@@ -30,8 +30,10 @@
 //!
 //! - **counts** (int32): property count in bits 0-11, in-object capacity in bits 12-19, the
 //!   object kind id in bits 20-27, and (OBJECT_LAYOUT 5) the elements kind in bits 28-31
-//!   ([`ELEMENTS_KIND_SHIFT`]; the values are in `elements.rs`; 0 in every shape, and read by
-//!   nothing, until M5-P1 ELEM1 writes it).
+//!   ([`ELEMENTS_KIND_SHIFT`]; the values are in `elements.rs`; M5-P1 ELEM1). Every shape
+//!   made from another one keeps its elements kind (a child, a unique copy, the dictionary
+//!   shape, a new prototype's root); only [`with_elements_kind`] changes it, and the roots and
+//!   dictionary shapes of a PROTO_INFO are kept per elements kind.
 //! - **flags** (int32): [`flag`]. A fast shape is always extensible; a non-extensible object
 //!   is in dictionary mode (OM-10). OBJECT_LAYOUT 5: bits 4-7 of a root shape hold the slack
 //!   counter ([`flag::SLACK_SHIFT`]; M5-P2 SLACK).
@@ -173,10 +175,8 @@ pub(crate) mod flag {
 
 /// OBJECT_LAYOUT 5: the elements kind of a shape's objects in `counts` bits 28-31 (H18-Q3;
 /// the values are `elements.rs` constants, written by M5-P1 ELEM1).
-#[allow(dead_code)] // M5-P1 ELEM1
 pub(crate) const ELEMENTS_KIND_SHIFT: u32 = 28;
 /// OBJECT_LAYOUT 5: the elements-kind bits of `counts` (bit 31 is the int32 sign bit).
-#[allow(dead_code)] // M5-P1 ELEM1
 pub(crate) const ELEMENTS_KIND_MASK: i32 = (0xF_u32 << ELEMENTS_KIND_SHIFT) as i32;
 
 /// OBJECT_LAYOUT 5: the representation values of details bits 4-6 (H17 rep/const row, C-02;
@@ -552,6 +552,38 @@ fn pack_counts(count: usize, capacity: u8, object_kind: u8) -> u64 {
     )
 }
 
+/// [`pack_counts`] with the elements-kind bits `ek_bits` (counts bits 28-31, as
+/// [`ek_bits_of`] gives them).
+fn pack_counts_ek(count: usize, capacity: u8, object_kind: u8, ek_bits: i32) -> u64 {
+    debug_assert!(ek_bits & !ELEMENTS_KIND_MASK == 0);
+    int32_bits(int32_of(pack_counts(count, capacity, object_kind)) | ek_bits)
+}
+
+/// The elements-kind bits (counts bits 28-31, in place) of `shape`.
+#[inline(always)]
+fn ek_bits_of(shape: u64) -> i32 {
+    counts(cell(shape)) & ELEMENTS_KIND_MASK
+}
+
+/// The elements-kind bits of kind `ek` (0-15), in place.
+#[inline(always)]
+const fn ek_bits(ek: u8) -> i32 {
+    ((ek as u32) << ELEMENTS_KIND_SHIFT) as i32
+}
+
+/// The elements kind (`elements::kind`, 0-15) of the objects with `shape` (H18-Q3). Not a GC
+/// point.
+#[inline(always)]
+pub(crate) fn elements_kind(shape: u64) -> u8 {
+    debug_assert!(is_shape(shape));
+    // No checked `cell`: its panic path would give the T0 keyed handlers a frame (M5-P1).
+    let p = core::ptr::with_exposed_provenance_mut::<ep9_value::Word0>(shape as usize);
+    // SAFETY: a shape value is the address of a live shape cell (never 0), whose provenance
+    // `Value::from_cell_ptr` exposed (`shape_of` rebuilds it from the object's address).
+    let s = unsafe { CellPtr::from_raw(NonNull::new_unchecked(p)) };
+    ((counts(s) as u32) >> ELEMENTS_KIND_SHIFT) as u8
+}
+
 /// The number of properties of `shape` (0 for a dictionary shape).
 pub(crate) fn count(shape: u64) -> usize {
     count_of(cell(shape))
@@ -767,7 +799,12 @@ pub(crate) fn add(rt: &Runtime, shape: u64, key: u64, attrs: i32) -> Added {
         proto(shape),
         shape,
         d,
-        pack_counts(n + 1, capacity(shape), object_kind(shape)),
+        pack_counts_ek(
+            n + 1,
+            capacity(shape),
+            object_kind(shape),
+            ek_bits_of(shape),
+        ),
         fl,
     );
     record_transition(rt, shape, child);
@@ -795,7 +832,12 @@ fn add_unique(rt: &Runtime, shape: u64, key: u64, attrs: i32, how: Probe) -> Add
         return Added::Dictionary;
     }
     let d = descriptors_for_child(rt, shape, key, Details::new(attrs, n as u16), how);
-    let counts = pack_counts(n + 1, capacity(shape), object_kind(shape));
+    let counts = pack_counts_ek(
+        n + 1,
+        capacity(shape),
+        object_kind(shape),
+        ek_bits_of(shape),
+    );
     Added::Shape(new_unique(
         rt,
         proto(shape),
@@ -817,7 +859,12 @@ pub(crate) fn remove_last_unique(rt: &Runtime, shape: u64) -> u64 {
     } else {
         descriptors(shape)
     };
-    let counts = pack_counts(n - 1, capacity(shape), object_kind(shape));
+    let counts = pack_counts_ek(
+        n - 1,
+        capacity(shape),
+        object_kind(shape),
+        ek_bits_of(shape),
+    );
     new_unique(
         rt,
         proto(shape),
@@ -1091,8 +1138,20 @@ pub(crate) fn root_shape_for(
     object_kind: KindId,
     capacity: u8,
 ) -> u64 {
+    root_shape_for_kind(rt, proto_info, object_kind, capacity, 0)
+}
+
+/// [`root_shape_for`] with the elements kind `ek` (`elements::kind`; 0, PACKED_INT32, for a
+/// new object). Each (object kind, capacity, elements kind) has its own root. GC point.
+fn root_shape_for_kind(
+    rt: &Runtime,
+    proto_info: u64,
+    object_kind: KindId,
+    capacity: u8,
+    ek: u8,
+) -> u64 {
     debug_assert!(is_object_kind(object_kind));
-    let want = pack_counts(0, capacity, object_kind.get());
+    let want = pack_counts_ek(0, capacity, object_kind.get(), ek_bits(ek));
     if let Some(s) = find_in_info(proto_info, |s| {
         flags(s) & flag::DICTIONARY == 0 && rd(cell(s), shf::COUNTS) == want
     }) {
@@ -1105,16 +1164,29 @@ pub(crate) fn root_shape_for(
 }
 
 /// The shared dictionary shape for objects of `object_kind` whose prototype is the one of
-/// `proto_info`. GC point.
+/// `proto_info`, elements kind 0. GC point.
+#[cfg_attr(not(test), allow(dead_code))] // tests/shapes.rs; the VM asks the elements kind's
 pub(crate) fn dictionary_shape_for(
     rt: &Runtime,
     proto_info: u64,
     object_kind: KindId,
     extensible: bool,
 ) -> u64 {
+    dictionary_shape_for_kind(rt, proto_info, object_kind, extensible, 0)
+}
+
+/// [`dictionary_shape_for`] with the elements kind `ek` (one shared dictionary shape per
+/// (object kind, extensible, elements kind)). GC point.
+fn dictionary_shape_for_kind(
+    rt: &Runtime,
+    proto_info: u64,
+    object_kind: KindId,
+    extensible: bool,
+    ek: u8,
+) -> u64 {
     debug_assert!(is_object_kind(object_kind));
     let fl = flag::DICTIONARY | if extensible { flag::EXTENSIBLE } else { 0 };
-    let want = pack_counts(0, 0, object_kind.get());
+    let want = pack_counts_ek(0, 0, object_kind.get(), ek_bits(ek));
     if let Some(s) = find_in_info(proto_info, |s| {
         flags(s) == fl && rd(cell(s), shf::COUNTS) == want
     }) {
@@ -1241,7 +1313,7 @@ pub(crate) fn note_proto_index_key(rt: &Runtime, o: u64) {
 }
 
 /// True if the object `o` may have an array-index own property: an array with a non-zero
-/// `length` (holes too), a String wrapper of a non-empty string, a stored index key, or a
+/// `length` (holes too), another object with an element (M5-P1 ELEM1), a String wrapper of a non-empty string, a stored index key, or a
 /// routed kind (ARGUMENTS, MODULE_NAMESPACE: its hooks answer for index keys that are not in
 /// its storage). Not a GC point. Out of line: [`proto_info_for`] runs it once per new
 /// prototype.
@@ -1249,7 +1321,7 @@ pub(crate) fn note_proto_index_key(rt: &Runtime, o: u64) {
 #[inline(never)]
 fn may_have_index_keys(o: u64) -> bool {
     let wrapped = crate::wrapper::wrapper_value(o);
-    (kind::is_array(o) && object::array_len(o) > 0)
+    object::may_have_elements(o)
         || wrapped.is_some_and(|s| kind::is_string(s) && object::str_len(s) > 0)
         || (0..object::own_count(o))
             .any(|i| key::array_index_of(object::own_entry(o, i).0).is_some())
@@ -1382,8 +1454,9 @@ fn cached_function_shape(rt: &Runtime, fp: u64, slot: usize) -> u64 {
 pub(crate) fn dictionary_shape_of(rt: &Runtime, shape: u64, extensible: bool) -> u64 {
     let k = KindId::new(object_kind(shape)).expect("an object kind");
     let ext = if extensible { flag::EXTENSIBLE } else { 0 };
+    let ek = elements_kind(shape);
     if flags(shape) & flag::UNIQUE != 0 {
-        let counts = pack_counts(0, 0, k.get());
+        let counts = pack_counts_ek(0, 0, k.get(), ek_bits(ek));
         return new_unique(
             rt,
             proto(shape),
@@ -1394,7 +1467,7 @@ pub(crate) fn dictionary_shape_of(rt: &Runtime, shape: u64, extensible: bool) ->
         );
     }
     let info = proto_info_for(rt, proto(shape));
-    dictionary_shape_for(rt, info, k, extensible)
+    dictionary_shape_for_kind(rt, info, k, extensible, ek)
 }
 
 /// The shape for an object with `shape` (a unique one, or one without properties) after its
@@ -1406,6 +1479,7 @@ pub(crate) fn dictionary_shape_of(rt: &Runtime, shape: u64, extensible: bool) ->
 pub(crate) fn with_proto(rt: &Runtime, shape: u64, p: u64, capacity: u8) -> u64 {
     let k = KindId::new(object_kind(shape)).expect("an object kind");
     let fl = flags(shape);
+    let ek = elements_kind(shape);
     // GC point: `shape` and `p` live in Rust locals (CSS).
     let info = proto_info_for(rt, p);
     if fl & flag::UNIQUE != 0 {
@@ -1414,11 +1488,61 @@ pub(crate) fn with_proto(rt: &Runtime, shape: u64, p: u64, capacity: u8) -> u64 
         return new_unique(rt, p, d, counts, fl, unique_info(shape));
     }
     if fl & flag::DICTIONARY != 0 {
-        dictionary_shape_for(rt, info, k, fl & flag::EXTENSIBLE != 0)
+        dictionary_shape_for_kind(rt, info, k, fl & flag::EXTENSIBLE != 0, ek)
     } else {
         debug_assert!(count(shape) == 0, "a shared fast shape with properties");
-        root_shape_for(rt, info, k, capacity)
+        root_shape_for_kind(rt, info, k, capacity, ek)
     }
+}
+
+/// The shape for an object with `shape` after its elements kind becomes `ek` (H18, M5-P1
+/// ELEM1; the store side of a one-way transition, `elements::transition`): the same
+/// prototype, object kind, properties and flags. A unique shape is copied with the new
+/// kind; a dictionary shape becomes the shared one of that kind; a tree shape is found again
+/// from the root of that kind by its keys in order (the transitions of that tree). `None` if
+/// that walk meets a transition limit (`add` answers `Added::Dictionary`): the caller moves
+/// the object to dictionary mode and asks again. GC point.
+pub(crate) fn with_elements_kind(rt: &Runtime, shape: u64, ek: u8) -> Option<u64> {
+    debug_assert!(ek <= crate::elements::kind::MAX);
+    if elements_kind(shape) == ek {
+        return Some(shape);
+    }
+    let fl = flags(shape);
+    if fl & flag::UNIQUE != 0 {
+        let c = (counts(cell(shape)) & !ELEMENTS_KIND_MASK) | ek_bits(ek);
+        let d = descriptors(shape);
+        return Some(new_unique(
+            rt,
+            proto(shape),
+            d,
+            int32_bits(c),
+            fl,
+            unique_info(shape),
+        ));
+    }
+    let k = KindId::new(object_kind(shape)).expect("an object kind");
+    // GC points below: `shape` lives in a Rust local (CSS); its prototype is in prototype
+    // mode already, so this makes nothing.
+    let info = proto_info_for(rt, proto(shape));
+    if fl & flag::DICTIONARY != 0 {
+        return Some(dictionary_shape_for_kind(
+            rt,
+            info,
+            k,
+            fl & flag::EXTENSIBLE != 0,
+            ek,
+        ));
+    }
+    let mut s = root_shape_for_kind(rt, info, k, capacity(shape), ek);
+    for i in 0..count(shape) {
+        let (key, attrs) = (key_at(shape, i), details_at(shape, i).attrs());
+        match add(rt, s, key, attrs) {
+            Added::Shape(c) => s = c,
+            Added::Dictionary => return None,
+        }
+    }
+    debug_assert_eq!(flags(s), fl, "a tree shape with other flags");
+    Some(s)
 }
 
 // ---- checks ---------------------------------------------------------------------------------

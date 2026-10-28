@@ -62,6 +62,7 @@
 //! | [`record_typeof`] | the `TypeOf` cold body (its fast body is only `Flow::Cold`) | slot, operand |
 //! | [`record_call`], [`record_call_pushed`] | every `Call*` site except `CallRuntime`: after the frame push of `call_fast`, or in the cold body (`call_record_cold`: every cold exit, `CallWithSpread`, a `CallProperty`/`CallAnyReceiver` list without a receiver) | slot, callee |
 //! | [`record_keyed`] | `GetKeyedProperty` (before the array path), `SetKeyedProperty`, `DefineKeyedOwnProperty`, `DefineKeyedOwnPropertyInLiteral` (its fast body is only this hook and `Flow::Cold`), `StaInArrayLiteral`, `TestIn` (records nothing, see below) | slot, receiver, key |
+//! | [`keyed_hit_kind`] | the `GetKeyedProperty` array path and the `keyed_ic::fast_set` store, after the hit: the IC_LAYOUT 3 kinds-set bit, in the sampled window only, as `Flow::Record` (M5-P1 ELEM1) | the receiver |
 //! | [`record_keyed_cold`] | their cold bodies (out of bounds, a hole, a non-array receiver; every execution of `DefineKeyedOwnPropertyInLiteral`) | slot, receiver, key |
 //! | [`record_jump_loop`] | `JumpLoop` | slot |
 //! | [`record_closure`] | the `CreateClosure` cold body, after the closure exists (0 = an exception is pending) | slot, the closure bits |
@@ -140,8 +141,11 @@ use crate::shape;
 use crate::string;
 
 /// Value bits of the keyed slots (2, 4, 6, 10, 17). Bits 0-3 are the `ep9_facts::KeySet`
-/// bits; bits 4-7 the receiver ("element form" in v0: no elements kinds before H18);
-/// bits 8-9 what the element access found.
+/// bits; bits 4-7 the receiver; bits 8-9 what the element access found. IC_LAYOUT 3 (M5-P1
+/// ELEM1): bits 10-16 the set of elements kinds of the receivers of an index key (Arrays and
+/// `elements::plain_elements_kind` objects), one bit per kind value
+/// (`elements::kinds_set_bit`): [`record_keyed_cold`] records it on every miss of an index
+/// key, [`keyed_hit_kind`] on a fast hit in the sampled window only.
 pub(crate) mod keyed {
     /// An array index key: an int32 >= 0, a number that is an index, or an index string.
     pub const INDEX: u32 = 1 << 0;
@@ -771,12 +775,34 @@ fn element_case(o: u64, i: u32) -> u32 {
 /// HasKeyed slot), before the fast path. Records nothing: T0 runs fast the implicit case (an
 /// int32 index of a present Array element at `GetKeyedProperty`) and a StoreKeyed hit, which
 /// its site's miss recorded first; every other case goes cold, where [`record_keyed_cold`]
-/// records it. A fast keyed path must miss on a case that is new for its site (KEYED, M4-P3).
+/// records it. A fast keyed path must miss on a case that is new for its site (KEYED, M4-P3);
+/// a new elements kind is not such a case (its bit comes from [`keyed_hit_kind`]).
 #[inline(always)]
 pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 
+/// The IC_LAYOUT 3 kinds-set bit of a fast keyed hit on the Array `o` (the `GetKeyedProperty`
+/// array path, the `keyed_ic::fast_set` store), or 0. Sampled as [`record_call`] (H16-Q2
+/// rule (2)): only in the first [`CALL_WINDOW`] budget units after a budget reset; the hit
+/// gives the bit to its dispatch as `interp::Flow::Record`, so the record runs out of line and
+/// the handler keeps no frame. So the kinds set of a site holds every kind of its cold
+/// executions ([`record_keyed_cold`]) and the kinds of its sampled hits: a kind that only
+/// hits outside every window see is missing, as a sampled call target is (M5-P1 BENCH-SET:
+/// recording on every hit cost t0-prop +3%, crypto +10%, navier-stokes +13%). No IC hit reads
+/// these bits, so a T0 table without profile records (`ics_only`, MODES-D19) hits the same.
+#[inline(always)]
+pub(crate) fn keyed_hit_kind(st: &St<'_>, o: u64) -> u32 {
+    debug_assert!(kinds::is_array(o));
+    if st.cx.budget <= BUDGET - CALL_WINDOW {
+        return 0;
+    }
+    core::hint::cold_path();
+    crate::elements::kinds_set_bit(crate::elements::kind_of(o))
+}
+
 /// A keyed access whose fast path failed, before the generic operation: the key and receiver
-/// bits, and for an index of an Array what the element access finds (out of bounds, a hole).
+/// bits, for an index of an Array what the element access finds (out of bounds, a hole), and
+/// for an index on a receiver with elements kinds its kind's kinds-set bit (IC_LAYOUT 3; the
+/// kind before the operation, which may make a transition).
 #[inline(always)]
 pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
     let Some(v) = vector_of(st) else { return };
@@ -785,7 +811,12 @@ pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
     if let Some(i) = index
         && kinds::is_array(o)
     {
-        bits |= element_case(o, i);
+        bits |= element_case(o, i) | crate::elements::kinds_set_bit(crate::elements::kind_of(o));
+    } else if index.is_some()
+        && kinds::is_cell_bits(o)
+        && crate::elements::plain_elements_kind(kinds::cell_kind(o))
+    {
+        bits |= crate::elements::kinds_set_bit(crate::elements::kind_of(o));
     }
     let old = value(v, s.0);
     if old as u32 | bits != old as u32 {

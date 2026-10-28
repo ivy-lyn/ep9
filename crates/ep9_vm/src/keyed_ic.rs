@@ -22,11 +22,15 @@
 //! | the hole | megamorphic: the fast case ran cold with 2 or more shapes | for any receiver |
 //!
 //! The **fast case** of `SetKeyedProperty`: the receiver is an Array, the key an int32
-//! `i >= 0`, and element `i` is present (below `length`, inside the ELEMENTS capacity, not a
-//! hole). Its store replaces the value of an own writable data property (a v0 element is
-//! always {w, e, c}), so it needs no `[[Extensible]]` test, no prototype walk and no
-//! `proto_index` fuse, and it changes no shape and no length. Every other keyed case goes
-//! cold and leaves the key half alone, so the key half names only receivers of the fast case.
+//! `i >= 0`, and element `i` is present (below `length`, inside the elements capacity, not a
+//! hole), and the value fits the array's elements kind as it is (H18, M5-P1 ELEM1: an int32
+//! fits every kind; a non-int32 Value does not fit an INT32 kind; a DOUBLE kind takes only
+//! numbers, written as raw f64 with a canonical NaN). Its store replaces the value of an own
+//! writable data property (an element is always {w, e, c}), so it needs no `[[Extensible]]`
+//! test, no prototype walk and no `proto_index` fuse, and it changes no shape, no kind and
+//! no length: a store that needs a kind transition goes cold (transitions happen on the
+//! cold store path only). Every other keyed case goes cold and leaves the key half alone, so
+//! the key half names only receivers of the fast case.
 //!
 //! **The cold-miss rule (profile.rs "Keyed sites", MC-w14-6).** A hit records nothing, so a
 //! hit is allowed only where the cold path already recorded everything the hit would have
@@ -56,13 +60,15 @@
 //! (a dead shape reads undefined after the GC, and the next cold fast case records the new
 //! one), and its store takes the barrier.
 
+use crate::elements;
 use crate::feedback::{self, fv};
 use crate::frame::{HOLE, UNDEFINED, int32_of};
 use crate::interp::dsl::FSlot;
 use crate::interp::{Flow, St};
 use crate::kinds;
-use crate::object::{self, elems, obj, rd, rd_i32};
-use crate::runtime::Runtime;
+use crate::object::{self, delems, elems, obj, rd, rd_i32};
+use crate::profile;
+use crate::runtime::{Runtime, val};
 use crate::shape;
 use ep9_heap::CellPtr;
 use ep9_value::encoding::NUMBER_TAG;
@@ -80,11 +86,12 @@ fn shape_id(o: u64) -> u32 {
     unsafe { object::cell(o).header() }.shape_id().get()
 }
 
-/// The ELEMENTS cell and byte offset of element `i` of the receiver `o` for the fast case:
+/// The elements cell and byte offset of element `i` of the receiver `o` for the fast case:
 /// `o` an Array, `k` an int32 `>= 0` below `length` and the capacity, the element not a hole.
-/// Not a GC point; reads only.
+/// The cell is an ELEMENTS cell (Values) or an ELEMENTS_DOUBLE cell (raw f64, hole
+/// [`delems::HOLE`]); the bool is true for the latter. Not a GC point; reads only.
 #[inline(always)]
-fn present_element(o: u64, k: u64) -> Option<(CellPtr, usize)> {
+fn present_element(o: u64, k: u64) -> Option<(CellPtr, usize, bool)> {
     if k & NUMBER_TAG != NUMBER_TAG || !kinds::is_array(o) {
         return None;
     }
@@ -101,24 +108,33 @@ fn present_element(o: u64, k: u64) -> Option<(CellPtr, usize)> {
         return None;
     }
     let off = elems::DATA + 8 * i as usize;
-    (rd(e, off) != HOLE).then_some((e, off))
+    // SAFETY: `e` is live (crate invariant).
+    if unsafe { e.header() }.kind() == kinds::ELEMENTS.get() {
+        return (rd(e, off) != HOLE).then_some((e, off, false));
+    }
+    (object::raw_get(e, off) != delems::HOLE).then_some((e, off, true))
 }
 
 /// Whether the keyed IC state of slot `s` lets the fast case of the receiver `o` hit (see the
-/// module docs). On a miss it changes the state (out of line) and the caller goes cold, so
-/// the cold body records this execution.
+/// module docs): `Some(megamorphic)`. On a miss (`None`) it changes the state (out of line)
+/// and the caller goes cold, so the cold body records this execution. A monomorphic hit
+/// needs no kinds-set record: the shape holds the elements kind, and the miss that installed
+/// the shape recorded it.
 #[inline(always)]
-fn hits(st: &St<'_>, o: u64, s: FSlot) -> bool {
+fn hits(st: &St<'_>, o: u64, s: FSlot) -> Option<bool> {
     let Some(v) = feedback::vector(st.info()) else {
-        return true;
+        return Some(false);
     };
     let key = feedback::key(v, s.0);
     // An undefined key and the hole never equal a ShapeId (as in `ic::handler_for`).
-    if key as u32 == shape_id(o) || key == HOLE {
-        return true;
+    if key as u32 == shape_id(o) {
+        return Some(false);
+    }
+    if key == HOLE {
+        return Some(true);
     }
     note_receiver(st.rt(), v, s.0, o, key);
-    false
+    None
 }
 
 /// The keyed IC state change of slot `i` of the vector `v` for a fast-case receiver `o`
@@ -144,17 +160,39 @@ pub(crate) fn fast_get(_st: &mut St<'_>, _o: u64, _k: u64, _s: FSlot) -> Flow {
     Flow::Cold
 }
 
-/// `o[k] = v` (StoreKeyed slot `s`): the fast case stores a present Array element in place.
+/// `o[k] = v` (StoreKeyed slot `s`): the fast case stores a present Array element in place,
+/// in the storage form of its kind, when `v` needs no kind transition.
 #[inline(always)]
 pub(crate) fn fast_set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flow {
-    let Some((e, off)) = present_element(o, k) else {
+    let Some((e, off, doubles)) = present_element(o, k) else {
         return Flow::Cold;
     };
-    if !hits(st, o, s) {
+    let fits = if doubles {
+        val(v).is_number()
+    } else {
+        // An int32 fits every Values kind; anything else does not fit an INT32 kind.
+        v & NUMBER_TAG == NUMBER_TAG || elements::kind_of(o) > elements::kind::HOLEY_INT32
+    };
+    if !fits {
         return Flow::Cold;
     }
-    object::wr(&st.rt().heap, e, off, v);
-    Flow::Next
+    let Some(megamorphic) = hits(st, o, s) else {
+        return Flow::Cold;
+    };
+    if doubles {
+        object::raw_set(e, off, object::double_bits(v));
+    } else {
+        object::wr(&st.rt().heap, e, off, v);
+    }
+    // A megamorphic hit may see a kind new for the site: the kinds-set bit of a sampled one,
+    // recorded out of line (`profile::keyed_hit_kind`).
+    if !megamorphic {
+        return Flow::Next;
+    }
+    match profile::keyed_hit_kind(st, o) {
+        0 => Flow::Next,
+        bits => Flow::Record(profile::Rec::new(s, bits)),
+    }
 }
 
 /// CreateDataProperty `o[k] = v` with the opcode's `flags` (DefineKeyedOwn slot `s`). Always
