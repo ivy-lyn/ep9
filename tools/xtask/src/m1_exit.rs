@@ -23,11 +23,11 @@
 //!
 //! | Item | Host column | Windows column |
 //! |---|---|---|
-//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", on a fresh tree: no uncommitted change, and the tree ids of `crates`, `tools/bench`, `Cargo.lock` and `rust-toolchain.toml` equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
-//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN); a gate host, not provisional; fresh: its commit is HEAD, or an ancestor with no change in the four paths of item 1 since (else OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
+//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", on a fresh tree: a full commit id (40 hex digits), no uncommitted change, and the tree ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
+//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 since (else OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted Fuzzilli record is fresh in `crates`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), and a counted Fuzzilli record is fresh in `crates`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all four parts) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
@@ -475,6 +475,18 @@ fn is_full_sha(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// [`fresh_since`] for the `commit` of an item 2 or item 5 input: a named commit must be a full
+/// commit id ([`is_full_sha`]), so `"HEAD"` or a short id gives OPEN (M4-P5 C3). A missing one
+/// keeps the [`fresh_since`] text.
+fn fresh_named(root: &Path, commit: &str, paths: &[&str]) -> Result<String, String> {
+    if !commit.is_empty() && commit != "unknown" && !is_full_sha(commit) {
+        return Err(format!(
+            "its commit {commit:?} is not a commit id (40 hex digits)"
+        ));
+    }
+    fresh_since(root, commit, paths)
+}
+
 /// Where an input came from (P3-ORCH-14, P3-ORCH-21): the `commit`, `dirty` and `made_by`
 /// fields of an ep9-test262 JSON (tools/test262/src/provenance.rs), or the [`SOURCE_LINE`] of a
 /// nesting log.
@@ -738,6 +750,12 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
     // Fresh: no uncommitted change, and the tree ids at HEAD equal the measured ones.
     let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
     let mut fresh = Vec::new();
+    // The tree ids prove the code; the commit must still be a full id (M4-P5 C3).
+    if !is_full_sha(commit) {
+        fresh.push(format!(
+            "its commit {commit:?} is not a commit id (40 hex digits)"
+        ));
+    }
     match j.get("dirty").and_then(Json::arr) {
         Some([]) => {}
         Some(d) => fresh.push(format!(
@@ -846,7 +864,7 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         parts.push("provisional run".into());
     }
     let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
-    let tree = match fresh_since(root, commit, &FRESH_PATHS) {
+    let tree = match fresh_named(root, commit, &FRESH_PATHS) {
         Ok(t) => t,
         Err(e) => {
             status = status.max(Status::Open);
@@ -1491,7 +1509,7 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
                 }
             };
         if counted {
-            match fresh_since(&c.o.root, commit, fresh_paths) {
+            match fresh_named(&c.o.root, commit, fresh_paths) {
                 Ok(_) => {
                     *hours
                         .entry(if tool == "fuzzilli" {
@@ -3129,7 +3147,7 @@ mod tests {
                 "marginal (no gate host)",
             ),
             (
-                exit2_json("0123abc", ["pass", "pass"], true),
+                exit2_json(&"0123abcd".repeat(5), ["pass", "pass"], true),
                 HOST,
                 Status::Open,
                 "is not in this repository",
@@ -3304,6 +3322,75 @@ mod tests {
         format!(
             r#"{{"schema":"ep9-fuzz/v1","tool":"{tool}","campaign":"{tool}-{hours}","target":"t","commit":"{commit}","cpu_hours":{hours},"counted":{counted},"crashes":[{crash}]}}"#
         )
+    }
+
+    /// M4-P5 C3: items 1, 2 and 5 take a full commit id only. `"HEAD"` resolves to whatever the
+    /// tree is now, and a short or upper-case id is not the form the tools write: each gives OPEN.
+    #[test]
+    fn items_1_2_and_5_need_a_full_commit_id() {
+        let root = fake_repo("fullsha");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let kernels = kernels_json(&root, HOST, 15, 15, None);
+        let set = |o: &mut Options, commit: &str| {
+            o.kernels = Some(input(
+                &root,
+                "kernels.json",
+                &kernels.replace(
+                    &format!(r#""commit":"{head}""#),
+                    &format!(r#""commit":"{commit}""#),
+                ),
+            ));
+            o.cross = Some(input(
+                &root,
+                "exit2.json",
+                &exit2_json(commit, ["pass", "pass"], true),
+            ));
+            o.fuzz = vec![
+                input(
+                    &root,
+                    "f1.json",
+                    &fuzz_json("fuzzilli", commit, 100.0, true, ""),
+                ),
+                input(
+                    &root,
+                    "f2.json",
+                    &fuzz_json("cargo-fuzz", &head, 24.0, true, ""),
+                ),
+            ];
+        };
+        set(&mut o, &head);
+        let r = run(&o).unwrap();
+        for i in [0, 1, 4] {
+            assert_eq!(
+                r.cells[i].0.status,
+                Status::Pass,
+                "item {}: {:?}",
+                i + 1,
+                r.cells[i].0
+            );
+        }
+        for bad in [
+            "HEAD".to_string(),
+            head[..7].to_string(),
+            head.to_uppercase(),
+        ] {
+            set(&mut o, &bad);
+            let r = run(&o).unwrap();
+            for i in [0, 1, 4] {
+                let c = &r.cells[i].0;
+                assert_eq!(c.status, Status::Open, "item {} {bad}: {c:?}", i + 1);
+                assert!(
+                    c.evidence.contains(&format!(
+                        "its commit {bad:?} is not a commit id (40 hex digits)"
+                    )),
+                    "item {} {bad}: {}",
+                    i + 1,
+                    c.evidence
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
