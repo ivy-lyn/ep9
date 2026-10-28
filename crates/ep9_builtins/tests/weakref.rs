@@ -194,6 +194,9 @@ fn end_of_job(i: &mut Isolate) -> Result<(), String> {
 /// rule 35; it lived here until M5-P1 GC5 moved it to `common`). On linux-x64 debug an
 /// unscrubbed collection kept the target of
 /// [`a_checkpoint_lets_a_weakref_target_die_at_the_next_gc`] alive (CI run 40564429974).
+/// Inlined, as `common::scrub_and_collect` (rule 35: the scrubs run in the caller's own
+/// frame; CI run 40733504045, Win64 home space).
+#[inline(always)]
 fn scrub_and_collect(i: &mut Isolate) {
     common::scrub_and_collect(i);
 }

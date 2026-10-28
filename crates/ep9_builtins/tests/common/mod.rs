@@ -118,16 +118,30 @@ pub fn scrub_below() {
 /// frame's own collections: without the second scrub a chain target's one-past-end address
 /// stopped the 30-link weakref chain after 2 links (mac a64 debug, `EP9_HASH_SEED` 59;
 /// verifier E, V-E1; 4941d6a).
-#[inline(never)]
+///
+/// Inlined (rule 35: the scrubs run in the caller's own frame), so the zeros also lie under
+/// the frame of [`collect_isolate`]. An out-of-line helper's own frame is not under its own
+/// scrub, and a slot that it never writes (on Win64 the home space it gives its callees) keeps
+/// what the last call at that depth left there (ep9_vm `tests/ordered_table.rs` `collect`:
+/// CI run 40733504045).
+#[inline(always)]
 pub fn scrub_and_collect(i: &mut Isolate) {
     scrub_below();
-    i.collect_garbage();
+    collect_isolate(i);
     scrub_below();
 }
 
-/// A collection after a stack scrub, from inside a host function: the scrub is a call of its
-/// own, so the collection's frames lie on its zeros.
+/// A full collection, out of line, so that its frames lie on the zeros of the caller's scrub.
 #[inline(never)]
+fn collect_isolate(i: &mut Isolate) {
+    i.collect_garbage();
+}
+
+/// A collection after a stack scrub, from inside a host function ([`scrub_and_collect`] from
+/// Rust): the scrub is a call of its own, so the collection's frames lie on its zeros. Inlined,
+/// as [`scrub_and_collect`]: the scrub runs in the host function's frame, so its zeros lie
+/// under the frame of [`collect_now`] too.
+#[inline(always)]
 pub fn scrub_then_collect(cx: &mut Cx<'_>) {
     scrub_below();
     collect_now(cx);
