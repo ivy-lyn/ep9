@@ -539,6 +539,54 @@ fn om10_an_index_key_on_a_non_array_makes_a_dictionary() {
     });
 }
 
+/// OM-10 as built since M5-P1 ELEM1 (H18-Q3): an index key goes to the +16 elements store
+/// only when the elements path accepts it. On a plain object that has an elements cell, a
+/// near string index key stays an element and the shape stays fast; a far one (`PLAIN_GAP`
+/// or more past the capacity, `object::element_set` refuses it) becomes a stored property
+/// and makes a dictionary, as does a far int32 key, and any index key on a kind with no +16
+/// elements store (a Number wrapper) (Codex M5-P1 R2 on H17:72).
+#[test]
+fn om10_an_index_the_elements_store_refuses_makes_a_dictionary() {
+    each(|cx, rt| {
+        for far_string in [true, false] {
+            let o = object::new_plain_object(rt);
+            put(rt, o, "b", int(1), attr::DEFAULT);
+            property::define_index(cx, o, 0, int(10)).unwrap();
+            assert!(object::has_elements_cell(o));
+            property::define(cx, o, k(rt, "5"), int(15)).unwrap();
+            assert!(
+                !shape::is_dictionary(shape::shape_of(o)),
+                "a near index stays fast"
+            );
+            assert_eq!(object::element_get(o, 5), Some(int(15)));
+            let far = 100_000u32;
+            assert!(far >= crate::elements::PLAIN_GAP + 8);
+            if far_string {
+                property::define(cx, o, k(rt, "100000"), int(2)).unwrap();
+            } else {
+                property::define_index(cx, o, u64::from(far), int(2)).unwrap();
+            }
+            assert!(
+                shape::is_dictionary(shape::shape_of(o)),
+                "a far index makes a dictionary (string key: {far_string})"
+            );
+            assert_eq!(object::element_get(o, far), None);
+            assert_eq!(own(rt, o, "100000"), Some(int(2)));
+            assert_eq!(own_keys(cx, o), ["0", "5", "100000", "b"]);
+        }
+        // A kind with no +16 elements store (a Number wrapper): an index key, even a near
+        // int32 one, stays a stored property and makes a dictionary.
+        let w = wrapper::new_wrapper(rt, rt.root(Root::NumberPrototype), int(7));
+        property::define_index(cx, w, 0, int(1)).unwrap();
+        assert!(
+            shape::is_dictionary(shape::shape_of(w)),
+            "a wrapper's index key"
+        );
+        assert!(!object::has_elements_cell(w));
+        assert_eq!(own(rt, w, "0"), Some(int(1)));
+    });
+}
+
 #[test]
 fn om10_set_prototype_of_with_own_properties_makes_a_dictionary() {
     each(|cx, rt| {
