@@ -584,6 +584,34 @@ fn om10_an_index_the_elements_store_refuses_makes_a_dictionary() {
         );
         assert!(!object::has_elements_cell(w));
         assert_eq!(own(rt, w, "0"), Some(int(1)));
+        // A [[Set]] of a new index once a prototype has had an index key (the runtime-wide
+        // flag `shape::proto_index_keys` is never cleared, so this case comes last):
+        // `plain_store` refuses, and on an object with no elements cell the key is stored
+        // and makes a dictionary. An object that has a cell stays fast (the element goes to
+        // +16). JS: `Object.prototype[9] = 'p'; var q = {}; q[0] = 1;`.
+        assert!(!shape::proto_index_keys(rt));
+        property::define_index(cx, rt.root(Root::ObjectPrototype), 9, int(9)).unwrap();
+        assert!(shape::proto_index_keys(rt));
+        let q = object::new_plain_object(rt);
+        put(rt, q, "b", int(1), attr::DEFAULT);
+        let c = object::new_plain_object(rt);
+        put(rt, c, "b", int(1), attr::DEFAULT);
+        property::define_index(cx, c, 0, int(10)).unwrap();
+        assert!(object::has_elements_cell(c) && !shape::is_dictionary(shape::shape_of(c)));
+        property::set_keyed(cx, q, int(0), int(1), false).unwrap();
+        property::set_keyed(cx, c, int(1), int(11), false).unwrap();
+        assert!(
+            shape::is_dictionary(shape::shape_of(q)),
+            "a new index [[Set]] with no elements cell, after a prototype index key"
+        );
+        assert!(!object::has_elements_cell(q));
+        assert_eq!(own(rt, q, "0"), Some(int(1)));
+        assert!(
+            !shape::is_dictionary(shape::shape_of(c)),
+            "an object with an elements cell stays fast"
+        );
+        assert_eq!(object::element_get(c, 1), Some(int(11)));
+        assert_eq!(own(rt, c, "1"), None);
     });
 }
 
