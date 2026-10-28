@@ -8,7 +8,9 @@
 //!  heap cell word (u64, the native-word encoding) <-> ExternalRef<T> <-> *const T
 //! ```
 //!
-//! M5-P0 stub: the type and its signatures; nothing uses it yet.
+//! M5-P0 stub: the type and its signatures; nothing uses it yet. Since M5-P1 (the phase fixer,
+//! M5-P0-ORCH-12, MODES-CHECK-w18 MC-w18-13b) `new` and `get` use the native-word encoding
+//! (`frame::native_of`, `frame::native_ptr`): the word is a double Value, never a raw address.
 
 use core::marker::PhantomData;
 
@@ -28,17 +30,18 @@ impl<T> Clone for ExternalRef<T> {
 impl<T> Copy for ExternalRef<T> {}
 
 impl<T> ExternalRef<T> {
-    /// The reference to `p`. M5-P0 stub: the word is the address.
+    /// The reference to `p`: its native word (`frame::native_of`, which exposes the
+    /// provenance).
     pub(crate) fn new(p: *const T) -> ExternalRef<T> {
         ExternalRef {
-            word: p as usize as u64,
+            word: crate::frame::native_of(p),
             _t: PhantomData,
         }
     }
 
-    /// The pointer.
+    /// The pointer (`frame::native_ptr` of the word).
     pub(crate) fn get(self) -> *const T {
-        self.word as usize as *const T
+        crate::frame::native_ptr::<T>(self.word).cast_const()
     }
 
     /// The word a heap cell stores.
@@ -52,5 +55,27 @@ impl<T> ExternalRef<T> {
             word,
             _t: PhantomData,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExternalRef;
+    use crate::frame;
+
+    /// The cell word is the native-word encoding of the address (address +
+    /// `DOUBLE_ENCODE_OFFSET`, a double Value), not the raw address, and it round-trips.
+    #[test]
+    fn the_word_is_the_native_word_encoding() {
+        let x = 7u64;
+        let p: *const u64 = &x;
+        let r = ExternalRef::new(p);
+        assert_eq!(r.to_word(), frame::native_of(p));
+        assert_ne!(r.to_word(), p.addr() as u64);
+        assert_eq!(frame::native_addr(r.to_word()), p.addr());
+        let back = ExternalRef::<u64>::from_word(r.to_word()).get();
+        assert_eq!(back, p);
+        // SAFETY: `back` is `p`, which points at the live local `x`.
+        assert_eq!(unsafe { *back }, 7);
     }
 }
