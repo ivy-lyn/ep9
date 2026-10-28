@@ -124,6 +124,41 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
     }
 }
 
+/// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, schema 1) of the VM kind `k`, or
+/// `None` for a reserved value (7-15). The two numberings differ at 1-4 (VM: OBJECT_LAYOUT 5,
+/// V10-A21; facts: holey kinds after the packed ones), so every reader converts through this
+/// one map, never a cast (MODES-CHECK-w18 MC-w18-4; the month-6 schema bump either renumbers
+/// `ElementsKind` to the VM order or keeps the map).
+#[cfg_attr(not(test), allow(dead_code))] // first reader: M5-P2 ELEM2 (ALLOC_SITE facts)
+pub(crate) const fn to_fact(k: u8) -> Option<ep9_facts::ElementsKind> {
+    use ep9_facts::ElementsKind as F;
+    match k {
+        kind::PACKED_INT32 => Some(F::PackedInt32),
+        kind::HOLEY_INT32 => Some(F::HoleyInt32),
+        kind::PACKED_DOUBLE => Some(F::PackedDouble),
+        kind::HOLEY_DOUBLE => Some(F::HoleyDouble),
+        kind::PACKED_ELEMENTS => Some(F::PackedElements),
+        kind::HOLEY_ELEMENTS => Some(F::HoleyElements),
+        kind::DICTIONARY => Some(F::Dictionary),
+        _ => None,
+    }
+}
+
+/// The VM kind of the FactSnapshot elements kind `f`: the inverse of [`to_fact`].
+#[cfg_attr(not(test), allow(dead_code))] // first reader: M5-P2 ELEM2
+pub(crate) const fn from_fact(f: ep9_facts::ElementsKind) -> u8 {
+    use ep9_facts::ElementsKind as F;
+    match f {
+        F::PackedInt32 => kind::PACKED_INT32,
+        F::HoleyInt32 => kind::HOLEY_INT32,
+        F::PackedDouble => kind::PACKED_DOUBLE,
+        F::HoleyDouble => kind::HOLEY_DOUBLE,
+        F::PackedElements => kind::PACKED_ELEMENTS,
+        F::HoleyElements => kind::HOLEY_ELEMENTS,
+        F::Dictionary => kind::DICTIONARY,
+    }
+}
+
 /// True for the holey kinds (1, 3, 5).
 #[cfg_attr(not(test), allow(dead_code))] // tests (layout5, elements)
 pub(crate) const fn is_holey(k: u8) -> bool {

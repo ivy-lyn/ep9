@@ -746,3 +746,41 @@ fn the_store_hit_keeps_the_kind() {
         }
     }
 }
+
+/// MC-w18-4: the one map between the VM kinds and `ep9_facts::ElementsKind`, over every value
+/// the 4 shape bits hold: 0-6 map to the fact kind of the same meaning (packed or holey, and
+/// the storage of the name) and back; 7-15 map to none; every fact kind maps back to itself.
+#[test]
+fn the_fact_kind_map_is_one_to_one() {
+    use ep9_facts::ElementsKind as F;
+    let want = [
+        (ek::PACKED_INT32, F::PackedInt32),
+        (ek::HOLEY_INT32, F::HoleyInt32),
+        (ek::PACKED_DOUBLE, F::PackedDouble),
+        (ek::HOLEY_DOUBLE, F::HoleyDouble),
+        (ek::PACKED_ELEMENTS, F::PackedElements),
+        (ek::HOLEY_ELEMENTS, F::HoleyElements),
+        (ek::DICTIONARY, F::Dictionary),
+    ];
+    for k in 0..=ek::MAX {
+        let got = elements::to_fact(k);
+        match want.iter().find(|&&(v, _)| v == k) {
+            Some(&(_, f)) => {
+                assert_eq!(got, Some(f), "VM kind {k}");
+                assert_eq!(elements::from_fact(f), k, "{f:?}");
+                // The names agree on holes and storage.
+                assert_eq!(
+                    f.name().starts_with("holey"),
+                    k != ek::DICTIONARY && elements::is_holey(k),
+                    "{k} {f:?}"
+                );
+            }
+            None => assert_eq!(got, None, "reserved VM kind {k}"),
+        }
+    }
+    for b in 0..=u8::MAX {
+        if let Some(f) = F::from_u8(b) {
+            assert_eq!(elements::to_fact(elements::from_fact(f)), Some(f), "{f:?}");
+        }
+    }
+}
