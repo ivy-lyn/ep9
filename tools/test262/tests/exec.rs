@@ -272,6 +272,58 @@ fn the_json_names_its_commit_dirty_flag_and_host() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// MC-w17-5 (plan v10 section 2.6): the JSON names the build: `mode` and `preset` are the
+/// preset the isolates ran (`jit` with the runner's default `jit` feature, V10-A12), `features`
+/// the ep9_vm features, `feedback` the `--feedback` mode (default `full` for `jit`). The summary
+/// line says the same.
+#[test]
+fn the_json_names_its_build() {
+    let root = tree("build");
+    let expect = expect_file(&root, FAILING);
+    let json = root.join("summary.json");
+    let preset = if cfg!(feature = "jit") {
+        "jit"
+    } else {
+        "jitless"
+    };
+    for (extra, feedback) in [
+        (
+            &[][..],
+            if cfg!(feature = "jit") {
+                "full"
+            } else {
+                "ics_only"
+            },
+        ),
+        (&["--feedback", "ics_only"][..], "ics_only"),
+        (&["--feedback", "full"][..], "full"),
+    ] {
+        let mut args = vec!["--json", json.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let (code, text) = exec(&root, &expect, &args, None);
+        assert_eq!(code, Some(0), "{text}");
+        assert!(
+            text.contains(&format!(", mode {preset}, feedback {feedback}, timeout ")),
+            "{text}"
+        );
+        let summary = std::fs::read_to_string(&json).unwrap();
+        let head = format!(
+            "{{\"command\":\"exec\",\"mode\":\"{preset}\",\"preset\":\"{preset}\",\"features\":["
+        );
+        assert!(summary.starts_with(&head), "{summary}");
+        assert!(
+            summary.contains(&format!("],\"feedback\":\"{feedback}\",\"target\":")),
+            "{summary}"
+        );
+        if cfg!(feature = "jit") {
+            assert!(summary.contains("\"features\":[\"jit\""), "{summary}");
+        }
+    }
+    let (code, text) = exec(&root, &expect, &["--feedback", "some"], None);
+    assert_eq!(code, Some(2), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// C2 and item 8 (plan v10 section 2.6): the JSON names the commit the runner was built at
 /// (in a git work tree: HEAD, as cargo rebuilt it for this test) and the HEAD of the test262
 /// checkout it ran; a test262 directory that is no git work tree of its own names none.

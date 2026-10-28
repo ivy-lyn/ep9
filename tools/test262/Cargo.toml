@@ -18,5 +18,12 @@ ep9_frontend = { path = "../../crates/ep9_frontend" }
 ep9_heap = { path = "../../crates/ep9_heap" }
 ep9_vm = { path = "../../crates/ep9_vm" }
 
+# The runner runs the gate preset (`jit`, feedback `full`) by default, also when CI builds it
+# alone (`-p ep9_test262`): without the feature its ep9_vm would default to `jitless` (plan v10
+# V10-A12). `--no-default-features` gives a jitless runner.
+[features]
+default = ["jit"]
+jit = ["ep9_vm/jit"]
+
 [lints]
 workspace = true
