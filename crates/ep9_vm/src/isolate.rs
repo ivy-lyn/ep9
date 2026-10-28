@@ -276,8 +276,13 @@ impl Isolate {
     /// ```
     pub fn new_with(config: IsolateConfig, exec: ExecOptions) -> Result<Isolate, IsolateError> {
         if !exec.preset().available() {
+            // Name the preset (MC-w18-3): only the jit preset is known and can be missing.
             return Err(IsolateError::Config(
-                "the jit preset needs a build with the jit feature",
+                if exec.preset() == crate::exec::Preset::JIT {
+                    "the jit preset needs a build with the jit feature"
+                } else {
+                    "an unknown preset: this build runs only the jit and jitless presets"
+                },
             ));
         }
         if config.vm_stack_slots < 1024 || config.vm_stack_slots > (1 << 28) {

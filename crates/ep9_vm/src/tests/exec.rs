@@ -30,7 +30,8 @@ fn presets_have_their_default_feedback_and_names() {
         (Feedback::FULL.name(), Feedback::ICS_ONLY.name()),
         ("full", "ics_only")
     );
-    assert_eq!(Preset::from_name("hybrid"), None);
+    // A name no build assigns (doc 13 §5.4: never the next planned one).
+    assert_eq!(Preset::from_name("x-never"), None);
     assert_eq!(Feedback::from_name("none"), None);
 }
 

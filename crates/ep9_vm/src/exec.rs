@@ -37,11 +37,13 @@ impl Preset {
     /// The jitless preset: no runtime code generation (every build).
     pub const JITLESS: Preset = Preset(1);
 
-    /// The preset name (`jit`, `jitless`), as result JSON files write it.
+    /// The preset name (`jit`, `jitless`), as result JSON files write it. A value this build
+    /// does not know (a later preset) is `unknown`, never a known name (MC-w18-3).
     pub const fn name(self) -> &'static str {
         match self.0 {
             0 => "jit",
-            _ => "jitless",
+            1 => "jitless",
+            _ => "unknown",
         }
     }
 
@@ -55,9 +57,10 @@ impl Preset {
     }
 
     /// True if this build can run the preset: the jit preset needs the `jit` feature (M-R6,
-    /// doc 13:77); the jitless preset runs in every build (M-R3).
+    /// doc 13:77); the jitless preset runs in every build (M-R3); a preset this build does not
+    /// know runs in none (an allow-list, MC-w18-3).
     pub const fn available(self) -> bool {
-        self.0 != Preset::JIT.0 || cfg!(feature = "jit")
+        self.0 == Preset::JITLESS.0 || (self.0 == Preset::JIT.0 && cfg!(feature = "jit"))
     }
 }
 
@@ -72,11 +75,13 @@ impl Feedback {
     /// Stored from M5-P0; effective from M5-P3 (PROFILE6).
     pub const ICS_ONLY: Feedback = Feedback(1);
 
-    /// The mode name (`full`, `ics_only`), as result JSON files write it.
+    /// The mode name (`full`, `ics_only`), as result JSON files write it. A value this build
+    /// does not know is `unknown` (MC-w18-3).
     pub const fn name(self) -> &'static str {
         match self.0 {
             0 => "full",
-            _ => "ics_only",
+            1 => "ics_only",
+            _ => "unknown",
         }
     }
 
@@ -277,5 +282,37 @@ mod fuzz_seat_tests {
         let c = Isolate::new(IsolateConfig::default()).unwrap();
         assert_eq!(c.rt.exec.get(), ExecOptions::default());
         assert_eq!(b.rt.exec.get().fuzz_hooks(), FuzzHooks::NONE);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExecOptions, Feedback, Preset};
+    use crate::{Isolate, IsolateConfig, IsolateError};
+
+    /// MC-w18-3: the names and `available` are an allow-list. A value no build assigns (255,
+    /// at the top of the range, never the next planned one) is `unknown`, no build runs it,
+    /// and `new_with` refuses it with a text that is not the jit one.
+    #[test]
+    fn an_unknown_preset_or_mode_is_refused() {
+        let (p, f) = (Preset(255), Feedback(255));
+        assert_eq!((p.name(), f.name()), ("unknown", "unknown"));
+        assert!(!p.available());
+        assert_eq!(Preset::from_name(p.name()), None);
+        assert_eq!(Feedback::from_name(f.name()), None);
+        let exec = ExecOptions {
+            preset: p,
+            ..ExecOptions::jitless()
+        };
+        match Isolate::new_with(IsolateConfig::default(), exec) {
+            Err(IsolateError::Config(m)) => {
+                assert!(
+                    m.contains("unknown preset") && !m.contains("jit feature"),
+                    "{m}"
+                )
+            }
+            Err(e) => panic!("another error: {e}"),
+            Ok(_) => panic!("an unknown preset ran"),
+        }
     }
 }
