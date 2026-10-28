@@ -59,8 +59,11 @@ export const KERNEL_IDS = [
   ...Object.keys(OCTANE_KERNELS).map((k) => `octane/${k}`),
 ];
 
-/** The paths whose change makes a kernels JSON stale (plan v9 section 9.4 item 1). */
-export const FRESH_PATHS = ["crates", "tools/bench", "Cargo.lock", "rust-toolchain.toml"];
+/**
+ * The paths whose change makes a kernels JSON stale (plan v9 section 9.4 item 1; the root
+ * Cargo.toml since M4-P5: its [profile.release] sets lto and panic). m1-exit reads the same list.
+ */
+export const FRESH_PATHS = ["crates", "tools/bench", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"];
 
 /** Rust target triples by node's platform-arch (the m1-exit column names). */
 const TRIPLES = {

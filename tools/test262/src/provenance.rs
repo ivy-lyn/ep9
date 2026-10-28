@@ -28,9 +28,10 @@ use std::process::Command;
 
 /// The paths whose ids the JSON names: the paths whose change makes an m1-exit item 3 or 4 input
 /// stale (`T262_FRESH_PATHS` in tools/xtask/src/m1_exit.rs).
-pub const TREE_PATHS: [&str; 6] = [
+pub const TREE_PATHS: [&str; 7] = [
     "crates",
     "tools/bench",
+    "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
     "tools/test262",
@@ -225,7 +226,7 @@ mod tests {
         write_fields(&mut out, &source(&d, &no_env));
         assert!(out.starts_with(",\"commit\":\""), "{out}");
         assert!(out.contains(",\"dirty\":true,\"commit_source\":\"git\",\"made_by\":\"host:"));
-        // The temp tree has none of the six paths; with one, its id is named.
+        // The temp tree has none of the seven paths; with one, its id is named.
         assert!(!out.contains("\"tree\""), "{out}");
         std::fs::write(d.join("Cargo.lock"), "lock\n").unwrap();
         git_in(&d, &["add", "-A"]);
@@ -239,6 +240,13 @@ mod tests {
             out.ends_with(&format!(",\"tree\":{{\"Cargo.lock\":\"{}\"}}", s.tree[0].1)),
             "{out}"
         );
+        // The root Cargo.toml is a tree path too (M4-P5 C1: its `[profile.release]`).
+        std::fs::write(d.join("Cargo.toml"), "[workspace]\n").unwrap();
+        git_in(&d, &["add", "-A"]);
+        git_in(&d, &["commit", "-q", "-m", "manifest"]);
+        let s = source(&d, &no_env);
+        let names: Vec<&str> = s.tree.iter().map(|(p, _)| *p).collect();
+        assert_eq!(names, ["Cargo.toml", "Cargo.lock"], "{s:?}");
         std::fs::remove_dir_all(d).unwrap();
     }
 

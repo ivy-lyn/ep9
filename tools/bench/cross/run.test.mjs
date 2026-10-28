@@ -853,7 +853,7 @@ test("kernels: --check runs all 15 on the oracle and the engine; JSON for m1-exi
   assert.deepEqual(j.summary, { total: 15, ok: 15, failing: [], failing_not_named: [], all_ok: true });
   assert.equal(j.harness.v8v7, "stub");
   assert.equal(j.harness.octane, OCTANE_HARNESS);
-  assert.deepEqual(Object.keys(j.tree), ["crates", "tools/bench", "Cargo.lock", "rust-toolchain.toml"]);
+  assert.deepEqual(Object.keys(j.tree), ["crates", "tools/bench", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]);
   assert.ok(Array.isArray(j.dirty));
   assert.equal(j.ep9.version, "fake-ep9 0.0");
   assert.match(r.stdout, /15\/15 kernels run with node's output \(v8-v7 8\/8, Octane-7 7\/7\)\./);

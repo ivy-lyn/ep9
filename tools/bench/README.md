@@ -198,8 +198,8 @@ node tools/bench/cross/exit2.mjs run.json --out exit2.json                      
   its line in base.js or the kernel file, and a named blocker when the error names a feature
   (pow core, RegExp, or the `Math.<f>` calls of that line that ep9's `Math` lacks).
   `--not-yet LIST` names kernels that may fail (a role's NOT-YET list). The JSON (schema
-  `ep9-kernels/v1`) has the commit, the git tree ids of `crates`, `tools/bench`, `Cargo.lock`
-  and `rust-toolchain.toml`, the paths among them with uncommitted changes (`dirty`), the host
+  `ep9-kernels/v1`) has the commit, the git tree ids of `crates`, `tools/bench`, the root
+  `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml`, the paths among them with uncommitted changes (`dirty`), the host
   target triple, the ep9 binary's SHA-256 and every kernel's result. Exit 0 every kernel ran
   (those on `--not-yet` may fail); 1 a kernel failed; 2 usage; 3 no verdict.
 - **exit2.mjs** reads one ep9-cross/v1 run. Per round, the geomean of the kernels' net ratios

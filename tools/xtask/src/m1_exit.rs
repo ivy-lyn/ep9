@@ -40,7 +40,7 @@
 //! by NESTING_CMD) name their commit, whether the tree had uncommitted changes, and the host or
 //! CI job that made them. The cell is at least OPEN, with a "stale input" or "provenance" reason,
 //! when the commit is missing, is not HEAD or an ancestor with no change in `crates`,
-//! `tools/bench`, `Cargo.lock`, `rust-toolchain.toml`, `tools/test262` or
+//! `tools/bench`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/test262` or
 //! `third_party/test262.commit` since (unless the input names the git id of each of these paths
 //! and each equals HEAD's: a CI pull_request job runs on GitHub's merge commit, which the local
 //! repository does not have; the JSON `"tree"` object, the log line `m1-exit trees: <path>=<id>
@@ -108,16 +108,24 @@ const TITLES: [&str; 10] = [
 ];
 
 /// Item 1: the paths whose change makes a measured input stale (kernels.mjs FRESH_PATHS; the
-/// GATES-3 tool note adds `Cargo.lock` and `rust-toolchain.toml` to the M0 rule). Items 2 and 5
-/// use them too.
-const FRESH_PATHS: [&str; 4] = ["crates", "tools/bench", "Cargo.lock", "rust-toolchain.toml"];
+/// GATES-3 tool note adds `Cargo.lock` and `rust-toolchain.toml` to the M0 rule; M4-P5 C1 adds
+/// the root `Cargo.toml`, whose `[profile.release]` sets `lto` and `panic`). Items 2 and 5 use
+/// them too.
+const FRESH_PATHS: [&str; 5] = [
+    "crates",
+    "tools/bench",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+];
 
 /// Items 3, 4 and 8 (plan v9 section 7 step 3, P3-ORCH-14): the paths whose change after the
 /// input's commit makes a test262 or nesting input stale: [`FRESH_PATHS`], the runner and the
 /// test262 pin.
-const T262_FRESH_PATHS: [&str; 6] = [
+const T262_FRESH_PATHS: [&str; 7] = [
     "crates",
     "tools/bench",
+    "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
     "tools/test262",
@@ -126,9 +134,10 @@ const T262_FRESH_PATHS: [&str; 6] = [
 
 /// The Windows column (P3-ORCH-21): the CI run's head is HEAD, or an ancestor with no change in
 /// these paths since ([`T262_FRESH_PATHS`], the expectation files and the workflows).
-const CI_FRESH_PATHS: [&str; 8] = [
+const CI_FRESH_PATHS: [&str; 9] = [
     "crates",
     "tools/bench",
+    "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
     "tools/test262",
@@ -199,7 +208,7 @@ const NESTING_TESTS: [&str; 9] = [
 ];
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
      echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
-     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' $p $(git rev-parse --verify --quiet HEAD:$p); done)\" >> nesting.log; \
+     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' $p $(git rev-parse --verify --quiet HEAD:$p); done)\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -1929,6 +1938,7 @@ mod tests {
         }
         write(&root, "crates/ep9_vm/src/lib.rs", "// no marker\n");
         write(&root, "tools/bench/x.mjs", "// bench\n");
+        write(&root, "Cargo.toml", "[workspace]\n");
         write(&root, "Cargo.lock", "# lock\n");
         write(&root, "rust-toolchain.toml", "[toolchain]\n");
         write(&root, "docs/decisions-log.md", "# log\n");
@@ -2318,7 +2328,7 @@ mod tests {
         let c = &run(&o).unwrap().cells[7].0;
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(
-            c.evidence.contains("stale input: not this tree: crates, tools/bench, Cargo.lock, rust-toolchain.toml, tools/test262, third_party/test262.commit changed"),
+            c.evidence.contains("stale input: not this tree: crates, tools/bench, Cargo.toml, Cargo.lock, rust-toolchain.toml, tools/test262, third_party/test262.commit changed"),
             "{}",
             c.evidence
         );
@@ -2332,6 +2342,61 @@ mod tests {
             &with_source_line(&log, &head, 0),
         ));
         assert_eq!(run(&o).unwrap().cells[7].0.status, Status::Open);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M4-P5 C1: the root `Cargo.toml` (its `[profile.release]` sets `lto` and `panic`) is a fresh
+    /// path of every list: a change to it after the input's commit makes items 1, 2 and 8 OPEN.
+    #[test]
+    fn a_root_cargo_toml_change_makes_inputs_stale() {
+        for list in [&FRESH_PATHS[..], &T262_FRESH_PATHS[..], &CI_FRESH_PATHS[..]] {
+            assert!(list.contains(&"Cargo.toml"), "{list:?}");
+        }
+        assert!(
+            NESTING_CMD.contains(" Cargo.toml Cargo.lock "),
+            "{NESTING_CMD}"
+        );
+        let root = fake_repo("cargotoml");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let log = with_source_line(&read(&fixture("nesting.log")).unwrap(), &head, 0);
+        o.kernels = Some(input(
+            &root,
+            "kernels.json",
+            &kernels_json(&root, HOST, 15, 15, None),
+        ));
+        o.cross = Some(input(
+            &root,
+            "exit2.json",
+            &exit2_json(&head, ["pass", "pass"], true),
+        ));
+        o.nesting = Some(input(&root, "nesting.log", &log));
+        let r = run(&o).unwrap();
+        for i in [0, 1, 7] {
+            assert_eq!(
+                r.cells[i].0.status,
+                Status::Pass,
+                "item {}: {:?}",
+                i + 1,
+                r.cells[i].0
+            );
+        }
+        write(
+            &root,
+            "Cargo.toml",
+            "[workspace]\n[profile.release]\nlto = \"fat\"\n",
+        );
+        commit_all(&root, "profile");
+        let r = run(&o).unwrap();
+        for (i, why) in [
+            (0, "Cargo.toml differs from HEAD"),
+            (1, "Cargo.toml"),
+            (7, "Cargo.toml"),
+        ] {
+            let c = &r.cells[i].0;
+            assert_eq!(c.status, Status::Open, "item {}: {c:?}", i + 1);
+            assert!(c.evidence.contains(why), "item {}: {}", i + 1, c.evidence);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2365,8 +2430,12 @@ mod tests {
             "{text}"
         );
         let src = Source::of_log(&text).unwrap();
-        // The fake repo has 4 of the 6 paths.
-        assert_eq!(src.trees.len(), 4, "{src:?}");
+        // The fake repo has 5 of the 7 paths, the root Cargo.toml among them (C1).
+        assert_eq!(src.trees.len(), 5, "{src:?}");
+        assert_eq!(
+            src.trees.get("Cargo.toml"),
+            Some(&git_in(&root, &["rev-parse", "HEAD:Cargo.toml"]))
+        );
         assert_eq!(
             src.trees.get("Cargo.lock"),
             Some(&git_in(&root, &["rev-parse", "HEAD:Cargo.lock"]))
@@ -2421,15 +2490,21 @@ mod tests {
     fn item3_reads_tree_ids_of_a_foreign_commit() {
         let root = fake_repo("item3tree");
         let mut o = opts(&root);
-        let ids: Vec<String> = ["crates", "tools/bench", "Cargo.lock", "rust-toolchain.toml"]
-            .iter()
-            .map(|p| {
-                format!(
-                    r#""{p}":"{}""#,
-                    git_in(&root, &["rev-parse", &format!("HEAD:{p}")])
-                )
-            })
-            .collect();
+        let ids: Vec<String> = [
+            "crates",
+            "tools/bench",
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+        ]
+        .iter()
+        .map(|p| {
+            format!(
+                r#""{p}":"{}""#,
+                git_in(&root, &["rev-parse", &format!("HEAD:{p}")])
+            )
+        })
+        .collect();
         let src = |ids: &str| {
             format!(
                 r#""commit":"{}","dirty":false,"made_by":"host:ci gh-run:1/build","tree":{{{ids}}},"#,
