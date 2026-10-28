@@ -134,7 +134,7 @@ Path (a) runs in every mode. Path (b) runs at build time inside `ep9c`. Both pat
 | Speed claims | G2-G4 unchanged from v1 | FV1 (vs node --jitless) | FV2 (short runs vs node with a warm compile cache) |
 | v1 status | Ships | Ships. baseline-AOT only if K-A3 passes (else M5c if ready, else T0); optimized-AOT only if K-A4J passes | Ships only if K-A4P passes |
 
-A1 artifacts (code cache, startup snapshot, bytecode units) serve all three modes. FV3 (sound typed numeric class code, A5 = M10, by the D17 rule) is a gated research stage ([05-aot.md](./05-aot.md)).
+A1 artifacts (code cache, startup snapshot, bytecode units) serve all three modes. FV3 (sound typed numeric class code, A5 = M10, by the D17 rule) is a gated research stage ([05-aot.md](./05-aot.md)). The mode model in detail (build features, the process codegen permit, the ExecPolicy presets, code sets and `select()`, and the room kept for later AOT and hybrid work): [13-execution-modes.md](./13-execution-modes.md).
 
 ## 5. Mode × code-kind matrix
 
@@ -293,6 +293,7 @@ Full crate table, features and binary composition: [08-repo.md](./08-repo.md).
 | Decisions 2026-10-21 | H15: release expansion per target, then sibling calls on every target after the T0 result ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), [§10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0)) |
 | As built 2026-10-25 (M0 month 3) | §7: the FactSnapshot row names the VM facts exporter (built in M3-P3, H16-Q5), `ep9 --facts-out` (M3-P4) and the `.ep9prof` container (H16-Q5b, A3); the SP-Unit row gives its result (GO on 4 targets). No H row, stage or gate changes ([decisions-log §13](../decisions-log.md)) |
 | Decisions 2026-10-20 | H11: JSC Riptide barrier; S2 is retreating wavefront, not SATB (GC algorithm change). H6: empty/hole bits stated. H23, H24, H29-H32: debugger, interrupt-poll and D17 (d) reservations [R18]. H35: mismatch outcome by field. H36: CR target, `ep9_math`. ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)) |
+| Clarified 2026-10-27 ([13-execution-modes](./13-execution-modes.md), MODES-CHECK-w13) | Read §4 with 13 §3.3 and §4.4. Hybrid "DEOPT, then instrumented re-tier": the frame goes to T0 and the function keeps its AOT code; the re-tier starts when the function's speculation exits pass its budget (13, contradiction C4). Hybrid fact sources: re-tier code reads RUNTIME first, then the unit's PROFILED and HINTED facts at lower precedence (H33-Q2; 13, contradiction C1). No goal, H row or speed claim changes. Decided 2026-10-27 (MODES-D11, 13 §1.2; a decision, not a clarify): for §4 and §5, the jitless preset keeps the T0 ICs but records no T0 type feedback by default (`type feedback: ics_only`); a training run (`--profile-out`) uses `full` |
 
 ## Evidence tags
 

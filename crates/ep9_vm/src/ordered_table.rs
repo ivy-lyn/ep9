@@ -38,13 +38,14 @@
 //! with word0 flag bit 9 (`FLAG_HASH_PRESENT`) set, so a lookup of an object that was never a
 //! key reads no property. No hash input is an address (H12-Q2).
 //!
-//! Weak keys (WeakMap, WeakSet): the trace function visits each key slot of a weak table with
-//! `Tracer::visit_weak`, so the GC clears a dead key to undefined at the end of the
-//! collection. The value of an entry is strong while its key is there. The value of an entry
-//! whose key is already gone (undefined) is weak too, so the next GC frees it; the entry
-//! itself goes at the next rehash. Known gap (plan-v8 §3 B-COLLECTIONS task 3): no ephemeron
-//! fixpoint, so a value that refers to its own key keeps that key alive. The fixpoint comes
-//! with WeakRef and FinalizationRegistry in M1 (`docs/plan/03-gc.md`).
+//! Weak keys (WeakMap, WeakSet): the trace function visits each key slot of a weak table as a
+//! weak slot, so the GC clears a dead key to undefined at the end of the collection. A WeakSet
+//! entry is its key only (`Tracer::visit_weak`). A WeakMap entry is an ephemeron
+//! (`Tracer::visit_ephemeron`, M4-P2): its value is traced only once its key is marked, from
+//! any path, and the heap repeats that to a fixpoint; a value whose key dies is cleared in the
+//! same GC. So a value that refers to its own key, or a cycle of entries whose keys only the
+//! values reach, does not keep itself alive. The value of an entry whose key is already gone
+//! (undefined) is weak; the entry itself goes at the next rehash.
 //!
 //! No Rust `Vec`/`Box` holds Values across a GC point here (plan §1 rule 8): the table is a
 //! heap cell.
@@ -100,10 +101,13 @@ fn table_size(c: CellPtr) -> usize {
 
 /// The trace function. A strong table (Map, Set) visits every Value slot. A weak table
 /// (WeakMap, WeakSet) visits the counts, the flags and the bucket heads strongly (int32s, or
-/// the forward of an obsolete table); each key slot with `visit_weak` (cleared to undefined
-/// at GC end if its cell dies); each value slot strongly while its key is there, else with
-/// `visit_weak` (the key died in an earlier GC: nothing may read the value again, and a
-/// dangling slot is never left behind); the chain slots hold int32s only.
+/// the forward of an obsolete table); each WeakSet key slot with `visit_weak` (cleared to
+/// undefined at GC end if its cell dies); each WeakMap entry whose key is there as an
+/// ephemeron (`visit_ephemeron`: the key is weak, and the value is traced only once the GC
+/// has marked the key by some other path, so a value that reaches its own key does not keep
+/// it alive); the value of an entry whose key is already gone (undefined: the key died in an
+/// earlier GC; HOLE: deleted) with `visit_weak` (nothing may read it again, and a dangling
+/// slot is never left behind); the chain slots hold int32s only.
 fn trace_table(c: CellPtr, t: &mut Tracer<'_>) {
     let size = table_size(c);
     if rd_i32(c, otf::FLAGS) & FLAG_WEAK_KEYS == 0 {
@@ -120,14 +124,15 @@ fn trace_table(c: CellPtr, t: &mut Tracer<'_>) {
     t.visit_slots(&slots[..head_words]);
     for i in 0..capacity {
         let e = &slots[head_words + i * width..head_words + (i + 1) * width];
+        if width != MAP_WIDTH {
+            t.visit_weak(&e[0]);
+            continue;
+        }
         let key = e[0].bits();
-        t.visit_weak(&e[0]);
-        if width == MAP_WIDTH {
-            if key == UNDEFINED || key == HOLE {
-                t.visit_weak(&e[1]);
-            } else {
-                t.visit(&e[1]);
-            }
+        if key == UNDEFINED || key == HOLE {
+            t.visit_weak(&e[1]);
+        } else {
+            t.visit_ephemeron(&e[0], &e[1]);
         }
     }
 }

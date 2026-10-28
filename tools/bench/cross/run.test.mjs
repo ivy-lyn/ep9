@@ -1,9 +1,10 @@
 // node --test tools/bench/cross/run.test.mjs
-// Fake engines (testdata/fake-engine.sh, one symlink per engine) and synthetic samples: no shells
-// and no ep9 build needed. The v8v7 tests skip when third_party/bench-v8v7 is not synced.
+// Fake engines (testdata/fake-engine.sh, one symlink per engine; testdata/fake-kernels-ep9.sh),
+// synthetic samples and fixtures in testdata/: no shells and no ep9 build needed. The v8v7 and
+// Octane tests skip when third_party/bench-v8v7 or third_party/bench-octane is not synced.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -23,8 +24,11 @@ import {
   renderMarkdown,
   schedule,
 } from "./run.mjs";
-import { benchmarkNames, generate, HARNESSES } from "./v8v7.mjs";
-import { EMPTY, WORKLOADS } from "./workloads.mjs";
+import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
+import { blockerOf, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, treeState, withProbe } from "./kernels.mjs";
+import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
+import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
+import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "../../..");
@@ -267,7 +271,10 @@ test("versions.txt, host files and options", () => {
   assert.throws(() => parseArgs(["--ep9", "x", "--engines", "qjs,node-jitless"]), /must include ep9/);
   assert.throws(() => parseArgs(["--ep9", "x", "--engines", "ep9,bun"]), /unknown engine bun/);
   assert.throws(() => parseArgs(["--ep9", "x", "--workloads", "nope"]), /unknown workload nope/);
-  assert.equal(parseArgs(["--ep9", "x"]).harness, "stub");
+  // The default is v8v7.mjs DEFAULT_HARNESS (stub until MATH1 sets base; V9-D14).
+  assert.equal(parseArgs(["--ep9", "x"]).harness, DEFAULT_HARNESS);
+  assert.ok(HARNESSES.includes(DEFAULT_HARNESS));
+  assert.equal(parseArgs(["--ep9", "x", "--harness", "stub"]).harness, "stub");
   assert.equal(parseArgs(["--ep9", "x", "--harness", "base"]).harness, "base");
   assert.throws(() => parseArgs(["--ep9", "x", "--harness", "real"]), /--harness must be one of stub, base/);
 });
@@ -390,6 +397,16 @@ test("CLI: rotated rounds as planned, 10 rounds, JSON with every sample", (t) =>
   assert.equal(r.stdout, readFileSync(f.md, "utf8"));
 });
 
+test("CLI: the JSON says whether the fresh paths had uncommitted changes (CX5-C5)", (t) => {
+  const f = fakeSetup(t);
+  const r = f.run(["--host", f.host(1000)]);
+  assert.equal(r.status, 0, r.stderr);
+  const res = JSON.parse(readFileSync(f.out, "utf8"));
+  // The list of kernels.mjs's treeState(): the FRESH_PATHS entries with changes ([] = clean).
+  assert.deepEqual(res.commit.dirty, treeState().dirty);
+  assert.ok(Array.isArray(res.commit.dirty), JSON.stringify(res.commit));
+});
+
 test("CLI: load guard failure is provisional with --allow-busy, and 'host busy' without", (t) => {
   const f = fakeSetup(t);
   const busy = f.run(["--host", f.host(-100)]);
@@ -503,7 +520,7 @@ test("v8v7: benchmark names", () => {
 test("v8v7: the base harness runs the pinned base.js unchanged and prints what the stub prints", { skip: !haveV8v7 && "third_party/bench-v8v7 not synced" }, () => {
   assert.deepEqual(HARNESSES, ["stub", "base"]);
   assert.throws(() => generate("richards", { harness: "real" }), /unknown harness real/);
-  const stub = generate("richards");
+  const stub = generate("richards", { harness: "stub" });
   const g = generate("richards", { harness: "base" });
   assert.equal(stub.harness, "stub");
   assert.equal(g.harness, "base");
@@ -529,4 +546,495 @@ test("v8v7: the base harness runs the pinned base.js unchanged and prints what t
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("v8v7: an error in the evaluated base.js maps to its base.js line", { skip: !haveV8v7 && "third_party/bench-v8v7 not synced" }, () => {
+  const g = generate("richards", { harness: "base", n: 1 });
+  const base = readFileSync(path.join(ROOT, "third_party/bench-v8v7/bench/bench-v8/base.js"), "utf8").split("\n");
+  const at = base.findIndex((l) => l.includes("Math.log(")) + 1;
+  assert.ok(at > 0);
+  const e = errorPlace(g, "/x/richards.js", { status: 1, stdout: "", stderr: `<eval>:${at}:12: Uncaught TypeError: undefined is not a function\n    at x\n` });
+  assert.deepEqual(e, { message: "Uncaught TypeError: undefined is not a function", place: `base.js:${at}`, line: base[at - 1].trim() });
+  // A kernel line: the file as the engine was given it.
+  const k = errorPlace(g, "/x/richards.js", { status: 1, stdout: "", stderr: `/x/richards.js:${66 + g.offset}:3: Uncaught Error: boom\n` });
+  assert.equal(k.place, "richards.js:66");
+  // Another engine's form stays as it is; a driver ERROR line counts when stderr is empty.
+  assert.deepEqual(errorPlace(g, "/x/richards.js", { status: 1, stdout: "", stderr: "TypeError: not a function\n" }), { message: "TypeError: not a function", place: null, line: null });
+  assert.equal(errorPlace(g, "/x/r.js", { status: 0, stdout: "ERROR Richards boom\nRichards 1\n", stderr: "" }).message, "ERROR Richards boom");
+});
+
+// ---- Octane-7 (octane.mjs) ----------------------------------------------------------------
+
+const haveOctane = existsSync(path.join(ROOT, "third_party/bench-octane/richards.js"));
+
+test("octane: Octane-7 kernels, the same N as v8-v7, the pinned base.js and kernel unchanged", { skip: !haveOctane && "third_party/bench-octane not synced" }, () => {
+  assert.deepEqual(Object.keys(OCTANE_KERNELS), ["richards", "deltablue", "crypto", "raytrace", "earley-boyer", "splay", "navier-stokes"]);
+  const pin = readFileSync(path.join(ROOT, "third_party/bench-octane.commit"), "utf8").trim();
+  const a = generateOctane("crypto");
+  assert.equal(a.text, generateOctane("crypto").text);
+  assert.equal(a.pin, pin);
+  assert.ok(a.text.includes(`chromium/octane at ${pin}`));
+  assert.equal(a.harness, OCTANE_HARNESS);
+  assert.equal(a.n, 8);
+  assert.equal(a.expect, "Encrypt 8\nDecrypt 8");
+  for (const p of a.parts) {
+    // Each part is the pinned file, unchanged, at its offset.
+    const src = readFileSync(path.join(ROOT, "third_party/bench-octane", p.file), "utf8");
+    assert.equal(a.text.split("\n").slice(p.offset, p.offset + p.lines).join("\n"), src.replace(/\n$/, ""), p.file);
+  }
+  assert.equal(a.parts[1].offset, a.offset);
+  assert.throws(() => generateOctane("regexp"), /unknown Octane-7 kernel regexp/);
+  assert.throws(() => generateOctane("richards", { n: 0 }), /bad --n/);
+});
+
+test("octane: the driver runs base.js's deterministic mode N times and refuses a bad score", { skip: !haveOctane && "third_party/bench-octane not synced" }, () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "octane-"));
+  try {
+    const g = generateOctane("splay", { n: 3 });
+    const counted = g.text.replace(/^BenchmarkSuite\.RunSuites\(/m, "var __runs = 0, __run = SplayRun; Splay.benchmarks[0].run = function () { __runs++; __run(); };\nBenchmarkSuite.RunSuites(") + 'print("runs " + __runs);\n';
+    const f = path.join(dir, "splay.js");
+    writeFileSync(f, counted);
+    let r = spawnSync(process.execPath, [f], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    // Exactly N run() calls: no warm-up, no "for 1 s".
+    assert.equal(r.stdout.trim(), "Splay 3\nruns 3");
+    // Negative control: a Math.log that gives NaN makes the score NaN, and the driver prints ERROR.
+    writeFileSync(f, g.text.replace(PRINT_PRELUDE, `${PRINT_PRELUDE}Math.log = function () { return NaN; };\n`));
+    r = spawnSync(process.execPath, [f], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^ERROR Splay score NaN$/m);
+    // An error inside run() goes through base.js's NotifyError: an ERROR line, so a refusal.
+    writeFileSync(f, g.text.replace(/^BenchmarkSuite\.RunSuites\(/m, 'Splay.benchmarks[0].run = function () { throw new Error("boom"); };\nBenchmarkSuite.RunSuites('));
+    r = spawnSync(process.execPath, [f], { encoding: "utf8" });
+    assert.match(r.stdout, /^ERROR Splay Error: boom$/m);
+    assert.notEqual(r.stdout.trim(), g.expect);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("octane: an error line in base.js or in the kernel maps back to that file", { skip: !haveOctane && "third_party/bench-octane not synced" }, () => {
+  const g = generateOctane("richards", { n: 1 });
+  const base = readFileSync(path.join(ROOT, "third_party/bench-octane/base.js"), "utf8").split("\n");
+  const at = base.findIndex((l) => l.includes("Math.log(measurements[i].time)")) + 1;
+  const e = errorPlace(g, "/w/r.js", { status: 1, stdout: "", stderr: `/w/r.js:${at + g.parts[0].offset}:15: Uncaught TypeError: undefined is not a function\n` });
+  assert.equal(e.place, `base.js:${at}`);
+  assert.equal(e.line, base[at - 1].trim());
+  const k = errorPlace(g, "/w/r.js", { status: 1, stdout: "", stderr: `/w/r.js:${40 + g.offset}:1: Uncaught Error: x\n` });
+  assert.equal(k.place, "richards.js:40");
+  // The driver after the kernel is "generated".
+  const d = errorPlace(g, "/w/r.js", { status: 1, stdout: "", stderr: `/w/r.js:${g.text.split("\n").length - 2}:1: Uncaught Error: x\n` });
+  assert.match(d.place, /^generated:\d+$/);
+});
+
+// ---- workloads and sets -------------------------------------------------------------------
+
+test("workloads: the 8 v8-v7 kernels, Octane-7 and the exit-2 sets", () => {
+  for (const [name, w] of Object.entries(WORKLOADS)) {
+    assert.equal([w.file, w.v8v7, w.octane].filter(Boolean).length, 1, name);
+  }
+  assert.deepEqual(V8V7_8.map((w) => WORKLOADS[w].v8v7), V8V7_8);
+  assert.deepEqual(V8V7_7, ["richards", "deltablue", "crypto", "raytrace", "earley-boyer", "splay", "navier-stokes"]);
+  assert.deepEqual(OCTANE_7, V8V7_7.map((w) => `octane-${w}`));
+  for (const w of [...V8V7_8, ...OCTANE_7]) assert.deepEqual(WORKLOADS[w].classes, ["M", "R"], w);
+  assert.deepEqual(SETS.exit2, [...V8V7_7, ...OCTANE_7]);
+  assert.deepEqual(expandWorkloads(["t0-loop", "exit2", "richards"]), ["t0-loop", ...V8V7_7, ...OCTANE_7]);
+  assert.deepEqual(parseArgs(["--ep9", "x", "--workloads", "ci-v0,octane-7"]).workloads, ["ci-v0", ...OCTANE_7]);
+  assert.throws(() => parseArgs(["--ep9", "x", "--workloads", "richards,richards"]), /--workloads has a duplicate/);
+  // The exit-2 readings read these sets.
+  assert.deepEqual(READINGS.map((r) => [r.workloads, r.comparator, r.threshold]), [[OCTANE_7, "qjs", 1.0], [V8V7_7, "node-jitless", 0.75]]);
+});
+
+test("workloads: an Octane workload is the octane.mjs file and names its harness", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "wl-"));
+  try {
+    const m = materialize(["octane-deltablue", "deltablue"], dir, { harness: "stub" });
+    assert.equal(m["octane-deltablue"].harness, OCTANE_HARNESS);
+    assert.equal(m["octane-deltablue"].expect, "DeltaBlue 100");
+    assert.equal(readFileSync(m["octane-deltablue"].file, "utf8"), generateOctane("deltablue").text);
+    assert.equal(m.deltablue.harness, "stub");
+    assert.match(m["octane-deltablue"].source, /^third_party\/bench-octane deltablue\.js$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- exit2.mjs ----------------------------------------------------------------------------
+
+const EXIT2 = path.join(DIR, "exit2.mjs");
+const fixture = () => JSON.parse(readFileSync(path.join(DIR, "testdata/cross-exit2.json"), "utf8"));
+
+test("exit2: per-round geomeans, intervals and gate readings from the fixture", () => {
+  const e = readExit2(fixture());
+  const [oct, v8] = e.readings;
+  // Octane-7 vs QuickJS: about 1.2 in every round: pass.
+  assert.equal(oct.status, "valid");
+  assert.equal(oct.net.n, 10);
+  assert.deepEqual(oct.net.ranks, [2, 9]);
+  assert.ok(oct.net.interval[0] >= 1.0 && Math.abs(oct.net.median - 1.2) < 0.01, JSON.stringify(oct.net));
+  assert.equal(oct.gate, "pass");
+  assert.equal(oct.kernels.length, 7);
+  // The per-round geomean of round r is the geomean of the 7 kernels' ratios of round r.
+  const rows = fixture().M.ratios.filter((r) => r.comparator === "qjs" && OCTANE_7.includes(r.workload));
+  const r3 = Math.exp(rows.reduce((a, r) => a + Math.log(r.net.ratios[3]), 0) / rows.length);
+  assert.ok(Math.abs(oct.net.series[3] - r3) < 1e-12);
+  // v8-v7 vs node --jitless: about 0.75, and the interval contains 0.75: marginal.
+  assert.equal(v8.status, "valid");
+  assert.ok(v8.net.interval[0] < 0.75 && v8.net.interval[1] >= 0.75, JSON.stringify(v8.net.interval));
+  assert.equal(v8.gate, "marginal");
+  assert.equal(e.pass, false);
+  assert.match(renderExit2(e), /\| Octane-7 geomean vs QuickJS \| 1 \| 1\.200 \| .* \| pass \|/);
+});
+
+test("exit2: dirty from the run's list of changed fresh paths; no list is null (CX5-C5)", () => {
+  let j = fixture();
+  j.commit.dirty = [];
+  let e = readExit2(j);
+  assert.equal(e.dirty, false);
+  assert.deepEqual(e.dirty_paths, []);
+  j.commit.dirty = ["crates/ep9_vm/src/lib.rs"];
+  e = readExit2(j);
+  assert.equal(e.dirty, true);
+  assert.deepEqual(e.dirty_paths, ["crates/ep9_vm/src/lib.rs"]);
+  assert.match(renderExit2(e), /uncommitted changes in crates\/ep9_vm\/src\/lib\.rs/);
+  j = fixture();
+  delete j.commit.dirty;
+  e = readExit2(j);
+  assert.equal(e.dirty, null);
+  assert.equal(e.dirty_paths, null);
+});
+
+test("m1-exit's kernel and reading ids are the ones kernels.mjs and exit2.mjs write (CX5-C3)", () => {
+  const rs = readFileSync(path.join(DIR, "../../xtask/src/m1_exit.rs"), "utf8");
+  const list = (name) => {
+    const m = rs.match(new RegExp(`const ${name}: \\[&str; [A-Z0-9_]+\\] = \\[([^\\]]*)\\];`));
+    assert.ok(m, name);
+    return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  };
+  assert.deepEqual(list("KERNEL_IDS"), KERNEL_IDS);
+  assert.deepEqual(list("READING_IDS"), READINGS.map((r) => r.id));
+});
+
+test("exit2: pass, fail, and no gate verdict for a provisional run, a stub harness or a void row", () => {
+  // Scale every node --jitless ratio: 0.75 x 1.1 passes, 0.75 x 0.9 fails.
+  const scaled = (k) => {
+    const j = fixture();
+    for (const r of j.M.ratios.filter((x) => x.comparator === "node-jitless")) {
+      r.net.ratios = r.net.ratios.map((x) => x * k);
+      r.net.median *= k;
+    }
+    return j;
+  };
+  let e = readExit2(scaled(1.1));
+  assert.deepEqual(e.readings.map((r) => r.gate), ["pass", "pass"]);
+  assert.equal(e.pass, true);
+  e = readExit2(scaled(0.9));
+  assert.equal(e.readings[1].gate, "fail");
+
+  let j = scaled(1.1);
+  j.provisional = true;
+  j.provisional_reasons = ["host x is not a gate host"];
+  e = readExit2(j);
+  assert.equal(e.pass, false);
+  assert.equal(e.readings[0].status, "provisional");
+  assert.match(e.readings[0].gate, /^no gate verdict \(the interval reads pass\)$/);
+  assert.match(e.readings[0].reasons[0], /provisional run \(host x is not a gate host\)/);
+
+  // V9-D14: the v8-v7 reading needs the real base.js.
+  j = scaled(1.1);
+  for (const w of j.workloads) if (w.harness === "base") w.harness = "stub";
+  e = readExit2(j);
+  assert.equal(e.readings[0].gate, "pass");
+  assert.match(e.readings[1].gate, /^no gate verdict/);
+  assert.match(e.readings[1].reasons.join(), /harness is not base for richards \(stub\)/);
+
+  // A void kernel row (run.mjs labels it) gives no gate verdict.
+  j = scaled(1.1);
+  j.M.ratios.find((r) => r.workload === "octane-splay" && r.comparator === "qjs").status = ["void (IQR 6.0% > 5%)", "provisional"];
+  e = readExit2(j);
+  assert.match(e.readings[0].gate, /^no gate verdict/);
+  assert.match(e.readings[0].reasons.join(), /row not valid: octane-splay/);
+
+  // A net-invalid row: gross geomean shown, no gate verdict.
+  j = scaled(1.1);
+  const row = j.M.ratios.find((r) => r.workload === "crypto" && r.comparator === "node-jitless");
+  row.net = null;
+  row.net_invalid = "net time <= 0 in round(s) 3";
+  row.status = ["net invalid (net time <= 0 in round(s) 3)", "provisional"];
+  e = readExit2(j);
+  assert.equal(e.readings[1].net, null);
+  assert.ok(e.readings[1].gross);
+  assert.match(e.readings[1].gate, /^no gate verdict \(the gross interval reads/);
+
+  // A missing kernel: incomplete.
+  j = scaled(1.1);
+  j.M.ratios = j.M.ratios.filter((r) => r.workload !== "octane-raytrace");
+  e = readExit2(j);
+  assert.equal(e.readings[0].status, "incomplete");
+  assert.match(e.readings[0].reasons[0], /no qjs row for octane-raytrace/);
+});
+
+test("exit2: fewer than 10 paired rounds, or series shorter than the run says, give no gate verdict", () => {
+  const passing = () => {
+    const j = fixture();
+    for (const r of j.M.ratios.filter((x) => x.comparator === "node-jitless")) r.net.ratios = r.net.ratios.map((x) => x * 1.1);
+    return j;
+  };
+  assert.equal(readExit2(passing()).pass, true);
+  const cut = (j, n) => {
+    for (const r of j.M.ratios) {
+      r.net.ratios = r.net.ratios.slice(0, n);
+      r.gross.ratios = r.gross.ratios.slice(0, n);
+    }
+    return j;
+  };
+  // Every series cut to 6 (verdict() still gives an interval at n = 6) while the run says 10.
+  let e = readExit2(cut(passing(), 6));
+  assert.equal(e.pass, false);
+  for (const r of e.readings) {
+    assert.match(r.gate, /^no gate verdict/);
+    assert.match(r.reasons.join(), /ratio series not 10 long: .*\(6\/6\)/);
+  }
+  // The same 6 rounds, declared as 6: below the class M minimum.
+  let j = cut(passing(), 6);
+  j.M.rounds = 6;
+  j.options.rounds = 6;
+  e = readExit2(j);
+  assert.equal(e.pass, false);
+  assert.match(e.readings[0].reasons.join(), /the run has 6 paired rounds \(M\.rounds\); class M needs >= 10/);
+  // One kernel's series one short.
+  j = passing();
+  const row = j.M.ratios.find((r) => r.workload === "octane-splay" && r.comparator === "qjs");
+  row.net.ratios.pop();
+  e = readExit2(j);
+  assert.match(e.readings[0].gate, /^no gate verdict/);
+  assert.match(e.readings[0].reasons.join(), /ratio series not 10 long: octane-splay \(9\/10\)/);
+  assert.equal(e.readings[1].gate, "pass");
+  // M.rounds and options.rounds disagree.
+  j = passing();
+  j.options.rounds = 12;
+  e = readExit2(j);
+  assert.equal(e.pass, false);
+  assert.match(e.readings[1].reasons.join(), /M\.rounds \(10\) differs from options\.rounds \(12\)/);
+});
+
+test("exit2: CLI exit status and JSON", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "exit2-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const out = path.join(dir, "e.json");
+  let r = spawnSync(process.execPath, [EXIT2, path.join(DIR, "testdata/cross-exit2.json"), "--out", out], { encoding: "utf8" });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /Exit 2: not passed\./);
+  const e = JSON.parse(readFileSync(out, "utf8"));
+  assert.equal(e.schema, "ep9-exit2/v1");
+  assert.equal(e.commit, "0123456789abcdef0123456789abcdef01234567");
+  const pass = fixture();
+  for (const x of pass.M.ratios.filter((y) => y.comparator === "node-jitless")) x.net.ratios = x.net.ratios.map((v) => v * 1.1);
+  const f = path.join(dir, "pass.json");
+  writeFileSync(f, JSON.stringify(pass));
+  r = spawnSync(process.execPath, [EXIT2, f], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Exit 2: PASS/);
+  writeFileSync(f, JSON.stringify({ schema: "ep9-bench/v1" }));
+  r = spawnSync(process.execPath, [EXIT2, f], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /not an ep9-cross\/v1 run/);
+  r = spawnSync(process.execPath, [EXIT2], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+});
+
+// ---- kernels.mjs --------------------------------------------------------------------------
+
+const KERNELS_CLI = path.join(DIR, "kernels.mjs");
+
+test("kernels: ids, options and blocker names", () => {
+  assert.equal(KERNEL_IDS.length, 15);
+  assert.deepEqual(KERNEL_IDS.filter((k) => k.startsWith("v8v7/")).map((k) => k.slice(5)), V8V7_8);
+  assert.deepEqual(KERNEL_IDS.filter((k) => k.startsWith("octane/")).map((k) => `octane-${k.slice(7)}`), OCTANE_7);
+  assert.throws(() => kernelsArgs([]), /--check ENGINE is required/);
+  assert.throws(() => kernelsArgs(["--check", "x", "--not-yet", "v8v7/nope"]), /unknown kernel v8v7\/nope/);
+  assert.throws(() => kernelsArgs(["--check", "x", "--harness", "real"]), /--harness must be one of/);
+  assert.equal(kernelsArgs(["--check", "x"]).harness, DEFAULT_HARNESS);
+  assert.equal(kernelsArgs(["--check", "x", "--out", "-"]).out, "-");
+  // The d7cc797 blockers (lang-bench section 1.1), from ep9's messages.
+  const ep9Math = ["abs", "floor", "pow", "max"];
+  assert.equal(blockerOf("Uncaught Error: not implemented in ep9 v0: ** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)", "x", ep9Math), "pow core (Math.pow and ** with a non-integer result; H36)");
+  assert.equal(blockerOf("Uncaught Error: not implemented in ep9 v0: RegExp literals", "var re0 = /^ba/;", ep9Math), "RegExp");
+  assert.equal(blockerOf("Uncaught TypeError: undefined is not a function", "log += Math.log(measurements[i].time);", ep9Math), "Math.log");
+  // Of the Math calls on the line, only the ones the engine lacks.
+  assert.equal(blockerOf("Uncaught TypeError: undefined is not a function", "t = Math.floor(65536 * Math.random());", ep9Math), "Math.random");
+  assert.equal(blockerOf("Uncaught TypeError: undefined is not a function", "t = Math.floor(65536 * Math.random());", null), "Math.floor, Math.random");
+  assert.equal(blockerOf("Uncaught TypeError: x is not a function", "foo();", ep9Math), null);
+});
+
+test("kernels: --check runs all 15 on the oracle and the engine; JSON for m1-exit", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kernels-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(DIR, "testdata/fake-kernels-ep9.sh");
+  const out = path.join(dir, "k.json");
+  const run = (args, env = {}) =>
+    spawnSync(process.execPath, [KERNELS_CLI, "--check", fake, "--harness", "stub", "--out", out, ...args], {
+      encoding: "utf8",
+      env: { ...process.env, FAKE_NODE: process.execPath, ...env },
+    });
+
+  // All 15 as node: exit 0.
+  let r = run([]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  let j = JSON.parse(readFileSync(out, "utf8"));
+  assert.equal(j.schema, "ep9-kernels/v1");
+  assert.deepEqual(j.kernels.map((k) => k.id), KERNEL_IDS);
+  for (const k of j.kernels) {
+    assert.equal(k.status, OK, k.id);
+    assert.equal(k.output, k.oracle_output);
+    assert.equal(k.n, 1);
+  }
+  assert.deepEqual(j.summary, { total: 15, ok: 15, failing: [], failing_not_named: [], all_ok: true });
+  assert.equal(j.harness.v8v7, "stub");
+  assert.equal(j.harness.octane, OCTANE_HARNESS);
+  assert.deepEqual(Object.keys(j.tree), ["crates", "tools/bench", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]);
+  assert.ok(Array.isArray(j.dirty));
+  assert.equal(j.ep9.version, "fake-ep9 0.0");
+  assert.match(r.stdout, /15\/15 kernels run with node's output \(v8-v7 8\/8, Octane-7 7\/7\)\./);
+
+  // ep9's error form in base.js, and a wrong output: exit 1, blocker named, place mapped.
+  const at = generateKernel("octane/richards", { n: 1, harness: "stub" }).parts[0].offset + 203;
+  r = run([], { FAKE_FAIL: `octane-richards:${at}`, FAKE_WRONG: "v8v7-richards" });
+  assert.equal(r.status, 1, r.stderr);
+  j = JSON.parse(readFileSync(out, "utf8"));
+  const oct = j.kernels.find((k) => k.id === "octane/richards");
+  assert.equal(oct.status, "fails");
+  assert.equal(oct.place, "base.js:203");
+  assert.equal(oct.blocker, "Math.log");
+  const v8 = j.kernels.find((k) => k.id === "v8v7/richards");
+  assert.equal(v8.status, "output differs");
+  assert.match(v8.error, /printed "Richards 2", node printed "Richards 1"/);
+  assert.deepEqual(j.summary.failing, ["v8v7/richards", "octane/richards"]);
+  assert.match(r.stdout, /\| octane\/richards \| fails: Uncaught TypeError: undefined is not a function \| Math\.log \| base\.js:203 \| `log \+= Math\.log\(measurements\[i\]\.time\);` \|/);
+
+  // A named NOT-YET list: the same failures exit 0, and stay in the JSON.
+  r = run(["--not-yet", "v8v7/richards,octane/richards"], { FAKE_FAIL: `octane-richards:${at}`, FAKE_WRONG: "v8v7-richards" });
+  assert.equal(r.status, 0, r.stderr);
+  j = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(j.summary.failing_not_named, []);
+  assert.equal(j.summary.all_ok, false);
+
+  // The oracle must print the generator's output: no verdict (exit 3) otherwise.
+  r = spawnSync(process.execPath, [KERNELS_CLI, "--check", fake, "--node", fake, "--out", out], {
+    encoding: "utf8",
+    env: { ...process.env, FAKE_NODE: process.execPath, FAKE_WRONG: "v8v7-richards" },
+  });
+  assert.equal(r.status, 3, r.stderr);
+  assert.match(r.stderr, /no verdict: v8v7\/richards on the oracle .*printed "Richards 2"/);
+});
+
+test("kernels: result probes for regexp and navier-stokes, between the kernel and the driver", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, () => {
+  assert.deepEqual(Object.keys(PROBES).sort(), ["navier-stokes", "regexp"]);
+  for (const id of KERNEL_IDS) {
+    for (const harness of HARNESSES) {
+      const g = generateKernel(id, { n: 2, harness });
+      const p = withProbe(g);
+      if (!PROBES[g.kernel]) {
+        // No probe: the file is the generator's.
+        assert.equal(p.text, g.text, id);
+        assert.equal(p.probe, null);
+        continue;
+      }
+      assert.equal(p.probe, PROBES[g.kernel].what);
+      // base.js and the kernel keep their lines; the probe comes after the kernel, before the driver.
+      const lines = p.text.split("\n");
+      for (const part of g.parts) assert.deepEqual(lines.slice(part.offset, part.offset + part.lines), g.text.split("\n").slice(part.offset, part.offset + part.lines), `${id} ${part.file}`);
+      const end = lines.indexOf(`// ---- end of ${g.source} ----`);
+      assert.equal(lines[end + 1], "// ---- kernels.mjs result probe (check runs only) ----", id);
+      assert.ok(p.text.endsWith(g.text.slice(g.text.indexOf(`// ---- end of ${g.source} ----\n`) + `// ---- end of ${g.source} ----\n`.length)), id);
+      assert.deepEqual(probeKeys(p), g.expect.split("\n").flatMap((l) => [1, 2].map((i) => `check ${l.replace(/ 2$/, "")} ${i}`)));
+    }
+  }
+});
+
+test("kernels: the probes catch a matcher that never matches and a solver that does no work", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kernels-probe-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(DIR, "testdata/fake-kernels-ep9.sh");
+  const env = (fault) => ({ ...process.env, FAKE_NODE: process.execPath, FAKE_FAULT: fault });
+  // The bug the probes close: without them, each fault still prints the harness's expected lines.
+  for (const [id, fault] of [["v8v7/regexp", "exec-null"], ["v8v7/regexp", "replace-same"], ["octane/navier-stokes", "no-update"], ["v8v7/navier-stokes", "no-update"]]) {
+    const g = generateKernel(id, { n: 1, harness: "base" });
+    const name = id.replace("/", "-");
+    const f = path.join(dir, `${name}.js`);
+    writeFileSync(f, g.text);
+    const r = spawnSync(fake, [f], { encoding: "utf8", env: env(`${name}:${fault}`) });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), g.expect, `${id} ${fault}`);
+  }
+  const out = path.join(dir, "k.json");
+  const check = (fault) => {
+    const r = spawnSync(process.execPath, [KERNELS_CLI, "--check", fake, "--harness", "base", "--out", out], { encoding: "utf8", env: env(fault) });
+    return { r, j: JSON.parse(readFileSync(out, "utf8")) };
+  };
+  let { r, j } = check("v8v7-regexp:exec-null,octane-navier-stokes:no-update,v8v7-navier-stokes:no-update");
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(j.summary.failing, ["v8v7/regexp", "v8v7/navier-stokes", "octane/navier-stokes"]);
+  for (const id of j.summary.failing) {
+    const k = j.kernels.find((x) => x.id === id);
+    assert.equal(k.status, "output differs", id);
+    assert.match(k.oracle_output, /^check \w+ 1 -?\d+$/m);
+    assert.ok(k.probe);
+  }
+  // Every other kernel: output equal, no probe.
+  for (const k of j.kernels.filter((x) => !j.summary.failing.includes(x.id))) {
+    assert.equal(k.status, OK, k.id);
+    assert.equal(k.probe, PROBES[k.kernel]?.what ?? null);
+  }
+  ({ r, j } = check("v8v7-regexp:replace-same"));
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(j.summary.failing, ["v8v7/regexp"]);
+});
+
+test("kernels: the probes catch NaN, infinities, undefined and 32-bit wraps in the grids, and typed regexp results", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kernels-probe-nf-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(DIR, "testdata/fake-kernels-ep9.sh");
+  const env = (fault) => ({ ...process.env, FAKE_NODE: process.execPath, FAKE_FAULT: fault });
+  const faults = [
+    ...["v8v7/navier-stokes", "octane/navier-stokes"].flatMap((id) =>
+      ["dens", "xvel", "yvel"].flatMap((grid) => ["nan", "inf", "ninf", "undef", "wrap"].map((bad) => [id, `${grid}-${bad}`]))),
+    ["v8v7/regexp", "exec-numstr"],
+  ];
+  for (const [id, fault] of faults) {
+    const g = generateKernel(id, { n: 1, harness: "base" });
+    const name = id.replace("/", "-");
+    // Without the probe, the regexp fault still prints the harness's lines. (Without it nothing
+    // reads the grids: setup's display callback is a no-op, so a grid fault changes no cell.)
+    let r;
+    if (id.endsWith("/regexp")) {
+      const plain = path.join(dir, `${name}.js`);
+      writeFileSync(plain, g.text);
+      r = spawnSync(fake, [plain], { encoding: "utf8", env: env(`${name}:${fault}`) });
+      assert.equal(r.status, 0, `${id} ${fault}: ${r.stderr}`);
+      assert.equal(r.stdout.trim(), g.expect, `${id} ${fault}`);
+    }
+    // With it, the probe line differs from node's (the --check comparison of one kernel).
+    const probed = path.join(dir, "probed", `${name}.js`);
+    mkdirSync(path.dirname(probed), { recursive: true });
+    writeFileSync(probed, withProbe(g).text);
+    const node = spawnSync(process.execPath, [probed], { encoding: "utf8" });
+    assert.equal(node.status, 0, node.stderr);
+    r = spawnSync(fake, [probed], { encoding: "utf8", env: env(`${name}:${fault}`) });
+    assert.equal(r.status, 0, `${id} ${fault}: ${r.stderr}`);
+    const probeLine = (s) => s.split("\n").filter((l) => l.startsWith("check "));
+    assert.equal(probeLine(r.stdout).length, 1, `${id} ${fault}`);
+    assert.notDeepEqual(probeLine(r.stdout), probeLine(node.stdout), `${id} ${fault}`);
+    assert.equal(r.stdout.split("\n").filter((l) => !l.startsWith("check ")).join("\n").trim(), g.expect, `${id} ${fault}`);
+  }
+  // The gate: --check reports them as "output differs" and exits 1.
+  const out = path.join(dir, "k.json");
+  const r = spawnSync(process.execPath, [KERNELS_CLI, "--check", fake, "--harness", "base", "--out", out], {
+    encoding: "utf8",
+    env: env("v8v7-regexp:exec-numstr,v8v7-navier-stokes:dens-nan,octane-navier-stokes:xvel-inf"),
+  });
+  assert.equal(r.status, 1, r.stderr);
+  const j = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(j.summary.failing, ["v8v7/regexp", "v8v7/navier-stokes", "octane/navier-stokes"]);
+  for (const id of j.summary.failing) assert.equal(j.kernels.find((x) => x.id === id).status, "output differs", id);
 });

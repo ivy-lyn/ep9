@@ -1,0 +1,164 @@
+# The pins of the `path:line` drift check (cargo xtask adr-lint, part 4; tools/xtask/src/exit/drift.rs).
+# Made from the PINS and HISTORY tables of the ADRLINE tool path_line_drift.py at M4-P3 (each pin's
+# reason is a comment there). One pin per line, fields split by one tab:
+#   pin      <doc file name> <token> <path at HEAD> <start pattern> <offset> [<end pattern> <offset>]
+#   history  <doc file name> <token> <text the doc line holds> <commit> <pattern> [<path>]
+# A pattern is a literal with optional ^ and $ anchors; write \ before a punctuation character.
+pin	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:67	crates/ep9_heap/src/layout.rs	^pub const PAGE_REMEMBERED_OFFSET: usize = 16;$	0
+pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/slow/call.rs:600	crates/ep9_vm/src/interp/slow/call.rs	// One unit, also when the frame does not fit \(R3-2\), as in `do_call`\.	1
+pin	H19-strings.md	crates/ep9_vm/src/string.rs:63	crates/ep9_vm/src/string.rs	^mod strf \{$	0
+pin	H19-strings.md	crates/ep9_vm/src/string.rs:586	crates/ep9_vm/src/string.rs	^pub\(crate\) fn flatten\(cx: &mut Cx, s: u64\) -> u64 \{$	0
+pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/mod.rs:179	crates/ep9_vm/src/interp/mod.rs	pub const TERMINATE: u32 = 1;	0
+pin	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:434	crates/ep9_heap/src/heap.rs	Page::from_base\(self\.base\.add\(\(addr & PAGE_MASK\)	0
+pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:14	crates/ep9_vm/src/object.rs	^//! \| ARRAY \| 18 \|	0
+pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:17	crates/ep9_vm/src/object.rs	^//! \| ELEMENTS \| 65 \|	0
+pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:85-87	crates/ep9_vm/src/object.rs	pub const MAX_LENGTH: u32 = 1 << 26;	-1	pub const MAX_LENGTH: u32 = 1 << 26;	0
+pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:198-200	crates/ep9_vm/src/property.rs	&& array_store\(rt, o, i, v\)	-1	&& array_store\(rt, o, i, v\)	3
+pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:189-195	crates/ep9_vm/src/property.rs	if f64::from\(n\) != d \|\| !object::array_set_length\(rt, o, n\)	0	if f64::from\(n\) != d \|\| !object::array_set_length\(rt, o, n\)	6
+pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:319-324	crates/ep9_vm/src/property.rs	&& object::array_get\(base, i\)\.is_some\(\)	-2	object::array_set\(rt, base, i, crate::frame::HOLE\);	2
+pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:176-178	crates/ep9_vm/src/runtime.rs	roots: \(0\.\.ROOT_SLOTS\)	0
+pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/object.rs:103	crates/ep9_vm/src/string.rs	^pub\(crate\) const MAX_STRING_LENGTH	0
+pin	H23-limits-and-failure-policy.md	`Cargo.toml` lines 38-42	Cargo.toml	^\[profile\.release\]	0	^debug = "line-tables-only"	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:95	crates/ep9_vm/src/builtins.rs	^pub enum IntrinsicId	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:300	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:513	crates/ep9_vm/src/builtins.rs	^pub struct PropDef	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:593	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:672	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable	0
+pin	H20-builtin-abi.md	`:715`	crates/ep9_vm/src/builtins.rs	^pub fn check_tables	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/natives.rs:289	crates/ep9_vm/src/natives.rs	^pub\(crate\) static VM_TABLE	0
+pin	H10-rooting.md	.github/workflows/ci.yml:600-602	.github/workflows/ci.yml	^      - name: SP-GC gate$	0	^      - name: SP-GC gate$	2
+pin	H24-debug-and-profiling-hooks.md	.github/workflows/ci.yml:610-616	.github/workflows/ci.yml	^      # Spike B structural gate \(plan-v4	0	run: bash spikes/spike-b/gate\.sh structural$	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:378	crates/ep9_vm/src/abi/mod.rs	^pub struct ScratchList<'s> \{	0
+pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:394	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn symbol_for\(	0
+pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:412	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn well_known\(	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:80	crates/ep9_vm/src/abi/mod.rs	^// H20 sizes: one word each	1
+pin	H20-builtin-abi.md	crates/ep9_vm/src/property.rs:868	crates/ep9_vm/src/property.rs	^pub\(crate\) fn get_own_property\(	0
+pin	H20-builtin-abi.md	`:868`	crates/ep9_vm/src/property.rs	^pub\(crate\) fn get_own_property\(	0
+pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:520-527	crates/ep9_vm/src/property.rs	// v0: a dense array keeps a hole\.$	-4	// v0: a dense array keeps a hole\.$	3
+pin	H03-ts-runtime-semantics.md	crates/ep9_bytecode/src/unit.rs:30	crates/ep9_bytecode/src/unit.rs	^/// \| 4 \| Runtime ids 29-31	0
+pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:51	crates/ep9_vm/src/runtime.rs	^pub\(crate\) enum Root \{	0
+pin	H29-deopt-contract.md	docs/adr/H14-frames-and-dispatch.md:62-63	docs/adr/H14-frames-and-dispatch.md	^\*\*JIT frames \(Spike B, D21 placement \(a\)	0	^\*\*JIT frames, placement \(b\)	0
+pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:402	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn prototype\(	0
+pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:166	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/local.rs:117	crates/ep9_vm/src/abi/local.rs	^    fn get\(&self\) -> Value	0
+pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:418	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn prototype\(	0
+pin	H25-sandbox-readiness.md	crates/ep9_vm/src/object.rs:919	crates/ep9_vm/src/object.rs	init\(f, fun::INFO, native_of\(info\)\);	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/call.rs:206	crates/ep9_vm/src/call.rs	^pub\(crate\) fn top_of\(	0
+pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:176	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
+pin	H12-no-address-identity.md	crates/ep9_vm/src/runtime.rs:269	crates/ep9_vm/src/runtime.rs	pub templates: RefCell<HashMap<\(usize, u32\),	0
+pin	H34-relocation-kinds.md	docs/adr/H07-address-space-and-code-range.md:88	docs/adr/H07-address-space-and-code-range.md	^\| H07-Q2 \|	0
+pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/ops.rs:381	crates/ep9_vm/src/interp/ops.rs	^fn budget_out\(st: &mut St<'_>\)	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/local.rs:147	crates/ep9_vm/src/abi/local.rs	^pub struct Local<'s, T = JsValue> \{	0
+history	H06-value-encoding.md	tools/xtask/src/m0_exit.rs:1270-1306	Checked at 0c4c70e	0c4c70e	^        Ok\(text\) => \{$
+history	H36-fp-semantics.md	crates/ep9_builtins/tests/table.rs:169	Row added for 077d1fe	077d1fe	^fn clippy_toml_repeats_the_root_bans\(
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/object.rs:703	Checked at bfd5cd8	375d953	init\(f, fun::INFO, native_of\(info\)\);
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/object.rs:916	Checked at bfd5cd8	375d953	init\(c, ctxf::SCOPE, native_of\(scope\)\);
+history	H20-builtin-abi.md	crates/ep9_vm/src/property.rs:1357	M3-P0 P0-VM3 agent (step 2)	9344d6b	^pub\(crate\) fn get_index\(
+history	H20-builtin-abi.md	`:868`	M3-P0 P0-VM3 agent (step 2)	9344d6b	^pub\(crate\) fn get_own_property\(
+history	H20-builtin-abi.md	crates/ep9_vm/src/isolate.rs:645	M2-P3-ISOLATE-API agent	35dcf44	^impl<'s> abi::Cx<'s> \{
+history	H20-builtin-abi.md	crates/ep9_vm/src/isolate.rs:645	after M2-P4-RF1 Q1-Q3	35dcf44	^impl<'s> abi::Cx<'s> \{
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:973	thin wrappers of	eb2ad2c	^    pub fn get_with_receiver\(
+history	H20-builtin-abi.md	`:1021`	thin wrappers of	eb2ad2c	^    pub fn set_with_receiver\(
+history	H01-front-end-boundary.md	.github/workflows/ci.yml:195	| 3 Verifier | P4-ACCEPT-3	0c4c70e	bytecodegen::corpus
+history	H01-front-end-boundary.md	crates/ep9_frontend/src/scope/collect.rs:1207-1211	| 3 Verifier | P4-ACCEPT-3	0c4c70e	// Synthetic functions\. Function ids must be a preorder
+history	H01-front-end-boundary.md	crates/ep9_frontend/src/eval.rs:150-179	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^\) -> Result<R, CodegenError> \{
+history	H04-lazy-compile-contract.md	crates/ep9_vm/src/interp/ops.rs:289	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	fi\.slot\.kind_byte\(\) != DispatchKind::Interp as u8
+history	H04-lazy-compile-contract.md	crates/ep9_vm/src/interp/ops.rs:290	| 3 Verifier | P5-ACCEPT-4	bfd5cd8	fi\.slot\.kind_byte\(\) != DispatchKind::Interp as u8
+history	H05-always-linked-compiler.md	crates/ep9_cli/src/run.rs:198	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^static COMPILER: CompilerHooks
+history	H05-always-linked-compiler.md	tools/test262/src/exec.rs:509	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^static COMPILER: CompilerHooks
+history	H05-always-linked-compiler.md	crates/ep9_frontend/src/bytecodegen/mod.rs:89	| 3 Verifier | P4-ACCEPT-3	0c4c70e	embed_source: true
+history	H08-object-header-and-shapeid.md	crates/ep9_vm/src/shape.rs:361	| 3 Verifier | P3-ACCEPT-2	e719ffa	^    assert!\($
+history	H10-rooting.md	.github/workflows/ci.yml:372-374	| 3 Verifier | P4-ACCEPT-3	0c4c70e	- name: SP-GC gate
+history	H11-barrier-and-atomics.md	crates/ep9_vm/src/interp/mod.rs:128	| 3 Verifier | P4-ACCEPT-3	0c4c70e	pub rt: \*const Runtime
+history	H11-barrier-and-atomics.md	crates/ep9_vm/src/object.rs:235-240	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^#\[inline\(always\)\]$
+history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/object.rs:705	| 3 Verifier | P3-ACCEPT-2	e719ffa	init\(f, fun::INFO, native_of\(info\)\);
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/isolate.rs:80	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	vm_stack_slots: 1 << 20
+history	H23-limits-and-failure-policy.md	crates/ep9_cli/src/run.rs:280-285	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	let stack = opts\.stack_mib << 20;
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/runtime.rs:414-418	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	^fn alloc_failed\(
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/isolate.rs:199	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	queue: WeakInterruptQueue
+history	H24-debug-and-profiling-hooks.md	crates/ep9_vm/src/native.rs:368	| 3 Verifier | P5-ACCEPT-4	bfd5cd8	^unsafe fn enter<
+history	H24-debug-and-profiling-hooks.md	.github/workflows/ci.yml:390-396	| 3 Verifier | P5-ACCEPT-4	bfd5cd8	# Spike B structural gate
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/object.rs:705	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	init\(f, fun::INFO, native_of\(info\)\);
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/object.rs:919	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	init\(c, ctxf::SCOPE, native_of\(scope\)\);
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/call.rs:93-102	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	slot::CALLER_FP\) = native_of\(caller_fp\)
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/call.rs:93-102	| 3 Verifier | P5-ACCEPT-4	bfd5cd8	slot::CALLER_FP\) = native_of\(caller_fp\)
+history	H28-platform-layer.md	.github/workflows/ci.yml:95-98	| 3 Verifier | P4-ACCEPT-3	0c4c70e	name: macos-arm64, os: macos-15
+history	H28-platform-layer.md	.github/workflows/ci.yml:309-312	| 3 Verifier | P4-ACCEPT-3	0c4c70e	name: macos-arm64, os: macos-15
+history	H31-fuse-registry.md	crates/ep9_vm/src/shape.rs:216	over `crates/*/src` at e719ffa: one match	e719ffa	/// protector\)\.
+history	H04-lazy-compile-contract.md	crates/ep9_vm/src/interp/ops.rs:291	| 3 Verifier (M3-P2	cbae45d	fi\.slot\.kind_byte\(\) != DispatchKind::Interp as u8
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/index.rs:94	| 2026-10-22 | rewrite (API addition) | New `Cx` method `check_native_stack()`	e7af527	^    pub fn check_native_stack\(
+history	H30-ir-fact-model.md	crates/ep9_vm/src/interp/ops.rs:142	| 2026-10-22 | rewrite | PROVEN row	65f346b	BinOp::Shr => Some\(num\(f64::from\(\(a as u32\) >>
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:669-675	| 2026-10-22 | rewrite | Rules rows 2 and 3 scoped as built	a5e0488	^        if small \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:995-996	| 3 Verifier | P4-ACCEPT-3	0c4c70e	if size > MAX_SMALL_SIZE \{
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:673	| 3 Verifier | P4-ACCEPT-3	0c4c70e	addr & PAGE_MASK
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:669-675	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^        if small \{$
+history	H10-rooting.md	crates/ep9_heap/src/heap.rs:669-675	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^        if small \{$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:330	| 1 Reviewer | P3-ACCEPT-2	fc368e1	BARRIER_THRESHOLD_OFFSET: usize = 0;
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:330	| 3 Verifier | P4-ACCEPT-3	0c4c70e	BARRIER_THRESHOLD_OFFSET: usize = 0;
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:213-214	| 3 Verifier | P4-ACCEPT-3	0c4c70e	assert!\(offset_of!\(Heap, hot\) == 0\);
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/slow/call.rs:588	| 1 Reviewer (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, addendum	26513a2	cx\.budget -= 1;
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/slow/call.rs:183	| 4 Data (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, addendum	f59173e	cx\.budget -= 1;
+history	H36-fp-semantics.md	crates/ep9_builtins/tests/table.rs:175	| 3 Verifier | P3-ACCEPT-2	d6c8620	^fn clippy_toml_repeats_the_root_bans\(
+history	H36-fp-semantics.md	crates/ep9_builtins/tests/table.rs:175	| 1 Reviewer (amendment 2026-10-22, P4 RF1)	d6c8620	^fn clippy_toml_repeats_the_root_bans\(
+history	H23-limits-and-failure-policy.md	`Cargo.toml` lines 42-52	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	^\[profile\.release\]$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:455	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H11-Q6 fill row, GC2-EPH-S1)	4fee08e	^                    threshold::GEN$
+history	H22-isolates-and-realms.md	crates/ep9_vm/tests/golden/h20-core.txt:344	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H22-Q11 fill row, ADR-A0)	91c3af1	pub fn take_unhandled_rejections\(&mut self\)
+history	H16-ics-and-feedback.md	`:40-50`	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H16-Q1 and CacheIR fill row, ADR-A0)	4fee08e	^//! \| Handler \| Sites \| Hit \|$	crates/ep9_vm/src/ic.rs
+history	H16-ics-and-feedback.md	`:360-398`	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H16-Q1 and CacheIR fill row, ADR-A0)	4fee08e	^    name: u32,$	crates/ep9_vm/src/ic.rs
+history	H16-ics-and-feedback.md	`:425-470`	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H16-Q1 and CacheIR fill row, ADR-A0)	4fee08e	^        \}$	crates/ep9_vm/src/ic.rs
+history	H16-ics-and-feedback.md	`:490-547`	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H16-Q1 and CacheIR fill row, ADR-A0)	4fee08e	^pub\(crate\) fn load_global\(	crates/ep9_vm/src/ic.rs
+history	H08-object-header-and-shapeid.md	crates/ep9_heap/src/layout.rs:36	| 3 Verifier | P3-ACCEPT-2	e719ffa	^pub const MIN_CELL_SIZE: usize = 16;$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:67	| 1 Reviewer | P3-ACCEPT-2	e719ffa	assert!\(FIRST_CELL_OFFSET == 9472 && FIRST_LINE == 37\);
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:88	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^pub\(crate\) struct PageHeader \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:31	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^pub const GRANULE: usize = 8;$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:38	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^pub const MAX_SMALL_SIZE: usize = 8 << 10;$
+history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/feedback.rs:169	| 3 Verifier | P3-ACCEPT-2	e719ffa	init\(c, fv::INFO, native_of\(fi\)\);
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/feedback.rs:169	| 1 Reviewer | P4-ACCEPT-3	0c4c70e	init\(c, fv::INFO, native_of\(fi\)\);
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/feedback.rs:169	| 3 Verifier | P5-ACCEPT-4	bfd5cd8	init\(c, fv::INFO, native_of\(fi\)\);
+history	H20-builtin-abi.md	crates/ep9_regexp/src/lib.rs:267-272	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 fill (API addition) row, RX0A, part 2)	4fee08e	^    let copy_name = \|out: &mut Vec<u32>, from: usize\| -> usize \{$
+history	H06-value-encoding.md	crates/ep9_heap/src/trace.rs:140	| 1 Reviewer | P3-ACCEPT-2	e719ffa	debug_assert!\(bits != 0, "a GC-visible slot holds the bits 0
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/trace.rs:357-382	| 2026-10-22 | rewrite | Rules rows 2 and 3 scoped as built	a5e0488	^pub\(crate\) fn find_cell\(
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/trace.rs:357	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^pub\(crate\) fn find_cell\(
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/trace.rs:357-382	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^pub\(crate\) fn find_cell\(
+history	H10-rooting.md	crates/ep9_heap/src/trace.rs:357-382	| 2026-10-22 | rewrite | Decision diagram	a5e0488	^pub\(crate\) fn find_cell\(
+history	H10-rooting.md	crates/ep9_heap/src/trace.rs:357-382	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^pub\(crate\) fn find_cell\(
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/profile.rs:8-19	| 1 Reviewer (M4-P0 addendum	f1a70ed	^//! \| Slot kind \(ABI byte\) \|
+history	H30-ir-fact-model.md	crates/ep9_vm/src/conv.rs:397	| 2026-10-22 | rewrite | PROVEN row	65f346b	BinOp::Shr => num\(f64::from\(to_uint32\(x\) >>
+
+# M4-P3 integration fixer, part B (ADRLINE after the P3 code fixes): refs in dated review rows keep
+# the line of the commit their row names (M3-P1-REVIEWROW-REFS): code moved by KEYED, IC2, the
+# P3 fixer's 82b71b1 and 7ef5308, and the isolate_config doc fix e6d1e11.
+history	H11-barrier-and-atomics.md	tools/test262/src/exec.rs:552	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row	2c2502a	let generational \= std\:\:env\:\:var_os\(\"EP9_GC_GENERATIONAL\"\)\.is_some_and
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:920-964	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 CacheIR global-store fil	7b954ac	pub\(crate\) fn global_case\(rt\: \&Runtime\, name\: u64\, store\: bool\) \-\> Opt
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:920-964	| 3 Verifier (M4-P2 amendment: the 2026-10-27 CacheIR global-store fil	7b954ac	pub\(crate\) fn global_case\(rt\: \&Runtime\, name\: u64\, store\: bool\) \-\> Opt
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/facts_export.rs:69-79	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\/\/\! \- \*\*Implicit bits \(H16\-Q2 \(1\)\; MODES\-D10\, F\-R9\)\.\*\* T0 writes no bi
+history	H16-ics-and-feedback.md	`:80-94`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\/\/\! \- \*\*Count units \(F\-R7\, MC\-w13\-2\)\.\*\* Each count names its unit\, and
+history	H16-ics-and-feedback.md	`:95-103`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\/\/\! \- \*\*Call keys are never written out \(F\-R8\, MC\-w13\-8\)\.\*\* A \`Call\*\` 
+history	H16-ics-and-feedback.md	`:395-408`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\(K\:\:Call\, _\) \=\> SlotFacts\:\:Call\(match \(u\.call\, u\.construct\) \{
+history	H16-ics-and-feedback.md	`:420-425`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\(K\:\:BinaryOp\, _\) \=\> SlotFacts\:\:BinaryOp\(
+history	H16-ics-and-feedback.md	crates/ep9_builtins/tests/facts_export.rs:586	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	fn a_periodic_call_pattern_keeps_sites_out_of_the_fixed_window\(\) \{
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/stub_cache.rs:113	| 4 Data (M4-P3 amendment: the 2026-10-27 H16-Q3 fill row	2c2502a	heap\.add_weak_source\(move \|_\| flush\(\&e\[\.\.\]\, \&u\)\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:1357	| 4 Data (M4-P3 amendment: the 2026-10-27 H16-Q3 fill row	2c2502a	if case\.key \=\= KEY_STRING \|\| handler \=\= SLOW \{
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:716	| 4 Data (M4-P3 amendment: the 2026-10-27 H16-Q3 fill row	2c2502a	const MEGA_FILL\: bool \= cfg\!\(test\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:412-415	| 4 Data (M4-P3 amendment: the 2026-10-27 string method cases rewrite row	2c2502a	\/\/ ShapeId 0 is a string\'s or a symbol\'s\: a KEY_STRING prototype case 
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/native.rs:401	| 1 Reviewer (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, addendum for the round-5 fix D1)	26513a2	cx\.budget \-\= 1\; \/\/ 1 unit per call\, also when the frame does not fit \(
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/native.rs:401	| 3 Verifier (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, 2026-10-24 addendum for the round-5 fix D1	ed431b7	cx\.budget \-\= 1\; \/\/ 1 unit per call\, also when the frame does not fit \(
+# M4-P4 integration fixer A (ADRLINE of the M4-P4 merge head): dated record and Change-log rows keep the line their commit had
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1228	| 1 Reviewer (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3-S1)	eef801d	^fn trace_s1_logs\(mem\: \&Memory\, t\: \&mut Tracer\<\'_\>\) \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:873	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^    pub fn collect_minor\(\&self\) \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1260	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^    fn gc_trigger\(\&mut self\, size\: usize\) \-\> Option\<GcKind\> \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1228	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^fn trace_s1_logs\(mem\: \&Memory\, t\: \&mut Tracer\<\'_\>\) \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1040	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^                inner\.empty_s1_logs\(\)\;$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:950	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	dd82391	^                inner\.clear_marks\(\)\;$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/verify.rs:283	| 1 Reviewer (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3-S1)	eef801d	^pub\(crate\) fn check_old_cells\(inner\: \&Inner\, errors\: \&mut Vec\<String\>\) \-\> usize \{$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/verify.rs:283	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	eef801d	^pub\(crate\) fn check_old_cells\(inner\: \&Inner\, errors\: \&mut Vec\<String\>\) \-\> usize \{$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:938	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	dd82391	^                Some\(crate\:\:verify\:\:check_old_cells\(inner\, \&mut pre_errors\)\)$
+history	H11-barrier-and-atomics.md	crates/ep9_vm/src/object.rs:333-340	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	dd82391	^\/\/\/ Initializing store into a cell allocated since the last GC point \(E2\: no barrier\)\. Once a$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:158	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	dd82391	^            stress_major_every\: 64\,$
+history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:260-265	| 2026-10-26	36d1092	^pub struct TargetFacts \{$
+history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:300-305	| 2026-10-26	36d1092	^pub struct CloneCase \{$
+history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:260-265	| 1 Reviewer (M4-P0 addendum: the 2026-10-26 rewrite (version) row, IC_LAYOUT 1 -> 2; re-c	36d1092	^pub struct TargetFacts \{$
+history	H16-ics-and-feedback.md	`:300-305`	| 1 Reviewer (M4-P0 addendum: the 2026-10-26 rewrite (version) row, IC_LAYOUT 1 -> 2; re-c	d1c350b	^pub struct CloneCase \{$	crates/ep9_facts/src/facts.rs
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/object.rs:347	| 3 Verifier (M4-P2 amendment: the 2026-10-27 CacheIR global-store fill row, P2-ORCH-9)	2dbf2b0	^pub\(crate\) fn wr\(heap\: \&Heap\, c\: CellPtr\, off\: usize\, v\: u64\) \{$
+history	H36-fp-semantics.md	crates/ep9_math/src/exact.rs:745	| 3 Verifier	b34fd01	^    fn soft_fma_sticky_of_shifted_product\(\) \{$
+pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_heap/src/heap.rs	^    pub near_limit\: Option<fn\(committed\: usize, limit\: usize\) \-> usize>,$	0

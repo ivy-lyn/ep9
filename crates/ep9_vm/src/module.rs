@@ -28,7 +28,7 @@
 //! | MODULE field | Value |
 //! |---|---|
 //! | `STATUS` | int32 [`status`]: new, unlinked, linking, linked, evaluating, evaluating-async, evaluated; and aborted (not in the spec: a termination stopped its Evaluate, or its pending async evaluation) |
-//! | `ENVIRONMENT` | the module environment: a CONTEXT with the slots of [`env`] (not on any context chain) |
+//! | `ENVIRONMENT` | the module environment: a CONTEXT with the slots of [`mod@env`] (not on any context chain) |
 //! | `NAMESPACE` | the namespace object, made on first use ([`get_namespace`]) |
 //! | `UNIT` | native word: the module's `LoadedUnit` (its module records, ABI 5 section 5) |
 //! | `REQUESTED` | ELEMENTS: the specifier of each ModuleRequest (an atom) |
@@ -150,7 +150,7 @@ pub(crate) mod env {
     pub const EVALUATE: u32 = 1;
     /// `import.meta` (`[[ImportMeta]]`), undefined until the first `GetImportMeta`.
     pub const IMPORT_META: u32 = 2;
-    /// The first cell box ([`cell_slot`]).
+    /// The first cell box ([`cell_slot`](super::cell_slot)).
     pub const CELLS: u32 = 3;
 }
 
@@ -834,7 +834,7 @@ fn namespace_entries(rt: &Runtime, m: u64) -> Result<Vec<(NameAtom, Resolution)>
             res => out.push((n, res)),
         }
     }
-    out.sort_by(|a, b| string::str_view(a.0.0).cmp(&string::str_view(b.0.0)));
+    out.sort_by(|a, b| string::compare(a.0.0, b.0.0));
     out.dedup_by(|a, b| a.0 == b.0);
     Ok(out)
 }

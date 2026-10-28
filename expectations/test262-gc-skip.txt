@@ -1,12 +1,13 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 44 tests: 11 month-2, 10 M3-P1, 22 M3-P2 and 1 M3-P3 test. 9 of them also fail without
-# GC-stress and are listed in every expectations/test262.<triple>.jit.txt: 8 month-2 tests
-# (S7.4_A5.js, S7.4_A6.js, the 5 tco-* tests and ownkeys-linear.js) and the M3-P1 test
-# two-digit-years.js. The other 35 pass without GC-stress: the 3 month-2 tests recursion.js,
-# string-upper-lower-mapping.js and toSpliced-dense.js, the other 9 M3-P1 tests, the 22 M3-P2
-# tests and the M3-P3 test.
+# 51 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3 and 7 M4-P3 tests. 15 of them also fail
+# without GC-stress and are listed in every expectations/test262.<triple>.jit.txt: 8 month-2
+# tests (S7.4_A5.js, S7.4_A6.js, the 5 tco-* tests and ownkeys-linear.js), the M3-P1 test
+# two-digit-years.js and 6 of the M4-P3 tests. The other 36 pass without GC-stress: the 3
+# month-2 tests recursion.js, string-upper-lower-mapping.js and toSpliced-dense.js, the other
+# 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test and the M4-P3 test
+# character-class-escape-non-whitespace.js.
 # The 8 month-2 tests that fail without GC-stress:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists) and fails at the first lone surrogate, 0xD800 (EVM-SURROGATE; the shim is M3).
@@ -56,8 +57,22 @@
 # --gc-stress 1 --feedback-threshold 0 on mac a64 release its 2 runs take 19.3 s wall, so the
 # Windows runner is more than 6 times slower on this file (M3-P4 FIXES looked for a
 # Windows-only cost and found none; the file stays on the list for M0, M3-P4-GCSKIP-WIN).
+# M4-P3 (REGEXP1, the RegExp constructor and methods): 7 tests that failed at their first step
+# before now run their long loops. In the REGEXP1 x86-64 sandbox GC run (branch m1m4/p3-regexp1,
+# x86_64-unknown-linux-gnu, --gc-stress 1 --feedback-threshold 0 --timeout 60, 4 workers) each
+# hit the hard timeout (no result after 125 s; the worker was killed):
+# - the 4 language/literals/regexp/S7.8.5_A1.1_T2, _A1.4_T2, _A2.1_T2, _A2.4_T2 tests and the 2
+#   annexB RegExp-leading-escape-BMP and RegExp-trailing-escape-BMP tests: each evals one
+#   pattern per UTF-16 code unit (64K evals), as S7.4_A5.js does with comments. Alone under
+#   GC-stress on mac a64 they ran past 1,805 s. Without GC-stress they still fail at the first
+#   lone surrogate, so they stay in the jit lists;
+# - built-ins/RegExp/character-class-escape-non-whitespace.js: passes without GC-stress; under
+#   it more than 60 s on x86-64.
 # Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
-# head). Paths are relative to the test262 root.
+# head; the M4-P3 tests: on x86_64-unknown-linux-gnu). Paths are relative to the test262 root.
+test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js
+test/annexB/built-ins/RegExp/RegExp-trailing-escape-BMP.js
+test/built-ins/RegExp/character-class-escape-non-whitespace.js
 test/built-ins/decodeURI/S15.1.3.1_A1.10_T1.js
 test/built-ins/decodeURI/S15.1.3.1_A1.11_T1.js
 test/built-ins/decodeURI/S15.1.3.1_A1.11_T2.js
@@ -87,6 +102,10 @@ test/language/expressions/call/tco-non-eval-function-dynamic.js
 test/language/expressions/call/tco-non-eval-function.js
 test/language/expressions/call/tco-non-eval-global.js
 test/language/expressions/call/tco-non-eval-with.js
+test/language/literals/regexp/S7.8.5_A1.1_T2.js
+test/language/literals/regexp/S7.8.5_A1.4_T2.js
+test/language/literals/regexp/S7.8.5_A2.1_T2.js
+test/language/literals/regexp/S7.8.5_A2.4_T2.js
 test/staging/sm/Array/toSpliced-dense.js
 test/staging/sm/Date/dst-offset-caching-1-of-8.js
 test/staging/sm/Date/dst-offset-caching-2-of-8.js

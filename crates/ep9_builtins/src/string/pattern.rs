@@ -1,5 +1,6 @@
-//! The pattern methods with string patterns (§22.1.3.19-20, §22.1.3.23): replace, replaceAll
-//! and split, plus IsRegExp (§7.2.8) and GetSubstitution (§22.1.3.19.1).
+//! The pattern methods (§22.1.3.13, §22.1.3.19-20, §22.1.3.22-23): match, replace,
+//! replaceAll, search and split, plus GetSubstitution (§22.1.3.19.1). IsRegExp (§7.2.8) is
+//! `crate::regexp::is_reg_exp`.
 //!
 //! ```text
 //! s.split(sep, lim)        sep an Object with a @@split method ──> Call(it, sep, «O, lim»)
@@ -8,36 +9,24 @@
 //! otherwise                ToString(pat): a code-unit search (StringIndexOf); r a function
 //!                          ──> Call(r, undefined, «match, position, string»), else
 //!                          GetSubstitution with no captures ($$, $&, $`, $' only)
+//! s.match(re), s.search(re)  re an Object with a @@match / @@search method ──> Call it;
+//!                          otherwise RegExpCreate(re), then Invoke(rx, @@match / @@search)
+//!                          (M4-P3 REGEXP1; their ids are in the regexp block)
 //! ```
+//!
+//! A RegExp object's `[Symbol.replace]` and `[Symbol.split]` (the regexp module) take the
+//! RegExp arms; `[Symbol.replace]` shares [`get_substitution`] with captures and named
+//! captures.
 //!
 //! The symbols come from `%Symbol%` ([`super::well_known`]). The spec looks the method up only
 //! when the pattern is an Object (ecma262 PR 3009, test262 `cstm-*-on-*-primitive.js`); V8 in
-//! node 24 still reads it from a primitive's prototype. ep9 follows the spec. RegExp is M1, so
-//! IsRegExp only reads @@match: no object has a `[[RegExpMatcher]]` slot yet.
+//! node 24 still reads it from a primitive's prototype. ep9 follows the spec.
 
 use ep9_vm::{Args, Cx, JsArray, JsObject, JsResult, Local};
 
 use super::{new_str, push_units, string_index_of, this_string, to_units, units, well_known};
 use crate::array::index_key;
-
-/// IsRegExp ( argument ) (§7.2.8).
-pub(super) fn is_reg_exp<'s>(cx: &mut Cx<'s>, argument: Local<'s>) -> JsResult<bool> {
-    // 1. If argument is not an Object, return false.
-    let Some(o) = argument.as_object() else {
-        return Ok(false);
-    };
-    // 2. Let matcher be ? Get(argument, @@match).
-    let sym = well_known(cx, "match")?;
-    let matcher = cx.get(o, sym)?;
-    // 3. If matcher is not undefined, return ToBoolean(matcher).
-    if !matcher.is_undefined() {
-        return Ok(cx.to_boolean(matcher));
-    }
-    // 4. If argument has a [[RegExpMatcher]] internal slot, return true.
-    //    (v0: no RegExp objects, M1)
-    // 5. Return false.
-    Ok(false)
-}
+pub(crate) use crate::regexp::is_reg_exp;
 
 /// GetMethod ( V, P ) (§7.3.11) for an object `V` and the well-known symbol `Symbol.<name>`:
 /// `None` for undefined or null.
@@ -73,17 +62,22 @@ fn require_object_coercible<'s>(cx: &mut Cx<'s>, this: Local<'s>, name: &str) ->
 }
 
 /// GetSubstitution ( matched, str, position, captures, namedCaptures, replacementTemplate )
-/// (§22.1.3.19.1) with no captures and namedCaptures undefined (string patterns), appended to
-/// `result`. `matched` is the search string, found at `position` in `string`.
-fn get_substitution<'s>(
+/// (§22.1.3.19.1), appended to `result`. `matched` was found at `position` in `string`;
+/// `captures[i]` is capture `i + 1` (`None` = undefined; string patterns have none);
+/// `named_captures` is undefined (`None`) or an Object.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn get_substitution<'s>(
     cx: &mut Cx<'s>,
     matched: &[u16],
     string: &[u16],
     position: usize,
+    captures: &[Option<Vec<u16>>],
+    named_captures: Option<Local<'s, JsObject>>,
     template: &[u16],
     result: &mut Vec<u16>,
 ) -> JsResult<()> {
     const DOLLAR: u16 = b'$' as u16;
+    let is_digit = |u: &u16| (u16::from(b'0')..=u16::from(b'9')).contains(u);
     // 1. Let stringLength be the length of str.
     let string_length = string.len();
     // 2. Assert: position ≤ stringLength.
@@ -95,6 +89,7 @@ fn get_substitution<'s>(
     while !rest.is_empty() {
         //  a. NOTE: The following steps isolate ref (a prefix of templateRemainder), determine
         //     refReplacement (its replacement), and then append that replacement to result.
+        let named: Vec<u16>;
         let (ref_len, ref_replacement): (usize, &[u16]) = match rest {
             //  b. If templateRemainder starts with "$$", then
             //     i. Let ref be "$$". ii. Let refReplacement be "$".
@@ -117,15 +112,87 @@ fn get_substitution<'s>(
                 (2, &string[tail_pos..])
             }
             //  f. Else if templateRemainder starts with "$" followed by 1 or more decimal
-            //     digits, then ... captures is empty, so 1 ≤ index ≤ #captures never holds:
-            //     ref is "$" and one digit (step f.v: a two-digit index > #captures falls back
-            //     to one digit), and refReplacement is ref (step f.ix).
-            //  g. Else if templateRemainder starts with "$<", then ... namedCaptures is
-            //     undefined: ref is "$<" and refReplacement is ref (step g.ii).
+            //     digits, then
+            [DOLLAR, d, ..] if is_digit(d) => {
+                //  i. If templateRemainder starts with "$" followed by 2 or more decimal
+                //     digits, let digitCount be 2. Otherwise, let digitCount be 1.
+                let two = rest.get(2).is_some_and(is_digit);
+                //  ii. Let digits be the substring of templateRemainder from 1 to 1 +
+                //      digitCount.
+                //  iii. Let index be ℝ(StringToNumber(digits)).
+                let digit = |u: u16| usize::from(u - u16::from(b'0'));
+                let mut digit_count = if two { 2 } else { 1 };
+                let mut index = if two {
+                    digit(*d) * 10 + digit(rest[2])
+                } else {
+                    digit(*d)
+                };
+                //  iv. Assert: 0 ≤ index ≤ 99.
+                //  v. Let captureLen be the number of elements in captures.
+                let capture_len = captures.len();
+                //  vi. If index > captureLen and digitCount = 2, then
+                //      1. NOTE: When a two-digit replacement pattern specifies an index
+                //         exceeding the count of capturing groups, it is reinterpreted as a
+                //         one-digit replacement pattern followed by a literal digit.
+                //      2. Set digitCount to 1.
+                //      3. Set digits to the substring of digits from 0 to 1.
+                //      4. Set index to ℝ(StringToNumber(digits)).
+                if index > capture_len && digit_count == 2 {
+                    digit_count = 1;
+                    index = digit(*d);
+                }
+                //  vii. Let ref be the substring of templateRemainder from 0 to 1 +
+                //       digitCount.
+                let ref_len = 1 + digit_count;
+                //  viii. If 1 ≤ index ≤ captureLen, then
+                //        1. Let capture be captures[index - 1].
+                //        2. If capture is undefined, then
+                //           a. Let refReplacement be the empty String.
+                //        3. Else,
+                //           a. Let refReplacement be capture.
+                //  ix. Else,
+                //      1. Let refReplacement be ref.
+                if (1..=capture_len).contains(&index) {
+                    (ref_len, captures[index - 1].as_deref().unwrap_or(&[]))
+                } else {
+                    (ref_len, &rest[..ref_len])
+                }
+            }
+            //  g. Else if templateRemainder starts with "$<", then
+            [DOLLAR, 0x3C, ..] => {
+                //  i. Let gtPos be StringIndexOf(templateRemainder, ">", 0).
+                let gt_pos = rest.iter().position(|&u| u == u16::from(b'>'));
+                match (gt_pos, named_captures) {
+                    //  ii. If gtPos = not-found or namedCaptures is undefined, then
+                    //      1. Let ref be "$<".
+                    //      2. Let refReplacement be ref.
+                    (None, _) | (_, None) => (2, &rest[..2]),
+                    //  iii. Else,
+                    (Some(gt_pos), Some(groups)) => {
+                        //   1. Let ref be the substring of templateRemainder from 0 to
+                        //      gtPos + 1.
+                        //   2. Let groupName be the substring of templateRemainder from 2 to
+                        //      gtPos.
+                        //   3. Assert: namedCaptures is an Object.
+                        //   4. Let capture be ? Get(namedCaptures, groupName).
+                        let group_name = cx.new_string_utf16(&rest[2..gt_pos])?;
+                        let capture = cx.get(groups, group_name)?;
+                        //   5. If capture is undefined, then
+                        //      a. Let refReplacement be the empty String.
+                        //   6. Else,
+                        //      a. Let refReplacement be ? ToString(capture).
+                        named = if capture.is_undefined() {
+                            Vec::new()
+                        } else {
+                            to_units(cx, capture)?
+                        };
+                        (gt_pos + 1, &named[..])
+                    }
+                }
+            }
             //  h. Else,
             //     i. Let ref be the substring of templateRemainder from 0 to 1.
             //     ii. Let refReplacement be ref.
-            // (each of f, g and h copies its ref; one code unit at a time is the same text)
             _ => (1, &rest[..1]),
         };
         //  i. Let refLength be the length of ref.
@@ -171,7 +238,16 @@ impl<'s> Replacer<'s> {
                 let replacement = to_units(cx, r)?;
                 push_units(cx, result, &replacement)
             }
-            None => get_substitution(cx, search, string, position, &self.template, result),
+            None => get_substitution(
+                cx,
+                search,
+                string,
+                position,
+                &[],
+                None,
+                &self.template,
+                result,
+            ),
         }
     }
 }
@@ -440,4 +516,53 @@ fn push<'s>(
     cx.create_data_property_or_throw(array, key, v)?;
     *count += 1;
     Ok(())
+}
+
+/// String.prototype.match ( regexp ) (§22.1.3.13).
+pub(crate) fn match_<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    matcher_call(cx, this, args.get(0), "match")
+}
+
+/// String.prototype.search ( regexp ) (§22.1.3.22).
+pub(crate) fn search<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    matcher_call(cx, this, args.get(0), "search")
+}
+
+/// The steps of String.prototype.match and search (§22.1.3.13, §22.1.3.22; they differ only
+/// in the symbol, `Symbol.<name>`).
+fn matcher_call<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    regexp: Local<'s>,
+    name: &str,
+) -> JsResult<Local<'s>> {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    require_object_coercible(cx, this, name)?;
+    // 2. If regexp is an Object, then
+    if let Some(o) = regexp.as_object() {
+        //    a. Let matcher (searcher) be ? GetMethod(regexp, @@match (@@search)).
+        //    b. If it is not undefined, then
+        //       i. Return ? Call(matcher, regexp, « O »).
+        if let Some(m) = get_method(cx, o, name)? {
+            return cx.call(m, regexp, &[this]);
+        }
+    }
+    // 3. Let S be ? ToString(O).
+    let s = this_string(cx, this, name)?;
+    // 4. Let rx be ? RegExpCreate(regexp, undefined).
+    let rx = crate::regexp::regexp_create(cx, regexp, "")?;
+    // 5. Return ? Invoke(rx, @@match (@@search), « S »).
+    let key = well_known(cx, name)?;
+    let f = cx.get(rx, key)?;
+    cx.call(f, rx, &[s.value()])
 }

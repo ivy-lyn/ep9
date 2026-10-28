@@ -9,6 +9,9 @@ adds no duty for the users of ep9's own code.
 Not listed here:
 - Cargo dependencies (crates.io). Release builds ship a notice file that
   cargo-about generates from Cargo.lock (docs/plan/12-governance.md section 1).
+  For example regress 0.12.0 (MIT OR Apache-2.0), the RX0 backend of
+  ep9_regexp. Its planned fork patches (third_party/patches/regress/) are
+  code in this repository, so they get an entry here when they land.
 - Checkouts that scripts/sync-*.sh fetch into third_party/<name>/ (git-ignored).
   They are not part of this repository and ep9 binaries do not contain them.
 
@@ -100,17 +103,141 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----------------------------------------------------------------------
 
+CORE-MATH (MIT)
+---------------
+
+Project:  CORE-MATH, correctly rounded mathematical functions,
+          https://core-math.gitlabpages.inria.fr/ (git:
+          https://gitlab.inria.fr/core-math/core-math)
+Ported:   at commit 1f876c544231f310f483f0a523e163850141dd7e (2026-10-26), to Rust,
+          rounding to nearest only, without errno or exception flags (M4-P1, H36):
+          - crates/ep9_math/src/exp.rs from src/binary64/exp/exp.c (cr_exp);
+          - crates/ep9_math/src/log.rs from src/binary64/log/log.c and
+            src/binary64/log/dint.h (cr_log);
+          - crates/ep9_math/src/pow.rs from src/binary64/pow/pow.c, pow.h, dint.h
+            and qint.h (cr_pow).
+          and, at the same commit (M4-P4, H36), from src/binary64/<name>/<name>.c
+          (cr_<name>) unless stated:
+          - crates/ep9_math/src/{acos,acosh,asin,asinh,atan,atanh,cbrt,cosh,expm1,
+            log10,log1p,log2,sin,sinh,tan,tanh}.rs;
+          - crates/ep9_math/src/atan2.rs from src/binary64/atan2/atan2.c and
+            src/binary64/atan2/tint.h (cr_atan2);
+          - crates/ep9_math/src/cos.rs from src/binary64/cos/cos.c (cr_cos), and
+            crates/ep9_math/src/trig.rs from the parts of cos.c that tan.c repeats
+            word for word (the dint64_t arithmetic, the reduction, the tables).
+          The tables and constants are the C ones (the double tables keep their C
+          hexadecimal text). Each file's header lists its changes.
+          pxfm (the planned seed, below) was not used for these functions: the
+          port is direct from the CORE-MATH C source, which names its authors.
+Copyright: exp.c: "Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>."
+          log.c: "Copyright (c) 2022 INRIA and CERN. Authors: Paul Zimmermann and
+          Tom Hubrecht."
+          log/dint.h: "Copyright (c) 2022 CERN. Author: Tom Hubrecht"
+          pow.c, pow.h: "Copyright (c) 2022-2025 CERN and Inria. Authors: Tom
+          Hubrecht and Paul Zimmermann"
+          pow/dint.h, pow/qint.h: "Copyright (c) 2022, 2023 CERN and Inria.
+          Authors: Tom Hubrecht and Paul Zimmermann"
+          acos.c: "Copyright (c) 2024-2025 Alexei Sibidanov."
+          acosh.c: "Copyright (c) 2023 Alexei Sibidanov."
+          asin.c: "Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>."
+          asinh.c: "Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>."
+          atan.c: "Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>."
+          atan2.c: "Copyright (c) 2024-2025 Paul Zimmermann and Alexei Sibidanov"
+          atan2/tint.h: "Copyright (c) 2023-2024 Paul Zimmermann and Alexei
+          Sibidanov"
+          atanh.c: "Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>."
+          cbrt.c: "Copyright (c) 2021-2022 Alexei Sibidanov."
+          cos.c, tan.c: "Copyright (c) 2022-2025 Paul Zimmermann and Tom Hubrecht"
+          cosh.c: "Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>"
+          expm1.c: "Copyright (c) 2024 Alexei Sibidanov."
+          log10.c: "Copyright (c) 2022-2025 INRIA and CERN. Authors: Paul Zimmermann
+          and Tom Hubrecht."
+          log1p.c: "Copyright (c) 2024-2026 Alexei Sibidanov <sibid@uvic.ca>."
+          log2.c: "Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>."
+          sin.c: "Copyright (c) 2022-2026 Paul Zimmermann and Tom Hubrecht and
+          Alexei Sibidanov"
+          sinh.c: "Copyright (c) 2023-2026 Alexei Sibidanov and Paul Zimmermann."
+          tanh.c: "Copyright (c) 2023-2026 Alexei Sibidanov, Cyprien Peignier, Paul
+          Zimmermann"
+
+The CORE-MATH code is distributed under the following license
+(MIT license, https://spdx.org/licenses/MIT):
+
+----------------------------------------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----------------------------------------------------------------------
+
+V8 (BSD-3-Clause)
+-----------------
+
+Project:  V8, Google's JavaScript engine, https://v8.dev/ (git:
+          https://chromium.googlesource.com/v8/v8, mirror https://github.com/v8/v8)
+Ported:   crates/ep9_math/src/hypot.rs (Math.hypot, H36) from src/builtins/math.tq
+          (MathHypot, its general path with the Kahan sum), at main
+          f8008f466663464cf3f14474da2c8c91b1be1fcb (2026-10-27), to Rust. The caller
+          does ToNumber; the IEEE operations and their order are V8's (M4-P4).
+Copyright: math.tq: "Copyright 2019 the V8 project authors. All rights reserved.
+          Use of this source code is governed by a BSD-style license that can be
+          found in the LICENSE file."
+
+The V8 LICENSE file gives these terms for V8's own code:
+
+----------------------------------------------------------------------
+Copyright 2014, the V8 project authors. All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+----------------------------------------------------------------------
+
 Planned entries (added by the PR that ports the code; not in the tree yet)
 ==========================================================================
 
 - V8 (BSD-3-Clause): irregexp (RX1), fixed-dtoa, bignum-dtoa,
-  DoubleToRadixCString, src/bigint, Torque MathHypot (H36).
+  DoubleToRadixCString, src/bigint: lines in the V8 entry above.
 - fdlibm (Sun notice "provided that this notice is preserved"), if any
   fdlibm-derived file is ported.
 - pxfm 0.1.30 (BSD-3-Clause OR Apache-2.0; ep9 takes the BSD-3-Clause side):
-  seed of the correctly rounded functions in crates/ep9_math (H36).
-- CORE-MATH (MIT): algorithms of the correctly rounded functions (H36), named
-  as the origin where a ported function matches the CORE-MATH C source.
+  seed of the correctly rounded functions in crates/ep9_math (H36), where a
+  later port uses it (every correctly rounded function so far is a direct
+  CORE-MATH port, above).
 - LLVM libc (Apache-2.0 WITH LLVM-exception): where a ported function comes
   from it (H36).
 - ecmascript_atomics (MPL-2.0), only if vendored: the files stay separate,

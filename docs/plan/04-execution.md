@@ -124,7 +124,7 @@ call f --> dispatch slot[f] = { kind, entry }        kind: interp | baseline | o
 - optimized-AOT writes only call and exit counters.
 - Hybrid re-tiers hot optimized-AOT functions through instrumented T1, then T2.
 - Runtime feedback overrides PROFILED and HINTED facts. A replayed profile can lock in slower code (Leyden Havlak: steady state 20-40% slower) [R11].
-- K-A4P decides if hybrid ships ([./05-aot.md](./05-aot.md)).
+- K-A4P decides if hybrid ships ([./05-aot.md](./05-aot.md)). The mode model, code sets and `select()`, and the fact flow across runs: [13-execution-modes.md](./13-execution-modes.md).
 
 ## 5. JIT infrastructure and the relocatable MacroAssembler
 
@@ -344,6 +344,7 @@ lazy:  fuse pops -> mark dependent code -> swap return addresses on the stack ->
 - Clarified 2026-10-22 (decisions-log M2-D21-FAIL, M2-P4-SPUNIT-M3, M2-W2-D21-B): §5 SP-Unit runs in M3-P1 on placement (b), not inside Spike B in month 2.
 - As built 2026-10-25 (M3-P4 DOCS; decisions-log §13): §2 names where T0 takes budget units (H23); §5 gives the Spike B and SP-Unit results; §6 names the VM facts exporter (H16-Q5). No design change.
 - As built 2026-10-26 (M3-P4 DOCS step 2): §2 gets the M3-P4 T0 fast paths with their cachegrind effect, and the budget unit of a call from Rust whose frame does not fit; §6 names `ep9 --facts-out`. No design change.
+- Clarified 2026-10-27 ([13-execution-modes](./13-execution-modes.md), MODES-CHECK-w13): §4 hybrid "DEOPT, then instrumented re-tier" means: the frame goes to T0 and the AOT code stays; the re-tier starts when the function's speculation exits pass its budget (13 §3.3, contradiction C4). The "call and exit counters" of optimized-AOT are budget counters in the H23 unit (calls + `JumpLoop`) and exit counters (13 C-08). §6: unit facts come from the container hints section (to be renamed `facts` and to carry PROFILED facts: proposed, 13 C-16 at A2); v1 writers leave the CompiledUnit hint section empty (13 F-R1, C-12). No tier, threshold or gate changes. Decided 2026-10-27 (MODES-D11, 13 §1.2; a decision, not a clarify): the jitless preset records no T0 type feedback by default (`type feedback: ics_only`); a training run (`--profile-out`) uses `full`.
 
 ## Evidence tags
 

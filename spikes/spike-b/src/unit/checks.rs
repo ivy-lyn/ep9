@@ -626,7 +626,7 @@ fn scrub_stack() {
 // ---- (d) threads -----------------------------------------------------------------------------
 
 /// Calls of each runtime-table entry through the counting table.
-static COUNTS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static COUNTS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
 
 macro_rules! counting {
     ($($name:ident = $idx:literal, $field:ident, ($($a:ident: $t:ty),*);)*) => {$(
@@ -654,6 +654,8 @@ counting! {
     c_stack_overflow = 5, stack_overflow, (cx: *mut NativeCx, fp: *mut u64, off: u32);
     c_throw = 6, throw, (cx: *mut NativeCx, fp: *mut u64, off: u32, v: u64);
     c_unwind = 7, unwind, (cx: *mut NativeCx, fp: *mut u64, off: u32);
+    c_get_keyed = 8, get_keyed, (cx: *mut NativeCx, fp: *mut u64, off: u32, o: u64, k: u64);
+    c_set_keyed = 9, set_keyed, (cx: *mut NativeCx, fp: *mut u64, off: u32, o: u64, k: u64, v: u64);
 }
 
 /// A runtime table that counts each call, then runs the process table's entry.
@@ -666,6 +668,8 @@ static COUNTING: RuntimeTable = RuntimeTable {
     stack_overflow: c_stack_overflow,
     throw: c_throw,
     unwind: c_unwind,
+    get_keyed: c_get_keyed,
+    set_keyed: c_set_keyed,
 };
 
 /// What one thread of check (d) saw.

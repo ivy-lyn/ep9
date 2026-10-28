@@ -296,8 +296,9 @@ fn rooted_leaf(heap: &Heap) -> (crate::GlobalHandle, Vec<usize>) {
 fn a_large_cell_sweeps_dead_pages_before_out_of_memory() {
     let heap = test_heap(|c| c.max_heap_bytes = PAGE_SIZE);
     let dead = leaf_garbage(&heap);
-    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
+    paint_stack(&dead);
     clear_stack();
+    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
     let before = heap.stats().collections;
     let big = heap.alloc(NODE, NODE_HEADER + 8 * 2000);
     if let Ok(c) = big {
@@ -320,6 +321,7 @@ fn a_large_cell_sweeps_dead_pages_before_out_of_memory() {
 fn a_medium_cell_sweeps_dead_pages_before_out_of_memory() {
     let heap = test_heap(|c| c.max_heap_bytes = PAGE_SIZE);
     let (g, dead) = rooted_leaf(&heap);
+    paint_stack(&dead);
     heap.collect_with_words(&[]);
     heap.drop_global(g);
     clear_stack();

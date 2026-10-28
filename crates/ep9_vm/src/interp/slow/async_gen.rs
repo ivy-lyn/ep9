@@ -256,7 +256,7 @@ fn iterator_method(cx: &mut Cx, v: u64, which: WellKnownSymbol) -> Res<u64> {
 }
 
 /// GetIterator(obj, async) (§7.4.3): `obj[@@asyncIterator]()`, else
-/// CreateAsyncFromSyncIterator(GetIteratorFromMethod(obj, obj[@@iterator])). BytecodeGen loads
+/// CreateAsyncFromSyncIterator(GetIteratorFromMethod(obj, `obj[@@iterator]`)). BytecodeGen loads
 /// `next` from the result (unobservable for an async-from-sync iterator). GC point; runs JS.
 fn get_async_iterator(cx: &mut Cx, obj: u64) -> Res<u64> {
     if obj == UNDEFINED || obj == NULL {

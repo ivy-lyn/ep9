@@ -1,0 +1,540 @@
+# RX0A differential golden (M4-P2): 535 (pattern, flags, lastIndex, input) cases and the
+# result of one RegExp.prototype.exec in node v24.22.1. Columns are tab separated;
+# strings: printable ASCII, \\ for a backslash, \uXXXX for any other code unit. Result:
+# null | error (SyntaxError at compile) | match s-e ... (capture spans; - = not taken part).
+# The start of the search is lastIndex for g or y, else 0. Made by a scratchpad generator.
+abc		0	abc	match 0-3
+abc		0	xxabcxx	match 2-5
+abc		0	ab	null
+abc		0		null
+abc		0	ABC	null
+abc	i	0	ABC	match 0-3
+abc	i	0	aBc	match 0-3
+abc	i	0	xAbC	match 1-4
+a.c		0	abc	match 0-3
+a.c		0	a\u000ac	null
+a.c		0	a\u2028c	null
+a.c		0	a\ud83d\ude00c	null
+a.c	s	0	a\u000ac	match 0-3
+a.c	s	0	a\u000dc	match 0-3
+a.c	s	0	a\u2029c	match 0-3
+a.c	u	0	a\ud83d\ude00c	match 0-4
+a.c	u	0	a\ud800c	match 0-3
+[a-c]+		0	xxabcabcz	match 2-8
+[a-c]+		0	c	match 0-1
+[^a-c]+		0	abcxyzabc	match 3-6
+[^a-c]+		0	abc	null
+[\\d]+		0	abc123def	match 3-6
+[\\d]+		0	\u0661\u0662	null
+\\d+\\.\\d*		0	v1.25	match 1-5
+\\d+\\.\\d*		0	x.5	null
+\\d+\\.\\d*		0	12.	match 0-3
+\\w+		0	  hello_world  	match 2-13
+\\w+		0	\u00e9t\u00e9	match 1-2
+\\w+		0	__	match 0-2
+\\W+		0	ab, cd!	match 2-4
+\\W+		0	abc	null
+\\s+		0	a \u0009\u000a\u00a0\ufeff\u2028b	match 1-7
+\\s+		0	ab	null
+\\S+		0	  x\u00a0y  	match 2-3
+[\\s\\S]		0	\u000a	match 0-1
+[\\s\\S]		0		null
+[]		0		null
+[^]		0	\u000a	match 0-1
+[^]		0		null
+[a\\-z]		0	-	match 0-1
+[a\\-z]		0	b	null
+[\\b]		0	a\u0008b	match 1-2
+\\x41\\u0042\\0		0	AB\u0000	match 0-3
+\\x41\\u0042\\0		0	AB0	null
+\\cJ		0	a\u000ab	match 1-2
+\\u{61}	u	0	a	match 0-1
+\\u{61}	u	0	u{61}	null
+\\u{61}		0	uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu	match 0-61
+\\u{61}		0	a	null
+\\u{1F600}	u	0	x\ud83d\ude00y	match 1-3
+a*		0		match 0-0
+a*		0	aaa	match 0-3
+a*		0	baaa	match 0-0
+a+?		0	aaa	match 0-1
+a{2}		0	a	null
+a{2}		0	aa	match 0-2
+a{2}		0	aaaa	match 0-2
+a{2,}		0	aaaaa	match 0-5
+a{2,}		0	a	null
+a{2,3}		0	aaaaa	match 0-3
+a{2,3}?		0	aaaaa	match 0-2
+a{,2}		0	a{,2}	match 0-5
+a{,2}		0	aa	null
+x{1}{		0	x{	match 0-2
+(a|ab)(c|bcd)(d*)		0	abcd	match 0-4 0-1 1-4 4-4
+(a+)+b		0	aaaaaaaaaaaaaaaab	match 0-17 0-16
+(a+)+b		0	aaaaaaaaaaaaaaab	match 0-16 0-15
+(?:ab)*c		0	ababc	match 0-5
+(?:ab)*c		0	c	match 0-1
+(?:ab)*c		0	abab	null
+(a)|b		0	b	match 0-1 -
+(a)|b		0	a	match 0-1 0-1
+(?:(a)|b)+		0	ba	match 0-2 1-2
+(z)((a+)?(b+)?(c))*		0	zaacbbbcac	match 0-10 0-1 8-10 8-9 - 9-10
+(a*)*		0	b	match 0-0 -
+(a*)*		0	aa	match 0-2 0-2
+(a*)+		0	b	match 0-0 0-0
+(a|b)*?c		0	abc	match 0-3 1-2
+(.*?)a(?!(a+)b\\2c)\\2(.*)		0	baaabaac	match 0-8 0-2 - 3-8
+cat|dog|bird		0	a bird	match 2-6
+cat|dog|bird		0	hotdog	match 3-6
+cat|dog|bird		0	fish	null
+^abc		0	abc	match 0-3
+^abc		0	xabc	null
+^abc		0	x\u000aabc	null
+^abc	m	0	x\u000aabc	match 2-5
+^abc	m	0	x\u000dabc	match 2-5
+^abc	m	0	x\u2028abc	match 2-5
+abc$		0	abc	match 0-3
+abc$		0	abcx	null
+abc$	m	0	abc\u000ax	match 0-3
+abc$	m	0	abc\u2029	match 0-3
+^$		0		match 0-0
+^$		0	a	null
+^$	m	0	a\u000a\u000ab	match 2-2
+\\bfoo\\b		0	a foo b	match 2-5
+\\bfoo\\b		0	afoob	null
+\\bfoo\\b		0	foo	match 0-3
+\\Bo\\B		0	foo	match 1-2
+\\Bo\\B		0	o	null
+\\b		0		null
+\\b		0	  	null
+\\b	u	0	\u00e9a	match 1-1
+\\w	iu	0	\u017f	match 0-1
+\\w	iu	0	\u212a	match 0-1
+\\w	i	0	\u017f	null
+\\w	i	0	\u212a	null
+\\W	iu	0	\u017f	null
+(a)(b)(c)		0	xabc	match 1-4 1-2 2-3 3-4
+(a)?b		0	b	match 0-1 -
+(a)?b		0	ab	match 0-2 0-1
+(\\w)\\1		0	abccd	match 2-4 2-3
+(\\w)\\1		0	abcd	null
+\\1(a)		0	aa	match 0-1 0-1
+\\1(a)		0	a	match 0-1 0-1
+(a)\\2(b)		0	ab	match 0-2 0-1 1-2
+(?<year>\\d{4})-(?<month>\\d{2})		0	on 2024-05-01	match 3-10 3-7 8-10
+(?<a>.)\\k<a>		0	xyyz	match 1-3 1-2
+\\k<a>		0	k<a>	match 0-4
+(?<a>x)|(?<a>y)		0	y	match 0-1 - 0-1
+(?<a>x)|(?<a>y)		0	x	match 0-1 0-1 -
+(a)|\\1b		0	b	match 0-1 -
+(?:a(b)?)+		0	aba	match 0-3 -
+(\\d+)\\s(\\w+)		0	10 apples	match 0-9 0-2 3-9
+(\\2two|(one))+		0	oneonetwo	match 0-9 6-9 -
+((a)|b)+		0	ab	match 0-2 1-2 -
+foo(?=bar)		0	foobar	match 0-3
+foo(?=bar)		0	foobaz	null
+foo(?!bar)		0	foobar	null
+foo(?!bar)		0	foobaz	match 0-3
+(?<=\\$)\\d+		0	cost $42	match 6-8
+(?<=\\$)\\d+		0	cost 42	null
+(?<!\\$)\\b\\d+		0	$4 and 7	match 7-8
+(?=(a+))		0	baaabac	match 1-1 1-4
+(?=(a+))a*b\\1		0	baaabac	match 3-6 3-4
+(?<=(\\d+)(\\d+))$		0	1053	match 4-4 0-1 1-4
+(?<=\\1(a))b		0	aab	match 2-3 1-2
+(?<=a(?=b)b)c		0	abc	match 2-3
+(?!(a))\\1		0	b	match 0-0 -
+(?<=^|,)\\w+		0	a,bc,def	match 0-1
+(?<=a)		0	xa	match 2-2
+(?<=a)		1	xa	match 2-2
+(?<=a)		2	xa	match 2-2
+a	g	2	banana	match 3-4
+a	g	4	banana	match 5-6
+a	g	5	banana	match 5-6
+a	g	6	banana	null
+a	g	7	banana	null
+a	y	0	banana	null
+a	y	1	banana	match 1-2
+a	y	3	banana	match 3-4
+a	y	6	banana	null
+\\d	gy	0	12a3	match 0-1
+\\d	gy	1	12a3	match 1-2
+\\d	gy	2	12a3	null
+\\d	gy	3	12a3	match 3-4
+	g	0	abc	match 0-0
+	g	3	abc	match 3-3
+	g	4	abc	null
+	y	2	abc	match 2-2
+	y	3	abc	match 3-3
+^b	gy	1	abc	null
+^b	my	2	a\u000ab	match 2-3
+x*	y	0	aaxx	match 0-0
+x*	y	2	aaxx	match 2-4
+(?:)	g	0		match 0-0
+(?:)	g	1		null
+b	d	0	abc	match 1-2
+(b)	dg	2	abcb	match 3-4 3-4
+.	u	0	\ud83d\ude00	match 0-2
+.	u	0	\ud83d	match 0-1
+.	u	0	\ude00x	match 0-1
+.		0	\ud83d\ude00	match 0-1
+^.$	u	0	\ud83d\ude00	match 0-2
+^.$		0	\ud83d\ude00	null
+\\ud83d		0	\ud83d\ude00	match 0-1
+\\ud83d	u	0	\ud83d\ude00	null
+\\ud83d	u	0	\ud83dx	match 0-1
+\\ude00	u	0	\ud83d\ude00	null
+\\ude00	gu	1	\ud83d\ude00	null
+\\ude00	g	0	\ud83d\ude00	match 1-2
+\\ude00	g	1	\ud83d\ude00	match 1-2
+[\\ud83d\\ude00]		0	\ud83d\ude00	match 0-1
+[\\ud83d\\ude00]	u	0	\ud83d\ude00	match 0-2
+[\\ud83d\\ude00]	u	0	\ud83d	null
+\ud83d\ude00+		0	\ud83d\ude00\ud83d\ude00	match 0-2
+\ud83d\ude00+	u	0	\ud83d\ude00\ud83d\ude00	match 0-4
+[\ud83d\ude00-\ud83d\ude4f]	u	0	a\ud83d\ude4a	match 1-3
+\\p{L}+	u	0	123\u00e9t\u00e9\u4e2d!	match 3-7
+\\p{Lu}	u	0	abC	match 2-3
+\\P{L}+	u	0	ab12!c	match 2-5
+\\p{Script=Greek}+	u	0	abc\u03b1\u03b2\u03b3d	match 3-6
+\\p{Emoji_Presentation}	u	0	a\ud83d\ude00	match 1-3
+\\p{L}		0	p{L}	match 0-4
+\\p{Nd}	v	0	x\u0663	match 1-2
+[\\p{L}--[a-z]]+	v	0	abcDEF\u00e9	match 3-7
+[[a-z]&&[aeiou]]+	v	0	xyzaeb	match 3-5
+[\\q{abc|d}x]	v	0	zd	match 1-2
+\\p{RGI_Emoji}	v	0	a\ud83d\ude00	match 1-3
+\u00e9	i	0	\u00c9	match 0-1
+[a-z]+	i	0	ABC	match 0-3
+\u212a	i	0	k	null
+\u212a	i	0	K	null
+\u212a	iu	0	k	match 0-1
+\u212a	iu	0	K	match 0-1
+\u017f	i	0	s	null
+\u017f	i	0	S	null
+\u017f	iu	0	s	match 0-1
+\u017f	iu	0	S	match 0-1
+\u00df	iu	0	\u1e9e	match 0-1
+\u00df	iu	0	ss	null
+\u03c3	i	0	\u03a3	match 0-1
+\u03c3	i	0	\u03c2	match 0-1
+[\u00e0-\u00ff]	i	0	\u00c0	match 0-1
+\u0131	i	0	I	null
+\u0130	iu	0	i	null
+(a)\\1	i	0	aA	match 0-2 0-1
+[^a]	i	0	A	null
+\\u{10400}	iu	0	\ud801\udc28	match 0-2
+.+		0	ab\u000dcd	match 0-2
+.+		0	ab\u2028cd	match 0-2
+^.*$	m	0	one\u000atwo	match 0-3
+\\n		0	a\u000ab	match 1-2
+]		0	a]	match 1-2
+{		0	a{	match 1-2
+a{1		0	a{1	match 0-3
+\\8		0	8	match 0-1
+\\a		0	a	match 0-1
+[\\d-a]		0	-	match 0-1
+\\c		0	\\c	match 0-2
+[\\c_]		0	\u001f	match 0-1
+(?=a)*		0	a	match 0-0
+\\08		0	\u00008	match 0-2
+\\377		0	\u00ff	match 0-1
+\\400		0	 0	match 0-2
+(		0	x	error
+a)		0	x	error
+[b-a]		0	x	error
+a**		0	x	error
+?		0	x	error
++a		0	x	error
+a{2,1}		0	x	error
+(?<a>x)(?<a>y)		0	x	error
+\\k<b>(?<a>x)		0	x	error
+(?<1>x)		0	x	error
+\\u{110000}	u	0	x	error
+\\p{Nope}	u	0	x	error
+\\c	u	0	x	error
+]	u	0	x	error
+{	u	0	x	error
+(?<=a)+		0	x	error
+[a-\\d]	u	0	x	error
+a	uv	0	x	error
+[a&&&b]	v	0	x	error
+\\2(a)	u	0	x	error
+(?:		0	x	error
+[		0	x	error
+x{99999999999999999999}		0	x	null
+\\		0	x	error
+(\\w+)@(\\w+)\\.com		0	mail me at joe@example.com today	match 11-26 11-14 15-22
+<(\\w+)[^>]*>(.*?)</\\1>		0	<b class=x>bold</b> <i>it</i>	match 0-19 1-2 11-15
+\\d{3}-\\d{4}	g	0	call 555-1234 or 555-9876	match 5-13
+\\d{3}-\\d{4}	g	9	call 555-1234 or 555-9876	match 17-25
+\\d{3}-\\d{4}	g	13	call 555-1234 or 555-9876	match 17-25
+^\\s*|\\s*$	g	0	  pad  	match 0-2
+^\\s*|\\s*$	g	2	  pad  	match 5-7
+^\\s*|\\s*$	g	7	  pad  	match 7-7
+[aeiou]	gi	0	Programming Language	match 2-3
+[aeiou]	gi	5	Programming Language	match 5-6
+[aeiou]	gi	20	Programming Language	null
+(\\d+)(?:px|em)		0	width: 120px	match 7-12 7-10
+^(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+)@		0	joe.doe@x	null
+([^,]+),?	g	0	a,bb,,c	match 0-2 0-1
+([^,]+),?	g	2	a,bb,,c	match 2-5 2-4
+([^,]+),?	g	5	a,bb,,c	match 6-7 6-7
+([^,]+),?	g	6	a,bb,,c	match 6-7 6-7
+\u00e9+		0	caf\u00e9\u00e9	match 3-5
+[\u00c0-\u00ff]+		0	na\u00efve r\u00e9sum\u00e9	match 2-3
+\u0100		0	\u00ff\u0100	match 1-2
+\\xff		0	\u00ff	match 0-1
+(?:a|b)*?c		0	ababc	match 0-5
+(?:x|y)		0	\u00ffy	match 1-2
+\\w+		0	The quick brown fox jumps over the lazy dog 1234	match 0-3
+\\w+		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 0-3
+\\w+		0	\u4e2d\u6587 text \u0394\u03b4 42	match 3-7
+\\w+		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 0-5
+\\w+		0	aaa bbb aaa	match 0-3
+\\w+		0		null
+\\b\\w	g	0	The quick brown fox jumps over the lazy dog 1234	match 0-1
+\\b\\w	g	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 0-1
+\\b\\w	g	0	\u4e2d\u6587 text \u0394\u03b4 42	match 3-4
+\\b\\w	g	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 0-1
+\\b\\w	g	0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-1
+\\b\\w	g	0	aaa bbb aaa	match 0-1
+\\b\\w	g	0		null
+[A-Z]\\w*		0	The quick brown fox jumps over the lazy dog 1234	match 0-3
+[A-Z]\\w*		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+[A-Z]\\w*		0	\u4e2d\u6587 text \u0394\u03b4 42	null
+[A-Z]\\w*		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+[A-Z]\\w*		0	line1\u000aline2\u000d\u000aline3\u2028end	null
+[A-Z]\\w*		0	aaa bbb aaa	null
+[A-Z]\\w*		0		null
+\\d+		0	The quick brown fox jumps over the lazy dog 1234	match 44-48
+\\d+		0	\u4e2d\u6587 text \u0394\u03b4 42	match 11-13
+\\d+		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+\\d+		0	line1\u000aline2\u000d\u000aline3\u2028end	match 4-5
+\\d+		0	aaa bbb aaa	null
+\\d+		0		null
+\\s+	u	0	The quick brown fox jumps over the lazy dog 1234	match 3-4
+\\s+	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 4-5
+\\s+	u	0	\u4e2d\u6587 text \u0394\u03b4 42	match 2-3
+\\s+	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 5-6
+\\s+	u	0	line1\u000aline2\u000d\u000aline3\u2028end	match 5-6
+\\s+	u	0	aaa bbb aaa	match 3-4
+\\s+	u	0		null
+(\\w+)\\s(\\w+)		0	The quick brown fox jumps over the lazy dog 1234	match 0-9 0-3 4-9
+(\\w+)\\s(\\w+)		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 13-21 13-15 16-21
+(\\w+)\\s(\\w+)		0	\u4e2d\u6587 text \u0394\u03b4 42	null
+(\\w+)\\s(\\w+)		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+(\\w+)\\s(\\w+)		0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-11 0-5 6-11
+(\\w+)\\s(\\w+)		0	aaa bbb aaa	match 0-7 0-3 4-7
+^\\w+$	m	0	The quick brown fox jumps over the lazy dog 1234	null
+^\\w+$	m	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+^\\w+$	m	0	\u4e2d\u6587 text \u0394\u03b4 42	null
+^\\w+$	m	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+^\\w+$	m	0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-5
+^\\w+$	m	0	aaa bbb aaa	null
+^\\w+$	m	0		null
+(.)\\1		0	The quick brown fox jumps over the lazy dog 1234	null
+(.)\\1		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+(.)\\1		0	\u4e2d\u6587 text \u0394\u03b4 42	null
+(.)\\1		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+(.)\\1		0	line1\u000aline2\u000d\u000aline3\u2028end	null
+(.)\\1		0	aaa bbb aaa	match 0-2 0-1
+(.)\\1		0		null
+[^\\x00-\\x7f]+		0	The quick brown fox jumps over the lazy dog 1234	null
+[^\\x00-\\x7f]+		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 3-4
+[^\\x00-\\x7f]+		0	\u4e2d\u6587 text \u0394\u03b4 42	match 0-2
+[^\\x00-\\x7f]+		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 6-10
+[^\\x00-\\x7f]+		0	aaa bbb aaa	null
+[^\\x00-\\x7f]+		0		null
+[\\u00c0-\\u024f]	i	0	The quick brown fox jumps over the lazy dog 1234	null
+[\\u00c0-\\u024f]	i	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 3-4
+[\\u00c0-\\u024f]	i	0	\u4e2d\u6587 text \u0394\u03b4 42	null
+[\\u00c0-\\u024f]	i	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+[\\u00c0-\\u024f]	i	0	line1\u000aline2\u000d\u000aline3\u2028end	null
+[\\u00c0-\\u024f]	i	0	aaa bbb aaa	null
+[\\u00c0-\\u024f]	i	0		null
+(?<w>\\w)(?=\\k<w>)		0	The quick brown fox jumps over the lazy dog 1234	null
+(?<w>\\w)(?=\\k<w>)		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+(?<w>\\w)(?=\\k<w>)		0	\u4e2d\u6587 text \u0394\u03b4 42	null
+(?<w>\\w)(?=\\k<w>)		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+(?<w>\\w)(?=\\k<w>)		0	line1\u000aline2\u000d\u000aline3\u2028end	null
+(?<w>\\w)(?=\\k<w>)		0	aaa bbb aaa	match 0-1 0-1
+(?<w>\\w)(?=\\k<w>)		0		null
+\\p{Lu}	u	0	The quick brown fox jumps over the lazy dog 1234	match 0-1
+\\p{Lu}	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 11-12
+\\p{Lu}	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+\\p{Lu}	u	0	line1\u000aline2\u000d\u000aline3\u2028end	null
+\\p{Lu}	u	0	aaa bbb aaa	null
+\\p{Lu}	u	0		null
+\\p{L}{2,}	u	0	The quick brown fox jumps over the lazy dog 1234	match 0-3
+\\p{L}{2,}	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 0-4
+\\p{L}{2,}	u	0	\u4e2d\u6587 text \u0394\u03b4 42	match 0-2
+\\p{L}{2,}	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 0-5
+\\p{L}{2,}	u	0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-4
+\\p{L}{2,}	u	0	aaa bbb aaa	match 0-3
+\\p{L}{2,}	u	0		null
+.$		0	The quick brown fox jumps over the lazy dog 1234	match 47-48
+.$		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 24-25
+.$		0	\u4e2d\u6587 text \u0394\u03b4 42	match 12-13
+.$		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 20-21
+.$		0	line1\u000aline2\u000d\u000aline3\u2028end	match 21-22
+.$		0	aaa bbb aaa	match 10-11
+.$		0		null
+.$	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 24-25
+.$	u	0	\u4e2d\u6587 text \u0394\u03b4 42	match 12-13
+.$	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 20-21
+.$	u	0	line1\u000aline2\u000d\u000aline3\u2028end	match 21-22
+.$	u	0	aaa bbb aaa	match 10-11
+.$	u	0		null
+(?<=\\s)\\S+		0	The quick brown fox jumps over the lazy dog 1234	match 4-9
+(?<=\\s)\\S+		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 5-10
+(?<=\\s)\\S+		0	\u4e2d\u6587 text \u0394\u03b4 42	match 3-7
+(?<=\\s)\\S+		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 6-10
+(?<=\\s)\\S+		0	line1\u000aline2\u000d\u000aline3\u2028end	match 6-11
+(?<=\\s)\\S+		0	aaa bbb aaa	match 4-7
+(?<=\\s)\\S+		0		null
+a+	i	0	The quick brown fox jumps over the lazy dog 1234	match 36-37
+a+	i	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 1-2
+a+	i	0	\u4e2d\u6587 text \u0394\u03b4 42	null
+a+	i	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 11-12
+a+	i	0	line1\u000aline2\u000d\u000aline3\u2028end	null
+a+	i	0		null
+(aaa|bbb) (?!\\1)		0	The quick brown fox jumps over the lazy dog 1234	null
+(aaa|bbb) (?!\\1)		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+(aaa|bbb) (?!\\1)		0	\u4e2d\u6587 text \u0394\u03b4 42	null
+(aaa|bbb) (?!\\1)		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+(aaa|bbb) (?!\\1)		0	line1\u000aline2\u000d\u000aline3\u2028end	null
+(aaa|bbb) (?!\\1)		0	aaa bbb aaa	match 0-4 0-3
+(aaa|bbb) (?!\\1)		0		null
+[\\s\\S]{3}	y	0	The quick brown fox jumps over the lazy dog 1234	match 0-3
+[\\s\\S]{3}	y	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 0-3
+[\\s\\S]{3}	y	0	\u4e2d\u6587 text \u0394\u03b4 42	match 0-3
+[\\s\\S]{3}	y	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 0-3
+[\\s\\S]{3}	y	0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-3
+[\\s\\S]{3}	y	0	aaa bbb aaa	match 0-3
+[\\s\\S]{3}	y	0		null
+\\W	u	0	The quick brown fox jumps over the lazy dog 1234	match 3-4
+\\W	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 3-4
+\\W	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 5-6
+\\W	u	0	line1\u000aline2\u000d\u000aline3\u2028end	match 5-6
+\\W	u	0	aaa bbb aaa	match 3-4
+\\W	u	0		null
+(?:[a-z]+)\\d	i	0	The quick brown fox jumps over the lazy dog 1234	null
+(?:[a-z]+)\\d	i	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+(?:[a-z]+)\\d	i	0	\u4e2d\u6587 text \u0394\u03b4 42	null
+(?:[a-z]+)\\d	i	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+(?:[a-z]+)\\d	i	0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-5
+(?:[a-z]+)\\d	i	0	aaa bbb aaa	null
+(?:[a-z]+)\\d	i	0		null
+\\p{N}	u	0	The quick brown fox jumps over the lazy dog 1234	match 44-45
+\\p{N}	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+\\p{N}	u	0	\u4e2d\u6587 text \u0394\u03b4 42	match 11-12
+\\p{N}	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+\\p{N}	u	0	line1\u000aline2\u000d\u000aline3\u2028end	match 4-5
+\\p{N}	u	0	aaa bbb aaa	null
+\\p{N}	u	0		null
+(e)|(\\u00e9)	i	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 3-4 - 3-4
+(e)|(\\u00e9)	i	0	\u4e2d\u6587 text \u0394\u03b4 42	match 4-5 4-5 -
+(e)|(\\u00e9)	i	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 0-1 0-1 -
+(e)|(\\u00e9)	i	0	line1\u000aline2\u000d\u000aline3\u2028end	match 3-4 3-4 -
+(e)|(\\u00e9)	i	0	aaa bbb aaa	null
+(e)|(\\u00e9)	i	0		null
+$		0	The quick brown fox jumps over the lazy dog 1234	match 48-48
+$		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 25-25
+$		0	\u4e2d\u6587 text \u0394\u03b4 42	match 13-13
+$		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 21-21
+$		0	line1\u000aline2\u000d\u000aline3\u2028end	match 22-22
+$		0	aaa bbb aaa	match 11-11
+$		0		match 0-0
+[\\ud800-\\udfff]		0	The quick brown fox jumps over the lazy dog 1234	null
+[\\ud800-\\udfff]		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+[\\ud800-\\udfff]		0	\u4e2d\u6587 text \u0394\u03b4 42	null
+[\\ud800-\\udfff]		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 6-7
+[\\ud800-\\udfff]		0	line1\u000aline2\u000d\u000aline3\u2028end	null
+[\\ud800-\\udfff]		0		null
+[\\ud800-\\udfff]	u	0	The quick brown fox jumps over the lazy dog 1234	null
+[\\ud800-\\udfff]	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+[\\ud800-\\udfff]	u	0	\u4e2d\u6587 text \u0394\u03b4 42	null
+[\\ud800-\\udfff]	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 15-16
+[\\ud800-\\udfff]	u	0	line1\u000aline2\u000d\u000aline3\u2028end	null
+[\\ud800-\\udfff]	u	0	aaa bbb aaa	null
+[\\ud800-\\udfff]	u	0		null
+[\\u{10000}-\\u{10ffff}]	u	0	The quick brown fox jumps over the lazy dog 1234	null
+[\\u{10000}-\\u{10ffff}]	u	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+[\\u{10000}-\\u{10ffff}]	u	0	\u4e2d\u6587 text \u0394\u03b4 42	null
+[\\u{10000}-\\u{10ffff}]	u	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 6-8
+[\\u{10000}-\\u{10ffff}]	u	0	line1\u000aline2\u000d\u000aline3\u2028end	null
+[\\u{10000}-\\u{10ffff}]	u	0	aaa bbb aaa	null
+[\\u{10000}-\\u{10ffff}]	u	0		null
+\\D+		0	The quick brown fox jumps over the lazy dog 1234	match 0-44
+\\D+		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 0-25
+\\D+		0	\u4e2d\u6587 text \u0394\u03b4 42	match 0-11
+\\D+		0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-4
+\\D+		0	aaa bbb aaa	match 0-11
+\\D+		0		null
+(?:\\r\\n|\\n|\\u2028)		0	The quick brown fox jumps over the lazy dog 1234	null
+(?:\\r\\n|\\n|\\u2028)		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	null
+(?:\\r\\n|\\n|\\u2028)		0	\u4e2d\u6587 text \u0394\u03b4 42	null
+(?:\\r\\n|\\n|\\u2028)		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	null
+(?:\\r\\n|\\n|\\u2028)		0	line1\u000aline2\u000d\u000aline3\u2028end	match 5-6
+(?:\\r\\n|\\n|\\u2028)		0	aaa bbb aaa	null
+(?:\\r\\n|\\n|\\u2028)		0		null
+x?	g	0	The quick brown fox jumps over the lazy dog 1234	match 0-0
+x?	g	0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 0-0
+x?	g	0	\u4e2d\u6587 text \u0394\u03b4 42	match 0-0
+x?	g	0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 0-0
+x?	g	0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-0
+x?	g	0	aaa bbb aaa	match 0-0
+x?	g	0		match 0-0
+[^]{2}$		0	The quick brown fox jumps over the lazy dog 1234	match 46-48
+[^]{2}$		0	\u4e2d\u6587 text \u0394\u03b4 42	match 11-13
+[^]{2}$		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 19-21
+[^]{2}$		0	line1\u000aline2\u000d\u000aline3\u2028end	match 20-22
+[^]{2}$		0	aaa bbb aaa	match 9-11
+[^]{2}$		0		null
+(?=\\w{4})\\w		0	The quick brown fox jumps over the lazy dog 1234	match 4-5
+(?=\\w{4})\\w		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 16-17
+(?=\\w{4})\\w		0	\u4e2d\u6587 text \u0394\u03b4 42	match 3-4
+(?=\\w{4})\\w		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 0-1
+(?=\\w{4})\\w		0	line1\u000aline2\u000d\u000aline3\u2028end	match 0-1
+(?=\\w{4})\\w		0	aaa bbb aaa	null
+(?=\\w{4})\\w		0		null
+\\B		0	The quick brown fox jumps over the lazy dog 1234	match 1-1
+\\B		0	caf\u00e9 na\u00efve \u00c0 la carte, \u00ff\u00e9	match 1-1
+\\B		0	\u4e2d\u6587 text \u0394\u03b4 42	match 0-0
+\\B		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 1-1
+\\B		0	line1\u000aline2\u000d\u000aline3\u2028end	match 1-1
+\\B		0		match 0-0
+\\uD800\\u0061	u	0	\ud800a	match 0-2
+\\uD800\\u0061	u	0	\ud8000061	null
+\\uD800\\u{61}	u	0	\ud800a	match 0-2
+\\uD800\\uD800	u	0	\ud800\ud800	match 0-2
+\\uD800\\uDC00	u	0	\ud800\udc00	match 0-2
+[\\uD800\\u0061]	u	0	a	match 0-1
+\\uDC00\\u0061	u	0	\udc00a	match 0-2
+\\\\uD800\\u0061	u	0	\\uD800a	match 0-7
+\\uD800\\u12	u	0	\ud800	error
+\\uD800\\u0061	v	0	\ud800a	match 0-2
+\\uD800\\u0061	v	0	\ud8000061	null
+\\uD800\\u{61}	v	0	\ud800a	match 0-2
+\\uD800\\uD800	v	0	\ud800\ud800	match 0-2
+\\uD800\\uDC00	v	0	\ud800\udc00	match 0-2
+[\\uD800\\u0061]	v	0	a	match 0-1
+\\uDC00\\u0061	v	0	\udc00a	match 0-2
+\\\\uD800\\u0061	v	0	\\uD800a	match 0-7
+\\uD800\\u12	v	0	\ud800	error
+[a-z]	i	0	\u212a	null
+[a-z]	i	0	\u017f	null
+\\W	i	0	\u212a	match 0-1
+\\W	i	0	\u017f	match 0-1
+(s)\\1	i	0	s\u017f	null
+\\k<\ud835\udc9c>		0	k<\ud835\udc9c>	match 0-5
+\\k<\ud835\udc9c>	i	0	k<\ud835\udc9c>	match 0-5
+\\k<\ud835\udc9c>	u	0	k<\ud835\udc9c>	error
+\\k<\\uD835\\uDC9C>		0	k<\ud835\udc9c>	match 0-5
+\\k<[a]>		0	k<a>	match 0-4
+[(?<a>x)]\\k<a>		0	ak<a>	match 0-5
+\\(?<a>x\\)\\k<a>		0	<a>x)k<a>	match 0-9
+(?<\ud835\udc9c>x)\\k<\ud835\udc9c>		0	axx	match 1-3 1-2
+\\k<\ud835\udc9c>(?<\ud835\udc9c>y)		0	y	match 0-1 0-1
+(?<a>x)\\k<\ud835\udc9c>|(?<\ud835\udc9c>y)		0	x	match 0-1 0-1 -
+(?<a>x)\\k<\ud835\udc9c>		0	x	error
+\\k<\ud835\udc9c>(?<a>x)		0	x	error

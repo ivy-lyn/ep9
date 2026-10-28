@@ -2,8 +2,7 @@
 //! implemented", TDZ and termination (gates "exceptions", "stack-limit-rangeerror").
 
 use ep9_bytecode::{
-    FeedbackSlotKind, HandlerKind, Label, Register, RegisterList, RuntimeId, ScopeKind,
-    VariableMode, VerifiedUnit,
+    HandlerKind, Label, Register, RegisterList, RuntimeId, ScopeKind, VariableMode, VerifiedUnit,
 };
 
 use super::{
@@ -302,7 +301,6 @@ fn type_errors_and_not_implemented_are_catchable() {
     fn make() -> VerifiedUnit {
         let mut s = Asm::script(0);
         let (ctx, t) = (s.b.new_register(), s.b.new_register());
-        let bin = s.bin;
         // undefined()
         try_print_message(&mut s, ctx, |s| {
             s.b.lda_undefined()
@@ -317,18 +315,6 @@ fn type_errors_and_not_implemented_are_catchable() {
         // new print()
         try_print_message(&mut s, ctx, |s| {
             s.construct_global("print", RegisterList::EMPTY);
-        });
-        // /a/  (RegExp literals are not in v0)
-        try_print_message(&mut s, ctx, |s| {
-            let k = s.b.string_constant("a");
-            let slot = s.b.feedback_slot(FeedbackSlotKind::Literal);
-            s.b.create_reg_exp_literal(k, slot, 0);
-        });
-        // 2 ** 0.3  (needs the correctly rounded pow core of ep9_math, H36, month 2)
-        try_print_message(&mut s, ctx, |s| {
-            s.b.lda_smi(2).star(t);
-            s.lda_num(0.3);
-            s.b.exp(t, bin);
         });
         // 1n
         try_print_message(&mut s, ctx, |s| {
@@ -351,8 +337,6 @@ fn type_errors_and_not_implemented_are_catchable() {
             "undefined is not a function",
             "Cannot read properties of undefined (reading 'x')",
             "function print is not a constructor",
-            "not implemented in ep9 v0: RegExp literals",
-            "not implemented in ep9 v0: ** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)",
             "not implemented in ep9 v0: BigInt values",
             "x is not defined",
         ]

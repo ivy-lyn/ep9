@@ -165,13 +165,22 @@ pub(crate) fn interrupt_at(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
 }
 
 /// An entry from Rust (`interp::run`) at the first instruction of a function that has no
-/// feedback vector: counts the call (`feedback::count_call`). GC point: the entry frame is
-/// pushed and holds the callee, `this` and the arguments.
+/// feedback vector. A unit's entry code (function 0: a script, a module body, eval code)
+/// runs once, so a call count never reaches the threshold: it gets its vector here
+/// (`feedback::ensure`; M4-P2 FACTS2, PERF3 step-2 item 3), so its sites record from the
+/// first instruction on, not only after a loop polls. Any other function counts the call
+/// (`feedback::count_call`). GC point: the entry frame is pushed and holds the callee, `this`
+/// and the arguments.
 #[cold]
 #[inline(never)]
 pub(crate) fn count_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) {
     enter(cx, fp, pc);
-    feedback::count_call(cx.rt(), cx.feedback_threshold, info(fp));
+    let fi = info(fp);
+    if fi.function_id == 0 {
+        feedback::ensure(cx.rt(), cx.feedback_threshold, fi);
+    } else {
+        feedback::count_call(cx.rt(), cx.feedback_threshold, fi);
+    }
 }
 
 /// Throws the "not implemented" error of v0.
@@ -217,7 +226,8 @@ pub(crate) fn throw_name(cx: &mut Cx, fp: *mut u64, pc: *const u8, m: NameMsg, n
 }
 
 fn throw_name_now(cx: &mut Cx, m: NameMsg, name: u64) -> Throw {
-    let n = object::str_view(name).to_string_lossy();
+    let name = crate::string::flatten(cx, name);
+    let n = crate::string::view(cx, name).to_string_lossy();
     let msg = match m {
         NameMsg::Tdz => format!("Cannot access '{n}' before initialization"),
         NameMsg::NotDefined => format!("{n} is not defined"),

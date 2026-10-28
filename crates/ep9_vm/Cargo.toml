@@ -15,6 +15,9 @@ ep9_heap = { path = "../ep9_heap" }
 # `**`, Math and `%` use the one Rust Math (H36).
 ep9_math = { path = "../ep9_math" }
 ep9_platform = { path = "../ep9_platform" }
+# RegExp backends (RX0: regress). ep9_vm is the only crate that depends on ep9_regexp; builtins
+# reach it through Cx part-2 methods (.github/scripts/dep-guards.sh check 14).
+ep9_regexp = { path = "../ep9_regexp" }
 ep9_value = { path = "../ep9_value" }
 
 [features]
@@ -24,8 +27,8 @@ jit = ["ep9_platform/jit"]
 # with `explicit_tail_calls` (D8: opt-in). Stable builds have the match loop and sibling calls.
 become = []
 # Spike B (M0 month 2; docs/measurements/2026-10-22-spike-b-protocol.md): the native-entry path
-# for spike-made code in T0's call path. Implies `jit`. Only spikes/spike-b turns it on; never in
-# the ep9 graph (.github/scripts/dep-guards.sh check 11).
+# for spike-made code in T0's call path. Implies `jit`. Only spikes/spike-b and spikes/spike-c turn
+# it on; never in the ep9 graph (.github/scripts/dep-guards.sh check 11).
 spike-native = ["jit"]
 # Inline-cache hit and miss counters (H16), for reports. Off in every shipped build; never in the
 # ep9 graph (.github/scripts/dep-guards.sh check 11).

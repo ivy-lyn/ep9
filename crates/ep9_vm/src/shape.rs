@@ -25,8 +25,8 @@
 //! | SLOTS | 71 | +8 capacity, +16 values | 16 + 8 cap |
 //! | DESCRIPTORS | 72 | +8 capacity, +16 length, +24 DESC_INDEX or undefined, +32 entries: key, details | 32 + 16 cap |
 //! | DESC_INDEX | 73 | +8 bucket count (a power of 2), +16 buckets: descriptor index or undefined | 16 + 8 buckets |
-//! | TRANSITIONS | 74 | +8 capacity, +16 child shapes (weak) or undefined | 16 + 8 cap |
-//! | PROTO_INFO | 75 | +8 prototype (or null), +16 shape count, +24 SLOTS of shapes, +32 reserved (M1 validity cell) | 40 |
+//! | TRANSITIONS | 74 | +8 capacity, +16 child shapes (weak) or undefined; the same weak array is the users list of a VALIDITY_CELL (`validity.rs`) | 16 + 8 cap |
+//! | PROTO_INFO | 75 | +8 prototype (or null), +16 shape count, +24 SLOTS of shapes, +32 the prototype's current VALIDITY_CELL (79, `validity.rs`; undefined until an IC case needs it; the null prototype's is made in [`init`]; traced strongly) | 40 |
 //!
 //! - **counts** (int32): property count in bits 0-11, in-object capacity in bits 12-19, the
 //!   object kind id in bits 20-27.
@@ -61,9 +61,11 @@
 //!   for a unique shape too). It gets word0 flag IS_PROTOTYPE and a unique shape that holds
 //!   its PROTO_INFO at +40. So every shape's proto is null or a prototype-mode object
 //!   ([`new_shape`] asserts it in debug builds). Any structural change of a prototype-mode
-//!   object bumps [`ShapeState::proto_epoch`] ([`note_change`]): a named property or an
-//!   element that appears or goes away, new attributes, `[[SetPrototypeOf]]`,
-//!   PreventExtensions, dictionary mode. A value store does not.
+//!   object ([`note_change`]: a named property or an element that appears or goes away, new
+//!   attributes, `[[SetPrototypeOf]]`, PreventExtensions, dictionary mode) invalidates its
+//!   validity cell and the cells of every prototype below it (`validity.rs`, H16 K5), and
+//!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths
+//!   until M5-P0, plan v9 §3.3 and V9-A25). A value store does neither.
 //! - The first array-index own property on a prototype-mode object (or an object with one, or
 //!   a routed ARGUMENTS or MODULE_NAMESPACE object, becoming a prototype) sets the sticky
 //!   [`proto_index_keys`] flag: until then `[[Set]]` adds array elements without walking the
@@ -75,10 +77,10 @@
 //! |---|---|---|
 //! | [`heap_config`] | `Isolate::new`, before the heap exists | the shape space (H08-Q1) and the cage alignment |
 //! | [`register_kinds`] | `object::register_kinds` | SHAPE (shape space), SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO |
-//! | [`init`] | `Runtime::new` | register the ShapeState root range and make the null PROTO_INFO |
+//! | [`init`] | `Runtime::new` | register the ShapeState root range and make the null PROTO_INFO and its validity cell |
 //!
-//! `Cx::proto_epoch` points at [`ShapeState::proto_epoch`], so a host call or a nested run
-//! that changes a prototype is seen at once (never a stale copy).
+//! `Cx::proto_epoch` points at [`ShapeState::proto_epoch`]; since M4-P1 no IC hit path
+//! compares it (the validity cells do), only the debug cross-check of `ic.rs` reads it.
 
 use core::cell::Cell;
 use core::ptr::NonNull;
@@ -138,6 +140,8 @@ mod pif {
     pub const PROTO: usize = 8;
     pub const COUNT: usize = 16;
     pub const SHAPES: usize = 24;
+    /// The prototype's current VALIDITY_CELL (`validity.rs`) or undefined.
+    pub const VALIDITY: usize = 32;
     pub const SIZE: usize = 40;
 }
 
@@ -209,17 +213,19 @@ mod root {
     pub const FIRST_REALM_CACHE: usize = FUNCTION_SHAPE;
 }
 
-/// The last value of [`ShapeState::proto_epoch`]: it stays there (it never wraps). No IC case
-/// that compares the epoch is made at this value, so every such case made before misses
-/// for the rest of the isolate's life, and only the generic path runs (W4-P3FIX-EPOCH-SAT).
-/// M1's validity cells (H16 K5) replace the epoch.
+/// The last value of [`ShapeState::proto_epoch`]: it stays there (it never wraps;
+/// W4-P3FIX-EPOCH-SAT). Since M4-P1 no IC case compares the epoch (the validity cells of
+/// `validity.rs` guard them, H16 K5), so a saturated epoch changes no IC result; the debug
+/// cross-check of `ic.rs` then checks every hit.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub(crate) const EPOCH_SATURATED: u32 = u32::MAX;
 
 /// Per-isolate shape state (a `Runtime` field).
 #[derive(Debug)]
 pub(crate) struct ShapeState {
-    /// Bumped on every structural change of a prototype (OM-8), up to [`EPOCH_SATURATED`];
-    /// prototype IC handlers compare it.
+    /// Bumped on every structural change of a prototype (OM-8), up to [`EPOCH_SATURATED`].
+    /// No IC hit path compares it since M4-P1 (validity cells); the debug cross-check of the
+    /// hit paths reads it (plan v9 V9-A25, R1), and tests do.
     pub proto_epoch: Cell<u32>,
     /// Sticky, never cleared: set once a prototype-mode object has an array-index own
     /// property, or a routed kind becomes a prototype ([`proto_index_keys`]). While it is
@@ -364,6 +370,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
     for (id, k) in kinds {
         heap.register_kind(id, k).expect("register a VM cell kind");
     }
+    crate::validity::register_kind(heap);
 }
 
 /// Runs once in `Runtime::new`, after the kinds are registered and before the realm exists:
@@ -385,6 +392,9 @@ pub(crate) fn init(rt: &Runtime) {
     let info = new_proto_info(rt, NULL);
     // E3: a store into a root takes no barrier.
     roots[root::NULL_PROTO_INFO].init(val(info));
+    // GC point: `info` is in the root range now.
+    let c = crate::validity::new_root_cell(rt);
+    set_validity_cell(rt, info, c);
 }
 
 // ---- keys -----------------------------------------------------------------------------------
@@ -1000,6 +1010,30 @@ pub(crate) fn null_proto_info(rt: &Runtime) -> u64 {
     rt.shapes.roots[root::NULL_PROTO_INFO].bits()
 }
 
+/// The PROTO_INFO of `p`, a prototype-mode object or null (every shape's prototype is one,
+/// [`new_shape`]). Unlike [`proto_info_for`] it makes nothing. Not a GC point.
+#[inline]
+pub(crate) fn proto_info_of(rt: &Runtime, p: u64) -> u64 {
+    if p == NULL {
+        return null_proto_info(rt);
+    }
+    debug_assert!(is_prototype_object(p), "{p:#x} is not in prototype mode");
+    unique_info(shape_of(p))
+}
+
+/// The VALIDITY_CELL in the PROTO_INFO `info` (+32), or undefined. Not a GC point.
+#[inline]
+pub(crate) fn validity_cell_of(info: u64) -> u64 {
+    rd(cell(info), pif::VALIDITY)
+}
+
+/// Makes `c` the current VALIDITY_CELL of the PROTO_INFO `info` (`validity::cell_for`). Not a
+/// GC point.
+pub(crate) fn set_validity_cell(rt: &Runtime, info: u64, c: u64) {
+    debug_assert!(kind::cell_kind(c) == kind::VALIDITY_CELL.get());
+    wr(&rt.heap, cell(info), pif::VALIDITY, c);
+}
+
 /// The number of root and dictionary shapes `proto_info` holds.
 #[cfg(test)]
 pub(crate) fn proto_info_len(proto_info: u64) -> usize {
@@ -1124,14 +1158,22 @@ pub(crate) fn is_prototype_object(o: u64) -> bool {
 }
 
 /// Records a structural change of `o` (add, delete, attribute change, `[[SetPrototypeOf]]`,
-/// dictionary mode, PreventExtensions): bumps the epoch if `o` is a prototype (OM-8). The
-/// epoch saturates at [`EPOCH_SATURATED`] (W4-P3FIX-EPOCH-SAT): a wrap would bring back the
-/// epoch of an old handler, which would then hit with a stale answer.
+/// dictionary mode, PreventExtensions). If `o` is a prototype (OM-8): invalidates its
+/// validity cell and the cells of every prototype below it (`validity::invalidate`, H16 K5),
+/// and bumps the epoch, which saturates at [`EPOCH_SATURATED`] (W4-P3FIX-EPOCH-SAT; only the
+/// debug cross-check of the IC hit paths reads it). A prototype always has a unique shape
+/// with its PROTO_INFO (prototype mode keeps it on every change). Not a GC point.
 #[inline]
 pub(crate) fn note_change(rt: &Runtime, o: u64) {
     if is_prototype_object(o) {
         let e = &rt.shapes.proto_epoch;
         e.set(e.get().saturating_add(1));
+        let s = shape_of(o);
+        debug_assert!(
+            flags(s) & flag::UNIQUE != 0,
+            "a prototype without a unique shape"
+        );
+        crate::validity::invalidate(rt, validity_cell_of(unique_info(s)));
     }
 }
 

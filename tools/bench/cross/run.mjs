@@ -11,9 +11,12 @@
 //   --engines LIST      default ep9,qjs,node-jitless,d8-jitless,brimstone (ep9 is required)
 //   --shells FILE       reference shells (default third_party/shells/versions.txt, written by
 //                       scripts/sync-shells.sh)
-//   --workloads LIST    default t0-loop,t0-branchy,t0-call,t0-prop,ci-v0,richards (workloads.mjs)
-//   --harness H         the v8v7 harness: stub (default; runs 1 and 2) or base (the real base.js,
-//                       run 3; v8v7.mjs). The JSON names it per workload
+//   --workloads LIST    default t0-loop,t0-branchy,t0-call,t0-prop,ci-v0,richards (workloads.mjs).
+//                       Set names expand: v8v7-8, v8v7-7 (no regexp), octane-7, exit2 (v8v7-7 +
+//                       octane-7, the M1 exit-2 run that exit2.mjs reads)
+//   --harness H         the v8v7 harness: stub (runs 1 and 2) or base (the real base.js, run 3;
+//                       v8v7.mjs); default DEFAULT_HARNESS of v8v7.mjs. The Octane kernels always
+//                       run with Octane's base.js (octane.mjs). The JSON names it per workload
 //   --rounds N          measured paired rounds, >= 10 (class M minimum; default 10)
 //   --warmup N          dropped warm-up rounds (default 1)
 //   --host FILE         tools/bench/hosts/<host>.toml. Without it the run is provisional
@@ -68,8 +71,9 @@ import { setTimeout as sleepMs } from "node:timers/promises";
 
 import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile } from "../lib/host.mjs";
 import { geomean, median, verdict } from "../lib/stats.mjs";
-import { DEFAULT_WORKLOADS, EMPTY, materialize, WORKLOADS } from "./workloads.mjs";
-import { HARNESSES, ROOT } from "./v8v7.mjs";
+import { DEFAULT_WORKLOADS, EMPTY, expandWorkloads, materialize, WORKLOADS } from "./workloads.mjs";
+import { treeState } from "./kernels.mjs";
+import { DEFAULT_HARNESS, HARNESSES, ROOT } from "./v8v7.mjs";
 
 export const SCHEMA = "ep9-cross/v1";
 /** Class M minimum (10-quality section 3). */
@@ -99,7 +103,7 @@ export function parseArgs(argv) {
     engines: DEFAULT_ENGINES,
     shells: path.join(ROOT, "third_party/shells/versions.txt"),
     workloads: DEFAULT_WORKLOADS,
-    harness: "stub",
+    harness: DEFAULT_HARNESS,
     rounds: MIN_ROUNDS,
     warmup: 1,
     host: null,
@@ -134,7 +138,7 @@ export function parseArgs(argv) {
       case "--commit": o.commit = val(); break;
       case "--engines": o.engines = val().split(","); break;
       case "--shells": o.shells = path.resolve(val()); break;
-      case "--workloads": o.workloads = val().split(","); break;
+      case "--workloads": o.workloads = val().split(","); break; // sets expand below
       case "--harness": o.harness = val(); break;
       case "--rounds": o.rounds = num(a, val()); break;
       case "--warmup": o.warmup = num(a, val()); break;
@@ -166,8 +170,9 @@ export function parseArgs(argv) {
   if (new Set(o.engines).size !== o.engines.length) throw new UsageError("--engines has a duplicate");
   if (o.engines.length < 2) throw new UsageError("--engines needs ep9 and at least one other engine");
   for (const e of o.engines) if (!ENGINES[e]) throw new UsageError(`unknown engine ${e} (known: ${Object.keys(ENGINES).join(", ")})`);
-  for (const w of o.workloads) if (!WORKLOADS[w]) throw new UsageError(`unknown workload ${w} (known: ${Object.keys(WORKLOADS).join(", ")})`);
   if (new Set(o.workloads).size !== o.workloads.length) throw new UsageError("--workloads has a duplicate");
+  o.workloads = expandWorkloads(o.workloads);
+  for (const w of o.workloads) if (!WORKLOADS[w]) throw new UsageError(`unknown workload ${w} (known: ${Object.keys(WORKLOADS).join(", ")})`);
   if (!HARNESSES.includes(o.harness)) throw new UsageError(`--harness must be one of ${HARNESSES.join(", ")}`);
   return o;
 }
@@ -478,6 +483,9 @@ export async function run(o, deps = {}) {
   const commit = o.commit ?? git(["rev-parse", "HEAD"]);
   const runnerCommit = git(["rev-parse", "HEAD"]);
   const runnerDirty = git(["status", "--porcelain", "--untracked-files=no"]);
+  // The fresh paths (kernels.mjs FRESH_PATHS) with uncommitted changes, as kernels.mjs writes
+  // them ([] = clean, null = git cannot say); m1-exit item 2 gives OPEN unless it is [] (CX5-C5).
+  const dirty = treeState().dirty;
 
   const work = o.work ?? mkdtempSync(path.join(os.tmpdir(), "ep9-cross-"));
   mkdirSync(work, { recursive: true });
@@ -553,7 +561,7 @@ export async function run(o, deps = {}) {
       label: o.label,
       started,
       finished: new Date().toISOString(),
-      commit: { ep9: commit, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "" },
+      commit: { ep9: commit, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "", dirty },
       host: {
         file: o.host && path.relative(ROOT, o.host),
         id: hostFile?.id ?? null,

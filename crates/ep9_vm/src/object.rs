@@ -27,6 +27,7 @@
 //! | SLOT_OBJECT | 24 | +24 ObjectClass id (int32), +32 internal slots: an ELEMENTS cell of n Values, or undefined when n = 0 ([`slot_obj`]) | 0 |
 //! | ARGUMENTS | 25 | +24 parameter map (a CONTEXT, or undefined for an unmapped object), +32 mapped count (int32); elements at +16 ([`argsf`]) | 3 (`length`, @@iterator, `callee`) |
 //! | MODULE_NAMESPACE | 26 | +24 module (a MODULE cell), +32 export names (an ELEMENTS cell of sorted strings) ([`nsf`]) | 1 (@@toStringTag) |
+//! | PROXY, PROXY_CALLABLE | 27, 28 | +24 `[[ProxyTarget]]`, +32 `[[ProxyHandler]]` (null once revoked; `proxy.rs`, M4-P4 PROXY1) | 0 |
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
@@ -67,7 +68,7 @@ pub(crate) use crate::kinds::{
     cell_kind, is_array, is_context, is_error, is_function, is_iterator, is_object, is_string,
 };
 pub(crate) use crate::props::{own_count, own_define, own_delete, own_entry, own_get, own_replace};
-pub(crate) use crate::string::{concat, new_string, new_string_utf16, str_len, str_view};
+pub(crate) use crate::string::{concat, new_string, new_string_utf16, str_len};
 
 /// Object fields shared by every JS object kind (H17 v0).
 pub(crate) mod obj {
@@ -276,9 +277,13 @@ pub(crate) mod fixed {
     pub const WRAPPER: usize = 1;
     /// BOUND_FUNCTION: target, bound `this`, bound arguments.
     pub const BOUND: usize = 3;
+    /// PROXY and PROXY_CALLABLE: `[[ProxyTarget]]`, `[[ProxyHandler]]` (`proxy.rs`).
+    pub const PROXY: usize = 2;
 }
 
-mod elems {
+/// ELEMENTS cell fields (+8 capacity (int32), +16 values). Also used by the literal-site hit
+/// (`literal_site.rs`).
+pub(crate) mod elems {
     pub const CAPACITY: usize = 8;
     pub const DATA: usize = 16;
 }
@@ -328,9 +333,15 @@ pub(crate) fn rd(c: CellPtr, off: usize) -> u64 {
     slot_of(c, off).bits()
 }
 
-/// Initializing store into a cell allocated since the last GC point (E2: no barrier).
+/// Initializing store into a cell allocated since the last GC point (E2: no barrier). Once a
+/// GC-stress heap exists, the heap's E2 check tests the claim (`ep9_heap::e2_check_init`: the
+/// host must not have survived a GC) and names this call's caller.
 #[inline(always)]
+#[track_caller]
 pub(crate) fn init(c: CellPtr, off: usize, v: u64) {
+    if ep9_heap::e2_check_on() {
+        ep9_heap::e2_check_init(c, v, core::panic::Location::caller());
+    }
     slot_of(c, off).init(val(v));
 }
 
@@ -398,8 +409,17 @@ const FIXED_COUNTS: [u8; 256] = {
     t[kind::SLOT_OBJECT.get() as usize] = slot_obj::FIXED as u8;
     t[kind::ARGUMENTS.get() as usize] = argsf::FIXED as u8;
     t[kind::MODULE_NAMESPACE.get() as usize] = nsf::FIXED as u8;
+    t[kind::PROXY.get() as usize] = fixed::PROXY as u8;
+    t[kind::PROXY_CALLABLE.get() as usize] = fixed::PROXY as u8;
     t
 };
+
+/// The byte offset of in-object field 0 of an OBJECT cell: `obj::FIXED` plus OBJECT's fixed
+/// fields (none today), the offset `ic.rs` `field_location` gives field 0. The literal and
+/// clone hits write fields from here (`literal_site.rs`), so a fixed field added to OBJECT
+/// moves them too (M4-P1 review R4).
+pub(crate) const OBJECT_FIELD0: usize =
+    obj::FIXED + 8 * FIXED_COUNTS[kind::OBJECT.get() as usize] as usize;
 
 /// The fixed-field count of the JS object kind `k` (16-63): one table load.
 #[inline(always)]
@@ -416,7 +436,9 @@ pub(crate) fn fixed_count(k: u8) -> usize {
             kind::GENERATOR,
             kind::SLOT_OBJECT,
             kind::ARGUMENTS,
-            kind::MODULE_NAMESPACE
+            kind::MODULE_NAMESPACE,
+            kind::PROXY,
+            kind::PROXY_CALLABLE
         ]
         .iter()
         .any(|x| x.get() == k),
@@ -477,7 +499,7 @@ fn trace_realm(c: CellPtr, t: &mut Tracer<'_>) {
 /// that owns a layout (strings, the property dictionary, symbols, shapes, feedback,
 /// accessors, ICs, the ordered tables).
 pub(crate) fn register_kinds(heap: &Heap) {
-    let kinds: [(KindId, CellKind); 15] = [
+    let kinds: [(KindId, CellKind); 17] = [
         (
             kind::OBJECT,
             object_kind("object", object_size::<0>, trace_object::<0>),
@@ -559,6 +581,22 @@ pub(crate) fn register_kinds(heap: &Heap) {
             ),
         ),
         (
+            kind::PROXY,
+            object_kind(
+                "proxy",
+                object_size::<{ fixed::PROXY }>,
+                trace_object::<{ fixed::PROXY }>,
+            ),
+        ),
+        (
+            kind::PROXY_CALLABLE,
+            object_kind(
+                "proxy-callable",
+                object_size::<{ fixed::PROXY }>,
+                trace_object::<{ fixed::PROXY }>,
+            ),
+        ),
+        (
             kind::ELEMENTS,
             CellKind {
                 name: "elements",
@@ -624,6 +662,29 @@ fn alloc_with_shape(rt: &Runtime, k: KindId, s: u64, capacity: u8) -> CellPtr {
     // SAFETY: `c` is the new live cell.
     unsafe { c.header() }.set_flags(u16::from(capacity));
     shape::install(rt, c.to_value().to_bits(), s);
+    c
+}
+
+/// A new JS object of kind `k` with `shape` (a live fast shape of that kind) and the shape's
+/// in-object capacity (`shape::field_layout`); every field holds undefined. GC point (the
+/// allocation): the caller has published its frame and keeps every Value it needs in a frame
+/// or a Rust local. The literal-site and construct-site hits use it (`literal_site.rs`,
+/// `construct_ic.rs`; M4-P1 OBJ-ALLOC).
+///
+/// The body is [`alloc_with_shape`]'s, kept as a second copy on purpose: `inline(always)`
+/// keeps the allocation inside the T0 hit handlers, and leaving `alloc_with_shape` without
+/// the attribute keeps the code of its other callers as it was (one shared inline body
+/// changed the handler call counts of two targets by one, disasm-check, M4-P1 fixer).
+#[inline(always)]
+pub(crate) fn alloc_from_shape(rt: &Runtime, k: KindId, shape: u64) -> CellPtr {
+    let (cap, sk) = shape::field_layout(shape);
+    debug_assert_eq!(sk, k.get(), "a shape of another kind");
+    let size = obj::FIXED + 8 * (fixed_count(k.get()) + cap);
+    let c = rt.alloc(k, size);
+    // The size function reads the in-object count: set it before the next GC point.
+    // SAFETY: `c` is the new live cell.
+    unsafe { c.header() }.set_flags(cap as u16);
+    shape::install(rt, c.to_value().to_bits(), shape);
     c
 }
 
@@ -695,6 +756,11 @@ pub(crate) fn set_proto(rt: &Runtime, o: u64, p: u64) -> bool {
     while q != NULL {
         if q == o {
             return false;
+        }
+        // Step 8.c.i: a proxy's [[GetPrototypeOf]] is not the ordinary one, so the walk stops
+        // there (no cycle). Its cell's own prototype is null, so this only says it.
+        if crate::proxy::is_proxy_kind(cell_kind(q)) {
+            break;
         }
         q = proto_of(q);
     }

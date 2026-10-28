@@ -30,7 +30,7 @@
 use std::collections::BTreeSet;
 use std::ptr::NonNull;
 
-use crate::layout::{PAGE_SIZE, Page};
+use crate::layout::{Large, PAGE_SIZE, Page};
 
 /// Freed small pages that stay committed for reuse.
 pub(crate) const MAX_CACHED_FREE_PAGES: usize = 16;
@@ -203,6 +203,11 @@ impl Memory {
 
     pub(crate) fn base(&self) -> NonNull<u8> {
         self.base
+    }
+
+    /// Bytes of the reservation.
+    pub(crate) fn size(&self) -> usize {
+        self.size
     }
 
     pub(crate) fn base_addr(&self) -> usize {
@@ -417,6 +422,7 @@ impl Memory {
     /// page goes back to the shape region, decommitted.
     pub(crate) fn free_small_page(&mut self, idx: usize) {
         debug_assert_eq!(self.chunks[idx], Chunk::Small);
+        self.page(idx).header().remembered.release();
         if self.is_shape_chunk(idx) {
             // SAFETY: the page holds no live cell (the sweep found none), and the heap keeps no
             // pointer into a free chunk.
@@ -529,6 +535,9 @@ impl Memory {
             panic!("chunk {idx} is not a large object head");
         };
         let committed = committed.next_multiple_of(self.os_page);
+        // SAFETY: chunk `idx` is the committed head of a large object.
+        let large = unsafe { Large::from_base(self.chunk_base(idx)) };
+        crate::remembered::release_cards(large.header());
         // SAFETY: caller contract.
         unsafe { self.decommit(idx, committed) };
         self.committed -= committed;
@@ -581,11 +590,22 @@ pub(crate) const SHAPE_CAGE_ALIGN: usize = 1 << 32;
 
 const _: () = assert!(MIN_SHAPE_SPACE.is_multiple_of(PAGE_SIZE));
 
-#[cfg(miri)]
 impl Drop for Memory {
     fn drop(&mut self) {
+        // The S1 lists and card tables are Rust memory (remembered.rs).
+        for idx in self.small_pages() {
+            self.page(idx).header().remembered.release();
+        }
+        for idx in self.large_heads() {
+            // SAFETY: chunk `idx` is the committed head of a large object.
+            let large = unsafe { Large::from_base(self.chunk_base(idx)) };
+            crate::remembered::release_cards(large.header());
+        }
         // SAFETY: `base` came from `alloc_zeroed(self.layout)` in `reserve`.
-        unsafe { std::alloc::dealloc(self.base.as_ptr(), self.layout) }
+        #[cfg(miri)]
+        unsafe {
+            std::alloc::dealloc(self.base.as_ptr(), self.layout)
+        }
     }
 }
 

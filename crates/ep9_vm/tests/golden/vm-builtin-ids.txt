@@ -108,3 +108,11 @@ intrinsic  60  %MapIteratorPrototype%
 intrinsic  61  %SetIteratorPrototype%
 intrinsic  62  %JSON%
 intrinsic  63  %ThrowTypeError%
+intrinsic  64  %Proxy%
+intrinsic  65  %RegExp%
+intrinsic  66  %RegExp.prototype%
+intrinsic  67  %RegExpStringIteratorPrototype%
+intrinsic  68  %WeakRef%
+intrinsic  69  %WeakRef.prototype%
+intrinsic  70  %FinalizationRegistry%
+intrinsic  71  %FinalizationRegistry.prototype%

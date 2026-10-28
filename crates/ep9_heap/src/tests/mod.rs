@@ -5,10 +5,15 @@
 //! | `barrier.rs` | barrier v2: filter, threshold compare, slow path stores, shape install, init |
 //! | `model.rs` | the H11 decision model: exhaustive interleavings, 6 scenarios, negative controls |
 //! | `alloc.rs` | TLAB, holes, overflow, LOS, pre-fill, kinds, limits, offsets |
+//! | `ephemeron.rs` | `Tracer::visit_ephemeron`: own-key values, cycles, key1 -> value1 -> key2 chains (rounds and the linear form), non-cell keys, random graphs against a model fixpoint |
 //! | `gc.rs` | mark-sweep with precise roots, weak slots, lazy sweep, zapping, GC-stress, verifier |
 //! | `css.rs` | conservative stack scan: locals, interior and one-past-end pointers, S7 (not Miri) |
 //! | `stress.rs` | randomized mutator against a model of the object graph |
+//! | `s1.rs` | S1 step 1 behind `HeapConfig::generational`: remembered lists, LOS cards, sticky marks, the verifier's S1 rules, GC-stress, a caught panic |
+//! | `minor.rs` | S1 step 2: the minor GC (old cells stay, remembered hosts and dirty cards traced, weak parts and young-key ephemerons), the major GC, the policy, generational GC-stress, the generational invariant check, a caught panic |
 //! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, shared commit limit, config |
+//! | `verify.rs` | the verify after a GC (checked mark + checked sweep) finds each fault `Heap::verify` finds; the planted dangling slot; the E2 check |
+//! | `v1.rs` | V1, the remembered-set verifier before every minor GC: when it runs, ages against colours, the card of each young reference of a large object; each negative control of 03-gc §7 for S1 (drop 1 in N barriers, old-only filter, elide after escape) fails V1, in a scenario and in the random mutator, and passes with the control off; the S1 forms of "no root rescan" and "no card rescan" (a minor GC that skips the remembered hosts or the dirty cards) fail V1 at the next minor GC |
 
 use ep9_value::Value;
 
@@ -18,10 +23,15 @@ mod alloc;
 mod barrier;
 #[cfg(not(miri))]
 mod css;
+mod ephemeron;
 mod gc;
+mod minor;
 mod model;
+mod s1;
 mod shape;
 mod stress;
+mod v1;
+mod verify;
 
 /// A test node: word0, a raw meta word `(id << 32) | n`, then `n` Value slots.
 pub(crate) const NODE: KindId = KindId::new(10).unwrap();
@@ -168,6 +178,18 @@ pub(crate) fn expected_live(heap: &Heap, roots: &[usize]) -> std::collections::B
         work.extend(children(c));
     }
     seen
+}
+
+/// Writes `dead[0]` into every word of 16 KiB of stack below the caller's frame: the worst
+/// stale words a garbage helper can leave in its dead frame. Call it right after the helper.
+/// Then a test whose GC must find no live cell fails on every target, not only where two
+/// frames happen to line up, if anything copies a stale stack word into the test's own frame
+/// before [`clear_stack`]. Example: `heap.stats()` returns a `GcStats` whose 7 padding bytes
+/// (after `last_minor`) come from the callee's stack as they were.
+#[inline(never)]
+pub(crate) fn paint_stack(dead: &[usize]) {
+    let mut words = [dead[0]; 2048];
+    std::hint::black_box(&mut words);
 }
 
 /// Zeroes 64 KiB of stack below the caller's frame. Stale words that earlier calls left there

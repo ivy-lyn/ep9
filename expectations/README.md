@@ -17,6 +17,7 @@ Committed expectations and pinned benchmark lists ([08-repo](../docs/plan/08-rep
 | `typed-kernels.txt` | TYPED-KERNELS | by hand |
 | `bytecode-corpus.digest` | The G1 corpus digest: SHA-256 over the sorted (path under `third_party/`, mode, unit hash) lines of every unit that BytecodeGen compiles from test262 and the 3 bench pins. Every host and target, debug and release, must give it (CI job `test262`). It changes only with an ABI bump or a codegen change, each with a BCG-CORPUS row in `docs/decisions-log.md`. Orchestrator-only after M2-P0. After M3-P4: BCG-CORPUS-14 (`17dc1f9c…7531`; the E9 kind marker slots changed the units of classes that hold a direct eval). Before it: BCG-CORPUS-13 (`ed74e92f…1c2a`, 94,502 units; M3-P3) | `EP9_BLESS_CORPUS=1 cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored` |
 | `fp-check-allow.toml` | Exceptions for `cargo xtask fp-check` (H36): a banned libm symbol allowed in one function, with a reopen condition. More than 5 entries reopens H36. Format in the file header | by hand |
+| `adr-trailer-exceptions.txt` | Commits that touch an H-row crate without an `ADR:` trailer, one line `<sha> <ADR ids> <decisions-log row>` (plan v9 rule 26); `cargo xtask adr-lint --trailers-only` reads it from the work tree. Made at M4-P1 for 2 merge commits (decision M4-P1-TRAILER). Format in the file header | the orchestrator, append only |
 
 Benchmark set files (`*-set.txt`, `short-run.txt`, `typed-kernels.txt`): one entry per line.
 
@@ -40,15 +41,15 @@ CI (job `test262`) runs `exec` on each tier-1 runner and compares with the file 
 target. A difference exits 1. An infrastructure error (panic, timeout, worker crash) exits 2.
 Both fail the job.
 
-| Target | Failing files after M3-P4 | Source of the last update |
+| Target | Failing files after the M4-P2 merge | Source of the last update |
 |---|---|---|
-| `aarch64-apple-darwin` | 18,076 | the M3-P4 FIXES step 2 expectations commit (M3-P4-EVAL-SCOPE): 217 paths out (D3d, E6 and E9 in direct eval code); the same 217 paths pass in 3 x86-64 sandbox runs (exec, eager feedback, GC-stress), with 0 new failures |
-| `x86_64-unknown-linux-gnu` | 18,076 | the same commit; same body |
-| `aarch64-unknown-linux-gnu` | 18,076 | the same commit; same body |
-| `x86_64-pc-windows-msvc` | 18,076 | the same commit; same body |
+| `aarch64-apple-darwin` | 17,910 | the M4-P2 merge expectations commit `7c692cb`: 111 paths out (STR2, RX0A, GC2 and the other M4-P2 roles); the x86-64 sandbox exec run listed them as "listed but passing", with 0 new failures. Before it, M4-P1 `344f6ed` took 55 paths out (MATH1): 18,076 -> 18,021 |
+| `x86_64-unknown-linux-gnu` | 17,910 | the same commit; same body |
+| `aarch64-unknown-linux-gnu` | 17,910 | the same commit; same body |
+| `x86_64-pc-windows-msvc` | 17,910 | the same commit; same body |
 
 - At test262 d53ebc8b the 4 files list the same paths. Only the header line differs. Each file
-  has 3 header lines, so 18,079 lines in all.
+  has 3 header lines, so 17,913 lines in all.
 - The count of failing files (`aarch64-apple-darwin`) at each phase head:
 
   | Head | Failing files | Head | Failing files |
@@ -59,6 +60,8 @@ Both fail the job.
   | m2-p2 (`5c9034a`) | 33,910 | M3-P2 (`88dacff`) | 19,001 |
   | m2-p3 (`938d2bc`) | 32,654 | M3-P3 (`63f115a`) | 18,293 |
   | m2-p4 (`c39f782`) | 27,325 | M3-P4 (tag `m3-p4`) | 18,076 |
+  | M3-P5 (tag `m0-exit`, `d7cc797`) | 18,076 | M4-P0 (tag `m4-p0`, `fc6ac78`) | 18,076 |
+  | M4-P1 (tag `m4-p1`, `2a20857`) | 18,021 | M4-P2 merge (`7c692cb`) | 17,910 |
 
 - When CI shows a difference on one target only, that is a platform difference: find the cause
   before you change the file of that target. A failed job uploads `test262-exec-<runner>`
@@ -93,7 +96,7 @@ against the exec file without the skip list; item 12 reads the corpus logs.
 
 ## GC-stress skip list
 
-`test262-gc-skip.txt` lists 44 paths after M3-P4. Under `--gc-stress 1 --timeout 60` (a
+`test262-gc-skip.txt` lists 44 paths after M3-P4 (the same 44 at the M4-P2 merge). Under `--gc-stress 1 --timeout 60` (a
 collection before every allocation, the heap verifier after each) each one runs past the timeout,
 or can on a busy host. A timeout is an infrastructure error (exit 2), so without the list the
 GC-stress run could never pass.
@@ -134,3 +137,4 @@ The decision rows, in order:
 | 2026-10-21 | `bytecode-corpus.digest` row. M2-P0 re-blessed the digest after ABI 3: `ffdbd454…82acb` → `8203f695…6805b` (macOS arm64, release and debug) |
 | 2026-10-25 | Text update for month 3 (M3-P4 DOCS; no expectation file changed): the GC skip-list row and section with its decision rows, who writes the files, the failing-file count per phase head, how CI and `cargo xtask m0-exit` use the files, the 5 parse files and the current corpus digest |
 | 2026-10-26 | Text update after M3-P4 (M3-P4 DOCS step 2; no expectation file changed by this row): 18,076 failing files on all 4 targets (217 paths out), the M3-P4 row of the history, BCG-CORPUS-14, and the M3-P4-GCSKIP-WIN row (the skip list stays at 44) |
+| 2026-10-27 | Text update after the M4-P2 merge (the M4-P2 Codex-fix docs agent; no expectation file changed by this row): the exec-file table and the phase-head history were stale at 18,076; recounted from the 4 jit files at `7b954ac`: 17,910 failing paths in each (17,913 lines with the 3 header lines; the 4 path sets are equal), after M4-P1 `344f6ed` (55 out) and the M4-P2 merge `7c692cb` (111 out). New history rows for M3-P5, M4-P0, M4-P1 and the M4-P2 merge. The parse files (7 paths each) and the GC skip list (44) are unchanged |

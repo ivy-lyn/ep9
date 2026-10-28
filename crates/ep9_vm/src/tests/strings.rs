@@ -2,6 +2,8 @@
 //! table, the hash and its seed, array-index keys, the single-character table and the length
 //! limit.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::process::Command;
 
 use ep9_bytecode::{FeedbackSlotKind, VerifiedUnit};
@@ -13,8 +15,8 @@ use crate::atoms::{self, Atom};
 use crate::key::{self, Probe};
 use crate::kinds::{self, FLAG_ATOM};
 use crate::object::cell;
-use crate::runtime::Runtime;
-use crate::string::{self, testing};
+use crate::runtime::{Runtime, val};
+use crate::string::{self, JsStr, testing};
 use crate::{Dispatch, IntrinsicId, IsolateConfig, Local};
 
 /// Allocated size of the cell of `b`.
@@ -756,4 +758,868 @@ fn computed_keys_and_string_indexing_under_gc_stress() {
     let r = run_all(make);
     assert_eq!(ok(&r), "name");
     assert_eq!(r.output, ["1", "five", "b", "true"]);
+}
+
+// ---- ropes and slices (M4-P1 STR1; H19) ------------------------------------------------------
+
+/// The allocator of the `ep9_vm` unit-test binary: `System`, plus a per-thread count of Rust
+/// heap allocations, so a test can show that a call copies nothing into a Rust `Vec` (tests
+/// run on many threads; each counts only its own). The JS heap does not use it (`ep9_heap`
+/// maps its own pages).
+struct CountingAlloc;
+
+thread_local! {
+    static RUST_ALLOCS: Cell<u64> = const { Cell::new(0) };
+    static RUST_BYTES: Cell<u64> = const { Cell::new(0) };
+}
+
+fn count_rust_alloc(bytes: usize) {
+    // `try_with`: a thread that is tearing down its locals still allocates.
+    let _ = RUST_ALLOCS.try_with(|n| n.set(n.get() + 1));
+    let _ = RUST_BYTES.try_with(|n| n.set(n.get() + bytes as u64));
+}
+
+/// Rust heap allocations made so far on this thread.
+fn rust_allocs() -> u64 {
+    RUST_ALLOCS.with(Cell::get)
+}
+
+/// Bytes of the Rust heap allocations made so far on this thread (a `realloc` counts its new
+/// size).
+fn rust_bytes() -> u64 {
+    RUST_BYTES.with(Cell::get)
+}
+
+// SAFETY: every method forwards to `System` with the same arguments, so `System`'s contract
+// holds; the count is a thread-local `Cell` with no destructor and allocates nothing.
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count_rust_alloc(layout.size());
+        // SAFETY: the caller keeps `GlobalAlloc::alloc`'s contract (non-zero size).
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count_rust_alloc(layout.size());
+        // SAFETY: as `alloc`.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from this allocator, so from `System`, with `layout`.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        count_rust_alloc(new_size);
+        // SAFETY: as `dealloc`, and the caller keeps `realloc`'s size contract.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static COUNTING_ALLOC: CountingAlloc = CountingAlloc;
+
+/// `a + b` through the runtime concat (the string Add path).
+fn cat(rt: &Runtime, a: u64, b: u64) -> u64 {
+    string::concat(rt, a, b).expect("under the limit")
+}
+
+/// The text of a string through the rope-safe reader.
+fn text(b: u64) -> String {
+    string::to_rust_string(b)
+}
+
+/// The rope and slice tests run on a stressed isolate: a collection before every allocation
+/// and the heap verifier after each one (plan v9 §3.6 acceptance).
+fn stressed() -> crate::Isolate {
+    isolate(config(Dispatch::DEFAULT, true))
+}
+
+#[test]
+fn concat_makes_a_cons_from_13_units_and_a_flat_string_below() {
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let a = string::new_string(rt, "abcdef");
+    let b = string::new_string(rt, "ghijkl");
+    let short = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(short), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(short), "abcdefghijkl");
+    let m = string::new_string(rt, "m");
+    let long = cat(rt, short, m);
+    assert_eq!(kinds::cell_kind(long), kinds::CONS.get());
+    assert_eq!(cell_size(rt, long), 32);
+    assert_eq!(string::str_len(long), string::MIN_CONS_LENGTH);
+    assert_eq!(text(long), "abcdefghijklm");
+    // "" + s and s + "" are s.
+    let e = rt.atom(Atom::Empty);
+    assert_eq!(cat(rt, e, long), long);
+    assert_eq!(cat(rt, long, e), long);
+    rt.heap.collect();
+    assert_eq!(text(long), "abcdefghijklm");
+}
+
+#[test]
+fn flatten_writes_the_flat_form_once_into_the_cons() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let mut s = string::new_string(rt, "x");
+    for i in 0..200 {
+        let p = string::new_string(rt, &format!("{i},"));
+        s = cat(rt, s, p);
+    }
+    let want: String = std::iter::once("x".to_string())
+        .chain((0..200).map(|i| format!("{i},")))
+        .collect();
+    assert_eq!(kinds::cell_kind(s), kinds::CONS.get());
+    let f = string::flatten(&mut iso.cx, s);
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(kinds::cell_kind(f), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(f), want);
+    // The CONS is now (flat, ""): a second flatten returns the same cell and allocates
+    // nothing (under GC stress an allocation would collect); the CONS reads as its flat form.
+    let before = rt.heap.stats().collections;
+    assert_eq!(string::flatten(&mut iso.cx, s), f);
+    assert_eq!(iso.rt.heap.stats().collections, before);
+    assert_eq!(kinds::cell_kind(s), kinds::CONS.get());
+    assert_eq!(string::view(&iso.cx, f).len(), want.len());
+    assert_eq!(text(s), want);
+    assert!(string::equals(s, f));
+    assert_eq!(string::hash(s), string::hash(f));
+}
+
+#[test]
+fn deep_ropes_read_flatten_and_compare_without_recursion() {
+    // A 100k-deep left rope (s += x) and right rope (s = x + s) on the test thread's normal
+    // stack: the walks keep their work on a Rust Vec, not the native stack. GC stress runs a
+    // smaller depth (a collection per allocation is quadratic).
+    for (stress, n) in [(false, 100_000), (true, 1_500)] {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        let rt: &Runtime = &iso.rt;
+        // The parts live in scratch roots: a Rust Vec buffer is not scanned (rule 8).
+        let roots = rt.heap.scratch_roots();
+        for d in 0..10 {
+            roots.push(val(string::new_string(rt, &format!("<{d}>"))));
+        }
+        let part = |i: usize| roots.get(i % 10).to_bits();
+        let (mut left, mut right) = (rt.atom(Atom::Empty), rt.atom(Atom::Empty));
+        for i in 0..n {
+            left = cat(rt, left, part(i));
+            right = cat(rt, part(n - 1 - i), right);
+        }
+        let want: String = (0..n).map(|i| format!("<{}>", i % 10)).collect();
+        assert_eq!(text(left), want);
+        assert_eq!(text(right), want);
+        assert!(string::equals(left, right));
+        assert_eq!(string::compare(left, right), core::cmp::Ordering::Equal);
+        assert_eq!(string::hash(left), string::hash(right));
+        assert!(string::equals_text(left, JsStr::Latin1(want.as_bytes())));
+        // One part more on the left: greater, not equal.
+        let bigger = cat(rt, left, part(0));
+        assert_eq!(string::compare(bigger, right), core::cmp::Ordering::Greater);
+        assert_eq!(string::compare(right, bigger), core::cmp::Ordering::Less);
+        assert!(!string::equals(bigger, right));
+        drop(roots);
+        let fl = string::flatten(&mut iso.cx, left);
+        let fr = string::flatten(&mut iso.cx, right);
+        assert_eq!(text(fl), want);
+        assert!(string::equals(fl, fr));
+        iso.collect_garbage();
+        assert_eq!(text(left), want);
+        assert_eq!(text(bigger), format!("{want}<0>"));
+    }
+}
+
+#[test]
+fn a_rope_hashes_and_compares_like_its_flat_text() {
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    for round in 0..200 {
+        // Random parts, some with a unit above 0xFF, glued in a random tree shape. The parts
+        // live in scratch roots; `pieces` holds their root indices.
+        let roots = rt.heap.scratch_roots();
+        let mut pieces: Vec<usize> = Vec::new();
+        let mut all: Vec<u16> = Vec::new();
+        for _ in 0..(1 + rng.next() % 6) {
+            let len = (rng.next() % 9) as usize;
+            let wide = rng.next().is_multiple_of(4);
+            let units: Vec<u16> = (0..len)
+                .map(|_| {
+                    let u = (rng.next() % 0x7f) as u16 + 1;
+                    if wide && rng.next().is_multiple_of(3) {
+                        u + 0x400
+                    } else {
+                        u
+                    }
+                })
+                .collect();
+            all.extend(&units);
+            pieces.push(roots.push(val(string::new_string_utf16(rt, &units))));
+        }
+        while pieces.len() > 1 {
+            let i = (rng.next() as usize) % (pieces.len() - 1);
+            let (x, y) = (
+                roots.get(pieces[i]).to_bits(),
+                roots.get(pieces[i + 1]).to_bits(),
+            );
+            let joined = roots.push(val(cat(rt, x, y)));
+            pieces.splice(i..i + 2, [joined]);
+        }
+        let r = roots.get(pieces[0]).to_bits();
+        let flat = string::new_string_utf16(rt, &all);
+        assert_eq!(string::str_len(r), all.len());
+        assert!(string::equals(r, flat), "round {round}");
+        assert!(string::equals(flat, r), "round {round}");
+        assert_eq!(string::hash(r), string::hash(flat), "round {round}");
+        assert_eq!(string::compare(r, flat), core::cmp::Ordering::Equal);
+        assert!(string::equals_text(r, JsStr::Utf16(&all)), "round {round}");
+        assert_eq!(text(r), String::from_utf16_lossy(&all));
+        for (i, &u) in all.iter().enumerate() {
+            assert_eq!(string::unit_at(r, i), u, "round {round} unit {i}");
+        }
+        assert_eq!(string::array_index(r), JsStr::Utf16(&all).array_index());
+        let wide = all.iter().any(|&u| u > 0xFF);
+        string::with_text(r, |t| {
+            assert_eq!(matches!(t, JsStr::Utf16(_)), wide, "round {round}");
+            assert_eq!(t.to_utf16(), all);
+        });
+    }
+}
+
+#[test]
+fn rope_hash_matches_the_slice_hash() {
+    // The streaming SipHash over a rope walk equals the slice form for every tail length.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    for len in 13..40 {
+        let units: Vec<u16> = (0..len as u16).map(|i| 0x61 + i % 26).collect();
+        let (a, b) = units.split_at(len / 3);
+        let r = cat(
+            rt,
+            string::new_string_utf16(rt, a),
+            string::new_string_utf16(rt, b),
+        );
+        assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+        assert_eq!(string::hash(r), string::hash_text(JsStr::Utf16(&units)).1);
+    }
+}
+
+#[test]
+fn a_cons_with_a_utf16_leaf_flattens_to_utf16() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "latin-one ");
+    let b = string::new_string_utf16(rt, &[0x20ac, 0x41, 0x42]);
+    let r = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let f = string::flatten(&mut iso.cx, r);
+    assert_eq!(kinds::cell_kind(f), kinds::SEQ_UTF16.get());
+    assert_eq!(text(f), "latin-one \u{20ac}AB");
+    // A Latin-1-only rope flattens to Latin-1.
+    let rt: &Runtime = &iso.rt;
+    let r2 = cat(rt, a, a);
+    let f2 = string::flatten(&mut iso.cx, r2);
+    assert_eq!(kinds::cell_kind(f2), kinds::SEQ_LATIN1.get());
+}
+
+#[test]
+fn substring_makes_a_slice_from_13_units_over_the_flat_parent() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let p = string::new_string(rt, "0123456789abcdefghijklmnopqrstuvwxyz");
+    let s = string::substring(rt, p, 3, 20);
+    assert_eq!(kinds::cell_kind(s), kinds::SLICED.get());
+    assert_eq!(cell_size(rt, s), 32);
+    assert_eq!(text(s), "3456789abcdefghij");
+    assert_eq!(string::view(&iso.cx, s).len(), 17);
+    // A slice of a slice points at the same parent.
+    let rt: &Runtime = &iso.rt;
+    let s2 = string::substring(rt, s, 2, 15);
+    assert_eq!(kinds::cell_kind(s2), kinds::SLICED.get());
+    assert_eq!(text(s2), "56789abcdefgh");
+    // Below 13 units: a flat copy; the whole string: itself; empty: "".
+    let s3 = string::substring(rt, s, 0, 12);
+    assert_eq!(kinds::cell_kind(s3), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(s3), "3456789abcde");
+    assert_eq!(string::substring(rt, p, 0, 36), p);
+    assert_eq!(string::substring(rt, p, 5, 5), rt.atom(Atom::Empty));
+    // flatten leaves a slice as is; hash and compare see its text.
+    assert_eq!(string::flatten(&mut iso.cx, s), s);
+    let rt: &Runtime = &iso.rt;
+    let same = string::new_string(rt, "3456789abcdefghij");
+    assert!(string::equals(s, same));
+    assert_eq!(string::hash(s), string::hash(same));
+    // A substring of a rope flattens it first; a UTF-16 parent gives a UTF-16 slice.
+    let w = string::new_string_utf16(rt, &[0x3b1; 20]);
+    let r = cat(rt, p, w);
+    let s4 = string::substring(rt, r, 30, 45);
+    assert_eq!(kinds::cell_kind(s4), kinds::SLICED.get());
+    let mut want: Vec<u16> = "uvwxyz".encode_utf16().collect();
+    want.extend([0x3b1; 9]);
+    assert!(string::equals_text(s4, JsStr::Utf16(&want)));
+    // The slice keeps its parent alive across collections.
+    drop(want);
+    iso.collect_garbage();
+    assert_eq!(text(s2), "56789abcdefgh");
+}
+
+#[test]
+fn char_at_and_string_view_flatten_a_rope() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "abcdefghij");
+    let r = cat(rt, a, a);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let c = string::char_at(rt, r, 13);
+    assert_eq!(text(c), "d");
+    // SAFETY: `r` is a live string cell of this isolate (a Rust local: conservative scan).
+    let v = unsafe { Value::from_bits_unchecked(r) };
+    let got = iso.string_view(v).map(|s| s.to_string_lossy());
+    assert_eq!(got.as_deref(), Some("abcdefghijabcdefghij"));
+}
+
+#[test]
+fn an_interned_rope_is_one_key_with_its_flat_text() {
+    // atoms::intern takes any string kind (it is not a GC point, so it keeps the CONS): a
+    // rope atom and the same text from Rust are one key.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let a = string::new_string(rt, "property-");
+    let b = string::new_string(rt, "name-long");
+    let r = cat(rt, a, b);
+    let k = atoms::intern(rt, r);
+    assert_eq!(k, r);
+    assert!(string::is_atom(r));
+    assert_eq!(atoms::intern_str(rt, "property-name-long"), r);
+    assert_eq!(atoms::lookup(rt, "property-name-long"), Some(r));
+    rt.heap.collect();
+    atoms::verify(rt).unwrap();
+}
+
+/// H19-Q4, Rules (Codex H19 H-3; M4-P4 fixer B): `key::intern_key` (the define paths) calls
+/// `atoms::intern`, which makes a CONS with a new text the atom in place. Then `atomize` and
+/// `Cx::intern` of an equal rope give that CONS atom, not a SEQ one, and the rope stays a
+/// (flattened) CONS, not a THIN forwarder (`forward` needs a SEQ atom). One atom per text
+/// holds, the key compares by bits, and a property stored under the rope atom is found
+/// through the other rope.
+#[test]
+fn a_rope_atom_from_intern_key_is_what_atomize_and_cx_intern_give_later() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let text = "seeded-rope-atom-text";
+    let r1 = cat(
+        rt,
+        string::new_string(rt, "seeded-rope-"),
+        string::new_string(rt, "atom-text"),
+    );
+    let k = key::intern_key(rt, r1);
+    assert_eq!(k, r1);
+    assert_eq!(kinds::cell_kind(r1), kinds::CONS.get());
+    assert!(string::is_atom(r1));
+    // atomize of an equal rope: the CONS atom; the rope is flattened, not THIN.
+    let r2 = cat(
+        rt,
+        string::new_string(rt, "seeded-"),
+        string::new_string(rt, "rope-atom-text"),
+    );
+    let a2 = atoms::atomize(rt, r2);
+    assert_eq!(a2, r1);
+    assert!(!string::is_seq(a2));
+    assert_eq!(kinds::cell_kind(r2), kinds::CONS.get(), "no THIN forwarder");
+    assert!(!string::is_atom(r2));
+    // Cx::intern of a third equal rope: the same CONS atom.
+    let r3 = cat(
+        rt,
+        string::new_string(rt, "seeded-rope-atom"),
+        string::new_string(rt, "-text"),
+    );
+    let a3 = iso
+        .with_cx(|cx| Ok(cx.intern(Local::from_bits(r3)).bits()))
+        .unwrap();
+    assert_eq!(a3, r1);
+    assert_eq!(kinds::cell_kind(r3), kinds::CONS.get(), "no THIN forwarder");
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(atoms::intern_str(rt, text), r1, "one atom per text");
+    assert_eq!(string::to_rust_string(r1), text);
+    // A property stored under the rope atom is found by the other rope's key.
+    let found = iso
+        .with_cx(|cx| {
+            let o = cx.new_object();
+            let k1: Local<'_, crate::JsKey> = Local::from_bits(r1);
+            cx.set(o, k1, Local::int32(5), true)?;
+            let k2 = cx.intern(Local::from_bits(r2));
+            Ok(cx.get(o, k2)?.as_int32())
+        })
+        .unwrap();
+    assert_eq!(found, Some(5));
+    iso.collect_garbage();
+    atoms::verify(&iso.rt).unwrap();
+}
+
+#[test]
+fn ropes_from_bytecode_add_print_and_compare() {
+    // var s = ""; for (i = 0; i < 40; i++) s = s + "ab"; print(s); return s === s + "";
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (str_, i, t) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+        s.lda_str("");
+        s.b.star(str_).lda_zero().star(i);
+        let head = s.b.bound_label();
+        let exit = s.b.new_label();
+        s.b.lda_smi(40).test_less_than(i, s.cmp).jump_if_false(exit);
+        s.lda_str("ab");
+        s.b.add(str_, s.bin).star(str_);
+        s.b.ldar(i).inc(s.bin).star(i).jump_loop(head, 0, s.loop_);
+        s.b.bind(exit);
+        s.b.ldar(str_);
+        s.print_acc();
+        s.lda_str("");
+        s.b.add(str_, s.bin).star(t);
+        s.b.ldar(t).test_equal_strict(str_, s.cmp).return_();
+        unit("", vec![s.finish()])
+    }
+    let r = run_all(make);
+    assert_eq!(ok(&r), "true");
+    assert_eq!(r.output, ["ab".repeat(40)]);
+}
+
+#[test]
+fn array_index_reads_ropes_and_slices_without_a_flatten() {
+    // `profile.rs` (the keyed `KeySet` bits) and `key::array_index_of` call
+    // `string::array_index` on keys that can be a CONS not yet flattened or a SLICED string
+    // (M4-P1 PROFILE need 5). It reads them in place: no flatten, no JS-heap allocation (under
+    // GC stress an allocation would collect), before and after the hash field is cached. A
+    // rope or slice has at least 13 units, more than any array index (10 digits), so the
+    // answer is always `None`.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let digits = |s: &str| string::new_string(rt, s);
+    let cases = [
+        cat(rt, digits("1234567"), digits("890123")),
+        cat(rt, digits("0"), digits("000000000000")),
+        cat(rt, digits("4294967"), digits("294000")),
+        cat(rt, digits("abcdefg"), digits("hijklm")),
+    ];
+    let parent = digits("12345678901234567890");
+    let slice = string::substring(rt, parent, 1, 15);
+    assert_eq!(kinds::cell_kind(slice), kinds::SLICED.get());
+    for (i, &s) in cases.iter().chain([&slice]).enumerate() {
+        let before = rt.heap.stats().collections;
+        assert_eq!(string::array_index(s), None, "case {i}");
+        let _ = string::hash(s);
+        assert_eq!(string::array_index(s), None, "case {i}, hash cached");
+        assert_eq!(key::array_index_of(s), None, "case {i}");
+        assert_eq!(
+            rt.heap.stats().collections,
+            before,
+            "case {i}: no allocation"
+        );
+        if i < cases.len() {
+            assert_eq!(kinds::cell_kind(s), kinds::CONS.get(), "case {i}");
+            assert!(string::str_len(s) >= string::MIN_CONS_LENGTH);
+        }
+    }
+}
+
+#[test]
+fn array_index_copies_no_rope_text_to_the_rust_heap() {
+    // Codex r2 code F2 (M4-P1): the test above counts collections, which a Rust `Vec` copy
+    // does not make. `string::array_index` answers a key longer than 10 units without
+    // `with_text` (a974ad4), so a rope key (Latin-1 or two-byte), before or after its hash is
+    // cached, costs no Rust heap allocation; a slice key is flat and never needed the copy.
+    // The control shows the counter sees the copy that the guard skips.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let ropes = [
+        cat(
+            rt,
+            string::new_string(rt, "1234567"),
+            string::new_string(rt, "890123"),
+        ),
+        cat(
+            rt,
+            string::new_string(rt, "12345\u{3b1}7"),
+            string::new_string(rt, "890123"),
+        ),
+    ];
+    let parent = string::new_string(rt, "12345678901234567890");
+    let slice = string::substring(rt, parent, 1, 15);
+    assert_eq!(kinds::cell_kind(slice), kinds::SLICED.get());
+    for (i, &s) in ropes.iter().chain([&slice]).enumerate() {
+        for cached in [false, true] {
+            if cached {
+                let _ = string::hash(s);
+            }
+            let before = rust_allocs();
+            assert_eq!(string::array_index(s), None, "case {i}");
+            assert_eq!(key::array_index_of(s), None, "case {i}");
+            let made = rust_allocs() - before;
+            assert_eq!(
+                made, 0,
+                "case {i}, hash cached {cached}: Rust heap allocations"
+            );
+        }
+        if i < ropes.len() {
+            assert_eq!(kinds::cell_kind(s), kinds::CONS.get(), "case {i}");
+        }
+    }
+    // Control: the copy that the guard skips is a Rust heap allocation the counter sees.
+    let before = rust_allocs();
+    string::with_text(ropes[0], |t| assert_eq!(t.array_index(), None));
+    assert!(
+        rust_allocs() > before,
+        "with_text copies an unflattened rope"
+    );
+}
+
+// ---- thin strings and atomize (M4-P2 STR2; H19-Q1, H19-Q4) ----------------------------------
+
+/// Checks that `s` is a THIN cell forwarding to the SEQ atom `a` with the text `want`, and that
+/// every rope-safe reader sees the text through it without an allocation.
+fn assert_thin(iso: &mut crate::Isolate, s: u64, a: u64, want: &str) {
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(kinds::cell_kind(s), kinds::THIN.get(), "{want:?}");
+    assert!(!string::is_atom(s));
+    assert!(string::is_atom(a));
+    assert!(string::is_seq(a));
+    assert_eq!(string::thin_target(s), Some(a));
+    assert_eq!(cell_size(rt, s), 32);
+    let before = rt.heap.stats().collections;
+    assert_eq!(string::str_len(s), want.encode_utf16().count());
+    assert_eq!(text(s), want);
+    assert!(string::equals(s, a) && string::equals(a, s));
+    assert_eq!(string::compare(s, a), core::cmp::Ordering::Equal);
+    assert_eq!(string::hash(s), string::hash(a));
+    assert_eq!(string::hash_field(s), string::hash_field(a));
+    assert!(string::is_flat(s));
+    let units: Vec<u16> = want.encode_utf16().collect();
+    assert!(string::equals_text(s, JsStr::Utf16(&units)));
+    for (i, &u) in units.iter().enumerate() {
+        assert_eq!(string::unit_at(s, i), u);
+    }
+    // intern and atomize of a THIN cell are one load; flatten gives the atom.
+    assert_eq!(atoms::intern(rt, s), a);
+    assert_eq!(atoms::atomize(rt, s), a);
+    assert_eq!(string::flatten(&mut iso.cx, s), a);
+    assert_eq!(string::view(&iso.cx, s).len(), units.len());
+    assert_eq!(
+        iso.rt.heap.stats().collections,
+        before,
+        "THIN reads allocate nothing"
+    );
+}
+
+#[test]
+fn atomize_makes_a_rope_a_thin_forwarder_to_its_flat_atom() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "atomize-rope-");
+    let b = string::new_string(rt, "with-no-atom-yet");
+    let r = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    assert_eq!(atoms::lookup(rt, "atomize-rope-with-no-atom-yet"), None);
+    let k = atoms::atomize(rt, r);
+    assert_ne!(k, r);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_LATIN1.get());
+    assert_eq!(
+        atoms::lookup(rt, "atomize-rope-with-no-atom-yet"),
+        Some(k),
+        "the flat cell is the atom"
+    );
+    assert_thin(&mut iso, r, k, "atomize-rope-with-no-atom-yet");
+    // The THIN cell keeps its atom alive (it is traced) and the table stays whole.
+    iso.collect_garbage();
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(text(r), "atomize-rope-with-no-atom-yet");
+    assert_eq!(string::thin_target(r), Some(k));
+    atoms::verify(rt).unwrap();
+}
+
+#[test]
+fn cx_intern_of_a_rope_gives_a_flat_atom() {
+    // STR2 need 4 (M4-P2 fixer): `Cx::intern` (the builtin ABI, also `IntoKey` for a string)
+    // atomizes, so a rope from a builtin never becomes a rope atom; the rope forwards.
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let r = cat(
+        rt,
+        string::new_string(rt, "cx-intern-rope-"),
+        string::new_string(rt, "with-no-atom-yet"),
+    );
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let k = iso
+        .with_cx(|cx| Ok(cx.intern(Local::from_bits(r)).bits()))
+        .unwrap();
+    assert_ne!(k, r);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_LATIN1.get());
+    assert_thin(&mut iso, r, k, "cx-intern-rope-with-no-atom-yet");
+    atoms::verify(&iso.rt).unwrap();
+}
+
+#[test]
+fn atomize_of_a_rope_whose_text_has_an_atom_forwards_to_that_atom() {
+    // The rope is flattened first (V9-D13), its flat copy finds the atom, and the rope
+    // forwards to the atom; the flat copy is garbage.
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let atom = atoms::intern_str(rt, "existing-atom-text");
+    let r = cat(
+        rt,
+        string::new_string(rt, "existing-"),
+        string::new_string(rt, "atom-text"),
+    );
+    assert_eq!(atoms::atomize(rt, r), atom);
+    assert_thin(&mut iso, r, atom, "existing-atom-text");
+}
+
+#[test]
+fn intern_of_a_flattened_rope_atomizes_its_flat_part() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let r = cat(
+        rt,
+        string::new_string(rt, "flattened-"),
+        string::new_string(rt, "rope-key"),
+    );
+    let f = string::flatten(&mut iso.cx, r);
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let before = rt.heap.stats().collections;
+    let k = atoms::intern(rt, r);
+    assert_eq!(k, f, "the flat part becomes the atom in place");
+    assert_eq!(rt.heap.stats().collections, before);
+    assert_thin(&mut iso, r, f, "flattened-rope-key");
+}
+
+#[test]
+fn a_utf16_rope_forwards_to_a_utf16_atom() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "two-byte ");
+    let b = string::new_string_utf16(rt, &[0x3b1, 0x3b2, 0x3b3, 0x20ac]);
+    let r = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let k = atoms::atomize(rt, r);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_UTF16.get());
+    // The CONS's two-byte flag does not stay on the THIN cell (its atom says the encoding).
+    // SAFETY: `r` is a live cell (a Rust local: conservative scan).
+    let flags = unsafe { cell(r).header().flags() };
+    assert_eq!(flags & !FLAG_ATOM, 0);
+    assert_thin(&mut iso, r, k, "two-byte \u{3b1}\u{3b2}\u{3b3}\u{20ac}");
+    string::with_text(r, |t| assert!(matches!(t, JsStr::Utf16(_))));
+}
+
+#[test]
+fn atomize_copies_a_slice_into_a_seq_atom_and_the_slice_forwards() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let parent = string::new_string(rt, "0123456789abcdefghijklmnopqrstuvwxyz");
+    let s = string::substring(rt, parent, 4, 30);
+    assert_eq!(kinds::cell_kind(s), kinds::SLICED.get());
+    // No atom yet: a SEQ copy of the text becomes the atom, never the slice (a slice atom
+    // would keep the whole parent alive).
+    let k = atoms::atomize(rt, s);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_LATIN1.get());
+    assert_thin(&mut iso, s, k, "456789abcdefghijklmnopqrst");
+    // A slice whose text has an atom forwards with no allocation.
+    let rt: &Runtime = &iso.rt;
+    let s2 = string::substring(rt, parent, 4, 30);
+    let before = rt.heap.stats().collections;
+    assert_eq!(atoms::atomize(rt, s2), k);
+    assert_eq!(rt.heap.stats().collections, before);
+    assert_thin(&mut iso, s2, k, "456789abcdefghijklmnopqrst");
+    // intern (no GC point) also forwards a slice to an existing atom.
+    let rt: &Runtime = &iso.rt;
+    let s3 = string::substring(rt, parent, 4, 30);
+    assert_eq!(atoms::intern(rt, s3), k);
+    assert_thin(&mut iso, s3, k, "456789abcdefghijklmnopqrst");
+    iso.collect_garbage();
+    atoms::verify(&iso.rt).unwrap();
+}
+
+#[test]
+fn to_property_key_of_a_rope_is_the_atom_and_the_rope_forwards() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let r = cat(
+        rt,
+        string::new_string(rt, "computed-"),
+        string::new_string(rt, "property-key"),
+    );
+    let k = key::to_property_key(&mut iso.cx, r).unwrap();
+    assert!(string::is_atom(k) && string::is_seq(k));
+    assert_thin(&mut iso, r, k, "computed-property-key");
+    // The same rope as a key again: the atom, with no allocation and no content compare.
+    let before = iso.rt.heap.stats().collections;
+    assert_eq!(key::to_property_key(&mut iso.cx, r).unwrap(), k);
+    assert_eq!(iso.rt.heap.stats().collections, before);
+    assert_eq!(key::probe(k), Probe::Bits);
+}
+
+#[test]
+fn ropes_and_thin_keys_under_gc_stress_keep_one_atom_per_text() {
+    // Many rope keys, some texts twice, atomized under GC stress: one atom per text, every
+    // rope a THIN forwarder to it, and the table check passes after each collection.
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let roots = rt.heap.scratch_roots();
+    for i in 0..60 {
+        let r = cat(
+            rt,
+            string::new_string(rt, "rope-key-number-"),
+            string::new_string(rt, &format!("{}", i % 20)),
+        );
+        roots.push(val(r));
+    }
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for i in 0..60 {
+        let r = roots.get(i).to_bits();
+        let k = key::to_property_key(&mut iso.cx, r).unwrap();
+        let rt: &Runtime = &iso.rt;
+        let t = text(r);
+        assert_eq!(text(k), t);
+        assert_eq!(kinds::cell_kind(r), kinds::THIN.get());
+        match seen.iter().find(|(x, _)| *x == t) {
+            Some(&(_, j)) => assert_eq!(k, roots.get(j).to_bits(), "{t}: one atom"),
+            None => seen.push((t, roots.push(val(k)))),
+        }
+        rt.heap.collect();
+        atoms::verify(rt).unwrap();
+    }
+    assert_eq!(seen.len(), 20);
+}
+
+// ---- the number-string cache (M4-P2 STR2; H19-Q6) --------------------------------------------
+
+#[test]
+fn number_keys_and_number_strings_share_one_cache_emptied_at_gc() {
+    for stress in [false, true] {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        for d in [7.0, 1234.0, 1.5, -0.0, f64::NAN, 1e21, 4_294_967_295.0] {
+            let rt: &Runtime = &iso.rt;
+            let k = key::number_key(rt, d);
+            assert!(string::is_atom(k));
+            assert_eq!(text(k), crate::numconv::number_to_string(d), "{d}");
+            // A hit gives the same atom and allocates nothing.
+            let before = rt.heap.stats().collections;
+            assert_eq!(key::number_key(rt, d), k, "{d}");
+            assert_eq!(atoms::cached_number_string(rt, d), Some(k), "{d}");
+            assert_eq!(rt.heap.stats().collections, before);
+            // ToString of the number is the cached string.
+            assert_eq!(crate::conv::number_string(&mut iso.cx, d), k, "{d}");
+            // A collection empties the cache; the next key is still the text's atom.
+            iso.collect_garbage();
+            let rt: &Runtime = &iso.rt;
+            assert_eq!(atoms::cached_number_string(rt, d), None, "{d}");
+            assert_eq!(key::number_key(rt, d), atoms::intern_str(rt, &text(k)));
+        }
+        // -0 and 0 share a slot but keep their own entries (bits compare); both are "0".
+        let rt: &Runtime = &iso.rt;
+        let z = key::number_key(rt, 0.0);
+        assert_eq!(key::number_key(rt, -0.0), z);
+        // ToString fills the slot with a plain string; the key then interns that string in
+        // place and the slot holds the atom.
+        let s = crate::conv::number_string(&mut iso.cx, 98765.25);
+        let rt: &Runtime = &iso.rt;
+        assert!(!string::is_atom(s));
+        assert_eq!(atoms::cached_number_string(rt, 98765.25), Some(s));
+        let k = key::number_key(rt, 98765.25);
+        assert_eq!(k, s, "the cached SEQ string became the atom in place");
+        assert!(string::is_atom(k));
+        assert_eq!(crate::conv::number_string(&mut iso.cx, 98765.25), k);
+        atoms::verify(&iso.rt).unwrap();
+    }
+}
+
+// ---- messages over the length limit (M4-P2 STR2; H19-Q5) -------------------------------------
+
+#[test]
+fn a_message_over_the_length_limit_is_the_v8_error_text() {
+    use crate::error::testing::bounded_text;
+    // Under or at the limit: whole (quoted values are never cut, as in V8).
+    assert_eq!(bounded_text("abc", 3), "abc");
+    assert_eq!(bounded_text("é\u{3b1}x", 3), "é\u{3b1}x");
+    // 6 UTF-8 bytes, 3 UTF-16 units: the exact count keeps it.
+    assert_eq!(bounded_text("ééé", 3), "ééé");
+    // Over: V8's "<error>" (node v24.22.1 for a key of 2^29 - 24 units).
+    assert_eq!(bounded_text("abcd", 3), "<error>");
+    assert_eq!(bounded_text("😀😀", 3), "<error>");
+    // The real limit leaves every normal message alone.
+    let long = "k".repeat(100_000);
+    assert_eq!(bounded_text(&long, string::MAX_STRING_LENGTH), long);
+}
+
+/// A string of `n` units ("x" repeated) as a balanced rope of shared halves: about 2 log2(n)
+/// cells, whatever `n` is, so a string near the length limit costs almost no memory.
+fn x_rope(rt: &Runtime, n: usize) -> u64 {
+    if n < 2 * string::MIN_CONS_LENGTH {
+        return string::new_string(rt, &"x".repeat(n));
+    }
+    let half = x_rope(rt, n / 2);
+    let r = cat(rt, half, half);
+    if n % 2 == 1 {
+        cat(rt, r, string::new_string(rt, "x"))
+    } else {
+        r
+    }
+}
+
+/// `undefined[K]` through the interpreter's keyed load, `K` a global; the thrown error.
+fn read_undefined_at_global_k() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let u = s.b.new_register();
+    s.b.lda_undefined().star(u);
+    s.lda_global("K");
+    s.b.get_keyed_property(u, s.keyed).return_();
+    unit("", vec![s.finish()])
+}
+
+/// H19-Q5 end to end (M4-P4 fixer B, Codex H19 H-1): `undefined[k]` with a rope key whose
+/// message would pass the length limit throws the TypeError "<error>" (node v24.22.1 for a
+/// key of 2^29 - 24 units) and reads nothing of the key: the length is checked first, so the
+/// rope stays an unflattened CONS and the run makes under 1 MiB of Rust allocations (the old
+/// path copied the key into Rust text twice, about 1 GiB, before the limit check). A key under
+/// the limit stays whole, as in V8: node gives a 1,000,048-unit message for a 1,000,000-unit
+/// key (scratchpad m1m4/p4/fixB/js/limit.js).
+#[test]
+fn a_keyed_read_of_undefined_with_a_rope_key_past_the_limit_copies_nothing() {
+    on_big_stack(|| {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        // 48 units of text around the key: over the limit by 38.
+        let n = string::MAX_STRING_LENGTH - 10;
+        let k = x_rope(&iso.rt, n);
+        assert_eq!(string::str_len(k), n);
+        assert_eq!(kinds::cell_kind(k), kinds::CONS.get());
+        iso.with_cx(|cx| {
+            let g = cx.global();
+            cx.set(g, "K", Local::<'_, crate::JsValue>::from_bits(k), true)
+        })
+        .unwrap();
+        let before = rust_bytes();
+        let e = iso
+            .run_raw(read_undefined_at_global_k(), "limit.js")
+            .unwrap_err();
+        let made = rust_bytes() - before;
+        assert_eq!(e.constructor.as_deref(), Some("TypeError"), "{e}");
+        assert_eq!(e.message, "TypeError: <error>");
+        assert!(made < 1 << 20, "{made} bytes of Rust allocations");
+        assert_eq!(kinds::cell_kind(k), kinds::CONS.get());
+        assert!(!string::is_flat(k), "the key was flattened");
+
+        // Under the limit: the whole key, as V8.
+        let k = x_rope(&iso.rt, 1_000_000);
+        iso.with_cx(|cx| {
+            let g = cx.global();
+            cx.set(g, "K", Local::<'_, crate::JsValue>::from_bits(k), true)
+        })
+        .unwrap();
+        let e = iso
+            .run_raw(read_undefined_at_global_k(), "limit.js")
+            .unwrap_err();
+        let msg = e.message.strip_prefix("TypeError: ").expect("a TypeError");
+        assert_eq!(msg.len(), 1_000_048);
+        assert!(msg.starts_with("Cannot read properties of undefined (reading 'xxx"));
+        assert!(msg.ends_with("xxx')"));
+    });
 }

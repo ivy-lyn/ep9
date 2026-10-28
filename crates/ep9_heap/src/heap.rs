@@ -27,6 +27,38 @@
 //!      until the page is swept)
 //! a callback (root source, trace, size, weak source) panics while marking: every mark bit
 //!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
+//!   (generational: set to the VO bits instead, so every cell counts as old, and the logs stay;
+//!   after a mark panic a WHITE cell also becomes BLACK, so a store into it is still logged)
+//!
+//! generational (HeapConfig::generational, S1): threshold GEN; marks are sticky (marked = old)
+//!   major GC (collect(), the policy, every 64th GC-stress GC): ... finish the last lazy
+//!     sweep -> clear every mark bit -> full mark -> empty every remembered list and card
+//!     table (remembered.rs) -> ...
+//!   minor GC (the policy, GC-stress): ... finish the last lazy sweep -> (V1, with
+//!     verify_after_gc or GC-stress: the generational invariant, verify.rs; an error panics
+//!     "heap verifier failed before a minor GC (V1)") -> mark from the roots; an old cell
+//!     stops the mark (its bit is set) -> trace the S1 logs: every remembered (GREY) small
+//!     host again, set BLACK, and the dirty cards of each old large object -> the ephemeron
+//!     fixpoint (an old key counts as marked, a young key waits) -> clear weak slots and run
+//!     the weak sources (a young cell left unmarked is dead; an old one is live) -> empty the
+//!     logs -> sweep: frees the unmarked (dead young) cells, keeps every mark (survivors
+//!     become old)
+//!   sweep: frees the unmarked cells and keeps the mark bits of the others (old = marked)
+//!   policy: a minor GC when the allocation budget is spent (budget = max(initial budget,
+//!     old bytes / 2)); a major GC instead once the old bytes passed twice the live bytes of
+//!     the last major GC (est.), or when an allocation finds no memory after its GC
+//!
+//! verify_after_gc (GC-stress turns it on): the verify costs no second trace of the heap
+//!   mark:  a checked mark (trace.rs) checks every edge, weak slot, word0 shape, kind, size
+//!          and space it visits (strong roots too, weak ranges in the weak pass), so every
+//!          slot of every live cell is checked once
+//!   then:  sweep every page with checks (cell order: no overlap, inside the page, small
+//!          size; no mark bit left, generational: none outside a kept cell; a dead cell is
+//!          zapped only if it ends before the next cell and inside the page), the cells
+//!          kept = the cells the mark pushed (a mark bit set before the GC hides a cell from
+//!          the mark), then page and LOS headers, the S1 logs (empty after a GC) and weak
+//!          handles (verify.rs)
+//!   any error: panic "heap verifier failed after GC" with the error list
 //! ```
 //!
 //! [`Heap`] keeps the fields that JIT and AOT code read at fixed offsets first
@@ -50,11 +82,12 @@ use ep9_value::{ShapeId, Value, Word0};
 use crate::barrier::{BarrierState, Slot, gc_state, threshold};
 use crate::cell::{CellKind, CellPtr, CellSize, KindError, KindId, KindTable, Space};
 use crate::layout::{
-    BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, LARGE_CELL_OFFSET, LINE_SIZE, LINES_PER_PAGE,
-    Large, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE, Page, ZAP_WORD,
-    cell_size_for,
+    BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, GRANULE, LARGE_CELL_OFFSET, LINE_SIZE,
+    LINES_PER_PAGE, Large, MARK_BITS_OFFSET, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES,
+    PAGE_MASK, PAGE_SIZE, Page, VO_BITS_OFFSET, ZAP_WORD, cell_size_for,
 };
 use crate::memory::{HeapError, Memory};
+use crate::remembered::GenerationalCage;
 use crate::roots::{GlobalHandle, Handles, RootId, RootStrength, Roots, ScratchRoots, WeakHandle};
 use crate::trace::{Mode, Tracer, WeakVisitor, find_cell};
 
@@ -79,10 +112,30 @@ pub struct HeapConfig {
     /// Bytes allocated before the first GC. Later budgets are `max(this, live bytes)`, so the
     /// heap may double between collections.
     pub initial_budget: usize,
-    /// GC-stress: collect before every Nth allocation. 0 = off, 1 = every allocation.
+    /// GC-stress: collect before every Nth allocation. 0 = off, 1 = every allocation. A
+    /// value above 0 also turns on the process-wide E2 check
+    /// ([`crate::E2_CHECK_UNDER_GC_STRESS`], [`crate::e2_check_init`]). With
+    /// [`HeapConfig::generational`] it also runs V1, the remembered-set verifier, before
+    /// every minor GC (as `verify_after_gc` does; verify.rs).
     pub gc_stress: u32,
     /// Run the heap verifier after every collection and panic on an error.
     pub verify_after_gc: bool,
+    /// Which collections run the verifier when `verify_after_gc` is on. Today the only mode is
+    /// [`VerifyMode::EveryGc`] (the default): every collection verifies.
+    pub verify: VerifyMode,
+    /// The S1 generational mode (03-gc §3-§4, H09/H11). `false` (the default) is S0. `true`:
+    /// the barrier threshold is GEN, so a store of a cell into an old (BLACK) host takes the
+    /// slow path, which logs the host in its page's remembered list (GREY) or, for a large
+    /// object, dirties the 512-byte card of the slot (step 1, M4-P2); marks are sticky (the
+    /// sweep keeps the mark bits of the cells it keeps: marked = old). Step 2 (M4-P3): most
+    /// collections are minor GCs, which trace from the roots and the logs and stop at old
+    /// cells; a major GC clears the marks first and traces everything (module doc: the
+    /// policy). [`Heap::collect`] is always a major GC.
+    pub generational: bool,
+    /// Generational GC-stress ([`HeapConfig::gc_stress`] with [`HeapConfig::generational`]):
+    /// every Nth GC-stress collection is a major GC, the others are minor (V9-D27). 0 and 1:
+    /// every one is major. Default 64. Without the flag every collection is a full GC.
+    pub stress_major_every: u32,
     /// Fill freed cells with [`ZAP_WORD`].
     pub zap: bool,
     /// Keep the cells that the last conservative scan found ([`Heap::last_conservative_roots`]).
@@ -104,11 +157,27 @@ impl Default for HeapConfig {
             initial_budget: 8 << 20,
             gc_stress: 0,
             verify_after_gc: false,
+            verify: VerifyMode::EveryGc,
+            generational: false,
+            stress_major_every: 64,
             zap: cfg!(debug_assertions),
             record_conservative_roots: false,
             shape_space_bytes: 0,
         }
     }
+}
+
+/// Which collections run the heap verifier ([`HeapConfig::verify`]).
+///
+/// The verify after a GC is a checked mark plus a checked sweep (see the module doc): it
+/// covers what [`Heap::verify`] covers without a second trace of the heap (V9-D22 step 1). A
+/// cadence (a full verify every Nth GC) is step 2 and is not built: it is needed only if the
+/// x86-64 GC-stress run stays above its target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Every collection.
+    #[default]
+    EveryGc,
 }
 
 /// Why an allocation failed.
@@ -153,7 +222,14 @@ impl std::error::Error for AllocError {}
 /// Counters. "last" values describe the most recent collection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GcStats {
+    /// Every collection, minor and major.
     pub collections: u64,
+    /// S1 minor collections (included in `collections`).
+    pub minor_collections: u64,
+    /// The last collection was a minor GC.
+    pub last_minor: bool,
+    /// Cells the last collection traced (a minor GC: the young cells it reached and the hosts
+    /// of the S1 logs), and their bytes.
     pub last_marked_cells: usize,
     pub last_marked_bytes: usize,
     pub last_conservative_roots: usize,
@@ -200,6 +276,9 @@ pub struct Heap {
     /// Per kind byte, for `alloc` without a borrow of `inner`: [`NOT_REGISTERED`],
     /// [`DYNAMIC_SIZE`], or the fixed size rounded by `cell_size_for`.
     kind_sizes: [Cell<usize>; 256],
+    /// The cage's entry in the thread's list of generational cages (remembered.rs); `None` in
+    /// S0. Declared before `inner`, so the entry goes before the cage is unmapped.
+    _generational: Option<GenerationalCage>,
     pub(crate) inner: RefCell<Inner>,
     pub(crate) roots: RefCell<Roots>,
     pub(crate) handles: RefCell<Handles>,
@@ -234,6 +313,18 @@ pub(crate) struct Settings {
     pub(crate) zap: bool,
     pub(crate) record_css: bool,
     pub(crate) near_limit: Option<fn(usize, usize) -> usize>,
+    /// S1: sticky marks, the barrier logs and minor GCs ([`HeapConfig::generational`]).
+    pub(crate) generational: bool,
+    pub(crate) stress_major_every: u32,
+}
+
+/// Which collection runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GcKind {
+    /// S1: mark from the roots and the S1 logs; old cells stay (module doc).
+    Minor,
+    /// A full GC (S0: every GC).
+    Major,
 }
 
 /// Where the conservative scan reads.
@@ -262,34 +353,96 @@ enum Swept {
 /// work lists are only dropped, and the weak entries cleared so far (only after a full mark)
 /// held cells that are unreachable. So clean marks are the whole state to restore. The heap
 /// stays usable after a caught panic, and the cost is on the panic path only.
-struct UnmarkOnUnwind<'a>(&'a Memory);
+///
+/// Generational (sticky marks): the guard sets every mark bit to its VO bit and every large
+/// object's mark instead, so every cell counts as old (marked) and none is freed before the
+/// next full GC; the remembered lists and cards are emptied only after a mark completes, so
+/// they still hold every logged host, and the guard sets those hosts GREY again. A young cell
+/// (WHITE) that the mark had not reached becomes BLACK: a marked cell is BLACK, or GREY and
+/// listed, so a later store of a new cell into it takes the slow path and is logged (the
+/// verifier checks this).
+struct UnmarkOnUnwind<'a> {
+    mem: &'a Memory,
+    sticky: bool,
+}
 
 impl Drop for UnmarkOnUnwind<'_> {
     fn drop(&mut self) {
-        let mem = self.0;
+        let mem = self.mem;
         for idx in mem.small_pages() {
-            clear_page_marks(mem.page(idx));
+            let page = mem.page(idx);
+            reset_page_marks(page, self.sticky);
+            if self.sticky {
+                // Old now: a WHITE cell would take the barrier's fast path (no log).
+                for w in 0..BITMAP_WORDS {
+                    let mut vo = page.vo_word(w).load(Relaxed);
+                    while vo != 0 {
+                        let bit = vo.trailing_zeros() as usize;
+                        vo &= vo - 1;
+                        // SAFETY: a VO bit marks a live cell start of this committed page (no
+                        // cell was freed: the unwind happens before the sweep).
+                        let c = unsafe {
+                            CellPtr::from_raw(mem.ptr(page.addr() + (w * 64 + bit) * 8).cast())
+                        };
+                        blacken_white(c);
+                    }
+                }
+                // The mark set some listed (GREY) hosts BLACK; the lists stay, so they must
+                // be GREY again, or a later store into one would not be logged.
+                // SAFETY: no push runs during the unwind of a GC.
+                for &off in unsafe { page.header().remembered.offsets() } {
+                    // SAFETY: a listed offset is the start of a live cell of this page (no
+                    // cell was freed: the unwind happens before the sweep).
+                    let c =
+                        unsafe { CellPtr::from_raw(mem.ptr(page.addr() + off as usize).cast()) };
+                    // SAFETY: as above.
+                    unsafe { c.header() }.set_gc_state(gc_state::GREY);
+                }
+            }
         }
         for idx in mem.large_heads() {
             // SAFETY: chunk `idx` is the committed head of a large object.
             let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
-            large.header().mark.store(0, Relaxed);
+            large.header().mark.store(u8::from(self.sticky), Relaxed);
+            if self.sticky {
+                // SAFETY: the LOS cell starts right after the header and is live.
+                blacken_white(unsafe { CellPtr::from_raw(large.cell_ptr().cast()) });
+            }
         }
     }
 }
 
-/// Clears the mark bits of one small page when dropped (`sweep_page` holds one).
-struct UnmarkPageOnUnwind(Page);
-
-impl Drop for UnmarkPageOnUnwind {
-    fn drop(&mut self) {
-        clear_page_marks(self.0);
+/// Sets a WHITE (young) cell BLACK; a BLACK or GREY cell keeps its state.
+fn blacken_white(c: CellPtr) {
+    // SAFETY: callers pass a live cell start of this heap.
+    let h = unsafe { c.header() };
+    if h.gc_state() == gc_state::WHITE {
+        h.set_gc_state(gc_state::BLACK);
     }
 }
 
-fn clear_page_marks(page: Page) {
+/// Resets the mark bits of one small page when dropped (`sweep_page` holds one), as
+/// [`UnmarkOnUnwind`] does.
+struct UnmarkPageOnUnwind {
+    page: Page,
+    sticky: bool,
+}
+
+impl Drop for UnmarkPageOnUnwind {
+    fn drop(&mut self) {
+        reset_page_marks(self.page, self.sticky);
+    }
+}
+
+/// Clears the mark bits of `page`, or (`sticky`) sets them to its VO bits.
+fn reset_page_marks(page: Page, sticky: bool) {
     for w in 0..BITMAP_WORDS {
-        page.mark_word(w).store(0, Relaxed);
+        let m = if sticky {
+            page.vo_word(w).load(Relaxed)
+        } else {
+            0
+        };
+        page.mark_word(w).store(m, Relaxed);
     }
 }
 
@@ -321,7 +474,20 @@ pub(crate) struct Inner {
     mark_stack: Vec<CellPtr>,
     weak_slots: Vec<NonNull<Slot>>,
     css_log: Vec<CellPtr>,
+    /// The ephemeron fixpoint of the last GC: rounds, and whether it went linear (tests).
+    pub(crate) last_ephemeron: (u32, bool),
     pub(crate) stats: GcStats,
+    /// S1 policy: the next budget GC is major.
+    next_major: bool,
+    /// S1 policy: bytes of old cells (the live bytes of the last major GC plus what each
+    /// minor GC since then kept of the young cells), and the bound that makes the next
+    /// budget GC major.
+    old_bytes: usize,
+    major_limit: usize,
+    /// S1 GC-stress: collections so far (every `stress_major_every`th is major).
+    stress_gcs: u32,
+    /// V1 runs so far (one before each minor GC with `verify_after_gc` or GC-stress).
+    pub(crate) v1_runs: u64,
 }
 
 impl Heap {
@@ -348,6 +514,9 @@ impl Heap {
         let base = mem.base();
         let base_addr = mem.base_addr();
         let shape_bytes = mem.shape_bytes();
+        if config.gc_stress > 0 {
+            crate::verify::e2_check_for_gc_stress();
+        }
         let s = Settings {
             initial_budget: config.initial_budget.max(PAGE_SIZE),
             gc_stress: config.gc_stress,
@@ -355,10 +524,19 @@ impl Heap {
             zap: config.zap,
             record_css: config.record_conservative_roots,
             near_limit: config.near_limit,
+            generational: config.generational,
+            stress_major_every: config.stress_major_every,
         };
+        let generational = config
+            .generational
+            .then(|| GenerationalCage::register(base, mem.size()));
         Ok(Heap {
             hot: Hot {
-                barrier: BarrierState::new(threshold::OFF),
+                barrier: BarrierState::new(if config.generational {
+                    threshold::GEN
+                } else {
+                    threshold::OFF
+                }),
                 _pad: [0; 7],
                 cursor: Cell::new(0),
                 limit: Cell::new(0),
@@ -367,6 +545,7 @@ impl Heap {
             base,
             shape_bytes,
             kind_sizes: [const { Cell::new(NOT_REGISTERED) }; 256],
+            _generational: generational,
             inner: RefCell::new(Inner {
                 mem,
                 kinds: KindTable::new(),
@@ -392,7 +571,13 @@ impl Heap {
                 mark_stack: Vec::new(),
                 weak_slots: Vec::new(),
                 css_log: Vec::new(),
+                last_ephemeron: (0, false),
                 stats: GcStats::default(),
+                next_major: false,
+                old_bytes: 0,
+                major_limit: s.initial_budget.saturating_mul(2),
+                stress_gcs: 0,
+                v1_runs: 0,
             }),
             roots: RefCell::new(Roots::default()),
             handles: RefCell::new(Handles::default()),
@@ -507,11 +692,7 @@ impl Heap {
             }
             size
         };
-        let trigger = self.inner.borrow_mut().gc_trigger(size);
-        if trigger {
-            self.collect();
-        }
-        let mut collected = trigger;
+        let mut collected = self.collect_if_triggered(size);
         let mut swept = false;
         let mut asked = false;
         loop {
@@ -584,11 +765,7 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn alloc_slow(&self, kind: KindId, size: usize) -> Result<CellPtr, AllocError> {
-        let trigger = self.inner.borrow_mut().gc_trigger(size);
-        if trigger {
-            self.collect();
-        }
-        let mut collected = trigger;
+        let mut collected = self.collect_if_triggered(size);
         let mut swept = false;
         let mut asked = false;
         loop {
@@ -611,6 +788,19 @@ impl Heap {
                 }
                 None => return Err(AllocError::OutOfMemory),
             }
+        }
+    }
+
+    /// The GC that an allocation of `size` bytes triggers (GC-stress, the budget), if any.
+    /// True if it was a full (major) GC: the out-of-memory path then needs no second one.
+    fn collect_if_triggered(&self, size: usize) -> bool {
+        let trigger = self.inner.borrow_mut().gc_trigger(size);
+        match trigger {
+            Some(kind) => {
+                self.collect_kind(kind);
+                kind == GcKind::Major
+            }
+            None => false,
         }
     }
 
@@ -677,19 +867,31 @@ impl Heap {
         unsafe { CellPtr::from_raw(p.cast()) }
     }
 
-    /// A full stop-the-world collection. It spills the callee-saved registers and scans this
-    /// thread's stack conservatively, so every cell that a Rust local holds stays alive.
+    /// A full stop-the-world collection (a major GC of a generational heap). It spills the
+    /// callee-saved registers and scans this thread's stack conservatively, so every cell
+    /// that a Rust local holds stays alive.
     pub fn collect(&self) {
+        self.collect_kind(GcKind::Major);
+    }
+
+    /// A minor GC of a generational heap ([`HeapConfig::generational`]; module doc): it frees
+    /// only young cells that nothing reaches, and the young cells it keeps become old. A
+    /// heap that is not generational runs a full collection instead.
+    pub fn collect_minor(&self) {
+        self.collect_kind(GcKind::Minor);
+    }
+
+    fn collect_kind(&self, kind: GcKind) {
         #[cfg(not(miri))]
-        ep9_platform::with_spilled_registers(|regs| self.collect_at(regs.sp()));
+        ep9_platform::with_spilled_registers(|regs| self.collect_at(regs.sp(), kind));
         #[cfg(miri)]
-        self.collect_scanning(Scan::Stack(0));
+        self.collect_scanning(Scan::Stack(0), kind);
     }
 
     #[cfg_attr(miri, allow(dead_code))]
     #[inline(never)]
-    fn collect_at(&self, sp: usize) {
-        self.collect_scanning(Scan::Stack(sp));
+    fn collect_at(&self, sp: usize, kind: GcKind) {
+        self.collect_scanning(Scan::Stack(sp), kind);
     }
 
     /// A collection whose conservative scan reads `words` instead of the stack (tests only:
@@ -697,11 +899,18 @@ impl Heap {
     #[cfg(test)]
     pub(crate) fn collect_with_words(&self, words: &[usize]) {
         let lo = words.as_ptr().addr();
-        self.collect_scanning(Scan::Words(lo, lo + words.len() * 8));
+        self.collect_scanning(Scan::Words(lo, lo + words.len() * 8), GcKind::Major);
     }
 
-    fn collect_scanning(&self, scan: Scan) {
-        let verify = {
+    /// [`Heap::collect_with_words`] as a minor GC (tests only).
+    #[cfg(test)]
+    pub(crate) fn collect_minor_with_words(&self, words: &[usize]) {
+        let lo = words.as_ptr().addr();
+        self.collect_scanning(Scan::Words(lo, lo + words.len() * 8), GcKind::Minor);
+    }
+
+    fn collect_scanning(&self, scan: Scan, kind: GcKind) {
+        let (verify, mark_errors, pushed, large_kept, old_before) = {
             let mut inner_ref = self.inner.borrow_mut();
             let inner = &mut *inner_ref;
             let mut roots = self.roots.borrow_mut();
@@ -720,6 +929,30 @@ impl Heap {
             inner.shape_page = None;
             // Mark bits and VO bits must be exact before marking.
             inner.finish_sweeping();
+
+            // With `verify_after_gc`, the mark checks what it visits (the verify then needs no
+            // second trace; verify.rs).
+            let verify = inner.s.verify_after_gc;
+            let sticky = inner.s.generational;
+            let minor = sticky && kind == GcKind::Minor;
+            // V1 (H11, 03-gc §7): a minor GC keeps the old cells' marks, so its mark does not
+            // trace them. Before the mark, V1 checks them (no old cell outside the S1 logs
+            // holds a young cell) and counts them (the sweeps then keep the old cells and the
+            // cells pushed). It runs with the verify, and under GC-stress without it. An
+            // error panics here, before anything changes: the minor GC would free the young
+            // cell that the unlogged old host still holds.
+            let old_before = if minor && (verify || inner.s.gc_stress > 0) {
+                let mut v1_errors = Vec::new();
+                let old = crate::verify::check_old_cells(inner, &mut v1_errors);
+                inner.v1_runs += 1;
+                if !v1_errors.is_empty() {
+                    let e = crate::verify::VerifyError { errors: v1_errors };
+                    panic!("heap verifier failed before a minor GC (V1): {e}");
+                }
+                verify.then_some(old)
+            } else {
+                None
+            };
             inner.recyclable.clear();
             inner.shape_recyclable.clear();
 
@@ -727,17 +960,25 @@ impl Heap {
             // function may panic. The unwind then drops this guard, which clears every mark
             // bit, so the next GC starts from clean marks. Nothing is freed before the guard
             // is forgotten.
-            let unmark = UnmarkOnUnwind(&inner.mem);
+            if sticky && !minor {
+                // A full GC: the sticky marks of the last one must not hide a cell from
+                // this mark (verify.rs counts pushed against kept).
+                inner.clear_marks();
+            }
+            let unmark = UnmarkOnUnwind {
+                mem: &inner.mem,
+                sticky,
+            };
             let mut log = core::mem::take(&mut inner.css_log);
             log.clear();
             let record = inner.s.record_css;
-            let mut t = Tracer::new(
-                &inner.mem,
-                &inner.kinds,
-                Mode::Mark,
-                core::mem::take(&mut inner.mark_stack),
-                core::mem::take(&mut inner.weak_slots),
-            );
+            let stack = core::mem::take(&mut inner.mark_stack);
+            let weak = core::mem::take(&mut inner.weak_slots);
+            let mut t = if verify {
+                Tracer::new_checked(&inner.mem, &inner.kinds, stack, weak)
+            } else {
+                Tracer::new(&inner.mem, &inner.kinds, Mode::Mark, stack, weak)
+            };
 
             let stack_words = match scan {
                 #[cfg(not(miri))]
@@ -778,23 +1019,43 @@ impl Heap {
                 t.visit_bits(b);
             }
             roots.visit_strong(&mut t, false);
-            t.drain();
+            if minor {
+                // The S1 logs, before they are emptied: the old hosts that may hold young
+                // cells.
+                trace_s1_logs(&inner.mem, &mut t);
+            }
+            t.drain_to_fixpoint();
 
             let mut weak_cleared = t.clear_weak_slots();
             let marked_cells = t.marked_cells;
             let marked_bytes = t.marked_bytes;
+            let promoted_bytes = marked_bytes - t.retraced_bytes;
+            let pushed = t.pushed_cells;
+            inner.last_ephemeron = (t.ephemeron_rounds, t.ephemeron_linear);
+            let mark_errors = core::mem::take(&mut t.errors);
             let (stack, weak) = t.into_lists();
             inner.mark_stack = stack;
             inner.weak_slots = weak;
             inner.css_log = log;
 
-            let mut w = WeakVisitor::new(&inner.mem);
+            let mut w = if verify {
+                WeakVisitor::new_checked(&inner.mem, mark_errors)
+            } else {
+                WeakVisitor::new(&inner.mem)
+            };
             handles.clear_dead(&mut w);
             roots.visit_weak(&mut w);
             weak_cleared += w.cleared;
+            let mark_errors = w.errors;
             core::mem::forget(unmark);
+            if sticky {
+                // Every host the logs name was traced by this mark: a full mark traces every
+                // live cell, a minor one traced the logs (trace_s1_logs). A dead host is
+                // dead (a full mark only: old cells never die in a minor GC).
+                inner.empty_s1_logs();
+            }
 
-            inner.sweep_large();
+            let large_kept = inner.sweep_large();
             let (mut shape_pages, mut pages): (Vec<usize>, Vec<usize>) = inner
                 .mem
                 .small_pages()
@@ -804,18 +1065,22 @@ impl Heap {
             inner.sweep_queue = pages;
             inner.shape_sweep_queue = shape_pages;
 
-            inner.budget = inner.s.initial_budget.max(marked_bytes);
+            inner.after_gc(minor, marked_bytes, promoted_bytes);
             inner.allocated_since_gc = 0;
             let st = &mut inner.stats;
             st.collections += 1;
+            st.minor_collections += u64::from(minor);
+            st.last_minor = minor;
             st.last_marked_cells = marked_cells;
             st.last_marked_bytes = marked_bytes;
             st.last_conservative_roots = css_roots;
             st.last_stack_words = stack_words;
             st.last_weak_cleared = weak_cleared;
-            inner.s.verify_after_gc
+            (verify, mark_errors, pushed, large_kept, old_before)
         };
-        if verify && let Err(e) = self.verify() {
+        if verify
+            && let Err(e) = self.verify_after_collect(mark_errors, pushed, large_kept, old_before)
+        {
             panic!("heap verifier failed after GC: {e}");
         }
     }
@@ -826,8 +1091,12 @@ impl Heap {
         self.inner.borrow_mut().finish_sweeping();
     }
 
-    /// Turns GC-stress on (`n` > 0: collect before every nth allocation) or off (0).
+    /// Turns GC-stress on (`n` > 0: collect before every nth allocation) or off (0). Turning
+    /// it on also turns on the process-wide E2 check ([`crate::E2_CHECK_UNDER_GC_STRESS`]).
     pub fn set_gc_stress(&self, n: u32) {
+        if n > 0 {
+            crate::verify::e2_check_for_gc_stress();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.s.gc_stress = n;
         inner.stress_count = 0;
@@ -968,18 +1237,113 @@ impl Heap {
     }
 }
 
+/// S1 minor GC: traces the hosts the S1 logs name (they are old, so the mark stops at them):
+/// every remembered small host again, and each old large object with a dirty card through its
+/// dirty cards. The logs are emptied after the mark (`Inner::empty_s1_logs`).
+fn trace_s1_logs(mem: &Memory, t: &mut Tracer<'_>) {
+    #[cfg(test)]
+    let (skip_hosts, skip_cards) = (
+        minor_controls::SKIP_REMEMBERED.get(),
+        minor_controls::SKIP_CARDS.get(),
+    );
+    #[cfg(not(test))]
+    let (skip_hosts, skip_cards) = (false, false);
+    t.context = crate::trace::Context::Root("remembered list");
+    for idx in mem.small_pages().filter(|_| !skip_hosts) {
+        let page = mem.page(idx);
+        // SAFETY: no store (push) runs during a GC.
+        for &off in unsafe { page.header().remembered.offsets() } {
+            let addr = page.addr() + off as usize;
+            // A listed host is an old cell (only a BLACK, marked host is logged); one that is
+            // not marked is young, and the mark traces it if it is reached.
+            if crate::trace::cell_start(mem, addr).is_some() && page.is_marked(addr) {
+                // SAFETY: a live cell of this heap starts at `addr` (checked above).
+                t.retrace(unsafe { CellPtr::from_raw(mem.ptr(addr).cast()) });
+            }
+        }
+    }
+    t.context = crate::trace::Context::Root("large object cards");
+    for idx in mem.large_heads().filter(|_| !skip_cards) {
+        // SAFETY: chunk `idx` is the committed head of a large object.
+        let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
+        let h = large.header();
+        if h.dirty.load(Relaxed) == 0 || h.mark.load(Relaxed) == 0 {
+            continue;
+        }
+        if let Some(cards) = crate::trace::CardView::of(h, large.cell_addr()) {
+            // SAFETY: the LOS cell starts right after the header and is live.
+            t.trace_by_cards(unsafe { CellPtr::from_raw(large.cell_ptr().cast()) }, cards);
+        }
+    }
+}
+
+/// Tests only: collector-side negative controls (tests/v1.rs), the S1 forms of 03-gc §7 "no
+/// root rescan" and "no card rescan": the minor GC skips the remembered hosts, or the dirty
+/// cards, of the S1 logs.
+#[cfg(test)]
+pub(crate) mod minor_controls {
+    use core::cell::Cell;
+
+    std::thread_local! {
+        pub(crate) static SKIP_REMEMBERED: Cell<bool> = const { Cell::new(false) };
+        pub(crate) static SKIP_CARDS: Cell<bool> = const { Cell::new(false) };
+    }
+}
+
 impl Inner {
-    /// Called on every slow-path allocation: true if a GC must run first.
-    fn gc_trigger(&mut self, size: usize) -> bool {
+    /// Called on every slow-path allocation: the GC that must run first, if any.
+    fn gc_trigger(&mut self, size: usize) -> Option<GcKind> {
         if self.s.gc_stress > 0 {
             self.stress_count += 1;
             if self.stress_count >= self.s.gc_stress {
                 self.stress_count = 0;
-                return true;
+                return Some(self.stress_kind());
             }
-            return false;
+            return None;
         }
-        self.allocated_since_gc + size > self.budget
+        if self.allocated_since_gc + size <= self.budget {
+            return None;
+        }
+        Some(if self.s.generational && !self.next_major {
+            GcKind::Minor
+        } else {
+            GcKind::Major
+        })
+    }
+
+    /// GC-stress: a full GC without the flag; with it, every `stress_major_every`th GC is
+    /// major and the others are minor (V9-D27).
+    fn stress_kind(&mut self) -> GcKind {
+        if !self.s.generational {
+            return GcKind::Major;
+        }
+        self.stress_gcs = self.stress_gcs.wrapping_add(1);
+        let n = self.s.stress_major_every;
+        if n <= 1 || self.stress_gcs.is_multiple_of(n) {
+            GcKind::Major
+        } else {
+            GcKind::Minor
+        }
+    }
+
+    /// The budget of the next GC and the S1 policy (module doc). `marked_bytes`: the bytes
+    /// this GC traced; `promoted_bytes`: of those, the young cells it kept (a minor GC).
+    fn after_gc(&mut self, minor: bool, marked_bytes: usize, promoted_bytes: usize) {
+        let initial = self.s.initial_budget;
+        if !self.s.generational {
+            // S0: the heap may double between collections.
+            self.budget = initial.max(marked_bytes);
+            return;
+        }
+        if minor {
+            self.old_bytes = self.old_bytes.saturating_add(promoted_bytes);
+        } else {
+            self.old_bytes = marked_bytes;
+            self.major_limit = initial.max(marked_bytes).saturating_mul(2);
+        }
+        self.next_major = self.old_bytes > self.major_limit;
+        // The sweep of a minor GC visits every page, so the budget grows with the heap.
+        self.budget = initial.max(self.old_bytes / 2);
     }
 
     fn sync_limit(&self, hot: &Hot) {
@@ -1135,16 +1499,29 @@ impl Inner {
     }
 
     pub(crate) fn finish_sweeping(&mut self) {
+        self.finish_sweeping_with::<false>(&mut Vec::new());
+    }
+
+    /// [`Inner::finish_sweeping`] with the verifier's cell checks on every live cell (errors
+    /// to `errors`; verify.rs). Returns the number of cells it kept (marked cells).
+    pub(crate) fn finish_sweeping_checked(&mut self, errors: &mut Vec<String>) -> usize {
+        self.finish_sweeping_with::<true>(errors)
+    }
+
+    /// Returns the number of cells kept.
+    fn finish_sweeping_with<const CHECK: bool>(&mut self, errors: &mut Vec<String>) -> usize {
+        let mut kept = 0;
         while let Some(idx) = self.sweep_queue.pop() {
-            if self.sweep_page(idx) == Swept::Recyclable {
+            if self.sweep_page_with::<CHECK>(idx, errors, &mut kept) == Swept::Recyclable {
                 self.recyclable.push(idx);
             }
         }
         while let Some(idx) = self.shape_sweep_queue.pop() {
-            if self.sweep_page(idx) == Swept::Recyclable {
+            if self.sweep_page_with::<CHECK>(idx, errors, &mut kept) == Swept::Recyclable {
                 self.shape_recyclable.push(idx);
             }
         }
+        kept
     }
 
     /// Lazy sweep of one small page: frees unmarked cells (VO bit cleared, zapped), clears the
@@ -1154,57 +1531,111 @@ impl Inner {
     /// a size function panics, the unwind clears the page's mark bits; its dead cells that
     /// still have a VO bit are not zapped yet, and the next GC frees them.
     fn sweep_page(&mut self, idx: usize) -> Swept {
+        self.sweep_page_with::<false>(idx, &mut Vec::new(), &mut 0)
+    }
+
+    /// [`Inner::sweep_page`]. `CHECK` (the verify after a GC): also checks the live cells in
+    /// address order (none overlaps the previous one or crosses the page end; each has a
+    /// small-page size) and that no mark bit lies outside a VO bit; and, before it zaps a dead
+    /// cell, that the dead cell ends before the next cell starts and inside the page (a wrong
+    /// size would zap a live cell after its checks). Errors go to `errors`; a live cell whose
+    /// size cannot be known counts as one granule, a dead cell with a bad extent is not
+    /// zapped. Adds the number of live cells to `kept`.
+    fn sweep_page_with<const CHECK: bool>(
+        &mut self,
+        idx: usize,
+        errors: &mut Vec<String>,
+        kept: &mut usize,
+    ) -> Swept {
         let page = self.mem.page(idx);
-        let unmark = UnmarkPageOnUnwind(page);
+        let sticky = self.s.generational;
+        let unmark = UnmarkPageOnUnwind { page, sticky };
+        // Sticky marks: a kept cell keeps its mark bit (old); without them every bit goes.
+        let keep_marks = if sticky { u64::MAX } else { 0 };
         // SAFETY: the line-mark array lies in the page's committed metadata area.
         unsafe { page.line_marks().write_bytes(0, LINES_PER_PAGE) };
         let mut live = 0usize;
-        for w in 0..crate::layout::BITMAP_WORDS {
-            let vo = page.vo_word(w).load(Relaxed);
-            if vo == 0 {
+        // CHECK: the end of the previous live cell.
+        let mut prev_end = page.addr() + FIRST_CELL_OFFSET;
+        let vo_bits = self
+            .mem
+            .ptr(page.addr() + VO_BITS_OFFSET)
+            .cast::<u64>()
+            .as_ptr();
+        // Blocks of SKIP_WORDS VO words: an empty block costs one test (under GC-stress most
+        // pages hold few cells, and this loop runs for every page at every GC).
+        for b in (0..BITMAP_WORDS).step_by(SKIP_WORDS) {
+            if block_is_empty(vo_bits, b) {
                 continue;
             }
-            let mk = page.mark_word(w).load(Relaxed);
-            debug_assert_eq!(mk & !vo, 0, "mark bit without a VO bit");
-            let mut alive = vo & mk;
-            while alive != 0 {
-                let bit = alive.trailing_zeros() as usize;
-                alive &= alive - 1;
-                let addr = page.addr() + (w * 64 + bit) * 8;
-                let size = self.size_at(addr);
-                let first = (addr - page.addr()) / LINE_SIZE;
-                let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
-                // SAFETY: lines first..=last are inside the line-mark array (a cell never
-                // crosses the page end).
-                unsafe {
-                    page.line_marks()
-                        .add(first)
-                        .write_bytes(1, last - first + 1)
-                };
-                live += 1;
-            }
-            // Free the dead cells before zapping them: no VO bit is left on a zapped cell.
-            page.vo_word(w).store(vo & mk, Relaxed);
-            let mut dead = vo & !mk;
-            while dead != 0 {
-                let bit = dead.trailing_zeros() as usize;
-                dead &= dead - 1;
-                let addr = page.addr() + (w * 64 + bit) * 8;
-                let size = self.size_at(addr);
-                if self.s.zap {
-                    let p = self.mem.ptr(addr).cast::<u64>();
-                    for i in 0..size / 8 {
-                        // SAFETY: the dead cell [addr, addr + size) is committed memory that no
-                        // live cell or root reaches; nothing reads it after this sweep.
-                        unsafe { p.add(i).write(ZAP_WORD) };
-                    }
+            for w in b..b + SKIP_WORDS {
+                let vo = page.vo_word(w).load(Relaxed);
+                if vo == 0 {
+                    continue;
                 }
-                self.stats.freed_cells += 1;
-                self.stats.freed_bytes += size as u64;
+                let mk = page.mark_word(w).load(Relaxed);
+                if CHECK && mk & !vo != 0 {
+                    sweep_error(errors, idx, format_args!("mark bit without a VO bit"));
+                }
+                debug_assert!(CHECK || mk & !vo == 0, "mark bit without a VO bit");
+                let mut alive = vo & mk;
+                while alive != 0 {
+                    let bit = alive.trailing_zeros() as usize;
+                    alive &= alive - 1;
+                    let addr = page.addr() + (w * 64 + bit) * 8;
+                    let size = if CHECK {
+                        self.check_live_cell(addr, &mut prev_end, errors)
+                    } else {
+                        self.size_at(addr)
+                    };
+                    let first = (addr - page.addr()) / LINE_SIZE;
+                    let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
+                    // SAFETY: lines first..=last are inside the line-mark array (a cell never
+                    // crosses the page end).
+                    unsafe {
+                        page.line_marks()
+                            .add(first)
+                            .write_bytes(1, last - first + 1)
+                    };
+                    live += 1;
+                }
+                // Free the dead cells before zapping them: no VO bit is left on a zapped cell.
+                page.vo_word(w).store(vo & mk, Relaxed);
+                let mut dead = vo & !mk;
+                while dead != 0 {
+                    let bit = dead.trailing_zeros() as usize;
+                    dead &= dead - 1;
+                    let addr = page.addr() + (w * 64 + bit) * 8;
+                    let size = if CHECK {
+                        match self.check_dead_cell(page, w, vo, addr, errors) {
+                            Some(size) => size,
+                            None => continue,
+                        }
+                    } else {
+                        self.size_at(addr)
+                    };
+                    if self.s.zap {
+                        let p = self.mem.ptr(addr).cast::<u64>();
+                        for i in 0..size / 8 {
+                            // SAFETY: the dead cell [addr, addr + size) is committed memory that no
+                            // live cell or root reaches; nothing reads it after this sweep.
+                            unsafe { p.add(i).write(ZAP_WORD) };
+                        }
+                    }
+                    self.stats.freed_cells += 1;
+                    self.stats.freed_bytes += size as u64;
+                }
+                page.mark_word(w).store(vo & mk & keep_marks, Relaxed);
             }
-            page.mark_word(w).store(0, Relaxed);
+        }
+        // The loop reset the mark words that have a VO bit and left the others: any mark
+        // bit now outside a kept cell (sticky) or at all (S0) is one outside a cell, which the
+        // verifier reports.
+        if CHECK && self.any_mark_bit(page, sticky) {
+            sweep_error(errors, idx, format_args!("mark bit set outside a GC"));
         }
         core::mem::forget(unmark);
+        *kept += live;
         if live == 0 {
             self.mem.free_small_page(idx);
             return Swept::Free;
@@ -1213,6 +1644,138 @@ impl Inner {
             Swept::Recyclable
         } else {
             Swept::Full
+        }
+    }
+
+    /// True if any mark bit of `page` is set, or (`sticky`) any mark bit without a VO bit.
+    /// One pass over the 4 KiB mark bitmap with plain loads, so that it vectorizes (most pages
+    /// under GC-stress hold few cells, so this pass is most of the checked sweep's extra cost).
+    fn any_mark_bit(&self, page: Page, sticky: bool) -> bool {
+        let mk = self.mem.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
+        let vo = self.mem.ptr(page.addr() + VO_BITS_OFFSET).cast::<u64>();
+        let mut any = 0u64;
+        for w in 0..BITMAP_WORDS {
+            let outside = if sticky {
+                // SAFETY: both bitmaps lie in the page's committed metadata area, 8-aligned,
+                // with the provenance of the reservation. Only this thread touches them (S0
+                // and S1 are stop-the-world), and no atomic access runs during this loop.
+                unsafe { !vo.add(w).read() }
+            } else {
+                u64::MAX
+            };
+            // SAFETY: as above.
+            any |= unsafe { mk.add(w).read() } & outside;
+        }
+        any != 0
+    }
+
+    /// The checked sweep's checks of the live cell at `addr` (a VO start): it starts after
+    /// the previous cell ends, its size is a small-page size, it ends inside the page. (The
+    /// checked mark checked its kind, space and slots.) Returns its size, cut at the page end;
+    /// one granule when the size cannot be known (the mark reported that).
+    #[inline]
+    fn check_live_cell(
+        &self,
+        addr: usize,
+        prev_end: &mut usize,
+        errors: &mut Vec<String>,
+    ) -> usize {
+        // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
+        let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+        let page_end = (addr & PAGE_MASK) + PAGE_SIZE;
+        let size = self.kinds.cell_size(c).unwrap_or(GRANULE);
+        if addr < *prev_end || size > MAX_SMALL_SIZE || addr + size > page_end {
+            self.cell_order_error(addr, size, *prev_end, errors);
+        }
+        *prev_end = addr + size;
+        size.min(page_end - addr)
+    }
+
+    /// The checked sweep's checks of the dead cell at `addr` (a VO start in word `w`, whose
+    /// bits before this sweep were `vo`): a registered kind, a small-page size, and its extent
+    /// ends inside the page and holds no other VO start (live or dead). Returns its size, or
+    /// `None` after an error: the caller does not zap it.
+    #[inline]
+    fn check_dead_cell(
+        &self,
+        page: Page,
+        w: usize,
+        vo: u64,
+        addr: usize,
+        errors: &mut Vec<String>,
+    ) -> Option<usize> {
+        // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
+        let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+        let idx = (addr - self.mem.base_addr()) / PAGE_SIZE;
+        let Some(size) = self.kinds.cell_size(c) else {
+            // SAFETY: as above: `c` is a cell start with a word0.
+            let kind = unsafe { c.header() }.kind();
+            let msg = format_args!("dead cell {addr:#x} (kind {kind}) has no size");
+            sweep_error(errors, idx, msg);
+            return None;
+        };
+        if size > MAX_SMALL_SIZE || addr + size > page.addr() + PAGE_SIZE {
+            let msg = format_args!("dead cell {addr:#x} of {size} B crosses the page end");
+            sweep_error(errors, idx, msg);
+            return None;
+        }
+        // Granules (addr, addr + size) must hold no VO bit. Words after `w` are not swept yet,
+        // so their VO bits are the ones from before this sweep.
+        let first = (addr - page.addr()) / GRANULE + 1;
+        let end = (addr + size - page.addr()) / GRANULE;
+        let mut g = first;
+        while g < end {
+            let wi = g / 64;
+            let bits = if wi == w {
+                vo
+            } else {
+                page.vo_word(wi).load(Relaxed)
+            };
+            let hi = end.min((wi + 1) * 64);
+            let span = hi - g;
+            let mask = if span == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << span) - 1) << (g % 64)
+            };
+            if bits & mask != 0 {
+                let next = page.addr() + (wi * 64 + (bits & mask).trailing_zeros() as usize) * 8;
+                let msg = format_args!(
+                    "dead cell {addr:#x} of {size} B overlaps the next cell {next:#x}"
+                );
+                sweep_error(errors, idx, msg);
+                return None;
+            }
+            g = hi;
+        }
+        Some(size)
+    }
+
+    #[cold]
+    fn cell_order_error(
+        &self,
+        addr: usize,
+        size: usize,
+        prev_end: usize,
+        errors: &mut Vec<String>,
+    ) {
+        let idx = (addr - self.mem.base_addr()) / PAGE_SIZE;
+        if addr < prev_end {
+            let msg = format_args!(
+                "cell {addr:#x} overlaps the previous cell or the metadata (ends {prev_end:#x})"
+            );
+            sweep_error(errors, idx, msg);
+        }
+        if size > MAX_SMALL_SIZE {
+            sweep_error(
+                errors,
+                idx,
+                format_args!("small cell {addr:#x} has size {size}"),
+            );
+        }
+        if addr + size > (addr & PAGE_MASK) + PAGE_SIZE {
+            let msg = format_args!("cell {addr:#x} of {size} B crosses the page end");
+            sweep_error(errors, idx, msg);
         }
     }
 
@@ -1226,14 +1789,19 @@ impl Inner {
             .unwrap_or_else(|| panic!("heap corrupt: cell {c:?} has an unregistered kind"))
     }
 
-    /// Frees every unmarked large object and clears the marks of the others.
-    fn sweep_large(&mut self) {
+    /// Frees every unmarked large object and clears the marks of the others (generational:
+    /// keeps them). Returns the number of large objects kept.
+    fn sweep_large(&mut self) -> usize {
         let heads: Vec<usize> = self.mem.large_heads().collect();
+        let mut kept = 0;
+        // Sticky marks: a kept large object stays marked (old).
+        let keep = u8::from(self.s.generational);
         for idx in heads {
             // SAFETY: chunk `idx` is the committed head of a large object.
             let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
             let h = large.header();
-            if h.mark.swap(0, Relaxed) != 0 {
+            if h.mark.swap(keep, Relaxed) != 0 {
+                kept += 1;
                 continue;
             }
             let (size, committed) = (h.size, h.committed);
@@ -1243,7 +1811,65 @@ impl Inner {
             // is decommitted, so a stale access faults instead of reading old data.
             unsafe { self.mem.free_large(idx, committed) };
         }
+        kept
     }
+}
+
+impl Inner {
+    /// Generational, at the start of a full GC (every lazy sweep finished): clears the mark
+    /// bit of every small-page cell and every large object.
+    fn clear_marks(&mut self) {
+        for idx in self.mem.small_pages() {
+            reset_page_marks(self.mem.page(idx), false);
+        }
+        for idx in self.mem.large_heads() {
+            // SAFETY: chunk `idx` is the committed head of a large object.
+            let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
+            large.header().mark.store(0, Relaxed);
+        }
+    }
+
+    /// Generational, after a mark: empties every page's remembered list and cleans every
+    /// large object's cards (each logged host was traced, and a small one set BLACK, by the
+    /// mark, or is dead). The memory stays for the next cycle.
+    fn empty_s1_logs(&mut self) {
+        for idx in self.mem.small_pages() {
+            self.mem.page(idx).header().remembered.clear();
+        }
+        for idx in self.mem.large_heads() {
+            // SAFETY: chunk `idx` is the committed head of a large object.
+            let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
+            crate::remembered::clear_cards(large.header());
+        }
+    }
+}
+
+/// VO words per block in the sweep's empty-block test.
+const SKIP_WORDS: usize = 8;
+const _: () = assert!(BITMAP_WORDS.is_multiple_of(SKIP_WORDS));
+
+/// True if the VO words `[w, w + SKIP_WORDS)` at `vo` are all 0. Plain loads, so the test
+/// vectorizes.
+#[inline(always)]
+fn block_is_empty(vo: *const u64, w: usize) -> bool {
+    let mut any = 0u64;
+    for i in w..w + SKIP_WORDS {
+        // SAFETY: `vo` is the VO bitmap of a committed page (BITMAP_WORDS words, 8-aligned,
+        // with the reservation's provenance) and `i < BITMAP_WORDS`. Only this thread writes
+        // it (S0), and no write runs during this read.
+        any |= unsafe { vo.add(i).read() };
+    }
+    any == 0
+}
+
+/// A checked sweep's error about small page `idx`.
+#[cold]
+fn sweep_error(errors: &mut Vec<String>, idx: usize, msg: core::fmt::Arguments<'_>) {
+    crate::trace::record_error(
+        errors,
+        crate::trace::Context::Root("page"),
+        format_args!("small page {idx}: {msg}"),
+    );
 }
 
 /// The next run of free lines in `page`, from line `*line` on. Leaves `*line` after the run

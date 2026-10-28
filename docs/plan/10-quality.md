@@ -163,10 +163,10 @@ Measurement rules:
 
 | Target | Tool | From | Exit metric |
 |---|---|---|---|
-| Front end (source → verified bytecode) | cargo-fuzz; the dictionary has every deep form of G6 | M0 | No panics, no aborts; the bytecode verifier passes |
+| Front end (source → verified bytecode) | cargo-fuzz; the dictionary has every deep form of G6. Targets `frontend_compile`, `function_ctor`, `eval_context` (fuzz/README.md:16-20). Venue (M1; plan v9 V9-D24, V9-A6): mutation runs only on GitHub, in the CI job `fuzz-smoke` (60 s per target, every non-docs change) and in the dispatch-only workflow `fuzz.yml` (campaigns, run by the orchestrator); the Mac builds the targets and replays seeds only (`-runs=0`) (docs/decisions-log.md:2770, :2797) | M0 | No panics, no aborts; the bytecode verifier passes |
 | Number conversions | Diff against V8 output tables (400k cases [R08]) | M0 | 0 mismatches |
-| RegExp compile + exec; oxc vs matcher validity | cargo-fuzz + diff against node | M1 | 0 mismatches |
-| Whole engine | Fuzzilli REPRL + SanitizerCoverage in `ep9_cli` [R09] | M1 | CPU-hour budgets below, 0 unique crashes |
+| RegExp compile + exec; oxc vs matcher validity | cargo-fuzz + diff against node. Venue: as the front-end row (cargo-fuzz runs on GitHub, V9-D24); no RegExp target is built yet | M1 | 0 mismatches |
+| Whole engine | Fuzzilli REPRL + SanitizerCoverage in `ep9_cli` [R09] (`ep9 --reprl`, fuzz/README.md:68-100). Venue (M1; V9-D24, V9-A6): Cloudflare `infra/fuzz` only, a separate Worker with at most 4 boxes, run by the orchestrator on a request file; it does not use the test262 box slots (docs/decisions-log.md:2825, M4-PLAN-ORCH-2; :3136, M4-P3-REPRL-HOST). The Mac builds Fuzzilli and the sancov `ep9` and runs only REPRLRun's self-tests and the fake-parent unit test, never a fuzz run | M1 | CPU-hour budgets below, 0 unique crashes |
 | Output differential | ep9 vs node and QuickJS on generated programs | M1 | Triaged mismatches = 0 |
 | **FP differential** | Generated FP programs; every tier and code kind vs node | M1 | 0 mismatches |
 | Tier differential + deopt | Fuzzilli + `--force-tier`, concurrent-marking verifier on | M5 (Spike C uses it in M1) | 0 mismatches |
@@ -176,7 +176,7 @@ Measurement rules:
 | **.ep9h and .ep9prof parsers** | cargo-fuzz | A1h (.ep9h), A3 (.ep9prof) | No panics; bad input drops the hints or the profile |
 | JSON, ValueSerializer, snapshot loader, code cache | cargo-fuzz | M3-M6 | No panics |
 
-Crash-free budgets grow from 24 CPU-h (front end, M1) to 100 (M1), 500 (M2), 2,000 (M3), 1,000 tier-diff (M5), 10,000 (M7) and 50,000 cumulative (M8). New: 1,000 CPU-h mode-diff at A3 and 5,000 at A4 (est.).
+Crash-free budgets grow from 24 CPU-h (front end, M1) to 100 (M1), 500 (M2), 2,000 (M3), 1,000 tier-diff (M5), 10,000 (M7) and 50,000 cumulative (M8). New: 1,000 CPU-h mode-diff at A3 and 5,000 at A4 (est.). **M1 counting (plan v9 V9-D24, V9-A30, V9-A17; docs/decisions-log.md:2770, :2821, :2808).** "0 unique crashes" = one counted run per budget after the last fix, on code at or after M1a. The counted Fuzzilli 100 CPU-h run is on the M1 exit-candidate tree (after the last month-6 VM change); earlier runs find bugs but do not count, and if the calendar does not allow it the M1 report names the limit. CPU-h of a cargo-fuzz job = seconds x fork workers / 3600; the `fuzz.yml` default is 3 targets x 2 h x 4 workers = 24 CPU-h (.github/workflows/fuzz.yml:14-15). The repo is public, so no fuzz job prints, logs or uploads an input: the fuzzer output stays in a file inside the job or on the box, and only crash counts, SHA-256 hashes and numbers leave it (fuzz/README.md:34-40).
 
 ---
 
@@ -241,7 +241,7 @@ RK1-RK28 are plan v1 risks R1-R28, re-tagged. RK29-RK44 are new.
 | RK24 | Windows diverges | CSS, SEH, VirtualAlloc rework | Tier-1 CI from week 1. SP-GC, SP-JIT-mem, SP-Dispatch on Win64 | Windows-only CI failures | [R09] Windows topic |
 | RK25 | Win64 passes only 4 register arguments | Dispatch loses the tail call or adds a load per dispatch | ≤ 4 handler arguments (H15). SP-Dispatch on Win64 hardware | Windows > 10% slower than Linux x64 | [P1] |
 | RK26 | T2 needs profiles that T0 does not record | M2 gates break later, or G4 misses | H16/H29 ADRs in M0. T0 records the profiles before the M2 gate. Spike C in M1 | Spike C fails its gate | [R06] |
-| RK27 | tsrs on Windows is untested upstream | `ep9 check` fails on a tier-1 platform | Unix only until SP-tsrs-win passes; ≤ 2 patches | Spike fails | [TSRS] release.yml:132-133, build.rs |
+| RK27 | tsrs on Windows has little upstream testing: one per-PR CI job (`tsrs_checker` check, `tsrs_api_transport` tests); the full conformance suite runs only in the Windows release job (pgo-train-windows.ps1:14-26) | `ep9 check` fails on a tier-1 platform | Unix only until SP-tsrs-win passes; ≤ 2 patches | Spike fails | [TSRS] release.yml:292-408, ci.yml:43-55, build.rs |
 | RK28 | The agent team delivers CORE work slower than planned (D3) | v1 late | M0-exit throughput check (D3); critical-path table; levers ([09-milestones](./09-milestones.md)) | PM done per week below half the plan rate (est.) | [R07] Maglev staffing |
 | RK29 | Overselling AOT | The architecture chases a claim that no measured system meets | D15 = (a); (b) only as gated A5 with mechanism-neutral wording. FV1-FV3, each with a numeric gate and a kill. N10. Every claim names its comparator | A document claims "AOT beats V8" with no FV gate | [R15][R17] |
 | RK30 | Dual-mode test-matrix cost (mode x tier x platform) | Slower CI and triage; CORE time lost | One optimizer and one frame for all code kinds. Mode matrix nightly, not per PR. Budgets per stage | The mode-diff triage queue grows two weeks in a row | [R14][R16] |

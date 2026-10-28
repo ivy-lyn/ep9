@@ -9,7 +9,10 @@
 //! functions for tests live in `support.rs`. M3-P0 declared the month-3 modules (`arguments`,
 //! `async_fn`, `async_gen`, `facts_export`, `layout3`, `module`, `ordered_table`, `realm`,
 //! `time`); `layout3` holds the OBJECT_LAYOUT 3 tests, the others are empty until their
-//! owners fill them.
+//! owners fill them. M4-P0 declared the month-4 modules (`construct`, `instance_ic`, `keyed`,
+//! `layout4`, `literal_site`, `profile`, `proxy`, `regexp`, `stub_cache`, `validity`,
+//! `weakref`); `layout4` holds the OBJECT_LAYOUT 4 and IC_LAYOUT 2 tests, the others are empty
+//! until their owners fill them.
 
 #![allow(clippy::unwrap_used)]
 
@@ -23,6 +26,7 @@ mod basic;
 mod builtins;
 mod calls;
 mod class_fields;
+mod construct;
 mod eval;
 mod exceptions;
 mod facts_export;
@@ -30,23 +34,33 @@ mod feedback;
 mod gc;
 mod generator;
 mod ic;
+mod instance_ic;
 mod interp;
 mod isolate_api;
 mod iter;
 mod jobs;
+mod keyed;
 mod layout3;
+mod layout4;
+mod literal_site;
 mod module;
 #[cfg(feature = "spike-native")]
 mod native;
 mod objects;
 mod ordered_table;
+mod profile;
+mod proxy;
 mod realm;
+mod regexp;
 mod shapes;
 mod slots;
 mod strings;
+mod stub_cache;
 mod support;
 mod symbols;
 mod time;
+mod validity;
+mod weakref;
 mod with_stmt;
 mod wrappers;
 

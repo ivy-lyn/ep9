@@ -194,12 +194,13 @@ fn eval_ext(c: u64) -> Option<u64> {
 
 /// (M3-P4, CX2-E9-1) `name` is a private name `#x` (or a synthetic `#.` name): no identifier
 /// starts with `#`, so only the private names of direct eval code (E9) are looked up by name.
-fn is_private_name(cx: &Cx, name: u64) -> bool {
-    if !kinds::is_string(name) {
-        return false;
-    }
-    let text = string::view(cx, name);
-    !text.is_empty() && text.at(0) == u16::from(b'#')
+/// `name` can be a rope that is not flattened (a rope that `atoms::intern` made an atom, M4-P1
+/// STR1 F3; `key::intern_key` still does, `Cx::intern` atomizes since M4-P2), so the first
+/// unit is read with the rope-safe `string::unit_at`. Not a GC point.
+fn is_private_name(name: u64) -> bool {
+    kinds::is_string(name)
+        && string::str_len(name) != 0
+        && string::unit_at(name, 0) == u16::from(b'#')
 }
 
 /// (CX2-E9-1) The binding of the private name `name` (`#x`) of direct eval code: the slot of
@@ -262,7 +263,7 @@ fn private_symbol(cx: &mut Cx, name: u64, v: u64) -> Res<u64> {
 /// frame `fp`, out to the global environment (see the module doc). GC point (an
 /// `@@unscopables` getter, a poll).
 fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
-    if is_private_name(cx, name) {
+    if is_private_name(name) {
         return resolve_private(cx, fp, name);
     }
     let implicit = is_implicit_name(name);
@@ -305,7 +306,7 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
 
 /// HasBinding of an object Environment Record with `withEnvironment` true (§9.1.1.2.1).
 fn with_has_binding(cx: &mut Cx, o: u64, name: u64) -> Res<bool> {
-    if !property::has_property(cx, o, name) {
+    if !property::try_has_property(cx, o, name)? {
         return Ok(false);
     }
     let key = symbol::well_known(cx.rt(), WellKnownSymbol::Unscopables);
@@ -353,7 +354,7 @@ fn get_binding_value(
             Ok(v)
         }
         Binding::With(o) => {
-            if !property::has_property(cx, o, name) {
+            if !property::try_has_property(cx, o, name)? {
                 if strict {
                     return Err(throw_name_now(cx, NameMsg::NotDefined, name));
                 }
@@ -380,7 +381,7 @@ fn get_binding_value(
                 return Ok(v);
             }
             let g = rt.global();
-            if !property::has_property(cx, g, name) {
+            if !property::try_has_property(cx, g, name)? {
                 if inside_typeof {
                     return Ok(UNDEFINED);
                 }
@@ -444,7 +445,7 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
         Binding::With(o) => {
             // The binding may be gone since the reference was resolved (a getter of
             // `@@unscopables` deleted it): strict code throws, sloppy code sets it again.
-            if strict && !property::has_property(cx, o, name) {
+            if strict && !property::try_has_property(cx, o, name)? {
                 return Err(throw_name_now(cx, NameMsg::NotDefined, name));
             }
             property::set(cx, o, name, v, strict)
@@ -488,7 +489,7 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
                 return Ok(());
             }
             let g = rt.global();
-            if strict && !property::has_property(cx, g, name) {
+            if strict && !property::try_has_property(cx, g, name)? {
                 return Err(throw_name_now(cx, NameMsg::NotDefined, name));
             }
             property::set(cx, g, name, v, strict)
@@ -528,7 +529,7 @@ pub(crate) fn lda_lookup_slot(
         let b = resolve(cx, fp, name)?;
         let v = get_binding_value(cx, b, name, strict(fp), inside_typeof)?;
         // (CX2-E9-1) Only a private field's key is read this way (E9).
-        if is_private_name(cx, name) {
+        if is_private_name(name) {
             return private_symbol(cx, name, v);
         }
         Ok(v)
@@ -641,7 +642,7 @@ pub(crate) fn resolve_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u
             let rt = cx.rt();
             let g = rt.global();
             if own_get(rt.root(Root::Lexical), name).is_some()
-                || property::has_property(cx, g, name)
+                || property::try_has_property(cx, g, name)?
             {
                 UNDEFINED
             } else {

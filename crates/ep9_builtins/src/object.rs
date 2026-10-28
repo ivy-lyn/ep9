@@ -237,12 +237,12 @@ fn is_prototype_of<'s>(
     };
     // 2. Let O be ? ToObject(this value).
     let o = cx.to_object(this)?;
-    // 3. Repeat,
+    // 3. Repeat, (a proxy may make the chain a cycle: the step polls and is bounded, as V8's)
+    let mut hops = 0;
     loop {
-        cx.poll_interrupt()?;
         // a. Set V to ? V.[[GetPrototypeOf]]().
         // b. If V is null, return false.
-        let Some(p) = cx.get_prototype_of(v)?.as_object() else {
+        let Some(p) = cx.prototype_walk_step(v, &mut hops)?.as_object() else {
             return Ok(Local::boolean(false));
         };
         // c. If SameValue(O, V) is true, return true.
@@ -392,9 +392,9 @@ fn lookup_accessor_half<'s>(
     let mut o = cx.to_object(this)?;
     // 2. Let key be ? ToPropertyKey(P).
     let key = cx.to_property_key(args.get(0))?;
-    // 3. Repeat,
+    // 3. Repeat, (a proxy may make the chain a cycle: the step polls and is bounded, as V8's)
+    let mut hops = 0;
     loop {
-        cx.poll_interrupt()?;
         // a. Let desc be ? O.[[GetOwnProperty]](key).
         // b. If desc is not undefined, then
         if let Some(desc) = cx.get_own_property(o, key)? {
@@ -408,7 +408,7 @@ fn lookup_accessor_half<'s>(
         }
         // c. Set O to ? O.[[GetPrototypeOf]]().
         // d. If O is null, return undefined.
-        let Some(p) = cx.get_prototype_of(o)?.as_object() else {
+        let Some(p) = cx.prototype_walk_step(o, &mut hops)?.as_object() else {
             return Ok(Local::undefined());
         };
         o = p;

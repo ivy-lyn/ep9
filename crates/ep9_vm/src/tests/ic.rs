@@ -1,6 +1,7 @@
 //! Inline cache tests (H16 v0, `ic.rs`): the entry states (mono, poly 2 to 4, mega), the
 //! handlers of the named sites (0x21, 0x22, 0x24, 0x25) and the global sites (0x10 to 0x12),
-//! the epoch, and the weak references of IC data.
+//! the validity cells of the prototype cases (`validity.rs`; more in `tests::validity`), a
+//! saturated epoch, and the weak references of IC data.
 //!
 //! Each test runs under every dispatch expansion, with and without GC stress (a collection
 //! before every allocation, then the heap verifier), with eager feedback (threshold 0: a
@@ -29,14 +30,15 @@ use crate::realm;
 use crate::runtime::{Runtime, val};
 use crate::shape;
 use crate::string;
+use crate::validity;
 use crate::{Dispatch, Exception, Isolate, IsolateConfig, Value};
 
 /// The feedback slot of the site of each test function (its only slot).
-const SLOT: u32 = 0;
+pub(super) const SLOT: u32 = 0;
 
 /// The site of one test function `f<i>(a, b)`.
 #[derive(Clone, Copy, Debug)]
-enum Site {
+pub(super) enum Site {
     /// `return a.name` (0x21).
     Get(&'static str),
     /// `a.name = b` (0x24), in strict code if the flag is set.
@@ -128,19 +130,19 @@ fn program(sites: &[Site]) -> VerifiedUnit {
 }
 
 /// An isolate that ran [`program`].
-struct T {
-    iso: Isolate,
+pub(super) struct T {
+    pub(super) iso: Isolate,
 }
 
 impl T {
-    fn new(c: IsolateConfig, sites: &[Site]) -> T {
+    pub(super) fn new(c: IsolateConfig, sites: &[Site]) -> T {
         let mut iso = isolate(c);
         iso.with_cx_checkpoint(|cx| cx.run_script(program(sites), "ic.js").map(|_| ()))
             .unwrap();
         T { iso }
     }
 
-    fn rt(&self) -> &Runtime {
+    pub(super) fn rt(&self) -> &Runtime {
         &self.iso.rt
     }
 
@@ -149,7 +151,7 @@ impl T {
     }
 
     /// `f<i>(a, b)`.
-    fn call(&mut self, i: usize, a: u64, b: u64) -> Result<u64, Exception> {
+    pub(super) fn call(&mut self, i: usize, a: u64, b: u64) -> Result<u64, Exception> {
         let f = self.f(i);
         self.iso
             .call_raw(f, Value::UNDEFINED, &[val(a), val(b)])
@@ -157,13 +159,13 @@ impl T {
     }
 
     /// `f<i>(a, b)`, which must not throw.
-    fn ok(&mut self, i: usize, a: u64, b: u64) -> u64 {
+    pub(super) fn ok(&mut self, i: usize, a: u64, b: u64) -> u64 {
         self.call(i, a, b)
             .unwrap_or_else(|e| panic!("f{i} threw {}", e.message))
     }
 
     /// `f<i>(a, b)`, which must throw an error made by `ctor`.
-    fn throws(&mut self, i: usize, a: u64, b: u64, ctor: &str) {
+    pub(super) fn throws(&mut self, i: usize, a: u64, b: u64, ctor: &str) {
         match self.call(i, a, b) {
             Ok(v) => panic!("f{i} returned {v:#x}, not a {ctor}"),
             Err(e) => assert_eq!(e.constructor.as_deref(), Some(ctor), "f{i}: {}", e.message),
@@ -171,57 +173,58 @@ impl T {
     }
 
     /// The feedback vector of `f<i>` (function `i + 1`).
-    fn vector(&self, i: usize) -> u64 {
+    pub(super) fn vector(&self, i: usize) -> u64 {
         let units = self.iso.rt.units.borrow();
         feedback::vector(&units.last().unwrap().infos[i + 1]).expect("eager feedback")
     }
 
-    fn state(&self, i: usize) -> State {
+    pub(super) fn state(&self, i: usize) -> State {
         ic::state(self.vector(i), SLOT)
     }
 
     /// The handler `f<i>` keeps for the case key `key` (a shape or KEY_STRING).
-    fn handler(&self, i: usize, key: u64) -> Option<u64> {
+    pub(super) fn handler(&self, i: usize, key: u64) -> Option<u64> {
         ic::find(self.vector(i), SLOT, key)
     }
 
-    /// (kind, epoch, reference, location) of that handler ([`ic::describe_handler`]).
-    fn describe(&self, i: usize, key: u64) -> Option<(i32, u32, u64, i32)> {
+    /// (kind, +16 (the validity cell), reference, location) of that handler
+    /// ([`ic::describe_handler`]).
+    pub(super) fn describe(&self, i: usize, key: u64) -> Option<(i32, u64, u64, i32)> {
         self.handler(i, key).map(ic::describe_handler)
     }
 
-    fn kind(&self, i: usize, key: u64) -> Option<i32> {
+    pub(super) fn kind(&self, i: usize, key: u64) -> Option<i32> {
         self.describe(i, key).map(|d| d.0)
     }
 
-    fn epoch(&self) -> u32 {
+    pub(super) fn epoch(&self) -> u32 {
         self.rt().shapes.proto_epoch.get()
     }
 
-    fn collect(&mut self) {
+    pub(super) fn collect(&mut self) {
         self.iso.collect_garbage();
         self.iso.verify_heap().unwrap();
     }
 
     /// Roots `v` (a strong handle) until [`T::release`].
-    fn keep(&self, v: u64) -> GlobalHandle {
+    pub(super) fn keep(&self, v: u64) -> GlobalHandle {
         self.rt().heap.new_global(val(v))
     }
 
-    fn release(&self, h: GlobalHandle) {
+    pub(super) fn release(&self, h: GlobalHandle) {
         self.rt().heap.drop_global(h);
     }
 }
 
 /// The kinds [`ic::describe_handler`] gives for IC_HANDLER cells.
-const PROTO_LOAD: i32 = hk::PROTO_LOAD | 0x100;
-const MISSING: i32 = hk::MISSING | 0x100;
-const ADD: i32 = hk::ADD | 0x100;
+pub(super) const PROTO_LOAD: i32 = hk::PROTO_LOAD | 0x100;
+pub(super) const MISSING: i32 = hk::MISSING | 0x100;
+pub(super) const ADD: i32 = hk::ADD | 0x100;
 const GLOBAL: i32 = hk::GLOBAL | 0x100;
 
 /// Runs `test` under every dispatch expansion, with and without GC stress, with eager
 /// feedback, on a big stack.
-fn each(test: fn(IsolateConfig)) {
+pub(super) fn each(test: fn(IsolateConfig)) {
     for &d in Dispatch::ALL {
         for stress in [false, true] {
             on_big_stack(move || {
@@ -235,22 +238,22 @@ fn each(test: fn(IsolateConfig)) {
     }
 }
 
-fn key(rt: &Runtime, name: &str) -> u64 {
+pub(super) fn key(rt: &Runtime, name: &str) -> u64 {
     atoms::intern_str(rt, name)
 }
 
-fn int(i: i32) -> u64 {
+pub(super) fn int(i: i32) -> u64 {
     int32_bits(i)
 }
 
 /// Object.prototype.
-fn object_prototype(rt: &Runtime) -> u64 {
+pub(super) fn object_prototype(rt: &Runtime) -> u64 {
     object::proto_of(object::new_plain_object(rt))
 }
 
 /// A new object with prototype `proto` and the data properties `props` {w, e, c}, added in
 /// that order.
-fn object_with(rt: &Runtime, proto: u64, props: &[(&str, u64)]) -> u64 {
+pub(super) fn object_with(rt: &Runtime, proto: u64, props: &[(&str, u64)]) -> u64 {
     let o = object::new_object(rt, proto);
     for &(name, v) in props {
         props::own_define(rt, o, key(rt, name), v, attr::DEFAULT);
@@ -259,12 +262,12 @@ fn object_with(rt: &Runtime, proto: u64, props: &[(&str, u64)]) -> u64 {
 }
 
 /// The own property `name` of `o`.
-fn own(rt: &Runtime, o: u64, name: &str) -> Option<u64> {
+pub(super) fn own(rt: &Runtime, o: u64, name: &str) -> Option<u64> {
     props::own_get(o, key(rt, name)).map(|(v, _)| v)
 }
 
 /// A new function object (a host function), a "method".
-fn method(rt: &Runtime, name: &str) -> u64 {
+pub(super) fn method(rt: &Runtime, name: &str) -> u64 {
     realm::new_host_function(rt, print, name, 0, false)
 }
 
@@ -288,7 +291,7 @@ fn method(rt: &Runtime, name: &str) -> u64 {
 //   test frame spilled the payload register of `T::state`'s `Monomorphic`, which still held
 //   the dead shape. Hence every read of a dead cell happens below the pad.
 
-const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
+pub(super) const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
 
 /// Bytes of zeros between the test's frame and the frames that make the dead cells: far more
 /// than a collection's own frames take (`T::collect` down to the spill trampoline).
@@ -307,7 +310,7 @@ fn scrub_stack() {
 /// addresses. Returns that result and `pad_low`, the lowest byte of the pad: every frame of
 /// `made`'s callee lies below it.
 #[inline(never)]
-fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
+pub(super) fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
     let mut pad = [0u8; DEEP];
     black_box(&mut pad);
     let r = made();
@@ -317,7 +320,7 @@ fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
 /// Scrubs the stack and collects, after the dead cells were made by [`below_a_pad`] (which
 /// gave `pad_low`). Then checks that the collection can show something about them: its
 /// conservative scan stopped above the pad, and kept none of `dead` (masked addresses).
-fn collect_after_a_pad(t: &mut T, pad_low: usize, dead: &[usize]) {
+pub(super) fn collect_after_a_pad(t: &mut T, pad_low: usize, dead: &[usize]) {
     scrub_stack();
     t.collect();
     let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
@@ -490,7 +493,7 @@ fn out_of_line_fields_load_store_and_add() {
     });
 }
 
-// ---- prototype chain: the epoch, the holder ------------------------------------------------
+// ---- prototype chain: the validity cell, the holder -----------------------------------------
 
 #[test]
 fn a_warm_proto_load_returns_the_replaced_method() {
@@ -509,7 +512,7 @@ fn a_warm_proto_load_returns_the_replaced_method() {
         let (kind, _, holder, _) = ic::describe_handler(h);
         assert_eq!((kind, holder), (PROTO_LOAD, p));
         assert_eq!(t.ok(0, o, UNDEFINED), m1);
-        // `p.m = m2` replaces the method: a value store, so the epoch stays.
+        // `p.m = m2` replaces the method: a value store, so the epoch and the cell stay.
         let m2 = method(t.rt(), "m2");
         let e = t.epoch();
         t.ok(1, p, m2);
@@ -531,7 +534,7 @@ fn a_warm_proto_load_returns_the_replaced_method() {
         assert_eq!(t.ok(0, o, UNDEFINED), m2);
         let (kind, _, holder, _) = t.describe(0, shape::shape_of(o2)).unwrap();
         assert_eq!((kind, holder), (PROTO_LOAD, q));
-        // A missing property: undefined under the epoch, until a prototype gets it.
+        // A missing property: undefined under the cell, until a prototype gets it.
         assert_eq!(t.ok(2, o, UNDEFINED), UNDEFINED);
         assert_eq!(t.kind(2, so), Some(MISSING));
         assert_eq!(t.ok(2, o, UNDEFINED), UNDEFINED);
@@ -657,7 +660,7 @@ fn a_super_load_is_keyed_on_the_home_objects_prototype() {
     });
 }
 
-// ---- the epoch saturates (W4-P3FIX-EPOCH-SAT) ---------------------------------------------
+// ---- a saturated epoch changes no IC (W4-P3FIX-EPOCH-SAT, H16 K5) ---------------------------
 
 /// The sites of [`epoch_run`]: `o.b` (a prototype load), `o.q` (a missing property), strict
 /// `x.n = v` (an add that a read-only `n` on the chain makes throw), sloppy `y.m = v` (an add
@@ -708,9 +711,9 @@ struct EpochRun {
     /// Two rounds of [`epoch_answers`] after the four changes, then one after a fifth.
     answers: Vec<Option<i32>>,
     epoch: u32,
-    /// With the IC: the kind of each site's case for `o`'s shape, then the kind and epoch of
-    /// a 0x25 case made after the changes.
-    kinds: Option<([i32; 5], (i32, u32))>,
+    /// With the IC: the kind of each site's case for `o`'s shape and whether its +16 is a
+    /// valid validity cell, then the kind of a 0x25 case made after the changes.
+    kinds: Option<([(i32, bool); 5], i32)>,
 }
 
 /// Sets the epoch to `warm`, warms [`EPOCH_SITES`] on `o` and new objects whose prototype is
@@ -731,13 +734,21 @@ fn epoch_run(c: IsolateConfig, warm: u32, jump: u32) -> EpochRun {
         let warm_answers = [Some(2), None, Some(5), Some(6), Some(7)];
         assert_eq!(epoch_answers(&mut t, o, p), warm_answers);
     }
+    let mut warm_cells = Vec::new();
     if ic {
-        let (kind, made_at, holder, _) = t.describe(0, so).unwrap();
-        assert_eq!((kind, made_at, holder), (PROTO_LOAD, warm, p));
-        assert_eq!(t.describe(1, so).map(|d| (d.0, d.1)), Some((MISSING, warm)));
-        for i in 2..5 {
-            assert_eq!(t.describe(i, so).map(|d| (d.0, d.1)), Some((ADD, warm)));
+        let (kind, cell, holder, _) = t.describe(0, so).unwrap();
+        assert_eq!((kind, holder), (PROTO_LOAD, p));
+        assert!(validity::is_valid(cell));
+        assert_eq!(t.describe(1, so).map(|d| (d.0, d.1)), Some((MISSING, cell)));
+        for i in 2..4 {
+            assert_eq!(t.describe(i, so).map(|d| (d.0, d.1)), Some((ADD, cell)));
         }
+        // 0x25 keeps no cell.
+        assert_eq!(
+            t.describe(4, so).map(|d| (d.0, d.1)),
+            Some((ADD, UNDEFINED))
+        );
+        warm_cells.push(t.keep(cell));
     }
     assert_eq!(t.epoch(), warm);
     t.rt().shapes.proto_epoch.set(jump);
@@ -762,8 +773,15 @@ fn epoch_run(c: IsolateConfig, warm: u32, jump: u32) -> EpochRun {
         t.ok(4, z, int(8));
         assert_eq!(own(t.rt(), z, "d"), Some(int(8)));
         let d = t.describe(4, zs).unwrap();
-        ([0, 1, 2, 3, 4].map(|i| t.kind(i, so).unwrap()), (d.0, d.1))
+        let k = [0, 1, 2, 3, 4].map(|i| {
+            let d = t.describe(i, so).unwrap();
+            (d.0, validity::is_valid(d.1))
+        });
+        (k, d.0)
     });
+    for h in warm_cells {
+        t.release(h);
+    }
     t.release(kept);
     EpochRun {
         answers,
@@ -791,30 +809,39 @@ fn epoch_matches_the_generic_path(c: IsolateConfig, warm: u32, jump: u32) -> Epo
     with
 }
 
+/// The kinds every [`epoch_run`] ends with: the misses after the changes record real cases
+/// under new valid cells (`o.b` a prototype load of the fifth change's `b`, `o.q` a prototype
+/// load, the sloppy add again), not `SLOW` as the saturated epoch did before validity cells.
+/// The strict add threw, so it recorded nothing: its warm case keeps the old, invalid cell. A
+/// 0x25 add case has no cell.
+const AFTER_THE_CHANGES: [(i32, bool); 5] = [
+    (PROTO_LOAD, true),
+    (PROTO_LOAD, true),
+    (ADD, false),
+    (ADD, true),
+    (ADD, false),
+];
+
 #[test]
-fn a_saturated_epoch_misses_every_case_made_before_it() {
+fn a_saturated_epoch_changes_no_ic_result() {
     each(|c| {
-        // Warm at MAX - 2; the four changes take the epoch to MAX and then stay there.
+        // Warm at MAX - 2; the four changes take the epoch to MAX and then it stays there.
         let run = epoch_matches_the_generic_path(c, u32::MAX - 2, u32::MAX - 2);
-        // At MAX the misses record SLOW, not a case that compares the epoch (a missing case
-        // for `o.b` would answer undefined after the fifth change); the strict add threw, so
-        // it recorded nothing. A 0x25 add case ignores the epoch: the old one still hits, and
-        // a new one is still made.
         let (kinds, define) = run.kinds.unwrap();
-        assert_eq!(kinds, [smi::SLOW, smi::SLOW, ADD, smi::SLOW, ADD]);
-        assert_eq!(define, (ADD, u32::MAX));
+        assert_eq!(kinds, AFTER_THE_CHANGES);
+        assert_eq!(define, ADD);
     });
 }
 
 #[test]
 fn the_epoch_does_not_wrap_back_to_an_old_case() {
     each(|c| {
-        // Warm at 3, jump to MAX: four changes would wrap the epoch to 0, 1, 2 and then 3, so
-        // every warm case would hit again with its old answer (`o.b` reading `c`, `o.q`
-        // undefined, `x.n = 5` adding past a read-only `n`).
+        // Warm at 3, jump to MAX: had the epoch wrapped to 0, 1, 2 and then 3, an epoch
+        // compare would let every warm case hit again with its old answer (`o.b` reading `c`,
+        // `o.q` undefined, `x.n = 5` adding past a read-only `n`). The cells do not count.
         let run = epoch_matches_the_generic_path(c, 3, u32::MAX);
         let (kinds, _) = run.kinds.unwrap();
-        assert_eq!(kinds, [smi::SLOW, smi::SLOW, ADD, smi::SLOW, ADD]);
+        assert_eq!(kinds, AFTER_THE_CHANGES);
     });
 }
 
@@ -880,12 +907,12 @@ fn a_proto_load_whose_holder_died_misses() {
         let ((o, p2), pad_low) = below_a_pad(|| made_a_proto_load_through_a_lone_holder(&mut t));
         collect_after_a_pad(&mut t, pad_low, &[p2]);
         // The case stays (its key, the shape of `o`, lives); its weak holder is cleared.
-        let (kind, made_at, holder, _) = t.describe(0, shape::shape_of(o)).unwrap();
+        let (kind, cell, holder, _) = t.describe(0, shape::shape_of(o)).unwrap();
         assert_eq!((kind, holder), (PROTO_LOAD, UNDEFINED));
-        // The changed epoch alone would miss. Put the case's epoch back, so the dead holder is
-        // what makes the hit path miss.
-        assert_ne!(t.epoch(), made_at);
-        t.rt().shapes.proto_epoch.set(made_at);
+        // The cut cleared the cell, which alone would miss. Make it valid again, so the dead
+        // holder is what makes the hit path miss.
+        assert!(!validity::is_valid(cell));
+        validity::force_valid(t.rt(), cell);
         assert_eq!(t.ok(0, o, UNDEFINED), UNDEFINED);
         assert_eq!(t.kind(0, shape::shape_of(o)), Some(MISSING));
         assert_eq!(t.ok(0, o, UNDEFINED), UNDEFINED);

@@ -124,7 +124,7 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
 /// The current realm's %ThrowTypeError% (§10.2.4.1), or `None` before a table makes it. On
 /// the first use in a realm it gets the attributes the spec gives it: `length` and `name`
 /// {w: false, e: false, c: false} (a table gives a builtin function {c}) and
-/// [[Extensible]] false. The strict `callee` accessor is the only way JS code reaches it
+/// `[[Extensible]]` false. The strict `callee` accessor is the only way JS code reaches it
 /// (no month-3 role builds the Function.prototype `caller` and `arguments` accessors), so
 /// no code sees it before this runs. GC point (the dictionary move of the redefinitions).
 fn throw_type_error(rt: &Runtime) -> Option<u64> {
@@ -248,6 +248,36 @@ fn set_element(rt: &Runtime, o: u64, i: u32, v: u64, attrs: i32) {
     let (e, n, _) = store(o).expect("an element");
     object::list_set(rt, e, i as usize, v);
     object::list_set(rt, e, n + i as usize, int32_bits(attrs));
+}
+
+// ---- integer-index access without a key (M4-P3 KEYED; `property.rs`, `abi/mod.rs`) ----------
+
+/// The current value of element `i` of the arguments object `o` (a mapped index reads its
+/// parameter, §10.4.4.3), or `None` if `i` is not an element: then the ordinary storage or
+/// the chain decides, with the key. The [`get`] hook for an index key, without the key. Not
+/// a GC point.
+#[inline]
+pub(crate) fn element_value(o: u64, i: u32) -> Option<u64> {
+    debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
+    let (v, _) = element(o, i)?;
+    Some(value(o, i, v))
+}
+
+/// `o.[[Set]](i, v, o)` (§10.4.4.4, receiver `o`) for a writable element `i` of the arguments
+/// object `o`, without the key: writes the parameter while `i` is mapped and the element, as
+/// the [`set`] hook does. False, with nothing stored, when `i` is not an element or not
+/// writable: the caller takes the key path, where the hook decides. Not a GC point.
+#[inline]
+pub(crate) fn set_element_value(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
+    debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
+    match element(o, i) {
+        Some((_, a)) if a & attr::WRITABLE != 0 => {
+            set_mapped(rt, o, i, v);
+            set_element(rt, o, i, v, a);
+            true
+        }
+        _ => false,
+    }
 }
 
 // ---- exotic hooks (`exotic.rs`): `None` = no exotic own property, take the ordinary path ----

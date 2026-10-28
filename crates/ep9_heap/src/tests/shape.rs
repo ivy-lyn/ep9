@@ -643,8 +643,9 @@ fn shape_garbage(heap: &Heap) -> Vec<usize> {
 fn alloc_shape_sweeps_dead_ordinary_pages_before_out_of_memory() {
     let heap = shape_heap(|c| c.max_heap_bytes = PAGE_SIZE);
     let dead = ordinary_garbage(&heap);
-    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
+    paint_stack(&dead);
     clear_stack();
+    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
     let before = heap.stats().collections;
     let s = heap.alloc_shape(SHAPE, 24).map(|c| c.addr());
     let st = heap.stats();
@@ -664,8 +665,9 @@ fn alloc_shape_sweeps_dead_ordinary_pages_before_out_of_memory() {
 fn alloc_sweeps_dead_shape_pages_before_out_of_memory() {
     let heap = shape_heap(|c| c.max_heap_bytes = PAGE_SIZE);
     let dead = shape_garbage(&heap);
-    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
+    paint_stack(&dead);
     clear_stack();
+    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
     let before = heap.stats().collections;
     let n = heap.alloc(LEAF, 24).map(|c| c.addr());
     let st = heap.stats();
@@ -684,6 +686,7 @@ fn alloc_sweeps_dead_shape_pages_before_out_of_memory() {
 fn a_large_cell_sweeps_dead_shape_pages_before_out_of_memory() {
     let heap = shape_heap(|c| c.max_heap_bytes = PAGE_SIZE);
     let dead = shape_garbage(&heap);
+    paint_stack(&dead);
     clear_stack();
     let before = heap.stats().collections;
     let big = heap.alloc(NODE, NODE_HEADER + 8 * 2000);

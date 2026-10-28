@@ -112,8 +112,8 @@ downcast! {
     JsFunction => kinds::is_callable,
     JsArray => kinds::is_array,
     JsString => kinds::is_string,
-    // v0: every string is flat. Ropes (M1) make this a test of the flat kinds.
-    FlatStr => kinds::is_string,
+    // A rope (an unflattened CONS) is not flat: `Cx::code_unit_at` reads the units in place.
+    FlatStr => crate::string::is_flat,
     JsSymbol => kinds::is_symbol,
 }
 

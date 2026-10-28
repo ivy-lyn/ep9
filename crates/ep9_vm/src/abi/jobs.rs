@@ -12,7 +12,9 @@
 //!                                                      : enqueue a REACTION job
 //! fulfill_promise / reject_promise   state, result, then one REACTION job per reaction
 //! perform_microtask_checkpoint   run the queue in order until it is empty (one interrupt
-//!                                budget unit per job; termination stops it and clears it)
+//!                                budget unit per job; termination stops it and clears it),
+//!                                then the FinalizationRegistry cleanup until none is pending
+//!                                (one budget unit per callback), then ClearKeptObjects
 //! ```
 //!
 //! | Method | Spec |
@@ -195,11 +197,21 @@ impl<'s> Cx<'s> {
     }
 
     /// Performs a microtask checkpoint: runs the queued jobs in order, and the jobs they
-    /// queue, until the queue is empty. Each job takes one interrupt budget unit and polls
-    /// (M2-P2-POLL), so an interrupt callback runs and `TerminateHandle` stops a job loop; a
-    /// termination also clears the queue. A job that throws stops the checkpoint with its
-    /// exception pending (`Err`); the jobs behind it stay queued. Then the rejected list drops
-    /// any promise that got a handler ("handle" unlinks one at once already).
+    /// queue, until the queue is empty. Each time the queue is empty it runs ClearKeptObjects
+    /// and then the FinalizationRegistry cleanup jobs (`abi/weakref.rs`, M4-P4); the jobs a
+    /// cleanup callback queues run in the same checkpoint, and a callback that throws stops it
+    /// like a job that throws. A GC during a callback may find more dead targets: their
+    /// callbacks run in the same checkpoint too, until no cleanup is pending, with no round
+    /// cap (M4-P4 P4-ORCH-8; node `--expose-gc` runs them all). Each job and each cleanup
+    /// callback (a JS or a builtin function) takes one interrupt budget unit and polls
+    /// (M2-P2-POLL), so an interrupt callback runs and `TerminateHandle` stops a job loop or
+    /// a cleanup chain that never ends; a termination also clears the queue, and the cells
+    /// not yet served stay pending for a later checkpoint. A job that throws stops the
+    /// checkpoint with its exception pending (`Err`); the jobs behind it stay queued. On the
+    /// `Ok` exit it runs ClearKeptObjects once more, after the cleanup and the jobs it queued,
+    /// so a WeakRef that a callback made keeps its target only to the end of the checkpoint
+    /// (§9.10; Codex C2-2). Then the rejected list drops any promise that got a handler
+    /// ("handle" unlinks one at once already).
     ///
     /// Only with no JS on the stack (the spec runs it when the execution context stack is
     /// empty): `Isolate::with_cx_checkpoint` runs it after its scope, and an embedder inside
@@ -215,7 +227,28 @@ impl<'s> Cx<'s> {
         }
         loop {
             if rt.jobs.queue_head() == UNDEFINED {
-                break;
+                // The queue is empty: ClearKeptObjects, then the FinalizationRegistry cleanup
+                // jobs (07-runtime.md "Job order"; `abi/weakref.rs`), as HTML's microtask
+                // checkpoint and node do: a target stays alive through every job of the
+                // checkpoint. A callback may queue jobs: they run in this checkpoint. Each
+                // callback takes a budget unit and polls (`cleanup_finalization_registries`).
+                self.clear_kept_objects();
+                if let Err(t) = self.cleanup_finalization_registries() {
+                    if rt.terminating.get() {
+                        self.clear_queue();
+                    }
+                    return Err(t);
+                }
+                if rt.jobs.queue_head() == UNDEFINED {
+                    // A GC inside a callback set the cleanup flag again: serve those cells
+                    // now. No round cap (P4-ORCH-8): a chain of callbacks that always kills a
+                    // new target runs as long as a JS loop does, and the poll of each callback
+                    // stops it as a loop's back edge does (R-GC-P4-3, Codex B1-2).
+                    if rt.kept_objects.is_pending() {
+                        continue;
+                    }
+                    break;
+                }
             }
             if let Err(t) = self.poll_interrupt() {
                 self.clear_queue();
@@ -229,6 +262,10 @@ impl<'s> Cx<'s> {
                 return Err(t);
             }
         }
+        // ClearKeptObjects at the end of the checkpoint, after the cleanup callbacks and the
+        // jobs they queued: a callback may have made a WeakRef (AddToKeptObjects) and queued
+        // nothing (Codex C2-2). Not a GC point.
+        self.clear_kept_objects();
         self.prune_rejected();
         Ok(())
     }

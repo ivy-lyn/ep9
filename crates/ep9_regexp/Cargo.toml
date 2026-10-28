@@ -1,0 +1,16 @@
+[package]
+name = "ep9_regexp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Only ep9_vm depends on this crate (.github/scripts/dep-guards.sh check 14).
+[dependencies]
+# `utf16`: find_from_utf16 and find_from_ucs2, the UTF-16 input path (Input::Utf16). The
+# Cargo tables freeze at the M4-P0 merge, so the feature is on before RX0A uses it.
+regress = { workspace = true, features = ["utf16"] }
+
+[lints]
+workspace = true

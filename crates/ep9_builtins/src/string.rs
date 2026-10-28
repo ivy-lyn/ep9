@@ -19,13 +19,14 @@
 //!                        Rust std full case mapping, Unicode 17 (H26), lone surrogates kept;
 //!                        the toLocale forms are the plain ones in v0                     (P4)
 //!   string/pattern.rs    split, replace, replaceAll with string patterns; an object
-//!                        pattern with @@split / @@replace is called (RegExp is M1)       (P4)
+//!                        pattern with @@split / @@replace is called                      (P4)
+//!                        match, search (ids in the regexp block: RegExpCreate, then
+//!                        @@match / @@search; M4-P3 REGEXP1)
 //!   string/annex_b.rs    substr and the 13 HTML methods (anchor ... sup)               (P4)
 //! global                 String {w, c}
 //! ```
 //!
-//! Not here: match, matchAll, search (they need RegExp, M1) and normalize (the normalization
-//! tables are M1).
+//! Not here: matchAll (month 5, REGEXP2) and normalize (the normalization tables are M1).
 //!
 //! Strings are read as UTF-16 code units (the private `units` helper) and built in a
 //! `Vec<u16>` (no `Value` in a Rust heap list). A loop whose length is bounded by a string's
@@ -41,7 +42,7 @@
 
 mod annex_b;
 mod case;
-mod pattern;
+pub(crate) mod pattern;
 mod proto;
 
 use ep9_vm::{
@@ -287,7 +288,7 @@ fn this_string<'s>(cx: &mut Cx<'s>, this: Local<'s>, name: &str) -> JsResult<Loc
 }
 
 /// The code units of `s`, copied out (a view cannot live across a GC point, R3).
-fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, JsString>) -> JsResult<Vec<u16>> {
+pub(crate) fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, JsString>) -> JsResult<Vec<u16>> {
     let len = cx.string_len(s);
     units_range(cx, s, 0, len)
 }
@@ -319,7 +320,7 @@ fn new_str<'s>(cx: &mut Cx<'s>, units: &[u16]) -> JsResult<Local<'s>> {
 }
 
 /// Appends `more` to `out`; RangeError if the result would pass [`MAX_LENGTH`].
-fn push_units<'s>(cx: &mut Cx<'s>, out: &mut Vec<u16>, more: &[u16]) -> JsResult<()> {
+pub(crate) fn push_units<'s>(cx: &mut Cx<'s>, out: &mut Vec<u16>, more: &[u16]) -> JsResult<()> {
     if out.len() + more.len() > MAX_LENGTH {
         return Err(cx.throw_range_error("Invalid string length"));
     }
@@ -424,7 +425,7 @@ fn string_index_of<'s>(
 
 /// The well-known symbol `Symbol.<name>`, read from `%Symbol%` (its own property is
 /// non-writable and non-configurable, §20.4.2, so this is always the symbol).
-fn well_known<'s>(cx: &mut Cx<'s>, name: &str) -> JsResult<Local<'s, JsSymbol>> {
+pub(crate) fn well_known<'s>(cx: &mut Cx<'s>, name: &str) -> JsResult<Local<'s, JsSymbol>> {
     let ctor = cx.intrinsic(IntrinsicId::Symbol);
     let v = cx.get(ctor, name)?;
     match v.as_symbol() {

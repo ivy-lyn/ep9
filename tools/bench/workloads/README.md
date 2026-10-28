@@ -10,6 +10,7 @@ Fixed JS programs for the T0 interpreter. Each one checks its own result and thr
 | `t0-call.js` | H15 dispatch kernels | JS-to-JS calls with 0-3 arguments, recursion, a closure |
 | `t0-prop.js` | H15 dispatch kernels | named properties, class methods, array elements |
 | `t0-gen.js` | generator kernel (P1-GEN-VM; not in `DEFAULT_WORKLOADS`) | generator resume and suspend: for-of over a generator, `next(v)` with sent values, `yield*` |
+| `strings-m1.js` | H19 string speed record (plan v9 V9-D17; a value, not a gate; not in `DEFAULT_WORKLOADS`) | 7 named micros: concat-rope, index-chars, rope-keys, number-keys, number-strings, compare, substrings; `var ONLY = "<name>";` before the file runs one; the record is in `docs/adr/H19-strings.md` |
 | `t0-dispatch.mjs` | runner | paired rounds of two configs, PERF-NOISE statistics (10-quality §3) |
 
 ```text

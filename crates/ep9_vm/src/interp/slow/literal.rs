@@ -101,11 +101,18 @@ pub(crate) fn literal(cx: &mut Cx, fp: *mut u64, pc: *const u8, kind: Lit, k: u3
     enter(cx, fp, pc);
     let r = match kind {
         Lit::Array => array_literal(cx, fp, k),
-        Lit::Object => object_literal(cx, fp, k),
+        Lit::Object => object_literal(cx, fp, pc, k),
         Lit::Template => template_object(cx, fp, k),
         Lit::EmptyArray => Ok(object::new_array(cx.rt(), 0)),
         Lit::EmptyObject => Ok(object::new_plain_object(cx.rt())),
     };
+    // The literal-site hook (M4-P0; filled by M4-P1 OBJ-ALLOC, `literal_site.rs`): a stub that
+    // records nothing. Not for template objects (the realm's template registry keeps them).
+    if kind != Lit::Template
+        && let Ok(o) = r
+    {
+        crate::literal_site::miss(cx, fp, pc, kind, k, o);
+    }
     ret(r)
 }
 
@@ -113,7 +120,11 @@ fn array_literal(cx: &mut Cx, fp: *mut u64, k: u32) -> Res<u64> {
     array_from_boilerplate(cx, info(fp), k)
 }
 
-fn object_literal(cx: &mut Cx, fp: *mut u64, k: u32) -> Res<u64> {
+fn object_literal(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> Res<u64> {
+    // A literal with nested shallow arrays, from the site's recorded shape (M4-P1 OBJ-ALLOC).
+    if let Some(o) = crate::literal_site::cold_object(cx, fp, pc, k) {
+        return Ok(o);
+    }
     object_from_boilerplate(cx, info(fp), k)
 }
 
@@ -231,5 +242,10 @@ fn template_object(cx: &mut Cx, fp: *mut u64, k: u32) -> Res<u64> {
 pub(crate) fn clone_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, source: u64) -> u64 {
     enter(cx, fp, pc);
     let o = object::new_plain_object(cx.rt());
-    ret(copy_data_properties(cx, o, source, UNDEFINED).map(|_| o))
+    let r = copy_data_properties(cx, o, source, UNDEFINED).map(|_| o);
+    // The literal-site hook of CloneObject (M4-P0; M4-P1 OBJ-ALLOC): a stub.
+    if let Ok(o) = r {
+        crate::literal_site::miss_clone(cx, fp, pc, source, o);
+    }
+    ret(r)
 }

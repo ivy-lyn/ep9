@@ -34,6 +34,11 @@
 //! M3-P1 B-COLLECTIONS), `realm.rs` (realms, M3-P1 REALMS), `time.rs` (the clock and the local
 //! time zone, M3-P1 B-DATE). The facts exporter is public here as [`export_facts`]
 //! (`facts_export.rs`, M3-P3 FACTS-EXPORT; V8-A13).
+//!
+//! Month-4 submodules (M4-P0 stubs, one owner each): `regexp.rs` (RegExp on the ABI and its
+//! [`MatchRecord`], M4-P2 RX0A, then M4-P3 REGEXP1) and `weakref.rs` (WeakRef and
+//! FinalizationRegistry, M4-P4 WEAKREF). `Cx::math_random` (Math.random over the isolate's
+//! xorshift128+ state, V9-D16) is in this file.
 
 mod collections;
 mod index;
@@ -41,9 +46,11 @@ mod iter;
 mod jobs;
 mod local;
 mod realm;
+mod regexp;
 mod script;
 mod slots;
 mod time;
+mod weakref;
 
 use core::marker::PhantomData;
 
@@ -56,6 +63,7 @@ pub use self::jobs::{
 pub use self::local::{
     Downcast, FlatStr, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
 };
+pub use self::regexp::MatchRecord;
 pub use self::{collections::CollectionCursor, iter::IteratorRecord, slots::ObjectClass};
 use crate::builtins::{self, IntrinsicId};
 use crate::conv::{self, Hint};
@@ -493,14 +501,6 @@ impl Drop for ArgsBuilder<'_> {
     }
 }
 
-/// HasOwnProperty(O, P) (§7.3.13) on a routed kind: its `[[GetOwnProperty]]` (the hook may
-/// throw) is not undefined. Out of line, so [`Cx::has_own_property`] keeps one kind test.
-/// GC point.
-#[inline(never)]
-fn routed_has_own_property(cx: &mut interp::Cx, o: u64, k: u64) -> JsResult<bool> {
-    Ok(property::get_own_property(cx, o, k)?.is_some())
-}
-
 // ---- Cx ------------------------------------------------------------------------------------
 
 /// What a host function can do with the isolate (H20). It exposes no `&Runtime`: builtins
@@ -681,9 +681,11 @@ impl<'s> Cx<'s> {
         Self::local(atoms::intern_str(self.rt(), s))
     }
 
-    /// The property key (atom) for the string `s`.
+    /// The property key (atom) for the string `s`. A rope or slice is flattened or copied
+    /// first, so a builtin never makes a rope or slice atom (`atoms::atomize`, H19-Q1, Q4). A
+    /// GC point, as every `&mut Cx` call is.
     pub fn intern(&mut self, s: Local<'s, JsString>) -> Local<'s, JsKey> {
-        Self::local(atoms::intern(self.rt(), s.bits()))
+        Self::local(atoms::atomize(self.rt(), s.bits()))
     }
 
     /// A new string from Rust text. RangeError past the string length limit (2^29 - 24).
@@ -1039,11 +1041,12 @@ impl<'s> Cx<'s> {
     ) -> JsResult<bool> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
-        Ok(property::has_property(self.cx, o, k))
+        property::try_has_property(self.cx, o, k)
     }
 
-    /// HasOwnProperty(O, P) (§7.3.13). A routed kind (ARGUMENTS, MODULE_NAMESPACE) asks its
-    /// `[[GetOwnProperty]]`, which may throw (a namespace binding in its TDZ, §10.4.6.5).
+    /// HasOwnProperty(O, P) (§7.3.13). A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy)
+    /// asks its `[[GetOwnProperty]]`, which may throw (a namespace binding in its TDZ,
+    /// §10.4.6.5; a revoked proxy).
     pub fn has_own_property(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -1051,10 +1054,7 @@ impl<'s> Cx<'s> {
     ) -> JsResult<bool> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
-        if crate::exotic::is_routed(kinds::cell_kind(o)) {
-            return routed_has_own_property(self.cx, o, k);
-        }
-        Ok(property::has_own_property(self.cx, o, k))
+        property::try_has_own_property(self.cx, o, k)
     }
 
     /// O.`[[GetOwnProperty]]`(P) (§10.1.5), with the virtual properties (R6).
@@ -1151,12 +1151,34 @@ impl<'s> Cx<'s> {
         o: impl Into<Local<'s, JsObject>>,
     ) -> JsResult<Local<'s, JsArray>> {
         let o = o.into().bits();
-        Ok(Self::local(property::own_property_keys(self.cx, o)))
+        Ok(Self::local(property::try_own_property_keys(self.cx, o)?))
     }
 
     /// O.`[[GetPrototypeOf]]`() (§10.1.1): an object or null.
     pub fn get_prototype_of(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<Local<'s>> {
-        Ok(Self::local(object::proto_of(o.into().bits())))
+        Ok(Self::local(property::try_get_prototype_of(
+            self.cx,
+            o.into().bits(),
+        )?))
+    }
+
+    /// One step of a builtin's walk up the prototype chain (`isPrototypeOf`,
+    /// `__lookupGetter__`): one interrupt budget unit and a poll when it runs out (as
+    /// [`Cx::poll_interrupt`]), then O.`[[GetPrototypeOf]]`(), an object or null. `hops`
+    /// counts the proxies the walk has asked (the caller starts it at 0); a proxy may make the
+    /// chain a cycle, so past 100 × 1024 of them (V8's `JSProxy::kMaxIterationLimit`) the step
+    /// throws the RangeError "Maximum call stack size exceeded", as V8 does.
+    #[inline]
+    pub fn prototype_walk_step(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        hops: &mut u32,
+    ) -> JsResult<Local<'s>> {
+        Ok(Self::local(property::prototype_walk_step(
+            self.cx,
+            o.into().bits(),
+            hops,
+        )?))
     }
 
     /// O.`[[SetPrototypeOf]]`(V) (§10.1.2); `proto` is an object or null.
@@ -1169,17 +1191,17 @@ impl<'s> Cx<'s> {
         if p != NULL && !kinds::is_object(p) {
             return Err(self.throw_type_error("Object prototype may only be an Object or null"));
         }
-        Ok(property::set_prototype_of(self.rt(), o, p))
+        property::try_set_prototype_of(self.cx, o, p)
     }
 
     /// O.`[[IsExtensible]]`() (§10.1.3).
     pub fn is_extensible(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<bool> {
-        Ok(property::is_extensible(o.into().bits()))
+        property::try_is_extensible(self.cx, o.into().bits())
     }
 
     /// O.`[[PreventExtensions]]`() (§10.1.4).
     pub fn prevent_extensions(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<bool> {
-        Ok(property::prevent_extensions(self.rt(), o.into().bits()))
+        property::try_prevent_extensions(self.cx, o.into().bits())
     }
 
     /// IsCallable (§7.2.3).
@@ -1193,9 +1215,17 @@ impl<'s> Cx<'s> {
         kinds::is_callable(b) && object::is_constructor(b)
     }
 
-    /// IsArray (§7.2.2). v0: no proxies, so it never throws.
+    /// IsArray (§7.2.2). v0: no proxies, so it never throws. A Proxy gives false here (the
+    /// frozen signature cannot throw); [`Cx::is_array_or_throw`] takes the Proxy step.
     pub fn is_array(&self, v: impl Into<Local<'s>>) -> bool {
         kinds::is_array(v.into().bits())
+    }
+
+    /// IsArray (§7.2.2) with the Proxy step (part 2, M4-P4 PROXY1; V9-D12): an Array is an
+    /// array, a Proxy answers for its `[[ProxyTarget]]` (down a chain of proxies), and a
+    /// revoked Proxy throws a TypeError (step 3.a). Any value. Allocates only the error.
+    pub fn is_array_or_throw(&mut self, v: impl Into<Local<'s>>) -> JsResult<bool> {
+        crate::proxy::is_array(self.cx, v.into().bits())
     }
 
     /// Whether `v` has an `[[ErrorData]]` internal slot (an Error instance, §20.5): the test
@@ -1426,8 +1456,21 @@ impl<'s> Cx<'s> {
         let len = self.get(o, self.atom(Atom::Length))?;
         let len = self.to_length(len)?;
         let mut list = self.args_builder();
+        // Get(O, ! ToString(𝔽(i))) without a string key (M4-P3 KEYED, OI-04): a present
+        // array element is read in place, any other array index through `get_int` (an
+        // arguments element, a hole, the chain); each read sees the state after the last
+        // push and the last getter. An index past 2^32 - 2 takes the key.
         for i in 0..len {
-            let e = property::get_keyed(self.cx, o.bits(), conv::num(i as f64))?;
+            let ob = o.bits();
+            let e = match u32::try_from(i) {
+                Ok(n) if n != u32::MAX => {
+                    match kinds::is_array(ob).then(|| object::array_get(ob, n)) {
+                        Some(Some(v)) => v,
+                        _ => property::get_int(self.cx, ob, n)?,
+                    }
+                }
+                _ => property::get_keyed(self.cx, ob, conv::num(i as f64))?,
+            };
             list.push(self, Self::local::<JsValue>(e))?;
         }
         Ok(list)
@@ -1471,5 +1514,26 @@ impl<'s> Cx<'s> {
     /// Runs a full garbage collection now (test hooks such as `gc()`).
     pub fn collect_garbage(&mut self) {
         self.rt().heap.collect();
+    }
+
+    // ---- Math.random (M4-P0, part 2; V9-D16) ----
+
+    /// The next value of `Math.random` (§21.3.2.27): a number in [0, 1) from the isolate's
+    /// xorshift128+ state (`Runtime::rng`, the V8 generator). The state is seeded per isolate
+    /// from the process hash key (random from the OS, or fixed by `EP9_HASH_SEED`) and the
+    /// isolate's id (`runtime::rng_seed`): each isolate has its own sequence, and one
+    /// `EP9_HASH_SEED` repeats it run to run. Never throws, never allocates; not for
+    /// cryptography.
+    pub fn math_random(&mut self) -> f64 {
+        let rng = &self.rt().rng;
+        let [mut s1, s0] = rng.get();
+        s1 ^= s1 << 23;
+        s1 ^= s1 >> 17;
+        s1 ^= s0;
+        s1 ^= s0 >> 26;
+        rng.set([s0, s1]);
+        // The top 52 bits of the first word as the mantissa of a number in [1, 2), minus 1:
+        // every result is a multiple of 2^-52 below 1 (exact operations only, H36).
+        f64::from_bits((s0 >> 12) | 0x3FF0_0000_0000_0000) - 1.0
     }
 }

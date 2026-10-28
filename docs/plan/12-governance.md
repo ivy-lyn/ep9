@@ -49,7 +49,8 @@ IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0-M5, M8; LICENSE, REMOTE-CI
 | tsrs scanner port (only if option D) | tsrs | Apache-2.0 + NOTICE (derived from TypeScript) | Keep headers; copy the NOTICE lines that apply into `THIRD-PARTY-LICENSE` | Ship those NOTICE lines |
 | test262 patches | test262 | test262 BSD licence (Ecma); no patent licence | Keep the header | None: test data never ships |
 | Typed AWFY kernels | are-we-fast-yet | MIT | Keep the copyright line | None: benchmark only |
-| tsrs in `ep9-typecheck` | tsrs | Apache-2.0 + NOTICE | Never copied into the engine (dep guard) | The `ep9-typecheck` release ships tsrs `LICENSE` and `NOTICE` |
+| tsrs in `ep9-typecheck` | tsrs | Apache-2.0 + NOTICE | Never copied into the engine (dep guard) | The `ep9-typecheck` release ships tsrs `LICENSE`, `NOTICE` and `licenses/Go-LICENSE` (BSD-3-Clause; since tsrs 745eb10, `tsrs_core` compiles Go-derived tables under it) |
+| tsrs binary for `ep9 check` | tsrs | Apache-2.0 + NOTICE; BSD-3-Clause for the Go-derived tables | Built in tsrs's own workspace, never linked into the engine (dep guard) | Any ep9 release that ships the `tsrs` binary ships tsrs `LICENSE`, `NOTICE` and `licenses/Go-LICENSE` (BSD-3-Clause condition 2 covers binary forms) |
 
 ## 2. Repository
 
@@ -88,7 +89,7 @@ After the push: set the merge settings, create the label `ci:full`, and start on
 | Windows x64 | 0.010 | 1.7x |
 | macOS arm64 (M1, 3-core) | 0.062 | 10.3x |
 
-- Included per month for private repos: 2,000 minutes (Free) or 3,000 (Pro). Usage counts against it at list price, so macOS uses it about 10x faster. Each job rounds up to a whole minute. Public repos are free; ep9 stays private.
+- Included per month for private repos: 2,000 minutes (Free) or 3,000 (Pro). Usage counts against it at list price, so macOS uses it about 10x faster. Each job rounds up to a whole minute. Public repos are free. ep9 is public since 2026-10-21: `origin` is the public repo and the old private repo stays as the remote `private` (user decision, decisions-log M2-PUBLIC-REPO, docs/decisions-log.md:1197; M2-GOV-PUBLIC, :1255). So the included quota and the quota risk below apply only to runs in the private repo.
 - Prices fell by up to 39% on 2026-01-01. The planned $0.002/min fee for self-hosted runners is postponed.
 - **Quota risk.** A nightly macOS run alone (about 12 min x $0.062, about $0.75 per night, about $22 per month) is worth more than the whole included quota at the Linux rate. Without a payment method on the account, usage is blocked once the quota is used, so CI is expected to block in month 1. A payment method and a budget are owner actions; agents never change billing. Until one exists, agents keep running the host gates, and macOS nightly runs only when `main` moved.
 
@@ -102,14 +103,14 @@ After the push: set the merge settings, create the label `ci:full`, and start on
 | Push to `main` | Linux x64 | yes | no | no | yes (per-commit baseline) |
 | Nightly 19:17 UTC | all 4 | yes | Mondays (UTC) | Mondays (UTC) | yes |
 | `workflow_dispatch` | all 4 | yes | yes | yes | yes |
-| Docs-only change | none: only the `scope` job runs | no | no | no | no |
+| Docs-only change | none: the `scope` job and `lint` run (plan v9 V9-D35) | lint only (with adr-lint); no dep guards | no | no | no |
 
-- **State on 2026-10-20.** `.github/workflows/ci.yml` has the decided `pull_request` types and the concurrency rule. The `scope` job, `.github/scripts/ci-scope.sh` and the nightly `schedule` trigger land together in one follow-up PR, after the current tools/ work. Until then every event runs every job (the old behaviour), and no nightly run exists.
+- **State on 2026-10-26 (M4-P0; plan v9 V9-D35, V9-A18).** `.github/workflows/ci.yml` has the decided `pull_request` types, the concurrency rule and the `scope` job. `.github/scripts/ci-scope.sh` is an allow-list that fails closed: a change is docs-only only when every changed path is added or modified, and is under `docs/` or is a root `*.md`, and is not `docs/adr/README.md` or under `docs/measurements/` (code and tests read both). A docs-only change runs `scope` and `lint` (lint stays, so adr-lint sees ADR commits); any other change runs every job on all 4 targets. The per-event tiers of the table above and the nightly `schedule` trigger stay off in month 4 (every phase head needs all 4 targets; the nightly comment at .github/workflows/ci.yml:62-64). **Update in M4-P5 (plan v9 §7 step 2).** The Docs-only row is as built. The rows above it are the planned tiers and are off: in month 4 a change that is not docs-only runs all 52 jobs (.github/workflows/ci.yml:40-41) on every event (pull request, push to `main`, dispatch), and `ci:full` changes nothing. V9-D35 decides month 4 only (docs/decisions-log.md:2781, M4-PLAN-D35); turning the tiers or the nightly run on is a later plan decision. From M4-P2 `fuzz-smoke` (cargo-fuzz, 60 s per front-end target, Linux x64) is one of the 52 jobs; front-end fuzz campaigns run in the separate dispatch-only workflow `.github/workflows/fuzz.yml` (10-quality §4). The x86-64 sandbox GC-stress step over 6 boxes is an orchestrator run outside GitHub (V9-D35). On a code change CI is done only when all 52 jobs ran and none is pending or skipped (V9-A18; a skipped job is green on GitHub; .github/workflows/ci.yml:48-50).
 - `.github/scripts/ci-scope.sh` computes the tier. It reads the changed paths from git, so there is no `paths-ignore`: a path-skipped workflow leaves required checks "Pending", a skipped job does not.
 - The nightly run is skipped when `main` has not moved since the last successful nightly run.
 - Concurrency: a new push to a PR cancels that PR's running CI. Push, schedule and dispatch runs are never cancelled. Each push to `main` has its own group, so every main commit gets a run (per-commit perf baseline).
 - `ci:full` is read when CI starts (open, push, ready for review). There is no `labeled` trigger: in the PR's group it would cancel the running CI on every label change. For a full run now: `gh workflow run ci.yml --ref <branch>`.
-- Timeouts cap a runaway job: 40 min (build, test262), 45 (spikes), 90 (sp-tsrs-win).
+- Timeouts cap a runaway job (plan v9 §9.2: at least 1.5x the last measured time; the `timeout-minutes` of each job in `.github/workflows/ci.yml`): 110 min (build + test), 90 (test262 parse + exec), 60 (feature matrix, test262 GC-stress shards, spikes, fp-check, perf CI v0), 30 (lint, disasm, Miri, fuzz smoke), 15 (dep guards; the SP-Dispatch Zen 3 report step), 10 (scope), 120 (sp-tsrs-win). The fuzz-smoke value stays 30 after its first measured run (15 min 51 s with a 10-minute smoke; about 7 min with the normal 60 s x 3; decisions-log M4-P2-FUZZSMOKE, docs/decisions-log.md:3055). A `fuzz.yml` campaign job has 360 (the GitHub job limit; .github/workflows/fuzz.yml:69).
 - The agent host is macOS arm64. Before a PR is marked ready, the author runs the §2 item 4 commands on the host. So a PR without macOS CI still has a macOS run.
 
 ### 3.3 Budget

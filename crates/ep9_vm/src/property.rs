@@ -21,6 +21,7 @@
 //! | constructor function | `prototype` (created on first use, `exotic.rs`) |
 //! | primitive wrapper | `wrapper::string_own_property` (String wrappers: `length`, indices) |
 //! | arguments object, module namespace | routed hooks (`exotic.rs`): `arguments.rs`, `module.rs` |
+//! | proxy (PROXY, PROXY_CALLABLE) | routed hooks (`exotic.rs`): `proxy.rs`, all internal methods |
 //! | string primitive | `length`, array-index keys; then `String.prototype` |
 //! | number / boolean primitive | `Number.prototype` / `Boolean.prototype` |
 //! | symbol primitive | `Symbol.prototype` (`symbol::prototype`) |
@@ -37,21 +38,41 @@
 //! `None` takes the ordinary method; a hook that needs the ordinary step calls
 //! [`ordinary_set_with_receiver`], [`ordinary_define_own_property`], [`ordinary_delete`] or
 //! [`ordinary_own_property_keys`].
+//!
+//! Proxies (M4-P4 PROXY1; plan v9 §6.3, V9-A21). PROXY and PROXY_CALLABLE are routed kinds
+//! whose internal methods may run JS (the traps, PROXY2 in month 5) and may throw (a revoked
+//! proxy). The ordinary functions keep their infallible signatures and assert in debug
+//! builds that they never meet a proxy: [`has_property`], [`has_own_property`],
+//! [`is_extensible`], [`prevent_extensions`], [`set_prototype_of`], [`own_property_keys`],
+//! [`has_index`] and `exotic::own_attrs`. `[[GetPrototypeOf]]` is `object::proto_of` (no
+//! assert: it is in the IC code; a proxy cell's own shape has a null prototype). Each has a
+//! fallible form that is a GC point and asks a proxy: [`try_has_property`],
+//! [`try_has_own_property`], [`try_is_extensible`], [`try_prevent_extensions`],
+//! [`try_set_prototype_of`], [`try_own_property_keys`], [`try_has_index`],
+//! `exotic::try_own_attrs` and [`try_get_prototype_of`]. Code that can meet a proxy (any JS
+//! object) calls the fallible form; the callers that keep the ordinary form hold an ordinary
+//! object by construction, or are on the PROXY2 list (month 5).
+//!
+//! ```text
+//!  get / set / define / delete / [[GetOwnProperty]]: the routed hook (exotic.rs) -> proxy.rs
+//!  has / in / has_index ............................: try_has_property, try_has_index
+//!  a walk over [[Prototype]] that may meet a proxy  : try_get_prototype_of
+//! ```
 
 use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::descriptor::Desc;
-use crate::error::{not_implemented, throw_error};
+use crate::error::{
+    Part::Key, Part::Text, bounded_message, not_implemented, stack_overflow, throw_error,
+};
 use crate::exotic::{self, Exotic};
 use crate::frame::{NULL, UNDEFINED};
 use crate::interp::Cx;
-use crate::key::{
-    self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key, key_text,
-};
+use crate::key::{self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key};
 use crate::kinds::{self as kind, is_bound, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{accessor, bound, shape, string, symbol, wrapper};
+use crate::{accessor, arguments, bound, shape, string, symbol, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -71,7 +92,7 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
     let how = key::probe(key);
     loop {
         if kind::cell_kind(o) != kind::OBJECT.get()
-            && let Some(r) = exotic::get(cx, o, key, how)
+            && let Some(r) = exotic::get(cx, o, key, how, receiver)
         {
             return r;
         }
@@ -101,7 +122,7 @@ pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
         if k != kind::OBJECT.get() && !exotic::is_routed(k) {
             // Only non-routed kinds get here, and their `exotic::get` never throws; the
             // `Some(Err)` arm is defensive.
-            match exotic::get(cx, o, key, how) {
+            match exotic::get(cx, o, key, how, o) {
                 Some(Ok(v)) => return Some(v),
                 Some(Err(_)) => {
                     cx.rt().take_pending();
@@ -145,11 +166,13 @@ fn get_primitive(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         }
     }
     let Some(proto) = primitive_proto(rt, base) else {
-        let k = key_text(rt, key);
-        let msg = format!(
-            "Cannot read properties of {} (reading '{k}')",
-            describe(base)
-        );
+        let msg = bounded_message(&[
+            Text("Cannot read properties of "),
+            Key(base),
+            Text(" (reading '"),
+            Key(key),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     };
     get_with_receiver(cx, proto, key, base)
@@ -178,22 +201,24 @@ fn object_bool(b: bool) -> u64 {
     crate::conv::boolean(b)
 }
 
-/// A string, number, boolean or symbol in V8's message form: `string 'ab'`, `number '1.5'`,
-/// `boolean 'true'`, `symbol 'Symbol(x)'`.
-fn primitive_text(b: u64) -> String {
-    let (ty, text) = if is_string(b) {
-        ("string", string::to_rust_string(b))
+/// The start of a string, number, boolean or symbol in V8's message form (`string 'ab'`,
+/// `number '1.5'`, `boolean 'true'`, `symbol 'Symbol(x)'`): the type and the opening quote;
+/// the value's text is a [`Key`] part (bounded, H19-Q5).
+fn primitive_type(b: u64) -> &'static str {
+    if is_string(b) {
+        "string '"
     } else if is_symbol(b) {
-        ("symbol", describe(b))
+        "symbol '"
     } else if val(b).is_number() {
-        ("number", describe(b))
+        "number '"
     } else {
-        ("boolean", describe(b))
-    };
-    format!("{ty} '{text}'")
+        "boolean '"
+    }
 }
 
-/// `base[k]` for any key value (keyed load).
+/// `base[k]` for any key value (keyed load). An int32 index `>= 0` on an object makes no
+/// string key (M4-P3 KEYED, OI-04): an array element, an arguments element ([`get_int`]),
+/// then [`get_index`] (a hole, a String wrapper's character, a stored index, the chain).
 pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
     if let Some(i) = val(k).as_int32()
         && i >= 0
@@ -205,17 +230,39 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
         } else if is_string(base) && (i as usize) < object::str_len(base) {
             return Ok(string::char_at(cx.rt(), base, i as usize));
         }
+        if is_object(base) {
+            return get_int(cx, base, i as u32);
+        }
     }
     if base == UNDEFINED || base == NULL {
-        let msg = format!(
-            "Cannot read properties of {} (reading '{}')",
-            describe(base),
-            describe(k).trim_matches('"')
-        );
+        // The key's length is checked before its text is read (H19-Q5, Codex H19 H-1): a
+        // rope key near the length limit gives `<error>` with no flatten and no copy.
+        let msg = bounded_message(&[
+            Text("Cannot read properties of "),
+            Key(base),
+            Text(" (reading '"),
+            Key(k),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let key = to_property_key(cx, k)?;
     get(cx, base, key)
+}
+
+/// `o[i]` (`[[Get]]` with receiver `o`) for the object `o` and an array index `i`, without a
+/// string key: an element of an arguments object (a mapped index reads its parameter), then
+/// [`get_index`], which answers an array hole, a String wrapper's character and a missing
+/// index without a key, and asks a routed kind with the key. GC point (a getter, the key
+/// path).
+#[inline]
+pub(crate) fn get_int(cx: &mut Cx, o: u64, i: u32) -> Res<u64> {
+    if kind::cell_kind(o) == kind::ARGUMENTS.get()
+        && let Some(v) = arguments::element_value(o, i)
+    {
+        return Ok(v);
+    }
+    get_index(cx, o, u64::from(i))
 }
 
 /// PutValue on a property reference (§6.2.5.6): `base[key] = v` with receiver `base`. A
@@ -238,11 +285,13 @@ pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res
 #[inline(never)]
 fn set_primitive(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res<()> {
     let Some(proto) = primitive_proto(cx.rt(), base) else {
-        let msg = format!(
-            "Cannot set properties of {} (setting '{}')",
-            describe(base),
-            key_text(cx.rt(), key)
-        );
+        let msg = bounded_message(&[
+            Text("Cannot set properties of "),
+            Key(base),
+            Text(" (setting '"),
+            Key(key),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     };
     // Step 5.a: ToObject(base).[[Set]](key, v, base). The wrapper's own properties come
@@ -401,6 +450,11 @@ fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool>
             };
             define_own_property(cx, receiver, key, desc)
         }
+        // Step 2.e: CreateDataProperty(Receiver, P, V). A proxy receiver takes its
+        // `[[DefineOwnProperty]]` (its cell's storage holds no property key).
+        None if crate::proxy::is_proxy_kind(kind::cell_kind(receiver)) => {
+            define_own_property(cx, receiver, key, Desc::data(v, attr::DEFAULT))
+        }
         None => {
             if !is_extensible(receiver) {
                 return Ok(false);
@@ -433,11 +487,11 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
         return Ok(());
     }
     let rt = cx.rt();
-    let k = key_text(rt, key);
+    // `what`: the receiver as V8 names it, `#<Object>` or a primitive's `type 'text'`.
     let what = if is_object(base) {
-        "#<Object>".to_string()
+        [Text("#<Object>"), Text(""), Text("")]
     } else {
-        primitive_text(base)
+        [Text(primitive_type(base)), Key(base), Text("'")]
     };
     let own_string = is_string(base)
         && (is_atom(cx, key, Atom::Length)
@@ -447,27 +501,71 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
     } else {
         first_attrs_on_chain(rt, start, key)
     };
+    let [w0, w1, w2] = what;
+    let k = Key(key);
     let msg = match found {
-        Some(a) if a & attr::ACCESSOR != 0 => {
-            format!("Cannot set property {k} of {what} which has only a getter")
-        }
-        Some(a) if a & attr::WRITABLE == 0 && is_object(base) => {
-            format!("Cannot assign to read only property '{k}' of object '{what}'")
-        }
-        Some(a) if a & attr::WRITABLE == 0 => {
-            format!("Cannot assign to read only property '{k}' of {what}")
-        }
-        _ if is_object(base) => format!("Cannot add property {k}, object is not extensible"),
-        _ => format!("Cannot create property '{k}' on {what}"),
+        Some(a) if a & attr::ACCESSOR != 0 => bounded_message(&[
+            Text("Cannot set property "),
+            k,
+            Text(" of "),
+            w0,
+            w1,
+            w2,
+            Text(" which has only a getter"),
+        ]),
+        Some(a) if a & attr::WRITABLE == 0 && is_object(base) => bounded_message(&[
+            Text("Cannot assign to read only property '"),
+            k,
+            Text("' of object '"),
+            w0,
+            w1,
+            w2,
+            Text("'"),
+        ]),
+        Some(a) if a & attr::WRITABLE == 0 => bounded_message(&[
+            Text("Cannot assign to read only property '"),
+            k,
+            Text("' of "),
+            w0,
+            w1,
+            w2,
+        ]),
+        _ if is_object(base) => bounded_message(&[
+            Text("Cannot add property "),
+            k,
+            Text(", object is not extensible"),
+        ]),
+        _ => bounded_message(&[
+            Text("Cannot create property '"),
+            k,
+            Text("' on "),
+            w0,
+            w1,
+            w2,
+        ]),
     };
     Err(throw_error(cx, ErrorKind::TypeError, &msg))
 }
 
-/// The attributes of the first property `key` on the chain from the object `o`, if any.
-/// Not a GC point (a lazy `prototype` is not made: it is {w}).
+/// The attributes of the first property `key` on the chain from the object `o`, if any, for
+/// an error message. Not a GC point and runs no JS (a lazy `prototype` is not made: it is
+/// {w}). A proxy is not asked: the walk goes on at its target, as the no-trap step does (a
+/// revoked proxy ends it). A proxy may make the chain a cycle: past [`MAX_PROXY_HOPS`]
+/// proxies the walk gives `None` (M4-P4 fixer B, Codex PROXY1 P-2).
 fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
     let how = key::probe(key);
+    let mut hops = 0;
     loop {
+        while crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+            hops += 1;
+            if hops > MAX_PROXY_HOPS {
+                return None;
+            }
+            o = crate::proxy::target(o);
+            if o == NULL {
+                return None;
+            }
+        }
         if let Some(a) = exotic::own_attrs(rt, o, key, how)
             .or_else(|| props::own_get_with(o, key, how).map(|(_, a)| a))
         {
@@ -480,21 +578,29 @@ fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
     }
 }
 
-/// `base[k] = v` for any key value (keyed store).
+/// `base[k] = v` for any key value (keyed store). An int32 index `>= 0` stores a dense array
+/// element ([`array_store`]) or a writable arguments element (its parameter too while it is
+/// mapped, §10.4.4.4) without a string key (M4-P3 KEYED); every other case takes the key.
 pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) -> Res<()> {
-    if is_array(base)
-        && let Some(i) = val(k).as_int32()
+    if let Some(i) = val(k).as_int32()
         && i >= 0
-        && array_store(cx.rt(), base, i as u32, v)
     {
-        return Ok(());
+        let kd = kind::cell_kind(base);
+        if kd == kind::ARRAY.get() && array_store(cx.rt(), base, i as u32, v) {
+            return Ok(());
+        }
+        if kd == kind::ARGUMENTS.get() && arguments::set_element_value(cx.rt(), base, i as u32, v) {
+            return Ok(());
+        }
     }
     if base == UNDEFINED || base == NULL {
-        let msg = format!(
-            "Cannot set properties of {} (setting '{}')",
-            describe(base),
-            describe(k).trim_matches('"')
-        );
+        let msg = bounded_message(&[
+            Text("Cannot set properties of "),
+            Key(base),
+            Text(" (setting '"),
+            Key(k),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let key = to_property_key(cx, k)?;
@@ -519,10 +625,14 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     {
         return Ok(());
     }
+    // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy) takes its `[[DefineOwnProperty]]`
+    // hook.
+    if exotic::is_routed(kind::cell_kind(o)) {
+        return define_routed(cx, o, key, v);
+    }
     let exotic = exotic::own_attrs(rt, o, key, how);
     let stored = props::own_get_with(o, key, how);
-    // A routed kind (ARGUMENTS, MODULE_NAMESPACE) takes its `[[DefineOwnProperty]]` hook.
-    if exotic.is_none() && !exotic::is_routed(kind::cell_kind(o)) {
+    if exotic.is_none() {
         match stored {
             None if is_extensible(o) => {
                 props::own_add(rt, o, key, v, attr::DEFAULT);
@@ -536,14 +646,46 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
         }
     }
     let exists = exotic.is_some() || stored.is_some();
+    define_slow(cx, o, key, v, exists)
+}
+
+/// [`define`] on a routed kind (out of line: the fast path above stays as it was). The
+/// message of a rejection says whether the property existed; for a proxy that would need its
+/// `[[GetOwnProperty]]` (a trap from PROXY2 on), so a proxy gets V8's trap text. GC point.
+#[cold]
+#[inline(never)]
+fn define_routed(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
+    if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        if define_own_property(cx, o, key, Desc::data(v, attr::DEFAULT))? {
+            return Ok(());
+        }
+        let msg = bounded_message(&[
+            Text("'defineProperty' on proxy: trap returned falsish for property '"),
+            Key(key),
+            Text("'"),
+        ]);
+        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    }
+    let how = key::probe(key);
+    let exists = exotic::own_attrs(cx.rt(), o, key, how).is_some()
+        || props::own_get_with(o, key, how).is_some();
+    define_slow(cx, o, key, v, exists)
+}
+
+/// The `[[DefineOwnProperty]]` step of [`define`]; a rejection throws a TypeError that says
+/// whether the property `exists`. GC point.
+fn define_slow(cx: &mut Cx, o: u64, key: u64, v: u64, exists: bool) -> Res<()> {
     if define_own_property(cx, o, key, Desc::data(v, attr::DEFAULT))? {
         return Ok(());
     }
-    let k = key_text(cx.rt(), key);
     let msg = if exists {
-        format!("Cannot redefine property: {k}")
+        bounded_message(&[Text("Cannot redefine property: "), Key(key)])
     } else {
-        format!("Cannot define property {k}, object is not extensible")
+        bounded_message(&[
+            Text("Cannot define property "),
+            Key(key),
+            Text(", object is not extensible"),
+        ])
     };
     Err(throw_error(cx, ErrorKind::TypeError, &msg))
 }
@@ -578,14 +720,18 @@ pub(crate) fn delete(cx: &mut Cx, base: u64, k: u64, strict: bool) -> Res<bool> 
             !(is_string(base) && (array_index_of(key).is_some() || is_atom(cx, key, Atom::Length)))
         );
     }
-    let deleted = match exotic::delete(cx, base, key) {
-        Some(r) => r?,
-        None => ordinary_delete(cx.rt(), base, key),
-    };
-    if deleted {
+    if internal_delete(cx, base, key)? {
         Ok(true)
     } else {
         deny(cx, key, strict)
+    }
+}
+
+/// `o.[[Delete]](key)` (§10.1.10, or a routed kind's hook) on the object `o`. GC point.
+pub(crate) fn internal_delete(cx: &mut Cx, o: u64, key: u64) -> Res<bool> {
+    match exotic::delete(cx, o, key) {
+        Some(r) => r,
+        None => Ok(ordinary_delete(cx.rt(), o, key)),
     }
 }
 
@@ -620,10 +766,11 @@ pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
 
 fn deny(cx: &mut Cx, key: u64, strict: bool) -> Res<bool> {
     if strict {
-        let msg = format!(
-            "Cannot delete property '{}' of object",
-            key_text(cx.rt(), key)
-        );
+        let msg = bounded_message(&[
+            Text("Cannot delete property '"),
+            Key(key),
+            Text("' of object"),
+        ]);
         Err(throw_error(cx, ErrorKind::TypeError, &msg))
     } else {
         Ok(false)
@@ -642,12 +789,29 @@ pub(crate) fn has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
             ),
         ));
     }
+    // An int32 index `>= 0` needs no string key (M4-P3 KEYED): [`try_has_index`] answers an
+    // element, a String wrapper index and a missing index, and asks a routed kind with the
+    // key (an arguments element answers first).
+    if let Some(i) = val(k).as_int32()
+        && i >= 0
+    {
+        if kind::cell_kind(o) == kind::ARGUMENTS.get()
+            && arguments::element_value(o, i as u32).is_some()
+        {
+            return Ok(true);
+        }
+        return try_has_index(cx, o, i as u64);
+    }
     let key = to_property_key(cx, k)?;
-    Ok(has_property(cx, o, key))
+    try_has_property(cx, o, key)
 }
 
-/// HasProperty(O, P) (§7.3.12, OrdinaryHasProperty along the chain) for a property key.
-/// Runs no JS (no proxies yet) and allocates nothing.
+/// HasProperty(O, P) (§7.3.12, OrdinaryHasProperty along the chain) for a property key, for
+/// a chain with no proxy (a debug assert at each object; [`try_has_property`] takes one).
+/// Runs no JS and allocates nothing.
+// V9-A21 keeps the ordinary form; since `Cx::has_index` asks [`try_has_index`] (M4-P4 fixer
+// B, Codex PROXY1 P-3) only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn has_property(cx: &Cx, o: u64, key: u64) -> bool {
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
@@ -664,13 +828,57 @@ pub(crate) fn has_property(cx: &Cx, o: u64, key: u64) -> bool {
     }
 }
 
-/// HasOwnProperty(O, P) (§7.3.13): `[[GetOwnProperty]]` is not undefined. Allocates nothing.
+/// HasProperty(O, P) (§7.3.12) for any object: OrdinaryHasProperty along the chain until a
+/// proxy, whose `[[HasProperty]]` (`proxy.rs`) answers for itself and the rest of the
+/// chain. GC point (a proxy may run JS from PROXY2 on); a chain with no proxy allocates
+/// nothing.
+pub(crate) fn try_has_property(cx: &mut Cx, o: u64, key: u64) -> Res<bool> {
+    debug_assert!(is_object(o) && is_property_key(key));
+    let how = key::probe(key);
+    let mut cur = o;
+    loop {
+        if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
+            // GC point: `key` lives in a Rust local.
+            return crate::proxy::has_property(cx, cur, key);
+        }
+        if has_own_with(cx.rt(), cur, key, how) {
+            return Ok(true);
+        }
+        let p = object::proto_of(cur);
+        if p == NULL {
+            return Ok(false);
+        }
+        cur = p;
+    }
+}
+
+/// HasOwnProperty(O, P) (§7.3.13): `[[GetOwnProperty]]` is not undefined, for an object that
+/// is not a proxy (a debug assert; [`try_has_own_property`] takes one). Allocates nothing.
 pub(crate) fn has_own_property(cx: &Cx, o: u64, key: u64) -> bool {
     debug_assert!(is_object(o) && is_property_key(key));
     has_own_with(cx.rt(), o, key, key::probe(key))
 }
 
+/// HasOwnProperty(O, P) (§7.3.13) for any object. ARGUMENTS and MODULE_NAMESPACE ask their
+/// `[[GetOwnProperty]]` hook (a namespace binding in its TDZ throws, §10.4.6.5); a proxy its
+/// `[[GetOwnProperty]]` (`exotic::try_own_attrs`). GC point for a routed kind only.
+pub(crate) fn try_has_own_property(cx: &mut Cx, o: u64, key: u64) -> Res<bool> {
+    debug_assert!(is_object(o) && is_property_key(key));
+    let k = kind::cell_kind(o);
+    if crate::proxy::is_proxy_kind(k) {
+        return Ok(exotic::try_own_attrs(cx, o, key, key::probe(key))?.is_some());
+    }
+    if exotic::is_routed(k) {
+        return Ok(get_own_property(cx, o, key)?.is_some());
+    }
+    Ok(has_own_property(cx, o, key))
+}
+
 fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
+    debug_assert!(
+        !crate::proxy::is_proxy_kind(kind::cell_kind(o)),
+        "the ordinary HasProperty met a proxy: use try_has_property"
+    );
     props::own_get_with(o, key, how).is_some() || exotic::own_attrs(rt, o, key, how).is_some()
 }
 
@@ -689,6 +897,21 @@ fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
 /// takes that step in place, so a long bound chain costs no native stack (W4-BLTA-BOUND).
 /// GC point (the `@@hasInstance` getter and handler run JS): `v` and `f` live in Rust locals.
 pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
+    // The InstanceOf IC (M4-P3 IC2, `instance_ic.rs`): the site, read before any JS runs;
+    // the case of `f` is recorded once the generic answer is known.
+    let site = crate::instance_ic::site(cx);
+    let r = instance_of_generic(cx, v, f);
+    if r.is_ok()
+        && let Some((vector, slot)) = site
+    {
+        // GC point: `f` lives in a Rust local.
+        crate::instance_ic::record(cx.rt(), vector, slot, f);
+    }
+    r
+}
+
+/// InstanceofOperator(v, f) without the IC: the loop of [`instance_of`].
+fn instance_of_generic(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
     let mut f = f;
     loop {
         // 1. If target is not an Object, throw a TypeError exception.
@@ -768,15 +991,62 @@ fn ordinary_has_instance_of_function(cx: &mut Cx, c: u64, o: u64) -> Res<bool> {
             "Function has non-object prototype in instanceof check",
         ));
     }
-    // 6. Repeat: O = ? O.[[GetPrototypeOf]](); null gives false, P gives true.
-    let mut o = object::proto_of(o);
+    // 6. Repeat: O = ? O.[[GetPrototypeOf]](); null gives false, P gives true. GC point (a
+    //    proxy on the chain, the interrupt poll): `proto` lives in a Rust local. A proxy may
+    //    make the chain a cycle, so the walk is bounded ([`prototype_walk_step`]).
+    let mut hops = 0;
+    let mut o = prototype_walk_step(cx, o, &mut hops)?;
     while o != NULL {
         if o == proto {
             return Ok(true);
         }
-        o = object::proto_of(o);
+        o = prototype_walk_step(cx, o, &mut hops)?;
     }
     Ok(false)
+}
+
+/// The most proxies one prototype-chain walk passes: V8's `JSProxy::kMaxIterationLimit`
+/// (100 × 1024), past which V8's `PrototypeIterator` throws the RangeError "Maximum call
+/// stack size exceeded" (node v24.22.1 gives it for `a instanceof C`, `isPrototypeOf` and
+/// `__lookupGetter__` when `a`'s prototype is a proxy of `a`). Only a proxy can close a
+/// cycle: OrdinarySetPrototypeOf refuses one through ordinary objects and stops its check at
+/// a proxy (§10.1.2.1 step 8.c.i), so an ordinary chain of any length is never cut.
+pub(crate) const MAX_PROXY_HOPS: u32 = 100 * 1024;
+
+/// One step of a walk up the prototype chain (instanceof, for-in, and through
+/// `Cx::prototype_walk_step` the builtins `isPrototypeOf`, `__lookupGetter__` and
+/// `__lookupSetter__`; M4-P4 fixer B, Codex PROXY1 P-2, R-VM-P4-2): one interrupt budget unit
+/// and a poll when it runs out (the walk has no back edge, M2-P2-POLL), then
+/// `o.[[GetPrototypeOf]]()`. `hops` counts the proxies the walk has asked; past
+/// [`MAX_PROXY_HOPS`] the step throws the RangeError "Maximum call stack size exceeded"
+/// instead. The caller starts `hops` at 0. GC point (a proxy, the poll).
+///
+/// The hot part is inlined: the budget unit and, for an ordinary object, its shape's
+/// prototype; the proxy part is a cold call (M4-P4 verifier B V-B1: the walk had cost about
+/// 22 more instructions per step than before fixer B). The instanceof cache's hit walk takes
+/// 8 units per full group of 8 steps (none for its last 1 to 8) and leaves the poll to this walk.
+#[inline]
+pub(crate) fn prototype_walk_step(cx: &mut Cx, o: u64, hops: &mut u32) -> Res<u64> {
+    cx.budget -= 1;
+    if cx.budget <= 0 && crate::interp::slow::interrupt(cx, core::ptr::null_mut()) == 0 {
+        return Err(ep9_value::Throw);
+    }
+    if !crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        return Ok(object::proto_of(o));
+    }
+    proxy_walk_step(cx, o, hops)
+}
+
+/// The proxy part of [`prototype_walk_step`]: counts the hop, then the proxy's
+/// `[[GetPrototypeOf]]` (`proxy::get_prototype_of`). GC point.
+#[cold]
+#[inline(never)]
+fn proxy_walk_step(cx: &mut Cx, o: u64, hops: &mut u32) -> Res<u64> {
+    *hops += 1;
+    if *hops > MAX_PROXY_HOPS {
+        return stack_overflow(cx);
+    }
+    crate::proxy::get_prototype_of(cx, o)
 }
 
 /// Whether `h` is `%Function.prototype%[@@hasInstance]` (VM builtin 0.30). Allocates nothing.
@@ -809,11 +1079,14 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     // prototype's. A key seen before, enumerable or not, is skipped later.
     // GC: the Rust vectors hold only indices, key atoms of property storage (reachable from
     // `o`) and the `length` atom (a runtime root); a new index string goes into `keys` (a Rust
-    // local, so a root) at once. A routed kind's keys come from its key array (`own`, a Rust
-    // local kept live until they are pushed) and stay reachable from the object: namespace
-    // export names from `nsf::EXPORTS`, arguments string keys from its storage.
+    // local, so a root) at once. A routed kind's keys come from its key array (`own`), and
+    // each such array goes into `kept` (a Rust local, so a root) until the loop ends: the
+    // keys in `seen_string` stay alive although a proxy's keys may be reachable from nothing
+    // else once its traps run JS (PROXY2).
     let mut seen_index: Vec<u32> = Vec::new();
     let mut seen_string: Vec<u64> = Vec::new();
+    let mut kept = UNDEFINED;
+    let mut hops = 0;
     let mut cur = o;
     loop {
         // (index, enumerable) and (key, enumerable).
@@ -822,9 +1095,14 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
         // The key array of a routed kind, kept live until its keys are pushed below.
         let mut own = UNDEFINED;
         if exotic::is_routed(kind::cell_kind(cur)) {
-            // A routed kind (ARGUMENTS, MODULE_NAMESPACE): its `[[OwnPropertyKeys]]` and
-            // `[[GetOwnProperty]]` (the hooks, else the ordinary methods). GC points.
-            own = own_property_keys(cx, cur);
+            // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy): its `[[OwnPropertyKeys]]`
+            // and `[[GetOwnProperty]]` (the hooks, else the ordinary methods). GC points.
+            own = try_own_property_keys(cx, cur)?;
+            if kept == UNDEFINED {
+                kept = object::new_array(cx.rt(), 0);
+            }
+            let n = object::array_len(kept);
+            object::array_set(cx.rt(), kept, n, own);
             for j in 0..object::array_len(own) {
                 let Some(k) = object::array_get(own, j) else {
                     continue;
@@ -890,12 +1168,16 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             }
         }
         std::hint::black_box(own);
-        let p = object::proto_of(cur);
+        // GC point (a proxy's [[GetPrototypeOf]], the interrupt poll). A proxy may make the
+        // chain a cycle: the step is bounded ([`prototype_walk_step`]), so `kept` holds at
+        // most one key array per proxy hop up to the bound.
+        let p = prototype_walk_step(cx, cur, &mut hops)?;
         if p == NULL {
             break;
         }
         cur = p;
     }
+    std::hint::black_box(kept);
     Ok(keys)
 }
 
@@ -922,6 +1204,18 @@ fn own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(u64, i32, OwnSlot)
     Ok(props::own_get_with(o, key, how).map(|(v, a)| (v, a, OwnSlot::Storage)))
 }
 
+/// `o.[[GetOwnProperty]](key)` in the stored form: (value, attribute bits), where an
+/// accessor's value is its ACCESSOR_PAIR; an array's `length` too. The form a proxy's
+/// `[[GetOwnProperty]]` returns from its target (`proxy.rs`). GC point.
+pub(crate) fn own_property_stored(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(u64, i32)>> {
+    debug_assert!(is_object(o) && is_property_key(key));
+    if is_array(o) && is_atom(cx, key, Atom::Length) {
+        // §10.4.2: {w: true, e: false, c: false} (as `get_own_property`).
+        return Ok(Some((num(f64::from(object::array_len(o))), attr::WRITABLE)));
+    }
+    Ok(own_property(cx, o, key)?.map(|(v, a, _)| (v, a)))
+}
+
 /// `o.[[GetOwnProperty]](key)` (§10.1.5.1 OrdinaryGetOwnProperty, plus the exotic
 /// properties of arrays, constructors and String wrappers; H20 R6). Only a routed kind's hook
 /// throws (a namespace binding in its TDZ, §10.4.6.5). GC point.
@@ -935,13 +1229,28 @@ pub(crate) fn get_own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<Desc
     Ok(own_property(cx, o, key)?.map(|(v, a, _)| accessor::stored_desc(v, a)))
 }
 
-/// IsExtensible (§7.2.5, ordinary objects): the shape's flag.
+/// IsExtensible (§7.2.5, ordinary objects): the shape's flag. Not for a proxy (a debug
+/// assert; [`try_is_extensible`] takes one).
 pub(crate) fn is_extensible(o: u64) -> bool {
+    debug_assert!(
+        !crate::proxy::is_proxy(o),
+        "is_extensible on a proxy: use try_is_extensible"
+    );
     shape::is_extensible(shape::shape_of(o))
 }
 
+/// IsExtensible(O) (§7.2.5) for any object: a proxy asks its `[[IsExtensible]]`. GC point
+/// for a proxy only.
+pub(crate) fn try_is_extensible(cx: &mut Cx, o: u64) -> Res<bool> {
+    if crate::proxy::is_proxy(o) {
+        return crate::proxy::is_extensible(cx, o);
+    }
+    Ok(is_extensible(o))
+}
+
 /// `o.[[PreventExtensions]]()` (§10.1.4.1). Always succeeds for ordinary objects. The
-/// object moves to a non-extensible dictionary shape (OM-10). GC point.
+/// object moves to a non-extensible dictionary shape (OM-10). Not for a proxy (a debug
+/// assert; [`try_prevent_extensions`] takes one). GC point.
 pub(crate) fn prevent_extensions(rt: &Runtime, o: u64) -> bool {
     if is_extensible(o) {
         props::prevent_extensions(rt, o);
@@ -949,10 +1258,43 @@ pub(crate) fn prevent_extensions(rt: &Runtime, o: u64) -> bool {
     true
 }
 
+/// `o.[[PreventExtensions]]()` for any object: a proxy asks its own (`proxy.rs`). GC point.
+pub(crate) fn try_prevent_extensions(cx: &mut Cx, o: u64) -> Res<bool> {
+    if crate::proxy::is_proxy(o) {
+        return crate::proxy::prevent_extensions(cx, o);
+    }
+    Ok(prevent_extensions(cx.rt(), o))
+}
+
+/// `o.[[GetPrototypeOf]]()` for any object: the shape's prototype (§10.1.1.1
+/// OrdinaryGetPrototypeOf, `object::proto_of`), or a proxy's `[[GetPrototypeOf]]`
+/// (`proxy.rs`). GC point for a proxy only.
+#[inline]
+pub(crate) fn try_get_prototype_of(cx: &mut Cx, o: u64) -> Res<u64> {
+    if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        return crate::proxy::get_prototype_of(cx, o);
+    }
+    Ok(object::proto_of(o))
+}
+
+/// `o.[[SetPrototypeOf]](p)` for any object (`p` is an object or null): a proxy asks its
+/// own (`proxy.rs`). GC point.
+pub(crate) fn try_set_prototype_of(cx: &mut Cx, o: u64, p: u64) -> Res<bool> {
+    if crate::proxy::is_proxy(o) {
+        return crate::proxy::set_prototype_of(cx, o, p);
+    }
+    Ok(set_prototype_of(cx.rt(), o, p))
+}
+
 /// `o.[[SetPrototypeOf]](p)` (§10.1.2.1 OrdinarySetPrototypeOf; `p` is an object or null).
-/// %Object.prototype% is an immutable prototype exotic object (§10.4.7). GC point.
+/// %Object.prototype% is an immutable prototype exotic object (§10.4.7). Not for a proxy (a
+/// debug assert; [`try_set_prototype_of`] takes one). GC point.
 pub(crate) fn set_prototype_of(rt: &Runtime, o: u64, p: u64) -> bool {
     debug_assert!(is_object(o) && (p == NULL || is_object(p)));
+    debug_assert!(
+        !crate::proxy::is_proxy(o),
+        "set_prototype_of on a proxy: use try_set_prototype_of"
+    );
     if object::proto_of(o) == p {
         return true;
     }
@@ -1204,13 +1546,23 @@ fn array_define_length(cx: &mut Cx, a: u64, desc: Desc) -> Res<bool> {
 /// then symbols in creation order. The exotic properties come where the spec creates them:
 /// `length` of an array or String wrapper first among the strings; a constructor's lazy
 /// `prototype` after its `length` and `name`. A routed kind's hook
-/// (`exotic::own_property_keys`) runs first. GC point.
+/// (`exotic::own_property_keys`) runs first. Not for a proxy (a debug assert;
+/// [`try_own_property_keys`] takes one). GC point.
 pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     debug_assert!(is_object(o));
     if let Some(keys) = exotic::own_property_keys(cx, o) {
         return keys;
     }
     ordinary_own_property_keys(cx, o)
+}
+
+/// `o.[[OwnPropertyKeys]]()` for any object: a proxy asks its own (`proxy.rs`), every other
+/// kind [`own_property_keys`]. GC point.
+pub(crate) fn try_own_property_keys(cx: &mut Cx, o: u64) -> Res<u64> {
+    if crate::proxy::is_proxy(o) {
+        return crate::proxy::own_property_keys(cx, o);
+    }
+    Ok(own_property_keys(cx, o))
 }
 
 /// [`own_property_keys`] past the hook of `o`: OrdinaryOwnPropertyKeys (with the array and
@@ -1274,7 +1626,8 @@ pub(crate) fn ordinary_own_property_keys(cx: &mut Cx, o: u64) -> u64 {
 //
 // ```text
 // i ≤ 2^53 - 1: find_index walks the chain from o, per object own_index(i) without the key:
-//   routed kind (ARGUMENTS, MODULE_NAMESPACE)    -> Unknown: its hooks, with the key
+//   routed kind (ARGUMENTS, MODULE_NAMESPACE,
+//                PROXY, PROXY_CALLABLE)          -> Unknown: its hooks, with the key
 //   array element / String wrapper index        -> found
 //   array-index i: fast shape                    -> absent (an array-index key makes a
 //                                                   dictionary, OM-10)
@@ -1302,8 +1655,8 @@ enum OwnIndex {
     WrapperChar(u64),
     /// The object has no such own property.
     Absent,
-    /// Too many stored keys to scan, or a routed kind (ARGUMENTS, MODULE_NAMESPACE) whose
-    /// hooks decide: ask this object with the key.
+    /// Too many stored keys to scan, or a routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy)
+    /// whose hooks decide: ask this object with the key.
     Unknown,
 }
 
@@ -1331,8 +1684,10 @@ fn index_digits(i: u64, buf: &mut [u8; 20]) -> &[u8] {
 /// The own property `! ToString(𝔽(i))` of the object `o` (`text` is that string), found
 /// without the key: the exotic ones of `exotic.rs` that an integer key can name (array
 /// elements, String wrapper indices), then the stored ones. A routed kind (ARGUMENTS,
-/// MODULE_NAMESPACE) always answers `Unknown`: its hooks decide, with the key. A new exotic
-/// kind with integer keys adds its case here too. Not a GC point.
+/// MODULE_NAMESPACE, PROXY, PROXY_CALLABLE) always answers `Unknown`: its hooks decide, with
+/// the key (H31 fast-path row 3: only routed kinds answer an index through hooks). A new
+/// exotic kind with integer keys joins `exotic::is_routed` or adds its case here. Not a GC
+/// point.
 fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
     let k = kind::cell_kind(o);
     if exotic::is_routed(k) {
@@ -1398,8 +1753,12 @@ fn index_key_of(rt: &Runtime, i: u64) -> u64 {
     key::number_key(rt, i as f64)
 }
 
-/// HasProperty(O, ! ToString(𝔽(i))) (§7.3.12) on the object `o`. No atom for an element or a
-/// missing index. GC point only on the key path.
+/// HasProperty(O, ! ToString(𝔽(i))) (§7.3.12) on the object `o`, for a chain with no proxy
+/// ([`has_property`]'s debug assert; [`try_has_index`] takes one). No atom for an element or
+/// a missing index. GC point only on the key path.
+// V9-A21 keeps the ordinary form; since `Cx::has_index` asks [`try_has_index`] (M4-P4 fixer
+// B, Codex PROXY1 P-3) only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn has_index(cx: &Cx, o: u64, i: u64) -> bool {
     debug_assert!(is_object(o));
     if i <= MAX_SAFE_INDEX {
@@ -1416,6 +1775,27 @@ pub(crate) fn has_index(cx: &Cx, o: u64, i: u64) -> bool {
     }
     let key = index_key_of(cx.rt(), i);
     has_property(cx, o, key)
+}
+
+/// [`has_index`] for any object: a proxy on the chain answers `Unknown` in `own_index` (a
+/// routed kind), and the key path asks it ([`try_has_property`]). GC point on the key path.
+pub(crate) fn try_has_index(cx: &mut Cx, o: u64, i: u64) -> Res<bool> {
+    debug_assert!(is_object(o));
+    if i <= MAX_SAFE_INDEX {
+        let mut buf = [0u8; 20];
+        let text = index_digits(i, &mut buf);
+        match find_index(cx.rt(), o, i, text) {
+            (_, OwnIndex::Stored(..) | OwnIndex::WrapperChar(_)) => return Ok(true),
+            (_, OwnIndex::Absent) => return Ok(false),
+            (cur, OwnIndex::Unknown) => {
+                // GC point: `cur` lives in a Rust local.
+                let key = index_key_of(cx.rt(), i);
+                return try_has_property(cx, cur, key);
+            }
+        }
+    }
+    let key = index_key_of(cx.rt(), i);
+    try_has_property(cx, o, key)
 }
 
 /// Get(O, ! ToString(𝔽(i))) (§7.3.2, OrdinaryGet) on the object `o`. No atom for an element

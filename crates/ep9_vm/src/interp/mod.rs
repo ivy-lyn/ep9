@@ -144,8 +144,11 @@ pub(crate) struct Cx {
     /// = never). From `IsolateConfig::feedback_threshold`; see `feedback.rs`.
     pub feedback_threshold: u32,
     /// The prototype epoch (`ShapeState::proto_epoch` in the runtime), read through this
-    /// pointer so a change made by a host call or a nested run is seen at once. The IC hit
-    /// paths compare it (`ic.rs`).
+    /// pointer so a change made by a host call or a nested run is seen at once. Since M4-P1
+    /// no IC hit path compares it: the validity cells replaced it (`validity.rs`, H16 K5),
+    /// and release builds do not read it. `ic::load` and `ic::store` still take it for the
+    /// debug cross-check of a hit (plan v9 R1, V9-A25, `ic.rs`). The field stays because the
+    /// `Cx` field list is frozen for month 4; it is removed in M5-P0.
     pub proto_epoch: *const Cell<u32>,
     // ---- appended in M2-P0 (no field above moves; the poll fields are fixed for month 2) ----
     /// The isolate's interrupt word (`Runtime::terminate`, bits in [`interrupt`]), read at
@@ -253,6 +256,46 @@ pub(crate) enum Flow {
     Jump(*const u8),
     /// Continue in this opcode's cold block (its own handler in (b) and (c)).
     Cold,
+    /// As `Next`, after a feedback record (`profile::Rec`; T0 profile, H16-Q2). In (b) the
+    /// handler tail-calls `dsl::record_next`, which records and dispatches, so the record
+    /// code is not in the handler: on x86-64 a handler that records inline saves registers on
+    /// entry, also on its paths that record nothing (M4-P1 PROFILE-X64). (a), (c) and the
+    /// prefixed step record inline.
+    Record(crate::profile::Rec),
+    /// As `Record`, for a comparison whose record needs the operand pair
+    /// (`profile::Pair`); (b) tail-calls `dsl::record_pair_next`.
+    RecordPair(crate::profile::Pair),
+    /// As `Jump(t)` after `call_fast` pushed a callee frame (`fp` is the new frame), for a
+    /// call in the sampled window: `profile::record_call_pushed` with the caller's Call slot.
+    /// (b) tail-calls `dsl::record_call_next`.
+    JumpRecordCall(*const u8, crate::interp::dsl::FSlot),
+}
+
+impl Flow {
+    /// Runs the record of `Record` and `RecordPair` inline and gives `Next` for them; other
+    /// values pass through. For the match loop (a), the debug expansion, and the prefixed
+    /// steps (`step::<S>`): out of line in debug builds, so the ~150 arms that call it add no
+    /// record locals to the one frame of the loop or of a step (their sizes bound the native
+    /// stack a JS call chain or a host re-entry needs, `tests::interp`).
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    pub(crate) fn recorded(self, st: &St<'_>) -> Flow {
+        match self {
+            Flow::Record(r) => {
+                crate::profile::record(st, r);
+                Flow::Next
+            }
+            Flow::RecordPair(p) => {
+                crate::profile::record_pair(st, p);
+                Flow::Next
+            }
+            Flow::JumpRecordCall(t, s) => {
+                crate::profile::record_call_pushed(st, s);
+                Flow::Jump(t)
+            }
+            f => f,
+        }
+    }
 }
 
 /// What a cold body (or a fast body without a cold block) does next.

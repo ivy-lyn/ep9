@@ -23,7 +23,7 @@ use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
 use crate::kinds::{is_callable, is_symbol};
 use crate::numconv::{exponentiate, fmod, number_to_string, string_to_number};
-use crate::object::{self, is_function, is_object, is_string, str_view};
+use crate::object::{self, is_function, is_object, is_string};
 use crate::runtime::{Atom, ErrorKind, Root, val};
 use crate::symbol::{self, WellKnownSymbol};
 use crate::{atoms, property, wrapper};
@@ -148,7 +148,10 @@ pub(crate) fn to_number(cx: &mut Cx, b: u64) -> Res<f64> {
         UNDEFINED => f64::NAN,
         NULL | FALSE => 0.0,
         TRUE => 1.0,
-        _ if is_string(b) => string_to_number(&str_view(b).to_utf16()),
+        _ if is_string(b) => {
+            let s = crate::string::flatten(cx, b);
+            string_to_number(&crate::string::view(cx, s).to_utf16())
+        }
         _ if is_object(b) => {
             let p = to_primitive(cx, b, Hint::Number)?;
             return to_number(cx, p);
@@ -180,9 +183,16 @@ pub(crate) fn to_uint32_of(cx: &mut Cx, b: u64) -> Res<u32> {
     Ok(to_uint32(to_number(cx, b)?))
 }
 
-/// A heap string for the number `d`.
+/// A heap string for the number `d`: the isolate's cached string of `d` (H19-Q6), or a new
+/// one that then fills the cache slot. GC point on a miss.
 pub(crate) fn number_string(cx: &mut Cx, d: f64) -> u64 {
-    object::new_string(cx.rt(), &number_to_string(d))
+    let rt = cx.rt();
+    if let Some(s) = crate::atoms::cached_number_string(rt, d) {
+        return s;
+    }
+    let s = object::new_string(rt, &number_to_string(d));
+    crate::atoms::cache_number_string(rt, d, s);
+    s
 }
 
 /// ToString (§7.1.17), as a heap string.
@@ -217,7 +227,8 @@ pub(crate) fn to_string(cx: &mut Cx, b: u64) -> Res<u64> {
 /// ToString as Rust text (lone surrogates become U+FFFD).
 pub(crate) fn to_rust_string(cx: &mut Cx, b: u64) -> Res<String> {
     let s = to_string(cx, b)?;
-    Ok(str_view(s).to_string_lossy())
+    let s = crate::string::flatten(cx, s);
+    Ok(crate::string::view(cx, s).to_string_lossy())
 }
 
 /// `typeof` (§13.5.3).
@@ -267,7 +278,7 @@ pub(crate) fn strict_equals(a: u64, b: u64) -> bool {
     }
     match (as_number(a), as_number(b)) {
         (Some(x), Some(y)) => x == y,
-        _ => is_string(a) && is_string(b) && str_view(a).eq(&str_view(b)),
+        _ => is_string(a) && is_string(b) && crate::string::equals(a, b),
     }
 }
 
@@ -326,7 +337,7 @@ pub(crate) fn less_than(cx: &mut Cx, a: u64, b: u64, left_first: bool) -> Res<Op
     };
     if is_string(pa) && is_string(pb) {
         return Ok(Some(
-            str_view(pa).cmp(&str_view(pb)) == core::cmp::Ordering::Less,
+            crate::string::compare(pa, pb) == core::cmp::Ordering::Less,
         ));
     }
     let x = to_number(cx, pa)?;
@@ -372,23 +383,16 @@ pub(crate) enum BinOp {
     Shr,
 }
 
-/// `lhs OP rhs` on two numbers.
-pub(crate) fn number_op(cx: &mut Cx, op: BinOp, x: f64, y: f64) -> Res<u64> {
+/// `lhs OP rhs` on two numbers. No number operation throws since `**` has its correctly
+/// rounded core (M4-P1); the `Cx` and `Res` stay for the callers.
+pub(crate) fn number_op(_cx: &mut Cx, op: BinOp, x: f64, y: f64) -> Res<u64> {
     Ok(match op {
         BinOp::Add => num(x + y),
         BinOp::Sub => num(x - y),
         BinOp::Mul => num(x * y),
         BinOp::Div => num(x / y),
         BinOp::Mod => num(fmod(x, y)),
-        BinOp::Exp => match exponentiate(x, y) {
-            Some(r) => num(r),
-            None => {
-                return Err(not_implemented(
-                    cx,
-                    "** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)",
-                ));
-            }
-        },
+        BinOp::Exp => num(exponentiate(x, y)),
         BinOp::BitOr => num(f64::from(to_int32(x) | to_int32(y))),
         BinOp::BitXor => num(f64::from(to_int32(x) ^ to_int32(y))),
         BinOp::BitAnd => num(f64::from(to_int32(x) & to_int32(y))),
@@ -427,7 +431,7 @@ pub(crate) fn binary(cx: &mut Cx, op: BinOp, lhs: u64, rhs: u64) -> Res<u64> {
 /// Text of a value for error messages (never runs JS).
 pub(crate) fn describe(b: u64) -> String {
     if is_string(b) {
-        return format!("\"{}\"", str_view(b).to_string_lossy());
+        return format!("\"{}\"", crate::string::to_rust_string(b));
     }
     if let Some(d) = as_number(b) {
         return number_to_string(d);

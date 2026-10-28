@@ -12,12 +12,17 @@
 //! ```
 //!
 //! The forms are those of M0 exit item 7: bracket (array, paren, object, block, function),
-//! binary, member, call, comma, template (also tagged) and class (body, heritage). The programs
-//! also run, so a deep tree that compiles must also execute. The regex forms nest `v`-flag
-//! classes, which only the pre-scan limits (a regex has no AST depth).
+//! binary, member, call, comma, template (also tagged) and class (body, heritage); and those of
+//! M1 exit item 8 (M4-P2 FE-FUZZ, GFF-DEPTH-E2E): conditional (also nested in the consequent),
+//! assignment, unary (`!` and `typeof`), arrow and exponent, the same 7 forms as the `m1_*`
+//! tests of ep9_frontend `depth_tests.rs`. The programs also run, so a deep tree that compiles
+//! must also execute. The regex forms nest `v`-flag classes, which only the pre-scan limits (a
+//! regex has no AST depth).
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ep9_frontend::{AST_CAP, CompileError, SourceOpts, Strictness, check_early_errors};
 
@@ -121,6 +126,46 @@ const FORMS: &[Form] = &[
         name: "class-heritage",
         build: |n| wrap("var x = ", "class extends ", "Object", "{}", n),
     },
+    // M1 exit item 8
+    Form {
+        name: "conditional",
+        build: |n| wrap("var a = 0;\nvar x = ", "a?a:", "a", "", n),
+    },
+    Form {
+        name: "conditional-consequent",
+        build: |n| wrap("var a = 0;\nvar x = ", "a?", "a", ":a", n),
+    },
+    Form {
+        name: "assignment",
+        build: |n| wrap("var a;\nvar x = ", "a=", "0", "", n),
+    },
+    Form {
+        name: "unary",
+        build: |n| wrap("var a = 0;\nvar x = ", "!", "a", "", n),
+    },
+    Form {
+        name: "unary-typeof",
+        build: |n| wrap("var a = 0;\nvar x = ", "typeof ", "a", "", n),
+    },
+    Form {
+        name: "arrow",
+        build: |n| wrap("var x = ", "x=>", "0", "", n),
+    },
+    Form {
+        name: "exponent",
+        build: |n| wrap("var a = 1;\nvar x = ", "a**", "a", "", n),
+    },
+];
+
+/// The M1 exit item 8 forms (the `m1_*` gate tests of ep9_frontend `depth_tests.rs`).
+const M1_FORMS: [&str; 7] = [
+    "conditional",
+    "conditional-consequent",
+    "assignment",
+    "unary",
+    "unary-typeof",
+    "arrow",
+    "exponent",
 ];
 
 /// With the `v` flag a class stays open after a nested class closes: `[[a]&&[[a]&&[a]]]` is 3
@@ -192,16 +237,58 @@ fn temp_dir() -> PathBuf {
     d
 }
 
+/// `f` over `items` on up to `available_parallelism` threads; the results in item order.
+/// Every `ep9` run is its own process with its own stacks, so the threads change nothing it
+/// checks; each thread here also gets its own front-end worker for `check_early_errors`.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let results = Mutex::new(Vec::with_capacity(items.len()));
+    let threads = std::thread::available_parallelism()
+        .map_or(2, std::num::NonZero::get)
+        .min(items.len());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(i) else { return };
+                    let r = f(item);
+                    results.lock().expect("lock").push((i, r));
+                }
+            });
+        }
+    });
+    let mut results = results.into_inner().expect("lock");
+    results.sort_by_key(|&(i, _)| i);
+    results.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Wall time is a few deep programs that run for minutes in a debug `ep9` (bracket-array,
+/// bracket-object, class-heritage), so the runs, not the forms, are the unit of parallel work.
 #[test]
 fn caps_hold_end_to_end() {
     let dir = temp_dir();
-    let mut report = Vec::new();
-    let mut failures = Vec::new();
     let regex_forms = REGEX_FORMS.iter().map(|form| (form, Some(REGEX_FAR)));
-    for (form, far) in FORMS.iter().map(|form| (form, None)).chain(regex_forms) {
-        let cap = cap_of(form);
+    let forms: Vec<(&Form, Option<usize>)> = FORMS
+        .iter()
+        .map(|form| (form, None))
+        .chain(regex_forms)
+        .collect();
+    let caps = par_map(&forms, |&(form, _)| cap_of(form));
+    // (form, n, cap, expected to print ok)
+    let mut runs = Vec::new();
+    for (&(form, far), &cap) in forms.iter().zip(&caps) {
         for n in [cap - 1, cap] {
-            let out = run_ep9(form, n, &dir);
+            runs.push((form, n, cap, true));
+        }
+        for n in std::iter::once(cap + 1).chain(far) {
+            runs.push((form, n, cap, false));
+        }
+    }
+    let outs = par_map(&runs, |&(form, n, _, _)| run_ep9(form, n, &dir));
+    let mut failures = Vec::new();
+    for (&(form, n, cap, ok), out) in runs.iter().zip(&outs) {
+        if ok {
             let stdout = String::from_utf8_lossy(&out.stdout);
             if out.status.code() != Some(0) || stdout != "ok\n" {
                 failures.push(format!(
@@ -211,9 +298,7 @@ fn caps_hold_end_to_end() {
                     String::from_utf8_lossy(&out.stderr)
                 ));
             }
-        }
-        for n in std::iter::once(cap + 1).chain(far) {
-            let out = run_ep9(form, n, &dir);
+        } else {
             let stderr = String::from_utf8_lossy(&out.stderr);
             if out.status.code() != Some(1)
                 || !stderr.contains("RangeError: Maximum call stack size exceeded")
@@ -227,9 +312,23 @@ fn caps_hold_end_to_end() {
                 ));
             }
         }
-        report.push(format!("{}: cap {cap} levels", form.name));
     }
     let _ = std::fs::remove_dir_all(&dir);
+    let report: Vec<String> = forms
+        .iter()
+        .zip(&caps)
+        .map(|(&(form, _), cap)| format!("{}: cap {cap} levels", form.name))
+        .collect();
     println!("{}", report.join("\n"));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn every_m1_form_is_listed() {
+    for name in M1_FORMS {
+        assert!(
+            FORMS.iter().any(|f| f.name == name),
+            "{name}: M1 exit item 8 form missing from FORMS"
+        );
+    }
 }

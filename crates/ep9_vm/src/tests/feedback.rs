@@ -5,11 +5,13 @@
 
 use std::hint::black_box;
 
-use ep9_bytecode::{FunctionId, RegisterList, VerifiedUnit};
+use ep9_bytecode::{FeedbackSlotKind, FunctionId, RegisterList, VerifiedUnit};
 
 use super::{Asm, config, isolate, meta, on_big_stack, unit};
+use crate::construct_ic::{cs, handler_i32};
 use crate::feedback;
-use crate::frame::{UNDEFINED, int32_bits};
+use crate::frame::{UNDEFINED, int32_bits, int32_of};
+use crate::ic::hk;
 use crate::interp::BUDGET;
 use crate::kinds;
 use crate::object;
@@ -22,7 +24,8 @@ use crate::{Dispatch, Isolate, IsolateConfig, Value};
 enum How {
     /// `f()`: the T0 call fast path.
     Fast,
-    /// `new f()`: always the cold path (`slow::call`).
+    /// `new f()`: the T0 construct-site hit once the site has a `CONSTRUCT_SITE` handler
+    /// (`construct_ic.rs`, M4-P1), else the cold path (`slow::call`).
     Construct,
     /// `f()` and `new f()` in turn, starting with `f()`.
     Mixed,
@@ -65,6 +68,30 @@ fn program(calls: u32, how: How, back_edges: i32) -> VerifiedUnit {
     unit("", vec![s.finish(), f.finish()])
 }
 
+/// The script: `f = function f() { loop }` (function 1, a global; the loop has `back_edges`
+/// back edges), then one call of `f`.
+fn program_loop_in_f(back_edges: i32) -> VerifiedUnit {
+    let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+    let i = f.b.new_register();
+    f.b.lda_zero().star(i);
+    let head = f.b.bound_label();
+    let exit = f.b.new_label();
+    f.b.lda_smi(back_edges)
+        .test_less_than(i, f.cmp)
+        .jump_if_false(exit);
+    f.b.ldar(i).inc(f.bin).star(i).jump_loop(head, 0, f.loop_);
+    f.b.bind(exit);
+    f.b.lda_undefined().return_();
+    let mut s = Asm::script(0);
+    let r = s.b.new_register();
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0).star(r);
+    s.sta_global("f");
+    s.b.call_undefined_receiver0(r, s.call);
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), f.finish()])
+}
+
 /// The feedback state of one function after a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct State {
@@ -91,7 +118,13 @@ fn state(fi: &FunctionInfo) -> State {
 }
 
 /// The vector `v` of `fi`: a FEEDBACK cell in `fi`'s unit slot, with one slot per feedback
-/// slot of the function, pointing back at `fi`. Every slot is still (undefined, int32 0).
+/// slot of the function, pointing back at `fi`. These programs have no property IC site, so
+/// only two writers touch the vector: T0 profile recording (M4-P1 PROFILE, `profile.rs`)
+/// writes int32 counts into the Call, CreateClosure and JumpLoop slots, and a Call key that is
+/// the hole or a FunctionInfo native word (not a cell); a `new f()` site (M4-P1 OBJ-ALLOC,
+/// `construct_ic.rs`) keeps in its Call slot the constructor (a FUNCTION cell, weak) or the
+/// hole, and an int32 count or a `CONSTRUCT_SITE` handler. Every other slot is still
+/// (undefined, int32 0).
 fn check_vector(fi: &FunctionInfo, v: u64) {
     assert!(feedback::is_vector(v), "not a FEEDBACK cell: {v:#x}");
     let unit = fi.loaded_unit().unwrap();
@@ -103,9 +136,24 @@ fn check_vector(fi: &FunctionInfo, v: u64) {
         .feedback_slots
         .len();
     assert_eq!(feedback::slot_count(v) as usize, n);
+    let kinds_of = &unit.unit.functions[fi.function_id as usize].feedback_slots;
     for i in 0..n as u32 {
-        assert_eq!(feedback::key(v, i), UNDEFINED, "key of slot {i}");
-        assert_eq!(feedback::value(v, i), int32_bits(0), "value of slot {i}");
+        let (key, value) = (feedback::key(v, i), feedback::value(v, i));
+        let call = kinds_of[i as usize] == FeedbackSlotKind::Call;
+        if !call {
+            assert_eq!(key, UNDEFINED, "key of slot {i}");
+        } else if kinds::is_cell_bits(key) {
+            assert!(kinds::is_function(key), "key of Call slot {i}: {key:#x}");
+        }
+        if call && kinds::is_cell_bits(value) {
+            assert_eq!(kinds::cell_kind(value), kinds::IC_HANDLER.get(), "slot {i}");
+            assert_eq!(handler_i32(value, cs::KIND), hk::CONSTRUCT_SITE, "slot {i}");
+        } else {
+            assert!(
+                value == int32_bits(int32_of(value)) && int32_of(value) >= 0,
+                "value of slot {i}: {value:#x}"
+            );
+        }
     }
 }
 
@@ -161,13 +209,15 @@ fn no_vector_after_7_calls_and_a_vector_on_the_8th() {
     assert_eq!(IsolateConfig::default().feedback_threshold, 8);
     let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
     // The T0 fast path counts and goes cold on the 8th call; `slow::call` makes the vector.
+    // The script gets its vector at entry (PERF3 step-2 item 3): no count.
     let [script, f] = run_states(t, || program(7, How::Fast, 0));
-    assert_eq!((script, f), (none(1), none(7)));
+    assert_eq!((script, f), (made(0), none(7)));
     let [_, f] = run_states(t, || program(8, How::Fast, 0));
     assert_eq!(f, made(8));
     let [_, f] = run_states(t, || program(30, How::Fast, 0));
     assert_eq!(f, made(8), "no count once the vector exists");
-    // `new f()` is always cold: `slow::call` counts and makes it.
+    // `new f()`: the cold path (`slow::call`) or, once the site keeps a `CONSTRUCT_SITE`
+    // handler, the construct-site hit (`construct_ic::fast`); both count the call.
     let [_, f] = run_states(t, || program(7, How::Construct, 0));
     assert_eq!(f, none(7));
     let [_, f] = run_states(t, || program(8, How::Construct, 0));
@@ -181,36 +231,68 @@ fn no_vector_after_7_calls_and_a_vector_on_the_8th() {
 
 #[test]
 fn thresholds_0_1_3_and_max() {
-    // 0 = eager: the script (an entry from Rust) and `f` get a vector at their first call.
+    // 0 = eager: `f` gets a vector at its first call. The script (a unit's entry code) gets
+    // its vector at entry under every threshold but u32::MAX, with no count (item 3).
     let [script, f] = run_states(0, || program(0, How::Fast, 0));
-    assert_eq!((script, f), (made(1), none(0)), "f is never called");
+    assert_eq!((script, f), (made(0), none(0)), "f is never called");
     let [script, f] = run_states(0, || program(1, How::Fast, 0));
-    assert_eq!((script, f), (made(1), made(1)));
+    assert_eq!((script, f), (made(0), made(1)));
     let [_, f] = run_states(0, || program(1, How::Construct, 0));
     assert_eq!(f, made(1));
     // 1: the first call; 3: the third.
     let [script, f] = run_states(1, || program(1, How::Fast, 0));
-    assert_eq!((script, f), (made(1), made(1)));
+    assert_eq!((script, f), (made(0), made(1)));
     let [script, f] = run_states(3, || program(2, How::Mixed, 0));
-    assert_eq!((script, f), (none(1), none(2)));
+    assert_eq!((script, f), (made(0), none(2)));
     let [_, f] = run_states(3, || program(3, How::Mixed, 0));
     assert_eq!(f, made(3));
-    // u32::MAX = never, not even at a loop's budget poll.
+    // u32::MAX = never: not at the entry, not at a loop's budget poll.
     let back_edges = 2 * BUDGET as i32;
     let [script, f] = run_states(u32::MAX, move || program(20, How::Mixed, back_edges));
-    assert_eq!((script, f), (none(1), none(20)));
+    assert_eq!((script, f), (none(0), none(20)));
+    let [_, f] = run_states(u32::MAX, move || program_loop_in_f(back_edges));
+    assert_eq!(f, none(1));
 }
 
 #[test]
 fn a_loop_that_runs_once_gets_a_vector_at_its_first_budget_poll() {
     // A fresh isolate starts with at most BUDGET units, and each back edge takes one, so the
-    // first poll comes at or before back edge BUDGET. The script is entered once (1 < 8).
+    // first poll comes at or before back edge BUDGET. `f` is called once (1 < 8).
     let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
-    let [script, f] = run_states(t, || program(0, How::Fast, BUDGET as i32));
-    assert_eq!((script, f), (made(1), none(0)));
+    let [script, f] = run_states(t, || program_loop_in_f(BUDGET as i32));
+    assert_eq!((script, f), (made(0), made(1)));
     // A short loop has no poll.
-    let [script, _] = run_states(t, || program(0, How::Fast, 100));
-    assert_eq!(script, none(1));
+    let [_, f] = run_states(t, || program_loop_in_f(100));
+    assert_eq!(f, none(1));
+}
+
+#[test]
+fn a_script_gets_its_vector_at_entry() {
+    // PERF3 step-2 item 3 (M4-P2 FACTS2): a script's sites record from its first instruction,
+    // with no loop and no call. Before, a script (entered once) got a vector only at a loop
+    // poll, so its global loads and calls missed with no vector (ic-stats "no-vector").
+    let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
+    let [script, _] = run_states(t, || program(0, How::Fast, 0));
+    assert_eq!(script, made(0));
+    // Its CreateClosure slot saw the one closure (`profile::record_closure`).
+    on_big_stack(|| {
+        let mut iso = isolate(IsolateConfig::default());
+        iso.with_cx_checkpoint(|cx| {
+            cx.run_script(program(1, How::Fast, 0), "test.js")
+                .map(|_| ())
+        })
+        .unwrap();
+        with_info(&iso, 0, |_, fi| {
+            let v = feedback::vector(fi).expect("the script has a vector");
+            let unit = fi.loaded_unit().unwrap();
+            let kinds_of = &unit.unit.functions[0].feedback_slots;
+            let closure = kinds_of
+                .iter()
+                .position(|&k| k == FeedbackSlotKind::CreateClosure)
+                .unwrap();
+            assert_eq!(feedback::value(v, closure as u32), int32_bits(1));
+        });
+    });
 }
 
 #[test]
@@ -391,4 +473,73 @@ fn a_key_to_a_dead_cell_is_cleared_and_a_value_is_kept() {
         assert_eq!(feedback::key(v, 1), iso.rt.global());
         assert_eq!(feedback::value(v, 1), int32_bits(5));
     });
+}
+
+/// The script: `f = function f() {}` (function 1) and `g = function g(a) { loop }` (function
+/// 2; each iteration calls `a` `calls` times, then a back edge; `back_edges` back edges),
+/// then one call `g(f)`.
+fn program_calls_per_back_edge(calls: u32, back_edges: i32) -> VerifiedUnit {
+    let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+    f.b.lda_undefined().return_();
+    let mut g = Asm::new(meta("g", 1, 0, 0, 0));
+    let a = g.b.parameter(0);
+    let i = g.b.new_register();
+    g.b.lda_zero().star(i);
+    let head = g.b.bound_label();
+    let exit = g.b.new_label();
+    g.b.lda_smi(back_edges)
+        .test_less_than(i, g.cmp)
+        .jump_if_false(exit);
+    for _ in 0..calls {
+        g.b.call_undefined_receiver0(a, g.call);
+    }
+    g.b.ldar(i).inc(g.bin).star(i).jump_loop(head, 0, g.loop_);
+    g.b.bind(exit);
+    g.b.lda_undefined().return_();
+    let mut s = Asm::script(0);
+    let (rf, rg) = (s.b.new_register(), s.b.new_register());
+    let kf = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(kf, s.closure, 0).star(rf);
+    let kg = s.b.function_constant(FunctionId(2));
+    s.b.create_closure(kg, s.closure, 0).star(rg);
+    let args = s.b.new_register_list(1);
+    s.b.ldar(rf).star(args.get(0));
+    s.b.call_undefined_receiver1(rg, args.get(0), s.call);
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), f.finish(), g.finish()])
+}
+
+/// The state of function `id` after a run of `make()` with `threshold` in the match loop
+/// (the budget does not depend on the dispatch or on GC stress, and a debug build of the
+/// other expansions has no tail calls, so a long loop of calls would use up the native
+/// stack).
+fn run_state_of(
+    threshold: u32,
+    id: usize,
+    make: impl Fn() -> VerifiedUnit + Copy + Send + 'static,
+) -> State {
+    on_big_stack(move || {
+        let mut iso = isolate(IsolateConfig {
+            feedback_threshold: threshold,
+            ..config(Dispatch::Match, false)
+        });
+        iso.with_cx_checkpoint(|cx| cx.run_script(make(), "test.js").map(|_| ()))
+            .unwrap();
+        with_info(&iso, id, |_, fi| state(fi))
+    })
+}
+
+#[test]
+fn a_loop_whose_polls_land_on_calls_gets_its_vector() {
+    // PERF3 step-2 item 4 (the budget phase lock): with k calls and 1 back edge per
+    // iteration, k + 1 divides BUDGET for k = 1, 3, 4, so every poll lands on the same unit
+    // of the body; for some k that is a call, and `g` (called once, 1 < 8) got no vector,
+    // since `feedback::ensure` ran only at the JumpLoop poll. The call poll in `slow::call`
+    // now runs it too.
+    let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
+    for calls in 1..=5 {
+        let back_edges = BUDGET as i32;
+        let g = run_state_of(t, 2, move || program_calls_per_back_edge(calls, back_edges));
+        assert!(g.vector, "{calls} calls per back edge: {g:?}");
+    }
 }

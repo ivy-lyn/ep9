@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use ep9_bytecode::{FeedbackSlotKind, FunctionBuilder, FunctionCode, FunctionId, VerifiedUnit};
 use ep9_facts::{
-    Access, BindingSet, FactSnapshot, FunctionRef, IcState, KeyRef, ObjectKind, PropAttrs,
-    PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TypeSet,
+    Access, BindingSet, ClosureCount, FactSnapshot, FunctionRef, IcState, KeyRef, ObjectKind,
+    PropAttrs, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TypeSet,
 };
 
 use super::{Asm, config, isolate, meta, on_big_stack, unit};
@@ -404,23 +404,29 @@ fn each_handler_becomes_its_fact() {
         assert_eq!(bindings(&snap, 6), BindingSet::LEXICAL);
         assert_eq!(bindings(&snap, 7), BindingSet::DATA);
 
-        // f8 never ran: no vector, no record. No Call-kind record anywhere (H16-Q2). The
-        // script (function 0) has one record: its StoreGlobal slot, which the `sta_global`
-        // sites of every name share (megamorphic: no binding). Its other slots have no T0 IC
-        // site.
+        // f8 never ran: no vector, no record. The Call slot 1 of each `f<i>` has no site, so no
+        // record. The script (function 0) has two records: its StoreGlobal slot, which the
+        // `sta_global` sites of every name share (megamorphic: no binding), and its
+        // CreateClosure slot (10 closures: many). Its other slots have no site.
         assert!(t.vector(8).is_none());
         assert!(snap.get(9, 0).is_none());
         for (key, facts) in snap.records() {
             if key.function == 0 {
-                assert_eq!(key.slot, 4, "{facts:?}");
                 assert!(
-                    matches!(facts, SlotFacts::StoreGlobal(g) if g.bindings.is_empty()),
-                    "{facts:?}"
+                    matches!(
+                        (key.slot, facts),
+                        (4, SlotFacts::StoreGlobal(g)) if g.bindings.is_empty()
+                    ) || matches!(
+                        facts,
+                        SlotFacts::CreateClosure(c) if c.closures == ClosureCount::Many
+                    ),
+                    "{key:?} {facts:?}"
                 );
             } else {
                 assert_eq!(key.slot, 0, "{key:?} {facts:?}");
             }
         }
+        assert_eq!(snap.records().filter(|(k, _)| k.function == 0).count(), 2);
 
         // The snapshot is valid for its unit, and it encodes and decodes to itself.
         let (valid, dropped) = snap.clone().validate(&t.unit).expect("not stale");
@@ -537,4 +543,242 @@ fn an_unknown_unit_hash_is_an_error() {
     let t = T::new();
     assert!(export_facts(&t.iso, &[0xEE; 32]).is_err());
     assert!(export_facts(&t.iso, &t.unit.content_hash()).is_ok());
+}
+
+// ---- Call slots (F-R8, MC-w13-8; M4-P2 FACTS2) -------------------------------------------------
+
+/// How a call-test function uses its one Call slot (slot 0) on its parameter `a`.
+#[derive(Clone, Copy, Debug)]
+enum CallUse {
+    /// `a()` (0x64): `profile.rs` keys a FunctionInfo word and counts sampled calls.
+    Call,
+    /// `new a()` (0x69): `construct_ic.rs` keys the constructor (weak) and counts the
+    /// constructs of the cold path.
+    Construct,
+    /// `a(); new a()` on the same slot.
+    Both,
+}
+
+const CALL_USES: [CallUse; 3] = [CallUse::Call, CallUse::Construct, CallUse::Both];
+
+/// `c<i>(a)` for each [`CALL_USES`] entry (functions 1-3), `g` (function 4: `function g()
+/// {}`), all globals.
+fn call_program() -> VerifiedUnit {
+    let mut fns = Vec::new();
+    let mut s = Asm::script(0);
+    for i in 0..=CALL_USES.len() {
+        let k = s.b.function_constant(FunctionId(i as u32 + 1));
+        s.b.create_closure(k, s.closure, 0);
+        let name = if i == CALL_USES.len() {
+            "g".to_string()
+        } else {
+            format!("c{i}")
+        };
+        s.sta_global(&name);
+    }
+    s.b.lda_undefined().return_();
+    fns.push(s.finish());
+    for (i, &how) in CALL_USES.iter().enumerate() {
+        let mut b = FunctionBuilder::new(meta(&format!("c{i}"), 1, 0, 0, 0));
+        let a = b.parameter(0);
+        let slot = b.feedback_slot(FeedbackSlotKind::Call);
+        if matches!(how, CallUse::Call | CallUse::Both) {
+            b.call_undefined_receiver0(a, slot);
+        }
+        if matches!(how, CallUse::Construct | CallUse::Both) {
+            b.ldar(a)
+                .construct(a, ep9_bytecode::RegisterList::EMPTY, 0, slot);
+        }
+        b.lda_undefined().return_();
+        fns.push(b.finish().unwrap());
+    }
+    let mut g = FunctionBuilder::new(meta("g", 0, 0, 0, 0));
+    g.lda_undefined().return_();
+    fns.push(g.finish().unwrap());
+    unit("", fns)
+}
+
+/// The CallFacts of slot 0 of `c<i>` (function `i + 1`).
+fn call_facts(s: &FactSnapshot, i: usize) -> &ep9_facts::CallFacts {
+    match s.get(i as u32 + 1, 0) {
+        Some(SlotFacts::Call(c)) => c,
+        r => panic!("c{i}: not a Call record: {r:?}"),
+    }
+}
+
+/// Runs `c<i>(callee)` for each `(i, callee global)` of `calls` on a fresh isolate (eager
+/// feedback, every dispatch, with and without GC stress) and returns the snapshot, which
+/// must give the same bytes in every run.
+fn run_calls(calls: &'static [(usize, &'static str)]) -> (VerifiedUnit, FactSnapshot) {
+    let mut first: Option<(VerifiedUnit, FactSnapshot)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let (unit, snap) = on_big_stack(move || {
+                let mut c = config(d, stress);
+                c.feedback_threshold = 0;
+                let mut iso = isolate(c);
+                let unit = call_program();
+                let u = unit.clone();
+                iso.with_cx(|cx| cx.run_script(u, "calls.js").map(|_| ()))
+                    .unwrap();
+                for &(i, callee) in calls {
+                    iso.with_cx(|cx| {
+                        let f = cx.global_binding(&format!("c{i}"))?.expect("c<i>");
+                        let a = cx.global_binding(callee)?.expect("the callee");
+                        cx.call(f, Local::undefined(), &[a]).map(|_| ())
+                    })
+                    .unwrap_or_else(|e| panic!("c{i}({callee}) threw {}", e.message));
+                }
+                let snap = export_facts(&iso, &unit.content_hash()).unwrap();
+                (unit, snap)
+            });
+            match &first {
+                None => first = Some((unit, snap)),
+                Some((_, s0)) => assert_eq!(snap.encode(), s0.encode(), "{d:?} stress={stress}"),
+            }
+        }
+    }
+    first.unwrap()
+}
+
+/// The `FunctionRef` of the VM builtin `name` (a constructor of `natives::VM_TABLE`).
+fn vm_builtin(name: &str) -> FunctionRef {
+    let m = &crate::natives::VM_TABLE.modules[0];
+    let i = m
+        .defs
+        .iter()
+        .position(|d| d.name == name && d.kind == crate::builtins::BuiltinKind::Constructor)
+        .unwrap();
+    FunctionRef::Builtin(m.id(i as u16).bits())
+}
+
+#[test]
+fn a_call_key_becomes_a_function_ref_or_megamorphic() {
+    // c0 `a()`: g three times (a unit function), c1 `new a()`: g twice; then the same with
+    // `Object` (a table builtin) on fresh isolates, and `print` (a host function: no
+    // FunctionRef, so megamorphic). Every call runs in the first sampling window of a fresh
+    // isolate, so each is a sampled call.
+    let (unit, snap) = run_calls(&[(0, "g"), (0, "g"), (0, "g"), (1, "g"), (1, "g")]);
+    let g = FunctionRef::Js {
+        unit: unit.content_hash(),
+        function: CALL_USES.len() as u32 + 1,
+    };
+    let c0 = call_facts(&snap, 0);
+    assert_eq!(c0.callees.state, IcState::Monomorphic);
+    assert_eq!(c0.callees.targets, [g]);
+    assert_eq!(c0.count, 3, "sampled calls");
+    assert_eq!(c0.result, TypeSet::EMPTY);
+    let c1 = call_facts(&snap, 1);
+    assert_eq!(c1.callees.state, IcState::Monomorphic);
+    assert_eq!(c1.callees.targets, [g]);
+    // Constructs of the cold path: the first one is cold; the second may hit the handler.
+    assert!((1..=2).contains(&c1.count), "{c1:?}");
+    // c2 never ran: no vector, no record.
+    assert!(snap.get(3, 0).is_none());
+
+    let (_, snap) = run_calls(&[(0, "Object"), (1, "Object")]);
+    let c0 = call_facts(&snap, 0);
+    assert_eq!(c0.callees.state, IcState::Monomorphic);
+    assert_eq!(c0.callees.targets, [vm_builtin("Object")]);
+    assert_eq!(c0.count, 1);
+    // `new Object()` runs the host constructor in `slow::call` before `construct_ic::miss`,
+    // so today its site keeps no target (uninitialized). Whatever it keeps maps the same way.
+    let c1 = call_facts(&snap, 1);
+    assert!(
+        c1.callees.state == IcState::Uninitialized || c1.callees.targets == [vm_builtin("Object")],
+        "{c1:?}"
+    );
+
+    let (_, snap) = run_calls(&[(0, "print")]);
+    let c0 = call_facts(&snap, 0);
+    assert_eq!(c0.callees.state, IcState::Megamorphic);
+    assert!(c0.callees.targets.is_empty());
+    assert_eq!(c0.count, 1);
+
+    // A second target makes the site megamorphic.
+    let (_, snap) = run_calls(&[(0, "g"), (0, "Object")]);
+    let c0 = call_facts(&snap, 0);
+    assert_eq!(c0.callees.state, IcState::Megamorphic);
+    assert_eq!(c0.count, 2);
+}
+
+#[test]
+fn a_shared_call_and_construct_slot_is_megamorphic() {
+    // c2 `a(); new a()` on one slot: the key half holds a FunctionInfo word or a constructor
+    // cell, and the value half sampled calls or cold-path constructs, by which site wrote
+    // last. The exporter cannot branch on one opcode: megamorphic, no target, count 0 (F-R7:
+    // two units never add). The raw slot is not empty, so this is not "never ran".
+    let (unit, snap) = run_calls(&[(2, "g"), (2, "g"), (2, "Object")]);
+    let c2 = call_facts(&snap, 2);
+    assert_eq!(c2.callees.state, IcState::Megamorphic);
+    assert!(c2.callees.targets.is_empty());
+    assert_eq!(c2.count, 0);
+    // No word of the process is in the bytes: the record round-trips and validates.
+    let (valid, dropped) = snap.clone().validate(&unit).expect("not stale");
+    assert!(dropped.is_empty(), "{dropped:?}");
+    assert_eq!(valid, snap);
+    assert_eq!(FactSnapshot::decode(&snap.encode()).unwrap(), snap);
+}
+
+#[test]
+fn an_instanceof_slot_gets_a_record_once_it_left_its_start_state() {
+    // `io(a, b)`: `a instanceof b` (InstanceOf slot 0). A slot in its start state (undefined,
+    // int32 0) gives no record: a run that throws (a primitive rhs) records nothing
+    // (`instance_ic.rs`, M4-P3 IC2). A run with a function rhs records it with an INSTANCEOF
+    // handler cell, which the exporter must not read as an int32: TargetFacts.
+    on_big_stack(|| {
+        let mut s = Asm::script(0);
+        for (i, name) in ["io", "g"].iter().enumerate() {
+            let k = s.b.function_constant(FunctionId(i as u32 + 1));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global(name);
+        }
+        s.b.lda_undefined().return_();
+        let mut b = FunctionBuilder::new(meta("io", 2, 0, 0, 0));
+        let (a, rhs) = (b.parameter(0), b.parameter(1));
+        let slot = b.feedback_slot(FeedbackSlotKind::InstanceOf);
+        b.ldar(rhs).test_instance_of(a, slot).return_();
+        let mut g = FunctionBuilder::new(meta("g", 0, 0, 0, 0));
+        g.lda_undefined().return_();
+        let unit = unit(
+            "",
+            vec![s.finish(), b.finish().unwrap(), g.finish().unwrap()],
+        );
+        let mut c = config(Dispatch::DEFAULT, false);
+        c.feedback_threshold = 0;
+        let mut iso = isolate(c);
+        let u = unit.clone();
+        iso.with_cx(|cx| cx.run_script(u, "io.js").map(|_| ()))
+            .unwrap();
+        let export = |iso: &Isolate| export_facts(iso, &unit.content_hash()).unwrap();
+        // `o instanceof 1` throws a TypeError and records nothing.
+        let threw = iso.with_cx(|cx| {
+            let io = cx.global_binding("io")?.expect("io");
+            let o = cx.new_object();
+            let one = Local::int32(1);
+            cx.call(io, Local::undefined(), &[o.into(), one])?;
+            Ok(())
+        });
+        assert!(threw.is_err());
+        assert!(export(&iso).get(1, 0).is_none(), "start state: no record");
+        iso.with_cx(|cx| {
+            let io = cx.global_binding("io")?.expect("io");
+            let g = cx.global_binding("g")?.expect("g");
+            let o = cx.new_object();
+            cx.call(io, Local::undefined(), &[o.into(), g])?;
+            Ok(())
+        })
+        .unwrap();
+        let want = FunctionRef::Js {
+            unit: unit.content_hash(),
+            function: 2,
+        };
+        match export(&iso).get(1, 0) {
+            Some(SlotFacts::InstanceOf(t)) => {
+                assert_eq!(t.state, IcState::Monomorphic);
+                assert_eq!(t.targets, [want]);
+            }
+            r => panic!("{r:?}"),
+        }
+    });
 }

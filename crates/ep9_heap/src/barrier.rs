@@ -178,25 +178,30 @@ pub fn set_shape(host: &Word0, id: ShapeId, state: &BarrierState) {
 ///
 /// | Stage | Does |
 /// |---|---|
-/// | S0 (now) | The store (Release). Logs nothing |
-/// | S1 | Store; LOS host: dirty the 512-byte card; BLACK host: set GREY, push to the remembered set |
+/// | S0 | The store (Release). Logs nothing |
+/// | S1 (step 1 built behind [`crate::HeapConfig::generational`], M4-P2) | Store; LOS host: dirty the 512-byte card of `slot`; BLACK host: set GREY, push to its page's remembered list (remembered.rs) |
 /// | S2 | Store (Release); `fence(SeqCst)`; re-read gc_state; re-grey a BLACK marked host |
+///
+/// `host` is the word0 of the cell that holds `slot`. A host outside every generational heap
+/// of this thread (an S0 heap, a word that is not a cell) gets the store only.
 #[cold]
 #[inline(never)]
 pub extern "C" fn barrier_slow(host: &Word0, slot: &Slot, v: Value) {
-    let _ = host;
     #[cfg(test)]
     slow_counter::bump();
     slot.0.store(v.to_bits(), Release);
+    crate::remembered::log_store(host, core::ptr::from_ref(slot).addr());
 }
 
-/// Slow path of [`set_shape`]. S0: the store. S1 and S2 log the host as in [`barrier_slow`].
+/// Slow path of [`set_shape`]. S0: the store. S1 logs the host as [`barrier_slow`] does
+/// (word0 is the slot: card 0 of a LOS host); S2 will too.
 #[cold]
 #[inline(never)]
 pub extern "C" fn barrier_slow_shape(host: &Word0, id: ShapeId) {
     #[cfg(test)]
     slow_counter::bump();
     host.set_shape_id(id);
+    crate::remembered::log_store(host, core::ptr::from_ref(host).addr());
 }
 
 /// Per-thread count of slow-path calls, for the tests only.

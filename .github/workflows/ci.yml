@@ -3,9 +3,13 @@
 #
 #   lint ............. fmt + clippy + rustdoc -D warnings; gc-lint   (Linux x64)
 #                      jetstream/run.mjs, cross/run.mjs and t0-dispatch.mjs tests
+#                      adr-lint since m0-exit (M1 exit item 6, plan v9 rule 26)
+#   scope ............ docs_only for the pushed range                (Linux x64)
+#                      (.github/scripts/ci-scope.sh, its self-test first)
 #   build-test ....... build + test; clippy on the other 3 targets;  (4 targets)
-#                      feature matrix (default, jitless, aot; H27);
 #                      ep9_vm spike-native tests (Spike B native entry)
+#   feature-matrix ... default, jitless, aot (H27; cargo xtask        (4 targets)
+#                      feature-matrix), out of build-test for wall time
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
 #                      exec with eager feedback; bytecodegen corpus
 #                      digest (G1), debug too (not windows-x64); the
@@ -30,6 +34,21 @@
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
+#   fuzz-smoke ....... cargo-fuzz, 60 s per front-end target; prints (Linux x64)
+#                      only the crash count and hashes (V9-A17)
+#
+# 52 jobs: lint 1, scope 1, build-test 4, feature-matrix 4, test262 4, test262-gc 24, fp-check 1,
+# disasm 4, spikes 4, miri 1, dep-guards 1, perf-ci-v0 1, sp-tsrs-win 1, fuzz-smoke 1.
+#
+# Scope (docs/plan/12-governance.md section 3; plan v9 V9-D35, V9-A18): every job except lint and
+# scope `needs: scope` and is skipped when scope says docs_only=true. docs_only is true only when
+# every changed path is under docs/ or is a root *.md, and none is docs/adr/README.md or under
+# docs/measurements/ (code reads both); anything else fails closed to docs_only=false. A
+# docs-only change runs scope and lint only (lint stays: its adr-lint step, from M4-P3, must see
+# ADR commits). If scope fails, the other jobs still run (`!cancelled()`). GitHub counts a skipped job as green,
+# so on a code change CI is done only when every one of the 52 jobs ran and none is pending or
+# skipped. Timeouts follow the plan v9 section 9.2 budget table (rule 25: >= 1.5x the last
+# measured time).
 #
 # Every action is pinned by full commit SHA; the comment names its release tag.
 # The Rust toolchain comes from rust-toolchain.toml through .github/actions/setup-rust.
@@ -41,9 +60,17 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   # The nightly trigger (cron "17 19 * * *", REMOTE-CI decision, docs/plan/12-governance.md
-  # section 3) lands together with the scope job. Without the scope job a nightly run would start
-  # every job on all 4 targets every night, even when main did not move.
+  # section 3) and the per-event tiers stay off in month 4 (plan v9 V9-D35): every phase head
+  # needs all 4 targets, and a nightly run would start every job even when main did not move.
   workflow_dispatch:
+    inputs:
+      # A dispatch has no pushed range. Empty: docs_only=false, every job runs. A commit: the range
+      # from it to the dispatched commit, an ancestor or false (a CI probe of the docs-only path).
+      scope_base:
+        description: "scope: base commit of the range (empty: run every job)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -81,8 +108,8 @@ jobs:
       # JsStr or FlatStr in a heap container, a static, a thread_local or a boxed closure
       # (tools/xtask/src/gc_lint.rs). Each finding names its file:line; every allow is listed.
       - run: cargo xtask gc-lint
-      # Broken intra-doc links and other rustdoc warnings fail the job.
-      - run: cargo doc --workspace --no-deps --locked
+      # Broken intra-doc links and other rustdoc warnings fail the job, private items too.
+      - run: cargo doc --workspace --no-deps --locked --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
       # run.mjs gate logic with a fake engine; no JetStream checkout needed.
@@ -92,9 +119,79 @@ jobs:
       - run: node --test tools/bench/cross/run.test.mjs
       # t0-dispatch.mjs statistics (PERF-NOISE ranks, verdicts, arguments); no ep9 build needed.
       - run: node --test tools/bench/workloads/t0-dispatch.test.mjs
+      # M1 exit item 6 (plan v9 rule 26, section 5.6), last so a finding hides no check above:
+      # `cargo xtask adr-lint` (tools/xtask/src/adr_lint.rs) over m0-exit..HEAD: ADR trailers,
+      # review records, README Counts, path:line drift and the doc 13 short cites. HEAD is the checked-out tree, so on
+      # pull_request it is GitHub's refs/pull/N/merge commit: the merge result, so drift that the
+      # base branch brings in fails too. That clean 2-parent merge has no trailer and needs none:
+      # a merge touches only the paths where its tree differs from `git merge-tree --write-tree`
+      # of its parents. Full history first (the drift part reads old blobs). The output is the
+      # item-6 input of `cargo xtask m1-exit`.
+      - name: adr-lint
+        run: |
+          git fetch --no-tags --unshallow origin
+          git fetch --no-tags origin 'refs/tags/m0-exit:refs/tags/m0-exit'
+          cargo xtask adr-lint --base m0-exit 2>&1 | tee adr-lint.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: m1-exit-inputs-adr-lint
+          path: adr-lint.txt
+          if-no-files-found: warn
+
+  # docs_only for the range of this event: pull_request: merge-base(base, head)..head (--merge-base);
+  # push: before..sha, workflow_dispatch: inputs.scope_base..sha, base an ancestor of sha or false
+  # (a force-push, no input). The script is an allow-list and fails closed (see its header).
+  # Full history, no blobs: the script needs commits and trees only (--no-renames).
+  scope:
+    name: scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      # The fixture ranges of plan v9 section 2.7 (and the fail-closed cases) in a throwaway repo.
+      - name: ci-scope self-test
+        run: bash .github/scripts/ci-scope.sh --self-test
+      - name: scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          DISPATCH_BASE: ${{ inputs.scope_base }}
+          SHA: ${{ github.sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" head="$PR_HEAD" mode=(--merge-base) ;;
+            push) base="$PUSH_BEFORE" head="$SHA" mode=() ;;
+            workflow_dispatch) base="$DISPATCH_BASE" head="$SHA" mode=() ;;
+            *) base="" head="$SHA" mode=() ;;
+          esac
+          rc=0
+          if [ -z "$base" ]; then
+            echo "scope: no base for event $EVENT"
+            out="docs_only=false"
+          else
+            out="$(bash .github/scripts/ci-scope.sh "${mode[@]}" "$base" "$head")" || rc=$?
+          fi
+          case "$out" in
+            docs_only=true | docs_only=false) ;;
+            *) echo "::error::ci-scope.sh exited $rc and printed '$out'"; out="docs_only=false"; rc=1 ;;
+          esac
+          echo "$out" >> "$GITHUB_OUTPUT"
+          echo "scope ($EVENT, ${base:-no base}..$head): $out" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
 
   build-test:
     name: build + test (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -104,7 +201,9 @@ jobs:
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: windows-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # Plan v9 section 9.2: 110 (>= 1.5 x 72.0 min, the last measured max with the feature matrix
+    # inside) until the first run without it is measured.
+    timeout-minutes: 110
     steps:
       # Windows: keep LF in our files and in test262 (scripts break on CRLF), allow long paths.
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
@@ -128,27 +227,54 @@ jobs:
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # H27: the default (jit), jitless and aot feature sets, one package at a time (a --workspace
-      # build unifies features and would hide a jitless leak): build, clippy -D warnings and test,
-      # 9 cells (tools/xtask/src/features.rs). It runs every cell, then lists PASS or FAIL per cell.
-      - name: feature matrix
-        if: ${{ !cancelled() }}
-        run: cargo xtask feature-matrix
+
+  # H27: the default (jit), jitless and aot feature sets, one package at a time (a --workspace
+  # build unifies features and would hide a jitless leak): build, clippy -D warnings and test,
+  # 9 cells (tools/xtask/src/features.rs). It runs every cell, then lists PASS or FAIL per cell.
+  # Its own job since M4-P0 (plan v9 section 2.7, L1): build-test, with this step inside, was the
+  # longest job (72.0 min max, windows-x64). The default set's `cargo test -p ep9_cli` runs the e2e
+  # check against node, so this job pins the same node as build-test.
+  feature-matrix:
+    name: feature matrix (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.1'
+      - run: cargo xtask feature-matrix
 
   test262:
     name: test262 parse + exec (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
         # linux-x64 also runs the atom-key gate (a debug exec run). GC-stress runs in the test262-gc
         # job (M3-P3 GATES-2), so this job no longer needs the 300-min limit of M3-P2-CI-GC-TIMEOUT.
         include:
-          - { name: macos-arm64, os: macos-15, timeout: 60 }
-          - { name: linux-x64, os: ubuntu-24.04, timeout: 90 }
-          - { name: linux-arm64, os: ubuntu-24.04-arm, timeout: 60 }
-          - { name: windows-x64, os: windows-2025, timeout: 60 }
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout }}
+    # Plan v9 section 9.2: 90 on every target (>= 1.5 x 45.0 min, the last measured max).
+    timeout-minutes: 90
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -217,15 +343,15 @@ jobs:
           cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-debug.log || rc=$?
           echo "m0-exit status: $rc" | tee -a corpus-debug.log
           exit "$rc"
-      # M0 exit item 7 (nesting caps, the UTF-16 column): the m0-exit input log of NESTING_CMD
-      # (tools/xtask/src/m0_exit.rs), two cargo runs, each with its start and exit-status lines. The
-      # build + test job runs the same tests; this log is what m0-exit reads for the host column.
+      # The host-column log of m0-exit item 7 and m1-exit item 8 (nesting caps): NESTING_CMD of tools/xtask/src/{m0_exit.rs, m1_exit.rs}, the same lines (the m1-exit source lines too).
       - name: nesting caps (m0-exit item 7 log)
         if: ${{ !cancelled() && matrix.name != 'windows-x64' }}
         env:
           CARGO_TERM_COLOR: never
         run: |
           echo "m0-exit start: depth_tests" | tee nesting.log
+          echo "m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}" | tee -a nesting.log
+          echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
           rc1=0
           cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
           echo "m0-exit status: $rc1" | tee -a nesting.log
@@ -302,6 +428,8 @@ jobs:
   # "exec"). To change n, change `shards` and the `shard` list together.
   test262-gc:
     name: test262 GC-stress (${{ matrix.target.name }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -313,7 +441,8 @@ jobs:
         shards: [6]
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.target.os }}
-    timeout-minutes: 90
+    # Plan v9 section 9.2: 60 (>= 1.5 x 22.7 min, the last measured max of one shard).
+    timeout-minutes: 60
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -356,6 +485,8 @@ jobs:
   # objects with llvm-nm and llvm-objdump from llvm-tools.
   fp-check:
     name: fp-check (linux-x64)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -388,6 +519,8 @@ jobs:
   # target, not on the host.
   disasm:
     name: disasm checks (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -417,6 +550,8 @@ jobs:
 
   spikes:
     name: spike gates (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -588,6 +723,8 @@ jobs:
   # pinned one of the become feature.
   miri:
     name: Miri (linux-x64)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -601,6 +738,8 @@ jobs:
 
   dep-guards:
     name: dependency guards
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -633,6 +772,8 @@ jobs:
   # the table in the step summary. A record, not a gate: the ratchet comes later.
   perf-ci-v0:
     name: perf CI v0 (linux-x64)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -662,6 +803,8 @@ jobs:
   # recorded in the job summary and an artifact. It never blocks (continue-on-error).
   sp-tsrs-win:
     name: SP-tsrs-win (recorded, not blocking)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: windows-2025
     continue-on-error: true
     timeout-minutes: 120
@@ -699,3 +842,61 @@ jobs:
           name: sp-tsrs-win-log
           path: sp-tsrs-win.log
           if-no-files-found: warn
+
+  # Front-end fuzz smoke (plan v9 M4-P2 FE-FUZZ; docs/plan/10-quality.md section 4): the 3
+  # cargo-fuzz targets of fuzz/ (its own nightly workspace, fuzz/README.md), seeded from
+  # fuzz/seeds and a test262 sample, FUZZ_SMOKE seconds of mutation each. The repo is public
+  # (plan v9 rule 14, V9-A17): fuzz/scripts/run.sh sends the fuzzer output to a file inside the
+  # job and prints only the crash count, the SHA-256 of each crash file and numeric stats; the
+  # job uploads nothing. The self-test step first proves that rule on a fixture crash. A CI
+  # probe of the 10-minute smoke sets frontend_compile=600 (and the timeout to 45).
+  # Rule 25: the Mac run of every step except the mutation is 172 s (cold build in the
+  # self-test 102 s, test262 seeds 57 s, seed replay 11 s) + 180 s mutation = 5.9 min; on
+  # ubuntu-24.04 (4 vCPU, cold cache, cargo-fuzz install) about 12-15 min (est.).
+  fuzz-smoke:
+    name: fuzz smoke (linux-x64)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    # Plan v9 section 9.2: 30 (new job; the fixer re-reads it from the first measured run).
+    timeout-minutes: 30
+    env:
+      CARGO_FUZZ_VERSION: 0.12.0
+      # <target>=<seconds of mutation>, one per target.
+      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The +toolchain of fuzz/rust-toolchain.toml (the Miri pin); the root stable pin builds
+      # cargo-fuzz itself.
+      - uses: ./.github/actions/setup-rust
+      - name: Install the fuzz nightly (fuzz/rust-toolchain.toml)
+        working-directory: fuzz
+        run: |
+          chan="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$chan" --profile minimal --no-self-update
+          rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz -> target
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      - name: Seed corpus (test262 sample)
+        run: bash fuzz/scripts/seed-test262.sh third_party/test262 fuzz/corpus
+      - name: Output rule self-test (a fixture crash shows only the count and the hash)
+        run: bash fuzz/scripts/self-test.sh
+      - name: Build the targets
+        run: bash fuzz/scripts/run.sh build
+      - name: Fuzz smoke
+        run: |
+          rc=0
+          for item in $FUZZ_SMOKE; do
+            t="${item%%=*}"
+            s="${item#*=}"
+            bash fuzz/scripts/run.sh "$t" "$s" "fuzz/corpus/$t" "fuzz/seeds/$t" || rc=1
+          done
+          exit "$rc"

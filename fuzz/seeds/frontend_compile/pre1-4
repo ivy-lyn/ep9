@@ -1,0 +1,1 @@
+var v; for ([v = eval("5")] of [[]]);

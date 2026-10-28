@@ -18,7 +18,7 @@ use ep9_value::Throw;
 use crate::conv::Res;
 use crate::frame::{CONSTRUCT_BIT, HEADER, int32_of, native_ptr, slot};
 use crate::interp::{Cx, EXIT_STUB};
-use crate::object::{self, attr, is_error, is_string, own_define, str_view};
+use crate::object::{self, attr, is_error, is_string, own_define};
 use crate::runtime::{Atom, ErrorKind, Runtime, Site};
 use crate::unit::FunctionInfo;
 
@@ -133,7 +133,8 @@ pub(crate) fn error_header(cx: &mut Cx, e: u64) -> String {
     let read = |cx: &mut Cx, a: Atom| -> String {
         let key = rt.atom(a);
         match crate::property::get_data_from(cx, e, key) {
-            Some(v) if is_string(v) => str_view(v).to_string_lossy(),
+            // Rope-safe and no GC point (an error report may run near the heap limit).
+            Some(v) if is_string(v) => crate::string::to_rust_string(v),
             _ => String::new(),
         }
     };
@@ -159,8 +160,95 @@ pub(crate) fn install_stack(cx: &mut Cx, e: u64) {
         object::set_error_site(rt, e, site.unit, site.offset);
     }
     let text = format!("{}{}", error_header(cx, e), stack_lines(rt, &frames));
-    let s = object::new_string(rt, &text);
+    let s = message_string(rt, &text);
     own_define(rt, e, rt.atom(Atom::Stack), s, attr::HIDDEN);
+}
+
+/// The text V8 gives a message that cannot be made (node v24.22.1: `undefined[s]` with `s` of
+/// 2^29 - 24 units throws a TypeError whose message is this text).
+const OVER_LIMIT_MESSAGE: &str = "<error>";
+
+/// A heap string of a message or stack text built in Rust (H19-Q5). Quoted values stay whole,
+/// as in V8; a text over the string length limit (2^29 - 24 code units) becomes
+/// [`OVER_LIMIT_MESSAGE`], so a huge key in a message never reaches the allocator's limit
+/// assert. GC point.
+pub(crate) fn message_string(rt: &Runtime, text: &str) -> u64 {
+    object::new_string(rt, bounded_text(text, crate::string::MAX_STRING_LENGTH))
+}
+
+/// One part of a message built by [`bounded_message`].
+#[derive(Clone, Copy)]
+pub(crate) enum Part<'a> {
+    /// Rust text of the message itself (short).
+    Text(&'a str),
+    /// The text of a key or value as V8 quotes it: a string's text (whole, H19-Q5), a
+    /// symbol's `Symbol(desc)`, else `conv::describe` (a number's text, `undefined`, ...).
+    Key(u64),
+}
+
+/// The UTF-16 length of [`Part::Key`]'s text, from the string lengths: O(1) for a rope.
+fn key_units(k: u64) -> usize {
+    if is_string(k) {
+        crate::string::str_len(k)
+    } else if crate::kinds::is_symbol(k) {
+        let d = crate::symbol::description(k);
+        "Symbol()".len()
+            + if is_string(d) {
+                crate::string::str_len(d)
+            } else {
+                0
+            }
+    } else {
+        crate::conv::describe(k).encode_utf16().count()
+    }
+}
+
+/// The text of [`Part::Key`] (lone surrogates become U+FFFD, one unit each, so its UTF-16
+/// length is [`key_units`]).
+fn key_text(k: u64) -> String {
+    if is_string(k) {
+        crate::string::to_rust_string(k)
+    } else if crate::kinds::is_symbol(k) {
+        crate::symbol::descriptive_text(k)
+    } else {
+        crate::conv::describe(k)
+    }
+}
+
+/// A message that quotes keys or values, as Rust text for [`throw_error`] (H19-Q5; M4-P4
+/// fixer B, Codex H19 H-1): the UTF-16 length is counted first, from the string lengths, so
+/// a message over the length limit is [`OVER_LIMIT_MESSAGE`] with no copy of any quoted
+/// string (a rope near the limit is never flattened or read into Rust text). Under the limit
+/// every quoted value is whole, as in V8. Not a GC point.
+pub(crate) fn bounded_message(parts: &[Part<'_>]) -> String {
+    let units: usize = parts
+        .iter()
+        .map(|p| match *p {
+            Part::Text(t) => t.encode_utf16().count(),
+            Part::Key(k) => key_units(k),
+        })
+        .sum();
+    if units > crate::string::MAX_STRING_LENGTH {
+        return OVER_LIMIT_MESSAGE.into();
+    }
+    let mut out = String::new();
+    for p in parts {
+        match *p {
+            Part::Text(t) => out.push_str(t),
+            Part::Key(k) => out.push_str(&key_text(k)),
+        }
+    }
+    out
+}
+
+/// `text`, or [`OVER_LIMIT_MESSAGE`] if it has more than `limit` UTF-16 code units. The exact
+/// count runs only when the UTF-8 length is over the limit (UTF-16 length <= UTF-8 length).
+fn bounded_text(text: &str, limit: usize) -> &str {
+    if text.len() > limit && text.encode_utf16().count() > limit {
+        OVER_LIMIT_MESSAGE
+    } else {
+        text
+    }
 }
 
 /// A new error of `kind` with `message` (a string value or `None`), with a stack.
@@ -176,7 +264,7 @@ pub(crate) fn new_error_value(cx: &mut Cx, proto: u64, message: Option<u64>) -> 
 
 pub(crate) fn new_error(cx: &mut Cx, kind: ErrorKind, msg: &str) -> u64 {
     let rt = cx.rt();
-    let m = object::new_string(rt, msg);
+    let m = message_string(rt, msg);
     new_error_value(cx, rt.root(kind.prototype_root()), Some(m))
 }
 
@@ -211,7 +299,7 @@ pub(crate) fn describe_exception(rt: &Runtime, exc: u64) -> (Option<Site>, Optio
         let site = object::error_site(exc).map(|(unit, offset)| Site { unit, offset });
         let stack = object::own_get(exc, rt.atom(Atom::Stack))
             .filter(|(v, _)| is_string(*v))
-            .map(|(v, _)| str_view(v).to_string_lossy());
+            .map(|(v, _)| crate::string::to_rust_string(v));
         (site, stack)
     } else {
         (rt.shared.throw_site.get(), None)
@@ -274,3 +362,11 @@ fn find_handler(fi: &FunctionInfo, off: u32) -> Option<(u32, u32)> {
 }
 
 const _: () = assert!(HEADER == 8);
+
+#[cfg(test)]
+pub(crate) mod testing {
+    //! Hooks for tests/strings.rs (H19-Q5).
+    pub(crate) fn bounded_text(text: &str, limit: usize) -> &str {
+        super::bounded_text(text, limit)
+    }
+}

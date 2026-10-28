@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft (2026-10-22): the plan row and the merge rule. FactSnapshot v0 already names the three sources (H16); the IR and the merge are not built. SP-Facts (M1) validates the lattice and the ref nodes |
 | Fix by | Draft M0 month 3; frozen M1 exit |
-| Freeze point | M1 exit, the whole row (README §2). Built after M1 exit (T2 in M7, A4), so README §3.4 applies: H30-Q7 |
+| Freeze point | Parts (the Freeze table, README §3.4; H30-Q7): the model at M1 exit; the fused HINTED kinds after the M1 list and the ref-node kinds as append-only lists; the VERIFIED region table at the end of A5, only if it is built |
 | Origin | R16-D3; plan status N |
 | Crates | `ep9_facts` (`FactSource`, FactSnapshot), later `ep9_opt` (IR facts, ref nodes, graph builder), `ep9_aot` (the AOT merge), `ep9_frontend` (HINTED join, H37) |
 | Owner (plan role) | AOT senior (SP-Facts, A0 part 2); CORE T2 owner (the optimizer) ([09 §4](../plan/09-milestones.md#4-spikes)) |
@@ -58,7 +58,7 @@ Copied from the plan row (02 §6): proven ⊑ predicted{source ∈ RUNTIME, PROF
 |---|---|---|
 | A FactSnapshot names exactly one source of RUNTIME, PROFILED or HINTED; any other byte refuses the snapshot | `ep9_facts` test `header_errors`: source byte 3 gives `BadValue("fact source")` (`crates/ep9_facts/tests/encoding.rs:184-185`); `tests/schema.rs` (schema fingerprint, H16) | M0 wk4 |
 | TS types never become PROVEN; HINTED facts always get a Guard or a fuse | M1: Spike C / SP-Facts (lattice); hint soundness corpus (10-quality §2) and hint chaos fuzzing (10-quality §4) | M1; A1h; A4 |
-| The IR holds no raw heap constant; only the five ref nodes | M1: Spike C / SP-Facts (ref nodes); the unit writer rejects HeapConst (H34, 04 §5) | M1; A2 |
+| The IR holds no raw heap constant; only ref nodes (the five of the Decision today; an append-only list, Freeze table) | M1: Spike C / SP-Facts (ref nodes); the unit writer rejects HeapConst (H34, 04 §5) | M1; A2 |
 | ShapeRef lowers to an immediate only for a snapshot root shape | unit golden tests (H8 rule row `docs/adr/H08-object-header-and-shapeid.md:89`) | A2 |
 | RUNTIME > PROFILED > HINTED per fact kind; fused HINTED facts with no runtime counterpart stay | M1: Spike C / SP-Facts (one kernel from a PROFILED FactSnapshot file gives identical output); profile staleness suite (10-quality §2) | M1; A3 |
 | One graph builder reads bytecode + FactSnapshot for JIT and AOT | M1: Spike C / SP-Facts; mode x tier differential (10-quality §4) | M1; A3 |
@@ -89,13 +89,23 @@ Copied from the plan row (02 §6): proven ⊑ predicted{source ∈ RUNTIME, PROF
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H30-Q1 | Where does `confidence` live? FactSnapshot v0 has a source per snapshot and no confidence field | M1 (H16 freeze) | A per-record confidence byte for PROFILED and HINTED only; adding it bumps `FACT_SCHEMA_VERSION` |
-| H30-Q2 | "The provenance set is open": a new source byte (VERIFIED = 3) is refused by a v1 decoder. Reserve it now or bump the schema when D17 (d) is picked? | M1 exit (freeze) | Reserve the value in the schema text at the M1 freeze; the decoder keeps refusing it until built |
+| H30-Q1 | Where does `confidence` live? FactSnapshot v0 has a source per snapshot and no confidence field | M1 (H16 freeze) | A per-record confidence byte for PROFILED and HINTED only; adding it bumps `FACT_SCHEMA_VERSION`. **Proposal 2026-10-27 (M4-P2 ADR-A0; C-05, C7):** as proposed: 1 byte per record of a PROFILED or HINTED snapshot, in the one month-6 `FACT_SCHEMA_VERSION` bump (V9-D10). H32 "HINTED: at lower confidence" reads this byte (H32-Q1) |
+| H30-Q2 | "The provenance set is open": a new source byte (VERIFIED = 3) is refused by a v1 decoder. Reserve it now or bump the schema when D17 (d) is picked? | M1 exit (freeze) | Reserve the value in the schema text at the M1 freeze; the decoder keeps refusing it until built. **Filled 2026-10-27 (M4-P2 ADR-A0; plan v9 §4.1 task 3, C-05): VERIFIED = 3 is reserved as a name of the provenance set, and it is never a FactSnapshot source.** A FactSnapshot keys facts by (function, slot) (H16), and VERIFIED facts are keyed by region version (H30-Q5), so they get their own region table, never FactSnapshot records. The decoder keeps refusing source byte 3 (`header_errors`, `crates/ep9_facts/tests/encoding.rs:184-185`), and no schema bump adds a VERIFIED field |
 | H30-Q3 | The per-fact-kind precedence table: which fact kinds exist, and which HINTED kinds count as "fused, no runtime counterpart" beyond CHA, enum constant, non-null, slot pre-size | M1 (SP-Facts) | Fact kinds = H16 slot payloads + the 4 fused kinds named by the plan |
-| H30-Q4 | Merging two snapshots of one function (RUNTIME + HINTED) in the JIT: snapshot time and thread | M1 (SP-Facts) | Main-thread snapshot as Warp (04 §6); merge off-thread |
+| H30-Q4 | Merging two snapshots of one function (RUNTIME + HINTED) in the JIT: snapshot time and thread | M1 (SP-Facts) | Main-thread snapshot as Warp (04 §6); merge off-thread. **Proposal 2026-10-27 (M4-P2 ADR-A0; C-05):** one `ep9_facts::merge(sources) -> FactSet` serves the JIT and `ep9_aot` (`ep9_facts` depends on `ep9_bytecode` only, so both sides can call it). The JIT takes the main-thread snapshot and merges off-thread; compile threads never read live heap objects (H21 P7) |
 | H30-Q5 | How a VERIFIED fact is keyed (by region version, not by bytecode site) and how it ranks against RUNTIME [R18] | M7 exit (D17 rule) | Not built unless D17 picks (d) |
 | H30-Q6 | Which spec invariants and range facts count as PROVEN, and the list of Math range facts (H36 CR results) | M7 (T2) | A closed list in `ep9_opt`, each with a differential test |
-| H30-Q7 | README §3.4 asks a Freeze table for a row built after M1 exit | M1 exit | The whole row freezes at M1 exit; the SP-Facts speed number may be recorded later (README §2) |
+| H30-Q7 | README §3.4 asks a Freeze table for a row built after M1 exit | M1 exit | The whole row freezes at M1 exit; the SP-Facts speed number may be recorded later (README §2). **Filled 2026-10-27 (M4-P2 ADR-A0; MODES-D1): the Freeze table below** |
+
+## Freeze table
+
+README §3.4 form (H30-Q7; plan v9 §4.1 task 9; the design is [13](../plan/13-execution-modes.md) §4 and §5.4, MODES-D1). A gated part freezes at the gate that ends its build.
+
+| Part | What it holds | Freeze point | After the freeze point | Check |
+|---|---|---|---|---|
+| Model | Decision and Rules: the lattice, the precedence per fact kind, the merge rule, the ref-node rule (no raw heap constant) and the meaning of each ref node, one graph builder, the guard policy in the IR; the fills of Q1 and Q4, and the M1 list of the Q3 fill (the fact kinds and fused HINTED kinds it names by M1 exit); the provenance set: the FactSnapshot sources 0 RUNTIME, 1 PROFILED, 2 HINTED, and VERIFIED = 3 as a reserved name only (Q2; a new FactSnapshot source would be a schema change, H16) | M1 exit | Frozen-part rules (README §3.2) | SP-Facts (M1 exit item 10). A speed-only miss after the time box is recorded, not blocking (README §2). SP-Facts measures PROFILED facts under JIT lowering only, so it is not a jitless-lowering number; the A4 gate names that measure (MC-w13-23) |
+| Fused HINTED kinds and ref-node kinds (append-only) | The fused HINTED kinds ("no runtime counterpart") after the M1 list of the Q3 fill: no codegen reads hints before A4 (`docs/plan/01-front-end.md:238`; hint consumers come at A4, `docs/plan/02-architecture.md:230`), so kinds found in A4 come by append. The ref-node kinds: RootRef, IntrinsicRef, ShapeRef, CellRef, UnitConst, in this order; a new kind names its lowering (H34) in its fill row (MC-w14-4) | None | Append only; a kind's meaning never changes | when built: the unit writer refuses an unknown ref node (A2); the merge drops an unknown fused kind (A4) |
+| VERIFIED region table (gated) | The region table format and its ranking against RUNTIME (Q5) | The end of A5 (the K-A5v decision), only if the D17 rule picks (d) | Frozen-part rules | A5 gates |
 
 ## Reopens if
 
@@ -109,3 +119,5 @@ Copied from the plan row (02 §6): proven ⊑ predicted{source ∈ RUNTIME, PROF
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H30, 02 §3, 04 §6 and 05 §11, with the FactSource bytes of FactSnapshot v0 as built; confidence, VERIFIED and the fact-kind table are Open questions | P3-ADR-JIT agent (M2-P3) |
 | 2026-10-22 | rewrite | PROVEN row: "bitwise ops → int32" was wrong for `>>>`, which gives uint32 (ToUint32, ECMAScript §13.9; the interpreter boxes it as a double: `crates/ep9_vm/src/interp/ops.rs:142`, `crates/ep9_vm/src/conv.rs:397`; node: `-1>>>0` is 4294967295). The row now lists the int32 operators and gives `>>>` as uint32. The same fix is in plan 02 §3 and 04 §6, which this row copies. Codex review of the P3 merge (M2-P3-RF1-H30) | P3 review fix (orchestrator) |
+| 2026-10-27 | fill (H30 is Draft) | Freeze table and Open-question text (plan v9 §4.1 tasks 2, 3 and 9; MODES-D1, MODES-D3, C-05): the Freeze point field names the parts; a Freeze table (the model and the provenance set at M1 exit, with the SP-Facts note of MC-w13-23; the VERIFIED region table at the end of A5); Q2 filled (VERIFIED = 3 reserved as a name, its own region table, never FactSnapshot records); Q1 and Q4 proposals; Q7 filled. Every check keeps its result | M4-P2 ADR-A0 (VM lead role) |
+| 2026-10-27 | clarify (H30 is Draft) | MODES-CHECK-w14 finding MC-w14-4 (U3; 13 §5.4; MODES-D1: a part freezes at the gate that ends its build): the Q3 fill is split, so the Model part (M1 exit) holds only the M1 list of fact kinds and fused HINTED kinds, and the fused kinds after it form an append-only list (no codegen reads hints before A4, so kinds found in A4 would otherwise need a rewrite); the ref-node kinds become an append-only list too (the Rules row and the Freeze point field follow). No check, value or ref node changes | M4-P3 integration fixer (docs part A) |

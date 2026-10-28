@@ -32,7 +32,7 @@
 use ep9_value::Throw;
 
 use crate::bound;
-use crate::call::{self, CallSite};
+use crate::call::{self, ArgBuf, CallSite};
 use crate::conv::{Res, describe};
 use crate::error::{self, not_implemented, stack_overflow, throw_error};
 use crate::feedback;
@@ -55,8 +55,15 @@ use super::{enter, interrupt};
 #[inline(never)]
 pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {
     enter(cx, fp, pc);
-    if cx.budget <= 0 && interrupt(cx, fp) == 0 {
-        return error::unwind(cx, fp, pc);
+    if cx.budget <= 0 {
+        if interrupt(cx, fp) == 0 {
+            return error::unwind(cx, fp, pc);
+        }
+        // The caller gets its vector at a call poll too (PERF3 step-2 item 4), not only at a
+        // JumpLoop poll: a loop whose polls always land on a call would get none. GC point,
+        // as `count_call` below: the callee and arguments are in the caller's registers
+        // (the frame is recorded) and `acc` is a Rust local.
+        feedback::ensure(cx.rt(), cx.feedback_threshold, super::info(fp));
     }
     #[cfg(feature = "spike-native")]
     // SAFETY: `pc` is the call instruction (or its prefix) of verified code in the live top
@@ -84,9 +91,10 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         return call_native(cx, fp, s, fi);
     }
     let rt = cx.rt();
-    // The argument values stay rooted in the caller's registers while this copy exists.
+    // The argument values stay rooted in the caller's registers while this copy exists. Up
+    // to `call::INLINE_ARGS` of them need no heap allocation (`call::ArgBuf`).
     // SAFETY: the offsets come from register operands of verified code in the frame `fp`.
-    let mut args: Vec<u64> = s.args.iter().map(|&o| unsafe { *fp.offset(o) }).collect();
+    let mut args: ArgBuf<u64> = s.args.iter().map(|&o| unsafe { *fp.offset(o) }).collect();
     // The spread operand (`CallWithSpread`, `ConstructWithSpread`) is an Array that bytecode
     // made: BytecodeGen ran the iterator protocol already (`arguments_into`), or built the
     // list itself (a spread that is not last, a default derived constructor's rest array).
@@ -176,6 +184,10 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             // GC point; `this` then lives in a Rust local until the stub frame holds it.
             call::ordinary_create_from_constructor(cx, new_target)?
         };
+        // The construct-site hook (M4-P0; filled by M4-P1 OBJ-ALLOC, `construct_ic.rs`): a stub
+        // that records nothing. GC point allowed: `this` is a Rust local, the rest is in caller
+        // registers.
+        crate::construct_ic::miss(cx, fp, s, callee, new_target, this);
         // SAFETY: `fp` is the live top frame; `this` is valid Value bits.
         let Some(stub) = (unsafe { call::push_construct_stub(cx, fp, this, callee, s.next_pc) })
         else {
@@ -602,12 +614,12 @@ fn prepend_bound_args(
     cx: &mut Cx,
     f: u64,
     new_target: u64,
-    args: &mut Vec<u64>,
+    args: &mut ArgBuf<u64>,
 ) -> Res<bound::Unwrapped> {
     let u = bound::unwrap(cx, f, new_target)?;
     let n = u.bound as usize;
     if n > 0 {
-        args.splice(0..0, core::iter::repeat_n(UNDEFINED, n));
+        args.prepend(n, UNDEFINED);
         bound::copy_chain_args(f, &mut args[..n]);
     }
     Ok(u)

@@ -6,15 +6,21 @@
 //! ```text
 //!  export_facts(isolate, unit hash)
 //!    the first loaded unit whose content hash is `unit hash` (else Err)
-//!    └─ each function with a FEEDBACK cell (feedback.rs), each slot that an IC site uses
+//!    └─ each function with a FEEDBACK cell (feedback.rs), each slot that a T0 site writes
 //!         LoadNamed, StoreNamed, DefineNamedOwn (0x21, 0x22, 0x24, 0x25) ── PropertyFacts
 //!         LoadGlobal, LoadGlobalInsideTypeof, StoreGlobal (0x10-0x12) ──── GlobalFacts
-//!         other kinds: no record (T0 v0 does not record them, H16-Q2)
+//!         Call (Call* 0x5e-0x67 | Construct* 0x69, 0x6a; branch on the opcode) ── CallFacts
+//!         keyed kinds (2, 4, 6, 10, 17) ─ KeyedFacts    BinaryOp ─ BinaryHint
+//!         CompareOp ─ CompareHint    TypeOf ─ TypeSet    InstanceOf ─ TargetFacts
+//!         Literal ─ LiteralFacts     CloneObject ─ CloneFacts    ForIn ─ ForInHint
+//!         JumpLoop ─ LoopFacts       CreateClosure ─ ClosureFacts   (M4-P2 FACTS2)
 //!  IC entry (ic.rs)   ── state: uninitialized | monomorphic | polymorphic | megamorphic
 //!   case (key, handler)
 //!     key: a live shape ──root walk──> ShapeDesc {proto, kind, flags, capacity, keys}
 //!     handler: own field ─> OwnField     array length ─> ArrayLength    SLOW ─> Generic
 //!              PROTO_LOAD ─> ProtoField  MISSING ─> Missing             ADD ─> AddField
+//!  call target (a FunctionInfo word, or a FUNCTION cell) ──address──> FunctionRef
+//!     a unit function ─> Js {unit hash, id}   a table builtin ─> Builtin(id)   else: none
 //! ```
 //!
 //! Rules:
@@ -46,33 +52,87 @@
 //! - A case that has no description is left out (the `ep9_facts` rule: a state may have
 //!   fewer cases than the IC had): the string key ([`ic::KEY_STRING`]), a dead key, an object
 //!   kind with no [`ObjectKind`] (generators, arguments, objects with internal slots, module
-//!   namespaces), a prototype handler whose epoch is not the current `proto_epoch` (it misses
-//!   from now on, and its chain may have changed) or whose holder or target shape is dead, and
+//!   namespaces), a prototype handler whose validity cell is invalid (`validity.rs`: it
+//!   misses from now on, and its chain may have changed) or whose holder or target shape is
+//!   dead, and
 //!   two cases whose receivers have equal descriptions but different accesses.
-//! - T0 v0 records no value types, call targets or counts (H16-Q2): `values` is empty, and
-//!   a global site's `bindings` come from its cases only.
+//! - T0 records no value types at property and global sites, and no call result types
+//!   (H16-Q2): `values` and `CallFacts::result` are empty; global `bindings` come from cases.
+//! - **Which slots get a record (M4-P2 FACTS2).** A slot that a T0 site writes: the named and
+//!   global sites (as before), every `Call*` and `Construct*` site, and every site of the
+//!   other kinds except four that T0 leaves empty: the two slots of 0x8f `GetIterator`, the
+//!   Call slot of 0x6b `TailCall` (reserved), the Literal slot of `GetTemplateObject` and the
+//!   Literal slot of `CreateRegExpLiteral` (`regexp::create_literal` writes no slot).
+//!   InstanceOf (14) gets a record only once its slot left the start state (undefined, int32
+//!   0): `instance_ic.rs` (M4-P3 IC2) records a run only when it gives a result (a rhs that
+//!   throws records nothing), so a slot in its start state has no rhs to name.
+//! - **Implicit bits (H16-Q2 (1); MODES-D10, F-R9).** T0 writes no bit for an int32 pair with
+//!   an int32 result at a BinaryOp site (also an int32 operand of a unary site), an int32 pair
+//!   at a CompareOp site, and a present int32 index of an Array at `GetKeyedProperty`. The
+//!   reader adds them to every slot of the kind in a function that has a vector: every
+//!   BinaryOp record has `BinaryHint::INT32`, every CompareOp record `CompareHint::INT32`,
+//!   every LoadKeyed record `KeySet::INDEX`. So a BinaryOp or CompareOp record whose only
+//!   bit is that one is an empty slot, and it means **"int32 or never ran"**: T0 cannot tell
+//!   a cold site from an int32 site (a slot starts as int32 0, `feedback.rs`). A LoadKeyed
+//!   record whose only bit is `INDEX` is not always an empty slot: it means **"only int32
+//!   index keys, or never ran"**, and it says nothing of the receiver, bounds or holes. The
+//!   cold path writes the receiver bits 4-7 and the out-of-bounds and hole bits 8-9 there
+//!   (`profile.rs`), but schema 1 has no field for them (`keyed` below drops them), so an index
+//!   read of a non-array receiver, out of bounds or of a hole exports the same record
+//!   (MODES-D17, MODES-D18: the "ran" bit comes with those bits in the month-6 bump). AOT
+//!   treats these records so, and the H32 site budget bounds the cost when the site later
+//!   sees other values. A bit next to it is a prediction too (T0 may also have seen int32
+//!   there): a consumer guards (H16 Consequences).
+//! - **Count units (F-R7, MC-w13-2).** Each count names its unit, and a merge adds counts of
+//!   one unit only (H16-Q5b):
+//!
+//!   | Field | Unit | Writer |
+//!   |---|---|---|
+//!   | `CallFacts::count`, `Call*` site | **sampled calls**: a call in the first `CALL_WINDOW` (64) budget units after a budget reset | `profile.rs` (`record_call`) |
+//!   | `CallFacts::count`, `Construct*` site | **constructs of the cold path** (a hit writes nothing) | `construct_ic.rs` (`miss`) |
+//!   | `CallFacts::count`, a slot both share | none: 0 (the slot mixes the two units) | - |
+//!   | `LoopFacts::back_edges` | **sampled back edges**: a back edge that polls (it used up the budget) | `profile.rs` (`record_jump_loop`) |
+//!   | `LiteralFacts::count` | **cold-path literal results**: a lower bound of the allocations | `literal_site.rs` (`miss`) |
+//!
+//!   All saturate at `i32::MAX`. A sampled count is a share of the budget units, not of the
+//!   executions: the windows come at a fixed period (`BUDGET`), so a call pattern with that
+//!   period can keep a site out of every window (`tests::facts_export`, MC-w13-17; the
+//!   jitter of the window start is month 5).
+//! - **Call keys are never written out (F-R8, MC-w13-8).** A `Call*` site keys the native word
+//!   of the callee's FunctionInfo (`profile.rs`), a `Construct*` site the constructor cell
+//!   (weak, `construct_ic.rs`). The exporter branches on the site opcode and maps the
+//!   FunctionInfo by its address: inside a loaded unit's dense info array, it is
+//!   `FunctionRef::Js {unit hash, id}` (a unit function but function 0); in the table of this
+//!   export's builtin infos, `FunctionRef::Builtin(id)` (a table builtin of the current realm,
+//!   `builtins::existing_function`). Anything else (a host function, a bound function, a
+//!   proxy, a word in a slot that both kinds share) makes the site megamorphic with no target.
+//!   The word is never read as a pointer.
 //! - The exporter reads the heap and allocates nothing, so it is not a GC point. It takes
 //!   `&Isolate`, so no JS runs while it reads. It keeps no table keyed by a heap-cell Value
-//!   (H12-Q2 (a)): each shape and prototype is described again where a case names it. A
-//!   finished [`ShapeDesc`] is interned by its content (Codex C2-FX1): equal descriptions
-//!   share one `Arc`, so the memory kept grows with the distinct descriptions, not with the
-//!   sites that name them.
+//!   (H12-Q2 (a)): each shape and prototype is described again where a case names it (the
+//!   builtin table is keyed by FunctionInfo addresses: Rust memory that lives as long as the
+//!   isolate and never moves). A finished [`ShapeDesc`] is interned by its content
+//!   (Codex C2-FX1): equal descriptions share one `Arc`, so the memory kept grows with the
+//!   distinct descriptions, not with the sites that name them.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ep9_bytecode::{ABI_VERSION, FeedbackSlotKind, Instructions, Opcode, OperandKind, UnitString};
 use ep9_facts::{
-    Access, BindingSet, FactHeader, FactSnapshot, FactSource, FunctionRef, GlobalFacts, IcState,
-    KeyRef, ObjectKind, PropAttrs, PropertyCase, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags,
-    SlotFacts, TypeSet, UnitHash,
+    Access, BinaryHint, BindingSet, CallFacts, CloneCase, CloneFacts, ClosureCount, ClosureFacts,
+    CompareHint, FactHeader, FactSnapshot, FactSource, ForInHint, FunctionRef, GlobalFacts,
+    IcState, KeyRef, KeySet, KeyedFacts, LiteralFacts, LoopFacts, ObjectKind, PropAttrs,
+    PropertyCase, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TargetFacts, TypeSet,
+    UnitHash,
 };
+use ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
 
 use crate::Isolate;
 use crate::atoms::Atom;
 use crate::builtins::{self, IntrinsicId};
 use crate::feedback;
-use crate::frame::{HOLE, NULL, UNDEFINED, int32_of};
+use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, State, hk, smi};
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, attr, cell, obj, rd, rd_i32};
@@ -82,12 +142,14 @@ use crate::shape::{self, slf};
 use crate::string::{self, JsStr};
 use crate::symbol::{self, WellKnownSymbol};
 use crate::unit::{FunctionInfo, LoadedUnit};
+use crate::validity;
 
-/// The fields of an IC_HANDLER cell (the `ic.rs` layout table: +8 kind, +16 epoch, +24 holder
-/// or target shape (weak), +32 location).
+/// The fields of an IC_HANDLER cell (the `ic.rs` layout table: +8 kind, +16 the validity cell
+/// (or undefined for a 0x25 add; an int32 count for CONSTRUCT_SITE and CLONE), +24 holder,
+/// target or result shape (weak), +32 location).
 mod hc {
     pub const KIND: usize = 8;
-    pub const EPOCH: usize = 16;
+    pub const CELL: usize = 16;
     pub const REF: usize = 24;
     pub const LOCATION: usize = 32;
 }
@@ -99,10 +161,11 @@ const POLY_CASE: usize = 16;
 
 /// The facts of the loaded unit whose content hash is `unit_hash`, from its feedback vectors
 /// (H16-Q5). The snapshot's header names this build's bytecode ABI and the source `runtime`.
-/// One record per feedback slot that an IC site of T0 uses (the named-property and global
-/// sites), in each function that has a feedback vector; a function that has none (it ran
-/// fewer times than `IsolateConfig::feedback_threshold`) gives no record. If the isolate
-/// loaded two units with this hash (one source run twice), the first one loaded is read.
+/// One record per feedback slot that a T0 site writes (the module docs list them), in each
+/// function that has a feedback vector; a function that has none (it ran fewer times than
+/// `IsolateConfig::feedback_threshold` and polled at no loop) gives no record. If the
+/// isolate loaded two units with this hash (one source run twice), the first one loaded is
+/// read.
 ///
 /// The bytes of `snapshot.encode()` depend only on the program and what it did: no ShapeId,
 /// address or closure identity is in them. Not a GC point; runs no JS.
@@ -143,27 +206,12 @@ pub fn export_facts(
         };
         let code = &unit.unit.functions[f].bytecode;
         let kinds = &unit.unit.functions[f].feedback_slots;
-        let sites = site_names(info, code, kinds.len());
+        let uses = slot_uses(info, code, kinds.len());
         debug_assert_eq!(feedback::slot_count(v) as usize, kinds.len());
-        for (i, (&k, site)) in kinds.iter().zip(&sites).enumerate() {
-            let Some(name) = *site else {
-                continue;
-            };
+        for (i, (&k, u)) in kinds.iter().zip(&uses).enumerate() {
             let i = i as u32;
-            let facts = match k {
-                FeedbackSlotKind::LoadNamed => SlotFacts::LoadNamed(ex.property(v, i, true)),
-                FeedbackSlotKind::StoreNamed => SlotFacts::StoreNamed(ex.property(v, i, true)),
-                // 0x25 add cases do not compare the epoch (ic.rs).
-                FeedbackSlotKind::DefineNamedOwn => {
-                    SlotFacts::DefineNamedOwn(ex.property(v, i, false))
-                }
-                FeedbackSlotKind::LoadGlobal => SlotFacts::LoadGlobal(ex.global(v, i, name)),
-                FeedbackSlotKind::LoadGlobalInsideTypeof => {
-                    SlotFacts::LoadGlobalInsideTypeof(ex.global(v, i, name))
-                }
-                FeedbackSlotKind::StoreGlobal => SlotFacts::StoreGlobal(ex.global(v, i, name)),
-                // T0 v0 records no other kind (H16-Q2): no record, not an empty one.
-                _ => continue,
+            let Some(facts) = ex.slot(&units, v, i, k, u) else {
+                continue;
             };
             let r = snapshot.insert(f as u32, i, facts);
             // The cases are distinct and checked above: a refusal is an exporter bug.
@@ -173,52 +221,140 @@ pub fn export_facts(
     Ok(snapshot)
 }
 
-/// What one feedback slot of a function serves: `None` if no IC site of T0 uses it (a slot of
-/// another kind, or the load slot of 0x8f `GetIterator`, which T0 keeps empty); else the
-/// site's name constant (HOLE if two sites with different names share it: `ic::init_vector`
-/// made it megamorphic).
-fn site_names(fi: &FunctionInfo, code: &[u8], n: usize) -> Vec<Option<u64>> {
-    let mut names = vec![None; n];
+/// What the instructions of one function do with one of its feedback slots ([`slot_uses`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct SlotUse {
+    /// The name constant of the named-property and global sites that use the slot (HOLE if
+    /// two sites with different names share it: `ic::init_vector` made it megamorphic).
+    name: Option<u64>,
+    /// A `Call*` site (0x5e-0x67) uses it: T0 keeps a FunctionInfo word and sampled calls.
+    call: bool,
+    /// A `Construct*` site (0x69, 0x6a) uses it: the constructor (weak) and the constructs of
+    /// the cold path.
+    construct: bool,
+    /// A site of another kind whose slot T0 writes uses it.
+    other: bool,
+}
+
+/// What each feedback slot of a function serves, from its code. No IC site of T0 uses the two
+/// slots of 0x8f `GetIterator` (it keeps them empty), the Call slot of 0x6b `TailCall`
+/// (reserved: `not_impl`), the Literal slot of `GetTemplateObject` (`literal_site::miss`
+/// records no template) or the Literal slot of `CreateRegExpLiteral` (`regexp::create_literal`
+/// ignores it), so they give no use.
+fn slot_uses(fi: &FunctionInfo, code: &[u8], n: usize) -> Vec<SlotUse> {
+    let mut uses = vec![SlotUse::default(); n];
     for insn in Instructions::new(code) {
         let Ok(insn) = insn else {
             debug_assert!(false, "verified code decodes");
             break;
         };
-        if !matches!(
-            insn.opcode,
-            Opcode::GetNamedProperty
-                | Opcode::GetNamedPropertyFromSuper
-                | Opcode::SetNamedProperty
-                | Opcode::DefineNamedOwnProperty
-                | Opcode::LdaGlobal
-                | Opcode::LdaGlobalInsideTypeof
-                | Opcode::StaGlobal
-        ) {
-            continue;
-        }
         let operand = |want| (0..insn.operand_count()).find(|&j| insn.operand_kind(j) == want);
-        let (Some(s), Some(k)) = (operand(OperandKind::Slot), operand(OperandKind::Const)) else {
+        let Some(s) = operand(OperandKind::Slot) else {
             continue;
         };
-        let Some(entry) = names.get_mut(insn.unsigned(s) as usize) else {
+        let Some(u) = uses.get_mut(insn.unsigned(s) as usize) else {
             continue;
         };
-        let name = fi.constant(insn.unsigned(k));
-        *entry = match *entry {
-            None => Some(name),
-            Some(seen) if seen == name => Some(name),
-            Some(_) => Some(HOLE),
-        };
+        match insn.opcode {
+            Opcode::GetNamedProperty
+            | Opcode::GetNamedPropertyFromSuper
+            | Opcode::SetNamedProperty
+            | Opcode::DefineNamedOwnProperty
+            | Opcode::LdaGlobal
+            | Opcode::LdaGlobalInsideTypeof
+            | Opcode::StaGlobal => {
+                let Some(k) = operand(OperandKind::Const) else {
+                    continue;
+                };
+                let name = fi.constant(insn.unsigned(k));
+                u.name = match u.name {
+                    None => Some(name),
+                    Some(seen) if seen == name => Some(name),
+                    Some(_) => Some(HOLE),
+                };
+            }
+            Opcode::CallAnyReceiver
+            | Opcode::CallProperty
+            | Opcode::CallProperty0
+            | Opcode::CallProperty1
+            | Opcode::CallProperty2
+            | Opcode::CallUndefinedReceiver
+            | Opcode::CallUndefinedReceiver0
+            | Opcode::CallUndefinedReceiver1
+            | Opcode::CallUndefinedReceiver2
+            | Opcode::CallWithSpread => u.call = true,
+            Opcode::Construct | Opcode::ConstructWithSpread => u.construct = true,
+            Opcode::GetIterator
+            | Opcode::TailCall
+            | Opcode::GetTemplateObject
+            | Opcode::CreateRegExpLiteral => {}
+            _ => u.other = true,
+        }
     }
-    names
+    uses
 }
 
-/// One export: the runtime, the content hashes of the units made so far, by unit index, and
-/// the shape descriptions made so far, by their content (no heap address is a key, H12-Q2).
+/// The int32 value half of slot `i` of `v` as bits, or `None` (a VM bug: the slot kinds that
+/// `profile.rs` writes hold an int32, H16-Q2).
+fn int_value(v: u64, i: u32) -> Option<u32> {
+    let x = feedback::value(v, i);
+    if val(x).is_int32() {
+        Some(int32_of(x) as u32)
+    } else {
+        debug_assert!(false, "slot {i} holds no int32: {x:#x}");
+        None
+    }
+}
+
+/// A keyed slot (2, 4, 6, 10, 17; `profile.rs` writes the value half, KEYED (M4-P3) the key
+/// half): the `KeySet` bits 0-3 of the value, with `implicit` added (H16-Q2 (1)). The state is
+/// the key half's (`keyed_ic.rs`), live only for StoreKeyed (MC-w15-1): undefined (no state:
+/// new, the shape died, or another kind: a LoadKeyed state stays undefined), a receiver shape
+/// (monomorphic: the fast case missed once with it; no case: schema 1 has no element access)
+/// or the hole (megamorphic). Bits 4-9 (receiver, out of bounds, hole): month-6 bump, MC-w13-9.
+fn keyed(v: u64, i: u32, implicit: KeySet) -> Option<KeyedFacts> {
+    let bits = int_value(v, i)?;
+    let state = match feedback::key(v, i) {
+        UNDEFINED => IcState::Uninitialized,
+        HOLE => IcState::Megamorphic,
+        _ => IcState::Monomorphic,
+    };
+    Some(KeyedFacts {
+        property: PropertyFacts {
+            state,
+            cases: Vec::new(),
+            values: TypeSet::EMPTY,
+        },
+        keys: known(KeySet::from_bits((bits & KeySet::ALL.bits() as u32) as u8))?.union(implicit),
+    })
+}
+
+/// `bits` as a set of a schema bitset, or `None` if a bit is not in it (a VM bug: `profile.rs`
+/// writes the `ep9_facts` bit numbers).
+fn known<T>(bits: Option<T>) -> Option<T> {
+    debug_assert!(
+        bits.is_some(),
+        "a recorded bit that the schema does not have"
+    );
+    bits
+}
+
+/// The address of the FunctionInfo that the native word `w` names, if `w` is a native word
+/// (`frame::native`: an address below 2^49 plus the double offset). Not a pointer read.
+fn native_address(w: u64) -> Option<usize> {
+    let addr = w.checked_sub(DOUBLE_ENCODE_OFFSET)?;
+    (addr < 1 << 49).then_some(addr as usize)
+}
+
+/// One export: the runtime, the content hashes of the units made so far, by unit index, the
+/// shape descriptions made so far, by their content (no heap address is a key, H12-Q2), and
+/// the builtin FunctionInfo table, made at the first call target that is no unit function
+/// ([`Exporter::builtin_infos`]).
 struct Exporter<'a> {
     rt: &'a Runtime,
     hashes: HashMap<u32, UnitHash>,
     descs: HashSet<Arc<ShapeDesc>>,
+    targets: Option<HashMap<usize, FunctionRef>>,
 }
 
 impl<'a> Exporter<'a> {
@@ -227,7 +363,283 @@ impl<'a> Exporter<'a> {
             rt,
             hashes: HashMap::new(),
             descs: HashSet::new(),
+            targets: None,
         }
+    }
+
+    /// The record of slot `i` (kind `k`, used as `u`) of the vector `v`, or `None` if no T0
+    /// site writes it (the module docs).
+    fn slot(
+        &mut self,
+        units: &[Box<LoadedUnit>],
+        v: u64,
+        i: u32,
+        k: FeedbackSlotKind,
+        u: &SlotUse,
+    ) -> Option<SlotFacts> {
+        use FeedbackSlotKind as K;
+        let facts = match (k, u.name) {
+            (K::LoadNamed, Some(_)) => SlotFacts::LoadNamed(self.property(v, i, true)),
+            (K::StoreNamed, Some(_)) => SlotFacts::StoreNamed(self.property(v, i, true)),
+            // 0x25 add cases keep no validity cell (ic.rs).
+            (K::DefineNamedOwn, Some(_)) => SlotFacts::DefineNamedOwn(self.property(v, i, false)),
+            (K::LoadGlobal, Some(name)) => SlotFacts::LoadGlobal(self.global(v, i, name)),
+            (K::LoadGlobalInsideTypeof, Some(name)) => {
+                SlotFacts::LoadGlobalInsideTypeof(self.global(v, i, name))
+            }
+            (K::StoreGlobal, Some(name)) => SlotFacts::StoreGlobal(self.global(v, i, name)),
+            (
+                K::LoadNamed
+                | K::StoreNamed
+                | K::DefineNamedOwn
+                | K::LoadGlobal
+                | K::LoadGlobalInsideTypeof
+                | K::StoreGlobal,
+                None,
+            ) => return None,
+            // F-R8: the opcode says what the key half holds.
+            (K::Call, _) => SlotFacts::Call(match (u.call, u.construct) {
+                (true, false) => self.call(units, v, i),
+                (false, true) => self.construct(units, v, i),
+                // The key is a word or a cell, the count of either unit (F-R7): nothing of it
+                // is known.
+                (true, true) => CallFacts {
+                    count: 0,
+                    callees: TargetFacts {
+                        state: IcState::Megamorphic,
+                        targets: Vec::new(),
+                    },
+                    result: TypeSet::EMPTY,
+                },
+                (false, false) => return None,
+            }),
+            _ if !u.other => return None,
+            // The implicit present int32 index of an Array (`GetKeyedProperty`, H16-Q2 (1)).
+            (K::LoadKeyed, _) => SlotFacts::LoadKeyed(keyed(v, i, KeySet::INDEX)?),
+            (K::StoreKeyed, _) => SlotFacts::StoreKeyed(keyed(v, i, KeySet::EMPTY)?),
+            (K::DefineKeyedOwn, _) => SlotFacts::DefineKeyedOwn(keyed(v, i, KeySet::EMPTY)?),
+            (K::HasKeyed, _) => SlotFacts::HasKeyed(keyed(v, i, KeySet::EMPTY)?),
+            (K::StoreInArrayLiteral, _) => {
+                SlotFacts::StoreInArrayLiteral(keyed(v, i, KeySet::EMPTY)?)
+            }
+            // The implicit int32 bits (H16-Q2 (1)): "int32 or never ran" (MODES-D10).
+            (K::BinaryOp, _) => SlotFacts::BinaryOp(
+                known(BinaryHint::from_bits(int_value(v, i)? as u8))?.union(BinaryHint::INT32),
+            ),
+            (K::CompareOp, _) => SlotFacts::CompareOp(
+                known(CompareHint::from_bits(int_value(v, i)? as u16))?.union(CompareHint::INT32),
+            ),
+            (K::TypeOf, _) => {
+                SlotFacts::TypeOf(known(TypeSet::from_bits(int_value(v, i)? as u16))?)
+            }
+            (K::InstanceOf, _) => {
+                // A slot in its start state (no run gave a result, `instance_ic.rs`): no record.
+                // The value half may be a handler or a POLY_IC cell, so no `int_value`.
+                if feedback::key(v, i) == UNDEFINED && feedback::value(v, i) == int32_bits(0) {
+                    return None;
+                }
+                SlotFacts::InstanceOf(self.instance_of(units, v, i))
+            }
+            (K::Literal, _) => SlotFacts::Literal(self.literal(v, i)?),
+            (K::CloneObject, _) => SlotFacts::CloneObject(self.clone_site(v, i)),
+            (K::ForIn, _) => SlotFacts::ForIn(known(ForInHint::from_bits(int_value(v, i)? as u8))?),
+            (K::JumpLoop, _) => SlotFacts::JumpLoop(LoopFacts {
+                back_edges: int_value(v, i)?,
+            }),
+            (K::CreateClosure, _) => SlotFacts::CreateClosure(ClosureFacts {
+                closures: match int_value(v, i)? {
+                    0 => ClosureCount::None,
+                    1 => ClosureCount::One,
+                    _ => ClosureCount::Many,
+                },
+            }),
+        };
+        Some(facts)
+    }
+
+    /// The name of the FunctionInfo at address `addr`: `Js` for a unit function (but
+    /// function 0, which no closure has, H02), found by the address range of its unit's
+    /// dense info array (only that unit is hashed); `Builtin` for a table builtin
+    /// ([`Exporter::builtin_infos`]); else `None` (a host function, a stub, no info).
+    fn target_at(&mut self, units: &[Box<LoadedUnit>], addr: usize) -> Option<FunctionRef> {
+        let size = size_of::<FunctionInfo>();
+        for u in units {
+            let base = u.infos.as_ptr().addr();
+            let Some(off) = addr.checked_sub(base) else {
+                continue;
+            };
+            if off < size * u.infos.len() {
+                let f = (off % size == 0)
+                    .then_some(off / size)
+                    .filter(|&f| f != 0)?;
+                return Some(FunctionRef::Js {
+                    unit: self.unit_hash(u),
+                    function: f as u32,
+                });
+            }
+        }
+        self.builtin_infos().get(&addr).copied()
+    }
+
+    /// The FunctionInfo address of each table builtin whose function object exists in the
+    /// current realm (`builtins::existing_function`; the install makes every one), with its
+    /// id. Made at the first lookup of an export.
+    fn builtin_infos(&mut self) -> &HashMap<usize, FunctionRef> {
+        if self.targets.is_none() {
+            let mut t = HashMap::new();
+            let tables =
+                core::iter::once(&crate::natives::VM_TABLE).chain(self.rt.builtins.table());
+            for m in tables.flat_map(|t| t.modules.iter()) {
+                for d in 0..m.defs.len() {
+                    let id = m.id(d as u16);
+                    if let Some(f) = builtins::existing_function(self.rt, id) {
+                        let info = core::ptr::from_ref(object::function_info(f)).addr();
+                        t.insert(info, FunctionRef::Builtin(id.bits()));
+                    }
+                }
+            }
+            self.targets = Some(t);
+        }
+        self.targets.as_ref().expect("made above")
+    }
+
+    /// The name of the function cell `f` (a FUNCTION cell of a unit function or a table
+    /// builtin), else `None` (a bound function, a proxy, a host function, a dead key).
+    fn function_ref(&mut self, units: &[Box<LoadedUnit>], f: u64) -> Option<FunctionRef> {
+        if !is_cell_bits(f) || !kind::is_function(f) {
+            return None;
+        }
+        let addr = core::ptr::from_ref(object::function_info(f)).addr();
+        self.target_at(units, addr)
+    }
+
+    /// The callee state of one key: undefined (no target yet), the hole (megamorphic), or
+    /// a target that has a name (monomorphic) or none (megamorphic).
+    fn callees(key: u64, target: Option<FunctionRef>) -> TargetFacts {
+        let (state, targets) = match (key, target) {
+            (UNDEFINED, _) => (IcState::Uninitialized, Vec::new()),
+            (_, Some(r)) if key != HOLE => (IcState::Monomorphic, vec![r]),
+            _ => (IcState::Megamorphic, Vec::new()),
+        };
+        TargetFacts { state, targets }
+    }
+
+    /// A Call slot that only `Call*` sites use (`profile.rs`): the key is the native word of
+    /// the one sampled callee's FunctionInfo, the hole or undefined; the value is the count
+    /// of the **sampled calls** (F-R7).
+    fn call(&mut self, units: &[Box<LoadedUnit>], v: u64, i: u32) -> CallFacts {
+        let key = feedback::key(v, i);
+        let target = match key {
+            UNDEFINED | HOLE => None,
+            // F-R8: a word never leaves the process; its FunctionInfo's address is looked up.
+            w if !is_cell_bits(w) => native_address(w).and_then(|a| self.target_at(units, a)),
+            // A cell here is not what `profile.rs` writes: no name.
+            _ => None,
+        };
+        // A value half that is not an int32 cannot be here (a construct handler of a shared
+        // slot): count 0.
+        let n = feedback::value(v, i);
+        CallFacts {
+            count: if val(n).is_int32() {
+                int32_of(n) as u32
+            } else {
+                0
+            },
+            callees: Self::callees(key, target),
+            result: TypeSet::EMPTY,
+        }
+    }
+
+    /// A Call slot that only `Construct*` sites use (`construct_ic.rs`): the key is the
+    /// constructor (weak; undefined after it died) or the hole; the value is the count of the
+    /// **constructs of the cold path** (F-R7), an int32 or the +16 of a `CONSTRUCT_SITE`
+    /// handler.
+    fn construct(&mut self, units: &[Box<LoadedUnit>], v: u64, i: u32) -> CallFacts {
+        let key = feedback::key(v, i);
+        let target = self.function_ref(units, key);
+        let h = feedback::value(v, i);
+        let count = if val(h).is_int32() {
+            int32_of(h)
+        } else if is_cell_bits(h) && rd_i32(cell(h), hc::KIND) == hk::CONSTRUCT_SITE {
+            rd_i32(cell(h), hc::CELL)
+        } else {
+            0
+        };
+        CallFacts {
+            count: count as u32,
+            callees: Self::callees(key, target),
+            result: TypeSet::EMPTY,
+        }
+    }
+
+    /// An InstanceOf slot (IC_LAYOUT 2: the rhs function (weak) or the hole, and a handler, a
+    /// POLY_IC cell or an int32 state; `instance_ic.rs`, IC2 M4-P3): the state and the
+    /// functions that have a name (the others are left out).
+    fn instance_of(&mut self, units: &[Box<LoadedUnit>], v: u64, i: u32) -> TargetFacts {
+        let (state, keys) = self.entry(v, i);
+        let mut targets: Vec<FunctionRef> = keys
+            .into_iter()
+            .filter_map(|k| self.function_ref(units, k))
+            .collect();
+        targets.sort();
+        targets.dedup();
+        TargetFacts { state, targets }
+    }
+
+    /// A Literal slot (`literal_site.rs`): the count of the **cold-path results** (F-R7) and
+    /// the shape of the last one (weak key; none if it died or has no description). v0 has no
+    /// elements kinds (H18), so `elements` is none.
+    fn literal(&mut self, v: u64, i: u32) -> Option<LiteralFacts> {
+        let count = int_value(v, i)?;
+        let key = feedback::key(v, i);
+        let shape = if is_cell_bits(key) && shape::is_shape(key) {
+            self.shape_desc(key)
+        } else {
+            None
+        };
+        Some(LiteralFacts {
+            count,
+            shape,
+            elements: None,
+        })
+    }
+
+    /// A CloneObject slot (`literal_site.rs`, an IC entry keyed by the source shape): the state
+    /// and one case per live source shape whose `CLONE` handler's result shape is alive and
+    /// both have a description. Two sources with one description but different results are
+    /// left out, as at a property site.
+    fn clone_site(&mut self, v: u64, i: u32) -> CloneFacts {
+        let (state, keys) = self.entry(v, i);
+        let mut cases = Vec::new();
+        for k in keys {
+            let Some(h) = ic::find(v, i, k) else {
+                debug_assert!(false, "a case key with no handler");
+                continue;
+            };
+            if !is_cell_bits(k) || !shape::is_shape(k) || !is_cell_bits(h) {
+                continue;
+            }
+            let c = cell(h);
+            let r = rd(c, hc::REF);
+            if rd_i32(c, hc::KIND) != hk::CLONE || !is_cell_bits(r) {
+                continue;
+            }
+            if let (Some(source), Some(result)) = (self.shape_desc(k), self.shape_desc(r)) {
+                cases.push(CloneCase { source, result });
+            }
+        }
+        cases.sort();
+        cases.dedup();
+        let mut keep = vec![true; cases.len()];
+        for j in 1..cases.len() {
+            if cases[j - 1].source == cases[j].source {
+                keep[j - 1] = false;
+                keep[j] = false;
+            }
+        }
+        let mut it = keep.into_iter();
+        cases.retain(|_| it.next().unwrap_or(false));
+        CloneFacts { state, cases }
     }
 
     /// The content hash of a loaded unit (one serialization per unit and export).
@@ -255,9 +667,9 @@ impl<'a> Exporter<'a> {
         }
     }
 
-    /// The facts of a named-property slot. `check_epoch`: an add case compares the epoch (0x24,
-    /// not 0x25).
-    fn property(&mut self, v: u64, i: u32, check_epoch: bool) -> PropertyFacts {
+    /// The facts of a named-property slot. `check_chain`: an add case checks its validity cell
+    /// (0x24, not 0x25).
+    fn property(&mut self, v: u64, i: u32, check_chain: bool) -> PropertyFacts {
         let (state, keys) = self.entry(v, i);
         let mut cases: Vec<PropertyCase> = Vec::new();
         for k in keys {
@@ -265,7 +677,7 @@ impl<'a> Exporter<'a> {
                 debug_assert!(false, "a case key with no handler");
                 continue;
             };
-            if let Some(c) = self.case(k, h, check_epoch) {
+            if let Some(c) = self.case(k, h, check_chain) {
                 cases.push(c);
             }
         }
@@ -290,7 +702,7 @@ impl<'a> Exporter<'a> {
     }
 
     /// The case for key `k` (a shape) and handler `h`, if both have a description.
-    fn case(&mut self, k: u64, h: u64, check_epoch: bool) -> Option<PropertyCase> {
+    fn case(&mut self, k: u64, h: u64, check_chain: bool) -> Option<PropertyCase> {
         if k == ic::KEY_STRING || !is_cell_bits(k) || !shape::is_shape(k) {
             return None;
         }
@@ -308,8 +720,8 @@ impl<'a> Exporter<'a> {
             }
         } else {
             let c = cell(h);
-            let epoch = rd_i32(c, hc::EPOCH) as u32;
-            let current = epoch == self.rt.shapes.proto_epoch.get();
+            // The stale rule (H16 K5): a prototype case holds only while its cell is valid.
+            let current = validity::is_valid(rd(c, hc::CELL));
             let r = rd(c, hc::REF);
             let location = rd_i32(c, hc::LOCATION);
             match rd_i32(c, hc::KIND) {
@@ -320,7 +732,7 @@ impl<'a> Exporter<'a> {
                 hk::MISSING if current => Access::Missing {
                     depth: chain_depth(shape::proto(k), None)?,
                 },
-                hk::ADD if (current || !check_epoch) && r != UNDEFINED => Access::AddField {
+                hk::ADD if (current || !check_chain) && r != UNDEFINED => Access::AddField {
                     to: self.shape_desc(r)?,
                     field: key_index(r, location)?,
                 },
@@ -453,10 +865,10 @@ impl<'a> Exporter<'a> {
     /// A shape key (an atom or a symbol) by content.
     fn key_ref(&self, k: u64) -> KeyRef {
         if kind::is_string(k) {
-            return KeyRef::String(match string::str_view(k) {
+            return KeyRef::String(string::with_text(k, |t| match t {
                 JsStr::Latin1(b) => UnitString::from_latin1(b),
                 JsStr::Utf16(u) => UnitString::from_utf16(u),
-            });
+            }));
         }
         WellKnownSymbol::ALL
             .into_iter()

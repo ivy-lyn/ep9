@@ -46,7 +46,7 @@ IDs used here: D1, D4, D12, D18, D20; H1-H4, H23, H36, H37; P1-P5; L0-L2; A1h, A
 | Process-wide hazards | Fixed 32 GiB reservation at 0x4001_0000_0000 that aborts; 1M source slots never reused; panic on relative file names | none | [R09] |
 | Cargo graph leak | `unicode-id-start =1.1.2` downgrades oxc (16 test262 failures) | none | [R02], [R04] |
 | Re-parse of one function; eval-context parse options | No public API; none | No public API; none (#11793 open) | [R03], [R04] |
-| Windows | Not built, tested or shipped upstream; plain pointers on Windows | Builds on Windows | [TSRS] release.yml, build.rs |
+| Windows | Not built, tested or shipped upstream at f527e984; 745eb10 adds a Windows x64 release build (releases only) that runs the full conformance suite and a smoke check. Plain pointers on Windows | Builds on Windows | [TSRS] release.yml (f527e984 :132-133; 745eb10 :292-408), build.rs |
 | Upstream | PRs closed; about 200 commits a week | MIT, takes PRs; 60 breaking releases a year | [R01], [R04] |
 
 ### 2.2 tsrs as an offline type oracle (prototype)
@@ -165,7 +165,7 @@ Owner: the front-end lead agent (D12). Agents draft; only the user posts upstrea
 
 | Gate | Trigger |
 |---|---|
-| P1 | Eval context or the depth limit is neither upstream nor in a local set of ≤ 3 patches |
+| P1 | Eval context or the depth limit is neither upstream nor in a local set of ≤ 3 patches. Reading (plan v9 V9-D25, docs/decisions-log.md:2771): an item that runs on a tested ep9 workaround counts as covered, so P1 does not trip on it. Eval context stays on its workaround (a Script parse that drops only the allowed nodes' errors, plus post-checks: `crates/ep9_frontend/src/eval.rs:6-21`, decision E1; the `eval_context` fuzz target). The depth limit stays on layers 0, 2 and 3 of §6 (`crates/ep9_frontend/src/depth.rs:3-8`; tests `crates/ep9_frontend/src/depth_tests.rs` and `crates/ep9_cli/tests/nesting_caps.rs`, the `frontend_compile` fuzz target); the layer-1 oxc counter becomes a local patch only if the 24 CPU-h front-end cargo-fuzz run finds a depth miss. Local oxc patches today: 0 of 3 (no `third_party/patches/oxc`, no `[patch.crates-io]` in `Cargo.toml`) |
 | P2 | Measured work for oxc version bumps is > 1 PM per year (est.) |
 | P3 | After L1: compiling typescript.js (9.1 MB) takes > 1.5x V8 cold compile, or retained front-end memory is > 2x V8's (est.) |
 | P4 | Any test262 lone-surrogate eval case fails through the shim (M0 counts them, incl. S7.4_A5 and S7.4_A6 [T262]) |

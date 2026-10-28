@@ -314,6 +314,7 @@ Gate data does not come back to you as a question. At each re-check point the or
 | [plan/10-quality.md](plan/10-quality.md) | test262 per mode, suites, benchmark sets, fuzzing, risks RK1-RK44 |
 | [plan/11-decisions.md](plan/11-decisions.md) | D1-D21 with options, decisions, re-check rules and evidence |
 | [plan/12-governance.md](plan/12-governance.md) | Licence, repository, CI cost, review and ownership, upstream contact, line endings |
+| [plan/13-execution-modes.md](plan/13-execution-modes.md) | Execution modes: build features, process permit, ExecPolicy presets, code sets and `select()`, facts across runs, append-only contract parts, future room F1-F24 |
 
 | Tag | Report | Tag | Report |
 |---|---|---|---|

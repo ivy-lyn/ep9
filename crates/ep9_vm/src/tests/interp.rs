@@ -2,7 +2,7 @@
 //! prefixed operands, dispatch slots and the code registry, random verified units, and the
 //! sample unit of ep9_bytecode.
 
-use ep9_bytecode::{FunctionId, VerifiedUnit};
+use ep9_bytecode::{FeedbackSlotKind, FunctionId, VerifiedUnit};
 
 use super::{Asm, common, config, isolate, meta, ok, on_big_stack, run_all, take_output, unit};
 use crate::dispatch::{CodeRegistry, DispatchKind};
@@ -115,6 +115,103 @@ fn js_calls_do_not_recurse_in_rust() {
             assert_eq!(run_deep(d, 100_000, 512 << 10), "0", "{}", d.name());
         }
     }
+}
+
+/// The environment variable that makes `scaled_steps_fit_a_small_stack` run its child part;
+/// its value is the child's native stack size in bytes.
+const SCALED_CHILD: &str = "EP9_SCALED_REENTRY_CHILD";
+
+/// The native stack of the child of `scaled_steps_fit_a_small_stack`: 2 MiB (the main-thread
+/// size of many embedders, and the size of the reproduction in the M4-P1 Codex finding).
+const SCALED_STACK: usize = 2 << 20;
+
+/// inner.js: `1.5 + 1000 + 100000` with a `Wide` and an `ExtraWide` AddSmi.
+fn reenter_inner<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let mut s = Asm::script(0);
+    s.lda_num(1.5);
+    s.b.add_smi(1000, s.bin).add_smi(100_000, s.bin).return_();
+    cx.run_script(unit("", vec![s.finish()]), "inner.js")
+}
+
+/// mid.js: `return reenter_inner()` through an `ExtraWide` CallUndefinedReceiver0.
+fn reenter_mid<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.run_script(scaled_call_unit("reenter_inner", 1 << 16), "mid.js")
+}
+
+/// A script `return name()` whose call slot comes after `pad` other slots, so that the call
+/// has a `Wide` (pad >= 256) or `ExtraWide` (pad >= 65536) prefix.
+fn scaled_call_unit(name: &str, pad: usize) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    s.lda_global(name);
+    s.b.star(s.f);
+    for _ in 0..pad {
+        s.b.feedback_slot(FeedbackSlotKind::BinaryOp);
+    }
+    let k = s.b.feedback_slot(FeedbackSlotKind::Call);
+    s.b.call_undefined_receiver0(s.f, k).return_();
+    unit("", vec![s.finish()])
+}
+
+/// The native frames of the prefixed steps (`step::<S2>`, `step::<S4>`) bound the native
+/// stack that host re-entry needs: a `Wide` call to a host function that runs a script with
+/// an `ExtraWide` call to a host function that runs a script with `Wide` and `ExtraWide`
+/// arithmetic keeps three step frames live, each under a match loop frame. Under the match
+/// loop (the debug default, unoptimized frames) this fits in a 2 MiB thread, with feedback
+/// recording on (threshold 0). The type-feedback records of the steps go through the debug
+/// out-of-line `Flow::recorded`, as in the match loop: inline, they tripled the debug frame
+/// of `step::<S2>` (M4-P1 Codex finding, 279 KiB to 821 KiB on aarch64) and this run
+/// overflowed the stack. An overflow aborts the process, so the run is a child process.
+#[test]
+fn scaled_steps_fit_a_small_stack() {
+    if let Some(bytes) = std::env::var_os(SCALED_CHILD) {
+        let bytes: usize = bytes.to_str().unwrap().parse().unwrap();
+        let r = std::thread::Builder::new()
+            .stack_size(bytes)
+            .spawn(|| {
+                let mut iso = isolate(IsolateConfig {
+                    feedback_threshold: 0,
+                    ..config(Dispatch::Match, false)
+                });
+                iso.register_host_function("reenter_inner", 0, reenter_inner);
+                iso.register_host_function("reenter_mid", 0, reenter_mid);
+                iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(scaled_call_unit("reenter_mid", 256), "outer.js")
+                        .map(|v| cx.display(v))
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        println!("SCALED_REENTRY {r:?}");
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::interp::scaled_steps_fit_a_small_stack",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(SCALED_CHILD, SCALED_STACK.to_string())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("SCALED_REENTRY Ok(\"101001.5\")"),
+        "{:?}\nstdout:\n{stdout}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
