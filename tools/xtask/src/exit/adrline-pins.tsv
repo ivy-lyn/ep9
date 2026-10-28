@@ -8,7 +8,7 @@ pin	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:67	crates/ep9_h
 pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/slow/call.rs:600	crates/ep9_vm/src/interp/slow/call.rs	// One unit, also when the frame does not fit \(R3-2\), as in `do_call`\.	1
 pin	H19-strings.md	crates/ep9_vm/src/string.rs:63	crates/ep9_vm/src/string.rs	^mod strf \{$	0
 pin	H19-strings.md	crates/ep9_vm/src/string.rs:586	crates/ep9_vm/src/string.rs	^pub\(crate\) fn flatten\(cx: &mut Cx, s: u64\) -> u64 \{$	0
-pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/mod.rs:179	crates/ep9_vm/src/interp/mod.rs	pub const TERMINATE: u32 = 1;	0
+pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/mod.rs:175	crates/ep9_vm/src/interp/mod.rs	pub const TERMINATE: u32 = 1;	0
 pin	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:434	crates/ep9_heap/src/heap.rs	Page::from_base\(self\.base\.add\(\(addr & PAGE_MASK\)	0
 pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:14	crates/ep9_vm/src/object.rs	^//! \| ARRAY \| 18 \|	0
 pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:17	crates/ep9_vm/src/object.rs	^//! \| ELEMENTS \| 65 \|	0
@@ -162,3 +162,17 @@ history	H16-ics-and-feedback.md	`:300-305`	| 1 Reviewer (M4-P0 addendum: the 202
 history	H16-ics-and-feedback.md	crates/ep9_vm/src/object.rs:347	| 3 Verifier (M4-P2 amendment: the 2026-10-27 CacheIR global-store fill row, P2-ORCH-9)	2dbf2b0	^pub\(crate\) fn wr\(heap\: \&Heap\, c\: CellPtr\, off\: usize\, v\: u64\) \{$
 history	H36-fp-semantics.md	crates/ep9_math/src/exact.rs:745	| 3 Verifier	b34fd01	^    fn soft_fma_sticky_of_shifted_product\(\) \{$
 pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_heap/src/heap.rs	^    pub near_limit\: Option<fn\(committed\: usize, limit\: usize\) \-> usize>,$	0
+# M5-P0 integration fixer (ADRLINE of the M5-P0 merge head): two refs whose line text P0-VM5
+# changed in place (OBJECT_LAYOUT 5 added +32 to the ARRAY row; the IC hit path lost the epoch
+# argument), and one dated record row that keeps the native.rs lines of its commit.
+pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:21	crates/ep9_vm/src/object.rs	^//! \| ARRAY \| 18 \|	0
+pin	H31-fuse-registry.md	crates/ep9_vm/src/interp/ops.rs:926	crates/ep9_vm/src/interp/ops.rs	match ic::load\(st\.rt\(\), st\.info\(\), object::proto_of\(home\), s\.0, name\.0\) \{	0
+history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/native.rs:285-295	| 4 Data (M4-P3 amendment: the 2026-10-27 RuntimeTable row clarify, K-1)	f0a5557	^    pub const RT_POLL\: usize = offset_of\!\(RuntimeTable, poll\)\;$
+# H23:34: the new number 205 was an older token of H23 with another line (375d953), so the
+# drift map would read it from there.
+pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/isolate.rs:205	crates/ep9_vm/src/isolate.rs	^pub struct InterruptHandle \{	0
+# Dated record rows that a FIX line would have moved: they keep the line of the commit they
+# name (M3-P1-REVIEWROW-REFS); the fixer may not edit a Result cell written by someone else.
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/profile.rs:102-104	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row, P2-ORCH-12)	06f9ee7	^//!   - \*\*An int32 `\+` or `-` that overflows\*\*
+history	H20-builtin-abi.md	crates/ep9_vm/src/versions.rs:26	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 clarify row, H20-Q1, ADR-A0)	4fee08e	^pub const FRAME_VERSION\: u32 = 2\;$
+history	H22-isolates-and-realms.md	crates/ep9_vm/src/isolate.rs:513-517	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H22-Q11 fill row, ADR-A0)	4fee08e	^    /// It runs ABI code, so it is an H20 core entry point
