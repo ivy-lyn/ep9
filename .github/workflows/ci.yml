@@ -46,8 +46,8 @@
 # fuzz-smoke 1.
 #
 # The dispatch input `only` (plan v10 rule 27, a CI probe of a merge head): windows-x64,linux-x64
-# keeps only those two entries in the 4-target matrices of build-test, test262, spikes and
-# bench-run (49 jobs); the one-runner jobs (Linux x64, Windows x64) all run. Default `all`.
+# keeps only those two entries in every 4-target matrix (33 jobs); the one-runner jobs (Linux
+# x64, Windows x64) all run. Default `all`.
 #
 # Scope (docs/plan/12-governance.md section 3; plan v9 V9-D35, V9-A18): every job except lint and
 # scope `needs: scope` and is skipped when scope says docs_only=true. docs_only is true only when
@@ -262,11 +262,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { name: macos-arm64, os: macos-15 }
-          - { name: linux-x64, os: ubuntu-24.04 }
-          - { name: linux-arm64, os: ubuntu-24.04-arm }
-          - { name: windows-x64, os: windows-2025 }
+        # The 4 targets, or the 2 of the dispatch input `only` (header).
+        include: ${{ fromJSON(inputs.only == 'windows-x64,linux-x64'
+          && '[{"name":"linux-x64","os":"ubuntu-24.04"}, {"name":"windows-x64","os":"windows-2025"}]'
+          || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
+               {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -428,11 +428,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - { name: macos-arm64, os: macos-15 }
-          - { name: linux-x64, os: ubuntu-24.04 }
-          - { name: linux-arm64, os: ubuntu-24.04-arm }
-          - { name: windows-x64, os: windows-2025 }
+        # The 4 targets, or the 2 of the dispatch input `only` (header).
+        target: ${{ fromJSON(inputs.only == 'windows-x64,linux-x64'
+          && '[{"name":"linux-x64","os":"ubuntu-24.04"}, {"name":"windows-x64","os":"windows-2025"}]'
+          || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
+               {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
         shards: [6]
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.target.os }}
@@ -521,11 +521,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { name: macos-arm64, os: macos-15 }
-          - { name: linux-x64, os: ubuntu-24.04 }
-          - { name: linux-arm64, os: ubuntu-24.04-arm }
-          - { name: windows-x64, os: windows-2025 }
+        # The 4 targets, or the 2 of the dispatch input `only` (header).
+        include: ${{ fromJSON(inputs.only == 'windows-x64,linux-x64'
+          && '[{"name":"linux-x64","os":"ubuntu-24.04"}, {"name":"windows-x64","os":"windows-2025"}]'
+          || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
+               {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
