@@ -189,10 +189,12 @@ mod hc {
     pub const SIZE: usize = 40;
 }
 
-/// POLY_IC fields (`crate::layout` exports `CASES` and `CASE` for Spike C, C-18).
+/// POLY_IC fields (`crate::layout` exports `CASES`, `CASE` and `HANDLER` for Spike C, C-18).
 pub(crate) mod pc {
     pub const CASES: usize = 8;
     pub const CASE: usize = 16;
+    /// A case's handler half, after its key (`crate::layout::POLY_HANDLER`, MC-w16-4).
+    pub const HANDLER: usize = 8;
     pub const SIZE: usize = CASES + CASE * super::POLY_CASES;
 }
 

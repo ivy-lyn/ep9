@@ -288,7 +288,8 @@ pub(crate) mod elems {
     pub const DATA: usize = 16;
 }
 
-mod ctxf {
+/// CONTEXT cell fields (`crate::layout` exports them for native code, MC-w16-16).
+pub(crate) mod ctxf {
     pub const PREVIOUS: usize = 8;
     pub const SCOPE: usize = 16;
     pub const LENGTH: usize = 24;

@@ -10,6 +10,12 @@
 //! layout. The process table itself (`native::RUNTIME_TABLE`) and every function it calls stay
 //! behind `spike-native`: a default build has `Cx::runtime_table` = null.
 //!
+//! Each export names the one version that owns it (MC-w15-5; doc 13 C-18 and §7.3): VM_LAYOUT
+//! (`Cx`, FunctionInfo and RuntimeTable offsets, the table length), FRAME (frame offsets from
+//! fp, MC-w16-18), OBJECT_LAYOUT (cells, fields and kind ids), IC_LAYOUT (feedback and IC
+//! data) or the Value encoding. The current numbers are in `versions.rs`; a change of any
+//! value moves its owner's version.
+//!
 //! No item here is read by T0 code; the module adds no instruction to a handler.
 
 use core::mem::offset_of;
@@ -19,7 +25,7 @@ use crate::feedback::fv;
 use crate::frame::{HEADER, slot};
 use crate::ic::smi;
 use crate::interp::Cx;
-use crate::object::{arr, elems, fun, obj};
+use crate::object::{arr, ctxf, elems, fun, obj};
 use crate::unit::FunctionInfo;
 
 /// The `Cx` that native code gets and passes back to the table functions. Opaque: native code
@@ -111,165 +117,187 @@ pub struct RuntimeTable {
     pub set_keyed: RtFn3,
 }
 
-// ---- Cx (the isolate register points at it) ----
-/// `Cx::stack_limit`: VM frames must end at or below this slot (a `*mut u64`).
+// ---- Cx (the isolate register points at it): VM_LAYOUT ----
+/// VM_LAYOUT. `Cx::stack_limit`: VM frames must end at or below this slot (a `*mut u64`).
 pub const CX_STACK_LIMIT: usize = offset_of!(Cx, stack_limit);
-/// `Cx::budget` (i64): one unit per loop back edge and per function entry; call
+/// VM_LAYOUT. `Cx::budget` (i64): one unit per loop back edge and per function entry; call
 /// [`RuntimeTable::poll`] when it reaches 0.
 pub const CX_BUDGET: usize = offset_of!(Cx, budget);
-/// `Cx::global_this` (Value bits): the receiver a sloppy callee gets for undefined/null.
+/// VM_LAYOUT. `Cx::global_this` (Value bits): the receiver a sloppy callee gets for
+/// undefined/null.
 pub const CX_GLOBAL_THIS: usize = offset_of!(Cx, global_this);
-/// `Cx::interrupt` (`*const AtomicU32`): the interrupt word.
+/// VM_LAYOUT. `Cx::interrupt` (`*const AtomicU32`): the interrupt word.
 pub const CX_INTERRUPT: usize = offset_of!(Cx, interrupt);
-/// `Cx::native_limit` (usize): the lowest native stack address native code may reach;
-/// the prologue's one compare.
+/// VM_LAYOUT. `Cx::native_limit` (usize): the lowest native stack address native code may
+/// reach; the prologue's one compare.
 pub const CX_NATIVE_LIMIT: usize = offset_of!(Cx, native_limit);
-/// `Cx::runtime_table` (`*const RuntimeTable`).
+/// VM_LAYOUT. `Cx::runtime_table` (`*const RuntimeTable`; null without `spike-native`).
 pub const CX_RUNTIME_TABLE: usize = offset_of!(Cx, runtime_table);
-/// `Cx::unit_data` (usize; M3-P1 SP-UNIT, H35-Q9): the isolate's unit-data directory, one
-/// word per unit slot, each the base of the isolate's RW copy of the unit in that slot (0:
-/// none). Unit code loads its unit-data register (x27 / r14) from it on entry. 0 = no
-/// directory.
+/// VM_LAYOUT. `Cx::unit_data` (usize; M3-P1 SP-UNIT, H35-Q9): the isolate's unit-data
+/// directory, one word per unit slot, each the base of the isolate's RW copy of the unit in
+/// that slot (0: none). Unit code loads its unit-data register (x27 / r14) from it on entry.
+/// 0 = no directory.
 pub const CX_UNIT_DATA: usize = offset_of!(Cx, unit_data);
+/// VM_LAYOUT. `Cx::table`: the 256 handler addresses of the dispatch (H15: at offset 0).
+/// Placement (b) code (P4-PLACEMENT-B) leaves with a tail jump to `table[*pc]`.
+pub const CX_TABLE: usize = offset_of!(Cx, table);
+/// VM_LAYOUT. `Cx::out_fp` (`*mut u64`): the frame [`RuntimeTable::unwind`] continues in.
+pub const CX_OUT_FP: usize = offset_of!(Cx, out_fp);
+/// VM_LAYOUT. `Cx::out_pc` (`*const u8`): the pc [`RuntimeTable::unwind`] continues at.
+pub const CX_OUT_PC: usize = offset_of!(Cx, out_pc);
 
-// ---- RuntimeTable ----
+// ---- RuntimeTable: VM_LAYOUT (an H13 index list, append-only) ----
+/// VM_LAYOUT. Entry 0.
 pub const RT_POLL: usize = offset_of!(RuntimeTable, poll);
+/// VM_LAYOUT. Entry 1.
 pub const RT_CALL_ANY: usize = offset_of!(RuntimeTable, call_any);
+/// VM_LAYOUT. Entry 2.
 pub const RT_ADD: usize = offset_of!(RuntimeTable, add);
+/// VM_LAYOUT. Entry 3.
 pub const RT_INC: usize = offset_of!(RuntimeTable, inc);
+/// VM_LAYOUT. Entry 4.
 pub const RT_COMPARE: usize = offset_of!(RuntimeTable, compare);
+/// VM_LAYOUT. Entry 5.
 pub const RT_STACK_OVERFLOW: usize = offset_of!(RuntimeTable, stack_overflow);
+/// VM_LAYOUT. Entry 6.
 pub const RT_THROW: usize = offset_of!(RuntimeTable, throw);
+/// VM_LAYOUT. Entry 7 (P4-PLACEMENT-B).
 pub const RT_UNWIND: usize = offset_of!(RuntimeTable, unwind);
-/// Appended by M4-P3 KEYED (P2-ORCH-6): the generic keyed load and store.
+/// VM_LAYOUT. Entry 8 (M4-P3 KEYED, P2-ORCH-6): the generic keyed load.
 pub const RT_GET_KEYED: usize = offset_of!(RuntimeTable, get_keyed);
+/// VM_LAYOUT. Entry 9 (M4-P3 KEYED): the generic keyed store.
 pub const RT_SET_KEYED: usize = offset_of!(RuntimeTable, set_keyed);
 
-// ---- placement (b) (P4-PLACEMENT-B) ----
-/// `Cx::table`: the 256 handler addresses of the dispatch (H15: at offset 0). (b) code
-/// leaves with a tail jump to `table[*pc]`.
-pub const CX_TABLE: usize = offset_of!(Cx, table);
-/// `Cx::out_fp` (`*mut u64`): the frame [`RuntimeTable::unwind`] continues in.
-pub const CX_OUT_FP: usize = offset_of!(Cx, out_fp);
-/// `Cx::out_pc` (`*const u8`): the pc [`RuntimeTable::unwind`] continues at.
-pub const CX_OUT_PC: usize = offset_of!(Cx, out_pc);
-/// FunctionInfo: the start of its bytecode (`*const u8`).
+// ---- FunctionInfo: VM_LAYOUT ----
+/// VM_LAYOUT. FunctionInfo: the start of its bytecode (`*const u8`).
 pub const FI_CODE: usize = offset_of!(FunctionInfo, code);
-/// A frame's caller fp and return pc words are native words: `address +
-/// NATIVE_WORD_OFFSET` (frame.rs `native`; one bit, 2^49, so an `eor` decodes them).
-pub const NATIVE_WORD_OFFSET: u64 = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+/// VM_LAYOUT. FunctionInfo: the dispatch slot kind byte (`DispatchKind`).
+pub const FI_SLOT_KIND: usize = offset_of!(FunctionInfo, slot) + DispatchSlot::KIND_OFFSET;
+/// VM_LAYOUT. FunctionInfo: the dispatch slot entry (usize).
+pub const FI_SLOT_ENTRY: usize = offset_of!(FunctionInfo, slot) + DispatchSlot::ENTRY_OFFSET;
+/// VM_LAYOUT. FunctionInfo: register count (u32).
+pub const FI_REGISTER_COUNT: usize = offset_of!(FunctionInfo, register_count);
+/// VM_LAYOUT. FunctionInfo: parameter count (u32).
+pub const FI_PARAMETER_COUNT: usize = offset_of!(FunctionInfo, parameter_count);
+/// VM_LAYOUT (MC-w13-14). FunctionInfo: `feedback`, a pointer to the unit slot that holds the
+/// function's FEEDBACK cell (null: no vector yet).
+pub const FI_FEEDBACK: usize = offset_of!(FunctionInfo, feedback);
 
-// ---- VM frames (frame.rs, H14): byte offsets from fp ----
-/// Header words between the receiver and `r0`.
+// ---- VM frames (frame.rs, H14): byte offsets from fp; FRAME (MC-w16-18) ----
+/// FRAME. Header words between the receiver and `r0`.
 pub const FRAME_HEADER_WORDS: usize = HEADER;
-/// Caller fp (native word).
+/// FRAME. Caller fp (native word).
 pub const FP_CALLER_FP: isize = slot::CALLER_FP * 8;
-/// Return pc (native word): the bytecode pc after the call instruction.
+/// FRAME. Return pc (native word): the bytecode pc after the call instruction.
 pub const FP_RETURN_PC: isize = slot::RETURN_PC * 8;
-/// The function object (Value).
+/// FRAME. The function object (Value).
 pub const FP_CALLEE: isize = slot::CALLEE * 8;
-/// Argument count (int32), plus the construct bit.
+/// FRAME. Argument count (int32), plus the construct bit.
 pub const FP_ARGC: isize = slot::ARGC * 8;
-/// FunctionInfo (native word).
+/// FRAME. FunctionInfo (native word).
 pub const FP_FUNCTION_INFO: isize = slot::FUNCTION_INFO * 8;
-/// new.target (Value; undefined for a native call).
+/// FRAME. new.target (Value; undefined for a native call), or the generator object in a
+/// resumed frame.
 pub const FP_NEW_TARGET: isize = slot::NEW_TARGET * 8;
-/// Current context (Value).
+/// FRAME. Current context (Value).
 pub const FP_CONTEXT: isize = slot::CONTEXT * 8;
-/// Bytecode offset of the current instruction (int32); the table functions write it.
+/// FRAME. Bytecode offset of the current instruction (int32); the table functions write it.
 pub const FP_BYTECODE_OFFSET: isize = slot::BYTECODE_OFFSET * 8;
-/// The receiver.
+/// FRAME. The receiver.
 pub const FP_RECEIVER: isize = slot::RECEIVER * 8;
 
-/// Byte offset from fp of parameter `a<i>` (`i < max(argc, parameter_count)`).
+/// FRAME. Byte offset from fp of parameter `a<i>` (`i < max(argc, parameter_count)`).
 pub const fn fp_param(i: u32) -> isize {
     (slot::PARAM0 - i as isize) * 8
 }
 
-/// Byte offset from fp of register `r<i>`.
+/// FRAME. Byte offset from fp of register `r<i>`.
 pub const fn fp_register(i: u32) -> isize {
     i as isize * 8
 }
 
-// ---- FUNCTION cells and FunctionInfo ----
-/// FUNCTION cell field: its FunctionInfo (native word).
-pub const FUNCTION_INFO: usize = fun::INFO;
-/// FUNCTION cell field: its context (Value).
-pub const FUNCTION_CONTEXT: usize = fun::CONTEXT;
-/// FunctionInfo: the dispatch slot kind byte (`DispatchKind`).
-pub const FI_SLOT_KIND: usize = offset_of!(FunctionInfo, slot) + DispatchSlot::KIND_OFFSET;
-/// FunctionInfo: the dispatch slot entry (usize).
-pub const FI_SLOT_ENTRY: usize = offset_of!(FunctionInfo, slot) + DispatchSlot::ENTRY_OFFSET;
-/// FunctionInfo: register count (u32).
-pub const FI_REGISTER_COUNT: usize = offset_of!(FunctionInfo, register_count);
-/// FunctionInfo: parameter count (u32).
-pub const FI_PARAMETER_COUNT: usize = offset_of!(FunctionInfo, parameter_count);
-
-// ---- the layout facts Spike C bakes (M4-P3 KEYED, P2-ORCH-6, MC-w14-7) ----
-//
-// Each constant below is a copy that `spikes/spike-c/src/vm_layout.rs` kept by hand (same
-// name there), now taken from the VM's own definitions, so a layout change moves it
-// (Spike C reads them since M4-P4 SPIKEC-4). A change of any value is a layout change for
-// native code and unit text. Each doc names the one version that owns the value (MC-w15-5,
-// doc 13 C-18 and section 7.3: one owner per fact): OBJECT_LAYOUT 4, IC_LAYOUT 2, Value encoding 1
-// (`ep9_value::Value::VERSION`), or the future `VM_LAYOUT_VERSION` (C-18) only for what no
-// other version owns. They stay behind `spike-native` with the rest of this module until
-// C-18 moves them out of the gate (M5-P0).
-
-/// OBJECT_LAYOUT 4. Word0 bytes 0-3: the ShapeId that an IC guard compares (`ep9_value`
-/// `Word0::SHAPE_ID_OFFSET`; an `ldr w` at +0).
-pub const SHAPE_ID_BYTE: u32 = ep9_value::Word0::SHAPE_ID_OFFSET as u32;
-/// OBJECT_LAYOUT 4. The kind byte of a cell: byte 5 of word0 (`ep9_value` `Word0::KIND_OFFSET`;
-/// an `ldrb` at +5).
-pub const KIND_BYTE: u32 = ep9_value::Word0::KIND_OFFSET as u32;
-/// OBJECT_LAYOUT 4. Kind id of an ordinary object (`kinds::OBJECT`).
-pub const KIND_OBJECT: u8 = crate::kinds::OBJECT.get();
-/// OBJECT_LAYOUT 4. Kind id of an Array (`kinds::ARRAY`).
-pub const KIND_ARRAY: u8 = crate::kinds::ARRAY.get();
-/// OBJECT_LAYOUT 4. The first in-object field of an OBJECT (no fixed fields): field `f` is at
-/// `OBJECT_FIELDS + 8f` (`object::obj::FIXED`).
-pub const OBJECT_FIELDS: u32 = obj::FIXED as u32;
-/// OBJECT_LAYOUT 4. ARRAY: the ELEMENTS cell, or undefined (`object::obj::ELEMENTS`).
-pub const ARRAY_ELEMENTS: u32 = obj::ELEMENTS as u32;
-/// OBJECT_LAYOUT 4. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
-pub const ARRAY_LENGTH: u32 = arr::LENGTH as u32;
-/// OBJECT_LAYOUT 4. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
-pub const ELEMENTS_CAPACITY: u32 = elems::CAPACITY as u32;
-/// OBJECT_LAYOUT 4. ELEMENTS: the first value; value `i` is at `ELEMENTS_DATA + 8i`
-/// (`object::elems::DATA`).
-pub const ELEMENTS_DATA: u32 = elems::DATA as u32;
-/// Value encoding 1. The hole (`frame::HOLE`, `Value::EMPTY`): an empty element; in a feedback
+// ---- Value encoding ----
+/// Value encoding (`ep9_value::encoding::VERSION`). A frame's caller fp and return pc words,
+/// and every native word in a cell, are `address + NATIVE_WORD_OFFSET` (frame.rs `native`;
+/// one bit, 2^49, so an `eor` decodes them).
+pub const NATIVE_WORD_OFFSET: u64 = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+/// Value encoding. The hole (`frame::HOLE`, `Value::EMPTY`): an empty element; in a feedback
 /// key half, the polymorphic or megamorphic marker (an empty key half is undefined).
 pub const HOLE: u64 = crate::frame::HOLE;
-/// IC_LAYOUT 2. FEEDBACK cell: the FunctionInfo of its function, a native word
+
+// ---- cells and kind ids: OBJECT_LAYOUT ----
+//
+// The constants below are what `spikes/spike-c/src/vm_layout.rs` kept by hand until M4-P4
+// (same names there), taken from the VM's own definitions, so a layout change moves them. A
+// change of any value is a layout change for native code and unit text.
+
+/// OBJECT_LAYOUT. Word0 bytes 0-3: the ShapeId that an IC guard compares (`ep9_value`
+/// `Word0::SHAPE_ID_OFFSET`; an `ldr w` at +0).
+pub const SHAPE_ID_BYTE: u32 = ep9_value::Word0::SHAPE_ID_OFFSET as u32;
+/// OBJECT_LAYOUT. The kind byte of a cell: byte 5 of word0 (`ep9_value` `Word0::KIND_OFFSET`;
+/// an `ldrb` at +5).
+pub const KIND_BYTE: u32 = ep9_value::Word0::KIND_OFFSET as u32;
+/// OBJECT_LAYOUT. Kind id of an ordinary object (`kinds::OBJECT`).
+pub const KIND_OBJECT: u8 = crate::kinds::OBJECT.get();
+/// OBJECT_LAYOUT. Kind id of an Array (`kinds::ARRAY`).
+pub const KIND_ARRAY: u8 = crate::kinds::ARRAY.get();
+/// OBJECT_LAYOUT. The first in-object field of an OBJECT (no fixed fields): field `f` is at
+/// `OBJECT_FIELDS + 8f` (`object::obj::FIXED`).
+pub const OBJECT_FIELDS: u32 = obj::FIXED as u32;
+/// OBJECT_LAYOUT. A JS object's elements store (every JS kind from M5-P1, H18-Q3; arrays
+/// before): an elements cell, or undefined (`object::obj::ELEMENTS`).
+pub const ARRAY_ELEMENTS: u32 = obj::ELEMENTS as u32;
+/// OBJECT_LAYOUT. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
+pub const ARRAY_LENGTH: u32 = arr::LENGTH as u32;
+/// OBJECT_LAYOUT. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
+pub const ELEMENTS_CAPACITY: u32 = elems::CAPACITY as u32;
+/// OBJECT_LAYOUT. ELEMENTS: the first value; value `i` is at `ELEMENTS_DATA + 8i`
+/// (`object::elems::DATA`).
+pub const ELEMENTS_DATA: u32 = elems::DATA as u32;
+/// OBJECT_LAYOUT. FUNCTION cell field: its FunctionInfo (native word; `object::fun::INFO`).
+pub const FUNCTION_INFO: usize = fun::INFO;
+/// OBJECT_LAYOUT. FUNCTION cell field: its context (Value; `object::fun::CONTEXT`).
+pub const FUNCTION_CONTEXT: usize = fun::CONTEXT;
+/// OBJECT_LAYOUT (MC-w16-16). CONTEXT cell: the enclosing context (Value; `object::ctxf`).
+pub const CONTEXT_PREVIOUS: u32 = ctxf::PREVIOUS as u32;
+/// OBJECT_LAYOUT. CONTEXT cell: the scope word (a native word to the context's
+/// `ContextScope`).
+pub const CONTEXT_SCOPE: u32 = ctxf::SCOPE as u32;
+/// OBJECT_LAYOUT. CONTEXT cell: the slot count (an int32 Value).
+pub const CONTEXT_LENGTH: u32 = ctxf::LENGTH as u32;
+/// OBJECT_LAYOUT. CONTEXT cell: slot 0; slot `i` is at `CONTEXT_SLOTS + 8i`.
+pub const CONTEXT_SLOTS: u32 = ctxf::SLOTS as u32;
+
+// ---- feedback and IC data: IC_LAYOUT ----
+/// IC_LAYOUT. FEEDBACK cell: the FunctionInfo of its function, a native word
 /// (`feedback::fv::INFO`).
 pub const FEEDBACK_INFO: u32 = fv::INFO as u32;
-/// IC_LAYOUT 2. FEEDBACK cell: the first slot (`feedback::fv::SLOTS`).
+/// IC_LAYOUT. FEEDBACK cell: the first slot (`feedback::fv::SLOTS`).
 pub const FEEDBACK_SLOTS: u32 = fv::SLOTS as u32;
-/// IC_LAYOUT 2. FEEDBACK cell: bytes per slot, the key (weak) then the value
+/// IC_LAYOUT. FEEDBACK cell: bytes per slot, the key (weak) then the value
 /// (`feedback::fv::SLOT_SIZE`, `KEY`, `VALUE`).
 pub const FEEDBACK_SLOT_SIZE: u32 = fv::SLOT_SIZE as u32;
-/// IC_LAYOUT 2. A feedback slot: the key half (weak).
+/// IC_LAYOUT. A feedback slot: the key half (weak).
 pub const FEEDBACK_KEY: u32 = fv::KEY as u32;
-/// IC_LAYOUT 2. A feedback slot: the value half (strong).
+/// IC_LAYOUT. A feedback slot: the value half (strong).
 pub const FEEDBACK_VALUE: u32 = fv::VALUE as u32;
-/// IC_LAYOUT 2. POLY_IC cell: the first case, a key (weak) then a handler (`ic::pc::CASES`;
-/// also proved on a live POLY_IC cell by `tests::native`).
+/// IC_LAYOUT. POLY_IC cell: the first case, a key (weak) then a handler (`ic::pc::CASES`;
+/// also proved on a live POLY_IC cell by `tests::native` and `tests::layout5`).
 pub const POLY_CASES: u32 = crate::ic::pc::CASES as u32;
-/// IC_LAYOUT 2. POLY_IC cell: bytes per case (`ic::pc::CASE`).
+/// IC_LAYOUT. POLY_IC cell: bytes per case (`ic::pc::CASE`).
 pub const POLY_CASE_SIZE: u32 = crate::ic::pc::CASE as u32;
-/// IC_LAYOUT 2. POLY_IC cell: cases per cell (`ic::POLY_CASES`).
+/// IC_LAYOUT (MC-w16-4). POLY_IC case: the handler half, after the key; case `i`'s handler is
+/// at `POLY_CASES + POLY_CASE_SIZE * i + POLY_HANDLER` (`ic::pc::HANDLER`).
+pub const POLY_HANDLER: u32 = crate::ic::pc::HANDLER as u32;
+/// IC_LAYOUT. POLY_IC cell: cases per cell (`ic::POLY_CASES`).
 pub const POLY_COUNT: u32 = crate::ic::POLY_CASES as u32;
-/// IC_LAYOUT 2. Smi handler: the kind is in bits 0-3 (`ic::smi::KIND_MASK`).
+/// IC_LAYOUT. Smi handler: the kind is in bits 0-3 (`ic::smi::KIND_MASK`).
 pub const SMI_KIND_MASK: i32 = smi::KIND_MASK;
-/// IC_LAYOUT 2. Smi handler: the byte offset starts at this bit (`ic::smi::SHIFT`).
+/// IC_LAYOUT. Smi handler: the byte offset starts at this bit (`ic::smi::SHIFT`).
 pub const SMI_SHIFT: u32 = smi::SHIFT;
-/// IC_LAYOUT 2. Smi handler kind: the field at the byte offset of the object cell
+/// IC_LAYOUT. Smi handler kind: the field at the byte offset of the object cell
 /// (`ic::smi::FIELD_IN_OBJECT`).
 pub const SMI_FIELD_IN_OBJECT: i32 = smi::FIELD_IN_OBJECT;
-/// IC_LAYOUT 2. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
+/// IC_LAYOUT. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
 /// (`ic::smi::ARRAY_LENGTH`).
 pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
-/// VM_LAYOUT (C-18, MC-w13-14). FunctionInfo: `feedback`, a pointer to the unit slot that holds
-/// the function's FEEDBACK cell (null: no vector yet).
-pub const FI_FEEDBACK: usize = offset_of!(FunctionInfo, feedback);

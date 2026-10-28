@@ -365,6 +365,10 @@ embed (not core): pub const ARRAY_LENGTH: i32
 embed (not core): pub const ARRAY_LENGTH: u32
 embed (not core): pub const BUILTIN_ABI_VERSION: u32
 embed (not core): pub const COLD_OPCODES: usize
+embed (not core): pub const CONTEXT_LENGTH: u32
+embed (not core): pub const CONTEXT_PREVIOUS: u32
+embed (not core): pub const CONTEXT_SCOPE: u32
+embed (not core): pub const CONTEXT_SLOTS: u32
 embed (not core): pub const CX_BUDGET: usize
 embed (not core): pub const CX_GLOBAL_THIS: usize
 embed (not core): pub const CX_INTERRUPT: usize
@@ -416,6 +420,7 @@ embed (not core): pub const OBJECT_LAYOUT_VERSION: u32
 embed (not core): pub const POLY_CASES: u32
 embed (not core): pub const POLY_CASE_SIZE: u32
 embed (not core): pub const POLY_COUNT: u32
+embed (not core): pub const POLY_HANDLER: u32
 embed (not core): pub const RT_ADD: usize
 embed (not core): pub const RT_CALL_ANY: usize
 embed (not core): pub const RT_COMPARE: usize
