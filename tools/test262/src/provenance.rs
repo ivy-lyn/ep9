@@ -9,7 +9,7 @@
 //!
 //! The runner reads the facts twice (CX5-C1): before the run starts and when it writes the
 //! summary. The JSON names the first read; when the two differ in the commit, the dirty flag,
-//! the source kind or a tree id ([`settle`]), it writes `"dirty": true` and
+//! the source kind, a tree id or the manifest outcome ([`settle`]), it writes `"dirty": true` and
 //! `"source_changed_during_run": true`, so m1-exit gives OPEN.
 //!
 //! - `"commit"`: `git rev-parse --verify HEAD` in the repo root (found at build time, as the
@@ -21,14 +21,38 @@
 //!   (`0` or `1`) name them; the caller that copied the tree sets both. With no git tree and no
 //!   `EP9_SOURCE_COMMIT`: `"sbx-commit"` when `<root>/.sbx-commit` holds one line of 40 hex
 //!   digits (CX5-C6; `infra/x86-sandbox/sbx push-git` writes it after it extracts `git archive`
-//!   of that commit, committed files only, so `"dirty": false`). Such a tree is taken as clean
-//!   with no file check; the month-5 provenance work adds one.
+//!   of that commit, committed files only). Such a tree is clean only when its files match the
+//!   export manifest `<root>/.sbx-manifest` (CX6-2 c, [`check_manifest`]): `"dirty": false` when
+//!   every listed file has its listed git blob id, `"dirty": true` on a mismatch, and no dirty
+//!   field (so m1-exit gives OPEN) when the manifest is missing or cannot be read.
+//!   `"source_manifest"` names the outcome: `"checked"`, `"mismatch"`, `"missing"` or
+//!   `"unreadable"` (only on this path).
 //! - An explicit `EP9_SOURCE_DIRTY` other than `0` makes `"dirty": true` on every path (git, env,
 //!   `.sbx-commit`), also with no `EP9_SOURCE_COMMIT` (CX6-2). `0` does not hide a dirty git tree.
 //! - `"made_by"`: `host:<hostname>`, plus ` gh-run:<GITHUB_RUN_ID>/<GITHUB_JOB>` in a GitHub job.
 //! - `"tree"`: `{"<path>": "<git tree or blob id at HEAD>", ...}` for [`TREE_PATHS`] (from git
 //!   only). A pull_request CI job runs on GitHub's merge commit, which the local repository does
 //!   not have: m1-exit then compares these ids with HEAD's.
+//!
+//! Two build facts (plan v10 section 2.6, [`write_runner_fields`]; m1-exit X4 checks both):
+//!
+//! - `"runner_commit"`: the commit this runner binary was built at (C2): `EP9_RUNNER_COMMIT`,
+//!   which build.rs sets from `git rev-parse HEAD` and keeps fresh by watching the HEAD paths
+//!   (`crates/ep9_unit/build_watch.rs`). Left out when git could not answer at build time. A
+//!   runner built at one commit and run on a tree at another writes both: m1-exit gives OPEN.
+//! - `"test262_head"`: the HEAD of the test262 checkout the run used (in:193 item 8), read when
+//!   the summary is written; left out when that directory is not the top of a git work tree.
+//!   m1-exit compares it with the pin, `third_party/test262.commit`.
+//!
+//! **The export manifest** `.sbx-manifest` (written by the `sbx push-git` side, orchestrator):
+//! the output of `git ls-tree -r --full-tree <commit>` for the exported commit, one entry per
+//! line (`<mode> <type> <id>\t<path>`, the path C-quoted as git quotes it), or the same with
+//! `-z` (NUL after each entry). Each `blob` entry must exist under the root with that git blob
+//! id (SHA-1 of `blob <len>\0<bytes>`; a symbolic link (mode 120000) hashes its target), and,
+//! on Unix, with the executable bit of its mode. A `commit` entry (a submodule) is skipped.
+//! Files that the manifest does not list are not checked, as git status ignores untracked
+//! files. `git archive` converts nothing in this repository (`.gitattributes`: `eol=lf`, no
+//! `export-subst`), so the extracted bytes are the blob bytes.
 //!
 //! The nesting log of m1-exit item 8 prints the same facts in one line (NESTING_CMD in
 //! tools/xtask/src/m1_exit.rs).
@@ -59,6 +83,9 @@ pub struct Source {
     pub made_by: String,
     /// (path, id at HEAD) for each of [`TREE_PATHS`] that HEAD has (git only).
     pub tree: Vec<(&'static str, String)>,
+    /// The export manifest check of a `.sbx-commit` tree ([`check_manifest`]); None on the
+    /// other paths.
+    pub manifest: Option<Manifest>,
     /// The facts read when the summary was written differ from the ones read before the run
     /// ([`settle`]).
     pub changed: bool,
@@ -66,6 +93,33 @@ pub struct Source {
 
 /// The file `infra/x86-sandbox/sbx push-git` writes in the root of the tree it extracts.
 pub const SBX_COMMIT: &str = ".sbx-commit";
+
+/// The export manifest next to [`SBX_COMMIT`] (CX6-2 c; module doc).
+pub const SBX_MANIFEST: &str = ".sbx-manifest";
+
+/// The outcome of the export manifest check of a `.sbx-commit` tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Manifest {
+    /// Every listed file has its listed id (and mode).
+    Checked,
+    /// A listed file is missing or differs.
+    Mismatch,
+    /// No manifest file.
+    Missing,
+    /// The manifest cannot be read or has a line in another form.
+    Unreadable,
+}
+
+impl Manifest {
+    pub fn name(self) -> &'static str {
+        match self {
+            Manifest::Checked => "checked",
+            Manifest::Mismatch => "mismatch",
+            Manifest::Missing => "missing",
+            Manifest::Unreadable => "unreadable",
+        }
+    }
+}
 
 /// The trimmed stdout of `git -C <root> <args>`, or None when git fails.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
@@ -124,25 +178,34 @@ pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
             made_by,
             tree,
             changed: false,
+            manifest: None,
         };
     }
     if env("EP9_SOURCE_COMMIT").is_none()
         && let Ok(text) = std::fs::read_to_string(root.join(SBX_COMMIT))
     {
-        // One commit's committed files (`git archive`): not dirty unless the caller says so. A
-        // bad line names nothing.
+        // One commit's committed files (`git archive`): clean when they match the export
+        // manifest, unless the caller says dirty. A bad line names nothing.
         let commit = Some(text.trim().to_ascii_lowercase()).filter(|c| full_sha(c));
+        let manifest = check_manifest(root);
         return Source {
             dirty: if declared_dirty {
                 Some(true)
+            } else if commit.is_none() {
+                None
             } else {
-                commit.as_ref().map(|_| false)
+                match manifest {
+                    Manifest::Checked => Some(false),
+                    Manifest::Mismatch => Some(true),
+                    Manifest::Missing | Manifest::Unreadable => None,
+                }
             },
             commit,
             from: "sbx-commit",
             made_by,
             tree: Vec::new(),
             changed: false,
+            manifest: Some(manifest),
         };
     }
     let commit = env("EP9_SOURCE_COMMIT")
@@ -155,17 +218,279 @@ pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
         made_by,
         tree: Vec::new(),
         changed: false,
+        manifest: None,
+    }
+}
+
+/// The export manifest check (module doc): `<root>/.sbx-manifest` against the files under
+/// `root`.
+pub fn check_manifest(root: &Path) -> Manifest {
+    let bytes = match std::fs::read(root.join(SBX_MANIFEST)) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Manifest::Missing,
+        Err(_) => return Manifest::Unreadable,
+    };
+    let Some(entries) = manifest_entries(&bytes) else {
+        return Manifest::Unreadable;
+    };
+    if entries.is_empty() {
+        return Manifest::Unreadable;
+    }
+    for e in &entries {
+        if e.kind == "commit" {
+            continue;
+        }
+        if !file_matches(root, e) {
+            return Manifest::Mismatch;
+        }
+    }
+    Manifest::Checked
+}
+
+/// One `git ls-tree` entry.
+#[derive(Debug, PartialEq, Eq)]
+struct Entry {
+    mode: String,
+    kind: String,
+    id: String,
+    path: String,
+}
+
+/// The entries of a manifest: `-z` form when it holds a NUL, else one entry per line with
+/// C-quoted paths. None when an entry is in another form.
+fn manifest_entries(bytes: &[u8]) -> Option<Vec<Entry>> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let nul = text.contains('\0');
+    let records = text
+        .split(if nul { '\0' } else { '\n' })
+        .map(|r| {
+            if nul {
+                r
+            } else {
+                r.strip_suffix('\r').unwrap_or(r)
+            }
+        })
+        .filter(|r| !r.is_empty());
+    let mut out = Vec::new();
+    for r in records {
+        let (meta, path) = r.split_once('\t')?;
+        let mut f = meta.split(' ');
+        let (mode, kind, id) = (f.next()?, f.next()?, f.next()?);
+        if f.next().is_some()
+            || !matches!(kind, "blob" | "commit")
+            || !(mode.len() == 6 && mode.bytes().all(|b| b.is_ascii_digit()))
+            || !full_sha(id)
+        {
+            return None;
+        }
+        let path = if !nul && path.starts_with('"') {
+            unquote(path)?
+        } else {
+            path.to_string()
+        };
+        // A path that leaves the root is no entry of a tree.
+        if path.is_empty()
+            || path.starts_with('/')
+            || path
+                .split('/')
+                .any(|c| c.is_empty() || c == "." || c == "..")
+        {
+            return None;
+        }
+        out.push(Entry {
+            mode: mode.to_string(),
+            kind: kind.to_string(),
+            id: id.to_ascii_lowercase(),
+            path,
+        });
+    }
+    Some(out)
+}
+
+/// A C-quoted git path (`"a\tb\303\251"`): the escapes `\a \b \t \n \v \f \r \" \\` and
+/// three octal digits for a byte.
+fn unquote(q: &str) -> Option<String> {
+    let inner = q.strip_prefix('"')?.strip_suffix('"')?;
+    let b = inner.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let c = *b.get(i + 1)?;
+        i += 2;
+        out.push(match c {
+            b'a' => 7,
+            b'b' => 8,
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => 11,
+            b'f' => 12,
+            b'r' => b'\r',
+            b'"' => b'"',
+            b'\\' => b'\\',
+            b'0'..=b'3' => {
+                let d = |k: usize| {
+                    b.get(k)
+                        .filter(|x| (b'0'..=b'7').contains(x))
+                        .map(|x| x - b'0')
+                };
+                let v = (c - b'0') << 6 | d(i)? << 3 | d(i + 1)?;
+                i += 2;
+                v
+            }
+            _ => return None,
+        });
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The file of `e` under `root` has the entry's blob id (and, on Unix, its executable bit).
+fn file_matches(root: &Path, e: &Entry) -> bool {
+    let p = root.join(&e.path);
+    let Ok(meta) = std::fs::symlink_metadata(&p) else {
+        return false;
+    };
+    let bytes = if e.mode == "120000" {
+        if !meta.file_type().is_symlink() {
+            return false;
+        }
+        match std::fs::read_link(&p) {
+            Ok(t) => t.to_string_lossy().into_owned().into_bytes(),
+            Err(_) => return false,
+        }
+    } else {
+        if !meta.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let exec = meta.permissions().mode() & 0o111 != 0;
+            if exec != (e.mode == "100755") {
+                return false;
+            }
+        }
+        match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(_) => return false,
+        }
+    };
+    hex(&blob_id(&bytes)) == e.id
+}
+
+/// The git blob id of `bytes`: SHA-1 of `blob <len>\0<bytes>`.
+fn blob_id(bytes: &[u8]) -> [u8; 20] {
+    let mut data = format!("blob {}\0", bytes.len()).into_bytes();
+    data.extend_from_slice(bytes);
+    sha1(&data)
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// SHA-1 (FIPS 180-4), for git object ids only (not for security).
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let mut msg = data.to_vec();
+    let bits = (data.len() as u64).wrapping_mul(8);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bits.to_be_bytes());
+    for block in msg.as_chunks::<64>().0 {
+        let mut w = [0u32; 80];
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let t = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = t;
+        }
+        for (x, v) in h.iter_mut().zip([a, b, c, d, e]) {
+            *x = x.wrapping_add(v);
+        }
+    }
+    let mut out = [0u8; 20];
+    for (i, x) in h.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&x.to_be_bytes());
+    }
+    out
+}
+
+/// The commit this runner was built at (`EP9_RUNNER_COMMIT` of build.rs; module doc), or None
+/// when git could not answer at build time.
+pub fn runner_commit() -> Option<&'static str> {
+    Some(env!("EP9_RUNNER_COMMIT")).filter(|c| full_sha(c))
+}
+
+/// The HEAD commit of the test262 checkout at `dir` (module doc): None unless `dir` is the top
+/// of its own git work tree (a checkout copied without `.git` into the ep9 tree must not take
+/// the ep9 commit).
+pub fn test262_head(dir: &Path) -> Option<String> {
+    let top = git(dir, &["rev-parse", "--show-toplevel"])?;
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(Path::new(&top)) != canon(dir) {
+        return None;
+    }
+    git(dir, &["rev-parse", "--verify", "HEAD^{commit}"])
+        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| full_sha(c))
+}
+
+/// Appends `,"runner_commit":...` and `,"test262_head":...` (each left out when unknown, so
+/// m1-exit reads "no runner commit" or "no test262 HEAD" and gives OPEN).
+pub fn write_runner_fields(out: &mut String, runner: Option<&str>, test262: Option<&str>) {
+    if let Some(c) = runner {
+        out.push_str(",\"runner_commit\":");
+        json::string(out, c);
+    }
+    if let Some(h) = test262 {
+        out.push_str(",\"test262_head\":");
+        json::string(out, h);
     }
 }
 
 /// The facts of a run (CX5-C1): `before` (read before the run started) when `after` (read when
-/// the summary is written) names the same commit, dirty flag, source kind and tree ids; else
+/// the summary is written) names the same commit, dirty flag, source kind, tree ids and manifest
+/// outcome; else
 /// `before` with `dirty` true and `changed` set, because the tests may have run on either tree.
 pub fn settle(before: Source, after: &Source) -> Source {
     let same = before.commit == after.commit
         && before.dirty == after.dirty
         && before.from == after.from
-        && before.tree == after.tree;
+        && before.tree == after.tree
+        && before.manifest == after.manifest;
     if same {
         before
     } else {
@@ -218,6 +543,10 @@ pub fn write_fields(out: &mut String, s: &Source) {
     }
     out.push_str(",\"commit_source\":");
     json::string(out, s.from);
+    if let Some(m) = s.manifest {
+        out.push_str(",\"source_manifest\":");
+        json::string(out, m.name());
+    }
     out.push_str(",\"made_by\":");
     json::string(out, &s.made_by);
     if s.changed {
@@ -433,6 +762,7 @@ mod tests {
         let sbx = tmp("dirty-env-sbx");
         let sha = "89abcdef0123456789abcdef0123456789abcdef";
         std::fs::write(sbx.join(".sbx-commit"), format!("{sha}\n")).unwrap();
+        write_manifest_of(&sbx, &[("a.txt", b"a\n")]);
         for (v, want) in [("1", true), ("2", true), ("0", false)] {
             let s = source(&sbx, &dirty(v));
             assert_eq!(
@@ -456,26 +786,44 @@ mod tests {
         std::fs::remove_dir_all(copy).unwrap();
     }
 
+    /// Writes `files` under `root` and a `.sbx-manifest` (newline form) that lists them as
+    /// blobs of mode 100644.
+    fn write_manifest_of(root: &Path, files: &[(&str, &[u8])]) {
+        let mut m = String::new();
+        for (name, bytes) in files {
+            std::fs::write(root.join(name), bytes).unwrap();
+            m.push_str(&format!("100644 blob {}\t{name}\n", hex(&blob_id(bytes))));
+        }
+        std::fs::write(root.join(SBX_MANIFEST), m).unwrap();
+    }
+
     /// CX5-C6 (Codex round 1): `sbx push-git` extracts `git archive` of one commit (committed
     /// files only) and writes that commit to `<root>/.sbx-commit`. With no git tree and no
-    /// EP9_SOURCE_COMMIT, the runner names it: not dirty, `commit_source` "sbx-commit". A
-    /// line that is not 40 hex digits names nothing; the env goes first.
+    /// EP9_SOURCE_COMMIT, the runner names it, `commit_source` "sbx-commit", not dirty when
+    /// the files match `.sbx-manifest` (CX6-2 c). A line that is not 40 hex digits names
+    /// nothing; the env goes first.
     #[test]
     fn a_sbx_push_git_tree_names_its_sbx_commit() {
         let d = tmp("sbx");
         let sha = "89abcdef0123456789abcdef0123456789abcdef";
         std::fs::write(d.join(".sbx-commit"), format!("{sha}\n")).unwrap();
+        write_manifest_of(&d, &[("a.txt", b"a\n")]);
         let s = source(&d, &no_env);
         assert_eq!(
-            (s.commit.as_deref(), s.dirty, s.from),
-            (Some(sha), Some(false), "sbx-commit"),
+            (s.commit.as_deref(), s.dirty, s.from, s.manifest),
+            (
+                Some(sha),
+                Some(false),
+                "sbx-commit",
+                Some(Manifest::Checked)
+            ),
             "{s:?}"
         );
         let mut out = String::new();
         write_fields(&mut out, &s);
         assert!(
             out.starts_with(&format!(
-                ",\"commit\":\"{sha}\",\"dirty\":false,\"commit_source\":\"sbx-commit\""
+                ",\"commit\":\"{sha}\",\"dirty\":false,\"commit_source\":\"sbx-commit\",\"source_manifest\":\"checked\""
             )),
             "{out}"
         );
@@ -495,6 +843,210 @@ mod tests {
         std::fs::write(d.join(".sbx-commit"), "abc123\n").unwrap();
         let s = source(&d, &no_env);
         assert_eq!((s.commit.as_deref(), s.dirty), (None, None), "{s:?}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// SHA-1 known answers (FIPS 180-4 examples; one and two blocks) and git blob ids.
+    #[test]
+    fn sha1_and_blob_ids() {
+        assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(
+            hex(&sha1(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            hex(&sha1(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+        );
+        // `printf 'hello\n' | git hash-object --stdin`
+        assert_eq!(
+            hex(&blob_id(b"hello\n")),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
+        );
+        assert_eq!(
+            hex(&blob_id(b"")),
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        );
+    }
+
+    /// The two forms of `git ls-tree -r`: C-quoted paths per line, and `-z`. A line in another
+    /// form, or a path that leaves the root, makes the manifest unreadable.
+    #[test]
+    fn manifest_entries_read_both_forms() {
+        let id = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let e = manifest_entries(
+            format!(
+                "100644 blob {id}\ta.txt\r\n100755 blob {id}\t\"d/\\303\\251 \\\"q\\\".sh\"\n\
+                 160000 commit {id}\tsub\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let paths: Vec<&str> = e.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "d/\u{e9} \"q\".sh", "sub"]);
+        assert_eq!(
+            (e[1].mode.as_str(), e[2].kind.as_str()),
+            ("100755", "commit")
+        );
+        let z =
+            manifest_entries(format!("100644 blob {id}\t\"x\"\0100644 blob {id}\tb\0").as_bytes())
+                .unwrap();
+        assert_eq!(z[0].path, "\"x\"");
+        assert_eq!(z[1].path, "b");
+        for bad in [
+            format!("100644 blob {id} a.txt\n"),
+            format!("100644 tree {id}\ta\n"),
+            "100644 blob abc\ta\n".to_string(),
+            format!("100644 blob {id}\t../a\n"),
+            format!("100644 blob {id}\t/etc/a\n"),
+            format!("100644 blob {id}\t\"a\\q\"\n"),
+        ] {
+            assert_eq!(manifest_entries(bad.as_bytes()), None, "{bad:?}");
+        }
+    }
+
+    /// CX6-2 (c): a git-free copy of a real commit (as `git archive` makes it) checks against
+    /// the `git ls-tree -r` output of that commit, in both forms; an edited, missing or (Unix)
+    /// re-moded file is a mismatch and dirty; no manifest or a bad one gives no dirty field.
+    #[test]
+    fn the_export_manifest_check() {
+        let repo = tmp("manifest-repo");
+        std::fs::create_dir_all(repo.join("d")).unwrap();
+        let files: [(&str, &[u8]); 3] = [
+            ("a.txt", b"a\n"),
+            ("d/\u{e9}.txt", b"accent\n"),
+            ("big.bin", &[7u8; 5000]),
+        ];
+        for (n, b) in files {
+            std::fs::write(repo.join(n), b).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(repo.join("run.sh"), "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(repo.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            std::os::unix::fs::symlink("a.txt", repo.join("link")).unwrap();
+        }
+        git_in(&repo, &["init", "-q"]);
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-q", "-m", "a"]);
+        let ls = |z: bool| {
+            let mut cmd = Command::new("git");
+            // The quoted form whatever the user's git config says.
+            cmd.arg("-C")
+                .arg(&repo)
+                .args(["-c", "core.quotePath=true", "ls-tree", "-r"]);
+            if z {
+                cmd.arg("-z");
+            }
+            let o = cmd.args(["--full-tree", "HEAD"]).output().unwrap();
+            assert!(o.status.success());
+            o.stdout
+        };
+        let (lines, nul) = (ls(false), ls(true));
+        assert!(String::from_utf8_lossy(&lines).contains("\"d/\\303\\251.txt\""));
+        // The copy: the files only, no .git.
+        let copy = tmp("manifest-copy");
+        std::fs::create_dir_all(copy.join("d")).unwrap();
+        for (n, b) in files {
+            std::fs::write(copy.join(n), b).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::copy(repo.join("run.sh"), copy.join("run.sh")).unwrap();
+            std::fs::set_permissions(copy.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            std::os::unix::fs::symlink("a.txt", copy.join("link")).unwrap();
+        }
+        let sha = "89abcdef0123456789abcdef0123456789abcdef";
+        std::fs::write(copy.join(SBX_COMMIT), format!("{sha}\n")).unwrap();
+        let state = || {
+            let s = source(&copy, &no_env);
+            (s.dirty, s.manifest)
+        };
+        assert_eq!(state(), (None, Some(Manifest::Missing)));
+        for m in [&lines, &nul] {
+            std::fs::write(copy.join(SBX_MANIFEST), m).unwrap();
+            assert_eq!(state(), (Some(false), Some(Manifest::Checked)));
+        }
+        // An untracked file is not checked.
+        std::fs::write(copy.join("new.txt"), "x").unwrap();
+        assert_eq!(state(), (Some(false), Some(Manifest::Checked)));
+        // An edited file.
+        std::fs::write(copy.join("big.bin"), [7u8; 4999]).unwrap();
+        assert_eq!(state(), (Some(true), Some(Manifest::Mismatch)));
+        let mut out = String::new();
+        write_fields(&mut out, &source(&copy, &no_env));
+        assert!(
+            out.contains(
+                ",\"dirty\":true,\"commit_source\":\"sbx-commit\",\"source_manifest\":\"mismatch\""
+            ),
+            "{out}"
+        );
+        std::fs::write(copy.join("big.bin"), [7u8; 5000]).unwrap();
+        assert_eq!(state(), (Some(false), Some(Manifest::Checked)));
+        // A missing file.
+        std::fs::remove_file(copy.join("d/\u{e9}.txt")).unwrap();
+        assert_eq!(state(), (Some(true), Some(Manifest::Mismatch)));
+        std::fs::write(copy.join("d/\u{e9}.txt"), b"accent\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(copy.join("run.sh"), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            assert_eq!(state(), (Some(true), Some(Manifest::Mismatch)));
+            std::fs::set_permissions(copy.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            std::fs::remove_file(copy.join("link")).unwrap();
+            std::os::unix::fs::symlink("big.bin", copy.join("link")).unwrap();
+            assert_eq!(state(), (Some(true), Some(Manifest::Mismatch)));
+            std::fs::remove_file(copy.join("link")).unwrap();
+            std::os::unix::fs::symlink("a.txt", copy.join("link")).unwrap();
+        }
+        assert_eq!(state(), (Some(false), Some(Manifest::Checked)));
+        // A manifest in another form names no dirty state; an explicit dirty env still wins.
+        std::fs::write(copy.join(SBX_MANIFEST), "not a manifest\n").unwrap();
+        assert_eq!(state(), (None, Some(Manifest::Unreadable)));
+        let dirty = |k: &str| (k == "EP9_SOURCE_DIRTY").then(|| "1".to_string());
+        assert_eq!(source(&copy, &dirty).dirty, Some(true));
+        // A manifest that changes during the run is a source change (CX5-C1).
+        std::fs::write(copy.join(SBX_MANIFEST), &lines).unwrap();
+        let before = source(&copy, &no_env);
+        std::fs::write(copy.join("a.txt"), "edited\n").unwrap();
+        assert!(settle(before, &source(&copy, &no_env)).changed);
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(copy).unwrap();
+    }
+
+    /// C2 and item 8: the runner's build commit (from build.rs, in this repository: a commit
+    /// id) and the HEAD of a test262 checkout (only the top of its own work tree), both written
+    /// by `write_runner_fields` and left out when unknown.
+    #[test]
+    fn runner_commit_and_test262_head() {
+        let rc = runner_commit().expect("this test runs in the ep9 git tree");
+        assert!(full_sha(rc), "{rc}");
+        let d = tmp("t262-head");
+        assert_eq!(test262_head(&d), None);
+        git_in(&d, &["init", "-q"]);
+        git_in(&d, &["commit", "-q", "--allow-empty", "-m", "t"]);
+        let head = test262_head(&d).unwrap();
+        assert!(full_sha(&head), "{head}");
+        // A directory inside it is not a checkout of its own.
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        assert_eq!(test262_head(&d.join("sub")), None);
+        let mut out = String::new();
+        write_runner_fields(&mut out, Some(rc), Some(&head));
+        assert_eq!(
+            out,
+            format!(",\"runner_commit\":\"{rc}\",\"test262_head\":\"{head}\"")
+        );
+        let mut out = String::new();
+        write_runner_fields(&mut out, None, None);
+        assert_eq!(out, "");
         std::fs::remove_dir_all(d).unwrap();
     }
 }

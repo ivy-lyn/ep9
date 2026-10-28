@@ -35,8 +35,8 @@ use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
 use ep9_vm::{
-    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, HostFn, Isolate,
-    IsolateConfig, JsResult, Local, PropertyDescriptor, TerminateHandle,
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, ExecOptions, Feedback,
+    HostFn, Isolate, IsolateConfig, JsResult, Local, PropertyDescriptor, TerminateHandle,
 };
 
 use crate::frontmatter::{self, Meta};
@@ -79,6 +79,9 @@ pub struct Options {
     pub skip_list: Option<PathBuf>,
     /// `IsolateConfig::feedback_threshold` of every isolate.
     pub feedback_threshold: u32,
+    /// The type-feedback mode of every isolate (`--feedback`; `Isolate::new_with`, C-23): the
+    /// build's default preset with this mode.
+    pub feedback: Feedback,
     pub verbose: bool,
     pub progress: bool,
     /// Number of failure causes in the report.
@@ -93,6 +96,7 @@ pub struct WorkerOptions {
     pub timeout: Duration,
     pub gc_stress: u32,
     pub feedback_threshold: u32,
+    pub feedback: Feedback,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -606,6 +610,12 @@ fn hook_failure(e: CodegenError) -> CompileFailure {
     }
 }
 
+/// The execution options of every test isolate (C-23): this build's default preset (`jit` with
+/// the runner's default `jit` feature) with the `--feedback` mode.
+fn exec_options(feedback: Feedback) -> ExecOptions {
+    ExecOptions::default().feedback(feedback)
+}
+
 /// `exec` exits 2 unless an isolate made with `config` has a builtin table: a run without
 /// one would fail thousands of tests and could rewrite the expectations with them.
 fn check_builtins(config: IsolateConfig) -> Result<(), String> {
@@ -625,7 +635,8 @@ struct RunCtx<'a> {
 impl RunCtx<'_> {
     fn isolate(&self) -> Result<Isolate, String> {
         let config = isolate_config(self.opts.gc_stress, self.opts.feedback_threshold);
-        let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
+        let mut iso = Isolate::new_with(config, exec_options(self.opts.feedback))
+            .map_err(|e| format!("cannot create an isolate: {e}"))?;
         for (name, length, f) in HOST_FUNCTIONS {
             iso.register_host_function(name, length, f);
         }
@@ -1486,6 +1497,8 @@ pub fn run(opts: &Options) -> ExitCode {
         opts.gc_stress.to_string(),
         "--feedback-threshold".into(),
         opts.feedback_threshold.to_string(),
+        "--feedback".into(),
+        opts.feedback.name().into(),
     ];
     // A test has at most 2 runs; each gets the soft timeout, then a margin. A worker that
     // gives no result by then is stuck where the interrupt check does not reach: kill it.
@@ -1555,11 +1568,14 @@ pub fn run(opts: &Options) -> ExitCode {
     let mut top: Vec<(&str, usize)> = causes.iter().map(|(c, n)| (*c, *n)).collect();
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
 
+    let exec = exec_options(opts.feedback);
     println!(
-        "ep9-test262 exec: {} tests, {} worker processes, target {}, mode jit, timeout {:?}{}{}",
+        "ep9-test262 exec: {} tests, {} worker processes, target {}, mode {}, feedback {}, timeout {:?}{}{}",
         results.len(),
         threads,
         opts.triple,
+        exec.preset().name(),
+        exec.feedback_mode().name(),
         opts.timeout,
         if opts.gc_stress > 0 {
             format!(", GC-stress {}", opts.gc_stress)
@@ -1730,7 +1746,19 @@ fn summary_json(
     let count = |out: &mut String, c: Count| {
         let _ = write!(out, "{{\"passed\":{},\"total\":{}}}", c.passed, c.total);
     };
-    let mut out = String::from("{\"command\":\"exec\",\"mode\":\"jit\",\"target\":");
+    // The build (MC-w17-5): `mode` is the preset the isolates ran (no longer the literal
+    // "jit"), `features` the ep9_vm features of this binary, `feedback` the type-feedback mode.
+    let build = ep9_vm::build_info();
+    let exec = exec_options(opts.feedback);
+    let mut out = String::from("{\"command\":\"exec\",\"mode\":");
+    json::string(&mut out, exec.preset().name());
+    out.push_str(",\"preset\":");
+    json::string(&mut out, build.preset);
+    out.push_str(",\"features\":");
+    json::string_array(&mut out, build.features);
+    out.push_str(",\"feedback\":");
+    json::string(&mut out, exec.feedback_mode().name());
+    out.push_str(",\"target\":");
     json::string(&mut out, opts.triple);
     out.push_str(",\"test262\":");
     json::string(&mut out, &opts.test262.display().to_string());
@@ -1738,6 +1766,12 @@ fn summary_json(
     // the facts read before the run, dirty when a second read now differs (CX5-C1).
     let now = provenance::source(&crate::repo_root(), &provenance::process_env);
     provenance::write_fields(&mut out, &provenance::settle(source, &now));
+    // The runner's build commit and the test262 checkout HEAD (C2, item 8; m1-exit X4).
+    provenance::write_runner_fields(
+        &mut out,
+        provenance::runner_commit(),
+        provenance::test262_head(&opts.test262).as_deref(),
+    );
     let _ = write!(
         out,
         ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"feedback_threshold\":{},\"skipped\":{}",

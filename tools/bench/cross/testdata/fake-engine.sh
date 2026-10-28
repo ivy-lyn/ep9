@@ -3,6 +3,7 @@
 # the `const want = ...` value of a T0 workload file, and nothing for the empty script.
 # The engine's name is the name it is called by: the test makes one symlink per engine.
 #   FAKE_LOG=FILE      append "<name> <script name>" for each call
+#   FAKE_NO_BUILD=1    --version prints no build line (an ep9 from before M5-P0)
 #   FAKE_WRONG=n:w     engine n prints a wrong result for workload w
 #   FAKE_FAIL=n:w      engine n exits 3 on workload w
 #   FAKE_WRONG_COUNTED=n:w   engine n prints a wrong result for workload w, but only in a counted
@@ -10,6 +11,8 @@
 name=$(basename "$0")
 if [ "$1" = "--version" ]; then
   echo "fake $name 0.0"
+  # The build line of an M5-P0 ep9 (FAKE_NO_BUILD=1: a binary from before, with none).
+  if [ -z "$FAKE_NO_BUILD" ]; then echo "features none; preset jitless"; fi
   exit 0
 fi
 for a; do f=$a; done
