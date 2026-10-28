@@ -21,17 +21,19 @@
 //!    a MOVED line is NOT AT BASE LINE and names no new number: the cite may have been wrong at
 //!    that base already (verifier r1 F2: `golden:334` named another line there). A cite whose
 //!    file is missing at HEAD (a family name with no file) is NO FILE.
-//! 5. A doc 13 line that is not a line of doc 13 at the base (new or edited since; M4-P5
-//!    CX5-C7) was written for the files at HEAD: its cites are checked at HEAD only, and a cite
-//!    past the end of its file at HEAD is BAD AT HEAD. Step 4 is for the unchanged lines.
+//! 5. A cite on a doc 13 line that is new since the base, or on an edited line whose cite
+//!    number changed (the base line the edit replaced has no such cite; M4-P5 CX5-C7, verifier
+//!    r1 F1), was written for the files at HEAD: it is checked at HEAD only, and a cite past the
+//!    end of its file at HEAD is BAD AT HEAD. Step 4 is for the other cites, so an edit that
+//!    keeps a stale number still gives MOVED.
 //!
 //! The part gates from M4-P5 ([`GATE`] true; plan v9 rule 20, P5-ORCH-2: it guards the
 //! doc 13 pointers such as the FR0 row H31:90): a finding fails adr-lint and so m1-exit item 6.
 //! With [`GATE`] false the part is report only: its lines start with `note: `, an error is a
 //! note, and the result does not change.
 //!
-//! To fix a MOVED finding, change the cite number: its doc 13 line is then new since the base
-//! and is checked at HEAD (step 5). Setting `Cites at` to a later commit (one commit cannot
+//! To fix a MOVED finding, change the cite number: the cite is then new since the base and is
+//! checked at HEAD (step 5). Setting `Cites at` to a later commit (one commit cannot
 //! name itself, so a commit before the one that sets it) brings the other lines up to date.
 
 use super::{git, read};
@@ -266,10 +268,15 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
     }
     let (base, named) = base_commit(root, &doc, &mut out)?;
     let short_base = &base[..base.len().min(7)];
-    // The doc 13 lines at the base: a line that is not one of them (new or edited since) was
-    // written for the files at HEAD, so its cites are checked at HEAD only (CX5-C7).
+    // The doc 13 lines at the base: a cite on a line that is not one of them (new or edited
+    // since) was written for the files at HEAD, so it is checked at HEAD only (CX5-C7). An
+    // edited line keeps the move check for each cite that the base line it replaced also has
+    // ([`paired`]; verifier r1 F1): only a new cite number is checked at HEAD only.
     let base_doc = git_raw(root, &format!("{base}:{DOC}")).unwrap_or_default();
     let old_lines: HashSet<&str> = base_doc.lines().collect();
+    let base_v: Vec<&str> = base_doc.lines().collect();
+    let head_v: Vec<&str> = doc.lines().collect();
+    let pair = paired(&base_v, &head_v);
     // The files of each family dir at HEAD.
     let mut dirs: HashMap<String, Vec<String>> = HashMap::new();
     let mut files: HashMap<(String, &str), Option<Vec<String>>> = HashMap::new();
@@ -320,7 +327,9 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                 continue;
             };
             let (b, h) = (show(&base, &file), show("HEAD", &file));
-            let new_line = !old_lines.contains(l);
+            let carried = pair[i]
+                .is_some_and(|b| cites_in(base_v[b], &forms).contains(&(name.clone(), n, end)));
+            let new_line = !old_lines.contains(l) && !carried;
             for k in std::iter::once(n).chain(end) {
                 out.total += 1;
                 if new_line {
@@ -385,6 +394,47 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
         }
     }
     Ok(out)
+}
+
+/// For each line of `head`, the line of `base` it replaced, if any: the lines of a longest
+/// common subsequence are kept (no pair: they are base lines); between two kept lines, the n-th
+/// added line pairs with the n-th removed one (an added line with no removed one: no pair).
+fn paired(base: &[&str], head: &[&str]) -> Vec<Option<usize>> {
+    let (n, m) = (base.len(), head.len());
+    // t[i][j]: the length of a longest common subsequence of base[i..] and head[j..].
+    let mut t = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            t[i][j] = if base[i] == head[j] {
+                t[i + 1][j + 1] + 1
+            } else {
+                t[i + 1][j].max(t[i][j + 1])
+            };
+        }
+    }
+    let mut out = vec![None; m];
+    let (mut i, mut j) = (0, 0);
+    let (mut gone, mut added) = (Vec::new(), Vec::new());
+    loop {
+        let kept = i < n && j < m && base[i] == head[j];
+        if kept || (i == n && j == m) {
+            // A drop of each drain empties its whole list, the unpaired rest too.
+            for (b, h) in gone.drain(..).zip(added.drain(..)) {
+                out[h] = Some(b);
+            }
+            if !kept {
+                return out;
+            }
+            i += 1;
+            j += 1;
+        } else if j < m && (i == n || t[i][j + 1] >= t[i + 1][j]) {
+            added.push(j);
+            j += 1;
+        } else {
+            gone.push(i);
+            i += 1;
+        }
+    }
 }
 
 /// The first cell of a table row (not blank).
@@ -754,6 +804,79 @@ mod tests {
                 &base[..7]
             )]
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The pairing of edited lines: the n-th added line in a gap pairs with the n-th removed
+    /// one; an added line beyond the removed ones, and a kept line, pair with none.
+    #[test]
+    fn edited_lines_pair_with_the_lines_they_replaced() {
+        let base = ["h", "a", "b", "t"];
+        let head = ["h", "A", "B", "new", "t", "end"];
+        assert_eq!(
+            paired(&base, &head),
+            vec![None, Some(1), Some(2), None, None, None]
+        );
+        assert_eq!(paired(&[], &["x"]), vec![None]);
+        assert_eq!(paired(&["x", "y"], &[]), Vec::<Option<usize>>::new());
+    }
+
+    /// M4-P5 CX5 verifier r1 F1: an edited doc 13 line (its text differs from the base) keeps
+    /// the move check for each cite its base line had; only a cite whose number changed (or a
+    /// line that replaced none) is checked at HEAD only. Else an edit that keeps a stale number
+    /// hides a MOVED cite for good (after the next `Cites at` bump it is the same at both).
+    #[test]
+    fn an_edited_line_keeps_the_move_check() {
+        let root = repo("edited");
+        write(&root, "docs/adr/README.md", "a\nb\nc\nd\n");
+        let body = "\nRule AR:2.\n\nOther AR:3.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        let head = |b: &str| format!("{}{b}", HEADER.replace("{BASE}", &base[..7]));
+        write(&root, DOC, &head(body));
+        commit(&root, "header");
+        write(&root, "docs/adr/README.md", "z\na\nb\nc\nd\n");
+        commit(&root, "move");
+        // Both lines edited, the stale numbers kept: both still MOVED.
+        write(
+            &root,
+            DOC,
+            &head("\nRule AR:2 (see).\n\nOther AR:3 (see).\n"),
+        );
+        commit(&root, "edit");
+        let c = short_cites(&root).unwrap();
+        let short = &base[..7];
+        assert_eq!(
+            c.findings,
+            vec![
+                format!("SHORT CITE MOVED doc13:6 AR:2 -> AR:3 (same text as at {short}): b"),
+                format!("SHORT CITE MOVED doc13:8 AR:3 -> AR:4 (same text as at {short}): c"),
+            ]
+        );
+        // One line fixed (its number changed: checked at HEAD), the other still stale.
+        write(
+            &root,
+            DOC,
+            &head("\nRule AR:3 (see).\n\nOther AR:3, AR:5.\n"),
+        );
+        commit(&root, "half");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(
+            c.findings,
+            vec![format!(
+                "SHORT CITE MOVED doc13:8 AR:3 -> AR:4 (same text as at {short}): c"
+            )]
+        );
+        // Every number +1 in one commit: no finding.
+        write(&root, DOC, &head("\nRule AR:3.\n\nOther AR:4.\n"));
+        commit(&root, "renumber");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(c.findings, Vec::<String>::new());
+        assert_eq!(c.total, 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 
