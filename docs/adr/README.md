@@ -111,7 +111,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 
 | Approval of | Who | Result | Date |
 |---|---|---|---|
-| The C-13 rows H29-H34 and the two notes above (M4-P5 DOCS) | Pending: the orchestrator (§3.2) | Pending | |
+| The C-13 rows H29-H34 and the two notes above (M4-P5 DOCS) | the orchestrator (§3.2); it wrote none of them | **Approved**. A read-only checker compared the 13 rows with the ADR Freeze tables by meaning (all 13 gated parts have a row, none extra; the one mismatch, the H34 "for unit text" limit, DOCS fixed in M4-P5) and the two notes with the ADRs and 13 §5.4 and §7.1; Codex rounds 1 and 2 (M4-P5 docs slices) found nothing in them | 2026-10-28 |
 
 ## 4. Ownership, CODEOWNERS and the ADR lint
 
