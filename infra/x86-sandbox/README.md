@@ -11,8 +11,8 @@ the design (one id = one container, the destroy/exec race fix, what `sbx` retrie
 token rotation timing) is in that README; it is not copied here.
 
 ```
- Mac                            Cloudflare (account 6db7cbc0423b5d56af93d13e4e2b469b)
- ───                            ─────────────────────────────────────────────────────
+ Mac                            Cloudflare (account <account-id>)
+ ───                            ─────────────────────────────────
  cargo zigbuild --target x86_64-unknown-linux-gnu
    │
  ./sbx ──HTTPS + Bearer──▶ Worker ep9-x86-sandbox   (http -> 403, bad token -> 401, then route)
@@ -25,7 +25,7 @@ token rotation timing) is in that README; it is not copied here.
                            standard-4 = 4 vCPU, 12 GiB, 20 GB disk; linux/amd64, Debian 13
 ```
 
-- URL: `.url` = `https://ep9-x86-sandbox.lynweklm.workers.dev` (must be `https://`)
+- URL: `.url` = `https://<worker-name>.<your-subdomain>.workers.dev` (must be `https://`)
 - Token: `.token` (mode 600, git-ignored). Never print it. `sbx` reads it itself.
 - Client needs: bash 3.2+, curl, jq, base64, split, shasum, zstd, tar, git (`push-git` needs
   `git archive --add-file`).
@@ -152,12 +152,12 @@ with all 4 vCPU busy (2 at once: up to ~$0.80/h). An idle box bills until it sle
 
 ```bash
 cd <ep9 checkout>/infra/x86-sandbox
-export CLOUDFLARE_ACCOUNT_ID=6db7cbc0423b5d56af93d13e4e2b469b
+export CLOUDFLARE_ACCOUNT_ID=<account-id>
 npm ci && npm run types && npx tsc --noEmit          # types file is generated, git-ignored
 npx wrangler deploy                                  # OrbStack Docker builds the linux/amd64 image
 (umask 077; openssl rand -hex 32 > .token)           # first deploy only
 npx wrangler secret put SBX_TOKEN --name ep9-x86-sandbox < .token
-printf '%s\n' https://ep9-x86-sandbox.lynweklm.workers.dev > .url
+printf '%s\n' https://<worker-name>.<your-subdomain>.workers.dev > .url
 ```
 
 - Pins (exact): `@cloudflare/sandbox` 1.0.1, wrangler 4.151.0, typescript 6.0.3 (the set the
