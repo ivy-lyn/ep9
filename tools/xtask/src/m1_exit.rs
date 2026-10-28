@@ -27,7 +27,7 @@
 //! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
@@ -2026,8 +2026,11 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             .map(str::trim)
             .filter(|s| !s.is_empty());
         // A second record of a counted campaign adds no hours, but its open crashes still count
-        // (a crash found late in a campaign is still open).
-        let dup = counted && campaign.is_some_and(|id| !campaigns.insert(format!("{tool}/{id}")));
+        // (a crash found late in a campaign is still open). F4 (in:190 item 5): the id is
+        // inserted below, only once this record counts, so a record of the id that is not
+        // counted (dirty, stale, no `dirty` field) does not block a later one that counts.
+        let key = campaign.map(|id| format!("{tool}/{id}"));
+        let dup = counted && key.as_ref().is_some_and(|k| campaigns.contains(k));
         if dup {
             why.push(format!(
                 "{}: campaign {tool} {:?} again, its hours counted once",
@@ -2087,6 +2090,8 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
         if counted {
             match fresh_named(&c.o.root, commit, fresh_paths) {
                 Ok(_) => {
+                    // F4: the campaign counts from here on (`counted` needs a campaign id).
+                    campaigns.extend(key);
                     *hours
                         .entry(if tool == "fuzzilli" {
                             "fuzzilli"
@@ -3882,6 +3887,101 @@ mod tests {
         );
         assert!(
             c.evidence.contains(", 1 open unique crashes"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// F4 (plan v10 section 3.7; in:190 item 5) on the records of the producer,
+    /// fuzz/scripts/record.sh (the fixtures `fuzz-*.json`, made by `make-fuzz-records.sh`): a
+    /// campaign id counts once, and only from the record that counts. A record of the id that is
+    /// not counted (dirty, or stale) does not block a later one that counts.
+    #[test]
+    fn item5_counts_a_campaign_from_the_record_that_counts() {
+        let root = fake_repo("item5f4");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let placeholder = "f4".repeat(20);
+        let rec = |name: &str, commit: &str| {
+            let text = read(&fixture(name)).unwrap();
+            assert!(text.contains(&placeholder), "{name}: {text}");
+            input(&root, name, &text.replace(&placeholder, commit))
+        };
+        let clean = rec("fuzz-fuzzilli.json", &head);
+        let dirty = rec("fuzz-fuzzilli-dirty.json", &head);
+        let cargo = rec("fuzz-cargo-fuzz.json", &head);
+        let mut o = opts(&root);
+        // The producer's records count: 100 + 24 CPU-h, PASS.
+        o.fuzz = vec![clean.clone(), cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains(
+                "Fuzzilli 100.0 / 100 CPU-h, cargo-fuzz 24.0 / 24 CPU-h, 0 open unique crashes"
+            ),
+            "{}",
+            c.evidence
+        );
+        // A dirty record of the campaign first, then the clean one: the clean one counts (the
+        // id was inserted before the checks: 0 h, OPEN).
+        o.fuzz = vec![dirty.clone(), clean.clone(), cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert!(
+            c.evidence
+                .contains("fuzz-fuzzilli-dirty.json: not counted: made with uncommitted changes"),
+            "{}",
+            c.evidence
+        );
+        assert!(!c.evidence.contains("again"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        assert_eq!(
+            c.status,
+            Status::Open,
+            "the dirty record is still named: {c:?}"
+        );
+        // The other order: the clean one counts, the dirty one is the same campaign again.
+        o.fuzz = vec![clean.clone(), dirty, cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains(
+                "fuzz-fuzzilli-dirty.json: campaign fuzzilli \"fz-fixture-1\" again, its hours counted once"
+            ),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        // A stale record of the campaign (a commit this repository does not have) first: it is
+        // not counted, and the fresh one still counts.
+        let stale = input(
+            &root,
+            "stale.json",
+            &read(&clean).unwrap().replace(&head, &"e".repeat(40)),
+        );
+        o.fuzz = vec![stale, clean, cargo];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(
+            c.status,
+            Status::Open,
+            "the stale record is still named: {c:?}"
+        );
+        assert!(
+            c.evidence
+                .contains("stale.json: not counted: its commit `eeee"),
+            "{}",
+            c.evidence
+        );
+        assert!(!c.evidence.contains("again"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
             "{}",
             c.evidence
         );
