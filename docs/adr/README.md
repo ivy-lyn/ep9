@@ -99,7 +99,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H32 | (the Policy part) | D17 rows: SOUND THROW (D17 c), VERIFIED (D17 d) | End of A5, only if the D17 rule picks them |
 | H33 | Rule: the shared feedback schema, the counters of optimized-AOT code, RUNTIME over PROFILED and HINTED, the stale-profile rule, no re-tier in a jitless build | Baseline-AOT IC cells: how unit IC cells map to the FeedbackVector (Q3) | A3 gate |
 | H33 | (the Rule part) | Hybrid part: the re-tier path, the budget word and its unit (Q1), the re-tier start rule (Q5), the threshold number, the T1 start state (Q2), the exits that start the re-tier (Q4), the hybrid event row | K-A4P (M8 exit); removed before its freeze point if K-A4P fails |
-| H34 | Backend contract: one instruction stream, no LLVM, the meaning of each kind, zero text relocations, the Q1-Q3 fills | JIT finalize forms (T1 in M5, T2 in M7), not the T3-only forms | M7 exit (T2) |
+| H34 | Backend contract: one instruction stream, no LLVM, the meaning of each kind, HeapConst rejected by the unit writer, zero text relocations, the Q1-Q3 fills for unit text (the JIT code-range part of Q3 is in the JIT finalize part) | JIT finalize forms (T1 in M5, T2 in M7), not the T3-only forms | M7 exit (T2) |
 | H34 | (the Backend contract) | Unit finalize forms of baseline-AOT units, with the Stub kind in unit code (Q4) | A3 gate (with H35) |
 | H34 | (the Backend contract) | Unit finalize forms that only optimized-AOT unit text uses (DeoptExit, the osr-entry form) | A4 gates (M8 exit) |
 | H34 | (the Backend contract) | T3 JIT finalize forms | The gate that ends T3 (M9); removed before its freeze point if T3 is not built |
