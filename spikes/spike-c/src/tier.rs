@@ -616,8 +616,9 @@ mod tests {
     }
 
     /// Review F2 (M4-P2): an int32 `+` that overflows in the very warm-up the facts come from
-    /// still reads as an int32 hint (the profile leaves it implicit), so its overflow guard is
-    /// unbacked; the input checks keep the fact basis.
+    /// gets no fact for its overflow guard. Since M5-P1 PROFILE5 (MODES-D16) T0 records that
+    /// overflow as `INT32_OVERFLOW`, so the site's hint is not inside {int32}: its input check
+    /// is unbacked too, as at a `*` site that overflowed. The other sites keep the fact basis.
     #[test]
     fn an_add_overflow_guard_is_never_fact_backed() {
         if !aarch64() {
@@ -640,7 +641,8 @@ mod tests {
         );
         let g = &r.report.graph;
         for l in g.lines().filter(|l| l.contains(" guard g")) {
-            if l.contains("Int32(Add)") {
+            // @15 is the `s + a` site; every `+` overflow guard is unbacked.
+            if l.contains("Int32(Add)") || l.ends_with("-> @15") {
                 assert!(l.contains("Unbacked"), "{l}\n{g}");
             } else {
                 assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");

@@ -45,8 +45,8 @@
 //! check; a later backed site upgrades it (the value did not change in between). A loop
 //! phi's entry check (`unbox_loop_phis`) is backed if a check of the phi in the loop header
 //! block was (the header runs with the entry value). The overflow guard of `+`, `-`, Inc and
-//! Dec is always unbacked: T0 leaves an int32 `+` or `-` that overflows implicit int32, so
-//! the hint does not cover it (`*` records its overflow and -0, so its guard keeps the basis).
+//! Dec is always unbacked here; since M5-P1 (MODES-D16) T0 records their overflow as
+//! `INT32_OVERFLOW` (as `*` records its overflow and -0), so a later step may back it.
 //!
 //! **Checks are shared by (value, policy) (SPIKEC-3, MC-w14-20).** The block-local memo keys
 //! a check by its op, its input and the exit policy that the mode gives the site's basis
@@ -503,9 +503,9 @@ impl Builder<'_> {
             (self.int32(l, basis), self.int32(r, basis))
         };
         // The op's own guard (overflow, and -0 for `*`): T0 records an overflow of `*` in the
-        // BinaryOp hint (INT32_OVERFLOW), but an int32 `+` or `-` (also Inc and Dec) that
-        // overflows stays implicit int32 (ep9_vm profile.rs), so a hint inside {int32} does
-        // not cover that guard: it is unbacked. The input checks keep the site's basis.
+        // BinaryOp hint (INT32_OVERFLOW), and since M5-P1 (MODES-D16) also an int32 `+`, `-`,
+        // Inc or Dec that overflows; the `+`/`-` guard stays unbacked here (a later SPIKEC
+        // step may back it from a hint inside {int32}). The input checks keep the site's basis.
         let op_basis = match op {
             Int32Op::Add | Int32Op::Sub => GuardBasis::Unbacked,
             _ => basis,
