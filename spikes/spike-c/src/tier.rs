@@ -641,6 +641,32 @@ mod tests {
         );
     }
 
+    /// R-SPIKE-P4-1 (M5-P1), the reviewer's probe `lp`: the loop is entered only when
+    /// `c > 0`, so its preheader may branch past it. The entry check of the phi `s` (whose
+    /// entry value `a` is a string or a double in the last calls) may not sit there: with
+    /// `c = 0` it would fail on a path that never enters the loop, and a deopt would resume T0
+    /// inside it. The phi stays Tagged; every call equals T0.
+    #[test]
+    fn lp_a_preheader_that_branches_past_the_loop_has_no_entry_check() {
+        if !aarch64() {
+            return;
+        }
+        let lp = "function lp(a, n, c) { var s = a; var i = 0; if (c > 0) { while (i < n) { s = (s + i) | 0; i = (i + 1) | 0; } } return s; }";
+        let r = equal(
+            lp,
+            "for (var q = 0; q < 20; q++) lp(q, 4, 1);",
+            "print(lp(8, 4, 0)); print(lp('str', 4, 0)); print(lp(1.5, 4, 0)); print(lp(2, 5, 1));",
+            "lp",
+        );
+        assert_eq!(r.t0.output, ["8", "str", "1.5", "12"]);
+        let g = &r.report.graph;
+        assert!(
+            !g.lines()
+                .any(|l| l.contains("CheckInt32(n1)") && l.contains(" guard g")),
+            "an entry check of `s`:\n{g}"
+        );
+    }
+
     const ARR: &str = "function fill(a, n) { for (var i = 0; i < n; i++) { a[i] = (a[i] * 3 + i) & 1023; } return a[0]; }";
 
     #[test]
