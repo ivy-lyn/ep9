@@ -27,9 +27,10 @@
 //!    written for the files of the commit that added it, not for the base. A cite past the end
 //!    of its file at HEAD is BAD AT HEAD. Else (CX6-3, plan v10 section 3.7) it gets the step 4
 //!    check with that commit in place of the base: the newest commit after the base that
-//!    changed how often the cite's text occurs in the doc (`git log -S`) and whose doc holds
-//!    more such cites than its first parent's ([`Intro`]; a cite merged from a branch is found
-//!    at its branch commit). The findings name that commit ("the commit that added the cite");
+//!    changed how often the cite's text occurs in the doc (`git log -S`, a merge by its diff
+//!    against its first parent) and whose doc holds more such cites than each of its parents'
+//!    ([`Intro`]; a cite merged from a branch is found at its branch commit, and one that a
+//!    merge resolution added, at the merge). The findings name that commit ("the commit that added the cite");
 //!    a cite past the end of its file there is BAD AT INTRO (rule 31 moves a cite with its file
 //!    in one commit). A cite that no commit added (uncommitted in the work tree) is checked at
 //!    HEAD only. Step 4 is for the other cites, so an edit that keeps a stale number still gives
@@ -460,8 +461,10 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
 /// CX6-3 (M4-P5; plan v10 section 3.7): the commit that added a cite that is new since the base
 /// (step 5 of the module doc). The candidates are the commits after the base that changed the
 /// number of times the cite's text occurs in the doc (`git log -S<cite> <base>..HEAD -- <doc>`,
-/// newest first); the cite was added by the newest one whose doc holds more cites of that name
-/// and number (above `## 12.`, as [`cites_in`] reads them) than its first parent's. None when no
+/// newest first; a merge by its diff against its first parent); the cite was added by the
+/// newest one whose doc holds more cites of that name and number (above `## 12.`, as
+/// [`cites_in`] reads them) than each of its parents' (so a merge resolution that adds a cite
+/// in no parent is its adder, and a cite merged from a branch keeps its branch commit). None when no
 /// such commit exists, or when the doc in the work tree holds more of the cite than HEAD's (an
 /// uncommitted cite: no commit wrote it).
 struct Intro<'a> {
@@ -505,19 +508,34 @@ impl<'a> Intro<'a> {
             Some(e) => format!("{name}:{n}-{e}"),
             None => format!("{name}:{n}"),
         };
+        // `--diff-merges=first-parent`: a merge is searched by its diff against its first
+        // parent, so a cite that a merge resolution added (in no parent) is a candidate too
+        // (Codex r1 gates6). `%P`: the parents, so a merge counts as the adder only when its
+        // doc holds more of the cite than every parent's; a cite merged from a branch is then
+        // found at its branch commit, as before.
         let log = git(
             self.root,
             &[
                 "log",
-                "--format=%H",
+                "--diff-merges=first-parent",
+                "--format=%H %P",
                 &format!("-S{text}"),
                 &format!("{}..HEAD", self.base),
                 "--",
                 DOC,
             ],
         )?;
-        for c in log.lines().map(str::trim).filter(|c| !c.is_empty()) {
-            if self.count(c, cite) > self.count(&format!("{c}^"), cite) {
+        for l in log.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let mut ids = l.split(' ');
+            let Some(c) = ids.next() else { continue };
+            let here = self.count(c, cite);
+            let parents: Vec<&str> = ids.filter(|p| !p.is_empty()).collect();
+            let most = parents
+                .iter()
+                .map(|p| self.count(p, cite))
+                .max()
+                .unwrap_or(0);
+            if here > most {
                 return Some(c.to_string());
             }
         }
@@ -1190,6 +1208,62 @@ mod tests {
                 "SHORT CITE MOVED doc13:10 H31:21 -> H31:22 (same text as at {}, the commit that added the cite): row 21, the role's row",
                 &role[..7]
             )]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A cite added in a merge resolution, in neither parent (Codex r1 gates6 [medium], M5-P1
+    /// fixer round 3): it is checked at the merge commit. A later commit moves its line: MOVED.
+    /// Without the merge diff in the `-S` search no commit added it, and the move was missed.
+    #[test]
+    fn a_cite_added_in_a_merge_resolution_is_checked_at_the_merge() {
+        let root = repo("merge-intro");
+        write(&root, "docs/adr/README.md", "a\nb\nc\n");
+        let body = "\nAR:2.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        let head = |extra: &str| format!("{}{body}{extra}", HEADER.replace("{BASE}", &base[..7]));
+        write(&root, DOC, &head(""));
+        commit(&root, "header");
+        let main = git_in(&root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        git_in(&root, &["checkout", "-q", "-b", "side"]);
+        write(&root, "side.txt", "side\n");
+        commit(&root, "side");
+        git_in(&root, &["checkout", "-q", &main]);
+        write(&root, "main.txt", "main\n");
+        commit(&root, "main");
+        // The merge itself adds the README paragraph and the cite (a resolution edit).
+        git_in(&root, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\nb\nc\nd, the merge's paragraph\n",
+        );
+        write(&root, DOC, &head("\nMerge rule: AR:4.\n"));
+        let merge = commit(&root, "merge side");
+        assert_eq!(short_cites(&root).unwrap().findings, Vec::<String>::new());
+        write(
+            &root,
+            "docs/adr/README.md",
+            "z\na\nb\nc\nd, the merge's paragraph\n",
+        );
+        commit(&root, "insert");
+        assert_eq!(
+            short_cites(&root).unwrap().findings,
+            vec![
+                format!(
+                    "SHORT CITE MOVED doc13:6 AR:2 -> AR:3 (same text as at {}): b",
+                    &base[..7]
+                ),
+                format!(
+                    "SHORT CITE MOVED doc13:8 AR:4 -> AR:5 (same text as at {}, the commit that added the cite): d, the merge's paragraph",
+                    &merge[..7]
+                ),
+            ]
         );
         std::fs::remove_dir_all(root).unwrap();
     }
