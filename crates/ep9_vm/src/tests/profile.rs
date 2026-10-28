@@ -210,7 +210,7 @@ fn binary_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
     v.push(site(&mut s, B, smi(2), smi(3), |s, l, k| {
         s.b.add(l, k);
     }));
-    // 1: int32 overflow of `+`: the fast path's double arm; implicit (V9-D6, `profile.rs`).
+    // 1: int32 overflow of `+`: the overflow arm records INT32_OVERFLOW (MODES-D16).
     v.push(site(&mut s, B, num(2147483647.0), smi(1), |s, l, k| {
         s.b.add(l, k);
     }));
@@ -295,7 +295,7 @@ fn binary_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
         },
     ));
     // 13: a Wide `AddSmi` that overflows (the prefixed fast path goes cold; `AddSmi`'s own
-    // fast body then takes its double arm): implicit, as case 1.
+    // fast body then takes its overflow arm): INT32_OVERFLOW, as case 1 (MODES-D16).
     v.push(site(
         &mut s,
         B,
@@ -338,7 +338,7 @@ fn binary_sites_record_their_hints_and_int32_pairs_are_implicit() {
     let ovf = bin(BinaryHint::INT32_OVERFLOW);
     let want = [
         0,
-        0,
+        ovf,
         ovf,
         ovf,
         ovf,
@@ -350,7 +350,7 @@ fn binary_sites_record_their_hints_and_int32_pairs_are_implicit() {
         bin(BinaryHint::STRING) | bin(BinaryHint::NUMBER),
         bin(BinaryHint::ODDBALL) | bin(BinaryHint::NUMBER),
         bin(BinaryHint::OTHER) | bin(BinaryHint::NUMBER),
-        0,
+        ovf,
         0,
         bin(BinaryHint::NUMBER) | bin(BinaryHint::STRING),
         bin(BinaryHint::ODDBALL),
@@ -396,6 +396,223 @@ fn the_int32_overflow_rule_matches_each_operator() {
     assert!(!f(BinOp::Shr, 8, 1));
     assert!(f(BinOp::Shr, -1, 0));
     assert!(!f(BinOp::Shl, 1, 31), "i32::MIN");
+}
+
+// ---- MODES-D16: the int32 overflow of `+`, `-`, `Inc` and `Dec` -----------------------------
+
+/// The arm of a MODES-D16 case: the operation whose overflow it records, or none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Arm {
+    Add,
+    Sub,
+    Inc,
+    Dec,
+    /// Int32 results that fit, and `Negate` (not a D16 operation): implicit.
+    None,
+}
+
+/// The D16 sites of [`overflow_program`], in order: (arm, name, the value half after the run).
+const OVERFLOW_CASES: [(Arm, &str, BinaryHint); 12] = [
+    (Arm::Add, "Add i32::MAX + 1", BinaryHint::INT32_OVERFLOW),
+    (Arm::Sub, "Sub i32::MIN - 1", BinaryHint::INT32_OVERFLOW),
+    (Arm::Add, "AddSmi i32::MAX + 1", BinaryHint::INT32_OVERFLOW),
+    (Arm::Sub, "SubSmi i32::MIN - 1", BinaryHint::INT32_OVERFLOW),
+    (
+        Arm::Sub,
+        "Wide SubSmi (i32::MIN + 5) - 1000",
+        BinaryHint::INT32_OVERFLOW,
+    ),
+    (Arm::Inc, "Inc i32::MAX", BinaryHint::INT32_OVERFLOW),
+    (Arm::Dec, "Dec i32::MIN", BinaryHint::INT32_OVERFLOW),
+    (
+        Arm::None,
+        "Add, Sub, AddSmi, SubSmi, Inc, Dec that fit",
+        BinaryHint::EMPTY,
+    ),
+    (
+        Arm::None,
+        "Negate i32::MIN (not a D16 operation)",
+        BinaryHint::EMPTY,
+    ),
+    (
+        Arm::Add,
+        "Add: an overflow, then a fit",
+        BinaryHint::INT32_OVERFLOW,
+    ),
+    (
+        Arm::Inc,
+        "Inc: an overflow, then 1.5",
+        BinaryHint::INT32_OVERFLOW.union(BinaryHint::NUMBER),
+    ),
+    (
+        Arm::Sub,
+        "Sub i32::MAX - -1 (an overflow up)",
+        BinaryHint::INT32_OVERFLOW,
+    ),
+];
+
+/// One site per MODES-D16 arm (`+`, `-`, their `*Smi` forms, `Inc`, `Dec`), the int32 cases
+/// that fit (implicit), `Negate` (outside D16: implicit) and two sites run twice. Each D16
+/// site also checks the result: the double of the exact sum or difference.
+fn overflow_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    use FeedbackSlotKind::BinaryOp as B;
+    let mut s = Asm::script(0);
+    let mut v = Vec::new();
+    let smi = |n: i32| {
+        move |s: &mut Asm| {
+            s.b.lda_smi(n);
+        }
+    };
+    let bad = s.b.new_label();
+    let ok = s.b.new_label();
+    // Throws unless the accumulator is the number `want` (a strict equality on doubles: the
+    // overflow arm made a double, never a wrapped int32).
+    let check = |s: &mut Asm, want: f64, bad| {
+        let t = s.b.new_register();
+        s.b.star(t);
+        s.lda_num(want);
+        s.b.test_equal_strict(t, s.cmp).jump_if_false(bad);
+    };
+    // 0, 1: `+` and `-` past int32.
+    v.push(site(&mut s, B, smi(i32::MAX), smi(1), |s, l, k| {
+        s.b.add(l, k);
+    }));
+    check(&mut s, 2147483648.0, bad);
+    v.push(site(&mut s, B, smi(i32::MIN), smi(1), |s, l, k| {
+        s.b.sub(l, k);
+    }));
+    check(&mut s, -2147483649.0, bad);
+    // 2, 3: the one-byte `AddSmi` and `SubSmi`.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MAX).add_smi(1, k);
+    v.push(k);
+    check(&mut s, 2147483648.0, bad);
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN).sub_smi(1, k);
+    v.push(k);
+    check(&mut s, -2147483649.0, bad);
+    // 4: a Wide `SubSmi` (the prefixed fast path goes cold; `SubSmi`'s own fast body records).
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN + 5).sub_smi(1000, k);
+    v.push(k);
+    check(&mut s, -2147484643.0, bad);
+    // 5, 6: `Inc` and `Dec`.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MAX).inc(k);
+    v.push(k);
+    check(&mut s, 2147483648.0, bad);
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN).dec(k);
+    v.push(k);
+    check(&mut s, -2147483649.0, bad);
+    // 7: one slot shared by each operation on a value that fits: implicit.
+    let k = s.b.feedback_slot(B);
+    let r = s.b.new_register();
+    s.b.lda_smi(7).star(r).lda_smi(i32::MAX - 7).add(r, k);
+    s.b.lda_smi(i32::MIN + 7).star(r).lda_smi(7).sub(r, k);
+    s.b.lda_smi(i32::MAX - 1)
+        .add_smi(1, k)
+        .lda_smi(i32::MIN + 1)
+        .sub_smi(1, k);
+    s.b.lda_smi(i32::MAX - 1)
+        .inc(k)
+        .lda_smi(i32::MIN + 1)
+        .dec(k);
+    v.push(k);
+    check(&mut s, f64::from(i32::MIN), bad);
+    // 8: `Negate` of i32::MIN leaves int32 but is not a D16 operation: implicit.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN).negate(k);
+    v.push(k);
+    check(&mut s, 2147483648.0, bad);
+    // 9: one `Add` site run twice, an overflow then a fit: the bit stays.
+    let k9 = s.b.feedback_slot(B);
+    let a = s.b.new_register();
+    s.b.lda_smi(i32::MAX).star(a);
+    counted_loop(&mut s, 2, |s, _| {
+        s.b.lda_smi(1).add(a, k9);
+        s.b.lda_smi(1).star(a);
+    });
+    v.push(k9);
+    // 10: one `Inc` site: an overflow, then a double.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MAX).inc(k);
+    s.lda_num(1.5);
+    s.b.inc(k);
+    v.push(k);
+    check(&mut s, 2.5, bad);
+    // 11: `-` of a negative int32 past i32::MAX.
+    v.push(site(&mut s, B, smi(i32::MAX), smi(-1), |s, l, k| {
+        s.b.sub(l, k);
+    }));
+    check(&mut s, 2147483648.0, bad);
+    assert_eq!(v.len(), OVERFLOW_CASES.len());
+    s.b.jump(ok);
+    s.b.bind(bad);
+    s.lda_str("a D16 site gave a wrong result");
+    s.b.throw();
+    s.b.bind(ok);
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), v)
+}
+
+/// Runs [`overflow_program`] (every expansion, with and without GC stress, results checked)
+/// and checks the cases of `arm`.
+fn check_overflow_arm(arm: Arm) {
+    let got = slots(RUN, || overflow_program().0);
+    let k = overflow_program().1;
+    let mut n = 0;
+    for (i, (&slot, &(a, name, want))) in k.iter().zip(&OVERFLOW_CASES).enumerate() {
+        if a == arm {
+            n += 1;
+            assert_eq!(value(&got, 0, slot), bin(want), "D16 case {i}: {name}");
+            assert_eq!(
+                key(&got, 0, slot),
+                Key::Undefined,
+                "D16 case {i}: key untouched"
+            );
+        }
+    }
+    assert!(n > 0, "{arm:?} has cases");
+}
+
+#[test]
+fn an_int32_add_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Add);
+}
+
+#[test]
+fn an_int32_sub_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Sub);
+}
+
+#[test]
+fn an_int32_inc_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Inc);
+}
+
+#[test]
+fn an_int32_dec_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Dec);
+}
+
+#[test]
+fn d16_results_that_fit_and_negate_stay_implicit() {
+    check_overflow_arm(Arm::None);
+}
+
+/// The MODES-D16 record is the `ep9_facts` bit that `*`, `/` and `>>>` write (one meaning,
+/// "int32 operands and a result outside int32"), and no other bit.
+#[test]
+fn the_d16_record_is_the_int32_overflow_bit() {
+    assert_eq!(profile::INT32_OVERFLOW, bin(BinaryHint::INT32_OVERFLOW));
+    assert_eq!(
+        profile::int32_pair_bits(
+            crate::conv::BinOp::Mul,
+            ep9_value::Value::number(4294967296.0).to_bits()
+        ),
+        profile::INT32_OVERFLOW
+    );
 }
 
 // ---- CompareOp and TypeOf ------------------------------------------------------------------

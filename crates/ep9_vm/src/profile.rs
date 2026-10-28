@@ -46,7 +46,7 @@
 //!
 //! | Flow | Fast bodies | Record (sibling: tail-called function) |
 //! |---|---|---|
-//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next`: it reads the slot operand again from the bytecode) |
+//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next`: it reads the slot operand again from the bytecode) |
 //! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next`: it gets the pair) |
 //! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
 //!
@@ -55,9 +55,9 @@
 //!
 //! | Hook | Called from | Arguments |
 //! |---|---|---|
-//! | [`binary_pair_bits`], [`int32_result_bits`], [`int32_pair_bits`], [`NUMBER_PAIR`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`, `binop_fast_boxed` for `*` and `/`): the pair's record is chosen from the tags before the operation, the int32 overflow record from the result | operator, operand tags, result |
+//! | [`binary_pair_bits`], [`int32_result_bits`], [`int32_pair_bits`], [`NUMBER_PAIR`], [`INT32_OVERFLOW`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`, `binop_fast_boxed` for `*` and `/`): the pair's record is chosen from the tags before the operation, the int32 overflow record of `*`, `/` and `>>>` from the result; an int32 `+` or `-` records [`INT32_OVERFLOW`] on its overflow arm only | operator, operand tags, result |
 //! | [`record_binary_cold`] | their cold body (`binop_cold`): an int32 `%` with a negative dividend or a 0 divisor, an int32 `**`, `%`, `**` and the bitwise operators on a double, or other types | slot, operator, left, right |
-//! | [`NUMBER_OPERAND`], [`record_unary`] | `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` (BinaryOp slots): a double in the fast body; other operands (and every `BitwiseNot` that is not int32) in the cold body | slot, operand |
+//! | [`NUMBER_OPERAND`], [`INT32_OVERFLOW`], [`record_unary`] | `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` (BinaryOp slots): a double in the fast body; an int32 `Inc` or `Dec` that overflows on its overflow arm ([`INT32_OVERFLOW`]); other operands (and every `BitwiseNot` that is not int32) in the cold body | slot, operand |
 //! | [`NUMBER_COMPARE`], [`Pair`], [`record_compare`] | `TestEqual`, `TestEqualStrict`, `TestLessThan`, `TestGreaterThan`, `TestLessThanOrEqual`, `TestGreaterThanOrEqual`: fast body as above, cold body otherwise | slot, left, right |
 //! | [`record_typeof`] | the `TypeOf` cold body (its fast body is only `Flow::Cold`) | slot, operand |
 //! | [`record_call`], [`record_call_pushed`] | every `Call*` site except `CallRuntime`: after the frame push of `call_fast`, or in the cold body (`call_record_cold`: every cold exit, `CallWithSpread`, a `CallProperty`/`CallAnyReceiver` list without a receiver) | slot, callee |
@@ -100,14 +100,17 @@
 //!     a site that never runs in a window stays uninitialized. The windows come at a fixed
 //!     period, so a pattern with that period can hide a target (an open point for the
 //!     reader).
-//!   - **An int32 `+` or `-` that overflows** takes the fast path's double arm and stays
-//!     implicit (its test costs every int32 `+` and `-`); `*`, `/` and `>>>` record
-//!     `INT32_OVERFLOW` (their test reuses the boxed result).
+//!   - **An int32 `+`, `-`, `Inc` or `Dec` that overflows** records `INT32_OVERFLOW` on
+//!     the overflow arm of its fast body only, the branch the checked operation already
+//!     takes ([`INT32_OVERFLOW`]; MODES-D16, M5-P1 PROFILE5): the int32 result that fits
+//!     tests nothing more. `*`, `/` and `>>>` record `INT32_OVERFLOW` from the result's tag
+//!     (their test reuses the boxed result).
 //!   - **Keyed sites** record on their cold path only. Every keyed case is cold except the
 //!     implicit one and a StoreKeyed hit. A fast keyed path (such as StoreKeyed's) must miss on
 //!     a case that is new for its site (KEYED, M4-P3), so the cold hook still sees it.
-//! - **Unary sites** see only the operand: an int32 operand stays implicit even when `Inc`,
-//!   `Dec` or `Negate` leaves int32 (the hook has no operator).
+//! - **Unary sites** see only the operand in the hook: an int32 operand stays implicit, also
+//!   when `Negate` leaves int32 (-0, `-i32::MIN`). `Inc` and `Dec` record their int32
+//!   overflow in their own fast body ([`INT32_OVERFLOW`]), not through the hook.
 //! - **Call keys.** The key is the native word of the callee's FunctionInfo (a FUNCTION
 //!   cell's +24, `frame::native`), not the function cell: it is not a cell, so the store needs
 //!   no barrier (E1) and no call (a call in a T0 handler makes LLVM save registers on every
@@ -434,10 +437,10 @@ fn binary_operand(v: u64) -> u32 {
 
 /// The record of a binary operator site (BinaryOp slot) whose fast path made `v` from an
 /// int32 pair: 0 (implicit), except a `*`, `/` or `>>>` whose result is not an int32 (an
-/// overflow, -0, a fraction, a `>>>` past `i32::MAX`): `INT32_OVERFLOW`. An `+` or `-` that
-/// overflows takes the fast path's double arm and stays implicit: its test would add
-/// instructions to every int32 `+` and `-` (V9-D6); the double it makes is recorded as
-/// `NUMBER` at the sites it reaches. `*` and `/` box their result with the same
+/// overflow, -0, a fraction, a `>>>` past `i32::MAX`): `INT32_OVERFLOW`. An int32 `+` or `-`
+/// does not come here: `interp::ops::binop_fast` runs its own int32 arm and records
+/// [`INT32_OVERFLOW`] on the overflow branch only, so the result that fits tests nothing
+/// (V9-D6, MODES-D16). `*` and `/` box their result with the same
 /// `Value::number` as [`int32_pair_overflows`], and `>>>` gives an int32 exactly when it is at
 /// most `i32::MAX`, so a test of the result's tag is that rule.
 #[inline(always)]
@@ -477,6 +480,14 @@ pub(crate) const NUMBER_PAIR: u32 = BinaryHint::NUMBER.bits() as u32;
 /// The record of a unary operator or numeric conversion site (BinaryOp slot) whose fast path
 /// took a double operand ([`unary_bits`] of a double).
 pub(crate) const NUMBER_OPERAND: u32 = BinaryHint::NUMBER.bits() as u32;
+
+/// The record of an int32 `+` or `-` (also `AddSmi`, `SubSmi`), `Inc` or `Dec` whose result
+/// is outside int32 (MODES-D16, M5-P1 PROFILE5): `BinaryHint::INT32_OVERFLOW` ("int32
+/// operands and a result outside int32", the bit `*`, `/` and `>>>` write). The fast body
+/// returns it from the arm where the checked operation failed, so the int32 result that fits
+/// runs no more instructions than before, and an overflow guard of these four operations now
+/// has a fact behind it (an empty slot still means "int32 or never ran", F-R9).
+pub(crate) const INT32_OVERFLOW: u32 = BinaryHint::INT32_OVERFLOW.bits() as u32;
 
 /// The record of a relational comparison (CompareOp slot) whose fast path took a number pair
 /// that is not two int32s ([`compare_pair`] of such a pair).
