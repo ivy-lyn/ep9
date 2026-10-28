@@ -865,7 +865,8 @@ pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 
 /// The IC_LAYOUT 3 kinds-set bit of a fast keyed hit on the Array `o` (the `GetKeyedProperty`
 /// array path, the `keyed_ic::fast_set` store), or 0. Sampled as [`record_call`] (H16-Q2
-/// rule (2)): only in the first [`CALL_WINDOW`] budget units after a budget reset; the hit
+/// rule (2)): only in the window, the [`CALL_WINDOW`] budget units below `BUDGET` (a budget
+/// above `BUDGET`, the jitter units of [`budget_after_poll`], records nothing); the hit
 /// gives the bit to its dispatch as `interp::Flow::Record`, so the record runs out of line and
 /// the handler keeps no frame. So the kinds set of a site holds every kind of its cold
 /// executions ([`record_keyed_cold`]) and the kinds of its sampled hits: a kind that only
@@ -879,6 +880,10 @@ pub(crate) fn keyed_hit_kind(st: &St<'_>, o: u64) -> u32 {
         return 0;
     }
     core::hint::cold_path();
+    // The jitter units of a poll ([`budget_after_poll`]) are before the window.
+    if st.cx.budget > BUDGET {
+        return 0;
+    }
     crate::elements::kinds_set_bit(crate::elements::kind_of(o))
 }
 

@@ -597,6 +597,14 @@ fn kinds_program() -> (
     (unit("", vec![s.finish()]), get, set)
 }
 
+/// The kinds the LoadKeyed site of [`kinds_program`] sees.
+const SEEN: &[u8] = &[
+    ek::PACKED_INT32,
+    ek::HOLEY_INT32,
+    ek::PACKED_DOUBLE,
+    ek::PACKED_ELEMENTS,
+];
+
 /// The kinds sets: the LoadKeyed site saw PACKED_INT32, PACKED_DOUBLE, PACKED_ELEMENTS (the
 /// inline hits, in the sampled window: the script runs right after the budget reset, so
 /// `profile::keyed_hit_kind` records them) and HOLEY_INT32 (the hole read, cold); the
@@ -604,6 +612,28 @@ fn kinds_program() -> (
 /// store that makes a hole. The other bits are as before IC_LAYOUT 3.
 #[test]
 fn keyed_slots_record_the_kinds_they_saw() {
+    keyed_kinds_at(None, SEEN);
+}
+
+/// A fast keyed hit in the jitter units of a poll (a budget above `BUDGET`,
+/// `profile::budget_after_poll`) records no kind, as `profile::record_call` records no
+/// target there: the LoadKeyed site keeps only the kind of its cold hole read. The script's
+/// own call takes one unit, so a start at `BUDGET + 1` runs at `BUDGET`, the window's top.
+#[test]
+fn a_keyed_hit_in_the_jitter_units_records_no_kind() {
+    use crate::interp::BUDGET;
+    for budget in [BUDGET + 2, BUDGET + 100] {
+        keyed_kinds_at(Some(budget), &[ek::HOLEY_INT32]);
+    }
+    for budget in [BUDGET + 1, BUDGET - 1] {
+        keyed_kinds_at(Some(budget), SEEN);
+    }
+}
+
+/// Runs [`kinds_program`] with the budget `budget` (or the isolate's own) and checks that the
+/// LoadKeyed site's kinds set is `get_kinds` and the rest of both slots as
+/// [`keyed_slots_record_the_kinds_they_saw`] says.
+fn keyed_kinds_at(budget: Option<i64>, get_kinds: &'static [u8]) {
     for &d in Dispatch::ALL {
         for stress in [false, true] {
             on_big_stack(move || {
@@ -611,6 +641,9 @@ fn keyed_slots_record_the_kinds_they_saw() {
                     feedback_threshold: 0,
                     ..config(d, stress)
                 });
+                if let Some(b) = budget {
+                    iso.cx.budget = b;
+                }
                 let (u, get, set) = kinds_program();
                 let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "kinds.js").map(|_| ()));
                 assert!(r.is_ok(), "{r:?}");
@@ -623,13 +656,8 @@ fn keyed_slots_record_the_kinds_they_saw() {
                 let g = bits(get);
                 assert_eq!(
                     g & elements::KINDS_SET_MASK,
-                    kset(&[
-                        ek::PACKED_INT32,
-                        ek::HOLEY_INT32,
-                        ek::PACKED_DOUBLE,
-                        ek::PACKED_ELEMENTS
-                    ]),
-                    "{} stress={stress}: get {g:#x}",
+                    kset(get_kinds),
+                    "{} stress={stress} budget={budget:?}: get {g:#x}",
                     d.name()
                 );
                 assert_eq!(g & 0x3FF, keyed::INDEX | keyed::ARRAY | keyed::HOLE);
