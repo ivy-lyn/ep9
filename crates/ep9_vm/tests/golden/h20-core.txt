@@ -91,6 +91,7 @@ abi: impl<'s> Cx<'s> :: pub fn clear_kept_objects(&mut self)
 abi: impl<'s> Cx<'s> :: pub fn closure_data(&self, impl Into<Local<'s>>) -> Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn code_unit_at(&self, Local<'s, FlatStr>, usize) -> Option<u16>
 abi: impl<'s> Cx<'s> :: pub fn collect_garbage(&mut self)
+abi: impl<'s> Cx<'s> :: pub fn collect_garbage_minor(&mut self)
 abi: impl<'s> Cx<'s> :: pub fn collection_clear(&mut self, impl Into<Local<'s>>, ObjectClass) -> JsResult<()>
 abi: impl<'s> Cx<'s> :: pub fn collection_cursor(&mut self, impl Into<Local<'s>>, ObjectClass) -> JsResult<CollectionCursor<'s>>
 abi: impl<'s> Cx<'s> :: pub fn collection_delete(&mut self, impl Into<Local<'s>>, ObjectClass, impl Into<Local<'s>>) -> JsResult<bool>
