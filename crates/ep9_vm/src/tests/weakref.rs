@@ -20,7 +20,8 @@
 //! | `a_minor_gc_clears_a_young_target` | with S1 on, a minor collection clears a young target and the hook calls back |
 //! | `wrong_receivers_throw` | RequireInternalSlot TypeErrors, also for a hand-made object of the class |
 //! | `a_cleanup_walk_stops_at_a_termination_request_with_its_lists_whole` | (M5-P1 GC5) a cleanup walk polls every `WALK_POLL_CELLS` cells; at a termination request it stops with CELLS and CLEARED whole, notes the stop, keeps the cleanup pending; the next run moves and serves the rest, each cell once |
-//! | `a_stopped_unlink_walk_ends_a_direct_cleanup_call_with_the_termination` | (M5-P1 fixer round 4, Codex R2) a termination seen while the walk unlinks dead registries, with no cell to serve, ends a direct `cleanup_finalization_registries` call (`Isolate::with_cx`, no checkpoint) with the termination; the next call unlinks the rest |
+//! | `a_stopped_unlink_walk_ends_a_direct_cleanup_call_with_the_termination` | (M5-P1 fixer round 4, Codex R2) a termination seen while the walk unlinks dead registries, with no cell to serve, ends a direct `cleanup_finalization_registries` call (`Isolate::with_cx`, no checkpoint) with the termination and reads no registry link after the stop (fixer round 6, Codex round 3); the next call unlinks the rest |
+//! | `a_stopped_collect_walk_reads_no_more_registry_links` | (M5-P1 fixer round 6, Codex round 3) a termination seen while `collect_cleared` walks the first registry's cells ends the call with the termination before the next registry link is read; the next call serves every cell once |
 
 use core::cell::{Cell, RefCell};
 use std::hint::black_box;
@@ -635,7 +636,8 @@ fn a_cleanup_walk_stops_at_a_termination_request_with_its_lists_whole() {
 /// "Propagate walk termination without requiring a callback"). 3,000 registries die with no
 /// cell, so `unlink_dead_registries` reaches its poll (every [`weakref::WALK_POLL_CELLS`]
 /// links) and stops there; no callback is to run. A direct call through `Isolate::with_cx`
-/// must give the termination (`Err`, `terminated`) and leave no termination request for the
+/// must give the termination (`Err`, `terminated`), read no registry link after the stop
+/// (fixer round 6; Codex round 3 counted 1,979) and leave no termination request for the
 /// next run. The next call (the request gone) unlinks the rest. Without stress (3,000
 /// registries), S0 and S1.
 #[test]
@@ -671,6 +673,13 @@ fn a_stopped_unlink_walk_ends_a_direct_cleanup_call_with_the_termination() {
                 UNDEFINED,
                 "the walk stopped with dead links left ({label})"
             );
+            // The stop ends the walk at once: no registry link is read after it (Codex round
+            // 3 counted 1,979 here, S0 and S1).
+            assert_eq!(
+                iso.rt.kept_objects.links_after_stop(),
+                0,
+                "links read after the stop ({label})"
+            );
             // The next call unlinks the rest and serves nothing.
             assert_eq!(
                 iso.with_cx(|cx| cx.cleanup_finalization_registries()),
@@ -678,6 +687,69 @@ fn a_stopped_unlink_walk_ends_a_direct_cleanup_call_with_the_termination() {
             );
             assert_eq!(iso.rt.kept_objects.registries(), UNDEFINED, "{label}");
             assert_eq!(take_log(), Vec::<i32>::new(), "{label}");
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// A stop inside `collect_cleared` ends the cleanup call before the walk reads the next
+/// registry link (M5-P1 fixer round 6; Codex round 3 "Propagate termination before traversing
+/// the remaining registries"). 500 live registries with no cell, then one registry with 3,000
+/// dead cells, made last, so it is the first link: its walk reaches the poll and stops. The
+/// call gives the termination, reads no link after the stop (the 500 links stay unread), and
+/// leaves the work pending; the next call (the request gone) serves every cell once. Without
+/// stress (3,000 registrations), S0 and S1.
+#[test]
+fn a_stopped_collect_walk_reads_no_more_registry_links() {
+    use core::sync::atomic::Ordering;
+    const LIVE: usize = 500;
+    const CELLS: usize = 3000;
+    for generational in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(cfg(false, generational));
+            iso.register_host_function("cb", 1, cb);
+            take_log();
+            let live: Vec<GlobalHandle> = (0..LIVE).map(|_| new_registry(&mut iso, "cb")).collect();
+            let r = new_registry(&mut iso, "cb");
+            for k in 0..CELLS {
+                register_fresh(&mut iso, r, k as i32, None);
+            }
+            collect(&iso);
+            let terminate = crate::interp::interrupt::TERMINATE;
+            iso.rt.terminate.fetch_or(terminate, Ordering::SeqCst);
+            let got = iso.with_cx(|cx| cx.cleanup_finalization_registries());
+            let label = format!("generational={generational}");
+            assert!(
+                matches!(&got, Err(e) if e.terminated),
+                "the stopped walk ends the call with the termination: {got:?} ({label})"
+            );
+            assert_eq!(
+                iso.rt.kept_objects.links_after_stop(),
+                0,
+                "links read after the stop ({label})"
+            );
+            assert_eq!(
+                iso.rt.terminate.load(Ordering::SeqCst) & terminate,
+                0,
+                "no termination request is left for the next run ({label})"
+            );
+            assert!(iso.rt.kept_objects.is_pending(), "{label}");
+            let fr = iso.rt.heap.global(r).to_bits();
+            assert!(
+                list_len(fr, registry::CELLS) > 0,
+                "the walk stopped with cells not yet moved ({label})"
+            );
+            assert_eq!(take_log(), Vec::<i32>::new(), "no callback ran ({label})");
+            // The next call moves and serves the rest, each cell once.
+            assert_eq!(cleanup(&mut iso), Ok(()), "{label}");
+            let mut got = take_log();
+            got.sort_unstable();
+            assert_eq!(got, (0..CELLS as i32).collect::<Vec<_>>(), "{label}");
+            iso.rt.heap.drop_global(r);
+            for g in live {
+                iso.rt.heap.drop_global(g);
+            }
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });

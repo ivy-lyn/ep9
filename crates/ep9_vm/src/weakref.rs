@@ -67,6 +67,7 @@
 //! | [`KeptObjects::new`] | no | the isolate state: WEAK_CELL kind, root source, weak source |
 //! | [`new_cell`] | yes | a WEAK_CELL |
 //! | [`target`], [`held`], [`token`], [`next`], [`set_next`] | no | WEAK_CELL fields |
+//! | [`next_link`] | no | one step along the registry chain (tests count the steps after a walk stopped) |
 //! | [`KeptObjects::add`] | yes | AddToKeptObjects (§9.10.2) |
 //! | [`KeptObjects::clear`] | no | ClearKeptObjects (§9.10.1) |
 //! | [`KeptObjects::add_registry`] | yes | puts a new registry in the isolate's chain |
@@ -205,6 +206,23 @@ pub(crate) fn next(c: u64) -> u64 {
     field(c, wc::NEXT)
 }
 
+/// The next link of the registry chain after `link`, or undefined: a read of [`next`] that
+/// tests count when a cleanup walk of this run stopped
+/// ([`KeptObjects::links_after_stop`]; no count outside tests). Not a GC point.
+#[inline]
+pub(crate) fn next_link(rt: &Runtime, link: u64) -> u64 {
+    #[cfg(test)]
+    {
+        let k = &rt.kept_objects.roots;
+        if k.walk_stopped.get() {
+            k.links_after_stop.set(k.links_after_stop.get() + 1);
+        }
+    }
+    #[cfg(not(test))]
+    let _ = rt;
+    next(link)
+}
+
 /// Sets the next cell after `c` (barriered). Not a GC point.
 pub(crate) fn set_next(rt: &Runtime, c: u64, n: u64) {
     debug_assert_eq!(kinds::cell_kind(c), kinds::WEAK_CELL.get());
@@ -226,6 +244,10 @@ struct Roots {
     /// A cleanup walk stopped at a termination request since the last
     /// [`KeptObjects::take_pending`] ([`walk_step`]).
     walk_stopped: Cell<bool>,
+    /// Tests only: the registry-chain links read ([`next_link`]) after a walk stopped, since
+    /// the last [`KeptObjects::take_pending`].
+    #[cfg(test)]
+    links_after_stop: Cell<usize>,
 }
 
 impl Roots {
@@ -295,6 +317,8 @@ impl KeptObjects {
             pending: Cell::new(false),
             walk_budget: Cell::new(WALK_POLL_CELLS),
             walk_stopped: Cell::new(false),
+            #[cfg(test)]
+            links_after_stop: Cell::new(0),
         });
         let r = Rc::clone(&roots);
         heap.add_root_source(move |t| r.trace(t));
@@ -373,6 +397,8 @@ impl KeptObjects {
     /// [`KeptObjects::walk_stopped`]: the walks of the new run may go on. Not a GC point.
     pub(crate) fn take_pending(&self) -> bool {
         self.roots.walk_stopped.set(false);
+        #[cfg(test)]
+        self.roots.links_after_stop.set(0);
         self.roots.pending.replace(false)
     }
 
@@ -382,6 +408,13 @@ impl KeptObjects {
     /// caller. Not a GC point.
     pub(crate) fn walk_stopped(&self) -> bool {
         self.roots.walk_stopped.get()
+    }
+
+    /// Tests only: the registry-chain links read ([`next_link`]) after a cleanup walk of this
+    /// run stopped (0 when none stopped). Not a GC point.
+    #[cfg(test)]
+    pub(crate) fn links_after_stop(&self) -> usize {
+        self.roots.links_after_stop.get()
     }
 
     /// True if a GC since the last [`KeptObjects::take_pending`] saw a dead registry or an
@@ -441,30 +474,35 @@ pub(crate) fn walk_step(rt: &Runtime, stop: bool) -> bool {
 
 /// Drops from the registry chain every link whose registry died (TARGET undefined).
 /// Barriered stores. Not a GC point. Polls ([`walk_step`]); at a termination request it stops
-/// with the chain whole and some dead links left (the cleanup stays pending).
+/// with the chain whole and some dead links left (the cleanup stays pending), and reads no
+/// link after the stop.
 pub(crate) fn unlink_dead_registries(rt: &Runtime) {
     let k = &rt.kept_objects;
     let mut head = k.registries();
     while head != UNDEFINED && target(head) == UNDEFINED {
         if walk_step(rt, true) {
-            break;
+            k.roots.registries.set(head);
+            return;
         }
-        head = next(head);
+        head = next_link(rt, head);
     }
     k.roots.registries.set(head);
     let mut prev = head;
     while prev != UNDEFINED {
-        let mut n = next(prev);
+        let first = next_link(rt, prev);
+        let mut n = first;
+        let mut stopped = false;
         while n != UNDEFINED && target(n) == UNDEFINED {
             if walk_step(rt, true) {
+                stopped = true;
                 break;
             }
-            n = next(n);
+            n = next_link(rt, n);
         }
-        if n != next(prev) {
+        if n != first {
             set_next(rt, prev, n);
         }
-        if walk_step(rt, true) {
+        if stopped || walk_step(rt, true) {
             return;
         }
         prev = n;

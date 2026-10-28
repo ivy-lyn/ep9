@@ -209,16 +209,22 @@ impl<'s> Cx<'s> {
         if !rt.kept_objects.take_pending() {
             return Ok(());
         }
+        // A walk that stopped at a termination request (`weakref::walk_step`) ends the walks:
+        // the check runs after the unlink and after each registry, before the next link is
+        // read, so no link is followed after the stop (Codex round 3).
         weakref::unlink_dead_registries(rt);
         let mut link = rt.kept_objects.registries();
-        while link != UNDEFINED {
+        while link != UNDEFINED && !rt.kept_objects.walk_stopped() {
             weakref::collect_cleared(rt, weakref::target(link));
-            link = weakref::next(link);
+            if !rt.kept_objects.walk_stopped() {
+                link = weakref::next_link(rt, link);
+            }
         }
-        // A walk that stopped at a termination request (`weakref::walk_step`): no callback
-        // runs after it. A poll with no budget left ends the run with the termination at once
-        // (`Err`), also when no cell is in CLEARED (a stop while dead registries are unlinked)
-        // and also for a direct call outside a checkpoint. The rest stays pending.
+        // After a stop no callback runs. A poll with no budget left ends the run with the
+        // termination at once (`Err`), also when no cell is in CLEARED (a stop while dead
+        // registries are unlinked) and also for a direct call outside a checkpoint. The rest
+        // (dead links, cells not yet moved, CLEARED) stays, and the pending flag that
+        // `walk_step` set makes the next run do it.
         if rt.kept_objects.walk_stopped() {
             self.cx.budget = 0;
             return self.poll_interrupt();
@@ -251,7 +257,7 @@ impl<'s> Cx<'s> {
                     }
                 }
             }
-            link = weakref::next(link);
+            link = weakref::next_link(rt, link);
         }
         Ok(())
     }
