@@ -198,3 +198,4 @@ pin	H16-ics-and-feedback.md	crates/ep9_vm/src/facts_export.rs:86-100	crates/ep9_
 # H31:79: the new number exotic.rs:210 was an older H31 token with another line (e902a53), so the
 # drift map would read it from there.
 pin	H31-fuse-registry.md	crates/ep9_vm/src/exotic.rs:210	crates/ep9_vm/src/exotic.rs	^pub\(crate\) fn own_attrs\(rt\: \&Runtime\, o\: u64\, key\: u64\, how\: Probe\)	0
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/weakref.rs:227	M4-P4 P4-ORCH-8 (Codex C2-1 and C2-2 on fixer A	e1857f3	if let Err\(t\) = self\.poll_interrupt\(\) \{
