@@ -246,6 +246,50 @@ fn the_runtime_table_offsets() {
     assert_eq!(rt.len(), 11);
 }
 
+/// The VM_LAYOUT 1 numbers native code reads, pinned (M5-P0 review F2): the live-object tests
+/// above follow a moved field, so only this test fails when a `Cx` or `FunctionInfo` field
+/// moves. 64-bit targets; every feature set has the same numbers (C-18: no `Cx` field is
+/// gated since M5-P0).
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn vm_layout_1_offsets_are_pinned() {
+    const MOVED: &str = "a changed number moves VM_LAYOUT_VERSION (or OBJECT_LAYOUT for CONTEXT_*)";
+    let cx = [
+        layout::CX_TABLE,
+        layout::CX_STACK_LIMIT,
+        layout::CX_BUDGET,
+        layout::CX_GLOBAL_THIS,
+        layout::CX_OUT_FP,
+        layout::CX_OUT_PC,
+        layout::CX_INTERRUPT,
+        layout::CX_NATIVE_LIMIT,
+        layout::CX_RUNTIME_TABLE,
+        layout::CX_UNIT_DATA,
+    ];
+    assert_eq!(
+        cx,
+        [0, 2056, 2064, 2072, 2080, 2088, 2104, 2112, 2120, 2136],
+        "{MOVED}"
+    );
+    let fi = [
+        layout::FI_SLOT_KIND,
+        layout::FI_SLOT_ENTRY,
+        layout::FI_REGISTER_COUNT,
+        layout::FI_PARAMETER_COUNT,
+        layout::FI_CODE,
+        layout::FI_FEEDBACK,
+    ];
+    assert_eq!(fi, [0, 8, 16, 20, 32, 104], "{MOVED}");
+    let context = [
+        layout::CONTEXT_PREVIOUS,
+        layout::CONTEXT_SCOPE,
+        layout::CONTEXT_LENGTH,
+        layout::CONTEXT_SLOTS,
+    ];
+    assert_eq!(context, [8, 16, 24, 32], "{MOVED}");
+    assert_eq!(versions::VM_LAYOUT_VERSION, 1, "{MOVED}");
+}
+
 /// Arrays (ARRAY +32 allocation site, OBJECT_LAYOUT 5) and REALM (+48, +56) on live cells; the
 /// ELEMENTS cell of an array has kind `KIND_ELEMENTS`.
 #[test]
