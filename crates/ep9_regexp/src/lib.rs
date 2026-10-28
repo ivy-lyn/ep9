@@ -3,7 +3,7 @@
 //! ```text
 //!   ep9_builtins --Cx part-2 methods--> ep9_vm --Backend::compile / exec--> ep9_regexp
 //!                                         |                                   |
-//!                     Runtime.regexp_programs (one Program per RegExp)     RX0: regress 0.12.0
+//!                     Runtime.regexp_programs (one Program per RegExp)     RX0: regress fork
 //! ```
 //!
 //! Only `ep9_vm` depends on this crate (.github/scripts/dep-guards.sh check 14). Builtins reach
@@ -12,10 +12,10 @@
 //!
 //! | Backend | State |
 //! |---|---|
-//! | RX0 ([`Rx0`]: regress 0.12.0 from crates.io, unpatched; V9-D15) | Built (M4-P2 RX0A). Its fork (`third_party/regress.commit`, `[patch.crates-io]`) comes in M5-P0 |
+//! | RX0 ([`Rx0`]: regress 0.12.0 from the fork checkout `third_party/regress` through `[patch.crates-io]`: upstream v0.12.0 at `third_party/regress.commit`, plus `third_party/patches/regress/`; V9-D15) | Built (M4-P2 RX0A). Fork wired in M5-P0 with 0 patches, so the code equals crates.io 0.12.0; the patches come in M5-P3 (RX0b) |
 //! | RX1, RX2 (irregexp port) | Not started (M2-M5) |
 //!
-//! RX0 limits, until the fork patch (month 5):
+//! RX0 limits, until the fork patches (M5-P3, RX0b):
 //!
 //! | Limit | Why | Effect |
 //! |---|---|---|
