@@ -40,6 +40,12 @@
 //!   which build.rs sets from `git rev-parse HEAD` and keeps fresh by watching the HEAD paths
 //!   (`crates/ep9_unit/build_watch.rs`). Left out when git could not answer at build time. A
 //!   runner built at one commit and run on a tree at another writes both: m1-exit gives OPEN.
+//! - `"runner_dirty"`: whether a tracked file under the compiled paths (`runner_build.rs`:
+//!   `crates`, `tools/test262`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the
+//!   regress pin and patch set) differed from HEAD when this binary was built
+//!   (`EP9_RUNNER_DIRTY`; gates5 high 1). build.rs reruns on the git index and on any change
+//!   under those paths, so a binary built from an edit that was undone later still says `true`.
+//!   Left out when git could not answer. `true` or no field: m1-exit gives OPEN.
 //! - `"test262_head"`: the HEAD of the test262 checkout the run used (in:193 item 8), read when
 //!   the summary is written; left out when that directory is not the top of a git work tree.
 //!   m1-exit compares it with the pin, `third_party/test262.commit`.
@@ -457,6 +463,16 @@ pub fn runner_commit() -> Option<&'static str> {
     Some(env!("EP9_RUNNER_COMMIT")).filter(|c| full_sha(c))
 }
 
+/// Whether the compiled sources had uncommitted changes when this runner was built
+/// (`EP9_RUNNER_DIRTY` of build.rs; module doc), or None when git could not answer.
+pub fn runner_dirty() -> Option<bool> {
+    match env!("EP9_RUNNER_DIRTY") {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
 /// The HEAD commit of the test262 checkout at `dir` (module doc): None unless `dir` is the top
 /// of its own git work tree (a checkout copied without `.git` into the ep9 tree must not take
 /// the ep9 commit).
@@ -471,12 +487,25 @@ pub fn test262_head(dir: &Path) -> Option<String> {
         .filter(|c| full_sha(c))
 }
 
-/// Appends `,"runner_commit":...` and `,"test262_head":...` (each left out when unknown, so
-/// m1-exit reads "no runner commit" or "no test262 HEAD" and gives OPEN).
-pub fn write_runner_fields(out: &mut String, runner: Option<&str>, test262: Option<&str>) {
+/// Appends `,"runner_commit":...`, `,"runner_dirty":...` and `,"test262_head":...` (each left
+/// out when unknown, so m1-exit reads "no runner commit", "no runner dirty flag" or "no test262
+/// HEAD" and gives OPEN).
+pub fn write_runner_fields(
+    out: &mut String,
+    runner: Option<&str>,
+    runner_dirty: Option<bool>,
+    test262: Option<&str>,
+) {
     if let Some(c) = runner {
         out.push_str(",\"runner_commit\":");
         json::string(out, c);
+    }
+    if let Some(d) = runner_dirty {
+        out.push_str(if d {
+            ",\"runner_dirty\":true"
+        } else {
+            ",\"runner_dirty\":false"
+        });
     }
     if let Some(h) = test262 {
         out.push_str(",\"test262_head\":");
@@ -1063,13 +1092,17 @@ mod tests {
         std::fs::create_dir_all(d.join("sub")).unwrap();
         assert_eq!(test262_head(&d.join("sub")), None);
         let mut out = String::new();
-        write_runner_fields(&mut out, Some(rc), Some(&head));
+        write_runner_fields(&mut out, Some(rc), Some(true), Some(&head));
         assert_eq!(
             out,
-            format!(",\"runner_commit\":\"{rc}\",\"test262_head\":\"{head}\"")
+            format!(
+                ",\"runner_commit\":\"{rc}\",\"runner_dirty\":true,\"test262_head\":\"{head}\""
+            )
         );
+        // gates5 high 1: in this repository build.rs names the dirty flag too.
+        assert!(runner_dirty().is_some());
         let mut out = String::new();
-        write_runner_fields(&mut out, None, None);
+        write_runner_fields(&mut out, None, None, None);
         assert_eq!(out, "");
         std::fs::remove_dir_all(d).unwrap();
     }

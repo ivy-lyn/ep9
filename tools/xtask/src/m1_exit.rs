@@ -48,10 +48,12 @@
 //! ...`), when the tree was dirty (or the input does not say), when the runner read another
 //! source state at the end of the run than at its start (`"source_changed_during_run": true`),
 //! when no host or job is named, or when the job is of another CI run than `--ci-run`. An
-//! ep9-test262 JSON also names the commit its runner was built at (`"runner_commit"`) and the
-//! HEAD of the test262 checkout it ran (`"test262_head"`); the cell is OPEN ("provenance") when
-//! one is missing, the runner commit is not the input's `commit`, or the checkout HEAD is not
-//! the pin `third_party/test262.commit` (plan v10 X4).
+//! ep9-test262 JSON also names the commit its runner was built at (`"runner_commit"`), whether
+//! the runner's compiled sources had uncommitted changes then (`"runner_dirty"`), and the HEAD of
+//! the test262 checkout it ran (`"test262_head"`); the cell is OPEN ("provenance") when one is
+//! missing or not a full commit id, the runner commit is not the input's `commit`, the runner
+//! was built dirty, or the checkout HEAD is not the pin `third_party/test262.commit` (plan v10
+//! X4).
 //!
 //! **The CI run** names its head (`headSha`): HEAD, or an ancestor with no change in those paths,
 //! `expectations` or `.github` since. Else every Windows cell is at least OPEN ("stale CI run").
@@ -572,12 +574,15 @@ struct Source {
     runner: Option<Runner>,
 }
 
-/// The two build facts an ep9-test262 JSON names from M5-P0 (plan v10 section 2.6, X4): the
+/// The build facts an ep9-test262 JSON names from M5-P0 (plan v10 section 2.6, X4): the
 /// commit the runner binary was built at (`"runner_commit"`, C2) and the HEAD of the test262
 /// checkout it ran (`"test262_head"`, item 8). A field that is missing or empty is None.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Runner {
     commit: Option<String>,
+    /// `"runner_dirty"` (gates5 high 1): the compiled sources had uncommitted changes when the
+    /// runner was built.
+    dirty: Option<bool>,
     test262_head: Option<String>,
 }
 
@@ -605,6 +610,7 @@ impl Source {
             changed: j.get("source_changed_during_run").and_then(Json::bool) == Some(true),
             runner: Some(Runner {
                 commit: str_field(j, "runner_commit"),
+                dirty: j.get("runner_dirty").and_then(Json::bool),
                 test262_head: str_field(j, "test262_head"),
             }),
         }
@@ -694,8 +700,9 @@ fn test262_pin(root: &Path) -> Option<String> {
 
 /// X4 (plan v10 section 2.6; C2 and in:193 item 8): the OPEN reasons of an ep9-test262 JSON's
 /// build facts. The runner was built at the input's `commit` (a runner of another commit may
-/// run other code than the tree it names), and the test262 checkout it ran is at this tree's
-/// pin. A missing fact is OPEN too: the runner of this tree writes both.
+/// run other code than the tree it names) with no uncommitted change in its compiled sources
+/// (gates5 high 1), and the test262 checkout it ran is at this tree's pin. A missing fact is
+/// OPEN too: the runner of this tree writes each one.
 fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
     let mut why = Vec::new();
     match (r.commit.as_deref(), commit) {
@@ -712,6 +719,16 @@ fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
             short(c)
         )),
         _ => {}
+    }
+    match r.dirty {
+        Some(false) => {}
+        Some(true) => why.push(
+            "provenance: the runner was built from uncommitted changes (runner_dirty)".to_string(),
+        ),
+        None => why.push(
+            "provenance: it names no runner dirty flag (runner_dirty; make it again with this tree's runner)"
+                .to_string(),
+        ),
     }
     match (r.test262_head.as_deref(), test262_pin(root)) {
         (None, _) => why.push(
@@ -2495,7 +2512,7 @@ mod tests {
     fn src_at(root: &Path, rev: &str) -> String {
         let commit = git_in(root, &["rev-parse", rev]);
         format!(
-            r#""commit":"{commit}","dirty":false,"commit_source":"git","made_by":"host:test","runner_commit":"{commit}","test262_head":"{PIN}","#,
+            r#""commit":"{commit}","dirty":false,"commit_source":"git","made_by":"host:test","runner_commit":"{commit}","runner_dirty":false,"test262_head":"{PIN}","#,
         )
     }
 
@@ -3134,7 +3151,7 @@ mod tests {
         .collect();
         let src = |ids: &str| {
             format!(
-                r#""commit":"{e}","dirty":false,"made_by":"host:ci gh-run:1/build","runner_commit":"{e}","test262_head":"{PIN}","tree":{{{ids}}},"#,
+                r#""commit":"{e}","dirty":false,"made_by":"host:ci gh-run:1/build","runner_commit":"{e}","runner_dirty":false,"test262_head":"{PIN}","tree":{{{ids}}},"#,
                 e = "e".repeat(40)
             )
         };
@@ -3277,6 +3294,18 @@ mod tests {
                 ok.replace(PIN, &PIN[..12]),
                 Status::Open,
                 "provenance: its test262_head \"a11111111111\" is not a commit id (40 hex digits)",
+            ),
+            // gates5 high 1: a runner built from uncommitted changes of its compiled sources,
+            // or one that does not say, is OPEN.
+            (
+                ok.replace(r#""runner_dirty":false"#, r#""runner_dirty":true"#),
+                Status::Open,
+                "provenance: the runner was built from uncommitted changes (runner_dirty)",
+            ),
+            (
+                ok.replace(r#""runner_dirty":false,"#, ""),
+                Status::Open,
+                "provenance: it names no runner dirty flag (runner_dirty;",
             ),
         ];
         for (src, want, text) in cases {
