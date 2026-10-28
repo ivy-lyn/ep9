@@ -277,6 +277,10 @@ pub fn run_opts(
             if got != want || want.result.is_err() {
                 return Err(format!("{}: the probe gave {got:?}, T0 {want:?}", hot.name));
             }
+            // An output that prints nothing compares nothing (M5-P1 review).
+            if want.output.is_empty() {
+                return Err(format!("{}: the probe printed nothing", hot.name));
+            }
             let after = counts(&s)?;
             let rose: Vec<u64> = after.iter().zip(&exits).map(|(a, b)| a - b).collect();
             match fired(&report, &rose).first() {
@@ -302,11 +306,15 @@ pub fn run_opts(
 }
 
 /// Per hot function: a call whose receiver no shape guard admits (a literal object, a shape
-/// the kernel never makes).
+/// the kernel never makes). It prints what the call computes, so the compare with T0 checks
+/// the deopt's values: am3's carry and the destination digits (2 digits, with 28-bit inputs
+/// so the carry is not 0).
 const PROBES: [(&str, &str); 1] = [(
     "am3",
-    "var __spikeCProbe = { array: [1, 2], other: 3, am: am3 }; \
-     __spikeCProbe.am(0, 5, { array: [0, 0] }, 0, 0, 1);",
+    "var __spikeCProbe = { array: [268435455, 123456789], other: 3, am: am3 }; \
+     var __spikeCW = { array: [268435455, 7] }; \
+     var __spikeCC = __spikeCProbe.am(0, 268435455, __spikeCW, 0, 3, 2); \
+     print(__spikeCC + \" \" + __spikeCW.array.join(\",\"));",
 )];
 
 /// A script-level config C run: `defs` and `warm` run in T0 (the feedback), then the global
