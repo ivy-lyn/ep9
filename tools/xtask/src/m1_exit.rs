@@ -451,7 +451,19 @@ fn ci_fresh(root: &Path, ci: &Ci) -> Result<String, String> {
     let Some(head) = ci.head.as_deref().filter(|h| !h.is_empty()) else {
         return Err(format!("CI run {id} names no head commit (headSha)"));
     };
+    if !is_full_sha(head) {
+        return Err(format!(
+            "CI run {id}: its headSha {head:?} is not a commit id (40 hex digits)"
+        ));
+    }
     fresh_since(root, head, &CI_FRESH_PATHS).map_err(|e| format!("CI run {id}: {e}"))
+}
+
+/// A full commit id: 40 lower-case hex digits. An input names its commit this way (the runner,
+/// NESTING_CMD and `gh run view` all write it); a ref name such as `HEAD` or a branch would
+/// resolve to whatever the local tree is now, so it names no commit (verifier r1 F3).
+fn is_full_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Where an input came from (P3-ORCH-14, P3-ORCH-21): the `commit`, `dirty` and `made_by`
@@ -566,6 +578,12 @@ fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
                     .to_string(),
             );
             "no commit".to_string()
+        }
+        Some(commit) if !is_full_sha(commit) => {
+            why.push(format!(
+                "stale input: its commit {commit:?} is not a commit id (40 hex digits)"
+            ));
+            format!("commit {commit:?}")
         }
         Some(commit) => match fresh_since(&c.o.root, commit, paths) {
             Ok(t) => format!("commit `{}`: {t}", short(commit)),
@@ -1006,16 +1024,34 @@ fn gc_source(c: &Ctx) -> (Vec<String>, String) {
                 .join(", ")
         ));
     }
-    if let (Some((ep, ej)), [Some(gc)]) = (&c.exec, commits.iter().collect::<Vec<_>>().as_slice())
-        && let Some(e) = Source::of_json(ej).commit
-        && e != *gc
-    {
-        why.push(format!(
-            "provenance: --exec {} measured `{}`, the GC-stress run `{}`: the same pass set needs one tree",
-            ep.display(),
-            short(&e),
-            short(gc)
-        ));
+    // The --exec run is the other half of the comparison: it names a commit id, the GC-stress
+    // commit, and a clean tree (verifier r1 F4).
+    if let Some((ep, ej)) = &c.exec {
+        let es = Source::of_json(ej);
+        match es.commit.as_deref().filter(|e| is_full_sha(e)) {
+            None => why.push(format!(
+                "provenance: --exec {} names no commit id: the same pass set needs one tree",
+                ep.display()
+            )),
+            Some(e) => {
+                if let [Some(gc)] = commits.iter().collect::<Vec<_>>().as_slice()
+                    && e != gc.as_str()
+                {
+                    why.push(format!(
+                        "provenance: --exec {} measured `{}`, the GC-stress run `{}`: the same pass set needs one tree",
+                        ep.display(),
+                        short(e),
+                        short(gc)
+                    ));
+                }
+            }
+        }
+        if es.dirty != Some(false) {
+            why.push(format!(
+                "provenance: --exec {} was measured with uncommitted changes, or does not say",
+                ep.display()
+            ));
+        }
     }
     (why, texts.join(" | "))
 }
@@ -1408,15 +1444,15 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             .and_then(Json::str)
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        if counted && let Some(id) = campaign {
-            let key = format!("{tool}/{id}");
-            if !campaigns.insert(key) {
-                why.push(format!(
-                    "{}: campaign {tool} {id:?} again, counted once",
-                    p.display()
-                ));
-                continue;
-            }
+        // A second record of a counted campaign adds no hours, but its open crashes still count
+        // (a crash found late in a campaign is still open).
+        let dup = counted && campaign.is_some_and(|id| !campaigns.insert(format!("{tool}/{id}")));
+        if dup {
+            why.push(format!(
+                "{}: campaign {tool} {:?} again, its hours counted once",
+                p.display(),
+                campaign.unwrap_or("")
+            ));
         }
         for cr in j.get("crashes").and_then(Json::arr).unwrap_or(&[]) {
             let state = cr.get("state").and_then(Json::str).unwrap_or("open");
@@ -1433,6 +1469,7 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
         let h = j.get("cpu_hours").and_then(Json::num).unwrap_or(0.0);
         let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
         let counted = counted
+            && !dup
             && match campaign {
                 Some(_) => true,
                 None => {
@@ -2214,14 +2251,41 @@ mod tests {
                 "stale input: measured with uncommitted changes",
             ),
             (
-                with_source_line(&log, "0123abc", 0),
+                with_source_line(&log, &format!("0123abc{}", "0".repeat(33)), 0),
                 Status::Open,
-                "stale input: its commit `0123abc` is not in this repository",
+                "stale input: its commit `0123abc000000000000000000000000000000000` is not in this repository",
+            ),
+            // A ref name is not a commit id, even when it resolves (verifier r1 F3).
+            (
+                with_source_line(&log, "HEAD", 0),
+                Status::Open,
+                "stale input: its commit \"HEAD\" is not a commit id (40 hex digits)",
+            ),
+            (
+                with_source_line(&log, &head[..12], 0),
+                Status::Open,
+                "is not a commit id (40 hex digits)",
             ),
             (
                 two,
                 Status::Open,
                 "provenance: two source lines that differ",
+            ),
+            // Two trees lines that differ (verifier r1 F5).
+            (
+                with_source_line(&log, &head, 0)
+                    .replacen(
+                        "m0-exit start: depth_tests\n",
+                        &format!("m0-exit start: depth_tests\n{TREES_LINE}crates=aaa\n"),
+                        1,
+                    )
+                    .replacen(
+                        "m0-exit start: nesting_caps cli\n",
+                        &format!("m0-exit start: nesting_caps cli\n{TREES_LINE}crates=bbb\n"),
+                        1,
+                    ),
+                Status::Open,
+                "provenance: two trees lines that differ",
             ),
             (
                 log.replacen(
@@ -2436,6 +2500,12 @@ mod tests {
                 Status::Open,
                 "provenance: it names no host or job (made_by)",
             ),
+            // A ref name is not a commit id (verifier r1 F3).
+            (
+                r#""commit":"HEAD","dirty":false,"made_by":"host:t","#.to_string(),
+                Status::Open,
+                "stale input: its commit \"HEAD\" is not a commit id",
+            ),
         ];
         for (src, want, text) in cases {
             o.exec = Some(input(
@@ -2547,6 +2617,33 @@ mod tests {
         let c = &run(&o).unwrap().cells[3].0;
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(c.evidence.contains("(dirty)"), "{}", c.evidence);
+        // A fresh GC input next to an --exec input with no commit, a ref name, a dirty tree, or
+        // no dirty field: not one known tree (verifier r1 F4).
+        o.exec_gc = vec![input(&root, "gc.json", &gc(&head))];
+        for (src, text) in [
+            (String::new(), "names no commit id"),
+            (
+                r#""commit":"HEAD","dirty":false,"made_by":"host:t","#.to_string(),
+                "names no commit id",
+            ),
+            (
+                head.replace(r#""dirty":false"#, r#""dirty":true"#),
+                "was measured with uncommitted changes, or does not say",
+            ),
+            (
+                head.replace(r#""dirty":false,"#, ""),
+                "was measured with uncommitted changes, or does not say",
+            ),
+        ] {
+            o.exec = Some(input(&root, "exec.json", &exec(&src)));
+            let c = &run(&o).unwrap().cells[3].0;
+            assert_eq!(c.status, Status::Open, "{text}: {c:?}");
+            assert!(
+                c.evidence.contains("provenance: --exec ") && c.evidence.contains(text),
+                "{text}: {}",
+                c.evidence
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2596,6 +2693,16 @@ mod tests {
             "{}",
             w.evidence
         );
+        // A ref name as headSha is not a commit id, though it resolves to HEAD (verifier r1 F3).
+        o.ci_run_json = Some(input(&root, "ci.json", &ci(Some("HEAD"))));
+        let w = &run(&o).unwrap().cells[7].1;
+        assert_eq!(w.status, Status::Open, "{w:?}");
+        assert!(
+            w.evidence
+                .contains("its headSha \"HEAD\" is not a commit id (40 hex digits)"),
+            "{}",
+            w.evidence
+        );
         // A step that did not run stays NOT-RUN.
         assert_eq!(run(&o).unwrap().cells[0].1.status, Status::NotRun);
         std::fs::remove_dir_all(root).unwrap();
@@ -2642,8 +2749,9 @@ mod tests {
         ];
         let c = &run(&o).unwrap().cells[4].0;
         assert!(
-            c.evidence
-                .contains("b.json: campaign fuzzilli \"fuzzilli-50\" again, counted once"),
+            c.evidence.contains(
+                "b.json: campaign fuzzilli \"fuzzilli-50\" again, its hours counted once"
+            ),
             "{}",
             c.evidence
         );
@@ -2680,6 +2788,64 @@ mod tests {
             c.evidence
         );
         assert!(c.evidence.contains("Fuzzilli 0.0 / 100"), "{}", c.evidence);
+        // A second record of a counted campaign adds no hours, but its open crash is read, in
+        // either order (verifier r1 F1: the second record hid its crash, a false PASS).
+        let clean = fuzz_json("fuzzilli", &head, 100.0, true, "");
+        let late = fuzz_json(
+            "fuzzilli",
+            &head,
+            100.0,
+            true,
+            r#"{"id":"z9","state":"open"}"#,
+        );
+        for (first, second) in [(&clean, &late), (&late, &clean)] {
+            o.fuzz = vec![
+                input(&root, "a.json", first),
+                input(&root, "a2.json", second),
+                input(&root, "cargo.json", &cargo),
+            ];
+            let c = &run(&o).unwrap().cells[4].0;
+            assert_eq!(c.status, Status::Fail, "{c:?}");
+            assert!(
+                c.evidence.contains("1 open unique crashes"),
+                "{}",
+                c.evidence
+            );
+            assert!(c.evidence.contains("z9 (fuzzilli, open)"), "{}", c.evidence);
+            assert!(
+                c.evidence.contains("Fuzzilli 100.0 / 100"),
+                "{}",
+                c.evidence
+            );
+        }
+        // One crash id in two campaigns is one unique crash (verifier r1 F5).
+        let x = r#"{"id":"x1","state":"open"}"#;
+        o.fuzz = vec![
+            input(
+                &root,
+                "a.json",
+                &fuzz_json("fuzzilli", &head, 50.0, true, x),
+            ),
+            input(
+                &root,
+                "a2.json",
+                &fuzz_json("fuzzilli", &head, 50.0, true, x)
+                    .replace("fuzzilli-50", "fuzzilli-50-b"),
+            ),
+            input(&root, "cargo.json", &cargo),
+        ];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Fail, "{c:?}");
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100"),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains(", 1 open unique crashes"),
+            "{}",
+            c.evidence
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
