@@ -190,26 +190,12 @@ fn end_of_job(i: &mut Isolate) -> Result<(), String> {
         .map_err(|e| e.message)
 }
 
-/// A collection after a stack scrub: [`scrub_below`] zeroes the stack below this frame, then
-/// the collection runs from here, so its own frames (`Isolate::collect_garbage` down to the
-/// spill trampoline, which the conservative scan reads) lie on zeros. The scrub must be a
-/// call of its own (fixer E): with the zeroed array in this frame, the collection's frames
-/// lay below the array, on the stale words of a script's frames (a debug match loop takes
-/// about 200 KiB of stack, so a script run below a 64 KiB pad reaches past a 256 KiB array),
-/// and a slot that those frames leave unwritten could hold a dead target's address. On
-/// linux-x64 debug that kept the target of
+/// A collection after a stack scrub, before and after (`common::scrub_and_collect`, plan
+/// rule 35; it lived here until M5-P1 GC5 moved it to `common`). On linux-x64 debug an
+/// unscrubbed collection kept the target of
 /// [`a_checkpoint_lets_a_weakref_target_die_at_the_next_gc`] alive (CI run 40564429974).
-/// The second scrub wipes the collection's own frames before the next checkpoint's frames lie
-/// over them: the collection's deeper frames (the work after the scan) leave the addresses
-/// of live cells, and a slot that a later live frame leaves unwritten keeps such a word for
-/// that frame's own collections. Without it a chain target's one-past-end address, left
-/// about 5 KiB below this frame, stopped the 30-link chain after 2 links (mac a64 debug,
-/// `EP9_HASH_SEED` 59; verifier E, V-E1).
-#[inline(never)]
 fn scrub_and_collect(i: &mut Isolate) {
-    scrub_below();
-    i.collect_garbage();
-    scrub_below();
+    common::scrub_and_collect(i);
 }
 
 /// A WeakRef target lives to the end of the job, then dies; the registry's callback gets
@@ -414,10 +400,10 @@ log('registered');
     }
 }
 
-/// `gc()` for the scripts below: a collection after a stack scrub ([`scrub_then_collect`]: the
-/// words below this frame are zeroed first, and the collection's frames then lie on them, as
-/// in [`scrub_and_collect`]), so the frames of earlier calls leave no stale pointer for the
-/// scan.
+/// `gc()` for the scripts below: a collection after a stack scrub
+/// (`common::scrub_then_collect`: the words below this frame are zeroed first, and the
+/// collection's frames then lie on them, as in [`scrub_and_collect`]), so the frames of
+/// earlier calls leave no stale pointer for the scan.
 #[inline(never)]
 fn gc_scrubbed<'s>(
     cx: &mut Cx<'s>,
@@ -425,13 +411,8 @@ fn gc_scrubbed<'s>(
     _args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    scrub_then_collect(cx);
+    common::scrub_then_collect(cx);
     Ok(Local::undefined())
-}
-
-#[inline(never)]
-fn collect_now(cx: &mut Cx<'_>) {
-    cx.collect_garbage();
 }
 
 /// `registerFresh(fr, held)`: `fr.register({}, held)` with the new target made here, in Rust,
@@ -516,7 +497,7 @@ fn drop_and_collect<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     drop_below(cx, args.get(0), args.get(1))?;
-    scrub_then_collect(cx);
+    common::scrub_then_collect(cx);
     Ok(Local::undefined())
 }
 
@@ -525,22 +506,6 @@ fn drop_below<'s>(cx: &mut Cx<'s>, keep: Local<'s>, k: Local<'s>) -> JsResult<()
     let keep = keep.as_object().expect("an array");
     let k = u64::try_from(k.as_int32().expect("an index")).expect("an index");
     cx.set_index(keep, k, Local::null(), true).map(|_| ())
-}
-
-/// A collection after a stack scrub, from inside a host function ([`scrub_and_collect`] from
-/// Rust): the scrub is a call of its own, so the collection's frames lie on its zeros.
-#[inline(never)]
-fn scrub_then_collect(cx: &mut Cx<'_>) {
-    scrub_below();
-    collect_now(cx);
-}
-
-/// Zeroes 512 KiB of stack below the caller's frame. The caller's next call (a collection)
-/// then has zeros under its frames, where the conservative scan reads.
-#[inline(never)]
-fn scrub_below() {
-    let mut words = [0usize; 1 << 16];
-    black_box(&mut words);
 }
 
 /// A chain of cleanup rounds with no promise job between them: `links` targets are registered
@@ -783,6 +748,79 @@ log('registered');
                 take_log(),
                 ["registered", "cleanup held made in cleanup", "after true"],
                 "stress={stress}"
+            );
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+// ---- the WEAKREF tail (M5-P1 GC5; plan v10 §3.2 tasks 2 and 4; DL M4-P4-OPEN (3), (5)) ----
+
+/// `weakFresh(fr, held)`: a new object made here, in Rust (so no interpreter frame keeps a
+/// stale copy of it for the conservative scan), registered in `fr` with `held` if `fr` is
+/// an object, and a new WeakRef to it, which is the result. WeakRef creation adds the object
+/// to the kept list (AddToKeptObjects), so after the call only the kept list holds it
+/// strongly.
+#[inline(never)]
+fn weak_fresh<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let (fr, held) = (args.get(0), args.get(1));
+    let o = cx.new_object();
+    if let Some(r) = fr.as_object() {
+        let register = cx.get(r, "register")?;
+        cx.call(register, fr, &[o.into(), held])?;
+    }
+    let weak_ref = cx.global_binding("WeakRef")?.expect("WeakRef");
+    Ok(cx.construct(weak_ref, &[o.into()], weak_ref)?.into())
+}
+
+/// The first ClearKeptObjects of a checkpoint (the one before the cleanup jobs,
+/// `crates/ep9_vm/src/abi/jobs.rs` in `perform_microtask_checkpoint`) has a test of its own
+/// (V-E2, M4-P4 verifier E): a script makes a WeakRef to a target that only the kept list
+/// holds, and no checkpoint runs after it. A scrubbed GC then kills another target, and the
+/// next checkpoint's cleanup callback for it collects (`gc()`): the job target must be dead
+/// there, because the checkpoint cleared the kept list before the cleanup. With that one
+/// call removed, the end-of-checkpoint clear still runs, so every other weakref test passes,
+/// but this callback finds the target alive (`after gc false`; the mutation is in the GC5
+/// report). The job target is in no FinalizationRegistry, so no cleanup walk reads its
+/// address onto the stack.
+#[test]
+fn the_first_clear_of_a_checkpoint_frees_a_job_target_for_a_cleanup_gc() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            i.register_host_function("gc", 0, gc_scrubbed);
+            i.register_host_function("registerFresh", 2, register_fresh);
+            i.register_host_function("weakFresh", 2, weak_fresh);
+            run(
+                &mut i,
+                r#"
+var w = weakFresh(undefined);
+var fr = new FinalizationRegistry(function (held) {
+  gc();
+  log('cleanup', held, 'job target dead', w.deref() === undefined);
+});
+registerFresh(fr, 'trigger');
+log('script', w.deref() !== undefined);
+"#,
+            )
+            .unwrap();
+            assert_eq!(take_log(), ["script true"], "stress={stress}");
+            // The trigger dies; the job target stays (the kept list holds it: no checkpoint
+            // ran after the script).
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            let roots = common::conservative_roots(&i);
+            assert_eq!(
+                take_log(),
+                ["cleanup trigger job target dead true"],
+                "stress={stress} (the last GC had {roots} conservative roots)"
             );
             i.verify_heap().expect("a valid heap");
         });
