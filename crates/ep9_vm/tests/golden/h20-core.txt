@@ -382,6 +382,16 @@ embed (not core): pub const CX_UNIT_DATA: usize
 embed (not core): pub const DEOPT_META_VERSION: u32
 embed (not core): pub const ELEMENTS_CAPACITY: u32
 embed (not core): pub const ELEMENTS_DATA: u32
+embed (not core): pub const ELEMENTS_DOUBLE_CAPACITY: u32
+embed (not core): pub const ELEMENTS_DOUBLE_DATA: u32
+embed (not core): pub const ELEMENTS_DOUBLE_HOLE: u64
+embed (not core): pub const ELEMENTS_KIND_DICTIONARY: u8
+embed (not core): pub const ELEMENTS_KIND_HOLEY_DOUBLE: u8
+embed (not core): pub const ELEMENTS_KIND_HOLEY_ELEMENTS: u8
+embed (not core): pub const ELEMENTS_KIND_HOLEY_INT32: u8
+embed (not core): pub const ELEMENTS_KIND_PACKED_DOUBLE: u8
+embed (not core): pub const ELEMENTS_KIND_PACKED_ELEMENTS: u8
+embed (not core): pub const ELEMENTS_KIND_PACKED_INT32: u8
 embed (not core): pub const FEEDBACK_INFO: u32
 embed (not core): pub const FEEDBACK_KEY: u32
 embed (not core): pub const FEEDBACK_SLOTS: u32
@@ -412,6 +422,9 @@ embed (not core): pub const HOLE: u64
 embed (not core): pub const IC_LAYOUT_VERSION: u32
 embed (not core): pub const KIND_ARRAY: u8
 embed (not core): pub const KIND_BYTE: u32
+embed (not core): pub const KIND_ELEMENTS: u8
+embed (not core): pub const KIND_ELEMENTS_DICT: u8
+embed (not core): pub const KIND_ELEMENTS_DOUBLE: u8
 embed (not core): pub const KIND_OBJECT: u8
 embed (not core): pub const NATIVE_WORD_OFFSET: u64
 embed (not core): pub const NO_CODE: u8
@@ -431,6 +444,7 @@ embed (not core): pub const RT_SET_KEYED: usize
 embed (not core): pub const RT_STACK_OVERFLOW: usize
 embed (not core): pub const RT_THROW: usize
 embed (not core): pub const RT_UNWIND: usize
+embed (not core): pub const SHAPE_ELEMENTS_KIND_SHIFT: u32
 embed (not core): pub const SHAPE_ID_BYTE: u32
 embed (not core): pub const SMI_ARRAY_LENGTH: i32
 embed (not core): pub const SMI_FIELD_IN_OBJECT: i32

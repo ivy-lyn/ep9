@@ -25,7 +25,8 @@ use crate::feedback::fv;
 use crate::frame::{HEADER, slot};
 use crate::ic::smi;
 use crate::interp::Cx;
-use crate::object::{arr, ctxf, elems, fun, obj};
+use crate::elements::kind as ek;
+use crate::object::{arr, ctxf, delems, elems, fun, obj};
 use crate::unit::FunctionInfo;
 
 /// The `Cx` that native code gets and passes back to the table functions. Opaque: native code
@@ -267,6 +268,38 @@ pub const CONTEXT_SCOPE: u32 = ctxf::SCOPE as u32;
 pub const CONTEXT_LENGTH: u32 = ctxf::LENGTH as u32;
 /// OBJECT_LAYOUT. CONTEXT cell: slot 0; slot `i` is at `CONTEXT_SLOTS + 8i`.
 pub const CONTEXT_SLOTS: u32 = ctxf::SLOTS as u32;
+/// OBJECT_LAYOUT. Kind id of an ELEMENTS cell (65): Values (`kinds::ELEMENTS`). The only
+/// elements cell native code may read as Values (V10-D9b).
+pub const KIND_ELEMENTS: u8 = crate::kinds::ELEMENTS.get();
+/// OBJECT_LAYOUT (5). Kind id of an ELEMENTS_DOUBLE cell (81): raw f64 data
+/// (`kinds::ELEMENTS_DOUBLE`).
+pub const KIND_ELEMENTS_DOUBLE: u8 = crate::kinds::ELEMENTS_DOUBLE.get();
+/// OBJECT_LAYOUT (5). Kind id of an ELEMENTS_DICT cell (82): dictionary elements
+/// (`kinds::ELEMENTS_DICT`).
+pub const KIND_ELEMENTS_DICT: u8 = crate::kinds::ELEMENTS_DICT.get();
+/// OBJECT_LAYOUT (5). ELEMENTS_DOUBLE: the capacity, an int32 Value (`object::delems`).
+pub const ELEMENTS_DOUBLE_CAPACITY: u32 = delems::CAPACITY as u32;
+/// OBJECT_LAYOUT (5). ELEMENTS_DOUBLE: raw f64 `i` is at `ELEMENTS_DOUBLE_DATA + 8i`.
+pub const ELEMENTS_DOUBLE_DATA: u32 = delems::DATA as u32;
+/// OBJECT_LAYOUT (5). ELEMENTS_DOUBLE: the hole, a NaN no store writes (`object::delems`).
+pub const ELEMENTS_DOUBLE_HOLE: u64 = delems::HOLE;
+/// OBJECT_LAYOUT (5). The bits of a shape's `counts` word (+48) that hold its elements kind
+/// (`shape::ELEMENTS_KIND_SHIFT`, 4 bits).
+pub const SHAPE_ELEMENTS_KIND_SHIFT: u32 = crate::shape::ELEMENTS_KIND_SHIFT;
+/// OBJECT_LAYOUT (5). Elements kind values (`elements::kind`; 7-15 reserved, bit 0 = holey).
+pub const ELEMENTS_KIND_PACKED_INT32: u8 = ek::PACKED_INT32;
+/// OBJECT_LAYOUT (5).
+pub const ELEMENTS_KIND_HOLEY_INT32: u8 = ek::HOLEY_INT32;
+/// OBJECT_LAYOUT (5).
+pub const ELEMENTS_KIND_PACKED_DOUBLE: u8 = ek::PACKED_DOUBLE;
+/// OBJECT_LAYOUT (5).
+pub const ELEMENTS_KIND_HOLEY_DOUBLE: u8 = ek::HOLEY_DOUBLE;
+/// OBJECT_LAYOUT (5).
+pub const ELEMENTS_KIND_PACKED_ELEMENTS: u8 = ek::PACKED_ELEMENTS;
+/// OBJECT_LAYOUT (5).
+pub const ELEMENTS_KIND_HOLEY_ELEMENTS: u8 = ek::HOLEY_ELEMENTS;
+/// OBJECT_LAYOUT (5).
+pub const ELEMENTS_KIND_DICTIONARY: u8 = ek::DICTIONARY;
 
 // ---- feedback and IC data: IC_LAYOUT ----
 /// IC_LAYOUT. FEEDBACK cell: the FunctionInfo of its function, a native word

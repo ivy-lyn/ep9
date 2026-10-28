@@ -18,7 +18,7 @@
 //! |---|---|---|---|
 //! | OBJECT | 16 | none | 4 for `{}`; n for a literal with n named keys; 8 for other prototypes (`new F`) |
 //! | FUNCTION | 17 | +24 FunctionInfo (native word), +32 context, +40 `[[HomeObject]]` or undefined, +48 `[[Realm]]` (a REALM cell) | 2 (`length`, `name`) |
-//! | ARRAY | 18 | +24 length (int32); elements at +16 | 0 |
+//! | ARRAY | 18 | +24 length (int32), +32 allocation-site handler or undefined (OBJECT_LAYOUT 5, [`arr`]); elements at +16 | 0 |
 //! | ERROR | 19 | +24 unit index (int32 or undefined), +32 source offset (int32) | 2 |
 //! | ITERATOR | 20 | +24 iterated value: an object (undefined when done, null while an array iterator's `next` runs user code) or a string ("" when done), +32 next index (int32), +40 kind (int32, [`iter_kind`]: values, keys, entries) | 0 |
 //! | PRIMITIVE_WRAPPER | 21 | +24 the primitive | 0 |
@@ -32,10 +32,12 @@
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | ELEMENTS | 65 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
+//! | ELEMENTS_DOUBLE | 81 | +8 capacity (int32), +16 raw f64 data (hole = the NaN 0xFFF7_FFFF_FFF7_FFFF; [`delems`]; OBJECT_LAYOUT 5, built by M5-P1 ELEM1) | 16 + 8 cap |
+//! | ELEMENTS_DICT | 82 | sparse elements (OBJECT_LAYOUT 5; the layout is M5-P2 ELEM2's, `elements.rs`) | - |
 //! | CONTEXT | 66 | +8 previous, +16 scope (native word: a [`ContextScope`] record), +24 length (int32), +32 slots | 32 + 8 len |
 //! | MODULE | 76 | the Source Text Module Record (§16.2.1.4-6), 16 Values from +8 ([`modf`]) | 136 |
 //! | ORDERED_TABLE | 77 | Map and Set storage: +8 capacity, +16 live count, +24 deleted count, +32 bucket count, +40 entry width, +48 flags (int32s; flag bit 0 = weak keys, bit 1 = obsolete: a rehash or `clear` replaced the table and bucket head 0 holds the forward to the new one, bit 2 = cleared: `clear` replaced it, so a cursor restarts at 0), then the bucket heads and the entries (`ordered_table.rs`) | 56 + 8 (buckets + capacity x width) |
-//! | REALM | 78 | +8 global object, +16 global lexical record, +24 intrinsics (an ELEMENTS cell, index = `IntrinsicId`), +32 template registry, +40 host-defined ([`realmf`]) | 48 |
+//! | REALM | 78 | +8 global object, +16 global lexical record, +24 intrinsics (an ELEMENTS cell, index = `IntrinsicId`), +32 template registry, +40 host-defined, +48 and +56 the cached mapped and unmapped arguments shapes (OBJECT_LAYOUT 5) ([`realmf`]) | 64 |
 //!
 //! Every word after word0 is a valid `Value` (raw pointers use the native-word encoding of
 //! `frame.rs`), so one trace function per size visits them all; no trace function visits
@@ -54,6 +56,12 @@
 //! ARGUMENTS and MODULE_NAMESPACE (JS objects; their exotic internal methods are routed from
 //! `exotic.rs` and `property.rs` to `arguments.rs` and `module.rs`), MODULE, ORDERED_TABLE and
 //! REALM (internal cells). Month-3 roles fill the behaviour; the layout is fixed here.
+//!
+//! OBJECT_LAYOUT 5 (`versions.rs`, M5-P0): ARRAY gets a second fixed field, the
+//! allocation-site handler (+32; `arr::FIXED` 1 -> 2, an array cell grows by 8 B); REALM gets
+//! the two cached arguments shapes (+48, +56; 48 -> 64 B); the ELEMENTS_DOUBLE and
+//! ELEMENTS_DICT kinds are declared ([`delems`]); CONTEXT offsets are `pub(crate)` for the
+//! `crate::layout` export.
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, KindId, Slot, Tracer};
 
@@ -254,13 +262,26 @@ pub(crate) mod realmf {
     /// `[[HostDefined]]`: the realm's module map (`module.rs` `map_get`, `map_add`): an
     /// ELEMENTS list, entry 0 the count n, then n pairs (name atom, MODULE record).
     pub const HOST_DEFINED: usize = 40;
-    /// The cell size: word0 and 5 Values.
-    pub const SIZE: usize = 48;
+    /// OBJECT_LAYOUT 5 (V10-D11): the cached shape of this realm's mapped arguments objects,
+    /// or undefined (M5-P2 VMIC builds the ARGS fast path).
+    #[allow(dead_code)] // filled by M5-P2 VMIC
+    pub const MAPPED_ARGUMENTS_SHAPE: usize = 48;
+    /// OBJECT_LAYOUT 5: the cached shape of this realm's unmapped arguments objects, or
+    /// undefined.
+    #[allow(dead_code)] // filled by M5-P2 VMIC
+    pub const UNMAPPED_ARGUMENTS_SHAPE: usize = 56;
+    /// The cell size: word0 and 7 Values (OBJECT_LAYOUT 5; 5 Values before).
+    pub const SIZE: usize = 64;
 }
 
 pub(crate) mod arr {
     pub const LENGTH: usize = 24;
-    pub const FIXED: usize = 1;
+    /// OBJECT_LAYOUT 5 (V10-D6, MODES-D19): the allocation-site handler of an array made at an
+    /// array-literal site (an IC_HANDLER cell, handler kind ALLOC_SITE, IC_LAYOUT 3), or
+    /// undefined. Written only by IC code (M5-P2 ELEM2).
+    #[allow(dead_code)] // filled by M5-P2 ELEM2
+    pub const ALLOC_SITE: usize = 32;
+    pub const FIXED: usize = 2;
     /// v0: dense arrays only, up to this length. Elements kinds come with H18 (M1a).
     pub const MAX_LENGTH: u32 = 1 << 26;
 }
@@ -286,6 +307,20 @@ pub(crate) mod fixed {
 pub(crate) mod elems {
     pub const CAPACITY: usize = 8;
     pub const DATA: usize = 16;
+}
+
+/// ELEMENTS_DOUBLE cell fields (OBJECT_LAYOUT 5, kind 81; V9-D39, V10-D7): +8 capacity (an int32
+/// Value), +16 raw f64 data. The data words are not Values: the trace function visits none.
+/// M5-P1 ELEM1 registers the kind and builds the stores.
+#[allow(dead_code)] // filled by M5-P1 ELEM1
+pub(crate) mod delems {
+    pub const CAPACITY: usize = 8;
+    pub const DATA: usize = 16;
+    /// The hole: a NaN that no store writes, because every DOUBLE store makes its NaN the
+    /// canonical one ([`CANONICAL_NAN`]).
+    pub const HOLE: u64 = 0xFFF7_FFFF_FFF7_FFFF;
+    /// The NaN a DOUBLE store writes for any NaN (`f64::NAN`).
+    pub const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
 }
 
 /// CONTEXT cell fields (`crate::layout` exports them for native code, MC-w16-16).

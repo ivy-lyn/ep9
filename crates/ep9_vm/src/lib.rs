@@ -66,6 +66,7 @@ mod construct_ic;
 mod conv;
 mod descriptor;
 mod dispatch;
+mod elements;
 mod error;
 mod exec;
 mod exotic;
