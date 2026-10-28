@@ -4412,6 +4412,44 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// fuzzrec high 1: a record cut off before its summary (counted false, fuzz.yml's fallback)
+    /// still carries its open crash ids, and item 5 reads them: FAIL, even with enough counted hours.
+    #[test]
+    fn item5_reads_the_crashes_of_an_uncounted_record() {
+        let root = fake_repo("item5unc");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let cut = fuzz_json(
+            "cargo-fuzz",
+            &head,
+            0.0,
+            false,
+            r#"{"id":"c3","state":"open"}"#,
+        )
+        .replace(r#""campaign":"cargo-fuzz-0""#, r#""campaign":"gh1-1-t""#);
+        o.fuzz = vec![
+            input(
+                &root,
+                "f1.json",
+                &fuzz_json("fuzzilli", &head, 100.0, true, ""),
+            ),
+            input(
+                &root,
+                "f2.json",
+                &fuzz_json("cargo-fuzz", &head, 24.0, true, ""),
+            ),
+            input(&root, "f3.json", &cut),
+        ];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Fail, "{c:?}");
+        assert!(
+            c.evidence.contains("1 open unique crashes"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn arguments() {
         let a = |s: &[&str]| {
