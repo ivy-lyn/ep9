@@ -23,11 +23,11 @@
 //!
 //! | Item | Host column | Windows column |
 //! |---|---|---|
-//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", on a fresh tree: a full commit id (40 hex digits), no uncommitted change, and the tree ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
-//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 since (else OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
+//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, and the reported tree ids equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
+//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), and a counted Fuzzilli record is fresh in `crates`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), is not `"dirty": true` (else not counted, OPEN; no `dirty` field: counted, with a NOTE), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
@@ -44,17 +44,21 @@
 //! `third_party/test262.commit` since (unless the input names the git id of each of these paths
 //! and each equals HEAD's: a CI pull_request job runs on GitHub's merge commit, which the local
 //! repository does not have; the JSON `"tree"` object, the log line `m1-exit trees: <path>=<id>
-//! ...`), when the tree was dirty (or the input does not say), when no host or job is named, or
-//! when the job is of another CI run than `--ci-run`.
+//! ...`), when the tree was dirty (or the input does not say), when the runner read another
+//! source state at the end of the run than at its start (`"source_changed_during_run": true`),
+//! when no host or job is named, or when the job is of another CI run than `--ci-run`.
 //!
 //! **The CI run** names its head (`headSha`): HEAD, or an ancestor with no change in those paths,
 //! `expectations` or `.github` since. Else every Windows cell is at least OPEN ("stale CI run").
 //!
 //! **Fuzz records** (`ep9-fuzz/v1`, one JSON object per campaign; plan v9 V9-D24, V9-A30):
 //! `{"schema": "ep9-fuzz/v1", "tool": "fuzzilli" | "cargo-fuzz", "campaign": "<id>", "target": "<name>", "commit":
-//! "<sha>", "cpu_hours": <n>, "counted": true | false, "crashes": [{"id": "<hash>", "state":
-//! "open" | "fixed" | "duplicate" | "not-a-bug"}]}`. A record with `counted: false` only adds
-//! its open crashes. The record holds hashes only, never an input (rule 14).
+//! "<sha>", "dirty": true | false, "cpu_hours": <n>, "counted": true | false, "crashes": [{"id":
+//! "<hash>", "state": "open" | "fixed" | "duplicate" | "not-a-bug"}]}`. A record with `counted:
+//! false` only adds its open crashes. `dirty` (the fuzzed tree had uncommitted changes in a
+//! tracked file): `true` is not counted (OPEN); a record without the field still counts and the
+//! row gets a NOTE line, because its producers (fuzz.yml, infra/fuzz) are month-5 work and do
+//! not write it yet (CX5-C5). The record holds hashes only, never an input (rule 14).
 //!
 //! The extra rows (no exit-code effect): the carried M0 item-5 cell (SP-Dispatch, read from the
 //! newest `*-m0-spike-review.md`), the stub markers (`m2`, `m3`, `m4`, plan v9 rule 4) and the
@@ -158,6 +162,27 @@ const TREES_LINE: &str = "m1-exit trees:";
 
 /// Item 1: the kernels (8 v8-v7 + 7 Octane).
 const KERNELS: usize = 15;
+/// Item 1: the kernel ids, each once (CX5-C3; `KERNEL_IDS` of tools/bench/cross/kernels.mjs,
+/// whose node test checks that the two lists are the same).
+const KERNEL_IDS: [&str; KERNELS] = [
+    "v8v7/richards",
+    "v8v7/deltablue",
+    "v8v7/crypto",
+    "v8v7/raytrace",
+    "v8v7/earley-boyer",
+    "v8v7/regexp",
+    "v8v7/splay",
+    "v8v7/navier-stokes",
+    "octane/richards",
+    "octane/deltablue",
+    "octane/crypto",
+    "octane/raytrace",
+    "octane/earley-boyer",
+    "octane/splay",
+    "octane/navier-stokes",
+];
+/// Item 2: the reading ids, each once (CX5-C3; `READINGS` of tools/bench/cross/exit2.mjs).
+const READING_IDS: [&str; 2] = ["octane7-vs-qjs", "v8v7-7-vs-node-jitless"];
 const KERNEL_OK: &str = "runs, output equal";
 const KERNELS_CMD: &str =
     "node tools/bench/cross/kernels.mjs --check target/release/ep9 --out kernels.json";
@@ -497,6 +522,9 @@ struct Source {
     made_by: Option<String>,
     /// (path, id) of the paths the input names (`"tree"` of the JSON, the [`TREES_LINE`] of a log).
     trees: BTreeMap<String, String>,
+    /// The runner read another commit, dirty flag or tree ids at the end of the run than at its
+    /// start (`"source_changed_during_run": true`, CX5-C1).
+    changed: bool,
 }
 
 impl Source {
@@ -520,6 +548,7 @@ impl Source {
                     .collect(),
                 _ => BTreeMap::new(),
             },
+            changed: j.get("source_changed_during_run").and_then(Json::bool) == Some(true),
         }
     }
 
@@ -560,6 +589,7 @@ impl Source {
                 dirty: Some(dirty > 0),
                 made_by: Some(made_by.trim().to_string()).filter(|m| !m.is_empty()),
                 trees: BTreeMap::new(),
+                changed: false,
             };
             match &found {
                 Some(f) if *f != s => {
@@ -626,6 +656,11 @@ fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
         Some(true) => why.push("stale input: measured with uncommitted changes (dirty)".into()),
         None => why.push("stale input: it does not say whether the tree was dirty".into()),
     }
+    if s.changed {
+        why.push(
+            "stale input: the source changed during the run (source_changed_during_run)".into(),
+        );
+    }
     let by = match s.made_by.as_deref() {
         Some(m) => m.to_string(),
         None => {
@@ -676,6 +711,38 @@ fn repo_wide(host: Cell) -> (Cell, Cell) {
         format!("repo-wide, as the host column: {}", host.evidence),
     );
     (host, win)
+}
+
+/// CX5-C3: the ids of the rows against the `expected` ids, each once: the duplicates
+/// (`<what> <id> <n> times`), the missing ids and the unknown ones. Empty when each expected id
+/// is there once and no other id is.
+fn each_once(what: &str, ids: &[&str], expected: &[&str]) -> Vec<String> {
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for id in ids {
+        *seen.entry(id).or_default() += 1;
+    }
+    let mut why: Vec<String> = seen
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(id, n)| format!("{what} {id} {n} times"))
+        .collect();
+    let missing: Vec<&str> = expected
+        .iter()
+        .filter(|e| !seen.contains_key(*e))
+        .copied()
+        .collect();
+    if !missing.is_empty() {
+        why.push(format!("missing {what}s: {}", missing.join(", ")));
+    }
+    let unknown: Vec<&str> = seen
+        .keys()
+        .filter(|id| !expected.contains(id))
+        .copied()
+        .collect();
+    if !unknown.is_empty() {
+        why.push(format!("unknown {what}s: {}", unknown.join(", ")));
+    }
+    why
 }
 
 fn because(why: &[String]) -> String {
@@ -743,6 +810,16 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         status = Status::Fail;
         why.push(format!("{} kernels, not the {KERNELS}", rows.len()));
     }
+    // Each of the 15 kernels once: a copy of a passing row is no evidence for a missing one.
+    let ids: Vec<&str> = rows
+        .iter()
+        .map(|r| r.get("id").and_then(Json::str).unwrap_or("?"))
+        .collect();
+    let id_why = each_once("kernel", &ids, &KERNEL_IDS);
+    if !id_why.is_empty() {
+        status = status.max(Status::Open);
+        why.extend(id_why);
+    }
     if !failing.is_empty() {
         status = Status::Fail;
         why.push(format!("not ok: {}", some_paths(&failing)));
@@ -757,6 +834,48 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         fresh.push(format!(
             "its commit {commit:?} is not a commit id (40 hex digits)"
         ));
+    } else if git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{commit}^{{commit}}"),
+        ],
+    )
+    .is_none()
+    {
+        fresh.push(format!(
+            "its commit `{}` is not in this repository",
+            short(commit)
+        ));
+    } else {
+        // CX5-C2: `kernels.mjs --commit A` names A but reads the tree ids of the checkout: the
+        // named commit's ids of the fresh paths must be the reported ones.
+        let other: Vec<&str> = FRESH_PATHS
+            .iter()
+            .filter(|path| {
+                let theirs = j.path(&["tree", path]).and_then(Json::str);
+                let at = git(
+                    root,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("{commit}:{path}"),
+                    ],
+                );
+                theirs != at.as_deref()
+            })
+            .copied()
+            .collect();
+        if !other.is_empty() {
+            fresh.push(format!(
+                "its commit `{}` has other ids of {} than the reported ones",
+                short(commit),
+                other.join(", ")
+            ));
+        }
     }
     match j.get("dirty").and_then(Json::arr) {
         Some([]) => {}
@@ -833,6 +952,16 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         status = Status::Fail;
         parts.push(format!("{} readings, not 2", readings.len()));
     }
+    // Each of the two readings once (CX5-C3).
+    let ids: Vec<&str> = readings
+        .iter()
+        .map(|r| r.get("id").and_then(Json::str).unwrap_or("?"))
+        .collect();
+    let id_why = each_once("reading", &ids, &READING_IDS);
+    if !id_why.is_empty() {
+        status = status.max(Status::Open);
+        parts.extend(id_why);
+    }
     for r in readings {
         let label = r.get("label").and_then(Json::str).unwrap_or("?");
         let gate = r.get("gate").and_then(Json::str).unwrap_or("no gate");
@@ -866,13 +995,41 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         parts.push("provisional run".into());
     }
     let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
-    let tree = match fresh_named(root, commit, &FRESH_PATHS) {
+    let mut tree = match fresh_named(root, commit, &FRESH_PATHS) {
         Ok(t) => t,
         Err(e) => {
             status = status.max(Status::Open);
             e
         }
     };
+    // CX5-C5: run.mjs writes whether the fresh paths had uncommitted changes, exit2.mjs copies
+    // it; true or missing gives OPEN.
+    match j.get("dirty").and_then(Json::bool) {
+        Some(false) => {}
+        Some(true) => {
+            status = status.max(Status::Open);
+            let paths: Vec<&str> = j
+                .get("dirty_paths")
+                .and_then(Json::arr)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Json::str)
+                .collect();
+            let _ = write!(
+                tree,
+                "; measured with uncommitted changes (dirty): {}",
+                if paths.is_empty() {
+                    "paths not named".to_string()
+                } else {
+                    paths.join(", ")
+                }
+            );
+        }
+        None => {
+            status = status.max(Status::Open);
+            tree.push_str("; it does not say whether the tree was dirty (`dirty`)");
+        }
+    }
     cell(
         status,
         format!(
@@ -1446,6 +1603,7 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
     // counted campaign id, adds no hours and no crash.
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
     let mut campaigns: BTreeSet<String> = BTreeSet::new();
+    let mut notes: Vec<String> = Vec::new();
     for (p, j) in &c.fuzz {
         let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
         if !files.insert(canon) {
@@ -1458,9 +1616,10 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             continue;
         }
         let tool = j.get("tool").and_then(Json::str).unwrap_or("");
+        // CX5-C4: the root Cargo.toml too (its `[profile.release]`, the workspace members).
         let fresh_paths: &[&str] = match tool {
-            "fuzzilli" => &["crates", "Cargo.lock", "rust-toolchain.toml"],
-            "cargo-fuzz" => &["crates/ep9_frontend", "fuzz", "Cargo.lock"],
+            "fuzzilli" => &["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"],
+            "cargo-fuzz" => &["crates/ep9_frontend", "fuzz", "Cargo.toml", "Cargo.lock"],
             _ => {
                 status = Status::Fail;
                 why.push(format!("{}: unknown tool {tool:?}", p.display()));
@@ -1510,6 +1669,27 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
                     false
                 }
             };
+        // CX5-C5: `dirty: true` is not counted; a record with no `dirty` counts with a NOTE
+        // (the ep9-fuzz/v1 producers add the field in month 5).
+        let counted = counted
+            && match j.get("dirty").and_then(Json::bool) {
+                Some(false) => true,
+                Some(true) => {
+                    status = status.max(Status::Open);
+                    why.push(format!(
+                        "{}: not counted: made with uncommitted changes (dirty)",
+                        p.display()
+                    ));
+                    false
+                }
+                None => {
+                    notes.push(format!(
+                        "NOTE: {} does not say whether its tree was dirty (the ep9-fuzz/v1 producers write `dirty` from month 5)",
+                        p.display()
+                    ));
+                    true
+                }
+            };
         if counted {
             match fresh_named(&c.o.root, commit, fresh_paths) {
                 Ok(_) => {
@@ -1553,12 +1733,13 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
     repo_wide(cell(
         status,
         format!(
-            "{}; Fuzzilli {:.1} / {FUZZILLI_HOURS} CPU-h, cargo-fuzz {:.1} / {CARGO_FUZZ_HOURS} CPU-h, {} open unique crashes{}",
+            "{}; Fuzzilli {:.1} / {FUZZILLI_HOURS} CPU-h, cargo-fuzz {:.1} / {CARGO_FUZZ_HOURS} CPU-h, {} open unique crashes{}{}",
             runs.join(", "),
             hours.get("fuzzilli").copied().unwrap_or(0.0),
             hours.get("cargo-fuzz").copied().unwrap_or(0.0),
             open.len(),
-            because(&why)
+            because(&why),
+            because(&notes)
         ),
     ))
 }
@@ -2366,7 +2547,8 @@ mod tests {
     }
 
     /// M4-P5 C1: the root `Cargo.toml` (its `[profile.release]` sets `lto` and `panic`) is a fresh
-    /// path of every list: a change to it after the input's commit makes items 1, 2 and 8 OPEN.
+    /// path of every list: a change to it after the input's commit makes items 1, 2 and 8 OPEN,
+    /// and (CX5-C4) item 5: neither fuzz record counts.
     #[test]
     fn a_root_cargo_toml_change_makes_inputs_stale() {
         for list in [&FRESH_PATHS[..], &T262_FRESH_PATHS[..], &CI_FRESH_PATHS[..]] {
@@ -2391,8 +2573,21 @@ mod tests {
             &exit2_json(&head, ["pass", "pass"], true),
         ));
         o.nesting = Some(input(&root, "nesting.log", &log));
+        // CX5-C4: the fuzz records of item 5 too (both tools).
+        o.fuzz = vec![
+            input(
+                &root,
+                "f1.json",
+                &fuzz_json("fuzzilli", &head, 100.0, true, ""),
+            ),
+            input(
+                &root,
+                "f2.json",
+                &fuzz_json("cargo-fuzz", &head, 24.0, true, ""),
+            ),
+        ];
         let r = run(&o).unwrap();
-        for i in [0, 1, 7] {
+        for i in [0, 1, 4, 7] {
             assert_eq!(
                 r.cells[i].0.status,
                 Status::Pass,
@@ -2411,6 +2606,14 @@ mod tests {
         for (i, why) in [
             (0, "Cargo.toml differs from HEAD"),
             (1, "Cargo.toml"),
+            (
+                4,
+                "f1.json: not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml changed",
+            ),
+            (
+                4,
+                "f2.json: not counted: not this tree: crates/ep9_frontend, fuzz, Cargo.toml, Cargo.lock changed",
+            ),
             (7, "Cargo.toml"),
         ] {
             let c = &r.cells[i].0;
@@ -2612,6 +2815,16 @@ mod tests {
                 ok.replace(r#""dirty":false,"#, ""),
                 Status::Open,
                 "stale input: it does not say whether the tree was dirty",
+            ),
+            // CX5-C1: the runner read another source state at the end of the run than at its
+            // start (it then writes dirty true too).
+            (
+                ok.replace(
+                    r#""dirty":false,"#,
+                    r#""dirty":true,"source_changed_during_run":true,"#,
+                ),
+                Status::Open,
+                "stale input: the source changed during the run (source_changed_during_run)",
             ),
             (
                 format!(
@@ -3072,10 +3285,13 @@ mod tests {
     ) -> String {
         let rows: Vec<String> = (0..total)
             .map(|i| {
+                let id = KERNEL_IDS
+                    .get(i)
+                    .map_or_else(|| format!("k{i}"), |k| k.to_string());
                 if i < ok {
-                    format!(r#"{{"id":"k{i}","status":"runs, output equal","ok":true}}"#)
+                    format!(r#"{{"id":"{id}","status":"runs, output equal","ok":true}}"#)
                 } else {
-                    format!(r#"{{"id":"k{i}","status":"fails","ok":false,"blocker":"RegExp"}}"#)
+                    format!(r#"{{"id":"{id}","status":"fails","ok":false,"blocker":"RegExp"}}"#)
                 }
             })
             .collect();
@@ -3110,7 +3326,7 @@ mod tests {
             (
                 kernels_json(&root, HOST, 14, 15, None),
                 Status::Fail,
-                "not ok: k14 (fails, blocker RegExp)",
+                "not ok: octane/navier-stokes (fails, blocker RegExp)",
             ),
             (
                 kernels_json(&root, HOST, 8, 8, None),
@@ -3144,7 +3360,7 @@ mod tests {
 
     fn exit2_json(commit: &str, gates: [&str; 2], gate_host: bool) -> String {
         format!(
-            r#"{{"schema":"ep9-exit2/v1","commit":"{commit}","host":{{"gate_host":{gate_host}}},"provisional":false,"readings":[{{"label":"Octane-7","gate":"{}","net":{{"median":1.1}}}},{{"label":"v8-v7","gate":"{}"}}]}}"#,
+            r#"{{"schema":"ep9-exit2/v1","commit":"{commit}","dirty":false,"host":{{"gate_host":{gate_host}}},"provisional":false,"readings":[{{"id":"octane7-vs-qjs","label":"Octane-7","gate":"{}","net":{{"median":1.1}}}},{{"id":"v8v7-7-vs-node-jitless","label":"v8-v7","gate":"{}"}}]}}"#,
             gates[0], gates[1]
         )
     }
@@ -3210,6 +3426,174 @@ mod tests {
         let c = &run(&o).unwrap().cells[1].0;
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(c.evidence.contains("Cargo.lock"), "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// CX5-C2 (Codex round 1): kernels.mjs takes `--commit A` while it reads the tree ids of the
+    /// checkout (B). The named commit must be in this repository and its ids of the fresh paths
+    /// must be the reported ones; else OPEN.
+    #[test]
+    fn item1_the_named_commit_has_the_reported_tree_ids() {
+        let root = fake_repo("item1commit");
+        let a = git_in(&root, &["rev-parse", "HEAD"]);
+        write(&root, "crates/ep9_vm/src/lib.rs", "// changed\n");
+        let b = commit_all(&root, "vm");
+        let mut o = opts(&root);
+        // The ids of B (HEAD) with the commit A: crates differs between them.
+        let j = kernels_json(&root, HOST, 15, 15, None);
+        o.kernels = Some(input(&root, "kernels.json", &j));
+        assert_eq!(run(&o).unwrap().cells[0].0.status, Status::Pass);
+        let at_a = j.replace(&b, &a);
+        o.kernels = Some(input(&root, "kernels.json", &at_a));
+        let c = &run(&o).unwrap().cells[0].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains(&format!(
+                "its commit `{}` has other ids of crates than the reported ones",
+                short(&a)
+            )),
+            "{}",
+            c.evidence
+        );
+        // A full id that is no commit here.
+        let gone = j.replace(&b, &"0123abcd".repeat(5));
+        o.kernels = Some(input(&root, "kernels.json", &gone));
+        let c = &run(&o).unwrap().cells[0].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains(&format!(
+                "its commit `{}` is not in this repository",
+                short(&"0123abcd".repeat(5))
+            )),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// CX5-C3 (Codex round 1): each expected kernel (item 1) and reading (item 2) once; a
+    /// duplicate row does not stand in for a missing one.
+    #[test]
+    fn items_1_and_2_need_each_expected_id_once() {
+        let root = fake_repo("ids");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        // 15 rows, all of one passing kernel.
+        let j = kernels_json(&root, HOST, 15, 15, None);
+        let mut one = j.clone();
+        for k in &KERNEL_IDS[1..] {
+            one = one.replace(&format!(r#""id":"{k}""#), r#""id":"v8v7/richards""#);
+        }
+        o.kernels = Some(input(&root, "kernels.json", &one));
+        let c = &run(&o).unwrap().cells[0].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("kernel v8v7/richards 15 times"),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("missing kernels: v8v7/deltablue,"),
+            "{}",
+            c.evidence
+        );
+        // An id that is not one of the 15.
+        let other = j.replace(r#""id":"octane/splay""#, r#""id":"octane/typescript""#);
+        o.kernels = Some(input(&root, "kernels.json", &other));
+        let c = &run(&o).unwrap().cells[0].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("missing kernels: octane/splay"),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("unknown kernels: octane/typescript"),
+            "{}",
+            c.evidence
+        );
+        // Item 2: two copies of one passing reading.
+        let two = exit2_json(&head, ["pass", "pass"], true)
+            .replace("v8v7-7-vs-node-jitless", "octane7-vs-qjs");
+        o.cross = Some(input(&root, "exit2.json", &two));
+        let c = &run(&o).unwrap().cells[1].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("reading octane7-vs-qjs 2 times"),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence
+                .contains("missing readings: v8v7-7-vs-node-jitless"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// CX5-C5 (Codex round 1): a measured tree with uncommitted changes proves nothing. Item 2:
+    /// `dirty: true` or no `dirty` (run.mjs and exit2.mjs write it) gives OPEN. Item 5: a
+    /// record with `dirty: true` is not counted; one with no `dirty` (the ep9-fuzz/v1
+    /// producers add it in month 5) counts with a NOTE.
+    #[test]
+    fn items_2_and_5_read_the_dirty_flag() {
+        let root = fake_repo("dirty");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let clean = exit2_json(&head, ["pass", "pass"], true);
+        for (j, want, text) in [
+            (clean.clone(), Status::Pass, "this tree (HEAD)"),
+            (
+                clean.replace(
+                    r#""dirty":false"#,
+                    r#""dirty":true,"dirty_paths":["crates/x.rs"]"#,
+                ),
+                Status::Open,
+                "measured with uncommitted changes (dirty): crates/x.rs",
+            ),
+            (
+                clean.replace(r#""dirty":false,"#, ""),
+                Status::Open,
+                "it does not say whether the tree was dirty",
+            ),
+        ] {
+            o.cross = Some(input(&root, "exit2.json", &j));
+            let c = &run(&o).unwrap().cells[1].0;
+            assert_eq!(c.status, want, "{text}: {c:?}");
+            assert!(c.evidence.contains(text), "{text}: {}", c.evidence);
+        }
+        let fuzz = |o: &mut Options, a: String| {
+            o.fuzz = vec![
+                input(&root, "f1.json", &a),
+                input(
+                    &root,
+                    "f2.json",
+                    &fuzz_json("cargo-fuzz", &head, 24.0, true, ""),
+                ),
+            ];
+        };
+        let f = fuzz_json("fuzzilli", &head, 100.0, true, "");
+        fuzz(&mut o, f.replace(r#""dirty":false"#, r#""dirty":true"#));
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence
+                .contains("f1.json: not counted: made with uncommitted changes (dirty)"),
+            "{}",
+            c.evidence
+        );
+        assert!(c.evidence.contains("Fuzzilli 0.0 / 100"), "{}", c.evidence);
+        fuzz(&mut o, f.replace(r#""dirty":false,"#, ""));
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains("NOTE: ")
+                && c.evidence
+                    .contains("f1.json does not say whether its tree was dirty"),
+            "{}",
+            c.evidence
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -3353,7 +3737,7 @@ mod tests {
 
     fn fuzz_json(tool: &str, commit: &str, hours: f64, counted: bool, crash: &str) -> String {
         format!(
-            r#"{{"schema":"ep9-fuzz/v1","tool":"{tool}","campaign":"{tool}-{hours}","target":"t","commit":"{commit}","cpu_hours":{hours},"counted":{counted},"crashes":[{crash}]}}"#
+            r#"{{"schema":"ep9-fuzz/v1","tool":"{tool}","campaign":"{tool}-{hours}","target":"t","commit":"{commit}","dirty":false,"cpu_hours":{hours},"counted":{counted},"crashes":[{crash}]}}"#
         )
     }
 
@@ -3486,7 +3870,7 @@ mod tests {
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(
             c.evidence.contains(
-                "not counted: not this tree: crates, Cargo.lock, rust-toolchain.toml changed"
+                "not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml changed"
             ),
             "{}",
             c.evidence

@@ -21,7 +21,8 @@
 // class M minimum of 10 paired rounds (M.rounds, options.rounds and the length of every kernel's
 // ratio series must all be the same number >= 10). A missing kernel or engine makes
 // the reading "incomplete". Freshness (the commit against the tree) is m1-exit's check: this
-// tool prints the commit.
+// tool prints the commit and copies run.mjs's list of changed fresh paths (`dirty`, a boolean,
+// and `dirty_paths`).
 //
 // Exit status: 0 both readings pass; 1 a reading does not pass; 2 usage error or not an
 // ep9-cross/v1 file.
@@ -108,6 +109,10 @@ export function readExit2(res) {
     schema: SCHEMA,
     source_schema: res.schema,
     commit: res.commit?.ep9 ?? null,
+    // Uncommitted changes in the fresh paths when the run started (run.mjs, CX5-C5): null when
+    // the run does not say; m1-exit item 2 gives OPEN unless it is false.
+    dirty: Array.isArray(res.commit?.dirty) ? res.commit.dirty.length > 0 : null,
+    dirty_paths: Array.isArray(res.commit?.dirty) ? res.commit.dirty : null,
     runner_commit: res.commit?.runner ?? null,
     started: res.started ?? null,
     host: { id: res.host?.id ?? null, gate_host: res.host?.gate_host ?? false, cpu: res.host?.measured?.cpu ?? null, platform: res.host?.measured?.platform ?? null },
@@ -122,7 +127,8 @@ const iv = (v) => (v?.interval ? `${f3(v.interval[0])}-${f3(v.interval[1])}` : "
 
 export function renderMarkdown(e) {
   const L = [];
-  L.push(`M1 exit 2 from the run of ep9 commit \`${(e.commit ?? "unknown").slice(0, 12)}\` (${e.started ?? "?"}), host ${e.host.id ?? "no host file"}${e.host.gate_host ? " (gate host)" : ""}.`);
+  const dirty = e.dirty === null ? " (the run does not say whether the tree had uncommitted changes)" : e.dirty ? ` + uncommitted changes in ${e.dirty_paths.join(", ")}` : "";
+  L.push(`M1 exit 2 from the run of ep9 commit \`${(e.commit ?? "unknown").slice(0, 12)}\`${dirty} (${e.started ?? "?"}), host ${e.host.id ?? "no host file"}${e.host.gate_host ? " (gate host)" : ""}.`);
   L.push("");
   L.push("| reading | threshold | per-round geomean (net) | interval | IQR % | geomean of medians (net / gross) | gate |");
   L.push("|---|---|---|---|---|---|---|");

@@ -7,13 +7,21 @@
 //! the commit is missing, the tree was dirty, or the paths the run depends on changed after the
 //! commit.
 //!
+//! The runner reads the facts twice (CX5-C1): before the run starts and when it writes the
+//! summary. The JSON names the first read; when the two differ in the commit, the dirty flag,
+//! the source kind or a tree id ([`settle`]), it writes `"dirty": true` and
+//! `"source_changed_during_run": true`, so m1-exit gives OPEN.
+//!
 //! - `"commit"`: `git rev-parse --verify HEAD` in the repo root (found at build time, as the
 //!   default paths are). Left out when git cannot answer.
 //! - `"dirty"`: `git status --porcelain --untracked-files=no` prints a line (a tracked file has
 //!   an uncommitted change). Left out when git cannot answer.
 //! - `"commit_source"`: `"git"`, or `"env"` when the repo root is no git tree (a copy of the
 //!   tree, as on a sandbox box) and `EP9_SOURCE_COMMIT` (40 hex digits) and `EP9_SOURCE_DIRTY`
-//!   (`0` or `1`) name them; the caller that copied the tree sets both.
+//!   (`0` or `1`) name them; the caller that copied the tree sets both. With no git tree and no
+//!   `EP9_SOURCE_COMMIT`: `"sbx-commit"` when `<root>/.sbx-commit` holds one line of 40 hex
+//!   digits (CX5-C6; `infra/x86-sandbox/sbx push-git` writes it after it extracts `git archive`
+//!   of that commit, committed files only, so `"dirty": false`).
 //! - `"made_by"`: `host:<hostname>`, plus ` gh-run:<GITHUB_RUN_ID>/<GITHUB_JOB>` in a GitHub job.
 //! - `"tree"`: `{"<path>": "<git tree or blob id at HEAD>", ...}` for [`TREE_PATHS`] (from git
 //!   only). A pull_request CI job runs on GitHub's merge commit, which the local repository does
@@ -43,12 +51,18 @@ pub const TREE_PATHS: [&str; 7] = [
 pub struct Source {
     pub commit: Option<String>,
     pub dirty: Option<bool>,
-    /// "git" or "env".
+    /// "git", "env" or "sbx-commit".
     pub from: &'static str,
     pub made_by: String,
     /// (path, id at HEAD) for each of [`TREE_PATHS`] that HEAD has (git only).
     pub tree: Vec<(&'static str, String)>,
+    /// The facts read when the summary was written differ from the ones read before the run
+    /// ([`settle`]).
+    pub changed: bool,
 }
+
+/// The file `infra/x86-sandbox/sbx push-git` writes in the root of the tree it extracts.
+pub const SBX_COMMIT: &str = ".sbx-commit";
 
 /// The trimmed stdout of `git -C <root> <args>`, or None when git fails.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
@@ -96,6 +110,21 @@ pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
             from: "git",
             made_by,
             tree,
+            changed: false,
+        };
+    }
+    if env("EP9_SOURCE_COMMIT").is_none()
+        && let Ok(text) = std::fs::read_to_string(root.join(SBX_COMMIT))
+    {
+        // One commit's committed files (`git archive`): never dirty. A bad line names nothing.
+        let commit = Some(text.trim().to_ascii_lowercase()).filter(|c| full_sha(c));
+        return Source {
+            dirty: commit.as_ref().map(|_| false),
+            commit,
+            from: "sbx-commit",
+            made_by,
+            tree: Vec::new(),
+            changed: false,
         };
     }
     let commit = env("EP9_SOURCE_COMMIT")
@@ -112,6 +141,26 @@ pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
         from: "env",
         made_by,
         tree: Vec::new(),
+        changed: false,
+    }
+}
+
+/// The facts of a run (CX5-C1): `before` (read before the run started) when `after` (read when
+/// the summary is written) names the same commit, dirty flag, source kind and tree ids; else
+/// `before` with `dirty` true and `changed` set, because the tests may have run on either tree.
+pub fn settle(before: Source, after: &Source) -> Source {
+    let same = before.commit == after.commit
+        && before.dirty == after.dirty
+        && before.from == after.from
+        && before.tree == after.tree;
+    if same {
+        before
+    } else {
+        Source {
+            dirty: Some(true),
+            changed: true,
+            ..before
+        }
     }
 }
 
@@ -140,7 +189,8 @@ pub fn process_env(key: &str) -> Option<String> {
 }
 
 /// Appends `,"commit":...,"dirty":...,"commit_source":...,"made_by":...` (a missing commit or
-/// dirty flag is left out, so m1-exit reads "no commit" and gives OPEN).
+/// dirty flag is left out, so m1-exit reads "no commit" and gives OPEN), then
+/// `,"source_changed_during_run":true` when [`settle`] saw a change, and `,"tree":{...}`.
 pub fn write_fields(out: &mut String, s: &Source) {
     if let Some(c) = &s.commit {
         out.push_str(",\"commit\":");
@@ -157,6 +207,9 @@ pub fn write_fields(out: &mut String, s: &Source) {
     json::string(out, s.from);
     out.push_str(",\"made_by\":");
     json::string(out, &s.made_by);
+    if s.changed {
+        out.push_str(",\"source_changed_during_run\":true");
+    }
     if !s.tree.is_empty() {
         out.push_str(",\"tree\":{");
         for (i, (p, id)) in s.tree.iter().enumerate() {
@@ -284,6 +337,105 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         let s = source(&sub, &no_env);
         assert_eq!((s.commit, s.from), (None, "env"));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// CX5-C1 (Codex round 1): the facts are read before the run and again when the summary
+    /// is written. A commit made between the two reads (here, in place of a long run), or
+    /// another env commit, gives the first commit with dirty true and the change flag; the
+    /// same facts give the first read unchanged.
+    #[test]
+    fn a_source_change_during_the_run_is_dirty() {
+        let d = tmp("during");
+        std::fs::write(d.join("Cargo.lock"), "a\n").unwrap();
+        git_in(&d, &["init", "-q"]);
+        git_in(&d, &["add", "-A"]);
+        git_in(&d, &["commit", "-q", "-m", "a"]);
+        let before = source(&d, &no_env);
+        let same = settle(before.clone(), &source(&d, &no_env));
+        assert_eq!(same, before);
+        let mut out = String::new();
+        write_fields(&mut out, &same);
+        assert!(!out.contains("source_changed_during_run"), "{out}");
+        // The checkout moves on while the tests run.
+        std::fs::write(d.join("Cargo.lock"), "b\n").unwrap();
+        git_in(&d, &["commit", "-q", "-am", "b"]);
+        let after = source(&d, &no_env);
+        assert_ne!(after.commit, before.commit);
+        let s = settle(before.clone(), &after);
+        assert_eq!(
+            (s.commit.clone(), s.dirty, s.changed),
+            (before.commit.clone(), Some(true), true)
+        );
+        let mut out = String::new();
+        write_fields(&mut out, &s);
+        assert!(out.contains(",\"dirty\":true,"), "{out}");
+        assert!(out.contains(",\"source_changed_during_run\":true"), "{out}");
+        // Only the dirty flag changes (an edit that is not committed): a change too.
+        std::fs::write(d.join("Cargo.lock"), "c\n").unwrap();
+        let s = settle(after.clone(), &source(&d, &no_env));
+        assert!(s.changed, "{s:?}");
+        // A git-free copy: the env seam names another commit at the end.
+        let copy = tmp("during-copy");
+        let at = |sha: &'static str| {
+            move |k: &str| match k {
+                "EP9_SOURCE_COMMIT" => Some(sha.to_string()),
+                "EP9_SOURCE_DIRTY" => Some("0".to_string()),
+                _ => None,
+            }
+        };
+        let a = "0123456789abcdef0123456789abcdef01234567";
+        let b = "89abcdef0123456789abcdef0123456789abcdef";
+        let first = source(&copy, &at(a));
+        assert!(!settle(first.clone(), &source(&copy, &at(a))).changed);
+        let s = settle(first, &source(&copy, &at(b)));
+        assert_eq!(
+            (s.commit.as_deref(), s.dirty, s.changed),
+            (Some(a), Some(true), true)
+        );
+        std::fs::remove_dir_all(d).unwrap();
+        std::fs::remove_dir_all(copy).unwrap();
+    }
+
+    /// CX5-C6 (Codex round 1): `sbx push-git` extracts `git archive` of one commit (committed
+    /// files only) and writes that commit to `<root>/.sbx-commit`. With no git tree and no
+    /// EP9_SOURCE_COMMIT, the runner names it: not dirty, `commit_source` "sbx-commit". A
+    /// line that is not 40 hex digits names nothing; the env goes first.
+    #[test]
+    fn a_sbx_push_git_tree_names_its_sbx_commit() {
+        let d = tmp("sbx");
+        let sha = "89abcdef0123456789abcdef0123456789abcdef";
+        std::fs::write(d.join(".sbx-commit"), format!("{sha}\n")).unwrap();
+        let s = source(&d, &no_env);
+        assert_eq!(
+            (s.commit.as_deref(), s.dirty, s.from),
+            (Some(sha), Some(false), "sbx-commit"),
+            "{s:?}"
+        );
+        let mut out = String::new();
+        write_fields(&mut out, &s);
+        assert!(
+            out.starts_with(&format!(
+                ",\"commit\":\"{sha}\",\"dirty\":false,\"commit_source\":\"sbx-commit\""
+            )),
+            "{out}"
+        );
+        // The env goes first.
+        let other = "0123456789abcdef0123456789abcdef01234567";
+        let env = |k: &str| match k {
+            "EP9_SOURCE_COMMIT" => Some(other.to_string()),
+            "EP9_SOURCE_DIRTY" => Some("1".to_string()),
+            _ => None,
+        };
+        let s = source(&d, &env);
+        assert_eq!(
+            (s.commit.as_deref(), s.dirty, s.from),
+            (Some(other), Some(true), "env")
+        );
+        // Not a full id: no commit, no dirty flag.
+        std::fs::write(d.join(".sbx-commit"), "abc123\n").unwrap();
+        let s = source(&d, &no_env);
+        assert_eq!((s.commit.as_deref(), s.dirty), (None, None), "{s:?}");
         std::fs::remove_dir_all(d).unwrap();
     }
 }
