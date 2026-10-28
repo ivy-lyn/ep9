@@ -2068,6 +2068,8 @@ fn run_native_overflow(
                 iso.interrupt_handle()
                     .request(Box::new(move || r2.store(true, Ordering::SeqCst)));
                 iso.cx.budget = budget;
+                // These tests count the units across a poll: the fixed reset to `BUDGET`.
+                iso.rt.call_window_jitter.set(crate::profile::JITTER_OFF);
                 let r = iso.with_cx_checkpoint(|cx| {
                     cx.run_script(native_overflow_program(calls, site), "overflow.js")
                         .map(|v| cx.display(v))
