@@ -25,17 +25,33 @@
 //! |---|---|---|
 //! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", on a fresh tree: no uncommitted change, and the tree ids of `crates`, `tools/bench`, `Cargo.lock` and `rust-toolchain.toml` equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
 //! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN); a gate host, not provisional; fresh: its commit is HEAD, or an ancestor with no change in the four paths of item 1 since (else OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
-//! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
-//! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24) | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records), 0 open unique crashes; a counted Fuzzilli record is fresh in `crates`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
+//! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted Fuzzilli record is fresh in `crates`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all four parts) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
-//! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
+//! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
 //! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241) | repo-wide, as the host |
 //!
+//! **Fresh, named inputs** (plan v9 section 7 step 3; P3-ORCH-14 finding 6, P3-ORCH-21): the
+//! exec and GC JSONs (`commit`, `dirty`, `made_by`, written by tools/test262/src/provenance.rs)
+//! and the nesting log (`m1-exit source: commit <sha> dirty <n> made-by <host or job>`, written
+//! by NESTING_CMD) name their commit, whether the tree had uncommitted changes, and the host or
+//! CI job that made them. The cell is at least OPEN, with a "stale input" or "provenance" reason,
+//! when the commit is missing, is not HEAD or an ancestor with no change in `crates`,
+//! `tools/bench`, `Cargo.lock`, `rust-toolchain.toml`, `tools/test262` or
+//! `third_party/test262.commit` since (unless the input names the git id of each of these paths
+//! and each equals HEAD's: a CI pull_request job runs on GitHub's merge commit, which the local
+//! repository does not have; the JSON `"tree"` object, the log line `m1-exit trees: <path>=<id>
+//! ...`), when the tree was dirty (or the input does not say), when no host or job is named, or
+//! when the job is of another CI run than `--ci-run`.
+//!
+//! **The CI run** names its head (`headSha`): HEAD, or an ancestor with no change in those paths,
+//! `expectations` or `.github` since. Else every Windows cell is at least OPEN ("stale CI run").
+//!
 //! **Fuzz records** (`ep9-fuzz/v1`, one JSON object per campaign; plan v9 V9-D24, V9-A30):
-//! `{"schema": "ep9-fuzz/v1", "tool": "fuzzilli" | "cargo-fuzz", "target": "<name>", "commit":
+//! `{"schema": "ep9-fuzz/v1", "tool": "fuzzilli" | "cargo-fuzz", "campaign": "<id>", "target": "<name>", "commit":
 //! "<sha>", "cpu_hours": <n>, "counted": true | false, "crashes": [{"id": "<hash>", "state":
 //! "open" | "fixed" | "duplicate" | "not-a-bug"}]}`. A record with `counted: false` only adds
 //! its open crashes. The record holds hashes only, never an input (rule 14).
@@ -96,6 +112,41 @@ const TITLES: [&str; 10] = [
 /// use them too.
 const FRESH_PATHS: [&str; 4] = ["crates", "tools/bench", "Cargo.lock", "rust-toolchain.toml"];
 
+/// Items 3, 4 and 8 (plan v9 section 7 step 3, P3-ORCH-14): the paths whose change after the
+/// input's commit makes a test262 or nesting input stale: [`FRESH_PATHS`], the runner and the
+/// test262 pin.
+const T262_FRESH_PATHS: [&str; 6] = [
+    "crates",
+    "tools/bench",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "tools/test262",
+    "third_party/test262.commit",
+];
+
+/// The Windows column (P3-ORCH-21): the CI run's head is HEAD, or an ancestor with no change in
+/// these paths since ([`T262_FRESH_PATHS`], the expectation files and the workflows).
+const CI_FRESH_PATHS: [&str; 8] = [
+    "crates",
+    "tools/bench",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "tools/test262",
+    "third_party/test262.commit",
+    "expectations",
+    ".github",
+];
+
+/// Item 8: the source line of a nesting log (NESTING_CMD): `m1-exit source: commit <sha> dirty
+/// <n> made-by <host or job>`, inside a cargo run (after its start line), so m0-exit, which reads
+/// the same log, sees one more body line.
+const SOURCE_LINE: &str = "m1-exit source: ";
+
+/// Item 8: the trees line of a nesting log (NESTING_CMD): `m1-exit trees: <path>=<id> ...` for
+/// [`T262_FRESH_PATHS`], so a log made on GitHub's pull_request merge commit (which the local
+/// repository does not have) can show that it ran HEAD's code.
+const TREES_LINE: &str = "m1-exit trees:";
+
 /// Item 1: the kernels (8 v8-v7 + 7 Octane).
 const KERNELS: usize = 15;
 const KERNEL_OK: &str = "runs, output equal";
@@ -147,6 +198,8 @@ const NESTING_TESTS: [&str; 9] = [
     "every_m1_form_is_listed",
 ];
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
+     echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
+     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' $p $(git rev-parse --verify --quiet HEAD:$p); done)\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -265,6 +318,8 @@ struct Ctx<'a> {
     verdicts: BTreeMap<String, (String, PathBuf)>,
     nesting: Option<(PathBuf, String)>,
     ci: Result<Ci, String>,
+    /// The CI run's head against HEAD ([`ci_fresh`]); Err(why) makes each Windows cell OPEN.
+    ci_fresh: Result<String, String>,
 }
 
 fn run(o: &Options) -> Result<Report, String> {
@@ -299,6 +354,10 @@ fn run(o: &Options) -> Result<Report, String> {
         (Some(id), None) => gh_run(id),
         (None, None) => Err("no CI run given (--ci-run <id> or --ci-run-json <file>)".into()),
     };
+    let ci_fresh = match &ci {
+        Ok(ci) => ci_fresh(&o.root, ci),
+        Err(e) => Err(e.clone()),
+    };
     let c = Ctx {
         o,
         kernels: read_json(&o.kernels)?,
@@ -313,6 +372,7 @@ fn run(o: &Options) -> Result<Report, String> {
             .map(|p| Ok::<_, String>((p.clone(), read(p)?)))
             .transpose()?,
         ci,
+        ci_fresh,
     };
     // An exec JSON of another command or target is a usage error (as m0-exit).
     let execs = c
@@ -365,11 +425,208 @@ fn run(o: &Options) -> Result<Report, String> {
     Ok(render(&c, cells, extra_rows(&o.root), missing))
 }
 
-/// The Windows cell from the CI run: NOT-RUN without a run; a missing job or step is NOT-RUN.
+/// The Windows cell from the CI run: NOT-RUN without a run; a missing job or step is NOT-RUN. A
+/// run of another tree ([`ci_fresh`]) proves nothing about HEAD: its PASS reads OPEN, with the
+/// reason first (P3-ORCH-21).
 fn with_ci(c: &Ctx, f: impl FnOnce(&Ci) -> Result<Cell, String>) -> Cell {
     match &c.ci {
         Err(e) => cell(Status::NotRun, e.clone()),
-        Ok(ci) => f(ci).unwrap_or_else(|e| cell(Status::NotRun, e)),
+        Ok(ci) => {
+            let got = f(ci).unwrap_or_else(|e| cell(Status::NotRun, e));
+            match &c.ci_fresh {
+                Ok(_) => got,
+                Err(why) => cell(
+                    got.status.max(Status::Open),
+                    format!("stale CI run: {why}; the run read: {}", got.evidence),
+                ),
+            }
+        }
+    }
+}
+
+/// The CI run's head against HEAD (P3-ORCH-21): the run names its head commit, and that is HEAD
+/// or an ancestor with no change in [`CI_FRESH_PATHS`] since. Err(why) gives OPEN.
+fn ci_fresh(root: &Path, ci: &Ci) -> Result<String, String> {
+    let id = ci.id.as_deref().unwrap_or("(no id)");
+    let Some(head) = ci.head.as_deref().filter(|h| !h.is_empty()) else {
+        return Err(format!("CI run {id} names no head commit (headSha)"));
+    };
+    fresh_since(root, head, &CI_FRESH_PATHS).map_err(|e| format!("CI run {id}: {e}"))
+}
+
+/// Where an input came from (P3-ORCH-14, P3-ORCH-21): the `commit`, `dirty` and `made_by`
+/// fields of an ep9-test262 JSON (tools/test262/src/provenance.rs), or the [`SOURCE_LINE`] of a
+/// nesting log.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Source {
+    commit: Option<String>,
+    dirty: Option<bool>,
+    made_by: Option<String>,
+    /// (path, id) of the paths the input names (`"tree"` of the JSON, the [`TREES_LINE`] of a log).
+    trees: BTreeMap<String, String>,
+}
+
+impl Source {
+    fn of_json(j: &Json) -> Source {
+        Source {
+            commit: j
+                .get("commit")
+                .and_then(Json::str)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string),
+            dirty: j.get("dirty").and_then(Json::bool),
+            made_by: j
+                .get("made_by")
+                .and_then(Json::str)
+                .filter(|m| !m.trim().is_empty())
+                .map(str::to_string),
+            trees: match j.get("tree") {
+                Some(Json::Obj(m)) => m
+                    .iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.str()?.to_string())))
+                    .collect(),
+                _ => BTreeMap::new(),
+            },
+        }
+    }
+
+    /// The source lines of a log: none gives an empty source (no commit); lines that differ, or
+    /// one in another form, are Err(why).
+    fn of_log(log: &str) -> Result<Source, String> {
+        let mut found: Option<Source> = None;
+        let mut trees: Option<BTreeMap<String, String>> = None;
+        for l in log.lines().map(str::trim) {
+            if let Some(rest) = l.strip_prefix(TREES_LINE) {
+                let mut t = BTreeMap::new();
+                for pair in rest.split_whitespace() {
+                    // `<path>=` (empty id): HEAD has no such path.
+                    let (p, id) = pair
+                        .split_once('=')
+                        .filter(|(p, _)| !p.is_empty())
+                        .ok_or_else(|| format!("a trees line in another form: {l:?}"))?;
+                    if !id.is_empty() {
+                        t.insert(p.to_string(), id.to_string());
+                    }
+                }
+                if trees.as_ref().is_some_and(|old| *old != t) {
+                    return Err("two trees lines that differ".into());
+                }
+                trees = Some(t);
+                continue;
+            }
+            let Some(rest) = l.strip_prefix(SOURCE_LINE) else {
+                continue;
+            };
+            let bad = || format!("a source line in another form: {l:?}");
+            let rest = rest.strip_prefix("commit ").ok_or_else(bad)?;
+            let (commit, rest) = rest.split_once(" dirty ").ok_or_else(bad)?;
+            let (dirty, made_by) = rest.split_once(" made-by ").ok_or_else(bad)?;
+            let dirty: u64 = dirty.trim().parse().map_err(|_| bad())?;
+            let s = Source {
+                commit: Some(commit.trim().to_string()).filter(|c| !c.is_empty()),
+                dirty: Some(dirty > 0),
+                made_by: Some(made_by.trim().to_string()).filter(|m| !m.is_empty()),
+                trees: BTreeMap::new(),
+            };
+            match &found {
+                Some(f) if *f != s => {
+                    return Err(format!(
+                        "two source lines that differ: commit `{}` and `{}`",
+                        short(f.commit.as_deref().unwrap_or("none")),
+                        short(s.commit.as_deref().unwrap_or("none"))
+                    ));
+                }
+                _ => found = Some(s),
+            }
+        }
+        let mut s = found.unwrap_or_default();
+        s.trees = trees.unwrap_or_default();
+        Ok(s)
+    }
+
+    /// The CI run id of `made_by` (` gh-run:<id>/<job>`).
+    fn ci_run(&self) -> Option<&str> {
+        let m = self.made_by.as_deref()?;
+        let rest = &m[m.find("gh-run:")? + "gh-run:".len()..];
+        Some(rest.split(['/', ' ']).next().unwrap_or(rest)).filter(|r| !r.is_empty())
+    }
+}
+
+/// The freshness and provenance of one input (plan v9 section 7 step 3; P3-ORCH-14 finding 6,
+/// P3-ORCH-21): (the OPEN reasons, a short text). The input names its commit, that commit is
+/// HEAD or an ancestor with no change in `paths` since ([`fresh_since`]), the tree had no
+/// uncommitted change, and the input names the host or job that made it; a job of another CI
+/// run than the one given is a mismatch.
+fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
+    let mut why = Vec::new();
+    let tree = match s.commit.as_deref() {
+        None => {
+            why.push(
+                "stale input: it names no commit (make it again with this tree's runner or command)"
+                    .to_string(),
+            );
+            "no commit".to_string()
+        }
+        Some(commit) => match fresh_since(&c.o.root, commit, paths) {
+            Ok(t) => format!("commit `{}`: {t}", short(commit)),
+            // Another commit (a pull_request merge commit of CI) that ran HEAD's code: every
+            // path's id equals HEAD's.
+            Err(_) if same_trees(&c.o.root, &s.trees, paths) => format!(
+                "commit `{}`, not HEAD or its ancestor, but its ids of {} equal HEAD's",
+                short(commit),
+                paths.join(", ")
+            ),
+            Err(e) => {
+                why.push(format!("stale input: {e}"));
+                format!("commit `{}`", short(commit))
+            }
+        },
+    };
+    match s.dirty {
+        Some(false) => {}
+        Some(true) => why.push("stale input: measured with uncommitted changes (dirty)".into()),
+        None => why.push("stale input: it does not say whether the tree was dirty".into()),
+    }
+    let by = match s.made_by.as_deref() {
+        Some(m) => m.to_string(),
+        None => {
+            why.push("provenance: it names no host or job (made_by)".into());
+            "no host".to_string()
+        }
+    };
+    if let (Some(theirs), Ok(ci)) = (s.ci_run(), &c.ci)
+        && let Some(ours) = ci.id.as_deref()
+        && theirs != ours
+    {
+        why.push(format!(
+            "provenance: made by CI run {theirs}, but the CI run given is {ours}"
+        ));
+    }
+    (why, format!("{tree}; made by {by}"))
+}
+
+/// Every path's id in `trees` is the id of that path at HEAD (a path HEAD does not have must be
+/// absent from `trees` too). An empty `trees` is not the same.
+fn same_trees(root: &Path, trees: &BTreeMap<String, String>, paths: &[&str]) -> bool {
+    !trees.is_empty()
+        && paths.iter().all(|p| {
+            let ours = git(
+                root,
+                &["rev-parse", "--verify", "--quiet", &format!("HEAD:{p}")],
+            );
+            trees.get(*p) == ours.as_ref()
+        })
+}
+
+/// Adds the source text of an input to a cell; a reason makes the cell at least OPEN.
+fn with_source(host: Cell, (why, text): (Vec<String>, String)) -> Cell {
+    if why.is_empty() {
+        cell(host.status, format!("{}; source: {text}", host.evidence))
+    } else {
+        cell(
+            host.status.max(Status::Open),
+            format!("{}; source: {text}. {}", host.evidence, why.join("; ")),
+        )
     }
 }
 
@@ -637,6 +894,14 @@ fn item3(c: &Ctx) -> (Cell, Cell) {
             )
         }
     };
+    // Fresh and named (P3-ORCH-14, P3-ORCH-21).
+    let host = match &c.exec {
+        Some((_, j)) => with_source(
+            host,
+            source_check(c, &Source::of_json(j), &T262_FRESH_PATHS),
+        ),
+        None => host,
+    };
     let win = with_ci(c, |ci| {
         let s = ci.step("test262 parse + exec", &["test262 exec"])?;
         let text = format!("step \"test262 exec\" {}", s.describe());
@@ -698,8 +963,61 @@ fn item4(c: &Ctx) -> (Cell, Cell) {
         host.status.max(skip.status),
         format!("{}; {}", host.evidence, skip.evidence),
     );
+    let host = if c.gc.is_empty() {
+        host
+    } else {
+        with_source(host, gc_source(c))
+    };
     let win = with_ci(c, gc_ci_cell);
     (host, win)
+}
+
+/// The source of the GC-stress inputs (P3-ORCH-14, P3-ORCH-21): each shard fresh and named, all
+/// shards of one commit, and the `--exec` run (the pass set they are compared with) of the same
+/// commit.
+fn gc_source(c: &Ctx) -> (Vec<String>, String) {
+    let mut why: Vec<String> = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
+    let mut commits: BTreeSet<Option<String>> = BTreeSet::new();
+    for (_, j) in &c.gc {
+        let s = Source::of_json(j);
+        let (w, t) = source_check(c, &s, &T262_FRESH_PATHS);
+        for w in w {
+            if !why.contains(&w) {
+                why.push(w);
+            }
+        }
+        if !texts.contains(&t) {
+            texts.push(t);
+        }
+        commits.insert(s.commit);
+    }
+    if commits.len() > 1 {
+        why.push(format!(
+            "provenance: the {} GC-stress inputs name {} commits ({}): one split measures one tree",
+            c.gc.len(),
+            commits.len(),
+            commits
+                .iter()
+                .map(|c| c
+                    .as_deref()
+                    .map_or("none".to_string(), |c| format!("`{}`", short(c))))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let (Some((ep, ej)), [Some(gc)]) = (&c.exec, commits.iter().collect::<Vec<_>>().as_slice())
+        && let Some(e) = Source::of_json(ej).commit
+        && e != *gc
+    {
+        why.push(format!(
+            "provenance: --exec {} measured `{}`, the GC-stress run `{}`: the same pass set needs one tree",
+            ep.display(),
+            short(&e),
+            short(gc)
+        ));
+    }
+    (why, texts.join(" | "))
 }
 
 /// The skip-list part of item 4 (V9-A24): its size, and each path added since `--base` is named
@@ -1059,7 +1377,16 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
     let mut hours: BTreeMap<&str, f64> = BTreeMap::new();
     let mut open: Vec<String> = Vec::new();
     let mut runs = Vec::new();
+    // Each campaign counts once (P3-ORCH-21): a file given twice, or a second record of a
+    // counted campaign id, adds no hours and no crash.
+    let mut files: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut campaigns: BTreeSet<String> = BTreeSet::new();
     for (p, j) in &c.fuzz {
+        let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        if !files.insert(canon) {
+            why.push(format!("{}: given twice, counted once", p.display()));
+            continue;
+        }
         if j.get("schema").and_then(Json::str) != Some("ep9-fuzz/v1") {
             status = Status::Fail;
             why.push(format!("{}: not an ep9-fuzz/v1 record", p.display()));
@@ -1075,18 +1402,48 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
                 continue;
             }
         };
+        let counted = j.get("counted").and_then(Json::bool).unwrap_or(false);
+        let campaign = j
+            .get("campaign")
+            .and_then(Json::str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if counted && let Some(id) = campaign {
+            let key = format!("{tool}/{id}");
+            if !campaigns.insert(key) {
+                why.push(format!(
+                    "{}: campaign {tool} {id:?} again, counted once",
+                    p.display()
+                ));
+                continue;
+            }
+        }
         for cr in j.get("crashes").and_then(Json::arr).unwrap_or(&[]) {
             let state = cr.get("state").and_then(Json::str).unwrap_or("open");
             if !CLOSED.contains(&state) {
-                open.push(format!(
+                let crash = format!(
                     "{} ({tool}, {state})",
                     cr.get("id").and_then(Json::str).unwrap_or("?")
-                ));
+                );
+                if !open.contains(&crash) {
+                    open.push(crash);
+                }
             }
         }
-        let counted = j.get("counted").and_then(Json::bool).unwrap_or(false);
         let h = j.get("cpu_hours").and_then(Json::num).unwrap_or(0.0);
         let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
+        let counted = counted
+            && match campaign {
+                Some(_) => true,
+                None => {
+                    status = status.max(Status::Open);
+                    why.push(format!(
+                        "{}: not counted: a counted record names no campaign id",
+                        p.display()
+                    ));
+                    false
+                }
+            };
         if counted {
             match fresh_since(&c.o.root, commit, fresh_paths) {
                 Ok(_) => {
@@ -1105,8 +1462,9 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             }
         }
         runs.push(format!(
-            "{} {tool} {:.1} CPU-h at `{}`{}",
+            "{} {tool}{} {:.1} CPU-h at `{}`{}",
             p.display(),
+            campaign.map_or(String::new(), |id| format!(" campaign {id:?}")),
             h,
             short(commit),
             if counted { "" } else { " (not counted)" }
@@ -1268,7 +1626,14 @@ fn item8(c: &Ctx) -> (Cell, Cell) {
                     parts.push(format!("{why} (make it with `{NESTING_CMD}`)"));
                 }
             }
-            cell(status, format!("{}: {}", p.display(), parts.join(", ")))
+            let src = match Source::of_log(log) {
+                Ok(s) => source_check(c, &s, &T262_FRESH_PATHS),
+                Err(e) => (vec![format!("provenance: {e}")], "not read".into()),
+            };
+            with_source(
+                cell(status, format!("{}: {}", p.display(), parts.join(", "))),
+                src,
+            )
         }
     };
     let win = with_ci(c, |ci| {
@@ -1390,14 +1755,18 @@ fn render(
         Ok(ci) => {
             let _ = writeln!(
                 md,
-                "- {CI_TRIPLE} column: CI run {} on commit `{}`{} ({} jobs).",
+                "- {CI_TRIPLE} column: CI run {} on commit `{}`{} ({} jobs); {}.",
                 ci.id.as_deref().unwrap_or("(no id)"),
                 ci.head.as_deref().unwrap_or("unknown"),
                 ci.url
                     .as_deref()
                     .map(|u| format!(", {u}"))
                     .unwrap_or_default(),
-                ci.jobs.len()
+                ci.jobs.len(),
+                match &c.ci_fresh {
+                    Ok(t) => format!("fresh: {t}"),
+                    Err(why) => format!("stale (every cell at least OPEN): {why}"),
+                }
             );
         }
         Err(e) => {
@@ -1692,9 +2061,18 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn exec_json(lp: u64, lt: u64, total: u64, gc: f64, fails: &[&str]) -> String {
+    /// The source fields of a runner JSON at `rev` of `root` (clean tree, a host named), with
+    /// the trailing comma.
+    fn src_at(root: &Path, rev: &str) -> String {
         format!(
-            r#"{{"command":"exec","target":"{HOST}","gc_stress":{gc},"files":{{"passed":{},"total":{total}}},"by_dir":{{"language":{{"files":{{"passed":{lp},"total":{lt}}}}}}},"results":[{}]}}"#,
+            r#""commit":"{}","dirty":false,"commit_source":"git","made_by":"host:test","#,
+            git_in(root, &["rev-parse", rev])
+        )
+    }
+
+    fn exec_json(lp: u64, lt: u64, total: u64, gc: f64, fails: &[&str], src: &str) -> String {
+        format!(
+            r#"{{"command":"exec","target":"{HOST}",{src}"gc_stress":{gc},"files":{{"passed":{},"total":{total}}},"by_dir":{{"language":{{"files":{{"passed":{lp},"total":{lt}}}}}}},"results":[{}]}}"#,
             total - fails.len() as u64,
             results(fails)
         )
@@ -1722,7 +2100,11 @@ mod tests {
             ),
             (20, 20, 1.0, Status::Fail, "a GC-stress run"),
         ] {
-            o.exec = Some(input(&root, "exec.json", &exec_json(lp, lt, 24, gc, &[])));
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(lp, lt, 24, gc, &[], &src_at(&root, "HEAD")),
+            ));
             let c = &run(&o).unwrap().cells[2].0;
             assert_eq!(c.status, want, "{c:?}");
             assert!(c.evidence.contains(text), "{text}: {}", c.evidence);
@@ -1734,15 +2116,29 @@ mod tests {
     fn item8_reads_the_m1_tests() {
         let root = fake_repo("item8");
         let mut o = opts(&root);
+        // The fixture has no source line: the tests pass, but the input is stale (P3-ORCH-14).
         o.nesting = Some(fixture("nesting.log"));
         let c = &run(&o).unwrap().cells[7].0;
-        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(
             c.evidence.contains("the 9 tests ok, 2 cargo runs"),
             "{}",
             c.evidence
         );
-        let log = read(&fixture("nesting.log")).unwrap();
+        assert!(
+            c.evidence.contains("stale input: it names no commit"),
+            "{}",
+            c.evidence
+        );
+        let log = with_source_line(
+            &read(&fixture("nesting.log")).unwrap(),
+            &git_in(&root, &["rev-parse", "HEAD"]),
+            0,
+        );
+        o.nesting = Some(input(&root, "nesting.log", &log));
+        let c = &run(&o).unwrap().cells[7].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(c.evidence.contains("source: commit `"), "{}", c.evidence);
         for (edit, want, text) in [
             (
                 log.replace("test depth_tests::m1_exponent ... ok\n", ""),
@@ -1772,6 +2168,518 @@ mod tests {
             assert_eq!(c.status, want, "{text}: {c:?}");
             assert!(c.evidence.contains(text), "{text}: {}", c.evidence);
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The nesting log with the NESTING_CMD source line after its first start line.
+    fn with_source_line(log: &str, commit: &str, dirty: u32) -> String {
+        log.replacen(
+            "m0-exit start: depth_tests\n",
+            &format!(
+                "m0-exit start: depth_tests\n{SOURCE_LINE}commit {commit} dirty {dirty} made-by host:test\n"
+            ),
+            1,
+        )
+    }
+
+    /// P3-ORCH-14 (finding 6): item 8 needs a fresh, clean, named nesting log.
+    #[test]
+    fn item8_needs_a_fresh_named_log() {
+        let root = fake_repo("item8src");
+        let first = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let log = read(&fixture("nesting.log")).unwrap();
+        // A later commit outside the fresh paths keeps it fresh.
+        write(&root, "docs/x.md", "doc\n");
+        commit_all(&root, "docs");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let two = with_source_line(&log, &first, 0).replace(
+            "m0-exit start: nesting_caps cli\n",
+            &format!("m0-exit start: nesting_caps cli\n{SOURCE_LINE}commit {head} dirty 0 made-by host:test\n"),
+        );
+        for (text, want, why) in [
+            (
+                with_source_line(&log, &first, 0),
+                Status::Pass,
+                "an ancestor of HEAD",
+            ),
+            (
+                with_source_line(&log, &head, 0),
+                Status::Pass,
+                "this tree (HEAD)",
+            ),
+            (
+                with_source_line(&log, &head, 3),
+                Status::Open,
+                "stale input: measured with uncommitted changes",
+            ),
+            (
+                with_source_line(&log, "0123abc", 0),
+                Status::Open,
+                "stale input: its commit `0123abc` is not in this repository",
+            ),
+            (
+                two,
+                Status::Open,
+                "provenance: two source lines that differ",
+            ),
+            (
+                log.replacen(
+                    "m0-exit start: depth_tests\n",
+                    &format!("m0-exit start: depth_tests\n{SOURCE_LINE}{head}\n"),
+                    1,
+                ),
+                Status::Open,
+                "a source line in another form",
+            ),
+            (
+                with_source_line(&log, &head, 0).replace(" made-by host:test", " made-by "),
+                Status::Open,
+                "a source line in another form",
+            ),
+        ] {
+            o.nesting = Some(input(&root, "nesting.log", &text));
+            let c = &run(&o).unwrap().cells[7].0;
+            assert_eq!(c.status, want, "{why}: {c:?}");
+            assert!(c.evidence.contains(why), "{why}: {}", c.evidence);
+        }
+        // A change in tools/test262 (or crates, ...) after the log's commit: stale.
+        write(&root, "tools/test262/src/main.rs", "// runner\n");
+        commit_all(&root, "runner");
+        o.nesting = Some(input(
+            &root,
+            "nesting.log",
+            &with_source_line(&log, &head, 0),
+        ));
+        let c = &run(&o).unwrap().cells[7].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("stale input: not this tree: crates, tools/bench, Cargo.lock, rust-toolchain.toml, tools/test262, third_party/test262.commit changed"),
+            "{}",
+            c.evidence
+        );
+        // So does a new test262 pin.
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        write(&root, "third_party/test262.commit", "abc\n");
+        commit_all(&root, "pin");
+        o.nesting = Some(input(
+            &root,
+            "nesting.log",
+            &with_source_line(&log, &head, 0),
+        ));
+        assert_eq!(run(&o).unwrap().cells[7].0.status, Status::Open);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The two NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads
+    /// them as this tree, clean, with its path ids; a CI merge commit that the repo does not have
+    /// passes on those ids, and fails when one id differs.
+    #[cfg(unix)]
+    #[test]
+    fn the_nesting_cmd_source_lines_work() {
+        let root = fake_repo("nestcmd");
+        // NESTING_CMD up to its first cargo run: the start line and the two source lines.
+        let prefix = &NESTING_CMD[..NESTING_CMD.find("cargo test").unwrap()];
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(prefix.trim().trim_end_matches(';'))
+            .current_dir(&root)
+            .env_remove("GITHUB_RUN_ID")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let made = read(&root.join("nesting.log")).unwrap();
+        std::fs::remove_file(root.join("nesting.log")).unwrap();
+        let text = made
+            .strip_prefix("m0-exit start: depth_tests\n")
+            .unwrap_or_else(|| panic!("{made}"))
+            .to_string();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        assert!(
+            text.starts_with(&format!("{SOURCE_LINE}commit {head} dirty 0 made-by host:")),
+            "{text}"
+        );
+        let src = Source::of_log(&text).unwrap();
+        // The fake repo has 4 of the 6 paths.
+        assert_eq!(src.trees.len(), 4, "{src:?}");
+        assert_eq!(
+            src.trees.get("Cargo.lock"),
+            Some(&git_in(&root, &["rev-parse", "HEAD:Cargo.lock"]))
+        );
+        let log = read(&fixture("nesting.log")).unwrap().replacen(
+            "m0-exit start: depth_tests\n",
+            &format!("m0-exit start: depth_tests\n{text}"),
+            1,
+        );
+        let mut o = opts(&root);
+        o.nesting = Some(input(&root, "nesting.log", &log));
+        let c = &run(&o).unwrap().cells[7].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        // A commit the repo does not have (GitHub's pull_request merge commit), same ids: fresh.
+        let merge = "e".repeat(40);
+        let foreign = log.replace(&format!("commit {head} "), &format!("commit {merge} "));
+        o.nesting = Some(input(&root, "nesting.log", &foreign));
+        let c = &run(&o).unwrap().cells[7].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains("but its ids of crates, tools/bench"),
+            "{}",
+            c.evidence
+        );
+        // ... but not when one id differs.
+        let lock = git_in(&root, &["rev-parse", "HEAD:Cargo.lock"]);
+        o.nesting = Some(input(
+            &root,
+            "nesting.log",
+            &foreign.replace(&lock, &"0".repeat(40)),
+        ));
+        let c = &run(&o).unwrap().cells[7].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("is not in this repository"),
+            "{}",
+            c.evidence
+        );
+        // Nor with no trees line.
+        let bare: String = foreign
+            .lines()
+            .filter(|l| !l.starts_with(TREES_LINE))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        o.nesting = Some(input(&root, "nesting.log", &bare));
+        assert_eq!(run(&o).unwrap().cells[7].0.status, Status::Open);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The exec JSON of a CI merge commit: fresh when its `tree` ids equal HEAD's.
+    #[test]
+    fn item3_reads_tree_ids_of_a_foreign_commit() {
+        let root = fake_repo("item3tree");
+        let mut o = opts(&root);
+        let ids: Vec<String> = ["crates", "tools/bench", "Cargo.lock", "rust-toolchain.toml"]
+            .iter()
+            .map(|p| {
+                format!(
+                    r#""{p}":"{}""#,
+                    git_in(&root, &["rev-parse", &format!("HEAD:{p}")])
+                )
+            })
+            .collect();
+        let src = |ids: &str| {
+            format!(
+                r#""commit":"{}","dirty":false,"made_by":"host:ci gh-run:1/build","tree":{{{ids}}},"#,
+                "e".repeat(40)
+            )
+        };
+        o.exec = Some(input(
+            &root,
+            "exec.json",
+            &exec_json(17, 20, 24, 0.0, &[], &src(&ids.join(","))),
+        ));
+        let c = &run(&o).unwrap().cells[2].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        // One path missing from the ids, or one more (a path HEAD does not have): stale.
+        for bad in [
+            ids[1..].join(","),
+            format!(r#"{},"tools/test262":"abc""#, ids.join(",")),
+        ] {
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(17, 20, 24, 0.0, &[], &src(&bad)),
+            ));
+            let c = &run(&o).unwrap().cells[2].0;
+            assert_eq!(c.status, Status::Open, "{bad}: {c:?}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// P3-ORCH-14 and P3-ORCH-21: the exec JSON of item 3 names a fresh commit, a clean tree and
+    /// its host; a job of another CI run than the one given is a mismatch.
+    #[test]
+    fn item3_needs_a_fresh_named_exec_json() {
+        let root = fake_repo("item3src");
+        let first = git_in(&root, &["rev-parse", "HEAD"]);
+        write(&root, "docs/x.md", "doc\n");
+        commit_all(&root, "docs");
+        let mut o = opts(&root);
+        let ok = src_at(&root, "HEAD");
+        let cases = [
+            (ok.clone(), Status::Pass, "source: commit `"),
+            (src_at(&root, &first), Status::Pass, "an ancestor of HEAD"),
+            (
+                String::new(),
+                Status::Open,
+                "stale input: it names no commit",
+            ),
+            (
+                ok.replace(r#""dirty":false"#, r#""dirty":true"#),
+                Status::Open,
+                "stale input: measured with uncommitted changes (dirty)",
+            ),
+            (
+                ok.replace(r#""dirty":false,"#, ""),
+                Status::Open,
+                "stale input: it does not say whether the tree was dirty",
+            ),
+            (
+                format!(
+                    r#""commit":"{}","dirty":false,"made_by":"host:t","#,
+                    "f".repeat(40)
+                ),
+                Status::Open,
+                "is not in this repository",
+            ),
+            (
+                ok.replace(r#""made_by":"host:test","#, ""),
+                Status::Open,
+                "provenance: it names no host or job (made_by)",
+            ),
+        ];
+        for (src, want, text) in cases {
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(17, 20, 24, 0.0, &[], &src),
+            ));
+            let c = &run(&o).unwrap().cells[2].0;
+            assert_eq!(c.status, want, "{text}: {c:?}");
+            assert!(c.evidence.contains(text), "{text}: {}", c.evidence);
+        }
+        // A runner change after the run: stale.
+        write(&root, "tools/test262/src/exec.rs", "// runner\n");
+        commit_all(&root, "runner");
+        o.exec = Some(input(
+            &root,
+            "exec.json",
+            &exec_json(17, 20, 24, 0.0, &[], &ok),
+        ));
+        let c = &run(&o).unwrap().cells[2].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("stale input: not this tree"),
+            "{}",
+            c.evidence
+        );
+        // A JSON made by CI run 999, read next to CI run 123: a mismatch.
+        let head = src_at(&root, "HEAD");
+        let by_ci = head.replace("host:test", "host:runner gh-run:999/build");
+        o.exec = Some(input(
+            &root,
+            "exec.json",
+            &exec_json(17, 20, 24, 0.0, &[], &by_ci),
+        ));
+        o.ci_run_json = Some(fixture("ci-run.json"));
+        let c = &run(&o).unwrap().cells[2].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence
+                .contains("provenance: made by CI run 999, but the CI run given is 123"),
+            "{}",
+            c.evidence
+        );
+        let by_ci = head.replace("host:test", "host:runner gh-run:123/build");
+        o.exec = Some(input(
+            &root,
+            "exec.json",
+            &exec_json(17, 20, 24, 0.0, &[], &by_ci),
+        ));
+        assert_eq!(run(&o).unwrap().cells[2].0.status, Status::Pass);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// P3-ORCH-21: the GC-stress inputs name one commit, the --exec input the same one.
+    #[test]
+    fn item4_inputs_name_one_tree() {
+        let root = fake_repo("item4src");
+        let first = git_in(&root, &["rev-parse", "HEAD"]);
+        write(&root, "docs/x.md", "doc\n");
+        commit_all(&root, "docs");
+        let head = src_at(&root, "HEAD");
+        let old = src_at(&root, &first);
+        let mut o = opts(&root);
+        let gc = |src: &str| gc_json(&["test/language/l00.js"], S1, src);
+        let exec = |src: &str| {
+            exec_json(
+                18,
+                20,
+                24,
+                0.0,
+                &["test/language/l00.js", "test/language/l01.js"],
+                src,
+            )
+        };
+        o.exec = Some(input(&root, "exec.json", &exec(&head)));
+        o.exec_gc = vec![input(&root, "gc.json", &gc(&head))];
+        let c = &run(&o).unwrap().cells[3].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        // --exec of an older (still fresh) commit than the GC run: not one tree.
+        o.exec = Some(input(&root, "exec.json", &exec(&old)));
+        let c = &run(&o).unwrap().cells[3].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("the same pass set needs one tree"),
+            "{}",
+            c.evidence
+        );
+        // Two GC inputs of two commits.
+        o.exec = None;
+        o.exec_gc = vec![
+            input(&root, "gc1.json", &gc(&head)),
+            input(&root, "gc2.json", &gc(&old)),
+        ];
+        let c = &run(&o).unwrap().cells[3].0;
+        assert!(c.status >= Status::Open, "{c:?}");
+        assert!(
+            c.evidence
+                .contains("provenance: the 2 GC-stress inputs name 2 commits"),
+            "{}",
+            c.evidence
+        );
+        // A dirty GC input.
+        o.exec_gc = vec![input(
+            &root,
+            "gc.json",
+            &gc(&head.replace(r#""dirty":false"#, r#""dirty":true"#)),
+        )];
+        o.exec = Some(input(&root, "exec.json", &exec(&head)));
+        let c = &run(&o).unwrap().cells[3].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(c.evidence.contains("(dirty)"), "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// P3-ORCH-21: the CI run's head is HEAD (or an ancestor with no change in the CI paths);
+    /// else each Windows cell is at least OPEN.
+    #[test]
+    fn a_stale_ci_run_proves_nothing() {
+        let root = fake_repo("cihead");
+        let first = git_in(&root, &["rev-parse", "HEAD"]);
+        let ci = |head: Option<&str>| {
+            let head = head.map_or(String::new(), |h| format!(r#""headSha":"{h}","#));
+            format!(
+                r#"{{"databaseId":5,{head}"jobs":[{{"name":"build + test (windows-x64)","steps":[{{"name":"Run cargo test --workspace --locked","status":"completed","conclusion":"success"}}]}}]}}"#
+            )
+        };
+        let mut o = opts(&root);
+        o.ci_run_json = Some(input(&root, "ci.json", &ci(Some(&first))));
+        let r = run(&o).unwrap();
+        assert_eq!(r.cells[7].1.status, Status::Pass, "{:?}", r.cells[7].1);
+        assert!(
+            r.markdown.contains("fresh: this tree (HEAD)"),
+            "{}",
+            r.markdown
+        );
+        // A docs commit since: still fresh.
+        write(&root, "docs/x.md", "doc\n");
+        commit_all(&root, "docs");
+        assert_eq!(run(&o).unwrap().cells[7].1.status, Status::Pass);
+        // An expectation change since: stale; so is a run with no head.
+        write(&root, "expectations/x.txt", "x\n");
+        commit_all(&root, "expect");
+        let r = run(&o).unwrap();
+        let w = &r.cells[7].1;
+        assert_eq!(w.status, Status::Open, "{w:?}");
+        assert!(
+            w.evidence
+                .starts_with("stale CI run: CI run 5: not this tree"),
+            "{}",
+            w.evidence
+        );
+        assert!(r.markdown.contains("stale (every cell at least OPEN)"));
+        o.ci_run_json = Some(input(&root, "ci.json", &ci(None)));
+        let w = &run(&o).unwrap().cells[7].1;
+        assert_eq!(w.status, Status::Open, "{w:?}");
+        assert!(
+            w.evidence.contains("names no head commit"),
+            "{}",
+            w.evidence
+        );
+        // A step that did not run stays NOT-RUN.
+        assert_eq!(run(&o).unwrap().cells[0].1.status, Status::NotRun);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// P3-ORCH-21: each fuzz campaign counts once.
+    #[test]
+    fn item5_counts_each_campaign_once() {
+        let root = fake_repo("item5dup");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let half = fuzz_json(
+            "fuzzilli",
+            &head,
+            50.0,
+            true,
+            r#"{"id":"c1","state":"open"}"#,
+        );
+        let cargo = fuzz_json("cargo-fuzz", &head, 24.0, true, "");
+        // The same file twice.
+        let f = input(&root, "half.json", &half);
+        o.fuzz = vec![f.clone(), f, input(&root, "cargo.json", &cargo)];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert!(
+            c.evidence.contains("half.json: given twice, counted once"),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("Fuzzilli 50.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("1 open unique crashes"),
+            "{}",
+            c.evidence
+        );
+        // Two files of one campaign id.
+        o.fuzz = vec![
+            input(&root, "a.json", &half),
+            input(&root, "b.json", &half),
+            input(&root, "cargo.json", &cargo),
+        ];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert!(
+            c.evidence
+                .contains("b.json: campaign fuzzilli \"fuzzilli-50\" again, counted once"),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("Fuzzilli 50.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        // Two campaigns of 50 h each: 100 h, PASS (crash closed).
+        let a = fuzz_json("fuzzilli", &head, 50.0, true, "");
+        let b = a.replace("fuzzilli-50", "fuzzilli-50-b");
+        o.fuzz = vec![
+            input(&root, "a.json", &a),
+            input(&root, "b.json", &b),
+            input(&root, "cargo.json", &cargo),
+        ];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        // A counted record with no campaign id is not counted.
+        o.fuzz = vec![
+            input(
+                &root,
+                "a.json",
+                &fuzz_json("fuzzilli", &head, 100.0, true, "")
+                    .replace(r#""campaign":"fuzzilli-100","#, ""),
+            ),
+            input(&root, "cargo.json", &cargo),
+        ];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("a counted record names no campaign id"),
+            "{}",
+            c.evidence
+        );
+        assert!(c.evidence.contains("Fuzzilli 0.0 / 100"), "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2013,10 +2921,10 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn gc_json(fails: &[&str], extra: &str) -> String {
+    fn gc_json(fails: &[&str], extra: &str, src: &str) -> String {
         let total = t262_files().len() as u64 - 1;
         format!(
-            r#"{{"command":"exec","target":"{HOST}","gc_stress":1,"timeout_ms":60000,"feedback_threshold":0,{extra}"skipped":1,"skipped_paths":["test/language/l19.js"],"files":{{"passed":{},"total":{total}}},"results":[{}],"expectations":{{"file":"x"}}}}"#,
+            r#"{{"command":"exec","target":"{HOST}","gc_stress":1,"timeout_ms":60000,"feedback_threshold":0,{extra}{src}"skipped":1,"skipped_paths":["test/language/l19.js"],"files":{{"passed":{},"total":{total}}},"results":[{}],"expectations":{{"file":"x"}}}}"#,
             total - fails.len() as u64,
             results(fails)
         )
@@ -2027,6 +2935,7 @@ mod tests {
     #[test]
     fn item4_same_pass_set_with_s1() {
         let root = fake_repo("item4");
+        let src = src_at(&root, "HEAD");
         let mut o = opts(&root);
         o.exec = Some(input(
             &root,
@@ -2037,37 +2946,42 @@ mod tests {
                 24,
                 0.0,
                 &["test/language/l00.js", "test/language/l01.js"],
+                &src,
             ),
         ));
         for (j, want, text) in [
             (
-                gc_json(&["test/language/l00.js"], S1),
+                gc_json(&["test/language/l00.js"], S1, &src),
                 Status::Pass,
                 "S1 on, verify cadence 1, files 22 / 23 + 1 skipped, infra 0, new failures 0",
             ),
             (
-                gc_json(&["test/language/l05.js"], S1),
+                gc_json(&["test/language/l05.js"], S1, &src),
                 Status::Fail,
                 "pass without GC-stress, fail under it: test/language/l05.js",
             ),
-            (gc_json(&[], ""), Status::Open, "no \"generational\" field"),
             (
-                gc_json(&[], r#""generational":true,"verify_cadence":8,"#),
+                gc_json(&[], "", &src),
+                Status::Open,
+                "no \"generational\" field",
+            ),
+            (
+                gc_json(&[], r#""generational":true,"verify_cadence":8,"#, &src),
                 Status::Fail,
                 "verify cadence 8, not 1",
             ),
             (
-                gc_json(&[], r#""generational":false,"verify_cadence":1,"#),
+                gc_json(&[], r#""generational":false,"verify_cadence":1,"#, &src),
                 Status::Fail,
                 "S1 off",
             ),
             (
-                gc_json(&[], S1).replace(r#""timeout_ms":60000"#, r#""timeout_ms":90000"#),
+                gc_json(&[], S1, &src).replace(r#""timeout_ms":60000"#, r#""timeout_ms":90000"#),
                 Status::Fail,
                 "timeout_ms 90000",
             ),
             (
-                gc_json(&[], S1)
+                gc_json(&[], S1, &src)
                     .replace(r#"["test/language/l19.js"]"#, r#"["test/language/l18.js"]"#),
                 Status::Fail,
                 "not in the list: test/language/l18.js",
@@ -2082,7 +2996,7 @@ mod tests {
         // Without --exec: against the committed expectation file (the run must name it).
         o.exec = None;
         // (A Windows temp path has backslashes: escape them for JSON.)
-        let named = gc_json(&["test/language/l00.js"], S1).replace(
+        let named = gc_json(&["test/language/l00.js"], S1, &src).replace(
             r#""file":"x""#,
             &format!(
                 r#""file":"{}""#,
@@ -2147,7 +3061,7 @@ mod tests {
 
     fn fuzz_json(tool: &str, commit: &str, hours: f64, counted: bool, crash: &str) -> String {
         format!(
-            r#"{{"schema":"ep9-fuzz/v1","tool":"{tool}","target":"t","commit":"{commit}","cpu_hours":{hours},"counted":{counted},"crashes":[{crash}]}}"#
+            r#"{{"schema":"ep9-fuzz/v1","tool":"{tool}","campaign":"{tool}-{hours}","target":"t","commit":"{commit}","cpu_hours":{hours},"counted":{counted},"crashes":[{crash}]}}"#
         )
     }
 
