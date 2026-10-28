@@ -879,3 +879,92 @@ queueJob(function () {{ log('job', w.deref() !== undefined); {job}; }});
         }
     }
 }
+
+thread_local! {
+    static SERVED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// A cleanup callback that counts its calls.
+fn count_served<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    SERVED.with(|n| n.set(n.get() + 1));
+    Ok(Local::undefined())
+}
+
+/// The cleanup list walks poll every 1,024 cells (`weakref::walk_step`; DL M4-P4-OPEN (3)):
+/// an `InterruptHandle` request runs inside one `unregister` call that walks 5,000 cells, so
+/// it has run when that script returns; the script has no back edge, and its few calls do
+/// not use up the budget, so no other poll runs it. Without the walk poll the request waits for the next budget
+/// poll (the mutation is in the GC5 report). No GC stress (5,000 registrations).
+#[test]
+fn an_unregister_walk_runs_interrupt_requests() {
+    common::on_big_stack(|| {
+        let mut i = log_isolate(false);
+        run(
+            &mut i,
+            r#"
+var tok = {}, fr = new FinalizationRegistry(function () {});
+var keep = [];
+(function () { for (var k = 0; k < 5000; k++) { var t = {}; keep.push(t); fr.register(t, k, tok); } })();
+"#,
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        i.interrupt_handle().request(Box::new(move || {
+            let _ = tx.send(());
+        }));
+        assert!(rx.try_recv().is_err(), "the request waits for a poll");
+        run(&mut i, "var a = fr.unregister({}); log('removed', a);").unwrap();
+        let ran = rx.try_recv().is_ok();
+        assert_eq!(take_log(), ["removed false"]);
+        assert!(ran, "the unregister walk ran the interrupt request");
+        run(&mut i, "log('left', fr.unregister(tok));").unwrap();
+        assert_eq!(take_log(), ["left true"]);
+        i.verify_heap().expect("a valid heap");
+    });
+}
+
+/// A termination request stops a long cleanup walk (`weakref::collect_cleared`, 30,000 dead
+/// cells) at its next poll: the checkpoint ends with the termination before the walk has
+/// moved 1,024 cells, so fewer than 1,024 callbacks ran; the cells not yet moved stay in the
+/// registry, and the next checkpoint (no GC between) serves them, each once. Without the walk
+/// poll the walk moves all 30,000 cells and the callbacks run until the budget poll (the
+/// mutation is in the GC5 report). No GC stress (30,000 registrations).
+#[test]
+fn a_termination_stops_a_long_cleanup_walk() {
+    const CELLS: usize = 30_000;
+    common::on_big_stack(|| {
+        let mut i = log_isolate(false);
+        i.register_host_function("countServed", 1, count_served);
+        run(
+            &mut i,
+            &format!(
+                r#"
+var tok = {{}}, fr = new FinalizationRegistry(countServed);
+(function () {{ for (var k = 0; k < {CELLS}; k++) fr.register({{}}, k, tok); }})();
+"#
+            ),
+        )
+        .unwrap();
+        scrub_and_collect(&mut i);
+        SERVED.with(|n| n.set(0));
+        i.terminate_handle().terminate();
+        let e = i
+            .perform_microtask_checkpoint()
+            .expect_err("the termination stops the walk");
+        assert!(e.terminated, "{}", e.message);
+        let first = SERVED.with(core::cell::Cell::get);
+        assert!(first < 1024, "{first} callbacks before the termination");
+        i.perform_microtask_checkpoint()
+            .map_err(|e| e.message)
+            .unwrap();
+        assert_eq!(SERVED.with(core::cell::Cell::get), CELLS);
+        run(&mut i, "log('left', fr.unregister(tok));").unwrap();
+        assert_eq!(take_log(), ["left false"]);
+        i.verify_heap().expect("a valid heap");
+    });
+}
