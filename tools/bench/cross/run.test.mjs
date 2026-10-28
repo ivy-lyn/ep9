@@ -844,6 +844,16 @@ test("exit2: fewer than 10 paired rounds, or series shorter than the run says, g
   assert.match(e.readings[1].reasons.join(), /M\.rounds \(10\) differs from options\.rounds \(12\)/);
 });
 
+test("exit2: engine_build is the ep9 engine's build line; none is null (X3, M5-P1)", () => {
+  const j = fixture();
+  assert.equal(readExit2(j).engine_build, null);
+  j.engines.find((e) => e.id === "ep9").engine_build = "features jit,become; preset jit";
+  j.engines.find((e) => e.id === "qjs").engine_build = "not ep9";
+  assert.equal(readExit2(j).engine_build, "features jit,become; preset jit");
+  delete j.engines;
+  assert.equal(readExit2(j).engine_build, null);
+});
+
 test("exit2: CLI exit status and JSON", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "exit2-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
