@@ -5,14 +5,19 @@
 #
 #   infra/fuzz/run.sh <minutes> [<out dir>]        out dir default /work/fuzz-out (made fresh)
 #
-# Environment: EP9 (default /opt/ep9/bin/ep9), FUZZILLI (default /opt/fuzzilli/bin/FuzzilliCli),
-# JOBS (Fuzzilli --jobs, default nproc), FUZZ_TAG (Fuzzilli --tag, default ep9-<hostname>).
+# Environment: EP9 (default /opt/ep9/bin/ep9; the jitless build is /opt/ep9/bin/ep9-jitless,
+# $EP9_JITLESS in the image), FUZZILLI (default /opt/fuzzilli/bin/FuzzilliCli), JOBS (Fuzzilli
+# --jobs, default nproc), FUZZ_TAG (Fuzzilli --tag, default ep9-<hostname>). The ep9 profile
+# forwards EP9_REPRL_HEAP_MB, EP9_REPRL_STACK_MB, EP9_REPRL_GC_STRESS and EP9_REPRL_PRESET
+# (jit | jitless) from this environment to the REPRL child.
 # The ep9-fuzz/v1 record (fuzz/scripts/record.sh; plan v10 §2.7):
 #   FUZZ_BOX      box name in the campaign id (default the hostname)
 #   FUZZ_SESSION  session name in the campaign id (default the UTC start time, HHMMSS)
 #   COUNTED       true | false (default false); true only for a run pre-registered by a
 #                 decisions-log row (plan rule 41)
 #   EP9_SOURCE    the source file of the image (default /opt/ep9/SOURCE: commit=, dirty=)
+# Target: `reprl-jitless` when line 2 of `$EP9 --version` says "preset jitless" (the jitless
+# build), else `reprl`.
 # Campaign id: fz-<UTC date YYYYMMDD>-<box>-<session>, one per box session (m1-exit counts each
 # id once). cpu_hours = the measured FuzzilliCli seconds x JOBS / 3600. Crash ids: the triage
 # group ids (infra/fuzz/triage.sh --ids). A FuzzilliCli exit other than 0, or no coverage line,
@@ -70,10 +75,17 @@ case "$src_commit" in *[!0-9a-f]* | '') src_commit=unknown ;; esac
 [ "${#src_commit}" -eq 40 ] || src_commit=unknown
 case "$src_dirty" in true | false) ;; *) src_dirty=unknown ;; esac
 [ "$src_commit" = unknown ] && src_dirty=unknown
+# The build line of the binary ("features <list>; preset <name>"; ep9_vm::build_info).
+build="$("$ep9" --version 2>/dev/null | sed -n 2p)"
+case "$build" in
+  *"; preset jitless") target=reprl-jitless ;;
+  *) target=reprl ;;
+esac
 
 rm -rf "$out"
 mkdir -p "$out"
 echo "run.sh: $minutes min, $jobs jobs, tag $tag, ep9 $(sha256sum "$ep9" | cut -c1-16)"
+echo "run.sh: target $target, build ${build:-unknown}, preset setting ${EP9_REPRL_PRESET:-default}"
 echo "run.sh: campaign $campaign, commit $src_commit, dirty $src_dirty, counted $counted"
 start=$(date +%s)
 # --maxRuntime stops Fuzzilli; timeout is only a guard (start-up tests, shutdown).
@@ -111,7 +123,7 @@ done
 n="$(wc -l < "$out/coverage.log" | tr -d ' ')"
 
 # The ep9-fuzz/v1 record: crash ids are the triage group ids (never a program text).
-rec=(--tool fuzzilli --campaign "$campaign" --target reprl --commit "$src_commit"
+rec=(--tool fuzzilli --campaign "$campaign" --target "$target" --commit "$src_commit"
   --dirty "$src_dirty" --counted "$counted" --seconds "$secs" --workers "$jobs" --binary "$ep9")
 if [ "${#crashes[@]}" -gt 0 ]; then
   ids="$(bash "$here/triage.sh" --ids ${crashes[@]+"${crashes[@]}"})" ||

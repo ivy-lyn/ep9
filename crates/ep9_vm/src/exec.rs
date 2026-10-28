@@ -97,6 +97,7 @@ impl Feedback {
 pub struct ExecOptions {
     preset: Preset,
     feedback: Feedback,
+    fuzz: FuzzHooks,
 }
 
 impl ExecOptions {
@@ -106,6 +107,7 @@ impl ExecOptions {
         ExecOptions {
             preset: Preset::JIT,
             feedback: Feedback::FULL,
+            fuzz: FuzzHooks::NONE,
         }
     }
 
@@ -114,6 +116,7 @@ impl ExecOptions {
         ExecOptions {
             preset: Preset::JITLESS,
             feedback: Feedback::ICS_ONLY,
+            fuzz: FuzzHooks::NONE,
         }
     }
 
@@ -194,5 +197,85 @@ impl std::fmt::Display for BuildInfo {
             self.features.join(",")
         };
         write!(f, "features {features}; preset {}", self.preset)
+    }
+}
+
+/// The fuzz-hook seat of an isolate (M5-P1 REPRL2; w16 O7, V10-D27): the place in
+/// [`ExecOptions`] where the hooks that a fuzzer host sets for one isolate live.
+///
+/// ```text
+/// REPRL child, per script:  ExecOptions (preset, feedback, fuzz hooks) -> Isolate::new_with
+///                                                                         -> Runtime::exec
+///                           the isolate drops at the end of the script: its hooks go with it
+/// ```
+///
+/// Why a seat in the options: V8 once leaked a fuzz flag from one REPRL script to the next
+/// through a process global (V8 ac1bee768f, MODES-CHECK-w16 O7). ep9 runs one fresh isolate per
+/// REPRL script, so a hook stored here cannot reach the next script; a static or a
+/// thread-local could (ep9 has per-thread state that outlives an isolate).
+///
+/// Empty in M5-P1: each hook comes with its feature (fuse pop after FR0 and CONST/REP;
+/// tier-up and deopt with T1; PIN), never before (V10-D27). How a hook is added:
+/// - a private field here, a plain `fn` pointer (`Copy`: the options sit in a `Cell` in the
+///   isolate's `Runtime`; no captured state, so per-run state stays in the isolate);
+/// - a setter on [`ExecOptions`] (a new H20 golden line, `embed (not core)`; never a public
+///   field), and its reader through `rt.exec.get().fuzz_hooks()`;
+/// - a `None` default, so a build or an embedder that sets no hook runs as before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FuzzHooks {}
+
+impl FuzzHooks {
+    /// No hook set: every preset constructor starts with it.
+    pub(crate) const NONE: FuzzHooks = FuzzHooks {};
+}
+
+impl ExecOptions {
+    /// The fuzz hooks of these options (the seat; none is built yet, V10-D27).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the seat: the first fuzz hook reads it (V10-D27)")
+    )]
+    pub(crate) const fn fuzz_hooks(&self) -> FuzzHooks {
+        self.fuzz
+    }
+}
+
+#[cfg(test)]
+mod fuzz_seat_tests {
+    //! The fuzz-hook seat (M5-P1 REPRL2): every preset starts empty, the feedback setter keeps
+    //! it, and each isolate reads its own copy (the one `Isolate::new_with` stored).
+
+    use super::{ExecOptions, Feedback, FuzzHooks};
+    use crate::{Isolate, IsolateConfig};
+
+    #[test]
+    fn every_preset_starts_with_an_empty_seat() {
+        for o in [
+            ExecOptions::jit(),
+            ExecOptions::jitless(),
+            ExecOptions::build_default(),
+            ExecOptions::default(),
+            ExecOptions::jitless().feedback(Feedback::FULL),
+        ] {
+            assert_eq!(o.fuzz_hooks(), FuzzHooks::NONE, "{o:?}");
+        }
+        assert_eq!(FuzzHooks::default(), FuzzHooks::NONE);
+    }
+
+    #[test]
+    fn each_isolate_holds_its_own_options() {
+        let a = Isolate::new_with(IsolateConfig::default(), ExecOptions::jitless()).unwrap();
+        let b = Isolate::new_with(
+            IsolateConfig::default(),
+            ExecOptions::jitless().feedback(Feedback::FULL),
+        )
+        .unwrap();
+        assert_eq!(a.rt.exec.get().feedback_mode(), Feedback::ICS_ONLY);
+        assert_eq!(b.rt.exec.get().feedback_mode(), Feedback::FULL);
+        assert_eq!(a.rt.exec.get().fuzz_hooks(), FuzzHooks::NONE);
+        drop(a);
+        let c = Isolate::new(IsolateConfig::default()).unwrap();
+        assert_eq!(c.rt.exec.get(), ExecOptions::default());
+        assert_eq!(b.rt.exec.get().fuzz_hooks(), FuzzHooks::NONE);
     }
 }

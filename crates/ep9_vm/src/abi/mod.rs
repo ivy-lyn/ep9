@@ -1516,6 +1516,36 @@ impl<'s> Cx<'s> {
         self.rt().heap.collect();
     }
 
+    /// Runs a minor garbage collection now (the REPRL `gc('minor')`; M5-P1 REPRL2, a part-2
+    /// addition): with the S1 generational heap (`HeapConfig::generational`) it frees only the
+    /// young cells that nothing reaches, and the young cells it keeps become old. A heap that
+    /// is not generational (S0) runs a full collection instead, as `collect_garbage` does. A
+    /// `Local` stays valid across it, as across `collect_garbage`.
+    ///
+    /// ```
+    /// use ep9_heap::HeapConfig;
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let s1 = IsolateConfig {
+    ///     heap: HeapConfig { generational: true, ..HeapConfig::default() },
+    ///     ..IsolateConfig::default()
+    /// };
+    /// let mut iso = Isolate::new(s1).unwrap();
+    /// let before = iso.gc_stats();
+    /// iso.with_cx(|cx| Ok(cx.collect_garbage_minor())).unwrap();
+    /// let after = iso.gc_stats();
+    /// assert_eq!(after.minor_collections, before.minor_collections + 1);
+    /// assert!(after.last_minor);
+    ///
+    /// // S0: a full collection, no minor one.
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// iso.with_cx(|cx| Ok(cx.collect_garbage_minor())).unwrap();
+    /// assert_eq!(iso.gc_stats().minor_collections, 0);
+    /// assert!(!iso.gc_stats().last_minor);
+    /// ```
+    pub fn collect_garbage_minor(&mut self) {
+        self.rt().heap.collect_minor();
+    }
+
     // ---- Math.random (M4-P0, part 2; V9-D16) ----
 
     /// The next value of `Math.random` (§21.3.2.27): a number in [0, 1) from the isolate's
