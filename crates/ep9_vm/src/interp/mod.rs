@@ -127,8 +127,9 @@ impl Dispatch {
 /// It holds no GC-visible state (see `runtime.rs`).
 ///
 /// The field list is a native-code contract: `crate::layout` exports the offsets native code
-/// reads (`CX_*`). M5-P0 (C-18) removed `proto_epoch` and made the three native fields
-/// unconditional, so the layout is the same in every build; the list is frozen for month 5.
+/// reads (`CX_*`). M5-P0 (C-18) removed the prototype epoch copy (V9-D7; the IC hit paths
+/// read validity cells) and made the three native fields unconditional, so the layout is the
+/// same in every build; the list is frozen for month 5.
 #[repr(C)]
 pub(crate) struct Cx {
     pub table: [Handler; 256],

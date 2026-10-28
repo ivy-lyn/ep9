@@ -47,14 +47,14 @@
 //!
 //! Month-5 modules (M5-P0, plan v10 §2.4; OBJECT_LAYOUT 5, IC_LAYOUT 3, VM_LAYOUT 1):
 //! [`layout`] (the layout facts native code bakes in, C-18; ungated since M5-P0) and exec.rs
-//! ([`ExecOptions`], [`Isolate::new_with`] and [`build_info`], C-23). Stubs (`// m5-stub`)
-//! that change nothing until their owners fill them: deopt.rs (the deopt core and its side
-//! table, M5-P1 SPIKEC-5), fuse.rs (the fuse registry, M5-P1 FR0), elements.rs (elements
-//! kinds, M5-P1 ELEM1 and M5-P2 ELEM2), slack.rs (slack tracking, M5-P2 SLACK), field_rep.rs
-//! (field representation and const bits, M5-P2 CONSTREP), external_ref.rs (`ExternalRef<T>`,
-//! M5-P3 M1A-CODE). Their hooks: `shape::note_change` -> fuse, `object::new_object` and
-//! `construct_ic::fast` -> slack, `props` field stores -> field_rep; each is an inline call
-//! that returns today's value.
+//! ([`ExecOptions`], [`Isolate::new_with`] and [`build_info`], C-23). Month-5 stubs (each
+//! marked on its first line) that change nothing until their owners fill them: deopt.rs (the
+//! deopt core and its side table, M5-P1 SPIKEC-5), fuse.rs (the fuse registry, M5-P1 FR0),
+//! elements.rs (elements kinds, M5-P1 ELEM1 and M5-P2 ELEM2), slack.rs (slack tracking, M5-P2
+//! SLACK), field_rep.rs (field representation and const bits, M5-P2 CONSTREP),
+//! external_ref.rs (`ExternalRef<T>`, M5-P3 M1A-CODE). Their hooks: `shape::note_change` ->
+//! fuse, `object::new_object` and `construct_ic::fast` -> slack, `props` field stores ->
+//! field_rep; each is an inline call that returns today's value.
 //!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
