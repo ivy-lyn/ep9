@@ -82,7 +82,7 @@ Rules:
 
 ### 1.2 ExecOptions, ExecPolicy and the three presets (proposal)
 
-Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:468). "A changed or removed core line is a change to a Frozen part; a new line is an addition" (golden:3-5). A new field is a changed line, so its kind is rewrite (H20:88). A new entry point and a new type are new lines, so they are part-2 additions, a fill (H20:89; test `a_new_isolate_method_is_a_new_line`, H20:131).
+Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:468). "A changed or removed core line is a change to a Frozen part; a new line is an addition" (golden:3-5). A new field is a changed line, so its kind is rewrite (H20:88). A new entry point and a new type are new lines, so they are part-2 additions, a fill (H20:89; test `a_new_isolate_method_is_a_new_line`, H20:132).
 
 ```
  Isolate::new_with(config: IsolateConfig, exec: ExecOptions) -> Result<Isolate, IsolateError>   (new line)
