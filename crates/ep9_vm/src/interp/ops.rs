@@ -182,10 +182,36 @@ fn fast_binop(op: BinOp, l: u64, r: u64) -> Option<u64> {
 ///
 /// `*` and `/` take [`binop_fast_boxed`] instead: their int32 arm boxes a double too, and with
 /// the record chosen first x86-64 LLVM saves a register on entry for them.
+///
+/// An int32 `+` or `-` (and `AddSmi`, `SubSmi`) runs its own int32 arm first: the sum or
+/// difference that fits is the hit path, with no record and no test of the result; the
+/// overflow arm (the checked operation failed) makes the double and records
+/// [`profile::INT32_OVERFLOW`] (MODES-D16, M5-P1 PROFILE5).
 #[inline(always)]
 fn binop_fast(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
     if matches!(op, BinOp::Mul | BinOp::Div) {
         return binop_fast_boxed(st, s, op, l, r);
+    }
+    if matches!(op, BinOp::Add | BinOp::Sub) && is_i32(l) && is_i32(r) {
+        let (a, b) = (i32_of(l), i32_of(r));
+        let exact = if matches!(op, BinOp::Add) {
+            a.checked_add(b)
+        } else {
+            a.checked_sub(b)
+        };
+        if let Some(i) = exact {
+            st.acc = int(i);
+            return Flow::Next;
+        }
+        core::hint::cold_path();
+        // The exact sum or difference of two int32s is a double outside int32.
+        let (x, y) = (f64::from(a), f64::from(b));
+        st.acc = num(if matches!(op, BinOp::Add) {
+            x + y
+        } else {
+            x - y
+        });
+        return Flow::Record(profile::Rec::new(s, profile::INT32_OVERFLOW));
     }
     let pair = profile::binary_pair_bits(l, r);
     match fast_binop(op, l, r) {
@@ -1087,12 +1113,15 @@ smi_ops! {
 op!(Inc(st, s: FSlot) {
     let v = st.acc;
     if is_i32(v) {
-        // An int32 operand is implicit (H16-Q2), also when the result is not an int32.
-        st.acc = match i32_of(v).checked_add(1) {
-            Some(i) => int(i),
-            None => num(f64::from(i32::MAX) + 1.0),
-        };
-        return Flow::Next;
+        // An int32 operand whose result fits is implicit (H16-Q2); the overflow arm records
+        // `INT32_OVERFLOW` (MODES-D16), so the arm that fits does not change.
+        if let Some(i) = i32_of(v).checked_add(1) {
+            st.acc = int(i);
+            return Flow::Next;
+        }
+        core::hint::cold_path();
+        st.acc = num(f64::from(i32::MAX) + 1.0);
+        return Flow::Record(profile::Rec::new(s, profile::INT32_OVERFLOW));
     }
     match number(v) {
         Some(x) => {
@@ -1108,12 +1137,15 @@ op!(Inc(st, s: FSlot) {
 op!(Dec(st, s: FSlot) {
     let v = st.acc;
     if is_i32(v) {
-        // An int32 operand is implicit (H16-Q2), also when the result is not an int32.
-        st.acc = match i32_of(v).checked_sub(1) {
-            Some(i) => int(i),
-            None => num(f64::from(i32::MIN) - 1.0),
-        };
-        return Flow::Next;
+        // An int32 operand whose result fits is implicit (H16-Q2); the overflow arm records
+        // `INT32_OVERFLOW` (MODES-D16), so the arm that fits does not change.
+        if let Some(i) = i32_of(v).checked_sub(1) {
+            st.acc = int(i);
+            return Flow::Next;
+        }
+        core::hint::cold_path();
+        st.acc = num(f64::from(i32::MIN) - 1.0);
+        return Flow::Record(profile::Rec::new(s, profile::INT32_OVERFLOW));
     }
     match number(v) {
         Some(x) => {
