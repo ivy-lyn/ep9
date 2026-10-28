@@ -72,7 +72,7 @@ import { setTimeout as sleepMs } from "node:timers/promises";
 import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile } from "../lib/host.mjs";
 import { geomean, median, verdict } from "../lib/stats.mjs";
 import { DEFAULT_WORKLOADS, EMPTY, expandWorkloads, materialize, WORKLOADS } from "./workloads.mjs";
-import { treeState } from "./kernels.mjs";
+import { splitVersion, treeState } from "./kernels.mjs";
 import { DEFAULT_HARNESS, HARNESSES, ROOT } from "./v8v7.mjs";
 
 export const SCHEMA = "ep9-cross/v1";
@@ -224,12 +224,13 @@ export function resolveEngines(ids, { ep9, shellsFile }) {
     if (!d.shell) {
       const v = spawnSync(ep9, ["--version"], { encoding: "utf8" });
       if (v.error) throw new UsageError(`--ep9 ${ep9}: ${v.error.message}`);
-      return { id, label: d.label, role: d.role, bin: ep9, args: d.args, version: (v.stdout || "").trim() };
+      // The first line, and the build line of M5-P0 (`engine_build`, null for an older binary).
+      return { id, label: d.label, role: d.role, bin: ep9, args: d.args, ...splitVersion(v.stdout || "") };
     }
     const s = shells.shells[d.shell];
     if (!s) throw new UsageError(`${shellsFile} has no ${d.shell} line (engine ${id})`);
     if (!existsSync(s.path)) throw new UsageError(`${s.path} (engine ${id}) does not exist (run bash scripts/sync-shells.sh)`);
-    return { id, label: d.label, role: d.role, bin: s.path, args: d.args, version: s.version };
+    return { id, label: d.label, role: d.role, bin: s.path, args: d.args, version: s.version, engine_build: null };
   });
 }
 
@@ -573,8 +574,9 @@ export async function run(o, deps = {}) {
       provisional,
       provisional_reasons: reasons,
       options: { rounds: o.rounds, warmup: o.warmup, settle_s: o.settleS, wait_min: o.waitMin, after_s: o.afterS, allow_busy: o.allowBusy },
-      // The binary by file name only: the version (ep9: the commit) names the build.
-      engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, bin: path.basename(e.bin), args: e.args })),
+      // The binary by file name only: the version (ep9: the commit) names the build, and ep9's
+      // engine_build its features and preset (MC-w17-5; null for the other engines).
+      engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, bin: path.basename(e.bin), args: e.args })),
       workloads: Object.values(files).map(({ file, ...w }) => ({ ...w, file: path.basename(file) })),
       M: { ratio: "t(engine) / t(ep9) per round; > 1: ep9 is faster", samples, ...m },
       R: r,
@@ -603,7 +605,7 @@ export function renderMarkdown(res) {
   const g = (c) =>
     !c ? "not checked" : c.limit === null ? `${c.load1} (no idle baseline: the guard cannot pass)` : `${c.load1} (limit ${c.limit}: ${c.pass ? "pass" : "FAIL"})`;
   L.push(`- 1-minute load: before ${g(ld.before)}; after ${g(ld.after)}; after each round ${Math.min(...roundLoads)}-${Math.max(...roundLoads)}. Idle baseline ${h.idle_baseline_load1 ?? "not measured"}.`);
-  L.push(`- Engines: ${res.engines.map((e) => `${e.label} (${e.role}; ${e.version})`).join("; ")}.`);
+  L.push(`- Engines: ${res.engines.map((e) => `${e.label} (${e.role}; ${e.version}${e.engine_build ? `, ${e.engine_build}` : ""})`).join("; ")}.`);
   L.push(`- ${res.M.rounds} paired rounds (+${res.options.warmup} warm-up dropped), rotated order. Ratio = t(engine) / t(ep9) per round: ep9's speed relative to that engine (> 1: ep9 faster). Net = minus the same engine's empty-script time in the same round. Interval: order statistics, ranks ${res.M.ratios[0]?.net?.ranks?.join(" and ") ?? res.M.ratios[0]?.gross.ranks?.join(" and ") ?? "-"}.`);
   L.push(res.provisional ? `- **PROVISIONAL**: ${res.provisional_reasons.join("; ")}. No row passes or fails a gate.` : "- Gate run: the load guard passed before and after.");
   L.push("");

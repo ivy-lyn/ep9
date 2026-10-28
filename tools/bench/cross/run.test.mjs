@@ -25,7 +25,7 @@ import {
   schedule,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
-import { blockerOf, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, treeState, withProbe } from "./kernels.mjs";
+import { blockerOf, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, splitVersion, treeState, withProbe } from "./kernels.mjs";
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
 import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
@@ -395,6 +395,32 @@ test("CLI: rotated rounds as planned, 10 rounds, JSON with every sample", (t) =>
   // Neither canary workload ran: the table says so.
   assert.match(readFileSync(f.md, "utf8"), /\| richards \| not in this run \| - \| no reading \|\n\| deltablue \| not in this run/);
   assert.equal(r.stdout, readFileSync(f.md, "utf8"));
+});
+
+test("splitVersion: the first line and the M5-P0 build line (MC-w17-5)", () => {
+  assert.deepEqual(splitVersion("ep9 0.0.0\r\nfeatures jit,become; preset jit\r\n"), {
+    version: "ep9 0.0.0",
+    engine_build: "features jit,become; preset jit",
+  });
+  assert.deepEqual(splitVersion("ep9 0.0.0\n"), { version: "ep9 0.0.0", engine_build: null });
+  assert.deepEqual(splitVersion(""), { version: "", engine_build: null });
+});
+
+test("CLI: ep9's build line goes into the JSON and the Markdown; an older ep9 gives null", (t) => {
+  const f = fakeSetup(t);
+  const args = ["--host", f.host(1000), "--rounds", "10", "--warmup", "0"];
+  let r = f.run(args);
+  assert.equal(r.status, 0, r.stderr);
+  let res = JSON.parse(readFileSync(f.out, "utf8"));
+  const ep9 = res.engines.find((e) => e.id === "ep9");
+  assert.equal(ep9.version, "fake ep9 0.0");
+  assert.equal(ep9.engine_build, "features none; preset jitless");
+  for (const e of res.engines.filter((e) => e.id !== "ep9")) assert.equal(e.engine_build, null, e.id);
+  assert.match(readFileSync(f.md, "utf8"), /ep9 T0 \(subject; fake ep9 0\.0, features none; preset jitless\)/);
+  r = f.run(args, { FAKE_NO_BUILD: "1" });
+  assert.equal(r.status, 0, r.stderr);
+  res = JSON.parse(readFileSync(f.out, "utf8"));
+  assert.equal(res.engines.find((e) => e.id === "ep9").engine_build, null);
 });
 
 test("CLI: the JSON says whether the fresh paths had uncommitted changes (CX5-C5)", (t) => {
@@ -895,6 +921,8 @@ test("kernels: --check runs all 15 on the oracle and the engine; JSON for m1-exi
   assert.deepEqual(Object.keys(j.tree), ["crates", "tools/bench", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]);
   assert.ok(Array.isArray(j.dirty));
   assert.equal(j.ep9.version, "fake-ep9 0.0");
+  assert.equal(j.ep9.engine_build, "features jit; preset jit");
+  assert.match(r.stdout, /\(fake-ep9 0\.0; features jit; preset jit\)/);
   assert.match(r.stdout, /15\/15 kernels run with node's output \(v8-v7 8\/8, Octane-7 7\/7\)\./);
 
   // ep9's error form in base.js, and a wrong output: exit 1, blocker named, place mapped.
