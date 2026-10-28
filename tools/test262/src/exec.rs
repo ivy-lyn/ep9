@@ -42,7 +42,7 @@ use ep9_vm::{
 use crate::frontmatter::{self, Meta};
 use crate::parse::{Mode, STRICT_PREFIX, modes};
 use crate::suite::{self, TestFile};
-use crate::{expect, json};
+use crate::{expect, json, provenance};
 
 /// Native stack of the thread that runs the isolates in a worker (the CLI uses the same).
 const RUN_STACK_BYTES: usize = 64 << 20;
@@ -1730,6 +1730,11 @@ fn summary_json(
     json::string(&mut out, opts.triple);
     out.push_str(",\"test262\":");
     json::string(&mut out, &opts.test262.display().to_string());
+    // Where the run came from (`cargo xtask m1-exit` items 3 and 4: freshness and provenance).
+    provenance::write_fields(
+        &mut out,
+        &provenance::source(&crate::repo_root(), &provenance::process_env),
+    );
     let _ = write!(
         out,
         ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"feedback_threshold\":{},\"skipped\":{}",

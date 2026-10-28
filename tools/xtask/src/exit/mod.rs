@@ -15,10 +15,12 @@
 //! | `report` | `Status`, `Cell`, text helpers, the stub-marker grep |
 //! | `records` | adr-lint: the review records of ADR amendments and the README Counts line (M4-P3) |
 //! | `drift` | adr-lint: the `path:line` references of the ADRs and the plan (M4-P3) |
+//! | `cites` | adr-lint: the short cites (`H31:66`, `AR:37`, ...) of plan doc 13 (M4-P5, MC-w16-8) |
 //! | `freeze` | the Frozen state of an ADR, part by part (its Freeze table; M4-P3) |
 
 pub(crate) mod adr;
 pub(crate) mod ci;
+pub(crate) mod cites;
 pub(crate) mod cross;
 pub(crate) mod drift;
 pub(crate) mod freeze;
