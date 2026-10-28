@@ -343,12 +343,7 @@ jobs:
           cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-debug.log || rc=$?
           echo "m0-exit status: $rc" | tee -a corpus-debug.log
           exit "$rc"
-      # M0 exit item 7 (nesting caps, the UTF-16 column): the m0-exit input log of NESTING_CMD
-      # (tools/xtask/src/m0_exit.rs), two cargo runs, each with its start and exit-status lines. The
-      # build + test job runs the same tests; this log is what m0-exit reads for the host column.
-      # M1 exit item 8 reads the same log: the "m1-exit source:" and "m1-exit trees:" lines are
-      # the two source lines of NESTING_CMD in tools/xtask/src/m1_exit.rs (same text; the test
-      # ci_yml_writes_the_nesting_cmd_source_lines checks it).
+      # The host-column log of m0-exit item 7 and m1-exit item 8 (nesting caps): NESTING_CMD of tools/xtask/src/{m0_exit.rs, m1_exit.rs}, the same lines (the m1-exit source lines too).
       - name: nesting caps (m0-exit item 7 log)
         if: ${{ !cancelled() && matrix.name != 'windows-x64' }}
         env:
