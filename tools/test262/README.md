@@ -130,6 +130,16 @@ or else the `.sbx-commit` file that `sbx push-git` writes (`commit_source` `sbx-
 dirty). An `EP9_SOURCE_DIRTY` other than `0` makes the run dirty on every path. The runner reads these facts before the run and again at the end; when they differ it
 writes `"dirty": true` and `"source_changed_during_run": true`.
 
+It also names the runner build and the test262 checkout (`cargo xtask m1-exit` X4 gives OPEN
+when one is missing, is not a full commit id, or does not match):
+
+| Field | Value |
+|---|---|
+| `runner_commit` | the commit the binary was built at (build.rs, `git rev-parse HEAD`) |
+| `runner_dirty` | a tracked file under the compiled paths (`runner_build.rs`: `crates`, `tools/test262`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the regress pin and patch set) differed from HEAD at build time; build.rs reruns on the git index and on any change there, so a binary built from an edit that was undone later still says `true` (X4: OPEN) |
+| `test262_head`, `test262_head_end` | the checkout HEAD before the run and at its end (X4: equal to `third_party/test262.commit`, else OPEN) |
+| `test262_dirty` | `git status` of the checkout, before or after the run, shows an edited or untracked file (the sync stamp `.ep9-stamp` does not count; X4: OPEN) |
+
 `--feedback-threshold <n>` is the number of calls before a function gets its feedback vector
 (H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.
 The result must not depend on it, so every threshold uses the same expectation file.

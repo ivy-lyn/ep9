@@ -46,9 +46,16 @@
 //!   (`EP9_RUNNER_DIRTY`; gates5 high 1). build.rs reruns on the git index and on any change
 //!   under those paths, so a binary built from an edit that was undone later still says `true`.
 //!   Left out when git could not answer. `true` or no field: m1-exit gives OPEN.
-//! - `"test262_head"`: the HEAD of the test262 checkout the run used (in:193 item 8), read when
-//!   the summary is written; left out when that directory is not the top of a git work tree.
-//!   m1-exit compares it with the pin, `third_party/test262.commit`.
+//! - `"test262_head"`: the HEAD of the test262 checkout the run used (in:193 item 8), read before
+//!   the run starts; left out when that directory is not the top of a git work tree. m1-exit
+//!   compares it with the pin, `third_party/test262.commit`.
+//! - `"test262_head_end"`: the same HEAD read again when the summary is written, and
+//!   `"test262_dirty"`: whether `git status --porcelain --untracked-files=normal` of the checkout
+//!   printed a line before the run or at its end (an edited test, or a new untracked one the
+//!   run picks up), not counting the `.ep9-stamp` file of scripts/sync-lib.sh; gates5 high 2.
+//!   Each is left out when git cannot answer. m1-exit gives OPEN when the dirty flag is `true`
+//!   or missing, or the two HEADs differ. (A patch set under `third_party/patches/test262`
+//!   would show as dirty; there is none.)
 //!
 //! **The export manifest** `.sbx-manifest` (written by the `sbx push-git` side, orchestrator):
 //! the output of `git ls-tree -r --full-tree <commit>` for the exported commit, one entry per
@@ -487,14 +494,54 @@ pub fn test262_head(dir: &Path) -> Option<String> {
         .filter(|c| full_sha(c))
 }
 
-/// Appends `,"runner_commit":...`, `,"runner_dirty":...` and `,"test262_head":...` (each left
-/// out when unknown, so m1-exit reads "no runner commit", "no runner dirty flag" or "no test262
-/// HEAD" and gives OPEN).
+/// The test262 checkout as one read sees it (gates5 high 2; module doc): its HEAD
+/// ([`test262_head`]) and whether it has changes ([`test262_dirty`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkout {
+    pub head: Option<String>,
+    pub dirty: Option<bool>,
+}
+
+/// One read of the test262 checkout at `dir` (before the run, and again at its end).
+pub fn test262_checkout(dir: &Path) -> Checkout {
+    Checkout {
+        head: test262_head(dir),
+        dirty: test262_dirty(dir),
+    }
+}
+
+/// The file scripts/sync-lib.sh writes in each checkout it syncs (`<pin> <patch hash>`): not
+/// a change of the test262 tree.
+const SYNC_STAMP: &str = ".ep9-stamp";
+
+/// Whether the test262 checkout at `dir` has a change (module doc): a tracked file that
+/// differs from HEAD or an untracked file, other than [`SYNC_STAMP`]. None unless `dir` is the
+/// top of its own git work tree, or when git fails.
+pub fn test262_dirty(dir: &Path) -> Option<bool> {
+    let top = git(dir, &["rev-parse", "--show-toplevel"])?;
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(Path::new(&top)) != canon(dir) {
+        return None;
+    }
+    let status = git(dir, &["status", "--porcelain", "--untracked-files=normal"])?;
+    Some(
+        status
+            .lines()
+            .any(|l| !l.is_empty() && l != format!("?? {SYNC_STAMP}")),
+    )
+}
+
+/// Appends `,"runner_commit":...`, `,"runner_dirty":...`, `,"test262_head":...` (HEAD of
+/// `t262` read before the run), `,"test262_head_end":...` (read now, `end`) and
+/// `,"test262_dirty":...` (a change in either read). Each is left out when unknown, so m1-exit
+/// reads "no runner commit", "no runner dirty flag", "no test262 HEAD" or "no test262 dirty
+/// flag" and gives OPEN.
 pub fn write_runner_fields(
     out: &mut String,
     runner: Option<&str>,
     runner_dirty: Option<bool>,
-    test262: Option<&str>,
+    t262: &Checkout,
+    end: &Checkout,
 ) {
     if let Some(c) = runner {
         out.push_str(",\"runner_commit\":");
@@ -507,9 +554,20 @@ pub fn write_runner_fields(
             ",\"runner_dirty\":false"
         });
     }
-    if let Some(h) = test262 {
+    if let Some(h) = &t262.head {
         out.push_str(",\"test262_head\":");
         json::string(out, h);
+    }
+    if let Some(h) = &end.head {
+        out.push_str(",\"test262_head_end\":");
+        json::string(out, h);
+    }
+    if let (Some(a), Some(b)) = (t262.dirty, end.dirty) {
+        out.push_str(if a || b {
+            ",\"test262_dirty\":true"
+        } else {
+            ",\"test262_dirty\":false"
+        });
     }
 }
 
@@ -1075,6 +1133,46 @@ mod tests {
         std::fs::remove_dir_all(copy).unwrap();
     }
 
+    /// gates5 high 2: the test262 checkout is dirty with an edited tracked file or a new
+    /// untracked one (the runner would run it), not with the sync stamp; a dirty read before or
+    /// at the end makes `test262_dirty` true; a directory that is not the top of its own work
+    /// tree names nothing.
+    #[test]
+    fn test262_dirty_reads_the_checkout() {
+        let d = tmp("t262-dirty");
+        assert_eq!(test262_dirty(&d), None);
+        std::fs::create_dir_all(d.join("test")).unwrap();
+        std::fs::write(d.join("test/a.js"), "a\n").unwrap();
+        git_in(&d, &["init", "-q"]);
+        git_in(&d, &["add", "-A"]);
+        git_in(&d, &["commit", "-q", "-m", "t"]);
+        assert_eq!(test262_dirty(&d), Some(false));
+        std::fs::write(d.join(SYNC_STAMP), "pin hash\n").unwrap();
+        assert_eq!(test262_dirty(&d), Some(false));
+        assert_eq!(test262_dirty(&d.join("test")), None);
+        let clean = test262_checkout(&d);
+        std::fs::write(d.join("test/new.js"), "n\n").unwrap();
+        assert_eq!(test262_dirty(&d), Some(true));
+        std::fs::remove_file(d.join("test/new.js")).unwrap();
+        std::fs::write(d.join("test/a.js"), "edited\n").unwrap();
+        let dirty = test262_checkout(&d);
+        assert_eq!(dirty.dirty, Some(true));
+        for (a, b) in [(&clean, &dirty), (&dirty, &clean)] {
+            let mut out = String::new();
+            write_runner_fields(&mut out, None, None, a, b);
+            assert!(out.ends_with(",\"test262_dirty\":true"), "{out}");
+        }
+        // Unknown at one end: no flag (m1-exit gives OPEN).
+        let unknown = Checkout {
+            head: clean.head.clone(),
+            dirty: None,
+        };
+        let mut out = String::new();
+        write_runner_fields(&mut out, None, None, &clean, &unknown);
+        assert!(!out.contains("test262_dirty"), "{out}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
     /// C2 and item 8: the runner's build commit (from build.rs, in this repository: a commit
     /// id) and the HEAD of a test262 checkout (only the top of its own work tree), both written
     /// by `write_runner_fields` and left out when unknown.
@@ -1091,18 +1189,27 @@ mod tests {
         // A directory inside it is not a checkout of its own.
         std::fs::create_dir_all(d.join("sub")).unwrap();
         assert_eq!(test262_head(&d.join("sub")), None);
+        let co = test262_checkout(&d);
+        assert_eq!(
+            (co.head.as_deref(), co.dirty),
+            (Some(head.as_str()), Some(false))
+        );
         let mut out = String::new();
-        write_runner_fields(&mut out, Some(rc), Some(true), Some(&head));
+        write_runner_fields(&mut out, Some(rc), Some(true), &co, &co);
         assert_eq!(
             out,
             format!(
-                ",\"runner_commit\":\"{rc}\",\"runner_dirty\":true,\"test262_head\":\"{head}\""
+                ",\"runner_commit\":\"{rc}\",\"runner_dirty\":true,\"test262_head\":\"{head}\",\"test262_head_end\":\"{head}\",\"test262_dirty\":false"
             )
         );
         // gates5 high 1: in this repository build.rs names the dirty flag too.
         assert!(runner_dirty().is_some());
+        let none = Checkout {
+            head: None,
+            dirty: None,
+        };
         let mut out = String::new();
-        write_runner_fields(&mut out, None, None, None);
+        write_runner_fields(&mut out, None, None, &none, &none);
         assert_eq!(out, "");
         std::fs::remove_dir_all(d).unwrap();
     }
