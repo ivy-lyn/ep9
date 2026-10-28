@@ -85,7 +85,7 @@ use crate::exit::freeze::frozen_by_m1;
 use crate::exit::gc_shards::{GC_JOB, merge_gc_shards, test262_files};
 use crate::exit::json::{Json, parse_json};
 use crate::exit::logs::{cargo_failure, invocation_check, invocations};
-use crate::exit::report::{Cell, Status, all_ok, cell, not_given, short, some_paths, stub_markers};
+use crate::exit::report::{Cell, Status, all_ok, cell, not_given, some_paths, stub_markers};
 use crate::exit::t262::{committed, count, exec_health, expectation_set, pct, recheck};
 use crate::exit::verdict::{newest_spike_review, verdict_table};
 use crate::exit::{git, read};
@@ -679,6 +679,9 @@ fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
             "provenance: it names no runner build commit (runner_commit; make it again with this tree's runner)"
                 .to_string(),
         ),
+        (Some(rc), _) if !is_hex_sha(rc) => why.push(format!(
+            "provenance: its runner_commit {rc:?} is not a commit id (40 hex digits)"
+        )),
         (Some(rc), Some(c)) if !rc.eq_ignore_ascii_case(c) => why.push(format!(
             "provenance: the runner was built at `{}`, the input names `{}`",
             short(rc),
@@ -691,6 +694,9 @@ fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
             "provenance: it names no test262 checkout HEAD (test262_head; make it again with this tree's runner)"
                 .to_string(),
         ),
+        (Some(h), _) if !is_hex_sha(h) => why.push(format!(
+            "provenance: its test262_head {h:?} is not a commit id (40 hex digits)"
+        )),
         (Some(_), None) => {
             why.push("provenance: this tree has no third_party/test262.commit pin".to_string())
         }
@@ -702,6 +708,26 @@ fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
         _ => {}
     }
     why
+}
+
+/// 40 hex digits in either case (gates5 medium 5): a build fact of X4 ([`runner_check`]) must be
+/// a full commit id; the runner writes lower case, and upper case names the same id.
+fn is_hex_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// [`crate::exit::report::short`] cut on character boundaries (gates5 medium 5): an input field
+/// that is no commit id may hold any text, and a cut inside a UTF-8 character would panic. More
+/// than 12 characters: the first 8, `…`, the last 5.
+fn short(s: &str) -> String {
+    let n = s.chars().count();
+    if n > 12 {
+        let head: String = s.chars().take(8).collect();
+        let tail: String = s.chars().skip(n - 5).collect();
+        format!("{head}\u{2026}{tail}")
+    } else {
+        s.to_string()
+    }
 }
 
 /// The freshness and provenance of one input (plan v9 section 7 step 3; P3-ORCH-14 finding 6,
@@ -3065,6 +3091,34 @@ mod tests {
                 Status::Pass,
                 "source: commit `",
             ),
+            // gates5 medium 5: a build fact that is not a full commit id is OPEN, also when it
+            // holds non-ASCII text (the shortening of the evidence text must not panic).
+            (
+                ok.replace(
+                    &format!(r#""runner_commit":"{head}""#),
+                    &format!(r#""runner_commit":"{}""#, "\u{e9}".repeat(10)),
+                ),
+                Status::Open,
+                "provenance: its runner_commit \"\u{e9}\u{e9}\u{e9}",
+            ),
+            (
+                ok.replace(
+                    &format!(r#""runner_commit":"{head}""#),
+                    r#""runner_commit":"abc123""#,
+                ),
+                Status::Open,
+                "provenance: its runner_commit \"abc123\" is not a commit id (40 hex digits)",
+            ),
+            (
+                ok.replace(PIN, &"\u{e9}".repeat(10)),
+                Status::Open,
+                "provenance: its test262_head \"\u{e9}\u{e9}\u{e9}",
+            ),
+            (
+                ok.replace(PIN, &PIN[..12]),
+                Status::Open,
+                "provenance: its test262_head \"a11111111111\" is not a commit id (40 hex digits)",
+            ),
         ];
         for (src, want, text) in cases {
             o.exec = Some(input(
@@ -4166,5 +4220,20 @@ mod tests {
         assert!(a(&["--host", "x", "--out", "o", "--what"]).is_err());
         assert!(a(&["--host", "x", "--out", "o", "--base", ""]).is_err());
         assert!(a(&["--host"]).is_err());
+    }
+
+    /// gates5 medium 5: the evidence shortening cuts on character boundaries, so an input field
+    /// with non-ASCII text cannot panic m1-exit; an ASCII id is cut as before.
+    #[test]
+    fn short_is_safe_for_any_text() {
+        let id = "0123abcd".repeat(5);
+        assert_eq!(short(&id), "0123abcd\u{2026}3abcd");
+        assert_eq!(short("abc"), "abc");
+        let e = "\u{e9}".repeat(20);
+        assert_eq!(
+            short(&e),
+            format!("{}\u{2026}{}", "\u{e9}".repeat(8), "\u{e9}".repeat(5))
+        );
+        assert_eq!(short(&"\u{e9}".repeat(12)), "\u{e9}".repeat(12));
     }
 }
