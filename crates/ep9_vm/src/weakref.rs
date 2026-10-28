@@ -56,9 +56,11 @@
 //!   poll every [`WALK_POLL_CELLS`] cells ([`walk_step`]; M5-P1 GC5, DL M4-P4-OPEN (3)): the
 //!   `InterruptHandle` requests run there (they run no JS, H23-Q6), and on a termination
 //!   request the first two stop, leave the rest pending ([`KeptObjects::set_pending`]) and
-//!   note it ([`KeptObjects::walk_stopped`]), so the checkpoint polls and ends with the
-//!   termination (`abi/jobs.rs`). [`remove_token`] runs inside `unregister` and its count must
-//!   be whole, so it never stops; the termination waits for the next JS poll.
+//!   note it ([`KeptObjects::walk_stopped`]), so `Cx::cleanup_finalization_registries`
+//!   (`abi/weakref.rs`) runs no callback, polls at once and ends with the termination, for
+//!   every caller (the checkpoint and a direct call). [`remove_token`] runs inside
+//!   `unregister` and its count must be whole, so it never stops; the termination waits for
+//!   the next JS poll.
 //!
 //! | Function | GC point | Job |
 //! |---|---|---|
@@ -375,8 +377,9 @@ impl KeptObjects {
     }
 
     /// True if a cleanup walk stopped at a termination request since the last
-    /// [`KeptObjects::take_pending`] ([`walk_step`]). The checkpoint then polls at once, so
-    /// the termination ends it. Not a GC point.
+    /// [`KeptObjects::take_pending`] ([`walk_step`]). `Cx::cleanup_finalization_registries`
+    /// (`abi/weakref.rs`) then polls at once, so the termination ends the run for every
+    /// caller. Not a GC point.
     pub(crate) fn walk_stopped(&self) -> bool {
         self.roots.walk_stopped.get()
     }
