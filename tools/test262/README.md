@@ -126,8 +126,18 @@ The `exec --json` summary also says where the run came from (`src/provenance.rs`
 m1-exit` items 3 and 4 read it): `commit`, `dirty`, `commit_source` (`git` or `env`), `made_by`
 (host, and the GitHub run and job) and `tree` (git ids of the paths a run depends on). A tree
 copy with no git takes `EP9_SOURCE_COMMIT` (40 hex digits) and `EP9_SOURCE_DIRTY` (`0`/`1`),
-or else the `.sbx-commit` file that `sbx push-git` writes (`commit_source` `sbx-commit`, not
-dirty). An `EP9_SOURCE_DIRTY` other than `0` makes the run dirty on every path. The runner reads these facts before the run and again at the end; when they differ it
+or else the `.sbx-commit` file that `sbx push-git` writes (`commit_source` `sbx-commit`; not
+dirty only when the tree matches the export manifest `.sbx-manifest`, `source_manifest`
+`checked`). The manifest format is the one of infra/x86-sandbox/README.md (push-git):
+
+```
+commit <full commit id>      the exported commit; must equal .sbx-commit (else mismatch)
+<blob id> <path>             one line per file, sorted by path (LC_ALL=C); raw path after the first space
+end <n>                      last line: n = the number of file lines (else unreadable: a write cut short)
+```
+
+Every line ends with `\n`. Each listed file must have its git blob id (a symlink: of its target
+text); the manifest names no mode, and unlisted files are not checked. An `EP9_SOURCE_DIRTY` other than `0` makes the run dirty on every path. The runner reads these facts before the run and again at the end; when they differ it
 writes `"dirty": true` and `"source_changed_during_run": true`.
 
 It also names the runner build and the test262 checkout (`cargo xtask m1-exit` X4 gives OPEN
