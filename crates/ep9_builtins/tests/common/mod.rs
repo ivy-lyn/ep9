@@ -174,18 +174,30 @@ pub fn conservative_roots(i: &Isolate) -> usize {
 /// adds the target to the kept list) and no microtask checkpoint (it clears the kept list).
 /// A FinalizationRegistry callback is the usual probe: `dead` runs
 /// `Cx::cleanup_finalization_registries` and reads what the callback logged.
+///
+/// Inlined, as [`scrub_and_collect`] (rule 35): both collections scrub in the test's own
+/// frame, so no slot of an out-of-line helper frame that the test's earlier calls left stale
+/// lies over the collection (CI run 40733504045, Win64 home space). `dead` runs out of line
+/// ([`is_dead`]), so its reads leave no cell address in the test's frame.
+#[inline(always)]
 pub fn assert_dies(i: &mut Isolate, what: &str, mut dead: impl FnMut(&mut Isolate) -> bool) {
     scrub_and_collect(i);
     let roots = conservative_roots(i);
-    if dead(i) {
+    if is_dead(i, &mut dead) {
         return;
     }
     scrub_and_collect(i);
-    if dead(i) {
+    if is_dead(i, &mut dead) {
         panic!(
             "{what}: kept by the conservative scan for one more GC ({roots} conservative roots \
              in that GC): a stale stack word, not a reference (plan rule 35)"
         );
     }
     panic!("{what}: still alive after two scrubbed collections: a reference keeps it");
+}
+
+/// `dead(i)`, out of line (see [`assert_dies`]).
+#[inline(never)]
+fn is_dead(i: &mut Isolate, dead: &mut impl FnMut(&mut Isolate) -> bool) -> bool {
+    dead(i)
 }
