@@ -185,7 +185,7 @@ A value, not a gate. The workload is `tools/bench/workloads/strings-m1.js`: 7 na
 
 ## Review record
 
-Rows 1 and 4 of the Accept record (plan v9 §6.1, §10: H19 stays Draft until the M4-P5 Accept step). Rows 2 and 3 come from the M4-P4 integration fixer (fixer B, 2026-10-27: rows 2 for each dated set; rows 3 where it fixed no finding of that row, the others Pending for the M4-P4 records reviewer; fixer B-2 re-ran fixer B's checks after the Mac reboot and filled its row-4 data), the Approval from the M4-P5 DOCS role (rule 21). The dated rows 1 and 4 cover each Change-log row dated after m0-exit one by one, so that `cargo xtask adr-lint` can match them once H19 is Accepted.
+Rows 1 and 4 of the Accept record (plan v9 §6.1, §10: H19 stays Draft until the M4-P5 Accept step). Rows 2 and 3 come from the M4-P4 integration fixer (fixer B, 2026-10-27: rows 2 for each dated set; rows 3 where it fixed no finding of that row, the others Pending for the M4-P4 records reviewer; fixer B-2 re-ran fixer B's checks after the Mac reboot and filled its row-4 data), the Approval from the M4-P5 DOCS role (rule 21). M4-P5 H19REC wrote rows 1, 3 and 4 of the three M4-P4 fixer A sets (2026-10-27). The dated rows 1 and 4 cover each Change-log row dated after m0-exit one by one, so that `cargo xtask adr-lint` can match them once H19 is Accepted.
 
 | Part (README §3.1) | Who | Result | Ref |
 |---|---|---|---|
