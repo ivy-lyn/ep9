@@ -14,7 +14,7 @@
 //! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 5 |
 //! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 5 |
 //! | ARRAY: elements store, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 5 |
-//! | the elements store read as Values is an ELEMENTS cell (kind 65); `CheckArray`, `LoadElement` and `StoreElement` trap on any other elements cell (ELEMENTS_DOUBLE 81, ELEMENTS_DICT 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS` | OBJECT_LAYOUT 5 |
+//! | the elements store read as Values is an ELEMENTS cell (kind 65); `CheckArray`, `LoadElement` and `StoreElement` exit on any other elements cell (ELEMENTS_DOUBLE 81, ELEMENTS_DICT 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS` | OBJECT_LAYOUT 5 |
 //! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 5 |
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
 //! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 3 |
@@ -179,6 +179,7 @@ for (var layoutI = 0; layoutI < 20; layoutI++) { layoutGet(layoutObj); layoutLen
 pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     let r = session.run(CHECK_SRC, "layout-probe.js");
     r.result.map_err(|e| format!("layout probe: {e}"))?;
+    check_versions(VM_VERSIONS)?;
     let o = session.function_value("layoutObj")?.to_bits();
     let a = session.function_value("layoutObj.b")?.to_bits();
     let f = session.function_value("layoutGet")?;
@@ -240,8 +241,46 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     }
     Ok(format!(
         "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
-         as ep9_vm::layout exports them"
+         as ep9_vm::layout exports them; versions {}",
+        PINNED
+            .iter()
+            .map(|(n, v)| format!("{n} {v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     ))
+}
+
+/// The versions this module's facts (the table above) and the emitter's frame and exit code
+/// were written against (SPIKEC-5). A VM that bumps one of them changed a fact compiled code
+/// bakes in, so [`check`] refuses until the spike is moved to it.
+pub const PINNED: [(&str, u32); 4] = [
+    ("OBJECT_LAYOUT", 5),
+    ("IC_LAYOUT", 3),
+    ("FRAME", 2),
+    ("VM_LAYOUT", 1),
+];
+
+/// The VM's own versions, in [`PINNED`] order.
+const VM_VERSIONS: [u32; 4] = {
+    use ep9_vm::versions::*;
+    [
+        OBJECT_LAYOUT_VERSION,
+        IC_LAYOUT_VERSION,
+        FRAME_VERSION,
+        VM_LAYOUT_VERSION,
+    ]
+};
+
+/// Refuses if a version in `vm` (in [`PINNED`] order) is not the pinned one.
+fn check_versions(vm: [u32; 4]) -> Result<(), String> {
+    for ((name, want), got) in PINNED.iter().zip(vm) {
+        if got != *want {
+            return Err(format!(
+                "{name} is {got} in ep9_vm, the spike is pinned to {want}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -254,6 +293,19 @@ mod tests {
         let mut s = crate::harness::Session::new(&Config::default()).expect("session");
         let note = check(&mut s).expect("layout");
         assert!(note.contains("FunctionInfo.feedback"), "{note}");
+        assert!(note.contains("VM_LAYOUT 1"), "{note}");
+    }
+
+    /// The pin refuses a VM with any other version.
+    #[test]
+    fn a_bumped_version_is_refused() {
+        assert_eq!(check_versions(VM_VERSIONS), Ok(()));
+        for i in 0..4 {
+            let mut v = VM_VERSIONS;
+            v[i] += 1;
+            let e = check_versions(v).expect_err("refused");
+            assert!(e.contains(PINNED[i].0), "{e}");
+        }
     }
 
     /// The values the emitter baked before the switch (the M4-P0 hand copies) are the
