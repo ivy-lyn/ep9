@@ -10,8 +10,12 @@ Not listed here:
 - Cargo dependencies (crates.io). Release builds ship a notice file that
   cargo-about generates from Cargo.lock (docs/plan/12-governance.md section 1).
   For example regress 0.12.0 (MIT OR Apache-2.0), the RX0 backend of
-  ep9_regexp. Its planned fork patches (third_party/patches/regress/) are
-  code in this repository, so they get an entry here when they land.
+  ep9_regexp. Since M5-P0 it builds from the fork checkout third_party/regress
+  (upstream v0.12.0 at third_party/regress.commit, through [patch.crates-io];
+  with 0 patches its code equals the crates.io 0.12.0 release), so it is still
+  in Cargo.lock as a path package. Its fork patches
+  (third_party/patches/regress/*.patch, none yet) are code in this repository,
+  so they get an entry here when the first one lands (M5-P3).
 - Checkouts that scripts/sync-*.sh fetch into third_party/<name>/ (git-ignored).
   They are not part of this repository and ep9 binaries do not contain them.
 
