@@ -812,3 +812,398 @@ fn the_fact_kind_map_is_one_to_one() {
         }
     }
 }
+
+// ---- DICTIONARY elements (M5-P2 ELEM2; H18-Q2, Q4) -------------------------------------------
+
+/// The `length` key.
+fn length_key(rt: &Runtime) -> u64 {
+    key(rt, "length")
+}
+
+/// A descriptor with only a value.
+fn vdesc(v: u64) -> Desc {
+    Desc {
+        value: Some(v),
+        ..Desc::default()
+    }
+}
+
+/// The capacity of the elements cell of `a` (a dense one).
+fn capacity(a: u64) -> u64 {
+    let e = object::cell(object::rd(object::cell(a), obj::ELEMENTS));
+    object::rd_i32(e, object::elems::CAPACITY) as u64
+}
+
+/// A data descriptor with all four fields.
+fn data_desc(v: u64, w: bool, e: bool, c: bool) -> Desc {
+    Desc {
+        value: Some(v),
+        writable: Some(w),
+        enumerable: Some(e),
+        configurable: Some(c),
+        ..Desc::default()
+    }
+}
+
+/// H18-Q2: an index 1,024 or more past the capacity moves the array to DICTIONARY (one-way)
+/// with its present elements as {w, e, c} entries; holes stay absent; `length` follows the
+/// highest index; reads, `in`, own keys, delete and later stores (near or far) go through the
+/// dictionary cell; the array never goes back to a dense kind.
+#[test]
+fn a_far_index_makes_a_dictionary_array() {
+    each(|cx, rt| {
+        let a = object::new_array(rt, 0);
+        for i in 0..3u64 {
+            assert!(property::set_index(cx, a, i, int(i as i32 + 1)).unwrap());
+        }
+        assert!(property::set_index(cx, a, 5, dbl(2.5)).unwrap());
+        assert_eq!(elements::kind_of(a), ek::HOLEY_DOUBLE);
+        let cap = capacity(a);
+        // One short of the gap: still dense.
+        let near = cap + u64::from(elements::ARRAY_GAP) - 1;
+        assert!(property::set_index(cx, a, near, int(7)).unwrap());
+        assert_eq!(elements::kind_of(a), ek::HOLEY_DOUBLE, "inside the gap");
+        let cap = capacity(a);
+        let far = cap + u64::from(elements::ARRAY_GAP);
+        assert!(property::set_index(cx, a, far, val_str(rt, "far")).unwrap());
+        assert_eq!(elements::kind_of(a), ek::DICTIONARY, "a store at the gap");
+        assert_eq!(cell_kind_at_16(a), kinds::ELEMENTS_DICT.get());
+        checked(rt, a);
+        assert_eq!(u64::from(object::array_len(a)), far + 1);
+        // The elements kept their values; a hole is still absent.
+        for (i, want) in [(0, int(1)), (1, int(2)), (2, int(3)), (5, dbl(2.5))] {
+            assert_eq!(property::get_index(cx, a, i).unwrap(), want, "a[{i}]");
+        }
+        assert_eq!(property::get_index(cx, a, near).unwrap(), int(7));
+        assert_eq!(property::get_index(cx, a, far).unwrap(), val_str(rt, "far"));
+        assert_eq!(property::get_index(cx, a, 3).unwrap(), UNDEFINED, "a hole");
+        assert!(!property::has_index(cx, a, 4));
+        assert!(property::has_index(cx, a, far));
+        // The dense readers find nothing in the dictionary cell (its capacity is 0).
+        assert_eq!(object::array_get(a, 0), None);
+        let keys = texts(property::own_property_keys(cx, a));
+        assert_eq!(
+            keys,
+            [
+                "0".to_string(),
+                "1".into(),
+                "2".into(),
+                "5".into(),
+                near.to_string(),
+                far.to_string(),
+                "length".into()
+            ]
+        );
+        // Stores near the start stay in the dictionary (one-way); a delete removes an entry.
+        assert!(property::set_index(cx, a, 3, int(4)).unwrap());
+        assert_eq!(elements::kind_of(a), ek::DICTIONARY, "one-way");
+        assert_eq!(property::get_index(cx, a, 3).unwrap(), int(4));
+        let k1 = crate::key::index_key(rt, 1);
+        assert!(property::internal_delete(cx, a, k1).unwrap());
+        assert!(!property::has_index(cx, a, 1));
+        // A `length` cut drops the entries at or past it.
+        let lk = length_key(rt);
+        assert!(property::define_own_property(cx, a, lk, vdesc(int(4))).unwrap());
+        assert_eq!(object::array_len(a), 4);
+        assert!(!property::has_index(cx, a, 5));
+        assert!(!property::has_index(cx, a, far));
+        assert_eq!(
+            texts(property::own_property_keys(cx, a)),
+            ["0", "2", "3", "length"]
+        );
+        checked(rt, a);
+    });
+}
+
+/// H18-Q4: 2^26 stays the dense limit, but an index or a `length` past it works: up to
+/// 2^32 - 2 for an index and 2^32 - 1 for `length` (ECMA-262), as DICTIONARY. Index
+/// 2^32 - 1 is not an array index: a property that leaves `length` alone.
+#[test]
+fn an_index_or_a_length_past_the_dense_limit_works() {
+    each(|cx, rt| {
+        let max_index = u64::from(u32::MAX) - 1;
+        let a = object::new_array(rt, 0);
+        assert!(property::set_index(cx, a, 0, int(1)).unwrap());
+        assert!(property::set_index(cx, a, max_index, int(2)).unwrap());
+        assert_eq!(elements::kind_of(a), ek::DICTIONARY);
+        assert_eq!(object::array_len(a), u32::MAX);
+        let lk = length_key(rt);
+        let len = property::get_own_property(cx, a, lk).unwrap().unwrap();
+        assert_eq!(
+            len.value,
+            Some(dbl(4294967295.0)),
+            "length 2^32 - 1, a double"
+        );
+        // The `length` IC reads +24 as a Value: the double there is the right Number.
+        assert_eq!(
+            object::rd(object::cell(a), object::arr::LENGTH),
+            dbl(4294967295.0)
+        );
+        // Index 2^32 - 1: a property, `length` stays.
+        assert!(property::set_index(cx, a, u64::from(u32::MAX), int(3)).unwrap());
+        assert_eq!(object::array_len(a), u32::MAX);
+        assert_eq!(
+            property::get_index(cx, a, u64::from(u32::MAX)).unwrap(),
+            int(3)
+        );
+        checked(rt, a);
+
+        // A `length` past the dense limit on a dense array: DICTIONARY, the elements kept.
+        let b = object::new_array(rt, 0);
+        assert!(property::set_index(cx, b, 1, dbl(0.5)).unwrap());
+        let big = num_bits(f64::from(object::arr::MAX_LENGTH) + 1.0);
+        assert!(property::define_own_property(cx, b, lk, vdesc(big)).unwrap());
+        assert_eq!(elements::kind_of(b), ek::DICTIONARY);
+        assert_eq!(object::array_len(b), object::arr::MAX_LENGTH + 1);
+        assert_eq!(property::get_index(cx, b, 1).unwrap(), dbl(0.5));
+        // And down again: the entries stay, `length` is an int32 again.
+        assert!(property::define_own_property(cx, b, lk, vdesc(int(2))).unwrap());
+        assert_eq!(object::array_len(b), 2);
+        assert_eq!(object::rd(object::cell(b), object::arr::LENGTH), int(2));
+        assert_eq!(elements::kind_of(b), ek::DICTIONARY, "one-way");
+        checked(rt, b);
+    });
+}
+
+fn num_bits(d: f64) -> u64 {
+    crate::conv::num(d)
+}
+
+/// H18-Q2 / H17 "Element accessors": an accessor element, an element with attributes other
+/// than {w, e, c} and a non-writable `length` are DICTIONARY entries and flags (v0 threw
+/// "not implemented"). A non-configurable entry stops a `length` cut (§10.4.2.4 step 17); a
+/// non-writable `length` refuses a new index at or past it and any other value.
+#[test]
+fn attributes_accessors_and_a_read_only_length_live_in_the_dictionary() {
+    each(|cx, rt| {
+        let a = object::new_array(rt, 0);
+        for i in 0..4u64 {
+            assert!(property::set_index(cx, a, i, int(i as i32)).unwrap());
+        }
+        // A read-only, non-configurable element 1.
+        let k1 = crate::key::index_key(rt, 1);
+        assert!(
+            property::define_own_property(cx, a, k1, data_desc(int(9), false, true, false))
+                .unwrap()
+        );
+        assert_eq!(elements::kind_of(a), ek::DICTIONARY);
+        let d = property::get_own_property(cx, a, k1).unwrap().unwrap();
+        assert_eq!(
+            (d.value, d.writable, d.enumerable, d.configurable),
+            (Some(int(9)), Some(false), Some(true), Some(false))
+        );
+        assert!(!property::set_index(cx, a, 1, int(5)).unwrap(), "read-only");
+        assert_eq!(property::get_index(cx, a, 1).unwrap(), int(9));
+        assert!(
+            !property::internal_delete(cx, a, k1).unwrap(),
+            "non-configurable"
+        );
+        // An accessor element 2 (a getter of undefined).
+        let k2 = crate::key::index_key(rt, 2);
+        let acc = Desc {
+            get: Some(UNDEFINED),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Desc::default()
+        };
+        assert!(property::define_own_property(cx, a, k2, acc).unwrap());
+        let d = property::get_own_property(cx, a, k2).unwrap().unwrap();
+        assert!(d.is_accessor());
+        assert_eq!(property::get_index(cx, a, 2).unwrap(), UNDEFINED);
+        // Not enumerable: own keys keep it, for-in does not.
+        assert_eq!(
+            texts(property::own_property_keys(cx, a)),
+            ["0", "1", "2", "3", "length"]
+        );
+        // A cut stops at the non-configurable element: `length` = 2, the result false.
+        let lk = length_key(rt);
+        assert!(!property::define_own_property(cx, a, lk, vdesc(int(0))).unwrap());
+        assert_eq!(object::array_len(a), 2);
+        assert!(property::has_index(cx, a, 1));
+        assert!(!property::has_index(cx, a, 2));
+        // A non-writable `length`: the flag in the dictionary cell.
+        let ro = Desc {
+            writable: Some(false),
+            ..Desc::default()
+        };
+        assert!(property::define_own_property(cx, a, lk, ro).unwrap());
+        let d = property::get_own_property(cx, a, lk).unwrap().unwrap();
+        assert_eq!((d.value, d.writable), (Some(int(2)), Some(false)));
+        assert!(!elements::length_writable(a));
+        assert!(
+            !property::set_index(cx, a, 2, int(1)).unwrap(),
+            "past a read-only length"
+        );
+        assert!(!property::has_index(cx, a, 2));
+        assert!(
+            property::set_index(cx, a, 0, int(8)).unwrap(),
+            "below it: fine"
+        );
+        assert!(!property::define_own_property(cx, a, lk, vdesc(int(5))).unwrap());
+        assert!(
+            property::define_own_property(cx, a, lk, vdesc(int(2))).unwrap(),
+            "the same value"
+        );
+        let rw = Desc {
+            writable: Some(true),
+            ..Desc::default()
+        };
+        assert!(
+            !property::define_own_property(cx, a, lk, rw).unwrap(),
+            "never writable again"
+        );
+        checked(rt, a);
+
+        // A read-only `length` on a dense array moves it to DICTIONARY too.
+        let b = object::new_array(rt, 0);
+        assert!(property::set_index(cx, b, 0, dbl(1.5)).unwrap());
+        assert!(property::define_own_property(cx, b, lk, ro).unwrap());
+        assert_eq!(elements::kind_of(b), ek::DICTIONARY);
+        assert_eq!(property::get_index(cx, b, 0).unwrap(), dbl(1.5));
+        assert!(!property::set_index(cx, b, 1, int(1)).unwrap());
+        assert_eq!(object::array_len(b), 1);
+        checked(rt, b);
+    });
+}
+
+/// H18 Rules "A store far past the end goes to dictionary elements, not to a dense
+/// allocation": one high index keeps the memory flat. `a[2**32 - 2] = 1` and a `length` of
+/// 2^32 - 1 each allocate a few hundred bytes (v0: `a[2**26 - 1] = 1` allocated 2^26 slots,
+/// 540,606,464 B peak RSS, H18 v0 notes). The heap's allocated-bytes counter is the measure:
+/// it counts the heap's pages as it takes them (256 KiB steps), so the bound is 1 MiB, 1/512
+/// of the v0 figure; the dictionary cell itself has the fewest buckets.
+#[test]
+fn one_high_index_keeps_rss_flat() {
+    const FLAT: u64 = 1 << 20;
+    each(|cx, rt| {
+        let a = object::new_array(rt, 0);
+        assert!(property::set_index(cx, a, 0, int(1)).unwrap());
+        let before = rt.heap.stats().allocated_bytes;
+        assert!(property::set_index(cx, a, u64::from(u32::MAX) - 1, int(1)).unwrap());
+        let grew = rt.heap.stats().allocated_bytes - before;
+        assert!(grew < FLAT, "a[2**32 - 2] = 1 allocated {grew} B");
+        assert_eq!(elements::kind_of(a), ek::DICTIONARY);
+        let d = object::cell(object::rd(object::cell(a), obj::ELEMENTS));
+        assert_eq!(
+            object::rd_i32(d, elements::dict::BUCKETS) as usize,
+            elements::dict::MIN_BUCKETS
+        );
+
+        let b = object::new_array(rt, 0);
+        let before = rt.heap.stats().allocated_bytes;
+        let lk = length_key(rt);
+        assert!(property::define_own_property(cx, b, lk, vdesc(dbl(4294967295.0))).unwrap());
+        let grew = rt.heap.stats().allocated_bytes - before;
+        assert!(grew < FLAT, "length = 2**32 - 1 allocated {grew} B");
+
+        // Under the dense limit but far past the capacity: the gap rule, also flat.
+        let c = object::new_array(rt, 0);
+        let before = rt.heap.stats().allocated_bytes;
+        assert!(
+            property::set_index(cx, c, u64::from(object::arr::MAX_LENGTH) - 1, int(1)).unwrap()
+        );
+        let grew = rt.heap.stats().allocated_bytes - before;
+        assert!(grew < FLAT, "a[2**26 - 1] = 1 allocated {grew} B");
+        checked(rt, a);
+        checked(rt, b);
+        checked(rt, c);
+    });
+}
+
+/// A store or define on an array (the storage-form test).
+type Op = dyn Fn(&mut VmCx, u64);
+
+/// H18 Rules "The storage form follows the kind" (M5-P1-ORCH-11: the shape guard is the kind
+/// source of the tiers, so the cell at +16 must be the form the shape's kind names): every
+/// kind 0-6 that stores, defines and `length` writes reach has the form `storage_form_ok`
+/// names (none or ELEMENTS for 0, 1, 4, 5; none or ELEMENTS_DOUBLE for 2, 3; ELEMENTS_DICT
+/// for 6), the shape holds the kind, and the check refuses a wrong form.
+#[test]
+fn the_storage_form_follows_the_shape_kind() {
+    each(|cx, rt| {
+        let mut seen = [false; 7];
+        let lk = length_key(rt);
+        let mut note = |a: u64| {
+            let k = elements::kind_of(a);
+            assert_eq!(
+                k,
+                shape::elements_kind(shape::shape_of(a)),
+                "the shape holds the kind"
+            );
+            assert!(
+                elements::storage_form_ok(a),
+                "kind {k}, cell {:#x}",
+                cell_kind_at_16(a)
+            );
+            checked(rt, a);
+            seen[k as usize] = true;
+        };
+        // Each may fail (a read-only element 0 refuses a later store): the kinds still hold.
+        let ops: [&Op; 8] = [
+            &|cx, a| {
+                let _ = property::set_index(cx, a, 0, int(1)).unwrap();
+            },
+            &|cx, a| {
+                let _ = property::set_index(cx, a, 2, int(1)).unwrap();
+            },
+            &|cx, a| {
+                let _ = property::set_index(cx, a, 0, dbl(0.5)).unwrap();
+            },
+            &|cx, a| {
+                let _ = property::set_index(cx, a, 3, dbl(0.5)).unwrap();
+            },
+            &|cx, a| {
+                let _ = property::set_index(cx, a, 0, UNDEFINED).unwrap();
+            },
+            &|cx, a| {
+                let _ = property::set_index(cx, a, 4, NULL_).unwrap();
+            },
+            &|cx, a| {
+                let _ = property::set_index(cx, a, 5000, int(1)).unwrap();
+            },
+            &|cx, a| {
+                let k = crate::key::index_key(cx.rt(), 0);
+                let d = data_desc(int(1), false, true, true);
+                let _ = property::define_own_property(cx, a, k, d).unwrap();
+            },
+        ];
+        // Every pair of operations, from an empty array and from a 2-element one.
+        for (n, first) in ops.iter().enumerate() {
+            for second in ops.iter() {
+                for start in [0, 2] {
+                    let a = object::new_array(rt, 0);
+                    for i in 0..start {
+                        assert!(property::set_index(cx, a, i, int(1)).unwrap());
+                    }
+                    note(a);
+                    first(cx, a);
+                    note(a);
+                    second(cx, a);
+                    note(a);
+                    if n % 2 == 0 {
+                        let _ = property::define_own_property(cx, a, lk, vdesc(int(1))).unwrap();
+                        note(a);
+                    }
+                }
+            }
+        }
+        assert_eq!(seen, [true; 7], "every kind 0-6 was reached");
+        // The check refuses a wrong form: a DOUBLE array whose +16 is a Values cell.
+        let a = object::new_array(rt, 0);
+        assert!(property::set_index(cx, a, 0, dbl(0.5)).unwrap());
+        let e = object::rd(object::cell(a), obj::ELEMENTS);
+        let values = rt.alloc(kinds::ELEMENTS, object::elems::DATA + 8);
+        object::init(values, object::elems::CAPACITY, int(1));
+        object::init(values, object::elems::DATA, int(1));
+        object::wr(
+            &rt.heap,
+            object::cell(a),
+            obj::ELEMENTS,
+            values.to_value().to_bits(),
+        );
+        assert!(!elements::storage_form_ok(a));
+        assert!(elements::check(a).is_err());
+        object::wr(&rt.heap, object::cell(a), obj::ELEMENTS, e);
+        assert!(elements::storage_form_ok(a));
+    });
+}

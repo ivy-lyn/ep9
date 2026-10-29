@@ -587,10 +587,18 @@ impl<'a> Exporter<'a> {
     }
 
     /// A Literal slot (`literal_site.rs`): the count of the **cold-path results** (F-R7) and
-    /// the shape of the last one (weak key; none if it died or has no description). v0 has no
-    /// elements kinds (H18), so `elements` is none.
+    /// the shape of the last one (weak key; none if it died or has no description). At an
+    /// array-literal site that ran cold, the value half is its ALLOC_SITE handler (IC_LAYOUT
+    /// 3, V10-D6; M5-P2 ELEM2): the count is the handler's, and `elements` is the site's
+    /// elements kind, the kind its next arrays are born with (the join of every kind its
+    /// arrays reached, so at least the last result's; through the one map
+    /// `elements::to_fact`, MC-w18-4). An object-literal site (and an array site before its
+    /// first cold run) has none.
     fn literal(&mut self, v: u64, i: u32) -> Option<LiteralFacts> {
-        let count = int_value(v, i)?;
+        let (count, elements) = match crate::literal_site::site_of(feedback::value(v, i)) {
+            Some((k, count)) => (count, crate::elements::to_fact(k)),
+            None => (int_value(v, i)?, None),
+        };
         let key = feedback::key(v, i);
         let shape = if is_cell_bits(key) && shape::is_shape(key) {
             self.shape_desc(key)
@@ -600,7 +608,7 @@ impl<'a> Exporter<'a> {
         Some(LiteralFacts {
             count,
             shape,
-            elements: None,
+            elements,
         })
     }
 

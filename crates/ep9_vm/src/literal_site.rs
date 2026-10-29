@@ -4,10 +4,12 @@
 //! handler (an IC_HANDLER cell of handler kind `CLONE`, `ic::hk`: +16 int32 count, +24 the
 //! result shape (weak), +32 int32 0), or the hole and a POLY_IC cell (2-4 cases: source shape
 //! (weak), clone handler) or the int32 [`ic::MEGA`]. A hit allocates with the result shape and
-//! copies the constants (Literal) or the source's fields (CloneObject); computed or nested
-//! values stay off the T0 hit. An object literal whose nested values are all shallow arrays
-//! (splay's leaf nodes) is built on its cold path from the recorded shape ([`cold_object`]),
-//! not by the generic per-key define.
+//! copies the constants (Literal) or the source's fields (CloneObject); computed values stay
+//! off the T0 hit. An object literal whose nested values are all shallow arrays (splay's leaf
+//! nodes) is built from the recorded shape ([`nested_object`]) by its T0 hit (M5-P2 ELEM2) and
+//! by its cold path ([`cold_object`]), not by the generic per-key define. An array-literal site
+//! keeps an ALLOC_SITE handler ([`ah`], IC_LAYOUT 3; V10-D6): its arrays are born in the
+//! elements kind its earlier arrays reached ([`array_site`], [`generalize`]).
 //!
 //! ```text
 //! interp/ops.rs fast bodies (M4-P0 hooks)          cold path
@@ -23,7 +25,8 @@
 //! | Slot | Key (weak) | Value (strong) | Hit |
 //! |---|---|---|---|
 //! | Literal, new | undefined | int32 0 | none |
-//! | Literal, seen | the shape of the last result the cold path made | int32 count of cold-path results (saturating) | object: a shallow boilerplate whose result shape is the key; array: a shallow boilerplate (or `[]`) and the realm's array shape |
+//! | Literal, seen | the shape of the last result the cold path made | int32 count of cold-path results (saturating) | object: a shallow boilerplate whose result shape is the key, or one whose nested values are flat array boilerplates; array: a shallow boilerplate (or `[]`) and the realm's array shape |
+//! | Literal, array site seen (M5-P2) | as above | an ALLOC_SITE handler ([`ah`]: the site's elements kind, the result shape (weak), the count); every array made there keeps it at ARRAY +32 | as above, with the handler's result shape when it is a fresh array shape of the realm (the site's kind) |
 //! | CloneObject, new | undefined | int32 0 | none |
 //! | CloneObject, monomorphic | the source shape | a `CLONE` handler | a source with that shape |
 //! | CloneObject, polymorphic | the hole | a POLY_IC cell, 2-4 cases | a source with a case's shape |
@@ -78,6 +81,22 @@ pub(crate) mod ch {
     pub const COUNT: usize = 16;
     pub const RESULT: usize = 24;
     pub const ZERO: usize = 32;
+    pub const SIZE: usize = 40;
+}
+
+/// ALLOC_SITE handler fields (an IC_HANDLER cell, kind 70, handler kind `ALLOC_SITE`; IC_LAYOUT
+/// 3, the `ic.rs` table; V10-D6, MODES-D19; M5-P2 ELEM2). The Literal slot of an array-literal
+/// site holds it in its value half once the site ran cold, and every array made there holds
+/// it at ARRAY +32 (`object::arr::ALLOC_SITE`).
+pub(crate) mod ah {
+    pub const KIND: usize = 8;
+    /// The int32 elements kind the site's arrays are born with (`elements::kind`, 0-5): the
+    /// join of every kind its arrays reached (one-way, [`super::generalize`]).
+    pub const ELEMENTS_KIND: usize = 16;
+    /// The shape (weak) of a fresh array of that kind: the hit allocates with it.
+    pub const RESULT: usize = 24;
+    /// The int32 count of the site's cold-path results (saturating).
+    pub const COUNT: usize = 32;
     pub const SIZE: usize = 40;
 }
 
@@ -210,7 +229,7 @@ fn literal_shape(fi: &FunctionInfo, s: FSlot) -> Option<u64> {
 #[inline(always)]
 pub(crate) fn fast_object(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) -> Flow {
     if flags & SHALLOW == 0 {
-        return Flow::Cold;
+        return fast_nested_object(st, boilerplate, s);
     }
     let fi = st.info();
     let Some(shape) = literal_shape(fi, s) else {
@@ -284,14 +303,39 @@ pub(crate) fn fast_array(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) -
         elements::allows(literal_kind(fi, elements), shape::elements_kind(shape)),
         "a literal key kind below its constants' kind"
     );
+    let (shape, site) = site_shape(rt, fi, s, shape);
     rt.enter(st.fp, st.pc);
-    // GC points; `shape` lives in a Rust local. A computed element (`None`) stays a hole until
-    // `StaInArrayLiteral` stores it, as on the cold path.
+    // GC points; `shape` and `site` live in Rust locals. A computed element (`None`) stays a
+    // hole until `StaInArrayLiteral` stores it, as on the cold path.
     let a = alloc_array(rt, shape, elements.len(), |i| {
         elements[i].map_or(HOLE, |ci| fi.constant(ci.0))
     });
+    // The array is the newest cell (E2).
+    init(cell(a), arr::ALLOC_SITE, site);
     st.acc = a;
     Flow::Next
+}
+
+/// The shape an array-literal hit allocates with and the site handler the array keeps
+/// (ARRAY +32; undefined when the slot holds none): the handler's result shape when it is
+/// alive and still a fresh array shape of this realm (its kind is the site's, at least the
+/// key's: kinds only grow), else the key `shape`. Reads only (a hit writes no feedback,
+/// V9-D6). Not a GC point.
+#[inline(always)]
+fn site_shape(rt: &Runtime, fi: &FunctionInfo, s: FSlot, shape: u64) -> (u64, u64) {
+    let Some(v) = feedback::vector(fi) else {
+        return (shape, UNDEFINED);
+    };
+    let h = feedback::value(v, s.0);
+    if !is_cell_bits(h) {
+        return (shape, UNDEFINED);
+    }
+    let r = rd(cell(h), ah::RESULT);
+    if r != shape && is_cell_bits(r) && is_array_shape(rt, r) {
+        (r, h)
+    } else {
+        (shape, h)
+    }
 }
 
 /// `CreateEmptyArrayLiteral` (Literal slot `s`).
@@ -304,8 +348,12 @@ pub(crate) fn fast_empty_array(st: &mut St<'_>, s: FSlot) -> Flow {
     if !is_array_shape(rt, shape) {
         return Flow::Cold;
     }
+    let (shape, site) = site_shape(rt, st.info(), s, shape);
     rt.enter(st.fp, st.pc);
-    st.acc = alloc_array(rt, shape, 0, |_| HOLE);
+    let a = alloc_array(rt, shape, 0, |_| HOLE);
+    // The array is the newest cell (E2).
+    init(cell(a), arr::ALLOC_SITE, site);
+    st.acc = a;
     Flow::Next
 }
 
@@ -505,8 +553,10 @@ fn bump(value: u64) -> u64 {
 
 /// The cold path of a literal of `kind` (constant `k`) at `pc` in frame `fp` made `result`
 /// (`slow::literal`, after the object exists; the slot is an operand of the instruction at
-/// `pc`). Records the result's shape (weak) and counts the result. Not a GC point (one
-/// barriered slot write); not called for a throw.
+/// `pc`). Records the result's shape (weak) and counts the result. At an array-literal site
+/// the value half is the site's ALLOC_SITE handler ([`array_site`]) instead of the count. GC
+/// point at an array-literal site only (the handler, a kind transition): `result` lives in a
+/// Rust local of the caller; not called for a throw.
 #[inline]
 pub(crate) fn miss(cx: &mut Cx, fp: *mut u64, pc: *const u8, kind: Lit, k: u32, result: u64) {
     if matches!(kind, Lit::EmptyObject | Lit::Template) || !kind::is_object(result) {
@@ -524,11 +574,22 @@ pub(crate) fn miss(cx: &mut Cx, fp: *mut u64, pc: *const u8, kind: Lit, k: u32, 
         debug_assert!(false, "a literal slot past the vector");
         return;
     }
+    // A site handler only for a slot that this site alone uses (as the key): a shared slot
+    // would mix the kinds of two sites.
+    let array = matches!(kind, Lit::Array | Lit::EmptyArray)
+        && kind::is_array(result)
+        && !shared_slot(fi, i);
+    if array {
+        // GC point: `result` lives in a Rust local of the caller; `v` is rooted by the unit.
+        array_site(rt, v, i, result);
+    }
     let (key, value) = (feedback::key(v, i), feedback::value(v, i));
+    // The count: in the site handler at an array-literal site, else the value half.
+    let value = if array { value } else { bump(value) };
     let shape = shape::shape_of(result);
     if key == shape {
         // Checked when it was recorded (shapes do not change): only the count.
-        feedback::set_slot(rt, v, i, key, bump(value));
+        feedback::set_slot(rt, v, i, key, value);
         return;
     }
     let describable = !shape::is_dictionary(shape) && literal_shape_ok(fi, kind, k, shape);
@@ -545,7 +606,89 @@ pub(crate) fn miss(cx: &mut Cx, fp: *mut u64, pc: *const u8, kind: Lit, k: u32, 
     } else {
         UNDEFINED
     };
-    feedback::set_slot(rt, v, i, new_key, bump(value));
+    feedback::set_slot(rt, v, i, new_key, value);
+}
+
+/// The allocation-site part of an array-literal miss (V10-D6, MODES-D19): the site's
+/// ALLOC_SITE handler (made at the first miss, in slot `i`'s value half), the cold `result`
+/// moved to the site's kind when the site saw a more general one (a store-side transition,
+/// one-way; no load changes a kind), the site kind joined with the result's, the result
+/// shape, the count, and the result's back pointer ARRAY +32. Written by this cold path and
+/// by store-side transitions ([`generalize`]) only, never by a `profile.rs` record hook, so
+/// `ics_only` keeps it. GC point (the handler, the transition): `result` lives in a Rust
+/// local of the caller.
+fn array_site(rt: &Runtime, v: u64, i: u32, result: u64) {
+    let value = feedback::value(v, i);
+    let h = if is_cell_bits(value) {
+        value
+    } else {
+        // GC point: `result` lives in a Rust local.
+        let h = rt.alloc(kind::IC_HANDLER, ah::SIZE);
+        init(h, ah::KIND, int32_bits(hk::ALLOC_SITE));
+        init(
+            h,
+            ah::ELEMENTS_KIND,
+            int32_bits(i32::from(elements::kind_of(result))),
+        );
+        init(h, ah::RESULT, UNDEFINED);
+        init(h, ah::COUNT, int32_bits(0));
+        let h = h.to_value().to_bits();
+        // The value half is strong; the key half is written by `miss` after this.
+        feedback::set_slot(rt, v, i, feedback::key(v, i), h);
+        h
+    };
+    let c = cell(h);
+    let site = object::rd_i32(c, ah::ELEMENTS_KIND) as u8;
+    let rk = elements::kind_of(result);
+    let want = elements::join(site, rk);
+    if want != rk && want < elements::kind::DICTIONARY {
+        // GC point: `result` and `h` live in Rust locals (the handler is also in the slot).
+        elements::transition(rt, result, want);
+    }
+    if want != site && want < elements::kind::DICTIONARY {
+        object::wr(&rt.heap, c, ah::ELEMENTS_KIND, int32_bits(i32::from(want)));
+    }
+    let s = shape::shape_of(result);
+    if is_array_shape(rt, s) {
+        object::wr(&rt.heap, c, ah::RESULT, s);
+    }
+    object::wr(&rt.heap, c, ah::COUNT, bump(rd(c, ah::COUNT)));
+    object::wr(&rt.heap, cell(result), arr::ALLOC_SITE, h);
+}
+
+/// A store-side kind transition of the array `a` (to kind `to`, below DICTIONARY) whose ARRAY
+/// +32 holds the ALLOC_SITE handler `h` (`elements::transition`): the site kind becomes the
+/// join of its kind and `to`, and the handler's result shape becomes `a`'s new shape if that
+/// is a fresh array shape of kind `to`, so the site's next arrays are born in that kind.
+/// One-way. Not a GC point.
+pub(crate) fn generalize(rt: &Runtime, h: u64, a: u64, to: u8) {
+    debug_assert!(to < elements::kind::DICTIONARY);
+    let c = cell(h);
+    debug_assert_eq!(object::rd_i32(c, ah::KIND), hk::ALLOC_SITE);
+    let site = object::rd_i32(c, ah::ELEMENTS_KIND) as u8;
+    let want = elements::join(site, to);
+    if want != site {
+        object::wr(&rt.heap, c, ah::ELEMENTS_KIND, int32_bits(i32::from(want)));
+    }
+    let s = shape::shape_of(a);
+    if shape::elements_kind(s) == want && is_array_shape(rt, s) {
+        object::wr(&rt.heap, c, ah::RESULT, s);
+    }
+}
+
+/// The ALLOC_SITE handler of an array-literal site's Literal slot value `value`, if any:
+/// (elements kind, count). For the facts export and the tests.
+pub(crate) fn site_of(value: u64) -> Option<(u8, u32)> {
+    if !is_cell_bits(value) || kind::cell_kind(value) != kind::IC_HANDLER.get() {
+        return None;
+    }
+    let c = cell(value);
+    (object::rd_i32(c, ah::KIND) == hk::ALLOC_SITE).then(|| {
+        (
+            object::rd_i32(c, ah::ELEMENTS_KIND) as u8,
+            object::rd_i32(c, ah::COUNT) as u32,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -555,19 +698,49 @@ thread_local! {
 }
 
 /// The cold path of `CreateObjectLiteral` at `pc` (boilerplate constant `k`) in frame `fp`,
-/// before the generic build (`slow::literal`): an object literal that is not shallow, whose
-/// nested values are all shallow array boilerplates (`{array: [0, 1, 2], s: ...}`: splay's
-/// leaf nodes), built from the site's recorded shape as a hit builds a shallow one, with each
-/// nested array made like a shallow array literal. `None` (nothing made) for anything else:
-/// no recorded shape, another nested value, a BigInt, more than `call::INLINE_ARGS` nested
-/// arrays. GC point: the nested arrays live in an inline buffer on the native stack (the
-/// conservative scan) until the object holds them; the object is allocated last, so its
-/// fields are initializing stores (E2).
+/// before the generic build (`slow::literal`): [`nested_object`] from the site's recorded
+/// shape. `None` (nothing made) when it does not apply. GC point.
 pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> Option<u64> {
     let rt = cx.rt();
     let fi = FrameRef(fp).info();
-    let v = feedback::vector(fi)?;
+    // No vector, no recorded shape: decode no instruction (most cold runs of a literal are
+    // the runs of a function before its vector exists).
+    feedback::vector(fi)?;
     let (i, _) = slot_at(fi, pc)?;
+    let o = nested_object(rt, fi, i, k)?;
+    #[cfg(test)]
+    COLD_BUILDS.with(|c| c.set(c.get() + 1));
+    Some(o)
+}
+
+/// `CreateObjectLiteral` of a boilerplate that is not shallow (Literal slot `s`): the T0 hit
+/// of [`nested_object`] (M5-P2 ELEM2, splay's leaf nodes `{array: [0, 1, ...], string: ...}`).
+/// As a shallow hit, it writes no feedback (V9-D6); the recorded shape comes from the cold
+/// path. A GC point: it publishes its frame first.
+#[inline(always)]
+fn fast_nested_object(st: &mut St<'_>, boilerplate: K, s: FSlot) -> Flow {
+    let fi = st.info();
+    let rt = st.rt();
+    rt.enter(st.fp, st.pc);
+    match nested_object(rt, fi, s.0, boilerplate.0) {
+        Some(o) => {
+            st.acc = o;
+            Flow::Next
+        }
+        None => Flow::Cold,
+    }
+}
+
+/// An object literal (boilerplate constant `k`, Literal slot `i`) that is not shallow, whose
+/// nested values are all shallow array boilerplates (`{array: [0, 1, 2], s: ...}`: splay's
+/// leaf nodes), built from the slot's recorded shape as a hit builds a shallow one, with each
+/// nested array made like a shallow array literal. `None` (nothing made) for anything else:
+/// no recorded shape, another nested value, a BigInt, more than `call::INLINE_ARGS` nested
+/// arrays. Reads the slot only. GC point: the nested arrays live in an inline buffer on the
+/// native stack (the conservative scan) until the object holds them; the object is
+/// allocated last, so its fields are initializing stores (E2).
+fn nested_object(rt: &Runtime, fi: &FunctionInfo, i: u32, k: u32) -> Option<u64> {
+    let v = feedback::vector(fi)?;
     if i >= feedback::slot_count(v) {
         return None;
     }
@@ -639,8 +812,6 @@ pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> O
         };
         init(o, object::OBJECT_FIELD0 + 8 * j, b);
     }
-    #[cfg(test)]
-    COLD_BUILDS.with(|c| c.set(c.get() + 1));
     Some(o.to_value().to_bits())
 }
 

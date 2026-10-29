@@ -836,7 +836,10 @@ pub(crate) fn flags_of(o: u64) -> i32 {
 
 // ---- arrays and elements (H18) -------------------------------------------------------------
 
+/// A new empty Array with an elements cell of `capacity` holes (none for 0). The capacity is
+/// a hint: at most [`arr::MAX_LENGTH`] is allocated. GC point.
 pub(crate) fn new_array(rt: &Runtime, capacity: usize) -> u64 {
+    let capacity = capacity.min(arr::MAX_LENGTH as usize);
     let a = new_js_object(rt, kind::ARRAY, rt.root(Root::ArrayPrototype), 0);
     init(a, arr::LENGTH, int32_bits(0));
     if capacity > 0 {
@@ -922,8 +925,44 @@ pub(crate) fn new_record(rt: &Runtime, k: KindId) -> u64 {
     c.to_value().to_bits()
 }
 
+/// The `length` of the Array `a` (0 to 2^32 - 1). ARRAY +24 holds it as an int32 Value below
+/// 2^31 and as a double Value from 2^31 on ([`length_value`]; only a DICTIONARY array gets
+/// there, H18-Q4), so an IC load of +24 gives the right Number. Not a GC point.
+#[inline(always)]
 pub(crate) fn array_len(a: u64) -> u32 {
-    rd_i32(cell(a), arr::LENGTH) as u32
+    let w = rd(cell(a), arr::LENGTH);
+    if w & ep9_value::encoding::NUMBER_TAG == ep9_value::encoding::NUMBER_TAG {
+        w as u32
+    } else {
+        long_array_len(w)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn long_array_len(w: u64) -> u32 {
+    let d = val(w).as_number().expect("an array length is a Number");
+    debug_assert!(d >= 2147483648.0 && d <= f64::from(u32::MAX));
+    d as u32
+}
+
+/// The `length` of the Array `a` as a bound of its dense store: the low 32 bits of +24, which
+/// are the length below 2^31. A longer array is DICTIONARY, whose cell has no dense part
+/// (`elements::dict`, capacity 0), so no dense read passes it either way. One load; the T0
+/// keyed paths use it. Not a GC point.
+#[inline(always)]
+pub(crate) fn array_len_dense(a: u64) -> u32 {
+    rd(cell(a), arr::LENGTH) as u32
+}
+
+/// The ARRAY +24 word of the length `len`: an int32 Value below 2^31, else a double Value.
+#[inline(always)]
+pub(crate) fn length_value(len: u32) -> u64 {
+    if len <= i32::MAX as u32 {
+        int32_bits(len as i32)
+    } else {
+        ep9_value::Value::double(f64::from(len)).to_bits()
+    }
 }
 
 /// The elements cell (+16) of the JS object `o`, if it has one.
@@ -1013,7 +1052,7 @@ fn element_at(e: CellPtr, i: u32) -> Option<u64> {
 /// (`GetKeyedProperty`) reads through it with no call.
 #[inline(always)]
 pub(crate) fn array_get(a: u64, i: u32) -> Option<u64> {
-    if i >= array_len(a) {
+    if i >= array_len_dense(a) {
         return None;
     }
     element_at(elements_of(a)?, i)
@@ -1055,24 +1094,30 @@ pub(crate) fn element_indices(o: u64) -> impl Iterator<Item = u32> {
     (0..end).filter(move |&i| element_get(o, i).is_some())
 }
 
-/// Stores element `i`, growing the array; [`HOLE`] removes it. False if `i` is past the v0
-/// dense limit. A raw store: callers check `[[Extensible]]` for a new element, and a
-/// `[[Set]]` caller the prototype chain (`shape::proto_index_keys`). Every element write goes
-/// through here, [`array_set_length`] and [`element_set`]: an element that appears or goes
-/// away is a structural change of a prototype (OM-8, `shape::note_change`); a value store is
-/// not. An element that appears on a prototype also sets `shape::proto_index_keys`.
+/// Stores element `i` as a {w, e, c} data property, growing the array; [`HOLE`] removes it.
+/// A raw store: callers check `[[Extensible]]` for a new element, and a `[[Set]]` caller the
+/// prototype chain (`shape::proto_index_keys`). Every element write goes through here,
+/// [`array_set_length`], [`element_set`] and the DICTIONARY paths of `property.rs`
+/// (`elements::dict_put`): an element that appears or goes away is a structural change of a
+/// prototype (OM-8, `shape::note_change`); a value store is not. An element that appears on
+/// a prototype also sets `shape::proto_index_keys`.
 ///
 /// Elements kinds (H18, M5-P1): the store first makes the array's kind general enough for `v`
 /// (`elements::transition`, one-way: a hole or an index past `length` makes it holey, a double
 /// makes it DOUBLE, another Value ELEMENTS), then stores in the kind's storage form; a DOUBLE
-/// store writes `v`'s f64 with a canonical NaN ([`double_bits`]). GC point (a new cell or
-/// shape): `a` and `v` live in Rust locals.
+/// store writes `v`'s f64 with a canonical NaN ([`double_bits`]). An index at or past
+/// [`arr::MAX_LENGTH`], or `elements::ARRAY_GAP` or more past the capacity, moves the array to
+/// DICTIONARY (M5-P2 ELEM2, H18-Q2, Q4), whose stores take [`array_set_sparse`]. False (nothing
+/// stored) only for `i` = 2^32 - 1 (not an array index) and for the DICTIONARY cases that need
+/// the attribute-aware path of `property.rs`. GC point (a new cell or shape): `a` and `v` live
+/// in Rust locals.
 pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
-    if i >= arr::MAX_LENGTH {
-        return false;
-    }
-    let len = array_len(a);
     let from = crate::elements::kind_of(a);
+    if i >= arr::MAX_LENGTH || from == crate::elements::kind::DICTIONARY {
+        return array_set_sparse(rt, a, i, v);
+    }
+    // Not DICTIONARY: `length` is at most the dense limit, an int32 Value.
+    let len = array_len_dense(a);
     // At or below `length`, an int32 fits every kind (INT32 is the bottom of the lattice) and
     // every value but the hole fits an ELEMENTS kind: no join.
     let int32 = v & ep9_value::encoding::NUMBER_TAG == ep9_value::encoding::NUMBER_TAG;
@@ -1095,6 +1140,58 @@ pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
         wr(&rt.heap, cell(a), arr::LENGTH, int32_bits(i as i32 + 1));
     }
     true
+}
+
+/// [`array_set`] of a DICTIONARY array, or at an index at or past [`arr::MAX_LENGTH`] (the
+/// array moves to DICTIONARY first): a {w, e, c} entry `i` = `v`, new or in place of a
+/// {w, e, c} data entry; [`HOLE`] removes the entry. `length` becomes `i` + 1 when `i` is at or
+/// past it. False (nothing stored): `i` = 2^32 - 1; an existing entry with other attributes
+/// or an accessor; a new entry at or past a non-writable `length` (the callers then take the
+/// key path of `property.rs`, which knows attributes, §10.4.2.1). GC point.
+#[cold]
+#[inline(never)]
+pub(crate) fn array_set_sparse(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
+    use crate::elements as el;
+    if i == u32::MAX {
+        return false;
+    }
+    let len = array_len(a);
+    if let Some(d) = el::dict_of(a) {
+        match el::dict_get(d, i) {
+            Some((_, at)) if at != attr::DEFAULT => return false,
+            None if v != HOLE && i >= len && !el::length_writable(a) => return false,
+            _ => {}
+        }
+    } else if v == HOLE {
+        // A hole at or past the dense limit: no element is there.
+        return true;
+    }
+    // GC point: `a` and `v` live in Rust locals.
+    el::to_dictionary(rt, a);
+    let d = el::dict_of(a).expect("a dictionary");
+    let present = el::dict_get(d, i).is_some();
+    if v == HOLE {
+        el::dict_remove(d, i);
+    } else {
+        // GC point (a growth).
+        el::dict_put(rt, a, i, v, attr::DEFAULT);
+        if i >= len {
+            set_array_len(rt, a, i + 1);
+        }
+    }
+    if shape::is_prototype_object(a) && present != (v != HOLE) {
+        if v != HOLE {
+            shape::note_proto_index_key(rt, a);
+        }
+        shape::note_change(rt, a);
+    }
+    true
+}
+
+/// Writes the `length` word of the Array `a` ([`length_value`]); no element changes.
+#[inline]
+pub(crate) fn set_array_len(rt: &Runtime, a: u64, len: u32) {
+    wr(&rt.heap, cell(a), arr::LENGTH, length_value(len));
 }
 
 /// The store of [`array_set`] and [`element_set`]: kind `from` -> `to`, then `v` (or the hole)
@@ -1155,13 +1252,28 @@ pub(crate) fn element_set(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
 fn store_element_slow(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
     use crate::elements::{Storage, storage};
     // Only a prototype pays for more than the flag test.
+    let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as usize);
+    if v != HOLE && (i as usize) >= cap + crate::elements::ARRAY_GAP as usize && kind::is_array(o) {
+        // H18-Q2: a far index moves the array to DICTIONARY (no dense kind on the way, so the
+        // site of a literal array is not generalized), not to a dense allocation. GC point:
+        // `o` and `v` live in Rust locals.
+        let stored = array_set_sparse(rt, o, i, v);
+        debug_assert!(
+            stored,
+            "a new {{w, e, c}} entry of a fresh DICTIONARY array"
+        );
+        return;
+    }
     let structural = shape::is_prototype_object(o) && element_get(o, i).is_some() != (v != HOLE);
     if to != from {
-        // GC point: `o` and `v` live in Rust locals.
+        // GC point: `o` and `v` live in Rust locals. A conversion keeps the capacity.
         crate::elements::transition(rt, o, to);
     }
     let doubles = storage(to) == Some(Storage::Doubles);
-    let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as usize);
+    if (i as usize) >= cap && v == HOLE {
+        // A hole past the capacity: no element is there.
+        return;
+    }
     let e = if (i as usize) < cap {
         elements_of(o).expect("elements")
     } else {
@@ -1204,13 +1316,45 @@ fn store_element_slow(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
     }
 }
 
-/// Sets `length` (§10.4.2.4 ArraySetLength, v0: dense, no non-configurable elements). False
-/// if `len` is past the v0 dense limit. A cut that removes an element is a structural change
-/// of a prototype (OM-8); growth and a cut over holes only change the value of `length`.
-/// Growth makes the kind holey (the new indices are holes; GC point); a cut keeps it.
+/// Sets `length` (§10.4.2.4 ArraySetLength steps 13-19, the deletes): every element at or
+/// past `len` goes, from the highest index down. False if a non-configurable element stops it
+/// (only a DICTIONARY array has one): `length` is then that index + 1. The callers check the
+/// value (ToUint32) and that `length` is writable. A `len` past [`arr::MAX_LENGTH`] moves the
+/// array to DICTIONARY (H18-Q4), so any length up to 2^32 - 1 works. A cut that removes an
+/// element is a structural change of a prototype (OM-8); growth and a cut over holes only
+/// change the value of `length`. Growth makes the kind holey (the new indices are holes; GC
+/// point); a cut keeps it.
 pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
-    if len > arr::MAX_LENGTH {
-        return false;
+    use crate::elements as el;
+    if len > arr::MAX_LENGTH && el::kind_of(a) != el::kind::DICTIONARY {
+        // GC point: `a` lives in a Rust local.
+        el::to_dictionary(rt, a);
+    }
+    if let Some(d) = el::dict_of(a) {
+        let old = array_len(a);
+        let mut ok = true;
+        let mut new_len = len;
+        if len < old {
+            let cut: Vec<(u32, i32)> = el::dict_entries(d)
+                .into_iter()
+                .filter(|&(i, _)| i >= len)
+                .collect();
+            let mut removed = false;
+            for &(i, at) in cut.iter().rev() {
+                if at & attr::CONFIGURABLE == 0 {
+                    new_len = i + 1;
+                    ok = false;
+                    break;
+                }
+                el::dict_remove(d, i);
+                removed = true;
+            }
+            if removed {
+                shape::note_change(rt, a);
+            }
+        }
+        set_array_len(rt, a, new_len);
+        return ok;
     }
     let old = array_len(a);
     if len > old {
