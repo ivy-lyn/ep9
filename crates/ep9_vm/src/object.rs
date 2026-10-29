@@ -727,15 +727,15 @@ pub(crate) fn alloc_from_shape(rt: &Runtime, k: KindId, shape: u64) -> CellPtr {
 }
 
 /// `OrdinaryObjectCreate(proto)` (`proto` an object or null). In-object slots: 4 when the
-/// prototype is %Object.prototype% (`{}`), 8 otherwise (`new F`, which reaches here
-/// through OrdinaryCreateFromConstructor, and Object.create). GC point.
+/// prototype is %Object.prototype% (`{}`), otherwise `slack::GENEROUS` (Object.create, and
+/// `new F` when `slack::instance_capacity` knows no store count for F; else
+/// OrdinaryCreateFromConstructor sizes the object itself, `slack.rs`). GC point.
 pub(crate) fn new_object(rt: &Runtime, proto: u64) -> u64 {
     let cap = if proto == rt.root(Root::ObjectPrototype) {
         4
     } else {
-        8
+        usize::from(crate::slack::GENEROUS)
     };
-    let cap = crate::slack::initial_capacity(rt, proto, cap);
     new_object_with_capacity(rt, proto, cap)
 }
 
