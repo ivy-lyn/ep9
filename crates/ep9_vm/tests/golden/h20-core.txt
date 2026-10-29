@@ -192,7 +192,13 @@ abi: impl<'s> Cx<'s> :: pub fn promise_result(&mut self, impl Into<Local<'s>>) -
 abi: impl<'s> Cx<'s> :: pub fn promise_state(&mut self, impl Into<Local<'s>>) -> JsResult<PromiseState>
 abi: impl<'s> Cx<'s> :: pub fn prototype_walk_step(&mut self, impl Into<Local<'s, JsObject>>, &mut u32) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn regexp_create(&mut self, impl Into<Local<'s>>, impl Into<Local<'s, JsString>>, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn regexp_disable_legacy_features(&mut self, impl Into<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn regexp_exec(&mut self, impl Into<Local<'s>>, impl Into<Local<'s, JsString>>, usize) -> JsResult<Option<MatchRecord>>
+abi: impl<'s> Cx<'s> :: pub fn regexp_initialize(&mut self, impl Into<Local<'s>>, impl Into<Local<'s, JsString>>, impl Into<Local<'s, JsString>>) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn regexp_legacy_features(&self, impl Into<Local<'s>>) -> bool
+abi: impl<'s> Cx<'s> :: pub fn regexp_legacy_static(&mut self, u32) -> JsResult<Option<Local<'s, JsString>>>
+abi: impl<'s> Cx<'s> :: pub fn regexp_note_match(&mut self, impl Into<Local<'s>>, impl Into<Local<'s, JsString>>, &MatchRecord)
+abi: impl<'s> Cx<'s> :: pub fn regexp_set_legacy_input(&mut self, impl Into<Local<'s, JsString>>)
 abi: impl<'s> Cx<'s> :: pub fn reject_promise(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn run_module(&mut self, VerifiedUnit, &str, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn run_script(&mut self, VerifiedUnit, &str) -> JsResult<Local<'s>>
