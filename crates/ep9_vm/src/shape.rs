@@ -39,8 +39,12 @@
 //!   counter ([`flag::SLACK_SHIFT`]; M5-P2 SLACK).
 //! - **details** (int32, [`Details`]): attributes in bits 0-3 (writable, enumerable,
 //!   configurable, [`ACCESSOR`]), representation in bits 4-6 and const in bit 7 (OBJECT_LAYOUT
-//!   5 names the values, [`rep`] and [`DETAILS_CONST`]; both 0 until M5-P2 CONSTREP writes
-//!   them), field index in bits 8-23.
+//!   5 names the values, [`rep`] and [`DETAILS_CONST`]; M5-P2 CONSTREP writes them, the rules
+//!   are in `field_rep.rs`), field index in bits 8-23.
+//! - **Field families** (M5-P2 CONSTREP): the shape that added descriptor `i` is the field's
+//!   owner ([`field_owner`]). Its descendants in the transition tree share that entry, or hold
+//!   a copy of it (a branch). A change of the representation or const bits of a field writes
+//!   every copy in place ([`set_field_bits_in_family`]); the bits only ever widen.
 //!
 //! Rules:
 //! - Only SHAPE lives in the shape space ([`heap_config`], [`register_kinds`]); its cells come
@@ -180,24 +184,34 @@ pub(crate) const ELEMENTS_KIND_SHIFT: u32 = 28;
 pub(crate) const ELEMENTS_KIND_MASK: i32 = (0xF_u32 << ELEMENTS_KIND_SHIFT) as i32;
 
 /// OBJECT_LAYOUT 5: the representation values of details bits 4-6 (H17 rep/const row, C-02;
-/// M5-P2 CONSTREP writes them). 5-7 are reserved.
-#[allow(dead_code)] // M5-P2 CONSTREP
+/// M5-P2 CONSTREP writes them, `field_rep.rs`). 5-7 are reserved. One-way: NONE -> INT32 ->
+/// DOUBLE -> ANY, NONE -> HEAP -> ANY.
 pub(crate) mod rep {
     /// The bits of a details word that hold the representation.
     pub const SHIFT: u32 = 4;
     pub const MASK: i32 = 0x7 << SHIFT;
-    /// No representation recorded yet (v0: every descriptor).
+    /// No value stored yet. A field never keeps it after its first store.
     pub const NONE: i32 = 0;
+    /// Every value is an int32.
     pub const INT32: i32 = 1;
+    /// Every value is a number (an int32 or a double; a Value holds a double unboxed, H6).
     pub const DOUBLE: i32 = 2;
-    /// A heap object (not a number).
+    /// No value is a number: a cell, or an immediate such as undefined, null or a boolean.
     pub const HEAP: i32 = 3;
+    /// Any value.
     pub const ANY: i32 = 4;
 }
 
-/// OBJECT_LAYOUT 5: details bit 7, the field is const (H17 rep/const row; M5-P2 CONSTREP).
-#[allow(dead_code)] // M5-P2 CONSTREP
+/// OBJECT_LAYOUT 5: details bit 7, the field is const: no object of the field's family stored
+/// a second value into it since it was added (H17 rep/const row; M5-P2 CONSTREP).
 pub(crate) const DETAILS_CONST: i32 = 1 << 7;
+
+/// The representation and const bits of a details word (bits 4-7).
+pub(crate) const FIELD_BITS: i32 = rep::MASK | DETAILS_CONST;
+
+/// The field bits of a field that no writer checks: any value, not const. A shape made by
+/// [`add`] (no value known) gets them.
+pub(crate) const ANY_FIELD: i32 = rep::ANY << rep::SHIFT;
 
 /// The cage alignment and largest cage of an ep9_vm isolate (W4-OBJ-CAGE): 64 GiB, the H7
 /// default cage size. [`heap_config`] asks for it, so the cage base of any cell is its
@@ -227,9 +241,8 @@ const CAPACITY_SHIFT: u32 = 12;
 const KIND_SHIFT: u32 = 20;
 
 /// Details bits 4-7: representation (3 bits, [`rep`]) and const (1 bit, [`DETAILS_CONST`]),
-/// 0 until M5-P2 CONSTREP writes them.
-const RESERVED_DETAILS: i32 = 0xF0;
-const _: () = assert!(rep::MASK | DETAILS_CONST == RESERVED_DETAILS);
+/// written by M5-P2 CONSTREP (`field_rep.rs`).
+const _: () = assert!(FIELD_BITS == 0xF0);
 const FIELD_SHIFT: u32 = 8;
 
 /// ShapeState root range slots.
@@ -489,6 +502,32 @@ impl Details {
         (self.0 >> FIELD_SHIFT) as u16
     }
 
+    /// The representation ([`rep`]).
+    pub(crate) fn rep(self) -> i32 {
+        (self.0 & rep::MASK) >> rep::SHIFT
+    }
+
+    /// True if the field is const ([`DETAILS_CONST`]).
+    pub(crate) fn is_const(self) -> bool {
+        self.0 & DETAILS_CONST != 0
+    }
+
+    /// The representation and const bits ([`FIELD_BITS`]), in place.
+    pub(crate) fn field_bits(self) -> i32 {
+        self.0 & FIELD_BITS
+    }
+
+    /// These details with the field bits `b` ([`FIELD_BITS`], in place).
+    pub(crate) fn with_field_bits(self, b: i32) -> Details {
+        debug_assert!(b & !FIELD_BITS == 0 && (b & rep::MASK) >> rep::SHIFT <= rep::ANY);
+        Details((self.0 & !FIELD_BITS) | b)
+    }
+
+    /// The same property and field: attributes and field index (not the field bits).
+    fn same_slot(self, other: Details) -> bool {
+        (self.0 ^ other.0) & !FIELD_BITS == 0
+    }
+
     fn bits(self) -> u64 {
         int32_bits(self.0)
     }
@@ -497,8 +536,8 @@ impl Details {
         debug_assert!(val(b).is_int32());
         let d = int32_of(b);
         debug_assert!(
-            d & RESERVED_DETAILS == 0,
-            "reserved details bits set: {d:#x}"
+            (d & rep::MASK) >> rep::SHIFT <= rep::ANY,
+            "a reserved representation in {d:#x}"
         );
         Details(d)
     }
@@ -690,6 +729,105 @@ pub(crate) fn transition_count(shape: u64) -> usize {
     n
 }
 
+// ---- field families (M5-P2 CONSTREP) ----------------------------------------------------------
+
+/// The field bits ([`FIELD_BITS`], in place) of descriptor `i` of the fast shape `shape`. Not
+/// a GC point. Always inlined, with no checked `cell` (its panic path would give a T0 store
+/// handler a frame, as in [`elements_kind`]).
+#[inline(always)]
+pub(crate) fn field_bits_at(shape: u64, i: usize) -> i32 {
+    debug_assert!(is_shape(shape) && i < count(shape));
+    let s = raw_cell(shape);
+    let d = raw_cell(rd(s, shf::DESCRIPTORS));
+    int32_of(rd(d, key_off(i) + 8)) & FIELD_BITS
+}
+
+/// The representation ([`rep`]) of the last descriptor of the fast shape `shape` (the field
+/// an add-property transition to `shape` writes). Not a GC point; always inlined, no checked
+/// `cell` (the `ADD` hit of `ic::store`).
+#[inline(always)]
+pub(crate) fn last_field_rep(shape: u64) -> i32 {
+    debug_assert!(is_shape(shape) && count(shape) > 0);
+    let s = raw_cell(shape);
+    let n = (int32_of(rd(s, shf::COUNTS)) & COUNT_MASK) as usize;
+    let d = raw_cell(rd(s, shf::DESCRIPTORS));
+    (int32_of(rd(d, key_off(n - 1) + 8)) & rep::MASK) >> rep::SHIFT
+}
+
+/// The cell of a shape or DESCRIPTORS value, built as [`elements_kind`] does (no checked
+/// `cell`).
+#[inline(always)]
+fn raw_cell(b: u64) -> CellPtr {
+    debug_assert!(kind::is_cell_bits(b) && b != 0);
+    let p = core::ptr::with_exposed_provenance_mut::<ep9_value::Word0>(b as usize);
+    // SAFETY: `b` is the address of a live cell (a shape, or the DESCRIPTORS cell a live shape
+    // holds), whose provenance `Value::from_cell_ptr` exposed.
+    unsafe { CellPtr::from_raw(NonNull::new_unchecked(p)) }
+}
+
+/// The owner of descriptor `i` of the fast shape `shape` (`i < count(shape)`): the shape that
+/// added it. A tree shape walks its parents back to it; a unique (prototype-mode) shape has
+/// no parent and is its own owner. Not a GC point.
+pub(crate) fn field_owner(shape: u64, i: usize) -> u64 {
+    debug_assert!(i < count(shape) && !is_dictionary(shape));
+    let mut o = shape;
+    loop {
+        let p = parent(o);
+        if p == UNDEFINED || count(p) <= i {
+            return o;
+        }
+        o = p;
+    }
+}
+
+/// Writes descriptor `i` of the field family of `owner` ([`field_owner`]): `f` maps the
+/// details of each DESCRIPTORS cell that `owner` or a live descendant uses to the new ones;
+/// `f` only widens the field bits, and a join, so a cell that several shapes share (the
+/// prefix rule) is read again but written once. A cell that another family shares (a unique
+/// shape) sees the wider bits too, which is safe. Returns true if any cell changed. Not a GC
+/// point: the walk's stack of shapes is Rust memory only until it returns.
+pub(crate) fn set_field_bits_in_family(
+    owner: u64,
+    i: usize,
+    f: impl Fn(Details) -> Details,
+) -> bool {
+    let mut changed = false;
+    let mut todo = vec![owner];
+    while let Some(sh) = todo.pop() {
+        let c = cell(sh);
+        let d = rd(c, shf::DESCRIPTORS);
+        if d != UNDEFINED && count_of(c) > i {
+            let dc = cell(d);
+            let old = d_details(dc, i);
+            let new = f(old);
+            debug_assert!(old.same_slot(new));
+            if new != old {
+                // E1: an int32 store needs no barrier.
+                object::init(dc, key_off(i) + 8, new.bits());
+                changed = true;
+            }
+        }
+        if flags(sh) & (flag::UNIQUE | flag::DICTIONARY) != 0 {
+            continue;
+        }
+        let t = rd(c, shf::TRANSITION);
+        if t != UNDEFINED {
+            todo.push(t);
+        }
+        let tab = rd(c, shf::TABLE);
+        if tab != UNDEFINED && kind::cell_kind(tab) == kind::TRANSITIONS.get() {
+            let tc = cell(tab);
+            for j in 0..rd_i32(tc, trf::CAPACITY) as usize {
+                let ch = rd(tc, trf::ENTRIES + 8 * j);
+                if ch != UNDEFINED {
+                    todo.push(ch);
+                }
+            }
+        }
+    }
+    changed
+}
+
 // ---- lookup ---------------------------------------------------------------------------------
 
 /// The own property `key` of objects with `shape`: its descriptor index and details. Not a GC
@@ -765,8 +903,17 @@ pub(crate) fn lookup_with(shape: u64, key: u64, how: Probe) -> Option<Found> {
 
 /// The shape of an object with `shape` after it gets the new own property `key` with
 /// `attrs` ([`attr`] bits plus [`ACCESSOR`]): the existing transition or a new child. GC
-/// point. `key` must not be a property of `shape` already.
+/// point. `key` must not be a property of `shape` already. A new field gets [`ANY_FIELD`]
+/// (no value is known); a writer that knows the first value uses [`add_with`].
 pub(crate) fn add(rt: &Runtime, shape: u64, key: u64, attrs: i32) -> Added {
+    add_with(rt, shape, key, attrs, ANY_FIELD)
+}
+
+/// [`add`], where a new descriptor gets the field bits `bits` ([`FIELD_BITS`]: the
+/// representation of the first value and the const bit, `field_rep::initial`). An existing
+/// transition keeps its bits: the caller joins its value into them
+/// (`field_rep::on_init_store`). GC point.
+pub(crate) fn add_with(rt: &Runtime, shape: u64, key: u64, attrs: i32, bits: i32) -> Added {
     debug_assert!(is_shape(shape));
     debug_assert!(attrs & !ATTR_MASK == 0, "bad attributes {attrs:#x}");
     let fl = flags(shape);
@@ -780,7 +927,7 @@ pub(crate) fn add(rt: &Runtime, shape: u64, key: u64, attrs: i32) -> Added {
     );
     let how = classify(rt, key);
     if fl & flag::UNIQUE != 0 {
-        return add_unique(rt, shape, key, attrs, how);
+        return add_unique(rt, shape, key, attrs, bits, how);
     }
     if let Some(child) = find_transition(shape, key, attrs, how) {
         return Added::Shape(child);
@@ -793,7 +940,8 @@ pub(crate) fn add(rt: &Runtime, shape: u64, key: u64, attrs: i32) -> Added {
         return Added::Dictionary;
     }
     // GC points below: `shape`, `key`, `d` and `child` live in Rust locals (CSS).
-    let d = descriptors_for_child(rt, shape, key, Details::new(attrs, n as u16), how);
+    let details = Details::new(attrs, n as u16).with_field_bits(bits);
+    let d = descriptors_for_child(rt, shape, key, details, how);
     let child = new_shape(
         rt,
         proto(shape),
@@ -826,12 +974,13 @@ pub(crate) fn remove_last(shape: u64) -> u64 {
 /// [`add`] on a unique (prototype-mode) shape: a new unique shape with one more property,
 /// the same prototype, flags and PROTO_INFO. The descriptor array follows the prefix rule,
 /// so it may be shared with tree shapes. GC point.
-fn add_unique(rt: &Runtime, shape: u64, key: u64, attrs: i32, how: Probe) -> Added {
+fn add_unique(rt: &Runtime, shape: u64, key: u64, attrs: i32, bits: i32, how: Probe) -> Added {
     let n = count(shape);
     if n >= MAX_FAST_PROPERTIES || key::is_index_key(key) {
         return Added::Dictionary;
     }
-    let d = descriptors_for_child(rt, shape, key, Details::new(attrs, n as u16), how);
+    let details = Details::new(attrs, n as u16).with_field_bits(bits);
+    let d = descriptors_for_child(rt, shape, key, details, how);
     let counts = pack_counts_ek(
         n + 1,
         capacity(shape),
@@ -949,8 +1098,17 @@ fn descriptors_for_child(rt: &Runtime, shape: u64, key: u64, details: Details, h
         }
         return nd;
     }
-    if d_details(od, n) == details && same_key(d_key(od, n), key, how) {
-        // A child that died added this very entry: share the array again.
+    let shared = d_details(od, n);
+    if shared.same_slot(details) && same_key(d_key(od, n), key, how) {
+        // A child that died added this very entry: share the array again. The entry keeps
+        // the field bits of its old users, widened by the new child's (one-way; a live
+        // unique shape that shares the array may still use the entry).
+        let b = crate::field_rep::join_bits(shared.field_bits(), details.field_bits());
+        if b != shared.field_bits() {
+            // E1: an int32 store needs no barrier.
+            object::init(od, key_off(n) + 8, shared.with_field_bits(b).bits());
+            crate::field_rep::note_widened(rt, n);
+        }
         return old;
     }
     // A branch: copy the prefix.
@@ -1535,13 +1693,17 @@ pub(crate) fn with_elements_kind(rt: &Runtime, shape: u64, ek: u8) -> Option<u64
     }
     let mut s = root_shape_for_kind(rt, info, k, capacity(shape), ek);
     for i in 0..count(shape) {
-        let (key, attrs) = (key_at(shape, i), details_at(shape, i).attrs());
-        match add(rt, s, key, attrs) {
+        let (key, d) = (key_at(shape, i), details_at(shape, i));
+        // A new field gets the old field's bits (M5-P2 CONSTREP).
+        match add_with(rt, s, key, d.attrs(), d.field_bits()) {
             Added::Shape(c) => s = c,
             Added::Dictionary => return None,
         }
     }
     debug_assert_eq!(flags(s), fl, "a tree shape with other flags");
+    // The object keeps its values: the fields of a tree shape found again widen to hold them
+    // (M5-P2 CONSTREP; not a GC point).
+    crate::field_rep::join_fields(rt, shape, s);
     Some(s)
 }
 

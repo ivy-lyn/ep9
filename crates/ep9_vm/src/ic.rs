@@ -115,7 +115,7 @@ use crate::key;
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32};
 use crate::runtime::{Atom, Root, Runtime};
-use crate::shape::{self, slf};
+use crate::shape::{self, rep, slf};
 use crate::string;
 use crate::stub_cache;
 use crate::unit::FunctionInfo;
@@ -150,6 +150,80 @@ pub(crate) mod smi {
     pub const SLOW: i32 = 5;
     /// The value of a megamorphic entry.
     pub const MEGA: i32 = 6;
+    /// M5-P2 CONSTREP (an append to the handler kinds, H16 "Append-only"): a field store case
+    /// (0x24, 0x25) whose field has a representation that is not ANY (`field_rep.rs`). The
+    /// hit stores only a value whose tag fits it, else it misses (the miss path widens the
+    /// field). Odd kinds are in-object, even ones out of line, as [`FIELD_IN_OBJECT`] and
+    /// [`FIELD_OUT_OF_LINE`]. Only store sites hold them; [`plain`] gives the field handler
+    /// that readers outside the hit path see (`ic::find`).
+    pub const FIELD_INT32_IN_OBJECT: i32 = 9;
+    pub const FIELD_INT32_OUT_OF_LINE: i32 = 10;
+    /// A number (an int32 or a double).
+    pub const FIELD_NUMBER_IN_OBJECT: i32 = 11;
+    pub const FIELD_NUMBER_OUT_OF_LINE: i32 = 12;
+    /// No number (a cell or another immediate).
+    pub const FIELD_HEAP_IN_OBJECT: i32 = 13;
+    pub const FIELD_HEAP_OUT_OF_LINE: i32 = 14;
+
+    // Each checked kind: in-object odd, out of line the next even one; `rep_of_kind` gives
+    // its representation.
+    const _: () = assert!(
+        FIELD_INT32_OUT_OF_LINE == FIELD_INT32_IN_OBJECT + 1
+            && FIELD_NUMBER_OUT_OF_LINE == FIELD_NUMBER_IN_OBJECT + 1
+            && FIELD_HEAP_OUT_OF_LINE == FIELD_HEAP_IN_OBJECT + 1
+            && FIELD_INT32_IN_OBJECT & 1 == FIELD_IN_OBJECT & 1
+            && rep_of_kind(FIELD_INT32_OUT_OF_LINE) == crate::shape::rep::INT32
+            && rep_of_kind(FIELD_NUMBER_IN_OBJECT) == crate::shape::rep::DOUBLE
+            && rep_of_kind(FIELD_HEAP_OUT_OF_LINE) == crate::shape::rep::HEAP
+            && FIELD_HEAP_OUT_OF_LINE <= KIND_MASK
+    );
+
+    /// True for a representation-checked field store kind (9-14).
+    #[inline(always)]
+    pub(crate) const fn is_checked(k: i32) -> bool {
+        k >= FIELD_INT32_IN_OBJECT && k <= FIELD_HEAP_OUT_OF_LINE
+    }
+
+    /// The representation (`shape::rep`) a checked kind `k` names.
+    #[inline(always)]
+    pub(crate) const fn rep_of_kind(k: i32) -> i32 {
+        (k - 7) >> 1
+    }
+
+    /// The smi field handler `x` with its representation check dropped: a checked kind
+    /// becomes [`FIELD_IN_OBJECT`] or [`FIELD_OUT_OF_LINE`] at the same offset; any other
+    /// handler stays.
+    #[inline]
+    pub(crate) const fn plain(x: i32) -> i32 {
+        let k = x & KIND_MASK;
+        if is_checked(k) {
+            (x & !KIND_MASK)
+                | if k & 1 == 1 {
+                    FIELD_IN_OBJECT
+                } else {
+                    FIELD_OUT_OF_LINE
+                }
+        } else {
+            x
+        }
+    }
+
+    /// The checked form of the field handler `x` ([`FIELD_IN_OBJECT`] or
+    /// [`FIELD_OUT_OF_LINE`]) for a field of representation `r`: `x` itself for ANY, `None`
+    /// for NONE (no value stored yet).
+    pub(crate) fn checked(x: i32, r: i32) -> Option<i32> {
+        use crate::shape::rep;
+        let k = x & KIND_MASK;
+        debug_assert!(k == FIELD_IN_OBJECT || k == FIELD_OUT_OF_LINE);
+        let base = match r {
+            rep::ANY => return Some(x),
+            rep::INT32 => FIELD_INT32_IN_OBJECT,
+            rep::DOUBLE => FIELD_NUMBER_IN_OBJECT,
+            rep::HEAP => FIELD_HEAP_IN_OBJECT,
+            _ => return None,
+        };
+        Some((x & !KIND_MASK) | (base + k - FIELD_IN_OBJECT))
+    }
 }
 
 /// IC_HANDLER kinds (the int32 at +8).
@@ -465,10 +539,22 @@ fn store_with<const CHECK_EPOCH: bool>(
     if is_i32(h) {
         let x = int32_of(h);
         let off = (x >> smi::SHIFT) as usize;
-        match x & smi::KIND_MASK {
-            smi::FIELD_IN_OBJECT => object::wr(&rt.heap, c, off, v),
-            smi::FIELD_OUT_OF_LINE => object::wr(&rt.heap, cell(rd(c, obj::SLOTS)), off, v),
+        // M5-P2 CONSTREP: a checked kind stores only a value whose tag fits the field's
+        // representation; the miss path widens it. Odd kinds are in-object.
+        let k = x & smi::KIND_MASK;
+        let fits = |r| crate::field_rep::fits(r, v);
+        match k {
+            smi::FIELD_IN_OBJECT | smi::FIELD_OUT_OF_LINE => {}
+            smi::FIELD_INT32_IN_OBJECT | smi::FIELD_INT32_OUT_OF_LINE if fits(rep::INT32) => {}
+            smi::FIELD_NUMBER_IN_OBJECT | smi::FIELD_NUMBER_OUT_OF_LINE if fits(rep::DOUBLE) => {}
+            smi::FIELD_HEAP_IN_OBJECT | smi::FIELD_HEAP_OUT_OF_LINE if fits(rep::HEAP) => {}
             _ => return false,
+        }
+        let in_object = k & 1 != 0;
+        if in_object {
+            object::wr(&rt.heap, c, off, v);
+        } else {
+            object::wr(&rt.heap, cell(rd(c, obj::SLOTS)), off, v);
         }
         return true;
     }
@@ -480,6 +566,11 @@ fn store_with<const CHECK_EPOCH: bool>(
     }
     let target = rd(hcell, hc::REF);
     if target == UNDEFINED {
+        return false;
+    }
+    // M5-P2 CONSTREP: the new field's representation must hold the value (the first store
+    // keeps the const bit); the miss path widens it.
+    if !crate::field_rep::fits(shape::last_field_rep(target), v) {
         return false;
     }
     #[cfg(debug_assertions)]
@@ -662,8 +753,22 @@ pub(crate) fn state(v: u64, i: u32) -> State {
     }
 }
 
-/// The handler slot `i` of the vector `v` keeps for the case key `k`, if any.
+/// The handler slot `i` of the vector `v` keeps for the case key `k`, if any. A
+/// representation-checked field store handler is given as its plain field handler
+/// ([`smi::plain`], M5-P2 CONSTREP): readers outside the hit paths (the facts exporter,
+/// tests) see the field case; [`find_raw`] gives the stored word.
 pub(crate) fn find(v: u64, i: u32, k: u64) -> Option<u64> {
+    find_raw(v, i, k).map(|h| {
+        if is_i32(h) {
+            int32_bits(smi::plain(int32_of(h)))
+        } else {
+            h
+        }
+    })
+}
+
+/// [`find`] with the stored handler word as it is.
+pub(crate) fn find_raw(v: u64, i: u32, k: u64) -> Option<u64> {
     let (key, value) = (feedback::key(v, i), feedback::value(v, i));
     if key == k {
         return Some(value);
@@ -1046,9 +1151,9 @@ fn key_proto(rt: &Runtime, key: u64) -> u64 {
 /// The case of a store that ran: a decided case, or for an add, the transition from `from`
 /// to the shape `o` has now, if the store added `name` as the next data property {w, e, c}
 /// of a fast shape. Anything else (dictionary mode, another shape) is `SLOW`. Not a GC point.
-pub(crate) fn store_case_after(_rt: &Runtime, pre: StorePre, o: u64, name: u64) -> Option<Case> {
+pub(crate) fn store_case_after(rt: &Runtime, pre: StorePre, o: u64, name: u64) -> Option<Case> {
     let (from, chain) = match pre {
-        StorePre::Done(c) => return Some(c),
+        StorePre::Done(c) => return checked_case(rt, c, name),
         StorePre::Add { from, chain } => (from, chain),
     };
     let to = shape::shape_of(o);
@@ -1074,6 +1179,34 @@ pub(crate) fn store_case_after(_rt: &Runtime, pre: StorePre, o: u64, name: u64) 
         key: from,
         handler,
         stub: Some((store_op(chain.is_none()), name)),
+    })
+}
+
+/// A decided store case after its store ran (M5-P2 CONSTREP): a field case gets the
+/// representation-checked kind of the field as the store left it ([`smi::checked`]). A field
+/// whose const bit is still set (no second store yet) or that holds no representation gets
+/// no case: the hit would store without the second-store hook. Other cases stay. Not a GC
+/// point.
+fn checked_case(rt: &Runtime, c: Case, name: u64) -> Option<Case> {
+    let Handler::Smi(h) = c.handler else {
+        return Some(c);
+    };
+    let x = int32_of(h);
+    if !matches!(
+        x & smi::KIND_MASK,
+        smi::FIELD_IN_OBJECT | smi::FIELD_OUT_OF_LINE
+    ) {
+        return Some(c);
+    }
+    let f = shape::lookup(rt, c.key, name)?;
+    let d = f.details;
+    if d.is_const() {
+        return None;
+    }
+    let x = smi::checked(x, d.rep())?;
+    Some(Case {
+        handler: Handler::Smi(int32_bits(x)),
+        ..c
     })
 }
 
@@ -1103,6 +1236,11 @@ pub(crate) fn global_case(rt: &Runtime, name: u64, store: bool) -> Option<Case> 
         if !usable(f.details.attrs()) {
             return slow(ls);
         }
+        if store {
+            // M5-P2 CONSTREP: a global store hit does not check the value (the slot is
+            // shared with the loads of the name), so the field holds any value from now on.
+            crate::field_rep::widen(rt, ls, f.index);
+        }
         let loc = field_location(ls, usize::from(f.details.field()));
         return Some(Case {
             key: ls,
@@ -1117,6 +1255,10 @@ pub(crate) fn global_case(rt: &Runtime, name: u64, store: bool) -> Option<Case> 
     let f = shape::lookup(rt, gs, name)?;
     if !usable(f.details.attrs()) {
         return slow(gs);
+    }
+    if store {
+        // As for a lexical binding above (M5-P2 CONSTREP).
+        crate::field_rep::widen(rt, gs, f.index);
     }
     Some(Case {
         key: gs,
@@ -1428,7 +1570,9 @@ pub(crate) fn init_vector(fi: &FunctionInfo, code: &[u8], v: u64) {
 #[cfg(test)]
 pub(crate) fn describe_handler(h: u64) -> (i32, u64, u64, i32) {
     if is_i32(h) {
-        let x = int32_of(h);
+        // A representation-checked store kind reads as its plain field handler (M5-P2
+        // CONSTREP; `tests::field_rep` reads the stored word with `find_raw`).
+        let x = smi::plain(int32_of(h));
         return (x & smi::KIND_MASK, UNDEFINED, UNDEFINED, x);
     }
     let c = cell(h);
