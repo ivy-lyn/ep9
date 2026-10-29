@@ -18,7 +18,8 @@
 //! |---|---|
 //! | encoding | `init(c, fv::INFO, native_of(fi))`; `&*native_ptr::<FunctionInfo>(w)`; `frame::native(a)` |
 //! | field | `let w = rd(c, fun::INFO);`; `init(v, k, rd(cell(f), fun::INFO))` |
-//! | import | `use crate::frame::native_of as nw;` (a renamed encoding function); `use crate::object::fun::INFO;` (a bare field name) |
+//! | import | `use crate::frame::native_of as nw;` (a renamed encoding function); `use crate::object::fun::INFO;` (a bare field name); `use crate::object::fun as f;` (a renamed field or `frame` module); `use crate::layout::*;`; `use crate::frame::native;` |
+//! | macro path | `fun::$f`, `crate::frame::$name` (a protected module, then a metavariable); `$m::INFO` |
 //! | allow | a [`VM_STACK`] entry with no hit in a scanned file (remove it) |
 //!
 //! - Allowed without a finding: `crates/ep9_vm/src/frame.rs` (the encoding and the VM stack),
@@ -31,7 +32,10 @@
 //!   its line.
 //! - Known gaps: a statement that names `ExternalRef` and also copies a bare field word; a
 //!   raw offset (`rd(c, 24)`) in place of the field name; a native word made by hand
-//!   (`addr + DOUBLE_ENCODE_OFFSET`). Review and the H25 inventory cover them.
+//!   (`addr + DOUBLE_ENCODE_OFFSET`); a macro path whose module and field both come from
+//!   metavariables (`$m::$f`). Review and the H25 inventory cover them.
+//! - Test code is an item whose `cfg` is false in every build without `test` (`test`,
+//!   `all(test, ..)`); `any(test, feature = "x")` compiles in production and is checked.
 //!
 //! Exit codes: 0 no finding, 1 a finding, 2 usage error or a file that does not parse. Paths
 //! print relative to the root with `/` on every OS. Fixture tests: the `tests` module below.
@@ -362,21 +366,34 @@ fn range_of(s: proc_macro2::Span) -> Range {
     (s.start(), s.end())
 }
 
+/// An item is test code only when its `cfg` predicate is false in every build without `test`:
+/// `test`, `all(.., test, ..)`, `any(..)` whose every arm needs `test`. `any(test, feature =
+/// "x")`, `feature = "test-hooks"` and `not(..)` compile in a production build.
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
-        if !a.path().is_ident("cfg") {
-            return false;
-        }
-        let toks = match &a.meta {
-            syn::Meta::List(l) => l.tokens.to_string(),
-            _ => return false,
-        };
-        let words: Vec<&str> = toks
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|w| !w.is_empty())
-            .collect();
-        words.contains(&"test") && !words.contains(&"not")
+        a.path().is_ident("cfg") && a.parse_args::<syn::Meta>().is_ok_and(|m| needs_test(&m))
     })
+}
+
+fn needs_test(m: &syn::Meta) -> bool {
+    match m {
+        syn::Meta::Path(p) => p.is_ident("test"),
+        syn::Meta::NameValue(_) => false,
+        syn::Meta::List(l) => {
+            let Ok(args) = l.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                return false;
+            };
+            if l.path.is_ident("all") {
+                args.iter().any(needs_test)
+            } else if l.path.is_ident("any") {
+                !args.is_empty() && args.iter().all(needs_test)
+            } else {
+                false // `not(..)` and anything else
+            }
+        }
+    }
 }
 
 impl<'ast> Visit<'ast> for Regions {
@@ -484,12 +501,31 @@ impl Regions {
                         ),
                     ));
                 }
+                if is_protected_module(&name) {
+                    self.imports.push((
+                        line,
+                        format!(
+                            "the module `{name}` is imported as `{}`: the field and encoding \
+                             names under it would hide; use `{name}` itself",
+                            r.rename
+                        ),
+                    ));
+                }
                 self.field_import(parent, &name, line);
             }
-            syn::UseTree::Name(n) => self.field_import(parent, &n.ident.to_string(), line),
+            syn::UseTree::Name(n) => {
+                let name = n.ident.to_string();
+                if parent == Some("frame") && name == "native" {
+                    self.imports.push((
+                        line,
+                        "`frame::native` is imported by name: call it `frame::native`".into(),
+                    ));
+                }
+                self.field_import(parent, &name, line);
+            }
             syn::UseTree::Glob(_) => {
                 if let Some(p) = parent
-                    && FIELDS.iter().any(|(m, _)| *m == p && *m != "layout")
+                    && (FIELDS.iter().any(|(m, _)| *m == p) || p == "frame")
                 {
                     self.imports.push((
                         line,
@@ -514,11 +550,18 @@ impl Regions {
     }
 }
 
+/// A module whose names the token rules match: a FIELDS module, or `frame` (`frame::native`).
+fn is_protected_module(name: &str) -> bool {
+    name == "frame" || FIELDS.iter().any(|(m, _)| *m == name)
+}
+
 /// A token of the flat stream: an identifier, `::`, or anything else (a group bound too, so a
 /// path never joins across a group).
 enum Tok {
     Ident(String, Pos),
     Colon2,
+    /// `$` (a `macro_rules!` metavariable follows).
+    Dollar(Pos),
     Other,
 }
 
@@ -535,6 +578,7 @@ fn flatten(ts: TokenStream, out: &mut Vec<Tok>) {
                     out.push(Tok::Other);
                 }
             }
+            TokenTree::Punct(p) if p.as_char() == '$' => out.push(Tok::Dollar(p.span().start())),
             TokenTree::Group(g) => {
                 out.push(Tok::Other);
                 flatten(g.stream(), out);
@@ -568,6 +612,29 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
     let mut hits: Vec<(Kind, String, Pos)> = Vec::new();
     let mut extref: Vec<Pos> = Vec::new();
     for (i, t) in toks.iter().enumerate() {
+        // A path that a macro completes: `fun::$f`, `crate::frame::$name` (any protected
+        // module, then a metavariable), or `$m::INFO` (a metavariable, then a field const).
+        // The lint does not expand macros, so it rejects both forms.
+        if let Tok::Dollar(at) = t {
+            if i >= 2
+                && let (Tok::Ident(head, _), Tok::Colon2) = (&toks[i - 2], &toks[i - 1])
+                && is_protected_module(head)
+            {
+                let kind = if head == "frame" {
+                    Kind::Encoding
+                } else {
+                    Kind::Field
+                };
+                hits.push((kind, format!("{head}::$.. (a macro-built path)"), *at));
+            }
+            if let (Some(Tok::Ident(..)), Some(Tok::Colon2), Some(Tok::Ident(c, _))) =
+                (toks.get(i + 1), toks.get(i + 2), toks.get(i + 3))
+                && FIELDS.iter().any(|(_, f)| f == c)
+            {
+                hits.push((Kind::Field, format!("$..::{c} (a macro-built path)"), *at));
+            }
+            continue;
+        }
         let Tok::Ident(name, at) = t else { continue };
         if name == "ExternalRef" {
             extref.push(*at);
@@ -815,6 +882,55 @@ macro_rules! sneak {
             f,
             [(1, "import"), (2, "import"), (3, "import"), (5, "encoding")]
         );
+    }
+
+    /// Codex M5-P3 r1: module aliases, `frame::native` by name, globs, macro-built paths and
+    /// production cfgs that name `test` each hid a native word.
+    #[test]
+    fn aliases_macro_paths_and_production_cfgs_fail() {
+        let alias = "\
+use crate::object::fun as fields;
+mod m { pub use crate::object::fun as f; }
+use crate::frame as encoding;
+use crate::layout::*;
+use crate::frame::native;
+use crate::frame::*;
+";
+        let (f, _) = lint(VM, alias);
+        assert_eq!(
+            f,
+            [
+                (1, "import"),
+                (2, "import"),
+                (3, "import"),
+                (4, "import"),
+                (5, "import"),
+                (6, "import")
+            ]
+        );
+        let mac = "\
+macro_rules! read_word { ($v:expr, $f:ident) => { rd(cell($v), fun::$f) }; }
+macro_rules! enc { ($n:ident, $p:expr) => { crate::frame::$n($p) }; }
+macro_rules! rd_mod { ($m:ident, $c:expr) => { rd($c, $m::INFO) }; }
+";
+        let (f, _) = lint(VM, mac);
+        assert_eq!(f, [(1, "field"), (2, "encoding"), (3, "field")]);
+        let cfg = "\
+#[cfg(any(test, target_pointer_width = \"64\"))]
+fn a(c: CellPtr, fi: &FunctionInfo) { init(c, fun::INFO, native_of(fi)); }
+#[cfg(feature = \"test-hooks\")]
+fn b(c: CellPtr, fi: &FunctionInfo) { init(c, fun::INFO, native_of(fi)); }
+#[cfg(all(test, not(miri)))]
+fn c(c: CellPtr, fi: &FunctionInfo) { init(c, fun::INFO, native_of(fi)); }
+#[cfg(any(test, all(test, unix)))]
+fn d(c: CellPtr, fi: &FunctionInfo) { init(c, fun::INFO, native_of(fi)); }
+";
+        let (f, r) = lint(VM, cfg);
+        assert_eq!(
+            f,
+            [(2, "encoding"), (2, "field"), (4, "encoding"), (4, "field")]
+        );
+        assert_eq!(r.in_tests, 4);
     }
 
     #[test]
