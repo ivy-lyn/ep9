@@ -60,8 +60,10 @@ commands:
                             (one path per line, as in an expectation file); prints the count
           --feedback-threshold <n>  calls before a function gets a feedback vector (default 8;
                             0 = at the first call, 4294967295 = never)
+          --preset <name>   preset of every isolate: jit or jitless (default: this build's;
+                            jit with the default `jit` feature; jit needs that feature)
           --feedback <mode>  type-feedback mode of every isolate: full or ics_only (default:
-                            the default of this build's preset; full for the jit preset)
+                            the default of the preset: full for jit, ics_only for jitless)
           --causes <n>      failure causes in the report (default 20)
           --progress        print progress to stderr
           --verbose         print every failure
@@ -213,6 +215,24 @@ fn count(flag: &str, v: &str) -> Result<u32, String> {
         .map_err(|_| format!("bad {flag} value {v:?}"))
 }
 
+/// A `--preset` value: `jit` or `jitless` (ep9_vm `Preset`, C-23), one this build runs (M-R6:
+/// the jit preset needs the `jit` feature; never a silent downgrade; M5-P0-ORCH-10).
+fn preset(v: &str) -> Result<ep9_vm::Preset, String> {
+    let p = ep9_vm::Preset::from_name(v)
+        .ok_or_else(|| format!("bad --preset value {v:?} (jit or jitless)"))?;
+    if !p.available() {
+        return Err(format!(
+            "--preset {v}: this build cannot run it (the jit preset needs the jit feature)"
+        ));
+    }
+    Ok(p)
+}
+
+/// The feedback mode of a run: `--feedback` if given, else the default of the preset.
+fn feedback_of(preset: ep9_vm::Preset, given: Option<ep9_vm::Feedback>) -> ep9_vm::Feedback {
+    given.unwrap_or_else(|| exec::preset_options(preset).feedback_mode())
+}
+
 /// A `--feedback` value: `full` or `ics_only` (ep9_vm `Feedback`, C-23).
 fn feedback(v: &str) -> Result<ep9_vm::Feedback, String> {
     ep9_vm::Feedback::from_name(v)
@@ -230,6 +250,7 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
         gc_stress: 0,
         skip_list: None,
         feedback_threshold: ep9_vm::IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
+        preset: ep9_vm::ExecOptions::default().preset(),
         feedback: ep9_vm::ExecOptions::default().feedback_mode(),
         verbose: false,
         progress: false,
@@ -238,6 +259,7 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
         triple: TRIPLE,
     };
     let mut it = args.iter();
+    let mut feedback_given = None;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--test262" => opts.test262 = PathBuf::from(value(arg, &mut it)?),
@@ -249,7 +271,8 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
             "--gc-stress" => opts.gc_stress = count(arg, value(arg, &mut it)?)?,
             "--skip-list" => opts.skip_list = Some(PathBuf::from(value(arg, &mut it)?)),
             "--feedback-threshold" => opts.feedback_threshold = count(arg, value(arg, &mut it)?)?,
-            "--feedback" => opts.feedback = feedback(value(arg, &mut it)?)?,
+            "--preset" => opts.preset = preset(value(arg, &mut it)?)?,
+            "--feedback" => feedback_given = Some(feedback(value(arg, &mut it)?)?),
             "--causes" => opts.causes = count(arg, value(arg, &mut it)?)? as usize,
             "--verbose" => opts.verbose = true,
             "--progress" => opts.progress = true,
@@ -259,6 +282,7 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
                 .push(prefix.trim_start_matches("./").to_string()),
         }
     }
+    opts.feedback = feedback_of(opts.preset, feedback_given);
     if opts.skip_list.is_some() {
         // The list names the tests that only GC-stress makes too slow; a normal run skips
         // nothing.
@@ -278,9 +302,11 @@ fn parse_worker_args(args: &[String]) -> Result<exec::WorkerOptions, String> {
         timeout: std::time::Duration::from_secs(20),
         gc_stress: 0,
         feedback_threshold: ep9_vm::IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
-        feedback: ep9_vm::ExecOptions::default().feedback_mode(),
+        exec: ep9_vm::ExecOptions::default(),
     };
     let mut it = args.iter();
+    let mut preset_given = opts.exec.preset();
+    let mut feedback_given = None;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--test262" => opts.test262 = PathBuf::from(value(arg, &mut it)?),
@@ -295,10 +321,13 @@ fn parse_worker_args(args: &[String]) -> Result<exec::WorkerOptions, String> {
             }
             "--gc-stress" => opts.gc_stress = count(arg, value(arg, &mut it)?)?,
             "--feedback-threshold" => opts.feedback_threshold = count(arg, value(arg, &mut it)?)?,
-            "--feedback" => opts.feedback = feedback(value(arg, &mut it)?)?,
+            "--preset" => preset_given = preset(value(arg, &mut it)?)?,
+            "--feedback" => feedback_given = Some(feedback(value(arg, &mut it)?)?),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    opts.exec =
+        exec::preset_options(preset_given).feedback(feedback_of(preset_given, feedback_given));
     Ok(opts)
 }
 
@@ -351,13 +380,55 @@ mod tests {
         #[cfg(feature = "jit")]
         assert_eq!(default, Feedback::FULL);
         assert_eq!(parse_exec_args(&[]).unwrap().feedback, default);
-        assert_eq!(parse_worker_args(&[]).unwrap().feedback, default);
+        assert_eq!(
+            parse_worker_args(&[]).unwrap().exec.feedback_mode(),
+            default
+        );
         let o = parse_exec_args(&strings(&["--feedback", "ics_only"])).unwrap();
         assert_eq!(o.feedback, Feedback::ICS_ONLY);
         let w = parse_worker_args(&strings(&["--feedback", "full"])).unwrap();
-        assert_eq!(w.feedback, Feedback::FULL);
+        assert_eq!(w.exec.feedback_mode(), Feedback::FULL);
         assert!(parse_exec_args(&strings(&["--feedback", "jit"])).is_err());
         assert!(parse_worker_args(&strings(&["--feedback"])).is_err());
+    }
+
+    /// `--preset` (M5-P0-ORCH-10): jit or jitless, for the parent and its workers; a preset
+    /// this build cannot run is a usage error, never a silent downgrade (M-R6); the feedback
+    /// default follows the preset (jit: full, jitless: ics_only), and `--feedback` overrides
+    /// it in either order.
+    #[test]
+    fn preset_reaches_exec_and_worker() {
+        use ep9_vm::{ExecOptions, Feedback, Preset};
+        let o = parse_exec_args(&[]).unwrap();
+        assert_eq!(o.preset, ExecOptions::default().preset());
+        let o = parse_exec_args(&strings(&["--preset", "jitless"])).unwrap();
+        assert_eq!(
+            (o.preset, o.feedback),
+            (Preset::JITLESS, Feedback::ICS_ONLY)
+        );
+        let w = parse_worker_args(&strings(&["--preset", "jitless"])).unwrap();
+        assert_eq!(w.exec, ExecOptions::jitless());
+        for args in [
+            ["--preset", "jitless", "--feedback", "full"],
+            ["--feedback", "full", "--preset", "jitless"],
+        ] {
+            let o = parse_exec_args(&strings(&args)).unwrap();
+            assert_eq!((o.preset, o.feedback), (Preset::JITLESS, Feedback::FULL));
+            let w = parse_worker_args(&strings(&args)).unwrap().exec;
+            assert_eq!(w, ExecOptions::jitless().feedback(Feedback::FULL));
+        }
+        match parse_exec_args(&strings(&["--preset", "jit"])) {
+            Ok(o) => {
+                assert!(Preset::JIT.available());
+                assert_eq!((o.preset, o.feedback), (Preset::JIT, Feedback::FULL));
+            }
+            Err(e) => assert!(!Preset::JIT.available() && e.contains("jit feature"), "{e}"),
+        }
+        if !Preset::JIT.available() {
+            assert!(parse_worker_args(&strings(&["--preset", "jit"])).is_err());
+        }
+        assert!(parse_exec_args(&strings(&["--preset", "hybrid"])).is_err());
+        assert!(parse_worker_args(&strings(&["--preset"])).is_err());
     }
 
     #[test]

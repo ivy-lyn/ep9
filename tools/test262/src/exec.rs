@@ -36,7 +36,7 @@ use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Stric
 use ep9_heap::HeapConfig;
 use ep9_vm::{
     Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, ExecOptions, Feedback,
-    HostFn, Isolate, IsolateConfig, JsResult, Local, PropertyDescriptor, TerminateHandle,
+    HostFn, Isolate, IsolateConfig, JsResult, Local, Preset, PropertyDescriptor, TerminateHandle,
 };
 
 use crate::frontmatter::{self, Meta};
@@ -79,8 +79,8 @@ pub struct Options {
     pub skip_list: Option<PathBuf>,
     /// `IsolateConfig::feedback_threshold` of every isolate.
     pub feedback_threshold: u32,
-    /// The type-feedback mode of every isolate (`--feedback`; `Isolate::new_with`, C-23): the
-    /// build's default preset with this mode.
+    /// The preset and type-feedback mode of every isolate (`--preset`, `--feedback`; C-23).
+    pub preset: Preset,
     pub feedback: Feedback,
     pub verbose: bool,
     pub progress: bool,
@@ -96,7 +96,7 @@ pub struct WorkerOptions {
     pub timeout: Duration,
     pub gc_stress: u32,
     pub feedback_threshold: u32,
-    pub feedback: Feedback,
+    pub exec: ExecOptions,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -610,10 +610,10 @@ fn hook_failure(e: CodegenError) -> CompileFailure {
     }
 }
 
-/// The execution options of every test isolate (C-23): this build's default preset (`jit` with
-/// the runner's default `jit` feature) with the `--feedback` mode.
-fn exec_options(feedback: Feedback) -> ExecOptions {
-    ExecOptions::default().feedback(feedback)
+/// The execution options of every test isolate (C-23): the `--preset` (default: this build's,
+/// `jit` with the default `jit` feature; [`preset_options`]) with the `--feedback` mode.
+fn exec_options(preset: Preset, feedback: Feedback) -> ExecOptions {
+    preset_options(preset).feedback(feedback)
 }
 
 /// `exec` exits 2 unless an isolate made with `config` has a builtin table: a run without
@@ -635,7 +635,7 @@ struct RunCtx<'a> {
 impl RunCtx<'_> {
     fn isolate(&self) -> Result<Isolate, String> {
         let config = isolate_config(self.opts.gc_stress, self.opts.feedback_threshold);
-        let mut iso = Isolate::new_with(config, exec_options(self.opts.feedback))
+        let mut iso = Isolate::new_with(config, self.opts.exec)
             .map_err(|e| format!("cannot create an isolate: {e}"))?;
         for (name, length, f) in HOST_FUNCTIONS {
             iso.register_host_function(name, length, f);
@@ -1543,6 +1543,8 @@ pub fn run(opts: &Options) -> ExitCode {
         opts.gc_stress.to_string(),
         "--feedback-threshold".into(),
         opts.feedback_threshold.to_string(),
+        "--preset".into(),
+        opts.preset.name().into(),
         "--feedback".into(),
         opts.feedback.name().into(),
     ];
@@ -1614,7 +1616,7 @@ pub fn run(opts: &Options) -> ExitCode {
     let mut top: Vec<(&str, usize)> = causes.iter().map(|(c, n)| (*c, *n)).collect();
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
 
-    let exec = exec_options(opts.feedback);
+    let exec = exec_options(opts.preset, opts.feedback);
     println!(
         "ep9-test262 exec: {} tests, {} worker processes, target {}, mode {}, feedback {}, timeout {:?}{}{}",
         results.len(),
@@ -1778,6 +1780,17 @@ pub fn run(opts: &Options) -> ExitCode {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The options of the preset `preset` with its own feedback mode (`jit`: `full`, `jitless`:
+/// `ics_only`, MODES-D11), before `--feedback` (M5-P0-ORCH-10). The argument parser refuses a
+/// preset this build cannot run; `Isolate::new_with` would refuse it too (M-R6).
+pub fn preset_options(preset: Preset) -> ExecOptions {
+    if preset == Preset::JIT {
+        ExecOptions::jit()
+    } else {
+        ExecOptions::jitless()
+    }
+}
+
 fn summary_json(
     opts: &Options,
     by_dir: &BTreeMap<String, (Count, Count)>,
@@ -1797,7 +1810,7 @@ fn summary_json(
     // The build (MC-w17-5): `mode` is the preset the isolates ran (no longer the literal
     // "jit"), `features` the ep9_vm features of this binary, `feedback` the type-feedback mode.
     let build = ep9_vm::build_info();
-    let exec = exec_options(opts.feedback);
+    let exec = exec_options(opts.preset, opts.feedback);
     let mut out = String::from("{\"command\":\"exec\",\"mode\":");
     json::string(&mut out, exec.preset().name());
     out.push_str(",\"preset\":");
