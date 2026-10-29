@@ -213,13 +213,40 @@ pub(super) fn escape<'s>(
         return Err(cx.throw_type_error("RegExp.escape requires a string"));
     };
     let units = crate::string::units(cx, s)?;
-    Ok(cx.new_string_utf16(&escape_units(&units))?.value())
+    // The longest string the VM makes is checked before the buffer grows (the rule of the
+    // string builders, `crate::string::MAX_LENGTH`; Codex M5-P2 r1 regexp2 2).
+    let Some(escaped) = escape_units(&units, crate::string::MAX_LENGTH) else {
+        return Err(cx.throw_range_error("Invalid string length"));
+    };
+    Ok(cx.new_string_utf16(&escaped)?.value())
 }
 
-/// Steps 2-5 of RegExp.escape (§22.2.5.1) on the code units of S.
-pub(crate) fn escape_units(s: &[u16]) -> Vec<u16> {
+/// Steps 2-5 of RegExp.escape (§22.2.5.1) on the code units of S, or `None` if the result
+/// would be longer than `max` code units. Two passes: the exact length first (each code
+/// point's escape into a small scratch buffer, stopping past `max`), then one allocation of
+/// that length, so a long input never grows a buffer past `max` (up to 6 units per input
+/// unit: a lone surrogate is `\uXXXX`).
+pub(crate) fn escape_units(s: &[u16], max: usize) -> Option<Vec<u16>> {
+    let mut len = 0usize;
+    let mut one: Vec<u16> = Vec::with_capacity(12);
+    for (i, c) in char::decode_utf16(s.iter().copied()).enumerate() {
+        let c = match c {
+            Ok(ch) => u32::from(ch),
+            Err(e) => u32::from(e.unpaired_surrogate()),
+        };
+        one.clear();
+        if i == 0 && c < 0x80 && (c as u8).is_ascii_alphanumeric() {
+            push_hex_escape(&mut one, 'x', c, 2);
+        } else {
+            encode_for_regexp_escape(&mut one, c);
+        }
+        len += one.len();
+        if len > max {
+            return None;
+        }
+    }
     // 2. Let escaped be the empty String.
-    let mut escaped: Vec<u16> = Vec::with_capacity(s.len() + 4);
+    let mut escaped: Vec<u16> = Vec::with_capacity(len);
     // 3. Let cpList be StringToCodePoints(S).
     // 4. For each code point c in cpList, do
     for c in char::decode_utf16(s.iter().copied()) {
@@ -238,7 +265,8 @@ pub(crate) fn escape_units(s: &[u16]) -> Vec<u16> {
         }
     }
     // 5. Return escaped.
-    escaped
+    debug_assert_eq!(escaped.len(), len);
+    Some(escaped)
 }
 
 /// Appends `\`, `letter` and `value` as `digits` lowercase hex digits.
@@ -408,7 +436,22 @@ pub(crate) fn escape_pattern(src: &[u16], nested: bool) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_pattern;
+    use super::{escape_pattern, escape_units};
+
+    /// Codex M5-P2 r1 regexp2 2: the length is checked before the one allocation, at the
+    /// bound itself (10 lone surrogates escape to 60 units).
+    #[test]
+    fn escape_checks_the_length_before_it_allocates() {
+        let lone = [0xD800u16; 10];
+        assert_eq!(escape_units(&lone, 59), None);
+        let v = escape_units(&lone, 60).expect("60 units fit");
+        assert_eq!((v.len(), v.capacity()), (60, 60));
+        let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let text = |v: Vec<u16>| String::from_utf16(&v).expect("UTF-16");
+        assert_eq!(text(escape_units(&units("a.b"), 100).unwrap()), "\\x61\\.b");
+        assert_eq!(escape_units(&units("a.b"), 6), None);
+        assert_eq!(escape_units(&[], 0), Some(Vec::new()));
+    }
 
     fn esc(s: &str, nested: bool) -> String {
         let units: Vec<u16> = s.encode_utf16().collect();
