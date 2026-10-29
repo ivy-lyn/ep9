@@ -47,11 +47,27 @@
 #        counter at least its forced exit, every armed guard forced (`tier::forced_coverage`;
 #        Codex M5-P2 r1 spikec6 3), heap verifier clean
 #     SKIP without the v8-v7 checkout
+#   gate.sh spfacts      (plan v10 M5-P3 SPFACTS WI-SC8; protocol §6.3, C5c) SP-Facts, config P:
+#     1  release build (as am3)
+#     2  `spike-c sp-facts write crypto <file>`: a training run (loop(1) in T0) writes the live
+#        facts of the kernel's unit as a PROFILED file (FACT_SCHEMA_VERSION 1)
+#     3  `spike-c sp-facts check crypto <file> --n 1` and `--n 8`, a new process: the file read
+#        and validated (no record dropped), the hot set compiled from it and installed before
+#        the first run(), then loop(1) (the start-up exits are counted and printed) and loop(n);
+#        every line equal to T0 and to config C, the same set compiled as C, heap verifier clean
+#     4  `spike-c sp-facts wrong crypto`: config P with wrong files (another kernel's, another
+#        run's, records shuffled across slots, no records, another FACT_SCHEMA_VERSION, a
+#        RUNTIME file): output equal to T0 each time, the stale, other-schema and RUNTIME files
+#        refused, and compiled code from a wrong file took exits (MC-w15-18: a wrong profile
+#        costs speed, never output)
+#     SKIP without the v8-v7 checkout. The Mac t(C) / t(P) report is `spike-c sp-facts time
+#     crypto` (a report, never a reading; not in any gate step)
 #   gate.sh time         (plan v9 M4-P2 SPIKEC-2; protocol §3) the class S timing of crypto on
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
 #     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
 #     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
-#   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, then `gate.sh linsolve`
+#   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, `gate.sh linsolve`, then
+#                        `gate.sh spfacts`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
 #      SPIKE_C_BENCH_DIR (default: third_party/bench-v8v7/bench/bench-v8).
@@ -156,6 +172,25 @@ linsolve() {
   run "linsolve/tier-n12" "$bin" tier navier-stokes --n 12
 }
 
+spfacts() {
+  if ! build_release; then
+    record "spfacts" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/crypto.js" ]; then
+    record "spfacts" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  local prof="$CARGO_TARGET_DIR/spfacts-crypto.facts"
+  rm -f "$prof"
+  run "spfacts/write" "$bin" sp-facts write crypto "$prof"
+  run "spfacts/p-n1" "$bin" sp-facts check crypto "$prof" --n 1
+  run "spfacts/p-n8" "$bin" sp-facts check crypto "$prof"
+  run "spfacts/wrong" "$bin" sp-facts wrong crypto
+}
+
 timing() {
   if ! build_release; then
     record "time" FAIL "release build failed"
@@ -176,15 +211,17 @@ case "$step" in
   am3) am3 ;;
   deopt) deopt ;;
   linsolve) linsolve ;;
+  spfacts) spfacts ;;
   time) timing ;;
   all)
     structural
     am3
     deopt
     linsolve
+    spfacts
     ;;
   *)
-    echo "usage: gate.sh [structural | am3 | deopt | linsolve | time]" >&2
+    echo "usage: gate.sh [structural | am3 | deopt | linsolve | spfacts | time]" >&2
     exit 2
     ;;
 esac
