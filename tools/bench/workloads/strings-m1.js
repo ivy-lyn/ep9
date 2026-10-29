@@ -82,6 +82,20 @@ const micros = {
     }
     return n;
   },
+  // substring and slice of 13 or more units over a long text: SLICED cells, O(1) after one
+  // flatten (H19; the builtins call Cx::substring from M5-P3), then length and charCodeAt.
+  "slices"() {
+    let s = "";
+    for (let i = 0; i < 2000; i++) s += "word " + i + "; ";
+    let n = 0;
+    for (let i = 0; i < 20000; i++) {
+      const at = (i * 131) % (s.length - 600);
+      const a = s.substring(at, at + 500);
+      const b = a.slice(17, 400);
+      n = (n + a.length + b.length + b.charCodeAt(i % 383)) | 0;
+    }
+    return n;
+  },
 };
 
 // Expected results (node v24.22.1). A wrong result throws, so it cannot pass as a fast run.
@@ -93,6 +107,7 @@ const want = {
   "number-strings": "1286630",
   "compare": "17400:29900",
   "substrings": "274686",
+  "slices": "19086203",
 };
 
 const only = typeof ONLY === "string" ? ONLY : null;
