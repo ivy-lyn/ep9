@@ -212,15 +212,22 @@ pub enum Op {
         /// The smi handler every case must have.
         handler: u64,
     },
-    /// Guard: the Tagged input is an Array (kind byte). Tagged.
+    /// Guard, the kind guard (WI-SC7, M5-P1-ORCH-11): the Tagged input is an Array (kind
+    /// byte) whose shape holds an elements kind of `vm_layout::ARRAY_KINDS` (INT32, DOUBLE or
+    /// ELEMENTS, packed or holey; DICTIONARY and the reserved kinds exit). Tagged: the element
+    /// ops take it as their array input, so none of them runs before it.
     CheckArray,
     /// The field at byte `offset` of the object input (behind a [`Op::CheckShape`]). Tagged.
     LoadField { offset: u32 },
-    /// Guard: element `index` (Int32) of the array input: in `0..length`, inside the ELEMENTS
-    /// capacity, not a hole. Tagged.
+    /// Guard: element `index` (Int32) of the array input (a [`Op::CheckArray`]): in
+    /// `0..length`, inside the capacity of its ELEMENTS or ELEMENTS_DOUBLE cell (any other
+    /// elements store exits), not a hole. Tagged (a raw f64 boxes as `Value::number`).
     LoadElement,
-    /// Guard: stores the Int32 value into an existing element (same bounds and hole checks).
-    /// An int32 is not a cell, so no barrier is needed (H11 elision E1).
+    /// Guard: stores the Int32 or Float64 value into an existing element (same bounds and hole
+    /// checks): raw f64 into an ELEMENTS_DOUBLE cell, an int32 Value into an ELEMENTS cell; a
+    /// Float64 that is no int32 into an ELEMENTS cell takes the generic store out of line (the
+    /// kind transition: a GC point, no JS for an existing element of an Array). A number is
+    /// not a cell, so no barrier is needed (H11 elision E1).
     StoreElement,
     /// Guard: the Tagged input is a number (an int32 or a double Value); its value as a
     /// double. Float64 (SPIKEC-4).

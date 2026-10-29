@@ -75,24 +75,90 @@ pub struct HotHarness {
     pub function: &'static str,
     pub setup: &'static str,
     pub digest: &'static str,
+    /// The `__spikeCHot` calls of the warm-up (the facts the compile reads).
+    pub warm: u32,
+    /// The default `k` of the timed call (about 0.15 s of T0 time on an M-series Mac).
+    pub k: u32,
+    /// For an inner closure no JS value reaches with its own inputs (WI-SC5: navier-stokes'
+    /// `lin_solve` reads `width`, `height`, `rowSize`, `iterations` and calls `set_bnd`): the
+    /// kernel file's lines `.0..=.1`, copied into the script `hot.js` on the same line
+    /// numbers, inside a function whose first lines are `prelude` (the closure's variables)
+    /// and which returns the hot function. The H configs compile and install that copy (same
+    /// text, its own facts, by function id), not the kernel's closure.
+    pub copy: Option<((u32, u32), &'static str)>,
 }
 
 /// The hot-function harnesses (the first hot function of each kernel that compiles today).
 /// am3: a 37-digit `this` (28-bit digits, as crypto's own numbers) times a 28-bit `x`, added
 /// into a 74-digit `w` at a moving offset; each call reads and writes the same cells, so every
 /// call does the same work, and `w` stays 28-bit digits.
-pub const HOT: [HotHarness; 1] = [HotHarness {
-    function: "am3",
-    setup: "var __hx = nbi(), __hw = nbi();\n\
-            for (var i = 0; i < 37; i++) __hx.array[i] = (i * 2654435 + 12345) & 0xfffffff;\n\
-            for (var i = 0; i < 74; i++) __hw.array[i] = (i * 40503 + 7) & 0xfffffff;\n\
-            function __spikeCHot(k) {\n\
-            \x20 var c = 0;\n\
-            \x20 for (var r = 0; r < k; r++) c = (c + __hx.am(0, 0x9e3779b, __hw, r % 37, 0, 37)) | 0;\n\
-            \x20 return c;\n\
-            }\n",
-    digest: "(function () { var h = 0; for (var i = 0; i < 74; i++) h = (h * 31 + __hw.array[i]) | 0; return 'digest ' + h; })()",
-}];
+/// lin_solve (M5-P2 SPIKEC-6): the copy of `set_bnd` and `lin_solve` (navier-stokes.js:82-149)
+/// at the kernel's size (Setup: 128 x 128, 20 iterations), called as `project` calls it
+/// (`lin_solve(0, p, div, 1, 4)`, the iterative branch) on two arrays of doubles; every call
+/// does the same work (20 sweeps of every cell).
+pub const HOT: [HotHarness; 2] = [
+    HotHarness {
+        function: "am3",
+        setup: "var __hx = nbi(), __hw = nbi();\n\
+                for (var i = 0; i < 37; i++) __hx.array[i] = (i * 2654435 + 12345) & 0xfffffff;\n\
+                for (var i = 0; i < 74; i++) __hw.array[i] = (i * 40503 + 7) & 0xfffffff;\n\
+                function __spikeCHot(k) {\n\
+                \x20 var c = 0;\n\
+                \x20 for (var r = 0; r < k; r++) c = (c + __hx.am(0, 0x9e3779b, __hw, r % 37, 0, 37)) | 0;\n\
+                \x20 return c;\n\
+                }\n",
+        digest: "(function () { var h = 0; for (var i = 0; i < 74; i++) h = (h * 31 + __hw.array[i]) | 0; return 'digest ' + h; })()",
+        warm: 200,
+        k: 100_000,
+        copy: None,
+    },
+    HotHarness {
+        function: "lin_solve",
+        setup: "var __hn = 130 * 130, __hp = [], __hd = [];\n\
+                for (var i = 0; i < __hn; i++) { __hp.push(0.5 + (i % 7) * 0.125); __hd.push(((i * 37) % 101) / 64 - 0.75); }\n\
+                function __spikeCHot(k) {\n\
+                \x20 for (var r = 0; r < k; r++) __hl(0, __hp, __hd, 1, 4);\n\
+                \x20 return __hp[131];\n\
+                }\n",
+        digest: "(function () { var s = 0; for (var i = 0; i < __hn; i++) s += __hp[i] * ((i % 13) + 1); return 'digest ' + s; })()",
+        warm: 3,
+        k: 10,
+        copy: Some((
+            (82, 149),
+            "var __hl = (function () {\nvar width = 128, height = 128, rowSize = width + 2, iterations = 20;\n",
+        )),
+    },
+];
+
+/// The default `k` of the H configs for `k`'s first hot function (100,000 without a harness).
+pub fn default_k(k: &Kernel) -> u32 {
+    hot_harness(k).map_or(100_000, |h| h.k)
+}
+
+/// The script `hot.js` of `h`: with a copy, the prelude, blank lines up to the first copied
+/// line, the kernel's lines on their own line numbers, the end of the wrapper; then `setup`.
+fn hot_script(h: &HotHarness, k: &Kernel) -> Result<String, String> {
+    let Some(((first, last), prelude)) = h.copy else {
+        return Ok(h.setup.to_string());
+    };
+    let text = std::fs::read_to_string(kernels::bench_dir().join(k.file))
+        .map_err(|e| format!("{}: {e}", k.file))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let body = lines
+        .get(first as usize - 1..last as usize)
+        .ok_or_else(|| format!("{}: no lines {first}-{last}", k.file))?;
+    let used = prelude.matches('\n').count();
+    let pad = (first as usize - 1)
+        .checked_sub(used)
+        .ok_or("the prelude is longer than the lines before the copy")?;
+    Ok(format!(
+        "{prelude}{}{}\nreturn {};\n}})();\n{}",
+        "\n".repeat(pad),
+        body.join("\n"),
+        h.function,
+        h.setup
+    ))
+}
 
 /// What one process measured.
 #[derive(Clone, Debug, PartialEq)]
@@ -197,7 +263,9 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
     let mut timed_exits = 0u64;
     let mut secs = 0.0;
     // The exits counted so far for `f` (all records), when `f` runs compiled code.
-    let counted = |s: &Session, f| s.exit_counts(f).map(|c| c.iter().sum::<u64>());
+    let counted = |s: &Session, f: &crate::harness::Target| {
+        s.exit_counts_of(f).map(|c| c.iter().sum::<u64>())
+    };
     match which {
         Which::T0 | Which::C => {
             // The warm-up: the driver's n = 1 loop (its lines are not part of the output).
@@ -217,7 +285,7 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                 // SAFETY: `c` is emit_a64's placement (b) code for `f`, from `input_of(f)`
                 // in `compile_hot` with no JS run since, unchanged (as `tier::run`); `meta`
                 // is its exit table.
-                unsafe { s.install_b(&[f], vec![c], vec![Some(meta)]) }?;
+                unsafe { s.install_targets(std::slice::from_ref(&f), vec![c], vec![Some(meta)]) }?;
                 compiled = Some(f);
             }
             let names = kernels::benchmark_names(
@@ -242,7 +310,7 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     "setup.js",
                     &mut out,
                 )?;
-                let before = compiled.and_then(|f| counted(&s, f));
+                let before = compiled.as_ref().and_then(|f| counted(&s, f));
                 let t = Instant::now();
                 step(
                     &mut s,
@@ -251,7 +319,8 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     &mut out,
                 )?;
                 secs += t.elapsed().as_secs_f64();
-                if let (Some(a), Some(b)) = (before, compiled.and_then(|f| counted(&s, f))) {
+                if let (Some(a), Some(b)) = (before, compiled.as_ref().and_then(|f| counted(&s, f)))
+                {
                     timed_exits += b - a;
                 }
                 let check = if k.check.is_empty() {
@@ -271,11 +340,20 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
         }
         Which::H0 | Which::H1 => {
             let h = hot_harness(k).ok_or_else(|| format!("{}: no hot harness", hot.name))?;
-            step(&mut s, h.setup, "hot.js", &mut out)?;
-            step(&mut s, "__spikeCHot(200);", "hot-warm.js", &mut out)?;
-            // As for T0 and C: the compile runs in H0 too, not installed.
-            let (f, c, report) =
-                tier::compile_hot(&mut s, hot, "defs.js", d1.offset, IntFacts::Live)?;
+            step(&mut s, &hot_script(h, k)?, "hot.js", &mut out)?;
+            step(
+                &mut s,
+                &format!("__spikeCHot({});", h.warm),
+                "hot-warm.js",
+                &mut out,
+            )?;
+            // As for T0 and C: the compile runs in H0 too, not installed. A copied function
+            // is compiled from hot.js (its lines are the kernel's line numbers there).
+            let (file, offset) = match h.copy {
+                Some(_) => ("hot.js", 0),
+                None => ("defs.js", d1.offset),
+            };
+            let (f, c, report) = tier::compile_hot(&mut s, hot, file, offset, IntFacts::Live)?;
             if which == Which::H1 {
                 code = Some((
                     report.emit.code_bytes,
@@ -284,10 +362,10 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                 ));
                 let meta = report.emit.meta.encode();
                 // SAFETY: as for config C above.
-                unsafe { s.install_b(&[f], vec![c], vec![Some(meta)]) }?;
+                unsafe { s.install_targets(std::slice::from_ref(&f), vec![c], vec![Some(meta)]) }?;
                 compiled = Some(f);
             }
-            let before = compiled.and_then(|f| counted(&s, f));
+            let before = compiled.as_ref().and_then(|f| counted(&s, f));
             let t = Instant::now();
             step(
                 &mut s,
@@ -296,7 +374,7 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                 &mut out,
             )?;
             secs = t.elapsed().as_secs_f64();
-            if let (Some(a), Some(b)) = (before, compiled.and_then(|f| counted(&s, f))) {
+            if let (Some(a), Some(b)) = (before, compiled.as_ref().and_then(|f| counted(&s, f))) {
                 timed_exits += b - a;
             }
             step(
@@ -705,6 +783,25 @@ mod tests {
             exits: Some(4),
         };
         assert_eq!(Once::parse(&o.text()).expect("parse"), o);
+    }
+
+    /// lin_solve's hot harness (WI-SC5): the copy in hot.js is compiled by its function id and
+    /// installed; H1 prints H0's lines with no exit.
+    #[test]
+    fn the_lin_solve_harness_compiles_its_copy() {
+        if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64)
+            || !kernels::bench_present()
+        {
+            eprintln!("skip: aarch64 and the v8-v7 checkout only");
+            return;
+        }
+        let k = kernels::kernel("navier-stokes").expect("navier-stokes");
+        let h0 = once(Which::H0, k, 1, 1).expect("h0");
+        let h1 = once(Which::H1, k, 1, 1).expect("h1");
+        assert_eq!(h1.output, h0.output);
+        assert!(h0.output[0].starts_with("result "), "{h0:?}");
+        assert_eq!(h1.exits, Some(0));
+        assert!(h1.code.is_some() && h0.code.is_none());
     }
 
     /// The four configurations in this process, n = 1: C prints T0's lines, H1 H0's, and the

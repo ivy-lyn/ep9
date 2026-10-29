@@ -22,7 +22,7 @@
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
-//! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value); or the generic keyed entry (a key that is not an index, a value that is not an int32; SPIKEC-4) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
+//! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value; WI-SC7); or the generic keyed entry (a key that is not an index, a Tagged value; SPIKEC-4) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
 //! | `+`, `-`, `*` whose BinaryOp record saw a double (hint inside {int32, int32-overflow, number}, with number), and `/` always | CheckNumber on each Tagged input (an Int32 input converts), a Float64 op (SPIKEC-4) | the check is predicted{source} with the record, else unknown; the op's result PROVEN (a number from numbers) |
 //! | `===` | CheckInt32 on each input (backed by an int32 CompareOp fact), Compare(Eq) (SPIKEC-4) | PROVEN (a boolean) |
 //! | LdaCurrentContextSlot, LdaImmutableCurrentContextSlot | LoadContextSlot (SPIKEC-4) | unknown |
@@ -67,7 +67,22 @@
 //! | a name, symbol or other key | the generic path: [`ir::Op::GetKeyedGeneric`] / [`ir::Op::SetKeyedGeneric`], no guard (SPIKEC-4) |
 //!
 //! The IC state (the key half: undefined, a receiver shape, or the hole once KEYED writes it)
-//! is not read: the element guards test the receiver's kind and the element, not its shape.
+//! is not read: the element guards test the receiver's elements kind (read from its shape, the
+//! kind source, M5-P1-ORCH-11) and the element.
+//!
+//! **Elements kinds (WI-SC7, ELEM1).** `CheckArray` is the kind guard: an Array whose shape
+//! holds one of the six kinds with elements in an ELEMENTS or ELEMENTS_DOUBLE cell
+//! (`vm_layout::ARRAY_KINDS`); DICTIONARY and the reserved kinds exit. It is shared per block
+//! until an op that may run JS. The element ops take its result as their array input, so no
+//! element op (a raw f64 load included) can be placed before it. Each element op then reads
+//! the elements cell's kind byte, the storage form that follows the kind (H18), and takes one
+//! of two paths: Values (INT32 and ELEMENTS kinds) or raw f64 (DOUBLE kinds); any other cell
+//! exits (fail closed after a store swap, M5-P0 review F1). A load gives a Tagged Value in
+//! both forms (a raw f64 boxes as `Value::number` does: an integral double is an int32 again,
+//! as T0, H18:54). A store takes an Int32 or a Float64 value: into raw f64 as a double (every
+//! NaN as the pure NaN, so never the hole), into Values as an int32 Value; a Float64 that is
+//! not an int32 (or is -0) into Values calls the generic store out of line, which makes the
+//! kind transition (INT32 to DOUBLE, a GC point), as T0's store does.
 //! CheckArray, LoadElement and StoreElement stay unbacked in every case (the receiver,
 //! bounds and hole bits come with the month-6 schema bump, MODES-D18).
 //!
@@ -76,7 +91,7 @@
 //! entries of `ep9_vm::RuntimeTable` that M4-P3 KEYED appended (8 `get_keyed`, 9 `set_keyed`;
 //! `layout::RT_GET_KEYED`, `RT_SET_KEYED`) in place of the refusal SPIKEC-3 made. A
 //! SetKeyedProperty whose value is not an int32 takes the generic store too (the entry does
-//! the store barrier; StoreElement stores only int32s, which need none). Both entries run
+//! the store barrier; StoreElement stores only numbers, which need none). Both entries run
 //! the T0 miss-path functions (`slow::prop`: `property::get_keyed` / `set_keyed`), which
 //! record no feedback, so the compiled code still records none (native.rs:149-158;
 //! MC-w15-6: a RuntimeTable entry calls only non-recording generic functions). A generic
@@ -195,6 +210,9 @@ pub enum KeyedPath {
 
 const PLACEHOLDER: NodeId = NodeId(u32::MAX);
 
+/// The memo tag of `CheckArray` (the kind guard): the 4 that `check_array` passes to `memo`.
+const MEMO_CHECK_ARRAY: u8 = 4;
+
 struct Builder<'a> {
     g: Graph,
     cfg: Cfg,
@@ -283,6 +301,11 @@ impl Builder<'_> {
     /// Adds a node at the end of the current block.
     fn emit(&mut self, op: Op, inputs: Vec<NodeId>, repr: Repr, trust: Trust) -> NodeId {
         let off = self.offset();
+        // An op that may run JS may change an array's elements kind (to DICTIONARY, say), so
+        // the element ops after it in the block get a kind guard of their own (WI-SC7).
+        if op.is_call() {
+            self.memo.retain(|m| m.0 != MEMO_CHECK_ARRAY);
+        }
         let n = self.g.add(op, inputs, repr, trust, self.cur, off);
         self.g.blocks[self.cur.0 as usize].nodes.push(n);
         n
@@ -793,10 +816,11 @@ impl Builder<'_> {
                 let o = self.reg(insn.register(0))?;
                 let k = self.reg(insn.register(1))?;
                 let v = self.acc()?;
-                // StoreElement stores an int32 (no barrier); any other value goes through the
-                // generic store, whose entry does the barrier.
-                let not_int32 = self.node(v).repr != Repr::Int32;
-                match self.keyed_site(insn.unsigned(2), true, not_int32)? {
+                // StoreElement stores an int32 or a double (a number is not a cell: no
+                // barrier); a Tagged value goes through the generic store, whose entry does the
+                // barrier.
+                let tagged = !matches!(self.node(v).repr, Repr::Int32 | Repr::Float64);
+                match self.keyed_site(insn.unsigned(2), true, tagged)? {
                     KeyedPath::Element(key_basis) => {
                         let a = self.check_array(o);
                         let i = self.int32(k, key_basis);
@@ -1292,7 +1316,14 @@ impl Builder<'_> {
                 | Op::Return
                 | Op::LoadField { .. } => vec![Repr::Tagged],
                 Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
-                Op::StoreElement => vec![Repr::Tagged, Repr::Int32, Repr::Int32],
+                // The value: a Float64 stays one; anything else must be an Int32.
+                Op::StoreElement => {
+                    let value = match self.g.node(node.inputs[2]).repr {
+                        Repr::Float64 => Repr::Float64,
+                        _ => Repr::Int32,
+                    };
+                    vec![Repr::Tagged, Repr::Int32, value]
+                }
                 Op::CheckNumber => vec![Repr::Tagged],
                 Op::Int32ToFloat64 => vec![Repr::Int32],
                 Op::Float64(_) => vec![Repr::Float64, Repr::Float64],

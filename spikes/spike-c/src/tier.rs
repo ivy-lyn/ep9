@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use spike_b::harness::{Config, RunOutput};
 
-use crate::harness::Session;
+use crate::harness::{Session, Target};
 use crate::kernels::{self, Kernel};
 use crate::{CompileReport, emit_a64, facts};
 
@@ -125,15 +125,16 @@ pub enum IntFacts {
 
 /// Compiles the hot function `hot` of the script `file` of `s` (the kernel file's line L is
 /// line L + `offset` there) from the live facts of what `s` ran so far (with the stand-in int
-/// records if `int` asks for them). Returns the function value, the code and the report; the
-/// caller installs the code.
+/// records if `int` asks for them). Returns the install target (the function value if a JS
+/// expression reaches it, else the function by its id: an inner closure, WI-SC5), the code
+/// and the report; the caller installs the code.
 pub fn compile_hot(
     s: &mut Session,
     hot: &kernels::Hot,
     file: &str,
     offset: u32,
     int: IntFacts,
-) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
+) -> Result<(Target, spike_b::emit::FunctionCode, CompileReport), String> {
     compile_hot_with(s, hot, file, offset, int, emit_a64::StubForm::Call)
 }
 
@@ -145,16 +146,29 @@ pub fn compile_hot_with(
     offset: u32,
     int: IntFacts,
     form: emit_a64::StubForm,
-) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
-    let reach = hot.reach.ok_or_else(|| {
-        format!(
-            "{}: an inner closure; install by function id is not built",
-            hot.name
-        )
-    })?;
+) -> Result<(Target, spike_b::emit::FunctionCode, CompileReport), String> {
+    let opts = emit_a64::EmitOptions {
+        form,
+        ..Default::default()
+    };
+    compile_hot_opts(s, hot, file, offset, int, &opts)
+}
+
+/// [`compile_hot`] with the emitter options `opts` (the test builds too).
+pub fn compile_hot_opts(
+    s: &mut Session,
+    hot: &kernels::Hot,
+    file: &str,
+    offset: u32,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<(Target, spike_b::emit::FunctionCode, CompileReport), String> {
     // The function value first: `function_value` runs a one-line script (a global
     // assignment), which calls nothing, so the feedback the facts come from does not change.
-    let f = s.function_value(reach)?;
+    let value = match hot.reach {
+        Some(reach) => Some(s.function_value(reach)?),
+        None => None,
+    };
     let script = s.script(file).ok_or_else(|| format!("no script {file}"))?;
     let ids = script.functions_on_line(hot.lines.0 + offset);
     let [id] = ids[..] else {
@@ -167,10 +181,17 @@ pub fn compile_hot_with(
     };
     let live = compile_facts(s, script, id, int)?;
     let facts = facts::for_function(&live, id);
-    let input = s.input_of(f)?;
-    let (code, report) = crate::compile_input_with(&input, &facts, form)
+    let target = match value {
+        Some(f) => Target::Value(f),
+        None => Target::Id {
+            file: file.to_string(),
+            id,
+        },
+    };
+    let input = s.input_of_target(&target)?;
+    let (code, report) = crate::compile_input_opts(&input, &facts, opts)
         .map_err(|r| format!("{}: {r}", hot.name))?;
-    Ok((f, code, report))
+    Ok((target, code, report))
 }
 
 /// The facts of function `id` of `script` for a compile: the live snapshot, with the stand-in
@@ -207,13 +228,24 @@ pub fn run_opts(
     int: IntFacts,
     form: emit_a64::StubForm,
 ) -> Result<TierRun, String> {
+    let opts = emit_a64::EmitOptions {
+        form,
+        ..Default::default()
+    };
+    run_full(k, n, config, int, &opts)
+}
+
+/// [`run_opts`] with the emitter options `opts`. With a force table (WI-SC4) the compiled
+/// function's guards count down their words and exit when one ends, and the run also
+/// collects garbage and runs the heap verifier after loop(n) (an error if it finds any).
+pub fn run_full(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<TierRun, String> {
     let hot = k.hot.first().ok_or("no hot function")?;
-    if hot.reach.is_none() {
-        return Err(format!(
-            "{}: an inner closure; install by function id is not built",
-            hot.name
-        ));
-    }
     let d1 = kernels::driver(k, 1)?;
     let dn = kernels::driver(k, n)?;
     let (defs, loop1) = split(&d1, k.file)?;
@@ -246,7 +278,7 @@ pub fn run_opts(
     if w2.output != w.output {
         return Err("the two warm-up runs differ (both are T0)".into());
     }
-    let (f, code, report) = compile_hot_with(&mut s, hot, "defs.js", d1.offset, int, form)?;
+    let (f, code, report) = compile_hot_opts(&mut s, hot, "defs.js", d1.offset, int, opts)?;
     let meta = report.emit.meta.encode();
     // SAFETY: `code` is the placement (b) code `emit_a64` made for `f` from `input_of(f)` just
     // above (no JS ran since), unchanged, and `meta` its exit table. emit_a64 keeps the (b)
@@ -254,19 +286,25 @@ pub fn run_opts(
     // (`vm_layout`, proved at the start of this run), only RuntimeTable calls (the deopt
     // entry among them), x19-x28 saved and restored, and every exit is the tail jump to
     // `cx.table[*pc]`.
-    unsafe { s.install_b(&[f], vec![code], vec![Some(meta)]) }?;
-    if s.slot_kind(f) != Some(ep9_vm::DispatchKind::Opt) {
+    unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
+    if s.slot_kind_of(&f) != Some(ep9_vm::DispatchKind::Opt) {
         return Err(format!(
             "{}: slot kind {:?} after install",
             hot.name,
-            s.slot_kind(f)
+            s.slot_kind_of(&f)
         ));
     }
     let t = Instant::now();
     let compiled = s.run(&loop_n, "loop.js");
     let compiled_secs = t.elapsed().as_secs_f64();
-    let counts = |s: &Session| s.exit_counts(f).ok_or("no exit counters after the install");
+    let counts = |s: &Session| {
+        s.exit_counts_of(&f)
+            .ok_or("no exit counters after the install")
+    };
     let exits = counts(&s)?;
+    if opts.force.is_some() {
+        s.verify()?;
+    }
     let equal = compiled == t0 && t0.result.is_ok() && dn.matches(&compiled.output);
     // The probe: `this` of a shape the IC never saw. The compiled function's first shape
     // guard deopts, and T0 finishes the call: the result must be T0's own.
@@ -316,6 +354,77 @@ const PROBES: [(&str, &str); 1] = [(
      var __spikeCC = __spikeCProbe.am(0, 268435455, __spikeCW, 0, 3, 2); \
      print(__spikeCC + \" \" + __spikeCW.array.join(\",\"));",
 )];
+
+/// The length of the force tables of the deopt gate (guard ids are below the node count).
+pub const FORCE_LEN: usize = 4096;
+
+/// One forced run of [`force_each_guard`].
+#[derive(Clone, Debug)]
+pub struct ForcedRun {
+    pub guard: u32,
+    /// The guard's word reached 0: its `at`-th pass took the exit.
+    pub forced: bool,
+    /// The exits the VM counted for the records of this guard, and for all other records.
+    pub counted: u64,
+    pub others: u64,
+    /// Output equal to T0 (and the verifier found nothing).
+    pub equal: bool,
+}
+
+impl ForcedRun {
+    /// Right: equal to T0, the guard was forced, the VM counted that one exit and no other.
+    pub fn right(&self) -> bool {
+        self.equal && self.forced && self.counted == 1 && self.others == 0
+    }
+}
+
+/// `gate.sh deopt` (WI-SC4): for each guard of `k`'s first hot function, a config C run of
+/// loop(n) with only that guard forced, at its `at`-th pass: the output must equal T0, the
+/// heap verifier must find nothing, and the VM's exit counters must hold exactly that exit.
+pub fn force_each_guard(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    at: u32,
+) -> Result<Vec<ForcedRun>, String> {
+    let plain = run(k, n, config)?;
+    let mut guards: Vec<u32> = plain
+        .report
+        .emit
+        .meta
+        .exits
+        .iter()
+        .map(|e| e.guard)
+        .collect();
+    guards.sort_unstable();
+    guards.dedup();
+    let mut out = Vec::new();
+    for g in guards {
+        let t = emit_a64::ForceTable::new(FORCE_LEN);
+        t.arm(g, at);
+        let opts = emit_a64::EmitOptions {
+            force: Some(&t),
+            ..Default::default()
+        };
+        let r = run_full(k, n, config, IntFacts::Live, &opts)?;
+        let (mut counted, mut others) = (0, 0);
+        for (rec, c) in r.report.emit.meta.exits.iter().zip(&r.exits) {
+            if rec.guard == g {
+                counted += c;
+            } else {
+                others += c;
+            }
+        }
+        out.push(ForcedRun {
+            guard: g,
+            forced: t.get(g) == 0,
+            counted,
+            others,
+            equal: r.equal,
+        });
+    }
+    Ok(out)
+}
 
 /// A script-level config C run: `defs` and `warm` run in T0 (the feedback), then the global
 /// function `name` is compiled from the live facts and installed, then `main` runs. T0 runs
@@ -383,6 +492,24 @@ pub fn run_script_opts(
     int: IntFacts,
     form: emit_a64::StubForm,
 ) -> Result<ScriptRun, String> {
+    let opts = emit_a64::EmitOptions {
+        form,
+        ..Default::default()
+    };
+    run_script_full(config, defs, warm, main, name, int, &opts)
+}
+
+/// [`run_script`] with the int facts of `int` and the emitter options `opts` (the test builds
+/// too: forced deopts, int32 junk).
+pub fn run_script_full(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<ScriptRun, String> {
     let config = config.threaded();
     let mut t0s = Session::new(&config)?;
     t0s.run(defs, "defs.js")
@@ -399,8 +526,13 @@ pub fn run_script_opts(
     s.run(warm, "warm.js")
         .result
         .map_err(|e| format!("warm: {e}"))?;
-    let f = s.function_value(name)?;
-    let (code, report) = {
+    // A global function by its value; any other function of `defs` (an inner closure) by its
+    // function id (WI-SC5).
+    let f = match ep9_vm::NativeCx::global_value(s.iso(), name) {
+        Some(_) => Some(s.function_value(name)?),
+        None => None,
+    };
+    let (f, code, report) = {
         let script = s.script("defs.js").ok_or("no defs script")?;
         let ids = script.functions_named(name);
         let [id] = ids[..] else {
@@ -408,16 +540,25 @@ pub fn run_script_opts(
         };
         let live = compile_facts(&s, script, id, int)?;
         let facts = facts::for_function(&live, id);
-        let input = s.input_of(f)?;
-        crate::compile_input_with(&input, &facts, form).map_err(|r| format!("{name}: {r}"))?
+        let f = match f {
+            Some(f) => Target::Value(f),
+            None => Target::Id {
+                file: "defs.js".into(),
+                id,
+            },
+        };
+        let input = s.input_of_target(&f)?;
+        let (code, report) =
+            crate::compile_input_opts(&input, &facts, opts).map_err(|r| format!("{name}: {r}"))?;
+        (f, code, report)
     };
     let meta = report.emit.meta.encode();
-    // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of(f)` with no
-    // JS run since, unchanged, and its exit table.
-    unsafe { s.install_b(&[f], vec![code], vec![Some(meta)]) }?;
+    // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of_target(f)`
+    // with no JS run since, unchanged, and its exit table.
+    unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
     let compiled = s.run(main, "main.js");
     let exits = s
-        .exit_counts(f)
+        .exit_counts_of(&f)
         .ok_or("no exit counters after the install")?;
     Ok(ScriptRun {
         t0,
@@ -961,10 +1102,9 @@ mod tests {
     /// The double path (SPIKEC-4): a `+` or `*` whose record saw a double takes CheckNumber
     /// and Float64 ops; the result boxes as `Value::number` does (an int32 Value for an
     /// integer, -0 and NaN kept apart), equal to T0; a string operand fails the number check
-    /// (a deopt, never a wrong value). Since M5-P1 ELEM1 an array of doubles keeps its elements
-    /// in an ELEMENTS_DOUBLE cell, and CheckArray exits there (V10-D9b, closed on DOUBLE cells);
-    /// so each array of this test ends in a `null` that `n` never reaches, which keeps its
-    /// elements as Values, and one more run shows the exit on a DOUBLE cell.
+    /// (a deopt, never a wrong value). Most arrays of this test end in a `null` that `n` never
+    /// reaches (an ELEMENTS kind: Values); since WI-SC7 arrays of doubles alone (a DOUBLE kind:
+    /// raw f64 in an ELEMENTS_DOUBLE cell) run compiled too, with no exit.
     const DOT: &str = "function dot(a, b, n) { var s = 0; for (var i = 0; i < n; i++) { s = s + a[i] * b[i]; } return s; }";
 
     #[test]
@@ -998,10 +1138,15 @@ mod tests {
             assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
         deopts(DOT, warm, "print(dot(['x', null], [1, null], 1));", "dot");
-        // An array of doubles alone has an ELEMENTS_DOUBLE cell: CheckArray exits, and the
-        // run ends in T0 with T0's value.
-        let r = deopts(DOT, warm, "print(dot([0.5, 1.5], [2, 0.25], 2));", "dot");
-        assert_eq!(r.compiled.output, ["1.375"]);
+        // Arrays of doubles alone (ELEMENTS_DOUBLE cells): raw f64 loads, no exit; a NaN, a -0
+        // and an int32 array mixed in.
+        let r = equal(
+            DOT,
+            warm,
+            "print(dot([0.5, 1.5], [2, 0.25], 2), dot([0.5, NaN], [2, 1], 2), 1 / dot([-0.5, 1.5], [0, -0], 2), dot([1.5, 2.5], [2, 4], 2));",
+            "dot",
+        );
+        assert_eq!(r.compiled.output, ["1.375 NaN Infinity 13"]);
         // GC stress: the boxed doubles and the arrays around the compiled loop.
         let r = run_script(
             &Config::stress(),
@@ -1012,6 +1157,389 @@ mod tests {
         )
         .expect("run");
         assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+    }
+
+    /// WI-SC7: `scale` stores a Float64 into each element and `put` an Int32. On DOUBLE
+    /// arrays the stores write raw f64 (NaN as the pure NaN, -0 kept); on an INT32 array a
+    /// double that is no int32 takes the generic store out of line, which makes the INT32 to
+    /// DOUBLE transition as T0 does, and the loop goes on in the compiled code; an integral
+    /// double stays an int32 Value. No exit in any of it; equal to T0, with GC stress too
+    /// (the transition allocates the ELEMENTS_DOUBLE cell).
+    const SCALE: &str = "function scale(a, n, f) { for (var i = 0; i < n; i++) { a[i] = a[i] * f; } return a; }\n\
+        function put(a, n, v) { for (var i = 0; i < n; i++) { a[i] = (v + i) | 0; } return a; }";
+
+    #[test]
+    fn double_stores_and_the_kind_transition_equal_t0() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) { scale([0.5, 1.5, 2.5], 3, 1.5); put([0.5, 1.5], 2, q); }";
+        let main = "var d = scale([0.5, 1.5, 2.5, 4], 4, 0.5); print(d.join(), 1 / scale([0.5], 1, -0)[0]);\n\
+            print(scale([0.5, 1.5], 2, NaN).join(), scale([1, 2, 3], 3, 2).join());\n\
+            var t = [1, 2, 3, 4]; scale(t, 4, 0.25); t[0] = 'x'; print(t.join(), put([1.5, 2.5, 3.5], 3, 7).join());\n\
+            var h = new Array(3); h[0] = 1; h[1] = 2; h[2] = 3; print(scale(h, 3, 1.5).join(), scale([1, 2], 2, -1).join());";
+        let want = [
+            "0.25,0.75,1.25,2 -Infinity",
+            "NaN,NaN 2,4,6",
+            "x,0.5,0.75,1 7,8,9",
+            "1.5,3,4.5 -1,-2",
+        ];
+        for config in [Config::default(), Config::stress()] {
+            let defs = SCALE;
+            for name in ["scale", "put"] {
+                let r = run_script(&config, defs, warm, main, name).expect("run");
+                assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+                assert!(r.fired().is_empty(), "{name}: exits {:?}", r.exits);
+                assert_eq!(r.compiled.output, want, "{name}");
+            }
+        }
+        let r = run_script(&Config::default(), SCALE, warm, main, "scale").expect("run");
+        assert!(
+            r.report.graph.contains("StoreElement") && !r.report.graph.contains("SetKeyedGeneric"),
+            "{}",
+            r.report.graph
+        );
+    }
+
+    /// WI-SC7 (MODES-CHECK-w19 MC-w19-5 (4), outside O3): every element op, a raw f64 load
+    /// included, reads its array through a kind guard (`CheckArray`), so no pass can place the
+    /// load before the guard; and a Float64 value at an exit is in a general register or a
+    /// native stack slot (MC-w19-8: the H29 form has no FP register location, and the emitter
+    /// keeps doubles as their bits in x registers between ops), so the deopt core boxes it.
+    #[test]
+    fn element_ops_read_their_kind_guard_and_doubles_at_exits_are_in_x_registers() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) scale([0.5, 1.5, 2.5], 3, 1.5);";
+        let r = run_script(&Config::default(), SCALE, warm, "print(1);", "scale").expect("run");
+        let g = &r.report.graph;
+        let mut ops = 0;
+        for l in g
+            .lines()
+            .filter(|l| l.contains("LoadElement") || l.contains("StoreElement"))
+        {
+            // `nK = Op(nA, ...)`: the first input is the array.
+            let arr = l.split('(').nth(1).and_then(|t| t.split([',', ')']).next());
+            let arr = arr.expect("an input").trim();
+            let def = g
+                .lines()
+                .find(|d| d.trim_start().starts_with(&format!("{arr} ")))
+                .unwrap_or_else(|| panic!("no def of {arr}\n{g}"));
+            assert!(def.contains("CheckArray"), "{l} reads {def}\n{g}");
+            ops += 1;
+        }
+        assert!(ops >= 2, "{g}");
+        let meta = &r.report.emit.meta;
+        let doubles: Vec<_> = meta
+            .exits
+            .iter()
+            .flat_map(|e| &e.values)
+            .filter(|v| v.repr == crate::deopt_meta::ValueRepr::Float64)
+            .collect();
+        assert!(!doubles.is_empty(), "{}", meta.line());
+        for v in doubles {
+            assert!(
+                matches!(
+                    v.loc,
+                    crate::deopt_meta::ValueLoc::Reg(_) | crate::deopt_meta::ValueLoc::Stack(_)
+                ),
+                "{v:?}"
+            );
+        }
+    }
+
+    /// w17 O10 and MODES-CHECK-w19 outside O2 (a guard proven to fail): a guard that fails on
+    /// every call exits on every call, as a speculation exit (the only class the eager exits
+    /// have, `deopt_meta`), and its counter equals the number of calls: the code stays
+    /// installed (SCP:128), so each call enters it again. The H32 site budget and the pin it
+    /// leads to are not built in the spike (A4); this is the input they will read.
+    #[test]
+    fn a_guard_that_fails_on_every_call_counts_every_call() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);";
+        let calls = 7;
+        let main = format!(
+            "var o = {{ 0: 1, 1: 2, length: 2 }}; var s = 0; for (var k = 0; k < {calls}; k++) s += dot(o, o, 2); print(s);"
+        );
+        let r = run_script(&Config::default(), DOT, warm, &main, "dot").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["35"]);
+        let fired: Vec<(usize, u64)> = r
+            .exits
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(_, c)| c > 0)
+            .collect();
+        let [(k, count)] = fired[..] else {
+            panic!("one exit expected: {:?}", r.exits);
+        };
+        assert_eq!(count, calls, "{:?}", r.exits);
+        let guard = r.report.emit.exits[k].0;
+        assert!(
+            r.report
+                .graph
+                .lines()
+                .any(|l| l.contains("CheckArray") && l.contains(&format!(" guard g{guard} "))),
+            "g{guard}\n{}",
+            r.report.graph
+        );
+    }
+
+    /// WI-SC4 (C2): each guard of `dot` and of `scale` forced alone at its second pass: the
+    /// output equals T0, the forced word ends at 0 and the VM counts that one exit and no
+    /// other; then every guard armed from a seed, with GC stress: equal to T0, and each
+    /// guard's counter at least its forced exit.
+    #[test]
+    fn forcing_each_guard_deopts_to_t0() {
+        if !aarch64() {
+            return;
+        }
+        use crate::emit_a64::{EmitOptions, ForceTable};
+        let warm = "for (var q = 0; q < 20; q++) { dot([1, 2, 3], [4, 5, 6], 3); dot([0.5, 1.5], [2, 0.25], 2); scale([0.5, 1.5, 2.5], 3, 1.5); }";
+        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), scale([1, 2, 3], 3, 0.5).join());";
+        let defs = format!("{DOT}\n{SCALE}");
+        for name in ["dot", "scale"] {
+            // No natural exit in `main`: each exit below is the forced one.
+            let plain = run_script(&Config::default(), &defs, warm, main, name).expect("run");
+            assert!(
+                plain.equal() && plain.fired().is_empty(),
+                "{name}: {:?}",
+                plain.exits
+            );
+            let mut guards: Vec<u32> = plain
+                .report
+                .emit
+                .meta
+                .exits
+                .iter()
+                .map(|e| e.guard)
+                .collect();
+            guards.sort_unstable();
+            guards.dedup();
+            assert!(guards.len() >= 4, "{name}: {guards:?}");
+            let mut forced = 0;
+            for &g in &guards {
+                let t = ForceTable::new(FORCE_LEN);
+                t.arm(g, 2);
+                let opts = EmitOptions {
+                    force: Some(&t),
+                    ..Default::default()
+                };
+                let r = run_script_full(
+                    &Config::default(),
+                    &defs,
+                    warm,
+                    main,
+                    name,
+                    IntFacts::Live,
+                    &opts,
+                )
+                .expect("run");
+                assert!(r.equal(), "{name} g{g}: {:?} vs {:?}", r.compiled, r.t0);
+                let fired = r.fired();
+                if t.get(g) == 0 {
+                    forced += 1;
+                    assert_eq!(fired, [g], "{name} g{g}: {:?}", r.exits);
+                    assert_eq!(r.exits.iter().sum::<u64>(), 1, "{name} g{g}");
+                } else {
+                    assert!(fired.is_empty(), "{name} g{g}: {:?}", r.exits);
+                }
+            }
+            // A guard on a path `main` takes fewer than twice (an error path) stays unforced.
+            assert!(
+                forced * 2 > guards.len(),
+                "{name}: {forced} of {}",
+                guards.len()
+            );
+            let t = ForceTable::seeded(5, FORCE_LEN);
+            let opts = EmitOptions {
+                force: Some(&t),
+                ..Default::default()
+            };
+            let r = run_script_full(
+                &Config::stress(),
+                &defs,
+                warm,
+                main,
+                name,
+                IntFacts::Live,
+                &opts,
+            )
+            .expect("run");
+            assert!(r.equal(), "{name} seeded: {:?} vs {:?}", r.compiled, r.t0);
+            for &g in &guards {
+                let c: u64 = r
+                    .report
+                    .emit
+                    .meta
+                    .exits
+                    .iter()
+                    .zip(&r.exits)
+                    .filter(|(e, _)| e.guard == g)
+                    .map(|(_, c)| c)
+                    .sum();
+                assert!(c >= u64::from(t.get(g) == 0), "{name} g{g}: {c}");
+            }
+        }
+    }
+
+    /// MODES-CHECK-w19 outside O1 (V8 b60744d16a: arm64 code that read "an int32 is
+    /// zero-extended"): in the int32 junk build every Int32 and Bool result gets 0xDEADBEEF in
+    /// its upper 32 bits, in its register or spill slot. Int loops, overflow, -0 and
+    /// out-of-bounds deopts, element ops, a phi swap and int32 values at exits (the deopt core
+    /// boxes the low half) give T0's output and the same exits as the plain build. The junk
+    /// build is larger (the movk pairs are there).
+    #[test]
+    fn junk_in_the_upper_half_of_int32_values_changes_nothing() {
+        if !aarch64() {
+            return;
+        }
+        use crate::emit_a64::EmitOptions;
+        let fib = "function fib(n) { var a = 0, b = 1; for (var i = 0; i < n; i++) { var t = a; a = b; b = (t + b) & 65535; } return a; }";
+        let m =
+            "function m(a, b) { var r = 0; for (var i = 0; i < 1; i++) { r = a * b; } return r; }";
+        let cases: [(&str, &str, &str, &str); 6] = [
+            (
+                SUM,
+                "sum",
+                "for (var k = 0; k < 20; k++) sum(10);",
+                "print(sum(0), sum(1000), sum(-5), sum(100000), sum(2.5));",
+            ),
+            (fib, "fib", "fib(5);", "print(fib(10), fib(1000));"),
+            (
+                m,
+                "m",
+                "m(3, 4);",
+                "print(m(-3, 4), m(46340, 46340), m(65536, 65536), 1 / m(0, -5));",
+            ),
+            (
+                DOT,
+                "dot",
+                "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);",
+                "print(dot([1, 2, 3], [4, 5, 6], 3), dot([1, 2], [3, 4], 5), dot([0.5, 1.5], [2, 0.25], 2));",
+            ),
+            (
+                SCALE,
+                "put",
+                "for (var q = 0; q < 20; q++) put([1, 2, 3], 3, q);",
+                "print(put([1, 2, 3], 3, -7).join(), put([1.5, 2.5], 2, 2147483647).join(), put([1], 3, 1).join());",
+            ),
+            (
+                SCALE,
+                "scale",
+                "for (var q = 0; q < 20; q++) scale([1, 2, 3], 3, 2);",
+                "print(scale([1, 2, 3], 3, 2).join(), scale([1, 2], 2, 0.5).join());",
+            ),
+        ];
+        for (defs, name, warm, main) in cases {
+            let plain = run_script(&Config::default(), defs, warm, main, name).expect("run");
+            let opts = EmitOptions {
+                int32_junk: true,
+                ..Default::default()
+            };
+            let junk = run_script_full(
+                &Config::default(),
+                defs,
+                warm,
+                main,
+                name,
+                IntFacts::Live,
+                &opts,
+            )
+            .expect("run");
+            assert!(junk.equal(), "{name}: {:?} vs {:?}", junk.compiled, junk.t0);
+            assert_eq!(junk.compiled, plain.compiled, "{name}");
+            assert_eq!(junk.exits, plain.exits, "{name}");
+            assert!(
+                junk.report.emit.code_bytes > plain.report.emit.code_bytes,
+                "{name}: no junk was written"
+            );
+        }
+    }
+
+    /// w16 O6: a termination that a T0 frame sees after a deopt unwinds through T0 callers
+    /// with no `catch` or `finally` of theirs running (`error::unwind` skips handlers while
+    /// terminating). `terminate()` asks before the call; the compiled `dot` takes its kind
+    /// guard's exit at once (the receiver is not an Array: no compiled poll ran yet), T0
+    /// finishes the loop and stops at its next poll. Equal to T0: no `catch`, `finally` or
+    /// `after` line, the run ends in the termination, and the next script runs.
+    #[test]
+    fn a_termination_after_a_deopt_runs_no_catch_or_finally() {
+        if !aarch64() {
+            return;
+        }
+        let defs = format!(
+            "{DOT}\nfunction caller(a, n) {{ try {{ return dot(a, a, n); }} catch (e) {{ print('catch'); }} finally {{ print('finally'); }} }}"
+        );
+        let warm = "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);";
+        let main = "print('before'); terminate(); var o = { 0: 1, 1: 2, length: 2 }; caller(o, 1000000); print('after');";
+        let r = run_script(&Config::default(), &defs, warm, main, "dot").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["before"]);
+        assert!(r.compiled.result.is_err(), "{:?}", r.compiled);
+        assert_eq!(r.exits.iter().sum::<u64>(), 1, "{:?}", r.exits);
+        let g = r.fired()[0];
+        assert!(
+            r.report
+                .graph
+                .lines()
+                .any(|l| l.contains("CheckArray") && l.contains(&format!(" guard g{g} "))),
+            "g{g}\n{}",
+            r.report.graph
+        );
+    }
+
+    /// C5b (SCP §6.2): the deopt metadata holds offsets only, so the same code and metadata
+    /// finalized again at another address deopts the same: `dot` installed from module A,
+    /// run (int, double and deopting calls), uninstalled, the same bytes and metadata
+    /// installed from module B at another start, run again: the same output and the same
+    /// exit counters, both equal to T0.
+    #[test]
+    fn a_moved_copy_of_code_and_metadata_deopts_the_same() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);";
+        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), dot([1, 2], [3, 4], 5), dot(['x', 1], [1, 1], 2), dot({ 0: 1, length: 1 }, [2], 1));";
+        let config = Config::default().threaded();
+        let mut t0s = Session::new(&config).expect("session");
+        t0s.run(DOT, "defs.js").result.expect("defs");
+        t0s.run(warm, "warm.js").result.expect("warm");
+        let t0 = t0s.run(main, "main.js");
+        let mut s = Session::new(&config).expect("session");
+        s.run(DOT, "defs.js").result.expect("defs");
+        s.run(warm, "warm.js").result.expect("warm");
+        let f = s.function_value("dot").expect("dot");
+        let script = s.script("defs.js").expect("defs");
+        let id = script.functions_named("dot")[0];
+        let live = facts::live(&s, script).expect("facts");
+        let input = s.input_of(f).expect("input");
+        let (code, report) =
+            crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
+        let meta = report.emit.meta.encode();
+        let mut runs = Vec::new();
+        for _ in 0..2 {
+            // SAFETY: emit_a64's placement (b) code for `f` from `input_of(f)` with no JS
+            // run since but `main`, which changes no feedback the code reads (the guards read
+            // nothing from the feedback vector), and its own metadata, unchanged.
+            let placed = unsafe { s.install_b(&[f], vec![code.clone()], vec![Some(meta.clone())]) }
+                .expect("install")[0]
+                .code
+                .start;
+            let out = s.run(main, "main.js");
+            let exits = s.exit_counts(f).expect("counters");
+            s.uninstall(f).expect("uninstall");
+            runs.push((placed, out, exits));
+        }
+        assert_ne!(runs[0].0, runs[1].0, "the copy is at the same place");
+        assert_eq!(runs[0].1, t0);
+        assert_eq!(runs[1].1, runs[0].1);
+        assert_eq!(runs[1].2, runs[0].2);
+        assert!(runs[0].2.iter().sum::<u64>() >= 2, "{:?}", runs[0].2);
     }
 
     /// `/` always takes the double path; `===` compares int32s behind CheckInt32 (SPIKEC-4).
@@ -1046,36 +1574,78 @@ mod tests {
         );
     }
 
-    /// Context slot loads and calls build into the graph (SPIKEC-4), and the emitter refuses
-    /// them with the reason: no CONTEXT slot offsets in `ep9_vm::layout`, and calls wait for
-    /// month 5.
+    /// Context slot loads and calls (SPIKEC-4 built them; WI-SC5 emits them): `inner`, an
+    /// inner closure installed by its function id, reads `k` from its context, for a closure
+    /// made before the install and one made after (both run the code: one dispatch slot);
+    /// `callit` calls through `RuntimeTable::call_any` with its operands in their VM frame
+    /// slots: a compiled callee, a T0 closure, a host function, a throw that a T0 caller
+    /// catches, and a callee that stores to the context `inner` reads. Equal to T0 with no
+    /// exit, with GC stress too.
     #[test]
-    fn context_loads_and_calls_build_and_the_emitter_names_why_not() {
-        let mut s = Session::new(&Config::default().threaded()).expect("session");
+    fn context_loads_and_calls_equal_t0() {
+        if !aarch64() {
+            return;
+        }
         let defs = "function outer(k) { function inner(x) { return (x + k) | 0; } return inner; }\n\
             function callit(f, x) { return f(x); }\n\
-            var inner5 = outer(5); for (var q = 0; q < 20; q++) { inner5(q); callit(inner5, q); }";
-        s.run(defs, "defs.js").result.expect("defs");
-        let script = s.script("defs.js").expect("defs");
-        let live = facts::live(&s, script).expect("facts");
-        for (name, op, why) in [
-            ("inner", "LoadContextSlot", "CONTEXT cell's slot offsets"),
-            ("callit", "Call", "RuntimeTable::call_any"),
-        ] {
-            let id = script.functions_named(name)[0];
-            let input = script.unit_input(id, name).expect("input");
-            let g = crate::graph_report(&input, &facts::for_function(&live, id)).expect("graph");
-            assert!(g.ops.contains_key(op), "{name}: {:?}", g.ops);
-            if aarch64() {
-                let e = g.emit.expect_err("refused");
-                assert!(e.contains(why), "{name}: {e}");
+            var box = (function () { var v = 1; return { get: function (x) { return (x + v) | 0; }, set: function (x) { v = x; return 0; } }; })();\n\
+            var inner5 = outer(5); for (var q = 0; q < 20; q++) { inner5(q); callit(inner5, q); box.get(q); }";
+        let main = "var later = outer(-3); print(inner5(1), later(2), callit(inner5, 7), callit(later, 7));\n\
+            print(callit(function (y) { return y * 2; }, 4), callit(Math.abs, -9), callit(box.set, 40), box.get(2));\n\
+            try { callit(function () { throw 'boom'; }, 1); } catch (e) { print('caught ' + e); }";
+        let want = ["6 -1 12 4", "8 9 0 42", "caught boom"];
+        for config in [Config::default(), Config::stress()] {
+            for (name, op) in [
+                ("inner", "LoadContextSlot"),
+                ("callit", "Call"),
+                ("get", "LoadContextSlot"),
+            ] {
+                let r = run_script(&config, defs, "", main, name).expect("run");
+                assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+                assert_eq!(r.compiled.output, want, "{name}");
+                assert!(r.fired().is_empty(), "{name}: exits {:?}", r.exits);
+                assert!(r.report.graph.contains(op), "{name}\n{}", r.report.graph);
             }
+        }
+    }
+
+    /// Call operands and parameters (WI-SC5): the frontend copies each call operand into a
+    /// fresh local register, so `call_any` reads them from local slots the code writes, and a
+    /// parameter's slot (where its incoming value lives, read by later nodes) is never
+    /// written: `b` keeps the incoming `a` after `a` changes and is passed. The emitter
+    /// refuses a parameter operand that holds a new value (the frontend makes none today).
+    #[test]
+    fn a_call_never_writes_over_an_incoming_parameter() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function id(x) { return x; }\n\
+            function pass(a, g) { return g(a); }\n\
+            function swap(a, g) { var b = a; a = (a + 1) | 0; var c = g(a); return (b + c) | 0; }";
+        let warm = "for (var q = 0; q < 20; q++) { pass(q, id); swap(q, id); }";
+        let main = "print(pass(7, id), swap(7, id), pass('s', id));";
+        for name in ["pass", "swap"] {
+            let r = run_script(&Config::default(), defs, warm, main, name).expect(name);
+            assert!(
+                r.equal() && r.fired().is_empty(),
+                "{:?} vs {:?}",
+                r.compiled,
+                r.t0
+            );
+            assert_eq!(r.compiled.output, ["7 15 s"]);
+            let call = r
+                .report
+                .graph
+                .lines()
+                .find(|l| l.contains("Call {"))
+                .expect("a call");
+            assert!(!call.contains("Register(-"), "{call}");
         }
     }
 
     /// Kernel 2 (SPIKEC-4): `lin_solve` (an inner closure of navier-stokes, found by its
     /// function id) builds into a checked graph from the live facts of an n = 1 run, its
-    /// registers allocate and verify, and the emitter stops at the first context slot load.
+    /// registers allocate and verify, and the emitter takes it (WI-SC5).
     #[test]
     fn lin_solve_graph_builds() {
         if !kernels::bench_present() {
@@ -1109,10 +1679,35 @@ mod tests {
         for l in g.graph.lines().filter(|l| l.contains("CheckNumber")) {
             assert!(l.contains("Fact(Runtime)"), "{l}\n{}", g.graph);
         }
+        // Since WI-SC5 the emitter takes every op of it.
         if aarch64() {
-            let e = g.emit.as_ref().expect_err("refused");
-            assert!(e.contains("context slot"), "{e}");
+            assert!(g.emit.is_ok(), "{:?}", g.emit);
         }
+    }
+
+    /// Kernel 2 (WI-SC5): navier-stokes with `lin_solve` compiled and installed by its
+    /// function id (no JS value reaches it) prints T0's check line (every cell of the three
+    /// fields digested), with no exit at all: the double arrays pass the kind guard and the
+    /// raw f64 element ops (WI-SC7), so no CheckArray exit measures the deopt path.
+    #[test]
+    fn lin_solve_by_function_id_equals_t0() {
+        if !aarch64() || !kernels::bench_present() {
+            return;
+        }
+        let k = kernels::kernel("navier-stokes").expect("navier-stokes");
+        let r = run(k, 1, &Config::default()).expect("run");
+        assert!(r.equal, "{}", r.line());
+        assert_eq!(r.exits.iter().sum::<u64>(), 0, "{}", r.line());
+        assert!(
+            r.compiled.output[0].starts_with("checksum 328.09"),
+            "{:?}",
+            r.compiled
+        );
+        assert!(
+            r.report.graph.contains("StoreElement"),
+            "{}",
+            r.report.graph
+        );
     }
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;

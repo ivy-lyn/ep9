@@ -159,13 +159,30 @@ pub fn compile_input_with(
     facts: &facts::FunctionFacts<'_>,
     form: emit_a64::StubForm,
 ) -> Result<(FunctionCode, CompileReport), Refusal> {
+    compile_input_opts(
+        input,
+        facts,
+        &emit_a64::EmitOptions {
+            form,
+            ..Default::default()
+        },
+    )
+}
+
+/// [`compile_input`] with the emitter options `opts` ([`emit_a64::EmitOptions`]: the stub form
+/// and the test builds, forced deopts (WI-SC4) and int32 junk).
+pub fn compile_input_opts(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<(FunctionCode, CompileReport), Refusal> {
     let (graph, stats) = build::build(input, facts)?;
     let alloc = regalloc::allocate(&graph).map_err(Refusal::Limit)?;
     regalloc::verify(&graph, &alloc).map_err(Refusal::Limit)?;
     if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
         return Err(Refusal::Arch);
     }
-    let (code, emit) = emit_a64::emit_with(input, &graph, &alloc, form)?;
+    let (code, emit) = emit_a64::emit_opts(input, &graph, &alloc, opts)?;
     let (fact_guards, unbacked_guards) = graph.guard_counts();
     let report = CompileReport {
         name: input.name.to_string(),

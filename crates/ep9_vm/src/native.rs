@@ -1162,7 +1162,19 @@ pub unsafe fn install_native_b(
     f: Value,
     code: Range<usize>,
 ) -> Result<(), InstallError> {
-    let fi = bytecode_info(f)?;
+    // SAFETY: the caller's contract.
+    unsafe { install_b_info(iso, bytecode_info(f)?, code) }
+}
+
+/// [`install_native_b`] for the bytecode FunctionInfo `fi` (also install by function id).
+///
+/// # Safety
+/// As [`install_native_b`], for the function of `fi`.
+unsafe fn install_b_info(
+    iso: &Isolate,
+    fi: &FunctionInfo,
+    code: Range<usize>,
+) -> Result<(), InstallError> {
     if fi.is_class_constructor() {
         return Err(InstallError::ClassConstructor);
     }
@@ -1201,9 +1213,9 @@ const _: () = {
 /// resume pc and sets `Cx::out_fp`/`out_pc` there, as [`RuntimeTable::unwind`] does, then
 /// returns the accumulator. The shared exit tail-jumps to `cx.table[*out_pc]`, so T0 resumes
 /// in the same VM frame; the code stays installed (SCP:128). If the side table refuses (no
-/// metadata, no record at `pc`, a value the frame cannot take), it throws an internal error
-/// from the function's start and returns what `error::unwind` gives, so the shared exit takes
-/// the same path. No GC point on the success path (H29-Q7).
+/// metadata, no record at `pc`, a value the frame cannot take), the process ends: [`fatal_deopt`]
+/// (M5-P1-ORCH-12, H23: an engine invariant broke, so no JS code may catch it, and jitless
+/// would never reach this point). No GC point (H29-Q7).
 ///
 /// # Safety
 /// As [`rt_deopt`].
@@ -1239,13 +1251,102 @@ unsafe fn deopt_at(cx: &mut Cx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64
             cx.out_pc = at;
             resume.acc
         }
-        Err(e) => {
-            rt.enter(fp, fi.code);
-            let msg = format!("ep9 internal error: deopt at native offset {pc}: {e}");
-            throw_error(cx, ErrorKind::Error, &msg);
-            crate::error::unwind(cx, fp, fi.code)
-        }
+        Err(e) => fatal_deopt(pc, &e),
     }
+}
+
+/// A deopt that cannot rebuild its frame (the metadata reader refuses the exit) is fatal:
+/// it prints `ep9: fatal: deopt at native offset <pc>: <why>` to stderr and aborts the
+/// process (M5-P1-ORCH-12, H23 "Failed deopt"). Never a JS exception: a script's `catch`
+/// would hide an engine bug, and the same script in jitless (no native code) never gets
+/// here, so a mode differential would see two outputs. An abort, not a panic: a panic hook
+/// may not end the process at once, and the table function must not unwind (H23).
+#[cold]
+#[inline(never)]
+fn fatal_deopt(pc: u32, why: &str) -> ! {
+    std::eprintln!("ep9: fatal: deopt at native offset {pc}: {why}");
+    std::process::abort()
+}
+
+/// The body of [`NativeCx::install_b_with_deopt`] for the bytecode FunctionInfo `fi`.
+///
+/// # Safety
+/// As [`NativeCx::install_b_with_deopt`], for the function of `fi`.
+unsafe fn install_meta(
+    iso: &Isolate,
+    fi: &FunctionInfo,
+    code: Range<usize>,
+    meta: &[u8],
+) -> Result<(), String> {
+    // SAFETY: a bytecode FunctionInfo's code is `code_len` bytes of verified bytecode.
+    let bytecode = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let starts: Vec<u32> = ep9_bytecode::Instructions::new(bytecode)
+        .map_while(Result::ok)
+        .map(|i| i.offset)
+        .collect();
+    let len = code.end.saturating_sub(code.start);
+    let function = core::ptr::from_ref(fi).addr();
+    let read =
+        crate::deopt::CodeMeta::read(len, function, meta, |o| starts.binary_search(&o).is_ok());
+    let read = read.map_err(|e| format!("deopt metadata refused: {e}"))?;
+    let start = code.start;
+    // SAFETY: the caller's contract.
+    unsafe { install_b_info(iso, fi, code) }.map_err(|e| format!("install refused: {e:?}"))?;
+    iso.rt.deopt.insert(start, read);
+    Ok(())
+}
+
+/// The exit counters of the code installed for `fi` with deopt metadata.
+fn counts_of(iso: &Isolate, fi: &FunctionInfo) -> Option<Vec<u64>> {
+    if fi.slot.kind_byte() != DispatchKind::Opt as u8 {
+        return None;
+    }
+    iso.rt.deopt.counters(fi.slot.entry())
+}
+
+/// The [`NativeTarget`] of the bytecode FunctionInfo `fi` (as [`native_target`] makes it for
+/// a function value).
+fn target_of<'i>(fi: &'i FunctionInfo) -> NativeTarget<'i> {
+    // SAFETY: a bytecode FunctionInfo's code is `code_len` bytes that its loaded unit owns;
+    // units live until the isolate drops, and the result borrows the isolate.
+    let bytecode = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let handler_count = fi.loaded_unit().map_or(0, |u| {
+        u.unit.functions[fi.function_id as usize].handlers.len() as u32
+    });
+    NativeTarget {
+        name: &fi.name,
+        bytecode,
+        parameter_count: fi.parameter_count,
+        register_count: fi.register_count,
+        strict: fi.is_strict(),
+        handler_count,
+        kind: fi.slot.kind(),
+        info: core::ptr::from_ref(fi).addr(),
+    }
+}
+
+/// The bytecode FunctionInfo of function `id` of the one loaded unit named `file` (install
+/// by function id, WI-SC5).
+fn info_by_id<'i>(iso: &'i Isolate, file: &str, id: u32) -> Result<&'i FunctionInfo, String> {
+    let rt: &Runtime = &iso.rt;
+    let fi: *const FunctionInfo = {
+        let units = rt.units.borrow();
+        let mut named = units.iter().filter(|u| u.file == file);
+        let (Some(u), None) = (named.next(), named.next()) else {
+            return Err(format!("not one loaded unit named {file:?}"));
+        };
+        u.infos
+            .get(id as usize)
+            .ok_or_else(|| format!("{file}: no function {id}"))?
+    };
+    // SAFETY: a loaded unit is boxed and kept until the isolate drops (`LoadedUnit`), so its
+    // FunctionInfo lives as long as the borrow of `iso`; the `units` borrow above only guarded
+    // the list, which only grows.
+    let fi = unsafe { &*fi };
+    if fi.host.is_some() || !fi.is_bytecode() || fi.code.is_null() {
+        return Err(format!("{file}: function {id} has no bytecode"));
+    }
+    Ok(fi)
 }
 
 /// The deopt part of the spike API (M5-P1 SPIKEC-5), as associated functions of
@@ -1271,32 +1372,50 @@ impl NativeCx {
         meta: &[u8],
     ) -> Result<(), String> {
         let fi = bytecode_info(f).map_err(|e| format!("install refused: {e:?}"))?;
-        // SAFETY: a bytecode FunctionInfo's code is `code_len` bytes of verified bytecode.
-        let bytecode = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
-        let starts: Vec<u32> = ep9_bytecode::Instructions::new(bytecode)
-            .map_while(Result::ok)
-            .map(|i| i.offset)
-            .collect();
-        let len = code.end.saturating_sub(code.start);
-        let function = core::ptr::from_ref(fi).addr();
-        let read =
-            crate::deopt::CodeMeta::read(len, function, meta, |o| starts.binary_search(&o).is_ok());
-        let read = read.map_err(|e| format!("deopt metadata refused: {e}"))?;
-        let start = code.start;
         // SAFETY: the caller's contract.
-        unsafe { install_native_b(iso, f, code) }.map_err(|e| format!("install refused: {e:?}"))?;
-        iso.rt.deopt.insert(start, read);
-        Ok(())
+        unsafe { install_meta(iso, fi, code, meta) }
     }
 
     /// The exit counters (one per record, in record order) of the code installed for `f` by
     /// [`NativeCx::install_b_with_deopt`]; `None` if `f` has no such code.
     pub fn deopt_counts(iso: &Isolate, f: Value) -> Option<Vec<u64>> {
-        let fi = bytecode_info(f).ok()?;
-        if fi.slot.kind_byte() != DispatchKind::Opt as u8 {
-            return None;
-        }
-        iso.rt.deopt.counters(fi.slot.entry())
+        counts_of(iso, bytecode_info(f).ok()?)
+    }
+
+    /// Install by function id (M5-P2 SPIKEC-6, WI-SC5): the [`NativeTarget`] of function `id`
+    /// of the loaded unit named `file`. Every function of a loaded unit has its FunctionInfo
+    /// from the load on, so this reaches a function that no JS value reaches, such as an
+    /// inner closure (navier-stokes' `lin_solve`). Refused unless exactly one loaded unit has
+    /// that name and its function `id` is a bytecode function.
+    pub fn target_by_id<'i>(
+        iso: &'i Isolate,
+        file: &str,
+        id: u32,
+    ) -> Result<NativeTarget<'i>, String> {
+        info_by_id(iso, file, id).map(target_of)
+    }
+
+    /// [`NativeCx::install_b_with_deopt`] for function `id` of the loaded unit `file` (see
+    /// [`NativeCx::target_by_id`]). Every closure of the function, made before or after,
+    /// shares the one dispatch slot (H14), so all of them run the code.
+    ///
+    /// # Safety
+    /// As [`NativeCx::install_b_with_deopt`], for that function.
+    pub unsafe fn install_b_with_deopt_by_id(
+        iso: &Isolate,
+        file: &str,
+        id: u32,
+        code: Range<usize>,
+        meta: &[u8],
+    ) -> Result<(), String> {
+        let fi = info_by_id(iso, file, id)?;
+        // SAFETY: the caller's contract.
+        unsafe { install_meta(iso, fi, code, meta) }
+    }
+
+    /// [`NativeCx::deopt_counts`] for function `id` of the loaded unit `file`.
+    pub fn deopt_counts_by_id(iso: &Isolate, file: &str, id: u32) -> Option<Vec<u64>> {
+        counts_of(iso, info_by_id(iso, file, id).ok()?)
     }
 
     /// Reads `meta` as the deopt reader does (the H29 byte form, every refusal of

@@ -84,9 +84,15 @@ pub struct Kernel {
 }
 
 /// navier-stokes has no result check in v7: the driver keeps the `Field` of the last frame and
-/// prints a check line of its density and velocity fields.
+/// prints a check line of its density and velocity fields. The hook also sets the two globals
+/// that decide when a frame adds points back to their initial values (navier-stokes.js:61-62;
+/// `addPoints` changes them, Setup does not), so every loop of a process starts as the first
+/// one: a no-op in a fresh process (node's reference line is the same), and the loop after a
+/// warm-up (`spike-c tier`, the timed configs) adds points at the same frames as a fresh run,
+/// so its fields are not all 0 at n = 1 (M5-P2 SPIKEC-6: they were, a weak T0 compare).
 const NS_HOOK: &str = "var __spikeCField = null;\n\
-solver.setDisplayFunction(function (f) { __spikeCField = f; });";
+solver.setDisplayFunction(function (f) { __spikeCField = f; });\n\
+framesTillAddingPoints = 0; framesBetweenAddingPoints = 5;";
 /// The navier-stokes check line: `checksum <d> <u> <v> digest <ha> <hb>`, over every cell of the
 /// three fields (the boundary cells too: x and y from -1 to the size), in index order.
 ///
