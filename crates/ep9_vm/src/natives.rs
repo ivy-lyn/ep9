@@ -868,7 +868,8 @@ fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsRes
             proto = p;
         } else {
             // §10.1.14 step 4: the prototype of GetFunctionRealm(newTarget).
-            let r = crate::realm::get_function_realm(rt, nt);
+            let r = crate::realm::try_get_function_realm(cx, nt)?;
+            let rt = cx.rt();
             let id = crate::builtins::IntrinsicId::ALL
                 .into_iter()
                 .find(|id| id.root() == Some(kind.prototype_root()))

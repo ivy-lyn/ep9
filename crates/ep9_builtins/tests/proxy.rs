@@ -324,3 +324,20 @@ print(t(() => Array.of.call(r3.proxy, 1).length), t(() => new r3.proxy()).split(
         ])
     );
 }
+
+/// GetFunctionRealm (§7.3.22) step 4: a newTarget proxy revoked while its `prototype` is read
+/// throws the TypeError in OrdinaryCreateFromConstructor, GetPrototypeFromConstructor and a
+/// NativeError (Codex r1 proxy2 [medium]; test262 base-ctor-revoked-proxy.js). Node v24.22.1
+/// throws a TypeError in each (its text names the operation 'undefined').
+#[test]
+fn get_function_realm_throws_for_a_revoked_proxy() {
+    assert_eq!(
+        common::run_both(js!(r#"
+function nt() { var r = Proxy.revocable(function () {}, { get: function (t, k) { if (k === 'prototype') { r.revoke(); return undefined; } return t[k]; } }); return r.proxy; }
+print(t(() => Reflect.construct(function () {}, [], nt())).split(':')[0], t(() => Reflect.construct(Array, [], nt())).split(':')[0], t(() => Reflect.construct(TypeError, [], nt())).split(':')[0]);
+var live = new Proxy(function () {}, { get: function () { return undefined; } });
+print(Object.getPrototypeOf(Reflect.construct(function () {}, [], live)) === Object.prototype, Array.isArray(Reflect.construct(Array, [], live)));
+"#)),
+        lines(&["TypeError TypeError TypeError", "true true"])
+    );
+}

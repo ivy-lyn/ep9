@@ -703,7 +703,8 @@ pub(crate) fn ordinary_create_from_constructor(cx: &mut Cx, f: u64) -> Res<u64> 
         None => property::get(cx, f, key)?,
     };
     if !is_object(p) {
-        let r = realm::get_function_realm(rt, f);
+        let r = realm::try_get_function_realm(cx, f)?;
+        let rt = cx.rt();
         let proto = realm::intrinsic_in(rt, r, crate::builtins::IntrinsicId::ObjectPrototype);
         return Ok(object::new_object(rt, proto));
     }

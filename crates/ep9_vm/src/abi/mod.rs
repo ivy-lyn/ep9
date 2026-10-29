@@ -1490,8 +1490,8 @@ impl<'s> Cx<'s> {
         Ok(match p.as_object() {
             Some(p) => p,
             None => {
+                let realm = crate::realm::try_get_function_realm(self.cx, constructor.bits())?;
                 let rt = self.rt();
-                let realm = crate::realm::get_function_realm(rt, constructor.bits());
                 let v = crate::realm::intrinsic_in(rt, realm, default);
                 assert!(kinds::is_object(v), "{} is not installed", default.name());
                 Self::local(v)
