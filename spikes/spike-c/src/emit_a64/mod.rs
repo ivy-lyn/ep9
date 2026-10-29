@@ -1523,12 +1523,12 @@ impl Emitter<'_> {
         Ok(epilogue)
     }
 
-    /// A [`SlowStore`]: x12 = the array, x13 = the index as an int32 Value, x14 = the value as a
-    /// double Value (`Value::number` of a double that is no int32: its bits plus the offset,
-    /// NaN purified); then the generic store with the allocatable caller-saved registers
-    /// saved, as a SetKeyedGeneric; a 0 result unwinds from the store's offset. The sources
-    /// are x12-x14 or allocated registers (never another of x12-x14), so writing x12, x13,
-    /// x14 in that order reads each source before it is written.
+    /// A [`SlowStore`]: x12 = the array, x13 = the index as an int32 Value, x14 = the value (a
+    /// Tagged one as it is, else a double Value: the bits of a double that is no int32 plus the
+    /// offset, NaN purified); then the generic store with the allocatable caller-saved registers
+    /// saved, as a SetKeyedGeneric; a 0 result unwinds from the store's offset. The sources are
+    /// x12-x14 or allocated registers (never another of x12-x14), so writing x12, x13, x14 in
+    /// that order reads each source before it is written.
     fn slow_store(&mut self, st: SlowStore) -> Result<(), Refusal> {
         let (arr, i, v) = (st.arr, st.index, st.value);
         let ok = self.ops.new_dynamic_label();
@@ -1592,9 +1592,9 @@ impl Emitter<'_> {
         slow
     }
 
-    /// The out-of-line path of a store of the Tagged value `v` (SPIKEC-7: a number in line,
-    /// any other Value to the generic store, one path for both storage forms). For any other
-    /// `v`, a label that nothing uses.
+    /// The out-of-line path of a store of the Tagged value `v` (SPIKEC-7: what the storage form
+    /// takes in line, `double_form` and `values_form`, and any other Value
+    /// to the generic store: one path for both forms). For any other `v`, a label nothing uses.
     fn tagged_slow(
         &mut self,
         v: Option<(u8, Repr)>,

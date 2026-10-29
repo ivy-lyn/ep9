@@ -2085,13 +2085,13 @@ mod tests {
             g.contains("SetKeyedGeneric") && g.contains("GetKeyedGeneric"),
             "{g}"
         );
-        // `o[k] = v` and `o[k]` saw names and symbols. `t[0] = s` saw only indexes: since
-        // SPIKEC-7 a store of any value takes the element path there (a number in line, any
-        // other Value out of line through the generic store); `s` is an Int32 by then.
+        // `o[k] = v` and `o[k]` saw names and symbols. `t[0] = s` saw only indexes but stores
+        // the loop phi `s`, which is still Tagged when the builder translates the store (the
+        // phis are unboxed after the walk) and is no element copy, so it takes the generic
+        // store too (as before SPIKEC-7 again: M5-P3 reviewer B F1).
         let sites = &r.report.build.keyed;
         assert_eq!(sites.len(), 3, "{sites:?}");
-        assert!(sites[0].generic && sites[2].generic, "{sites:?}");
-        assert!(!sites[1].generic, "{sites:?}");
+        assert!(sites.iter().all(|k| k.generic), "{sites:?}");
         assert_eq!(sites[1].keys, Some(ep9_facts::KeySet::INDEX), "{sites:?}");
         // Under GC stress (a collection before every allocation): the setter, the getter and
         // the string concatenation allocate inside and after the call.
@@ -2099,20 +2099,20 @@ mod tests {
         assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
     }
 
-    /// SPIKEC-7 (M5-P2-ORCH-1, lin_solve limit 2): a store of a Tagged value on an index-only
-    /// site takes the element path: a number is stored in line (an int32 Value as it is, or
-    /// raw f64 into a DOUBLE store), and any other Value (here a cell: the array itself, so
-    /// the store barrier matters) goes to the generic store out of line, whose entry does the
-    /// barrier and the kind transition. No exit; equal to T0, under GC stress too.
+    /// SPIKEC-7 (M5-P2-ORCH-1, lin_solve limit 2): the store of an element copy's Tagged value
+    /// (`a[i] = b[0]`) on an index-only site takes the element path: a number is stored in
+    /// line (an int32 Value as it is, or raw f64 into a DOUBLE store), and any other Value
+    /// (here a cell: the array itself, so the store barrier matters) goes to the generic store
+    /// out of line, whose entry does the barrier and the kind transition. No exit; equal to
+    /// T0, under GC stress too.
     #[test]
     fn a_tagged_store_takes_the_element_path_and_cells_go_out_of_line() {
         if !aarch64() {
             return;
         }
-        let defs =
-            "function put(a, i, n) { for (var k = 0; k < n; k++) { a[i] = a; } return a[i]; }";
-        let main = "var b = [1, 2, 3]; print(put(b, 2, 3) === b, b.length, b[2] === b); gc(); print(b[2].length);";
-        let warm = "var w = [0, 0]; for (var q = 0; q < 20; q++) put(w, q & 1, 2);";
+        let defs = "function put(a, b, i, n) { for (var k = 0; k < n; k++) { a[i] = b[0]; } return a[i]; }";
+        let main = "var b = [1, 2, 3]; print(put(b, [b], 2, 3) === b, b.length, b[2] === b); gc(); print(b[2].length);";
+        let warm = "var w = [0, 0]; for (var q = 0; q < 20; q++) put(w, [w], q & 1, 2);";
         let r = equal(defs, warm, main, "put");
         assert_eq!(r.compiled.output, ["true 3 true", "3"]);
         let store: Vec<_> = r.report.build.keyed.iter().filter(|k| k.store).collect();
@@ -2130,6 +2130,48 @@ mod tests {
             r.compiled,
             r.t0
         );
+    }
+
+    /// M5-P3 reviewer B F1: a store of a Tagged value that is no element copy (here a
+    /// parameter) takes the generic store, as at the phase base (dbbbac3), so an array that
+    /// grows (a store at its length) and a receiver that is no Array run with no exit. On
+    /// the element path each failed a guard on every call: 11 exits (StoreElement bounds) and
+    /// 11 (CheckArray) in these mains at a6a0ede, and the code stayed installed. Equal to T0.
+    #[test]
+    fn a_tagged_store_that_is_no_copy_takes_the_generic_store() {
+        if !aarch64() {
+            return;
+        }
+        let cases = [
+            (
+                "function g(b, n, v) { for (var i = 0; i < n; i++) { b[i] = v; } return b.length; }",
+                "for (var q = 0; q < 20; q++) { g([], 3, 's'); }",
+                "for (var q = 0; q < 10; q++) g([], 3, 't'); print(g([], 2, null));",
+                "g",
+                "2",
+            ),
+            (
+                "function f(o, n, v) { for (var i = 0; i < n; i++) { o[i] = v; } return o; }",
+                "for (var q = 0; q < 20; q++) { f({}, 3, {}); }",
+                "for (var q = 0; q < 10; q++) f({}, 3, {}); print(Object.keys(f({}, 2, 1)));",
+                "f",
+                "0,1",
+            ),
+        ];
+        for (defs, warm, main, name, out) in cases {
+            for config in [Config::default(), Config::stress()] {
+                let r = run_script(&config, defs, warm, main, name).expect("run");
+                assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+                assert_eq!(r.compiled.output, [out]);
+                let total: u64 = r.exits.iter().sum();
+                assert_eq!(total, 0, "{name}: {:?}\n{}", r.exits, r.report.graph);
+                let g = &r.report.graph;
+                assert!(
+                    g.contains("SetKeyedGeneric") && !g.contains("StoreElement"),
+                    "{g}"
+                );
+            }
+        }
     }
 
     /// Codex M5-P3 r1 spikec7 1: a nested merge, a phi of two Float64 values (no load feeds
@@ -2318,13 +2360,10 @@ mod tests {
             let input = s.input_of(f).expect("input");
             crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile")
         };
-        // The sites that saw names are generic; `t[0] = s` (indexes only) is an element store.
+        // Every site is generic: the ones that saw names, and `t[0] = s` (indexes only, but
+        // its value is a Tagged phi, no element copy; M5-P3 reviewer B F1).
         assert!(
-            report
-                .build
-                .keyed
-                .iter()
-                .all(|k| k.generic == (k.keys != Some(ep9_facts::KeySet::INDEX))),
+            report.build.keyed.iter().all(|k| k.generic),
             "{:?}",
             report.build.keyed
         );

@@ -225,9 +225,9 @@ pub enum Op {
     /// it (SPIKEC-7, `build::float_loads`; it then exits on a Value that is no number).
     LoadElement,
     /// Guard: stores into an existing element (same checks). An Int32 or Float64: raw f64 into
-    /// ELEMENTS_DOUBLE, an int32 Value into ELEMENTS (a Float64 that is no int32: the generic
-    /// store out of line, the kind transition, a GC point, no JS); a number needs no barrier
-    /// (H11 E1). A Tagged value (SPIKEC-7): a number Value so; any other out of line (barrier).
+    /// ELEMENTS_DOUBLE, an int32 Value into ELEMENTS (else the generic store out of line, the
+    /// kind transition, a GC point, no JS); a number needs no barrier (H11 E1). A Tagged copy
+    /// (SPIKEC-7): an int32 Value into ELEMENTS, a number into ELEMENTS_DOUBLE, else out of line.
     StoreElement,
     /// Guard: the Tagged input is a number (an int32 or a double Value); its value as a
     /// double. Float64 (SPIKEC-4).

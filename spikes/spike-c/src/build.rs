@@ -22,7 +22,7 @@
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
-//! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value, WI-SC7; a Float64 load and any stored value, SPIKEC-7); or the generic keyed entry (a key that is not an index; SPIKEC-4) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
+//! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value, WI-SC7; a Float64 load and the Tagged value of an element copy `a[i] = b[j]`, SPIKEC-7); or the generic keyed entry (a key that is not an index, SPIKEC-4; a store of any other Tagged value) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
 //! | `+`, `-`, `*` whose BinaryOp record saw a double (hint inside {int32, int32-overflow, number}, with number), and `/` always | CheckNumber on each Tagged input (an Int32 input converts), a Float64 op (SPIKEC-4) | the check is predicted{source} with the record, else unknown; the op's result PROVEN (a number from numbers) |
 //! | `===` | CheckInt32 on each input (backed by an int32 CompareOp fact), Compare(Eq) (SPIKEC-4) | PROVEN (a boolean) |
 //! | LdaCurrentContextSlot, LdaImmutableCurrentContextSlot | LoadContextSlot (SPIKEC-4) | unknown |
@@ -83,7 +83,7 @@
 //! store takes an Int32 or a Float64: into raw f64 as a double (every NaN as the pure NaN, so
 //! never the hole), into Values as an int32 Value; a Float64 that is no int32 (or is -0) into
 //! Values calls the generic store out of line (the kind transition, a GC point), as T0 does. A
-//! Tagged value (SPIKEC-7) is stored in line if it is a number Value, else out of line too.
+//! Tagged copy (SPIKEC-7): an int32 Value into Values and a number into raw f64 in line.
 //! CheckArray, LoadElement and StoreElement stay unbacked in every case (the receiver,
 //! bounds and hole bits come with the month-6 schema bump, MODES-D18).
 //!
@@ -91,7 +91,7 @@
 //! an index would exit on those keys from every element guard, so it calls the generic keyed
 //! entries of `ep9_vm::RuntimeTable` that M4-P3 KEYED appended (8 `get_keyed`, 9 `set_keyed`;
 //! `layout::RT_GET_KEYED`, `RT_SET_KEYED`) in place of the refusal SPIKEC-3 made (a Tagged
-//! store value took them too until SPIKEC-7; now the element path, above). Both entries run
+//! store value; since SPIKEC-7 an element copy's value takes the element path, above). Both run
 //! the T0 miss-path functions (`slow::prop`: `property::get_keyed` / `set_keyed`), which
 //! record no feedback, so the compiled code still records none (native.rs:149-158;
 //! MC-w15-6: a RuntimeTable entry calls only non-recording generic functions). A generic
@@ -481,8 +481,8 @@ impl Builder<'_> {
     /// The keyed record of `slot` at the access at the current offset (`store` for
     /// SetKeyedProperty): the path of the site, or a refusal for a record of another kind
     /// (see the module docs, "Keyed facts"). `generic` takes the generic path whatever the
-    /// record says (a store of a value that is not an int32). Records the site for the
-    /// report.
+    /// record says (a store of a Tagged value that is no element copy). Records the site for
+    /// the report.
     fn keyed_site(&mut self, slot: u32, store: bool, generic: bool) -> Result<KeyedPath, Refusal> {
         let off = self.offset();
         let refuse = |why: String| Refusal::Limit(format!("keyed access at {off}: {why}"));
@@ -816,11 +816,11 @@ impl Builder<'_> {
                 let o = self.reg(insn.register(0))?;
                 let k = self.reg(insn.register(1))?;
                 let v = self.acc()?;
-                // StoreElement stores an int32 or a double in line (a number is not a cell: no
-                // barrier); a Tagged value (lin_solve's copy `x[r] = x0[r]`, M5-P2-ORCH-1
-                // limit 2; SPIKEC-7) is stored in line when it is a number, and any other
-                // Value goes to the generic store out of line, whose entry does the barrier.
-                match self.keyed_site(insn.unsigned(2), true, false)? {
+                // An int32, a double or an element copy (`x[r] = x0[r]`, M5-P2-ORCH-1 limit 2)
+                // is a StoreElement; any other Tagged value the generic store (M5-P3 B F1).
+                let copy = matches!(self.node(v).op, Op::LoadElement);
+                let tagged = !matches!(self.node(v).repr, Repr::Int32 | Repr::Float64) && !copy;
+                match self.keyed_site(insn.unsigned(2), true, tagged)? {
                     KeyedPath::Element(key_basis) => {
                         let a = self.check_array(o);
                         let i = self.int32(k, key_basis);
