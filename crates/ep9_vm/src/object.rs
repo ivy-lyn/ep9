@@ -1621,13 +1621,13 @@ pub(crate) fn gen_release(rt: &Runtime, g: u64) {
 }
 
 /// IsConstructor (§7.2.4): a FUNCTION whose FunctionInfo has `[[Construct]]`, or a bound
-/// function whose target is a constructor (`bound::is_constructor`).
+/// function or callable proxy whose target is a constructor (`bound::is_constructor`).
 pub(crate) fn is_constructor(f: u64) -> bool {
     let k = cell_kind(f);
     if k == kind::FUNCTION.get() {
         function_info(f).is_constructor()
     } else {
-        k == kind::BOUND_FUNCTION.get() && crate::bound::is_constructor(f)
+        crate::bound::is_constructor(f)
     }
 }
 

@@ -46,7 +46,7 @@ use crate::conv::Res;
 use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
 use crate::frame::{CONSTRUCT_BIT, HEADER, HOLE, NULL, UNDEFINED, int32_bits, native_of, slot};
 use crate::interp::{self, Cx, EXIT_STUB};
-use crate::kinds::{OBJECT, cell_kind, is_callable, is_cell_bits};
+use crate::kinds::{OBJECT, cell_kind, is_bound, is_callable, is_cell_bits};
 use crate::object::{self, function_context, function_info, is_function, is_object};
 use crate::property;
 use crate::realm;
@@ -353,16 +353,16 @@ pub(crate) fn call_with(
     if is_function(f) {
         return call_function_object(cx, f, this, argc, arg, new_target);
     }
-    // A bound function: `construct_with` unwraps it before the call step.
-    debug_assert!(new_target == UNDEFINED, "[[Construct]] of a bound function");
-    // §10.4.1.1 steps 1-5: Call(target, boundThis, boundArgs ++ argumentsList).
+    if !is_bound(f) {
+        return call_proxy(cx, f, this, argc, arg, new_target); // a callable proxy (§10.5.12)
+    }
     let u = bound::unwrap(cx, f, UNDEFINED)?;
     let Some(total) = u.bound.checked_add(argc) else {
         return stack_overflow(cx);
     };
     let bound = u.bound;
     let (pre, saved) = push_bound_args(cx, f, bound)?;
-    let r = call_function_object(
+    let r = call_target(
         cx,
         u.target,
         u.this,
@@ -624,16 +624,16 @@ pub(crate) fn construct_with(
     if is_function(f) {
         return construct_function_object(cx, f, argc, arg, new_target);
     }
-    // §10.4.1.2 steps 1-6: Construct(target, boundArgs ++ argumentsList, newTarget), with
-    // newTarget = target while it is the bound function. The copy of the bound arguments is
-    // scanned at the GC point of OrdinaryCreateFromConstructor.
+    if !is_bound(f) {
+        return construct_proxy(cx, f, argc, arg, new_target); // a callable proxy (§10.5.13)
+    }
     let u = bound::unwrap(cx, f, new_target)?;
     let Some(total) = u.bound.checked_add(argc) else {
         return stack_overflow(cx);
     };
     let bound = u.bound;
     let (pre, saved) = push_bound_args(cx, f, bound)?;
-    let r = construct_function_object(
+    let r = construct_target(
         cx,
         u.target,
         total,
@@ -1081,4 +1081,129 @@ pub(crate) fn bound_with_global(fi: &FunctionInfo, bound: u64, global: u64) -> u
     } else {
         bound
     }
+}
+
+// ---- Proxy [[Call]] and [[Construct]] (§10.5.12-13; M5-P3 PROXY2) ------------------------------
+//
+// A callable proxy never gets a frame. [`call_with`] and [`construct_with`] send it here, and so
+// does `slow::call` for a bytecode caller (through them). Its `[[Call]]` and `[[Construct]]`
+// (`proxy.rs`) run its trap or forward to its target, nested in Rust, with the arguments copied
+// once to the scratch area ([`push_args`]), so the GC sees them while the trap's argument array
+// is made. The innermost target of a bound function may be a callable proxy too: the bound
+// paths call [`call_target`] and [`construct_target`], which take either kind.
+//
+// ```text
+// call_with(f) ──── FUNCTION ─────────> call_function_object(f)
+//             ├──── PROXY_CALLABLE ───> call_proxy: args to scratch ─> proxy::call (trap "apply")
+//             └──── BOUND: unwrap(f) ─> call_target(target, boundThis, bound ++ args)
+// construct_with(f, nt) ── FUNCTION ──> construct_function_object(f, nt)
+//             ├──── PROXY_CALLABLE ───> construct_proxy ─> proxy::construct (trap "construct")
+//             └──── BOUND: unwrap(f) ─> construct_target(target, bound ++ args, nt)
+// ```
+
+/// The call step of a bound function's innermost target (`bound::unwrap`): a FUNCTION
+/// ([`call_function_object`]) or a callable proxy ([`call_proxy`]).
+#[inline(always)]
+fn call_target(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    if is_function(f) {
+        call_function_object(cx, f, this, argc, arg, new_target)
+    } else {
+        call_proxy(cx, f, this, argc, arg, new_target)
+    }
+}
+
+/// The construct step of a bound function's innermost target (§10.4.1.2 steps 1-6:
+/// Construct(target, boundArgs ++ argumentsList, newTarget), with newTarget = target while it
+/// is the bound function; the copy of the bound arguments is scanned at the GC point of
+/// OrdinaryCreateFromConstructor): a FUNCTION ([`construct_function_object`]) or a callable
+/// proxy ([`construct_proxy`]).
+#[inline(always)]
+fn construct_target(
+    cx: &mut Cx,
+    f: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    if is_function(f) {
+        construct_function_object(cx, f, argc, arg, new_target)
+    } else {
+        construct_proxy(cx, f, argc, arg, new_target)
+    }
+}
+
+/// Copies the `argc` arguments that `arg(i)` reads to the scratch area above the top frame,
+/// and raises the scratch top past them, as [`push_bound_args`] does: the GC scans the copy.
+/// `arg` may read the caller's scratch Values (below the copy). Returns the copy and the
+/// scratch top to put back after the call. RangeError if the VM stack is full. Not a GC point
+/// unless it throws.
+fn push_args(cx: &mut Cx, argc: u32, arg: impl Fn(u32) -> u64) -> Res<(*const u64, *mut u64)> {
+    let stack = cx.rt().stack();
+    let saved = stack.scratch_top();
+    let start = top_of(cx, stack.fp());
+    let end = start.wrapping_add(argc as usize);
+    if end.addr() > cx.stack_limit.addr() || end.addr() < start.addr() {
+        return stack_overflow(cx);
+    }
+    for i in 0..argc {
+        // SAFETY: [start, end) is inside the stack (end <= limit <= end of the stack) and
+        // above the top frame and every scratch Value, so these writes clobber nothing live.
+        unsafe { *start.add(i as usize) = arg(i) };
+    }
+    // Every slot below `end` now holds a valid Value.
+    stack.set_scratch_top(end);
+    Ok((start, saved))
+}
+
+/// `[[Call]]` of the callable proxy `p` (§10.5.12) with `argc` arguments that `arg(i)` reads
+/// (any memory, as for [`call_with`]): they go to the scratch area first ([`push_args`]),
+/// then `proxy::call` runs the trap or forwards. `new_target` is undefined: a construct takes
+/// [`construct_proxy`]. GC point, runs JS.
+#[cold]
+#[inline(never)]
+fn call_proxy(
+    cx: &mut Cx,
+    p: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    debug_assert!(
+        new_target == UNDEFINED,
+        "[[Construct]] of a proxy: construct_proxy"
+    );
+    let (args, saved) = push_args(cx, argc, arg)?;
+    // SAFETY: `argc` Values at `args`, under the scratch top until the `restore_scratch`
+    // below; nested frames and scratch use start above it ([`top_of`]).
+    let list = unsafe { core::slice::from_raw_parts(args, argc as usize) };
+    let r = crate::proxy::call(cx, p, this, list);
+    restore_scratch(cx.rt(), saved);
+    r
+}
+
+/// `[[Construct]]` of the callable proxy `p` (§10.5.13; [`construct_with`] checked
+/// IsConstructor of `p` and `new_target`), as [`call_proxy`]. GC point, runs JS.
+#[cold]
+#[inline(never)]
+fn construct_proxy(
+    cx: &mut Cx,
+    p: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    let (args, saved) = push_args(cx, argc, arg)?;
+    // SAFETY: as in [`call_proxy`].
+    let list = unsafe { core::slice::from_raw_parts(args, argc as usize) };
+    let r = crate::proxy::construct(cx, p, list, new_target);
+    restore_scratch(cx.rt(), saved);
+    r
 }

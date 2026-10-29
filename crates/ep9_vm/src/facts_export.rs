@@ -979,7 +979,7 @@ fn key_index(s: u64, loc: i32) -> Option<u16> {
 
 /// The prototype-chain steps from the prototype `p` of a receiver (1 = `p` itself) to
 /// `holder`, or, with `None`, the number of prototypes up to null. `None` if the chain does
-/// not reach the holder or is longer than 255.
+/// not reach the holder, is longer than 255 or passes a proxy (a trap answers its prototype).
 fn chain_depth(mut p: u64, holder: Option<u64>) -> Option<u8> {
     let mut depth: u8 = 0;
     while p != NULL {
@@ -987,7 +987,7 @@ fn chain_depth(mut p: u64, holder: Option<u64>) -> Option<u8> {
         if Some(p) == holder {
             return Some(depth);
         }
-        p = object::proto_of(p);
+        p = (!crate::proxy::is_proxy(p)).then(|| object::proto_of(p))?;
     }
     match holder {
         None => Some(depth),

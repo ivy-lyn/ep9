@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!  BOUND_FUNCTION (H17 v0)                     made by BoundFunctionCreate (§10.4.1.3)
-//!  +24 fixed 0  [[BoundTargetFunction]]        a FUNCTION or another BOUND_FUNCTION
+//!  +24 fixed 0  [[BoundTargetFunction]]        a FUNCTION, a BOUND_FUNCTION or a PROXY_CALLABLE
 //!  +32 fixed 1  [[BoundThis]]
 //!  +40 fixed 2  [[BoundArguments]]             undefined (none), or an internal dense ARRAY
 //!  +48, +56     in-object slots: `length`, `name` (SetFunctionLength/Name, by
@@ -10,13 +10,13 @@
 //! ```
 //!
 //! The fields never change after creation, and a bound function never gets a frame. A call
-//! walks the chain of bound functions down to the first FUNCTION (the innermost target) with
-//! a loop, never Rust recursion ([`unwrap`]), and that target's frame gets the arguments in
-//! spec order: the innermost bound arguments first, then each outer function's, then the call's
-//! own. A second walk copies the bound ones in that order ([`copy_chain_args`]), so a call
-//! costs O(chain depth + bound arguments). [`unwrap`] takes one interrupt budget unit per
-//! level, so termination stops a call through a long chain. The callers are the three call
-//! paths: `slow::call` (bytecode), `call::call_with` and `call::construct_with` (Rust).
+//! walks the chain down to the first FUNCTION or callable proxy (the innermost target) with a
+//! loop, never Rust recursion ([`unwrap`]), and that target gets the arguments in spec order:
+//! the innermost bound arguments first, then each outer function's, then the call's own (a
+//! proxy's `[[Call]]`/`[[Construct]]`: `call.rs`, M5-P3). A second walk copies the bound ones
+//! ([`copy_chain_args`]), so a call costs O(chain depth + bound arguments). [`unwrap`] takes
+//! one interrupt budget unit per level, so termination stops a call through a long chain. The
+//! callers are the three call paths: `slow::call`, `call::call_with` and `call::construct_with`.
 //!
 //! GC: the copy goes to the VM stack's scratch area (`call.rs`), or to the argument `Vec` of
 //! `slow::call`, whose values the caller keeps rooted: the outermost bound function is in the
@@ -73,21 +73,21 @@ fn bound_arg(f: u64, i: u32) -> u64 {
     v.unwrap_or(UNDEFINED)
 }
 
-/// The innermost target of the bound function `f`: the first FUNCTION down its chain.
-fn innermost(f: u64) -> u64 {
+/// The innermost target of the bound function `f`: the first FUNCTION or callable proxy.
+pub(crate) fn innermost(f: u64) -> u64 {
     let mut t = target(f);
     while is_bound(t) {
         t = target(t);
     }
-    debug_assert!(is_function(t));
+    debug_assert!(is_function(t) || crate::proxy::is_proxy(t));
     t
 }
 
-/// IsConstructor of the bound function `f` (§10.4.1.3 step 6: it has `[[Construct]]` if its
-/// target has one). The targets never change, so this asks the innermost target. Not a GC
-/// point. `object::is_constructor` asks this for BOUND_FUNCTION cells.
+/// IsConstructor of `f`, a bound function (§10.4.1.3 step 6: `[[Construct]]` if its target
+/// has one) or a callable proxy (§10.5.14 step 7.b): `proxy::is_constructor` walks both kinds
+/// in one loop. Not a GC point. `object::is_constructor` asks this for every other kind.
 pub(crate) fn is_constructor(f: u64) -> bool {
-    object::is_constructor(innermost(f))
+    crate::proxy::is_constructor(f)
 }
 
 /// BoundFunctionCreate(targetFunction, boundThis, boundArgs) (§10.4.1.3). `target` is
@@ -133,7 +133,7 @@ pub(crate) fn new_bound_function(cx: &mut Cx, target: u64, this: u64, args: &[u6
 /// A call of a bound function after its chain is walked ([`unwrap`]).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Unwrapped {
-    /// The innermost target: a FUNCTION.
+    /// The innermost target: a FUNCTION or a callable proxy (`call.rs` takes either).
     pub target: u64,
     /// The innermost `[[BoundThis]]` (the `this` of `[[Call]]`; `[[Construct]]` ignores it).
     pub this: u64,

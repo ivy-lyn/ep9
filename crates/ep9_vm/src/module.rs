@@ -2055,7 +2055,7 @@ fn import_attributes(cx: &mut Cx, options: u64) -> Res<Vec<(String, String)>> {
     let rt = cx.rt();
     let entries = rt.heap.scratch_roots();
     entries.push(val(attributes));
-    let keys = property::own_property_keys(cx, attributes);
+    let keys = property::try_own_property_keys(cx, attributes)?;
     entries.push(val(keys));
     for i in 0..object::array_len(keys) {
         let Some(k) = object::array_get(keys, i) else {

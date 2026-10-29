@@ -1605,4 +1605,27 @@ impl<'s> Cx<'s> {
         let s = s.into().bits();
         Ok(Self::local(string::substring(self.rt(), s, from, to)))
     }
+
+    /// ProxyCreate(target, handler) (§10.5.14; part 2, M5-P3 PROXY2): a new Proxy exotic
+    /// object, callable if `target` is (and a constructor if `target` is); a TypeError if
+    /// either is not an object. For `new Proxy` and `Proxy.revocable`.
+    pub fn proxy_create(
+        &mut self,
+        target: impl Into<Local<'s>>,
+        handler: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let (t, h) = (target.into().bits(), handler.into().bits());
+        crate::proxy::proxy_create(self.cx, t, h).map(Self::local)
+    }
+
+    /// The revoke step of a revocable Proxy (§28.2.2.1.1 steps 3-5; part 2, M5-P3 PROXY2):
+    /// `p.[[ProxyTarget]]` and `p.[[ProxyHandler]]` become null, so every internal method of
+    /// `p` throws a TypeError from then on. A value that is not a Proxy, or a revoked one, is
+    /// left as it is. Never throws, never allocates.
+    pub fn proxy_revoke(&mut self, p: impl Into<Local<'s>>) {
+        let p = p.into().bits();
+        if crate::proxy::is_proxy(p) {
+            crate::proxy::revoke(self.rt(), p);
+        }
+    }
 }

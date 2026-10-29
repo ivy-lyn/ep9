@@ -1268,9 +1268,9 @@ pub(crate) fn object_to_string<'s>(
     // 3. O = ! ToObject(this value). GC point: `o` then lives in a Rust local.
     let o = cx.to_object(this)?.bits();
     // 4-14. builtinTag: a primitive and its wrapper have the same tag, from [[BooleanData]],
-    //    [[NumberData]] or [[StringData]].
+    //    [[NumberData]] or [[StringData]]. 4: ? IsArray(O), a revoked proxy throws (PROXY2).
     let data = local(wrapper::wrapper_value(o).unwrap_or(o));
-    let builtin_tag = if is_array(o) {
+    let builtin_tag = if crate::proxy::is_array(cx.inner(), o)? {
         "Array"
     } else if crate::kinds::cell_kind(o) == crate::kinds::ARGUMENTS.get() {
         // 5. O has a [[ParameterMap]] internal slot (every arguments object: §10.4.4.6 step 3

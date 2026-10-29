@@ -68,14 +68,14 @@ pub(crate) fn is_key(rt: &Runtime, key: u64, how: Probe, a: Atom) -> bool {
     }
 }
 
-/// True if the function `f` has a lazy `prototype` (`generator::lazy_prototype_kind`: a
-/// constructor, later also a generator function) that is still lazy (not in its storage),
-/// and `key` is `prototype`. Not a GC point.
+/// True if `key` is `prototype` and `f` still has a lazy one, not in its storage (a constructor
+/// but `%Proxy%`, or a generator function: `generator::lazy_prototype_kind`). Not a GC point.
 #[inline]
 pub(crate) fn is_lazy_prototype(rt: &Runtime, f: u64, key: u64, how: Probe) -> bool {
     generator::lazy_prototype_kind(object::function_info(f)).is_some()
         && is_key(rt, key, how, Atom::Prototype)
         && props::own_get_with(f, key, how).is_none()
+        && !is_proxy_constructor(rt, f)
 }
 
 /// The `prototype` object of the function `f`, created on first use
@@ -436,4 +436,16 @@ pub(crate) mod probe {
     pub(crate) fn take() -> Vec<&'static str> {
         HITS.with(|h| core::mem::take(&mut *h.borrow_mut()))
     }
+}
+
+/// True if `f` is `%Proxy%` of its own realm: the one constructor with no `prototype`
+/// (§28.2.2; M5-P3 PROXY2). It is a table builtin, so without this test its `prototype` would
+/// be lazy ([`is_lazy_prototype`]). Asked only when the rest of that test holds. Not a GC
+/// point.
+#[cold]
+#[inline(never)]
+fn is_proxy_constructor(rt: &Runtime, f: u64) -> bool {
+    let id = crate::builtins::IntrinsicId::Proxy;
+    object::function_info(f).host.is_some()
+        && crate::realm::intrinsic_in(rt, object::function_realm(f), id) == f
 }
