@@ -199,3 +199,28 @@ pin	H16-ics-and-feedback.md	crates/ep9_vm/src/facts_export.rs:86-100	crates/ep9_
 # drift map would read it from there.
 pin	H31-fuse-registry.md	crates/ep9_vm/src/exotic.rs:210	crates/ep9_vm/src/exotic.rs	^pub\(crate\) fn own_attrs\(rt\: \&Runtime\, o\: u64\, key\: u64\, how\: Probe\)	0
 history	H20-builtin-abi.md	crates/ep9_vm/src/abi/weakref.rs:227	M4-P4 P4-ORCH-8 (Codex C2-1 and C2-2 on fixer A	e1857f3	if let Err\(t\) = self\.poll_interrupt\(\) \{
+# M5-P2 integration fixer (ADRLINE at the M5-P2 merge head): tokens in dated record rows keep their numbers;
+# each pattern is the token's first line at the commit that added it (FIX or UNFIXABLE at HEAD).
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:1055	| 2 Codex (M4-P4 amendment: the 2026-10-27 ADRLINE clarify row)	e1857f3	inner\.empty_s1_logs\(\)\;
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:1055	| 4 Data (M4-P4 amendment: the 2026-10-27 fixer C clarify row, the heap.rs:1055 reference)	e1857f3	inner\.empty_s1_logs\(\)\;
+history	H11-barrier-and-atomics.md	`:966`	| 4 Data (M4-P4 amendment: the 2026-10-27 fixer C clarify row, the heap.rs:1055 reference)	e1857f3	inner\.clear_marks\(\)\;
+history	H17-object-layout.md	spikes/spike-c/src/build.rs:572	| 1 Reviewer (M5-P0 amendment: the 2026-10-28 rewrite (version) row, OBJECT_LAYOUT 4 -> 5)	b7f5d2a	self\.memo\.clear\(\)\;
+history	H17-object-layout.md	`:971`	| 1 Reviewer (M5-P0 amendment: the 2026-10-28 rewrite (version) row, OBJECT_LAYOUT 4 -> 5)	b7f5d2a	self\.memo\(4\, o\, policy\, \|s\| \{
+history	H17-object-layout.md	crates/ep9_vm/src/property.rs:1558-1588	| 3 Verifier (M5-P1 amendment: the 2026-10-29 fill row, elements rows as built, ELEM1)	886aa50	fn add_own_property\(cx\: \&mut Cx\, o\: u64\, key\: u64\, v\: u64\, attrs\: i32\)
+history	H17-object-layout.md	crates/ep9_vm/src/elements.rs:249-262	| 3 Verifier (M5-P1 amendment: the 2026-10-29 fill row, elements rows as built, ELEM1)	886aa50	pub\(crate\) fn plain_elements_kind\(k\: u8\) \-\> bool \{
+history	H17-object-layout.md	crates/ep9_vm/src/elements.rs:249-262	| 3 Verifier (M5-P1 addendum after the body-text fix: the ELEM1 elements rows)	886aa50	pub\(crate\) fn plain_elements_kind\(k\: u8\) \-\> bool \{
+history	H17-object-layout.md	crates/ep9_vm/src/elements.rs:249-262	| 1 Reviewer (M5-P1 amendment: the 2026-10-29 OM-10 rewrite row, fixer round 4 (refused in	886aa50	pub\(crate\) fn plain_elements_kind\(k\: u8\) \-\> bool \{
+history	H19-strings.md	crates/ep9_heap/src/heap.rs:1055	| 3 Verifier (M4-P4: the 2026-10-27 fixer A clarify row, R-H19-2, -4 and -5 (re-kinded rew	6640044	inner\.empty_s1_logs\(\)\;
+history	H19-strings.md	crates/ep9_heap/src/heap.rs:1219	| 4 Data (M4-P4: the 2026-10-27 ADRLINE clarify row (fixer A, part B fixer B))	b994355	pub fn add_weak_source\(\&self\, f\: impl FnMut\(\&mut WeakVisitor\<\'_\>\) \+ \'s
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/regexp.rs:117-120	| 3 Verifier (M4-P3 amendment: the 2026-10-27 fill (API addition) row, REGEXP1, part 2)	dd82391	pub fn is_builtin\(\&self\, f\: impl Into\<Local\<\'s\>\>\, id\: BuiltinId\) \-\> bo
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/regexp.rs:31-36	| 3 Verifier (M4-P3 amendment: the 2026-10-27 fill (API addition) row, REGEXP1, part 2)	dd82391	\#\[derive\(Clone\, Debug\, Default\, PartialEq\, Eq\)\]
+history	H20-builtin-abi.md	crates/ep9_builtins/src/regexp/exec.rs:360-361	| 3 Verifier (M4-P3 amendment: the 2026-10-27 fill (API addition) row, REGEXP1, part 2)	dd82391	pub\(crate\) fn is_builtin_exec\<\'s\>\(cx\: \&Cx\<\'s\>\, f\: Local\<\'s\>\) \-\> bool \{
+history	H20-builtin-abi.md	`:376`	| 3 Verifier (M4-P3 amendment: the 2026-10-27 fill (API addition) row, REGEXP1, part 2)	dd82391	if is_builtin_exec\(cx\, exec\) \&\& is_regexp_object\(cx\, r\) \{
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:1545-1547	| 3 Verifier (M5-P1 amendment: the 2026-10-28 part-2 fill row (API addition), Cx::collect_	886aa50	pub fn collect_garbage_minor\(\&mut self\) \{
+history	H28-platform-layer.md	.github/workflows/ci.yml:861-862	| 2 Codex (M5-P0 amendment: the 2026-10-28 ci.yml cite clarify row)	036a0ef	\- name\: regress sync
+history	H29-deopt-contract.md	spikes/spike-c/src/tier.rs:275-278	| 2 Codex (M5-P1 amendment: the 2026-10-29 fill row, the SPIKEC-5 deopt core as built)	886aa50	let want \= t0s\.run\(js\, \"probe\.js\"\)\;
+history	H31-fuse-registry.md	crates/ep9_vm/src/fuse.rs:410-418	| 2 Codex (M5-P1 amendment: the 2026-10-28 rewrite row, fuse registry v0, FR0)	886aa50	self\.armed\.set\(self\.armed\.get\(\) \+ 1\)\;
+history	H31-fuse-registry.md	crates/ep9_vm/src/fuse.rs:453-465	| 2 Codex (M5-P1 amendment: the 2026-10-28 rewrite row, fuse registry v0, FR0)	886aa50	^    \}$
+history	H31-fuse-registry.md	crates/ep9_vm/src/fuse.rs:279	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, fuse registry v0, FR0)	886aa50	fn armed_with\(\&self\, rt\: \&Runtime\, subject\: u64\) \-\> bool \{
+history	H31-fuse-registry.md	`:441-447`	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, fuse registry v0, FR0)	886aa50	FuseRef\:\:Dynamic\(d\) \=\> \{
+history	H31-fuse-registry.md	crates/ep9_vm/src/shape.rs:1292	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, fuse registry v0, FR0)	886aa50	crate\:\:fuse\:\:on_proto_change\(rt\, o\)\;
