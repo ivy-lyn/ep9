@@ -26,7 +26,7 @@
 //! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, the reported tree ids equal HEAD's, and its ids of `third_party/regress.commit` and `third_party/patches/regress` (the regress fork) equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
 //! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
-//! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
+//! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
@@ -1744,9 +1744,17 @@ fn gc_cell(c: &Ctx, label: &str, j: &Json) -> Cell {
     let (fp, ft) = count(j, &["files"]).unwrap_or((0, 0));
     let mut status = Status::Pass;
     let mut why = Vec::new();
-    if gc <= 0.0 {
-        status = Status::Fail;
-        why.push("not a GC-stress run".to_string());
+    // A GC before every allocation (GC_CMD, ci.yml): a larger n may run no stress GC at all
+    // (the heap skips the budget under stress), so no minor GC, whatever the major cadence.
+    match j.get("gc_stress").and_then(Json::num) {
+        Some(1.0) => {}
+        g => {
+            status = Status::Fail;
+            why.push(format!(
+                "gc_stress {}, not 1 (--gc-stress 1)",
+                g.map_or("missing".to_string(), |g| g.to_string())
+            ));
+        }
     }
     match j.get("timeout_ms").and_then(Json::num) {
         Some(t) if t <= GC_TIMEOUT_MS => {}
@@ -4550,6 +4558,23 @@ mod tests {
                 ),
                 Status::Pass,
                 "S1 on, verify cadence 1, major GC every 8,",
+            ),
+            // A stress cadence above 1 may run no stress GC at all (gc_trigger skips the
+            // budget), so no minor GC: only `--gc-stress 1` is item 4 evidence.
+            (
+                gc_json(&[], S1, &src).replace(r#""gc_stress":1,"#, r#""gc_stress":4294967295,"#),
+                Status::Fail,
+                "gc_stress 4294967295, not 1",
+            ),
+            (
+                gc_json(&[], S1, &src).replace(r#""gc_stress":1,"#, r#""gc_stress":2,"#),
+                Status::Fail,
+                "gc_stress 2, not 1",
+            ),
+            (
+                gc_json(&[], S1, &src).replace(r#""gc_stress":1,"#, ""),
+                Status::Fail,
+                "gc_stress missing, not 1",
             ),
             (
                 gc_json(&["test/language/l05.js"], S1, &src),
