@@ -649,7 +649,7 @@ fn array_site(rt: &Runtime, v: u64, i: u32, result: u64) {
         object::wr(&rt.heap, c, ah::ELEMENTS_KIND, int32_bits(i32::from(want)));
     }
     let s = shape::shape_of(result);
-    if is_array_shape(rt, s) {
+    if is_birth_shape(rt, s) {
         object::wr(&rt.heap, c, ah::RESULT, s);
     }
     object::wr(&rt.heap, c, ah::COUNT, bump(rd(c, ah::COUNT)));
@@ -659,8 +659,8 @@ fn array_site(rt: &Runtime, v: u64, i: u32, result: u64) {
 /// A store-side kind transition of the array `a` (to kind `to`, below DICTIONARY) whose ARRAY
 /// +32 holds the ALLOC_SITE handler `h` (`elements::transition`): the site kind becomes the
 /// join of its kind and `to`, and the handler's result shape becomes `a`'s new shape if that
-/// is a fresh array shape of kind `to`, so the site's next arrays are born in that kind.
-/// One-way. Not a GC point.
+/// is a birth shape of kind `to` ([`is_birth_shape`]), so the site's next arrays are born in
+/// that kind. One-way. Not a GC point.
 pub(crate) fn generalize(rt: &Runtime, h: u64, a: u64, to: u8) {
     debug_assert!(to < elements::kind::DICTIONARY);
     let c = cell(h);
@@ -671,7 +671,7 @@ pub(crate) fn generalize(rt: &Runtime, h: u64, a: u64, to: u8) {
         object::wr(&rt.heap, c, ah::ELEMENTS_KIND, int32_bits(i32::from(want)));
     }
     let s = shape::shape_of(a);
-    if shape::elements_kind(s) == want && is_array_shape(rt, s) {
+    if shape::elements_kind(s) == want && is_birth_shape(rt, s) {
         object::wr(&rt.heap, c, ah::RESULT, s);
     }
 }
@@ -960,4 +960,13 @@ fn clonable(ss: u64, rs: u64) -> bool {
 #[cfg(test)]
 pub(crate) fn handler_i32(h: u64, off: usize) -> i32 {
     object::rd_i32(cell(h), off)
+}
+
+/// True if `shape` may be a site's result shape, the birth shape of its next arrays
+/// (the two ALLOC_SITE RESULT writers, [`array_site`] and [`generalize`]): an
+/// [`is_array_shape`] that is extensible and not a dictionary shape. A store-side kind
+/// transition keeps the flags of the array's shape (after `Object.preventExtensions`, say),
+/// and a fresh literal must not take them (Codex M5-P2 r1 elem2 1). Not a GC point.
+fn is_birth_shape(rt: &Runtime, shape: u64) -> bool {
+    is_array_shape(rt, shape) && shape::is_extensible(shape) && !shape::is_dictionary(shape)
 }
