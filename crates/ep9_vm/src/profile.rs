@@ -420,7 +420,7 @@ impl Pair {
 /// Runs the comparison record `p`: [`record_compare`].
 #[inline(always)]
 pub(crate) fn record_pair(st: &St<'_>, p: Pair) {
-    record_compare(st, p.s, p.l, p.r);
+    compare_record(st, p.s, p.l, p.r);
 }
 
 /// Runs the record `r` (a load and a test; a store only when a bit is new, V9-D6).
@@ -574,7 +574,7 @@ pub(crate) fn record_binary_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r
     } else {
         binary_operand(l) | binary_operand(r)
     };
-    add_bits(st, s, bits);
+    add_bits_cold(st, s, bits);
 }
 
 /// The bits a unary operator or a numeric conversion (BinaryOp slot) records for the operand
@@ -591,7 +591,7 @@ pub(crate) fn unary_bits(v: u64) -> u32 {
 pub(crate) fn record_unary(st: &mut St<'_>, s: FSlot, v: u64) {
     let bits = unary_bits(v);
     if bits != 0 {
-        add_bits(st, s, bits);
+        add_bits_cold(st, s, bits);
     }
 }
 
@@ -659,7 +659,7 @@ pub(crate) fn compare_bits(l: u64, r: u64) -> u32 {
 pub(crate) fn record_compare(st: &St<'_>, s: FSlot, l: u64, r: u64) {
     let bits = compare_bits(l, r);
     if bits != 0 {
-        add_bits(st, s, bits);
+        add_bits_cold(st, s, bits);
     }
 }
 
@@ -700,7 +700,7 @@ fn type_of(v: u64) -> u32 {
 /// `typeof` (TypeOf slot): the operand's `TypeSet` bit.
 #[inline(always)]
 pub(crate) fn record_typeof(st: &mut St<'_>, s: FSlot, v: u64) {
-    add_bits(st, s, type_of(v));
+    add_bits_cold(st, s, type_of(v));
 }
 
 // ---- Call ----------------------------------------------------------------------------------
@@ -735,7 +735,7 @@ pub(crate) fn record_call(st: &mut St<'_>, s: FSlot, callee: u64) {
     if st.cx.budget > BUDGET {
         return;
     }
-    if let Some(v) = vector_of(st) {
+    if let Some(v) = rec_vector(st) {
         record_call_in(st.rt(), v, s, callee);
     }
 }
@@ -893,7 +893,7 @@ pub(crate) fn keyed_hit_kind(st: &St<'_>, o: u64) -> u32 {
 /// kind before the operation, which may make a transition).
 #[inline(always)]
 pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
-    let Some(v) = vector_of(st) else { return };
+    let Some(v) = rec_vector(st) else { return };
     let (key, index) = keyed_key(k);
     let mut bits = key | keyed_receiver(o);
     if let Some(i) = index
@@ -920,7 +920,7 @@ pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
 #[inline(always)]
 pub(crate) fn record_jump_loop(st: &mut St<'_>, s: FSlot) {
     if st.cx.budget <= 1
-        && let Some(v) = vector_of(st)
+        && let Some(v) = rec_vector(st)
     {
         count_int32(v, s.0, i32::MAX as u32);
     }
@@ -933,7 +933,7 @@ pub(crate) fn record_closure(st: &mut St<'_>, s: FSlot, closure: u64) {
     if closure == 0 {
         return;
     }
-    if let Some(v) = vector_of(st) {
+    if let Some(v) = rec_vector(st) {
         count_int32(v, s.0, CLOSURE_MANY);
     }
 }
@@ -948,7 +948,7 @@ pub(crate) fn for_in_bits(_keys: u64) -> u32 {
 /// `ForInPrepare` on its cold path (the accumulator is not a key array): [`for_in_bits`].
 #[inline(always)]
 pub(crate) fn record_for_in(st: &mut St<'_>, s: FSlot, keys: u64) {
-    add_bits(st, s, for_in_bits(keys));
+    add_bits_cold(st, s, for_in_bits(keys));
 }
 
 /// `ForInNext` (ForIn slot): `receiver` is the object being enumerated. The key half keeps
@@ -959,7 +959,7 @@ pub(crate) fn record_for_in_next(st: &mut St<'_>, s: FSlot, receiver: u64) {
     if !kinds::is_object(receiver) {
         return;
     }
-    let Some(v) = vector_of(st) else { return };
+    let Some(v) = rec_vector(st) else { return };
     let k = key(v, s.0);
     if k == HOLE {
         return;
@@ -967,5 +967,61 @@ pub(crate) fn record_for_in_next(st: &mut St<'_>, s: FSlot, receiver: u64) {
     let shape = shape::shape_of(receiver);
     if k != shape {
         put_key(st.rt(), v, s.0, if k == UNDEFINED { shape } else { HOLE });
+    }
+}
+
+// ---- type feedback `ics_only` (MODES-D11, MODES-D19; M5-P3 PROFILE6) -------------------------
+//
+// An isolate whose feedback mode (`ExecOptions`) is `ics_only`, the jitless preset's default,
+// runs no record of this module. Its ICs and every object-model input (allocation sites, clone
+// handlers, slack, field representation, elements kinds) are written as under `full`. How each
+// record point is dropped, and what that costs a `full` isolate:
+//
+// | Record point | `ics_only` | Cost under `full` |
+// |---|---|---|
+// | `Flow::Record`, `RecordPair`, `JumpRecordCall` of a fast body, sibling or `become` | the expansion's second handler table (`interp::Dispatch::table`): its fast handlers continue with no record (`interp::dsl::record_exit`), so they hold no record code | none (one table per `Cx`) |
+// | the same flows in the match loop and the prefixed step | dropped by `interp::dsl::settle` after a read of [`records`] | one read per loop entry, one per prefixed record |
+// | the hooks of the cold bodies ([`record_binary_cold`], [`record_unary`], [`record_compare`], [`record_typeof`], [`record_call`], [`record_keyed_cold`], [`record_closure`], [`record_for_in`], [`record_for_in_next`]) and [`record_jump_loop`] (a back edge that polls) | [`rec_vector`] gives no vector, [`add_bits_cold`] adds nothing | one read of the mode on a path that already went cold (or polls) |
+//
+// The cold handlers are one copy that both tables share: `interp/ops.rs` calls these hooks
+// inside the cold bodies, and a hook cannot see which table runs it, so it reads the mode.
+
+/// True if the isolate of `cx` runs the record hooks of this module: its feedback mode is not
+/// `ics_only` (MODES-D11). `Isolate::new_with` sets the mode once, before any JS runs, and picks
+/// the handler table by it (`interp::Dispatch::table`). Two dependent loads (the `Runtime`
+/// pointer, the mode byte); the callers are cold paths, polls and the entry of the match loop.
+#[inline(always)]
+pub(crate) fn records(cx: &crate::interp::Cx) -> bool {
+    cx.rt().exec.get().feedback_mode() != crate::exec::Feedback::ICS_ONLY
+}
+
+/// [`vector_of`] for a hook that a cold body (or a polling back edge) runs: none when the
+/// isolate does not record ([`records`]), so the hook writes nothing. The records of the fast
+/// bodies (`interp::Flow`) need no test: only a `full` table, or a loop or step that read
+/// [`records`], runs them.
+#[inline(always)]
+fn rec_vector(st: &St<'_>) -> Option<u64> {
+    if !records(st.cx) {
+        return None;
+    }
+    vector_of(st)
+}
+
+/// [`add_bits`] for a hook of a cold body: nothing when the isolate does not record
+/// ([`records`]).
+#[inline(always)]
+fn add_bits_cold(st: &St<'_>, s: FSlot, bits: u32) {
+    if records(st.cx) {
+        add_bits(st, s, bits);
+    }
+}
+
+/// The record of [`record_compare`] with no mode test: the record of a `Flow::RecordPair`
+/// ([`record_pair`]), which only a `full` table, or a loop or step that read [`records`], runs.
+#[inline(always)]
+fn compare_record(st: &St<'_>, s: FSlot, l: u64, r: u64) {
+    let bits = compare_bits(l, r);
+    if bits != 0 {
+        add_bits(st, s, bits);
     }
 }

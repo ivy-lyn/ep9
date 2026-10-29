@@ -267,7 +267,7 @@ impl Isolate {
     /// [`Isolate::new`] with the execution options `exec` (C-23): the preset and the
     /// type-feedback mode. A preset this build cannot run is
     /// [`IsolateError::Config`], never a silent downgrade (M-R6): the jit preset needs the
-    /// `jit` feature. The feedback mode is stored; it takes effect in M5-P3.
+    /// `jit` feature. The feedback mode picks the T0 handler table (MODES-D11, MODES-D19).
     ///
     /// ```
     /// use ep9_vm::{ExecOptions, Feedback, Isolate, IsolateConfig};
@@ -306,7 +306,7 @@ impl Isolate {
         rt.exec.set(exec);
         realm::init(&rt);
         let mut cx = Box::new(Cx {
-            table: *config.dispatch.table(),
+            table: *config.dispatch.table(exec.feedback_mode()),
             rt: &*rt,
             stack_limit: rt.stack().end(),
             budget: BUDGET,

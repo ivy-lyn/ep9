@@ -320,9 +320,15 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 /// (the record's bits, the slot operand's offset and the instruction length,
 /// [`slot_place`]), so the handler holds no value for the record: `record_next` reads the slot
 /// operand again and finds the next pc. (c) (`become` needs the same signature): records
-/// inline and continues at the next pc.
+/// inline and continues at the next pc. The `ics_only` expansions (MODES-D11, MODES-D19; M5-P3
+/// PROFILE6) drop the record and continue at the next pc: their fast handlers have no record
+/// code, so the record's bits are dead code there.
 macro_rules! record_exit {
-    (return, $name:ident, $st:ident, $r:ident) => {{
+    ($tail:tt, ics_only, $name:ident, $st:ident, $r:ident) => {{
+        let _ = $r;
+        $st.next
+    }};
+    (return, full, $name:ident, $st:ident, $r:ident) => {{
         let St {
             cx, pc, fp, acc, ..
         } = $st;
@@ -331,7 +337,7 @@ macro_rules! record_exit {
         // `fp`; `slot_place` gives its slot operand and its length.
         unsafe { return $crate::interp::dsl::record_next(cx, pc, fp, acc, w) }
     }};
-    (become, $name:ident, $st:ident, $r:ident) => {{
+    (become, full, $name:ident, $st:ident, $r:ident) => {{
         $crate::profile::record(&$st, $r);
         $st.next
     }};
@@ -340,9 +346,13 @@ pub(crate) use record_exit;
 
 /// The `Flow::RecordPair` arm of a threaded fast handler: as [`record_exit`], with the operand
 /// pair as the last two arguments of [`record_pair_next`] and the slot place as its const
-/// parameter.
+/// parameter. `ics_only`: no record, the next pc.
 macro_rules! record_pair_exit {
-    (return, $name:ident, $st:ident, $p:ident) => {{
+    ($tail:tt, ics_only, $name:ident, $st:ident, $p:ident) => {{
+        let _ = $p;
+        $st.next
+    }};
+    (return, full, $name:ident, $st:ident, $p:ident) => {{
         let St {
             cx, pc, fp, acc, ..
         } = $st;
@@ -354,7 +364,7 @@ macro_rules! record_pair_exit {
             >(cx, pc, fp, acc, l, r);
         }
     }};
-    (become, $name:ident, $st:ident, $p:ident) => {{
+    (become, full, $name:ident, $st:ident, $p:ident) => {{
         $crate::profile::record_pair(&$st, $p);
         $st.next
     }};
@@ -364,9 +374,13 @@ pub(crate) use record_pair_exit;
 /// The `Flow::JumpRecordCall` arm of a threaded fast handler: (b) tail-calls
 /// [`record_call_next`] with the callee's state (the handler signature: the target pc, the new
 /// frame) and the slot place of the caller's instruction as its const parameter; (c) records
-/// inline and jumps.
+/// inline and jumps. `ics_only`: no record, the jump to the callee.
 macro_rules! record_call_exit {
-    (return, $name:ident, $st:ident, $t:ident, $s:ident) => {{
+    ($tail:tt, ics_only, $name:ident, $st:ident, $t:ident, $s:ident) => {{
+        let _ = $s;
+        $t
+    }};
+    (return, full, $name:ident, $st:ident, $t:ident, $s:ident) => {{
         let St { cx, fp, acc, .. } = $st;
         // SAFETY: `fp` is the frame `call_fast` pushed and `$t` its first pc (or a VM stub);
         // its return pc is the next instruction of the caller.
@@ -376,7 +390,7 @@ macro_rules! record_call_exit {
             >(cx, $t, fp, acc);
         }
     }};
-    (become, $name:ident, $st:ident, $t:ident, $s:ident) => {{
+    (become, full, $name:ident, $st:ident, $t:ident, $s:ident) => {{
         $crate::profile::record_call_pushed(&$st, $s);
         $t
     }};
@@ -568,11 +582,85 @@ record_next_fn! {
     "Rust" => not(target_arch = "x86_64");
 }
 
+/// The cold handler of opcode `$name` in an [`expand_threaded`] expansion. `full`: the cold
+/// body (`ops::<Name>::cold`), then the dispatch. `ics_only`: a tail jump to the cold handler
+/// of the `full` table of the same `$tail` (`interp::sibling` or `interp::tail`): the cold
+/// bodies are the same code in both modes (their record hooks test the mode,
+/// `profile::records`), so the `ics_only` table adds no copy of them.
+macro_rules! cold_handler {
+    ([$tail:tt, $exp:literal, full] $name:ident ($($oname:ident : $okind:ident),*)) => {
+        $crate::interp::dsl::handler! {
+            /// Cold path of the opcode with the same name.
+            ///
+            /// # Safety
+            /// As for the fast handler, which is the only caller.
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__", stringify!($name), "_cold"))]
+            #[cold]
+            #[inline(never)]
+            #[allow(non_snake_case, unused_mut, unused_variables, unused_unsafe)]
+            pub(crate) fn $name(cx, pc, fp, acc) {
+                // SAFETY: as in the fast handler.
+                let (len, ($($oname,)*)) = unsafe {
+                    $crate::interp::dsl::decode!($crate::interp::dsl::S1, pc; $($oname: $okind),*)
+                };
+                // SAFETY: as in the fast handler.
+                let mut st = unsafe { St::new(cx, pc, fp, acc, pc.add(len)) };
+                let next = match $crate::interp::ops::$name::cold(&mut st, $($oname),*) {
+                    Done::Next => st.next,
+                    Done::Jump(t) => t,
+                };
+                let St { cx, fp, acc, .. } = st;
+                // SAFETY: as in the fast handler.
+                let h = cx.table[unsafe { *next } as usize];
+                // SAFETY: as in the fast handler.
+                unsafe { $tail h(cx, next, fp, acc) }
+            }
+        }
+    };
+    ([return, $exp:literal, ics_only] $name:ident ($($oname:ident : $okind:ident),*)) => {
+        $crate::interp::dsl::cold_handler!(@forward [return, $exp] $name, $crate::interp::sibling::cold::$name);
+    };
+    ([become, $exp:literal, ics_only] $name:ident ($($oname:ident : $okind:ident),*)) => {
+        $crate::interp::dsl::cold_handler!(@forward [become, $exp] $name, $crate::interp::tail::cold::$name);
+    };
+    (@forward [$tail:tt, $exp:literal] $name:ident, $full:path) => {
+        $crate::interp::dsl::handler! {
+            /// Cold path of the opcode with the same name: the cold handler of the `full`
+            /// table (the same state; it dispatches through `cx.table`, so it continues in
+            /// this table).
+            ///
+            /// # Safety
+            /// As for the fast handler, which is the only caller.
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__", stringify!($name), "_cold"))]
+            #[cold]
+            #[inline(never)]
+            #[allow(non_snake_case)]
+            pub(crate) fn $name(cx, pc, fp, acc) {
+                // SAFETY: the same handler contract.
+                unsafe { $tail $full(cx, pc, fp, acc) }
+            }
+        }
+    };
+}
+pub(crate) use cold_handler;
+
 /// One handler per opcode, one cold handler per cold block, the `Exit`, `BadOpcode` and
 /// `ConstructReturn` handlers, and the dispatch `TABLE`. `$tail` is `return` (sibling call,
 /// checked by `cargo xtask disasm-check`) or `become` (guaranteed, nightly).
+///
+/// `$mode` is the type-feedback mode of the table (MODES-D11; M5-P3 PROFILE6):
+///
+/// | `$mode` | Fast handlers | Cold handlers |
+/// |---|---|---|
+/// | `full` | `Flow::Record`, `RecordPair`, `JumpRecordCall` run the profile record ([`record_exit`]) | the cold bodies ([`cold_handler`]) |
+/// | `ics_only` | the same arms continue with no record: no `profile.rs` record code in a fast handler | one tail jump to the cold handler of the `full` table of the same `$tail` ([`cold_handler`]) |
+///
+/// The record hooks of the cold bodies are `ops.rs` code that both tables share, so they test
+/// the isolate's mode themselves (`profile::records`, on the cold path only). Every expansion
+/// has the same handler count (`ep9_vm::internals::THREADED_HANDLERS`, the
+/// `cargo xtask disasm-check --expect` value).
 macro_rules! expand_threaded {
-    ( [$tail:tt, $exp:literal]
+    ( [$tail:tt, $exp:literal, $mode:ident]
       $( $(#[$doc:meta])* $name:ident = $code:literal, $snake:ident, acc: $acc:ident,
          flags: [$($flag:ident),*],
          operands: ($($oname:ident : $okind:ident $(($oparam:tt))?),*); )*
@@ -604,10 +692,12 @@ macro_rules! expand_threaded {
                             // SAFETY: the cold handler takes the same state as this one.
                             unsafe { $tail cold::$name(cx, pc, fp, acc) }
                         }
-                        Flow::Record(r) => $crate::interp::dsl::record_exit!($tail, $name, st, r),
-                        Flow::RecordPair(p) => $crate::interp::dsl::record_pair_exit!($tail, $name, st, p),
+                        Flow::Record(r) => $crate::interp::dsl::record_exit!($tail, $mode, $name, st, r),
+                        Flow::RecordPair(p) => {
+                            $crate::interp::dsl::record_pair_exit!($tail, $mode, $name, st, p)
+                        }
                         Flow::JumpRecordCall(t, s) => {
-                            $crate::interp::dsl::record_call_exit!($tail, $name, st, t, s)
+                            $crate::interp::dsl::record_call_exit!($tail, $mode, $name, st, t, s)
                         }
                     }
                 } else {
@@ -629,33 +719,11 @@ macro_rules! expand_threaded {
             #[allow(unused_imports)]
             use super::*;
             $(
-                $crate::interp::ops::if_cold!($name { $crate::interp::dsl::handler! {
-                    /// Cold path of the opcode with the same name.
-                    ///
-                    /// # Safety
-                    /// As for the fast handler, which is the only caller.
-                    #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__", stringify!($name), "_cold"))]
-                    #[cold]
-                    #[inline(never)]
-                    #[allow(non_snake_case, unused_mut, unused_variables, unused_unsafe)]
-                    pub(crate) fn $name(cx, pc, fp, acc) {
-                        // SAFETY: as in the fast handler.
-                        let (len, ($($oname,)*)) = unsafe {
-                            $crate::interp::dsl::decode!($crate::interp::dsl::S1, pc; $($oname: $okind),*)
-                        };
-                        // SAFETY: as in the fast handler.
-                        let mut st = unsafe { St::new(cx, pc, fp, acc, pc.add(len)) };
-                        let next = match $crate::interp::ops::$name::cold(&mut st, $($oname),*) {
-                            Done::Next => st.next,
-                            Done::Jump(t) => t,
-                        };
-                        let St { cx, fp, acc, .. } = st;
-                        // SAFETY: as in the fast handler.
-                        let h = cx.table[unsafe { *next } as usize];
-                        // SAFETY: as in the fast handler.
-                        unsafe { $tail h(cx, next, fp, acc) }
-                    }
-                } } else {});
+                $crate::interp::ops::if_cold!($name {
+                    $crate::interp::dsl::cold_handler!(
+                        [$tail, $exp, $mode] $name ($($oname: $okind),*)
+                    );
+                } else {});
             )*
         }
 
@@ -761,6 +829,29 @@ macro_rules! expand_threaded {
 }
 pub(crate) use expand_threaded;
 
+/// A fast body's flow after its record, for the expansions that record inline (the match
+/// loop (a) and the prefixed step): `records` (the isolate's feedback mode is `full`,
+/// `profile::records`) runs the record (`Flow::recorded`); else (`ics_only`, MODES-D11) the
+/// record is dropped: `Record` and `RecordPair` give `Next`, `JumpRecordCall` gives its `Jump`.
+/// Other flows pass through. Out of line in debug builds, as `Flow::recorded`.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+pub(crate) fn settle(
+    f: crate::interp::Flow,
+    st: &crate::interp::St<'_>,
+    records: bool,
+) -> crate::interp::Flow {
+    use crate::interp::Flow;
+    if records {
+        return f.recorded(st);
+    }
+    match f {
+        Flow::Record(_) | Flow::RecordPair(_) => Flow::Next,
+        Flow::JumpRecordCall(t, _) => Flow::Jump(t),
+        f => f,
+    }
+}
+
 // ---- (a) the match loop --------------------------------------------------------------------
 
 /// One `loop { match }` function. Cold blocks run in out-of-line functions (`cold::*`), so
@@ -788,6 +879,9 @@ macro_rules! expand_match {
             let mut pc = pc;
             let mut fp = fp;
             let mut acc = acc;
+            // The type-feedback mode (MODES-D11): one read per entry; the isolate's mode never
+            // changes. The `ics_only` loop drops the records of the fast bodies (`settle`).
+            let records = $crate::profile::records(cx);
             loop {
                 // SAFETY: `pc` is an instruction start of verified code or a VM stub.
                 let op = unsafe { *pc };
@@ -801,7 +895,7 @@ macro_rules! expand_match {
                         let mut st = unsafe { St::new(&mut *cx, pc, fp, acc, pc.add(len)) };
                         $crate::interp::ops::if_cold!($name {
                             let flow = $crate::interp::ops::$name::fast(&mut st, $($oname),*);
-                            match flow.recorded(&st) {
+                            match $crate::interp::dsl::settle(flow, &st, records) {
                                 Flow::Next => {
                                     pc = st.next;
                                     fp = st.fp;
@@ -812,7 +906,7 @@ macro_rules! expand_match {
                                     fp = st.fp;
                                     acc = st.acc;
                                 }
-                                // `recorded` (above) turned these into `Next`.
+                                // `settle` (above) turned these into `Next` or `Jump`.
                                 Flow::Record(_) | Flow::RecordPair(_) | Flow::JumpRecordCall(..) => {
                                     unreachable!()
                                 }
@@ -923,11 +1017,14 @@ macro_rules! expand_scaled {
                             Flow::Next => Done::Next,
                             Flow::Jump(t) => Done::Jump(t),
                             // Out of line in debug builds, as in the match loop: inline, the
-                            // record locals of every arm made this frame ~3x bigger.
+                            // record locals of every arm made this frame ~3x bigger. The
+                            // isolate's feedback mode is read here, on this rare path (prefixed
+                            // instructions), so every table shares this step.
                             f @ (Flow::Record(_)
                             | Flow::RecordPair(_)
                             | Flow::JumpRecordCall(..)) => {
-                                match f.recorded(&st) {
+                                let records = $crate::profile::records(st.cx);
+                                match $crate::interp::dsl::settle(f, &st, records) {
                                     Flow::Jump(t) => Done::Jump(t),
                                     _ => Done::Next,
                                 }
