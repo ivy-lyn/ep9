@@ -5,7 +5,9 @@
 //! files under `language/arguments-object`.
 
 use ep9_bytecode::{FunctionCode, VerifiedUnit};
-use ep9_bytecode::{FunctionFlags, FunctionId, Register, ScopeId, ScopeKind, VariableMode};
+use ep9_bytecode::{
+    FunctionFlags, FunctionId, Register, RegisterList, ScopeId, ScopeKind, VariableMode,
+};
 
 use super::{Asm, config, isolate, meta, ok, on_big_stack, run_all, unit_with_scopes};
 use crate::builtins::{self, BuiltinId};
@@ -389,4 +391,301 @@ fn the_builtin_tag_of_an_arguments_object_is_arguments() {
         with_a(mapped_a, stress, check);
         with_a(unmapped_a, stress, check);
     }
+}
+
+// ---- the ARGS fast path (V10-D11, M5-P2 VMIC) ------------------------------------------------
+
+/// A unit whose script calls `f` (function 1) four times and stores each result in a global:
+/// `B = f(1, 2, 3)` (the realm's first object of its kind: the spec path, which caches the
+/// shape), then `A = f(1, 2, 3)`, `C = f(1, 2)` and `D = f()` (the fast path).
+fn call_f_four_times(f: FunctionCode) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0).star(s.f);
+    let args = s.a;
+    let two = s.b.new_register_list(2);
+    for i in 0..3 {
+        s.b.lda_smi(i as i32 + 1).star(args.get(i));
+        if i < 2 {
+            s.b.star(two.get(i));
+        }
+    }
+    for (list, name) in [
+        (args, "B"),
+        (args, "A"),
+        (two, "C"),
+        (RegisterList::EMPTY, "D"),
+    ] {
+        s.b.call_undefined_receiver(s.f, list, list.len(), s.call);
+        s.sta_global(name);
+    }
+    s.b.return_();
+    unit_with_scopes(
+        "",
+        vec![(
+            ScopeKind::Function,
+            None,
+            vec![("a", VariableMode::Var), ("b", VariableMode::Var)],
+        )],
+        vec![s.finish(), f],
+    )
+}
+
+/// The mapped form of [`call_f_four_times`]: `function f(a, b) { return arguments; }`.
+fn mapped_four() -> VerifiedUnit {
+    call_f_four_times(mapped_f(vec![Some(0), Some(1)], |_, _| {}))
+}
+
+/// The unmapped form of [`call_f_four_times`]: a strict `function g(a) { return arguments; }`.
+fn unmapped_four() -> VerifiedUnit {
+    let mut m = meta("g", 1, 0, 0, 0);
+    m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
+    let mut g = Asm::new(m);
+    let args = g.b.new_register();
+    g.b.create_unmapped_arguments().star(args);
+    g.b.ldar(args).return_();
+    call_f_four_times(g.finish())
+}
+
+/// Runs `make` in a new isolate (GC stress `stress`) and calls `check` with the globals `B`,
+/// `A`, `C` and `D`, each kept by a global handle meanwhile.
+fn with_four(make: fn() -> VerifiedUnit, stress: bool, check: fn(&mut Cx, [u64; 4])) {
+    on_big_stack(move || {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        iso.with_cx_checkpoint(|cx| cx.run_script(make(), "test.js").map(|_| ()))
+            .unwrap();
+        let v = ["B", "A", "C", "D"].map(|n| iso.global_raw(n).expect(n).to_bits());
+        let hs = v.map(|a| iso.rt.heap.new_global(crate::runtime::val(a)));
+        check(&mut iso.cx, v);
+        for h in hs {
+            iso.rt.heap.drop_global(h);
+        }
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    });
+}
+
+/// The REALM record field that caches the arguments shape for `mapped`.
+fn cached(rt: &Runtime, mapped: bool) -> u64 {
+    let realm = rt.root(crate::runtime::Root::Realm);
+    let f = if mapped {
+        object::realmf::MAPPED_ARGUMENTS_SHAPE
+    } else {
+        object::realmf::UNMAPPED_ARGUMENTS_SHAPE
+    };
+    object::record_get(realm, f)
+}
+
+/// Every own property of `a` as (key text, descriptor), in key order.
+fn props_of(cx: &mut Cx, a: u64) -> Vec<(String, Desc)> {
+    let ks = property::own_property_keys(cx, a);
+    let names = keys(cx, a);
+    let mut out = Vec::new();
+    for (j, name) in names.into_iter().enumerate() {
+        let k = object::array_get(ks, j as u32).unwrap();
+        let d = property::get_own_property(cx, a, k).unwrap().unwrap();
+        out.push((name, d));
+    }
+    out
+}
+
+/// V10-D11: the realm's first arguments object of a kind (made the spec way) leaves its
+/// shape in the REALM record; every later one (the fast path) has that shape and the same
+/// own properties with the same attributes and values: 3, 2 and 0 arguments (no elements
+/// list), mapped and unmapped, with and without GC stress.
+#[test]
+fn the_fast_path_makes_the_spec_object() {
+    fn check(cx: &mut Cx, [b, a, c, d]: [u64; 4], mapped: bool) {
+        let s = crate::shape::shape_of(b);
+        assert_eq!(
+            cached(cx.rt(), mapped),
+            s,
+            "the first object's shape is cached"
+        );
+        assert_eq!(
+            cached(cx.rt(), !mapped),
+            UNDEFINED,
+            "the other kind is not made"
+        );
+        for o in [a, c, d] {
+            assert_eq!(kinds::cell_kind(o), kinds::ARGUMENTS.get());
+            assert_eq!(
+                crate::shape::shape_of(o),
+                s,
+                "the fast path takes the cached shape"
+            );
+            assert_eq!(object::proto_of(o), object::proto_of(b));
+        }
+        // A (fast) and B (spec) have equal properties; the unmapped `callee` accessor pairs
+        // are two cells with the same halves.
+        assert_eq!(props_of(cx, a), props_of(cx, b));
+        assert_eq!(
+            keys(cx, c),
+            ["0", "1", "length", "callee", "@@iterator"],
+            "f(1, 2)"
+        );
+        assert_eq!(keys(cx, d), ["length", "callee", "@@iterator"], "f()");
+        let length = cx.rt().atom(Atom::Length);
+        for (o, n) in [(a, 3), (c, 2), (d, 0)] {
+            assert_eq!(property::get(cx, o, length).unwrap(), int32_bits(n));
+            for i in 0..n as u32 {
+                assert_eq!(get(cx, o, i), int32_bits(i as i32 + 1));
+            }
+        }
+        assert_eq!(
+            object::rd(object::cell(d), crate::object::obj::ELEMENTS),
+            UNDEFINED
+        );
+        if mapped {
+            // The parameter map of a fast object: index 0 and 1 alias `a` and `b`.
+            set_param(cx, a, 0, int32_bits(70));
+            assert_eq!(get(cx, a, 0), int32_bits(70));
+            let k1 = key(cx.rt(), 1);
+            property::set(cx, a, k1, int32_bits(80), true).unwrap();
+            assert_eq!(param(a, 1), int32_bits(80));
+            assert_eq!(
+                object::fixed_get(d, 0),
+                UNDEFINED,
+                "f(): no mapped parameter"
+            );
+        } else {
+            assert_eq!(object::fixed_get(a, 0), UNDEFINED, "no parameter map");
+        }
+    }
+    for stress in [false, true] {
+        with_four(mapped_four, stress, |cx, v| check(cx, v, true));
+        with_four(unmapped_four, stress, |cx, v| check(cx, v, false));
+    }
+}
+
+/// The spec tests of this file, on objects of the fast path (the second call).
+#[test]
+fn the_spec_tests_hold_on_the_fast_path() {
+    for stress in [false, true] {
+        with_four(mapped_four, stress, |cx, [_, a, _, _]| {
+            assert_eq!(
+                keys(cx, a),
+                ["0", "1", "2", "length", "callee", "@@iterator"]
+            );
+            let callee = cx.rt().atom(Atom::Callee);
+            let d = property::get_own_property(cx, a, callee).unwrap().unwrap();
+            assert!(kinds::is_callable(d.value.unwrap()));
+            // Delete index 0 and redefine `length`: the hooks and the ordinary storage.
+            let k0 = key(cx.rt(), 0);
+            assert!(property::delete(cx, a, k0, true).unwrap());
+            assert_eq!(keys(cx, a), ["1", "2", "length", "callee", "@@iterator"]);
+            let length = cx.rt().atom(Atom::Length);
+            property::set(cx, a, length, int32_bits(9), true).unwrap();
+            assert_eq!(property::get(cx, a, length).unwrap(), int32_bits(9));
+        });
+        with_four(unmapped_four, stress, |cx, [_, a, _, _]| {
+            let t = builtins::intrinsic(cx.rt(), builtins::IntrinsicId::ThrowTypeError);
+            let callee = cx.rt().atom(Atom::Callee);
+            let d = property::get_own_property(cx, a, callee).unwrap().unwrap();
+            assert_eq!((d.get, d.set), (Some(t), Some(t)));
+            assert_eq!((d.enumerable, d.configurable), (Some(false), Some(false)));
+            assert!(property::get(cx, a, callee).is_err());
+            cx.rt().take_pending();
+        });
+    }
+}
+
+/// `arguments::unmodified_length`, the `length` read of the CreateListFromArrayLike fast
+/// path: the int32 in field 0 while the object keeps the realm's cached shape (a value store
+/// keeps it); `None` for a negative or non-int32 `length` and after any shape change (a new
+/// property, a redefined or deleted `length`). CreateListFromArrayLike reads the same list
+/// on both paths: a changed `length` past the elements reads the chain.
+#[test]
+fn the_list_fast_path_reads_an_unmodified_arguments_object() {
+    use crate::abi::{Cx as AbiCx, JsValue, Local};
+    use crate::arguments::unmodified_length;
+    fn list(cx: &mut Cx, a: u64) -> Vec<u64> {
+        let mut acx = AbiCx::new(cx);
+        let l = acx
+            .create_list_from_array_like(Local::<JsValue>::from_bits(a))
+            .unwrap();
+        (0..l.len()).map(|i| l.get(i).bits()).collect()
+    }
+    for stress in [false, true] {
+        with_four(mapped_four, stress, |cx, [b, a, c, d]| {
+            let rt = cx.rt();
+            assert_eq!(unmodified_length(rt, b), Some(3));
+            assert_eq!(unmodified_length(rt, c), Some(2));
+            assert_eq!(unmodified_length(rt, d), Some(0));
+            let i = int32_bits;
+            assert_eq!(list(cx, a), [i(1), i(2), i(3)]);
+            assert_eq!(list(cx, d), Vec::<u64>::new());
+            // A mapped element reads its parameter.
+            set_param(cx, a, 1, i(20));
+            assert_eq!(list(cx, a), [i(1), i(20), i(3)]);
+            // length = 5 (a value store: the same shape): indices 3 and 4 read the chain,
+            // undefined, then %Object.prototype%[4] once it has one.
+            let length = cx.rt().atom(Atom::Length);
+            property::set(cx, a, length, i(5), true).unwrap();
+            assert_eq!(unmodified_length(cx.rt(), a), Some(5));
+            assert_eq!(list(cx, a), [i(1), i(20), i(3), UNDEFINED, UNDEFINED]);
+            let proto = object::proto_of(a);
+            property::set_keyed(cx, proto, i(4), i(44), true).unwrap();
+            assert_eq!(list(cx, a), [i(1), i(20), i(3), UNDEFINED, i(44)]);
+            // A deleted element reads the chain too (undefined at index 0).
+            let k0 = key(cx.rt(), 0);
+            assert!(property::delete(cx, a, k0, true).unwrap());
+            assert_eq!(list(cx, a), [UNDEFINED, i(20), i(3), UNDEFINED, i(44)]);
+            // A negative or a double `length`: the generic path (ToLength).
+            property::set(cx, a, length, i(-1), true).unwrap();
+            assert_eq!(unmodified_length(cx.rt(), a), None);
+            assert_eq!(list(cx, a), Vec::<u64>::new());
+            property::set(cx, a, length, crate::conv::num(2.5), true).unwrap();
+            assert_eq!(unmodified_length(cx.rt(), a), None);
+            assert_eq!(list(cx, a), [UNDEFINED, i(20)]);
+            // A new own property changes the shape: the generic path.
+            let x = crate::atoms::intern_str(cx.rt(), "x");
+            property::set(cx, c, x, i(1), true).unwrap();
+            assert_eq!(unmodified_length(cx.rt(), c), None);
+            assert_eq!(list(cx, c), [i(1), i(2)]);
+            // A deleted `length`: the generic path reads undefined, so an empty list.
+            assert!(property::delete(cx, b, length, true).unwrap());
+            assert_eq!(unmodified_length(cx.rt(), b), None);
+            assert_eq!(list(cx, b), Vec::<u64>::new());
+        });
+    }
+}
+
+/// Each realm caches its own arguments shapes: a second realm's first object is made the spec
+/// way with that realm's %Object.prototype%, its shape goes into the second REALM record, and
+/// the first realm's cache is not used there (nor its shape taken as unmodified there).
+#[test]
+fn each_realm_caches_its_own_arguments_shape() {
+    on_big_stack(|| {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        iso.with_cx_checkpoint(|cx| cx.run_script(mapped_four(), "test.js").map(|_| ()))
+            .unwrap();
+        let a1 = iso.global_raw("A").unwrap().to_bits();
+        let h1 = iso.rt.heap.new_global(crate::runtime::val(a1));
+        let s1 = cached(&iso.rt, true);
+        assert_eq!(crate::shape::shape_of(a1), s1);
+        let r = iso.create_realm(|cx, g| {
+            cx.run_script(mapped_four(), "realm2.js")?;
+            let rt: &Runtime = cx.inner().rt();
+            let s2 = cached(rt, true);
+            assert!(crate::shape::is_shape(s2));
+            assert_ne!(s2, s1, "the second realm's own shape");
+            let op2 = rt.root(crate::runtime::Root::ObjectPrototype);
+            assert_eq!(crate::shape::proto(s2), op2);
+            for n in ["B", "A", "C", "D"] {
+                let k = crate::atoms::intern_str(rt, n);
+                let o = property::get(cx.inner(), g.bits(), k).unwrap();
+                assert_eq!(crate::shape::shape_of(o), s2);
+                assert_eq!(object::proto_of(o), op2);
+            }
+            assert_eq!(crate::arguments::unmodified_length(rt, a1), None);
+            Ok(())
+        });
+        assert_eq!(r, Ok(()));
+        assert_eq!(cached(&iso.rt, true), s1, "the first realm's cache stays");
+        assert_eq!(crate::arguments::unmodified_length(&iso.rt, a1), Some(3));
+        iso.rt.heap.drop_global(h1);
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    });
 }

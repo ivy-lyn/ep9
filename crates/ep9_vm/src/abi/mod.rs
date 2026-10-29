@@ -1453,20 +1453,39 @@ impl<'s> Cx<'s> {
         let Some(o) = v.as_object() else {
             return Err(self.throw_type_error("CreateListFromArrayLike called on non-object"));
         };
-        let len = self.get(o, self.atom(Atom::Length))?;
-        let len = self.to_length(len)?;
+        // An arguments object with the shape it was made with (V10-D11, M5-P2 VMIC): its
+        // `length` is an own data property read in place (no getter, no conversion).
+        let ob = o.bits();
+        let is_args = kinds::cell_kind(ob) == kinds::ARGUMENTS.get();
+        let len = match is_args
+            .then(|| crate::arguments::unmodified_length(self.rt(), ob))
+            .flatten()
+        {
+            Some(n) => u64::from(n),
+            None => {
+                let len = self.get(o, self.atom(Atom::Length))?;
+                self.to_length(len)?
+            }
+        };
         let mut list = self.args_builder();
         // Get(O, ! ToString(𝔽(i))) without a string key (M4-P3 KEYED, OI-04): a present
-        // array element is read in place, any other array index through `get_int` (an
-        // arguments element, a hole, the chain); each read sees the state after the last
-        // push and the last getter. An index past 2^32 - 2 takes the key.
+        // array element or arguments element is read in place, any other array index through
+        // `get_int` (a hole, an index past the elements, the chain); each read sees the state
+        // after the last push and the last getter. An index past 2^32 - 2 takes the key.
         for i in 0..len {
             let ob = o.bits();
             let e = match u32::try_from(i) {
                 Ok(n) if n != u32::MAX => {
-                    match kinds::is_array(ob).then(|| object::array_get(ob, n)) {
-                        Some(Some(v)) => v,
-                        _ => property::get_int(self.cx, ob, n)?,
+                    let here = if is_args {
+                        crate::arguments::element_value(ob, n)
+                    } else if kinds::is_array(ob) {
+                        object::array_get(ob, n)
+                    } else {
+                        None
+                    };
+                    match here {
+                        Some(v) => v,
+                        None => property::get_int(self.cx, ob, n)?,
                     }
                 }
                 _ => property::get_keyed(self.cx, ob, conv::num(i as f64))?,
