@@ -37,8 +37,7 @@ mod stringify;
 
 use ep9_vm::{
     BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId, IntrinsicValue, JsArray,
-    JsObject, JsResult, Local, ObjectProps, PrimitiveType, PropAttrs, PropDef, PropKey,
-    WellKnownSymbol,
+    JsObject, JsResult, Local, ObjectProps, PropAttrs, PropDef, PropKey, WellKnownSymbol,
 };
 
 /// How many object and array levels `JSON.stringify` and the `JSON.parse` reviver walk
@@ -115,42 +114,14 @@ pub(crate) fn too_deep(cx: &mut Cx<'_>) -> ep9_vm::Throw {
 
 /// The primitive inside `o` if `o` has a `[[NumberData]]`, `[[StringData]]` or
 /// `[[BooleanData]]` internal slot (a Number, String or Boolean wrapper object), else `None`.
-/// Never runs JS.
-///
-/// The builtin ABI has no test for a wrapper that does not throw, so this asks
-/// `Cx::this_primitive_value` (thisNumberValue and the others) and catches its TypeError:
-/// up to three error objects for an object that is not a wrapper. A `Cx` method that answers
-/// without a throw (a non-throwing `this_primitive_value`) replaces the body; it is reported
-/// to the M3-P1 integration fixer as an H20 part-2 row.
+/// Never runs JS: `Cx::primitive_data` reads the internal slot, so a proxy (no wrapper) is
+/// never asked for a property (Codex r1 proxy2: the old `length` probe called its
+/// `getOwnPropertyDescriptor` trap).
 pub(crate) fn primitive_data<'s>(
     cx: &mut Cx<'s>,
     o: Local<'s, JsObject>,
 ) -> JsResult<Option<Local<'s>>> {
-    // Arrays, functions and objects of an internal-slot class are never wrappers.
-    if cx.is_array(o) || o.is_callable() || cx.object_class(o).is_some() {
-        return Ok(None);
-    }
-    // A String wrapper always has an own `length` (§10.4.3.5, not configurable), so an
-    // object without one needs no String probe.
-    let string_length = cx.get_own_property(o, "length")?.is_some();
-    for ty in [
-        PrimitiveType::Number,
-        PrimitiveType::String,
-        PrimitiveType::Boolean,
-    ] {
-        if ty == PrimitiveType::String && !string_length {
-            continue;
-        }
-        match cx.this_primitive_value(o, ty) {
-            Ok(v) => return Ok(Some(v)),
-            // The probe's TypeError is not a JS-visible completion: drop it. A termination
-            // cannot be caught and goes on (`catch_exception` gives it back).
-            Err(t) => {
-                cx.catch_exception(t)?;
-            }
-        }
-    }
-    Ok(None)
+    Ok(cx.primitive_data(o))
 }
 
 /// EnumerableOwnProperties(O, key) (§7.3.23): the own enumerable string keys of `o`, in

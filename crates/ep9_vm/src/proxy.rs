@@ -109,7 +109,7 @@ pub(crate) fn is_proxy(v: u64) -> bool {
     is_object(v) && is_proxy_kind(kind::cell_kind(v))
 }
 
-/// `[[ProxyTarget]]` of the proxy `p`: an object, or null once revoked.
+/// `[[ProxyTarget]]` of the proxy `p`: an object; once revoked null, or undefined ([`revoke`]).
 #[inline]
 pub(crate) fn target(p: u64) -> u64 {
     debug_assert!(is_proxy(p));

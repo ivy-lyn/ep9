@@ -341,3 +341,44 @@ print(Object.getPrototypeOf(Reflect.construct(function () {}, [], live)) === Obj
         lines(&["TypeError TypeError TypeError", "true true"])
     );
 }
+
+/// JSON.stringify asks a proxy only the traps of SerializeJSONProperty (§25.5.2.2): the
+/// wrapper test reads the internal slot and calls no trap (Codex r1 proxy2 [medium]: the
+/// `length` probe of `primitive_data` called `getOwnPropertyDescriptor`). Node v24.22.1.
+#[test]
+fn json_stringify_asks_no_extra_trap() {
+    assert_eq!(
+        common::run_both(js!(r#"
+print(t(() => JSON.stringify(new Proxy([], { getOwnPropertyDescriptor: function () { throw 123; } }))));
+var log = [];
+var h = {};
+['get', 'getOwnPropertyDescriptor', 'ownKeys', 'has'].forEach(function (n) { h[n] = function (t, k) { log.push(n + (k === undefined ? '' : ':' + String(k))); return Reflect[n].apply(null, arguments); }; });
+print(JSON.stringify({ a: new Proxy({ x: 1 }, h) }), JSON.stringify(new Proxy([1], h)), JSON.stringify(1, null, new Proxy({}, h)), JSON.stringify({ a: 1 }, new Proxy({}, h)));
+print(log.join(' '));
+print(JSON.stringify([new Number(1), new String('s'), new Boolean(false)]));
+"#)),
+        lines(&[
+            "[]",
+            "{\"a\":{\"x\":1}} [1] 1 {\"a\":1}",
+            "get:toJSON ownKeys getOwnPropertyDescriptor:x get:x get:toJSON get:length get:0",
+            "[1,\"s\",false]",
+        ])
+    );
+}
+
+/// Function.prototype.toString (§20.2.3.5 step 4) of a callable proxy asks the proxy for
+/// nothing: no trap runs, and the name part is empty (M5-P3 PROXY2 need; node v24.22.1
+/// prints `function () { [native code] }` and an empty trap log).
+#[test]
+fn function_to_string_of_a_proxy_runs_no_trap() {
+    assert_eq!(
+        common::run_both(js!(r#"
+var log = [];
+var h = {};
+['get', 'getOwnPropertyDescriptor', 'has', 'ownKeys', 'getPrototypeOf'].forEach(function (n) { h[n] = function (t, k) { log.push(n + ':' + String(k)); return Reflect[n].apply(null, arguments); }; });
+var p = new Proxy(function g(a) { return a; }, h);
+print(Function.prototype.toString.call(p), '|', log.join(' '));
+"#)),
+        lines(&["function () { [native code] } | "])
+    );
+}

@@ -1619,13 +1619,39 @@ impl<'s> Cx<'s> {
     }
 
     /// The revoke step of a revocable Proxy (§28.2.2.1.1 steps 3-5; part 2, M5-P3 PROXY2):
-    /// `p.[[ProxyTarget]]` and `p.[[ProxyHandler]]` become null, so every internal method of
-    /// `p` throws a TypeError from then on. A value that is not a Proxy, or a revoked one, is
+    /// `p.[[ProxyHandler]]` becomes null, so every internal method of `p` throws a TypeError
+    /// from then on; `p.[[ProxyTarget]]` too (the field keeps `undefined` when `p` has
+    /// `[[Construct]]`, §10.5.14 step 7.b). A value that is not a Proxy, or a revoked one, is
     /// left as it is. Never throws, never allocates.
     pub fn proxy_revoke(&mut self, p: impl Into<Local<'s>>) {
         let p = p.into().bits();
         if crate::proxy::is_proxy(p) {
             crate::proxy::revoke(self.rt(), p);
         }
+    }
+
+    /// The primitive inside `v` if it is a Number, String or Boolean wrapper object (it has a
+    /// `[[NumberData]]`, `[[StringData]]` or `[[BooleanData]]` internal slot), else `None`
+    /// (part 2, M5-P3 integration fixer). Any value; never throws, runs no JS and asks a
+    /// proxy nothing (a proxy is no wrapper). For JSON (SerializeJSONProperty step 4, the
+    /// replacer list, `space`).
+    pub fn primitive_data(&self, v: impl Into<Local<'s>>) -> Option<Local<'s>> {
+        let v = v.into().bits();
+        if !kinds::is_object(v) {
+            return None;
+        }
+        let p = wrapper::wrapper_value(v)?;
+        matches!(
+            PrimitiveType::of(p),
+            Some(PrimitiveType::Number | PrimitiveType::String | PrimitiveType::Boolean)
+        )
+        .then(|| Self::local(p))
+    }
+
+    /// Whether `v` is a Proxy exotic object (§10.5), revoked or not (part 2, M5-P3
+    /// integration fixer). Any value; never throws, runs no JS. For a builtin that must not
+    /// ask a proxy for a property where the spec reads none (Function.prototype.toString).
+    pub fn is_proxy(&self, v: impl Into<Local<'s>>) -> bool {
+        crate::proxy::is_proxy(v.into().bits())
     }
 }

@@ -153,6 +153,7 @@ abi: impl<'s> Cx<'s> :: pub fn is_constructor(&self, impl Into<Local<'s>>) -> bo
 abi: impl<'s> Cx<'s> :: pub fn is_error(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_extensible(&mut self, impl Into<Local<'s, JsObject>>) -> JsResult<bool>
 abi: impl<'s> Cx<'s> :: pub fn is_promise(&self, impl Into<Local<'s>>) -> bool
+abi: impl<'s> Cx<'s> :: pub fn is_proxy(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_strictly_equal(&self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn iterator_close<T>(&mut self, &IteratorRecord<'s>, JsResult<T>) -> JsResult<T>
 abi: impl<'s> Cx<'s> :: pub fn iterator_step_value(&mut self, &mut IteratorRecord<'s>) -> JsResult<Option<Local<'s>>>
@@ -186,6 +187,7 @@ abi: impl<'s> Cx<'s> :: pub fn perform_microtask_checkpoint(&mut self) -> JsResu
 abi: impl<'s> Cx<'s> :: pub fn perform_promise_then(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>, impl Into<Local<'s>>, Option<PromiseCapability<'s>>) -> Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn poll_interrupt(&mut self) -> JsResult<()>
 abi: impl<'s> Cx<'s> :: pub fn prevent_extensions(&mut self, impl Into<Local<'s, JsObject>>) -> JsResult<bool>
+abi: impl<'s> Cx<'s> :: pub fn primitive_data(&self, impl Into<Local<'s>>) -> Option<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn promise_is_handled(&mut self, impl Into<Local<'s>>) -> JsResult<bool>
 abi: impl<'s> Cx<'s> :: pub fn promise_resolve(&mut self, impl Into<Local<'s, JsObject>>, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn promise_result(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
