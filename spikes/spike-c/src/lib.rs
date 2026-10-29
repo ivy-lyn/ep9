@@ -55,6 +55,7 @@ pub mod harness;
 pub mod ir;
 pub mod kernels;
 pub mod regalloc;
+pub mod sp_facts;
 pub mod structural;
 pub mod tier;
 pub mod timing;
