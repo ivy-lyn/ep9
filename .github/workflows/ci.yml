@@ -15,8 +15,10 @@
 #                      exec with eager feedback; bytecodegen corpus
 #                      digest (G1), debug too (not windows-x64); the
 #                      nesting-cap tests (not windows-x64); the
-#                      m0-exit inputs as an artifact
-#   test262-gc ....... exec with GC-stress + eager feedback, 6 shards (4 targets)
+#                      m0-exit inputs as an artifact; GC-stress S1
+#                      with major GCs only, on a few prefixes
+#   test262-gc ....... exec with GC-stress (S1) + eager feedback,     (4 targets)
+#                      6 shards (S0 with the dispatch input gc_mode)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
 #                      SoftFma vs hardware FMA
 #   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
@@ -48,6 +50,11 @@
 # The dispatch input `only` (plan v10 rule 27, a CI probe of a merge head): windows-x64,linux-x64
 # keeps only those two entries in every 4-target matrix (33 jobs); the one-runner jobs (Linux
 # x64, Windows x64) all run. Default `all`.
+#
+# The dispatch input `gc_mode` (plan v10 V10-D19, V9-D27): `s1` (the default, and every push and
+# pull_request run) runs the GC-stress shards with the S1 generational heap, the heap default
+# since M5-P2; `s0` runs them with S0, and their step name then says S0, so the m0-exit and
+# m1-exit readers never take that run for the S1 evidence.
 #
 # Scope (docs/plan/12-governance.md section 3; plan v9 V9-D35, V9-A18): every job except lint and
 # scope `needs: scope` and is skipped when scope says docs_only=true. docs_only is true only when
@@ -87,6 +94,13 @@ on:
         options:
           - all
           - windows-x64,linux-x64
+      gc_mode:
+        description: "GC-stress shards: s1 (the default) or s0 (plan v10 V10-D19)"
+        default: s1
+        type: choice
+        options:
+          - s1
+          - s0
 
 permissions:
   contents: read
@@ -339,6 +353,21 @@ jobs:
       - name: test262 exec, eager feedback
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
+      # The S1 major path (plan v10 V10-D19, V9-D27): GC-stress with S1 where every GC is a major
+      # one (EP9_GC_STRESS_MAJOR_EVERY=1: the sticky marks cleared and a full mark each time; the
+      # shards run mostly minor GCs, a major one every 64th), on the weak-reference, collection,
+      # RegExp exec, for-in and instanceof prefixes, against the same expectation file.
+      - name: test262 exec, GC-stress (S1, major GCs only) + eager feedback
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        env:
+          EP9_GC_GENERATIONAL: "1"
+          EP9_GC_STRESS_MAJOR_EVERY: "1"
+        run: >-
+          cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0
+          --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc-major.json
+          test/built-ins/WeakRef test/built-ins/FinalizationRegistry test/built-ins/WeakMap
+          test/built-ins/WeakSet test/built-ins/Map test/built-ins/RegExp/prototype/exec
+          test/language/statements/for-in test/language/expressions/instanceof
       # G1 determinism (decision M2-DETERMINISM): every unit of the bytecodegen corpus (test262
       # plus the 3 benchmark pins, 54,522 files) compiles to the same bytes on every target, in
       # release and in debug. The digest over them must equal expectations/bytecode-corpus.digest
@@ -409,7 +438,9 @@ jobs:
           if-no-files-found: warn
 
   # GC-stress (a collection before every allocation, the heap verifier after each) with eager
-  # feedback, against the expectation file of each target: M0 exit item 6, on every target
+  # feedback and the S1 generational heap (since M5-P2, plan v10 V10-D19: a minor GC at each
+  # allocation, a major one every 64th; S0 with the dispatch input gc_mode=s0, header), against
+  # the expectation file of each target: M0 exit item 6 and M1 exit item 4, on every target
   # (V8-A22: windows-x64 too). One whole run took about 2 h on the hosted 4-CPU linux-x64 runner
   # at M3-P2, so it runs as 6 shards, one job each (M3-P3-GC-SHARD). `cargo xtask m0-exit
   # --gc-shard k/n` prints the test262 path prefixes of shard k: a split of the checkout by file
@@ -436,8 +467,9 @@ jobs:
         shards: [6]
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.target.os }}
-    # Plan v9 section 9.2: 60 (>= 1.5 x 22.7 min, the last measured max of one shard).
-    timeout-minutes: 60
+    # Plan v10 section 9.2 and V10-D19: 75 for the first S1 run (S1 GC-stress is about 1.5-1.85x
+    # S0; the last S0 max of one shard was 21 min), then 1.5x the measured max (rule 25).
+    timeout-minutes: 75
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -450,9 +482,13 @@ jobs:
           path: third_party/test262
           key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
       - run: bash scripts/sync-test262.sh
-      - name: test262 exec, GC-stress + eager feedback
+      # The step name says the heap mode: `cargo xtask m1-exit` item 4 needs "S1" in it, and
+      # m0-exit item 6 reads this exact S1 name (GC_STEP, tools/xtask/src/exit/gc_shards.rs) or
+      # the name before M5-P2. EP9_GC_GENERATIONAL is explicit, so the JSON says what ran.
+      - name: "test262 exec, GC-stress (${{ inputs.gc_mode == 's0' && 'S0' || 'S1' }}) + eager feedback"
         env:
           SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+          EP9_GC_GENERATIONAL: ${{ inputs.gc_mode == 's0' && '0' || '1' }}
         run: |
           out="$(cargo xtask m0-exit --gc-shard "$SHARD")"
           set -f
