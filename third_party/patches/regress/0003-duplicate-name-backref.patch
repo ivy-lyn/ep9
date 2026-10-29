@@ -34,10 +34,10 @@ Test: tests/named_backrefs.rs.
  create mode 100644 tests/named_backrefs.rs
 
 diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
-index dedb29c..b629afc 100644
+index b40a467..d262cd4 100644
 --- a/src/classicalbacktrack.rs
 +++ b/src/classicalbacktrack.rs
-@@ -1027,6 +1027,22 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+@@ -1076,6 +1076,22 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
                          next_or_bt!(matched)
                      }
  

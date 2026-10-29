@@ -883,6 +883,23 @@ mod tests {
         assert!(polls > (1 << 18) / POLL_INTERVAL, "{polls} polls");
     }
 
+    /// Patch 0001: each iteration of a single-character loop is a step, and patch 0005: each
+    /// candidate of the UTF-16 prefix search is a step. A long run polls once per interval
+    /// (before: once, before the search).
+    #[test]
+    fn rx0_single_char_loops_and_prefix_scans_poll() {
+        let a = vec![b'a'; 100_000];
+        let (r, polls) = run_polled("a+", "", Input::Latin1(&a), 0, 0);
+        assert_eq!(r, ExecResult::Match);
+        assert!(polls > 90, "{polls} polls");
+        let mut u = vec![u16::from(b'a'); 20_000];
+        u.push(0x100);
+        let p = format!("{}b", "a".repeat(2000));
+        let (r, polls) = run_polled(&p, "", Input::Utf16(&u), 0, 0);
+        assert_eq!(r, ExecResult::NoMatch);
+        assert!(polls > 15, "{polls} polls");
+    }
+
     /// Patch 0002: a sticky exec is one attempt at `start`. A sticky lexer that fails at each
     /// position of a long subject polls once per exec (before its attempt): no exec scans the
     /// rest of the subject (before the patch each one searched to the end: n^2 / 1024 polls).

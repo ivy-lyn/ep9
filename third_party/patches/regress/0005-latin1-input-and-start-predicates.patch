@@ -19,22 +19,27 @@ widen each subject to UTF-16 first.
   the units below 256 and one bit for all others; memchr for 1-3
   units), or anchored at the start. UTF-16, UCS-2 and Latin-1 searches
   use it. A UTF-16 search uses a set only when it holds no unit at or
-  above 256, so it never starts inside a surrogate pair.
+  above 256, so it never starts inside a surrogate pair. The UTF-16
+  prefix search compares at most 16 prefix units at each candidate,
+  so its uncounted work stays linear in the text; the counted match
+  attempt at the candidate checks the rest.
 
 Searches over &str are unchanged.
 
 Test: tests/latin1.rs checks each search (predicates on) against one
 match attempt per position (no predicate) for 29 patterns, 5 flag sets
-and 27 texts in all three forms.
+and 27 texts in all three forms. tests/limits.rs checks that a long
+prefix search on UTF-16 text polls.
 ---
  src/api.rs                |  32 ++++-
  src/classicalbacktrack.rs |  59 +++++++-
  src/emit.rs               |   2 +
- src/indexing.rs           | 278 ++++++++++++++++++++++++++++++++++++++
+ src/indexing.rs           | 286 ++++++++++++++++++++++++++++++++++++++
  src/insn.rs               |  51 +++++++
- src/startpredicate.rs     | 218 ++++++++++++++++++++++++++++++
+ src/startpredicate.rs     | 218 +++++++++++++++++++++++++++++
  tests/latin1.rs           | 195 ++++++++++++++++++++++++++
- 7 files changed, 831 insertions(+), 4 deletions(-)
+ tests/limits.rs           |  38 +++++
+ 8 files changed, 877 insertions(+), 4 deletions(-)
  create mode 100644 tests/latin1.rs
 
 diff --git a/src/api.rs b/src/api.rs
@@ -109,7 +114,7 @@ index 69fe290..1a7ba0a 100644
      }
  
 diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
-index b629afc..21da175 100644
+index d262cd4..c08491b 100644
 --- a/src/classicalbacktrack.rs
 +++ b/src/classicalbacktrack.rs
 @@ -10,6 +10,8 @@ use crate::exec;
@@ -121,7 +126,7 @@ index b629afc..21da175 100644
  use crate::insn::{CompiledRegex, Insn, LoopFields};
  use crate::matchers;
  use crate::matchers::CharProperties;
-@@ -1209,12 +1211,14 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+@@ -1258,12 +1260,14 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
  
      /// \return the next match for an anchored regex that only matches at the start.
      /// This avoids any string searching and only tries matching at the given position.
@@ -137,7 +142,7 @@ index b629afc..21da175 100644
          let inp = self.input;
          // For anchored regexes, only try matching at the current position
          if let Some(end) = self.matcher.try_at_pos(inp, 0, pos, Forward::new()) {
-@@ -1243,6 +1247,35 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+@@ -1292,6 +1296,35 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
          Some(self.successful_match(pos, end))
      }
  
@@ -173,7 +178,7 @@ index b629afc..21da175 100644
      /// \return the next match, searching the remaining bytes using the given
      /// prefix searcher to quickly find the first potential match location.
      fn next_match_with_prefix_search<PrefixSearch: bytesearch::ByteSearcher>(
-@@ -1289,9 +1322,29 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
+@@ -1338,9 +1371,29 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
          pos: Input::Position,
          next_start: &mut Option<Input::Position>,
      ) -> Option<Match> {
@@ -219,7 +224,7 @@ index 0cb96b8..86f726c 100644
      };
      emitter.emit_node(&n.node);
 diff --git a/src/indexing.rs b/src/indexing.rs
-index 44a80d5..5197c19 100644
+index 44a80d5..47a5f43 100644
 --- a/src/indexing.rs
 +++ b/src/indexing.rs
 @@ -1,5 +1,7 @@
@@ -288,7 +293,7 @@ index 44a80d5..5197c19 100644
  
      #[inline(always)]
      fn unicode(&self) -> bool {
-@@ -1290,3 +1329,242 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
+@@ -1290,3 +1329,250 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
          panic!("Should never be matching bytes for ucs2");
      }
  }
@@ -502,13 +507,21 @@ index 44a80d5..5197c19 100644
 +    }
 +}
 +
++/// The most prefix units `find_unit_start_u16` compares at one candidate position. The
++/// search does not count its steps, so its work must stay linear in the text: a longer
++/// prefix is checked by the (counted) match attempt at the position it returns.
++#[cfg(feature = "utf16")]
++const PREFIX_CHECK_UNITS: usize = 16;
++
 +/// The index in `units` of the first code unit where a match may start under `pred` (a
-+/// `Prefix` or `First` predicate), or None.
++/// `Prefix` or `First` predicate), or None. It compares at most `PREFIX_CHECK_UNITS` units
++/// of the prefix at each candidate, so a search takes O(text length) work.
 +#[cfg(feature = "utf16")]
 +fn find_unit_start_u16(units: &[u16], pred: &UnitPredicate) -> Option<usize> {
 +    match pred {
 +        UnitPredicate::Prefix { units: prefix, .. } => {
 +            let first = u16::from(prefix[0]);
++            let check = &prefix[..core::cmp::min(prefix.len(), PREFIX_CHECK_UNITS)];
 +            let mut at = 0;
 +            loop {
 +                at += units[at..].iter().position(|&u| u == first)?;
@@ -516,7 +529,7 @@ index 44a80d5..5197c19 100644
 +                if rest.len() >= prefix.len()
 +                    && rest
 +                        .iter()
-+                        .zip(prefix.iter())
++                        .zip(check.iter())
 +                        .all(|(&u, &p)| u == u16::from(p))
 +                {
 +                    return Some(at);
@@ -1033,4 +1046,50 @@ index 0000000..c9e9290
 +    assert_eq!(m.range(), 1..3);
 +    let m = re.find_from_latin1(&[b'a', 0xc9, 0xe9], 0).next();
 +    assert!(m.is_none());
++}
+diff --git a/tests/limits.rs b/tests/limits.rs
+index 0702720..28843b7 100644
+--- a/tests/limits.rs
++++ b/tests/limits.rs
+@@ -208,3 +208,41 @@ fn single_character_loop_iterations_are_steps() {
+     let m = re.find_limited(Text::Ucs2(&text), 0, &mut limits).unwrap();
+     assert_eq!(m.unwrap().range(), 0..100_000);
+ }
++
++/// A long literal prefix on UTF-16 text: the start-position search compares a bounded part
++/// of the prefix, and each candidate it returns is a counted step, so the O(text x prefix)
++/// work polls (it was one step before).
++#[test]
++fn a_long_prefix_search_on_utf16_text_polls() {
++    let pattern = format!("{}b", "a".repeat(2000));
++    let re = Regex::new(&pattern).unwrap();
++    let mut text = vec![u16::from(b'a'); 20_000];
++    text.push(0x100);
++    for t in [Text::Ucs2(&text), Text::Utf16(&text)] {
++        let mut polls = 0u32;
++        let mut count = || {
++            polls += 1;
++            false
++        };
++        let mut limits = Limits {
++            budget: None,
++            poll_interval: 1000,
++            poll: &mut count,
++        };
++        assert!(re.find_limited(t, 0, &mut limits).unwrap().is_none());
++        assert!(polls >= 17, "{polls} polls");
++    }
++    // A prefix longer than the compared part still finds the right match.
++    let re = Regex::new(&format!("{}b", "a".repeat(40))).unwrap();
++    let mut text = vec![u16::from(b'a'); 100];
++    text.push(u16::from(b'b'));
++    text.push(0x100);
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 1000,
++        poll: &mut never,
++    };
++    let m = re.find_limited(Text::Ucs2(&text), 0, &mut limits).unwrap();
++    assert_eq!(m.unwrap().range(), 60..101);
 +}

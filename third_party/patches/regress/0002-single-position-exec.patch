@@ -56,10 +56,10 @@ index b5a65e6..69fe290 100644
      ///
      /// The replacement string may contain capture group references in the form `$1`, `$2`, etc.,
 diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
-index d75b10c..dedb29c 100644
+index 66f7e8d..b40a467 100644
 --- a/src/classicalbacktrack.rs
 +++ b/src/classicalbacktrack.rs
-@@ -1215,6 +1215,18 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+@@ -1264,6 +1264,18 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
          }
      }
  
@@ -78,7 +78,7 @@ index d75b10c..dedb29c 100644
      /// \return the next match, searching the remaining bytes using the given
      /// prefix searcher to quickly find the first potential match location.
      fn next_match_with_prefix_search<PrefixSearch: bytesearch::ByteSearcher>(
-@@ -1314,6 +1326,29 @@ pub(crate) fn find_limited<Input: InputIndexer>(
+@@ -1363,6 +1375,29 @@ pub(crate) fn find_limited<Input: InputIndexer>(
      }
  }
  
