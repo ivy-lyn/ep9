@@ -1779,7 +1779,6 @@ pub fn run(opts: &Options) -> ExitCode {
     status
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The options of the preset `preset` with its own feedback mode (`jit`: `full`, `jitless`:
 /// `ics_only`, MODES-D11), before `--feedback` (M5-P0-ORCH-10). The argument parser refuses a
 /// preset this build cannot run; `Isolate::new_with` would refuse it too (M-R6).
@@ -1791,6 +1790,7 @@ pub fn preset_options(preset: Preset) -> ExecOptions {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn summary_json(
     opts: &Options,
     by_dir: &BTreeMap<String, (Count, Count)>,
