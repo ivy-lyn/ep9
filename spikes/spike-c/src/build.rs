@@ -1337,8 +1337,8 @@ impl Builder<'_> {
             }
         }
         // A phi stays in the set only if a load of the set flows into it (directly or through
-        // phis of the set): a phi of plain numbers is left as the repr pass made it. No load
-        // of the set uses a phi that leaves, so the rules above still hold.
+        // phis of the set), or a phi that stays reads it (below): a phi of plain numbers is
+        // left as the repr pass made it. A use that leaves the set only boxes (BoxFloat64).
         let mut fed = vec![false; len];
         loop {
             let mut changed = false;
@@ -1355,6 +1355,27 @@ impl Builder<'_> {
                 if f {
                     fed[n.0 as usize] = true;
                     changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // A phi of the set that a kept phi reads stays too, even if no load feeds it (a
+        // nested merge: `if (b) v = x / y; else v = x / z; if (c) v = a[0];`), else the kept
+        // phi would get a Tagged input that no conversion makes a Float64.
+        loop {
+            let mut changed = false;
+            for &n in &order {
+                let node = self.g.node(n);
+                if node.op != Op::Phi || !set[n.0 as usize] || !fed[n.0 as usize] {
+                    continue;
+                }
+                for &v in &node.inputs {
+                    if set[v.0 as usize] && !fed[v.0 as usize] {
+                        fed[v.0 as usize] = true;
+                        changed = true;
+                    }
                 }
             }
             if !changed {

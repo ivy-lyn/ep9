@@ -2132,6 +2132,72 @@ mod tests {
         );
     }
 
+    /// Codex M5-P3 r1 spikec7 1: a nested merge, a phi of two Float64 values (no load feeds
+    /// it) read by a phi that a Float64 load feeds. `float_loads` must keep both phis Float64
+    /// (it dropped the first, so `fix_reprs` met a Float64 phi with a Tagged input and
+    /// panicked: an abort in the release build). Equal to T0, no exit, with GC stress too;
+    /// a non-number element exits at the load; every guard forced, each run equal to T0.
+    #[test]
+    fn a_float64_phi_keeps_the_numeric_phis_it_reads() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function f(a, x, y, z, b, c) { var v; if (b < 0) v = x / y; else v = x / z; if (c < 0) v = a[0]; return v / y; }";
+        let warm =
+            "for (var q = 0; q < 20; q++) { f([1.5], 3, 2, 4, q & 1 ? -1 : 1, q & 2 ? -1 : 1); }";
+        let main = "print(f([1.5], 3, 2, 4, -1, -1), f([1.5], 3, 2, 4, 1, 1), f([2.5], 3, 2, 4, 1, -1), f([2.5], 3, 2, 4, -1, 1));";
+        for config in [Config::default(), Config::stress()] {
+            let r = run_script(&config, defs, warm, main, "f").expect("run");
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            assert!(r.fired().is_empty(), "{:?}\n{}", r.exits, r.report.graph);
+            assert_eq!(r.compiled.output, ["0.75 0.375 1.25 0.75"]);
+            let phis: Vec<&str> = r
+                .report
+                .graph
+                .lines()
+                .filter(|l| l.contains("= Phi("))
+                .collect();
+            assert!(
+                phis.len() == 2 && phis.iter().all(|l| l.contains(": Float64")),
+                "{phis:?}"
+            );
+        }
+        deopts(
+            defs,
+            warm,
+            "print(f(['x'], 3, 2, 4, 1, -1), f([1.5], 3, 2, 4, 1, -1));",
+            "f",
+        );
+        let t0 = t0_script(&Config::default(), defs, warm, main).expect("t0");
+        let plain = run_script(&Config::default(), defs, warm, main, "f").expect("run");
+        let guards = plain
+            .report
+            .emit
+            .meta
+            .exits
+            .iter()
+            .map(|e| e.guard)
+            .collect();
+        let f = crate::diff::force_all(7, guards, |t| {
+            let opts = emit_a64::EmitOptions {
+                force: Some(t),
+                ..Default::default()
+            };
+            let c = compiled_script(
+                &Config::default(),
+                defs,
+                warm,
+                main,
+                "f",
+                IntFacts::Live,
+                &opts,
+            )?;
+            Ok((c.output == t0, c.report, c.exits))
+        })
+        .expect("force");
+        assert!(f.bad.is_empty() && f.never().is_empty(), "{f:?}");
+    }
+
     /// SPIKEC-7: the copy `a[i] = b[i]` (lin_solve's `x[r] = x0[r]`) of every value form into
     /// every storage form, with no exit: int32s, doubles (NaN, -0), strings, objects,
     /// undefined and booleans, into INT32, DOUBLE and ELEMENTS arrays (the kind transitions
