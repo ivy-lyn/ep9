@@ -203,11 +203,26 @@ impl Program {
 
 /// The helpers every program's `defs` starts with: `V(x)`, an object whose `valueOf` counts
 /// its calls and returns `x`; `D(a)`, `a` moved to DICTIONARY elements (an index far past its
-/// capacity, elements_kind.rs `ARRAY_GAP`), with its first elements kept.
+/// capacity, elements_kind.rs `ARRAY_GAP`), with its first elements kept; `O1`, `O2`, two
+/// objects a program can store and find again by identity; `S(a)`, an array shown element by
+/// element (Codex M5-P3 r1 spikec7 2): its length, a hole as `hole`, `-0` as itself, a
+/// primitive with its type, an object as `O1`/`O2`/`self`/`obj` (print's ToString would map
+/// -0 to 0, a hole, null and undefined to "", and every object alike).
 const PRELUDE: &str = "\
 var calls = 0;\n\
 function V(x) { return { valueOf: function () { calls = calls + 1; return x; } }; }\n\
-function D(a) { a[100000] = 0; return a; }\n";
+function D(a) { a[100000] = 0; return a; }\n\
+var O1 = { id: 1 }, O2 = { id: 2 };\n\
+function S(a) { if (typeof a !== 'object' || a === null) return typeof a + ':' + String(a); var o = ['len ' + a.length]; var m = a.length < 256 ? a.length : 256; for (var i = 0; i < m; i++) { if (!(i in a)) { o.push('hole'); continue; } var x = a[i]; if (x === 0 && 1 / x < 0) o.push('-0'); else if (typeof x === 'object' && x !== null) o.push(x === a ? 'self' : 'id' in x ? 'O' + x.id : 'obj'); else o.push(typeof x + ':' + String(x)); } return o.join(' '); }\n";
+
+/// `expr`, a call that returns an array, shown by `S` (PRELUDE); a trailing valueOf count
+/// stays outside.
+fn shown(expr: &str) -> String {
+    match expr.strip_suffix(" + ' ' + calls") {
+        Some(call) => format!("S({call}) + ' ' + calls"),
+        None => format!("S({expr})"),
+    }
+}
 
 /// A line of `main`: `expr` printed, a throw printed by its name.
 fn line(expr: &str) -> String {
@@ -375,7 +390,7 @@ pub fn program(seed: u64) -> Program {
                     r.ints(n, -1000, 1000)
                 };
                 let a = if dbl { r.dbls(n) } else { r.ints(n, -9, 9) };
-                main += &line(&format!("f({a}, {b}, {n}, {v})"));
+                main += &line(&shown(&format!("f({a}, {b}, {n}, {v})")));
             }
             let d = r.dbl();
             let edges = [
@@ -393,7 +408,7 @@ pub fn program(seed: u64) -> Program {
                 "f([0, 0, 0], [1, 2, 3], 3, NaN)".to_string(),
             ];
             for e in r.some(&edges.each_ref(), 6) {
-                main += &line(e);
+                main += &line(&shown(e));
             }
         }
         "copy" => {
@@ -424,22 +439,22 @@ pub fn program(seed: u64) -> Program {
                 } else {
                     r.ints(n + 2, -9, 9)
                 };
-                main += &line(&format!("f({a}, {b}, {n})"));
+                main += &line(&shown(&format!("f({a}, {b}, {n})")));
             }
             let edges = [
                 "f([0, 0, 0, 0, 0], ['a', 'b', 'c'], 3)".to_string(),
-                "f([0.5, 0.5, 0.5, 0.5, 0.5], [1, 2, 3], 3)".to_string(),
+                "f([0.5, 0.5, 0.5, 0.5, 0.5], [1, -0, 3], 3)".to_string(),
                 "f([0, 0, 0, 0, 0], [1.5, 2.5, 3.5], 3)".to_string(),
                 "f([0, 0, 0, 0, 0], [1, , 3], 3)".to_string(),
-                "f([0, 0, 0, 0, 0], [{}, null, undefined], 3)".to_string(),
-                "f([0, 0], [1, 2, 3], 3)".to_string(),
+                "f([0, 0, 0, 0, 0], [O1, null, undefined], 3)".to_string(),
+                "f([0, 0], [O2, {}, 3], 3)".to_string(),
                 "f(D([0, 0, 0, 0, 0]), [1, 2, 3], 3)".to_string(),
                 "f([0, 0, 0, 0, 0], D([1, 2, 3]), 3)".to_string(),
                 "f(['x', 0, 0, 0, 0], [1.5, 2, 3], 3)".to_string(),
                 "f([0, 0, 0, 0, 0], [NaN, -0, 1], 3)".to_string(),
             ];
             for e in r.some(&edges.each_ref(), 6) {
-                main += &line(e);
+                main += &line(&shown(e));
             }
         }
         "named" => {
@@ -634,13 +649,13 @@ pub fn program(seed: u64) -> Program {
                 "for (var q = 0; q < 20; q++) L(field({w}, {h}, 0.25), field({w}, {h}, 0.5), {a}, {c});"
             );
             for _ in 0..3 {
-                main += &line(&format!(
+                main += &line(&shown(&format!(
                     "L(field({w}, {h}, {}), field({w}, {h}, {}), {}, {})",
                     r.dbl(),
                     r.dbl(),
                     r.dbl(),
                     r.int(1, 9)
-                ));
+                )));
             }
             let edges = [
                 format!(
@@ -669,7 +684,7 @@ pub fn program(seed: u64) -> Program {
                 format!("L(field({w}, {h}, 0.5), field({w}, {h}, 0.5), {a}, 0)"),
             ];
             for e in r.some(&edges.each_ref(), 6) {
-                main += &line(e);
+                main += &line(&shown(e));
             }
         }
     }
@@ -1207,6 +1222,34 @@ pub fn main(args: &[String]) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex M5-P3 r1 spikec7 2: `S` (PRELUDE) shows what print's ToString merges: -0 and
+    /// 0, a hole, null and undefined, two objects, the array itself; and the copy family
+    /// stores -0 into a DOUBLE array and named objects, so a store that loses one of them
+    /// fails the compare (negative control: a store that writes +0 for -0 into raw f64 fails
+    /// 15 of the copy seeds in 1..200; it passed all 200 when the arrays were printed).
+    #[test]
+    fn the_array_form_shows_what_tostring_merges() {
+        let main = "var a = [0, -0, , null, undefined, O1, O2, {}, '1', 1.5]; a.push(a); print(S(a)); print(String([0, -0, , null, undefined]));";
+        let out = tier::t0_script(&Config::default(), PRELUDE, "", main).expect("t0");
+        assert!(out.result.is_ok(), "{out:?}");
+        assert_eq!(
+            out.output,
+            [
+                "len 11 number:0 -0 hole object:null undefined:undefined O1 O2 obj string:1 number:1.5 self",
+                "0,0,,,"
+            ]
+        );
+        let copies: Vec<Program> = (1..=200)
+            .map(program)
+            .filter(|p| p.family == "copy")
+            .collect();
+        assert!(copies.iter().any(|p| {
+            p.main
+                .contains("S(f([0.5, 0.5, 0.5, 0.5, 0.5], [1, -0, 3], 3))")
+        }));
+        assert!(copies.iter().all(|p| !p.main.contains("print(f(")));
+    }
 
     /// MC-w17-10: the lint refuses each GC-timing name, in code, in a string and as a
     /// property, and passes names that only contain one.
