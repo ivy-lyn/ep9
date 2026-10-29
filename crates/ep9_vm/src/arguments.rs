@@ -458,6 +458,34 @@ pub(crate) fn unmodified_length(rt: &Runtime, o: u64) -> Option<u32> {
     u32::try_from(len).ok()
 }
 
+/// `ToLength(Get(o, "length"))` of CreateListFromArrayLike (§7.3.19 step 2) read in place
+/// when `o` (an object) is an arguments object with an [`unmodified_length`]; `None`: the
+/// caller takes Get and ToLength. The `length` fast path of
+/// `abi::Cx::create_list_from_array_like` (V10-D11). Not a GC point.
+#[inline]
+pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
+    if kind::cell_kind(o) != kind::ARGUMENTS.get() {
+        return None;
+    }
+    unmodified_length(rt, o).map(u64::from)
+}
+
+/// `Get(o, ! ToString(𝔽(i)))` of CreateListFromArrayLike (§7.3.19 step 6.b) read in place
+/// when `i` is a present element of the array or arguments object `o` (an object; a mapped
+/// index reads its parameter, [`element_value`]); `None`: the caller reads it through
+/// `property::get_int` (a hole, an index past the elements, an accessor, the chain, any other
+/// kind). Not a GC point.
+#[inline]
+pub(crate) fn list_element(o: u64, i: u32) -> Option<u64> {
+    if kind::is_array(o) {
+        object::array_get(o, i)
+    } else if kind::cell_kind(o) == kind::ARGUMENTS.get() {
+        element_value(o, i)
+    } else {
+        None
+    }
+}
+
 /// `o.[[Set]](i, v, o)` (§10.4.4.4, receiver `o`) for a writable element `i` of the arguments
 /// object `o`, without the key: writes the parameter while `i` is mapped and the element, as
 /// the [`set`] hook does. False, with nothing stored, when `i` is not an element or not
