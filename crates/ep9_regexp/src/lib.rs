@@ -20,7 +20,7 @@
 //!
 //! | Patch | regress API | Here |
 //! |---|---|---|
-//! | 0001 poll + budget | `Limits`, `Stopped` | `poll` before the search and every [`POLL_INTERVAL`] steps inside it (a start position, a backtrack, a loop iteration): an interrupt ends an exec within one interval. No budget: JavaScript has no backtrack limit, so [`ExecResult::BudgetExceeded`] is never returned (one rule for every execution mode, MC-w20-16) |
+//! | 0001 poll + budget | `Limits`, `Stopped` | `poll` before the search and every [`POLL_INTERVAL`] steps inside it (a start position, a backtrack, a loop iteration, a chunk of the start-position scan): an interrupt ends an exec within one interval. No budget: JavaScript has no backtrack limit, so [`ExecResult::BudgetExceeded`] is never returned (one rule for every execution mode, MC-w20-16) |
 //! | 0002 single-position exec | `match_at_limited`, `exec_into(.., anchored)` | sticky (`y`) is one attempt at `start`, not a search (plan v9 R16) |
 //! | 0003 duplicate-name backref | `BackRefAny` | `\k<x>` of a name that several groups share matches the group that took part (test262 duplicate-names-*) |
 //! | 0004 non-Unicode `i` ASCII rule | `canonicalize_legacy` | Canonicalize (§22.2.2.7.3) without `u`/`v`: `ſ`, `ı`, the Kelvin sign do not match ASCII letters; the node golden has no KNOWN line |
@@ -883,9 +883,9 @@ mod tests {
         assert!(polls > (1 << 18) / POLL_INTERVAL, "{polls} polls");
     }
 
-    /// Patch 0001: each iteration of a single-character loop is a step, and patch 0005: each
-    /// candidate of the UTF-16 prefix search is a step. A long run polls once per interval
-    /// (before: once, before the search).
+    /// Patch 0001: each iteration of a single-character loop is a step; patch 0005: each scan
+    /// chunk and each candidate of the UTF-16 prefix search is a step. A long run polls once
+    /// per interval (before: once, before the search).
     #[test]
     fn rx0_single_char_loops_and_prefix_scans_poll() {
         let a = vec![b'a'; 100_000];
@@ -898,6 +898,26 @@ mod tests {
         let (r, polls) = run_polled(&p, "", Input::Utf16(&u), 0, 0);
         assert_eq!(r, ExecResult::NoMatch);
         assert!(polls > 15, "{polls} polls");
+    }
+
+    /// Patch 0005: the start-position scan is metered in chunks, also when each candidate
+    /// fails inside it (a prefix whose mismatch is in its first 16 units) or no unit is a
+    /// candidate (a first-unit set): a long subject polls, and an interrupt stops it (Codex
+    /// M5-P3 r2 eng [high]; before, the scan polled once, before the search).
+    #[test]
+    fn rx0_rejected_scan_candidates_poll() {
+        let n = 4 << 20;
+        let (a, u) = (vec![b'a'; n], vec![u16::from(b'a'); n]);
+        let p = format!("{}b", "a".repeat(15));
+        for pat in [p.as_str(), "[bc]x"] {
+            for input in [Input::Latin1(&a), Input::Utf16(&u)] {
+                let (r, polls) = run_polled(pat, "", input, 0, 0);
+                assert_eq!(r, ExecResult::NoMatch, "/{pat}/");
+                assert!(polls >= 3, "/{pat}/: {polls} polls");
+                let (r, polls) = run_polled(pat, "", input, 0, 2);
+                assert_eq!((r, polls), (ExecResult::Interrupted, 2), "/{pat}/");
+            }
+        }
     }
 
     /// Patch 0002: a sticky exec is one attempt at `start`. A sticky lexer that fails at each

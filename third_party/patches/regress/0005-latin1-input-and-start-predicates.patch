@@ -19,27 +19,33 @@ widen each subject to UTF-16 first.
   the units below 256 and one bit for all others; memchr for 1-3
   units), or anchored at the start. UTF-16, UCS-2 and Latin-1 searches
   use it. A UTF-16 search uses a set only when it holds no unit at or
-  above 256, so it never starts inside a surrogate pair. The UTF-16
-  prefix search compares at most 16 prefix units at each candidate,
-  so its uncounted work stays linear in the text; the counted match
-  attempt at the candidate checks the rest.
+  above 256, so it never starts inside a surrogate pair.
+- The start-position search is metered: one call looks at the start
+  positions of one chunk of at most 1024 units and is one counted step
+  (budget and poll), so a long subject with no candidate, or whose
+  candidates the prefix check rejects, spends the budget and polls on
+  all three forms. The UTF-16 and UCS-2 prefix search compares at most
+  16 prefix units at each candidate; the counted match attempt at the
+  candidate checks the rest.
 
 Searches over &str are unchanged.
 
 Test: tests/latin1.rs checks each search (predicates on) against one
 match attempt per position (no predicate) for 29 patterns, 5 flag sets
 and 27 texts in all three forms. tests/limits.rs checks that a long
-prefix search on UTF-16 text polls.
+prefix search on UTF-16 text polls, and that a prefix whose mismatch
+is in its first 16 units and a first-unit set spend the budget and
+poll on UCS-2, UTF-16 and Latin-1 text.
 ---
- src/api.rs                |  32 ++++-
- src/classicalbacktrack.rs |  59 +++++++-
+ src/api.rs                |  32 +++-
+ src/classicalbacktrack.rs |  70 +++++++-
  src/emit.rs               |   2 +
- src/indexing.rs           | 286 ++++++++++++++++++++++++++++++++++++++
- src/insn.rs               |  51 +++++++
- src/startpredicate.rs     | 218 +++++++++++++++++++++++++++++
- tests/latin1.rs           | 195 ++++++++++++++++++++++++++
- tests/limits.rs           |  38 +++++
- 8 files changed, 877 insertions(+), 4 deletions(-)
+ src/indexing.rs           | 360 ++++++++++++++++++++++++++++++++++++++
+ src/insn.rs               |  51 ++++++
+ src/startpredicate.rs     | 218 +++++++++++++++++++++++
+ tests/latin1.rs           | 195 +++++++++++++++++++++
+ tests/limits.rs           | 108 ++++++++++++
+ 8 files changed, 1032 insertions(+), 4 deletions(-)
  create mode 100644 tests/latin1.rs
 
 diff --git a/src/api.rs b/src/api.rs
@@ -114,10 +120,15 @@ index 69fe290..1a7ba0a 100644
      }
  
 diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
-index d262cd4..c08491b 100644
+index d262cd4..1320c66 100644
 --- a/src/classicalbacktrack.rs
 +++ b/src/classicalbacktrack.rs
-@@ -10,6 +10,8 @@ use crate::exec;
+@@ -7,9 +7,13 @@ use crate::bytesearch;
+ use crate::cursor;
+ use crate::cursor::{Backward, Direction, Forward};
+ use crate::exec;
++#[cfg(feature = "utf16")]
++use crate::indexing::UnitScan;
  use crate::indexing::{AsciiInput, ElementType, InputIndexer, Utf8Input};
  #[cfg(not(feature = "utf16"))]
  use crate::insn::StartPredicate;
@@ -126,7 +137,7 @@ index d262cd4..c08491b 100644
  use crate::insn::{CompiledRegex, Insn, LoopFields};
  use crate::matchers;
  use crate::matchers::CharProperties;
-@@ -1258,12 +1260,14 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+@@ -1258,12 +1262,14 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
  
      /// \return the next match for an anchored regex that only matches at the start.
      /// This avoids any string searching and only tries matching at the given position.
@@ -142,7 +153,7 @@ index d262cd4..c08491b 100644
          let inp = self.input;
          // For anchored regexes, only try matching at the current position
          if let Some(end) = self.matcher.try_at_pos(inp, 0, pos, Forward::new()) {
-@@ -1292,6 +1296,35 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+@@ -1292,6 +1298,44 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
          Some(self.successful_match(pos, end))
      }
  
@@ -160,7 +171,16 @@ index d262cd4..c08491b 100644
 +            if !self.matcher.step() {
 +                return None;
 +            }
-+            pos = inp.find_unit_start(pos, pred)?;
++            // One step per chunk of the scan, so a long subject with no candidate (or with
++            // candidates that the prefix check rejects) is metered too.
++            pos = match inp.find_unit_start(pos, pred) {
++                UnitScan::Candidate(p) => p,
++                UnitScan::Scanned(p) => {
++                    pos = p;
++                    continue;
++                }
++                UnitScan::End => return None,
++            };
 +            if let Some(end) = self.matcher.try_at_pos(inp, 0, pos, Forward::new()) {
 +                // If we matched the empty string, we have to increment.
 +                if end != pos {
@@ -178,7 +198,7 @@ index d262cd4..c08491b 100644
      /// \return the next match, searching the remaining bytes using the given
      /// prefix searcher to quickly find the first potential match location.
      fn next_match_with_prefix_search<PrefixSearch: bytesearch::ByteSearcher>(
-@@ -1338,9 +1371,29 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
+@@ -1338,9 +1382,29 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
          pos: Input::Position,
          next_start: &mut Option<Input::Position>,
      ) -> Option<Match> {
@@ -224,7 +244,7 @@ index 0cb96b8..86f726c 100644
      };
      emitter.emit_node(&n.node);
 diff --git a/src/indexing.rs b/src/indexing.rs
-index 44a80d5..47a5f43 100644
+index 44a80d5..c715ed2 100644
 --- a/src/indexing.rs
 +++ b/src/indexing.rs
 @@ -1,5 +1,7 @@
@@ -235,7 +255,7 @@ index 44a80d5..47a5f43 100644
  use crate::matchers::{self, CharProperties};
  #[cfg(feature = "utf16")]
  use crate::position::IndexPosition;
-@@ -57,6 +59,23 @@ where
+@@ -57,6 +59,24 @@ where
      /// This is true for ASCII and UTF8, but not for UCS2 or UTF16.
      const CODE_UNITS_ARE_BYTES: bool;
  
@@ -244,56 +264,64 @@ index 44a80d5..47a5f43 100644
 +    #[cfg(feature = "utf16")]
 +    const UNIT_PREDICATES: bool = false;
 +
-+    /// \return the first position at or after `pos` where a match may start under `pred`
-+    /// (a `Prefix` or `First` predicate), or None if there is none. Only called when
++    /// Scans for the first position at or after `pos` where a match may start under `pred`
++    /// (a `Prefix` or `First` predicate). It looks at the start positions of one chunk of
++    /// at most `UNIT_SCAN_CHUNK` units, so a caller counts a step per call. Only called when
 +    /// `UNIT_PREDICATES` is true.
 +    #[cfg(feature = "utf16")]
 +    fn find_unit_start(
 +        &self,
 +        pos: Self::Position,
 +        _pred: &UnitPredicate,
-+    ) -> Option<Self::Position> {
-+        Some(pos)
++    ) -> UnitScan<Self::Position> {
++        UnitScan::Candidate(pos)
 +    }
 +
      /// \return whether we are using unicode for case-folding.
      fn unicode(&self) -> bool;
  
-@@ -898,6 +917,20 @@ impl<'a> InputIndexer for Utf16Input<'a> {
+@@ -898,6 +918,24 @@ impl<'a> InputIndexer for Utf16Input<'a> {
      type Element = u32;
      type CharProps = matchers::Utf16CharProperties;
      const CODE_UNITS_ARE_BYTES: bool = false;
 +    const UNIT_PREDICATES: bool = true;
 +
-+    fn find_unit_start(&self, pos: Self::Position, pred: &UnitPredicate) -> Option<Self::Position> {
++    fn find_unit_start(
++        &self,
++        pos: Self::Position,
++        pred: &UnitPredicate,
++    ) -> UnitScan<Self::Position> {
 +        // A set that holds units at or above 256 may hold a trail surrogate, and a search must
 +        // not start inside a surrogate pair: try every position then.
 +        if let UnitPredicate::First(set) = pred {
 +            if set.high {
-+                return Some(pos);
++                return UnitScan::Candidate(pos);
 +            }
 +        }
-+        // Each candidate unit is below 256, so no candidate is inside a pair.
-+        let at = find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred)?;
-+        Some(pos + at)
++        // Each candidate unit is below 256, so no candidate is inside a pair, and a chunk
++        // that ends inside a pair goes on at a unit that is no candidate.
++        find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred).map(|at| pos + at)
 +    }
  
      #[inline(always)]
      fn unicode(&self) -> bool {
-@@ -1144,6 +1177,12 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
+@@ -1144,6 +1182,15 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
      type Element = u32;
      type CharProps = matchers::Utf16CharProperties;
      const CODE_UNITS_ARE_BYTES: bool = false;
 +    const UNIT_PREDICATES: bool = true;
 +
-+    fn find_unit_start(&self, pos: Self::Position, pred: &UnitPredicate) -> Option<Self::Position> {
-+        let at = find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred)?;
-+        Some(pos + at)
++    fn find_unit_start(
++        &self,
++        pos: Self::Position,
++        pred: &UnitPredicate,
++    ) -> UnitScan<Self::Position> {
++        find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred).map(|at| pos + at)
 +    }
  
      #[inline(always)]
      fn unicode(&self) -> bool {
-@@ -1290,3 +1329,250 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
+@@ -1290,3 +1337,316 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
          panic!("Should never be matching bytes for ucs2");
      }
  }
@@ -330,17 +358,39 @@ index 44a80d5..47a5f43 100644
 +    const CODE_UNITS_ARE_BYTES: bool = true;
 +    const UNIT_PREDICATES: bool = true;
 +
-+    fn find_unit_start(&self, pos: Self::Position, pred: &UnitPredicate) -> Option<Self::Position> {
++    fn find_unit_start(
++        &self,
++        pos: Self::Position,
++        pred: &UnitPredicate,
++    ) -> UnitScan<Self::Position> {
 +        let rest = &self.input[self.pos_to_offset(pos)..];
-+        let at = match pred {
-+            UnitPredicate::Prefix { finder, .. } => finder.find(rest)?,
-+            UnitPredicate::First(set) => match set.few {
-+                Some([a, b, c]) => memchr::memchr3(a, b, c, rest)?,
-+                None => bytesearch::ByteSearcher::find_in(&set.low, rest)?,
-+            },
-+            UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => 0,
++        // The start positions of this chunk: `rest[..starts]`; the chunk reads `need - 1`
++        // more units for a prefix that starts near its end.
++        let need = match pred {
++            UnitPredicate::Prefix { units, .. } => units.len(),
++            UnitPredicate::First(_) => 1,
++            UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => {
++                return UnitScan::Candidate(pos);
++            }
 +        };
-+        Some(pos + at)
++        let Some(open) = (rest.len() + 1).checked_sub(need) else {
++            return UnitScan::End;
++        };
++        let starts = core::cmp::min(open, UNIT_SCAN_CHUNK);
++        let window = &rest[..starts + need - 1];
++        let at = match pred {
++            UnitPredicate::Prefix { finder, .. } => finder.find(window),
++            UnitPredicate::First(set) => match set.few {
++                Some([a, b, c]) => memchr::memchr3(a, b, c, window),
++                None => bytesearch::ByteSearcher::find_in(&set.low, window),
++            },
++            UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => Some(0),
++        };
++        match at {
++            Some(at) => UnitScan::Candidate(pos + at),
++            None if starts == open => UnitScan::End,
++            None => UnitScan::Scanned(pos + starts),
++        }
 +    }
 +
 +    #[inline(always)]
@@ -507,41 +557,85 @@ index 44a80d5..47a5f43 100644
 +    }
 +}
 +
-+/// The most prefix units `find_unit_start_u16` compares at one candidate position. The
-+/// search does not count its steps, so its work must stay linear in the text: a longer
++/// The most prefix units `find_unit_start_u16` compares at one candidate position: a longer
 +/// prefix is checked by the (counted) match attempt at the position it returns.
 +#[cfg(feature = "utf16")]
 +const PREFIX_CHECK_UNITS: usize = 16;
 +
-+/// The index in `units` of the first code unit where a match may start under `pred` (a
-+/// `Prefix` or `First` predicate), or None. It compares at most `PREFIX_CHECK_UNITS` units
-+/// of the prefix at each candidate, so a search takes O(text length) work.
++/// The most start positions one `find_unit_start` call looks at. The caller counts one step
++/// per call, so a scan of a long subject (rejected prefix candidates included) spends the
++/// budget and polls; one call reads at most this many units plus the prefix length, and
++/// compares at most `PREFIX_CHECK_UNITS` units at each candidate.
 +#[cfg(feature = "utf16")]
-+fn find_unit_start_u16(units: &[u16], pred: &UnitPredicate) -> Option<usize> {
-+    match pred {
++pub(crate) const UNIT_SCAN_CHUNK: usize = 1024;
++
++/// What one `find_unit_start` call found.
++#[cfg(feature = "utf16")]
++#[derive(Debug, Copy, Clone, PartialEq, Eq)]
++pub enum UnitScan<P> {
++    /// A position where a match may start.
++    Candidate(P),
++    /// No match starts before this position: the chunk ended; scan on from here.
++    Scanned(P),
++    /// No match starts at any later position.
++    End,
++}
++
++#[cfg(feature = "utf16")]
++impl<P> UnitScan<P> {
++    /// The same result with `f` applied to its position.
++    fn map<Q>(self, f: impl FnOnce(P) -> Q) -> UnitScan<Q> {
++        match self {
++            UnitScan::Candidate(p) => UnitScan::Candidate(f(p)),
++            UnitScan::Scanned(p) => UnitScan::Scanned(f(p)),
++            UnitScan::End => UnitScan::End,
++        }
++    }
++}
++
++/// The first index in `units` where a match may start under `pred` (a `Prefix` or `First`
++/// predicate), among the start positions of one chunk (`UNIT_SCAN_CHUNK`). It compares at
++/// most `PREFIX_CHECK_UNITS` units of the prefix at each candidate, so one call takes
++/// O(`UNIT_SCAN_CHUNK`) work.
++#[cfg(feature = "utf16")]
++fn find_unit_start_u16(units: &[u16], pred: &UnitPredicate) -> UnitScan<usize> {
++    let need = match pred {
++        UnitPredicate::Prefix { units: prefix, .. } => prefix.len(),
++        UnitPredicate::First(_) => 1,
++        UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => return UnitScan::Candidate(0),
++    };
++    // The start positions that leave room for `need` units, and this chunk's part of them.
++    let Some(open) = (units.len() + 1).checked_sub(need) else {
++        return UnitScan::End;
++    };
++    let starts = core::cmp::min(open, UNIT_SCAN_CHUNK);
++    let found = match pred {
 +        UnitPredicate::Prefix { units: prefix, .. } => {
 +            let first = u16::from(prefix[0]);
 +            let check = &prefix[..core::cmp::min(prefix.len(), PREFIX_CHECK_UNITS)];
 +            let mut at = 0;
 +            loop {
-+                at += units[at..].iter().position(|&u| u == first)?;
-+                let rest = &units[at..];
-+                if rest.len() >= prefix.len()
-+                    && rest
-+                        .iter()
-+                        .zip(check.iter())
-+                        .all(|(&u, &p)| u == u16::from(p))
++                let Some(i) = units[at..starts].iter().position(|&u| u == first) else {
++                    break None;
++                };
++                at += i;
++                if units[at..]
++                    .iter()
++                    .zip(check.iter())
++                    .all(|(&u, &p)| u == u16::from(p))
 +                {
-+                    return Some(at);
-+                }
-+                if rest.len() < prefix.len() {
-+                    return None;
++                    break Some(at);
 +                }
 +                at += 1;
 +            }
 +        }
-+        UnitPredicate::First(set) => units.iter().position(|&u| set.contains(u)),
++        UnitPredicate::First(set) => units[..starts].iter().position(|&u| set.contains(u)),
 +        UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => Some(0),
++    };
++    match found {
++        Some(at) => UnitScan::Candidate(at),
++        None if starts == open => UnitScan::End,
++        None => UnitScan::Scanned(starts),
 +    }
 +}
 diff --git a/src/insn.rs b/src/insn.rs
@@ -1048,10 +1142,10 @@ index 0000000..c9e9290
 +    assert!(m.is_none());
 +}
 diff --git a/tests/limits.rs b/tests/limits.rs
-index 0702720..28843b7 100644
+index 0702720..bd8c11f 100644
 --- a/tests/limits.rs
 +++ b/tests/limits.rs
-@@ -208,3 +208,41 @@ fn single_character_loop_iterations_are_steps() {
+@@ -208,3 +208,111 @@ fn single_character_loop_iterations_are_steps() {
      let m = re.find_limited(Text::Ucs2(&text), 0, &mut limits).unwrap();
      assert_eq!(m.unwrap().range(), 0..100_000);
  }
@@ -1092,4 +1186,74 @@ index 0702720..28843b7 100644
 +    };
 +    let m = re.find_limited(Text::Ucs2(&text), 0, &mut limits).unwrap();
 +    assert_eq!(m.unwrap().range(), 60..101);
++}
++
++/// A prefix whose mismatch is inside its first 16 units: every candidate fails in the
++/// start-position search itself, so no candidate reaches the counted match attempt. The
++/// search meters the units it scans in bounded chunks, so a long subject spends the budget
++/// and polls on UCS-2, UTF-16 and Latin-1 text (it was one step before, with no poll).
++#[test]
++fn rejected_prefix_candidates_are_metered() {
++    let re = Regex::new(&format!("{}b", "a".repeat(15))).unwrap();
++    let wide = vec![u16::from(b'a'); 100_000];
++    let narrow = vec![b'a'; 100_000];
++    for t in [Text::Ucs2(&wide), Text::Utf16(&wide), Text::Latin1(&narrow)] {
++        let mut never = || false;
++        let mut limits = Limits {
++            budget: Some(20),
++            poll_interval: 1024,
++            poll: &mut never,
++        };
++        let r = re.find_limited(t, 0, &mut limits);
++        assert_eq!(r.unwrap_err(), Stopped::BudgetExceeded, "budget");
++        let mut polls = 0u32;
++        let mut stop_at_third = || {
++            polls += 1;
++            polls == 3
++        };
++        let mut limits = Limits {
++            budget: None,
++            poll_interval: 4,
++            poll: &mut stop_at_third,
++        };
++        let r = re.find_limited(t, 0, &mut limits);
++        assert_eq!(r.unwrap_err(), Stopped::Interrupted, "poll");
++        assert_eq!(polls, 3);
++    }
++    // A first-unit set on a long subject with no member is metered too.
++    let re = Regex::new("[bc]x").unwrap();
++    for t in [Text::Ucs2(&wide), Text::Utf16(&wide), Text::Latin1(&narrow)] {
++        let mut never = || false;
++        let mut limits = Limits {
++            budget: Some(20),
++            poll_interval: 1024,
++            poll: &mut never,
++        };
++        let r = re.find_limited(t, 0, &mut limits);
++        assert_eq!(r.unwrap_err(), Stopped::BudgetExceeded, "set budget");
++    }
++    // With room to finish, the search gives the same result as before: no match, and a
++    // match whose start is past several chunks.
++    let mut text = vec![u16::from(b'a'); 5_000];
++    text.extend(utf16("aaaaaaaaaaaaaaab"));
++    let mut bytes = vec![b'a'; 5_000];
++    bytes.extend(b"aaaaaaaaaaaaaaab");
++    let re = Regex::new(&format!("{}b", "a".repeat(15))).unwrap();
++    for t in [Text::Ucs2(&text), Text::Utf16(&text), Text::Latin1(&bytes)] {
++        let mut never = || false;
++        let mut limits = Limits {
++            budget: None,
++            poll_interval: 1024,
++            poll: &mut never,
++        };
++        let m = re.find_limited(t, 0, &mut limits).unwrap();
++        assert_eq!(m.unwrap().range(), 5_000..5_016);
++        let mut never = || false;
++        let mut limits = Limits {
++            budget: None,
++            poll_interval: 1024,
++            poll: &mut never,
++        };
++        assert!(re.find_limited(t, 5_001, &mut limits).unwrap().is_none());
++    }
 +}
