@@ -215,6 +215,8 @@ fn create_slow(rt: &Runtime, f: FrameRef, mapped: bool, map: &[Option<u32>]) -> 
 /// object, then only init stores (E2: no GC point between the object's allocation and its
 /// last store). GC point.
 fn create_fast(rt: &Runtime, f: FrameRef, s: u64, mapped: bool, map: &[Option<u32>]) -> u64 {
+    #[cfg(test)]
+    FAST_PATH_OBJECTS.with(|n| n.set(n.get() + 1));
     let argc = f.argc();
     // GC points below: `s` is held by the REALM record, `values`, `callee_v` and `e` live in
     // Rust locals (CSS), and the argument values are read from the frame after the
@@ -253,6 +255,12 @@ fn create_fast(rt: &Runtime, f: FrameRef, s: u64, mapped: bool, map: &[Option<u3
         init(o, first + 8 * i, v);
     }
     o.to_value().to_bits()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The objects [`create_fast`] made on this thread (the tests check the path ran).
+    pub(crate) static FAST_PATH_OBJECTS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
 /// The ELEMENTS list of a new arguments object for the frame `f` (n = argc > 0 arguments,

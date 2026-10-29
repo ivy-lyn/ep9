@@ -452,8 +452,11 @@ fn unmapped_four() -> VerifiedUnit {
 fn with_four(make: fn() -> VerifiedUnit, stress: bool, check: fn(&mut Cx, [u64; 4])) {
     on_big_stack(move || {
         let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        let fast = crate::arguments::FAST_PATH_OBJECTS.with(|n| n.get());
         iso.with_cx_checkpoint(|cx| cx.run_script(make(), "test.js").map(|_| ()))
             .unwrap();
+        let made = crate::arguments::FAST_PATH_OBJECTS.with(|n| n.get()) - fast;
+        assert_eq!(made, 3, "A, C and D come from the fast path");
         let v = ["B", "A", "C", "D"].map(|n| iso.global_raw(n).expect(n).to_bits());
         let hs = v.map(|a| iso.rt.heap.new_global(crate::runtime::val(a)));
         check(&mut iso.cx, v);
@@ -599,12 +602,21 @@ fn the_spec_tests_hold_on_the_fast_path() {
 fn the_list_fast_path_reads_an_unmodified_arguments_object() {
     use crate::abi::{Cx as AbiCx, JsValue, Local};
     use crate::arguments::unmodified_length;
-    fn list(cx: &mut Cx, a: u64) -> Vec<u64> {
+    /// The list as text: the int32 values and `undefined`, space-separated.
+    fn list(cx: &mut Cx, a: u64) -> String {
         let mut acx = AbiCx::new(cx);
         let l = acx
             .create_list_from_array_like(Local::<JsValue>::from_bits(a))
             .unwrap();
-        (0..l.len()).map(|i| l.get(i).bits()).collect()
+        let text = |b: u64| match crate::runtime::val(b).as_int32() {
+            Some(n) => n.to_string(),
+            None if b == UNDEFINED => "undefined".to_string(),
+            None => format!("{b:#x}"),
+        };
+        (0..l.len())
+            .map(|i| text(l.get(i).bits()))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
     for stress in [false, true] {
         with_four(mapped_four, stress, |cx, [b, a, c, d]| {
@@ -613,40 +625,40 @@ fn the_list_fast_path_reads_an_unmodified_arguments_object() {
             assert_eq!(unmodified_length(rt, c), Some(2));
             assert_eq!(unmodified_length(rt, d), Some(0));
             let i = int32_bits;
-            assert_eq!(list(cx, a), [i(1), i(2), i(3)]);
-            assert_eq!(list(cx, d), Vec::<u64>::new());
+            assert_eq!(list(cx, a), "1 2 3");
+            assert_eq!(list(cx, d), "");
             // A mapped element reads its parameter.
             set_param(cx, a, 1, i(20));
-            assert_eq!(list(cx, a), [i(1), i(20), i(3)]);
+            assert_eq!(list(cx, a), "1 20 3");
             // length = 5 (a value store: the same shape): indices 3 and 4 read the chain,
             // undefined, then %Object.prototype%[4] once it has one.
             let length = cx.rt().atom(Atom::Length);
             property::set(cx, a, length, i(5), true).unwrap();
             assert_eq!(unmodified_length(cx.rt(), a), Some(5));
-            assert_eq!(list(cx, a), [i(1), i(20), i(3), UNDEFINED, UNDEFINED]);
+            assert_eq!(list(cx, a), "1 20 3 undefined undefined");
             let proto = object::proto_of(a);
             property::set_keyed(cx, proto, i(4), i(44), true).unwrap();
-            assert_eq!(list(cx, a), [i(1), i(20), i(3), UNDEFINED, i(44)]);
+            assert_eq!(list(cx, a), "1 20 3 undefined 44");
             // A deleted element reads the chain too (undefined at index 0).
             let k0 = key(cx.rt(), 0);
             assert!(property::delete(cx, a, k0, true).unwrap());
-            assert_eq!(list(cx, a), [UNDEFINED, i(20), i(3), UNDEFINED, i(44)]);
+            assert_eq!(list(cx, a), "undefined 20 3 undefined 44");
             // A negative or a double `length`: the generic path (ToLength).
             property::set(cx, a, length, i(-1), true).unwrap();
             assert_eq!(unmodified_length(cx.rt(), a), None);
-            assert_eq!(list(cx, a), Vec::<u64>::new());
+            assert_eq!(list(cx, a), "");
             property::set(cx, a, length, crate::conv::num(2.5), true).unwrap();
             assert_eq!(unmodified_length(cx.rt(), a), None);
-            assert_eq!(list(cx, a), [UNDEFINED, i(20)]);
+            assert_eq!(list(cx, a), "undefined 20");
             // A new own property changes the shape: the generic path.
             let x = crate::atoms::intern_str(cx.rt(), "x");
             property::set(cx, c, x, i(1), true).unwrap();
             assert_eq!(unmodified_length(cx.rt(), c), None);
-            assert_eq!(list(cx, c), [i(1), i(2)]);
+            assert_eq!(list(cx, c), "1 2");
             // A deleted `length`: the generic path reads undefined, so an empty list.
             assert!(property::delete(cx, b, length, true).unwrap());
             assert_eq!(unmodified_length(cx.rt(), b), None);
-            assert_eq!(list(cx, b), Vec::<u64>::new());
+            assert_eq!(list(cx, b), "");
         });
     }
 }
