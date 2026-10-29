@@ -1037,7 +1037,8 @@ fn the_abi_creates_and_revokes_a_proxy() {
             let pc = cx.proxy_create(c, h).unwrap();
             assert!(cx.is_constructor(pc));
             cx.proxy_revoke(pc);
-            assert!(!cx.is_constructor(pc));
+            // §10.5.14 step 7.b: a revoked proxy keeps the [[Construct]] it got at creation.
+            assert!(cx.is_constructor(pc));
         });
     }
 }

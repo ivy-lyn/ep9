@@ -8,15 +8,15 @@
 //!  +0  word0 (shape of the cell: prototype null; only private names are stored here)
 //!  +8  SLOTS (out-of-line fields) | PROPS | undefined
 //!  +16 undefined (no elements)
-//!  +24 fixed 0  [[ProxyTarget]]   an object; null once revoked
+//!  +24 fixed 0  [[ProxyTarget]]   an object; once revoked null, or undefined if it has [[Construct]]
 //!  +32 fixed 1  [[ProxyHandler]]  an object; null once revoked
 //! ```
 //!
 //! The kind is PROXY_CALLABLE when the target is callable at creation (§10.5.14 step 7), so
 //! IsCallable stays a kind test (`kinds::is_callable`). Both fields live in the heap cell
 //! (plan rule 8) and are traced as Values (object.rs registers both kinds). IsConstructor of
-//! a callable proxy is its target's ([`is_constructor`]); a revoked one reads false (its
-//! target is null; §10.5.14 step 7.b would keep `[[Construct]]`: H31, PROXY2 list).
+//! a callable proxy is its target's ([`is_constructor`]); a revoked one keeps its answer
+//! (§10.5.14 step 7.b): its target field holds null, or `undefined` if it has `[[Construct]]`.
 //!
 //! Routing (MC-w15-12, H31 fast-path row 3): both kinds are `exotic::is_routed` kinds, so
 //! every hook of `exotic.rs` and `property.rs` that can throw sends them here, and the keyless
@@ -155,26 +155,41 @@ pub(crate) fn proxy_create(cx: &mut Cx, target: u64, handler: u64) -> Res<u64> {
     Ok(p)
 }
 
-/// The revoke step of a revocable proxy (§28.2.2.1.1 steps 3-5): both fields become null.
-/// Revoking a revoked proxy changes nothing. Not a GC point.
+/// The target field of a revoked proxy that has `[[Construct]]` (§10.5.14 step 7.b: a
+/// revoked proxy keeps the internal methods it got at creation). Not an object, so nothing
+/// reads it as a target; a revoked proxy without `[[Construct]]` holds null.
+const REVOKED_CONSTRUCTOR: u64 = UNDEFINED;
+
+/// The revoke step of a revocable proxy (§28.2.2.1.1 steps 3-5): the handler becomes null,
+/// and the target null, or [`REVOKED_CONSTRUCTOR`] when the proxy has `[[Construct]]` (so
+/// IsConstructor keeps its creation-time answer, as V8's map bit does). Revoking a revoked
+/// proxy changes nothing. Not a GC point.
 pub(crate) fn revoke(rt: &Runtime, p: u64) {
-    object::fixed_set(rt, p, field::TARGET, NULL);
+    if handler(p) == NULL {
+        return;
+    }
+    let t = if is_constructor(p) {
+        REVOKED_CONSTRUCTOR
+    } else {
+        NULL
+    };
+    object::fixed_set(rt, p, field::TARGET, t);
     object::fixed_set(rt, p, field::HANDLER, NULL);
 }
 
 /// IsConstructor (§7.2.4) of `p` when it is not a FUNCTION (`object::is_constructor` asks
 /// this through `bound::is_constructor`): a bound function's or a proxy's is its target's,
 /// down a chain of proxies and bound functions in a loop (no Rust recursion). A revoked
-/// proxy reads false: its target is gone (the spec keeps the `[[Construct]]` it got at
-/// creation; a revoked one throws in it anyway). Not a GC point.
+/// proxy keeps the answer it had at creation (§10.5.14 step 7.b; [`revoke`] stores it in the
+/// target field), so revoking a proxy down the chain changes no outer answer. Not a GC point.
 pub(crate) fn is_constructor(p: u64) -> bool {
     let mut f = p;
     loop {
         let k = kind::cell_kind(f);
         if k == kind::PROXY_CALLABLE.get() {
             f = target(f);
-            if f == NULL {
-                return false;
+            if !is_object(f) {
+                return f == REVOKED_CONSTRUCTOR;
             }
         } else if k == kind::BOUND_FUNCTION.get() {
             f = crate::bound::innermost(f);

@@ -296,3 +296,31 @@ print(out.length, out.join());
         lines(&["1 b"])
     );
 }
+
+/// IsConstructor of a revoked proxy (§10.5.14 step 7.b; Codex r1 proxy2 [medium]): a proxy
+/// keeps the `[[Construct]]` it got at creation, so `Array.of` constructs through it (and
+/// throws the revoked TypeError), and a live outer proxy whose inner target was revoked
+/// still runs its `construct` trap. Node v24.22.1 prints these lines.
+#[test]
+fn a_revoked_proxy_keeps_its_construct() {
+    assert_eq!(
+        common::run_both(js!(r#"
+var r = Proxy.revocable(function () {}, {});
+r.revoke();
+print(t(() => Array.of.call(r.proxy, 1)));
+var r2 = Proxy.revocable(function () {}, {});
+var outer = new Proxy(r2.proxy, { construct: function () { return { ok: 1 }; } });
+var bound = Function.prototype.bind.call(r2.proxy, null);
+r2.revoke();
+print(t(() => JSON.stringify(new outer())), t(() => new bound()));
+var r3 = Proxy.revocable(() => 1, {});
+r3.revoke();
+print(t(() => Array.of.call(r3.proxy, 1).length), t(() => new r3.proxy()).split(':')[0]);
+"#)),
+        lines(&[
+            "TypeError: Cannot perform 'construct' on a proxy that has been revoked",
+            "{\"ok\":1} TypeError: Cannot perform 'construct' on a proxy that has been revoked",
+            "1 TypeError",
+        ])
+    );
+}

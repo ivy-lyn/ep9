@@ -709,7 +709,8 @@ fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
                 return None;
             }
             o = crate::proxy::target(o);
-            if o == NULL {
+            if !is_object(o) {
+                // Revoked (null, or undefined for one with [[Construct]]).
                 return None;
             }
         }
