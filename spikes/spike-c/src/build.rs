@@ -864,12 +864,17 @@ impl Builder<'_> {
                 self.set_acc(n);
             }
             LdaCurrentContextSlot | LdaImmutableCurrentContextSlot => {
+                // A guard as an element load's (Codex M5-P2 r1 spikec6 1): the emitted code
+                // checks the frame's context and the slot index (`emit_a64` `load_context`),
+                // and exits on the state before the instruction, which T0 runs again.
+                let st = self.state();
                 let n = self.emit(
                     Op::LoadContextSlot(insn.unsigned(0)),
                     vec![],
                     Repr::Tagged,
                     Trust::Unknown,
                 );
+                self.guard(n, GuardBasis::Unbacked, st);
                 self.set_acc(n);
             }
             CallUndefinedReceiver0 | CallUndefinedReceiver1 | CallUndefinedReceiver2 => {

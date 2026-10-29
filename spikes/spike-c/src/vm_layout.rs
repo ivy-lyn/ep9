@@ -254,6 +254,7 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     check_versions(VM_VERSIONS)?;
     // SAFETY: the session ran CHECK_SRC just now.
     unsafe { check_kinds(session) }?;
+    check_context(session)?;
     let o = session.function_value("layoutObj")?.to_bits();
     let a = session.function_value("layoutObj.b")?.to_bits();
     let f = session.function_value("layoutGet")?;
@@ -316,7 +317,7 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     Ok(format!(
         "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
          as ep9_vm::layout exports them; the elements kind in the shape and both storage forms \
-         on arrays of the 6 kinds; versions {}",
+         on arrays of the 6 kinds; a closure's CONTEXT cell; versions {}",
         PINNED
             .iter()
             .map(|(n, v)| format!("{n} {v}"))
@@ -432,6 +433,47 @@ fn check_versions(vm: [u32; 4]) -> Result<(), String> {
         if got != *want {
             return Err(format!(
                 "{name} is {got} in ep9_vm, the spike is pinned to {want}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `kinds::CONTEXT`): the kind id of a CONTEXT cell,
+/// which the guard of `LoadContextSlot` compares (Codex M5-P2 r1 spikec6 1; the export is
+/// frozen in month 5, plan v10 rule 2, as for [`KIND_SHAPE`]). Proved by [`check_context`].
+pub const KIND_CONTEXT: u8 = 66;
+
+/// The probe of [`check_context`]: a closure whose function's context holds one slot.
+const CONTEXT_SRC: &str = "\
+function layoutCtxMake() { var layoutC = 5; return function layoutCtxGet() { return layoutC; }; }\n\
+var layoutCtxFn = layoutCtxMake();\n";
+
+/// The context facts the `LoadContextSlot` guard reads, on a live closure: its function's
+/// context (`layout::FUNCTION_CONTEXT`) is a cell of kind [`KIND_CONTEXT`] whose length
+/// (`layout::CONTEXT_LENGTH`, an int32 Value) is 1 and whose slot 0 (`layout::CONTEXT_SLOTS`)
+/// holds 5.
+fn check_context(session: &mut crate::harness::Session) -> Result<(), String> {
+    use ep9_vm::layout::{CONTEXT_LENGTH, CONTEXT_SLOTS, FUNCTION_CONTEXT};
+    let r = session.run(CONTEXT_SRC, "layout-context.js");
+    r.result.map_err(|e| format!("context probe: {e}"))?;
+    let f = session.function_value("layoutCtxFn")?.to_bits();
+    if !is_cell(f) {
+        return Err("layoutCtxFn is not a cell".into());
+    }
+    // SAFETY: `f` is a live function held by a global of the session's isolate, which runs
+    // nothing while this reads; its context cell is live too (checked a cell before it is read).
+    unsafe {
+        let c = word(f, FUNCTION_CONTEXT as u32);
+        if !is_cell(c) || kind(c) != KIND_CONTEXT {
+            return Err(format!(
+                "the closure's context {c:#x} is not a CONTEXT cell"
+            ));
+        }
+        let (len, slot0) = (int32_of(word(c, CONTEXT_LENGTH)), word(c, CONTEXT_SLOTS));
+        if len != Some(1) || slot0 != int32_bits(5) {
+            return Err(format!(
+                "CONTEXT length {len:?} at +{CONTEXT_LENGTH}, slot 0 {slot0:#x} at +{CONTEXT_SLOTS}"
             ));
         }
     }

@@ -241,8 +241,8 @@ pub enum Op {
     /// for an integer in int32 range that is not -0, else a double with NaN purified).
     BoxFloat64,
     /// Slot `index` of the current context (the frame's context; `LdaCurrentContextSlot`):
-    /// Tagged, unknown. Reads mutable memory: never shared or moved across an effect
-    /// (SPIKEC-4, lin_solve).
+    /// Tagged, unknown, a guard (a CONTEXT cell with more slots; M5-P2). Reads mutable memory:
+    /// never shared or moved across an effect (SPIKEC-4, lin_solve).
     LoadContextSlot(u32),
     /// A call with an undefined receiver (`CallUndefinedReceiver0/1/2`): inputs = the callee,
     /// then the arguments, all Tagged; `regs` are the instruction's operand registers in the
@@ -307,7 +307,7 @@ impl Op {
             | Op::LoadElement
             | Op::StoreElement => true,
             Op::Int32(o) => !o.bitwise(),
-            _ => false,
+            _ => matches!(self, Op::LoadContextSlot(_)),
         }
     }
 

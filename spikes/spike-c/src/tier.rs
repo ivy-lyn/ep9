@@ -1609,6 +1609,66 @@ mod tests {
         }
     }
 
+    /// Codex M5-P2 r1 spikec6 1: a `LoadContextSlot` past the length of the frame's context
+    /// (a verified unit that BytecodeGen never makes: the verifier bounds a slot by the unit's
+    /// largest scope, H02-Q2; here `mk2`'s 2 slots, while `g`'s context has 1) exits to T0, which
+    /// runs the instruction again and throws its internal error, as a T0 run does. Before the
+    /// guard the compiled code read the word past the context: a wrong value, and under GC
+    /// stress an abort in the deopt of a later guard.
+    #[test]
+    fn a_context_slot_past_the_context_exits_to_t0() {
+        if !aarch64() {
+            return;
+        }
+        /// `g`'s first context load (the `x > 100` branch, which the warm-up never takes)
+        /// reads slot 1.
+        fn slot_1(file: &str, mut u: ep9_bytecode::CompiledUnit) -> ep9_bytecode::CompiledUnit {
+            if file != "defs.js" {
+                return u;
+            }
+            let want = ep9_bytecode::UnitString::new("g");
+            let g = (0..u.functions.len())
+                .find(|&f| u.functions[f].name.is_some_and(|n| *u.string(n) == want))
+                .expect("g");
+            let code = &mut u.functions[g].bytecode;
+            let at = ep9_bytecode::Instructions::new(code)
+                .map(|i| i.expect("decodes"))
+                .find(|i| {
+                    i.opcode == ep9_bytecode::Opcode::LdaImmutableCurrentContextSlot
+                        || i.opcode == ep9_bytecode::Opcode::LdaCurrentContextSlot
+                })
+                .map(|i| (i.offset + 1) as usize)
+                .expect("a context load");
+            assert_eq!(code[at], 0, "slot 0 (a one-byte operand)");
+            code[at] = 1;
+            u
+        }
+        let defs = "function mk() { var a = 7; return function g(x) { if (x > 100) { return a + 1; } return a; }; }\n\
+            function mk2() { var p = 1, q = 2; return function h() { return p + q; }; }\n\
+            var g1 = mk(); var h1 = mk2();";
+        let warm = "for (var q = 0; q < 20; q++) { g1(q); h1(); }";
+        let main = "try { print(g1(200)); } catch (e) { print('threw ' + e); } print(g1(3));";
+        crate::harness::PATCH.with(|p| *p.borrow_mut() = Some(slot_1));
+        for config in [Config::default(), Config::stress()] {
+            let r = run_script(&config, defs, warm, main, "g").expect("run");
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            assert_eq!(
+                r.compiled.output,
+                [
+                    "threw Error: ep9 internal error: context slot out of range",
+                    "7"
+                ]
+            );
+            assert_eq!(r.exits.iter().sum::<u64>(), 1, "exits {:?}", r.exits);
+            assert!(
+                r.report.graph.contains("LoadContextSlot(1)"),
+                "{}",
+                r.report.graph
+            );
+        }
+        crate::harness::PATCH.with(|p| *p.borrow_mut() = None);
+    }
+
     /// Call operands and parameters (WI-SC5): the frontend copies each call operand into a
     /// fresh local register, so `call_any` reads them from local slots the code writes, and a
     /// parameter's slot (where its incoming value lives, read by later nodes) is never

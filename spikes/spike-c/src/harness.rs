@@ -27,6 +27,33 @@ thread_local! {
     static TERMINATE: RefCell<Option<ep9_vm::TerminateHandle>> = const { RefCell::new(None) };
 }
 
+/// A test's change to a unit before it runs: (file name, unit) -> unit.
+#[cfg(test)]
+pub(crate) type UnitPatch = fn(&str, ep9_bytecode::CompiledUnit) -> ep9_bytecode::CompiledUnit;
+
+#[cfg(test)]
+thread_local! {
+    /// A test's change to each unit that [`Session::run`] compiles on this thread: a verified
+    /// unit that BytecodeGen never makes (Codex M5-P2 r1 spikec6 1). The changed unit is
+    /// verified again before it runs.
+    pub(crate) static PATCH: RefCell<Option<UnitPatch>> = const { RefCell::new(None) };
+}
+
+/// The unit `run` runs: `unit`, or in a test the [`PATCH`] of it, verified again.
+#[cfg(test)]
+fn patched(file: &str, unit: VerifiedUnit) -> Result<VerifiedUnit, String> {
+    match PATCH.with(|p| *p.borrow()) {
+        Some(f) => ep9_bytecode::verify(f(file, unit.into_inner()))
+            .map_err(|e| format!("the patched unit does not verify: {e:?}")),
+        None => Ok(unit),
+    }
+}
+
+#[cfg(not(test))]
+fn patched(_file: &str, unit: VerifiedUnit) -> Result<VerifiedUnit, String> {
+    Ok(unit)
+}
+
 /// The lines `print` wrote on this thread since the last call.
 pub fn take_output() -> Vec<String> {
     OUTPUT.with(|o| std::mem::take(&mut *o.borrow_mut()))
@@ -206,7 +233,7 @@ impl Session {
         take_output();
         let handle = self.iso.terminate_handle();
         TERMINATE.with(|t| *t.borrow_mut() = Some(handle));
-        let result = match compile(source) {
+        let result = match compile(source).and_then(|u| patched(file, u)) {
             Ok(unit) => {
                 self.scripts.push(Script {
                     file: file.to_string(),

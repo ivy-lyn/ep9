@@ -1245,13 +1245,13 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::LoadContextSlot(i) => {
-                // The frame's current context (a CONTEXT cell; the graph builder takes no
-                // PushContext, so it is the function's own for the whole call), then its slot
-                // `i` (`ep9_vm::layout::CONTEXT_SLOTS`, WI-SC5). Read again at each use: a
-                // call may store to the slot.
-                let d = self.dst(n)?;
+                // The frame's current context (the graph builder takes no PushContext, so it is
+                // the function's own for the whole call), checked ([`Emitter::load_context`]),
+                // then its slot `i` (`ep9_vm::layout::CONTEXT_SLOTS`, WI-SC5). Read again at
+                // each use: a call may store to the slot.
+                let (trap, d) = (self.trap(n)?, self.dst(n)?);
                 let at = u64::from(layout::CONTEXT_SLOTS) + 8 * u64::from(*i);
-                load_fp(&mut self.ops, 16, layout::FP_CONTEXT as i32);
+                self.load_context(trap, *i)?;
                 if at <= 32760 {
                     let at = at as u32;
                     dynasm!(self.ops ; .arch aarch64 ; ldr X(d), [x16, at]);
@@ -1739,6 +1739,38 @@ impl Emitter<'_> {
 /// 0, `mov x29, sp` at 4, then one `stp` per pair of [`SAVED`]. The epilogue at `epilogue`
 /// restores the pairs (one `ldp` each, reversed), then `ldp x29, x30`, then `br`; its rows sit
 /// between remember/restore state, so the out-of-line code after the `br` has the body's rule.
+impl Emitter<'_> {
+    /// `x16` = the frame's current context for a `LoadContextSlot(i)` (its guard, Codex M5-P2
+    /// r1 spikec6 1): the exit `trap` unless the word is a CONTEXT cell
+    /// ([`vm_layout::KIND_CONTEXT`]) with more than `i` slots (`layout::CONTEXT_LENGTH`, an
+    /// int32 Value). The verifier bounds a slot operand only by the largest scope of the unit
+    /// (H02-Q2), and T0 checks both in its handler (`ctx_walk`, `context_get`); after the
+    /// exit T0 runs the instruction again and throws as it does. Uses `x17`. Refuses `i` past
+    /// 4095 (one `cmp` immediate).
+    fn load_context(&mut self, trap: DynamicLabel, i: u32) -> Result<(), Refusal> {
+        if i > 4095 {
+            return Err(Refusal::Limit(format!("context slot {i} past 4095")));
+        }
+        let (kind, ctx) = (vm_layout::KIND_BYTE, u32::from(vm_layout::KIND_CONTEXT));
+        let len = layout::CONTEXT_LENGTH;
+        load_fp(&mut self.ops, 16, layout::FP_CONTEXT as i32);
+        mov64(&mut self.ops, 17, NOT_CELL_MASK);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; tst x16, x17
+            ; b.ne =>trap
+            ; cbz x16, =>trap
+            ; ldrb w17, [x16, kind]
+            ; cmp w17, ctx
+            ; b.ne =>trap
+            ; ldr w17, [x16, len]
+            ; cmp w17, i
+            ; b.ls =>trap
+        );
+        Ok(())
+    }
+}
+
 fn cfi(frame: u32, epilogue: u32) -> CfiProgram {
     let mut p = CfiProgram::new();
     let words = u64::from(frame / 8);
