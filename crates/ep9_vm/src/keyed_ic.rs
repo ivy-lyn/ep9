@@ -50,6 +50,13 @@
 //! the value half that the `profile.rs` record hooks write, so a T0 table that runs no record
 //! hook (`type feedback: ics_only`) keeps every hit.
 //!
+//! **Two tails (M5-P1-ORCH-3, MC-w19-10; M5-P2 ELEM2).** The StoreKeyed hit has two tails
+//! with no flag between them: the monomorphic one (store, `Flow::Next`) and the megamorphic
+//! one (store, then the sampled kinds-set bit, `profile::keyed_hit_kind`). The monomorphic
+//! path pays no budget test. The kinds-set record is the only `profile.rs` hook on either
+//! keyed hit path (here, and after the array path of `GetKeyedProperty`, where the bit goes
+//! out through `record_next`); it is what the `ics_only` table strips (PROFILE6).
+//!
 //! **Fuses (MC-w14-18).** The fast case assumes no fuse: it writes a present own element.
 //! The generic paths of `property.rs` keep using the `proto_index` flag
 //! (`shape::proto_index_keys`, V8's "no elements" protector) for a new element and a hole
@@ -96,7 +103,9 @@ fn present_element(o: u64, k: u64) -> Option<(CellPtr, usize, bool)> {
         return None;
     }
     let i = u32::try_from(int32_of(k)).ok()?;
-    if i >= object::array_len(o) {
+    // The dense bound (one load): a DICTIONARY array (M5-P2 ELEM2) has a capacity of 0, so it
+    // misses below whatever its `length` word says.
+    if i >= object::array_len_dense(o) {
         return None;
     }
     let e = rd(object::cell(o), obj::ELEMENTS);
@@ -113,28 +122,6 @@ fn present_element(o: u64, k: u64) -> Option<(CellPtr, usize, bool)> {
         return (rd(e, off) != HOLE).then_some((e, off, false));
     }
     (object::raw_get(e, off) != delems::HOLE).then_some((e, off, true))
-}
-
-/// Whether the keyed IC state of slot `s` lets the fast case of the receiver `o` hit (see the
-/// module docs): `Some(megamorphic)`. On a miss (`None`) it changes the state (out of line)
-/// and the caller goes cold, so the cold body records this execution. A monomorphic hit
-/// needs no kinds-set record: the shape holds the elements kind, and the miss that installed
-/// the shape recorded it.
-#[inline(always)]
-fn hits(st: &St<'_>, o: u64, s: FSlot) -> Option<bool> {
-    let Some(v) = feedback::vector(st.info()) else {
-        return Some(false);
-    };
-    let key = feedback::key(v, s.0);
-    // An undefined key and the hole never equal a ShapeId (as in `ic::handler_for`).
-    if key as u32 == shape_id(o) {
-        return Some(false);
-    }
-    if key == HOLE {
-        return Some(true);
-    }
-    note_receiver(st.rt(), v, s.0, o, key);
-    None
 }
 
 /// The keyed IC state change of slot `i` of the vector `v` for a fast-case receiver `o`
@@ -162,6 +149,14 @@ pub(crate) fn fast_get(_st: &mut St<'_>, _o: u64, _k: u64, _s: FSlot) -> Flow {
 
 /// `o[k] = v` (StoreKeyed slot `s`): the fast case stores a present Array element in place,
 /// in the storage form of its kind, when `v` needs no kind transition.
+///
+/// The monomorphic hit (the key half names the receiver's shape) and a function without a
+/// vector store and return `Flow::Next`: one ShapeId compare, no record, no budget test (the
+/// shape holds the kind; the miss that installed the shape recorded it). The megamorphic hit
+/// is its own tail (M5-P1-ORCH-3, MC-w19-10; V8 keeps its megamorphic keyed store apart): its
+/// own store, then the sampled kinds-set record ([`set_megamorphic`]); no flag joins the two
+/// tails, so the monomorphic path pays nothing for it. A state change goes cold
+/// ([`note_receiver`]).
 #[inline(always)]
 pub(crate) fn fast_set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flow {
     let Some((e, off, doubles)) = present_element(o, k) else {
@@ -176,19 +171,47 @@ pub(crate) fn fast_set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flo
     if !fits {
         return Flow::Cold;
     }
-    let Some(megamorphic) = hits(st, o, s) else {
-        return Flow::Cold;
-    };
+    if let Some(vec) = feedback::vector(st.info()) {
+        let key = feedback::key(vec, s.0);
+        // An undefined key and the hole never equal a ShapeId (as in `ic::handler_for`).
+        if key as u32 != shape_id(o) {
+            if key == HOLE {
+                return set_megamorphic(st, o, v, s, e, off, doubles);
+            }
+            note_receiver(st.rt(), vec, s.0, o, key);
+            return Flow::Cold;
+        }
+    }
+    store_present(st.rt(), e, off, doubles, v);
+    Flow::Next
+}
+
+/// The store of a fast-case hit: `v` in place at `off` of the elements cell `e`, as raw f64
+/// with a canonical NaN in a DOUBLE cell, else as a Value with the barrier. Not a GC point.
+#[inline(always)]
+fn store_present(rt: &Runtime, e: CellPtr, off: usize, doubles: bool, v: u64) {
     if doubles {
         object::raw_set(e, off, object::double_bits(v));
     } else {
-        object::wr(&st.rt().heap, e, off, v);
+        object::wr(&rt.heap, e, off, v);
     }
-    // A megamorphic hit may see a kind new for the site: the kinds-set bit of a sampled one,
-    // recorded out of line (`profile::keyed_hit_kind`).
-    if !megamorphic {
-        return Flow::Next;
-    }
+}
+
+/// The megamorphic tail of [`fast_set`]: the store, then the kinds-set bit of a sampled kind
+/// for its dispatch (`profile::keyed_hit_kind`; the hook PROFILE6 strips for `ics_only`). Not
+/// a GC point.
+#[inline(always)]
+fn set_megamorphic(
+    st: &mut St<'_>,
+    o: u64,
+    v: u64,
+    s: FSlot,
+    e: CellPtr,
+    off: usize,
+    doubles: bool,
+) -> Flow {
+    core::hint::cold_path();
+    store_present(st.rt(), e, off, doubles, v);
     match profile::keyed_hit_kind(st, o) {
         0 => Flow::Next,
         bits => Flow::Record(profile::Rec::new(s, bits)),
