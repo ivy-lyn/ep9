@@ -1,7 +1,7 @@
 # ep9 CI on the 4 tier-1 targets (D2; docs/plan/09-milestones.md section 8 week 1;
 # docs/plan/10-quality.md sections 2 and 5; docs/plan/08-repo.md section 7).
 #
-#   lint ............. fmt + clippy + rustdoc -D warnings; gc-lint   (Linux x64)
+#   lint ............. fmt + clippy + rustdoc -D warnings; gc-lint, extref-lint (Linux x64)
 #                      jetstream/run.mjs, cross/run.mjs and t0-dispatch.mjs tests
 #                      adr-lint since m0-exit (M1 exit item 6, plan v9 rule 26)
 #   scope ............ docs_only for the pushed range                (Linux x64)
@@ -138,6 +138,9 @@ jobs:
       # JsStr or FlatStr in a heap container, a static, a thread_local or a boxed closure
       # (tools/xtask/src/gc_lint.rs). Each finding names its file:line; every allow is listed.
       - run: cargo xtask gc-lint
+      # H25-Q2 (C-26): no native word outside ExternalRef, frame.rs and the VM stack code, and
+      # none copied from one field into a heap cell (tools/xtask/src/extref_lint.rs).
+      - run: cargo xtask extref-lint
       # Broken intra-doc links and other rustdoc warnings fail the job, private items too.
       - run: cargo doc --workspace --no-deps --locked --document-private-items
         env:
@@ -721,11 +724,11 @@ jobs:
         if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
         run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unit -- --nocapture
       # Spike C gate (plan v10 V10-D38; M1 exit items 7 and 10): `gate.sh` with no argument runs
-      # structural, am3, deopt and linsolve (not `time`, a timing report). The emitter is aarch64
-      # only, so it runs on the 2 arm64 runners. The am3, deopt and linsolve steps read the pinned
+      # structural, am3, deopt, linsolve, diff and spfacts (not `time`, a timing report). The
+      # emitter is aarch64 only, so it runs on the 2 arm64 runners. The kernel steps read the pinned
       # v8-v7 checkout, and the structural kernels check prints SKIP without it; here every step
       # must run, so a SKIP line fails the step. The GC-stress runs of am3 and deopt must pass (no
-      # XFAIL since the deopt entry, spikes/spike-c/gate.sh). Mac a64 (18 CPUs), cold build: 75 s.
+      # XFAIL since the deopt entry). Mac a64, cold build: 75 s (M5-P2); diff +40 s, spfacts +3 s.
       - name: v8-v7 checkout (Spike C)
         if: ${{ !cancelled() && (matrix.name == 'macos-arm64' || matrix.name == 'linux-arm64') }}
         run: bash scripts/sync-bench.sh bench-v8v7
