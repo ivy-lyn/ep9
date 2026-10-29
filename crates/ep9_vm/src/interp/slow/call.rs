@@ -132,15 +132,15 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             callee
         };
         if is_bound(callee) {
-            // §10.4.1.2: Construct(target, boundArgs ++ args, newTarget == F ? target :
-            // newTarget).
-            let u = prepend_bound_args(cx, callee, new_target, &mut args)?;
-            callee = u.target;
-            new_target = u.new_target;
+            let u = prepend_bound_args(cx, callee, new_target, &mut args)?; // §10.4.1.2
+            (callee, new_target) = (u.target, u.new_target);
         }
         let Ok(argc) = u32::try_from(args.len()) else {
             return stack_overflow(cx);
         };
+        if !object::is_function(callee) {
+            return construct_proxy(cx, fp, s, callee, argc, &args, new_target);
+        }
         let fi = object::function_info(callee);
         if fi.host.is_some() {
             let r = call::call_host(
@@ -217,8 +217,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         let Some(nfp) = nfp else {
             return stack_overflow(cx);
         };
-        cx.out_fp = nfp;
-        cx.out_pc = fi.code;
+        (cx.out_fp, cx.out_pc) = (nfp, fi.code);
         return Ok(UNDEFINED);
     }
     if !is_callable(callee) {
@@ -227,14 +226,15 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     }
     let mut this = s.this;
     if is_bound(callee) {
-        // §10.4.1.1: Call(target, boundThis, boundArgs ++ args).
-        let u = prepend_bound_args(cx, callee, UNDEFINED, &mut args)?;
-        callee = u.target;
-        this = u.this;
+        let u = prepend_bound_args(cx, callee, UNDEFINED, &mut args)?; // §10.4.1.1
+        (callee, this) = (u.target, u.this);
     }
     let Ok(argc) = u32::try_from(args.len()) else {
         return stack_overflow(cx);
     };
+    if !object::is_function(callee) {
+        return call_proxy(cx, fp, s, callee, this, argc, &args);
+    }
     let fi = object::function_info(callee);
     if fi.host.is_some() {
         let r = call::call_host(
@@ -623,6 +623,46 @@ fn prepend_bound_args(
         bound::copy_chain_args(f, &mut args[..n]);
     }
     Ok(u)
+}
+
+/// The `Call*` of a callable proxy `p` (§10.5.12; M5-P3 PROXY2), after a bound callee's
+/// chain (§10.4.1.1: Call(target, boundThis, boundArgs ++ args)): its `[[Call]]` from Rust
+/// (`call::call_with`, nested, as for a host callee), and the dispatch goes on at the next
+/// instruction. `args` stay rooted in the caller's registers (and the bound callee).
+#[cold]
+#[inline(never)]
+fn call_proxy(
+    cx: &mut Cx,
+    fp: *mut u64,
+    s: &CallSite,
+    p: u64,
+    this: u64,
+    argc: u32,
+    args: &[u64],
+) -> Res<u64> {
+    let r = call::call_with(cx, p, this, argc, |i| args[i as usize], UNDEFINED)?;
+    (cx.out_fp, cx.out_pc) = (fp, s.next_pc);
+    Ok(r)
+}
+
+/// The `Construct*` of a callable proxy `p` (§10.5.13; M5-P3 PROXY2), after a bound
+/// callee's chain (§10.4.1.2: Construct(target, boundArgs ++ args, newTarget == F ? target :
+/// newTarget)): its `[[Construct]]` from Rust (`call::construct_with`, nested), as
+/// [`call_proxy`].
+#[cold]
+#[inline(never)]
+fn construct_proxy(
+    cx: &mut Cx,
+    fp: *mut u64,
+    s: &CallSite,
+    p: u64,
+    argc: u32,
+    args: &[u64],
+    new_target: u64,
+) -> Res<u64> {
+    let r = call::construct_with(cx, p, argc, |i| args[i as usize], new_target)?;
+    (cx.out_fp, cx.out_pc) = (fp, s.next_pc);
+    Ok(r)
 }
 
 #[inline]

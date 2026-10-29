@@ -118,11 +118,11 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
 /// property; `None` for an accessor (its getter does not run) or no property. For engine
 /// text that must run no JS: an error's "Name: message" header (`error::error_header`, made
 /// inside `throw_error`, also on stack overflow) and the reported constructor name. GC point
-/// (a lazy `prototype`), but runs no JS and cannot throw. A routed object's hooks
-/// (ARGUMENTS, MODULE_NAMESPACE) are not asked: only its ordinary storage is read, then the
-/// walk goes on to its prototype. A hook may throw (a namespace binding in its TDZ), and the
-/// ReferenceError it makes would read its own header here again (`error::error_header` ->
-/// `get_data_from`) and recurse without bound.
+/// (a lazy `prototype`), but runs no JS and cannot throw. A routed object's hooks are not
+/// asked: ARGUMENTS and MODULE_NAMESPACE read their ordinary storage, then the prototype; a
+/// proxy has none and no prototype of its own, so it reads as empty and ends the walk (its
+/// traps run JS). A hook may throw (a namespace binding in its TDZ), and the ReferenceError
+/// would read its own header here again (`error_header` -> `get_data_from`) without bound.
 pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
@@ -818,21 +818,21 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
 }
 
 /// [`define`] on a routed kind (out of line: the fast path above stays as it was). The
-/// message of a rejection says whether the property existed; for a proxy that would need its
-/// `[[GetOwnProperty]]` (a trap from PROXY2 on), so a proxy gets V8's trap text. GC point.
+/// message of a rejection says whether the property existed; a proxy picks its text by trap
+/// (V8; M5-P3 PROXY2, H31 PROXY2 list). GC point.
 #[cold]
 #[inline(never)]
 fn define_routed(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
-        if define_own_property(cx, o, key, Desc::data(v, attr::DEFAULT))? {
-            return Ok(());
-        }
-        let msg = bounded_message(&[
-            Text("'defineProperty' on proxy: trap returned falsish for property '"),
-            Key(key),
-            Text("'"),
-        ]);
-        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+        // `proxy::define_by_trap`: the first proxy down the target chain whose handler has a
+        // `defineProperty` trap answers, and a false result gets the trap text; with no trap
+        // on the way, the first target that is not a proxy takes the define and gives its own
+        // text ("Cannot define property k, object is not extensible"), as V8 does.
+        return match crate::proxy::define_by_trap(cx, o, key, Desc::data(v, attr::DEFAULT))? {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(crate::proxy::define_falsish(cx, key)),
+            Err(target) => define(cx, target, key, v),
+        };
     }
     let how = key::probe(key);
     let exists =
@@ -1360,10 +1360,10 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             }
         }
         std::hint::black_box(own);
-        // GC point (a proxy's [[GetPrototypeOf]], the interrupt poll). A proxy may make the
-        // chain a cycle: the step is bounded ([`prototype_walk_step`]), so `kept` holds at
-        // most one key array per proxy hop up to the bound.
-        let p = prototype_walk_step(cx, cur, &mut hops)?;
+        // GC point (a proxy's [[GetPrototypeOf]], the poll). V8's walk ([`for_in_step`]) ends
+        // after the first proxy unless `o` is one; a proxy `o` may make the chain a cycle, so
+        // the step is bounded and `kept` holds at most one key array per hop up to the bound.
+        let p = for_in_step(cx, o, cur, &mut hops)?;
         if p == NULL {
             break;
         }
@@ -1656,9 +1656,9 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
     Ok(true)
 }
 
-/// ValidateAndApplyPropertyDescriptor (§10.1.6.3) steps 4-5: may `desc` change the existing
-/// property `current` (a complete data or accessor descriptor)?
-fn validate(desc: &Desc, current: &Desc) -> bool {
+/// ValidateAndApplyPropertyDescriptor (§10.1.6.3) steps 4-5 (and IsCompatiblePropertyDescriptor
+/// for `proxy.rs`): may `desc` change the property `current` (a complete descriptor)?
+pub(crate) fn validate(desc: &Desc, current: &Desc) -> bool {
     if current.configurable == Some(true) {
         return true;
     }
@@ -2156,4 +2156,19 @@ pub(crate) fn delete_index(cx: &mut Cx, o: u64, i: u64, strict: bool) -> Res<boo
     }
     let key = index_key_of(cx.rt(), i);
     delete(cx, o, key, strict)
+}
+
+/// The step of the `for-in` walk ([`for_in_keys`]) from `cur`, whose keys are listed, for the
+/// receiver `o`: [`prototype_walk_step`], except that V8 ends the walk after the first proxy
+/// on the chain when `o` is not a proxy (H31, the for-in row; V10-D61). It still asks that
+/// proxy's `[[GetPrototypeOf]]` once and drops the answer. Node v24.22.1 lists `x` for
+/// `a = {x: 1}; p = new Proxy(a, {}); Object.setPrototypeOf(a, p); for (k in a)` and calls
+/// the `getPrototypeOf` trap once; a proxy receiver walks on through proxies, so `for (k in
+/// p)` on that cycle throws the RangeError past [`MAX_PROXY_HOPS`]. GC point.
+fn for_in_step(cx: &mut Cx, o: u64, cur: u64, hops: &mut u32) -> Res<u64> {
+    let p = prototype_walk_step(cx, cur, hops)?;
+    if p != NULL && crate::proxy::is_proxy(cur) && !crate::proxy::is_proxy(o) {
+        return Ok(NULL);
+    }
+    Ok(p)
 }

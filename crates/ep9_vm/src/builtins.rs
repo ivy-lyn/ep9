@@ -1055,7 +1055,8 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
             match d.value {
                 IntrinsicValue::Builtin(i) => {
                     data_def(m, i).map_err(at)?;
-                    if m.defs[usize::from(i)].kind == BuiltinKind::Constructor {
+                    let ctor = m.defs[usize::from(i)].kind == BuiltinKind::Constructor;
+                    if ctor && d.id != IntrinsicId::Proxy {
                         constructors.push((d.id, m.name));
                     }
                 }
@@ -1081,9 +1082,8 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                 if on_target.iter().any(|(k, _)| k.same(&p.key)) {
                     return Err(here("defined twice"));
                 }
-                // Install adds keys in walk order, and adding a key to a function first makes
-                // its lazy `prototype` (`props::own_add`), which the table's own `prototype`
-                // would then meet. So a constructor gets `prototype` {} before any other key.
+                // Keys go in in walk order; a new key on a function first makes its lazy `prototype`
+                // (`props::own_add`): a constructor but %Proxy% (§28.2.2) has `prototype` {} first.
                 let is_prototype = p.key.same(&prototype)
                     && p.attrs == PropAttrs::NONE
                     && !matches!(p.value, PropValue::Accessor { .. });
