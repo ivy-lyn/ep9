@@ -713,11 +713,11 @@ jobs:
         if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
         run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unit -- --nocapture
       # Spike C gate (plan v10 V10-D38; M1 exit items 7 and 10): `gate.sh` with no argument runs
-      # structural, am3 and linsolve (not `time`, a timing report). The emitter is aarch64 only,
-      # so it runs on the 2 arm64 runners. The am3 and linsolve steps read the pinned v8-v7
-      # checkout, and the structural kernels check prints SKIP without it; here every step must
-      # run, so a SKIP line fails the step. The am3 GC-stress step is a report (XFAIL until the
-      # deopt entry, spikes/spike-c/gate.sh). Mac a64 (18 CPUs), cold build: 75 s.
+      # structural, am3, deopt and linsolve (not `time`, a timing report). The emitter is aarch64
+      # only, so it runs on the 2 arm64 runners. The am3, deopt and linsolve steps read the pinned
+      # v8-v7 checkout, and the structural kernels check prints SKIP without it; here every step
+      # must run, so a SKIP line fails the step. The GC-stress runs of am3 and deopt must pass (no
+      # XFAIL since the deopt entry, spikes/spike-c/gate.sh). Mac a64 (18 CPUs), cold build: 75 s.
       - name: v8-v7 checkout (Spike C)
         if: ${{ !cancelled() && (matrix.name == 'macos-arm64' || matrix.name == 'linux-arm64') }}
         run: bash scripts/sync-bench.sh bench-v8v7
