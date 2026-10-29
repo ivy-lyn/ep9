@@ -1257,3 +1257,58 @@ pub(crate) fn is_array(cx: &mut Cx, v: u64) -> Res<bool> {
     }
     Ok(kind::is_array(v))
 }
+
+/// True if the handler of the proxy `p` has the trap `name` (`"set"` or `"deleteProperty"`)
+/// as an own or inherited data property that holds a callable, read with no JS: a strict
+/// `[[Set]]` or `[[Delete]]` that returned false asks it for its throw text ([`falsish`]),
+/// after the trap ran (V8 throws in the trap step). A revoked proxy, an accessor, or a handler
+/// chain that reaches a routed kind (a proxy: its answer may run JS) reads as no trap, so
+/// the caller keeps its own text. GC point (the name's atom; the trap made it already).
+pub(crate) fn has_data_trap(rt: &Runtime, p: u64, name: &str) -> bool {
+    let key = crate::atoms::intern_str(rt, name);
+    let how = crate::key::probe(key);
+    let mut h = handler(p);
+    while is_object(h) && !crate::exotic::is_routed(kind::cell_kind(h)) {
+        if crate::exotic::own_attrs(rt, h, key, how).is_some() {
+            return false;
+        }
+        if let Some((v, a)) = crate::props::own_get_with(h, key, how) {
+            return a & attr::ACCESSOR == 0 && is_callable(v);
+        }
+        h = object::proto_of(h);
+    }
+    false
+}
+
+/// True if a strict `delete o[key]` that returned false got that false from a
+/// `deleteProperty` trap: of the proxy `o` or of a proxy down its target chain, which a proxy
+/// with no trap forwards to ([`has_data_trap`]; bounded as `property::MAX_PROXY_HOPS`).
+/// GC point (as [`has_data_trap`]).
+pub(crate) fn delete_trap_said_false(rt: &Runtime, o: u64) -> bool {
+    let mut o = o;
+    for _ in 0..property::MAX_PROXY_HOPS {
+        if !is_proxy(o) {
+            return false;
+        }
+        if has_data_trap(rt, o, "deleteProperty") {
+            return true;
+        }
+        o = target(o);
+    }
+    false
+}
+
+/// The TypeError of a strict `[[Set]]` or `[[Delete]]` whose trap `name` returned false
+/// (V8's text: "'set' on proxy: trap returned falsish for property 'k'").
+pub(crate) fn falsish(cx: &mut Cx, name: &str, key: u64) -> Throw {
+    invariant(
+        cx,
+        &[
+            Text("'"),
+            Text(name),
+            Text("' on proxy: trap returned falsish for property '"),
+            Key(key),
+            Text("'"),
+        ],
+    )
+}

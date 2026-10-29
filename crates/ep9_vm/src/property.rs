@@ -626,7 +626,7 @@ fn dict_delete(rt: &Runtime, a: u64, i: u32) -> bool {
 
 /// A failed `base[key] = v`: nothing in sloppy code, a TypeError in strict code. The message
 /// names the first property on the chain from `start` (`base`, or the prototype of a
-/// primitive `base`), as V8 does. Not a GC point before the throw.
+/// primitive `base`), or the proxy `set` trap that said false, as V8 does. GC point.
 #[cold]
 #[inline(never)]
 fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
@@ -648,9 +648,9 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
     } else {
         first_attrs_on_chain(rt, start, key)
     };
-    let [w0, w1, w2] = what;
-    let k = Key(key);
+    let ([w0, w1, w2], k) = (what, Key(key));
     let msg = match found {
+        Some(SET_TRAP) => return Err(crate::proxy::falsish(cx, "set", key)),
         Some(a) if a & attr::ACCESSOR != 0 => bounded_message(&[
             Text("Cannot set property "),
             k,
@@ -695,18 +695,18 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
 }
 
 /// The attributes of the first property `key` on the chain from the object `o`, if any, for
-/// an error message. Not a GC point and runs no JS (a lazy `prototype` is not made: it is
-/// {w}). A proxy is not asked: the walk goes on at its target, as the no-trap step does (a
-/// revoked proxy ends it). A proxy may make the chain a cycle: past [`MAX_PROXY_HOPS`]
-/// proxies the walk gives `None` (M4-P4 fixer B, Codex PROXY1 P-2).
+/// an error message; runs no JS (a lazy `prototype` is not made: it is {w}). A proxy with a
+/// data `set` trap gives [`SET_TRAP`] (`proxy::has_data_trap`, a GC point); one with none is
+/// not asked: the walk goes on at its target, as the no-trap step does (a revoked proxy ends
+/// it). Past [`MAX_PROXY_HOPS`] proxies (a cycle) it gives `None` (Codex PROXY1 P-2).
 fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
     let how = key::probe(key);
     let mut hops = 0;
     loop {
         while crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
             hops += 1;
-            if hops > MAX_PROXY_HOPS {
-                return None;
+            if hops > MAX_PROXY_HOPS || crate::proxy::has_data_trap(rt, o, "set") {
+                return (hops <= MAX_PROXY_HOPS).then_some(SET_TRAP);
             }
             o = crate::proxy::target(o);
             if !is_object(o) {
@@ -899,7 +899,7 @@ pub(crate) fn delete(cx: &mut Cx, base: u64, k: u64, strict: bool) -> Res<bool> 
     if internal_delete(cx, base, key)? {
         Ok(true)
     } else {
-        deny(cx, key, strict)
+        deny(cx, base, key, strict)
     }
 }
 
@@ -954,14 +954,14 @@ pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
     }
 }
 
-fn deny(cx: &mut Cx, key: u64, strict: bool) -> Res<bool> {
+/// A false `[[Delete]]` of `o` (§13.5.1.2 step 5.d: `delete` in strict code throws when
+/// `[[Delete]]` gives false): false in sloppy code, the TypeError of [`delete_failed`] in
+/// strict code, whose text names the proxy trap that said false (V8: the trap step throws),
+/// or the key and "of object". `Cx::delete_property_or_throw` (DeletePropertyOrThrow) takes
+/// this path too; `Reflect.deleteProperty` returns the false. GC point.
+fn deny(cx: &mut Cx, o: u64, key: u64, strict: bool) -> Res<bool> {
     if strict {
-        let msg = bounded_message(&[
-            Text("Cannot delete property '"),
-            Key(key),
-            Text("' of object"),
-        ]);
-        Err(throw_error(cx, ErrorKind::TypeError, &msg))
+        Err(delete_failed(cx, o, key))
     } else {
         Ok(false)
     }
@@ -2183,4 +2183,25 @@ fn for_in_step(cx: &mut Cx, o: u64, cur: u64, hops: &mut u32) -> Res<u64> {
         return Ok(NULL);
     }
     Ok(p)
+}
+
+/// The `first_attrs_on_chain` answer for a proxy whose data `set` trap said false (no
+/// attribute set is negative).
+const SET_TRAP: i32 = -1;
+
+/// The TypeError of a strict `delete o[key]` that got false: V8's text for the proxy
+/// `deleteProperty` trap that said it (of `o` or of a proxy down its target chain,
+/// `proxy::delete_trap_said_false`), else "Cannot delete property 'k' of object". GC point.
+#[cold]
+#[inline(never)]
+fn delete_failed(cx: &mut Cx, o: u64, key: u64) -> ep9_value::Throw {
+    if crate::proxy::delete_trap_said_false(cx.rt(), o) {
+        return crate::proxy::falsish(cx, "deleteProperty", key);
+    }
+    let msg = bounded_message(&[
+        Text("Cannot delete property '"),
+        Key(key),
+        Text("' of object"),
+    ]);
+    throw_error(cx, ErrorKind::TypeError, &msg)
 }

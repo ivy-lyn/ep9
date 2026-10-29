@@ -7,8 +7,8 @@
 //! "Name: message"). `common::run_both` runs each script with and without GC stress (a
 //! collection before every allocation, then the heap verifier). Texts that differ from node
 //! are left out here and listed in the PROXY2 report: call-site names ("(intermediate
-//! value)"), a few falsish texts made by the callers (`Object.defineProperty`, a strict
-//! store or delete), and the operation name in a revoked proxy's `Object.prototype.toString`.
+//! value)"), a few falsish texts made by the callers (`Object.defineProperty`, the builtins'
+//! own Set calls), and the operation name in a revoked proxy's `Object.prototype.toString`.
 
 mod common;
 
@@ -390,6 +390,49 @@ print(t(function () { return Function.prototype.toString.call(r.proxy); }));
             "function () { [native code] } | ",
             "function () { [native code] }",
             "function () { [native code] }"
+        ])
+    );
+}
+
+/// A strict `[[Set]]` or `[[Delete]]` that a proxy trap answered false throws V8's trap text
+/// (node v24.22.1): a `set` trap on the receiver, on its prototype chain or on a proxy that a
+/// proxy with no trap forwards to; a `deleteProperty` trap likewise down the target chain;
+/// any key form. With no trap, the target's own text stays (M5-P3 reviewer A F4: before, every
+/// line said "Cannot add property a, object is not extensible" or "Cannot delete property 'a'
+/// of object"). Sloppy code and `Reflect` get false, as before.
+#[test]
+fn a_strict_falsish_trap_throws_the_trap_text() {
+    assert_eq!(
+        common::run_both(js!(r#"
+var F = function () { return false; };
+var out = [];
+function s(f) { out.push(t(function () { 'use strict'; f(); })); }
+s(function () { 'use strict'; var p = new Proxy({}, { set: F }); p.a = 1; });
+s(function () { 'use strict'; var o = Object.create(new Proxy({}, { set: F })); o.a = 1; });
+s(function () { 'use strict'; var p = new Proxy(new Proxy({}, { set: F }), {}); p.a = 1; });
+s(function () { 'use strict'; var p = new Proxy({}, { set: F }); p[0] = 1; });
+s(function () { 'use strict'; var p = new Proxy({}, { set: F }); p[Symbol('s')] = 1; });
+s(function () { 'use strict'; var p = new Proxy([], { set: F }); p.push(1); });
+s(function () { 'use strict'; var p = new Proxy({}, { set: F }); p[{ toString: function () { return 'kk'; } }] = 1; });
+s(function () { 'use strict'; var p = new Proxy({}, { deleteProperty: F }); delete p.a; });
+s(function () { 'use strict'; var p = new Proxy(new Proxy({}, { deleteProperty: F }), {}); delete p.a; });
+s(function () { 'use strict'; var g = {}; Object.defineProperty(g, 'a', { value: 1 }); var p = new Proxy(g, { set: undefined }); p.a = 2; });
+var q = new Proxy({}, { set: F, deleteProperty: F });
+out.forEach(function (l) { print(l); });
+print((function () { q.b = 1; return delete q.b; })(), Reflect.set(q, 'c', 1), Reflect.deleteProperty(q, 'c'));
+"#)),
+        lines(&[
+            "TypeError: 'set' on proxy: trap returned falsish for property 'a'",
+            "TypeError: 'set' on proxy: trap returned falsish for property 'a'",
+            "TypeError: 'set' on proxy: trap returned falsish for property 'a'",
+            "TypeError: 'set' on proxy: trap returned falsish for property '0'",
+            "TypeError: 'set' on proxy: trap returned falsish for property 'Symbol(s)'",
+            "TypeError: 'set' on proxy: trap returned falsish for property '0'",
+            "TypeError: 'set' on proxy: trap returned falsish for property 'kk'",
+            "TypeError: 'deleteProperty' on proxy: trap returned falsish for property 'a'",
+            "TypeError: 'deleteProperty' on proxy: trap returned falsish for property 'a'",
+            "TypeError: Cannot assign to read only property 'a' of object '#<Object>'",
+            "false false false"
         ])
     );
 }
