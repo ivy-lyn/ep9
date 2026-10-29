@@ -219,15 +219,15 @@ pub enum Op {
     CheckArray,
     /// The field at byte `offset` of the object input (behind a [`Op::CheckShape`]). Tagged.
     LoadField { offset: u32 },
-    /// Guard: element `index` (Int32) of the array input (a [`Op::CheckArray`]): in
-    /// `0..length`, inside the capacity of its ELEMENTS or ELEMENTS_DOUBLE cell (any other
-    /// elements store exits), not a hole. Tagged (a raw f64 boxes as `Value::number`).
+    /// Guard: element `index` (Int32) of the array input (a [`Op::CheckArray`]): in `0..length`,
+    /// inside the capacity of its ELEMENTS or ELEMENTS_DOUBLE cell (any other store exits), not
+    /// a hole. Tagged (a raw f64 boxes as `Value::number`), or Float64 if only number uses read
+    /// it (SPIKEC-7, `build::float_loads`; it then exits on a Value that is no number).
     LoadElement,
-    /// Guard: stores the Int32 or Float64 value into an existing element (same bounds and hole
-    /// checks): raw f64 into an ELEMENTS_DOUBLE cell, an int32 Value into an ELEMENTS cell; a
-    /// Float64 that is no int32 into an ELEMENTS cell takes the generic store out of line (the
-    /// kind transition: a GC point, no JS for an existing element of an Array). A number is
-    /// not a cell, so no barrier is needed (H11 elision E1).
+    /// Guard: stores into an existing element (same checks). An Int32 or Float64: raw f64 into
+    /// ELEMENTS_DOUBLE, an int32 Value into ELEMENTS (a Float64 that is no int32: the generic
+    /// store out of line, the kind transition, a GC point, no JS); a number needs no barrier
+    /// (H11 E1). A Tagged value (SPIKEC-7): a number Value so; any other out of line (barrier).
     StoreElement,
     /// Guard: the Tagged input is a number (an int32 or a double Value); its value as a
     /// double. Float64 (SPIKEC-4).
