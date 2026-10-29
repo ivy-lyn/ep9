@@ -522,7 +522,12 @@ impl Regions {
                 }
             }
             syn::UseTree::Rename(r) => {
-                let name = r.ident.to_string();
+                // `m::{self as x}` renames `m` itself (Codex M5-P3 r2): check it as `m as x`.
+                let ident = r.ident.to_string();
+                let name = match parent {
+                    Some(p) if ident == "self" => p.to_string(),
+                    _ => ident,
+                };
                 if ENCODING.contains(&name.as_str())
                     || OFFSETS.contains(&name.as_str())
                     || (parent == Some("frame") && name == "native")
@@ -1007,6 +1012,23 @@ fn d(c: CellPtr, fi: &FunctionInfo) { init(c, fun::INFO, native_of(fi)); }
             [(2, "encoding"), (2, "field"), (4, "encoding"), (4, "field")]
         );
         assert_eq!(r.in_tests, 4);
+    }
+
+    /// Codex M5-P3 r2 eng: `self as x` in a group renames the parent module, so `x::native`
+    /// and `x::INFO` hid from the encoding and field rules. A bare `{self}` keeps the name.
+    #[test]
+    fn self_aliases_of_protected_modules_fail() {
+        let src = "\
+use crate::frame::{self as enc, UNDEFINED};
+fn a(addr: usize) -> u64 { enc::native(addr) }
+use crate::object::fun::{self as f, CONTEXT};
+fn b(c: CellPtr) -> u64 { rd(c, f::INFO) }
+use crate::layout::{self as l};
+use crate::frame::{self};
+use crate::object::{self as o};
+";
+        let (f, _) = lint(VM, src);
+        assert_eq!(f, [(1, "import"), (3, "import"), (5, "import")]);
     }
 
     #[test]
