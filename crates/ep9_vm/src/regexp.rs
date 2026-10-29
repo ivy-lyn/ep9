@@ -15,7 +15,7 @@
 //!            program (Program: regress code, no Value) <───── slot MATCHER: int32 i
 //!            names (the group names, UTF-16, no Value)
 //!   GC: the weak source frees entry i when its owner died; i goes to the free list
-//!   cache:   the last 64 programs by (source units, flag bits), most recently used first
+//!   cache:   the last 256 programs by (source units, flag bits), most recently used first
 //!            (Rc<Compiled> shared with the entries; no Value, no GC hook)
 //!   scratch: the engine's reusable exec memory (Engine::Scratch; no Value, no GC hook)
 //!   legacy:  per realm (key: its %RegExp%, weak): RegExp.input and the last match (subject
@@ -162,7 +162,10 @@ impl Programs {
 }
 
 /// The most programs the cache keeps ([`ProgramCache`]; BP R8: a small strong LRU, est.).
-const CACHE_ENTRIES: usize = 64;
+/// 256 since M5-P3 (RX0b): the v8-v7 regexp kernel uses 241 programs in turn, and 64 entries
+/// compiled 12,752 times in its N = 5 run (a replay of its order of use), 256 entries 241
+/// times.
+const CACHE_ENTRIES: usize = 256;
 
 /// The longest pattern (code units) the cache keeps; a longer one compiles each time.
 const CACHE_MAX_UNITS: usize = 4096;

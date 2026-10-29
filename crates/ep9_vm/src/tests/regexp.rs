@@ -13,7 +13,7 @@
 //! | `termination_stops_a_running_search` | (M5-P3 RX0b) a termination from another thread ends a running exponential search at the next poll inside it (fork patch 0001) |
 //! | `a_multi_match_loop_reads_the_subject_in_place` | (M5-P3 RX0b) the exec loop of a global replace on Latin-1, UTF-16 and rope subjects, before and after minor and major GCs: the engine reads the flat text in place (fork patch 0005; the M4-P3 UTF-16 copy of a Latin-1 subject is gone) |
 //! | `exec_keeps_the_receiver_across_the_flatten` | under GC stress, an exec whose only RegExp root is its argument keeps the program while the rope subject is flattened (fails before the fix in release only) |
-//! | `the_program_cache_compiles_a_pattern_once` | (M5-P2) a seen (source, flags) pair compiles no program; other flags or source compile; a SyntaxError is not cached; the cache keeps 64 programs, the least recently used goes first, and a RegExp whose program left the cache still runs |
+//! | `the_program_cache_compiles_a_pattern_once` | (M5-P2) a seen (source, flags) pair compiles no program; other flags or source compile; a SyntaxError is not cached; the cache keeps 256 programs, the least recently used goes first, and a RegExp whose program left the cache still runs |
 //! | `a_literal_in_a_loop_compiles_once` | (M5-P2) two evaluations of one literal make two objects and one program |
 //! | `initialize_replaces_the_program` | (M5-P2) `Cx::regexp_initialize` (Annex B `compile`) keeps the table index, changes source, flags and program, keeps the legacy bit; a bad pattern or flags change nothing |
 //! | `legacy_state_keeps_no_realm_alive` | (M5-P2) the legacy static state of a realm holds its key weakly: a realm that nothing else holds is collected and its state dropped; a live realm keeps its state and string |
@@ -551,14 +551,14 @@ fn the_program_cache_compiles_a_pattern_once() {
                 take_error(cx, rt);
             }
             assert_eq!(t.cached(), cached, "an error is not cached");
-            // The bound: 64 programs, the least recently used goes first.
+            // The bound: 256 programs, the least recently used goes first.
             let first = re(cx, "first", "");
-            for i in 0..100 {
+            for i in 0..300 {
                 re(cx, &format!("p{i}"), "");
             }
-            assert_eq!(t.cached(), 64);
+            assert_eq!(t.cached(), 256);
             let n1 = t.compiles();
-            re(cx, "p99", "");
+            re(cx, "p299", "");
             assert_eq!(t.compiles(), n1, "a recent pattern is still cached");
             re(cx, "p0", "");
             assert_eq!(t.compiles(), n1 + 1, "the oldest pattern left the cache");
