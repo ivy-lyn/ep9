@@ -279,10 +279,10 @@ pub(crate) fn transition(rt: &Runtime, o: u64, to: u8) {
         from != to && allows(from, to),
         "elements kind {from} -> {to}"
     );
-    debug_assert!(
-        to < kind::DICTIONARY,
-        "DICTIONARY elements are M5-P2 ELEM2's"
-    );
+    if to == kind::DICTIONARY {
+        to_dictionary(rt, o);
+        return;
+    }
     // GC point (the new cell): filled with raw or initializing stores before the next one.
     let e = object::rd(object::cell(o), obj::ELEMENTS);
     let converted = if e != crate::frame::UNDEFINED && storage(from) != storage(to) {
@@ -312,6 +312,7 @@ pub(crate) fn transition(rt: &Runtime, o: u64, to: u8) {
         );
     }
     shape::install(rt, o, ns);
+    debug_assert!(storage_form_ok(o), "storage form after {from} -> {to}");
 }
 
 /// A new ELEMENTS_DOUBLE cell with the elements of the ELEMENTS cell `e` (int32 Values and
@@ -371,7 +372,8 @@ fn double_cell_size(c: CellPtr) -> usize {
 /// the GC visits none of them.
 fn trace_double_cell(_c: CellPtr, _t: &mut Tracer<'_>) {}
 
-/// Registers ELEMENTS_DOUBLE (kind 81, OBJECT_LAYOUT 5). `object::register_kinds` calls it.
+/// Registers ELEMENTS_DOUBLE (kind 81) and ELEMENTS_DICT (kind 82, OBJECT_LAYOUT 5).
+/// `object::register_kinds` calls it.
 pub(crate) fn register_kinds(heap: &Heap) {
     heap.register_kind(
         kinds_::ELEMENTS_DOUBLE,
@@ -382,6 +384,334 @@ pub(crate) fn register_kinds(heap: &Heap) {
         },
     )
     .expect("register ELEMENTS_DOUBLE");
+    heap.register_kind(
+        kinds_::ELEMENTS_DICT,
+        CellKind {
+            name: "elements-dict",
+            size: CellSize::Dynamic(dict_cell_size),
+            trace: trace_dict_cell,
+        },
+    )
+    .expect("register ELEMENTS_DICT");
+}
+
+// ---- DICTIONARY elements (kind 6, an ELEMENTS_DICT cell; M5-P2 ELEM2) ------------------------
+
+/// ELEMENTS_DICT cell fields (kind 82, OBJECT_LAYOUT 5; H18-Q2, Q4). Every word from +8 is a
+/// Value (int32s, keys, values, ACCESSOR_PAIR cells), so the GC traces them all.
+///
+/// ```text
+///  +8  dense capacity: int32 0 (no dense part: every dense reader misses at its capacity test,
+///      the same offset as `elems::CAPACITY` and `delems::CAPACITY`)
+///  +16 count: int32, live entries
+///  +24 used: int32, live + deleted entries
+///  +32 flags: int32, bit 0 = `length` is not writable (FLAG_LENGTH_READONLY)
+///  +40 buckets: int32, a power of two (8 or more)
+///  +48 entries, 3 words each:  key | value or ACCESSOR_PAIR | attributes (int32, `object::attr`)
+///      key: the int32 Value of the index bits (u32 as i32), undefined = empty, the hole =
+///      deleted; open addressing, linear probing, the hash of the index's high bits
+/// ```
+pub(crate) mod dict {
+    pub const CAPACITY: usize = 8;
+    pub const COUNT: usize = 16;
+    pub const USED: usize = 24;
+    pub const FLAGS: usize = 32;
+    pub const BUCKETS: usize = 40;
+    pub const DATA: usize = 48;
+    /// Bytes per entry.
+    pub const ENTRY: usize = 24;
+    /// Flag bit 0: `length` is not writable (§10.4.2.4; H17 "Element accessors" row).
+    pub const LENGTH_READONLY: i32 = 1;
+    /// The fewest buckets of a cell.
+    pub const MIN_BUCKETS: usize = 8;
+}
+
+const _: () = assert!(dict::CAPACITY == object::elems::CAPACITY);
+
+/// The largest distance past the capacity at which a new element of an Array still goes to its
+/// dense store (H18-Q2's gap, V8's `kMaxGap`, est.): a farther one moves the array to
+/// DICTIONARY, so one high index allocates no dense range (H18 Rules, "one high index keeps
+/// RSS flat").
+pub(crate) const ARRAY_GAP: u32 = 1024;
+
+fn dict_cell_size(c: CellPtr) -> usize {
+    dict::DATA + dict::ENTRY * object::rd_i32(c, dict::BUCKETS) as usize
+}
+
+fn trace_dict_cell(c: CellPtr, t: &mut Tracer<'_>) {
+    object::trace_from_8(c, t, dict_cell_size(c));
+}
+
+/// A new ELEMENTS_DICT cell with `buckets` empty buckets (a power of two) and `flags`. GC
+/// point.
+fn new_dict_cell(rt: &Runtime, buckets: usize, flags: i32) -> CellPtr {
+    debug_assert!(buckets.is_power_of_two() && buckets >= dict::MIN_BUCKETS);
+    let c = rt.alloc(kinds_::ELEMENTS_DICT, dict::DATA + dict::ENTRY * buckets);
+    object::init(c, dict::CAPACITY, int32_bits(0));
+    object::init(c, dict::COUNT, int32_bits(0));
+    object::init(c, dict::USED, int32_bits(0));
+    object::init(c, dict::FLAGS, int32_bits(flags));
+    object::init(c, dict::BUCKETS, int32_bits(buckets as i32));
+    for b in 0..buckets {
+        let at = dict::DATA + dict::ENTRY * b;
+        object::init(c, at, crate::frame::UNDEFINED);
+        object::init(c, at + 8, crate::frame::UNDEFINED);
+        object::init(c, at + 16, int32_bits(0));
+    }
+    c
+}
+
+/// The ELEMENTS_DICT cell of the JS object `o` if its kind is DICTIONARY. Not a GC point.
+#[inline]
+pub(crate) fn dict_of(o: u64) -> Option<CellPtr> {
+    if kind_of(o) != kind::DICTIONARY {
+        return None;
+    }
+    let e = object::rd(object::cell(o), obj::ELEMENTS);
+    debug_assert!(kinds_::cell_kind(e) == kinds_::ELEMENTS_DICT.get());
+    Some(object::cell(e))
+}
+
+/// The key word of index `i`.
+#[inline]
+fn dict_key(i: u32) -> u64 {
+    int32_bits(i as i32)
+}
+
+/// The first bucket of index `i` in a table of `buckets` (a power of two): the high bits of a
+/// multiplicative hash, so strided indices spread.
+#[inline]
+fn dict_home(i: u32, buckets: usize) -> usize {
+    let bits = buckets.trailing_zeros();
+    (i.wrapping_mul(0x9E37_79B1) >> (32 - bits)) as usize
+}
+
+/// The byte offset of the live entry of index `i` in the ELEMENTS_DICT cell `d`. Not a GC
+/// point.
+fn dict_find(d: CellPtr, i: u32) -> Option<usize> {
+    let buckets = object::rd_i32(d, dict::BUCKETS) as usize;
+    let key = dict_key(i);
+    let mut b = dict_home(i, buckets);
+    for _ in 0..buckets {
+        let at = dict::DATA + dict::ENTRY * b;
+        let k = object::rd(d, at);
+        if k == key {
+            return Some(at);
+        }
+        if k == crate::frame::UNDEFINED {
+            return None;
+        }
+        b = (b + 1) & (buckets - 1);
+    }
+    None
+}
+
+/// Entry `i` of the ELEMENTS_DICT cell `d`: (value or ACCESSOR_PAIR, attributes). Not a GC
+/// point.
+pub(crate) fn dict_get(d: CellPtr, i: u32) -> Option<(u64, i32)> {
+    let at = dict_find(d, i)?;
+    Some((object::rd(d, at + 8), object::rd_i32(d, at + 16)))
+}
+
+/// The live entries of the ELEMENTS_DICT cell `d`: (index, attributes), ascending. Not a GC
+/// point.
+pub(crate) fn dict_entries(d: CellPtr) -> Vec<(u32, i32)> {
+    let buckets = object::rd_i32(d, dict::BUCKETS) as usize;
+    let mut out = Vec::with_capacity(object::rd_i32(d, dict::COUNT) as usize);
+    for b in 0..buckets {
+        let at = dict::DATA + dict::ENTRY * b;
+        let k = object::rd(d, at);
+        if k != crate::frame::UNDEFINED && k != HOLE {
+            out.push((crate::frame::int32_of(k) as u32, object::rd_i32(d, at + 16)));
+        }
+    }
+    out.sort_unstable_by_key(|&(i, _)| i);
+    out
+}
+
+/// The flags word of the ELEMENTS_DICT cell `d`.
+fn dict_flags(d: CellPtr) -> i32 {
+    object::rd_i32(d, dict::FLAGS)
+}
+
+/// True if the Array `a`'s `length` is writable: always, but for a DICTIONARY array whose
+/// cell has [`dict::LENGTH_READONLY`]. Not a GC point.
+#[inline]
+pub(crate) fn length_writable(a: u64) -> bool {
+    dict_of(a).is_none_or(|d| dict_flags(d) & dict::LENGTH_READONLY == 0)
+}
+
+/// Makes the Array `a`'s `length` not writable: the array moves to DICTIONARY first (one
+/// way). GC point.
+pub(crate) fn set_length_readonly(rt: &Runtime, a: u64) {
+    let d = match dict_of(a) {
+        Some(d) => d,
+        None => {
+            to_dictionary(rt, a);
+            dict_of(a).expect("a dictionary")
+        }
+    };
+    object::init(
+        d,
+        dict::FLAGS,
+        int32_bits(dict_flags(d) | dict::LENGTH_READONLY),
+    );
+}
+
+/// Stores entry `i` of the DICTIONARY object `o`: `v` (a Value or an ACCESSOR_PAIR) with
+/// `attrs`, a new entry or in place of the old one. The cell grows (a new cell at +16) when
+/// it is three quarters used. A raw store: the callers check attributes, `[[Extensible]]`
+/// and `length`. GC point (a growth): `o` and `v` live in Rust locals.
+pub(crate) fn dict_put(rt: &Runtime, o: u64, i: u32, v: u64, attrs: i32) {
+    let d = dict_of(o).expect("a DICTIONARY object");
+    if let Some(at) = dict_find(d, i) {
+        object::wr(&rt.heap, d, at + 8, v);
+        object::init(d, at + 16, int32_bits(attrs));
+        return;
+    }
+    let buckets = object::rd_i32(d, dict::BUCKETS) as usize;
+    let used = object::rd_i32(d, dict::USED) as usize;
+    let d = if (used + 1) * 4 > buckets * 3 {
+        // GC point: `o` and `v` live in Rust locals; the old cell is reachable from `o`.
+        let count = object::rd_i32(d, dict::COUNT) as usize;
+        let nb = ((count + 1) * 2).next_power_of_two().max(dict::MIN_BUCKETS);
+        let n = new_dict_cell(rt, nb, dict_flags(d));
+        let old = dict_of(o).expect("a DICTIONARY object");
+        for b in 0..buckets {
+            let at = dict::DATA + dict::ENTRY * b;
+            let k = object::rd(old, at);
+            if k != crate::frame::UNDEFINED && k != HOLE {
+                dict_insert_new(
+                    n,
+                    crate::frame::int32_of(k) as u32,
+                    object::rd(old, at + 8),
+                    object::rd_i32(old, at + 16),
+                    true,
+                );
+            }
+        }
+        object::wr(
+            &rt.heap,
+            object::cell(o),
+            obj::ELEMENTS,
+            n.to_value().to_bits(),
+        );
+        n
+    } else {
+        d
+    };
+    dict_insert_new(d, i, v, attrs, false);
+    let at = dict_find(d, i).expect("the new entry");
+    // The value slot of a cell that may be older than `v` takes the barrier.
+    object::wr(&rt.heap, d, at + 8, v);
+}
+
+/// Inserts the new entry `i` (not in `d`) into the ELEMENTS_DICT cell `d`, which has room.
+/// `fresh`: `d` is the newest cell (initializing stores); else the caller stores the value
+/// again with the barrier. Not a GC point.
+fn dict_insert_new(d: CellPtr, i: u32, v: u64, attrs: i32, fresh: bool) {
+    let buckets = object::rd_i32(d, dict::BUCKETS) as usize;
+    let mut b = dict_home(i, buckets);
+    loop {
+        let at = dict::DATA + dict::ENTRY * b;
+        let k = object::rd(d, at);
+        if k == crate::frame::UNDEFINED || k == HOLE {
+            if k == crate::frame::UNDEFINED {
+                let used = object::rd_i32(d, dict::USED);
+                object::init(d, dict::USED, int32_bits(used + 1));
+            }
+            object::init(d, at, dict_key(i));
+            if fresh {
+                object::init(d, at + 8, v);
+            } else {
+                // A placeholder until the caller's barriered store.
+                object::init(d, at + 8, crate::frame::UNDEFINED);
+            }
+            object::init(d, at + 16, int32_bits(attrs));
+            let count = object::rd_i32(d, dict::COUNT);
+            object::init(d, dict::COUNT, int32_bits(count + 1));
+            return;
+        }
+        b = (b + 1) & (buckets - 1);
+    }
+}
+
+/// Removes entry `i` of the ELEMENTS_DICT cell `d` (a tombstone), if present. A raw delete:
+/// the callers check `[[Configurable]]`. Not a GC point.
+pub(crate) fn dict_remove(d: CellPtr, i: u32) -> bool {
+    let Some(at) = dict_find(d, i) else {
+        return false;
+    };
+    object::init(d, at, HOLE);
+    object::init(d, at + 8, crate::frame::UNDEFINED);
+    object::init(d, at + 16, int32_bits(0));
+    let count = object::rd_i32(d, dict::COUNT);
+    object::init(d, dict::COUNT, int32_bits(count - 1));
+    true
+}
+
+/// Moves the Array `a` to DICTIONARY (one-way, H18 Decision): an ELEMENTS_DICT cell with
+/// each present element of its dense store as a {w, e, c} entry, then the shape of kind
+/// DICTIONARY. The site of an array-literal array is not generalized to DICTIONARY (a site
+/// makes dense arrays only). GC point: `a` lives in a Rust local of the caller.
+#[cold]
+#[inline(never)]
+pub(crate) fn to_dictionary(rt: &Runtime, a: u64) {
+    debug_assert!(kinds_::is_array(a), "DICTIONARY elements are for Arrays");
+    let from = kind_of(a);
+    if from == kind::DICTIONARY {
+        return;
+    }
+    let present: Vec<u32> = object::element_indices(a).collect();
+    let nb = (present.len() * 2)
+        .next_power_of_two()
+        .max(dict::MIN_BUCKETS);
+    // GC point: `a` lives in a Rust local; the dense cell is reachable from `a`.
+    let d = new_dict_cell(rt, nb, 0);
+    for &i in &present {
+        let v = object::element_get(a, i).expect("a present element");
+        dict_insert_new(d, i, v, object::attr::DEFAULT, true);
+    }
+    // GC point: `a` and `d` live in Rust locals (CSS).
+    let ns = match shape::with_elements_kind(rt, shape::shape_of(a), kind::DICTIONARY) {
+        Some(s) => s,
+        None => {
+            crate::props::to_dictionary(rt, a);
+            shape::with_elements_kind(rt, shape::shape_of(a), kind::DICTIONARY)
+                .expect("a dictionary shape takes any elements kind")
+        }
+    };
+    object::wr(
+        &rt.heap,
+        object::cell(a),
+        obj::ELEMENTS,
+        d.to_value().to_bits(),
+    );
+    shape::install(rt, a, ns);
+    debug_assert!(storage_form_ok(a), "storage form after a DICTIONARY move");
+}
+
+/// True if the storage form of the JS object `o`'s elements store is its kind's (H18 Rules,
+/// "the storage form follows the kind"; M5-P1-ORCH-11: the shape guard is the kind source of
+/// the tiers): no cell, an ELEMENTS cell for kinds 0, 1, 4, 5, an ELEMENTS_DOUBLE cell for
+/// 2, 3 and an ELEMENTS_DICT cell for 6 (which always has one). ARGUMENTS objects keep their
+/// own +16 store. Not a GC point. Every transition asserts it in debug builds.
+pub(crate) fn storage_form_ok(o: u64) -> bool {
+    if kinds_::cell_kind(o) == kinds_::ARGUMENTS.get() {
+        return true;
+    }
+    let k = kind_of(o);
+    let e = object::rd(object::cell(o), obj::ELEMENTS);
+    let want = match storage(k) {
+        Some(Storage::Values) => kinds_::ELEMENTS.get(),
+        Some(Storage::Doubles) => kinds_::ELEMENTS_DOUBLE.get(),
+        Some(Storage::Dictionary) => kinds_::ELEMENTS_DICT.get(),
+        None => return false,
+    };
+    if e == crate::frame::UNDEFINED {
+        return k != kind::DICTIONARY;
+    }
+    kinds_::cell_kind(e) == want
 }
 
 /// Checks the elements invariants of the JS object `o` (tests): the cell's storage form is
@@ -392,12 +722,33 @@ pub(crate) fn register_kinds(heap: &Heap) {
 pub(crate) fn check(o: u64) -> Result<(), String> {
     let k = kind_of(o);
     let e = object::rd(object::cell(o), obj::ELEMENTS);
-    if k >= kind::DICTIONARY {
-        return Err(format!("kind {k} before M5-P2"));
-    }
     let array = kinds_::is_array(o);
     if !array && kinds_::cell_kind(o) == kinds_::ARGUMENTS.get() {
         return Ok(());
+    }
+    if !storage_form_ok(o) {
+        return Err(format!("kind {k} with the store {e:#x}"));
+    }
+    if k == kind::DICTIONARY {
+        if !array {
+            return Err("DICTIONARY on an object that is not an Array".into());
+        }
+        let d = object::cell(e);
+        let entries = dict_entries(d);
+        let len = object::array_len(o);
+        if entries.len() != object::rd_i32(d, dict::COUNT) as usize {
+            return Err("an ELEMENTS_DICT count that is not its live entries".into());
+        }
+        if object::rd_i32(d, dict::CAPACITY) != 0 {
+            return Err("an ELEMENTS_DICT cell with a dense capacity".into());
+        }
+        if let Some(&(i, _)) = entries.iter().find(|&&(i, _)| i >= len) {
+            return Err(format!("a dictionary entry at {i} past length {len}"));
+        }
+        return Ok(());
+    }
+    if k > kind::DICTIONARY {
+        return Err(format!("reserved kind {k}"));
     }
     if e == crate::frame::UNDEFINED {
         return if array || k == kind::PACKED_INT32 || is_holey(k) {
