@@ -343,7 +343,9 @@ pub fn once_with(
                     sp_facts::Source::Profiled(&snap),
                 )?;
                 code = Some(set.code());
-                let inst = set.install(&mut s)?;
+                // SAFETY: `set` is `compile_hot_set`'s result for `s` just above, unchanged,
+                // with no JS run since.
+                let inst = unsafe { set.install(&mut s) }?;
                 compiled = inst.set.iter().map(|(_, t, _)| t.clone()).collect();
                 // The warm-up run() with the code installed: the start-up exits.
                 let before = counted(&s, &compiled);
@@ -370,7 +372,9 @@ pub fn once_with(
                 )?;
                 if which == Which::C {
                     code = Some(set.code());
-                    let inst = set.install(&mut s)?;
+                    // SAFETY: as for config P above: `compile_hot_set`'s result for `s`,
+                    // unchanged, with no JS run since.
+                    let inst = unsafe { set.install(&mut s) }?;
                     compiled = inst.set.iter().map(|(_, t, _)| t.clone()).collect();
                 }
             }

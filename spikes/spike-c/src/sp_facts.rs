@@ -108,7 +108,20 @@ impl HotSet {
     }
 
     /// Installs every compiled function (placement (b), with its exit table).
-    pub fn install(self, s: &mut Session) -> Result<Installed, String> {
+    ///
+    /// # Safety
+    /// `self` is what [`compile_hot_set`] returned for `s`, with no JS run in `s` since and
+    /// no field changed (the code bytes, targets and reports are public, and
+    /// [`Session::install_targets`] can check only the function key): each code is then
+    /// the placement (b) code `emit_a64` made for its target and each meta its own exit
+    /// table, the contract of [`Session::install_targets`].
+    ///
+    /// ```compile_fail,E0133
+    /// fn f(set: spike_c::sp_facts::HotSet, s: &mut spike_c::harness::Session) {
+    ///     let _ = set.install(s); // E0133: an unsafe fn
+    /// }
+    /// ```
+    pub unsafe fn install(self, s: &mut Session) -> Result<Installed, String> {
         let mut targets = Vec::new();
         let mut codes = Vec::new();
         let mut metas = Vec::new();
@@ -120,13 +133,14 @@ impl HotSet {
             set.push((c.name, c.target, c.report));
         }
         if !codes.is_empty() {
-            // SAFETY: each code is the placement (b) code `emit_a64` made for its target from
-            // `input_of_target` in `compile_hot_set` (which runs no JS between the first input
-            // and the last compile, and the caller runs none between the compile and this
-            // install), unchanged, and each meta is its own exit table; emit_a64 keeps the (b)
-            // contract as for `tier::run_full` (the T0 handler ABI, `ep9_vm::layout` offsets
-            // proved by `vm_layout::check`, only RuntimeTable calls, callee-saved registers
-            // kept, every exit the tail jump to `cx.table[*pc]`).
+            // SAFETY: the caller's contract (# Safety): each code is the placement (b) code
+            // `emit_a64` made for its target from `input_of_target` in `compile_hot_set`
+            // (which runs no JS between the first input and the last compile, and the caller
+            // runs none between the compile and this install), unchanged, and each meta is its
+            // own exit table; emit_a64 keeps the (b) contract as for `tier::run_full` (the T0
+            // handler ABI, `ep9_vm::layout` offsets proved by `vm_layout::check`, only
+            // RuntimeTable calls, callee-saved registers kept, every exit the tail jump to
+            // `cx.table[*pc]`).
             unsafe { s.install_targets(&targets, codes, metas) }?;
         }
         for (name, t, _) in &set {
@@ -410,7 +424,9 @@ fn finish(
         .iter()
         .map(|c| (fnv1a64(&c.code.code), fnv1a64(&c.report.emit.meta.encode())))
         .collect();
-    let inst = set.install(&mut s)?;
+    // SAFETY: `set` is `compile_hot_set`'s result for `s` (run_c, run_p), unchanged, and no
+    // JS ran in `s` since (`line`, `code` and the digests only read it).
+    let inst = unsafe { set.install(&mut s) }?;
     let c0 = inst.counts(&s)?;
     let (warm, c1) = match warm {
         Some(w) => (w, c0.clone()),
