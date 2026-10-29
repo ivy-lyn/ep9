@@ -784,9 +784,9 @@ pub(crate) fn field_owner(shape: u64, i: usize) -> u64 {
 /// Writes descriptor `i` of the field family of `owner` ([`field_owner`]): `f` maps the
 /// details of each DESCRIPTORS cell that `owner` or a live descendant uses to the new ones;
 /// `f` only widens the field bits, and a join, so a cell that several shapes share (the
-/// prefix rule) is read again but written once. A cell that another family shares (a unique
-/// shape) sees the wider bits too, which is safe. Returns true if any cell changed. Not a GC
-/// point: the walk's stack of shapes is Rust memory only until it returns.
+/// prefix rule) is read again but written once. A unique shape's cell is its own copy
+/// ([`own_descriptors`]) or one only older unique shapes of its object share: the walk stops.
+/// Returns true if any cell changed. Not a GC point: the walk's stack is Rust memory only.
 pub(crate) fn set_field_bits_in_family(
     owner: u64,
     i: usize,
@@ -973,8 +973,8 @@ pub(crate) fn remove_last(shape: u64) -> u64 {
 }
 
 /// [`add`] on a unique (prototype-mode) shape: a new unique shape with one more property,
-/// the same prototype, flags and PROTO_INFO. The descriptor array follows the prefix rule,
-/// so it may be shared with tree shapes. GC point.
+/// the same prototype, flags and PROTO_INFO. The descriptor array follows the prefix rule
+/// among this object's unique shapes, never a tree shape's ([`own_descriptors`]). GC point.
 fn add_unique(rt: &Runtime, shape: u64, key: u64, attrs: i32, bits: i32, how: Probe) -> Added {
     let n = count(shape);
     if n >= MAX_FAST_PROPERTIES || key::is_index_key(key) {
@@ -1102,8 +1102,8 @@ fn descriptors_for_child(rt: &Runtime, shape: u64, key: u64, details: Details, h
     let shared = d_details(od, n);
     if shared.same_slot(details) && same_key(d_key(od, n), key, how) {
         // A child that died added this very entry: share the array again. The entry keeps
-        // the field bits of its old users, widened by the new child's (one-way; a live
-        // unique shape that shares the array may still use the entry).
+        // the field bits of its old users, widened by the new child's (one-way; an older
+        // unique shape of the same object that shares the array may still use the entry).
         let b = crate::field_rep::join_bits(shared.field_bits(), details.field_bits());
         if b != shared.field_bits() {
             // E1: an int32 store needs no barrier.
@@ -1498,14 +1498,14 @@ pub(crate) fn proto_info_for(rt: &Runtime, p: u64) -> u64 {
     if is_prototype_object(p) {
         return unique_info(shape_of(p));
     }
-    // GC points below: `p` and `info` live in Rust locals (CSS).
+    // GC points below (`own_descriptors` too): `p`, `info` and `old` live in Rust locals (CSS).
     let info = new_proto_info(rt, p);
     let old = shape_of(p);
     let fl = flags(old) & (flag::EXTENSIBLE | flag::DICTIONARY);
     let u = new_unique(
         rt,
         proto(old),
-        descriptors(old),
+        own_descriptors(rt, old),
         rd(cell(old), shf::COUNTS),
         fl,
         info,
@@ -1796,4 +1796,28 @@ pub(crate) fn check(rt: &Runtime, shape: u64) -> Result<(), String> {
         return Err("the root has a parent or descriptors".into());
     }
     Ok(())
+}
+
+/// The DESCRIPTORS of the new unique shape of an object whose shape was `old`
+/// ([`proto_info_for`]): a copy of a tree shape's first `count(old)` entries, field bits and
+/// all (M5-P2 CONSTREP; Codex r1 constrep 1). The unique shape starts its own field families,
+/// and a widening through it writes only its own cell ([`set_field_bits_in_family`] stops at
+/// a unique shape), so it must not write a tree branch's cell that the family's owner, and so
+/// its kind-3 fuse, does not read. Undefined (a dictionary or an empty shape) stays. GC point:
+/// `old` and the new cell live in Rust locals (CSS).
+fn own_descriptors(rt: &Runtime, old: u64) -> u64 {
+    let (d, n) = (descriptors(old), count(old));
+    if d == UNDEFINED || n == 0 {
+        return d;
+    }
+    debug_assert!(
+        flags(old) & flag::UNIQUE == 0,
+        "a unique shape is in prototype mode"
+    );
+    let cap = (n + 1).next_power_of_two().max(MIN_DESCRIPTORS);
+    let nd = copy_descriptors(rt, cell(d), n, cap);
+    if n > LINEAR_MAX {
+        build_index(rt, nd);
+    }
+    nd
 }

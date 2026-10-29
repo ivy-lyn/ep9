@@ -39,8 +39,10 @@
 //! - The bits live in the shared DESCRIPTORS entry of the field. A family is the owner shape
 //!   that added the field and its descendants; a branch has a copy of the entry. A widening
 //!   writes every copy of its family (descendants are live while an object uses them; a dead
-//!   branch needs no write). A cell shared with another family (a unique shape, the prefix
-//!   rule) is widened too, which is safe.
+//!   branch needs no write). A prototype-mode object (a unique shape) leaves its tree family
+//!   with its own copy of the cell (`shape::proto_info_for`), so no cell is shared between
+//!   families: a widening never writes a cell that the family's owner, and so its kind-3
+//!   fuse, does not read.
 //! - Writers outside this list must keep the rule themselves: a direct field write stores
 //!   only values that the field's bits already allow, or widens first ([`widen`],
 //!   [`widen_all`]). The month-5 list of such writers is in the H17 row.

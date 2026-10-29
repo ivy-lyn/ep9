@@ -172,15 +172,17 @@ fn a_widening_reaches_every_shape_of_the_family() {
         // A transition made after the widening copies the wide bits.
         let o4 = object_with(rt, op, &[("fa", int(2)), ("fy", int(1))]);
         assert_eq!(bits(o4, 0), (rep::DOUBLE, false));
-        // A prototype-mode object (a unique shape) shares or copies the entry, and widens.
+        // A prototype-mode object (a unique shape) has its own copy of the entries: it left
+        // the family, so its widening stays in its own cell.
         let p = object_with(rt, op, &[("fa", int(1)), ("fb", int(1))]);
         let _child = object::new_object(rt, p);
         assert!(shape::is_prototype_object(p));
         store(rt, p, "fb", text(rt, "s"));
         assert_eq!(bits(p, 1), (rep::ANY, false));
-        assert!(
-            matches!(bits(o2, 1), (rep::ANY, false)),
-            "the shared entry widens too"
+        assert_eq!(
+            bits(o2, 1),
+            (rep::INT32, true),
+            "the tree family keeps its bits"
         );
     });
 }
@@ -419,5 +421,55 @@ fn shapes_with_no_known_value_are_any() {
             panic!("a child");
         };
         assert_eq!(shape::details_at(c, 0).rep(), rep::ANY);
+    });
+}
+
+/// A prototype that leaves a tree branch (`shape::proto_info_for`) takes its own copy of the
+/// branch's DESCRIPTORS cell (Codex M5-P2 r1 constrep 1). With a shared cell, a store into the
+/// prototype widened the branch's copy only (a unique shape's walk stops at itself), so a
+/// later store into an object of the branch read ANY, not const, and returned early: the
+/// owner's Field fuse stayed intact and its dependent code valid while the field changed.
+#[test]
+fn a_prototype_store_leaves_the_branch_and_the_owner_fuse_pops_on_the_next_store() {
+    each(|iso| {
+        let rt = &iso.rt;
+        let fuses = &rt.fuses;
+        let op = object_prototype(rt);
+        // A -> AB (cell D1) and A -> AC (a branch: its own copy D2).
+        let o_ab = object_with(rt, op, &[("ka", int(1)), ("kb", int(1))]);
+        let p = object_with(rt, op, &[("ka", int(1)), ("kc", int(1))]);
+        let o4 = object_with(rt, op, &[("ka", int(1)), ("kc", int(1))]);
+        let ac = shape::shape_of(o4);
+        assert_eq!(shape::shape_of(p), ac);
+        assert_ne!(
+            shape::descriptors(ac),
+            shape::descriptors(shape::shape_of(o_ab))
+        );
+        // p goes to prototype mode: a unique shape with its own cell.
+        shape::proto_info_for(rt, p);
+        let u = shape::shape_of(p);
+        assert_ne!(u, ac);
+        assert_ne!(
+            shape::descriptors(u),
+            shape::descriptors(ac),
+            "the unique shape has its own copy"
+        );
+        // Field(0) armed through an AC object watches the owner A.
+        let d = Descriptor::Field { index: 0 };
+        let f = FuseRef::Dynamic(d);
+        let w = fuses.arm(rt, d, ac).unwrap();
+        let code = CodeHandle::new();
+        fuses.depend(rt, f, ac, &code).unwrap();
+        // A store into the prototype widens its own family only.
+        store(rt, p, "ka", text(rt, "s"));
+        assert_eq!(bits(p, 0), (rep::ANY, false));
+        assert_eq!(bits(o4, 0), (rep::INT32, true), "the branch keeps its bits");
+        assert!(w.intact() && !code.is_invalidated());
+        // A second store into an AC object clears const for A's family: the fuse pops.
+        store(rt, o4, "ka", int(5));
+        assert_eq!(bits(o4, 0), (rep::INT32, false));
+        assert_eq!(bits(o_ab, 0), (rep::INT32, false));
+        assert!(!w.intact() && code.is_invalidated());
+        assert!(!fuses.intact(rt, f, ac));
     });
 }
