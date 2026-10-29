@@ -5,9 +5,7 @@
 
 use ep9_vm::{Args, Cx, JsResult, Local};
 
-use super::{
-    new_str, proto::relative_start, push_units, this_string, to_units, units, units_range,
-};
+use super::{new_str, proto::relative_start, push_units, this_string, to_units, units};
 
 /// String.prototype.substr ( start, length ) (B.2.2.1).
 pub(super) fn substr<'s>(
@@ -42,8 +40,8 @@ pub(super) fn substr<'s>(
     if int_start >= int_end {
         return Ok(cx.key("").value());
     }
-    let substring = units_range(cx, s, int_start, int_end)?;
-    new_str(cx, &substring)
+    // (a SLICED string from 13 units, H19)
+    Ok(cx.substring(s, int_start, int_end)?.value())
 }
 
 /// CreateHTML ( string, tag, attribute, value ) (B.2.2.2.1). `attribute` is `None` for the
