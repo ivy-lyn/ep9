@@ -13,7 +13,7 @@
 //! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 5 |
 //! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 5 |
 //! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 5 |
-//! | ARRAY: elements store, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 5 |
+//! | ARRAY: elements store, length (an int32 Value below 2^31, a double Value from 2^31 on, M5-P2 ELEM2; only a DICTIONARY array is that long, and `CheckArray` exits on it, so `LoadElement` and `StoreElement` read the low 32 bits as the dense bound) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 5 |
 //! | the two elements storage forms the element ops read: an ELEMENTS cell (kind 65, Values) or an ELEMENTS_DOUBLE cell (kind 81, raw f64); `LoadElement` and `StoreElement` exit on any other elements store (an ELEMENTS_DICT cell, 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS`, `KIND_ELEMENTS_DOUBLE`, `KIND_ELEMENTS_DICT` | OBJECT_LAYOUT 5 |
 //! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 5 |
 //! | ELEMENTS_DOUBLE: capacity (an int32 Value), raw f64 from `ELEMENTS_DOUBLE_DATA`; the hole is a NaN no store writes; a store writes every NaN as the pure NaN (`PURE_NAN_BITS`, proved below) | `ELEMENTS_DOUBLE_CAPACITY`, `ELEMENTS_DOUBLE_DATA`, `ELEMENTS_DOUBLE_HOLE` | OBJECT_LAYOUT 5 |
@@ -27,10 +27,10 @@
 //!
 //! Since M5-P0 the export is `ep9_vm::layout`, in every ep9_vm build (C-18). What is left here
 //! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
-//! Three facts the kind guard reads (M5-P2 SPIKEC-6, WI-SC7) are not in the export, which is
-//! frozen in month 5 (plan v10 rule 2): the shape address rule, the shape's `counts` offset and
-//! the SHAPE kind id. They are hand copies here, each proved on live arrays of all six element
-//! kinds by [`check`]; the export gap is a report item for the orchestrator.
+//! Four facts the guards read are not in the export, frozen in month 5 (plan v10 rule 2): the
+//! shape address rule, the shape's `counts` offset and the SHAPE kind id (the kind guard, M5-P2
+//! SPIKEC-6, WI-SC7; proved on live arrays of all six element kinds), and the CONTEXT kind id
+//! (the `LoadContextSlot` guard, M5-P2 fixer round 3). Hand copies, each proved by [`check`].
 
 use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
 

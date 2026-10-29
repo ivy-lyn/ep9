@@ -142,7 +142,7 @@ pub(crate) mod smi {
     pub const FIELD_IN_OBJECT: i32 = 1;
     /// The field at the byte offset of the object's SLOTS cell (+8).
     pub const FIELD_OUT_OF_LINE: i32 = 2;
-    /// An array's `length` (the int32 at +24).
+    /// An array's `length`: the Value at +24 (an int32 below 2^31, a double from 2^31 on).
     pub const ARRAY_LENGTH: i32 = 3;
     /// A string's `length` (the receiver must be a string).
     pub const STRING_LENGTH: i32 = 4;

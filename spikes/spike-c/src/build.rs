@@ -1022,7 +1022,7 @@ impl Builder<'_> {
             return Err(refuse(format!("IC state {:?}", pf.state)));
         }
         // Every case must read the same place: an in-object field of an ordinary object at
-        // one offset, or an Array's length (the int32 at +24).
+        // one offset, or an Array's length (the Value at +24: an int32, a double from 2^31).
         let mut location: Option<(u32, u64)> = None;
         let mut shapes = Vec::new();
         for c in &pf.cases {
