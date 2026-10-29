@@ -7,7 +7,7 @@ use std::hint::black_box;
 
 use ep9_bytecode::{FeedbackSlotKind, FunctionId, RegisterList, VerifiedUnit};
 
-use super::{Asm, config, isolate, meta, on_big_stack, unit};
+use super::{Asm, config, isolate, meta, on_big_stack, profile::isolate as isolate_full, unit};
 use crate::construct_ic::{cs, handler_i32};
 use crate::feedback;
 use crate::frame::{UNDEFINED, int32_bits, int32_of};
@@ -276,7 +276,7 @@ fn a_script_gets_its_vector_at_entry() {
     assert_eq!(script, made(0));
     // Its CreateClosure slot saw the one closure (`profile::record_closure`).
     on_big_stack(|| {
-        let mut iso = isolate(IsolateConfig::default());
+        let mut iso = isolate_full(IsolateConfig::default());
         iso.with_cx_checkpoint(|cx| {
             cx.run_script(program(1, How::Fast, 0), "test.js")
                 .map(|_| ())

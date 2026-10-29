@@ -11,7 +11,9 @@
 
 use ep9_bytecode::{FunctionId, VerifiedUnit};
 
-use super::{Asm, config, isolate, meta, on_big_stack, take_output, unit};
+use super::{
+    Asm, config, isolate, meta, on_big_stack, profile::isolate as isolate_full, take_output, unit,
+};
 use crate::arguments;
 use crate::feedback::{self, fv};
 use crate::frame::{HOLE, UNDEFINED, int32_bits};
@@ -170,7 +172,7 @@ fn run_ic(threshold: u32, make: fn() -> VerifiedUnit) -> Vec<String> {
     for &d in Dispatch::ALL {
         for stress in [false, true] {
             let out = on_big_stack(move || {
-                let mut iso = isolate(IsolateConfig {
+                let mut iso = isolate_full(IsolateConfig {
                     feedback_threshold: threshold,
                     ..config(d, stress)
                 });

@@ -12,7 +12,7 @@
 use ep9_bytecode::{FeedbackSlotKind, Register, VerifiedUnit};
 use ep9_value::Value;
 
-use super::{Asm, config, isolate, on_big_stack, unit};
+use super::{Asm, config, isolate, on_big_stack, profile::isolate as isolate_full, unit};
 use crate::atoms;
 use crate::descriptor::Desc;
 use crate::elements::{self, Storage, kind as ek};
@@ -637,7 +637,7 @@ fn keyed_kinds_at(budget: Option<i64>, get_kinds: &'static [u8]) {
     for &d in Dispatch::ALL {
         for stress in [false, true] {
             on_big_stack(move || {
-                let mut iso = isolate(IsolateConfig {
+                let mut iso = isolate_full(IsolateConfig {
                     feedback_threshold: 0,
                     ..config(d, stress)
                 });

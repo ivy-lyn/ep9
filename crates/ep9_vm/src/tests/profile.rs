@@ -28,8 +28,8 @@ fn isolate_with(config: IsolateConfig, f: Feedback) -> Isolate {
     iso
 }
 
-/// A new isolate with `print` and the type-feedback mode `full` (the record tests).
-fn isolate(config: IsolateConfig) -> Isolate {
+/// A new isolate with `print` and the type-feedback mode `full` (every test that reads records).
+pub(super) fn isolate(config: IsolateConfig) -> Isolate {
     isolate_with(config, Feedback::FULL)
 }
 

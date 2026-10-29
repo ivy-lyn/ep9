@@ -19,7 +19,7 @@ use ep9_facts::{
 use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
 use ep9_vm::abi::export_facts;
-use ep9_vm::{Isolate, IsolateConfig};
+use ep9_vm::{ExecOptions, Feedback, Isolate, IsolateConfig};
 
 /// richards, then 3 runs (the first calls make the feedback vectors: 8 calls, or a loop's
 /// budget poll).
@@ -45,16 +45,21 @@ fn run(src: &str) -> (VerifiedUnit, FactSnapshot) {
 /// GC at each allocation if `stress`: its unit and the facts of that unit.
 fn run_with(src: &str, threshold: u32, stress: bool) -> (VerifiedUnit, FactSnapshot) {
     let unit = compile(src);
-    let mut iso = Isolate::new(IsolateConfig {
-        builtins: Some(&ep9_builtins::TABLE),
-        feedback_threshold: threshold,
-        heap: HeapConfig {
-            gc_stress: u32::from(stress),
-            verify_after_gc: stress,
-            ..HeapConfig::default()
+    // The facts read record bits: `full` feedback in every build (`ics_only`, the default
+    // without the `jit` feature, writes none; MODES-D11).
+    let mut iso = Isolate::new_with(
+        IsolateConfig {
+            builtins: Some(&ep9_builtins::TABLE),
+            feedback_threshold: threshold,
+            heap: HeapConfig {
+                gc_stress: u32::from(stress),
+                verify_after_gc: stress,
+                ..HeapConfig::default()
+            },
+            ..IsolateConfig::default()
         },
-        ..IsolateConfig::default()
-    })
+        ExecOptions::default().feedback(Feedback::FULL),
+    )
     .expect("an isolate");
     let u = unit.clone();
     iso.with_cx(|cx| cx.run_script(u, "facts.js").map(|_| ()))
