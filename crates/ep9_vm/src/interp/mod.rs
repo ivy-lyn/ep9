@@ -3,8 +3,8 @@
 //! ```text
 //! ep9_bytecode::for_each_opcode!  (names, bytes, operand kinds)          ops.rs: one body per opcode
 //!        │                                                                   fast: Flow {Next, Jump, Cold}
-//!        ├── expand_threaded![return, "sib"]   (b) sibling calls              cold: Done {Next, Jump}
-//!        ├── expand_threaded![become, "become"] (c) nightly `become`
+//!        ├── expand_threaded![return, "sib"|"ics", full|ics_only] (b) sibling   cold: Done {Next, Jump}
+//!        ├── expand_threaded![become, "become"|"bics", ..]         (c) nightly `become`
 //!        ├── expand_match![]                    (a) loop { match }
 //!        └── expand_scaled![]                   Wide / ExtraWide instructions (out of line)
 //! ```
@@ -114,11 +114,11 @@ impl Dispatch {
         }
     }
 
-    pub(crate) fn table(self) -> &'static [Handler; 256] {
+    pub(crate) fn table(self, feedback: crate::exec::Feedback) -> &'static [Handler; 256] {
         match self {
-            Dispatch::Match | Dispatch::Sibling => &sibling::TABLE,
+            Dispatch::Match | Dispatch::Sibling => pick(&sibling::TABLE, &sib_ics::TABLE, feedback),
             #[cfg(feature = "become")]
-            Dispatch::Become => &tail::TABLE,
+            Dispatch::Become => pick(&tail::TABLE, &tail_ics::TABLE, feedback),
         }
     }
 }
@@ -447,7 +447,15 @@ pub(crate) mod match_loop {
 pub(crate) mod sibling {
     use super::*;
     use crate::interp::dsl::expand_threaded;
-    ep9_bytecode::for_each_opcode!(expand_threaded[return, "sib"]);
+    ep9_bytecode::for_each_opcode!(expand_threaded[return, "sib", full]);
+}
+
+/// (b) Sibling calls with the type feedback `ics_only` (MODES-D11; M5-P3 PROFILE6): no record
+/// code in the fast handlers; the cold handlers tail-jump to those of [`sibling`] ([`pick`]).
+pub(crate) mod sib_ics {
+    use super::*;
+    use crate::interp::dsl::expand_threaded;
+    ep9_bytecode::for_each_opcode!(expand_threaded[return, "ics", ics_only]);
 }
 
 /// (c) `become` (nightly).
@@ -455,7 +463,36 @@ pub(crate) mod sibling {
 pub(crate) mod tail {
     use super::*;
     use crate::interp::dsl::expand_threaded;
-    ep9_bytecode::for_each_opcode!(expand_threaded[become, "become"]);
+    ep9_bytecode::for_each_opcode!(expand_threaded[become, "become", full]);
+}
+
+/// (c) `become` with the type feedback `ics_only`: as [`sib_ics`] for [`tail`].
+#[cfg(feature = "become")]
+pub(crate) mod tail_ics {
+    use super::*;
+    use crate::interp::dsl::expand_threaded;
+    ep9_bytecode::for_each_opcode!(expand_threaded[become, "bics", ics_only]);
+}
+
+/// The handler table of an expansion for the type-feedback mode `f` ([`Dispatch::table`];
+/// MODES-D11, D11 of M5-P3, orchestrator M5-P3-ORCH-4): `ics_only` gives the expansion's second
+/// table, `ics` (its fast handlers have no `profile.rs` record code, `dsl::record_exit`), every
+/// other mode the `full` one. The choice is made once per `Cx` (`Isolate::new_with` copies the
+/// table into `Cx::table`), so it costs no instruction in either table. The `ics_only` table
+/// shares the cold handlers of the `full` one, whose record hooks test the mode
+/// (`profile::records`, on cold paths only); the match loop (a) and the prefixed step read the
+/// mode at run time (once per loop entry; on the rare prefixed path), and a `Cx` of the match
+/// loop holds the sibling table of its mode (native code and stubs dispatch through it).
+fn pick(
+    full: &'static [Handler; 256],
+    ics: &'static [Handler; 256],
+    f: crate::exec::Feedback,
+) -> &'static [Handler; 256] {
+    if f == crate::exec::Feedback::ICS_ONLY {
+        ics
+    } else {
+        full
+    }
 }
 
 /// Prefixed (`Wide`, `ExtraWide`) instructions: one out-of-line step per scale, shared by all
