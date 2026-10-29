@@ -1739,6 +1739,14 @@ impl Emitter<'_> {
 /// 0, `mov x29, sp` at 4, then one `stp` per pair of [`SAVED`]. The epilogue at `epilogue`
 /// restores the pairs (one `ldp` each, reversed), then `ldp x29, x30`, then `br`; its rows sit
 /// between remember/restore state, so the out-of-line code after the `br` has the body's rule.
+impl ForceTable {
+    /// Every guard's countdown now (the armed set before a run, for
+    /// `tier::forced_coverage`).
+    pub fn snapshot(&self) -> Vec<u32> {
+        (0..self.len() as u32).map(|g| self.get(g)).collect()
+    }
+}
+
 impl Emitter<'_> {
     /// `x16` = the frame's current context for a `LoadContextSlot(i)` (its guard, Codex M5-P2
     /// r1 spikec6 1): the exit `trap` unless the word is a CONTEXT cell

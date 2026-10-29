@@ -333,6 +333,7 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
         }
         Err(_) => None,
     };
+    let armed = force.as_ref().map(|t| t.snapshot()).unwrap_or_default();
     let opts = spike_c::emit_a64::EmitOptions {
         force: force.as_ref(),
         ..Default::default()
@@ -346,38 +347,34 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
     )?;
     println!("{}", run.report.line());
     println!("{}", run.line());
-    let mut ok = run.equal && (run.probe_exit.is_some() || run.function != "am3");
-    if let Some(t) = &force {
-        // Per guard: the VM counted at least the forced exit (a natural exit adds to it,
-        // as GC stress does), and with no natural exit exactly that.
-        let mut guards: Vec<u32> = run.report.emit.meta.exits.iter().map(|e| e.guard).collect();
-        guards.sort_unstable();
-        guards.dedup();
-        let mut forced = 0;
-        for &g in &guards {
-            let f = u64::from(t.get(g) == 0);
-            let c: u64 = run
-                .report
-                .emit
-                .meta
-                .exits
-                .iter()
-                .zip(&run.exits)
-                .filter(|(r, _)| r.guard == g)
-                .map(|(_, c)| c)
-                .sum();
-            forced += f;
-            if c < f || (!stress && c != f) {
-                println!("{}: g{g}: forced {f}, counted {c}", run.function);
-                ok = false;
+    let ok = match &force {
+        // Per guard: the VM counted at least the forced exit (a natural exit adds to it, as
+        // GC stress does), with no natural exit exactly that, and every armed guard was
+        // forced (Codex M5-P2 r1 spikec6 3).
+        Some(t) => match spike_c::tier::forced_coverage(&run, &armed, t, stress) {
+            Ok(n) => {
+                println!(
+                    "{}: forced build: {n} of {n} guards forced once, the exit counters agree, heap verifier clean",
+                    run.function
+                );
+                run.equal && (run.probe_exit.is_some() || run.function != "am3")
             }
-        }
-        println!(
-            "{}: forced build: {forced} of {} guards forced once, the exit counters agree, heap verifier clean",
-            run.function,
-            guards.len()
-        );
-    }
+            Err(lines) => {
+                for l in lines {
+                    println!("{l}");
+                }
+                false
+            }
+        },
+        // No forced guard: no exit either (Codex M5-P2 r1 spikec6 2), but am3 under stress.
+        None => match spike_c::tier::unforced_ok(&run, stress) {
+            Ok(()) => true,
+            Err(e) => {
+                println!("{e}");
+                false
+            }
+        },
+    };
     Ok(ok)
 }
 

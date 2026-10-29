@@ -358,6 +358,79 @@ const PROBES: [(&str, &str); 1] = [(
 /// The length of the force tables of the deopt gate (guard ids are below the node count).
 pub const FORCE_LEN: usize = 4096;
 
+/// The gate verdict of a `spike-c tier` run with no forced guard (`gate.sh am3` and
+/// `linsolve`): the output equals T0, am3's probe deopted, and loop(n) took no exit (Codex
+/// M5-P2 r1 spikec6 2: plan v10 §4.8 WI-SC5, 0 CheckArray exits for lin_solve; a compiled
+/// function that deopts on every call is not a pass). The one exception is am3 under GC
+/// stress, where a guard whose weak IC entry the GC cleared deopts by design (`gate.sh am3`
+/// step 4). The probe's own exit is counted apart (`probe_exit`).
+pub fn unforced_ok(run: &TierRun, stress: bool) -> Result<(), String> {
+    if !run.equal {
+        return Err(format!("{}: output differs from T0", run.function));
+    }
+    if run.function == "am3" && run.probe_exit.is_none() {
+        return Err("am3: the probe did not deopt".into());
+    }
+    let total: u64 = run.exits.iter().sum();
+    if total != 0 && !(stress && run.function == "am3") {
+        return Err(format!(
+            "{}: {total} exits in an unforced run (0 required; guards {:?})",
+            run.function,
+            fired(&run.report, &run.exits)
+        ));
+    }
+    Ok(())
+}
+
+/// The verdict of a forced build (`SPIKE_C_FORCE_DEOPT=<seed>`, `gate.sh deopt`; WI-SC4) whose
+/// table held `armed` before the run (a guard's countdown, 0 = off): per guard of the exit
+/// table, forced = armed and its countdown reached 0; the VM's counter holds at least the
+/// forced exit, and exactly it with no GC stress; and every armed guard was forced (Codex
+/// M5-P2 r1 spikec6 3: a guard whose countdown never reached 0 had no forced exit, so its
+/// reconstruction went untested). Ok(the number of guards), or the lines that fail.
+pub fn forced_coverage(
+    run: &TierRun,
+    armed: &[u32],
+    t: &emit_a64::ForceTable,
+    stress: bool,
+) -> Result<usize, Vec<String>> {
+    let exits = &run.report.emit.meta.exits;
+    let mut guards: Vec<u32> = exits.iter().map(|e| e.guard).collect();
+    guards.sort_unstable();
+    guards.dedup();
+    let mut bad = Vec::new();
+    let mut missing = Vec::new();
+    for &g in &guards {
+        let on = armed.get(g as usize).is_some_and(|&c| c != 0);
+        let f = u64::from(on && t.get(g) == 0);
+        if on && f == 0 {
+            missing.push(g);
+        }
+        let c: u64 = exits
+            .iter()
+            .zip(&run.exits)
+            .filter(|(r, _)| r.guard == g)
+            .map(|(_, c)| c)
+            .sum();
+        if c < f || (!stress && c != f) {
+            bad.push(format!("{}: g{g}: forced {f}, counted {c}", run.function));
+        }
+    }
+    if !missing.is_empty() {
+        let names: Vec<String> = missing.iter().map(|g| format!("g{g}")).collect();
+        bad.push(format!(
+            "{}: armed guards never forced: {}",
+            run.function,
+            names.join(" ")
+        ));
+    }
+    if bad.is_empty() {
+        Ok(guards.len())
+    } else {
+        Err(bad)
+    }
+}
+
 /// One forced run of [`force_each_guard`].
 #[derive(Clone, Debug)]
 pub struct ForcedRun {
@@ -1768,6 +1841,62 @@ mod tests {
             "{}",
             r.report.graph
         );
+    }
+
+    /// Codex M5-P2 r1 spikec6 2: the unforced gate verdict (`gate.sh linsolve`, `spike-c tier`)
+    /// takes a run of lin_solve with no exit and refuses one where every guard exits at its
+    /// first pass (output still equal to T0: before, only the output counted).
+    #[test]
+    fn an_exit_fails_the_unforced_gate() {
+        if !aarch64() || !kernels::bench_present() {
+            return;
+        }
+        let k = kernels::kernel("navier-stokes").expect("navier-stokes");
+        let plain = run(k, 1, &Config::default()).expect("run");
+        assert_eq!(unforced_ok(&plain, false), Ok(()), "{}", plain.line());
+        let t = emit_a64::ForceTable::new(FORCE_LEN);
+        for g in 0..FORCE_LEN as u32 {
+            t.arm(g, 1);
+        }
+        let opts = emit_a64::EmitOptions {
+            force: Some(&t),
+            ..Default::default()
+        };
+        let r = run_full(k, 1, &Config::default(), IntFacts::Live, &opts).expect("forced");
+        assert!(r.equal, "{}", r.line());
+        assert!(r.exits.iter().sum::<u64>() > 0, "{}", r.line());
+        let e = unforced_ok(&r, false).expect_err("an exit fails the unforced gate");
+        assert!(e.contains("exits in an unforced run"), "{e}");
+    }
+
+    /// Codex M5-P2 r1 spikec6 3: the seeded forced build (`gate.sh deopt` step 3, crypto n = 1
+    /// under GC stress) passes with every guard forced, and fails when one armed guard never
+    /// reaches 0 (armed with u32::MAX after the seed): before, such a guard read "forced 0,
+    /// counted 0" and passed.
+    #[test]
+    fn a_seeded_build_fails_when_an_armed_guard_is_never_forced() {
+        if !aarch64() || !kernels::bench_present() {
+            return;
+        }
+        let k = kernels::kernel("crypto").expect("crypto");
+        let seeded = |hold: Option<u32>| {
+            let t = emit_a64::ForceTable::seeded(1, FORCE_LEN);
+            if let Some(g) = hold {
+                t.arm(g, u32::MAX);
+            }
+            let armed = t.snapshot();
+            let opts = emit_a64::EmitOptions {
+                force: Some(&t),
+                ..Default::default()
+            };
+            let r = run_full(k, 1, &Config::stress(), IntFacts::Live, &opts).expect("run");
+            assert!(r.equal, "{}", r.line());
+            forced_coverage(&r, &armed, &t, true).map(|n| (n, r.report.emit.meta.exits[0].guard))
+        };
+        let (n, g) = seeded(None).expect("every guard forced");
+        assert_eq!(n, 29);
+        let e = seeded(Some(g)).expect_err("a guard never forced");
+        assert_eq!(e, [format!("am3: armed guards never forced: g{g}")]);
     }
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;

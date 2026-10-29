@@ -32,7 +32,9 @@
 #     3  `spike-c tier navier-stokes --n 1` and `--n 12`: lin_solve compiled and installed by
 #        its function id after the warm-up (context slots from the CONTEXT export, calls
 #        through RuntimeTable::call_any, raw f64 element loads and stores); output equal to T0
-#        line for line (the check line digests every cell of the three fields)
+#        line for line (the check line digests every cell of the three fields), and loop(n)
+#        takes no exit (0 required in every unforced run but am3 under GC stress,
+#        `tier::unforced_ok`; Codex M5-P2 r1 spikec6 2)
 #     SKIP without the v8-v7 checkout
 #   gate.sh deopt        (plan v10 M5-P2 SPIKEC-6 WI-SC4; protocol §4, C2) forced deopts of am3:
 #     1  release build (as am3)
@@ -42,7 +44,8 @@
 #        counters hold exactly that one exit
 #     3  `SPIKE_C_FORCE_DEOPT=1 spike-c tier crypto --n 1 --stress`: every guard armed from the
 #        seed, GC before every allocation, verifier on: output equal to T0, each guard's
-#        counter at least its forced exit, heap verifier clean
+#        counter at least its forced exit, every armed guard forced (`tier::forced_coverage`;
+#        Codex M5-P2 r1 spikec6 3), heap verifier clean
 #     SKIP without the v8-v7 checkout
 #   gate.sh time         (plan v9 M4-P2 SPIKEC-2; protocol §3) the class S timing of crypto on
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
