@@ -493,9 +493,8 @@ pub(super) fn slice<'s>(
     if from >= to {
         return Ok(cx.key("").value());
     }
-    // 13. Return the substring of S from from to to.
-    let substring = units_range(cx, s, from, to)?;
-    new_str(cx, &substring)
+    // 13. Return the substring of S from from to to (a SLICED string from 13 units, H19).
+    Ok(cx.substring(s, from, to)?.value())
 }
 
 /// String.prototype.startsWith ( searchString [ , position ] ) (§22.1.3.24).
@@ -568,9 +567,8 @@ pub(super) fn substring<'s>(
     // 8. Let from be min(finalStart, finalEnd).
     // 9. Let to be max(finalStart, finalEnd).
     let (from, to) = (final_start.min(final_end), final_start.max(final_end));
-    // 10. Return the substring of S from from to to.
-    let substring = units_range(cx, s, from, to)?;
-    new_str(cx, &substring)
+    // 10. Return the substring of S from from to to (a SLICED string from 13 units, H19).
+    Ok(cx.substring(s, from, to)?.value())
 }
 
 /// String.prototype.toWellFormed ( ) (§22.1.3.31).
