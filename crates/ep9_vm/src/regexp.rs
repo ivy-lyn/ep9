@@ -69,7 +69,7 @@
 //!   accessors read it ([`legacy_value`]). The state is Rust memory per realm, behind the
 //!   table's root source (the strings) and weak source (the realm key).
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::Ordering;
 use std::rc::Rc;
 
@@ -78,15 +78,19 @@ use ep9_regexp::{Backend, ExecResult, Flags, Input, Span};
 use ep9_value::Throw;
 
 use crate::abi::ObjectClass;
+use crate::accessor;
 use crate::atoms;
-use crate::builtins::{self, IntrinsicId};
+use crate::builtins::{self, BuiltinId, IntrinsicId};
 use crate::conv::{Res, describe};
 use crate::error::{FrameRef, throw_error};
 use crate::frame::{UNDEFINED, int32_bits, int32_of};
+use crate::fuse::{Descriptor, FuseRef};
 use crate::interp::{Cx, interrupt, slow};
 use crate::kinds;
 use crate::object::{self, attr};
+use crate::props;
 use crate::runtime::{ErrorKind, Runtime, val};
+use crate::shape;
 use crate::string::{self, JsStr};
 
 /// The RegExp backend of this build: the one place that names it (MC-w14-19).
@@ -314,6 +318,9 @@ pub(crate) struct ProgramTable {
     cache: RefCell<ProgramCache>,
     /// The engine's exec memory ([`Scratch`]; no Value, no GC hook).
     scratch: RefCell<Scratch>,
+    /// The builtin ids of the [`FLAG_ACCESSORS`] getters, from the first
+    /// [`has_initial_flags`] call (no Value).
+    flag_getters: Cell<Option<[BuiltinId; 9]>>,
     /// The legacy static values ([`Legacy`]), behind a root source.
     legacy: Rc<RefCell<Legacy>>,
 }
@@ -350,6 +357,7 @@ impl ProgramTable {
             inner,
             cache: RefCell::new(ProgramCache::default()),
             scratch: RefCell::new(Scratch::default()),
+            flag_getters: Cell::new(None),
             legacy,
         }
     }
@@ -452,6 +460,79 @@ impl ProgramTable {
 }
 
 // ---- RegExp objects ---------------------------------------------------------------------------
+
+/// The accessors of `%RegExp.prototype%` that `Get(R, "flags")` reads on a RegExp object
+/// `R` (§22.2.6.4 steps 4-11, after `flags` itself), in the order of the getter ids that
+/// [`has_initial_flags`] takes.
+pub(crate) const FLAG_ACCESSORS: [&str; 9] = [
+    "flags",
+    "hasIndices",
+    "global",
+    "ignoreCase",
+    "multiline",
+    "dotAll",
+    "unicode",
+    "unicodeSets",
+    "sticky",
+];
+
+/// Whether `? ToString(? Get(rx, "flags"))` is the text of the flag bits of `rx` with no JS
+/// run and nothing else observable (the RegExp fast paths, M5-P3 RX0b): `rx` is a RegExp
+/// object whose only own property is `lastIndex` (the initial shape: no own property hides
+/// an accessor), its `[[Prototype]]` is the current realm's `%RegExp.prototype%`, and on that
+/// prototype each of [`FLAG_ACCESSORS`] is an accessor whose getter is the builtin of the
+/// same place in `getters`. The prototype half is checked once and then kept by the kind-1
+/// fuse `ProtoChain(Intrinsic(RegExpPrototype))` of H31: any structural change of an object
+/// on its chain (an accessor replaced, a property added or deleted) pops it, and a popped
+/// fuse makes every later call false. One `getters` list per isolate: a call with another
+/// list is false. GC point (the check interns the names and arms the fuse); `rx` stays in a
+/// Rust local.
+pub(crate) fn has_initial_flags(rt: &Runtime, rx: u64, getters: &[BuiltinId; 9]) -> bool {
+    if !is_regexp(rx) {
+        return false;
+    }
+    let s = shape::shape_of(rx);
+    if shape::is_dictionary(s) || shape::count(s) != 1 {
+        return false;
+    }
+    let proto = builtins::intrinsic(rt, IntrinsicId::RegExpPrototype);
+    if !kinds::is_object(proto) || shape::proto(s) != proto {
+        return false;
+    }
+    let known = &rt.regexp_programs.flag_getters;
+    match known.get() {
+        Some(g) if g != *getters => return false,
+        _ => {}
+    }
+    let d = prototype_fuse();
+    if known.get().is_some() && rt.fuses.intact(rt, FuseRef::Dynamic(d), proto) {
+        return true;
+    }
+    // Not armed yet (or swept after a GC): check the accessors, then arm.
+    for (name, &id) in FLAG_ACCESSORS.iter().zip(getters) {
+        let key = atoms::intern_str(rt, name);
+        let Some((pair, attrs)) = props::own_get(proto, key) else {
+            return false;
+        };
+        if attrs & attr::ACCESSOR == 0
+            || builtins::existing_function(rt, id) != Some(accessor::getter(pair))
+        {
+            return false;
+        }
+    }
+    if rt.fuses.arm(rt, d, proto).is_err() {
+        return false;
+    }
+    known.set(Some(*getters));
+    true
+}
+
+/// The fuse that keeps the [`has_initial_flags`] check of `%RegExp.prototype%`.
+fn prototype_fuse() -> Descriptor {
+    Descriptor::ProtoChain(ep9_facts::ProtoRef::Intrinsic(
+        IntrinsicId::RegExpPrototype as u32,
+    ))
+}
 
 /// True if `v` is a RegExp object (it has a `[[RegExpMatcher]]` slot). Any Value.
 pub(crate) fn is_regexp(v: u64) -> bool {
