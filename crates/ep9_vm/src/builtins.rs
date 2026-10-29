@@ -1011,7 +1011,7 @@ pub(crate) fn check(embedder: Option<&'static BuiltinTable>) -> Result<(), Strin
 /// module; every alias names a data key (not an accessor) defined earlier on the same object;
 /// no key twice on one object; the first key of a constructor a module makes is `prototype`, a
 /// data property with attributes {} (§20: `Number.prototype` and the others), and every such
-/// constructor has one.
+/// constructor but `%Proxy%` (§28.2.2) has one.
 pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
     let modules = || tables.iter().flat_map(|t| t.modules.iter());
     let mut blocks = HashSet::new();
