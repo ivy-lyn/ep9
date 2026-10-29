@@ -28,7 +28,9 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ep9_facts::{FACT_SCHEMA_VERSION, FactHeader, FactSnapshot, FactSource, SlotFacts};
+use ep9_facts::{
+    BinaryHint, CompareHint, FACT_SCHEMA_VERSION, FactHeader, FactSnapshot, FactSource, SlotFacts,
+};
 use spike_b::emit::FunctionCode;
 use spike_b::harness::{Config, RunOutput};
 
@@ -591,6 +593,27 @@ fn splitmix64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// `s` with every BinaryOp record set to `bin` and every CompareOp record set to `cmp`; all
+/// other records (the named loads among them) are kept, so the code compiled from it passes
+/// the same shape guards as from `s` and reaches the arithmetic the changed facts lower.
+pub fn numeric_as(
+    s: &FactSnapshot,
+    bin: BinaryHint,
+    cmp: CompareHint,
+) -> Result<FactSnapshot, String> {
+    let mut out = FactSnapshot::new(*s.header());
+    for (k, f) in s.records() {
+        let f = match f {
+            SlotFacts::BinaryOp(_) => SlotFacts::BinaryOp(bin),
+            SlotFacts::CompareOp(_) => SlotFacts::CompareOp(cmp),
+            f => f.clone(),
+        };
+        out.insert(k.function, k.slot, f)
+            .map_err(|e| format!("record {}/{}: {e:?}", k.function, k.slot))?;
+    }
+    Ok(out)
+}
+
 /// `bytes` (an encoded snapshot) with its schema version field set to `version`.
 pub fn with_schema_version(bytes: &[u8], version: u32) -> Vec<u8> {
     let mut b = bytes.to_vec();
@@ -614,6 +637,19 @@ fn other_run(k: &Kernel) -> Option<&'static str> {
     }
 }
 
+/// What a wrong-profile case must show besides T0's output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    /// The file is refused (another kernel, another schema, a RUNTIME file).
+    Refuse,
+    /// The file is accepted; what compiles from it may exit anywhere or stay in T0.
+    Accept,
+    /// The file is accepted, the right file's hot set compiles from it to other code (the
+    /// changed facts reached the lowering), and loop(n) runs that code with no exit (so the
+    /// arithmetic lowered from the wrong facts ran).
+    Reach,
+}
+
 /// One wrong-profile case and what config P did with it.
 pub struct WrongCase {
     pub name: String,
@@ -625,8 +661,10 @@ pub struct WrongCase {
 /// The wrong-profile test (R4, MC-w15-18; `sp-facts wrong`, `gate.sh spfacts`): config P of
 /// `k` with files that do not describe the run. Pass: each case prints T0's lines (loop(1)
 /// and loop(n)) with the heap verifier clean; the files of another kernel, another schema
-/// version and a RUNTIME source are refused; and code compiled from a wrong file ran and
-/// took an exit in at least one case (else the test proved nothing about compiled code).
+/// version and a RUNTIME source are refused; code compiled from a wrong file ran and took an
+/// exit in at least one case; and the wrong numeric facts (named-load facts kept) compile to
+/// other code that loop(n) runs with no exit ([`Need::Reach`]), since the other cases exit at
+/// the first named load (g0) before any arithmetic.
 pub fn wrong_profiles(k: &'static Kernel, n: u32) -> Result<(Vec<String>, bool), String> {
     let config = Config::default();
     let t0 = run_t0(k, n, &config)?;
@@ -636,38 +674,44 @@ pub fn wrong_profiles(k: &'static Kernel, n: u32) -> Result<(Vec<String>, bool),
         .iter()
         .find(|o| o.name != k.name)
         .ok_or("no other kernel")?;
-    let mut cases: Vec<(String, bool, Vec<u8>)> = vec![(
+    let base = run_p(k, n, &config, &right)?;
+    let mut cases: Vec<(String, Need, Vec<u8>)> = vec![(
         format!("another kernel's file ({})", other_kernel.name),
-        true,
+        Need::Refuse,
         train(other_kernel)?,
     )];
     if let Some(script) = other_run(k) {
         cases.push((
             "another run of the same unit".into(),
-            false,
+            Need::Accept,
             train_with(k, Some(script))?,
         ));
     }
     for seed in 1..=4u64 {
         cases.push((
             format!("records shuffled across slots of one kind (seed {seed})"),
-            false,
+            Need::Accept,
             shuffled(&snap, seed)?.encode(),
         ));
     }
     cases.push((
+        "numeric facts NUMBER, named-load facts kept".into(),
+        Need::Reach,
+        numeric_as(&snap, BinaryHint::NUMBER, CompareHint::NUMBER)?.encode(),
+    ));
+    cases.push((
         "no records".into(),
-        false,
+        Need::Accept,
         FactSnapshot::new(*snap.header()).encode(),
     ));
     cases.push((
         format!("FACT_SCHEMA_VERSION {}", FACT_SCHEMA_VERSION + 1),
-        true,
+        Need::Refuse,
         with_schema_version(&right, FACT_SCHEMA_VERSION + 1),
     ));
     cases.push((
         "source RUNTIME".into(),
-        true,
+        Need::Refuse,
         FactSnapshot::new(FactHeader {
             source: FactSource::Runtime,
             ..*snap.header()
@@ -677,16 +721,20 @@ pub fn wrong_profiles(k: &'static Kernel, n: u32) -> Result<(Vec<String>, bool),
     let mut lines = Vec::new();
     let mut ok = true;
     let mut exited = false;
-    for (name, refuse, bytes) in cases {
+    for (name, need, bytes) in cases {
         let run = run_p(k, n, &config, &bytes)?;
         let equal = same(&t0, &run);
         let refused = run.refused_file.is_some();
         exited |= !run.installed.is_empty() && run.warm_exits.0 + run.timed_exits.0 > 0;
-        let right = equal && refused == refuse;
+        let reached = !run.installed.is_empty()
+            && run.installed == base.installed
+            && run.digests != base.digests
+            && run.timed_exits.0 == 0;
+        let right = equal && refused == (need == Need::Refuse) && (need != Need::Reach || reached);
         ok &= right;
         lines.push(format!(
-            "{}: {name}: {}; output {}; exits loop(1) {}, loop(n) {}; loop(n) {:.3} s (T0 {:.3} s, \
-             one run, a report){}",
+            "{}: {name}: {}; output {}; exits loop(1) {}, loop(n) {}{}; loop(n) {:.3} s (T0 {:.3} \
+             s, one run, a report){}",
             k.name,
             match &run.refused_file {
                 Some(e) => format!("file refused ({e}), the hot set stays in T0"),
@@ -699,6 +747,12 @@ pub fn wrong_profiles(k: &'static Kernel, n: u32) -> Result<(Vec<String>, bool),
             },
             run.warm_exits.1,
             run.timed_exits.1,
+            match (need, reached) {
+                (Need::Reach, true) =>
+                    "; other code than the right file's, reached compiled arithmetic",
+                (Need::Reach, false) => "; did NOT reach compiled arithmetic",
+                _ => "",
+            },
             run.secs,
             t0.secs,
             if right { "" } else { ": FAIL" }
@@ -870,6 +924,30 @@ print(r);\n";
         }
     }
 
+    /// `numeric_as` changes only the BinaryOp and CompareOp records.
+    #[test]
+    fn numeric_as_keeps_the_other_records() {
+        let (_, bytes) = profiled();
+        let snap = FactSnapshot::decode(&bytes).expect("decode");
+        let m = numeric_as(&snap, BinaryHint::NUMBER, CompareHint::NUMBER).expect("numeric");
+        assert_eq!(m.len(), snap.len());
+        let mut numeric = 0;
+        for (k, f) in m.records() {
+            match f {
+                SlotFacts::BinaryOp(h) => {
+                    numeric += 1;
+                    assert_eq!(*h, BinaryHint::NUMBER);
+                }
+                SlotFacts::CompareOp(h) => {
+                    numeric += 1;
+                    assert_eq!(*h, CompareHint::NUMBER);
+                }
+                f => assert_eq!(Some(f), snap.get(k.function, k.slot)),
+            }
+        }
+        assert!(numeric > 0);
+    }
+
     /// The shuffled file keeps the record count and every record on a slot of its own kind,
     /// so it validates against the unit with nothing dropped; another seed gives another
     /// file; seed order is deterministic.
@@ -924,5 +1002,12 @@ print(r);\n";
         let Some(k) = crypto_ready() else { return };
         let (lines, ok) = wrong_profiles(k, 1).expect("wrong");
         assert!(ok, "{lines:#?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("numeric facts NUMBER")
+                    && l.contains("reached compiled arithmetic")),
+            "{lines:#?}"
+        );
     }
 }
