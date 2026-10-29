@@ -546,23 +546,23 @@ fn injected_fault(rel: &str) {
     }
 }
 
-/// Whether `EP9_GC_GENERATIONAL=1` turns on the S1 generational heap (see [`isolate_config`]).
-fn generational_from_env() -> bool {
-    std::env::var_os("EP9_GC_GENERATIONAL").is_some_and(|v| v == "1")
+/// The heap mode of every test isolate, from the environment, which the workers inherit:
+/// (generational, stress_major_every) of [`heap_mode`]. Unset: the heap default (S1 since
+/// M5-P2, V10-D17). A bad value panics, so a typo cannot run the other mode.
+fn generational_from_env() -> (bool, u32) {
+    heap_mode(&|k| std::env::var_os(k)).unwrap_or_else(|e| panic!("ep9-test262: {e}"))
 }
 
-/// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's.
-/// `EP9_GC_GENERATIONAL=1` in the environment (inherited by the workers) turns on the S1
-/// generational heap (`HeapConfig::generational`): with `--gc-stress` that is the S1
-/// GC-stress mode, a minor GC at every Nth allocation and a major one every 64th GC (V9-D27;
-/// plan v9 §5.1). The switch lives in `HeapConfig`, never in `IsolateConfig`.
+/// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's,
+/// and the heap mode of [`generational_from_env`] (in `HeapConfig`, never `IsolateConfig`).
 fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
-    let generational = generational_from_env();
+    let (generational, stress_major_every) = generational_from_env();
     IsolateConfig {
         heap: HeapConfig {
             gc_stress,
             verify_after_gc: gc_stress > 0,
             generational,
+            stress_major_every,
             ..HeapConfig::default()
         },
         feedback_threshold,
@@ -1850,13 +1850,13 @@ fn summary_json(
             &results.iter().map(|(rel, _)| *rel).collect::<Vec<_>>(),
         );
     }
-    // `cargo xtask m1-exit` item 4 reads these two (TOOLS F6, GC4 need 3): the S1 generational
-    // heap (`EP9_GC_GENERATIONAL=1`, `isolate_config`) and how often the heap verifier runs
-    // (after every collection under GC-stress, else never).
+    // `cargo xtask m1-exit` item 4 reads the first two (TOOLS F6, GC4 need 3): the heap mode the
+    // isolates used (`isolate_config`; S1 unless `EP9_GC_GENERATIONAL=0`) and how often the heap
+    // verifier runs (after every GC under GC-stress, else never); then the major-GC cadence.
+    let (generational, major_every) = generational_from_env();
     let _ = write!(
         out,
-        ",\"generational\":{},\"verify_cadence\":{}",
-        generational_from_env(),
+        ",\"generational\":{generational},\"verify_cadence\":{},\"stress_major_every\":{major_every}",
         u32::from(opts.gc_stress > 0),
     );
     let _ = write!(out, ",\"wall_seconds\":{:.3}", wall.as_secs_f64());
@@ -1913,6 +1913,30 @@ fn summary_json(
     json::string_array(&mut out, &diff.now_passing);
     out.push_str("}}\n");
     out
+}
+
+/// The heap mode of the test isolates (plan v10 V10-D17), read through `var` (the environment):
+/// `EP9_GC_GENERATIONAL` unset or empty = `HeapConfig::default().generational` (S1 since
+/// M5-P2), `0` = S0, `1` = S1; `EP9_GC_STRESS_MAJOR_EVERY` unset or empty = the heap default
+/// (64), else `HeapConfig::stress_major_every` (GC-stress with S1: every Nth GC is major, the
+/// others minor; 0 and 1: every one is major, the major-only CI step). Returns (generational,
+/// stress_major_every). Any other value is an error.
+fn heap_mode(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Result<(bool, u32), String> {
+    let get = |k: &str| var(k).filter(|v| !v.is_empty());
+    let default = HeapConfig::default();
+    let generational = match get("EP9_GC_GENERATIONAL") {
+        None => default.generational,
+        Some(v) if v == "0" => false,
+        Some(v) if v == "1" => true,
+        Some(v) => return Err(format!("EP9_GC_GENERATIONAL must be 0 or 1, not {v:?}")),
+    };
+    let major_every = match get("EP9_GC_STRESS_MAJOR_EVERY") {
+        None => default.stress_major_every,
+        Some(v) => v.to_str().and_then(|s| s.parse().ok()).ok_or_else(|| {
+            format!("EP9_GC_STRESS_MAJOR_EVERY must be a number (u32), not {v:?}")
+        })?,
+    };
+    Ok((generational, major_every))
 }
 
 #[cfg(test)]
@@ -2057,5 +2081,45 @@ mod tests {
         assert!(w.disarm(), "late, fired by the watchdog");
         // Taken: no stale expiry for a later run that compiles but is never armed.
         assert!(!w.disarm());
+    }
+
+    /// V10-D17: the runner follows the heap default (S1 since M5-P2) unless
+    /// `EP9_GC_GENERATIONAL` is 0 or 1; `EP9_GC_STRESS_MAJOR_EVERY` sets the major cadence; a
+    /// bad value is an error, never the other mode.
+    #[test]
+    fn heap_mode_follows_the_heap_default_unless_the_env_says_0_or_1() {
+        let mode = |g: Option<&str>, m: Option<&str>| {
+            heap_mode(&|k| match k {
+                "EP9_GC_GENERATIONAL" => g.map(Into::into),
+                "EP9_GC_STRESS_MAJOR_EVERY" => m.map(Into::into),
+                _ => None,
+            })
+        };
+        assert!(HeapConfig::default().generational, "S1 is the heap default");
+        assert_eq!(mode(None, None), Ok((true, 64)));
+        assert_eq!(mode(Some(""), Some("")), Ok((true, 64)), "empty = unset");
+        assert_eq!(mode(Some("0"), None), Ok((false, 64)));
+        assert_eq!(mode(Some("1"), None), Ok((true, 64)));
+        assert_eq!(mode(None, Some("1")), Ok((true, 1)));
+        assert_eq!(mode(Some("1"), Some("8")), Ok((true, 8)));
+        for bad in ["true", "2", " 1", "on"] {
+            let e = mode(Some(bad), None).unwrap_err();
+            assert!(e.contains("EP9_GC_GENERATIONAL must be 0 or 1"), "{e}");
+        }
+        for bad in ["-1", "x", "4294967296"] {
+            let e = mode(None, Some(bad)).unwrap_err();
+            assert!(
+                e.contains("EP9_GC_STRESS_MAJOR_EVERY must be a number"),
+                "{e}"
+            );
+        }
+        // The isolates get exactly these values (no env var set in this test process).
+        if std::env::var_os("EP9_GC_GENERATIONAL").is_none()
+            && std::env::var_os("EP9_GC_STRESS_MAJOR_EVERY").is_none()
+        {
+            let c = isolate_config(1, 0);
+            assert!(c.heap.generational && c.heap.verify_after_gc);
+            assert_eq!(c.heap.stress_major_every, 64);
+        }
     }
 }

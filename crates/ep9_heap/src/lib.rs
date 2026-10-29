@@ -26,7 +26,7 @@
 //! | Stage | State |
 //! |---|---|
 //! | S0 | Built: stop-the-world, non-moving mark-sweep in mark-region style; lazy per-page sweep; bump allocation into free lines; LOS above 8 KiB; GC-stress; verifier; zapping |
-//! | S1 | Built behind [`HeapConfig::generational`] (default off). Step 1 (M4-P2): the barrier slow path logs BLACK hosts in per-page remembered lists and dirties 512-byte cards of LOS hosts; sticky marks (the sweep keeps the marks of the cells it keeps). Step 2 (M4-P3): minor GCs (from the roots and the logs; old cells stay), major GCs, the policy, generational GC-stress, the verifier's generational invariant. Non-moving. Default and evidence: month 5 |
+//! | S1 | Built behind [`HeapConfig::generational`] (default on since M5-P2, V10-D17; `false` = S0). Step 1 (M4-P2): the barrier slow path logs BLACK hosts in per-page remembered lists and dirties 512-byte cards of LOS hosts; sticky marks (the sweep keeps the marks of the cells it keeps). Step 2 (M4-P3): minor GCs (from the roots and the logs; old cells stay), major GCs, the policy, generational GC-stress, the verifier's generational invariant. Non-moving. Default since M5-P2: the CLI, REPRL, test262 and every isolate that does not set it |
 //! | S2-S3 | Not built. The barrier fast path, gc_state values and TLAB offsets are already the S1/S2 ones |
 //!
 //! No Rust code runs when a cell dies (H12): no `Drop`, no finalizer. [`HeapLayout`] and
