@@ -321,10 +321,14 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 /// [`slot_place`]), so the handler holds no value for the record: `record_next` reads the slot
 /// operand again and finds the next pc. (c) (`become` needs the same signature): records
 /// inline and continues at the next pc. The `ics_only` expansions (MODES-D11, MODES-D19; M5-P3
-/// PROFILE6) drop the record and continue at the next pc: their fast handlers have no record
-/// code, so the record's bits are dead code there.
+/// PROFILE6) drop the record: (b) tail-calls [`skip_next`] (no record, the next pc), (c)
+/// continues at the next pc. Their fast handlers have no record code; the bits are dead there.
 macro_rules! record_exit {
-    ($tail:tt, ics_only, $name:ident, $st:ident, $r:ident) => {{
+    (return, ics_only, $name:ident, $st:ident, $r:ident) => {{
+        let _ = $r;
+        $crate::interp::dsl::skip_exit!($name, $st)
+    }};
+    (become, ics_only, $name:ident, $st:ident, $r:ident) => {{
         let _ = $r;
         $st.next
     }};
@@ -344,11 +348,33 @@ macro_rules! record_exit {
 }
 pub(crate) use record_exit;
 
+/// The record arms of an `ics_only` sibling handler: a tail call of [`skip_next`] with the
+/// handler's state and the instruction length, no record.
+macro_rules! skip_exit {
+    ($name:ident, $st:ident) => {{
+        let St {
+            cx, pc, fp, acc, ..
+        } = $st;
+        // SAFETY: `pc` is this one-byte-scale instruction of verified code in the live frame
+        // `fp`; `one_byte_len` is its length.
+        unsafe {
+            return $crate::interp::dsl::skip_next::<
+                { $crate::interp::dsl::one_byte_len(ep9_bytecode::Opcode::$name) },
+            >(cx, pc, fp, acc);
+        }
+    }};
+}
+pub(crate) use skip_exit;
+
 /// The `Flow::RecordPair` arm of a threaded fast handler: as [`record_exit`], with the operand
 /// pair as the last two arguments of [`record_pair_next`] and the slot place as its const
-/// parameter. `ics_only`: no record, the next pc.
+/// parameter. `ics_only`: no record, as in [`record_exit`].
 macro_rules! record_pair_exit {
-    ($tail:tt, ics_only, $name:ident, $st:ident, $p:ident) => {{
+    (return, ics_only, $name:ident, $st:ident, $p:ident) => {{
+        let _ = $p;
+        $crate::interp::dsl::skip_exit!($name, $st)
+    }};
+    (become, ics_only, $name:ident, $st:ident, $p:ident) => {{
         let _ = $p;
         $st.next
     }};
@@ -582,6 +608,51 @@ record_next_fn! {
     "Rust" => not(target_arch = "x86_64");
 }
 
+/// Defines [`skip_next`] with the handler ABI (`handler!`) and a const parameter.
+macro_rules! skip_next_fn {
+    ($($abi:literal => $cfg:meta;)*) => {$(
+        /// The `Flow::Record` and `Flow::RecordPair` arms of an `ics_only` sibling expansion
+        /// (MODES-D11): no record, the dispatch of the instruction `LEN` bytes after `pc`.
+        /// Out of line, as [`record_next`] is for the `full` table, so a fast handler keeps the
+        /// shape of its `full` twin: LLVM does not merge a rare record path (a double result,
+        /// a compare of two non-int32 values) into the int32 path with selects, which cost
+        /// the int32 path a few instructions (t0-loop +1.9% on M5-P3 a64 before this helper).
+        /// `cargo xtask disasm-check` follows the jump to it as part of the handler.
+        ///
+        /// # Safety
+        /// `pc` is an instruction of verified code at one-byte scale in the live top frame
+        /// `fp`, `LEN` bytes long.
+        #[cfg($cfg)]
+        #[inline(never)]
+        pub(crate) unsafe extern $abi fn skip_next<const LEN: usize>(
+            cx: &mut $crate::interp::Cx,
+            pc: *const u8,
+            fp: *mut u64,
+            acc: u64,
+        ) -> u64 {
+            #[cfg(debug_assertions)]
+            debug_native_stack_check(cx);
+            // SAFETY: caller contract: the next instruction starts `LEN` bytes after `pc`.
+            let next = unsafe { pc.add(LEN) };
+            // SAFETY: `next` is an instruction start of verified code.
+            let h = cx.table[unsafe { *next } as usize];
+            // SAFETY: the table holds handlers of the sibling expansion; the state is valid.
+            unsafe { h(cx, next, fp, acc) }
+        }
+    )*};
+}
+
+skip_next_fn! {
+    "sysv64-unwind" => all(target_arch = "x86_64", panic = "unwind");
+    "sysv64" => all(target_arch = "x86_64", not(panic = "unwind"));
+    "Rust" => not(target_arch = "x86_64");
+}
+
+/// The instruction length of `op` at one-byte scale, for [`skip_next`].
+pub(crate) const fn one_byte_len(op: ep9_bytecode::Opcode) -> usize {
+    op.info().size(OperandScale::Single)
+}
+
 /// The cold handler of opcode `$name` in an [`expand_threaded`] expansion. `full`: the cold
 /// body (`ops::<Name>::cold`), then the dispatch. `ics_only`: a tail jump to the cold handler
 /// of the `full` table of the same `$tail` (`interp::sibling` or `interp::tail`): the cold
@@ -653,7 +724,7 @@ pub(crate) use cold_handler;
 /// | `$mode` | Fast handlers | Cold handlers |
 /// |---|---|---|
 /// | `full` | `Flow::Record`, `RecordPair`, `JumpRecordCall` run the profile record ([`record_exit`]) | the cold bodies ([`cold_handler`]) |
-/// | `ics_only` | the same arms continue with no record: no `profile.rs` record code in a fast handler | one tail jump to the cold handler of the `full` table of the same `$tail` ([`cold_handler`]) |
+/// | `ics_only` | the same arms continue with no record (sibling: a tail call of [`skip_next`]): no `profile.rs` record code in a fast handler | one tail jump to the cold handler of the `full` table of the same `$tail` ([`cold_handler`]) |
 ///
 /// The record hooks of the cold bodies are `ops.rs` code that both tables share, so they test
 /// the isolate's mode themselves (`profile::records`, on the cold path only). Every expansion
