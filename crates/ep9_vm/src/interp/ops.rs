@@ -182,10 +182,36 @@ fn fast_binop(op: BinOp, l: u64, r: u64) -> Option<u64> {
 ///
 /// `*` and `/` take [`binop_fast_boxed`] instead: their int32 arm boxes a double too, and with
 /// the record chosen first x86-64 LLVM saves a register on entry for them.
+///
+/// An int32 `+` or `-` (and `AddSmi`, `SubSmi`) runs its own int32 arm first: the sum or
+/// difference that fits is the hit path, with no record and no test of the result; the
+/// overflow arm (the checked operation failed) makes the double and records
+/// [`profile::INT32_OVERFLOW`] (MODES-D16, M5-P1 PROFILE5).
 #[inline(always)]
 fn binop_fast(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
     if matches!(op, BinOp::Mul | BinOp::Div) {
         return binop_fast_boxed(st, s, op, l, r);
+    }
+    if matches!(op, BinOp::Add | BinOp::Sub) && is_i32(l) && is_i32(r) {
+        let (a, b) = (i32_of(l), i32_of(r));
+        let exact = if matches!(op, BinOp::Add) {
+            a.checked_add(b)
+        } else {
+            a.checked_sub(b)
+        };
+        if let Some(i) = exact {
+            st.acc = int(i);
+            return Flow::Next;
+        }
+        core::hint::cold_path();
+        // The exact sum or difference of two int32s is a double outside int32.
+        let (x, y) = (f64::from(a), f64::from(b));
+        st.acc = num(if matches!(op, BinOp::Add) {
+            x + y
+        } else {
+            x - y
+        });
+        return Flow::Record(profile::Rec::new(s, profile::INT32_OVERFLOW));
     }
     let pair = profile::binary_pair_bits(l, r);
     match fast_binop(op, l, r) {
@@ -373,8 +399,8 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 /// The sampled call record (Call slot `s`; M4-P0 hook, PROFILE) runs once per call, after
 /// the test of the callee: after the frame push (`profile::record_call_pushed`, through
 /// `Flow::JumpRecordCall`, see [`jump_to_callee`]) or, at a cold exit, in the cold body
-/// (`profile::record_call` in `call_record_cold`; M4-P1 PROFILE-X64).
-#[cfg(not(feature = "spike-native"))]
+/// (`profile::record_call` in `call_record_cold`; M4-P1 PROFILE-X64). x86-64: at file end.
+#[cfg(all(not(feature = "spike-native"), not(target_arch = "x86_64")))]
 #[inline(always)]
 fn call_fast(
     st: &mut St<'_>,
@@ -446,7 +472,7 @@ fn call_fast(
 /// The T0 count of a call of `fi` while it has no feedback vector (`feedback::count_call`
 /// without the vector): `false` for the call that reaches the threshold, which goes cold so
 /// that `slow::call` makes the vector. A function with a vector costs one load and one test.
-/// The count is taken before the frame push; a cold exit after it calls [`uncount_call`], so
+/// The count is taken before the frame push; a cold exit after it calls `uncount_call`, so
 /// the cold path counts the call once (in `slow::call`).
 #[inline(always)]
 fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
@@ -461,16 +487,16 @@ fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
     true
 }
 
-/// Gives back the budget unit of a call that `call_fast` sends cold after its decrement:
-/// the unit used up the budget (X-PF1), or the frame does not fit (R3-2). The cold path takes
-/// the unit of the call again at its frame push, whether the push succeeds or fails:
+/// Gives back the unit of a call that `call_fast` (not the x86-64 form) sends cold after its
+/// decrement: the unit used up the budget (X-PF1), or the frame does not fit (R3-2). The cold
+/// path takes the unit again at its frame push, whether the push succeeds or fails:
 /// `slow::call`, or under spike-native `enter_b_cold` or, for an AotBaseline callee,
 /// `enter_native` (M3-P2 fix round 5, D1). So the call takes 1 unit, not 2 and not 0.
 /// `slow::call` polls before that if the budget is now 0; at a budget of 1 it does not, and
-/// the call leaves the budget at 0, so the next unit taker (a call or a `JumpLoop`) polls:
-/// the poll comes at most 1 unit later. The same holds when the frame does not fit: the
-/// RangeError leaves the budget at 0, so caught overflows do not starve the poll (also under
-/// spike-native).
+/// the call leaves the budget at 0, so the next unit taker (a call or a `JumpLoop`) polls: at
+/// most 1 unit later. The same holds when the frame does not fit: the RangeError leaves the
+/// budget at 0, so caught overflows do not starve the poll (also under spike-native).
+#[cfg(any(feature = "spike-native", not(target_arch = "x86_64")))]
 #[inline(always)]
 fn budget_out(st: &mut St<'_>) {
     st.cx.budget += 1;
@@ -478,6 +504,7 @@ fn budget_out(st: &mut St<'_>) {
 
 /// Takes back the count of [`count_call`] before a cold exit (the budget ran out, or the VM
 /// stack is full). No GC point lies between the two, so the vector state is the same.
+#[cfg(any(feature = "spike-native", not(target_arch = "x86_64")))]
 #[inline(always)]
 fn uncount_call(fi: &FunctionInfo) {
     if fi.feedback.get().is_null() {
@@ -494,8 +521,7 @@ fn uncount_call(fi: &FunctionInfo) {
 /// AotBaseline slot), whose handler calls the native code. Both take one budget unit as a T0
 /// callee does, record no feedback and are never class constructors (the installs refuse
 /// them). Any other slot (placement (a) in a Baseline slot: config A of the D21 bench) goes
-/// cold, as in the default build. The match loop runs the callee's bytecode at both stub
-/// bytes (D4).
+/// cold, as in the default build. The match loop runs the callee's code at both stubs (D4).
 #[cfg(feature = "spike-native")]
 #[inline(always)]
 fn call_fast(
@@ -900,7 +926,7 @@ op!(StaModuleVariable(st, cell: i32, depth: Depth) { Flow::Cold } cold {
 // operation and records a case.
 op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     let o = st.reg(object);
-    match ic::load(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0) {
+    match ic::load(st.rt(), st.info(), o, s.0, name.0) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
@@ -923,7 +949,7 @@ op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
     if !object::is_object(home) {
         return Flow::Cold;
     }
-    match ic::load(st.rt(), st.info(), st.cx.proto_epoch, object::proto_of(home), s.0, name.0) {
+    match ic::load(st.rt(), st.info(), object::proto_of(home), s.0, name.0) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
@@ -948,7 +974,7 @@ op!(GetKeyedProperty(st, object: R, s: FSlot) {
         && let Some(v) = object::array_get(o, i32_of(k) as u32)
     {
         st.acc = v;
-        return Flow::Next;
+        return next_or_record(s, profile::keyed_hit_kind(st, o));
     }
     keyed_ic::fast_get(st, o, k, s)
 } cold {
@@ -958,7 +984,7 @@ op!(GetKeyedProperty(st, object: R, s: FSlot) {
 });
 op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<true>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0, v) {
+    if ic::store::<true>(st.rt(), st.info(), o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {
@@ -973,7 +999,7 @@ op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
 // CreateDataPropertyOrThrow: an add needs no epoch (the prototype chain does not matter).
 op!(DefineNamedOwnProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<false>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0, v) {
+    if ic::store::<false>(st.rt(), st.info(), o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {
@@ -1087,12 +1113,15 @@ smi_ops! {
 op!(Inc(st, s: FSlot) {
     let v = st.acc;
     if is_i32(v) {
-        // An int32 operand is implicit (H16-Q2), also when the result is not an int32.
-        st.acc = match i32_of(v).checked_add(1) {
-            Some(i) => int(i),
-            None => num(f64::from(i32::MAX) + 1.0),
-        };
-        return Flow::Next;
+        // An int32 operand whose result fits is implicit (H16-Q2); the overflow arm records
+        // `INT32_OVERFLOW` (MODES-D16), so the arm that fits does not change.
+        if let Some(i) = i32_of(v).checked_add(1) {
+            st.acc = int(i);
+            return Flow::Next;
+        }
+        core::hint::cold_path();
+        st.acc = num(f64::from(i32::MAX) + 1.0);
+        return Flow::Record(profile::Rec::new(s, profile::INT32_OVERFLOW));
     }
     match number(v) {
         Some(x) => {
@@ -1108,12 +1137,15 @@ op!(Inc(st, s: FSlot) {
 op!(Dec(st, s: FSlot) {
     let v = st.acc;
     if is_i32(v) {
-        // An int32 operand is implicit (H16-Q2), also when the result is not an int32.
-        st.acc = match i32_of(v).checked_sub(1) {
-            Some(i) => int(i),
-            None => num(f64::from(i32::MIN) - 1.0),
-        };
-        return Flow::Next;
+        // An int32 operand whose result fits is implicit (H16-Q2); the overflow arm records
+        // `INT32_OVERFLOW` (MODES-D16), so the arm that fits does not change.
+        if let Some(i) = i32_of(v).checked_sub(1) {
+            st.acc = int(i);
+            return Flow::Next;
+        }
+        core::hint::cold_path();
+        st.acc = num(f64::from(i32::MIN) - 1.0);
+        return Flow::Record(profile::Rec::new(s, profile::INT32_OVERFLOW));
     }
     match number(v) {
         Some(x) => {
@@ -1871,6 +1903,97 @@ pub(crate) const COLD_COUNT: usize = {
     ep9_bytecode::for_each_opcode!(count_cold [])
 };
 
+/// `call_fast` of the default build on x86-64 (PERF3 item 2, M5-P2): the tests, the count, the
+/// unit and the frame of the other default-build `call_fast` (above), in another order. The
+/// SysV handler ABI leaves 9 caller-saved integer registers, and 4 of them hold the handler
+/// arguments; the other form keeps 10-12 values live across its frame push, so LLVM saved 5-6
+/// callee-saved registers on every entry and restored them at every exit (10-12 instructions
+/// per call, 1-3% of all instructions on t0-call, deltablue, richards and t0-prop; x86-64
+/// callgrind, m5-p0). The order here:
+///
+/// 1. the callee tests and the receiver test, without the global object
+///    (`call::try_bind_this(.., UNDEFINED)`);
+/// 2. the frame size test (`call::call_frame_fp`), then the missing arguments are written
+///    (`call::fill_missing_args`), so the frame base is dead before the next tests;
+/// 3. the unit (`budget <= 1` goes cold, X-PF1) and the count;
+/// 4. the decrement, the global object (`call::bound_with_global`) and the rest of the frame
+///    (`call::write_call_frame`).
+///
+/// Every cold exit comes before the count and the decrement, so no exit gives a unit or a
+/// count back, and `slow::call` sees the VM state the other form leaves at its cold exits
+/// (the units and the R3-2 RangeError as described there). The missing-argument slots that
+/// step 2 writes lie above the top frame: a later cold exit leaves them there, where no GC
+/// root scan and no reader looks (`runtime.rs` trace stops at the top frame), and the cold
+/// path's frame push writes them again. aarch64 keeps the other form: it has 18
+/// caller-saved registers, the other form saves none there on the hot forms, and this order
+/// costs it about 9 instructions per call (Mac a64: t0-call +3.0%, deltablue +2.8%).
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(always)]
+fn call_fast(
+    st: &mut St<'_>,
+    s: FSlot,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(&St<'_>, u32) -> u64,
+) -> Flow {
+    if !object::is_function(callee) {
+        return Flow::Cold;
+    }
+    let fi = object::function_info(callee);
+    if fi.slot.kind_byte() != DispatchKind::Interp as u8 || fi.is_class_constructor() {
+        return Flow::Cold;
+    }
+    // A callee of another realm: `slow::call` runs it in its realm (H22-Q3).
+    if object::function_realm(callee) != st.cx.realm {
+        return Flow::Cold;
+    }
+    // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2). The global
+    // object comes in at the frame write (`bound_with_global`).
+    let Some(this) = call::try_bind_this(fi, this, UNDEFINED) else {
+        return Flow::Cold;
+    };
+    let base = st.fp.wrapping_add(st.info().register_count as usize);
+    // A frame that does not fit (R3-2).
+    let Some(nfp) = call::call_frame_fp(base, st.cx.stack_limit, fi, argc) else {
+        return Flow::Cold;
+    };
+    // SAFETY: `nfp` is `call_frame_fp` of `base`, the first free slot above the live top frame
+    // `fp`, and the VM stack cap.
+    unsafe { call::fill_missing_args(base, nfp, argc) };
+    // The unit of this call would use up the budget (X-PF1).
+    if st.cx.budget <= 1 {
+        return Flow::Cold;
+    }
+    if !count_call(st, fi) {
+        return Flow::Cold;
+    }
+    // The volatile read makes the decrement one memory operation (`dec`): the value tested
+    // above is not kept in a register across the count.
+    // SAFETY: a read of a field of the live `Cx`.
+    st.cx.budget = unsafe { core::ptr::read_volatile(&raw const st.cx.budget) } - 1;
+    let this = call::bound_with_global(fi, this, st.cx.global_this);
+    let (fp, next) = (st.fp, st.next);
+    let rd: &St<'_> = st;
+    // SAFETY: as above; `arg` reads registers of the current verified instruction.
+    unsafe {
+        call::write_call_frame(
+            nfp,
+            fi,
+            callee,
+            this,
+            argc,
+            |i| arg(rd, i),
+            fp,
+            next,
+            || object::function_context(callee),
+        )
+    };
+    st.fp = nfp;
+    st.acc = UNDEFINED;
+    jump_to_callee(st, fi.code, s)
+}
+
 /// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit
 /// per call, also for a call that `call_fast` sends cold (M3-P2 PERF3; before, such a call
 /// took 2 units: RV2-H23-DOUBLE-UNIT), for the call whose unit uses up the budget (M3-P2
@@ -1974,6 +2097,8 @@ mod call_budget {
                     ..config(d, false)
                 });
                 iso.cx.budget = budget;
+                // These tests count the units across a poll: the fixed reset to `BUDGET`.
+                iso.rt.call_window_jitter.set(crate::profile::JITTER_OFF);
                 let r = iso.with_cx_checkpoint(|cx| {
                     cx.run_script(make(), "budget.js").map(|v| cx.display(v))
                 });
@@ -2166,6 +2291,7 @@ mod call_budget {
                 iso.interrupt_handle()
                     .request(Box::new(move || r2.store(true, Ordering::SeqCst)));
                 iso.cx.budget = budget;
+                iso.rt.call_window_jitter.set(crate::profile::JITTER_OFF);
                 let r = iso.with_cx_checkpoint(|cx| {
                     cx.run_script(overflow_program(calls, site), "overflow.js")
                         .map(|v| cx.display(v))

@@ -144,10 +144,39 @@ fn run(o: &Options) -> Result<Outcome, RunError> {
     }
     let samples: Vec<Sample> = (0..o.runs).map(|_| one()).collect::<Result<_, _>>()?;
     let name = o.name.clone().unwrap_or_else(|| o.command.join(" "));
+    let build = engine_build(&program);
     Ok(Outcome {
-        json: report::json(&name, &o.command, &counter, &samples),
+        json: report::json(&name, &o.command, &counter, build.as_deref(), &samples),
         no_counter: counter.err(),
     })
+}
+
+/// The build line of an ep9 binary (`"engine_build"`, report.rs): when the program's file name
+/// starts with `ep9`, the first line of its `--version` output that starts with `features `
+/// (`features <list>; preset <name>`, M5-P0). None for another program, a failed run, or a
+/// binary that prints no such line.
+fn engine_build(program: &std::path::Path) -> Option<String> {
+    let name = program.file_name()?.to_str()?;
+    if !name.starts_with("ep9") {
+        return None;
+    }
+    let out = std::process::Command::new(program)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    build_line(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The `features ...` line of a `--version` text, trimmed.
+fn build_line(version: &str) -> Option<String> {
+    version
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("features "))
+        .map(str::to_string)
 }
 
 fn main() -> ExitCode {
@@ -203,6 +232,41 @@ mod tests {
 
     fn strings(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The build line is the `features ...` line of `--version`; an older binary has none.
+    #[test]
+    fn build_line_of_a_version_text() {
+        assert_eq!(
+            build_line("ep9 0.0.0\r\nfeatures jit,become; preset jit\r\n").as_deref(),
+            Some("features jit,become; preset jit")
+        );
+        assert_eq!(build_line("ep9 0.0.0\n"), None);
+        assert_eq!(engine_build(std::path::Path::new("true")), None);
+    }
+
+    /// A program whose file name starts with `ep9` is asked for `--version`; one that does not is
+    /// not, whatever it prints.
+    #[cfg(unix)]
+    #[test]
+    fn engine_build_asks_an_ep9_binary_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ep9-bench-build-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = "#!/bin/sh\n[ \"$1\" = --version ] || exit 9\n\
+                      echo 'ep9 0.0.0'\necho 'features none; preset jitless'\n";
+        for name in ["ep9-fake", "other-fake"] {
+            let p = dir.join(name);
+            std::fs::write(&p, script).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(
+            engine_build(&dir.join("ep9-fake")).as_deref(),
+            Some("features none; preset jitless")
+        );
+        assert_eq!(engine_build(&dir.join("other-fake")), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

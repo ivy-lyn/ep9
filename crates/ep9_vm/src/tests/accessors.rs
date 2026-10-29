@@ -115,14 +115,6 @@ fn atom(rt: &Runtime, name: &str) -> u64 {
     crate::atoms::intern_str(rt, name)
 }
 
-/// Takes the pending exception's message.
-fn take_message(cx: &mut Cx<'_>, rt: &Runtime) -> String {
-    let e: Local<'_> = Local::from_bits(rt.take_pending());
-    let e = e.as_object().expect("an Error object");
-    let m = cx.get(e, "message").unwrap();
-    cx.to_rust_string(m).unwrap()
-}
-
 // ---- [[Get]] and [[Set]] ----------------------------------------------------------------------
 
 #[test]
@@ -1054,7 +1046,8 @@ fn validate_and_apply_accessor_descriptors() {
                     .unwrap()
             );
 
-            // Arrays: `length` rejects an accessor; an element accessor is "not implemented".
+            // Arrays: `length` rejects an accessor; an element accessor is a DICTIONARY entry
+            // (M5-P2 ELEM2; v0 said "not implemented").
             let a = cx.new_array();
             assert!(
                 !cx.define_own_property(a, "length", acc(Some(get1), None, None, None))
@@ -1062,12 +1055,11 @@ fn validate_and_apply_accessor_descriptors() {
             );
             assert!(
                 cx.define_own_property(a, "0", acc(Some(get1), None, c, c))
-                    .is_err()
+                    .unwrap()
             );
-            assert_eq!(
-                take_message(cx, rt),
-                "not implemented in ep9 v0: accessor array elements"
-            );
+            let d = cx.get_own_property(a, "0").unwrap().unwrap();
+            assert_eq!(d.get.unwrap().bits(), get1.bits());
+            assert_eq!(cx.get(a, "length").unwrap().as_int32(), Some(1));
         });
     }
 }

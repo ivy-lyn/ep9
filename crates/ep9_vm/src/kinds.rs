@@ -1,14 +1,15 @@
 //! Cell kind ids (word0 byte 5), table v1 (v2 of the object layout adds GENERATOR and
 //! SLOT_OBJECT, M2-P0; v3 adds ARGUMENTS, MODULE_NAMESPACE, MODULE, ORDERED_TABLE and REALM,
 //! M3-P0; v4 adds PROXY, PROXY_CALLABLE, VALIDITY_CELL and WEAK_CELL and the CONS, SLICED and
-//! THIN layouts, M4-P0), and the kind tests on Value bits.
+//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0),
+//! and the kind tests on Value bits.
 //!
 //! | Ids | Kinds | Range test |
 //! |---|---|---|
 //! | 1-7 | strings: SEQ_LATIN1, SEQ_UTF16; CONS, SLICED, THIN (layouts below, OBJECT_LAYOUT 4; built by M4-P1 STR1 and M4-P2 STR2); EXT_LATIN1, EXT_UTF16 reserved | [`is_string`] |
 //! | 8 | SYMBOL | [`is_symbol`] |
 //! | 16-63 | JS objects: OBJECT, FUNCTION, ARRAY, ERROR, ITERATOR, PRIMITIVE_WRAPPER, BOUND_FUNCTION, GENERATOR, SLOT_OBJECT, ARGUMENTS, MODULE_NAMESPACE, PROXY, PROXY_CALLABLE; 29-63 reserved | [`is_object`] |
-//! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO, MODULE, ORDERED_TABLE, REALM, VALIDITY_CELL, WEAK_CELL | - |
+//! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO, MODULE, ORDERED_TABLE, REALM, VALIDITY_CELL, WEAK_CELL, ELEMENTS_DOUBLE, ELEMENTS_DICT; FUSE (83) reserved | - |
 //! | 128 | SHAPE | - |
 //!
 //! OBJECT_LAYOUT 4 (M4-P0; plan v9 V9-D19, V9-D23, V9-A8). The ids below are the whole
@@ -27,9 +28,28 @@
 //! | VALIDITY_CELL | 79 | a prototype's validity cell (V8 style; PROTO_INFO +32): a valid bit and a weak users list | M4-P1 VALIDITY (`validity.rs`) |
 //! | WEAK_CELL | 80 | the weak target of a WeakRef or of a FinalizationRegistry entry (one weak trace function) | M4-P4 WEAKREF (`weakref.rs`) |
 //!
-//! No kind id is persisted (units, snapshots and facts never hold one), so the table may
-//! change. A kind is registered by the module that owns its layout (`object::register_kinds`
-//! calls them all). Strings use SEQ_LATIN1 (1) and SEQ_UTF16 (2) since P1 (H19).
+//! OBJECT_LAYOUT 5 (M5-P0; plan v10 §2.3, V10-D2). The month-5 ids; P0 declares them and
+//! registers none (the role that first allocates a kind registers its trace function):
+//!
+//! | Kind | Id | Layout (byte offsets) | Builder |
+//! |---|---|---|---|
+//! | ELEMENTS_DOUBLE | 81 | +8 capacity (an int32 Value), +16 raw f64 data (not Values: the trace function visits no data word); the hole is the NaN 0xFFF7_FFFF_FFF7_FFFF and every other NaN is stored as the canonical NaN (V9-D39, V10-D7; `object::delems`) | M5-P1 ELEM1 (`elements.rs`) |
+//! | ELEMENTS_DICT | 82 | sparse elements: index -> (value or ACCESSOR_PAIR, attributes); also the elements with non-default attributes, accessor elements and a non-writable `length` (H18-Q2, Q4; the H17 "Element accessors" row) | M5-P2 ELEM2 (`elements.rs`) |
+//! | FUSE | 83 | reserved: registered by M5-P1 FR0 (`fuse.rs`) only if a fuse word needs a cell (H31-Q1); else it stays reserved | M5-P1 FR0 |
+//!
+//! **The kind ids are append-only (C-24, V10-D5; decided M5-P0, H17 text by M5-P3 M1A-CODE).**
+//! No id is renumbered or reused: a renumbering is an OBJECT_LAYOUT bump, and native code and
+//! unit text bake kind ids (`crate::layout::KIND_*`). [`is_callable`] stays three compares
+//! (FUNCTION, BOUND_FUNCTION, PROXY_CALLABLE): making the callable kinds adjacent would
+//! renumber. `exotic::is_routed` stays the one range test 25..=28 and that range is closed: a
+//! new kind with routed internal methods gets its own compare, never a renumbered id. A
+//! retired id stays reserved. Negative tests probe an id that was never assigned (never "the
+//! next free id"), and no test or text tests a kind by a range other than the ones above.
+//!
+//! No kind id is persisted (units, snapshots and facts never hold one), but native code and
+//! unit text bake them, so they follow the append-only rule above. A kind is registered by the
+//! module that owns its layout (`object::register_kinds` calls them all). Strings use
+//! SEQ_LATIN1 (1) and SEQ_UTF16 (2) since P1 (H19).
 //!
 //! word0 flags (bytes 6-7): bits 0-7 are kind-specific (objects: the in-object slot count;
 //! strings: bit 0 ATOM), bit 8 is-prototype, bit 9 is reserved for "hash present" (H12-Q1),
@@ -118,6 +138,15 @@ pub(crate) const VALIDITY_CELL: KindId = k(79);
 /// The weak target of a WeakRef or a FinalizationRegistry entry (V9-D23). OBJECT_LAYOUT 4;
 /// built by M4-P4 WEAKREF (`weakref.rs`).
 pub(crate) const WEAK_CELL: KindId = k(80);
+/// Raw f64 elements (H18-Q1, V9-D39): +8 capacity (int32), +16 f64 data, the hole NaN
+/// (`object::delems`). OBJECT_LAYOUT 5; built by M5-P1 ELEM1 (`elements.rs`).
+pub(crate) const ELEMENTS_DOUBLE: KindId = k(81);
+/// Dictionary elements (H18-Q2, Q4): index -> (value or ACCESSOR_PAIR, attributes).
+/// OBJECT_LAYOUT 5; built by M5-P2 ELEM2 (`elements.rs`).
+pub(crate) const ELEMENTS_DICT: KindId = k(82);
+/// Reserved for a fuse cell (H31-Q1). OBJECT_LAYOUT 5; M5-P1 FR0 registers it only if a fuse
+/// word needs a cell (`fuse.rs`).
+pub(crate) const FUSE: KindId = k(83);
 
 // ---- shapes (128) ----
 pub(crate) const SHAPE: KindId = k(128);
@@ -172,8 +201,8 @@ pub(crate) fn is_function(b: u64) -> bool {
     cell_kind(b) == FUNCTION.get()
 }
 
-/// IsCallable (§7.2.3): a FUNCTION, a BOUND_FUNCTION or a PROXY_CALLABLE (OBJECT_LAYOUT 4;
-/// no code makes one before M4-P4 PROXY1).
+/// IsCallable (§7.2.3): a FUNCTION, a BOUND_FUNCTION or a PROXY_CALLABLE (OBJECT_LAYOUT 4).
+/// Three compares on purpose (C-24): one range test would need adjacent ids, a renumbering.
 #[inline(always)]
 pub(crate) fn is_callable(b: u64) -> bool {
     let k = cell_kind(b);
@@ -257,6 +286,9 @@ mod tests {
             REALM,
             VALIDITY_CELL,
             WEAK_CELL,
+            ELEMENTS_DOUBLE,
+            ELEMENTS_DICT,
+            FUSE,
         ];
         assert!(internal.iter().all(|k| (64..=127).contains(&k.get())));
         assert_eq!(
@@ -264,6 +296,10 @@ mod tests {
             (76, 77, 78)
         );
         assert_eq!((VALIDITY_CELL.get(), WEAK_CELL.get()), (79, 80));
+        assert_eq!(
+            (ELEMENTS_DOUBLE.get(), ELEMENTS_DICT.get(), FUSE.get()),
+            (81, 82, 83)
+        );
         assert_eq!((CONS.get(), SLICED.get(), THIN.get()), (3, 4, 5));
         assert_eq!(SYMBOL.get(), 8);
         assert_eq!(SHAPE.get(), 128);
@@ -275,8 +311,8 @@ mod tests {
             .collect();
         all.extend([SYMBOL.get(), SHAPE.get()]);
         let n = all.len();
-        // OBJECT_LAYOUT 3: 30 ids before, 35 after; OBJECT_LAYOUT 4: 39.
-        assert_eq!(n, 39);
+        // OBJECT_LAYOUT 3: 30 ids before, 35 after; OBJECT_LAYOUT 4: 39; OBJECT_LAYOUT 5: 42.
+        assert_eq!(n, 42);
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), n, "kind ids are distinct");

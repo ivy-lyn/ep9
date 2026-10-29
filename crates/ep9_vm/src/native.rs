@@ -58,25 +58,10 @@ use crate::realm;
 use crate::runtime::{ErrorKind, Runtime, val};
 use crate::unit::FunctionInfo;
 
-/// The `Cx` that native code gets and passes back to the table functions. Opaque: native code
-/// reads its fields at the [`layout`] offsets only.
-#[repr(C)]
-pub struct NativeCx {
-    _opaque: [u8; 0],
-}
-
-/// Declares function pointer types with the native-code ABI: `extern "sysv64"` on x86-64 (every
-/// OS), `extern "C"` elsewhere (aarch64). Both are non-unwinding ABIs.
-macro_rules! native_fn_types {
-    ($($(#[$m:meta])* $name:ident = fn($($t:ty),*);)*) => {$(
-        $(#[$m])*
-        #[cfg(target_arch = "x86_64")]
-        pub type $name = unsafe extern "sysv64" fn($($t),*) -> u64;
-        $(#[$m])*
-        #[cfg(not(target_arch = "x86_64"))]
-        pub type $name = unsafe extern "C" fn($($t),*) -> u64;
-    )*};
-}
+pub use crate::layout::{NativeCx, RuntimeTable};
+// The types of the table entries, for `ep9_vm::RtFn0` and the rest (lib.rs).
+#[allow(unused_imports)]
+pub use crate::layout::{NativeEntry, RtCompareFn, RtFn0, RtFn1, RtFn2, RtFn3};
 
 /// Defines functions with the native-code ABI (see `native_fn_types`).
 macro_rules! native_fns {
@@ -88,74 +73,6 @@ macro_rules! native_fns {
         #[cfg(not(target_arch = "x86_64"))]
         unsafe extern "C" fn $name($($a: $t),*) -> u64 $body
     )*};
-}
-
-native_fn_types! {
-    /// A native slot entry: `(cx, fp) -> acc`. `fp` is the function's own frame, pushed and
-    /// published by the caller. The result is the accumulator bits, or 0 if an exception is
-    /// pending.
-    NativeEntry = fn(*mut NativeCx, *mut u64);
-    /// A table function with no value operand: `(cx, fp, bytecode offset) -> acc or 0`.
-    RtFn0 = fn(*mut NativeCx, *mut u64, u32);
-    /// A table function with one value operand: `(cx, fp, bytecode offset, v) -> acc or 0`.
-    RtFn1 = fn(*mut NativeCx, *mut u64, u32, u64);
-    /// A table function with two value operands: `(cx, fp, bytecode offset, l, r) -> acc or 0`.
-    RtFn2 = fn(*mut NativeCx, *mut u64, u32, u64, u64);
-    /// The compare function: `(cx, fp, bytecode offset, op, l, r) -> true/false bits or 0`
-    /// (`op` from [`cmp`]).
-    RtCompareFn = fn(*mut NativeCx, *mut u64, u32, u32, u64, u64);
-    /// A table function with three value operands: `(cx, fp, bytecode offset, a, b, c) -> acc
-    /// or 0` (M4-P3 KEYED: [`RuntimeTable::set_keyed`]).
-    RtFn3 = fn(*mut NativeCx, *mut u64, u32, u64, u64, u64);
-}
-
-/// The runtime functions native code calls, at fixed offsets (`#[repr(C)]`, [`layout`]
-/// `RT_*`), reached through `Cx::runtime_table`. Every function takes `(cx, fp, off, ..)`:
-/// `cx` is the [`NativeCx`] native code got, `fp` its own frame, `off` the bytecode offset of
-/// the instruction it runs. Each one first publishes `fp` and saves `off` in the frame's offset
-/// slot (`Runtime::enter`), then returns the accumulator bits, or 0 if an exception is
-/// pending. None of them unwinds: a panic inside one aborts the process at its non-unwinding
-/// ABI boundary.
-#[repr(C)]
-#[derive(Debug)]
-pub struct RuntimeTable {
-    /// The interrupt poll (budget exhausted, for example at a `JumpLoop`): resets
-    /// `Cx::budget` and handles termination (`slow::interrupt`). True bits, or 0 when the
-    /// isolate terminates.
-    pub poll: RtFn0,
-    /// Runs the call or construct instruction at `off` (any `Call*` but `CallWithSpread`, and
-    /// `Construct`) to its end and returns the result: a native callee is entered at once
-    /// (nested), any other callee goes through `call::call_with` / `construct_with` (T0 code
-    /// runs a nested dispatch). Operand: the accumulator (new.target for `Construct`).
-    pub call_any: RtFn1,
-    /// `l + r` (the `Add` cold path, `conv::binary`).
-    pub add: RtFn2,
-    /// `v + 1` after ToNumeric (the `Inc` cold path).
-    pub inc: RtFn1,
-    /// `l OP r` for `op` in [`cmp`] (the `Test*` cold paths, `conv::compare`).
-    pub compare: RtCompareFn,
-    /// Throws the catchable RangeError "Maximum call stack size exceeded" (a failed native
-    /// stack compare in a prologue). Always 0.
-    pub stack_overflow: RtFn0,
-    /// `throw v` (the `Throw` cold path: records the throw site). Always 0.
-    pub throw: RtFn1,
-    /// Placement (b) (P4-PLACEMENT-B): unwinds the pending exception from the instruction at
-    /// `off` of the (b) frame `fp` (`error::unwind`). It sets `Cx::out_fp`/`Cx::out_pc` to the
-    /// frame and pc where the run goes on (a handler, or the EXIT stub) and returns the
-    /// accumulator there: the exception, or 0 when no handler of this run catches it (unlike
-    /// the other entries, 0 is a normal result here). (b) code then pops its native frame
-    /// record and tail-jumps to `cx.table[*out_pc]` with `(cx, out_pc, out_fp, result)`.
-    pub unwind: RtFn0,
-    /// `o[k]` (M4-P3 KEYED, P2-ORCH-6): the generic keyed load of the `GetKeyedProperty` at
-    /// `off` (`slow::prop`, `property::get_keyed`; a private name takes the private path).
-    /// Operands: the receiver and the key. The loaded value, or 0. It records no feedback
-    /// (native code records none), so a keyed site of native code has a real generic path.
-    pub get_keyed: RtFn2,
-    /// `o[k] = v` (M4-P3 KEYED, P2-ORCH-6): the generic keyed store of the `SetKeyedProperty`
-    /// at `off`, strict when the frame's function is strict (a failed store throws a
-    /// TypeError there). Operands: the receiver, the key and the value. `v`, or 0. No
-    /// feedback.
-    pub set_keyed: RtFn3,
 }
 
 /// The `op` codes of [`RuntimeTable::compare`].
@@ -184,13 +101,14 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     unwind: rt_unwind,
     get_keyed: rt_get_keyed,
     set_keyed: rt_set_keyed,
+    deopt: rt_deopt,
 };
 
 impl RuntimeTable {
     /// The entries in declaration order: name, byte offset, function type. The list is an
     /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
     /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
-    pub const ENTRIES: [(&'static str, usize, &'static str); 10] = [
+    pub const ENTRIES: [(&'static str, usize, &'static str); 11] = [
         ("poll", layout::RT_POLL, "RtFn0"),
         ("call_any", layout::RT_CALL_ANY, "RtFn1"),
         ("add", layout::RT_ADD, "RtFn2"),
@@ -201,6 +119,7 @@ impl RuntimeTable {
         ("unwind", layout::RT_UNWIND, "RtFn0"),
         ("get_keyed", layout::RT_GET_KEYED, "RtFn2"),
         ("set_keyed", layout::RT_SET_KEYED, "RtFn3"),
+        ("deopt", layout::RT_DEOPT, "RtFn2"),
     ];
 
     /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
@@ -245,184 +164,9 @@ impl NativeCx {
     }
 }
 
-/// Byte offsets native code reads and writes. All are fixed for the build (Cx and
-/// FunctionInfo are `repr(C)`; FRAME 2 and OBJECT_LAYOUT 4, `versions.rs`).
-pub mod layout {
-    use core::mem::offset_of;
-
-    use crate::dispatch::DispatchSlot;
-    use crate::feedback::fv;
-    use crate::frame::{HEADER, slot};
-    use crate::ic::smi;
-    use crate::interp::Cx;
-    use crate::object::{arr, elems, fun, obj};
-    use crate::unit::FunctionInfo;
-
-    use super::RuntimeTable;
-
-    // ---- Cx (the isolate register points at it) ----
-    /// `Cx::stack_limit`: VM frames must end at or below this slot (a `*mut u64`).
-    pub const CX_STACK_LIMIT: usize = offset_of!(Cx, stack_limit);
-    /// `Cx::budget` (i64): one unit per loop back edge and per function entry; call
-    /// [`RuntimeTable::poll`] when it reaches 0.
-    pub const CX_BUDGET: usize = offset_of!(Cx, budget);
-    /// `Cx::global_this` (Value bits): the receiver a sloppy callee gets for undefined/null.
-    pub const CX_GLOBAL_THIS: usize = offset_of!(Cx, global_this);
-    /// `Cx::interrupt` (`*const AtomicU32`): the interrupt word.
-    pub const CX_INTERRUPT: usize = offset_of!(Cx, interrupt);
-    /// `Cx::native_limit` (usize): the lowest native stack address native code may reach;
-    /// the prologue's one compare.
-    pub const CX_NATIVE_LIMIT: usize = offset_of!(Cx, native_limit);
-    /// `Cx::runtime_table` (`*const RuntimeTable`).
-    pub const CX_RUNTIME_TABLE: usize = offset_of!(Cx, runtime_table);
-    /// `Cx::unit_data` (usize; M3-P1 SP-UNIT, H35-Q9): the isolate's unit-data directory, one
-    /// word per unit slot, each the base of the isolate's RW copy of the unit in that slot (0:
-    /// none). Unit code loads its unit-data register (x27 / r14) from it on entry. 0 = no
-    /// directory.
-    pub const CX_UNIT_DATA: usize = offset_of!(Cx, unit_data);
-
-    // ---- RuntimeTable ----
-    pub const RT_POLL: usize = offset_of!(RuntimeTable, poll);
-    pub const RT_CALL_ANY: usize = offset_of!(RuntimeTable, call_any);
-    pub const RT_ADD: usize = offset_of!(RuntimeTable, add);
-    pub const RT_INC: usize = offset_of!(RuntimeTable, inc);
-    pub const RT_COMPARE: usize = offset_of!(RuntimeTable, compare);
-    pub const RT_STACK_OVERFLOW: usize = offset_of!(RuntimeTable, stack_overflow);
-    pub const RT_THROW: usize = offset_of!(RuntimeTable, throw);
-    pub const RT_UNWIND: usize = offset_of!(RuntimeTable, unwind);
-    /// Appended by M4-P3 KEYED (P2-ORCH-6): the generic keyed load and store.
-    pub const RT_GET_KEYED: usize = offset_of!(RuntimeTable, get_keyed);
-    pub const RT_SET_KEYED: usize = offset_of!(RuntimeTable, set_keyed);
-
-    // ---- placement (b) (P4-PLACEMENT-B) ----
-    /// `Cx::table`: the 256 handler addresses of the dispatch (H15: at offset 0). (b) code
-    /// leaves with a tail jump to `table[*pc]`.
-    pub const CX_TABLE: usize = offset_of!(Cx, table);
-    /// `Cx::out_fp` (`*mut u64`): the frame [`RuntimeTable::unwind`] continues in.
-    pub const CX_OUT_FP: usize = offset_of!(Cx, out_fp);
-    /// `Cx::out_pc` (`*const u8`): the pc [`RuntimeTable::unwind`] continues at.
-    pub const CX_OUT_PC: usize = offset_of!(Cx, out_pc);
-    /// FunctionInfo: the start of its bytecode (`*const u8`).
-    pub const FI_CODE: usize = offset_of!(FunctionInfo, code);
-    /// A frame's caller fp and return pc words are native words: `address +
-    /// NATIVE_WORD_OFFSET` (frame.rs `native`; one bit, 2^49, so an `eor` decodes them).
-    pub const NATIVE_WORD_OFFSET: u64 = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
-
-    // ---- VM frames (frame.rs, H14): byte offsets from fp ----
-    /// Header words between the receiver and `r0`.
-    pub const FRAME_HEADER_WORDS: usize = HEADER;
-    /// Caller fp (native word).
-    pub const FP_CALLER_FP: isize = slot::CALLER_FP * 8;
-    /// Return pc (native word): the bytecode pc after the call instruction.
-    pub const FP_RETURN_PC: isize = slot::RETURN_PC * 8;
-    /// The function object (Value).
-    pub const FP_CALLEE: isize = slot::CALLEE * 8;
-    /// Argument count (int32), plus the construct bit.
-    pub const FP_ARGC: isize = slot::ARGC * 8;
-    /// FunctionInfo (native word).
-    pub const FP_FUNCTION_INFO: isize = slot::FUNCTION_INFO * 8;
-    /// new.target (Value; undefined for a native call).
-    pub const FP_NEW_TARGET: isize = slot::NEW_TARGET * 8;
-    /// Current context (Value).
-    pub const FP_CONTEXT: isize = slot::CONTEXT * 8;
-    /// Bytecode offset of the current instruction (int32); the table functions write it.
-    pub const FP_BYTECODE_OFFSET: isize = slot::BYTECODE_OFFSET * 8;
-    /// The receiver.
-    pub const FP_RECEIVER: isize = slot::RECEIVER * 8;
-
-    /// Byte offset from fp of parameter `a<i>` (`i < max(argc, parameter_count)`).
-    pub const fn fp_param(i: u32) -> isize {
-        (slot::PARAM0 - i as isize) * 8
-    }
-
-    /// Byte offset from fp of register `r<i>`.
-    pub const fn fp_register(i: u32) -> isize {
-        i as isize * 8
-    }
-
-    // ---- FUNCTION cells and FunctionInfo ----
-    /// FUNCTION cell field: its FunctionInfo (native word).
-    pub const FUNCTION_INFO: usize = fun::INFO;
-    /// FUNCTION cell field: its context (Value).
-    pub const FUNCTION_CONTEXT: usize = fun::CONTEXT;
-    /// FunctionInfo: the dispatch slot kind byte (`DispatchKind`).
-    pub const FI_SLOT_KIND: usize = offset_of!(FunctionInfo, slot) + DispatchSlot::KIND_OFFSET;
-    /// FunctionInfo: the dispatch slot entry (usize).
-    pub const FI_SLOT_ENTRY: usize = offset_of!(FunctionInfo, slot) + DispatchSlot::ENTRY_OFFSET;
-    /// FunctionInfo: register count (u32).
-    pub const FI_REGISTER_COUNT: usize = offset_of!(FunctionInfo, register_count);
-    /// FunctionInfo: parameter count (u32).
-    pub const FI_PARAMETER_COUNT: usize = offset_of!(FunctionInfo, parameter_count);
-
-    // ---- the layout facts Spike C bakes (M4-P3 KEYED, P2-ORCH-6, MC-w14-7) ----
-    //
-    // Each constant below is a copy that `spikes/spike-c/src/vm_layout.rs` kept by hand (same
-    // name there), now taken from the VM's own definitions, so a layout change moves it
-    // (Spike C reads them since M4-P4 SPIKEC-4). A change of any value is a layout change for
-    // native code and unit text. Each doc names the one version that owns the value (MC-w15-5,
-    // doc 13 C-18 and section 7.3: one owner per fact): OBJECT_LAYOUT 4, IC_LAYOUT 2, Value encoding 1
-    // (`ep9_value::Value::VERSION`), or the future `VM_LAYOUT_VERSION` (C-18) only for what no
-    // other version owns. They stay behind `spike-native` with the rest of this module until
-    // C-18 moves them out of the gate (M5-P0).
-
-    /// OBJECT_LAYOUT 4. Word0 bytes 0-3: the ShapeId that an IC guard compares (`ep9_value`
-    /// `Word0::SHAPE_ID_OFFSET`; an `ldr w` at +0).
-    pub const SHAPE_ID_BYTE: u32 = ep9_value::Word0::SHAPE_ID_OFFSET as u32;
-    /// OBJECT_LAYOUT 4. The kind byte of a cell: byte 5 of word0 (`ep9_value` `Word0::KIND_OFFSET`;
-    /// an `ldrb` at +5).
-    pub const KIND_BYTE: u32 = ep9_value::Word0::KIND_OFFSET as u32;
-    /// OBJECT_LAYOUT 4. Kind id of an ordinary object (`kinds::OBJECT`).
-    pub const KIND_OBJECT: u8 = crate::kinds::OBJECT.get();
-    /// OBJECT_LAYOUT 4. Kind id of an Array (`kinds::ARRAY`).
-    pub const KIND_ARRAY: u8 = crate::kinds::ARRAY.get();
-    /// OBJECT_LAYOUT 4. The first in-object field of an OBJECT (no fixed fields): field `f` is at
-    /// `OBJECT_FIELDS + 8f` (`object::obj::FIXED`).
-    pub const OBJECT_FIELDS: u32 = obj::FIXED as u32;
-    /// OBJECT_LAYOUT 4. ARRAY: the ELEMENTS cell, or undefined (`object::obj::ELEMENTS`).
-    pub const ARRAY_ELEMENTS: u32 = obj::ELEMENTS as u32;
-    /// OBJECT_LAYOUT 4. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
-    pub const ARRAY_LENGTH: u32 = arr::LENGTH as u32;
-    /// OBJECT_LAYOUT 4. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
-    pub const ELEMENTS_CAPACITY: u32 = elems::CAPACITY as u32;
-    /// OBJECT_LAYOUT 4. ELEMENTS: the first value; value `i` is at `ELEMENTS_DATA + 8i`
-    /// (`object::elems::DATA`).
-    pub const ELEMENTS_DATA: u32 = elems::DATA as u32;
-    /// Value encoding 1. The hole (`frame::HOLE`, `Value::EMPTY`): an empty element; in a feedback
-    /// key half, the polymorphic or megamorphic marker (an empty key half is undefined).
-    pub const HOLE: u64 = crate::frame::HOLE;
-    /// IC_LAYOUT 2. FEEDBACK cell: the FunctionInfo of its function, a native word
-    /// (`feedback::fv::INFO`).
-    pub const FEEDBACK_INFO: u32 = fv::INFO as u32;
-    /// IC_LAYOUT 2. FEEDBACK cell: the first slot (`feedback::fv::SLOTS`).
-    pub const FEEDBACK_SLOTS: u32 = fv::SLOTS as u32;
-    /// IC_LAYOUT 2. FEEDBACK cell: bytes per slot, the key (weak) then the value
-    /// (`feedback::fv::SLOT_SIZE`, `KEY`, `VALUE`).
-    pub const FEEDBACK_SLOT_SIZE: u32 = fv::SLOT_SIZE as u32;
-    /// IC_LAYOUT 2. A feedback slot: the key half (weak).
-    pub const FEEDBACK_KEY: u32 = fv::KEY as u32;
-    /// IC_LAYOUT 2. A feedback slot: the value half (strong).
-    pub const FEEDBACK_VALUE: u32 = fv::VALUE as u32;
-    /// IC_LAYOUT 2. POLY_IC cell: the first case, a key (weak) then a handler (`ic::pc::CASES`;
-    /// also proved on a live POLY_IC cell by `tests::native`).
-    pub const POLY_CASES: u32 = crate::ic::pc::CASES as u32;
-    /// IC_LAYOUT 2. POLY_IC cell: bytes per case (`ic::pc::CASE`).
-    pub const POLY_CASE_SIZE: u32 = crate::ic::pc::CASE as u32;
-    /// IC_LAYOUT 2. POLY_IC cell: cases per cell (`ic::POLY_CASES`).
-    pub const POLY_COUNT: u32 = crate::ic::POLY_CASES as u32;
-    /// IC_LAYOUT 2. Smi handler: the kind is in bits 0-3 (`ic::smi::KIND_MASK`).
-    pub const SMI_KIND_MASK: i32 = smi::KIND_MASK;
-    /// IC_LAYOUT 2. Smi handler: the byte offset starts at this bit (`ic::smi::SHIFT`).
-    pub const SMI_SHIFT: u32 = smi::SHIFT;
-    /// IC_LAYOUT 2. Smi handler kind: the field at the byte offset of the object cell
-    /// (`ic::smi::FIELD_IN_OBJECT`).
-    pub const SMI_FIELD_IN_OBJECT: i32 = smi::FIELD_IN_OBJECT;
-    /// IC_LAYOUT 2. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
-    /// (`ic::smi::ARRAY_LENGTH`).
-    pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
-    /// VM_LAYOUT (C-18, MC-w13-14). FunctionInfo: `feedback`, a pointer to the unit slot that holds
-    /// the function's FEEDBACK cell (null: no vector yet).
-    pub const FI_FEEDBACK: usize = offset_of!(FunctionInfo, feedback);
-}
+/// The layout export moved to the ungated `crate::layout` (M5-P0, C-18); this path stays for
+/// the spike-native code and tests that name `native::layout`.
+pub use crate::layout;
 
 // ---- the T0 entry --------------------------------------------------------------------------
 
@@ -720,6 +464,20 @@ native_fns! {
         slow::prop(cx, fp, pc, PropOp::SetKeyed, o, k, v)
     }
 
+    /// [`RuntimeTable::deopt`] (M5-P1 SPIKEC-5; H29, V10-D29): the eager deopt entry. `pc`
+    /// is the exit stub's offset from the code start (not a bytecode offset); [`deopt_at`]
+    /// rebuilds the frame. Calls no recording function (MC-w15-6).
+    ///
+    /// # Safety
+    /// As [`rt_poll`], from a shared exit: `dump` holds x0-x30 at the exit and `native_fp` is
+    /// its x29, and the code runs with the metadata [`NativeCx::install_b_with_deopt`] took.
+    unsafe fn rt_deopt(cx: *mut NativeCx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64) -> u64 {
+        // SAFETY: caller contract: `cx` is the Cx native code got (see `enter`).
+        let cx = unsafe { &mut *cx.cast::<Cx>() };
+        // SAFETY: caller contract.
+        unsafe { deopt_at(cx, fp, pc, dump, native_fp) }
+    }
+
     /// [`RuntimeTable::unwind`].
     ///
     /// # Safety
@@ -981,7 +739,9 @@ pub unsafe fn install_native(
 }
 
 /// Puts the function `f` back on T0 (slot kind Interp, entry = its bytecode) and removes the
-/// registry entry [`install_native`] added. Returns that entry.
+/// registry entry [`install_native`] added, and the deopt side-table entry of the code start
+/// if [`NativeCx::install_b_with_deopt`] made one (V10-D32: a later code at the same start
+/// must not read the old records). Returns the registry entry.
 pub fn uninstall_native(iso: &Isolate, f: Value) -> Result<CodeEntry, InstallError> {
     let fi = bytecode_info(f)?;
     if fi.slot.kind_byte() == DispatchKind::Interp as u8 {
@@ -991,6 +751,7 @@ pub fn uninstall_native(iso: &Isolate, f: Value) -> Result<CodeEntry, InstallErr
     let start = fi.slot.entry();
     fi.slot
         .install(DispatchKind::Interp, fi.code.expose_provenance());
+    rt.deopt.remove(start);
     rt.registry
         .borrow_mut()
         .unregister(start)
@@ -1401,7 +1162,19 @@ pub unsafe fn install_native_b(
     f: Value,
     code: Range<usize>,
 ) -> Result<(), InstallError> {
-    let fi = bytecode_info(f)?;
+    // SAFETY: the caller's contract.
+    unsafe { install_b_info(iso, bytecode_info(f)?, code) }
+}
+
+/// [`install_native_b`] for the bytecode FunctionInfo `fi` (also install by function id).
+///
+/// # Safety
+/// As [`install_native_b`], for the function of `fi`.
+unsafe fn install_b_info(
+    iso: &Isolate,
+    fi: &FunctionInfo,
+    code: Range<usize>,
+) -> Result<(), InstallError> {
     if fi.is_class_constructor() {
         return Err(InstallError::ClassConstructor);
     }
@@ -1431,6 +1204,226 @@ const _: () = {
     assert!(HEADER == 8);
     assert!(slot::PARAM0 == -10 && slot::BYTECODE_OFFSET == -1);
 };
+
+// ---- the eager deopt entry (M5-P1 SPIKEC-5; H29, V10-D29 to V10-D32) -----------------------
+
+/// The body of [`RuntimeTable::deopt`]: finds the exit's record in the isolate's deopt side
+/// table by the code start (the frame's dispatch slot entry) and `pc`, rebuilds the VM frame
+/// `fp` (`deopt::SideTable::deopt`: values, accumulator, counter + 1), publishes `fp` at the
+/// resume pc and sets `Cx::out_fp`/`out_pc` there, as [`RuntimeTable::unwind`] does, then
+/// returns the accumulator. The shared exit tail-jumps to `cx.table[*out_pc]`, so T0 resumes
+/// in the same VM frame; the code stays installed (SCP:128). If the side table refuses (no
+/// metadata, no record at `pc`, a value the frame cannot take), the process ends: [`fatal_deopt`]
+/// (M5-P1-ORCH-12, H23: an engine invariant broke, so no JS code may catch it, in any mode
+/// that runs native code: jitless unit code deopts too; MC-w20-1). No GC point (H29-Q7).
+///
+/// # Safety
+/// As [`rt_deopt`].
+unsafe fn deopt_at(cx: &mut Cx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64) -> u64 {
+    let f = FrameRef(fp);
+    let fi = f.info();
+    let shape = crate::deopt::FrameShape {
+        registers: fi.register_count,
+        params: f.argc().max(fi.parameter_count),
+    };
+    // SAFETY: the shared exit stored x0-x30 at `dump` (caller contract), 8-aligned below sp.
+    let regs = unsafe {
+        &*core::ptr::with_exposed_provenance::<[u64; crate::deopt::DUMP_REGS]>(dump as usize)
+    };
+    let exit = crate::deopt::ExitState {
+        regs,
+        native_fp: core::ptr::with_exposed_provenance(native_fp as usize),
+    };
+    let function = core::ptr::from_ref(fi).addr();
+    let rt = cx.rt();
+    // SAFETY: `fp` is the live frame of `fi` with the slots of `shape`; the metadata of the
+    // install names only stack words of the exit's native frame (caller contract).
+    let r = unsafe {
+        rt.deopt
+            .deopt(fi.slot.entry(), function, pc, &exit, fp, shape)
+    };
+    match r {
+        Ok(resume) => {
+            // `CodeMeta::read` checked that the offset is an instruction start.
+            let at = fi.code.wrapping_add(resume.bytecode as usize);
+            rt.enter(fp, at);
+            cx.out_fp = fp;
+            cx.out_pc = at;
+            resume.acc
+        }
+        Err(e) => fatal_deopt(pc, &e),
+    }
+}
+
+/// A deopt that cannot rebuild its frame (the metadata reader refuses the exit) is fatal:
+/// it prints `ep9: fatal: deopt at native offset <pc>: <why>` to stderr and aborts the
+/// process (M5-P1-ORCH-12, H23 "Failed deopt"). Never a JS exception: a script's `catch`
+/// would hide an engine bug, and no frame state is right to go on from. Every mode that
+/// runs native code (jitless unit code too) aborts the same way. An abort, not a panic: a
+/// panic hook may not end the process at once, and the table function must not unwind (H23).
+#[cold]
+#[inline(never)]
+fn fatal_deopt(pc: u32, why: &str) -> ! {
+    std::eprintln!("ep9: fatal: deopt at native offset {pc}: {why}");
+    std::process::abort()
+}
+
+/// The body of [`NativeCx::install_b_with_deopt`] for the bytecode FunctionInfo `fi`.
+///
+/// # Safety
+/// As [`NativeCx::install_b_with_deopt`], for the function of `fi`.
+unsafe fn install_meta(
+    iso: &Isolate,
+    fi: &FunctionInfo,
+    code: Range<usize>,
+    meta: &[u8],
+) -> Result<(), String> {
+    // SAFETY: a bytecode FunctionInfo's code is `code_len` bytes of verified bytecode.
+    let bytecode = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let starts: Vec<u32> = ep9_bytecode::Instructions::new(bytecode)
+        .map_while(Result::ok)
+        .map(|i| i.offset)
+        .collect();
+    let len = code.end.saturating_sub(code.start);
+    let function = core::ptr::from_ref(fi).addr();
+    let read =
+        crate::deopt::CodeMeta::read(len, function, meta, |o| starts.binary_search(&o).is_ok());
+    let read = read.map_err(|e| format!("deopt metadata refused: {e}"))?;
+    let start = code.start;
+    // SAFETY: the caller's contract.
+    unsafe { install_b_info(iso, fi, code) }.map_err(|e| format!("install refused: {e:?}"))?;
+    iso.rt.deopt.insert(start, read);
+    Ok(())
+}
+
+/// The exit counters of the code installed for `fi` with deopt metadata.
+fn counts_of(iso: &Isolate, fi: &FunctionInfo) -> Option<Vec<u64>> {
+    if fi.slot.kind_byte() != DispatchKind::Opt as u8 {
+        return None;
+    }
+    iso.rt.deopt.counters(fi.slot.entry())
+}
+
+/// The [`NativeTarget`] of the bytecode FunctionInfo `fi` (as [`native_target`] makes it for
+/// a function value).
+fn target_of<'i>(fi: &'i FunctionInfo) -> NativeTarget<'i> {
+    // SAFETY: a bytecode FunctionInfo's code is `code_len` bytes that its loaded unit owns;
+    // units live until the isolate drops, and the result borrows the isolate.
+    let bytecode = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let handler_count = fi.loaded_unit().map_or(0, |u| {
+        u.unit.functions[fi.function_id as usize].handlers.len() as u32
+    });
+    NativeTarget {
+        name: &fi.name,
+        bytecode,
+        parameter_count: fi.parameter_count,
+        register_count: fi.register_count,
+        strict: fi.is_strict(),
+        handler_count,
+        kind: fi.slot.kind(),
+        info: core::ptr::from_ref(fi).addr(),
+    }
+}
+
+/// The bytecode FunctionInfo of function `id` of the one loaded unit named `file` (install
+/// by function id, WI-SC5).
+fn info_by_id<'i>(iso: &'i Isolate, file: &str, id: u32) -> Result<&'i FunctionInfo, String> {
+    let rt: &Runtime = &iso.rt;
+    let fi: *const FunctionInfo = {
+        let units = rt.units.borrow();
+        let mut named = units.iter().filter(|u| u.file == file);
+        let (Some(u), None) = (named.next(), named.next()) else {
+            return Err(format!("not one loaded unit named {file:?}"));
+        };
+        u.infos
+            .get(id as usize)
+            .ok_or_else(|| format!("{file}: no function {id}"))?
+    };
+    // SAFETY: a loaded unit is boxed and kept until the isolate drops (`LoadedUnit`), so its
+    // FunctionInfo lives as long as the borrow of `iso`; the `units` borrow above only guarded
+    // the list, which only grows.
+    let fi = unsafe { &*fi };
+    if fi.host.is_some() || !fi.is_bytecode() || fi.code.is_null() {
+        return Err(format!("{file}: function {id} has no bytecode"));
+    }
+    Ok(fi)
+}
+
+/// The deopt part of the spike API (M5-P1 SPIKEC-5), as associated functions of
+/// [`NativeCx`] (like `NativeCx::global_value`): `lib.rs` re-exports the free functions of
+/// this module by name, and its export list is not this role's to change.
+impl NativeCx {
+    /// [`install_native_b`] of the code `code` for the function `f`, with the code's deopt
+    /// metadata `meta` (the H29 byte form, `deopt.rs`): the shared exit of the code calls
+    /// [`RuntimeTable::deopt`], which finds its records here. The metadata is read and
+    /// checked first (the reader's refusals, a record pc past the code, a resume offset that
+    /// is not an instruction start of `f`'s bytecode); a refusal of the metadata or of the
+    /// install leaves `f` in T0. Its exit counters start at 0 ([`NativeCx::deopt_counts`]).
+    ///
+    /// # Safety
+    /// The [`install_native_b`] contract, and: every exit of the code calls
+    /// [`RuntimeTable::deopt`] with the code's own VM frame, the stub's offset from the code
+    /// start, its register dump (x0-x30) and its frame pointer, and each stack location of
+    /// `meta` is a word of that native frame.
+    pub unsafe fn install_b_with_deopt(
+        iso: &Isolate,
+        f: Value,
+        code: Range<usize>,
+        meta: &[u8],
+    ) -> Result<(), String> {
+        let fi = bytecode_info(f).map_err(|e| format!("install refused: {e:?}"))?;
+        // SAFETY: the caller's contract.
+        unsafe { install_meta(iso, fi, code, meta) }
+    }
+
+    /// The exit counters (one per record, in record order) of the code installed for `f` by
+    /// [`NativeCx::install_b_with_deopt`]; `None` if `f` has no such code.
+    pub fn deopt_counts(iso: &Isolate, f: Value) -> Option<Vec<u64>> {
+        counts_of(iso, bytecode_info(f).ok()?)
+    }
+
+    /// Install by function id (M5-P2 SPIKEC-6, WI-SC5): the [`NativeTarget`] of function `id`
+    /// of the loaded unit named `file`. Every function of a loaded unit has its FunctionInfo
+    /// from the load on, so this reaches a function that no JS value reaches, such as an
+    /// inner closure (navier-stokes' `lin_solve`). Refused unless exactly one loaded unit has
+    /// that name and its function `id` is a bytecode function.
+    pub fn target_by_id<'i>(
+        iso: &'i Isolate,
+        file: &str,
+        id: u32,
+    ) -> Result<NativeTarget<'i>, String> {
+        info_by_id(iso, file, id).map(target_of)
+    }
+
+    /// [`NativeCx::install_b_with_deopt`] for function `id` of the loaded unit `file` (see
+    /// [`NativeCx::target_by_id`]). Every closure of the function, made before or after,
+    /// shares the one dispatch slot (H14), so all of them run the code.
+    ///
+    /// # Safety
+    /// As [`NativeCx::install_b_with_deopt`], for that function.
+    pub unsafe fn install_b_with_deopt_by_id(
+        iso: &Isolate,
+        file: &str,
+        id: u32,
+        code: Range<usize>,
+        meta: &[u8],
+    ) -> Result<(), String> {
+        let fi = info_by_id(iso, file, id)?;
+        // SAFETY: the caller's contract.
+        unsafe { install_meta(iso, fi, code, meta) }
+    }
+
+    /// [`NativeCx::deopt_counts`] for function `id` of the loaded unit `file`.
+    pub fn deopt_counts_by_id(iso: &Isolate, file: &str, id: u32) -> Option<Vec<u64>> {
+        counts_of(iso, info_by_id(iso, file, id).ok()?)
+    }
+
+    /// Reads `meta` as the deopt reader does (the H29 byte form, every refusal of
+    /// `deopt::Table::decode`), with no install: the number of records, or why it refuses.
+    pub fn check_deopt_meta(meta: &[u8]) -> Result<usize, String> {
+        crate::deopt::Table::decode(meta).map(|t| t.records.len())
+    }
+}
 
 #[cfg(test)]
 std::thread_local! {

@@ -303,6 +303,25 @@ pub(crate) struct Runtime {
     /// entry of a dead RegExp.
     #[allow(dead_code)] // read by its owner module from M4-P1 on
     pub regexp_programs: crate::regexp::ProgramTable,
+    // ---- M5-P0 (plan v10 §2.4, P0-VM5): the month-5 Runtime fields; each type lives in its
+    // owner's module (as M4-P0) ----
+    /// The execution options of the isolate (`exec.rs`, C-23): set by `Isolate::new_with`
+    /// before the realm exists. Stored in M5-P0; M5-P3 PROFILE6 reads the feedback mode.
+    #[allow(dead_code)] // read from M5-P3 on
+    pub exec: Cell<crate::exec::ExecOptions>,
+    /// The deopt side table (`deopt.rs`, V10-D32): code start -> deopt metadata and exit
+    /// counters, filled by `NativeCx::install_b_with_deopt` (M5-P1 SPIKEC-5) and emptied of a
+    /// code start by `uninstall_native`. Rust memory, no Value.
+    #[cfg_attr(not(feature = "spike-native"), allow(dead_code))]
+    // read by native.rs (spike-native)
+    pub deopt: crate::deopt::SideTable,
+    /// The fuse registry (`fuse.rs`, H31): fuse states and their weak dependents (M5-P1 FR0;
+    /// `shape::note_change` calls its prototype hook). Rust memory.
+    pub fuses: crate::fuse::Registry,
+    /// The state of the sampled-call window jitter (`profile::budget_after_poll`, M5-P1
+    /// PROFILE5): each poll advances it. 0 = not seeded yet (the next poll starts the fixed
+    /// sequence); `profile::JITTER_OFF` = no jitter (the fixed reset to `BUDGET`).
+    pub call_window_jitter: Cell<u64>,
 }
 
 /// The next [`Runtime::id`].
@@ -351,6 +370,10 @@ impl Runtime {
             rng: Cell::new(rng_seed(id)),
             kept_objects: crate::weakref::KeptObjects::new(&heap),
             regexp_programs: crate::regexp::ProgramTable::new(&heap),
+            exec: Cell::new(crate::exec::ExecOptions::build_default()),
+            deopt: crate::deopt::SideTable::new(),
+            fuses: crate::fuse::Registry::new(&heap),
+            call_window_jitter: Cell::new(0),
             heap,
             shared,
             units: RefCell::new(Vec::new()),

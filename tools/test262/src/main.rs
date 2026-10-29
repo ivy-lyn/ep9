@@ -60,6 +60,8 @@ commands:
                             (one path per line, as in an expectation file); prints the count
           --feedback-threshold <n>  calls before a function gets a feedback vector (default 8;
                             0 = at the first call, 4294967295 = never)
+          --feedback <mode>  type-feedback mode of every isolate: full or ics_only (default:
+                            the default of this build's preset; full for the jit preset)
           --causes <n>      failure causes in the report (default 20)
           --progress        print progress to stderr
           --verbose         print every failure
@@ -211,6 +213,12 @@ fn count(flag: &str, v: &str) -> Result<u32, String> {
         .map_err(|_| format!("bad {flag} value {v:?}"))
 }
 
+/// A `--feedback` value: `full` or `ics_only` (ep9_vm `Feedback`, C-23).
+fn feedback(v: &str) -> Result<ep9_vm::Feedback, String> {
+    ep9_vm::Feedback::from_name(v)
+        .ok_or_else(|| format!("bad --feedback value {v:?} (full or ics_only)"))
+}
+
 fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
     let mut opts = exec::Options {
         test262: repo_root().join("third_party/test262"),
@@ -222,6 +230,7 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
         gc_stress: 0,
         skip_list: None,
         feedback_threshold: ep9_vm::IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
+        feedback: ep9_vm::ExecOptions::default().feedback_mode(),
         verbose: false,
         progress: false,
         causes: 20,
@@ -240,6 +249,7 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
             "--gc-stress" => opts.gc_stress = count(arg, value(arg, &mut it)?)?,
             "--skip-list" => opts.skip_list = Some(PathBuf::from(value(arg, &mut it)?)),
             "--feedback-threshold" => opts.feedback_threshold = count(arg, value(arg, &mut it)?)?,
+            "--feedback" => opts.feedback = feedback(value(arg, &mut it)?)?,
             "--causes" => opts.causes = count(arg, value(arg, &mut it)?)? as usize,
             "--verbose" => opts.verbose = true,
             "--progress" => opts.progress = true,
@@ -268,6 +278,7 @@ fn parse_worker_args(args: &[String]) -> Result<exec::WorkerOptions, String> {
         timeout: std::time::Duration::from_secs(20),
         gc_stress: 0,
         feedback_threshold: ep9_vm::IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
+        feedback: ep9_vm::ExecOptions::default().feedback_mode(),
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -284,6 +295,7 @@ fn parse_worker_args(args: &[String]) -> Result<exec::WorkerOptions, String> {
             }
             "--gc-stress" => opts.gc_stress = count(arg, value(arg, &mut it)?)?,
             "--feedback-threshold" => opts.feedback_threshold = count(arg, value(arg, &mut it)?)?,
+            "--feedback" => opts.feedback = feedback(value(arg, &mut it)?)?,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -328,6 +340,24 @@ mod tests {
         let w = parse_worker_args(&strings(&["--feedback-threshold", "4294967295"])).unwrap();
         assert_eq!(w.feedback_threshold, u32::MAX);
         assert_eq!(parse_worker_args(&[]).unwrap().feedback_threshold, default);
+    }
+
+    /// `--feedback` (C-23): full or ics_only, for the parent and its workers; the default is
+    /// the default of this build's preset (with the runner's default `jit` feature: `full`).
+    #[test]
+    fn feedback_reaches_exec_and_worker() {
+        use ep9_vm::Feedback;
+        let default = ep9_vm::ExecOptions::default().feedback_mode();
+        #[cfg(feature = "jit")]
+        assert_eq!(default, Feedback::FULL);
+        assert_eq!(parse_exec_args(&[]).unwrap().feedback, default);
+        assert_eq!(parse_worker_args(&[]).unwrap().feedback, default);
+        let o = parse_exec_args(&strings(&["--feedback", "ics_only"])).unwrap();
+        assert_eq!(o.feedback, Feedback::ICS_ONLY);
+        let w = parse_worker_args(&strings(&["--feedback", "full"])).unwrap();
+        assert_eq!(w.feedback, Feedback::FULL);
+        assert!(parse_exec_args(&strings(&["--feedback", "jit"])).is_err());
+        assert!(parse_worker_args(&strings(&["--feedback"])).is_err());
     }
 
     #[test]

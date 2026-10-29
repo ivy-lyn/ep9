@@ -9,7 +9,8 @@
 //! (`f0`, `f1`, ... are globals); objects come from the runtime and live in Rust locals (the
 //! conservative stack scan keeps them). A local keeps its cell only up to its last use: optimized
 //! code may drop it there. An object that an assertion about weak IC data needs alive after its
-//! last use is rooted by a handle ([`T::keep`]).
+//! last use is rooted by a handle ([`T::keep`], [`T::keep_all`]); an IC state (`Polymorphic(n)`,
+//! `Megamorphic`) counts the live shapes of every object it saw, so it is such an assertion.
 
 use std::hint::black_box;
 
@@ -214,6 +215,21 @@ impl T {
     pub(super) fn release(&self, h: GlobalHandle) {
         self.rt().heap.drop_global(h);
     }
+
+    /// Roots each of `vs` until [`T::release_all`]: objects whose shapes an IC state or a
+    /// stub cache entry counts after their last use. Case keys are weak, and a release frame
+    /// may drop a local's last copy at that use: on x86-64 the slot of the first of five
+    /// objects was reused right after its load, the object and its shape died under GC
+    /// stress, and the site stayed `Polymorphic(4)` (M5-P0, run 40733504045).
+    pub(super) fn keep_all(&self, vs: &[u64]) -> Vec<GlobalHandle> {
+        vs.iter().map(|&v| self.keep(v)).collect()
+    }
+
+    pub(super) fn release_all(&self, hs: Vec<GlobalHandle>) {
+        for h in hs {
+            self.release(h);
+        }
+    }
 }
 
 /// The kinds [`ic::describe_handler`] gives for IC_HANDLER cells.
@@ -320,8 +336,20 @@ pub(super) fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
 /// Scrubs the stack and collects, after the dead cells were made by [`below_a_pad`] (which
 /// gave `pad_low`). Then checks that the collection can show something about them: its
 /// conservative scan stopped above the pad, and kept none of `dead` (masked addresses).
+/// Inlined (rule 35), so the scrub runs in the test's own frame and its zeros lie under the
+/// frame of [`collect_and_check`] too: an out-of-line helper's own frame is not under its
+/// own scrub (`tests/ordered_table.rs` `collect`: CI run 40733504045). The collection and
+/// the checks stay out of line, so the unmasked addresses they compute never reach the
+/// test's frame.
+#[inline(always)]
 pub(super) fn collect_after_a_pad(t: &mut T, pad_low: usize, dead: &[usize]) {
     scrub_stack();
+    collect_and_check(t, pad_low, dead);
+}
+
+/// The collection and the checks of [`collect_after_a_pad`], out of line.
+#[inline(never)]
+fn collect_and_check(t: &mut T, pad_low: usize, dead: &[usize]) {
     t.collect();
     let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
     let scan_low = high - 8 * t.rt().heap.stats().last_stack_words;

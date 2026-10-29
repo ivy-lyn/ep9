@@ -37,23 +37,10 @@ fn dummy_kind(name: &'static str) -> CellKind {
 
 #[test]
 fn layout_4_and_ic_layout_2_versions() {
-    assert_eq!(
-        (
-            black_box(versions::OBJECT_LAYOUT_VERSION),
-            versions::IC_LAYOUT_VERSION
-        ),
-        (4, 2)
-    );
-    // The other contract versions do not change in M4-P0 (no bytecode ABI bump, V9-D41).
-    assert_eq!(
-        (
-            versions::FRAME_VERSION,
-            versions::BUILTIN_ABI_VERSION,
-            versions::DEOPT_META_VERSION,
-            ep9_bytecode::ABI_VERSION
-        ),
-        (2, 1, 0, 5)
-    );
+    // OBJECT_LAYOUT 5 and IC_LAYOUT 3 (M5-P0) keep every layout-4 kind, id and field checked
+    // here; the version numbers are pinned by `tests::layout5`.
+    assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 4);
+    assert!(black_box(versions::IC_LAYOUT_VERSION) >= 2);
 }
 
 #[test]

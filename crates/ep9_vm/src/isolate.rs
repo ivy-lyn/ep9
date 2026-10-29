@@ -38,6 +38,7 @@ use crate::abi::{JsKey, JsObject, Local};
 use crate::builtins::{self, BuiltinTable};
 use crate::compiler::{CompileResult, CompilerHooks};
 use crate::conv::{Res, describe};
+use crate::exec::ExecOptions;
 use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
@@ -256,8 +257,34 @@ fn native_margin(stack_size: usize) -> usize {
 
 impl Isolate {
     /// Creates an isolate on the current thread: the heap, the VM stack, and a realm with the
-    /// VM's builtins and those of `config.builtins` (checked first, once per table).
+    /// VM's builtins and those of `config.builtins` (checked first, once per table). It runs
+    /// the default options of the build ([`ExecOptions::default`]); [`Isolate::new_with`]
+    /// takes others.
     pub fn new(config: IsolateConfig) -> Result<Isolate, IsolateError> {
+        Isolate::new_with(config, ExecOptions::default())
+    }
+
+    /// [`Isolate::new`] with the execution options `exec` (C-23): the preset and the
+    /// type-feedback mode. A preset this build cannot run is
+    /// [`IsolateError::Config`], never a silent downgrade (M-R6): the jit preset needs the
+    /// `jit` feature. The feedback mode is stored; it takes effect in M5-P3.
+    ///
+    /// ```
+    /// use ep9_vm::{ExecOptions, Feedback, Isolate, IsolateConfig};
+    /// let exec = ExecOptions::jitless().feedback(Feedback::FULL);
+    /// assert!(Isolate::new_with(IsolateConfig::default(), exec).is_ok());
+    /// ```
+    pub fn new_with(config: IsolateConfig, exec: ExecOptions) -> Result<Isolate, IsolateError> {
+        if !exec.preset().available() {
+            // Name the preset (MC-w18-3): only the jit preset is known and can be missing.
+            return Err(IsolateError::Config(
+                if exec.preset() == crate::exec::Preset::JIT {
+                    "the jit preset needs a build with the jit feature"
+                } else {
+                    "an unknown preset: this build runs only the jit and jitless presets"
+                },
+            ));
+        }
         if config.vm_stack_slots < 1024 || config.vm_stack_slots > (1 << 28) {
             return Err(IsolateError::Config(
                 "vm_stack_slots must be in 1024..=2^28",
@@ -276,6 +303,7 @@ impl Isolate {
             config.compiler,
         );
         builtins::prepare(&rt, config.builtins);
+        rt.exec.set(exec);
         realm::init(&rt);
         let mut cx = Box::new(Cx {
             table: *config.dispatch.table(),
@@ -287,14 +315,13 @@ impl Isolate {
             out_pc: core::ptr::null(),
             dispatch: config.dispatch,
             feedback_threshold: config.feedback_threshold,
-            proto_epoch: &rt.shapes.proto_epoch,
             interrupt: Arc::as_ptr(&rt.terminate),
-            #[cfg(feature = "spike-native")]
             native_limit: rt.native_limit,
             #[cfg(feature = "spike-native")]
             runtime_table: &crate::native::RUNTIME_TABLE,
+            #[cfg(not(feature = "spike-native"))]
+            runtime_table: core::ptr::null(),
             realm: rt.root(Root::Realm),
-            #[cfg(feature = "spike-native")]
             unit_data: 0,
         });
         realm::install(&mut cx).map_err(IsolateError::BuiltinTable)?;

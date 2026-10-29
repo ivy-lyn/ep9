@@ -1,6 +1,7 @@
 #!/bin/sh
 # Fake ep9 for the kernels.mjs tests: runs the file on FAKE_NODE (a real node), so it prints what
 # node prints, except:
+#   --version                prints a version line and the M5-P0 build line
 #   math-names.js            prints a Math without log and random (the probe of kernels.mjs)
 #   FAKE_FAIL=<name>:<line>  for <name>.js: prints ep9's error form "<file>:<line>:5: Uncaught
 #                            TypeError: undefined is not a function" on stderr and exits 1
@@ -9,6 +10,7 @@
 #                            the harness lines as they are (fake-fault.mjs)
 if [ "$1" = "--version" ]; then
   echo "fake-ep9 0.0"
+  echo "features jit; preset jit"
   exit 0
 fi
 f=$1

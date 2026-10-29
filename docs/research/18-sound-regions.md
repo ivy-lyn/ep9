@@ -126,7 +126,7 @@ EVIDENCE: SR/finder/out/<repo>.summary.json (keys `classes_qualifying`, `functio
 | Element-shape facts (`arr[i]` is a class instance) are not modeled. In DeltaBlue, `class Variable[]` is the first blocking type for 27.3% of time and `class AbstractConstraint` for 21.3% (SR/hot/res/awfy-deltablue.json, `bad_type_time_pct`). Per-load checks in kernel regions are not counted | Over-count of guard-free code |
 | Hot shares come from V8 profiles, not ep9. With V8 inlining on, Q leaf functions merge into non-Q callers | Unknown in ep9 |
 | Array OOB, bivariance, covariant arrays, int vs double, stale narrowing ([R13] H2/H5/H6/H8/H13) are not rules. So bounds, hole and int32 checks may remain inside regions | Over-count of guard-free code |
-| All coverage comes from TS-type rules on TS sources. With D18 = c (no ep9-typecheck, docs/plan/11-decisions.md:114) or on bundled input ("Bundled input gets no hints", RK39, docs/plan/10-quality.md:231), the verifier works alone; bundler-lowered class fields may use defineProperty, a breaker | Unknown; not measured |
+| All coverage comes from TS-type rules on TS sources. With D18 = c (no ep9-typecheck, docs/plan/11-decisions.md:114) or on bundled input ("Bundled input gets no hints", RK39, docs/plan/10-quality.md:256), the verifier works alone; bundler-lowered class fields may use defineProperty, a breaker | Unknown; not measured |
 | Sampling error: about ±0.7 points at a 10% share with 4.8k samples; tsc per-run spread 6.4-6.9% (default) | Noise |
 
 ## 3. Precedents

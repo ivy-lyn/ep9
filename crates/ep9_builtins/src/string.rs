@@ -275,7 +275,7 @@ pub const MODULE: BuiltinModule = BuiltinModule {
 /// crates/ep9_vm/src/string.rs, which `Cx::new_string_utf16` enforces. The builders here check
 /// it before they grow a `Vec<u16>` past it, so a huge `repeat` or `padEnd` throws the same
 /// RangeError without allocating first.
-const MAX_LENGTH: usize = (1 << 29) - 24;
+pub(crate) const MAX_LENGTH: usize = (1 << 29) - 24;
 
 /// RequireObjectCoercible(this value), then ToString: steps 1-2 of most String.prototype
 /// methods. `name` is the method name for the TypeError text (V8's text).

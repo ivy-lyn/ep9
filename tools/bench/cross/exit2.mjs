@@ -114,6 +114,9 @@ export function readExit2(res) {
     dirty: Array.isArray(res.commit?.dirty) ? res.commit.dirty.length > 0 : null,
     dirty_paths: Array.isArray(res.commit?.dirty) ? res.commit.dirty : null,
     runner_commit: res.commit?.runner ?? null,
+    // The build line of the ep9 engine (`ep9 --version` line 2, run.mjs `engine_build`): m1-exit
+    // item 2 (X3) reads it; null when the run has none (an older run.mjs or binary).
+    engine_build: res.engines?.find((e) => e.id === "ep9")?.engine_build ?? null,
     started: res.started ?? null,
     host: { id: res.host?.id ?? null, gate_host: res.host?.gate_host ?? false, cpu: res.host?.measured?.cpu ?? null, platform: res.host?.measured?.platform ?? null },
     provisional: res.provisional ?? true,

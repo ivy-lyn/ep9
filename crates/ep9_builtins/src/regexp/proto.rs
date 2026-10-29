@@ -126,9 +126,14 @@ pub(super) fn flags<'s>(
 /// RegExpHasFlag ( R, codeUnit ) (§22.2.6.4.1) for the flag bit `bit`; `name` is the accessor
 /// for the error text.
 fn has_flag<'s>(cx: &mut Cx<'s>, this: Local<'s>, bit: u8, name: &str) -> JsResult<Local<'s>> {
+    // (The error texts are built only on the error paths: the flags getter calls these
+    // getters on every @@replace, @@match and @@split.)
     // 1. If R is not an Object, throw a TypeError exception.
-    let what = format!("RegExp.prototype.{name} getter");
-    let r = this_object(cx, this, &what)?;
+    let Some(r) = this.as_object() else {
+        let shown = cx.display(this);
+        let msg = format!("RegExp.prototype.{name} getter called on non-object {shown}");
+        return Err(cx.throw_type_error(&msg));
+    };
     // 2. If R does not have an [[OriginalFlags]] internal slot, then
     if !is_regexp_object(cx, r) {
         //    a. If SameValue(R, %RegExp.prototype%) is true, return undefined.
@@ -138,7 +143,7 @@ fn has_flag<'s>(cx: &mut Cx<'s>, this: Local<'s>, bit: u8, name: &str) -> JsResu
         }
         //    b. Otherwise, throw a TypeError exception.
         let shown = cx.display(this);
-        let msg = format!("{what} called on incompatible receiver {shown}");
+        let msg = format!("RegExp.prototype.{name} getter called on incompatible receiver {shown}");
         return Err(cx.throw_type_error(&msg));
     }
     // 3. Let flags be R.[[OriginalFlags]].
@@ -195,6 +200,156 @@ flag_getter!(
     /// get RegExp.prototype.unicodeSets (§22.2.6.19): RegExpHasFlag(R, "v").
     unicode_sets, flag::UNICODE_SETS, "unicodeSets"
 );
+
+/// RegExp.escape ( S ) (§22.2.5.1, ES2025).
+pub(super) fn escape<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. If S is not a String, throw a TypeError exception.
+    let Some(s) = args.get(0).as_string() else {
+        return Err(cx.throw_type_error("RegExp.escape requires a string"));
+    };
+    let units = crate::string::units(cx, s)?;
+    // The longest string the VM makes is checked before the buffer grows (the rule of the
+    // string builders, `crate::string::MAX_LENGTH`; Codex M5-P2 r1 regexp2 2).
+    let Some(escaped) = escape_units(&units, crate::string::MAX_LENGTH) else {
+        return Err(cx.throw_range_error("Invalid string length"));
+    };
+    Ok(cx.new_string_utf16(&escaped)?.value())
+}
+
+/// Steps 2-5 of RegExp.escape (§22.2.5.1) on the code units of S, or `None` if the result
+/// would be longer than `max` code units. Two passes: the exact length first (each code
+/// point's escape into a small scratch buffer, stopping past `max`), then one allocation of
+/// that length, so a long input never grows a buffer past `max` (up to 6 units per input
+/// unit: a lone surrogate is `\uXXXX`).
+pub(crate) fn escape_units(s: &[u16], max: usize) -> Option<Vec<u16>> {
+    let mut len = 0usize;
+    let mut one: Vec<u16> = Vec::with_capacity(12);
+    for (i, c) in char::decode_utf16(s.iter().copied()).enumerate() {
+        let c = match c {
+            Ok(ch) => u32::from(ch),
+            Err(e) => u32::from(e.unpaired_surrogate()),
+        };
+        one.clear();
+        if i == 0 && c < 0x80 && (c as u8).is_ascii_alphanumeric() {
+            push_hex_escape(&mut one, 'x', c, 2);
+        } else {
+            encode_for_regexp_escape(&mut one, c);
+        }
+        len += one.len();
+        if len > max {
+            return None;
+        }
+    }
+    // 2. Let escaped be the empty String.
+    let mut escaped: Vec<u16> = Vec::with_capacity(len);
+    // 3. Let cpList be StringToCodePoints(S).
+    // 4. For each code point c in cpList, do
+    for c in char::decode_utf16(s.iter().copied()) {
+        let c = match c {
+            Ok(ch) => u32::from(ch),
+            Err(e) => u32::from(e.unpaired_surrogate()),
+        };
+        // a. If escaped is the empty String, and c is matched by either DecimalDigit or
+        //    AsciiLetter, then
+        //    i-v. escaped = "\x" + the two lowercase hex digits of c.
+        if escaped.is_empty() && c < 0x80 && (c as u8).is_ascii_alphanumeric() {
+            push_hex_escape(&mut escaped, 'x', c, 2);
+        } else {
+            // b. Else, set escaped to escaped + EncodeForRegExpEscape(c).
+            encode_for_regexp_escape(&mut escaped, c);
+        }
+    }
+    // 5. Return escaped.
+    debug_assert_eq!(escaped.len(), len);
+    Some(escaped)
+}
+
+/// Appends `\`, `letter` and `value` as `digits` lowercase hex digits.
+fn push_hex_escape(out: &mut Vec<u16>, letter: char, value: u32, digits: usize) {
+    out.push(u16::from(b'\\'));
+    out.push(letter as u16);
+    for k in (0..digits).rev() {
+        let d = (value >> (4 * k)) & 0xF;
+        out.push(char::from_digit(d, 16).expect("a hex digit") as u16);
+    }
+}
+
+/// EncodeForRegExpEscape ( c ) (§22.2.5.1.1), appended to `out`.
+fn encode_for_regexp_escape(out: &mut Vec<u16>, c: u32) {
+    // 1. If c is matched by SyntaxCharacter or c is U+002F (SOLIDUS), then
+    //    a. Return the string-concatenation of 0x005C (REVERSE SOLIDUS) and
+    //       UTF16EncodeCodePoint(c).
+    if c < 0x80 && b"^$\\.*+?()[]{}|/".contains(&(c as u8)) {
+        out.extend([u16::from(b'\\'), c as u16]);
+        return;
+    }
+    // 2. If c is the code point listed in some cell of the "Code Point" column of Table 67
+    //    (ControlEscape), then return 0x005C followed by the ControlEscape letter.
+    let control = match c {
+        0x09 => Some(b't'),
+        0x0A => Some(b'n'),
+        0x0B => Some(b'v'),
+        0x0C => Some(b'f'),
+        0x0D => Some(b'r'),
+        _ => None,
+    };
+    if let Some(letter) = control {
+        out.extend([u16::from(b'\\'), u16::from(letter)]);
+        return;
+    }
+    // 3. Let otherPunctuators be the string-concatenation of ",-=<>#&!%:;@~'`" and the code
+    //    unit 0x0022 (QUOTATION MARK).
+    // 4. Let toEscape be StringToCodePoints(otherPunctuators).
+    let other = c < 0x80 && b",-=<>#&!%:;@~'`\"".contains(&(c as u8));
+    // 5. If toEscape contains c, c is matched by either WhiteSpace or LineTerminator, or c
+    //    has the same numeric value as a leading surrogate or trailing surrogate, then
+    if other || is_white_space_or_line_terminator(c) || (0xD800..=0xDFFF).contains(&c) {
+        //  a. Let cNum be the numeric value of c.
+        //  b. If cNum ≤ 0xFF, then return "\x" and StringPad(Number::toString(cNum, 16),
+        //     2, "0", start).
+        if c <= 0xFF {
+            push_hex_escape(out, 'x', c, 2);
+            return;
+        }
+        //  c. Let escaped be the empty String.
+        //  d. Let codeUnits be UTF16EncodeCodePoint(c).
+        //  e. For each code unit cu of codeUnits: escaped += UnicodeEscape(cu).
+        //  f. Return escaped.
+        let mut buf = [0u16; 2];
+        let units: &[u16] = match char::from_u32(c) {
+            Some(ch) => ch.encode_utf16(&mut buf),
+            None => {
+                buf[0] = c as u16;
+                &buf[..1]
+            }
+        };
+        for &cu in units {
+            push_hex_escape(out, 'u', u32::from(cu), 4);
+        }
+        return;
+    }
+    // 6. Return UTF16EncodeCodePoint(c).
+    match char::from_u32(c) {
+        Some(ch) => {
+            let mut buf = [0u16; 2];
+            out.extend_from_slice(ch.encode_utf16(&mut buf));
+        }
+        None => out.push(c as u16),
+    }
+}
+
+/// WhiteSpace (§12.2: TAB, VT, FF, ZWNBSP, any Zs code point) or LineTerminator (§12.3: LF,
+/// CR, LS, PS).
+fn is_white_space_or_line_terminator(c: u32) -> bool {
+    // TAB, LF, VT, FF, CR; SP, NBSP; the Zs block and LS, PS; ZWNBSP.
+    matches!(c, 0x09..=0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029)
+        || matches!(c, 0x202F | 0x205F | 0x3000 | 0xFEFF)
+}
 
 /// get RegExp.prototype.source (§22.2.6.13).
 pub(super) fn source<'s>(
@@ -281,7 +436,22 @@ pub(crate) fn escape_pattern(src: &[u16], nested: bool) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_pattern;
+    use super::{escape_pattern, escape_units};
+
+    /// Codex M5-P2 r1 regexp2 2: the length is checked before the one allocation, at the
+    /// bound itself (10 lone surrogates escape to 60 units).
+    #[test]
+    fn escape_checks_the_length_before_it_allocates() {
+        let lone = [0xD800u16; 10];
+        assert_eq!(escape_units(&lone, 59), None);
+        let v = escape_units(&lone, 60).expect("60 units fit");
+        assert_eq!((v.len(), v.capacity()), (60, 60));
+        let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let text = |v: Vec<u16>| String::from_utf16(&v).expect("UTF-16");
+        assert_eq!(text(escape_units(&units("a.b"), 100).unwrap()), "\\x61\\.b");
+        assert_eq!(escape_units(&units("a.b"), 6), None);
+        assert_eq!(escape_units(&[], 0), Some(Vec::new()));
+    }
 
     fn esc(s: &str, nested: bool) -> String {
         let units: Vec<u16> = s.encode_utf16().collect();

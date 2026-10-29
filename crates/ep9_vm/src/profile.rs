@@ -1,7 +1,8 @@
-//! T0 profile recording (owner M4-P1 PROFILE; OI-06, JA-3, H16-Q2) and the IC_LAYOUT 2 feedback
-//! slot table (H16; `versions::IC_LAYOUT_VERSION` 2, M4-P0).
+//! T0 profile recording (owner M4-P1 PROFILE; OI-06, JA-3, H16-Q2) and the IC_LAYOUT 3 feedback
+//! slot table (H16; `versions::IC_LAYOUT_VERSION` 2 since M4-P0, 3 since M5-P0).
 //!
-//! **IC_LAYOUT 2 slot table.** Each slot of a FEEDBACK cell (`feedback.rs`, 16 B) is a key half
+//! **IC_LAYOUT 3 slot table** (M5-P0: the keyed kinds-set bits and the ALLOC_SITE handler; the
+//! rest as IC_LAYOUT 2). Each slot of a FEEDBACK cell (`feedback.rs`, 16 B) is a key half
 //! (weak) and a value half (strong). One module writes each slot kind:
 //!
 //! | Slot kind (ABI byte) | Key half (weak) | Value half (strong) | Writer module (role, phase) |
@@ -9,11 +10,11 @@
 //! | Call (0) at `Call*` sites | **(M4-P1)** the native word of the target's FunctionInfo (not a cell; the FUNCTION cell's +24), or the hole = megamorphic | int32 count of the sampled calls (saturating) | `profile.rs` (PROFILE, M4-P1) |
 //! | Call (0) at `Construct*` sites | the target function, or the hole | a construct-site handler (an IC_HANDLER cell, handler kind `CONSTRUCT_SITE`: +16 int32 count, +24 initial shape (weak), +32 int32 `prototype` field index; V9-A8), or an int32 count | `construct_ic.rs` (OBJ-ALLOC, M4-P1) |
 //! | LoadNamed, StoreNamed, DefineNamedOwn, LoadGlobal*, StoreGlobal (1, 3, 5, 7-9) | as IC_LAYOUT 1 | as IC_LAYOUT 1; the prototype cases keep a validity cell, not the epoch | `ic.rs` (VALIDITY M4-P1, IC2 M4-P3) |
-//! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed (2, 4, 6, 10) | the receiver shape (monomorphic) or the hole (`keyed_ic.rs` writes it, KEYED, M4-P3) | int32 bits: element form seen, key types (int32, string, symbol), out of bounds, hole read | `profile.rs` writes the bits (M4-P1); `keyed_ic.rs` writes the key half and never reads the bits (KEYED, M4-P3; MC-w14-8); only the StoreKeyed fast case changes the key half, so the exported state is live only for StoreKeyed (MC-w15-1) |
+//! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed (2, 4, 6, 10) | the receiver shape (monomorphic) or the hole (`keyed_ic.rs` writes it, KEYED, M4-P3) | int32 bits: element form seen, key types (int32, string, symbol), out of bounds, hole read (bits 0-9); **IC_LAYOUT 3:** bits 10-16 the set of elements kinds seen, one bit per kind value 0-6 (`elements::KINDS_SET_SHIFT`; one storage form counts as one case, MC-w15-21; M5-P1 ELEM1 writes them) | `profile.rs` writes the bits (M4-P1); `keyed_ic.rs` writes the key half and never reads the bits (KEYED, M4-P3; MC-w14-8); only the StoreKeyed fast case changes the key half, so the exported state is live only for StoreKeyed (MC-w15-1) |
 //! | BinaryOp, CompareOp (11, 12) | undefined | int32 hint bits (int32, number, string, bigint, other) | `profile.rs` |
 //! | TypeOf (13) | undefined | int32 type bits | `profile.rs` |
 //! | InstanceOf (14) | the rhs function, or the hole (2-4 functions, or megamorphic) | an instanceof handler (an IC_HANDLER cell, handler kind `INSTANCEOF`: +16 validity cell, +24 the rhs function's shape (weak; the hit compares it, so the field index holds), +32 int32 `prototype` field index; V9-A8), a POLY_IC cell (2-4 cases: the function (weak), its handler), or an int32 state | `instance_ic.rs` (IC2, M4-P3) |
-//! | Literal (15) | the result shape | int32 count | `literal_site.rs` (OBJ-ALLOC, M4-P1) |
+//! | Literal (15) | the result shape | int32 count; **IC_LAYOUT 3:** at an array-literal site, or an allocation-site handler (an IC_HANDLER cell, handler kind `ALLOC_SITE`: +16 the int32 elements kind the site makes, +24 the result shape (weak), +32 int32 count; V10-D6, MODES-D19), which every array made there keeps at ARRAY +32 | `literal_site.rs` (OBJ-ALLOC, M4-P1; the ALLOC_SITE handler M5-P2 ELEM2) |
 //! | CloneObject (16) | the source shape, or the hole (2-4 source shapes, or megamorphic) | a clone handler (an IC_HANDLER cell, handler kind `CLONE`: +16 int32 count, +24 the result shape (weak), +32 int32 0), a POLY_IC cell (2-4 cases: the source shape (weak), its handler), or an int32 state | `literal_site.rs` (OBJ-ALLOC, M4-P1) |
 //! | StoreInArrayLiteral, ForIn, JumpLoop, CreateClosure (17-20) | ForIn: the receiver shape; others undefined | int32 bits or count (JumpLoop: the sampled back edges, **M4-P1**) | `profile.rs` |
 //!
@@ -24,7 +25,7 @@
 //!
 //! Rules: a slot is written only when its bit or state is new (load, test, rare store;
 //! V9-D6). A hit path never allocates and never calls (H16:103). The IC_HANDLER layout under
-//! IC_LAYOUT 2 is in the `ic.rs` module docs.
+//! IC_LAYOUT 3 is in the `ic.rs` module docs.
 //!
 //! **Record points** (`interp/ops.rs` calls them; ops.rs has no owner after M4-P0, V9-D5).
 //! Each hook is `#[inline(always)]` and calls nothing on its fast-body path. Not out of line
@@ -45,7 +46,7 @@
 //!
 //! | Flow | Fast bodies | Record (sibling: tail-called function) |
 //! |---|---|---|
-//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next`: it reads the slot operand again from the bytecode) |
+//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next`: it reads the slot operand again from the bytecode) |
 //! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next`: it gets the pair) |
 //! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
 //!
@@ -54,13 +55,14 @@
 //!
 //! | Hook | Called from | Arguments |
 //! |---|---|---|
-//! | [`binary_pair_bits`], [`int32_result_bits`], [`int32_pair_bits`], [`NUMBER_PAIR`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`, `binop_fast_boxed` for `*` and `/`): the pair's record is chosen from the tags before the operation, the int32 overflow record from the result | operator, operand tags, result |
+//! | [`binary_pair_bits`], [`int32_result_bits`], [`int32_pair_bits`], [`NUMBER_PAIR`], [`INT32_OVERFLOW`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`, `binop_fast_boxed` for `*` and `/`): the pair's record is chosen from the tags before the operation, the int32 overflow record of `*`, `/` and `>>>` from the result; an int32 `+` or `-` records [`INT32_OVERFLOW`] on its overflow arm only | operator, operand tags, result |
 //! | [`record_binary_cold`] | their cold body (`binop_cold`): an int32 `%` with a negative dividend or a 0 divisor, an int32 `**`, `%`, `**` and the bitwise operators on a double, or other types | slot, operator, left, right |
-//! | [`NUMBER_OPERAND`], [`record_unary`] | `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` (BinaryOp slots): a double in the fast body; other operands (and every `BitwiseNot` that is not int32) in the cold body | slot, operand |
+//! | [`NUMBER_OPERAND`], [`INT32_OVERFLOW`], [`record_unary`] | `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` (BinaryOp slots): a double in the fast body; an int32 `Inc` or `Dec` that overflows on its overflow arm ([`INT32_OVERFLOW`]); other operands (and every `BitwiseNot` that is not int32) in the cold body | slot, operand |
 //! | [`NUMBER_COMPARE`], [`Pair`], [`record_compare`] | `TestEqual`, `TestEqualStrict`, `TestLessThan`, `TestGreaterThan`, `TestLessThanOrEqual`, `TestGreaterThanOrEqual`: fast body as above, cold body otherwise | slot, left, right |
 //! | [`record_typeof`] | the `TypeOf` cold body (its fast body is only `Flow::Cold`) | slot, operand |
 //! | [`record_call`], [`record_call_pushed`] | every `Call*` site except `CallRuntime`: after the frame push of `call_fast`, or in the cold body (`call_record_cold`: every cold exit, `CallWithSpread`, a `CallProperty`/`CallAnyReceiver` list without a receiver) | slot, callee |
 //! | [`record_keyed`] | `GetKeyedProperty` (before the array path), `SetKeyedProperty`, `DefineKeyedOwnProperty`, `DefineKeyedOwnPropertyInLiteral` (its fast body is only this hook and `Flow::Cold`), `StaInArrayLiteral`, `TestIn` (records nothing, see below) | slot, receiver, key |
+//! | [`keyed_hit_kind`] | the `GetKeyedProperty` array path and the `keyed_ic::fast_set` store, after the hit: the IC_LAYOUT 3 kinds-set bit, in the sampled window only, as `Flow::Record` (M5-P1 ELEM1) | the receiver |
 //! | [`record_keyed_cold`] | their cold bodies (out of bounds, a hole, a non-array receiver; every execution of `DefineKeyedOwnPropertyInLiteral`) | slot, receiver, key |
 //! | [`record_jump_loop`] | `JumpLoop` | slot |
 //! | [`record_closure`] | the `CreateClosure` cold body, after the closure exists (0 = an exception is pending) | slot, the closure bits |
@@ -78,7 +80,7 @@
 //! | CompareOp (12) | `CompareHint` bits | untouched | every execution that is not implicit |
 //! | TypeOf (13) | `TypeSet` bits of the operand | untouched | every execution |
 //! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed, StoreInArrayLiteral (2, 4, 6, 10, 17) | [`keyed`] bits: the `KeySet` bits 0-3, the receiver (bits 4-7), out of bounds (8), hole (9) | untouched (KEYED, M4-P3, owns it) | every cold execution |
-//! | Call (0) at `Call*` sites | the count of sampled calls, saturating at `i32::MAX` | the native word of the one target FunctionInfo sampled, or the hole (megamorphic) | sampled: a call in the first [`CALL_WINDOW`] budget units after a budget reset |
+//! | Call (0) at `Call*` sites | the count of sampled calls, saturating at `i32::MAX` | the native word of the one target FunctionInfo sampled, or the hole (megamorphic) | sampled: a call in the [`CALL_WINDOW`] budget units of each budget period's window (the first ones after a reset to `BUDGET`; after a poll's jittered reset, [`budget_after_poll`], the ones after the jitter units) |
 //! | JumpLoop (19) | the count of sampled back edges, saturating at `i32::MAX` | untouched | sampled: a back edge that polls (the budget is used up) |
 //! | ForIn (18) | `ForInHint` bits | the one receiver shape seen, or the hole | every execution |
 //! | CreateClosure (20) | a count that saturates at [`CLOSURE_MANY`]: 0 none, 1 one, 2 many | untouched | every execution |
@@ -93,20 +95,30 @@
 //!     reader adds these bits to every slot of its kind in a function that has a vector: they
 //!     are a prediction that a consumer guards (H16 Consequences).
 //!   - **Sampled calls and back edges** (plan v9 R2: "move a kind to the cold path only").
-//!     `record_call` records only in the first [`CALL_WINDOW`] units of each
-//!     `interp::BUDGET` (the budget is reset at each poll), and `record_jump_loop` only at a
-//!     back edge that polls. A hot site is sampled in proportion to its share of the units;
-//!     a site that never runs in a window stays uninitialized. The windows come at a fixed
-//!     period, so a pattern with that period can hide a target (an open point for the
-//!     reader).
-//!   - **An int32 `+` or `-` that overflows** takes the fast path's double arm and stays
-//!     implicit (its test costs every int32 `+` and `-`); `*`, `/` and `>>>` record
-//!     `INT32_OVERFLOW` (their test reuses the boxed result).
+//!     `record_call` records only in a window of [`CALL_WINDOW`] budget units in each
+//!     budget period (a call whose budget before it is in `(BUDGET - CALL_WINDOW, BUDGET]`),
+//!     and `record_jump_loop` only at a back edge that polls. A hot site is sampled in
+//!     proportion to its share of the units; a site that never runs in a window stays
+//!     uninitialized. **Window jitter (M5-P1 PROFILE5; MC-w13-17, F16):** a poll resets the
+//!     budget to [`budget_after_poll`], `BUDGET` plus a jitter in `0..`[`CALL_JITTER`] from
+//!     the isolate's own sequence (`Runtime::call_window_jitter`), so the window starts that
+//!     many units after the poll and the polls do not come at a fixed period: a call pattern
+//!     whose period divides `BUDGET` no longer keeps a site out of every window. The window
+//!     test of the call handlers is unchanged (one compare with a constant); the upper bound
+//!     `BUDGET` is tested in the record path only. The poll
+//!     (`interp::slow::interrupt`) calls [`budget_after_poll`]; the isolate start keeps
+//!     `BUDGET`.
+//!   - **An int32 `+`, `-`, `Inc` or `Dec` that overflows** records `INT32_OVERFLOW` on
+//!     the overflow arm of its fast body only, the branch the checked operation already
+//!     takes ([`INT32_OVERFLOW`]; MODES-D16, M5-P1 PROFILE5): the int32 result that fits
+//!     tests nothing more. `*`, `/` and `>>>` record `INT32_OVERFLOW` from the result's tag
+//!     (their test reuses the boxed result).
 //!   - **Keyed sites** record on their cold path only. Every keyed case is cold except the
 //!     implicit one and a StoreKeyed hit. A fast keyed path (such as StoreKeyed's) must miss on
 //!     a case that is new for its site (KEYED, M4-P3), so the cold hook still sees it.
-//! - **Unary sites** see only the operand: an int32 operand stays implicit even when `Inc`,
-//!   `Dec` or `Negate` leaves int32 (the hook has no operator).
+//! - **Unary sites** see only the operand in the hook: an int32 operand stays implicit, also
+//!   when `Negate` leaves int32 (-0, `-i32::MIN`). `Inc` and `Dec` record their int32
+//!   overflow in their own fast body ([`INT32_OVERFLOW`]), not through the hook.
 //! - **Call keys.** The key is the native word of the callee's FunctionInfo (a FUNCTION
 //!   cell's +24, `frame::native`), not the function cell: it is not a cell, so the store needs
 //!   no barrier (E1) and no call (a call in a T0 handler makes LLVM save registers on every
@@ -139,8 +151,11 @@ use crate::shape;
 use crate::string;
 
 /// Value bits of the keyed slots (2, 4, 6, 10, 17). Bits 0-3 are the `ep9_facts::KeySet`
-/// bits; bits 4-7 the receiver ("element form" in v0: no elements kinds before H18);
-/// bits 8-9 what the element access found.
+/// bits; bits 4-7 the receiver; bits 8-9 what the element access found. IC_LAYOUT 3 (M5-P1
+/// ELEM1): bits 10-16 the set of elements kinds of the receivers of an index key (Arrays and
+/// `elements::plain_elements_kind` objects), one bit per kind value
+/// (`elements::kinds_set_bit`): [`record_keyed_cold`] records it on every miss of an index
+/// key, [`keyed_hit_kind`] on a fast hit in the sampled window only.
 pub(crate) mod keyed {
     /// An array index key: an int32 >= 0, a number that is an index, or an index string.
     pub const INDEX: u32 = 1 << 0;
@@ -173,9 +188,64 @@ const _: () = {
     assert!(KeySet::ALL.bits() == 0xF);
 };
 
-/// Calls are recorded in the first `CALL_WINDOW` budget units after each budget reset (a
-/// poll, or the isolate start).
+/// Calls are recorded in a window of `CALL_WINDOW` budget units in each budget period: a call
+/// whose budget before it is in `(BUDGET - CALL_WINDOW, BUDGET]`, the first `CALL_WINDOW`
+/// units after a reset to `BUDGET` (the isolate start), or units `j + 1 ..= j + CALL_WINDOW`
+/// after a reset to `BUDGET + j` ([`budget_after_poll`]).
 pub(crate) const CALL_WINDOW: i64 = 64;
+
+/// The jitter of a poll's budget reset is in `0..CALL_JITTER` units ([`budget_after_poll`]):
+/// two windows, so the start of the next window moves by up to twice its length each period.
+/// The mean budget period grows by `CALL_JITTER / 2` units (0.64% of `BUDGET`), so polls come
+/// that much less often.
+pub(crate) const CALL_JITTER: i64 = 2 * CALL_WINDOW;
+
+/// A `Runtime::call_window_jitter` state that turns the jitter off: [`budget_after_poll`]
+/// then gives `BUDGET`, the fixed period (as before M5-P1). Tests that count budget units
+/// across a poll set it; the sequence never reaches it.
+pub(crate) const JITTER_OFF: u64 = u64::MAX;
+
+/// The first state of the jitter sequence ([`budget_after_poll`]): the fraction bits of
+/// sqrt(2), a constant with no structure (not 0, not [`JITTER_OFF`]).
+pub(crate) const JITTER_SEED: u64 = 0x6a09_e667_f3bc_c908;
+
+/// The budget an interrupt poll resets to (`interp::slow::interrupt`): `BUDGET + j`, `j` in
+/// `0..CALL_JITTER`, the next value of the isolate's jitter sequence
+/// (`Runtime::call_window_jitter`). The sampled-call window then starts `j` units after the
+/// poll ([`CALL_WINDOW`]), so a call pattern with a period that divides `BUDGET` does not see
+/// the window at one fixed phase (MC-w13-17; DL M4-P1-OPEN (2)).
+///
+/// The sequence: a Weyl step of the state and the splitmix64 output function, from one fixed
+/// seed ([`JITTER_SEED`]) on first use. So every isolate and every process runs the same
+/// sequence: a second isolate gives the same facts (`ep9_builtins` `tests/facts_export.rs`),
+/// and a run does not depend on the hash seed. A program cannot keep a site out of every
+/// window unless its call pattern follows this sequence. The state is Rust memory (no Value,
+/// no GC point); a state of 0 means "not seeded yet", and [`JITTER_OFF`] turns the jitter
+/// off. Out of line: it runs once per poll.
+#[cold]
+#[inline(never)]
+pub(crate) fn budget_after_poll(rt: &Runtime) -> i64 {
+    const GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut state = rt.call_window_jitter.get();
+    if state == JITTER_OFF {
+        return BUDGET;
+    }
+    if state == 0 {
+        state = JITTER_SEED;
+    }
+    state = state.wrapping_add(GAMMA);
+    if state == 0 || state == JITTER_OFF {
+        state = GAMMA;
+    }
+    rt.call_window_jitter.set(state);
+    let mut z = state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    // CALL_JITTER is a power of two: the low bits of the mixed word.
+    const _: () = assert!(CALL_JITTER > 0 && CALL_JITTER & (CALL_JITTER - 1) == 0);
+    BUDGET + (z & (CALL_JITTER as u64 - 1)) as i64
+}
 
 /// The CreateClosure count saturates here: "many" (`ClosureCount::Many`).
 pub(crate) const CLOSURE_MANY: u32 = 2;
@@ -433,10 +503,10 @@ fn binary_operand(v: u64) -> u32 {
 
 /// The record of a binary operator site (BinaryOp slot) whose fast path made `v` from an
 /// int32 pair: 0 (implicit), except a `*`, `/` or `>>>` whose result is not an int32 (an
-/// overflow, -0, a fraction, a `>>>` past `i32::MAX`): `INT32_OVERFLOW`. An `+` or `-` that
-/// overflows takes the fast path's double arm and stays implicit: its test would add
-/// instructions to every int32 `+` and `-` (V9-D6); the double it makes is recorded as
-/// `NUMBER` at the sites it reaches. `*` and `/` box their result with the same
+/// overflow, -0, a fraction, a `>>>` past `i32::MAX`): `INT32_OVERFLOW`. An int32 `+` or `-`
+/// does not come here: `interp::ops::binop_fast` runs its own int32 arm and records
+/// [`INT32_OVERFLOW`] on the overflow branch only, so the result that fits tests nothing
+/// (V9-D6, MODES-D16). `*` and `/` box their result with the same
 /// `Value::number` as [`int32_pair_overflows`], and `>>>` gives an int32 exactly when it is at
 /// most `i32::MAX`, so a test of the result's tag is that rule.
 #[inline(always)]
@@ -476,6 +546,14 @@ pub(crate) const NUMBER_PAIR: u32 = BinaryHint::NUMBER.bits() as u32;
 /// The record of a unary operator or numeric conversion site (BinaryOp slot) whose fast path
 /// took a double operand ([`unary_bits`] of a double).
 pub(crate) const NUMBER_OPERAND: u32 = BinaryHint::NUMBER.bits() as u32;
+
+/// The record of an int32 `+` or `-` (also `AddSmi`, `SubSmi`), `Inc` or `Dec` whose result
+/// is outside int32 (MODES-D16, M5-P1 PROFILE5): `BinaryHint::INT32_OVERFLOW` ("int32
+/// operands and a result outside int32", the bit `*`, `/` and `>>>` write). The fast body
+/// returns it from the arm where the checked operation failed, so the int32 result that fits
+/// runs no more instructions than before, and an overflow guard of these four operations now
+/// has a fact behind it (an empty slot still means "int32 or never ran", F-R9).
+pub(crate) const INT32_OVERFLOW: u32 = BinaryHint::INT32_OVERFLOW.bits() as u32;
 
 /// The record of a relational comparison (CompareOp slot) whose fast path took a number pair
 /// that is not two int32s ([`compare_pair`] of such a pair).
@@ -643,24 +721,30 @@ fn target_key(callee: u64) -> u64 {
 /// A `Call*` site (Call slot) whose call went cold: called once per execution, from the cold
 /// body (`interp::ops::call_record_cold`), after the fast tests of the callee failed; a call
 /// that `call_fast` finishes records with [`record_call_pushed`] instead. Sampled:
-/// only a call in the first [`CALL_WINDOW`] units of the budget (`cx.budget` above
-/// `BUDGET - CALL_WINDOW`; the budget is reset at each poll) counts and keeps the target's
-/// FunctionInfo (monomorphic) or the hole (megamorphic). The hot path is one load and one
-/// test of the budget.
+/// only a call in the window ([`CALL_WINDOW`]: `cx.budget` in
+/// `(BUDGET - CALL_WINDOW, BUDGET]`; a poll resets the budget, [`budget_after_poll`]) counts
+/// and keeps the target's FunctionInfo (monomorphic) or the hole (megamorphic). The hot path
+/// is one load and one test of the budget; the upper bound (the jitter units before the
+/// window) is tested after it.
 #[inline(always)]
 pub(crate) fn record_call(st: &mut St<'_>, s: FSlot, callee: u64) {
     if st.cx.budget <= BUDGET - CALL_WINDOW {
         return;
     }
     core::hint::cold_path();
+    if st.cx.budget > BUDGET {
+        return;
+    }
     if let Some(v) = vector_of(st) {
         record_call_in(st.rt(), v, s, callee);
     }
 }
 
 /// True if a call whose budget unit `call_fast` has just taken (`budget` is the value after
-/// the decrement) is in the window of [`record_call`]: the budget before it was above
-/// `BUDGET - CALL_WINDOW`.
+/// the decrement) may be in the window of [`record_call`]: the budget before it was above
+/// `BUDGET - CALL_WINDOW`. One compare with a constant in the call handlers: the upper bound
+/// (a budget before the call above `BUDGET`, in the jitter units of [`budget_after_poll`])
+/// is tested in [`record_call_pushed`].
 #[inline(always)]
 pub(crate) fn call_window_after_unit(budget: i64) -> bool {
     budget >= BUDGET - CALL_WINDOW
@@ -671,9 +755,13 @@ pub(crate) fn call_window_after_unit(budget: i64) -> bool {
 /// slot of the caller's instruction. Same record as [`record_call`] before the push (no GC
 /// point and no write to the caller's vector lies between them). Runs after the handler
 /// (`interp::Flow::JumpRecordCall`, `interp::dsl::record_call_next`), so the call handlers
-/// keep no register for it.
+/// keep no register for it. A call in the jitter units before the window (the budget before
+/// it above `BUDGET`, so `cx.budget >= BUDGET` after its unit) records nothing.
 #[inline(always)]
 pub(crate) fn record_call_pushed(st: &St<'_>, s: FSlot) {
+    if st.cx.budget >= BUDGET {
+        return;
+    }
     // SAFETY: `st.fp` is a frame that `call::push_frame` just wrote: its caller-fp slot holds
     // the live caller frame, whose FunctionInfo slot holds a FunctionInfo native word.
     let fi = unsafe {
@@ -770,12 +858,39 @@ fn element_case(o: u64, i: u32) -> u32 {
 /// HasKeyed slot), before the fast path. Records nothing: T0 runs fast the implicit case (an
 /// int32 index of a present Array element at `GetKeyedProperty`) and a StoreKeyed hit, which
 /// its site's miss recorded first; every other case goes cold, where [`record_keyed_cold`]
-/// records it. A fast keyed path must miss on a case that is new for its site (KEYED, M4-P3).
+/// records it. A fast keyed path must miss on a case that is new for its site (KEYED, M4-P3);
+/// a new elements kind is not such a case (its bit comes from [`keyed_hit_kind`]).
 #[inline(always)]
 pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 
+/// The IC_LAYOUT 3 kinds-set bit of a fast keyed hit on the Array `o` (the `GetKeyedProperty`
+/// array path, the `keyed_ic::fast_set` store), or 0. Sampled as [`record_call`] (H16-Q2
+/// rule (2)): only in the window, the [`CALL_WINDOW`] budget units below `BUDGET` (a budget
+/// above `BUDGET`, the jitter units of [`budget_after_poll`], records nothing); the hit
+/// gives the bit to its dispatch as `interp::Flow::Record`, so the record runs out of line and
+/// the handler keeps no frame. So the kinds set of a site holds every kind of its cold
+/// executions ([`record_keyed_cold`]) and the kinds of its sampled hits: a kind that only
+/// hits outside every window see is missing, as a sampled call target is (M5-P1 BENCH-SET:
+/// recording on every hit cost t0-prop +3%, crypto +10%, navier-stokes +13%). No IC hit reads
+/// these bits, so a T0 table without profile records (`ics_only`, MODES-D19) hits the same.
+#[inline(always)]
+pub(crate) fn keyed_hit_kind(st: &St<'_>, o: u64) -> u32 {
+    debug_assert!(kinds::is_array(o));
+    if st.cx.budget <= BUDGET - CALL_WINDOW {
+        return 0;
+    }
+    core::hint::cold_path();
+    // The jitter units of a poll ([`budget_after_poll`]) are before the window.
+    if st.cx.budget > BUDGET {
+        return 0;
+    }
+    crate::elements::kinds_set_bit(crate::elements::kind_of(o))
+}
+
 /// A keyed access whose fast path failed, before the generic operation: the key and receiver
-/// bits, and for an index of an Array what the element access finds (out of bounds, a hole).
+/// bits, for an index of an Array what the element access finds (out of bounds, a hole), and
+/// for an index on a receiver with elements kinds its kind's kinds-set bit (IC_LAYOUT 3; the
+/// kind before the operation, which may make a transition).
 #[inline(always)]
 pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
     let Some(v) = vector_of(st) else { return };
@@ -784,7 +899,12 @@ pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
     if let Some(i) = index
         && kinds::is_array(o)
     {
-        bits |= element_case(o, i);
+        bits |= element_case(o, i) | crate::elements::kinds_set_bit(crate::elements::kind_of(o));
+    } else if index.is_some()
+        && kinds::is_cell_bits(o)
+        && crate::elements::plain_elements_kind(kinds::cell_kind(o))
+    {
+        bits |= crate::elements::kinds_set_bit(crate::elements::kind_of(o));
     }
     let old = value(v, s.0);
     if old as u32 | bits != old as u32 {

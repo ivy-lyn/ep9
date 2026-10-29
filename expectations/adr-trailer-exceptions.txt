@@ -19,3 +19,9 @@ ccc21bba1fb4b43e7c20e846ebc1ffd2740bd819 H36 M4-P1-TRAILER
 847468b4fdad5f054e2a686ce13bf49918839a1e none M4-P4-MAIN-MERGE
 b98e44442838f3e2bdfb4bc8228957ca9e1ad781 none M4-P4-MAIN-MERGE
 fc0477eae1f786b400c3fb454f3dee627902fa9a none M4-P4-MAIN-MERGE
+#
+# M5-P0: PR #5 (m1/m4) was squash-merged into main by GitHub (squash only). The squash commit
+# copies the tree of m1/m4 9cd8226, whose commits carry their own trailers; the squash message
+# has none. 79e6581 merges main into m1/m5 with `-s ours` (no tree change; main's tree is 9cd8226).
+a817ff1bbb279108a0c6ac5cc7f3b87da4e49de6 none M5-P0-MAIN-MERGE
+79e658147477ae8654e5fa3b986d10b7b571604d none M5-P0-MAIN-MERGE

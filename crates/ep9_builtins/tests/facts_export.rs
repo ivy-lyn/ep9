@@ -638,16 +638,15 @@ for (var i = 0; i < 3000; i++) keyed(A, []);
     });
 }
 
-/// MC-w13-17 (F16): what the fixed sampling window sees of a periodic call pattern, today.
-/// `run`'s loop body is 99 call sites (98 `a()`, then `b()`) and a back edge: 100 budget units,
-/// and `BUDGET` (10,000) is 100 periods, so every poll lands on the same unit of the body and
-/// the window (the first `CALL_WINDOW` = 64 units after it) covers the same sites every time
-/// (62 of the 99). Each of those counts one sampled call per poll; the others stay uninitialized
-/// though each ran 10,008 times, and the back edge never polls (0 sampled back edges). This
-/// test pins the current behaviour; the month-5 jitter of the window start (MC-w13-17) is
-/// meant to change it (then every site gets a count).
+/// MC-w13-17 (F16): what the sampling window sees of a periodic call pattern. `run`'s loop
+/// body is 99 call sites (98 `a()`, then `b()`) and a back edge: 100 budget units, and
+/// `BUDGET` (10,000) is 100 periods. With a fixed reset to `BUDGET` every poll landed on the
+/// same unit of the body, so the window (`CALL_WINDOW` = 64 units) covered the same 62 sites
+/// each time and 37 sites stayed uninitialized though each ran 10,008 times (M4). Since M5-P1
+/// PROFILE5 a poll resets the budget to `BUDGET` plus a jitter (`profile::budget_after_poll`),
+/// so the window starts at a new phase each period and every site gets a count.
 #[test]
-fn a_periodic_call_pattern_keeps_sites_out_of_the_fixed_window() {
+fn a_periodic_call_pattern_reaches_every_site_through_the_jittered_window() {
     on_big_stack(|| {
         let mut src = String::from("function a() {}\nfunction b() {}\nfunction run(n) {\n");
         src.push_str("  for (var i = 0; i < n; i++) {\n");
@@ -673,22 +672,19 @@ fn a_periodic_call_pattern_keeps_sites_out_of_the_fixed_window() {
             })
             .collect();
         assert_eq!(calls.len(), 99);
-        let sampled = calls.iter().filter(|&&n| n > 0).count();
-        // At most `CALL_WINDOW` (64) units, the back edge among them (62 sites at 12cfc61).
-        assert!((60..=64).contains(&sampled), "{calls:?}");
-        // One count per poll of the 10,000-iteration run: about 100 (10,000 x 100 units /
-        // BUDGET), the same at every sampled site.
-        let polls = *calls.iter().max().unwrap();
-        assert!((99..=101).contains(&polls), "{calls:?}");
-        assert!(calls.iter().all(|&n| n == 0 || n == polls), "{calls:?}");
-        // The unsampled sites are one run of the body, cyclically: a fixed phase.
-        let edges = (0..99)
-            .filter(|&i| (calls[i] == 0) != (calls[(i + 1) % 99] == 0))
-            .count();
-        assert_eq!(edges, 2, "{calls:?}");
-        // The loop's back edge never takes the last unit: 0 sampled back edges.
+        // Every site is sampled: no fixed phase hides one.
+        assert!(calls.iter().all(|&n| n > 0), "{calls:?}");
+        // About 99 polls in the 10,000-iteration run (10,000 x 100 units over a mean period
+        // of BUDGET + 63.5), each a window of 64 units: about 99 x 63 sampled calls in all
+        // (the back edge takes the 64th unit), spread over the 99 sites.
+        let total: u32 = calls.iter().sum();
+        assert!((5_500..=6_700).contains(&total), "{total} {calls:?}");
+        let (lo, hi) = (*calls.iter().min().unwrap(), *calls.iter().max().unwrap());
+        assert!(lo < hi, "the counts depend on the phase: {calls:?}");
+        assert!(hi <= 101, "at most one count per poll: {calls:?}");
+        // The back edge can now take the poll's unit: sampled back edges, at most one a poll.
         match of_kind(&facts, f, "JumpLoop")[..] {
-            [SlotFacts::JumpLoop(l)] => assert_eq!(l.back_edges, 0),
+            [SlotFacts::JumpLoop(l)] => assert!(l.back_edges <= 101, "{l:?}"),
             ref r => panic!("{r:?}"),
         }
     });

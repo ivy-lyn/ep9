@@ -22,7 +22,8 @@
 //! | POLY_IC | 69 | 4 cases from +8: key (weak), handler (strong) | 72 |
 //! | IC_HANDLER | 70 | IC_LAYOUT 2 (below): +8 int32 handler kind, +16 the validity cell (strong) or an int32, +24 a weak ref, +32 an int32 | 40 |
 //!
-//! **IC_LAYOUT 2** (`versions::IC_LAYOUT_VERSION`, M4-P0; plan v9 §2.3, V9-A8). The feedback
+//! **IC_LAYOUT 2** (`versions::IC_LAYOUT_VERSION`, M4-P0; plan v9 §2.3, V9-A8), **3** since M5-P0
+//! (the `ALLOC_SITE` handler kind and the keyed kinds-set bits, `profile.rs`). The feedback
 //! slot table (which module writes which slot kind) is in the `profile.rs` module docs. The
 //! IC_HANDLER cell:
 //!
@@ -34,6 +35,7 @@
 //! | `CONSTRUCT_SITE` | int32 count | the initial shape | the `prototype` field index | `construct_ic.rs` (M4-P1 OBJ-ALLOC) |
 //! | `INSTANCEOF` | the validity cell | the rhs function's shape (the slot key is the function) | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
 //! | `CLONE` | int32 count | the result shape (the slot key is the source shape) | int32 0 | `literal_site.rs` (M4-P1 OBJ-ALLOC) |
+//! | `ALLOC_SITE` (IC_LAYOUT 3) | the int32 elements kind the site makes | the result shape | int32 count | `literal_site.rs` (M5-P2 ELEM2) |
 //!
 //! The size stays 40 B and no kind id is added (construct sites, instanceof and clone caches
 //! are IC_HANDLER cells; a Literal site keeps only its slot halves). The trace function visits +24
@@ -72,8 +74,9 @@
 //!   0x24 and 0x25 different slot kinds, so a 0x24 site never reads one.
 //! - The debug cross-check (plan v9 R1, V9-A25): in debug builds a hit through a valid cell
 //!   walks the chain again and asserts the answer, unless no prototype changed since the
-//!   cell was made (the `proto_epoch` that `Cx::proto_epoch` points at equals the cell's).
-//!   Release builds do not read the epoch.
+//!   cell was made (the runtime's `ShapeState::proto_epoch` equals the cell's). It reads the
+//!   epoch from the runtime itself (M5-P0: `Cx` has no epoch field and the hit paths take no
+//!   epoch argument). Release builds do not read the epoch.
 //! - A fast shape is always extensible and a non-extensible object has a dictionary shape
 //!   (OM-10), so an add-property case, which is made only for a fast shape, can never match a
 //!   non-extensible receiver. [`store`] also asserts it.
@@ -101,8 +104,6 @@
 //!   operation itself when it is a field: a load reads through it ([`global_case_value`]), a
 //!   store writes through it ([`store_global_miss`]), so the miss scans each table once.
 
-use core::cell::Cell;
-
 use ep9_bytecode::{Instructions, Opcode, OperandKind};
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
 
@@ -114,7 +115,7 @@ use crate::key;
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32};
 use crate::runtime::{Atom, Root, Runtime};
-use crate::shape::{self, slf};
+use crate::shape::{self, rep, slf};
 use crate::string;
 use crate::stub_cache;
 use crate::unit::FunctionInfo;
@@ -141,7 +142,7 @@ pub(crate) mod smi {
     pub const FIELD_IN_OBJECT: i32 = 1;
     /// The field at the byte offset of the object's SLOTS cell (+8).
     pub const FIELD_OUT_OF_LINE: i32 = 2;
-    /// An array's `length` (the int32 at +24).
+    /// An array's `length`: the Value at +24 (an int32 below 2^31, a double from 2^31 on).
     pub const ARRAY_LENGTH: i32 = 3;
     /// A string's `length` (the receiver must be a string).
     pub const STRING_LENGTH: i32 = 4;
@@ -149,6 +150,80 @@ pub(crate) mod smi {
     pub const SLOW: i32 = 5;
     /// The value of a megamorphic entry.
     pub const MEGA: i32 = 6;
+    /// M5-P2 CONSTREP (an append to the handler kinds, H16 "Append-only"): a field store case
+    /// (0x24, 0x25) whose field has a representation that is not ANY (`field_rep.rs`). The
+    /// hit stores only a value whose tag fits it, else it misses (the miss path widens the
+    /// field). Odd kinds are in-object, even ones out of line, as [`FIELD_IN_OBJECT`] and
+    /// [`FIELD_OUT_OF_LINE`]. Only store sites hold them; [`plain`] gives the field handler
+    /// that readers outside the hit path see (`ic::find`).
+    pub const FIELD_INT32_IN_OBJECT: i32 = 9;
+    pub const FIELD_INT32_OUT_OF_LINE: i32 = 10;
+    /// A number (an int32 or a double).
+    pub const FIELD_NUMBER_IN_OBJECT: i32 = 11;
+    pub const FIELD_NUMBER_OUT_OF_LINE: i32 = 12;
+    /// No number (a cell or another immediate).
+    pub const FIELD_HEAP_IN_OBJECT: i32 = 13;
+    pub const FIELD_HEAP_OUT_OF_LINE: i32 = 14;
+
+    // Each checked kind: in-object odd, out of line the next even one; `rep_of_kind` gives
+    // its representation.
+    const _: () = assert!(
+        FIELD_INT32_OUT_OF_LINE == FIELD_INT32_IN_OBJECT + 1
+            && FIELD_NUMBER_OUT_OF_LINE == FIELD_NUMBER_IN_OBJECT + 1
+            && FIELD_HEAP_OUT_OF_LINE == FIELD_HEAP_IN_OBJECT + 1
+            && FIELD_INT32_IN_OBJECT & 1 == FIELD_IN_OBJECT & 1
+            && rep_of_kind(FIELD_INT32_OUT_OF_LINE) == crate::shape::rep::INT32
+            && rep_of_kind(FIELD_NUMBER_IN_OBJECT) == crate::shape::rep::DOUBLE
+            && rep_of_kind(FIELD_HEAP_OUT_OF_LINE) == crate::shape::rep::HEAP
+            && FIELD_HEAP_OUT_OF_LINE <= KIND_MASK
+    );
+
+    /// True for a representation-checked field store kind (9-14).
+    #[inline(always)]
+    pub(crate) const fn is_checked(k: i32) -> bool {
+        k >= FIELD_INT32_IN_OBJECT && k <= FIELD_HEAP_OUT_OF_LINE
+    }
+
+    /// The representation (`shape::rep`) a checked kind `k` names.
+    #[inline(always)]
+    pub(crate) const fn rep_of_kind(k: i32) -> i32 {
+        (k - 7) >> 1
+    }
+
+    /// The smi field handler `x` with its representation check dropped: a checked kind
+    /// becomes [`FIELD_IN_OBJECT`] or [`FIELD_OUT_OF_LINE`] at the same offset; any other
+    /// handler stays.
+    #[inline]
+    pub(crate) const fn plain(x: i32) -> i32 {
+        let k = x & KIND_MASK;
+        if is_checked(k) {
+            (x & !KIND_MASK)
+                | if k & 1 == 1 {
+                    FIELD_IN_OBJECT
+                } else {
+                    FIELD_OUT_OF_LINE
+                }
+        } else {
+            x
+        }
+    }
+
+    /// The checked form of the field handler `x` ([`FIELD_IN_OBJECT`] or
+    /// [`FIELD_OUT_OF_LINE`]) for a field of representation `r`: `x` itself for ANY, `None`
+    /// for NONE (no value stored yet).
+    pub(crate) fn checked(x: i32, r: i32) -> Option<i32> {
+        use crate::shape::rep;
+        let k = x & KIND_MASK;
+        debug_assert!(k == FIELD_IN_OBJECT || k == FIELD_OUT_OF_LINE);
+        let base = match r {
+            rep::ANY => return Some(x),
+            rep::INT32 => FIELD_INT32_IN_OBJECT,
+            rep::DOUBLE => FIELD_NUMBER_IN_OBJECT,
+            rep::HEAP => FIELD_HEAP_IN_OBJECT,
+            _ => return None,
+        };
+        Some((x & !KIND_MASK) | (base + k - FIELD_IN_OBJECT))
+    }
 }
 
 /// IC_HANDLER kinds (the int32 at +8).
@@ -175,6 +250,13 @@ pub(crate) mod hk {
     /// shape: +16 int32 count, +24 the result shape (weak), +32 int32 0.
     #[allow(dead_code)]
     pub const CLONE: i32 = 7;
+    /// IC_LAYOUT 3 (M5-P0; V10-D6, MODES-D19): an array-literal allocation site: +16 the int32
+    /// elements kind the site makes (`elements::kind`), +24 the result shape (weak), +32 an
+    /// int32 count. The Literal slot of the site and every array made there (ARRAY +32,
+    /// `object::arr::ALLOC_SITE`) hold it; one-way generalization. The literal-site code
+    /// writes it (`literal_site.rs`; an elements transition generalizes it through ARRAY +32),
+    /// never a record hook, so `ics_only` keeps it. Built in M5-P2 (ELEM2).
+    pub const ALLOC_SITE: i32 = 8;
 }
 
 /// IC_HANDLER fields.
@@ -189,10 +271,12 @@ mod hc {
     pub const SIZE: usize = 40;
 }
 
-/// POLY_IC fields (`native::layout` exports `CASES` and `CASE` for Spike C, C-18).
+/// POLY_IC fields (`crate::layout` exports `CASES`, `CASE` and `HANDLER` for Spike C, C-18).
 pub(crate) mod pc {
     pub const CASES: usize = 8;
     pub const CASE: usize = 16;
+    /// A case's handler half, after its key (`crate::layout::POLY_HANDLER`, MC-w16-4).
+    pub const HANDLER: usize = 8;
     pub const SIZE: usize = CASES + CASE * super::POLY_CASES;
 }
 
@@ -314,23 +398,16 @@ fn read_field(o: u64, loc: i32) -> Option<u64> {
     field_ref(o, loc).map(|(c, off)| rd(c, off))
 }
 
-#[cfg(debug_assertions)]
-fn epoch_now(epoch: *const Cell<u32>) -> u32 {
-    // SAFETY: `Cx::proto_epoch` points at the runtime's `ShapeState::proto_epoch`, which
-    // lives as long as the isolate.
-    unsafe { (*epoch).get() }
-}
-
 /// The debug cross-check of a hit through the valid validity cell of the handler `c` (plan v9
-/// R1, V9-A25): unless no prototype changed since the cell was made (`epoch` equals the
-/// epoch the cell keeps, and it is not saturated), walks the chain of `o` (the receiver or
+/// R1, V9-A25): unless no prototype changed since the cell was made (the runtime's
+/// `ShapeState::proto_epoch` equals the epoch the cell keeps, and it is not saturated), walks the chain of `o` (the receiver or
 /// lookup start whose shape is the case key; a string's starts at %String.prototype%) for
 /// the site's name `key` and asserts the handler's answer. Not a GC point.
 #[cfg(debug_assertions)]
 #[cold]
 #[inline(never)]
-fn cross_check(rt: &Runtime, epoch: *const Cell<u32>, o: u64, key: u64, c: CellPtr) {
-    let now = epoch_now(epoch);
+fn cross_check(rt: &Runtime, o: u64, key: u64, c: CellPtr) {
+    let now = rt.shapes.proto_epoch.get();
     if now != shape::EPOCH_SATURATED && now == validity::made_at(rd(c, hc::CELL)) {
         return;
     }
@@ -359,8 +436,8 @@ fn cross_check(rt: &Runtime, epoch: *const Cell<u32>, o: u64, key: u64, c: CellP
 /// `slot` of the vector of `fi`, or `None` on a miss (no vector, no case for `o`'s shape, a
 /// `SLOW` case, an invalid validity cell, a dead holder, a megamorphic entry). `o` is the
 /// receiver (0x21) or the lookup start (0x22); any value. `name` is the site's name constant
-/// (an index into the constants of `fi`) and `epoch` the prototype epoch: both feed only the
-/// debug cross-check ([`cross_check`]); release builds do not read them.
+/// (an index into the constants of `fi`): it feeds only the debug cross-check
+/// ([`cross_check`]); release builds do not read it.
 ///
 /// A megamorphic entry misses here: its miss path probes the stub cache ([`mega_load`], M4-P3
 /// IC2). A probe here would cost every monomorphic hit two loads (the site's name operand and
@@ -368,14 +445,7 @@ fn cross_check(rt: &Runtime, epoch: *const Cell<u32>, o: u64, key: u64, c: CellP
 /// +1.4% instructions on t0-prop, mac a64), so the hit path stays as it was.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-pub(crate) fn load(
-    rt: &Runtime,
-    fi: &FunctionInfo,
-    epoch: *const Cell<u32>,
-    o: u64,
-    slot: u32,
-    name: u32,
-) -> Option<u64> {
+pub(crate) fn load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, name: u32) -> Option<u64> {
     if !is_cell_bits(o) {
         return None;
     }
@@ -385,21 +455,14 @@ pub(crate) fn load(
     // `move`: a closure that borrowed `name` would keep it in memory, and the T0 handler then
     // loses its sibling tail call in a debug-assertions build at opt-level 2 (Spike C's test
     // profile), so each GetNamedProperty grew the native stack until the RangeError.
-    load_with(rt, epoch, o, id, move || fi.constant(name), h)
+    load_with(rt, o, id, move || fi.constant(name), h)
 }
 
 /// The value the handler `h` gives for `o` (ShapeId `id`), as for [`load`]. `key` gives the
 /// site's name for the debug cross-check only. Not a GC point.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-fn load_with(
-    rt: &Runtime,
-    epoch: *const Cell<u32>,
-    o: u64,
-    id: u32,
-    key: impl Fn() -> u64,
-    h: u64,
-) -> Option<u64> {
+fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Option<u64> {
     if is_i32(h) {
         let x = int32_of(h);
         return match x & smi::KIND_MASK {
@@ -420,7 +483,7 @@ fn load_with(
     }
     if k == hk::MISSING {
         #[cfg(debug_assertions)]
-        cross_check(rt, epoch, o, key(), c);
+        cross_check(rt, o, key(), c);
         return Some(UNDEFINED);
     }
     let holder = rd(c, hc::REF);
@@ -428,21 +491,20 @@ fn load_with(
         return None;
     }
     #[cfg(debug_assertions)]
-    cross_check(rt, epoch, o, key(), c);
+    cross_check(rt, o, key(), c);
     read_field(holder, rd_i32(c, hc::LOCATION))
 }
 
 /// The hit path of a named store: `o.key = v` (0x24, `CHECK_EPOCH`: an add case checks its
 /// validity cell) or CreateDataProperty (0x25) from slot `slot` of the vector of `fi`. False
 /// on a miss (also a megamorphic entry: its miss path probes the stub cache, [`mega_store`]);
-/// nothing is stored then. `name` (the site's name constant) and `epoch` feed only the debug
-/// cross-check ([`cross_check`]).
+/// nothing is stored then. `name` (the site's name constant) feeds only the debug cross-check
+/// ([`cross_check`]).
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn store<const CHECK_EPOCH: bool>(
     rt: &Runtime,
     fi: &FunctionInfo,
-    epoch: *const Cell<u32>,
     o: u64,
     slot: u32,
     name: u32,
@@ -458,7 +520,7 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
         return false;
     };
     // `move`: as in [`load`] (the sibling tail call of the handler).
-    store_with::<CHECK_EPOCH>(rt, epoch, o, move || fi.constant(name), v, h)
+    store_with::<CHECK_EPOCH>(rt, o, move || fi.constant(name), v, h)
 }
 
 /// Stores `v` through the handler `h` for `o`, as for [`store`]. False if `h` does not apply;
@@ -468,7 +530,6 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 fn store_with<const CHECK_EPOCH: bool>(
     rt: &Runtime,
-    epoch: *const Cell<u32>,
     o: u64,
     key: impl Fn() -> u64,
     v: u64,
@@ -478,10 +539,22 @@ fn store_with<const CHECK_EPOCH: bool>(
     if is_i32(h) {
         let x = int32_of(h);
         let off = (x >> smi::SHIFT) as usize;
-        match x & smi::KIND_MASK {
-            smi::FIELD_IN_OBJECT => object::wr(&rt.heap, c, off, v),
-            smi::FIELD_OUT_OF_LINE => object::wr(&rt.heap, cell(rd(c, obj::SLOTS)), off, v),
+        // M5-P2 CONSTREP: a checked kind stores only a value whose tag fits the field's
+        // representation; the miss path widens it. Odd kinds are in-object.
+        let k = x & smi::KIND_MASK;
+        let fits = |r| crate::field_rep::fits(r, v);
+        match k {
+            smi::FIELD_IN_OBJECT | smi::FIELD_OUT_OF_LINE => {}
+            smi::FIELD_INT32_IN_OBJECT | smi::FIELD_INT32_OUT_OF_LINE if fits(rep::INT32) => {}
+            smi::FIELD_NUMBER_IN_OBJECT | smi::FIELD_NUMBER_OUT_OF_LINE if fits(rep::DOUBLE) => {}
+            smi::FIELD_HEAP_IN_OBJECT | smi::FIELD_HEAP_OUT_OF_LINE if fits(rep::HEAP) => {}
             _ => return false,
+        }
+        let in_object = k & 1 != 0;
+        if in_object {
+            object::wr(&rt.heap, c, off, v);
+        } else {
+            object::wr(&rt.heap, cell(rd(c, obj::SLOTS)), off, v);
         }
         return true;
     }
@@ -495,9 +568,14 @@ fn store_with<const CHECK_EPOCH: bool>(
     if target == UNDEFINED {
         return false;
     }
+    // M5-P2 CONSTREP: the new field's representation must hold the value (the first store
+    // keeps the const bit); the miss path widens it.
+    if !crate::field_rep::fits(shape::last_field_rep(target), v) {
+        return false;
+    }
     #[cfg(debug_assertions)]
     if CHECK_EPOCH {
-        cross_check(rt, epoch, o, key(), hcell);
+        cross_check(rt, o, key(), hcell);
     }
     let loc = rd_i32(hcell, hc::LOCATION);
     let off = (loc >> smi::SHIFT) as usize;
@@ -531,7 +609,7 @@ pub(crate) fn mega_load(rt: &Runtime, v: u64, slot: u32, o: u64, key: u64) -> Op
     }
     let id = shape_id(o);
     let r = stub_cache::probe(rt, stub_cache::Op::Load, id, key)
-        .and_then(|h| load_with(rt, &rt.shapes.proto_epoch, o, id, || key, h));
+        .and_then(|h| load_with(rt, o, id, || key, h));
     stub_stats!(Load, r.is_some());
     r
 }
@@ -553,10 +631,9 @@ pub(crate) fn mega_store(
         return false;
     }
     let id = shape_id(o);
-    let epoch: *const Cell<u32> = &rt.shapes.proto_epoch;
     let done = match stub_cache::probe(rt, store_op(define), id, key) {
-        Some(h) if define => store_with::<false>(rt, epoch, o, || key, val, h),
-        Some(h) => store_with::<true>(rt, epoch, o, || key, val, h),
+        Some(h) if define => store_with::<false>(rt, o, || key, val, h),
+        Some(h) => store_with::<true>(rt, o, || key, val, h),
         None => false,
     };
     stub_stats!(Store, done);
@@ -676,8 +753,22 @@ pub(crate) fn state(v: u64, i: u32) -> State {
     }
 }
 
-/// The handler slot `i` of the vector `v` keeps for the case key `k`, if any.
+/// The handler slot `i` of the vector `v` keeps for the case key `k`, if any. A
+/// representation-checked field store handler is given as its plain field handler
+/// ([`smi::plain`], M5-P2 CONSTREP): readers outside the hit paths (the facts exporter,
+/// tests) see the field case; [`find_raw`] gives the stored word.
 pub(crate) fn find(v: u64, i: u32, k: u64) -> Option<u64> {
+    find_raw(v, i, k).map(|h| {
+        if is_i32(h) {
+            int32_bits(smi::plain(int32_of(h)))
+        } else {
+            h
+        }
+    })
+}
+
+/// [`find`] with the stored handler word as it is.
+pub(crate) fn find_raw(v: u64, i: u32, k: u64) -> Option<u64> {
     let (key, value) = (feedback::key(v, i), feedback::value(v, i));
     if key == k {
         return Some(value);
@@ -1060,9 +1151,9 @@ fn key_proto(rt: &Runtime, key: u64) -> u64 {
 /// The case of a store that ran: a decided case, or for an add, the transition from `from`
 /// to the shape `o` has now, if the store added `name` as the next data property {w, e, c}
 /// of a fast shape. Anything else (dictionary mode, another shape) is `SLOW`. Not a GC point.
-pub(crate) fn store_case_after(_rt: &Runtime, pre: StorePre, o: u64, name: u64) -> Option<Case> {
+pub(crate) fn store_case_after(rt: &Runtime, pre: StorePre, o: u64, name: u64) -> Option<Case> {
     let (from, chain) = match pre {
-        StorePre::Done(c) => return Some(c),
+        StorePre::Done(c) => return checked_case(rt, c, name),
         StorePre::Add { from, chain } => (from, chain),
     };
     let to = shape::shape_of(o);
@@ -1088,6 +1179,34 @@ pub(crate) fn store_case_after(_rt: &Runtime, pre: StorePre, o: u64, name: u64) 
         key: from,
         handler,
         stub: Some((store_op(chain.is_none()), name)),
+    })
+}
+
+/// A decided store case after its store ran (M5-P2 CONSTREP): a field case gets the
+/// representation-checked kind of the field as the store left it ([`smi::checked`]). A field
+/// whose const bit is still set (no second store yet) or that holds no representation gets
+/// no case: the hit would store without the second-store hook. Other cases stay. Not a GC
+/// point.
+fn checked_case(rt: &Runtime, c: Case, name: u64) -> Option<Case> {
+    let Handler::Smi(h) = c.handler else {
+        return Some(c);
+    };
+    let x = int32_of(h);
+    if !matches!(
+        x & smi::KIND_MASK,
+        smi::FIELD_IN_OBJECT | smi::FIELD_OUT_OF_LINE
+    ) {
+        return Some(c);
+    }
+    let f = shape::lookup(rt, c.key, name)?;
+    let d = f.details;
+    if d.is_const() {
+        return None;
+    }
+    let x = smi::checked(x, d.rep())?;
+    Some(Case {
+        handler: Handler::Smi(int32_bits(x)),
+        ..c
     })
 }
 
@@ -1117,6 +1236,11 @@ pub(crate) fn global_case(rt: &Runtime, name: u64, store: bool) -> Option<Case> 
         if !usable(f.details.attrs()) {
             return slow(ls);
         }
+        if store {
+            // M5-P2 CONSTREP: a global store hit does not check the value (the slot is
+            // shared with the loads of the name), so the field holds any value from now on.
+            crate::field_rep::widen(rt, ls, f.index);
+        }
         let loc = field_location(ls, usize::from(f.details.field()));
         return Some(Case {
             key: ls,
@@ -1131,6 +1255,10 @@ pub(crate) fn global_case(rt: &Runtime, name: u64, store: bool) -> Option<Case> 
     let f = shape::lookup(rt, gs, name)?;
     if !usable(f.details.attrs()) {
         return slow(gs);
+    }
+    if store {
+        // As for a lexical binding above (M5-P2 CONSTREP).
+        crate::field_rep::widen(rt, gs, f.index);
     }
     Some(Case {
         key: gs,
@@ -1218,7 +1346,7 @@ pub(crate) fn store_global_miss(
 #[cfg(test)]
 thread_local! {
     /// Tests (P4F-R1): how many times [`skip_global_miss`] ran.
-    pub(crate) static SKIP_CHECKS: Cell<u32> = const { Cell::new(0) };
+    pub(crate) static SKIP_CHECKS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 /// True if the miss path of the global slot `i` of `v` need not compute a case: the entry is
@@ -1442,7 +1570,9 @@ pub(crate) fn init_vector(fi: &FunctionInfo, code: &[u8], v: u64) {
 #[cfg(test)]
 pub(crate) fn describe_handler(h: u64) -> (i32, u64, u64, i32) {
     if is_i32(h) {
-        let x = int32_of(h);
+        // A representation-checked store kind reads as its plain field handler (M5-P2
+        // CONSTREP; `tests::field_rep` reads the stored word with `find_raw`).
+        let x = smi::plain(int32_of(h));
         return (x & smi::KIND_MASK, UNDEFINED, UNDEFINED, x);
     }
     let c = cell(h);

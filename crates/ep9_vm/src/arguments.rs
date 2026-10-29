@@ -46,10 +46,11 @@ use crate::interp::Cx;
 use crate::key::{Probe, array_index_of};
 use crate::kinds as kind;
 use crate::natives;
-use crate::object::{self, argsf, attr, init, obj};
+use crate::object::{self, argsf, attr, elems, init, obj, realmf};
 use crate::property;
 use crate::props;
 use crate::runtime::{Atom, Root, Runtime};
+use crate::shape;
 use crate::symbol::{self, WellKnownSymbol};
 
 /// `CreateMappedArguments` (`mapped`, §10.4.4.7) and `CreateUnmappedArguments` (§10.4.4.6)
@@ -57,20 +58,115 @@ use crate::symbol::{self, WellKnownSymbol};
 /// each formal parameter that the function's ABI 5 mapped-parameter list names (P0-D16) to
 /// its slot in the frame's current context. Returns the new accumulator, or 0 if an
 /// exception is pending (the `slow` entry convention; none is thrown). GC point.
+///
+/// The ARGS fast path (V10-D11, M5-P2 VMIC): the first object of each kind in a realm is
+/// made the spec way ([`create_slow`]: the root shape, then 3 property adds); its shape goes
+/// into the REALM record (`realmf::MAPPED_ARGUMENTS_SHAPE`, `UNMAPPED_ARGUMENTS_SHAPE`).
+/// Every later object of that realm and kind takes that shape at allocation and gets its 3
+/// slots written in place ([`create_fast`]): no shape search, no transition lookup, no key
+/// hashing.
 #[cold]
 #[inline(never)]
 pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> u64 {
     cx.rt().enter(fp, pc);
     let f = FrameRef(fp);
-    let argc = f.argc();
     // SAFETY: header slots of a live frame.
-    let (callee, context) = unsafe { (*fp.offset(slot::CALLEE), *fp.offset(slot::CONTEXT)) };
+    let context = unsafe { *fp.offset(slot::CONTEXT) };
     let map = if mapped {
-        parameter_map(f, context, argc)
+        parameter_map(f, context, f.argc())
     } else {
-        Vec::new()
+        &[]
     };
     let rt = cx.rt();
+    let realm = rt.root(Root::Realm);
+    match cached_shape(rt, realm, mapped) {
+        Some(s) => create_fast(rt, f, s, mapped, map),
+        None => {
+            let o = create_slow(rt, f, mapped, map);
+            remember_shape(rt, realm, mapped, o);
+            o
+        }
+    }
+}
+
+/// The REALM record field that caches the shape of the realm's mapped or unmapped arguments
+/// objects (OBJECT_LAYOUT 5, V10-D11).
+#[inline(always)]
+fn shape_field(mapped: bool) -> usize {
+    if mapped {
+        realmf::MAPPED_ARGUMENTS_SHAPE
+    } else {
+        realmf::UNMAPPED_ARGUMENTS_SHAPE
+    }
+}
+
+/// The cached arguments shape of `realm` (the current realm, a REALM record) for `mapped`,
+/// if [`remember_shape`] stored one and its prototype is still the current
+/// %Object.prototype% (a cheap guard: a realm's %Object.prototype% never changes). Not a GC
+/// point.
+#[inline(always)]
+fn cached_shape(rt: &Runtime, realm: u64, mapped: bool) -> Option<u64> {
+    if !kind::is_cell_bits(realm) || kind::cell_kind(realm) != kind::REALM.get() {
+        return None;
+    }
+    let s = object::record_get(realm, shape_field(mapped));
+    if s == UNDEFINED || shape::proto(s) != rt.root(Root::ObjectPrototype) {
+        return None;
+    }
+    debug_assert!(
+        fits(rt, s, mapped),
+        "a cached arguments shape of another form"
+    );
+    Some(s)
+}
+
+/// Stores the shape of `o` (an arguments object [`create_slow`] just made in the current
+/// realm `realm`) as the realm's cached shape for `mapped`, if it has the form
+/// [`create_fast`] writes ([`fits`]). Not a GC point.
+fn remember_shape(rt: &Runtime, realm: u64, mapped: bool, o: u64) {
+    if !kind::is_cell_bits(realm) || kind::cell_kind(realm) != kind::REALM.get() {
+        return;
+    }
+    let s = shape::shape_of(o);
+    if fits(rt, s, mapped) {
+        object::record_set(rt, realm, shape_field(mapped), s);
+    }
+}
+
+/// True if `s` is a shape [`create_fast`] may give a new arguments object: a fast shape of
+/// the transition tree (not a dictionary, not unique, not a prototype's) with exactly the 3
+/// properties `length`, @@iterator and `callee` in that order, in fields 0, 1 and 2 of the
+/// in-object slots, `callee` an accessor exactly when not `mapped`. (A realm without
+/// %ThrowTypeError% gives an unmapped object no `callee`: its shape does not fit, so that
+/// realm keeps the slow path.) Not a GC point.
+fn fits(rt: &Runtime, s: u64, mapped: bool) -> bool {
+    let fl = shape::flags(s);
+    if fl & (shape::flag::DICTIONARY | shape::flag::UNIQUE | shape::flag::PROTOTYPE) != 0
+        || shape::object_kind(s) != kind::ARGUMENTS.get()
+        || shape::count(s) != 3
+        || usize::from(shape::capacity(s)) < 3
+    {
+        return false;
+    }
+    let keys = [
+        rt.atom(Atom::Length),
+        symbol::well_known(rt, WellKnownSymbol::Iterator),
+        rt.atom(Atom::Callee),
+    ];
+    keys.iter().enumerate().all(|(i, &k)| {
+        let d = shape::details_at(s, i);
+        let accessor = i == 2 && !mapped;
+        shape::key_at(s, i) == k
+            && usize::from(d.field()) == i
+            && (d.attrs() & attr::ACCESSOR != 0) == accessor
+    })
+}
+
+/// The arguments object made the spec way (§10.4.4.6 steps 4-9, §10.4.4.7 steps 15-23): a
+/// new object from the root shape, its elements, then the ordinary properties `length`,
+/// @@iterator and `callee` added one by one. GC point.
+fn create_slow(rt: &Runtime, f: FrameRef, mapped: bool, map: &[Option<u32>]) -> u64 {
+    let argc = f.argc();
     // GC points below: `callee` and `context` are on the frame, the new cells live in Rust
     // locals, and the argument values are read from the frame after each allocation.
     let o = object::new_js_object(
@@ -80,33 +176,25 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
         argsf::CAPACITY,
     );
     let mc = map.len();
+    // SAFETY: header slots of a live frame.
+    let (callee, context) = unsafe { (*f.0.offset(slot::CALLEE), *f.0.offset(slot::CONTEXT)) };
     init(o, argsf::MAP, if mc > 0 { context } else { UNDEFINED });
     init(o, argsf::MAPPED_COUNT, int32_bits(mc as i32));
     init(o, obj::ELEMENTS, UNDEFINED);
     let o = o.to_value().to_bits();
     let n = argc as usize;
     if n > 0 {
-        let e = object::new_list(rt, 2 * n + mc, int32_bits(attr::DEFAULT));
-        for i in 0..n {
-            object::list_set(rt, e, i, f.arg(i as u32));
-        }
-        for (j, s) in map.iter().enumerate() {
-            let v = s.map_or(HOLE, |s| int32_bits(s as i32));
-            object::list_set(rt, e, 2 * n + j, v);
-        }
+        let e = new_elements(rt, f, map);
         object::wr(&rt.heap, object::cell(o), obj::ELEMENTS, e);
     }
     // The ordinary properties, in the spec's creation order (§10.4.4.6 steps 4-9, §10.4.4.7
     // steps 15-23): `length`, @@iterator, `callee`.
     let length = rt.atom(Atom::Length);
     props::own_add(rt, o, length, int32_bits(argc as i32), attr::HIDDEN);
-    let values = builtins::function_object(
-        rt,
-        BuiltinId::new(natives::VM_BLOCK, natives::vm::ARRAY_VALUES),
-    );
+    let values = array_values(rt);
     let iterator = symbol::well_known(rt, WellKnownSymbol::Iterator);
     props::own_add(rt, o, iterator, values, attr::HIDDEN);
-    let callee_key = crate::atoms::intern_str(rt, "callee");
+    let callee_key = rt.atom(Atom::Callee);
     if mapped {
         props::own_add(rt, o, callee_key, callee, attr::HIDDEN);
     } else {
@@ -119,6 +207,89 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
         }
     }
     o
+}
+
+/// The ARGS fast path: a new arguments object with the realm's cached shape `s` ([`fits`]),
+/// the same object [`create_slow`] makes. Every new cell is made first (the @@iterator
+/// function on its first use, the `callee` accessor pair, the elements list), then the
+/// object, then only init stores (E2: no GC point between the object's allocation and its
+/// last store). GC point.
+fn create_fast(rt: &Runtime, f: FrameRef, s: u64, mapped: bool, map: &[Option<u32>]) -> u64 {
+    #[cfg(test)]
+    FAST_PATH_OBJECTS.with(|n| n.set(n.get() + 1));
+    let argc = f.argc();
+    // GC points below: `s` is held by the REALM record, `values`, `callee_v` and `e` live in
+    // Rust locals (CSS), and the argument values are read from the frame after the
+    // allocations.
+    let values = array_values(rt);
+    let callee_v = if mapped {
+        UNDEFINED // read from the frame below, after the last GC point
+    } else {
+        // The cached unmapped shape has a `callee`, so this realm has %ThrowTypeError%.
+        let t = throw_type_error(rt).expect("a cached unmapped shape has a callee");
+        accessor::new_pair(rt, t, t)
+    };
+    let e = if argc > 0 {
+        new_elements(rt, f, map)
+    } else {
+        UNDEFINED
+    };
+    let o = object::alloc_from_shape(rt, kind::ARGUMENTS, s);
+    // No GC point from here on.
+    // SAFETY: header slots of a live frame.
+    let (callee, context) = unsafe { (*f.0.offset(slot::CALLEE), *f.0.offset(slot::CONTEXT)) };
+    let mc = map.len();
+    init(o, obj::ELEMENTS, e);
+    init(o, argsf::MAP, if mc > 0 { context } else { UNDEFINED });
+    init(o, argsf::MAPPED_COUNT, int32_bits(mc as i32));
+    let fields = [
+        int32_bits(argc as i32),
+        values,
+        if mapped { callee } else { callee_v },
+    ];
+    let first = obj::FIXED + 8 * argsf::FIXED;
+    for (i, v) in fields.into_iter().enumerate() {
+        // The field store hook of `props::field_set` (C-02 representation and const bits):
+        // it widens the field to `v` and clears const, as a second store (safe for a first store).
+        crate::field_rep::before_field_store(rt, s, i, v);
+        init(o, first + 8 * i, v);
+    }
+    o.to_value().to_bits()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The objects [`create_fast`] made on this thread (the tests check the path ran).
+    pub(crate) static FAST_PATH_OBJECTS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The ELEMENTS list of a new arguments object for the frame `f` (n = argc > 0 arguments,
+/// the parameter map `map`): the n values, n attribute words {w, e, c}, then the context slot
+/// of each mapped index (HOLE for one a later parameter of the same name shadows). GC point
+/// (the list).
+fn new_elements(rt: &Runtime, f: FrameRef, map: &[Option<u32>]) -> u64 {
+    let n = f.argc() as usize;
+    let e = object::new_list(rt, 2 * n + map.len(), int32_bits(attr::DEFAULT));
+    // No GC point from here on: the stores are init stores into the new list.
+    let c = object::cell(e);
+    for i in 0..n {
+        init(c, elems::DATA + 8 * i, f.arg(i as u32));
+    }
+    for (j, s) in map.iter().enumerate() {
+        let v = s.map_or(HOLE, |s| int32_bits(s as i32));
+        init(c, elems::DATA + 8 * (2 * n + j), v);
+    }
+    e
+}
+
+/// %Array.prototype.values% for the @@iterator property (§10.4.4.6 step 7, §10.4.4.7 step
+/// 20), made on its first use (a GC point then).
+#[inline]
+fn array_values(rt: &Runtime) -> u64 {
+    builtins::function_object(
+        rt,
+        BuiltinId::new(natives::VM_BLOCK, natives::vm::ARRAY_VALUES),
+    )
 }
 
 /// The current realm's %ThrowTypeError% (§10.2.4.1), or `None` before a table makes it. On
@@ -148,14 +319,14 @@ fn throw_type_error(rt: &Runtime) -> Option<u64> {
 /// `j < min(argc, formal count)`, the context slot of formal parameter `j`, or `None` when a
 /// later parameter of the same name binds that name (only the last one is mapped). Empty when
 /// the function has no list (no formal parameter) or the current context is not the list's
-/// scope (the verifier rules out the second case).
-fn parameter_map(f: FrameRef, context: u64, argc: u32) -> Vec<Option<u32>> {
+/// scope (the verifier rules out the second case). A slice of the unit's list: no copy.
+fn parameter_map<'a>(f: FrameRef, context: u64, argc: u32) -> &'a [Option<u32>] {
     let fi = f.info();
     let Some(u) = fi.loaded_unit() else {
-        return Vec::new();
+        return &[];
     };
     let Some(m) = &u.unit.functions[fi.function_id as usize].mapped_parameters else {
-        return Vec::new();
+        return &[];
     };
     let ok = kind::is_context(context) && {
         let (cu, scope) = object::context_scope(context);
@@ -163,10 +334,10 @@ fn parameter_map(f: FrameRef, context: u64, argc: u32) -> Vec<Option<u32>> {
     };
     debug_assert!(ok, "CreateMappedArguments outside its function context");
     if !ok {
-        return Vec::new();
+        return &[];
     }
     let n = (argc as usize).min(m.slots.len());
-    m.slots[..n].to_vec()
+    &m.slots[..n]
 }
 
 /// A new unmapped ARGUMENTS object with prototype `proto`: no parameter map, mapped count 0,
@@ -261,6 +432,58 @@ pub(crate) fn element_value(o: u64, i: u32) -> Option<u64> {
     debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
     let (v, _) = element(o, i)?;
     Some(value(o, i, v))
+}
+
+/// `length` of the arguments object `o` when `o` still has the shape it was made with in the
+/// current realm (one of the realm's cached shapes, [`fits`]: `length` is the data property in
+/// field 0, no own property was added, removed or redefined since) and holds an int32 at or
+/// above 0, which is then `ToLength(Get(o, "length"))` (§7.3.19 step 2) with no observable
+/// step. `None`: take the generic path. The CreateListFromArrayLike fast path
+/// (`abi::Cx::create_list_from_array_like`, V10-D11). Not a GC point.
+#[inline]
+pub(crate) fn unmodified_length(rt: &Runtime, o: u64) -> Option<u32> {
+    debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
+    let realm = rt.root(Root::Realm);
+    if !kind::is_cell_bits(realm) || kind::cell_kind(realm) != kind::REALM.get() {
+        return None;
+    }
+    let s = shape::shape_of(o);
+    if s != object::record_get(realm, realmf::MAPPED_ARGUMENTS_SHAPE)
+        && s != object::record_get(realm, realmf::UNMAPPED_ARGUMENTS_SHAPE)
+    {
+        return None;
+    }
+    let len = object::rd(object::cell(o), obj::FIXED + 8 * argsf::FIXED);
+    let len = crate::runtime::val(len).as_int32()?;
+    u32::try_from(len).ok()
+}
+
+/// `ToLength(Get(o, "length"))` of CreateListFromArrayLike (§7.3.19 step 2) read in place
+/// when `o` (an object) is an arguments object with an [`unmodified_length`]; `None`: the
+/// caller takes Get and ToLength. The `length` fast path of
+/// `abi::Cx::create_list_from_array_like` (V10-D11). Not a GC point.
+#[inline]
+pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
+    if kind::cell_kind(o) != kind::ARGUMENTS.get() {
+        return None;
+    }
+    unmodified_length(rt, o).map(u64::from)
+}
+
+/// `Get(o, ! ToString(𝔽(i)))` of CreateListFromArrayLike (§7.3.19 step 6.b) read in place
+/// when `i` is a present element of the array or arguments object `o` (an object; a mapped
+/// index reads its parameter, [`element_value`]); `None`: the caller reads it through
+/// `property::get_int` (a hole, an index past the elements, an accessor, the chain, any other
+/// kind). Not a GC point.
+#[inline]
+pub(crate) fn list_element(o: u64, i: u32) -> Option<u64> {
+    if kind::is_array(o) {
+        object::array_get(o, i)
+    } else if kind::cell_kind(o) == kind::ARGUMENTS.get() {
+        element_value(o, i)
+    } else {
+        None
+    }
 }
 
 /// `o.[[Set]](i, v, o)` (§10.4.4.4, receiver `o`) for a writable element `i` of the arguments

@@ -9,7 +9,7 @@
 //! | layout | the `ep9_vm::layout` facts [`crate::vm_layout`] takes hold on live objects | - |
 //! | pipeline | a loop function compiled from its live facts (graph builder, lattice check, linear scan, a64 emit), installed in an Opt slot: output equal to T0 | - |
 //! | lattice | the protocol §6.1 checks on a graph with a named-load fact: one trust level per value, PROVEN only from the H30 list, every predicted value behind a guard of its fact, the five ref nodes only, every guard resumable (SPIKEC-3 guard placement); a graph changed to break each rule is refused | - |
-//! | trap | an input no guard admits ends the run in the "deopt not built" trap, named by its guard, with no wrong value and no crash | month 5 (the deopt entry) |
+//! | deopt | an input no guard admits deopts into T0 in the same frame (H29: the exit table installed with the code, the deopt entry rebuilds the frame): output equal to T0, the guard's exit counted | - |
 //! | kernels | each protocol kernel (the pinned files) runs in T0 (n = 1) with its expected output, check line included (node's, where known); SKIP without the v8-v7 checkout | - |
 
 use std::process::ExitCode;
@@ -30,7 +30,7 @@ const CHECKS: [(&str, Check); 8] = [
     ("layout", layout),
     ("pipeline", pipeline),
     ("lattice", lattice),
-    ("trap", trap),
+    ("deopt", deopt),
     ("kernels", kernels_t0),
 ];
 
@@ -62,7 +62,7 @@ fn install_b() -> Result<String, String> {
     let bytes = code.code.len();
     // SAFETY: `code` is placement (b) code of Spike B's `BEmitter` for `f`, made from
     // `input_of(f)` just above (no JS ran since) and not changed.
-    unsafe { s.install_b(&[f], vec![code]) }?;
+    unsafe { s.install_b(&[f], vec![code], vec![None]) }?;
     if s.slot_kind(f) != Some(ep9_vm::DispatchKind::Opt) {
         return Err(format!("slot kind {:?}, not Opt", s.slot_kind(f)));
     }
@@ -202,7 +202,7 @@ fn lattice() -> Result<String, String> {
     ))
 }
 
-fn trap() -> Result<String, String> {
+fn deopt() -> Result<String, String> {
     if !aarch64() {
         return Ok("SKIP: the emitter is aarch64 only (protocol §1)".into());
     }
@@ -216,14 +216,18 @@ fn trap() -> Result<String, String> {
         "print(get(ps, 20)); print(get([{ y: 1, x: 2 }], 1));",
         "get",
     )?;
-    let Some(g) = r.trap else {
-        return Err(format!("no trap: {:?} vs T0 {:?}", r.compiled, r.t0));
+    let [g] = r.fired()[..] else {
+        return Err(format!(
+            "exits {:?}: compiled {:?} vs T0 {:?}",
+            r.exits, r.compiled, r.t0
+        ));
     };
-    if r.compiled.output != ["190"] || r.t0.output != ["190", "2"] {
+    if !r.equal() || r.t0.output != ["190", "2"] {
         return Err(format!("{:?} vs T0 {:?}", r.compiled, r.t0));
     }
     Ok(format!(
-        "a new shape at `ps[i].x` ends the run in the trap of guard g{g} after the right first line"
+        "a new shape at `ps[i].x` deopts at guard g{g} ({} exit); output equal to T0",
+        r.exits.iter().sum::<u64>()
     ))
 }
 

@@ -23,11 +23,11 @@
 //!
 //! | Item | Host column | Windows column |
 //! |---|---|---|
-//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, and the reported tree ids equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
-//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
+//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, the reported tree ids equal HEAD's, and its ids of `third_party/regress.commit` and `third_party/patches/regress` (the regress fork) equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
+//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
-//! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
@@ -40,13 +40,31 @@
 //! by NESTING_CMD) name their commit, whether the tree had uncommitted changes, and the host or
 //! CI job that made them. The cell is at least OPEN, with a "stale input" or "provenance" reason,
 //! when the commit is missing, is not HEAD or an ancestor with no change in `crates`,
-//! `tools/bench`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/test262` or
-//! `third_party/test262.commit` since (unless the input names the git id of each of these paths
+//! `tools/bench`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/test262`,
+//! `third_party/test262.commit`, `third_party/regress.commit` or `third_party/patches/regress`
+//! since (unless the input names the git id of each of these paths
 //! and each equals HEAD's: a CI pull_request job runs on GitHub's merge commit, which the local
 //! repository does not have; the JSON `"tree"` object, the log line `m1-exit trees: <path>=<id>
 //! ...`), when the tree was dirty (or the input does not say), when the runner read another
 //! source state at the end of the run than at its start (`"source_changed_during_run": true`),
-//! when no host or job is named, or when the job is of another CI run than `--ci-run`.
+//! when no host or job is named, when the runner read its source through its test seam
+//! (`"test_seam": true`, F3), or when the job is of another CI run than `--ci-run`. An
+//! ep9-test262 JSON also names the commit its runner was built at (`"runner_commit"`), whether
+//! the runner's compiled sources had uncommitted changes then (`"runner_dirty"`), and the HEAD of
+//! the test262 checkout it ran before and after the run (`"test262_head"`, `"test262_head_end"`)
+//! and whether that checkout had changes (`"test262_dirty"`); the cell is OPEN ("provenance")
+//! when one is missing or not a full commit id, the runner commit is not the input's `commit`,
+//! the runner was built dirty, the checkout HEAD is not the pin `third_party/test262.commit` or
+//! moved during the run, or the checkout had changes (plan v10 X4).
+//!
+//! **The gate build** (X3, the O8 refusal; plan v10 V10-D10, V10-A12): items 1-4 read the
+//! build each input ran. An ep9-test262 JSON names `preset`, `mode` (the preset its isolates
+//! ran), `feedback` and `features`; the kernels JSON (`ep9.engine_build`) and the exit2 JSON
+//! (`engine_build`) copy the build line of `ep9 --version`, `features <list>; preset <name>`,
+//! whose feedback is the preset's default (the `ep9` binary has no feedback option). The cell
+//! is OPEN (not FAIL), "preset X, the gate reads Y", when a field is missing, the preset or mode
+//! is not `jit`, the feedback is not `full`, or the features do not hold `jit`. Item 4 reads
+//! the build of each GC-stress JSON and of the `--exec` run it compares with.
 //!
 //! **The CI run** names its head (`headSha`): HEAD, or an ancestor with no change in those paths,
 //! `expectations` or `.github` since. Else every Windows cell is at least OPEN ("stale CI run").
@@ -62,9 +80,9 @@
 //! an input (rule 14).
 //!
 //! The extra rows (no exit-code effect): the carried M0 item-5 cell (SP-Dispatch, read from the
-//! newest `*-m0-spike-review.md`), the stub markers (`m2`, `m3`, `m4`, plan v9 rule 4) and the
-//! ADR Counts line. The tree root is `--root`, or this workspace (as m0-exit). The shared readers
-//! are in `crate::exit`.
+//! newest `*-m0-spike-review.md`), the stub markers (`m2`, `m3`, `m4`, plan v9 rule 4; `m5`,
+//! plan v10 rule 4) and the ADR Counts line. The tree root is `--root`, or this workspace (as
+//! m0-exit). The shared readers are in `crate::exit`.
 //!
 //! Exit 0 when every cell is PASS or N/A, 1 otherwise, 2 on a usage error or an input that
 //! cannot be read.
@@ -81,17 +99,18 @@ use crate::exit::freeze::frozen_by_m1;
 use crate::exit::gc_shards::{GC_JOB, merge_gc_shards, test262_files};
 use crate::exit::json::{Json, parse_json};
 use crate::exit::logs::{cargo_failure, invocation_check, invocations};
-use crate::exit::report::{Cell, Status, all_ok, cell, not_given, short, some_paths, stub_markers};
+use crate::exit::report::{Cell, Status, all_ok, cell, not_given, some_paths, stub_markers};
 use crate::exit::t262::{committed, count, exec_health, expectation_set, pct, recheck};
 use crate::exit::verdict::{newest_spike_review, verdict_table};
 use crate::exit::{git, read};
 
-/// The stub markers of plan v9 rule 4 (V9-D37). Written in two parts, so this file does not hold
-/// them (m0-exit greps for the first two).
-const STUB_MARKERS: [&str; 3] = [
+/// The stub markers of plan v9 rule 4 (V9-D37) and plan v10 rule 4 (`m5`, V10-D54). Written in
+/// two parts, so this file does not hold them (m0-exit greps for the first two).
+const STUB_MARKERS: [&str; 4] = [
     concat!("m2", "-stub"),
     concat!("m3", "-stub"),
     concat!("m4", "-stub"),
+    concat!("m5", "-stub"),
 ];
 
 /// The dirs of the stub-marker row: the four dirs that plan v9 rule 4 greps (`fuzz/` is FE-FUZZ's
@@ -124,10 +143,29 @@ const FRESH_PATHS: [&str; 5] = [
     "rust-toolchain.toml",
 ];
 
+/// The regress fork (D41, R41; pre medium 1): its pin and its patch set. ep9_vm builds regress
+/// from the git-ignored checkout these two make (scripts/sync-regress.sh, `[patch.crates-io]`),
+/// so a change of either changes engine code. Every fresh list of an input whose code builds
+/// regress has them: items 1 and 2 ([`ENGINE_FRESH_PATHS`]), 3, 4 and 8, the CI run, a Fuzzilli
+/// record (not cargo-fuzz: its targets do not build regress).
+const REGRESS_PATHS: [&str; 2] = ["third_party/regress.commit", "third_party/patches/regress"];
+
+/// Item 2: [`FRESH_PATHS`] and [`REGRESS_PATHS`]. Item 1 keeps [`FRESH_PATHS`] (the tree ids
+/// kernels.mjs writes) and checks [`REGRESS_PATHS`] at the input's commit against HEAD.
+const ENGINE_FRESH_PATHS: [&str; 7] = [
+    "crates",
+    "tools/bench",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    REGRESS_PATHS[0],
+    REGRESS_PATHS[1],
+];
+
 /// Items 3, 4 and 8 (plan v9 section 7 step 3, P3-ORCH-14): the paths whose change after the
 /// input's commit makes a test262 or nesting input stale: [`FRESH_PATHS`], the runner and the
 /// test262 pin.
-const T262_FRESH_PATHS: [&str; 7] = [
+const T262_FRESH_PATHS: [&str; 9] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -135,11 +173,25 @@ const T262_FRESH_PATHS: [&str; 7] = [
     "rust-toolchain.toml",
     "tools/test262",
     "third_party/test262.commit",
+    REGRESS_PATHS[0],
+    REGRESS_PATHS[1],
+];
+
+/// Item 5 (CX5-C4, F2): the paths whose change after a counted cargo-fuzz record's commit makes
+/// it stale: the `fuzz` workspace, every engine crate it builds (the path dependencies of
+/// `fuzz/Cargo.toml` and theirs; a test checks the list against them), the root `Cargo.toml`
+/// (its `[profile.release]`, the workspace members) and `Cargo.lock`.
+const CARGO_FUZZ_FRESH_PATHS: [&str; 5] = [
+    "crates/ep9_frontend",
+    "crates/ep9_bytecode",
+    "fuzz",
+    "Cargo.toml",
+    "Cargo.lock",
 ];
 
 /// The Windows column (P3-ORCH-21): the CI run's head is HEAD, or an ancestor with no change in
 /// these paths since ([`T262_FRESH_PATHS`], the expectation files and the workflows).
-const CI_FRESH_PATHS: [&str; 9] = [
+const CI_FRESH_PATHS: [&str; 11] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -147,6 +199,8 @@ const CI_FRESH_PATHS: [&str; 9] = [
     "rust-toolchain.toml",
     "tools/test262",
     "third_party/test262.commit",
+    REGRESS_PATHS[0],
+    REGRESS_PATHS[1],
     "expectations",
     ".github",
 ];
@@ -200,6 +254,12 @@ const GC_TIMEOUT_MS: f64 = 60_000.0;
 /// Item 4: the GC JSON fields that say S1 was on and how often the verifier ran.
 const GC_S1_KEY: &str = "generational";
 const GC_CADENCE_KEY: &str = "verify_cadence";
+/// Item 4: the S1 GC-stress major cadence (M5-P2 GC6, `EP9_GC_STRESS_MAJOR_EVERY`): every Nth
+/// stress GC is major, the others minor. 0 and 1 make every GC major, so no minor GC ran and
+/// the run is no S1 evidence. A JSON with no such field is of a runner before GC6, which could
+/// not change it: the heap default [`GC_MAJOR_DEFAULT`].
+const GC_MAJOR_KEY: &str = "stress_major_every";
+const GC_MAJOR_DEFAULT: f64 = 64.0;
 /// Item 4: the GC skip list and the log that names each added path.
 const GC_SKIP: &str = "test262-gc-skip.txt";
 const DECISIONS_LOG: &str = "docs/decisions-log.md";
@@ -210,6 +270,14 @@ const FUZZILLI_HOURS: f64 = 100.0;
 const CARGO_FUZZ_HOURS: f64 = 24.0;
 /// Item 5: the closed crash states.
 const CLOSED: [&str; 3] = ["fixed", "duplicate", "not-a-bug"];
+
+/// Items 1-4, X3 (the O8 refusal; plan v10 V10-D10, V10-A12): the gate build. The gate reads
+/// the default build: the `jit` ep9_vm feature, preset `jit`, feedback `full`. An input of
+/// another build, or one that does not say, is OPEN (not FAIL): `ics_only` and `jitless` are
+/// extra columns, never the gate reading.
+const GATE_PRESET: &str = "jit";
+const GATE_FEEDBACK: &str = "full";
+const GATE_FEATURE: &str = "jit";
 
 const VERDICTS_HOW: &str =
     "the Spike C and SP-Facts Verdict tables (a markdown table with Spike and Verdict columns)";
@@ -234,7 +302,7 @@ const NESTING_TESTS: [&str; 9] = [
 ];
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
      echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
-     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
+     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -526,6 +594,156 @@ struct Source {
     /// The runner read another commit, dirty flag or tree ids at the end of the run than at its
     /// start (`"source_changed_during_run": true`, CX5-C1).
     changed: bool,
+    /// An ep9-test262 JSON (not a log): it must also name the runner's build commit and the
+    /// test262 checkout HEAD (X4).
+    runner: Option<Runner>,
+    /// An ep9-test262 JSON (not a log): the build it ran, which must be the gate build (X3).
+    build: Option<Build>,
+    /// The runner read its source facts through its test seam (`"test_seam": true`; F3,
+    /// tools/test262/src/exec.rs): another tree's facts, or a file changed on purpose.
+    seam: bool,
+}
+
+/// The build an input names (X3, [`build_check`]): an ep9-test262 JSON writes `preset` (the
+/// build's default preset), `mode` (the preset its isolates ran), `feedback` and `features`
+/// (tools/test262/src/exec.rs, MC-w17-5); a bench JSON copies the second line of
+/// `ep9 --version`, `features <list>; preset <name>` ([`Build::of_line`]). A field that is
+/// missing or not of its type is None.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Build {
+    preset: Option<String>,
+    /// The preset the isolates ran (`mode`); None when the input has no such field.
+    mode: Option<String>,
+    feedback: Option<String>,
+    /// True when `feedback` is not written but follows from the preset ([`Build::of_line`]).
+    feedback_implied: bool,
+    features: Option<Vec<String>>,
+}
+
+impl Build {
+    /// The build fields of an ep9-test262 JSON.
+    fn of_json(j: &Json) -> Build {
+        Build {
+            preset: str_field(j, "preset"),
+            mode: str_field(j, "mode"),
+            feedback: str_field(j, "feedback"),
+            feedback_implied: false,
+            features: j.get("features").and_then(Json::arr).and_then(|a| {
+                a.iter()
+                    .map(|f| f.str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            }),
+        }
+    }
+
+    /// The build line of `ep9 --version` (`features jit,become; preset jit`; `features none`
+    /// when no feature is on; crates/ep9_cli/src/args.rs `version_text`), as kernels.mjs
+    /// (`ep9.engine_build`) and run.mjs copy it; None (no line, null) gives a build with no
+    /// field. A `feedback <mode>` part is read when there is one; else the feedback follows
+    /// from the preset (`jit` full, `jitless` ics_only; crates/ep9_vm/src/exec.rs
+    /// `ExecOptions::jit`, `::jitless`): the `ep9` binary has no feedback option and runs
+    /// `ExecOptions::default()`, the build's preset with its default mode.
+    fn of_line(line: Option<&str>) -> Build {
+        let mut b = Build::default();
+        for part in line.unwrap_or("").split(';') {
+            match part.trim().split_once(' ') {
+                Some(("features", v)) => {
+                    b.features = Some(match v.trim() {
+                        "none" => Vec::new(),
+                        v => v.split(',').map(|f| f.trim().to_string()).collect(),
+                    });
+                }
+                Some(("preset", v)) => b.preset = Some(v.trim().to_string()),
+                Some(("feedback", v)) => b.feedback = Some(v.trim().to_string()),
+                _ => {}
+            }
+        }
+        if b.feedback.is_none() {
+            b.feedback = match b.preset.as_deref() {
+                Some("jit") => Some("full".to_string()),
+                Some("jitless") => Some("ics_only".to_string()),
+                _ => None,
+            };
+            b.feedback_implied = b.feedback.is_some();
+        }
+        b
+    }
+
+    /// `preset jit, feedback full, features jit,become` (`?` for a missing field).
+    fn text(&self) -> String {
+        format!(
+            "build: preset {}, feedback {}{}, features {}",
+            self.preset.as_deref().unwrap_or("?"),
+            self.feedback.as_deref().unwrap_or("?"),
+            if self.feedback_implied {
+                " (the preset's default)"
+            } else {
+                ""
+            },
+            match &self.features {
+                None => "?".to_string(),
+                Some(f) if f.is_empty() => "none".to_string(),
+                Some(f) => f.join(","),
+            }
+        )
+    }
+}
+
+/// X3, the O8 refusal (plan v10 section 3.7, V10-D10): the OPEN reasons of an input whose build
+/// is not the gate build ([`GATE_PRESET`], [`GATE_FEEDBACK`], a feature list with
+/// [`GATE_FEATURE`]), or that does not name it. Each reason reads "preset X, the gate reads Y".
+fn build_check(b: &Build) -> Vec<String> {
+    let mut why = Vec::new();
+    let mut field = |what: &str, key: &str, got: Option<&str>, want: &str| match got {
+        None => why.push(format!(
+            "build: it names no {what} (`{key}`), the gate reads {what} {want} (V10-D10)"
+        )),
+        Some(g) if g != want => why.push(format!(
+            "build: {what} {g}, the gate reads {what} {want} (V10-D10)"
+        )),
+        Some(_) => {}
+    };
+    field("preset", "preset", b.preset.as_deref(), GATE_PRESET);
+    field("feedback", "feedback", b.feedback.as_deref(), GATE_FEEDBACK);
+    // `mode` is the preset the isolates ran; an input without the field is read by `preset`.
+    if let Some(m) = b.mode.as_deref()
+        && m != GATE_PRESET
+    {
+        why.push(format!(
+            "build: its isolates ran preset {m} (`mode`), the gate reads preset {GATE_PRESET} (V10-D10)"
+        ));
+    }
+    match &b.features {
+        None => why.push(format!(
+            "build: it names no features (`features`), the gate reads a build with {GATE_FEATURE} (V10-D10)"
+        )),
+        Some(f) if !f.iter().any(|f| f == GATE_FEATURE) => why.push(format!(
+            "build: features {}, the gate reads a build with {GATE_FEATURE} (V10-D10)",
+            if f.is_empty() {
+                "none".to_string()
+            } else {
+                f.join(",")
+            }
+        )),
+        Some(_) => {}
+    }
+    why
+}
+
+/// The build facts an ep9-test262 JSON names from M5-P0 (plan v10 section 2.6, X4): the
+/// commit the runner binary was built at (`"runner_commit"`, C2) and the HEAD of the test262
+/// checkout it ran (`"test262_head"`, item 8). A field that is missing or empty is None.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Runner {
+    commit: Option<String>,
+    /// `"runner_dirty"` (gates5 high 1): the compiled sources had uncommitted changes when the
+    /// runner was built.
+    dirty: Option<bool>,
+    test262_head: Option<String>,
+    /// `"test262_head_end"` and `"test262_dirty"` (gates5 high 2): the checkout HEAD read
+    /// again at the end of the run, and whether the checkout had changes before or after it.
+    test262_head_end: Option<String>,
+    test262_dirty: Option<bool>,
 }
 
 impl Source {
@@ -550,6 +768,15 @@ impl Source {
                 _ => BTreeMap::new(),
             },
             changed: j.get("source_changed_during_run").and_then(Json::bool) == Some(true),
+            runner: Some(Runner {
+                commit: str_field(j, "runner_commit"),
+                dirty: j.get("runner_dirty").and_then(Json::bool),
+                test262_head: str_field(j, "test262_head"),
+                test262_head_end: str_field(j, "test262_head_end"),
+                test262_dirty: j.get("test262_dirty").and_then(Json::bool),
+            }),
+            build: Some(Build::of_json(j)),
+            seam: j.get("test_seam").and_then(Json::bool) == Some(true),
         }
     }
 
@@ -591,6 +818,9 @@ impl Source {
                 made_by: Some(made_by.trim().to_string()).filter(|m| !m.is_empty()),
                 trees: BTreeMap::new(),
                 changed: false,
+                runner: None,
+                build: None,
+                seam: false,
             };
             match &found {
                 Some(f) if *f != s => {
@@ -616,11 +846,129 @@ impl Source {
     }
 }
 
+/// A non-empty string field of a JSON object, trimmed.
+fn str_field(j: &Json, key: &str) -> Option<String> {
+    j.get(key)
+        .and_then(Json::str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// The test262 pin of this tree: `third_party/test262.commit` at HEAD, or the file itself
+/// outside a git tree; trimmed, lower case.
+fn test262_pin(root: &Path) -> Option<String> {
+    git(root, &["show", "HEAD:third_party/test262.commit"])
+        .or_else(|| std::fs::read_to_string(root.join("third_party/test262.commit")).ok())
+        .map(|p| p.trim().to_ascii_lowercase())
+        .filter(|p| !p.is_empty())
+}
+
+/// X4 (plan v10 section 2.6; C2 and in:193 item 8): the OPEN reasons of an ep9-test262 JSON's
+/// build facts. The runner was built at the input's `commit` (a runner of another commit may
+/// run other code than the tree it names) with no uncommitted change in its compiled sources
+/// (gates5 high 1), and the test262 checkout it ran is at this tree's pin, at the same HEAD at
+/// the end of the run and with no change (gates5 high 2). A missing fact is OPEN too: the
+/// runner of this tree writes each one.
+fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
+    let mut why = Vec::new();
+    match (r.commit.as_deref(), commit) {
+        (None, _) => why.push(
+            "provenance: it names no runner build commit (runner_commit; make it again with this tree's runner)"
+                .to_string(),
+        ),
+        (Some(rc), _) if !is_hex_sha(rc) => why.push(format!(
+            "provenance: its runner_commit {rc:?} is not a commit id (40 hex digits)"
+        )),
+        (Some(rc), Some(c)) if !rc.eq_ignore_ascii_case(c) => why.push(format!(
+            "provenance: the runner was built at `{}`, the input names `{}`",
+            short(rc),
+            short(c)
+        )),
+        _ => {}
+    }
+    match r.dirty {
+        Some(false) => {}
+        Some(true) => why.push(
+            "provenance: the runner was built from uncommitted changes (runner_dirty)".to_string(),
+        ),
+        None => why.push(
+            "provenance: it names no runner dirty flag (runner_dirty; make it again with this tree's runner)"
+                .to_string(),
+        ),
+    }
+    match (r.test262_head.as_deref(), test262_pin(root)) {
+        (None, _) => why.push(
+            "provenance: it names no test262 checkout HEAD (test262_head; make it again with this tree's runner)"
+                .to_string(),
+        ),
+        (Some(h), _) if !is_hex_sha(h) => why.push(format!(
+            "provenance: its test262_head {h:?} is not a commit id (40 hex digits)"
+        )),
+        (Some(_), None) => {
+            why.push("provenance: this tree has no third_party/test262.commit pin".to_string())
+        }
+        (Some(h), Some(pin)) if !h.eq_ignore_ascii_case(&pin) => why.push(format!(
+            "provenance: the test262 checkout was at `{}`, the pin (third_party/test262.commit) is `{}`",
+            short(h),
+            short(&pin)
+        )),
+        _ => {}
+    }
+    // gates5 high 2: the same HEAD at the end of the run, and no change in the checkout.
+    match (r.test262_head.as_deref(), r.test262_head_end.as_deref()) {
+        (_, None) => why.push(
+            "provenance: it names no test262 checkout HEAD at the end of the run (test262_head_end; make it again with this tree's runner)"
+                .to_string(),
+        ),
+        (Some(h), Some(e)) if !h.eq_ignore_ascii_case(e) => why.push(format!(
+            "provenance: the test262 checkout moved during the run, from `{}` to `{}`",
+            short(h),
+            short(e)
+        )),
+        _ => {}
+    }
+    match r.test262_dirty {
+        Some(false) => {}
+        Some(true) => why.push(
+            "provenance: the test262 checkout had changes (test262_dirty)"
+                .to_string(),
+        ),
+        None => why.push(
+            "provenance: it names no test262 dirty flag (test262_dirty; make it again with this tree's runner)"
+                .to_string(),
+        ),
+    }
+    why
+}
+
+/// 40 hex digits in either case (gates5 medium 5): a build fact of X4 ([`runner_check`]) must be
+/// a full commit id; the runner writes lower case, and upper case names the same id.
+fn is_hex_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// [`crate::exit::report::short`] cut on character boundaries (gates5 medium 5): an input field
+/// that is no commit id may hold any text, and a cut inside a UTF-8 character would panic. More
+/// than 12 characters: the first 8, `…`, the last 5.
+fn short(s: &str) -> String {
+    let n = s.chars().count();
+    if n > 12 {
+        let head: String = s.chars().take(8).collect();
+        let tail: String = s.chars().skip(n - 5).collect();
+        format!("{head}\u{2026}{tail}")
+    } else {
+        s.to_string()
+    }
+}
+
 /// The freshness and provenance of one input (plan v9 section 7 step 3; P3-ORCH-14 finding 6,
 /// P3-ORCH-21): (the OPEN reasons, a short text). The input names its commit, that commit is
 /// HEAD or an ancestor with no change in `paths` since ([`fresh_since`]), the tree had no
 /// uncommitted change, and the input names the host or job that made it; a job of another CI
-/// run than the one given is a mismatch.
+/// run than the one given is a mismatch. An ep9-test262 JSON also names a runner built at that
+/// commit and a test262 checkout at the pin ([`runner_check`], X4), and the gate build
+/// ([`build_check`], X3).
 fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
     let mut why = Vec::new();
     let tree = match s.commit.as_deref() {
@@ -662,13 +1010,29 @@ fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
             "stale input: the source changed during the run (source_changed_during_run)".into(),
         );
     }
-    let by = match s.made_by.as_deref() {
+    if s.seam {
+        why.push(
+            "provenance: the runner read its source through its test seam (test_seam): a test run, not a measurement"
+                .into(),
+        );
+    }
+    if let Some(r) = &s.runner {
+        why.extend(runner_check(&c.o.root, s.commit.as_deref(), r));
+    }
+    // X3: the gate build (V10-D10).
+    if let Some(b) = &s.build {
+        why.extend(build_check(b));
+    }
+    let mut by = match s.made_by.as_deref() {
         Some(m) => m.to_string(),
         None => {
             why.push("provenance: it names no host or job (made_by)".into());
             "no host".to_string()
         }
     };
+    if let Some(b) = &s.build {
+        let _ = write!(by, "; {}", b.text());
+    }
     if let (Some(theirs), Ok(ci)) = (s.ci_run(), &c.ci)
         && let Some(ours) = ci.id.as_deref()
         && theirs != ours
@@ -877,6 +1241,26 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
                 other.join(", ")
             ));
         }
+        // pre medium 1: kernels.mjs writes no ids of the regress fork; its commit's ids must be
+        // HEAD's.
+        let id = |rev: &str, path: &str| {
+            git(
+                root,
+                &["rev-parse", "--verify", "--quiet", &format!("{rev}:{path}")],
+            )
+        };
+        let moved: Vec<&str> = REGRESS_PATHS
+            .iter()
+            .filter(|p| id(commit, p) != id("HEAD", p))
+            .copied()
+            .collect();
+        if !moved.is_empty() {
+            fresh.push(format!(
+                "{} changed between its commit `{}` and HEAD",
+                moved.join(", "),
+                short(commit)
+            ));
+        }
     }
     match j.get("dirty").and_then(Json::arr) {
         Some([]) => {}
@@ -902,13 +1286,21 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         status = status.max(Status::Open);
         format!("not fresh: {}", fresh.join("; "))
     };
+    // X3: the checked binary is the gate build (its `--version` build line, `ep9.engine_build`).
+    let build = Build::of_line(j.path(&["ep9", "engine_build"]).and_then(Json::str));
+    let build_why = build_check(&build);
+    if !build_why.is_empty() {
+        status = status.max(Status::Open);
+        why.extend(build_why);
+    }
     cell(
         status,
         format!(
-            "{}: {ok}/{} {KERNEL_OK}; ep9 commit `{}`; {tree}{}",
+            "{}: {ok}/{} {KERNEL_OK}; ep9 commit `{}`; {tree}; {}{}",
             p.display(),
             rows.len(),
             short(commit),
+            build.text(),
             because(&why)
         ),
     )
@@ -996,7 +1388,7 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         parts.push("provisional run".into());
     }
     let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
-    let mut tree = match fresh_named(root, commit, &FRESH_PATHS) {
+    let mut tree = match fresh_named(root, commit, &ENGINE_FRESH_PATHS) {
         Ok(t) => t,
         Err(e) => {
             status = status.max(Status::Open);
@@ -1031,6 +1423,14 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
             tree.push_str("; it does not say whether the tree was dirty (`dirty`)");
         }
     }
+    // X3: the measured ep9 is the gate build: the build line of its `--version`
+    // (`engine_build`, from the ep9 engine of the run.mjs JSON).
+    let build = Build::of_line(j.get("engine_build").and_then(Json::str));
+    let build_why = build_check(&build);
+    if !build_why.is_empty() {
+        status = status.max(Status::Open);
+    }
+    let _ = write!(tree, "; {}{}", build.text(), because(&build_why));
     cell(
         status,
         format!(
@@ -1158,6 +1558,12 @@ fn item4(c: &Ctx) -> (Cell, Cell) {
                         m.push((key.to_string(), v.clone()));
                     }
                 }
+                if let Json::Obj(m) = &mut merged {
+                    m.push((
+                        GC_MAJOR_KEY.to_string(),
+                        Json::Num(shards_major_every(shards)),
+                    ));
+                }
                 gc_cell(c, &label, &merged)
             }
             Err(e) => e,
@@ -1177,9 +1583,25 @@ fn item4(c: &Ctx) -> (Cell, Cell) {
     (host, win)
 }
 
+/// The major cadence of a split run: the smallest any shard records (a shard with no field: the
+/// default), so one major-only shard makes the whole run fail item 4.
+fn shards_major_every(shards: &[(PathBuf, Json)]) -> f64 {
+    shards
+        .iter()
+        .map(|(_, j)| major_every(j))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The `stress_major_every` of a GC JSON ([`GC_MAJOR_KEY`]; none: [`GC_MAJOR_DEFAULT`]).
+fn major_every(j: &Json) -> f64 {
+    j.get(GC_MAJOR_KEY)
+        .and_then(Json::num)
+        .unwrap_or(GC_MAJOR_DEFAULT)
+}
+
 /// The source of the GC-stress inputs (P3-ORCH-14, P3-ORCH-21): each shard fresh and named, all
 /// shards of one commit, and the `--exec` run (the pass set they are compared with) of the same
-/// commit.
+/// commit, a clean tree, the gate build and not the runner's test seam.
 fn gc_source(c: &Ctx) -> (Vec<String>, String) {
     let mut why: Vec<String> = Vec::new();
     let mut texts: Vec<String> = Vec::new();
@@ -1238,6 +1660,18 @@ fn gc_source(c: &Ctx) -> (Vec<String>, String) {
                 "provenance: --exec {} was measured with uncommitted changes, or does not say",
                 ep.display()
             ));
+        }
+        // F3: a pass set the runner made through its test seam is no measurement, as for
+        // item 3 (M5-P1 review).
+        if es.seam {
+            why.push(format!(
+                "provenance: --exec {}: the runner read its source through its test seam (test_seam): a test run, not a measurement",
+                ep.display()
+            ));
+        }
+        // X3: the pass set the GC-stress runs are compared with is of the gate build too.
+        for w in es.build.as_ref().map(build_check).unwrap_or_default() {
+            why.push(format!("--exec {}: {w}", ep.display()));
         }
     }
     (why, texts.join(" | "))
@@ -1310,9 +1744,17 @@ fn gc_cell(c: &Ctx, label: &str, j: &Json) -> Cell {
     let (fp, ft) = count(j, &["files"]).unwrap_or((0, 0));
     let mut status = Status::Pass;
     let mut why = Vec::new();
-    if gc <= 0.0 {
-        status = Status::Fail;
-        why.push("not a GC-stress run".to_string());
+    // A GC before every allocation (GC_CMD, ci.yml): a larger n may run no stress GC at all
+    // (the heap skips the budget under stress), so no minor GC, whatever the major cadence.
+    match j.get("gc_stress").and_then(Json::num) {
+        Some(1.0) => {}
+        g => {
+            status = Status::Fail;
+            why.push(format!(
+                "gc_stress {}, not 1 (--gc-stress 1)",
+                g.map_or("missing".to_string(), |g| g.to_string())
+            ));
+        }
     }
     match j.get("timeout_ms").and_then(Json::num) {
         Some(t) if t <= GC_TIMEOUT_MS => {}
@@ -1363,6 +1805,17 @@ fn gc_cell(c: &Ctx, label: &str, j: &Json) -> Cell {
                 "the JSON does not say the verify cadence (no \"{GC_CADENCE_KEY}\" field)"
             ));
             "verify cadence not recorded".to_string()
+        }
+    };
+    // Minor GCs ran: a major-only run (cadence 0 or 1) never traces the remembered set.
+    let major = match major_every(j) {
+        n if n >= 2.0 => format!("major GC every {n}"),
+        n => {
+            status = Status::Fail;
+            why.push(format!(
+                "\"{GC_MAJOR_KEY}\": {n}, every GC major (no minor GC ran: no S1 evidence)"
+            ));
+            format!("major GC every {n}")
         }
     };
     // The whole corpus of this tree's checkout: every file is run or skipped.
@@ -1481,7 +1934,7 @@ fn gc_cell(c: &Ctx, label: &str, j: &Json) -> Cell {
     cell(
         status,
         format!(
-            "{label}: --gc-stress {gc}, {s1}, {cadence}, files {fp} / {ft} + {skipped} skipped, infra {infra}, new failures {new} (against {basis}){}",
+            "{label}: --gc-stress {gc}, {s1}, {cadence}, {major}, files {fp} / {ft} + {skipped} skipped, infra {infra}, new failures {new} (against {basis}){}",
             because(&why)
         ),
     )
@@ -1618,8 +2071,15 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
         let tool = j.get("tool").and_then(Json::str).unwrap_or("");
         // CX5-C4: the root Cargo.toml too (its `[profile.release]`, the workspace members).
         let fresh_paths: &[&str] = match tool {
-            "fuzzilli" => &["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"],
-            "cargo-fuzz" => &["crates/ep9_frontend", "fuzz", "Cargo.toml", "Cargo.lock"],
+            "fuzzilli" => &[
+                "crates",
+                "Cargo.toml",
+                "Cargo.lock",
+                "rust-toolchain.toml",
+                REGRESS_PATHS[0],
+                REGRESS_PATHS[1],
+            ],
+            "cargo-fuzz" => &CARGO_FUZZ_FRESH_PATHS,
             _ => {
                 status = Status::Fail;
                 why.push(format!("{}: unknown tool {tool:?}", p.display()));
@@ -1633,8 +2093,11 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             .map(str::trim)
             .filter(|s| !s.is_empty());
         // A second record of a counted campaign adds no hours, but its open crashes still count
-        // (a crash found late in a campaign is still open).
-        let dup = counted && campaign.is_some_and(|id| !campaigns.insert(format!("{tool}/{id}")));
+        // (a crash found late in a campaign is still open). F4 (in:190 item 5): the id is
+        // inserted below, only once this record counts, so a record of the id that is not
+        // counted (dirty, stale, no `dirty` field) does not block a later one that counts.
+        let key = campaign.map(|id| format!("{tool}/{id}"));
+        let dup = counted && key.as_ref().is_some_and(|k| campaigns.contains(k));
         if dup {
             why.push(format!(
                 "{}: campaign {tool} {:?} again, its hours counted once",
@@ -1694,6 +2157,8 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
         if counted {
             match fresh_named(&c.o.root, commit, fresh_paths) {
                 Ok(_) => {
+                    // F4: the campaign counts from here on (`counted` needs a campaign id).
+                    campaigns.extend(key);
                     *hours
                         .entry(if tool == "fuzzilli" {
                             "fuzzilli"
@@ -1930,7 +2395,7 @@ fn extra_rows(root: &Path) -> Vec<(&'static str, Cell)> {
     vec![
         ("carried M0 item 5 (SP-Dispatch condition 2)", m0_item5),
         (
-            "stub markers (plan v9 rule 4)",
+            "stub markers (plan v9 and v10 rule 4)",
             stub_markers(root, &STUB_MARKERS, &STUB_DIRS),
         ),
         ("ADR Counts line", counts),
@@ -2143,6 +2608,7 @@ mod tests {
         write(&root, "Cargo.lock", "# lock\n");
         write(&root, "rust-toolchain.toml", "[toolchain]\n");
         write(&root, "docs/decisions-log.md", "# log\n");
+        write(&root, "third_party/test262.commit", &format!("{PIN}\n"));
         for f in t262_files() {
             write(&root, &format!("third_party/test262/{f}"), "// test\n");
         }
@@ -2245,19 +2711,19 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// The stub-marker row reads the m2, m3 and m4 markers, in the rule-4 dirs.
+    /// The stub-marker row reads the m2, m3, m4 and m5 markers, in the rule-4 dirs.
     #[test]
-    fn the_stub_row_reads_three_markers() {
+    fn the_stub_row_reads_four_markers() {
         let root = fake_repo("stubs");
         let r = run(&opts(&root)).unwrap();
         assert_eq!(
             r.extra[1].1.evidence,
             format!(
-                "no `{}`, `{}` or `{}` line",
-                STUB_MARKERS[0], STUB_MARKERS[1], STUB_MARKERS[2]
+                "no `{}`, `{}`, `{}` or `{}` line",
+                STUB_MARKERS[0], STUB_MARKERS[1], STUB_MARKERS[2], STUB_MARKERS[3]
             )
         );
-        for (i, f) in ["crates/a.rs", "spikes/b.rs", "tools/c.rs"]
+        for (i, f) in ["crates/a.rs", "spikes/b.rs", "tools/c.rs", "crates/e.rs"]
             .iter()
             .enumerate()
         {
@@ -2269,10 +2735,16 @@ mod tests {
         }
         let c = &run(&opts(&root)).unwrap().extra[1].1;
         assert_eq!(c.status, Status::Open, "{c:?}");
-        for f in ["crates/a.rs:1", "spikes/b.rs:1", "tools/c.rs:1"] {
+        assert!(c.evidence.starts_with("4 stub line(s)"), "{}", c.evidence);
+        for f in [
+            "crates/a.rs:1",
+            "spikes/b.rs:1",
+            "tools/c.rs:1",
+            "crates/e.rs:1",
+        ] {
             assert!(c.evidence.contains(f), "{f}: {}", c.evidence);
         }
-        for f in ["crates/a.rs", "spikes/b.rs", "tools/c.rs"] {
+        for f in ["crates/a.rs", "spikes/b.rs", "tools/c.rs", "crates/e.rs"] {
             std::fs::remove_file(root.join(f)).unwrap();
         }
         write(&root, "fuzz/d.rs", &format!("// {}\n", STUB_MARKERS[2]));
@@ -2311,10 +2783,21 @@ mod tests {
 
     /// The source fields of a runner JSON at `rev` of `root` (clean tree, a host named), with
     /// the trailing comma.
+    /// The test262 pin of [`fake_repo`].
+    const PIN: &str = "a111111111111111111111111111111111111111";
+
+    /// The source fields of an ep9-test262 JSON made at `rev`, by a runner built there, with the
+    /// pinned test262 checkout.
+    /// The build fields of a gate-build ep9-test262 JSON (X3).
+    const GATE_BUILD: &str =
+        r#""mode":"jit","preset":"jit","features":["jit","become"],"feedback":"full","#;
+    /// The `--version` build line of a gate-build ep9 (X3).
+    const GATE_LINE: &str = "features jit,become; preset jit";
+
     fn src_at(root: &Path, rev: &str) -> String {
+        let commit = git_in(root, &["rev-parse", rev]);
         format!(
-            r#""commit":"{}","dirty":false,"commit_source":"git","made_by":"host:test","#,
-            git_in(root, &["rev-parse", rev])
+            r#""commit":"{commit}","dirty":false,"commit_source":"git","made_by":"host:test","runner_commit":"{commit}","runner_dirty":false,"test262_head":"{PIN}","test262_head_end":"{PIN}","test262_dirty":false,{GATE_BUILD}"#,
         )
     }
 
@@ -2529,7 +3012,7 @@ mod tests {
         let c = &run(&o).unwrap().cells[7].0;
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(
-            c.evidence.contains("stale input: not this tree: crates, tools/bench, Cargo.toml, Cargo.lock, rust-toolchain.toml, tools/test262, third_party/test262.commit changed"),
+            c.evidence.contains("stale input: not this tree: crates, tools/bench, Cargo.toml, Cargo.lock, rust-toolchain.toml, tools/test262, third_party/test262.commit, third_party/regress.commit, third_party/patches/regress changed"),
             "{}",
             c.evidence
         );
@@ -2608,11 +3091,11 @@ mod tests {
             (1, "Cargo.toml"),
             (
                 4,
-                "f1.json: not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml changed",
+                "f1.json: not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress changed",
             ),
             (
                 4,
-                "f2.json: not counted: not this tree: crates/ep9_frontend, fuzz, Cargo.toml, Cargo.lock changed",
+                "f2.json: not counted: not this tree: crates/ep9_frontend, crates/ep9_bytecode, fuzz, Cargo.toml, Cargo.lock changed",
             ),
             (7, "Cargo.toml"),
         ] {
@@ -2621,6 +3104,188 @@ mod tests {
             assert!(c.evidence.contains(why), "item {}: {}", i + 1, c.evidence);
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// pre medium 1 (D41, R41): the regress fork is engine code (ep9_vm builds it through the
+    /// `[patch.crates-io]` path), so a change of its pin `third_party/regress.commit` or of a
+    /// patch under `third_party/patches/regress` after the input's commit makes items 1, 2, 3
+    /// and 8 OPEN and a counted Fuzzilli record not counted. A counted cargo-fuzz record stays
+    /// counted: its targets do not build regress.
+    #[test]
+    fn a_regress_pin_or_patch_change_makes_inputs_stale() {
+        for (k, path) in REGRESS_PATHS.iter().enumerate() {
+            let root = fake_repo(&format!("regress{k}"));
+            write(
+                &root,
+                "third_party/regress.commit",
+                &format!("{}\n", "b".repeat(40)),
+            );
+            write(
+                &root,
+                "third_party/patches/regress/README.md",
+                "# patches\n",
+            );
+            let head = commit_all(&root, "regress");
+            let mut o = opts(&root);
+            o.kernels = Some(input(
+                &root,
+                "kernels.json",
+                &kernels_json(&root, HOST, 15, 15, None),
+            ));
+            o.cross = Some(input(
+                &root,
+                "exit2.json",
+                &exit2_json(&head, ["pass", "pass"], true),
+            ));
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(17, 20, 24, 0.0, &[], &src_at(&root, "HEAD")),
+            ));
+            let log = with_source_line(&read(&fixture("nesting.log")).unwrap(), &head, 0);
+            o.nesting = Some(input(&root, "nesting.log", &log));
+            o.fuzz = vec![
+                input(
+                    &root,
+                    "f1.json",
+                    &fuzz_json("fuzzilli", &head, 100.0, true, ""),
+                ),
+                input(
+                    &root,
+                    "f2.json",
+                    &fuzz_json("cargo-fuzz", &head, 24.0, true, ""),
+                ),
+            ];
+            let r = run(&o).unwrap();
+            for i in [0, 1, 2, 4, 7] {
+                let c = &r.cells[i].0;
+                assert_eq!(c.status, Status::Pass, "{path}: item {}: {c:?}", i + 1);
+            }
+            if k == 0 {
+                write(&root, path, &format!("{}\n", "c".repeat(40)));
+            } else {
+                write(&root, &format!("{path}/0001-fix.patch"), "--- a\n+++ b\n");
+            }
+            commit_all(&root, path);
+            let r = run(&o).unwrap();
+            for i in [0, 1, 2, 4, 7] {
+                let c = &r.cells[i].0;
+                assert_eq!(c.status, Status::Open, "{path}: item {}: {c:?}", i + 1);
+                assert!(
+                    c.evidence.contains(path),
+                    "{path}: item {}: {}",
+                    i + 1,
+                    c.evidence
+                );
+            }
+            let fuzz = &r.cells[4].0.evidence;
+            assert!(
+                fuzz.contains("f1.json: not counted: not this tree"),
+                "{fuzz}"
+            );
+            assert!(!fuzz.contains("f2.json: not counted"), "{fuzz}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// pre medium 1: the runner's JSON names the ids of the paths of [`T262_FRESH_PATHS`]
+    /// (`TREE_PATHS` of tools/test262/src/provenance.rs), so a CI merge-commit run is checked on
+    /// all of them, the regress fork too. Reads the live source (the two lists must be the same).
+    #[test]
+    fn the_runner_tree_paths_are_the_t262_fresh_paths() {
+        let src = read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../test262/src/provenance.rs"))
+            .unwrap();
+        let start = src.find("pub const TREE_PATHS").expect("TREE_PATHS");
+        let body = &src[start..start + src[start..].find("];").unwrap()];
+        let listed: Vec<&str> = body
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.trim().strip_prefix('"')?.strip_suffix("\","))
+            .collect();
+        assert_eq!(listed, T262_FRESH_PATHS);
+    }
+
+    /// The `path = "..."` dependencies of a Cargo.toml text, in its build tables (`[dependencies]`,
+    /// `[build-dependencies]` and their `[target.*]` forms; dev-dependencies are not built into a
+    /// fuzz target).
+    fn path_deps(manifest: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut build_table = false;
+        for l in manifest.lines().map(str::trim) {
+            if l.starts_with('[') {
+                let t = l.trim_matches(['[', ']']);
+                build_table = (t.ends_with("dependencies") && !t.ends_with("dev-dependencies"))
+                    || (t.contains("dependencies.") && !t.contains("dev-dependencies."));
+                continue;
+            }
+            if !build_table || l.starts_with('#') {
+                continue;
+            }
+            // `name = { path = "<p>", ... }` or, in a `[dependencies.<name>]` table, `path = "<p>"`:
+            // a `path` key starts the line or follows `{`, `,` or a space.
+            for (k, _) in l.match_indices("path") {
+                if !(k == 0 || l[..k].ends_with(['{', ',', ' '])) {
+                    continue;
+                }
+                let value = l[k + "path".len()..]
+                    .trim_start()
+                    .strip_prefix('=')
+                    .map(str::trim_start)
+                    .and_then(|r| r.strip_prefix('"'))
+                    .and_then(|r| r.split('"').next());
+                if let Some(v) = value {
+                    out.push(v.to_string());
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// F2 (plan v10 section 2.6, X1): every engine crate that `fuzz/Cargo.toml` builds, through
+    /// its path dependencies and theirs, is in [`CARGO_FUZZ_FRESH_PATHS`]; so a change in any of
+    /// them makes a counted cargo-fuzz record stale. Reads the live manifests (the list must
+    /// follow them).
+    #[test]
+    fn the_cargo_fuzz_fresh_list_names_every_path_dependency() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo = std::fs::canonicalize(&repo).unwrap();
+        let mut todo = vec![repo.join("fuzz")];
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        while let Some(dir) = todo.pop() {
+            let text = read(&dir.join("Cargo.toml")).unwrap();
+            for dep in path_deps(&text) {
+                let d = std::fs::canonicalize(dir.join(&dep))
+                    .unwrap_or_else(|e| panic!("{}: {dep}: {e}", dir.display()));
+                let rel = d
+                    .strip_prefix(&repo)
+                    .unwrap_or_else(|_| panic!("{dep} is outside the repo"))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if seen.insert(rel) {
+                    todo.push(d);
+                }
+            }
+        }
+        assert!(seen.contains("crates/ep9_frontend"), "{seen:?}");
+        let missing: Vec<&String> = seen
+            .iter()
+            .filter(|p| !CARGO_FUZZ_FRESH_PATHS.contains(&p.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "fuzz/Cargo.toml builds {missing:?}, which CARGO_FUZZ_FRESH_PATHS lacks"
+        );
+        // The parser reads both forms and skips dev-dependencies.
+        assert_eq!(
+            path_deps(
+                "[dependencies]\na = { path = \"../a\" }\nb = \"1\"\n[dev-dependencies]\n\
+                 c = { path = \"../c\" }\n[dependencies.d]\npath = \"../d\"\n\
+                 [target.'cfg(unix)'.dependencies]\ne = { version = \"1\", path = \"../e\" }\n\
+                 [dependencies.pathx]\npath = \"../pathx\"\n"
+            ),
+            ["../a", "../d", "../e", "../pathx"]
+        );
     }
 
     /// The CI nesting step (.github/workflows/ci.yml) writes the two NESTING_CMD source lines
@@ -2654,6 +3319,15 @@ mod tests {
         );
     }
 
+    /// pre medium 1: the trees line of NESTING_CMD names exactly [`T262_FRESH_PATHS`], so a CI
+    /// merge-commit log passes on the ids of every path item 8 checks (the regress fork too).
+    #[test]
+    fn the_nesting_trees_line_names_the_t262_fresh_paths() {
+        let k = NESTING_CMD.find("for p in ").expect("the trees loop") + "for p in ".len();
+        let list = &NESTING_CMD[k..k + NESTING_CMD[k..].find(';').unwrap()];
+        assert_eq!(list.split(' ').collect::<Vec<_>>(), T262_FRESH_PATHS);
+    }
+
     /// The two NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads
     /// them as this tree, clean, with its path ids; a CI merge commit that the repo does not have
     /// passes on those ids, and fails when one id differs.
@@ -2684,8 +3358,8 @@ mod tests {
             "{text}"
         );
         let src = Source::of_log(&text).unwrap();
-        // The fake repo has 5 of the 7 paths, the root Cargo.toml among them (C1).
-        assert_eq!(src.trees.len(), 5, "{src:?}");
+        // The fake repo has 6 of the 7 paths, the root Cargo.toml among them (C1).
+        assert_eq!(src.trees.len(), 6, "{src:?}");
         assert_eq!(
             src.trees.get("Cargo.toml"),
             Some(&git_in(&root, &["rev-parse", "HEAD:Cargo.toml"]))
@@ -2750,6 +3424,7 @@ mod tests {
             "Cargo.toml",
             "Cargo.lock",
             "rust-toolchain.toml",
+            "third_party/test262.commit",
         ]
         .iter()
         .map(|p| {
@@ -2761,8 +3436,8 @@ mod tests {
         .collect();
         let src = |ids: &str| {
             format!(
-                r#""commit":"{}","dirty":false,"made_by":"host:ci gh-run:1/build","tree":{{{ids}}},"#,
-                "e".repeat(40)
+                r#""commit":"{e}","dirty":false,"made_by":"host:ci gh-run:1/build","runner_commit":"{e}","runner_dirty":false,"test262_head":"{PIN}","test262_head_end":"{PIN}","test262_dirty":false,{GATE_BUILD}"tree":{{{ids}}},"#,
+                e = "e".repeat(40)
             )
         };
         o.exec = Some(input(
@@ -2798,6 +3473,7 @@ mod tests {
         commit_all(&root, "docs");
         let mut o = opts(&root);
         let ok = src_at(&root, "HEAD");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
         let cases = [
             (ok.clone(), Status::Pass, "source: commit `"),
             (src_at(&root, &first), Status::Pass, "an ancestor of HEAD"),
@@ -2826,6 +3502,12 @@ mod tests {
                 Status::Open,
                 "stale input: the source changed during the run (source_changed_during_run)",
             ),
+            // F3: the runner's test seam (tools/test262/tests/exec.rs) is no measurement.
+            (
+                ok.replace(r#""dirty":false,"#, r#""dirty":false,"test_seam":true,"#),
+                Status::Open,
+                "provenance: the runner read its source through its test seam (test_seam)",
+            ),
             (
                 format!(
                     r#""commit":"{}","dirty":false,"made_by":"host:t","#,
@@ -2844,6 +3526,102 @@ mod tests {
                 r#""commit":"HEAD","dirty":false,"made_by":"host:t","#.to_string(),
                 Status::Open,
                 "stale input: its commit \"HEAD\" is not a commit id",
+            ),
+            // X4 (plan v10 section 2.6): a runner built at the input's commit, a test262
+            // checkout at the pin; a missing fact is OPEN too.
+            (
+                ok.replace(&format!(r#""runner_commit":"{head}","#), ""),
+                Status::Open,
+                "provenance: it names no runner build commit (runner_commit;",
+            ),
+            (
+                ok.replace(
+                    &format!(r#""runner_commit":"{head}""#),
+                    &format!(r#""runner_commit":"{first}""#),
+                ),
+                Status::Open,
+                "provenance: the runner was built at `",
+            ),
+            (
+                ok.replace(&format!(r#""test262_head":"{PIN}","#), ""),
+                Status::Open,
+                "provenance: it names no test262 checkout HEAD (test262_head;",
+            ),
+            (
+                ok.replace(PIN, &"2".repeat(40)),
+                Status::Open,
+                "provenance: the test262 checkout was at `22222222…22222`, the pin (third_party/test262.commit) is `a1111111…11111`",
+            ),
+            // Upper-case hex is the same id.
+            (
+                ok.replace(PIN, &PIN.to_ascii_uppercase()),
+                Status::Pass,
+                "source: commit `",
+            ),
+            // gates5 medium 5: a build fact that is not a full commit id is OPEN, also when it
+            // holds non-ASCII text (the shortening of the evidence text must not panic).
+            (
+                ok.replace(
+                    &format!(r#""runner_commit":"{head}""#),
+                    &format!(r#""runner_commit":"{}""#, "\u{e9}".repeat(10)),
+                ),
+                Status::Open,
+                "provenance: its runner_commit \"\u{e9}\u{e9}\u{e9}",
+            ),
+            (
+                ok.replace(
+                    &format!(r#""runner_commit":"{head}""#),
+                    r#""runner_commit":"abc123""#,
+                ),
+                Status::Open,
+                "provenance: its runner_commit \"abc123\" is not a commit id (40 hex digits)",
+            ),
+            (
+                ok.replace(PIN, &"\u{e9}".repeat(10)),
+                Status::Open,
+                "provenance: its test262_head \"\u{e9}\u{e9}\u{e9}",
+            ),
+            (
+                ok.replace(PIN, &PIN[..12]),
+                Status::Open,
+                "provenance: its test262_head \"a11111111111\" is not a commit id (40 hex digits)",
+            ),
+            // gates5 high 1: a runner built from uncommitted changes of its compiled sources,
+            // or one that does not say, is OPEN.
+            (
+                ok.replace(r#""runner_dirty":false"#, r#""runner_dirty":true"#),
+                Status::Open,
+                "provenance: the runner was built from uncommitted changes (runner_dirty)",
+            ),
+            (
+                ok.replace(r#""runner_dirty":false,"#, ""),
+                Status::Open,
+                "provenance: it names no runner dirty flag (runner_dirty;",
+            ),
+            // gates5 high 2: a test262 checkout with changes (before or after the run), one
+            // whose HEAD moved during the run, or a JSON that does not say, is OPEN.
+            (
+                ok.replace(r#""test262_dirty":false"#, r#""test262_dirty":true"#),
+                Status::Open,
+                "provenance: the test262 checkout had changes (test262_dirty)",
+            ),
+            (
+                ok.replace(r#""test262_dirty":false,"#, ""),
+                Status::Open,
+                "provenance: it names no test262 dirty flag (test262_dirty;",
+            ),
+            (
+                ok.replace(
+                    &format!(r#""test262_head_end":"{PIN}""#),
+                    &format!(r#""test262_head_end":"{}""#, "3".repeat(40)),
+                ),
+                Status::Open,
+                "provenance: the test262 checkout moved during the run, from `a1111111\u{2026}11111` to `33333333\u{2026}33333`",
+            ),
+            (
+                ok.replace(&format!(r#""test262_head_end":"{PIN}","#), ""),
+                Status::Open,
+                "provenance: it names no test262 checkout HEAD at the end of the run (test262_head_end;",
             ),
         ];
         for (src, want, text) in cases {
@@ -2972,6 +3750,11 @@ mod tests {
             (
                 head.replace(r#""dirty":false,"#, ""),
                 "was measured with uncommitted changes, or does not say",
+            ),
+            // F3: an --exec input that the runner made through its test seam (M5-P1 review).
+            (
+                head.replace(r#""dirty":false,"#, r#""dirty":false,"test_seam":true,"#),
+                "read its source through its test seam (test_seam)",
             ),
         ] {
             o.exec = Some(input(&root, "exec.json", &exec(&src)));
@@ -3188,6 +3971,101 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// F4 (plan v10 section 3.7; in:190 item 5) on the records of the producer,
+    /// fuzz/scripts/record.sh (the fixtures `fuzz-*.json`, made by `make-fuzz-records.sh`): a
+    /// campaign id counts once, and only from the record that counts. A record of the id that is
+    /// not counted (dirty, or stale) does not block a later one that counts.
+    #[test]
+    fn item5_counts_a_campaign_from_the_record_that_counts() {
+        let root = fake_repo("item5f4");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let placeholder = "f4".repeat(20);
+        let rec = |name: &str, commit: &str| {
+            let text = read(&fixture(name)).unwrap();
+            assert!(text.contains(&placeholder), "{name}: {text}");
+            input(&root, name, &text.replace(&placeholder, commit))
+        };
+        let clean = rec("fuzz-fuzzilli.json", &head);
+        let dirty = rec("fuzz-fuzzilli-dirty.json", &head);
+        let cargo = rec("fuzz-cargo-fuzz.json", &head);
+        let mut o = opts(&root);
+        // The producer's records count: 100 + 24 CPU-h, PASS.
+        o.fuzz = vec![clean.clone(), cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains(
+                "Fuzzilli 100.0 / 100 CPU-h, cargo-fuzz 24.0 / 24 CPU-h, 0 open unique crashes"
+            ),
+            "{}",
+            c.evidence
+        );
+        // A dirty record of the campaign first, then the clean one: the clean one counts (the
+        // id was inserted before the checks: 0 h, OPEN).
+        o.fuzz = vec![dirty.clone(), clean.clone(), cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert!(
+            c.evidence
+                .contains("fuzz-fuzzilli-dirty.json: not counted: made with uncommitted changes"),
+            "{}",
+            c.evidence
+        );
+        assert!(!c.evidence.contains("again"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        assert_eq!(
+            c.status,
+            Status::Open,
+            "the dirty record is still named: {c:?}"
+        );
+        // The other order: the clean one counts, the dirty one is the same campaign again.
+        o.fuzz = vec![clean.clone(), dirty, cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains(
+                "fuzz-fuzzilli-dirty.json: campaign fuzzilli \"fz-fixture-1\" again, its hours counted once"
+            ),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        // A stale record of the campaign (a commit this repository does not have) first: it is
+        // not counted, and the fresh one still counts.
+        let stale = input(
+            &root,
+            "stale.json",
+            &read(&clean).unwrap().replace(&head, &"e".repeat(40)),
+        );
+        o.fuzz = vec![stale, clean, cargo];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(
+            c.status,
+            Status::Open,
+            "the stale record is still named: {c:?}"
+        );
+        assert!(
+            c.evidence
+                .contains("stale.json: not counted: its commit `eeee"),
+            "{}",
+            c.evidence
+        );
+        assert!(!c.evidence.contains("again"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// The Freeze-table form of README section 3.4, with a Contract part due at M1 exit.
     fn adr(id: &str, status: &str, table: bool) -> String {
         let t = if table {
@@ -3306,7 +4184,7 @@ mod tests {
             })
             .collect();
         format!(
-            r#"{{"schema":"ep9-kernels/v1","commit":"{}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"kernels":[{}]}}"#,
+            r#"{{"schema":"ep9-kernels/v1","commit":"{}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"ep9":{{"bin":"ep9","engine_build":"{GATE_LINE}"}},"kernels":[{}]}}"#,
             git_in(root, &["rev-parse", "HEAD"]),
             ids.join(","),
             rows.join(",")
@@ -3360,7 +4238,7 @@ mod tests {
 
     fn exit2_json(commit: &str, gates: [&str; 2], gate_host: bool) -> String {
         format!(
-            r#"{{"schema":"ep9-exit2/v1","commit":"{commit}","dirty":false,"host":{{"gate_host":{gate_host}}},"provisional":false,"readings":[{{"id":"octane7-vs-qjs","label":"Octane-7","gate":"{}","net":{{"median":1.1}}}},{{"id":"v8v7-7-vs-node-jitless","label":"v8-v7","gate":"{}"}}]}}"#,
+            r#"{{"schema":"ep9-exit2/v1","commit":"{commit}","dirty":false,"engine_build":"{GATE_LINE}","host":{{"gate_host":{gate_host}}},"provisional":false,"readings":[{{"id":"octane7-vs-qjs","label":"Octane-7","gate":"{}","net":{{"median":1.1}}}},{{"id":"v8v7-7-vs-node-jitless","label":"v8-v7","gate":"{}"}}]}}"#,
             gates[0], gates[1]
         )
     }
@@ -3619,6 +4497,19 @@ mod tests {
     const S1: &str = r#""generational":true,"verify_cadence":1,"#;
 
     #[test]
+    fn item4_shards_take_the_smallest_major_cadence() {
+        let j = |extra: &str| parse_json(&format!("{{{extra}}}")).unwrap();
+        let p = PathBuf::new;
+        let all64 = [(p(), j(r#""stress_major_every":64"#)), (p(), j(""))];
+        assert_eq!(shards_major_every(&all64), 64.0);
+        let one_major = [
+            (p(), j(r#""stress_major_every":64"#)),
+            (p(), j(r#""stress_major_every":1"#)),
+        ];
+        assert_eq!(shards_major_every(&one_major), 1.0);
+    }
+
+    #[test]
     fn item4_same_pass_set_with_s1() {
         let root = fake_repo("item4");
         let src = src_at(&root, "HEAD");
@@ -3639,7 +4530,51 @@ mod tests {
             (
                 gc_json(&["test/language/l00.js"], S1, &src),
                 Status::Pass,
-                "S1 on, verify cadence 1, files 22 / 23 + 1 skipped, infra 0, new failures 0",
+                "S1 on, verify cadence 1, major GC every 64, files 22 / 23 + 1 skipped, infra 0, new failures 0",
+            ),
+            (
+                gc_json(
+                    &[],
+                    r#""generational":true,"verify_cadence":1,"stress_major_every":1,"#,
+                    &src,
+                ),
+                Status::Fail,
+                "\"stress_major_every\": 1, every GC major",
+            ),
+            (
+                gc_json(
+                    &[],
+                    r#""generational":true,"verify_cadence":1,"stress_major_every":0,"#,
+                    &src,
+                ),
+                Status::Fail,
+                "\"stress_major_every\": 0, every GC major",
+            ),
+            (
+                gc_json(
+                    &[],
+                    r#""generational":true,"verify_cadence":1,"stress_major_every":8,"#,
+                    &src,
+                ),
+                Status::Pass,
+                "S1 on, verify cadence 1, major GC every 8,",
+            ),
+            // A stress cadence above 1 may run no stress GC at all (gc_trigger skips the
+            // budget), so no minor GC: only `--gc-stress 1` is item 4 evidence.
+            (
+                gc_json(&[], S1, &src).replace(r#""gc_stress":1,"#, r#""gc_stress":4294967295,"#),
+                Status::Fail,
+                "gc_stress 4294967295, not 1",
+            ),
+            (
+                gc_json(&[], S1, &src).replace(r#""gc_stress":1,"#, r#""gc_stress":2,"#),
+                Status::Fail,
+                "gc_stress 2, not 1",
+            ),
+            (
+                gc_json(&[], S1, &src).replace(r#""gc_stress":1,"#, ""),
+                Status::Fail,
+                "gc_stress missing, not 1",
             ),
             (
                 gc_json(&["test/language/l05.js"], S1, &src),
@@ -3743,6 +4678,179 @@ mod tests {
         let c = gc_ci_cell(&ci(&[job(1, s1, "success"), job(2, s1, "failure")])).unwrap();
         assert_eq!(c.status, Status::Fail, "{c:?}");
         assert!(gc_ci_cell(&ci(&[])).is_err());
+    }
+
+    /// X3, the O8 refusal (plan v10 section 3.7, V10-D10): items 1-4 read the build of each
+    /// input. A missing field, a preset or feedback other than the gate's (`jit`, `full`), or
+    /// features without `jit` give OPEN, never FAIL; the gate build passes.
+    #[test]
+    fn items_1_to_4_refuse_another_build() {
+        let root = fake_repo("x3");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let gate = GATE_BUILD;
+        // Items 3 and 4: the fields of an ep9-test262 JSON.
+        let t262_cases: Vec<(String, Status, &str)> = vec![
+            (
+                gate.to_string(),
+                Status::Pass,
+                "build: preset jit, feedback full, features jit,become",
+            ),
+            (
+                gate.replace(r#""preset":"jit""#, r#""preset":"jitless""#),
+                Status::Open,
+                "build: preset jitless, the gate reads preset jit (V10-D10)",
+            ),
+            (
+                gate.replace(r#""mode":"jit""#, r#""mode":"jitless""#),
+                Status::Open,
+                "build: its isolates ran preset jitless (`mode`), the gate reads preset jit",
+            ),
+            (
+                gate.replace(r#""feedback":"full""#, r#""feedback":"ics_only""#),
+                Status::Open,
+                "build: feedback ics_only, the gate reads feedback full (V10-D10)",
+            ),
+            (
+                gate.replace(r#"["jit","become"]"#, r#"["become"]"#),
+                Status::Open,
+                "build: features become, the gate reads a build with jit (V10-D10)",
+            ),
+            (
+                gate.replace(r#"["jit","become"]"#, "[]"),
+                Status::Open,
+                "build: features none, the gate reads a build with jit",
+            ),
+            // A JSON from before M5-P0: `mode` only.
+            (
+                r#""mode":"jit","#.to_string(),
+                Status::Open,
+                "build: it names no preset (`preset`), the gate reads preset jit",
+            ),
+            (
+                gate.replace(r#""feedback":"full","#, ""),
+                Status::Open,
+                "build: it names no feedback (`feedback`), the gate reads feedback full",
+            ),
+            (
+                gate.replace(r#""features":["jit","become"],"#, ""),
+                Status::Open,
+                "build: it names no features (`features`), the gate reads a build with jit",
+            ),
+            // A non-string feature is no feature list.
+            (
+                gate.replace(r#"["jit","become"]"#, r#"["jit",1]"#),
+                Status::Open,
+                "build: it names no features (`features`)",
+            ),
+        ];
+        let bare = src_at(&root, "HEAD").replace(GATE_BUILD, "");
+        for (build, want, text) in &t262_cases {
+            let src = format!("{bare}{build}");
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(17, 20, 24, 0.0, &[], &src),
+            ));
+            o.exec_gc = Vec::new();
+            let c = &run(&o).unwrap().cells[2].0;
+            assert_eq!(c.status, *want, "item 3, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 3, {text}: {}", c.evidence);
+            // Item 4: the GC-stress JSON (the --exec run of the gate build).
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(17, 20, 24, 0.0, &[], &src_at(&root, "HEAD")),
+            ));
+            o.exec_gc = vec![input(&root, "gc.json", &gc_json(&[], S1, &src))];
+            let c = &run(&o).unwrap().cells[3].0;
+            assert_eq!(c.status, *want, "item 4, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 4, {text}: {}", c.evidence);
+        }
+        // Item 4 also reads the build of the --exec run it compares with.
+        let src = src_at(&root, "HEAD");
+        o.exec = Some(input(
+            &root,
+            "exec.json",
+            &exec_json(
+                17,
+                20,
+                24,
+                0.0,
+                &[],
+                &src.replace(r#""feedback":"full""#, r#""feedback":"ics_only""#),
+            ),
+        ));
+        o.exec_gc = vec![input(&root, "gc.json", &gc_json(&[], S1, &src))];
+        let c = &run(&o).unwrap().cells[3].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence
+                .contains("exec.json: build: feedback ics_only, the gate reads feedback full"),
+            "{}",
+            c.evidence
+        );
+        // Items 1 and 2: the `--version` build line the bench JSONs copy.
+        let line_cases: [(Option<&str>, Status, &str); 6] = [
+            (
+                Some(GATE_LINE),
+                Status::Pass,
+                "build: preset jit, feedback full (the preset's default), features jit,become",
+            ),
+            (
+                Some("features jit; preset jit; feedback full"),
+                Status::Pass,
+                "build: preset jit, feedback full, features jit",
+            ),
+            (
+                Some("features none; preset jitless"),
+                Status::Open,
+                "build: preset jitless, the gate reads preset jit (V10-D10); build: feedback ics_only, the gate reads feedback full (V10-D10); build: features none, the gate reads a build with jit",
+            ),
+            (
+                Some("features jit; preset jit; feedback ics_only"),
+                Status::Open,
+                "build: feedback ics_only, the gate reads feedback full",
+            ),
+            // A binary from before M5-P0 prints no build line: kernels.mjs writes null.
+            (
+                None,
+                Status::Open,
+                "build: it names no preset (`preset`), the gate reads preset jit",
+            ),
+            (
+                Some("unknown (--version: exit 1)"),
+                Status::Open,
+                "build: it names no features (`features`)",
+            ),
+        ];
+        for (line, want, text) in line_cases {
+            let value = line.map_or("null".to_string(), |l| format!("\"{l}\""));
+            let k = kernels_json(&root, HOST, 15, 15, None)
+                .replace(&format!("\"{GATE_LINE}\""), &value);
+            o.kernels = Some(input(&root, "kernels.json", &k));
+            let c = &run(&o).unwrap().cells[0].0;
+            assert_eq!(c.status, want, "item 1, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 1, {text}: {}", c.evidence);
+            let e = exit2_json(&head, ["pass", "pass"], true)
+                .replace(&format!("\"{GATE_LINE}\""), &value);
+            o.cross = Some(input(&root, "exit2.json", &e));
+            let c = &run(&o).unwrap().cells[1].0;
+            assert_eq!(c.status, want, "item 2, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 2, {text}: {}", c.evidence);
+        }
+        // An exit2 JSON with no `engine_build` field (exit2.mjs of M5-P0 copies none): OPEN.
+        let e = exit2_json(&head, ["pass", "pass"], true)
+            .replace(&format!(r#""engine_build":"{GATE_LINE}","#), "");
+        o.cross = Some(input(&root, "exit2.json", &e));
+        let c = &run(&o).unwrap().cells[1].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("build: it names no preset (`preset`)"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn fuzz_json(tool: &str, commit: &str, hours: f64, counted: bool, crash: &str) -> String {
@@ -3880,13 +4988,51 @@ mod tests {
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(
             c.evidence.contains(
-                "not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml changed"
+                "not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress changed"
             ),
             "{}",
             c.evidence
         );
         assert!(
             c.evidence.contains("cargo-fuzz 24.0 / 24"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// fuzzrec high 1: a record cut off before its summary (counted false, fuzz.yml's fallback)
+    /// still carries its open crash ids, and item 5 reads them: FAIL, even with enough counted hours.
+    #[test]
+    fn item5_reads_the_crashes_of_an_uncounted_record() {
+        let root = fake_repo("item5unc");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let cut = fuzz_json(
+            "cargo-fuzz",
+            &head,
+            0.0,
+            false,
+            r#"{"id":"c3","state":"open"}"#,
+        )
+        .replace(r#""campaign":"cargo-fuzz-0""#, r#""campaign":"gh1-1-t""#);
+        o.fuzz = vec![
+            input(
+                &root,
+                "f1.json",
+                &fuzz_json("fuzzilli", &head, 100.0, true, ""),
+            ),
+            input(
+                &root,
+                "f2.json",
+                &fuzz_json("cargo-fuzz", &head, 24.0, true, ""),
+            ),
+            input(&root, "f3.json", &cut),
+        ];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Fail, "{c:?}");
+        assert!(
+            c.evidence.contains("1 open unique crashes"),
             "{}",
             c.evidence
         );
@@ -3946,5 +5092,20 @@ mod tests {
         assert!(a(&["--host", "x", "--out", "o", "--what"]).is_err());
         assert!(a(&["--host", "x", "--out", "o", "--base", ""]).is_err());
         assert!(a(&["--host"]).is_err());
+    }
+
+    /// gates5 medium 5: the evidence shortening cuts on character boundaries, so an input field
+    /// with non-ASCII text cannot panic m1-exit; an ASCII id is cut as before.
+    #[test]
+    fn short_is_safe_for_any_text() {
+        let id = "0123abcd".repeat(5);
+        assert_eq!(short(&id), "0123abcd\u{2026}3abcd");
+        assert_eq!(short("abc"), "abc");
+        let e = "\u{e9}".repeat(20);
+        assert_eq!(
+            short(&e),
+            format!("{}\u{2026}{}", "\u{e9}".repeat(8), "\u{e9}".repeat(5))
+        );
+        assert_eq!(short(&"\u{e9}".repeat(12)), "\u{e9}".repeat(12));
     }
 }

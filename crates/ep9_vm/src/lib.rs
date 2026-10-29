@@ -45,6 +45,17 @@
 //! `abi/weakref.rs` (M4-P4 WEAKREF). `interp/ops.rs` calls the hooks (it has no owner after
 //! M4-P0).
 //!
+//! Month-5 modules (M5-P0, plan v10 §2.4; OBJECT_LAYOUT 5, IC_LAYOUT 3, VM_LAYOUT 1):
+//! [`layout`] (the layout facts native code bakes in, C-18; ungated since M5-P0) and exec.rs
+//! ([`ExecOptions`], [`Isolate::new_with`] and [`build_info`], C-23). Filled in M5-P1:
+//! deopt.rs (the deopt core and its side table, SPIKEC-5), fuse.rs (the fuse registry, FR0;
+//! hook `shape::note_change`), elements.rs (elements kinds step 1, ELEM1; M5-P2 ELEM2 adds
+//! DICTIONARY). Filled in M5-P2: slack.rs (the in-object capacity of `new F`, SLACK; hook
+//! `call::ordinary_create_from_constructor` -> `slack::instance_capacity`), field_rep.rs (field
+//! representation and const bits, CONSTREP; hooks in the `props` field stores and the store
+//! IC hits). The month-5 stub left (marked on its first line) changes nothing until its owner
+//! fills it: external_ref.rs (`ExternalRef<T>`, M5-P3 M1A-CODE).
+//!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
 #![cfg_attr(feature = "become", feature(explicit_tail_calls))]
@@ -60,14 +71,20 @@ mod call;
 mod compiler;
 mod construct_ic;
 mod conv;
+mod deopt;
 mod descriptor;
 mod dispatch;
+mod elements;
 mod error;
+mod exec;
 mod exotic;
+mod external_ref;
 mod facts_export;
 mod feedback;
+mod field_rep;
 mod frame;
 mod function_info;
+mod fuse;
 mod generator;
 mod host;
 mod ic;
@@ -78,6 +95,8 @@ mod jobs;
 mod key;
 mod keyed_ic;
 mod kinds;
+#[doc(hidden)]
+pub mod layout;
 mod literal_site;
 mod module;
 #[cfg(feature = "spike-native")]
@@ -94,6 +113,7 @@ mod realm;
 mod regexp;
 mod runtime;
 mod shape;
+mod slack;
 mod string;
 mod stub_cache;
 mod symbol;
@@ -123,6 +143,7 @@ pub use dispatch::{
     CodeEntry, CodeRegistry, DispatchKind, DispatchSlot, NO_CODE, RangeRegistry, RegistryError,
 };
 pub use ep9_value::{JsResult, Throw, Value};
+pub use exec::{BuildInfo, ExecOptions, Feedback, Preset, build_info};
 pub use host::HostCx;
 pub use interp::Dispatch;
 pub use isolate::{
@@ -135,7 +156,7 @@ pub use string::JsStr;
 #[cfg(feature = "spike-native")]
 pub use native::{
     InstallError, NativeCx, NativeEntry, NativeTarget, RtCompareFn, RtFn0, RtFn1, RtFn2,
-    RuntimeTable, call_from_rust, cmp, install_native, install_native_b, layout, lookup_code,
+    RuntimeTable, call_from_rust, cmp, install_native, install_native_b, lookup_code,
     native_target, uninstall_native,
 };
 

@@ -1453,22 +1453,22 @@ impl<'s> Cx<'s> {
         let Some(o) = v.as_object() else {
             return Err(self.throw_type_error("CreateListFromArrayLike called on non-object"));
         };
-        let len = self.get(o, self.atom(Atom::Length))?;
-        let len = self.to_length(len)?;
+        let len = match crate::arguments::list_length(self.rt(), o.bits()) {
+            Some(n) => n, // an unmodified arguments object (V10-D11): no getter, no conversion
+            None => self
+                .get(o, self.atom(Atom::Length))
+                .and_then(|l| self.to_length(l))?,
+        };
         let mut list = self.args_builder();
-        // Get(O, ! ToString(𝔽(i))) without a string key (M4-P3 KEYED, OI-04): a present
-        // array element is read in place, any other array index through `get_int` (an
-        // arguments element, a hole, the chain); each read sees the state after the last
-        // push and the last getter. An index past 2^32 - 2 takes the key.
+        // Get(O, ! ToString(𝔽(i))) with no string key (OI-04, V10-D11): a present array or
+        // arguments element in place, else `get_int`; each read sees the last push and getter.
         for i in 0..len {
             let ob = o.bits();
             let e = match u32::try_from(i) {
-                Ok(n) if n != u32::MAX => {
-                    match kinds::is_array(ob).then(|| object::array_get(ob, n)) {
-                        Some(Some(v)) => v,
-                        _ => property::get_int(self.cx, ob, n)?,
-                    }
-                }
+                Ok(n) if n != u32::MAX => match crate::arguments::list_element(ob, n) {
+                    Some(v) => v,
+                    None => property::get_int(self.cx, ob, n)?,
+                },
                 _ => property::get_keyed(self.cx, ob, conv::num(i as f64))?,
             };
             list.push(self, Self::local::<JsValue>(e))?;
@@ -1514,6 +1514,40 @@ impl<'s> Cx<'s> {
     /// Runs a full garbage collection now (test hooks such as `gc()`).
     pub fn collect_garbage(&mut self) {
         self.rt().heap.collect();
+    }
+
+    /// Runs a minor garbage collection now (the REPRL `gc('minor')`; M5-P1 REPRL2, a part-2
+    /// addition): with the S1 generational heap (`HeapConfig::generational`) it frees only the
+    /// young cells that nothing reaches, and the young cells it keeps become old. A heap that
+    /// is not generational (S0) runs a full collection instead, as `collect_garbage` does. A
+    /// `Local` stays valid across it, as across `collect_garbage`.
+    ///
+    /// ```
+    /// use ep9_heap::HeapConfig;
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let s1 = IsolateConfig {
+    ///     heap: HeapConfig { generational: true, ..HeapConfig::default() },
+    ///     ..IsolateConfig::default()
+    /// };
+    /// let mut iso = Isolate::new(s1).unwrap();
+    /// let before = iso.gc_stats();
+    /// iso.with_cx(|cx| Ok(cx.collect_garbage_minor())).unwrap();
+    /// let after = iso.gc_stats();
+    /// assert_eq!(after.minor_collections, before.minor_collections + 1);
+    /// assert!(after.last_minor);
+    ///
+    /// // S0: a full collection, no minor one.
+    /// let s0 = IsolateConfig {
+    ///     heap: HeapConfig { generational: false, ..HeapConfig::default() },
+    ///     ..IsolateConfig::default()
+    /// };
+    /// let mut iso = Isolate::new(s0).unwrap();
+    /// iso.with_cx(|cx| Ok(cx.collect_garbage_minor())).unwrap();
+    /// assert_eq!(iso.gc_stats().minor_collections, 0);
+    /// assert!(!iso.gc_stats().last_minor);
+    /// ```
+    pub fn collect_garbage_minor(&mut self) {
+        self.rt().heap.collect_minor();
     }
 
     // ---- Math.random (M4-P0, part 2; V9-D16) ----

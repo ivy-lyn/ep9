@@ -35,8 +35,8 @@ use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
 use ep9_vm::{
-    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, HostFn, Isolate,
-    IsolateConfig, JsResult, Local, PropertyDescriptor, TerminateHandle,
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, ExecOptions, Feedback,
+    HostFn, Isolate, IsolateConfig, JsResult, Local, PropertyDescriptor, TerminateHandle,
 };
 
 use crate::frontmatter::{self, Meta};
@@ -79,6 +79,9 @@ pub struct Options {
     pub skip_list: Option<PathBuf>,
     /// `IsolateConfig::feedback_threshold` of every isolate.
     pub feedback_threshold: u32,
+    /// The type-feedback mode of every isolate (`--feedback`; `Isolate::new_with`, C-23): the
+    /// build's default preset with this mode.
+    pub feedback: Feedback,
     pub verbose: bool,
     pub progress: bool,
     /// Number of failure causes in the report.
@@ -93,6 +96,7 @@ pub struct WorkerOptions {
     pub timeout: Duration,
     pub gc_stress: u32,
     pub feedback_threshold: u32,
+    pub feedback: Feedback,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -542,23 +546,23 @@ fn injected_fault(rel: &str) {
     }
 }
 
-/// Whether `EP9_GC_GENERATIONAL=1` turns on the S1 generational heap (see [`isolate_config`]).
-fn generational_from_env() -> bool {
-    std::env::var_os("EP9_GC_GENERATIONAL").is_some_and(|v| v == "1")
+/// The heap mode of every test isolate, from the environment, which the workers inherit:
+/// (generational, stress_major_every) of [`heap_mode`]. Unset: the heap default (S1 since
+/// M5-P2, V10-D17). A bad value panics, so a typo cannot run the other mode.
+fn generational_from_env() -> (bool, u32) {
+    heap_mode(&|k| std::env::var_os(k)).unwrap_or_else(|e| panic!("ep9-test262: {e}"))
 }
 
-/// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's.
-/// `EP9_GC_GENERATIONAL=1` in the environment (inherited by the workers) turns on the S1
-/// generational heap (`HeapConfig::generational`): with `--gc-stress` that is the S1
-/// GC-stress mode, a minor GC at every Nth allocation and a major one every 64th GC (V9-D27;
-/// plan v9 §5.1). The switch lives in `HeapConfig`, never in `IsolateConfig`.
+/// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's,
+/// and the heap mode of [`generational_from_env`] (in `HeapConfig`, never `IsolateConfig`).
 fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
-    let generational = generational_from_env();
+    let (generational, stress_major_every) = generational_from_env();
     IsolateConfig {
         heap: HeapConfig {
             gc_stress,
             verify_after_gc: gc_stress > 0,
             generational,
+            stress_major_every,
             ..HeapConfig::default()
         },
         feedback_threshold,
@@ -606,6 +610,12 @@ fn hook_failure(e: CodegenError) -> CompileFailure {
     }
 }
 
+/// The execution options of every test isolate (C-23): this build's default preset (`jit` with
+/// the runner's default `jit` feature) with the `--feedback` mode.
+fn exec_options(feedback: Feedback) -> ExecOptions {
+    ExecOptions::default().feedback(feedback)
+}
+
 /// `exec` exits 2 unless an isolate made with `config` has a builtin table: a run without
 /// one would fail thousands of tests and could rewrite the expectations with them.
 fn check_builtins(config: IsolateConfig) -> Result<(), String> {
@@ -625,7 +635,8 @@ struct RunCtx<'a> {
 impl RunCtx<'_> {
     fn isolate(&self) -> Result<Isolate, String> {
         let config = isolate_config(self.opts.gc_stress, self.opts.feedback_threshold);
-        let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
+        let mut iso = Isolate::new_with(config, exec_options(self.opts.feedback))
+            .map_err(|e| format!("cannot create an isolate: {e}"))?;
         for (name, length, f) in HOST_FUNCTIONS {
             iso.register_host_function(name, length, f);
         }
@@ -1405,12 +1416,58 @@ fn header(triple: &str) -> String {
     )
 }
 
+/// Test seam of the two source reads (only for tools/test262/tests; plan v10 section 3.7 F3,
+/// the CX5-C1 wiring): `EP9_TEST262_SOURCE_ROOT=<dir>` reads the source facts of the ep9 tree
+/// at `<dir>` (a small git tree of the test) in place of this repository, and
+/// `EP9_TEST262_DURING_RUN_FROM=<file>` with `EP9_TEST262_DURING_RUN_TO=<file>` copies the
+/// first file over the second right after the reads before the run (a tracked file of that
+/// tree, or of the test262 checkout, changes during the run). A run that uses either writes
+/// `"test_seam": true`, and `cargo xtask m1-exit` gives such an input OPEN.
+fn seam_source_root() -> PathBuf {
+    std::env::var_os("EP9_TEST262_SOURCE_ROOT")
+        .filter(|r| !r.is_empty())
+        .map_or_else(crate::repo_root, PathBuf::from)
+}
+
+/// True when the run uses the test seam ([`seam_source_root`]).
+fn seam_used() -> bool {
+    ["EP9_TEST262_SOURCE_ROOT", "EP9_TEST262_DURING_RUN_FROM"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+}
+
+/// The change of the test seam during the run ([`seam_source_root`]); an error ends the run
+/// (exit 2), so a test cannot pass without the change.
+fn seam_during_run() -> Result<(), String> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    match (
+        var("EP9_TEST262_DURING_RUN_FROM"),
+        var("EP9_TEST262_DURING_RUN_TO"),
+    ) {
+        (None, None) => Ok(()),
+        (Some(from), Some(to)) => std::fs::copy(&from, &to).map(|_| ()).map_err(|e| {
+            format!(
+                "test seam: cannot copy {} to {}: {e}",
+                Path::new(&from).display(),
+                Path::new(&to).display()
+            )
+        }),
+        _ => Err("test seam: set both EP9_TEST262_DURING_RUN_FROM and _TO".to_string()),
+    }
+}
+
 /// Run the `exec` command. Exit code: 0 = matches the expectations, 1 = differs, 2 = error.
 pub fn run(opts: &Options) -> ExitCode {
     let started = Instant::now();
     // The source facts before any test runs (CX5-C1): the summary compares them with a second
     // read when it is written.
-    let source = provenance::source(&crate::repo_root(), &provenance::process_env);
+    let source = provenance::source(&seam_source_root(), &provenance::process_env);
+    // The test262 checkout before the run too (gates5 high 2).
+    let t262 = provenance::test262_checkout(&opts.test262);
+    if let Err(e) = seam_during_run() {
+        eprintln!("ep9-test262: {e}");
+        return ExitCode::from(2);
+    }
     if let Err(e) = check_builtins(isolate_config(0, opts.feedback_threshold)) {
         eprintln!("ep9-test262: {e}");
         return ExitCode::from(2);
@@ -1486,6 +1543,8 @@ pub fn run(opts: &Options) -> ExitCode {
         opts.gc_stress.to_string(),
         "--feedback-threshold".into(),
         opts.feedback_threshold.to_string(),
+        "--feedback".into(),
+        opts.feedback.name().into(),
     ];
     // A test has at most 2 runs; each gets the soft timeout, then a margin. A worker that
     // gives no result by then is stuck where the interrupt check does not reach: kill it.
@@ -1555,11 +1614,14 @@ pub fn run(opts: &Options) -> ExitCode {
     let mut top: Vec<(&str, usize)> = causes.iter().map(|(c, n)| (*c, *n)).collect();
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
 
+    let exec = exec_options(opts.feedback);
     println!(
-        "ep9-test262 exec: {} tests, {} worker processes, target {}, mode jit, timeout {:?}{}{}",
+        "ep9-test262 exec: {} tests, {} worker processes, target {}, mode {}, feedback {}, timeout {:?}{}{}",
         results.len(),
         threads,
         opts.triple,
+        exec.preset().name(),
+        exec.feedback_mode().name(),
         opts.timeout,
         if opts.gc_stress > 0 {
             format!(", GC-stress {}", opts.gc_stress)
@@ -1705,6 +1767,7 @@ pub fn run(opts: &Options) -> ExitCode {
     if let Some(path) = &opts.json {
         let text = summary_json(
             opts, &by_dir, files_all, runs_all, &top, &results, &diff, wall, &skipped, source,
+            &t262,
         );
         if let Err(e) = std::fs::write(path, text) {
             eprintln!("ep9-test262: cannot write {}: {e}", path.display());
@@ -1726,18 +1789,43 @@ fn summary_json(
     wall: Duration,
     skipped: &BTreeSet<String>,
     source: provenance::Source,
+    t262: &provenance::Checkout,
 ) -> String {
     let count = |out: &mut String, c: Count| {
         let _ = write!(out, "{{\"passed\":{},\"total\":{}}}", c.passed, c.total);
     };
-    let mut out = String::from("{\"command\":\"exec\",\"mode\":\"jit\",\"target\":");
+    // The build (MC-w17-5): `mode` is the preset the isolates ran (no longer the literal
+    // "jit"), `features` the ep9_vm features of this binary, `feedback` the type-feedback mode.
+    let build = ep9_vm::build_info();
+    let exec = exec_options(opts.feedback);
+    let mut out = String::from("{\"command\":\"exec\",\"mode\":");
+    json::string(&mut out, exec.preset().name());
+    out.push_str(",\"preset\":");
+    json::string(&mut out, build.preset);
+    out.push_str(",\"features\":");
+    json::string_array(&mut out, build.features);
+    out.push_str(",\"feedback\":");
+    json::string(&mut out, exec.feedback_mode().name());
+    out.push_str(",\"target\":");
     json::string(&mut out, opts.triple);
     out.push_str(",\"test262\":");
     json::string(&mut out, &opts.test262.display().to_string());
     // Where the run came from (`cargo xtask m1-exit` items 3 and 4: freshness and provenance):
     // the facts read before the run, dirty when a second read now differs (CX5-C1).
-    let now = provenance::source(&crate::repo_root(), &provenance::process_env);
+    let now = provenance::source(&seam_source_root(), &provenance::process_env);
     provenance::write_fields(&mut out, &provenance::settle(source, &now));
+    if seam_used() {
+        out.push_str(",\"test_seam\":true");
+    }
+    // The runner's build commit and dirty flag, and the test262 checkout before the run and
+    // now (C2, gates5 high 1 and 2, item 8; m1-exit X4).
+    provenance::write_runner_fields(
+        &mut out,
+        provenance::runner_commit(),
+        provenance::runner_dirty(),
+        t262,
+        &provenance::test262_checkout(&opts.test262),
+    );
     let _ = write!(
         out,
         ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"feedback_threshold\":{},\"skipped\":{}",
@@ -1762,13 +1850,13 @@ fn summary_json(
             &results.iter().map(|(rel, _)| *rel).collect::<Vec<_>>(),
         );
     }
-    // `cargo xtask m1-exit` item 4 reads these two (TOOLS F6, GC4 need 3): the S1 generational
-    // heap (`EP9_GC_GENERATIONAL=1`, `isolate_config`) and how often the heap verifier runs
-    // (after every collection under GC-stress, else never).
+    // `cargo xtask m1-exit` item 4 reads the first two (TOOLS F6, GC4 need 3): the heap mode the
+    // isolates used (`isolate_config`; S1 unless `EP9_GC_GENERATIONAL=0`) and how often the heap
+    // verifier runs (after every GC under GC-stress, else never); then the major-GC cadence.
+    let (generational, major_every) = generational_from_env();
     let _ = write!(
         out,
-        ",\"generational\":{},\"verify_cadence\":{}",
-        generational_from_env(),
+        ",\"generational\":{generational},\"verify_cadence\":{},\"stress_major_every\":{major_every}",
         u32::from(opts.gc_stress > 0),
     );
     let _ = write!(out, ",\"wall_seconds\":{:.3}", wall.as_secs_f64());
@@ -1825,6 +1913,30 @@ fn summary_json(
     json::string_array(&mut out, &diff.now_passing);
     out.push_str("}}\n");
     out
+}
+
+/// The heap mode of the test isolates (plan v10 V10-D17), read through `var` (the environment):
+/// `EP9_GC_GENERATIONAL` unset or empty = `HeapConfig::default().generational` (S1 since
+/// M5-P2), `0` = S0, `1` = S1; `EP9_GC_STRESS_MAJOR_EVERY` unset or empty = the heap default
+/// (64), else `HeapConfig::stress_major_every` (GC-stress with S1: every Nth GC is major, the
+/// others minor; 0 and 1: every one is major, the major-only CI step). Returns (generational,
+/// stress_major_every). Any other value is an error.
+fn heap_mode(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Result<(bool, u32), String> {
+    let get = |k: &str| var(k).filter(|v| !v.is_empty());
+    let default = HeapConfig::default();
+    let generational = match get("EP9_GC_GENERATIONAL") {
+        None => default.generational,
+        Some(v) if v == "0" => false,
+        Some(v) if v == "1" => true,
+        Some(v) => return Err(format!("EP9_GC_GENERATIONAL must be 0 or 1, not {v:?}")),
+    };
+    let major_every = match get("EP9_GC_STRESS_MAJOR_EVERY") {
+        None => default.stress_major_every,
+        Some(v) => v.to_str().and_then(|s| s.parse().ok()).ok_or_else(|| {
+            format!("EP9_GC_STRESS_MAJOR_EVERY must be a number (u32), not {v:?}")
+        })?,
+    };
+    Ok((generational, major_every))
 }
 
 #[cfg(test)]
@@ -1969,5 +2081,45 @@ mod tests {
         assert!(w.disarm(), "late, fired by the watchdog");
         // Taken: no stale expiry for a later run that compiles but is never armed.
         assert!(!w.disarm());
+    }
+
+    /// V10-D17: the runner follows the heap default (S1 since M5-P2) unless
+    /// `EP9_GC_GENERATIONAL` is 0 or 1; `EP9_GC_STRESS_MAJOR_EVERY` sets the major cadence; a
+    /// bad value is an error, never the other mode.
+    #[test]
+    fn heap_mode_follows_the_heap_default_unless_the_env_says_0_or_1() {
+        let mode = |g: Option<&str>, m: Option<&str>| {
+            heap_mode(&|k| match k {
+                "EP9_GC_GENERATIONAL" => g.map(Into::into),
+                "EP9_GC_STRESS_MAJOR_EVERY" => m.map(Into::into),
+                _ => None,
+            })
+        };
+        assert!(HeapConfig::default().generational, "S1 is the heap default");
+        assert_eq!(mode(None, None), Ok((true, 64)));
+        assert_eq!(mode(Some(""), Some("")), Ok((true, 64)), "empty = unset");
+        assert_eq!(mode(Some("0"), None), Ok((false, 64)));
+        assert_eq!(mode(Some("1"), None), Ok((true, 64)));
+        assert_eq!(mode(None, Some("1")), Ok((true, 1)));
+        assert_eq!(mode(Some("1"), Some("8")), Ok((true, 8)));
+        for bad in ["true", "2", " 1", "on"] {
+            let e = mode(Some(bad), None).unwrap_err();
+            assert!(e.contains("EP9_GC_GENERATIONAL must be 0 or 1"), "{e}");
+        }
+        for bad in ["-1", "x", "4294967296"] {
+            let e = mode(None, Some(bad)).unwrap_err();
+            assert!(
+                e.contains("EP9_GC_STRESS_MAJOR_EVERY must be a number"),
+                "{e}"
+            );
+        }
+        // The isolates get exactly these values (no env var set in this test process).
+        if std::env::var_os("EP9_GC_GENERATIONAL").is_none()
+            && std::env::var_os("EP9_GC_STRESS_MAJOR_EVERY").is_none()
+        {
+            let c = isolate_config(1, 0);
+            assert!(c.heap.generational && c.heap.verify_after_gc);
+            assert_eq!(c.heap.stress_major_every, 64);
+        }
     }
 }

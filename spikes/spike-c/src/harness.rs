@@ -23,11 +23,50 @@ use spike_b::jit::{InMemory, JitModule, Placed};
 
 thread_local! {
     static OUTPUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The terminate handle of the session whose script runs now ([`Session::run`] sets it).
+    static TERMINATE: RefCell<Option<ep9_vm::TerminateHandle>> = const { RefCell::new(None) };
+}
+
+/// A test's change to a unit before it runs: (file name, unit) -> unit.
+#[cfg(test)]
+pub(crate) type UnitPatch = fn(&str, ep9_bytecode::CompiledUnit) -> ep9_bytecode::CompiledUnit;
+
+#[cfg(test)]
+thread_local! {
+    /// A test's change to each unit that [`Session::run`] compiles on this thread: a verified
+    /// unit that BytecodeGen never makes (Codex M5-P2 r1 spikec6 1). The changed unit is
+    /// verified again before it runs.
+    pub(crate) static PATCH: RefCell<Option<UnitPatch>> = const { RefCell::new(None) };
+}
+
+/// The unit `run` runs: `unit`, or in a test the [`PATCH`] of it, verified again.
+#[cfg(test)]
+fn patched(file: &str, unit: VerifiedUnit) -> Result<VerifiedUnit, String> {
+    match PATCH.with(|p| *p.borrow()) {
+        Some(f) => ep9_bytecode::verify(f(file, unit.into_inner()))
+            .map_err(|e| format!("the patched unit does not verify: {e:?}")),
+        None => Ok(unit),
+    }
+}
+
+#[cfg(not(test))]
+fn patched(_file: &str, unit: VerifiedUnit) -> Result<VerifiedUnit, String> {
+    Ok(unit)
 }
 
 /// The lines `print` wrote on this thread since the last call.
 pub fn take_output() -> Vec<String> {
     OUTPUT.with(|o| std::mem::take(&mut *o.borrow_mut()))
+}
+
+/// A function that [`Session::install_targets`] installs code for: a JS function value, or
+/// function `id` of the script `file` that the session ran (install by function id, M5-P2
+/// SPIKEC-6 WI-SC5: an inner closure such as navier-stokes' `lin_solve`, which no JS value
+/// reaches; every closure of the function runs the code).
+#[derive(Clone, Debug)]
+pub enum Target {
+    Value(Value),
+    Id { file: String, id: u32 },
 }
 
 /// `print(...args)`: ToString of each argument, space separated, as one captured line.
@@ -57,6 +96,22 @@ fn gc<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     cx.collect_garbage();
+    Ok(Local::undefined())
+}
+
+/// `terminate()`: asks the running script to stop (`TerminateHandle::terminate`); the isolate
+/// stops at its next interrupt poll with an exception JS cannot catch (w16 O6 tests).
+fn terminate<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    TERMINATE.with(|t| {
+        if let Some(h) = &*t.borrow() {
+            h.terminate();
+        }
+    });
     Ok(Local::undefined())
 }
 
@@ -107,8 +162,8 @@ impl Script {
 impl Script {
     /// The graph-builder input of function `id` read from the unit, for a function no JS
     /// expression reaches (an inner closure such as navier-stokes' `lin_solve`; SPIKEC-4).
-    /// Its key is 0: the code it gives cannot be installed (install by function id is a
-    /// `native.rs` need, protocol §9), only built, allocated and emitted for a report.
+    /// Its key is 0: the code it gives cannot be installed; [`Session::input_of_target`] with
+    /// [`Target::Id`] gives the installable input (install by function id, WI-SC5).
     pub fn unit_input<'a>(&'a self, id: u32, name: &'a str) -> Result<FunctionInput<'a>, String> {
         let f = self
             .unit
@@ -139,7 +194,7 @@ fn line_range(text: &str, line: u32) -> Option<std::ops::Range<usize>> {
     None
 }
 
-/// An isolate with the builtins, `print` and `gc`, the scripts it ran, and the JIT modules
+/// An isolate with the builtins, `print`, `gc` and `terminate`, the scripts it ran, and the JIT modules
 /// whose code it runs.
 ///
 /// The isolate stays inside the session: a move out would drop the modules while the
@@ -163,6 +218,7 @@ impl Session {
         let mut iso = Isolate::new(isolate_config(config)).map_err(|e| format!("{e:?}"))?;
         iso.register_host_function("print", 1, print);
         iso.register_host_function("gc", 0, gc);
+        iso.register_host_function("terminate", 0, terminate);
         Ok(Session {
             iso,
             modules: Vec::new(),
@@ -175,7 +231,9 @@ impl Session {
     /// ([`Session::scripts`]), even if it throws.
     pub fn run(&mut self, source: &str, file: &str) -> RunOutput {
         take_output();
-        let result = match compile(source) {
+        let handle = self.iso.terminate_handle();
+        TERMINATE.with(|t| *t.borrow_mut() = Some(handle));
+        let result = match compile(source).and_then(|u| patched(file, u)) {
             Ok(unit) => {
                 self.scripts.push(Script {
                     file: file.to_string(),
@@ -247,39 +305,98 @@ impl Session {
         ep9_vm::native_target(&self.iso, f).and_then(|t| t.kind)
     }
 
-    /// Places `codes` (made from the function values `fns`, same order) in one module and
-    /// installs each in an Opt slot (placement (b), `ep9_vm::install_native_b`). All or
-    /// nothing, as `spike_b::harness::Session::install_as`: if an install is refused, the
-    /// functions this call installed before it go back to T0 before the module drops.
+    /// The emitter input of `t` (its key is the live FunctionInfo, so the code installs).
+    pub fn input_of_target(&self, t: &Target) -> Result<FunctionInput<'_>, String> {
+        match t {
+            Target::Value(f) => self.input_of(*f),
+            Target::Id { file, id } => {
+                let t = ep9_vm::NativeCx::target_by_id(&self.iso, file, *id)?;
+                Ok(FunctionInput {
+                    name: t.name,
+                    bytecode: t.bytecode,
+                    parameter_count: t.parameter_count,
+                    register_count: t.register_count,
+                    handler_count: t.handler_count,
+                    key: t.info,
+                })
+            }
+        }
+    }
+
+    /// The dispatch-slot kind of `t` (as [`Session::slot_kind`]).
+    pub fn slot_kind_of(&self, t: &Target) -> Option<ep9_vm::DispatchKind> {
+        match t {
+            Target::Value(f) => self.slot_kind(*f),
+            Target::Id { file, id } => ep9_vm::NativeCx::target_by_id(&self.iso, file, *id)
+                .ok()
+                .and_then(|t| t.kind),
+        }
+    }
+
+    /// [`Session::install_targets`] for function values.
+    ///
+    /// # Safety
+    /// As [`Session::install_targets`].
+    pub unsafe fn install_b(
+        &mut self,
+        fns: &[Value],
+        codes: Vec<FunctionCode>,
+        metas: Vec<Option<Vec<u8>>>,
+    ) -> Result<&[Placed], String> {
+        let targets: Vec<Target> = fns.iter().map(|&f| Target::Value(f)).collect();
+        // SAFETY: the caller's contract.
+        unsafe { self.install_targets(&targets, codes, metas) }
+    }
+
+    /// Places `codes` (made from the targets `fns`, same order) in one module and installs
+    /// each in an Opt slot (placement (b)): with its deopt metadata `metas[i]` (the H29 byte
+    /// form of [`crate::deopt_meta`]) through `ep9_vm::NativeCx::install_b_with_deopt` (or
+    /// `install_b_with_deopt_by_id` for a [`Target::Id`]),
+    /// so its guard exits deopt to T0 (M5-P1), or with `None` through
+    /// `ep9_vm::install_native_b` (code with no exits, such as Spike B's; an exit of such code
+    /// is a failed deopt, which aborts the process, M5-P1-ORCH-12). All or nothing, as
+    /// `spike_b::harness::Session::install_as`: if an install is refused, the functions this
+    /// call installed before it go back to T0 before the module drops.
     ///
     /// The key check refuses code made for another function; it cannot see what the bytes
     /// do, so the ABI is the caller's promise.
     ///
     /// # Safety
     /// For each `i`, `codes[i].code` is the machine code of a placement (b) emitter for the
-    /// function `fns[i]` of this session (from [`Session::input_of`] with no JS run since),
+    /// function `fns[i]` of this session (from [`Session::input_of_target`] with no JS run
+    /// since),
     /// unchanged since the emitter made it, and meets the contract of
     /// `ep9_vm::install_native_b`: the T0 handler ABI `(cx, pc, fp, acc)`, `cx` read only
     /// through the `ep9_vm::layout` offsets, only `RuntimeTable` calls, callee-saved
     /// registers kept, and exits only by the (b) tail jump to `cx.table[*pc]`. Code of
     /// another ABI (placement (a) `NativeEntry` code, `spike_b::jit::SpikeEmitter`) breaks
-    /// it. The caller does not need to keep anything alive: the session keeps the module
-    /// until the isolate drops.
+    /// it. `metas[i]`, if any, is the metadata the emitter made with `codes[i]`: each exit
+    /// calls `RuntimeTable::deopt` with its stub's pc offset, and each stack location is a
+    /// word of the code's own native frame. The caller does not need to keep anything alive:
+    /// the session keeps the module until the isolate drops.
     ///
     /// ```compile_fail,E0133
     /// let mut s = spike_c::harness::Session::new(&spike_b::harness::Config::default()).unwrap();
-    /// let _ = s.install_b(&[], Vec::new()); // E0133: an unsafe fn
+    /// let _ = s.install_targets(&[], Vec::new(), Vec::new()); // E0133: an unsafe fn
     /// ```
-    pub unsafe fn install_b(
+    pub unsafe fn install_targets(
         &mut self,
-        fns: &[Value],
+        fns: &[Target],
         codes: Vec<FunctionCode>,
+        metas: Vec<Option<Vec<u8>>>,
     ) -> Result<&[Placed], String> {
-        if fns.len() != codes.len() {
-            return Err(format!("{} functions, {} codes", fns.len(), codes.len()));
+        if fns.len() != codes.len() || metas.len() != codes.len() {
+            return Err(format!(
+                "{} functions, {} codes, {} metadata tables",
+                fns.len(),
+                codes.len(),
+                metas.len()
+            ));
         }
-        for (i, (&f, code)) in fns.iter().zip(&codes).enumerate() {
-            let input = self.input_of(f).map_err(|e| format!("function {i}: {e}"))?;
+        for (i, (f, code)) in fns.iter().zip(&codes).enumerate() {
+            let input = self
+                .input_of_target(f)
+                .map_err(|e| format!("function {i}: {e}"))?;
             if input.key != code.key {
                 return Err(format!(
                     "{}: the code was made for another function",
@@ -288,30 +405,83 @@ impl Session {
             }
         }
         let module = InMemory.finalize(codes).map_err(|e| e.to_string())?;
-        for (i, &f) in fns.iter().enumerate() {
+        for (i, f) in fns.iter().enumerate() {
             let range = module.functions()[i].code.clone();
             // SAFETY: the caller's contract (# Safety): function `i` of the module is
             // placement (b) code for `f` (the key check above also holds: the same
-            // FunctionInfo) with the ABI and exit rules `install_native_b` requires. The
+            // FunctionInfo) with the ABI and exit rules `install_native_b` requires, and
+            // `metas[i]` is its own metadata (the `install_b_with_deopt` rules). The
             // module outlives the installation: on success it goes to `self.modules`, which
             // drops after `self.iso`, and `self.iso` never leaves the session (private
             // field, no `&mut` accessor); on a refusal the loop below uninstalls functions
             // 0..i before the module drops (or keeps the module if one cannot be uninstalled).
-            let r = unsafe { ep9_vm::install_native_b(&self.iso, f, range) };
+            let r = unsafe {
+                match (f, &metas[i]) {
+                    (Target::Value(f), Some(m)) => {
+                        ep9_vm::NativeCx::install_b_with_deopt(&self.iso, *f, range, m)
+                    }
+                    (Target::Value(f), None) => {
+                        ep9_vm::install_native_b(&self.iso, *f, range).map_err(|e| format!("{e:?}"))
+                    }
+                    (Target::Id { file, id }, Some(m)) => {
+                        ep9_vm::NativeCx::install_b_with_deopt_by_id(&self.iso, file, *id, range, m)
+                    }
+                    (Target::Id { .. }, None) => {
+                        Err("install by function id needs the deopt metadata".into())
+                    }
+                }
+            };
             if let Err(e) = r {
+                // A function installed by id has no uninstall: it counts as stuck, so the
+                // module stays.
                 let stuck = fns[..i]
                     .iter()
-                    .filter(|&&g| ep9_vm::uninstall_native(&self.iso, g).is_err())
+                    .filter(|g| match g {
+                        Target::Value(g) => ep9_vm::uninstall_native(&self.iso, *g).is_err(),
+                        Target::Id { .. } => true,
+                    })
                     .count();
                 let name = module.functions()[i].name.clone();
                 if stuck > 0 {
                     self.modules.push(module);
                 }
-                return Err(format!("{name}: install refused: {e:?}"));
+                return Err(format!("{name}: install refused: {e}"));
             }
         }
         self.modules.push(module);
         Ok(self.modules.last().expect("pushed").functions())
+    }
+
+    /// The exit counters of the code installed for `f` with deopt metadata, in stub order
+    /// (counter `k` = the exit of [`crate::emit_a64::EmitReport::exits`]`[k]`); `None` if `f`
+    /// has no such code.
+    pub fn exit_counts(&self, f: Value) -> Option<Vec<u64>> {
+        ep9_vm::NativeCx::deopt_counts(&self.iso, f)
+    }
+
+    /// Puts the function value `f` back on T0 (`ep9_vm::uninstall_native`); its module stays
+    /// with the session.
+    pub fn uninstall(&mut self, f: Value) -> Result<(), String> {
+        ep9_vm::uninstall_native(&self.iso, f)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// [`Session::exit_counts`] of `t`.
+    pub fn exit_counts_of(&self, t: &Target) -> Option<Vec<u64>> {
+        match t {
+            Target::Value(f) => self.exit_counts(*f),
+            Target::Id { file, id } => ep9_vm::NativeCx::deopt_counts_by_id(&self.iso, file, *id),
+        }
+    }
+
+    /// A full collection, then the heap verifier: an error names what it found.
+    pub fn verify(&mut self) -> Result<(), String> {
+        self.iso.collect_garbage();
+        self.iso
+            .verify_heap()
+            .map(|_| ())
+            .map_err(|e| format!("heap verifier: {:?}", e.errors))
     }
 
     /// The JIT modules of this session.
@@ -398,7 +568,7 @@ mod tests {
             .expect("(b) code");
         // SAFETY: `code` is placement (b) code of Spike B's `BEmitter` for `f`, made from
         // `input_of(f)` just above and not changed.
-        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect("install");
         assert_eq!(s.slot_kind(f), Some(ep9_vm::DispatchKind::Opt));
         let jit = s.run(main, "main.js");
         assert_eq!(jit, t0);
@@ -408,7 +578,7 @@ mod tests {
             .emit(&s.input_of(f).expect("input"))
             .expect("(b) code");
         // SAFETY: as above: (b) code of `BEmitter` for `f`, unchanged.
-        let e = unsafe { s.install_b(&[f], vec![code]) }.expect_err("already native");
+        let e = unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect_err("already native");
         assert!(e.contains("AlreadyNative"), "{e}");
         assert_eq!(s.modules().len(), 1);
     }

@@ -10,6 +10,7 @@
 //! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host and the Windows CI column, as a table |
 //! | `m1-exit` | `m1_exit.rs` | the 10 M1 exit items per host and the Windows CI column, as a table (M4-P0: the skeleton, every item NOT-RUN) |
 //! | `adr-lint` | `adr_lint.rs` | M1 exit item 6: ADR trailers and review records (M4-P0: only `--trailers-only`) |
+//! | `extref-lint` | `extref_lint.rs` | native words in heap cells only through `ExternalRef` (H25-Q2, C-26; M5-P0: the task name only, exits 2) |
 //!
 //! `m0_exit.rs` and `m1_exit.rs` share the input readers and the cell type in `exit/`.
 //!
@@ -19,6 +20,7 @@
 mod adr_lint;
 mod disasm;
 mod exit;
+mod extref_lint;
 mod features;
 mod fpcheck;
 mod gc_lint;
@@ -38,6 +40,7 @@ fn main() -> ExitCode {
         "m0-exit" => m0_exit::main(&args[1..]),
         "m1-exit" => m1_exit::main(&args[1..]),
         "adr-lint" => adr_lint::main(&args[1..]),
+        "extref-lint" => extref_lint::main(&args[1..]),
         _ => {
             eprintln!("xtask: task {task:?} is not implemented yet");
             return ExitCode::from(2);

@@ -38,10 +38,10 @@
 //! ([`Graph::set_guard`]); the builder never rewrites it, and shares a check only between
 //! sites of one policy (MC-w14-20).
 //!
-//! Until month 5 builds the deopt entry, every exit goes through its exit stub to the shared
-//! "deopt not built" trap ([`crate::emit_a64`]); each guard keeps the frame state a deopt
-//! will need (the bytecode offset and the SSA value of every live register), placed so that
-//! T0 can resume there ([`Graph::check`], guard placement).
+//! Every exit goes through its exit stub to the shared exit and the VM's deopt entry (H29,
+//! SPIKEC-5; [`crate::emit_a64`]); each guard keeps the frame state the deopt reads (the
+//! bytecode offset and the SSA value of every live register), placed so that T0 can resume
+//! there ([`Graph::check`], guard placement).
 
 use std::fmt;
 use std::sync::Arc;
@@ -212,15 +212,22 @@ pub enum Op {
         /// The smi handler every case must have.
         handler: u64,
     },
-    /// Guard: the Tagged input is an Array (kind byte). Tagged.
+    /// Guard, the kind guard (WI-SC7, M5-P1-ORCH-11): the Tagged input is an Array (kind
+    /// byte) whose shape holds an elements kind of `vm_layout::ARRAY_KINDS` (INT32, DOUBLE or
+    /// ELEMENTS, packed or holey; DICTIONARY and the reserved kinds exit). Tagged: the element
+    /// ops take it as their array input, so none of them runs before it.
     CheckArray,
     /// The field at byte `offset` of the object input (behind a [`Op::CheckShape`]). Tagged.
     LoadField { offset: u32 },
-    /// Guard: element `index` (Int32) of the array input: in `0..length`, inside the ELEMENTS
-    /// capacity, not a hole. Tagged.
+    /// Guard: element `index` (Int32) of the array input (a [`Op::CheckArray`]): in
+    /// `0..length`, inside the capacity of its ELEMENTS or ELEMENTS_DOUBLE cell (any other
+    /// elements store exits), not a hole. Tagged (a raw f64 boxes as `Value::number`).
     LoadElement,
-    /// Guard: stores the Int32 value into an existing element (same bounds and hole checks).
-    /// An int32 is not a cell, so no barrier is needed (H11 elision E1).
+    /// Guard: stores the Int32 or Float64 value into an existing element (same bounds and hole
+    /// checks): raw f64 into an ELEMENTS_DOUBLE cell, an int32 Value into an ELEMENTS cell; a
+    /// Float64 that is no int32 into an ELEMENTS cell takes the generic store out of line (the
+    /// kind transition: a GC point, no JS for an existing element of an Array). A number is
+    /// not a cell, so no barrier is needed (H11 elision E1).
     StoreElement,
     /// Guard: the Tagged input is a number (an int32 or a double Value); its value as a
     /// double. Float64 (SPIKEC-4).
@@ -234,8 +241,8 @@ pub enum Op {
     /// for an integer in int32 range that is not -0, else a double with NaN purified).
     BoxFloat64,
     /// Slot `index` of the current context (the frame's context; `LdaCurrentContextSlot`):
-    /// Tagged, unknown. Reads mutable memory: never shared or moved across an effect
-    /// (SPIKEC-4, lin_solve).
+    /// Tagged, unknown, a guard (a CONTEXT cell with more slots; M5-P2). Reads mutable memory:
+    /// never shared or moved across an effect (SPIKEC-4, lin_solve).
     LoadContextSlot(u32),
     /// A call with an undefined receiver (`CallUndefinedReceiver0/1/2`): inputs = the callee,
     /// then the arguments, all Tagged; `regs` are the instruction's operand registers in the
@@ -300,7 +307,7 @@ impl Op {
             | Op::LoadElement
             | Op::StoreElement => true,
             Op::Int32(o) => !o.bitwise(),
-            _ => false,
+            _ => matches!(self, Op::LoadContextSlot(_)),
         }
     }
 
@@ -385,7 +392,7 @@ pub struct FrameState {
 /// A guard's exit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Guard {
-    /// Dense guard index (the trap names it).
+    /// Dense guard index (its exit record names it).
     pub id: u32,
     pub basis: GuardBasis,
     pub policy: ExitPolicy,
@@ -565,7 +572,10 @@ impl Graph {
     ///   the state's block to the guard's, and no effect on any such path: none at or after
     ///   the state's offset in the state's block, none in a block between, none before the
     ///   guard in its own block, and none at all in either end block when it lies on a cycle
-    ///   of those paths (conservative: `Graph::effect_on_the_way`).
+    ///   of those paths (conservative: `Graph::effect_on_the_way`);
+    /// - a frame state after the guard's own instruction (a forward resume, R-SPIKE-P4-1)
+    ///   needs a block whose one successor starts at the state's offset and no effect after
+    ///   the guard in its block (`Graph::check_forward_state`).
     pub fn check(&self) -> Result<(), String> {
         let mut seen = vec![false; self.nodes.len()];
         for b in &self.blocks {
@@ -694,6 +704,10 @@ impl Graph {
                     {
                         return Err(format!("{at}: frame state before the guard"));
                     }
+                    if g.state.offset > node.offset {
+                        self.check_forward_state(bi, pos, g)
+                            .map_err(|e| format!("{at}: guard g{}: {e}", g.id))?;
+                    }
                     for &(_, v) in &g.state.registers {
                         if !self.node(v).live {
                             return Err(format!("{at}: a frame state value was removed"));
@@ -707,6 +721,38 @@ impl Graph {
 }
 
 impl Graph {
+    /// A guard at position `pos` of block `b` whose frame state lies after its own
+    /// instruction (R-SPIKE-P4-1, M5-P1): T0 resumes there and skips the rest of the block.
+    /// That is right only when the block's one successor starts at the state's offset (so the
+    /// skipped part ends in a jump there) and no effect follows the guard in the block (it
+    /// would never run). The loop phi entry check at the end of a preheader is the one such
+    /// guard the builder makes.
+    fn check_forward_state(&self, b: usize, pos: usize, g: &Guard) -> Result<(), String> {
+        let blk = &self.blocks[b];
+        let [next] = blk.succs[..] else {
+            return Err(format!(
+                "resumes T0 at @{}, after its block b{b}, which has {} successors",
+                g.state.offset,
+                blk.succs.len()
+            ));
+        };
+        let start = self.blocks[next.0 as usize].offset;
+        if start != g.state.offset {
+            return Err(format!(
+                "resumes T0 at @{}, but its block's successor b{} starts at @{start}",
+                g.state.offset, next.0
+            ));
+        }
+        let mut after = blk.nodes[pos + 1..].iter().map(|&n| self.node(n));
+        if let Some(e) = after.find(|n| n.live && n.op.is_effect()) {
+            return Err(format!(
+                "resumes T0 at @{} and skips the effect at @{} after it in b{b}",
+                g.state.offset, e.offset
+            ));
+        }
+        Ok(())
+    }
+
     /// The blocks reachable from block `from` (itself included) along `succs`, or along
     /// `preds` when `back`.
     fn reach(&self, from: usize, back: bool) -> Vec<bool> {
@@ -917,6 +963,10 @@ mod tests {
         assert!(e.contains("not replayable"), "{e}");
         // Resuming after the poll is fine.
         assert!(build(12, 12).check().is_ok());
+        // Resuming after the guard's own instruction needs a block whose one successor
+        // starts there (R-SPIKE-P4-1); this block has none.
+        let e = build(12, 14).check().unwrap_err();
+        assert!(e.contains("after its block b0"), "{e}");
         // A frame-state value made after the guard.
         let mut g = build(12, 12);
         let late = block(&mut g, Op::ConstInt32(1), vec![], Repr::Int32, 14);
@@ -998,5 +1048,59 @@ mod tests {
         }
         let e = cut.check().expect_err("a state with no path passed");
         assert!(e.contains("has no block path"), "{e}");
+    }
+
+    /// R-SPIKE-P4-1 (M5-P1): a loop phi's entry check sits at the end of a preheader whose
+    /// one successor is the header, with the header's frame state (a forward resume). The
+    /// same check in a block that may also branch past the loop, or whose successor starts
+    /// elsewhere, is refused; so is an effect after it in its block.
+    #[test]
+    fn check_refuses_a_forward_resume_off_the_loop_entry() {
+        let g = graph_of(
+            "function w(a, n) { var s = a; for (var i = 0; i < n; i = (i + 1) | 0) { s = (s + i) | 0; } return s; }",
+            "for (var q = 0; q < 20; q++) w(q, 3);",
+            "w",
+        );
+        g.check().expect("the built graph passes");
+        let (c, guard) = g
+            .guard_nodes()
+            .find(|(n, gd)| gd.state.offset > g.node(*n).offset)
+            .unwrap_or_else(|| panic!("no entry check with a forward state\n{g}"));
+        let pre = g.node(c).block.0 as usize;
+        let header = g.blocks[pre].succs[0].0 as usize;
+        assert_eq!(g.blocks[pre].succs.len(), 1, "{g}");
+        assert_eq!(g.blocks[header].offset, guard.state.offset, "{g}");
+        // A second successor (a branch past the loop).
+        let mut two = g.clone();
+        let exit = BlockId((two.blocks.len() - 1) as u32);
+        two.blocks[pre].succs.push(exit);
+        let e = two
+            .check()
+            .expect_err("a forward resume from a branching block passed");
+        assert!(e.contains("which has 2 successors"), "{e}");
+        // A state offset that is not where the successor starts.
+        let mut off = g.clone();
+        off.node_mut(c).guard.as_mut().expect("guard").state.offset += 1;
+        let e = off
+            .check()
+            .expect_err("a forward resume into the middle of a block passed");
+        assert!(e.contains("starts at"), "{e}");
+        // An effect after the guard in its block would be skipped.
+        let mut eff = g.clone();
+        let at = eff.node(c).offset;
+        let poll = eff.add(
+            Op::Poll,
+            vec![],
+            Repr::None,
+            Trust::Unknown,
+            BlockId(pre as u32),
+            at,
+        );
+        let k = eff.blocks[pre].nodes.len() - 1;
+        eff.blocks[pre].nodes.insert(k, poll);
+        let e = eff
+            .check()
+            .expect_err("an effect after a forward resume passed");
+        assert!(e.contains("skips the effect"), "{e}");
     }
 }
