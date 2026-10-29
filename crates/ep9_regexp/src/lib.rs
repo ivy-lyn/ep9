@@ -12,7 +12,7 @@
 //!
 //! | Backend | State |
 //! |---|---|
-//! | RX0 ([`Rx0`]: regress 0.12.0 from the fork checkout `third_party/regress` through `[patch.crates-io]`: upstream v0.12.0 at `third_party/regress.commit`, plus `third_party/patches/regress/`; V9-D15) | Built (M4-P2 RX0A). Fork wired in M5-P0; the 6 fork patches in M5-P3 (RX0b) |
+//! | RX0 ([`Rx0`]: regress 0.12.0 from the fork checkout `third_party/regress` through `[patch.crates-io]`: upstream v0.12.0 at `third_party/regress.commit`, plus `third_party/patches/regress/`; V9-D15) | Built (M4-P2 RX0A). Fork wired in M5-P0; the 7 fork patches in M5-P3 (RX0b) |
 //! | RX1, RX2 (irregexp port) | Not started (M2-M5) |
 //!
 //! The fork patches (M5-P3 RX0b, `third_party/patches/regress/`, each an upstreamable commit
@@ -26,6 +26,7 @@
 //! | 0004 non-Unicode `i` ASCII rule | `canonicalize_legacy` | Canonicalize (§22.2.2.7.3) without `u`/`v`: `ſ`, `ı`, the Kelvin sign do not match ASCII letters; the node golden has no KNOWN line |
 //! | 0005 Latin-1 input + start predicates | `Text::Latin1`, `unit_pred` | a Latin-1 subject is read in place (no UTF-16 copy); literal prefixes, first-unit sets and `^` skip positions |
 //! | 0006 caller-owned scratch | `Scratch`, `exec_into` | [`Backend::Scratch`]: the engine's stacks and the capture ranges are reused across execs (no allocation per exec once grown) |
+//! | 0007 flat string-property tables | `StringSetTable` (internal) | nothing to call: the tables of `\p{RGI_Emoji}` and the other properties of strings hold no pointer per string, so the binary has 7,905 fewer load-time fixups (W-REGEXP-1) |
 //!
 //! RX0 fixes in this crate, before regress sees the pattern or the start: `legacy_chars`
 //! (`\u{` and surrogate escapes without `u`; a group name as code points), `unicode_chars` (a
