@@ -252,8 +252,8 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     let r = session.run(CHECK_SRC, "layout-probe.js");
     r.result.map_err(|e| format!("layout probe: {e}"))?;
     check_versions(VM_VERSIONS)?;
-    // SAFETY: the session ran CHECK_SRC just now.
-    unsafe { check_kinds(session) }?;
+    // SAFETY: the session ran CHECK_SRC just now (and check_elem2 runs ELEM2_SRC first).
+    unsafe { check_kinds(session).and_then(|()| check_elem2(session)) }?;
     check_context(session)?;
     let o = session.function_value("layoutObj")?.to_bits();
     let a = session.function_value("layoutObj.b")?.to_bits();
@@ -317,7 +317,7 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     Ok(format!(
         "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
          as ep9_vm::layout exports them; the elements kind in the shape and both storage forms \
-         on arrays of the 6 kinds; a closure's CONTEXT cell; versions {}",
+         on arrays of the 6 kinds, DICTIONARY (3 ways) and site-born ones; a closure's CONTEXT cell; versions {}",
         PINNED
             .iter()
             .map(|(n, v)| format!("{n} {v}"))
@@ -475,6 +475,104 @@ fn check_context(session: &mut crate::harness::Session) -> Result<(), String> {
             return Err(format!(
                 "CONTEXT length {len:?} at +{CONTEXT_LENGTH}, slot 0 {slot0:#x} at +{CONTEXT_SLOTS}"
             ));
+        }
+    }
+    Ok(())
+}
+
+/// The probe of [`check_elem2`]: DICTIONARY arrays made three ways, and an array-literal site
+/// whose array went to DOUBLE, then its next array.
+const ELEM2_SRC: &str = "\
+var layoutDicts = [[1, 2, 3], [1, 2, 3], []];\n\
+layoutDicts[0][100000] = 4;\n\
+Object.defineProperty(layoutDicts[1], 'length', { writable: false });\n\
+layoutDicts[2][4294967294] = 5;\n\
+function layoutSite() { return [1, 2, 3]; }\n\
+var layoutSiteA = null;\n\
+for (var layoutJ = 0; layoutJ < 20; layoutJ++) layoutSiteA = layoutSite();\n\
+layoutSiteA[1] = 2.5;\n\
+var layoutSiteB = layoutSite();\n";
+
+/// R17 re-proof after M5-P2 ELEM2 (plan v10 §5.7, SPIKEC-7), on live objects of [`ELEM2_SRC`]:
+///
+/// - DICTIONARY arrays, made the three ways ELEM2 makes them (an index far past the
+///   capacity, a read-only `length`, a `length` past 2^31 - 1): the shape's kind bits give
+///   DICTIONARY, which [`ARRAY_KINDS`] leaves out (so `CheckArray` exits: fail closed), the
+///   elements store is an ELEMENTS_DICT cell (kind [`KIND_ELEMENTS_DICT`], which the element
+///   ops refuse too), and its word at `ELEMENTS_CAPACITY` is the int32 0 (a dense bound test
+///   that read it would miss). The long array's `length` is a double Value (only a
+///   DICTIONARY array is that long; `CheckArray` exits before an element op reads the low
+///   32 bits as the bound).
+/// - An array born of an allocation site: after a site's array went to DOUBLE, the site's
+///   next array is born PACKED_DOUBLE, in an ELEMENTS_DOUBLE cell with raw f64 data (the
+///   shape is the kind source the guard reads; Spike C reads no ALLOC_SITE word).
+///
+/// # Safety
+/// Nothing runs while this reads, between its `function_value` runs.
+unsafe fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
+    let r = session.run(ELEM2_SRC, "layout-elem2.js");
+    r.result.map_err(|e| format!("ELEM2 probe: {e}"))?;
+    for i in 0..3 {
+        let a = session
+            .function_value(&format!("layoutDicts[{i}]"))?
+            .to_bits();
+        if !is_cell(a) {
+            return Err(format!("layoutDicts[{i}] is not a cell"));
+        }
+        // SAFETY: `a` is a live Array held by a global of the session's isolate, which runs
+        // nothing while this reads; its shape and elements cells are live too.
+        unsafe {
+            let k = elements_kind(a);
+            if k != ELEMENTS_KIND_DICTIONARY || ARRAY_KINDS & (1 << k) != 0 {
+                return Err(format!(
+                    "layoutDicts[{i}]: elements kind {k}, not DICTIONARY outside ARRAY_KINDS"
+                ));
+            }
+            let e = word(a, ARRAY_ELEMENTS);
+            if !is_cell(e) || kind(e) != KIND_ELEMENTS_DICT {
+                return Err(format!(
+                    "layoutDicts[{i}]: the elements store is no ELEMENTS_DICT cell"
+                ));
+            }
+            if word(e, ELEMENTS_CAPACITY) != int32_bits(0) {
+                return Err(format!(
+                    "layoutDicts[{i}]: ELEMENTS_DICT +{ELEMENTS_CAPACITY} is not the int32 0"
+                ));
+            }
+            let len = word(a, ARRAY_LENGTH);
+            let want = if i == 2 { None } else { int32_of(len) };
+            if i == 2 && (int32_of(len).is_some() || len != double_bits(4294967295.0)) {
+                return Err(format!(
+                    "layoutDicts[2]: length {len:#x}, not the double 2^32 - 1"
+                ));
+            }
+            if i < 2 && want != Some(if i == 0 { 100001 } else { 3 }) {
+                return Err(format!("layoutDicts[{i}]: length {len:#x}"));
+            }
+        }
+    }
+    let born = session.function_value("layoutSiteB")?.to_bits();
+    let first = session.function_value("layoutSiteA")?.to_bits();
+    if !is_cell(born) || !is_cell(first) {
+        return Err("layoutSiteA or layoutSiteB is not a cell".into());
+    }
+    // SAFETY: as above.
+    unsafe {
+        if elements_kind(first) != ELEMENTS_KIND_PACKED_DOUBLE
+            || elements_kind(born) != ELEMENTS_KIND_PACKED_DOUBLE
+        {
+            return Err(format!(
+                "allocation site: kinds {} (stored to) and {} (born), not PACKED_DOUBLE",
+                elements_kind(first),
+                elements_kind(born)
+            ));
+        }
+        let e = word(born, ARRAY_ELEMENTS);
+        let at = |j: u32| word(e, ELEMENTS_DOUBLE_DATA + 8 * j);
+        if kind(e) != KIND_ELEMENTS_DOUBLE
+            || (at(0), at(1), at(2)) != (1f64.to_bits(), 2f64.to_bits(), 3f64.to_bits())
+        {
+            return Err("allocation site: the born array has no raw f64 1, 2, 3".into());
         }
     }
     Ok(())

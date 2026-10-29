@@ -1362,6 +1362,57 @@ mod tests {
         }
     }
 
+    /// R17 re-proof after M5-P2 ELEM2 (plan v10 §5.7): live DICTIONARY arrays, made the three
+    /// ways ELEM2 makes them (an index far past the capacity, a read-only `length`, a `length`
+    /// past 2^31 - 1), at a compiled element load (`dot`) and store (`fill`): each call
+    /// takes the exit of a `CheckArray` guard (the kind guard fails closed on DICTIONARY), T0
+    /// finishes it, and the output equals T0 (a store to the read-only-length array past its
+    /// end is dropped, as T0 drops it). Arrays born of an allocation site that learned DOUBLE
+    /// run with no exit (raw f64 loads).
+    #[test]
+    fn dictionary_arrays_exit_at_the_kind_guard_and_site_arrays_do_not() {
+        if !aarch64() {
+            return;
+        }
+        let defs = format!("{DOT}\n{ARR}\nfunction mk() {{ return [1, 2, 3]; }}");
+        let warm = "for (var q = 0; q < 20; q++) { dot([1, 2, 3], [4, 5, 6], 3); dot([0.5, 1.5], [2, 0.25], 2); fill([1, 2, 3, 4], 4); var m = mk(); }\n\
+            m[0] = 0.5;";
+        let main = "var g = [1, 2, 3]; g[100000] = 7;\n\
+            var r = [1, 2, 3]; Object.defineProperty(r, 'length', { writable: false });\n\
+            var l = [1, 2, 3]; l[4294967294] = 9;\n\
+            print(dot(g, g, 3), dot(r, r, 3), dot(l, l, 3), g.length, r.length, l.length);\n\
+            print(fill(g, 3), fill(r, 4), fill(l, 3), g[1], r.length, r[3], l[2]);";
+        let cases = [("dot", 3), ("fill", 3)];
+        for (name, calls) in cases {
+            let r = run_script(&Config::default(), &defs, warm, main, name).expect("run");
+            assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+            let fired = r.fired();
+            assert!(!fired.is_empty(), "{name}: no exit");
+            let checks = guard_ids(&r.report.graph, "CheckArray");
+            for g in &fired {
+                assert!(
+                    checks.contains(g),
+                    "{name}: g{g} is not a CheckArray guard\n{}",
+                    r.report.graph
+                );
+            }
+            assert_eq!(r.exits.iter().sum::<u64>(), calls, "{name}: {:?}", r.exits);
+        }
+        // The site's arrays: `mk` learned DOUBLE (m[0] = 0.5), so its next arrays are born
+        // PACKED_DOUBLE; the compiled loads read raw f64 with no exit.
+        let r = run_script(
+            &Config::default(),
+            &defs,
+            warm,
+            "var a = mk(), b = mk(); print(dot(a, b, 3), dot(mk(), [0.5, 0.25, 2], 3));",
+            "dot",
+        )
+        .expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["14 7"]);
+        assert!(r.fired().is_empty(), "{:?}\n{}", r.exits, r.report.graph);
+    }
+
     /// w17 O10 and MODES-CHECK-w19 outside O2 (a guard proven to fail): a guard that fails on
     /// every call exits on every call, as a speculation exit (the only class the eager exits
     /// have, `deopt_meta`), and its counter equals the number of calls: the code stays

@@ -1902,8 +1902,10 @@ mod tests {
 
     /// WI-SC7 (M5-P1-ORCH-11): `CheckArray`, the kind guard, reads the elements kind from the
     /// receiver's shape and exits on a kind outside `ARRAY_KINDS`: DICTIONARY (fail closed,
-    /// V10-D9b) and the reserved kinds. No array of this base has those kinds (ELEM2 builds
-    /// DICTIONARY), so the test forges one: it sets the kind bits of the shape of `b` (a
+    /// V10-D9b) and the reserved kinds. A reserved kind exists on no live array, so the test
+    /// forges it, and DICTIONARY too (live DICTIONARY arrays since M5-P2 ELEM2:
+    /// `tier::tests::dictionary_arrays_exit_at_the_kind_guard_and_site_arrays_do_not`): it
+    /// sets the kind bits of the shape of `b` (a
     /// PACKED_INT32 Array) to DICTIONARY, then to 7, and runs the compiled `fill(b, 3)`, which
     /// must take the exit of a CheckArray guard (installed with no exit table, so the deopt is
     /// fatal and names the exit, see [`exit_of`]; in a child process, so that T0 never runs
