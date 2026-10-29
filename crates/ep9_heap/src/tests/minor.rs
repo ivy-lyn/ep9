@@ -633,7 +633,10 @@ fn the_minor_verify_rejects_a_marked_white_cell() {
 /// S0 for the S0 tests (`tests/mod.rs`); this test takes the flag from the default.
 #[test]
 fn s1_is_the_default_since_m5_p2() {
-    assert!(HeapConfig::default().generational, "V10-D17: S1 is the default");
+    assert!(
+        HeapConfig::default().generational,
+        "V10-D17: S1 is the default"
+    );
     let heap = test_heap(|c| c.generational = HeapConfig::default().generational);
     assert_eq!(heap.barrier().threshold(), crate::barrier::threshold::GEN);
     let root = new_node(&heap, 1, 1);
@@ -642,6 +645,313 @@ fn s1_is_the_default_since_m5_p2() {
     let st = heap.stats();
     assert!(st.last_minor, "a minor GC, not a full one");
     assert_eq!(st.minor_collections, 1);
-    assert!(heap.is_cell(root.addr()), "the rooted cell survives and is old");
+    assert!(
+        heap.is_cell(root.addr()),
+        "the rooted cell survives and is old"
+    );
     heap.drop_global(g);
+}
+
+/// A chain of `n` rooted nodes (ids `first..first + n`): node i holds node i+1 in slot 0.
+/// Every 7th node is medium (40 slots, 336 B: above a line, so the overflow page when the main
+/// TLAB has no room), the others small (30 slots, 256 B: one line each). Returns the head; `g`
+/// roots it.
+fn rooted_chain(heap: &Heap, first: u32, n: u32) -> (CellPtr, crate::GlobalHandle) {
+    let head = new_node(heap, first, 30);
+    let g = heap.new_global(head.to_value());
+    let mut prev = head;
+    for id in first + 1..first + n {
+        let c = new_node(heap, id, if id % 7 == 0 { 40 } else { 30 });
+        store(heap, prev, 0, c.to_value());
+        prev = c;
+    }
+    (head, g)
+}
+
+/// Walks the chain from `head` and checks every id: a cell that an allocation overwrote
+/// breaks the chain or its ids.
+fn check_chain(head: CellPtr, first: u32, n: u32) {
+    let mut c = head;
+    for id in first..first + n {
+        assert_eq!(node_id(c), id, "chain cell {id} overwritten");
+        if id + 1 < first + n {
+            c = CellPtr::from_value(slot(c, 0).get()).expect("chain link");
+        }
+    }
+}
+
+/// H09-Q6, M5-P2 GC6: an S1 sweep does not walk a page with no dead cell; it keeps the page's
+/// line marks, which cover every live cell (the allocator marks each run it hands out, and
+/// the overflow page whole, and gives back the unused tails). So the later allocation into free lines never lands on a live
+/// cell: small cells, medium cells, after a minor and after a major GC. Not under Miri
+/// (5,000 nodes); the other S1 tests run the skip there.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn an_s1_sweep_skips_a_page_with_no_dead_cell_and_reuses_only_free_lines() {
+    use crate::heap::sweep_counter::skipped;
+    let heap = gen_heap(false, |_| {});
+    let (old, g_old) = rooted_chain(&heap, 1, 4000);
+    major(&heap);
+    heap.finish_sweeping();
+    let pages = heap.stats().small_pages as u64;
+    assert!(pages >= 4, "{pages} pages");
+    // No allocation since the last GC: no page holds a dead cell, none is walked.
+    let s0 = skipped();
+    minor(&heap);
+    heap.finish_sweeping();
+    assert_eq!(skipped() - s0, pages, "every page skipped after a minor GC");
+    let s1 = skipped();
+    major(&heap);
+    heap.finish_sweeping();
+    assert_eq!(
+        skipped() - s1,
+        pages,
+        "every page skipped after a major GC (S1)"
+    );
+    // Young cells: garbage and a rooted chain, in the free lines of old pages and in new
+    // pages. The pages that got young garbage are walked (their dead cells are freed); the
+    // full old pages are not.
+    let mut garbage = Vec::new();
+    for i in 0..3000u32 {
+        garbage.push(new_node(&heap, 100_000 + i, if i % 7 == 0 { 40 } else { 30 }).addr());
+    }
+    let (young, g_young) = rooted_chain(&heap, 10_000, 1000);
+    let s2 = skipped();
+    minor(&heap);
+    heap.finish_sweeping();
+    let walked_and_skipped = heap.stats().small_pages as u64;
+    let skipped_now = skipped() - s2;
+    assert!(skipped_now >= 1, "the full old pages are skipped");
+    assert!(
+        skipped_now < walked_and_skipped,
+        "the pages with garbage are walked"
+    );
+    assert!(
+        garbage.iter().all(|&a| !heap.is_cell(a)),
+        "dead young cells freed"
+    );
+    // Fill the free lines (old pages' holes, the freed garbage lines) with a third chain,
+    // then check that no live cell was overwritten.
+    let (third, g_third) = rooted_chain(&heap, 20_000, 4000);
+    check_chain(old, 1, 4000);
+    check_chain(young, 10_000, 1000);
+    check_chain(third, 20_000, 4000);
+    heap.verify().expect("verifier");
+    minor(&heap);
+    major(&heap);
+    check_chain(old, 1, 4000);
+    check_chain(young, 10_000, 1000);
+    check_chain(third, 20_000, 4000);
+    heap.verify().expect("verifier");
+    for g in [g_old, g_young, g_third] {
+        heap.drop_global(g);
+    }
+}
+
+thread_local! {
+    static SIZE_PANIC_NOW: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A 16 B leaf whose size function panics on demand.
+const PANICKY_SIZE: KindId = KindId::new(33).unwrap();
+
+fn panicky_size(_: CellPtr) -> usize {
+    if SIZE_PANIC_NOW.get() {
+        std::panic::resume_unwind(Box::new("test size panic"));
+    }
+    16
+}
+
+/// A size function panics while an S1 sweep walks a page: the walk had cleared the page's
+/// line marks and set only those of the cells before the panic, so the unwind marks every
+/// line used. After it the page holds no dead cell (the unwind set every mark bit to its VO
+/// bit), so the next S1 sweep keeps those line marks; without the fill, an allocation would
+/// land on the live cells after the panic point. Every cell is old (BLACK) when the walk
+/// panics, as after a major GC; the page unwind does not make a WHITE cell BLACK.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn a_size_panic_in_an_s1_sweep_leaves_every_line_used() {
+    let heap = gen_heap(false, |_| {});
+    heap.register_kind(
+        PANICKY_SIZE,
+        CellKind {
+            name: "test-minor-panicky-size",
+            size: CellSize::Dynamic(panicky_size),
+            trace: no_trace,
+        },
+    )
+    .unwrap();
+    let host = new_node(&heap, 1, 3);
+    let g = heap.new_global(host.to_value());
+    let dead = new_node(&heap, 2, 0);
+    store(&heap, host, 2, dead.to_value());
+    let odd = heap.alloc(PANICKY_SIZE, 16).unwrap();
+    store(&heap, host, 1, odd.to_value());
+    let (chain, g_chain) = rooted_chain(&heap, 10, 600);
+    store(&heap, host, 0, chain.to_value());
+    let page_of = |c: CellPtr| heap.inner.borrow().mem.chunk_index(c.addr());
+    assert_eq!(
+        page_of(chain),
+        page_of(host),
+        "the chain starts on the host's page"
+    );
+    assert!(odd.addr() < chain.addr());
+    major(&heap);
+    heap.finish_sweeping();
+    // `dead` is old and now unreachable: the next sweep walks the host's page and calls the
+    // size function of `odd`, which panics.
+    store(&heap, host, 2, Value::UNDEFINED);
+    major(&heap);
+    SIZE_PANIC_NOW.set(true);
+    let r = catch_unwind(AssertUnwindSafe(|| heap.finish_sweeping()));
+    SIZE_PANIC_NOW.set(false);
+    assert!(r.is_err(), "the size function did not panic");
+    assert!(
+        heap.is_cell(dead.addr()),
+        "the unwind keeps the page's cells"
+    );
+    minor(&heap);
+    heap.finish_sweeping();
+    let (more, g_more) = rooted_chain(&heap, 5_000, 2000);
+    check_chain(chain, 10, 600);
+    check_chain(more, 5_000, 2000);
+    assert_eq!(
+        CellPtr::from_value(slot(host, 1).get()).unwrap().addr(),
+        odd.addr()
+    );
+    heap.verify().expect("verifier");
+    for g in [g, g_chain, g_more] {
+        heap.drop_global(g);
+    }
+}
+
+/// A shape-space kind of 8 KiB with no references (the shape TLAB's too-short tail).
+const BIG_MINOR_SHAPE: KindId = KindId::new(34).unwrap();
+
+/// The free lines of the page that holds `addr`.
+fn free_lines(heap: &Heap, addr: usize) -> usize {
+    use crate::layout::{FIRST_LINE, LINES_PER_PAGE};
+    let inner = heap.inner.borrow();
+    let page = inner.mem.page(inner.mem.chunk_index(addr).unwrap());
+    (FIRST_LINE..LINES_PER_PAGE)
+        .filter(|&l| !page.line_used(l))
+        .count()
+}
+
+/// H09-Q6, M5-P2 GC6: a GC gives back the unused tail of each retired run (the main TLAB, the
+/// overflow page, the shape TLAB) and of a shape run too short for its cell, so a page that
+/// the S1 sweep then skips (no dead cell) still has those lines free. Without it, the run's
+/// lines stay marked used until a cell of the page dies: a page with one live cell stays
+/// full.
+#[test]
+fn an_s1_gc_gives_back_the_unused_tail_of_each_run() {
+    use crate::heap::sweep_counter::skipped;
+    use crate::layout::{LINE_SIZE, MAX_SMALL_SIZE, PAGE_CELL_BYTES};
+    let heap = gen_heap(false, |c| c.shape_space_bytes = 1 << 20);
+    heap.register_kind_in(
+        BIG_MINOR_SHAPE,
+        CellKind {
+            name: "test-minor-big-shape",
+            size: CellSize::Fixed(MAX_SMALL_SIZE),
+            trace: no_trace,
+        },
+        Space::Shape,
+    )
+    .unwrap();
+    // One medium cell (no main TLAB yet: the overflow page) and one small cell (the main
+    // TLAB: a fresh page, one run), both rooted.
+    let medium = new_node(&heap, 2, 40);
+    let small = new_node(&heap, 1, 2);
+    let gs = [small, medium].map(|c| heap.new_global(c.to_value()));
+    // Shape space: a page of big shapes, then one more, which leaves the first page's tail
+    // (shorter than 8 KiB but longer than a line) and takes a second page.
+    let roots = heap.scratch_roots();
+    let per_page = PAGE_CELL_BYTES / MAX_SMALL_SIZE;
+    let shapes: Vec<CellPtr> = (0..=per_page)
+        .map(|_| heap.alloc_shape(BIG_MINOR_SHAPE, MAX_SMALL_SIZE).unwrap())
+        .collect();
+    for s in &shapes {
+        roots.push(s.to_value());
+    }
+    let page_of = |a: usize| heap.inner.borrow().mem.chunk_index(a).unwrap();
+    assert_ne!(page_of(small.addr()), page_of(medium.addr()));
+    assert_ne!(page_of(shapes[0].addr()), page_of(shapes[per_page].addr()));
+    let tail_lines = (PAGE_CELL_BYTES - per_page * MAX_SMALL_SIZE) / LINE_SIZE;
+    assert!(
+        tail_lines >= 1,
+        "the first shape page has a tail of whole lines"
+    );
+    // The tail of the first shape page went back when the shape TLAB moved on.
+    assert_eq!(free_lines(&heap, shapes[0].addr()), tail_lines);
+    let s0 = skipped();
+    minor(&heap);
+    heap.finish_sweeping();
+    let pages = heap.stats().small_pages as u64;
+    assert_eq!(pages, 4, "two ordinary pages and two shape pages");
+    assert_eq!(
+        skipped() - s0,
+        pages,
+        "no page holds a dead cell: none is walked"
+    );
+    let used = |cells: usize| cells.div_ceil(LINE_SIZE);
+    let all = PAGE_CELL_BYTES / LINE_SIZE;
+    assert_eq!(
+        free_lines(&heap, small.addr()),
+        all - used(NODE_HEADER + 8 * 2)
+    );
+    assert_eq!(
+        free_lines(&heap, medium.addr()),
+        all - used(NODE_HEADER + 8 * 40)
+    );
+    assert_eq!(free_lines(&heap, shapes[0].addr()), tail_lines);
+    assert_eq!(
+        free_lines(&heap, shapes[per_page].addr()),
+        all - used(MAX_SMALL_SIZE)
+    );
+    // The next small cell reuses the first page.
+    let next = new_node(&heap, 3, 2);
+    assert_eq!(page_of(next.addr()), page_of(small.addr()));
+    heap.verify().expect("verifier");
+    drop(roots);
+    for g in gs {
+        heap.drop_global(g);
+    }
+}
+
+/// The overflow page moves on when a medium cell does not fit its tail: the old page's tail
+/// lines are free again, before and after an S1 sweep that skips the page. Only medium cells
+/// are allocated, so no main TLAB takes them first.
+#[test]
+fn an_s1_overflow_page_gives_back_its_tail_when_it_moves_on() {
+    use crate::heap::sweep_counter::skipped;
+    use crate::layout::{LINE_SIZE, PAGE_CELL_BYTES};
+    let heap = gen_heap(false, |_| {});
+    let slots = 1000; // 8,016 B: medium (above a line, at most MAX_SMALL_SIZE)
+    let size = NODE_HEADER + 8 * slots;
+    let per_page = PAGE_CELL_BYTES / size;
+    let roots = heap.scratch_roots();
+    let cells: Vec<CellPtr> = (0..=per_page as u32)
+        .map(|i| new_node(&heap, i, slots))
+        .collect();
+    for c in &cells {
+        roots.push(c.to_value());
+    }
+    let page_of = |a: usize| heap.inner.borrow().mem.chunk_index(a).unwrap();
+    let (first, last) = (cells[0].addr(), cells[per_page].addr());
+    assert_eq!(page_of(cells[per_page - 1].addr()), page_of(first));
+    assert_ne!(
+        page_of(last),
+        page_of(first),
+        "the last cell took a new page"
+    );
+    let tail = PAGE_CELL_BYTES / LINE_SIZE - (per_page * size).div_ceil(LINE_SIZE);
+    assert!(tail >= 1, "the first page has a tail of whole lines");
+    assert_eq!(free_lines(&heap, first), tail);
+    let s0 = skipped();
+    minor(&heap);
+    heap.finish_sweeping();
+    assert_eq!(skipped() - s0, 2, "both pages skipped (no dead cell)");
+    assert_eq!(free_lines(&heap, first), tail);
+    heap.verify().expect("verifier");
+    drop(roots);
 }

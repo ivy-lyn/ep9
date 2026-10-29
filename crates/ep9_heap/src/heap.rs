@@ -422,7 +422,9 @@ fn blacken_white(c: CellPtr) {
 }
 
 /// Resets the mark bits of one small page when dropped (`sweep_page` holds one), as
-/// [`UnmarkOnUnwind`] does.
+/// [`UnmarkOnUnwind`] does, and marks every line used: the sweep had cleared the line marks
+/// and set only some again, and an S1 sweep keeps the line marks of a page with no dead cell
+/// (`sweep_page_with`), so they must cover every cell until the page's next full sweep.
 struct UnmarkPageOnUnwind {
     page: Page,
     sticky: bool,
@@ -431,17 +433,15 @@ struct UnmarkPageOnUnwind {
 impl Drop for UnmarkPageOnUnwind {
     fn drop(&mut self) {
         reset_page_marks(self.page, self.sticky);
+        // SAFETY: the line-mark array lies in the page's committed metadata area.
+        unsafe { self.page.line_marks().write_bytes(1, LINES_PER_PAGE) };
     }
 }
 
 /// Clears the mark bits of `page`, or (`sticky`) sets them to its VO bits.
 fn reset_page_marks(page: Page, sticky: bool) {
     for w in 0..BITMAP_WORDS {
-        let m = if sticky {
-            page.vo_word(w).load(Relaxed)
-        } else {
-            0
-        };
+        let m = page.vo_word(w).load(Relaxed) & u64::from(sticky).wrapping_neg();
         page.mark_word(w).store(m, Relaxed);
     }
 }
@@ -917,7 +917,11 @@ impl Heap {
             let mut handles = self.handles.borrow_mut();
             let scratch = self.scratch.borrow();
 
-            // Retire the TLABs: the VO bits already cover every bump-allocated cell.
+            // Retire the TLABs: the VO bits already cover every bump-allocated cell. Their
+            // unused tails go back to free lines (an S1 sweep may keep the line marks).
+            inner.unmark_tail(self.hot.cursor.get(), inner.tlab_end);
+            inner.unmark_tail(inner.ov_cursor, inner.ov_end);
+            inner.unmark_tail(inner.shape_cursor, inner.shape_end);
             self.hot.cursor.set(0);
             self.hot.limit.set(0);
             inner.tlab_end = 0;
@@ -1342,7 +1346,7 @@ impl Inner {
             self.major_limit = initial.max(marked_bytes).saturating_mul(2);
         }
         self.next_major = self.old_bytes > self.major_limit;
-        // The sweep of a minor GC visits every page, so the budget grows with the heap.
+        // The sweep visits every page (it walks cells only where one died): grow with the heap.
         self.budget = initial.max(self.old_bytes / 2);
     }
 
@@ -1366,8 +1370,14 @@ impl Inner {
         }
         if size > MAX_LINE_CELL {
             if self.ov_cursor == 0 || self.ov_cursor + size > self.ov_end {
+                self.unmark_tail(self.ov_cursor, self.ov_end);
                 let idx = self.fresh_page()?;
-                let base = self.mem.page(idx).addr();
+                let page = self.mem.page(idx);
+                // The whole page is the overflow TLAB: every line counts as used, as a run
+                // that `next_free_run` hands out does (the S1 sweep may keep line marks).
+                // SAFETY: the line-mark array lies in the fresh page's committed metadata.
+                unsafe { page.line_marks().write_bytes(1, LINES_PER_PAGE) };
+                let base = page.addr();
                 self.ov_cursor = base + FIRST_CELL_OFFSET;
                 self.ov_end = base + PAGE_SIZE;
                 self.note_allocated(PAGE_CELL_BYTES);
@@ -1436,6 +1446,25 @@ impl Inner {
         }
     }
 
+    /// Gives back the unused tail [`from`, `to`) of a run that [`next_free_run`] marked used
+    /// (a retired TLAB, a too-short shape hole): its whole lines hold no cell, so they are free
+    /// lines again. Without this an S1 sweep that keeps the page's line marks (no dead cell)
+    /// would keep them used. `from` 0 (no run) does nothing; `to` is at most the page end.
+    fn unmark_tail(&self, from: usize, to: usize) {
+        if from == 0 || from >= to {
+            return;
+        }
+        let idx = self.mem.chunk_index(from).expect("a run lies in the heap");
+        let page = self.mem.page(idx);
+        let first = (from - page.addr()).div_ceil(LINE_SIZE);
+        let end = (to - page.addr()) / LINE_SIZE;
+        debug_assert!(end <= LINES_PER_PAGE, "a run ends in its page");
+        if first < end {
+            // SAFETY: lines first..end lie inside the line-mark array of this committed page.
+            unsafe { page.line_marks().add(first).write_bytes(0, end - first) };
+        }
+    }
+
     fn find_hole(&mut self, idx: usize) -> Option<(usize, usize)> {
         next_free_run(self.mem.page(idx), &mut self.cur_line)
     }
@@ -1451,12 +1480,18 @@ impl Inner {
                 return Some(cur);
             }
             if let Some(idx) = self.shape_page {
+                // The hole left is shorter than `size`: its whole lines are free again.
+                self.unmark_tail(cur, self.shape_end);
+                self.shape_cursor = 0;
+                self.shape_end = 0;
                 if let Some((start, end)) = next_free_run(self.mem.page(idx), &mut self.shape_line)
                 {
                     if end - start >= size {
                         self.note_allocated(end - start);
                         self.shape_cursor = start;
                         self.shape_end = end;
+                    } else {
+                        self.unmark_tail(start, end);
                     }
                     continue;
                 }
@@ -1534,7 +1569,18 @@ impl Inner {
         self.sweep_page_with::<false>(idx, &mut Vec::new(), &mut 0)
     }
 
-    /// [`Inner::sweep_page`]. `CHECK` (the verify after a GC): also checks the live cells in
+    /// [`Inner::sweep_page`]. S1 (sticky marks), not `CHECK`: a page with cells but no dead
+    /// cell (every VO bit has its mark bit) is not walked. The walk would free nothing, keep
+    /// every mark bit and only recompute the line marks, and those already cover every live
+    /// cell: the last walk set them from the live cells, and every run handed out since was
+    /// marked used ([`next_free_run`], the overflow page) up to its unused tail
+    /// ([`Inner::unmark_tail`]). Such a page keeps its line marks and only the free-line test
+    /// runs (H09-Q6; before M5-P2 a minor GC's sweep walked every cell of every page: on the
+    /// splay kernel the sweeps were about 93% of the extra instructions of S1 over S0, M5-P2
+    /// measure). `CHECK` walks every page and checks that rule: no live cell lies in a line
+    /// marked free before the walk.
+    ///
+    /// `CHECK` (the verify after a GC): also checks the live cells in
     /// address order (none overlaps the previous one or crosses the page end; each has a
     /// small-page size) and that no mark bit lies outside a VO bit; and, before it zaps a dead
     /// cell, that the dead cell ends before the next cell starts and inside the page (a wrong
@@ -1549,6 +1595,28 @@ impl Inner {
     ) -> Swept {
         let page = self.mem.page(idx);
         let sticky = self.s.generational;
+        if sticky && !CHECK && !self.needs_walk(page) {
+            #[cfg(test)]
+            sweep_counter::bump();
+            return if (FIRST_LINE..LINES_PER_PAGE).any(|l| !page.line_used(l)) {
+                Swept::Recyclable
+            } else {
+                Swept::Full
+            };
+        }
+        // CHECK: the line marks before the walk (they must cover every live cell).
+        let mut lines_before = [0u8; LINES_PER_PAGE];
+        if CHECK {
+            // SAFETY: the line-mark array (LINES_PER_PAGE bytes) lies in the page's committed
+            // metadata area; the copy goes to a local array of the same size.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    page.line_marks(),
+                    lines_before.as_mut_ptr(),
+                    LINES_PER_PAGE,
+                )
+            };
+        }
         let unmark = UnmarkPageOnUnwind { page, sticky };
         // Sticky marks: a kept cell keeps its mark bit (old); without them every bit goes.
         let keep_marks = if sticky { u64::MAX } else { 0 };
@@ -1590,6 +1658,16 @@ impl Inner {
                     };
                     let first = (addr - page.addr()) / LINE_SIZE;
                     let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
+                    if CHECK && lines_before[first..=last].contains(&0) {
+                        sweep_error(
+                            errors,
+                            idx,
+                            format_args!(
+                                "live cell {addr:#x} in a line marked free before the sweep (the \
+                                 S1 sweep keeps the line marks of a page with no dead cell)"
+                            ),
+                        );
+                    }
                     // SAFETY: lines first..=last are inside the line-mark array (a cell never
                     // crosses the page end).
                     unsafe {
@@ -1667,6 +1745,25 @@ impl Inner {
             any |= unsafe { mk.add(w).read() } & outside;
         }
         any != 0
+    }
+
+    /// True if the sweep must walk `page`: it holds a dead cell (a VO bit without its mark
+    /// bit: a cell the last mark did not reach), or no cell at all (the walk frees the page).
+    /// One pass over both bitmaps with plain loads, as in `any_mark_bit`.
+    fn needs_walk(&self, page: Page) -> bool {
+        let mk = self.mem.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
+        let vo = self.mem.ptr(page.addr() + VO_BITS_OFFSET).cast::<u64>();
+        let (mut dead, mut any) = (0u64, 0u64);
+        for w in 0..BITMAP_WORDS {
+            // SAFETY: both bitmaps lie in the page's committed metadata area, 8-aligned, with
+            // the provenance of the reservation. Only this thread touches them (S0 and S1 are
+            // stop-the-world), and no atomic access runs during this loop.
+            let v = unsafe { vo.add(w).read() };
+            // SAFETY: as above.
+            dead |= v & !unsafe { mk.add(w).read() };
+            any |= v;
+        }
+        dead != 0 || any == 0
     }
 
     /// The checked sweep's checks of the live cell at `addr` (a VO start): it starts after
@@ -1872,8 +1969,8 @@ fn sweep_error(errors: &mut Vec<String>, idx: usize, msg: core::fmt::Arguments<'
     );
 }
 
-/// The next run of free lines in `page`, from line `*line` on. Leaves `*line` after the run
-/// (at `LINES_PER_PAGE` when there is none). Returns the run's (start, end) addresses.
+/// The next run of free lines in `page`, from line `*line` on, marked used. Leaves `*line` after
+/// the run (at `LINES_PER_PAGE` when there is none). Returns the run's (start, end) addresses.
 fn next_free_run(page: Page, line: &mut usize) -> Option<(usize, usize)> {
     let mut l = *line;
     while l < LINES_PER_PAGE && page.line_used(l) {
@@ -1888,7 +1985,31 @@ fn next_free_run(page: Page, line: &mut usize) -> Option<(usize, usize)> {
         l += 1;
     }
     *line = l;
+    // The run is handed out: its lines count as used from now on, so the line marks cover
+    // every cell placed in it until the next walk of the page sets them from the live cells
+    // (an S1 sweep keeps the line marks of a page with no dead cell, `sweep_page_with`).
+    // SAFETY: lines start..l lie inside the line-mark array of this committed page.
+    unsafe { page.line_marks().add(start).write_bytes(1, l - start) };
     Some((page.addr() + start * LINE_SIZE, page.addr() + l * LINE_SIZE))
+}
+
+/// Per-thread count of pages that an S1 sweep did not walk (no dead cell), for the tests only.
+#[cfg(test)]
+pub(crate) mod sweep_counter {
+    use std::cell::Cell;
+
+    std::thread_local! {
+        static SKIPPED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn bump() {
+        SKIPPED.with(|c| c.set(c.get() + 1));
+    }
+
+    /// Pages skipped on this thread so far.
+    pub(crate) fn skipped() -> u64 {
+        SKIPPED.with(Cell::get)
+    }
 }
 
 #[cfg(test)]
