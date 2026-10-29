@@ -13,17 +13,12 @@
 //! result   null | error | match s-e ... ("-" = a capture that did not take part)
 //! ```
 //!
-//! [`KNOWN`] lists the lines where RX0 differs from node because of one regress 0.12.0
-//! defect, with the RX0 result: in non-Unicode `i` mode regress closes a character class (and
-//! `\w`, `\W`) under Unicode simple case folding, and expands a literal and a backreference
-//! by toUppercase without the ASCII rule of Canonicalize (§22.2.2.7.3: a character at or
-//! above 128 whose uppercase is below 128 stays itself), so `\u017f` (long s), `\u0131`
-//! (dotless i) and `\u212a` (Kelvin) match ASCII letters (`/[a-z]/i`, `/(s)\1/i`) and `\W`
-//! does not match them. The fix belongs to the regress fork patch (month 5, V9-D15); after
-//! it [`KNOWN`] must be empty (P2-ORCH-1). The test fails if any other line differs, if a known line gives another
-//! result, or if a known line starts to equal node (then remove it from the list).
+//! [`KNOWN`] lists the lines where RX0 differs from node, with the RX0 result. It held 11
+//! lines of one regress 0.12.0 defect (non-Unicode `i` without the ASCII rule of Canonicalize,
+//! §22.2.2.7.3) until the fork patch 0004 (M5-P3 RX0b, `third_party/patches/regress/`); it is
+//! now empty and must stay so (P2-ORCH-1). The test fails if any line differs from node.
 
-use ep9_regexp::{Backend, ExecResult, Flags, Input, Rx0};
+use ep9_regexp::{Backend, ExecResult, Flags, Input, Rx0, Rx0Scratch};
 
 /// Reads a golden string: `\\` is a backslash, `\uXXXX` any code unit, the rest as is.
 fn unescape(s: &str) -> Vec<u16> {
@@ -65,7 +60,10 @@ fn run(pattern: &[u16], flags: &str, last_index: usize, input: &[u16]) -> String
         None => Input::Utf16(input),
     };
     let mut caps = Vec::new();
-    match Rx0::exec(&program, input, start, &mut caps, &mut || false) {
+    let mut scratch = Rx0Scratch::default();
+    match Rx0::exec(&program, input, start, &mut caps, &mut scratch, &mut || {
+        false
+    }) {
         ExecResult::NoMatch => "null".into(),
         ExecResult::Match => {
             let spans: Vec<String> = caps
@@ -81,25 +79,9 @@ fn run(pattern: &[u16], flags: &str, last_index: usize, input: &[u16]) -> String
     }
 }
 
-/// Golden lines that differ from node, as (the golden line, the RX0 result).
-const KNOWN: &[(&str, &str)] = &[
-    ("\\\\w\ti\t0\t\\u017f\tnull", "match 0-1"),
-    ("\\\\w\ti\t0\t\\u212a\tnull", "match 0-1"),
-    ("\\u017f\ti\t0\ts\tnull", "match 0-1"),
-    ("\\u017f\ti\t0\tS\tnull", "match 0-1"),
-    ("\\u0131\ti\t0\tI\tnull", "match 0-1"),
-    (
-        "[\\\\u00c0-\\\\u024f]\ti\t0\tThe quick brown fox jumps over the lazy dog 1234\tnull",
-        "match 24-25",
-    ),
-    // The M4-P2 Codex-fix cases (P2-ORCH-8): the same defect in a class range, `\W` and a
-    // backreference.
-    ("[a-z]\ti\t0\t\\u212a\tnull", "match 0-1"),
-    ("[a-z]\ti\t0\t\\u017f\tnull", "match 0-1"),
-    ("\\\\W\ti\t0\t\\u212a\tmatch 0-1", "null"),
-    ("\\\\W\ti\t0\t\\u017f\tmatch 0-1", "null"),
-    ("(s)\\\\1\ti\t0\ts\\u017f\tnull", "match 0-2 0-1"),
-];
+/// Golden lines that differ from node, as (the golden line, the RX0 result): none since the
+/// fork patch 0004.
+const KNOWN: &[(&str, &str)] = &[];
 
 #[test]
 fn rx0_matches_node() {

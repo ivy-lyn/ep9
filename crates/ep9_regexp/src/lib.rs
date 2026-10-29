@@ -12,18 +12,21 @@
 //!
 //! | Backend | State |
 //! |---|---|
-//! | RX0 ([`Rx0`]: regress 0.12.0 from the fork checkout `third_party/regress` through `[patch.crates-io]`: upstream v0.12.0 at `third_party/regress.commit`, plus `third_party/patches/regress/`; V9-D15) | Built (M4-P2 RX0A). Fork wired in M5-P0 with 0 patches, so the code equals crates.io 0.12.0; the patches come in M5-P3 (RX0b) |
+//! | RX0 ([`Rx0`]: regress 0.12.0 from the fork checkout `third_party/regress` through `[patch.crates-io]`: upstream v0.12.0 at `third_party/regress.commit`, plus `third_party/patches/regress/`; V9-D15) | Built (M4-P2 RX0A). Fork wired in M5-P0; the 7 fork patches in M5-P3 (RX0b) |
 //! | RX1, RX2 (irregexp port) | Not started (M2-M5) |
 //!
-//! RX0 limits, until the fork patches (M5-P3, RX0b):
+//! The fork patches (M5-P3 RX0b, `third_party/patches/regress/`, each an upstreamable commit
+//! with its own test in regress `tests/`) and what [`Rx0`] uses of them:
 //!
-//! | Limit | Why | Effect |
+//! | Patch | regress API | Here |
 //! |---|---|---|
-//! | A Latin-1 subject is widened to UTF-16 on every exec | regress has no Latin-1 input (`find_from_utf16` and `find_from_ucs2` take `&[u16]`) | one copy of the subject per exec (plan v9 R16) |
-//! | `poll` runs once per exec, before the search | regress has no hook inside a search: one `Matches::next` call tries every start position | an interrupt waits until the running exec ends |
-//! | No backtrack budget | regress counts no steps | [`ExecResult::BudgetExceeded`] is never returned |
-//! | Sticky (`y`) is the first match from `start`, kept only if it starts at `start` | regress has no single-position attempt | a failing sticky exec scans to the end |
-//! | Non-Unicode `i`: a class, `\w` and `\W` use Unicode simple case folding; a literal and a backreference skip the ASCII rule of Canonicalize (§22.2.2.7.3) | regress 0.12.0 defect | `/\w/i` and `/[a-z]/i` match U+017F and U+212A, `/\W/i` does not, `/\u017f/i` matches `s`, `/(s)\1/i` matches `s\u017f` (11 lines of the node golden, `tests/node_pairs.rs` KNOWN) |
+//! | 0001 poll + budget | `Limits`, `Stopped` | `poll` before the search and every [`POLL_INTERVAL`] steps inside it (a start position, a backtrack, a loop iteration): an interrupt ends an exec within one interval. No budget: JavaScript has no backtrack limit, so [`ExecResult::BudgetExceeded`] is never returned (one rule for every execution mode, MC-w20-16) |
+//! | 0002 single-position exec | `match_at_limited`, `exec_into(.., anchored)` | sticky (`y`) is one attempt at `start`, not a search (plan v9 R16) |
+//! | 0003 duplicate-name backref | `BackRefAny` | `\k<x>` of a name that several groups share matches the group that took part (test262 duplicate-names-*) |
+//! | 0004 non-Unicode `i` ASCII rule | `canonicalize_legacy` | Canonicalize (§22.2.2.7.3) without `u`/`v`: `ſ`, `ı`, the Kelvin sign do not match ASCII letters; the node golden has no KNOWN line |
+//! | 0005 Latin-1 input + start predicates | `Text::Latin1`, `unit_pred` | a Latin-1 subject is read in place (no UTF-16 copy); literal prefixes, first-unit sets and `^` skip positions |
+//! | 0006 caller-owned scratch | `Scratch`, `exec_into` | [`Backend::Scratch`]: the engine's stacks and the capture ranges are reused across execs (no allocation per exec once grown) |
+//! | 0007 flat string-property tables | `StringSetTable` (internal) | nothing to call: the tables of `\p{RGI_Emoji}` and the other properties of strings hold no pointer per string, so the binary has 7,905 fewer load-time fixups (W-REGEXP-1) |
 //!
 //! RX0 fixes in this crate, before regress sees the pattern or the start: `legacy_chars`
 //! (`\u{` and surrogate escapes without `u`; a group name as code points), `unicode_chars` (a
@@ -167,6 +170,10 @@ pub trait Backend {
     /// A compiled pattern: Rust memory only, no GC value (the VM keeps it outside the heap).
     type Program;
 
+    /// Memory an exec reuses (the engine's stacks): Rust memory only, no GC value and no
+    /// state of a finished exec. The VM keeps one per isolate.
+    type Scratch: Default;
+
     /// Compiles `pattern` (the RegExp source as UTF-16 code units) with `flags`.
     fn compile(pattern: &[u16], flags: Flags) -> Result<Self::Program, SyntaxErr>;
 
@@ -174,25 +181,29 @@ pub trait Backend {
     /// [`ExecResult::Match`] the capture spans in code units are in `caps` (cleared first):
     /// `caps.len()` is the group count + 1, `caps[0]` is the whole match. The backend calls
     /// `poll` from time to time (at least once per call, before the search); a `true` return
-    /// stops it with [`ExecResult::Interrupted`].
+    /// stops it with [`ExecResult::Interrupted`]. `scratch` is memory the backend may keep
+    /// between calls.
     fn exec(
         program: &Self::Program,
         input: Input<'_>,
         start: usize,
         caps: &mut Vec<Option<Span>>,
+        scratch: &mut Self::Scratch,
         poll: &mut dyn FnMut() -> bool,
     ) -> ExecResult;
 }
 
 // ---- RX0: regress 0.12.0 --------------------------------------------------------------------
 
-/// The RX0 backend: regress 0.12.0 (backtracking, UTF-16 input).
+/// The RX0 backend: regress 0.12.0 with the ep9 fork patches (backtracking; Latin-1 and
+/// UTF-16 input).
 ///
 /// ```text
 /// compile  pattern units -> code points (u/v: surrogate pairs joined; else one per unit)
 ///          -> regress::Regex::from_unicode (flags i m s u v; v also sets regress `unicode`)
-/// exec     Latin-1 -> widened copy; u/v -> find_from_utf16, else find_from_ucs2; one
-///          `next()`; sticky keeps the match only if it starts at `start`
+/// exec     poll; Latin-1 -> Text::Latin1 (in place); u/v -> Text::Utf16, else Text::Ucs2;
+///          regress exec_into (sticky: one attempt at `start`), scratch reused, poll every
+///          POLL_INTERVAL steps
 /// ```
 #[derive(Debug)]
 pub enum Rx0 {}
@@ -211,6 +222,22 @@ impl Rx0Program {
     pub fn is_unicode(&self) -> bool {
         self.unicode
     }
+}
+
+/// The steps of a search (a start position, a backtrack or a loop iteration) between two
+/// calls of the exec's `poll`: an interrupt ends a running exec within this many steps.
+pub const POLL_INTERVAL: u32 = 1024;
+
+/// The scratch memory that [`Rx0`] keeps above this many bytes is dropped after the exec, so
+/// one exec that backtracked a lot does not hold its stack for the life of the isolate.
+const SCRATCH_KEEP_BYTES: usize = 1 << 20;
+
+/// The memory of [`Rx0`] execs ([`Backend::Scratch`]): regress's stacks and the capture
+/// ranges of the last match. Rust memory, no GC value.
+#[derive(Debug, Default)]
+pub struct Rx0Scratch {
+    engine: regress::Scratch,
+    ranges: Vec<Option<regress::Range>>,
 }
 
 /// The pattern as code points for regress: in Unicode mode a surrogate pair is one code point
@@ -416,6 +443,7 @@ fn syntax_error(pattern: &[u16], flags: Flags, reason: &str) -> SyntaxErr {
 
 impl Backend for Rx0 {
     type Program = Rx0Program;
+    type Scratch = Rx0Scratch;
 
     fn compile(pattern: &[u16], flags: Flags) -> Result<Rx0Program, SyntaxErr> {
         if flags.contains(Flags::UNICODE.union(Flags::UNICODE_SETS)) {
@@ -451,6 +479,7 @@ impl Backend for Rx0 {
         input: Input<'_>,
         start: usize,
         caps: &mut Vec<Option<Span>>,
+        scratch: &mut Rx0Scratch,
         poll: &mut dyn FnMut() -> bool,
     ) -> ExecResult {
         if poll() {
@@ -459,44 +488,48 @@ impl Backend for Rx0 {
         if start > input.len() {
             return ExecResult::NoMatch;
         }
-        let widened: Vec<u16>;
-        let units: &[u16] = match input {
-            Input::Utf16(u) => u,
-            Input::Latin1(b) => {
-                widened = b.iter().map(|&c| u16::from(c)).collect();
-                &widened
-            }
-        };
-        // Unicode mode: a start inside a surrogate pair starts at the pair (V8; RegExpBuiltinExec
-        // reads "the character obtained from element lastIndex", §22.2.7.2 step 13).
         let mut start = start;
-        if program.unicode
-            && start > 0
-            && start < units.len()
-            && is_trail(units[start])
-            && is_lead(units[start - 1])
-        {
-            start -= 1;
-        }
-        let found = if program.unicode {
-            program.re.find_from_utf16(units, start).next()
-        } else {
-            program.re.find_from_ucs2(units, start).next()
+        let text = match input {
+            // Latin-1 has no surrogates: the same text in either mode.
+            Input::Latin1(b) => regress::Text::Latin1(b),
+            Input::Utf16(units) if program.unicode => {
+                // Unicode mode: a start inside a surrogate pair starts at the pair (V8;
+                // RegExpBuiltinExec reads "the character obtained from element lastIndex",
+                // §22.2.7.2 step 13).
+                if start > 0
+                    && start < units.len()
+                    && is_trail(units[start])
+                    && is_lead(units[start - 1])
+                {
+                    start -= 1;
+                }
+                regress::Text::Utf16(units)
+            }
+            Input::Utf16(units) => regress::Text::Ucs2(units),
         };
-        let Some(m) = found else {
-            return ExecResult::NoMatch;
+        let mut limits = regress::Limits {
+            budget: None,
+            poll_interval: POLL_INTERVAL,
+            poll,
         };
-        if program.sticky && m.start() != start {
-            return ExecResult::NoMatch;
+        let Rx0Scratch { engine, ranges } = scratch;
+        let r = program
+            .re
+            .exec_into(text, start, program.sticky, engine, ranges, &mut limits);
+        let out = match r {
+            Ok(true) => {
+                caps.clear();
+                caps.extend(ranges.iter().map(|r| r.as_ref().map(|r| (r.start, r.end))));
+                ExecResult::Match
+            }
+            Ok(false) => ExecResult::NoMatch,
+            Err(regress::Stopped::Interrupted) => ExecResult::Interrupted,
+            Err(regress::Stopped::BudgetExceeded) => ExecResult::BudgetExceeded,
+        };
+        if engine.memory() > SCRATCH_KEEP_BYTES {
+            *engine = regress::Scratch::default();
         }
-        caps.clear();
-        caps.push(Some((m.start(), m.end())));
-        caps.extend(
-            m.captures
-                .iter()
-                .map(|r| r.as_ref().map(|r| (r.start, r.end))),
-        );
-        ExecResult::Match
+        out
     }
 }
 
@@ -509,6 +542,7 @@ mod tests {
 
     impl Backend for Literal {
         type Program = Vec<u16>;
+        type Scratch = ();
 
         fn compile(pattern: &[u16], flags: Flags) -> Result<Vec<u16>, SyntaxErr> {
             if flags.contains(Flags::UNICODE_SETS) && flags.contains(Flags::UNICODE) {
@@ -524,6 +558,7 @@ mod tests {
             input: Input<'_>,
             start: usize,
             caps: &mut Vec<Option<Span>>,
+            _scratch: &mut (),
             poll: &mut dyn FnMut() -> bool,
         ) -> ExecResult {
             let unit = |i: usize| match input {
@@ -558,17 +593,24 @@ mod tests {
     fn trait_signatures_work_for_both_input_forms() {
         let p = Literal::compile(&utf16("lo"), Flags::GLOBAL).unwrap();
         let mut caps = Vec::new();
-        let r = Literal::exec(&p, Input::Latin1(b"hello"), 0, &mut caps, &mut never);
+        let r = Literal::exec(
+            &p,
+            Input::Latin1(b"hello"),
+            0,
+            &mut caps,
+            &mut (),
+            &mut never,
+        );
         assert_eq!((r, caps[0]), (ExecResult::Match, Some((3, 5))));
         let text = utf16("h\u{e9}llo");
-        let r = Literal::exec(&p, Input::Utf16(&text), 4, &mut caps, &mut never);
+        let r = Literal::exec(&p, Input::Utf16(&text), 4, &mut caps, &mut (), &mut never);
         assert_eq!(r, ExecResult::NoMatch);
         let mut polls = 0;
         let mut stop = || {
             polls += 1;
             true
         };
-        let r = Literal::exec(&p, Input::Utf16(&text), 0, &mut caps, &mut stop);
+        let r = Literal::exec(&p, Input::Utf16(&text), 0, &mut caps, &mut (), &mut stop);
         assert_eq!((r, polls), (ExecResult::Interrupted, 1));
         let both = Flags::UNICODE.union(Flags::UNICODE_SETS);
         assert!(Literal::compile(&[], both).is_err());
@@ -599,7 +641,8 @@ mod tests {
     fn run(p: &str, f: &str, input: Input<'_>, start: usize) -> Option<Vec<Option<Span>>> {
         let prog = Rx0::compile(&utf16(p), Flags::parse(&utf16(f)).unwrap()).unwrap();
         let mut caps = Vec::new();
-        match Rx0::exec(&prog, input, start, &mut caps, &mut never) {
+        let mut scratch = Rx0Scratch::default();
+        match Rx0::exec(&prog, input, start, &mut caps, &mut scratch, &mut never) {
             ExecResult::Match => Some(caps),
             ExecResult::NoMatch => None,
             r => panic!("{r:?}"),
@@ -794,7 +837,128 @@ mod tests {
             polls += 1;
             true
         };
-        let r = Rx0::exec(&prog, Input::Latin1(b"a"), 0, &mut caps, &mut stop);
+        let mut scratch = Rx0Scratch::default();
+        let r = Rx0::exec(
+            &prog,
+            Input::Latin1(b"a"),
+            0,
+            &mut caps,
+            &mut scratch,
+            &mut stop,
+        );
         assert_eq!((r, polls), (ExecResult::Interrupted, 1));
+    }
+
+    /// Runs `p` on `input` from `start` with a poll that counts its calls and returns true
+    /// at call `stop_at` (0: never). Returns the result and the poll count.
+    fn run_polled(
+        p: &str,
+        f: &str,
+        input: Input<'_>,
+        start: usize,
+        stop_at: u32,
+    ) -> (ExecResult, u32) {
+        let prog = Rx0::compile(&utf16(p), Flags::parse(&utf16(f)).unwrap()).unwrap();
+        let (mut caps, mut scratch, mut polls) = (Vec::new(), Rx0Scratch::default(), 0u32);
+        let mut poll = || {
+            polls += 1;
+            polls == stop_at
+        };
+        let r = Rx0::exec(&prog, input, start, &mut caps, &mut scratch, &mut poll);
+        (r, polls)
+    }
+
+    /// Patch 0001: an interrupt ends an exponential search at the first poll inside it, so
+    /// within one poll interval of steps (it ran 2^30 steps before the patch).
+    #[test]
+    fn rx0_an_interrupt_stops_a_search_within_one_poll_interval() {
+        let a30 = [b'a'; 30];
+        let (r, polls) = run_polled("(a+)+b", "", Input::Latin1(&a30), 0, 2);
+        assert_eq!((r, polls), (ExecResult::Interrupted, 2));
+        // Without an interrupt the search polls once per interval and goes on (a short run:
+        // 18 a's is 2^18 steps).
+        let a18 = [b'a'; 18];
+        let (r, polls) = run_polled("(a+)+b", "", Input::Latin1(&a18), 0, 0);
+        assert_eq!(r, ExecResult::NoMatch);
+        assert!(polls > (1 << 18) / POLL_INTERVAL, "{polls} polls");
+    }
+
+    /// Patch 0002: a sticky exec is one attempt at `start`. A sticky lexer that fails at each
+    /// position of a long subject polls once per exec (before its attempt): no exec scans the
+    /// rest of the subject (before the patch each one searched to the end: n^2 / 1024 polls).
+    #[test]
+    fn rx0_a_failing_sticky_exec_does_not_scan() {
+        let text = vec![u16::from(b'a'); 20_000];
+        let prog = Rx0::compile(&utf16("b|ab?c"), Flags::STICKY).unwrap();
+        let (mut caps, mut scratch, mut polls) = (Vec::new(), Rx0Scratch::default(), 0usize);
+        let mut poll = || {
+            polls += 1;
+            false
+        };
+        for start in 0..text.len() {
+            let r = Rx0::exec(
+                &prog,
+                Input::Utf16(&text),
+                start,
+                &mut caps,
+                &mut scratch,
+                &mut poll,
+            );
+            assert_eq!(r, ExecResult::NoMatch);
+        }
+        assert_eq!(polls, text.len());
+        // A sticky match at `start`, and none at a later position.
+        assert_eq!(
+            run("ab?c", "y", Input::Latin1(b"xabc"), 1).unwrap(),
+            [Some((1, 4))]
+        );
+        assert_eq!(run("ab?c", "y", Input::Latin1(b"xabc"), 0), None);
+    }
+
+    /// Patch 0003: `\k<x>` of a name that two groups share matches the one that took part
+    /// (test262 duplicate-names-exec.js; node v24.22.0).
+    #[test]
+    fn rx0_duplicate_names_in_a_backreference() {
+        let p = "(?:(?<x>a)|(?<x>b))\\k<x>";
+        assert_eq!(
+            run(p, "", Input::Latin1(b"bb"), 0).unwrap(),
+            [Some((0, 2)), None, Some((0, 1))]
+        );
+        assert_eq!(
+            run(p, "", Input::Latin1(b"aa"), 0).unwrap(),
+            [Some((0, 2)), Some((0, 1)), None]
+        );
+        assert_eq!(run(p, "", Input::Latin1(b"ab"), 0), None);
+        // [\k] with a group name is a SyntaxError without u (B.1.2; node "Invalid escape").
+        for p in ["[\\k<a>](?<a>x)", "(?<a>x)[\\k<a>]"] {
+            assert!(Rx0::compile(&utf16(p), Flags::empty()).is_err(), "{p}");
+        }
+    }
+
+    /// Patch 0005: a Latin-1 subject is read in place, with the same results as its UTF-16
+    /// form, also for case pairs that leave Latin-1 (U+00FF, U+0178) and start predicates.
+    #[test]
+    fn rx0_latin1_equals_utf16() {
+        let cases = [
+            ("\\u0178", "i", &[b'a', 0xff][..]),
+            ("q{2,}x|\\d", "", b"qqx9"),
+            ("^b", "m", b"a\nb"),
+            ("[\\u00e0-\\u00ff]+", "i", &[b'A', 0xc9, 0xe9]),
+            ("(?<=\\u00e9)b", "", &[0xe9, b'b']),
+        ];
+        for (p, f, bytes) in cases {
+            let units: Vec<u16> = bytes.iter().map(|&b| u16::from(b)).collect();
+            for start in 0..=bytes.len() {
+                assert_eq!(
+                    run(p, f, Input::Latin1(bytes), start),
+                    run(p, f, Input::Utf16(&units), start),
+                    "/{p}/{f} from {start}"
+                );
+            }
+        }
+        assert_eq!(
+            run("\\u0178", "i", Input::Latin1(&[b'a', 0xff]), 0).unwrap(),
+            [Some((1, 2))]
+        );
     }
 }

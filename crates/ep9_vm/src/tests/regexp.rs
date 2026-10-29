@@ -10,9 +10,10 @@
 //! | `a_dead_regexp_frees_its_program` | the weak source frees the table entry of a RegExp that died, and the index is reused (V9-A7) |
 //! | `exec_runs_a_pending_interrupt` | a requested interrupt runs at the exec's poll, then the match goes on |
 //! | `exec_stops_on_termination` | a termination request ends the exec with the uncatchable termination |
-//! | `a_multi_match_loop_widens_once` | the exec loop of a global replace on one Latin-1 subject copies it to UTF-16 once, not once per match; every GC empties the copy (M4-P3 P3-ORCH-13) |
+//! | `termination_stops_a_running_search` | (M5-P3 RX0b) a termination from another thread ends a running exponential search at the next poll inside it (fork patch 0001) |
+//! | `a_multi_match_loop_reads_the_subject_in_place` | (M5-P3 RX0b) the exec loop of a global replace on Latin-1, UTF-16 and rope subjects, before and after minor and major GCs: the engine reads the flat text in place (fork patch 0005; the M4-P3 UTF-16 copy of a Latin-1 subject is gone) |
 //! | `exec_keeps_the_receiver_across_the_flatten` | under GC stress, an exec whose only RegExp root is its argument keeps the program while the rope subject is flattened (fails before the fix in release only) |
-//! | `the_program_cache_compiles_a_pattern_once` | (M5-P2) a seen (source, flags) pair compiles no program; other flags or source compile; a SyntaxError is not cached; the cache keeps 64 programs, the least recently used goes first, and a RegExp whose program left the cache still runs |
+//! | `the_program_cache_compiles_a_pattern_once` | (M5-P2) a seen (source, flags) pair compiles no program; other flags or source compile; a SyntaxError is not cached; the cache keeps 256 programs, the least recently used goes first, and a RegExp whose program left the cache still runs |
 //! | `a_literal_in_a_loop_compiles_once` | (M5-P2) two evaluations of one literal make two objects and one program |
 //! | `initialize_replaces_the_program` | (M5-P2) `Cx::regexp_initialize` (Annex B `compile`) keeps the table index, changes source, flags and program, keeps the legacy bit; a bad pattern or flags change nothing |
 //! | `legacy_state_keeps_no_realm_alive` | (M5-P2) the legacy static state of a realm holds its key weakly: a realm that nothing else holds is collected and its state dropped; a live realm keeps its state and string |
@@ -140,57 +141,42 @@ fn global_loop<'s>(cx: &mut Cx<'s>, r: Local<'s, JsObject>, s: Local<'s, JsStrin
 }
 
 #[test]
-fn a_multi_match_loop_widens_once() {
+fn a_multi_match_loop_reads_the_subject_in_place() {
     for stress in [false, true] {
         with_cx(stress, |cx, rt| {
-            let made = || rt.regexp_programs.widenings();
             let r = re(cx, "a", "g");
-            // A Latin-1 subject with 3 matches: 3 execs that match and 1 that does not.
+            // A Latin-1 subject with 3 matches: 3 execs that match and 1 that does not; a
+            // second loop on the same string, and another string.
             let s = cx.new_string("xaxa\u{e9}a").unwrap();
-            let before = made();
             assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
-            if !stress {
-                assert_eq!(made() - before, 1, "one copy for the 4 execs of the loop");
-            }
-            // A second loop on the same string reuses the copy; another string copies again.
-            let before = made();
             assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
             let t = cx.new_string("aa").unwrap();
             assert_eq!(global_loop(cx, r, t), [0, 1]);
-            if !stress {
-                assert_eq!(made() - before, 1, "only the new subject is copied");
-            }
-            // A UTF-16 subject needs no copy.
-            let before = made();
+            // A UTF-16 subject.
             let u = cx.new_string("\u{4e2d}a\u{4e2d}a").unwrap();
             assert_eq!(global_loop(cx, r, u), [1, 3]);
-            assert_eq!(made(), before, "UTF-16 is read in place");
             // A rope is flattened at its first exec; the later execs read the same flat cell.
             let a = object_string(rt, "the quick brown fox jumps over ");
             let b = object_string(rt, "the lazy dog, again and again");
             let rope = crate::string::concat(rt, a, b).expect("a rope");
             let rope: Local<'_> = Local::from_bits(rope);
             let rope = rope.as_string().unwrap();
-            let before = made();
             assert_eq!(global_loop(cx, r, rope), [36, 45, 47, 51, 55, 57]);
-            if !stress {
-                assert_eq!(made() - before, 1, "one copy of the flattened rope");
-            }
-            // Every GC (minor ones too) empties the copy: the next exec copies again.
+            // GCs (minor ones too) between loops change nothing.
             for minor in [false, true] {
-                let before = made();
                 if minor {
                     rt.heap.collect_minor();
                 } else {
                     rt.heap.collect();
                 }
                 assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
-                assert_eq!(
-                    made() - before,
-                    1,
-                    "the GC emptied the copy (minor: {minor})"
-                );
+                assert_eq!(global_loop(cx, r, rope), [36, 45, 47, 51, 55, 57]);
             }
+            // A Latin-1 subject above 0x7f and a case pair that leaves Latin-1 (U+00FF,
+            // U+0178), read in place.
+            let r2 = re(cx, "\\u0178", "gi");
+            let l = cx.new_string("\u{ff}x\u{ff}").unwrap();
+            assert_eq!(global_loop(cx, r2, l), [0, 2]);
         });
     }
 }
@@ -441,6 +427,36 @@ fn exec_stops_on_termination() {
     assert!(out.is_err(), "the termination ends the exec: {out:?}");
 }
 
+/// (M5-P3 RX0b, fork patch 0001) A termination requested from another thread while an
+/// exponential search runs (`/(a+)+b/` on 40 a's: about 2^40 backtracks) ends it at the next
+/// poll inside the search, `ep9_regexp::POLL_INTERVAL` steps at most. Before the patch the
+/// engine polled only before the search, so this exec did not end.
+#[test]
+fn termination_stops_a_running_search() {
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let stop = iso.terminate_handle();
+    let started = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&started);
+    let killer = std::thread::spawn(move || {
+        while seen.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        stop.terminate();
+    });
+    let out = iso.with_cx(|cx| {
+        let r = re(cx, "(a+)+b", "");
+        let s = cx.new_string(&"a".repeat(40)).unwrap();
+        started.store(1, Ordering::SeqCst);
+        cx.regexp_exec(r, s, 0).map(|m| m.is_some())
+    });
+    killer.join().unwrap();
+    assert!(
+        out.is_err(),
+        "the termination ends the running exec: {out:?}"
+    );
+}
+
 // ---- the receiver stays live through the exec (Codex M4-P2 R1B, high) ----
 // The caller's only copy of the RegExp is the argument of `regexp_exec`: it is made in a
 // frame below a pad, only its masked bits come back, and the stack is scrubbed before the
@@ -535,14 +551,14 @@ fn the_program_cache_compiles_a_pattern_once() {
                 take_error(cx, rt);
             }
             assert_eq!(t.cached(), cached, "an error is not cached");
-            // The bound: 64 programs, the least recently used goes first.
+            // The bound: 256 programs, the least recently used goes first.
             let first = re(cx, "first", "");
-            for i in 0..100 {
+            for i in 0..300 {
                 re(cx, &format!("p{i}"), "");
             }
-            assert_eq!(t.cached(), 64);
+            assert_eq!(t.cached(), 256);
             let n1 = t.compiles();
-            re(cx, "p99", "");
+            re(cx, "p299", "");
             assert_eq!(t.compiles(), n1, "a recent pattern is still cached");
             re(cx, "p0", "");
             assert_eq!(t.compiles(), n1 + 1, "the oldest pattern left the cache");

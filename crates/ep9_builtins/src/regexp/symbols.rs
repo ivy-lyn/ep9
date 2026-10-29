@@ -21,6 +21,7 @@ use ep9_vm::{
     ScratchList,
 };
 
+use super::def;
 use super::exec::{
     self, Exec, advance_string_index, is_builtin_exec, is_regexp_object, number, set_last_index,
     slot, substring,
@@ -41,8 +42,35 @@ fn this_object<'s>(cx: &mut Cx<'s>, this: Local<'s>, name: &str) -> JsResult<Loc
     }
 }
 
-/// ? ToString(? Get(rx, "flags")) as code units.
+/// The builtin getters of the `flags` fast path, in the order of
+/// `Cx::regexp_has_initial_flags`: `flags`, then the 8 flag accessors in the order of the
+/// `flags` getter (§22.2.6.4 steps 4-11).
+const FLAG_GETTERS: [ep9_vm::BuiltinId; 9] = [
+    super::MODULE.id(def::FLAGS),
+    super::MODULE.id(def::HAS_INDICES),
+    super::MODULE.id(def::GLOBAL),
+    super::MODULE.id(def::IGNORE_CASE),
+    super::MODULE.id(def::MULTILINE),
+    super::MODULE.id(def::DOT_ALL),
+    super::MODULE.id(def::UNICODE),
+    super::MODULE.id(def::UNICODE_SETS),
+    super::MODULE.id(def::STICKY),
+];
+
+/// ? ToString(? Get(rx, "flags")) as code units. Fast path (M5-P3 RX0b): for a RegExp with
+/// its initial shape and an unmodified `%RegExp.prototype%`
+/// (`Cx::regexp_has_initial_flags`), the Gets run only builtin getters, so the text comes
+/// from the `[[RegExpRecord]]` bits, in the `flags` getter's order.
 pub(super) fn flags_of<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<Vec<u16>> {
+    if cx.regexp_has_initial_flags(rx, &FLAG_GETTERS) {
+        let bits = exec::flag_bits(cx, rx)?;
+        return Ok(b"dgimsuvy"
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| bits & (1 << i) != 0)
+            .map(|(_, &c)| u16::from(c))
+            .collect());
+    }
     let flags = cx.get(rx, "flags")?;
     let flags = cx.to_string(flags)?;
     units(cx, flags)
@@ -151,6 +179,43 @@ enum Found {
 /// The longest string (code units): `crate::string`'s `MAX_LENGTH` (2^29 - 24).
 const MAX_STRING_UNITS: usize = (1 << 29) - 24;
 
+/// The subject S of @@replace, read in place by range (`Cx::regexp_push_units`; M5-P3
+/// RX0b). A path that needs all of S at once (GetSubstitution, a result object, the
+/// captures of a later result) copies it once ([`ReplaceSubject::all`]).
+struct ReplaceSubject<'s> {
+    s: Local<'s, JsString>,
+    copy: Option<Vec<u16>>,
+}
+
+impl<'s> ReplaceSubject<'s> {
+    fn new(s: Local<'s, JsString>) -> ReplaceSubject<'s> {
+        ReplaceSubject { s, copy: None }
+    }
+
+    /// The code units of S (copied at the first call).
+    fn all(&mut self, cx: &mut Cx<'s>) -> &[u16] {
+        let s = self.s;
+        self.copy.get_or_insert_with(|| {
+            let mut v = Vec::with_capacity(cx.string_len(s));
+            cx.regexp_push_units(s, 0, cx.string_len(s), &mut v);
+            v
+        })
+    }
+
+    /// Appends the code units `from..to` of S to `out`; RangeError if the result would pass
+    /// the longest string.
+    fn push(&self, cx: &mut Cx<'s>, out: &mut Vec<u16>, from: usize, to: usize) -> JsResult<()> {
+        if out.len() + (to - from) > MAX_STRING_UNITS {
+            return Err(cx.throw_range_error("Invalid string length"));
+        }
+        match &self.copy {
+            Some(c) => out.extend_from_slice(&c[from..to]),
+            None => cx.regexp_push_units(self.s, from, to, out),
+        }
+        Ok(())
+    }
+}
+
 /// An upper bound of the length of the GetSubstitution text of `template` in a subject of
 /// `length` code units: each template code unit adds at most one subject (a `$` reference
 /// is 2 or more units and adds at most the subject).
@@ -208,8 +273,8 @@ pub(super) fn replace<'s>(
     if global {
         set_last_index(cx, rx, 0)?;
     }
-    // (The code units of S, for the replaced-at-once results; step 13 in the spec.)
-    let string = units(cx, s)?;
+    // (S, read in place; step 13 in the spec.)
+    let mut string = ReplaceSubject::new(s);
     let bound = substitution_bound(&template, length_s);
     // 13. Let accumulatedResult be the empty String.
     let mut accumulated = Vec::new();
@@ -259,12 +324,13 @@ pub(super) fn replace<'s>(
                         <= MAX_STRING_UNITS =>
             {
                 // Step 15 of this result now (the doc above).
-                let r = replacement_of_record(cx, &m, s, &string, &template)?;
+                let r = replacement_of_record(cx, &m, &mut string, &template)?;
                 accumulate(cx, &mut accumulated, &mut next_source_position, &string, r)?;
             }
             Exec::Record(m) => {
                 let at = objects.len();
                 let (position, end) = (m.start(), m.end());
+                let string = string.all(cx);
                 objects.push(cx.new_string_utf16(&string[position..end])?);
                 for i in 1..=m.group_count() {
                     let cap = match m.get(i) {
@@ -306,10 +372,11 @@ pub(super) fn replace<'s>(
                 //       properties: reading them runs no JS).
                 let matched = objects.get(at).as_string().expect("the matched substring");
                 let named_captures = objects.get(at + 1 + n);
+                let all = string.all(cx);
                 let replacement = replacement_text(
                     cx,
                     matched,
-                    &string,
+                    all,
                     s,
                     position,
                     (&objects, at + 1, n),
@@ -324,15 +391,18 @@ pub(super) fn replace<'s>(
                     replacement,
                 }
             }
-            Found::Object(i) => replacement_of_object(
-                cx,
-                objects.get(i),
-                s,
-                &string,
-                functional_replace,
-                replace_value,
-                &template,
-            )?,
+            Found::Object(i) => {
+                let all = string.all(cx);
+                replacement_of_object(
+                    cx,
+                    objects.get(i),
+                    s,
+                    all,
+                    functional_replace,
+                    replace_value,
+                    &template,
+                )?
+            }
         };
         accumulate(
             cx,
@@ -346,7 +416,7 @@ pub(super) fn replace<'s>(
     // 17. Return the string-concatenation of accumulatedResult and the substring of S from
     //     nextSourcePosition.
     if next_source_position < length_s {
-        push_units(cx, &mut accumulated, &string[next_source_position..])?;
+        string.push(cx, &mut accumulated, next_source_position, length_s)?;
     }
     drop(objects);
     Ok(cx.new_string_utf16(&accumulated)?.value())
@@ -357,7 +427,7 @@ fn accumulate<'s>(
     cx: &mut Cx<'s>,
     accumulated: &mut Vec<u16>,
     next_source_position: &mut usize,
-    string: &[u16],
+    string: &ReplaceSubject<'s>,
     replaced: Replaced,
 ) -> JsResult<()> {
     let Replaced {
@@ -374,7 +444,7 @@ fn accumulate<'s>(
     //         substring of S from nextSourcePosition to position, and replacement.
     //     iii. Set nextSourcePosition to position + matchLength.
     if position >= *next_source_position {
-        push_units(cx, accumulated, &string[*next_source_position..position])?;
+        string.push(cx, accumulated, *next_source_position, position)?;
         push_units(cx, accumulated, &replacement)?;
         *next_source_position = position + match_length;
     }
@@ -465,8 +535,7 @@ fn replacement_of_object<'s>(
 fn replacement_of_record<'s>(
     cx: &mut Cx<'s>,
     m: &MatchRecord,
-    s: Local<'s, JsString>,
-    string: &[u16],
+    string: &mut ReplaceSubject<'s>,
     template: &[u16],
 ) -> JsResult<Replaced> {
     let (position, end) = (m.start(), m.end());
@@ -478,6 +547,8 @@ fn replacement_of_record<'s>(
             replacement: template.to_vec(),
         });
     }
+    let s = string.s;
+    let string = string.all(cx);
     let matched = cx.new_string_utf16(&string[position..end])?;
     let captures = cx.scratch_list();
     for i in 1..=m.group_count() {
@@ -885,4 +956,108 @@ fn split_by_search<'s>(
     let t = substring(cx, s, p, size)?;
     append(cx, a, &mut length_a, t, lim)?;
     Ok(a.value())
+}
+
+/// The fast paths of M5-P3 RX0b (the `flags` text from the record, S read in place): the
+/// same output as node v24.22.0 for an unmodified RegExp, for one whose own properties or
+/// prototype differ, and after `%RegExp.prototype%` changes once the fuse is armed (each
+/// line also under GC stress).
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
+    use ep9_heap::HeapConfig;
+    use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
+
+    thread_local! {
+        static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn print<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        let mut parts = Vec::new();
+        for v in args.iter() {
+            parts.push(cx.to_rust_string(v)?);
+        }
+        OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
+        Ok(Local::undefined())
+    }
+
+    fn run(src: &'static str, stress: bool) -> Vec<String> {
+        let f = move || {
+            let unit = ep9_frontend::compile(
+                src,
+                SourceOpts::script(Strictness::Sloppy),
+                CompileOptions::default(),
+            )
+            .expect("the script compiles");
+            let mut iso = Isolate::new(IsolateConfig {
+                heap: HeapConfig {
+                    gc_stress: u32::from(stress),
+                    verify_after_gc: stress,
+                    ..HeapConfig::default()
+                },
+                builtins: Some(&crate::TABLE),
+                ..IsolateConfig::default()
+            })
+            .expect("an isolate");
+            iso.register_host_function("print", 1, print);
+            OUT.with(|o| o.borrow_mut().clear());
+            let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
+            assert!(
+                r.is_ok(),
+                "the script throws: {:?}",
+                r.err().map(|e| e.message)
+            );
+            OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
+        };
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn(f)
+            .expect("a thread")
+            .join()
+            .expect("no panic")
+    }
+
+    #[test]
+    fn the_flags_fast_path_keeps_every_observable_get() {
+        let src = r#"var log = [];
+var big = "x"; for (var i = 0; i < 6; i++) big = big + big + "a";
+print("xaxa".replace(/a/g, "b"), "xaxa".replace(/a/, "b"), "a,b,,c".split(/,/).length, "aXa".match(/a/g).length, big.replace(/a/g, "").length);
+print("ĀaĀa".replace(/a/g, "[$&]"), ("x" + "a" + big).replace(/x/, "y").slice(0, 4), "a1b2".replace(/(\d)/g, "<$1>"), [..."a1b2".matchAll(/\d/g)].length);
+var own = /a/g;
+Object.defineProperty(own, "flags", { value: "" });
+print("xaxa".replace(own, "b"), "a,b".split(own).length);
+class R extends RegExp { get flags() { log.push("R.flags"); return ""; } }
+print("xaxa".replace(new R("a", "g"), "b"), log.join());
+log = [];
+var proto = Object.getPrototypeOf(/a/);
+var g = Object.getOwnPropertyDescriptor(proto, "global").get;
+Object.defineProperty(proto, "global", { get: function () { log.push("global"); return false; }, configurable: true });
+print("xaxa".replace(/a/g, "b"), log.join());
+Object.defineProperty(proto, "global", { get: g, configurable: true });
+log = [];
+var u = Object.getOwnPropertyDescriptor(proto, "unicode").get;
+Object.defineProperty(proto, "unicode", { get: function () { log.push("unicode"); return u.call(this); }, configurable: true });
+print("xaxa".replace(/a/g, "b"), "a".split(/(?:)/u).length, log.join());
+Object.prototype.extra = 1;
+print("xaxa".replace(/a/g, "c"), "xaxa".replace(/a/y, "c"));"#;
+        let want = [
+            "xbxb xbxa 4 2 64",
+            "\u{100}[a]\u{100}[a] yaxx a<1>b<2> 2",
+            "xbxa 2",
+            "xbxa R.flags",
+            "xbxa global",
+            "xbxb 1 unicode,unicode",
+            "xcxc xaxa",
+        ];
+        for stress in [false, true] {
+            assert_eq!(run(src, stress), want, "gc stress {stress}");
+        }
+    }
 }
