@@ -154,6 +154,19 @@ when one is missing, is not a full commit id, or does not match):
 (H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.
 The result must not depend on it, so every threshold uses the same expectation file.
 
+`--preset jit|jitless` picks the execution preset of every isolate (doc 13 §1.2; default: the
+build's, `jit` with the `jit` feature, else `jitless`; a preset the build cannot run is a usage
+error, exit 2). `--feedback full|ics_only` picks the type-feedback mode (MODES-D11; default: the
+preset's, `full` for `jit`, `ics_only` for `jitless`; `ics_only` runs the second T0 handler
+table, which writes no record bit). The result must not depend on either (doc 13 M-R9), so every
+preset and mode uses the same expectation file. The workers get both flags from the parent.
+
+| CI column (`ci.yml` test262 job) | Build | Flags |
+|---|---|---|
+| `test262 exec` | default (`jit`) | none (`jit`, `full`) |
+| `test262 exec, eager feedback` | default (`jit`) | `--feedback-threshold 0` |
+| `test262 exec, no-jit build (jitless, ics_only)` (linux-x64 only; M5-P3 PROFILE6) | `--no-default-features` | `--preset jitless` (so `ics_only`) |
+
 ### Panics and `panic = "abort"`
 
 Each worker process installs a panic hook that keeps the panic text for the result line and

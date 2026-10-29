@@ -663,7 +663,7 @@ pub struct WrongCase {
 /// and loop(n)) with the heap verifier clean; the files of another kernel, another schema
 /// version and a RUNTIME source are refused; code compiled from a wrong file ran and took an
 /// exit in at least one case; and the wrong numeric facts (named-load facts kept) compile to
-/// other code that loop(n) runs with no exit ([`Need::Reach`]), since the other cases exit at
+/// other code that loop(n) runs with no exit (`Need::Reach`), since the other cases exit at
 /// the first named load (g0) before any arithmetic.
 pub fn wrong_profiles(k: &'static Kernel, n: u32) -> Result<(Vec<String>, bool), String> {
     let config = Config::default();

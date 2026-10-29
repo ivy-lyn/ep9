@@ -23,7 +23,12 @@
 //! spike-c time <kernel> [--rounds R] [--n N] [--k K]
 //!                                           class S timing (protocol §3): T0, C, H0, H1 in new
 //!                                           processes, paired ratios; a report, never a reading
-//! spike-c once <t0|c|h0|h1> <kernel> [--n N] [--k K]   one timed configuration (`time` runs it)
+//! spike-c once <t0|c|p|h0|h1> <kernel> [--n N] [--k K]
+//!                                           one timed configuration (`time` runs it; p reads
+//!                                           the PROFILED file SPIKE_C_PROFILE names)
+//! spike-c sp-facts <write|check|wrong|time> ...
+//!                                           config P (SP-Facts, WI-SC8, gate.sh spfacts): a
+//!                                           PROFILED file written, checked, wrong files, timed
 //! spike-c show <kernel> [hot index]         bytecode and live facts of a hot function
 //! spike-c driver <kernel> [--n N]          print the driver script (node runs the same text)
 //! spike-c structural [check... | all]       the checks of `gate.sh structural`
@@ -42,7 +47,8 @@ fn usage() -> ExitCode {
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
          | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] \
          | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
-         | once <t0|c|h0|h1> <kernel> [--n N] [--k K] | show <kernel> [i] | driver <kernel> [--n N] \
+         | once <t0|c|p|h0|h1> <kernel> [--n N] [--k K] | sp-facts <write|check|wrong|time> ... \
+         | show <kernel> [i] | driver <kernel> [--n N] \
          | structural [check...|all]]"
     );
     ExitCode::from(2)
@@ -443,13 +449,13 @@ fn time_cmd(args: &[String]) -> Result<bool, String> {
     Ok(ok)
 }
 
-/// `spike-c once <t0|c|h0|h1> <kernel> [--n N] [--k K]`: one timed configuration, in the
+/// `spike-c once <t0|c|p|h0|h1> <kernel> [--n N] [--k K]`: one timed configuration, in the
 /// line form `timing::Once::parse` reads.
 fn once_cmd(args: &[String]) -> Result<bool, String> {
     let which = args
         .first()
         .and_then(|w| spike_c::timing::Which::parse(w))
-        .ok_or("once: t0, c, h0 or h1")?;
+        .ok_or("once: t0, c, p, h0 or h1")?;
     let k = kernel_arg(args.get(1))?;
     let n = flag(&args[1..], "--n")?.unwrap_or(k.n);
     let hot_k = flag(&args[1..], "--k")?.unwrap_or(spike_c::timing::default_k(k));

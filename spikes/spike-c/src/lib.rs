@@ -25,6 +25,7 @@
 //! | [`kernels`] | the protocol kernels: source files, hot functions, drivers, checks | P0-SPIKEC |
 //! | [`structural`] | `spike-c structural`, the checks of `gate.sh structural` | P0-SPIKEC; SPIKEC-1 adds layout, compile and lattice checks |
 //! | [`facts`] | the FactSnapshot input of one function: live (RUNTIME) or a PROFILED file | P0-SPIKEC; SP-Facts (month 5) |
+//! | [`sp_facts`] | config P (SP-Facts, WI-SC8): a PROFILED file written by a training run, loaded in a new process and the accepted hot set compiled before the first `run()`; the right-file check, the wrong-profile cases and the schema refusals (`gate.sh spfacts`), the t(C)/t(P) report | SPFACTS (M5-P3) |
 //! | [`cfg`](mod@cfg) | reachable bytecode as blocks, register liveness (H02-Q1) | SPIKEC-1 (M4-P1) |
 //! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards with frame states | SPIKEC-1 |
 //! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3; the generic keyed path, doubles, `===`, context loads and calls (the `lin_solve` graph) SPIKEC-4 |
