@@ -77,7 +77,7 @@ fn internalize<'s>(
     // 2. If val is an Object, then
     if let Some(o) = val.as_object() {
         // a. Let isArray be ? IsArray(val).
-        if cx.is_array(o) {
+        if cx.is_array_or_throw(o)? {
             // b. If isArray is true, then
             //    i. Let len be ? LengthOfArrayLike(val).
             let len = length_of_array_like(cx, o)?;

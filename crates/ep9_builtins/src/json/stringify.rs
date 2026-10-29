@@ -76,7 +76,7 @@ pub(super) fn stringify<'s>(
         if r.is_callable() {
             // a. If IsCallable(replacer) is true, set ReplacerFunction to replacer.
             replacer_function = r.value();
-        } else if cx.is_array(r) {
+        } else if cx.is_array_or_throw(r)? {
             // b. Else, let isArray be ? IsArray(replacer); if isArray is true, then
             //    i. Set PropertyList to a new empty List.
             has_property_list = true;
@@ -316,7 +316,7 @@ fn write_value<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, value: Local<'s>)
         // a. Let isArray be ? IsArray(value).
         // b. If isArray is true, return ? SerializeJSONArray(state, value).
         // c. Return ? SerializeJSONObject(state, value).
-        if cx.is_array(o) {
+        if cx.is_array_or_throw(o)? {
             serialize_array(cx, state, o)?;
         } else {
             serialize_object(cx, state, o)?;

@@ -327,7 +327,7 @@ fn array_species_create<'s>(
 ) -> JsResult<Local<'s, JsObject>> {
     // 1. Let isArray be ? IsArray(originalArray).
     // 2. If isArray is false, return ? ArrayCreate(length).
-    if !cx.is_array(original) {
+    if !cx.is_array_or_throw(original)? {
         return array_create(cx, length);
     }
     // 3. Let C be ? Get(originalArray, "constructor").
@@ -515,7 +515,7 @@ fn flatten_into_array<'s>(
             }
             // iii. Let shouldFlatten be false.
             // iv. If depth > 0, then set shouldFlatten to ? IsArray(element).
-            let should_flatten = depth > 0.0 && cx.is_array(element);
+            let should_flatten = depth > 0.0 && cx.is_array_or_throw(element)?;
             // v. If shouldFlatten is true, then
             if should_flatten {
                 let element = element.as_object().expect("an array is an object");
@@ -744,8 +744,8 @@ fn is_array<'s>(
     args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    // 1. Return ? IsArray(arg). (v0: no proxies, so IsArray never throws.)
-    Ok(Local::boolean(cx.is_array(args.get(0))))
+    // 1. Return ? IsArray(arg) (a revoked proxy throws).
+    Ok(Local::boolean(cx.is_array_or_throw(args.get(0))?))
 }
 
 /// Array.from ( items [ , mapper [ , thisArg ] ] ) (§23.1.2.1).
@@ -1149,7 +1149,7 @@ fn is_concat_spreadable<'s>(
     // 3. If spreadable is not undefined, return ToBoolean(spreadable).
     // 4. Return ? IsArray(O).
     let yes = if spreadable.is_undefined() {
-        cx.is_array(obj)
+        cx.is_array_or_throw(obj)?
     } else {
         cx.to_boolean(spreadable)
     };
