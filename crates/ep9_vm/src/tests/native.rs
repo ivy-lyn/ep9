@@ -4607,6 +4607,79 @@ mod placement_b {
         })
     }
 
+    /// Install by function id (M5-P2 SPIKEC-6, WI-SC5): `dsum` is function 1 of the unit
+    /// `d.js`; `NativeCx::target_by_id` names the same FunctionInfo as its value, and the code
+    /// installed by id runs for the global's closure, deopts as in
+    /// `an_eager_deopt_resumes_t0_in_the_same_frame` and counts its exit (read by id and by
+    /// value). Refused: a file no loaded unit has, an id past the unit, function 0's second
+    /// install (`AlreadyNative`), and a name two loaded units share.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn install_by_function_id_runs_for_the_closures_of_the_function() {
+        for &d in Dispatch::ALL.iter().filter(|&&d| d != Dispatch::Match) {
+            let label = d.name();
+            on_big_stack(move || {
+                let dump: &'static mut [u64; crate::deopt::DUMP_REGS] =
+                    Box::leak(Box::new([0; crate::deopt::DUMP_REGS]));
+                dump[5] = 0xFFFF_0000_0000_0028; // int32 40 in the low half
+                let nfp: &'static mut [u64; 4] = Box::leak(Box::new([0; 4]));
+                nfp[2] = 2.5f64.to_bits();
+                let (dump, nfp) = (dump.as_ptr().addr() as u64, nfp.as_ptr().addr() as u64);
+                with_b_stubs(&[b_deopt(8, dump, nfp)], |code| {
+                    let mut iso = isolate(config(d, false));
+                    iso.with_cx_checkpoint(|cx| cx.run_script(deopt_defs(), "d.js").map(|_| ()))
+                        .unwrap();
+                    let f = iso.global_raw("dsum").unwrap();
+                    let by_value = crate::native_target(&iso, f).unwrap().info;
+                    let t = NativeCx::target_by_id(&iso, "d.js", 1).unwrap();
+                    assert_eq!((t.info, t.name), (by_value, "dsum"), "{label}");
+                    for (file, id, why) in [
+                        ("e.js", 1, "not one loaded unit"),
+                        ("d.js", 9, "no function 9"),
+                    ] {
+                        let e = NativeCx::target_by_id(&iso, file, id).unwrap_err();
+                        assert!(e.contains(why), "{label}: {e}");
+                    }
+                    let meta = dsum_meta(&iso).encode();
+                    // SAFETY: as in `an_eager_deopt_resumes_t0_in_the_same_frame`: `b_deopt`
+                    // code, mapped until `with_b_stubs` returns, after the isolate drops.
+                    unsafe {
+                        NativeCx::install_b_with_deopt_by_id(
+                            &iso,
+                            "d.js",
+                            1,
+                            code[0].clone(),
+                            &meta,
+                        )
+                    }
+                    .unwrap();
+                    // SAFETY: as above; refused before the slot changes.
+                    let e = unsafe {
+                        NativeCx::install_b_with_deopt_by_id(
+                            &iso,
+                            "d.js",
+                            1,
+                            code[0].clone(),
+                            &meta,
+                        )
+                    }
+                    .unwrap_err();
+                    assert!(e.contains("AlreadyNative"), "{label}: {e}");
+                    let rows = vec![("dsum", vec![Lit::Int(1), Lit::Int(2)])];
+                    let (r, out) = run_rows(&mut iso, &rows);
+                    assert_eq!(r.as_deref(), Ok("done"), "{label}");
+                    assert_eq!(out, ["42.5"], "{label}");
+                    assert_eq!(NativeCx::deopt_counts_by_id(&iso, "d.js", 1), Some(vec![1]));
+                    assert_eq!(NativeCx::deopt_counts(&iso, f), Some(vec![1]), "{label}");
+                    iso.with_cx_checkpoint(|cx| cx.run_script(deopt_defs(), "d.js").map(|_| ()))
+                        .unwrap();
+                    let e = NativeCx::target_by_id(&iso, "d.js", 1).unwrap_err();
+                    assert!(e.contains("not one loaded unit"), "{label}: {e}");
+                })
+            });
+        }
+    }
+
     /// An uninstall drops the code's deopt side-table entry (M5-P1 fixer; V10-D32): after
     /// `install_b_with_deopt` of code A, `uninstall_native` and a plain `install_native_b` of
     /// code at the same start, the function has no exit counters, and an exit of that code
