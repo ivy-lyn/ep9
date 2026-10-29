@@ -32,11 +32,11 @@ Copied from the plan row: off-heap pointers only in `ExternalRef<T>`. Units are 
 
 | Cell | Field | Points at | Store |
 |---|---|---|---|
-| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:1424` |
-| FEEDBACK | info word (`fv::INFO`) | `FunctionInfo` | `crates/ep9_vm/src/feedback.rs:170` |
-| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | `crates/ep9_vm/src/object.rs:1645` (P0-VM, M2-P0) |
-| FEEDBACK | key half of a Call slot at a `Call*` site (IC_LAYOUT 2; M4-P1 PROFILE, 134cfda) | `FunctionInfo` of the call target: a copy of the FUNCTION cell's +24 word, read by `target_key` (`crates/ep9_vm/src/profile.rs:715`); no `native_of` call | `crates/ep9_vm/src/profile.rs:792` |
-| MODULE | `UNIT` (`modf::UNIT`; M3-P2 MODULE, 07ac9ee) | the module's `LoadedUnit` | `crates/ep9_vm/src/module.rs:419` |
+| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:1453` (read, `function_info`), `:433` (read, `trace_function`), `:1424` (store, `new_function`) |
+| FEEDBACK | info word (`fv::INFO`) | `FunctionInfo` | `crates/ep9_vm/src/feedback.rs:255` (read, `info_of`, test builds only), `:170` (store, `make`) |
+| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | `crates/ep9_vm/src/object.rs:1656` (read, `context_scope`), `:1645` (store, `new_context`; P0-VM, M2-P0) |
+| FEEDBACK | key half of a Call slot at a `Call*` site (IC_LAYOUT 2; M4-P1 PROFILE, 134cfda) | `FunctionInfo` of the call target: the FUNCTION cell's +24 word. Until M5-P3 `target_key` copied that word as a bare u64; since M5-P3 it makes it with `ExternalRef::new(function_info(callee)).to_word()`, the same word value (`crates/ep9_vm/src/profile.rs:792` stores it; `target_key` is at `:715`) | `crates/ep9_vm/src/profile.rs:792` |
+| MODULE | `UNIT` (`modf::UNIT`; M3-P2 MODULE, 07ac9ee) | the module's `LoadedUnit` | `crates/ep9_vm/src/module.rs:224` (read, `unit_of`), `:419` (store, `new_module`) |
 | small page header (heap metadata at the page base, not a cell; S1, `HeapConfig::generational`) | +16 `remembered` (`crates/ep9_heap/src/layout.rs:115`; M4-P2 GC2-EPH-S1, ea32358): a raw pointer, a u32 length, a u32 capacity | a `std::alloc` array of u32 byte offsets, one per remembered host of the page (`crates/ep9_heap/src/remembered.rs`); freed with the page or the heap | `crates/ep9_heap/src/remembered.rs:93` (`Remembered::grow`) |
 | large-object header (heap metadata at the chunk base, not a cell; S1) | +32 `cards` (`crates/ep9_heap/src/layout.rs:134`; ea32358): a raw pointer | a `std::alloc` card table, one byte per 512 B of the cell, made at the first logged store; freed with the object or the heap | `crates/ep9_heap/src/remembered.rs:147` (`dirty_card`) |
 

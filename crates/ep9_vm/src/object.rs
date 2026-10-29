@@ -65,11 +65,11 @@
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, KindId, Slot, Tracer};
 
-use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of, native_of, native_ptr};
+use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::kinds as kind;
 use crate::runtime::{Atom, Root, Runtime, val};
-use crate::shape;
 use crate::unit::{ContextScope, FunctionInfo, LoadedUnit};
+use crate::{external_ref::ExternalRef, shape};
 
 pub(crate) use crate::key::key_eq;
 pub(crate) use crate::kinds::{
@@ -430,7 +430,7 @@ fn trace_function(c: CellPtr, t: &mut Tracer<'_>) {
     trace_object::<{ fun::FIXED }>(c, t);
     // SAFETY: the slot +24 of a FUNCTION cell holds the native word of a FunctionInfo that
     // lives as long as the isolate (`new_function` writes it before the next GC point).
-    let fi = unsafe { &*native_ptr::<FunctionInfo>(rd(c, fun::INFO)) };
+    let fi = unsafe { &*ExternalRef::<FunctionInfo>::from_word(rd(c, fun::INFO)).get() };
     crate::module::trace_referrer_realm(fi, t);
 }
 
@@ -1421,7 +1421,7 @@ pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64
         shape::async_generator_function_shape(rt)
     };
     let f = alloc_with_shape(rt, kind::FUNCTION, s, fun::CAPACITY);
-    init(f, fun::INFO, native_of(info));
+    init(f, fun::INFO, ExternalRef::new(info).to_word());
     init(f, fun::CONTEXT, context);
     init(f, fun::REALM, rt.root(Root::Realm));
     let slots = obj::FIXED + 8 * fun::FIXED;
@@ -1450,7 +1450,7 @@ fn function_name(rt: &Runtime, fi: &FunctionInfo) -> u64 {
 pub(crate) fn function_info<'a>(f: u64) -> &'a FunctionInfo {
     // SAFETY: a FUNCTION cell's slot +24 holds the native word of a FunctionInfo that lives as
     // long as the isolate.
-    unsafe { &*native_ptr::<FunctionInfo>(rd(cell(f), fun::INFO)) }
+    unsafe { &*ExternalRef::<FunctionInfo>::from_word(rd(cell(f), fun::INFO)).get() }
 }
 
 pub(crate) fn function_context(f: u64) -> u64 {
@@ -1642,7 +1642,7 @@ pub(crate) fn new_context(
 ) -> u64 {
     let c = rt.alloc(kind::CONTEXT, ctxf::SLOTS + 8 * len);
     init(c, ctxf::PREVIOUS, previous);
-    init(c, ctxf::SCOPE, native_of(scope));
+    init(c, ctxf::SCOPE, ExternalRef::new(scope).to_word());
     init(c, ctxf::LENGTH, int32_bits(len as i32));
     c.to_value().to_bits()
 }
@@ -1653,7 +1653,7 @@ pub(crate) fn context_scope<'a>(c: u64) -> (&'a LoadedUnit, &'a ep9_bytecode::Sc
     // SAFETY: the SCOPE word of a CONTEXT cell is the native word of a `ContextScope` in a
     // boxed LoadedUnit (`new_context`); units are never freed while the isolate lives
     // (`Runtime::units` only grows), and the record's pointers point into that unit.
-    let cs = unsafe { &*native_ptr::<ContextScope>(rd(cell(c), ctxf::SCOPE)) };
+    let cs = unsafe { &*ExternalRef::<ContextScope>::from_word(rd(cell(c), ctxf::SCOPE)).get() };
     // SAFETY: as above; `scope` points into the unit's verified scope table, which never
     // changes after verification.
     unsafe { (&*cs.unit, &*cs.scope) }
