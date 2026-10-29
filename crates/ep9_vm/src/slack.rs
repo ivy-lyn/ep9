@@ -6,15 +6,18 @@
 //!    proto = F.prototype ──> instance_capacity(F, proto)
 //!                              Some(n) ─> object::new_object_with_capacity(proto, n)  root (proto, OBJECT, n)
 //!                              None    ─> object::new_object(proto)                   root (proto, OBJECT, GENEROUS)
-//!    n = the distinct names of F's own `this.<name> =` stores          (scan, cached by code)
+//!    n = the distinct names of F's own `this.<name> =` stores          (scan of F's code)
 //!      + the data properties of proto whose value is not callable (the instances' likely
 //!        shadows: `F.prototype.left = null`) and that F does not store, at most GENEROUS
+//!    chosen at F's first construct and kept in F's FunctionInfo (`slack_capacity`)
 //!  construct_ic::miss caches the root shape of that first instance; a hit allocates from it
 //! ```
 //!
 //! Rules:
-//! - One capacity per (constructor code, prototype): every instance of `new F` starts from
-//!   the same root shape, so the ICs see one shape family per constructor, as before.
+//! - One capacity per constructor (FunctionInfo), chosen at its first construct from its
+//!   code and the prototype it had then: every instance of `new F` starts from the same root
+//!   shape, so the ICs see one shape family per constructor, as before. A prototype that
+//!   gains a data field later does not change it.
 //! - The count is read from the bytecode, so no instance runs first with another capacity.
 //!   A run-time tracker that sizes the later instances after the first N (V8 slack tracking)
 //!   would start a second root shape family: measured in M5-P2, the T0 ICs then see two
@@ -32,12 +35,12 @@
 //!   count as holding it, or not.
 //! - It reads no execution policy (rule 40, M-R9): the bytecode and the prototype only, so
 //!   every preset and both feedback modes make the same shapes (`tests::slack`).
-//! - The scan result is a function of the code bytes alone, so a per-thread cache keyed by
-//!   the bytes (length and a 64-bit hash) keeps it ([`CACHE_ENTRIES`] entries, direct mapped):
-//!   a cold construct (a megamorphic site, `Reflect.construct`, a site with no vector) costs
-//!   a hash of the code, not a decode (measured: 8,285 instructions per cold construct of
-//!   deltablue's `Variable` without the cache). The cache holds no Value (rule 8): constant
-//!   indices and counts.
+//! - The FunctionInfo keeps the chosen capacity (one byte), so a later cold construct (a
+//!   megamorphic site, `Reflect.construct`, a site with no vector) reads it and runs no scan
+//!   (measured before: 8,285 instructions per cold construct of deltablue's `Variable` with
+//!   a scan each time). The memo is per function, so it never reads another function's
+//!   constant indices (an M5-P2 cache keyed by a hash of the code bytes could, on a
+//!   collision). It holds no Value (rule 8).
 //! - Not a GC point; it allocates nothing (fixed arrays).
 
 use ep9_bytecode::{Instructions, Opcode, OperandKind, Register, RuntimeId};
@@ -58,97 +61,13 @@ pub(crate) const MAX_NAMES: usize = 64;
 /// The registers a scan follows (locals and parameters below this index each).
 const TRACKED_REGISTERS: u32 = 64;
 
-/// The entries of the per-thread scan cache.
-pub(crate) const CACHE_ENTRIES: usize = 64;
-
-/// The names one cache entry keeps; a scan with more is not cached (it runs again).
-const CACHED_NAMES: usize = 16;
-
-/// One scan result: the code's length and hash, and the names (`n` = `NO_COUNT` for a scan
-/// that gave [`None`]).
-#[derive(Clone, Copy)]
-struct Entry {
-    len: u32,
-    hash: u64,
-    n: u8,
-    names: [u32; CACHED_NAMES],
-}
-
-/// `Entry::n` of a scan that gave [`None`].
-const NO_COUNT: u8 = u8::MAX;
-
-/// An entry no code matches (a function's code is never `u32::MAX` bytes long).
-const EMPTY: Entry = Entry {
-    len: u32::MAX,
-    hash: 0,
-    n: NO_COUNT,
-    names: [0; CACHED_NAMES],
-};
-
-std::thread_local! {
-    static CACHE: core::cell::RefCell<[Entry; CACHE_ENTRIES]> =
-        const { core::cell::RefCell::new([EMPTY; CACHE_ENTRIES]) };
-}
+/// `FunctionInfo::slack_capacity` of a function whose count is unknown ([`GENEROUS`]).
+pub(crate) const NO_COUNT: u8 = u8::MAX;
 
 #[cfg(test)]
 std::thread_local! {
-    /// Tests: the scans [`cached_store_names`] ran (cache misses).
+    /// Tests: the scans [`instance_capacity`] ran (first constructs).
     pub(crate) static SCANS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
-}
-
-/// A 64-bit hash of `code` (FNV-1a over 8-byte words, then a murmur3 finalizer). Not a GC
-/// point.
-fn code_hash(code: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let (words, rest) = code.as_chunks::<8>();
-    for &w in words {
-        h = (h ^ u64::from_le_bytes(w)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for &b in rest {
-        h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h ^= h >> 33;
-    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    h ^ (h >> 33)
-}
-
-/// [`this_store_names`] through the per-thread cache (module docs). Not a GC point.
-pub(crate) fn cached_store_names(code: &[u8], names: &mut [u32; MAX_NAMES]) -> Option<usize> {
-    let len = code.len() as u32;
-    let hash = code_hash(code);
-    let i = hash as usize % CACHE_ENTRIES;
-    let hit = CACHE.with(|c| {
-        let e = c.borrow()[i];
-        (e.len == len && e.hash == hash).then(|| {
-            let n = usize::from(e.n);
-            if e.n != NO_COUNT {
-                names[..n].copy_from_slice(&e.names[..n]);
-            }
-            e.n
-        })
-    });
-    if let Some(n) = hit {
-        return (n != NO_COUNT).then_some(usize::from(n));
-    }
-    #[cfg(test)]
-    SCANS.with(|c| c.set(c.get() + 1));
-    let r = this_store_names(code, names);
-    let n = match r {
-        Some(n) if n <= CACHED_NAMES => n as u8,
-        Some(_) => return r,
-        None => NO_COUNT,
-    };
-    let mut e = Entry {
-        len,
-        hash,
-        n,
-        names: [0; CACHED_NAMES],
-    };
-    if n != NO_COUNT {
-        e.names[..usize::from(n)].copy_from_slice(&names[..usize::from(n)]);
-    }
-    CACHE.with(|c| c.borrow_mut()[i] = e);
-    r
 }
 
 /// Where the scan found `this`: the accumulator and two register masks.
@@ -335,8 +254,9 @@ fn is_proto_field(proto: u64, s: u64, i: usize) -> bool {
     !d.is_accessor() && !is_callable(field_value(proto, s, usize::from(d.field())))
 }
 
-/// The in-object capacity of the instances `new f` makes with the prototype `proto` (module
-/// docs), or [`None`] for [`GENEROUS`]. Not a GC point.
+/// The in-object capacity of the instances `new f` makes (module docs), or [`None`] for
+/// [`GENEROUS`]: chosen at `f`'s first construct, with the prototype `proto` it has then,
+/// and kept in its FunctionInfo. Not a GC point.
 pub(crate) fn instance_capacity(rt: &Runtime, f: u64, proto: u64) -> Option<usize> {
     if !object::is_function(f) {
         return None;
@@ -346,11 +266,37 @@ pub(crate) fn instance_capacity(rt: &Runtime, f: u64, proto: u64) -> Option<usiz
     if fi.flags & need != need || fi.flags & fi_flags::DERIVED != 0 || fi.code.is_null() {
         return None;
     }
+    match fi.slack_capacity.get() {
+        0 => {}
+        NO_COUNT => return None,
+        c => return Some(usize::from(c - 1)),
+    }
+    let r = first_capacity(rt, fi, proto);
+    // The capacity is at most MAX_NAMES + GENEROUS (72), so capacity + 1 fits below NO_COUNT.
+    fi.slack_capacity.set(match r {
+        Some(c) => u8::try_from(c + 1)
+            .ok()
+            .filter(|&b| b != NO_COUNT)
+            .unwrap_or(NO_COUNT),
+        None => NO_COUNT,
+    });
+    r
+}
+
+/// [`instance_capacity`] at the first construct of `fi`: the scan and the prototype count.
+/// Not a GC point.
+fn first_capacity(
+    rt: &Runtime,
+    fi: &crate::function_info::FunctionInfo,
+    proto: u64,
+) -> Option<usize> {
+    #[cfg(test)]
+    SCANS.with(|c| c.set(c.get() + 1));
     // SAFETY: a bytecode FunctionInfo's code is its unit function's bytecode, which the unit
     // keeps at this address while the info lives (`FunctionInfo::bytecode`).
     let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
     let mut names = [0u32; MAX_NAMES];
-    let n = cached_store_names(code, &mut names)?;
+    let n = this_store_names(code, &mut names)?;
     if n == 0 {
         return None;
     }

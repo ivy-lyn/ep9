@@ -1,6 +1,6 @@
 //! Tests of slack (`slack.rs`) (owner M5-P2 SLACK; the H17 "Slack tracking" row): the scan
-//! of a constructor's `this.<name> =` stores, its per-thread cache, and the in-object capacity
-//! of the objects `new F` makes. Programs run under every dispatch expansion, with and without
+//! of a constructor's `this.<name> =` stores, the per-function memo of its result, and the
+//! in-object capacity of the objects `new F` makes. Programs run under every dispatch expansion, with and without
 //! GC stress, with eager feedback vectors (threshold 0: the construct site hits from its second
 //! construct) and with none (`u32::MAX`: every construct takes the cold path).
 
@@ -140,33 +140,6 @@ fn more_names_than_the_scan_keeps_give_none() {
     };
     assert_eq!(scan(&many(MAX_NAMES)), Some(MAX_NAMES));
     assert_eq!(scan(&many(MAX_NAMES + 1)), None);
-}
-
-#[test]
-fn the_cache_keeps_a_scan_per_code() {
-    // A new thread: an empty cache and a zero scan count.
-    std::thread::spawn(|| {
-        let p = ctor("P", point);
-        let e = ctor("E", |a| {
-            let this = a.b.receiver();
-            a.b.ldar(this);
-            a.set_named(this, "self");
-        });
-        let mut names = [0u32; MAX_NAMES];
-        for _ in 0..3 {
-            assert_eq!(slack::cached_store_names(p.bytecode(), &mut names), Some(2));
-            assert_ne!(names[0], names[1]);
-            assert_eq!(slack::cached_store_names(e.bytecode(), &mut names), None);
-        }
-        // One scan per code; the other calls hit (a None result too).
-        assert_eq!(slack::SCANS.with(|c| c.get()), 2);
-        // Equal bytes are one entry: a second copy of P's code hits.
-        let copy = p.bytecode().to_vec();
-        assert_eq!(slack::cached_store_names(&copy, &mut names), Some(2));
-        assert_eq!(slack::SCANS.with(|c| c.get()), 2);
-    })
-    .join()
-    .unwrap();
 }
 
 /// What a program left in the globals `o0` (the first instance) and `o` (the last).
@@ -388,4 +361,160 @@ fn a_constructor_with_no_store_scans_to_zero() {
     let mut b = FunctionBuilder::new(meta("Z", 0, 0, 0, 0));
     b.lda_undefined().return_();
     assert_eq!(scan(&b.finish().unwrap()), Some(0));
+}
+
+/// A constructor of `n` stores with no vector, run 10 times cold in a new thread: the scan
+/// runs once (the FunctionInfo keeps the capacity).
+#[test]
+fn the_capacity_is_chosen_once_per_function() {
+    on_big_stack(|| {
+        let c = IsolateConfig {
+            feedback_threshold: u32::MAX,
+            ..config(Dispatch::ALL[0], false)
+        };
+        let mut iso = isolate(c);
+        take_output();
+        iso.with_cx_checkpoint(|cx| cx.run_script(plain_point(), "slack.js").map(|_| ()))
+            .unwrap();
+        assert_eq!(take_output(), ["3"]);
+        assert_eq!(slack::SCANS.with(|c| c.get()), 1);
+    });
+}
+
+/// Like [`script`] with no prelude, with `P.prototype.z = 0` after each construct: the
+/// first construct runs before the prototype has `z`, the later ones after.
+fn script_proto_grows(p: FunctionCode) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("P");
+    let (ctor_reg, o, proto) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+    let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+    let args = s.b.new_register_list(2);
+    let i = s.b.new_register();
+    s.b.lda_zero().star(i);
+    let head = s.b.bound_label();
+    let exit = s.b.new_label();
+    s.b.lda_smi(10).test_less_than(i, s.cmp).jump_if_false(exit);
+    s.b.lda_smi(1)
+        .star(args.get(0))
+        .lda_smi(2)
+        .star(args.get(1));
+    s.lda_global("P");
+    s.b.star(ctor_reg);
+    s.b.construct(ctor_reg, args, 2, site).star(o);
+    s.sta_global("o");
+    let skip = s.b.new_label();
+    s.b.lda_zero()
+        .test_equal_strict(i, s.cmp)
+        .jump_if_false(skip);
+    s.b.ldar(o);
+    s.sta_global("o0");
+    s.b.bind(skip);
+    s.get_named(ctor_reg, "prototype");
+    s.b.star(proto);
+    s.b.lda_zero();
+    s.set_named(proto, "z");
+    s.b.ldar(i).inc(s.bin).star(i).jump_loop(head, 0, s.loop_);
+    s.b.bind(exit);
+    let t = s.b.new_register();
+    s.get_named(o, "x");
+    s.b.star(t);
+    s.get_named(o, "y");
+    s.b.add(t, s.bin);
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), p])
+}
+
+#[test]
+fn a_prototype_field_added_after_the_first_construct_changes_no_capacity() {
+    // Rule 40 / M-R9: the cold path (no vector) and the construct-site hit (eager vector)
+    // give the same capacity: the one chosen at the first construct (x, y; no `z` yet).
+    let seen = run_each(|| script_proto_grows(ctor("P", point)), &["3"]);
+    for (label, s) in &seen {
+        assert_eq!(s.first, (2, 2), "{label}");
+        assert_eq!(s.last, (2, 2), "{label}");
+        assert!(s.same_shape, "{label}");
+    }
+}
+
+/// A constructor of 0 parameters whose code is `LdaZero; this.<names[k]> = acc;
+/// LdaZero x3; LdaSmi i1; LdaZero x2; LdaSmi i2; LdaZero x2; Return`, with the string
+/// constants `consts` (slot 0 the store's).
+fn colliding_ctor(name: &str, consts: [&str; 2], k: usize, i1: i32, i2: i32) -> FunctionCode {
+    let mut b = FunctionBuilder::new(meta(name, 0, 0, 0, 0));
+    let slot = b.feedback_slot(FeedbackSlotKind::StoreNamed);
+    let ks = consts.map(|c| b.string_constant(c));
+    let this = b.receiver();
+    b.lda_zero().set_named_property(this, ks[k], slot);
+    b.lda_zero().lda_zero().lda_zero().lda_smi(i1);
+    b.lda_zero().lda_zero().lda_smi(i2);
+    b.lda_zero().lda_zero().return_();
+    b.finish().unwrap()
+}
+
+/// `A = f1; B = f2; B.prototype.x = null; new A(); o0 = o = new B(); print(1)`.
+fn colliding_constructors() -> VerifiedUnit {
+    // Two codes of equal length that differ in the stored name (constant 1 in A, 0 in B)
+    // and in the LdaSmi immediates, chosen so the two have one 64-bit FNV-1a hash (the
+    // M5-P2 SLACK scan cache key, length and hash: Codex round 1 finding, slack 1).
+    let a = colliding_ctor("A", ["q", "y"], 1, 0x1234_5678, 0x7654_3210);
+    let b = colliding_ctor(
+        "B",
+        ["x", "y"],
+        0,
+        0xf873_f47f_u32 as i32,
+        0x80d5_dba7_u32 as i32,
+    );
+    let hex = |c: &FunctionCode| {
+        c.bytecode()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        hex(&a),
+        "0324ff01000303030204785634120303020410325476030392"
+    );
+    assert_eq!(
+        hex(&b),
+        "0324ff000003030302047ff473f803030204a7dbd580030392"
+    );
+    let mut s = Asm::script(0);
+    for (i, g) in [(1, "A"), (2, "B")] {
+        let k = s.b.function_constant(FunctionId(i));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(g);
+    }
+    let (f, proto) = (s.b.new_register(), s.b.new_register());
+    s.lda_global("B");
+    s.b.star(f);
+    s.get_named(f, "prototype");
+    s.b.star(proto);
+    s.b.lda_null();
+    s.set_named(proto, "x");
+    let args = s.b.new_register_list(0);
+    let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+    s.lda_global("A");
+    s.b.star(f);
+    s.b.construct(f, args, 0, site);
+    s.lda_global("B");
+    s.b.star(f);
+    s.b.construct(f, args, 0, site);
+    s.sta_global("o");
+    s.sta_global("o0");
+    s.b.lda_smi(1);
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), a, b])
+}
+
+#[test]
+fn a_constructor_never_reads_another_constructors_scan() {
+    // B stores `x`, which B.prototype has as a data field: one slot (x counts once). A
+    // capacity from A's names (constant 1 = "y", not on the prototype) would be 2.
+    for (label, s) in run_each(colliding_constructors, &["1"]) {
+        assert_eq!(s.last, (1, 1), "{label}");
+    }
 }
