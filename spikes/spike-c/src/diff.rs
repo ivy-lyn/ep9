@@ -320,15 +320,15 @@ pub fn program(seed: u64) -> Program {
             let edges = [
                 format!("f([1, 2, 3], [4, 5, 6], 3, {x})"),
                 format!("f([NaN, 1.5], [1.5, 2.5], 2, {x})"),
-                format!("1 / f([-0, 0.5], [0.5, 0.5], 1, -0)"),
-                format!("f([1e308, 1e308], [0.5, 0.5], 2, 10)"),
+                "1 / f([-0, 0.5], [0.5, 0.5], 1, -0)".to_string(),
+                "f([1e308, 1e308], [0.5, 0.5], 2, 10)".to_string(),
                 format!("f([1.5, , 2.5], [1.5, 1.5, 1.5], 3, {x})"),
                 format!("f([1.5, 2.5], [1.5, 2.5], 4, {x})"),
                 format!("f([1.5, 'x'], [1.5, 2.5], 2, {x})"),
                 format!("f([1.5, V(2.5)], [1.5, 2.5], 2, {x}) + ' ' + calls"),
-                format!("f([1.5, 2.5], [1.5, 2.5], 2, '3')"),
+                "f([1.5, 2.5], [1.5, 2.5], 2, '3')".to_string(),
                 format!("f(D([1.5, 2.5]), [1.5, 2.5], 2, {x})"),
-                format!("f([1.5, 2.5], [1.5, 2.5], 2, undefined)"),
+                "f([1.5, 2.5], [1.5, 2.5], 2, undefined)".to_string(),
                 format!("f([0.5, 1, 2147483647], [3, 0.5, 2], 3, {x})"),
             ];
             for e in r.some(&edges.each_ref(), 6) {
@@ -390,7 +390,7 @@ pub fn program(seed: u64) -> Program {
                 "f([0, 0, 0], [2147483647, 1, 1], 3, 2147483647)".to_string(),
                 format!("f(['s', 0, 0], [1, 2, 3], 3, {v})"),
                 format!("f([0, 0, 0], [1, 2, 3], 3, V({v})) + ' ' + calls"),
-                format!("f([0, 0, 0], [1, 2, 3], 3, NaN)"),
+                "f([0, 0, 0], [1, 2, 3], 3, NaN)".to_string(),
             ];
             for e in r.some(&edges.each_ref(), 6) {
                 main += &line(e);
@@ -598,9 +598,7 @@ pub fn program(seed: u64) -> Program {
         "div-eq" => {
             name = "f";
             let d = r.int(2, 7);
-            defs += &format!(
-                "function f(a, n, k, d) {{ var c = 0, s = 0; for (var i = 0; i < n; i++) {{ if (a[i] === k) {{ c = c + 1; }} s = s + a[i] / d; }} return s + c; }}\n"
-            );
+            defs += "function f(a, n, k, d) { var c = 0, s = 0; for (var i = 0; i < n; i++) { if (a[i] === k) { c = c + 1; } s = s + a[i] / d; } return s + c; }\n";
             warm = "var W = [1, 2, 3, 2]; for (var q = 0; q < 20; q++) f(W, 4, 2, 3);".to_string();
             for _ in 0..3 {
                 let n = r.int(2, 7) as usize;
