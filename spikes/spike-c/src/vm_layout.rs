@@ -14,8 +14,11 @@
 //! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 5 |
 //! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 5 |
 //! | ARRAY: elements store, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 5 |
-//! | the elements store read as Values is an ELEMENTS cell (kind 65); `CheckArray`, `LoadElement` and `StoreElement` exit on any other elements cell (ELEMENTS_DOUBLE 81, ELEMENTS_DICT 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS` | OBJECT_LAYOUT 5 |
+//! | the two elements storage forms the element ops read: an ELEMENTS cell (kind 65, Values) or an ELEMENTS_DOUBLE cell (kind 81, raw f64); `LoadElement` and `StoreElement` exit on any other elements store (an ELEMENTS_DICT cell, 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS`, `KIND_ELEMENTS_DOUBLE`, `KIND_ELEMENTS_DICT` | OBJECT_LAYOUT 5 |
 //! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 5 |
+//! | ELEMENTS_DOUBLE: capacity (an int32 Value), raw f64 from `ELEMENTS_DOUBLE_DATA`; the hole is a NaN no store writes; a store writes every NaN as the pure NaN (`PURE_NAN_BITS`, proved below) | `ELEMENTS_DOUBLE_CAPACITY`, `ELEMENTS_DOUBLE_DATA`, `ELEMENTS_DOUBLE_HOLE` | OBJECT_LAYOUT 5 |
+//! | a shape's elements kind: `counts` bits 28-31; kinds 0-5 hold elements in the two forms above (INT32 and ELEMENTS kinds: Values; DOUBLE kinds: raw f64), 6 is DICTIONARY, 7-15 reserved. `CheckArray` (the kind guard, M5-P1-ORCH-11) reads it from the receiver's shape and exits unless it is in [`ARRAY_KINDS`] | `SHAPE_ELEMENTS_KIND_SHIFT`, `ELEMENTS_KIND_*` | OBJECT_LAYOUT 5 |
+//! | **not exported** (hand facts, proved below on live arrays of each kind): a cell's shape is the cell `(address & !(SHAPE_CAGE_ALIGN - 1)) \| ShapeId` (kind [`KIND_SHAPE`]), its `counts` word is at [`SHAPE_COUNTS`] | `shape::CAGE_ALIGN`, `shape::shape_of`, `shape::shf::COUNTS`, `kinds::SHAPE` (crate-private) | OBJECT_LAYOUT 5 |
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
 //! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 3 |
 //! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 3 |
@@ -24,15 +27,51 @@
 //!
 //! Since M5-P0 the export is `ep9_vm::layout`, in every ep9_vm build (C-18). What is left here
 //! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
+//! Three facts the kind guard reads (M5-P2 SPIKEC-6, WI-SC7) are not in the export, which is
+//! frozen in month 5 (plan v10 rule 2): the shape address rule, the shape's `counts` offset and
+//! the SHAPE kind id. They are hand copies here, each proved on live arrays of all six element
+//! kinds by [`check`]; the export gap is a report item for the orchestrator.
 
 use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
 
 pub use ep9_vm::layout::{
-    ARRAY_ELEMENTS, ARRAY_LENGTH, ELEMENTS_CAPACITY, ELEMENTS_DATA, FEEDBACK_INFO, FEEDBACK_KEY,
-    FEEDBACK_SLOT_SIZE, FEEDBACK_SLOTS, FEEDBACK_VALUE, FI_FEEDBACK, HOLE, KIND_ARRAY, KIND_BYTE,
-    KIND_ELEMENTS, KIND_OBJECT, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES, POLY_COUNT,
-    POLY_HANDLER, SHAPE_ID_BYTE, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK, SMI_SHIFT,
+    ARRAY_ELEMENTS, ARRAY_LENGTH, ELEMENTS_CAPACITY, ELEMENTS_DATA, ELEMENTS_DOUBLE_CAPACITY,
+    ELEMENTS_DOUBLE_DATA, ELEMENTS_DOUBLE_HOLE, ELEMENTS_KIND_DICTIONARY,
+    ELEMENTS_KIND_HOLEY_DOUBLE, ELEMENTS_KIND_HOLEY_ELEMENTS, ELEMENTS_KIND_HOLEY_INT32,
+    ELEMENTS_KIND_PACKED_DOUBLE, ELEMENTS_KIND_PACKED_ELEMENTS, ELEMENTS_KIND_PACKED_INT32,
+    FEEDBACK_INFO, FEEDBACK_KEY, FEEDBACK_SLOT_SIZE, FEEDBACK_SLOTS, FEEDBACK_VALUE, FI_FEEDBACK,
+    HOLE, KIND_ARRAY, KIND_BYTE, KIND_ELEMENTS, KIND_ELEMENTS_DICT, KIND_ELEMENTS_DOUBLE,
+    KIND_OBJECT, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES, POLY_COUNT, POLY_HANDLER,
+    SHAPE_ELEMENTS_KIND_SHIFT, SHAPE_ID_BYTE, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK,
+    SMI_SHIFT,
 };
+
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `shape::CAGE_ALIGN`): an ep9_vm cage is aligned to
+/// this and no larger, so the shape of a cell is the cell at `(address & !(SHAPE_CAGE_ALIGN -
+/// 1)) | ShapeId` (`shape::shape_of`). Proved by [`check`].
+pub const SHAPE_CAGE_ALIGN: u64 = 64 << 30;
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `shape::shf::COUNTS`): a shape's `counts` word, an
+/// int32 Value whose bits 28-31 ([`SHAPE_ELEMENTS_KIND_SHIFT`]) are the elements kind of its
+/// objects. Proved by [`check`].
+pub const SHAPE_COUNTS: u32 = 48;
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `kinds::SHAPE`): the kind id of a shape cell.
+/// Proved by [`check`].
+pub const KIND_SHAPE: u8 = 128;
+
+/// The elements kinds whose elements the element ops read and write (bit `k` = kind `k`):
+/// PACKED and HOLEY INT32, DOUBLE and ELEMENTS. The kind guard (`CheckArray`) exits on any
+/// other kind: DICTIONARY (an ELEMENTS_DICT cell, fail closed) and the reserved values 7-15.
+pub const ARRAY_KINDS: u16 = 1 << ELEMENTS_KIND_PACKED_INT32
+    | 1 << ELEMENTS_KIND_HOLEY_INT32
+    | 1 << ELEMENTS_KIND_PACKED_DOUBLE
+    | 1 << ELEMENTS_KIND_HOLEY_DOUBLE
+    | 1 << ELEMENTS_KIND_PACKED_ELEMENTS
+    | 1 << ELEMENTS_KIND_HOLEY_ELEMENTS;
+
+/// True for a DOUBLE elements kind (its elements are raw f64 in an ELEMENTS_DOUBLE cell).
+pub const fn is_double_kind(k: u8) -> bool {
+    k == ELEMENTS_KIND_PACKED_DOUBLE || k == ELEMENTS_KIND_HOLEY_DOUBLE
+}
 
 /// The smi handler of `length` on an Array shape (an int32 Value of kind ARRAY_LENGTH).
 pub const ARRAY_LENGTH_HANDLER: u64 = NUMBER_TAG | SMI_ARRAY_LENGTH as u32 as u64;
@@ -146,6 +185,26 @@ pub unsafe fn kind(v: u64) -> u8 {
     (unsafe { word(v, 0) } >> (8 * KIND_BYTE)) as u8
 }
 
+/// The shape cell of the cell `v` by the hand rule ([`SHAPE_CAGE_ALIGN`]).
+///
+/// # Safety
+/// As [`shape_id`].
+pub unsafe fn shape_of(v: u64) -> u64 {
+    // SAFETY: the caller's contract.
+    (v & !(SHAPE_CAGE_ALIGN - 1)) | u64::from(unsafe { shape_id(v) })
+}
+
+/// The elements kind (counts bits 28-31) of the shape of the cell `v`, as the kind guard reads
+/// it.
+///
+/// # Safety
+/// As [`shape_id`].
+pub unsafe fn elements_kind(v: u64) -> u8 {
+    // SAFETY: the caller's contract; [`check`] proved the rule and the offset.
+    let counts = unsafe { word(shape_of(v), SHAPE_COUNTS) } as u32;
+    (counts >> SHAPE_ELEMENTS_KIND_SHIFT) as u8
+}
+
 /// The int32 of an int32 Value, if it is one.
 pub const fn int32_of(bits: u64) -> Option<i32> {
     if bits & NUMBER_TAG == NUMBER_TAG {
@@ -172,7 +231,20 @@ function LayoutProbe() { this.a = 7; this.b = [11, 22, 33]; }\n\
 function layoutGet(o) { return o.b; }\n\
 function layoutLen(a) { return a.length; }\n\
 var layoutObj = new LayoutProbe();\n\
-for (var layoutI = 0; layoutI < 20; layoutI++) { layoutGet(layoutObj); layoutLen(layoutObj.b); }\n";
+for (var layoutI = 0; layoutI < 20; layoutI++) { layoutGet(layoutObj); layoutLen(layoutObj.b); }\n\
+var layoutKinds = [[1, 2, 3], [1, , 3], [1.5, 2.5, 3.5], [1.5, , 3.5], ['a', 2, 3], ['a', , 3]];\n\
+layoutKinds[2][1] = NaN;\n";
+
+/// The elements kind of each array of `layoutKinds` in [`CHECK_SRC`] (elements 0 and 2 are
+/// 1 and 3, or 1.5 and 3.5; element 1 is 2, NaN, or a hole).
+const CHECK_KINDS: [u8; 6] = [
+    ELEMENTS_KIND_PACKED_INT32,
+    ELEMENTS_KIND_HOLEY_INT32,
+    ELEMENTS_KIND_PACKED_DOUBLE,
+    ELEMENTS_KIND_HOLEY_DOUBLE,
+    ELEMENTS_KIND_PACKED_ELEMENTS,
+    ELEMENTS_KIND_HOLEY_ELEMENTS,
+];
 
 /// Proves every exported fact the emitter reads on live objects of `session` (runs
 /// [`CHECK_SRC`] there).
@@ -180,6 +252,8 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     let r = session.run(CHECK_SRC, "layout-probe.js");
     r.result.map_err(|e| format!("layout probe: {e}"))?;
     check_versions(VM_VERSIONS)?;
+    // SAFETY: the session ran CHECK_SRC just now.
+    unsafe { check_kinds(session) }?;
     let o = session.function_value("layoutObj")?.to_bits();
     let a = session.function_value("layoutObj.b")?.to_bits();
     let f = session.function_value("layoutGet")?;
@@ -241,13 +315,94 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     }
     Ok(format!(
         "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
-         as ep9_vm::layout exports them; versions {}",
+         as ep9_vm::layout exports them; the elements kind in the shape and both storage forms \
+         on arrays of the 6 kinds; versions {}",
         PINNED
             .iter()
             .map(|(n, v)| format!("{n} {v}"))
             .collect::<Vec<_>>()
             .join(", ")
     ))
+}
+
+/// The kind-guard facts on the six `layoutKinds` arrays of [`CHECK_SRC`]: the shape that the
+/// hand rule finds is a SHAPE cell, its `counts` bits 28-31 are the array's elements kind
+/// ([`CHECK_KINDS`]), the elements cell has the storage form of that kind, and the data words
+/// are where the export says: Values at `ELEMENTS_DATA`, raw f64 at `ELEMENTS_DOUBLE_DATA`, the
+/// two holes, and a stored NaN as the pure NaN.
+///
+/// # Safety
+/// The session ran [`CHECK_SRC`]. Between its `function_value` runs, nothing runs while this
+/// reads.
+unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), String> {
+    use ep9_value::encoding::PURE_NAN_BITS;
+    for (i, want) in CHECK_KINDS.into_iter().enumerate() {
+        let a = session
+            .function_value(&format!("layoutKinds[{i}]"))?
+            .to_bits();
+        if !is_cell(a) {
+            return Err(format!("layoutKinds[{i}] is not a cell"));
+        }
+        // SAFETY: `a` is a live Array held by a global of the session's isolate, which runs
+        // nothing while this reads; its shape cell (the hand rule, checked here by its kind
+        // byte) and its elements cell are live too.
+        unsafe {
+            let shape = shape_of(a);
+            if kind(shape) != KIND_SHAPE {
+                return Err(format!(
+                    "layoutKinds[{i}]: the cell at (address & !{SHAPE_CAGE_ALIGN:#x}) | ShapeId has kind {}, not SHAPE",
+                    kind(shape)
+                ));
+            }
+            if int32_of(word(shape, SHAPE_COUNTS)).is_none() {
+                return Err(format!("shape +{SHAPE_COUNTS} is not an int32 Value"));
+            }
+            let k = elements_kind(a);
+            if k != want {
+                return Err(format!(
+                    "layoutKinds[{i}]: counts bits {SHAPE_ELEMENTS_KIND_SHIFT}-31 give kind {k}, not {want}"
+                ));
+            }
+            let e = word(a, ARRAY_ELEMENTS);
+            let holey = i % 2 == 1;
+            if is_double_kind(k) {
+                if kind(e) != KIND_ELEMENTS_DOUBLE
+                    || int32_of(word(e, ELEMENTS_DOUBLE_CAPACITY)).is_none_or(|c| c < 3)
+                {
+                    return Err(format!("kind {k}: no ELEMENTS_DOUBLE cell or capacity"));
+                }
+                let at = |j: u32| word(e, ELEMENTS_DOUBLE_DATA + 8 * j);
+                let one = if holey {
+                    ELEMENTS_DOUBLE_HOLE
+                } else {
+                    PURE_NAN_BITS
+                };
+                if (at(0), at(1), at(2)) != (1.5f64.to_bits(), one, 3.5f64.to_bits()) {
+                    return Err(format!(
+                        "kind {k}: raw f64 words {:#x} {:#x} {:#x} (hole {ELEMENTS_DOUBLE_HOLE:#x}, NaN {PURE_NAN_BITS:#x})",
+                        at(0),
+                        at(1),
+                        at(2)
+                    ));
+                }
+            } else {
+                if kind(e) != KIND_ELEMENTS
+                    || int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3)
+                {
+                    return Err(format!("kind {k}: no ELEMENTS cell or capacity"));
+                }
+                let at = |j: u32| word(e, ELEMENTS_DATA + 8 * j);
+                let one = if holey { HOLE } else { int32_bits(2) };
+                if at(1) != one || at(2) != int32_bits(3) {
+                    return Err(format!("kind {k}: Values {:#x} {:#x}", at(1), at(2)));
+                }
+            }
+        }
+    }
+    if PURE_NAN_BITS == ELEMENTS_DOUBLE_HOLE || ARRAY_KINDS & (1 << ELEMENTS_KIND_DICTIONARY) != 0 {
+        return Err("the pure NaN is the DOUBLE hole, or DICTIONARY is an array kind".into());
+    }
+    Ok(())
 }
 
 /// The versions this module's facts (the table above) and the emitter's frame and exit code

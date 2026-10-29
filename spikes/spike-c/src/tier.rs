@@ -961,10 +961,9 @@ mod tests {
     /// The double path (SPIKEC-4): a `+` or `*` whose record saw a double takes CheckNumber
     /// and Float64 ops; the result boxes as `Value::number` does (an int32 Value for an
     /// integer, -0 and NaN kept apart), equal to T0; a string operand fails the number check
-    /// (a deopt, never a wrong value). Since M5-P1 ELEM1 an array of doubles keeps its elements
-    /// in an ELEMENTS_DOUBLE cell, and CheckArray exits there (V10-D9b, closed on DOUBLE cells);
-    /// so each array of this test ends in a `null` that `n` never reaches, which keeps its
-    /// elements as Values, and one more run shows the exit on a DOUBLE cell.
+    /// (a deopt, never a wrong value). Most arrays of this test end in a `null` that `n` never
+    /// reaches (an ELEMENTS kind: Values); since WI-SC7 arrays of doubles alone (a DOUBLE kind:
+    /// raw f64 in an ELEMENTS_DOUBLE cell) run compiled too, with no exit.
     const DOT: &str = "function dot(a, b, n) { var s = 0; for (var i = 0; i < n; i++) { s = s + a[i] * b[i]; } return s; }";
 
     #[test]
@@ -998,10 +997,15 @@ mod tests {
             assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
         deopts(DOT, warm, "print(dot(['x', null], [1, null], 1));", "dot");
-        // An array of doubles alone has an ELEMENTS_DOUBLE cell: CheckArray exits, and the
-        // run ends in T0 with T0's value.
-        let r = deopts(DOT, warm, "print(dot([0.5, 1.5], [2, 0.25], 2));", "dot");
-        assert_eq!(r.compiled.output, ["1.375"]);
+        // Arrays of doubles alone (ELEMENTS_DOUBLE cells): raw f64 loads, no exit; a NaN, a -0
+        // and an int32 array mixed in.
+        let r = equal(
+            DOT,
+            warm,
+            "print(dot([0.5, 1.5], [2, 0.25], 2), dot([0.5, NaN], [2, 1], 2), 1 / dot([-0.5, 1.5], [0, -0], 2), dot([1.5, 2.5], [2, 4], 2));",
+            "dot",
+        );
+        assert_eq!(r.compiled.output, ["1.375 NaN Infinity 13"]);
         // GC stress: the boxed doubles and the arrays around the compiled loop.
         let r = run_script(
             &Config::stress(),
@@ -1012,6 +1016,136 @@ mod tests {
         )
         .expect("run");
         assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+    }
+
+    /// WI-SC7: `scale` stores a Float64 into each element and `put` an Int32. On DOUBLE
+    /// arrays the stores write raw f64 (NaN as the pure NaN, -0 kept); on an INT32 array a
+    /// double that is no int32 takes the generic store out of line, which makes the INT32 to
+    /// DOUBLE transition as T0 does, and the loop goes on in the compiled code; an integral
+    /// double stays an int32 Value. No exit in any of it; equal to T0, with GC stress too
+    /// (the transition allocates the ELEMENTS_DOUBLE cell).
+    const SCALE: &str = "function scale(a, n, f) { for (var i = 0; i < n; i++) { a[i] = a[i] * f; } return a; }\n\
+        function put(a, n, v) { for (var i = 0; i < n; i++) { a[i] = (v + i) | 0; } return a; }";
+
+    #[test]
+    fn double_stores_and_the_kind_transition_equal_t0() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) { scale([0.5, 1.5, 2.5], 3, 1.5); put([0.5, 1.5], 2, q); }";
+        let main = "var d = scale([0.5, 1.5, 2.5, 4], 4, 0.5); print(d.join(), 1 / scale([0.5], 1, -0)[0]);\n\
+            print(scale([0.5, 1.5], 2, NaN).join(), scale([1, 2, 3], 3, 2).join());\n\
+            var t = [1, 2, 3, 4]; scale(t, 4, 0.25); t[0] = 'x'; print(t.join(), put([1.5, 2.5, 3.5], 3, 7).join());\n\
+            var h = new Array(3); h[0] = 1; h[1] = 2; h[2] = 3; print(scale(h, 3, 1.5).join(), scale([1, 2], 2, -1).join());";
+        let want = [
+            "0.25,0.75,1.25,2 -Infinity",
+            "NaN,NaN 2,4,6",
+            "x,0.5,0.75,1 7,8,9",
+            "1.5,3,4.5 -1,-2",
+        ];
+        for config in [Config::default(), Config::stress()] {
+            let defs = SCALE;
+            for name in ["scale", "put"] {
+                let r = run_script(&config, defs, warm, main, name).expect("run");
+                assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+                assert!(r.fired().is_empty(), "{name}: exits {:?}", r.exits);
+                assert_eq!(r.compiled.output, want, "{name}");
+            }
+        }
+        let r = run_script(&Config::default(), SCALE, warm, main, "scale").expect("run");
+        assert!(
+            r.report.graph.contains("StoreElement") && !r.report.graph.contains("SetKeyedGeneric"),
+            "{}",
+            r.report.graph
+        );
+    }
+
+    /// WI-SC7 (MODES-CHECK-w19 MC-w19-5 (4), outside O3): every element op, a raw f64 load
+    /// included, reads its array through a kind guard (`CheckArray`), so no pass can place the
+    /// load before the guard; and a Float64 value at an exit is in a general register or a
+    /// native stack slot (MC-w19-8: the H29 form has no FP register location, and the emitter
+    /// keeps doubles as their bits in x registers between ops), so the deopt core boxes it.
+    #[test]
+    fn element_ops_read_their_kind_guard_and_doubles_at_exits_are_in_x_registers() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) scale([0.5, 1.5, 2.5], 3, 1.5);";
+        let r = run_script(&Config::default(), SCALE, warm, "print(1);", "scale").expect("run");
+        let g = &r.report.graph;
+        let mut ops = 0;
+        for l in g
+            .lines()
+            .filter(|l| l.contains("LoadElement") || l.contains("StoreElement"))
+        {
+            // `nK = Op(nA, ...)`: the first input is the array.
+            let arr = l.split('(').nth(1).and_then(|t| t.split([',', ')']).next());
+            let arr = arr.expect("an input").trim();
+            let def = g
+                .lines()
+                .find(|d| d.trim_start().starts_with(&format!("{arr} ")))
+                .unwrap_or_else(|| panic!("no def of {arr}\n{g}"));
+            assert!(def.contains("CheckArray"), "{l} reads {def}\n{g}");
+            ops += 1;
+        }
+        assert!(ops >= 2, "{g}");
+        let meta = &r.report.emit.meta;
+        let doubles: Vec<_> = meta
+            .exits
+            .iter()
+            .flat_map(|e| &e.values)
+            .filter(|v| v.repr == crate::deopt_meta::ValueRepr::Float64)
+            .collect();
+        assert!(!doubles.is_empty(), "{}", meta.line());
+        for v in doubles {
+            assert!(
+                matches!(
+                    v.loc,
+                    crate::deopt_meta::ValueLoc::Reg(_) | crate::deopt_meta::ValueLoc::Stack(_)
+                ),
+                "{v:?}"
+            );
+        }
+    }
+
+    /// w17 O10 and MODES-CHECK-w19 outside O2 (a guard proven to fail): a guard that fails on
+    /// every call exits on every call, as a speculation exit (the only class the eager exits
+    /// have, `deopt_meta`), and its counter equals the number of calls: the code stays
+    /// installed (SCP:128), so each call enters it again. The H32 site budget and the pin it
+    /// leads to are not built in the spike (A4); this is the input they will read.
+    #[test]
+    fn a_guard_that_fails_on_every_call_counts_every_call() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);";
+        let calls = 7;
+        let main = format!(
+            "var o = {{ 0: 1, 1: 2, length: 2 }}; var s = 0; for (var k = 0; k < {calls}; k++) s += dot(o, o, 2); print(s);"
+        );
+        let r = run_script(&Config::default(), DOT, warm, &main, "dot").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["35"]);
+        let fired: Vec<(usize, u64)> = r
+            .exits
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(_, c)| c > 0)
+            .collect();
+        let [(k, count)] = fired[..] else {
+            panic!("one exit expected: {:?}", r.exits);
+        };
+        assert_eq!(count, calls, "{:?}", r.exits);
+        let guard = r.report.emit.exits[k].0;
+        assert!(
+            r.report
+                .graph
+                .lines()
+                .any(|l| l.contains("CheckArray") && l.contains(&format!(" guard g{guard} "))),
+            "g{guard}\n{}",
+            r.report.graph
+        );
     }
 
     /// `/` always takes the double path; `===` compares int32s behind CheckInt32 (SPIKEC-4).

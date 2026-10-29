@@ -90,7 +90,7 @@ use ep9_value::encoding::{
 use ep9_vm::layout;
 use spike_b::emit::{Arch, FunctionCode, FunctionInput, Refusal, Unwind};
 
-use crate::ir::{BlockId, Cond, ExitPolicy, FloatOp, Graph, Int32Op, NodeId, Op};
+use crate::ir::{BlockId, Cond, ExitPolicy, FloatOp, Graph, Int32Op, NodeId, Op, Repr};
 use crate::regalloc::{Allocation, Location};
 use crate::vm_layout;
 
@@ -294,6 +294,64 @@ fn restore_caller_saved(ops: &mut Ops) {
     );
 }
 
+/// x`d` = the Value of the f64 bits in x`x`, as `Value::number` gives it: an int32 Value for
+/// an integer in int32 range that is not -0, else a double Value with NaN purified (H18:54:
+/// T0's `double_value` does the same for a DOUBLE element). Uses x16, x17, d16, d17; reads x`x`
+/// first, so `x` may be one of them.
+fn box_number(ops: &mut Ops, d: u8, x: u8) {
+    let (int, dbl, purified, done) = (
+        ops.new_dynamic_label(),
+        ops.new_dynamic_label(),
+        ops.new_dynamic_label(),
+        ops.new_dynamic_label(),
+    );
+    dynasm!(ops
+        ; .arch aarch64
+        ; fmov d16, X(x)
+        ; fcvtzs w16, d16
+        ; scvtf d17, w16
+        ; fcmp d16, d17
+        ; b.ne =>dbl
+        ; cbnz w16, =>int
+        ; fmov x17, d16
+        ; tbnz x17, #63, =>dbl
+        ; =>int
+        ; mov w16, w16
+    );
+    mov64(ops, 17, NUMBER_TAG);
+    dynasm!(ops
+        ; .arch aarch64
+        ; orr X(d), x16, x17
+        ; b =>done
+        ; =>dbl
+        ; fcmp d16, d16
+        ; b.vc =>purified
+    );
+    mov64(ops, 16, PURE_NAN_BITS);
+    dynasm!(ops ; .arch aarch64 ; fmov d16, x16 ; =>purified ; fmov x16, d16);
+    mov64(ops, 17, DOUBLE_ENCODE_OFFSET);
+    dynasm!(ops
+        ; .arch aarch64
+        ; add X(d), x16, x17
+        ; =>done
+    );
+}
+
+/// The out-of-line path of a StoreElement of a Float64 that is no int32 into an ELEMENTS
+/// cell: the generic store (`RuntimeTable::set_keyed`), which makes the kind transition.
+struct SlowStore {
+    slow: DynamicLabel,
+    /// Where the store's code goes on.
+    done: DynamicLabel,
+    /// The store's bytecode offset (a throw unwinds from it).
+    offset: u32,
+    /// The registers of the array, the Int32 index and the Float64 value at the branch: each
+    /// is its staging register (x12, x13, x14) or an allocated one.
+    arr: u8,
+    index: u8,
+    value: u8,
+}
+
 /// A source of a phi move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Src {
@@ -318,6 +376,8 @@ struct Emitter<'a> {
     ret: DynamicLabel,
     /// Poll slow paths: (slow, continue, bytecode offset).
     polls: Vec<(DynamicLabel, DynamicLabel, u32)>,
+    /// StoreElement slow paths (WI-SC7).
+    slow_stores: Vec<SlowStore>,
     /// Branch edge stubs: (label, from block, to block).
     edges: Vec<(DynamicLabel, usize, usize)>,
     /// First native offset of each bytecode offset that made code.
@@ -374,6 +434,7 @@ pub fn emit_with(
         leave,
         ret,
         polls: Vec::new(),
+        slow_stores: Vec::new(),
         edges: Vec::new(),
         native_at: BTreeMap::new(),
         trap_at: Vec::new(),
@@ -599,20 +660,24 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::CheckArray => {
+                // The kind guard (WI-SC7; M5-P1-ORCH-11: the shape is the kind source): an
+                // Array whose shape's elements kind (counts bits 28-31) is in ARRAY_KINDS.
+                // DICTIONARY and the reserved kinds exit, fail closed (V10-D9b). The shape is
+                // the cell at (address & !(SHAPE_CAGE_ALIGN - 1)) | ShapeId (vm_layout: hand
+                // facts, proved on live arrays). The element ops read this node's result, so
+                // none of them, a raw f64 load included, runs before the guard (MC-w19-5).
                 let trap = self.trap(n);
                 let x = self.src(ins[0], 12)?;
                 let d = self.dst(n)?;
-                let kind = vm_layout::KIND_BYTE;
+                let (kind, shape_id) = (vm_layout::KIND_BYTE, vm_layout::SHAPE_ID_BYTE);
                 let arr = u32::from(vm_layout::KIND_ARRAY);
-                let elems = vm_layout::ARRAY_ELEMENTS;
-                let values = u32::from(vm_layout::KIND_ELEMENTS);
-                let ok = self.ops.new_dynamic_label();
+                let (counts, shift) = (
+                    vm_layout::SHAPE_COUNTS,
+                    vm_layout::SHAPE_ELEMENTS_KIND_SHIFT,
+                );
+                let cage = !(vm_layout::SHAPE_CAGE_ALIGN - 1);
+                let kinds = u32::from(vm_layout::ARRAY_KINDS);
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
-                // An Array whose elements store is a cell must have an ELEMENTS cell (Values),
-                // so an ELEMENTS_DOUBLE or ELEMENTS_DICT cell (OBJECT_LAYOUT 5) exits here, fail
-                // closed (V10-D9b). No elements cell (undefined) passes. The element ops check
-                // both again (this guard is shared per block, and a generic keyed op between
-                // may run JS that swaps the store; M5-P0 review F1).
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst X(x), x17
@@ -621,13 +686,14 @@ impl Emitter<'_> {
                     ; ldrb w16, [X(x), kind]
                     ; cmp w16, arr
                     ; b.ne =>trap
-                    ; ldr x16, [X(x), elems]
-                    ; tst x16, x17
-                    ; b.ne =>ok
-                    ; ldrb w16, [x16, kind]
-                    ; cmp w16, values
-                    ; b.ne =>trap
-                    ; =>ok
+                    ; ldr w16, [X(x), shape_id]
+                    ; and x17, X(x), cage
+                    ; add x17, x17, x16
+                    ; ldr w16, [x17, counts]
+                    ; lsr w16, w16, shift
+                    ; movz w17, kinds
+                    ; lsr w17, w17, w16
+                    ; tbz w17, #0, =>trap
                 );
                 if d != x {
                     dynasm!(self.ops ; .arch aarch64 ; mov X(d), X(x));
@@ -720,24 +786,33 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::LoadElement | Op::StoreElement => {
+                // Bounds by `length`; then the storage form by the elements cell's kind byte
+                // (H18: it follows the elements kind): ELEMENTS (Values) or ELEMENTS_DOUBLE (raw
+                // f64). Any other store exits, here too and not only at the kind guard: a
+                // GetKeyedGeneric or SetKeyedGeneric after that guard may run JS that swaps
+                // the store (V10-D9b, M5-P0 review F1). Then the form's capacity and hole.
                 let trap = self.trap(n);
+                let store = node.op == Op::StoreElement;
                 // Stage every input before x16 holds the elements (a far frame slot would
                 // load its offset through x16).
                 let arr = self.src(ins[0], 12)?;
                 let i = self.src(ins[1], 13)?;
-                let v = if node.op == Op::StoreElement {
-                    Some(self.src(ins[2], 14)?)
+                let v = if store {
+                    Some((self.src(ins[2], 14)?, self.g.node(ins[2]).repr))
                 } else {
                     None
                 };
-                let (len, elems, cap, data) = (
+                let (len, elems, kind) = (
                     vm_layout::ARRAY_LENGTH,
                     vm_layout::ARRAY_ELEMENTS,
-                    vm_layout::ELEMENTS_CAPACITY,
-                    vm_layout::ELEMENTS_DATA,
+                    vm_layout::KIND_BYTE,
                 );
-                let hole = vm_layout::HOLE as u32;
-                let (kind, values) = (vm_layout::KIND_BYTE, u32::from(vm_layout::KIND_ELEMENTS));
+                let (values, doubles) = (
+                    u32::from(vm_layout::KIND_ELEMENTS),
+                    u32::from(vm_layout::KIND_ELEMENTS_DOUBLE),
+                );
+                let (in_values, done) =
+                    (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; ldr w16, [X(arr), len]
@@ -746,16 +821,70 @@ impl Emitter<'_> {
                     ; ldr x16, [X(arr), elems]
                 );
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
-                // The store must be an ELEMENTS cell (Values) here too, not only at the block's
-                // CheckArray: a GetKeyedGeneric or SetKeyedGeneric after that guard may run JS
-                // that replaces it with an ELEMENTS_DOUBLE or ELEMENTS_DICT cell (V10-D9b).
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst x16, x17
                     ; b.ne =>trap
                     ; ldrb w17, [x16, kind]
                     ; cmp w17, values
+                    ; b.eq =>in_values
+                    ; cmp w17, doubles
                     ; b.ne =>trap
+                );
+                // ELEMENTS_DOUBLE: raw f64, the hole a NaN that no store writes.
+                let (cap, data) = (
+                    vm_layout::ELEMENTS_DOUBLE_CAPACITY,
+                    vm_layout::ELEMENTS_DOUBLE_DATA,
+                );
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; ldr w17, [x16, cap]
+                    ; cmp W(i), w17
+                    ; b.hs =>trap
+                    ; add x16, x16, data
+                    ; ldr x17, [x16, W(i), uxtw #3]
+                );
+                mov64(&mut self.ops, 15, vm_layout::ELEMENTS_DOUBLE_HOLE);
+                dynasm!(self.ops ; .arch aarch64 ; cmp x17, x15 ; b.eq =>trap);
+                match v {
+                    // A load boxes as `Value::number` (T0's `double_value`).
+                    None => {
+                        let d = self.dst(n)?;
+                        box_number(&mut self.ops, d, 17);
+                    }
+                    // A double store writes every NaN as the pure NaN, so never the hole.
+                    Some((v, Repr::Float64)) => {
+                        let raw = self.ops.new_dynamic_label();
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; mov x17, X(v)
+                            ; fmov d16, x17
+                            ; fcmp d16, d16
+                            ; b.vc =>raw
+                        );
+                        mov64(&mut self.ops, 17, PURE_NAN_BITS);
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; =>raw
+                            ; str x17, [x16, W(i), uxtw #3]
+                        );
+                    }
+                    Some((v, _)) => {
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; scvtf d16, W(v)
+                            ; fmov x17, d16
+                            ; str x17, [x16, W(i), uxtw #3]
+                        );
+                    }
+                }
+                // ELEMENTS: Values, the hole `Value::EMPTY`.
+                let (cap, data) = (vm_layout::ELEMENTS_CAPACITY, vm_layout::ELEMENTS_DATA);
+                let hole = vm_layout::HOLE as u32;
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; b =>done
+                    ; =>in_values
                     ; ldr w17, [x16, cap]
                     ; cmp W(i), w17
                     ; b.hs =>trap
@@ -764,17 +893,57 @@ impl Emitter<'_> {
                     ; cmp x17, hole
                     ; b.eq =>trap
                 );
-                if let Some(v) = v {
-                    dynasm!(self.ops ; .arch aarch64 ; mov w17, W(v));
-                    mov64(&mut self.ops, 15, NUMBER_TAG);
-                    dynasm!(self.ops
-                        ; .arch aarch64
-                        ; orr x17, x17, x15
-                        ; str x17, [x16, W(i), uxtw #3]
-                    );
-                } else {
-                    let d = self.dst(n)?;
-                    dynasm!(self.ops ; .arch aarch64 ; mov X(d), x17);
+                match v {
+                    None => {
+                        let d = self.dst(n)?;
+                        dynasm!(self.ops ; .arch aarch64 ; mov X(d), x17);
+                    }
+                    // An int32 Value if the double is an int32 (not -0); else the generic
+                    // store out of line: an INT32 kind must go to DOUBLE first, which T0's
+                    // store does (an ELEMENTS kind takes the double there too).
+                    Some((v, Repr::Float64)) => {
+                        let (slow, int) =
+                            (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+                        self.slow_stores.push(SlowStore {
+                            slow,
+                            done,
+                            offset: node.offset,
+                            arr,
+                            index: i,
+                            value: v,
+                        });
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; fmov d16, X(v)
+                            ; fcvtzs w17, d16
+                            ; scvtf d17, w17
+                            ; fcmp d16, d17
+                            ; b.ne =>slow
+                            ; cbnz w17, =>int
+                            ; fmov x15, d16
+                            ; tbnz x15, #63, =>slow
+                            ; =>int
+                            ; mov w17, w17
+                        );
+                        mov64(&mut self.ops, 15, NUMBER_TAG);
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; orr x17, x17, x15
+                            ; str x17, [x16, W(i), uxtw #3]
+                        );
+                    }
+                    Some((v, _)) => {
+                        dynasm!(self.ops ; .arch aarch64 ; mov w17, W(v));
+                        mov64(&mut self.ops, 15, NUMBER_TAG);
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; orr x17, x17, x15
+                            ; str x17, [x16, W(i), uxtw #3]
+                        );
+                    }
+                }
+                dynasm!(self.ops ; .arch aarch64 ; =>done);
+                if !store {
                     self.finish(n);
                 }
             }
@@ -907,46 +1076,9 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::BoxFloat64 => {
-                // `Value::number`: an int32 Value for an integer in int32 range that is not
-                // -0; else a double Value with NaN purified.
                 let x = self.src(ins[0], 12)?;
                 let d = self.dst(n)?;
-                let (int, dbl, purified, done) = (
-                    self.ops.new_dynamic_label(),
-                    self.ops.new_dynamic_label(),
-                    self.ops.new_dynamic_label(),
-                    self.ops.new_dynamic_label(),
-                );
-                dynasm!(self.ops
-                    ; .arch aarch64
-                    ; fmov d16, X(x)
-                    ; fcvtzs w16, d16
-                    ; scvtf d17, w16
-                    ; fcmp d16, d17
-                    ; b.ne =>dbl
-                    ; cbnz w16, =>int
-                    ; fmov x17, d16
-                    ; tbnz x17, #63, =>dbl
-                    ; =>int
-                    ; mov w16, w16
-                );
-                mov64(&mut self.ops, 17, NUMBER_TAG);
-                dynasm!(self.ops
-                    ; .arch aarch64
-                    ; orr X(d), x16, x17
-                    ; b =>done
-                    ; =>dbl
-                    ; fcmp d16, d16
-                    ; b.vc =>purified
-                );
-                mov64(&mut self.ops, 16, PURE_NAN_BITS);
-                dynasm!(self.ops ; .arch aarch64 ; fmov d16, x16 ; =>purified ; fmov x16, d16);
-                mov64(&mut self.ops, 17, DOUBLE_ENCODE_OFFSET);
-                dynasm!(self.ops
-                    ; .arch aarch64
-                    ; add X(d), x16, x17
-                    ; =>done
-                );
+                box_number(&mut self.ops, d, x);
                 self.finish(n);
             }
             Op::LoadContextSlot(i) => {
@@ -1189,6 +1321,46 @@ impl Emitter<'_> {
         Ok(epilogue)
     }
 
+    /// A [`SlowStore`]: x12 = the array, x13 = the index as an int32 Value, x14 = the value as a
+    /// double Value (`Value::number` of a double that is no int32: its bits plus the offset,
+    /// NaN purified); then the generic store with the allocatable caller-saved registers
+    /// saved, as a SetKeyedGeneric; a 0 result unwinds from the store's offset. The sources
+    /// are x12-x14 or allocated registers (never another of x12-x14), so writing x12, x13,
+    /// x14 in that order reads each source before it is written.
+    fn slow_store(&mut self, st: SlowStore) -> Result<(), Refusal> {
+        let (arr, i, v) = (st.arr, st.index, st.value);
+        let ok = self.ops.new_dynamic_label();
+        dynasm!(self.ops ; .arch aarch64 ; =>st.slow);
+        if arr != 12 {
+            dynasm!(self.ops ; .arch aarch64 ; mov x12, X(arr));
+        }
+        dynasm!(self.ops ; .arch aarch64 ; mov w13, W(i));
+        mov64(&mut self.ops, 15, NUMBER_TAG);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; orr x13, x13, x15
+            ; fmov d16, X(v)
+            ; fcmp d16, d16
+            ; b.vc =>ok
+        );
+        mov64(&mut self.ops, 16, PURE_NAN_BITS);
+        dynasm!(self.ops ; .arch aarch64 ; fmov d16, x16 ; =>ok ; fmov x14, d16);
+        mov64(&mut self.ops, 15, DOUBLE_ENCODE_OFFSET);
+        dynasm!(self.ops ; .arch aarch64 ; add x14, x14, x15);
+        save_caller_saved(&mut self.ops);
+        dynasm!(self.ops ; .arch aarch64 ; mov x3, x12 ; mov x4, x13 ; mov x5, x14);
+        call_table(&mut self.ops, layout::RT_SET_KEYED, st.offset)?;
+        dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+        restore_caller_saved(&mut self.ops);
+        let throw = self.throw_at(st.offset);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cbz x16, =>throw
+            ; b =>st.done
+        );
+        Ok(())
+    }
+
     /// The shared exit of [`ExitPolicy::Deopt`] (module docs; H29, V10-D31): the eager deopt
     /// entry. The stub's state goes to memory before any call or far branch, since a call or
     /// an AAPCS64 linker veneer may change x16, x17 and x30 (MC-w15-14). Then every register
@@ -1283,6 +1455,9 @@ impl Emitter<'_> {
                 ; cbz x0, =>throw
                 ; b =>cont
             );
+        }
+        for st in std::mem::take(&mut self.slow_stores) {
+            self.slow_store(st)?;
         }
         for (l, from, to) in std::mem::take(&mut self.edges) {
             dynasm!(self.ops ; .arch aarch64 ; =>l);
@@ -1483,14 +1658,16 @@ mod tests {
         stderr
     }
 
-    /// V10-D9b: `CheckArray` exits on an Array whose elements store is a cell other than an
-    /// ELEMENTS cell (an ELEMENTS_DOUBLE or ELEMENTS_DICT cell from M5-P1 on). The test makes
-    /// such an array by hand: it points `b`'s elements word at a plain object (a live cell, so
-    /// a GC meanwhile is safe), runs the compiled `fill(b, 3)`, which must take the exit of a
-    /// CheckArray guard (installed with no exit table, so the deopt is fatal and names the
-    /// exit, see [`exit_of`]; in a child process).
+    /// WI-SC7 (M5-P1-ORCH-11): `CheckArray`, the kind guard, reads the elements kind from the
+    /// receiver's shape and exits on a kind outside `ARRAY_KINDS`: DICTIONARY (fail closed,
+    /// V10-D9b) and the reserved kinds. No array of this base has those kinds (ELEM2 builds
+    /// DICTIONARY), so the test forges one: it sets the kind bits of the shape of `b` (a
+    /// PACKED_INT32 Array) to DICTIONARY, then to 7, and runs the compiled `fill(b, 3)`, which
+    /// must take the exit of a CheckArray guard (installed with no exit table, so the deopt is
+    /// fatal and names the exit, see [`exit_of`]; in a child process, so that T0 never runs
+    /// with the forged shape).
     #[test]
-    fn check_array_exits_on_an_elements_store_that_is_not_an_elements_cell() {
+    fn check_array_exits_on_an_elements_kind_outside_array_kinds() {
         use crate::harness::Session;
         use spike_b::harness::Config;
         if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
@@ -1498,8 +1675,8 @@ mod tests {
             return;
         }
         let defs = "function fill(a, n) { for (var i = 0; i < n; i++) { a[i] = (a[i] * 3 + i) & 1023; } return a[0]; }";
-        let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4); \
-                    var b = [5, 6, 7]; var o = { x: 1 };";
+        let warm =
+            "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4); var b = [5, 6, 7];";
         let mut s = Session::new(&Config::default().threaded()).expect("session");
         s.run(defs, "defs.js").result.expect("defs");
         s.run(warm, "warm.js").result.expect("warm");
@@ -1522,42 +1699,51 @@ mod tests {
             .filter_map(|t| t.split(' ').next()?.parse().ok())
             .collect();
         assert!(!guards.is_empty(), "{}", report.graph);
-        if !in_fatal_child() {
-            let stderr = fatal_child(
-                "emit_a64::tests::check_array_exits_on_an_elements_store_that_is_not_an_elements_cell",
-            );
-            let exit = exit_of(&stderr, &report.emit.exits);
-            assert!(
-                exit.is_some_and(|g| guards.contains(&g)),
-                "{stderr} ({guards:?})"
-            );
+        let forged = std::env::var("SPIKE_C_FORGED_KIND").ok();
+        let Some(forged) = forged.filter(|_| in_fatal_child()) else {
+            for k in [vm_layout::ELEMENTS_KIND_DICTIONARY, 7] {
+                // SAFETY: the variable is read only by the child this test starts.
+                unsafe { std::env::set_var("SPIKE_C_FORGED_KIND", k.to_string()) };
+                let stderr = fatal_child(
+                    "emit_a64::tests::check_array_exits_on_an_elements_kind_outside_array_kinds",
+                );
+                let exit = exit_of(&stderr, &report.emit.exits);
+                assert!(
+                    exit.is_some_and(|g| guards.contains(&g)),
+                    "kind {k}: {stderr} ({guards:?})"
+                );
+            }
             return;
-        }
+        };
+        let forged: u32 = forged.parse().expect("a kind");
         // SAFETY: emit_a64's placement (b) code for `fill`, from `input_of(fill)` with no JS
         // run since.
         unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect("install");
         let ok = s.run("fill(b, 3);", "ok.js");
         assert!(ok.result.is_ok(), "{:?}", ok.result);
         let b = s.function_value("b").expect("b").to_bits();
-        let o = s.function_value("o").expect("o").to_bits();
-        let at = (b + u64::from(vm_layout::ARRAY_ELEMENTS)) as *mut u64;
-        // SAFETY: `b` is a live Array held by a global; its elements word is a Value slot,
-        // and `o` is a live cell, so the array stays a valid heap object while the word
-        // points at it. The process aborts in the run below (a failed deopt), so T0 never
-        // reads the word.
-        let old = unsafe { at.read() };
-        assert!(vm_layout::is_cell(old));
-        // SAFETY: as above; the old word is the array's ELEMENTS cell.
-        assert_eq!(unsafe { vm_layout::kind(old) }, vm_layout::KIND_ELEMENTS);
-        // SAFETY: as above.
-        unsafe { at.write(o) };
+        // SAFETY: `b` is a live Array held by a global, so its shape cell (the rule that
+        // vm_layout::check proves) is live; the counts word is an int32 Value. The process
+        // aborts in the run below (a failed deopt), so T0 never sees the forged kind.
+        unsafe {
+            assert_eq!(
+                vm_layout::elements_kind(b),
+                vm_layout::ELEMENTS_KIND_PACKED_INT32
+            );
+            let at = (vm_layout::shape_of(b) + u64::from(vm_layout::SHAPE_COUNTS)) as *mut u64;
+            let mask = 0xF << vm_layout::SHAPE_ELEMENTS_KIND_SHIFT;
+            let low = (at.read() as u32 & !mask) | (forged << vm_layout::SHAPE_ELEMENTS_KIND_SHIFT);
+            at.write(vm_layout::int32_bits(low as i32));
+            assert_eq!(u32::from(vm_layout::elements_kind(b)), forged);
+        }
         let _ = s.run("fill(b, 3);", "bad.js");
         unreachable!("the exit of code with no exit table did not abort");
     }
 
     /// M5-P0 review F1: a CheckArray is shared per block, and a generic keyed op after it may
-    /// run JS that swaps the array's elements store (an ELEMENTS_DOUBLE or ELEMENTS_DICT cell
-    /// from M5-P1 on). So LoadElement checks the store's kind itself. The test removes every
+    /// run JS that swaps the array's elements store (an ELEMENTS_DICT cell, say). So LoadElement
+    /// checks the store's kind itself: an ELEMENTS or ELEMENTS_DOUBLE cell, else it exits (since
+    /// WI-SC7 the kind guard reads the shape, and only the element ops read the cell). The test removes every
     /// CheckArray from the graph of `sum` (the state the element op meets after such a swap),
     /// points `b`'s elements word at a plain object (a live cell) and runs the code: it must
     /// take the exit of a LoadElement guard, not read the object's words as Values (a fatal
