@@ -1537,7 +1537,11 @@ impl<'s> Cx<'s> {
     /// assert!(after.last_minor);
     ///
     /// // S0: a full collection, no minor one.
-    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let s0 = IsolateConfig {
+    ///     heap: HeapConfig { generational: false, ..HeapConfig::default() },
+    ///     ..IsolateConfig::default()
+    /// };
+    /// let mut iso = Isolate::new(s0).unwrap();
     /// iso.with_cx(|cx| Ok(cx.collect_garbage_minor())).unwrap();
     /// assert_eq!(iso.gc_stats().minor_collections, 0);
     /// assert!(!iso.gc_stats().last_minor);

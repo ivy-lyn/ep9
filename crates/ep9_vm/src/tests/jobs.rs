@@ -429,12 +429,18 @@ fn thenables_resolve_in_a_job_and_closures_look_like_builtins() {
 /// Negative control for the GC rule (plan rule 8): with the job roots untraced, the queued
 /// jobs die at the first collection and the GC-stress run cannot give the right output (a
 /// debug check or the heap verifier fails, or the output is wrong). The same steps with the
-/// roots traced pass, so the control fails only for the missing roots.
+/// roots traced pass, so the control fails only for the missing roots. The heap is S0
+/// (`generational: false`): with the S1 default (M5-P2) the untraced run gave the right
+/// output in a release build (no zapping there; the freed job cells were still readable at the
+/// checkpoint, est.), so the control did not see the missing roots. Under S0 it does, in debug
+/// and release, as before S1 became the default.
 #[test]
 fn untraced_job_roots_fail_under_gc_stress() {
     fn steps(untraced: bool) -> bool {
         crate::jobs::NEGATIVE_CONTROL_UNTRACED_QUEUE.with(|f| f.set(untraced));
-        let mut iso = isolate(config(Dispatch::DEFAULT, true));
+        let mut c = config(Dispatch::DEFAULT, true);
+        c.heap.generational = false;
+        let mut iso = isolate(c);
         take_output();
         iso.with_cx(|cx| {
             queue_prints(cx, &["a", "b", "c"])?;
