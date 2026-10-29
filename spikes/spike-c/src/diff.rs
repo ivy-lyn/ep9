@@ -204,24 +204,84 @@ impl Program {
 /// The helpers every program's `defs` starts with: `V(x)`, an object whose `valueOf` counts
 /// its calls and returns `x`; `D(a)`, `a` moved to DICTIONARY elements (an index far past its
 /// capacity, elements_kind.rs `ARRAY_GAP`), with its first elements kept; `O1`, `O2`, two
-/// objects a program can store and find again by identity; `S(a)`, an array shown element by
-/// element (Codex M5-P3 r1 spikec7 2): its length, a hole as `hole`, `-0` as itself, a
-/// primitive with its type, an object as `O1`/`O2`/`self`/`obj` (print's ToString would map
-/// -0 to 0, a hole, null and undefined to "", and every object alike).
+/// objects a program can store and find again by identity; `K(x)`, `x` kept in the list `R`
+/// of input objects (with the objects among its first 256 elements); `S(a)`, an array shown
+/// element by element (Codex M5-P3 r1 spikec7 2, r2 spk 2): its length, a hole as `hole`,
+/// `-0` as itself, a primitive with its type, an object by strict identity: `self`, `r<j>`
+/// (`R[j]`; `O1` is `r0`, `O2` is `r1`) or `n<j>` (the j-th other object `S` met in `a`).
+/// Up to length 256 it shows every index; a longer array shows each own key as `key=value`
+/// (every present index, however far). Print's ToString would map -0 to 0, a hole, null and
+/// undefined to "", and every object alike; content labels would merge objects alike.
 const PRELUDE: &str = "\
 var calls = 0;\n\
 function V(x) { return { valueOf: function () { calls = calls + 1; return x; } }; }\n\
 function D(a) { a[100000] = 0; return a; }\n\
 var O1 = { id: 1 }, O2 = { id: 2 };\n\
-function S(a) { if (typeof a !== 'object' || a === null) return typeof a + ':' + String(a); var o = ['len ' + a.length]; var m = a.length < 256 ? a.length : 256; for (var i = 0; i < m; i++) { if (!(i in a)) { o.push('hole'); continue; } var x = a[i]; if (x === 0 && 1 / x < 0) o.push('-0'); else if (typeof x === 'object' && x !== null) o.push(x === a ? 'self' : 'id' in x ? 'O' + x.id : 'obj'); else o.push(typeof x + ':' + String(x)); } return o.join(' '); }\n";
+var R = [O1, O2];\n\
+function isObj(x) { return typeof x === 'object' && x !== null; }\n\
+function K(x) { if (isObj(x)) { if (R.indexOf(x) < 0) R.push(x); if (x.length <= 256) for (var i = 0; i < x.length; i++) { var e = x[i]; if (isObj(e) && R.indexOf(e) < 0) R.push(e); } } return x; }\n\
+function S(a) { if (!isObj(a)) return typeof a + ':' + String(a); var o = ['len ' + a.length], n = []; function show(x) { if (x === 0 && 1 / x < 0) return '-0'; if (!isObj(x)) return typeof x + ':' + String(x); if (x === a) return 'self'; var j = R.indexOf(x); if (j >= 0) return 'r' + j; j = n.indexOf(x); if (j < 0) { j = n.length; n.push(x); } return 'n' + j; } if (a.length <= 256) { for (var i = 0; i < a.length; i++) o.push(i in a ? show(a[i]) : 'hole'); } else { var ks = Object.keys(a); for (var k = 0; k < ks.length; k++) o.push(ks[k] + '=' + show(a[ks[k]])); } return o.join(' '); }\n";
 
-/// `expr`, a call that returns an array, shown by `S` (PRELUDE); a trailing valueOf count
-/// stays outside.
+/// `expr`, a call that returns an array, shown by `S` (PRELUDE), with each argument kept
+/// by `K` ([`retained`]); a trailing valueOf count stays outside.
 fn shown(expr: &str) -> String {
     match expr.strip_suffix(" + ' ' + calls") {
-        Some(call) => format!("S({call}) + ' ' + calls"),
-        None => format!("S({expr})"),
+        Some(call) => format!("S({}) + ' ' + calls", retained(call)),
+        None => format!("S({})", retained(expr)),
     }
+}
+
+/// The call `name(a, b, ..)` as `name(K(a), K(b), ..)`, so `S` names its input objects by
+/// identity (Codex M5-P3 r2 spk 2). Any other form (no plain name, or more after the call's
+/// closing parenthesis) stays as it is.
+fn retained(call: &str) -> String {
+    let Some(open) = call.find('(') else {
+        return call.to_string();
+    };
+    let name = &call[..open];
+    let plain = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let Some(inner) = call[open + 1..].strip_suffix(')') else {
+        return call.to_string();
+    };
+    if !plain {
+        return call.to_string();
+    }
+    let (mut depth, mut start, mut quote, mut args) = (0i32, 0, None, Vec::new());
+    for (i, c) in inner.char_indices() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return call.to_string();
+                }
+            }
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || quote.is_some() {
+        return call.to_string();
+    }
+    args.push(inner[start..].trim());
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| match a.parse::<f64>() {
+            Ok(_) => a.to_string(),
+            Err(_) => format!("K({a})"),
+        })
+        .collect();
+    format!("{name}({})", args.join(", "))
 }
 
 /// A line of `main`: `expr` printed, a throw printed by its name.
@@ -1236,7 +1296,7 @@ mod tests {
         assert_eq!(
             out.output,
             [
-                "len 11 number:0 -0 hole object:null undefined:undefined O1 O2 obj string:1 number:1.5 self",
+                "len 11 number:0 -0 hole object:null undefined:undefined r0 r1 n0 string:1 number:1.5 self",
                 "0,0,,,"
             ]
         );
@@ -1246,9 +1306,41 @@ mod tests {
             .collect();
         assert!(copies.iter().any(|p| {
             p.main
-                .contains("S(f([0.5, 0.5, 0.5, 0.5, 0.5], [1, -0, 3], 3))")
+                .contains("S(f(K([0.5, 0.5, 0.5, 0.5, 0.5]), K([1, -0, 3]), 3))")
         }));
         assert!(copies.iter().all(|p| !p.main.contains("print(f(")));
+    }
+
+    /// Codex M5-P3 r2 spk 2, negative controls of the array form as the corpus prints it
+    /// (`shown`): the source array in place of an input object, a new object with the
+    /// content of `O1` in place of `O1`, and a change past index 255 of a DICTIONARY array
+    /// (at 100000, and a new index 300) each print another line.
+    #[test]
+    fn the_array_form_sees_identity_and_far_indices() {
+        let config = Config::default();
+        let run = |f: &str, call: &str| {
+            let defs = format!("{PRELUDE}{f}\n");
+            let out = tier::t0_script(&config, &defs, "", &line(&shown(call))).expect("t0");
+            assert!(out.result.is_ok(), "{out:?}");
+            out.output
+        };
+        let copy = "function f(a, b, n) { for (var i = 0; i < n; i++) { a[i] = b[i]; } return a; }";
+        let swap = "function f(a, b, n) { for (var i = 0; i < n; i++) { a[i] = i === 1 ? b : b[i]; } return a; }";
+        let call = "f([0, 0], [O2, {}, 3], 3)";
+        assert_ne!(
+            run(copy, call),
+            run(swap, call),
+            "the source array for {{}}"
+        );
+        let same = "function f(a) { return [a[0]]; }";
+        let twin = "function f(a) { return [{ id: a[0].id }]; }";
+        assert_ne!(run(same, "f([O1])"), run(twin, "f([O1])"), "a twin of O1");
+        let keep = "function f(a) { return a; }";
+        for far in ["a[100000] = 7;", "a[300] = 7;"] {
+            let mutant = format!("function f(a) {{ {far} return a; }}");
+            let d = "f(D([1, 2, 3]))";
+            assert_ne!(run(keep, d), run(&mutant, d), "{far}");
+        }
     }
 
     /// MC-w17-10: the lint refuses each GC-timing name, in code, in a string and as a
