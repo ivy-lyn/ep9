@@ -1250,8 +1250,8 @@ fn is_has_instance_intrinsic(rt: &Runtime, h: u64) -> bool {
 
 /// The keys a `for-in` loop visits (§14.7.5.9 EnumerateObjectProperties, v0: own and inherited
 /// enumerable string keys, array and String wrapper indices first, no duplicates; symbols are
-/// skipped), as a new array. A routed kind on the chain lists its keys through its
-/// `[[OwnPropertyKeys]]` and `[[GetOwnProperty]]`. GC point.
+/// skipped), as a new array. A routed kind lists its keys through `[[OwnPropertyKeys]]` and
+/// [`for_in_attrs`] (a proxy's key is a candidate; [`for_in_has`] filters it). GC point.
 pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     let rt = cx.rt();
     let keys = object::new_array(rt, 0);
@@ -1287,7 +1287,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
         let mut own = UNDEFINED;
         if exotic::is_routed(kind::cell_kind(cur)) {
             // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy): its `[[OwnPropertyKeys]]`
-            // and `[[GetOwnProperty]]` (the hooks, else the ordinary methods). GC points.
+            // and, but for a proxy, `[[GetOwnProperty]]` ([`for_in_attrs`]). GC points.
             if kept == UNDEFINED {
                 // Before the first hook runs (no JS has run yet, so every key in
                 // `seen_string` is still in some object's storage): root them all. A trap
@@ -1307,7 +1307,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 if is_symbol_key(k) {
                     continue;
                 }
-                let Some((_, a, _)) = own_property(cx, cur, k)? else {
+                let Some(a) = for_in_attrs(cx, cur, k)? else {
                     continue;
                 };
                 let enumerable = a & attr::ENUMERABLE != 0;
@@ -2204,4 +2204,72 @@ fn delete_failed(cx: &mut Cx, o: u64, key: u64) -> ep9_value::Throw {
         Text("' of object"),
     ]);
     throw_error(cx, ErrorKind::TypeError, &msg)
+}
+
+// ---- for-in: the key attributes of a routed kind and the ForInNext filter ------------------
+
+/// The attributes [`for_in_keys`] lists the own key `k` of the routed object `o` with: an
+/// ARGUMENTS or MODULE_NAMESPACE object's `[[GetOwnProperty]]` (`None`: not listed); for a
+/// proxy no trap runs and the key is a candidate (enumerable): [`for_in_has`] asks the
+/// proxy's `[[GetOwnProperty]]` when the loop reaches the key, as V8 does (its for-in keeps
+/// a proxy's keys unfiltered; node lists `ownKeys, getPrototypeOf`, then per key
+/// `getOwnPropertyDescriptor` and the body). GC point.
+fn for_in_attrs(cx: &mut Cx, o: u64, k: u64) -> Res<Option<i32>> {
+    if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        return Ok(Some(attr::ENUMERABLE));
+    }
+    Ok(own_property(cx, o, k)?.map(|(_, a, _)| a))
+}
+
+/// The ForInNext filter (V8 `HasEnumerableProperty`; M5-P3-ORCH-8 reversed, Codex M5-P3 r2
+/// eng 4): whether the receiver `o` still has the listed key `k` on its chain, so that a key
+/// deleted during the loop is skipped (§14.7.5.9). On a chain with no proxy it is the
+/// [`try_has_property`] walk (no trap to run). At a proxy it asks `[[GetOwnProperty]]` (the
+/// `getOwnPropertyDescriptor` trap), never `[[HasProperty]]`: see [`for_in_has_at_proxy`].
+/// GC point at a proxy only.
+pub(crate) fn for_in_has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
+    debug_assert!(is_object(o));
+    let key = to_property_key(cx, k)?;
+    let how = key::probe(key);
+    let mut cur = o;
+    loop {
+        if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
+            return for_in_has_at_proxy(cx, cur, key);
+        }
+        if has_own_with(cx.rt(), cur, key, how) {
+            return Ok(true);
+        }
+        let p = object::proto_of(cur);
+        if p == NULL {
+            return Ok(false);
+        }
+        cur = p;
+    }
+}
+
+/// The part of [`for_in_has`] from the first proxy `p` on: a proxy's `[[GetOwnProperty]]`
+/// answers (a descriptor: the key is visited if it is enumerable; none: the walk goes on at
+/// the proxy's `[[GetPrototypeOf]]`, a counted hop, [`MAX_PROXY_HOPS`]); an ordinary object
+/// answers by having the key at all (its keys were listed enumerable or not, as V8's DATA
+/// case). A throwing trap or a revoked proxy throws. GC point: `key` lives in a Rust local.
+#[cold]
+#[inline(never)]
+fn for_in_has_at_proxy(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
+    let how = key::probe(key);
+    let (mut cur, mut hops) = (p, 0);
+    loop {
+        if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
+            if let Some((_, a)) = crate::proxy::get_own_property(cx, cur, key)? {
+                return Ok(a & attr::ENUMERABLE != 0);
+            }
+            cur = proxy_walk_step(cx, cur, &mut hops)?;
+        } else if has_own_with(cx.rt(), cur, key, how) {
+            return Ok(true);
+        } else {
+            cur = object::proto_of(cur);
+        }
+        if cur == NULL {
+            return Ok(false);
+        }
+    }
 }

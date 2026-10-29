@@ -264,7 +264,8 @@ pub(crate) fn for_in_enumerate(cx: &mut Cx, fp: *mut u64, pc: *const u8, receive
     ret(property::for_in_keys(cx, receiver))
 }
 
-/// `ForInNext`: key `index` of the cache array, or undefined if the receiver lost it.
+/// `ForInNext`: key `index` of the cache array, or undefined if the receiver lost it (the
+/// filter [`property::for_in_has`]: `[[GetOwnProperty]]` at a proxy, never `has`).
 #[cold]
 #[inline(never)]
 pub(crate) fn for_in_next(
@@ -286,5 +287,5 @@ pub(crate) fn for_in_next(
     if !is_object(receiver) {
         return k;
     }
-    ret(property::has(cx, receiver, k).map(|h| if h { k } else { UNDEFINED }))
+    ret(property::for_in_has(cx, receiver, k).map(|h| if h { k } else { UNDEFINED }))
 }

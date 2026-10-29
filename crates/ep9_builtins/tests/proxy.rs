@@ -297,6 +297,68 @@ print(out.length, out.join());
     );
 }
 
+/// ForInNext's filter at a proxy is `[[GetOwnProperty]]`, never `[[HasProperty]]`, as V8's
+/// (M5-P3-ORCH-8 reversed, Codex r2 eng [medium]: the `has` filter made a throwing `has` trap
+/// throw and a false one hide a key). A throwing or false `has` trap is not called, on the
+/// proxy and on a proxy prototype; a key deleted during the loop is skipped; a proxy key
+/// that is not enumerable, or shadowed by a non-enumerable own key, is not visited; a key
+/// the proxy lists but does not have is found on its prototype; a throwing
+/// `getOwnPropertyDescriptor` trap and a revoked proxy throw; the trap logs (a proxy
+/// receiver, an ordinary receiver over a proxy, a proxy over a proxy) are node's. The
+/// expected lines are node v26.13.0's output for the same script.
+#[test]
+fn for_in_filters_a_proxy_key_by_get_own_property() {
+    assert_eq!(
+        common::run_both(js!(r#"
+function keys(o, each) { var r = []; for (var k in o) { r.push(k); if (each) each(k); } return r.join(); }
+print(t(() => keys(new Proxy({ x: 1, y: 2 }, { has: function () { throw 123; } }))));
+print(t(() => keys(new Proxy({ x: 1 }, { has: function () { return false; } }))));
+print(t(() => keys(Object.create(new Proxy({ x: 1 }, { has: function () { throw 1; } })))));
+var tgt = { a: 1, b: 2, c: 3 };
+print(keys(new Proxy(tgt, {}), function () { delete tgt.b; }));
+var base = { m: 1, n: 2 };
+print(keys(Object.create(new Proxy(base, {})), function () { delete base.n; }));
+var hid = Object.defineProperty({ v: 1 }, 'w', { value: 2, enumerable: false });
+var o4 = Object.create(new Proxy(hid, {})); o4.own = 1;
+print(keys(o4));
+var o5 = Object.create(new Proxy({ v: 1, u: 2 }, {})); Object.defineProperty(o5, 'v', { value: 0, enumerable: false });
+print(keys(o5));
+var ghost = new Proxy(Object.create({ z: 1, y: 2 }), { ownKeys: function () { return ['z', 'q']; } });
+print(keys(ghost), keys(Object.create(ghost)));
+var flip = new Proxy({ e: 1 }, { getOwnPropertyDescriptor: function (t, k) { return { value: 1, enumerable: false, configurable: true }; } });
+print(t(() => keys(flip)), t(() => keys(Object.create(flip))));
+var thr = new Proxy({ e: 1 }, { getOwnPropertyDescriptor: function () { throw new RangeError('gopd'); } });
+print(t(() => keys(thr)), t(() => keys(Object.create(thr))));
+var rv = Proxy.revocable({ e: 1 }, {}); var ro = Object.create(rv.proxy);
+print(t(() => keys(ro, function () { rv.revoke(); })));
+var log = [];
+var p = new Proxy({ a: 1, b: 2 }, { ownKeys(t) { log.push('ownKeys'); return Reflect.ownKeys(t); }, getOwnPropertyDescriptor(t, k) { log.push('gOPD ' + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); }, has(t, k) { log.push('has ' + String(k)); return Reflect.has(t, k); }, getPrototypeOf(t) { log.push('getPrototypeOf'); return Reflect.getPrototypeOf(t); } });
+for (var k in p) log.push('body ' + k);
+var o = Object.create(p); for (var k in o) log.push('o.body ' + k);
+print(log.join(', '));
+log = [];
+var q = new Proxy(Object.create(p), { ownKeys(t) { log.push('q.ownKeys'); return Reflect.ownKeys(t); }, getOwnPropertyDescriptor(t, k) { log.push('q.gOPD ' + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); }, getPrototypeOf(t) { log.push('q.getPrototypeOf'); return Reflect.getPrototypeOf(t); } });
+for (var k in q) log.push('q.body ' + k);
+print(log.join(', '));
+"#)),
+        lines(&[
+            "x,y",
+            "x",
+            "x",
+            "a,c",
+            "m",
+            "own,v",
+            "u",
+            "z,y z",
+            " ",
+            "RangeError: gopd RangeError: gopd",
+            "e",
+            "ownKeys, getPrototypeOf, gOPD a, body a, gOPD b, body b, ownKeys, getPrototypeOf, gOPD a, o.body a, gOPD b, o.body b",
+            "q.ownKeys, q.getPrototypeOf, ownKeys, getPrototypeOf, q.gOPD a, q.getPrototypeOf, gOPD a, q.body a, q.gOPD b, q.getPrototypeOf, gOPD b, q.body b",
+        ])
+    );
+}
+
 /// IsConstructor of a revoked proxy (§10.5.14 step 7.b; Codex r1 proxy2 [medium]): a proxy
 /// keeps the `[[Construct]]` it got at creation, so `Array.of` constructs through it (and
 /// throws the revoked TypeError), and a live outer proxy whose inner target was revoked

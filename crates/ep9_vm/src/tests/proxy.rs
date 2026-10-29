@@ -83,6 +83,18 @@ fn key_texts<'s>(cx: &mut Cx<'s>, keys: Local<'s, JsObject>) -> Vec<String> {
         .collect()
 }
 
+/// The keys of the for-in key array `keys` that ForInNext visits for the receiver `o`.
+fn visited<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, keys: Local<'s, JsObject>) -> Vec<String> {
+    let n = object::array_len(keys.bits());
+    (0..u64::from(n))
+        .filter_map(|i| {
+            let k = cx.get_index(keys, i).unwrap();
+            let seen = property::for_in_has(cx.inner(), o.bits(), k.bits()).unwrap();
+            seen.then(|| cx.to_rust_string(k).unwrap())
+        })
+        .collect()
+}
+
 // ---- routing ----------------------------------------------------------------------------------
 
 /// MC-w15-12 (H31 fast-path row 3): the routed kinds are exactly ARGUMENTS, MODULE_NAMESPACE,
@@ -231,14 +243,17 @@ fn a_proxy_on_the_chain_sees_the_receiver() {
         assert_eq!(cx.get(t, "data").unwrap().as_int32(), Some(4));
         let own = cx.get_own_property(o, "data").unwrap().expect("own data");
         assert_eq!(own.value.and_then(|v| v.as_int32()), Some(5));
-        // `for-in` lists the receiver's keys, then the proxy's (its target's).
+        // `for-in` lists the receiver's keys, then the proxy's (its target's) as candidates:
+        // ForInNext's filter (`for_in_has`) asks the proxy's [[GetOwnProperty]] for each, so
+        // the accessor `self` (not enumerable) is listed but not visited.
         let keys = property::for_in_keys(cx.inner(), o.bits()).unwrap();
         let keys: Local<'_, JsObject> = Local::from_bits(keys);
-        assert_eq!(key_texts(cx, keys), ["data"]);
+        assert_eq!(key_texts(cx, keys), ["data", "self"]);
+        assert_eq!(visited(cx, o, keys), ["data"]);
         cx.set(t, "more", Local::int32(1), true).unwrap();
         let keys = property::for_in_keys(cx.inner(), o.bits()).unwrap();
         let keys: Local<'_, JsObject> = Local::from_bits(keys);
-        assert_eq!(key_texts(cx, keys), ["data", "more"]);
+        assert_eq!(visited(cx, o, keys), ["data", "more"]);
     });
 }
 
