@@ -42,19 +42,19 @@ fn this_object<'s>(cx: &mut Cx<'s>, this: Local<'s>, name: &str) -> JsResult<Loc
 }
 
 /// ? ToString(? Get(rx, "flags")) as code units.
-fn flags_of<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<Vec<u16>> {
+pub(super) fn flags_of<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<Vec<u16>> {
     let flags = cx.get(rx, "flags")?;
     let flags = cx.to_string(flags)?;
     units(cx, flags)
 }
 
 /// Whether the flags text contains the letter `c`.
-fn has(flags: &[u16], c: u8) -> bool {
+pub(super) fn has(flags: &[u16], c: u8) -> bool {
     flags.contains(&u16::from(c))
 }
 
 /// ? ToLength(? Get(rx, "lastIndex")).
-fn last_index<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<u64> {
+pub(super) fn last_index<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<u64> {
     let v = cx.get(rx, "lastIndex")?;
     cx.to_length(v)
 }
@@ -619,7 +619,10 @@ pub(super) fn search<'s>(
 }
 
 /// SpeciesConstructor ( O, %RegExp% ) (§7.3.22).
-fn species_constructor<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>) -> JsResult<Local<'s>> {
+pub(super) fn species_constructor<'s>(
+    cx: &mut Cx<'s>,
+    o: Local<'s, JsObject>,
+) -> JsResult<Local<'s>> {
     // 1. Let C be ? Get(O, "constructor").
     let c = cx.get(o, "constructor")?;
     // 2. If C is undefined, return defaultConstructor.
@@ -821,7 +824,8 @@ pub(super) fn split<'s>(
 /// where the pattern matches, and there it gives the match a search from q finds first, so
 /// one non-sticky search per piece (a second program, the same pattern and flags without
 /// `y`) gives the same pieces as the position loop; the `lastIndex` writes and reads go to
-/// the unreachable splitter and are left out.
+/// the unreachable splitter and are left out. Each match is noted for the Annex B legacy
+/// static values, as each successful sticky exec would note it.
 fn split_by_search<'s>(
     cx: &mut Cx<'s>,
     splitter: Local<'s, JsObject>,
@@ -854,6 +858,9 @@ fn split_by_search<'s>(
         if q >= size {
             break;
         }
+        // (The spec's sticky exec succeeds here: its RegExpBuiltinExec updates the Annex B
+        // legacy static values. The searcher has the splitter's realm and legacy bit.)
+        cx.regexp_note_match(searcher, s, &m);
         let e = m.end().min(size);
         if e == p {
             q = advance_string_index(cx, s, q as u64, unicode_matching)? as usize;

@@ -1,9 +1,12 @@
 //! RegExp (§22.2, M4-P3 REGEXP1): the constructor, `exec`, `test`, `toString`, the flag
 //! accessors, `[Symbol.match]`, `[Symbol.replace]`, `[Symbol.search]`, `[Symbol.split]`, and
-//! `String.prototype.match` / `search`.
+//! `String.prototype.match` / `search`. M5-P2 REGEXP2: `[Symbol.matchAll]`,
+//! `%RegExpStringIteratorPrototype%`, `String.prototype.matchAll`, `RegExp.escape`, Annex B
+//! `RegExp.prototype.compile` and the legacy static accessors (`RegExp.$1` ...).
 //!
 //! The expected lines are node v24.22.1's output for the same script (`print` = the
-//! arguments' ToString joined by spaces). `common::run_both` runs each script with and without
+//! arguments' ToString joined by spaces), except where a test says that the spec (the
+//! legacy RegExp features proposal, which test262 `legacy-regexp` tests) and V8 differ. `common::run_both` runs each script with and without
 //! GC stress (a collection before every allocation, then the heap verifier).
 
 mod common;
@@ -387,5 +390,183 @@ for (var i = 0; i < 60; i++) {
 print(ok);"#
         ),
         lines(&[r#"120"#])
+    );
+}
+
+/// RegExp.prototype[@@matchAll] (§22.2.6.9), %RegExpStringIteratorPrototype% (§22.2.9) and
+/// String.prototype.matchAll (§22.1.3.14): the iterator protocol, empty matches (code points
+/// in Unicode mode), a non-global matcher, the copied lastIndex, the receiver errors.
+#[test]
+fn match_all_and_the_string_iterator() {
+    assert_eq!(
+        common::run_both(
+            r#"function name(f) { try { f(); return "none"; } catch (e) { return e.name; } }
+var it = "a1b22c333".matchAll(/\d+/g);
+print(Object.prototype.toString.call(it), it[Symbol.toStringTag], it[Symbol.iterator]() === it);
+var out = []; for (var m of it) out.push(m[0] + "@" + m.index); print(out.join());
+var r = it.next(); print(r.value, r.done, Object.keys(r).join());
+print([..."aXbX".matchAll("X")].length, [..."".matchAll(/(?:)/g)].length, [..."ab".matchAll(/(?:)/g)].map(function (m) { return m.index; }).join());
+print(name(function () { "a".matchAll(/a/); }), name(function () { RegExp.prototype[Symbol.matchAll].call(1, "a"); }), name(function () { it.next.call({}); }));
+var once = /a/[Symbol.matchAll]("aab"); var o1 = once.next(), o2 = once.next(); print(o1.value[0], o1.done, o2.value, o2.done);
+print([..."\u{1F600}x".matchAll(/(?:)/gu)].map(function (m) { return m.index; }).join(), [..."\u{1F600}x".matchAll(/(?:)/g)].map(function (m) { return m.index; }).join());
+print(String.prototype.matchAll.length, RegExp.prototype[Symbol.matchAll].name, it.next.name, it.next.length, String.prototype.matchAll.name);
+var re = /(?<d>\d)/g; re.lastIndex = 2; var it2 = re[Symbol.matchAll]("1234"); print(re.lastIndex, [...it2].map(function (m) { return m.groups.d; }).join(), re.lastIndex);
+var called = 0; var fake = { [Symbol.matchAll]: function (s) { called++; return s; } }; print("str".matchAll(fake), called);
+print(name(function () { "a".matchAll({ [Symbol.match]: true, flags: undefined }); }));"#
+        ),
+        lines(&[
+            r#"[object RegExp String Iterator] RegExp String Iterator true"#,
+            r#"1@1,22@3,333@6"#,
+            r#"undefined true value,done"#,
+            r#"2 1 0,1,2"#,
+            r#"TypeError TypeError TypeError"#,
+            r#"a false undefined true"#,
+            r#"0,2,3 0,1,2,3"#,
+            r#"1 [Symbol.matchAll] next 0 matchAll"#,
+            r#"2 3,4 2"#,
+            r#"str 1"#,
+            r#"TypeError"#
+        ])
+    );
+}
+
+/// RegExp.escape ( S ) (§22.2.5.1): a leading letter or digit, syntax characters, the other
+/// punctuators, white space, line terminators and lone surrogates; the TypeError of a
+/// non-string.
+#[test]
+fn regexp_escape() {
+    assert_eq!(
+        common::run_both(
+            r#"function name(f) { try { f(); return "none"; } catch (e) { return e.name; } }
+print(RegExp.escape("foo.bar"), RegExp.escape("1+1"), RegExp.escape("_a"), RegExp.escape("^$\\.*+?()[]{}|/"));
+print(JSON.stringify(RegExp.escape(" \t\n\v\f\r,-=<>#&!%:;@~'`\"")));
+print(JSON.stringify(RegExp.escape("   ﻿　𐀀x\udfffé")));
+print(name(function () { RegExp.escape(1); }), name(function () { RegExp.escape(new String("a")); }), RegExp.escape.length, RegExp.escape.name);
+print(new RegExp(RegExp.escape("a.b*c")).test("a.b*c"), new RegExp(RegExp.escape("a.b*c")).test("aXbbc"), RegExp.escape(""), RegExp.escape("\u{1F600}") === "\u{1F600}");
+var d = Object.getOwnPropertyDescriptor(RegExp, "escape"); print(d.writable, d.enumerable, d.configurable);"#
+        ),
+        lines(&[
+            r#"\x66oo\.bar \x31\+1 _a \^\$\\\.\*\+\?\(\)\[\]\{\}\|\/"#,
+            r#""\\x20\\t\\n\\v\\f\\r\\x2c\\x2d\\x3d\\x3c\\x3e\\x23\\x26\\x21\\x25\\x3a\\x3b\\x40\\x7e\\x27\\x60\\x22""#,
+            r#""\\xa0\\u2028\\u2029\\ufeff\\u3000𐀀x\\udfffé""#,
+            r#"TypeError TypeError 1 escape"#,
+            r#"true false  true"#,
+            r#"true false true"#
+        ])
+    );
+}
+
+/// Annex B RegExp.prototype.compile (B.2.4.1): the new source, flags and program on the same
+/// object, lastIndex 0, a RegExp pattern, the SyntaxErrors (the object keeps its source), the
+/// ToString order, a literal. Spec, not node: `compile` on a subclass instance is a TypeError
+/// ([[LegacyFeaturesEnabled]] false; node v24 compiles it).
+#[test]
+fn annex_b_compile() {
+    assert_eq!(
+        common::run_both(
+            r#"function name(f) { try { f(); return "none"; } catch (e) { return e.name; } }
+var re = /a/g; re.lastIndex = 3; var r2 = re.compile("b+", "i");
+print(r2 === re, re.source, re.flags, re.lastIndex, re.test("BB"), re.global);
+re.compile(/x/m); print(re.source, re.flags);
+print(name(function () { re.compile(/x/, "g"); }), name(function () { re.compile("("); }), name(function () { re.compile("a", "gg"); }), re.source, re.flags);
+class R extends RegExp {}
+print(name(function () { new R("a").compile("b"); }), name(function () { RegExp.prototype.compile.call({}, "a"); }), RegExp.prototype.compile.length);
+re.compile(); print(re.source, re.flags === "");
+var lit = function () { return /q/; }; var l = lit(); l.compile("w", "y"); print(l.source, l.sticky, lit().source);
+var frozen = /a/; Object.defineProperty(frozen, "lastIndex", { writable: false }); print(name(function () { frozen.compile("b"); }), frozen.source);
+var calls = []; var p = { toString: function () { calls.push("p"); return "c"; } }; var f = { toString: function () { calls.push("f"); return "g"; } }; re.compile(p, f); print(calls.join(), re.source, re.flags);"#
+        ),
+        lines(&[
+            r#"true b+ i 0 true false"#,
+            r#"x m"#,
+            r#"TypeError SyntaxError SyntaxError x m"#,
+            r#"TypeError TypeError 2"#,
+            r#"(?:) true"#,
+            r#"w true q"#,
+            r#"TypeError b"#,
+            r#"p,f c g"#
+        ])
+    );
+}
+
+/// The legacy static accessors of %RegExp% (Annex B, legacy RegExp features): the values after
+/// exec, replace, split and match, the initial empty strings, `RegExp.input =`, a failed exec
+/// changes nothing, the property order and attributes. Spec, not node: a receiver other than
+/// %RegExp% is a TypeError, and `$1`-`$9` have no setter (node v24 has both).
+#[test]
+fn annex_b_legacy_statics() {
+    assert_eq!(
+        common::run_both(
+            r#"function name(f) { try { f(); return "none"; } catch (e) { return e.name; } }
+print(JSON.stringify([RegExp.input, RegExp.lastMatch, RegExp.$1]));
+/(\w)(\d)?/.exec("--a1--");
+print(RegExp.$1, RegExp.$2, RegExp.lastMatch, RegExp["$&"], RegExp.lastParen, RegExp["$+"], RegExp.leftContext, RegExp["$`"], RegExp.rightContext, RegExp["$'"], RegExp.input, RegExp.$_, RegExp.$3 === "");
+"xyz".replace(/y/, ""); print(RegExp.lastMatch, RegExp.leftContext, RegExp.rightContext, JSON.stringify(RegExp.$1));
+/(a)|(b)/.exec("b"); print(JSON.stringify([RegExp.$1, RegExp.$2, RegExp.lastParen]));
+RegExp.input = 42; print(RegExp.input, typeof RegExp.$_, RegExp.lastMatch);
+/q/.exec("nope"); print(RegExp.lastMatch);
+print(name(function () { Object.getOwnPropertyDescriptor(RegExp, "$1").get.call({}); }), name(function () { Object.getOwnPropertyDescriptor(RegExp, "input").set.call({}, "a"); }));
+var d = Object.getOwnPropertyDescriptor(RegExp, "input"); print(d.enumerable, d.configurable, typeof d.set, typeof d.get);
+var d1 = Object.getOwnPropertyDescriptor(RegExp, "$1"); print(typeof d1.set, d1.enumerable, d1.configurable);
+print(Object.getOwnPropertyNames(RegExp).join());
+"a-b-c".split(/-/); print(RegExp.lastMatch, RegExp.leftContext);
+"abcabc".match(/b/g); print(RegExp.lastMatch, RegExp.leftContext);"#
+        ),
+        lines(&[
+            r#"["","",""]"#,
+            r#"a 1 a1 a1 1 1 -- -- -- -- --a1-- --a1-- true"#,
+            r#"y x z """#,
+            r#"["","b","b"]"#,
+            r#"42 string b"#,
+            r#"b"#,
+            r#"TypeError TypeError"#,
+            r#"false true function function"#,
+            r#"undefined false true"#,
+            r#"length,name,prototype,input,$_,lastMatch,$&,lastParen,$+,leftContext,$`,rightContext,$',$1,$2,$3,$4,$5,$6,$7,$8,$9,escape"#,
+            r#"- a-b"#,
+            r#"b abca"#
+        ])
+    );
+}
+
+/// A match of a RegExp subclass instance invalidates the legacy values (InvalidateLegacy-
+/// RegExpStaticProperties: each getter throws) until a %RegExp% match. Spec, not node (node v24
+/// keeps the values).
+#[test]
+fn annex_b_legacy_statics_after_a_subclass_exec() {
+    assert_eq!(
+        common::run_both(
+            r#"function name(f) { try { f(); return "none"; } catch (e) { return e.name; } }
+/(z)/.exec("z"); class R extends RegExp {} new R("b").exec("abc");
+print(name(function () { return RegExp.lastMatch; }), name(function () { return RegExp.input; }), name(function () { return RegExp.$1; }));
+/c/.exec("abc"); print(RegExp.lastMatch, RegExp.input);"#
+        ),
+        lines(&[r#"TypeError TypeError TypeError"#, r#"c abc"#])
+    );
+}
+
+/// @@replace step 15 in list order when results are replaced at once (M5-P2, F5): a template
+/// with captures, named groups and `$\``; a replace function; a getter that gives a user
+/// `exec` for the second match only (record, object, record: the third waits in the list);
+/// 20,000 matches; `$'`, `$$` and references to missing groups.
+#[test]
+fn replace_in_list_order() {
+    assert_eq!(
+        common::run_both(
+            r#"print("a1b2c3".replace(/(\d)/g, "[$1]"), "a1b2c3".replace(/(?<n>\d)/g, "{$<n>$`}"), "aaa".replace(/a*?/g, "-"));
+print("a1b2c3".replace(/(?<n>\d)/g, function (m, c, i, str, g) { return "<" + m + c + i + g.n + str.length + ">"; }));
+var re2 = /(\d)/g, k = 0, bexec = RegExp.prototype.exec;
+Object.defineProperty(re2, "exec", { get: function () { k++; return k === 2 ? function (s) { var r = bexec.call(this, s); if (r) r[0] = "Z" + r[0]; return r; } : bexec; } });
+print("a1b2c3".replace(re2, "<$1|$&>"), k);
+var big = "ab".repeat(20000).replace(/a/g, "$&$&"); print(big.length, big.slice(0, 7));
+print("x".replace(/x/g, "$'$`$$"), "abc".replace(/b/g, "$0$1$01"));"#
+        ),
+        lines(&[
+            r#"a[1]b[2]c[3] a{1a}b{2a1b}c{3a1b2c} -a-a-a-"#,
+            r#"a<11116>b<22326>c<33536>"#,
+            r#"a<1|1>b<2|Z2><3|3> 4"#,
+            r#"60000 aabaaba"#,
+            r#"$ a$0$1$01c"#
+        ])
     );
 }

@@ -175,6 +175,9 @@ pub(crate) fn builtin_match<'s>(
     if global || sticky {
         set_last_index(cx, r, m.end() as u64)?;
     }
+    // (Annex B legacy features: UpdateLegacyRegExpStaticProperties or
+    // InvalidateLegacyRegExpStaticProperties of %RegExp% for a RegExp of this realm.)
+    cx.regexp_note_match(r, s, &m);
     Ok(Some(m))
 }
 
