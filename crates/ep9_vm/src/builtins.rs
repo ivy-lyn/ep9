@@ -18,7 +18,7 @@
 //! | Each definition has one function object per realm, made in table order | identity: `Builtin(i)` twice is one object; a fixed heap layout |
 //! | Realm init walks the tables in a fixed order: VM table, then the embedder's; inside, module order, then entry order | two isolates have the same property order |
 //! | A table is checked before use: blocks, indices, kinds, intrinsics, aliases and duplicate keys | a table error is an `IsolateError`, never a half-built realm |
-//! | A constructor a table makes gets `prototype` {} as its first table key | §20 (`Number.prototype` and the others); a key before it would make the lazy `prototype` (`props::own_add`) |
+//! | A constructor a table makes gets `prototype` {} as its first table key; `%Proxy%` gets none | §20 (`Number.prototype` and the others); a key before it would make the lazy `prototype` (`props::own_add`); §28.2.2 (`exotic::is_lazy_prototype` makes none for `%Proxy%`) |
 //!
 //! Core intrinsics (the prototypes, `%Iterator.prototype%`, `%ArrayIteratorPrototype%` and the
 //! global object) come from `realm::init`; tables add properties to them and make the others

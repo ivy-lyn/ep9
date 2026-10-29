@@ -2,8 +2,8 @@
 //! kinds and the routing in ep9_vm `proxy.rs`). Makes `%Proxy%` (`IntrinsicId::Proxy`, 64):
 //! the constructor `Proxy` (length 2) with `Proxy.revocable` (length 2), and the global
 //! binding `Proxy` {w, c}. `%Proxy%` has no `prototype` property (§28.2.2): its definition
-//! is a method, so no lazy `prototype` is made for it, and `Cx::is_constructor` is true
-//! for it through its own `[[Construct]]` flag below.
+//! is a constructor (so it has `[[Construct]]`), `check_tables` takes it with no `prototype`
+//! key, and `exotic::is_lazy_prototype` makes no lazy one for it (the H20 table rule).
 //!
 //! | Function | Steps | Cx operation |
 //! |---|---|---|
