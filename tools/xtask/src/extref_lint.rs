@@ -35,6 +35,9 @@
 //!   stores write VM stack frame slots"). The VM stack is not a heap cell. The list names a
 //!   function, not a line, so it stays true when lines move; `-v` prints each allowed use with
 //!   its line.
+//! - The lint guards against honest mistakes in ep9's own code, not against a hostile author:
+//!   code review and the `ExternalRef` type are the boundary. Raw names (`r#frame`) read as
+//!   their plain names.
 //! - Known gaps: a statement that names `ExternalRef` and also copies a bare field word; a
 //!   raw offset (`rd(c, 24)`) in place of the field name; the offset as a literal (`1 << 49`)
 //!   in place of its name; a macro path whose module and field both come from metavariables
@@ -49,6 +52,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use proc_macro2::{LineColumn, Spacing, TokenStream, TokenTree};
+use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
@@ -449,20 +453,18 @@ impl<'ast> Visit<'ast> for Regions {
             return;
         }
         match i {
-            syn::Item::Fn(f) => self
-                .items
-                .push((range_of(i.span()), f.sig.ident.to_string())),
+            syn::Item::Fn(f) => self.items.push((range_of(i.span()), name_of(&f.sig.ident))),
             syn::Item::Macro(m) => {
                 // `macro_rules! name`, or an item-level call `op!(Return(..) ..)`, named
                 // `op!(Return)` by its first identifier.
                 let name = match &m.ident {
-                    Some(name) => Some(name.to_string()),
+                    Some(name) => Some(name_of(name)),
                     None => m.mac.path.segments.last().map(|seg| {
                         let first = m.mac.tokens.clone().into_iter().find_map(|t| match t {
-                            TokenTree::Ident(id) => Some(id.to_string()),
+                            TokenTree::Ident(id) => Some(name_of(&id)),
                             _ => None,
                         });
-                        format!("{}!({})", seg.ident, first.unwrap_or_default())
+                        format!("{}!({})", name_of(&seg.ident), first.unwrap_or_default())
                     }),
                 };
                 if let Some(name) = name {
@@ -486,14 +488,12 @@ impl<'ast> Visit<'ast> for Regions {
             self.tests.push((range_of(f.span()), ()));
             return;
         }
-        self.items
-            .push((range_of(f.span()), f.sig.ident.to_string()));
+        self.items.push((range_of(f.span()), name_of(&f.sig.ident)));
         visit::visit_impl_item_fn(self, f);
     }
 
     fn visit_trait_item_fn(&mut self, f: &'ast syn::TraitItemFn) {
-        self.items
-            .push((range_of(f.span()), f.sig.ident.to_string()));
+        self.items.push((range_of(f.span()), name_of(&f.sig.ident)));
         visit::visit_trait_item_fn(self, f);
     }
 
@@ -513,7 +513,7 @@ impl Regions {
     fn use_tree(&mut self, t: &syn::UseTree, parent: Option<&str>, line: usize) {
         match t {
             syn::UseTree::Path(p) => {
-                let seg = p.ident.to_string();
+                let seg = name_of(&p.ident);
                 self.use_tree(&p.tree, Some(&seg), line);
             }
             syn::UseTree::Group(g) => {
@@ -523,7 +523,7 @@ impl Regions {
             }
             syn::UseTree::Rename(r) => {
                 // `m::{self as x}` renames `m` itself (Codex M5-P3 r2): check it as `m as x`.
-                let ident = r.ident.to_string();
+                let ident = name_of(&r.ident);
                 let name = match parent {
                     Some(p) if ident == "self" => p.to_string(),
                     _ => ident,
@@ -553,7 +553,7 @@ impl Regions {
                 self.field_import(parent, &name, line);
             }
             syn::UseTree::Name(n) => {
-                let name = n.ident.to_string();
+                let name = name_of(&n.ident);
                 if parent == Some("frame") && name == "native" {
                     self.imports.push((
                         line,
@@ -592,6 +592,12 @@ impl Regions {
     }
 }
 
+/// An identifier's name without the raw prefix (`r#frame` is `frame`), as Rust resolves it,
+/// so a raw name hides nothing from the import and token rules (Codex M5-P3 r3 eng).
+fn name_of(i: &proc_macro2::Ident) -> String {
+    i.unraw().to_string()
+}
+
 /// A module whose names the token rules match: a FIELDS module, or `frame` (`frame::native`).
 fn is_protected_module(name: &str) -> bool {
     name == "frame" || FIELDS.iter().any(|(m, _)| *m == name)
@@ -611,7 +617,7 @@ fn flatten(ts: TokenStream, out: &mut Vec<Tok>) {
     let mut it = ts.into_iter().peekable();
     while let Some(t) = it.next() {
         match t {
-            TokenTree::Ident(i) => out.push(Tok::Ident(i.to_string(), i.span().start())),
+            TokenTree::Ident(i) => out.push(Tok::Ident(name_of(&i), i.span().start())),
             TokenTree::Punct(p) if p.as_char() == ':' && p.spacing() == Spacing::Joint => {
                 if matches!(it.peek(), Some(TokenTree::Punct(q)) if q.as_char() == ':') {
                     it.next();
@@ -1029,6 +1035,35 @@ use crate::object::{self as o};
 ";
         let (f, _) = lint(VM, src);
         assert_eq!(f, [(1, "import"), (3, "import"), (5, "import")]);
+    }
+
+    /// Codex M5-P3 r3 eng: a raw identifier (`r#frame`, `r#fun`) kept its `r#` in the names
+    /// the rules compare, so a raw module, field or encoding name hid from them.
+    #[test]
+    fn raw_identifiers_are_their_plain_names() {
+        let src = "\
+use crate::r#frame::{self as enc};
+fn a(addr: usize) -> u64 { enc::native(addr) }
+use crate::object::r#fun::{self as fields};
+fn b(c: CellPtr) -> u64 { rd(c, fields::INFO) }
+use crate::r#frame::r#native_of as nw;
+fn c(c: CellPtr, fi: &FunctionInfo) { init(c, r#fun::r#INFO, r#native_of(fi)); }
+fn d(addr: usize) -> u64 { r#frame::r#native(addr) }
+use crate::object::r#fun::r#INFO;
+";
+        let (f, _) = lint(VM, src);
+        assert_eq!(
+            f,
+            [
+                (1, "import"),
+                (3, "import"),
+                (5, "import"),
+                (6, "encoding"),
+                (6, "field"),
+                (7, "encoding"),
+                (8, "import")
+            ]
+        );
     }
 
     #[test]
