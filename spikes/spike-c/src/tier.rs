@@ -583,6 +583,19 @@ pub fn run_script_full(
     int: IntFacts,
     opts: &emit_a64::EmitOptions<'_>,
 ) -> Result<ScriptRun, String> {
+    let t0 = t0_script(config, defs, warm, main)?;
+    let c = compiled_script(config, defs, warm, main, name, int, opts)?;
+    Ok(ScriptRun {
+        t0,
+        compiled: c.output,
+        report: c.report,
+        exits: c.exits,
+    })
+}
+
+/// The T0 half of [`run_script`]: `defs`, `warm` and `main` in a T0 session of their own
+/// (the threaded dispatch, as the compiled half); the output of `main`.
+pub fn t0_script(config: &Config, defs: &str, warm: &str, main: &str) -> Result<RunOutput, String> {
     let config = config.threaded();
     let mut t0s = Session::new(&config)?;
     t0s.run(defs, "defs.js")
@@ -591,7 +604,32 @@ pub fn run_script_full(
     t0s.run(warm, "warm.js")
         .result
         .map_err(|e| format!("T0 warm: {e}"))?;
-    let t0 = t0s.run(main, "main.js");
+    Ok(t0s.run(main, "main.js"))
+}
+
+/// What the compiled half of [`run_script`] made: the output of `main`, the compile report
+/// and the exits counted in `main` per exit record (record order).
+#[derive(Clone, Debug)]
+pub struct CompiledRun {
+    pub output: RunOutput,
+    pub report: CompileReport,
+    pub exits: Vec<u64>,
+}
+
+/// The compiled half of [`run_script`]: `defs` and `warm` run in T0 (the feedback), then
+/// `name` is compiled from the live facts with `opts` and installed, then `main` runs. With a
+/// force table the heap verifier runs after `main` (an error if it finds anything), as in
+/// [`run_full`].
+pub fn compiled_script(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<CompiledRun, String> {
+    let config = config.threaded();
     let mut s = Session::new(&config)?;
     s.run(defs, "defs.js")
         .result
@@ -629,13 +667,15 @@ pub fn run_script_full(
     // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of_target(f)`
     // with no JS run since, unchanged, and its exit table.
     unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
-    let compiled = s.run(main, "main.js");
+    let output = s.run(main, "main.js");
     let exits = s
         .exit_counts_of(&f)
         .ok_or("no exit counters after the install")?;
-    Ok(ScriptRun {
-        t0,
-        compiled,
+    if opts.force.is_some() {
+        s.verify()?;
+    }
+    Ok(CompiledRun {
+        output,
         report,
         exits,
     })
@@ -1322,6 +1362,57 @@ mod tests {
         }
     }
 
+    /// R17 re-proof after M5-P2 ELEM2 (plan v10 §5.7): live DICTIONARY arrays, made the three
+    /// ways ELEM2 makes them (an index far past the capacity, a read-only `length`, a `length`
+    /// past 2^31 - 1), at a compiled element load (`dot`) and store (`fill`): each call
+    /// takes the exit of a `CheckArray` guard (the kind guard fails closed on DICTIONARY), T0
+    /// finishes it, and the output equals T0 (a store to the read-only-length array past its
+    /// end is dropped, as T0 drops it). Arrays born of an allocation site that learned DOUBLE
+    /// run with no exit (raw f64 loads).
+    #[test]
+    fn dictionary_arrays_exit_at_the_kind_guard_and_site_arrays_do_not() {
+        if !aarch64() {
+            return;
+        }
+        let defs = format!("{DOT}\n{ARR}\nfunction mk() {{ return [1, 2, 3]; }}");
+        let warm = "for (var q = 0; q < 20; q++) { dot([1, 2, 3], [4, 5, 6], 3); dot([0.5, 1.5], [2, 0.25], 2); fill([1, 2, 3, 4], 4); var m = mk(); }\n\
+            m[0] = 0.5;";
+        let main = "var g = [1, 2, 3]; g[100000] = 7;\n\
+            var r = [1, 2, 3]; Object.defineProperty(r, 'length', { writable: false });\n\
+            var l = [1, 2, 3]; l[4294967294] = 9;\n\
+            print(dot(g, g, 3), dot(r, r, 3), dot(l, l, 3), g.length, r.length, l.length);\n\
+            print(fill(g, 3), fill(r, 4), fill(l, 3), g[1], r.length, r[3], l[2]);";
+        let cases = [("dot", 3), ("fill", 3)];
+        for (name, calls) in cases {
+            let r = run_script(&Config::default(), &defs, warm, main, name).expect("run");
+            assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+            let fired = r.fired();
+            assert!(!fired.is_empty(), "{name}: no exit");
+            let checks = guard_ids(&r.report.graph, "CheckArray");
+            for g in &fired {
+                assert!(
+                    checks.contains(g),
+                    "{name}: g{g} is not a CheckArray guard\n{}",
+                    r.report.graph
+                );
+            }
+            assert_eq!(r.exits.iter().sum::<u64>(), calls, "{name}: {:?}", r.exits);
+        }
+        // The site's arrays: `mk` learned DOUBLE (m[0] = 0.5), so its next arrays are born
+        // PACKED_DOUBLE; the compiled loads read raw f64 with no exit.
+        let r = run_script(
+            &Config::default(),
+            &defs,
+            warm,
+            "var a = mk(), b = mk(); print(dot(a, b, 3), dot(mk(), [0.5, 0.25, 2], 3));",
+            "dot",
+        )
+        .expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["14 7"]);
+        assert!(r.fired().is_empty(), "{:?}\n{}", r.exits, r.report.graph);
+    }
+
     /// w17 O10 and MODES-CHECK-w19 outside O2 (a guard proven to fail): a guard that fails on
     /// every call exits on every call, as a speculation exit (the only class the eager exits
     /// have, `deopt_meta`), and its counter equals the number of calls: the code stays
@@ -1994,12 +2085,13 @@ mod tests {
             g.contains("SetKeyedGeneric") && g.contains("GetKeyedGeneric"),
             "{g}"
         );
-        // `o[k] = v` and `o[k]` saw names and symbols. `t[0] = s` saw only indexes but stores
-        // the loop phi `s`, which is still Tagged when the builder translates the store (the
-        // phis are unboxed after the walk), so it takes the generic store too.
+        // `o[k] = v` and `o[k]` saw names and symbols. `t[0] = s` saw only indexes: since
+        // SPIKEC-7 a store of any value takes the element path there (a number in line, any
+        // other Value out of line through the generic store); `s` is an Int32 by then.
         let sites = &r.report.build.keyed;
         assert_eq!(sites.len(), 3, "{sites:?}");
-        assert!(sites.iter().all(|k| k.generic), "{sites:?}");
+        assert!(sites[0].generic && sites[2].generic, "{sites:?}");
+        assert!(!sites[1].generic, "{sites:?}");
         assert_eq!(sites[1].keys, Some(ep9_facts::KeySet::INDEX), "{sites:?}");
         // Under GC stress (a collection before every allocation): the setter, the getter and
         // the string concatenation allocate inside and after the call.
@@ -2007,25 +2099,115 @@ mod tests {
         assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
     }
 
-    /// A store of a value that is not an int32 takes the generic store even on an index-only
-    /// site (the entry does the barrier); an int32 value keeps the element path.
+    /// SPIKEC-7 (M5-P2-ORCH-1, lin_solve limit 2): a store of a Tagged value on an index-only
+    /// site takes the element path: a number is stored in line (an int32 Value as it is, or
+    /// raw f64 into a DOUBLE store), and any other Value (here a cell: the array itself, so
+    /// the store barrier matters) goes to the generic store out of line, whose entry does the
+    /// barrier and the kind transition. No exit; equal to T0, under GC stress too.
     #[test]
-    fn a_store_of_a_non_int32_value_is_generic() {
+    fn a_tagged_store_takes_the_element_path_and_cells_go_out_of_line() {
         if !aarch64() {
             return;
         }
         let defs =
             "function put(a, i, n) { for (var k = 0; k < n; k++) { a[i] = a; } return a[i]; }";
-        let r = equal(
-            defs,
-            "var w = [0, 0]; for (var q = 0; q < 20; q++) put(w, q & 1, 2);",
-            "var b = [1, 2, 3]; print(put(b, 2, 3) === b, b.length, b[2] === b); gc(); print(b[2].length);",
-            "put",
-        );
+        let main = "var b = [1, 2, 3]; print(put(b, 2, 3) === b, b.length, b[2] === b); gc(); print(b[2].length);";
+        let warm = "var w = [0, 0]; for (var q = 0; q < 20; q++) put(w, q & 1, 2);";
+        let r = equal(defs, warm, main, "put");
         assert_eq!(r.compiled.output, ["true 3 true", "3"]);
         let store: Vec<_> = r.report.build.keyed.iter().filter(|k| k.store).collect();
-        assert!(store.len() == 1 && store[0].generic, "{store:?}");
+        assert!(store.len() == 1 && !store[0].generic, "{store:?}");
         assert_eq!(store[0].keys, Some(ep9_facts::KeySet::INDEX));
+        let g = &r.report.graph;
+        assert!(
+            g.contains("StoreElement") && !g.contains("SetKeyedGeneric"),
+            "{g}"
+        );
+        let r = run_script(&Config::stress(), defs, warm, main, "put").expect("run");
+        assert!(
+            r.equal() && r.fired().is_empty(),
+            "{:?} vs {:?}",
+            r.compiled,
+            r.t0
+        );
+    }
+
+    /// SPIKEC-7: the copy `a[i] = b[i]` (lin_solve's `x[r] = x0[r]`) of every value form into
+    /// every storage form, with no exit: int32s, doubles (NaN, -0), strings, objects,
+    /// undefined and booleans, into INT32, DOUBLE and ELEMENTS arrays (the kind transitions
+    /// made out of line, as T0 makes them), equal to T0, with GC stress too.
+    #[test]
+    fn a_tagged_copy_stores_every_value_form() {
+        if !aarch64() {
+            return;
+        }
+        let defs =
+            "function copy(a, b, n) { for (var i = 0; i < n; i++) { a[i] = b[i]; } return a; }";
+        let warm = "for (var q = 0; q < 20; q++) { copy([0.5, 0.5], [1.5, 2.5], 2); copy([0, 0], [1, 2], 2); }";
+        let main = "var o = {};\n\
+            print(copy([0.5, 0.5, 0.5], [1, 2.5, NaN], 3), 1 / copy([0.5], [-0], 1)[0]);\n\
+            print(copy([0, 0, 0], [1, 2, 3], 3), copy([0, 0, 0], [1, 2.5, 3], 3), 1 / copy([0], [-0], 1)[0]);\n\
+            print(copy([0.5, 0.5, 0.5], ['a', 1, 2], 3), copy([0, 0], [true, undefined], 2), copy(['x', 'y'], [7, 1.5], 2));\n\
+            var c = copy([0, 0], [o, null], 2); print(c[0] === o, c[1]);";
+        for config in [Config::default(), Config::stress()] {
+            let r = run_script(&config, defs, warm, main, "copy").expect("run");
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            assert!(r.fired().is_empty(), "{:?}\n{}", r.exits, r.report.graph);
+            assert_eq!(
+                r.compiled.output,
+                [
+                    "1,2.5,NaN -Infinity",
+                    "1,2,3 1,2.5,3 -Infinity",
+                    "a,1,2 true, 7,1.5",
+                    "true null"
+                ]
+            );
+            assert!(
+                !r.report.graph.contains("SetKeyedGeneric"),
+                "{}",
+                r.report.graph
+            );
+        }
+    }
+
+    /// SPIKEC-7 (M5-P2-ORCH-1, lin_solve limit 1): a load whose value only number uses read
+    /// is a Float64 load (no box at the load, no CheckNumber at the use), and a loop-carried
+    /// value fed by such a load is a Float64 phi; the loads exit on a Value that is not a
+    /// number (as the CheckNumber did), and the output equals T0 in every case, from raw
+    /// f64 stores and from Values (int32s, double Values), with GC stress too.
+    #[test]
+    fn number_only_loads_are_float64() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function run(x, x0, n, a) { var last = x[0]; for (var i = 1; i < n; i++) { last = x[i] = (x0[i] + a * last) * 0.5; } return x; }";
+        let defs = defs.replace("0.5", "a");
+        let warm = "for (var q = 0; q < 20; q++) run([0.5, 1.5, 2.5], [0.25, 0.5, 0.75], 3, 0.5);";
+        let main = "print(run([0.5, 1.5, 2.5, 3.5], [0.25, 0.5, 0.75, 1.25], 4, 0.5));\n\
+            print(run([1, 2, 3], [4, 5, 6], 3, 0.5), run([1, 2.5, 'x'], [4, 5, 6], 3, 0.5));\n\
+            print(run([0.5, 1.5], [NaN, 2], 2, 0.5), run(['s', 1], [1, 2], 2, 0.5), run([0.5, 1], [1, , 2], 3, 0.5));";
+        let g = run_script(&Config::default(), &defs, warm, "print(1);", "run")
+            .expect("run")
+            .report
+            .graph;
+        // One CheckNumber is left: the parameter `a`'s.
+        assert_eq!(g.matches("CheckNumber").count(), 1, "{g}");
+        assert!(
+            g.lines()
+                .any(|l| l.contains("LoadElement") && l.contains(": Float64")),
+            "{g}"
+        );
+        assert!(
+            g.lines()
+                .any(|l| l.contains("= Phi(") && l.contains(": Float64")),
+            "{g}"
+        );
+        for config in [Config::default(), Config::stress()] {
+            let r = run_script(&config, &defs, warm, main, "run").expect("run");
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            // The 's' and 'x' elements and the hole exit at their loads; the rest run through.
+            assert!(!r.fired().is_empty(), "{:?}", r.exits);
+        }
     }
 
     /// Native code records no feedback (MC-w15-6): after the compiled `gen` ran with new key
@@ -2070,7 +2252,16 @@ mod tests {
             let input = s.input_of(f).expect("input");
             crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile")
         };
-        assert!(report.build.keyed.iter().all(|k| k.generic));
+        // The sites that saw names are generic; `t[0] = s` (indexes only) is an element store.
+        assert!(
+            report
+                .build
+                .keyed
+                .iter()
+                .all(|k| k.generic == (k.keys != Some(ep9_facts::KeySet::INDEX))),
+            "{:?}",
+            report.build.keyed
+        );
         let meta = report.emit.meta.encode();
         // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of(f)` with
         // no JS run since, unchanged, and its exit table.

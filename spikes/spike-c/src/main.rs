@@ -16,6 +16,10 @@
 //!                                           (--stress: GC before every allocation, verifier on;
 //!                                           SPIKE_C_FORCE_DEOPT=<seed>: a forced build)
 //! spike-c deopt <kernel> [--n N] [--at A]   each guard forced once (WI-SC4, gate.sh deopt)
+//! spike-c diff [--seeds A..B] [--no-kernels] [--show N]
+//!                                           the tier differential (WI-SC6, gate.sh diff): the
+//!                                           gate kernels at n = 1 and the seeded corpus, T0 vs
+//!                                           config C, every guard forced
 //! spike-c time <kernel> [--rounds R] [--n N] [--k K]
 //!                                           class S timing (protocol §3): T0, C, H0, H1 in new
 //!                                           processes, paired ratios; a report, never a reading
@@ -37,7 +41,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
          | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] \
-         | deopt <kernel> [--n N] [--at A] | time <kernel> [--rounds R] [--n N] [--k K] \
+         | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
          | once <t0|c|h0|h1> <kernel> [--n N] [--k K] | show <kernel> [i] | driver <kernel> [--n N] \
          | structural [check...|all]]"
     );
@@ -503,6 +507,7 @@ fn main() -> ExitCode {
         "graph" => graph_cmd(rest),
         "tier" => tier_cmd(rest),
         "deopt" => deopt_cmd(rest),
+        "diff" => spike_c::diff::main(rest),
         "time" => time_cmd(rest),
         "once" => once_cmd(rest),
         "driver" => driver_cmd(rest),

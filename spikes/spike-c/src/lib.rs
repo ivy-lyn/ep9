@@ -33,6 +33,7 @@
 //! | [`deopt_meta`] | the per-exit deopt metadata: pc, guard, bytecode offset, counter, value places; offsets only; written in the H29 byte form the VM reads | SPIKEC-4; the H29 byte form SPIKEC-5 |
 //! | [`vm_layout`] | the VM layout facts the code reads, from the `ep9_vm::layout` export (each with its owning version), proved on live objects | SPIKEC-1; the export SPIKEC-4 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
+//! | [`diff`](mod@diff) | the tier differential (C3): the gate kernels at n = 1 and a seeded corpus, T0 vs config C byte for byte, every guard forced; no GC-timing compare (a lint) | SPIKEC-7 (M5-P3) |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
 //!
 //! Rules (protocol §1):
@@ -47,6 +48,7 @@
 pub mod build;
 pub mod cfg;
 pub mod deopt_meta;
+pub mod diff;
 pub mod emit_a64;
 pub mod facts;
 pub mod harness;

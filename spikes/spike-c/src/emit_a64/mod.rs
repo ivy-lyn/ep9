@@ -435,19 +435,19 @@ fn box_number(ops: &mut Ops, d: u8, x: u8) {
     );
 }
 
-/// The out-of-line path of a StoreElement of a Float64 that is no int32 into an ELEMENTS
-/// cell: the generic store (`RuntimeTable::set_keyed`), which makes the kind transition.
+/// The out-of-line path of a StoreElement (`RuntimeTable::set_keyed`: the kind transition and
+/// the barrier; then on at `done`): a Float64 that is no int32 into an ELEMENTS cell (boxed
+/// first), or a Tagged value the in-line forms do not take (SPIKEC-7, `tagged`: as it is).
 struct SlowStore {
     slow: DynamicLabel,
-    /// Where the store's code goes on.
     done: DynamicLabel,
-    /// The store's bytecode offset (a throw unwinds from it).
+    /// The store's bytecode offset (a throw unwinds from it); then the registers of the array,
+    /// the Int32 index and the value: each its staging register (x12, x13, x14) or allocated.
     offset: u32,
-    /// The registers of the array, the Int32 index and the Float64 value at the branch: each
-    /// is its staging register (x12, x13, x14) or an allocated one.
     arr: u8,
     index: u8,
     value: u8,
+    tagged: bool,
 }
 
 /// A source of a phi move.
@@ -976,6 +976,8 @@ impl Emitter<'_> {
                 );
                 let (in_values, done) =
                     (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+                // A Tagged store value's out-of-line path (SPIKEC-7, [`Emitter::tagged_slow`]).
+                let tagged_slow = self.tagged_slow(v, done, node.offset, [arr, i]);
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; ldr w16, [X(arr), len]
@@ -1010,12 +1012,14 @@ impl Emitter<'_> {
                 mov64(&mut self.ops, 15, vm_layout::ELEMENTS_DOUBLE_HOLE);
                 dynasm!(self.ops ; .arch aarch64 ; cmp x17, x15 ; b.eq =>trap);
                 match v {
-                    // A load boxes as `Value::number` (T0's `double_value`).
+                    // SPIKEC-7: a Float64 load (`build::float_loads`) and a Tagged value
+                    // ([`Emitter::double_form`]).
+                    None if node.repr == Repr::Float64 => self.double_form(n, i, None, trap)?,
                     None => {
                         let d = self.dst(n)?;
                         box_number(&mut self.ops, d, 17);
                     }
-                    // A double store writes every NaN as the pure NaN, so never the hole.
+                    Some((v, Repr::Tagged)) => self.double_form(n, i, Some(v), tagged_slow)?,
                     Some((v, Repr::Float64)) => {
                         let raw = self.ops.new_dynamic_label();
                         dynasm!(self.ops
@@ -1057,24 +1061,20 @@ impl Emitter<'_> {
                     ; b.eq =>trap
                 );
                 match v {
+                    // SPIKEC-7: a Float64 load and a Tagged value ([`Emitter::values_form`]: the
+                    // load exits on a Value that is no number, as the CheckNumber it replaces).
+                    None if node.repr == Repr::Float64 => self.values_form(n, i, None, trap)?,
                     None => {
                         let d = self.dst(n)?;
                         dynasm!(self.ops ; .arch aarch64 ; mov X(d), x17);
                     }
+                    Some((v, Repr::Tagged)) => self.values_form(n, i, Some(v), tagged_slow)?,
                     // An int32 Value if the double is an int32 (not -0); else the generic
                     // store out of line: an INT32 kind must go to DOUBLE first, which T0's
                     // store does (an ELEMENTS kind takes the double there too).
                     Some((v, Repr::Float64)) => {
-                        let (slow, int) =
-                            (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
-                        self.slow_stores.push(SlowStore {
-                            slow,
-                            done,
-                            offset: node.offset,
-                            arr,
-                            index: i,
-                            value: v,
-                        });
+                        let slow = self.slow_path(done, node.offset, [arr, i, v], false);
+                        let int = self.ops.new_dynamic_label();
                         dynasm!(self.ops
                             ; .arch aarch64
                             ; fmov d16, X(v)
@@ -1538,17 +1538,23 @@ impl Emitter<'_> {
         }
         dynasm!(self.ops ; .arch aarch64 ; mov w13, W(i));
         mov64(&mut self.ops, 15, NUMBER_TAG);
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; orr x13, x13, x15
-            ; fmov d16, X(v)
-            ; fcmp d16, d16
-            ; b.vc =>ok
-        );
-        mov64(&mut self.ops, 16, PURE_NAN_BITS);
-        dynasm!(self.ops ; .arch aarch64 ; fmov d16, x16 ; =>ok ; fmov x14, d16);
-        mov64(&mut self.ops, 15, DOUBLE_ENCODE_OFFSET);
-        dynasm!(self.ops ; .arch aarch64 ; add x14, x14, x15);
+        dynasm!(self.ops ; .arch aarch64 ; orr x13, x13, x15);
+        if st.tagged {
+            if v != 14 {
+                dynasm!(self.ops ; .arch aarch64 ; mov x14, X(v));
+            }
+        } else {
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; fmov d16, X(v)
+                ; fcmp d16, d16
+                ; b.vc =>ok
+            );
+            mov64(&mut self.ops, 16, PURE_NAN_BITS);
+            dynasm!(self.ops ; .arch aarch64 ; fmov d16, x16 ; =>ok ; fmov x14, d16);
+            mov64(&mut self.ops, 15, DOUBLE_ENCODE_OFFSET);
+            dynasm!(self.ops ; .arch aarch64 ; add x14, x14, x15);
+        }
         save_caller_saved(&mut self.ops);
         dynasm!(self.ops ; .arch aarch64 ; mov x3, x12 ; mov x4, x13 ; mov x5, x14);
         call_table(&mut self.ops, layout::RT_SET_KEYED, st.offset)?;
@@ -1559,6 +1565,139 @@ impl Emitter<'_> {
             ; .arch aarch64
             ; cbz x16, =>throw
             ; b =>st.done
+        );
+        Ok(())
+    }
+
+    /// A [`SlowStore`] of the element op at `offset` that goes on at `done`, for the array,
+    /// index and value registers `regs`: its label.
+    fn slow_path(
+        &mut self,
+        done: DynamicLabel,
+        offset: u32,
+        regs: [u8; 3],
+        tagged: bool,
+    ) -> DynamicLabel {
+        let slow = self.ops.new_dynamic_label();
+        let [arr, index, value] = regs;
+        self.slow_stores.push(SlowStore {
+            slow,
+            done,
+            offset,
+            arr,
+            index,
+            value,
+            tagged,
+        });
+        slow
+    }
+
+    /// The out-of-line path of a store of the Tagged value `v` (SPIKEC-7: a number in line,
+    /// any other Value to the generic store, one path for both storage forms). For any other
+    /// `v`, a label that nothing uses.
+    fn tagged_slow(
+        &mut self,
+        v: Option<(u8, Repr)>,
+        done: DynamicLabel,
+        offset: u32,
+        [arr, i]: [u8; 2],
+    ) -> DynamicLabel {
+        match v {
+            Some((v, Repr::Tagged)) => self.slow_path(done, offset, [arr, i, v], true),
+            _ => self.ops.new_dynamic_label(),
+        }
+    }
+
+    /// The SPIKEC-7 forms of an element op on an ELEMENTS_DOUBLE cell, after the bounds and
+    /// hole checks (x16 = the data, x17 = the element's raw f64 bits, `i` the index): with no
+    /// value, the Float64 load of node `n` (the bits as they are: no box); with the Tagged
+    /// value `v`, its store: an int32 Value converts, a double Value is its bits (every NaN as
+    /// the pure NaN, so never the hole), any other Value goes to `slow` (the generic store).
+    fn double_form(
+        &mut self,
+        n: NodeId,
+        i: u8,
+        v: Option<u8>,
+        slow: DynamicLabel,
+    ) -> Result<(), Refusal> {
+        let Some(v) = v else {
+            let d = self.dst(n)?;
+            dynasm!(self.ops ; .arch aarch64 ; mov X(d), x17);
+            return Ok(());
+        };
+        let (dbl, put) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+        mov64(&mut self.ops, 17, NUMBER_TAG);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cmp X(v), x17
+            ; b.lo =>dbl
+            ; scvtf d16, W(v)
+            ; fmov x17, d16
+            ; b =>put
+            ; =>dbl
+            ; tst X(v), x17
+            ; b.eq =>slow
+        );
+        mov64(&mut self.ops, 17, DOUBLE_ENCODE_OFFSET);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; sub x17, X(v), x17
+            ; fmov d16, x17
+            ; fcmp d16, d16
+            ; b.vc =>put
+        );
+        mov64(&mut self.ops, 17, PURE_NAN_BITS);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; =>put
+            ; str x17, [x16, W(i), uxtw #3]
+        );
+        Ok(())
+    }
+
+    /// The SPIKEC-7 forms of an element op on an ELEMENTS cell (Values), after the bounds and
+    /// hole checks (x16 = the data, x17 = the element, `i` the index). With no value, the
+    /// Float64 load of node `n`: an int32 Value converts, a double Value is its bits minus
+    /// the offset, any other Value goes to `out` (the load's exit: the CheckNumber it
+    /// replaces). With the Tagged value `v`, its store: an int32 Value as it is (not a cell:
+    /// no barrier), any other Value (a double Value too: an INT32 kind goes to DOUBLE first)
+    /// goes to `out` (the generic store, out of line).
+    fn values_form(
+        &mut self,
+        n: NodeId,
+        i: u8,
+        v: Option<u8>,
+        out: DynamicLabel,
+    ) -> Result<(), Refusal> {
+        if let Some(v) = v {
+            mov64(&mut self.ops, 17, NUMBER_TAG);
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; cmp X(v), x17
+                ; b.lo =>out
+                ; str X(v), [x16, W(i), uxtw #3]
+            );
+            return Ok(());
+        }
+        let d = self.dst(n)?;
+        let (dbl, num) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+        mov64(&mut self.ops, 16, NUMBER_TAG);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cmp x17, x16
+            ; b.lo =>dbl
+            ; scvtf d16, w17
+            ; fmov X(d), d16
+            ; b =>num
+            ; =>dbl
+            ; tst x17, x16
+            ; b.eq =>out
+        );
+        mov64(&mut self.ops, 16, DOUBLE_ENCODE_OFFSET);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; sub X(d), x17, x16
+            ; =>num
         );
         Ok(())
     }
@@ -1902,8 +2041,10 @@ mod tests {
 
     /// WI-SC7 (M5-P1-ORCH-11): `CheckArray`, the kind guard, reads the elements kind from the
     /// receiver's shape and exits on a kind outside `ARRAY_KINDS`: DICTIONARY (fail closed,
-    /// V10-D9b) and the reserved kinds. No array of this base has those kinds (ELEM2 builds
-    /// DICTIONARY), so the test forges one: it sets the kind bits of the shape of `b` (a
+    /// V10-D9b) and the reserved kinds. A reserved kind exists on no live array, so the test
+    /// forges it, and DICTIONARY too (live DICTIONARY arrays since M5-P2 ELEM2:
+    /// `tier::tests::dictionary_arrays_exit_at_the_kind_guard_and_site_arrays_do_not`): it
+    /// sets the kind bits of the shape of `b` (a
     /// PACKED_INT32 Array) to DICTIONARY, then to 7, and runs the compiled `fill(b, 3)`, which
     /// must take the exit of a CheckArray guard (installed with no exit table, so the deopt is
     /// fatal and names the exit, see [`exit_of`]; in a child process, so that T0 never runs

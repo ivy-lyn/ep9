@@ -47,11 +47,24 @@
 #        counter at least its forced exit, every armed guard forced (`tier::forced_coverage`;
 #        Codex M5-P2 r1 spikec6 3), heap verifier clean
 #     SKIP without the v8-v7 checkout
+#   gate.sh diff         (plan v10 M5-P3 SPIKEC-7 WI-SC6; protocol C3) the tier differential:
+#     1  release build (as am3)
+#     2  `spike-c diff`: the gate kernels at n = 1 (crypto's am3, navier-stokes' lin_solve): T0
+#        equal to node line for line (node on PATH, else that compare prints SKIP), config C
+#        equal to T0 with 0 exits, then forcing: every guard armed from a seed, then each
+#        guard not forced yet armed at its first pass, every run equal to T0; then the seeded
+#        corpus, seeds 1..200 (src/diff.rs: int32 overflow, double/int mixes, holes,
+#        out-of-bounds, shape changes, valueOf, DICTIONARY arrays, throws), each program
+#        T0 vs config C byte for byte, unforced and forced the same way. FAIL on any
+#        difference, a refused compile or a guard never forced. No GC-timing compare
+#        (MC-w17-10): a lint refuses WeakRef, FinalizationRegistry and gc in every program
+#     SKIP without the v8-v7 checkout
 #   gate.sh time         (plan v9 M4-P2 SPIKEC-2; protocol §3) the class S timing of crypto on
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
 #     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
 #     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
-#   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, then `gate.sh linsolve`
+#   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, `gate.sh linsolve`,
+#                        then `gate.sh diff`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
 #      SPIKE_C_BENCH_DIR (default: third_party/bench-v8v7/bench/bench-v8).
@@ -156,6 +169,20 @@ linsolve() {
   run "linsolve/tier-n12" "$bin" tier navier-stokes --n 12
 }
 
+diff_step() {
+  if ! build_release; then
+    record "diff" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/crypto.js" ] || [ ! -f "$bench/navier-stokes.js" ]; then
+    record "diff" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  run "diff/kernels+corpus" "$bin" diff
+}
+
 timing() {
   if ! build_release; then
     record "time" FAIL "release build failed"
@@ -176,15 +203,17 @@ case "$step" in
   am3) am3 ;;
   deopt) deopt ;;
   linsolve) linsolve ;;
+  diff) diff_step ;;
   time) timing ;;
   all)
     structural
     am3
     deopt
     linsolve
+    diff_step
     ;;
   *)
-    echo "usage: gate.sh [structural | am3 | deopt | linsolve | time]" >&2
+    echo "usage: gate.sh [structural | am3 | deopt | linsolve | diff | time]" >&2
     exit 2
     ;;
 esac
