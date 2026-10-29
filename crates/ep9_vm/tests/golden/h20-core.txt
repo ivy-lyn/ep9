@@ -213,6 +213,7 @@ abi: impl<'s> Cx<'s> :: pub fn set_slot(&mut self, impl Into<Local<'s>>, ObjectC
 abi: impl<'s> Cx<'s> :: pub fn set_with_receiver(&mut self, impl Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<bool>
 abi: impl<'s> Cx<'s> :: pub fn slot(&mut self, impl Into<Local<'s>>, ObjectClass, usize) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn string_len(&self, impl Into<Local<'s, JsString>>) -> usize
+abi: impl<'s> Cx<'s> :: pub fn substring(&mut self, impl Into<Local<'s, JsString>>, usize, usize) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn symbol_description(&self, Local<'s, JsSymbol>) -> Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn symbol_for(&mut self, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, JsSymbol>>
 abi: impl<'s> Cx<'s> :: pub fn this_primitive_value(&mut self, impl Into<Local<'s>>, PrimitiveType) -> JsResult<Local<'s>>
