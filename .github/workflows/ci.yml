@@ -353,6 +353,14 @@ jobs:
       - name: test262 exec, eager feedback
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
+      # The no-jit build (M5-P0-ORCH-10; plan v10 section 5.3): ep9_vm without the `jit` feature,
+      # the jitless preset and its default feedback `ics_only` (the second T0 handler table,
+      # MODES-D11), against the same expectation file (a preset changes no result, doc 13 M-R9).
+      # linux-x64 only (rule 25): est. +7-10 min on this job (a second release build of the
+      # runner without `jit`, est. 4-6 min, and one exec run, est. 3-4 min).
+      - name: test262 exec, no-jit build (jitless, ics_only)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
+        run: cargo run --release --locked -p ep9_test262 --no-default-features -- exec --preset jitless --json test262-exec-jitless.json
       # The S1 major path (plan v10 V10-D19, V9-D27): GC-stress with S1 where every GC is a major
       # one (EP9_GC_STRESS_MAJOR_EVERY=1: the sticky marks cleared and a full mark each time; the
       # shards run mostly minor GCs, a major one every 64th), on the weak-reference, collection,
