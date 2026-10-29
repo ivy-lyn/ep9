@@ -270,3 +270,29 @@ var del = new Proxy({ p: 1, q: 2 }, {}); r = []; for (var k in del) { r.push(k);
         lines(&["own,g ownKeys gpo", "g,top 0", "e,d,c", "c", "1,b,a", "p",])
     );
 }
+
+/// for-in (§14.7.5.9): a key seen before is skipped later, enumerable or not, even when a
+/// proxy trap on the chain deletes that property and a collection runs (Codex r1 proxy2
+/// [high]: the seen non-enumerable keys of an ordinary receiver were not rooted, and the
+/// atom table is weak, so a key the trap gives again read as new). Node v24.22.1 prints `1 b`.
+#[test]
+fn for_in_skips_a_seen_key_after_a_trap_deletes_it() {
+    assert_eq!(
+        common::run_both(js!(r#"
+function mk(i) { return ['hidden', 'Key', String(i)].join('_'); }
+var o = { a: 1, b: 2 };
+delete o.a;
+for (var i = 0; i < 8; i++) Object.defineProperty(o, mk(i), { value: i, enumerable: false, configurable: true });
+var p = new Proxy({}, {
+  ownKeys: function () { for (var i = 0; i < 8; i++) delete o[mk(i)]; var r = []; for (var i = 0; i < 8; i++) r.push(mk(i)); return r; },
+  has: function () { return true; },
+  getOwnPropertyDescriptor: function () { return { value: 1, enumerable: true, configurable: true }; }
+});
+Object.setPrototypeOf(o, p);
+var out = [];
+for (var k in o) out.push(k);
+print(out.length, out.join());
+"#)),
+        lines(&["1 b"])
+    );
+}

@@ -1269,9 +1269,10 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     // GC: the Rust vectors hold only indices, key atoms of property storage (reachable from
     // `o`) and the `length` atom (a runtime root); a new index string goes into `keys` (a Rust
     // local, so a root) at once. A routed kind's keys come from its key array (`own`), and
-    // each such array goes into `kept` (a Rust local, so a root) until the loop ends: the
-    // keys in `seen_string` stay alive although a proxy's keys may be reachable from nothing
-    // else once its traps run JS (PROXY2).
+    // each such array goes into `kept` (a Rust local, so a root) until the loop ends. From
+    // the first routed hop on, `kept` also holds every key of `seen_string` (an enumerable
+    // one is in `keys`): a proxy trap runs JS that may delete a property whose key was seen
+    // and then collect, and the atom table is weak (PROXY2).
     let mut seen_index: Vec<u32> = Vec::new();
     let mut seen_string: Vec<u64> = Vec::new();
     let mut kept = UNDEFINED;
@@ -1286,10 +1287,16 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
         if exotic::is_routed(kind::cell_kind(cur)) {
             // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy): its `[[OwnPropertyKeys]]`
             // and `[[GetOwnProperty]]` (the hooks, else the ordinary methods). GC points.
-            own = try_own_property_keys(cx, cur)?;
             if kept == UNDEFINED {
+                // Before the first hook runs (no JS has run yet, so every key in
+                // `seen_string` is still in some object's storage): root them all. A trap
+                // may delete those properties and collect, and the atom table is weak.
                 kept = object::new_array(cx.rt(), 0);
+                for (i, &k) in seen_string.iter().enumerate() {
+                    object::array_set(cx.rt(), kept, i as u32, k);
+                }
             }
+            own = try_own_property_keys(cx, cur)?;
             let n = object::array_len(kept);
             object::array_set(cx.rt(), kept, n, own);
             for j in 0..object::array_len(own) {
@@ -1357,6 +1364,10 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             if enumerable {
                 let len = object::array_len(keys);
                 object::array_set(cx.rt(), keys, len, k);
+            } else if kept != UNDEFINED {
+                // A key seen after a routed hop: a later trap may delete its property.
+                let n = object::array_len(kept);
+                object::array_set(cx.rt(), kept, n, k);
             }
         }
         std::hint::black_box(own);
