@@ -19,9 +19,9 @@
 //!   u32 at +8.
 //!
 //! Ropes (M4-P1 STR1; H19, V9-D13). `a + b` makes a CONS cell when the result has at least
-//! [`MIN_CONS_LENGTH`] code units, and a substring of at least `MIN_SLICE_LENGTH` (13) units
-//! is a SLICED cell over a SEQ parent (`substring`, test builds only until a `Cx::substring`
-//! caller exists; M4-P2 STR2). [`flatten`] of a CONS writes the flat
+//! [`MIN_CONS_LENGTH`] code units, and a substring of at least [`MIN_SLICE_LENGTH`] (13)
+//! units is a SLICED cell over a SEQ parent ([`substring`]; its runtime caller is the part-2
+//! ABI method `Cx::substring`, M5-P3 STR3). [`flatten`] of a CONS writes the flat
 //! form once and turns the cell into (first = flat, second = ""), V8 style: a flattened CONS
 //! reads as its first. A SLICED cell is flat for reading (its units are a range of the
 //! parent's), so [`flatten`] returns it as is.
@@ -98,8 +98,8 @@ pub(crate) const FLAG_TWO_BYTE: u16 = 0x0002;
 pub(crate) const MIN_CONS_LENGTH: usize = 13;
 
 /// A substring of at least this many code units is a SLICED cell (H19; V8
-/// `SlicedString::kMinLength`). Test builds only, with `substring`.
-#[cfg(test)]
+/// `SlicedString::kMinLength`). A tuning value, as [`MIN_CONS_LENGTH`] is: the H19 kind rule
+/// binds the runtime `concat` and `substring` (facts about T0, not rules for other tiers).
 pub(crate) const MIN_SLICE_LENGTH: usize = 13;
 
 /// Largest string length in code units (V8: 2^29 - 24). Longer results throw RangeError
@@ -896,15 +896,15 @@ fn new_cons(rt: &Runtime, first: u64, second: u64, len: usize) -> u64 {
     c.to_value().to_bits()
 }
 
-/// The substring `s[from..to]` (`from <= to <= str_len(s)`), for String.prototype.substring,
-/// slice and the like. GC point. A result of at least [`MIN_SLICE_LENGTH`] code units is a
-/// SLICED cell over the flat parent (O(1) after the flatten; H19), a shorter one a copy.
-///
-/// Test builds only (M4-P2 STR2, the STR1 F4 carry): no VM caller exists, and the builtins
-/// reach it only through a part-2 `Cx::substring` ABI method that no string role owns yet
-/// (`abi/mod.rs` and the H20 golden). Until that method lands, no SLICED cell is made outside
-/// tests; the SLICED and THIN readers stay, tested here.
-#[cfg(test)]
+/// The substring `s[from..to]` (`from <= to <= str_len(s)`), for the String.prototype methods
+/// through `Cx::substring` (M5-P3 STR3). GC point. A result of at least [`MIN_SLICE_LENGTH`]
+/// code units is a SLICED cell over the flat parent (O(1) after the flatten; H19), a shorter
+/// one a copy. Two cases allocate nothing: the full span gives `s` itself (checked first, so
+/// an empty parent gives itself; a SEQ cell with no units can exist), and an empty span of a
+/// non-empty `s` gives the empty atom. A slice of a SLICED string points at the SEQ parent,
+/// never at another slice. A slice keeps its whole parent alive while it lives (as in V8), and
+/// a GC frees both after its last use. Panics on a range that is not inside `s` (a caller bug:
+/// the slice would read past its parent).
 pub(crate) fn substring(rt: &Runtime, s: u64, from: usize, to: usize) -> u64 {
     let n = str_len(s);
     assert!(from <= to && to <= n, "substring {from}..{to} of {n} units");

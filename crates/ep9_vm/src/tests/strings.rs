@@ -1623,3 +1623,220 @@ fn a_keyed_read_of_undefined_with_a_rope_key_past_the_limit_copies_nothing() {
         assert!(msg.ends_with("xxx')"));
     });
 }
+
+// ---- Cx::substring (M5-P3 STR3; H19, V10-D44) ----
+
+/// The parent and the offset of the SLICED string `s` (+16 and +24 of the H19 layout table);
+/// `None` for any other kind.
+fn slice_parent(s: u64) -> Option<(u64, usize)> {
+    (kinds::cell_kind(s) == kinds::SLICED.get()).then(|| {
+        // SAFETY: `s` is a live SLICED cell (32 B): +16 holds the parent, +24 the int32 offset.
+        let (p, o) = unsafe {
+            (
+                cell(s).field::<u64>(16).read(),
+                cell(s).field::<u64>(24).read(),
+            )
+        };
+        (p, crate::frame::int32_of(o) as usize)
+    })
+}
+
+/// `Cx::substring` of the string `s` (bits), as bits.
+fn cx_substring(iso: &mut crate::Isolate, s: u64, from: usize, to: usize) -> u64 {
+    iso.with_cx(|cx| {
+        let s: Local<'_, crate::abi::JsString> = Local::from_bits(s);
+        Ok(cx.substring(s, from, to)?.bits())
+    })
+    .unwrap()
+}
+
+#[test]
+fn substring_of_an_empty_non_atom_seq_gives_the_parent() {
+    // CX5-D2 (M4-P5 Codex, month-5 input item 23): the full-span check comes before the
+    // empty-span check, so an empty parent gives itself, not the empty atom. A SEQ cell with
+    // no units that is not an atom exists: `new_string_latin1` with no bytes makes one.
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let e = string::new_string_latin1(rt, &[]);
+    let empty_atom = rt.atom(Atom::Empty);
+    assert_eq!(kinds::cell_kind(e), kinds::SEQ_LATIN1.get());
+    assert_eq!(string::str_len(e), 0);
+    assert!(!string::is_atom(e));
+    assert_ne!(e, empty_atom);
+    assert_eq!(string::substring(rt, e, 0, 0), e);
+    // The same through the builtin ABI.
+    assert_eq!(cx_substring(&mut iso, e, 0, 0), e);
+    // An empty span of a non-empty parent is the empty atom (no allocation).
+    let rt: &Runtime = &iso.rt;
+    let p = string::new_string(rt, "ab");
+    assert_eq!(string::substring(rt, p, 1, 1), empty_atom);
+    assert_eq!(cx_substring(&mut iso, p, 2, 2), empty_atom);
+}
+
+#[test]
+fn cx_substring_makes_slices_from_13_units_and_copies_below() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let p = string::new_string(rt, "0123456789abcdefghijklmnopqrstuvwxyz");
+    // 13 units: a SLICED cell over the parent; 12: a flat copy.
+    let s = cx_substring(&mut iso, p, 3, 16);
+    assert_eq!(kinds::cell_kind(s), kinds::SLICED.get());
+    assert_eq!(string::str_len(s), string::MIN_SLICE_LENGTH);
+    assert_eq!(text(s), "3456789abcdef");
+    let c = cx_substring(&mut iso, p, 3, 15);
+    assert_eq!(kinds::cell_kind(c), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(c), "3456789abcde");
+    // The full span is the string itself.
+    assert_eq!(cx_substring(&mut iso, p, 0, 36), p);
+    assert_eq!(cx_substring(&mut iso, s, 0, 13), s);
+    // A slice of a slice points at the SEQ parent, at the summed offset.
+    let long = cx_substring(&mut iso, p, 1, 35);
+    let s3 = cx_substring(&mut iso, long, 2, 30);
+    assert_eq!(kinds::cell_kind(s3), kinds::SLICED.get());
+    assert_eq!(text(s3), "3456789abcdefghijklmnopqrstu");
+    assert_eq!(slice_parent(s3), Some((p, 3)));
+    // A rope parent is flattened first; the slice points at its flat SEQ part.
+    let rt: &Runtime = &iso.rt;
+    let w = string::new_string_utf16(rt, &[0x3b1; 20]);
+    let r = cat(rt, p, w);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let s4 = cx_substring(&mut iso, r, 30, 45);
+    assert_eq!(kinds::cell_kind(s4), kinds::SLICED.get());
+    let mut want: Vec<u16> = "uvwxyz".encode_utf16().collect();
+    want.extend([0x3b1; 9]);
+    assert!(string::equals_text(s4, JsStr::Utf16(&want)));
+    let (parent, off) = slice_parent(s4).unwrap();
+    assert!(string::is_seq(parent) && off == 30);
+    // A short substring of a UTF-16 parent that fits Latin-1 is a Latin-1 copy.
+    let s5 = cx_substring(&mut iso, r, 30, 36);
+    assert_eq!(kinds::cell_kind(s5), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(s5), "uvwxyz");
+    // An atom parent (a THIN rope forwards to it) slices like any SEQ string.
+    let rt: &Runtime = &iso.rt;
+    let k = atoms::atomize(rt, r);
+    let s6 = cx_substring(&mut iso, r, 0, 20);
+    assert_eq!(slice_parent(s6), Some((k, 0)));
+    assert_eq!(text(s6), "0123456789abcdefghij");
+    iso.collect_garbage();
+    assert_eq!(text(s3), "3456789abcdefghijklmnopqrstu");
+    assert!(string::equals_text(s4, JsStr::Utf16(&want)));
+    atoms::verify(&iso.rt).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "substring 5..37 of 36 units")]
+fn cx_substring_panics_on_a_range_past_the_end() {
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let p = string::new_string(&iso.rt, "0123456789abcdefghijklmnopqrstuvwxyz");
+    cx_substring(&mut iso, p, 5, 37);
+}
+
+/// Overwrites 256 KiB of stack below the caller (rule 35).
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// Runs `made` with 64 KiB of zeros between its frames and the caller's.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> R {
+    let mut pad = [0u8; 64 << 10];
+    std::hint::black_box(&mut pad);
+    let r = made();
+    std::hint::black_box(&mut pad);
+    r
+}
+
+/// A collection (minor if `minor`), out of line, so that its frames lie on the zeros of the
+/// caller's scrub.
+#[inline(never)]
+fn gc_now(iso: &crate::Isolate, minor: bool) {
+    if minor {
+        iso.rt.heap.collect_minor();
+    } else {
+        iso.rt.heap.collect();
+    }
+}
+
+/// A collection after a stack scrub in the test's own frame, before and after (rule 35, the
+/// `tests/weakref.rs` form): inlined, so the zeros of the first scrub lie under `gc_now`.
+#[inline(always)]
+fn collect(iso: &crate::Isolate, minor: bool) {
+    scrub_stack();
+    gc_now(iso, minor);
+    scrub_stack();
+}
+
+/// True if the cell of `h` is alive. Read below a pad.
+#[inline(never)]
+fn alive(rt: &Runtime, h: ep9_heap::WeakHandle) -> bool {
+    below_a_pad(|| std::hint::black_box(rt.heap.weak(h)).is_some())
+}
+
+/// Makes a 40-unit parent and a 27-unit slice of it through `Cx::substring`, below a pad;
+/// returns weak handles of both and a strong handle of the slice (its "use").
+#[inline(never)]
+fn make_slice(
+    iso: &mut crate::Isolate,
+) -> (
+    ep9_heap::WeakHandle,
+    ep9_heap::WeakHandle,
+    ep9_heap::GlobalHandle,
+) {
+    below_a_pad(|| {
+        let p = string::new_string(&iso.rt, "retention: the parent of one slice cell.");
+        let s = cx_substring(iso, p, 11, 38);
+        assert_eq!(kinds::cell_kind(s), kinds::SLICED.get());
+        let heap = &iso.rt.heap;
+        (
+            heap.new_weak(val(p)),
+            heap.new_weak(val(s)),
+            heap.new_global(val(s)),
+        )
+    })
+}
+
+/// The text of the string in the strong handle `g`, read below a pad.
+#[inline(never)]
+fn held_text(rt: &Runtime, g: ep9_heap::GlobalHandle) -> String {
+    below_a_pad(|| text(rt.heap.global(g).to_bits()))
+}
+
+#[test]
+fn a_slice_keeps_its_parent_and_a_gc_frees_both_after_its_last_use() {
+    // S0 and S1 (generational, with a minor GC first), with and without GC stress.
+    for (stress, generational) in [(false, false), (true, false), (false, true), (true, true)] {
+        on_big_stack(move || {
+            let mut c = config(Dispatch::DEFAULT, stress);
+            c.heap.generational = generational;
+            let mut iso = isolate(c);
+            let (wp, ws, g) = make_slice(&mut iso);
+            let label = format!("stress={stress} generational={generational}");
+            // The slice is in use: it and its parent survive a minor and a full GC.
+            if generational {
+                collect(&iso, true);
+                assert!(alive(&iso.rt, ws) && alive(&iso.rt, wp), "{label}: minor");
+            }
+            collect(&iso, false);
+            assert!(alive(&iso.rt, ws), "{label}: the slice died while in use");
+            assert!(
+                alive(&iso.rt, wp),
+                "{label}: the parent died under a live slice"
+            );
+            assert_eq!(held_text(&iso.rt, g), "the parent of one slice cel");
+            // After its last use, a GC frees both.
+            iso.rt.heap.drop_global(g);
+            collect(&iso, false);
+            assert!(
+                !alive(&iso.rt, ws),
+                "{label}: the slice outlived its last use"
+            );
+            assert!(
+                !alive(&iso.rt, wp),
+                "{label}: the parent outlived its last slice"
+            );
+            iso.verify_heap().unwrap();
+        });
+    }
+}

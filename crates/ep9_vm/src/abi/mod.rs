@@ -1570,4 +1570,39 @@ impl<'s> Cx<'s> {
         // every result is a multiple of 2^-52 below 1 (exact operations only, H36).
         f64::from_bits((s0 >> 12) | 0x3FF0_0000_0000_0000) - 1.0
     }
+
+    // ---- substrings (M5-P3 STR3, part 2; H19, V10-D44) ----
+
+    /// The substring of `s` from `from` to `to`, in UTF-16 code units (the spec's "the
+    /// substring of S from inclusiveStart to exclusiveEnd", §6.1.4.1), for
+    /// String.prototype.substring, slice and substr. The full span gives `s` itself (also
+    /// for an empty `s`); an empty span of a non-empty `s` gives the empty String; a result of
+    /// 13 or more code units is a SLICED string over the flat form of `s`, O(1) after a
+    /// flatten (H19: the kind rule of the runtime `string::substring`; 13 is a tuning value);
+    /// a shorter one is a copy. A slice keeps all of `s` alive while it lives. A GC point (the
+    /// flatten of a rope, the new cell). Never `Err` today. Panics unless
+    /// `from <= to <= string_len(s)`.
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let (long, short) = iso
+    ///     .with_cx(|cx| {
+    ///         let s = cx.new_string("the substring of S from from to to")?;
+    ///         let long = cx.substring(s, 4, 17)?;
+    ///         let short = cx.substring(s, 0, 3)?;
+    ///         Ok((cx.to_rust_string(long)?, cx.to_rust_string(short)?))
+    ///     })
+    ///     .unwrap();
+    /// assert_eq!((long.as_str(), short.as_str()), ("substring of ", "the"));
+    /// ```
+    pub fn substring(
+        &mut self,
+        s: impl Into<Local<'s, JsString>>,
+        from: usize,
+        to: usize,
+    ) -> JsResult<Local<'s, JsString>> {
+        let s = s.into().bits();
+        Ok(Self::local(string::substring(self.rt(), s, from, to)))
+    }
 }
