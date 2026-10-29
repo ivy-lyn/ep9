@@ -131,16 +131,16 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         } else {
             callee
         };
-        if is_bound(callee) {
-            let u = prepend_bound_args(cx, callee, new_target, &mut args)?; // §10.4.1.2
-            (callee, new_target) = (u.target, u.new_target);
+        // A FUNCTION pays one kind test; a bound function or a callable proxy goes out of line.
+        if !object::is_function(callee) {
+            match construct_other(cx, fp, s, callee, new_target, &mut args)? {
+                Ok(u) => (callee, new_target) = u, // a bound function (§10.4.1.2)
+                Err(r) => return Ok(r),            // a callable proxy (§10.5.13)
+            }
         }
         let Ok(argc) = u32::try_from(args.len()) else {
             return stack_overflow(cx);
         };
-        if !object::is_function(callee) {
-            return construct_proxy(cx, fp, s, callee, argc, &args, new_target);
-        }
         let fi = object::function_info(callee);
         if fi.host.is_some() {
             let r = call::call_host(
@@ -217,7 +217,8 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         let Some(nfp) = nfp else {
             return stack_overflow(cx);
         };
-        (cx.out_fp, cx.out_pc) = (nfp, fi.code);
+        cx.out_fp = nfp;
+        cx.out_pc = fi.code;
         return Ok(UNDEFINED);
     }
     if !is_callable(callee) {
@@ -225,16 +226,15 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let mut this = s.this;
-    if is_bound(callee) {
-        let u = prepend_bound_args(cx, callee, UNDEFINED, &mut args)?; // §10.4.1.1
-        (callee, this) = (u.target, u.this);
+    if !object::is_function(callee) {
+        match call_other(cx, fp, s, callee, this, &mut args)? {
+            Ok(u) => (callee, this) = u, // a bound function (§10.4.1.1)
+            Err(r) => return Ok(r),      // a callable proxy (§10.5.12)
+        }
     }
     let Ok(argc) = u32::try_from(args.len()) else {
         return stack_overflow(cx);
     };
-    if !object::is_function(callee) {
-        return call_proxy(cx, fp, s, callee, this, argc, &args);
-    }
     let fi = object::function_info(callee);
     if fi.host.is_some() {
         let r = call::call_host(
@@ -625,44 +625,66 @@ fn prepend_bound_args(
     Ok(u)
 }
 
-/// The `Call*` of a callable proxy `p` (§10.5.12; M5-P3 PROXY2), after a bound callee's
-/// chain (§10.4.1.1: Call(target, boundThis, boundArgs ++ args)): its `[[Call]]` from Rust
-/// (`call::call_with`, nested, as for a host callee), and the dispatch goes on at the next
-/// instruction. `args` stay rooted in the caller's registers (and the bound callee).
-#[cold]
+/// The `Call*` callee that is not a FUNCTION (M5-P3 PROXY2), out of line so that a FUNCTION
+/// callee pays one kind test. A bound function unwraps to its innermost target, with its
+/// bound arguments put in front of `args` (§10.4.1.1: Call(target, boundThis, boundArgs ++
+/// args)); `Ok` gives that target and its `this` when the target is a FUNCTION. A callable
+/// proxy, or one at the end of the bound chain, is called here (§10.5.12): its `[[Call]]`
+/// from Rust (`call::call_with`, nested, as for a host callee), then the dispatch goes on at
+/// the next instruction, and `Err` gives the result. `args` stay rooted in the caller's
+/// registers (and in the bound callee there).
 #[inline(never)]
-fn call_proxy(
+fn call_other(
     cx: &mut Cx,
     fp: *mut u64,
     s: &CallSite,
-    p: u64,
+    callee: u64,
     this: u64,
-    argc: u32,
-    args: &[u64],
-) -> Res<u64> {
-    let r = call::call_with(cx, p, this, argc, |i| args[i as usize], UNDEFINED)?;
+    args: &mut ArgBuf<u64>,
+) -> Res<Result<(u64, u64), u64>> {
+    let (mut callee, mut this) = (callee, this);
+    if is_bound(callee) {
+        let u = prepend_bound_args(cx, callee, UNDEFINED, args)?;
+        (callee, this) = (u.target, u.this);
+    }
+    if object::is_function(callee) {
+        return Ok(Ok((callee, this)));
+    }
+    let Ok(argc) = u32::try_from(args.len()) else {
+        return stack_overflow(cx);
+    };
+    let r = call::call_with(cx, callee, this, argc, |i| args[i as usize], UNDEFINED)?;
     (cx.out_fp, cx.out_pc) = (fp, s.next_pc);
-    Ok(r)
+    Ok(Err(r))
 }
 
-/// The `Construct*` of a callable proxy `p` (§10.5.13; M5-P3 PROXY2), after a bound
-/// callee's chain (§10.4.1.2: Construct(target, boundArgs ++ args, newTarget == F ? target :
-/// newTarget)): its `[[Construct]]` from Rust (`call::construct_with`, nested), as
-/// [`call_proxy`].
-#[cold]
+/// The `Construct*` callee that is not a FUNCTION, as [`call_other`]: a bound function
+/// unwraps (§10.4.1.2: Construct(target, boundArgs ++ args, newTarget == F ? target :
+/// newTarget)), and `Ok` gives the target and the new.target; a callable proxy is
+/// constructed here (§10.5.13, `call::construct_with`), and `Err` gives the result.
 #[inline(never)]
-fn construct_proxy(
+fn construct_other(
     cx: &mut Cx,
     fp: *mut u64,
     s: &CallSite,
-    p: u64,
-    argc: u32,
-    args: &[u64],
+    callee: u64,
     new_target: u64,
-) -> Res<u64> {
-    let r = call::construct_with(cx, p, argc, |i| args[i as usize], new_target)?;
+    args: &mut ArgBuf<u64>,
+) -> Res<Result<(u64, u64), u64>> {
+    let (mut callee, mut new_target) = (callee, new_target);
+    if is_bound(callee) {
+        let u = prepend_bound_args(cx, callee, new_target, args)?;
+        (callee, new_target) = (u.target, u.new_target);
+    }
+    if object::is_function(callee) {
+        return Ok(Ok((callee, new_target)));
+    }
+    let Ok(argc) = u32::try_from(args.len()) else {
+        return stack_overflow(cx);
+    };
+    let r = call::construct_with(cx, callee, argc, |i| args[i as usize], new_target)?;
     (cx.out_fp, cx.out_pc) = (fp, s.next_pc);
-    Ok(r)
+    Ok(Err(r))
 }
 
 #[inline]
