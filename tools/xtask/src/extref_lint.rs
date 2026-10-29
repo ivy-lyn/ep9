@@ -12,6 +12,10 @@
 //!             name `ExternalRef`: a read or a write that skips the type, such as a native
 //!             word copied from one cell field into another as a bare u64 (the FEEDBACK Call
 //!             key half once copied the FUNCTION +24 word this way, MC-w13-1)
+//!   hand      the encoding offset ([`OFFSETS`]: `DOUBLE_ENCODE_OFFSET`, `NATIVE_WORD_OFFSET`)
+//!             outside the encoding crate ep9_value, frame.rs, external_ref.rs, layout.rs,
+//!             test code and the double-Value allow list [`DOUBLE_VALUE`]: a native word
+//!             made or decoded by hand (`w - DOUBLE_ENCODE_OFFSET`; M5-P3 reviewer A F3)
 //! ```
 //!
 //! | Finding | Example |
@@ -20,7 +24,8 @@
 //! | field | `let w = rd(c, fun::INFO);`; `init(v, k, rd(cell(f), fun::INFO))` |
 //! | import | `use crate::frame::native_of as nw;` (a renamed encoding function); `use crate::object::fun::INFO;` (a bare field name); `use crate::object::fun as f;` (a renamed field or `frame` module); `use crate::layout::*;`; `use crate::frame::native;` |
 //! | macro path | `fun::$f`, `crate::frame::$name` (a protected module, then a metavariable); `$m::INFO` |
-//! | allow | a [`VM_STACK`] entry with no hit in a scanned file (remove it) |
+//! | hand | `w.checked_sub(DOUBLE_ENCODE_OFFSET)` (the FEEDBACK Call key read of `facts_export.rs` until M5-P3 fixer round 2); `(w - layout::NATIVE_WORD_OFFSET) as usize`; `use ep9_value::encoding::*;` |
+//! | allow | a [`VM_STACK`] or [`DOUBLE_VALUE`] entry with no hit in a scanned file (remove it) |
 //!
 //! - Allowed without a finding: `crates/ep9_vm/src/frame.rs` (the encoding and the VM stack),
 //!   `crates/ep9_vm/src/external_ref.rs` (the type), `crates/ep9_vm/src/layout.rs` for fields
@@ -31,9 +36,9 @@
 //!   function, not a line, so it stays true when lines move; `-v` prints each allowed use with
 //!   its line.
 //! - Known gaps: a statement that names `ExternalRef` and also copies a bare field word; a
-//!   raw offset (`rd(c, 24)`) in place of the field name; a native word made by hand
-//!   (`addr + DOUBLE_ENCODE_OFFSET`); a macro path whose module and field both come from
-//!   metavariables (`$m::$f`). Review and the H25 inventory cover them.
+//!   raw offset (`rd(c, 24)`) in place of the field name; the offset as a literal (`1 << 49`)
+//!   in place of its name; a macro path whose module and field both come from metavariables
+//!   (`$m::$f`). Review and the H25 inventory cover them.
 //! - Test code is an item whose `cfg` is false in every build without `test` (`test`,
 //!   `all(test, ..)`); `any(test, feature = "x")` compiles in production and is checked.
 //!
@@ -72,6 +77,24 @@ pub(crate) const FIELDS: &[(&str, &str)] = &[
     ("layout", "FUNCTION_INFO"),
     ("layout", "CONTEXT_SCOPE"),
     ("layout", "FEEDBACK_INFO"),
+];
+
+/// The native-word offset, by its two names (`ep9_value::encoding` and the `ep9_vm::layout`
+/// export): a native word is `address + offset` (`frame::native`). A double Value is the
+/// same sum, so [`DOUBLE_VALUE`] names the code that boxes or unboxes a double with it.
+pub(crate) const OFFSETS: &[&str] = &["DOUBLE_ENCODE_OFFSET", "NATIVE_WORD_OFFSET"];
+
+/// The Value encoding crate: it defines the offset and boxes every double with it.
+const VALUE_CRATE: &str = "crates/ep9_value/src/";
+
+/// The functions (file, name) that use [`OFFSETS`] on a double Value, not on a native word:
+/// the double of a number Value (`interp/ops.rs` `number`, `profile.rs` `keyed_key`) and the
+/// Value of a DOUBLE element (`object.rs` `double_value`). Read at the M5-P3 fixer round 2
+/// head with this lint (`-v` lists the lines).
+pub(crate) const DOUBLE_VALUE: &[(&str, &str)] = &[
+    ("crates/ep9_vm/src/interp/ops.rs", "number"),
+    ("crates/ep9_vm/src/profile.rs", "keyed_key"),
+    ("crates/ep9_vm/src/object.rs", "double_value"),
 ];
 
 /// The encoding and the VM stack frame code.
@@ -203,13 +226,14 @@ fn crate_src_dirs(root: &Path) -> Result<Vec<String>, String> {
 // ---- results --------------------------------------------------------------------------------
 
 const WHY_STACK: &str = "VM stack";
+const WHY_DOUBLE: &str = "double Value";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Finding {
     /// Path from the root, with `/`.
     pub(crate) file: String,
     pub(crate) line: usize,
-    /// `encoding`, `field`, `import` or `allow`.
+    /// `encoding`, `field`, `hand`, `import` or `allow`.
     pub(crate) rule: &'static str,
     pub(crate) msg: String,
 }
@@ -268,27 +292,33 @@ pub(crate) fn run(root: &Path, paths: &[String]) -> Result<Report, String> {
     Ok(report)
 }
 
-/// A [`VM_STACK`] entry of a scanned file that no hit used is a finding: the list stays the
-/// list of the code that needs it.
+/// A [`VM_STACK`] or [`DOUBLE_VALUE`] entry of a scanned file that no hit used is a finding:
+/// each list stays the list of the code that needs it.
 fn unused_allows(scanned: &[String], report: &mut Report) {
-    for (file, item) in VM_STACK {
-        if !scanned.iter().any(|s| s == file) {
-            continue;
-        }
-        let used = report
-            .allowed
-            .iter()
-            .any(|a| a.file == *file && a.item == *item && a.why == WHY_STACK);
-        if !used {
-            report.findings.push(Finding {
-                file: file.to_string(),
-                line: 1,
-                rule: "allow",
-                msg: format!(
-                    "the VM stack allow-list entry `{item}` has no encoding use in this file: \
-                     remove it from extref_lint.rs VM_STACK"
-                ),
-            });
+    let lists = [
+        (VM_STACK, WHY_STACK, "VM_STACK", "encoding"),
+        (DOUBLE_VALUE, WHY_DOUBLE, "DOUBLE_VALUE", "offset"),
+    ];
+    for (list, why, name, what) in lists {
+        for (file, item) in list {
+            if !scanned.iter().any(|s| s == file) {
+                continue;
+            }
+            let used = report
+                .allowed
+                .iter()
+                .any(|a| a.file == *file && a.item == *item && a.why == why);
+            if !used {
+                report.findings.push(Finding {
+                    file: file.to_string(),
+                    line: 1,
+                    rule: "allow",
+                    msg: format!(
+                        "the {why} allow-list entry `{item}` has no {what} use in this file: \
+                         remove it from extref_lint.rs {name}"
+                    ),
+                });
+            }
         }
     }
 }
@@ -360,6 +390,9 @@ struct Regions {
     stmts: Vec<(Range, ())>,
     /// `use` findings: (line, rule message).
     imports: Vec<(usize, String)>,
+    /// Lines of a glob import of `encoding` (`ep9_value::encoding::*`): a finding outside
+    /// [`VALUE_CRATE`], because it hides the [`OFFSETS`] names.
+    encoding_globs: Vec<usize>,
 }
 
 fn range_of(s: proc_macro2::Span) -> Range {
@@ -491,6 +524,7 @@ impl Regions {
             syn::UseTree::Rename(r) => {
                 let name = r.ident.to_string();
                 if ENCODING.contains(&name.as_str())
+                    || OFFSETS.contains(&name.as_str())
                     || (parent == Some("frame") && name == "native")
                 {
                     self.imports.push((
@@ -524,6 +558,9 @@ impl Regions {
                 self.field_import(parent, &name, line);
             }
             syn::UseTree::Glob(_) => {
+                if parent == Some("encoding") {
+                    self.encoding_globs.push(line);
+                }
                 if let Some(p) = parent
                     && (FIELDS.iter().any(|(m, _)| *m == p) || p == "frame")
                 {
@@ -593,6 +630,8 @@ fn flatten(ts: TokenStream, out: &mut Vec<Tok>) {
 enum Kind {
     Encoding,
     Field,
+    /// An [`OFFSETS`] name.
+    Hand,
 }
 
 /// Lints one file's source; `rel` is its path from the root, with `/`.
@@ -643,6 +682,10 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
             hits.push((Kind::Encoding, name.clone(), *at));
             continue;
         }
+        if OFFSETS.contains(&name.as_str()) {
+            hits.push((Kind::Hand, name.clone(), *at));
+            continue;
+        }
         if i >= 2
             && let (Tok::Ident(head, _), Tok::Colon2) = (&toks[i - 2], &toks[i - 1])
         {
@@ -655,7 +698,16 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
     }
 
     let test_file = is_test_file(rel);
-    for (line, msg) in &rg.imports {
+    let value_crate = rel.starts_with(VALUE_CRATE);
+    let globs = rg.encoding_globs.iter().filter(|_| !value_crate);
+    let globs = globs.map(|l| {
+        (
+            *l,
+            "a glob import of `encoding` hides the offset names".into(),
+        )
+    });
+    let imports: Vec<(usize, String)> = rg.imports.iter().cloned().chain(globs).collect();
+    for (line, msg) in &imports {
         if !test_file
             && !rg
                 .tests
@@ -677,6 +729,9 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
         if test_file || innermost(&rg.tests, at).is_some() {
             report.in_tests += 1;
             continue;
+        }
+        if kind == Kind::Hand && value_crate {
+            continue; // the Value encoding itself
         }
         let item = innermost(&rg.items, at).map(|(_, n)| n.clone());
         let allowed = |why: &'static str, item: Option<String>, report: &mut Report| {
@@ -704,6 +759,27 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
                         msg: format!(
                             "`{name}` outside ExternalRef and the VM stack code{}: a heap-cell \
                              word goes through `ExternalRef::new` / `ExternalRef::from_word` (H25)",
+                            item.map(|i| format!(" (in `{i}`)")).unwrap_or_default()
+                        ),
+                    });
+                }
+            }
+            Kind::Hand => {
+                if rel == FRAME_FILE || rel == TYPE_FILE || rel == LAYOUT_FILE {
+                    allowed("the encoding, the type or the layout export", item, report);
+                } else if let Some(it) = &item
+                    && DOUBLE_VALUE.contains(&(rel, it.as_str()))
+                {
+                    allowed(WHY_DOUBLE, item, report);
+                } else {
+                    report.findings.push(Finding {
+                        file: rel.into(),
+                        line: at.line,
+                        rule: "hand",
+                        msg: format!(
+                            "`{name}` outside the encoding and ExternalRef{}: a native word is \
+                             made by `ExternalRef::new` and decoded by `ExternalRef::get` or \
+                             `ExternalRef::addr` (H25), never by hand",
                             item.map(|i| format!(" (in `{i}`)")).unwrap_or_default()
                         ),
                     });
@@ -945,6 +1021,56 @@ fn d(c: CellPtr, fi: &FunctionInfo) { init(c, fun::INFO, native_of(fi)); }
         assert_eq!(lint(VM, lay).0, [(1, "field")]);
     }
 
+    /// M5-P3 reviewer A F3: a native word decoded (or made) by hand with the offset, the form
+    /// `facts_export.rs` used for the FEEDBACK Call key half (reviewer A's fixture extref-fx);
+    /// an import that hides the offset names. The encoding files, the Value crate and the
+    /// double-Value functions keep the offset.
+    #[test]
+    fn a_hand_made_or_decoded_native_word_fails() {
+        let src = "\
+use ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+fn native_address(w: u64) -> Option<usize> {
+    let addr = w.checked_sub(DOUBLE_ENCODE_OFFSET)?;
+    (addr < 1 << 49).then_some(addr as usize)
+}
+fn info(w: u64) -> *const FunctionInfo {
+    (w - crate::layout::NATIVE_WORD_OFFSET) as usize as *const FunctionInfo
+}
+fn word(a: usize) -> u64 { a as u64 + ep9_value::encoding::DOUBLE_ENCODE_OFFSET }
+use ep9_value::encoding::DOUBLE_ENCODE_OFFSET as OFF;
+use ep9_value::encoding::*;
+";
+        let (f, _) = lint("crates/ep9_vm/src/facts_export.rs", src);
+        assert_eq!(
+            f,
+            [
+                (3, "hand"),
+                (7, "hand"),
+                (9, "hand"),
+                (10, "import"),
+                (11, "import")
+            ]
+        );
+        let ok = "pub fn native(a: usize) -> u64 { a as u64 + DOUBLE_ENCODE_OFFSET }";
+        assert_eq!(lint("crates/ep9_vm/src/frame.rs", ok).0, []);
+        assert_eq!(lint("crates/ep9_vm/src/external_ref.rs", ok).0, []);
+        let lay = "pub const NATIVE_WORD_OFFSET: u64 = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;";
+        assert_eq!(lint("crates/ep9_vm/src/layout.rs", lay).0, []);
+        let (f, r) = lint(
+            "crates/ep9_value/src/value.rs",
+            "use encoding::*;\n".to_owned().as_str(),
+        );
+        assert_eq!((f, r.allowed.len()), (vec![], 0));
+        let (f, r) = lint("crates/ep9_value/src/value.rs", ok);
+        assert_eq!((f, r.allowed.len()), (vec![], 0));
+        let dbl =
+            "fn number(b: u64) -> f64 { f64::from_bits(b.wrapping_sub(DOUBLE_ENCODE_OFFSET)) }";
+        let (f, r) = lint("crates/ep9_vm/src/interp/ops.rs", dbl);
+        assert_eq!((f, r.allowed[0].why), (vec![], "double Value"));
+        // The same function in another file is not on the list.
+        assert_eq!(lint(VM, dbl).0, [(1, "hand")]);
+    }
+
     #[test]
     fn a_file_that_does_not_parse_is_an_error() {
         let mut r = Report::default();
@@ -952,10 +1078,10 @@ fn d(c: CellPtr, fi: &FunctionInfo) { init(c, fun::INFO, native_of(fi)); }
         assert!(e.starts_with("crates/ep9_vm/src/fixture.rs:1:"), "{e}");
     }
 
-    /// Each VM stack entry is a (file, name) pair of a real VM file.
+    /// Each VM stack and double-Value entry is a (file, name) pair of a real VM file.
     #[test]
     fn the_vm_stack_list_is_vm_files() {
-        for (file, item) in VM_STACK {
+        for (file, item) in VM_STACK.iter().chain(super::DOUBLE_VALUE) {
             assert!(file.starts_with("crates/ep9_vm/src/"), "{file}");
             assert!(!item.is_empty());
         }

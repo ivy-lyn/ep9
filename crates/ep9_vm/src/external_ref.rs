@@ -20,6 +20,8 @@
 
 use core::marker::PhantomData;
 
+use ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+
 /// A native pointer to a `T` as it is stored in a heap cell word.
 #[repr(transparent)]
 pub(crate) struct ExternalRef<T> {
@@ -70,6 +72,17 @@ impl<T> ExternalRef<T> {
             _t: PhantomData,
         }
     }
+
+    /// The address the word names if it is a native word (`frame::native_addr`), else
+    /// `None`: for a word that may hold another Value, such as the FEEDBACK Call key half
+    /// (the hole, undefined or a cell; `facts_export.rs`). Not a pointer read.
+    #[inline(always)]
+    pub(crate) fn addr(self) -> Option<usize> {
+        let native = DOUBLE_ENCODE_OFFSET..DOUBLE_ENCODE_OFFSET << 1;
+        native
+            .contains(&self.word)
+            .then(|| crate::frame::native_addr(self.word))
+    }
 }
 
 #[cfg(test)]
@@ -91,5 +104,25 @@ mod tests {
         assert_eq!(back, p);
         // SAFETY: `back` is `p`, which points at the live local `x`.
         assert_eq!(unsafe { *back }, 7);
+    }
+
+    /// `addr` gives the address of a native word and `None` for any other Value (M5-P3
+    /// reviewer A F3: the FEEDBACK Call key read of `facts_export.rs` goes through it).
+    #[test]
+    fn addr_names_a_native_word_only() {
+        let x = 7u64;
+        let p: *const u64 = &x;
+        assert_eq!(ExternalRef::new(p).addr(), Some(p.addr()));
+        // Undefined, the hole, null, an int32, a cell-shaped word, a double Value, 0 and all ones.
+        let double = 1.5f64.to_bits() + super::DOUBLE_ENCODE_OFFSET;
+        let words = [
+            frame::UNDEFINED,
+            frame::HOLE,
+            frame::NULL,
+            frame::int32_bits(3),
+        ];
+        for w in words.into_iter().chain([0x1_0000, double, 0, u64::MAX]) {
+            assert_eq!(ExternalRef::<u64>::from_word(w).addr(), None, "{w:#x}");
+        }
     }
 }

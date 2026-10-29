@@ -126,11 +126,11 @@ use ep9_facts::{
     PropertyCase, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TargetFacts, TypeSet,
     UnitHash,
 };
-use ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
 
 use crate::Isolate;
 use crate::atoms::Atom;
 use crate::builtins::{self, IntrinsicId};
+use crate::external_ref::ExternalRef;
 use crate::feedback;
 use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, State, hk, smi};
@@ -340,10 +340,10 @@ fn known<T>(bits: Option<T>) -> Option<T> {
 }
 
 /// The address of the FunctionInfo that the native word `w` names, if `w` is a native word
-/// (`frame::native`: an address below 2^49 plus the double offset). Not a pointer read.
+/// (`ExternalRef::addr`, the H25 read of the FEEDBACK Call key half: an address below 2^49
+/// plus the offset). Not a pointer read.
 fn native_address(w: u64) -> Option<usize> {
-    let addr = w.checked_sub(DOUBLE_ENCODE_OFFSET)?;
-    (addr < 1 << 49).then_some(addr as usize)
+    ExternalRef::<FunctionInfo>::from_word(w).addr()
 }
 
 /// One export: the runtime, the content hashes of the units made so far, by unit index, the
