@@ -249,8 +249,8 @@ fn create_fast(rt: &Runtime, f: FrameRef, s: u64, mapped: bool, map: &[Option<u3
     ];
     let first = obj::FIXED + 8 * argsf::FIXED;
     for (i, v) in fields.into_iter().enumerate() {
-        // The field store hook of `props::field_set` (C-02 representation and const bits),
-        // so this store counts as the store of an add.
+        // The field store hook of `props::field_set` (C-02 representation and const bits):
+        // it widens the field to `v` and clears const, as a second store (safe for a first store).
         crate::field_rep::before_field_store(rt, s, i, v);
         init(o, first + 8 * i, v);
     }

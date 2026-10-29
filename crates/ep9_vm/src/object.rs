@@ -82,7 +82,8 @@ pub(crate) use crate::string::{concat, new_string, new_string_utf16, str_len};
 pub(crate) mod obj {
     /// SLOTS (fast mode, out-of-line fields), PROPS (dictionary mode) or undefined.
     pub const SLOTS: usize = 8;
-    /// ELEMENTS or undefined (v0: arrays only).
+    /// ELEMENTS (or ELEMENTS_DOUBLE, ELEMENTS_DICT) or undefined: an Array, and since M5-P1
+    /// ELEM1 a JS object of an `elements::plain_elements_kind` kind that got an index key.
     pub const ELEMENTS: usize = 16;
     /// The first fixed field; the in-object slots follow the fixed fields.
     pub const FIXED: usize = 24;

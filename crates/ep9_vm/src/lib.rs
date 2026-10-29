@@ -50,11 +50,11 @@
 //! ([`ExecOptions`], [`Isolate::new_with`] and [`build_info`], C-23). Filled in M5-P1:
 //! deopt.rs (the deopt core and its side table, SPIKEC-5), fuse.rs (the fuse registry, FR0;
 //! hook `shape::note_change`), elements.rs (elements kinds step 1, ELEM1; M5-P2 ELEM2 adds
-//! DICTIONARY). Month-5 stubs (each marked on its first line) that change nothing until their
-//! owners fill them: slack.rs (slack tracking, M5-P2 SLACK), field_rep.rs (field
-//! representation and const bits, M5-P2 CONSTREP), external_ref.rs (`ExternalRef<T>`, M5-P3
-//! M1A-CODE). Their hooks: `object::new_object` and `construct_ic::fast` -> slack, `props`
-//! field stores -> field_rep; each is an inline call that returns today's value.
+//! DICTIONARY). Filled in M5-P2: slack.rs (the in-object capacity of `new F`, SLACK; hook
+//! `call::ordinary_create_from_constructor` -> `slack::instance_capacity`), field_rep.rs (field
+//! representation and const bits, CONSTREP; hooks in the `props` field stores and the store
+//! IC hits). The month-5 stub left (marked on its first line) changes nothing until its owner
+//! fills it: external_ref.rs (`ExternalRef<T>`, M5-P3 M1A-CODE).
 //!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.

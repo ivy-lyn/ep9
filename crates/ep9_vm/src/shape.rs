@@ -35,8 +35,8 @@
 //!   shape, a new prototype's root); only [`with_elements_kind`] changes it, and the roots and
 //!   dictionary shapes of a PROTO_INFO are kept per elements kind.
 //! - **flags** (int32): [`flag`]. A fast shape is always extensible; a non-extensible object
-//!   is in dictionary mode (OM-10). OBJECT_LAYOUT 5: bits 4-7 of a root shape hold the slack
-//!   counter ([`flag::SLACK_SHIFT`]; M5-P2 SLACK).
+//!   is in dictionary mode (OM-10). OBJECT_LAYOUT 5: bits 4-7 ([`flag::SLACK_SHIFT`]) are
+//!   reserved and unused since M5-P2: SLACK reads the count from the bytecode (`slack.rs`).
 //! - **details** (int32, [`Details`]): attributes in bits 0-3 (writable, enumerable,
 //!   configurable, [`ACCESSOR`]), representation in bits 4-6 and const in bit 7 (OBJECT_LAYOUT
 //!   5 names the values, [`rep`] and [`DETAILS_CONST`]; M5-P2 CONSTREP writes them, the rules
@@ -167,13 +167,14 @@ pub(crate) mod flag {
     /// Not in the transition tree and used by one object only (prototype mode): no parent,
     /// no transitions. A change makes a new unique shape.
     pub const UNIQUE: i32 = 8;
-    /// OBJECT_LAYOUT 5: bits 4-7 of a root shape's flags hold the slack counter (H17 slack row;
-    /// M5-P2 SLACK): instances made before the root shape's in-object capacity is fixed. 0
-    /// until SLACK writes it.
-    #[allow(dead_code)] // M5-P2 SLACK
+    /// OBJECT_LAYOUT 5: bits 4-7 of a shape's flags, declared for a slack counter (H17 slack
+    /// row). Reserved and unused since M5-P2: SLACK reads the count from the bytecode
+    /// (`slack.rs`), and `shape::add` copies flags to children, so a root counter would reach
+    /// them. Always 0.
+    #[allow(dead_code)] // reserved
     pub const SLACK_SHIFT: u32 = 4;
-    /// OBJECT_LAYOUT 5: the slack counter bits.
-    #[allow(dead_code)] // M5-P2 SLACK
+    /// OBJECT_LAYOUT 5: the reserved bits 4-7.
+    #[allow(dead_code)] // reserved
     pub const SLACK_MASK: i32 = 0xF << SLACK_SHIFT;
 }
 

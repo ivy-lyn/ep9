@@ -253,9 +253,9 @@ pub(crate) mod hk {
     /// IC_LAYOUT 3 (M5-P0; V10-D6, MODES-D19): an array-literal allocation site: +16 the int32
     /// elements kind the site makes (`elements::kind`), +24 the result shape (weak), +32 an
     /// int32 count. The Literal slot of the site and every array made there (ARRAY +32,
-    /// `object::arr::ALLOC_SITE`) hold it; one-way generalization; only IC code writes it.
-    /// M5-P2 ELEM2 builds it.
-    #[allow(dead_code)] // M5-P2 ELEM2
+    /// `object::arr::ALLOC_SITE`) hold it; one-way generalization. The literal-site code
+    /// writes it (`literal_site.rs`; an elements transition generalizes it through ARRAY +32),
+    /// never a record hook, so `ics_only` keeps it. Built in M5-P2 (ELEM2).
     pub const ALLOC_SITE: i32 = 8;
 }
 
