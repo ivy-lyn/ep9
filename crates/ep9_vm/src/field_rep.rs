@@ -138,8 +138,8 @@ pub(crate) fn widen(rt: &Runtime, s: u64, f: usize) {
     }
 }
 
-/// [`widen`] for every field of the fast shape `s`. Not a GC point.
-#[allow(dead_code)] // for direct writers outside CONSTREP's files (the H17 row lists them)
+/// [`widen`] for every field of the fast shape `s`: for direct writers outside CONSTREP's
+/// files (the H17 row lists them; `literal_site::miss_clone`). Not a GC point.
 pub(crate) fn widen_all(rt: &Runtime, s: u64) {
     if shape::is_dictionary(s) {
         return;

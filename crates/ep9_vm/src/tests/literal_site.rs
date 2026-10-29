@@ -426,6 +426,59 @@ fn clone_object_goes_monomorphic_polymorphic_and_megamorphic() {
     );
 }
 
+/// `src = {x: 1}` (a literal: its root shape has 1 in-object slot, so `x` is another field
+/// family than the `x` of a clone result, whose root has 4), then `c = {...src}` twice (a cold
+/// clone, then a hit), then `src.x = "s"` (a second store: the source shape's `x` widens in
+/// place, so the source keeps its shape and the site its case), then `c = {...src}` (a hit);
+/// print c.x.
+fn clone_after_a_source_widening() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+    let site = s.b.feedback_slot(FeedbackSlotKind::CloneObject);
+    let (src, c) = (s.b.new_register(), s.b.new_register());
+    let (kx, k1) = (s.b.string_constant("x"), s.b.number_constant(1.0));
+    let bp = s.b.object_boilerplate(vec![(kx, Some(k1))]);
+    let text = s.b.string_constant("s");
+    s.b.create_object_literal(bp, lit, SHALLOW).star(src);
+    for _ in 0..2 {
+        s.b.clone_object(src, 0, site).star(c);
+    }
+    s.b.lda_constant(text);
+    s.set_named(src, "x");
+    s.b.clone_object(src, 0, site).star(c);
+    s.get_named(c, "x");
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), vec![site, lit])
+}
+
+/// A CloneObject hit copies the source's fields into the result shape with no value check,
+/// so the result shape's fields must allow any value (the H17 rep/const rule: a direct field
+/// writer stores only what the field's bits allow, or widens first). The cold path that
+/// records the case widens them (`field_rep::widen_all`); before that fix the hit stored
+/// "s" into an INT32 field.
+#[test]
+fn a_clone_hit_stores_only_into_fields_that_allow_any_value() {
+    run_checked(clone_after_a_source_widening, &["s"], |iso, slots| {
+        let (key, value) = slot_of(iso, slots[0]);
+        assert!(
+            shape::is_shape(key),
+            "monomorphic: the source kept its shape"
+        );
+        assert_eq!(handler_i32(value, ch::KIND), hk::CLONE);
+        assert_eq!(handler_i32(value, ch::COUNT), 1, "one cold clone, two hits");
+        let result = object::rd(object::cell(value), ch::RESULT);
+        assert_eq!(shape::count(result), 1);
+        assert_ne!(shape::field_layout(key).0, shape::field_layout(result).0);
+        assert_eq!(
+            shape::details_at(key, 0).rep(),
+            shape::rep::ANY,
+            "the source widened"
+        );
+        assert_eq!(shape::details_at(result, 0).rep(), shape::rep::ANY);
+    });
+}
+
 /// `{...src}` with src's properties all in the source's out-of-line storage past its
 /// in-object slots: `src = {}` (4 in-object slots) gets 4 + 2 keys; the result (4 in-object
 /// slots too) cannot hold 6, so the site records no case.

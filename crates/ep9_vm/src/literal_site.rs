@@ -871,6 +871,11 @@ pub(crate) fn miss_clone(cx: &mut Cx, fp: *mut u64, pc: *const u8, source: u64, 
     if key == HOLE && value == ic::MEGA {
         return;
     }
+    // A hit copies the source's fields into a result of shape `rs` with no value check
+    // (`fast_clone`), and the source's field bits may widen later in place: the result's
+    // fields allow any value (the H17 rep/const rule for a direct field writer). Not a GC
+    // point.
+    crate::field_rep::widen_all(rt, rs);
     // The case of `ss` already: give its handler the new result shape and the count.
     if let Some(h) = clone_handler(key, value, source_shape_id(source)) {
         let c = cell(h);
