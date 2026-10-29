@@ -368,7 +368,9 @@ print(JSON.stringify([new Number(1), new String('s'), new Boolean(false)]));
 
 /// Function.prototype.toString (§20.2.3.5 step 4) of a callable proxy asks the proxy for
 /// nothing: no trap runs, and the name part is empty (M5-P3 PROXY2 need; node v24.22.1
-/// prints `function () { [native code] }` and an empty trap log).
+/// prints `function () { [native code] }` and an empty trap log). So a throwing
+/// `getOwnPropertyDescriptor` trap and a revoked callable proxy give the same text (M5-P3
+/// reviewer A F1: before eecc049 the first threw "boom" and the second a TypeError).
 #[test]
 fn function_to_string_of_a_proxy_runs_no_trap() {
     assert_eq!(
@@ -378,7 +380,16 @@ var h = {};
 ['get', 'getOwnPropertyDescriptor', 'has', 'ownKeys', 'getPrototypeOf'].forEach(function (n) { h[n] = function (t, k) { log.push(n + ':' + String(k)); return Reflect[n].apply(null, arguments); }; });
 var p = new Proxy(function g(a) { return a; }, h);
 print(Function.prototype.toString.call(p), '|', log.join(' '));
+var boom = new Proxy(function h() {}, { getOwnPropertyDescriptor: function () { throw new Error('boom'); } });
+print(t(function () { return Function.prototype.toString.call(boom); }));
+var r = Proxy.revocable(function h() {}, {});
+r.revoke();
+print(t(function () { return Function.prototype.toString.call(r.proxy); }));
 "#)),
-        lines(&["function () { [native code] } | "])
+        lines(&[
+            "function () { [native code] } | ",
+            "function () { [native code] }",
+            "function () { [native code] }"
+        ])
     );
 }
