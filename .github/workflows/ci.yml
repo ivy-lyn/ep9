@@ -467,9 +467,9 @@ jobs:
         shards: [6]
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.target.os }}
-    # Plan v10 section 9.2 and V10-D19: 75 for the first S1 run (S1 GC-stress is about 1.5-1.85x
-    # S0; the last S0 max of one shard was 21 min), then 1.5x the measured max (rule 25).
-    timeout-minutes: 75
+    # Plan v10 section 9.2 and V10-D19: 1.5x the measured max of the first S1 run (26.6 min,
+    # windows-x64 6/6, run 40872022094), so 40 (rule 25).
+    timeout-minutes: 40
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
