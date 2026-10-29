@@ -479,6 +479,79 @@ fn a_clone_hit_stores_only_into_fields_that_allow_any_value() {
     });
 }
 
+/// Two source shapes at one CloneObject site (polymorphic): `s1 = {x: 1}` (a literal: root
+/// with 1 in-object slot) and `s2 = {}; s2.x = 2` (root with 4, the same shape as a clone
+/// result). Twice: `c = {...s1}; c = {...s2}`. Then `s1.x = "s"` (a second store widens the
+/// source's family in place: the case stays) and `c = {...s1}` (a hit of the first case).
+/// Then `q = {}; q.x = 7; q.x = 8`: a later object reaches the result shape by its own
+/// transitions. Prints c.x, q.x.
+fn clone_polymorphic_then_widen() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+    let site = s.b.feedback_slot(FeedbackSlotKind::CloneObject);
+    let (s1, s2, c, q) = (
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+    );
+    let (kx, k1) = (s.b.string_constant("x"), s.b.number_constant(1.0));
+    let bp = s.b.object_boilerplate(vec![(kx, Some(k1))]);
+    s.b.create_object_literal(bp, lit, SHALLOW).star(s1);
+    s.b.create_empty_object_literal().star(s2);
+    s.b.lda_smi(2);
+    s.set_named(s2, "x");
+    for _ in 0..2 {
+        s.b.clone_object(s1, 0, site).star(c);
+        s.b.clone_object(s2, 0, site).star(c);
+    }
+    s.lda_str("s");
+    s.set_named(s1, "x");
+    s.b.clone_object(s1, 0, site).star(c);
+    s.get_named(c, "x");
+    s.print_acc();
+    s.b.create_empty_object_literal().star(q);
+    s.b.lda_smi(7);
+    s.set_named(q, "x");
+    s.b.lda_smi(8);
+    s.set_named(q, "x");
+    s.get_named(q, "x");
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), vec![site, lit])
+}
+
+/// Codex M5-P2 r1 constrep 2: every CLONE handler a hit can use is installed by
+/// `literal_site::miss_clone` after `field_rep::widen_all` of its result shape (a new
+/// monomorphic case, a polymorphic case, a new result shape of a known case; a megamorphic
+/// site has no handler, so no hit). The bits only widen, so a polymorphic hit after a source
+/// widening stores into ANY fields, and a later object that reaches the result shape by its
+/// own transitions sees ANY, not const, too.
+#[test]
+fn a_polymorphic_clone_hit_stores_only_into_fields_that_allow_any_value() {
+    run_checked(clone_polymorphic_then_widen, &["s", "8"], |iso, slots| {
+        let (key, value) = slot_of(iso, slots[0]);
+        assert_eq!(key, HOLE, "polymorphic");
+        assert_eq!(kinds::cell_kind(value), kinds::POLY_IC.get());
+        let p = object::cell(value);
+        let mut cases = 0;
+        for i in 0..ic::POLY_CASES {
+            let at = ic::pc::CASES + ic::pc::CASE * i;
+            let (ss, h) = (object::rd(p, at), object::rd(p, at + ic::pc::HANDLER));
+            if ss == UNDEFINED {
+                continue;
+            }
+            cases += 1;
+            assert_eq!(handler_i32(h, ch::KIND), hk::CLONE);
+            assert_eq!(handler_i32(h, ch::COUNT), 1, "one cold clone per case");
+            let rs = object::rd(object::cell(h), ch::RESULT);
+            let d = shape::details_at(rs, 0);
+            assert_eq!((d.rep(), d.is_const()), (shape::rep::ANY, false));
+        }
+        assert_eq!(cases, 2);
+    });
+}
+
 /// `{...src}` with src's properties all in the source's out-of-line storage past its
 /// in-object slots: `src = {}` (4 in-object slots) gets 4 + 2 keys; the result (4 in-object
 /// slots too) cannot hold 6, so the site records no case.
