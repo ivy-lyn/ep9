@@ -1,0 +1,340 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] Apply the ASCII rule of Canonicalize without the u and v
+ flags
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Without u or v, JavaScript's Canonicalize (ECMA-262 22.2.2.7.3)
+uppercases a character but keeps it as it is when its full uppercase
+is not one code unit (U+1F80 -> two units) and when a character at or
+above 128 would become ASCII (U+017F long s -> S, U+0131 dotless i ->
+I). regress used the simple uppercase mapping for literals and
+backreferences, and Unicode simple case folding for classes, \w and
+\W. So /ſ/i matched "s", /[a-z]/i and /\w/i matched the Kelvin
+sign and long s, /\W/i did not, and /ᾀ/i matched U+1F88. V8 and
+the spec say no to each.
+
+canonicalize_legacy implements the spec steps (with a table of the 102
+BMP code points whose full uppercase is not one unit, SpecialCasing
+17.0). Literals, backreferences and classes (closed under it with
+add_icase_code_points_legacy) use it without u or v. With u or v
+nothing changes.
+
+The function equals the Canonicalize of node v24.22.0 (Unicode 17.0)
+for all 65,536 BMP code units, and so do the classes it makes for a
+single character.
+
+Test: tests/legacy_icase.rs.
+---
+ src/parse.rs          |  24 ++++++++--
+ src/unicode.rs        |  99 ++++++++++++++++++++++++++++++++++++++---
+ tests/legacy_icase.rs | 101 ++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 214 insertions(+), 10 deletions(-)
+ create mode 100644 tests/legacy_icase.rs
+
+diff --git a/src/parse.rs b/src/parse.rs
+index 3e9cdc7..65d1a64 100644
+--- a/src/parse.rs
++++ b/src/parse.rs
+@@ -332,6 +332,16 @@ fn codepoints_from_class_positive(ct: CharacterClassType) -> CodePointSet {
+ }
+ 
+ /// Returns code points for a character class, optionally inverted.
++/// The code points that match `cps` case-insensitively: closed under simple case folding
++/// with the `u` or `v` flag, else under the legacy Canonicalize (its ASCII rule).
++fn add_icase_code_points(cps: CodePointSet, unicode: bool) -> CodePointSet {
++    if unicode {
++        unicode::add_icase_code_points(cps)
++    } else {
++        unicode::add_icase_code_points_legacy(cps)
++    }
++}
++
+ fn codepoints_from_class(ct: CharacterClassType, positive: bool) -> CodePointSet {
+     let cps = codepoints_from_class_positive(ct);
+     if positive { cps } else { cps.inverted() }
+@@ -339,11 +349,16 @@ fn codepoints_from_class(ct: CharacterClassType, positive: bool) -> CodePointSet
+ 
+ /// \return a Bracket for a given character escape (positive or negative).
+ /// For icase mode, we expand the positive set first, then invert if needed.
+-fn make_bracket_class(ct: CharacterClassType, positive: bool, icase: bool) -> ir::Node {
++fn make_bracket_class(
++    ct: CharacterClassType,
++    positive: bool,
++    icase: bool,
++    unicode: bool,
++) -> ir::Node {
+     // Get the positive (non-inverted) set, perform any icase expansion, then maybe invert.
+     let mut cps = codepoints_from_class_positive(ct);
+     if icase {
+-        cps = unicode::add_icase_code_points(cps);
++        cps = add_icase_code_points(cps, unicode);
+     }
+     if !positive {
+         cps = cps.inverted();
+@@ -847,7 +862,7 @@ where
+                 Some(']') => {
+                     self.consume(']');
+                     if self.flags.icase {
+-                        result.cps = unicode::add_icase_code_points(result.cps);
++                        result.cps = add_icase_code_points(result.cps, self.flags.unicode);
+                     }
+                     return Ok(ir::Node::Bracket(result));
+                 }
+@@ -1605,6 +1620,7 @@ where
+                     CharacterClassType::Digits,
+                     c == 'd' as u32,
+                     self.flags.icase,
++                    self.flags.unicode,
+                 ))
+             }
+ 
+@@ -1614,6 +1630,7 @@ where
+                     CharacterClassType::Spaces,
+                     c == 's' as u32,
+                     self.flags.icase,
++                    self.flags.unicode,
+                 ))
+             }
+ 
+@@ -1623,6 +1640,7 @@ where
+                     CharacterClassType::Words,
+                     c == 'w' as u32,
+                     self.flags.icase,
++                    self.flags.unicode,
+                 ))
+             }
+ 
+diff --git a/src/unicode.rs b/src/unicode.rs
+index 6d8a6bd..8eef534 100644
+--- a/src/unicode.rs
++++ b/src/unicode.rs
+@@ -144,7 +144,89 @@ pub(crate) fn fold_code_point(cu: u32, unicode: bool) -> u32 {
+     if unicode {
+         return fold(cu);
+     }
+-    uppercase(cu)
++    canonicalize_legacy(cu)
++}
++
++/// The BMP code points whose full uppercase mapping (`toUppercase`, with the unconditional
++/// mappings of SpecialCasing.txt, Unicode 17.0) is not a single UTF-16 code unit. Sorted.
++const UPPERCASE_NOT_ONE_UNIT: [u16; 102] = [
++    0x00DF, 0x0149, 0x01F0, 0x0390, 0x03B0, 0x0587, 0x1E96, 0x1E97, 0x1E98, 0x1E99, 0x1E9A, 0x1F50,
++    0x1F52, 0x1F54, 0x1F56, 0x1F80, 0x1F81, 0x1F82, 0x1F83, 0x1F84, 0x1F85, 0x1F86, 0x1F87, 0x1F88,
++    0x1F89, 0x1F8A, 0x1F8B, 0x1F8C, 0x1F8D, 0x1F8E, 0x1F8F, 0x1F90, 0x1F91, 0x1F92, 0x1F93, 0x1F94,
++    0x1F95, 0x1F96, 0x1F97, 0x1F98, 0x1F99, 0x1F9A, 0x1F9B, 0x1F9C, 0x1F9D, 0x1F9E, 0x1F9F, 0x1FA0,
++    0x1FA1, 0x1FA2, 0x1FA3, 0x1FA4, 0x1FA5, 0x1FA6, 0x1FA7, 0x1FA8, 0x1FA9, 0x1FAA, 0x1FAB, 0x1FAC,
++    0x1FAD, 0x1FAE, 0x1FAF, 0x1FB2, 0x1FB3, 0x1FB4, 0x1FB6, 0x1FB7, 0x1FBC, 0x1FC2, 0x1FC3, 0x1FC4,
++    0x1FC6, 0x1FC7, 0x1FCC, 0x1FD2, 0x1FD3, 0x1FD6, 0x1FD7, 0x1FE2, 0x1FE3, 0x1FE4, 0x1FE6, 0x1FE7,
++    0x1FF2, 0x1FF3, 0x1FF4, 0x1FF6, 0x1FF7, 0x1FFC, 0xFB00, 0xFB01, 0xFB02, 0xFB03, 0xFB04, 0xFB05,
++    0xFB06, 0xFB13, 0xFB14, 0xFB15, 0xFB16, 0xFB17,
++];
++
++/// `Canonicalize` without the `u` and `v` flags ([spec] step 3 on): the uppercase of `cu`,
++/// except that `cu` stays itself when its full uppercase is not one code unit (`ß` -> "SS")
++/// and when a character at or above 128 would become ASCII (`ſ` U+017F -> `S`, `ı` U+0131 ->
++/// `I`), so that a non-ASCII character never matches an ASCII one.
++///
++/// [spec]: https://tc39.es/ecma262/#sec-runtime-semantics-canonicalize-ch
++pub(crate) fn canonicalize_legacy(cu: u32) -> u32 {
++    let upper = uppercase(cu);
++    if upper == cu {
++        return cu;
++    }
++    if cu >= 128 && upper < 128 {
++        return cu;
++    }
++    if let Ok(unit) = u16::try_from(cu) {
++        if UPPERCASE_NOT_ONE_UNIT.binary_search(&unit).is_ok() {
++            return cu;
++        }
++    }
++    upper
++}
++
++/// Calls `f(cp, canonicalize_legacy(cp))` for every code point that `canonicalize_legacy`
++/// changes (they are all in the TO_UPPERCASE table).
++fn for_each_legacy_canonicalization(mut f: impl FnMut(u32, u32)) {
++    for tr in TO_UPPERCASE.iter() {
++        let modulo = tr.predicate_mask() + 1;
++        let mut cp = tr.first();
++        while cp <= tr.last() {
++            let canon = canonicalize_legacy(cp);
++            if canon != cp {
++                f(cp, canon);
++            }
++            cp += modulo;
++        }
++    }
++}
++
++/// The code points that match the code points of `input` without the `u` and `v` flags:
++/// every `ch` such that `canonicalize_legacy(ch)` is `canonicalize_legacy(c)` of some `c` in
++/// `input` (CharacterSetMatcher with `rer.[[IgnoreCase]]`).
++pub fn add_icase_code_points_legacy(input: CodePointSet) -> CodePointSet {
++    // The canonical values of the members that `canonicalize_legacy` changes. The others
++    // are their own canonical value, so `input` holds them.
++    let mut targets = CodePointSet::new();
++    for_each_legacy_canonicalization(|cp, canon| {
++        if input.contains(cp) {
++            targets.add_one(canon);
++        }
++    });
++    let is_canonical_value =
++        |v: u32| targets.contains(v) || (input.contains(v) && canonicalize_legacy(v) == v);
++    let mut result = input.clone();
++    for iv in targets.intervals() {
++        for v in iv.codepoints() {
++            if canonicalize_legacy(v) == v {
++                result.add_one(v);
++            }
++        }
++    }
++    for_each_legacy_canonicalization(|cp, canon| {
++        if is_canonical_value(canon) {
++            result.add_one(cp);
++        }
++    });
++    result
+ }
+ 
+ pub fn fold(cu: u32) -> u32 {
+@@ -300,19 +382,22 @@ pub fn unfold_char(c: u32) -> Vec<u32> {
+     res
+ }
+ 
++/// \return all the characters whose `canonicalize_legacy` is that of `c` (the characters a
++/// literal `c` matches without the `u` and `v` flags). The result always contains `c`.
+ pub(crate) fn unfold_uppercase_char(c: u32) -> Vec<u32> {
+     let mut res = vec![c];
+-    let fcp = uppercase(c);
+-    if fcp != c {
+-        res.push(fcp);
++    let canon = canonicalize_legacy(c);
++    if canon != c && canonicalize_legacy(canon) == canon {
++        res.push(canon);
+     }
++    // Any other `cp` with that canonical value has `uppercase(cp) == canon`: it is in a
++    // range of the table that maps to `canon`.
+     for tr in TO_UPPERCASE.iter() {
+-        if !tr.transformed_to().contains(fcp) {
++        if !tr.transformed_to().contains(canon) {
+             continue;
+         }
+         for cp in tr.transformed_from().codepoints() {
+-            let tcp = tr.apply(cp);
+-            if tcp == fcp {
++            if tr.apply(cp) == canon && canonicalize_legacy(cp) == canon {
+                 res.push(cp);
+             }
+         }
+diff --git a/tests/legacy_icase.rs b/tests/legacy_icase.rs
+new file mode 100644
+index 0000000..e3a6eee
+--- /dev/null
++++ b/tests/legacy_icase.rs
+@@ -0,0 +1,101 @@
++//! Case-insensitive matching without the `u` and `v` flags: the JavaScript Canonicalize
++//! (ECMA-262 §22.2.2.7.3) uppercases a character, but keeps it when its uppercase is not one
++//! code unit, or when a character at or above 128 would become ASCII. So `ſ` (U+017F), `ı`
++//! (U+0131) and the Kelvin sign (U+212A) do not match ASCII letters. With `u` or `v` simple
++//! case folding applies. Expected results: node v24.22.0.
++#![cfg(feature = "utf16")]
++
++use regress::Regex;
++
++/// Whether `pattern` with `flags` matches somewhere in the UTF-16 text `text`.
++fn matches(pattern: &str, flags: &str, text: &str) -> bool {
++    let re = Regex::with_flags(pattern, flags).unwrap();
++    let units: Vec<u16> = text.encode_utf16().collect();
++    if flags.contains('u') {
++        re.find_from_utf16(&units, 0).next().is_some()
++    } else {
++        re.find_from_ucs2(&units, 0).next().is_some()
++    }
++}
++
++#[test]
++fn non_ascii_never_matches_ascii() {
++    // (pattern, text, node's result without u)
++    let cases = [
++        ("\\w", "\u{17f}", false),
++        ("\\w", "\u{212a}", false),
++        ("\\W", "\u{17f}", true),
++        ("\\W", "\u{212a}", true),
++        ("[\\w]", "\u{17f}", false),
++        ("[^\\W]", "\u{212a}", false),
++        ("\\u017f", "s", false),
++        ("\\u017f", "S", false),
++        ("\\u017f", "\u{17f}", true),
++        ("s", "\u{17f}", false),
++        ("\\u0131", "I", false),
++        ("i", "\u{131}", false),
++        ("[a-z]", "\u{212a}", false),
++        ("[a-z]", "\u{17f}", false),
++        ("[^a-z]", "\u{17f}", true),
++        ("k", "\u{212a}", false),
++        (
++            "[\\u00c0-\\u024f]",
++            "The quick brown fox jumps over the lazy dog 1234",
++            false,
++        ),
++        ("(s)\\1", "s\u{17f}", false),
++        ("(s)\\1", "sS", true),
++        ("(\u{17f})\\1", "\u{17f}s", false),
++    ];
++    for (p, t, want) in cases {
++        assert_eq!(matches(p, "i", t), want, "/{p}/i on {t:?}");
++    }
++}
++
++#[test]
++fn uppercase_of_more_than_one_unit_keeps_the_character() {
++    let cases = [
++        ("\\u1f80", "\u{1f88}", false),
++        ("\\u1f88", "\u{1f80}", false),
++        ("\\u1f80", "\u{1f80}", true),
++        ("\\u00df", "\u{1e9e}", false),
++        ("\\u00df", "SS", false),
++        ("[\\u1f80-\\u1f87]", "\u{1f8a}", false),
++        ("(\\u1fb3)\\1", "\u{1fb3}\u{1fbc}", false),
++    ];
++    for (p, t, want) in cases {
++        assert_eq!(matches(p, "i", t), want, "/{p}/i on {t:?}");
++    }
++}
++
++#[test]
++fn other_case_pairs_still_match() {
++    let cases = [
++        ("\\u00e9", "\u{c9}", true),
++        ("\\u00b5", "\u{39c}", true),
++        ("\\u00b5", "\u{3bc}", true),
++        ("[\\u03bc]", "\u{b5}", true),
++        ("[a-z]+", "ABC", true),
++        ("(\\u00e9)\\1", "\u{e9}\u{c9}", true),
++        ("\\u01c5", "\u{1c4}", true),
++        ("\\u01c6", "\u{1c5}", true),
++    ];
++    for (p, t, want) in cases {
++        assert_eq!(matches(p, "i", t), want, "/{p}/i on {t:?}");
++    }
++}
++
++#[test]
++fn unicode_mode_uses_simple_case_folding() {
++    let cases = [
++        ("\\u017f", "s", true),
++        ("\\w", "\u{17f}", true),
++        ("\\W", "\u{17f}", false),
++        ("[a-z]", "\u{212a}", true),
++        ("(s)\\1", "s\u{17f}", true),
++        ("\\u1f80", "\u{1f88}", true),
++    ];
++    for (p, t, want) in cases {
++        assert_eq!(matches(p, "iu", t), want, "/{p}/iu on {t:?}");
++    }
++}

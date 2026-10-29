@@ -1,0 +1,208 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] Add Regex::match_at_limited: one match attempt at one
+ position
+
+JavaScript's sticky flag (y) asks for a match that starts exactly at
+lastIndex. With only find_from_* an embedder must search from lastIndex
+and drop a match that starts later, so a failing sticky exec scans the
+whole rest of the text: a lexer built from sticky regexes becomes
+quadratic.
+
+match_at_limited tries the pattern at one code unit position and
+returns that match or None, with the same Limits as find_limited.
+
+Test: tests/match_at.rs (a failed attempt on a 100,000 unit text takes
+a few steps).
+---
+ src/api.rs                | 23 ++++++++++
+ src/classicalbacktrack.rs | 35 +++++++++++++++
+ tests/match_at.rs         | 92 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 150 insertions(+)
+ create mode 100644 tests/match_at.rs
+
+diff --git a/src/api.rs b/src/api.rs
+index b5a65e6..69fe290 100644
+--- a/src/api.rs
++++ b/src/api.rs
+@@ -602,6 +602,29 @@ impl Regex {
+         }
+     }
+ 
++    /// The match of the regex that starts exactly at code unit `pos` of `text`, or `None`:
++    /// one match attempt, with no search of later positions (the JavaScript sticky `y`
++    /// flag). The steps count against `limits` as in [`Regex::find_limited`]. Returns `Err`
++    /// if the limits stopped the attempt.
++    #[cfg(feature = "utf16")]
++    pub fn match_at_limited(
++        &self,
++        text: Text<'_>,
++        pos: usize,
++        limits: &mut Limits<'_>,
++    ) -> Result<Option<Match>, Stopped> {
++        match text {
++            Text::Utf16(t) => {
++                let input = Utf16Input::new(t, self.cr.flags.unicode);
++                classicalbacktrack::match_at_limited(&self.cr, input, pos, limits)
++            }
++            Text::Ucs2(t) => {
++                let input = Ucs2Input::new(t, self.cr.flags.unicode);
++                classicalbacktrack::match_at_limited(&self.cr, input, pos, limits)
++            }
++        }
++    }
++
+     /// Replaces the first match of the regex in `text` with the replacement string.
+     ///
+     /// The replacement string may contain capture group references in the form `$1`, `$2`, etc.,
+diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
+index d75b10c..dedb29c 100644
+--- a/src/classicalbacktrack.rs
++++ b/src/classicalbacktrack.rs
+@@ -1215,6 +1215,18 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+         }
+     }
+ 
++    /// \return the match that starts at `pos`, trying no other position.
++    #[cfg(feature = "utf16")]
++    fn match_at(&mut self, pos: Input::Position) -> Option<Match> {
++        if !self.matcher.step() {
++            return None;
++        }
++        let end = self
++            .matcher
++            .try_at_pos(self.input, 0, pos, Forward::new())?;
++        Some(self.successful_match(pos, end))
++    }
++
+     /// \return the next match, searching the remaining bytes using the given
+     /// prefix searcher to quickly find the first potential match location.
+     fn next_match_with_prefix_search<PrefixSearch: bytesearch::ByteSearcher>(
+@@ -1314,6 +1326,29 @@ pub(crate) fn find_limited<Input: InputIndexer>(
+     }
+ }
+ 
++/// The match of `re` in `input` that starts at code unit `pos`, with the steps counted
++/// against `limits` (`Regex::match_at_limited`): one attempt, no search.
++#[cfg(feature = "utf16")]
++pub(crate) fn match_at_limited<Input: InputIndexer>(
++    re: &CompiledRegex,
++    input: Input,
++    pos: usize,
++    limits: &mut Limits<'_>,
++) -> Result<Option<Match>, Stopped> {
++    let Some(pos) = input.try_move_right(input.left_end(), pos) else {
++        return Ok(None);
++    };
++    let mut exec = BacktrackExecutor::new(
++        input,
++        MatchAttempter::with_limits(re, input.left_end(), limits),
++    );
++    let found = exec.match_at(pos);
++    match exec.matcher.stopped() {
++        Some(why) => Err(why),
++        None => Ok(found),
++    }
++}
++
+ impl<'r, 't> exec::Executor<'r, 't> for BacktrackExecutor<'r, Utf8Input<'t>> {
+     type AsAscii = BacktrackExecutor<'r, AsciiInput<'t>>;
+ 
+diff --git a/tests/match_at.rs b/tests/match_at.rs
+new file mode 100644
+index 0000000..c06ca07
+--- /dev/null
++++ b/tests/match_at.rs
+@@ -0,0 +1,92 @@
++//! One match attempt at one position (`Regex::match_at_limited`, the JavaScript sticky flag).
++#![cfg(feature = "utf16")]
++
++use regress::{Limits, Regex, Stopped, Text};
++
++fn utf16(s: &str) -> Vec<u16> {
++    s.encode_utf16().collect()
++}
++
++/// The match at `pos` with no limit, as (start, end) and the group ranges.
++fn at(re: &Regex, text: &[u16], unicode: bool, pos: usize) -> Option<Vec<Option<(usize, usize)>>> {
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 1024,
++        poll: &mut never,
++    };
++    let text = if unicode {
++        Text::Utf16(text)
++    } else {
++        Text::Ucs2(text)
++    };
++    let m = re.match_at_limited(text, pos, &mut limits).unwrap()?;
++    Some(m.groups().map(|g| g.map(|r| (r.start, r.end))).collect())
++}
++
++#[test]
++fn only_a_match_that_starts_at_pos() {
++    let re = Regex::new("a(b)?").unwrap();
++    let text = utf16("xab a");
++    assert_eq!(at(&re, &text, false, 0), None);
++    assert_eq!(
++        at(&re, &text, false, 1),
++        Some(vec![Some((1, 3)), Some((2, 3))])
++    );
++    assert_eq!(at(&re, &text, false, 2), None);
++    assert_eq!(at(&re, &text, false, 4), Some(vec![Some((4, 5)), None]));
++    assert_eq!(at(&re, &text, false, 5), None, "at the end");
++    assert_eq!(at(&re, &text, false, 6), None, "past the end");
++
++    // An empty match at the end, and assertions that look at the left context.
++    let re = Regex::new("(?<=b)$").unwrap();
++    assert_eq!(at(&re, &utf16("ab"), false, 2), Some(vec![Some((2, 2))]));
++    let re = Regex::new("^a").unwrap();
++    assert_eq!(at(&re, &utf16("aa"), false, 1), None);
++    let re = Regex::with_flags("^a", "m").unwrap();
++    assert_eq!(at(&re, &utf16("\na"), false, 1), Some(vec![Some((1, 2))]));
++
++    // UTF-16: a surrogate pair is one character.
++    let re = Regex::with_flags(".", "u").unwrap();
++    let text = utf16("\u{1F600}x");
++    assert_eq!(at(&re, &text, true, 0), Some(vec![Some((0, 2))]));
++    assert_eq!(at(&re, &text, true, 2), Some(vec![Some((2, 3))]));
++}
++
++/// A failed attempt does not search the rest of the text: its steps do not grow with the
++/// text (a sticky lexer that fails at each position stays linear).
++#[test]
++fn a_failed_attempt_is_one_attempt() {
++    let re = Regex::new("x|y+z").unwrap();
++    let text = vec![u16::from(b'a'); 100_000];
++    let mut polls = 0u32;
++    let mut count = || {
++        polls += 1;
++        false
++    };
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 1,
++        poll: &mut count,
++    };
++    assert!(
++        re.match_at_limited(Text::Ucs2(&text), 0, &mut limits)
++            .unwrap()
++            .is_none()
++    );
++    assert!(polls < 10, "{polls} polls");
++}
++
++#[test]
++fn the_limits_apply() {
++    let re = Regex::new("(a+)+b").unwrap();
++    let text = utf16(&"a".repeat(30));
++    let mut stop = || true;
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 100,
++        poll: &mut stop,
++    };
++    let r = re.match_at_limited(Text::Ucs2(&text), 0, &mut limits);
++    assert_eq!(r.unwrap_err(), Stopped::Interrupted);
++}

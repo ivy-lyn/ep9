@@ -1,0 +1,1036 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] Add Latin-1 text and code-unit start predicates for
+ UTF-16 searches
+
+With the utf16 feature every search tried every position: the start
+predicates (a literal prefix, a first-byte set, the anchored start) are
+in UTF-8 bytes, so they were turned off for all inputs, and each failed
+position ran the full matcher. An embedder whose strings are Latin-1
+(one byte per UTF-16 code unit, as in JavaScript engines) also had to
+widen each subject to UTF-16 first.
+
+- Latin1Input / Text::Latin1 / find_from_latin1: a UTF-16 string whose
+  code units are all below 256, one byte per unit, matched as UCS-2 or
+  UTF-16 (case folding as Utf16CharProperties). Its code units are
+  bytes, so the byte searchers work on it.
+- CompiledRegex::unit_pred: the start predicate in code units: a
+  prefix of units below 256 (memmem), a set of first units (a bitmap of
+  the units below 256 and one bit for all others; memchr for 1-3
+  units), or anchored at the start. UTF-16, UCS-2 and Latin-1 searches
+  use it. A UTF-16 search uses a set only when it holds no unit at or
+  above 256, so it never starts inside a surrogate pair.
+
+Searches over &str are unchanged.
+
+Test: tests/latin1.rs checks each search (predicates on) against one
+match attempt per position (no predicate) for 29 patterns, 5 flag sets
+and 27 texts in all three forms.
+---
+ src/api.rs                |  32 ++++-
+ src/classicalbacktrack.rs |  59 +++++++-
+ src/emit.rs               |   2 +
+ src/indexing.rs           | 278 ++++++++++++++++++++++++++++++++++++++
+ src/insn.rs               |  51 +++++++
+ src/startpredicate.rs     | 218 ++++++++++++++++++++++++++++++
+ tests/latin1.rs           | 195 ++++++++++++++++++++++++++
+ 7 files changed, 831 insertions(+), 4 deletions(-)
+ create mode 100644 tests/latin1.rs
+
+diff --git a/src/api.rs b/src/api.rs
+index 69fe290..1a7ba0a 100644
+--- a/src/api.rs
++++ b/src/api.rs
+@@ -10,7 +10,7 @@ use crate::types::MAX_CAPTURE_GROUPS;
+ #[cfg(feature = "utf16")]
+ use crate::{
+     classicalbacktrack::MatchAttempter,
+-    indexing::{InputIndexer, Ucs2Input, Utf16Input},
++    indexing::{InputIndexer, Latin1Input, Ucs2Input, Utf16Input},
+ };
+ 
+ #[cfg(feature = "backend-pikevm")]
+@@ -425,6 +425,9 @@ pub enum Text<'t> {
+     Utf16(&'t [u16]),
+     /// UCS-2: each code unit is one character (no `u` or `v` flag).
+     Ucs2(&'t [u16]),
++    /// Latin-1: a UTF-16 string whose code units are all below 256, one byte per code unit
++    /// (no surrogates, so the same text in either mode).
++    Latin1(&'t [u8]),
+ }
+ 
+ /// A Regex is the compiled version of a pattern.
+@@ -580,6 +583,25 @@ impl Regex {
+         )
+     }
+ 
++    /// Returns an iterator for matches found in the Latin-1 `text` (one byte per code unit;
++    /// a UTF-16 string whose code units are all below 256) starting at index `start`.
++    #[cfg(feature = "utf16")]
++    pub fn find_from_latin1<'r, 't>(
++        &'r self,
++        text: &'t [u8],
++        start: usize,
++    ) -> exec::Matches<super::classicalbacktrack::BacktrackExecutor<'r, indexing::Latin1Input<'t>>>
++    {
++        let input = Latin1Input::new(text, self.cr.flags.unicode);
++        exec::Matches::new(
++            super::classicalbacktrack::BacktrackExecutor::new(
++                input,
++                MatchAttempter::new(&self.cr, input.left_end()),
++            ),
++            start,
++        )
++    }
++
+     /// Searches `text` from code unit `start` for the first match, as
+     /// [`Regex::find_from_utf16`] or [`Regex::find_from_ucs2`] do, but counts the steps of
+     /// the search against `limits`. Returns `Err` if the limits stopped the search.
+@@ -599,6 +621,10 @@ impl Regex {
+                 let input = Ucs2Input::new(t, self.cr.flags.unicode);
+                 classicalbacktrack::find_limited(&self.cr, input, start, limits)
+             }
++            Text::Latin1(t) => {
++                let input = Latin1Input::new(t, self.cr.flags.unicode);
++                classicalbacktrack::find_limited(&self.cr, input, start, limits)
++            }
+         }
+     }
+ 
+@@ -622,6 +648,10 @@ impl Regex {
+                 let input = Ucs2Input::new(t, self.cr.flags.unicode);
+                 classicalbacktrack::match_at_limited(&self.cr, input, pos, limits)
+             }
++            Text::Latin1(t) => {
++                let input = Latin1Input::new(t, self.cr.flags.unicode);
++                classicalbacktrack::match_at_limited(&self.cr, input, pos, limits)
++            }
+         }
+     }
+ 
+diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
+index b629afc..21da175 100644
+--- a/src/classicalbacktrack.rs
++++ b/src/classicalbacktrack.rs
+@@ -10,6 +10,8 @@ use crate::exec;
+ use crate::indexing::{AsciiInput, ElementType, InputIndexer, Utf8Input};
+ #[cfg(not(feature = "utf16"))]
+ use crate::insn::StartPredicate;
++#[cfg(feature = "utf16")]
++use crate::insn::UnitPredicate;
+ use crate::insn::{CompiledRegex, Insn, LoopFields};
+ use crate::matchers;
+ use crate::matchers::CharProperties;
+@@ -1209,12 +1211,14 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+ 
+     /// \return the next match for an anchored regex that only matches at the start.
+     /// This avoids any string searching and only tries matching at the given position.
+-    #[cfg(not(feature = "utf16"))]
+     fn next_match_anchored(
+         &mut self,
+         pos: Input::Position,
+         next_start: &mut Option<Input::Position>,
+     ) -> Option<Match> {
++        if !self.matcher.step() {
++            return None;
++        }
+         let inp = self.input;
+         // For anchored regexes, only try matching at the current position
+         if let Some(end) = self.matcher.try_at_pos(inp, 0, pos, Forward::new()) {
+@@ -1243,6 +1247,35 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+         Some(self.successful_match(pos, end))
+     }
+ 
++    /// \return the next match, skipping the positions where the code-unit start predicate
++    /// `pred` (`Prefix` or `First`) says no match can start.
++    #[cfg(feature = "utf16")]
++    fn next_match_with_unit_predicate(
++        &mut self,
++        mut pos: Input::Position,
++        next_start: &mut Option<Input::Position>,
++        pred: &UnitPredicate,
++    ) -> Option<Match> {
++        let inp = self.input;
++        loop {
++            if !self.matcher.step() {
++                return None;
++            }
++            pos = inp.find_unit_start(pos, pred)?;
++            if let Some(end) = self.matcher.try_at_pos(inp, 0, pos, Forward::new()) {
++                // If we matched the empty string, we have to increment.
++                if end != pos {
++                    *next_start = Some(end)
++                } else {
++                    *next_start = inp.next_right_pos(end);
++                }
++                return Some(self.successful_match(pos, end));
++            }
++            // Didn't find it at this position, try the next one.
++            pos = inp.next_right_pos(pos)?;
++        }
++    }
++
+     /// \return the next match, searching the remaining bytes using the given
+     /// prefix searcher to quickly find the first potential match location.
+     fn next_match_with_prefix_search<PrefixSearch: bytesearch::ByteSearcher>(
+@@ -1289,9 +1322,29 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
+         pos: Input::Position,
+         next_start: &mut Option<Input::Position>,
+     ) -> Option<Match> {
+-        // When UTF-16 support is active prefix search is not used due to the different encoding.
++        // When UTF-16 support is active the byte start predicate is not used, since its bytes
++        // are UTF-8 bytes. A code-unit input (UTF-16, UCS-2, Latin-1) uses the code-unit
++        // start predicate instead.
+         #[cfg(feature = "utf16")]
+-        return self.next_match_with_prefix_search(pos, next_start, &bytesearch::EmptyString {});
++        {
++            if Input::UNIT_PREDICATES {
++                let re = self.matcher.re;
++                return match &re.unit_pred {
++                    UnitPredicate::Arbitrary => self.next_match_with_prefix_search(
++                        pos,
++                        next_start,
++                        &bytesearch::EmptyString {},
++                    ),
++                    UnitPredicate::StartAnchored => self.next_match_anchored(pos, next_start),
++                    pred => self.next_match_with_unit_predicate(pos, next_start, pred),
++                };
++            }
++            return self.next_match_with_prefix_search(
++                pos,
++                next_start,
++                &bytesearch::EmptyString {},
++            );
++        }
+ 
+         #[cfg(not(feature = "utf16"))]
+         match &self.matcher.re.start_pred {
+diff --git a/src/emit.rs b/src/emit.rs
+index 0cb96b8..86f726c 100644
+--- a/src/emit.rs
++++ b/src/emit.rs
+@@ -469,6 +469,8 @@ pub fn emit(n: &ir::Regex) -> CompiledRegex {
+             group_names: Box::new([]),
+             flags: n.flags,
+             start_pred: startpredicate::predicate_for_re(n),
++            #[cfg(feature = "utf16")]
++            unit_pred: startpredicate::unit_predicate_for_re(n),
+         },
+     };
+     emitter.emit_node(&n.node);
+diff --git a/src/indexing.rs b/src/indexing.rs
+index 44a80d5..5197c19 100644
+--- a/src/indexing.rs
++++ b/src/indexing.rs
+@@ -1,5 +1,7 @@
+ use crate::bytesearch;
+ use crate::cursor::Direction;
++#[cfg(feature = "utf16")]
++use crate::insn::UnitPredicate;
+ use crate::matchers::{self, CharProperties};
+ #[cfg(feature = "utf16")]
+ use crate::position::IndexPosition;
+@@ -57,6 +59,23 @@ where
+     /// This is true for ASCII and UTF8, but not for UCS2 or UTF16.
+     const CODE_UNITS_ARE_BYTES: bool;
+ 
++    /// Whether a search uses the code-unit start predicate (`CompiledRegex::unit_pred`):
++    /// true for the UTF-16, UCS-2 and Latin-1 inputs, whose positions are code units.
++    #[cfg(feature = "utf16")]
++    const UNIT_PREDICATES: bool = false;
++
++    /// \return the first position at or after `pos` where a match may start under `pred`
++    /// (a `Prefix` or `First` predicate), or None if there is none. Only called when
++    /// `UNIT_PREDICATES` is true.
++    #[cfg(feature = "utf16")]
++    fn find_unit_start(
++        &self,
++        pos: Self::Position,
++        _pred: &UnitPredicate,
++    ) -> Option<Self::Position> {
++        Some(pos)
++    }
++
+     /// \return whether we are using unicode for case-folding.
+     fn unicode(&self) -> bool;
+ 
+@@ -898,6 +917,20 @@ impl<'a> InputIndexer for Utf16Input<'a> {
+     type Element = u32;
+     type CharProps = matchers::Utf16CharProperties;
+     const CODE_UNITS_ARE_BYTES: bool = false;
++    const UNIT_PREDICATES: bool = true;
++
++    fn find_unit_start(&self, pos: Self::Position, pred: &UnitPredicate) -> Option<Self::Position> {
++        // A set that holds units at or above 256 may hold a trail surrogate, and a search must
++        // not start inside a surrogate pair: try every position then.
++        if let UnitPredicate::First(set) = pred {
++            if set.high {
++                return Some(pos);
++            }
++        }
++        // Each candidate unit is below 256, so no candidate is inside a pair.
++        let at = find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred)?;
++        Some(pos + at)
++    }
+ 
+     #[inline(always)]
+     fn unicode(&self) -> bool {
+@@ -1144,6 +1177,12 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
+     type Element = u32;
+     type CharProps = matchers::Utf16CharProperties;
+     const CODE_UNITS_ARE_BYTES: bool = false;
++    const UNIT_PREDICATES: bool = true;
++
++    fn find_unit_start(&self, pos: Self::Position, pred: &UnitPredicate) -> Option<Self::Position> {
++        let at = find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred)?;
++        Some(pos + at)
++    }
+ 
+     #[inline(always)]
+     fn unicode(&self) -> bool {
+@@ -1290,3 +1329,242 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
+         panic!("Should never be matching bytes for ucs2");
+     }
+ }
++
++/// A Latin-1 string: one byte per code unit, each code unit is one character (code points
++/// 0 to 255). A UTF-16 string whose code units all fit in a byte can be searched in this form
++/// with no copy. Matching is as for UCS-2 and UTF-16 (a Latin-1 string has no surrogates);
++/// the code units are bytes, so the byte searchers of the start predicates work.
++#[cfg(feature = "utf16")]
++#[derive(Debug, Copy, Clone)]
++pub struct Latin1Input<'a> {
++    input: &'a [u8],
++    unicode: bool,
++}
++
++#[cfg(feature = "utf16")]
++impl<'a> Latin1Input<'a> {
++    pub fn new(s: &'a [u8], unicode: bool) -> Self {
++        Self { input: s, unicode }
++    }
++
++    #[inline(always)]
++    fn debug_assert_valid_pos(&self, pos: <Self as InputIndexer>::Position) -> &Self {
++        debug_assert!(self.left_end() <= pos && pos <= self.right_end());
++        self
++    }
++}
++
++#[cfg(feature = "utf16")]
++impl<'a> InputIndexer for Latin1Input<'a> {
++    type Position = IndexPosition<'a>;
++    type Element = u32;
++    type CharProps = matchers::Utf16CharProperties;
++    const CODE_UNITS_ARE_BYTES: bool = true;
++    const UNIT_PREDICATES: bool = true;
++
++    fn find_unit_start(&self, pos: Self::Position, pred: &UnitPredicate) -> Option<Self::Position> {
++        let rest = &self.input[self.pos_to_offset(pos)..];
++        let at = match pred {
++            UnitPredicate::Prefix { finder, .. } => finder.find(rest)?,
++            UnitPredicate::First(set) => match set.few {
++                Some([a, b, c]) => memchr::memchr3(a, b, c, rest)?,
++                None => bytesearch::ByteSearcher::find_in(&set.low, rest)?,
++            },
++            UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => 0,
++        };
++        Some(pos + at)
++    }
++
++    #[inline(always)]
++    fn unicode(&self) -> bool {
++        self.unicode
++    }
++
++    #[inline(always)]
++    fn subinput(&self, range: ops::Range<Self::Position>) -> Latin1Input<'a> {
++        self.debug_assert_valid_pos(range.start);
++        self.debug_assert_valid_pos(range.end);
++        debug_assert!(range.end >= range.start);
++        Latin1Input {
++            input: &self.input[core::ops::Range {
++                start: self.pos_to_offset(range.start),
++                end: self.pos_to_offset(range.end),
++            }],
++            unicode: self.unicode(),
++        }
++    }
++
++    #[inline(always)]
++    fn next_right(&self, pos: &mut Self::Position) -> Option<Self::Element> {
++        let b = self.input.get(self.pos_to_offset(*pos)).copied()?;
++        *pos += 1;
++        Some(b.into())
++    }
++
++    #[inline(always)]
++    fn next_left(&self, pos: &mut Self::Position) -> Option<Self::Element> {
++        if *pos == self.left_end() {
++            return None;
++        }
++        let b = self.input.get(self.pos_to_offset(*pos - 1)).copied()?;
++        *pos -= 1;
++        Some(b.into())
++    }
++
++    #[inline(always)]
++    fn next_right_pos(&self, pos: Self::Position) -> Option<Self::Position> {
++        self.try_move_right(pos, 1)
++    }
++
++    #[inline(always)]
++    fn next_left_pos(&self, pos: Self::Position) -> Option<Self::Position> {
++        self.try_move_left(pos, 1)
++    }
++
++    #[inline(always)]
++    fn peek_byte_right(&self, pos: Self::Position) -> Option<u8> {
++        self.input.get(self.pos_to_offset(pos)).copied()
++    }
++
++    #[inline(always)]
++    fn peek_byte_left(&self, pos: Self::Position) -> Option<u8> {
++        if pos == self.left_end() {
++            return None;
++        }
++        self.input.get(self.pos_to_offset(pos - 1)).copied()
++    }
++
++    #[inline(always)]
++    fn left_end(&self) -> Self::Position {
++        Self::Position::new(0)
++    }
++
++    #[inline(always)]
++    fn right_end(&self) -> Self::Position {
++        Self::Position::new(self.input.len())
++    }
++
++    #[inline(always)]
++    fn pos_to_offset(&self, pos: Self::Position) -> usize {
++        debug_assert!(self.left_end() <= pos && pos <= self.right_end());
++        pos - self.left_end()
++    }
++
++    fn try_move_right(&self, mut pos: Self::Position, amt: usize) -> Option<Self::Position> {
++        self.debug_assert_valid_pos(pos);
++        if self.right_end() - pos < amt {
++            None
++        } else {
++            pos += amt;
++            self.debug_assert_valid_pos(pos);
++            Some(pos)
++        }
++    }
++
++    #[inline(always)]
++    fn try_move_left(&self, mut pos: Self::Position, amt: usize) -> Option<Self::Position> {
++        self.debug_assert_valid_pos(pos);
++        if pos - self.left_end() < amt {
++            None
++        } else {
++            pos -= amt;
++            self.debug_assert_valid_pos(pos);
++            Some(pos)
++        }
++    }
++
++    #[inline(always)]
++    fn find_bytes<Search: bytesearch::ByteSearcher>(
++        &self,
++        pos: Self::Position,
++        search: &Search,
++    ) -> Option<Self::Position> {
++        let rem = &self.input[self.pos_to_offset(pos)..];
++        let idx = search.find_in(rem)?;
++        Some(pos + idx)
++    }
++
++    fn subrange_eq<Dir: Direction>(
++        &self,
++        _dir: Dir,
++        pos: &mut Self::Position,
++        range: Range<Self::Position>,
++    ) -> bool {
++        let len = range.end - range.start;
++        let (start, end) = if Dir::FORWARD {
++            if let Some(end) = self.try_move_right(*pos, len) {
++                let start = *pos;
++                *pos = end;
++                (start, end)
++            } else {
++                return false;
++            }
++        } else if let Some(start) = self.try_move_left(*pos, len) {
++            let end = *pos;
++            *pos = start;
++            (start, end)
++        } else {
++            return false;
++        };
++
++        let new_range = &self.input[self.pos_to_offset(start)..self.pos_to_offset(end)];
++        let old_range = &self.input[self.pos_to_offset(range.start)..self.pos_to_offset(range.end)];
++
++        new_range == old_range
++    }
++
++    fn match_bytes<const N: usize, Dir: Direction>(
++        &self,
++        dir: Dir,
++        pos: &mut Self::Position,
++        bytes: &[u8; N],
++    ) -> bool {
++        let (start, end) = if Dir::FORWARD {
++            match self.try_move_right(*pos, N) {
++                Some(end) => (*pos, end),
++                None => return false,
++            }
++        } else {
++            match self.try_move_left(*pos, N) {
++                Some(start) => (start, *pos),
++                None => return false,
++            }
++        };
++        let _ = dir;
++        if &self.input[self.pos_to_offset(start)..self.pos_to_offset(end)] != bytes {
++            return false;
++        }
++        *pos = if Dir::FORWARD { end } else { start };
++        true
++    }
++}
++
++/// The index in `units` of the first code unit where a match may start under `pred` (a
++/// `Prefix` or `First` predicate), or None.
++#[cfg(feature = "utf16")]
++fn find_unit_start_u16(units: &[u16], pred: &UnitPredicate) -> Option<usize> {
++    match pred {
++        UnitPredicate::Prefix { units: prefix, .. } => {
++            let first = u16::from(prefix[0]);
++            let mut at = 0;
++            loop {
++                at += units[at..].iter().position(|&u| u == first)?;
++                let rest = &units[at..];
++                if rest.len() >= prefix.len()
++                    && rest
++                        .iter()
++                        .zip(prefix.iter())
++                        .all(|(&u, &p)| u == u16::from(p))
++                {
++                    return Some(at);
++                }
++                if rest.len() < prefix.len() {
++                    return None;
++                }
++                at += 1;
++            }
++        }
++        UnitPredicate::First(set) => units.iter().position(|&u| set.contains(u)),
++        UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => Some(0),
++    }
++}
+diff --git a/src/insn.rs b/src/insn.rs
+index 947faae..950a237 100644
+--- a/src/insn.rs
++++ b/src/insn.rs
+@@ -193,6 +193,53 @@ pub enum StartPredicate {
+     StartAnchored,
+ }
+ 
++/// The start predicate of a search over UTF-16 code units (UTF-16, UCS-2 or Latin-1 text):
++/// a fast way to skip positions where no match can start.
++#[cfg(feature = "utf16")]
++#[derive(Debug, Clone)]
++pub enum UnitPredicate {
++    /// No predicate: try every position.
++    Arbitrary,
++
++    /// The regex is anchored to the start of the input: try only the first position.
++    StartAnchored,
++
++    /// Every match starts with these code units (two or more, each below 256).
++    Prefix {
++        units: Box<[u8]>,
++        finder: Box<memmem::Finder<'static>>,
++    },
++
++    /// The first code unit of every match is in this set.
++    First(UnitSet),
++}
++
++/// A set of code units: those below 256 in a bitmap, and whether any unit at or above 256
++/// is in the set.
++#[cfg(feature = "utf16")]
++#[derive(Debug, Clone)]
++pub struct UnitSet {
++    /// The members below 256.
++    pub low: ByteBitmap,
++    /// True if every unit at or above 256 is a member.
++    pub high: bool,
++    /// When `low` has 1 to 3 members and `high` is false: the members (repeated to fill the
++    /// array), for a memchr search of Latin-1 text.
++    pub few: Option<[u8; 3]>,
++}
++
++#[cfg(feature = "utf16")]
++impl UnitSet {
++    /// \return whether the code unit `u` is in the set.
++    #[inline(always)]
++    pub fn contains(&self, u: u16) -> bool {
++        match u8::try_from(u) {
++            Ok(b) => self.low.contains(b),
++            Err(_) => self.high,
++        }
++    }
++}
++
+ #[derive(Debug, Clone)]
+ pub struct CompiledRegex {
+     // Sequence of instructions.
+@@ -204,6 +251,10 @@ pub struct CompiledRegex {
+     // Predicate to rapidly find the first potential match.
+     pub start_pred: StartPredicate,
+ 
++    // The same, for a search over UTF-16 code units.
++    #[cfg(feature = "utf16")]
++    pub unit_pred: UnitPredicate,
++
+     // Number of loops, used to populate loop data.
+     pub loops: u32,
+ 
+diff --git a/src/startpredicate.rs b/src/startpredicate.rs
+index c1ab7fa..1591369 100644
+--- a/src/startpredicate.rs
++++ b/src/startpredicate.rs
+@@ -2,6 +2,8 @@
+ use crate::bytesearch::ByteBitmap;
+ use crate::codepointset;
+ use crate::insn::StartPredicate;
++#[cfg(feature = "utf16")]
++use crate::insn::{UnitPredicate, UnitSet};
+ use crate::ir;
+ use crate::ir::Node;
+ use crate::util::{add_utf8_first_bytes_to_bitmap, utf8_first_byte};
+@@ -226,3 +228,219 @@ pub fn predicate_for_re(re: &ir::Regex) -> StartPredicate {
+         .unwrap_or(AbstractStartPredicate::Arbitrary)
+         .resolve_to_insn()
+ }
++
++/// The code-unit form of a start predicate (a search over UTF-16, UCS-2 or Latin-1 text).
++#[cfg(feature = "utf16")]
++enum AbstractUnitPredicate {
++    /// No predicate.
++    Arbitrary,
++
++    /// A match starts with these code units (one or more, each below 0x10000).
++    Sequence(Vec<u32>),
++
++    /// The first code unit of a match: below 256 in `low`, any other if `high`.
++    Set { low: Box<ByteBitmap>, high: bool },
++}
++
++#[cfg(feature = "utf16")]
++impl AbstractUnitPredicate {
++    /// The empty set (no code unit starts a match).
++    fn empty_set() -> Self {
++        Self::Set {
++            low: Box::default(),
++            high: false,
++        }
++    }
++
++    /// Adds the code unit `u` to a set.
++    fn add_unit(low: &mut ByteBitmap, high: &mut bool, u: u32) {
++        match u8::try_from(u) {
++            Ok(b) => low.set(b),
++            Err(_) => *high = true,
++        }
++    }
++
++    /// The set of the first code units of the characters in `chars` (a supplementary
++    /// character starts with a lead surrogate, at or above 256).
++    fn first_units_of(chars: impl Iterator<Item = u32>) -> Self {
++        let mut low = Box::<ByteBitmap>::default();
++        let mut high = false;
++        for c in chars {
++            Self::add_unit(&mut low, &mut high, c);
++        }
++        Self::Set { low, high }
++    }
++
++    /// \return the disjunction of two predicates.
++    fn disjunction(x: Self, y: Self) -> Self {
++        match (x, y) {
++            (Self::Arbitrary, _) | (_, Self::Arbitrary) => Self::Arbitrary,
++            (Self::Sequence(s1), Self::Sequence(s2)) => {
++                let shared = s1.iter().zip(s2.iter()).take_while(|(a, b)| a == b).count();
++                if shared > 0 {
++                    Self::Sequence(s1[..shared].to_vec())
++                } else {
++                    Self::first_units_of([s1[0], s2[0]].into_iter())
++                }
++            }
++            (
++                Self::Set {
++                    low: mut l1,
++                    high: h1,
++                },
++                Self::Set { low: l2, high: h2 },
++            ) => {
++                l1.bitor(&l2);
++                Self::Set {
++                    low: l1,
++                    high: h1 || h2,
++                }
++            }
++            (Self::Set { mut low, mut high }, Self::Sequence(s))
++            | (Self::Sequence(s), Self::Set { mut low, mut high }) => {
++                Self::add_unit(&mut low, &mut high, s[0]);
++                Self::Set { low, high }
++            }
++        }
++    }
++
++    fn resolve(self) -> UnitPredicate {
++        match self {
++            Self::Arbitrary => UnitPredicate::Arbitrary,
++            Self::Sequence(units) => {
++                let bytes: Vec<u8> = units.iter().map_while(|&u| u8::try_from(u).ok()).collect();
++                if bytes.len() >= 2 {
++                    UnitPredicate::Prefix {
++                        finder: Box::new(memmem::Finder::new(&bytes).into_owned()),
++                        units: bytes.into_boxed_slice(),
++                    }
++                } else {
++                    Self::first_units_of(units[..1].iter().copied()).resolve()
++                }
++            }
++            Self::Set { low, high } => {
++                let few = if high || low.count_bits() == 0 || low.count_bits() > 3 {
++                    None
++                } else {
++                    let members: Vec<u8> = (0..=255u8).filter(|&b| low.contains(b)).collect();
++                    let last = members[members.len() - 1];
++                    Some([
++                        members[0],
++                        *members.get(1).unwrap_or(&last),
++                        *members.get(2).unwrap_or(&last),
++                    ])
++                };
++                UnitPredicate::First(UnitSet {
++                    low: *low,
++                    high,
++                    few,
++                })
++            }
++        }
++    }
++}
++
++/// Compute the code-unit start predicate of a node. As `compute_start_predicate`: `None`
++/// for a zero-width node, `Arbitrary` for no predicate. Icase nodes are already expanded
++/// into their sets by the parser.
++#[cfg(feature = "utf16")]
++fn compute_unit_predicate(n: &Node) -> Option<AbstractUnitPredicate> {
++    use AbstractUnitPredicate as P;
++    let arbitrary = Some(P::Arbitrary);
++    match n {
++        &Node::Char { c } => {
++            if c < 0x1_0000 {
++                Some(P::Sequence(vec![c]))
++            } else {
++                Some(P::first_units_of(core::iter::once(c)))
++            }
++        }
++        Node::CharSet(chars) => Some(P::first_units_of(chars.iter().copied())),
++
++        // Bytes are UTF-8 bytes, which a code-unit search does not see.
++        Node::ByteSequence(..) | Node::ByteSet(..) => arbitrary,
++
++        Node::Empty | Node::Goal => arbitrary,
++        Node::BackRef { .. } | Node::BackRefAny { .. } => arbitrary,
++        Node::StringSet { .. } => arbitrary,
++        Node::MatchAny | Node::MatchAnyExceptLineTerminator => arbitrary,
++        Node::Anchor { .. } | Node::WordBoundary { .. } => arbitrary,
++
++        // A run of leading characters forms a sequence; else the first node that is not
++        // zero-width decides.
++        Node::Cat(nodes) => {
++            let mut seq = Vec::new();
++            for node in nodes {
++                if let &Node::Char { c } = node {
++                    if c < 0x1_0000 {
++                        seq.push(c);
++                        continue;
++                    }
++                }
++                if !seq.is_empty() {
++                    break;
++                }
++                if let Some(p) = compute_unit_predicate(node) {
++                    return Some(p);
++                }
++            }
++            if seq.is_empty() {
++                None
++            } else {
++                Some(P::Sequence(seq))
++            }
++        }
++
++        Node::CaptureGroup { contents, .. } => compute_unit_predicate(contents),
++        Node::LookaroundAssertion { .. } => None,
++
++        Node::Loop { loopee, quant, .. } | Node::Loop1CharBody { loopee, quant } => {
++            if quant.min > 0 {
++                compute_unit_predicate(loopee)
++            } else {
++                arbitrary
++            }
++        }
++
++        Node::Alt(left, right) => {
++            match (compute_unit_predicate(left), compute_unit_predicate(right)) {
++                (Some(x), Some(y)) => Some(P::disjunction(x, y)),
++                // One arm can match the empty string.
++                _ => arbitrary,
++            }
++        }
++
++        Node::Bracket(bc) => {
++            let storage;
++            let cps = if bc.invert {
++                storage = bc.cps.inverted();
++                &storage
++            } else {
++                &bc.cps
++            };
++            let P::Set { mut low, mut high } = P::empty_set() else {
++                unreachable!()
++            };
++            for iv in cps.intervals() {
++                for u in iv.first..=core::cmp::min(iv.last, 255) {
++                    low.set(u as u8);
++                }
++                if iv.last >= 256 {
++                    high = true;
++                }
++            }
++            Some(P::Set { low, high })
++        }
++    }
++}
++
++/// \return the code-unit start predicate of a regex (searches over UTF-16 code units).
++#[cfg(feature = "utf16")]
++pub fn unit_predicate_for_re(re: &ir::Regex) -> UnitPredicate {
++    if is_start_anchored(&re.node) && !re.flags.multiline {
++        return UnitPredicate::StartAnchored;
++    }
++    compute_unit_predicate(&re.node)
++        .unwrap_or(AbstractUnitPredicate::Arbitrary)
++        .resolve()
++}
+diff --git a/tests/latin1.rs b/tests/latin1.rs
+new file mode 100644
+index 0000000..c9e9290
+--- /dev/null
++++ b/tests/latin1.rs
+@@ -0,0 +1,195 @@
++//! Latin-1 text (`Text::Latin1`, `find_from_latin1`) and the code-unit start predicates of a
++//! search over UTF-16, UCS-2 and Latin-1 text. The oracle is one match attempt at each
++//! position (`match_at_limited`), which uses no start predicate: the first position with a
++//! match is the answer of a search.
++#![cfg(feature = "utf16")]
++
++use regress::{Limits, Regex, Text};
++
++type Groups = Vec<Option<(usize, usize)>>;
++
++fn limits_run<T>(f: impl FnOnce(&mut Limits<'_>) -> T) -> T {
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 4096,
++        poll: &mut never,
++    };
++    f(&mut limits)
++}
++
++fn groups(m: &regress::Match) -> Groups {
++    m.groups().map(|g| g.map(|r| (r.start, r.end))).collect()
++}
++
++/// The search result from `start` (predicates on).
++fn search(re: &Regex, text: Text<'_>, start: usize) -> Option<Groups> {
++    limits_run(|l| re.find_limited(text, start, l).unwrap()).map(|m| groups(&m))
++}
++
++/// The oracle: the first position from `start` where one attempt matches. In UTF-16
++/// (`unicode`) a search steps over a surrogate pair, so a position inside one is no start.
++fn oracle(
++    re: &Regex,
++    text: Text<'_>,
++    units: &[u16],
++    unicode: bool,
++    start: usize,
++) -> Option<Groups> {
++    let inside_pair = |p: usize| {
++        unicode
++            && p > start
++            && p < units.len()
++            && (0xdc00..0xe000).contains(&units[p])
++            && (0xd800..0xdc00).contains(&units[p - 1])
++    };
++    (start..=units.len())
++        .filter(|&p| !inside_pair(p))
++        .find_map(|p| limits_run(|l| re.match_at_limited(text, p, l).unwrap()).map(|m| groups(&m)))
++}
++
++const PATTERNS: &[&str] = &[
++    "abc",
++    "a|b",
++    "qqqq|qqq|qq",
++    "(?:ab)+c",
++    "[a-c]x",
++    "[^a]",
++    "\u{e9}+",
++    "\\u00e9",
++    "x*",
++    "(?=b)b",
++    "(?<=a)b",
++    "^a",
++    "^a|b",
++    "a$",
++    "\\bfoo",
++    "[\\u0100-\\uffff]",
++    "[\\u00ff\\u0178]",
++    ".",
++    "\\d+",
++    "(a)|b",
++    "\\u0178",
++    "\u{ff}",
++    "\\u{1F600}",
++    "[\\udc00-\\udfff]",
++    "\\udc00",
++    "(?:)",
++    "(?!a)",
++    "ab|\\u0100",
++    "k",
++];
++
++fn texts() -> Vec<Vec<u16>> {
++    let mut v: Vec<Vec<u16>> = [
++        "abcqqqq\u{e9} \u{ff} foo\nab",
++        "xxabcxx",
++        "\u{c9}\u{e9}a\u{ff}b\u{b5}",
++        "ba\nab",
++        "",
++        "kK\u{212a}",
++        "a\u{100}b\u{1F600}c\u{178}",
++        "\u{1F600}",
++    ]
++    .iter()
++    .map(|s| s.encode_utf16().collect())
++    .collect();
++    // Pseudo-random Latin-1 texts over a small alphabet, so patterns match often.
++    let alphabet: Vec<u16> = "abcqx\n \u{e9}\u{c9}\u{ff}9".encode_utf16().collect();
++    let mut seed = 12345u32;
++    for len in [3, 10, 40] {
++        for _ in 0..6 {
++            v.push(
++                (0..len)
++                    .map(|_| {
++                        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
++                        alphabet[(seed >> 16) as usize % alphabet.len()]
++                    })
++                    .collect(),
++            );
++        }
++    }
++    // A lone trail surrogate and a pair.
++    v.push(vec![0xd800, 0xdc00, 0xdc00, u16::from(b'a')]);
++    v
++}
++
++#[test]
++fn searches_equal_one_attempt_per_position() {
++    let mut checked = 0;
++    for &p in PATTERNS {
++        for flags in ["", "i", "m", "u", "iu"] {
++            let Ok(re) = Regex::with_flags(p, flags) else {
++                continue;
++            };
++            let unicode = flags.contains('u');
++            for units in texts() {
++                let latin1: Option<Vec<u8>> = units.iter().map(|&u| u8::try_from(u).ok()).collect();
++                let wide = if unicode {
++                    Text::Utf16(&units)
++                } else {
++                    Text::Ucs2(&units)
++                };
++                for start in 0..=units.len() + 1 {
++                    // (A Unicode search does not start inside a pair: skip such starts.)
++                    if unicode
++                        && start > 0
++                        && start < units.len()
++                        && (0xdc00..0xe000).contains(&units[start])
++                        && (0xd800..0xdc00).contains(&units[start - 1])
++                    {
++                        continue;
++                    }
++                    let want = oracle(&re, wide, &units, unicode, start);
++                    let got = search(&re, wide, start);
++                    assert_eq!(got, want, "/{p}/{flags} on {units:x?} from {start}");
++                    let it = if unicode {
++                        re.find_from_utf16(&units, start).next()
++                    } else {
++                        re.find_from_ucs2(&units, start).next()
++                    };
++                    assert_eq!(it.map(|m| groups(&m)), want, "iterator /{p}/{flags}");
++                    if let Some(bytes) = &latin1 {
++                        let got = search(&re, Text::Latin1(bytes), start);
++                        assert_eq!(got, want, "Latin-1 /{p}/{flags} on {units:x?} from {start}");
++                        let it = re.find_from_latin1(bytes, start).next();
++                        assert_eq!(
++                            it.map(|m| groups(&m)),
++                            want,
++                            "Latin-1 iterator /{p}/{flags}"
++                        );
++                    }
++                    checked += 1;
++                }
++            }
++        }
++    }
++    assert!(checked > 10_000, "{checked}");
++}
++
++#[test]
++fn latin1_text_is_matched_by_code_unit() {
++    // Above 0x7f a byte is the code unit (no UTF-8): U+00E9 is one byte.
++    let re = Regex::with_flags("\u{e9}+", "").unwrap();
++    let m = re.find_from_latin1(&[b'c', 0xe9, 0xe9], 0).next().unwrap();
++    assert_eq!(m.range(), 1..3);
++    // Case-insensitive: U+00FF and U+0178 are a case pair; the uppercase is not Latin-1.
++    let re = Regex::with_flags("\\u0178", "i").unwrap();
++    assert_eq!(
++        re.find_from_latin1(&[b'a', 0xff], 0)
++            .next()
++            .unwrap()
++            .range(),
++        1..2
++    );
++    // Backreferences and lookbehind read the bytes as code units (node:
++    // /(?<=\u00e9)(.)\1/i.exec("\u00e9\u00c9\u00e9x") matches at 1, "\u00c9\u00e9").
++    let re = Regex::with_flags("(?<=\u{e9})(.)\\1", "i").unwrap();
++    let m = re
++        .find_from_latin1(&[0xe9, 0xc9, 0xe9, b'x'], 0)
++        .next()
++        .unwrap();
++    assert_eq!(m.range(), 1..3);
++    let m = re.find_from_latin1(&[b'a', 0xc9, 0xe9], 0).next();
++    assert!(m.is_none());
++}

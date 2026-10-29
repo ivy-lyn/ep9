@@ -6,8 +6,9 @@
 //! /a+/g  (CreateRegExpLiteral)  -> create_literal: a RegExp object, MATCHER = undefined
 //! Cx::regexp_create(proto, p, f) -> create: flags parsed, pattern compiled now, MATCHER = index
 //! Cx::regexp_exec(re, s, i)     -> exec: program_index (compiles at the first exec of a
-//!                                  literal), flatten s, Engine::exec from i, poll
-//!                                  interrupts; the match spans + the group names
+//!                                  literal), flatten s, Engine::exec from i on the flat
+//!                                  text in place (Latin-1 or UTF-16), poll interrupts;
+//!                                  the match spans + the group names
 //!
 //! Runtime.regexp_programs (ProgramTable, Rust memory)        RegExp object (heap)
 //!   entry i: owner (weak word) ─────────────────────────────> SLOT_OBJECT, class RegExp
@@ -16,15 +17,14 @@
 //!   GC: the weak source frees entry i when its owner died; i goes to the free list
 //!   cache:   the last 64 programs by (source units, flag bits), most recently used first
 //!            (Rc<Compiled> shared with the entries; no Value, no GC hook)
-//!   widened: the UTF-16 copy of the last Latin-1 subject (key = its flat string's bits);
-//!            the same weak source empties it in every GC
+//!   scratch: the engine's reusable exec memory (Engine::Scratch; no Value, no GC hook)
 //!   legacy:  per realm (key: its %RegExp%, weak): RegExp.input and the last match (subject
 //!            + spans); a root source traces the strings, the weak source drops a dead realm
 //! ```
 //!
-//! `Engine` is the one name of the backend here (RX0 = `ep9_regexp::Rx0` on regress 0.12.0
-//! in month 4; the month-5 fork and RX1/RX2 change only the alias, MC-w14-19). A program is
-//! an int32 table index in the object, never a process address.
+//! `Engine` is the one name of the backend here (RX0 = `ep9_regexp::Rx0` on regress 0.12.0,
+//! with the ep9 fork patches from M5-P3 RX0b; RX1/RX2 change only the alias, MC-w14-19). A
+//! program is an int32 table index in the object, never a process address.
 //!
 //! Internal slots of a RegExp object ([`slot`]):
 //!
@@ -51,14 +51,13 @@
 //! - The group names of a program (M4-P3 REGEXP1) come from [`group_names`], a scan of the
 //!   pattern after it compiled: the `[[GroupName]]` of each capture, for the `groups` object
 //!   of a match result (§22.2.7.2 steps 29-31). They are Rust memory beside the program.
-//! - The backend reads UTF-16, so a Latin-1 subject is copied to UTF-16 before a match. A
-//!   global match, replace or split runs one exec per match on one subject, so [`exec`] keeps
-//!   the copy of the last Latin-1 subject ([`Widened`]) and the next exec on the same flat
-//!   string reuses it: one copy per loop, not one per match (M4-P3 P3-ORCH-13). The key is
-//!   the flat string's bits. It is safe because the copy never lives across a GC: only a GC
-//!   frees a cell, and the table's weak source empties the copy in every GC (minor ones
-//!   too), so while the key is set the cell at those bits is the string that was copied, and
-//!   a string's text never changes (a SLICED cell that becomes THIN keeps its text).
+//! - The backend reads both string forms in place (fork patch 0005, M5-P3 RX0b): a Latin-1
+//!   subject is no longer copied to UTF-16 (the M4-P3 copy of the last subject is gone). The
+//!   flat text is borrowed from its heap cell only inside [`exec`]'s engine call, which is
+//!   not a GC point.
+//! - One [`Scratch`] per isolate (fork patch 0006): the engine's stacks and capture ranges,
+//!   reused by every exec. Rust memory with no Value and no position of a finished exec
+//!   (plan rule 8); the engine drops it when an exec left it large.
 //! - The program cache (M5-P2, M4-P3-OPEN (4)): a literal makes a new object per evaluation
 //!   and each compiles at its first exec; the cache makes a seen (source, flags) pair cost a
 //!   lookup, not a compile. Its key is the pattern's code units (a Rust copy, never a string
@@ -94,6 +93,8 @@ use crate::string::{self, JsStr};
 type Engine = ep9_regexp::Rx0;
 /// A compiled program of [`Engine`]: Rust memory, no Value.
 type Program = <Engine as Backend>::Program;
+/// The reusable exec memory of [`Engine`]: Rust memory, no Value.
+type Scratch = <Engine as Backend>::Scratch;
 
 /// The `[[GroupName]]` of each capture group of a program, by group number - 1 (`None` for
 /// an unnamed group), as UTF-16 code units. Empty when the pattern has no named group
@@ -239,42 +240,6 @@ impl ProgramCache {
     }
 }
 
-/// The UTF-16 copy of one Latin-1 subject (module doc): the key and the code units. Rust
-/// memory, no Value; the key is a plain word, never traced, valid only until the next GC.
-#[derive(Default)]
-struct Widened {
-    /// The bits of the flat string that `units` copies; 0 = empty.
-    key: u64,
-    units: Vec<u16>,
-    /// The number of copies made (tests: one per subject between two GCs).
-    #[cfg(test)]
-    made: usize,
-}
-
-impl Widened {
-    /// The UTF-16 code units of the flat Latin-1 string `flat`, whose bytes are `b`: the kept
-    /// copy if it is of `flat`, else a new copy (it replaces the old one). Not a GC point.
-    fn units_of(&mut self, flat: u64, b: &[u8]) -> &[u16] {
-        if self.key != flat {
-            self.units.clear();
-            self.units.extend(b.iter().map(|&c| u16::from(c)));
-            self.key = flat;
-            #[cfg(test)]
-            {
-                self.made += 1;
-            }
-        }
-        debug_assert_eq!(self.units.len(), b.len());
-        &self.units
-    }
-
-    /// Drops the copy and its memory (the weak source, in every GC).
-    fn clear(&mut self) {
-        self.key = 0;
-        self.units = Vec::new();
-    }
-}
-
 /// The legacy static values of one realm's `%RegExp%` (Annex B proposal "legacy RegExp
 /// features": `[[RegExpInput]]`, `[[RegExpLastMatch]]`, `[[RegExpLastParen]]`,
 /// `[[RegExpLeftContext]]`, `[[RegExpRightContext]]`, `[[RegExpParen1]]` ...
@@ -339,13 +304,13 @@ impl Legacy {
 }
 
 /// The compiled programs of the isolate, indexed by the int32 a RegExp object holds; the
-/// program cache; the Latin-1 copy; the legacy static values.
+/// program cache; the exec scratch; the legacy static values.
 pub(crate) struct ProgramTable {
     inner: Rc<RefCell<Programs>>,
     /// The program cache ([`ProgramCache`]; no Value, no GC hook).
     cache: RefCell<ProgramCache>,
-    /// The UTF-16 copy of the last Latin-1 subject ([`Widened`]).
-    widened: Rc<RefCell<Widened>>,
+    /// The engine's exec memory ([`Scratch`]; no Value, no GC hook).
+    scratch: RefCell<Scratch>,
     /// The legacy static values ([`Legacy`]), behind a root source.
     legacy: Rc<RefCell<Legacy>>,
 }
@@ -353,22 +318,18 @@ pub(crate) struct ProgramTable {
 impl ProgramTable {
     /// The empty table of a new isolate. `heap` is the isolate's heap, before its first
     /// allocation: the table's weak source (it holds an `Rc` clone of the entries) frees the
-    /// entries whose owner died, after marking, empties the Latin-1 copy and drops the legacy
-    /// state of a dead realm; its root source traces the strings of the legacy static values.
+    /// entries whose owner died, after marking, and drops the legacy state of a dead realm;
+    /// its root source traces the strings of the legacy static values.
     pub(crate) fn new(heap: &Heap) -> ProgramTable {
         let inner = Rc::new(RefCell::new(Programs::default()));
-        let widened = Rc::new(RefCell::new(Widened::default()));
         let legacy = Rc::new(RefCell::new(Legacy::default()));
-        let (table, copy) = (Rc::clone(&inner), Rc::clone(&widened));
+        let table = Rc::clone(&inner);
         let realms = Rc::clone(&legacy);
         heap.add_weak_source(move |w| {
             let mut t = table
                 .try_borrow_mut()
                 .expect("the RegExp program table is borrowed across a GC point");
             t.sweep(|b| w.is_live(val(b)));
-            copy.try_borrow_mut()
-                .expect("the RegExp subject copy is borrowed across a GC point")
-                .clear();
             realms
                 .try_borrow_mut()
                 .expect("the RegExp legacy state is borrowed across a GC point")
@@ -385,7 +346,7 @@ impl ProgramTable {
         ProgramTable {
             inner,
             cache: RefCell::new(ProgramCache::default()),
-            widened,
+            scratch: RefCell::new(Scratch::default()),
             legacy,
         }
     }
@@ -418,7 +379,8 @@ impl ProgramTable {
         e.compiled = Some(compiled);
     }
 
-    /// Runs program `index` (not a GC point: regress allocates only Rust memory).
+    /// Runs program `index` with the table's scratch (not a GC point: regress allocates only
+    /// Rust memory).
     fn exec(
         &self,
         index: i32,
@@ -432,7 +394,8 @@ impl ProgramTable {
             .compiled
             .as_ref()
             .expect("a live RegExp holds a live program index");
-        Engine::exec(&c.program, input, start, caps, poll)
+        let mut scratch = self.scratch.borrow_mut();
+        Engine::exec(&c.program, input, start, caps, &mut scratch, poll)
     }
 
     /// The group names of program `index` (a clone of the shared `Rc`).
@@ -475,12 +438,6 @@ impl ProgramTable {
     #[cfg(test)]
     pub(crate) fn set_legacy_input_of(&self, ctor: u64, s: u64) {
         self.legacy.borrow_mut().realm(ctor).input = LegacyValue::Str(s);
-    }
-
-    /// The number of Latin-1 subjects copied to UTF-16 so far (tests).
-    #[cfg(test)]
-    pub(crate) fn widenings(&self) -> usize {
-        self.widened.borrow().made
     }
 
     /// The table index of `re`'s program if it has one (tests).
@@ -800,10 +757,10 @@ pub(crate) fn exec(
     let out = loop {
         let rt = cx.rt();
         let r = {
-            // Not a GC point from here to the end of the block (the weak source borrows it).
-            let mut widened = rt.regexp_programs.widened.borrow_mut();
+            // Not a GC point from here to the end of the block: the text is borrowed from the
+            // flat cell in place.
             let input = match string::view(cx, flat) {
-                JsStr::Latin1(b) => Input::Utf16(widened.units_of(flat, b)),
+                JsStr::Latin1(b) => Input::Latin1(b),
                 JsStr::Utf16(u) => Input::Utf16(u),
             };
             let mut poll = || {
