@@ -129,7 +129,6 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
 /// V10-A21; facts: holey kinds after the packed ones), so every reader converts through this
 /// one map, never a cast (MODES-CHECK-w18 MC-w18-4; the month-6 schema bump either renumbers
 /// `ElementsKind` to the VM order or keeps the map).
-#[cfg_attr(not(test), allow(dead_code))] // first reader: M5-P2 ELEM2 (ALLOC_SITE facts)
 pub(crate) const fn to_fact(k: u8) -> Option<ep9_facts::ElementsKind> {
     use ep9_facts::ElementsKind as F;
     match k {
@@ -312,7 +311,26 @@ pub(crate) fn transition(rt: &Runtime, o: u64, to: u8) {
         );
     }
     shape::install(rt, o, ns);
+    if kinds_::is_array(o) {
+        generalize_site(rt, o, to);
+    }
     debug_assert!(storage_form_ok(o), "storage form after {from} -> {to}");
+}
+
+/// The allocation-site feedback of a store-side transition (V10-D6, MODES-D19): if the Array
+/// `a` was made at an array-literal site (ARRAY +32 holds its ALLOC_SITE handler), the site's
+/// kind becomes the join of its kind and `to` (one-way), and the handler's result shape (weak)
+/// becomes `a`'s new shape when that is still the shape of a fresh literal array (no own
+/// property, %Array.prototype%), so the site's next arrays are born in kind `to` and make
+/// no transition (`literal_site::fast_array`). DICTIONARY is not a birth kind: a site keeps
+/// HOLEY_ELEMENTS at most. Written by this store path only (never by a `profile.rs` record
+/// hook), so `type feedback: ics_only` keeps it. Not a GC point.
+fn generalize_site(rt: &Runtime, a: u64, to: u8) {
+    let h = object::rd(object::cell(a), object::arr::ALLOC_SITE);
+    if h == crate::frame::UNDEFINED || to >= kind::DICTIONARY {
+        return;
+    }
+    crate::literal_site::generalize(rt, h, a, to);
 }
 
 /// A new ELEMENTS_DOUBLE cell with the elements of the ELEMENTS cell `e` (int32 Values and
