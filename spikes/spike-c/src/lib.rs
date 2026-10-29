@@ -320,8 +320,8 @@ pub fn compile(
     name: &str,
     facts: &facts::FunctionFacts<'_>,
 ) -> Result<(FunctionCode, CompileReport), String> {
-    let mut probe = harness::Session::new(&spike_b::harness::Config::default())?;
-    vm_layout::check(&mut probe).map_err(|e| format!("vm layout: {e}"))?;
+    vm_layout::check(&spike_b::harness::Config::default())
+        .map_err(|e| format!("vm layout: {e}"))?;
     let input = session.function_input(name)?;
     compile_input(&input, facts).map_err(|r| format!("{name}: {r}"))
 }

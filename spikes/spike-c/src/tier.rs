@@ -257,7 +257,7 @@ pub fn run_full(
     }
     let config = config.threaded();
     // The layout export, proved on a session of their own (so both runs see the same scripts).
-    crate::vm_layout::check(&mut Session::new(&config)?).map_err(|e| format!("vm layout: {e}"))?;
+    crate::vm_layout::check(&config).map_err(|e| format!("vm layout: {e}"))?;
 
     let mut t0s = Session::new(&config)?;
     t0s.run(&defs, "defs.js")

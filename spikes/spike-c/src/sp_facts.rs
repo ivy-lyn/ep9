@@ -484,8 +484,7 @@ fn same(t0: &T0Run, r: &Run) -> bool {
 pub fn check(k: &Kernel, n: u32, bytes: &[u8]) -> Result<(Vec<String>, bool), String> {
     let config = Config::default();
     let t = texts(k, n)?;
-    crate::vm_layout::check(&mut Session::new(&config.threaded())?)
-        .map_err(|e| format!("vm layout: {e}"))?;
+    crate::vm_layout::check(&config.threaded()).map_err(|e| format!("vm layout: {e}"))?;
     let t0 = run_t0(k, n, &config)?;
     let c = run_c(k, n, &config)?;
     let p = run_p(k, n, &config, bytes)?;

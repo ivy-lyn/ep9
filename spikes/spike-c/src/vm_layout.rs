@@ -246,9 +246,18 @@ const CHECK_KINDS: [u8; 6] = [
     ELEMENTS_KIND_HOLEY_ELEMENTS,
 ];
 
-/// Proves every exported fact the emitter reads on live objects of `session` (runs
-/// [`CHECK_SRC`] there).
-pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
+/// Proves every exported fact the emitter reads on live objects of a private, fresh session
+/// of `config` (runs [`CHECK_SRC`] there): no other script ran in it, so no probe global is
+/// pre-set (Codex M5-P3 r2 spk 1).
+pub fn check(config: &spike_b::harness::Config) -> Result<String, String> {
+    check_in(&mut crate::harness::Session::new(config)?)
+}
+
+/// [`check`] on `session`. Each array the probes read is checked before its raw words are
+/// read (kind byte, int32 length, an elements cell of the right kind, its capacity), so a
+/// pre-set array global gives an `Err`; the other probe globals are trusted because
+/// [`check`] gives a fresh session.
+fn check_in(session: &mut crate::harness::Session) -> Result<String, String> {
     let r = session.run(CHECK_SRC, "layout-probe.js");
     r.result.map_err(|e| format!("layout probe: {e}"))?;
     check_versions(VM_VERSIONS)?;
@@ -280,11 +289,13 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
             return Err(format!("array length is not an int32 at +{ARRAY_LENGTH}"));
         }
         let e = word(a, ARRAY_ELEMENTS);
-        if !is_cell(e) || int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3) {
-            return Err("ELEMENTS cell or its capacity".into());
+        if !is_cell(e) || kind(e) != KIND_ELEMENTS {
+            return Err(format!(
+                "the array's elements word {e:#x} is no ELEMENTS cell"
+            ));
         }
-        if kind(e) != KIND_ELEMENTS {
-            return Err(format!("the array's elements cell has kind {}", kind(e)));
+        if int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3) {
+            return Err("the ELEMENTS cell's capacity".into());
         }
         for (i, want) in [11, 22, 33].into_iter().enumerate() {
             if word(e, ELEMENTS_DATA + 8 * i as u32) != int32_bits(want) {
@@ -344,10 +355,14 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
         if !is_cell(a) {
             return Err(format!("layoutKinds[{i}] is not a cell"));
         }
-        // SAFETY: `a` is a live Array held by a global of the session's isolate, which runs
-        // nothing while this reads; its shape cell (the hand rule, checked here by its kind
-        // byte) and its elements cell are live too.
+        // SAFETY: `a` is a live cell held by a global of the session's isolate, which runs
+        // nothing while this reads; checked an Array of length 3 (kind byte, int32 length)
+        // before its shape cell (the hand rule, checked by its kind byte) and its elements
+        // word (checked a cell of the kind's storage form before it is read) are read.
         unsafe {
+            if kind(a) != KIND_ARRAY || int32_of(word(a, ARRAY_LENGTH)) != Some(3) {
+                return Err(format!("layoutKinds[{i}] is no Array of length 3"));
+            }
             let shape = shape_of(a);
             if kind(shape) != KIND_SHAPE {
                 return Err(format!(
@@ -366,6 +381,9 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
             }
             let e = word(a, ARRAY_ELEMENTS);
             let holey = i % 2 == 1;
+            if !is_cell(e) {
+                return Err(format!("layoutKinds[{i}]: elements word {e:#x} is no cell"));
+            }
             if is_double_kind(k) {
                 if kind(e) != KIND_ELEMENTS_DOUBLE
                     || int32_of(word(e, ELEMENTS_DOUBLE_CAPACITY)).is_none_or(|c| c < 3)
@@ -519,9 +537,13 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
         if !is_cell(a) {
             return Err(format!("layoutDicts[{i}] is not a cell"));
         }
-        // SAFETY: `a` is a live Array held by a global of the session's isolate, which runs
-        // nothing while this reads; its shape and elements cells are live too.
+        // SAFETY: `a` is a live cell held by a global of the session's isolate, which runs
+        // nothing while this reads; checked an Array before its shape is read, and its
+        // elements word checked a cell before it is read.
         unsafe {
+            if kind(a) != KIND_ARRAY {
+                return Err(format!("layoutDicts[{i}] is no Array"));
+            }
             let k = elements_kind(a);
             if k != ELEMENTS_KIND_DICTIONARY || ARRAY_KINDS & (1 << k) != 0 {
                 return Err(format!(
@@ -556,8 +578,13 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
     if !is_cell(born) || !is_cell(first) {
         return Err("layoutSiteA or layoutSiteB is not a cell".into());
     }
-    // SAFETY: as above.
+    // SAFETY: as above: each is checked an Array before its shape is read, and `born`'s
+    // length, elements cell (kind) and capacity are checked before its data words are read
+    // (a pre-set `layoutSiteB` could give an empty array whose elements word is no cell).
     unsafe {
+        if kind(first) != KIND_ARRAY || kind(born) != KIND_ARRAY {
+            return Err("allocation site: layoutSiteA or layoutSiteB is no Array".into());
+        }
         if elements_kind(first) != ELEMENTS_KIND_PACKED_DOUBLE
             || elements_kind(born) != ELEMENTS_KIND_PACKED_DOUBLE
         {
@@ -568,10 +595,18 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
             ));
         }
         let e = word(born, ARRAY_ELEMENTS);
-        let at = |j: u32| word(e, ELEMENTS_DOUBLE_DATA + 8 * j);
-        if kind(e) != KIND_ELEMENTS_DOUBLE
-            || (at(0), at(1), at(2)) != (1f64.to_bits(), 2f64.to_bits(), 3f64.to_bits())
+        if int32_of(word(born, ARRAY_LENGTH)) != Some(3)
+            || !is_cell(e)
+            || kind(e) != KIND_ELEMENTS_DOUBLE
+            || int32_of(word(e, ELEMENTS_DOUBLE_CAPACITY)).is_none_or(|c| c < 3)
         {
+            return Err(format!(
+                "allocation site: the born array has no length 3 or no ELEMENTS_DOUBLE cell \
+                 of capacity 3 (elements word {e:#x})"
+            ));
+        }
+        let at = |j: u32| word(e, ELEMENTS_DOUBLE_DATA + 8 * j);
+        if (at(0), at(1), at(2)) != (1f64.to_bits(), 2f64.to_bits(), 3f64.to_bits()) {
             return Err("allocation site: the born array has no raw f64 1, 2, 3".into());
         }
     }
@@ -585,8 +620,7 @@ mod tests {
 
     #[test]
     fn layout_export_holds() {
-        let mut s = crate::harness::Session::new(&Config::default()).expect("session");
-        let note = check(&mut s).expect("layout");
+        let note = check(&Config::default()).expect("layout");
         assert!(note.contains("FunctionInfo.feedback"), "{note}");
         assert!(note.contains("VM_LAYOUT 1"), "{note}");
     }
@@ -637,6 +671,36 @@ mod tests {
             ),
             (0xF, 4, 1, 3)
         );
+    }
+
+    /// The script that pre-sets `layoutSiteB` (Codex M5-P3 r2 spk 1): an accessor that keeps
+    /// the probe's store out and returns an empty array born PACKED_DOUBLE at a generalized
+    /// `[]` site, whose elements word is `undefined` (no cell).
+    const PRESET_SITE_B: &str = "\
+function layoutMk() { return []; }\n\
+var layoutE = null;\n\
+for (var i = 0; i < 20; i++) layoutE = layoutMk();\n\
+layoutE[0] = 1.5;\n\
+var layoutEmpty = layoutMk();\n\
+Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return layoutEmpty; }, set: function (v) {} });\n";
+
+    /// A pre-set `layoutSiteB` accessor gives an `Err` from the probe, never a raw read of
+    /// the non-cell elements word.
+    #[test]
+    fn a_preset_layout_site_b_accessor_is_refused() {
+        let mut s = crate::harness::Session::new(&Config::default()).expect("session");
+        s.run(PRESET_SITE_B, "preset.js").result.expect("preset");
+        let e = s
+            .function_value("layoutEmpty")
+            .expect("layoutEmpty")
+            .to_bits();
+        // SAFETY: `e` is a live Array held by a global; the isolate runs nothing while this
+        // reads its kind byte, its shape's kind bits and its elements word.
+        let (k, ek, el) = unsafe { (kind(e), elements_kind(e), word(e, ARRAY_ELEMENTS)) };
+        assert_eq!((k, ek), (KIND_ARRAY, ELEMENTS_KIND_PACKED_DOUBLE));
+        assert!(!is_cell(el), "elements word {el:#x}");
+        let r = check_in(&mut s);
+        assert!(r.as_ref().is_err_and(|e| e.contains("born array")), "{r:?}");
     }
 
     #[test]

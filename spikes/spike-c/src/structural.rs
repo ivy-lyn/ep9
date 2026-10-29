@@ -106,7 +106,7 @@ fn facts_round_trip() -> Result<String, String> {
 }
 
 fn layout() -> Result<String, String> {
-    crate::vm_layout::check(&mut Session::new(&Config::default())?)
+    crate::vm_layout::check(&Config::default())
 }
 
 fn aarch64() -> bool {
