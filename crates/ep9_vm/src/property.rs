@@ -448,28 +448,28 @@ fn routed_proto_set(cx: &mut Cx, p: u64, key: u64, v: u64, receiver: u64) -> Res
 
 /// §10.1.9.2 steps 2.c-e: the store lands on `receiver`: an existing writable data property
 /// gets the value, a missing one is CreateDataProperty. An array receiver's `length` (which
-/// `own_property` does not see) is an existing writable data property: step 2.d.iv goes to
-/// ArraySetLength (a RangeError for an invalid length). GC point.
+/// `own_property` does not see) is an existing data property: step 2.c.iii returns false
+/// for a non-writable one before any conversion; else step 2.d.iv goes to ArraySetLength (a
+/// RangeError for an invalid length). GC point.
 fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool> {
     if !is_object(receiver) {
         return Ok(false);
     }
+    // Steps 2.d.iii-iv: only the value; the attributes stay.
+    let desc = Desc {
+        value: Some(v),
+        ..Desc::default()
+    };
     if is_array(receiver) && is_atom(cx, key, Atom::Length) {
-        let desc = Desc {
-            value: Some(v),
-            ..Desc::default()
-        };
+        // Step 2.c.iii (Codex M5-P2 r1 elem2 2): no conversion of `v`.
+        if !elements::length_writable(receiver) {
+            return Ok(false);
+        }
         return define_own_property(cx, receiver, key, desc);
     }
     match own_property(cx, receiver, key)? {
         Some((_, a, _)) if a & attr::WRITABLE == 0 => Ok(false),
-        Some(_) => {
-            let desc = Desc {
-                value: Some(v),
-                ..Desc::default()
-            };
-            define_own_property(cx, receiver, key, desc)
-        }
+        Some(_) => define_own_property(cx, receiver, key, desc),
         // Step 2.e: CreateDataProperty(Receiver, P, V). A proxy receiver takes its
         // `[[DefineOwnProperty]]` (its cell's storage holds no property key).
         None if crate::proxy::is_proxy_kind(kind::cell_kind(receiver)) => {
