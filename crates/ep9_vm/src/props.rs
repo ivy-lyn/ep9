@@ -171,7 +171,7 @@ fn field_get(o: u64, s: u64, f: usize) -> u64 {
 /// A second store of `v` into field `f` of `o` (fast shape `s`): widens the field's
 /// representation and clears its const bit first (`field_rep::before_field_store`, M5-P2
 /// CONSTREP). Not a GC point.
-#[inline]
+#[inline(always)]
 fn field_set(rt: &Runtime, o: u64, s: u64, f: usize, v: u64) {
     crate::field_rep::before_field_store(rt, s, f, v);
     let (c, off) = field_ref(o, s, f);

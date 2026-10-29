@@ -111,7 +111,7 @@ pub(crate) fn initial(v: u64) -> i32 {
 #[inline(always)]
 pub(crate) fn before_field_store(rt: &Runtime, s: u64, f: usize, v: u64) {
     let b = shape::field_bits_at(s, f);
-    if b & DETAILS_CONST == 0 && fits((b & rep::MASK) >> rep::SHIFT, v) {
+    if b == shape::ANY_FIELD || (b & DETAILS_CONST == 0 && fits((b & rep::MASK) >> rep::SHIFT, v)) {
         return;
     }
     generalize(rt, s, f, rep_of(v), true);
@@ -124,7 +124,7 @@ pub(crate) fn before_field_store(rt: &Runtime, s: u64, f: usize, v: u64) {
 #[inline]
 pub(crate) fn on_init_store(rt: &Runtime, s: u64, f: usize, v: u64) {
     let b = shape::field_bits_at(s, f);
-    if !fits((b & rep::MASK) >> rep::SHIFT, v) {
+    if b & rep::MASK != shape::ANY_FIELD && !fits((b & rep::MASK) >> rep::SHIFT, v) {
         generalize(rt, s, f, rep_of(v), false);
     }
 }
