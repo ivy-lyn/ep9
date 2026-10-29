@@ -1214,8 +1214,8 @@ const _: () = {
 /// returns the accumulator. The shared exit tail-jumps to `cx.table[*out_pc]`, so T0 resumes
 /// in the same VM frame; the code stays installed (SCP:128). If the side table refuses (no
 /// metadata, no record at `pc`, a value the frame cannot take), the process ends: [`fatal_deopt`]
-/// (M5-P1-ORCH-12, H23: an engine invariant broke, so no JS code may catch it, and jitless
-/// would never reach this point). No GC point (H29-Q7).
+/// (M5-P1-ORCH-12, H23: an engine invariant broke, so no JS code may catch it, in any mode
+/// that runs native code: jitless unit code deopts too; MC-w20-1). No GC point (H29-Q7).
 ///
 /// # Safety
 /// As [`rt_deopt`].
@@ -1258,9 +1258,9 @@ unsafe fn deopt_at(cx: &mut Cx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64
 /// A deopt that cannot rebuild its frame (the metadata reader refuses the exit) is fatal:
 /// it prints `ep9: fatal: deopt at native offset <pc>: <why>` to stderr and aborts the
 /// process (M5-P1-ORCH-12, H23 "Failed deopt"). Never a JS exception: a script's `catch`
-/// would hide an engine bug, and the same script in jitless (no native code) never gets
-/// here, so a mode differential would see two outputs. An abort, not a panic: a panic hook
-/// may not end the process at once, and the table function must not unwind (H23).
+/// would hide an engine bug, and no frame state is right to go on from. Every mode that
+/// runs native code (jitless unit code too) aborts the same way. An abort, not a panic: a
+/// panic hook may not end the process at once, and the table function must not unwind (H23).
 #[cold]
 #[inline(never)]
 fn fatal_deopt(pc: u32, why: &str) -> ! {
