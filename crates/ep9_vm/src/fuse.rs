@@ -2,39 +2,49 @@
 // (the link step of a unit, H35; JIT code) and the first wired builtin pop site come (the
 // runtime callers today: `shape::note_change` and the cleanup point's sweep).
 #![cfg_attr(not(test), allow(dead_code))]
-//! The fuse registry v0 (M5-P1 FR0; CONSTREP appends descriptor kind 3; H31, C-01,
-//! MC-w16-15, MC-w15-9, V10-D12): named facts that code depends on. A fuse is intact until a
-//! change pops it; a pop is one-way and invalidates every dependent code handle.
+//! The fuse registry v0 (M5-P1 FR0; M5-P2 CONSTREP: descriptor kind 3 and one word per armed
+//! subject; H31, C-01, MC-w16-15, MC-w15-9, V10-D12, M5-P1-ORCH-13): named facts that code
+//! depends on. A fuse is intact until a change pops it; a pop is one-way and invalidates every
+//! dependent code handle.
 //!
 //! ```text
 //!  FuseRef::Static(i)        a builtin fuse, by stable index ([`STATIC`]; H13 list)
-//!  FuseRef::Dynamic(d)       a fuse named by a descriptor ([`Descriptor`]):
-//!    kind 1 ProtoChain(ProtoRef)              the chain from that prototype up to null
-//!    kind 2 ConstructorChain(FunctionRef)     the chain from that function up to null
-//!    kind 3 field constness and representation (CONSTREP appends it)
+//!  FuseRef::Dynamic(d)       a fuse named by a descriptor ([`Descriptor`]) and armed per subject:
+//!    kind 1 ProtoChain(ProtoRef)              subject: that prototype (per realm); the chain
+//!                                             from it up to null
+//!    kind 2 ConstructorChain(FunctionRef)     subject: that function; the chain from it up
+//!    kind 3 Field { index }                   subject: a fast shape (run-local); the
+//!                                             representation and const bits of descriptor
+//!                                             `index` of its field family (M5-P2 CONSTREP)
 //!
 //!  Registry (Runtime::fuses, per isolate; Rust memory, no Value):
 //!    static:  [StaticFuse; 11]   word, wired bit, dependents (Weak<code handle>)
-//!    armed:   Descriptor -> DynFuse { word, subjects [(weak subject, strong VALIDITY_CELL)],
-//!                                     dependents (Weak<code handle>) }
-//!    popped:  Descriptor set (one-way: a popped descriptor never arms again)
+//!    armed:   Descriptor -> [Subject { weak subject, kind 1-2: strong VALIDITY_CELL,
+//!                                      kind 3: the field bits at the arm,
+//!                                      word, dependents (Weak<code handle>) }]
+//!    popped:  [(Descriptor, weak subject)]   one-way: that subject never arms again
+//!    popped_any: Descriptor set   kinds 1-2: popped in some realm; blocks depend
 //!
-//!  arm(rt, d, subject)  check the name and the chain (no proxy), prototype mode, cell_for
+//!  arm(rt, d, subject)  check the name (and the chain: no proxy), prototype mode, cell_for;
+//!                       a new subject gets its own word
 //!  depend(rt, f, subject, code)   code that runs against subject depends on f
 //!                                 (an InvalidatingFuse)
 //!  guard(rt, f, subject) / intact(rt, f, subject)
-//!                       the GuardFuse read: one load + compare of the fuse word; for a
-//!                       dynamic fuse only with a subject it is armed with
-//!  pop(rt, f)           word := POPPED, every live dependent Invalidated, handles released
+//!                       the GuardFuse read: one load + compare of the subject's word
+//!  pop of a subject     its word := POPPED; kinds 1-2: every dependent of the descriptor (in
+//!                       every realm) Invalidated, popped_any; kind 3: the subject's dependents
 //!  sweep_after_gc(rt)   at the cleanup point after a GC (Cx::cleanup_finalization_registries):
-//!                       drop dead dependents, dead subjects and the fuses nothing uses
+//!                       drop dead dependents, dead subjects and the subjects nothing uses
 //!  shape::note_change(o) on a prototype -> validity::invalidate -> on_proto_change
-//!                       -> pop every armed fuse whose subject cell is now invalid
+//!                       -> pop every armed kind-1/2 subject whose cell is now invalid
+//!  field_rep widening of descriptor i -> on_field_change(i)
+//!                       -> pop every armed kind-3 subject whose field bits changed
 //! ```
 //!
 //! Rules:
-//! - One-way (H31 Rules). A popped word never reads intact again. A popped descriptor is
-//!   refused by [`Registry::arm`] and [`Registry::depend`] for the life of the isolate.
+//! - One-way (H31 Rules). A popped word never reads intact again, and its subject is refused
+//!   by [`Registry::arm`] and [`Registry::guard`] for the life of the isolate (the popped list
+//!   holds the subject weakly; a dead one needs no entry).
 //! - A dynamic fuse exists from its first arm. It guards the chains of the subjects it was
 //!   armed with, from the arm on: a chain change before the arm is not a pop. A pop of a
 //!   descriptor that is not armed changes nothing.
@@ -47,30 +57,45 @@
 //! - A chain that holds a proxy is refused (MC-w16-15): a proxy's `[[GetPrototypeOf]]` is a
 //!   trap, so its chain can change with no structural change. So is a chain deeper than
 //!   `validity::MAX_DEPTH`, and a subject that the descriptor does not name.
-//! - Scope (doc 13 §3.5, F15). A fuse is per isolate: one word and one dependents list per
-//!   descriptor, so a pop through any armed subject (any realm) invalidates every dependent.
-//!   A descriptor names an object per realm (an intrinsic), or per closure (a class
-//!   prototype), so code that runs against another subject of the same name arms the fuse
-//!   with that subject first. [`Registry::depend`], [`Registry::guard`] and
-//!   [`Registry::intact`] of a dynamic fuse take the caller's subject and refuse
-//!   ([`Refusal::NotArmed`]) one whose current validity cell is not one the fuse holds: the
-//!   word of a fuse armed in one realm never answers for another realm's subject, whose chain
-//!   nothing watches (M5-P1 review, Codex r1 fr0).
+//! - Scope (H31-Q2, M5-P1-ORCH-13). GuardFuse words are per armed subject: one word per
+//!   (descriptor, subject), so a subject of another realm (another realm's intrinsic, another
+//!   closure's class prototype) is armed on its own and keeps its own word. InvalidatingFuse
+//!   dependents of kinds 1-2 are per isolate: a FunctionInfo and its code set are shared by
+//!   realms (H22), so a pop of any subject invalidates the dependents of every subject of the
+//!   descriptor and puts the descriptor in the "popped in any realm" summary, which refuses
+//!   [`Registry::depend`] from then on; the other realms' words stay intact. A kind-3
+//!   descriptor names no realm-wide object (a shape is run-local), so its dependents and its
+//!   popped state are its subject's only. [`Registry::depend`], [`Registry::guard`] and
+//!   [`Registry::intact`] take the caller's subject and refuse ([`Refusal::NotArmed`]) one that
+//!   no arm names or whose state changed (kinds 1-2: its current validity cell is not the one
+//!   the arm kept; kind 3: its field bits are not the ones the arm read) (M5-P1 review, Codex
+//!   r1 fr0). The realm fuse block for static fuses (`Root::RealmFuses`) waits for the first
+//!   wired static fuse (month 6, H31-Q5).
+//! - Kind 3 (M5-P2 CONSTREP, C-02): the subject is any fast shape that has descriptor
+//!   `index` (not an accessor); the arm keeps its field owner (`shape::field_owner`), so every
+//!   shape of the family names one fuse. A widening of the field's bits (`field_rep.rs`) pops
+//!   it. The word a compiled reader would load is reached through the shape: SHAPE +24
+//!   DESCRIPTORS, the entry's details bits 4-7 (H17 rep/const row); the Rust word mirrors it.
+//! - Subject forms are an append-only list (H31 Rules): ProtoRef (kind 1), FunctionRef (kind
+//!   2), a run-local field: a shape and a descriptor index (kind 3; no unit or snapshot names
+//!   one, R17).
 //! - Static fuses are named by index in the H31 Decision order. A static fuse is usable
 //!   ([`Registry::depend`], [`Registry::guard`], an intact read) only once its pop site is
 //!   wired ([`Registry::wire`]); v0 wires none, so each reads not intact.
 //! - Dependents are weak code handles ([`CodeHandle`]): the registry holds `Weak`s and drops
 //!   the dead ones. A pop marks each live one Invalidated; the lazy deopt of its frames and
 //!   the dispatch-slot swap come with H29 lazy deopt (month 6).
-//! - GC (plan rule 8): the registry holds handle-table indices, `Rc` fuse words and `Weak`
-//!   code handles, never a Value. [`on_proto_change`] and [`Registry::pop`] are not GC points;
-//!   [`Registry::arm`] is one.
+//! - GC (plan rule 8): the registry holds handle-table indices, `Rc` fuse words, int32 field
+//!   bits and `Weak` code handles, never a Value. [`on_proto_change`], [`on_field_change`] and
+//!   [`Registry::pop`] are not GC points; [`Registry::arm`] of kinds 1-2 is one. Subjects are
+//!   compared by the current value of their weak handles, by equality only (H12: never a
+//!   hash or a sort key).
 //! - The runtime sweep: a weak source notes each GC (it cannot sweep there: the heap's handle
 //!   table is borrowed while the weak sources run). The next FinalizationRegistry cleanup
 //!   point (`Cx::cleanup_finalization_registries`, which every microtask checkpoint runs)
 //!   calls [`Registry::sweep_after_gc`]: dead dependents and dead subjects go, and so does an
-//!   armed fuse that nothing uses (no live dependent and no word held outside the registry),
-//!   with its handles (M5-P1 fixer round 3, Codex r1 fr0).
+//!   armed subject that nothing uses (no live dependent and no word held outside the
+//!   registry), with its handles (M5-P1 fixer round 3, Codex r1 fr0).
 //!
 //! The FUSE kind id 83 stays reserved (OBJECT_LAYOUT 5): v0 needs no heap cell (H31-Q1, Q3:
 //! the fuse word is Rust memory until a unit link cell or a root table names it).
@@ -98,15 +123,18 @@ pub(crate) mod descriptor {
     pub const PROTO_CHAIN: u8 = 1;
     /// The constructor chain by FunctionRef (MC-w15-9, V10-D12).
     pub const CONSTRUCTOR_CHAIN: u8 = 2;
+    /// Field constness and representation (C-02, M5-P2 CONSTREP): a run-local field (a shape
+    /// and a descriptor index).
+    pub const FIELD: u8 = 3;
 
     /// True for a kind this build knows. A decoder (a unit's link table, H35) refuses the
     /// others, and the variant that names one is skipped (H31 Freeze table).
     pub fn known(k: u8) -> bool {
-        matches!(k, PROTO_CHAIN | CONSTRUCTOR_CHAIN)
+        matches!(k, PROTO_CHAIN | CONSTRUCTOR_CHAIN | FIELD)
     }
 }
 
-/// A dynamic fuse name: a descriptor kind and its subject.
+/// A dynamic fuse name: a descriptor kind and its subject form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Descriptor {
     /// Kind 1: no object on the chain from this prototype up to null has a structural change
@@ -116,6 +144,11 @@ pub(crate) enum Descriptor {
     /// `[[Prototype]]`, up to null) has a structural change. The guard of `x instanceof D`
     /// and of static loads on a derived class (MC-w15-9), which no ProtoRef can name.
     ConstructorChain(FunctionRef),
+    /// Kind 3 (M5-P2 CONSTREP, C-02): the representation and const bits of descriptor `index`
+    /// of a field family (`field_rep.rs`) do not change. The subject is a fast shape that has
+    /// the field; a shape is run-local, so the subject is part of the fuse's identity (no
+    /// unit or snapshot names it, R17).
+    Field { index: u16 },
 }
 
 impl Descriptor {
@@ -124,7 +157,14 @@ impl Descriptor {
         match self {
             Descriptor::ProtoChain(_) => descriptor::PROTO_CHAIN,
             Descriptor::ConstructorChain(_) => descriptor::CONSTRUCTOR_CHAIN,
+            Descriptor::Field { .. } => descriptor::FIELD,
         }
+    }
+
+    /// True if the descriptor names one object per realm (kinds 1-2), so its dependents are
+    /// per isolate: a pop of any subject invalidates them all (H31-Q2, M5-P1-ORCH-13).
+    fn realm_wide(&self) -> bool {
+        !matches!(self, Descriptor::Field { .. })
     }
 }
 
@@ -161,9 +201,9 @@ pub(crate) enum Refusal {
     UnknownStatic,
     /// A static fuse whose pop site is not wired: nothing would pop it.
     NotWired,
-    /// The fuse popped (one-way).
+    /// The fuse popped (one-way): for this subject, or (depend, kinds 1-2) in some realm.
     Popped,
-    /// A dynamic fuse that is not armed: [`Registry::arm`] it with its subject first.
+    /// A dynamic fuse that is not armed with this subject: [`Registry::arm`] it first.
     NotArmed,
     /// The descriptor does not name the subject (or names nothing: `ProtoRef::Unknown`).
     NotNamed,
@@ -259,29 +299,61 @@ struct StaticFuse {
     dependents: Dependents,
 }
 
-/// One armed subject of a dynamic fuse.
-struct Subject {
-    /// The subject object (weak; `None` for the null prototype).
-    object: Option<WeakHandle>,
-    /// Its VALIDITY_CELL at the arm (strong).
-    cell: GlobalHandle,
+/// What a subject's state is checked against: kinds 1-2 its VALIDITY_CELL at the arm
+/// (strong), kind 3 its field bits at the arm (an int32, `shape::FIELD_BITS`).
+enum Watch {
+    Cell(GlobalHandle),
+    FieldBits(i32),
 }
 
-struct DynFuse {
+/// One armed subject of a dynamic fuse, with its own word (H31-Q2, M5-P1-ORCH-13).
+struct Subject {
+    /// The subject (weak; `None` for the null prototype): kinds 1-2 the prototype or
+    /// function, kind 3 the field owner shape.
+    object: Option<WeakHandle>,
+    watch: Watch,
     word: Rc<FuseWord>,
-    subjects: Vec<Subject>,
     dependents: Dependents,
 }
 
-impl DynFuse {
-    /// True if the fuse is armed with `subject`: its current validity cell (no new one is
-    /// made) is valid and is the cell of one of the fuse's subjects. Not a GC point.
-    fn armed_with(&self, rt: &Runtime, subject: u64) -> bool {
-        current_cell(rt, subject).is_some_and(|c| {
-            self.subjects
-                .iter()
-                .any(|s| rt.heap.global(s.cell).to_bits() == c)
-        })
+impl Subject {
+    /// True if this entry is for the subject `id` (null, or the bits of a live cell): its
+    /// weak handle reads `id`. An equality test only (H12). Not a GC point.
+    fn is(&self, rt: &Runtime, id: u64) -> bool {
+        match self.object {
+            None => id == NULL,
+            Some(o) => rt.heap.weak(o).is_some_and(|v| v.to_bits() == id),
+        }
+    }
+
+    /// True if the state the arm saw still holds: kinds 1-2 the subject's current valid
+    /// VALIDITY_CELL (no new one is made) is the kept one; kind 3 the field bits of descriptor
+    /// `index` of the owner `id` are the kept ones. Not a GC point.
+    fn current(&self, rt: &Runtime, id: u64, index: Option<usize>) -> bool {
+        match (&self.watch, index) {
+            (Watch::Cell(c), None) => {
+                current_cell(rt, id).is_some_and(|now| rt.heap.global(*c).to_bits() == now)
+            }
+            (Watch::FieldBits(b), Some(i)) => shape::field_bits_at(id, i) == *b,
+            _ => false,
+        }
+    }
+
+    /// The subject's value (null, or the bits of a live cell), or `None` if it died. Not a GC
+    /// point.
+    fn id(&self, rt: &Runtime) -> Option<u64> {
+        match self.object {
+            None => Some(NULL),
+            Some(o) => rt.heap.weak(o).map(|v| v.to_bits()),
+        }
+    }
+
+    /// Releases the handles; gives the weak subject handle to keep (a popped subject).
+    fn release(self, rt: &Runtime) -> Option<WeakHandle> {
+        if let Watch::Cell(c) = self.watch {
+            rt.heap.drop_global(c);
+        }
+        self.object
     }
 }
 
@@ -300,17 +372,59 @@ fn current_cell(rt: &Runtime, subject: u64) -> Option<u64> {
     validity::is_valid(c).then_some(c)
 }
 
+/// A popped subject: refused by `arm` and `guard` for the life of the isolate.
+struct Popped {
+    d: Descriptor,
+    /// Weak; `None` for the null prototype.
+    object: Option<WeakHandle>,
+}
+
 struct Inner {
     statics: Vec<StaticFuse>,
-    armed: HashMap<Descriptor, DynFuse>,
-    popped: HashSet<Descriptor>,
+    armed: HashMap<Descriptor, Vec<Subject>>,
+    popped: Vec<Popped>,
+    /// Kinds 1-2: descriptors popped in some realm (blocks `depend`).
+    popped_any: HashSet<Descriptor>,
+}
+
+impl Inner {
+    /// True if the subject `id` of `d` popped. Not a GC point.
+    fn popped(&self, rt: &Runtime, d: Descriptor, id: u64) -> bool {
+        self.popped.iter().any(|p| {
+            p.d == d
+                && match p.object {
+                    None => id == NULL,
+                    Some(o) => rt.heap.weak(o).is_some_and(|v| v.to_bits() == id),
+                }
+        })
+    }
+
+    /// The armed entry of the subject `id` of `d`, if its state still holds. Not a GC point.
+    fn armed_with(&mut self, rt: &Runtime, d: Descriptor, id: u64) -> Option<&mut Subject> {
+        let index = field_index(d);
+        self.armed
+            .get_mut(&d)?
+            .iter_mut()
+            .find(|s| s.is(rt, id) && s.current(rt, id, index))
+    }
+}
+
+/// The descriptor index of a kind-3 descriptor.
+fn field_index(d: Descriptor) -> Option<usize> {
+    match d {
+        Descriptor::Field { index } => Some(usize::from(index)),
+        _ => None,
+    }
 }
 
 /// The per-isolate fuse registry (`Runtime::fuses`).
 pub(crate) struct Registry {
     inner: RefCell<Inner>,
-    /// The number of armed dynamic fuses: [`on_proto_change`] reads only this while it is 0.
+    /// The number of armed kind-1/2 subjects: [`on_proto_change`] reads only this while it is
+    /// 0.
     armed: Cell<usize>,
+    /// The number of armed kind-3 subjects: [`on_field_change`] reads only this while it is 0.
+    fields_armed: Cell<usize>,
     /// Set by the heap's weak source at every GC; cleared by [`Registry::sweep_after_gc`].
     gc_since_sweep: Rc<Cell<bool>>,
 }
@@ -335,9 +449,11 @@ impl Registry {
             inner: RefCell::new(Inner {
                 statics,
                 armed: HashMap::new(),
-                popped: HashSet::new(),
+                popped: Vec::new(),
+                popped_any: HashSet::new(),
             }),
             armed: Cell::new(0),
+            fields_armed: Cell::new(0),
             gc_since_sweep,
         }
     }
@@ -360,62 +476,88 @@ impl Registry {
         Ok(())
     }
 
-    /// Arms the dynamic fuse `d` with `subject`: the object `d` names in the current realm
-    /// (null for `ProtoChain(Null)`). From now on a structural change of an object on the
-    /// subject's chain pops `d`. Gives the fuse word. Arming an armed fuse with another
-    /// subject adds that subject; with the same one it changes nothing. Refused: a popped
-    /// descriptor, a subject the descriptor does not name, a proxy on the chain, a chain
-    /// deeper than `validity::MAX_DEPTH`. Puts the chain's first object in prototype mode
-    /// (`shape::proto_info_for`). GC point.
+    /// The counter of armed subjects of `d`'s kind.
+    fn counter(&self, d: Descriptor) -> &Cell<usize> {
+        if d.realm_wide() {
+            &self.armed
+        } else {
+            &self.fields_armed
+        }
+    }
+
+    /// Arms the dynamic fuse `d` with `subject` and gives the subject's word. Kinds 1-2: the
+    /// object `d` names in the current realm (null for `ProtoChain(Null)`); from now on a
+    /// structural change of an object on the subject's chain pops it. Kind 3: a fast shape
+    /// that has descriptor `index` (a data property); the fuse is the field owner's, and a
+    /// widening of its bits pops it. Arming an armed subject again gives its word. Refused: a
+    /// popped subject (one-way), a subject the descriptor does not name, a proxy on the chain,
+    /// a chain deeper than `validity::MAX_DEPTH`. Another realm's subject arms on its own,
+    /// with its own word, even after a pop in this realm. Kinds 1-2 put the chain's first
+    /// object in prototype mode (`shape::proto_info_for`): a GC point. Kind 3 is not one.
     pub(crate) fn arm(
         &self,
         rt: &Runtime,
         d: Descriptor,
         subject: u64,
     ) -> Result<Rc<FuseWord>, Refusal> {
-        if self.inner.borrow().popped.contains(&d) {
-            return Err(Refusal::Popped);
-        }
         if !names(rt, &d, subject) {
             return Err(Refusal::NotNamed);
         }
-        check_chain(subject)?;
-        // GC points below: `subject` lives in a Rust local (CSS); no JS runs, so the chain
-        // stays the one checked above.
-        if subject != NULL {
-            shape::proto_info_for(rt, subject);
+        let id = subject_id(d, subject);
+        if self.inner.borrow().popped(rt, d, id) {
+            return Err(Refusal::Popped);
         }
-        let c = validity::cell_for(rt, subject).ok_or(Refusal::TooDeep)?;
+        let watch = match field_index(d) {
+            Some(i) => Watch::FieldBits(shape::field_bits_at(id, i)),
+            None => {
+                check_chain(subject)?;
+                // GC points below: `subject` lives in a Rust local (CSS); no JS runs, so the
+                // chain stays the one checked above.
+                if subject != NULL {
+                    shape::proto_info_for(rt, subject);
+                }
+                let c = validity::cell_for(rt, subject).ok_or(Refusal::TooDeep)?;
+                Watch::Cell(rt.heap.new_global(val(c)))
+            }
+        };
         let mut inner = self.inner.borrow_mut();
-        debug_assert!(!inner.popped.contains(&d), "a GC pops nothing");
-        let fresh = !inner.armed.contains_key(&d);
-        let f = inner.armed.entry(d).or_insert_with(|| DynFuse {
-            word: FuseWord::new(),
-            subjects: Vec::new(),
+        debug_assert!(!inner.popped(rt, d, id), "a GC pops nothing");
+        let subjects = inner.armed.entry(d).or_default();
+        drop_dead_subjects(rt, subjects, &self.armed, &self.fields_armed, d);
+        let index = field_index(d);
+        if let Some(at) = subjects.iter().position(|s| s.is(rt, id)) {
+            if !subjects[at].current(rt, id, index) {
+                // Its state changed, and the hook did not pop it: refuse and pop it now.
+                drop(inner);
+                if let Watch::Cell(c) = watch {
+                    rt.heap.drop_global(c);
+                }
+                self.pop_subject(rt, d, id);
+                return Err(Refusal::Popped);
+            }
+            if let Watch::Cell(c) = watch {
+                rt.heap.drop_global(c);
+            }
+            return Ok(Rc::clone(&subjects[at].word));
+        }
+        let word = FuseWord::new();
+        subjects.push(Subject {
+            object: (id != NULL).then(|| rt.heap.new_weak(val(id))),
+            watch,
+            word: Rc::clone(&word),
             dependents: Dependents::default(),
         });
-        drop_dead_subjects(rt, &mut f.subjects);
-        if !f
-            .subjects
-            .iter()
-            .any(|s| rt.heap.global(s.cell).to_bits() == c)
-        {
-            f.subjects.push(Subject {
-                object: (subject != NULL).then(|| rt.heap.new_weak(val(subject))),
-                cell: rt.heap.new_global(val(c)),
-            });
-        }
-        let word = Rc::clone(&f.word);
-        if fresh {
-            self.armed.set(self.armed.get() + 1);
-        }
+        let n = self.counter(d);
+        n.set(n.get() + 1);
         Ok(word)
     }
 
-    /// Makes `code` depend on `f` (an InvalidatingFuse): a pop of `f` marks it Invalidated.
-    /// A static fuse must be wired (it ignores `subject`). A dynamic one must be armed with
-    /// `subject`, the object the code runs against (null for `ProtoChain(Null)`): its current
-    /// validity cell is one the fuse holds ([`Refusal::NotArmed`] if not). Not a GC point.
+    /// Makes `code` depend on `f` (an InvalidatingFuse): a pop of `f` marks it Invalidated. A
+    /// static fuse must be wired (it ignores `subject`). A dynamic one must be armed with
+    /// `subject`, the object (kind 3: the shape) the code runs against (null for
+    /// `ProtoChain(Null)`), and its state must still hold ([`Refusal::NotArmed`] if not).
+    /// Kinds 1-2 refuse once any subject of `d` popped, in any realm ([`Refusal::Popped`]).
+    /// Not a GC point.
     pub(crate) fn depend(
         &self,
         rt: &Runtime,
@@ -439,29 +581,34 @@ impl Registry {
                 s.dependents.add(code);
             }
             FuseRef::Dynamic(d) => {
-                if inner.popped.contains(&d) {
+                if d.realm_wide() && inner.popped_any.contains(&d) {
                     return Err(Refusal::Popped);
                 }
-                let f = inner.armed.get_mut(&d).ok_or(Refusal::NotArmed)?;
-                if !f.armed_with(rt, subject) {
-                    return Err(Refusal::NotArmed);
+                let id = lookup_id(rt, d, subject).ok_or(Refusal::NotArmed)?;
+                if inner.popped(rt, d, id) {
+                    return Err(Refusal::Popped);
                 }
-                f.dependents.add(code);
+                inner
+                    .armed_with(rt, d, id)
+                    .ok_or(Refusal::NotArmed)?
+                    .dependents
+                    .add(code);
             }
         }
         Ok(())
     }
 
     /// The word of `f` for a GuardFuse reader (a Rust fast path, H31-Q5): a wired static fuse
-    /// (it ignores `subject`), or a dynamic one armed with `subject` (as [`Registry::depend`]).
-    /// The word reads intact until `f` pops; it answers for `subject` only. Not a GC point.
+    /// (it ignores `subject`), or the word of the armed subject `subject` of a dynamic one (as
+    /// [`Registry::depend`]; a pop in another realm leaves it intact). The word reads intact
+    /// until that subject pops. Not a GC point.
     pub(crate) fn guard(
         &self,
         rt: &Runtime,
         f: FuseRef,
         subject: u64,
     ) -> Result<Rc<FuseWord>, Refusal> {
-        let inner = self.inner.borrow();
+        let mut inner = self.inner.borrow_mut();
         match f {
             FuseRef::Static(i) => {
                 let s = inner
@@ -475,14 +622,13 @@ impl Registry {
                 }
             }
             FuseRef::Dynamic(d) => {
-                if inner.popped.contains(&d) {
+                let id = lookup_id(rt, d, subject).ok_or(Refusal::NotArmed)?;
+                if inner.popped(rt, d, id) {
                     return Err(Refusal::Popped);
                 }
                 inner
-                    .armed
-                    .get(&d)
-                    .filter(|f| f.armed_with(rt, subject))
-                    .map(|f| Rc::clone(&f.word))
+                    .armed_with(rt, d, id)
+                    .map(|s| Rc::clone(&s.word))
                     .ok_or(Refusal::NotArmed)
             }
         }
@@ -495,50 +641,104 @@ impl Registry {
         self.guard(rt, f, subject).is_ok_and(|w| w.intact())
     }
 
-    /// Pops `f`: its word reads POPPED from now on, every live dependent is Invalidated, and
-    /// a dynamic fuse releases its handles and is never armed again. A popped fuse, or a
-    /// dynamic one that is not armed, changes nothing. Not a GC point.
+    /// Pops `f`: a static fuse's word reads POPPED from now on and its live dependents are
+    /// Invalidated; a dynamic fuse pops every armed subject ([`Registry::pop_subject`]). A
+    /// popped fuse, or a dynamic one that is not armed, changes nothing. Not a GC point.
     pub(crate) fn pop(&self, rt: &Runtime, f: FuseRef) {
-        let mut inner = self.inner.borrow_mut();
         match f {
             FuseRef::Static(i) => {
+                let mut inner = self.inner.borrow_mut();
                 if let Some(s) = inner.statics.get_mut(i as usize) {
                     s.word.0.set(POPPED);
                     s.dependents.invalidate_all();
                 }
             }
             FuseRef::Dynamic(d) => {
-                if let Some(mut f) = inner.armed.remove(&d) {
-                    self.armed.set(self.armed.get() - 1);
-                    f.word.0.set(POPPED);
-                    f.dependents.invalidate_all();
-                    release_subjects(rt, f.subjects.drain(..));
-                    inner.popped.insert(d);
+                // One live subject at a time: each pop removes it (no list of subject values
+                // is kept).
+                while let Some(id) = self.first_subject(rt, d, |_, _| true) {
+                    if !self.pop_subject(rt, d, id) {
+                        break;
+                    }
                 }
             }
         }
     }
 
-    /// Drops dead dependents and dead subjects, and the armed fuses that nothing uses (no
-    /// live dependent and no word held outside the registry). Not a GC point.
+    /// Pops the armed subject `id` of `d` (one-way): its word reads POPPED; kinds 1-2 mark
+    /// the dependents of every subject of `d` Invalidated (they are per isolate) and put `d`
+    /// in the "popped in any realm" summary; kind 3 marks the subject's own dependents. The
+    /// subject's handles are released; a weak one stays in the popped list. A subject that
+    /// is not armed changes nothing. True if it popped one. Not a GC point.
+    pub(crate) fn pop_subject(&self, rt: &Runtime, d: Descriptor, id: u64) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        let Some(subjects) = inner.armed.get_mut(&d) else {
+            return false;
+        };
+        let Some(at) = subjects.iter().position(|s| s.is(rt, id)) else {
+            return false;
+        };
+        let mut s = subjects.swap_remove(at);
+        s.word.0.set(POPPED);
+        s.dependents.invalidate_all();
+        if d.realm_wide() {
+            for other in subjects.iter_mut() {
+                other.dependents.invalidate_all();
+            }
+        }
+        if subjects.is_empty() {
+            inner.armed.remove(&d);
+        }
+        let n = self.counter(d);
+        n.set(n.get() - 1);
+        let object = s.release(rt);
+        inner.popped.push(Popped { d, object });
+        if d.realm_wide() {
+            inner.popped_any.insert(d);
+        }
+        true
+    }
+
+    /// Drops dead dependents, dead subjects and dead popped entries, and the armed subjects
+    /// that nothing uses (no live dependent and no word held outside the registry). Not a GC
+    /// point.
     pub(crate) fn sweep(&self, rt: &Runtime) {
         let mut inner = self.inner.borrow_mut();
         for s in &mut inner.statics {
             s.dependents.sweep();
         }
-        let mut unused = Vec::new();
-        for (d, f) in &mut inner.armed {
-            f.dependents.sweep();
-            drop_dead_subjects(rt, &mut f.subjects);
-            if f.dependents.0.is_empty() && Rc::strong_count(&f.word) == 1 {
-                unused.push(*d);
+        let mut empty = Vec::new();
+        for (d, subjects) in &mut inner.armed {
+            drop_dead_subjects(rt, subjects, &self.armed, &self.fields_armed, *d);
+            let mut j = 0;
+            while j < subjects.len() {
+                let s = &mut subjects[j];
+                s.dependents.sweep();
+                if s.dependents.0.is_empty() && Rc::strong_count(&s.word) == 1 {
+                    let s = subjects.swap_remove(j);
+                    let n = self.counter(*d);
+                    n.set(n.get() - 1);
+                    if let Some(o) = s.release(rt) {
+                        rt.heap.drop_weak(o);
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if subjects.is_empty() {
+                empty.push(*d);
             }
         }
-        for d in unused {
-            let f = inner.armed.remove(&d).expect("listed above");
-            release_subjects(rt, f.subjects.into_iter());
-            self.armed.set(self.armed.get() - 1);
+        for d in empty {
+            inner.armed.remove(&d);
         }
+        inner.popped.retain(|p| match p.object {
+            Some(o) if rt.heap.weak(o).is_none() => {
+                rt.heap.drop_weak(o);
+                false
+            }
+            _ => true,
+        });
     }
 
     /// [`Registry::sweep`] if a GC ran since the last call: the runtime sweep point
@@ -549,7 +749,8 @@ impl Registry {
         }
     }
 
-    /// The entries of the dependents list of `f` (dead ones not yet dropped included), or 0.
+    /// The entries of the dependents lists of `f` (every subject; dead ones not yet dropped
+    /// included), or 0.
     pub(crate) fn dependent_entries(&self, f: FuseRef) -> usize {
         let inner = self.inner.borrow();
         match f {
@@ -557,54 +758,94 @@ impl Registry {
                 .statics
                 .get(i as usize)
                 .map_or(0, |s| s.dependents.0.len()),
-            FuseRef::Dynamic(d) => inner.armed.get(&d).map_or(0, |f| f.dependents.0.len()),
+            FuseRef::Dynamic(d) => inner
+                .armed
+                .get(&d)
+                .map_or(0, |v| v.iter().map(|s| s.dependents.0.len()).sum()),
         }
     }
 
     /// The subjects a dynamic fuse is armed with (dead ones not yet dropped included), or 0.
     pub(crate) fn subject_count(&self, d: Descriptor) -> usize {
-        self.inner
-            .borrow()
-            .armed
-            .get(&d)
-            .map_or(0, |f| f.subjects.len())
+        self.inner.borrow().armed.get(&d).map_or(0, Vec::len)
     }
 
-    /// The armed dynamic fuses whose subject cell is no longer valid.
-    #[cold]
-    #[inline(never)]
-    fn changed(&self, rt: &Runtime) -> Vec<Descriptor> {
+    /// The first live armed subject of `d` for which `pick` holds. Not a GC point.
+    fn first_subject(
+        &self,
+        rt: &Runtime,
+        d: Descriptor,
+        pick: impl Fn(&Subject, u64) -> bool,
+    ) -> Option<u64> {
         let inner = self.inner.borrow();
         inner
             .armed
+            .get(&d)?
             .iter()
-            .filter(|(_, f)| {
-                f.subjects
-                    .iter()
-                    .any(|s| !validity::is_valid(rt.heap.global(s.cell).to_bits()))
+            .find_map(|s| s.id(rt).filter(|&id| pick(s, id)))
+    }
+
+    /// The first live armed kind-1/2 subject whose kept cell is no longer valid:
+    /// (descriptor, subject). Not a GC point.
+    #[cold]
+    #[inline(never)]
+    fn first_changed(&self, rt: &Runtime) -> Option<(Descriptor, u64)> {
+        let inner = self.inner.borrow();
+        inner.armed.iter().find_map(|(d, subjects)| {
+            subjects.iter().find_map(|s| {
+                let Watch::Cell(c) = s.watch else {
+                    return None;
+                };
+                if validity::is_valid(rt.heap.global(c).to_bits()) {
+                    return None;
+                }
+                s.id(rt).map(|id| (*d, id))
             })
-            .map(|(d, _)| *d)
-            .collect()
+        })
     }
 }
 
-/// Releases the handles of `subjects`.
-fn release_subjects(rt: &Runtime, subjects: impl Iterator<Item = Subject>) {
-    for s in subjects {
-        if let Some(o) = s.object {
+/// The subject a fuse of `d` keeps for `subject` (`names` holds): kind 3 the field owner of
+/// the shape, kinds 1-2 the subject itself. Not a GC point.
+fn subject_id(d: Descriptor, subject: u64) -> u64 {
+    match d {
+        Descriptor::Field { index } => shape::field_owner(subject, usize::from(index)),
+        _ => subject,
+    }
+}
+
+/// The subject a read of `d` looks up for `subject` (`depend`, `guard`): kind 3 the field
+/// owner of a shape the descriptor names (`None` for anything else); kinds 1-2 the subject
+/// itself (the entry's identity and its cell decide, whatever the current realm). Not a GC
+/// point.
+fn lookup_id(rt: &Runtime, d: Descriptor, subject: u64) -> Option<u64> {
+    if d.realm_wide() {
+        return Some(subject);
+    }
+    names(rt, &d, subject).then(|| subject_id(d, subject))
+}
+
+/// Drops the subjects whose object died (a GC cleared the weak handle), with their handles.
+fn drop_dead_subjects(
+    rt: &Runtime,
+    subjects: &mut Vec<Subject>,
+    armed: &Cell<usize>,
+    fields_armed: &Cell<usize>,
+    d: Descriptor,
+) {
+    let mut j = 0;
+    while j < subjects.len() {
+        if subjects[j].object.is_none_or(|o| rt.heap.weak(o).is_some()) {
+            j += 1;
+            continue;
+        }
+        let s = subjects.swap_remove(j);
+        let n = if d.realm_wide() { armed } else { fields_armed };
+        n.set(n.get() - 1);
+        if let Some(o) = s.release(rt) {
             rt.heap.drop_weak(o);
         }
-        rt.heap.drop_global(s.cell);
     }
-}
-
-/// Drops the subjects whose object died (a GC cleared the weak handle).
-fn drop_dead_subjects(rt: &Runtime, subjects: &mut Vec<Subject>) {
-    let (live, dead): (Vec<Subject>, Vec<Subject>) = subjects
-        .drain(..)
-        .partition(|s| s.object.is_none_or(|o| rt.heap.weak(o).is_some()));
-    *subjects = live;
-    release_subjects(rt, dead.into_iter());
 }
 
 /// True if `d` names `s` in the current realm. Not a GC point.
@@ -622,6 +863,14 @@ fn names(rt: &Runtime, d: &Descriptor, s: u64) -> bool {
         }
         Descriptor::ProtoChain(ProtoRef::Unknown) => false,
         Descriptor::ConstructorChain(r) => named(rt, &r, s),
+        Descriptor::Field { index } => {
+            let i = usize::from(index);
+            is_cell_bits(s)
+                && shape::is_shape(s)
+                && !shape::is_dictionary(s)
+                && i < shape::count(s)
+                && !shape::details_at(s, i).is_accessor()
+        }
     }
 }
 
@@ -686,9 +935,8 @@ fn check_chain(s: u64) -> Result<(), Refusal> {
 }
 
 /// The hook of a structural change of the prototype object `o` (`shape::note_change`, after
-/// the validity cells are invalidated): pops every armed dynamic fuse whose subject cell
-/// is no longer valid. One load and one branch while no dynamic fuse is armed. Not a GC
-/// point.
+/// the validity cells are invalidated): pops every armed kind-1/2 subject whose cell is no
+/// longer valid. One load and one branch while none is armed. Not a GC point.
 #[inline(always)]
 pub(crate) fn on_proto_change(rt: &Runtime, _o: u64) {
     if rt.fuses.armed.get() != 0 {
@@ -699,7 +947,38 @@ pub(crate) fn on_proto_change(rt: &Runtime, _o: u64) {
 #[cold]
 #[inline(never)]
 fn pop_changed(rt: &Runtime) {
-    for d in rt.fuses.changed(rt) {
-        rt.fuses.pop(rt, FuseRef::Dynamic(d));
+    // One subject at a time: each pop removes it.
+    while let Some((d, id)) = rt.fuses.first_changed(rt) {
+        if !rt.fuses.pop_subject(rt, d, id) {
+            break;
+        }
+    }
+}
+
+/// The hook of a widening of descriptor `i` of some field family (`field_rep.rs`, after the
+/// DESCRIPTORS cells are written): pops every armed kind-3 subject of index `i` whose field
+/// bits changed. One load and one branch while none is armed. Not a GC point.
+#[inline]
+pub(crate) fn on_field_change(rt: &Runtime, i: usize) {
+    if rt.fuses.fields_armed.get() != 0 {
+        pop_fields_changed(rt, i);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn pop_fields_changed(rt: &Runtime, i: usize) {
+    let Ok(index) = u16::try_from(i) else {
+        return;
+    };
+    let d = Descriptor::Field { index };
+    // One subject at a time: each pop removes it.
+    while let Some(id) = rt
+        .fuses
+        .first_subject(rt, d, |s, id| !s.current(rt, id, Some(i)))
+    {
+        if !rt.fuses.pop_subject(rt, d, id) {
+            break;
+        }
     }
 }

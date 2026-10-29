@@ -1,7 +1,8 @@
 //! Tests of the fuse registry v0 (`fuse.rs`; M5-P1 FR0, H31, C-01): a pop invalidates every
 //! dependent and is one-way, a dead dependent is dropped, a proxy chain is refused
 //! (MC-w16-15), a descriptor must name its subject, the constructor-chain kind (MC-w15-9),
-//! changes that must not pop, two realms (and a read for a subject no arm names), the static
+//! changes that must not pop, two realms (one word per subject, dependents per isolate:
+//! H31-Q2, M5-P1-ORCH-13; and a read for a subject no arm names), the static
 //! list order, the weak and strong handles across collections, and the runtime sweep at the
 //! cleanup point after a GC. Each test runs with and without GC stress (a collection
 //! before every allocation, then the heap verifier).
@@ -351,8 +352,14 @@ fn the_constructor_chain_pops_on_the_function_and_above() {
     }
 }
 
+/// H31-Q2 (M5-P1-ORCH-13, built in M5-P2 CONSTREP): one fuse armed in two realms keeps one
+/// word per subject and one dependents set per isolate. A pop in realm A (either one)
+/// invalidates the dependents armed through both realms and refuses new ones (the "popped in
+/// any realm" summary); realm A's word reads popped and its subject never arms again; realm
+/// B's word and `intact` stay true, and B's subject still arms (a GuardFuse reader in B keeps
+/// its fast path).
 #[test]
-fn a_fuse_armed_in_two_realms_pops_through_either() {
+fn a_pop_in_realm_a_invalidates_every_dependent_and_realm_b_stays_intact() {
     for second_pops in [true, false] {
         for stress in [false, true] {
             on_big_stack(move || {
@@ -361,29 +368,58 @@ fn a_fuse_armed_in_two_realms_pops_through_either() {
                     let g = cx.create_realm()?;
                     let d = proto_chain(IntrinsicId::ObjectPrototype);
                     let f = FuseRef::Dynamic(d);
-                    let c = CodeHandle::new();
-                    let (w, first_op) = {
+                    let (c1, c2) = (CodeHandle::new(), CodeHandle::new());
+                    let (w1, op1) = {
                         let rt: &Runtime = cx.inner().rt();
                         let op = builtins::intrinsic(rt, IntrinsicId::ObjectPrototype);
                         let w = rt.fuses.arm(rt, d, op).unwrap();
-                        rt.fuses.depend(rt, f, op, &c).unwrap();
+                        rt.fuses.depend(rt, f, op, &c1).unwrap();
                         (w, op)
                     };
-                    let second_op = cx.with_realm(g, |cx| {
+                    let (w2, op2) = cx.with_realm(g, |cx| {
                         let rt: &Runtime = cx.inner().rt();
                         let op = builtins::intrinsic(rt, IntrinsicId::ObjectPrototype);
-                        assert_ne!(op, first_op);
-                        // One fuse, a second subject.
+                        assert_ne!(op, op1);
+                        // One fuse, a second subject with its own word.
                         let w2 = rt.fuses.arm(rt, d, op).unwrap();
-                        assert!(std::rc::Rc::ptr_eq(&w, &w2));
+                        assert!(!std::rc::Rc::ptr_eq(&w1, &w2));
                         assert_eq!(rt.fuses.subject_count(d), 2);
+                        rt.fuses.depend(rt, f, op, &c2).unwrap();
                         rt.heap.collect();
-                        Ok(op)
+                        Ok((w2, op))
                     })?;
                     let rt: &Runtime = cx.inner().rt();
-                    assert!(w.intact());
-                    add(rt, if second_pops { second_op } else { first_op }, "fuseK");
-                    assert!(!w.intact() && c.is_invalidated());
+                    assert!(w1.intact() && w2.intact());
+                    let (popped, kept, kw, pw) = if second_pops {
+                        (op2, op1, &w1, &w2)
+                    } else {
+                        (op1, op2, &w2, &w1)
+                    };
+                    add(rt, popped, "fuseK");
+                    // Every dependent, armed through either realm, is invalidated.
+                    assert!(c1.is_invalidated() && c2.is_invalidated());
+                    assert!(!pw.intact() && !rt.fuses.intact(rt, f, popped));
+                    assert_eq!(rt.fuses.guard(rt, f, popped).err(), Some(Refusal::Popped));
+                    // The other realm's word stays intact, and its subject still arms (an
+                    // arm names the subject in the current realm: realm 1 here).
+                    assert!(kw.intact() && rt.fuses.intact(rt, f, kept));
+                    if second_pops {
+                        let again = rt.fuses.arm(rt, d, kept).unwrap();
+                        assert!(std::rc::Rc::ptr_eq(&again, kw));
+                    } else {
+                        assert_eq!(rt.fuses.arm(rt, d, popped).err(), Some(Refusal::Popped));
+                    }
+                    assert_eq!(rt.fuses.subject_count(d), 1);
+                    // No new dependent through either realm (popped in any realm).
+                    for s in [kept, popped] {
+                        assert_eq!(
+                            rt.fuses.depend(rt, f, s, &CodeHandle::new()),
+                            Err(Refusal::Popped)
+                        );
+                    }
+                    // The kept subject still pops on its own change.
+                    add(rt, kept, "fuseK2");
+                    assert!(!kw.intact());
                     Ok(())
                 });
                 assert_eq!(r, Ok(()));

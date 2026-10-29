@@ -168,9 +168,22 @@ fn field_get(o: u64, s: u64, f: usize) -> u64 {
     rd(c, off)
 }
 
+/// A second store of `v` into field `f` of `o` (fast shape `s`): widens the field's
+/// representation and clears its const bit first (`field_rep::before_field_store`, M5-P2
+/// CONSTREP). Not a GC point.
 #[inline]
 fn field_set(rt: &Runtime, o: u64, s: u64, f: usize, v: u64) {
     crate::field_rep::before_field_store(rt, s, f, v);
+    let (c, off) = field_ref(o, s, f);
+    wr(&rt.heap, c, off, v);
+}
+
+/// The first store of `v` into the new field `f` of `o`, under the shape `s` that the add
+/// gave (`own_add`): the const bit stays; a transition that other objects took widens to `v`
+/// (`field_rep::on_init_store`, M5-P2 CONSTREP). Not a GC point.
+#[inline]
+fn field_init(rt: &Runtime, o: u64, s: u64, f: usize, v: u64) {
+    crate::field_rep::on_init_store(rt, s, f, v);
     let (c, off) = field_ref(o, s, f);
     wr(&rt.heap, c, off, v);
 }
@@ -376,11 +389,11 @@ pub(crate) fn own_add(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
     if !shape::is_dictionary(s) {
         // GC points: `o`, `key`, `v` and `child` live in Rust locals (CSS); `child` is also
         // a (weak) transition of `s`, or a unique shape nothing else holds yet.
-        match shape::add(rt, s, key, attrs) {
+        match shape::add_with(rt, s, key, attrs, crate::field_rep::initial(v)) {
             Added::Shape(child) => {
                 let f = shape::count(child) - 1;
                 reserve_field(rt, o, child, f);
-                field_set(rt, o, child, f, v);
+                field_init(rt, o, child, f, v);
                 shape::install(rt, o, child);
                 shape::note_change(rt, o);
                 return;
