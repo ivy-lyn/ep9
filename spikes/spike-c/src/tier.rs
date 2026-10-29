@@ -583,6 +583,19 @@ pub fn run_script_full(
     int: IntFacts,
     opts: &emit_a64::EmitOptions<'_>,
 ) -> Result<ScriptRun, String> {
+    let t0 = t0_script(config, defs, warm, main)?;
+    let c = compiled_script(config, defs, warm, main, name, int, opts)?;
+    Ok(ScriptRun {
+        t0,
+        compiled: c.output,
+        report: c.report,
+        exits: c.exits,
+    })
+}
+
+/// The T0 half of [`run_script`]: `defs`, `warm` and `main` in a T0 session of their own
+/// (the threaded dispatch, as the compiled half); the output of `main`.
+pub fn t0_script(config: &Config, defs: &str, warm: &str, main: &str) -> Result<RunOutput, String> {
     let config = config.threaded();
     let mut t0s = Session::new(&config)?;
     t0s.run(defs, "defs.js")
@@ -591,7 +604,32 @@ pub fn run_script_full(
     t0s.run(warm, "warm.js")
         .result
         .map_err(|e| format!("T0 warm: {e}"))?;
-    let t0 = t0s.run(main, "main.js");
+    Ok(t0s.run(main, "main.js"))
+}
+
+/// What the compiled half of [`run_script`] made: the output of `main`, the compile report
+/// and the exits counted in `main` per exit record (record order).
+#[derive(Clone, Debug)]
+pub struct CompiledRun {
+    pub output: RunOutput,
+    pub report: CompileReport,
+    pub exits: Vec<u64>,
+}
+
+/// The compiled half of [`run_script`]: `defs` and `warm` run in T0 (the feedback), then
+/// `name` is compiled from the live facts with `opts` and installed, then `main` runs. With a
+/// force table the heap verifier runs after `main` (an error if it finds anything), as in
+/// [`run_full`].
+pub fn compiled_script(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<CompiledRun, String> {
+    let config = config.threaded();
     let mut s = Session::new(&config)?;
     s.run(defs, "defs.js")
         .result
@@ -629,13 +667,15 @@ pub fn run_script_full(
     // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of_target(f)`
     // with no JS run since, unchanged, and its exit table.
     unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
-    let compiled = s.run(main, "main.js");
+    let output = s.run(main, "main.js");
     let exits = s
         .exit_counts_of(&f)
         .ok_or("no exit counters after the install")?;
-    Ok(ScriptRun {
-        t0,
-        compiled,
+    if opts.force.is_some() {
+        s.verify()?;
+    }
+    Ok(CompiledRun {
+        output,
         report,
         exits,
     })
