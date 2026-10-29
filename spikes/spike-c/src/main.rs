@@ -496,6 +496,7 @@ fn main() -> ExitCode {
     let rest = &args[1..];
     let r = match cmd.as_str() {
         "structural" => return structural::main(rest),
+        "sp-facts" => return spike_c::sp_facts::main(rest),
         "kernels" => list(),
         "t0" => t0(rest),
         "facts" => facts_cmd(rest),

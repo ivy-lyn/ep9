@@ -64,14 +64,14 @@ pub fn to_profiled(snapshot: &FactSnapshot) -> Result<FactSnapshot, String> {
     Ok(out)
 }
 
-/// Reads a PROFILED file for `unit`: decodes it, refuses any source other than PROFILED,
-/// and checks it against the unit (`FactSnapshot::validate`: a stale snapshot is refused, a
-/// record that does not fit the unit is dropped and listed).
+/// Reads a PROFILED file for `unit` (config P, `crate::sp_facts`): decodes it (another schema
+/// version is refused whole), refuses any source other than PROFILED, and checks it against
+/// the unit (`FactSnapshot::validate`: stale is refused; a record that does not fit is dropped).
 pub fn read_profiled(
     bytes: &[u8],
     unit: &CompiledUnit,
 ) -> Result<(FactSnapshot, Vec<Dropped>), String> {
-    let s = FactSnapshot::decode(bytes).map_err(|e| format!("decode: {e:?}"))?;
+    let s = FactSnapshot::decode(bytes).map_err(|e| format!("decode: {e}"))?;
     if s.header().source != FactSource::Profiled {
         return Err(format!(
             "the file's source is {:?}, not Profiled",
