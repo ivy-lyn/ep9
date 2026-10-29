@@ -343,9 +343,9 @@ pub(crate) fn add_template(rt: &Runtime, t: u64) {
     object::list_set(rt, list, 0, int32_bits(used as i32 + 1));
 }
 
-/// GetFunctionRealm(obj) (§7.3.22) for the callers whose spec text takes an abrupt result
-/// as the current realm (NewPromiseReactionJob step 3, HostMakeJobCallback) or that throw on
-/// the next step anyway (`Cx::function_realm_intrinsic`): the `[[Realm]]` of a function, the
+/// GetFunctionRealm(obj) (§7.3.22) for the callers that take an abrupt result as the current
+/// realm (NewPromiseReactionJob step 3, HostMakeJobCallback, `Cx::function_realm_intrinsic`;
+/// a `?` step uses `try_get_function_realm`): the `[[Realm]]` of a function, the
 /// realm of a bound function's or a live proxy's target (steps 3-4), else the current realm
 /// (step 5, and a revoked proxy). Targets never change after creation, so the loop ends.
 /// Not a GC point.

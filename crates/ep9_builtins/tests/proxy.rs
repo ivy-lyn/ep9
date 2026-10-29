@@ -342,6 +342,35 @@ print(Object.getPrototypeOf(Reflect.construct(function () {}, [], live)) === Obj
     );
 }
 
+/// ArraySpeciesCreate step 4.b (§10.4.2.3: `? GetFunctionRealm(C)`): a bound function over
+/// a revoked proxy as the array's `constructor` throws the TypeError before its own
+/// `Symbol.species` is read (Codex r2 eng [medium]: the realm error was dropped, the bound
+/// function's `Symbol.species` was read and an array was made). Node v26.13.0 throws a
+/// TypeError in each; a live proxy under the same bound function makes an array.
+#[test]
+fn array_species_create_throws_for_a_bound_revoked_proxy() {
+    assert_eq!(
+        common::run_both(js!(r#"
+var r = Proxy.revocable(function () {}, {});
+var b = r.proxy.bind(null);
+b[Symbol.species] = Array;
+r.revoke();
+var a = [1, 2, 3];
+a.constructor = b;
+print(t(() => a.slice().length).split(':')[0], t(() => a.map(x => x).length).split(':')[0], t(() => a.filter(x => 1).length).split(':')[0], t(() => a.splice(0, 1).length).split(':')[0], t(() => a.concat().length).split(':')[0]);
+var r2 = Proxy.revocable(function () {}, {});
+var b2 = r2.proxy.bind(null);
+b2[Symbol.species] = Array;
+var c = [1, 2]; c.constructor = b2;
+print(Array.isArray(c.slice()), c.slice().length);
+"#)),
+        lines(&[
+            "TypeError TypeError TypeError TypeError TypeError",
+            "true 2"
+        ])
+    );
+}
+
 /// JSON.stringify asks a proxy only the traps of SerializeJSONProperty (§25.5.2.2): the
 /// wrapper test reads the internal slot and calls no trap (Codex r1 proxy2 [medium]: the
 /// `length` probe of `primitive_data` called `getOwnPropertyDescriptor`). Node v24.22.1.

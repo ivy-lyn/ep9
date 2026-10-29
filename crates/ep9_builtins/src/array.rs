@@ -338,7 +338,7 @@ fn array_species_create<'s>(
     //       realmC.[[Intrinsics]].[[%Array%]]) is true, set C to undefined. (C is realmC's
     //       %Array% and not the current one: each realm has its own %Array%.)
     if cx.is_constructor(c) {
-        let realm_array = cx.function_realm_intrinsic(c, IntrinsicId::Array);
+        let realm_array = cx.try_function_realm_intrinsic(c, IntrinsicId::Array)?;
         if c.is_same_bits(&realm_array) && !c.is_same_bits(&cx.intrinsic(IntrinsicId::Array)) {
             c = Local::undefined();
         }

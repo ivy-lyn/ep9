@@ -239,6 +239,7 @@ abi: impl<'s> Cx<'s> :: pub fn to_property_key(&mut self, impl Into<Local<'s>>) 
 abi: impl<'s> Cx<'s> :: pub fn to_rust_string(&mut self, impl Into<Local<'s>>) -> JsResult<String>
 abi: impl<'s> Cx<'s> :: pub fn to_string(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn to_uint32(&mut self, impl Into<Local<'s>>) -> JsResult<u32>
+abi: impl<'s> Cx<'s> :: pub fn try_function_realm_intrinsic(&mut self, impl Into<Local<'s>>, IntrinsicId) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn type_of(&self, impl Into<Local<'s>>) -> &'static str
 abi: impl<'s> Cx<'s> :: pub fn weak_ref_deref(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn with_realm<R>(&mut self, impl Into<Local<'s, JsObject>>, impl FnOnce(&mut Self) -> JsResult<R>) -> JsResult<R>
