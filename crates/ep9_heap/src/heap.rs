@@ -92,7 +92,7 @@ use crate::roots::{GlobalHandle, Handles, RootId, RootStrength, Roots, ScratchRo
 use crate::trace::{Mode, Tracer, WeakVisitor, find_cell};
 
 /// Heap settings. `Default` gives the plan values: a 64 GiB cage (H7), no limit below the
-/// cage, an 8 MiB first budget, no GC-stress, zapping in debug builds.
+/// cage, an 8 MiB first budget, S1 (generational), no GC-stress, zapping in debug builds.
 #[derive(Clone, Debug)]
 pub struct HeapConfig {
     /// The cage reservation (H7). Its alignment is raised to 256 KiB if lower.
@@ -123,14 +123,14 @@ pub struct HeapConfig {
     /// Which collections run the verifier when `verify_after_gc` is on. Today the only mode is
     /// [`VerifyMode::EveryGc`] (the default): every collection verifies.
     pub verify: VerifyMode,
-    /// The S1 generational mode (03-gc §3-§4, H09/H11). `false` (the default) is S0. `true`:
-    /// the barrier threshold is GEN, so a store of a cell into an old (BLACK) host takes the
-    /// slow path, which logs the host in its page's remembered list (GREY) or, for a large
-    /// object, dirties the 512-byte card of the slot (step 1, M4-P2); marks are sticky (the
-    /// sweep keeps the mark bits of the cells it keeps: marked = old). Step 2 (M4-P3): most
-    /// collections are minor GCs, which trace from the roots and the logs and stop at old
-    /// cells; a major GC clears the marks first and traces everything (module doc: the
-    /// policy). [`Heap::collect`] is always a major GC.
+    /// The S1 generational mode (03-gc §3-§4, H09/H11). `true` (the default since M5-P2,
+    /// V10-D17; `false` is S0): the barrier threshold is GEN, so a store of a cell into an old
+    /// (BLACK) host takes the slow path, which logs the host in its page's remembered list
+    /// (GREY) or, for a large object, dirties the 512-byte card of the slot (step 1, M4-P2);
+    /// marks are sticky (the sweep keeps the mark bits of the cells it keeps: marked = old).
+    /// Step 2 (M4-P3): most collections are minor GCs, which trace from the roots and the logs
+    /// and stop at old cells; a major GC clears the marks first and traces everything (module
+    /// doc: the policy). [`Heap::collect`] is always a major GC.
     pub generational: bool,
     /// Generational GC-stress ([`HeapConfig::gc_stress`] with [`HeapConfig::generational`]):
     /// every Nth GC-stress collection is a major GC, the others are minor (V9-D27). 0 and 1:
@@ -158,7 +158,7 @@ impl Default for HeapConfig {
             gc_stress: 0,
             verify_after_gc: false,
             verify: VerifyMode::EveryGc,
-            generational: false,
+            generational: true,
             stress_major_every: 64,
             zap: cfg!(debug_assertions),
             record_conservative_roots: false,
@@ -1106,7 +1106,7 @@ impl Heap {
     pub fn set_verify_after_gc(&self, on: bool) {
         self.inner.borrow_mut().s.verify_after_gc = on;
     }
-
+    /// A copy. Its padding is not zeroed: held across a GC, it may keep a dead cell one GC longer (css.rs).
     pub fn stats(&self) -> GcStats {
         let inner = self.inner.borrow();
         let mut s = inner.stats.clone();

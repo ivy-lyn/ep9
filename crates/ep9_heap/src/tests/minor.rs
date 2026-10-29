@@ -626,3 +626,22 @@ fn the_minor_verify_rejects_a_marked_white_cell() {
     assert!(msg.contains("marked (old) but WHITE"), "{msg}");
     heap.drop_global(g);
 }
+
+/// S1 is the default since M5-P2 (plan v10 V10-D17): `HeapConfig::default()` builds a
+/// generational heap, so a heap made from it (the CLI, REPRL, test262 and every isolate that
+/// does not set the flag) runs minor GCs, and its barrier threshold is GEN. `test_heap` stays
+/// S0 for the S0 tests (`tests/mod.rs`); this test takes the flag from the default.
+#[test]
+fn s1_is_the_default_since_m5_p2() {
+    assert!(HeapConfig::default().generational, "V10-D17: S1 is the default");
+    let heap = test_heap(|c| c.generational = HeapConfig::default().generational);
+    assert_eq!(heap.barrier().threshold(), crate::barrier::threshold::GEN);
+    let root = new_node(&heap, 1, 1);
+    let g = heap.new_global(root.to_value());
+    heap.collect_minor_with_words(&[]);
+    let st = heap.stats();
+    assert!(st.last_minor, "a minor GC, not a full one");
+    assert_eq!(st.minor_collections, 1);
+    assert!(heap.is_cell(root.addr()), "the rooted cell survives and is old");
+    heap.drop_global(g);
+}
