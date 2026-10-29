@@ -109,7 +109,6 @@ pub(crate) fn fast<const SPREAD: bool>(
     }
     let rt = st.rt();
     rt.enter(st.fp, st.pc);
-    let shape = crate::slack::instance_shape(rt, shape);
     // GC point: `f` and the arguments are in this frame's registers, `shape` in a Rust local.
     let this = alloc_from_shape(rt, kind::OBJECT, shape)
         .to_value()

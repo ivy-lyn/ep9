@@ -702,13 +702,17 @@ pub(crate) fn ordinary_create_from_constructor(cx: &mut Cx, f: u64) -> Res<u64> 
         Some((v, _)) => v,
         None => property::get(cx, f, key)?,
     };
-    let proto = if is_object(p) {
-        p
-    } else {
+    if !is_object(p) {
         let r = realm::get_function_realm(rt, f);
-        realm::intrinsic_in(rt, r, crate::builtins::IntrinsicId::ObjectPrototype)
-    };
-    Ok(object::new_object(rt, proto))
+        let proto = realm::intrinsic_in(rt, r, crate::builtins::IntrinsicId::ObjectPrototype);
+        return Ok(object::new_object(rt, proto));
+    }
+    // The in-object capacity from `f`'s own `this.<name> =` stores (`slack.rs`). GC point
+    // below: `p` lives in a Rust local.
+    Ok(match crate::slack::instance_capacity(rt, f, p) {
+        Some(n) => object::new_object_with_capacity(rt, p, n),
+        None => object::new_object(rt, p),
+    })
 }
 
 /// Interrupt poll at a function entry from Rust.
