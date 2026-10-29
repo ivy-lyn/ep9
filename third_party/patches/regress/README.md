@@ -16,7 +16,7 @@ third_party/regress/                checkout + patches                       git
 
 - Pin: `aae35dee1596cc9a9caaad2425b088081c09e5d5`, the commit of the annotated tag `v0.12.0` of
   https://github.com/ridiculousfish/regress.
-- Patches: 6 (M5-P3 RX0b), each one upstreamable commit on the pin with its own test (the
+- Patches: 7 (M5-P3 RX0b), each one upstreamable commit on the pin with its own test (the
   test file the patch adds under `tests/`, or its new `#[test]`s):
 
   | File | What | Test | ep9 use |
@@ -27,6 +27,7 @@ third_party/regress/                checkout + patches                       git
   | `0004-legacy-icase-ascii-rule.patch` | `i` without `u`/`v`: Canonicalize keeps a character whose uppercase is not one code unit, and a non-ASCII one that would become ASCII (`ſ`, `ı`) | `tests/legacy_icase.rs` | the 11 KNOWN lines of the node golden |
   | `0005-latin1-input-and-start-predicates.patch` | `Text::Latin1` (one byte per unit) and code-unit start predicates (a first-unit set, a literal prefix, an anchor) under the `utf16` feature | `tests/latin1.rs` | a Latin-1 subject is read in place, not widened; a failed position costs a scan, not a match attempt |
   | `0006-caller-owned-scratch.patch` | `Regex::exec_into` with a caller-owned `Scratch` and capture buffer: no allocation per exec, no group-name clone | `tests/scratch.rs` | one `Scratch` per isolate |
+  | `0007-flat-string-property-tables.patch` | the tables of the properties of strings (`\p{RGI_Emoji}` with `v`) as two integer arrays each (`StringSetTable`), not one pointer per string; `gen-unicode` writes the new form | `tests/string_properties.rs`, `unicode::tests::string_tables_are_well_formed` | 7,905 fewer load-time fixups: `ep9 --version` about 4.5% fewer instructions (W-REGEXP-1) |
 
   The source of the patches is the branch `rx0b` of a regress checkout; each file is its
   `git format-patch --zero-commit --no-signature` with the author `ep9` and no date.
