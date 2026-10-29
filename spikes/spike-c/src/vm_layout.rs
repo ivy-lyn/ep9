@@ -252,8 +252,8 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     let r = session.run(CHECK_SRC, "layout-probe.js");
     r.result.map_err(|e| format!("layout probe: {e}"))?;
     check_versions(VM_VERSIONS)?;
-    // SAFETY: the session ran CHECK_SRC just now (and check_elem2 runs ELEM2_SRC first).
-    unsafe { check_kinds(session).and_then(|()| check_elem2(session)) }?;
+    // SAFETY: the session ran CHECK_SRC just now (check_elem2 is safe: it runs ELEM2_SRC).
+    unsafe { check_kinds(session) }.and_then(|()| check_elem2(session))?;
     check_context(session)?;
     let o = session.function_value("layoutObj")?.to_bits();
     let a = session.function_value("layoutObj.b")?.to_bits();
@@ -507,9 +507,9 @@ var layoutSiteB = layoutSite();\n";
 ///   next array is born PACKED_DOUBLE, in an ELEMENTS_DOUBLE cell with raw f64 data (the
 ///   shape is the kind source the guard reads; Spike C reads no ALLOC_SITE word).
 ///
-/// # Safety
-/// Nothing runs while this reads, between its `function_value` runs.
-unsafe fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
+/// A safe fn: it runs [`ELEM2_SRC`] itself, and the `&mut` session runs nothing else while it
+/// reads the cells, between its `function_value` runs (the SAFETY notes inside).
+fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
     let r = session.run(ELEM2_SRC, "layout-elem2.js");
     r.result.map_err(|e| format!("ELEM2 probe: {e}"))?;
     for i in 0..3 {
