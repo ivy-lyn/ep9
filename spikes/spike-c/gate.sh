@@ -23,13 +23,16 @@
 #        PASS only if the output equals T0 (a shape the GC freed drops out of the weak IC
 #        entry a guard reads; that guard now deopts into T0, which re-records it). No XFAIL
 #     SKIP without the v8-v7 checkout (scripts/sync-bench.sh)
-#   gate.sh linsolve     (plan v9 M4-P4 SPIKEC-4; protocol §7 "lin_solve graph build") kernel 2:
+#   gate.sh linsolve     (plan v9 M4-P4 SPIKEC-4; protocol §7 "lin_solve graph build"; plan v10
+#                        M5-P2 SPIKEC-6 WI-SC5) kernel 2:
 #     1  release build (as am3)
 #     2  `spike-c graph navier-stokes`: lin_solve (an inner closure, found by its function id)
 #        built from the live facts of an n = 1 T0 run, the graph checked (lattice, guard
-#        placement), registers allocated and verified. PASS if those hold; the emitter's
-#        result is a report line (it refuses the context slot loads until ep9_vm::layout
-#        exports the CONTEXT slot offsets, and calls until month 5)
+#        placement), registers allocated and verified, then emitted (a report line)
+#     3  `spike-c tier navier-stokes --n 1` and `--n 12`: lin_solve compiled and installed by
+#        its function id after the warm-up (context slots from the CONTEXT export, calls
+#        through RuntimeTable::call_any, raw f64 element loads and stores); output equal to T0
+#        line for line (the check line digests every cell of the three fields)
 #     SKIP without the v8-v7 checkout
 #   gate.sh time         (plan v9 M4-P2 SPIKEC-2; protocol §3) the class S timing of crypto on
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
@@ -121,6 +124,8 @@ linsolve() {
     return
   fi
   run "linsolve/graph" "$bin" graph navier-stokes
+  run "linsolve/tier-n1" "$bin" tier navier-stokes --n 1
+  run "linsolve/tier-n12" "$bin" tier navier-stokes --n 12
 }
 
 timing() {

@@ -86,6 +86,7 @@ use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use ep9_platform::unwind::cfi::CfiProgram;
 use ep9_value::encoding::{
     DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG, PURE_NAN_BITS, VALUE_FALSE, VALUE_TRUE,
+    VALUE_UNDEFINED,
 };
 use ep9_vm::layout;
 use spike_b::emit::{Arch, FunctionCode, FunctionInput, Refusal, Unwind};
@@ -251,6 +252,29 @@ fn load_fp(ops: &mut Ops, rt: u8, off: i32) {
     } else {
         mov64(ops, 16, off as i64 as u64);
         dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x26, x16]);
+    }
+}
+
+/// Stores x`rt` to the VM frame slot at byte offset `off` from fp (x26); x17 is the scratch
+/// register of a far offset, so `rt` is not x17.
+fn store_fp(ops: &mut Ops, rt: u8, off: i32) {
+    if off >= 0 && off % 8 == 0 && off <= 32760 {
+        let o = off as u32;
+        dynasm!(ops ; .arch aarch64 ; str X(rt), [x26, o]);
+    } else if (-256..256).contains(&off) {
+        dynasm!(ops ; .arch aarch64 ; stur X(rt), [x26, off]);
+    } else {
+        mov64(ops, 17, off as i64 as u64);
+        dynasm!(ops ; .arch aarch64 ; str X(rt), [x26, x17]);
+    }
+}
+
+/// The byte offset from fp of the VM frame slot of the bytecode register `r`.
+fn reg_slot(r: ep9_bytecode::Register) -> i32 {
+    match (r.local_index(), r.parameter_index()) {
+        (Some(i), _) => layout::fp_register(i) as i32,
+        (_, Some(k)) => layout::fp_param(k) as i32,
+        _ => layout::FP_RECEIVER as i32,
     }
 }
 
@@ -1082,18 +1106,57 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::LoadContextSlot(i) => {
-                return Err(Refusal::Limit(format!(
-                    "context slot {i} at @{}: the CONTEXT cell's slot offsets are not in \
-                     ep9_vm::layout (crates/ep9_vm/src/native.rs, no month-4 owner)",
-                    node.offset
-                )));
+                // The frame's current context (a CONTEXT cell; the graph builder takes no
+                // PushContext, so it is the function's own for the whole call), then its slot
+                // `i` (`ep9_vm::layout::CONTEXT_SLOTS`, WI-SC5). Read again at each use: a
+                // call may store to the slot.
+                let d = self.dst(n)?;
+                let at = u64::from(layout::CONTEXT_SLOTS) + 8 * u64::from(*i);
+                load_fp(&mut self.ops, 16, layout::FP_CONTEXT as i32);
+                if at <= 32760 {
+                    let at = at as u32;
+                    dynasm!(self.ops ; .arch aarch64 ; ldr X(d), [x16, at]);
+                } else {
+                    mov64(&mut self.ops, 17, at);
+                    dynasm!(self.ops ; .arch aarch64 ; ldr X(d), [x16, x17]);
+                }
+                self.finish(n);
             }
-            Op::Call { .. } => {
-                return Err(Refusal::Limit(format!(
-                    "call at @{}: not emitted yet (month 5: RuntimeTable::call_any reads its \
-                     operands from their VM frame slots, which compiled code must write first)",
-                    node.offset
-                )));
+            Op::Call { regs } => {
+                // `RuntimeTable::call_any` (WI-SC5) runs the call instruction at this offset
+                // and reads its callee and arguments from their VM frame slots: write each
+                // operand there first (the value its register holds at this point, so the
+                // frame is what T0 would have), then call as the generic keyed ops do, with
+                // the accumulator operand undefined (it is new.target only for Construct).
+                // A parameter's or the receiver's slot is where its incoming value lives
+                // (`Location::Frame`), which other nodes may still read: it already holds
+                // the operand if that is the incoming value, and any other value there is
+                // refused, never written over it.
+                for (&v, &r) in ins.iter().zip(regs) {
+                    let slot = reg_slot(r);
+                    if r.local_index().is_none() {
+                        if self.a.of(v) == Location::Frame(slot) {
+                            continue;
+                        }
+                        return Err(Refusal::Limit(format!(
+                            "call at @{}: operand {r} is a parameter or the receiver that holds \
+                             a new value (its frame slot keeps the incoming one)",
+                            node.offset
+                        )));
+                    }
+                    let x = self.src(v, 12)?;
+                    store_fp(&mut self.ops, x, slot);
+                }
+                save_caller_saved(&mut self.ops);
+                mov64(&mut self.ops, 3, VALUE_UNDEFINED);
+                call_table(&mut self.ops, layout::RT_CALL_ANY, node.offset)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+                restore_caller_saved(&mut self.ops);
+                let throw = self.throw_at(node.offset);
+                dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov X(d), x16);
+                self.finish(n);
             }
             Op::GetKeyedGeneric | Op::SetKeyedGeneric => {
                 // The generic keyed entries (RuntimeTable 8 and 9, SPIKEC-4): stage the

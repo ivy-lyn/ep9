@@ -188,13 +188,11 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
     let h = k.hot.first().ok_or("no hot function")?;
     let (mut s, d, r, _) = run_t0(k, 1)?;
     r.result.map_err(|e| format!("{}: {e}", k.name))?;
-    let reach = h.reach.ok_or_else(|| {
-        format!(
-            "{}: an inner closure; install by function id is not built",
-            h.name
-        )
-    })?;
-    let f = s.function_value(reach)?;
+    // An inner closure is found by its function id (WI-SC5).
+    let f = match h.reach {
+        Some(reach) => Some(s.function_value(reach)?),
+        None => None,
+    };
     let script = s.script("driver.js").ok_or("no driver script")?;
     let ids = script.functions_on_line(h.lines.0 + d.offset);
     let [id] = ids[..] else {
@@ -206,7 +204,14 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
         ));
     };
     let live = facts::live(&s, script)?;
-    let input = s.input_of(f)?;
+    let target = match f {
+        Some(f) => spike_c::harness::Target::Value(f),
+        None => spike_c::harness::Target::Id {
+            file: "driver.js".into(),
+            id,
+        },
+    };
+    let input = s.input_of_target(&target)?;
     let ff = facts::for_function(&live, id);
     match spike_c::compile_input(&input, &ff) {
         Ok((code, report)) => {
@@ -333,16 +338,13 @@ fn flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Result<Option<T>, 
     }
 }
 
-/// The hot-harness call count per kernel (H0, H1): about 0.15 s of T0 time on an M-series Mac.
-const HOT_K: u32 = 100_000;
-
 /// `spike-c time <kernel> [--rounds R] [--n N] [--k K]`: the class S report (exit 1 on a wrong
 /// run).
 fn time_cmd(args: &[String]) -> Result<bool, String> {
     let k = kernel_arg(args.first())?;
     let rounds = flag(args, "--rounds")?.unwrap_or(15usize);
     let n = flag(args, "--n")?.unwrap_or(k.n);
-    let hot_k = flag(args, "--k")?.unwrap_or(HOT_K);
+    let hot_k = flag(args, "--k")?.unwrap_or(spike_c::timing::default_k(k));
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let (report, ok) = spike_c::timing::time(&exe, k, rounds, n, hot_k)?;
     print!("{report}");
@@ -358,7 +360,7 @@ fn once_cmd(args: &[String]) -> Result<bool, String> {
         .ok_or("once: t0, c, h0 or h1")?;
     let k = kernel_arg(args.get(1))?;
     let n = flag(&args[1..], "--n")?.unwrap_or(k.n);
-    let hot_k = flag(&args[1..], "--k")?.unwrap_or(HOT_K);
+    let hot_k = flag(&args[1..], "--k")?.unwrap_or(spike_c::timing::default_k(k));
     let o = spike_c::timing::once(which, k, n, hot_k)?;
     print!("{}", o.text());
     Ok(true)

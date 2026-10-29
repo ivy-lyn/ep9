@@ -30,6 +30,16 @@ pub fn take_output() -> Vec<String> {
     OUTPUT.with(|o| std::mem::take(&mut *o.borrow_mut()))
 }
 
+/// A function that [`Session::install_targets`] installs code for: a JS function value, or
+/// function `id` of the script `file` that the session ran (install by function id, M5-P2
+/// SPIKEC-6 WI-SC5: an inner closure such as navier-stokes' `lin_solve`, which no JS value
+/// reaches; every closure of the function runs the code).
+#[derive(Clone, Debug)]
+pub enum Target {
+    Value(Value),
+    Id { file: String, id: u32 },
+}
+
 /// `print(...args)`: ToString of each argument, space separated, as one captured line.
 fn print<'s>(
     cx: &mut Cx<'s>,
@@ -107,8 +117,8 @@ impl Script {
 impl Script {
     /// The graph-builder input of function `id` read from the unit, for a function no JS
     /// expression reaches (an inner closure such as navier-stokes' `lin_solve`; SPIKEC-4).
-    /// Its key is 0: the code it gives cannot be installed (install by function id is a
-    /// `native.rs` need, protocol §9), only built, allocated and emitted for a report.
+    /// Its key is 0: the code it gives cannot be installed; [`Session::input_of_target`] with
+    /// [`Target::Id`] gives the installable input (install by function id, WI-SC5).
     pub fn unit_input<'a>(&'a self, id: u32, name: &'a str) -> Result<FunctionInput<'a>, String> {
         let f = self
             .unit
@@ -247,9 +257,53 @@ impl Session {
         ep9_vm::native_target(&self.iso, f).and_then(|t| t.kind)
     }
 
-    /// Places `codes` (made from the function values `fns`, same order) in one module and
-    /// installs each in an Opt slot (placement (b)): with its deopt metadata `metas[i]` (the
-    /// H29 byte form of [`crate::deopt_meta`]) through `ep9_vm::NativeCx::install_b_with_deopt`,
+    /// The emitter input of `t` (its key is the live FunctionInfo, so the code installs).
+    pub fn input_of_target(&self, t: &Target) -> Result<FunctionInput<'_>, String> {
+        match t {
+            Target::Value(f) => self.input_of(*f),
+            Target::Id { file, id } => {
+                let t = ep9_vm::NativeCx::target_by_id(&self.iso, file, *id)?;
+                Ok(FunctionInput {
+                    name: t.name,
+                    bytecode: t.bytecode,
+                    parameter_count: t.parameter_count,
+                    register_count: t.register_count,
+                    handler_count: t.handler_count,
+                    key: t.info,
+                })
+            }
+        }
+    }
+
+    /// The dispatch-slot kind of `t` (as [`Session::slot_kind`]).
+    pub fn slot_kind_of(&self, t: &Target) -> Option<ep9_vm::DispatchKind> {
+        match t {
+            Target::Value(f) => self.slot_kind(*f),
+            Target::Id { file, id } => ep9_vm::NativeCx::target_by_id(&self.iso, file, *id)
+                .ok()
+                .and_then(|t| t.kind),
+        }
+    }
+
+    /// [`Session::install_targets`] for function values.
+    ///
+    /// # Safety
+    /// As [`Session::install_targets`].
+    pub unsafe fn install_b(
+        &mut self,
+        fns: &[Value],
+        codes: Vec<FunctionCode>,
+        metas: Vec<Option<Vec<u8>>>,
+    ) -> Result<&[Placed], String> {
+        let targets: Vec<Target> = fns.iter().map(|&f| Target::Value(f)).collect();
+        // SAFETY: the caller's contract.
+        unsafe { self.install_targets(&targets, codes, metas) }
+    }
+
+    /// Places `codes` (made from the targets `fns`, same order) in one module and installs
+    /// each in an Opt slot (placement (b)): with its deopt metadata `metas[i]` (the H29 byte
+    /// form of [`crate::deopt_meta`]) through `ep9_vm::NativeCx::install_b_with_deopt` (or
+    /// `install_b_with_deopt_by_id` for a [`Target::Id`]),
     /// so its guard exits deopt to T0 (M5-P1), or with `None` through
     /// `ep9_vm::install_native_b` (code with no exits, such as Spike B's; an exit of such code
     /// is a failed deopt, which aborts the process, M5-P1-ORCH-12). All or nothing, as
@@ -261,7 +315,8 @@ impl Session {
     ///
     /// # Safety
     /// For each `i`, `codes[i].code` is the machine code of a placement (b) emitter for the
-    /// function `fns[i]` of this session (from [`Session::input_of`] with no JS run since),
+    /// function `fns[i]` of this session (from [`Session::input_of_target`] with no JS run
+    /// since),
     /// unchanged since the emitter made it, and meets the contract of
     /// `ep9_vm::install_native_b`: the T0 handler ABI `(cx, pc, fp, acc)`, `cx` read only
     /// through the `ep9_vm::layout` offsets, only `RuntimeTable` calls, callee-saved
@@ -274,11 +329,11 @@ impl Session {
     ///
     /// ```compile_fail,E0133
     /// let mut s = spike_c::harness::Session::new(&spike_b::harness::Config::default()).unwrap();
-    /// let _ = s.install_b(&[], Vec::new(), Vec::new()); // E0133: an unsafe fn
+    /// let _ = s.install_targets(&[], Vec::new(), Vec::new()); // E0133: an unsafe fn
     /// ```
-    pub unsafe fn install_b(
+    pub unsafe fn install_targets(
         &mut self,
-        fns: &[Value],
+        fns: &[Target],
         codes: Vec<FunctionCode>,
         metas: Vec<Option<Vec<u8>>>,
     ) -> Result<&[Placed], String> {
@@ -290,8 +345,10 @@ impl Session {
                 metas.len()
             ));
         }
-        for (i, (&f, code)) in fns.iter().zip(&codes).enumerate() {
-            let input = self.input_of(f).map_err(|e| format!("function {i}: {e}"))?;
+        for (i, (f, code)) in fns.iter().zip(&codes).enumerate() {
+            let input = self
+                .input_of_target(f)
+                .map_err(|e| format!("function {i}: {e}"))?;
             if input.key != code.key {
                 return Err(format!(
                     "{}: the code was made for another function",
@@ -300,7 +357,7 @@ impl Session {
             }
         }
         let module = InMemory.finalize(codes).map_err(|e| e.to_string())?;
-        for (i, &f) in fns.iter().enumerate() {
+        for (i, f) in fns.iter().enumerate() {
             let range = module.functions()[i].code.clone();
             // SAFETY: the caller's contract (# Safety): function `i` of the module is
             // placement (b) code for `f` (the key check above also holds: the same
@@ -311,17 +368,30 @@ impl Session {
             // field, no `&mut` accessor); on a refusal the loop below uninstalls functions
             // 0..i before the module drops (or keeps the module if one cannot be uninstalled).
             let r = unsafe {
-                match &metas[i] {
-                    Some(m) => ep9_vm::NativeCx::install_b_with_deopt(&self.iso, f, range, m),
-                    None => {
-                        ep9_vm::install_native_b(&self.iso, f, range).map_err(|e| format!("{e:?}"))
+                match (f, &metas[i]) {
+                    (Target::Value(f), Some(m)) => {
+                        ep9_vm::NativeCx::install_b_with_deopt(&self.iso, *f, range, m)
+                    }
+                    (Target::Value(f), None) => {
+                        ep9_vm::install_native_b(&self.iso, *f, range).map_err(|e| format!("{e:?}"))
+                    }
+                    (Target::Id { file, id }, Some(m)) => {
+                        ep9_vm::NativeCx::install_b_with_deopt_by_id(&self.iso, file, *id, range, m)
+                    }
+                    (Target::Id { .. }, None) => {
+                        Err("install by function id needs the deopt metadata".into())
                     }
                 }
             };
             if let Err(e) = r {
+                // A function installed by id has no uninstall: it counts as stuck, so the
+                // module stays.
                 let stuck = fns[..i]
                     .iter()
-                    .filter(|&&g| ep9_vm::uninstall_native(&self.iso, g).is_err())
+                    .filter(|g| match g {
+                        Target::Value(g) => ep9_vm::uninstall_native(&self.iso, *g).is_err(),
+                        Target::Id { .. } => true,
+                    })
                     .count();
                 let name = module.functions()[i].name.clone();
                 if stuck > 0 {
@@ -339,6 +409,14 @@ impl Session {
     /// has no such code.
     pub fn exit_counts(&self, f: Value) -> Option<Vec<u64>> {
         ep9_vm::NativeCx::deopt_counts(&self.iso, f)
+    }
+
+    /// [`Session::exit_counts`] of `t`.
+    pub fn exit_counts_of(&self, t: &Target) -> Option<Vec<u64>> {
+        match t {
+            Target::Value(f) => self.exit_counts(*f),
+            Target::Id { file, id } => ep9_vm::NativeCx::deopt_counts_by_id(&self.iso, file, *id),
+        }
     }
 
     /// The JIT modules of this session.

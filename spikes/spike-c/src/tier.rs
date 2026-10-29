@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use spike_b::harness::{Config, RunOutput};
 
-use crate::harness::Session;
+use crate::harness::{Session, Target};
 use crate::kernels::{self, Kernel};
 use crate::{CompileReport, emit_a64, facts};
 
@@ -125,15 +125,16 @@ pub enum IntFacts {
 
 /// Compiles the hot function `hot` of the script `file` of `s` (the kernel file's line L is
 /// line L + `offset` there) from the live facts of what `s` ran so far (with the stand-in int
-/// records if `int` asks for them). Returns the function value, the code and the report; the
-/// caller installs the code.
+/// records if `int` asks for them). Returns the install target (the function value if a JS
+/// expression reaches it, else the function by its id: an inner closure, WI-SC5), the code
+/// and the report; the caller installs the code.
 pub fn compile_hot(
     s: &mut Session,
     hot: &kernels::Hot,
     file: &str,
     offset: u32,
     int: IntFacts,
-) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
+) -> Result<(Target, spike_b::emit::FunctionCode, CompileReport), String> {
     compile_hot_with(s, hot, file, offset, int, emit_a64::StubForm::Call)
 }
 
@@ -145,16 +146,13 @@ pub fn compile_hot_with(
     offset: u32,
     int: IntFacts,
     form: emit_a64::StubForm,
-) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
-    let reach = hot.reach.ok_or_else(|| {
-        format!(
-            "{}: an inner closure; install by function id is not built",
-            hot.name
-        )
-    })?;
+) -> Result<(Target, spike_b::emit::FunctionCode, CompileReport), String> {
     // The function value first: `function_value` runs a one-line script (a global
     // assignment), which calls nothing, so the feedback the facts come from does not change.
-    let f = s.function_value(reach)?;
+    let value = match hot.reach {
+        Some(reach) => Some(s.function_value(reach)?),
+        None => None,
+    };
     let script = s.script(file).ok_or_else(|| format!("no script {file}"))?;
     let ids = script.functions_on_line(hot.lines.0 + offset);
     let [id] = ids[..] else {
@@ -167,10 +165,17 @@ pub fn compile_hot_with(
     };
     let live = compile_facts(s, script, id, int)?;
     let facts = facts::for_function(&live, id);
-    let input = s.input_of(f)?;
+    let target = match value {
+        Some(f) => Target::Value(f),
+        None => Target::Id {
+            file: file.to_string(),
+            id,
+        },
+    };
+    let input = s.input_of_target(&target)?;
     let (code, report) = crate::compile_input_with(&input, &facts, form)
         .map_err(|r| format!("{}: {r}", hot.name))?;
-    Ok((f, code, report))
+    Ok((target, code, report))
 }
 
 /// The facts of function `id` of `script` for a compile: the live snapshot, with the stand-in
@@ -208,12 +213,6 @@ pub fn run_opts(
     form: emit_a64::StubForm,
 ) -> Result<TierRun, String> {
     let hot = k.hot.first().ok_or("no hot function")?;
-    if hot.reach.is_none() {
-        return Err(format!(
-            "{}: an inner closure; install by function id is not built",
-            hot.name
-        ));
-    }
     let d1 = kernels::driver(k, 1)?;
     let dn = kernels::driver(k, n)?;
     let (defs, loop1) = split(&d1, k.file)?;
@@ -254,18 +253,21 @@ pub fn run_opts(
     // (`vm_layout`, proved at the start of this run), only RuntimeTable calls (the deopt
     // entry among them), x19-x28 saved and restored, and every exit is the tail jump to
     // `cx.table[*pc]`.
-    unsafe { s.install_b(&[f], vec![code], vec![Some(meta)]) }?;
-    if s.slot_kind(f) != Some(ep9_vm::DispatchKind::Opt) {
+    unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
+    if s.slot_kind_of(&f) != Some(ep9_vm::DispatchKind::Opt) {
         return Err(format!(
             "{}: slot kind {:?} after install",
             hot.name,
-            s.slot_kind(f)
+            s.slot_kind_of(&f)
         ));
     }
     let t = Instant::now();
     let compiled = s.run(&loop_n, "loop.js");
     let compiled_secs = t.elapsed().as_secs_f64();
-    let counts = |s: &Session| s.exit_counts(f).ok_or("no exit counters after the install");
+    let counts = |s: &Session| {
+        s.exit_counts_of(&f)
+            .ok_or("no exit counters after the install")
+    };
     let exits = counts(&s)?;
     let equal = compiled == t0 && t0.result.is_ok() && dn.matches(&compiled.output);
     // The probe: `this` of a shape the IC never saw. The compiled function's first shape
@@ -399,8 +401,13 @@ pub fn run_script_opts(
     s.run(warm, "warm.js")
         .result
         .map_err(|e| format!("warm: {e}"))?;
-    let f = s.function_value(name)?;
-    let (code, report) = {
+    // A global function by its value; any other function of `defs` (an inner closure) by its
+    // function id (WI-SC5).
+    let f = match ep9_vm::NativeCx::global_value(s.iso(), name) {
+        Some(_) => Some(s.function_value(name)?),
+        None => None,
+    };
+    let (f, code, report) = {
         let script = s.script("defs.js").ok_or("no defs script")?;
         let ids = script.functions_named(name);
         let [id] = ids[..] else {
@@ -408,16 +415,25 @@ pub fn run_script_opts(
         };
         let live = compile_facts(&s, script, id, int)?;
         let facts = facts::for_function(&live, id);
-        let input = s.input_of(f)?;
-        crate::compile_input_with(&input, &facts, form).map_err(|r| format!("{name}: {r}"))?
+        let f = match f {
+            Some(f) => Target::Value(f),
+            None => Target::Id {
+                file: "defs.js".into(),
+                id,
+            },
+        };
+        let input = s.input_of_target(&f)?;
+        let (code, report) =
+            crate::compile_input_with(&input, &facts, form).map_err(|r| format!("{name}: {r}"))?;
+        (f, code, report)
     };
     let meta = report.emit.meta.encode();
-    // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of(f)` with no
-    // JS run since, unchanged, and its exit table.
-    unsafe { s.install_b(&[f], vec![code], vec![Some(meta)]) }?;
+    // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of_target(f)`
+    // with no JS run since, unchanged, and its exit table.
+    unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
     let compiled = s.run(main, "main.js");
     let exits = s
-        .exit_counts(f)
+        .exit_counts_of(&f)
         .ok_or("no exit counters after the install")?;
     Ok(ScriptRun {
         t0,
@@ -1180,36 +1196,78 @@ mod tests {
         );
     }
 
-    /// Context slot loads and calls build into the graph (SPIKEC-4), and the emitter refuses
-    /// them with the reason: no CONTEXT slot offsets in `ep9_vm::layout`, and calls wait for
-    /// month 5.
+    /// Context slot loads and calls (SPIKEC-4 built them; WI-SC5 emits them): `inner`, an
+    /// inner closure installed by its function id, reads `k` from its context, for a closure
+    /// made before the install and one made after (both run the code: one dispatch slot);
+    /// `callit` calls through `RuntimeTable::call_any` with its operands in their VM frame
+    /// slots: a compiled callee, a T0 closure, a host function, a throw that a T0 caller
+    /// catches, and a callee that stores to the context `inner` reads. Equal to T0 with no
+    /// exit, with GC stress too.
     #[test]
-    fn context_loads_and_calls_build_and_the_emitter_names_why_not() {
-        let mut s = Session::new(&Config::default().threaded()).expect("session");
+    fn context_loads_and_calls_equal_t0() {
+        if !aarch64() {
+            return;
+        }
         let defs = "function outer(k) { function inner(x) { return (x + k) | 0; } return inner; }\n\
             function callit(f, x) { return f(x); }\n\
-            var inner5 = outer(5); for (var q = 0; q < 20; q++) { inner5(q); callit(inner5, q); }";
-        s.run(defs, "defs.js").result.expect("defs");
-        let script = s.script("defs.js").expect("defs");
-        let live = facts::live(&s, script).expect("facts");
-        for (name, op, why) in [
-            ("inner", "LoadContextSlot", "CONTEXT cell's slot offsets"),
-            ("callit", "Call", "RuntimeTable::call_any"),
-        ] {
-            let id = script.functions_named(name)[0];
-            let input = script.unit_input(id, name).expect("input");
-            let g = crate::graph_report(&input, &facts::for_function(&live, id)).expect("graph");
-            assert!(g.ops.contains_key(op), "{name}: {:?}", g.ops);
-            if aarch64() {
-                let e = g.emit.expect_err("refused");
-                assert!(e.contains(why), "{name}: {e}");
+            var box = (function () { var v = 1; return { get: function (x) { return (x + v) | 0; }, set: function (x) { v = x; return 0; } }; })();\n\
+            var inner5 = outer(5); for (var q = 0; q < 20; q++) { inner5(q); callit(inner5, q); box.get(q); }";
+        let main = "var later = outer(-3); print(inner5(1), later(2), callit(inner5, 7), callit(later, 7));\n\
+            print(callit(function (y) { return y * 2; }, 4), callit(Math.abs, -9), callit(box.set, 40), box.get(2));\n\
+            try { callit(function () { throw 'boom'; }, 1); } catch (e) { print('caught ' + e); }";
+        let want = ["6 -1 12 4", "8 9 0 42", "caught boom"];
+        for config in [Config::default(), Config::stress()] {
+            for (name, op) in [
+                ("inner", "LoadContextSlot"),
+                ("callit", "Call"),
+                ("get", "LoadContextSlot"),
+            ] {
+                let r = run_script(&config, defs, "", main, name).expect("run");
+                assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+                assert_eq!(r.compiled.output, want, "{name}");
+                assert!(r.fired().is_empty(), "{name}: exits {:?}", r.exits);
+                assert!(r.report.graph.contains(op), "{name}\n{}", r.report.graph);
             }
+        }
+    }
+
+    /// Call operands and parameters (WI-SC5): the frontend copies each call operand into a
+    /// fresh local register, so `call_any` reads them from local slots the code writes, and a
+    /// parameter's slot (where its incoming value lives, read by later nodes) is never
+    /// written: `b` keeps the incoming `a` after `a` changes and is passed. The emitter
+    /// refuses a parameter operand that holds a new value (the frontend makes none today).
+    #[test]
+    fn a_call_never_writes_over_an_incoming_parameter() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function id(x) { return x; }\n\
+            function pass(a, g) { return g(a); }\n\
+            function swap(a, g) { var b = a; a = (a + 1) | 0; var c = g(a); return (b + c) | 0; }";
+        let warm = "for (var q = 0; q < 20; q++) { pass(q, id); swap(q, id); }";
+        let main = "print(pass(7, id), swap(7, id), pass('s', id));";
+        for name in ["pass", "swap"] {
+            let r = run_script(&Config::default(), defs, warm, main, name).expect(name);
+            assert!(
+                r.equal() && r.fired().is_empty(),
+                "{:?} vs {:?}",
+                r.compiled,
+                r.t0
+            );
+            assert_eq!(r.compiled.output, ["7 15 s"]);
+            let call = r
+                .report
+                .graph
+                .lines()
+                .find(|l| l.contains("Call {"))
+                .expect("a call");
+            assert!(!call.contains("Register(-"), "{call}");
         }
     }
 
     /// Kernel 2 (SPIKEC-4): `lin_solve` (an inner closure of navier-stokes, found by its
     /// function id) builds into a checked graph from the live facts of an n = 1 run, its
-    /// registers allocate and verify, and the emitter stops at the first context slot load.
+    /// registers allocate and verify, and the emitter takes it (WI-SC5).
     #[test]
     fn lin_solve_graph_builds() {
         if !kernels::bench_present() {
@@ -1243,10 +1301,35 @@ mod tests {
         for l in g.graph.lines().filter(|l| l.contains("CheckNumber")) {
             assert!(l.contains("Fact(Runtime)"), "{l}\n{}", g.graph);
         }
+        // Since WI-SC5 the emitter takes every op of it.
         if aarch64() {
-            let e = g.emit.as_ref().expect_err("refused");
-            assert!(e.contains("context slot"), "{e}");
+            assert!(g.emit.is_ok(), "{:?}", g.emit);
         }
+    }
+
+    /// Kernel 2 (WI-SC5): navier-stokes with `lin_solve` compiled and installed by its
+    /// function id (no JS value reaches it) prints T0's check line (every cell of the three
+    /// fields digested), with no exit at all: the double arrays pass the kind guard and the
+    /// raw f64 element ops (WI-SC7), so no CheckArray exit measures the deopt path.
+    #[test]
+    fn lin_solve_by_function_id_equals_t0() {
+        if !aarch64() || !kernels::bench_present() {
+            return;
+        }
+        let k = kernels::kernel("navier-stokes").expect("navier-stokes");
+        let r = run(k, 1, &Config::default()).expect("run");
+        assert!(r.equal, "{}", r.line());
+        assert_eq!(r.exits.iter().sum::<u64>(), 0, "{}", r.line());
+        assert!(
+            r.compiled.output[0].starts_with("checksum 328.09"),
+            "{:?}",
+            r.compiled
+        );
+        assert!(
+            r.report.graph.contains("StoreElement"),
+            "{}",
+            r.report.graph
+        );
     }
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
