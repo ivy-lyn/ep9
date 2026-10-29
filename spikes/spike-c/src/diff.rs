@@ -205,22 +205,29 @@ impl Program {
 /// its calls and returns `x`; `D(a)`, `a` moved to DICTIONARY elements (an index far past its
 /// capacity, elements_kind.rs `ARRAY_GAP`), with its first elements kept; `O1`, `O2`, two
 /// objects a program can store and find again by identity; `K(x)`, `x` kept in the list `R`
-/// of input objects (with the objects among its first 256 elements); `S(a)`, an array shown
-/// element by element (Codex M5-P3 r1 spikec7 2, r2 spk 2): its length, a hole as `hole`,
-/// `-0` as itself, a primitive with its type, an object by strict identity: `self`, `r<j>`
-/// (`R[j]`; `O1` is `r0`, `O2` is `r1`) or `n<j>` (the j-th other object `S` met in `a`).
-/// Up to length 256 it shows every index; a longer array shows each own key as `key=value`
-/// (every present index, however far). Print's ToString would map -0 to 0, a hole, null and
-/// undefined to "", and every object alike; content labels would merge objects alike.
+/// of input objects, with the object values of all its own properties (every present index
+/// of an array of any length; getters and setters too); `S(a)`, the oracle line of a call
+/// (Codex M5-P3 r1 spikec7 2, r2 spk 2, r3 spk 1 and 2). For the returned value, then for
+/// each kept input, `S` shows: its name, `array` or `object` (Array.isArray), its prototype's
+/// name, and every own key (Reflect.ownKeys: strings, then symbols as `@Symbol(..)`) with its
+/// full descriptor: the value, or the getter and the setter, and the flags `w`, `e`, `c` (a
+/// `-` for each false one). A hole is a missing index; `-0` shows as itself; a primitive
+/// with its type. An object (a function too) shows by strict identity: `w<j>` (`W[j]`:
+/// Object.prototype, Array.prototype, Function.prototype), `r<j>` (`R[j]`; `O1` is `r0`,
+/// `O2` is `r1`) or `n<j>` (the j-th other object `S` met). Print's ToString would map -0 to
+/// 0, a hole, null and undefined to "", and every object alike; content labels would merge
+/// objects alike. No getter, setter or valueOf runs.
 const PRELUDE: &str = "\
 var calls = 0;\n\
 function V(x) { return { valueOf: function () { calls = calls + 1; return x; } }; }\n\
 function D(a) { a[100000] = 0; return a; }\n\
 var O1 = { id: 1 }, O2 = { id: 2 };\n\
 var R = [O1, O2];\n\
-function isObj(x) { return typeof x === 'object' && x !== null; }\n\
-function K(x) { if (isObj(x)) { if (R.indexOf(x) < 0) R.push(x); if (x.length <= 256) for (var i = 0; i < x.length; i++) { var e = x[i]; if (isObj(e) && R.indexOf(e) < 0) R.push(e); } } return x; }\n\
-function S(a) { if (!isObj(a)) return typeof a + ':' + String(a); var o = ['len ' + a.length], n = []; function show(x) { if (x === 0 && 1 / x < 0) return '-0'; if (!isObj(x)) return typeof x + ':' + String(x); if (x === a) return 'self'; var j = R.indexOf(x); if (j >= 0) return 'r' + j; j = n.indexOf(x); if (j < 0) { j = n.length; n.push(x); } return 'n' + j; } if (a.length <= 256) { for (var i = 0; i < a.length; i++) o.push(i in a ? show(a[i]) : 'hole'); } else { var ks = Object.keys(a); for (var k = 0; k < ks.length; k++) o.push(ks[k] + '=' + show(a[ks[k]])); } return o.join(' '); }\n";
+var W = [Object.prototype, Array.prototype, Function.prototype];\n\
+function isObj(x) { return (typeof x === 'object' && x !== null) || typeof x === 'function'; }\n\
+function keep(x) { if (isObj(x) && W.indexOf(x) < 0 && R.indexOf(x) < 0) R.push(x); }\n\
+function K(x) { if (isObj(x)) { keep(x); var ks = Reflect.ownKeys(x); for (var i = 0; i < ks.length; i++) { var d = Object.getOwnPropertyDescriptor(x, ks[i]); keep(d.value); keep(d.get); keep(d.set); } } return x; }\n\
+function S(a) { var n = []; function name(x) { var j = W.indexOf(x); if (j >= 0) return 'w' + j; j = R.indexOf(x); if (j >= 0) return 'r' + j; j = n.indexOf(x); if (j < 0) { j = n.length; n.push(x); } return 'n' + j; } function show(x) { if (x === 0 && 1 / x < 0) return '-0'; if (!isObj(x)) return typeof x + ':' + String(x); return name(x); } function flags(d) { return (d.writable ? 'w' : '-') + (d.enumerable ? 'e' : '-') + (d.configurable ? 'c' : '-'); } function obj(x) { var p = Object.getPrototypeOf(x), o = [name(x), Array.isArray(x) ? 'array' : 'object', 'proto ' + (p === null ? 'null' : name(p))], ks = Reflect.ownKeys(x); for (var i = 0; i < ks.length; i++) { var k = ks[i], d = Object.getOwnPropertyDescriptor(x, k); o.push((typeof k === 'symbol' ? '@' + String(k) : k) + '=' + ('value' in d ? show(d.value) : 'get ' + show(d.get) + ' set ' + show(d.set)) + ' ' + flags(d)); } return o.join(' '); } if (!isObj(a)) return typeof a + ':' + String(a); var out = [obj(a)]; for (var j = 0; j < R.length; j++) out.push(obj(R[j])); return out.join(' | '); }\n";
 
 /// `expr`, a call that returns an array, shown by `S` (PRELUDE), with each argument kept
 /// by `K` ([`retained`]); a trailing valueOf count stays outside.
@@ -1284,7 +1291,8 @@ mod tests {
     use super::*;
 
     /// Codex M5-P3 r1 spikec7 2: `S` (PRELUDE) shows what print's ToString merges: -0 and
-    /// 0, a hole, null and undefined, two objects, the array itself; and the copy family
+    /// 0, a hole (index 2 is missing), null and undefined, two objects, the array itself (node
+    /// v26.13.0 prints the same first line for the same script); and the copy family
     /// stores -0 into a DOUBLE array and named objects, so a store that loses one of them
     /// fails the compare (negative control: a store that writes +0 for -0 into raw f64 fails
     /// 15 of the copy seeds in 1..200; it passed all 200 when the arrays were printed).
@@ -1296,7 +1304,7 @@ mod tests {
         assert_eq!(
             out.output,
             [
-                "len 11 number:0 -0 hole object:null undefined:undefined r0 r1 n0 string:1 number:1.5 self",
+                "n0 array proto w1 0=number:0 wec 1=-0 wec 3=object:null wec 4=undefined:undefined wec 5=r0 wec 6=r1 wec 7=n1 wec 8=string:1 wec 9=number:1.5 wec 10=n0 wec length=number:11 w-- | r0 object proto w0 id=number:1 wec | r1 object proto w0 id=number:2 wec",
                 "0,0,,,"
             ]
         );
@@ -1341,6 +1349,84 @@ mod tests {
             let d = "f(D([1, 2, 3]))";
             assert_ne!(run(keep, d), run(&mutant, d), "{far}");
         }
+    }
+
+    /// Codex M5-P3 r3 spk 1 and 2, negative controls of the oracle as the corpus prints it
+    /// (`shown`): each mutant returns or leaves what the base does except for one thing the
+    /// oracle must show: an object substituted at a low and at a far index of a long
+    /// (DICTIONARY) array, a clone of the returned array, an array-like object for an array,
+    /// another prototype, an extra string property on a short array, a non-enumerable index
+    /// 300 on a long array, a symbol key. Each mutant prints another line.
+    #[test]
+    fn the_oracle_sees_roots_prototypes_and_descriptors() {
+        let config = Config::default();
+        let helpers = "function L() { var a = D([1]); a[5000] = {}; return a; }\n\
+                       function L0() { return D([{}]); }";
+        let run = |f: &str, call: &str| {
+            let defs = format!("{PRELUDE}{helpers}\n{f}\n");
+            let out = tier::t0_script(&config, &defs, "", &line(&shown(call))).expect("t0");
+            assert!(out.result.is_ok(), "{out:?}");
+            out.output
+        };
+        let keep = "function f(a) { return a; }";
+        let controls: [(&str, &str, &str); 8] = [
+            (
+                "low index of a long array",
+                "function f(a) { a[0] = {}; return a; }",
+                "f(L0())",
+            ),
+            (
+                "far index of a long array",
+                "function f(a) { a[5000] = {}; return a; }",
+                "f(L())",
+            ),
+            (
+                "a cloned returned array",
+                "function f(a) { return a.slice(); }",
+                "f([1, 2])",
+            ),
+            (
+                "an array-like object",
+                "function f(a) { return { 0: a[0], 1: a[1], length: 2 }; }",
+                "f([1, 2])",
+            ),
+            (
+                "another prototype",
+                "function f(a) { Object.setPrototypeOf(a, Object.prototype); return a; }",
+                "f([1, 2])",
+            ),
+            (
+                "an extra string property",
+                "function f(a) { a.foo = 1; return a; }",
+                "f([1, 2])",
+            ),
+            (
+                "a non-enumerable index 300",
+                "function f(a) { Object.defineProperty(a, 300, { value: 7 }); return a; }",
+                "f(D([1, 2, 3]))",
+            ),
+            (
+                "a symbol key",
+                "function f(a) { a[Symbol.for('s')] = 1; return a; }",
+                "f([1, 2])",
+            ),
+        ];
+        let mut same = Vec::new();
+        for (what, mutant, call) in controls {
+            // The array-like control compares with a fresh array of the same elements.
+            let base = if what == "an array-like object" {
+                "function f(a) { return [a[0], a[1]]; }"
+            } else {
+                keep
+            };
+            if run(base, call) == run(mutant, call) {
+                same.push(what);
+            }
+        }
+        assert!(
+            same.is_empty(),
+            "the oracle prints the same line for: {same:?}"
+        );
     }
 
     /// MC-w17-10: the lint refuses each GC-timing name, in code, in a string and as a
