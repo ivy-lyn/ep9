@@ -1,16 +1,22 @@
-#![allow(dead_code)] // m5-stub
-//! `ExternalRef<T>` (owner M5-P3 M1A-CODE; C-26, H25-Q2, H25:55): the one type of a native
-//! word in a heap cell. From M1a every such field has this type, and `cargo xtask
-//! extref-lint` rejects a bare `native_of` or `native_ptr` outside it (and the VM stack code)
-//! and a native word copied from one cell field into another.
+//! `ExternalRef<T>` (C-26, H25-Q1; M5-P3 M1A-CODE): the one type of a native word in a heap
+//! cell. Every heap-cell field that holds an off-heap address (the H25 inventory: FUNCTION
+//! +24, FEEDBACK `fv::INFO`, CONTEXT `ctxf::SCOPE`, MODULE `modf::UNIT`, and the FEEDBACK Call
+//! key half, a copy of a FUNCTION +24 word) is written from [`ExternalRef::new`] or from the
+//! word of another `ExternalRef`, and read through [`ExternalRef::from_word`]. `cargo xtask
+//! extref-lint` (H25-Q2) rejects a bare `native_of`, `native_ptr` or `native_addr` outside
+//! this file and the VM stack code, and a read or a write of one of those fields that does
+//! not go through this type (so a native word cannot be copied from one cell field into
+//! another as a bare `u64`).
 //!
 //! ```text
-//!  heap cell word (u64, the native-word encoding) <-> ExternalRef<T> <-> *const T
+//!  *const T --new--> ExternalRef<T> --to_word--> heap cell word (u64: addr + 2^49, a double)
+//!  *const T <--get-- ExternalRef<T> <--from_word-- heap cell word
 //! ```
 //!
-//! M5-P0 stub: the type and its signatures; nothing uses it yet. Since M5-P1 (the phase fixer,
-//! M5-P0-ORCH-12, MODES-CHECK-w18 MC-w18-13b) `new` and `get` use the native-word encoding
-//! (`frame::native_of`, `frame::native_ptr`): the word is a double Value, never a raw address.
+//! Today the word is the native-word encoding of H14 (`frame::native_of`): a subnormal double
+//! Value, never a cell, so the GC skips it. A sandbox build (D6) would change this file only:
+//! the word would be an index into a per-isolate pointer table. Every method is
+//! `#[inline(always)]`, so the T0 handlers that read a FunctionInfo compile as before.
 
 use core::marker::PhantomData;
 
@@ -22,6 +28,7 @@ pub(crate) struct ExternalRef<T> {
 }
 
 impl<T> Clone for ExternalRef<T> {
+    #[inline(always)]
     fn clone(&self) -> Self {
         *self
     }
@@ -32,6 +39,7 @@ impl<T> Copy for ExternalRef<T> {}
 impl<T> ExternalRef<T> {
     /// The reference to `p`: its native word (`frame::native_of`, which exposes the
     /// provenance).
+    #[inline(always)]
     pub(crate) fn new(p: *const T) -> ExternalRef<T> {
         ExternalRef {
             word: crate::frame::native_of(p),
@@ -40,16 +48,22 @@ impl<T> ExternalRef<T> {
     }
 
     /// The pointer (`frame::native_ptr` of the word).
+    #[inline(always)]
     pub(crate) fn get(self) -> *const T {
         crate::frame::native_ptr::<T>(self.word).cast_const()
     }
 
     /// The word a heap cell stores.
+    #[inline(always)]
     pub(crate) fn to_word(self) -> u64 {
         self.word
     }
 
-    /// The reference a heap cell word holds.
+    /// The reference a heap cell word holds. The word must be one that [`to_word`] gave
+    /// (a read of an inventory field); `get` of any other word gives a wrong pointer.
+    ///
+    /// [`to_word`]: ExternalRef::to_word
+    #[inline(always)]
     pub(crate) fn from_word(word: u64) -> ExternalRef<T> {
         ExternalRef {
             word,

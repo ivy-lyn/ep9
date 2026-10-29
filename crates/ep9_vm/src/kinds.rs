@@ -43,7 +43,7 @@
 //! (FUNCTION, BOUND_FUNCTION, PROXY_CALLABLE): making the callable kinds adjacent would
 //! renumber. `exotic::is_routed` stays the one range test 25..=28 and that range is closed: a
 //! new kind with routed internal methods gets its own compare, never a renumbered id. A
-//! retired id stays reserved. Negative tests probe an id that was never assigned (never "the
+//! retired id stays reserved. Negative tests probe 255, an id that is never assigned (never "the
 //! next free id"), and no test or text tests a kind by a range other than the ones above.
 //!
 //! No kind id is persisted (units, snapshots and facts never hold one), but native code and

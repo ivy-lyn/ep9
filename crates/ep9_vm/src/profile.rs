@@ -712,7 +712,7 @@ pub(crate) fn record_typeof(st: &mut St<'_>, s: FSlot, v: u64) {
 #[inline(always)]
 fn target_key(callee: u64) -> u64 {
     if kinds::is_function(callee) {
-        word(callee, object::fun::INFO).bits()
+        crate::external_ref::ExternalRef::new(object::function_info(callee)).to_word()
     } else {
         HOLE
     }
