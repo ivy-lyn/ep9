@@ -18,11 +18,11 @@
 //! | A preset the build cannot run is an error, never a silent downgrade; it reuses `IsolateError::Config` (M-R6) | [`Isolate::new_with`] |
 //! | The jitless preset defaults to `ics_only`; the jit preset to `full` (MODES-D11) | [`ExecOptions::jitless`], [`ExecOptions::jit`] |
 //!
-//! M5-P0 stores the options (`Runtime::exec`); nothing reads them yet. The feedback mode takes
-//! effect in M5-P3 (PROFILE6: the `ics_only` T0 handler table, chosen per `Cx`); until then
-//! both modes run the same T0 table. `ics_only` keeps every IC and every object-model input
-//! (allocation-site element-kind feedback included) and drops only the `profile.rs` record
-//! hooks (MODES-D19).
+//! M5-P0 stores the options (`Runtime::exec`). The feedback mode is in effect since M5-P3
+//! (PROFILE6): `Isolate::new_with` picks the `ics_only` T0 handler table per `Cx`
+//! (`Dispatch::table`), and `profile::records` reads the mode. `ics_only` keeps every IC and
+//! every object-model input (allocation-site element-kind feedback included) and drops only
+//! the `profile.rs` record hooks (MODES-D19).
 //!
 //! [`Isolate::new_with`]: crate::Isolate::new_with
 
@@ -72,7 +72,7 @@ impl Feedback {
     /// T0 runs the `profile.rs` record hooks.
     pub const FULL: Feedback = Feedback(0);
     /// T0 keeps its ICs and every object-model input, and runs no `profile.rs` record hook.
-    /// Stored from M5-P0; effective from M5-P3 (PROFILE6).
+    /// Stored from M5-P0; in effect since M5-P3 (PROFILE6: the second T0 handler table).
     pub const ICS_ONLY: Feedback = Feedback(1);
 
     /// The mode name (`full`, `ics_only`), as result JSON files write it. A value this build

@@ -306,8 +306,8 @@ pub(crate) struct Runtime {
     // ---- M5-P0 (plan v10 §2.4, P0-VM5): the month-5 Runtime fields; each type lives in its
     // owner's module (as M4-P0) ----
     /// The execution options of the isolate (`exec.rs`, C-23): set by `Isolate::new_with`
-    /// before the realm exists. Stored in M5-P0; M5-P3 PROFILE6 reads the feedback mode.
-    #[allow(dead_code)] // read from M5-P3 on
+    /// before the realm exists. Stored in M5-P0; since M5-P3 (PROFILE6) `profile::records`
+    /// reads the feedback mode.
     pub exec: Cell<crate::exec::ExecOptions>,
     /// The deopt side table (`deopt.rs`, V10-D32): code start -> deopt metadata and exit
     /// counters, filled by `NativeCx::install_b_with_deopt` (M5-P1 SPIKEC-5) and emptied of a
