@@ -1400,12 +1400,14 @@ fn cfi(frame: u32, epilogue: u32) -> CfiProgram {
 mod tests {
     use super::*;
 
-    /// The guard whose exit ended a run that was installed with no exit table: the deopt
-    /// entry refuses ("deopt at native offset <pc>: no deopt metadata ...") and names the
+    /// The guard whose exit ended a child run that was installed with no exit table: the
+    /// deopt entry refuses, which is fatal ("ep9: fatal: deopt at native offset <pc>: no
+    /// deopt metadata ..." on stderr, then an abort; M5-P1-ORCH-12, H23), and names the
     /// stub's pc, which `exits` maps to its guard. A test that corrupts the heap by hand
-    /// installs so, so that T0 never resumes on the corrupted object.
+    /// installs so, in a child process ([`fatal_child`]), so that T0 never resumes on the
+    /// corrupted object.
     fn exit_of(err: &str, exits: &[(u32, u32)]) -> Option<u32> {
-        let rest = err.split("deopt at native offset ").nth(1)?;
+        let rest = err.split("ep9: fatal: deopt at native offset ").nth(1)?;
         let pc: u32 = rest.split(':').next()?.parse().ok()?;
         exits.iter().find(|x| x.1 == pc).map(|x| x.0)
     }
@@ -1413,10 +1415,13 @@ mod tests {
     #[test]
     fn exit_text() {
         let exits = [(0, 40), (3, 52)];
-        let e = "Error: ep9 internal error: deopt at native offset 52: no deopt metadata";
+        let e = "ep9: fatal: deopt at native offset 52: no deopt metadata for the code at 0x10";
         assert_eq!(exit_of(e, &exits), Some(3));
-        assert_eq!(exit_of("Error: deopt at native offset 44: x", &exits), None);
-        assert_eq!(exit_of("TypeError: x is 42", &exits), None);
+        assert_eq!(
+            exit_of("ep9: fatal: deopt at native offset 44: x", &exits),
+            None
+        );
+        assert_eq!(exit_of("Error: deopt at native offset 52: x", &exits), None);
     }
 
     #[test]
@@ -1449,12 +1454,41 @@ mod tests {
         assert_eq!(a.finalize().expect("a"), b.finalize().expect("b"));
     }
 
+    /// The environment variable that makes a test run its child part ([`fatal_child`]).
+    const FATAL_CHILD: &str = "SPIKE_C_FATAL_CHILD";
+
+    /// True in the child process of [`fatal_child`].
+    fn in_fatal_child() -> bool {
+        std::env::var_os(FATAL_CHILD).is_some()
+    }
+
+    /// Runs the test `name` (its path in this binary) again in a child process, where
+    /// [`in_fatal_child`] is true, and returns the child's stderr. The child must end by an
+    /// abort: its run takes a guard exit of code installed with no exit table, a failed
+    /// deopt.
+    fn fatal_child(name: &str) -> String {
+        let out = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env(FATAL_CHILD, "1")
+            .output()
+            .expect("child");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(out.status.signal(), Some(6), "SIGABRT: {stderr}");
+        }
+        #[cfg(not(unix))]
+        assert!(!out.status.success(), "{stderr}");
+        stderr
+    }
+
     /// V10-D9b: `CheckArray` exits on an Array whose elements store is a cell other than an
     /// ELEMENTS cell (an ELEMENTS_DOUBLE or ELEMENTS_DICT cell from M5-P1 on). The test makes
     /// such an array by hand: it points `b`'s elements word at a plain object (a live cell, so
     /// a GC meanwhile is safe), runs the compiled `fill(b, 3)`, which must take the exit of a
-    /// CheckArray guard (installed with no exit table, see [`exit_of`]), then puts the word
-    /// back. With the word back, the same call runs again.
+    /// CheckArray guard (installed with no exit table, so the deopt is fatal and names the
+    /// exit, see [`exit_of`]; in a child process).
     #[test]
     fn check_array_exits_on_an_elements_store_that_is_not_an_elements_cell() {
         use crate::harness::Session;
@@ -1488,6 +1522,17 @@ mod tests {
             .filter_map(|t| t.split(' ').next()?.parse().ok())
             .collect();
         assert!(!guards.is_empty(), "{}", report.graph);
+        if !in_fatal_child() {
+            let stderr = fatal_child(
+                "emit_a64::tests::check_array_exits_on_an_elements_store_that_is_not_an_elements_cell",
+            );
+            let exit = exit_of(&stderr, &report.emit.exits);
+            assert!(
+                exit.is_some_and(|g| guards.contains(&g)),
+                "{stderr} ({guards:?})"
+            );
+            return;
+        }
         // SAFETY: emit_a64's placement (b) code for `fill`, from `input_of(fill)` with no JS
         // run since.
         unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect("install");
@@ -1498,28 +1543,16 @@ mod tests {
         let at = (b + u64::from(vm_layout::ARRAY_ELEMENTS)) as *mut u64;
         // SAFETY: `b` is a live Array held by a global; its elements word is a Value slot,
         // and `o` is a live cell, so the array stays a valid heap object while the word
-        // points at it. The isolate runs only the script below until the word is restored.
+        // points at it. The process aborts in the run below (a failed deopt), so T0 never
+        // reads the word.
         let old = unsafe { at.read() };
         assert!(vm_layout::is_cell(old));
         // SAFETY: as above; the old word is the array's ELEMENTS cell.
         assert_eq!(unsafe { vm_layout::kind(old) }, vm_layout::KIND_ELEMENTS);
         // SAFETY: as above.
         unsafe { at.write(o) };
-        let bad = s.run("fill(b, 3);", "bad.js");
-        // SAFETY: as above.
-        unsafe { at.write(old) };
-        let exit = bad
-            .result
-            .as_ref()
-            .err()
-            .and_then(|e| exit_of(e, &report.emit.exits));
-        assert!(
-            exit.is_some_and(|g| guards.contains(&g)),
-            "{:?} ({guards:?})",
-            bad.result
-        );
-        let again = s.run("print(fill(b, 3));", "again.js");
-        assert!(again.result.is_ok(), "{:?}", again.result);
+        let _ = s.run("fill(b, 3);", "bad.js");
+        unreachable!("the exit of code with no exit table did not abort");
     }
 
     /// M5-P0 review F1: a CheckArray is shared per block, and a generic keyed op after it may
@@ -1527,7 +1560,8 @@ mod tests {
     /// from M5-P1 on). So LoadElement checks the store's kind itself. The test removes every
     /// CheckArray from the graph of `sum` (the state the element op meets after such a swap),
     /// points `b`'s elements word at a plain object (a live cell) and runs the code: it must
-    /// take the exit of a LoadElement guard, not read the object's words as Values.
+    /// take the exit of a LoadElement guard, not read the object's words as Values (a fatal
+    /// deopt that names the exit, in a child process, as above).
     #[test]
     fn element_ops_exit_on_an_elements_store_that_is_not_an_elements_cell() {
         use crate::harness::Session;
@@ -1588,6 +1622,17 @@ mod tests {
             let (code, report) = emit_with(&input, &g, &alloc, StubForm::Movz).expect("emit");
             (code, guards, report.exits)
         };
+        if !in_fatal_child() {
+            let stderr = fatal_child(
+                "emit_a64::tests::element_ops_exit_on_an_elements_store_that_is_not_an_elements_cell",
+            );
+            let exit = exit_of(&stderr, &exits);
+            assert!(
+                exit.is_some_and(|g| guards.contains(&g)),
+                "{stderr} ({guards:?})"
+            );
+            return;
+        }
         // SAFETY: emit_a64's placement (b) code for `sum`, from `input_of(sum)` with no JS
         // run since; its element ops keep their own guards.
         unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect("install");
@@ -1598,24 +1643,15 @@ mod tests {
         let at = (b + u64::from(vm_layout::ARRAY_ELEMENTS)) as *mut u64;
         // SAFETY: `b` is a live Array held by a global; its elements word is a Value slot,
         // and `o` is a live cell, so the array stays a valid heap object while the word
-        // points at it. The isolate runs only the script below until the word is restored;
-        // `sum` only reads.
+        // points at it. The process aborts in the run below (a failed deopt), so T0 never
+        // reads the word; `sum` only reads.
         let old = unsafe { at.read() };
         // SAFETY: as above; the old word is the array's ELEMENTS cell.
         assert_eq!(unsafe { vm_layout::kind(old) }, vm_layout::KIND_ELEMENTS);
         // SAFETY: as above.
         unsafe { at.write(o) };
-        let bad = s.run("sum(b, 3);", "bad.js");
-        // SAFETY: as above.
-        unsafe { at.write(old) };
-        let exit = bad.result.as_ref().err().and_then(|e| exit_of(e, &exits));
-        assert!(
-            exit.is_some_and(|g| guards.contains(&g)),
-            "{:?} ({guards:?})",
-            bad.result
-        );
-        let again = s.run("print(sum(b, 3));", "again.js");
-        assert!(again.result.is_ok(), "{:?}", again.result);
+        let _ = s.run("sum(b, 3);", "bad.js");
+        unreachable!("the exit of code with no exit table did not abort");
     }
 
     /// The largest frame that `emit` accepts encodes in both the prologue `stp` (pre-index,

@@ -252,7 +252,7 @@ impl Session {
     /// H29 byte form of [`crate::deopt_meta`]) through `ep9_vm::NativeCx::install_b_with_deopt`,
     /// so its guard exits deopt to T0 (M5-P1), or with `None` through
     /// `ep9_vm::install_native_b` (code with no exits, such as Spike B's; an exit of such code
-    /// ends in the deopt entry's internal error). All or nothing, as
+    /// is a failed deopt, which aborts the process, M5-P1-ORCH-12). All or nothing, as
     /// `spike_b::harness::Session::install_as`: if an install is refused, the functions this
     /// call installed before it go back to T0 before the module drops.
     ///

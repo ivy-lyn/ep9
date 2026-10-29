@@ -4336,8 +4336,9 @@ mod placement_b {
     /// register (an int32) and the accumulator from a native stack word (a double), counts
     /// the exit, and T0 resumes at the `Add` in the same VM frame: `dsum(1, 2)` is 2.5 + 40.
     /// A record that resumes at offset 0 with no values runs the whole function in T0
-    /// (`dsum0(1, 2)` is 3, as T0). A pc with no record is a catchable internal error, and the
-    /// next calls still work. Under the match loop the bytecode runs (no exit counts). The
+    /// (`dsum0(1, 2)` is 3, as T0). A pc with no record is fatal
+    /// (`a_deopt_the_side_table_refuses_aborts`); `dbad` is installed here but not called.
+    /// Under the match loop the bytecode runs (no exit counts). The
     /// install refuses metadata the reader refuses, a resume offset inside an instruction and
     /// a record past the code, and the function stays in T0.
     #[cfg(target_arch = "aarch64")]
@@ -4360,7 +4361,7 @@ mod placement_b {
             for stress in [false, true] {
                 let label = format!("{} stress={stress}", d.name());
                 let threaded = d != Dispatch::Match;
-                let (out, bad, counts) = on_big_stack(move || {
+                let (out, counts) = on_big_stack(move || {
                     let dump: &'static mut [u64; crate::deopt::DUMP_REGS] =
                         Box::leak(Box::new([0; crate::deopt::DUMP_REGS]));
                     dump[5] = 0xFFFF_0000_0000_0028; // int32 40 in the low half
@@ -4472,15 +4473,6 @@ mod placement_b {
                         ];
                         let (r, out) = run_rows(&mut iso, &rows);
                         assert_eq!(r.as_deref(), Ok("done"));
-                        let bad = iso
-                            .with_cx_checkpoint(|cx| {
-                                cx.run_script(
-                                    calls_unit(&[("dbad", vec![Int(1), Int(2)])]),
-                                    "bad.js",
-                                )
-                                .map(|v| cx.display(v))
-                            })
-                            .map_err(|e| e.message);
                         let (r2, again) = run_rows(&mut iso, &rows[..1]);
                         assert_eq!(r2.as_deref(), Ok("done"));
                         assert_eq!(again, out[..1]);
@@ -4490,18 +4482,11 @@ mod placement_b {
                             .collect();
                         iso.collect_garbage();
                         iso.verify_heap().unwrap();
-                        (out, bad, counts)
+                        (out, counts)
                     })
                 });
                 if threaded {
                     assert_eq!(out, ["42.5", "3", "42.5"], "{label}");
-                    let e = bad.unwrap_err();
-                    assert!(
-                        e.contains(
-                            "ep9 internal error: deopt at native offset 8: no exit record at pc 8"
-                        ),
-                        "{label}: {e}"
-                    );
                     assert_eq!(
                         counts,
                         [Some(vec![3]), Some(vec![1]), Some(vec![0])],
@@ -4509,7 +4494,6 @@ mod placement_b {
                     );
                 } else {
                     assert_eq!(out, ["3", "3", "11"], "{label}");
-                    assert_eq!(bad.as_deref(), Ok("done"), "{label}");
                     assert_eq!(
                         counts,
                         [Some(vec![0]), Some(vec![0]), Some(vec![0])],
@@ -4520,81 +4504,178 @@ mod placement_b {
         }
     }
 
+    /// The record of `dsum` at pc 8 as `an_eager_deopt_resumes_t0_in_the_same_frame` makes it:
+    /// resume at the `Add`, r4 = the int32 of dump register x5, the accumulator = the double
+    /// at native stack offset 16.
+    #[cfg(target_arch = "aarch64")]
+    fn dsum_meta(iso: &Isolate) -> crate::deopt::Table {
+        use crate::deopt::{ExitClass, ExitValue, Loc, Record, RecordTag, Repr, Table, Target};
+        Table {
+            consts: vec![],
+            records: vec![Record {
+                tag: RecordTag::Exit,
+                class: ExitClass::Speculation,
+                pc: 8,
+                bytecode: offset_in(iso, "dsum", Opcode::Add),
+                counter: 0,
+                feedback: None,
+                values: vec![
+                    ExitValue {
+                        target: Target::Reg(Register::local(4)),
+                        repr: Repr::Int32,
+                        loc: Loc::Reg(5),
+                    },
+                    ExitValue {
+                        target: Target::Acc,
+                        repr: Repr::Float64,
+                        loc: Loc::Stack(16),
+                    },
+                ],
+            }],
+        }
+    }
+
+    /// How [`deopt_case`] leaves `dsum` before its last call.
+    #[cfg(target_arch = "aarch64")]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum DeoptCase {
+        /// Uninstalled, then the same code installed again with no metadata
+        /// (`install_native_b`): its exit finds no side-table entry.
+        Uninstalled,
+        /// Installed with a table whose only record is at pc 12: the exit at pc 8 finds no
+        /// record.
+        NoRecord,
+    }
+
+    /// Runs `dsum(1, 2)` under `d` with the `b_deopt` stub (exit at pc 8): first with the
+    /// metadata of [`dsum_meta`] (unless `case` is `NoRecord`), then sets up `case` and, if
+    /// `call_last`, calls it once more (a failed deopt there: the process aborts). Returns the
+    /// outputs of the calls that returned and `dsum`'s exit counters before the last call.
+    #[cfg(target_arch = "aarch64")]
+    fn deopt_case(
+        d: Dispatch,
+        case: DeoptCase,
+        call_last: bool,
+    ) -> (Vec<String>, Option<Vec<u64>>) {
+        on_big_stack(move || {
+            let dump: &'static mut [u64; crate::deopt::DUMP_REGS] =
+                Box::leak(Box::new([0; crate::deopt::DUMP_REGS]));
+            dump[5] = 0xFFFF_0000_0000_0028; // int32 40 in the low half
+            let nfp: &'static mut [u64; 4] = Box::leak(Box::new([0; 4]));
+            nfp[2] = 2.5f64.to_bits();
+            let (dump, nfp) = (dump.as_ptr().addr() as u64, nfp.as_ptr().addr() as u64);
+            with_b_stubs(&[b_deopt(8, dump, nfp)], |code| {
+                let mut iso = isolate(config(d, false));
+                iso.with_cx_checkpoint(|cx| cx.run_script(deopt_defs(), "d.js").map(|_| ()))
+                    .unwrap();
+                let meta = dsum_meta(&iso);
+                let f = iso.global_raw("dsum").unwrap();
+                let rows = vec![("dsum", vec![Lit::Int(1), Lit::Int(2)])];
+                let mut out = Vec::new();
+                match case {
+                    DeoptCase::Uninstalled => {
+                        // SAFETY: as in `an_eager_deopt_resumes_t0_in_the_same_frame`.
+                        unsafe {
+                            NativeCx::install_b_with_deopt(&iso, f, code[0].clone(), &meta.encode())
+                        }
+                        .unwrap();
+                        let (r, first) = run_rows(&mut iso, &rows);
+                        assert_eq!(r.as_deref(), Ok("done"));
+                        out = first;
+                        crate::uninstall_native(&iso, f).unwrap();
+                        // SAFETY: the same code at the same start, with no metadata: its exit
+                        // calls `RuntimeTable::deopt`, which finds no side-table entry.
+                        unsafe { crate::install_native_b(&iso, f, code[0].clone()) }.unwrap();
+                    }
+                    DeoptCase::NoRecord => {
+                        let mut t = meta;
+                        t.records[0].pc = 12;
+                        // SAFETY: as in `an_eager_deopt_resumes_t0_in_the_same_frame`; the
+                        // stub exits at pc 8, where this table has no record.
+                        unsafe {
+                            NativeCx::install_b_with_deopt(&iso, f, code[0].clone(), &t.encode())
+                        }
+                        .unwrap();
+                    }
+                }
+                let counts = NativeCx::deopt_counts(&iso, f);
+                if call_last {
+                    let _ = run_rows(&mut iso, &rows);
+                }
+                (out, counts)
+            })
+        })
+    }
+
     /// An uninstall drops the code's deopt side-table entry (M5-P1 fixer; V10-D32): after
     /// `install_b_with_deopt` of code A, `uninstall_native` and a plain `install_native_b` of
-    /// code at the same start, an exit of that code finds no metadata (a catchable internal
-    /// error), not A's records, and the function has no exit counters.
+    /// code at the same start, the function has no exit counters, and an exit of that code
+    /// finds no metadata, not A's records (fatal: `a_deopt_the_side_table_refuses_aborts`).
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn an_uninstall_drops_the_deopt_metadata_of_its_code() {
-        use crate::deopt::{ExitClass, ExitValue, Loc, Record, RecordTag, Repr, Table, Target};
         for &d in Dispatch::ALL.iter().filter(|&&d| d != Dispatch::Match) {
             let label = d.name();
-            let (first, second, counts) = on_big_stack(move || {
-                let dump: &'static mut [u64; crate::deopt::DUMP_REGS] =
-                    Box::leak(Box::new([0; crate::deopt::DUMP_REGS]));
-                dump[5] = 0xFFFF_0000_0000_0028; // int32 40 in the low half
-                let nfp: &'static mut [u64; 4] = Box::leak(Box::new([0; 4]));
-                nfp[2] = 2.5f64.to_bits();
-                let (dump, nfp) = (dump.as_ptr().addr() as u64, nfp.as_ptr().addr() as u64);
-                with_b_stubs(&[b_deopt(8, dump, nfp)], |code| {
-                    let mut iso = isolate(config(d, false));
-                    iso.with_cx_checkpoint(|cx| cx.run_script(deopt_defs(), "d.js").map(|_| ()))
-                        .unwrap();
-                    let add = offset_in(&iso, "dsum", Opcode::Add);
-                    let meta = Table {
-                        consts: vec![],
-                        records: vec![Record {
-                            tag: RecordTag::Exit,
-                            class: ExitClass::Speculation,
-                            pc: 8,
-                            bytecode: add,
-                            counter: 0,
-                            feedback: None,
-                            values: vec![
-                                ExitValue {
-                                    target: Target::Reg(Register::local(4)),
-                                    repr: Repr::Int32,
-                                    loc: Loc::Reg(5),
-                                },
-                                ExitValue {
-                                    target: Target::Acc,
-                                    repr: Repr::Float64,
-                                    loc: Loc::Stack(16),
-                                },
-                            ],
-                        }],
-                    }
-                    .encode();
-                    let f = iso.global_raw("dsum").unwrap();
-                    // SAFETY: as in `an_eager_deopt_resumes_t0_in_the_same_frame`.
-                    unsafe { NativeCx::install_b_with_deopt(&iso, f, code[0].clone(), &meta) }
-                        .unwrap();
-                    use Lit::Int;
-                    let rows = vec![("dsum", vec![Int(1), Int(2)])];
-                    let (r, first) = run_rows(&mut iso, &rows);
-                    assert_eq!(r.as_deref(), Ok("done"));
-                    crate::uninstall_native(&iso, f).unwrap();
-                    // SAFETY: the same code at the same start, with no metadata: its exit
-                    // calls `RuntimeTable::deopt`, which must refuse.
-                    unsafe { crate::install_native_b(&iso, f, code[0].clone()) }.unwrap();
-                    let counts = NativeCx::deopt_counts(&iso, f);
-                    let second = iso
-                        .with_cx_checkpoint(|cx| {
-                            cx.run_script(calls_unit(&rows), "again.js")
-                                .map(|v| cx.display(v))
-                        })
-                        .map_err(|e| e.message);
-                    (first, second, counts)
-                })
-            });
+            let (first, counts) = deopt_case(d, DeoptCase::Uninstalled, false);
             assert_eq!(first, ["42.5"], "{label}");
             assert_eq!(counts, None, "{label}");
-            let e = second.unwrap_err();
+        }
+    }
+
+    /// The environment variable that makes `a_deopt_the_side_table_refuses_aborts` run its
+    /// child part: `uninstalled` or `no-record`.
+    #[cfg(target_arch = "aarch64")]
+    const FATAL_DEOPT_CHILD: &str = "EP9_FATAL_DEOPT_CHILD";
+
+    /// A deopt that the side table refuses is fatal (M5-P1-ORCH-12, H23 "Failed deopt"): the
+    /// process aborts (SIGABRT) with `ep9: fatal: deopt at native offset 8: <why>` on stderr,
+    /// and no JS code sees an exception. Two cases, each in a child process (an abort would
+    /// end the test binary): an exit of code installed with no metadata (after an uninstall,
+    /// so the old records are gone), and an exit at a pc with no record.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn a_deopt_the_side_table_refuses_aborts() {
+        let d = Dispatch::ALL
+            .iter()
+            .copied()
+            .find(|&d| d != Dispatch::Match)
+            .unwrap();
+        if let Some(case) = std::env::var_os(FATAL_DEOPT_CHILD) {
+            let case = match case.to_str() {
+                Some("uninstalled") => DeoptCase::Uninstalled,
+                Some("no-record") => DeoptCase::NoRecord,
+                other => panic!("unknown case {other:?}"),
+            };
+            deopt_case(d, case, true);
+            unreachable!("the failed deopt did not abort");
+        }
+        for (case, why) in [
+            ("uninstalled", "no deopt metadata for the code at"),
+            ("no-record", "no exit record at pc 8"),
+        ] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::native::placement_b::a_deopt_the_side_table_refuses_aborts",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(FATAL_DEOPT_CHILD, case)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(
-                e.contains("ep9 internal error: deopt at native offset 8: no deopt metadata"),
-                "{label}: {e}"
+                stderr.contains(&format!("ep9: fatal: deopt at native offset 8: {why}")),
+                "{case}: {stderr}"
             );
+            assert!(!stderr.contains("did not abort"), "{case}: {stderr}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                assert_eq!(out.status.signal(), Some(6), "{case}: {:?}", out.status);
+            }
+            #[cfg(not(unix))]
+            assert!(!out.status.success(), "{case}: {:?}", out.status);
         }
     }
 }

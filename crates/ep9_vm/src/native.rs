@@ -1201,9 +1201,9 @@ const _: () = {
 /// resume pc and sets `Cx::out_fp`/`out_pc` there, as [`RuntimeTable::unwind`] does, then
 /// returns the accumulator. The shared exit tail-jumps to `cx.table[*out_pc]`, so T0 resumes
 /// in the same VM frame; the code stays installed (SCP:128). If the side table refuses (no
-/// metadata, no record at `pc`, a value the frame cannot take), it throws an internal error
-/// from the function's start and returns what `error::unwind` gives, so the shared exit takes
-/// the same path. No GC point on the success path (H29-Q7).
+/// metadata, no record at `pc`, a value the frame cannot take), the process ends: [`fatal_deopt`]
+/// (M5-P1-ORCH-12, H23: an engine invariant broke, so no JS code may catch it, and jitless
+/// would never reach this point). No GC point (H29-Q7).
 ///
 /// # Safety
 /// As [`rt_deopt`].
@@ -1239,13 +1239,21 @@ unsafe fn deopt_at(cx: &mut Cx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64
             cx.out_pc = at;
             resume.acc
         }
-        Err(e) => {
-            rt.enter(fp, fi.code);
-            let msg = format!("ep9 internal error: deopt at native offset {pc}: {e}");
-            throw_error(cx, ErrorKind::Error, &msg);
-            crate::error::unwind(cx, fp, fi.code)
-        }
+        Err(e) => fatal_deopt(pc, &e),
     }
+}
+
+/// A deopt that cannot rebuild its frame (the metadata reader refuses the exit) is fatal:
+/// it prints `ep9: fatal: deopt at native offset <pc>: <why>` to stderr and aborts the
+/// process (M5-P1-ORCH-12, H23 "Failed deopt"). Never a JS exception: a script's `catch`
+/// would hide an engine bug, and the same script in jitless (no native code) never gets
+/// here, so a mode differential would see two outputs. An abort, not a panic: a panic hook
+/// may not end the process at once, and the table function must not unwind (H23).
+#[cold]
+#[inline(never)]
+fn fatal_deopt(pc: u32, why: &str) -> ! {
+    std::eprintln!("ep9: fatal: deopt at native offset {pc}: {why}");
+    std::process::abort()
 }
 
 /// The deopt part of the spike API (M5-P1 SPIKEC-5), as associated functions of
