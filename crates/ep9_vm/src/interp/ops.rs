@@ -472,7 +472,7 @@ fn call_fast(
 /// The T0 count of a call of `fi` while it has no feedback vector (`feedback::count_call`
 /// without the vector): `false` for the call that reaches the threshold, which goes cold so
 /// that `slow::call` makes the vector. A function with a vector costs one load and one test.
-/// The count is taken before the frame push; a cold exit after it calls [`uncount_call`], so
+/// The count is taken before the frame push; a cold exit after it calls `uncount_call`, so
 /// the cold path counts the call once (in `slow::call`).
 #[inline(always)]
 fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
