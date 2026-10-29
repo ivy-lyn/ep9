@@ -920,6 +920,47 @@ mod tests {
         }
     }
 
+    /// Patch 0005: a long literal prefix on Latin-1 text (Codex M5-P3 r3 eng [high]: a 256 KiB
+    /// prefix against 4 MiB with a 'b' every 128 KiB). The scan chunk is at least 4 times the
+    /// prefix, so the scan reads each unit at most 1.25 times. With 1,024-position chunks it
+    /// searched the whole prefix again for each chunk. The yardstick is one `str::contains`
+    /// (std is built optimized; regress here is not): about 50 times it after the fix and 700
+    /// times it before, in a debug build on a64. It still polls, and an interrupt stops it.
+    #[test]
+    fn rx0_a_long_latin1_prefix_scan_reads_each_unit_about_once() {
+        let len = 256 << 10;
+        let mut text = vec![b'a'; 4 << 20];
+        for p in (len / 2..text.len()).step_by(len / 2) {
+            text[p] = b'b';
+        }
+        let pat = "a".repeat(len);
+        let best = |f: &mut dyn FnMut()| {
+            (0..3)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    f();
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let hay = std::str::from_utf8(&text).unwrap();
+        let one = best(&mut || assert!(!std::hint::black_box(hay).contains(pat.as_str())));
+        let mut polls = 0;
+        let scan = best(&mut || {
+            let (r, p) = run_polled(&pat, "", Input::Latin1(&text), 0, 0);
+            assert_eq!(r, ExecResult::NoMatch);
+            polls = p;
+        });
+        assert!(polls >= 3, "{polls} polls");
+        assert!(
+            scan <= one * 150 + std::time::Duration::from_millis(20),
+            "scan {scan:?}, one search {one:?}"
+        );
+        let (r, polls) = run_polled(&pat, "", Input::Latin1(&text), 0, 2);
+        assert_eq!((r, polls), (ExecResult::Interrupted, 2));
+    }
+
     /// Patch 0002: a sticky exec is one attempt at `start`. A sticky lexer that fails at each
     /// position of a long subject polls once per exec (before its attempt): no exec scans the
     /// rest of the subject (before the patch each one searched to the end: n^2 / 1024 polls).
