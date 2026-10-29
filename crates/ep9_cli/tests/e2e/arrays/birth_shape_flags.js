@@ -53,3 +53,25 @@ check("many named properties", function () { return [8]; }, function (a) {
   for (var k = 0; k < 40; k++) delete a["p" + k];
   a[0] = 0.5;
 });
+
+// A prototype's unique shape is not a birth shape either (Codex M5-P2 r2 1): the site gave
+// it to fresh literals, which were not in prototype mode and kept the prototype alive; a
+// later Object.create of one of them failed a debug assert.
+(function () {
+  function f() { return [1]; }
+  for (var i = 0; i < 50; i++) f();
+  var p = f();
+  var child = Object.create(p);
+  p[0] = 0.5;
+  var bad = 0;
+  for (var i = 0; i < 50; i++) {
+    var q = f();
+    q.x = 1;
+    var c = Object.create(q);
+    if (Object.getPrototypeOf(c) !== q || c.x !== 1 || c[0] !== 1 || c.length !== 1) bad++;
+    q.x = 2;
+    delete q[0];
+    if (c.x !== 2 || c[0] !== undefined || child[0] !== 0.5) bad++;
+  }
+  print("prototype", child[0], p.length, bad);
+})();

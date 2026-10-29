@@ -986,3 +986,44 @@ var tok = {{}}, fr = new FinalizationRegistry(countServed);
         i.verify_heap().expect("a valid heap");
     });
 }
+
+/// An array-literal site's birth shape is never a prototype's unique shape (Codex M5-P2 r2
+/// 1): after `p` (a literal of the site) became a prototype and made a kind transition, the
+/// site gave `p`'s unique shape to its next literals, and that shape's PROTO_INFO kept `p`
+/// alive for as long as such a literal lived.
+#[test]
+fn a_literal_born_after_a_prototype_transition_does_not_keep_the_prototype() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            run(
+                &mut i,
+                r#"
+var fr = new FinalizationRegistry(function (held) { log('cleanup', held); });
+function f() { return [1]; }
+for (var i = 0; i < 50; i++) f();
+(function () {
+  var p = f();
+  Object.create(p);
+  p[0] = 0.5;
+  fr.register(p, 'prototype');
+})();
+var q = f();
+"#,
+            )
+            .unwrap();
+            common::assert_dies(&mut i, "a prototype whose site made a later literal", |i| {
+                i.with_cx(|cx| cx.cleanup_finalization_registries())
+                    .unwrap();
+                take_log() == ["cleanup prototype"]
+            });
+            run(
+                &mut i,
+                "q.x = 1; var c = Object.create(q); log(c.x, c[0], q.length);",
+            )
+            .unwrap();
+            assert_eq!(take_log(), ["1 1 1"], "stress={stress}");
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}

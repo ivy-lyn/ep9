@@ -6,3 +6,4 @@ accessor element true false false 0
 empty, preventExtensions true false false 0
 named property deleted true false false 0
 many named properties true false false 0
+prototype 0.5 1 0

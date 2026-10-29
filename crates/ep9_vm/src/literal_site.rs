@@ -964,9 +964,14 @@ pub(crate) fn handler_i32(h: u64, off: usize) -> i32 {
 
 /// True if `shape` may be a site's result shape, the birth shape of its next arrays
 /// (the two ALLOC_SITE RESULT writers, [`array_site`] and [`generalize`]): an
-/// [`is_array_shape`] that is extensible and not a dictionary shape. A store-side kind
-/// transition keeps the flags of the array's shape (after `Object.preventExtensions`, say),
-/// and a fresh literal must not take them (Codex M5-P2 r1 elem2 1). Not a GC point.
+/// [`is_array_shape`] that is extensible, not a dictionary shape and not a prototype's unique
+/// shape. A store-side kind transition keeps the flags of the array's shape (after
+/// `Object.preventExtensions`, say), and a fresh literal must not take them (Codex M5-P2 r1
+/// elem2 1). A unique shape belongs to one prototype-mode object and holds its PROTO_INFO:
+/// a fresh literal with it would keep that prototype alive and would not be in prototype
+/// mode itself (Codex M5-P2 r2 1). Not a GC point.
 fn is_birth_shape(rt: &Runtime, shape: u64) -> bool {
-    is_array_shape(rt, shape) && shape::is_extensible(shape) && !shape::is_dictionary(shape)
+    use shape::flag;
+    let mask = flag::EXTENSIBLE | flag::DICTIONARY | flag::PROTOTYPE | flag::UNIQUE;
+    is_array_shape(rt, shape) && shape::flags(shape) & mask == flag::EXTENSIBLE
 }
