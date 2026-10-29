@@ -399,8 +399,8 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 /// The sampled call record (Call slot `s`; M4-P0 hook, PROFILE) runs once per call, after
 /// the test of the callee: after the frame push (`profile::record_call_pushed`, through
 /// `Flow::JumpRecordCall`, see [`jump_to_callee`]) or, at a cold exit, in the cold body
-/// (`profile::record_call` in `call_record_cold`; M4-P1 PROFILE-X64).
-#[cfg(not(feature = "spike-native"))]
+/// (`profile::record_call` in `call_record_cold`; M4-P1 PROFILE-X64). x86-64: at file end.
+#[cfg(all(not(feature = "spike-native"), not(target_arch = "x86_64")))]
 #[inline(always)]
 fn call_fast(
     st: &mut St<'_>,
@@ -487,16 +487,16 @@ fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
     true
 }
 
-/// Gives back the budget unit of a call that `call_fast` sends cold after its decrement:
-/// the unit used up the budget (X-PF1), or the frame does not fit (R3-2). The cold path takes
-/// the unit of the call again at its frame push, whether the push succeeds or fails:
+/// Gives back the unit of a call that `call_fast` (not the x86-64 form) sends cold after its
+/// decrement: the unit used up the budget (X-PF1), or the frame does not fit (R3-2). The cold
+/// path takes the unit again at its frame push, whether the push succeeds or fails:
 /// `slow::call`, or under spike-native `enter_b_cold` or, for an AotBaseline callee,
 /// `enter_native` (M3-P2 fix round 5, D1). So the call takes 1 unit, not 2 and not 0.
 /// `slow::call` polls before that if the budget is now 0; at a budget of 1 it does not, and
-/// the call leaves the budget at 0, so the next unit taker (a call or a `JumpLoop`) polls:
-/// the poll comes at most 1 unit later. The same holds when the frame does not fit: the
-/// RangeError leaves the budget at 0, so caught overflows do not starve the poll (also under
-/// spike-native).
+/// the call leaves the budget at 0, so the next unit taker (a call or a `JumpLoop`) polls: at
+/// most 1 unit later. The same holds when the frame does not fit: the RangeError leaves the
+/// budget at 0, so caught overflows do not starve the poll (also under spike-native).
+#[cfg(any(feature = "spike-native", not(target_arch = "x86_64")))]
 #[inline(always)]
 fn budget_out(st: &mut St<'_>) {
     st.cx.budget += 1;
@@ -504,6 +504,7 @@ fn budget_out(st: &mut St<'_>) {
 
 /// Takes back the count of [`count_call`] before a cold exit (the budget ran out, or the VM
 /// stack is full). No GC point lies between the two, so the vector state is the same.
+#[cfg(any(feature = "spike-native", not(target_arch = "x86_64")))]
 #[inline(always)]
 fn uncount_call(fi: &FunctionInfo) {
     if fi.feedback.get().is_null() {
@@ -520,8 +521,7 @@ fn uncount_call(fi: &FunctionInfo) {
 /// AotBaseline slot), whose handler calls the native code. Both take one budget unit as a T0
 /// callee does, record no feedback and are never class constructors (the installs refuse
 /// them). Any other slot (placement (a) in a Baseline slot: config A of the D21 bench) goes
-/// cold, as in the default build. The match loop runs the callee's bytecode at both stub
-/// bytes (D4).
+/// cold, as in the default build. The match loop runs the callee's code at both stubs (D4).
 #[cfg(feature = "spike-native")]
 #[inline(always)]
 fn call_fast(
@@ -1902,6 +1902,97 @@ pub(crate) const COLD_COUNT: usize = {
     }
     ep9_bytecode::for_each_opcode!(count_cold [])
 };
+
+/// `call_fast` of the default build on x86-64 (PERF3 item 2, M5-P2): the tests, the count, the
+/// unit and the frame of the other default-build `call_fast` (above), in another order. The
+/// SysV handler ABI leaves 9 caller-saved integer registers, and 4 of them hold the handler
+/// arguments; the other form keeps 10-12 values live across its frame push, so LLVM saved 5-6
+/// callee-saved registers on every entry and restored them at every exit (10-12 instructions
+/// per call, 1-3% of all instructions on t0-call, deltablue, richards and t0-prop; x86-64
+/// callgrind, m5-p0). The order here:
+///
+/// 1. the callee tests and the receiver test, without the global object
+///    (`call::try_bind_this(.., UNDEFINED)`);
+/// 2. the frame size test (`call::call_frame_fp`), then the missing arguments are written
+///    (`call::fill_missing_args`), so the frame base is dead before the next tests;
+/// 3. the unit (`budget <= 1` goes cold, X-PF1) and the count;
+/// 4. the decrement, the global object (`call::bound_with_global`) and the rest of the frame
+///    (`call::write_call_frame`).
+///
+/// Every cold exit comes before the count and the decrement, so no exit gives a unit or a
+/// count back, and `slow::call` sees the VM state the other form leaves at its cold exits
+/// (the units and the R3-2 RangeError as described there). The missing-argument slots that
+/// step 2 writes lie above the top frame: a later cold exit leaves them there, where no GC
+/// root scan and no reader looks (`runtime.rs` trace stops at the top frame), and the cold
+/// path's frame push writes them again. aarch64 keeps the other form: it has 18
+/// caller-saved registers, the other form saves none there on the hot forms, and this order
+/// costs it about 9 instructions per call (Mac a64: t0-call +3.0%, deltablue +2.8%).
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(always)]
+fn call_fast(
+    st: &mut St<'_>,
+    s: FSlot,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(&St<'_>, u32) -> u64,
+) -> Flow {
+    if !object::is_function(callee) {
+        return Flow::Cold;
+    }
+    let fi = object::function_info(callee);
+    if fi.slot.kind_byte() != DispatchKind::Interp as u8 || fi.is_class_constructor() {
+        return Flow::Cold;
+    }
+    // A callee of another realm: `slow::call` runs it in its realm (H22-Q3).
+    if object::function_realm(callee) != st.cx.realm {
+        return Flow::Cold;
+    }
+    // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2). The global
+    // object comes in at the frame write (`bound_with_global`).
+    let Some(this) = call::try_bind_this(fi, this, UNDEFINED) else {
+        return Flow::Cold;
+    };
+    let base = st.fp.wrapping_add(st.info().register_count as usize);
+    // A frame that does not fit (R3-2).
+    let Some(nfp) = call::call_frame_fp(base, st.cx.stack_limit, fi, argc) else {
+        return Flow::Cold;
+    };
+    // SAFETY: `nfp` is `call_frame_fp` of `base`, the first free slot above the live top frame
+    // `fp`, and the VM stack cap.
+    unsafe { call::fill_missing_args(base, nfp, argc) };
+    // The unit of this call would use up the budget (X-PF1).
+    if st.cx.budget <= 1 {
+        return Flow::Cold;
+    }
+    if !count_call(st, fi) {
+        return Flow::Cold;
+    }
+    // The volatile read makes the decrement one memory operation (`dec`): the value tested
+    // above is not kept in a register across the count.
+    // SAFETY: a read of a field of the live `Cx`.
+    st.cx.budget = unsafe { core::ptr::read_volatile(&raw const st.cx.budget) } - 1;
+    let this = call::bound_with_global(fi, this, st.cx.global_this);
+    let (fp, next) = (st.fp, st.next);
+    let rd: &St<'_> = st;
+    // SAFETY: as above; `arg` reads registers of the current verified instruction.
+    unsafe {
+        call::write_call_frame(
+            nfp,
+            fi,
+            callee,
+            this,
+            argc,
+            |i| arg(rd, i),
+            fp,
+            next,
+            || object::function_context(callee),
+        )
+    };
+    st.fp = nfp;
+    st.acc = UNDEFINED;
+    jump_to_callee(st, fi.code, s)
+}
 
 /// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit
 /// per call, also for a call that `call_fast` sends cold (M3-P2 PERF3; before, such a call

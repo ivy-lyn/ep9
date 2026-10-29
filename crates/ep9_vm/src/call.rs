@@ -955,3 +955,130 @@ pub(crate) unsafe fn push_construct_stub(
         )
     }
 }
+
+// ---- the x86-64 T0 call fast path (PERF3 item 2) ----------------------------------------
+
+/// The `fp` that [`push_frame`] gives a call frame of `fi` with `argc` arguments at `base`, or
+/// `None` if that frame would end above `limit`: the size test of [`push_frame`] alone, with no
+/// write. The x86-64 T0 call fast path (`interp/ops.rs` `call_fast`, PERF3 item 2) makes this
+/// test before its count and its budget unit, then writes the frame with
+/// [`fill_missing_args`] and [`write_call_frame`]; the three together write what
+/// [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
+///
+/// The `& !7` changes no bit (`base` is a slot address, so `fp` is 8-byte aligned). It keeps
+/// LLVM from folding `base + 8 * n + 72` into every later address, so the fast path holds the
+/// new `fp` in one register, not `base` and `n` in two.
+#[cfg_attr(
+    any(feature = "spike-native", not(target_arch = "x86_64")),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) fn call_frame_fp(
+    base: *mut u64,
+    limit: *mut u64,
+    fi: &FunctionInfo,
+    argc: u32,
+) -> Option<*mut u64> {
+    let n = argc.max(fi.parameter_count) as usize;
+    let fp = base.wrapping_add(n + 1 + HEADER).map_addr(|a| a & !7);
+    let top = fp.wrapping_add(fi.register_count as usize);
+    (top.addr() <= limit.addr()).then_some(fp)
+}
+
+/// Writes undefined to the missing-argument slots of the call frame at `fp` (from
+/// [`call_frame_fp`] of `base`): `[base, fp + PARAM0 + 1 - argc)`, as [`push_frame`] does.
+///
+/// # Safety
+/// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
+/// contract for `base` and `limit`.
+#[cfg_attr(
+    any(feature = "spike-native", not(target_arch = "x86_64")),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) unsafe fn fill_missing_args(base: *mut u64, fp: *mut u64, argc: u32) {
+    // SAFETY: the slots lie in the frame `call_frame_fp` placed below `limit`, above every
+    // live frame (caller contract).
+    unsafe { fill_undefined(base, fp.offset(slot::PARAM0 + 1 - argc as isize)) }
+}
+
+/// Writes the rest of the call frame (new.target undefined) that [`push_frame`] writes, at the
+/// `fp` that [`call_frame_fp`] gave: the receiver, the arguments, the header and the
+/// registers ([`fill_missing_args`] writes the missing arguments). The receiver and the
+/// arguments go first, so their registers are free for the rest. Up to 2 arguments (the
+/// fixed-count `Call*` forms, whose `argc` is a constant) the copy unrolls fully; a longer
+/// list is copied by a plain pointer loop (LLVM unrolls a counted copy loop 4 times, which
+/// costs the list forms 2 more callee-saved registers on x86-64). `context` runs at its store
+/// (the fast path loads the callee's context there, not before the receiver and argument
+/// stores: one register less for the list forms on x86-64).
+///
+/// # Safety
+/// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
+/// contract for `base` and `limit`, and `arg(i)` returns valid Value bits for `i < argc`.
+#[cfg_attr(
+    any(feature = "spike-native", not(target_arch = "x86_64")),
+    allow(dead_code)
+)]
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn write_call_frame(
+    fp: *mut u64,
+    fi: &FunctionInfo,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    caller_fp: *mut u64,
+    return_pc: *const u8,
+    context: impl FnOnce() -> u64,
+) {
+    // SAFETY: [fp + RECEIVER - argc, fp + register_count) lies in the frame `call_frame_fp`
+    // placed below `limit`, above every live frame (caller contract), so these writes clobber
+    // nothing live.
+    unsafe {
+        *fp.offset(slot::RECEIVER) = this;
+        if argc <= 2 {
+            for i in 0..argc {
+                *fp.offset(slot::PARAM0 - i as isize) = arg(i);
+            }
+        } else {
+            let mut p = fp.offset(slot::PARAM0);
+            let end = p.wrapping_sub(argc as usize);
+            let mut i = 0;
+            while p > end {
+                // Volatile as in `fill_undefined`: a plain store; LLVM makes no vector loop.
+                p.write_volatile(arg(i));
+                p = p.wrapping_sub(1);
+                i += 1;
+            }
+        }
+        *fp.offset(slot::CALLER_FP) = native_of(caller_fp);
+        *fp.offset(slot::RETURN_PC) = native_of(return_pc);
+        *fp.offset(slot::CALLEE) = callee;
+        *fp.offset(slot::ARGC) = int32_bits(argc as i32);
+        *fp.offset(slot::FUNCTION_INFO) = native_of(fi);
+        *fp.offset(slot::NEW_TARGET) = UNDEFINED;
+        *fp.offset(slot::CONTEXT) = context();
+        *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
+        fill_undefined(fp, fp.wrapping_add(fi.register_count as usize));
+    }
+}
+
+/// The global object step of [`try_bind_this`] after the fact: for `b =
+/// try_bind_this(fi, this, UNDEFINED)` (not `None`), `bound_with_global(fi, b, global)` is
+/// `try_bind_this(fi, this, global)`. Only a sloppy callee with an undefined or null receiver
+/// gives undefined there (an object, a strict receiver and the hole come back as they are, and
+/// none of them is undefined for a sloppy callee). The T0 call fast path tests the receiver
+/// first and loads the global object only at its frame write (x86-64, PERF3 item 2).
+#[cfg_attr(
+    any(feature = "spike-native", not(target_arch = "x86_64")),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) fn bound_with_global(fi: &FunctionInfo, bound: u64, global: u64) -> u64 {
+    if bound == UNDEFINED && !fi.is_strict() {
+        global
+    } else {
+        bound
+    }
+}
