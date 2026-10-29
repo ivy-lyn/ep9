@@ -34,11 +34,21 @@
 #        through RuntimeTable::call_any, raw f64 element loads and stores); output equal to T0
 #        line for line (the check line digests every cell of the three fields)
 #     SKIP without the v8-v7 checkout
+#   gate.sh deopt        (plan v10 M5-P2 SPIKEC-6 WI-SC4; protocol §4, C2) forced deopts of am3:
+#     1  release build (as am3)
+#     2  `spike-c deopt crypto`: for each guard of am3, a config C run of crypto (n = 1) with
+#        only that guard forced (its countdown word ends at its 3rd pass, emit_a64::ForceTable):
+#        output equal to T0, the heap verifier clean after the run, and the VM's exit
+#        counters hold exactly that one exit
+#     3  `SPIKE_C_FORCE_DEOPT=1 spike-c tier crypto --n 1 --stress`: every guard armed from the
+#        seed, GC before every allocation, verifier on: output equal to T0, each guard's
+#        counter at least its forced exit, heap verifier clean
+#     SKIP without the v8-v7 checkout
 #   gate.sh time         (plan v9 M4-P2 SPIKEC-2; protocol §3) the class S timing of crypto on
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
 #     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
 #     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
-#   gate.sh              `gate.sh structural`, `gate.sh am3`, then `gate.sh linsolve`
+#   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, then `gate.sh linsolve`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
 #      SPIKE_C_BENCH_DIR (default: third_party/bench-v8v7/bench/bench-v8).
@@ -112,6 +122,21 @@ am3() {
   run "am3/stress" "$bin" tier crypto --n 1 --stress
 }
 
+deopt() {
+  if ! build_release; then
+    record "deopt" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/crypto.js" ]; then
+    record "deopt" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  run "deopt/each-guard" "$bin" deopt crypto
+  run "deopt/seeded-stress" env SPIKE_C_FORCE_DEOPT=1 "$bin" tier crypto --n 1 --stress
+}
+
 linsolve() {
   if ! build_release; then
     record "linsolve" FAIL "release build failed"
@@ -146,15 +171,17 @@ step="${1:-all}"
 case "$step" in
   structural) structural ;;
   am3) am3 ;;
+  deopt) deopt ;;
   linsolve) linsolve ;;
   time) timing ;;
   all)
     structural
     am3
+    deopt
     linsolve
     ;;
   *)
-    echo "usage: gate.sh [structural | am3 | linsolve | time]" >&2
+    echo "usage: gate.sh [structural | am3 | deopt | linsolve | time]" >&2
     exit 2
     ;;
 esac

@@ -114,6 +114,80 @@ pub enum StubForm {
     Movz,
 }
 
+/// Forced deopts (WI-SC4, `SPIKE_C_FORCE_DEOPT`): one read-write countdown word per guard id
+/// that code emitted with this table reads at each pass of the guard, before its own checks.
+/// 0 is off; any other value is decremented, and the pass that makes it 0 takes the guard's
+/// exit as if its check had failed. So a word armed with `c` forces exactly one exit, at the
+/// guard's `c`-th pass, and a word that is 0 after a run was forced; the VM's exit counter
+/// of that guard counts the same exit.
+///
+/// The code holds the table's address, so forced code is a test build only (the default
+/// code holds no address, `spike-c compile`); the table must outlive the code's runs.
+#[derive(Debug)]
+pub struct ForceTable {
+    words: Box<[std::sync::atomic::AtomicU32]>,
+}
+
+impl ForceTable {
+    /// `len` guards, every word off.
+    pub fn new(len: usize) -> ForceTable {
+        ForceTable {
+            words: (0..len).map(|_| Default::default()).collect(),
+        }
+    }
+
+    /// Every guard of `0..len` armed with a countdown from `seed` (1 to 8; splitmix64 of the
+    /// seed and the guard id), as `SPIKE_C_FORCE_DEOPT=<seed>` asks.
+    pub fn seeded(seed: u64, len: usize) -> ForceTable {
+        let t = ForceTable::new(len);
+        for g in 0..len {
+            let mut z = seed ^ (g as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            t.arm(g as u32, 1 + ((z ^ (z >> 31)) % 8) as u32);
+        }
+        t
+    }
+
+    /// Sets guard `g`'s countdown to `c` (0 = off).
+    pub fn arm(&self, g: u32, c: u32) {
+        self.words[g as usize].store(c, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Guard `g`'s countdown now.
+    pub fn get(&self, g: u32) -> u32 {
+        self.words[g as usize].load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn len(&self) -> usize {
+        self.words.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
+
+    fn word(&self, g: u32) -> Option<u64> {
+        self.words.get(g as usize).map(|w| w.as_ptr().addr() as u64)
+    }
+}
+
+/// How [`emit_opts`] builds the code: the stub form, and two test builds.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EmitOptions<'a> {
+    pub form: StubForm,
+    /// Forced deopts (WI-SC4, [`ForceTable`]).
+    pub force: Option<&'a ForceTable>,
+    /// Junk in the upper 32 bits of every Int32 and Bool result (MODES-CHECK-w19 outside O1:
+    /// a test build that proves no consumer reads past the low half, the deopt core
+    /// included). A64 writes of a W register zero the upper half; this build sets it to
+    /// [`INT32_JUNK`] after each such result.
+    pub int32_junk: bool,
+}
+
+/// The upper half [`EmitOptions::int32_junk`] writes (bits 32-63 of the register).
+pub const INT32_JUNK: u64 = 0xDEAD_BEEF;
+
 /// What the emitter made (the report).
 #[derive(Clone, Debug, Default)]
 pub struct EmitReport {
@@ -412,6 +486,10 @@ struct Emitter<'a> {
     stub_bytes: u32,
     shared_exit_bytes: u32,
     form: StubForm,
+    /// Forced deopts (WI-SC4), if this is a forced build.
+    force: Option<&'a ForceTable>,
+    /// The int32 junk build ([`EmitOptions::int32_junk`]).
+    int32_junk: bool,
 }
 
 /// Emits the code of `graph` (built from `input`) with the registers of `alloc` and the
@@ -431,6 +509,26 @@ pub fn emit_with(
     alloc: &Allocation,
     form: StubForm,
 ) -> Result<(FunctionCode, EmitReport), Refusal> {
+    emit_opts(
+        input,
+        graph,
+        alloc,
+        &EmitOptions {
+            form,
+            ..EmitOptions::default()
+        },
+    )
+}
+
+/// [`emit`] with the options `opts`: the stub form, and the test builds (forced deopts: every
+/// guard first counts down its word of the table and exits when it reaches 0; int32 junk).
+pub fn emit_opts(
+    input: &FunctionInput<'_>,
+    graph: &Graph,
+    alloc: &Allocation,
+    opts: &EmitOptions<'_>,
+) -> Result<(FunctionCode, EmitReport), Refusal> {
+    let form = opts.form;
     let frame = frame_bytes(alloc.spill_slots)?;
     let mut ops = Ops::new(0);
     let labels = graph
@@ -465,6 +563,8 @@ pub fn emit_with(
         stub_bytes: 0,
         shared_exit_bytes: 0,
         form,
+        force: opts.force,
+        int32_junk: opts.int32_junk,
     };
     let overflow = e.ops.new_dynamic_label();
     e.prologue(overflow)?;
@@ -544,12 +644,36 @@ impl Emitter<'_> {
     }
 
     /// The label of the exit stub of guard `n` (each failing branch of the guard goes there).
-    fn trap(&mut self, n: NodeId) -> DynamicLabel {
+    /// In a forced build ([`ForceTable`]) it first emits the countdown of the guard's word:
+    /// the guard's code calls this before its own checks and before it writes its result or
+    /// any flag it branches on, and the countdown uses only x16, x17 and the flags, so the
+    /// forced exit leaves with the state of a failed check.
+    fn trap(&mut self, n: NodeId) -> Result<DynamicLabel, Refusal> {
         let node = self.g.node(n);
         let g = node.guard.as_ref().expect("a guard");
         let l = self.ops.new_dynamic_label();
         self.traps.push((l, g.id, g.state.offset, g.policy));
-        l
+        if let Some(t) = self.force {
+            let word = t.word(g.id).ok_or_else(|| {
+                Refusal::Limit(format!(
+                    "guard g{} past the force table ({})",
+                    g.id,
+                    t.len()
+                ))
+            })?;
+            let off = self.ops.new_dynamic_label();
+            mov64(&mut self.ops, 17, word);
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; ldr w16, [x17]
+                ; cbz w16, =>off
+                ; sub w16, w16, #1
+                ; str w16, [x17]
+                ; cbz w16, =>l
+                ; =>off
+            );
+        }
+        Ok(l)
     }
 
     fn throw_at(&mut self, off: u32) -> DynamicLabel {
@@ -607,6 +731,21 @@ impl Emitter<'_> {
 
     /// Stores a spilled result from x15.
     fn finish(&mut self, n: NodeId) {
+        if self.int32_junk && matches!(self.g.node(n).repr, Repr::Int32 | Repr::Bool) {
+            let d = match self.a.of(n) {
+                Location::Reg(r) => Some(r),
+                Location::Stack(_) => Some(15),
+                _ => None,
+            };
+            if let Some(d) = d {
+                let (lo, hi) = ((INT32_JUNK & 0xFFFF) as u32, (INT32_JUNK >> 16) as u32);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; movk X(d), lo, lsl #32
+                    ; movk X(d), hi, lsl #48
+                );
+            }
+        }
         if let Location::Stack(k) = self.a.of(n) {
             let o = Self::slot_off(k);
             dynasm!(self.ops ; .arch aarch64 ; str x15, [sp, o]);
@@ -637,7 +776,7 @@ impl Emitter<'_> {
         match &node.op {
             Op::Incoming(_) | Op::Const(_) | Op::ConstInt32(_) | Op::Phi => {}
             Op::CheckInt32 | Op::TruncateInt32 => {
-                let trap = self.trap(n);
+                let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
                 let d = self.dst(n)?;
                 let (slow, done, ok) = (
@@ -690,7 +829,7 @@ impl Emitter<'_> {
                 // the cell at (address & !(SHAPE_CAGE_ALIGN - 1)) | ShapeId (vm_layout: hand
                 // facts, proved on live arrays). The element ops read this node's result, so
                 // none of them, a raw f64 load included, runs before the guard (MC-w19-5).
-                let trap = self.trap(n);
+                let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
                 let d = self.dst(n)?;
                 let (kind, shape_id) = (vm_layout::KIND_BYTE, vm_layout::SHAPE_ID_BYTE);
@@ -725,7 +864,7 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::CheckShape { site, handler, .. } => {
-                let trap = self.trap(n);
+                let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
                 let d = self.dst(n)?;
                 let fi_feedback = scaled(vm_layout::FI_FEEDBACK)?;
@@ -815,7 +954,7 @@ impl Emitter<'_> {
                 // f64). Any other store exits, here too and not only at the kind guard: a
                 // GetKeyedGeneric or SetKeyedGeneric after that guard may run JS that swaps
                 // the store (V10-D9b, M5-P0 review F1). Then the form's capacity and hole.
-                let trap = self.trap(n);
+                let trap = self.trap(n)?;
                 let store = node.op == Op::StoreElement;
                 // Stage every input before x16 holds the elements (a far frame slot would
                 // load its offset through x16).
@@ -982,15 +1121,15 @@ impl Emitter<'_> {
                     Int32Op::Shl => dynasm!(self.ops ; .arch aarch64 ; lsl W(d), W(l), W(r)),
                     Int32Op::Sar => dynasm!(self.ops ; .arch aarch64 ; asr W(d), W(l), W(r)),
                     Int32Op::Add => {
-                        let trap = self.trap(n);
+                        let trap = self.trap(n)?;
                         dynasm!(self.ops ; .arch aarch64 ; adds W(d), W(l), W(r) ; b.vs =>trap);
                     }
                     Int32Op::Sub => {
-                        let trap = self.trap(n);
+                        let trap = self.trap(n)?;
                         dynasm!(self.ops ; .arch aarch64 ; subs W(d), W(l), W(r) ; b.vs =>trap);
                     }
                     Int32Op::Mul => {
-                        let trap = self.trap(n);
+                        let trap = self.trap(n)?;
                         let ok = self.ops.new_dynamic_label();
                         dynasm!(self.ops
                             ; .arch aarch64
@@ -1055,7 +1194,7 @@ impl Emitter<'_> {
             Op::CheckNumber => {
                 // An int32 Value converts; a double Value is its bits minus the offset; any
                 // other Value (a cell, an immediate: no number tag bit) exits.
-                let trap = self.trap(n);
+                let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
                 let d = self.dst(n)?;
                 let (dbl, done) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());

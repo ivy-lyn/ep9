@@ -147,6 +147,22 @@ pub fn compile_hot_with(
     int: IntFacts,
     form: emit_a64::StubForm,
 ) -> Result<(Target, spike_b::emit::FunctionCode, CompileReport), String> {
+    let opts = emit_a64::EmitOptions {
+        form,
+        ..Default::default()
+    };
+    compile_hot_opts(s, hot, file, offset, int, &opts)
+}
+
+/// [`compile_hot`] with the emitter options `opts` (the test builds too).
+pub fn compile_hot_opts(
+    s: &mut Session,
+    hot: &kernels::Hot,
+    file: &str,
+    offset: u32,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<(Target, spike_b::emit::FunctionCode, CompileReport), String> {
     // The function value first: `function_value` runs a one-line script (a global
     // assignment), which calls nothing, so the feedback the facts come from does not change.
     let value = match hot.reach {
@@ -173,7 +189,7 @@ pub fn compile_hot_with(
         },
     };
     let input = s.input_of_target(&target)?;
-    let (code, report) = crate::compile_input_with(&input, &facts, form)
+    let (code, report) = crate::compile_input_opts(&input, &facts, opts)
         .map_err(|r| format!("{}: {r}", hot.name))?;
     Ok((target, code, report))
 }
@@ -212,6 +228,23 @@ pub fn run_opts(
     int: IntFacts,
     form: emit_a64::StubForm,
 ) -> Result<TierRun, String> {
+    let opts = emit_a64::EmitOptions {
+        form,
+        ..Default::default()
+    };
+    run_full(k, n, config, int, &opts)
+}
+
+/// [`run_opts`] with the emitter options `opts`. With a force table (WI-SC4) the compiled
+/// function's guards count down their words and exit when one ends, and the run also
+/// collects garbage and runs the heap verifier after loop(n) (an error if it finds any).
+pub fn run_full(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<TierRun, String> {
     let hot = k.hot.first().ok_or("no hot function")?;
     let d1 = kernels::driver(k, 1)?;
     let dn = kernels::driver(k, n)?;
@@ -245,7 +278,7 @@ pub fn run_opts(
     if w2.output != w.output {
         return Err("the two warm-up runs differ (both are T0)".into());
     }
-    let (f, code, report) = compile_hot_with(&mut s, hot, "defs.js", d1.offset, int, form)?;
+    let (f, code, report) = compile_hot_opts(&mut s, hot, "defs.js", d1.offset, int, opts)?;
     let meta = report.emit.meta.encode();
     // SAFETY: `code` is the placement (b) code `emit_a64` made for `f` from `input_of(f)` just
     // above (no JS ran since), unchanged, and `meta` its exit table. emit_a64 keeps the (b)
@@ -269,6 +302,9 @@ pub fn run_opts(
             .ok_or("no exit counters after the install")
     };
     let exits = counts(&s)?;
+    if opts.force.is_some() {
+        s.verify()?;
+    }
     let equal = compiled == t0 && t0.result.is_ok() && dn.matches(&compiled.output);
     // The probe: `this` of a shape the IC never saw. The compiled function's first shape
     // guard deopts, and T0 finishes the call: the result must be T0's own.
@@ -318,6 +354,77 @@ const PROBES: [(&str, &str); 1] = [(
      var __spikeCC = __spikeCProbe.am(0, 268435455, __spikeCW, 0, 3, 2); \
      print(__spikeCC + \" \" + __spikeCW.array.join(\",\"));",
 )];
+
+/// The length of the force tables of the deopt gate (guard ids are below the node count).
+pub const FORCE_LEN: usize = 4096;
+
+/// One forced run of [`force_each_guard`].
+#[derive(Clone, Debug)]
+pub struct ForcedRun {
+    pub guard: u32,
+    /// The guard's word reached 0: its `at`-th pass took the exit.
+    pub forced: bool,
+    /// The exits the VM counted for the records of this guard, and for all other records.
+    pub counted: u64,
+    pub others: u64,
+    /// Output equal to T0 (and the verifier found nothing).
+    pub equal: bool,
+}
+
+impl ForcedRun {
+    /// Right: equal to T0, the guard was forced, the VM counted that one exit and no other.
+    pub fn right(&self) -> bool {
+        self.equal && self.forced && self.counted == 1 && self.others == 0
+    }
+}
+
+/// `gate.sh deopt` (WI-SC4): for each guard of `k`'s first hot function, a config C run of
+/// loop(n) with only that guard forced, at its `at`-th pass: the output must equal T0, the
+/// heap verifier must find nothing, and the VM's exit counters must hold exactly that exit.
+pub fn force_each_guard(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    at: u32,
+) -> Result<Vec<ForcedRun>, String> {
+    let plain = run(k, n, config)?;
+    let mut guards: Vec<u32> = plain
+        .report
+        .emit
+        .meta
+        .exits
+        .iter()
+        .map(|e| e.guard)
+        .collect();
+    guards.sort_unstable();
+    guards.dedup();
+    let mut out = Vec::new();
+    for g in guards {
+        let t = emit_a64::ForceTable::new(FORCE_LEN);
+        t.arm(g, at);
+        let opts = emit_a64::EmitOptions {
+            force: Some(&t),
+            ..Default::default()
+        };
+        let r = run_full(k, n, config, IntFacts::Live, &opts)?;
+        let (mut counted, mut others) = (0, 0);
+        for (rec, c) in r.report.emit.meta.exits.iter().zip(&r.exits) {
+            if rec.guard == g {
+                counted += c;
+            } else {
+                others += c;
+            }
+        }
+        out.push(ForcedRun {
+            guard: g,
+            forced: t.get(g) == 0,
+            counted,
+            others,
+            equal: r.equal,
+        });
+    }
+    Ok(out)
+}
 
 /// A script-level config C run: `defs` and `warm` run in T0 (the feedback), then the global
 /// function `name` is compiled from the live facts and installed, then `main` runs. T0 runs
@@ -385,6 +492,24 @@ pub fn run_script_opts(
     int: IntFacts,
     form: emit_a64::StubForm,
 ) -> Result<ScriptRun, String> {
+    let opts = emit_a64::EmitOptions {
+        form,
+        ..Default::default()
+    };
+    run_script_full(config, defs, warm, main, name, int, &opts)
+}
+
+/// [`run_script`] with the int facts of `int` and the emitter options `opts` (the test builds
+/// too: forced deopts, int32 junk).
+pub fn run_script_full(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<ScriptRun, String> {
     let config = config.threaded();
     let mut t0s = Session::new(&config)?;
     t0s.run(defs, "defs.js")
@@ -424,7 +549,7 @@ pub fn run_script_opts(
         };
         let input = s.input_of_target(&f)?;
         let (code, report) =
-            crate::compile_input_with(&input, &facts, form).map_err(|r| format!("{name}: {r}"))?;
+            crate::compile_input_opts(&input, &facts, opts).map_err(|r| format!("{name}: {r}"))?;
         (f, code, report)
     };
     let meta = report.emit.meta.encode();
@@ -1162,6 +1287,259 @@ mod tests {
             "g{guard}\n{}",
             r.report.graph
         );
+    }
+
+    /// WI-SC4 (C2): each guard of `dot` and of `scale` forced alone at its second pass: the
+    /// output equals T0, the forced word ends at 0 and the VM counts that one exit and no
+    /// other; then every guard armed from a seed, with GC stress: equal to T0, and each
+    /// guard's counter at least its forced exit.
+    #[test]
+    fn forcing_each_guard_deopts_to_t0() {
+        if !aarch64() {
+            return;
+        }
+        use crate::emit_a64::{EmitOptions, ForceTable};
+        let warm = "for (var q = 0; q < 20; q++) { dot([1, 2, 3], [4, 5, 6], 3); dot([0.5, 1.5], [2, 0.25], 2); scale([0.5, 1.5, 2.5], 3, 1.5); }";
+        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), scale([1, 2, 3], 3, 0.5).join());";
+        let defs = format!("{DOT}\n{SCALE}");
+        for name in ["dot", "scale"] {
+            // No natural exit in `main`: each exit below is the forced one.
+            let plain = run_script(&Config::default(), &defs, warm, main, name).expect("run");
+            assert!(
+                plain.equal() && plain.fired().is_empty(),
+                "{name}: {:?}",
+                plain.exits
+            );
+            let mut guards: Vec<u32> = plain
+                .report
+                .emit
+                .meta
+                .exits
+                .iter()
+                .map(|e| e.guard)
+                .collect();
+            guards.sort_unstable();
+            guards.dedup();
+            assert!(guards.len() >= 4, "{name}: {guards:?}");
+            let mut forced = 0;
+            for &g in &guards {
+                let t = ForceTable::new(FORCE_LEN);
+                t.arm(g, 2);
+                let opts = EmitOptions {
+                    force: Some(&t),
+                    ..Default::default()
+                };
+                let r = run_script_full(
+                    &Config::default(),
+                    &defs,
+                    warm,
+                    main,
+                    name,
+                    IntFacts::Live,
+                    &opts,
+                )
+                .expect("run");
+                assert!(r.equal(), "{name} g{g}: {:?} vs {:?}", r.compiled, r.t0);
+                let fired = r.fired();
+                if t.get(g) == 0 {
+                    forced += 1;
+                    assert_eq!(fired, [g], "{name} g{g}: {:?}", r.exits);
+                    assert_eq!(r.exits.iter().sum::<u64>(), 1, "{name} g{g}");
+                } else {
+                    assert!(fired.is_empty(), "{name} g{g}: {:?}", r.exits);
+                }
+            }
+            // A guard on a path `main` takes fewer than twice (an error path) stays unforced.
+            assert!(
+                forced * 2 > guards.len(),
+                "{name}: {forced} of {}",
+                guards.len()
+            );
+            let t = ForceTable::seeded(5, FORCE_LEN);
+            let opts = EmitOptions {
+                force: Some(&t),
+                ..Default::default()
+            };
+            let r = run_script_full(
+                &Config::stress(),
+                &defs,
+                warm,
+                main,
+                name,
+                IntFacts::Live,
+                &opts,
+            )
+            .expect("run");
+            assert!(r.equal(), "{name} seeded: {:?} vs {:?}", r.compiled, r.t0);
+            for &g in &guards {
+                let c: u64 = r
+                    .report
+                    .emit
+                    .meta
+                    .exits
+                    .iter()
+                    .zip(&r.exits)
+                    .filter(|(e, _)| e.guard == g)
+                    .map(|(_, c)| c)
+                    .sum();
+                assert!(c >= u64::from(t.get(g) == 0), "{name} g{g}: {c}");
+            }
+        }
+    }
+
+    /// MODES-CHECK-w19 outside O1 (V8 b60744d16a: arm64 code that read "an int32 is
+    /// zero-extended"): in the int32 junk build every Int32 and Bool result gets 0xDEADBEEF in
+    /// its upper 32 bits, in its register or spill slot. Int loops, overflow, -0 and
+    /// out-of-bounds deopts, element ops, a phi swap and int32 values at exits (the deopt core
+    /// boxes the low half) give T0's output and the same exits as the plain build. The junk
+    /// build is larger (the movk pairs are there).
+    #[test]
+    fn junk_in_the_upper_half_of_int32_values_changes_nothing() {
+        if !aarch64() {
+            return;
+        }
+        use crate::emit_a64::EmitOptions;
+        let fib = "function fib(n) { var a = 0, b = 1; for (var i = 0; i < n; i++) { var t = a; a = b; b = (t + b) & 65535; } return a; }";
+        let m =
+            "function m(a, b) { var r = 0; for (var i = 0; i < 1; i++) { r = a * b; } return r; }";
+        let cases: [(&str, &str, &str, &str); 6] = [
+            (
+                SUM,
+                "sum",
+                "for (var k = 0; k < 20; k++) sum(10);",
+                "print(sum(0), sum(1000), sum(-5), sum(100000), sum(2.5));",
+            ),
+            (fib, "fib", "fib(5);", "print(fib(10), fib(1000));"),
+            (
+                m,
+                "m",
+                "m(3, 4);",
+                "print(m(-3, 4), m(46340, 46340), m(65536, 65536), 1 / m(0, -5));",
+            ),
+            (
+                DOT,
+                "dot",
+                "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);",
+                "print(dot([1, 2, 3], [4, 5, 6], 3), dot([1, 2], [3, 4], 5), dot([0.5, 1.5], [2, 0.25], 2));",
+            ),
+            (
+                SCALE,
+                "put",
+                "for (var q = 0; q < 20; q++) put([1, 2, 3], 3, q);",
+                "print(put([1, 2, 3], 3, -7).join(), put([1.5, 2.5], 2, 2147483647).join(), put([1], 3, 1).join());",
+            ),
+            (
+                SCALE,
+                "scale",
+                "for (var q = 0; q < 20; q++) scale([1, 2, 3], 3, 2);",
+                "print(scale([1, 2, 3], 3, 2).join(), scale([1, 2], 2, 0.5).join());",
+            ),
+        ];
+        for (defs, name, warm, main) in cases {
+            let plain = run_script(&Config::default(), defs, warm, main, name).expect("run");
+            let opts = EmitOptions {
+                int32_junk: true,
+                ..Default::default()
+            };
+            let junk = run_script_full(
+                &Config::default(),
+                defs,
+                warm,
+                main,
+                name,
+                IntFacts::Live,
+                &opts,
+            )
+            .expect("run");
+            assert!(junk.equal(), "{name}: {:?} vs {:?}", junk.compiled, junk.t0);
+            assert_eq!(junk.compiled, plain.compiled, "{name}");
+            assert_eq!(junk.exits, plain.exits, "{name}");
+            assert!(
+                junk.report.emit.code_bytes > plain.report.emit.code_bytes,
+                "{name}: no junk was written"
+            );
+        }
+    }
+
+    /// w16 O6: a termination that a T0 frame sees after a deopt unwinds through T0 callers
+    /// with no `catch` or `finally` of theirs running (`error::unwind` skips handlers while
+    /// terminating). `terminate()` asks before the call; the compiled `dot` takes its kind
+    /// guard's exit at once (the receiver is not an Array: no compiled poll ran yet), T0
+    /// finishes the loop and stops at its next poll. Equal to T0: no `catch`, `finally` or
+    /// `after` line, the run ends in the termination, and the next script runs.
+    #[test]
+    fn a_termination_after_a_deopt_runs_no_catch_or_finally() {
+        if !aarch64() {
+            return;
+        }
+        let defs = format!(
+            "{DOT}\nfunction caller(a, n) {{ try {{ return dot(a, a, n); }} catch (e) {{ print('catch'); }} finally {{ print('finally'); }} }}"
+        );
+        let warm = "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);";
+        let main = "print('before'); terminate(); var o = { 0: 1, 1: 2, length: 2 }; caller(o, 1000000); print('after');";
+        let r = run_script(&Config::default(), &defs, warm, main, "dot").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["before"]);
+        assert!(r.compiled.result.is_err(), "{:?}", r.compiled);
+        assert_eq!(r.exits.iter().sum::<u64>(), 1, "{:?}", r.exits);
+        let g = r.fired()[0];
+        assert!(
+            r.report
+                .graph
+                .lines()
+                .any(|l| l.contains("CheckArray") && l.contains(&format!(" guard g{g} "))),
+            "g{g}\n{}",
+            r.report.graph
+        );
+    }
+
+    /// C5b (SCP §6.2): the deopt metadata holds offsets only, so the same code and metadata
+    /// finalized again at another address deopts the same: `dot` installed from module A,
+    /// run (int, double and deopting calls), uninstalled, the same bytes and metadata
+    /// installed from module B at another start, run again: the same output and the same
+    /// exit counters, both equal to T0.
+    #[test]
+    fn a_moved_copy_of_code_and_metadata_deopts_the_same() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) dot([1, 2, 3], [4, 5, 6], 3);";
+        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), dot([1, 2], [3, 4], 5), dot(['x', 1], [1, 1], 2), dot({ 0: 1, length: 1 }, [2], 1));";
+        let config = Config::default().threaded();
+        let mut t0s = Session::new(&config).expect("session");
+        t0s.run(DOT, "defs.js").result.expect("defs");
+        t0s.run(warm, "warm.js").result.expect("warm");
+        let t0 = t0s.run(main, "main.js");
+        let mut s = Session::new(&config).expect("session");
+        s.run(DOT, "defs.js").result.expect("defs");
+        s.run(warm, "warm.js").result.expect("warm");
+        let f = s.function_value("dot").expect("dot");
+        let script = s.script("defs.js").expect("defs");
+        let id = script.functions_named("dot")[0];
+        let live = facts::live(&s, script).expect("facts");
+        let input = s.input_of(f).expect("input");
+        let (code, report) =
+            crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
+        let meta = report.emit.meta.encode();
+        let mut runs = Vec::new();
+        for _ in 0..2 {
+            // SAFETY: emit_a64's placement (b) code for `f` from `input_of(f)` with no JS
+            // run since but `main`, which changes no feedback the code reads (the guards read
+            // nothing from the feedback vector), and its own metadata, unchanged.
+            let placed = unsafe { s.install_b(&[f], vec![code.clone()], vec![Some(meta.clone())]) }
+                .expect("install")[0]
+                .code
+                .start;
+            let out = s.run(main, "main.js");
+            let exits = s.exit_counts(f).expect("counters");
+            s.uninstall(f).expect("uninstall");
+            runs.push((placed, out, exits));
+        }
+        assert_ne!(runs[0].0, runs[1].0, "the copy is at the same place");
+        assert_eq!(runs[0].1, t0);
+        assert_eq!(runs[1].1, runs[0].1);
+        assert_eq!(runs[1].2, runs[0].2);
+        assert!(runs[0].2.iter().sum::<u64>() >= 2, "{:?}", runs[0].2);
     }
 
     /// `/` always takes the double path; `===` compares int32s behind CheckInt32 (SPIKEC-4).

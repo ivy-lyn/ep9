@@ -23,6 +23,8 @@ use spike_b::jit::{InMemory, JitModule, Placed};
 
 thread_local! {
     static OUTPUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The terminate handle of the session whose script runs now ([`Session::run`] sets it).
+    static TERMINATE: RefCell<Option<ep9_vm::TerminateHandle>> = const { RefCell::new(None) };
 }
 
 /// The lines `print` wrote on this thread since the last call.
@@ -67,6 +69,22 @@ fn gc<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     cx.collect_garbage();
+    Ok(Local::undefined())
+}
+
+/// `terminate()`: asks the running script to stop (`TerminateHandle::terminate`); the isolate
+/// stops at its next interrupt poll with an exception JS cannot catch (w16 O6 tests).
+fn terminate<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    TERMINATE.with(|t| {
+        if let Some(h) = &*t.borrow() {
+            h.terminate();
+        }
+    });
     Ok(Local::undefined())
 }
 
@@ -149,7 +167,7 @@ fn line_range(text: &str, line: u32) -> Option<std::ops::Range<usize>> {
     None
 }
 
-/// An isolate with the builtins, `print` and `gc`, the scripts it ran, and the JIT modules
+/// An isolate with the builtins, `print`, `gc` and `terminate`, the scripts it ran, and the JIT modules
 /// whose code it runs.
 ///
 /// The isolate stays inside the session: a move out would drop the modules while the
@@ -173,6 +191,7 @@ impl Session {
         let mut iso = Isolate::new(isolate_config(config)).map_err(|e| format!("{e:?}"))?;
         iso.register_host_function("print", 1, print);
         iso.register_host_function("gc", 0, gc);
+        iso.register_host_function("terminate", 0, terminate);
         Ok(Session {
             iso,
             modules: Vec::new(),
@@ -185,6 +204,8 @@ impl Session {
     /// ([`Session::scripts`]), even if it throws.
     pub fn run(&mut self, source: &str, file: &str) -> RunOutput {
         take_output();
+        let handle = self.iso.terminate_handle();
+        TERMINATE.with(|t| *t.borrow_mut() = Some(handle));
         let result = match compile(source) {
             Ok(unit) => {
                 self.scripts.push(Script {
@@ -411,12 +432,29 @@ impl Session {
         ep9_vm::NativeCx::deopt_counts(&self.iso, f)
     }
 
+    /// Puts the function value `f` back on T0 (`ep9_vm::uninstall_native`); its module stays
+    /// with the session.
+    pub fn uninstall(&mut self, f: Value) -> Result<(), String> {
+        ep9_vm::uninstall_native(&self.iso, f)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
+    }
+
     /// [`Session::exit_counts`] of `t`.
     pub fn exit_counts_of(&self, t: &Target) -> Option<Vec<u64>> {
         match t {
             Target::Value(f) => self.exit_counts(*f),
             Target::Id { file, id } => ep9_vm::NativeCx::deopt_counts_by_id(&self.iso, file, *id),
         }
+    }
+
+    /// A full collection, then the heap verifier: an error names what it found.
+    pub fn verify(&mut self) -> Result<(), String> {
+        self.iso.collect_garbage();
+        self.iso
+            .verify_heap()
+            .map(|_| ())
+            .map_err(|e| format!("heap verifier: {:?}", e.errors))
     }
 
     /// The JIT modules of this session.
