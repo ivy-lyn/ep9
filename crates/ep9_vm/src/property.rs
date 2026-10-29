@@ -2224,7 +2224,8 @@ fn for_in_attrs(cx: &mut Cx, o: u64, k: u64) -> Res<Option<i32>> {
 /// The ForInNext filter (V8 `HasEnumerableProperty`; M5-P3-ORCH-8 reversed, Codex M5-P3 r2
 /// eng 4): whether the receiver `o` still has the listed key `k` on its chain, so that a key
 /// deleted during the loop is skipped (§14.7.5.9). On a chain with no proxy it is the
-/// [`try_has_property`] walk (no trap to run). At a proxy it asks `[[GetOwnProperty]]` (the
+/// [`try_has_property`] walk (no trap to run). From the first proxy on, the first object
+/// that has the key answers with its ENUMERABLE bit, a proxy by `[[GetOwnProperty]]` (the
 /// `getOwnPropertyDescriptor` trap), never `[[HasProperty]]`: see [`for_in_has_at_proxy`].
 /// GC point at a proxy only.
 pub(crate) fn for_in_has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
@@ -2247,15 +2248,18 @@ pub(crate) fn for_in_has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
     }
 }
 
-/// The part of [`for_in_has`] from the first proxy `p` on: a proxy's `[[GetOwnProperty]]`
-/// answers (a descriptor: the key is visited if it is enumerable; none: the walk goes on at
-/// the proxy's `[[GetPrototypeOf]]`, a counted hop, [`MAX_PROXY_HOPS`]); an ordinary object
-/// answers by having the key at all (its keys were listed enumerable or not, as V8's DATA
-/// case). A throwing trap or a revoked proxy throws. GC point: `key` lives in a Rust local.
+/// The part of [`for_in_has`] from the first proxy `p` on: the first object on the chain
+/// that has the key as an own property answers with its ENUMERABLE bit, so a non-enumerable
+/// property shadows an enumerable one further up (§14.7.5.9: only enumerable properties
+/// are visited; Codex M5-P3 r3 eng [medium]). A proxy answers by `[[GetOwnProperty]]`; none:
+/// the walk goes on at the proxy's `[[GetPrototypeOf]]`, a counted hop, [`MAX_PROXY_HOPS`].
+/// Any other object answers by its `[[GetOwnProperty]]` attributes. V8 (node 26) visits a key
+/// that a proxy's `ownKeys` lists when an object past it has the key non-enumerable (its DATA
+/// case does not read the attributes); ep9 does not. A throwing trap or a revoked proxy throws.
+/// GC point: `key` lives in a Rust local.
 #[cold]
 #[inline(never)]
 fn for_in_has_at_proxy(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
-    let how = key::probe(key);
     let (mut cur, mut hops) = (p, 0);
     loop {
         if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
@@ -2263,8 +2267,8 @@ fn for_in_has_at_proxy(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
                 return Ok(a & attr::ENUMERABLE != 0);
             }
             cur = proxy_walk_step(cx, cur, &mut hops)?;
-        } else if has_own_with(cx.rt(), cur, key, how) {
-            return Ok(true);
+        } else if let Some((_, a)) = own_property_stored(cx, cur, key)? {
+            return Ok(a & attr::ENUMERABLE != 0);
         } else {
             cur = object::proto_of(cur);
         }

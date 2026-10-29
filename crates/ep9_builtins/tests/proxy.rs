@@ -527,3 +527,36 @@ print((function () { q.b = 1; return delete q.b; })(), Reflect.set(q, 'c', 1), R
         ])
     );
 }
+
+/// ForInNext's filter past a proxy (Codex M5-P3 r3 eng [medium]): the first object on the
+/// chain that has the key answers with its ENUMERABLE bit, so a key a proxy's `ownKeys`
+/// lists but does not have is not visited when an object past the proxy has it
+/// non-enumerable (`hidden` on a prototype, `Object.prototype.toString`, a non-enumerable
+/// shadow over an enumerable one, a non-enumerable getter, an array's `length`, a String
+/// wrapper's `length`, an ordinary receiver over the proxy), and is visited when that
+/// property is enumerable. No getter runs. The expected lines are the output of the
+/// informative EnumerateObjectProperties of ECMA-262 §14.7.5.9 run in node v26.13.0 on the
+/// same objects. node's own for-in visits the key in each non-enumerable case (V8's filter
+/// reads no attributes past a proxy): `[hidden] [toString] [toString]`, `[shadow] [shadow]`,
+/// `[g] [g] 0`, `[length,0] [0,length]`, `[hidden] [hidden,v]`.
+#[test]
+fn for_in_past_a_proxy_reads_the_enumerable_bit() {
+    assert_eq!(
+        common::run_both(js!(r#"
+function keys(o) { var r = []; for (var k in o) r.push(k); return r.join(); }
+var base = Object.defineProperty({}, 'hidden', { value: 1 });
+function px(keys, target) { return new Proxy(target, { ownKeys: function () { return keys; } }); }
+var low = { shadow: 1 };
+var mid = Object.defineProperty(Object.create(low), 'shadow', { value: 2 });
+var calls = 0;
+var acc = Object.defineProperty({}, 'g', { get: function () { calls++; return 1; } });
+var acc2 = Object.defineProperty({}, 'g', { get: function () { calls++; return 1; }, enumerable: true });
+print('[' + keys(px(['hidden'], Object.create(base))) + ']', '[' + keys(px(['toString'], Object.create(base))) + ']', '[' + keys(px(['toString'], {})) + ']');
+print('[' + keys(px(['shadow'], Object.create(mid))) + ']', '[' + keys(px(['shadow'], Object.create(low))) + ']');
+print('[' + keys(px(['g'], Object.create(acc))) + ']', '[' + keys(px(['g'], Object.create(acc2))) + ']', calls);
+print('[' + keys(px(['length', '0'], Object.create([7]))) + ']', '[' + keys(px(['0', 'length'], Object.create(new String('x')))) + ']');
+print('[' + keys(Object.create(px(['hidden'], Object.create(base)))) + ']', '[' + keys(px(['hidden', 'v'], Object.create(Object.defineProperty({ v: 1 }, 'hidden', { value: 1 })))) + ']');
+"#)),
+        lines(&["[] [] []", "[] [shadow]", "[] [g] 0", "[0] [0]", "[] [v]"])
+    );
+}
