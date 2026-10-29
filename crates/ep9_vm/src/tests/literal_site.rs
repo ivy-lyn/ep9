@@ -171,7 +171,11 @@ fn shallow_and_empty_array_literals_hit_after_their_first_run() {
                 let (key, value) = slot_of(iso, slot);
                 assert!(shape::is_shape(key));
                 assert_eq!(shape::object_kind(key), kinds::ARRAY.get());
-                assert_eq!(value, int32_bits(1));
+                // An array-literal site keeps its ALLOC_SITE handler (M5-P2 ELEM2): one cold
+                // run counted there.
+                let (_, count) =
+                    crate::literal_site::site_of(value).expect("an ALLOC_SITE handler");
+                assert_eq!(count, 1);
             }
         },
     );
@@ -212,13 +216,14 @@ fn nested_literal_flags(flags: u8) -> (VerifiedUnit, Vec<FeedbackSlot>) {
 }
 
 #[test]
-fn a_nested_literal_stays_on_the_cold_path_and_is_built_from_its_shape() {
+fn a_nested_literal_hits_after_its_first_run_and_is_built_from_its_shape() {
     run_checked(nested_literal, &["5"], |iso, slots| {
         let (key, value) = slot_of(iso, slots[0]);
         assert!(shape::is_shape(key), "the facts get the shape");
-        assert_eq!(value, int32_bits(5), "every run was cold");
-        // The first run was generic; the other 4 built from the recorded shape.
-        assert_eq!(crate::literal_site::COLD_BUILDS.with(|c| c.get()), 4);
+        // The first run was generic and cold; the other 4 hit (M5-P2 ELEM2: the T0 hit of
+        // `literal_site::nested_object`), built from the recorded shape.
+        assert_eq!(value, int32_bits(1), "one cold run");
+        assert_eq!(crate::literal_site::COLD_BUILDS.with(|c| c.get()), 0);
     });
 }
 
@@ -349,7 +354,10 @@ fn literal_misses_walk_the_code_once_per_function() {
                     kinds::OBJECT
                 };
                 assert_eq!(shape::object_kind(key), want.get(), "{label}: site {n}");
-                assert_eq!(value, int32_bits(1), "{label}: site {n}");
+                // An array site counts in its ALLOC_SITE handler (M5-P2 ELEM2).
+                let count = crate::literal_site::site_of(value)
+                    .map_or(value, |(_, c)| int32_bits(c as i32));
+                assert_eq!(count, int32_bits(1), "{label}: site {n}");
             }
             iso.collect_garbage();
             iso.verify_heap().unwrap();
