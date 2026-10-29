@@ -4,12 +4,12 @@
 //! handler (an IC_HANDLER cell of handler kind `CLONE`, `ic::hk`: +16 int32 count, +24 the
 //! result shape (weak), +32 int32 0), or the hole and a POLY_IC cell (2-4 cases: source shape
 //! (weak), clone handler) or the int32 [`ic::MEGA`]. A hit allocates with the result shape and
-//! copies the constants (Literal) or the source's fields (CloneObject); computed or nested
-//! values stay off the T0 hit. An object literal whose nested values are all shallow arrays
-//! (splay's leaf nodes) is built on its cold path from the recorded shape ([`cold_object`]),
-//! not by the generic per-key define. An array-literal site keeps an ALLOC_SITE handler
-//! ([`ah`], IC_LAYOUT 3; V10-D6): its arrays are born in the elements kind its earlier arrays
-//! reached ([`array_site`], [`generalize`]).
+//! copies the constants (Literal) or the source's fields (CloneObject); computed values stay
+//! off the T0 hit. An object literal whose nested values are all shallow arrays (splay's leaf
+//! nodes) is built from the recorded shape ([`nested_object`]) by its T0 hit (M5-P2 ELEM2) and
+//! by its cold path ([`cold_object`]), not by the generic per-key define. An array-literal site
+//! keeps an ALLOC_SITE handler ([`ah`], IC_LAYOUT 3; V10-D6): its arrays are born in the
+//! elements kind its earlier arrays reached ([`array_site`], [`generalize`]).
 //!
 //! ```text
 //! interp/ops.rs fast bodies (M4-P0 hooks)          cold path
@@ -25,7 +25,7 @@
 //! | Slot | Key (weak) | Value (strong) | Hit |
 //! |---|---|---|---|
 //! | Literal, new | undefined | int32 0 | none |
-//! | Literal, seen | the shape of the last result the cold path made | int32 count of cold-path results (saturating) | object: a shallow boilerplate whose result shape is the key; array: a shallow boilerplate (or `[]`) and the realm's array shape |
+//! | Literal, seen | the shape of the last result the cold path made | int32 count of cold-path results (saturating) | object: a shallow boilerplate whose result shape is the key, or one whose nested values are flat array boilerplates; array: a shallow boilerplate (or `[]`) and the realm's array shape |
 //! | Literal, array site seen (M5-P2) | as above | an ALLOC_SITE handler ([`ah`]: the site's elements kind, the result shape (weak), the count); every array made there keeps it at ARRAY +32 | as above, with the handler's result shape when it is a fresh array shape of the realm (the site's kind) |
 //! | CloneObject, new | undefined | int32 0 | none |
 //! | CloneObject, monomorphic | the source shape | a `CLONE` handler | a source with that shape |
@@ -229,7 +229,7 @@ fn literal_shape(fi: &FunctionInfo, s: FSlot) -> Option<u64> {
 #[inline(always)]
 pub(crate) fn fast_object(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) -> Flow {
     if flags & SHALLOW == 0 {
-        return Flow::Cold;
+        return fast_nested_object(st, boilerplate, s);
     }
     let fi = st.info();
     let Some(shape) = literal_shape(fi, s) else {
@@ -698,19 +698,49 @@ thread_local! {
 }
 
 /// The cold path of `CreateObjectLiteral` at `pc` (boilerplate constant `k`) in frame `fp`,
-/// before the generic build (`slow::literal`): an object literal that is not shallow, whose
-/// nested values are all shallow array boilerplates (`{array: [0, 1, 2], s: ...}`: splay's
-/// leaf nodes), built from the site's recorded shape as a hit builds a shallow one, with each
-/// nested array made like a shallow array literal. `None` (nothing made) for anything else:
-/// no recorded shape, another nested value, a BigInt, more than `call::INLINE_ARGS` nested
-/// arrays. GC point: the nested arrays live in an inline buffer on the native stack (the
-/// conservative scan) until the object holds them; the object is allocated last, so its
-/// fields are initializing stores (E2).
+/// before the generic build (`slow::literal`): [`nested_object`] from the site's recorded
+/// shape. `None` (nothing made) when it does not apply. GC point.
 pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> Option<u64> {
     let rt = cx.rt();
     let fi = FrameRef(fp).info();
-    let v = feedback::vector(fi)?;
+    // No vector, no recorded shape: decode no instruction (most cold runs of a literal are
+    // the runs of a function before its vector exists).
+    feedback::vector(fi)?;
     let (i, _) = slot_at(fi, pc)?;
+    let o = nested_object(rt, fi, i, k)?;
+    #[cfg(test)]
+    COLD_BUILDS.with(|c| c.set(c.get() + 1));
+    Some(o)
+}
+
+/// `CreateObjectLiteral` of a boilerplate that is not shallow (Literal slot `s`): the T0 hit
+/// of [`nested_object`] (M5-P2 ELEM2, splay's leaf nodes `{array: [0, 1, ...], string: ...}`).
+/// As a shallow hit, it writes no feedback (V9-D6); the recorded shape comes from the cold
+/// path. A GC point: it publishes its frame first.
+#[inline(always)]
+fn fast_nested_object(st: &mut St<'_>, boilerplate: K, s: FSlot) -> Flow {
+    let fi = st.info();
+    let rt = st.rt();
+    rt.enter(st.fp, st.pc);
+    match nested_object(rt, fi, s.0, boilerplate.0) {
+        Some(o) => {
+            st.acc = o;
+            Flow::Next
+        }
+        None => Flow::Cold,
+    }
+}
+
+/// An object literal (boilerplate constant `k`, Literal slot `i`) that is not shallow, whose
+/// nested values are all shallow array boilerplates (`{array: [0, 1, 2], s: ...}`: splay's
+/// leaf nodes), built from the slot's recorded shape as a hit builds a shallow one, with each
+/// nested array made like a shallow array literal. `None` (nothing made) for anything else:
+/// no recorded shape, another nested value, a BigInt, more than `call::INLINE_ARGS` nested
+/// arrays. Reads the slot only. GC point: the nested arrays live in an inline buffer on the
+/// native stack (the conservative scan) until the object holds them; the object is
+/// allocated last, so its fields are initializing stores (E2).
+fn nested_object(rt: &Runtime, fi: &FunctionInfo, i: u32, k: u32) -> Option<u64> {
+    let v = feedback::vector(fi)?;
     if i >= feedback::slot_count(v) {
         return None;
     }
@@ -782,8 +812,6 @@ pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> O
         };
         init(o, object::OBJECT_FIELD0 + 8 * j, b);
     }
-    #[cfg(test)]
-    COLD_BUILDS.with(|c| c.set(c.get() + 1));
     Some(o.to_value().to_bits())
 }
 
