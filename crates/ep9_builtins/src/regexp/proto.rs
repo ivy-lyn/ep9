@@ -126,9 +126,14 @@ pub(super) fn flags<'s>(
 /// RegExpHasFlag ( R, codeUnit ) (§22.2.6.4.1) for the flag bit `bit`; `name` is the accessor
 /// for the error text.
 fn has_flag<'s>(cx: &mut Cx<'s>, this: Local<'s>, bit: u8, name: &str) -> JsResult<Local<'s>> {
+    // (The error texts are built only on the error paths: the flags getter calls these
+    // getters on every @@replace, @@match and @@split.)
     // 1. If R is not an Object, throw a TypeError exception.
-    let what = format!("RegExp.prototype.{name} getter");
-    let r = this_object(cx, this, &what)?;
+    let Some(r) = this.as_object() else {
+        let shown = cx.display(this);
+        let msg = format!("RegExp.prototype.{name} getter called on non-object {shown}");
+        return Err(cx.throw_type_error(&msg));
+    };
     // 2. If R does not have an [[OriginalFlags]] internal slot, then
     if !is_regexp_object(cx, r) {
         //    a. If SameValue(R, %RegExp.prototype%) is true, return undefined.
@@ -138,7 +143,7 @@ fn has_flag<'s>(cx: &mut Cx<'s>, this: Local<'s>, bit: u8, name: &str) -> JsResu
         }
         //    b. Otherwise, throw a TypeError exception.
         let shown = cx.display(this);
-        let msg = format!("{what} called on incompatible receiver {shown}");
+        let msg = format!("RegExp.prototype.{name} getter called on incompatible receiver {shown}");
         return Err(cx.throw_type_error(&msg));
     }
     // 3. Let flags be R.[[OriginalFlags]].
