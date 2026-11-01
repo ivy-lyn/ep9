@@ -27,13 +27,10 @@
 //!
 //! Since M5-P0 the export is `ep9_vm::layout`, in every ep9_vm build (C-18). What is left here
 //! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
-//! Four facts the guards read are not in the export, frozen in month 5 (plan v10 rule 2): the
-//! shape address rule, the shape's `counts` offset and the SHAPE kind id (the kind guard, M5-P2
-//! SPIKEC-6, WI-SC7; proved on live arrays of all six element kinds), and the CONTEXT kind id
-//! (the `LoadContextSlot` guard, M5-P2 fixer round 3). Hand copies, each proved by [`check`].
-//! Two more hand facts are not cell layout: the empty key of an IC entry (`undefined`, the
-//! shape guard's "unfilled" exit) and the shared exit's register dump (MODES-CHECK-w22
-//! MC-w22-6). [`HAND_FACTS`] lists all six.
+//! Four layout facts are not in the export, frozen in month 5 (plan v10 rule 2): the shape address
+//! rule, the shape's `counts` offset and the SHAPE kind id (the kind guard, M5-P2 SPIKEC-6, WI-SC7;
+//! proved on live arrays of each kind), and the CONTEXT kind id (the `LoadContextSlot` guard, M5-P2
+//! fixer round 3). [`check`] proves these hand copies; [`HAND_FACTS`] lists them and 2 more.
 
 use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
 
@@ -454,14 +451,10 @@ const VM_VERSIONS: [u32; 5] = {
 
 /// Refuses if a version in `vm` (in [`PINNED`] order) is not the pinned one.
 fn check_versions(vm: [u32; 5]) -> Result<(), String> {
-    for ((name, want), got) in PINNED.iter().zip(vm) {
-        if got != *want {
-            return Err(format!(
-                "{name} is {got} in ep9_vm, the spike is pinned to {want}"
-            ));
-        }
+    match PINNED.iter().zip(vm).find(|((_, want), got)| got != want) {
+        None => Ok(()),
+        Some(((name, want), got)) => Err(format!("{name} is {got}, the spike is pinned to {want}")),
     }
-    Ok(())
 }
 
 /// Not exported (hand fact, OBJECT_LAYOUT 5; `kinds::CONTEXT`): the kind id of a CONTEXT cell,
