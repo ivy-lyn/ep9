@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-28, M4-P5, plan v9 §7 step 1, orchestrator decision P5-ORCH-4; the review record: rows 1-4 of the H19 Accept set, and a dated set with an Approval for each Change-log row dated 2026-10-26 to 2026-10-28 (after m0-exit). Rows 1 and 3 of the 2026-10-28 sets and the Approvals came after the Accept step, in M4-P5 before the m4-p5 tag. A later Change-log row gets its set in its own phase, plan v10 rule 21; wording 2026-11-01, M5-P4 RECORDS). Was: Draft (2026-10-21; v0 notes). Flat Latin-1 and UTF-16 strings, atoms, keys and symbols are built; ropes and slices (M4-P1) and thin strings (M4-P2) are built; external strings are not |
+| Status | Accepted (2026-10-28, M4-P5, plan v9 §7 step 1, orchestrator decision P5-ORCH-4; the review record: rows 1-4 of the H19 Accept set, and a dated set with an Approval for each Change-log row added after m0-exit and dated 2026-10-26 to 2026-10-28 (15 rows). Of these, rows 1 and 3 of the two M4-P5 sets (the Accept row and CX5-D1) and the M4-P4 and M4-P5 Approvals came after the Accept step, in M4-P5 before the m4-p5 tag. A row from M5-P0 on gets its set in its own phase, plan v10 rule 21; wording 2026-11-01, M5-P4 RECORDS). Was: Draft (2026-10-21; v0 notes). Flat Latin-1 and UTF-16 strings, atoms, keys and symbols are built; ropes and slices (M4-P1) and thin strings (M4-P2) are built; external strings are not |
 | Fix by | M1a |
 | Freeze point | Two freeze points (the Freeze table below, README §3.4): "strings core" at M1a; "external strings" at M4 exit (plan v10 V10-A1, V10-D60). A third part, "atom ids (append-only)", has none (2026-11-01, MC-w21-4) |
 | Origin | v1#15; plan status U |
