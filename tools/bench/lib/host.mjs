@@ -30,6 +30,27 @@ export function cpuModel() {
   return os.cpus()[0]?.model?.trim() || "unknown";
 }
 
+/** The Linux file of the transparent huge page mode (MC-w18-O4: m1-exit item 2 records it). */
+export const THP_FILE = "/sys/kernel/mm/transparent_hugepage/enabled";
+
+/**
+ * The transparent huge page mode of this host: the one bracketed word of `file` (the kernel
+ * marks the mode in use: `always [madvise] never` -> "madvise"). null when the platform is not
+ * Linux, the file is missing or unreadable, or it does not have exactly one bracketed word:
+ * never a guess. `file` and `platform` are injectable for tests.
+ */
+export function thpMode({ file = THP_FILE, platform = process.platform } = {}) {
+  if (platform !== "linux") return null;
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  const m = [...text.matchAll(/\[([^\[\]\s]+)\]/g)];
+  return m.length === 1 ? m[0][1] : null;
+}
+
 export function load1() {
   return Number(os.loadavg()[0].toFixed(2));
 }

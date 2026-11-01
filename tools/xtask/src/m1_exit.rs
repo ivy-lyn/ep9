@@ -24,7 +24,7 @@
 //! | Item | Host column | Windows column |
 //! |---|---|---|
 //! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, the reported tree ids equal HEAD's, and its ids of `third_party/regress.commit` and `third_party/patches/regress` (the regress fork) equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
-//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31). On a Linux host the cell records the THP mode, `host.transparent_hugepage` (MC-w18-O4; no status effect) | N/A by design |
+//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31). On a Linux host the cell records the THP mode, `host.transparent_hugepage` (MC-w18-O4; no status effect; `tools/bench/lib/host.mjs` `thpMode` reads it, run.mjs writes it in `host.measured`, exit2.mjs copies it) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
@@ -1487,7 +1487,7 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
 /// MC-w18-O4 (M5-P2-ORCH-7): the transparent huge page mode of a Linux bench host, from the
 /// exit2 JSON's `host.transparent_hugepage` (the text of
 /// `/sys/kernel/mm/transparent_hugepage/enabled`, such as `always [madvise] never`, or the mode
-/// alone). The cell records it and its status does not change: item 2 is a speed reading, and a
+/// alone, as `tools/bench/lib/host.mjs` `thpMode` writes it). The cell records it and its status does not change: item 2 is a speed reading, and a
 /// G7 RSS gate compares the modes of its two readings.
 fn thp_text(j: &Json) -> String {
     match j
@@ -5028,6 +5028,32 @@ mod tests {
                 Some(t) => assert!(c.evidence.contains(t), "{t}: {}", c.evidence),
                 None => assert!(!c.evidence.contains("THP"), "{}", c.evidence),
             }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// MC-w18-O4 (M5-P4-ORCH-4 reversed): the producer's own exit2 JSONs (`exit2-thp-*.json`:
+    /// tools/bench/cross run.mjs `host.measured` with a fake Linux THP file, through exit2.mjs;
+    /// the node test of that chain checks they are its output) give the THP cell: the mode,
+    /// or "not recorded" when the producer wrote null.
+    #[test]
+    fn item2_reads_the_thp_mode_the_bench_producer_wrote() {
+        let root = fake_repo("item2thpfix");
+        let mut o = opts(&root);
+        o.host = "x86_64-unknown-linux-gnu".into();
+        for (name, text) in [
+            (
+                "exit2-thp-madvise.json",
+                "THP madvise (host.transparent_hugepage; report only)",
+            ),
+            (
+                "exit2-thp-null.json",
+                "THP mode not recorded (no host.transparent_hugepage; report only)",
+            ),
+        ] {
+            o.cross = Some(fixture(name));
+            let c = &run(&o).unwrap().cells[1].0;
+            assert!(c.evidence.contains(text), "{name}: {}", c.evidence);
         }
         std::fs::remove_dir_all(root).unwrap();
     }

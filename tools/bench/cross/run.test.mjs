@@ -10,7 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { cpuModel, guardAfter, guardBefore, loadCheck, parseToml, readHostFile } from "../lib/host.mjs";
+import { cpuModel, guardAfter, guardBefore, loadCheck, parseToml, readHostFile, THP_FILE, thpMode } from "../lib/host.mjs";
 import { medianRanks, verdict } from "../lib/stats.mjs";
 import {
   analyze,
@@ -303,6 +303,30 @@ test("load guard: settle, poll up to the wait limit, check after", async () => {
   assert.equal(g.pass, true);
 });
 
+test("THP mode: the bracketed word of the Linux file; null when there is none (MC-w18-O4)", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-thp-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = (name, text) => {
+    const f = path.join(dir, name);
+    writeFileSync(f, text);
+    return f;
+  };
+  // A fake file in place of the real one: the test never reads /sys.
+  assert.equal(THP_FILE, "/sys/kernel/mm/transparent_hugepage/enabled");
+  const linux = (file) => thpMode({ file, platform: "linux" });
+  assert.equal(linux(fake("a", "always [madvise] never\n")), "madvise");
+  assert.equal(linux(fake("b", "[always] madvise never\n")), "always");
+  assert.equal(linux(fake("c", "always madvise [never]")), "never");
+  // No bracketed word, two of them, an empty file or no file: null, never a guess.
+  assert.equal(linux(fake("d", "madvise\n")), null);
+  assert.equal(linux(fake("e", "[always] [madvise] never\n")), null);
+  assert.equal(linux(fake("f", "")), null);
+  assert.equal(linux(path.join(dir, "missing")), null);
+  // Not Linux: null, even with a readable file.
+  assert.equal(thpMode({ file: fake("g", "always [madvise] never\n"), platform: "darwin" }), null);
+  assert.equal(thpMode({ file: fake("h", "always [madvise] never\n"), platform: "win32" }), null);
+});
+
 test("ep9-bench JSON", () => {
   const p = parseBenchJson(
     JSON.stringify({
@@ -431,6 +455,16 @@ test("CLI: the JSON says whether the fresh paths had uncommitted changes (CX5-C5
   // The list of kernels.mjs's treeState(): the FRESH_PATHS entries with changes ([] = clean).
   assert.deepEqual(res.commit.dirty, treeState().dirty);
   assert.ok(Array.isArray(res.commit.dirty), JSON.stringify(res.commit));
+});
+
+test("CLI: host.measured has the THP mode of this host (null when not Linux; MC-w18-O4)", (t) => {
+  const f = fakeSetup(t);
+  const r = f.run(["--host", f.host(1000)]);
+  assert.equal(r.status, 0, r.stderr);
+  const res = JSON.parse(readFileSync(f.out, "utf8"));
+  assert.ok(Object.hasOwn(res.host.measured, "transparent_hugepage"), JSON.stringify(res.host.measured));
+  assert.equal(res.host.measured.transparent_hugepage, thpMode());
+  if (process.platform !== "linux") assert.equal(res.host.measured.transparent_hugepage, null);
 });
 
 test("CLI: load guard failure is provisional with --allow-busy, and 'host busy' without", (t) => {
@@ -852,6 +886,35 @@ test("exit2: engine_build is the ep9 engine's build line; none is null (X3, M5-P
   assert.equal(readExit2(j).engine_build, "features jit,become; preset jit");
   delete j.engines;
   assert.equal(readExit2(j).engine_build, null);
+});
+
+// The m1-exit item-2 fixtures (tools/xtask/tests/m1_exit/exit2-thp-*.json) are what this
+// producer writes: run.mjs's host.measured with the THP mode of a fake Linux file, through
+// exit2.mjs. `EP9_BLESS=1 node --test tools/bench/cross` writes them again.
+test("exit2: host.transparent_hugepage from the run's host.measured, as m1-exit's fixtures hold (MC-w18-O4)", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-thp-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const thp = path.join(dir, "enabled");
+  writeFileSync(thp, "always [madvise] never\n");
+  const cases = [
+    ["exit2-thp-madvise.json", thpMode({ file: thp, platform: "linux" }), "madvise"],
+    ["exit2-thp-null.json", thpMode({ file: path.join(dir, "missing"), platform: "linux" }), null],
+  ];
+  for (const [name, mode, want] of cases) {
+    assert.equal(mode, want);
+    const j = fixture();
+    // A Linux run: the only platform with a THP file.
+    j.host.measured.platform = "linux-x64";
+    j.host.measured.transparent_hugepage = mode;
+    const e = readExit2(j);
+    assert.equal(e.host.transparent_hugepage, want);
+    const text = `${JSON.stringify(e, null, 1)}\n`;
+    const file = path.join(ROOT, "tools/xtask/tests/m1_exit", name);
+    if (process.env.EP9_BLESS === "1") writeFileSync(file, text);
+    assert.equal(readFileSync(file, "utf8"), text, `${name}: run EP9_BLESS=1 node --test tools/bench/cross`);
+  }
+  // A run.mjs JSON with no THP field (before MC-w18-O4) gives null.
+  assert.equal(readExit2(fixture()).host.transparent_hugepage, null);
 });
 
 test("exit2: CLI exit status and JSON", (t) => {

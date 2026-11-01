@@ -118,7 +118,15 @@ export function readExit2(res) {
     // item 2 (X3) reads it; null when the run has none (an older run.mjs or binary).
     engine_build: res.engines?.find((e) => e.id === "ep9")?.engine_build ?? null,
     started: res.started ?? null,
-    host: { id: res.host?.id ?? null, gate_host: res.host?.gate_host ?? false, cpu: res.host?.measured?.cpu ?? null, platform: res.host?.measured?.platform ?? null },
+    // transparent_hugepage: run.mjs's THP mode of a Linux host (lib/host.mjs thpMode); m1-exit
+    // item 2 records it (MC-w18-O4). null when the run has none (not Linux, no file, older run).
+    host: {
+      id: res.host?.id ?? null,
+      gate_host: res.host?.gate_host ?? false,
+      cpu: res.host?.measured?.cpu ?? null,
+      platform: res.host?.measured?.platform ?? null,
+      transparent_hugepage: res.host?.measured?.transparent_hugepage ?? null,
+    },
     provisional: res.provisional ?? true,
     readings,
     pass: readings.every((r) => r.gate === "pass"),

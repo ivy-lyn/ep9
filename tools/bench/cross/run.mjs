@@ -69,7 +69,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleepMs } from "node:timers/promises";
 
-import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile } from "../lib/host.mjs";
+import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile, thpMode } from "../lib/host.mjs";
 import { geomean, median, verdict } from "../lib/stats.mjs";
 import { DEFAULT_WORKLOADS, EMPTY, expandWorkloads, materialize, WORKLOADS } from "./workloads.mjs";
 import { splitVersion, treeState } from "./kernels.mjs";
@@ -465,7 +465,8 @@ export async function run(o, deps = {}) {
   const load = deps.load ?? load1;
   const log = deps.log ?? ((s) => process.stderr.write(`${s}\n`));
   const started = new Date().toISOString();
-  const measured = hostInfo();
+  // The THP mode (Linux; null elsewhere): exit2.mjs copies it for m1-exit item 2 (MC-w18-O4).
+  const measured = { ...hostInfo(), transparent_hugepage: thpMode() };
   const reasons = [];
 
   let hostFile = null;
