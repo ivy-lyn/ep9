@@ -1,9 +1,14 @@
 # Verdicts (fixture)
 
-The plan v10 form (V10-D37). The tests put the fake repo's HEAD in place of the placeholder commit
-`c0` x 20, which is in no repository.
+The plan v10 form (V10-D37), one row for each protocol condition (M5-P4-ORCH-3). The tests put
+the fake repo's HEAD in place of the placeholder commit `c0` x 20, which is in no repository.
 
 | Spike | Condition | Verdict | Commit | Lowering | Host/CPU | ADRs |
 |---|---|---|---|---|---|---|
+| Spike C | C1 | GO | `c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0` | `jit` | m5max-macos, Apple M5 Max | H2, H14, H16, H17, H29 |
+| Spike C | C2 | GO | `c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0` | `jit` | m5max-macos, Apple M5 Max | H2, H14, H16, H17, H29 |
+| Spike C | C3 | GO | `c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0` | `jit` | m5max-macos, Apple M5 Max | H2, H14, H16, H17, H29 |
 | Spike C | C4 | GO | `c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0` | `jit` | m5max-macos, Apple M5 Max | H2, H14, H29-H34 |
+| SP-Facts | C5a | GO | `c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0` | `jit, PROFILED input` | m5max-macos, Apple M5 Max | H30-H34 |
+| SP-Facts | C5b | GO | `c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0` | `jit, PROFILED input` | m5max-macos, Apple M5 Max | H30-H34 |
 | SP-Facts | C5c | GO, speed recorded | `c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0` | `jit, PROFILED input` | m5max-macos, Apple M5 Max | H30-H33 |

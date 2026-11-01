@@ -29,10 +29,10 @@
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
-//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows (one per protocol condition; a later row of the same condition replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change in `spikes/spike-c`, `crates/ep9_vm` or `crates/ep9_facts` since, and the `Lowering` label `jit`; a row without them is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
+//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and C4 (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c` and the regress fork pin, M5-P4-ORCH-2), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
-//! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241), in each of its Verdict rows, each with a fresh `Commit` as in item 7 and the `Lowering` label `jit, PROFILED input` (else refused, at least OPEN) | repo-wide, as the host |
+//! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241), in each of its Verdict rows, with a row for each of C5a, C5b and C5c (as item 7), each with a fresh `Commit` as in item 7 and the `Lowering` label `jit, PROFILED input` (else refused, at least OPEN) | repo-wide, as the host |
 //!
 //! **Fresh, named inputs** (plan v9 section 7 step 3; P3-ORCH-14 finding 6, P3-ORCH-21): the
 //! exec and GC JSONs (`commit`, `dirty`, `made_by`, written by tools/test262/src/provenance.rs)
@@ -282,14 +282,39 @@ const GATE_FEATURE: &str = "jit";
 const VERDICTS_HOW: &str = "the Spike C and SP-Facts Verdict tables (a markdown table with Spike, Condition, Verdict, Commit, Lowering, Host/CPU and ADRs columns; V10-D37)";
 
 /// Items 7 and 10 (MC-w17-9, X8, V10-D37): a Verdict row's `Commit` is fresh when no file
-/// under these paths changed between it and HEAD (Spike C, the VM it installs code into, the
-/// FactSnapshot crate).
-const VERDICT_FRESH_PATHS: [&str; 3] = ["spikes/spike-c", "crates/ep9_vm", "crates/ep9_facts"];
+/// under these paths changed between it and HEAD. M5-P4-ORCH-2: the paths are the code the
+/// verdict judged, the path-dependency closure of `spikes/spike-c` (its `[dependencies]`,
+/// `[build-dependencies]` and target tables, read from each `Cargo.toml`: Spike B's lib and
+/// every engine crate it builds) and the regress fork that its `[patch.crates-io]` builds (the
+/// git-ignored checkout is made from the pin and the patch files, `scripts/sync-regress.sh`).
+/// The test `verdict_fresh_paths_are_the_spike_c_closure` reads the closure and compares.
+const VERDICT_FRESH_PATHS: [&str; 15] = [
+    "spikes/spike-c",
+    "spikes/spike-b",
+    "crates/ep9_builtins",
+    "crates/ep9_bytecode",
+    "crates/ep9_facts",
+    "crates/ep9_frontend",
+    "crates/ep9_heap",
+    "crates/ep9_math",
+    "crates/ep9_platform",
+    "crates/ep9_regexp",
+    "crates/ep9_unit",
+    "crates/ep9_value",
+    "crates/ep9_vm",
+    "third_party/regress.commit",
+    "third_party/patches/regress",
+];
 /// Item 7: the `Lowering` label of a Spike C row (MODES-D13: Spike C code is lowering `jit`).
 const SPIKE_C_LOWERING: &str = "jit";
 /// Item 10: the `Lowering` label of an SP-Facts row (C5c compiles from a PROFILED file under JIT
 /// lowering; it is not a jitless number, MC-w13-23).
 const SP_FACTS_LOWERING: &str = "jit, PROFILED input";
+/// Item 7 (M5-P4-ORCH-3): the protocol conditions of Spike C (protocol §0), one Verdict row
+/// each at least; a missing one reads OPEN.
+const SPIKE_C_CONDITIONS: [&str; 4] = ["C1", "C2", "C3", "C4"];
+/// Item 10 (M5-P4-ORCH-3): the SP-Facts conditions (protocol §0).
+const SP_FACTS_CONDITIONS: [&str; 3] = ["C5a", "C5b", "C5c"];
 
 /// Item 7: the ADRs Frozen at M1 exit (H2, H14, H16) and at M1a (H17-H19).
 const ITEM7_ADRS: [&str; 6] = ["H2", "H14", "H16", "H17", "H18", "H19"];
@@ -450,7 +475,7 @@ fn run(o: &Options) -> Result<Report, String> {
             verdicts
                 .entry(row.spike.clone())
                 .or_default()
-                .insert(row.condition.clone(), (row, f.clone()));
+                .insert(condition_label(&row.condition), (row, f.clone()));
         }
     }
     let ci = match (&o.ci_run, &o.ci_run_json) {
@@ -2284,18 +2309,39 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
     repo_wide(host)
 }
 
-/// The verdict of one spike: (status, text), the worst of its rows (one per protocol condition,
-/// or one row when the table has no Condition column). The verdict word: "no-go" or "fail" is
-/// FAIL; "go" with no "condition" is PASS; anything else is OPEN. MC-w17-9 (X8, V10-D37): a row
-/// is read only with a `Commit` that is a full commit id ([`is_full_sha`]), HEAD or an ancestor
-/// with no change in [`VERDICT_FRESH_PATHS`] since, and the `Lowering` label `lowering` (ASCII
-/// case and spaces aside). Else the row is refused: at least OPEN, with the reason.
-fn spike_status(c: &Ctx, spike: &str, lowering: &str) -> (Status, String) {
+/// The label of a Condition cell: its text before the first `:` (the protocol §0 id and, for
+/// example, a kernel name; the numbers follow the `:`), spaces folded. Rows of one spike with
+/// the same label: the later one replaces the earlier one.
+fn condition_label(cell: &str) -> String {
+    let head = cell.split(':').next().unwrap_or_default();
+    head.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The protocol §0 id of a Condition cell, as written in `ids` (ASCII case aside): the first
+/// word of its label, or `None` if that is not one of `ids`.
+fn condition_id<'a>(cell: &str, ids: &[&'a str]) -> Option<&'a str> {
+    let label = condition_label(cell);
+    let first = label.split([' ', ',']).next().unwrap_or_default();
+    ids.iter()
+        .copied()
+        .find(|id| id.eq_ignore_ascii_case(first))
+}
+
+/// The verdict of one spike: (status, text), the worst of its rows (one per protocol condition
+/// label). The verdict word: "no-go" or "fail" is FAIL; "go" with no "condition" is PASS;
+/// anything else is OPEN. MC-w17-9 (X8, V10-D37): a row is read only with a `Commit` that is a
+/// full commit id ([`is_full_sha`]), HEAD or an ancestor with no change in
+/// [`VERDICT_FRESH_PATHS`] since, and the `Lowering` label `lowering` (ASCII case and spaces
+/// aside). M5-P4-ORCH-3: a row is read only when its Condition names one of `conditions`, and
+/// each of `conditions` needs a row (a table with no Condition column names none). Else the row
+/// is refused, or the spike lacks a row: at least OPEN, with the reason.
+fn spike_status(c: &Ctx, spike: &str, lowering: &str, conditions: &[&str]) -> (Status, String) {
     let Some(rows) = c.verdicts.get(spike) else {
         return (Status::Open, format!("{spike}: no verdict"));
     };
     let mut status = Status::Pass;
     let mut parts = Vec::new();
+    let mut seen = BTreeSet::new();
     for (row, file) in rows.values() {
         let v = &row.verdict;
         let l = v.to_ascii_lowercase();
@@ -2307,6 +2353,18 @@ fn spike_status(c: &Ctx, spike: &str, lowering: &str) -> (Status, String) {
             Status::Open
         };
         let mut why = Vec::new();
+        match condition_id(&row.condition, conditions) {
+            Some(id) => {
+                seen.insert(id);
+            }
+            // No Condition column: the missing rows below say it.
+            None if row.condition.is_empty() => {}
+            None => why.push(format!(
+                "its Condition {:?} is none of {}",
+                row.condition,
+                conditions.join(", ")
+            )),
+        }
         let commit = match row.commit.as_deref() {
             None => {
                 why.push("no Commit cell".to_string());
@@ -2359,6 +2417,19 @@ fn spike_status(c: &Ctx, spike: &str, lowering: &str) -> (Status, String) {
             }
         ));
     }
+    let missing: Vec<&str> = conditions
+        .iter()
+        .copied()
+        .filter(|id| !seen.contains(id))
+        .collect();
+    if !missing.is_empty() {
+        status = status.max(Status::Open);
+        parts.push(format!(
+            "{spike}: no row for {} (protocol §0: a row for each of {})",
+            missing.join(", "),
+            conditions.join(", ")
+        ));
+    }
     (status, parts.join("; "))
 }
 
@@ -2377,7 +2448,7 @@ fn frozen_cell(root: &Path, ids: &[&str]) -> (Status, String) {
 }
 
 fn item7(c: &Ctx) -> (Cell, Cell) {
-    let (st, spike) = spike_status(c, "spike c", SPIKE_C_LOWERING);
+    let (st, spike) = spike_status(c, "spike c", SPIKE_C_LOWERING, &SPIKE_C_CONDITIONS);
     let (fst, frozen) = frozen_cell(&c.o.root, &ITEM7_ADRS);
     repo_wide(cell(st.max(fst), format!("{spike}; {frozen}")))
 }
@@ -2461,7 +2532,7 @@ fn item9(c: &Ctx) -> (Cell, Cell) {
 }
 
 fn item10(c: &Ctx) -> (Cell, Cell) {
-    let (st, t) = spike_status(c, "sp-facts", SP_FACTS_LOWERING);
+    let (st, t) = spike_status(c, "sp-facts", SP_FACTS_LOWERING, &SP_FACTS_CONDITIONS);
     repo_wide(cell(st, t))
 }
 
@@ -4244,10 +4315,18 @@ mod tests {
         let r = run(&o).unwrap();
         assert_eq!(r.cells[6].0.status, Status::Pass, "{:?}", r.cells[6]);
         assert!(
-            r.cells[6].0.evidence.starts_with(&format!(
+            r.cells[6].0.evidence.contains(&format!(
                 "spike c C4: GO (verdicts.md; commit `{}`: this tree (HEAD); lowering jit); H2: Frozen",
                 short(&head)
             )),
+            "{}",
+            r.cells[6].0.evidence
+        );
+        assert!(
+            r.cells[6]
+                .0
+                .evidence
+                .starts_with("spike c C1: GO (verdicts.md;"),
             "{}",
             r.cells[6].0.evidence
         );
@@ -4315,6 +4394,21 @@ mod tests {
         let head = commit_all(&root, "docs and cli");
         let jit = "`jit`";
         let pf = "`jit, PROFILED input`";
+        // The other conditions (M5-P4-ORCH-3), all GO on HEAD: each case changes C4 and C5c.
+        let rest = [
+            ("Spike C", "C1", "GO", head.as_str(), jit),
+            ("Spike C", "C2", "GO", head.as_str(), jit),
+            ("Spike C", "C3", "GO", head.as_str(), jit),
+            ("SP-Facts", "C5a", "GO", head.as_str(), pf),
+            ("SP-Facts", "C5b", "GO", head.as_str(), pf),
+        ];
+        let verdicts_md = |rows: &[(&str, &str, &str, &str, &str)]| -> String {
+            let mut t = verdicts_md(&rest);
+            for (s, c, v, sha, l) in rows {
+                t.push_str(&format!("| {s} | {c} | {v} | {sha} | {l} | m5max | H2 |\n"));
+            }
+            t
+        };
         let cases: Vec<(String, Status, Status, String)> = vec![
             // The M4 form (no Commit, no Lowering column): OPEN, not PASS.
             (
@@ -4385,7 +4479,7 @@ mod tests {
                 verdicts_md(&[("Spike C", "C4", "GO", &first, jit), ("SP-Facts", "C5c", "GO", &first, pf)]),
                 Status::Open,
                 Status::Open,
-                "spikes/spike-c, crates/ep9_vm, crates/ep9_facts changed between".into(),
+                format!("{} changed between", VERDICT_FRESH_PATHS.join(", ")),
             ),
             // A NO-GO row stays FAIL, refused or not.
             (
@@ -4477,6 +4571,255 @@ mod tests {
         let same = format!("{one_fail}\n{redo}");
         o.verdicts = vec![input(&root, "e.md", &same)];
         assert_eq!(run(&o).unwrap().cells[6].0.status, Status::Pass);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M5-P4-ORCH-3: item 7 needs a row for each of C1-C4 and item 10 for each of C5a-C5c
+    /// (protocol §0); one GO row alone reads OPEN, and a row whose Condition is not one of its
+    /// spike's is refused. The Condition label is the text before the first `:`: rows with a
+    /// kernel name are separate, and a later row with the same label replaces an earlier one.
+    #[test]
+    fn items7_and_10_need_a_row_for_each_condition() {
+        let root = fake_repo("item7set");
+        let mut o = opts(&root);
+        write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
+        let head = commit_all(&root, "adrs");
+        let (jit, pf) = ("jit", "jit, PROFILED input");
+        // One GO row each.
+        o.verdicts = vec![input(
+            &root,
+            "a.md",
+            &verdicts_md(&[
+                ("Spike C", "C4", "GO", &head, jit),
+                ("SP-Facts", "C5c", "GO", &head, pf),
+            ]),
+        )];
+        let r = run(&o).unwrap();
+        let (c7, c10) = (&r.cells[6].0, &r.cells[9].0);
+        assert_eq!((c7.status, c10.status), (Status::Open, Status::Open));
+        assert!(
+            c7.evidence.contains(
+                "spike c: no row for C1, C2, C3 (protocol §0: a row for each of C1, C2, C3, C4)"
+            ),
+            "{}",
+            c7.evidence
+        );
+        assert!(
+            c10.evidence.contains("sp-facts: no row for C5a, C5b"),
+            "{}",
+            c10.evidence
+        );
+        // Every condition, with numbers after the label and two C4 kernels: PASS.
+        let all = verdicts_md(&[
+            ("Spike C", "C1: am3, lin_solve", "GO", &head, jit),
+            ("Spike C", "C2", "GO", &head, jit),
+            ("Spike C", "c3: 0 mismatches", "GO", &head, jit),
+            ("Spike C", "C4 crypto: R 3.2 [3.1, 3.3]", "GO", &head, jit),
+            (
+                "Spike C",
+                "C4 navier-stokes: R 2.9 [2.8, 3.0]",
+                "NO-GO",
+                &head,
+                jit,
+            ),
+            ("SP-Facts", "C5a", "GO", &head, pf),
+            ("SP-Facts", "C5b", "GO", &head, pf),
+            ("SP-Facts", "C5c: 0.93", "GO, speed recorded", &head, pf),
+        ]);
+        o.verdicts = vec![input(&root, "b.md", &all)];
+        let r = run(&o).unwrap();
+        assert_eq!(
+            (r.cells[6].0.status, r.cells[9].0.status),
+            (Status::Fail, Status::Pass),
+            "{:?}",
+            r.cells[6]
+        );
+        // A later C4 navier-stokes row replaces the NO-GO one; the crypto row stays.
+        let redo = verdicts_md(&[(
+            "Spike C",
+            "C4  navier-stokes : R 3.1 [3.0, 3.2]",
+            "GO",
+            &head,
+            jit,
+        )]);
+        o.verdicts = vec![input(&root, "b.md", &all), input(&root, "c.md", &redo)];
+        let c7 = run(&o).unwrap().cells[6].0.clone();
+        assert_eq!(c7.status, Status::Pass, "{c7:?}");
+        assert!(
+            c7.evidence
+                .contains("spike c C4 crypto: R 3.2 [3.1, 3.3]: GO (b.md;")
+                && c7
+                    .evidence
+                    .contains("spike c C4 navier-stokes : R 3.1 [3.0, 3.2]: GO (c.md;"),
+            "{}",
+            c7.evidence
+        );
+        // A condition of the other spike, or none of the protocol: refused.
+        for bad in ["C5a", "C9", "condition 4"] {
+            let md = all.replace("| C2 |", &format!("| {bad} |"));
+            o.verdicts = vec![input(&root, "d.md", &md)];
+            let c7 = run(&o).unwrap().cells[6].0.clone();
+            assert_eq!(c7.status, Status::Fail, "{bad}: {c7:?}");
+            assert!(
+                c7.evidence
+                    .contains(&format!("its Condition {bad:?} is none of C1, C2, C3, C4"))
+                    && c7.evidence.contains("spike c: no row for C2"),
+                "{bad}: {}",
+                c7.evidence
+            );
+            let md = md.replace("| NO-GO |", "| GO |");
+            o.verdicts = vec![input(&root, "d.md", &md)];
+            assert_eq!(run(&o).unwrap().cells[6].0.status, Status::Open, "{bad}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M5-P4-ORCH-2: [`VERDICT_FRESH_PATHS`] is the path-dependency closure of `spikes/spike-c`
+    /// as its `Cargo.toml` files say (read here from this repository, not a fixture: the test
+    /// checks the list against the code a verdict judges), with the regress fork checkout
+    /// (`third_party/regress`, git-ignored) named by its pin and patch files.
+    #[test]
+    fn verdict_fresh_paths_are_the_spike_c_closure() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo = std::fs::canonicalize(&repo).unwrap();
+        let rel = |d: &Path| {
+            d.strip_prefix(&repo)
+                .unwrap_or_else(|_| panic!("{} is outside the repo", d.display()))
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        let spike_c = repo.join("spikes/spike-c");
+        let mut todo = vec![spike_c.clone()];
+        let mut closure: BTreeSet<String> = BTreeSet::from([rel(&spike_c)]);
+        while let Some(dir) = todo.pop() {
+            let text = read(&dir.join("Cargo.toml")).unwrap();
+            for dep in path_deps(&text) {
+                let d = std::fs::canonicalize(dir.join(&dep))
+                    .unwrap_or_else(|e| panic!("{}: {dep}: {e}", dir.display()));
+                if closure.insert(rel(&d)) {
+                    todo.push(d);
+                }
+            }
+        }
+        // The regress fork: spike-c's `[patch.crates-io]` builds the git-ignored checkout,
+        // which `scripts/sync-regress.sh` makes from the pin and the patch files.
+        let manifest = read(&spike_c.join("Cargo.toml")).unwrap();
+        let patch = manifest
+            .split("\n[patch.crates-io]\n")
+            .nth(1)
+            .expect("spike-c has a [patch.crates-io] table");
+        assert!(
+            patch.contains("regress = { path = \"../../third_party/regress\" }"),
+            "{patch}"
+        );
+        closure.insert("third_party/regress.commit".into());
+        closure.insert("third_party/patches/regress".into());
+        let list: BTreeSet<String> = VERDICT_FRESH_PATHS.iter().map(|p| p.to_string()).collect();
+        assert_eq!(list.len(), VERDICT_FRESH_PATHS.len(), "a path twice");
+        assert_eq!(list, closure);
+        // More than the V10-D37 three (a guard against an empty read).
+        for p in ["spikes/spike-b", "crates/ep9_heap", "crates/ep9_unit"] {
+            assert!(closure.contains(p), "{p}: {closure:?}");
+        }
+    }
+
+    /// Cross-role check (M5-P4 SPIKEC-8 text, GATES7 reader): the Verdict row form in §8 of
+    /// the live Spike C protocol is what items 7 and 10 read: its column names, its condition
+    /// ids (§0), its `Lowering` labels and its freshness paths are this reader's, and a table
+    /// of the form row, one row per §0 condition on HEAD, reads PASS. Reads the live protocol
+    /// (not a fixture), so a change of either side fails here.
+    #[test]
+    fn the_protocol_verdict_form_is_what_items_7_and_10_read() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let scp = read(&repo.join("docs/measurements/2026-10-27-spike-c-protocol.md")).unwrap();
+        let ticks = |l: &str| -> Vec<String> {
+            l.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect()
+        };
+        let sec8 = scp
+            .split("\n## 8. ")
+            .nth(1)
+            .and_then(|t| t.split("\n## ").next())
+            .expect("protocol §8");
+        let bullet = |name: &str| -> &str {
+            sec8.lines()
+                .find(|l| l.trim_start().starts_with(&format!("- **{name}:**")))
+                .unwrap_or_else(|| panic!("§8 has no {name} bullet"))
+        };
+        // Columns, in the reader's names.
+        let header = sec8
+            .lines()
+            .flat_map(ticks)
+            .find(|t| t.starts_with("| Spike |"))
+            .expect("§8 names the columns");
+        assert_eq!(
+            header,
+            "| Spike | Condition | Verdict | Commit | Lowering | Host/CPU | ADRs |"
+        );
+        // The §0 condition ids.
+        let sec0 = scp
+            .split("\n## 0. ")
+            .nth(1)
+            .and_then(|t| t.split("\n## ").next())
+            .expect("protocol §0");
+        let ids: Vec<String> = sec0
+            .lines()
+            .filter_map(|l| l.strip_prefix("| C"))
+            .map(|l| format!("C{}", l.split('|').next().unwrap().trim()))
+            .collect();
+        let (facts, spike): (Vec<String>, Vec<String>) =
+            ids.into_iter().partition(|id| id.starts_with("C5"));
+        assert_eq!(spike, SPIKE_C_CONDITIONS);
+        assert_eq!(facts, SP_FACTS_CONDITIONS);
+        // The Lowering labels and the freshness paths.
+        let lowering = bullet("Lowering");
+        assert!(
+            lowering.contains(&format!("`{SPIKE_C_LOWERING}` for every Spike C row"))
+                && lowering.contains(&format!("`{SP_FACTS_LOWERING}` for every SP-Facts row")),
+            "{lowering}"
+        );
+        let fresh: BTreeSet<String> = ticks(bullet("Commit"))
+            .into_iter()
+            .filter(|t| t.contains('/'))
+            .collect();
+        let want: BTreeSet<String> = VERDICT_FRESH_PATHS.iter().map(|p| p.to_string()).collect();
+        assert_eq!(fresh, want, "the §8 Commit bullet names the fresh paths");
+        // The form row, filled in, for each condition: PASS.
+        let form = sec8
+            .lines()
+            .flat_map(ticks)
+            .find(|t| t.starts_with("| Spike C | C4"))
+            .expect("§8 has the form row");
+        let root = fake_repo("item7scp");
+        let mut o = opts(&root);
+        write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
+        let head = commit_all(&root, "adrs");
+        let row = form.replace("<40-hex sha>", &head);
+        let mut md = format!("{header}\n|---|---|---|---|---|---|---|\n");
+        for id in SPIKE_C_CONDITIONS {
+            md.push_str(&row.replacen("| C4 ", &format!("| {id} "), 1));
+            md.push('\n');
+        }
+        for id in SP_FACTS_CONDITIONS {
+            let r = row
+                .replacen("| Spike C | C4 ", &format!("| SP-Facts | {id} "), 1)
+                .replacen(
+                    &format!("| {SPIKE_C_LOWERING} |"),
+                    &format!("| {SP_FACTS_LOWERING} |"),
+                    1,
+                );
+            md.push_str(&r);
+            md.push('\n');
+        }
+        let rows = verdict_rows(&md);
+        assert_eq!(rows.len(), 7, "{rows:?}");
+        o.verdicts = vec![input(&root, "scp.md", &md)];
+        let r = run(&o).unwrap();
+        assert_eq!(r.cells[6].0.status, Status::Pass, "{:?}", r.cells[6]);
+        assert_eq!(r.cells[9].0.status, Status::Pass, "{:?}", r.cells[9]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

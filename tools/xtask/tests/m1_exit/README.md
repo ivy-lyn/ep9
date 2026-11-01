@@ -11,7 +11,7 @@ temporary git tree.
 | `exec.json` | (read in place) | a given `--exec` / `--exec-gc` input |
 | `ci-run.json` | (read in place) | a given `--ci-run-json` input |
 | `nesting.log` | (read in place) | item 8: a `--nesting` log with the 9 M1 tests ok in 2 cargo runs, and no `m1-exit source:` line (so it is a stale input; the tests add the line with the fake repo's commit) |
-| `verdicts.md` | `inputs/` (the tests put the fake repo's HEAD in place of the placeholder commit `c0` x 20) | items 7 and 10: a `--verdicts` table in the V10-D37 form (Spike, Condition, Verdict, Commit, Lowering, Host/CPU, ADRs) with Spike C C4 GO, lowering `jit`, and SP-Facts C5c "GO, speed recorded", lowering `jit, PROFILED input` (MC-w17-9) |
+| `verdicts.md` | `inputs/` (the tests put the fake repo's HEAD in place of the placeholder commit `c0` x 20) | items 7 and 10: a `--verdicts` table in the V10-D37 form (Spike, Condition, Verdict, Commit, Lowering, Host/CPU, ADRs) with Spike C C1-C4 GO, lowering `jit`, and SP-Facts C5a and C5b GO, C5c "GO, speed recorded", lowering `jit, PROFILED input` (MC-w17-9; one row per condition, M5-P4-ORCH-3) |
 | `fuzz-fuzzilli.json`, `fuzz-fuzzilli-dirty.json`, `fuzz-cargo-fuzz.json` | `inputs/` (the tests put the fake repo's HEAD in place of the placeholder commit `f4` x 20) | item 5 (F4): ep9-fuzz/v1 records made by the producer, `fuzz/scripts/record.sh`: a clean counted Fuzzilli record (100 CPU-h), a dirty one of the same campaign id, and a cargo-fuzz record in the fuzz.yml form (`--run` with a run.sh summary, 24 CPU-h). `make-fuzz-records.sh` makes them again |
 
 The tests write the other inputs (kernels, exit2, exec, GC-stress and the other fuzz JSONs, ADR files with
