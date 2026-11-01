@@ -32,6 +32,9 @@
 //! spike-c show <kernel> [hot index]         bytecode and live facts of a hot function
 //! spike-c driver <kernel> [--n N]          print the driver script (node runs the same text)
 //! spike-c structural [check... | all]       the checks of `gate.sh structural`
+//! spike-c read-set                          the R17 read set: each `ep9_vm::layout` item Spike C
+//!                                           reads, by owner version, and the 4 hand facts
+//! spike-c liveness <kernel> [hot index]     the H02-Q1 liveness report of a hot function
 //! ```
 
 use std::process::ExitCode;
@@ -49,7 +52,7 @@ fn usage() -> ExitCode {
          | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
          | once <t0|c|p|h0|h1> <kernel> [--n N] [--k K] | sp-facts <write|check|wrong|time> ... \
          | show <kernel> [i] | driver <kernel> [--n N] \
-         | structural [check...|all]]"
+         | structural [check...|all] | read-set | liveness <kernel> [i]]"
     );
     ExitCode::from(2)
 }
@@ -520,6 +523,13 @@ fn main() -> ExitCode {
         "driver" => driver_cmd(rest),
         "show" => show_cmd(rest),
         "run" => run_cmd(rest),
+        "read-set" => {
+            for l in spike_c::vm_layout::read_set_lines() {
+                println!("{l}");
+            }
+            Ok(true)
+        }
+        "liveness" => liveness_cmd(rest),
         _ => return usage(),
     };
     match r {
@@ -528,6 +538,43 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("spike-c: {e}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// `spike-c liveness <kernel> [hot index]`: the H02-Q1 liveness report of a hot function
+/// ([`spike_c::liveness_lines`]), from the live facts of an n = 1 T0 run.
+fn liveness_cmd(args: &[String]) -> Result<bool, String> {
+    let k = kernel_arg(args.first())?;
+    let which: usize = match args.get(1) {
+        Some(v) => v.parse().map_err(|_| format!("bad hot index {v}"))?,
+        None => 0,
+    };
+    let h = k.hot.get(which).ok_or("no such hot function")?;
+    let (s, d, r, _) = run_t0(k, 1)?;
+    r.result.map_err(|e| format!("{}: {e}", k.name))?;
+    let script = s.script("driver.js").ok_or("no driver script")?;
+    let ids = script.functions_on_line(h.lines.0 + d.offset);
+    let [id] = ids[..] else {
+        return Err(format!(
+            "{}: {} functions on line {}",
+            h.name,
+            ids.len(),
+            h.lines.0
+        ));
+    };
+    let live = facts::live(&s, script)?;
+    let input = script.unit_input(id, h.name)?;
+    match spike_c::liveness_lines(&input, &facts::for_function(&live, id)) {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+            Ok(true)
+        }
+        Err(e) => {
+            println!("{}: graph build refused: {e}", h.name);
+            Ok(false)
         }
     }
 }
