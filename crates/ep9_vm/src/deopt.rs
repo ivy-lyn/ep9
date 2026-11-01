@@ -26,8 +26,8 @@
 //!  table   := uleb records, uleb consts, const* (u64 LE: an immediate Value, never a cell),
 //!             record* (sorted by pc, no two at one pc)
 //!  record  := u8 header     bits 0-3 record tag: 0 exit, 1 poll, 2 call (append-only, 16 values)
-//!                           bit 4 exit class: 0 speculation, 1 environment (H29-Q1, C-04)
-//!                           bits 5-7: 0
+//!                           bits 4-7 exit class: 0 speculation, 1 environment, others
+//!                           refused (append-only, H29-Q1 fill; C-04; bit 4 + reserved 5-7)
 //!             uleb pc       offset of the exit stub from the code start
 //!             uleb bytecode the bytecode offset T0 resumes at (H2: the only deopt id)
 //!             uleb counter  index into the code's RW exit-counter array (H29-Q5; < records)

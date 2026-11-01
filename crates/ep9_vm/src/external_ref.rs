@@ -14,9 +14,9 @@
 //! ```
 //!
 //! Today the word is the native-word encoding of H14 (`frame::native_of`): a subnormal double
-//! Value, never a cell, so the GC skips it. A sandbox build (D6) would change this file only:
-//! the word would be an index into a per-isolate pointer table. Every method is
-//! `#[inline(always)]`, so the T0 handlers that read a FunctionInfo compile as before.
+//! Value, never a cell, so the GC skips it. A sandbox build (D6) would change this file and the
+//! native-code emitters (they decode the word with one `eor`, H25-Q1, until C-18): the word
+//! would be an index into a per-isolate pointer table. Every method is `#[inline(always)]`.
 
 use core::marker::PhantomData;
 
