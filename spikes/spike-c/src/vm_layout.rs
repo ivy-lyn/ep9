@@ -31,6 +31,9 @@
 //! shape address rule, the shape's `counts` offset and the SHAPE kind id (the kind guard, M5-P2
 //! SPIKEC-6, WI-SC7; proved on live arrays of all six element kinds), and the CONTEXT kind id
 //! (the `LoadContextSlot` guard, M5-P2 fixer round 3). Hand copies, each proved by [`check`].
+//! Two more hand facts are not cell layout: the empty key of an IC entry (`undefined`, the
+//! shape guard's "unfilled" exit) and the shared exit's register dump (MODES-CHECK-w22
+//! MC-w22-6). [`HAND_FACTS`] lists all six.
 
 use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
 
@@ -426,27 +429,31 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
 
 /// The versions this module's facts (the table above) and the emitter's frame and exit code
 /// were written against (SPIKEC-5). A VM that bumps one of them changed a fact compiled code
-/// bakes in, so [`check`] refuses until the spike is moved to it.
-pub const PINNED: [(&str, u32); 4] = [
+/// bakes in, so [`check`] refuses until the spike is moved to it. Value encoding (since M5-P5,
+/// MODES-CHECK-w22 MC-w22-11) owns `HOLE`, `NATIVE_WORD_OFFSET` and the [`ENCODING_READS`]
+/// constants, which the emitter and the graph builder bake into code.
+pub const PINNED: [(&str, u32); 5] = [
     ("OBJECT_LAYOUT", 5),
     ("IC_LAYOUT", 3),
     ("FRAME", 2),
     ("VM_LAYOUT", 1),
+    ("Value encoding", 1),
 ];
 
-/// The VM's own versions, in [`PINNED`] order.
-const VM_VERSIONS: [u32; 4] = {
+/// The VM's own versions, in [`PINNED`] order (Value encoding is `ep9_value`'s).
+const VM_VERSIONS: [u32; 5] = {
     use ep9_vm::versions::*;
     [
         OBJECT_LAYOUT_VERSION,
         IC_LAYOUT_VERSION,
         FRAME_VERSION,
         VM_LAYOUT_VERSION,
+        ep9_value::encoding::VERSION,
     ]
 };
 
 /// Refuses if a version in `vm` (in [`PINNED`] order) is not the pinned one.
-fn check_versions(vm: [u32; 4]) -> Result<(), String> {
+fn check_versions(vm: [u32; 5]) -> Result<(), String> {
     for ((name, want), got) in PINNED.iter().zip(vm) {
         if got != *want {
             return Err(format!(
@@ -620,7 +627,7 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
 /// `read_set_names_the_owner_of_each_item` checks each owner against the doc line of the
 /// item in `crates/ep9_vm/src/layout.rs` (each export starts its doc with its owner). The two
 /// smi handlers ([`ARRAY_LENGTH_HANDLER`], [`field_in_object_handler`]) are derived from the
-/// IC_LAYOUT items here; the 4 facts the export lacks are [`HAND_FACTS`].
+/// IC_LAYOUT items here; the facts the export lacks are [`HAND_FACTS`].
 pub const READ_SET: [(&str, &str); 62] = [
     ("ARRAY_ELEMENTS", "OBJECT_LAYOUT"),
     ("ARRAY_LENGTH", "OBJECT_LAYOUT"),
@@ -686,11 +693,22 @@ pub const READ_SET: [(&str, &str); 62] = [
     ("fp_register", "FRAME"),
 ];
 
-/// The 4 layout facts Spike C reads that `ep9_vm::layout` does not export (MC-w20-7; the export
-/// is frozen in month 5, plan v10 rule 2): (name here, the VM item it copies, value, owner).
-/// Each is proved on live objects by [`check`], and the test `hand_facts_equal_the_vm_source`
-/// reads each from the VM's own source text, so a change there fails without a live run.
-pub const HAND_FACTS: [(&str, &str, u64, &str); 4] = [
+/// The VM facts Spike C bakes into code that `ep9_vm::layout` does not export (MC-w20-7; the
+/// export is frozen in month 5, plan v10 rule 2): (name in the spike, the VM item it copies,
+/// value, owner). The test `hand_facts_equal_the_vm_source` reads each from the VM's own
+/// source text, so a change there fails without a live run. A baked fact that is not in this
+/// list and not in [`READ_SET`] or [`ENCODING_READS`] is a gap: add it here with its test.
+///
+/// - The 4 OBJECT_LAYOUT facts: [`check`] also proves them on live objects.
+/// - `VALUE_UNDEFINED` (IC_LAYOUT): the key half of an IC entry that no site filled is
+///   `undefined` (`ic::state` reads it as Uninitialized; a new FEEDBACK cell keeps the
+///   allocator's `undefined` pre-fill in each key). The shape guard compares the key with it
+///   and takes its "unfilled" exit. Proved by source text only.
+/// - `DUMP_BYTES` (DEOPT_META; M5-P5-ORCH-8, MODES-CHECK-w22 MC-w22-6): the shared exit's
+///   register dump, VM-private: 256 bytes below sp, word n = xn for x0-x30
+///   (`deopt::DUMP_REGS`, 31 words; `RuntimeTable::deopt` reads them as `[u64; DUMP_REGS]`).
+///   The emitter stores it (`emit_a64` `deopt_exit`). Every deopt of the gate reads it.
+pub const HAND_FACTS: [(&str, &str, u64, &str); 6] = [
     (
         "SHAPE_CAGE_ALIGN",
         "shape::CAGE_ALIGN",
@@ -714,6 +732,18 @@ pub const HAND_FACTS: [(&str, &str, u64, &str); 4] = [
         "kinds::CONTEXT",
         KIND_CONTEXT as u64,
         "OBJECT_LAYOUT",
+    ),
+    (
+        "VALUE_UNDEFINED",
+        "ic::state: an unfilled IC key",
+        ep9_value::encoding::VALUE_UNDEFINED,
+        "IC_LAYOUT",
+    ),
+    (
+        "DUMP_BYTES",
+        "deopt::DUMP_REGS: x0-x30, word n = xn",
+        256,
+        "DEOPT_META",
     ),
 ];
 
@@ -742,6 +772,7 @@ pub fn read_set_lines() -> Vec<String> {
         "FRAME" => ep9_vm::versions::FRAME_VERSION.to_string(),
         "VM_LAYOUT" => ep9_vm::versions::VM_LAYOUT_VERSION.to_string(),
         "Value encoding" => ep9_value::encoding::VERSION.to_string(),
+        "DEOPT_META" => ep9_vm::versions::DEOPT_META_VERSION.to_string(),
         _ => "?".into(),
     };
     let mut out = Vec::new();
@@ -751,6 +782,7 @@ pub fn read_set_lines() -> Vec<String> {
         "FRAME",
         "VM_LAYOUT",
         "Value encoding",
+        "DEOPT_META",
     ] {
         let names: Vec<&str> = READ_SET
             .iter()
@@ -762,15 +794,13 @@ pub fn read_set_lines() -> Vec<String> {
             .filter(|h| h.3 == owner)
             .map(|h| format!("{} = {} ({})", h.0, h.2, h.1))
             .collect();
-        let mut line = format!(
-            "{owner} {}: {} exported: {}",
-            version(owner),
-            names.len(),
-            names.join(", ")
-        );
+        let mut line = format!("{owner} {}: {} exported", version(owner), names.len());
+        if !names.is_empty() {
+            line.push_str(&format!(": {}", names.join(", ")));
+        }
         if !hand.is_empty() {
             line.push_str(&format!(
-                "; {} hand facts (not exported, proved by `check`): {}",
+                "; {} hand facts (not exported, `HAND_FACTS`): {}",
                 hand.len(),
                 hand.join(", ")
             ));
@@ -797,13 +827,33 @@ mod tests {
         let note = check(&Config::default()).expect("layout");
         assert!(note.contains("FunctionInfo.feedback"), "{note}");
         assert!(note.contains("VM_LAYOUT 1"), "{note}");
+        assert!(note.contains("Value encoding 1"), "{note}");
+    }
+
+    /// MC-w22-11: the pin names Value encoding 1, the version of `ep9_value::encoding`, and
+    /// the read set's "Value encoding" owner prints the same number.
+    #[test]
+    fn value_encoding_is_pinned() {
+        assert_eq!(PINNED[4], ("Value encoding", 1));
+        assert_eq!(VM_VERSIONS[4], ep9_value::encoding::VERSION);
+        let mut v = VM_VERSIONS;
+        v[4] = 2;
+        let e = check_versions(v).expect_err("refused");
+        assert!(e.contains("Value encoding is 2"), "{e}");
+        assert!(
+            read_set_lines()
+                .iter()
+                .any(|l| l.starts_with("Value encoding 1: ")),
+            "{:?}",
+            read_set_lines()
+        );
     }
 
     /// The pin refuses a VM with any other version.
     #[test]
     fn a_bumped_version_is_refused() {
         assert_eq!(check_versions(VM_VERSIONS), Ok(()));
-        for i in 0..4 {
+        for i in 0..PINNED.len() {
             let mut v = VM_VERSIONS;
             v[i] += 1;
             let e = check_versions(v).expect_err("refused");
@@ -1005,9 +1055,28 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
             assert_eq!(doc, owner, "{name}");
         }
         let lines = read_set_lines();
-        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert_eq!(lines.len(), 6, "{lines:?}");
         assert!(lines[0].starts_with("OBJECT_LAYOUT 5: "), "{}", lines[0]);
         assert!(lines[0].contains("4 hand facts"), "{}", lines[0]);
+        assert!(
+            lines[1].starts_with("IC_LAYOUT 3: ") && lines[1].contains("; 1 hand facts"),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            lines[5].starts_with("DEOPT_META 0: 0 exported; 1 hand facts")
+                && lines[5].contains("DUMP_BYTES = 256"),
+            "{}",
+            lines[5]
+        );
+        // Every hand fact's owner has a line, so none is left out of the print.
+        for h in HAND_FACTS {
+            assert!(
+                lines.iter().any(|l| l.starts_with(&format!("{} ", h.3))),
+                "{}",
+                h.3
+            );
+        }
         assert!(
             lines[4].starts_with("Value encoding 1: 2 exported: HOLE, NATIVE_WORD_OFFSET; 8 `ep9_value::encoding` constants: DOUBLE_ENCODE_OFFSET, "),
             "{}",
@@ -1059,10 +1128,11 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
         l[..l.find([';', ')']).expect("an end")].trim()
     }
 
-    /// MC-w20-7: the 4 hand facts ([`HAND_FACTS`]) equal the VM items they copy, read from the
-    /// VM's own source text (the items are crate-private, and `layout.rs` is frozen until
-    /// `m5-p5`, plan v10 rule 2). [`check`] proves the same values on live objects; this test
-    /// fails at once on a change of the VM's text, with no isolate.
+    /// MC-w20-7: the 4 OBJECT_LAYOUT hand facts ([`HAND_FACTS`]) equal the VM items they copy,
+    /// read from the VM's own source text (the items are crate-private, and `layout.rs` is
+    /// frozen until `m5-p5`, plan v10 rule 2). [`check`] proves the same values on live
+    /// objects; this test fails at once on a change of the VM's text, with no isolate. The
+    /// other two have their own tests below.
     #[test]
     fn hand_facts_equal_the_vm_source() {
         const KINDS_RS: &str = include_str!("../../../crates/ep9_vm/src/kinds.rs");
@@ -1087,5 +1157,125 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
             assert_eq!(*owner, "OBJECT_LAYOUT", "{name}");
         }
         assert_eq!(PINNED[0], ("OBJECT_LAYOUT", 5));
+        let owners: Vec<&str> = HAND_FACTS.iter().map(|h| h.3).collect();
+        assert_eq!(
+            owners,
+            [
+                "OBJECT_LAYOUT",
+                "OBJECT_LAYOUT",
+                "OBJECT_LAYOUT",
+                "OBJECT_LAYOUT",
+                "IC_LAYOUT",
+                "DEOPT_META"
+            ]
+        );
+    }
+
+    /// The text of fn `name` in `src`: from `fn name(` to the next line that is `    }`.
+    fn fn_text<'a>(src: &'a str, name: &str) -> &'a str {
+        let at = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("no fn {name}"));
+        let body = &src[at..];
+        &body[..body
+            .find("\n    }\n")
+            .unwrap_or_else(|| panic!("no end of fn {name}"))]
+    }
+
+    /// The unfilled IC key ([`HAND_FACTS`] `VALUE_UNDEFINED`, IC_LAYOUT): the VM reads an entry
+    /// whose key half is `undefined` as Uninitialized (`ic::state`), and a new FEEDBACK cell
+    /// writes no key (the allocator pre-fills `undefined`); the emitter's shape guard compares
+    /// the key with `VALUE_UNDEFINED` and takes its "unfilled" exit.
+    #[test]
+    fn the_unfilled_ic_key_is_the_vm_source() {
+        const IC_RS: &str = include_str!("../../../crates/ep9_vm/src/ic.rs");
+        const FRAME_RS: &str = include_str!("../../../crates/ep9_vm/src/frame.rs");
+        const FEEDBACK_RS: &str = include_str!("../../../crates/ep9_vm/src/feedback.rs");
+        const EMIT_RS: &str = include_str!("emit_a64/mod.rs");
+        let (name, _, value, owner) = HAND_FACTS[4];
+        assert_eq!((name, owner), ("VALUE_UNDEFINED", "IC_LAYOUT"));
+        assert_eq!(value, ep9_vm::Value::UNDEFINED.to_bits());
+        assert!(
+            FRAME_RS.contains("pub const UNDEFINED: u64 = Value::UNDEFINED.to_bits();"),
+            "frame::UNDEFINED"
+        );
+        let state = fn_text(IC_RS, "state");
+        let first = state
+            .find("if key == UNDEFINED {")
+            .expect("ic::state tests the key with UNDEFINED");
+        assert!(
+            state[first..]
+                .trim_start_matches("if key == UNDEFINED {")
+                .trim_start()
+                .starts_with("State::Uninitialized"),
+            "{state}"
+        );
+        assert!(
+            FEEDBACK_RS.contains("Keys stay `undefined` (the")
+                && FEEDBACK_RS.contains("allocator's pre-fill)"),
+            "feedback::make writes no key"
+        );
+        assert!(
+            EMIT_RS.contains("VALUE_UNDEFINED as u32")
+                && EMIT_RS.contains("; cmp x17, undefined ; b.eq =>unfilled"),
+            "the shape guard's unfilled compare"
+        );
+    }
+
+    /// The shared exit's register dump ([`HAND_FACTS`] `DUMP_BYTES`, DEOPT_META; MC-w22-6):
+    /// the VM reads x0-x30 at the dump as `[u64; DUMP_REGS]` (word n = xn), and the emitter's
+    /// `deopt_exit` makes `DUMP_BYTES` (16-aligned, room for the 31 words) below sp, stores
+    /// each xn at `[sp, #8n]` and passes sp as the dump.
+    #[test]
+    fn the_register_dump_is_the_vm_source() {
+        const DEOPT_RS: &str = include_str!("../../../crates/ep9_vm/src/deopt.rs");
+        const NATIVE_RS: &str = include_str!("../../../crates/ep9_vm/src/native.rs");
+        const EMIT_RS: &str = include_str!("emit_a64/mod.rs");
+        let (name, _, bytes, owner) = HAND_FACTS[5];
+        assert_eq!((name, owner), ("DUMP_BYTES", "DEOPT_META"));
+        let regs: u64 = value_after(DEOPT_RS, "pub(crate) const DUMP_REGS: usize =")
+            .parse()
+            .expect("DUMP_REGS");
+        assert_eq!(regs, 31);
+        assert!(
+            NATIVE_RS.contains("[u64; crate::deopt::DUMP_REGS]>(dump as usize)"),
+            "RuntimeTable::deopt reads the dump as [u64; DUMP_REGS]"
+        );
+        let emitted: u64 = value_after(EMIT_RS, "const DUMP_BYTES: u32 =")
+            .parse()
+            .expect("DUMP_BYTES");
+        assert_eq!(emitted, bytes);
+        assert!(bytes % 16 == 0 && 8 * regs <= bytes && bytes < 8 * regs + 16);
+        let exit = fn_text(EMIT_RS, "deopt_exit");
+        assert!(exit.contains("; sub sp, sp, DUMP_BYTES"), "{exit}");
+        assert!(exit.contains("; add x3, sp, #0"), "the dump is sp: {exit}");
+        // Each store of the dump: `str xA, [sp, #o]` or `stp xA, xB, [sp(, #o)]`.
+        let mut at = std::collections::BTreeMap::new();
+        for l in exit.lines() {
+            let Some(rest) = l
+                .trim()
+                .strip_prefix("; stp ")
+                .or_else(|| l.trim().strip_prefix("; str "))
+            else {
+                continue;
+            };
+            let (list, addr) = rest.split_once(", [sp").expect("a store below sp");
+            let off: u64 = match addr.strip_suffix(']').expect("a closed address") {
+                "" => 0,
+                o => o
+                    .strip_prefix(", #")
+                    .expect("an offset")
+                    .parse()
+                    .expect("a number"),
+            };
+            for (i, r) in list.split(", ").enumerate() {
+                let n: u64 = r.trim_start_matches('x').parse().expect("an x register");
+                assert!(at.insert(n, off + 8 * i as u64).is_none(), "x{n} twice");
+            }
+        }
+        assert_eq!(at.len() as u64, regs, "{at:?}");
+        for (n, off) in at {
+            assert_eq!(off, 8 * n, "x{n}");
+        }
     }
 }
