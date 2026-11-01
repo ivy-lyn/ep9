@@ -1505,8 +1505,9 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
 /// MC-w18-O4 (M5-P2-ORCH-7): the transparent huge page mode of a Linux bench host, from the
 /// exit2 JSON's `host.transparent_hugepage` (the text of
 /// `/sys/kernel/mm/transparent_hugepage/enabled`, such as `always [madvise] never`, or the mode
-/// alone, as `tools/bench/lib/host.mjs` `thpMode` writes it). The cell records it and its status does not change: item 2 is a speed reading, and a
-/// G7 RSS gate compares the modes of its two readings.
+/// alone, as `tools/bench/lib/host.mjs` `thpMode` writes it). The cell records it and its
+/// status does not change: item 2 is a speed reading, and a G7 RSS gate compares the modes of
+/// its two readings.
 fn thp_text(j: &Json) -> String {
     match j
         .path(&["host", "transparent_hugepage"])

@@ -22,6 +22,7 @@ import {
   platformId,
   Refusal,
   renderMarkdown,
+  run as runCross,
   schedule,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
@@ -362,22 +363,19 @@ function fakeSetup(t) {
   };
   const out = path.join(dir, "out.json");
   const md = path.join(dir, "out.md");
+  // The CLI arguments of these tests, for a spawned run.mjs or an in-process run().
+  const argv = (args) => [
+    "--ep9", path.join(dir, "ep9"),
+    "--shells", path.join(dir, "versions.txt"),
+    "--engines", "ep9,qjs,node-jitless",
+    "--workloads", "t0-loop,t0-call,ci-v0",
+    "--settle-s", "0", "--after-s", "0", "--wait-min", "0",
+    "--out", out, "--md", md,
+    ...args,
+  ];
   const run = (args, env = {}) =>
-    spawnSync(
-      process.execPath,
-      [
-        RUN,
-        "--ep9", path.join(dir, "ep9"),
-        "--shells", path.join(dir, "versions.txt"),
-        "--engines", "ep9,qjs,node-jitless",
-        "--workloads", "t0-loop,t0-call,ci-v0",
-        "--settle-s", "0", "--after-s", "0", "--wait-min", "0",
-        "--out", out, "--md", md,
-        ...args,
-      ],
-      { encoding: "utf8", env: { ...process.env, ...env } },
-    );
-  return { dir, host, run, out, md };
+    spawnSync(process.execPath, [RUN, ...argv(args)], { encoding: "utf8", env: { ...process.env, ...env } });
+  return { dir, host, run, argv, out, md };
 }
 
 test("CLI: rotated rounds as planned, 10 rounds, JSON with every sample", (t) => {
@@ -457,7 +455,7 @@ test("CLI: the JSON says whether the fresh paths had uncommitted changes (CX5-C5
   assert.ok(Array.isArray(res.commit.dirty), JSON.stringify(res.commit));
 });
 
-test("CLI: host.measured has the THP mode of this host (null when not Linux; MC-w18-O4)", (t) => {
+test("CLI: host.measured has the THP mode of this host (null when not Linux; MC-w18-O4)", async (t) => {
   const f = fakeSetup(t);
   const r = f.run(["--host", f.host(1000)]);
   assert.equal(r.status, 0, r.stderr);
@@ -465,6 +463,23 @@ test("CLI: host.measured has the THP mode of this host (null when not Linux; MC-
   assert.ok(Object.hasOwn(res.host.measured, "transparent_hugepage"), JSON.stringify(res.host.measured));
   assert.equal(res.host.measured.transparent_hugepage, thpMode());
   if (process.platform !== "linux") assert.equal(res.host.measured.transparent_hugepage, null);
+  // The same arguments through run() with thpMode reading a fake Linux file (the test never
+  // reads this host's /sys): host.measured holds that file's mode, so a constant fails here.
+  const opts = parseArgs(f.argv(["--host", f.host(1000)]));
+  const fake = (name, text) => {
+    const file = path.join(f.dir, name);
+    if (text !== null) writeFileSync(file, text);
+    return { thpMode: () => thpMode({ file, platform: "linux" }), log: () => {} };
+  };
+  for (const [text, want] of [
+    ["always [madvise] never\n", "madvise"],
+    ["[always] madvise never\n", "always"],
+    ["always madvise [never]\n", "never"],
+    [null, null],
+  ]) {
+    const got = await runCross(opts, fake(`thp-${want}`, text));
+    assert.equal(got.host.measured.transparent_hugepage, want, String(text));
+  }
 });
 
 test("CLI: load guard failure is provisional with --allow-busy, and 'host busy' without", (t) => {

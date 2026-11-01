@@ -18,7 +18,7 @@ Benchmark tools ([10-quality](../../docs/plan/10-quality.md) section 2; perf CI 
 | `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, the 8 v8-v7 kernels, Octane-7 (`octane-<kernel>`), and the sets `v8v7-8`, `v8v7-7`, `octane-7`, `exit2` |
 | `cross/idle.mjs` | Measures a host's idle baseline for its host file |
 | `lib/stats.mjs` | PERF-NOISE statistics: median, order-statistic interval, verdict, IQR void rule, geomean. Shared by `cross/run.mjs` and `workloads/t0-dispatch.mjs` |
-| `lib/host.mjs` | Host facts, host files, the load guard |
+| `lib/host.mjs` | Host facts, host files, the load guard; `thpMode`, the transparent huge page mode of a Linux host (the bracketed word of `/sys/kernel/mm/transparent_hugepage/enabled`, null elsewhere), which `cross/run.mjs` writes to `host.measured` and `cross/exit2.mjs` copies for m1-exit item 2 |
 | `hosts/<host>.toml` | One file per benchmark host: CPU, cores, OS, gate host or not, idle baseline |
 
 ## ep9-bench

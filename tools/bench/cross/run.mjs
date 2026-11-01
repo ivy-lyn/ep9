@@ -457,16 +457,18 @@ function git(args) {
 }
 
 /**
- * The whole run. `deps` = { sleep(s), load(), log(text) } (injectable for tests).
+ * The whole run. `deps` = { sleep(s), load(), log(text), exec(engine, file), thpMode() }
+ * (injectable for tests; thpMode is lib/host.mjs's reader of this host by default).
  * Returns the ep9-cross/v1 result object.
  */
 export async function run(o, deps = {}) {
   const sleep = deps.sleep ?? ((s) => sleepMs(s * 1000));
   const load = deps.load ?? load1;
   const log = deps.log ?? ((s) => process.stderr.write(`${s}\n`));
+  const thp = deps.thpMode ?? thpMode;
   const started = new Date().toISOString();
   // The THP mode (Linux; null elsewhere): exit2.mjs copies it for m1-exit item 2 (MC-w18-O4).
-  const measured = { ...hostInfo(), transparent_hugepage: thpMode() };
+  const measured = { ...hostInfo(), transparent_hugepage: thp() };
   const reasons = [];
 
   let hostFile = null;
