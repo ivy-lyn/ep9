@@ -21,10 +21,13 @@ widen each subject to UTF-16 first.
   use it. A UTF-16 search uses a set only when it holds no unit at or
   above 256, so it never starts inside a surrogate pair.
 - The start-position search is metered: it looks at the start
-  positions in chunks and counts one step (budget and poll) per 1024
-  start positions, so a long subject with no candidate, or whose
-  candidates the prefix check rejects, spends the budget and polls on
-  all three forms. The UTF-16 and UCS-2 prefix search compares at most
+  positions in chunks and counts one step (budget and poll) per chunk
+  and one more per 1024 start positions it looked at past the first
+  1024, so a long subject with no candidate, or whose candidates the
+  prefix check rejects, spends the budget and polls on all three
+  forms. The count is of the positions looked at, not of the chunk:
+  a subject too short for the prefix, or a candidate found at once,
+  costs one step. The UTF-16 and UCS-2 prefix search compares at most
   16 prefix units at each candidate; the counted match attempt at the
   candidate checks the rest. The Latin-1 prefix search runs memmem on
   the whole prefix, so two chunks share prefix - 1 units: a Latin-1
@@ -41,17 +44,21 @@ is in its first 16 units and a first-unit set spend the budget and
 poll on UCS-2, UTF-16 and Latin-1 text, and that a 256 KiB prefix on
 4 MiB of Latin-1 text takes about one memmem pass, spends the budget
 and polls. A test of prefixes of 2 to 700 units checks matches at and
-around chunk edges against one attempt per position.
+around chunk edges against one attempt per position. A 256 KiB prefix
+on a subject too short for it, or a few units longer, finds no match
+within a budget of 20 steps on all three forms, and one found at once
+or after 3000 units matches within it and polls at most 8 times at a
+poll interval of 1.
 ---
  src/api.rs                |  32 +++-
- src/classicalbacktrack.rs |  74 +++++++-
+ src/classicalbacktrack.rs |  80 +++++++-
  src/emit.rs               |   2 +
- src/indexing.rs           | 387 ++++++++++++++++++++++++++++++++++++++
+ src/indexing.rs           | 383 ++++++++++++++++++++++++++++++++++++++
  src/insn.rs               |  51 +++++
- src/startpredicate.rs     | 218 +++++++++++++++++++++
+ src/startpredicate.rs     | 218 ++++++++++++++++++++++
  tests/latin1.rs           | 269 ++++++++++++++++++++++++++
- tests/limits.rs           | 180 ++++++++++++++++++
- 8 files changed, 1209 insertions(+), 4 deletions(-)
+ tests/limits.rs           | 237 +++++++++++++++++++++++
+ 8 files changed, 1268 insertions(+), 4 deletions(-)
  create mode 100644 tests/latin1.rs
 
 diff --git a/src/api.rs b/src/api.rs
@@ -126,16 +133,15 @@ index 69fe290..1a7ba0a 100644
      }
  
 diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
-index d262cd4..8c08c37 100644
+index d262cd4..2c68453 100644
 --- a/src/classicalbacktrack.rs
 +++ b/src/classicalbacktrack.rs
-@@ -7,9 +7,13 @@ use crate::bytesearch;
- use crate::cursor;
+@@ -8,8 +8,12 @@ use crate::cursor;
  use crate::cursor::{Backward, Direction, Forward};
  use crate::exec;
-+#[cfg(feature = "utf16")]
-+use crate::indexing::UnitScan;
  use crate::indexing::{AsciiInput, ElementType, InputIndexer, Utf8Input};
++#[cfg(feature = "utf16")]
++use crate::indexing::{UNIT_SCAN_CHUNK, UnitScan};
  #[cfg(not(feature = "utf16"))]
  use crate::insn::StartPredicate;
 +#[cfg(feature = "utf16")]
@@ -159,7 +165,7 @@ index d262cd4..8c08c37 100644
          let inp = self.input;
          // For anchored regexes, only try matching at the current position
          if let Some(end) = self.matcher.try_at_pos(inp, 0, pos, Forward::new()) {
-@@ -1292,6 +1298,48 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+@@ -1292,6 +1298,54 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
          Some(self.successful_match(pos, end))
      }
  
@@ -173,17 +179,23 @@ index d262cd4..8c08c37 100644
 +        pred: &UnitPredicate,
 +    ) -> Option<Match> {
 +        let inp = self.input;
-+        let scan_steps = inp.unit_scan_steps(pred);
 +        loop {
-+            // One step per `UNIT_SCAN_CHUNK` start positions of each chunk of the scan, so a
-+            // long subject with no candidate (or with candidates that the prefix check
-+            // rejects) is metered too, and so is a long Latin-1 prefix, whose chunk is longer.
-+            for _ in 0..scan_steps {
++            // One step per scan call, and one more per `UNIT_SCAN_CHUNK` start positions the
++            // call looked at past the first `UNIT_SCAN_CHUNK` (only a Latin-1 prefix chunk is
++            // longer), so a long subject with no candidate (or with candidates that the
++            // prefix check rejects) is metered. The count is of the positions looked at, not
++            // of the chunk: a subject too short for the prefix, or a candidate found at once,
++            // costs one step.
++            if !self.matcher.step() {
++                return None;
++            }
++            let (scan, looked) = inp.find_unit_start(pos, pred);
++            for _ in 0..looked.saturating_sub(1) / UNIT_SCAN_CHUNK {
 +                if !self.matcher.step() {
 +                    return None;
 +                }
 +            }
-+            pos = match inp.find_unit_start(pos, pred) {
++            pos = match scan {
 +                UnitScan::Candidate(p) => p,
 +                UnitScan::Scanned(p) => {
 +                    pos = p;
@@ -208,7 +220,7 @@ index d262cd4..8c08c37 100644
      /// \return the next match, searching the remaining bytes using the given
      /// prefix searcher to quickly find the first potential match location.
      fn next_match_with_prefix_search<PrefixSearch: bytesearch::ByteSearcher>(
-@@ -1338,9 +1386,29 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
+@@ -1338,9 +1392,29 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
          pos: Input::Position,
          next_start: &mut Option<Input::Position>,
      ) -> Option<Match> {
@@ -254,7 +266,7 @@ index 0cb96b8..86f726c 100644
      };
      emitter.emit_node(&n.node);
 diff --git a/src/indexing.rs b/src/indexing.rs
-index 44a80d5..572c9c1 100644
+index 44a80d5..af45e68 100644
 --- a/src/indexing.rs
 +++ b/src/indexing.rs
 @@ -1,5 +1,7 @@
@@ -265,7 +277,7 @@ index 44a80d5..572c9c1 100644
  use crate::matchers::{self, CharProperties};
  #[cfg(feature = "utf16")]
  use crate::position::IndexPosition;
-@@ -57,6 +59,31 @@ where
+@@ -57,6 +59,26 @@ where
      /// This is true for ASCII and UTF8, but not for UCS2 or UTF16.
      const CODE_UNITS_ARE_BYTES: bool;
  
@@ -275,29 +287,24 @@ index 44a80d5..572c9c1 100644
 +    const UNIT_PREDICATES: bool = false;
 +
 +    /// Scans for the first position at or after `pos` where a match may start under `pred`
-+    /// (a `Prefix` or `First` predicate). It looks at the start positions of one chunk of
-+    /// at most `unit_scan_steps(pred) * UNIT_SCAN_CHUNK` units, so a caller counts
-+    /// `unit_scan_steps(pred)` steps per call. Only called when `UNIT_PREDICATES` is true.
++    /// (a `Prefix` or `First` predicate). It looks at the start positions of one chunk (at
++    /// most `UNIT_SCAN_CHUNK`, more for a Latin-1 prefix: `latin1_scan_chunk`) and returns
++    /// what it found and how many start positions it looked at (the candidate included), so
++    /// a caller counts steps for the positions looked at, not for the chunk.
++    /// Only called when `UNIT_PREDICATES` is true.
 +    #[cfg(feature = "utf16")]
 +    fn find_unit_start(
 +        &self,
 +        pos: Self::Position,
 +        _pred: &UnitPredicate,
-+    ) -> UnitScan<Self::Position> {
-+        UnitScan::Candidate(pos)
-+    }
-+
-+    /// The steps one `find_unit_start` call counts: one per `UNIT_SCAN_CHUNK` start positions
-+    /// of its chunk.
-+    #[cfg(feature = "utf16")]
-+    fn unit_scan_steps(&self, _pred: &UnitPredicate) -> usize {
-+        1
++    ) -> (UnitScan<Self::Position>, usize) {
++        (UnitScan::Candidate(pos), 1)
 +    }
 +
      /// \return whether we are using unicode for case-folding.
      fn unicode(&self) -> bool;
  
-@@ -898,6 +925,24 @@ impl<'a> InputIndexer for Utf16Input<'a> {
+@@ -898,6 +920,25 @@ impl<'a> InputIndexer for Utf16Input<'a> {
      type Element = u32;
      type CharProps = matchers::Utf16CharProperties;
      const CODE_UNITS_ARE_BYTES: bool = false;
@@ -307,22 +314,23 @@ index 44a80d5..572c9c1 100644
 +        &self,
 +        pos: Self::Position,
 +        pred: &UnitPredicate,
-+    ) -> UnitScan<Self::Position> {
++    ) -> (UnitScan<Self::Position>, usize) {
 +        // A set that holds units at or above 256 may hold a trail surrogate, and a search must
 +        // not start inside a surrogate pair: try every position then.
 +        if let UnitPredicate::First(set) = pred {
 +            if set.high {
-+                return UnitScan::Candidate(pos);
++                return (UnitScan::Candidate(pos), 1);
 +            }
 +        }
 +        // Each candidate unit is below 256, so no candidate is inside a pair, and a chunk
 +        // that ends inside a pair goes on at a unit that is no candidate.
-+        find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred).map(|at| pos + at)
++        let (scan, looked) = find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred);
++        (scan.map(|at| pos + at), looked)
 +    }
  
      #[inline(always)]
      fn unicode(&self) -> bool {
-@@ -1144,6 +1189,15 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
+@@ -1144,6 +1185,16 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
      type Element = u32;
      type CharProps = matchers::Utf16CharProperties;
      const CODE_UNITS_ARE_BYTES: bool = false;
@@ -332,13 +340,14 @@ index 44a80d5..572c9c1 100644
 +        &self,
 +        pos: Self::Position,
 +        pred: &UnitPredicate,
-+    ) -> UnitScan<Self::Position> {
-+        find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred).map(|at| pos + at)
++    ) -> (UnitScan<Self::Position>, usize) {
++        let (scan, looked) = find_unit_start_u16(&self.input[self.pos_to_offset(pos)..], pred);
++        (scan.map(|at| pos + at), looked)
 +    }
  
      #[inline(always)]
      fn unicode(&self) -> bool {
-@@ -1290,3 +1344,336 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
+@@ -1290,3 +1341,335 @@ impl<'a> InputIndexer for Ucs2Input<'a> {
          panic!("Should never be matching bytes for ucs2");
      }
  }
@@ -379,7 +388,7 @@ index 44a80d5..572c9c1 100644
 +        &self,
 +        pos: Self::Position,
 +        pred: &UnitPredicate,
-+    ) -> UnitScan<Self::Position> {
++    ) -> (UnitScan<Self::Position>, usize) {
 +        let rest = &self.input[self.pos_to_offset(pos)..];
 +        // The start positions of this chunk: `rest[..starts]`; the chunk reads `need - 1`
 +        // more units for a prefix that starts near its end.
@@ -387,11 +396,12 @@ index 44a80d5..572c9c1 100644
 +            UnitPredicate::Prefix { units, .. } => units.len(),
 +            UnitPredicate::First(_) => 1,
 +            UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => {
-+                return UnitScan::Candidate(pos);
++                return (UnitScan::Candidate(pos), 1);
 +            }
 +        };
++        // A subject too short for the prefix has no start position: nothing to look at.
 +        let Some(open) = (rest.len() + 1).checked_sub(need) else {
-+            return UnitScan::End;
++            return (UnitScan::End, 0);
 +        };
 +        let starts = core::cmp::min(open, latin1_scan_chunk(need));
 +        let window = &rest[..starts + need - 1];
@@ -404,16 +414,9 @@ index 44a80d5..572c9c1 100644
 +            UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => Some(0),
 +        };
 +        match at {
-+            Some(at) => UnitScan::Candidate(pos + at),
-+            None if starts == open => UnitScan::End,
-+            None => UnitScan::Scanned(pos + starts),
-+        }
-+    }
-+
-+    fn unit_scan_steps(&self, pred: &UnitPredicate) -> usize {
-+        match pred {
-+            UnitPredicate::Prefix { units, .. } => latin1_scan_chunk(units.len()) / UNIT_SCAN_CHUNK,
-+            _ => 1,
++            Some(at) => (UnitScan::Candidate(pos + at), at + 1),
++            None if starts == open => (UnitScan::End, starts),
++            None => (UnitScan::Scanned(pos + starts), starts),
 +        }
 +    }
 +
@@ -588,9 +591,9 @@ index 44a80d5..572c9c1 100644
 +
 +/// The most start positions one UTF-16 or UCS-2 `find_unit_start` call looks at; a Latin-1
 +/// chunk is a whole number of these (`latin1_scan_chunk`). The caller counts one step per this
-+/// many start positions, so a scan of a long subject (rejected prefix candidates included)
-+/// spends the budget and polls. A UTF-16 or UCS-2 call compares at most `PREFIX_CHECK_UNITS`
-+/// units at each candidate.
++/// many start positions looked at (at least one per call), so a scan of a long subject
++/// (rejected prefix candidates included) spends the budget and polls. A UTF-16 or UCS-2 call
++/// compares at most `PREFIX_CHECK_UNITS` units at each candidate.
 +#[cfg(feature = "utf16")]
 +pub(crate) const UNIT_SCAN_CHUNK: usize = 1024;
 +
@@ -600,7 +603,10 @@ index 44a80d5..572c9c1 100644
 +/// `need - 1` units past its last start position, and the next chunk reads them again; with
 +/// this length those shared units are at most a quarter of a chunk, so a whole scan reads each
 +/// unit at most 1.25 times. The caller counts one step per `UNIT_SCAN_CHUNK` start positions
-+/// (`unit_scan_steps`), so the work per counted step stays bounded for any prefix length.
++/// the call looked at (at least one), so the work per counted step of a whole chunk stays
++/// bounded for any prefix length. A call with fewer start positions (the end of the subject,
++/// or a candidate) reads at most `need - 1` more units, which the match attempt at a candidate
++/// reads too.
 +#[cfg(feature = "utf16")]
 +fn latin1_scan_chunk(need: usize) -> usize {
 +    UNIT_SCAN_CHUNK * core::cmp::max(1, (need * 4).div_ceil(UNIT_SCAN_CHUNK))
@@ -631,19 +637,21 @@ index 44a80d5..572c9c1 100644
 +}
 +
 +/// The first index in `units` where a match may start under `pred` (a `Prefix` or `First`
-+/// predicate), among the start positions of one chunk (`UNIT_SCAN_CHUNK`). It compares at
-+/// most `PREFIX_CHECK_UNITS` units of the prefix at each candidate, so one call takes
-+/// O(`UNIT_SCAN_CHUNK`) work.
++/// predicate), among the start positions of one chunk (`UNIT_SCAN_CHUNK`), and the start
++/// positions it looked at (the candidate included). It compares at most `PREFIX_CHECK_UNITS`
++/// units of the prefix at each candidate, so one call takes O(`UNIT_SCAN_CHUNK`) work.
 +#[cfg(feature = "utf16")]
-+fn find_unit_start_u16(units: &[u16], pred: &UnitPredicate) -> UnitScan<usize> {
++fn find_unit_start_u16(units: &[u16], pred: &UnitPredicate) -> (UnitScan<usize>, usize) {
 +    let need = match pred {
 +        UnitPredicate::Prefix { units: prefix, .. } => prefix.len(),
 +        UnitPredicate::First(_) => 1,
-+        UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => return UnitScan::Candidate(0),
++        UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => {
++            return (UnitScan::Candidate(0), 1);
++        }
 +    };
 +    // The start positions that leave room for `need` units, and this chunk's part of them.
 +    let Some(open) = (units.len() + 1).checked_sub(need) else {
-+        return UnitScan::End;
++        return (UnitScan::End, 0);
 +    };
 +    let starts = core::cmp::min(open, UNIT_SCAN_CHUNK);
 +    let found = match pred {
@@ -670,9 +678,9 @@ index 44a80d5..572c9c1 100644
 +        UnitPredicate::Arbitrary | UnitPredicate::StartAnchored => Some(0),
 +    };
 +    match found {
-+        Some(at) => UnitScan::Candidate(at),
-+        None if starts == open => UnitScan::End,
-+        None => UnitScan::Scanned(starts),
++        Some(at) => (UnitScan::Candidate(at), at + 1),
++        None if starts == open => (UnitScan::End, starts),
++        None => (UnitScan::Scanned(starts), starts),
 +    }
 +}
 diff --git a/src/insn.rs b/src/insn.rs
@@ -1253,10 +1261,10 @@ index 0000000..203794a
 +    assert!(checked > 1_000, "{checked}");
 +}
 diff --git a/tests/limits.rs b/tests/limits.rs
-index 0702720..388ca25 100644
+index 0702720..b48fc37 100644
 --- a/tests/limits.rs
 +++ b/tests/limits.rs
-@@ -208,3 +208,183 @@ fn single_character_loop_iterations_are_steps() {
+@@ -208,3 +208,240 @@ fn single_character_loop_iterations_are_steps() {
      let m = re.find_limited(Text::Ucs2(&text), 0, &mut limits).unwrap();
      assert_eq!(m.unwrap().range(), 0..100_000);
  }
@@ -1439,4 +1447,61 @@ index 0702720..388ca25 100644
 +    let r = re.find_limited(Text::Latin1(&text), 0, &mut limits);
 +    assert_eq!(r.unwrap_err(), Stopped::Interrupted, "poll");
 +    assert_eq!(polls, 3);
++}
++
++/// The probe of Codex M5-P3 r4: a long literal prefix on a subject that is too short for it,
++/// or only a few units longer. The search counts one step per scan call and one per 1,024
++/// start positions it looks at, not per 1,024 positions of the chunk it may look at (1,024
++/// steps for a 256 KiB prefix on Latin-1 text). So with a budget of 20 these subjects end in
++/// no match on all three forms, and a candidate found at once, or after a few chunks, costs
++/// few steps and polls.
++#[test]
++fn a_long_prefix_counts_the_start_positions_it_scans() {
++    let len = 256 << 10;
++    let re = Regex::new(&"a".repeat(len)).unwrap();
++    let with_budget = |t: Text<'_>| {
++        let mut never = || false;
++        let mut limits = Limits {
++            budget: Some(20),
++            poll_interval: 1024,
++            poll: &mut never,
++        };
++        re.find_limited(t, 0, &mut limits)
++            .map(|m| m.map(|m| m.range()))
++    };
++    let polls_of = |t: Text<'_>| {
++        let mut polls = 0u32;
++        let mut count = || {
++            polls += 1;
++            false
++        };
++        let mut limits = Limits {
++            budget: None,
++            poll_interval: 1,
++            poll: &mut count,
++        };
++        let r = re
++            .find_limited(t, 0, &mut limits)
++            .map(|m| m.map(|m| m.range()));
++        (r, polls)
++    };
++    let mut found_late = vec![b'b'; 3000];
++    found_late.extend(vec![b'a'; len]);
++    let cases: [(Vec<u8>, Option<core::ops::Range<usize>>); 5] = [
++        (b"x".to_vec(), None),
++        (vec![b'a'; len - 1], None),
++        (vec![b'b'; len + 10], None),
++        (vec![b'a'; len], Some(0..len)),
++        (found_late, Some(3000..3000 + len)),
++    ];
++    for (bytes, want) in cases {
++        let wide: Vec<u16> = bytes.iter().map(|&b| u16::from(b)).collect();
++        for t in [Text::Latin1(&bytes), Text::Ucs2(&wide), Text::Utf16(&wide)] {
++            let n = bytes.len();
++            assert_eq!(with_budget(t), Ok(want.clone()), "{n} units, budget");
++            let (r, polls) = polls_of(t);
++            assert_eq!(r, Ok(want.clone()), "{n} units, polls");
++            assert!(polls <= 8, "{n} units: {polls} polls");
++        }
++    }
 +}
