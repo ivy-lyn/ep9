@@ -29,7 +29,7 @@
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
-//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and, for C4, one row per gate kernel of protocol §2, labelled `C4 crypto` and `C4 navier-stokes` (`SPIKE_C_GATE_KERNELS`; protocol §0 C4 "for each gate kernel"; another C4 label, such as a bare `C4` or `C4 all`, is refused; Codex r2) (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from, the root `rust-toolchain.toml` that sets its compiler and the regress fork pin, M5-P4-ORCH-2, -9 and -10), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
+//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and, for C4, one row per gate kernel of protocol §2, labelled `C4 crypto` and `C4 navier-stokes` (`SPIKE_C_GATE_KERNELS`; protocol §0 C4 "for each gate kernel"; another C4 label, such as a bare `C4` or `C4 all`, is refused; Codex r2) (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from, the root `rust-toolchain.toml` that sets its compiler, the root `.cargo/config.toml` that cargo merges into the build and the regress fork pin, M5-P4-ORCH-2, -9, -10 and -14), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
 //! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241), in each of its Verdict rows, with a row for each of C5a, C5b and C5c (as item 7), each with a fresh `Commit` as in item 7 and the `Lowering` label `jit, PROFILED input` (else refused, at least OPEN) | repo-wide, as the host |
@@ -5002,6 +5002,34 @@ mod tests {
             "[workspace.lints.rust]",
         ] {
             assert!(root.lines().any(|l| l.trim() == t), "{t}");
+        }
+    }
+
+    /// W2 review finding 1 (M5-P4): the item 7 row of the module doc names each repo-root file
+    /// of [`VERDICT_FRESH_PATHS`] (the paths outside `crates`, `spikes` and `third_party`), so
+    /// the doc keeps up with the list.
+    #[test]
+    fn the_item_7_doc_names_each_root_fresh_file() {
+        let src = include_str!("m1_exit.rs");
+        let row = src
+            .lines()
+            .find(|l| l.starts_with("//! | 7 | "))
+            .expect("the item 7 row of the module doc");
+        let root_files: Vec<&str> = VERDICT_FRESH_PATHS
+            .iter()
+            .copied()
+            .filter(|p| {
+                !["crates/", "spikes/", "third_party/"]
+                    .iter()
+                    .any(|d| p.starts_with(d))
+            })
+            .collect();
+        assert_eq!(
+            root_files,
+            ["Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"]
+        );
+        for f in root_files {
+            assert!(row.contains(&format!("the root `{f}`")), "{f}: {row}");
         }
     }
 
