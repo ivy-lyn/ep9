@@ -29,7 +29,7 @@
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
-//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and C4 (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from and the regress fork pin, M5-P4-ORCH-2 and -9), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
+//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and, for C4, one row per gate kernel of protocol §2, labelled `C4 crypto` and `C4 navier-stokes` (`SPIKE_C_GATE_KERNELS`; protocol §0 C4 "for each gate kernel"; another C4 label, such as a bare `C4` or `C4 all`, is refused; Codex r2) (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from and the regress fork pin, M5-P4-ORCH-2 and -9), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
 //! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241), in each of its Verdict rows, with a row for each of C5a, C5b and C5c (as item 7), each with a fresh `Commit` as in item 7 and the `Lowering` label `jit, PROFILED input` (else refused, at least OPEN) | repo-wide, as the host |
@@ -320,6 +320,13 @@ const SP_FACTS_LOWERING: &str = "jit, PROFILED input";
 /// Item 7 (M5-P4-ORCH-3): the protocol conditions of Spike C (protocol §0), one Verdict row
 /// each at least; a missing one reads OPEN.
 const SPIKE_C_CONDITIONS: [&str; 4] = ["C1", "C2", "C3", "C4"];
+/// Item 7 (Codex r2 on the W1 fixer range): the conditions that need one row per gate kernel.
+/// Protocol §0 C4 gates the ratio "for each gate kernel", so one kernel's GO row must not stand
+/// for the other: the row label is `C4 <kernel>`, one of [`SPIKE_C_GATE_KERNELS`].
+const SPIKE_C_PER_KERNEL: [&str; 1] = ["C4"];
+/// Item 7: the gate kernels of protocol §2 (its "gate kernel" rows; the test
+/// `the_c4_kernels_are_the_protocol_gate_kernels` reads that table and compares).
+const SPIKE_C_GATE_KERNELS: [&str; 2] = ["crypto", "navier-stokes"];
 /// Item 10 (M5-P4-ORCH-3): the SP-Facts conditions (protocol §0).
 const SP_FACTS_CONDITIONS: [&str; 3] = ["C5a", "C5b", "C5c"];
 
@@ -2334,18 +2341,44 @@ fn condition_id<'a>(cell: &str, ids: &[&'a str]) -> Option<&'a str> {
         .find(|id| id.eq_ignore_ascii_case(first))
 }
 
+/// The row labels a spike needs: each of `conditions`, but `<id> <kernel>` for each of
+/// `kernels` where the id is one of `per_kernel` (protocol §0 C4: "for each gate kernel").
+fn needed_labels(conditions: &[&str], per_kernel: &[&str], kernels: &[&str]) -> Vec<String> {
+    conditions
+        .iter()
+        .flat_map(|id| {
+            if per_kernel.contains(id) {
+                kernels.iter().map(|k| format!("{id} {k}")).collect()
+            } else {
+                vec![id.to_string()]
+            }
+        })
+        .collect()
+}
+
 /// The verdict of one spike: (status, text), the worst of its rows (one per protocol condition
 /// label). The verdict word: "no-go" or "fail" is FAIL; "go" with no "condition" is PASS;
 /// anything else is OPEN. MC-w17-9 (X8, V10-D37): a row is read only with a `Commit` that is a
 /// full commit id ([`is_full_sha`]), HEAD or an ancestor with no change in
 /// [`VERDICT_FRESH_PATHS`] since, and the `Lowering` label `lowering` (ASCII case and spaces
 /// aside). M5-P4-ORCH-3: a row is read only when its Condition names one of `conditions`, and
-/// each of `conditions` needs a row (a table with no Condition column names none). Else the row
-/// is refused, or the spike lacks a row: at least OPEN, with the reason.
-fn spike_status(c: &Ctx, spike: &str, lowering: &str, conditions: &[&str]) -> (Status, String) {
+/// each of `conditions` needs a row (a table with no Condition column names none). Codex r2: an
+/// id of `per_kernel` needs a row per gate kernel instead, labelled `<id> <kernel>` with one of
+/// `kernels` (ASCII case aside); another label of that id (`C4`, `C4 all`, `C4 crypto+...`) is
+/// refused, so no row stands for two kernels. Else the row is refused, or the spike lacks a row:
+/// at least OPEN, with the reason.
+fn spike_status(
+    c: &Ctx,
+    spike: &str,
+    lowering: &str,
+    conditions: &[&str],
+    per_kernel: &[&str],
+    kernels: &[&str],
+) -> (Status, String) {
     let Some(rows) = c.verdicts.get(spike) else {
         return (Status::Open, format!("{spike}: no verdict"));
     };
+    let needed = needed_labels(conditions, per_kernel, kernels);
     let mut status = Status::Pass;
     let mut parts = Vec::new();
     let mut seen = BTreeSet::new();
@@ -2361,8 +2394,24 @@ fn spike_status(c: &Ctx, spike: &str, lowering: &str, conditions: &[&str]) -> (S
         };
         let mut why = Vec::new();
         match condition_id(&row.condition, conditions) {
+            Some(id) if per_kernel.contains(&id) => {
+                let label = condition_label(&row.condition);
+                match kernels
+                    .iter()
+                    .find(|k| label.eq_ignore_ascii_case(&format!("{id} {k}")))
+                {
+                    Some(k) => {
+                        seen.insert(format!("{id} {k}"));
+                    }
+                    None => why.push(format!(
+                        "its Condition label {label:?} names no one gate kernel: {id} needs a row \
+                         for each of {} (protocol §0, §2)",
+                        needed_labels(&[id], per_kernel, kernels).join(", ")
+                    )),
+                }
+            }
             Some(id) => {
-                seen.insert(id);
+                seen.insert(id.to_string());
             }
             // No Condition column: the missing rows below say it.
             None if row.condition.is_empty() => {}
@@ -2424,17 +2473,17 @@ fn spike_status(c: &Ctx, spike: &str, lowering: &str, conditions: &[&str]) -> (S
             }
         ));
     }
-    let missing: Vec<&str> = conditions
+    let missing: Vec<&str> = needed
         .iter()
-        .copied()
-        .filter(|id| !seen.contains(id))
+        .map(String::as_str)
+        .filter(|l| !seen.contains(*l))
         .collect();
     if !missing.is_empty() {
         status = status.max(Status::Open);
         parts.push(format!(
             "{spike}: no row for {} (protocol §0: a row for each of {})",
             missing.join(", "),
-            conditions.join(", ")
+            needed.join(", ")
         ));
     }
     (status, parts.join("; "))
@@ -2455,7 +2504,14 @@ fn frozen_cell(root: &Path, ids: &[&str]) -> (Status, String) {
 }
 
 fn item7(c: &Ctx) -> (Cell, Cell) {
-    let (st, spike) = spike_status(c, "spike c", SPIKE_C_LOWERING, &SPIKE_C_CONDITIONS);
+    let (st, spike) = spike_status(
+        c,
+        "spike c",
+        SPIKE_C_LOWERING,
+        &SPIKE_C_CONDITIONS,
+        &SPIKE_C_PER_KERNEL,
+        &SPIKE_C_GATE_KERNELS,
+    );
     let (fst, frozen) = frozen_cell(&c.o.root, &ITEM7_ADRS);
     repo_wide(cell(st.max(fst), format!("{spike}; {frozen}")))
 }
@@ -2539,7 +2595,14 @@ fn item9(c: &Ctx) -> (Cell, Cell) {
 }
 
 fn item10(c: &Ctx) -> (Cell, Cell) {
-    let (st, t) = spike_status(c, "sp-facts", SP_FACTS_LOWERING, &SP_FACTS_CONDITIONS);
+    let (st, t) = spike_status(
+        c,
+        "sp-facts",
+        SP_FACTS_LOWERING,
+        &SP_FACTS_CONDITIONS,
+        &[],
+        &[],
+    );
     repo_wide(cell(st, t))
 }
 
@@ -4323,7 +4386,7 @@ mod tests {
         assert_eq!(r.cells[6].0.status, Status::Pass, "{:?}", r.cells[6]);
         assert!(
             r.cells[6].0.evidence.contains(&format!(
-                "spike c C4: GO (verdicts.md; commit `{}`: this tree (HEAD); lowering jit); H2: Frozen",
+                "spike c C4 navier-stokes: R 3.1 [3.0, 3.2], 15 rounds, IQR 3%: GO (verdicts.md; commit `{}`: this tree (HEAD); lowering jit); H2: Frozen",
                 short(&head)
             )),
             "{}",
@@ -4405,11 +4468,13 @@ mod tests {
         let head = commit_all(&root, "docs and cli");
         let jit = "`jit`";
         let pf = "`jit, PROFILED input`";
-        // The other conditions (M5-P4-ORCH-3), all GO on HEAD: each case changes C4 and C5c.
+        // The other conditions (M5-P4-ORCH-3), all GO on HEAD: each case changes the C4 crypto
+        // row and C5c.
         let rest = [
             ("Spike C", "C1", "GO", head.as_str(), jit),
             ("Spike C", "C2", "GO", head.as_str(), jit),
             ("Spike C", "C3", "GO", head.as_str(), jit),
+            ("Spike C", "C4 navier-stokes", "GO", head.as_str(), jit),
             ("SP-Facts", "C5a", "GO", head.as_str(), pf),
             ("SP-Facts", "C5b", "GO", head.as_str(), pf),
         ];
@@ -4433,47 +4498,47 @@ mod tests {
             ),
             // Empty cells.
             (
-                verdicts_md(&[("Spike C", "C4", "GO", "", jit), ("SP-Facts", "C5c", "GO", &head, "")]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", "", jit), ("SP-Facts", "C5c", "GO", &head, "")]),
                 Status::Open,
                 Status::Open,
                 "refused: no Commit cell".into(),
             ),
             // A short id, a ref name, an upper-case id.
             (
-                verdicts_md(&[("Spike C", "C4", "GO", &head[..12], jit), ("SP-Facts", "C5c", "GO", "HEAD", pf)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", &head[..12], jit), ("SP-Facts", "C5c", "GO", "HEAD", pf)]),
                 Status::Open,
                 Status::Open,
                 format!("its Commit {:?} is not a commit id (40 hex digits)", &head[..12]),
             ),
             (
-                verdicts_md(&[("Spike C", "C4", "GO", &head.to_ascii_uppercase(), jit), ("SP-Facts", "C5c", "GO", &head, pf)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", &head.to_ascii_uppercase(), jit), ("SP-Facts", "C5c", "GO", &head, pf)]),
                 Status::Open,
                 Status::Pass,
                 "is not a commit id".into(),
             ),
             // Not in the repository; not an ancestor.
             (
-                verdicts_md(&[("Spike C", "C4", "GO", VERDICT_PLACEHOLDER, jit), ("SP-Facts", "C5c", "GO", &side, pf)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", VERDICT_PLACEHOLDER, jit), ("SP-Facts", "C5c", "GO", &side, pf)]),
                 Status::Open,
                 Status::Open,
                 "is not in this repository".into(),
             ),
             (
-                verdicts_md(&[("Spike C", "C4", "GO", &side, jit), ("SP-Facts", "C5c", "GO", &head, pf)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", &side, jit), ("SP-Facts", "C5c", "GO", &head, pf)]),
                 Status::Open,
                 Status::Pass,
                 "is not an ancestor of HEAD".into(),
             ),
             // The wrong lowering: jitless for Spike C, plain jit for SP-Facts.
             (
-                verdicts_md(&[("Spike C", "C4", "GO", &head, "jitless"), ("SP-Facts", "C5c", "GO", &head, jit)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", &head, "jitless"), ("SP-Facts", "C5c", "GO", &head, jit)]),
                 Status::Open,
                 Status::Open,
                 "lowering `jitless`, the gate reads `jit`".into(),
             ),
             // Case and spaces aside, the label is the gate's.
             (
-                verdicts_md(&[("Spike C", "C4", "GO", &head, "JIT"), ("SP-Facts", "C5c", "GO", &head, "jit,   profiled input")]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", &head, "JIT"), ("SP-Facts", "C5c", "GO", &head, "jit,   profiled input")]),
                 Status::Pass,
                 Status::Pass,
                 "lowering JIT".into(),
@@ -4481,20 +4546,20 @@ mod tests {
             // An ancestor with only docs and ep9_cli changed since: fresh; one before the three
             // fresh-path commits: stale.
             (
-                verdicts_md(&[("Spike C", "C4", "GO", &fresh, jit), ("SP-Facts", "C5c", "GO", &fresh, pf)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", &fresh, jit), ("SP-Facts", "C5c", "GO", &fresh, pf)]),
                 Status::Pass,
                 Status::Pass,
                 "an ancestor of HEAD".into(),
             ),
             (
-                verdicts_md(&[("Spike C", "C4", "GO", &first, jit), ("SP-Facts", "C5c", "GO", &first, pf)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "GO", &first, jit), ("SP-Facts", "C5c", "GO", &first, pf)]),
                 Status::Open,
                 Status::Open,
                 format!("{} changed between", VERDICT_FRESH_PATHS.join(", ")),
             ),
             // A NO-GO row stays FAIL, refused or not.
             (
-                verdicts_md(&[("Spike C", "C4", "NO-GO", "", jit), ("SP-Facts", "C5c", "NO-GO", &head, pf)]),
+                verdicts_md(&[("Spike C", "C4 crypto", "NO-GO", "", jit), ("SP-Facts", "C5c", "NO-GO", &head, pf)]),
                 Status::Fail,
                 Status::Fail,
                 "NO-GO".into(),
@@ -4523,7 +4588,7 @@ mod tests {
             o.verdicts = vec![input(
                 &root,
                 "v.md",
-                &verdicts_md(&[("Spike C", "C4", "GO", before, jit)]),
+                &verdicts_md(&[("Spike C", "C4 crypto", "GO", before, jit)]),
             )];
             let c7 = &run(&o).unwrap().cells[6].0;
             assert_eq!(c7.status, Status::Open, "{p}: {c7:?}");
@@ -4549,12 +4614,13 @@ mod tests {
             ("Spike C", "C1", "GO", &head, jit),
             ("Spike C", "C2", "GO", &head, jit),
             ("Spike C", "C3", "GO", &head, jit),
-            ("Spike C", "C4", "GO", &head, jit),
+            ("Spike C", "C4 crypto", "GO", &head, jit),
+            ("Spike C", "C4 navier-stokes", "GO", &head, jit),
         ]);
         o.verdicts = vec![input(&root, "a.md", &all_go)];
         let c7 = run(&o).unwrap().cells[6].0.clone();
         assert_eq!(c7.status, Status::Pass, "{c7:?}");
-        for k in ["C1", "C2", "C3", "C4"] {
+        for k in ["C1", "C2", "C3", "C4 crypto", "C4 navier-stokes"] {
             assert!(
                 c7.evidence.contains(&format!("spike c {k}: GO (a.md;")),
                 "{}",
@@ -4585,10 +4651,11 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// M5-P4-ORCH-3: item 7 needs a row for each of C1-C4 and item 10 for each of C5a-C5c
-    /// (protocol §0); one GO row alone reads OPEN, and a row whose Condition is not one of its
-    /// spike's is refused. The Condition label is the text before the first `:`: rows with a
-    /// kernel name are separate, and a later row with the same label replaces an earlier one.
+    /// M5-P4-ORCH-3: item 7 needs a row for each of C1-C4 (C4: one per gate kernel) and item 10
+    /// for each of C5a-C5c (protocol §0); one GO row alone reads OPEN, and a row whose Condition
+    /// is not one of its spike's is refused. The Condition label is the text before the first
+    /// `:`: rows with a kernel name are separate, and a later row with the same label replaces an
+    /// earlier one.
     #[test]
     fn items7_and_10_need_a_row_for_each_condition() {
         let root = fake_repo("item7set");
@@ -4601,7 +4668,7 @@ mod tests {
             &root,
             "a.md",
             &verdicts_md(&[
-                ("Spike C", "C4", "GO", &head, jit),
+                ("Spike C", "C4 crypto", "GO", &head, jit),
                 ("SP-Facts", "C5c", "GO", &head, pf),
             ]),
         )];
@@ -4610,7 +4677,8 @@ mod tests {
         assert_eq!((c7.status, c10.status), (Status::Open, Status::Open));
         assert!(
             c7.evidence.contains(
-                "spike c: no row for C1, C2, C3 (protocol §0: a row for each of C1, C2, C3, C4)"
+                "spike c: no row for C1, C2, C3, C4 navier-stokes (protocol §0: a row for each of \
+                 C1, C2, C3, C4 crypto, C4 navier-stokes)"
             ),
             "{}",
             c7.evidence
@@ -4681,6 +4749,91 @@ mod tests {
             let md = md.replace("| NO-GO |", "| GO |");
             o.verdicts = vec![input(&root, "d.md", &md)];
             assert_eq!(run(&o).unwrap().cells[6].0.status, Status::Open, "{bad}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Codex r2 (protocol §0 C4 "for each gate kernel", §2): item 7 needs a `C4 <kernel>` row for
+    /// each of [`SPIKE_C_GATE_KERNELS`]. A missing kernel reads OPEN and names the missing label;
+    /// a C4 row whose label names no one gate kernel (a combined, unknown or bare label) is
+    /// refused: never PASS, even next to two good rows.
+    #[test]
+    fn item7_needs_a_c4_row_for_each_gate_kernel() {
+        let root = fake_repo("item7c4");
+        let mut o = opts(&root);
+        write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
+        let head = commit_all(&root, "adrs");
+        let jit = "jit";
+        let with = |c4: &[&str]| -> String {
+            let mut rows = vec![
+                ("Spike C", "C1", "GO", head.as_str(), jit),
+                ("Spike C", "C2", "GO", head.as_str(), jit),
+                ("Spike C", "C3", "GO", head.as_str(), jit),
+            ];
+            rows.extend(c4.iter().map(|c| ("Spike C", *c, "GO", head.as_str(), jit)));
+            verdicts_md(&rows)
+        };
+        let item7 = |o: &mut Options, md: &str| -> Cell {
+            o.verdicts = vec![input(&root, "v.md", md)];
+            run(o).unwrap().cells[6].0.clone()
+        };
+        let all = "C1, C2, C3, C4 crypto, C4 navier-stokes";
+        // Both kernels, any ASCII case: PASS.
+        for pair in [
+            ["C4 crypto: R 3.4", "C4 navier-stokes: R 3.1"],
+            ["c4 Crypto", "C4  NAVIER-STOKES : R 3.1"],
+        ] {
+            let c7 = item7(&mut o, &with(&pair));
+            assert_eq!(c7.status, Status::Pass, "{pair:?}: {c7:?}");
+        }
+        // One kernel missing: OPEN, the missing label named.
+        for (have, miss) in [
+            ("C4 crypto: R 3.4", "C4 navier-stokes"),
+            ("C4 navier-stokes: R 3.1", "C4 crypto"),
+        ] {
+            let c7 = item7(&mut o, &with(&[have]));
+            assert_eq!(c7.status, Status::Open, "{have}: {c7:?}");
+            assert!(
+                c7.evidence.contains(&format!(
+                    "spike c: no row for {miss} (protocol §0: a row for each of {all})"
+                )),
+                "{have}: {}",
+                c7.evidence
+            );
+        }
+        // A label that names no one gate kernel: refused, alone or next to both good rows.
+        for bad in [
+            "C4",
+            "C4: R 3.2",
+            "C4 all",
+            "C4 crypto+navier-stokes",
+            "C4 crypto, navier-stokes",
+            "C4 crypto navier-stokes",
+            "C4 richards",
+            "C4 cryptography",
+        ] {
+            let refused = format!(
+                "its Condition label {:?} names no one gate kernel: C4 needs a row for each of \
+                 C4 crypto, C4 navier-stokes (protocol §0, §2)",
+                condition_label(bad)
+            );
+            let c7 = item7(&mut o, &with(&[bad]));
+            assert_eq!(c7.status, Status::Open, "{bad}: {c7:?}");
+            assert!(
+                c7.evidence.contains(&refused)
+                    && c7
+                        .evidence
+                        .contains("spike c: no row for C4 crypto, C4 navier-stokes"),
+                "{bad}: {}",
+                c7.evidence
+            );
+            let c7 = item7(&mut o, &with(&["C4 crypto", "C4 navier-stokes", bad]));
+            assert_eq!(c7.status, Status::Open, "{bad} with both: {c7:?}");
+            assert!(c7.evidence.contains(&refused), "{bad}: {}", c7.evidence);
+            // A NO-GO stays FAIL under any label.
+            let md = with(&["C4 crypto", "C4 navier-stokes", bad]);
+            let md = md.replace(&format!("| {bad} | GO |"), &format!("| {bad} | NO-GO |"));
+            assert_eq!(item7(&mut o, &md).status, Status::Fail, "{bad}");
         }
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -4845,16 +4998,30 @@ mod tests {
         let form = sec8
             .lines()
             .flat_map(ticks)
-            .find(|t| t.starts_with("| Spike C | C4"))
+            .find(|t| t.starts_with("| Spike C | C4 crypto:"))
             .expect("§8 has the form row");
+        // The Condition bullet names the C4 row of each gate kernel (Codex r2).
+        let condition = bullet("Spike");
+        for k in SPIKE_C_GATE_KERNELS {
+            assert!(
+                condition.contains(&format!("`C4 {k}`")),
+                "§8 names no `C4 {k}` row: {condition}"
+            );
+        }
         let root = fake_repo("item7scp");
         let mut o = opts(&root);
         write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
         let head = commit_all(&root, "adrs");
         let row = form.replace("<40-hex sha>", &head);
         let mut md = format!("{header}\n|---|---|---|---|---|---|---|\n");
-        for id in SPIKE_C_CONDITIONS {
-            md.push_str(&row.replacen("| C4 ", &format!("| {id} "), 1));
+        // One row per needed label: C1-C3, then C4 once per gate kernel (Codex r2).
+        let needed = needed_labels(
+            &SPIKE_C_CONDITIONS,
+            &SPIKE_C_PER_KERNEL,
+            &SPIKE_C_GATE_KERNELS,
+        );
+        for label in &needed {
+            md.push_str(&row.replacen("| C4 crypto:", &format!("| {label}:"), 1));
             md.push('\n');
         }
         for id in SP_FACTS_CONDITIONS {
@@ -4869,12 +5036,65 @@ mod tests {
             md.push('\n');
         }
         let rows = verdict_rows(&md);
-        assert_eq!(rows.len(), 7, "{rows:?}");
+        assert_eq!(rows.len(), 8, "{rows:?}");
         o.verdicts = vec![input(&root, "scp.md", &md)];
         let r = run(&o).unwrap();
         assert_eq!(r.cells[6].0.status, Status::Pass, "{:?}", r.cells[6]);
         assert_eq!(r.cells[9].0.status, Status::Pass, "{:?}", r.cells[9]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Codex r2: [`SPIKE_C_GATE_KERNELS`] is the "gate kernel" rows of the live protocol's §2
+    /// table, in its order, and §0 gates C4 "for each gate kernel" (the reason
+    /// [`SPIKE_C_PER_KERNEL`] holds C4 and only C4 of the conditions).
+    #[test]
+    fn the_c4_kernels_are_the_protocol_gate_kernels() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let scp = read(&repo.join("docs/measurements/2026-10-27-spike-c-protocol.md")).unwrap();
+        let section = |head: &str| -> String {
+            scp.split(&format!("\n## {head}"))
+                .nth(1)
+                .and_then(|t| t.split("\n#").next())
+                .unwrap_or_else(|| panic!("protocol has no {head}"))
+                .to_string()
+        };
+        let row_cells = |l: &str| -> Vec<String> {
+            l.trim()
+                .trim_matches('|')
+                .split('|')
+                .map(|c| c.trim().to_string())
+                .collect()
+        };
+        let sec2 = section("2. Kernels");
+        let mut header = None;
+        let mut gate = Vec::new();
+        for l in sec2.lines().filter(|l| l.trim_start().starts_with('|')) {
+            let c = row_cells(l);
+            let Some((k, r)) = header else {
+                header = Some((
+                    c.iter()
+                        .position(|h| h == "Kernel")
+                        .expect("a Kernel column"),
+                    c.iter().position(|h| h == "Role").expect("a Role column"),
+                ));
+                continue;
+            };
+            if c[r].starts_with("gate kernel") {
+                gate.push(c[k].clone());
+            }
+        }
+        assert_eq!(gate, SPIKE_C_GATE_KERNELS, "§2 gate kernels");
+        // §0: C4 is the one condition with a row per gate kernel.
+        let sec0 = section("0. ");
+        let per_kernel: Vec<String> = sec0
+            .lines()
+            .filter(|l| l.contains("for each gate kernel"))
+            .map(|l| row_cells(l)[0].clone())
+            .collect();
+        assert_eq!(
+            per_kernel, SPIKE_C_PER_KERNEL,
+            "§0 rows with a ratio per gate kernel"
+        );
     }
 
     fn kernels_json(
