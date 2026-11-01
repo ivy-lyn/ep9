@@ -2251,7 +2251,7 @@ pub(crate) fn for_in_has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
 /// The part of [`for_in_has`] from the first proxy `p` on: the first object on the chain
 /// that has the key as an own property answers with its ENUMERABLE bit, so a non-enumerable
 /// property shadows an enumerable one further up (§14.7.5.9: only enumerable properties
-/// are visited; Codex M5-P3 r3 eng [medium]). A proxy answers by `[[GetOwnProperty]]`; none:
+/// are visited; Codex M5-P3 r3 eng, medium). A proxy answers by `[[GetOwnProperty]]`; none:
 /// the walk goes on at the proxy's `[[GetPrototypeOf]]`, a counted hop, [`MAX_PROXY_HOPS`].
 /// Any other object answers by its `[[GetOwnProperty]]` attributes. V8 (node 26) visits a key
 /// that a proxy's `ownKeys` lists when an object past it has the key non-enumerable (its DATA
