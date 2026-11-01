@@ -1,7 +1,9 @@
 //! OBJECT_LAYOUT 5, IC_LAYOUT 3 and VM_LAYOUT 1 (M5-P0, owner P0-VM5; plan v10 §2.3, §2.4): the
 //! versions, the kind ids 81-83 (declared; registered by their builders or still free), the
 //! elements-kind values, `Atom::Callee`, and the `crate::layout` export read on live objects
-//! in the default build (C-18: the export is no longer behind `spike-native`).
+//! in the default build (C-18: the export is no longer behind `spike-native`). The probes of
+//! three append-only lists (MODES-CHECK-w22): H18 kind value 15, H17 rep value 7 and H29 value
+//! repr 7, each the top of its field, never the next free value (README §3.4).
 
 use std::hint::black_box;
 
@@ -134,6 +136,32 @@ fn elements_kind_values_and_storage_forms() {
     assert_eq!(elements::kind_of_array(UNDEFINED), ek::HOLEY_ELEMENTS);
 }
 
+/// H18 "elements kind values (append-only)": kind 15, the top of the 4 shape bits (never the
+/// next free value 7), is refused today (MODES-CHECK-w22 MC-w22-1). It has no storage form, no
+/// FactSnapshot kind and no kinds-set bit inside the IC_LAYOUT 3 mask, and an object whose
+/// shape holds it fails the storage-form check (`elements::storage_form_ok`, `elements::check`).
+#[test]
+fn h18_kind_value_probe_15() {
+    const PROBE: u8 = 15;
+    assert_eq!(PROBE, ek::MAX, "15 is the top of the 4 shape bits");
+    assert_eq!(elements::storage(PROBE), None);
+    assert_eq!(elements::to_fact(PROBE), None);
+    assert_eq!(elements::kinds_set_bit(PROBE) & elements::KINDS_SET_MASK, 0);
+    let iso = isolate(config(Dispatch::DEFAULT, false));
+    let rt = &*iso.rt;
+    let a = object::new_array(rt, 1);
+    assert!(object::array_set(rt, a, 0, int32_bits(1)));
+    let s = shape::shape_of(a);
+    assert!(elements::storage_form_ok(a));
+    let t = shape::with_elements_kind(rt, s, PROBE).expect("a shape of kind 15");
+    assert_eq!(shape::elements_kind(t), PROBE);
+    shape::install(rt, a, t);
+    assert!(!elements::storage_form_ok(a), "kind 15 has no storage form");
+    assert!(elements::check(a).is_err());
+    shape::install(rt, a, s);
+    elements::check(a).unwrap();
+}
+
 /// The ELEMENTS_DOUBLE layout and its hole (V9-D39): a NaN that is not the canonical NaN, so
 /// no DOUBLE store writes it.
 #[test]
@@ -176,11 +204,44 @@ fn the_shape_bit_positions() {
     );
 }
 
+/// H17 "representation values (append-only)": rep 7, the top of the 3-bit field (never the
+/// next free value 5), is refused today (MODES-CHECK-w22 MC-w22-2). Only debug asserts refuse
+/// it (`Details::with_field_bits`, `Details::from_bits`: the "not yet used" checks, which an
+/// append changes in its fill). In every build a field of rep 7 takes no value without a
+/// widening (`field_rep::fits`) and a store IC gets no checked handler for it (`smi::checked`).
+#[test]
+fn h17_rep_value_probe_7() {
+    use crate::field_rep;
+    use crate::ic::smi;
+    const PROBE: i32 = 7;
+    assert_eq!(
+        shape::rep::MASK >> shape::rep::SHIFT,
+        PROBE,
+        "7 is the top of the field"
+    );
+    for v in [
+        int32_bits(1),
+        ep9_value::Value::double(0.5).to_bits(),
+        UNDEFINED,
+    ] {
+        assert!(field_rep::fits(shape::rep::ANY, v));
+        assert!(!field_rep::fits(PROBE, v), "rep 7 holds no value");
+    }
+    assert!(smi::checked(smi::FIELD_IN_OBJECT, shape::rep::ANY).is_some());
+    assert_eq!(smi::checked(smi::FIELD_IN_OBJECT, PROBE), None);
+    let d = shape::Details::new(0, 0);
+    assert_eq!(d.with_field_bits(shape::ANY_FIELD).rep(), shape::rep::ANY);
+    if cfg!(debug_assertions) {
+        let r = std::panic::catch_unwind(|| d.with_field_bits(PROBE << shape::rep::SHIFT));
+        assert!(r.is_err(), "the debug assert refuses rep 7");
+    }
+}
+
 /// `Atom::Callee` is a predefined atom (V10-D11), appended after the week-4 list (id 35).
 #[test]
 fn callee_is_a_predefined_atom() {
     assert_eq!((Atom::Callee.id(), Atom::Callee.text()), (35, "callee"));
-    assert_eq!(Atom::ALL.last(), Some(&Atom::Callee));
+    assert_eq!(Atom::ALL[35], Atom::Callee);
     let iso = isolate(config(Dispatch::DEFAULT, false));
     let rt = &*iso.rt;
     rt.heap.collect();
@@ -188,6 +249,37 @@ fn callee_is_a_predefined_atom() {
         crate::atoms::intern_str(rt, "callee"),
         rt.atom(Atom::Callee)
     );
+}
+
+/// H29 "value repr (append-only)": value-tag bits 4-6 hold 0 Tagged, 1 Int32, 2 Bool and
+/// 3 Float64. Repr 7, the top of the 3-bit field (never the next free value 4), is refused by
+/// the deopt reader (`deopt::Table::decode`, "4-7 refused"), so `CodeMeta::read` refuses the
+/// code object and it is not installed (MODES-CHECK-w22 MC-w22-19).
+#[test]
+fn h29_value_repr_probe_7() {
+    use crate::deopt::{CodeMeta, Table, form};
+    const PROBE: u8 = 7;
+    assert_eq!(
+        form::REPR_MASK >> form::REPR_SHIFT,
+        PROBE,
+        "7 is the top of the field"
+    );
+    // One exit record (pc 8, bytecode 0, counter 0, no feedback slot, no inline frame) with
+    // one value: machine register 0 into the accumulator, in the repr `repr`.
+    let table = |repr: u8| -> Vec<u8> {
+        let tag = form::LOC_REG | repr << form::REPR_SHIFT | form::ACC;
+        vec![1, 0, form::RECORD_EXIT, 8, 0, 0, 0, 0, 1, tag, 0]
+    };
+    for repr in 0..form::REPRS {
+        Table::decode(&table(repr)).unwrap_or_else(|e| panic!("repr {repr}: {e}"));
+        assert!(CodeMeta::read(16, 0, &table(repr), |_| true).is_ok());
+    }
+    let e = Table::decode(&table(PROBE)).unwrap_err();
+    assert!(e.contains("unknown repr 7"), "{e}");
+    let e = CodeMeta::read(16, 0, &table(PROBE), |_| true)
+        .err()
+        .expect("the code object is refused");
+    assert!(e.contains("unknown repr 7"), "{e}");
 }
 
 // ---- layout facts on live objects --------------------------------------------------------------
