@@ -225,3 +225,8 @@ history	H31-fuse-registry.md	crates/ep9_vm/src/fuse.rs:279	| 3 Verifier (M5-P1 a
 history	H31-fuse-registry.md	`:441-447`	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, fuse registry v0, FR0)	886aa50	FuseRef\:\:Dynamic\(d\) \=\> \{
 history	H31-fuse-registry.md	crates/ep9_vm/src/shape.rs:1292	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, fuse registry v0, FR0)	886aa50	crate\:\:fuse\:\:on_proto_change\(rt\, o\)\;
 history	H20-builtin-abi.md	crates/ep9_regexp/src/lib.rs:489	| 1 Reviewer (M4-P3 amendment: the 2026-10-27 fill (API addition) row, REGEXP1, part 2)	1ac4dcdb	^        if program\.sticky && m\.start\(\) != start \{$
+# M5-P4 orchestrator (fix-once round after Codex r5): the doc 13 C-02 cite of the H17 Validity cells
+# row, whose v0-today cell was corrected in place (71a5ac36, 3d670328: proto_epoch counts after M5-P0;
+# M5-P0 removed the Cx pointer). The pattern names the row by its first two cells (H17:162 also starts
+# with "Validity cells").
+pin	13-execution-modes.md	docs/adr/H17-object-layout.md:135	docs/adr/H17-object-layout.md	^\| Validity cells \| Prototype-chain validity cells per PROTO_INFO	0
