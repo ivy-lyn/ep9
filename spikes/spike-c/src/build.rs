@@ -1304,10 +1304,17 @@ impl Builder<'_> {
             }
         }
         let mut set = vec![false; len];
+        // MC-w21-10: the pass moves a CheckNumber's exit to the load's own guard, so it may
+        // run only where both exits deopt (T0 then runs the load again: the same values, the
+        // same output). A guard of another policy (a SLOWPATH guard that runs a generic path
+        // and goes on) changes what runs when its exit moves, so such a load, and such a
+        // CheckNumber, keeps its form. B2 rule: a pass that changes a value's repr across a
+        // guard needs a DEOPT guard ([`exit_may_move`]).
         for &n in &order {
             let node = self.g.node(n);
             set[n.0 as usize] = node.repr == Repr::Tagged
                 && matches!(node.op, Op::LoadElement | Op::Phi)
+                && (node.op == Op::Phi || node.guard.as_ref().is_some_and(exit_may_move))
                 && !uses[n.0 as usize].is_empty();
         }
         // The greatest set closed under the two rules (a fixed point that only removes).
@@ -1320,7 +1327,8 @@ impl Builder<'_> {
                 let node = self.g.node(n);
                 let uses_ok = uses[n.0 as usize].iter().all(|&u| {
                     let un = self.g.node(u);
-                    un.op == Op::CheckNumber || (un.op == Op::Phi && set[u.0 as usize])
+                    (un.op == Op::CheckNumber && un.guard.as_ref().is_some_and(exit_may_move))
+                        || (un.op == Op::Phi && set[u.0 as usize])
                 });
                 let inputs_ok = node.op != Op::Phi
                     || node.inputs.iter().all(|&v| {
@@ -1630,5 +1638,15 @@ fn int_op(op: Opcode) -> Int32Op {
         BitwiseXor | BitwiseXorSmi => Int32Op::Xor,
         ShiftLeft | ShiftLeftSmi => Int32Op::Shl,
         _ => Int32Op::Sar,
+    }
+}
+
+/// True if a pass may move the exit of guard `g` to another guard (MC-w21-10, used by
+/// `float_loads`): only an eager deopt to T0 at the guard's own frame state, whose exit runs
+/// the same bytecode again. A match with no wildcard, so a new [`ExitPolicy`] (H32 SLOWPATH,
+/// PIN) does not compile until this rule names it.
+pub fn exit_may_move(g: &ir::Guard) -> bool {
+    match g.policy {
+        ExitPolicy::Deopt => true,
     }
 }
