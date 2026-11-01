@@ -356,8 +356,8 @@ pub fn liveness_lines(
         acc_live += usize::from(s.acc.is_some());
         offsets.insert(s.offset);
         if let Some(i) = c.insns.iter().position(|x| x.offset == s.offset) {
-            let want = c.live_before[i].iter().filter(|l| **l).count();
-            equal += usize::from(want == n);
+            let regs: Vec<_> = s.registers.iter().map(|(r, _)| *r).collect();
+            equal += usize::from(c.is_live_set(i, &regs, s.acc.is_some()));
         }
     }
     let exits = live_at_exit.len();
@@ -385,7 +385,7 @@ pub fn liveness_lines(
             row_bytes
         ),
         format!(
-            "{}: {exits} guard exits at {points} bytecode offsets; live values per exit (registers + the accumulator) min {min}, mean {mean:.1}, max {max}; the accumulator live at {acc_live}; frame state = liveness at the exit's offset for {equal} of {exits}",
+            "{}: {exits} guard exits at {points} bytecode offsets; live values per exit (registers + the accumulator) min {min}, mean {mean:.1}, max {max}; the accumulator live at {acc_live}; frame state = the live set at the exit's offset, register by register, for {equal} of {exits} (the builder's own liveness: this checks the state, not the liveness)",
             input.name
         ),
         format!(
