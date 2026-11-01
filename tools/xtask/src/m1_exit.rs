@@ -24,15 +24,15 @@
 //! | Item | Host column | Windows column |
 //! |---|---|---|
 //! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, the reported tree ids equal HEAD's, and its ids of `third_party/regress.commit` and `third_party/patches/regress` (the regress fork) equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
-//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
+//! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31). On a Linux host the cell records the THP mode, `host.transparent_hugepage` (MC-w18-O4; no status effect) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
-//! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
+//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows (one per protocol condition; a later row of the same condition replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change in `spikes/spike-c`, `crates/ep9_vm` or `crates/ep9_facts` since, and the `Lowering` label `jit`; a row without them is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
-//! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241) | repo-wide, as the host |
+//! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241), in each of its Verdict rows, each with a fresh `Commit` as in item 7 and the `Lowering` label `jit, PROFILED input` (else refused, at least OPEN) | repo-wide, as the host |
 //!
 //! **Fresh, named inputs** (plan v9 section 7 step 3; P3-ORCH-14 finding 6, P3-ORCH-21): the
 //! exec and GC JSONs (`commit`, `dirty`, `made_by`, written by tools/test262/src/provenance.rs)
@@ -101,7 +101,7 @@ use crate::exit::json::{Json, parse_json};
 use crate::exit::logs::{cargo_failure, invocation_check, invocations};
 use crate::exit::report::{Cell, Status, all_ok, cell, not_given, some_paths, stub_markers};
 use crate::exit::t262::{committed, count, exec_health, expectation_set, pct, recheck};
-use crate::exit::verdict::{newest_spike_review, verdict_table};
+use crate::exit::verdict::{VerdictRow, newest_spike_review, verdict_rows, verdict_table};
 use crate::exit::{git, read};
 
 /// The stub markers of plan v9 rule 4 (V9-D37) and plan v10 rule 4 (`m5`, V10-D54). Written in
@@ -279,8 +279,17 @@ const GATE_PRESET: &str = "jit";
 const GATE_FEEDBACK: &str = "full";
 const GATE_FEATURE: &str = "jit";
 
-const VERDICTS_HOW: &str =
-    "the Spike C and SP-Facts Verdict tables (a markdown table with Spike and Verdict columns)";
+const VERDICTS_HOW: &str = "the Spike C and SP-Facts Verdict tables (a markdown table with Spike, Condition, Verdict, Commit, Lowering, Host/CPU and ADRs columns; V10-D37)";
+
+/// Items 7 and 10 (MC-w17-9, X8, V10-D37): a Verdict row's `Commit` is fresh when no file
+/// under these paths changed between it and HEAD (Spike C, the VM it installs code into, the
+/// FactSnapshot crate).
+const VERDICT_FRESH_PATHS: [&str; 3] = ["spikes/spike-c", "crates/ep9_vm", "crates/ep9_facts"];
+/// Item 7: the `Lowering` label of a Spike C row (MODES-D13: Spike C code is lowering `jit`).
+const SPIKE_C_LOWERING: &str = "jit";
+/// Item 10: the `Lowering` label of an SP-Facts row (C5c compiles from a PROFILED file under JIT
+/// lowering; it is not a jitless number, MC-w13-23).
+const SP_FACTS_LOWERING: &str = "jit, PROFILED input";
 
 /// Item 7: the ADRs Frozen at M1 exit (H2, H14, H16) and at M1a (H17-H19).
 const ITEM7_ADRS: [&str; 6] = ["H2", "H14", "H16", "H17", "H18", "H19"];
@@ -418,7 +427,9 @@ struct Ctx<'a> {
     exec: Option<(PathBuf, Json)>,
     gc: Vec<(PathBuf, Json)>,
     fuzz: Vec<(PathBuf, Json)>,
-    verdicts: BTreeMap<String, (String, PathBuf)>,
+    /// Spike -> condition ("" when the table has no Condition column) -> the row and its file.
+    /// A later row of the same spike and condition replaces an earlier one.
+    verdicts: BTreeMap<String, BTreeMap<String, (VerdictRow, PathBuf)>>,
     nesting: Option<(PathBuf, String)>,
     ci: Result<Ci, String>,
     /// The CI run's head against HEAD ([`ci_fresh`]); Err(why) makes each Windows cell OPEN.
@@ -433,10 +444,13 @@ fn run(o: &Options) -> Result<Report, String> {
         ))
     };
     let read_json = |p: &Option<PathBuf>| p.as_ref().map(read_one).transpose();
-    let mut verdicts = BTreeMap::new();
+    let mut verdicts: BTreeMap<String, BTreeMap<String, (VerdictRow, PathBuf)>> = BTreeMap::new();
     for f in &o.verdicts {
-        for (spike, v) in verdict_table(&read(f)?) {
-            verdicts.insert(spike, (v, f.clone()));
+        for row in verdict_rows(&read(f)?) {
+            verdicts
+                .entry(row.spike.clone())
+                .or_default()
+                .insert(row.condition.clone(), (row, f.clone()));
         }
     }
     let ci = match (&o.ci_run, &o.ci_run_json) {
@@ -1387,6 +1401,9 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         status = status.max(Status::Open);
         parts.push("provisional run".into());
     }
+    if host.contains("-linux-") {
+        parts.push(thp_text(j));
+    }
     let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
     let mut tree = match fresh_named(root, commit, &ENGINE_FRESH_PATHS) {
         Ok(t) => t,
@@ -1440,6 +1457,28 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
             short(commit)
         ),
     )
+}
+
+/// MC-w18-O4 (M5-P2-ORCH-7): the transparent huge page mode of a Linux bench host, from the
+/// exit2 JSON's `host.transparent_hugepage` (the text of
+/// `/sys/kernel/mm/transparent_hugepage/enabled`, such as `always [madvise] never`, or the mode
+/// alone). The cell records it and its status does not change: item 2 is a speed reading, and a
+/// G7 RSS gate compares the modes of its two readings.
+fn thp_text(j: &Json) -> String {
+    match j
+        .path(&["host", "transparent_hugepage"])
+        .and_then(Json::str)
+        .filter(|t| !t.trim().is_empty())
+    {
+        None => "THP mode not recorded (no host.transparent_hugepage; report only)".into(),
+        Some(t) => {
+            let mode = t
+                .split_once('[')
+                .and_then(|(_, r)| r.split_once(']'))
+                .map_or(t.trim(), |(m, _)| m.trim());
+            format!("THP {mode} (host.transparent_hugepage; report only)")
+        }
+    }
 }
 
 fn item3(c: &Ctx) -> (Cell, Cell) {
@@ -2245,27 +2284,82 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
     repo_wide(host)
 }
 
-/// The verdict of one spike: (status, text). A verdict with "condition" is OPEN.
-fn spike_status(c: &Ctx, spike: &str) -> (Status, String) {
-    let Some((v, file)) = c.verdicts.get(spike) else {
+/// The verdict of one spike: (status, text), the worst of its rows (one per protocol condition,
+/// or one row when the table has no Condition column). The verdict word: "no-go" or "fail" is
+/// FAIL; "go" with no "condition" is PASS; anything else is OPEN. MC-w17-9 (X8, V10-D37): a row
+/// is read only with a `Commit` that is a full commit id ([`is_full_sha`]), HEAD or an ancestor
+/// with no change in [`VERDICT_FRESH_PATHS`] since, and the `Lowering` label `lowering` (ASCII
+/// case and spaces aside). Else the row is refused: at least OPEN, with the reason.
+fn spike_status(c: &Ctx, spike: &str, lowering: &str) -> (Status, String) {
+    let Some(rows) = c.verdicts.get(spike) else {
         return (Status::Open, format!("{spike}: no verdict"));
     };
-    let l = v.to_ascii_lowercase();
-    let status = if l.contains("no-go") || l.contains("fail") {
-        Status::Fail
-    } else if l.starts_with("go") && !l.contains("condition") {
-        Status::Pass
-    } else {
-        Status::Open
-    };
-    (
-        status,
-        format!(
-            "{spike}: {v} ({})",
+    let mut status = Status::Pass;
+    let mut parts = Vec::new();
+    for (row, file) in rows.values() {
+        let v = &row.verdict;
+        let l = v.to_ascii_lowercase();
+        let mut st = if l.contains("no-go") || l.contains("fail") {
+            Status::Fail
+        } else if l.starts_with("go") && !l.contains("condition") {
+            Status::Pass
+        } else {
+            Status::Open
+        };
+        let mut why = Vec::new();
+        let commit = match row.commit.as_deref() {
+            None => {
+                why.push("no Commit cell".to_string());
+                "no commit".to_string()
+            }
+            Some(sha) if !is_full_sha(sha) => {
+                why.push(format!(
+                    "its Commit {sha:?} is not a commit id (40 hex digits)"
+                ));
+                format!("commit {sha:?}")
+            }
+            Some(sha) => match fresh_since(&c.o.root, sha, &VERDICT_FRESH_PATHS) {
+                Ok(t) => format!("commit `{}`: {t}", short(sha)),
+                Err(e) => {
+                    why.push(e);
+                    format!("commit `{}`", short(sha))
+                }
+            },
+        };
+        let low = match row.lowering.as_deref() {
+            None => {
+                why.push(format!("no Lowering cell (the gate reads `{lowering}`)"));
+                "no lowering".to_string()
+            }
+            Some(got) => {
+                let fold = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !fold(got).eq_ignore_ascii_case(&fold(lowering)) {
+                    why.push(format!("lowering `{got}`, the gate reads `{lowering}`"));
+                }
+                format!("lowering {got}")
+            }
+        };
+        if !why.is_empty() {
+            st = st.max(Status::Open);
+        }
+        status = status.max(st);
+        let cond = if row.condition.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", row.condition)
+        };
+        parts.push(format!(
+            "{spike}{cond}: {v} ({}; {commit}; {low}){}",
             file.file_name()
-                .map_or(String::new(), |f| f.to_string_lossy().into_owned())
-        ),
-    )
+                .map_or(String::new(), |f| f.to_string_lossy().into_owned()),
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(" refused: {}", why.join("; "))
+            }
+        ));
+    }
+    (status, parts.join("; "))
 }
 
 /// The Frozen state of each ADR, part by part: OPEN while one is not Frozen.
@@ -2283,7 +2377,7 @@ fn frozen_cell(root: &Path, ids: &[&str]) -> (Status, String) {
 }
 
 fn item7(c: &Ctx) -> (Cell, Cell) {
-    let (st, spike) = spike_status(c, "spike c");
+    let (st, spike) = spike_status(c, "spike c", SPIKE_C_LOWERING);
     let (fst, frozen) = frozen_cell(&c.o.root, &ITEM7_ADRS);
     repo_wide(cell(st.max(fst), format!("{spike}; {frozen}")))
 }
@@ -2367,7 +2461,7 @@ fn item9(c: &Ctx) -> (Cell, Cell) {
 }
 
 fn item10(c: &Ctx) -> (Cell, Cell) {
-    let (st, t) = spike_status(c, "sp-facts");
+    let (st, t) = spike_status(c, "sp-facts", SP_FACTS_LOWERING);
     repo_wide(cell(st, t))
 }
 
@@ -4117,29 +4211,68 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// The placeholder commit of the `verdicts.md` fixture (in no repository).
+    const VERDICT_PLACEHOLDER: &str = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0";
+
+    /// The `verdicts.md` fixture with `commit` in place of the placeholder, as an input file.
+    fn verdicts_input(root: &Path, name: &str, commit: &str) -> PathBuf {
+        let v = read(&fixture("verdicts.md"))
+            .unwrap()
+            .replace(VERDICT_PLACEHOLDER, commit);
+        input(root, name, &v)
+    }
+
+    /// A Verdict table in the V10-D37 form with these rows: (spike, condition, verdict, commit,
+    /// lowering).
+    fn verdicts_md(rows: &[(&str, &str, &str, &str, &str)]) -> String {
+        let mut t = String::from(
+            "| Spike | Condition | Verdict | Commit | Lowering | Host/CPU | ADRs |\n|---|---|---|---|---|---|---|\n",
+        );
+        for (s, c, v, sha, l) in rows {
+            t.push_str(&format!("| {s} | {c} | {v} | {sha} | {l} | m5max | H2 |\n"));
+        }
+        t
+    }
+
     #[test]
     fn items7_and_10_read_verdicts_and_freezes() {
         let root = fake_repo("item7");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
         let mut o = opts(&root);
-        o.verdicts = vec![fixture("verdicts.md")];
+        o.verdicts = vec![verdicts_input(&root, "verdicts.md", &head)];
         write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
         let r = run(&o).unwrap();
         assert_eq!(r.cells[6].0.status, Status::Pass, "{:?}", r.cells[6]);
         assert!(
-            r.cells[6]
-                .0
-                .evidence
-                .starts_with("spike c: GO (verdicts.md); H2: Frozen")
+            r.cells[6].0.evidence.starts_with(&format!(
+                "spike c C4: GO (verdicts.md; commit `{}`: this tree (HEAD); lowering jit); H2: Frozen",
+                short(&head)
+            )),
+            "{}",
+            r.cells[6].0.evidence
         );
         assert_eq!(r.cells[9].0.status, Status::Pass, "{:?}", r.cells[9]);
-        assert!(r.cells[9].0.evidence.contains("GO, speed recorded"));
+        assert!(
+            r.cells[9]
+                .0
+                .evidence
+                .contains("GO, speed recorded (verdicts.md; commit"),
+            "{}",
+            r.cells[9].0.evidence
+        );
+        assert!(
+            r.cells[9]
+                .0
+                .evidence
+                .contains("lowering jit, PROFILED input")
+        );
         // H17 still Draft: OPEN; a verdict with a condition: OPEN.
         write(
             &root,
             "docs/adr/H17-x.md",
             &adr("H17", "Draft (2026-10-21)", false),
         );
-        let v = read(&fixture("verdicts.md"))
+        let v = read(&o.verdicts[0])
             .unwrap()
             .replace("| GO |", "| GO with a condition |");
         o.verdicts = vec![input(&root, "v.md", &v)];
@@ -4151,6 +4284,199 @@ mod tests {
                 .evidence
                 .contains("H17: Draft (no Freeze table: the whole row is not Frozen)")
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// MC-w17-9 (X8, V10-D37): items 7 and 10 read a Verdict row only with a fresh, full
+    /// `Commit` and the gate's `Lowering`; a row without them is refused (OPEN).
+    #[test]
+    fn items7_and_10_refuse_a_row_without_commit_or_lowering() {
+        let root = fake_repo("item7rows");
+        let mut o = opts(&root);
+        write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
+        let first = commit_all(&root, "adrs");
+        // A side commit: in the repository, not an ancestor of HEAD.
+        git_in(&root, &["checkout", "-q", "-b", "side"]);
+        write(&root, "docs/side.md", "side\n");
+        let side = commit_all(&root, "side");
+        git_in(&root, &["checkout", "-q", "-"]);
+        // After `first`: one commit in each fresh path, then (after `fresh`) one commit outside
+        // them (docs and another crate).
+        let mut by_path = Vec::new();
+        for p in VERDICT_FRESH_PATHS {
+            let before = git_in(&root, &["rev-parse", "HEAD"]);
+            write(&root, &format!("{p}/f.rs"), "// changed\n");
+            commit_all(&root, p);
+            by_path.push((p, before));
+        }
+        let fresh = git_in(&root, &["rev-parse", "HEAD"]);
+        write(&root, "docs/x.md", "doc\n");
+        write(&root, "crates/ep9_cli/src/main.rs", "// cli\n");
+        let head = commit_all(&root, "docs and cli");
+        let jit = "`jit`";
+        let pf = "`jit, PROFILED input`";
+        let cases: Vec<(String, Status, Status, String)> = vec![
+            // The M4 form (no Commit, no Lowering column): OPEN, not PASS.
+            (
+                read(&fixture("m0-spike-review.md"))
+                    .unwrap()
+                    .replace("SP-GC", "Spike C")
+                    .replace("SP-Dispatch | g | GO with conditions (condition 2, §3)", "SP-Facts | g | GO"),
+                Status::Open,
+                Status::Open,
+                "spike c: GO (v.md; no commit; no lowering) refused: no Commit cell; no Lowering cell (the gate reads `jit`)".into(),
+            ),
+            // Empty cells.
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", "", jit), ("SP-Facts", "C5c", "GO", &head, "")]),
+                Status::Open,
+                Status::Open,
+                "refused: no Commit cell".into(),
+            ),
+            // A short id, a ref name, an upper-case id.
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", &head[..12], jit), ("SP-Facts", "C5c", "GO", "HEAD", pf)]),
+                Status::Open,
+                Status::Open,
+                format!("its Commit {:?} is not a commit id (40 hex digits)", &head[..12]),
+            ),
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", &head.to_ascii_uppercase(), jit), ("SP-Facts", "C5c", "GO", &head, pf)]),
+                Status::Open,
+                Status::Pass,
+                "is not a commit id".into(),
+            ),
+            // Not in the repository; not an ancestor.
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", VERDICT_PLACEHOLDER, jit), ("SP-Facts", "C5c", "GO", &side, pf)]),
+                Status::Open,
+                Status::Open,
+                "is not in this repository".into(),
+            ),
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", &side, jit), ("SP-Facts", "C5c", "GO", &head, pf)]),
+                Status::Open,
+                Status::Pass,
+                "is not an ancestor of HEAD".into(),
+            ),
+            // The wrong lowering: jitless for Spike C, plain jit for SP-Facts.
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", &head, "jitless"), ("SP-Facts", "C5c", "GO", &head, jit)]),
+                Status::Open,
+                Status::Open,
+                "lowering `jitless`, the gate reads `jit`".into(),
+            ),
+            // Case and spaces aside, the label is the gate's.
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", &head, "JIT"), ("SP-Facts", "C5c", "GO", &head, "jit,   profiled input")]),
+                Status::Pass,
+                Status::Pass,
+                "lowering JIT".into(),
+            ),
+            // An ancestor with only docs and ep9_cli changed since: fresh; one before the three
+            // fresh-path commits: stale.
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", &fresh, jit), ("SP-Facts", "C5c", "GO", &fresh, pf)]),
+                Status::Pass,
+                Status::Pass,
+                "an ancestor of HEAD".into(),
+            ),
+            (
+                verdicts_md(&[("Spike C", "C4", "GO", &first, jit), ("SP-Facts", "C5c", "GO", &first, pf)]),
+                Status::Open,
+                Status::Open,
+                "spikes/spike-c, crates/ep9_vm, crates/ep9_facts changed between".into(),
+            ),
+            // A NO-GO row stays FAIL, refused or not.
+            (
+                verdicts_md(&[("Spike C", "C4", "NO-GO", "", jit), ("SP-Facts", "C5c", "NO-GO", &head, pf)]),
+                Status::Fail,
+                Status::Fail,
+                "NO-GO".into(),
+            ),
+        ];
+        for (md, want7, want10, text) in &cases {
+            o.verdicts = vec![input(&root, "v.md", md)];
+            let r = run(&o).unwrap();
+            let (c7, c10) = (&r.cells[6].0, &r.cells[9].0);
+            assert_eq!(
+                (c7.status, c10.status),
+                (*want7, *want10),
+                "{text}: {c7:?} {c10:?}"
+            );
+            assert!(
+                c7.evidence.contains(text.as_str()) || c10.evidence.contains(text.as_str()),
+                "{text}: {} / {}",
+                c7.evidence,
+                c10.evidence
+            );
+            // The Windows column repeats the host cell.
+            assert_eq!(r.cells[6].1.status, *want7);
+        }
+        // A commit just before a change in each fresh path is stale.
+        for (p, before) in &by_path {
+            o.verdicts = vec![input(
+                &root,
+                "v.md",
+                &verdicts_md(&[("Spike C", "C4", "GO", before, jit)]),
+            )];
+            let c7 = &run(&o).unwrap().cells[6].0;
+            assert_eq!(c7.status, Status::Open, "{p}: {c7:?}");
+            assert!(
+                c7.evidence.contains("changed between"),
+                "{p}: {}",
+                c7.evidence
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// One row per protocol condition: the cell is the worst row; a later row of the same spike
+    /// and condition (a later table or a later `--verdicts` file) replaces the earlier one.
+    #[test]
+    fn items7_and_10_read_every_condition_row() {
+        let root = fake_repo("item7conds");
+        let mut o = opts(&root);
+        write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
+        let head = commit_all(&root, "adrs");
+        let jit = "jit";
+        let all_go = verdicts_md(&[
+            ("Spike C", "C1", "GO", &head, jit),
+            ("Spike C", "C2", "GO", &head, jit),
+            ("Spike C", "C3", "GO", &head, jit),
+            ("Spike C", "C4", "GO", &head, jit),
+        ]);
+        o.verdicts = vec![input(&root, "a.md", &all_go)];
+        let c7 = run(&o).unwrap().cells[6].0.clone();
+        assert_eq!(c7.status, Status::Pass, "{c7:?}");
+        for k in ["C1", "C2", "C3", "C4"] {
+            assert!(
+                c7.evidence.contains(&format!("spike c {k}: GO (a.md;")),
+                "{}",
+                c7.evidence
+            );
+        }
+        // One condition without its commit: OPEN; one NO-GO: FAIL.
+        let one_open = all_go.replace(&format!("| C3 | GO | {head} |"), "| C3 | GO |  |");
+        o.verdicts = vec![input(&root, "b.md", &one_open)];
+        assert_eq!(run(&o).unwrap().cells[6].0.status, Status::Open);
+        let one_fail = all_go.replace("| C2 | GO |", "| C2 | NO-GO |");
+        o.verdicts = vec![input(&root, "c.md", &one_fail)];
+        assert_eq!(run(&o).unwrap().cells[6].0.status, Status::Fail);
+        // A later file's C2 row replaces the NO-GO row.
+        let redo = verdicts_md(&[("Spike C", "C2", "GO", &head, jit)]);
+        o.verdicts = vec![input(&root, "c.md", &one_fail), input(&root, "d.md", &redo)];
+        let c7 = run(&o).unwrap().cells[6].0.clone();
+        assert_eq!(c7.status, Status::Pass, "{c7:?}");
+        assert!(
+            c7.evidence.contains("spike c C2: GO (d.md;"),
+            "{}",
+            c7.evidence
+        );
+        // A later row of the same file replaces an earlier one too.
+        let same = format!("{one_fail}\n{redo}");
+        o.verdicts = vec![input(&root, "e.md", &same)];
+        assert_eq!(run(&o).unwrap().cells[6].0.status, Status::Pass);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4304,6 +4630,62 @@ mod tests {
         let c = &run(&o).unwrap().cells[1].0;
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(c.evidence.contains("Cargo.lock"), "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// MC-w18-O4 (M5-P2-ORCH-7): a Linux bench host's exit2 cell records its THP mode, from
+    /// `host.transparent_hugepage`; the status does not change, and other hosts print nothing.
+    #[test]
+    fn item2_records_the_thp_mode_of_a_linux_host() {
+        let root = fake_repo("item2thp");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let plain = exit2_json(&head, ["pass", "pass"], false);
+        let with = |t: &str| {
+            plain.replace(
+                r#""host":{"gate_host":false}"#,
+                &format!(r#""host":{{"gate_host":false,"transparent_hugepage":"{t}"}}"#),
+            )
+        };
+        assert!(with("x").contains("transparent_hugepage"));
+        for (j, host, text) in [
+            (
+                with("always [madvise] never"),
+                "x86_64-unknown-linux-gnu",
+                Some("THP madvise (host.transparent_hugepage; report only)"),
+            ),
+            (
+                with("[always] madvise never"),
+                "aarch64-unknown-linux-gnu",
+                Some("THP always ("),
+            ),
+            (
+                with("never"),
+                "x86_64-unknown-linux-gnu",
+                Some("THP never ("),
+            ),
+            (
+                with(" "),
+                "x86_64-unknown-linux-gnu",
+                Some("THP mode not recorded"),
+            ),
+            (
+                plain.clone(),
+                "x86_64-unknown-linux-gnu",
+                Some("THP mode not recorded (no host.transparent_hugepage; report only)"),
+            ),
+            (with("always [madvise] never"), HOST, None),
+        ] {
+            o.host = host.into();
+            o.cross = Some(input(&root, "exit2.json", &j));
+            let c = &run(&o).unwrap().cells[1].0;
+            // No gate host: OPEN with and without the THP field.
+            assert_eq!(c.status, Status::Open, "{c:?}");
+            match text {
+                Some(t) => assert!(c.evidence.contains(t), "{t}: {}", c.evidence),
+                None => assert!(!c.evidence.contains("THP"), "{}", c.evidence),
+            }
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
