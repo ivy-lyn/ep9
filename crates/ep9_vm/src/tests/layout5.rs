@@ -100,10 +100,12 @@ fn elements_kind_values_and_storage_forms() {
         ],
         [0, 1, 2, 3, 4, 5, 6]
     );
-    let forms: Vec<_> = (0..16).map(elements::storage).collect();
+    // Only the values as built (0-6): an append at 7 keeps this test (H18 append-only part);
+    // `h18_kind_value_probe_15` checks that an unknown value is refused.
+    let forms: Vec<_> = (0..7).map(elements::storage).collect();
     use Storage::{Dictionary, Doubles, Values};
     assert_eq!(
-        forms[..7],
+        forms,
         [
             Some(Values),
             Some(Values),
@@ -114,16 +116,18 @@ fn elements_kind_values_and_storage_forms() {
             Some(Dictionary)
         ]
     );
-    assert!(forms[7..].iter().all(Option::is_none), "7-15 are reserved");
-    let holey: Vec<u8> = (0..ek::COUNT).filter(|&k| elements::is_holey(k)).collect();
+    let holey: Vec<u8> = (0..7).filter(|&k| elements::is_holey(k)).collect();
     assert_eq!(holey, [1, 3, 5]);
     // One bit per value 0-6 from bit 10; bits 0-9 keep their IC_LAYOUT 2 meaning.
-    let bits: u32 = (0..ek::COUNT).map(elements::kinds_set_bit).sum();
-    assert_eq!(bits, 0x7F << 10);
-    assert_eq!(
-        bits & (crate::profile::keyed::HOLE | crate::profile::keyed::OUT_OF_BOUNDS),
-        0
-    );
+    for k in 0..7u8 {
+        let bit = elements::kinds_set_bit(k);
+        assert_eq!(bit, 1 << (10 + u32::from(k)), "kind {k}");
+        assert_ne!(bit & elements::KINDS_SET_MASK, 0, "kind {k}");
+        assert_eq!(
+            bit & (crate::profile::keyed::HOLE | crate::profile::keyed::OUT_OF_BOUNDS),
+            0
+        );
+    }
     // The shape bits: counts 28-31, free of the kind id (20-27).
     assert_eq!(shape::ELEMENTS_KIND_SHIFT, 28);
     assert_eq!(
@@ -270,8 +274,13 @@ fn h29_value_repr_probe_7() {
         let tag = form::LOC_REG | repr << form::REPR_SHIFT | form::ACC;
         vec![1, 0, form::RECORD_EXIT, 8, 0, 0, 0, 0, 1, tag, 0]
     };
-    for repr in 0..form::REPRS {
-        Table::decode(&table(repr)).unwrap_or_else(|e| panic!("repr {repr}: {e}"));
+    // The wire values as built, and the Repr each decodes to (Spike C `deopt_meta.rs` writes
+    // the same values): a swap or a reuse of a value fails here.
+    use crate::deopt::Repr;
+    let built = [Repr::Tagged, Repr::Int32, Repr::Bool, Repr::Float64];
+    for (repr, want) in (0u8..).zip(built) {
+        let t = Table::decode(&table(repr)).unwrap_or_else(|e| panic!("repr {repr}: {e}"));
+        assert_eq!(t.records[0].values[0].repr, want, "repr {repr}");
         assert!(CodeMeta::read(16, 0, &table(repr), |_| true).is_ok());
     }
     let e = Table::decode(&table(PROBE)).unwrap_err();
