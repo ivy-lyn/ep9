@@ -1,7 +1,8 @@
 //! The per-exit deopt metadata (SPIKEC-4; protocol §6.2, C5b; H29-Q1, Q2, Q5), as a builder of
 //! the H29 byte form that the VM reads (M5-P1 SPIKEC-5, V10-D30: the form and its reader are
-//! `crates/ep9_vm/src/deopt.rs`). The emitter makes one record per guard exit from the
-//! guard's frame state and the register allocation ([`crate::emit_a64::emit`]); the install
+//! `crates/ep9_vm/src/deopt.rs`). The emitter makes one record per exit stub (one per guard,
+//! and one per [`Cause`] of a shape guard, MC-w21-5) from the guard's frame state and the
+//! register allocation ([`crate::emit_a64::emit`]); the install
 //! hands the bytes to `ep9_vm::NativeCx::install_b_with_deopt`, whose reader refuses anything
 //! the form does not allow (`ep9_vm::NativeCx::check_deopt_meta` reads them with no install).
 //!
@@ -82,6 +83,60 @@ pub struct ExitValue {
     pub loc: ValueLoc,
 }
 
+/// Why an exit was taken (MODES-CHECK-w21 MC-w21-5): a guard with more than one check gets an
+/// exit stub, a record and a counter per cause, so the VM's exit counters count its exits by
+/// cause. Not in the H29 bytes, as [`ExitRecord::guard`] is not: the spike's reports name it.
+/// Every record is a speculation exit (header bit 4 is 0) in Spike C; the exit class a cause
+/// should have is the H29-Q1 class list and a B2 decision (H32-Q5), not this spike's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Cause {
+    /// The guard's one check failed (every guard but `CheckShape`).
+    #[default]
+    Check,
+    /// `CheckShape`: the IC entry holds a case, but not the guard's (another shape in a
+    /// monomorphic entry, no POLY_IC case for the shape, or another handler): the fact the
+    /// code was compiled from does not hold. The only cause that means a wrong profile.
+    Differs,
+    /// `CheckShape`: the receiver is not a cell (or is the zero word).
+    NotCell,
+    /// `CheckShape`: the function has no feedback vector (`FunctionInfo.feedback` is null).
+    NoVector,
+    /// `CheckShape`: the IC entry's key half is undefined: T0 has not filled it yet, or its
+    /// weak key died (feedback.rs: the key half is cleared to undefined).
+    Unfilled,
+    /// `CheckShape`: the entry is megamorphic (the hole key, a value that is no POLY_IC cell).
+    Megamorphic,
+}
+
+impl Cause {
+    /// The causes of a `CheckShape` guard, in the order of its exit stubs.
+    pub const SHAPE: [Cause; 5] = [
+        Cause::Differs,
+        Cause::NotCell,
+        Cause::NoVector,
+        Cause::Unfilled,
+        Cause::Megamorphic,
+    ];
+
+    /// The cause's name in the reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            Cause::Check => "check",
+            Cause::Differs => "differs",
+            Cause::NotCell => "not-cell",
+            Cause::NoVector => "no-vector",
+            Cause::Unfilled => "unfilled",
+            Cause::Megamorphic => "megamorphic",
+        }
+    }
+
+    /// True for a cause that says the feedback the guard reads is not there yet (no vector, an
+    /// entry T0 has not filled), not that a fact is wrong: the start-up exits of MC-w21-5.
+    pub fn not_filled(self) -> bool {
+        matches!(self, Cause::NoVector | Cause::Unfilled)
+    }
+}
+
 /// The metadata of one guard exit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitRecord {
@@ -89,6 +144,8 @@ pub struct ExitRecord {
     pub pc: u32,
     /// The guard (not in the bytes: the spike's reports name it).
     pub guard: u32,
+    /// Why this exit is taken (not in the bytes; [`Cause`]).
+    pub cause: Cause,
     /// The bytecode offset T0 resumes at.
     pub bytecode: u32,
     /// Index of the exit's counter.
@@ -147,12 +204,16 @@ fn sleb(out: &mut Vec<u8>, v: i64) {
 }
 
 impl ExitTable {
-    /// The records of the guards in `stubs` (guard id, native offset of its stub, in stub
-    /// order) from their frame states in `g` and the locations in `a`. Refuses a frame-state
-    /// value with no readable place, or a constant that is a cell.
-    pub fn build(g: &Graph, a: &Allocation, stubs: &[(u32, u32)]) -> Result<ExitTable, String> {
+    /// The records of the exit stubs in `stubs` (guard id, native offset of the stub, cause; in
+    /// stub order) from their guards' frame states in `g` and the locations in `a`. Refuses a
+    /// frame-state value with no readable place, or a constant that is a cell.
+    pub fn build(
+        g: &Graph,
+        a: &Allocation,
+        stubs: &[(u32, u32, Cause)],
+    ) -> Result<ExitTable, String> {
         let mut t = ExitTable::default();
-        for (counter, &(id, pc)) in stubs.iter().enumerate() {
+        for (counter, &(id, pc, cause)) in stubs.iter().enumerate() {
             let (n, guard) = g
                 .guard_nodes()
                 .find(|(_, gd)| gd.id == id)
@@ -176,6 +237,7 @@ impl ExitTable {
             t.exits.push(ExitRecord {
                 pc,
                 guard: id,
+                cause,
                 bytecode: guard.state.offset,
                 counter: counter as u32,
                 feedback,
@@ -265,18 +327,42 @@ impl ExitTable {
         out
     }
 
+    /// The values of every record by location kind (the H29-Q2 report): `reg n, stack n, const
+    /// n, frame n`.
+    pub fn locations_text(&self) -> String {
+        let mut n = [0usize; 4];
+        for v in self.exits.iter().flat_map(|e| &e.values) {
+            n[match v.loc {
+                ValueLoc::Reg(_) => 0,
+                ValueLoc::Stack(_) => 1,
+                ValueLoc::Const(_) => 2,
+                ValueLoc::Frame(_) => 3,
+            }] += 1;
+        }
+        format!(
+            "reg {}, stack {}, const {}, frame {}",
+            n[0], n[1], n[2], n[3]
+        )
+    }
+
     /// One report line: exits, bytes, bytes per exit, values per exit.
     pub fn line(&self) -> String {
         let bytes = self.encode().len();
         let n = self.exits.len().max(1) as f64;
         let values: usize = self.exits.iter().map(|e| e.values.len()).sum();
         format!(
-            "exit metadata: {} records, {} consts, {bytes} bytes ({:.1} per exit, {:.1} values per \
-             exit); offsets and indexes only",
+            "exit metadata: {} records ({} guards), {} consts, {bytes} bytes ({:.1} per exit, {:.1} \
+             values per exit; values by location: {}); offsets and indexes only",
             self.exits.len(),
+            self.exits
+                .iter()
+                .map(|e| e.guard)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
             self.consts.len(),
             bytes as f64 / n,
             values as f64 / n,
+            self.locations_text(),
         )
     }
 }
@@ -297,6 +383,7 @@ mod tests {
                 ExitRecord {
                     pc: 2100,
                     guard: 3,
+                    cause: Cause::Unfilled,
                     bytecode: 57,
                     counter: 0,
                     feedback: Some(2),
@@ -321,6 +408,7 @@ mod tests {
                 ExitRecord {
                     pc: 2112,
                     guard: 9,
+                    cause: Cause::Check,
                     bytecode: 0,
                     counter: 1,
                     feedback: None,

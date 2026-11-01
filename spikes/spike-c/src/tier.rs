@@ -47,9 +47,10 @@ pub struct TierRun {
     pub probe_exit: Option<u32>,
 }
 
-/// The guards of the exit records whose counter is not 0 (`exits` in record order).
+/// The guards of the exit records whose counter is not 0 (`exits` in record order), each
+/// once (a shape guard has a record per cause, next to each other: MC-w21-5).
 pub fn fired(report: &CompileReport, exits: &[u64]) -> Vec<u32> {
-    report
+    let mut g: Vec<u32> = report
         .emit
         .meta
         .exits
@@ -57,7 +58,29 @@ pub fn fired(report: &CompileReport, exits: &[u64]) -> Vec<u32> {
         .zip(exits)
         .filter(|(_, n)| **n > 0)
         .map(|(r, _)| r.guard)
-        .collect()
+        .collect();
+    g.dedup();
+    g
+}
+
+/// The exits of `exits` (record order) by cause (MC-w21-5; [`crate::deopt_meta::Cause`]), as
+/// `cause n` parts in cause order, the causes with no exit left out.
+pub fn by_cause(report: &CompileReport, exits: &[u64]) -> Vec<(crate::deopt_meta::Cause, u64)> {
+    let mut m = std::collections::BTreeMap::new();
+    for (r, &n) in report.emit.meta.exits.iter().zip(exits) {
+        if n > 0 {
+            *m.entry(r.cause).or_insert(0) += n;
+        }
+    }
+    m.into_iter().collect()
+}
+
+/// [`by_cause`] as text: `differs 3, unfilled 2`.
+pub fn cause_text(by: &[(crate::deopt_meta::Cause, u64)]) -> String {
+    by.iter()
+        .map(|(c, n)| format!("{} {n}", c.name()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl TierRun {
@@ -84,7 +107,10 @@ impl TierRun {
         let exits = if total == 0 {
             "; exits 0".to_string()
         } else {
-            format!("; exits {total} (guards {guards})")
+            format!(
+                "; exits {total} (guards {guards}; causes {})",
+                cause_text(&by_cause(&self.report, &self.exits))
+            )
         };
         format!(
             "{} {} n = {}: {verdict}{exits}; T0 {:.3} s, compiled {:.3} s (one run, report \
@@ -684,6 +710,7 @@ pub fn compiled_script(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deopt_meta::Cause;
 
     /// A function compiled with a Mac-only emitter: skip elsewhere.
     fn aarch64() -> bool {
@@ -1451,6 +1478,98 @@ mod tests {
             "g{guard}\n{}",
             r.report.graph
         );
+    }
+
+    /// MC-w20-17 (w20 outside O5, the JSC `Object.assign` case: an access on a value with no
+    /// prediction became an exit with no site, which exited on every run and taught the next
+    /// compile nothing): a keyed access on the result of a call, a value with no fact of its
+    /// own, gets guards that name the access's own bytecode offset and a counter each, so
+    /// every exit is charged to that site (the H32 site budget reads those counters, A4).
+    /// With an array result it takes no exit; with an object result each call exits there
+    /// and is counted, and the output equals T0. Never an exit with no site.
+    #[test]
+    fn a_keyed_access_on_a_call_result_exits_at_its_own_site() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "var setMk;\n\
+            var first = (function () {\n\
+              var mk = function (n) { return [n, n + 1, n + 2]; };\n\
+              setMk = function (f) { mk = f; };\n\
+              return function first(n) { var a = mk(n); return a[1]; };\n\
+            })();";
+        let warm = "for (var q = 0; q < 20; q++) first(q);";
+        let calls = 5;
+        let main = format!(
+            "print(first(3)); setMk(function (n) {{ return {{ 1: n }}; }});\n\
+             var s = 0; for (var k = 0; k < {calls}; k++) s += first(k); print(s);"
+        );
+        let r = run_script(&Config::default(), defs, warm, &main, "first").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["4", "10"]);
+        let keyed = &r.report.build.keyed;
+        let [site] = &keyed[..] else {
+            panic!("one keyed site: {keyed:?}");
+        };
+        let meta = &r.report.emit.meta.exits;
+        assert!(
+            meta.iter().enumerate().all(|(k, x)| x.counter == k as u32),
+            "{}",
+            r.report.emit.meta.line()
+        );
+        let mut charged = 0;
+        for (x, &c) in meta.iter().zip(&r.exits) {
+            if c > 0 {
+                assert_eq!(
+                    x.bytecode, site.offset,
+                    "exit g{} not at the access",
+                    x.guard
+                );
+                charged += c;
+            }
+        }
+        assert_eq!(charged, calls, "{:?}", r.exits);
+        assert_eq!(r.exits.iter().sum::<u64>(), calls, "{:?}", r.exits);
+    }
+
+    /// MC-w21-5: a shape guard has one exit record per cause, and each failure takes its own:
+    /// another shape (`differs`), a number receiver (`not-cell`), and an entry that went
+    /// megamorphic after five more shapes (`megamorphic`). Each run equals T0, and every
+    /// exit of the guard is in its records (so the per-guard sums of the forced tests and the
+    /// H32 site budget read the same counts as before the split).
+    #[test]
+    fn a_shape_guard_counts_its_exits_by_cause() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function getX(o) { return o.x; }";
+        let warm = "for (var q = 0; q < 20; q++) getX({ x: q });";
+        let cases: [(&str, Cause, u64); 3] = [
+            ("print(getX({ y: 1, x: 2 }));", Cause::Differs, 1),
+            ("print(getX(5), getX(true));", Cause::NotCell, 2),
+            (
+                "var a = [{ a: 1, x: 1 }, { b: 1, x: 2 }, { c: 1, x: 3 }, { d: 1, x: 4 }, { e: 1, x: 5 }];\n\
+                 for (var q = 0; q < 5; q++) getX(a[q]);\n\
+                 print(getX({ x: 9 }));",
+                Cause::Megamorphic,
+                1,
+            ),
+        ];
+        for (main, cause, at_least) in cases {
+            let r = run_script(&Config::default(), defs, warm, main, "getX").expect("run");
+            assert!(r.equal(), "{main}: {:?} vs {:?}", r.compiled, r.t0);
+            let by = by_cause(&r.report, &r.exits);
+            let n = by.iter().find(|(c, _)| *c == cause).map_or(0, |x| x.1);
+            assert!(n >= at_least, "{main}: {by:?}");
+            let meta = &r.report.emit.meta.exits;
+            let shape: Vec<_> = meta.iter().filter(|x| x.cause != Cause::Check).collect();
+            assert_eq!(shape.len(), 5, "{}", r.report.emit.meta.line());
+            assert!(
+                shape.iter().all(|x| x.feedback == Some(0)),
+                "{}",
+                r.report.emit.meta.line()
+            );
+        }
     }
 
     /// WI-SC4 (C2): each guard of `dot` and of `scale` forced alone at its second pass: the
@@ -2606,10 +2725,32 @@ mod tests {
                 && s.key_basis == crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime)),
             "{k:?}"
         );
-        // One 4-byte exit stub per guard (the call form), one metadata record per exit.
+        // One 4-byte exit stub per guard and cause (the call form), one metadata record per
+        // stub: 29 guards, 2 of them shape guards with 5 causes each (MC-w21-5), so 37.
         let e = &r.report.emit;
-        assert_eq!((e.guards, e.stub_bytes), (29, 29 * 4), "{}", e.exits_line());
-        assert_eq!(e.meta.exits.len(), 29, "{}", e.meta.line());
+        assert_eq!((e.guards, e.stub_bytes), (37, 37 * 4), "{}", e.exits_line());
+        assert_eq!(e.meta.exits.len(), 37, "{}", e.meta.line());
+        let mut ids: Vec<u32> = e.meta.exits.iter().map(|x| x.guard).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 29, "{}", e.meta.line());
+        let shape: Vec<_> = e
+            .meta
+            .exits
+            .iter()
+            .filter(|x| x.cause != Cause::Check)
+            .collect();
+        assert_eq!(shape.len(), 10, "{}", e.meta.line());
+        assert!(
+            shape
+                .chunks(5)
+                .all(|c| c.iter().map(|x| x.cause).eq(Cause::SHAPE)
+                    && c.iter().all(|x| x.guard == c[0].guard
+                        && x.bytecode == c[0].bytecode
+                        && x.values == c[0].values
+                        && x.feedback.is_some())),
+            "{:?}",
+            shape
+        );
     }
 
     /// am3 with the movz-form exit stubs (MC-w15-14, a report since the call form is the
@@ -2638,7 +2779,7 @@ mod tests {
         let e = &r.report.emit;
         assert_eq!(
             (e.guards, e.stub_bytes),
-            (29, 29 * 12),
+            (37, 37 * 12),
             "{}",
             e.exits_line()
         );

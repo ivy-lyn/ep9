@@ -30,10 +30,10 @@
 //! non-moving and the GC scans the native stack conservatively (H10), so a cell held in a
 //! register or a saved slot stays valid across the call. The entries record no feedback.
 //!
-//! **Guards (H32, JIT mode).** Every branch of a failed guard goes to that guard's **exit
-//! stub**; the stub goes to the **shared exit** of the guard's `Guard.policy` (data the graph
-//! builder set: the emitter reads no mode, docs/plan/13-execution-modes.md B2, P-R1). The one
-//! policy is `ExitPolicy::Deopt`.
+//! **Guards (H32, JIT mode).** Each branch of a failed guard goes to an **exit stub** of the
+//! guard (one, or one per cause for a shape guard, MC-w21-5); the stub goes to the **shared
+//! exit** of `Guard.policy` (data the graph builder set: the emitter reads no mode, doc 13 B2,
+//! P-R1). The one policy is `ExitPolicy::Deopt`.
 //!
 //! ```text
 //!  guard g fails ──> exit stub k (the k-th guard)          clobbers only x16, x17, x30
@@ -193,13 +193,13 @@ pub const INT32_JUNK: u64 = 0xDEAD_BEEF;
 pub struct EmitReport {
     pub code_bytes: usize,
     pub frame_bytes: u32,
-    pub guards: usize,
+    pub guards: usize, // the exit stubs: one per guard, one per cause of a shape guard
     /// The stub form used.
     pub form: StubForm,
-    /// Native offset of each guard's exit stub, in stub order: (guard id, offset). Entry `k`
-    /// is the exit whose counter has index `k`.
+    /// Native offset of each exit stub (one per guard and cause), in stub order: (guard id,
+    /// offset). Entry `k` is the exit whose counter has index `k`.
     pub exits: Vec<(u32, u32)>,
-    /// Bytes of all exit stubs (one per guard).
+    /// Bytes of all exit stubs (one per guard; a shape guard has one per cause, MC-w21-5).
     pub stub_bytes: u32,
     /// Bytes of the shared exits (one per exit policy used: the deopt entry).
     pub shared_exit_bytes: u32,
@@ -467,7 +467,7 @@ struct Emitter<'a> {
     /// Offset 0 of the code (the shared exit's `adr` finds the code start from it).
     start: DynamicLabel,
     /// Guard exits: (label, guard id, bytecode offset, the guard's policy).
-    traps: Vec<(DynamicLabel, u32, u32, ExitPolicy)>,
+    traps: Vec<(DynamicLabel, u32, u32, ExitPolicy, crate::deopt_meta::Cause)>,
     throws: BTreeMap<u32, DynamicLabel>,
     unwind: DynamicLabel,
     leave: DynamicLabel,
@@ -481,7 +481,7 @@ struct Emitter<'a> {
     /// First native offset of each bytecode offset that made code.
     native_at: BTreeMap<u32, u32>,
     /// (guard id, native offset of its exit stub).
-    trap_at: Vec<(u32, u32)>,
+    trap_at: Vec<(u32, u32, crate::deopt_meta::Cause)>,
     /// Bytes of the exit stubs and of the shared exits.
     stub_bytes: u32,
     shared_exit_bytes: u32,
@@ -587,7 +587,7 @@ pub fn emit_opts(
         frame_bytes: frame,
         guards,
         form,
-        exits: report_traps,
+        exits: report_traps.iter().map(|&(g, pc, _)| (g, pc)).collect(),
         stub_bytes: e.stub_bytes,
         shared_exit_bytes: e.shared_exit_bytes,
         meta,
@@ -651,8 +651,8 @@ impl Emitter<'_> {
     fn trap(&mut self, n: NodeId) -> Result<DynamicLabel, Refusal> {
         let node = self.g.node(n);
         let g = node.guard.as_ref().expect("a guard");
-        let l = self.ops.new_dynamic_label();
-        self.traps.push((l, g.id, g.state.offset, g.policy));
+        let (l, c) = (self.ops.new_dynamic_label(), Default::default());
+        self.traps.push((l, g.id, g.state.offset, g.policy, c));
         if let Some(t) = self.force {
             let word = t.word(g.id).ok_or_else(|| {
                 Refusal::Limit(format!(
@@ -864,14 +864,14 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::CheckShape { site, handler, .. } => {
-                let trap = self.trap(n)?;
+                let [differs, not_cell, no_vector, unfilled, mega] = self.shape_traps(n)?;
                 let x = self.src(ins[0], 12)?;
                 let d = self.dst(n)?;
                 let fi_feedback = scaled(vm_layout::FI_FEEDBACK)?;
                 let fi_word = layout::FP_FUNCTION_INFO as i32;
                 let entry = vm_layout::FEEDBACK_SLOTS + vm_layout::FEEDBACK_SLOT_SIZE * site;
                 let (poly, hit) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
-                let hole = vm_layout::HOLE as u32;
+                let (hole, undefined) = (vm_layout::HOLE as u32, VALUE_UNDEFINED as u32);
                 let native_word = native_word_offset()?;
                 let (shape_id, key, value) = (
                     vm_layout::SHAPE_ID_BYTE,
@@ -882,8 +882,8 @@ impl Emitter<'_> {
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst X(x), x17
-                    ; b.ne =>trap
-                    ; cbz X(x), =>trap
+                    ; b.ne =>not_cell
+                    ; cbz X(x), =>not_cell
                     ; ldr w15, [X(x), shape_id]
                 );
                 // The IC entry: fp's FunctionInfo -> its feedback slot -> the FEEDBACK cell.
@@ -892,7 +892,7 @@ impl Emitter<'_> {
                     ; .arch aarch64
                     ; eor x16, x16, native_word
                     ; ldr x16, [x16, fi_feedback]
-                    ; cbz x16, =>trap
+                    ; cbz x16, =>no_vector
                     ; ldr x16, [x16]
                 );
                 mov64(&mut self.ops, 17, u64::from(entry));
@@ -905,15 +905,15 @@ impl Emitter<'_> {
                     ; ldr x17, [x16, value]
                     ; b =>hit
                     ; =>poly
-                    ; cmp x17, hole
-                    ; b.ne =>trap
+                    ; cmp x17, undefined ; b.eq =>unfilled
+                    ; cmp x17, hole ; b.ne =>differs
                     ; ldr x16, [x16, value]
                 );
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst x16, x17
-                    ; b.ne =>trap
+                    ; b.ne =>mega
                 );
                 for i in 0..vm_layout::POLY_COUNT {
                     let k = vm_layout::POLY_CASES + vm_layout::POLY_CASE_SIZE * i;
@@ -929,12 +929,12 @@ impl Emitter<'_> {
                         ; =>next
                     );
                 }
-                dynasm!(self.ops ; .arch aarch64 ; b =>trap ; =>hit);
+                dynasm!(self.ops ; .arch aarch64 ; b =>differs ; =>hit);
                 mov64(&mut self.ops, 16, *handler);
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; cmp x17, x16
-                    ; b.ne =>trap
+                    ; b.ne =>differs
                 );
                 if d != x {
                     dynasm!(self.ops ; .arch aarch64 ; mov X(d), X(x));
@@ -1812,7 +1812,7 @@ impl Emitter<'_> {
         // (policy, shared exit)
         let mut shared: Vec<(ExitPolicy, DynamicLabel)> = Vec::new();
         let start = self.ops.offset().0 as u32;
-        for (l, id, _, policy) in self.traps.clone() {
+        for (l, id, _, policy, cause) in self.traps.clone() {
             let exit = match shared.iter().find(|(p, _)| *p == policy) {
                 Some(&(_, x)) => x,
                 None => {
@@ -1823,7 +1823,7 @@ impl Emitter<'_> {
             };
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             let here = self.ops.offset().0 as u32;
-            self.trap_at.push((id, here));
+            self.trap_at.push((id, here, cause));
             match self.form {
                 StubForm::Call => {
                     dynasm!(self.ops ; .arch aarch64 ; bl =>exit);
@@ -1871,6 +1871,29 @@ impl Emitter<'_> {
             ; b =>leave
         );
         Ok(())
+    }
+}
+
+impl Emitter<'_> {
+    /// The exit labels of the shape guard `n`, one per cause ([`crate::deopt_meta::Cause::SHAPE`] order:
+    /// differs, not a cell, no vector, unfilled, megamorphic; MC-w21-5): each label gets an
+    /// exit stub, a record and a counter of its own, so the VM's exit counters count the
+    /// guard's exits by cause. The first is [`Emitter::trap`]'s (a forced build's countdown
+    /// exits there). Every record has the guard's frame state, so each resumes T0 the same
+    /// way; only the cause (not in the H29 bytes) and the stub's pc differ.
+    fn shape_traps(&mut self, n: NodeId) -> Result<[DynamicLabel; 5], Refusal> {
+        let first = self.trap(n)?;
+        let (_, id, offset, policy, _) = *self.traps.last().expect("the trap just made");
+        let mut out = [first; 5];
+        for (i, cause) in crate::deopt_meta::Cause::SHAPE.into_iter().enumerate() {
+            if i == 0 {
+                self.traps.last_mut().expect("the trap just made").4 = cause;
+            } else {
+                out[i] = self.ops.new_dynamic_label();
+                self.traps.push((out[i], id, offset, policy, cause));
+            }
+        }
+        Ok(out)
     }
 }
 

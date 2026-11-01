@@ -67,6 +67,11 @@
 #        and validated (no record dropped), the hot set compiled from it and installed before
 #        the first run(), then loop(1) (the start-up exits are counted and printed) and loop(n);
 #        every line equal to T0 and to config C, the same set compiled as C, heap verifier clean
+#     3b `spike-c sp-facts check crypto <file> --n 1 --feedback ics_only` (MC-w21-9, SPIKEC-8):
+#        the same check with T0 and P on isolates of the jit preset with ics_only feedback (T0
+#        keeps every IC and drops the profile records, MODES-D19): compiled code from the file
+#        runs on an ics_only isolate, every line equal to T0; the start-up exits are printed
+#        by cause (MC-w21-5)
 #     4  `spike-c sp-facts wrong crypto`: config P with wrong files (another kernel's, another
 #        run's, records shuffled across slots, no records, another FACT_SCHEMA_VERSION, a
 #        RUNTIME file): output equal to T0 each time, the stale, other-schema and RUNTIME files
@@ -214,6 +219,7 @@ spfacts() {
   run "spfacts/write" "$bin" sp-facts write crypto "$prof"
   run "spfacts/p-n1" "$bin" sp-facts check crypto "$prof" --n 1
   run "spfacts/p-n8" "$bin" sp-facts check crypto "$prof"
+  run "spfacts/p-ics-only" "$bin" sp-facts check crypto "$prof" --n 1 --feedback ics_only
   run "spfacts/wrong" "$bin" sp-facts wrong crypto
 }
 

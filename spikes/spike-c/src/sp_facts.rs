@@ -31,6 +31,7 @@ use std::time::Instant;
 use ep9_facts::{
     BinaryHint, CompareHint, FACT_SCHEMA_VERSION, FactHeader, FactSnapshot, FactSource, SlotFacts,
 };
+use ep9_vm::{ExecOptions, Feedback};
 use spike_b::emit::FunctionCode;
 use spike_b::harness::{Config, RunOutput};
 
@@ -195,7 +196,11 @@ impl Installed {
                 if n == 0 {
                     format!("{name}: 0")
                 } else {
-                    format!("{name}: {n} (guards {})", g.join(" "))
+                    format!(
+                        "{name}: {n} (guards {}; causes {})",
+                        g.join(" "),
+                        tier::cause_text(&tier::by_cause(report, &d))
+                    )
                 }
             })
             .collect();
@@ -208,6 +213,23 @@ impl Installed {
 
     pub fn names(&self) -> Vec<&'static str> {
         self.set.iter().map(|(n, _, _)| *n).collect()
+    }
+
+    /// The exits between two [`Installed::counts`] readings by cause (MC-w21-5), summed over
+    /// the installed functions, in cause order.
+    pub fn by_cause(
+        &self,
+        before: &[Vec<u64>],
+        after: &[Vec<u64>],
+    ) -> Vec<(crate::deopt_meta::Cause, u64)> {
+        let mut m = std::collections::BTreeMap::new();
+        for ((_, _, report), (b, a)) in self.set.iter().zip(before.iter().zip(after)) {
+            let d: Vec<u64> = a.iter().zip(b).map(|(a, b)| a - b).collect();
+            for (c, n) in tier::by_cause(report, &d) {
+                *m.entry(c).or_insert(0) += n;
+            }
+        }
+        m.into_iter().collect()
     }
 }
 
@@ -306,7 +328,12 @@ fn texts(k: &Kernel, n: u32) -> Result<Texts, String> {
 
 /// A session with the kernel's defs.js run.
 fn defs_session(t: &Texts, config: &Config) -> Result<Session, String> {
-    let mut s = Session::new(&config.threaded())?;
+    defs_session_exec(t, config, ExecOptions::default())
+}
+
+/// [`defs_session`] on an isolate that runs `exec`.
+fn defs_session_exec(t: &Texts, config: &Config, exec: ExecOptions) -> Result<Session, String> {
+    let mut s = Session::new_exec(&config.threaded(), exec)?;
     s.run(&t.defs, DEFS)
         .result
         .map_err(|e| format!("defs: {e}"))?;
@@ -340,8 +367,18 @@ pub struct T0Run {
 
 /// T0: defs.js, loop(1), loop(n).
 pub fn run_t0(k: &Kernel, n: u32, config: &Config) -> Result<T0Run, String> {
+    run_t0_exec(k, n, config, ExecOptions::default())
+}
+
+/// [`run_t0`] on an isolate that runs `exec`.
+pub fn run_t0_exec(
+    k: &Kernel,
+    n: u32,
+    config: &Config,
+    exec: ExecOptions,
+) -> Result<T0Run, String> {
     let t = texts(k, n)?;
-    let mut s = defs_session(&t, config)?;
+    let mut s = defs_session_exec(&t, config, exec)?;
     let warm = s.run(&t.loop1, "warm.js");
     let at = Instant::now();
     let timed = s.run(&t.loop_n, "loop.js");
@@ -370,6 +407,8 @@ pub struct Run {
     /// Exits in loop(1) (for P: the start-up) and in loop(n), each as a total and a line.
     pub warm_exits: (u64, String),
     pub timed_exits: (u64, String),
+    /// The loop(1) exits by cause (MC-w21-5).
+    pub warm_causes: Vec<(crate::deopt_meta::Cause, u64)>,
 }
 
 /// Config C: defs.js, loop(1) in T0, the hot set compiled from the live facts and
@@ -388,8 +427,21 @@ pub fn run_c(k: &Kernel, n: u32, config: &Config) -> Result<Run, String> {
 /// refused file is not an error here: the run goes on with the hot set in T0
 /// ([`Run::refused_file`]).
 pub fn run_p(k: &Kernel, n: u32, config: &Config, bytes: &[u8]) -> Result<Run, String> {
+    run_p_exec(k, n, config, bytes, ExecOptions::default())
+}
+
+/// [`run_p`] on an isolate that runs `exec` (MC-w21-9: `ExecOptions::jit()` with
+/// `Feedback::ICS_ONLY`, the closest model of a jitless AOT unit compiled from a profile: the
+/// code's shape guards read the live IC entries, which `ics_only` keeps).
+pub fn run_p_exec(
+    k: &Kernel,
+    n: u32,
+    config: &Config,
+    bytes: &[u8],
+    exec: ExecOptions,
+) -> Result<Run, String> {
     let t = texts(k, n)?;
-    let mut s = defs_session(&t, config)?;
+    let mut s = defs_session_exec(&t, config, exec)?;
     let unit = s.script(DEFS).ok_or("no defs script")?.unit.unit();
     let (set, refused_file, dropped) = match facts::read_profiled(bytes, unit) {
         Ok((snap, dropped)) => (
@@ -461,6 +513,7 @@ fn finish(
         secs,
         warm_exits: (sum(&c0, &c1), inst.exit_line(&c0, &c1)),
         timed_exits: (sum(&c1, &c2), inst.exit_line(&c1, &c2)),
+        warm_causes: inst.by_cause(&c0, &c1),
     })
 }
 
@@ -482,18 +535,39 @@ fn same(t0: &T0Run, r: &Run) -> bool {
 /// as C (not empty), every line of P equal to T0 and C (loop(1) and loop(n)), loop(n) a right
 /// driver run, both heap verifiers clean.
 pub fn check(k: &Kernel, n: u32, bytes: &[u8]) -> Result<(Vec<String>, bool), String> {
-    let config = Config::default();
+    check_exec(k, n, bytes, &Config::default(), ExecOptions::default())
+}
+
+/// [`check`] with T0 and config P on isolates of `config` that run `exec` (`sp-facts check
+/// --feedback ics_only`, `--eager`; MC-w21-5, MC-w21-9). Config C stays the default build's
+/// (jit, feedback full, `config`), so its code is the reference P's code must equal: P
+/// compiles from the file, so the isolate's feedback mode changes what runs (T0's records,
+/// the IC entries the guards read), never the code.
+pub fn check_exec(
+    k: &Kernel,
+    n: u32,
+    bytes: &[u8],
+    config: &Config,
+    exec: ExecOptions,
+) -> Result<(Vec<String>, bool), String> {
     let t = texts(k, n)?;
     crate::vm_layout::check(&config.threaded()).map_err(|e| format!("vm layout: {e}"))?;
-    let t0 = run_t0(k, n, &config)?;
-    let c = run_c(k, n, &config)?;
-    let p = run_p(k, n, &config, bytes)?;
+    let t0 = run_t0_exec(k, n, config, exec)?;
+    let c = run_c(k, n, config)?;
+    let p = run_p_exec(k, n, config, bytes, exec)?;
     let mut lines = Vec::new();
     let mut ok = true;
     let mut fail = |lines: &mut Vec<String>, why: String| {
         lines.push(format!("{}: FAIL: {why}", k.name));
         ok = false;
     };
+    lines.push(format!(
+        "{}: T0 and P isolates: preset {}, feedback {}, feedback threshold {}",
+        k.name,
+        exec.preset().name(),
+        exec.feedback_mode().name(),
+        config.feedback_threshold
+    ));
     lines.push(format!("{}: config C: {}", k.name, c.set_line));
     match &p.refused_file {
         Some(e) => fail(&mut lines, format!("the file was refused: {e}")),
@@ -809,6 +883,7 @@ fn flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Result<Option<T>, 
 
 fn run_main(args: &[String]) -> Result<bool, String> {
     let usage = "usage: spike-c sp-facts [write <kernel> <file> | check <kernel> <file> [--n N] \
+                 [--feedback full|ics_only] [--eager] \
                  | wrong <kernel> [--n N] | time <kernel> [--rounds R] [--n N]]";
     let cmd = args.first().ok_or(usage)?;
     let rest = &args[1..];
@@ -840,7 +915,17 @@ fn run_main(args: &[String]) -> Result<bool, String> {
             let path = rest.get(1).ok_or("check needs <file>")?;
             let n = flag(rest, "--n")?.unwrap_or(k.n);
             let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-            let (lines, ok) = check(k, n, &bytes)?;
+            let feedback = match flag::<String>(rest, "--feedback")? {
+                None => Feedback::FULL,
+                Some(f) => Feedback::from_name(&f).ok_or(format!("bad --feedback {f}"))?,
+            };
+            let config = if rest.iter().any(|a| a == "--eager") {
+                Config::eager()
+            } else {
+                Config::default()
+            };
+            let exec = ExecOptions::jit().feedback(feedback);
+            let (lines, ok) = check_exec(k, n, &bytes, &config, exec)?;
             for l in lines {
                 println!("{l}");
             }
@@ -993,6 +1078,49 @@ print(r);\n";
         assert_eq!(p.installed, ["am3"], "{}", p.set_line);
         let c = run_c(k, 1, &Config::default()).expect("c");
         assert_eq!(p.digests, c.digests);
+    }
+
+    /// MC-w21-5 and MC-w21-9: config P of crypto from a right file, with T0 and P on isolates
+    /// with feedback full (threshold 8 and 0) and `ics_only` (jit preset): every line equals
+    /// T0, and the start-up exits, counted by cause, are the same each time and nearly all
+    /// "not filled": am3 runs before T0 made its feedback vector (the native call skips T0's
+    /// call count, and the vector waits for a T0 poll in a deopted frame), so its first shape
+    /// guard exits at "no vector". Only "differs" would mean a wrong file.
+    #[test]
+    fn config_p_start_up_exits_by_cause() {
+        use crate::deopt_meta::Cause;
+        let Some(k) = crypto_ready() else { return };
+        let bytes = train(k).expect("train");
+        let mut seen = Vec::new();
+        for (config, feedback) in [
+            (Config::default(), Feedback::FULL),
+            (Config::eager(), Feedback::FULL),
+            (Config::default(), Feedback::ICS_ONLY),
+        ] {
+            let exec = ExecOptions::jit().feedback(feedback);
+            let t0 = run_t0_exec(k, 1, &config, exec).expect("t0");
+            let p = run_p_exec(k, 1, &config, &bytes, exec).expect("p");
+            assert!(same(&t0, &p), "{:?}: {:?} {:?}", feedback, p.warm, p.timed);
+            assert_eq!(p.installed, ["am3"], "{}", p.set_line);
+            let total: u64 = p.warm_causes.iter().map(|(_, n)| n).sum();
+            assert_eq!(total, p.warm_exits.0, "{:?}", p.warm_causes);
+            let not_filled: u64 = p
+                .warm_causes
+                .iter()
+                .filter(|(c, _)| c.not_filled())
+                .map(|(_, n)| n)
+                .sum();
+            assert!(
+                p.warm_causes
+                    .iter()
+                    .any(|&(c, n)| c == Cause::NoVector && n > 0),
+                "{:?}",
+                p.warm_causes
+            );
+            assert!(not_filled * 10 >= total * 9, "{:?}", p.warm_causes);
+            seen.push(p.warm_causes);
+        }
+        assert!(seen.windows(2).all(|w| w[0] == w[1]), "{seen:?}");
     }
 
     /// R4 (MC-w15-18): wrong files cost exits, never output.
