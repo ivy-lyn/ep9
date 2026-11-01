@@ -717,6 +717,23 @@ pub const HAND_FACTS: [(&str, &str, u64, &str); 4] = [
     ),
 ];
 
+/// The `ep9_value::encoding` constants Spike C reads (the emitter, the graph builder, the deopt
+/// metadata and this module; the emitter and the builder bake them into code), owner Value
+/// encoding. They are not `ep9_vm::layout` items, so [`READ_SET`] does not list them (the
+/// M5-P4 W1 reviewer F8). The test `encoding_reads_are_what_spike_c_reads` keeps this list
+/// equal to the names the spike's sources use (`VERSION`, which names the owner's version, is
+/// not a fact).
+pub const ENCODING_READS: [&str; 8] = [
+    "DOUBLE_ENCODE_OFFSET",
+    "NOT_CELL_MASK",
+    "NUMBER_TAG",
+    "PURE_NAN_BITS",
+    "VALUE_FALSE",
+    "VALUE_NULL",
+    "VALUE_TRUE",
+    "VALUE_UNDEFINED",
+];
+
 /// The R17 read set grouped by owner, with the owner's version number (`spike-c read-set`).
 pub fn read_set_lines() -> Vec<String> {
     let version = |owner: &str| match owner {
@@ -756,6 +773,13 @@ pub fn read_set_lines() -> Vec<String> {
                 "; {} hand facts (not exported, proved by `check`): {}",
                 hand.len(),
                 hand.join(", ")
+            ));
+        }
+        if owner == "Value encoding" {
+            line.push_str(&format!(
+                "; {} `ep9_value::encoding` constants: {}",
+                ENCODING_READS.len(),
+                ENCODING_READS.join(", ")
             ));
         }
         out.push(line);
@@ -984,6 +1008,46 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
         assert_eq!(lines.len(), 5, "{lines:?}");
         assert!(lines[0].starts_with("OBJECT_LAYOUT 5: "), "{}", lines[0]);
         assert!(lines[0].contains("4 hand facts"), "{}", lines[0]);
+        assert!(
+            lines[4].starts_with("Value encoding 1: 2 exported: HOLE, NATIVE_WORD_OFFSET; 8 `ep9_value::encoding` constants: DOUBLE_ENCODE_OFFSET, "),
+            "{}",
+            lines[4]
+        );
+    }
+
+    /// [`ENCODING_READS`] is exactly the `ep9_value::encoding` constants the spike's sources
+    /// name (a path into `ep9_value::encoding`, or a name of a `use` list of it), `VERSION`
+    /// aside. A new read with no row (or a row nothing reads) fails here.
+    #[test]
+    fn encoding_reads_are_what_spike_c_reads() {
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let ident = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect()
+        };
+        let mut used = std::collections::BTreeSet::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).expect("read");
+            for (at, m) in src.match_indices("ep9_value::encoding::") {
+                let rest = &src[at + m.len()..];
+                if let Some(list) = rest.strip_prefix('{') {
+                    let list = &list[..list.find('}').expect("a closed use list")];
+                    used.extend(list.split(',').map(|n| ident(n.trim())));
+                } else {
+                    used.insert(ident(rest));
+                }
+            }
+        }
+        used.retain(|n| !n.is_empty() && n != "VERSION");
+        let listed: std::collections::BTreeSet<String> =
+            ENCODING_READS.iter().map(|n| n.to_string()).collect();
+        assert_eq!(listed.len(), ENCODING_READS.len(), "a name twice");
+        assert_eq!(used, listed);
     }
 
     /// The value after `prefix` in `src` (the first line that has it), up to `;` or `)`.
