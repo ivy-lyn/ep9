@@ -376,12 +376,12 @@ fn the_atoms_list_is_append_only() {
         (32, "next"),
         (33, "return"),
         (34, "throw"),
+        (35, "callee"),
     ];
     let got: Vec<(u16, &str)> = Atom::ALL.iter().map(|a| (a.id(), a.text())).collect();
     assert_eq!(&got[..want.len()], want);
-    for (i, a) in Atom::ALL.iter().enumerate() {
-        assert_eq!(usize::from(a.id()), i);
-    }
+    let ids = Atom::ALL.iter().map(|a| usize::from(a.id()));
+    assert!(ids.eq(0..Atom::ALL.len()), "each id is its index: {got:?}");
     // Every static atom is the table's atom of its text and a root.
     let iso = isolate(config(Dispatch::DEFAULT, false));
     let rt = &*iso.rt;

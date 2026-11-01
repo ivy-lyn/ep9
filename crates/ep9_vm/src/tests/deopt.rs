@@ -132,9 +132,9 @@ fn the_list_widths_refuse_the_next_value_and_tag_15() {
         let e = Table::decode(&one_record(tag, 0, &[])).unwrap_err();
         assert!(e.contains(&format!("unknown record tag {tag}")), "{e}");
     }
-    // The exit class bit is a value, not a reserved bit; bits 5-7 are reserved.
+    // Exit classes (bits 4-7): 0 and 1 built; 15 (0xF0) refused, not the next class 2 (H29).
     Table::decode(&one_record(form::ENVIRONMENT, 0, &[])).expect("environment class");
-    for bit in [0x20, 0x40, 0x80] {
+    for bit in [0x40, 0x80, 0xF0] {
         let e = Table::decode(&one_record(bit, 0, &[])).unwrap_err();
         assert!(e.contains("reserved bits 5-7"), "{e}");
     }
