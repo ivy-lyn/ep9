@@ -45,6 +45,10 @@ pub struct TierRun {
     /// compiled code is what runs and deopts), or `None` if the kernel has no probe. The
     /// probe's result equals T0's (else the run is an error).
     pub probe_exit: Option<u32>,
+    /// A forced build (a force table, WI-SC4): a forced exit leaves by its guard's first
+    /// stub, which for a shape guard is the `differs` one, so [`TierRun::line`] gives no
+    /// causes for it (the M5-P4 W1 reviewer F6).
+    pub forced: bool,
 }
 
 /// The guards of the exit records whose counter is not 0 (`exits` in record order), each
@@ -83,6 +87,27 @@ pub fn cause_text(by: &[(crate::deopt_meta::Cause, u64)]) -> String {
         .join(", ")
 }
 
+/// The exits part of [`TierRun::line`]: the total, the guards that fired and the exits by
+/// cause. A forced build (`forced`) gets no causes: its forced exits all take a guard's first
+/// stub (`differs` for a shape guard), so a by-cause count would read them as wrong profiles.
+pub fn exits_text(report: &CompileReport, exits: &[u64], forced: bool) -> String {
+    let total: u64 = exits.iter().sum();
+    if total == 0 {
+        return "; exits 0".to_string();
+    }
+    let guards = fired(report, exits)
+        .iter()
+        .map(|g| format!("g{g}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let causes = if forced {
+        "forced build: no causes, a forced exit takes its guard's first stub".to_string()
+    } else {
+        format!("causes {}", cause_text(&by_cause(report, exits)))
+    };
+    format!("; exits {total} (guards {guards}; {causes})")
+}
+
 impl TierRun {
     /// One summary line.
     pub fn line(&self) -> String {
@@ -98,20 +123,7 @@ impl TierRun {
             Some(g) => format!("; probe: a new receiver shape deopts at g{g}, result as T0"),
             None => String::new(),
         };
-        let total: u64 = self.exits.iter().sum();
-        let guards = fired(&self.report, &self.exits)
-            .iter()
-            .map(|g| format!("g{g}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let exits = if total == 0 {
-            "; exits 0".to_string()
-        } else {
-            format!(
-                "; exits {total} (guards {guards}; causes {})",
-                cause_text(&by_cause(&self.report, &self.exits))
-            )
-        };
+        let exits = exits_text(&self.report, &self.exits, self.forced);
         format!(
             "{} {} n = {}: {verdict}{exits}; T0 {:.3} s, compiled {:.3} s (one run, report \
              only){probe}",
@@ -366,6 +378,7 @@ pub fn run_full(
         t0_secs,
         compiled_secs,
         probe_exit,
+        forced: opts.force.is_some(),
     })
 }
 
@@ -1570,6 +1583,62 @@ mod tests {
                 r.report.emit.meta.line()
             );
         }
+    }
+
+    /// The M5-P4 W1 reviewer F6: a forced shape guard leaves by its first stub, `differs`, so
+    /// the exits line of a forced build gives no causes (a by-cause count would read the
+    /// forced exit as a wrong profile); the same exits of a build that is not forced do.
+    #[test]
+    fn a_forced_build_gives_no_exit_causes() {
+        if !aarch64() {
+            return;
+        }
+        use crate::emit_a64::{EmitOptions, ForceTable};
+        let defs = "function getX(o) { return o.x; }";
+        let warm = "for (var q = 0; q < 20; q++) getX({ x: q });";
+        let main = "for (var q = 0; q < 4; q++) print(getX({ x: q }));";
+        let plain = run_script(&Config::default(), defs, warm, main, "getX").expect("run");
+        assert!(
+            plain.equal() && plain.fired().is_empty(),
+            "{:?}",
+            plain.exits
+        );
+        let meta = &plain.report.emit.meta.exits;
+        let g = meta
+            .iter()
+            .find(|x| x.cause == Cause::Differs)
+            .expect("a shape guard")
+            .guard;
+        let t = ForceTable::new(FORCE_LEN);
+        t.arm(g, 2);
+        let opts = EmitOptions {
+            force: Some(&t),
+            ..Default::default()
+        };
+        let r = run_script_full(
+            &Config::default(),
+            defs,
+            warm,
+            main,
+            "getX",
+            IntFacts::Live,
+            &opts,
+        )
+        .expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!((t.get(g), r.fired()), (0, vec![g]), "{:?}", r.exits);
+        assert_eq!(by_cause(&r.report, &r.exits), [(Cause::Differs, 1)]);
+        let forced = exits_text(&r.report, &r.exits, true);
+        assert_eq!(
+            forced,
+            format!(
+                "; exits 1 (guards g{g}; forced build: no causes, a forced exit takes its guard's first stub)"
+            )
+        );
+        assert_eq!(
+            exits_text(&r.report, &r.exits, false),
+            format!("; exits 1 (guards g{g}; causes differs 1)")
+        );
     }
 
     /// WI-SC4 (C2): each guard of `dot` and of `scale` forced alone at its second pass: the
