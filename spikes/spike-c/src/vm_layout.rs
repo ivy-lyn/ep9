@@ -613,6 +613,156 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
     Ok(())
 }
 
+/// The R17 read set (plan v10 §6.1 WI-SC9 (1); an input of the M1a record): every
+/// `ep9_vm::layout` item Spike C reads (the emitter, the register allocator and this
+/// module), with the version that owns it (MC-w15-5). The test
+/// `read_set_is_what_spike_c_reads` keeps it equal to the names the spike's sources use, and
+/// `read_set_names_the_owner_of_each_item` checks each owner against the doc line of the
+/// item in `crates/ep9_vm/src/layout.rs` (each export starts its doc with its owner). The two
+/// smi handlers ([`ARRAY_LENGTH_HANDLER`], [`field_in_object_handler`]) are derived from the
+/// IC_LAYOUT items here; the 4 facts the export lacks are [`HAND_FACTS`].
+pub const READ_SET: [(&str, &str); 62] = [
+    ("ARRAY_ELEMENTS", "OBJECT_LAYOUT"),
+    ("ARRAY_LENGTH", "OBJECT_LAYOUT"),
+    ("CONTEXT_LENGTH", "OBJECT_LAYOUT"),
+    ("CONTEXT_SLOTS", "OBJECT_LAYOUT"),
+    ("CX_BUDGET", "VM_LAYOUT"),
+    ("CX_NATIVE_LIMIT", "VM_LAYOUT"),
+    ("CX_OUT_FP", "VM_LAYOUT"),
+    ("CX_OUT_PC", "VM_LAYOUT"),
+    ("CX_RUNTIME_TABLE", "VM_LAYOUT"),
+    ("CX_TABLE", "VM_LAYOUT"),
+    ("ELEMENTS_CAPACITY", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DATA", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DOUBLE_CAPACITY", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DOUBLE_DATA", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DOUBLE_HOLE", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_DICTIONARY", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_HOLEY_DOUBLE", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_HOLEY_ELEMENTS", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_HOLEY_INT32", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_PACKED_DOUBLE", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_PACKED_ELEMENTS", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_PACKED_INT32", "OBJECT_LAYOUT"),
+    ("FEEDBACK_INFO", "IC_LAYOUT"),
+    ("FEEDBACK_KEY", "IC_LAYOUT"),
+    ("FEEDBACK_SLOTS", "IC_LAYOUT"),
+    ("FEEDBACK_SLOT_SIZE", "IC_LAYOUT"),
+    ("FEEDBACK_VALUE", "IC_LAYOUT"),
+    ("FI_FEEDBACK", "VM_LAYOUT"),
+    ("FP_CALLER_FP", "FRAME"),
+    ("FP_CONTEXT", "FRAME"),
+    ("FP_FUNCTION_INFO", "FRAME"),
+    ("FP_RECEIVER", "FRAME"),
+    ("FP_RETURN_PC", "FRAME"),
+    ("FUNCTION_CONTEXT", "OBJECT_LAYOUT"),
+    ("HOLE", "Value encoding"),
+    ("KIND_ARRAY", "OBJECT_LAYOUT"),
+    ("KIND_BYTE", "OBJECT_LAYOUT"),
+    ("KIND_ELEMENTS", "OBJECT_LAYOUT"),
+    ("KIND_ELEMENTS_DICT", "OBJECT_LAYOUT"),
+    ("KIND_ELEMENTS_DOUBLE", "OBJECT_LAYOUT"),
+    ("KIND_OBJECT", "OBJECT_LAYOUT"),
+    ("NATIVE_WORD_OFFSET", "Value encoding"),
+    ("OBJECT_FIELDS", "OBJECT_LAYOUT"),
+    ("POLY_CASES", "IC_LAYOUT"),
+    ("POLY_CASE_SIZE", "IC_LAYOUT"),
+    ("POLY_COUNT", "IC_LAYOUT"),
+    ("POLY_HANDLER", "IC_LAYOUT"),
+    ("RT_CALL_ANY", "VM_LAYOUT"),
+    ("RT_DEOPT", "VM_LAYOUT"),
+    ("RT_GET_KEYED", "VM_LAYOUT"),
+    ("RT_POLL", "VM_LAYOUT"),
+    ("RT_SET_KEYED", "VM_LAYOUT"),
+    ("RT_STACK_OVERFLOW", "VM_LAYOUT"),
+    ("RT_UNWIND", "VM_LAYOUT"),
+    ("SHAPE_ELEMENTS_KIND_SHIFT", "OBJECT_LAYOUT"),
+    ("SHAPE_ID_BYTE", "OBJECT_LAYOUT"),
+    ("SMI_ARRAY_LENGTH", "IC_LAYOUT"),
+    ("SMI_FIELD_IN_OBJECT", "IC_LAYOUT"),
+    ("SMI_KIND_MASK", "IC_LAYOUT"),
+    ("SMI_SHIFT", "IC_LAYOUT"),
+    ("fp_param", "FRAME"),
+    ("fp_register", "FRAME"),
+];
+
+/// The 4 layout facts Spike C reads that `ep9_vm::layout` does not export (MC-w20-7; the export
+/// is frozen in month 5, plan v10 rule 2): (name here, the VM item it copies, value, owner).
+/// Each is proved on live objects by [`check`], and the test `hand_facts_equal_the_vm_source`
+/// reads each from the VM's own source text, so a change there fails without a live run.
+pub const HAND_FACTS: [(&str, &str, u64, &str); 4] = [
+    (
+        "SHAPE_CAGE_ALIGN",
+        "shape::CAGE_ALIGN",
+        SHAPE_CAGE_ALIGN,
+        "OBJECT_LAYOUT",
+    ),
+    (
+        "SHAPE_COUNTS",
+        "shape::shf::COUNTS",
+        SHAPE_COUNTS as u64,
+        "OBJECT_LAYOUT",
+    ),
+    (
+        "KIND_SHAPE",
+        "kinds::SHAPE",
+        KIND_SHAPE as u64,
+        "OBJECT_LAYOUT",
+    ),
+    (
+        "KIND_CONTEXT",
+        "kinds::CONTEXT",
+        KIND_CONTEXT as u64,
+        "OBJECT_LAYOUT",
+    ),
+];
+
+/// The R17 read set grouped by owner, with the owner's version number (`spike-c read-set`).
+pub fn read_set_lines() -> Vec<String> {
+    let version = |owner: &str| match owner {
+        "OBJECT_LAYOUT" => ep9_vm::versions::OBJECT_LAYOUT_VERSION.to_string(),
+        "IC_LAYOUT" => ep9_vm::versions::IC_LAYOUT_VERSION.to_string(),
+        "FRAME" => ep9_vm::versions::FRAME_VERSION.to_string(),
+        "VM_LAYOUT" => ep9_vm::versions::VM_LAYOUT_VERSION.to_string(),
+        "Value encoding" => ep9_value::encoding::VERSION.to_string(),
+        _ => "?".into(),
+    };
+    let mut out = Vec::new();
+    for owner in [
+        "OBJECT_LAYOUT",
+        "IC_LAYOUT",
+        "FRAME",
+        "VM_LAYOUT",
+        "Value encoding",
+    ] {
+        let names: Vec<&str> = READ_SET
+            .iter()
+            .filter(|(_, o)| *o == owner)
+            .map(|(n, _)| *n)
+            .collect();
+        let hand: Vec<String> = HAND_FACTS
+            .iter()
+            .filter(|h| h.3 == owner)
+            .map(|h| format!("{} = {} ({})", h.0, h.2, h.1))
+            .collect();
+        let mut line = format!(
+            "{owner} {}: {} exported: {}",
+            version(owner),
+            names.len(),
+            names.join(", ")
+        );
+        if !hand.is_empty() {
+            line.push_str(&format!(
+                "; {} hand facts (not exported, proved by `check`): {}",
+                hand.len(),
+                hand.join(", ")
+            ));
+        }
+        out.push(line);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,5 +859,169 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
         assert_eq!(int32_of(int32_bits(-5)), Some(-5));
         assert_eq!(int32_of(double_bits(1.5)), None);
         assert!(!is_cell(int32_bits(0)) && !is_cell(HOLE) && !is_cell(0));
+    }
+
+    /// The VM's `layout.rs`: each public item and the owner its doc names first (`VM_LAYOUT.`,
+    /// `FRAME.`, `OBJECT_LAYOUT (5).`, `IC_LAYOUT (MC-w16-4).`, `Value encoding.` ...).
+    const LAYOUT_RS: &str = include_str!("../../../crates/ep9_vm/src/layout.rs");
+
+    /// (name, owner) of each `pub const`, `pub const fn` and `pub fn` of [`LAYOUT_RS`] that has
+    /// a doc block; the owner is the doc block's first words up to `.` or ` (`.
+    fn layout_items() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut doc: Option<String> = None;
+        for l in LAYOUT_RS.lines() {
+            let t = l.trim_start();
+            if let Some(d) = t.strip_prefix("///") {
+                doc.get_or_insert_with(|| d.trim().to_string());
+                continue;
+            }
+            let item = ["pub const fn ", "pub const ", "pub fn "]
+                .iter()
+                .find_map(|p| l.strip_prefix(p));
+            if let (Some(rest), Some(d)) = (item, doc.as_ref()) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                let owner = d
+                    .split(['.', '('])
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                out.push((name, owner));
+            }
+            if !t.starts_with("#[") {
+                doc = None;
+            }
+        }
+        out
+    }
+
+    /// The names of `ep9_vm::layout` items the spike's sources use: `layout::NAME` (not
+    /// `vm_layout::NAME`, which is this module) and the names of a `use ep9_vm::layout::{..}`.
+    fn names_used(src: &str, exports: &std::collections::BTreeSet<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        let ident = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect()
+        };
+        for (at, _) in src.match_indices("layout::") {
+            let before = src[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            let rest = &src[at + "layout::".len()..];
+            if let Some(list) = rest.strip_prefix('{') {
+                let list = &list[..list.find('}').expect("a closed use list")];
+                out.extend(list.split(',').map(|n| ident(n.trim())));
+            } else {
+                out.push(ident(rest));
+            }
+        }
+        out.retain(|n| exports.contains(n));
+        out
+    }
+
+    /// Every `.rs` file under `dir`, recursively.
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("src dir") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                sources(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// R17 read set (WI-SC9 (1)): [`READ_SET`] is exactly the `ep9_vm::layout` items the
+    /// spike's sources read. A new read with no row (or a row nothing reads) fails here.
+    #[test]
+    fn read_set_is_what_spike_c_reads() {
+        let exports: std::collections::BTreeSet<String> =
+            layout_items().into_iter().map(|(n, _)| n).collect();
+        assert!(exports.len() > 60, "{exports:?}");
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut used = std::collections::BTreeSet::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).expect("read");
+            used.extend(names_used(&src, &exports));
+        }
+        let listed: std::collections::BTreeSet<String> =
+            READ_SET.iter().map(|(n, _)| n.to_string()).collect();
+        assert_eq!(listed.len(), READ_SET.len(), "a name twice in READ_SET");
+        assert_eq!(
+            used.difference(&listed).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "read but not in READ_SET"
+        );
+        assert_eq!(
+            listed.difference(&used).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "in READ_SET but not read"
+        );
+    }
+
+    /// Each [`READ_SET`] owner is the owner `layout.rs` names for the item.
+    #[test]
+    fn read_set_names_the_owner_of_each_item() {
+        let items = layout_items();
+        for (name, owner) in READ_SET {
+            let (_, doc) = items
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is not in layout.rs"));
+            assert_eq!(doc, owner, "{name}");
+        }
+        let lines = read_set_lines();
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!(lines[0].starts_with("OBJECT_LAYOUT 5: "), "{}", lines[0]);
+        assert!(lines[0].contains("4 hand facts"), "{}", lines[0]);
+    }
+
+    /// The value after `prefix` in `src` (the first line that has it), up to `;` or `)`.
+    fn value_after<'a>(src: &'a str, prefix: &str) -> &'a str {
+        let l = src
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("no line {prefix}"));
+        l[..l.find([';', ')']).expect("an end")].trim()
+    }
+
+    /// MC-w20-7: the 4 hand facts ([`HAND_FACTS`]) equal the VM items they copy, read from the
+    /// VM's own source text (the items are crate-private, and `layout.rs` is frozen until
+    /// `m5-p5`, plan v10 rule 2). [`check`] proves the same values on live objects; this test
+    /// fails at once on a change of the VM's text, with no isolate.
+    #[test]
+    fn hand_facts_equal_the_vm_source() {
+        const KINDS_RS: &str = include_str!("../../../crates/ep9_vm/src/kinds.rs");
+        const SHAPE_RS: &str = include_str!("../../../crates/ep9_vm/src/shape.rs");
+        let kind = |name: &str| -> u64 {
+            value_after(KINDS_RS, &format!("pub(crate) const {name}: KindId = k("))
+                .parse()
+                .expect("a kind id")
+        };
+        let cage = value_after(SHAPE_RS, "pub(crate) const CAGE_ALIGN: usize =");
+        let (a, b) = cage.split_once("<<").expect("a << b");
+        let cage: u64 = a.trim().parse::<u64>().expect("a") << b.trim().parse::<u32>().expect("b");
+        // `COUNTS` is the `counts` field of the SHAPE fields (`mod shf`), not another module's.
+        let shf = &SHAPE_RS[SHAPE_RS.find("mod shf {").expect("mod shf")..];
+        let shf = &shf[..shf.find('}').expect("end of shf")];
+        let counts: u64 = value_after(shf, "pub const COUNTS: usize =")
+            .parse()
+            .expect("counts");
+        let vm = [cage, counts, kind("SHAPE"), kind("CONTEXT")];
+        for ((name, item, value, owner), v) in HAND_FACTS.iter().zip(vm) {
+            assert_eq!(*value, v, "{name} copies {item}");
+            assert_eq!(*owner, "OBJECT_LAYOUT", "{name}");
+        }
+        assert_eq!(PINNED[0], ("OBJECT_LAYOUT", 5));
     }
 }
