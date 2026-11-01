@@ -29,7 +29,7 @@
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
-//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and C4 (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c` and the regress fork pin, M5-P4-ORCH-2), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
+//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and C4 (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from and the regress fork pin, M5-P4-ORCH-2 and -9), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
 //! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241), in each of its Verdict rows, with a row for each of C5a, C5b and C5c (as item 7), each with a fresh `Commit` as in item 7 and the `Lowering` label `jit, PROFILED input` (else refused, at least OPEN) | repo-wide, as the host |
@@ -287,8 +287,14 @@ const VERDICTS_HOW: &str = "the Spike C and SP-Facts Verdict tables (a markdown 
 /// `[build-dependencies]` and target tables, read from each `Cargo.toml`: Spike B's lib and
 /// every engine crate it builds) and the regress fork that its `[patch.crates-io]` builds (the
 /// git-ignored checkout is made from the pin and the patch files, `scripts/sync-regress.sh`).
+/// M5-P4-ORCH-9 (2): also the root `Cargo.toml`. Spike C has its own workspace and lock, but the
+/// engine crates it builds by path are root-workspace members with `workspace = true` keys, and
+/// cargo reads those from their own workspace root, the root `Cargo.toml`: `[workspace.package]`
+/// (edition, rust-version, license), `[workspace.dependencies]` (the exact oxc and regress pins)
+/// and `[workspace.lints]`. A changed root edition or oxc pin changes the spike-c build (and
+/// its lock). The root `[patch]` and `[profile]` tables do not reach it: spike-c has its own.
 /// The test `verdict_fresh_paths_are_the_spike_c_closure` reads the closure and compares.
-const VERDICT_FRESH_PATHS: [&str; 15] = [
+const VERDICT_FRESH_PATHS: [&str; 16] = [
     "spikes/spike-c",
     "spikes/spike-b",
     "crates/ep9_builtins",
@@ -304,6 +310,7 @@ const VERDICT_FRESH_PATHS: [&str; 15] = [
     "crates/ep9_vm",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "Cargo.toml",
 ];
 /// Item 7: the `Lowering` label of a Spike C row (MODES-D13: Spike C code is lowering `jit`).
 const SPIKE_C_LOWERING: &str = "jit";
@@ -4384,7 +4391,11 @@ mod tests {
         let mut by_path = Vec::new();
         for p in VERDICT_FRESH_PATHS {
             let before = git_in(&root, &["rev-parse", "HEAD"]);
-            write(&root, &format!("{p}/f.rs"), "// changed\n");
+            if root.join(p).is_file() {
+                write(&root, p, "# changed\n");
+            } else {
+                write(&root, &format!("{p}/f.rs"), "// changed\n");
+            }
             commit_all(&root, p);
             by_path.push((p, before));
         }
@@ -4677,7 +4688,8 @@ mod tests {
     /// M5-P4-ORCH-2: [`VERDICT_FRESH_PATHS`] is the path-dependency closure of `spikes/spike-c`
     /// as its `Cargo.toml` files say (read here from this repository, not a fixture: the test
     /// checks the list against the code a verdict judges), with the regress fork checkout
-    /// (`third_party/regress`, git-ignored) named by its pin and patch files.
+    /// (`third_party/regress`, git-ignored) named by its pin and patch files, and the workspace
+    /// root manifest of each crate that inherits a `workspace = true` key (M5-P4-ORCH-9 (2)).
     #[test]
     fn verdict_fresh_paths_are_the_spike_c_closure() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -4688,11 +4700,32 @@ mod tests {
                 .to_string_lossy()
                 .replace('\\', "/")
         };
+        // Cargo's workspace root of a package: the nearest directory, its own included, whose
+        // Cargo.toml has a `[workspace]` table.
+        let workspace_root = |dir: &Path| -> PathBuf {
+            dir.ancestors()
+                .find(|d| {
+                    read(&d.join("Cargo.toml"))
+                        .is_ok_and(|t| t.lines().any(|l| l.trim() == "[workspace]"))
+                })
+                .unwrap_or_else(|| panic!("{}: no workspace root", dir.display()))
+                .to_path_buf()
+        };
         let spike_c = repo.join("spikes/spike-c");
         let mut todo = vec![spike_c.clone()];
         let mut closure: BTreeSet<String> = BTreeSet::from([rel(&spike_c)]);
+        let mut inherits = BTreeSet::new();
         while let Some(dir) = todo.pop() {
             let text = read(&dir.join("Cargo.toml")).unwrap();
+            // `version.workspace = true`, `x = { workspace = true }`, `[lints] workspace = true`:
+            // cargo reads the value from the package's workspace root manifest.
+            if text
+                .lines()
+                .any(|l| l.split('#').next().unwrap().contains("workspace = true"))
+            {
+                inherits.insert(rel(&dir));
+                closure.insert(rel(&workspace_root(&dir).join("Cargo.toml")));
+            }
             for dep in path_deps(&text) {
                 let d = std::fs::canonicalize(dir.join(&dep))
                     .unwrap_or_else(|e| panic!("{}: {dep}: {e}", dir.display()));
@@ -4718,8 +4751,29 @@ mod tests {
         assert_eq!(list.len(), VERDICT_FRESH_PATHS.len(), "a path twice");
         assert_eq!(list, closure);
         // More than the V10-D37 three (a guard against an empty read).
-        for p in ["spikes/spike-b", "crates/ep9_heap", "crates/ep9_unit"] {
+        for p in [
+            "spikes/spike-b",
+            "crates/ep9_heap",
+            "crates/ep9_unit",
+            "Cargo.toml",
+        ] {
             assert!(closure.contains(p), "{p}: {closure:?}");
+        }
+        // The spikes keep their own workspace (no inherited key); every engine crate inherits
+        // from the root manifest, which has the tables they name.
+        assert!(inherits.contains("crates/ep9_vm") && inherits.contains("crates/ep9_frontend"));
+        assert!(
+            !inherits.iter().any(|d| d.starts_with("spikes/")),
+            "{inherits:?}"
+        );
+        let root = read(&repo.join("Cargo.toml")).unwrap();
+        for t in [
+            "[workspace]",
+            "[workspace.package]",
+            "[workspace.dependencies]",
+            "[workspace.lints.rust]",
+        ] {
+            assert!(root.lines().any(|l| l.trim() == t), "{t}");
         }
     }
 
@@ -4783,7 +4837,7 @@ mod tests {
         );
         let fresh: BTreeSet<String> = ticks(bullet("Commit"))
             .into_iter()
-            .filter(|t| t.contains('/'))
+            .filter(|t| t.contains('/') || t == "Cargo.toml")
             .collect();
         let want: BTreeSet<String> = VERDICT_FRESH_PATHS.iter().map(|p| p.to_string()).collect();
         assert_eq!(fresh, want, "the §8 Commit bullet names the fresh paths");
