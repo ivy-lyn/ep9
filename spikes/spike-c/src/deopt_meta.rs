@@ -463,4 +463,94 @@ mod tests {
         let e = ep9_vm::NativeCx::check_deopt_meta(&cell).unwrap_err();
         assert!(e.contains("not an immediate Value"), "{e}");
     }
+
+    /// The signed fields (a value's VM register target and a VM frame slot's byte offset from
+    /// fp) are ZigZag-mapped, `(v << 1) ^ (v >> 63)`, then written as a uleb: not SLEB128
+    /// (two's complement, as in DWARF CFI). The fixed bytes of both forms differ for every
+    /// value but 0, so this pins the form (Codex r1 spikec8, H29-Q2).
+    #[test]
+    fn signed_fields_are_zigzag_uleb_not_sleb128() {
+        // (value, ZigZag + uleb: what `sleb` writes, SLEB128: what it does not write)
+        let cases: [(i64, &[u8], &[u8]); 11] = [
+            (0, &[0x00], &[0x00]),
+            (-1, &[0x01], &[0x7F]),
+            (1, &[0x02], &[0x01]),
+            (-64, &[0x7F], &[0x40]),
+            (63, &[0x7E], &[0x3F]),
+            (64, &[0x80, 0x01], &[0xC0, 0x00]),
+            (-65, &[0x81, 0x01], &[0xBF, 0x7F]),
+            (-8, &[0x0F], &[0x78]),
+            (-123_456, &[0xFF, 0x88, 0x0F], &[0xC0, 0xBB, 0x78]),
+            (
+                i64::from(i32::MIN),
+                &[0xFF, 0xFF, 0xFF, 0xFF, 0x0F],
+                &[0x80, 0x80, 0x80, 0x80, 0x78],
+            ),
+            (
+                i64::from(i32::MAX),
+                &[0xFE, 0xFF, 0xFF, 0xFF, 0x0F],
+                &[0xFF, 0xFF, 0xFF, 0xFF, 0x07],
+            ),
+        ];
+        for (v, zigzag, sleb128) in cases {
+            let mut out = Vec::new();
+            sleb(&mut out, v);
+            assert_eq!(out, zigzag, "{v}");
+            assert_eq!(out == sleb128, v == 0, "{v}");
+        }
+    }
+
+    /// The VM's reader (`ep9_vm` `deopt.rs` `Reader::sleb32`) reads the same ZigZag + uleb
+    /// bytes back: a word offset is taken, and a non-word offset is refused with the exact
+    /// value it read. The SLEB128 bytes of the same offset read as another value.
+    #[test]
+    fn the_vm_reads_the_zigzag_bytes_back() {
+        // One exit record with one value: the accumulator in a VM frame slot at `o`.
+        let table = |o: i32| ExitTable {
+            consts: vec![],
+            exits: vec![ExitRecord {
+                pc: 0,
+                guard: 0,
+                cause: Cause::Check,
+                bytecode: 0,
+                counter: 0,
+                feedback: None,
+                values: vec![ExitValue {
+                    target: None,
+                    repr: ValueRepr::Tagged,
+                    loc: ValueLoc::Frame(o),
+                }],
+            }],
+        };
+        // records 1, consts 0, header 0, pc 0, bytecode 0, counter 0, feedback 0, inline 0,
+        // values 1, tag 0x83 (VM frame slot, Tagged, the accumulator), offset -8 = 0x0F.
+        let b = table(-8).encode();
+        assert_eq!(
+            b,
+            [
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x83, 0x0F
+            ]
+        );
+        let check = ep9_vm::NativeCx::check_deopt_meta;
+        for o in [-8, 8, -64, 64, -4096, i32::MIN] {
+            assert_eq!(check(&table(o).encode()), Ok(1), "{o}");
+        }
+        for o in [-12, -65, 63, -4100, i32::MAX] {
+            let e = check(&table(o).encode()).unwrap_err();
+            assert!(
+                e.contains(&format!("byte offset {o} is not a word")),
+                "{o}: {e}"
+            );
+        }
+        // SLEB128 bytes of -8 (0x78) and 8 (0x08): the reader reads 60 and 4.
+        for (sleb128, read) in [(0x78u8, 60), (0x08, 4)] {
+            let mut bad = b.clone();
+            *bad.last_mut().unwrap() = sleb128;
+            let e = check(&bad).unwrap_err();
+            assert!(
+                e.contains(&format!("byte offset {read} is not a word")),
+                "{e}"
+            );
+        }
+    }
 }
