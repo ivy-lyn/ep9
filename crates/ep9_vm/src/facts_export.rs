@@ -66,6 +66,14 @@
 //!   InstanceOf (14) gets a record only once its slot left the start state (undefined, int32
 //!   0): `instance_ic.rs` (M4-P3 IC2) records a run only when it gives a result (a rhs that
 //!   throws records nothing), so a slot in its start state has no rhs to name.
+//! - **`ics_only`: no record kinds (MC-w21-1, M5-P3-ORCH-14).** An isolate whose feedback mode
+//!   is `ics_only` (MODES-D11; the jitless preset's default) runs no record of `profile.rs`, so
+//!   a slot that only those records write keeps its first state, which would export as "int32
+//!   or never ran" (a BinaryOp or CompareOp site with only the implicit bit). The export of
+//!   such an isolate leaves those kinds out ([`record_only`]): it has the IC and object-model
+//!   kinds (named and global sites, `Construct*` sites, InstanceOf, Literal, CloneObject) and
+//!   no Call record of a `Call*` site, keyed, BinaryOp, CompareOp, TypeOf, ForIn, JumpLoop or
+//!   CreateClosure record. The header is the same (no format change).
 //! - **Implicit bits (H16-Q2 (1); MODES-D10, F-R9).** T0 writes no bit for an int32 pair with
 //!   an int32 result at a BinaryOp site (also an int32 operand of a unary site), an int32 pair
 //!   at a CompareOp site, and a present int32 index of an Array at `GetKeyedProperty`. The
@@ -186,6 +194,8 @@ pub fn export_facts(
 ) -> Result<ep9_facts::FactSnapshot, &'static str> {
     let rt: &Runtime = &isolate.rt;
     let mut ex = Exporter::new(rt);
+    // MC-w21-1: an `ics_only` isolate wrote no record, so the record kinds are left out.
+    let records = rt.exec.get().feedback_mode() != crate::exec::Feedback::ICS_ONLY;
     let units = rt.units.borrow();
     let mut target = None;
     for u in units.iter() {
@@ -210,6 +220,9 @@ pub fn export_facts(
         debug_assert_eq!(feedback::slot_count(v) as usize, kinds.len());
         for (i, (&k, u)) in kinds.iter().zip(&uses).enumerate() {
             let i = i as u32;
+            if !records && record_only(k, u) {
+                continue;
+            }
             let Some(facts) = ex.slot(&units, v, i, k, u) else {
                 continue;
             };
@@ -234,6 +247,40 @@ struct SlotUse {
     construct: bool,
     /// A site of another kind whose slot T0 writes uses it.
     other: bool,
+}
+
+/// True if the facts of a slot of kind `k` (used as `u`) come only from the records of
+/// `profile.rs` (the IC_LAYOUT 3 slot table there): an `ics_only` isolate writes none of them
+/// (MODES-D11), so its export leaves the slot out (MC-w21-1). A Call slot is a record at a
+/// `Call*` site only; a `Construct*` site (`construct_ic.rs`) and a slot both share keep their
+/// record. A keyed slot's facts are its record bits plus a key half that only StoreKeyed keeps
+/// live (MC-w15-1), so with bits 0 it would read as "no key seen" (LoadKeyed: "int32 index or
+/// never ran"). No wildcard: a new slot kind must say which it is.
+fn record_only(k: FeedbackSlotKind, u: &SlotUse) -> bool {
+    use FeedbackSlotKind as K;
+    match k {
+        K::Call => u.call && !u.construct,
+        K::LoadKeyed
+        | K::StoreKeyed
+        | K::DefineKeyedOwn
+        | K::HasKeyed
+        | K::StoreInArrayLiteral
+        | K::BinaryOp
+        | K::CompareOp
+        | K::TypeOf
+        | K::ForIn
+        | K::JumpLoop
+        | K::CreateClosure => true,
+        K::LoadNamed
+        | K::StoreNamed
+        | K::DefineNamedOwn
+        | K::LoadGlobal
+        | K::LoadGlobalInsideTypeof
+        | K::StoreGlobal
+        | K::InstanceOf
+        | K::Literal
+        | K::CloneObject => false,
+    }
 }
 
 /// What each feedback slot of a function serves, from its code. No IC site of T0 uses the two

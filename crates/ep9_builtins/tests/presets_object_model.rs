@@ -29,6 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use ep9_bytecode::FeedbackSlotKind;
 use ep9_facts::{ElementsKind, FactSnapshot, ShapeDesc, SlotFacts};
 use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
@@ -146,8 +147,18 @@ fn label(exec: ExecOptions, heap: &str, threshold: u32) -> String {
 /// Runs the workload on a fresh isolate with `exec`, the heap config `heap` and the feedback
 /// threshold `threshold`. The printed digest and the facts.
 fn run(exec: ExecOptions, heap: HeapConfig, threshold: u32) -> (String, FactSnapshot) {
+    run_src(WORKLOAD, exec, heap, threshold)
+}
+
+/// [`run`] with the script `src` in place of the workload.
+fn run_src(
+    src: &str,
+    exec: ExecOptions,
+    heap: HeapConfig,
+    threshold: u32,
+) -> (String, FactSnapshot) {
     let unit = ep9_frontend::compile(
-        WORKLOAD,
+        src,
         SourceOpts::script(Strictness::Sloppy),
         CompileOptions::default(),
     )
@@ -306,4 +317,130 @@ fn with_no_vector_every_preset_gives_the_same_answer_and_no_facts() {
             Some((l0, out0)) => assert_eq!(&out, out0, "{l} vs {l0}"),
         }
     }
+}
+
+/// A script with a site of every record kind (MC-w21-1): binary, unary and compare operators,
+/// `typeof`, keyed loads, stores, `in` and a computed literal key, an array literal with
+/// computed elements, `for-in`, a loop, a closure and calls; and the IC and object-model kinds
+/// (named loads and stores, globals, a construct site, `instanceof`, literals, a clone).
+const RECORD_KINDS: &str = r#"
+function Point(x, y) { this.x = x; this.y = y; }
+function f(o, a, n) {
+  var s = 0;
+  for (var i = 0; i < n; i++) {
+    s = s + a[i % a.length] * 1.5;
+    a[i % a.length] = s;
+    if (typeof o.x == "number") s += o.x;
+    if (i in a) s++;
+    s = -s;
+    var ty = typeof a[0];
+    var dk = { ["k" + (i % 2)]: ty.length };
+    s += dk.k0 === undefined ? 1 : 2;
+  }
+  for (var k in o) s += k.length;
+  var g = function () { return s; };
+  var arr = [s, o];
+  var c = {...o};
+  return g() + arr.length + c.x + (o instanceof Point ? 1 : 0);
+}
+var t = 0;
+for (var j = 0; j < 40; j++) t += f(new Point(j, 2), [1, 2, 3], 5);
+print(t);
+"#;
+
+/// The slot kinds whose facts come only from the records of `profile.rs` (MC-w21-1): an
+/// `ics_only` isolate writes none of them, so its export leaves them out (M5-P3-ORCH-14; H16
+/// Change log 2026-11-01). The Call kind is both: `Call*` sites are records, `Construct*` sites
+/// an IC (`construct_ic.rs`).
+const RECORD_ONLY: [FeedbackSlotKind; 11] = [
+    FeedbackSlotKind::LoadKeyed,
+    FeedbackSlotKind::StoreKeyed,
+    FeedbackSlotKind::DefineKeyedOwn,
+    FeedbackSlotKind::HasKeyed,
+    FeedbackSlotKind::StoreInArrayLiteral,
+    FeedbackSlotKind::BinaryOp,
+    FeedbackSlotKind::CompareOp,
+    FeedbackSlotKind::TypeOf,
+    FeedbackSlotKind::ForIn,
+    FeedbackSlotKind::JumpLoop,
+    FeedbackSlotKind::CreateClosure,
+];
+
+/// MC-w21-1 (M5-P3-ORCH-14): an `ics_only` export has no record-kind entry, so no BinaryOp or
+/// CompareOp site reads as "int32 or never ran" (F-R9); it keeps the IC and object-model kinds.
+/// A `full` export of the same script has a record of every kind the script uses (the control),
+/// and more Call records (its `Call*` sites).
+#[test]
+fn an_ics_only_export_has_no_record_kind() {
+    let kinds = |facts: &FactSnapshot| -> BTreeMap<String, usize> {
+        let mut m = BTreeMap::new();
+        for (_, f) in facts.records() {
+            *m.entry(format!("{:?}", f.kind())).or_insert(0) += 1;
+        }
+        m
+    };
+    let cases: Vec<(ExecOptions, &'static str, HeapConfig, u32)> = presets()
+        .into_iter()
+        .map(|exec| {
+            let (n, h) = heaps()[0].clone();
+            (exec, n, h, 0)
+        })
+        .collect();
+    let handles: Vec<_> = cases
+        .into_iter()
+        .map(|(exec, n, h, threshold)| {
+            std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn(move || {
+                    let (printed, facts) = run_src(RECORD_KINDS, exec, h, threshold);
+                    (exec, label(exec, n, threshold), printed, facts)
+                })
+                .expect("a test thread")
+        })
+        .collect();
+    let mut calls = BTreeMap::new();
+    let mut ic_kinds = None;
+    let mut answer: Option<String> = None;
+    for (exec, l, printed, facts) in handles.into_iter().map(|h| h.join().expect("the run")) {
+        assert!(!printed.is_empty(), "{l}");
+        assert_eq!(
+            answer.get_or_insert_with(|| printed.clone()),
+            &printed,
+            "{l}"
+        );
+        let k = kinds(&facts);
+        let has = |kind: FeedbackSlotKind| k.contains_key(&format!("{kind:?}"));
+        let ics_only = exec.feedback_mode() == Feedback::ICS_ONLY;
+        for kind in RECORD_ONLY {
+            assert_eq!(has(kind), !ics_only, "{l}: {kind:?} in {k:?}");
+        }
+        // The IC and object-model kinds are there in every mode, with the same counts.
+        let ic: BTreeMap<String, usize> = k
+            .iter()
+            .filter(|(name, _)| {
+                name.as_str() != "Call" && !RECORD_ONLY.iter().any(|r| format!("{r:?}") == **name)
+            })
+            .map(|(name, n)| (name.clone(), *n))
+            .collect();
+        for kind in [
+            FeedbackSlotKind::LoadNamed,
+            FeedbackSlotKind::StoreNamed,
+            FeedbackSlotKind::LoadGlobal,
+            FeedbackSlotKind::Literal,
+            FeedbackSlotKind::CloneObject,
+            FeedbackSlotKind::InstanceOf,
+        ] {
+            assert!(has(kind), "{l}: {kind:?} in {k:?}");
+        }
+        match &ic_kinds {
+            None => ic_kinds = Some((l.clone(), ic)),
+            Some((l0, ic0)) => assert_eq!(&ic, ic0, "the IC kinds: {l} vs {l0}"),
+        }
+        calls.insert(ics_only, k.get("Call").copied().unwrap_or(0));
+    }
+    // `ics_only` keeps the Construct-site Call records (an IC) and leaves out the `Call*` ones.
+    assert!(
+        calls[&true] >= 1 && calls[&true] < calls[&false],
+        "{calls:?}"
+    );
 }
