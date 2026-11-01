@@ -364,6 +364,15 @@ jobs:
       - name: test262 exec, no-jit build (jitless, ics_only)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
         run: cargo run --release --locked -p ep9_test262 --no-default-features -- exec --preset jitless --json test262-exec-jitless.json
+      # The no-jit unit tests (M5-P3-ORCH-15, MODES-CHECK-w21 MC-w21-21): ep9_vm and ep9_builtins
+      # without the `jit` feature, every test target (lib, integration and doc tests), so the
+      # jitless preset and `ics_only`, the defaults of that build, run the unit tests too (doc 13
+      # M-R9). linux-x64 only, next to the no-jit test262 column (rule 25): est. +12-20 min (a
+      # debug test build of the two crates without `jit`, then 1,160 tests; 13.3 min on the Mac,
+      # 18 CPUs at load 20-28, M5-P4). The job took 27 min in run 41285628624; timeout stays 90.
+      - name: no-jit unit tests (ep9_vm, ep9_builtins)
+        if: ${{ !cancelled() && matrix.name == 'linux-x64' }}
+        run: cargo test --locked -p ep9_vm -p ep9_builtins --no-default-features
       # The S1 major path (plan v10 V10-D19, V9-D27): GC-stress with S1 where every GC is a major
       # one (EP9_GC_STRESS_MAJOR_EVERY=1: the sticky marks cleared and a full mark each time; the
       # shards run mostly minor GCs, a major one every 64th), on the weak-reference, collection,
