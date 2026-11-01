@@ -214,8 +214,18 @@ pub struct Session {
 }
 
 impl Session {
+    /// A session whose isolate runs the build's default options (`Isolate::new`: the jit
+    /// preset, feedback full).
     pub fn new(config: &Config) -> Result<Session, String> {
-        let mut iso = Isolate::new(isolate_config(config)).map_err(|e| format!("{e:?}"))?;
+        Session::new_exec(config, ep9_vm::ExecOptions::default())
+    }
+
+    /// A session whose isolate runs `exec` (`Isolate::new_with`): for example the jit preset
+    /// with `ics_only` feedback, where T0 keeps every IC and drops the profile records
+    /// (MODES-D19), so compiled code runs on an `ics_only` isolate (MC-w21-9).
+    pub fn new_exec(config: &Config, exec: ep9_vm::ExecOptions) -> Result<Session, String> {
+        let mut iso =
+            Isolate::new_with(isolate_config(config), exec).map_err(|e| format!("{e:?}"))?;
         iso.register_host_function("print", 1, print);
         iso.register_host_function("gc", 0, gc);
         iso.register_host_function("terminate", 0, terminate);

@@ -279,7 +279,12 @@ pub fn graph_report(
         Err(Refusal::Arch.to_string())
     } else {
         emit_a64::emit(input, &graph, &alloc)
-            .map(|(code, e)| (code.code.len(), e.exits_line()))
+            .map(|(code, e)| {
+                (
+                    code.code.len(),
+                    format!("{}; {}", e.exits_line(), e.meta.line()),
+                )
+            })
             .map_err(|r| r.to_string())
     };
     let (fact_guards, unbacked_guards) = graph.guard_counts();
@@ -324,4 +329,70 @@ pub fn compile(
         .map_err(|e| format!("vm layout: {e}"))?;
     let input = session.function_input(name)?;
     compile_input(&input, facts).map_err(|r| format!("{name}: {r}"))
+}
+
+/// The H02-Q1 liveness report of one function (plan v10 §6.1 WI-SC9 (3), a B1 input; H02-Q1
+/// asks for a serialized per-function liveness section "computed from `AccUse` and register
+/// operand kinds"): the graph builder's liveness ([`cfg`](mod@cfg): from the opcode table,
+/// no per-opcode list), its size as one bit per register per instruction, the live values at
+/// each guard exit (the frame states the exit records carry) and whether each equals the
+/// liveness at its bytecode offset, and the size of a section that holds only the exit
+/// points. One line per row of the report (`spike-c liveness`).
+pub fn liveness_lines(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+) -> Result<Vec<String>, Refusal> {
+    let c = cfg::Cfg::build(input, build::supported)?;
+    let (graph, _) = build::build(input, facts)?;
+    let width = c.width();
+    let row_bytes = width.div_ceil(8);
+    let mut live_at_exit = Vec::new();
+    let (mut equal, mut acc_live) = (0usize, 0usize);
+    let mut offsets = std::collections::BTreeSet::new();
+    for (_, g) in graph.guard_nodes() {
+        let s = &g.state;
+        let n = s.registers.len() + usize::from(s.acc.is_some());
+        live_at_exit.push(n);
+        acc_live += usize::from(s.acc.is_some());
+        offsets.insert(s.offset);
+        if let Some(i) = c.insns.iter().position(|x| x.offset == s.offset) {
+            let want = c.live_before[i].iter().filter(|l| **l).count();
+            equal += usize::from(want == n);
+        }
+    }
+    let exits = live_at_exit.len();
+    let (min, max) = (
+        live_at_exit.iter().copied().min().unwrap_or(0),
+        live_at_exit.iter().copied().max().unwrap_or(0),
+    );
+    let mean = live_at_exit.iter().sum::<usize>() as f64 / exits.max(1) as f64;
+    let points = offsets.len();
+    Ok(vec![
+        format!(
+            "{}: {} reachable instructions, {} blocks; {} registers in the dense index (receiver, {} parameters, {} locals, the accumulator)",
+            input.name,
+            c.insns.len(),
+            c.blocks.len(),
+            width,
+            input.parameter_count,
+            input.register_count
+        ),
+        format!(
+            "{}: liveness (backward, to a fixed point; reads and writes from the opcode table) {} us; one bit per register per instruction: {} bytes ({} B per instruction)",
+            input.name,
+            c.liveness_time.as_micros(),
+            c.liveness_bytes(),
+            row_bytes
+        ),
+        format!(
+            "{}: {exits} guard exits at {points} bytecode offsets; live values per exit (registers + the accumulator) min {min}, mean {mean:.1}, max {max}; the accumulator live at {acc_live}; frame state = liveness at the exit's offset for {equal} of {exits}",
+            input.name
+        ),
+        format!(
+            "{}: a section with only the exit offsets: {points} rows x {row_bytes} B = {} bytes (+ one uleb offset per row), {:.1}% of the full table",
+            input.name,
+            points * row_bytes,
+            100.0 * (points * row_bytes) as f64 / c.liveness_bytes().max(1) as f64
+        ),
+    ])
 }
