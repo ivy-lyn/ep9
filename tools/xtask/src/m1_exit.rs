@@ -296,8 +296,14 @@ const VERDICTS_HOW: &str = "the Spike C and SP-Facts Verdict tables (a markdown 
 /// M5-P4-ORCH-10 (1): also the root `rust-toolchain.toml`. Spike C has no toolchain file, so
 /// rustup takes the nearest one above it, the root one: it sets the compiler of the spike-c
 /// build (items 1 and 5 hold it fresh too).
+/// Codex r3 (M5-P4-ORCH-14): also the root `.cargo/config.toml`. Cargo merges every cargo
+/// config file (`.cargo/config.toml`, or `.cargo/config` with no extension) of the directory it
+/// runs in and of each directory above it, so a `[build]` or `[target]` table there (rustflags,
+/// a linker) changes the spike-c build. Today the root one holds aliases only; spikes/ has none.
+/// Files outside the repo (cargo's home config, `RUSTFLAGS`) are out by design: the Verdict row
+/// records the host (protocol §8).
 /// The test `verdict_fresh_paths_are_the_spike_c_closure` reads the closure and compares.
-const VERDICT_FRESH_PATHS: [&str; 17] = [
+const VERDICT_FRESH_PATHS: [&str; 18] = [
     "spikes/spike-c",
     "spikes/spike-b",
     "crates/ep9_builtins",
@@ -315,6 +321,7 @@ const VERDICT_FRESH_PATHS: [&str; 17] = [
     "third_party/patches/regress",
     "Cargo.toml",
     "rust-toolchain.toml",
+    ".cargo/config.toml",
 ];
 /// Item 7: the `Lowering` label of a Spike C row (MODES-D13: Spike C code is lowering `jit`).
 const SPIKE_C_LOWERING: &str = "jit";
@@ -2847,6 +2854,7 @@ mod tests {
         write(&root, "Cargo.toml", "[workspace]\n");
         write(&root, "Cargo.lock", "# lock\n");
         write(&root, "rust-toolchain.toml", "[toolchain]\n");
+        write(&root, ".cargo/config.toml", "[alias]\n");
         write(&root, "docs/decisions-log.md", "# log\n");
         write(&root, "third_party/test262.commit", &format!("{PIN}\n"));
         for f in t262_files() {
@@ -4656,6 +4664,42 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// Codex r3 (M5-P4-ORCH-14): a commit that changes only the root cargo config (a `[build]`
+    /// rustflags table, which cargo merges into the spike-c build) makes the Verdict rows of an
+    /// earlier commit stale: item 7 reads OPEN. A docs commit keeps them fresh.
+    #[test]
+    fn a_cargo_config_change_makes_an_earlier_verdict_open() {
+        let root = fake_repo("item7cargocfg");
+        let mut o = opts(&root);
+        write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
+        let ran = commit_all(&root, "adrs");
+        let jit = "jit";
+        let all_go = verdicts_md(&[
+            ("Spike C", "C1", "GO", &ran, jit),
+            ("Spike C", "C2", "GO", &ran, jit),
+            ("Spike C", "C3", "GO", &ran, jit),
+            ("Spike C", "C4 crypto", "GO", &ran, jit),
+            ("Spike C", "C4 navier-stokes", "GO", &ran, jit),
+        ]);
+        o.verdicts = vec![input(&root, "a.md", &all_go)];
+        write(&root, "docs/x.md", "doc\n");
+        commit_all(&root, "docs");
+        let c7 = run(&o).unwrap().cells[6].0.clone();
+        assert_eq!(c7.status, Status::Pass, "{c7:?}");
+        write(
+            &root,
+            ".cargo/config.toml",
+            "[alias]\n\n[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n",
+        );
+        let changed = commit_all(&root, "cargo config only");
+        let diff = git_in(&root, &["diff", "--name-only", "HEAD~1", &changed]);
+        assert_eq!(diff.trim(), ".cargo/config.toml");
+        let c7 = run(&o).unwrap().cells[6].0.clone();
+        assert_eq!(c7.status, Status::Open, "{c7:?}");
+        assert!(c7.evidence.contains("changed between"), "{}", c7.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// M5-P4-ORCH-3: item 7 needs a row for each of C1-C4 (C4: one per gate kernel) and item 10
     /// for each of C5a-C5c (protocol §0); one GO row alone reads OPEN, and a row whose Condition
     /// is not one of its spike's is refused. The Condition label is the text before the first
@@ -4847,7 +4891,9 @@ mod tests {
     /// as its `Cargo.toml` files say (read here from this repository, not a fixture: the test
     /// checks the list against the code a verdict judges), with the regress fork checkout
     /// (`third_party/regress`, git-ignored) named by its pin and patch files, and the workspace
-    /// root manifest of each crate that inherits a `workspace = true` key (M5-P4-ORCH-9 (2)).
+    /// root manifest of each crate that inherits a `workspace = true` key (M5-P4-ORCH-9 (2)),
+    /// the toolchain file (M5-P4-ORCH-10 (1)) and every cargo config file at or above
+    /// `spikes/spike-c` in this repository (Codex r3, M5-P4-ORCH-14).
     #[test]
     fn verdict_fresh_paths_are_the_spike_c_closure() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -4913,6 +4959,21 @@ mod tests {
             .find(|f| f.is_file())
             .expect("a toolchain file at or above spikes/spike-c");
         closure.insert(rel(&toolchain));
+        // Codex r3 (M5-P4-ORCH-14): the cargo config files. Cargo merges `.cargo/config.toml`
+        // and `.cargo/config` (no extension) of the directory it runs in (`gate.sh` runs in
+        // spikes/spike-c) and of each directory above it; the ones in this repo are in the list.
+        let configs: Vec<String> = spike_c
+            .ancestors()
+            .take_while(|d| d.starts_with(&repo))
+            .flat_map(|d| [d.join(".cargo/config.toml"), d.join(".cargo/config")])
+            .filter(|f| f.is_file())
+            .map(|f| rel(&f))
+            .collect();
+        assert!(
+            configs.iter().any(|c| c == ".cargo/config.toml"),
+            "the root cargo config: {configs:?}"
+        );
+        closure.extend(configs);
         let list: BTreeSet<String> = VERDICT_FRESH_PATHS.iter().map(|p| p.to_string()).collect();
         assert_eq!(list.len(), VERDICT_FRESH_PATHS.len(), "a path twice");
         assert_eq!(list, closure);
@@ -4970,6 +5031,16 @@ mod tests {
                 .find(|l| l.trim_start().starts_with(&format!("- **{name}:**")))
                 .unwrap_or_else(|| panic!("§8 has no {name} bullet"))
         };
+        // The first §8 bullet (who writes the rows) says C4 has a row per gate kernel too
+        // (M5-P4 reviewer r4).
+        let first = sec8
+            .lines()
+            .find(|l| l.starts_with("- "))
+            .expect("§8 has bullets");
+        assert!(
+            first.contains("one Verdict row per condition") && first.contains("per gate kernel"),
+            "{first}"
+        );
         // Columns, in the reader's names.
         let header = sec8
             .lines()
