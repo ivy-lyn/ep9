@@ -555,3 +555,94 @@ fn a_loop_whose_polls_land_on_calls_gets_its_vector() {
         assert!(g.vector, "{calls} calls per back edge: {g:?}");
     }
 }
+
+// ---- the feedback mode, written once (M6-P0 SCHEMA6; MC-w21-8, MC-w22-13) ----
+
+/// The isolate's options are written once, before its first realm (`exec::install`): a
+/// second write panics and leaves the first mode, which `Cx::table`, the cold hooks
+/// (`profile::records`) and the export (`facts_export::keep`) all read.
+#[test]
+fn the_feedback_mode_is_written_once() {
+    use crate::exec::{self, ExecOptions, Feedback};
+    for (first, second) in [
+        (Feedback::FULL, Feedback::ICS_ONLY),
+        (Feedback::ICS_ONLY, Feedback::FULL),
+    ] {
+        let iso = Isolate::new_with(
+            IsolateConfig::default(),
+            ExecOptions::jitless().feedback(first),
+        )
+        .unwrap();
+        assert_eq!(exec::feedback_mode(&iso.rt), first);
+        assert_eq!(exec::records(&iso.rt), first == Feedback::FULL);
+        let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            exec::install(&iso.rt, ExecOptions::jitless().feedback(second));
+        }));
+        let msg = again.expect_err("a second write of the options panics");
+        let msg = msg
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| msg.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        assert!(msg.contains("written once"), "{msg}");
+        assert_eq!(exec::feedback_mode(&iso.rt), first, "the first mode stays");
+        // `Cx::table` was picked from the same mode (the two tables differ).
+        let words = |t: &[crate::interp::Handler; 256]| -> Vec<usize> {
+            t.iter().map(|h| *h as usize).collect()
+        };
+        let d = IsolateConfig::default().dispatch;
+        assert_ne!(words(d.table(first)), words(d.table(second)));
+        assert_eq!(words(&iso.cx.table), words(d.table(first)));
+    }
+}
+
+/// `exec::install` is the one writer of `Runtime::exec` (a source scan of this crate), and no
+/// module but `exec.rs` reads the mode from the field: every reader goes through
+/// `exec::feedback_mode` or `exec::records`.
+#[test]
+fn only_exec_rs_touches_the_feedback_mode_field() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&src, &mut files);
+    // The needles are built here, so this file does not match itself.
+    let (set, get) = (
+        ["exec", ".set("].concat(),
+        ["exec", ".get().feedback_mode()"].concat(),
+    );
+    let (mut writes, mut mode_reads) = (Vec::new(), Vec::new());
+    for f in &files {
+        let rel = f
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(f).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains(set.as_str()) {
+                writes.push(format!("{rel}:{}", n + 1));
+            }
+            if code.contains(get.as_str()) {
+                mode_reads.push(format!("{rel}:{}", n + 1));
+            }
+        }
+    }
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert!(writes[0].starts_with("exec.rs:"), "{writes:?}");
+    assert!(
+        mode_reads
+            .iter()
+            .all(|r| r.starts_with("exec.rs:") || r.starts_with("tests/exec.rs:")),
+        "{mode_reads:?}"
+    );
+}

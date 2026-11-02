@@ -1006,7 +1006,8 @@ fn chain_depth(mut p: u64, holder: Option<u64>) -> Option<u8> {
 /// `Call*` site, keyed kind (its facts are the record bits and a key half that only StoreKeyed
 /// keeps live, MC-w15-1), BinaryOp, CompareOp, TypeOf, ForIn, JumpLoop or CreateClosure. A
 /// `full` export keeps every kind. The header and the format are the same. No wildcard: a new
-/// slot kind must say which it is.
+/// slot kind must say which it is. The mode test is `exec::records`, the one that
+/// `profile::records` makes too (MC-w22-13).
 fn keep(rt: &Runtime, k: FeedbackSlotKind, u: &SlotUse) -> bool {
     use FeedbackSlotKind as K;
     let record_only = match k {
@@ -1032,5 +1033,5 @@ fn keep(rt: &Runtime, k: FeedbackSlotKind, u: &SlotUse) -> bool {
         | K::Literal
         | K::CloneObject => false,
     };
-    !record_only || rt.exec.get().feedback_mode() != crate::exec::Feedback::ICS_ONLY
+    !record_only || crate::exec::records(rt)
 }

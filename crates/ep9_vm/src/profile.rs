@@ -993,12 +993,13 @@ pub(crate) fn record_for_in_next(st: &mut St<'_>, s: FSlot, receiver: u64) {
 // inside the cold bodies, and a hook cannot see which table runs it, so it reads the mode.
 
 /// True if the isolate of `cx` runs the record hooks of this module: its feedback mode is not
-/// `ics_only` (MODES-D11). `Isolate::new_with` sets the mode once, before any JS runs, and picks
-/// the handler table by it (`interp::Dispatch::table`). Two dependent loads (the `Runtime`
-/// pointer, the mode byte); the callers are cold paths, polls and the entry of the match loop.
+/// `ics_only` (MODES-D11; `exec::records`). `Isolate::new_with` writes the mode once, before
+/// any JS runs (`exec::install`), and picks the handler table by it
+/// (`interp::Dispatch::table`). Two dependent loads (the `Runtime` pointer, the mode byte); the
+/// callers are cold paths, polls and the entry of the match loop.
 #[inline(always)]
 pub(crate) fn records(cx: &crate::interp::Cx) -> bool {
-    cx.rt().exec.get().feedback_mode() != crate::exec::Feedback::ICS_ONLY
+    crate::exec::records(cx.rt())
 }
 
 /// [`vector_of`] for a hook that a cold body (or a polling back edge) runs: none when the
