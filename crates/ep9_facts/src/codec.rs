@@ -22,7 +22,7 @@
 //! does: equal cases merge, a receiver with two different accesses is left out
 //! ([`SlotFacts::merge_cases`]). The full field list is in [`crate::schema_text`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use ep9_bytecode::{FeedbackSlotKind, UnitString};
@@ -327,9 +327,11 @@ impl FactSnapshot {
         }
         // Each shape takes at least 10 bytes and each record at least 11.
         r.room(shape_count, 10)?;
-        // The order check compares two shapes only if neither folded an open value: a fold
-        // may make two shapes equal, or change their order (the module docs).
-        let mut prev_folded = true;
+        // The order check skips a shape that folded an open value: a fold may make it equal to
+        // another shape, or change its place (the module docs). The other shapes hold only
+        // values this schema names, so each one is compared with the last of them: a folded
+        // shape between two of them does not hide their order.
+        let mut last_known: Option<usize> = None;
         for _ in 0..shape_count {
             let before = r.folded;
             r.folded = false;
@@ -337,13 +339,23 @@ impl FactSnapshot {
             check_shape(&s)?;
             let folded = r.folded;
             r.folded |= before;
-            if !folded && !prev_folded && r.shapes.last().is_some_and(|prev| **prev >= s) {
-                return Err(FactError::NonCanonical("shapes not strictly ascending"));
+            if !folded {
+                if last_known.is_some_and(|i| *r.shapes[i] >= s) {
+                    return Err(FactError::NonCanonical("shapes not strictly ascending"));
+                }
+                last_known = Some(r.shapes.len());
             }
-            prev_folded = folded;
             r.shapes.push(Arc::new(s));
         }
-        let shapes_folded = r.folded;
+        // A fold may make two shapes of the table equal, or change their order. Then the
+        // records need a merge of their cases (below). The table is ranked once here, so the
+        // merge compares ranks and never two shapes: its work per record does not grow with
+        // shape size.
+        let rank = if r.folded {
+            Some(r.rank_shapes())
+        } else {
+            None
+        };
         r.used = vec![false; r.shapes.len()];
         let mut snap = FactSnapshot::new(FactHeader {
             bytecode_abi,
@@ -382,11 +394,12 @@ impl FactSnapshot {
         if r.used.iter().any(|u| !u) {
             return Err(FactError::NonCanonical("a shape no record uses"));
         }
-        if shapes_folded {
+        if let Some(rank) = rank {
+            // Every shape of a record is an `Arc` of the ranked table, so each has a rank.
+            let rank = |s: &Arc<ShapeDesc>| rank[&Arc::as_ptr(s)];
             for f in snap.records_mut() {
-                f.merge_cases();
                 // A merge only removes cases, so the record keeps every rule.
-                debug_assert_eq!(f.check(), Ok(()));
+                f.merge_cases(&rank);
             }
         }
         Ok(snap)
@@ -550,6 +563,27 @@ impl<'a> Reader<'a> {
                 k
             }
         })
+    }
+
+    /// Ranks the shape table after a fold: sorts it once, gives equal shapes one `Arc` (the
+    /// first of them) and one rank, and gives each `Arc` its place in shape order. Its work is
+    /// one sort of the table, whatever the number of records.
+    fn rank_shapes(&mut self) -> HashMap<*const ShapeDesc, u32> {
+        let mut by_shape: Vec<usize> = (0..self.shapes.len()).collect();
+        by_shape.sort_by(|&a, &b| self.shapes[a].cmp(&self.shapes[b]));
+        let mut rank = HashMap::with_capacity(by_shape.len());
+        let mut next = 0u32;
+        for (j, &i) in by_shape.iter().enumerate() {
+            if let Some(&prev) = j.checked_sub(1).map(|p| &by_shape[p])
+                && self.shapes[prev] == self.shapes[i]
+            {
+                self.shapes[i] = Arc::clone(&self.shapes[prev]);
+                continue;
+            }
+            rank.insert(Arc::as_ptr(&self.shapes[i]), next);
+            next += 1;
+        }
+        rank
     }
 
     /// Table entry `i`, shared: a reference costs one `Arc`, whatever the shape's size.

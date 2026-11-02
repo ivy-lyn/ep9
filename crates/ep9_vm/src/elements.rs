@@ -28,7 +28,7 @@
 //! |---|---|
 //! | shape `counts` bits 28-31 (`shape::elements_kind`) | the kind of the shape's objects (H18-Q3); every JS object kind has one; a new object starts at PACKED_INT32 (0) with no elements cell |
 //! | the +16 field of a JS object (`object::obj::ELEMENTS`) | undefined (no element yet), an ELEMENTS cell (Values: kinds 0, 1, 4, 5) or an ELEMENTS_DOUBLE cell (kinds 2, 3) |
-//! | keyed slot value half, bits 10-16 (IC_LAYOUT 3, [`KINDS_SET_SHIFT`]) | the set of kinds seen at the site, one bit per value 0-6: every miss of an index key (`profile::record_keyed_cold`), a fast hit in the sampled window (`profile::keyed_hit_kind`; a monomorphic StoreKeyed hit needs none: its shape holds the kind); bits 0-9 keep their meaning (`profile::keyed`) |
+//! | keyed slot value half, bits 10-25 (IC_LAYOUT 4, [`KINDS_SET_SHIFT`]; bits 10-16 in IC_LAYOUT 3) | the set of kinds seen at the site, one bit per kind value 0-15 (built or not): every miss of an index key (`profile::record_keyed_cold`), a fast hit in the sampled window (`profile::keyed_hit_kind`; a monomorphic StoreKeyed hit needs none: its shape holds the kind); bits 0-9 keep their meaning (`profile::keyed`) |
 //! | an ALLOC_SITE handler +16 (IC_LAYOUT 3, `ic::hk::ALLOC_SITE`) | the kind an array-literal site makes (MODES-D19, V10-D6; M5-P2 ELEM2) |
 //!
 //! What makes each kind (the store side, `object::array_set`, `object::element_set`):

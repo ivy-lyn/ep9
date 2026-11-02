@@ -4354,6 +4354,7 @@ mod placement_b {
                 bytecode,
                 counter: 0,
                 feedback: None,
+                reason: crate::deopt::ExitReason::Unknown,
                 values,
             }],
         };
@@ -4519,6 +4520,7 @@ mod placement_b {
                 bytecode: offset_in(iso, "dsum", Opcode::Add),
                 counter: 0,
                 feedback: None,
+                reason: crate::deopt::ExitReason::Unknown,
                 values: vec![
                     ExitValue {
                         target: Target::Reg(Register::local(4)),

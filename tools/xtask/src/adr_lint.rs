@@ -1917,6 +1917,54 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// GATES8 Codex r1: a FIX that changes the path is not a number change. A pin of the
+    /// pin table (an in-tree file) can make the drift check give `lib.rs:2 -> other.rs:2`.
+    /// The ADRLINE row with that body change is then not lint-proven, so it needs its record.
+    #[test]
+    fn a_fix_that_changes_the_path_is_not_lint_proven() {
+        let (root, base, day) = full_repo("adrline-path");
+        let other = "crates/ep9_vm/src/other.rs";
+        commit(
+            &root,
+            &[(other, "// a\nfn victim() {}\n")],
+            "vm: other\n\nADR: H16",
+        );
+        let h16 = read(&root.join(H16)).unwrap();
+        write(
+            &root,
+            drift::PINS_FILE,
+            &format!("pin\tH16-ics.md\t{LIB}:2\t{other}\t^fn victim\t0\n"),
+        );
+        write(
+            &root,
+            H16,
+            &h16.replace(&format!("{LIB}:2"), &format!("{other}:2")),
+        );
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!(
+                "| {day} | clarify (proposed; Accepted path) | 1 `path:line` reference moved (drift script; ADRLINE) | fixer |"
+            )],
+        );
+        commit(&root, &[], "docs/adr: H16 ADRLINE");
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.text.contains(&format!(
+                "1 ADRLINE row(s) not lint-proven, so each needs its review record: line 10: the drift check's FIX {LIB}:2 -> {other}:2 changes more than its line numbers"
+            )),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.summary.contains("review records FAIL"),
+            "{}",
+            lint.summary
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// X16 (plan v11; the 825702d6 class): an index row that m0-exit cannot parse (a `)` after
     /// the cell bar) fails the Counts part, as it fails m0-exit.
     #[test]

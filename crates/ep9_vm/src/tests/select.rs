@@ -10,7 +10,9 @@
 use crate::dispatch::DispatchKind::{self, AotBaseline, AotOpt, Baseline, Interp, Opt};
 use crate::exec::Preset;
 use crate::fuse::{STATIC, descriptor};
-use crate::select::{CodeObject, CodeSet, Dep, Pick, Policy, Session, State, lowering, select};
+use crate::select::{
+    CodeObject, CodeSet, Dep, ObjectState, Pick, Policy, Session, lowering, select,
+};
 
 const ALL: [(&str, Policy); 3] = [
     ("jit", Policy::JIT),
@@ -163,7 +165,7 @@ fn t4_pin_with_two_active_aot_opt_variants_picks_neither() {
     // jitless: AotBaseline (H32:42-43).
     assert_eq!(select(&s, &Policy::JITLESS, &host), Pick::Code(2));
     // Both variants stay Active: PIN is a function state, not an object state.
-    assert!(s.objects.iter().all(|o| o.state == State::Active));
+    assert!(s.objects.iter().all(|o| o.state == ObjectState::Active));
     // Without an AotBaseline, Interp.
     s.objects.pop();
     assert_eq!(select(&s, &Policy::JITLESS, &host), Pick::Interp);
@@ -224,7 +226,7 @@ fn t6_a_fuse_pop_skips_dependents_and_keeps_guard_fuse_code() {
         s.objects[1].deps[0] = dep(false);
         assert_eq!(pick(&s, p), Pick::Code(0));
         // Then Invalidated (M-R5: never an object that is not Active).
-        s.objects[1].state = State::Invalidated;
+        s.objects[1].state = ObjectState::Invalidated;
         s.objects[1].deps[0] = dep(true);
         assert_eq!(pick(&s, p), Pick::Code(0));
     }
@@ -272,7 +274,7 @@ fn t10_debugger_attach_invalidates_jit_code_and_keeps_aot_code() {
         index: inspector,
         intact: false,
     });
-    o.state = State::Invalidated;
+    o.state = ObjectState::Invalidated;
     let mut s = set(vec![o]);
     s.debug_copy = true;
     assert_eq!(select(&s, &Policy::JIT, &connected), Pick::InterpDebug);
@@ -340,7 +342,7 @@ fn an_object_that_is_not_active_is_never_picked() {
         for k in DispatchKind::ALL {
             for l in [lowering::JIT, lowering::HYBRID, lowering::JITLESS] {
                 let mut o = obj(k, l);
-                o.state = State::Invalidated;
+                o.state = ObjectState::Invalidated;
                 assert_eq!(pick(&set(vec![o]), p), Pick::Interp, "{name} {k:?} {l}");
             }
         }

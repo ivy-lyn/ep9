@@ -268,11 +268,11 @@ fn h29_value_repr_probe_7() {
         PROBE,
         "7 is the top of the field"
     );
-    // One exit record (pc 8, bytecode 0, counter 0, no feedback slot, no inline frame) with
-    // one value: machine register 0 into the accumulator, in the repr `repr`.
+    // One exit record (pc 8, bytecode 0, counter 0, no feedback slot, reason 0, no inline
+    // frame) with one value: machine register 0 into the accumulator, in the repr `repr`.
     let table = |repr: u8| -> Vec<u8> {
         let tag = form::LOC_REG | repr << form::REPR_SHIFT | form::ACC;
-        vec![1, 0, form::RECORD_EXIT, 8, 0, 0, 0, 0, 1, tag, 0]
+        vec![1, 0, form::RECORD_EXIT, 8, 0, 0, 0, 0, 0, 1, tag, 0]
     };
     // The wire values as built, and the Repr each decodes to (Spike C `deopt_meta.rs` writes
     // the same values): a swap or a reuse of a value fails here.

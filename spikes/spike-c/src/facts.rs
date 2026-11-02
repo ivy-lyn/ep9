@@ -203,10 +203,12 @@ print(r);\n";
         );
     }
 
-    /// Why keyed records back no element guard (SPIKEC-3): in FACT_SCHEMA 1 a LoadKeyed site
-    /// whose reads went out of bounds, hit a hole or had a non-array receiver exports the
-    /// same keys, {index}, as a site that only read present elements (the receiver, bounds
-    /// and hole bits of the slot have no schema field, `ep9_vm` facts_export.rs `keyed`).
+    /// Why the keys of a keyed record back no element guard (SPIKEC-3): a LoadKeyed site whose
+    /// reads went out of bounds, hit a hole or had a non-array receiver exports the same keys,
+    /// {index}, as a site that only read present elements. FACT_SCHEMA 1 had no field for the
+    /// receiver, bounds and hole bits of the slot; FACT_SCHEMA 2 exports them as
+    /// `KeyedFacts::hint` (`ep9_facts::KeyedHint`, `ep9_vm` facts_export.rs `keyed`). Spike C
+    /// reads only the keys, so its element guards stay unbacked.
     #[test]
     fn keyed_records_do_not_show_bounds_holes_or_receivers() {
         use ep9_facts::KeySet;

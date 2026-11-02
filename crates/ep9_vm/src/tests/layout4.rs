@@ -113,7 +113,7 @@ fn is_callable_takes_proxy_callable() {
 
 #[test]
 fn intrinsic_ids_64_to_71_are_declared_not_made() {
-    assert_eq!(IntrinsicId::ALL.len(), 72);
+    assert_eq!(IntrinsicId::ALL.len(), 73); // 72 in M4-P0; 73 since M6-P0
     let new = [
         (IntrinsicId::Proxy, "%Proxy%"),
         (IntrinsicId::RegExp, "%RegExp%"),
@@ -144,7 +144,7 @@ fn intrinsic_ids_64_to_71_are_declared_not_made() {
     }
     let realm = iso.rt.root(crate::runtime::Root::Realm);
     let list = object::record_get(realm, object::realmf::INTRINSICS);
-    assert_eq!(object::list_len(list), 72);
+    assert_eq!(object::list_len(list), IntrinsicId::ALL.len()); // 72 in M4-P0
 }
 
 #[test]
