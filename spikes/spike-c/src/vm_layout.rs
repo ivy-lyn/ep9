@@ -430,8 +430,8 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
 /// MODES-CHECK-w22 MC-w22-11) owns `HOLE`, `NATIVE_WORD_OFFSET` and the [`ENCODING_READS`]
 /// constants, which the emitter and the graph builder bake into code.
 pub const PINNED: [(&str, u32); 5] = [
-    ("OBJECT_LAYOUT", 5),
-    ("IC_LAYOUT", 3),
+    ("OBJECT_LAYOUT", 6),
+    ("IC_LAYOUT", 4),
     ("FRAME", 2),
     ("VM_LAYOUT", 1),
     ("Value encoding", 1),
