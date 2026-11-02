@@ -571,7 +571,7 @@ fn h17_shape_flag_bit_probe_30() {
 /// entry for that function's global load, so the entry runs with a real native frame.
 #[cfg(feature = "spike-native")]
 mod load_global {
-    use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    use core::cell::Cell;
 
     use ep9_bytecode::{
         FeedbackSlotKind, FunctionId, Opcode, RegisterList, RuntimeId, ScopeKind, VariableMode,
@@ -584,20 +584,24 @@ mod load_global {
     use crate::tests::{Asm, config, isolate, meta, on_big_stack, unit_with_scopes};
     use crate::{Dispatch, Exception, Isolate, IsolateConfig};
 
-    /// The bytecode offset the stand-in passes to the entry.
-    static OFF: AtomicU32 = AtomicU32::new(0);
+    thread_local! {
+        /// The bytecode offset the stand-in passes to the entry. It is per thread: each test
+        /// installs and calls on its own thread, and the entry runs on the thread that calls.
+        /// A shared value let a parallel test change the offset between install and call.
+        static OFF: Cell<u32> = const { Cell::new(0) };
+    }
 
     /// The stand-in for native code: the entry's result for the load at [`OFF`].
     #[cfg(target_arch = "x86_64")]
     unsafe extern "sysv64" fn entry(cx: *mut NativeCx, fp: *mut u64) -> u64 {
         // SAFETY: called as native code, with the Cx and the live frame of its function.
-        unsafe { (RuntimeTable::process().load_global)(cx, fp, OFF.load(Relaxed)) }
+        unsafe { (RuntimeTable::process().load_global)(cx, fp, OFF.with(Cell::get)) }
     }
     /// The stand-in for native code: the entry's result for the load at [`OFF`].
     #[cfg(not(target_arch = "x86_64"))]
     unsafe extern "C" fn entry(cx: *mut NativeCx, fp: *mut u64) -> u64 {
         // SAFETY: called as native code, with the Cx and the live frame of its function.
-        unsafe { (RuntimeTable::process().load_global)(cx, fp, OFF.load(Relaxed)) }
+        unsafe { (RuntimeTable::process().load_global)(cx, fp, OFF.with(Cell::get)) }
     }
 
     /// `x = 7`; the functions below; `let tdz` declared, then a throw before it is set, so
@@ -666,9 +670,14 @@ mod load_global {
             .offset
     }
 
+    /// Sets the offset that [`entry`] passes to the entry.
+    fn set_off(off: u32) {
+        OFF.with(|o| o.set(off));
+    }
+
     /// Installs [`entry`] as the native code of `name`, with the entry offset `off`.
     fn install(iso: &Isolate, name: &str, off: u32) -> Value {
-        OFF.store(off, Relaxed);
+        set_off(off);
         let f = iso.global_raw(name).unwrap();
         let start = entry as *const () as usize;
         // SAFETY: the range starts at `entry`, a function with the native entry ABI that lives
@@ -767,5 +776,36 @@ mod load_global {
             );
             assert_eq!(state(), crate::ic::State::Monomorphic);
         });
+    }
+
+    /// Tests run on parallel threads, so the offset of one test's stand-in must not be the
+    /// offset of another. Thread A installs `lg` with its load offset. The test thread then
+    /// sets offset 0 (what `install` does for `lt`, `lm`, `lz` and `nl`). After that, the
+    /// call in thread A must still load at its own offset and give 7.
+    #[test]
+    fn the_offset_is_per_thread() {
+        use std::sync::mpsc::channel;
+
+        // Channels, not a barrier: if thread A fails before it sends, `recv` returns and
+        // `join` reports the failure (a barrier would wait forever).
+        let (installed, wait_installed) = channel::<()>();
+        let (offset_set, wait_offset_set) = channel::<()>();
+        let a = std::thread::Builder::new()
+            .stack_size(512 << 20)
+            .spawn(move || {
+                let mut iso = defs_isolate(config(Dispatch::Match, false));
+                let off = offset_of(&iso, "lg", Opcode::LdaGlobal);
+                assert!(off > 0, "the load follows a jump");
+                let f = install(&iso, "lg", off);
+                installed.send(()).unwrap();
+                wait_offset_set.recv().unwrap();
+                call(&mut iso, f, &[Value::FALSE]).map_err(|e| e.message)
+            })
+            .unwrap();
+        if wait_installed.recv().is_ok() {
+            set_off(0);
+            offset_set.send(()).unwrap();
+        }
+        assert_eq!(a.join().unwrap(), Ok(Value::int32(7).to_bits()));
     }
 }
