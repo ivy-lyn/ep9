@@ -77,7 +77,7 @@ Phase-merged work with no per-ADR PR keeps the record in the ADR's `## Review re
 | reopen | A failed spike gate before the part's freeze point. After the freeze point a reopen is a rewrite |
 
 - The author proposes the kind in the Change-log line. The reviewer agent confirms it. If they disagree, the kind is **rewrite**.
-- **G8 counts** the Change-log lines of kind rewrite on a Frozen part, dated after M1 exit. Rewrites of a part before its freeze point are not counted; the milestone report lists them as "pre-freeze churn". [2026-11-02, M6-P0 DOC13-6; M5-P4-ORCH-11] A rewrite of a Frozen part between M1a and M1 exit (a part that froze at M1a, rewritten before M1 exit) is in neither bucket: G8 does not count it, and it is not pre-freeze churn. The M1 milestone report lists each one by name.
+- **G8 counts** the Change-log lines of kind rewrite on a Frozen part, dated after M1 exit. Rewrites of a part before its freeze point are not counted; the milestone report lists them as "pre-freeze churn". [2026-11-02, M6-P0 DOC13-6; M5-P4-ORCH-11] A rewrite of a Frozen part between M1a and M1 exit (a part that froze at M1a, rewritten before M1 exit) is in neither bucket: G8 does not count it, and it is not pre-freeze churn. The M1 milestone report lists each one by name. [2026-11-02, M6-P0 check:] "Between M1a and M1 exit" is the date of the rewrite: the gap holds a rewrite of any part frozen before M1 exit (the M1a parts and the H20 core, frozen at M0 exit).
 
 ### 3.4 Parts built after M1 exit (P-3)
 
