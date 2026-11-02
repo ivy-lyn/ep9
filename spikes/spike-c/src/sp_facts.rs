@@ -5,7 +5,7 @@
 //!  training process   spike-c sp-facts write <kernel> <file>
 //!    defs.js (stub harness + Math.random + the kernel file) ; warm.js = loop(1), in T0
 //!    facts::live (the defs.js unit) ──to_profiled──> encode ──> <file>
-//!                     (FACT_SCHEMA_VERSION 1, source PROFILED; the .ep9prof container is A3)
+//!                     (FACT_SCHEMA_VERSION 2, source PROFILED; the .ep9prof container is A3)
 //!  config P           a new process: spike-c sp-facts check <kernel> <file>, spike-c once p
 //!    defs.js ; read <file> (decode: another schema version is refused; the source must be
 //!      PROFILED; validate vs the defs.js unit: a stale file is refused, a record that does
