@@ -1,0 +1,1 @@
+{"schema":"ep9-fuzz/v1","tool":"fuzzilli","campaign":"fz-fixture-box-1","target":"reprl","preset":"jit","commit":"f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4","dirty":false,"cpu_hours":16.0000,"seconds":14400,"workers":4,"counted":true,"crashes":[],"binary_sha256":"aeeff699baf32bb577b78823d7f93b196ef558063fa61f4bb1d6703a9d0c5479"}

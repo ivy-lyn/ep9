@@ -32,6 +32,16 @@
 //!   at least one amendment row (README section 3: an amendment adds a dated Change-log line).
 //!   No amendment row is a gap.
 //!
+//! - **Lint-proven ADRLINE rows** (plan v11 V11-D23 (c), W-FM11, X15; README section 3.1). A
+//!   new `clarify` row whose Change text names `ADRLINE` needs no record when the drift check
+//!   proves the body change: since the base the text outside the two sections changed only in
+//!   `path:N` numbers, each one the value the `path:line` drift check ([`super::drift`]) gives
+//!   as FIX for the old number. The check runs the drift check on a scratch copy of the ADR
+//!   with the changed body lines as they were at the base (the copy shares this tree's git
+//!   repository and reads its history only), and applies its FIX values to those lines: each
+//!   must give the line as it is now. Proven rows count as rows that need none and cover the
+//!   body change; else they are amendment rows like any other (with a `note:` that says why).
+//!
 //! The date links a record to its Change-log rows: a label names no row id, so two rows of one
 //! day share their records by count, and one amendment row covers every body change of the
 //! range. That is the limit of this check.
@@ -204,9 +214,160 @@ pub(crate) struct Records {
     pub(crate) adrs: usize,
     /// Amendment rows since the base (needing a record).
     pub(crate) rows: usize,
-    /// Rows that need none: record-only rows, and edits of rows dated before the base.
+    /// Rows that need none: record-only rows, edits of rows dated before the base, and
+    /// lint-proven ADRLINE rows.
     pub(crate) skipped: usize,
+    /// Of `skipped`: the lint-proven ADRLINE rows (X15).
+    pub(crate) adrline: usize,
     pub(crate) gaps: Vec<String>,
+    /// Why an ADRLINE row is not lint-proven (no effect of its own: the row then needs its
+    /// record like any other).
+    pub(crate) notes: Vec<String>,
+}
+
+/// X15: a Change-log row that may be a lint-proven ADRLINE row: kind `clarify`, and its Change
+/// text names `ADRLINE` (the drift-fix rows of the M2-P4-FIX-ADRLINE-ROWS form do).
+fn adrline_row(kind_word: &str, change: &str) -> bool {
+    kind_word == "clarify" && change.contains("ADRLINE")
+}
+
+/// The lines of the text outside the `## Change log` and `## Review record` sections (as
+/// [`body`]), each with its 0-based line index in `text`.
+fn body_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut on = true;
+    let mut out = Vec::new();
+    for (i, l) in text.lines().enumerate() {
+        if l.starts_with("## ") {
+            let t = l.trim();
+            on = t != "## Change log" && t != "## Review record";
+        }
+        if on {
+            out.push((i, l));
+        }
+    }
+    out
+}
+
+/// X15: the FIX values of the drift check for the doc `rel` with the text `text`, by line (1-based):
+/// (old token, new token) in the order the check reads them. The check runs on a scratch root
+/// that holds only this doc and the pin table, and whose `.git` file names this tree's git dir,
+/// so the history and HEAD are this tree's. The drift check runs only `git show`, `git log` and
+/// `git diff <commit> HEAD` there (no command that reads or writes an index or a work tree).
+fn drift_fixes(
+    root: &Path,
+    rel: &str,
+    text: &str,
+) -> Result<BTreeMap<usize, Vec<(String, String)>>, String> {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let gitdir = git(root, &["rev-parse", "--absolute-git-dir"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or("cannot read the git dir of the tree")?;
+    let k = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("ep9-adrline-{}-{k}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let made = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(tmp.join(rel).parent().unwrap_or(&tmp))?;
+        std::fs::write(tmp.join(".git"), format!("gitdir: {gitdir}\n"))?;
+        std::fs::write(tmp.join(rel), text)?;
+        let pins = root.join(super::drift::PINS_FILE);
+        if pins.is_file() {
+            let to = tmp.join(super::drift::PINS_FILE);
+            std::fs::create_dir_all(to.parent().unwrap_or(&tmp))?;
+            std::fs::copy(&pins, &to)?;
+        }
+        Ok(())
+    })();
+    let d = made
+        .map_err(|e| format!("cannot write the scratch copy {}: {e}", tmp.display()))
+        .and_then(|()| super::drift::drift(&tmp));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mut out: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
+    let at = format!("{rel}:");
+    for l in d?.lines {
+        // `FIX       <rel>:<n> <old> -> <new> (<tag>, <how>)`, then a line with the HEAD text.
+        let Some(first) = l
+            .strip_prefix("FIX")
+            .and_then(|r| r.trim_start().lines().next())
+        else {
+            continue;
+        };
+        let Some((place, rest)) = first.split_once(' ') else {
+            continue;
+        };
+        let Some(n) = place
+            .strip_prefix(&at)
+            .and_then(|n| n.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let Some((old, rest)) = rest.split_once(" -> ") else {
+            continue;
+        };
+        let Some((new, _)) = rest.rsplit_once(" (") else {
+            continue;
+        };
+        out.entry(n)
+            .or_default()
+            .push((old.to_string(), new.to_string()));
+    }
+    Ok(out)
+}
+
+/// X15: is the body change of the ADR `rel` since the base only `path:N` numbers that the drift
+/// check moves? Ok(the number of changed body lines) or Err(why not).
+fn lint_proven(root: &Path, rel: &str, base: Option<&str>, head: &str) -> Result<usize, String> {
+    let base = base.ok_or("the file is new since the base")?;
+    let (b, h) = (body_lines(base), body_lines(head));
+    if b.len() != h.len() {
+        return Err(format!(
+            "the text outside the two sections has {} lines at the base and {} now",
+            b.len(),
+            h.len()
+        ));
+    }
+    let changed: Vec<usize> = (0..h.len()).filter(|&i| b[i].1 != h[i].1).collect();
+    if changed.is_empty() {
+        return Err("no line outside the two sections changed".into());
+    }
+    // The doc as it is now, with the changed body lines as they were at the base.
+    let mut lines: Vec<&str> = head.lines().collect();
+    for &i in &changed {
+        lines[h[i].0] = b[i].1;
+    }
+    let mut doc = lines.join("\n");
+    if head.ends_with('\n') {
+        doc.push('\n');
+    }
+    let fixes = drift_fixes(root, rel, &doc)?;
+    for &i in &changed {
+        let n = h[i].0 + 1;
+        let Some(fs) = fixes.get(&n) else {
+            return Err(format!(
+                "line {n} changed, and the drift check moves no reference on its base text"
+            ));
+        };
+        // The FIX values, left to right, on the base line.
+        let mut line = b[i].1.to_string();
+        let mut from = 0;
+        for (old, new) in fs {
+            let Some(k) = line[from..].find(old.as_str()) else {
+                return Err(format!("line {n}: no {old:?} in its base text"));
+            };
+            line.replace_range(from + k..from + k + old.len(), new);
+            from += k + new.len();
+        }
+        if line != h[i].1 {
+            return Err(format!(
+                "line {n} is not its base text with the drift check's FIX values ({})",
+                fs.iter()
+                    .map(|(o, n)| format!("{o} -> {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(changed.len())
 }
 
 pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
@@ -237,6 +398,8 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
             *old_records.entry(row).or_default() += 1;
         }
         let mut need: BTreeMap<String, usize> = BTreeMap::new();
+        // X15: the dates of the new ADRLINE rows, proven below.
+        let mut adrline: Vec<String> = Vec::new();
         for row in section_rows(&text, "Change log") {
             if old.contains(&row) {
                 continue;
@@ -258,11 +421,15 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
                 r.skipped += 1;
                 continue;
             }
-            r.rows += 1;
             let word = kind
                 .split(|ch: char| ch.is_whitespace() || "(;,".contains(ch))
                 .next()
                 .unwrap_or("");
+            if adrline_row(word, change) {
+                adrline.push(d.to_string());
+                continue;
+            }
+            r.rows += 1;
             if !KINDS.contains(&word) {
                 r.gaps.push(format!(
                     "{rel}: the {d} row of kind {kind:?} is not an amendment kind (clarify, fill, rewrite or reopen; README section 3.3): {:?}",
@@ -271,8 +438,30 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
             }
             *need.entry(d.to_string()).or_default() += 1;
         }
+        // X15: lint-proven ADRLINE rows need no record and cover the body change; the others
+        // are amendment rows.
+        let mut body_covered = false;
+        if !adrline.is_empty() {
+            match lint_proven(root, &rel, base_text.as_deref(), &text) {
+                Ok(_) => {
+                    r.skipped += adrline.len();
+                    r.adrline += adrline.len();
+                    body_covered = true;
+                }
+                Err(why) => {
+                    r.notes.push(format!(
+                        "{rel}: {} ADRLINE row(s) not lint-proven, so each needs its review record: {why}",
+                        adrline.len()
+                    ));
+                    for d in adrline {
+                        r.rows += 1;
+                        *need.entry(d).or_default() += 1;
+                    }
+                }
+            }
+        }
         if need.is_empty() {
-            if base_text.as_deref().is_some_and(|b| body(b) != body(&text)) {
+            if !body_covered && base_text.as_deref().is_some_and(|b| body(b) != body(&text)) {
                 r.gaps.push(format!(
                     "{rel}: the text outside `## Change log` and `## Review record` changed since the base, and no new Change-log row dated on or after {base_day} records it (README section 3: an amendment adds a dated Change-log line, then needs its review record)"
                 ));

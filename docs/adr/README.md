@@ -54,7 +54,7 @@ Accept, and every amendment of an Accepted or Frozen ADR, need all of these. The
 3. An agent that did not write the change verifies each Codex finding through the full control flow and sorts it: (a) serves the ADR's goal, (b) a defect the PR introduced, (c) neither. Only (a) and (b) change the PR. A (c) finding goes to Open questions or to an issue.
 4. The data the change needs: the spike gate output for Accept and reopen, a benchmark or gate output for a Frozen part.
 
-Phase-merged work with no per-ADR PR keeps the record in the ADR's `## Review record` section (M2-ACCEPT-RECORD).
+Phase-merged work with no per-ADR PR keeps the record in the ADR's `## Review record` section (M2-ACCEPT-RECORD). A lint-proven ADRLINE row needs no review record (plan v11 V11-D23 (c), from M6-P0): a `clarify` Change-log row whose Change text names `ADRLINE`, when the ADR's text outside its Change log and Review record changed since the lint base only in `path:N` numbers, each the value that the `path:line` drift check of `cargo xtask adr-lint` gives as FIX for the old number (the lint proves it; a row it does not prove gets a `note:` line). Any other change makes the row an amendment row that needs rows 1-4 and an Approval.
 
 ### 3.2 Who approves (P-1)
 

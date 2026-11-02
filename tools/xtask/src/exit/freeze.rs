@@ -124,8 +124,9 @@ fn frozen_names(status: &str) -> Option<Vec<String>> {
     )
 }
 
-/// The Frozen check of one ADR at M1 exit: (every due part is Frozen, the evidence).
-pub(crate) fn frozen_by_m1(root: &Path, id: &str) -> (bool, String) {
+/// The text of the ADR `id` (`H15`): the first `docs/adr/H<nn>-*.md` by name. Err: the
+/// evidence text (no such file, or it cannot be read).
+fn adr_text(root: &Path, id: &str) -> Result<String, String> {
     let num = id.trim_start_matches('H');
     let prefix = format!("H{num:0>2}-");
     let file = std::fs::read_dir(root.join("docs/adr"))
@@ -140,11 +141,32 @@ pub(crate) fn frozen_by_m1(root: &Path, id: &str) -> (bool, String) {
             v.into_iter().next()
         });
     let Some(file) = file else {
-        return (false, format!("{id}: no docs/adr/{prefix}*.md"));
+        return Err(format!("{id}: no docs/adr/{prefix}*.md"));
     };
-    let text = match read(&root.join("docs/adr").join(&file)) {
+    read(&root.join("docs/adr").join(&file)).map_err(|e| format!("{id}: {e}"))
+}
+
+/// X9 (plan v11 GF-4): the part `name` of the Freeze table of the ADR `id` (the name compared
+/// as the Frozen check does: in any case, without a trailing `(append-only)` or `(gated)`):
+/// (the part, when it falls, whether the Status line freezes it). None: no such file, no Freeze
+/// table, or no part of that name.
+pub(crate) fn find_part(root: &Path, id: &str, name: &str) -> Option<(Part, Due, bool)> {
+    let text = adr_text(root, id).ok()?;
+    let want = base_name(name);
+    let part = freeze_table(&text)
+        .into_iter()
+        .find(|p| base_name(&p.name) == want)?;
+    let frozen = frozen_names(&status_of(&text).unwrap_or_default())
+        .is_some_and(|names| names.contains(&want));
+    let due = due(&part.freeze_point);
+    Some((part, due, frozen))
+}
+
+/// The Frozen check of one ADR at M1 exit: (every due part is Frozen, the evidence).
+pub(crate) fn frozen_by_m1(root: &Path, id: &str) -> (bool, String) {
+    let text = match adr_text(root, id) {
         Ok(t) => t,
-        Err(e) => return (false, format!("{id}: {e}")),
+        Err(e) => return (false, e),
     };
     let status = status_of(&text).unwrap_or_default();
     let word = status
@@ -276,6 +298,54 @@ mod tests {
         }
         let root = tree("Frozen", plain);
         assert!(!frozen_by_m1(&root, "H30").0);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// X17 (plan v11 V11-A1): an H18-form cell "M2 exit" is a later part; a cell that holds
+    /// "M1 exit" anywhere is due by M1 exit (`due` matches by `contains`), so the moved H18
+    /// cell must not name M1 exit. The A4, S2b and Zen 3 gate cells are later parts.
+    #[test]
+    fn the_freeze_point_words() {
+        for (fp, want) in [
+            ("M2 exit", Due::Later),
+            ("M2 exit (flags-first form)", Due::Later),
+            ("M2 exit (moved from M1 exit, V11-D6)", Due::ByM1Exit),
+            ("M1 exit", Due::ByM1Exit),
+            ("M1a", Due::ByM1Exit),
+            ("None", Due::Open),
+            ("The A4 gate", Due::Later),
+            ("S2b gate (milestone M5)", Due::Later),
+            (
+                "the first gate with a bare-metal EPYC 7763 host",
+                Due::Later,
+            ),
+        ] {
+            assert_eq!(due(fp), want, "{fp}");
+        }
+    }
+
+    /// X9: one part by name, in any case and without its `(append-only)` or `(gated)` suffix,
+    /// with whether the Status line freezes it.
+    #[test]
+    fn a_part_by_name() {
+        let root = tree("Frozen (contract; 2026-12-01, M1 exit)", ADR);
+        let (p, d, frozen) = find_part(&root, "H29", "contract").unwrap();
+        assert_eq!(
+            (p.name.as_str(), d, frozen),
+            ("Contract", Due::ByM1Exit, true)
+        );
+        let (p, d, frozen) = find_part(&root, "H29", "Record tags").unwrap();
+        assert_eq!(
+            (p.name.as_str(), d, frozen),
+            ("Record tags (append-only)", Due::Open, false)
+        );
+        let (_, d, _) = find_part(&root, "H29", "a4-built (gated)").unwrap();
+        assert_eq!(d, Due::Later);
+        assert!(find_part(&root, "H29", "no such part").is_none());
+        assert!(find_part(&root, "H15", "contract").is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+        let root = tree("Accepted", "# H29\n\n| Status | STATUS |\n");
+        assert!(find_part(&root, "H29", "contract").is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

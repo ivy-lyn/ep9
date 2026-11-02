@@ -12,9 +12,9 @@
 //! | Part | Passes when | Module |
 //! |---|---|---|
 //! | 1 trailers | every commit that touches an H-row crate has an `ADR:` trailer, or a line in `expectations/adr-trailer-exceptions.txt` (below) | this file |
-//! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2), and such an ADR whose text outside its Change log and Review record changed has a new amendment row | `exit::records` |
-//! | 3 Counts | the README Counts line and index column equal the Status lines | `exit::records` |
-//! | 4 path:line drift | every `path:line` reference of `docs/adr` and `docs/plan` names the same line at HEAD as when it was written (no FIX and no UNFIXABLE line of the ADRLINE dry run) | `exit::drift` |
+//! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2), and such an ADR whose text outside its Change log and Review record changed has a new amendment row; a lint-proven ADRLINE row needs no record (plan v11 V11-D23 (c), X15) | `exit::records` |
+//! | 3 Counts | the README Counts line and index column equal the Status lines, and the README index parses as m0-exit reads it: one row per ADR H1-H37, in order (plan v11 X16; the 825702d6 class) | `exit::records`, `exit::adr` |
+//! | 4 path:line drift | every `path:line` reference of `docs/adr` and `docs/plan` names the same line at HEAD as when it was written (no FIX and no UNFIXABLE line of the ADRLINE dry run); the summary counts the unused pins of the pin table (listed, no effect) | `exit::drift` |
 //! | 5 short cites | every short cite of `docs/plan/13-execution-modes.md` (`H31:66`, `AR:37`, ...) names the same line at HEAD as at the commit its header names (MC-w16-8). It gates from M4-P5 (`exit::cites::GATE` true); with `GATE` false it is report only: `note:` lines, no effect on the result | `exit::cites` |
 //!
 //! **Part 1.** Every commit in `<rev>..HEAD` that touches an H-row crate must carry a git trailer
@@ -40,7 +40,7 @@
 //! Exit 2: a usage error, an unknown `<rev>`, an exceptions line in another form, no Crates row
 //! in `docs/adr/H*.md`, or a pin table line in another form.
 
-use crate::exit::{cites, drift, read, records};
+use crate::exit::{adr, cites, drift, read, records};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -105,21 +105,29 @@ pub(crate) fn full(root: &Path, base: &str) -> Result<Lint, String> {
     let t = trailers(root, base)?;
     let base_sha = base_commit(root, base)?;
     let rec = records::records(root, &base_sha)?;
-    let (counts_line, from_files, count_findings) = records::counts(root)?;
+    let (counts_line, from_files, mut count_findings) = records::counts(root)?;
+    // X16: the README index as m0-exit parses it (`exit::adr::adr_index`).
+    count_findings.extend(adr::index_findings(&read(
+        &root.join("docs/adr/README.md"),
+    )?));
     let d = drift::drift(root)?;
     let sc = cites::part(root)?;
     let mut text = String::new();
     // Part 1 prints its own summary line last.
     text.push_str(&t.text);
+    for n in &rec.notes {
+        text.push_str(&format!("note: {n}\n"));
+    }
     for g in &rec.gaps {
         text.push_str(&format!("{g}\n"));
     }
     let rec_ok = rec.gaps.is_empty();
     text.push_str(&format!(
-        "adr-lint review records: {base}..HEAD: {} Accepted or Frozen ADRs, {} amendment rows ({} rows need none: record-only rows and edits of older rows), {} gaps{}\n",
+        "adr-lint review records: {base}..HEAD: {} Accepted or Frozen ADRs, {} amendment rows ({} rows need none: record-only rows, edits of older rows and {} lint-proven ADRLINE rows), {} gaps{}\n",
         rec.adrs,
         rec.rows,
         rec.skipped,
+        rec.adrline,
         rec.gaps.len(),
         pass_word(rec_ok)
     ));
@@ -134,8 +142,14 @@ pub(crate) fn full(root: &Path, base: &str) -> Result<Lint, String> {
     for l in &d.lines {
         text.push_str(&format!("{l}\n"));
     }
+    // X16: the unused pins (listed above, no effect on the result).
+    let unused = d
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("UNUSED PIN "))
+        .count();
     text.push_str(&format!(
-        "adr-lint path:line drift: {} (pins: {}){}\n",
+        "adr-lint path:line drift: {} unused-pins={unused} (pins: {}){}\n",
         d.summary(),
         drift::PINS_FILE,
         pass_word(d.pass())
@@ -1794,6 +1808,267 @@ mod tests {
             "pin\tH16-ics.md\tx.rs:1\tx.rs\ta.b\t0\n",
         );
         assert!(full(&root, &base).unwrap_err().contains("regex syntax"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// X15 (plan v11 V11-D23 (c), W-FM11): an ADRLINE row whose body change is only `path:N`
+    /// numbers equal to the drift check's FIX values needs no review record. A number the
+    /// check does not give, a word changed beside it, or a row that does not name ADRLINE is an
+    /// amendment row that needs its record.
+    #[test]
+    fn a_lint_proven_adrline_row_needs_no_record() {
+        let (root, base, day) = full_repo("adrline");
+        commit(
+            &root,
+            &[(
+                LIB,
+                &format!("// new first line\n{}", fixture("vm-lib.rs.txt")),
+            )],
+            "vm: a line\n\nADR: H16",
+        );
+        let h16 = read(&root.join(H16)).unwrap();
+        let row = format!(
+            "| {day} | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the vm line (drift script; ADRLINE) | fixer |"
+        );
+        let with_row = |body_from: &str, body_to: &str, row: &str| {
+            write(&root, H16, &h16.replace(body_from, body_to));
+            add_rows(&root, H16, "Change log", &[row.to_string()]);
+            commit(&root, &[], "docs/adr: H16 ADRLINE");
+        };
+        // The FIX value: PASS with no record.
+        with_row("lib.rs:2", "lib.rs:3", &row);
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(
+                "0 amendment rows (1 rows need none: record-only rows, edits of older rows and 1 lint-proven ADRLINE rows), 0 gaps: PASS"
+            ),
+            "{}",
+            lint.text
+        );
+        // Not the FIX value: the row needs its record.
+        with_row("lib.rs:2", "lib.rs:4", &row);
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(
+                "note: docs/adr/H16-ics.md: 1 ADRLINE row(s) not lint-proven, so each needs its review record: line 10 is not its base text with the drift check's FIX values (crates/ep9_vm/src/lib.rs:2 -> crates/ep9_vm/src/lib.rs:3)"
+            ),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.text.contains(&format!(
+                "docs/adr/H16-ics.md: 1 amendment row(s) dated {day} since the base, 0 complete"
+            )),
+            "{}",
+            lint.text
+        );
+        // The FIX value and one more word: not proven.
+        with_row(
+            "The IC entry point is `crates/ep9_vm/src/lib.rs:2`.",
+            "The one IC entry point is `crates/ep9_vm/src/lib.rs:3`.",
+            &row,
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.text.contains("1 ADRLINE row(s) not lint-proven")
+                && lint.summary.contains("review records FAIL"),
+            "{}",
+            lint.text
+        );
+        // A clarify row that does not name ADRLINE: an amendment row as before.
+        with_row("lib.rs:2", "lib.rs:3", &row.replace("; ADRLINE", ""));
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.summary.contains("review records FAIL"),
+            "{}",
+            lint.text
+        );
+        assert!(!lint.text.contains("not lint-proven"), "{}", lint.text);
+        // With its record, the not-proven ADRLINE row passes.
+        with_row("lib.rs:2", "lib.rs:4", &row);
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(
+                &format!("the {day} ADRLINE row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        // (The drift part passes too: a committed number is checked from the commit that wrote
+        // it, so it cannot see that lib.rs:4 is the wrong line. That is why an ADRLINE row with
+        // no record must be proven against the old number.)
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        // The scratch copies are gone.
+        let left: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("ep9-adrline-{}-", std::process::id()))
+            })
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// X16 (plan v11; the 825702d6 class): an index row that m0-exit cannot parse (a `)` after
+    /// the cell bar) fails the Counts part, as it fails m0-exit.
+    #[test]
+    fn the_readme_index_parses_as_m0_exit_reads_it() {
+        let (root, base, _) = full_repo("index");
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.summary.contains("Counts PASS"), "{}", lint.text);
+        let readme = read(&root.join(README)).unwrap();
+        let broken = readme.replace(
+            "Accepted (fixture) | [H16-ics.md]",
+            "Accepted (fixture) |) [H16-ics.md]",
+        );
+        assert_ne!(broken, readme);
+        write(&root, README, &broken);
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text
+                .contains("docs/adr/README.md: found 36 index rows, expected H1-H37"),
+            "{}",
+            lint.text
+        );
+        assert!(lint.summary.contains("Counts FAIL"), "{}", lint.summary);
+        // Two rows swapped: each once, but not in order.
+        let l17 = readme.lines().find(|l| l.starts_with("| H17 |")).unwrap();
+        let l18 = readme.lines().find(|l| l.starts_with("| H18 |")).unwrap();
+        let swapped = readme
+            .replace(l17, "@17@")
+            .replace(l18, l17)
+            .replace("@17@", l18);
+        write(&root, README, &swapped);
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.text
+                .contains("the index rows are not H1-H37, each once, in order (read 37 rows: H1"),
+            "{}",
+            lint.text
+        );
+        // A duplicate row in place of one: it names the missing id.
+        write(
+            &root,
+            README,
+            &readme.replace(l18, &l17.replace("Fixture row 17", "Again")),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.text.contains("; missing H18)"), "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// X16: the drift summary counts the unused pins.
+    #[test]
+    fn the_drift_summary_counts_unused_pins() {
+        let (root, base, _) = full_repo("unused");
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.text.contains(" unused-pins=0 (pins: "),
+            "{}",
+            lint.text
+        );
+        write(
+            &root,
+            drift::PINS_FILE,
+            &format!(
+                "pin\tH16-ics.md\tcrates/ep9_vm/src/lib.rs:9\t{LIB}\t^pub fn ic_entry\\(\\) \\{{\\}}$\t0\n\
+                 pin\tH99-none.md\tcrates/ep9_vm/src/lib.rs:1\t{LIB}\t^// line 1$\t0\n"
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(" unused-pins=2 (pins: "),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.text.contains("UNUSED PIN (\"H99-none.md\""),
+            "{}",
+            lint.text
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// FR6 (plan v11 V11-D24, R17): one clarify row carries a Draft -> Frozen Status change: with
+    /// its one review record (rows 1-4 and an Approval) the records part passes; without it, the
+    /// row is one gap.
+    #[test]
+    fn one_clarify_row_carries_draft_to_frozen() {
+        let (root, base, day) = full_repo("draft-frozen");
+        let h29 = read(&root.join(H29)).unwrap().replace(
+            "| Status | Draft (2026-10-22, fixture) |",
+            &format!("| Status | Frozen (contract, byte form; {day}, M1 exit) |"),
+        );
+        let readme = read(&root.join(README))
+            .unwrap()
+            .replace(
+                "| Draft (fixture) |",
+                &format!("| Frozen (contract, byte form; {day}) |"),
+            )
+            .replace(
+                "1 Draft, 35 Not started, 1 Accepted, 0 Frozen",
+                "0 Draft, 35 Not started, 1 Accepted, 1 Frozen",
+            );
+        write(&root, H29, &h29);
+        write(&root, README, &readme);
+        add_rows(
+            &root,
+            H29,
+            "Change log",
+            &[format!(
+                "| {day} | clarify | Accepted and Frozen: contract, byte form (M1 exit) | orchestrator |"
+            )],
+        );
+        let h29 = read(&root.join(H29)).unwrap();
+        write(
+            &root,
+            H29,
+            &format!(
+                "{h29}\n## Review record\n\n| Part (README §3.1) | Who | Result | Ref |\n|---|---|---|---|\n"
+            ),
+        );
+        commit(&root, &[], "docs/adr: H29 Draft -> Frozen");
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.summary.contains("Counts PASS"), "{}", lint.text);
+        assert!(
+            lint.summary.contains("review records FAIL"),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.text.contains(&format!(
+                "docs/adr/H29-deopt.md: 1 amendment row(s) dated {day} since the base, 0 complete"
+            )),
+            "{}",
+            lint.text
+        );
+        add_rows(
+            &root,
+            H29,
+            "Review record",
+            &record(
+                &format!("the {day} Accepted and Frozen clarify row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains("1 amendment rows (0 rows need none"),
+            "{}",
+            lint.text
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -37,6 +37,41 @@ pub(crate) fn adr_index(text: &str) -> Result<Vec<AdrRow>, String> {
     Ok(rows)
 }
 
+/// X16 (plan v11; the 825702d6 class): the findings of the README index as m0-exit reads it
+/// ([`adr_index`]): it parses, and its rows are H1-H37, each once, in order. Empty: no finding.
+/// adr-lint part 3 prints them, so an index that m0-exit cannot read fails adr-lint too.
+pub(crate) fn index_findings(readme: &str) -> Vec<String> {
+    let rows = match adr_index(readme) {
+        Ok(r) => r,
+        Err(e) => {
+            return vec![format!(
+                "{e} (the m0-exit index parse: rows `| H<n> | ... |` with 6 cells split by ` | `)"
+            )];
+        }
+    };
+    let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    let want: Vec<String> = (1..=37).map(|n| format!("H{n}")).collect();
+    if ids == want {
+        Vec::new()
+    } else {
+        let missing: Vec<&str> = want
+            .iter()
+            .filter(|w| !ids.contains(&w.as_str()))
+            .map(String::as_str)
+            .collect();
+        vec![format!(
+            "docs/adr/README.md: the index rows are not H1-H37, each once, in order (read {} rows: {}{})",
+            ids.len(),
+            ids.join(" "),
+            if missing.is_empty() {
+                String::new()
+            } else {
+                format!("; missing {}", missing.join(" "))
+            }
+        )]
+    }
+}
+
 pub(crate) fn merged(status: &str) -> bool {
     status.starts_with("Accepted") || status.starts_with("Frozen")
 }
