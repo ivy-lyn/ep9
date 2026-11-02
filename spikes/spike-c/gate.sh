@@ -62,7 +62,7 @@
 #   gate.sh spfacts      (plan v10 M5-P3 SPFACTS WI-SC8; protocol §6.3, C5c) SP-Facts, config P:
 #     1  release build (as am3)
 #     2  `spike-c sp-facts write crypto <file>`: a training run (loop(1) in T0) writes the live
-#        facts of the kernel's unit as a PROFILED file (FACT_SCHEMA_VERSION 1)
+#        facts of the kernel's unit as a PROFILED file (FACT_SCHEMA_VERSION 2)
 #     3  `spike-c sp-facts check crypto <file> --n 1` and `--n 8`, a new process: the file read
 #        and validated (no record dropped), the hot set compiled from it and installed before
 #        the first run(), then loop(1) (the start-up exits are counted and printed) and loop(n);

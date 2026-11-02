@@ -2,26 +2,35 @@
 //! the H29 byte form that the VM reads (M5-P1 SPIKEC-5, V10-D30: the form and its reader are
 //! `crates/ep9_vm/src/deopt.rs`). The emitter makes one record per exit stub (one per guard,
 //! and one per [`Cause`] of a shape guard, MC-w21-5) from the guard's frame state and the
-//! register allocation ([`crate::emit_a64::emit`]); the install
+//! register allocation ([`crate::emit_a64::emit`]); each record names its cause as the exit
+//! class and the reason of the H29 form (V11-D13, V11-D14; [`Cause::class`],
+//! [`Cause::reason`]). The install
 //! hands the bytes to `ep9_vm::NativeCx::install_b_with_deopt`, whose reader refuses anything
 //! the form does not allow (`ep9_vm::NativeCx::check_deopt_meta` reads them with no install).
 //!
 //! ```text
 //!  table   := uleb records, uleb consts, const* (u64 LE: an immediate Value), record*
-//!  record  := u8 header     bits 0-3 record tag (0 exit), bit 4 exit class (0 speculation)
+//!  record  := u8 header     bits 0-3 record tag (0 exit), bits 4-7 exit class (0 speculation,
+//!                           2 not filled: [`Cause::class`])
 //!             uleb pc       native offset of the exit stub from the code start
 //!             uleb bytecode the bytecode offset T0 resumes at
 //!             uleb counter  index into the code's RW exit-counter array (the stub index)
 //!             uleb feedback the guard's feedback slot + 1 (a shape guard's IC site), 0 = none
+//!             uleb reason   the cause: 0 unknown (a guard with one check), 1-5 the causes of
+//!                           a shape guard ([`Cause::reason`])
 //!             uleb inline   0 (no inlining)
 //!             uleb n, value* every live VM register and the accumulator at the exit
 //!  value   := u8 tag        bits 0-3 location (0 reg, 1 stack, 2 const-index, 3 VM frame
 //!                           slot), bits 4-6 repr (Tagged, Int32, Bool, Float64), bit 7: the
 //!                           target is the accumulator
-//!             [sleb target] the VM register (its bytecode operand), absent for the acc
-//!             payload        register number (uleb), stack byte offset from x29 (uleb),
-//!                           const index (uleb) or VM frame byte offset from fp (sleb)
+//!             [target]      the VM register (its bytecode operand; ZigZag + uleb), absent
+//!                           for the acc
+//!             payload       register number (uleb), stack byte offset from x29 (uleb),
+//!                           const index (uleb) or VM frame byte offset from fp (ZigZag + uleb)
 //! ```
+//!
+//! A signed field is ZigZag + uleb, `uleb((v << 1) ^ (v >> 63))` ([`zigzag`]), not SLEB128
+//! (H29-Q2).
 //!
 //! **Position independent.** Every field is an offset or an index: the pc from the code
 //! start, the bytecode offset from the function's bytecode start, a native stack word from
@@ -44,6 +53,15 @@ use crate::regalloc::{Allocation, Location};
 /// The H29 byte form's tag values (the VM's `deopt::form`; the VM's reader is the check).
 mod form {
     pub const RECORD_EXIT: u8 = 0;
+    pub const CLASS_SHIFT: u32 = 4;
+    pub const CLASS_SPECULATION: u8 = 0;
+    pub const CLASS_NOT_FILLED: u8 = 2;
+    pub const REASON_UNKNOWN: u32 = 0;
+    pub const REASON_SHAPE_DIFFERS: u32 = 1;
+    pub const REASON_NOT_CELL: u32 = 2;
+    pub const REASON_NO_VECTOR: u32 = 3;
+    pub const REASON_UNFILLED: u32 = 4;
+    pub const REASON_MEGAMORPHIC: u32 = 5;
     pub const LOC_REG: u8 = 0;
     pub const LOC_STACK: u8 = 1;
     pub const LOC_CONST: u8 = 2;
@@ -85,9 +103,9 @@ pub struct ExitValue {
 
 /// Why an exit was taken (MODES-CHECK-w21 MC-w21-5): a guard with more than one check gets an
 /// exit stub, a record and a counter per cause, so the VM's exit counters count its exits by
-/// cause. Not in the H29 bytes, as [`ExitRecord::guard`] is not: the spike's reports name it.
-/// Every record is a speculation exit (header bit 4 is 0) in Spike C; the exit class a cause
-/// should have is the H29-Q1 class list and a B2 decision (H32-Q5), not this spike's.
+/// cause. Since M6-P0 the record carries it (V11-D13, V11-D14): its reason ([`Cause::reason`])
+/// and its exit class ([`Cause::class`]: "not filled" for [`Cause::not_filled`], else
+/// speculation). [`ExitRecord::guard`] is still not in the bytes: the spike's reports name it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Cause {
     /// The guard's one check failed (every guard but `CheckShape`).
@@ -135,6 +153,30 @@ impl Cause {
     pub fn not_filled(self) -> bool {
         matches!(self, Cause::NoVector | Cause::Unfilled)
     }
+
+    /// The H29 exit class of the cause's record (header bits 4-7): 2 "not filled" for a
+    /// [`Cause::not_filled`] cause, outside the H32 site and function budgets (V11-D14), else 0
+    /// speculation.
+    pub fn class(self) -> u8 {
+        if self.not_filled() {
+            form::CLASS_NOT_FILLED
+        } else {
+            form::CLASS_SPECULATION
+        }
+    }
+
+    /// The H29 reason of the cause's record (V11-D13): 0 unknown for [`Cause::Check`] (the
+    /// guard has one check), 1-5 for the shape-guard causes in [`Cause::SHAPE`] order.
+    pub fn reason(self) -> u32 {
+        match self {
+            Cause::Check => form::REASON_UNKNOWN,
+            Cause::Differs => form::REASON_SHAPE_DIFFERS,
+            Cause::NotCell => form::REASON_NOT_CELL,
+            Cause::NoVector => form::REASON_NO_VECTOR,
+            Cause::Unfilled => form::REASON_UNFILLED,
+            Cause::Megamorphic => form::REASON_MEGAMORPHIC,
+        }
+    }
 }
 
 /// The metadata of one guard exit.
@@ -144,7 +186,7 @@ pub struct ExitRecord {
     pub pc: u32,
     /// The guard (not in the bytes: the spike's reports name it).
     pub guard: u32,
-    /// Why this exit is taken (not in the bytes; [`Cause`]).
+    /// Why this exit is taken: the record's exit class and reason ([`Cause`]).
     pub cause: Cause,
     /// The bytecode offset T0 resumes at.
     pub bytecode: u32,
@@ -199,7 +241,8 @@ fn uleb(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
-fn sleb(out: &mut Vec<u8>, v: i64) {
+/// A signed field: ZigZag, then uleb (not SLEB128; H29-Q2).
+fn zigzag(out: &mut Vec<u8>, v: i64) {
     uleb(out, ((v << 1) ^ (v >> 63)) as u64);
 }
 
@@ -298,10 +341,10 @@ impl ExitTable {
             out.extend_from_slice(&c.bits().to_le_bytes());
         }
         for e in &self.exits {
-            // An eager guard exit: record tag exit, exit class speculation (bit 4 clear).
-            out.push(form::RECORD_EXIT);
+            // An eager guard exit: record tag exit, the cause's exit class and reason.
+            out.push(form::RECORD_EXIT | e.cause.class() << form::CLASS_SHIFT);
             let feedback = e.feedback.map_or(0, |s| s + 1);
-            for f in [e.pc, e.bytecode, e.counter, feedback, 0] {
+            for f in [e.pc, e.bytecode, e.counter, feedback, e.cause.reason(), 0] {
                 uleb(&mut out, u64::from(f));
             }
             uleb(&mut out, e.values.len() as u64);
@@ -315,10 +358,10 @@ impl ExitTable {
                 let acc = if v.target.is_none() { form::ACC } else { 0 };
                 out.push(loc | (v.repr as u8) << form::REPR_SHIFT | acc);
                 if let Some(r) = v.target {
-                    sleb(&mut out, i64::from(r.to_operand()));
+                    zigzag(&mut out, i64::from(r.to_operand()));
                 }
                 if loc == form::LOC_FRAME {
-                    sleb(&mut out, payload);
+                    zigzag(&mut out, payload);
                 } else {
                     uleb(&mut out, payload as u64);
                 }
@@ -423,22 +466,105 @@ mod tests {
     }
 
     /// The VM's reader takes what this builder writes: every location kind, every repr, the
-    /// accumulator, a parameter, a local and a feedback slot. The bytes are the H29 form
-    /// byte for byte (the record of guard 9 below).
+    /// accumulator, a parameter, a local, a feedback slot, a not-filled class and a reason. The
+    /// bytes are the H29 form byte for byte (the head of the record of guard 3, all of guard 9).
     #[test]
     fn the_vm_reads_the_built_table() {
         let t = sample();
         let b = t.encode();
         assert_eq!(ep9_vm::NativeCx::check_deopt_meta(&b), Ok(2));
+        // Record 1 (after the counts and 2 consts, byte 18): header 0x20 (exit, class 2 not
+        // filled), pc 2100 (uleb b4 10), bytecode 57, counter 0, feedback slot 2 + 1, reason 4
+        // (unfilled), no inline frame, 3 values.
+        let head = [0x20, 0xB4, 0x10, 0x39, 0x00, 0x03, 0x04, 0x00, 0x03];
+        assert_eq!(b[18..27], head, "{b:02x?}");
         // Record 2: header 0 (exit, speculation), pc 2112 (uleb c0 10), bytecode 0, counter 1,
-        // no feedback, no inline frame, 1 value: tag 0x02 (const-index, Tagged, a register
-        // target), target r0 (sleb 0), const 1.
+        // no feedback, reason 0 (unknown: a guard with one check), no inline frame, 1 value:
+        // tag 0x02 (const-index, Tagged, a register target), target r0 (ZigZag 0), const 1.
         let tail = [
-            0x00, 0xC0, 0x10, 0x00, 0x01, 0x00, 0x00, 0x01, 0x02, 0x00, 0x01,
+            0x00, 0xC0, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x01,
         ];
         assert!(b.ends_with(&tail), "{b:02x?}");
         // A spill slot is a byte offset from x29: slot 3 is x29 + 120.
         assert_eq!(stack_offset(3), 120);
+    }
+
+    /// One record per [`Cause`]: the class and reason bytes the builder writes (V11-D13,
+    /// V11-D14), which the VM's reader takes; a reason or class the VM does not know is
+    /// refused. The values are the VM's own `deopt::form` constants, read from its source text
+    /// (they are crate-private), so a renumbering on either side fails here.
+    #[test]
+    fn each_cause_writes_its_class_and_reason() {
+        let causes = [
+            Cause::Check,
+            Cause::Differs,
+            Cause::NotCell,
+            Cause::NoVector,
+            Cause::Unfilled,
+            Cause::Megamorphic,
+        ];
+        let t = ExitTable {
+            consts: vec![],
+            exits: (0u32..)
+                .zip(causes)
+                .map(|(i, cause)| ExitRecord {
+                    pc: 4 * i,
+                    guard: 0,
+                    cause,
+                    bytecode: 0,
+                    counter: i,
+                    feedback: None,
+                    values: vec![],
+                })
+                .collect(),
+        };
+        let b = t.encode();
+        assert_eq!(ep9_vm::NativeCx::check_deopt_meta(&b), Ok(6));
+        // Each record: header, pc, bytecode, counter, feedback, reason, inline, n (8 bytes,
+        // every field below 128), after the two counts.
+        let got: Vec<(u8, u8)> = b[2..].chunks(8).map(|r| (r[0], r[5])).collect();
+        assert_eq!(
+            got,
+            [(0, 0), (0, 1), (0, 2), (0x20, 3), (0x20, 4), (0, 5)],
+            "{b:02x?}"
+        );
+        const DEOPT_RS: &str = include_str!("../../../crates/ep9_vm/src/deopt.rs");
+        let vm = |name: &str, ty: &str| -> u32 {
+            let prefix = format!("pub const {name}: {ty} =");
+            let l = DEOPT_RS
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(prefix.as_str()))
+                .unwrap_or_else(|| panic!("no {prefix} in deopt.rs"));
+            l.trim().trim_end_matches(';').parse().expect("a number")
+        };
+        assert_eq!(vm("CLASS_SHIFT", "u32"), form::CLASS_SHIFT);
+        assert_eq!(
+            vm("CLASS_SPECULATION", "u8"),
+            u32::from(form::CLASS_SPECULATION)
+        );
+        assert_eq!(
+            vm("CLASS_NOT_FILLED", "u8"),
+            u32::from(form::CLASS_NOT_FILLED)
+        );
+        for (name, cause) in [
+            ("REASON_UNKNOWN", Cause::Check),
+            ("REASON_SHAPE_DIFFERS", Cause::Differs),
+            ("REASON_NOT_CELL", Cause::NotCell),
+            ("REASON_NO_VECTOR", Cause::NoVector),
+            ("REASON_UNFILLED", Cause::Unfilled),
+            ("REASON_MEGAMORPHIC", Cause::Megamorphic),
+        ] {
+            assert_eq!(vm(name, "u32"), cause.reason(), "{name}");
+        }
+        // The next reason and class 15 are refused (the VM knows reasons 0-5, classes 0-2).
+        let mut bad = b.clone();
+        bad[2 + 8 * 5 + 5] = 6;
+        let e = ep9_vm::NativeCx::check_deopt_meta(&bad).unwrap_err();
+        assert!(e.contains("unknown exit reason 6"), "{e}");
+        let mut bad = b.clone();
+        bad[2] = 0xF0;
+        let e = ep9_vm::NativeCx::check_deopt_meta(&bad).unwrap_err();
+        assert!(e.contains("unknown exit class 15"), "{e}");
     }
 
     /// What the VM's reader refuses, the builder never writes: a cut table, a const index past
@@ -470,7 +596,7 @@ mod tests {
     /// value but 0, so this pins the form (Codex r1 spikec8, H29-Q2).
     #[test]
     fn signed_fields_are_zigzag_uleb_not_sleb128() {
-        // (value, ZigZag + uleb: what `sleb` writes, SLEB128: what it does not write)
+        // (value, ZigZag + uleb: what `zigzag` writes, SLEB128: what it does not write)
         let cases: [(i64, &[u8], &[u8]); 11] = [
             (0, &[0x00], &[0x00]),
             (-1, &[0x01], &[0x7F]),
@@ -492,15 +618,15 @@ mod tests {
                 &[0xFF, 0xFF, 0xFF, 0xFF, 0x07],
             ),
         ];
-        for (v, zigzag, sleb128) in cases {
+        for (v, want, sleb128) in cases {
             let mut out = Vec::new();
-            sleb(&mut out, v);
-            assert_eq!(out, zigzag, "{v}");
+            zigzag(&mut out, v);
+            assert_eq!(out, want, "{v}");
             assert_eq!(out == sleb128, v == 0, "{v}");
         }
     }
 
-    /// The VM's reader (`ep9_vm` `deopt.rs` `Reader::sleb32`) reads the same ZigZag + uleb
+    /// The VM's reader (`ep9_vm` `deopt.rs` `Reader::zigzag32`) reads the same ZigZag + uleb
     /// bytes back: a word offset is taken, and a non-word offset is refused with the exact
     /// value it read. The SLEB128 bytes of the same offset read as another value.
     #[test]
@@ -522,13 +648,14 @@ mod tests {
                 }],
             }],
         };
-        // records 1, consts 0, header 0, pc 0, bytecode 0, counter 0, feedback 0, inline 0,
-        // values 1, tag 0x83 (VM frame slot, Tagged, the accumulator), offset -8 = 0x0F.
+        // records 1, consts 0, header 0, pc 0, bytecode 0, counter 0, feedback 0, reason 0,
+        // inline 0, values 1, tag 0x83 (VM frame slot, Tagged, the accumulator), offset -8 =
+        // 0x0F.
         let b = table(-8).encode();
         assert_eq!(
             b,
             [
-                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x83, 0x0F
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x83, 0x0F
             ]
         );
         let check = ep9_vm::NativeCx::check_deopt_meta;

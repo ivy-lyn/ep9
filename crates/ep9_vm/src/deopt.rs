@@ -26,31 +26,48 @@
 //!  table   := uleb records, uleb consts, const* (u64 LE: an immediate Value, never a cell),
 //!             record* (sorted by pc, no two at one pc)
 //!  record  := u8 header     bits 0-3 record tag: 0 exit, 1 poll, 2 call (append-only, 16 values)
-//!                           bits 4-7 exit class: 0 speculation, 1 environment, others
-//!                           refused (append-only, H29-Q1 fill; C-04; bit 4 + reserved 5-7)
+//!                           bits 4-7 exit class: 0 speculation, 1 environment, 2 not filled
+//!                           (append-only, 16 values; H29-Q1 fill, C-04; V11-D14)
 //!             uleb pc       offset of the exit stub from the code start
 //!             uleb bytecode the bytecode offset T0 resumes at (H2: the only deopt id)
 //!             uleb counter  index into the code's RW exit-counter array (H29-Q5; < records)
 //!             uleb feedback the guard's feedback slot + 1, 0 = none (a note, MC-w13-7)
+//!             uleb reason   why the exit is taken: 0 unknown, 1 shape differs, 2 not a cell,
+//!                           3 no vector, 4 unfilled, 5 megamorphic (append-only; V11-D13)
 //!             uleb inline   inline frames: 0 (no inline frame kind is built; more is refused)
 //!             uleb n, value*
 //!  value   := u8 tag        bits 0-3 location: 0 reg, 1 stack, 2 const-index, 3 VM frame slot
 //!                           (append-only, 16 values; 3 is the M5-P1 fill, V10-D30)
 //!                           bits 4-6 repr: 0 Tagged, 1 Int32, 2 Bool, 3 Float64 (4-7 refused)
 //!                           bit 7: the target is the accumulator
-//!             [sleb target] the VM register (its bytecode operand); absent for the accumulator
+//!             [target]      the VM register (its bytecode operand; ZigZag + uleb), absent
+//!                           for the accumulator
 //!             payload       reg: uleb machine register (< 31, the dump's index)
 //!                           stack: uleb byte offset from the exit's native frame pointer (8n)
 //!                           const-index: uleb index into the table's consts
-//!                           VM frame slot: sleb byte offset from fp (8n; the receiver, a
-//!                           parameter or a register of the frame)
+//!                           VM frame slot: ZigZag + uleb byte offset from fp (8n; the
+//!                           receiver, a parameter or a register of the frame)
 //! ```
 //!
-//! The reader refuses every unknown value and every reserved bit (H29 Freeze table: "the
-//! deopt reader refuses a code object with an unknown tag"); the install then refuses the
-//! code, and the function stays in T0. The writer is the compiler's (Spike C's
-//! `deopt_meta.rs` today; `ep9_opt` later, H29 Crates); `Table::encode` is the tests'
-//! reference writer. DEOPT_META_VERSION stays 0 in month 5: no shipped metadata (V10-D29).
+//! A signed field is ZigZag + uleb: `uleb((v << 1) ^ (v >> 63))`, so -1 is 0x01 and 1 is 0x02
+//! (not SLEB128, the two's-complement form of DWARF CFI; H29-Q2).
+//!
+//! **Exit class and reason** (H29-Q1; V11-D13, V11-D14). The class says what the exit means
+//! for the H32 budgets: only a speculation exit (a fact the code was compiled from did not
+//! hold) counts toward them; an environment exit is a lazy deopt from an outside event; a
+//! not-filled exit is taken because the feedback its guard reads is not there yet (no
+//! feedback vector, or an IC entry T0 has not filled), and it is outside the site and
+//! function budgets. No code reads a budget yet. The reason says which check of the guard
+//! failed (one record per cause is the writer's choice, not a rule); 0 = unknown, for a
+//! guard with one check. The reader checks it; no VM code acts on it yet: it is kept for a
+//! later recompile, and for AOT code it is in the unit's rodata (F14, H35).
+//!
+//! The reader refuses every unknown value (H29 Freeze table: "the deopt reader refuses a code
+//! object with an unknown tag"); the install then refuses the code, and the function stays in
+//! T0. The writer is the compiler's (Spike C's `deopt_meta.rs` today; `ep9_opt` later, H29
+//! Crates); `Table::encode` is the tests' reference writer. DEOPT_META_VERSION stays 0 in
+//! month 6: no shipped metadata (V10-D29); the form above is "format 1 (declared)", and the
+//! version moves to 1 at A2 start (V11-D12).
 //!
 //! **No GC point** (H29-Q7, SCP:127). The rebuild reads every value before it writes one,
 //! boxes ints, booleans and doubles as immediates and allocates nothing on the heap: a
@@ -78,10 +95,31 @@ pub(crate) mod form {
     pub const RECORD_CALL: u8 = 2;
     /// The record tags this reader knows: `0..RECORD_TAGS` (append-only, H29).
     pub const RECORD_TAGS: u8 = 3;
-    /// Record header bit 4: an environment exit (else a speculation exit).
-    pub const ENVIRONMENT: u8 = 0x10;
-    /// Record header bits 5-7: reserved, must be 0.
-    pub const HEADER_RESERVED: u8 = 0xE0;
+    /// Record header bits 4-7: the exit class (H29-Q1: a 4-bit append-only list).
+    pub const CLASS_SHIFT: u32 = 4;
+    /// Exit class 0: a speculation exit (a fact the code was compiled from did not hold).
+    pub const CLASS_SPECULATION: u8 = 0;
+    /// Exit class 1: an environment exit (a lazy deopt from an outside event).
+    pub const CLASS_ENVIRONMENT: u8 = 1;
+    /// Exit class 2: a not-filled exit (no feedback vector, or an unfilled IC entry; V11-D14).
+    pub const CLASS_NOT_FILLED: u8 = 2;
+    /// The exit classes this reader knows: `0..CLASSES` (append-only, H29).
+    pub const CLASSES: u8 = 3;
+
+    /// Record field `reason` 0: unknown (a guard with one check, or a writer that names none).
+    pub const REASON_UNKNOWN: u32 = 0;
+    /// Reason 1: the IC entry holds a case, but not the guard's (a shape guard).
+    pub const REASON_SHAPE_DIFFERS: u32 = 1;
+    /// Reason 2: the value is not a cell (a shape guard).
+    pub const REASON_NOT_CELL: u32 = 2;
+    /// Reason 3: the function has no feedback vector.
+    pub const REASON_NO_VECTOR: u32 = 3;
+    /// Reason 4: the IC entry is unfilled (its key half is undefined).
+    pub const REASON_UNFILLED: u32 = 4;
+    /// Reason 5: the IC entry is megamorphic.
+    pub const REASON_MEGAMORPHIC: u32 = 5;
+    /// The reasons this reader knows: `0..REASONS` (append-only, V11-D13).
+    pub const REASONS: u32 = 6;
 
     /// Value tag bits 0-3: the location tag.
     pub const LOC_MASK: u8 = 0x0F;
@@ -108,10 +146,13 @@ pub(crate) mod form {
     pub const ACC: u8 = 0x80;
 }
 
-// Each list's length is its last value + 1: the tests fill each list, then probe the next
-// value and tag 15 (w17 O4).
+// Each list's length is its last value + 1: the tests fill each list, then probe the top of
+// its field (tag 15, class 15, repr 7, reason u32::MAX), never the next free value: a later
+// append fills that one (w17 O4; README append rule, v11in #6).
 const _: () = assert!(
     form::RECORD_TAGS == form::RECORD_CALL + 1
+        && form::CLASSES == form::CLASS_NOT_FILLED + 1
+        && form::REASONS == form::REASON_MEGAMORPHIC + 1
         && form::LOC_TAGS == form::LOC_FRAME + 1
         && form::REPRS == form::REPR_FLOAT64 + 1
 );
@@ -128,12 +169,31 @@ pub(crate) enum RecordTag {
     Call,
 }
 
-/// Why an exit left the code (H29-Q1, C-04): only speculation exits count toward the H32
-/// budgets; an environment exit is a lazy deopt from an outside event.
+/// What an exit means for the H32 budgets (H29-Q1, C-04; the module docs): only speculation
+/// exits count toward them; an environment exit is a lazy deopt from an outside event; a
+/// not-filled exit (V11-D14) is outside the site and function budgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExitClass {
     Speculation,
     Environment,
+    NotFilled,
+}
+
+/// Which check of a guard failed (V11-D13; the record's `reason` field).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExitReason {
+    /// A guard with one check, or a writer that names no reason.
+    Unknown,
+    /// The IC entry holds a case, but not the guard's: the fact did not hold.
+    ShapeDiffers,
+    /// The value is not a cell.
+    NotCell,
+    /// The function has no feedback vector.
+    NoVector,
+    /// The IC entry is unfilled.
+    Unfilled,
+    /// The IC entry is megamorphic.
+    Megamorphic,
 }
 
 /// The machine form of a value at an exit.
@@ -186,6 +246,7 @@ pub(crate) struct Record {
     pub bytecode: u32,
     pub counter: u32,
     pub feedback: Option<u32>,
+    pub reason: ExitReason,
     pub values: Vec<ExitValue>,
 }
 
@@ -230,7 +291,8 @@ impl Reader<'_> {
         u32::try_from(self.uleb()?).map_err(|_| "a u32 field is too large".to_string())
     }
 
-    fn sleb32(&mut self) -> Result<i32, String> {
+    /// A signed field: ZigZag + uleb (module docs), as an i32.
+    fn zigzag32(&mut self) -> Result<i32, String> {
         let z = self.uleb()?;
         let v = ((z >> 1) as i64) ^ -((z & 1) as i64);
         i32::try_from(v).map_err(|_| "an i32 field is too large".to_string())
@@ -238,8 +300,8 @@ impl Reader<'_> {
 }
 
 impl Table {
-    /// Reads a table in the H29 byte form. Refuses every unknown tag value, every reserved
-    /// bit, a cut or overlong table, a const that is a cell, records out of pc order, a
+    /// Reads a table in the H29 byte form. Refuses every unknown tag, class, reason or repr
+    /// value, a cut or overlong table, a const that is a cell, records out of pc order, a
     /// counter index past the records, an inline frame, a register past the dump, a stack
     /// or frame offset that is not a word, a const index past the list and two values for
     /// one target.
@@ -301,7 +363,7 @@ impl Table {
                 out.push(b | 0x80);
             }
         }
-        fn sleb(out: &mut Vec<u8>, v: i64) {
+        fn zigzag(out: &mut Vec<u8>, v: i64) {
             uleb(out, ((v << 1) ^ (v >> 63)) as u64);
         }
         let mut out = Vec::new();
@@ -317,15 +379,25 @@ impl Table {
                 RecordTag::Call => form::RECORD_CALL,
             };
             let class = match r.class {
-                ExitClass::Speculation => 0,
-                ExitClass::Environment => form::ENVIRONMENT,
+                ExitClass::Speculation => form::CLASS_SPECULATION,
+                ExitClass::Environment => form::CLASS_ENVIRONMENT,
+                ExitClass::NotFilled => form::CLASS_NOT_FILLED,
             };
-            out.push(tag | class);
+            let reason = match r.reason {
+                ExitReason::Unknown => form::REASON_UNKNOWN,
+                ExitReason::ShapeDiffers => form::REASON_SHAPE_DIFFERS,
+                ExitReason::NotCell => form::REASON_NOT_CELL,
+                ExitReason::NoVector => form::REASON_NO_VECTOR,
+                ExitReason::Unfilled => form::REASON_UNFILLED,
+                ExitReason::Megamorphic => form::REASON_MEGAMORPHIC,
+            };
+            out.push(tag | class << form::CLASS_SHIFT);
             for f in [
                 r.pc,
                 r.bytecode,
                 r.counter,
                 r.feedback.map_or(0, |s| s + 1),
+                reason,
                 0,
             ] {
                 uleb(&mut out, u64::from(f));
@@ -351,10 +423,10 @@ impl Table {
                 };
                 out.push(loc | repr << form::REPR_SHIFT | acc);
                 if let Target::Reg(t) = v.target {
-                    sleb(&mut out, i64::from(t.to_operand()));
+                    zigzag(&mut out, i64::from(t.to_operand()));
                 }
                 if loc == form::LOC_FRAME {
-                    sleb(&mut out, payload);
+                    zigzag(&mut out, payload);
                 } else {
                     uleb(&mut out, payload as u64);
                 }
@@ -372,27 +444,32 @@ fn is_cell_bits(bits: u64) -> bool {
 /// One record of a table with `records` records and the const list `consts`.
 fn decode_record(r: &mut Reader<'_>, consts: &[u64], records: u32) -> Result<Record, String> {
     let header = r.byte()?;
-    if header & form::HEADER_RESERVED != 0 {
-        return Err(format!(
-            "record header {header:#04x}: reserved bits 5-7 set"
-        ));
-    }
     let tag = match header & form::RECORD_TAG_MASK {
         form::RECORD_EXIT => RecordTag::Exit,
         form::RECORD_POLL => RecordTag::Poll,
         form::RECORD_CALL => RecordTag::Call,
         t => return Err(format!("unknown record tag {t}")),
     };
-    let class = if header & form::ENVIRONMENT != 0 {
-        ExitClass::Environment
-    } else {
-        ExitClass::Speculation
+    let class = match header >> form::CLASS_SHIFT {
+        form::CLASS_SPECULATION => ExitClass::Speculation,
+        form::CLASS_ENVIRONMENT => ExitClass::Environment,
+        form::CLASS_NOT_FILLED => ExitClass::NotFilled,
+        c => return Err(format!("unknown exit class {c}")),
     };
     let (pc, bytecode, counter) = (r.u32()?, r.u32()?, r.u32()?);
     if counter >= records {
         return Err(format!("counter {counter} of {records} records"));
     }
     let feedback = r.u32()?.checked_sub(1);
+    let reason = match r.u32()? {
+        form::REASON_UNKNOWN => ExitReason::Unknown,
+        form::REASON_SHAPE_DIFFERS => ExitReason::ShapeDiffers,
+        form::REASON_NOT_CELL => ExitReason::NotCell,
+        form::REASON_NO_VECTOR => ExitReason::NoVector,
+        form::REASON_UNFILLED => ExitReason::Unfilled,
+        form::REASON_MEGAMORPHIC => ExitReason::Megamorphic,
+        x => return Err(format!("unknown exit reason {x}")),
+    };
     let inline = r.uleb()?;
     if inline != 0 {
         return Err(format!(
@@ -415,6 +492,7 @@ fn decode_record(r: &mut Reader<'_>, consts: &[u64], records: u32) -> Result<Rec
         bytecode,
         counter,
         feedback,
+        reason,
         values,
     })
 }
@@ -431,7 +509,7 @@ fn decode_value(r: &mut Reader<'_>, consts: &[u64]) -> Result<ExitValue, String>
     let target = if tag & form::ACC != 0 {
         Target::Acc
     } else {
-        Target::Reg(Register::from_operand(r.sleb32()?))
+        Target::Reg(Register::from_operand(r.zigzag32()?))
     };
     let word = |o: i64| -> Result<(), String> {
         if o % 8 == 0 {
@@ -461,7 +539,7 @@ fn decode_value(r: &mut Reader<'_>, consts: &[u64]) -> Result<ExitValue, String>
             Loc::Const(i)
         }
         form::LOC_FRAME => {
-            let o = r.sleb32()?;
+            let o = r.zigzag32()?;
             word(i64::from(o))?;
             Loc::Frame(o)
         }

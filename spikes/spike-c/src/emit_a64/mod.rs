@@ -97,9 +97,9 @@ use crate::vm_layout;
 
 type Ops = VecAssembler<Aarch64Relocation>;
 
-/// The bytes of the shared exit's register dump below sp: x0-x30, one word each (word n =
-/// xn, `ep9_vm` `deopt::DUMP_REGS`), rounded up to keep sp 16-aligned.
-const DUMP_BYTES: u32 = 256;
+/// The bytes of the shared exit's register dump below sp: x0-x30, one word each (word n = xn,
+/// `ep9_vm` `deopt::DUMP_REGS`), 16-aligned: the DEOPT_META export (a hand fact until M6-P0).
+const DUMP_BYTES: u32 = layout::DUMP_BYTES;
 
 /// The form of the exit stubs (V10-D31: the call form is the default; MC-w15-14: the movz
 /// form stays as a report).
@@ -826,8 +826,8 @@ impl Emitter<'_> {
                 // The kind guard (WI-SC7; M5-P1-ORCH-11: the shape is the kind source): an
                 // Array whose shape's elements kind (counts bits 28-31) is in ARRAY_KINDS.
                 // DICTIONARY and the reserved kinds exit, fail closed (V10-D9b). The shape is
-                // the cell at (address & !(SHAPE_CAGE_ALIGN - 1)) | ShapeId (vm_layout: hand
-                // facts, proved on live arrays). The element ops read this node's result, so
+                // the cell at (address & !(SHAPE_CAGE_ALIGN - 1)) | ShapeId (layout exports,
+                // which vm_layout::check proves on live arrays). The element ops read this node's result, so
                 // none of them, a raw f64 load included, runs before the guard (MC-w19-5).
                 let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
@@ -871,7 +871,7 @@ impl Emitter<'_> {
                 let fi_word = layout::FP_FUNCTION_INFO as i32;
                 let entry = vm_layout::FEEDBACK_SLOTS + vm_layout::FEEDBACK_SLOT_SIZE * site;
                 let (poly, hit) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
-                let (hole, undefined) = (vm_layout::HOLE as u32, VALUE_UNDEFINED as u32);
+                let (hole, undefined) = (vm_layout::HOLE as u32, layout::VALUE_UNDEFINED as u32);
                 let native_word = native_word_offset()?;
                 let (shape_id, key, value) = (
                     vm_layout::SHAPE_ID_BYTE,
@@ -1880,7 +1880,8 @@ impl Emitter<'_> {
     /// exit stub, a record and a counter of its own, so the VM's exit counters count the
     /// guard's exits by cause. The first is [`Emitter::trap`]'s (a forced build's countdown
     /// exits there). Every record has the guard's frame state, so each resumes T0 the same
-    /// way; only the cause (not in the H29 bytes) and the stub's pc differ.
+    /// way; only the cause (the record's exit class and reason, V11-D13, V11-D14) and the
+    /// stub's pc differ.
     fn shape_traps(&mut self, n: NodeId) -> Result<[DynamicLabel; 5], Refusal> {
         let first = self.trap(n)?;
         let (_, id, offset, policy, _) = *self.traps.last().expect("the trap just made");

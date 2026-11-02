@@ -33,7 +33,7 @@
 //! spike-c driver <kernel> [--n N]          print the driver script (node runs the same text)
 //! spike-c structural [check... | all]       the checks of `gate.sh structural`
 //! spike-c read-set                          the R17 read set: each `ep9_vm::layout` item Spike C
-//!                                           reads, by owner version, and the hand facts (HAND_FACTS)
+//!                                           reads, by owner version (no hand fact since M6-P0)
 //! spike-c liveness <kernel> [hot index]     the H02-Q1 liveness report of a hot function
 //! ```
 
