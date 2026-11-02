@@ -55,7 +55,7 @@ use crate::interp::{Cx, EXIT_STUB};
 use crate::isolate::{Exception, Isolate};
 use crate::object;
 use crate::realm;
-use crate::runtime::{ErrorKind, Runtime, val};
+use crate::runtime::{ErrorKind, Root, Runtime, val};
 use crate::unit::FunctionInfo;
 
 pub use crate::layout::{NativeCx, RuntimeTable};
@@ -102,13 +102,14 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     get_keyed: rt_get_keyed,
     set_keyed: rt_set_keyed,
     deopt: rt_deopt,
+    load_global: rt_load_global,
 };
 
 impl RuntimeTable {
     /// The entries in declaration order: name, byte offset, function type. The list is an
     /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
     /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
-    pub const ENTRIES: [(&'static str, usize, &'static str); 11] = [
+    pub const ENTRIES: [(&'static str, usize, &'static str); 12] = [
         ("poll", layout::RT_POLL, "RtFn0"),
         ("call_any", layout::RT_CALL_ANY, "RtFn1"),
         ("add", layout::RT_ADD, "RtFn2"),
@@ -120,6 +121,7 @@ impl RuntimeTable {
         ("get_keyed", layout::RT_GET_KEYED, "RtFn2"),
         ("set_keyed", layout::RT_SET_KEYED, "RtFn3"),
         ("deopt", layout::RT_DEOPT, "RtFn2"),
+        ("load_global", layout::RT_LOAD_GLOBAL, "RtFn0"),
     ];
 
     /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
@@ -478,6 +480,20 @@ native_fns! {
         unsafe { deopt_at(cx, fp, pc, dump, native_fp) }
     }
 
+    /// [`RuntimeTable::load_global`] (M6-P0 VM6, V11-D43). Calls no recording function
+    /// (MC-w15-6).
+    ///
+    /// # Safety
+    /// As [`rt_poll`].
+    unsafe fn rt_load_global(cx: *mut NativeCx, fp: *mut u64, off: u32) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, pc) = unsafe { enter(cx, fp, off) };
+        let Some(pc) = pc else {
+            return bad_offset(cx, off);
+        };
+        load_global_at(cx, fp, pc)
+    }
+
     /// [`RuntimeTable::unwind`].
     ///
     /// # Safety
@@ -495,6 +511,56 @@ native_fns! {
         let pc = pc.unwrap_or(FrameRef(fp).info().code);
         crate::error::unwind(cx, fp, pc)
     }
+}
+
+/// [`RuntimeTable::load_global`]: the global binding that the `LdaGlobal` or
+/// `LdaGlobalInsideTypeof` at `pc` of the frame `fp` names. GetBindingValue of the global
+/// environment as T0's cold path (`slow::load_global`) gives it, with no IC update: the script
+/// lexical record first (a hole is a TDZ ReferenceError), then HasProperty and `[[Get]]` on the
+/// global object (`property::has`, `property::get`; T0's one-scan walk is a shortcut with the
+/// same result). The value, or 0 with a pending exception. GC point.
+fn load_global_at(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
+    let fi = FrameRef(fp).info();
+    // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified bytecode
+    // (`enter` checked that `pc` lies in it).
+    let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let off = pc.addr() - fi.code.addr();
+    let (name, in_typeof) = match ep9_bytecode::decode_at(code, off as u32) {
+        Ok(i) if i.opcode == Opcode::LdaGlobal => (fi.constant(i.unsigned(0)), false),
+        Ok(i) if i.opcode == Opcode::LdaGlobalInsideTypeof => (fi.constant(i.unsigned(0)), true),
+        _ => {
+            let msg = format!("ep9 internal error: no global load at offset {off}");
+            throw_error(cx, ErrorKind::Error, &msg);
+            return 0;
+        }
+    };
+    let rt = cx.rt();
+    if let Some((v, _)) = object::own_get(rt.root(Root::Lexical), name) {
+        if v == HOLE {
+            return name_error(cx, name, "Cannot access '", "' before initialization");
+        }
+        return v;
+    }
+    let g = rt.global();
+    let r = (|| -> Res<u64> {
+        if !crate::property::has(cx, g, name)? {
+            if in_typeof {
+                return Ok(UNDEFINED);
+            }
+            return Ok(name_error(cx, name, "", " is not defined"));
+        }
+        crate::property::get(cx, g, name)
+    })();
+    ret(r)
+}
+
+/// Throws the ReferenceError `<before><name><after>` (the T0 texts of `slow`). Returns 0.
+fn name_error(cx: &mut Cx, name: u64, before: &str, after: &str) -> u64 {
+    let name = crate::string::flatten(cx, name);
+    let n = crate::string::view(cx, name).to_string_lossy();
+    let msg = format!("{before}{n}{after}");
+    throw_error(cx, ErrorKind::ReferenceError, &msg);
+    0
 }
 
 /// The argument registers of a call instruction (frame slot offsets), without a heap copy.

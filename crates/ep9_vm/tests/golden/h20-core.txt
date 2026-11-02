@@ -330,6 +330,7 @@ embed (not core): RuntimeTable field 07: pub unwind: RtFn0
 embed (not core): RuntimeTable field 08: pub get_keyed: RtFn2
 embed (not core): RuntimeTable field 09: pub set_keyed: RtFn3
 embed (not core): RuntimeTable field 10: pub deopt: RtFn2
+embed (not core): RuntimeTable field 11: pub load_global: RtFn0
 embed (not core): impl CodeEntry :: pub fn contains(&self, usize) -> bool
 embed (not core): impl CodeEntry :: pub fn range(&self) -> Range<usize>
 embed (not core): impl CodeRegistry for RangeRegistry { fn register(&mut self, CodeEntry) -> Result<(), RegistryError>; fn unregister(&mut self, usize) -> Option<CodeEntry>; fn lookup(&self, usize) -> Option<CodeEntry>; fn len(&self) -> usize }
@@ -473,6 +474,7 @@ embed (not core): pub const RT_COMPARE: usize
 embed (not core): pub const RT_DEOPT: usize
 embed (not core): pub const RT_GET_KEYED: usize
 embed (not core): pub const RT_INC: usize
+embed (not core): pub const RT_LOAD_GLOBAL: usize
 embed (not core): pub const RT_POLL: usize
 embed (not core): pub const RT_SET_KEYED: usize
 embed (not core): pub const RT_STACK_OVERFLOW: usize

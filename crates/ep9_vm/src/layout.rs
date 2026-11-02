@@ -11,10 +11,10 @@
 //! behind `spike-native`: a default build has `Cx::runtime_table` = null.
 //!
 //! Each export names the one version that owns it (MC-w15-5; doc 13 C-18 and §7.3): VM_LAYOUT
-//! (`Cx`, FunctionInfo and RuntimeTable offsets, the table length), FRAME (frame offsets from
-//! fp, MC-w16-18), OBJECT_LAYOUT (cells, fields and kind ids), IC_LAYOUT (feedback and IC
-//! data) or the Value encoding. The current numbers are in `versions.rs`; a change of any
-//! value moves its owner's version.
+//! (`Cx`, FunctionInfo and RuntimeTable offsets, not the table length: C-18), FRAME (frame
+//! offsets from fp, MC-w16-18), OBJECT_LAYOUT (cells, fields and kind ids), IC_LAYOUT (feedback
+//! and IC data) or the Value encoding. The current numbers are in `versions.rs`; a change of any
+//! value moves its owner's version (a RuntimeTable append moves none, H13-Q3).
 //!
 //! No item here is read by T0 code; the module adds no instruction to a handler.
 
@@ -123,6 +123,13 @@ pub struct RuntimeTable {
     /// accumulator there. It calls no recording function (MC-w15-6). M5-P0: a stub that
     /// throws "deopt not built" and returns 0; M5-P1 SPIKEC-5 builds it.
     pub deopt: RtFn2,
+    /// The global load (M6-P0 VM6, V11-D43; SC D4): the value of the global binding that the
+    /// `LdaGlobal` or `LdaGlobalInsideTypeof` at `off` names (its name constant comes from the
+    /// bytecode, so native code bakes no heap constant). It runs T0's GetBindingValue of the
+    /// global environment (the script lexical record, then the global object) and records no
+    /// feedback (MC-w15-6). The value, or 0 with a pending exception: the ReferenceError of a
+    /// TDZ binding or of a missing name outside `typeof`, or the throw of a getter or a trap.
+    pub load_global: RtFn0,
 }
 
 // ---- Cx (the isolate register points at it): VM_LAYOUT ----
@@ -177,6 +184,8 @@ pub const RT_GET_KEYED: usize = offset_of!(RuntimeTable, get_keyed);
 pub const RT_SET_KEYED: usize = offset_of!(RuntimeTable, set_keyed);
 /// VM_LAYOUT. Entry 10 (M5-P0, V10-D39): the eager deopt entry.
 pub const RT_DEOPT: usize = offset_of!(RuntimeTable, deopt);
+/// VM_LAYOUT. Entry 11 (M6-P0 VM6, V11-D43): the global load.
+pub const RT_LOAD_GLOBAL: usize = offset_of!(RuntimeTable, load_global);
 
 // ---- FunctionInfo: VM_LAYOUT ----
 /// VM_LAYOUT. FunctionInfo: the start of its bytecode (`*const u8`).
