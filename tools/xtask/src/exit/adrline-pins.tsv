@@ -230,3 +230,9 @@ history	H20-builtin-abi.md	crates/ep9_regexp/src/lib.rs:489	| 1 Reviewer (M4-P3 
 # M5-P0 removed the Cx pointer). The pattern names the row by its first two cells (H17:162 also starts
 # with "Validity cells").
 pin	13-execution-modes.md	docs/adr/H17-object-layout.md:135	docs/adr/H17-object-layout.md	^\| Validity cells \| Prototype-chain validity cells per PROTO_INFO	0
+# M5-P5 orchestrator: the review rows of the H17 and H18 Accept sets cite the README section 5 index
+# rows of H17 and H18, whose closing parenthesis 558bab86 moved inside the Status cell after the rows
+# were written (e3f7cbe9). The patterns name each row by its first two cells.
+pin	H17-object-layout.md	docs/adr/README.md:148-149	docs/adr/README.md	^\| H17 \| Object layout \|	0	^\| H18 \| Elements kinds \|	0
+pin	H17-object-layout.md	docs/adr/README.md:148	docs/adr/README.md	^\| H17 \| Object layout \|	0
+pin	H18-elements-kinds.md	docs/adr/README.md:149	docs/adr/README.md	^\| H18 \| Elements kinds \|	0
