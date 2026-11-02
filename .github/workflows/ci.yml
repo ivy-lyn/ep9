@@ -1135,6 +1135,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The test262 checkout, as in the test262 job: crates/ep9_builtins/tests/object.rs compares
+      # its embedded propertyHelper.js lines with the pinned harness and skips without it. No
+      # other job that runs the ep9_builtins tests has the checkout.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
       - name: no-jit unit tests (ep9_vm, ep9_builtins)
         env:
           EP9_EXPECT_NO_JIT: "1"
