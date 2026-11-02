@@ -288,8 +288,36 @@ fn val(bits: u64) -> Value {
 
 // ---- (a) build -------------------------------------------------------------------------------
 
-/// The live addresses of a session with unit A loaded (for the window scan).
-fn live_addresses(us: &mut UnitSession, m: &Mapped) -> Live {
+/// A text placed a second time: a chunk of `range`, written as LOAD writes the text
+/// (`load::map`), then read back. Returns the chunk start and the bytes there. The chunk goes
+/// back to `range` at the end.
+fn place_again(range: &ep9_platform::CodeRange, text: &[u8]) -> Result<(usize, Vec<u8>), String> {
+    let mut chunk = range.alloc(text.len().max(1)).map_err(|e| e.to_string())?;
+    let mut mem = chunk
+        .commit(ep9_platform::jit::WxMode::DEFAULT)
+        .map_err(|e| e.to_string())?;
+    {
+        let mut w = mem
+            .open_write(0, text.len().max(1))
+            .map_err(|e| e.to_string())?;
+        w.bytes()[..text.len()].copy_from_slice(text);
+        w.close().map_err(|e| e.to_string())?;
+    }
+    let start = mem.exec_base();
+    // SAFETY: the chunk is committed and holds the `text.len()` bytes just written from
+    // `start`; `mem` keeps it mapped while the slice lives.
+    let moved = unsafe { std::slice::from_raw_parts(start as *const u8, text.len()) }.to_vec();
+    Ok((start, moved))
+}
+
+/// The live addresses of a session with unit A loaded (for the window scan). The placed
+/// ranges (the unit text, the code range) get their second placement in `second`, a code
+/// range of the check's own: another 4 GiB slot, with unit A's text at its first chunk.
+fn live_addresses(
+    us: &mut UnitSession,
+    m: &Mapped,
+    second: &ep9_platform::CodeRange,
+) -> Result<Live, String> {
     let mut l = Live::default();
     let cx = NativeCx::of(&mut us.s.iso);
     l.point("the Cx", cx.addr());
@@ -317,11 +345,16 @@ fn live_addresses(us: &mut UnitSession, m: &Mapped) -> Live {
         l.point("a link cell value", rw.link(0) as usize);
     }
     l.point("the unit directory", us.units.directory());
-    l.range("the unit text", m.text.clone());
-    if let Ok(r) = ep9_platform::CodeRange::process() {
-        l.range("the code range", r.range());
+    // SAFETY: `m.text` is mapped for the life of the process (`load::map`).
+    let text = unsafe { std::slice::from_raw_parts(m.text.start as *const u8, m.text.len()) };
+    let (moved_text, moved) = place_again(second, text)?;
+    if moved != text {
+        return Err("the text placed a second time differs from the mapped text".into());
     }
-    l
+    l.placed("the unit text", m.text.clone(), moved_text)?;
+    let process = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
+    l.placed("the code range", process.range(), second.base())?;
+    Ok(l)
 }
 
 fn check_build(_: Scale) -> Result<Vec<String>, String> {
@@ -330,7 +363,13 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
     // A live session with unit A, for the addresses the scan looks for.
     let mut us = session_with(&Config::default(), &[a_host])?;
     let m = mapping_of(a_host)?;
-    let live = live_addresses(&mut us, m);
+    // The second placement: a code range that does not overlap the process one.
+    let process = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
+    let mut config = ep9_platform::CodeRangeConfig::default();
+    config.avoid.push(process.range());
+    let second = ep9_platform::CodeRange::reserve(&config).map_err(|e| e.to_string())?;
+    let live = live_addresses(&mut us, m, &second)?;
+    let mut fixed = 0;
     for arch in [Arch::Aarch64, Arch::X86_64] {
         for spec in [unit_a(), unit_b()] {
             let bytes = build(&spec, arch)?;
@@ -342,7 +381,12 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
                 ));
             }
             let v = UnitView::parse(&bytes)?;
-            let mut findings = scan::windows(v.text, &live);
+            // The text read at the second placement (the build has no address input, so it
+            // is the same text; LOAD copies it unchanged).
+            let (_, moved) = place_again(&second, v.text)?;
+            let w = scan::windows(v.text, &moved, &live);
+            fixed += w.fixed.len();
+            let mut findings = w.found;
             if arch == Arch::Aarch64 {
                 let fns: Vec<_> = v
                     .functions
@@ -404,10 +448,13 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
         }
     }
     out.push(format!(
-        "scan: {} live addresses (+/- {} KiB) and {} ranges of this process",
+        "scan: {} live addresses (+/- {} KiB) and {} placed ranges of this process (second \
+         placement {:#x}); {fixed} windows in a placed range at this placement only (fixed \
+         bytes, no finding)",
         live.points.len(),
         scan::MARGIN >> 10,
-        live.ranges.len()
+        live.placed.len(),
+        second.base(),
     ));
     Ok(out)
 }
