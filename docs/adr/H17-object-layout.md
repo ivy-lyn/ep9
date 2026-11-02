@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Frozen (layout core; 2026-11-02, M1a). Was: Accepted (2026-11-02, M5-P5, plan v10 §6.5 and §7 step 3, orchestrator step AR:32; the review record of every Change-log row has rows 1-4 or gets them in M5-P5 W1, and the Approvals of the dated sets and of this step are written in M5-P5 W1 before the push). Was: Draft (2026-10-21; v0 as built in M0 wk4). Not frozen: see "Decide before M1a" |
+| Status | Frozen (layout core; 2026-11-02, M1a). Was: Accepted (2026-11-02, M5-P5, plan v10 §6.5 and §7 step 3, orchestrator step AR:32; the review record of every Change-log row has rows 1-4 or gets them in M5-P5 W1, and the Approvals of the dated sets and of this step are written in M5-P5 W1 before the push). Was: Draft (2026-10-21; v0 as built in M0 wk4; the "Decide before M1a" rows were open then and are decided now, H17-Q1 and H17-Q2). The other parts and their freeze points: the Freeze table |
 | Fix by | M1 |
 | Freeze point | By part (the Freeze table below, README §3.4; plan v10 V10-D9): "layout core" at M1a; "kind ids (append-only)" and "representation values (append-only)" have none; "rep-const write rules (gated)" and "layout tuning (gated)" at the A4 gate; "Dictionary v1", "Accessor ICs", "Transition table form" and "Index keys on prototypes" at M1 exit; "S2 weak transition child" at the S2b gate |
 | Origin | v1#13; plan status U |
