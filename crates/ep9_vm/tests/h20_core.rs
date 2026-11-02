@@ -2512,15 +2512,24 @@ fn a_new_cx_method_is_an_addition() {
 /// lines; a field appended to a core struct (`IsolateConfig`) changes its one core line.
 #[test]
 fn an_appended_runtime_table_field_is_an_addition() {
-    let last = "    pub deopt: RtFn2,\n";
+    // The last field of `RuntimeTable` today (the test follows later appends).
+    let src = sources();
+    let (_, layout) = src.iter().find(|(p, _)| p == "layout.rs").unwrap();
+    let body = &layout[layout.find("pub struct RuntimeTable {").unwrap()..];
+    let body = &body[..body.find("\n}\n").unwrap() + 1];
+    let last = body
+        .lines()
+        .rfind(|l| l.starts_with("    pub "))
+        .map(|l| format!("{l}\n"))
+        .unwrap();
     let edit = |text: &str| {
         let mut files = sources();
         let (_, t) = files.iter_mut().find(|(p, _)| p == "layout.rs").unwrap();
-        assert!(t.contains(last), "layout.rs has no {last:?}");
-        *t = t.replacen(last, text, 1);
+        assert_eq!(t.matches(last.as_str()).count(), 1, "layout.rs: {last:?}");
+        *t = t.replacen(last.as_str(), text, 1);
         diff(&golden_lines(), &extract(&files))
     };
-    let (gone, new) = edit("    pub deopt: RtFn2,\n    /// A probe.\n    pub probe: RtFn0,\n");
+    let (gone, new) = edit(&format!("{last}    /// A probe.\n    pub probe: RtFn0,\n"));
     assert!(gone.is_empty(), "{gone:?}");
     assert_eq!(new.len(), 1, "{new:?}");
     assert!(
@@ -2528,9 +2537,13 @@ fn an_appended_runtime_table_field_is_an_addition() {
             && new[0].ends_with(": pub probe: RtFn0"),
         "{new:?}"
     );
-    let (gone, new) = edit("    pub probe: RtFn0,\n    pub deopt: RtFn2,\n");
+    // A field put before the last one: the last field's line changes (its place moves).
+    let (gone, new) = edit(&format!("    pub probe: RtFn0,\n{last}"));
     assert_eq!(gone.len(), 1, "{gone:?}");
-    assert!(gone[0].ends_with(": pub deopt: RtFn2"), "{gone:?}");
+    assert!(
+        gone[0].ends_with(last.trim().trim_end_matches(',')),
+        "{gone:?}"
+    );
     assert_eq!(new.len(), 2, "{new:?}");
     // A swap of two fields (offsets move): both field lines change.
     let mut files = sources();
