@@ -383,6 +383,18 @@ fn drift_fixes(
     Ok(out)
 }
 
+/// X15: does the FIX `old -> new` change only line numbers? Each token ends with its number
+/// or range (`path:N`, `:N-M`, `` `path` line N ``; drift.rs `render`). Without that end
+/// (ASCII digits and `-`), the two must be the same bytes, so the path and every other
+/// character stay. A pin can point a token at another path, so a FIX may change more.
+fn numbers_only(old: &str, new: &str) -> bool {
+    fn head(t: &str) -> &str {
+        t.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-')
+    }
+    let (a, b) = (head(old), head(new));
+    a == b && a.len() < old.len() && b.len() < new.len()
+}
+
 /// X15: is the body change of the ADR `rel` since the base only `path:N` numbers that the drift
 /// check moves? Ok(the number of changed body lines) or Err(why not).
 fn lint_proven(root: &Path, rel: &str, base: Option<&str>, head: &str) -> Result<usize, String> {
@@ -420,6 +432,11 @@ fn lint_proven(root: &Path, rel: &str, base: Option<&str>, head: &str) -> Result
         let mut line = b[i].1.to_string();
         let mut from = 0;
         for (old, new) in fs {
+            if !numbers_only(old, new) {
+                return Err(format!(
+                    "line {n}: the drift check's FIX {old} -> {new} changes more than its line numbers"
+                ));
+            }
             let Some(k) = line[from..].find(old.as_str()) else {
                 return Err(format!("line {n}: no {old:?} in its base text"));
             };
@@ -797,6 +814,22 @@ mod tests {
         assert_eq!(read(&victim.join("file")).unwrap(), "VICTIM");
         assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 1);
         std::fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[test]
+    fn a_fix_changes_only_line_numbers() {
+        assert!(numbers_only("crates/a/lib.rs:2", "crates/a/lib.rs:3"));
+        assert!(numbers_only("crates/a/lib.rs:2", "crates/a/lib.rs:12-14"));
+        assert!(numbers_only(":7-9", ":8"));
+        assert!(numbers_only("`ci.yml` lines 38-42", "`ci.yml` lines 40-44"));
+        // Another path, also one that differs only in digits or `-`.
+        assert!(!numbers_only("crates/a/lib.rs:2", "crates/a/other.rs:2"));
+        assert!(!numbers_only("docs/adr/H16-x.md:2", "docs/adr/H17-x.md:2"));
+        assert!(!numbers_only("a-1.rs:2", "a-2.rs:2"));
+        // Another form, or no number.
+        assert!(!numbers_only("`a.rs` line 3", "`a.rs` lines 3-5"));
+        assert!(!numbers_only("a.rs:2", "a.rs:"));
+        assert!(!numbers_only("a.rs", "a.rs"));
     }
 
     #[test]
