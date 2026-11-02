@@ -4,11 +4,27 @@
 //! probe at bit 30, and each hand-fact export against the live value. The module is declared in
 //! VM6 step 0 with the other month-6 test modules; VM6 step 8 fills it.
 
-use ep9_bytecode::{FunctionId, VerifiedUnit};
+use std::hint::black_box;
 
-use super::{Asm, config, isolate, meta, unit};
-use crate::frame::{UNDEFINED, int32_of};
-use crate::{Dispatch, IsolateConfig, kinds, layout, object, shape};
+use ep9_bytecode::{FunctionId, VerifiedUnit};
+use ep9_heap::{CellKind, CellSize, KindError};
+
+use super::{Asm, config, isolate, meta, on_big_stack, unit};
+use crate::builtins::{self, IntrinsicId};
+use crate::frame::{UNDEFINED, int32_bits, int32_of};
+use crate::object::{cell, realmf};
+use crate::runtime::{REALM_ROOT_COUNT, ROOT_COUNT, Root, Runtime};
+use crate::{Dispatch, IsolateConfig, kinds, layout, object, props, realm, shape, versions};
+
+fn no_trace(_: ep9_heap::CellPtr, _: &mut ep9_heap::Tracer<'_>) {}
+
+fn dummy_kind(name: &'static str) -> CellKind {
+    CellKind {
+        name,
+        size: CellSize::Fixed(16),
+        trace: no_trace,
+    }
+}
 
 /// The word at byte `off` of the cell value `c`.
 ///
@@ -161,6 +177,393 @@ fn the_ic_and_deopt_hand_fact_exports_hold() {
     assert!(layout::DUMP_BYTES as usize >= 8 * crate::deopt::DUMP_REGS);
     assert!(layout::DUMP_BYTES.is_multiple_of(16));
     assert_eq!(crate::deopt::DUMP_REGS, 31, "x0-x30");
+}
+
+// ---- versions (M6-P0 VM6 step 8) -------------------------------------------------------------
+
+/// The month-6 versions (V11-D3, plan v11 rule 2): OBJECT_LAYOUT 5 -> 6 and IC_LAYOUT 3 -> 4
+/// move once, in M6-P0; VM_LAYOUT 1 (a RuntimeTable append moves none, C-18), FRAME 2,
+/// DEOPT_META 0 (V11-D12), the builtin ABI 1 and the bytecode ABI 5 stay.
+#[test]
+fn month_6_versions() {
+    assert_eq!(
+        (
+            black_box(versions::OBJECT_LAYOUT_VERSION),
+            versions::IC_LAYOUT_VERSION,
+            versions::VM_LAYOUT_VERSION,
+            versions::FRAME_VERSION,
+            versions::DEOPT_META_VERSION
+        ),
+        (6, 4, 1, 2, 0)
+    );
+    assert_eq!(
+        (versions::BUILTIN_ABI_VERSION, ep9_bytecode::ABI_VERSION),
+        (1, 5)
+    );
+}
+
+// ---- OBJECT_LAYOUT 6: kind 84, the FUSE cell, Root::RealmFuses ------------------------------
+
+/// Masks a cell address so the test's frame never holds it (the conservative scan, H10).
+const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
+
+/// Overwrites 256 KiB of stack below the caller (plan v10 rule 35), so stale words of returned
+/// frames hold no cell for the conservative scan.
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    black_box(&mut words);
+}
+
+/// Makes an object, stores it as the value of entry 0 of the PROPS_INDEXED cell `c` and
+/// returns a weak handle to it and its masked address; out of line, so the object stays in no
+/// frame of the caller.
+#[inline(never)]
+fn hold_in_entry_0(rt: &Runtime, c: ep9_heap::CellPtr) -> (ep9_heap::WeakHandle, usize) {
+    use crate::props_index::pif;
+    let held = object::new_object(rt, rt.root(Root::ObjectPrototype));
+    object::wr(&rt.heap, c, pif::ENTRIES + 8, held);
+    let h = rt.heap.new_weak(crate::runtime::val(held));
+    (h, black_box(held as usize) ^ MASK)
+}
+
+/// Kind 84 PROPS_INDEXED is registered on every isolate (`props::register_kinds`), with the
+/// layout the export names: a live cell of capacity 3 is `32 + 24 * 3` bytes by its size
+/// function, and its trace function keeps alive an object that only one of its entries holds:
+/// after a scrub and a full GC whose conservative scan did not find that object, a weak handle
+/// still reads it, and the heap verifier passes (plain and under GC stress 1).
+#[test]
+fn kind_84_is_registered_with_its_size_and_trace() {
+    use crate::props_index::pif;
+    assert_eq!(kinds::PROPS_INDEXED.get(), 84);
+    assert_eq!(layout::KIND_PROPS_INDEXED, 84);
+    assert_eq!(
+        (
+            layout::PROPS_INDEXED_CAPACITY,
+            layout::PROPS_INDEXED_COUNT,
+            layout::PROPS_INDEXED_INDEX,
+            layout::PROPS_INDEXED_ENTRIES,
+            layout::PROPS_INDEXED_ENTRY_SIZE
+        ),
+        (8, 16, 24, 32, 24)
+    );
+    for stress in [false, true] {
+        let iso = isolate(config(Dispatch::DEFAULT, stress));
+        let rt = &*iso.rt;
+        match rt
+            .heap
+            .register_kind(kinds::PROPS_INDEXED, dummy_kind("test"))
+        {
+            Err(KindError::Taken(k)) => assert_eq!(k, kinds::PROPS_INDEXED),
+            r => panic!("kind 84 is not registered: {r:?}"),
+        }
+        const CAP: usize = 3;
+        let key = crate::atoms::intern_str(rt, "layout6Key");
+        let c = rt.alloc(kinds::PROPS_INDEXED, pif::ENTRIES + pif::ENTRY * CAP);
+        object::init(c, pif::CAPACITY, int32_bits(CAP as i32));
+        object::init(c, pif::COUNT, int32_bits(1));
+        object::init(c, pif::INDEX, UNDEFINED);
+        for i in 0..CAP {
+            let e = pif::ENTRIES + pif::ENTRY * i;
+            object::init(c, e, if i == 0 { key } else { UNDEFINED });
+            object::init(c, e + 8, UNDEFINED);
+            object::init(c, e + 16, int32_bits(0));
+        }
+        let root = rt.heap.new_global(c.to_value());
+        // SAFETY: `c` is a live cell of this heap.
+        assert_eq!(unsafe { rt.heap.cell_size(c) }, 32 + 24 * CAP);
+        let (weak, masked) = hold_in_entry_0(rt, c);
+        scrub_stack();
+        rt.heap.collect();
+        let held = masked ^ MASK;
+        assert!(
+            !rt.heap
+                .last_conservative_roots()
+                .iter()
+                .any(|r| r.addr() == held),
+            "the conservative scan kept the entry's object: the check proves nothing"
+        );
+        let v = rt
+            .heap
+            .weak(weak)
+            .expect("the PROPS_INDEXED trace keeps entry 0's value");
+        let cv = rt.heap.global(root).to_bits();
+        // SAFETY: `cv` is held by the global handle, so it is live; the isolate runs nothing.
+        unsafe {
+            assert_eq!(kind_byte(cv), layout::KIND_PROPS_INDEXED);
+            assert_eq!(word_at(cv, pif::ENTRIES), key);
+            assert_eq!(word_at(cv, pif::ENTRIES + 8), v.to_bits());
+            assert_eq!(int32_of(word_at(cv, pif::CAPACITY)), CAP as i32);
+        }
+        assert!(object::is_object(v.to_bits()));
+        iso.verify_heap().unwrap();
+        rt.heap.drop_weak(weak);
+        rt.heap.drop_global(root);
+    }
+}
+
+/// The FUSE 83 layout of OBJECT_LAYOUT 6 (built by M6-P2 FUSE-PI): one u32 per static fuse
+/// from +8, and `Root::RealmFuses`, the realm root before `Root::RealmKey` that mirrors the
+/// intrinsic `IntrinsicId::RealmFuses`. Kind 83 is free today, so the test registers it with
+/// the exported size and puts a live cell in the first realm: the entries read as written,
+/// a second realm has its own (undefined) block, and a realm switch carries the root.
+#[test]
+fn the_fuse_layout_and_the_realm_fuses_root() {
+    let n = crate::fuse::STATIC.len();
+    assert_eq!(n, 11, "fuse::STATIC");
+    assert_eq!(
+        (
+            layout::KIND_FUSE,
+            layout::FUSE_ENTRIES,
+            layout::FUSE_ENTRY_SIZE,
+            layout::FUSE_INTACT
+        ),
+        (83, 8, 4, 1)
+    );
+    assert_eq!(layout::KIND_FUSE, kinds::FUSE.get());
+    assert_eq!(layout::FUSE_SIZE, 56, "8 + 4 x 11, rounded up to 8");
+    // The root: the last realm root, before the isolate-wide RealmKey (V11-D21, MC-w22-17).
+    assert_eq!(Root::RealmFuses as usize + 1, Root::RealmKey as usize);
+    assert_eq!(Root::RealmFuses as usize, REALM_ROOT_COUNT - 1);
+    assert_eq!(REALM_ROOT_COUNT + 1, ROOT_COUNT);
+    assert_eq!(IntrinsicId::RealmFuses as usize, 72);
+    assert_eq!(IntrinsicId::ALL[72], IntrinsicId::RealmFuses);
+    assert_eq!(IntrinsicId::RealmFuses.root(), Some(Root::RealmFuses));
+    assert!(!IntrinsicId::RealmFuses.is_core());
+    on_big_stack(move || {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        let first = iso.cx.realm;
+        let rt = &*iso.rt;
+        // Nothing builds the block yet: undefined in the root, the intrinsic and the record.
+        assert_eq!(rt.root(Root::RealmFuses), UNDEFINED);
+        assert_eq!(builtins::intrinsic(rt, IntrinsicId::RealmFuses), UNDEFINED);
+        let list = object::record_get(first, realmf::INTRINSICS);
+        assert_eq!(object::list_len(list), IntrinsicId::ALL.len());
+        assert_eq!(object::list_get(list, 72), UNDEFINED);
+        // A FUSE cell with the exported layout.
+        rt.heap
+            .register_kind(
+                kinds::FUSE,
+                CellKind {
+                    name: "fuse-block (test)",
+                    size: CellSize::Fixed(layout::FUSE_SIZE as usize),
+                    trace: no_trace,
+                },
+            )
+            .expect("kind 83 is free before FUSE-PI");
+        let c = rt.alloc(kinds::FUSE, layout::FUSE_SIZE as usize);
+        let base = c.addr() + layout::FUSE_ENTRIES as usize;
+        for i in 0..n {
+            let w = if i == 6 { 0 } else { layout::FUSE_INTACT };
+            // SAFETY: entry `i` is inside the cell (FUSE_SIZE covers n entries), live and
+            // written once here.
+            unsafe { ((base + layout::FUSE_ENTRY_SIZE as usize * i) as *mut u32).write(w) };
+        }
+        let cv = c.to_value().to_bits();
+        builtins::load_intrinsic(rt, IntrinsicId::RealmFuses, cv);
+        realm::record_intrinsic(rt, IntrinsicId::RealmFuses, cv);
+        assert_eq!(rt.root(Root::RealmFuses), cv);
+        // SAFETY: `c` is a live cell of this heap.
+        assert_eq!(unsafe { rt.heap.cell_size(c) }, 56);
+        let read = |c: u64, i: usize| {
+            let at =
+                c as usize + (layout::FUSE_ENTRIES + layout::FUSE_ENTRY_SIZE * i as u32) as usize;
+            // SAFETY: `c` is the live FUSE cell above, entry `i` < n.
+            unsafe { (at as *const u32).read() }
+        };
+        let r = iso.with_cx(|cx| {
+            let g = cx.create_realm()?;
+            cx.with_realm(g, |cx| {
+                let rt: &Runtime = cx.inner().rt();
+                assert_eq!(rt.root(Root::RealmFuses), UNDEFINED, "a realm's own block");
+                rt.heap.collect();
+                Ok(())
+            })?;
+            let rt: &Runtime = cx.inner().rt();
+            assert_eq!(
+                rt.root(Root::RealmFuses),
+                cv,
+                "the switch back loads the root"
+            );
+            Ok(())
+        });
+        assert_eq!(r, Ok(()));
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+        // SAFETY: the FUSE cell is held by the root (and this frame), so it is live.
+        unsafe {
+            assert_eq!(kind_byte(cv), layout::KIND_FUSE);
+        }
+        let words: Vec<u32> = (0..n).map(|i| read(cv, i)).collect();
+        assert_eq!(words, [1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]);
+    });
+}
+
+// ---- IC_LAYOUT 4: the kinds-set pair and the ran bit -----------------------------------------
+
+/// IC_LAYOUT 4 (V11-D4): the keyed kinds set is bits 10-25, one bit per kind value 0-15, and
+/// the pair (IC_LAYOUT_VERSION, mask) is pinned (as in `tests::elements`); the LoadKeyed "ran"
+/// bit 26 is outside the set and bits 0-9; bits 27-30 are reserved; the new IC_HANDLER kinds
+/// are 9-11, after ALLOC_SITE 8 and inside the int32 at +8.
+#[test]
+fn the_kinds_set_pair_and_the_ran_bit() {
+    use crate::elements::{self, kind as ek};
+    use crate::ic::hk;
+    use crate::profile::keyed;
+    assert_eq!(
+        (versions::IC_LAYOUT_VERSION, elements::KINDS_SET_MASK),
+        (4, 0xFFFF << 10)
+    );
+    assert_eq!(layout::KEYED_KINDS_SET_SHIFT, 10);
+    for k in 0..=ek::MAX {
+        let bit = elements::kinds_set_bit(k);
+        assert_eq!(bit, 1 << (10 + u32::from(k)), "kind {k}");
+        assert_ne!(bit & elements::KINDS_SET_MASK, 0, "kind {k}");
+    }
+    let low = keyed::INDEX
+        | keyed::NAME
+        | keyed::SYMBOL
+        | keyed::OTHER_KEY
+        | keyed::ARRAY
+        | keyed::OBJECT
+        | keyed::STRING
+        | keyed::PRIMITIVE
+        | keyed::OUT_OF_BOUNDS
+        | keyed::HOLE;
+    assert_eq!(low, 0x3FF, "bits 0-9");
+    assert_eq!(keyed::RAN, 1 << 26);
+    assert_eq!(keyed::RAN & (low | elements::KINDS_SET_MASK), 0);
+    const RESERVED: u32 = 0xF << 27;
+    assert_eq!(RESERVED & (low | elements::KINDS_SET_MASK | keyed::RAN), 0);
+    assert_eq!(
+        low | elements::KINDS_SET_MASK | keyed::RAN | RESERVED,
+        0x7FFF_FFFF,
+        "bits 0-30, bit 31 unused"
+    );
+    assert_eq!(
+        (hk::ALLOC_SITE, hk::GETTER, hk::SETTER, hk::PROTO_DICT_LOAD),
+        (8, 9, 10, 11)
+    );
+}
+
+/// The "ran" bit 26 is free on live slots (V11-D4: "VM6 proves it free"): a LoadKeyed and a
+/// StoreKeyed site that saw arrays of 5 kinds, DICTIONARY included (bit 16, the top bit of the
+/// IC_LAYOUT 3 set), hold their kinds in bits 10-25 and nothing in bits 26-31.
+#[test]
+fn the_ran_bit_is_free_on_recorded_keyed_slots() {
+    use ep9_bytecode::FeedbackSlotKind;
+
+    use crate::elements::{self, kind as ek};
+    use crate::feedback;
+    use crate::profile::keyed;
+    let mut s = Asm::script(0);
+    let get = s.b.feedback_slot(FeedbackSlotKind::LoadKeyed);
+    let set = s.set_keyed;
+    let k = s.b.new_register();
+    let mut arrays = Vec::new();
+    for (at, v) in [(0, 0), (0, 1), (0, 2), (1, 0), (5000, 0)] {
+        let r = s.b.new_register();
+        let lit = s.lit;
+        s.b.create_empty_array_literal(lit).star(r);
+        s.b.lda_smi(at).star(k);
+        match v {
+            0 => {
+                s.b.lda_smi(5);
+            }
+            1 => {
+                s.lda_num(1.5);
+            }
+            _ => {
+                s.lda_str("x");
+            }
+        }
+        s.b.set_keyed_property(r, k, set);
+        arrays.push(r);
+    }
+    for r in arrays {
+        s.b.lda_zero().get_keyed_property(r, get);
+    }
+    s.b.lda_undefined().return_();
+    let u = unit("", vec![s.finish()]);
+    let mut iso = super::profile::isolate(IsolateConfig {
+        feedback_threshold: 0,
+        ..config(Dispatch::DEFAULT, false)
+    });
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "ran.js").map(|_| ()));
+    assert!(r.is_ok(), "{r:?}");
+    let units = iso.rt.units.borrow();
+    let fi = &units.last().unwrap().infos[0];
+    let v = feedback::vector(fi).unwrap();
+    for slot in [get, set] {
+        let bits = feedback::value(v, slot.index() as u32) as u32;
+        assert_eq!(bits & !0x03FF_FFFF, 0, "bits 26-31 of {bits:#x}");
+        assert_eq!(bits & keyed::RAN, 0);
+        assert_ne!(bits & keyed::INDEX, 0, "an index key: {bits:#x}");
+    }
+    let g = feedback::value(v, get.index() as u32) as u32;
+    assert_ne!(
+        g & elements::kinds_set_bit(ek::DICTIONARY),
+        0,
+        "DICTIONARY, bit 16: {g:#x}"
+    );
+}
+
+// ---- the shape flags probe -------------------------------------------------------------------
+
+/// H17 "shape flag bits (append-only)" (V11-D7, V11-A9; MODES-CHECK-w23 MC-w23-18): bits 4-30
+/// of a shape's `flags` word are append room and bit 31 is never used. The probe is bit 30, the
+/// top of the room (never the next free bit 4): no flag constant names it, and a shape with it
+/// set reads and behaves as the same shape (its own flags, a property read and add, a GC and
+/// the heap verifier); a child shape made from it keeps the bit, as `shape::add` copies flags.
+#[test]
+fn h17_shape_flag_bit_probe_30() {
+    use crate::shape::flag;
+    const PROBE: i32 = 1 << 30;
+    /// The `flags` word of a shape cell (`shape.rs` `shf::FLAGS`, a private module; the test
+    /// reads it back through `shape::flags`).
+    const FLAGS: usize = 56;
+    let built = flag::EXTENSIBLE | flag::DICTIONARY | flag::PROTOTYPE | flag::UNIQUE;
+    assert_eq!(built, 0xF, "bits 0-3 as built");
+    assert_eq!(flag::SLACK_MASK, 0xF0, "bits 4-7, unused");
+    const _: () = assert!(
+        PROBE > 0,
+        "bit 30 keeps the int32 positive; bit 31 is never used"
+    );
+    for stress in [false, true] {
+        let iso = isolate(config(Dispatch::DEFAULT, stress));
+        let rt = &*iso.rt;
+        let o = object::new_object(rt, rt.root(Root::ObjectPrototype));
+        let a = crate::atoms::intern_str(rt, "layout6A");
+        props::own_add(rt, o, a, int32_bits(7), object::attr::DEFAULT);
+        let s = shape::shape_of(o);
+        let before = shape::flags(s);
+        assert_eq!(before & !0xF, 0, "no flag above bit 3 today");
+        object::init(cell(s), FLAGS, int32_bits(before | PROBE));
+        assert_eq!(shape::flags(s), before | PROBE, "shf::FLAGS is +56");
+        assert_eq!(shape::is_extensible(s), before & flag::EXTENSIBLE != 0);
+        assert_eq!(shape::is_dictionary(s), before & flag::DICTIONARY != 0);
+        assert_eq!(
+            props::own_get(o, a),
+            Some((int32_bits(7), object::attr::DEFAULT))
+        );
+        let b = crate::atoms::intern_str(rt, "layout6B");
+        props::own_add(rt, o, b, int32_bits(8), object::attr::DEFAULT);
+        let t = shape::shape_of(o);
+        assert_ne!(t, s);
+        assert_eq!(shape::flags(t) & PROBE, PROBE, "a child keeps the bit");
+        assert_eq!(
+            props::own_get(o, a),
+            Some((int32_bits(7), object::attr::DEFAULT))
+        );
+        assert_eq!(
+            props::own_get(o, b),
+            Some((int32_bits(8), object::attr::DEFAULT))
+        );
+        rt.heap.collect();
+        iso.verify_heap().unwrap();
+        assert_eq!(shape::flags(shape::shape_of(o)) & PROBE, PROBE);
+        black_box(o);
+    }
 }
 
 /// RuntimeTable entry 11 `load_global` (M6-P0 VM6 step 2, V11-D43): a Rust function stands in
