@@ -413,6 +413,7 @@ embed (not core): pub const CX_STACK_LIMIT: usize
 embed (not core): pub const CX_TABLE: usize
 embed (not core): pub const CX_UNIT_DATA: usize
 embed (not core): pub const DEOPT_META_VERSION: u32
+embed (not core): pub const DUMP_BYTES: u32
 embed (not core): pub const ELEMENTS_CAPACITY: u32
 embed (not core): pub const ELEMENTS_DATA: u32
 embed (not core): pub const ELEMENTS_DOUBLE_CAPACITY: u32
@@ -456,10 +457,12 @@ embed (not core): pub const IC_LAYOUT_VERSION: u32
 embed (not core): pub const KEYED_KINDS_SET_SHIFT: u32
 embed (not core): pub const KIND_ARRAY: u8
 embed (not core): pub const KIND_BYTE: u32
+embed (not core): pub const KIND_CONTEXT: u8
 embed (not core): pub const KIND_ELEMENTS: u8
 embed (not core): pub const KIND_ELEMENTS_DICT: u8
 embed (not core): pub const KIND_ELEMENTS_DOUBLE: u8
 embed (not core): pub const KIND_OBJECT: u8
+embed (not core): pub const KIND_SHAPE: u8
 embed (not core): pub const NATIVE_WORD_OFFSET: u64
 embed (not core): pub const NO_CODE: u8
 embed (not core): pub const OBJECT_FIELDS: u32
@@ -480,6 +483,8 @@ embed (not core): pub const RT_SET_KEYED: usize
 embed (not core): pub const RT_STACK_OVERFLOW: usize
 embed (not core): pub const RT_THROW: usize
 embed (not core): pub const RT_UNWIND: usize
+embed (not core): pub const SHAPE_CAGE_ALIGN: u64
+embed (not core): pub const SHAPE_COUNTS: u32
 embed (not core): pub const SHAPE_ELEMENTS_KIND_SHIFT: u32
 embed (not core): pub const SHAPE_ID_BYTE: u32
 embed (not core): pub const SMI_ARRAY_LENGTH: i32
@@ -487,6 +492,7 @@ embed (not core): pub const SMI_FIELD_IN_OBJECT: i32
 embed (not core): pub const SMI_KIND_MASK: i32
 embed (not core): pub const SMI_SHIFT: u32
 embed (not core): pub const THREADED_HANDLERS: usize
+embed (not core): pub const VALUE_UNDEFINED: u64
 embed (not core): pub const VM_LAYOUT_VERSION: u32
 embed (not core): pub const fn fp_param(u32) -> isize
 embed (not core): pub const fn fp_register(u32) -> isize

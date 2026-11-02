@@ -13,8 +13,8 @@
 //! Each export names the one version that owns it (MC-w15-5; doc 13 C-18 and §7.3): VM_LAYOUT
 //! (`Cx`, FunctionInfo and RuntimeTable offsets, not the table length: C-18), FRAME (frame
 //! offsets from fp, MC-w16-18), OBJECT_LAYOUT (cells, fields and kind ids), IC_LAYOUT (feedback
-//! and IC data) or the Value encoding. The current numbers are in `versions.rs`; a change of any
-//! value moves its owner's version (a RuntimeTable append moves none, H13-Q3).
+//! and IC data), DEOPT_META (the deopt exit) or the Value encoding. Numbers: `versions.rs`; a
+//! change of any value moves its owner's version (a RuntimeTable append moves none, H13-Q3).
 //!
 //! No item here is read by T0 code; the module adds no instruction to a handler.
 
@@ -318,6 +318,20 @@ pub const ELEMENTS_KIND_PACKED_ELEMENTS: u8 = ek::PACKED_ELEMENTS;
 pub const ELEMENTS_KIND_HOLEY_ELEMENTS: u8 = ek::HOLEY_ELEMENTS;
 /// OBJECT_LAYOUT (5).
 pub const ELEMENTS_KIND_DICTIONARY: u8 = ek::DICTIONARY;
+// The 4 OBJECT_LAYOUT facts below were Spike C hand facts until M6-P0 (`HAND_FACTS`,
+// MC-w20-7, MC-w23-9; plan v11 §2.4 step 3, v11in #2): the M5-P2 guards read them.
+/// OBJECT_LAYOUT. The cage alignment of the shape rule: an ep9_vm cage is aligned to this and
+/// no larger, so the shape of a cell is the cell at `(address & !(SHAPE_CAGE_ALIGN - 1)) |
+/// ShapeId` (`shape::CAGE_ALIGN`, `shape::shape_of`).
+pub const SHAPE_CAGE_ALIGN: u64 = crate::shape::CAGE_ALIGN as u64;
+/// OBJECT_LAYOUT. A shape's `counts` word, an int32 Value whose bits 28-31
+/// ([`SHAPE_ELEMENTS_KIND_SHIFT`]) are the elements kind of its objects (`shape.rs`
+/// `shf::COUNTS`, a private module: `tests::layout6` proves the value on live shapes).
+pub const SHAPE_COUNTS: u32 = 48;
+/// OBJECT_LAYOUT. Kind id of a shape cell (`kinds::SHAPE`).
+pub const KIND_SHAPE: u8 = crate::kinds::SHAPE.get();
+/// OBJECT_LAYOUT. Kind id of a CONTEXT cell (`kinds::CONTEXT`; the `LoadContextSlot` guard).
+pub const KIND_CONTEXT: u8 = crate::kinds::CONTEXT.get();
 
 // ---- feedback and IC data: IC_LAYOUT ----
 /// IC_LAYOUT. FEEDBACK cell: the FunctionInfo of its function, a native word
@@ -355,3 +369,15 @@ pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
 /// IC_LAYOUT (3). A keyed slot's value half: bit `KEYED_KINDS_SET_SHIFT + k` is set once the
 /// site saw elements kind `k` (0-6; `elements::KINDS_SET_SHIFT`).
 pub const KEYED_KINDS_SET_SHIFT: u32 = crate::elements::KINDS_SET_SHIFT;
+/// IC_LAYOUT. The key half of a feedback slot, or of a POLY_IC case, that no site filled:
+/// `undefined` (`ic::state` reads the slot as Uninitialized; a new FEEDBACK or POLY_IC cell
+/// keeps the allocator's `undefined` fill). A shape guard compares a key with it for its
+/// "unfilled" exit. Was a Spike C hand fact until M6-P0 (v11in #2, MC-w23-9).
+pub const VALUE_UNDEFINED: u64 = crate::frame::UNDEFINED;
+
+// ---- the deopt exit: DEOPT_META ----
+/// DEOPT_META. Bytes of the shared exit's register dump below sp: word `n` is `xn` for
+/// x0-x30 (`deopt::DUMP_REGS` words, which `RuntimeTable::deopt` reads), rounded up to 16 so sp
+/// stays 16-aligned (M5-P5-ORCH-8, MODES-CHECK-w22 MC-w22-6). Was a Spike C hand fact until
+/// M6-P0 (v11in #2, MC-w23-9).
+pub const DUMP_BYTES: u32 = (crate::deopt::DUMP_REGS * 8).next_multiple_of(16) as u32;
