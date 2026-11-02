@@ -84,7 +84,13 @@
 //! A line is a signature without parameter names (a rename is not an API change), with the
 //! attributes that matter to a caller (`derive`, `repr`, `non_exhaustive`, `cfg`,
 //! `doc(hidden)`, `deprecated`). Comments, doc text and bodies are not read. In the `embed`
-//! lines a const or static shows its name and type, not its value. Not here: the
+//! lines a const or static shows its name and type, not its value. An `embed (not core):`
+//! struct with two or more pub fields (`RuntimeTable`, `BuildInfo`, `CodeEntry`) has the
+//! per-field form ([`PER_FIELD_GROUP`]; M6-P0 VM6, plan v11 V11-D44): a head line, then one
+//! line `<Type> field NN: <field>` per pub field, NN its place from 00. So an appended field
+//! (a RuntimeTable entry, H13-Q3) is an added line, and a reordered, retyped or removed field
+//! is a changed line. Core structs keep the one-line form: a new field of a core struct is a
+//! changed core line. Not here: the
 //! append-only lists that have their own goldens (the `IntrinsicId` and `ObjectClass` variants,
 //! `tests/golden/vm-builtin-ids.txt`, `tests/golden/object-classes.txt`), private and
 //! `pub(crate)` items. `export_facts` (H20 part 2, V8-A13) is not core: it has its path and an
@@ -917,6 +923,11 @@ const NOT_CORE_TYPES: [&str; 1] = ["Dispatch"];
 /// `ALL` values are not core lines.
 const PART2_ENUMS: [&str; 2] = ["IntrinsicId", "ObjectClass"];
 
+/// The group whose structs with two or more pub fields get the per-field form (V11-D44): the
+/// embedder API that is not core. Each field line names its place, so the set compare of
+/// [`diff`] still sees a reorder.
+const PER_FIELD_GROUP: &str = "embed (not core)";
+
 /// The lines of one public item `it` (not an impl) of group `g`.
 fn item_lines(g: &str, it: &Item, out: &mut Vec<String>) {
     let attrs = kept_attrs(&it.attrs);
@@ -954,6 +965,16 @@ fn item_lines(g: &str, it: &Item, out: &mut Vec<String>) {
                 } else {
                     private = true;
                 }
+            }
+            if g == PER_FIELD_GROUP && pub_fields.len() >= 2 {
+                let more = if private { ", .." } else { "" };
+                out.push(format!(
+                    "{g}: {attrs}{head} {{ one line per pub field{more} }}"
+                ));
+                for (i, f) in pub_fields.iter().enumerate() {
+                    out.push(format!("{g}: {name} field {i:02}: {f}"));
+                }
+                return;
             }
             if private {
                 pub_fields.push("..".to_string());
@@ -1169,14 +1190,14 @@ fn isolate_lines(its: &[(String, Item)], out: &mut Vec<String>) {
     }
 }
 
-/// The `embed` line of a module-level pub item that is not an impl, a `use` or a `mod`: a type
-/// (struct, enum, type alias, trait: [`item_lines`]) or a fn, const or static ([`member_sig`]).
-/// `None` for an item that is not `pub` (a `pub(crate)` or private item cannot be named from
-/// outside the crate).
-fn embed_item_line(g: &str, outer: &str, it: &Item) -> Option<String> {
+/// The `embed` lines of a module-level pub item that is not an impl, a `use` or a `mod`: a
+/// type (struct, enum, type alias, trait: [`item_lines`]; a struct in the per-field form has
+/// several) or a fn, const or static ([`member_sig`], one line). None for an item that is not
+/// `pub` (a `pub(crate)` or private item cannot be named from outside the crate).
+fn embed_item_lines(g: &str, outer: &str, it: &Item) -> Vec<String> {
     let h = &it.head;
     if !is_pub(h) || is_impl_head(h) || is_use_head(h) || is_mod_head(h) {
-        return None;
+        return Vec::new();
     }
     let ws: Vec<&str> = h.split(' ').collect();
     let is_type = ["struct", "enum", "trait", "union"]
@@ -1187,10 +1208,14 @@ fn embed_item_line(g: &str, outer: &str, it: &Item) -> Option<String> {
         let mut v = Vec::new();
         item_lines(g, it, &mut v);
         return v
-            .pop()
-            .map(|l| drop_paths(&l.replacen(&format!("{g}: "), &format!("{g}: {outer}"), 1)));
+            .into_iter()
+            .map(|l| drop_paths(&l.replacen(&format!("{g}: "), &format!("{g}: {outer}"), 1)))
+            .collect();
     }
-    Some(format!("{g}: {outer}{}", member_sig(it)?))
+    member_sig(it)
+        .map(|s| format!("{g}: {outer}{s}"))
+        .into_iter()
+        .collect()
 }
 
 /// True for a name that an `embed` line must not hide (RV5-F1 M5): `Isolate` and the raw
@@ -1328,7 +1353,7 @@ fn type_closure(
         if done.0.insert(name.clone()) {
             for (outer, it) in defs.types.get(&name).into_iter().flatten() {
                 found = true;
-                lines.extend(embed_item_line(g, outer, it));
+                lines.extend(embed_item_lines(g, outer, it));
             }
             // The impls of a pub type only (a `pub(crate)` type or a generic parameter of the
             // same name is not one).
@@ -1354,7 +1379,7 @@ fn type_closure(
         if item_root && done.1.insert(name.clone()) {
             for (outer, it) in defs.free.get(&name).into_iter().flatten() {
                 found = true;
-                lines.extend(embed_item_line(g, outer, it));
+                lines.extend(embed_item_lines(g, outer, it));
             }
             if !found {
                 lines.push(format!(
@@ -1502,7 +1527,7 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
                 defs.add(o, it);
                 // A free pub fn, const or static that names `Isolate` or a raw type (RV5-F1
                 // M5), in any module: a line, so the raw-type guard reads it.
-                if let Some(l) = embed_item_line("embed (not core)", o, it)
+                if let Some(l) = embed_item_lines("embed (not core)", o, it).pop()
                     && !is_alias_head(&it.head)
                     && !["struct", "enum", "trait", "union"]
                         .iter()
@@ -2480,6 +2505,54 @@ fn a_new_cx_method_is_an_addition() {
         new,
         ["abi: impl<'s> Cx<'s> :: pub fn probe_method(&mut self, Local<'s>) -> bool"]
     );
+}
+
+/// V11-D44: the per-field form. A field appended to `RuntimeTable` (an `embed (not core):`
+/// struct) is one added line and no line goes away; a swap of two fields changes the two field
+/// lines; a field appended to a core struct (`IsolateConfig`) changes its one core line.
+#[test]
+fn an_appended_runtime_table_field_is_an_addition() {
+    let last = "    pub deopt: RtFn2,\n";
+    let edit = |text: &str| {
+        let mut files = sources();
+        let (_, t) = files.iter_mut().find(|(p, _)| p == "layout.rs").unwrap();
+        assert!(t.contains(last), "layout.rs has no {last:?}");
+        *t = t.replacen(last, text, 1);
+        diff(&golden_lines(), &extract(&files))
+    };
+    let (gone, new) = edit("    pub deopt: RtFn2,\n    /// A probe.\n    pub probe: RtFn0,\n");
+    assert!(gone.is_empty(), "{gone:?}");
+    assert_eq!(new.len(), 1, "{new:?}");
+    assert!(
+        new[0].starts_with("embed (not core): RuntimeTable field ")
+            && new[0].ends_with(": pub probe: RtFn0"),
+        "{new:?}"
+    );
+    let (gone, new) = edit("    pub probe: RtFn0,\n    pub deopt: RtFn2,\n");
+    assert_eq!(gone.len(), 1, "{gone:?}");
+    assert!(gone[0].ends_with(": pub deopt: RtFn2"), "{gone:?}");
+    assert_eq!(new.len(), 2, "{new:?}");
+    // A swap of two fields (offsets move): both field lines change.
+    let mut files = sources();
+    let (_, t) = files.iter_mut().find(|(p, _)| p == "layout.rs").unwrap();
+    let (a, b) = ("    pub add: RtFn2,\n", "    pub inc: RtFn1,\n");
+    assert!(t.contains(a) && t.contains(b));
+    *t = t
+        .replacen(a, "@@A@@", 1)
+        .replacen(b, a, 1)
+        .replacen("@@A@@", b, 1);
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    assert_eq!((gone.len(), new.len()), (2, 2), "{gone:?} {new:?}");
+    // A core struct keeps the one-line form: a new field is a changed core line.
+    let mut files = sources();
+    let (_, t) = files.iter_mut().find(|(p, _)| p == "isolate.rs").unwrap();
+    let from = "pub struct IsolateConfig {\n";
+    assert!(t.contains(from));
+    *t = t.replacen(from, "pub struct IsolateConfig {\n    pub probe: u32,\n", 1);
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    assert_eq!(gone.len(), 1, "{gone:?}");
+    assert!(gone[0].starts_with("embed: ") && gone[0].contains("pub struct IsolateConfig {"));
+    assert_eq!(new.len(), 1, "{new:?}");
 }
 
 /// A parameter rename, a moved method, a doc change and a body change keep the golden.
