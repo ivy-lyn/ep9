@@ -112,9 +112,8 @@ use crate::conv::Res;
 use crate::descriptor::Desc;
 use crate::error::{FrameRef, not_implemented, throw_error};
 use crate::exotic::probe;
-use crate::frame::{
-    FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, int32_of, native_of, native_ptr,
-};
+use crate::external_ref::ExternalRef;
+use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, int32_of};
 use crate::interp::Cx;
 use crate::key::{Probe, is_symbol_key, key_eq};
 use crate::kinds as kind;
@@ -220,8 +219,9 @@ fn set_i32(rt: &Runtime, m: u64, field: usize, v: i32) {
 /// The module's unit.
 fn unit_of<'a>(m: u64) -> &'a LoadedUnit {
     // SAFETY: `modf::UNIT` holds the native word of a boxed LoadedUnit (`new_module`), and the
-    // isolate keeps every unit until it drops (`Runtime::units` only grows).
-    unsafe { &*native_ptr::<LoadedUnit>(object::record_get(m, modf::UNIT)) }
+    // isolate keeps every unit until it drops (`Runtime::units` only grows). The word is an
+    // `ExternalRef<LoadedUnit>` (H25, C-26).
+    unsafe { &*ExternalRef::<LoadedUnit>::from_word(object::record_get(m, modf::UNIT)).get() }
 }
 
 /// The module records of the module's unit (ABI 5 section 5).
@@ -416,7 +416,7 @@ fn new_module(rt: &Runtime, lu: &LoadedUnit, name: u64) -> u64 {
     set_status(rt, m, status::NEW);
     let tla = if recs.has_tla { TRUE } else { FALSE };
     object::record_set(rt, m, modf::HAS_TLA, tla);
-    object::record_set(rt, m, modf::UNIT, native_of(core::ptr::from_ref(lu)));
+    object::record_set(rt, m, modf::UNIT, ExternalRef::new(lu).to_word());
     let n = recs.requested_modules.len();
     let requested = object::new_list(rt, n, UNDEFINED);
     for (i, r) in recs.requested_modules.iter().enumerate() {
@@ -2055,7 +2055,7 @@ fn import_attributes(cx: &mut Cx, options: u64) -> Res<Vec<(String, String)>> {
     let rt = cx.rt();
     let entries = rt.heap.scratch_roots();
     entries.push(val(attributes));
-    let keys = property::own_property_keys(cx, attributes);
+    let keys = property::try_own_property_keys(cx, attributes)?;
     entries.push(val(keys));
     for i in 0..object::array_len(keys) {
         let Some(k) = object::array_get(keys, i) else {

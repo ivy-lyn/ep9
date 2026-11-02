@@ -59,3 +59,8 @@ lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"
 panic = "abort"
+
+# The regress fork, as in the root Cargo.toml (its [patch.crates-io] does not reach this
+# workspace): run `bash scripts/sync-regress.sh` first. dep-guards check 16 checks this entry.
+[patch.crates-io]
+regress = { path = "../../third_party/regress" }

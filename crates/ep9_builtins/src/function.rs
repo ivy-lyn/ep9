@@ -220,9 +220,11 @@ fn to_string<'s>(
         //    implementation-defined String source code representation of func. The
         //    representation must have the syntax of a NativeFunction.
         // v0 name: the own data property `name` (no getter runs) when it is a string of the
-        // NativeFunction syntax: an IdentifierName, or "get " / "set " and one. Else none.
+        // NativeFunction syntax: an IdentifierName, or "get " / "set " and one. Else none
+        // (a proxy too: it is asked nothing, so no trap runs, as in V8).
         let mut name = String::new();
-        if let Some(d) = cx.get_own_property(func, "name")?
+        if !cx.is_proxy(func)
+            && let Some(d) = cx.get_own_property(func, "name")?
             && let Some(v) = d.value
             && v.is_string()
         {

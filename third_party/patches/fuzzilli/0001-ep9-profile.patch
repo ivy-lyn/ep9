@@ -1,9 +1,9 @@
 diff --git a/Sources/Fuzzilli/Profiles/Ep9Profile.swift b/Sources/Fuzzilli/Profiles/Ep9Profile.swift
 new file mode 100644
-index 0000000..fa1d1c0
+index 0000000..84f71fa
 --- /dev/null
 +++ b/Sources/Fuzzilli/Profiles/Ep9Profile.swift
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,102 @@
 +// The ep9 profile (the ep9 repo's third_party/patches/fuzzilli/0001-ep9-profile.patch).
 +//
 +// ep9 is a JavaScript engine in Rust. `ep9 --reprl` runs the REPRL loop on fds 100-103 with a
@@ -12,18 +12,23 @@ index 0000000..fa1d1c0
 +//   0: a Rust panic (SIGABRT), 1: a store to 0x41414141 (SIGSEGV),
 +//   2: a trap instruction (SIGILL on x86-64, SIGTRAP on arm64).
 +// A full GC heap ends the child with exit 71 and no status word: a failed run, not a crash.
++// `gc('minor')` runs a minor GC (S1: only the young cells), `gc()` and `gc('major')` a full
++// one; any other argument is a full one too (ep9 does not convert it).
 +
 +import Foundation
 +
 +// The REPRL child gets only processEnv (libreprl execve's with it), not the launcher's
 +// environment. So the ep9 REPRL settings are forwarded from the FuzzilliCli environment, each
-+// only when it is set: EP9_REPRL_HEAP_MB, EP9_REPRL_STACK_MB, EP9_REPRL_GC_STRESS (ep9's
-+// crates/ep9_cli/src/reprl.rs). A panic prints its backtrace to stderr, which Fuzzilli keeps in
-+// the crash file (infra/fuzz/triage.sh dedups by the panic text and the top frames).
++// only when it is set: EP9_REPRL_HEAP_MB, EP9_REPRL_STACK_MB, EP9_REPRL_GC_STRESS and
++// EP9_REPRL_PRESET (jit or jitless; ep9's crates/ep9_cli/src/reprl.rs). A panic prints its
++// backtrace to stderr, which Fuzzilli keeps in the crash file (infra/fuzz/triage.sh dedups by
++// the panic text and the top frames).
 +private let ep9ProcessEnv: [String: String] = {
 +    var env = ["RUST_BACKTRACE": "1"]
 +    let launcher = ProcessInfo.processInfo.environment
-+    for key in ["EP9_REPRL_HEAP_MB", "EP9_REPRL_STACK_MB", "EP9_REPRL_GC_STRESS"] {
++    for key in [
++        "EP9_REPRL_HEAP_MB", "EP9_REPRL_STACK_MB", "EP9_REPRL_GC_STRESS", "EP9_REPRL_PRESET",
++    ] {
 +        if let value = launcher[key] {
 +            env[key] = value
 +        }
@@ -31,8 +36,17 @@ index 0000000..fa1d1c0
 +    return env
 +}()
 +
++// GC calls of each kind: gc() (full), gc('minor') and gc('major').
 +private let Ep9GcGenerator = CodeGenerator("Ep9GcGenerator") { b in
-+    b.callFunction(b.createNamedVariable(forBuiltin: "gc"))
++    let gc = b.createNamedVariable(forBuiltin: "gc")
++    switch Int.random(in: 0..<3) {
++    case 0:
++        b.callFunction(gc)
++    case 1:
++        b.callFunction(gc, withArgs: [b.loadString("minor")])
++    default:
++        b.callFunction(gc, withArgs: [b.loadString("major")])
++    }
 +}
 +
 +let ep9Profile = Profile(
@@ -61,6 +75,9 @@ index 0000000..fa1d1c0
 +        // Check that the fuzzilli integration is available.
 +        ("fuzzilli('FUZZILLI_PRINT', 'test')", .shouldSucceed),
 +
++        // Check that both GC kinds run.
++        ("gc('minor'); gc('major'); gc()", .shouldSucceed),
++
 +        // Check that the three crash kinds are detected.
 +        ("fuzzilli('FUZZILLI_CRASH', 0)", .shouldCrash),
 +        ("fuzzilli('FUZZILLI_CRASH', 1)", .shouldCrash),
@@ -78,7 +95,7 @@ index 0000000..fa1d1c0
 +    disabledMutators: [],
 +
 +    additionalBuiltins: [
-+        "gc": .function([] => .undefined)
++        "gc": .function([.opt(.string)] => .undefined)
 +    ],
 +
 +    additionalObjectGroups: [],

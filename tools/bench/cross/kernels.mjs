@@ -34,7 +34,9 @@
 //
 // The JSON keeps what m1-exit needs for "15/15 on a fresh tree": the commit, the git tree ids
 // of crates, tools/bench, the root Cargo.toml, Cargo.lock and rust-toolchain.toml at HEAD, and the paths among them
-// with uncommitted changes (`dirty`; not fresh when it is not empty).
+// with uncommitted changes (`dirty`; not fresh when it is not empty). `ep9.engine_build` is the
+// build line of the checked binary's `--version` ("features <list>; preset <name>", M5-P0,
+// MC-w17-5), or null for a binary that prints none.
 //
 // Exit status: 0 every kernel ran with node's output (kernels on --not-yet may fail); 1 a kernel
 // failed; 2 usage error; 3 the oracle or the generator failed (no verdict).
@@ -369,7 +371,7 @@ export function check(o, deps = {}) {
       tree: st.tree,
       dirty: st.dirty,
       host: { ...host, target: TRIPLES[host.platform] ?? null },
-      ep9: { bin: path.basename(o.check), version: version(o.check), sha256: sha256File(o.check) },
+      ep9: { bin: path.basename(o.check), ...splitVersion(runVersion(o.check)), sha256: sha256File(o.check) },
       oracle: { engine: "node", bin: path.basename(o.node), version: version(o.node) },
       n: o.n,
       harness: { v8v7: o.harness, octane: rows.find((r) => r.suite === "octane")?.harness ?? null },
@@ -393,6 +395,16 @@ export function check(o, deps = {}) {
   }
 }
 
+/**
+ * An ep9 `--version` text: its first line is the version, and its line that starts with
+ * "features " names the build ("features <list>; preset <name>", M5-P0, MC-w17-5). A binary
+ * from before M5-P0 prints no such line: `engine_build` is null.
+ */
+export function splitVersion(text) {
+  const lines = clean(text).split("\n").map((l) => l.trim());
+  return { version: lines[0], engine_build: lines.find((l) => l.startsWith("features ")) ?? null };
+}
+
 function runVersion(bin) {
   const r = spawnSync(bin, ["--version"], { encoding: "utf8" });
   return r.status === 0 ? r.stdout : `unknown (--version: ${r.error?.message ?? `exit ${r.status}`})`;
@@ -410,7 +422,7 @@ function sha256File(f) {
 export function renderTable(res) {
   const cell = (x) => (x ?? "").replaceAll("|", "\\|").replaceAll("`", "'").replaceAll("\n", " / ");
   const L = [];
-  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}.`);
+  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}${res.ep9.engine_build ? `; ${res.ep9.engine_build}` : ""}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}.`);
   L.push("");
   L.push("| kernel | result | blocker | place | source line |");
   L.push("|---|---|---|---|---|");

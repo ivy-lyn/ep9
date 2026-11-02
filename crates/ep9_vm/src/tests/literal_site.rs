@@ -171,7 +171,11 @@ fn shallow_and_empty_array_literals_hit_after_their_first_run() {
                 let (key, value) = slot_of(iso, slot);
                 assert!(shape::is_shape(key));
                 assert_eq!(shape::object_kind(key), kinds::ARRAY.get());
-                assert_eq!(value, int32_bits(1));
+                // An array-literal site keeps its ALLOC_SITE handler (M5-P2 ELEM2): one cold
+                // run counted there.
+                let (_, count) =
+                    crate::literal_site::site_of(value).expect("an ALLOC_SITE handler");
+                assert_eq!(count, 1);
             }
         },
     );
@@ -212,13 +216,14 @@ fn nested_literal_flags(flags: u8) -> (VerifiedUnit, Vec<FeedbackSlot>) {
 }
 
 #[test]
-fn a_nested_literal_stays_on_the_cold_path_and_is_built_from_its_shape() {
+fn a_nested_literal_hits_after_its_first_run_and_is_built_from_its_shape() {
     run_checked(nested_literal, &["5"], |iso, slots| {
         let (key, value) = slot_of(iso, slots[0]);
         assert!(shape::is_shape(key), "the facts get the shape");
-        assert_eq!(value, int32_bits(5), "every run was cold");
-        // The first run was generic; the other 4 built from the recorded shape.
-        assert_eq!(crate::literal_site::COLD_BUILDS.with(|c| c.get()), 4);
+        // The first run was generic and cold; the other 4 hit (M5-P2 ELEM2: the T0 hit of
+        // `literal_site::nested_object`), built from the recorded shape.
+        assert_eq!(value, int32_bits(1), "one cold run");
+        assert_eq!(crate::literal_site::COLD_BUILDS.with(|c| c.get()), 0);
     });
 }
 
@@ -349,7 +354,10 @@ fn literal_misses_walk_the_code_once_per_function() {
                     kinds::OBJECT
                 };
                 assert_eq!(shape::object_kind(key), want.get(), "{label}: site {n}");
-                assert_eq!(value, int32_bits(1), "{label}: site {n}");
+                // An array site counts in its ALLOC_SITE handler (M5-P2 ELEM2).
+                let count = crate::literal_site::site_of(value)
+                    .map_or(value, |(_, c)| int32_bits(c as i32));
+                assert_eq!(count, int32_bits(1), "{label}: site {n}");
             }
             iso.collect_garbage();
             iso.verify_heap().unwrap();
@@ -416,6 +424,132 @@ fn clone_object_goes_monomorphic_polymorphic_and_megamorphic() {
             assert_eq!(slot_of(iso, slots[0]), (HOLE, ic::MEGA));
         },
     );
+}
+
+/// `src = {x: 1}` (a literal: its root shape has 1 in-object slot, so `x` is another field
+/// family than the `x` of a clone result, whose root has 4), then `c = {...src}` twice (a cold
+/// clone, then a hit), then `src.x = "s"` (a second store: the source shape's `x` widens in
+/// place, so the source keeps its shape and the site its case), then `c = {...src}` (a hit);
+/// print c.x.
+fn clone_after_a_source_widening() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+    let site = s.b.feedback_slot(FeedbackSlotKind::CloneObject);
+    let (src, c) = (s.b.new_register(), s.b.new_register());
+    let (kx, k1) = (s.b.string_constant("x"), s.b.number_constant(1.0));
+    let bp = s.b.object_boilerplate(vec![(kx, Some(k1))]);
+    let text = s.b.string_constant("s");
+    s.b.create_object_literal(bp, lit, SHALLOW).star(src);
+    for _ in 0..2 {
+        s.b.clone_object(src, 0, site).star(c);
+    }
+    s.b.lda_constant(text);
+    s.set_named(src, "x");
+    s.b.clone_object(src, 0, site).star(c);
+    s.get_named(c, "x");
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), vec![site, lit])
+}
+
+/// A CloneObject hit copies the source's fields into the result shape with no value check,
+/// so the result shape's fields must allow any value (the H17 rep/const rule: a direct field
+/// writer stores only what the field's bits allow, or widens first). The cold path that
+/// records the case widens them (`field_rep::widen_all`); before that fix the hit stored
+/// "s" into an INT32 field.
+#[test]
+fn a_clone_hit_stores_only_into_fields_that_allow_any_value() {
+    run_checked(clone_after_a_source_widening, &["s"], |iso, slots| {
+        let (key, value) = slot_of(iso, slots[0]);
+        assert!(
+            shape::is_shape(key),
+            "monomorphic: the source kept its shape"
+        );
+        assert_eq!(handler_i32(value, ch::KIND), hk::CLONE);
+        assert_eq!(handler_i32(value, ch::COUNT), 1, "one cold clone, two hits");
+        let result = object::rd(object::cell(value), ch::RESULT);
+        assert_eq!(shape::count(result), 1);
+        assert_ne!(shape::field_layout(key).0, shape::field_layout(result).0);
+        assert_eq!(
+            shape::details_at(key, 0).rep(),
+            shape::rep::ANY,
+            "the source widened"
+        );
+        assert_eq!(shape::details_at(result, 0).rep(), shape::rep::ANY);
+    });
+}
+
+/// Two source shapes at one CloneObject site (polymorphic): `s1 = {x: 1}` (a literal: root
+/// with 1 in-object slot) and `s2 = {}; s2.x = 2` (root with 4, the same shape as a clone
+/// result). Twice: `c = {...s1}; c = {...s2}`. Then `s1.x = "s"` (a second store widens the
+/// source's family in place: the case stays) and `c = {...s1}` (a hit of the first case).
+/// Then `q = {}; q.x = 7; q.x = 8`: a later object reaches the result shape by its own
+/// transitions. Prints c.x, q.x.
+fn clone_polymorphic_then_widen() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+    let site = s.b.feedback_slot(FeedbackSlotKind::CloneObject);
+    let (s1, s2, c, q) = (
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+    );
+    let (kx, k1) = (s.b.string_constant("x"), s.b.number_constant(1.0));
+    let bp = s.b.object_boilerplate(vec![(kx, Some(k1))]);
+    s.b.create_object_literal(bp, lit, SHALLOW).star(s1);
+    s.b.create_empty_object_literal().star(s2);
+    s.b.lda_smi(2);
+    s.set_named(s2, "x");
+    for _ in 0..2 {
+        s.b.clone_object(s1, 0, site).star(c);
+        s.b.clone_object(s2, 0, site).star(c);
+    }
+    s.lda_str("s");
+    s.set_named(s1, "x");
+    s.b.clone_object(s1, 0, site).star(c);
+    s.get_named(c, "x");
+    s.print_acc();
+    s.b.create_empty_object_literal().star(q);
+    s.b.lda_smi(7);
+    s.set_named(q, "x");
+    s.b.lda_smi(8);
+    s.set_named(q, "x");
+    s.get_named(q, "x");
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), vec![site, lit])
+}
+
+/// Codex M5-P2 r1 constrep 2: every CLONE handler a hit can use is installed by
+/// `literal_site::miss_clone` after `field_rep::widen_all` of its result shape (a new
+/// monomorphic case, a polymorphic case, a new result shape of a known case; a megamorphic
+/// site has no handler, so no hit). The bits only widen, so a polymorphic hit after a source
+/// widening stores into ANY fields, and a later object that reaches the result shape by its
+/// own transitions sees ANY, not const, too.
+#[test]
+fn a_polymorphic_clone_hit_stores_only_into_fields_that_allow_any_value() {
+    run_checked(clone_polymorphic_then_widen, &["s", "8"], |iso, slots| {
+        let (key, value) = slot_of(iso, slots[0]);
+        assert_eq!(key, HOLE, "polymorphic");
+        assert_eq!(kinds::cell_kind(value), kinds::POLY_IC.get());
+        let p = object::cell(value);
+        let mut cases = 0;
+        for i in 0..ic::POLY_CASES {
+            let at = ic::pc::CASES + ic::pc::CASE * i;
+            let (ss, h) = (object::rd(p, at), object::rd(p, at + ic::pc::HANDLER));
+            if ss == UNDEFINED {
+                continue;
+            }
+            cases += 1;
+            assert_eq!(handler_i32(h, ch::KIND), hk::CLONE);
+            assert_eq!(handler_i32(h, ch::COUNT), 1, "one cold clone per case");
+            let rs = object::rd(object::cell(h), ch::RESULT);
+            let d = shape::details_at(rs, 0);
+            assert_eq!((d.rep(), d.is_const()), (shape::rep::ANY, false));
+        }
+        assert_eq!(cases, 2);
+    });
 }
 
 /// `{...src}` with src's properties all in the source's out-of-line storage past its

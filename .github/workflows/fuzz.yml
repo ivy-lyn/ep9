@@ -2,17 +2,23 @@
 # front-end budget is 24 CPU-h at M1). Dispatch only; the orchestrator runs it (plan v9 rule 3).
 #
 #   one job per target x runner: seeds (fuzz/seeds + a test262 sample) -> cargo fuzz run
-#   -fork=<jobs> for <seconds> -> crash count + SHA-256 per crash file -> fuzz-summary JSON
+#   -fork=<jobs> for <seconds> -> crash count + SHA-256 per crash file -> one ep9-fuzz/v1
+#   record (fuzz/scripts/record.sh), the m1-exit item 5 input
 #
 # The repo is public (plan v9 rule 14, V9-A17): fuzz/scripts/run.sh sends the fuzzer output
 # to a file inside the job and prints only the crash count, the hashes and numeric stats. The
-# job uploads only the summary JSON (target, seconds, fork, CPU-h, executed units, crash count,
-# crash hashes): no crash input, no corpus, no log. A crash fails the job with a fixed text;
-# the input is reproduced off GitHub (the orchestrator's triage host), never from this job.
-# The self-test step proves the output rule on a fixture crash before each campaign.
+# job uploads only the record JSON (names, numbers, hashes: commit, dirty, CPU-h, executed
+# units, crash ids): no crash input, no corpus, no log. A crash fails the job with a fixed text;
+# the input is reproduced off GitHub (on a fuzz box, plan v10 V10-D26), never from this job.
+# The self-test step proves the output rule and the record rule before each campaign.
 #
-# CPU-h of a job = seconds x jobs / 3600 (the fork workers run all the time). Default: 3
-# targets x 2 h x 4 workers = 24 CPU-h (V9-D24 counting: one counted run after the last fix).
+# The record (plan v10 §2.7, CX6-1): campaign gh<run id>-<attempt>-<target>; commit = the
+# checked-out HEAD; dirty = a tracked file differed from HEAD before the build or after the run
+# (`git status --porcelain --untracked-files=no`); cpu_hours = the MEASURED run seconds x jobs /
+# 3600 (the fork workers run all the time), so a run cut short counts what it ran; counted =
+# the `counted` input. Default: 3 targets x 2 h x 4 workers = 24 CPU-h. A counted run is
+# pre-registered: a decisions-log row names the tool, campaign and tree before the dispatch
+# (plan v10 rule 41); a bug-finding run keeps the default `counted: false`.
 name: fuzz
 
 on:
@@ -41,6 +47,11 @@ on:
         required: true
         default: "4096"
         type: string
+      counted:
+        description: "a counted run (m1-exit item 5): only with a decisions-log row first (plan rule 41)"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -102,6 +113,12 @@ jobs:
         run: bash fuzz/scripts/seed-test262.sh third_party/test262 fuzz/corpus
       - name: Output rule self-test (a fixture crash shows only the count and the hash)
         run: bash fuzz/scripts/self-test.sh
+      # The source state of the fuzzed tree: the tracked files before the build (the Summary
+      # step checks them again after the run).
+      - name: Source state
+        run: |
+          git status --porcelain --untracked-files=no > "$RUNNER_TEMP/ep9-dirty-before"
+          echo "commit $(git rev-parse HEAD), $(wc -l < "$RUNNER_TEMP/ep9-dirty-before" | tr -d ' ') changed tracked file(s)"
       - name: Build the targets
         run: bash fuzz/scripts/run.sh build
       - name: Campaign
@@ -112,26 +129,45 @@ jobs:
           FUZZ_MAX_LEN: ${{ inputs.max_len }}
           FUZZ_SUMMARY: fuzz-summary.json
         run: bash fuzz/scripts/run.sh "$TARGET" "$SECONDS_IN" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET"
-      # The summary holds numbers and hashes only. It gets the commit, runner and CPU-h here.
+      # The ep9-fuzz/v1 record: names, numbers and hashes only (record.sh refuses any other
+      # string). With no run summary (the campaign step did not end) the record says 0 s and
+      # counted false, and it still lists the crash files of this campaign: run.sh wrote
+      # fuzz-summary.json.started when the run began, and `run.sh crashes` reads that run's
+      # artifact dir (no marker, no run: the self-test's fixture crash is never read).
       - name: Summary
         if: ${{ always() }}
         env:
           TARGET: ${{ matrix.target }}
           RUNNER_IMAGE: ${{ inputs.runner }}
-          SECONDS_IN: ${{ inputs.seconds }}
           JOBS_IN: ${{ inputs.jobs }}
-          SHA: ${{ github.sha }}
+          COUNTED: ${{ inputs.counted }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          [ -f fuzz-summary.json ] || echo '{"crashes":null}' > fuzz-summary.json
-          cpu_h="$(awk -v s="$SECONDS_IN" -v j="$JOBS_IN" 'BEGIN { printf "%.2f", s * j / 3600 }')"
-          body="$(cat fuzz-summary.json)"
-          printf '{"commit":"%s","runner":"%s","cpu_hours":%s,"run":%s}\n' \
-            "$SHA" "$RUNNER_IMAGE" "$cpu_h" "$body" > "fuzz-summary-$TARGET.json"
-          { echo "## cargo-fuzz $TARGET"; echo '```'; cat "fuzz-summary-$TARGET.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          before="$RUNNER_TEMP/ep9-dirty-before"
+          if [ ! -f "$before" ]; then
+            dirty=unknown
+          elif [ -s "$before" ] || [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            dirty=true
+          else
+            dirty=false
+          fi
+          args=(--tool cargo-fuzz --campaign "gh$RUN_ID-$RUN_ATTEMPT-$TARGET" --target "$TARGET"
+            --commit "$(git rev-parse HEAD)" --dirty "$dirty" --counted "$COUNTED" --runner "$RUNNER_IMAGE")
+          if [ -f fuzz-summary.json ]; then
+            args+=(--run fuzz-summary.json)
+          else
+            ids="$(bash fuzz/scripts/run.sh crashes fuzz-summary.json)" ||
+              { echo "::error::no run summary, and the crash files of the run cannot be read"; exit 1; }
+            args+=(--seconds 0 --workers "$JOBS_IN" --uncounted "no run summary: the campaign step did not end")
+            for h in $ids; do args+=(--crash-id "$h"); done
+          fi
+          bash fuzz/scripts/record.sh "${args[@]}" --out "fuzz-record-$TARGET.json"
+          { echo "## cargo-fuzz $TARGET (ep9-fuzz/v1)"; echo '```'; cat "fuzz-record-$TARGET.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
-          name: fuzz-summary-${{ matrix.target }}
-          path: fuzz-summary-${{ matrix.target }}.json
+          name: fuzz-record-${{ matrix.target }}
+          path: fuzz-record-${{ matrix.target }}.json
           if-no-files-found: warn
           retention-days: 90

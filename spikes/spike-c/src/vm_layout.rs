@@ -1,37 +1,77 @@
 //! The VM layout facts the emitted code reads, taken from the `ep9_vm::layout` export (M4-P3
 //! KEYED, 8140b68; SPIKEC-4 switched to it, decision P3-ORCH-9). Until SPIKEC-4 this module
 //! kept hand copies of them; now every offset, kind id and handler field below is the VM's
-//! own constant (except the POLY_IC handler half, a literal `+ 8` here and in `emit_a64`;
-//! MC-w16-4, `POLY_HANDLER` comes with C-18), so a layout change moves the compiled code with
-//! it. [`check`] proves them on live objects before any compile: a wrong export fails there.
+//! own constant (the POLY_IC handler half too since M5-P0: `POLY_HANDLER`, MC-w16-4, C-18), so a
+//! layout change moves the compiled code with it. [`check`] proves them on live objects before
+//! any compile: a wrong export fails there.
 //!
 //! Each fact names the version that owns it (MC-w15-5: one owner per fact, doc 13 §7.3; the
 //! C-18 `VM_LAYOUT` version covers only what no other version owns):
 //!
 //! | Fact | Export (`ep9_vm::layout`) | Owning version |
 //! |---|---|---|
-//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 4 |
-//! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 4 |
-//! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 4 |
-//! | ARRAY: ELEMENTS, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 4 |
-//! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 4 |
+//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 5 |
+//! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 5 |
+//! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 5 |
+//! | ARRAY: elements store, length (an int32 Value below 2^31, a double Value from 2^31 on, M5-P2 ELEM2; only a DICTIONARY array is that long, and `CheckArray` exits on it, so `LoadElement` and `StoreElement` read the low 32 bits as the dense bound) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 5 |
+//! | the two elements storage forms the element ops read: an ELEMENTS cell (kind 65, Values) or an ELEMENTS_DOUBLE cell (kind 81, raw f64); `LoadElement` and `StoreElement` exit on any other elements store (an ELEMENTS_DICT cell, 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS`, `KIND_ELEMENTS_DOUBLE`, `KIND_ELEMENTS_DICT` | OBJECT_LAYOUT 5 |
+//! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 5 |
+//! | ELEMENTS_DOUBLE: capacity (an int32 Value), raw f64 from `ELEMENTS_DOUBLE_DATA`; the hole is a NaN no store writes; a store writes every NaN as the pure NaN (`PURE_NAN_BITS`, proved below) | `ELEMENTS_DOUBLE_CAPACITY`, `ELEMENTS_DOUBLE_DATA`, `ELEMENTS_DOUBLE_HOLE` | OBJECT_LAYOUT 5 |
+//! | a shape's elements kind: `counts` bits 28-31; kinds 0-5 hold elements in the two forms above (INT32 and ELEMENTS kinds: Values; DOUBLE kinds: raw f64), 6 is DICTIONARY, 7-15 reserved. `CheckArray` (the kind guard, M5-P1-ORCH-11) reads it from the receiver's shape and exits unless it is in [`ARRAY_KINDS`] | `SHAPE_ELEMENTS_KIND_SHIFT`, `ELEMENTS_KIND_*` | OBJECT_LAYOUT 5 |
+//! | **not exported** (hand facts, proved below on live arrays of each kind): a cell's shape is the cell `(address & !(SHAPE_CAGE_ALIGN - 1)) \| ShapeId` (kind [`KIND_SHAPE`]), its `counts` word is at [`SHAPE_COUNTS`]; and (proved on a live closure) the CONTEXT kind id [`KIND_CONTEXT`] (the `LoadContextSlot` guard) | `shape::CAGE_ALIGN`, `shape::shape_of`, `shape::shf::COUNTS`, `kinds::SHAPE`, `kinds::CONTEXT` (crate-private) | OBJECT_LAYOUT 5 |
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
-//! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 2 |
-//! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 2 |
-//! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler (key + 8, not exported: MC-w16-4); `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_COUNT` | IC_LAYOUT 2 |
-//! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT (C-18; the one fact no other version owns) |
+//! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 3 |
+//! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 3 |
+//! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler at `+ POLY_HANDLER` (MC-w16-4); `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_HANDLER`, `POLY_COUNT` | IC_LAYOUT 3 |
+//! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT 1 (C-18) |
 //!
-//! The export stays behind `spike-native` until C-18 moves it (M5-P0). What is left here
+//! Since M5-P0 the export is `ep9_vm::layout`, in every ep9_vm build (C-18). What is left here
 //! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
+//! Four layout facts are not in the export, frozen in month 5 (plan v10 rule 2): the shape address
+//! rule, the shape's `counts` offset and the SHAPE kind id (the kind guard, M5-P2 SPIKEC-6, WI-SC7;
+//! proved on live arrays of each kind), and the CONTEXT kind id (the `LoadContextSlot` guard, M5-P2
+//! fixer round 3). [`check`] proves these hand copies; [`HAND_FACTS`] lists them and 2 more.
 
 use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
 
 pub use ep9_vm::layout::{
-    ARRAY_ELEMENTS, ARRAY_LENGTH, ELEMENTS_CAPACITY, ELEMENTS_DATA, FEEDBACK_INFO, FEEDBACK_KEY,
-    FEEDBACK_SLOT_SIZE, FEEDBACK_SLOTS, FEEDBACK_VALUE, FI_FEEDBACK, HOLE, KIND_ARRAY, KIND_BYTE,
-    KIND_OBJECT, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES, POLY_COUNT, SHAPE_ID_BYTE,
-    SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK, SMI_SHIFT,
+    ARRAY_ELEMENTS, ARRAY_LENGTH, ELEMENTS_CAPACITY, ELEMENTS_DATA, ELEMENTS_DOUBLE_CAPACITY,
+    ELEMENTS_DOUBLE_DATA, ELEMENTS_DOUBLE_HOLE, ELEMENTS_KIND_DICTIONARY,
+    ELEMENTS_KIND_HOLEY_DOUBLE, ELEMENTS_KIND_HOLEY_ELEMENTS, ELEMENTS_KIND_HOLEY_INT32,
+    ELEMENTS_KIND_PACKED_DOUBLE, ELEMENTS_KIND_PACKED_ELEMENTS, ELEMENTS_KIND_PACKED_INT32,
+    FEEDBACK_INFO, FEEDBACK_KEY, FEEDBACK_SLOT_SIZE, FEEDBACK_SLOTS, FEEDBACK_VALUE, FI_FEEDBACK,
+    HOLE, KIND_ARRAY, KIND_BYTE, KIND_ELEMENTS, KIND_ELEMENTS_DICT, KIND_ELEMENTS_DOUBLE,
+    KIND_OBJECT, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES, POLY_COUNT, POLY_HANDLER,
+    SHAPE_ELEMENTS_KIND_SHIFT, SHAPE_ID_BYTE, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK,
+    SMI_SHIFT,
 };
+
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `shape::CAGE_ALIGN`): an ep9_vm cage is aligned to
+/// this and no larger, so the shape of a cell is the cell at `(address & !(SHAPE_CAGE_ALIGN -
+/// 1)) | ShapeId` (`shape::shape_of`). Proved by [`check`].
+pub const SHAPE_CAGE_ALIGN: u64 = 64 << 30;
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `shape::shf::COUNTS`): a shape's `counts` word, an
+/// int32 Value whose bits 28-31 ([`SHAPE_ELEMENTS_KIND_SHIFT`]) are the elements kind of its
+/// objects. Proved by [`check`].
+pub const SHAPE_COUNTS: u32 = 48;
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `kinds::SHAPE`): the kind id of a shape cell.
+/// Proved by [`check`].
+pub const KIND_SHAPE: u8 = 128;
+
+/// The elements kinds whose elements the element ops read and write (bit `k` = kind `k`):
+/// PACKED and HOLEY INT32, DOUBLE and ELEMENTS. The kind guard (`CheckArray`) exits on any
+/// other kind: DICTIONARY (an ELEMENTS_DICT cell, fail closed) and the reserved values 7-15.
+pub const ARRAY_KINDS: u16 = 1 << ELEMENTS_KIND_PACKED_INT32
+    | 1 << ELEMENTS_KIND_HOLEY_INT32
+    | 1 << ELEMENTS_KIND_PACKED_DOUBLE
+    | 1 << ELEMENTS_KIND_HOLEY_DOUBLE
+    | 1 << ELEMENTS_KIND_PACKED_ELEMENTS
+    | 1 << ELEMENTS_KIND_HOLEY_ELEMENTS;
+
+/// True for a DOUBLE elements kind (its elements are raw f64 in an ELEMENTS_DOUBLE cell).
+pub const fn is_double_kind(k: u8) -> bool {
+    k == ELEMENTS_KIND_PACKED_DOUBLE || k == ELEMENTS_KIND_HOLEY_DOUBLE
+}
 
 /// The smi handler of `length` on an Array shape (an int32 Value of kind ARRAY_LENGTH).
 pub const ARRAY_LENGTH_HANDLER: u64 = NUMBER_TAG | SMI_ARRAY_LENGTH as u32 as u64;
@@ -118,7 +158,7 @@ pub unsafe fn ic_handler_for(key: u64, value: u64, id: u32) -> Option<u64> {
         for i in 0..POLY_COUNT {
             let at = POLY_CASES + POLY_CASE_SIZE * i;
             // SAFETY: `value` is a live POLY_IC cell (POLY_COUNT cases).
-            let (k, h) = unsafe { (word(value, at), word(value, at + 8)) };
+            let (k, h) = unsafe { (word(value, at), word(value, at + POLY_HANDLER)) };
             if k as u32 == id {
                 return Some(h);
             }
@@ -143,6 +183,26 @@ pub unsafe fn shape_id(v: u64) -> u32 {
 pub unsafe fn kind(v: u64) -> u8 {
     // SAFETY: the caller's contract.
     (unsafe { word(v, 0) } >> (8 * KIND_BYTE)) as u8
+}
+
+/// The shape cell of the cell `v` by the hand rule ([`SHAPE_CAGE_ALIGN`]).
+///
+/// # Safety
+/// As [`shape_id`].
+pub unsafe fn shape_of(v: u64) -> u64 {
+    // SAFETY: the caller's contract.
+    (v & !(SHAPE_CAGE_ALIGN - 1)) | u64::from(unsafe { shape_id(v) })
+}
+
+/// The elements kind (counts bits 28-31) of the shape of the cell `v`, as the kind guard reads
+/// it.
+///
+/// # Safety
+/// As [`shape_id`].
+pub unsafe fn elements_kind(v: u64) -> u8 {
+    // SAFETY: the caller's contract; [`check`] proved the rule and the offset.
+    let counts = unsafe { word(shape_of(v), SHAPE_COUNTS) } as u32;
+    (counts >> SHAPE_ELEMENTS_KIND_SHIFT) as u8
 }
 
 /// The int32 of an int32 Value, if it is one.
@@ -171,13 +231,39 @@ function LayoutProbe() { this.a = 7; this.b = [11, 22, 33]; }\n\
 function layoutGet(o) { return o.b; }\n\
 function layoutLen(a) { return a.length; }\n\
 var layoutObj = new LayoutProbe();\n\
-for (var layoutI = 0; layoutI < 20; layoutI++) { layoutGet(layoutObj); layoutLen(layoutObj.b); }\n";
+for (var layoutI = 0; layoutI < 20; layoutI++) { layoutGet(layoutObj); layoutLen(layoutObj.b); }\n\
+var layoutKinds = [[1, 2, 3], [1, , 3], [1.5, 2.5, 3.5], [1.5, , 3.5], ['a', 2, 3], ['a', , 3]];\n\
+layoutKinds[2][1] = NaN;\n";
 
-/// Proves every exported fact the emitter reads on live objects of `session` (runs
-/// [`CHECK_SRC`] there).
-pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
+/// The elements kind of each array of `layoutKinds` in [`CHECK_SRC`] (elements 0 and 2 are
+/// 1 and 3, or 1.5 and 3.5; element 1 is 2, NaN, or a hole).
+const CHECK_KINDS: [u8; 6] = [
+    ELEMENTS_KIND_PACKED_INT32,
+    ELEMENTS_KIND_HOLEY_INT32,
+    ELEMENTS_KIND_PACKED_DOUBLE,
+    ELEMENTS_KIND_HOLEY_DOUBLE,
+    ELEMENTS_KIND_PACKED_ELEMENTS,
+    ELEMENTS_KIND_HOLEY_ELEMENTS,
+];
+
+/// Proves every exported fact the emitter reads on live objects of a private, fresh session
+/// of `config` (runs [`CHECK_SRC`] there): no other script ran in it, so no probe global is
+/// pre-set (Codex M5-P3 r2 spk 1).
+pub fn check(config: &spike_b::harness::Config) -> Result<String, String> {
+    check_in(&mut crate::harness::Session::new(config)?)
+}
+
+/// [`check`] on `session`. Each array the probes read is checked before its raw words are
+/// read (kind byte, int32 length, an elements cell of the right kind, its capacity), so a
+/// pre-set array global gives an `Err`; the other probe globals are trusted because
+/// [`check`] gives a fresh session.
+fn check_in(session: &mut crate::harness::Session) -> Result<String, String> {
     let r = session.run(CHECK_SRC, "layout-probe.js");
     r.result.map_err(|e| format!("layout probe: {e}"))?;
+    check_versions(VM_VERSIONS)?;
+    // SAFETY: the session ran CHECK_SRC just now (check_elem2 is safe: it runs ELEM2_SRC).
+    unsafe { check_kinds(session) }.and_then(|()| check_elem2(session))?;
+    check_context(session)?;
     let o = session.function_value("layoutObj")?.to_bits();
     let a = session.function_value("layoutObj.b")?.to_bits();
     let f = session.function_value("layoutGet")?;
@@ -203,8 +289,13 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
             return Err(format!("array length is not an int32 at +{ARRAY_LENGTH}"));
         }
         let e = word(a, ARRAY_ELEMENTS);
-        if !is_cell(e) || int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3) {
-            return Err("ELEMENTS cell or its capacity".into());
+        if !is_cell(e) || kind(e) != KIND_ELEMENTS {
+            return Err(format!(
+                "the array's elements word {e:#x} is no ELEMENTS cell"
+            ));
+        }
+        if int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3) {
+            return Err("the ELEMENTS cell's capacity".into());
         }
         for (i, want) in [11, 22, 33].into_iter().enumerate() {
             if word(e, ELEMENTS_DATA + 8 * i as u32) != int32_bits(want) {
@@ -236,8 +327,487 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
     }
     Ok(format!(
         "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
-         as ep9_vm::layout exports them"
+         as ep9_vm::layout exports them; the elements kind in the shape and both storage forms \
+         on arrays of the 6 kinds, DICTIONARY (3 ways) and site-born ones; a closure's CONTEXT cell; versions {}",
+        PINNED
+            .iter()
+            .map(|(n, v)| format!("{n} {v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     ))
+}
+
+/// The kind-guard facts on the six `layoutKinds` arrays of [`CHECK_SRC`]: the shape that the
+/// hand rule finds is a SHAPE cell, its `counts` bits 28-31 are the array's elements kind
+/// ([`CHECK_KINDS`]), the elements cell has the storage form of that kind, and the data words
+/// are where the export says: Values at `ELEMENTS_DATA`, raw f64 at `ELEMENTS_DOUBLE_DATA`, the
+/// two holes, and a stored NaN as the pure NaN.
+///
+/// # Safety
+/// The session ran [`CHECK_SRC`]. Between its `function_value` runs, nothing runs while this
+/// reads.
+unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), String> {
+    use ep9_value::encoding::PURE_NAN_BITS;
+    for (i, want) in CHECK_KINDS.into_iter().enumerate() {
+        let a = session
+            .function_value(&format!("layoutKinds[{i}]"))?
+            .to_bits();
+        if !is_cell(a) {
+            return Err(format!("layoutKinds[{i}] is not a cell"));
+        }
+        // SAFETY: `a` is a live cell held by a global of the session's isolate, which runs
+        // nothing while this reads; checked an Array of length 3 (kind byte, int32 length)
+        // before its shape cell (the hand rule, checked by its kind byte) and its elements
+        // word (checked a cell of the kind's storage form before it is read) are read.
+        unsafe {
+            if kind(a) != KIND_ARRAY || int32_of(word(a, ARRAY_LENGTH)) != Some(3) {
+                return Err(format!("layoutKinds[{i}] is no Array of length 3"));
+            }
+            let shape = shape_of(a);
+            if kind(shape) != KIND_SHAPE {
+                return Err(format!(
+                    "layoutKinds[{i}]: the cell at (address & !{SHAPE_CAGE_ALIGN:#x}) | ShapeId has kind {}, not SHAPE",
+                    kind(shape)
+                ));
+            }
+            if int32_of(word(shape, SHAPE_COUNTS)).is_none() {
+                return Err(format!("shape +{SHAPE_COUNTS} is not an int32 Value"));
+            }
+            let k = elements_kind(a);
+            if k != want {
+                return Err(format!(
+                    "layoutKinds[{i}]: counts bits {SHAPE_ELEMENTS_KIND_SHIFT}-31 give kind {k}, not {want}"
+                ));
+            }
+            let e = word(a, ARRAY_ELEMENTS);
+            let holey = i % 2 == 1;
+            if !is_cell(e) {
+                return Err(format!("layoutKinds[{i}]: elements word {e:#x} is no cell"));
+            }
+            if is_double_kind(k) {
+                if kind(e) != KIND_ELEMENTS_DOUBLE
+                    || int32_of(word(e, ELEMENTS_DOUBLE_CAPACITY)).is_none_or(|c| c < 3)
+                {
+                    return Err(format!("kind {k}: no ELEMENTS_DOUBLE cell or capacity"));
+                }
+                let at = |j: u32| word(e, ELEMENTS_DOUBLE_DATA + 8 * j);
+                let one = if holey {
+                    ELEMENTS_DOUBLE_HOLE
+                } else {
+                    PURE_NAN_BITS
+                };
+                if (at(0), at(1), at(2)) != (1.5f64.to_bits(), one, 3.5f64.to_bits()) {
+                    return Err(format!(
+                        "kind {k}: raw f64 words {:#x} {:#x} {:#x} (hole {ELEMENTS_DOUBLE_HOLE:#x}, NaN {PURE_NAN_BITS:#x})",
+                        at(0),
+                        at(1),
+                        at(2)
+                    ));
+                }
+            } else {
+                if kind(e) != KIND_ELEMENTS
+                    || int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3)
+                {
+                    return Err(format!("kind {k}: no ELEMENTS cell or capacity"));
+                }
+                let at = |j: u32| word(e, ELEMENTS_DATA + 8 * j);
+                let one = if holey { HOLE } else { int32_bits(2) };
+                if at(1) != one || at(2) != int32_bits(3) {
+                    return Err(format!("kind {k}: Values {:#x} {:#x}", at(1), at(2)));
+                }
+            }
+        }
+    }
+    if PURE_NAN_BITS == ELEMENTS_DOUBLE_HOLE || ARRAY_KINDS & (1 << ELEMENTS_KIND_DICTIONARY) != 0 {
+        return Err("the pure NaN is the DOUBLE hole, or DICTIONARY is an array kind".into());
+    }
+    Ok(())
+}
+
+/// The versions this module's facts (the table above) and the emitter's frame and exit code
+/// were written against (SPIKEC-5). A VM that bumps one of them changed a fact compiled code
+/// bakes in, so [`check`] refuses until the spike is moved to it. Value encoding (since M5-P5,
+/// MODES-CHECK-w22 MC-w22-11) owns `HOLE`, `NATIVE_WORD_OFFSET` and the [`ENCODING_READS`]
+/// constants, which the emitter and the graph builder bake into code.
+pub const PINNED: [(&str, u32); 5] = [
+    ("OBJECT_LAYOUT", 5),
+    ("IC_LAYOUT", 3),
+    ("FRAME", 2),
+    ("VM_LAYOUT", 1),
+    ("Value encoding", 1),
+];
+
+/// The VM's own versions, in [`PINNED`] order (Value encoding is `ep9_value`'s).
+const VM_VERSIONS: [u32; 5] = {
+    use ep9_vm::versions::*;
+    [
+        OBJECT_LAYOUT_VERSION,
+        IC_LAYOUT_VERSION,
+        FRAME_VERSION,
+        VM_LAYOUT_VERSION,
+        ep9_value::encoding::VERSION,
+    ]
+};
+
+/// Refuses if a version in `vm` (in [`PINNED`] order) is not the pinned one.
+fn check_versions(vm: [u32; 5]) -> Result<(), String> {
+    match PINNED.iter().zip(vm).find(|((_, want), got)| got != want) {
+        None => Ok(()),
+        Some(((name, want), got)) => Err(format!("{name} is {got}, the spike is pinned to {want}")),
+    }
+}
+
+/// Not exported (hand fact, OBJECT_LAYOUT 5; `kinds::CONTEXT`): the kind id of a CONTEXT cell,
+/// which the guard of `LoadContextSlot` compares (Codex M5-P2 r1 spikec6 1; the export is
+/// frozen in month 5, plan v10 rule 2, as for [`KIND_SHAPE`]). Proved by [`check_context`].
+pub const KIND_CONTEXT: u8 = 66;
+
+/// The probe of [`check_context`]: a closure whose function's context holds one slot.
+const CONTEXT_SRC: &str = "\
+function layoutCtxMake() { var layoutC = 5; return function layoutCtxGet() { return layoutC; }; }\n\
+var layoutCtxFn = layoutCtxMake();\n";
+
+/// The context facts the `LoadContextSlot` guard reads, on a live closure: its function's
+/// context (`layout::FUNCTION_CONTEXT`) is a cell of kind [`KIND_CONTEXT`] whose length
+/// (`layout::CONTEXT_LENGTH`, an int32 Value) is 1 and whose slot 0 (`layout::CONTEXT_SLOTS`)
+/// holds 5.
+fn check_context(session: &mut crate::harness::Session) -> Result<(), String> {
+    use ep9_vm::layout::{CONTEXT_LENGTH, CONTEXT_SLOTS, FUNCTION_CONTEXT};
+    let r = session.run(CONTEXT_SRC, "layout-context.js");
+    r.result.map_err(|e| format!("context probe: {e}"))?;
+    let f = session.function_value("layoutCtxFn")?.to_bits();
+    if !is_cell(f) {
+        return Err("layoutCtxFn is not a cell".into());
+    }
+    // SAFETY: `f` is a live function held by a global of the session's isolate, which runs
+    // nothing while this reads; its context cell is live too (checked a cell before it is read).
+    unsafe {
+        let c = word(f, FUNCTION_CONTEXT as u32);
+        if !is_cell(c) || kind(c) != KIND_CONTEXT {
+            return Err(format!(
+                "the closure's context {c:#x} is not a CONTEXT cell"
+            ));
+        }
+        let (len, slot0) = (int32_of(word(c, CONTEXT_LENGTH)), word(c, CONTEXT_SLOTS));
+        if len != Some(1) || slot0 != int32_bits(5) {
+            return Err(format!(
+                "CONTEXT length {len:?} at +{CONTEXT_LENGTH}, slot 0 {slot0:#x} at +{CONTEXT_SLOTS}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The probe of [`check_elem2`]: DICTIONARY arrays made three ways, and an array-literal site
+/// whose array went to DOUBLE, then its next array.
+const ELEM2_SRC: &str = "\
+var layoutDicts = [[1, 2, 3], [1, 2, 3], []];\n\
+layoutDicts[0][100000] = 4;\n\
+Object.defineProperty(layoutDicts[1], 'length', { writable: false });\n\
+layoutDicts[2][4294967294] = 5;\n\
+function layoutSite() { return [1, 2, 3]; }\n\
+var layoutSiteA = null;\n\
+for (var layoutJ = 0; layoutJ < 20; layoutJ++) layoutSiteA = layoutSite();\n\
+layoutSiteA[1] = 2.5;\n\
+var layoutSiteB = layoutSite();\n";
+
+/// R17 re-proof after M5-P2 ELEM2 (plan v10 §5.7, SPIKEC-7), on live objects of [`ELEM2_SRC`]:
+///
+/// - DICTIONARY arrays, made the three ways ELEM2 makes them (an index far past the
+///   capacity, a read-only `length`, a `length` past 2^31 - 1): the shape's kind bits give
+///   DICTIONARY, which [`ARRAY_KINDS`] leaves out (so `CheckArray` exits: fail closed), the
+///   elements store is an ELEMENTS_DICT cell (kind [`KIND_ELEMENTS_DICT`], which the element
+///   ops refuse too), and its word at `ELEMENTS_CAPACITY` is the int32 0 (a dense bound test
+///   that read it would miss). The long array's `length` is a double Value (only a
+///   DICTIONARY array is that long; `CheckArray` exits before an element op reads the low
+///   32 bits as the bound).
+/// - An array born of an allocation site: after a site's array went to DOUBLE, the site's
+///   next array is born PACKED_DOUBLE, in an ELEMENTS_DOUBLE cell with raw f64 data (the
+///   shape is the kind source the guard reads; Spike C reads no ALLOC_SITE word).
+///
+/// A safe fn: it runs [`ELEM2_SRC`] itself, and the `&mut` session runs nothing else while it
+/// reads the cells, between its `function_value` runs (the SAFETY notes inside).
+fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
+    let r = session.run(ELEM2_SRC, "layout-elem2.js");
+    r.result.map_err(|e| format!("ELEM2 probe: {e}"))?;
+    for i in 0..3 {
+        let a = session
+            .function_value(&format!("layoutDicts[{i}]"))?
+            .to_bits();
+        if !is_cell(a) {
+            return Err(format!("layoutDicts[{i}] is not a cell"));
+        }
+        // SAFETY: `a` is a live cell held by a global of the session's isolate, which runs
+        // nothing while this reads; checked an Array before its shape is read, and its
+        // elements word checked a cell before it is read.
+        unsafe {
+            if kind(a) != KIND_ARRAY {
+                return Err(format!("layoutDicts[{i}] is no Array"));
+            }
+            let k = elements_kind(a);
+            if k != ELEMENTS_KIND_DICTIONARY || ARRAY_KINDS & (1 << k) != 0 {
+                return Err(format!(
+                    "layoutDicts[{i}]: elements kind {k}, not DICTIONARY outside ARRAY_KINDS"
+                ));
+            }
+            let e = word(a, ARRAY_ELEMENTS);
+            if !is_cell(e) || kind(e) != KIND_ELEMENTS_DICT {
+                return Err(format!(
+                    "layoutDicts[{i}]: the elements store is no ELEMENTS_DICT cell"
+                ));
+            }
+            if word(e, ELEMENTS_CAPACITY) != int32_bits(0) {
+                return Err(format!(
+                    "layoutDicts[{i}]: ELEMENTS_DICT +{ELEMENTS_CAPACITY} is not the int32 0"
+                ));
+            }
+            let len = word(a, ARRAY_LENGTH);
+            let want = if i == 2 { None } else { int32_of(len) };
+            if i == 2 && (int32_of(len).is_some() || len != double_bits(4294967295.0)) {
+                return Err(format!(
+                    "layoutDicts[2]: length {len:#x}, not the double 2^32 - 1"
+                ));
+            }
+            if i < 2 && want != Some(if i == 0 { 100001 } else { 3 }) {
+                return Err(format!("layoutDicts[{i}]: length {len:#x}"));
+            }
+        }
+    }
+    let born = session.function_value("layoutSiteB")?.to_bits();
+    let first = session.function_value("layoutSiteA")?.to_bits();
+    if !is_cell(born) || !is_cell(first) {
+        return Err("layoutSiteA or layoutSiteB is not a cell".into());
+    }
+    // SAFETY: as above: each is checked an Array before its shape is read, and `born`'s
+    // length, elements cell (kind) and capacity are checked before its data words are read
+    // (a pre-set `layoutSiteB` could give an empty array whose elements word is no cell).
+    unsafe {
+        if kind(first) != KIND_ARRAY || kind(born) != KIND_ARRAY {
+            return Err("allocation site: layoutSiteA or layoutSiteB is no Array".into());
+        }
+        if elements_kind(first) != ELEMENTS_KIND_PACKED_DOUBLE
+            || elements_kind(born) != ELEMENTS_KIND_PACKED_DOUBLE
+        {
+            return Err(format!(
+                "allocation site: kinds {} (stored to) and {} (born), not PACKED_DOUBLE",
+                elements_kind(first),
+                elements_kind(born)
+            ));
+        }
+        let e = word(born, ARRAY_ELEMENTS);
+        if int32_of(word(born, ARRAY_LENGTH)) != Some(3)
+            || !is_cell(e)
+            || kind(e) != KIND_ELEMENTS_DOUBLE
+            || int32_of(word(e, ELEMENTS_DOUBLE_CAPACITY)).is_none_or(|c| c < 3)
+        {
+            return Err(format!(
+                "allocation site: the born array has no length 3 or no ELEMENTS_DOUBLE cell \
+                 of capacity 3 (elements word {e:#x})"
+            ));
+        }
+        let at = |j: u32| word(e, ELEMENTS_DOUBLE_DATA + 8 * j);
+        if (at(0), at(1), at(2)) != (1f64.to_bits(), 2f64.to_bits(), 3f64.to_bits()) {
+            return Err("allocation site: the born array has no raw f64 1, 2, 3".into());
+        }
+    }
+    Ok(())
+}
+
+/// The R17 read set (plan v10 §6.1 WI-SC9 (1); an input of the M1a record): every
+/// `ep9_vm::layout` item Spike C reads (the emitter, the register allocator and this
+/// module), with the version that owns it (MC-w15-5). The test
+/// `read_set_is_what_spike_c_reads` keeps it equal to the names the spike's sources use, and
+/// `read_set_names_the_owner_of_each_item` checks each owner against the doc line of the
+/// item in `crates/ep9_vm/src/layout.rs` (each export starts its doc with its owner). The two
+/// smi handlers ([`ARRAY_LENGTH_HANDLER`], [`field_in_object_handler`]) are derived from the
+/// IC_LAYOUT items here; the facts the export lacks are [`HAND_FACTS`].
+pub const READ_SET: [(&str, &str); 62] = [
+    ("ARRAY_ELEMENTS", "OBJECT_LAYOUT"),
+    ("ARRAY_LENGTH", "OBJECT_LAYOUT"),
+    ("CONTEXT_LENGTH", "OBJECT_LAYOUT"),
+    ("CONTEXT_SLOTS", "OBJECT_LAYOUT"),
+    ("CX_BUDGET", "VM_LAYOUT"),
+    ("CX_NATIVE_LIMIT", "VM_LAYOUT"),
+    ("CX_OUT_FP", "VM_LAYOUT"),
+    ("CX_OUT_PC", "VM_LAYOUT"),
+    ("CX_RUNTIME_TABLE", "VM_LAYOUT"),
+    ("CX_TABLE", "VM_LAYOUT"),
+    ("ELEMENTS_CAPACITY", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DATA", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DOUBLE_CAPACITY", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DOUBLE_DATA", "OBJECT_LAYOUT"),
+    ("ELEMENTS_DOUBLE_HOLE", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_DICTIONARY", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_HOLEY_DOUBLE", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_HOLEY_ELEMENTS", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_HOLEY_INT32", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_PACKED_DOUBLE", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_PACKED_ELEMENTS", "OBJECT_LAYOUT"),
+    ("ELEMENTS_KIND_PACKED_INT32", "OBJECT_LAYOUT"),
+    ("FEEDBACK_INFO", "IC_LAYOUT"),
+    ("FEEDBACK_KEY", "IC_LAYOUT"),
+    ("FEEDBACK_SLOTS", "IC_LAYOUT"),
+    ("FEEDBACK_SLOT_SIZE", "IC_LAYOUT"),
+    ("FEEDBACK_VALUE", "IC_LAYOUT"),
+    ("FI_FEEDBACK", "VM_LAYOUT"),
+    ("FP_CALLER_FP", "FRAME"),
+    ("FP_CONTEXT", "FRAME"),
+    ("FP_FUNCTION_INFO", "FRAME"),
+    ("FP_RECEIVER", "FRAME"),
+    ("FP_RETURN_PC", "FRAME"),
+    ("FUNCTION_CONTEXT", "OBJECT_LAYOUT"),
+    ("HOLE", "Value encoding"),
+    ("KIND_ARRAY", "OBJECT_LAYOUT"),
+    ("KIND_BYTE", "OBJECT_LAYOUT"),
+    ("KIND_ELEMENTS", "OBJECT_LAYOUT"),
+    ("KIND_ELEMENTS_DICT", "OBJECT_LAYOUT"),
+    ("KIND_ELEMENTS_DOUBLE", "OBJECT_LAYOUT"),
+    ("KIND_OBJECT", "OBJECT_LAYOUT"),
+    ("NATIVE_WORD_OFFSET", "Value encoding"),
+    ("OBJECT_FIELDS", "OBJECT_LAYOUT"),
+    ("POLY_CASES", "IC_LAYOUT"),
+    ("POLY_CASE_SIZE", "IC_LAYOUT"),
+    ("POLY_COUNT", "IC_LAYOUT"),
+    ("POLY_HANDLER", "IC_LAYOUT"),
+    ("RT_CALL_ANY", "VM_LAYOUT"),
+    ("RT_DEOPT", "VM_LAYOUT"),
+    ("RT_GET_KEYED", "VM_LAYOUT"),
+    ("RT_POLL", "VM_LAYOUT"),
+    ("RT_SET_KEYED", "VM_LAYOUT"),
+    ("RT_STACK_OVERFLOW", "VM_LAYOUT"),
+    ("RT_UNWIND", "VM_LAYOUT"),
+    ("SHAPE_ELEMENTS_KIND_SHIFT", "OBJECT_LAYOUT"),
+    ("SHAPE_ID_BYTE", "OBJECT_LAYOUT"),
+    ("SMI_ARRAY_LENGTH", "IC_LAYOUT"),
+    ("SMI_FIELD_IN_OBJECT", "IC_LAYOUT"),
+    ("SMI_KIND_MASK", "IC_LAYOUT"),
+    ("SMI_SHIFT", "IC_LAYOUT"),
+    ("fp_param", "FRAME"),
+    ("fp_register", "FRAME"),
+];
+
+/// The VM facts Spike C bakes into code that `ep9_vm::layout` does not export (MC-w20-7; the
+/// export is frozen in month 5, plan v10 rule 2): (name in the spike, the VM item it copies,
+/// value, owner). The test `hand_facts_equal_the_vm_source` reads each from the VM's own
+/// source text, so a change there fails without a live run. A baked fact that is not in this
+/// list and not in [`READ_SET`] or [`ENCODING_READS`] is a gap: add it here with its test.
+///
+/// - The 4 OBJECT_LAYOUT facts: [`check`] also proves them on live objects.
+/// - `VALUE_UNDEFINED` (IC_LAYOUT): the key half of an IC entry that no site filled is
+///   `undefined` (`ic::state` reads it as Uninitialized; a new FEEDBACK cell keeps the
+///   allocator's `undefined` pre-fill in each key). The shape guard compares the key with it
+///   and takes its "unfilled" exit. Proved by source text only.
+/// - `DUMP_BYTES` (DEOPT_META; M5-P5-ORCH-8, MODES-CHECK-w22 MC-w22-6): the shared exit's
+///   register dump, VM-private: 256 bytes below sp, word n = xn for x0-x30
+///   (`deopt::DUMP_REGS`, 31 words; `RuntimeTable::deopt` reads them as `[u64; DUMP_REGS]`).
+///   The emitter stores it (`emit_a64` `deopt_exit`). Every deopt of the gate reads it.
+pub const HAND_FACTS: [(&str, &str, u64, &str); 6] = [
+    (
+        "SHAPE_CAGE_ALIGN",
+        "shape::CAGE_ALIGN",
+        SHAPE_CAGE_ALIGN,
+        "OBJECT_LAYOUT",
+    ),
+    (
+        "SHAPE_COUNTS",
+        "shape::shf::COUNTS",
+        SHAPE_COUNTS as u64,
+        "OBJECT_LAYOUT",
+    ),
+    (
+        "KIND_SHAPE",
+        "kinds::SHAPE",
+        KIND_SHAPE as u64,
+        "OBJECT_LAYOUT",
+    ),
+    (
+        "KIND_CONTEXT",
+        "kinds::CONTEXT",
+        KIND_CONTEXT as u64,
+        "OBJECT_LAYOUT",
+    ),
+    (
+        "VALUE_UNDEFINED",
+        "ic::state: an unfilled IC key",
+        ep9_value::encoding::VALUE_UNDEFINED,
+        "IC_LAYOUT",
+    ),
+    (
+        "DUMP_BYTES",
+        "deopt::DUMP_REGS: x0-x30, word n = xn",
+        256,
+        "DEOPT_META",
+    ),
+];
+
+/// The `ep9_value::encoding` constants Spike C reads (the emitter, the graph builder, the deopt
+/// metadata and this module; the emitter and the builder bake them into code), owner Value
+/// encoding. They are not `ep9_vm::layout` items, so [`READ_SET`] does not list them (the
+/// M5-P4 W1 reviewer F8). The test `encoding_reads_are_what_spike_c_reads` keeps this list
+/// equal to the names the spike's sources use (`VERSION`, which names the owner's version, is
+/// not a fact).
+pub const ENCODING_READS: [&str; 8] = [
+    "DOUBLE_ENCODE_OFFSET",
+    "NOT_CELL_MASK",
+    "NUMBER_TAG",
+    "PURE_NAN_BITS",
+    "VALUE_FALSE",
+    "VALUE_NULL",
+    "VALUE_TRUE",
+    "VALUE_UNDEFINED",
+];
+
+/// The R17 read set grouped by owner, with the owner's version number (`spike-c read-set`).
+pub fn read_set_lines() -> Vec<String> {
+    let version = |owner: &str| match owner {
+        "OBJECT_LAYOUT" => ep9_vm::versions::OBJECT_LAYOUT_VERSION.to_string(),
+        "IC_LAYOUT" => ep9_vm::versions::IC_LAYOUT_VERSION.to_string(),
+        "FRAME" => ep9_vm::versions::FRAME_VERSION.to_string(),
+        "VM_LAYOUT" => ep9_vm::versions::VM_LAYOUT_VERSION.to_string(),
+        "Value encoding" => ep9_value::encoding::VERSION.to_string(),
+        "DEOPT_META" => ep9_vm::versions::DEOPT_META_VERSION.to_string(),
+        _ => "?".into(),
+    };
+    let mut out = Vec::new();
+    for owner in [
+        "OBJECT_LAYOUT",
+        "IC_LAYOUT",
+        "FRAME",
+        "VM_LAYOUT",
+        "Value encoding",
+        "DEOPT_META",
+    ] {
+        let names: Vec<&str> = READ_SET
+            .iter()
+            .filter(|(_, o)| *o == owner)
+            .map(|(n, _)| *n)
+            .collect();
+        let hand: Vec<String> = HAND_FACTS
+            .iter()
+            .filter(|h| h.3 == owner)
+            .map(|h| format!("{} = {} ({})", h.0, h.2, h.1))
+            .collect();
+        let mut line = format!("{owner} {}: {} exported", version(owner), names.len());
+        if !names.is_empty() {
+            line.push_str(&format!(": {}", names.join(", ")));
+        }
+        if !hand.is_empty() {
+            line.push_str(&format!(
+                "; {} hand facts (not exported, `HAND_FACTS`): {}",
+                hand.len(),
+                hand.join(", ")
+            ));
+        }
+        if owner == "Value encoding" {
+            line.push_str(&format!(
+                "; {} `ep9_value::encoding` constants: {}",
+                ENCODING_READS.len(),
+                ENCODING_READS.join(", ")
+            ));
+        }
+        out.push(line);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -247,9 +817,41 @@ mod tests {
 
     #[test]
     fn layout_export_holds() {
-        let mut s = crate::harness::Session::new(&Config::default()).expect("session");
-        let note = check(&mut s).expect("layout");
+        let note = check(&Config::default()).expect("layout");
         assert!(note.contains("FunctionInfo.feedback"), "{note}");
+        assert!(note.contains("VM_LAYOUT 1"), "{note}");
+        assert!(note.contains("Value encoding 1"), "{note}");
+    }
+
+    /// MC-w22-11: the pin names Value encoding 1, the version of `ep9_value::encoding`, and
+    /// the read set's "Value encoding" owner prints the same number.
+    #[test]
+    fn value_encoding_is_pinned() {
+        assert_eq!(PINNED[4], ("Value encoding", 1));
+        assert_eq!(VM_VERSIONS[4], ep9_value::encoding::VERSION);
+        let mut v = VM_VERSIONS;
+        v[4] = 2;
+        let e = check_versions(v).expect_err("refused");
+        assert!(e.contains("Value encoding is 2"), "{e}");
+        assert!(
+            read_set_lines()
+                .iter()
+                .any(|l| l.starts_with("Value encoding 1: ")),
+            "{:?}",
+            read_set_lines()
+        );
+    }
+
+    /// The pin refuses a VM with any other version.
+    #[test]
+    fn a_bumped_version_is_refused() {
+        assert_eq!(check_versions(VM_VERSIONS), Ok(()));
+        for i in 0..PINNED.len() {
+            let mut v = VM_VERSIONS;
+            v[i] += 1;
+            let e = check_versions(v).expect_err("refused");
+            assert!(e.contains(PINNED[i].0), "{e}");
+        }
     }
 
     /// The values the emitter baked before the switch (the M4-P0 hand copies) are the
@@ -275,6 +877,8 @@ mod tests {
             (16, 24, 16, 0, 8)
         );
         assert_eq!((POLY_CASES, POLY_CASE_SIZE, POLY_COUNT), (8, 16, 4));
+        // M5-P0 (C-18): the handler half, a literal + 8 before, and the ELEMENTS kind.
+        assert_eq!((POLY_HANDLER, KIND_ELEMENTS), (8, 65));
         assert_eq!(
             (
                 SMI_KIND_MASK,
@@ -286,11 +890,385 @@ mod tests {
         );
     }
 
+    /// The script that pre-sets `layoutSiteB` (Codex M5-P3 r2 spk 1): an accessor that keeps
+    /// the probe's store out and returns an empty array born PACKED_DOUBLE at a generalized
+    /// `[]` site, whose elements word is `undefined` (no cell).
+    const PRESET_SITE_B: &str = "\
+function layoutMk() { return []; }\n\
+var layoutE = null;\n\
+for (var i = 0; i < 20; i++) layoutE = layoutMk();\n\
+layoutE[0] = 1.5;\n\
+var layoutEmpty = layoutMk();\n\
+Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return layoutEmpty; }, set: function (v) {} });\n";
+
+    /// A pre-set `layoutSiteB` accessor gives an `Err` from the probe, never a raw read of
+    /// the non-cell elements word.
+    #[test]
+    fn a_preset_layout_site_b_accessor_is_refused() {
+        let mut s = crate::harness::Session::new(&Config::default()).expect("session");
+        s.run(PRESET_SITE_B, "preset.js").result.expect("preset");
+        let e = s
+            .function_value("layoutEmpty")
+            .expect("layoutEmpty")
+            .to_bits();
+        // SAFETY: `e` is a live Array held by a global; the isolate runs nothing while this
+        // reads its kind byte, its shape's kind bits and its elements word.
+        let (k, ek, el) = unsafe { (kind(e), elements_kind(e), word(e, ARRAY_ELEMENTS)) };
+        assert_eq!((k, ek), (KIND_ARRAY, ELEMENTS_KIND_PACKED_DOUBLE));
+        assert!(!is_cell(el), "elements word {el:#x}");
+        let r = check_in(&mut s);
+        assert!(r.as_ref().is_err_and(|e| e.contains("born array")), "{r:?}");
+    }
+
     #[test]
     fn handler_encoding() {
         assert_eq!(field_in_object_handler(24), NUMBER_TAG | (1 | (24 << 4)));
         assert_eq!(int32_of(int32_bits(-5)), Some(-5));
         assert_eq!(int32_of(double_bits(1.5)), None);
         assert!(!is_cell(int32_bits(0)) && !is_cell(HOLE) && !is_cell(0));
+    }
+
+    /// The VM's `layout.rs`: each public item and the owner its doc names first (`VM_LAYOUT.`,
+    /// `FRAME.`, `OBJECT_LAYOUT (5).`, `IC_LAYOUT (MC-w16-4).`, `Value encoding.` ...).
+    const LAYOUT_RS: &str = include_str!("../../../crates/ep9_vm/src/layout.rs");
+
+    /// (name, owner) of each `pub const`, `pub const fn` and `pub fn` of [`LAYOUT_RS`] that has
+    /// a doc block; the owner is the doc block's first words up to `.` or ` (`.
+    fn layout_items() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut doc: Option<String> = None;
+        for l in LAYOUT_RS.lines() {
+            let t = l.trim_start();
+            if let Some(d) = t.strip_prefix("///") {
+                doc.get_or_insert_with(|| d.trim().to_string());
+                continue;
+            }
+            let item = ["pub const fn ", "pub const ", "pub fn "]
+                .iter()
+                .find_map(|p| l.strip_prefix(p));
+            if let (Some(rest), Some(d)) = (item, doc.as_ref()) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                let owner = d
+                    .split(['.', '('])
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                out.push((name, owner));
+            }
+            if !t.starts_with("#[") {
+                doc = None;
+            }
+        }
+        out
+    }
+
+    /// The names of `ep9_vm::layout` items the spike's sources use: `layout::NAME` (not
+    /// `vm_layout::NAME`, which is this module) and the names of a `use ep9_vm::layout::{..}`.
+    fn names_used(src: &str, exports: &std::collections::BTreeSet<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        let ident = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect()
+        };
+        for (at, _) in src.match_indices("layout::") {
+            let before = src[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            let rest = &src[at + "layout::".len()..];
+            if let Some(list) = rest.strip_prefix('{') {
+                let list = &list[..list.find('}').expect("a closed use list")];
+                out.extend(list.split(',').map(|n| ident(n.trim())));
+            } else {
+                out.push(ident(rest));
+            }
+        }
+        out.retain(|n| exports.contains(n));
+        out
+    }
+
+    /// Every `.rs` file under `dir`, recursively.
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("src dir") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                sources(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// R17 read set (WI-SC9 (1)): [`READ_SET`] is exactly the `ep9_vm::layout` items the
+    /// spike's sources read. A new read with no row (or a row nothing reads) fails here.
+    #[test]
+    fn read_set_is_what_spike_c_reads() {
+        let exports: std::collections::BTreeSet<String> =
+            layout_items().into_iter().map(|(n, _)| n).collect();
+        assert!(exports.len() > 60, "{exports:?}");
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut used = std::collections::BTreeSet::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).expect("read");
+            used.extend(names_used(&src, &exports));
+        }
+        let listed: std::collections::BTreeSet<String> =
+            READ_SET.iter().map(|(n, _)| n.to_string()).collect();
+        assert_eq!(listed.len(), READ_SET.len(), "a name twice in READ_SET");
+        assert_eq!(
+            used.difference(&listed).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "read but not in READ_SET"
+        );
+        assert_eq!(
+            listed.difference(&used).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "in READ_SET but not read"
+        );
+    }
+
+    /// Each [`READ_SET`] owner is the owner `layout.rs` names for the item.
+    #[test]
+    fn read_set_names_the_owner_of_each_item() {
+        let items = layout_items();
+        for (name, owner) in READ_SET {
+            let (_, doc) = items
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is not in layout.rs"));
+            assert_eq!(doc, owner, "{name}");
+        }
+        let lines = read_set_lines();
+        assert_eq!(lines.len(), 6, "{lines:?}");
+        assert!(lines[0].starts_with("OBJECT_LAYOUT 5: "), "{}", lines[0]);
+        assert!(lines[0].contains("4 hand facts"), "{}", lines[0]);
+        assert!(
+            lines[1].starts_with("IC_LAYOUT 3: ") && lines[1].contains("; 1 hand facts"),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            lines[5].starts_with("DEOPT_META 0: 0 exported; 1 hand facts")
+                && lines[5].contains("DUMP_BYTES = 256"),
+            "{}",
+            lines[5]
+        );
+        // Every hand fact's owner has a line, so none is left out of the print.
+        for h in HAND_FACTS {
+            assert!(
+                lines.iter().any(|l| l.starts_with(&format!("{} ", h.3))),
+                "{}",
+                h.3
+            );
+        }
+        assert!(
+            lines[4].starts_with("Value encoding 1: 2 exported: HOLE, NATIVE_WORD_OFFSET; 8 `ep9_value::encoding` constants: DOUBLE_ENCODE_OFFSET, "),
+            "{}",
+            lines[4]
+        );
+    }
+
+    /// [`ENCODING_READS`] is exactly the `ep9_value::encoding` constants the spike's sources
+    /// name (a path into `ep9_value::encoding`, or a name of a `use` list of it), `VERSION`
+    /// aside. A new read with no row (or a row nothing reads) fails here.
+    #[test]
+    fn encoding_reads_are_what_spike_c_reads() {
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let ident = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect()
+        };
+        let mut used = std::collections::BTreeSet::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).expect("read");
+            for (at, m) in src.match_indices("ep9_value::encoding::") {
+                let rest = &src[at + m.len()..];
+                if let Some(list) = rest.strip_prefix('{') {
+                    let list = &list[..list.find('}').expect("a closed use list")];
+                    used.extend(list.split(',').map(|n| ident(n.trim())));
+                } else {
+                    used.insert(ident(rest));
+                }
+            }
+        }
+        used.retain(|n| !n.is_empty() && n != "VERSION");
+        let listed: std::collections::BTreeSet<String> =
+            ENCODING_READS.iter().map(|n| n.to_string()).collect();
+        assert_eq!(listed.len(), ENCODING_READS.len(), "a name twice");
+        assert_eq!(used, listed);
+    }
+
+    /// The value after `prefix` in `src` (the first line that has it), up to `;` or `)`.
+    fn value_after<'a>(src: &'a str, prefix: &str) -> &'a str {
+        let l = src
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("no line {prefix}"));
+        l[..l.find([';', ')']).expect("an end")].trim()
+    }
+
+    /// MC-w20-7: the 4 OBJECT_LAYOUT hand facts ([`HAND_FACTS`]) equal the VM items they copy,
+    /// read from the VM's own source text (the items are crate-private, and `layout.rs` is
+    /// frozen until `m5-p5`, plan v10 rule 2). [`check`] proves the same values on live
+    /// objects; this test fails at once on a change of the VM's text, with no isolate. The
+    /// other two have their own tests below.
+    #[test]
+    fn hand_facts_equal_the_vm_source() {
+        const KINDS_RS: &str = include_str!("../../../crates/ep9_vm/src/kinds.rs");
+        const SHAPE_RS: &str = include_str!("../../../crates/ep9_vm/src/shape.rs");
+        let kind = |name: &str| -> u64 {
+            value_after(KINDS_RS, &format!("pub(crate) const {name}: KindId = k("))
+                .parse()
+                .expect("a kind id")
+        };
+        let cage = value_after(SHAPE_RS, "pub(crate) const CAGE_ALIGN: usize =");
+        let (a, b) = cage.split_once("<<").expect("a << b");
+        let cage: u64 = a.trim().parse::<u64>().expect("a") << b.trim().parse::<u32>().expect("b");
+        // `COUNTS` is the `counts` field of the SHAPE fields (`mod shf`), not another module's.
+        let shf = &SHAPE_RS[SHAPE_RS.find("mod shf {").expect("mod shf")..];
+        let shf = &shf[..shf.find('}').expect("end of shf")];
+        let counts: u64 = value_after(shf, "pub const COUNTS: usize =")
+            .parse()
+            .expect("counts");
+        let vm = [cage, counts, kind("SHAPE"), kind("CONTEXT")];
+        for ((name, item, value, owner), v) in HAND_FACTS.iter().zip(vm) {
+            assert_eq!(*value, v, "{name} copies {item}");
+            assert_eq!(*owner, "OBJECT_LAYOUT", "{name}");
+        }
+        assert_eq!(PINNED[0], ("OBJECT_LAYOUT", 5));
+        let owners: Vec<&str> = HAND_FACTS.iter().map(|h| h.3).collect();
+        assert_eq!(
+            owners,
+            [
+                "OBJECT_LAYOUT",
+                "OBJECT_LAYOUT",
+                "OBJECT_LAYOUT",
+                "OBJECT_LAYOUT",
+                "IC_LAYOUT",
+                "DEOPT_META"
+            ]
+        );
+    }
+
+    /// The text of fn `name` in `src`: from `fn name(` to the next line that is `    }`.
+    fn fn_text<'a>(src: &'a str, name: &str) -> &'a str {
+        let at = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("no fn {name}"));
+        let body = &src[at..];
+        &body[..body
+            .find("\n    }\n")
+            .unwrap_or_else(|| panic!("no end of fn {name}"))]
+    }
+
+    /// The unfilled IC key ([`HAND_FACTS`] `VALUE_UNDEFINED`, IC_LAYOUT): the VM reads an entry
+    /// whose key half is `undefined` as Uninitialized (`ic::state`), and a new FEEDBACK cell
+    /// writes no key (the allocator pre-fills `undefined`); the emitter's shape guard compares
+    /// the key with `VALUE_UNDEFINED` and takes its "unfilled" exit.
+    #[test]
+    fn the_unfilled_ic_key_is_the_vm_source() {
+        const IC_RS: &str = include_str!("../../../crates/ep9_vm/src/ic.rs");
+        const FRAME_RS: &str = include_str!("../../../crates/ep9_vm/src/frame.rs");
+        const FEEDBACK_RS: &str = include_str!("../../../crates/ep9_vm/src/feedback.rs");
+        const EMIT_RS: &str = include_str!("emit_a64/mod.rs");
+        let (name, _, value, owner) = HAND_FACTS[4];
+        assert_eq!((name, owner), ("VALUE_UNDEFINED", "IC_LAYOUT"));
+        assert_eq!(value, ep9_vm::Value::UNDEFINED.to_bits());
+        assert!(
+            FRAME_RS.contains("pub const UNDEFINED: u64 = Value::UNDEFINED.to_bits();"),
+            "frame::UNDEFINED"
+        );
+        let state = fn_text(IC_RS, "state");
+        let first = state
+            .find("if key == UNDEFINED {")
+            .expect("ic::state tests the key with UNDEFINED");
+        assert!(
+            state[first..]
+                .trim_start_matches("if key == UNDEFINED {")
+                .trim_start()
+                .starts_with("State::Uninitialized"),
+            "{state}"
+        );
+        assert!(
+            FEEDBACK_RS.contains("Keys stay `undefined` (the")
+                && FEEDBACK_RS.contains("allocator's pre-fill)"),
+            "feedback::make writes no key"
+        );
+        assert!(
+            EMIT_RS.contains("VALUE_UNDEFINED as u32")
+                && EMIT_RS.contains("; cmp x17, undefined ; b.eq =>unfilled"),
+            "the shape guard's unfilled compare"
+        );
+    }
+
+    /// The shared exit's register dump ([`HAND_FACTS`] `DUMP_BYTES`, DEOPT_META; MC-w22-6):
+    /// the VM reads x0-x30 at the dump as `[u64; DUMP_REGS]` (word n = xn), and the emitter's
+    /// `deopt_exit` makes `DUMP_BYTES` (16-aligned, room for the 31 words) below sp, stores
+    /// each xn at `[sp, #8n]` and passes sp as the dump.
+    #[test]
+    fn the_register_dump_is_the_vm_source() {
+        const DEOPT_RS: &str = include_str!("../../../crates/ep9_vm/src/deopt.rs");
+        const NATIVE_RS: &str = include_str!("../../../crates/ep9_vm/src/native.rs");
+        const EMIT_RS: &str = include_str!("emit_a64/mod.rs");
+        let (name, _, bytes, owner) = HAND_FACTS[5];
+        assert_eq!((name, owner), ("DUMP_BYTES", "DEOPT_META"));
+        let regs: u64 = value_after(DEOPT_RS, "pub(crate) const DUMP_REGS: usize =")
+            .parse()
+            .expect("DUMP_REGS");
+        assert_eq!(regs, 31);
+        assert!(
+            NATIVE_RS.contains("[u64; crate::deopt::DUMP_REGS]>(dump as usize)"),
+            "RuntimeTable::deopt reads the dump as [u64; DUMP_REGS]"
+        );
+        let emitted: u64 = value_after(EMIT_RS, "const DUMP_BYTES: u32 =")
+            .parse()
+            .expect("DUMP_BYTES");
+        assert_eq!(emitted, bytes);
+        assert!(bytes % 16 == 0 && 8 * regs <= bytes && bytes < 8 * regs + 16);
+        let exit = fn_text(EMIT_RS, "deopt_exit");
+        assert!(exit.contains("; sub sp, sp, DUMP_BYTES"), "{exit}");
+        assert!(exit.contains("; add x3, sp, #0"), "the dump is sp: {exit}");
+        // Each store of the dump: `str xA, [sp, #o]` or `stp xA, xB, [sp(, #o)]`.
+        let mut at = std::collections::BTreeMap::new();
+        for l in exit.lines() {
+            let Some(rest) = l
+                .trim()
+                .strip_prefix("; stp ")
+                .or_else(|| l.trim().strip_prefix("; str "))
+            else {
+                continue;
+            };
+            let (list, addr) = rest.split_once(", [sp").expect("a store below sp");
+            let off: u64 = match addr.strip_suffix(']').expect("a closed address") {
+                "" => 0,
+                o => o
+                    .strip_prefix(", #")
+                    .expect("an offset")
+                    .parse()
+                    .expect("a number"),
+            };
+            for (i, r) in list.split(", ").enumerate() {
+                let n: u64 = r.trim_start_matches('x').parse().expect("an x register");
+                assert!(at.insert(n, off + 8 * i as u64).is_none(), "x{n} twice");
+            }
+        }
+        assert_eq!(at.len() as u64, regs, "{at:?}");
+        for (n, off) in at {
+            assert_eq!(off, 8 * n, "x{n}");
+        }
     }
 }

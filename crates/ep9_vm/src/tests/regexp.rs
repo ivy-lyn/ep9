@@ -10,8 +10,13 @@
 //! | `a_dead_regexp_frees_its_program` | the weak source frees the table entry of a RegExp that died, and the index is reused (V9-A7) |
 //! | `exec_runs_a_pending_interrupt` | a requested interrupt runs at the exec's poll, then the match goes on |
 //! | `exec_stops_on_termination` | a termination request ends the exec with the uncatchable termination |
-//! | `a_multi_match_loop_widens_once` | the exec loop of a global replace on one Latin-1 subject copies it to UTF-16 once, not once per match; every GC empties the copy (M4-P3 P3-ORCH-13) |
+//! | `termination_stops_a_running_search` | (M5-P3 RX0b) a termination from another thread ends a running exponential search at the next poll inside it (fork patch 0001) |
+//! | `a_multi_match_loop_reads_the_subject_in_place` | (M5-P3 RX0b) the exec loop of a global replace on Latin-1, UTF-16 and rope subjects, before and after minor and major GCs: the engine reads the flat text in place (fork patch 0005; the M4-P3 UTF-16 copy of a Latin-1 subject is gone) |
 //! | `exec_keeps_the_receiver_across_the_flatten` | under GC stress, an exec whose only RegExp root is its argument keeps the program while the rope subject is flattened (fails before the fix in release only) |
+//! | `the_program_cache_compiles_a_pattern_once` | (M5-P2) a seen (source, flags) pair compiles no program; other flags or source compile; a SyntaxError is not cached; the cache keeps 256 programs, the least recently used goes first, and a RegExp whose program left the cache still runs |
+//! | `a_literal_in_a_loop_compiles_once` | (M5-P2) two evaluations of one literal make two objects and one program |
+//! | `initialize_replaces_the_program` | (M5-P2) `Cx::regexp_initialize` (Annex B `compile`) keeps the table index, changes source, flags and program, keeps the legacy bit; a bad pattern or flags change nothing |
+//! | `legacy_state_keeps_no_realm_alive` | (M5-P2) the legacy static state of a realm holds its key weakly: a realm that nothing else holds is collected and its state dropped; a live realm keeps its state and string |
 
 use core::hint::black_box;
 use std::sync::Arc;
@@ -136,57 +141,42 @@ fn global_loop<'s>(cx: &mut Cx<'s>, r: Local<'s, JsObject>, s: Local<'s, JsStrin
 }
 
 #[test]
-fn a_multi_match_loop_widens_once() {
+fn a_multi_match_loop_reads_the_subject_in_place() {
     for stress in [false, true] {
         with_cx(stress, |cx, rt| {
-            let made = || rt.regexp_programs.widenings();
             let r = re(cx, "a", "g");
-            // A Latin-1 subject with 3 matches: 3 execs that match and 1 that does not.
+            // A Latin-1 subject with 3 matches: 3 execs that match and 1 that does not; a
+            // second loop on the same string, and another string.
             let s = cx.new_string("xaxa\u{e9}a").unwrap();
-            let before = made();
             assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
-            if !stress {
-                assert_eq!(made() - before, 1, "one copy for the 4 execs of the loop");
-            }
-            // A second loop on the same string reuses the copy; another string copies again.
-            let before = made();
             assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
             let t = cx.new_string("aa").unwrap();
             assert_eq!(global_loop(cx, r, t), [0, 1]);
-            if !stress {
-                assert_eq!(made() - before, 1, "only the new subject is copied");
-            }
-            // A UTF-16 subject needs no copy.
-            let before = made();
+            // A UTF-16 subject.
             let u = cx.new_string("\u{4e2d}a\u{4e2d}a").unwrap();
             assert_eq!(global_loop(cx, r, u), [1, 3]);
-            assert_eq!(made(), before, "UTF-16 is read in place");
             // A rope is flattened at its first exec; the later execs read the same flat cell.
             let a = object_string(rt, "the quick brown fox jumps over ");
             let b = object_string(rt, "the lazy dog, again and again");
             let rope = crate::string::concat(rt, a, b).expect("a rope");
             let rope: Local<'_> = Local::from_bits(rope);
             let rope = rope.as_string().unwrap();
-            let before = made();
             assert_eq!(global_loop(cx, r, rope), [36, 45, 47, 51, 55, 57]);
-            if !stress {
-                assert_eq!(made() - before, 1, "one copy of the flattened rope");
-            }
-            // Every GC (minor ones too) empties the copy: the next exec copies again.
+            // GCs (minor ones too) between loops change nothing.
             for minor in [false, true] {
-                let before = made();
                 if minor {
                     rt.heap.collect_minor();
                 } else {
                     rt.heap.collect();
                 }
                 assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
-                assert_eq!(
-                    made() - before,
-                    1,
-                    "the GC emptied the copy (minor: {minor})"
-                );
+                assert_eq!(global_loop(cx, r, rope), [36, 45, 47, 51, 55, 57]);
             }
+            // A Latin-1 subject above 0x7f and a case pair that leaves Latin-1 (U+00FF,
+            // U+0178), read in place.
+            let r2 = re(cx, "\\u0178", "gi");
+            let l = cx.new_string("\u{ff}x\u{ff}").unwrap();
+            assert_eq!(global_loop(cx, r2, l), [0, 2]);
         });
     }
 }
@@ -244,7 +234,8 @@ fn create_errors_and_slots() {
         assert_eq!(cx.object_class(r), Some(ObjectClass::RegExp));
         assert_eq!(slot_text(cx, r, slot::SOURCE), "a|b");
         assert_eq!(slot_text(cx, r, slot::FLAGS), "dgimsy");
-        assert_eq!(slot_text(cx, r, slot::RECORD), "159");
+        // 159 = the flag bits, plus 256 = [[LegacyFeaturesEnabled]] (Annex B, M5-P2).
+        assert_eq!(slot_text(cx, r, slot::RECORD), "415");
         assert!(
             ProgramTable::index_of(r.bits()).is_some(),
             "compiled at once"
@@ -436,6 +427,36 @@ fn exec_stops_on_termination() {
     assert!(out.is_err(), "the termination ends the exec: {out:?}");
 }
 
+/// (M5-P3 RX0b, fork patch 0001) A termination requested from another thread while an
+/// exponential search runs (`/(a+)+b/` on 40 a's: about 2^40 backtracks) ends it at the next
+/// poll inside the search, `ep9_regexp::POLL_INTERVAL` steps at most. Before the patch the
+/// engine polled only before the search, so this exec did not end.
+#[test]
+fn termination_stops_a_running_search() {
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let stop = iso.terminate_handle();
+    let started = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&started);
+    let killer = std::thread::spawn(move || {
+        while seen.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        stop.terminate();
+    });
+    let out = iso.with_cx(|cx| {
+        let r = re(cx, "(a+)+b", "");
+        let s = cx.new_string(&"a".repeat(40)).unwrap();
+        started.store(1, Ordering::SeqCst);
+        cx.regexp_exec(r, s, 0).map(|m| m.is_some())
+    });
+    killer.join().unwrap();
+    assert!(
+        out.is_err(),
+        "the termination ends the running exec: {out:?}"
+    );
+}
+
 // ---- the receiver stays live through the exec (Codex M4-P2 R1B, high) ----
 // The caller's only copy of the RegExp is the argument of `regexp_exec`: it is made in a
 // frame below a pad, only its masked bits come back, and the stack is scrubbed before the
@@ -490,4 +511,205 @@ fn exec_keeps_the_receiver_across_the_flatten() {
     }
     iso.collect_garbage();
     iso.verify_heap().unwrap();
+}
+
+// ---- the program cache (M5-P2 REGEXP2) ---------------------------------------------------------
+
+#[test]
+fn the_program_cache_compiles_a_pattern_once() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let t = &rt.regexp_programs;
+            let n0 = t.compiles();
+            let a = re(cx, "a+(b)", "g");
+            let b = re(cx, "a+(b)", "g");
+            assert_eq!(t.compiles() - n0, 1, "the second create is a cache hit");
+            let ia = ProgramTable::index_of(a.bits()).unwrap();
+            let ib = ProgramTable::index_of(b.bits()).unwrap();
+            assert_ne!(ia, ib, "one table entry per object");
+            assert_eq!(exec(cx, a, "xaab", 0), "1-4 3-4");
+            assert_eq!(exec(cx, b, "xaab", 0), "1-4 3-4");
+            // Other flags, other source: compiled.
+            re(cx, "a+(b)", "gi");
+            re(cx, "a+(c)", "g");
+            assert_eq!(t.compiles() - n0, 3);
+            // A rope source with the same text is a hit.
+            let rope = {
+                let (x, y) = (object_string(rt, "a+"), object_string(rt, "(b)"));
+                crate::string::concat(rt, x, y).expect("a rope")
+            };
+            let rope: Local<'_> = Local::from_bits(rope);
+            let (proto, f) = (cx.new_object(), cx.new_string("g").unwrap());
+            cx.regexp_create(proto, rope.as_string().unwrap(), f)
+                .unwrap();
+            assert_eq!(t.compiles() - n0, 3, "a rope with the same text is a hit");
+            // A SyntaxError compiles nothing that stays.
+            let cached = t.cached();
+            for _ in 0..2 {
+                let (p, f) = (cx.new_string("(").unwrap(), cx.new_string("").unwrap());
+                assert!(cx.regexp_create(proto, p, f).is_err());
+                take_error(cx, rt);
+            }
+            assert_eq!(t.cached(), cached, "an error is not cached");
+            // The bound: 256 programs, the least recently used goes first.
+            let first = re(cx, "first", "");
+            for i in 0..300 {
+                re(cx, &format!("p{i}"), "");
+            }
+            assert_eq!(t.cached(), 256);
+            let n1 = t.compiles();
+            re(cx, "p299", "");
+            assert_eq!(t.compiles(), n1, "a recent pattern is still cached");
+            re(cx, "p0", "");
+            assert_eq!(t.compiles(), n1 + 1, "the oldest pattern left the cache");
+            // A RegExp whose program left the cache still holds it (its table entry).
+            assert_eq!(exec(cx, first, "a first", 0), "2-7");
+        });
+    }
+}
+
+#[test]
+fn a_literal_in_a_loop_compiles_once() {
+    for stress in [false, true] {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        let n0 = iso.rt.regexp_programs.compiles();
+        let out = iso.with_cx(|cx| {
+            let arr = cx.run_script(two_literals(), "test.js")?;
+            let arr = arr.as_object().unwrap();
+            let r0 = cx.get(arr, "0")?.as_object().unwrap();
+            let r1 = cx.get(arr, "1")?.as_object().unwrap();
+            let s = cx.new_string("xab").unwrap();
+            let m0 = cx.regexp_exec(r0, s, 0)?.unwrap();
+            let m1 = cx.regexp_exec(r1, s, 0)?.unwrap();
+            Ok((spans(&m0), spans(&m1)))
+        });
+        assert_eq!(out.unwrap(), ("1-3 2-3".into(), "1-3 2-3".into()));
+        assert_eq!(iso.rt.regexp_programs.compiles() - n0, 1, "stress={stress}");
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    }
+}
+
+#[test]
+fn initialize_replaces_the_program() {
+    with_cx(true, |cx, rt| {
+        let r = re(cx, "a", "g");
+        let i = ProgramTable::index_of(r.bits()).unwrap();
+        let (p, f) = (cx.new_string("b+").unwrap(), cx.new_string("i").unwrap());
+        cx.regexp_initialize(r, p, f).unwrap();
+        assert_eq!(ProgramTable::index_of(r.bits()), Some(i), "the same entry");
+        assert_eq!(slot_text(cx, r, slot::SOURCE), "b+");
+        assert_eq!(slot_text(cx, r, slot::FLAGS), "i");
+        // 4 = i, plus 256 = [[LegacyFeaturesEnabled]] (kept).
+        assert_eq!(slot_text(cx, r, slot::RECORD), "260");
+        assert_eq!(exec(cx, r, "aBB", 0), "1-3");
+        // A bad pattern or bad flags: the SyntaxError, and nothing changes.
+        for (p, f) in [("(", ""), ("c", "gg")] {
+            let (p, f) = (cx.new_string(p).unwrap(), cx.new_string(f).unwrap());
+            assert!(cx.regexp_initialize(r, p, f).is_err());
+            assert!(take_error(cx, rt).starts_with("SyntaxError: "));
+            assert_eq!(slot_text(cx, r, slot::SOURCE), "b+");
+            assert_eq!(slot_text(cx, r, slot::FLAGS), "i");
+            assert_eq!(exec(cx, r, "aBB", 0), "1-3");
+        }
+        // Not a RegExp: a TypeError.
+        let o = cx.new_object();
+        let (p, f) = (cx.new_string("a").unwrap(), cx.new_string("").unwrap());
+        assert!(cx.regexp_initialize(o, p, f).is_err());
+        assert_eq!(
+            take_error(cx, rt),
+            "TypeError: object is not a RegExp object"
+        );
+        // A literal not yet compiled gets its first table entry.
+        let arr = cx.run_script(two_literals(), "test.js").unwrap();
+        let arr = arr.as_object().unwrap();
+        let lit = cx.get(arr, "0").unwrap().as_object().unwrap();
+        assert!(ProgramTable::index_of(lit.bits()).is_none());
+        let (p, f) = (cx.new_string("y").unwrap(), cx.new_string("").unwrap());
+        cx.regexp_initialize(lit, p, f).unwrap();
+        assert!(ProgramTable::index_of(lit.bits()).is_some());
+        assert_eq!(exec(cx, lit, "xy", 0), "1-2");
+    });
+}
+
+// ---- the legacy static state holds its realm weakly (M5-P2 REGEXP2) ----------------------------
+
+/// A full collection after a stack scrub (rule 35: the scrub runs in the test's own frame,
+/// before and after; `tests/weakref.rs` `collect`).
+#[inline(always)]
+fn collect(iso: &Isolate) {
+    scrub_stack();
+    gc_now(iso);
+    scrub_stack();
+}
+
+/// A full collection, out of line, so that its frames lie on the zeros of the caller's scrub.
+#[inline(never)]
+fn gc_now(iso: &Isolate) {
+    iso.rt.heap.collect();
+}
+
+/// True if the cell of `h` is alive. Read below a pad.
+#[inline(never)]
+fn alive(rt: &Runtime, h: ep9_heap::WeakHandle) -> bool {
+    below_a_pad(|| black_box(rt.heap.weak(h)).is_some()).0
+}
+
+/// Makes a realm that nothing holds, with legacy state keyed by its global object (an
+/// isolate with no RegExp builtins has no `%RegExp%`); returns weak handles to the global and
+/// to the state's string. Out of line, below a pad.
+#[inline(never)]
+fn lose_a_realm_with_legacy_state(
+    iso: &mut Isolate,
+) -> (ep9_heap::WeakHandle, ep9_heap::WeakHandle) {
+    below_a_pad(|| {
+        iso.create_realm(|cx, global| {
+            let rt = cx.inner().rt();
+            let s = object_string(rt, "lost input");
+            rt.regexp_programs.set_legacy_input_of(global.bits(), s);
+            let w = rt.heap.new_weak(crate::runtime::val(global.bits()));
+            Ok((w, rt.heap.new_weak(crate::runtime::val(s))))
+        })
+        .unwrap()
+    })
+    .0
+}
+
+#[test]
+fn legacy_state_keeps_no_realm_alive() {
+    for stress in [false, true] {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        // The first realm's state: kept with its string.
+        let kept = below_a_pad(|| {
+            let rt = &iso.rt;
+            let s = object_string(rt, "kept input");
+            rt.regexp_programs.set_legacy_input_of(rt.global(), s);
+            rt.heap.new_weak(crate::runtime::val(s))
+        })
+        .0;
+        let (global, string) = lose_a_realm_with_legacy_state(&mut iso);
+        assert_eq!(iso.rt.regexp_programs.legacy_realms(), 2);
+        collect(&iso);
+        assert!(!alive(&iso.rt, global), "stress={stress}: the realm died");
+        assert_eq!(
+            iso.rt.regexp_programs.legacy_realms(),
+            1,
+            "stress={stress}: its state is dropped"
+        );
+        assert!(
+            alive(&iso.rt, kept),
+            "stress={stress}: the live realm's string"
+        );
+        // The dropped state's string was traced in that GC; nothing holds it now.
+        collect(&iso);
+        assert!(
+            !alive(&iso.rt, string),
+            "stress={stress}: the lost string died"
+        );
+        assert!(alive(&iso.rt, kept));
+        for h in [global, string, kept] {
+            iso.rt.heap.drop_weak(h);
+        }
+        iso.verify_heap().unwrap();
+    }
 }

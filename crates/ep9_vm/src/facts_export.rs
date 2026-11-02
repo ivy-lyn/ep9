@@ -65,7 +65,7 @@
 //!   Literal slot of `CreateRegExpLiteral` (`regexp::create_literal` writes no slot).
 //!   InstanceOf (14) gets a record only once its slot left the start state (undefined, int32
 //!   0): `instance_ic.rs` (M4-P3 IC2) records a run only when it gives a result (a rhs that
-//!   throws records nothing), so a slot in its start state has no rhs to name.
+//!   throws records nothing), so a slot in its start state has no rhs to name. `ics_only`: [`keep`].
 //! - **Implicit bits (H16-Q2 (1); MODES-D10, F-R9).** T0 writes no bit for an int32 pair with
 //!   an int32 result at a BinaryOp site (also an int32 operand of a unary site), an int32 pair
 //!   at a CompareOp site, and a present int32 index of an Array at `GetKeyedProperty`. The
@@ -95,9 +95,9 @@
 //!   | `LiteralFacts::count` | **cold-path literal results**: a lower bound of the allocations | `literal_site.rs` (`miss`) |
 //!
 //!   All saturate at `i32::MAX`. A sampled count is a share of the budget units, not of the
-//!   executions: the windows come at a fixed period (`BUDGET`), so a call pattern with that
-//!   period can keep a site out of every window (`tests::facts_export`, MC-w13-17; the
-//!   jitter of the window start is month 5).
+//!   executions. A poll resets the budget to `BUDGET` plus a jitter (M5-P1 PROFILE5,
+//!   `profile::budget_after_poll`), so a call pattern whose period divides `BUDGET` no
+//!   longer keeps a site out of every window (MC-w13-17; `ep9_builtins` `tests/facts_export.rs`).
 //! - **Call keys are never written out (F-R8, MC-w13-8).** A `Call*` site keys the native word
 //!   of the callee's FunctionInfo (`profile.rs`), a `Construct*` site the constructor cell
 //!   (weak, `construct_ic.rs`). The exporter branches on the site opcode and maps the
@@ -126,11 +126,11 @@ use ep9_facts::{
     PropertyCase, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TargetFacts, TypeSet,
     UnitHash,
 };
-use ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
 
 use crate::Isolate;
 use crate::atoms::Atom;
 use crate::builtins::{self, IntrinsicId};
+use crate::external_ref::ExternalRef;
 use crate::feedback;
 use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, State, hk, smi};
@@ -210,7 +210,7 @@ pub fn export_facts(
         debug_assert_eq!(feedback::slot_count(v) as usize, kinds.len());
         for (i, (&k, u)) in kinds.iter().zip(&uses).enumerate() {
             let i = i as u32;
-            let Some(facts) = ex.slot(&units, v, i, k, u) else {
+            let Some(facts) = ex.slot(&units, v, i, k, u).filter(|_| keep(rt, k, u)) else {
                 continue;
             };
             let r = snapshot.insert(f as u32, i, facts);
@@ -340,10 +340,10 @@ fn known<T>(bits: Option<T>) -> Option<T> {
 }
 
 /// The address of the FunctionInfo that the native word `w` names, if `w` is a native word
-/// (`frame::native`: an address below 2^49 plus the double offset). Not a pointer read.
+/// (`ExternalRef::addr`, the H25 read of the FEEDBACK Call key half: an address below 2^49
+/// plus the offset). Not a pointer read.
 fn native_address(w: u64) -> Option<usize> {
-    let addr = w.checked_sub(DOUBLE_ENCODE_OFFSET)?;
-    (addr < 1 << 49).then_some(addr as usize)
+    ExternalRef::<FunctionInfo>::from_word(w).addr()
 }
 
 /// One export: the runtime, the content hashes of the units made so far, by unit index, the
@@ -587,10 +587,18 @@ impl<'a> Exporter<'a> {
     }
 
     /// A Literal slot (`literal_site.rs`): the count of the **cold-path results** (F-R7) and
-    /// the shape of the last one (weak key; none if it died or has no description). v0 has no
-    /// elements kinds (H18), so `elements` is none.
+    /// the shape of the last one (weak key; none if it died or has no description). At an
+    /// array-literal site that ran cold, the value half is its ALLOC_SITE handler (IC_LAYOUT
+    /// 3, V10-D6; M5-P2 ELEM2): the count is the handler's, and `elements` is the site's
+    /// elements kind, the kind its next arrays are born with (the join of every kind its
+    /// arrays reached, so at least the last result's; through the one map
+    /// `elements::to_fact`, MC-w18-4). An object-literal site (and an array site before its
+    /// first cold run) has none.
     fn literal(&mut self, v: u64, i: u32) -> Option<LiteralFacts> {
-        let count = int_value(v, i)?;
+        let (count, elements) = match crate::literal_site::site_of(feedback::value(v, i)) {
+            Some((k, count)) => (count, crate::elements::to_fact(k)),
+            None => (int_value(v, i)?, None),
+        };
         let key = feedback::key(v, i);
         let shape = if is_cell_bits(key) && shape::is_shape(key) {
             self.shape_desc(key)
@@ -600,7 +608,7 @@ impl<'a> Exporter<'a> {
         Some(LiteralFacts {
             count,
             shape,
-            elements: None,
+            elements,
         })
     }
 
@@ -971,7 +979,7 @@ fn key_index(s: u64, loc: i32) -> Option<u16> {
 
 /// The prototype-chain steps from the prototype `p` of a receiver (1 = `p` itself) to
 /// `holder`, or, with `None`, the number of prototypes up to null. `None` if the chain does
-/// not reach the holder or is longer than 255.
+/// not reach the holder, is longer than 255 or passes a proxy (a trap answers its prototype).
 fn chain_depth(mut p: u64, holder: Option<u64>) -> Option<u8> {
     let mut depth: u8 = 0;
     while p != NULL {
@@ -979,10 +987,50 @@ fn chain_depth(mut p: u64, holder: Option<u64>) -> Option<u8> {
         if Some(p) == holder {
             return Some(depth);
         }
-        p = object::proto_of(p);
+        p = (!crate::proxy::is_proxy(p)).then(|| object::proto_of(p))?;
     }
     match holder {
         None => Some(depth),
         Some(_) => None,
     }
+}
+
+/// False if an export leaves out slot kind `k` (used as `u`) (MODES-CHECK-w21 MC-w21-1,
+/// orchestrator M5-P3-ORCH-14 (a)): the isolate's feedback mode is `ics_only` (MODES-D11; the
+/// jitless preset's default) and the slot's facts come only from the records of `profile.rs`
+/// (its IC_LAYOUT 3 slot table), which such an isolate never runs. Such a slot keeps its first
+/// state (undefined, int32 0), which would export as a record of "int32 or never ran" (a
+/// BinaryOp or CompareOp site with only the implicit bit, F-R9). So an `ics_only` export has
+/// the IC and object-model kinds (named and global sites, the Call slot of a `Construct*` site
+/// or one both share, InstanceOf, Literal, CloneObject) and no record kind: no Call slot of a
+/// `Call*` site, keyed kind (its facts are the record bits and a key half that only StoreKeyed
+/// keeps live, MC-w15-1), BinaryOp, CompareOp, TypeOf, ForIn, JumpLoop or CreateClosure. A
+/// `full` export keeps every kind. The header and the format are the same. No wildcard: a new
+/// slot kind must say which it is.
+fn keep(rt: &Runtime, k: FeedbackSlotKind, u: &SlotUse) -> bool {
+    use FeedbackSlotKind as K;
+    let record_only = match k {
+        K::Call => u.call && !u.construct,
+        K::LoadKeyed
+        | K::StoreKeyed
+        | K::DefineKeyedOwn
+        | K::HasKeyed
+        | K::StoreInArrayLiteral
+        | K::BinaryOp
+        | K::CompareOp
+        | K::TypeOf
+        | K::ForIn
+        | K::JumpLoop
+        | K::CreateClosure => true,
+        K::LoadNamed
+        | K::StoreNamed
+        | K::DefineNamedOwn
+        | K::LoadGlobal
+        | K::LoadGlobalInsideTypeof
+        | K::StoreGlobal
+        | K::InstanceOf
+        | K::Literal
+        | K::CloneObject => false,
+    };
+    !record_only || rt.exec.get().feedback_mode() != crate::exec::Feedback::ICS_ONLY
 }

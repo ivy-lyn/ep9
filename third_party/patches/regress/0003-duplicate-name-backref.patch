@@ -1,0 +1,324 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] Match the participating group in a backreference to a
+ shared name
+
+ES2025 lets capture groups in different alternatives share a name
+(/(?:(?<x>a)|(?<x>b))\k<x>/). \k<x> must match the text of the one
+group that participated, or the empty string if none did. The parser
+lowered it to an alternation of backreferences, one per group. A
+backreference to a group that did not participate matches the empty
+string, so the first arm won: /(?:(?<x>a)|(?<x>b))\k<x>/ matched only
+"b" in "bb" (test262 built-ins/RegExp/named-groups/
+duplicate-names-exec.js, -match.js, -test.js).
+
+A new IR node and instruction, BackRefAny, holds the list of groups and
+matches the first one that has a capture (both engines).
+
+Also: without the u or v flag, a pattern with a group name parses with
+[+NamedCaptureGroups], and there k is not an identity escape (Annex B
+SourceCharacterIdentityEscape), so [\k] is a SyntaxError, as in V8.
+
+Test: tests/named_backrefs.rs.
+---
+ src/classicalbacktrack.rs | 16 +++++++++++
+ src/emit.rs               | 15 ++++++++++
+ src/insn.rs               |  7 +++++
+ src/ir.rs                 | 14 ++++++++++
+ src/optimizer.rs          |  5 +++-
+ src/parse.rs              | 29 ++++++++++----------
+ src/pikevm.rs             | 14 ++++++++++
+ src/startpredicate.rs     |  2 +-
+ tests/named_backrefs.rs   | 58 +++++++++++++++++++++++++++++++++++++++
+ 9 files changed, 144 insertions(+), 16 deletions(-)
+ create mode 100644 tests/named_backrefs.rs
+
+diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
+index b40a467..d262cd4 100644
+--- a/src/classicalbacktrack.rs
++++ b/src/classicalbacktrack.rs
+@@ -1076,6 +1076,22 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+                         next_or_bt!(matched)
+                     }
+ 
++                    Insn::BackRefAny { groups, icase } => {
++                        // The one group that participated, or none: then the backreference
++                        // matches the empty string.
++                        let range = groups
++                            .iter()
++                            .find_map(|&g| self.s.groups.iat(g as usize).as_range());
++                        let matched = match range {
++                            Some(orig_range) if *icase => {
++                                matchers::backref_icase(input, dir, orig_range, &mut pos)
++                            }
++                            Some(orig_range) => matchers::backref(input, dir, orig_range, &mut pos),
++                            None => true,
++                        };
++                        next_or_bt!(matched)
++                    }
++
+                     &Insn::Lookahead {
+                         negate,
+                         start_group,
+diff --git a/src/emit.rs b/src/emit.rs
+index 04577e5..0cb96b8 100644
+--- a/src/emit.rs
++++ b/src/emit.rs
+@@ -403,6 +403,21 @@ impl Emitter {
+                         })
+                     }
+ 
++                    Node::BackRefAny { groups, icase } => {
++                        // -1 because \1 matches the first capture group, which has index 0.
++                        let groups = groups
++                            .iter()
++                            .map(|&group| {
++                                debug_assert!(group >= 1, "Group should not be zero");
++                                (group - 1) as CaptureGroupID
++                            })
++                            .collect();
++                        self.emit_insn(Insn::BackRefAny {
++                            groups,
++                            icase: *icase,
++                        })
++                    }
++
+                     Node::ByteSet(bytes) => self.emit_byte_set_insn(bytes),
+ 
+                     Node::CharSet(chars) => {
+diff --git a/src/insn.rs b/src/insn.rs
+index 003e1ee..947faae 100644
+--- a/src/insn.rs
++++ b/src/insn.rs
+@@ -96,6 +96,13 @@ pub enum Insn {
+         icase: bool,
+     },
+ 
++    /// Perform a backreference match to the first of the groups that has matched, or match
++    /// the empty string if none has (a name shared by several groups).
++    BackRefAny {
++        groups: Box<[CaptureGroupID]>,
++        icase: bool,
++    },
++
+     /// Match the next character against the bracket contents, stored at the given index in the CompiledRegex.
+     Bracket(usize),
+ 
+diff --git a/src/ir.rs b/src/ir.rs
+index ae0f5df..efcc1e9 100644
+--- a/src/ir.rs
++++ b/src/ir.rs
+@@ -87,6 +87,11 @@ pub enum Node {
+     /// are emitted through alternations of backreferences.
+     BackRef { group: u32, icase: bool },
+ 
++    /// A backreference to a name that several capture groups share (in different
++    /// alternatives). Indices are 1-based. It matches the text of the one group of the list
++    /// that participated (at most one can), or the empty string if none did.
++    BackRefAny { groups: Box<[u32]>, icase: bool },
++
+     /// A bracket.
+     Bracket(BracketContents),
+ 
+@@ -246,6 +251,10 @@ impl Node {
+                 unicode_icase,
+             },
+             &Node::BackRef { group, icase } => Node::BackRef { group, icase },
++            Node::BackRefAny { groups, icase } => Node::BackRefAny {
++                groups: groups.clone(),
++                icase: *icase,
++            },
+             Node::Bracket(bc) => Node::Bracket(bc.clone()),
+             // Do not reverse into lookarounds, they already have the right sense.
+             Node::LookaroundAssertion {
+@@ -323,6 +332,7 @@ where
+             | Node::StringSet { .. }
+             | Node::WordBoundary { .. }
+             | Node::BackRef { .. }
++            | Node::BackRefAny { .. }
+             | Node::Bracket { .. }
+             | Node::MatchAny
+             | Node::MatchAnyExceptLineTerminator
+@@ -397,6 +407,7 @@ where
+             | Node::Anchor { .. }
+             | Node::WordBoundary { .. }
+             | Node::BackRef { .. }
++            | Node::BackRefAny { .. }
+             | Node::Bracket { .. } => {}
+             Node::Cat(nodes) => {
+                 nodes.iter_mut().for_each(|node| self.process(node));
+@@ -574,6 +585,9 @@ fn display_node(node: &Node, depth: usize, f: &mut fmt::Formatter) -> fmt::Resul
+         &Node::BackRef { group, .. } => {
+             writeln!(f, "BackRef {:?} ", group)?;
+         }
++        Node::BackRefAny { groups, .. } => {
++            writeln!(f, "BackRefAny {:?} ", groups)?;
++        }
+         Node::Bracket(contents) => {
+             writeln!(f, "Bracket {:?}", contents)?;
+         }
+diff --git a/src/optimizer.rs b/src/optimizer.rs
+index ced6a86..b374dff 100644
+--- a/src/optimizer.rs
++++ b/src/optimizer.rs
+@@ -180,7 +180,10 @@ fn remove_empties(n: &mut Node, _w: &Walk) -> PassAction {
+             // Capture groups could in principle be optimized if they only match empties.
+             PassAction::Keep
+         }
+-        Node::WordBoundary { .. } | Node::BackRef { .. } | Node::Bracket { .. } => PassAction::Keep,
++        Node::WordBoundary { .. }
++        | Node::BackRef { .. }
++        | Node::BackRefAny { .. }
++        | Node::Bracket { .. } => PassAction::Keep,
+         Node::LookaroundAssertion {
+             negate, contents, ..
+         } => {
+diff --git a/src/parse.rs b/src/parse.rs
+index 40e1701..3e9cdc7 100644
+--- a/src/parse.rs
++++ b/src/parse.rs
+@@ -1010,6 +1010,12 @@ where
+                             PropertyEscapeKind::StringSet(_) => error("Invalid property escape"),
+                         }
+                     }
++                    // ClassEscape :: CharacterEscape :: IdentityEscape: with a group name in
++                    // the pattern ([+NamedCaptureGroups]) `k` is not a
++                    // SourceCharacterIdentityEscape (B.1.2), so `[\k]` is an error.
++                    'k' if !self.flags.unicode && !self.named_group_indices.is_empty() => {
++                        error("Invalid escape")
++                    }
+                     // ClassEscape :: CharacterEscape
+                     _ => {
+                         let cc = self.consume_character_escape()?;
+@@ -1714,20 +1720,15 @@ where
+                         }
+                     }
+                     _ => {
+-                        // Unusual case of multiple groups sharing a name: the backref should try each in turn.
+-                        // Lower to alternations of backreferences. Reverse to keep it right-associative: a | (b | (c | d))...
+-                        let icase = self.flags.icase;
+-                        let backrefs =
+-                            group_indices
+-                                .iter()
+-                                .rev()
+-                                .map(|group_index| ir::Node::BackRef {
+-                                    group: *group_index + 1,
+-                                    icase,
+-                                });
+-                        backrefs
+-                            .reduce(|right, left| ir::Node::Alt(Box::new(left), Box::new(right)))
+-                            .unwrap()
++                        // Unusual case of multiple groups sharing a name (in different
++                        // alternatives). The backref matches the one group that participated,
++                        // or the empty string if none did (BackreferenceMatcher). An
++                        // alternation of backrefs would be wrong: a backref to a group that
++                        // did not participate matches the empty string, so its arm would win.
++                        ir::Node::BackRefAny {
++                            groups: group_indices.iter().map(|&g| g + 1).collect(),
++                            icase: self.flags.icase,
++                        }
+                     }
+                 };
+                 Ok(node)
+diff --git a/src/pikevm.rs b/src/pikevm.rs
+index 8f74dbf..de4f65f 100644
+--- a/src/pikevm.rs
++++ b/src/pikevm.rs
+@@ -243,6 +243,20 @@ fn try_match_state<Input: InputIndexer, Dir: Direction>(
+             nextinsn_or_fail!(matched)
+         }
+ 
++        Insn::BackRefAny { groups, icase } => {
++            // The one group that participated, or none: then the backreference matches the
++            // empty string.
++            let range = groups.iter().find_map(|&g| s.groups[g as usize].as_range());
++            let matched = match range {
++                Some(orig_range) if *icase => {
++                    matchers::backref_icase(input, dir, orig_range, &mut s.pos)
++                }
++                Some(orig_range) => matchers::backref(input, dir, orig_range, &mut s.pos),
++                None => true,
++            };
++            nextinsn_or_fail!(matched)
++        }
++
+         &Insn::Lookahead {
+             negate,
+             start_group: _,
+diff --git a/src/startpredicate.rs b/src/startpredicate.rs
+index 21cd5e4..c1ab7fa 100644
+--- a/src/startpredicate.rs
++++ b/src/startpredicate.rs
+@@ -125,7 +125,7 @@ fn compute_start_predicate(n: &Node) -> Option<AbstractStartPredicate> {
+ 
+         Node::Empty => arbitrary,
+         Node::Goal => arbitrary,
+-        Node::BackRef { .. } => arbitrary,
++        Node::BackRef { .. } | Node::BackRefAny { .. } => arbitrary,
+ 
+         Node::CharSet(chars) => {
+             // Pick the first bytes out.
+diff --git a/tests/named_backrefs.rs b/tests/named_backrefs.rs
+new file mode 100644
+index 0000000..a5e62eb
+--- /dev/null
++++ b/tests/named_backrefs.rs
+@@ -0,0 +1,58 @@
++//! Backreferences to a name that several capture groups share (ES2025 duplicate named
++//! groups), and `\k` in a class when the pattern has group names. The expected results are
++//! those of test262 `built-ins/RegExp/named-groups/duplicate-names-exec.js` and of node v24.
++
++use regress::Regex;
++
++/// The groups of the first match of `pattern` in `text` (`None` for no match), as strings.
++fn exec(pattern: &str, text: &str) -> Option<Vec<Option<String>>> {
++    let re = Regex::new(pattern).unwrap();
++    let m = re.find(text)?;
++    Some(m.groups().map(|g| g.map(|r| text[r].to_string())).collect())
++}
++
++fn groups(v: &[Option<&str>]) -> Option<Vec<Option<String>>> {
++    Some(v.iter().map(|g| g.map(str::to_string)).collect())
++}
++
++#[test]
++fn a_shared_name_refers_to_the_group_that_matched() {
++    let p = r"(?:(?<x>a)|(?<x>b))\k<x>";
++    assert_eq!(exec(p, "aa"), groups(&[Some("aa"), Some("a"), None]));
++    // An alternation of backrefs would match "b" with an empty \k<x> (group 1 unset).
++    assert_eq!(exec(p, "bb"), groups(&[Some("bb"), None, Some("b")]));
++    assert_eq!(exec(p, "abab"), None);
++    assert_eq!(exec(p, "cdef"), None);
++
++    let p = r"(?:(?:(?<x>a)|(?<x>b))\k<x>){2}";
++    assert_eq!(exec(p, "aabb"), groups(&[Some("aabb"), None, Some("b")]));
++    assert_eq!(exec(p, "abab"), None);
++
++    let p = r"^(?:(?<a>x)|(?<a>y)|z)\k<a>$";
++    assert_eq!(exec(p, "xx"), groups(&[Some("xx"), Some("x"), None]));
++    assert_eq!(exec(p, "z"), groups(&[Some("z"), None, None]));
++    assert_eq!(exec(p, "zz"), None);
++
++    let p = r"^(?:(?<a>x)|(?<a>y)|z){2}\k<a>$";
++    assert_eq!(exec(p, "xz"), groups(&[Some("xz"), None, None]));
++    assert_eq!(exec(p, "yz"), groups(&[Some("yz"), None, None]));
++    assert_eq!(exec(p, "xzx"), None);
++    assert_eq!(exec(p, "yzy"), None);
++
++    // Backwards (in a lookbehind) and case-insensitive.
++    let re = Regex::with_flags(r"(?<=\k<n>(?:(?<n>a)|(?<n>b)))c", "").unwrap();
++    assert_eq!(re.find("bbc").map(|m| m.range()), Some(2..3));
++    assert_eq!(re.find("abc").map(|m| m.range()), None);
++    let re = Regex::with_flags(r"(?:(?<n>a)|(?<n>b))\k<n>", "i").unwrap();
++    assert_eq!(re.find("bB").map(|m| m.range()), Some(0..2));
++}
++
++#[test]
++fn k_in_a_class_with_group_names_is_an_error() {
++    for p in [r"[\k<a>](?<a>x)", r"[\k](?<a>x)", r"(?<a>x)[\k<a>]"] {
++        assert!(Regex::new(p).is_err(), "{p}");
++    }
++    // Without a group name, \k in a class is the identity escape k.
++    let re = Regex::new(r"[\k<a>]").unwrap();
++    assert_eq!(re.find("<k").map(|m| m.range()), Some(0..1));
++}

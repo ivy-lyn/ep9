@@ -1,0 +1,349 @@
+{
+ "schema": "ep9-exit2/v1",
+ "source_schema": "ep9-cross/v1",
+ "commit": "0123456789abcdef0123456789abcdef01234567",
+ "dirty": null,
+ "dirty_paths": null,
+ "runner_commit": "0123456789abcdef0123456789abcdef01234567",
+ "engine_build": null,
+ "started": "2026-10-26T00:00:00.000Z",
+ "host": {
+  "id": "test-gate",
+  "gate_host": true,
+  "cpu": "test cpu",
+  "platform": "linux-x64",
+  "transparent_hugepage": "madvise"
+ },
+ "provisional": false,
+ "readings": [
+  {
+   "id": "octane7-vs-qjs",
+   "label": "Octane-7 geomean vs QuickJS",
+   "comparator": "qjs",
+   "threshold": 1,
+   "workloads": [
+    "octane-richards",
+    "octane-deltablue",
+    "octane-crypto",
+    "octane-raytrace",
+    "octane-earley-boyer",
+    "octane-splay",
+    "octane-navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.1998971318341591,
+    "interval": [
+     1.196456192946545,
+     1.2033135737472112
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.28577494200446074,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.1998971318341591,
+     1.1981581358626376,
+     1.196456192946545,
+     1.2033135737472112,
+     1.20158714119525,
+     1.1998971318341591,
+     1.1981581358626376,
+     1.196456192946545,
+     1.2033135737472112,
+     1.20158714119525
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.1950068260488411,
+    "interval": [
+     1.1916547942400024,
+     1.1983439937520746
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.2798875712608982,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.1950068260488411,
+     1.1933196724207893,
+     1.1916547942400024,
+     1.1983439937520746,
+     1.1966643480026193,
+     1.1950068260488411,
+     1.1933196724207893,
+     1.1916547942400024,
+     1.1983439937520746,
+     1.1966643480026193
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.2,
+    "gross": 1.1951102712260981
+   },
+   "kernels": [
+    {
+     "workload": "octane-richards",
+     "metric": "net",
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-deltablue",
+     "metric": "net",
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-crypto",
+     "metric": "net",
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-raytrace",
+     "metric": "net",
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-earley-boyer",
+     "metric": "net",
+     "median": 1.2,
+     "interval": [
+      1.1760000000000002,
+      1.224
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-splay",
+     "metric": "net",
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.2240000000000002
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-navier-stokes",
+     "metric": "net",
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.2240000000000002
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "v8v7-7-vs-node-jitless",
+   "label": "v8-v7 7-kernel geomean vs node --jitless",
+   "comparator": "node-jitless",
+   "threshold": 0.75,
+   "workloads": [
+    "richards",
+    "deltablue",
+    "crypto",
+    "raytrace",
+    "earley-boyer",
+    "splay",
+    "navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "marginal",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 0.7499357073963493,
+    "interval": [
+     0.7477851205915906,
+     0.752070983592007
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.285774942004446,
+    "void": false,
+    "threshold": 0.75,
+    "side": "marginal",
+    "series": [
+     0.7477851205915906,
+     0.752070983592007,
+     0.7509919632470312,
+     0.7499357073963493,
+     0.7488488349141487,
+     0.7477851205915906,
+     0.752070983592007,
+     0.7509919632470312,
+     0.7499357073963493,
+     0.7488488349141487
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 0.7573110569662753,
+    "interval": [
+     0.7552308244012398,
+     0.7593892691679538
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.27453170330664234,
+    "void": false,
+    "threshold": 0.75,
+    "side": "above",
+    "series": [
+     0.7552308244012398,
+     0.7593892691679538,
+     0.7583486602999661,
+     0.7573110569662753,
+     0.756269601355947,
+     0.7552308244012398,
+     0.7593892691679538,
+     0.7583486602999661,
+     0.7573110569662753,
+     0.756269601355947
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 0.75,
+    "gross": 0.757378413696961
+   },
+   "kernels": [
+    {
+     "workload": "richards",
+     "metric": "net",
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "deltablue",
+     "metric": "net",
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "crypto",
+     "metric": "net",
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "raytrace",
+     "metric": "net",
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "earley-boyer",
+     "metric": "net",
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "splay",
+     "metric": "net",
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "navier-stokes",
+     "metric": "net",
+     "median": 0.75,
+     "interval": [
+      0.7350000000000001,
+      0.7649999999999999
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ]
+  }
+ ],
+ "pass": false
+}

@@ -4,7 +4,9 @@
 //! prototype case, the flush at every GC, and `KEY_STRING` prototype cases.
 //!
 //! The harness is `tests::ic` (`T`, one site per function, every dispatch expansion, with and
-//! without GC stress, eager feedback).
+//! without GC stress, eager feedback). The objects that make a site megamorphic are rooted
+//! ([`T::keep_all`]) up to the last assertion that needs the site megamorphic: case keys are
+//! weak, and a shape that dies frees its case.
 
 use super::ic::{
     MASK, SLOT, Site, T, below_a_pad, collect_after_a_pad, each, int, key, object_prototype,
@@ -32,7 +34,8 @@ fn entry(t: &T, op: Op, o: u64, name: &str) -> Option<u64> {
     stub_cache::probe(t.rt(), op, id(o), key(t.rt(), name))
 }
 
-/// Five objects with `x` (= 10..14) in five shapes, under `p`.
+/// Five objects with `x` (= 10..14) in five shapes, under `p`. The caller roots them
+/// ([`T::keep_all`]) while a state or an entry needs their shapes.
 fn five(t: &T, p: u64) -> [u64; 5] {
     let pads = ["a", "b", "c", "d", "e"];
     core::array::from_fn(|i| {
@@ -46,6 +49,7 @@ fn megamorphic_loads_and_stores_go_through_the_stub_cache() {
         let mut t = T::new(c, &[Site::Get("x"), Site::Set("x", false)]);
         let p = object_prototype(t.rt());
         let objs = five(&t, p);
+        let kept = t.keep_all(&objs);
         for &o in &objs {
             t.ok(0, o, UNDEFINED);
             t.ok(1, o, int(1));
@@ -87,6 +91,7 @@ fn megamorphic_loads_and_stores_go_through_the_stub_cache() {
         assert_eq!(own(t.rt(), fresh2, "x"), Some(int(6)));
         assert_eq!(id(fresh), id(fresh2));
         assert_eq!(t.ok(0, fresh2, UNDEFINED), int(6));
+        t.release_all(kept);
     });
 }
 
@@ -104,10 +109,15 @@ fn the_miss_path_probes_answer_from_the_stub_cache() {
         assert_eq!(t.ok(0, o, UNDEFINED), int(3));
         assert_eq!(ic::mega_load(t.rt(), t.vector(0), SLOT, o, x), None);
         let objs = five(&t, p);
+        let kept = t.keep_all(&objs);
         for &q in &objs {
             t.ok(0, q, UNDEFINED);
             t.ok(1, q, int(1));
         }
+        assert_eq!(
+            (t.state(0), t.state(1)),
+            (State::Megamorphic, State::Megamorphic)
+        );
         let o = object_with(t.rt(), p, &[("m", int(0)), ("x", int(3))]);
         assert_eq!(ic::mega_load(t.rt(), t.vector(0), SLOT, o, x), None);
         assert_eq!(t.ok(0, o, UNDEFINED), int(3));
@@ -131,6 +141,7 @@ fn the_miss_path_probes_answer_from_the_stub_cache() {
         // Another name at a megamorphic slot: no entry, no answer.
         let y = key(t.rt(), "y");
         assert_eq!(ic::mega_load(t.rt(), v0, SLOT, o, y), None);
+        t.release_all(kept);
     });
 }
 
@@ -140,6 +151,7 @@ fn the_stub_cache_is_empty_after_every_gc() {
         let mut t = T::new(c, &[Site::Get("x")]);
         let p = object_prototype(t.rt());
         let objs = five(&t, p);
+        let kept = t.keep_all(&objs);
         for &o in &objs {
             t.ok(0, o, UNDEFINED);
         }
@@ -152,22 +164,25 @@ fn the_stub_cache_is_empty_after_every_gc() {
         // It fills again.
         assert_eq!(t.ok(0, o, UNDEFINED), int(7));
         assert!(entry(&t, Op::Load, o, "x").is_some());
+        t.release_all(kept);
     });
 }
 
 /// Makes the load site megamorphic, then loads `x` from a new object in a shape no other
 /// object has, so that an entry keyed on that shape exists. Returns the masked addresses of
-/// the object and its shape.
+/// the object and its shape. The five objects are rooted only up to the entry check.
 #[inline(never)]
 fn made_an_entry(t: &mut T) -> [usize; 2] {
     let p = object_prototype(t.rt());
     let objs = five(t, p);
+    let kept = t.keep_all(&objs);
     for &o in &objs {
         t.ok(0, o, UNDEFINED);
     }
     let o = object_with(t.rt(), p, &[("lone", int(0)), ("x", int(9))]);
     assert_eq!(t.ok(0, o, UNDEFINED), int(9));
     assert!(entry(t, Op::Load, o, "x").is_some());
+    t.release_all(kept);
     let s = shape::shape_of(o);
     [
         std::hint::black_box(o as usize) ^ MASK,
@@ -200,6 +215,7 @@ fn a_prototype_case_in_the_stub_cache_checks_its_validity_cell() {
         let pads = ["a", "b", "c", "d", "e", "f"];
         let objs: [u64; 6] =
             core::array::from_fn(|i| object_with(t.rt(), mid, &[(pads[i], int(0))]));
+        let kept = t.keep_all(&objs);
         for &o in &objs[..5] {
             assert_eq!(t.ok(0, o, UNDEFINED), int(1));
         }
@@ -220,6 +236,7 @@ fn a_prototype_case_in_the_stub_cache_checks_its_validity_cell() {
         assert_ne!(h2, h);
         assert_eq!(t.ok(0, o, UNDEFINED), int(3));
         assert_eq!(t.ok(0, objs[0], UNDEFINED), int(3));
+        t.release_all(kept);
     });
 }
 
@@ -237,6 +254,7 @@ fn a_load_entry_is_never_used_for_a_store_or_a_define() {
         );
         let p = object_prototype(t.rt());
         let objs = five(&t, p);
+        let kept = t.keep_all(&objs);
         for &o in &objs {
             t.ok(0, o, UNDEFINED);
             t.ok(1, o, int(1));
@@ -270,6 +288,7 @@ fn a_load_entry_is_never_used_for_a_store_or_a_define() {
         assert_eq!(own(t.rt(), s2, "y"), None);
         t.ok(2, s2, int(6));
         assert_eq!(own(t.rt(), s2, "y"), Some(int(6)));
+        t.release_all(kept);
     });
 }
 
@@ -281,6 +300,7 @@ fn shared_slots_and_strings_at_megamorphic_sites() {
         let mut t = T::new(c, &[Site::Shared, Site::Get("length")]);
         let p = object_prototype(t.rt());
         let o = object_with(t.rt(), p, &[("x", int(1)), ("y", int(2))]);
+        let kept_o = t.keep(o);
         for _ in 0..3 {
             assert_eq!(t.ok(0, o, UNDEFINED), int(2));
         }
@@ -297,6 +317,10 @@ fn shared_slots_and_strings_at_megamorphic_sites() {
                 ],
             )
         });
+        // Rooted: the state counts all five shapes after the first object's last use (on
+        // x86-64 release that object's frame slot was reused, and under GC stress it died:
+        // `Polymorphic(4)`, run 40733504045).
+        let kept = t.keep_all(&lens);
         for (i, &l) in lens.iter().enumerate() {
             assert_eq!(t.ok(1, l, UNDEFINED), int(i as i32));
         }
@@ -304,6 +328,8 @@ fn shared_slots_and_strings_at_megamorphic_sites() {
         let s = string::new_string(t.rt(), "abc");
         assert_eq!(t.ok(1, s, UNDEFINED), int(3));
         assert_eq!(t.ok(1, s, UNDEFINED), int(3));
+        t.release_all(kept);
+        t.release(kept_o);
     });
 }
 

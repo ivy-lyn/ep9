@@ -753,3 +753,114 @@ fn a_rust_call_copies_the_arguments_before_the_this_wrap() {
         assert_eq!(r, Ok(Some(7)), "this = {this:?}");
     }
 }
+
+/// A host function for the frame tests below; never called.
+fn never_called<'s>(
+    _: &mut Cx<'s>,
+    _: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    unreachable!("the frame tests only read the counts of this info")
+}
+
+/// PERF3 item 2 (M5-P2): the x86-64 T0 call fast path's frame (`call::call_frame_fp`, then
+/// `call::fill_missing_args` and `call::write_call_frame`) is the frame `call::push_frame`
+/// writes, slot for slot, and both refuse the same sizes: no missing argument, missing
+/// arguments, no register, more arguments than parameters, 0 to 4 arguments (the list forms
+/// take the copy loop from 3), a frame one slot too big, one that just fits and one with room
+/// left.
+#[test]
+fn the_fast_frame_write_equals_push_frame() {
+    use crate::call::{call_frame_fp, fill_missing_args, push_frame, write_call_frame};
+    use crate::frame::{HEADER, UNDEFINED, int32_bits};
+    use crate::unit::FunctionInfo;
+    const MARK: u64 = 0x7FF8_0000_DEAD_BEEF;
+    let (callee, this, context) = (int32_bits(1), int32_bits(2), int32_bits(3));
+    let context_of = || context;
+    let caller_fp = core::ptr::without_provenance_mut::<u64>(0x1000);
+    let return_pc = core::ptr::without_provenance::<u8>(0x2000);
+    let arg = |i: u32| int32_bits(100 + i as i32);
+    for (params, regs) in [(0, 0), (0, 4), (1, 0), (3, 2), (5, 7)] {
+        let mut fi = FunctionInfo::host(never_called, "f", 0, false);
+        fi.parameter_count = params;
+        fi.register_count = regs;
+        for argc in 0..=4u32 {
+            let size = argc.max(params) as usize + 1 + HEADER + regs as usize;
+            for room in [size - 1, size, size + 3] {
+                let (mut a, mut b) = (vec![MARK; 64], vec![MARK; 64]);
+                // SAFETY: base + room lies inside each 64-slot buffer (room <= 25).
+                let pa = unsafe {
+                    let base = a.as_mut_ptr().add(4);
+                    push_frame(
+                        base,
+                        base.add(room),
+                        &fi,
+                        callee,
+                        this,
+                        argc,
+                        arg,
+                        caller_fp,
+                        return_pc,
+                        context,
+                        UNDEFINED,
+                    )
+                };
+                // SAFETY: as above; `fp` is `call_frame_fp` of the same base and limit.
+                let pb = unsafe {
+                    let base = b.as_mut_ptr().add(4);
+                    call_frame_fp(base, base.add(room), &fi, argc).inspect(|&fp| {
+                        fill_missing_args(base, fp, argc);
+                        write_call_frame(
+                            fp, &fi, callee, this, argc, arg, caller_fp, return_pc, context_of,
+                        )
+                    })
+                };
+                let case = format!("params {params} regs {regs} argc {argc} room {room}");
+                assert_eq!(
+                    pa.map(|p| p.addr() - a.as_ptr().addr()),
+                    pb.map(|p| p.addr() - b.as_ptr().addr()),
+                    "{case}"
+                );
+                assert_eq!(pa.is_some(), room >= size, "{case}");
+                assert_eq!(a, b, "{case}");
+            }
+        }
+    }
+}
+
+/// PERF3 item 2: `call::bound_with_global` after `call::try_bind_this(.., undefined)` gives
+/// what `call::try_bind_this(.., global)` gives, for a strict and a sloppy callee and each
+/// receiver that is not a cell (a cell receiver comes back as it is either way, and never as
+/// undefined).
+#[test]
+fn bound_with_global_after_the_receiver_test_is_try_bind_this() {
+    use crate::call::{bound_with_global, try_bind_this};
+    use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits};
+    use crate::function_info::fi_flags;
+    use crate::unit::FunctionInfo;
+    let global = int32_bits(77);
+    let receivers = [
+        UNDEFINED,
+        NULL,
+        HOLE,
+        TRUE,
+        FALSE,
+        int32_bits(0),
+        int32_bits(-5),
+        ep9_value::Value::number(1.5).to_bits(),
+    ];
+    for strict in [false, true] {
+        let mut fi = FunctionInfo::host(never_called, "f", 0, false);
+        if !strict {
+            fi.flags &= !fi_flags::STRICT;
+        }
+        assert_eq!(fi.is_strict(), strict);
+        for this in receivers {
+            let want = try_bind_this(&fi, this, global);
+            let got =
+                try_bind_this(&fi, this, UNDEFINED).map(|b| bound_with_global(&fi, b, global));
+            assert_eq!(got, want, "strict {strict} receiver {this:#x}");
+        }
+    }
+}

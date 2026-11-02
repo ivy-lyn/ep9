@@ -13,3 +13,4 @@
       7      56  unwind  RtFn0
       8      64  get_keyed  RtFn2
       9      72  set_keyed  RtFn3
+     10      80  deopt  RtFn2

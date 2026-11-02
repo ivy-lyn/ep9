@@ -18,7 +18,7 @@
 //! | Each definition has one function object per realm, made in table order | identity: `Builtin(i)` twice is one object; a fixed heap layout |
 //! | Realm init walks the tables in a fixed order: VM table, then the embedder's; inside, module order, then entry order | two isolates have the same property order |
 //! | A table is checked before use: blocks, indices, kinds, intrinsics, aliases and duplicate keys | a table error is an `IsolateError`, never a half-built realm |
-//! | A constructor a table makes gets `prototype` {} as its first table key | §20 (`Number.prototype` and the others); a key before it would make the lazy `prototype` (`props::own_add`) |
+//! | A constructor a table makes gets `prototype` {} as its first table key; `%Proxy%` gets none | §20 (`Number.prototype` and the others); a key before it would make the lazy `prototype` (`props::own_add`); §28.2.2 (`exotic::is_lazy_prototype` makes none for `%Proxy%`) |
 //!
 //! Core intrinsics (the prototypes, `%Iterator.prototype%`, `%ArrayIteratorPrototype%` and the
 //! global object) come from `realm::init`; tables add properties to them and make the others
@@ -1011,7 +1011,7 @@ pub(crate) fn check(embedder: Option<&'static BuiltinTable>) -> Result<(), Strin
 /// module; every alias names a data key (not an accessor) defined earlier on the same object;
 /// no key twice on one object; the first key of a constructor a module makes is `prototype`, a
 /// data property with attributes {} (§20: `Number.prototype` and the others), and every such
-/// constructor has one.
+/// constructor but `%Proxy%` (§28.2.2) has one.
 pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
     let modules = || tables.iter().flat_map(|t| t.modules.iter());
     let mut blocks = HashSet::new();
@@ -1055,7 +1055,8 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
             match d.value {
                 IntrinsicValue::Builtin(i) => {
                     data_def(m, i).map_err(at)?;
-                    if m.defs[usize::from(i)].kind == BuiltinKind::Constructor {
+                    let ctor = m.defs[usize::from(i)].kind == BuiltinKind::Constructor;
+                    if ctor && d.id != IntrinsicId::Proxy {
                         constructors.push((d.id, m.name));
                     }
                 }
@@ -1081,9 +1082,8 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                 if on_target.iter().any(|(k, _)| k.same(&p.key)) {
                     return Err(here("defined twice"));
                 }
-                // Install adds keys in walk order, and adding a key to a function first makes
-                // its lazy `prototype` (`props::own_add`), which the table's own `prototype`
-                // would then meet. So a constructor gets `prototype` {} before any other key.
+                // Keys go in in walk order; a new key on a function first makes its lazy `prototype`
+                // (`props::own_add`): a constructor but %Proxy% (§28.2.2) has `prototype` {} first.
                 let is_prototype = p.key.same(&prototype)
                     && p.attrs == PropAttrs::NONE
                     && !matches!(p.value, PropValue::Accessor { .. });

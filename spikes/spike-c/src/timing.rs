@@ -24,33 +24,45 @@
 //! | C | as T0, with the compiled first hot function installed (placement (b)) before the timed part |
 //! | H0 | the kernel file, then the hot function alone in a fixed-input loop ([`HOT`]): a warm-up call, the same compile as H1 (not installed), the timed call with `k` rounds, then a digest of what it wrote |
 //! | H1 | as H0, with the function compiled from the live facts of the H0 warm-up and installed |
+//! | P | SP-Facts (§6.3, M5-P3): the kernel file, then the hot set compiled from the PROFILED file `SPIKE_C_PROFILE` names (written by another process) and installed **before the first `run()`**; then the warm-up `run()` (the start-up: its exits are counted, `startup` line) and the timed part as C |
 //!
 //! The compile runs in all four configs (its global, its fact export and its allocations), so
-//! the VM state at the timer start differs only by the installed code.
+//! the VM state at the timer start differs only by the installed code. C, its T0 baseline and
+//! P compile the same set: each hot function the compiler accepts (M5-P2-ORCH-1; a refused one
+//! stays in T0), [`crate::sp_facts::compile_hot_set`]. `spike-c sp-facts time` ([`time_p`])
+//! runs T0, C and P in new processes and reports t(C) / t(P) (C5c).
 //!
 //! The timer is the process's own clock around the timed scripts only (protocol §3: the check
-//! line is made after the timer stops). Exits in the timed region are 0 in every right run:
-//! a guard failure ends the run in the trap until month 5, and a trapped run is a wrong run.
+//! line is made after the timer stops). A guard failure in C or H1 deopts into T0 in the
+//! same frame (month 5, H29), so the run stays right; the exits counted in the timed region
+//! are part of what one process reports (`exits` line).
 
 use std::process::Command;
 use std::time::Instant;
 
 use spike_b::harness::Config;
 
-use crate::harness::Session;
+use crate::harness::{Session, Target};
 use crate::kernels::{self, Kernel};
 use crate::tier::{self, IntFacts};
+use crate::{facts, sp_facts};
 
-/// One of the four configurations of protocol §3.
+/// One of the four configurations of protocol §3, or config P (SP-Facts, §6.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Which {
     T0,
     C,
     H0,
     H1,
+    /// Config P: the hot set compiled from a PROFILED file before the first `run()` (M5-P3).
+    P,
 }
 
+/// The environment variable that names config P's PROFILED file (`spike-c once p`).
+pub const PROFILE_ENV: &str = "SPIKE_C_PROFILE";
+
 impl Which {
+    /// The four configs of `spike-c time` (P is timed by [`time_p`]).
     pub const ALL: [Which; 4] = [Which::T0, Which::C, Which::H0, Which::H1];
 
     pub fn name(self) -> &'static str {
@@ -59,11 +71,15 @@ impl Which {
             Which::C => "c",
             Which::H0 => "h0",
             Which::H1 => "h1",
+            Which::P => "p",
         }
     }
 
     pub fn parse(s: &str) -> Option<Which> {
-        Which::ALL.into_iter().find(|w| w.name() == s)
+        Which::ALL
+            .into_iter()
+            .chain([Which::P])
+            .find(|w| w.name() == s)
     }
 }
 
@@ -74,24 +90,90 @@ pub struct HotHarness {
     pub function: &'static str,
     pub setup: &'static str,
     pub digest: &'static str,
+    /// The `__spikeCHot` calls of the warm-up (the facts the compile reads).
+    pub warm: u32,
+    /// The default `k` of the timed call (about 0.15 s of T0 time on an M-series Mac).
+    pub k: u32,
+    /// For an inner closure no JS value reaches with its own inputs (WI-SC5: navier-stokes'
+    /// `lin_solve` reads `width`, `height`, `rowSize`, `iterations` and calls `set_bnd`): the
+    /// kernel file's lines `.0..=.1`, copied into the script `hot.js` on the same line
+    /// numbers, inside a function whose first lines are `prelude` (the closure's variables)
+    /// and which returns the hot function. The H configs compile and install that copy (same
+    /// text, its own facts, by function id), not the kernel's closure.
+    pub copy: Option<((u32, u32), &'static str)>,
 }
 
 /// The hot-function harnesses (the first hot function of each kernel that compiles today).
 /// am3: a 37-digit `this` (28-bit digits, as crypto's own numbers) times a 28-bit `x`, added
 /// into a 74-digit `w` at a moving offset; each call reads and writes the same cells, so every
 /// call does the same work, and `w` stays 28-bit digits.
-pub const HOT: [HotHarness; 1] = [HotHarness {
-    function: "am3",
-    setup: "var __hx = nbi(), __hw = nbi();\n\
-            for (var i = 0; i < 37; i++) __hx.array[i] = (i * 2654435 + 12345) & 0xfffffff;\n\
-            for (var i = 0; i < 74; i++) __hw.array[i] = (i * 40503 + 7) & 0xfffffff;\n\
-            function __spikeCHot(k) {\n\
-            \x20 var c = 0;\n\
-            \x20 for (var r = 0; r < k; r++) c = (c + __hx.am(0, 0x9e3779b, __hw, r % 37, 0, 37)) | 0;\n\
-            \x20 return c;\n\
-            }\n",
-    digest: "(function () { var h = 0; for (var i = 0; i < 74; i++) h = (h * 31 + __hw.array[i]) | 0; return 'digest ' + h; })()",
-}];
+/// lin_solve (M5-P2 SPIKEC-6): the copy of `set_bnd` and `lin_solve` (navier-stokes.js:82-149)
+/// at the kernel's size (Setup: 128 x 128, 20 iterations), called as `project` calls it
+/// (`lin_solve(0, p, div, 1, 4)`, the iterative branch) on two arrays of doubles; every call
+/// does the same work (20 sweeps of every cell).
+pub const HOT: [HotHarness; 2] = [
+    HotHarness {
+        function: "am3",
+        setup: "var __hx = nbi(), __hw = nbi();\n\
+                for (var i = 0; i < 37; i++) __hx.array[i] = (i * 2654435 + 12345) & 0xfffffff;\n\
+                for (var i = 0; i < 74; i++) __hw.array[i] = (i * 40503 + 7) & 0xfffffff;\n\
+                function __spikeCHot(k) {\n\
+                \x20 var c = 0;\n\
+                \x20 for (var r = 0; r < k; r++) c = (c + __hx.am(0, 0x9e3779b, __hw, r % 37, 0, 37)) | 0;\n\
+                \x20 return c;\n\
+                }\n",
+        digest: "(function () { var h = 0; for (var i = 0; i < 74; i++) h = (h * 31 + __hw.array[i]) | 0; return 'digest ' + h; })()",
+        warm: 200,
+        k: 100_000,
+        copy: None,
+    },
+    HotHarness {
+        function: "lin_solve",
+        setup: "var __hn = 130 * 130, __hp = [], __hd = [];\n\
+                for (var i = 0; i < __hn; i++) { __hp.push(0.5 + (i % 7) * 0.125); __hd.push(((i * 37) % 101) / 64 - 0.75); }\n\
+                function __spikeCHot(k) {\n\
+                \x20 for (var r = 0; r < k; r++) __hl(0, __hp, __hd, 1, 4);\n\
+                \x20 return __hp[131];\n\
+                }\n",
+        digest: "(function () { var s = 0; for (var i = 0; i < __hn; i++) s += __hp[i] * ((i % 13) + 1); return 'digest ' + s; })()",
+        warm: 3,
+        k: 10,
+        copy: Some((
+            (82, 149),
+            "var __hl = (function () {\nvar width = 128, height = 128, rowSize = width + 2, iterations = 20;\n",
+        )),
+    },
+];
+
+/// The default `k` of the H configs for `k`'s first hot function (100,000 without a harness).
+pub fn default_k(k: &Kernel) -> u32 {
+    hot_harness(k).map_or(100_000, |h| h.k)
+}
+
+/// The script `hot.js` of `h`: with a copy, the prelude, blank lines up to the first copied
+/// line, the kernel's lines on their own line numbers, the end of the wrapper; then `setup`.
+fn hot_script(h: &HotHarness, k: &Kernel) -> Result<String, String> {
+    let Some(((first, last), prelude)) = h.copy else {
+        return Ok(h.setup.to_string());
+    };
+    let text = std::fs::read_to_string(kernels::bench_dir().join(k.file))
+        .map_err(|e| format!("{}: {e}", k.file))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let body = lines
+        .get(first as usize - 1..last as usize)
+        .ok_or_else(|| format!("{}: no lines {first}-{last}", k.file))?;
+    let used = prelude.matches('\n').count();
+    let pad = (first as usize - 1)
+        .checked_sub(used)
+        .ok_or("the prelude is longer than the lines before the copy")?;
+    Ok(format!(
+        "{prelude}{}{}\nreturn {};\n}})();\n{}",
+        "\n".repeat(pad),
+        body.join("\n"),
+        h.function,
+        h.setup
+    ))
+}
 
 /// What one process measured.
 #[derive(Clone, Debug, PartialEq)]
@@ -102,6 +184,10 @@ pub struct Once {
     pub output: Vec<String>,
     /// For C and H1: the compiled code's size and its (fact, unbacked) guards.
     pub code: Option<(usize, usize, usize)>,
+    /// For C, H1 and P: the exits counted in the timed region (all exit records together).
+    pub exits: Option<u64>,
+    /// For P: the exits counted in the warm-up `run()` after the install (the start-up).
+    pub startup: Option<u64>,
 }
 
 impl Once {
@@ -110,6 +196,12 @@ impl Once {
         let mut s = format!("secs {}\n", self.secs);
         if let Some((b, f, u)) = self.code {
             s.push_str(&format!("code {b} {f} {u}\n"));
+        }
+        if let Some(e) = self.exits {
+            s.push_str(&format!("exits {e}\n"));
+        }
+        if let Some(e) = self.startup {
+            s.push_str(&format!("startup {e}\n"));
         }
         for l in &self.output {
             s.push_str(&format!("| {l}\n"));
@@ -120,6 +212,8 @@ impl Once {
     pub fn parse(text: &str) -> Result<Once, String> {
         let mut secs = None;
         let mut code = None;
+        let mut exits = None;
+        let mut startup = None;
         let mut output = Vec::new();
         for l in text.lines() {
             if let Some(o) = l.strip_prefix("| ") {
@@ -134,12 +228,18 @@ impl Once {
                     return Err(format!("bad code line {l}"));
                 };
                 code = Some((b, f, u));
+            } else if let Some(v) = l.strip_prefix("exits ") {
+                exits = Some(v.parse::<u64>().map_err(|e| format!("exits {v}: {e}"))?);
+            } else if let Some(v) = l.strip_prefix("startup ") {
+                startup = Some(v.parse::<u64>().map_err(|e| format!("startup {v}: {e}"))?);
             }
         }
         Ok(Once {
             secs: secs.ok_or("no secs line")?,
             output,
             code,
+            exits,
+            startup,
         })
     }
 }
@@ -171,9 +271,40 @@ fn step(s: &mut Session, script: &str, file: &str, out: &mut Vec<String>) -> Res
     r.result.map(|_| ()).map_err(|e| format!("{file}: {e}"))
 }
 
+/// The exits counted so far for the installed `targets` (all records), `None` if nothing is
+/// installed.
+fn counted(s: &Session, targets: &[Target]) -> Option<u64> {
+    if targets.is_empty() {
+        return None;
+    }
+    targets
+        .iter()
+        .map(|t| s.exit_counts_of(t).map(|c| c.iter().sum::<u64>()))
+        .sum()
+}
+
 /// One configuration in this process (`spike-c once`): `n` timed `run()` calls per benchmark
-/// for T0 and C, `k` calls of the hot function for H0 and H1.
+/// for T0, C and P, `k` calls of the hot function for H0 and H1. P reads the PROFILED file
+/// that [`PROFILE_ENV`] names.
 pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once, String> {
+    let profile = match which {
+        Which::P => Some(std::path::PathBuf::from(
+            std::env::var(PROFILE_ENV)
+                .map_err(|_| format!("once p needs {PROFILE_ENV}=<PROFILED file>"))?,
+        )),
+        _ => None,
+    };
+    once_with(which, k, n, hot_k, profile.as_deref())
+}
+
+/// [`once`] with config P's PROFILED file given (`profile`; P needs it, the others ignore it).
+pub fn once_with(
+    which: Which,
+    k: &'static Kernel,
+    n: u32,
+    hot_k: u32,
+    profile: Option<&std::path::Path>,
+) -> Result<Once, String> {
     let config = Config::default().threaded();
     let d1 = kernels::driver(k, 1)?;
     let (defs, loop1) = tier::split(&d1, k.file)?;
@@ -182,25 +313,70 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
     step(&mut s, &defs, "defs.js", &mut out)?;
     let hot = k.hot.first().ok_or("no hot function")?;
     let mut code = None;
+    // The installed functions in C, H1 and P, and the exits they counted in the timed region.
+    let mut compiled: Vec<Target> = Vec::new();
+    let mut timed_exits = 0u64;
+    let mut startup = None;
     let mut secs = 0.0;
     match which {
-        Which::T0 | Which::C => {
-            // The warm-up: the driver's n = 1 loop (its lines are not part of the output).
-            let mut warm = Vec::new();
-            step(&mut s, &loop1, "warm.js", &mut warm)?;
-            // The compile runs in T0 too (not installed), so both start the timer from the
-            // same VM state but the installed code.
-            let (f, c, report) =
-                tier::compile_hot(&mut s, hot, "defs.js", d1.offset, IntFacts::Live)?;
-            if which == Which::C {
-                code = Some((
-                    report.emit.code_bytes,
-                    report.fact_guards,
-                    report.unbacked_guards,
-                ));
-                // SAFETY: `c` is emit_a64's placement (b) code for `f`, from `input_of(f)`
-                // in `compile_hot` with no JS run since, unchanged (as `tier::run`).
-                unsafe { s.install_b(&[f], vec![c]) }?;
+        Which::T0 | Which::C | Which::P => {
+            if which == Which::P {
+                // Config P (SP-Facts, §6.3): the hot set from the PROFILED file, compiled and
+                // installed before the kernel's first run(); a refused file or a dropped
+                // record is a wrong run.
+                let path = profile.ok_or("config P needs a PROFILED file")?;
+                let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let unit = s.script("defs.js").ok_or("no defs script")?.unit.unit();
+                let (snap, dropped) = facts::read_profiled(&bytes, unit)?;
+                if !dropped.is_empty() {
+                    return Err(format!(
+                        "{}: {} records dropped",
+                        path.display(),
+                        dropped.len()
+                    ));
+                }
+                let set = sp_facts::compile_hot_set(
+                    &mut s,
+                    k,
+                    "defs.js",
+                    d1.offset,
+                    sp_facts::Source::Profiled(&snap),
+                )?;
+                code = Some(set.code());
+                // SAFETY: `set` is `compile_hot_set`'s result for `s` just above, unchanged,
+                // with no JS run since.
+                let inst = unsafe { set.install(&mut s) }?;
+                compiled = inst.set.iter().map(|(_, t, _)| t.clone()).collect();
+                // The warm-up run() with the code installed: the start-up exits.
+                let before = counted(&s, &compiled);
+                let mut warm = Vec::new();
+                step(&mut s, &loop1, "warm.js", &mut warm)?;
+                if !d1.matches(&warm) {
+                    return Err(format!("the start-up run() printed {warm:?}"));
+                }
+                if let (Some(a), Some(b)) = (before, counted(&s, &compiled)) {
+                    startup = Some(b - a);
+                }
+            } else {
+                // The warm-up: the driver's n = 1 loop (its lines are not part of the output).
+                let mut warm = Vec::new();
+                step(&mut s, &loop1, "warm.js", &mut warm)?;
+                // The compile runs in T0 too (not installed), so both start the timer from the
+                // same VM state but the installed code.
+                let set = sp_facts::compile_hot_set(
+                    &mut s,
+                    k,
+                    "defs.js",
+                    d1.offset,
+                    sp_facts::Source::Live,
+                )?;
+                if which == Which::C {
+                    code = Some(set.code());
+                    // SAFETY: as for config P above: `compile_hot_set`'s result for `s`,
+                    // unchanged, with no JS run since.
+                    let inst = unsafe { set.install(&mut s) }?;
+                    compiled = inst.set.iter().map(|(_, t, _)| t.clone()).collect();
+                }
             }
             let names = kernels::benchmark_names(
                 &std::fs::read_to_string(kernels::bench_dir().join(k.file))
@@ -224,6 +400,7 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     "setup.js",
                     &mut out,
                 )?;
+                let before = counted(&s, &compiled);
                 let t = Instant::now();
                 step(
                     &mut s,
@@ -232,6 +409,9 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     &mut out,
                 )?;
                 secs += t.elapsed().as_secs_f64();
+                if let (Some(a), Some(b)) = (before, counted(&s, &compiled)) {
+                    timed_exits += b - a;
+                }
                 let check = if k.check.is_empty() {
                     String::new()
                 } else {
@@ -249,20 +429,34 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
         }
         Which::H0 | Which::H1 => {
             let h = hot_harness(k).ok_or_else(|| format!("{}: no hot harness", hot.name))?;
-            step(&mut s, h.setup, "hot.js", &mut out)?;
-            step(&mut s, "__spikeCHot(200);", "hot-warm.js", &mut out)?;
-            // As for T0 and C: the compile runs in H0 too, not installed.
-            let (f, c, report) =
-                tier::compile_hot(&mut s, hot, "defs.js", d1.offset, IntFacts::Live)?;
+            step(&mut s, &hot_script(h, k)?, "hot.js", &mut out)?;
+            step(
+                &mut s,
+                &format!("__spikeCHot({});", h.warm),
+                "hot-warm.js",
+                &mut out,
+            )?;
+            // As for T0 and C: the compile runs in H0 too, not installed. A copied function
+            // is compiled from hot.js (its lines are the kernel's line numbers there).
+            let (file, offset) = match h.copy {
+                Some(_) => ("hot.js", 0),
+                None => ("defs.js", d1.offset),
+            };
+            let (f, c, report) = tier::compile_hot(&mut s, hot, file, offset, IntFacts::Live)?;
             if which == Which::H1 {
                 code = Some((
                     report.emit.code_bytes,
                     report.fact_guards,
                     report.unbacked_guards,
                 ));
-                // SAFETY: as for config C above.
-                unsafe { s.install_b(&[f], vec![c]) }?;
+                let meta = report.emit.meta.encode();
+                // SAFETY: `c` is emit_a64's placement (b) code for `f`, from `input_of(f)`
+                // in `compile_hot` with no JS run since, unchanged (as `tier::run`); `meta`
+                // is its exit table.
+                unsafe { s.install_targets(std::slice::from_ref(&f), vec![c], vec![Some(meta)]) }?;
+                compiled = vec![f];
             }
+            let before = counted(&s, &compiled);
             let t = Instant::now();
             step(
                 &mut s,
@@ -271,6 +465,9 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                 &mut out,
             )?;
             secs = t.elapsed().as_secs_f64();
+            if let (Some(a), Some(b)) = (before, counted(&s, &compiled)) {
+                timed_exits += b - a;
+            }
             step(
                 &mut s,
                 &format!("print('result ' + __spikeCR, {});", h.digest),
@@ -283,6 +480,8 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
         secs,
         output: out,
         code,
+        exits: (!compiled.is_empty()).then_some(timed_exits),
+        startup,
     })
 }
 
@@ -450,6 +649,8 @@ pub fn time(
     let mut ref_h0: Option<Vec<String>> = None;
     let mut wrong = Vec::new();
     let mut code = None;
+    // The most exits one C or H1 run counted in its timed region.
+    let mut most_exits: Option<u64> = None;
     for round in 0..=rounds {
         let mut times = [None; 4];
         for which in order(round) {
@@ -484,7 +685,10 @@ pub fn time(
                     ref_t0.get_or_insert(o.output.clone());
                     ok
                 }
-                Which::C => ref_t0.as_ref().is_none_or(|r| *r == o.output) && dn.matches(&o.output),
+                // `time` runs Which::ALL, which has no P; P is held to C's rule all the same.
+                Which::C | Which::P => {
+                    ref_t0.as_ref().is_none_or(|r| *r == o.output) && dn.matches(&o.output)
+                }
                 Which::H0 => {
                     let ok = ref_h0.as_ref().is_none_or(|r| *r == o.output);
                     ref_h0.get_or_insert(o.output.clone());
@@ -501,6 +705,9 @@ pub fn time(
             }
             if which == Which::C {
                 code = code.or(o.code);
+            }
+            if let Some(e) = o.exits {
+                most_exits = Some(most_exits.map_or(e, |m| m.max(e)));
             }
             times[i_of(which)] = Some(o.secs);
         }
@@ -552,16 +759,172 @@ pub fn time(
             "compiled {}: {b} bytes, guards {f} fact + {u} unbacked",
             k.hot[0].name
         ));
-        if ok {
-            report.push_str(
-                "; exits in the timed region: 0 (a guard failure ends a run in the trap, and \
-                 every run was right)",
-            );
+        if let Some(e) = most_exits {
+            report.push_str(&format!(
+                "; exits in the timed region: at most {e} per C or H1 run (a guard failure \
+                 deopts into T0)"
+            ));
         }
         report.push('\n');
     }
     if ok {
         report.push_str("correctness: every run right (T0 a right driver run, C = T0, H1 = H0)\n");
+    } else {
+        report.push_str(&format!("correctness FAIL: {} wrong runs\n", wrong.len()));
+        for w in &wrong {
+            report.push_str(&format!("  {w}\n"));
+        }
+    }
+    Ok((report, ok))
+}
+
+/// The order of T0, C and P in `round` for [`time_p`]: C and P swap places every round (over
+/// rounds 1..=15 each comes first in 7 or 8 rounds), T0 moves from first to last.
+pub fn order_p(round: usize) -> [Which; 3] {
+    if round.is_multiple_of(2) {
+        [Which::T0, Which::C, Which::P]
+    } else {
+        [Which::P, Which::C, Which::T0]
+    }
+}
+
+/// The SP-Facts class S report of `k` (`spike-c sp-facts time`, protocol §6.3, C5c): per
+/// round, T0, C and P in new processes (`exe once ...`, P with [`PROFILE_ENV`] = `profile`, a
+/// PROFILED file another process wrote); Q = t(C) / t(P) per round against 0.90, R = t(T0) /
+/// t(C) for context; P's start-up exits. A report, never a reading (§3 "Host"). Returns the
+/// text and whether every run was right (T0 a right driver run, C = T0, P = T0).
+pub fn time_p(
+    exe: &std::path::Path,
+    k: &'static Kernel,
+    rounds: usize,
+    n: u32,
+    profile: &std::path::Path,
+) -> Result<(String, bool), String> {
+    let dn = kernels::driver(k, n)?;
+    let mut report = format!(
+        "SP-Facts class S timing, {} (report only, never a reading: protocol §3, §6.3)\nhost: {}\n\
+         rounds: {rounds} + 1 warm-up (dropped); n = {n} run() per benchmark; P reads a PROFILED \
+         file written by another process (FACT_SCHEMA_VERSION {})\n",
+        k.name,
+        host_line(),
+        ep9_facts::FACT_SCHEMA_VERSION
+    );
+    let ix = |w: Which| match w {
+        Which::T0 => 0,
+        Which::C => 1,
+        _ => 2,
+    };
+    let mut t: Vec<[Option<f64>; 3]> = Vec::new();
+    let mut ref_t0: Option<Vec<String>> = None;
+    let mut wrong = Vec::new();
+    let (mut code_c, mut code_p) = (None, None);
+    let (mut startup, mut timed_p): (Vec<u64>, Vec<u64>) = (Vec::new(), Vec::new());
+    for round in 0..=rounds {
+        let mut times = [None; 3];
+        for which in order_p(round) {
+            let out = Command::new(exe)
+                .args(["once", which.name(), k.name, "--n", &n.to_string()])
+                .env(PROFILE_ENV, profile)
+                .output()
+                .map_err(|e| format!("spawn {}: {e}", exe.display()))?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            let o = if out.status.success() {
+                Once::parse(&text)?
+            } else {
+                wrong.push(format!(
+                    "round {round} {}: exit {:?}: {}",
+                    which.name(),
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+                continue;
+            };
+            let right = dn.matches(&o.output) && ref_t0.as_ref().is_none_or(|r| *r == o.output);
+            if which == Which::T0 {
+                ref_t0.get_or_insert(o.output.clone());
+            }
+            if !right {
+                wrong.push(format!(
+                    "round {round} {}: output {:?}",
+                    which.name(),
+                    o.output
+                ));
+            }
+            match which {
+                Which::C => code_c = code_c.or(o.code),
+                Which::P => {
+                    code_p = code_p.or(o.code);
+                    startup.extend(o.startup);
+                    timed_p.extend(o.exits);
+                }
+                _ => {}
+            }
+            times[ix(which)] = Some(o.secs);
+        }
+        if round > 0 {
+            t.push(times);
+        }
+    }
+    // Round 0 runs T0 first (order_p), so every later run is compared with that T0 output.
+    let ok = wrong.is_empty();
+    for w in [Which::T0, Which::C, Which::P] {
+        let v: Vec<f64> = t.iter().filter_map(|r| r[ix(w)]).collect();
+        if !v.is_empty() {
+            report.push_str(&format!(
+                "t({}) median {:.4} s over {} runs\n",
+                w.name(),
+                median(&v),
+                v.len()
+            ));
+        }
+    }
+    let ratio = |a: Which, b: Which| -> Vec<f64> {
+        t.iter()
+            .filter_map(|r| Some(r[ix(a)]? / r[ix(b)]?))
+            .collect()
+    };
+    let q = ratio(Which::C, Which::P);
+    let r = ratio(Which::T0, Which::C);
+    let words = |x: &Summary, bar: f64| {
+        if ok {
+            x.line(bar)
+        } else {
+            x.line_without_verdict()
+        }
+    };
+    if !q.is_empty() {
+        report.push_str(&format!(
+            "Q = t(C) / t(P) (C5c): {}\n",
+            words(&Summary::of(&q), 0.90)
+        ));
+    }
+    if !r.is_empty() {
+        report.push_str(&format!(
+            "R = t(T0) / t(C) (context): {}\n",
+            words(&Summary::of(&r), 3.0)
+        ));
+    }
+    let set = |c: Option<(usize, usize, usize)>| {
+        c.map_or("-".to_string(), |(b, f, u)| {
+            format!("{b} bytes, guards {f} fact + {u} unbacked")
+        })
+    };
+    report.push_str(&format!(
+        "compiled hot set: C {}; P {}\n",
+        set(code_c),
+        set(code_p)
+    ));
+    if !startup.is_empty() {
+        report.push_str(&format!(
+            "P start-up exits (the warm-up run() after the install): min {}, max {} per run; \
+             P exits in the timed region: max {} per run\n",
+            startup.iter().min().unwrap_or(&0),
+            startup.iter().max().unwrap_or(&0),
+            timed_p.iter().max().unwrap_or(&0)
+        ));
+    }
+    if ok {
+        report.push_str("correctness: every run right (T0 a right driver run, C = T0, P = T0)\n");
     } else {
         report.push_str(&format!("correctness FAIL: {} wrong runs\n", wrong.len()));
         for w in &wrong {
@@ -585,6 +948,8 @@ fn i_of(w: Which) -> usize {
         Which::C => 1,
         Which::H0 => 2,
         Which::H1 => 3,
+        // Not one of the four columns of `time` (Which::ALL); `time_p` has its own.
+        Which::P => unreachable!("config P is timed by time_p"),
     }
 }
 
@@ -668,8 +1033,76 @@ mod tests {
             secs: 0.25,
             output: vec!["Encrypt 8".into(), String::new(), "x".into()],
             code: Some((3292, 2, 27)),
+            exits: Some(4),
+            startup: Some(9),
         };
         assert_eq!(Once::parse(&o.text()).expect("parse"), o);
+    }
+
+    /// SP-Facts (M5-P3): `once p` parses; in [`order_p`] each of C and P comes first in 7 or
+    /// 8 of rounds 1..=15, each round runs T0, C and P once, and round 0 runs T0 first (the
+    /// output reference of `time_p`).
+    #[test]
+    fn config_p_order_is_counterbalanced() {
+        assert_eq!(Which::parse("p"), Some(Which::P));
+        assert!(!Which::ALL.contains(&Which::P));
+        assert_eq!(order_p(0)[0], Which::T0);
+        let c_first = (1..=15)
+            .filter(|&r| {
+                let o = order_p(r);
+                o.iter().position(|&w| w == Which::C) < o.iter().position(|&w| w == Which::P)
+            })
+            .count();
+        assert!((7..=8).contains(&c_first), "C first in {c_first} rounds");
+        for r in 0..4 {
+            let mut o = order_p(r).to_vec();
+            o.sort_by_key(|w| w.name());
+            assert_eq!(o, [Which::C, Which::P, Which::T0]);
+        }
+    }
+
+    /// Config P in this process, n = 1, from a PROFILED file another session wrote: the lines
+    /// of C, the same code, the start-up exits counted. Skips off aarch64 and without the
+    /// checkout.
+    #[test]
+    fn config_p_prints_cs_lines_on_crypto() {
+        if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64)
+            || !kernels::bench_present()
+        {
+            eprintln!("skip: aarch64 and the v8-v7 checkout only");
+            return;
+        }
+        let k = kernels::kernel("crypto").expect("crypto");
+        let path =
+            std::env::temp_dir().join(format!("spike-c-timing-test-{}.facts", std::process::id()));
+        std::fs::write(&path, crate::sp_facts::train(k).expect("train")).expect("write");
+        let p = once_with(Which::P, k, 1, 1, Some(&path));
+        let _ = std::fs::remove_file(&path);
+        let p = p.expect("p");
+        let c = once(Which::C, k, 1, 1).expect("c");
+        assert_eq!(p.output, c.output);
+        assert_eq!(p.code, c.code);
+        assert!(p.startup.is_some() && c.startup.is_none());
+        assert_eq!(p.exits, Some(0), "{p:?}");
+    }
+
+    /// lin_solve's hot harness (WI-SC5): the copy in hot.js is compiled by its function id and
+    /// installed; H1 prints H0's lines with no exit.
+    #[test]
+    fn the_lin_solve_harness_compiles_its_copy() {
+        if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64)
+            || !kernels::bench_present()
+        {
+            eprintln!("skip: aarch64 and the v8-v7 checkout only");
+            return;
+        }
+        let k = kernels::kernel("navier-stokes").expect("navier-stokes");
+        let h0 = once(Which::H0, k, 1, 1).expect("h0");
+        let h1 = once(Which::H1, k, 1, 1).expect("h1");
+        assert_eq!(h1.output, h0.output);
+        assert!(h0.output[0].starts_with("result "), "{h0:?}");
+        assert_eq!(h1.exits, Some(0));
+        assert!(h1.code.is_some() && h0.code.is_none());
     }
 
     /// The four configurations in this process, n = 1: C prints T0's lines, H1 H0's, and the
@@ -691,6 +1124,7 @@ mod tests {
         );
         assert_eq!(c.output, t0.output);
         assert!(c.code.is_some() && t0.code.is_none());
+        assert!(c.exits.is_some() && t0.exits.is_none());
         let h0 = once(Which::H0, k, 1, 50).expect("h0");
         let h1 = once(Which::H1, k, 1, 50).expect("h1");
         assert_eq!(h1.output, h0.output);

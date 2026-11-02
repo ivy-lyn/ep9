@@ -34,11 +34,11 @@ use core::ptr::NonNull;
 use ep9_heap::{AllocError, CellKind, CellPtr, CellSize, Heap, RootStrength, Tracer};
 use ep9_value::Value;
 
-use crate::frame::{int32_bits, native_of};
 use crate::kinds;
 use crate::object::{cell, init, rd, rd_i32, wr};
 use crate::runtime::Runtime;
 use crate::unit::{FunctionInfo, LoadedUnit};
+use crate::{external_ref::ExternalRef, frame::int32_bits};
 
 /// One function's feedback slot: a Value (undefined or its FEEDBACK cell) in the unit's root
 /// range.
@@ -167,7 +167,7 @@ fn make(rt: &Runtime, fi: &FunctionInfo) {
     // E2: `c` is new and no GC point follows until it is linked. Keys stay `undefined` (the
     // allocator's pre-fill).
     init(c, fv::COUNT, int32_bits(n as i32));
-    init(c, fv::INFO, native_of(fi));
+    init(c, fv::INFO, ExternalRef::new(fi).to_word());
     for i in 0..n {
         init(c, slot_offset(i) + fv::VALUE, int32_bits(0));
     }

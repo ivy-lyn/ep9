@@ -45,29 +45,50 @@
 //!   barriered (`object::wr`, `object::slot_set`).
 //! - The weak source walks every registry and every cell at every GC (minor ones too):
 //!   O(registries + cells). A per-GC worklist of the cells the mark met (V8's
-//!   `weak_cells` worklist) needs a heap hook; that is a month-5 WEAKREF tail item.
+//!   `weak_cells` worklist) needs a heap hook. M5-P1 GC5 measured the walk under S1 minor GCs
+//!   (R-GC-P4-6, mac a64): about 67 instructions per live cell per minor GC; 0 on the bench
+//!   kernels (none makes a registry), +0.44% for 10,000 live cells and +4.0% for 100,000
+//!   under an allocation loop of 37 minor GCs. Only the cells made since the last GC can see
+//!   their target die in a minor GC (see the S1 rule above), so a minor GC could walk those
+//!   only; that needs a minor flag from the heap (`WeakVisitor`), a heap change, so it is a
+//!   GC6 (S1B) item and not built here.
+//! - The cleanup walks ([`unlink_dead_registries`], [`collect_cleared`], [`remove_token`])
+//!   poll every [`WALK_POLL_CELLS`] cells ([`walk_step`]; M5-P1 GC5, DL M4-P4-OPEN (3)): the
+//!   `InterruptHandle` requests run there (they run no JS, H23-Q6), and on a termination
+//!   request the first two stop, leave the rest pending ([`KeptObjects::set_pending`]) and
+//!   note it ([`KeptObjects::walk_stopped`]), so `Cx::cleanup_finalization_registries`
+//!   (`abi/weakref.rs`) runs no callback, polls at once and ends with the termination, for
+//!   every caller (the checkpoint and a direct call). [`remove_token`] runs inside
+//!   `unregister` and its count must be whole, so it never stops; the termination waits for
+//!   the next JS poll.
 //!
 //! | Function | GC point | Job |
 //! |---|---|---|
 //! | [`KeptObjects::new`] | no | the isolate state: WEAK_CELL kind, root source, weak source |
 //! | [`new_cell`] | yes | a WEAK_CELL |
 //! | [`target`], [`held`], [`token`], [`next`], [`set_next`] | no | WEAK_CELL fields |
+//! | [`next_link`] | no | one step along the registry chain (tests count the steps after a walk stopped) |
 //! | [`KeptObjects::add`] | yes | AddToKeptObjects (§9.10.2) |
 //! | [`KeptObjects::clear`] | no | ClearKeptObjects (§9.10.1) |
 //! | [`KeptObjects::add_registry`] | yes | puts a new registry in the isolate's chain |
 //! | [`KeptObjects::take_pending`] | no | the cleanup hook's "anything to do?" test |
 //! | [`KeptObjects::is_pending`] | no | the job loop's "more cleanup?" test (the flag stays) |
+//! | [`KeptObjects::walk_stopped`] | no | a cleanup walk of this run stopped at a termination request |
 //! | [`KeptObjects::registries`] | no | the first link of the chain |
 //! | [`unlink_dead_registries`] | no | drops the links of dead registries |
 //! | [`collect_cleared`] | no | moves the empty cells of a registry from CELLS to CLEARED |
+//! | [`remove_token`] | no | unregister: removes the cells of one token |
+//! | [`walk_step`] | no | the poll of the cleanup walks, every [`WALK_POLL_CELLS`] cells |
 
 use core::cell::Cell;
+use core::sync::atomic::Ordering;
 use std::rc::Rc;
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer, WeakVisitor};
 
 use crate::abi::ObjectClass;
 use crate::frame::{NULL, UNDEFINED};
+use crate::interp::interrupt;
 use crate::kinds;
 use crate::object::{self, cell, init, rd, wr};
 use crate::ordered_table::{self as table, SET_WIDTH};
@@ -185,6 +206,23 @@ pub(crate) fn next(c: u64) -> u64 {
     field(c, wc::NEXT)
 }
 
+/// The next link of the registry chain after `link`, or undefined: a read of [`next`] that
+/// tests count when a cleanup walk of this run stopped
+/// (`KeptObjects::links_after_stop`, a test-only item; no count outside tests). Not a GC point.
+#[inline]
+pub(crate) fn next_link(rt: &Runtime, link: u64) -> u64 {
+    #[cfg(test)]
+    {
+        let k = &rt.kept_objects.roots;
+        if k.walk_stopped.get() {
+            k.links_after_stop.set(k.links_after_stop.get() + 1);
+        }
+    }
+    #[cfg(not(test))]
+    let _ = rt;
+    next(link)
+}
+
 /// Sets the next cell after `c` (barriered). Not a GC point.
 pub(crate) fn set_next(rt: &Runtime, c: u64, n: u64) {
     debug_assert_eq!(kinds::cell_kind(c), kinds::WEAK_CELL.get());
@@ -201,6 +239,15 @@ struct Roots {
     /// Set by the weak source when a registry died or a cell's target is empty; cleared by
     /// [`KeptObjects::take_pending`].
     pending: Cell<bool>,
+    /// The cells the cleanup walks may still read before their next poll ([`walk_step`]).
+    walk_budget: Cell<usize>,
+    /// A cleanup walk stopped at a termination request since the last
+    /// [`KeptObjects::take_pending`] ([`walk_step`]).
+    walk_stopped: Cell<bool>,
+    /// Tests only: the registry-chain links read ([`next_link`]) after a walk stopped, since
+    /// the last [`KeptObjects::take_pending`].
+    #[cfg(test)]
+    links_after_stop: Cell<usize>,
 }
 
 impl Roots {
@@ -268,6 +315,10 @@ impl KeptObjects {
             kept: Cell::new(UNDEFINED),
             registries: Cell::new(UNDEFINED),
             pending: Cell::new(false),
+            walk_budget: Cell::new(WALK_POLL_CELLS),
+            walk_stopped: Cell::new(false),
+            #[cfg(test)]
+            links_after_stop: Cell::new(0),
         });
         let r = Rc::clone(&roots);
         heap.add_root_source(move |t| r.trace(t));
@@ -342,9 +393,28 @@ impl KeptObjects {
     }
 
     /// True if a GC since the last call saw a dead registry or an empty target (and clears
-    /// the flag). Not a GC point.
+    /// the flag). The cleanup run calls it first, so it also clears
+    /// [`KeptObjects::walk_stopped`]: the walks of the new run may go on. Not a GC point.
     pub(crate) fn take_pending(&self) -> bool {
+        self.roots.walk_stopped.set(false);
+        #[cfg(test)]
+        self.roots.links_after_stop.set(0);
         self.roots.pending.replace(false)
+    }
+
+    /// True if a cleanup walk stopped at a termination request since the last
+    /// [`KeptObjects::take_pending`] ([`walk_step`]). `Cx::cleanup_finalization_registries`
+    /// (`abi/weakref.rs`) then polls at once, so the termination ends the run for every
+    /// caller. Not a GC point.
+    pub(crate) fn walk_stopped(&self) -> bool {
+        self.roots.walk_stopped.get()
+    }
+
+    /// Tests only: the registry-chain links read ([`next_link`]) after a cleanup walk of this
+    /// run stopped (0 when none stopped). Not a GC point.
+    #[cfg(test)]
+    pub(crate) fn links_after_stop(&self) -> usize {
+        self.roots.links_after_stop.get()
     }
 
     /// True if a GC since the last [`KeptObjects::take_pending`] saw a dead registry or an
@@ -361,30 +431,88 @@ impl KeptObjects {
     }
 }
 
+/// The cells a cleanup walk reads between two polls ([`walk_step`]). A walk step is a few
+/// loads and at most two barriered stores, so a poll every 1,024 steps costs one counter
+/// update per cell and one atomic load per 1,024 cells.
+pub(crate) const WALK_POLL_CELLS: usize = 1024;
+
+/// One cell of a cleanup walk: every [`WALK_POLL_CELLS`] calls (the count runs on across
+/// walks and runs), a poll of the interrupt word. The poll runs the `InterruptHandle`
+/// requests (they run no JS and touch no heap, H23-Q6, as `interp::slow::interrupt` runs
+/// them) and returns true if a termination is requested or unwinds; it leaves the TERMINATE
+/// bit set, so the next VM poll throws the termination. A walk that `stop`s (`true`) and gets
+/// true ends between two cells, with every list whole, and leaves the rest of its work
+/// pending ([`KeptObjects::set_pending`]; [`KeptObjects::walk_stopped`]). Not a GC point.
+pub(crate) fn walk_step(rt: &Runtime, stop: bool) -> bool {
+    let k = &rt.kept_objects.roots;
+    if stop && k.walk_stopped.get() {
+        return true;
+    }
+    let left = k.walk_budget.get() - 1;
+    if left != 0 {
+        k.walk_budget.set(left);
+        return false;
+    }
+    k.walk_budget.set(WALK_POLL_CELLS);
+    let word = &*rt.terminate;
+    if word.load(Ordering::Relaxed) & interrupt::REQUEST != 0
+        && word.fetch_and(!interrupt::REQUEST, Ordering::AcqRel) & interrupt::REQUEST != 0
+    {
+        rt.run_interrupt_requests();
+    }
+    if !stop {
+        return false;
+    }
+    let terminate =
+        rt.terminating.get() || word.load(Ordering::Acquire) & interrupt::TERMINATE != 0;
+    if terminate {
+        k.walk_stopped.set(true);
+        k.pending.set(true);
+    }
+    terminate
+}
+
 /// Drops from the registry chain every link whose registry died (TARGET undefined).
-/// Barriered stores. Not a GC point.
+/// Barriered stores. Not a GC point. Polls ([`walk_step`]); at a termination request it stops
+/// with the chain whole and some dead links left (the cleanup stays pending), and reads no
+/// link after the stop.
 pub(crate) fn unlink_dead_registries(rt: &Runtime) {
     let k = &rt.kept_objects;
     let mut head = k.registries();
     while head != UNDEFINED && target(head) == UNDEFINED {
-        head = next(head);
+        if walk_step(rt, true) {
+            k.roots.registries.set(head);
+            return;
+        }
+        head = next_link(rt, head);
     }
     k.roots.registries.set(head);
     let mut prev = head;
     while prev != UNDEFINED {
-        let mut n = next(prev);
+        let first = next_link(rt, prev);
+        let mut n = first;
+        let mut stopped = false;
         while n != UNDEFINED && target(n) == UNDEFINED {
-            n = next(n);
+            if walk_step(rt, true) {
+                stopped = true;
+                break;
+            }
+            n = next_link(rt, n);
         }
-        if n != next(prev) {
+        if n != first {
             set_next(rt, prev, n);
+        }
+        if stopped || walk_step(rt, true) {
+            return;
         }
         prev = n;
     }
 }
 
 /// Moves every cell of the registry `fr` whose target is empty from CELLS to the end of
-/// CLEARED, in CELLS order; returns how many. Barriered stores. Not a GC point.
+/// CLEARED, in CELLS order; returns how many. Barriered stores. Not a GC point. Polls
+/// ([`walk_step`]); at a termination request it stops between two cells with both lists
+/// whole: the cells not yet read stay in CELLS, and the cleanup stays pending.
 pub(crate) fn collect_cleared(rt: &Runtime, fr: u64) -> usize {
     // Find the tail of CLEARED (usually empty).
     if !is_registry(fr) {
@@ -395,6 +523,9 @@ pub(crate) fn collect_cleared(rt: &Runtime, fr: u64) -> usize {
         tail = UNDEFINED;
     } else {
         while is_weak_cell(next(tail)) {
+            if walk_step(rt, true) {
+                return 0;
+            }
             tail = next(tail);
         }
     }
@@ -402,6 +533,9 @@ pub(crate) fn collect_cleared(rt: &Runtime, fr: u64) -> usize {
     let mut prev = UNDEFINED;
     let mut c = object::slot_get(fr, registry::CELLS);
     while is_weak_cell(c) {
+        if walk_step(rt, true) {
+            break;
+        }
         let n = next(c);
         if target(c) == UNDEFINED {
             // Unlink from CELLS.
@@ -429,13 +563,15 @@ pub(crate) fn collect_cleared(rt: &Runtime, fr: u64) -> usize {
 
 /// Removes from the list in slot `list` of the registry `fr` every cell whose token is
 /// `tok` (an object or an unregistered symbol: SameValue is identity); returns how many.
-/// Barriered stores. Not a GC point.
+/// Barriered stores. Not a GC point. Polls for the interrupt requests ([`walk_step`]) but
+/// never stops: `unregister` returns the whole count.
 pub(crate) fn remove_token(rt: &Runtime, fr: u64, list: usize, tok: u64) -> usize {
     debug_assert!(tok != UNDEFINED);
     let mut removed = 0;
     let mut prev = UNDEFINED;
     let mut c = object::slot_get(fr, list);
     while is_weak_cell(c) {
+        walk_step(rt, false);
         let n = next(c);
         if token(c) == tok {
             if prev == UNDEFINED {

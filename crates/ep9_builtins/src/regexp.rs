@@ -37,13 +37,16 @@
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-regexp.txt`.
 
+mod annex_b;
 mod exec;
+mod iter;
 mod proto;
 mod symbols;
 
 use ep9_vm::{
-    Args, Atom, BuiltinDef, BuiltinModule, Cx, IntrinsicDef, IntrinsicId, IntrinsicValue, JsResult,
-    JsString, Local, ObjectProps, PropAttrs, PropDef, PropKey, WellKnownSymbol,
+    Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
+    IntrinsicValue, JsResult, JsString, Local, ObjectProps, PropAttrs, PropDef, PropKey,
+    WellKnownSymbol,
 };
 
 pub(crate) use self::exec::{is_regexp_object, slot};
@@ -75,6 +78,20 @@ pub(crate) mod def {
     pub const SPECIES: u16 = 18;
     pub const STRING_MATCH: u16 = 19;
     pub const STRING_SEARCH: u16 = 20;
+    // M5-P2 REGEXP2
+    pub const MATCH_ALL: u16 = 21;
+    pub const ITERATOR_NEXT: u16 = 22;
+    pub const STRING_MATCH_ALL: u16 = 23;
+    pub const ESCAPE: u16 = 24;
+    pub const COMPILE: u16 = 25;
+    pub const GET_INPUT: u16 = 26;
+    pub const SET_INPUT: u16 = 27;
+    pub const GET_LAST_MATCH: u16 = 28;
+    pub const GET_LAST_PAREN: u16 = 29;
+    pub const GET_LEFT_CONTEXT: u16 = 30;
+    pub const GET_RIGHT_CONTEXT: u16 = 31;
+    /// `get RegExp.$1` ... `get RegExp.$9` are 32 ... 40.
+    pub const GET_PAREN_1: u16 = 32;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -100,6 +117,26 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::getter("[Symbol.species]", species),     // 18
     BuiltinDef::method("match", 1, pattern::match_),     // 19
     BuiltinDef::method("search", 1, pattern::search),    // 20
+    BuiltinDef::method("[Symbol.matchAll]", 1, iter::match_all), // 21
+    BuiltinDef::method("next", 0, iter::next),           // 22
+    BuiltinDef::method("matchAll", 1, pattern::match_all), // 23
+    BuiltinDef::method("escape", 1, proto::escape),      // 24
+    BuiltinDef::method("compile", 2, annex_b::compile),  // 25
+    BuiltinDef::getter("input", annex_b::get_input),     // 26
+    BuiltinDef::setter("input", annex_b::set_input),     // 27
+    BuiltinDef::getter("lastMatch", annex_b::get_last_match), // 28
+    BuiltinDef::getter("lastParen", annex_b::get_last_paren), // 29
+    BuiltinDef::getter("leftContext", annex_b::get_left_context), // 30
+    BuiltinDef::getter("rightContext", annex_b::get_right_context), // 31
+    BuiltinDef::getter("$1", annex_b::get_paren_1),      // 32
+    BuiltinDef::getter("$2", annex_b::get_paren_2),      // 33
+    BuiltinDef::getter("$3", annex_b::get_paren_3),      // 34
+    BuiltinDef::getter("$4", annex_b::get_paren_4),      // 35
+    BuiltinDef::getter("$5", annex_b::get_paren_5),      // 36
+    BuiltinDef::getter("$6", annex_b::get_paren_6),      // 37
+    BuiltinDef::getter("$7", annex_b::get_paren_7),      // 38
+    BuiltinDef::getter("$8", annex_b::get_paren_8),      // 39
+    BuiltinDef::getter("$9", annex_b::get_paren_9),      // 40
 ];
 
 /// The intrinsics this module makes.
@@ -115,6 +152,13 @@ pub const INTRINSICS: &[IntrinsicDef] = &[
     IntrinsicDef {
         id: IntrinsicId::RegExp,
         value: IntrinsicValue::Builtin(def::REGEXP),
+    },
+    // §22.2.9.2: %RegExpStringIteratorPrototype% (prototype %Iterator.prototype%).
+    IntrinsicDef {
+        id: IntrinsicId::RegExpStringIteratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::IteratorPrototype),
+        },
     },
 ];
 
@@ -133,6 +177,12 @@ const fn getter(name: &'static str, def: u16) -> PropDef {
     PropDef::accessor(PropKey::Str(name), Some(def), None)
 }
 
+/// A legacy static accessor of `%RegExp%` (Annex B legacy features: {c}, not enumerable)
+/// under `name`, getter `get` and setter `set`.
+const fn legacy(name: &'static str, get: u16, set: Option<u16>) -> PropDef {
+    PropDef::accessor(PropKey::Str(name), Some(get), set)
+}
+
 /// The properties this module adds, per object (the order of node v24's own keys).
 pub const PROPS: &[ObjectProps] = &[
     ObjectProps {
@@ -144,6 +194,28 @@ pub const PROPS: &[ObjectProps] = &[
                 IntrinsicId::RegExpPrototype,
                 PropAttrs::NONE,
             ),
+            // Annex B legacy features: the static accessors (node v24's order).
+            legacy("input", def::GET_INPUT, Some(def::SET_INPUT)),
+            legacy("$_", def::GET_INPUT, Some(def::SET_INPUT)),
+            legacy("lastMatch", def::GET_LAST_MATCH, None),
+            legacy("$&", def::GET_LAST_MATCH, None),
+            legacy("lastParen", def::GET_LAST_PAREN, None),
+            legacy("$+", def::GET_LAST_PAREN, None),
+            legacy("leftContext", def::GET_LEFT_CONTEXT, None),
+            legacy("$`", def::GET_LEFT_CONTEXT, None),
+            legacy("rightContext", def::GET_RIGHT_CONTEXT, None),
+            legacy("$'", def::GET_RIGHT_CONTEXT, None),
+            legacy("$1", def::GET_PAREN_1, None),
+            legacy("$2", def::GET_PAREN_1 + 1, None),
+            legacy("$3", def::GET_PAREN_1 + 2, None),
+            legacy("$4", def::GET_PAREN_1 + 3, None),
+            legacy("$5", def::GET_PAREN_1 + 4, None),
+            legacy("$6", def::GET_PAREN_1 + 5, None),
+            legacy("$7", def::GET_PAREN_1 + 6, None),
+            legacy("$8", def::GET_PAREN_1 + 7, None),
+            legacy("$9", def::GET_PAREN_1 + 8, None),
+            // §22.2.5.1 RegExp.escape ( S ) (ES2025).
+            method("escape", def::ESCAPE),
             // §22.2.5.2 get RegExp [ %Symbol.species% ] ({c}).
             PropDef::accessor(
                 PropKey::Symbol(WellKnownSymbol::SPECIES),
@@ -174,7 +246,10 @@ pub const PROPS: &[ObjectProps] = &[
             getter("unicodeSets", def::UNICODE_SETS),
             PropDef::method(PropKey::Atom(Atom::ToStringKey), def::TO_STRING),
             method("test", def::TEST),
+            // B.2.4.1 RegExp.prototype.compile ( pattern, flags ).
+            method("compile", def::COMPILE),
             symbol_method(WellKnownSymbol::MATCH, def::MATCH),
+            symbol_method(WellKnownSymbol::MATCH_ALL, def::MATCH_ALL),
             symbol_method(WellKnownSymbol::REPLACE, def::REPLACE),
             symbol_method(WellKnownSymbol::SEARCH, def::SEARCH),
             symbol_method(WellKnownSymbol::SPLIT, def::SPLIT),
@@ -187,6 +262,20 @@ pub const PROPS: &[ObjectProps] = &[
         props: &[
             method("match", def::STRING_MATCH),
             method("search", def::STRING_SEARCH),
+            // §22.1.3.14 String.prototype.matchAll (M5-P2).
+            method("matchAll", def::STRING_MATCH_ALL),
+        ],
+    },
+    ObjectProps {
+        // §22.2.9.2 %RegExpStringIteratorPrototype%: next, [%Symbol.toStringTag%].
+        target: IntrinsicId::RegExpStringIteratorPrototype,
+        props: &[
+            method("next", def::ITERATOR_NEXT),
+            PropDef::constant(
+                PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
+                ConstValue::Str("RegExp String Iterator"),
+                PropAttrs::CONFIGURABLE,
+            ),
         ],
     },
     ObjectProps {
@@ -330,7 +419,14 @@ fn regexp<'s>(
     // 8. Return ? RegExpInitialize(O, P, F).
     let p = initialize_text(cx, p)?;
     let f = initialize_text(cx, f)?;
-    Ok(cx.regexp_create(proto, p, f)?.value())
+    let o = cx.regexp_create(proto, p, f)?;
+    // (RegExpAlloc, Annex B legacy features: [[LegacyFeaturesEnabled]] is true only when
+    // newTarget is the current realm's %RegExp%.)
+    let this_realm_regexp = cx.intrinsic(IntrinsicId::RegExp);
+    if !cx.same_value(new_target, this_realm_regexp) {
+        cx.regexp_disable_legacy_features(o);
+    }
+    Ok(o.value())
 }
 
 /// get RegExp [ %Symbol.species% ] (§22.2.5.2).

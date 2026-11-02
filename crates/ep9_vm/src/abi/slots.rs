@@ -55,8 +55,9 @@ pub enum ObjectClass {
     /// `[[ArrayBufferMaxByteLength]]`, `[[ArrayBufferDetachKey]]`. Slots hold Values: the
     /// byte store itself needs a native-data addition (not in M0 month 2).
     ArrayBuffer,
-    /// A RegExp instance: `[[OriginalSource]]`, `[[OriginalFlags]]`, `[[RegExpRecord]]`,
-    /// `[[RegExpMatcher]]`.
+    /// A RegExp instance: `[[OriginalSource]]`, `[[OriginalFlags]]`, `[[RegExpRecord]]` (bit 8:
+    /// `[[LegacyFeaturesEnabled]]`, M5-P2), `[[RegExpMatcher]]`, `[[Realm]]` (Annex B, M5-P2;
+    /// the `regexp.rs` slot table).
     RegExp,
     /// A WeakMap instance: `[[WeakMapData]]` (M3-P1).
     WeakMap,

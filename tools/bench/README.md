@@ -18,7 +18,7 @@ Benchmark tools ([10-quality](../../docs/plan/10-quality.md) section 2; perf CI 
 | `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, the 8 v8-v7 kernels, Octane-7 (`octane-<kernel>`), and the sets `v8v7-8`, `v8v7-7`, `octane-7`, `exit2` |
 | `cross/idle.mjs` | Measures a host's idle baseline for its host file |
 | `lib/stats.mjs` | PERF-NOISE statistics: median, order-statistic interval, verdict, IQR void rule, geomean. Shared by `cross/run.mjs` and `workloads/t0-dispatch.mjs` |
-| `lib/host.mjs` | Host facts, host files, the load guard |
+| `lib/host.mjs` | Host facts, host files, the load guard; `thpMode`, the transparent huge page mode of a Linux host (the bracketed word of `/sys/kernel/mm/transparent_hugepage/enabled`, null elsewhere), which `cross/run.mjs` writes to `host.measured` and `cross/exit2.mjs` copies for m1-exit item 2 |
 | `hosts/<host>.toml` | One file per benchmark host: CPU, cores, OS, gate host or not, idle baseline |
 
 ## ep9-bench
@@ -139,7 +139,9 @@ The rules come from the PERF-NOISE rule ([10-quality](../../docs/plan/10-quality
 ### The v8-v7 stub harness
 
 The official harness (`base.js` + `run_harness.js`) needs `Date` for its timer and score, and `Math`.
-ep9 T0 has neither yet, so `cross/v8v7.mjs` keeps the kernel file as it is and replaces only the
+When the stub was made (decision PERF-2), ep9 T0 had no `Date` and no `Math.log` or `Math.pow`. `Date` came
+in M3-P1 and those two in M4-P1 (MATH1), so `base` is the default harness since then (next section).
+The stub `cross/v8v7.mjs` keeps the kernel file as it is and replaces only the
 harness: `BenchmarkSuite` and `Benchmark` record the benchmarks, each benchmark runs setup, then
 `run()` N times, then tear-down, and prints `<name> <N>`. `Math.random` is base.js's deterministic
 version where `Math` exists. The kernels check their own results. The generator reads the kernel

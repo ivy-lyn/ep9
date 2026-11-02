@@ -23,8 +23,8 @@ use crate::{Dispatch, Isolate, arguments, kinds, module, property, props, shape,
 
 #[test]
 fn layout_3_versions_kinds_and_fixed_fields() {
-    // OBJECT_LAYOUT 4 (M4-P0) keeps every layout-3 kind and field checked here; the version
-    // numbers are pinned by `tests::layout4`.
+    // OBJECT_LAYOUT 4 (M4-P0) and 5 (M5-P0) keep every layout-3 kind and field checked here;
+    // the version numbers are pinned by `tests::layout5`.
     assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 3);
     let ids = [
         kinds::ARGUMENTS,
@@ -59,10 +59,10 @@ fn layout_3_versions_kinds_and_fixed_fields() {
         (nsf::MODULE, nsf::EXPORTS, nsf::FIXED, nsf::CAPACITY),
         (24, 32, 2, 1)
     );
-    // MODULE: 16 Values after word0; REALM: 5.
+    // MODULE: 16 Values after word0; REALM: 5 (7 since OBJECT_LAYOUT 5, `tests::layout5`).
     assert_eq!(modf::SIZE, 8 + 8 * 16);
     assert_eq!((modf::STATUS, modf::HOST_DEFINED), (8, 128));
-    assert_eq!(realmf::SIZE, 8 + 8 * 5);
+    assert_eq!(realmf::SIZE, 8 + 8 * 7);
     assert_eq!(
         (
             realmf::GLOBAL_OBJECT,
@@ -88,8 +88,9 @@ fn layout_3_versions_kinds_and_fixed_fields() {
 }
 
 /// `object::register_kinds` registers the 5 new kinds (15 entries of its own array, plus the
-/// `ordered_table::register_kinds` call): a second registration of each is refused. A reserved
-/// id (29) is still free (27 and 28 are the proxy kinds since M4-P4).
+/// `ordered_table::register_kinds` call): a second registration of each is refused. The
+/// never-assigned id [`NEVER_ASSIGNED`] is free (C-24: a probe never uses "the next free id",
+/// which the next appended kind takes; until M5-P3 this probe used 29).
 #[test]
 fn register_kinds_registers_the_five_new_kinds() {
     let iso = isolate(config(Dispatch::DEFAULT, false));
@@ -113,9 +114,231 @@ fn register_kinds_registers_the_five_new_kinds() {
             id.get()
         );
     }
-    // 27 and 28 are the proxy kinds since M4-P4 PROXY1; 29 is still reserved.
-    let free = KindId::new(29).unwrap();
+    let free = KindId::new(NEVER_ASSIGNED).unwrap();
     assert_eq!(iso.rt.heap.register_kind(free, k("free")), Ok(()));
+}
+
+// ---- C-24: the kind ids and the IC handler kinds are append-only lists (M5-P3 M1A-CODE) -----
+//
+// MODES-CHECK-w17 O4: each append-only list states its field width, a full list is refused
+// (never wrapped), and a test fills it. Negative tests probe a value that is never assigned.
+
+/// The kind id that is never assigned (the `kinds.rs` module doc, C-24): no range holds it.
+const NEVER_ASSIGNED: u8 = 255;
+
+/// Every kind id the table declares (`kinds.rs`), by range.
+fn declared_kinds() -> Vec<(&'static str, KindId)> {
+    vec![
+        ("SEQ_LATIN1", kinds::SEQ_LATIN1),
+        ("SEQ_UTF16", kinds::SEQ_UTF16),
+        ("CONS", kinds::CONS),
+        ("SLICED", kinds::SLICED),
+        ("THIN", kinds::THIN),
+        ("EXT_LATIN1", kinds::EXT_LATIN1),
+        ("EXT_UTF16", kinds::EXT_UTF16),
+        ("SYMBOL", kinds::SYMBOL),
+        ("OBJECT", kinds::OBJECT),
+        ("FUNCTION", kinds::FUNCTION),
+        ("ARRAY", kinds::ARRAY),
+        ("ERROR", kinds::ERROR),
+        ("ITERATOR", kinds::ITERATOR),
+        ("PRIMITIVE_WRAPPER", kinds::PRIMITIVE_WRAPPER),
+        ("BOUND_FUNCTION", kinds::BOUND_FUNCTION),
+        ("GENERATOR", kinds::GENERATOR),
+        ("SLOT_OBJECT", kinds::SLOT_OBJECT),
+        ("ARGUMENTS", kinds::ARGUMENTS),
+        ("MODULE_NAMESPACE", kinds::MODULE_NAMESPACE),
+        ("PROXY", kinds::PROXY),
+        ("PROXY_CALLABLE", kinds::PROXY_CALLABLE),
+        ("PROPS", kinds::PROPS),
+        ("ELEMENTS", kinds::ELEMENTS),
+        ("CONTEXT", kinds::CONTEXT),
+        ("ACCESSOR_PAIR", kinds::ACCESSOR_PAIR),
+        ("FEEDBACK", kinds::FEEDBACK),
+        ("POLY_IC", kinds::POLY_IC),
+        ("IC_HANDLER", kinds::IC_HANDLER),
+        ("SLOTS", kinds::SLOTS),
+        ("DESCRIPTORS", kinds::DESCRIPTORS),
+        ("DESC_INDEX", kinds::DESC_INDEX),
+        ("TRANSITIONS", kinds::TRANSITIONS),
+        ("PROTO_INFO", kinds::PROTO_INFO),
+        ("MODULE", kinds::MODULE),
+        ("ORDERED_TABLE", kinds::ORDERED_TABLE),
+        ("REALM", kinds::REALM),
+        ("VALIDITY_CELL", kinds::VALIDITY_CELL),
+        ("WEAK_CELL", kinds::WEAK_CELL),
+        ("ELEMENTS_DOUBLE", kinds::ELEMENTS_DOUBLE),
+        ("ELEMENTS_DICT", kinds::ELEMENTS_DICT),
+        ("FUSE", kinds::FUSE),
+        ("SHAPE", kinds::SHAPE),
+    ]
+}
+
+/// The kind id list (H17, C-24): a u8 in word0 byte 5, 0 refused, so the list is full at 255
+/// ids and has no 256th (no wrap: `KindId` is a non-zero u8). The ids as built at M1a are
+/// pinned (an append adds a row here; a renumbering fails), each lies in its range of the
+/// `kinds.rs` table, and the routed range 25..=28 is closed: exactly its 4 kinds, so a new
+/// routed kind needs its own compare.
+#[test]
+fn kind_ids_are_an_append_only_byte_list() {
+    assert_eq!(KindId::new(0), None);
+    assert_eq!(KindId::new(u8::MAX).map(KindId::get), Some(255));
+    let all = declared_kinds();
+    let ids: Vec<u8> = all.iter().map(|(_, k)| k.get()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ids.len(), "a kind id is used twice: {ids:?}");
+    assert_eq!(
+        ids,
+        [
+            1, 2, 3, 4, 5, 6, 7, 8, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 64, 65, 66,
+            67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 128
+        ],
+        "kind ids as built (append-only: a new id is added at the end of its range)"
+    );
+    for (name, k) in &all {
+        let id = k.get();
+        let range = match id {
+            1..=7 => "strings",
+            8 => "symbol",
+            16..=63 => "JS objects",
+            64..=127 => "internal cells",
+            128 => "shape",
+            _ => panic!("{name} = {id} is in no range of the kinds.rs table"),
+        };
+        assert!(!range.is_empty());
+    }
+    // The never-assigned probe id is no declared kind and in no range.
+    assert!(!ids.contains(&NEVER_ASSIGNED));
+    const { assert!(NEVER_ASSIGNED > 128) };
+    // `is_routed` is the closed range 25..=28: exactly the 4 routed kinds, of all 256 bytes.
+    let routed: Vec<u8> = (0..=u8::MAX)
+        .filter(|&k| crate::exotic::is_routed(k))
+        .collect();
+    assert_eq!(
+        routed,
+        [
+            kinds::ARGUMENTS.get(),
+            kinds::MODULE_NAMESPACE.get(),
+            kinds::PROXY.get(),
+            kinds::PROXY_CALLABLE.get()
+        ]
+    );
+}
+
+/// A kind test on Value bits (`kinds::is_*`).
+type KindTest = fn(u64) -> bool;
+
+/// A cell of the never-assigned kind is none of the kinds: every kind test on Value bits
+/// says no (a test that probed "the next free id" would turn true when that id is appended).
+#[test]
+fn a_cell_of_a_never_assigned_kind_passes_no_kind_test() {
+    let iso = isolate(config(Dispatch::DEFAULT, false));
+    fn dummy(_: ep9_heap::CellPtr, _: &mut ep9_heap::Tracer<'_>) {}
+    let probe = KindId::new(NEVER_ASSIGNED).unwrap();
+    let kind = CellKind {
+        name: "never assigned",
+        size: CellSize::Fixed(16),
+        trace: dummy,
+    };
+    assert_eq!(iso.rt.heap.register_kind(probe, kind), Ok(()));
+    let c = iso.rt.heap.alloc(probe, 16).expect("a 16 B cell");
+    // No GC point until the last read: `c` is only read here.
+    let b = c.to_value().to_bits();
+    assert_eq!(kinds::cell_kind(b), NEVER_ASSIGNED);
+    let tests: [(&str, KindTest); 11] = [
+        ("is_string", kinds::is_string),
+        ("is_symbol", kinds::is_symbol),
+        ("is_object", kinds::is_object),
+        ("is_function", kinds::is_function),
+        ("is_callable", kinds::is_callable),
+        ("is_array", kinds::is_array),
+        ("is_error", kinds::is_error),
+        ("is_iterator", kinds::is_iterator),
+        ("is_context", kinds::is_context),
+        ("is_wrapper", kinds::is_wrapper),
+        ("is_bound", kinds::is_bound),
+    ];
+    for (name, t) in tests {
+        assert!(!t(b), "{name} of a kind-{NEVER_ASSIGNED} cell");
+    }
+    assert!(!crate::exotic::is_routed(NEVER_ASSIGNED));
+    black_box(b);
+}
+
+/// The smi handler kinds (H16, C-24; MODES-CHECK-w20 MC-w20-10): a 4-bit field (bits 0-3)
+/// below the byte offset (bits 4-31). Kinds 1-6 and 9-14 are assigned; 0, 7, 8 and 15 are not,
+/// and the hit and widening helpers leave them alone. The field is full for the paired kinds:
+/// the next in-object / out-of-line pair (15, 16) does not fit, because 16 would wrap into
+/// the offset. So a new smi handler kind past the field is an IC_HANDLER cell kind (one more
+/// load), never a wrapped value. The IC_HANDLER kinds (the int32 at +8) are 1-8.
+#[test]
+fn ic_handler_kind_lists_state_their_width() {
+    use crate::ic::{hk, smi};
+    assert_eq!(smi::KIND_MASK, (1 << smi::SHIFT) - 1);
+    assert_eq!(smi::KIND_MASK, 0xF, "a 4-bit field");
+    let assigned = [
+        smi::FIELD_IN_OBJECT,
+        smi::FIELD_OUT_OF_LINE,
+        smi::ARRAY_LENGTH,
+        smi::STRING_LENGTH,
+        smi::SLOW,
+        smi::MEGA,
+        smi::FIELD_INT32_IN_OBJECT,
+        smi::FIELD_INT32_OUT_OF_LINE,
+        smi::FIELD_NUMBER_IN_OBJECT,
+        smi::FIELD_NUMBER_OUT_OF_LINE,
+        smi::FIELD_HEAP_IN_OBJECT,
+        smi::FIELD_HEAP_OUT_OF_LINE,
+    ];
+    assert_eq!(assigned, [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14]);
+    for k in assigned {
+        assert_eq!(k & !smi::KIND_MASK, 0, "kind {k} fits the field");
+    }
+    // The never-assigned values: no helper treats them as a checked field kind, and the
+    // field handler made at an offset keeps them (no wrap into the offset).
+    for k in [0, 7, 8, 15] {
+        assert!(!assigned.contains(&k));
+        assert!(!smi::is_checked(k), "kind {k}");
+        let x = (40 << smi::SHIFT) | k;
+        assert_eq!(smi::plain(x), x, "kind {k}");
+        assert_eq!(x >> smi::SHIFT, 40);
+    }
+    // Every checked kind made from a field handler stays in the field, at every offset up
+    // to the largest one the 28 offset bits hold.
+    let max_off = i32::MAX >> smi::SHIFT;
+    for off in [0, 8, 1 << 20, max_off] {
+        for base in [smi::FIELD_IN_OBJECT, smi::FIELD_OUT_OF_LINE] {
+            for r in [shape::rep::INT32, shape::rep::DOUBLE, shape::rep::HEAP] {
+                let x = smi::checked((off << smi::SHIFT) | base, r).expect("a checked kind");
+                assert!(smi::is_checked(x & smi::KIND_MASK));
+                assert_eq!(x >> smi::SHIFT, off, "offset {off}");
+                assert_eq!(smi::plain(x), (off << smi::SHIFT) | base);
+            }
+        }
+    }
+    // Full: the next checked pair would be (15, 16); 16 does not fit, it would wrap to 0 and
+    // move the offset by one.
+    let next_pair = (
+        smi::FIELD_HEAP_OUT_OF_LINE + 1,
+        smi::FIELD_HEAP_OUT_OF_LINE + 2,
+    );
+    assert_eq!(next_pair, (15, 16));
+    assert!(next_pair.1 > smi::KIND_MASK);
+    assert_eq!(((40 << smi::SHIFT) + next_pair.1) >> smi::SHIFT, 41);
+    // The IC_HANDLER cell kinds: an int32 field, 1-8 as built, 0 never assigned.
+    let cell_kinds = [
+        hk::PROTO_LOAD,
+        hk::MISSING,
+        hk::ADD,
+        hk::GLOBAL,
+        hk::CONSTRUCT_SITE,
+        hk::INSTANCEOF,
+        hk::CLONE,
+        hk::ALLOC_SITE,
+    ];
+    assert_eq!(cell_kinds, [1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
 // ---- the realm --------------------------------------------------------------------------------
@@ -299,7 +522,7 @@ fn made_holders(rt: &Runtime) -> (Vec<GlobalHandle>, Vec<(String, u64)>) {
         "ORDERED_TABLE",
         &mut (otf::DATA + 8..otf::DATA + 8 * (2 + 2 * 3)).step_by(8),
     );
-    // REALM: 5 Values.
+    // REALM: 7 Values (5 before OBJECT_LAYOUT 5).
     let r = crate::realm::new_realm_record(rt);
     fill(r, "REALM", &mut (8..realmf::SIZE).step_by(8));
     // FUNCTION: [[HomeObject]] (+40) and the 2 in-object slots, which moved to +56 and +64.

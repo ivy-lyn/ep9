@@ -343,19 +343,66 @@ pub(crate) fn add_template(rt: &Runtime, t: u64) {
     object::list_set(rt, list, 0, int32_bits(used as i32 + 1));
 }
 
-/// GetFunctionRealm(obj) (§7.3.22): the `[[Realm]]` of a function, the realm of a bound
-/// function's target (step 3), else the current realm (step 5; v0 has no Proxy). Not a GC
-/// point.
-pub(crate) fn get_function_realm(rt: &Runtime, mut obj: u64) -> u64 {
+/// GetFunctionRealm(obj) (§7.3.22) for the callers that take an abrupt result as the current
+/// realm (NewPromiseReactionJob step 3, HostMakeJobCallback, `Cx::function_realm_intrinsic`;
+/// a `?` step uses `try_get_function_realm`): the `[[Realm]]` of a function, the
+/// realm of a bound function's or a live proxy's target (steps 3-4), else the current realm
+/// (step 5, and a revoked proxy). Targets never change after creation, so the loop ends.
+/// Not a GC point.
+pub(crate) fn get_function_realm(rt: &Runtime, obj: u64) -> u64 {
+    function_realm_of(obj).unwrap_or_else(|| rt.root(Root::Realm))
+}
+
+/// GetFunctionRealm(obj) (§7.3.22) with step 4.a: a revoked proxy on the way throws a
+/// TypeError (ValidateNonRevokedProxy). For GetPrototypeFromConstructor (§10.1.14 step 4).
+/// Not a GC point before the throw.
+pub(crate) fn try_get_function_realm(cx: &mut Cx, obj: u64) -> conv::Res<u64> {
+    match function_realm_of(obj) {
+        Some(r) => Ok(r),
+        None if is_revoked_on_chain(obj) => Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "Cannot perform 'GetFunctionRealm' on a proxy that has been revoked",
+        )),
+        None => Ok(cx.rt().root(Root::Realm)),
+    }
+}
+
+/// The realm steps 1-4 of GetFunctionRealm: `None` for step 5 (no function at the end of
+/// the chain) and for a revoked proxy.
+fn function_realm_of(mut obj: u64) -> Option<u64> {
     loop {
         if kinds::is_function(obj) {
-            return object::function_realm(obj);
+            return Some(object::function_realm(obj));
         }
         if kinds::is_bound(obj) {
             obj = crate::bound::target(obj);
             continue;
         }
-        return rt.root(Root::Realm);
+        if crate::proxy::is_proxy(obj) {
+            obj = crate::proxy::target(obj);
+            if !kinds::is_object(obj) {
+                return None;
+            }
+            continue;
+        }
+        return None;
+    }
+}
+
+/// Whether the GetFunctionRealm walk from `obj` stops at a revoked proxy.
+fn is_revoked_on_chain(mut obj: u64) -> bool {
+    loop {
+        if kinds::is_bound(obj) {
+            obj = crate::bound::target(obj);
+        } else if crate::proxy::is_proxy(obj) {
+            if crate::proxy::handler(obj) == NULL {
+                return true;
+            }
+            obj = crate::proxy::target(obj);
+        } else {
+            return false;
+        }
     }
 }
 

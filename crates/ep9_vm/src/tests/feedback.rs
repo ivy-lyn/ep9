@@ -7,7 +7,7 @@ use std::hint::black_box;
 
 use ep9_bytecode::{FeedbackSlotKind, FunctionId, RegisterList, VerifiedUnit};
 
-use super::{Asm, config, isolate, meta, on_big_stack, unit};
+use super::{Asm, config, isolate, meta, on_big_stack, profile::isolate as isolate_full, unit};
 use crate::construct_ic::{cs, handler_i32};
 use crate::feedback;
 use crate::frame::{UNDEFINED, int32_bits, int32_of};
@@ -276,7 +276,7 @@ fn a_script_gets_its_vector_at_entry() {
     assert_eq!(script, made(0));
     // Its CreateClosure slot saw the one closure (`profile::record_closure`).
     on_big_stack(|| {
-        let mut iso = isolate(IsolateConfig::default());
+        let mut iso = isolate_full(IsolateConfig::default());
         iso.with_cx_checkpoint(|cx| {
             cx.run_script(program(1, How::Fast, 0), "test.js")
                 .map(|_| ())
@@ -365,8 +365,20 @@ fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
 /// Scrubs the stack and collects, after the cells were made by [`below_a_pad`] (which gave
 /// `pad_low`). Then checks that the collection can show something about them: its
 /// conservative scan stopped above the pad, and kept none of `cells` (masked addresses).
+/// Inlined (rule 35), so the scrub runs in the test's own frame and its zeros lie under the
+/// frame of [`collect_and_check`] too: an out-of-line helper's own frame is not under its
+/// own scrub (`tests/ordered_table.rs` `collect`: CI run 40733504045). The collection and
+/// the checks stay out of line, so the unmasked addresses they compute never reach the
+/// test's frame.
+#[inline(always)]
 fn collect_after_a_pad(iso: &mut Isolate, pad_low: usize, cells: &[usize]) {
     scrub_stack();
+    collect_and_check(iso, pad_low, cells);
+}
+
+/// The collection and the checks of [`collect_after_a_pad`], out of line.
+#[inline(never)]
+fn collect_and_check(iso: &mut Isolate, pad_low: usize, cells: &[usize]) {
     iso.collect_garbage();
     let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
     let scan_low = high - 8 * iso.heap().stats().last_stack_words;

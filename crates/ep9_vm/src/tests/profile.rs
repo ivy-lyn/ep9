@@ -3,20 +3,35 @@
 //! Call slot and GC. Each program runs under every dispatch expansion, with and without GC
 //! stress (a collection before every allocation, then the heap verifier), with the feedback
 //! threshold 0, so the script has its vector from its first instruction; every run must give
-//! the same slots.
+//! the same slots. These isolates run the type-feedback mode `full` (MODES-D11): a build
+//! without the `jit` feature (`cargo test -p ep9_vm`) defaults to the jitless preset, whose
+//! `ics_only` runs no record (the tests at the end of this file).
 
 use ep9_bytecode::{
     FeedbackSlot, FeedbackSlotKind, FunctionId, Register, RegisterList, VerifiedUnit,
 };
 use ep9_facts::{BinaryHint, CompareHint, ForInHint, TypeSet};
 
-use super::{Asm, config, isolate, meta, on_big_stack, unit};
+use super::{Asm, config, meta, on_big_stack, print, unit};
 use crate::feedback;
 use crate::frame::{HOLE, UNDEFINED, int32_bits, native_of};
 use crate::interp::BUDGET;
 use crate::kinds;
-use crate::profile::{self, CALL_WINDOW, CLOSURE_MANY, keyed};
-use crate::{Dispatch, IsolateConfig};
+use crate::profile::{self, CALL_JITTER, CALL_WINDOW, CLOSURE_MANY, keyed};
+use crate::{Dispatch, ExecOptions, Feedback, Isolate, IsolateConfig};
+
+/// A new isolate with `print` and the type-feedback mode `f` on the default preset of this
+/// build.
+fn isolate_with(config: IsolateConfig, f: Feedback) -> Isolate {
+    let mut iso = Isolate::new_with(config, ExecOptions::default().feedback(f)).unwrap();
+    iso.register_host_function("print", 1, print);
+    iso
+}
+
+/// A new isolate with `print` and the type-feedback mode `full` (every test that reads records).
+pub(super) fn isolate(config: IsolateConfig) -> Isolate {
+    isolate_with(config, Feedback::FULL)
+}
 
 /// A key half after a run, in a form that two isolates share.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,12 +63,15 @@ struct How {
     budget: Option<i64>,
     /// The run must succeed.
     ok: bool,
+    /// The type-feedback mode (MODES-D11).
+    feedback: Feedback,
 }
 
 const RUN: How = How {
     threshold: 0,
     budget: None,
     ok: true,
+    feedback: Feedback::FULL,
 };
 
 /// The slots of every function of the unit of `make` after a run. Runs under every dispatch
@@ -68,10 +86,13 @@ fn slots_gc(how: How, make: fn() -> VerifiedUnit) -> BeforeAfter {
     for &d in Dispatch::ALL {
         for stress in [false, true] {
             let got = on_big_stack(move || {
-                let mut iso = isolate(IsolateConfig {
-                    feedback_threshold: how.threshold,
-                    ..config(d, stress)
-                });
+                let mut iso = isolate_with(
+                    IsolateConfig {
+                        feedback_threshold: how.threshold,
+                        ..config(d, stress)
+                    },
+                    how.feedback,
+                );
                 if let Some(b) = how.budget {
                     iso.cx.budget = b;
                 }
@@ -145,6 +166,74 @@ fn key(slots: &[Slots], f: usize, s: FeedbackSlot) -> Key {
     slots[f].as_ref().expect("a vector")[s.index()].0
 }
 
+/// MODES-D11, MODES-D19 (M5-P3 PROFILE6): `make` under the type-feedback mode `ics_only`, in
+/// every dispatch expansion and GC mode, writes no record of `profile.rs` and every IC write:
+/// against the same run under `full`, a slot of a kind that only `profile.rs` writes (BinaryOp,
+/// CompareOp, TypeOf, Call at a call site, JumpLoop, CreateClosure, ForIn) keeps its first
+/// state (undefined, int32 0); a keyed slot keeps its value half (the record bits) at int32 0
+/// and its key half (the KEYED IC's state) as under `full`; every other slot (the ICs, literal
+/// sites, clone sites) ends as under `full`. The `full` run must have recorded something, so
+/// the check is not empty. Returns the slots of the `full` run.
+fn assert_no_records(how: How, make: fn() -> VerifiedUnit) -> Vec<Slots> {
+    use FeedbackSlotKind as K;
+    let full = slots(how, make);
+    let ics = slots(
+        How {
+            feedback: Feedback::ICS_ONLY,
+            ..how
+        },
+        make,
+    );
+    let unit = make();
+    let first = (Key::Undefined, int32_bits(0));
+    let mut recorded = 0;
+    for (f, (a, b)) in full.iter().zip(&ics).enumerate() {
+        let (Some(a), Some(b)) = (a, b) else {
+            assert_eq!(
+                a.is_some(),
+                b.is_some(),
+                "function {f}: a vector in one mode only"
+            );
+            continue;
+        };
+        let kinds = &unit.functions[f].feedback_slots;
+        assert_eq!((a.len(), b.len()), (kinds.len(), kinds.len()));
+        for (i, k) in kinds.iter().enumerate() {
+            let (full_slot, ics_slot) = (a[i], b[i]);
+            match k {
+                K::BinaryOp
+                | K::CompareOp
+                | K::TypeOf
+                | K::Call
+                | K::JumpLoop
+                | K::CreateClosure
+                | K::ForIn => {
+                    assert_eq!(ics_slot, first, "function {f} slot {i} ({k:?}): no record");
+                    recorded += usize::from(full_slot != first);
+                }
+                K::LoadKeyed
+                | K::StoreKeyed
+                | K::DefineKeyedOwn
+                | K::HasKeyed
+                | K::StoreInArrayLiteral => {
+                    assert_eq!(
+                        ics_slot,
+                        (full_slot.0, int32_bits(0)),
+                        "function {f} slot {i} ({k:?}): the IC key, no record bits"
+                    );
+                    recorded += usize::from(full_slot.1 != int32_bits(0));
+                }
+                _ => assert_eq!(ics_slot, full_slot, "function {f} slot {i} ({k:?}): the IC"),
+            }
+        }
+    }
+    assert!(
+        recorded > 0,
+        "the full run recorded nothing: the check is empty"
+    );
+    full
+}
+
 fn bin(h: BinaryHint) -> u32 {
     u32::from(h.bits())
 }
@@ -210,7 +299,7 @@ fn binary_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
     v.push(site(&mut s, B, smi(2), smi(3), |s, l, k| {
         s.b.add(l, k);
     }));
-    // 1: int32 overflow of `+`: the fast path's double arm; implicit (V9-D6, `profile.rs`).
+    // 1: int32 overflow of `+`: the overflow arm records INT32_OVERFLOW (MODES-D16).
     v.push(site(&mut s, B, num(2147483647.0), smi(1), |s, l, k| {
         s.b.add(l, k);
     }));
@@ -295,7 +384,7 @@ fn binary_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
         },
     ));
     // 13: a Wide `AddSmi` that overflows (the prefixed fast path goes cold; `AddSmi`'s own
-    // fast body then takes its double arm): implicit, as case 1.
+    // fast body then takes its overflow arm): INT32_OVERFLOW, as case 1 (MODES-D16).
     v.push(site(
         &mut s,
         B,
@@ -333,12 +422,12 @@ fn binary_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
 
 #[test]
 fn binary_sites_record_their_hints_and_int32_pairs_are_implicit() {
-    let got = slots(RUN, || binary_program().0);
+    let got = assert_no_records(RUN, || binary_program().0);
     let k = binary_program().1;
     let ovf = bin(BinaryHint::INT32_OVERFLOW);
     let want = [
         0,
-        0,
+        ovf,
         ovf,
         ovf,
         ovf,
@@ -350,7 +439,7 @@ fn binary_sites_record_their_hints_and_int32_pairs_are_implicit() {
         bin(BinaryHint::STRING) | bin(BinaryHint::NUMBER),
         bin(BinaryHint::ODDBALL) | bin(BinaryHint::NUMBER),
         bin(BinaryHint::OTHER) | bin(BinaryHint::NUMBER),
-        0,
+        ovf,
         0,
         bin(BinaryHint::NUMBER) | bin(BinaryHint::STRING),
         bin(BinaryHint::ODDBALL),
@@ -396,6 +485,223 @@ fn the_int32_overflow_rule_matches_each_operator() {
     assert!(!f(BinOp::Shr, 8, 1));
     assert!(f(BinOp::Shr, -1, 0));
     assert!(!f(BinOp::Shl, 1, 31), "i32::MIN");
+}
+
+// ---- MODES-D16: the int32 overflow of `+`, `-`, `Inc` and `Dec` -----------------------------
+
+/// The arm of a MODES-D16 case: the operation whose overflow it records, or none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Arm {
+    Add,
+    Sub,
+    Inc,
+    Dec,
+    /// Int32 results that fit, and `Negate` (not a D16 operation): implicit.
+    None,
+}
+
+/// The D16 sites of [`overflow_program`], in order: (arm, name, the value half after the run).
+const OVERFLOW_CASES: [(Arm, &str, BinaryHint); 12] = [
+    (Arm::Add, "Add i32::MAX + 1", BinaryHint::INT32_OVERFLOW),
+    (Arm::Sub, "Sub i32::MIN - 1", BinaryHint::INT32_OVERFLOW),
+    (Arm::Add, "AddSmi i32::MAX + 1", BinaryHint::INT32_OVERFLOW),
+    (Arm::Sub, "SubSmi i32::MIN - 1", BinaryHint::INT32_OVERFLOW),
+    (
+        Arm::Sub,
+        "Wide SubSmi (i32::MIN + 5) - 1000",
+        BinaryHint::INT32_OVERFLOW,
+    ),
+    (Arm::Inc, "Inc i32::MAX", BinaryHint::INT32_OVERFLOW),
+    (Arm::Dec, "Dec i32::MIN", BinaryHint::INT32_OVERFLOW),
+    (
+        Arm::None,
+        "Add, Sub, AddSmi, SubSmi, Inc, Dec that fit",
+        BinaryHint::EMPTY,
+    ),
+    (
+        Arm::None,
+        "Negate i32::MIN (not a D16 operation)",
+        BinaryHint::EMPTY,
+    ),
+    (
+        Arm::Add,
+        "Add: an overflow, then a fit",
+        BinaryHint::INT32_OVERFLOW,
+    ),
+    (
+        Arm::Inc,
+        "Inc: an overflow, then 1.5",
+        BinaryHint::INT32_OVERFLOW.union(BinaryHint::NUMBER),
+    ),
+    (
+        Arm::Sub,
+        "Sub i32::MAX - -1 (an overflow up)",
+        BinaryHint::INT32_OVERFLOW,
+    ),
+];
+
+/// One site per MODES-D16 arm (`+`, `-`, their `*Smi` forms, `Inc`, `Dec`), the int32 cases
+/// that fit (implicit), `Negate` (outside D16: implicit) and two sites run twice. Each D16
+/// site also checks the result: the double of the exact sum or difference.
+fn overflow_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    use FeedbackSlotKind::BinaryOp as B;
+    let mut s = Asm::script(0);
+    let mut v = Vec::new();
+    let smi = |n: i32| {
+        move |s: &mut Asm| {
+            s.b.lda_smi(n);
+        }
+    };
+    let bad = s.b.new_label();
+    let ok = s.b.new_label();
+    // Throws unless the accumulator is the number `want` (a strict equality on doubles: the
+    // overflow arm made a double, never a wrapped int32).
+    let check = |s: &mut Asm, want: f64, bad| {
+        let t = s.b.new_register();
+        s.b.star(t);
+        s.lda_num(want);
+        s.b.test_equal_strict(t, s.cmp).jump_if_false(bad);
+    };
+    // 0, 1: `+` and `-` past int32.
+    v.push(site(&mut s, B, smi(i32::MAX), smi(1), |s, l, k| {
+        s.b.add(l, k);
+    }));
+    check(&mut s, 2147483648.0, bad);
+    v.push(site(&mut s, B, smi(i32::MIN), smi(1), |s, l, k| {
+        s.b.sub(l, k);
+    }));
+    check(&mut s, -2147483649.0, bad);
+    // 2, 3: the one-byte `AddSmi` and `SubSmi`.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MAX).add_smi(1, k);
+    v.push(k);
+    check(&mut s, 2147483648.0, bad);
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN).sub_smi(1, k);
+    v.push(k);
+    check(&mut s, -2147483649.0, bad);
+    // 4: a Wide `SubSmi` (the prefixed fast path goes cold; `SubSmi`'s own fast body records).
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN + 5).sub_smi(1000, k);
+    v.push(k);
+    check(&mut s, -2147484643.0, bad);
+    // 5, 6: `Inc` and `Dec`.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MAX).inc(k);
+    v.push(k);
+    check(&mut s, 2147483648.0, bad);
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN).dec(k);
+    v.push(k);
+    check(&mut s, -2147483649.0, bad);
+    // 7: one slot shared by each operation on a value that fits: implicit.
+    let k = s.b.feedback_slot(B);
+    let r = s.b.new_register();
+    s.b.lda_smi(7).star(r).lda_smi(i32::MAX - 7).add(r, k);
+    s.b.lda_smi(i32::MIN + 7).star(r).lda_smi(7).sub(r, k);
+    s.b.lda_smi(i32::MAX - 1)
+        .add_smi(1, k)
+        .lda_smi(i32::MIN + 1)
+        .sub_smi(1, k);
+    s.b.lda_smi(i32::MAX - 1)
+        .inc(k)
+        .lda_smi(i32::MIN + 1)
+        .dec(k);
+    v.push(k);
+    check(&mut s, f64::from(i32::MIN), bad);
+    // 8: `Negate` of i32::MIN leaves int32 but is not a D16 operation: implicit.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MIN).negate(k);
+    v.push(k);
+    check(&mut s, 2147483648.0, bad);
+    // 9: one `Add` site run twice, an overflow then a fit: the bit stays.
+    let k9 = s.b.feedback_slot(B);
+    let a = s.b.new_register();
+    s.b.lda_smi(i32::MAX).star(a);
+    counted_loop(&mut s, 2, |s, _| {
+        s.b.lda_smi(1).add(a, k9);
+        s.b.lda_smi(1).star(a);
+    });
+    v.push(k9);
+    // 10: one `Inc` site: an overflow, then a double.
+    let k = s.b.feedback_slot(B);
+    s.b.lda_smi(i32::MAX).inc(k);
+    s.lda_num(1.5);
+    s.b.inc(k);
+    v.push(k);
+    check(&mut s, 2.5, bad);
+    // 11: `-` of a negative int32 past i32::MAX.
+    v.push(site(&mut s, B, smi(i32::MAX), smi(-1), |s, l, k| {
+        s.b.sub(l, k);
+    }));
+    check(&mut s, 2147483648.0, bad);
+    assert_eq!(v.len(), OVERFLOW_CASES.len());
+    s.b.jump(ok);
+    s.b.bind(bad);
+    s.lda_str("a D16 site gave a wrong result");
+    s.b.throw();
+    s.b.bind(ok);
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), v)
+}
+
+/// Runs [`overflow_program`] (every expansion, with and without GC stress, results checked)
+/// and checks the cases of `arm`.
+fn check_overflow_arm(arm: Arm) {
+    let got = assert_no_records(RUN, || overflow_program().0);
+    let k = overflow_program().1;
+    let mut n = 0;
+    for (i, (&slot, &(a, name, want))) in k.iter().zip(&OVERFLOW_CASES).enumerate() {
+        if a == arm {
+            n += 1;
+            assert_eq!(value(&got, 0, slot), bin(want), "D16 case {i}: {name}");
+            assert_eq!(
+                key(&got, 0, slot),
+                Key::Undefined,
+                "D16 case {i}: key untouched"
+            );
+        }
+    }
+    assert!(n > 0, "{arm:?} has cases");
+}
+
+#[test]
+fn an_int32_add_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Add);
+}
+
+#[test]
+fn an_int32_sub_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Sub);
+}
+
+#[test]
+fn an_int32_inc_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Inc);
+}
+
+#[test]
+fn an_int32_dec_that_overflows_records_int32_overflow() {
+    check_overflow_arm(Arm::Dec);
+}
+
+#[test]
+fn d16_results_that_fit_and_negate_stay_implicit() {
+    check_overflow_arm(Arm::None);
+}
+
+/// The MODES-D16 record is the `ep9_facts` bit that `*`, `/` and `>>>` write (one meaning,
+/// "int32 operands and a result outside int32"), and no other bit.
+#[test]
+fn the_d16_record_is_the_int32_overflow_bit() {
+    assert_eq!(profile::INT32_OVERFLOW, bin(BinaryHint::INT32_OVERFLOW));
+    assert_eq!(
+        profile::int32_pair_bits(
+            crate::conv::BinOp::Mul,
+            ep9_value::Value::number(4294967296.0).to_bits()
+        ),
+        profile::INT32_OVERFLOW
+    );
 }
 
 // ---- CompareOp and TypeOf ------------------------------------------------------------------
@@ -544,7 +850,7 @@ fn compare_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
 
 #[test]
 fn compare_sites_record_their_hints_and_int32_pairs_are_implicit() {
-    let got = slots(RUN, || compare_program().0);
+    let got = assert_no_records(RUN, || compare_program().0);
     let k = compare_program().1;
     let want = [
         0,
@@ -599,7 +905,7 @@ fn typeof_sites_record_the_type_of_each_operand() {
         g.b.lda_undefined().return_();
         unit("", vec![s.finish(), g.finish()])
     }
-    let got = slots(RUN, make);
+    let got = assert_no_records(RUN, make);
     let all = [
         TypeSet::INT32,
         TypeSet::DOUBLE,
@@ -715,7 +1021,7 @@ fn keyed_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
 
 #[test]
 fn keyed_sites_record_keys_receivers_and_misses() {
-    let got = slots(RUN, || keyed_program().0);
+    let got = assert_no_records(RUN, || keyed_program().0);
     let k = keyed_program().1;
     let ia = keyed::INDEX | keyed::ARRAY;
     let want = [
@@ -736,7 +1042,9 @@ fn keyed_sites_record_keys_receivers_and_misses() {
     ];
     assert_eq!(k.len(), want.len());
     for (i, (&slot, &w)) in k.iter().zip(&want).enumerate() {
-        assert_eq!(value(&got, 0, slot), w, "keyed case {i}");
+        // IC_LAYOUT 3 bits 10-16 (the kinds set, M5-P1 ELEM1) are left out here.
+        let bits = value(&got, 0, slot) & !crate::elements::KINDS_SET_MASK;
+        assert_eq!(bits, w, "keyed case {i}");
         assert_eq!(
             key(&got, 0, slot),
             Key::Undefined,
@@ -846,14 +1154,20 @@ fn keyed_index_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
 fn keyed_sites_record_the_element_case_of_every_index_key_form() {
     // An index string, -0 or an integral double up to 2^32 - 2 is the same array index as
     // the int32 key: a hole or an index past the length records HOLE or OUT_OF_BOUNDS.
-    let got = slots(RUN, || keyed_index_program().0);
+    let got = assert_no_records(RUN, || keyed_index_program().0);
     let k = keyed_index_program().1;
     assert_eq!(k.len(), INDEX_CASES.len());
     let wrong: Vec<(usize, u32, u32)> = k
         .iter()
         .zip(&INDEX_CASES)
         .enumerate()
-        .map(|(i, (&slot, &(_, _, w)))| (i, value(&got, 0, slot), w))
+        .map(|(i, (&slot, &(_, _, w)))| {
+            (
+                i,
+                value(&got, 0, slot) & !crate::elements::KINDS_SET_MASK,
+                w,
+            )
+        })
         .filter(|&(_, g, w)| g != w)
         .collect();
     assert!(wrong.is_empty(), "(case, got, want): {wrong:?}");
@@ -890,7 +1204,7 @@ fn keyed_rope_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
 fn keyed_sites_read_rope_keys_in_place() {
     // `keyed_key` calls `string::array_index` on the key before the generic operation, so
     // the key is still a CONS here (M4-P1 PROFILE need 5): the rope reads as a name.
-    let got = slots(RUN, || keyed_rope_program().0);
+    let got = assert_no_records(RUN, || keyed_rope_program().0);
     let k = keyed_rope_program().1;
     let want = [
         keyed::NAME | keyed::OBJECT,
@@ -982,7 +1296,7 @@ fn calls_in_the_window_record_target_and_count() {
     // after the isolate start.
     const N: i32 = 6;
     assert!(i64::from(4 * N + 8) < CALL_WINDOW);
-    let got = slots(RUN, || call_program(N, false).0);
+    let got = assert_no_records(RUN, || call_program(N, false).0);
     let k = call_program(N, false).1;
     let n = N as u32;
     assert_eq!(
@@ -1042,17 +1356,103 @@ fn calls_outside_the_window_are_not_recorded_until_a_poll() {
     );
 }
 
+/// The window jitter (M5-P1 PROFILE5; MC-w13-17): a poll resets the budget to `BUDGET + j`
+/// (`profile::budget_after_poll`), and a call whose budget before it is above `BUDGET` (in
+/// the `j` units before the window) records nothing, at a call that `call_fast` finishes
+/// (`record_call_pushed`) and at one that goes cold (`record_call`).
+#[test]
+fn calls_in_the_jitter_units_before_the_window_are_not_recorded() {
+    let k = call_program(6, false).1;
+    // The whole run (about 32 units) is in the jitter units: nothing is recorded.
+    let above = How {
+        budget: Some(BUDGET + CALL_JITTER),
+        ..RUN
+    };
+    let got = slots(above, || call_program(6, false).0);
+    for s in [k.mono, k.mega, k.closures, k.host] {
+        assert_eq!((key(&got, 0, s), value(&got, 0, s)), (Key::Undefined, 0));
+    }
+    // 4 units of jitter: the first 2 iterations of the mono loop (a call and a back edge
+    // each) are before the window, the rest of the run is in it.
+    let near = How {
+        budget: Some(BUDGET + 4),
+        ..RUN
+    };
+    let got = slots(near, || call_program(6, false).0);
+    assert_eq!(
+        (key(&got, 0, k.mono), value(&got, 0, k.mono)),
+        (Key::Info(1), 4)
+    );
+    assert_eq!(
+        (key(&got, 0, k.mega), value(&got, 0, k.mega)),
+        (Key::Hole, 6)
+    );
+    assert_eq!(
+        (key(&got, 0, k.host), value(&got, 0, k.host)),
+        (Key::Native, 1),
+        "a cold call in the window (record_call)"
+    );
+}
+
+/// `profile::budget_after_poll`: `BUDGET` plus a jitter in `0..CALL_JITTER`, from one fixed
+/// sequence that each isolate starts on its first poll (so a second isolate, and a second
+/// process, see the same jitters and give the same facts), with many values. Over 100 polls
+/// of a pattern whose period (100 units) divides `BUDGET`, the window start takes many
+/// phases, where the fixed reset gave one.
+#[test]
+fn a_poll_resets_the_budget_with_a_jitter_from_a_fixed_sequence() {
+    let draws = |rt: &crate::runtime::Runtime| -> Vec<i64> {
+        (0..512).map(|_| profile::budget_after_poll(rt)).collect()
+    };
+    let iso = isolate(config(Dispatch::DEFAULT, false));
+    assert_eq!(
+        iso.rt.call_window_jitter.get(),
+        0,
+        "seeded on the first poll"
+    );
+    let a = draws(&iso.rt);
+    assert_ne!(iso.rt.call_window_jitter.get(), 0);
+    assert!(
+        a.iter().all(|b| (BUDGET..BUDGET + CALL_JITTER).contains(b)),
+        "{a:?}"
+    );
+    let distinct: std::collections::BTreeSet<i64> = a.iter().copied().collect();
+    assert!(distinct.len() > CALL_JITTER as usize / 2, "{distinct:?}");
+    // The same seed gives the same sequence.
+    iso.rt.call_window_jitter.set(0);
+    assert_eq!(draws(&iso.rt), a);
+    // Off: the fixed period, and the state stays off.
+    iso.rt.call_window_jitter.set(profile::JITTER_OFF);
+    assert!(draws(&iso.rt).iter().all(|&b| b == BUDGET));
+    assert_eq!(iso.rt.call_window_jitter.get(), profile::JITTER_OFF);
+    // Another isolate runs the same sequence.
+    let other = isolate(config(Dispatch::DEFAULT, false));
+    assert_eq!(draws(&other.rt), a);
+    // The window start of each of 100 periods, as a phase of a 100-unit pattern.
+    let mut at = 0i64;
+    let phases: std::collections::BTreeSet<i64> = a[..100]
+        .iter()
+        .map(|&b| {
+            at += b;
+            at % 100
+        })
+        .collect();
+    assert!(phases.len() > 30, "{phases:?}");
+}
+
 // ---- JumpLoop, CreateClosure, ForIn ----------------------------------------------------------
 
 #[test]
 fn back_edges_are_counted_at_the_budget_polls() {
     fn make() -> VerifiedUnit {
         let mut s = Asm::script(0);
-        counted_loop(&mut s, 2 * BUDGET as i32 + 10, |_, _| {});
+        // Past the second poll also when the first one's reset has the largest jitter
+        // (`profile::budget_after_poll`), and before a third.
+        counted_loop(&mut s, 2 * (BUDGET + CALL_JITTER) as i32 + 10, |_, _| {});
         s.b.lda_undefined().return_();
         unit("", vec![s.finish()])
     }
-    let got = slots(RUN, make);
+    let got = assert_no_records(RUN, make);
     let s = Asm::script(0);
     // One back edge per unit and no call: the loop polls twice.
     assert_eq!(value(&got, 0, s.loop_), 2);
@@ -1079,7 +1479,7 @@ fn closures_count_none_one_many() {
         f.b.lda_undefined().return_();
         unit("", vec![s.finish(), f.finish()])
     }
-    let got = slots(RUN, make);
+    let got = assert_no_records(RUN, make);
     let mut s = Asm::script(0);
     let one = s.b.feedback_slot(FeedbackSlotKind::CreateClosure);
     let many = s.b.feedback_slot(FeedbackSlotKind::CreateClosure);
@@ -1135,6 +1535,7 @@ fn for_in_program() -> (VerifiedUnit, [FeedbackSlot; 3]) {
 
 #[test]
 fn for_in_sites_record_the_receiver_shape_weakly() {
+    assert_no_records(RUN, || for_in_program().0);
     let (got, after) = slots_gc(RUN, || for_in_program().0);
     let [mono, mega, empty] = for_in_program().1;
     let any = u32::from(ForInHint::ANY.bits());
@@ -1242,3 +1643,341 @@ fn counts_saturate_and_leave_a_handler_alone() {
         iso.verify_heap().unwrap();
     });
 }
+
+// ---- the vector axis (M5-P3 PROFILE6; doc 13 M-R9, MODES-CHECK-w20 MC-w20-4, -15) -----------
+
+/// What the vector-axis workload ([`vector_axis_program`]) left on live objects and shapes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Live {
+    /// The printed answer.
+    out: Vec<String>,
+    /// The last `new P(i, i)`: in-object capacity (slack, `shape::field_layout`) and
+    /// (representation, const) of `x` and `y`.
+    point: (usize, [(i32, bool); 2]),
+    /// Elements kinds of arrays from the `mk` literal site: one that kept int32 elements, one
+    /// that took a double, and one made after the loop (the site's birth kind).
+    arrays: [u8; 3],
+    /// The ALLOC_SITE handler of the `mk` literal site: its elements kind, or `None` (no
+    /// handler: no vector).
+    site: Option<u8>,
+    /// The clone `q = {...s}` (made twice, then `q.x = 7`): capacity and (rep, const) of `x`.
+    clone: (usize, (i32, bool)),
+    /// The literal `s = {x: 1}`: (rep, const) of `x`.
+    literal: (i32, bool),
+}
+
+impl Live {
+    /// The names of the fields where `self` and `other` differ.
+    fn differs(&self, other: &Live) -> Vec<&'static str> {
+        let mut d = Vec::new();
+        let mut field = |name, same: bool| {
+            if !same {
+                d.push(name);
+            }
+        };
+        field("out", self.out == other.out);
+        field("point.capacity", self.point.0 == other.point.0);
+        field("point.x", self.point.1[0] == other.point.1[0]);
+        field("point.y", self.point.1[1] == other.point.1[1]);
+        field("arrays.int32", self.arrays[0] == other.arrays[0]);
+        field("arrays.double", self.arrays[1] == other.arrays[1]);
+        field("arrays.born", self.arrays[2] == other.arrays[2]);
+        field("site", self.site == other.site);
+        field("clone.capacity", self.clone.0 == other.clone.0);
+        field("clone.x", self.clone.1 == other.clone.1);
+        field("literal.x", self.literal == other.literal);
+        d
+    }
+}
+
+/// The slot of the array literal of `mk` (function 2) in [`vector_axis_program`].
+fn mk_literal_slot() -> FeedbackSlot {
+    vector_axis().1
+}
+
+/// The vector-axis workload, as the w16 O2 test of `ep9_builtins` (`presets_object_model.rs`)
+/// in JS, with the clone probe of MC-w20-4 and an array-literal birth-kind case:
+///
+/// ```text
+/// function P(x, y) { this.x = x; this.y = y; }       // f1: slack, field bits
+/// function mk(v) { var a = [1, 2, 3]; a[1] = v; return a; }   // f2: ALLOC_SITE
+/// function cl(s) { return {...s}; }                  // f3: CloneObject
+/// for (i = 0; i < 20; i++) {
+///   o = new P(i, i); ai = mk(i); ad = mk(0.5);
+///   s = {x: 1}; q = cl(s); q = cl(s); q.x = 7;
+/// }
+/// born = mk(2); print(o.x + o.y + ai[1] + born[0] + q.x + s.x);
+/// ```
+///
+/// The functions run 20-41 times, so they get their vectors at threshold 0 (the first call)
+/// and the default (8, during the loop), never at `u32::MAX`; the script runs once, so its
+/// own sites (the literal `s`) have a vector only at threshold 0.
+fn vector_axis_program() -> VerifiedUnit {
+    vector_axis().0
+}
+
+fn vector_axis() -> (VerifiedUnit, FeedbackSlot) {
+    const SHALLOW: u8 = 1;
+    // f1: P.
+    let mut p = Asm::new(meta("P", 2, 0, 0, 0));
+    let this = p.b.receiver();
+    p.b.ldar(p.b.parameter(0));
+    p.set_named(this, "x");
+    p.b.ldar(p.b.parameter(1));
+    p.set_named(this, "y");
+    p.b.lda_undefined().return_();
+    // f2: mk.
+    let mut m = Asm::new(meta("mk", 1, 0, 0, 0));
+    let (k1, k2, k3) = (
+        m.b.number_constant(1.0),
+        m.b.number_constant(2.0),
+        m.b.number_constant(3.0),
+    );
+    let bp = m.b.array_boilerplate(vec![Some(k1), Some(k2), Some(k3)]);
+    let (a, idx) = (m.b.new_register(), m.b.new_register());
+    let mk_site = m.lit;
+    m.b.create_array_literal(bp, mk_site, SHALLOW).star(a);
+    m.b.lda_smi(1).star(idx);
+    m.b.ldar(m.b.parameter(0))
+        .set_keyed_property(a, idx, m.set_keyed);
+    m.b.ldar(a).return_();
+    // f3: cl.
+    let mut c = Asm::new(meta("cl", 1, 0, 0, 0));
+    let clone_site = c.b.feedback_slot(FeedbackSlotKind::CloneObject);
+    c.b.clone_object(c.b.parameter(0), 0, clone_site).return_();
+    // The script.
+    let mut s = Asm::script(0);
+    let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+    let (kx, kone) = (s.b.string_constant("x"), s.b.number_constant(1.0));
+    let obp = s.b.object_boilerplate(vec![(kx, Some(kone))]);
+    let fns: Vec<Register> = (1..=3)
+        .map(|n| {
+            let r = s.b.new_register();
+            let k = s.b.function_constant(FunctionId(n));
+            s.b.create_closure(k, s.closure, 0).star(r);
+            r
+        })
+        .collect();
+    let (pf, mkf, clf) = (fns[0], fns[1], fns[2]);
+    let args = s.b.new_register_list(2);
+    let (o, ai, ad, src, q, half, born) = (
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+    );
+    let half_k = s.b.number_constant(0.5);
+    s.b.lda_constant(half_k).star(half);
+    counted_loop(&mut s, 20, |s, i| {
+        let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+        s.b.ldar(i).star(args.get(0)).star(args.get(1));
+        s.b.construct(pf, args, 2, site).star(o);
+        let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+        s.b.call_undefined_receiver1(mkf, i, site).star(ai);
+        let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+        s.b.call_undefined_receiver1(mkf, half, site).star(ad);
+        s.b.create_object_literal(obp, lit, SHALLOW).star(src);
+        let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+        s.b.call_undefined_receiver1(clf, src, site).star(q);
+        let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+        s.b.call_undefined_receiver1(clf, src, site).star(q);
+        s.b.lda_smi(7);
+        s.set_named(q, "x");
+    });
+    let two = s.b.new_register();
+    s.b.lda_smi(2).star(two);
+    let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+    s.b.call_undefined_receiver1(mkf, two, site).star(born);
+    for (r, name) in [
+        (o, "o"),
+        (ai, "ai"),
+        (ad, "ad"),
+        (born, "born"),
+        (q, "q"),
+        (src, "s"),
+    ] {
+        s.b.ldar(r);
+        s.sta_global(name);
+    }
+    // print(o.x + o.y + ai[1] + born[0] + q.x + s.x)
+    let t = s.b.new_register();
+    s.get_named(o, "x");
+    s.b.star(t);
+    s.get_named(o, "y");
+    s.b.add(t, s.bin).star(t);
+    s.b.lda_smi(1)
+        .get_keyed_property(ai, s.keyed)
+        .add(t, s.bin)
+        .star(t);
+    s.b.lda_zero()
+        .get_keyed_property(born, s.keyed)
+        .add(t, s.bin)
+        .star(t);
+    s.get_named(q, "x");
+    s.b.add(t, s.bin).star(t);
+    s.get_named(src, "x");
+    s.b.add(t, s.bin);
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (
+        unit("", vec![s.finish(), p.finish(), m.finish(), c.finish()]),
+        mk_site,
+    )
+}
+
+/// The heap configs of the vector axis (MC-w20-15): S0, S1, and both with GC stress (a
+/// collection before every allocation, then the heap verifier; S1 stress: minor GCs and a major
+/// one every 64th).
+fn heap_configs() -> [(&'static str, ep9_heap::HeapConfig); 4] {
+    let h = |generational: bool, stress: bool| ep9_heap::HeapConfig {
+        generational,
+        gc_stress: u32::from(stress),
+        verify_after_gc: stress,
+        ..ep9_heap::HeapConfig::default()
+    };
+    [
+        ("S0", h(false, false)),
+        ("S1", h(true, false)),
+        ("S0+stress", h(false, true)),
+        ("S1+stress", h(true, true)),
+    ]
+}
+
+/// Every preset and feedback setter this build runs: `jit` (only with the `jit` feature,
+/// M-R6), `jitless` with `ics_only` (its default) and with `full`.
+fn presets() -> Vec<ExecOptions> {
+    let mut v = Vec::new();
+    if crate::Preset::JIT.available() {
+        v.push(ExecOptions::jit());
+        v.push(ExecOptions::jit().feedback(Feedback::ICS_ONLY));
+    }
+    v.push(ExecOptions::jitless());
+    v.push(ExecOptions::jitless().feedback(Feedback::FULL));
+    v
+}
+
+/// Runs [`vector_axis_program`] in a fresh isolate and reads [`Live`] (call it on a big
+/// stack).
+fn run_live(exec: ExecOptions, heap: ep9_heap::HeapConfig, d: Dispatch, threshold: u32) -> Live {
+    {
+        let config = IsolateConfig {
+            feedback_threshold: threshold,
+            heap,
+            ..config(d, false)
+        };
+        let mut iso = Isolate::new_with(config, exec).unwrap();
+        iso.register_host_function("print", 1, print);
+        super::take_output();
+        let r = iso
+            .with_cx_checkpoint(|cx| cx.run_script(vector_axis_program(), "axis.js").map(|_| ()));
+        let out = super::take_output();
+        assert!(r.is_ok(), "{r:?}");
+        let obj = |name: &str| {
+            let o = iso.global_raw(name).unwrap().to_bits();
+            assert!(kinds::is_object(o), "{name}");
+            o
+        };
+        let bits = |o: u64, i: usize| {
+            let d = crate::shape::details_at(crate::shape::shape_of(o), i);
+            (d.rep(), d.is_const())
+        };
+        let cap = |o: u64| crate::shape::field_layout(crate::shape::shape_of(o)).0;
+        let (o, q, s) = (obj("o"), obj("q"), obj("s"));
+        let site = {
+            let units = iso.rt.units.borrow();
+            let fi = &units.last().unwrap().infos[2];
+            feedback::vector(fi).and_then(|v| {
+                crate::literal_site::site_of(feedback::value(v, mk_literal_slot().0))
+                    .map(|(kind, _)| kind)
+            })
+        };
+        let live = Live {
+            out,
+            point: (cap(o), [bits(o, 0), bits(o, 1)]),
+            arrays: ["ai", "ad", "born"].map(|n| crate::elements::kind_of(obj(n))),
+            site,
+            clone: (cap(q), bits(q, 0)),
+            literal: bits(s, 0),
+        };
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+        live
+    }
+}
+
+/// M-R9 on the vector axis (MC-w20-4 (2), MC-w20-15; orchestrator M5-P3-ORCH-1 option A, -2):
+/// at one feedback threshold, every preset and feedback setter, every heap config (S0, S1, GC
+/// stress) and every dispatch expansion leaves the same object model on live shapes: the
+/// slack capacity and field representation and const bits of a constructed object, the
+/// elements kinds of literal arrays and the ALLOC_SITE birth kind, the clone result's fields,
+/// a literal's fields. `ics_only` keeps the ALLOC_SITE cell (MODES-D19).
+///
+/// The threshold is one run value for every preset (ORCH-1 option A), and it is a knob, not a
+/// mode: threshold 0 and the default may differ from `u32::MAX` (no vector: no ALLOC_SITE
+/// handler and no clone handler, whose cold paths make the object-model writes). This test
+/// names the fields that differ, so a change of that set is seen.
+#[test]
+fn every_preset_and_heap_make_the_same_live_object_model_at_one_threshold() {
+    let mut at = Vec::new();
+    for threshold in [0, IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD, u32::MAX] {
+        let mut cases = Vec::new();
+        for exec in presets() {
+            for (heap_name, heap) in heap_configs() {
+                for &d in Dispatch::ALL {
+                    cases.push((exec, heap_name, heap.clone(), d));
+                }
+            }
+        }
+        // 8 runs at a time, each on its own big stack (an isolate belongs to its thread).
+        let mut first: Option<(String, Live)> = None;
+        for chunk in cases.chunks(8) {
+            let runs: Vec<_> = chunk
+                .iter()
+                .cloned()
+                .map(|(exec, heap_name, heap, d)| {
+                    let label = format!(
+                        "threshold {threshold} {} {} {heap_name} {}",
+                        exec.preset().name(),
+                        exec.feedback_mode().name(),
+                        d.name()
+                    );
+                    let h = std::thread::Builder::new()
+                        .stack_size(512 << 20)
+                        .spawn(move || run_live(exec, heap, d, threshold))
+                        .unwrap();
+                    (label, h)
+                })
+                .collect();
+            for (label, h) in runs {
+                let live = h.join().unwrap();
+                match &first {
+                    None => first = Some((label, live)),
+                    Some((l0, live0)) => {
+                        assert_eq!(&live, live0, "{label} vs {l0}: {:?}", live.differs(live0))
+                    }
+                }
+            }
+        }
+        at.push((threshold, first.unwrap().1));
+    }
+    let (eager, default, never) = (&at[0].1, &at[1].1, &at[2].1);
+    // The answer is the same at every threshold.
+    assert_eq!(eager.out, never.out);
+    // Vectors make the ALLOC_SITE handler (it keeps the generalized birth kind) and the clone
+    // handler (its cold path widens the result shape's fields, `field_rep::widen_all`).
+    assert!(eager.site.is_some() && default.site.is_some() && never.site.is_none());
+    assert_eq!(eager.differs(never), EAGER_VS_NEVER, "{eager:?}\n{never:?}");
+    assert_eq!(
+        default.differs(never),
+        DEFAULT_VS_NEVER,
+        "{default:?}\n{never:?}"
+    );
+}
+
+/// The fields that threshold 0 and `u32::MAX` leave different (the knob, documented).
+const EAGER_VS_NEVER: &[&str] = &["arrays.int32", "arrays.born", "site", "clone.x"];
+/// The fields that the default threshold and `u32::MAX` leave different.
+const DEFAULT_VS_NEVER: &[&str] = &["arrays.int32", "arrays.born", "site", "clone.x"];

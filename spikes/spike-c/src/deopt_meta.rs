@@ -1,45 +1,58 @@
-//! The per-exit deopt metadata form (SPIKEC-4; protocol §6.2, C5b; H29-Q1, Q2, Q5). No
-//! runtime reads it yet: the month-5 deopt entry will. The emitter makes one record per
-//! guard exit from the guard's frame state and the register allocation
-//! ([`crate::emit_a64::emit`]); `spike-c compile` prints its size.
+//! The per-exit deopt metadata (SPIKEC-4; protocol §6.2, C5b; H29-Q1, Q2, Q5), as a builder of
+//! the H29 byte form that the VM reads (M5-P1 SPIKEC-5, V10-D30: the form and its reader are
+//! `crates/ep9_vm/src/deopt.rs`). The emitter makes one record per exit stub (one per guard,
+//! and one per [`Cause`] of a shape guard, MC-w21-5) from the guard's frame state and the
+//! register allocation ([`crate::emit_a64::emit`]); the install
+//! hands the bytes to `ep9_vm::NativeCx::install_b_with_deopt`, whose reader refuses anything
+//! the form does not allow (`ep9_vm::NativeCx::check_deopt_meta` reads them with no install).
 //!
 //! ```text
-//!  table   := uleb exits, uleb consts, const* (u64 LE: an immediate Value), record*
-//!  record  := uleb pc        native offset of the exit stub from the code start
-//!             uleb guard     the guard id (the trap names it)
-//!             uleb bytecode  the bytecode offset T0 resumes at
-//!             uleb counter   index into the function's RW exit-counter array
+//!  table   := uleb records, uleb consts, const* (u64 LE: an immediate Value), record*
+//!  record  := u8 header     bits 0-3 record tag (0 exit), bit 4 exit class (0 speculation)
+//!             uleb pc       native offset of the exit stub from the code start
+//!             uleb bytecode the bytecode offset T0 resumes at
+//!             uleb counter  index into the code's RW exit-counter array (the stub index)
+//!             uleb feedback the guard's feedback slot + 1 (a shape guard's IC site), 0 = none
+//!             uleb inline   0 (no inlining)
 //!             uleb n, value* every live VM register and the accumulator at the exit
-//!  value   := u8 tag         bits 0-1 repr (Tagged, Int32, Bool, Float64), bits 2-3 kind
-//!                            (machine register, native stack slot, VM frame slot, const),
-//!                            bit 4: the target is the accumulator
-//!             [sleb target]  the VM register (its bytecode operand), absent for the acc
-//!             payload        register number, spill slot, frame byte offset (sleb) or
-//!                            const index (uleb)
+//!  value   := u8 tag        bits 0-3 location (0 reg, 1 stack, 2 const-index, 3 VM frame
+//!                           slot), bits 4-6 repr (Tagged, Int32, Bool, Float64), bit 7: the
+//!                           target is the accumulator
+//!             [sleb target] the VM register (its bytecode operand), absent for the acc
+//!             payload        register number (uleb), stack byte offset from x29 (uleb),
+//!                           const index (uleb) or VM frame byte offset from fp (sleb)
 //! ```
 //!
 //! **Position independent.** Every field is an offset or an index: the pc from the code
-//! start, the bytecode offset from the function's bytecode start, a native stack slot from
-//! the compiled frame's sp, a VM frame slot from fp, a const by index into the table's own
+//! start, the bytecode offset from the function's bytecode start, a native stack word from
+//! the compiled frame's x29, a VM frame slot from fp, a const by index into the table's own
 //! list of immediate Values (no cell: H30 has no raw heap constant, and [`ExitTable::build`]
 //! refuses one). So code + table can move together, and two isolates that compile the same
 //! function from the same facts make byte-equal tables (test
 //! `metadata_is_the_same_in_two_isolates`).
 //!
-//! **What the deopt entry does with a record** (month 5): find the record of the exit (by pc,
-//! or by index for the call-form stubs of [`crate::emit_a64::StubForm::Call`]), box each value
-//! by its repr (Int32 and Bool to a Value, Float64 to a number Value), write it to its VM
-//! register slot or the accumulator, add 1 to the counter, resume T0 at the bytecode offset.
-//! The entry runs from the exit stub, which passes the guard id and offset in x16/x17 (the
-//! 12-byte form) or the index in x30 (the call form): it saves x16/x17 (or x30) before any
-//! table call or far branch, since a linker veneer or a call may change them (MC-w15-14).
+//! **What the deopt entry does with a record** (`ep9_vm` `deopt.rs`): the shared exit passes
+//! the exit stub's pc offset ([`crate::emit_a64`]); the entry finds the record by it, boxes
+//! each value by its repr, writes it to its VM register or the accumulator, adds 1 to the
+//! counter and resumes T0 at the bytecode offset.
 
 use ep9_bytecode::Register;
 
 use crate::ir::{Graph, NodeId, Op, Repr};
 use crate::regalloc::{Allocation, Location};
 
-/// The machine form of a value at an exit.
+/// The H29 byte form's tag values (the VM's `deopt::form`; the VM's reader is the check).
+mod form {
+    pub const RECORD_EXIT: u8 = 0;
+    pub const LOC_REG: u8 = 0;
+    pub const LOC_STACK: u8 = 1;
+    pub const LOC_CONST: u8 = 2;
+    pub const LOC_FRAME: u8 = 3;
+    pub const REPR_SHIFT: u32 = 4;
+    pub const ACC: u8 = 0x80;
+}
+
+/// The machine form of a value at an exit (the H29 repr values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueRepr {
     Tagged = 0,
@@ -53,7 +66,7 @@ pub enum ValueRepr {
 pub enum ValueLoc {
     /// A machine register `x<n>`.
     Reg(u8),
-    /// Native stack slot `k` of the compiled frame (sp + 96 + 8k).
+    /// Spill slot `k` of the compiled frame: the word at x29 + [`stack_offset`]`(k)`.
     Stack(u32),
     /// The VM frame slot at this byte offset from fp (the receiver, a parameter).
     Frame(i32),
@@ -70,16 +83,75 @@ pub struct ExitValue {
     pub loc: ValueLoc,
 }
 
+/// Why an exit was taken (MODES-CHECK-w21 MC-w21-5): a guard with more than one check gets an
+/// exit stub, a record and a counter per cause, so the VM's exit counters count its exits by
+/// cause. Not in the H29 bytes, as [`ExitRecord::guard`] is not: the spike's reports name it.
+/// Every record is a speculation exit (header bit 4 is 0) in Spike C; the exit class a cause
+/// should have is the H29-Q1 class list and a B2 decision (H32-Q5), not this spike's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Cause {
+    /// The guard's one check failed (every guard but `CheckShape`).
+    #[default]
+    Check,
+    /// `CheckShape`: the IC entry holds a case, but not the guard's (another shape in a
+    /// monomorphic entry, no POLY_IC case for the shape, or another handler): the fact the
+    /// code was compiled from does not hold. The only cause that means a wrong profile.
+    Differs,
+    /// `CheckShape`: the receiver is not a cell (or is the zero word).
+    NotCell,
+    /// `CheckShape`: the function has no feedback vector (`FunctionInfo.feedback` is null).
+    NoVector,
+    /// `CheckShape`: the IC entry's key half is undefined: T0 has not filled it yet, or its
+    /// weak key died (feedback.rs: the key half is cleared to undefined).
+    Unfilled,
+    /// `CheckShape`: the entry is megamorphic (the hole key, a value that is no POLY_IC cell).
+    Megamorphic,
+}
+
+impl Cause {
+    /// The causes of a `CheckShape` guard, in the order of its exit stubs.
+    pub const SHAPE: [Cause; 5] = [
+        Cause::Differs,
+        Cause::NotCell,
+        Cause::NoVector,
+        Cause::Unfilled,
+        Cause::Megamorphic,
+    ];
+
+    /// The cause's name in the reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            Cause::Check => "check",
+            Cause::Differs => "differs",
+            Cause::NotCell => "not-cell",
+            Cause::NoVector => "no-vector",
+            Cause::Unfilled => "unfilled",
+            Cause::Megamorphic => "megamorphic",
+        }
+    }
+
+    /// True for a cause that says the feedback the guard reads is not there yet (no vector, an
+    /// entry T0 has not filled), not that a fact is wrong: the start-up exits of MC-w21-5.
+    pub fn not_filled(self) -> bool {
+        matches!(self, Cause::NoVector | Cause::Unfilled)
+    }
+}
+
 /// The metadata of one guard exit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitRecord {
     /// Native offset of the exit stub from the code start.
     pub pc: u32,
+    /// The guard (not in the bytes: the spike's reports name it).
     pub guard: u32,
+    /// Why this exit is taken (not in the bytes; [`Cause`]).
+    pub cause: Cause,
     /// The bytecode offset T0 resumes at.
     pub bytecode: u32,
     /// Index of the exit's counter.
     pub counter: u32,
+    /// The guard's feedback slot (a shape guard's IC site), if it has one.
+    pub feedback: Option<u32>,
     pub values: Vec<ExitValue>,
 }
 
@@ -105,8 +177,14 @@ impl Immediate {
 pub struct ExitTable {
     /// Immediate Values the records name by index.
     pub consts: Vec<Immediate>,
-    /// One record per exit, in stub order (`counter` = the index).
+    /// One record per exit, in stub order (`counter` = the index), so sorted by pc.
     pub exits: Vec<ExitRecord>,
+}
+
+/// The byte offset from x29 of spill slot `k` (the emitter's frame: spill slots from
+/// sp + 96, and x29 = sp after the prologue).
+pub fn stack_offset(k: u32) -> u32 {
+    crate::emit_a64::spill_slot_offset(k)
 }
 
 fn uleb(out: &mut Vec<u8>, mut v: u64) {
@@ -125,50 +203,17 @@ fn sleb(out: &mut Vec<u8>, v: i64) {
     uleb(out, ((v << 1) ^ (v >> 63)) as u64);
 }
 
-struct Reader<'a> {
-    b: &'a [u8],
-    at: usize,
-}
-
-impl Reader<'_> {
-    fn byte(&mut self) -> Result<u8, String> {
-        let x = *self.b.get(self.at).ok_or("truncated")?;
-        self.at += 1;
-        Ok(x)
-    }
-
-    fn uleb(&mut self) -> Result<u64, String> {
-        let (mut v, mut shift) = (0u64, 0u32);
-        loop {
-            let b = self.byte()?;
-            if shift >= 64 {
-                return Err("uleb too long".into());
-            }
-            v |= u64::from(b & 0x7f) << shift;
-            if b & 0x80 == 0 {
-                return Ok(v);
-            }
-            shift += 7;
-        }
-    }
-
-    fn u32(&mut self) -> Result<u32, String> {
-        u32::try_from(self.uleb()?).map_err(|_| "a u32 field is too large".to_string())
-    }
-
-    fn sleb(&mut self) -> Result<i64, String> {
-        let z = self.uleb()?;
-        Ok(((z >> 1) as i64) ^ -((z & 1) as i64))
-    }
-}
-
 impl ExitTable {
-    /// The records of the guards in `stubs` (guard id, native offset of its stub, in stub
-    /// order) from their frame states in `g` and the locations in `a`. Refuses a frame-state
-    /// value with no readable place, or a constant that is a cell.
-    pub fn build(g: &Graph, a: &Allocation, stubs: &[(u32, u32)]) -> Result<ExitTable, String> {
+    /// The records of the exit stubs in `stubs` (guard id, native offset of the stub, cause; in
+    /// stub order) from their guards' frame states in `g` and the locations in `a`. Refuses a
+    /// frame-state value with no readable place, or a constant that is a cell.
+    pub fn build(
+        g: &Graph,
+        a: &Allocation,
+        stubs: &[(u32, u32, Cause)],
+    ) -> Result<ExitTable, String> {
         let mut t = ExitTable::default();
-        for (counter, &(id, pc)) in stubs.iter().enumerate() {
+        for (counter, &(id, pc, cause)) in stubs.iter().enumerate() {
             let (n, guard) = g
                 .guard_nodes()
                 .find(|(_, gd)| gd.id == id)
@@ -185,11 +230,17 @@ impl ExitTable {
                 let (repr, loc) = t.place(g, a, v).map_err(|e| format!("{at}: {e}"))?;
                 values.push(ExitValue { target, repr, loc });
             }
+            let feedback = match g.node(n).op {
+                Op::CheckShape { site, .. } => Some(site),
+                _ => None,
+            };
             t.exits.push(ExitRecord {
                 pc,
                 guard: id,
+                cause,
                 bytecode: guard.state.offset,
                 counter: counter as u32,
+                feedback,
                 values,
             });
         }
@@ -238,7 +289,7 @@ impl ExitTable {
         })
     }
 
-    /// The encoded form (module docs).
+    /// The H29 byte form (module docs).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         uleb(&mut out, self.exits.len() as u64);
@@ -247,22 +298,26 @@ impl ExitTable {
             out.extend_from_slice(&c.bits().to_le_bytes());
         }
         for e in &self.exits {
-            for f in [e.pc, e.guard, e.bytecode, e.counter, e.values.len() as u32] {
+            // An eager guard exit: record tag exit, exit class speculation (bit 4 clear).
+            out.push(form::RECORD_EXIT);
+            let feedback = e.feedback.map_or(0, |s| s + 1);
+            for f in [e.pc, e.bytecode, e.counter, feedback, 0] {
                 uleb(&mut out, u64::from(f));
             }
+            uleb(&mut out, e.values.len() as u64);
             for v in &e.values {
-                let (kind, payload) = match v.loc {
-                    ValueLoc::Reg(r) => (0u8, i64::from(r)),
-                    ValueLoc::Stack(k) => (1, i64::from(k)),
-                    ValueLoc::Frame(o) => (2, i64::from(o)),
-                    ValueLoc::Const(i) => (3, i64::from(i)),
+                let (loc, payload) = match v.loc {
+                    ValueLoc::Reg(r) => (form::LOC_REG, i64::from(r)),
+                    ValueLoc::Stack(k) => (form::LOC_STACK, i64::from(stack_offset(k))),
+                    ValueLoc::Const(i) => (form::LOC_CONST, i64::from(i)),
+                    ValueLoc::Frame(o) => (form::LOC_FRAME, i64::from(o)),
                 };
-                let acc = if v.target.is_none() { 0x10 } else { 0 };
-                out.push(v.repr as u8 | kind << 2 | acc);
+                let acc = if v.target.is_none() { form::ACC } else { 0 };
+                out.push(loc | (v.repr as u8) << form::REPR_SHIFT | acc);
                 if let Some(r) = v.target {
                     sleb(&mut out, i64::from(r.to_operand()));
                 }
-                if kind == 2 {
+                if loc == form::LOC_FRAME {
                     sleb(&mut out, payload);
                 } else {
                     uleb(&mut out, payload as u64);
@@ -272,66 +327,22 @@ impl ExitTable {
         out
     }
 
-    /// Reads an encoded table back.
-    pub fn decode(bytes: &[u8]) -> Result<ExitTable, String> {
-        let mut r = Reader { b: bytes, at: 0 };
-        let n = r.uleb()?;
-        let nc = r.uleb()?;
-        let mut t = ExitTable::default();
-        for _ in 0..nc {
-            let s = bytes.get(r.at..r.at + 8).ok_or("truncated const")?;
-            let bits = u64::from_le_bytes(s.try_into().expect("8 bytes"));
-            t.consts
-                .push(Immediate::new(bits).ok_or(format!("const {bits:#x} is a cell"))?);
-            r.at += 8;
+    /// The values of every record by location kind (the H29-Q2 report): `reg n, stack n, const
+    /// n, frame n`.
+    pub fn locations_text(&self) -> String {
+        let mut n = [0usize; 4];
+        for v in self.exits.iter().flat_map(|e| &e.values) {
+            n[match v.loc {
+                ValueLoc::Reg(_) => 0,
+                ValueLoc::Stack(_) => 1,
+                ValueLoc::Const(_) => 2,
+                ValueLoc::Frame(_) => 3,
+            }] += 1;
         }
-        for _ in 0..n {
-            let (pc, guard, bytecode, counter, nv) =
-                (r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?);
-            let mut values = Vec::new();
-            for _ in 0..nv {
-                let tag = r.byte()?;
-                let repr = match tag & 3 {
-                    0 => ValueRepr::Tagged,
-                    1 => ValueRepr::Int32,
-                    2 => ValueRepr::Bool,
-                    _ => ValueRepr::Float64,
-                };
-                let target = if tag & 0x10 != 0 {
-                    None
-                } else {
-                    let op = i32::try_from(r.sleb()?).map_err(|_| "register operand")?;
-                    Some(Register::from_operand(op))
-                };
-                let loc = match (tag >> 2) & 3 {
-                    0 => ValueLoc::Reg(u8::try_from(r.uleb()?).map_err(|_| "register")?),
-                    1 => ValueLoc::Stack(r.u32()?),
-                    2 => ValueLoc::Frame(i32::try_from(r.sleb()?).map_err(|_| "frame offset")?),
-                    _ => {
-                        let i = r.u32()?;
-                        if i as usize >= t.consts.len() {
-                            return Err(format!("const {i} of {}", t.consts.len()));
-                        }
-                        ValueLoc::Const(i)
-                    }
-                };
-                values.push(ExitValue { target, repr, loc });
-            }
-            t.exits.push(ExitRecord {
-                pc,
-                guard,
-                bytecode,
-                counter,
-                values,
-            });
-        }
-        if r.at != bytes.len() {
-            return Err(format!(
-                "{} bytes after the last record",
-                bytes.len() - r.at
-            ));
-        }
-        Ok(t)
+        format!(
+            "reg {}, stack {}, const {}, frame {}",
+            n[0], n[1], n[2], n[3]
+        )
     }
 
     /// One report line: exits, bytes, bytes per exit, values per exit.
@@ -340,12 +351,18 @@ impl ExitTable {
         let n = self.exits.len().max(1) as f64;
         let values: usize = self.exits.iter().map(|e| e.values.len()).sum();
         format!(
-            "exit metadata: {} records, {} consts, {bytes} bytes ({:.1} per exit, {:.1} values per \
-             exit); offsets and indexes only",
+            "exit metadata: {} records ({} guards), {} consts, {bytes} bytes ({:.1} per exit, {:.1} \
+             values per exit; values by location: {}); offsets and indexes only",
             self.exits.len(),
+            self.exits
+                .iter()
+                .map(|e| e.guard)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
             self.consts.len(),
             bytes as f64 / n,
             values as f64 / n,
+            self.locations_text(),
         )
     }
 }
@@ -354,25 +371,8 @@ impl ExitTable {
 mod tests {
     use super::*;
 
-    #[test]
-    fn leb_round_trip() {
-        for v in [0u64, 1, 127, 128, 300, u64::from(u32::MAX), u64::MAX] {
-            let mut b = Vec::new();
-            uleb(&mut b, v);
-            assert_eq!(Reader { b: &b, at: 0 }.uleb(), Ok(v));
-        }
-        for v in [0i64, -1, 1, -64, 64, -100_000, i64::from(i32::MIN)] {
-            let mut b = Vec::new();
-            sleb(&mut b, v);
-            assert_eq!(Reader { b: &b, at: 0 }.sleb(), Ok(v));
-        }
-    }
-
-    /// Every location kind, the accumulator, a parameter and a local round-trip; a cut table
-    /// or a const index past the list is refused.
-    #[test]
-    fn encode_decode() {
-        let t = ExitTable {
+    fn sample() -> ExitTable {
+        ExitTable {
             consts: [
                 crate::vm_layout::int32_bits(7),
                 ep9_value::encoding::VALUE_UNDEFINED,
@@ -383,8 +383,10 @@ mod tests {
                 ExitRecord {
                     pc: 2100,
                     guard: 3,
+                    cause: Cause::Unfilled,
                     bytecode: 57,
                     counter: 0,
+                    feedback: Some(2),
                     values: vec![
                         ExitValue {
                             target: Some(Register::local(4)),
@@ -394,7 +396,7 @@ mod tests {
                         ExitValue {
                             target: Some(Register::parameter(1)),
                             repr: ValueRepr::Tagged,
-                            loc: ValueLoc::Frame(-40),
+                            loc: ValueLoc::Frame(-88),
                         },
                         ExitValue {
                             target: None,
@@ -406,8 +408,10 @@ mod tests {
                 ExitRecord {
                     pc: 2112,
                     guard: 9,
+                    cause: Cause::Check,
                     bytecode: 0,
                     counter: 1,
+                    feedback: None,
                     values: vec![ExitValue {
                         target: Some(Register::local(0)),
                         repr: ValueRepr::Tagged,
@@ -415,17 +419,138 @@ mod tests {
                     }],
                 },
             ],
-        };
+        }
+    }
+
+    /// The VM's reader takes what this builder writes: every location kind, every repr, the
+    /// accumulator, a parameter, a local and a feedback slot. The bytes are the H29 form
+    /// byte for byte (the record of guard 9 below).
+    #[test]
+    fn the_vm_reads_the_built_table() {
+        let t = sample();
         let b = t.encode();
-        assert_eq!(ExitTable::decode(&b), Ok(t.clone()));
-        assert!(ExitTable::decode(&b[..b.len() - 1]).is_err());
+        assert_eq!(ep9_vm::NativeCx::check_deopt_meta(&b), Ok(2));
+        // Record 2: header 0 (exit, speculation), pc 2112 (uleb c0 10), bytecode 0, counter 1,
+        // no feedback, no inline frame, 1 value: tag 0x02 (const-index, Tagged, a register
+        // target), target r0 (sleb 0), const 1.
+        let tail = [
+            0x00, 0xC0, 0x10, 0x00, 0x01, 0x00, 0x00, 0x01, 0x02, 0x00, 0x01,
+        ];
+        assert!(b.ends_with(&tail), "{b:02x?}");
+        // A spill slot is a byte offset from x29: slot 3 is x29 + 120.
+        assert_eq!(stack_offset(3), 120);
+    }
+
+    /// What the VM's reader refuses, the builder never writes: a cut table, a const index past
+    /// the list, a cell in the const list, two records at one pc.
+    #[test]
+    fn the_vm_refuses_a_broken_table() {
+        let t = sample();
+        let b = t.encode();
+        assert!(ep9_vm::NativeCx::check_deopt_meta(&b[..b.len() - 1]).is_err());
         let mut bad = t.clone();
         bad.exits[1].values[0].loc = ValueLoc::Const(5);
-        assert!(ExitTable::decode(&bad.encode()).is_err());
+        let e = ep9_vm::NativeCx::check_deopt_meta(&bad.encode()).unwrap_err();
+        assert!(e.contains("const 5 of 2"), "{e}");
+        let mut pc = t.clone();
+        pc.exits[1].pc = pc.exits[0].pc;
+        let e = ep9_vm::NativeCx::check_deopt_meta(&pc.encode()).unwrap_err();
+        assert!(e.contains("sorted by pc"), "{e}");
         // A cell address in the const list is refused on both sides.
         assert!(Immediate::new(0x1000).is_none());
         let mut cell = t.encode();
         cell[2..10].copy_from_slice(&0x1000u64.to_le_bytes());
-        assert!(ExitTable::decode(&cell).is_err());
+        let e = ep9_vm::NativeCx::check_deopt_meta(&cell).unwrap_err();
+        assert!(e.contains("not an immediate Value"), "{e}");
+    }
+
+    /// The signed fields (a value's VM register target and a VM frame slot's byte offset from
+    /// fp) are ZigZag-mapped, `(v << 1) ^ (v >> 63)`, then written as a uleb: not SLEB128
+    /// (two's complement, as in DWARF CFI). The fixed bytes of both forms differ for every
+    /// value but 0, so this pins the form (Codex r1 spikec8, H29-Q2).
+    #[test]
+    fn signed_fields_are_zigzag_uleb_not_sleb128() {
+        // (value, ZigZag + uleb: what `sleb` writes, SLEB128: what it does not write)
+        let cases: [(i64, &[u8], &[u8]); 11] = [
+            (0, &[0x00], &[0x00]),
+            (-1, &[0x01], &[0x7F]),
+            (1, &[0x02], &[0x01]),
+            (-64, &[0x7F], &[0x40]),
+            (63, &[0x7E], &[0x3F]),
+            (64, &[0x80, 0x01], &[0xC0, 0x00]),
+            (-65, &[0x81, 0x01], &[0xBF, 0x7F]),
+            (-8, &[0x0F], &[0x78]),
+            (-123_456, &[0xFF, 0x88, 0x0F], &[0xC0, 0xBB, 0x78]),
+            (
+                i64::from(i32::MIN),
+                &[0xFF, 0xFF, 0xFF, 0xFF, 0x0F],
+                &[0x80, 0x80, 0x80, 0x80, 0x78],
+            ),
+            (
+                i64::from(i32::MAX),
+                &[0xFE, 0xFF, 0xFF, 0xFF, 0x0F],
+                &[0xFF, 0xFF, 0xFF, 0xFF, 0x07],
+            ),
+        ];
+        for (v, zigzag, sleb128) in cases {
+            let mut out = Vec::new();
+            sleb(&mut out, v);
+            assert_eq!(out, zigzag, "{v}");
+            assert_eq!(out == sleb128, v == 0, "{v}");
+        }
+    }
+
+    /// The VM's reader (`ep9_vm` `deopt.rs` `Reader::sleb32`) reads the same ZigZag + uleb
+    /// bytes back: a word offset is taken, and a non-word offset is refused with the exact
+    /// value it read. The SLEB128 bytes of the same offset read as another value.
+    #[test]
+    fn the_vm_reads_the_zigzag_bytes_back() {
+        // One exit record with one value: the accumulator in a VM frame slot at `o`.
+        let table = |o: i32| ExitTable {
+            consts: vec![],
+            exits: vec![ExitRecord {
+                pc: 0,
+                guard: 0,
+                cause: Cause::Check,
+                bytecode: 0,
+                counter: 0,
+                feedback: None,
+                values: vec![ExitValue {
+                    target: None,
+                    repr: ValueRepr::Tagged,
+                    loc: ValueLoc::Frame(o),
+                }],
+            }],
+        };
+        // records 1, consts 0, header 0, pc 0, bytecode 0, counter 0, feedback 0, inline 0,
+        // values 1, tag 0x83 (VM frame slot, Tagged, the accumulator), offset -8 = 0x0F.
+        let b = table(-8).encode();
+        assert_eq!(
+            b,
+            [
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x83, 0x0F
+            ]
+        );
+        let check = ep9_vm::NativeCx::check_deopt_meta;
+        for o in [-8, 8, -64, 64, -4096, i32::MIN] {
+            assert_eq!(check(&table(o).encode()), Ok(1), "{o}");
+        }
+        for o in [-12, -65, 63, -4100, i32::MAX] {
+            let e = check(&table(o).encode()).unwrap_err();
+            assert!(
+                e.contains(&format!("byte offset {o} is not a word")),
+                "{o}: {e}"
+            );
+        }
+        // SLEB128 bytes of -8 (0x78) and 8 (0x08): the reader reads 60 and 4.
+        for (sleb128, read) in [(0x78u8, 60), (0x08, 4)] {
+            let mut bad = b.clone();
+            *bad.last_mut().unwrap() = sleb128;
+            let e = check(&bad).unwrap_err();
+            assert!(
+                e.contains(&format!("byte offset {read} is not a word")),
+                "{e}"
+            );
+        }
     }
 }

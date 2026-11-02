@@ -1,0 +1,868 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] Add Limits: a step budget and an interrupt poll for a
+ search
+
+A backtracking search can take exponential time (/(a+)+b/ on a long
+run of a's), and an embedder that must stop a script (a timeout, a
+terminate request) has no way to end it: the search runs to its end.
+
+Regex::find_limited searches a UTF-16 or UCS-2 text like
+find_from_utf16 / find_from_ucs2, but counts steps: a start position,
+a backtrack or a loop iteration (also each iteration of a loop whose
+body matches one character: greedy, lazy or counted). Every
+poll_interval steps it calls the caller's poll callback; true ends the
+search with Stopped::Interrupted. An optional budget ends it with
+Stopped::BudgetExceeded. A stop inside a lookaround stops the whole
+search. Searches without limits count against a counter that never
+runs out, so their results do not change.
+
+Test: tests/limits.rs.
+---
+ src/api.rs                |  69 ++++++++
+ src/classicalbacktrack.rs | 320 ++++++++++++++++++++++++++++++++------
+ tests/limits.rs           | 210 +++++++++++++++++++++++++
+ 3 files changed, 554 insertions(+), 45 deletions(-)
+ create mode 100644 tests/limits.rs
+
+diff --git a/src/api.rs b/src/api.rs
+index c8815c7..b5a65e6 100644
+--- a/src/api.rs
++++ b/src/api.rs
+@@ -380,6 +380,53 @@ impl<'m> Iterator for NamedGroups<'m> {
+ impl<'m> ExactSizeIterator for NamedGroups<'m> {}
+ impl<'m> FusedIterator for NamedGroups<'m> {}
+ 
++/// How a search with [`Limits`] ended before it had its answer.
++#[derive(Debug, Copy, Clone, PartialEq, Eq)]
++pub enum Stopped {
++    /// The `poll` callback of the [`Limits`] returned true.
++    Interrupted,
++    /// The search took more steps than the budget of the [`Limits`].
++    BudgetExceeded,
++}
++
++/// Limits of one search: a step budget and an interrupt poll.
++///
++/// A step is one start position, one backtrack or one loop iteration of the backtracking
++/// engine, so a search with no backtracks counts at most one step per input position and
++/// loop iteration. Every `poll_interval` steps the search calls `poll`; when it returns true
++/// the search ends with [`Stopped::Interrupted`]. When the steps reach `budget` the search ends
++/// with [`Stopped::BudgetExceeded`] (the budget is checked when a poll interval ends, so a
++/// search may take up to `poll_interval - 1` more steps).
++pub struct Limits<'p> {
++    /// The most steps one search may take; `None` means no limit.
++    pub budget: Option<u64>,
++    /// The steps between two calls of `poll` (0 counts as 1).
++    pub poll_interval: u32,
++    /// Called every `poll_interval` steps; `true` stops the search.
++    pub poll: &'p mut dyn FnMut() -> bool,
++}
++
++impl fmt::Debug for Limits<'_> {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("Limits")
++            .field("budget", &self.budget)
++            .field("poll_interval", &self.poll_interval)
++            .finish_non_exhaustive()
++    }
++}
++
++/// A string of UTF-16 code units, the subject of a [`Regex::find_limited`] search. Positions
++/// and match ranges are code unit indexes.
++#[cfg(feature = "utf16")]
++#[derive(Debug, Copy, Clone)]
++#[non_exhaustive]
++pub enum Text<'t> {
++    /// UTF-16: a surrogate pair is one character (the JavaScript `u` and `v` flags).
++    Utf16(&'t [u16]),
++    /// UCS-2: each code unit is one character (no `u` or `v` flag).
++    Ucs2(&'t [u16]),
++}
++
+ /// A Regex is the compiled version of a pattern.
+ #[derive(Debug, Clone)]
+ pub struct Regex {
+@@ -533,6 +580,28 @@ impl Regex {
+         )
+     }
+ 
++    /// Searches `text` from code unit `start` for the first match, as
++    /// [`Regex::find_from_utf16`] or [`Regex::find_from_ucs2`] do, but counts the steps of
++    /// the search against `limits`. Returns `Err` if the limits stopped the search.
++    #[cfg(feature = "utf16")]
++    pub fn find_limited(
++        &self,
++        text: Text<'_>,
++        start: usize,
++        limits: &mut Limits<'_>,
++    ) -> Result<Option<Match>, Stopped> {
++        match text {
++            Text::Utf16(t) => {
++                let input = Utf16Input::new(t, self.cr.flags.unicode);
++                classicalbacktrack::find_limited(&self.cr, input, start, limits)
++            }
++            Text::Ucs2(t) => {
++                let input = Ucs2Input::new(t, self.cr.flags.unicode);
++                classicalbacktrack::find_limited(&self.cr, input, start, limits)
++            }
++        }
++    }
++
+     /// Replaces the first match of the regex in `text` with the replacement string.
+     ///
+     /// The replacement string may contain capture group references in the form `$1`, `$2`, etc.,
+diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
+index d1e4d26..66f7e8d 100644
+--- a/src/classicalbacktrack.rs
++++ b/src/classicalbacktrack.rs
+@@ -1,6 +1,8 @@
+ //! Classical backtracking execution engine
+ 
+-use crate::api::Match;
++#[cfg(feature = "utf16")]
++use crate::api::Limits;
++use crate::api::{Match, Stopped};
+ use crate::bytesearch;
+ use crate::cursor;
+ use crate::cursor::{Backward, Direction, Forward};
+@@ -68,11 +70,122 @@ struct State<Position: PositionType> {
+     groups: Vec<GroupData<Position>>,
+ }
+ 
++/// The step counter of one search: a step is a backtrack, a loop iteration or a start
++/// position. Every `chunk` steps it calls `poll`, and it stops the search when `poll` returns
++/// true or the budget is spent.
++struct Meter<'a> {
++    /// Steps left in the current chunk.
++    fuel: u32,
++    /// The size of the current chunk (the steps it counts when it runs out).
++    chunk: u32,
++    /// Steps counted in the chunks that ran out.
++    used: u64,
++    /// The step budget (`None`: no limit).
++    budget: Option<u64>,
++    /// The steps between two polls.
++    interval: u32,
++    /// The interrupt poll (`None`: no poll).
++    poll: Option<&'a mut (dyn FnMut() -> bool + 'a)>,
++    /// Why the search stopped, once it has.
++    stopped: Option<Stopped>,
++}
++
++impl core::fmt::Debug for Meter<'_> {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
++        f.debug_struct("Meter")
++            .field("fuel", &self.fuel)
++            .field("used", &self.used)
++            .field("budget", &self.budget)
++            .field("interval", &self.interval)
++            .field("stopped", &self.stopped)
++            .finish()
++    }
++}
++
++impl<'a> Meter<'a> {
++    /// A meter that never stops a search.
++    fn unlimited() -> Self {
++        Meter {
++            fuel: u32::MAX,
++            chunk: u32::MAX,
++            used: 0,
++            budget: None,
++            interval: u32::MAX,
++            poll: None,
++            stopped: None,
++        }
++    }
++
++    /// A meter for `limits`.
++    #[cfg(feature = "utf16")]
++    fn new(limits: &'a mut Limits<'_>) -> Self {
++        let interval = limits.poll_interval.max(1);
++        let mut m = Meter {
++            fuel: 0,
++            chunk: 0,
++            used: 0,
++            budget: limits.budget,
++            interval,
++            poll: Some(&mut *limits.poll),
++            stopped: None,
++        };
++        m.chunk = m.next_chunk();
++        m.fuel = m.chunk;
++        m
++    }
++
++    /// The size of the next chunk: the poll interval, or less when the budget ends sooner.
++    fn next_chunk(&self) -> u32 {
++        match self.budget {
++            Some(b) => {
++                let left = b.saturating_sub(self.used);
++                core::cmp::min(u64::from(self.interval), left) as u32
++            }
++            None => self.interval,
++        }
++    }
++
++    /// Counts one step. \return false if the search must stop.
++    #[inline(always)]
++    fn step(&mut self) -> bool {
++        if self.fuel == 0 {
++            return self.refuel();
++        }
++        self.fuel -= 1;
++        true
++    }
++
++    /// The chunk ran out: count it, check the budget, poll, and start the next chunk.
++    #[cold]
++    #[inline(never)]
++    fn refuel(&mut self) -> bool {
++        if self.stopped.is_some() {
++            return false;
++        }
++        self.used = self.used.saturating_add(u64::from(self.chunk));
++        if self.budget.is_some_and(|b| self.used >= b) {
++            self.stopped = Some(Stopped::BudgetExceeded);
++            return false;
++        }
++        if let Some(poll) = self.poll.as_mut() {
++            if poll() {
++                self.stopped = Some(Stopped::Interrupted);
++                return false;
++            }
++        }
++        // This step is the first of the new chunk.
++        self.chunk = self.next_chunk();
++        self.fuel = self.chunk.saturating_sub(1);
++        true
++    }
++}
++
+ #[derive(Debug)]
+ pub(crate) struct MatchAttempter<'a, Input: InputIndexer> {
+     re: &'a CompiledRegex,
+     bts: Vec<BacktrackInsn<Input>>,
+     s: State<Input::Position>,
++    meter: Meter<'a>,
+ }
+ 
+ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+@@ -84,9 +197,35 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+                 loops: vec![LoopData::new(entry); re.loops as usize],
+                 groups: vec![GroupData::new(); re.groups as usize],
+             },
++            meter: Meter::unlimited(),
+         }
+     }
+ 
++    /// An attempter whose search counts steps against `limits`.
++    #[cfg(feature = "utf16")]
++    pub(crate) fn with_limits(
++        re: &'a CompiledRegex,
++        entry: Input::Position,
++        limits: &'a mut Limits<'_>,
++    ) -> Self {
++        let mut m = Self::new(re, entry);
++        m.meter = Meter::new(limits);
++        m
++    }
++
++    /// Why the search stopped early, if it did.
++    #[cfg(feature = "utf16")]
++    pub(crate) fn stopped(&self) -> Option<Stopped> {
++        self.meter.stopped
++    }
++
++    /// Counts one step of the search (a start position, a backtrack or a loop iteration).
++    /// \return false if the limits stop the search.
++    #[inline(always)]
++    pub(crate) fn step(&mut self) -> bool {
++        self.meter.step()
++    }
++
+     #[inline(always)]
+     fn push_backtrack(&mut self, bt: BacktrackInsn<Input>) {
+         self.bts.push(bt)
+@@ -123,6 +262,9 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         pos: Input::Position,
+         ip: IP,
+     ) -> Option<IP> {
++        if !self.meter.step() {
++            return None;
++        }
+         let loop_data = &mut self.s.loops[loop_fields.loop_id as usize];
+         let iteration = loop_data.iters;
+ 
+@@ -178,10 +320,11 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         }
+     }
+ 
+-    // Drive the loop up to \p max times.
+-    // \return the position (min, max), or None on failure.
++    // Drive the loop up to \p max times. Each iteration is a step of \p meter.
++    // \return the position (min, max), or None on failure or when the meter stops the search.
+     #[inline(always)]
+     fn run_scm_loop_impl<Dir: Direction, Scm: SingleCharMatcher<Input, Dir>>(
++        meter: &mut Meter<'_>,
+         input: &Input,
+         mut pos: Input::Position,
+         min: usize,
+@@ -193,7 +336,7 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         // Drive the iteration min times.
+         // That tells us the min position.
+         for _ in 0..min {
+-            if !matcher.matches(input, dir, &mut pos) {
++            if !meter.step() || !matcher.matches(input, dir, &mut pos) {
+                 return None;
+             }
+         }
+@@ -201,6 +344,9 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+ 
+         // Drive it up to the max.
+         for _ in 0..(max - min) {
++            if !meter.step() {
++                return None;
++            }
+             let saved = pos;
+             if !matcher.matches(input, dir, &mut pos) {
+                 pos = saved;
+@@ -212,27 +358,34 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+     }
+ 
+     // Compute the maximum position from a starting position, up to a limit.
+-    // This is used for lazy computation in non-greedy loops.
++    // This is used for lazy computation in non-greedy loops. Each iteration is a step of
++    // \p meter; None when the meter stops the search.
+     fn compute_max_pos<Dir: Direction, Scm: SingleCharMatcher<Input, Dir>>(
++        meter: &mut Meter<'_>,
+         input: &Input,
+         mut pos: Input::Position,
+         limit: usize,
+         dir: Dir,
+         matcher: Scm,
+-    ) -> Input::Position {
++    ) -> Option<Input::Position> {
+         for _ in 0..limit {
++            if !meter.step() {
++                return None;
++            }
+             let saved = pos;
+             if !matcher.matches(input, dir, &mut pos) {
+                 pos = saved;
+                 break;
+             }
+         }
+-        pos
++        Some(pos)
+     }
+ 
+     // Helper function to extract the duplicated match blocks that handle different instruction types
+     // with different matcher functions. This significantly reduces code duplication and compile times.
++    #[allow(clippy::too_many_arguments)]
+     fn with_scm_loop_impl<Dir: Direction>(
++        meter: &mut Meter<'_>,
+         re: &CompiledRegex,
+         input: &Input,
+         pos: Input::Position,
+@@ -244,13 +397,14 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         match re.insns.iat(ip + 1) {
+             &Insn::Char(c) => {
+                 let c = <<Input as InputIndexer>::Element as ElementType>::try_from(c)?;
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::Char { c })
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::Char { c })
+             }
+             &Insn::Bracket(idx) => {
+                 let bc = &re.brackets[idx];
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::Bracket { bc })
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::Bracket { bc })
+             }
+             Insn::AsciiBracket(bitmap) => Self::run_scm_loop_impl(
++                meter,
+                 input,
+                 pos,
+                 min,
+@@ -259,9 +413,10 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+                 scm::MatchByteSet { bytes: bitmap },
+             ),
+             Insn::MatchAny => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchAny::new())
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::MatchAny::new())
+             }
+             Insn::MatchAnyExceptLineTerminator => Self::run_scm_loop_impl(
++                meter,
+                 input,
+                 pos,
+                 min,
+@@ -270,34 +425,52 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+                 scm::MatchAnyExceptLineTerminator::new(),
+             ),
+             Insn::CharSet(chars) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::CharSet { chars })
+-            }
+-            &Insn::ByteSet2(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteArraySet(bytes))
+-            }
+-            &Insn::ByteSet3(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteArraySet(bytes))
+-            }
+-            &Insn::ByteSet4(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteArraySet(bytes))
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::CharSet { chars })
+             }
++            &Insn::ByteSet2(bytes) => Self::run_scm_loop_impl(
++                meter,
++                input,
++                pos,
++                min,
++                max,
++                dir,
++                scm::MatchByteArraySet(bytes),
++            ),
++            &Insn::ByteSet3(bytes) => Self::run_scm_loop_impl(
++                meter,
++                input,
++                pos,
++                min,
++                max,
++                dir,
++                scm::MatchByteArraySet(bytes),
++            ),
++            &Insn::ByteSet4(bytes) => Self::run_scm_loop_impl(
++                meter,
++                input,
++                pos,
++                min,
++                max,
++                dir,
++                scm::MatchByteArraySet(bytes),
++            ),
+             Insn::ByteSeq1(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteSeq(bytes))
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq2(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteSeq(bytes))
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq3(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteSeq(bytes))
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq4(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteSeq(bytes))
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq5(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteSeq(bytes))
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq6(bytes) => {
+-                Self::run_scm_loop_impl(input, pos, min, max, dir, scm::MatchByteSeq(bytes))
++                Self::run_scm_loop_impl(meter, input, pos, min, max, dir, scm::MatchByteSeq(bytes))
+             }
+             _ => {
+                 unreachable!("Missing SCM: {:?}", re.insns.iat(ip + 1));
+@@ -307,6 +480,7 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+ 
+     // Helper function for compute_max_pos to avoid duplication
+     fn with_scm_compute_max<Dir: Direction>(
++        meter: &mut Meter<'_>,
+         re: &CompiledRegex,
+         input: &Input,
+         pos: Input::Position,
+@@ -317,17 +491,25 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         let result = match re.insns.iat(ip + 1) {
+             &Insn::Char(c) => {
+                 let c = <<Input as InputIndexer>::Element as ElementType>::try_from(c)?;
+-                Self::compute_max_pos(input, pos, limit, dir, scm::Char { c })
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::Char { c })
+             }
+             &Insn::Bracket(idx) => {
+                 let bc = &re.brackets[idx];
+-                Self::compute_max_pos(input, pos, limit, dir, scm::Bracket { bc })
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::Bracket { bc })
+             }
+-            Insn::AsciiBracket(bitmap) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteSet { bytes: bitmap })
++            Insn::AsciiBracket(bitmap) => Self::compute_max_pos(
++                meter,
++                input,
++                pos,
++                limit,
++                dir,
++                scm::MatchByteSet { bytes: bitmap },
++            ),
++            Insn::MatchAny => {
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchAny::new())
+             }
+-            Insn::MatchAny => Self::compute_max_pos(input, pos, limit, dir, scm::MatchAny::new()),
+             Insn::MatchAnyExceptLineTerminator => Self::compute_max_pos(
++                meter,
+                 input,
+                 pos,
+                 limit,
+@@ -335,40 +517,40 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+                 scm::MatchAnyExceptLineTerminator::new(),
+             ),
+             Insn::CharSet(chars) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::CharSet { chars })
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::CharSet { chars })
+             }
+             &Insn::ByteSet2(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteArraySet(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteArraySet(bytes))
+             }
+             &Insn::ByteSet3(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteArraySet(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteArraySet(bytes))
+             }
+             &Insn::ByteSet4(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteArraySet(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteArraySet(bytes))
+             }
+             Insn::ByteSeq1(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteSeq(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq2(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteSeq(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq3(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteSeq(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq4(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteSeq(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq5(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteSeq(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteSeq(bytes))
+             }
+             Insn::ByteSeq6(bytes) => {
+-                Self::compute_max_pos(input, pos, limit, dir, scm::MatchByteSeq(bytes))
++                Self::compute_max_pos(meter, input, pos, limit, dir, scm::MatchByteSeq(bytes))
+             }
+             _ => {
+                 unreachable!("Missing SCM: {:?}", re.insns.iat(ip + 1));
+             }
+         };
+-        Some(result)
++        result
+     }
+ 
+     // Given that ip points at a loop whose body matches exactly one character, run
+@@ -391,15 +573,24 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         // We'll only compute it when we need to set up backtracking.
+         let (min_pos, max_pos) = if greedy {
+             // For greedy loops, compute both min and max positions
+-            Self::with_scm_loop_impl(self.re, input, *pos, min, max, dir, ip)?
++            Self::with_scm_loop_impl(&mut self.meter, self.re, input, *pos, min, max, dir, ip)?
+         } else {
+             // For non-greedy loops, initially only compute the minimum position
+-            let (min_pos, _) = Self::with_scm_loop_impl(self.re, input, *pos, min, min, dir, ip)?;
++            let (min_pos, _) =
++                Self::with_scm_loop_impl(&mut self.meter, self.re, input, *pos, min, min, dir, ip)?;
+ 
+             // For non-greedy loops, we only compute the max position if we need to set up backtracking
+             let max_pos = if min < max {
+                 // We need to compute the max for backtracking purposes
+-                Self::with_scm_compute_max(self.re, input, min_pos, max - min, dir, ip)?
++                Self::with_scm_compute_max(
++                    &mut self.meter,
++                    self.re,
++                    input,
++                    min_pos,
++                    max - min,
++                    dir,
++                    ip,
++                )?
+             } else {
+                 min_pos
+             };
+@@ -473,6 +664,13 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         // Put back our bts.
+         core::mem::swap(&mut self.bts, &mut saved_bts);
+ 
++        // The limits stopped the search inside the lookaround: fail, so the caller backtracks
++        // out of the whole search.
++        if self.meter.stopped.is_some() {
++            self.s.groups.splice(range, saved_groups);
++            return false;
++        }
++
+         // If we are a positive lookahead that successfully matched, retain the
+         // capture groups (but we need to set up backtracking). Otherwise restore
+         // them.
+@@ -499,6 +697,11 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         pos: &mut Input::Position,
+         _dir: Dir,
+     ) -> bool {
++        if !self.meter.step() {
++            // Stopped: give up the whole search.
++            self.bts.truncate(1);
++            return false;
++        }
+         loop {
+             // We always have a single Exhausted instruction backstopping our stack,
+             // so we do not need to check for empty bts.
+@@ -1071,6 +1274,9 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+     ) -> Option<Match> {
+         let inp = self.input;
+         loop {
++            if !self.matcher.step() {
++                return None;
++            }
+             // Find the next start location, or None if none.
+             // Don't try this unless CODE_UNITS_ARE_BYTES - i.e. don't do byte searches
+             // on UTF-16 or UCS2.
+@@ -1133,6 +1339,30 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
+     }
+ }
+ 
++/// The first match of `re` in `input` from code unit `start`, with the steps of the search
++/// counted against `limits` (`Regex::find_limited`).
++#[cfg(feature = "utf16")]
++pub(crate) fn find_limited<Input: InputIndexer>(
++    re: &CompiledRegex,
++    input: Input,
++    start: usize,
++    limits: &mut Limits<'_>,
++) -> Result<Option<Match>, Stopped> {
++    let Some(pos) = input.try_move_right(input.left_end(), start) else {
++        return Ok(None);
++    };
++    let mut exec = BacktrackExecutor::new(
++        input,
++        MatchAttempter::with_limits(re, input.left_end(), limits),
++    );
++    let mut next_start = None;
++    let found = exec::MatchProducer::next_match(&mut exec, pos, &mut next_start);
++    match exec.matcher.stopped() {
++        Some(why) => Err(why),
++        None => Ok(found),
++    }
++}
++
+ impl<'r, 't> exec::Executor<'r, 't> for BacktrackExecutor<'r, Utf8Input<'t>> {
+     type AsAscii = BacktrackExecutor<'r, AsciiInput<'t>>;
+ 
+diff --git a/tests/limits.rs b/tests/limits.rs
+new file mode 100644
+index 0000000..0702720
+--- /dev/null
++++ b/tests/limits.rs
+@@ -0,0 +1,210 @@
++//! Searches with `Limits`: the step budget and the interrupt poll (`Regex::find_limited`).
++#![cfg(feature = "utf16")]
++
++use regress::{Flags, Limits, Regex, Stopped, Text};
++
++fn utf16(s: &str) -> Vec<u16> {
++    s.encode_utf16().collect()
++}
++
++/// `find_limited` with no budget and a poll that never stops: the same match as
++/// `find_from_utf16` / `find_from_ucs2`.
++#[test]
++fn unlimited_search_finds_the_same_match() {
++    let cases = [
++        ("a+b", "", "xxaaab"),
++        ("(a)|(b)", "", "zzb"),
++        ("(?<=x)y", "", "xyxy"),
++        ("(?=(a+))a*b", "", "aaab"),
++        ("\\u{1F600}+", "u", "x\u{1F600}\u{1F600}"),
++        ("^$", "m", "a\n\nb"),
++        ("q", "", "abc"),
++    ];
++    for (pattern, flags, text) in cases {
++        let re = Regex::with_flags(pattern, flags).unwrap();
++        let units = utf16(text);
++        for start in 0..=units.len() + 1 {
++            let mut never = || false;
++            let mut limits = Limits {
++                budget: None,
++                poll_interval: 3,
++                poll: &mut never,
++            };
++            let (text, want) = if re_is_unicode(flags) {
++                (
++                    Text::Utf16(&units),
++                    re.find_from_utf16(&units, start).next(),
++                )
++            } else {
++                (Text::Ucs2(&units), re.find_from_ucs2(&units, start).next())
++            };
++            let got = re.find_limited(text, start, &mut limits).unwrap();
++            assert_eq!(
++                got.as_ref()
++                    .map(|m| (m.range(), m.groups().collect::<Vec<_>>())),
++                want.as_ref()
++                    .map(|m| (m.range(), m.groups().collect::<Vec<_>>())),
++                "/{pattern}/{flags} on {text:?} from {start}"
++            );
++        }
++    }
++}
++
++fn re_is_unicode(flags: &str) -> bool {
++    flags.contains('u') || flags.contains('v')
++}
++
++/// A catastrophic pattern stops at the first poll that returns true.
++#[test]
++fn a_poll_interrupts_exponential_backtracking() {
++    let re = Regex::with_flags("(a+)+b", Flags::default()).unwrap();
++    let text = utf16(&"a".repeat(30));
++    let mut polls = 0u32;
++    let mut stop_at_third = || {
++        polls += 1;
++        polls == 3
++    };
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 1000,
++        poll: &mut stop_at_third,
++    };
++    let r = re.find_limited(Text::Ucs2(&text), 0, &mut limits);
++    assert_eq!(r.unwrap_err(), Stopped::Interrupted);
++    assert_eq!(polls, 3);
++}
++
++/// The budget ends the search with `BudgetExceeded`; a search inside the budget is not
++/// changed by it.
++#[test]
++fn the_budget_ends_a_long_search() {
++    let re = Regex::new("(a+)+b").unwrap();
++    let text = utf16(&"a".repeat(30));
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: Some(100_000),
++        poll_interval: 1024,
++        poll: &mut never,
++    };
++    let r = re.find_limited(Text::Ucs2(&text), 0, &mut limits);
++    assert_eq!(r.unwrap_err(), Stopped::BudgetExceeded);
++
++    let mut text = text;
++    text.push(u16::from(b'b'));
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: Some(100_000),
++        poll_interval: 1024,
++        poll: &mut never,
++    };
++    let m = re.find_limited(Text::Ucs2(&text), 0, &mut limits).unwrap();
++    assert_eq!(m.unwrap().range(), 0..31);
++
++    // A budget of 0 stops at the first step.
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: Some(0),
++        poll_interval: 1024,
++        poll: &mut never,
++    };
++    let r = re.find_limited(Text::Ucs2(&text), 0, &mut limits);
++    assert_eq!(r.unwrap_err(), Stopped::BudgetExceeded);
++}
++
++/// A stop inside a negative lookahead stops the whole search (it is not a failed
++/// lookahead, which would make the negation succeed).
++#[test]
++fn a_stop_inside_a_lookaround_stops_the_search() {
++    for pattern in ["(?!(a+)+b)", "(?=(a+)+b)|c", "(?<!b(a+)+)z"] {
++        let re = Regex::new(pattern).unwrap();
++        let text = utf16(&format!("{}z", "a".repeat(28)));
++        let mut polls = 0u32;
++        let mut stop_at_second = || {
++            polls += 1;
++            polls == 2
++        };
++        let mut limits = Limits {
++            budget: None,
++            poll_interval: 500,
++            poll: &mut stop_at_second,
++        };
++        let r = re.find_limited(Text::Ucs2(&text), 0, &mut limits);
++        assert_eq!(r.unwrap_err(), Stopped::Interrupted, "{pattern}");
++    }
++}
++
++/// Start positions count as steps, so a long search with no backtracking polls too. (Every
++/// position can start a match of the pattern, so no start predicate skips one.)
++#[test]
++fn start_positions_are_steps() {
++    let re = Regex::new("a(?=b)").unwrap();
++    let text = vec![u16::from(b'a'); 100_000];
++    let mut polls = 0u32;
++    let mut count = || {
++        polls += 1;
++        false
++    };
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 1000,
++        poll: &mut count,
++    };
++    assert!(
++        re.find_limited(Text::Ucs2(&text), 0, &mut limits)
++            .unwrap()
++            .is_none()
++    );
++    assert!(polls >= 99, "{polls} polls");
++}
++
++/// A start past the end finds nothing and takes no step.
++#[test]
++fn a_start_past_the_end_finds_nothing() {
++    let re = Regex::new("").unwrap();
++    let text = utf16("ab");
++    let mut calls = 0;
++    let mut count = || {
++        calls += 1;
++        true
++    };
++    let mut limits = Limits {
++        budget: Some(0),
++        poll_interval: 1,
++        poll: &mut count,
++    };
++    assert!(
++        re.find_limited(Text::Ucs2(&text), 3, &mut limits)
++            .unwrap()
++            .is_none()
++    );
++    assert_eq!(calls, 0);
++}
++
++/// Each iteration of a single-character loop (`Loop1CharBody`: greedy, lazy, counted, and
++/// inside a lookaround) is a step, like an iteration of any other loop: a long run of one
++/// character spends the budget and polls.
++#[test]
++fn single_character_loop_iterations_are_steps() {
++    let text = vec![u16::from(b'a'); 100_000];
++    for pattern in ["a+", "a{99999}", "a+?$", "(?=a*)(?:b|$)", "(?<=a*)$"] {
++        let re = Regex::new(pattern).unwrap();
++        let mut never = || false;
++        let mut limits = Limits {
++            budget: Some(10_000),
++            poll_interval: 1024,
++            poll: &mut never,
++        };
++        let r = re.find_limited(Text::Ucs2(&text), 0, &mut limits);
++        assert_eq!(r.unwrap_err(), Stopped::BudgetExceeded, "/{pattern}/");
++    }
++    // Within the budget the match is the same.
++    let re = Regex::new("a+").unwrap();
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: Some(200_000),
++        poll_interval: 1024,
++        poll: &mut never,
++    };
++    let m = re.find_limited(Text::Ucs2(&text), 0, &mut limits).unwrap();
++    assert_eq!(m.unwrap().range(), 0..100_000);
++}

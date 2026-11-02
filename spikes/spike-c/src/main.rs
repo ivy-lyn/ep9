@@ -13,14 +13,28 @@
 //!                                           (live facts, n = 1; by function id, so an inner
 //!                                           closure too), then report what the emitter does
 //! spike-c tier <kernel> [--n N] [--stress]  config C: that function compiled, output against T0
-//!                                           (--stress: GC before every allocation, verifier on)
+//!                                           (--stress: GC before every allocation, verifier on;
+//!                                           SPIKE_C_FORCE_DEOPT=<seed>: a forced build)
+//! spike-c deopt <kernel> [--n N] [--at A]   each guard forced once (WI-SC4, gate.sh deopt)
+//! spike-c diff [--seeds A..B] [--no-kernels] [--show N]
+//!                                           the tier differential (WI-SC6, gate.sh diff): the
+//!                                           gate kernels at n = 1 and the seeded corpus, T0 vs
+//!                                           config C, every guard forced
 //! spike-c time <kernel> [--rounds R] [--n N] [--k K]
 //!                                           class S timing (protocol §3): T0, C, H0, H1 in new
 //!                                           processes, paired ratios; a report, never a reading
-//! spike-c once <t0|c|h0|h1> <kernel> [--n N] [--k K]   one timed configuration (`time` runs it)
+//! spike-c once <t0|c|p|h0|h1> <kernel> [--n N] [--k K]
+//!                                           one timed configuration (`time` runs it; p reads
+//!                                           the PROFILED file SPIKE_C_PROFILE names)
+//! spike-c sp-facts <write|check|wrong|time> ...
+//!                                           config P (SP-Facts, WI-SC8, gate.sh spfacts): a
+//!                                           PROFILED file written, checked, wrong files, timed
 //! spike-c show <kernel> [hot index]         bytecode and live facts of a hot function
 //! spike-c driver <kernel> [--n N]          print the driver script (node runs the same text)
 //! spike-c structural [check... | all]       the checks of `gate.sh structural`
+//! spike-c read-set                          the R17 read set: each `ep9_vm::layout` item Spike C
+//!                                           reads, by owner version, and the hand facts (HAND_FACTS)
+//! spike-c liveness <kernel> [hot index]     the H02-Q1 liveness report of a hot function
 //! ```
 
 use std::process::ExitCode;
@@ -34,9 +48,11 @@ use spike_c::{facts, structural};
 fn usage() -> ExitCode {
     eprintln!(
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
-         | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] | time <kernel> [--rounds R] [--n N] [--k K] \
-         | once <t0|c|h0|h1> <kernel> [--n N] [--k K] | show <kernel> [i] | driver <kernel> [--n N] \
-         | structural [check...|all]]"
+         | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] \
+         | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
+         | once <t0|c|p|h0|h1> <kernel> [--n N] [--k K] | sp-facts <write|check|wrong|time> ... \
+         | show <kernel> [i] | driver <kernel> [--n N] \
+         | structural [check...|all] | read-set | liveness <kernel> [i]]"
     );
     ExitCode::from(2)
 }
@@ -188,13 +204,11 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
     let h = k.hot.first().ok_or("no hot function")?;
     let (mut s, d, r, _) = run_t0(k, 1)?;
     r.result.map_err(|e| format!("{}: {e}", k.name))?;
-    let reach = h.reach.ok_or_else(|| {
-        format!(
-            "{}: an inner closure; install by function id is not built",
-            h.name
-        )
-    })?;
-    let f = s.function_value(reach)?;
+    // An inner closure is found by its function id (WI-SC5).
+    let f = match h.reach {
+        Some(reach) => Some(s.function_value(reach)?),
+        None => None,
+    };
     let script = s.script("driver.js").ok_or("no driver script")?;
     let ids = script.functions_on_line(h.lines.0 + d.offset);
     let [id] = ids[..] else {
@@ -206,7 +220,14 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
         ));
     };
     let live = facts::live(&s, script)?;
-    let input = s.input_of(f)?;
+    let target = match f {
+        Some(f) => spike_c::harness::Target::Value(f),
+        None => spike_c::harness::Target::Id {
+            file: "driver.js".into(),
+            id,
+        },
+    };
+    let input = s.input_of_target(&target)?;
     let ff = facts::for_function(&live, id);
     match spike_c::compile_input(&input, &ff) {
         Ok((code, report)) => {
@@ -216,11 +237,19 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
             println!("{}", report.line());
             println!("{}", report.keyed_line());
             println!("{}: {}", report.name, report.emit.exits_line());
-            // The call form of the stubs, a report next to the default (MC-w15-14).
-            let (_, call) =
-                spike_c::compile_input_with(&input, &ff, spike_c::emit_a64::StubForm::Call)
-                    .map_err(|e| format!("{}: call stubs: {e}", h.name))?;
-            println!("{}: {}", report.name, call.emit.exits_line());
+            // The movz form of the stubs, a report next to the default call form (MC-w15-14,
+            // V10-D31).
+            let (_, movz) =
+                spike_c::compile_input_with(&input, &ff, spike_c::emit_a64::StubForm::Movz)
+                    .map_err(|e| format!("{}: movz stubs: {e}", h.name))?;
+            println!("{}: {}", report.name, movz.emit.exits_line());
+            // The VM's reader takes the table the install registers (H29).
+            let records = ep9_vm::NativeCx::check_deopt_meta(&report.emit.meta.encode())
+                .map_err(|e| format!("{}: exit table: {e}", h.name))?;
+            println!(
+                "{}: exit table read by ep9_vm: {records} records",
+                report.name
+            );
             println!("{}: {}", report.name, report.emit.meta.line());
             let meta = report.emit.meta.encode();
             println!(
@@ -304,10 +333,95 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
     } else {
         Config::default()
     };
-    let run = spike_c::tier::run(k, n.unwrap_or(k.n), &config)?;
+    // `SPIKE_C_FORCE_DEOPT=<seed>` (WI-SC4): a forced build, every guard armed from the seed.
+    let force = match std::env::var("SPIKE_C_FORCE_DEOPT") {
+        Ok(v) => {
+            let seed: u64 = v
+                .parse()
+                .map_err(|_| format!("SPIKE_C_FORCE_DEOPT={v}: not a number"))?;
+            Some(spike_c::emit_a64::ForceTable::seeded(
+                seed,
+                spike_c::tier::FORCE_LEN,
+            ))
+        }
+        Err(_) => None,
+    };
+    let armed = force.as_ref().map(|t| t.snapshot()).unwrap_or_default();
+    let opts = spike_c::emit_a64::EmitOptions {
+        force: force.as_ref(),
+        ..Default::default()
+    };
+    let run = spike_c::tier::run_full(
+        k,
+        n.unwrap_or(k.n),
+        &config,
+        spike_c::tier::IntFacts::Live,
+        &opts,
+    )?;
     println!("{}", run.report.line());
     println!("{}", run.line());
-    Ok(run.equal && (run.probe_trap.is_some() || run.function != "am3"))
+    let ok = match &force {
+        // Per guard: the VM counted at least the forced exit (a natural exit adds to it, as
+        // GC stress does), with no natural exit exactly that, and every armed guard was
+        // forced (Codex M5-P2 r1 spikec6 3).
+        Some(t) => match spike_c::tier::forced_coverage(&run, &armed, t, stress) {
+            Ok(n) => {
+                println!(
+                    "{}: forced build: {n} of {n} guards forced once, the exit counters agree, heap verifier clean",
+                    run.function
+                );
+                run.equal && (run.probe_exit.is_some() || run.function != "am3")
+            }
+            Err(lines) => {
+                for l in lines {
+                    println!("{l}");
+                }
+                false
+            }
+        },
+        // No forced guard: no exit either (Codex M5-P2 r1 spikec6 2), but am3 under stress.
+        None => match spike_c::tier::unforced_ok(&run, stress) {
+            Ok(()) => true,
+            Err(e) => {
+                println!("{e}");
+                false
+            }
+        },
+    };
+    Ok(ok)
+}
+
+/// `spike-c deopt <kernel> [--n N] [--at A]` (`gate.sh deopt`, WI-SC4): each guard of the
+/// first hot function forced once, alone, at its `A`-th pass (default 3), in a config C run
+/// of loop(n) (default n = 1): the output equals T0, the heap verifier finds nothing, and the
+/// VM's exit counters hold exactly that exit.
+fn deopt_cmd(args: &[String]) -> Result<bool, String> {
+    let k = kernel_arg(args.first())?;
+    let n = flag(args, "--n")?.unwrap_or(1u32);
+    let at = flag(args, "--at")?.unwrap_or(3u32);
+    let runs = spike_c::tier::force_each_guard(k, n, &Config::default(), at)?;
+    let mut right = 0;
+    for r in &runs {
+        if r.right() {
+            right += 1;
+        } else {
+            println!(
+                "{}: g{}: forced {}, counted {} (other exits {}), output {}",
+                k.name,
+                r.guard,
+                r.forced,
+                r.counted,
+                r.others,
+                if r.equal { "equal to T0" } else { "differs" }
+            );
+        }
+    }
+    println!(
+        "{}: {} guards, each forced once at pass {at} (n = {n}): {right} right (output equal to T0, one exit counted, heap verifier clean)",
+        k.name,
+        runs.len()
+    );
+    Ok(!runs.is_empty() && right == runs.len())
 }
 
 /// The value after `flag` in `args`, parsed.
@@ -325,32 +439,29 @@ fn flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Result<Option<T>, 
     }
 }
 
-/// The hot-harness call count per kernel (H0, H1): about 0.15 s of T0 time on an M-series Mac.
-const HOT_K: u32 = 100_000;
-
 /// `spike-c time <kernel> [--rounds R] [--n N] [--k K]`: the class S report (exit 1 on a wrong
 /// run).
 fn time_cmd(args: &[String]) -> Result<bool, String> {
     let k = kernel_arg(args.first())?;
     let rounds = flag(args, "--rounds")?.unwrap_or(15usize);
     let n = flag(args, "--n")?.unwrap_or(k.n);
-    let hot_k = flag(args, "--k")?.unwrap_or(HOT_K);
+    let hot_k = flag(args, "--k")?.unwrap_or(spike_c::timing::default_k(k));
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let (report, ok) = spike_c::timing::time(&exe, k, rounds, n, hot_k)?;
     print!("{report}");
     Ok(ok)
 }
 
-/// `spike-c once <t0|c|h0|h1> <kernel> [--n N] [--k K]`: one timed configuration, in the
+/// `spike-c once <t0|c|p|h0|h1> <kernel> [--n N] [--k K]`: one timed configuration, in the
 /// line form `timing::Once::parse` reads.
 fn once_cmd(args: &[String]) -> Result<bool, String> {
     let which = args
         .first()
         .and_then(|w| spike_c::timing::Which::parse(w))
-        .ok_or("once: t0, c, h0 or h1")?;
+        .ok_or("once: t0, c, p, h0 or h1")?;
     let k = kernel_arg(args.get(1))?;
     let n = flag(&args[1..], "--n")?.unwrap_or(k.n);
-    let hot_k = flag(&args[1..], "--k")?.unwrap_or(HOT_K);
+    let hot_k = flag(&args[1..], "--k")?.unwrap_or(spike_c::timing::default_k(k));
     let o = spike_c::timing::once(which, k, n, hot_k)?;
     print!("{}", o.text());
     Ok(true)
@@ -398,17 +509,27 @@ fn main() -> ExitCode {
     let rest = &args[1..];
     let r = match cmd.as_str() {
         "structural" => return structural::main(rest),
+        "sp-facts" => return spike_c::sp_facts::main(rest),
         "kernels" => list(),
         "t0" => t0(rest),
         "facts" => facts_cmd(rest),
         "compile" => compile_cmd(rest),
         "graph" => graph_cmd(rest),
         "tier" => tier_cmd(rest),
+        "deopt" => deopt_cmd(rest),
+        "diff" => spike_c::diff::main(rest),
         "time" => time_cmd(rest),
         "once" => once_cmd(rest),
         "driver" => driver_cmd(rest),
         "show" => show_cmd(rest),
         "run" => run_cmd(rest),
+        "read-set" => {
+            for l in spike_c::vm_layout::read_set_lines() {
+                println!("{l}");
+            }
+            Ok(true)
+        }
+        "liveness" => liveness_cmd(rest),
         _ => return usage(),
     };
     match r {
@@ -417,6 +538,43 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("spike-c: {e}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// `spike-c liveness <kernel> [hot index]`: the H02-Q1 liveness report of a hot function
+/// ([`spike_c::liveness_lines`]), from the live facts of an n = 1 T0 run.
+fn liveness_cmd(args: &[String]) -> Result<bool, String> {
+    let k = kernel_arg(args.first())?;
+    let which: usize = match args.get(1) {
+        Some(v) => v.parse().map_err(|_| format!("bad hot index {v}"))?,
+        None => 0,
+    };
+    let h = k.hot.get(which).ok_or("no such hot function")?;
+    let (s, d, r, _) = run_t0(k, 1)?;
+    r.result.map_err(|e| format!("{}: {e}", k.name))?;
+    let script = s.script("driver.js").ok_or("no driver script")?;
+    let ids = script.functions_on_line(h.lines.0 + d.offset);
+    let [id] = ids[..] else {
+        return Err(format!(
+            "{}: {} functions on line {}",
+            h.name,
+            ids.len(),
+            h.lines.0
+        ));
+    };
+    let live = facts::live(&s, script)?;
+    let input = script.unit_input(id, h.name)?;
+    match spike_c::liveness_lines(&input, &facts::for_function(&live, id)) {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+            Ok(true)
+        }
+        Err(e) => {
+            println!("{}: graph build refused: {e}", h.name);
+            Ok(false)
         }
     }
 }

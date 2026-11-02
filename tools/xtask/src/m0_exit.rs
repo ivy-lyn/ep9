@@ -33,7 +33,7 @@
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional; measured at HEAD, or at an ancestor with no change under `crates/` or `tools/bench/` since (else OPEN) | N/A by design (a gate-host speed reading; no Windows bench job) |
 //! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
-//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here). Several GC JSONs must be every shard of one `--gc-shard` split of this tree's test262 checkout, each once, with the same settings: each JSON's `run_paths` (every file it ran) and `skipped_paths` are exactly the files of its shard, so together they hold every test file once; they are merged and checked as one run | every job `test262 GC-stress (windows-x64, k/n)`, k = 1..n each once, with its step "test262 exec, GC-stress + eager feedback" green |
+//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here). Several GC JSONs must be every shard of one `--gc-shard` split of this tree's test262 checkout, each once, with the same settings: each JSON's `run_paths` (every file it ran) and `skipped_paths` are exactly the files of its shard, so together they hold every test file once; they are merged and checked as one run | every job `test262 GC-stress (windows-x64, k/n)`, k = 1..n each once, with its step "test262 exec, GC-stress (S1) + eager feedback" (or, in runs before M5-P2, "test262 exec, GC-stress + eager feedback") green |
 //! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok, each one in a cargo run that finished with exit status 0, no cargo failure line (`error[E`, `error:`, a panic) anywhere in it, and its 2 cargo runs (or more) each between a start line `m0-exit start: <label>` and an exit-status line `m0-exit status: 0`, with no run unfinished and no line outside a run | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
@@ -1070,21 +1070,21 @@ fn gc_ci_cell(ci: &Ci) -> Result<Cell, String> {
     let mut parts = Vec::new();
     let mut seconds = 0;
     let mut seen = BTreeSet::new();
+    let mut step: &str = GC_STEP; // the name the run's jobs use (GC_STEPS)
     for (k, _, job) in &shards {
         if !seen.insert(*k) {
             status = Status::Fail;
             parts.push(format!("shard {k}/{n} has two jobs"));
             continue;
         }
-        match job.steps.iter().find(|s| s.name == GC_STEP) {
+        match job.steps.iter().find(|s| is_gc_step(&s.name)) {
             Some(s) => {
+                step = &s.name;
                 status = status.max(s.status());
                 seconds += s.seconds().unwrap_or(0);
                 if s.status() != Status::Pass {
-                    parts.push(format!(
-                        "shard {k}/{n}: step \"{GC_STEP}\" {}",
-                        s.describe()
-                    ));
+                    let how = s.describe();
+                    parts.push(format!("shard {k}/{n}: step \"{step}\" {how}"));
                 }
             }
             None => {
@@ -1105,7 +1105,7 @@ fn gc_ci_cell(ci: &Ci) -> Result<Cell, String> {
         ));
     }
     let text = format!(
-        "{} of {n} \"{head}k/n)\" jobs, step \"{GC_STEP}\" ({GC_CMD} on the prefixes of `cargo xtask m0-exit --gc-shard k/{n}`; {seconds} s over all shards){}",
+        "{} of {n} \"{head}k/n)\" jobs, step \"{step}\" ({GC_CMD} on the prefixes of `cargo xtask m0-exit --gc-shard k/{n}`; {seconds} s over all shards){}",
         seen.len(),
         if parts.is_empty() {
             ": all green".to_string()
@@ -2791,6 +2791,51 @@ mod tests {
         let mut run = ci(&ci_json("success"));
         run.jobs.retain(|j| !j.name.starts_with(GC_JOB));
         assert!(gc_ci_cell(&run).unwrap_err().contains("no"));
+    }
+
+    /// V10-D19: the shard step names S1 since M5-P2 (GC6). m0-exit reads that name and the one
+    /// before it (runs of an older ci.yml still read), names the step the run used, and gives
+    /// NOT-RUN for any other name.
+    #[test]
+    fn windows_gc_shards_read_the_s1_and_the_older_step_name() {
+        let ci = |text: &str| Ci::from_json(&parse_json(text).unwrap()).unwrap();
+        assert!(GC_STEP.contains("S1") && GC_STEPS[0] == GC_STEP);
+        let older = GC_STEPS[1];
+        assert_eq!(older, "test262 exec, GC-stress + eager feedback");
+        let new = ci_json("success");
+        assert!(new.contains(GC_STEP));
+        let c = gc_ci_cell(&ci(&new)).unwrap();
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(
+            c.evidence.contains(&format!("step \"{GC_STEP}\" (")),
+            "{}",
+            c.evidence
+        );
+        let old = new.replace(GC_STEP, older);
+        assert!(!old.contains(GC_STEP));
+        let c = gc_ci_cell(&ci(&old)).unwrap();
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("2 of 2"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains(&format!("step \"{older}\" (")),
+            "{}",
+            c.evidence
+        );
+        // A failed shard step under the older name: FAIL, and the part names that step.
+        let failed = ci_json_with(|n| Some(if n == GC_STEP { "failure" } else { "success" }))
+            .replace(GC_STEP, older);
+        let c = gc_ci_cell(&ci(&failed)).unwrap();
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(
+            c.evidence.contains(&format!("1/2: step \"{older}\" ")),
+            "{}",
+            c.evidence
+        );
+        // Any other name (an S0 dispatch run names S0): the shard has no step m0-exit reads.
+        let s0 = new.replace(GC_STEP, "test262 exec, GC-stress (S0) + eager feedback");
+        let c = gc_ci_cell(&ci(&s0)).unwrap();
+        assert_eq!(c.status, Status::NotRun, "{}", c.evidence);
+        assert!(c.evidence.contains("has no step"), "{}", c.evidence);
     }
 
     /// GATES-2 task 1: item 4's Windows cell is N/A by design, and N/A counts as a pass.

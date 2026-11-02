@@ -555,7 +555,7 @@ pub(super) fn copy_data_properties(
     if !is_object(source) {
         return Ok(());
     }
-    let keys = property::own_property_keys(cx, source);
+    let keys = property::try_own_property_keys(cx, source)?;
     for i in 0..object::array_len(keys) {
         let Some(k) = object::array_get(keys, i) else {
             continue;

@@ -8,7 +8,7 @@
 //! cx.create_realm()                     a new realm, all builtin tables; the current realm stays
 //! cx.with_realm(global, |cx| ..)        runs Rust code with that realm current, then switches back
 //! cx.evaluate_script_in(global, src, f) ScriptEvaluation in that realm (Cx::evaluate_script)
-//! cx.function_realm_intrinsic(f, id)    an intrinsic of GetFunctionRealm(f)
+//! cx.function_realm_intrinsic(f, id)    an intrinsic of GetFunctionRealm(f); try_: the ? form
 //! ```
 
 use ep9_value::JsResult;
@@ -79,12 +79,29 @@ impl<'s> Cx<'s> {
 
     /// The intrinsic `id` of GetFunctionRealm(`f`) (§7.3.22: the realm of a function, of a
     /// bound function's target, else the current realm), or undefined if no table made it.
-    /// For the realm steps of the spec, as ArraySpeciesCreate step 4 (§10.4.2.3: a
-    /// constructor that is `%Array%` of another realm is not used). Not a GC point.
+    /// It never throws: a revoked proxy on the walk gives the current realm; a spec step
+    /// with `? GetFunctionRealm` uses [`Cx::try_function_realm_intrinsic`]. Not a GC point.
     pub fn function_realm_intrinsic(&self, f: impl Into<Local<'s>>, id: IntrinsicId) -> Local<'s> {
         let rt = self.rt();
         let r = realm::get_function_realm(rt, f.into().bits());
         Self::local(realm::intrinsic_in(rt, r, id))
+    }
+
+    /// [`Cx::function_realm_intrinsic`] with GetFunctionRealm step 4.a (§7.3.22): a revoked
+    /// proxy on the walk (also behind a bound function) throws a TypeError. For the spec
+    /// steps that take `? GetFunctionRealm(C)`, as ArraySpeciesCreate step 4.b (§10.4.2.3).
+    /// Not a GC point before the throw.
+    ///
+    /// # Errors
+    ///
+    /// A `TypeError` if the walk reaches a revoked proxy.
+    pub fn try_function_realm_intrinsic(
+        &mut self,
+        f: impl Into<Local<'s>>,
+        id: IntrinsicId,
+    ) -> JsResult<Local<'s>> {
+        let r = realm::try_get_function_realm(self.cx, f.into().bits())?;
+        Ok(Self::local(realm::intrinsic_in(self.rt(), r, id)))
     }
 }
 

@@ -2,8 +2,10 @@
 //! the routing (MC-w15-12: proxies are routed kinds, so the keyless index paths ask them), the
 //! month-4 internal methods (the step for an undefined trap: the target's method), revocation,
 //! `Cx::is_array_or_throw`, the fallible forms of `property.rs` and their callers, and the
-//! debug asserts of the ordinary forms. No JS can make a Proxy before PROXY2 (month 5), so
-//! the proxies here come from `proxy::proxy_create`.
+//! debug asserts of the ordinary forms. The proxies here come from `proxy::proxy_create`
+//! and the ABI (`Cx::proxy_create`, `Cx::proxy_revoke`); the traps from JS are tested in
+//! `ep9_builtins` `tests/proxy.rs` (M5-P3 PROXY2), and the trap tests below call the methods
+//! of `proxy.rs` from Rust, with and without GC stress.
 
 use ep9_bytecode::VerifiedUnit;
 
@@ -77,6 +79,18 @@ fn key_texts<'s>(cx: &mut Cx<'s>, keys: Local<'s, JsObject>) -> Vec<String> {
         .map(|i| {
             let k = cx.get_index(keys, i).unwrap();
             cx.to_rust_string(k).unwrap()
+        })
+        .collect()
+}
+
+/// The keys of the for-in key array `keys` that ForInNext visits for the receiver `o`.
+fn visited<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, keys: Local<'s, JsObject>) -> Vec<String> {
+    let n = object::array_len(keys.bits());
+    (0..u64::from(n))
+        .filter_map(|i| {
+            let k = cx.get_index(keys, i).unwrap();
+            let seen = property::for_in_has(cx.inner(), o.bits(), k.bits()).unwrap();
+            seen.then(|| cx.to_rust_string(k).unwrap())
         })
         .collect()
 }
@@ -229,14 +243,17 @@ fn a_proxy_on_the_chain_sees_the_receiver() {
         assert_eq!(cx.get(t, "data").unwrap().as_int32(), Some(4));
         let own = cx.get_own_property(o, "data").unwrap().expect("own data");
         assert_eq!(own.value.and_then(|v| v.as_int32()), Some(5));
-        // `for-in` lists the receiver's keys, then the proxy's (its target's).
+        // `for-in` lists the receiver's keys, then the proxy's (its target's) as candidates:
+        // ForInNext's filter (`for_in_has`) asks the proxy's [[GetOwnProperty]] for each, so
+        // the accessor `self` (not enumerable) is listed but not visited.
         let keys = property::for_in_keys(cx.inner(), o.bits()).unwrap();
         let keys: Local<'_, JsObject> = Local::from_bits(keys);
-        assert_eq!(key_texts(cx, keys), ["data"]);
+        assert_eq!(key_texts(cx, keys), ["data", "self"]);
+        assert_eq!(visited(cx, o, keys), ["data"]);
         cx.set(t, "more", Local::int32(1), true).unwrap();
         let keys = property::for_in_keys(cx.inner(), o.bits()).unwrap();
         let keys: Local<'_, JsObject> = Local::from_bits(keys);
-        assert_eq!(key_texts(cx, keys), ["data", "more"]);
+        assert_eq!(visited(cx, o, keys), ["data", "more"]);
     });
 }
 
@@ -576,8 +593,10 @@ fn a_chain_of_max_forward_depth_proxies_answers_and_one_more_throws() {
 /// builtin step `Cx::prototype_walk_step` (`isPrototypeOf`, `__lookupGetter__`) end on the
 /// cycle with the RangeError after `MAX_PROXY_HOPS` proxies, as V8's `PrototypeIterator`
 /// does (node v24.22.1: `a instanceof C`, `Object.prototype.isPrototypeOf(a)` and
-/// `a.__lookupGetter__('zz')` throw it). No GC stress: for-in allocates one key array per
-/// proxy hop (102,400 of them), and a collection before each would take minutes.
+/// `a.__lookupGetter__('zz')` throw it). For-in over `a` (not a proxy) stops after the first
+/// proxy and lists `a`, as node does (V10-D61, M5-P3 PROXY2); over `p` it walks on and throws.
+/// No GC stress: for-in over `p` allocates one key array per proxy hop (102,400 of them), and
+/// a collection before each would take minutes.
 #[test]
 fn the_prototype_walks_end_on_a_proxy_cycle() {
     {
@@ -593,9 +612,11 @@ fn the_prototype_walks_end_on_a_proxy_cycle() {
                 assert_eq!(take_error(cx, rt), STACK_TEXT);
                 assert!(property::instance_of(cx.inner(), o, cb).is_err());
                 assert_eq!(take_error(cx, rt), STACK_TEXT);
-                assert!(property::for_in_keys(cx.inner(), o).is_err());
-                assert_eq!(take_error(cx, rt), STACK_TEXT);
             }
+            let keys = property::for_in_keys(cx.inner(), ab).unwrap();
+            assert_eq!(key_texts(cx, Local::from_bits(keys)), ["a"]);
+            assert!(property::for_in_keys(cx.inner(), pb).is_err());
+            assert_eq!(take_error(cx, rt), STACK_TEXT);
             // The builtin step: the hop count passes the bound, then the RangeError.
             let mut hops = 0;
             let mut o = a;
@@ -869,5 +890,170 @@ fn named_ics_take_the_generic_path_at_a_proxy() {
         });
         assert!(r.is_ok(), "{}: {r:?}", d.name());
         assert_eq!(take_output(), ["2", "undefined"], "{}", d.name());
+    }
+}
+
+// ---- traps and the ABI (M5-P3 PROXY2) -------------------------------------------------------
+
+/// A trap that returns its arguments as a new array (`[...arguments]`): it allocates, so with
+/// GC stress a collection runs inside each trap call, while the method keeps the target, the
+/// key and the receiver in Rust locals.
+fn args_trap<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // A stack array (a Local never lives in Rust heap memory, H20 R2); the traps here get 3.
+    let list = [args.get(0), args.get(1), args.get(2)];
+    Ok(cx
+        .create_array_from_list(&list[..args.len().min(3)])?
+        .value())
+}
+
+/// An `ownKeys` trap: three new strings, "b", "a", "1" (each a new allocation).
+fn own_keys_trap<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let b = cx.new_string("b")?.value();
+    let a = cx.new_string("a")?.value();
+    let one = cx.new_string("1")?.value();
+    Ok(cx.create_array_from_list(&[b, a, one])?.value())
+}
+
+/// A handler whose traps `names` are `f`.
+fn handler_of<'s>(cx: &mut Cx<'s>, rt: &Runtime, names: &[&str], f: HostFn) -> Local<'s, JsObject> {
+    let h = cx.new_object();
+    for &n in names {
+        let t = host_fn(rt, f, n);
+        cx.set(h, n, t, true).unwrap();
+    }
+    h
+}
+
+/// `[[Get]]`, `[[Call]]` and `[[Construct]]` call their traps with the spec's arguments
+/// (§10.5.8: target, key, receiver; §10.5.12: target, this, an args array; §10.5.13: target,
+/// an args array, newTarget), and `[[OwnPropertyKeys]]` takes the trap's list in its order
+/// (§10.5.11; the target is extensible and has no non-configurable key). With and without GC
+/// stress: each trap allocates.
+#[test]
+fn the_traps_get_the_spec_arguments_with_and_without_gc_stress() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let target = cx.new_object();
+            let h = handler_of(cx, rt, &["get"], args_trap);
+            let p = cx.proxy_create(target, h).unwrap();
+            let r = cx.get(p, "k").unwrap().as_object().unwrap();
+            assert_eq!(object::array_len(r.bits()), 3);
+            let (t0, k1, r2) = (
+                cx.get_index(r, 0).unwrap(),
+                cx.get_index(r, 1).unwrap(),
+                cx.get_index(r, 2).unwrap(),
+            );
+            assert!(cx.same_value(t0, target));
+            assert_eq!(cx.to_rust_string(k1).unwrap(), "k");
+            assert!(cx.same_value(r2, p));
+            // The receiver of a get through the chain is the child (§10.1.8.1 step 3).
+            let child = cx.new_object_with_proto(p);
+            let r = cx.get(child, "k").unwrap().as_object().unwrap();
+            let r2 = cx.get_index(r, 2).unwrap();
+            assert!(cx.same_value(r2, child));
+
+            let h = handler_of(cx, rt, &["ownKeys"], own_keys_trap);
+            let p = cx.proxy_create(target, h).unwrap();
+            let keys = cx.own_property_keys(p).unwrap();
+            assert_eq!(key_texts(cx, keys.into()), ["b", "a", "1"]);
+
+            let f = host_fn(rt, return_this, "f");
+            let h = handler_of(cx, rt, &["apply"], args_trap);
+            let pf = cx.proxy_create(f, h).unwrap();
+            assert!(kinds::is_callable(pf.bits()));
+            let this = cx.new_object();
+            let r = cx
+                .call(pf, this, &[Local::int32(1), Local::int32(2)])
+                .unwrap();
+            let r = r.as_object().unwrap();
+            let (t0, this1, a2) = (
+                cx.get_index(r, 0).unwrap(),
+                cx.get_index(r, 1).unwrap(),
+                cx.get_index(r, 2).unwrap(),
+            );
+            assert!(cx.same_value(t0, f));
+            assert!(cx.same_value(this1, this));
+            let a2 = a2.as_object().unwrap();
+            assert_eq!(object::array_len(a2.bits()), 2);
+            assert_eq!(cx.get_index(a2, 1).unwrap().as_int32(), Some(2));
+
+            let c: Local<'_> = Local::from_bits(crate::realm::new_host_function(
+                rt,
+                return_this,
+                "C",
+                0,
+                true,
+            ));
+            let h = handler_of(cx, rt, &["construct"], args_trap);
+            let pc = cx.proxy_create(c, h).unwrap();
+            assert!(cx.is_constructor(pc));
+            let r = cx.construct(pc, &[Local::int32(5)], pc).unwrap();
+            let (t0, a1, nt2) = (
+                cx.get_index(r, 0).unwrap(),
+                cx.get_index(r, 1).unwrap(),
+                cx.get_index(r, 2).unwrap(),
+            );
+            assert!(cx.same_value(t0, c));
+            let a1 = a1.as_object().unwrap();
+            assert_eq!(cx.get_index(a1, 0).unwrap().as_int32(), Some(5));
+            assert!(cx.same_value(nt2, pc));
+        });
+    }
+}
+
+/// `Cx::proxy_create` and `Cx::proxy_revoke` (H20 part 2, M5-P3 PROXY2): a TypeError for a
+/// non-object target or handler; a proxy of a plain object is not callable; revoking twice,
+/// or revoking an object that is not a proxy, changes nothing. A revoked callable proxy is
+/// not a constructor here (its target is gone; the revoked-IsConstructor note in `proxy.rs`).
+#[test]
+fn the_abi_creates_and_revokes_a_proxy() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let t = cx.new_object();
+            let h = cx.new_object();
+            assert!(cx.proxy_create(Local::int32(1), h).is_err());
+            assert_eq!(
+                take_error(cx, rt),
+                "TypeError: Cannot create proxy with a non-object as target or handler"
+            );
+            assert!(cx.proxy_create(t, Local::null()).is_err());
+            take_error(cx, rt);
+            let p = cx.proxy_create(t, h).unwrap();
+            assert!(proxy::is_proxy(p.bits()));
+            assert!(!kinds::is_callable(p.bits()));
+            assert!(cx.set(p, "x", Local::int32(3), true).unwrap());
+            assert_eq!(cx.get(t, "x").unwrap().as_int32(), Some(3));
+            cx.proxy_revoke(p);
+            cx.proxy_revoke(p);
+            cx.proxy_revoke(t);
+            assert!(cx.get(p, "x").is_err());
+            assert_eq!(
+                take_error(cx, rt),
+                "TypeError: Cannot perform 'get' on a proxy that has been revoked"
+            );
+            assert_eq!(cx.get(t, "x").unwrap().as_int32(), Some(3));
+            let c: Local<'_> = Local::from_bits(crate::realm::new_host_function(
+                rt,
+                return_this,
+                "C",
+                0,
+                true,
+            ));
+            let pc = cx.proxy_create(c, h).unwrap();
+            assert!(cx.is_constructor(pc));
+            cx.proxy_revoke(pc);
+            // §10.5.14 step 7.b: a revoked proxy keeps the [[Construct]] it got at creation.
+            assert!(cx.is_constructor(pc));
+        });
     }
 }

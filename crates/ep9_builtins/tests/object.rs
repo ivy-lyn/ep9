@@ -545,21 +545,19 @@ fn freeze_seal_and_prevent_extensions() {
 
 /// A sealed empty array keeps a writable `length`, so TestIntegrityLevel(frozen) is false
 /// (§7.3.16 step 5.b.ii). V8 (node v24.22.1) prints true here; ep9 follows the spec.
-/// Freezing an array needs non-writable elements and `length` (dictionary elements, H18):
-/// v0 throws the not-implemented error.
+/// Freezing an array makes its elements and `length` non-writable: DICTIONARY elements
+/// (H18, M5-P2 ELEM2); strict stores to them throw TypeError.
 #[test]
-fn arrays_seal_and_the_v0_freeze_limit() {
+fn arrays_seal_and_freeze() {
     assert_eq!(
         run_both(
             "var a = Object.seal([]); print(Object.isSealed(a), Object.isFrozen(a));
-             try { Object.freeze([1]); } catch (e) { print(e.message); }
-             try { Object.freeze([]); } catch (e) { print(e.message); }"
+             var b = Object.freeze([1]); b[0] = 2; print(Object.isFrozen(b), b.length, b[0]);
+             var c = Object.freeze([]); print(Object.isFrozen(c), c.length);
+             try { (function () { 'use strict'; b[0] = 3; })(); } catch (e) { print(e.constructor.name); }
+             try { (function () { 'use strict'; c.length = 1; })(); } catch (e) { print(e.constructor.name); }"
         ),
-        lines(&[
-            "true false",
-            "not implemented in ep9 v0: array elements that are not writable, enumerable and configurable",
-            "not implemented in ep9 v0: a non-writable array length",
-        ])
+        lines(&["true false", "true 1 1", "true 0", "TypeError", "TypeError"])
     );
 }
 

@@ -868,7 +868,8 @@ fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsRes
             proto = p;
         } else {
             // §10.1.14 step 4: the prototype of GetFunctionRealm(newTarget).
-            let r = crate::realm::get_function_realm(rt, nt);
+            let r = crate::realm::try_get_function_realm(cx, nt)?;
+            let rt = cx.rt();
             let id = crate::builtins::IntrinsicId::ALL
                 .into_iter()
                 .find(|id| id.root() == Some(kind.prototype_root()))
@@ -1268,9 +1269,9 @@ pub(crate) fn object_to_string<'s>(
     // 3. O = ! ToObject(this value). GC point: `o` then lives in a Rust local.
     let o = cx.to_object(this)?.bits();
     // 4-14. builtinTag: a primitive and its wrapper have the same tag, from [[BooleanData]],
-    //    [[NumberData]] or [[StringData]].
+    //    [[NumberData]] or [[StringData]]. 4: ? IsArray(O), a revoked proxy throws (PROXY2).
     let data = local(wrapper::wrapper_value(o).unwrap_or(o));
-    let builtin_tag = if is_array(o) {
+    let builtin_tag = if crate::proxy::is_array(cx.inner(), o)? {
         "Array"
     } else if crate::kinds::cell_kind(o) == crate::kinds::ARGUMENTS.get() {
         // 5. O has a [[ParameterMap]] internal slot (every arguments object: §10.4.4.6 step 3
@@ -1419,8 +1420,13 @@ pub(crate) fn array_push<'s>(
         return push_generic(cx, this, args);
     };
     let a = a.bits();
-    if crate::shape::proto_index_keys(cx.inner().rt()) {
-        // A prototype may have an index key: each store is a `[[Set]]` walk.
+    if crate::shape::proto_index_keys(cx.inner().rt())
+        || !crate::elements::length_writable(a)
+        || u64::from(object::array_len(a)) + args.len() as u64 > u64::from(u32::MAX)
+    {
+        // A prototype may have an index key, `length` is read-only (a DICTIONARY array, M5-P2
+        // ELEM2), or the new length passes 2^32 - 1: each store is a `[[Set]]` walk, which
+        // throws the spec's TypeError or RangeError (§23.1.3.23 steps 5-6).
         let len = f64::from(object::array_len(a));
         return push_with_set(cx.inner(), a, len, args).map(local);
     }

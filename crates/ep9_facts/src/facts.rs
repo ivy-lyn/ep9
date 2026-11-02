@@ -294,7 +294,9 @@ pub struct LiteralFacts {
     pub count: u32,
     /// The shape of the last result, if it has a description.
     pub shape: Option<Arc<ShapeDesc>>,
-    /// The elements kind of the last array result.
+    /// The elements kind of an array-literal site: the kind of its ALLOC_SITE handler (since
+    /// M5-P2), the most general kind the site's arrays reached, which its next arrays are
+    /// born with. None for an object-literal site and an array site before its first cold run.
     pub elements: Option<ElementsKind>,
 }
 

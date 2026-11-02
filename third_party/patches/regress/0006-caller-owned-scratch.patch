@@ -1,0 +1,618 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] Add Regex::exec_into: searches with caller-owned memory
+
+Each search allocated its backtrack stack and its loop and group
+vectors (MatchAttempter::new), then the captures vector of the Match
+and a clone of the group names. A caller that runs many searches (a
+JavaScript engine runs one per exec, many per replace or split) paid
+five allocations per search.
+
+exec_into runs one search (or, with anchored, one attempt at start)
+over a Text with Limits. The engine's stacks come from a Scratch that
+the caller keeps across searches, and the capture ranges go into the
+caller's Vec, so a search allocates nothing once both have grown. No
+Match is built, so the group names are not cloned.
+
+For this the backtrack stack entries are keyed by the position type,
+and the UTF-16, UCS-2 and Latin-1 inputs use IndexPosition<'static>
+(a plain index), so one Scratch serves every text and regex. The
+executor's search loops now return a span; next_match builds the Match.
+
+Test: tests/scratch.rs (one Scratch for 6 regexes, 6 texts, 3 text
+forms, search and anchored, equal to find_limited and
+match_at_limited; a stopped search leaves a usable Scratch).
+---
+ src/api.rs                |  54 +++++++++++
+ src/classicalbacktrack.rs | 184 +++++++++++++++++++++++++++++++-------
+ src/indexing.rs           |  12 ++-
+ tests/scratch.rs          | 108 ++++++++++++++++++++++
+ 4 files changed, 323 insertions(+), 35 deletions(-)
+ create mode 100644 tests/scratch.rs
+
+diff --git a/src/api.rs b/src/api.rs
+index 1a7ba0a..1e07d77 100644
+--- a/src/api.rs
++++ b/src/api.rs
+@@ -415,6 +415,9 @@ impl fmt::Debug for Limits<'_> {
+     }
+ }
+ 
++#[cfg(feature = "utf16")]
++pub use crate::classicalbacktrack::Scratch;
++
+ /// A string of UTF-16 code units, the subject of a [`Regex::find_limited`] search. Positions
+ /// and match ranges are code unit indexes.
+ #[cfg(feature = "utf16")]
+@@ -602,6 +605,57 @@ impl Regex {
+         )
+     }
+ 
++    /// One search of `text` for the first match from code unit `start` (as
++    /// [`Regex::find_limited`]), or with `anchored` one attempt at `start` (as
++    /// [`Regex::match_at_limited`]), that allocates nothing once `scratch` and `captures` are
++    /// large enough: the engine's stacks live in `scratch`, which the caller keeps for its
++    /// next search, and the match goes into `captures` (cleared first): the whole match at
++    /// index 0, then one entry per capture group (`None` for a group that did not
++    /// participate), in code units. Returns `Ok(true)` for a match, `Ok(false)` for none
++    /// (`captures` is then empty), or `Err` if the limits stopped the search.
++    #[cfg(feature = "utf16")]
++    pub fn exec_into(
++        &self,
++        text: Text<'_>,
++        start: usize,
++        anchored: bool,
++        scratch: &mut Scratch,
++        captures: &mut Vec<Option<Range>>,
++        limits: &mut Limits<'_>,
++    ) -> Result<bool, Stopped> {
++        let cr = &self.cr;
++        let unicode = cr.flags.unicode;
++        match text {
++            Text::Utf16(t) => classicalbacktrack::exec_into(
++                cr,
++                Utf16Input::new(t, unicode),
++                start,
++                anchored,
++                scratch,
++                captures,
++                limits,
++            ),
++            Text::Ucs2(t) => classicalbacktrack::exec_into(
++                cr,
++                Ucs2Input::new(t, unicode),
++                start,
++                anchored,
++                scratch,
++                captures,
++                limits,
++            ),
++            Text::Latin1(t) => classicalbacktrack::exec_into(
++                cr,
++                Latin1Input::new(t, unicode),
++                start,
++                anchored,
++                scratch,
++                captures,
++                limits,
++            ),
++        }
++    }
++
+     /// Searches `text` from code unit `start` for the first match, as
+     /// [`Regex::find_from_utf16`] or [`Regex::find_from_ucs2`] do, but counts the steps of
+     /// the search against `limits`. Returns `Err` if the limits stopped the search.
+diff --git a/src/classicalbacktrack.rs b/src/classicalbacktrack.rs
+index 2c68453..f7413f6 100644
+--- a/src/classicalbacktrack.rs
++++ b/src/classicalbacktrack.rs
+@@ -17,6 +17,8 @@ use crate::insn::UnitPredicate;
+ use crate::insn::{CompiledRegex, Insn, LoopFields};
+ use crate::matchers;
+ use crate::matchers::CharProperties;
++#[cfg(feature = "utf16")]
++use crate::position::IndexPosition;
+ use crate::position::PositionType;
+ use crate::scm;
+ use crate::scm::SingleCharMatcher;
+@@ -27,22 +29,22 @@ use alloc::vec::Vec;
+ use core::ops::Range;
+ 
+ #[derive(Clone, Debug)]
+-enum BacktrackInsn<Input: InputIndexer> {
++enum BacktrackInsn<Position: PositionType> {
+     /// Nothing more to backtrack.
+     /// This "backstops" our stack.
+     Exhausted,
+ 
+     /// Restore the IP and position.
+-    SetPosition { ip: IP, pos: Input::Position },
++    SetPosition { ip: IP, pos: Position },
+ 
+     SetLoopData {
+         id: LoopID,
+-        data: LoopData<Input::Position>,
++        data: LoopData<Position>,
+     },
+ 
+     SetCaptureGroup {
+         id: CaptureGroupID,
+-        data: GroupData<Input::Position>,
++        data: GroupData<Position>,
+     },
+ 
+     EnterNonGreedyLoop {
+@@ -51,20 +53,20 @@ enum BacktrackInsn<Input: InputIndexer> {
+         ip: IP,
+         // The input position of the loop before entering it.
+         // This is used to set up backtracking that restores this position.
+-        orig_pos: Input::Position,
+-        data: LoopData<Input::Position>,
++        orig_pos: Position,
++        data: LoopData<Position>,
+     },
+ 
+     GreedyLoop1Char {
+         continuation: IP,
+-        min: Input::Position,
+-        max: Input::Position,
++        min: Position,
++        max: Position,
+     },
+ 
+     NonGreedyLoop1Char {
+         continuation: IP,
+-        min: Input::Position,
+-        max: Input::Position,
++        min: Position,
++        max: Position,
+     },
+ }
+ 
+@@ -184,10 +186,32 @@ impl<'a> Meter<'a> {
+     }
+ }
+ 
++/// The memory of the backtracking engine, kept by the caller across searches
++/// (`Regex::exec_into`) so that a search allocates nothing once it has grown. It holds no
++/// position of a finished search (each search clears it first).
++#[cfg(feature = "utf16")]
++#[derive(Debug, Default)]
++pub struct Scratch {
++    bts: Vec<BacktrackInsn<IndexPosition<'static>>>,
++    loops: Vec<LoopData<IndexPosition<'static>>>,
++    groups: Vec<GroupData<IndexPosition<'static>>>,
++}
++
++#[cfg(feature = "utf16")]
++impl Scratch {
++    /// The bytes of memory the scratch holds (a search that backtracked a lot leaves a large
++    /// backtrack stack).
++    pub fn memory(&self) -> usize {
++        self.bts.capacity() * core::mem::size_of::<BacktrackInsn<IndexPosition<'static>>>()
++            + self.loops.capacity() * core::mem::size_of::<LoopData<IndexPosition<'static>>>()
++            + self.groups.capacity() * core::mem::size_of::<GroupData<IndexPosition<'static>>>()
++    }
++}
++
+ #[derive(Debug)]
+ pub(crate) struct MatchAttempter<'a, Input: InputIndexer> {
+     re: &'a CompiledRegex,
+-    bts: Vec<BacktrackInsn<Input>>,
++    bts: Vec<BacktrackInsn<Input::Position>>,
+     s: State<Input::Position>,
+     meter: Meter<'a>,
+ }
+@@ -217,6 +241,46 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+         m
+     }
+ 
++    /// An attempter for `limits` whose stacks are the memory of `scratch` (given back with
++    /// `into_scratch`).
++    #[cfg(feature = "utf16")]
++    pub(crate) fn with_scratch(
++        re: &'a CompiledRegex,
++        entry: Input::Position,
++        limits: &'a mut Limits<'_>,
++        scratch: &mut Scratch,
++    ) -> Self
++    where
++        Input: InputIndexer<Position = IndexPosition<'static>>,
++    {
++        let mut bts = core::mem::take(&mut scratch.bts);
++        bts.clear();
++        bts.push(BacktrackInsn::Exhausted);
++        let mut loops = core::mem::take(&mut scratch.loops);
++        loops.clear();
++        loops.resize(re.loops as usize, LoopData::new(entry));
++        let mut groups = core::mem::take(&mut scratch.groups);
++        groups.clear();
++        groups.resize(re.groups as usize, GroupData::new());
++        Self {
++            re,
++            bts,
++            s: State { loops, groups },
++            meter: Meter::new(limits),
++        }
++    }
++
++    /// Gives the stacks back to `scratch`.
++    #[cfg(feature = "utf16")]
++    pub(crate) fn into_scratch(self, scratch: &mut Scratch)
++    where
++        Input: InputIndexer<Position = IndexPosition<'static>>,
++    {
++        scratch.bts = self.bts;
++        scratch.loops = self.s.loops;
++        scratch.groups = self.s.groups;
++    }
++
+     /// Why the search stopped early, if it did.
+     #[cfg(feature = "utf16")]
+     pub(crate) fn stopped(&self) -> Option<Stopped> {
+@@ -231,7 +295,7 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+     }
+ 
+     #[inline(always)]
+-    fn push_backtrack(&mut self, bt: BacktrackInsn<Input>) {
++    fn push_backtrack(&mut self, bt: BacktrackInsn<Input::Position>) {
+         self.bts.push(bt)
+     }
+ 
+@@ -247,7 +311,7 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+     }
+ 
+     fn prepare_to_enter_loop(
+-        bts: &mut Vec<BacktrackInsn<Input>>,
++        bts: &mut Vec<BacktrackInsn<Input::Position>>,
+         pos: Input::Position,
+         loop_fields: &LoopFields,
+         loop_data: &mut LoopData<Input::Position>,
+@@ -297,7 +361,7 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+             }
+             (true, false) => {
+                 // Only entering is viable.
+-                MatchAttempter::prepare_to_enter_loop(&mut self.bts, pos, loop_fields, loop_data);
++                Self::prepare_to_enter_loop(&mut self.bts, pos, loop_fields, loop_data);
+                 Some(loop_taken_ip)
+             }
+             (true, true) if !loop_fields.greedy => {
+@@ -318,7 +382,7 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+                     ip: loop_not_taken_ip,
+                     pos,
+                 });
+-                MatchAttempter::prepare_to_enter_loop(&mut self.bts, pos, loop_fields, loop_data);
++                Self::prepare_to_enter_loop(&mut self.bts, pos, loop_fields, loop_data);
+                 Some(loop_taken_ip)
+             }
+         }
+@@ -756,12 +820,7 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
+                         },
+                     };
+                     *loop_data = data;
+-                    MatchAttempter::prepare_to_enter_loop(
+-                        &mut self.bts,
+-                        *pos,
+-                        loop_fields,
+-                        loop_data,
+-                    );
++                    Self::prepare_to_enter_loop(&mut self.bts, *pos, loop_fields, loop_data);
+                     return true;
+                 }
+ 
+@@ -1266,7 +1325,7 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+         &mut self,
+         pos: Input::Position,
+         next_start: &mut Option<Input::Position>,
+-    ) -> Option<Match> {
++    ) -> Option<(Input::Position, Input::Position)> {
+         if !self.matcher.step() {
+             return None;
+         }
+@@ -1279,23 +1338,23 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+             } else {
+                 *next_start = inp.next_right_pos(end);
+             }
+-            Some(self.successful_match(pos, end))
++            Some((pos, end))
+         } else {
+             // Anchored regex failed to match at this position, no more matches
+             None
+         }
+     }
+ 
+-    /// \return the match that starts at `pos`, trying no other position.
++    /// \return the span of the match that starts at `pos`, trying no other position.
+     #[cfg(feature = "utf16")]
+-    fn match_at(&mut self, pos: Input::Position) -> Option<Match> {
++    fn span_at(&mut self, pos: Input::Position) -> Option<(Input::Position, Input::Position)> {
+         if !self.matcher.step() {
+             return None;
+         }
+         let end = self
+             .matcher
+             .try_at_pos(self.input, 0, pos, Forward::new())?;
+-        Some(self.successful_match(pos, end))
++        Some((pos, end))
+     }
+ 
+     /// \return the next match, skipping the positions where the code-unit start predicate
+@@ -1306,7 +1365,7 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+         mut pos: Input::Position,
+         next_start: &mut Option<Input::Position>,
+         pred: &UnitPredicate,
+-    ) -> Option<Match> {
++    ) -> Option<(Input::Position, Input::Position)> {
+         let inp = self.input;
+         loop {
+             // One step per scan call, and one more per `UNIT_SCAN_CHUNK` start positions the
+@@ -1339,7 +1398,7 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+                 } else {
+                     *next_start = inp.next_right_pos(end);
+                 }
+-                return Some(self.successful_match(pos, end));
++                return Some((pos, end));
+             }
+             // Didn't find it at this position, try the next one.
+             pos = inp.next_right_pos(pos)?;
+@@ -1353,7 +1412,7 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+         mut pos: Input::Position,
+         next_start: &mut Option<Input::Position>,
+         prefix_search: &PrefixSearch,
+-    ) -> Option<Match> {
++    ) -> Option<(Input::Position, Input::Position)> {
+         let inp = self.input;
+         loop {
+             if !self.matcher.step() {
+@@ -1372,7 +1431,7 @@ impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
+                 } else {
+                     *next_start = inp.next_right_pos(end);
+                 }
+-                return Some(self.successful_match(pos, end));
++                return Some((pos, end));
+             }
+             // Didn't find it at this position, try the next one.
+             pos = inp.next_right_pos(pos)?;
+@@ -1392,6 +1451,19 @@ impl<Input: InputIndexer> exec::MatchProducer for BacktrackExecutor<'_, Input> {
+         pos: Input::Position,
+         next_start: &mut Option<Input::Position>,
+     ) -> Option<Match> {
++        let (start, end) = self.next_span(pos, next_start)?;
++        Some(self.successful_match(start, end))
++    }
++}
++
++impl<Input: InputIndexer> BacktrackExecutor<'_, Input> {
++    /// \return the span of the next match from `pos`, and set `next_start` to the position
++    /// after it (as `MatchProducer::next_match`). The capture groups hold its captures.
++    fn next_span(
++        &mut self,
++        pos: Input::Position,
++        next_start: &mut Option<Input::Position>,
++    ) -> Option<(Input::Position, Input::Position)> {
+         // When UTF-16 support is active the byte start predicate is not used, since its bytes
+         // are UTF-8 bytes. A code-unit input (UTF-16, UCS-2, Latin-1) uses the code-unit
+         // start predicate instead.
+@@ -1458,13 +1530,59 @@ pub(crate) fn find_limited<Input: InputIndexer>(
+         MatchAttempter::with_limits(re, input.left_end(), limits),
+     );
+     let mut next_start = None;
+-    let found = exec::MatchProducer::next_match(&mut exec, pos, &mut next_start);
++    let found = exec
++        .next_span(pos, &mut next_start)
++        .map(|(start, end)| exec.successful_match(start, end));
+     match exec.matcher.stopped() {
+         Some(why) => Err(why),
+         None => Ok(found),
+     }
+ }
+ 
++/// One search of `re` in `input` from code unit `start` (with `anchored`, one attempt at
++/// `start`), using the memory of `scratch` and writing the match into `captures`
++/// (`Regex::exec_into`).
++#[cfg(feature = "utf16")]
++pub(crate) fn exec_into<Input: InputIndexer<Position = IndexPosition<'static>>>(
++    re: &CompiledRegex,
++    input: Input,
++    start: usize,
++    anchored: bool,
++    scratch: &mut Scratch,
++    captures: &mut Vec<Option<Range<usize>>>,
++    limits: &mut Limits<'_>,
++) -> Result<bool, Stopped> {
++    captures.clear();
++    let Some(pos) = input.try_move_right(input.left_end(), start) else {
++        return Ok(false);
++    };
++    let matcher = MatchAttempter::with_scratch(re, input.left_end(), limits, scratch);
++    let mut exec = BacktrackExecutor::new(input, matcher);
++    let found = if anchored {
++        exec.span_at(pos)
++    } else {
++        exec.next_span(pos, &mut None)
++    };
++    let stopped = exec.matcher.stopped();
++    if let (Some((start, end)), None) = (found, stopped) {
++        let offset = |p| input.pos_to_offset(p);
++        captures.reserve(exec.matcher.s.groups.len() + 1);
++        captures.push(Some(offset(start)..offset(end)));
++        captures.extend(
++            exec.matcher
++                .s
++                .groups
++                .iter()
++                .map(|gd| gd.as_range().map(|r| offset(r.start)..offset(r.end))),
++        );
++    }
++    exec.matcher.into_scratch(scratch);
++    match stopped {
++        Some(why) => Err(why),
++        None => Ok(found.is_some()),
++    }
++}
++
+ /// The match of `re` in `input` that starts at code unit `pos`, with the steps counted
+ /// against `limits` (`Regex::match_at_limited`): one attempt, no search.
+ #[cfg(feature = "utf16")]
+@@ -1481,7 +1599,9 @@ pub(crate) fn match_at_limited<Input: InputIndexer>(
+         input,
+         MatchAttempter::with_limits(re, input.left_end(), limits),
+     );
+-    let found = exec.match_at(pos);
++    let found = exec
++        .span_at(pos)
++        .map(|(start, end)| exec.successful_match(start, end));
+     match exec.matcher.stopped() {
+         Some(why) => Err(why),
+         None => Ok(found),
+diff --git a/src/indexing.rs b/src/indexing.rs
+index af45e68..d675e15 100644
+--- a/src/indexing.rs
++++ b/src/indexing.rs
+@@ -916,7 +916,9 @@ impl<'a> Utf16Input<'a> {
+ 
+ #[cfg(feature = "utf16")]
+ impl<'a> InputIndexer for Utf16Input<'a> {
+-    type Position = IndexPosition<'a>;
++    // Positions are plain indexes: 'static lets a caller keep the engine's memory across
++    // searches (`Scratch`).
++    type Position = IndexPosition<'static>;
+     type Element = u32;
+     type CharProps = matchers::Utf16CharProperties;
+     const CODE_UNITS_ARE_BYTES: bool = false;
+@@ -1181,7 +1183,9 @@ impl<'a> Ucs2Input<'a> {
+ 
+ #[cfg(feature = "utf16")]
+ impl<'a> InputIndexer for Ucs2Input<'a> {
+-    type Position = IndexPosition<'a>;
++    // Positions are plain indexes: 'static lets a caller keep the engine's memory across
++    // searches (`Scratch`).
++    type Position = IndexPosition<'static>;
+     type Element = u32;
+     type CharProps = matchers::Utf16CharProperties;
+     const CODE_UNITS_ARE_BYTES: bool = false;
+@@ -1368,7 +1372,9 @@ impl<'a> Latin1Input<'a> {
+ 
+ #[cfg(feature = "utf16")]
+ impl<'a> InputIndexer for Latin1Input<'a> {
+-    type Position = IndexPosition<'a>;
++    // Positions are plain indexes: 'static lets a caller keep the engine's memory across
++    // searches (`Scratch`).
++    type Position = IndexPosition<'static>;
+     type Element = u32;
+     type CharProps = matchers::Utf16CharProperties;
+     const CODE_UNITS_ARE_BYTES: bool = true;
+diff --git a/tests/scratch.rs b/tests/scratch.rs
+new file mode 100644
+index 0000000..0754439
+--- /dev/null
++++ b/tests/scratch.rs
+@@ -0,0 +1,108 @@
++//! `Regex::exec_into`: searches that keep the engine's memory in a caller-owned `Scratch`
++//! and write the match into a caller-owned capture list.
++#![cfg(feature = "utf16")]
++
++use regress::{Limits, Range, Regex, Scratch, Stopped, Text};
++
++fn no_limits<T>(f: impl FnOnce(&mut Limits<'_>) -> T) -> T {
++    let mut never = || false;
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 4096,
++        poll: &mut never,
++    };
++    f(&mut limits)
++}
++
++/// The match as `find_limited` / `match_at_limited` give it: the whole match, then the groups.
++fn reference(re: &Regex, text: Text<'_>, start: usize, anchored: bool) -> Vec<Option<Range>> {
++    let m = no_limits(|l| {
++        if anchored {
++            re.match_at_limited(text, start, l)
++        } else {
++            re.find_limited(text, start, l)
++        }
++    })
++    .unwrap();
++    match m {
++        Some(m) => m.groups().collect(),
++        None => Vec::new(),
++    }
++}
++
++#[test]
++fn one_scratch_serves_many_regexes_and_texts() {
++    let regexes = [
++        Regex::new("(a)(b)?(?:(c)|d)").unwrap(),
++        Regex::new("x+").unwrap(),
++        Regex::with_flags("(?<n>\u{e9})|(z)", "i").unwrap(),
++        Regex::with_flags("(.)(?=(\\1))", "u").unwrap(),
++        Regex::new("((a+)+)b").unwrap(),
++        Regex::new("").unwrap(),
++    ];
++    let words = [
++        "zzabd",
++        "xxacx",
++        "\u{c9}\u{e9}a",
++        "\u{1F600}\u{1F600}a",
++        "aaab",
++        "",
++    ];
++    let mut scratch = Scratch::default();
++    let mut caps = vec![Some(7..9); 3];
++    for re in &regexes {
++        for word in words {
++            let units: Vec<u16> = word.encode_utf16().collect();
++            let latin1: Option<Vec<u8>> = units.iter().map(|&u| u8::try_from(u).ok()).collect();
++            for start in 0..=units.len() + 1 {
++                for anchored in [false, true] {
++                    let mut texts = vec![Text::Ucs2(&units), Text::Utf16(&units)];
++                    if let Some(b) = &latin1 {
++                        texts.push(Text::Latin1(b));
++                    }
++                    for text in texts {
++                        let want = reference(re, text, start, anchored);
++                        let found = no_limits(|l| {
++                            re.exec_into(text, start, anchored, &mut scratch, &mut caps, l)
++                        })
++                        .unwrap();
++                        assert_eq!(found, !want.is_empty());
++                        assert_eq!(caps, want, "{re:?} {word:?} {start} {anchored} {text:?}");
++                    }
++                }
++            }
++        }
++    }
++}
++
++/// A stop leaves the scratch usable for the next search.
++#[test]
++fn a_stopped_search_leaves_a_usable_scratch() {
++    let re = Regex::new("(a+)+b").unwrap();
++    let text: Vec<u16> = "a".repeat(28).encode_utf16().collect();
++    let mut scratch = Scratch::default();
++    let mut caps = Vec::new();
++    let mut stop = || true;
++    let mut limits = Limits {
++        budget: None,
++        poll_interval: 64,
++        poll: &mut stop,
++    };
++    let r = re.exec_into(
++        Text::Ucs2(&text),
++        0,
++        false,
++        &mut scratch,
++        &mut caps,
++        &mut limits,
++    );
++    assert_eq!(r, Err(Stopped::Interrupted));
++    let mut ok = text.clone();
++    ok.push(u16::from(b'b'));
++    let r = no_limits(|l| re.exec_into(Text::Ucs2(&ok), 0, false, &mut scratch, &mut caps, l));
++    assert_eq!(r, Ok(true));
++    assert_eq!(caps, vec![Some(0..29), Some(0..28)]);
++    // The scratch kept its memory; a new one holds none.
++    assert!(scratch.memory() > 0);
++    assert_eq!(Scratch::default().memory(), 0);
++}

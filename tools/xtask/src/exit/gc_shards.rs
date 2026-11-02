@@ -17,9 +17,19 @@ use super::t262::count;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The CI job and step of a GC-stress shard (`.github/workflows/ci.yml`).
+/// The CI job and step of a GC-stress shard (`.github/workflows/ci.yml`). The step names S1
+/// since M5-P2 (plan v10 V10-D19: S1 replaced S0 in the shards; `m1-exit` item 4 needs "S1" in
+/// the name).
 pub(crate) const GC_JOB: &str = "test262 GC-stress";
-pub(crate) const GC_STEP: &str = "test262 exec, GC-stress + eager feedback";
+pub(crate) const GC_STEP: &str = "test262 exec, GC-stress (S1) + eager feedback";
+/// Every shard step name that `m0-exit` item 6 reads: [`GC_STEP`], and the name before M5-P2
+/// (S0 shards), so the runs of an older ci.yml still read.
+pub(crate) const GC_STEPS: [&str; 2] = [GC_STEP, "test262 exec, GC-stress + eager feedback"];
+
+/// Whether `name` is a GC-stress shard step that `m0-exit` reads ([`GC_STEPS`]).
+pub(crate) fn is_gc_step(name: &str) -> bool {
+    GC_STEPS.contains(&name)
+}
 /// The largest split that item 6 looks for.
 pub(crate) const MAX_GC_SHARDS: usize = 32;
 

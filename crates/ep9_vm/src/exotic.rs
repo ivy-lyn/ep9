@@ -5,6 +5,7 @@
 //! | Receiver | Own properties seen here | Attributes |
 //! |---|---|---|
 //! | array | `length`; array-index keys below the dense limit (elements) | {w}; {w, e, c} |
+//! | an object of an `elements::plain_elements_kind` (H18-Q3, M5-P1 ELEM1) | array-index keys in its +16 elements store; other index keys stay stored properties | {w, e, c} |
 //! | String wrapper | `length`; indices below the length (`wrapper::string_own_property`) | {}; {e} |
 //! | constructor or generator function | `prototype` until first use, then an ordinary property | {w} |
 //! | arguments object (kind ARGUMENTS) | routed to `arguments.rs` (M3-P2 VM-ARGS) | - |
@@ -44,6 +45,19 @@ use crate::props;
 use crate::runtime::{Atom, Runtime};
 use crate::wrapper;
 
+/// The element that `key` names in the +16 elements store of `o`, an object of an
+/// `elements::plain_elements_kind` (H18-Q3): (index, value). The +16 test comes first: most
+/// objects have no elements cell. Not a GC point.
+#[inline(always)]
+pub(crate) fn plain_element(o: u64, key: u64) -> Option<(u32, u64)> {
+    debug_assert!(crate::elements::plain_elements_kind(kind::cell_kind(o)));
+    if !object::has_elements_cell(o) {
+        return None;
+    }
+    let i = array_index_of(key)?;
+    object::element_get(o, i).map(|v| (i, v))
+}
+
 /// True if `key` is the atom `a`. With a classified probe, an atom compares by bits only.
 #[inline]
 pub(crate) fn is_key(rt: &Runtime, key: u64, how: Probe, a: Atom) -> bool {
@@ -54,14 +68,14 @@ pub(crate) fn is_key(rt: &Runtime, key: u64, how: Probe, a: Atom) -> bool {
     }
 }
 
-/// True if the function `f` has a lazy `prototype` (`generator::lazy_prototype_kind`: a
-/// constructor, later also a generator function) that is still lazy (not in its storage),
-/// and `key` is `prototype`. Not a GC point.
+/// True if `key` is `prototype` and `f` still has a lazy one, not in its storage (a constructor
+/// but `%Proxy%`, or a generator function: `generator::lazy_prototype_kind`). Not a GC point.
 #[inline]
 pub(crate) fn is_lazy_prototype(rt: &Runtime, f: u64, key: u64, how: Probe) -> bool {
     generator::lazy_prototype_kind(object::function_info(f)).is_some()
         && is_key(rt, key, how, Atom::Prototype)
         && props::own_get_with(f, key, how).is_none()
+        && !is_proxy_constructor(rt, f)
 }
 
 /// The `prototype` object of the function `f`, created on first use
@@ -118,6 +132,11 @@ pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe, receiver: u64) -> O
             .and_then(|i| object::array_get(o, i))
             .map(Ok);
     }
+    if crate::elements::plain_elements_kind(k)
+        && let Some((_, v)) = plain_element(o, key)
+    {
+        return Some(Ok(v));
+    }
     if k == kind::FUNCTION.get() {
         if is_lazy_prototype(cx.rt(), o, key, how) {
             return Some(Ok(function_prototype(cx.rt(), o)));
@@ -136,7 +155,8 @@ pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe, receiver: u64) -> O
 /// Where an exotic own property lives, for the apply step of `[[DefineOwnProperty]]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Exotic {
-    /// A dense array element.
+    /// A dense array element, or an element of an `elements::plain_elements_kind` object
+    /// (H18-Q3).
     Element(u32),
     /// A String wrapper's `length` or index (never writable or configurable).
     Wrapper,
@@ -160,6 +180,11 @@ pub(crate) fn own_property(
     if k == kind::ARRAY.get() {
         let i = array_index_of(key)?;
         return object::array_get(o, i).map(|v| Ok((v, attr::DEFAULT, Exotic::Element(i))));
+    }
+    if crate::elements::plain_elements_kind(k)
+        && let Some((i, v)) = plain_element(o, key)
+    {
+        return Some(Ok((v, attr::DEFAULT, Exotic::Element(i))));
     }
     if k == kind::FUNCTION.get() {
         if is_lazy_prototype(cx.rt(), o, key, how) {
@@ -190,6 +215,9 @@ pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i3
         }
         let i = array_index_of(key)?;
         return object::array_get(o, i).map(|_| attr::DEFAULT);
+    }
+    if crate::elements::plain_elements_kind(k) && plain_element(o, key).is_some() {
+        return Some(attr::DEFAULT);
     }
     if k == kind::FUNCTION.get() {
         return is_lazy_prototype(rt, o, key, how).then_some(attr::WRITABLE);
@@ -408,4 +436,16 @@ pub(crate) mod probe {
     pub(crate) fn take() -> Vec<&'static str> {
         HITS.with(|h| core::mem::take(&mut *h.borrow_mut()))
     }
+}
+
+/// True if `f` is `%Proxy%` of its own realm: the one constructor with no `prototype`
+/// (§28.2.2; M5-P3 PROXY2). It is a table builtin, so without this test its `prototype` would
+/// be lazy ([`is_lazy_prototype`]). Asked only when the rest of that test holds. Not a GC
+/// point.
+#[cold]
+#[inline(never)]
+fn is_proxy_constructor(rt: &Runtime, f: u64) -> bool {
+    let id = crate::builtins::IntrinsicId::Proxy;
+    object::function_info(f).host.is_some()
+        && crate::realm::intrinsic_in(rt, object::function_realm(f), id) == f
 }

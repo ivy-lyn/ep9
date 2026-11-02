@@ -11,7 +11,7 @@
 // or the first error line with its place in the kernel file (the generated line minus the stub).
 //
 // Why a stub: the official harness (base.js + run_harness.js) needs Date for its timer and score,
-// and Math for its deterministic Math.random. ep9 T0 has neither yet. The stub keeps the kernel
+// and Math for Math.random and GeometricMean (Math.log, Math.pow). ep9 T0 had none of these when the stub was made (decision PERF-2): Date came in M3-P1, Math.log and Math.pow in M4-P1 (MATH1), and DEFAULT_HARNESS is "base" since then. The stub keeps the kernel
 // file as it is and replaces only the harness:
 //   - BenchmarkSuite(name, reference, benchmarks) records the benchmarks; Benchmark(name, run,
 //     setup, tearDown) is base.js's constructor (base.js:39-44);

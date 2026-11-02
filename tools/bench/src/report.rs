@@ -3,7 +3,7 @@
 //! ```text
 //! { "schema": "ep9-bench/v1", "name": .., "command": [..],
 //!   "counter": .. | null, "counter_status": "ok" | "unavailable", "counter_note": null | ..,
-//!   "unit": "instructions", "target": .., "commit": .. | null,
+//!   "unit": "instructions", "target": .., "commit": .. | null, "engine_build": .. | null,
 //!   "runs": [ { "instructions": n | null, "wall_ns": n, "max_rss_bytes": n | null }, .. ],
 //!   "summary": { "instructions": { "min": n, "median": n, "max": n } | null,
 //!                "wall_ns": { "median": n } } }
@@ -12,6 +12,11 @@
 //! v1 adds `counter_status` and `counter_note` to v0. When the host has no instruction counter,
 //! `counter` is null, `counter_status` is "unavailable", `counter_note` tells why, and every
 //! `instructions` value is null. A null count is "not measured", never 0.
+//!
+//! `engine_build` (M5-P0, plan v10 V10-A19; MC-w17-5) is the build line of the measured ep9
+//! binary: the `features ...; preset ...` line its `--version` prints. It is null when the
+//! command's file name does not start with `ep9`, or the binary prints no such line (a build
+//! from before M5-P0). `commit` names the tree; `engine_build` names how the binary was built.
 
 use crate::counter::{Counter, Sample};
 use std::fmt::Write as _;
@@ -24,6 +29,7 @@ pub fn json(
     name: &str,
     command: &[String],
     counter: &Result<Counter, String>,
+    engine_build: Option<&str>,
     samples: &[Sample],
 ) -> String {
     let mut o = String::new();
@@ -54,6 +60,11 @@ pub fn json(
     match std::env::var("GITHUB_SHA").or_else(|_| std::env::var("EP9_COMMIT")) {
         Ok(sha) => string(&mut o, &sha),
         Err(_) => o.push_str("null"),
+    }
+    o.push_str(",\n  \"engine_build\": ");
+    match engine_build {
+        Some(line) => string(&mut o, line),
+        None => o.push_str("null"),
     }
     o.push_str(",\n  \"runs\": [\n");
     for (i, s) in samples.iter().enumerate() {
@@ -163,9 +174,11 @@ mod tests {
             "x",
             &["ep9".into(), "-e".into()],
             &Ok(Counter::Perf),
+            Some("features jit; preset jit"),
             &samples,
         );
         assert!(j.contains("\"schema\": \"ep9-bench/v1\""));
+        assert!(j.contains(",\n  \"engine_build\": \"features jit; preset jit\",\n"));
         assert!(j.contains("\"command\": [\"ep9\", \"-e\"]"));
         assert!(j.contains("\"counter\": \"perf-stat-instructions-u\""));
         assert!(j.contains("\"counter_status\": \"ok\""));
@@ -179,7 +192,14 @@ mod tests {
     #[test]
     fn report_without_counter() {
         let samples = [sample(None, 5, None), sample(None, 4, None)];
-        let j = json("x", &["ep9".into()], &Err("no \"PMC\"".into()), &samples);
+        let j = json(
+            "x",
+            &["ep9".into()],
+            &Err("no \"PMC\"".into()),
+            None,
+            &samples,
+        );
+        assert!(j.contains(",\n  \"engine_build\": null,\n"), "{j}");
         assert!(j.contains("\"counter\": null"));
         assert!(j.contains("\"counter_status\": \"unavailable\""));
         assert!(j.contains("\"counter_note\": \"no \\\"PMC\\\"\""));

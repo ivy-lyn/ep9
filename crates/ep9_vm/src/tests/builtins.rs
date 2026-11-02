@@ -1231,3 +1231,23 @@ fn global_bindings_functions_then_vars() {
         },
     );
 }
+
+/// `%Proxy%` is the one table constructor with no `prototype` (§28.2.2; M5-P3 PROXY2, the H20
+/// `check_tables` exception, a rewrite of a Frozen core rule): the checks take it with no key,
+/// and any other constructor with none still fails (`%Number%`).
+#[test]
+fn only_proxy_is_a_table_constructor_without_prototype() {
+    const PROXY_DEFS: &[BuiltinDef] = &[BuiltinDef::constructor("Proxy", 2, count_args)];
+    const MAKE_PROXY: &[IntrinsicDef] = &[IntrinsicDef {
+        id: IntrinsicId::Proxy,
+        value: IntrinsicValue::Builtin(0),
+    }];
+    let m: &'static [BuiltinModule] = Box::leak(Box::new([module(PROXY_DEFS, MAKE_PROXY, &[])]));
+    let t: &'static BuiltinTable = Box::leak(Box::new(BuiltinTable::new("proxy", m)));
+    assert_eq!(check_tables(&[crate::internals::VM_BUILTINS, t]), Ok(()));
+    let e = check_one(module(NUMBER_DEFS, MAKE_NUMBER, &[]));
+    assert!(
+        e.contains("the constructor %Number% has no `prototype`"),
+        "{e}"
+    );
+}

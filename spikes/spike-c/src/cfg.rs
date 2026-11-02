@@ -113,6 +113,23 @@ impl Cfg {
         self.insns.len() * self.width().div_ceil(8)
     }
 
+    /// True if `registers` and `acc` are exactly the live set before instruction `i`: every
+    /// live register once, no other register, and the accumulator if and only if it is live
+    /// (the H02-Q1 report compares each exit's frame state this way; a count compare would
+    /// pass two sets of one size).
+    pub fn is_live_set(&self, i: usize, registers: &[Register], acc: bool) -> bool {
+        let mut got = vec![false; self.width()];
+        for &r in registers {
+            let k = self.index(r);
+            if k >= self.acc() || got[k] {
+                return false;
+            }
+            got[k] = true;
+        }
+        got[self.acc()] = acc;
+        self.live_before.get(i) == Some(&got)
+    }
+
     /// Decodes the reachable instructions of `input`, splits them into blocks and computes
     /// the liveness. `supported` says which opcodes the builder translates; any other
     /// reachable one is refused here.
@@ -396,6 +413,40 @@ mod tests {
         assert!(named.contains(&"a0".to_string()), "{named:?}");
         assert!(!live[cfg.acc()]);
         assert!(cfg.liveness_bytes() > 0);
+    }
+
+    /// `is_live_set` compares register sets, not counts (the M5-P4 W1 reviewer F5; Codex
+    /// M5-P4 r1): at the loop header the live set itself passes; the same count with one
+    /// register swapped for a dead one, a register twice, a missing register, and a live
+    /// accumulator each fail.
+    #[test]
+    fn the_live_set_compare_reads_each_register() {
+        let mut s = Session::new(&Config::default()).expect("session");
+        s.run(
+            "function sum(n) { var a = 0; for (var i = 0; i < n; i++) { a = (a + i) | 0; } return a; }",
+            "l.js",
+        )
+        .result
+        .expect("run");
+        let input = s.function_input("sum").expect("input");
+        let cfg = Cfg::build(&input, all).expect("cfg");
+        let i = (0..cfg.blocks.len())
+            .find(|&b| cfg.blocks[b].loop_header)
+            .map(|b| cfg.blocks[b].insns.start)
+            .expect("a loop header");
+        let (live, dead): (Vec<usize>, Vec<usize>) =
+            (0..cfg.acc()).partition(|&r| cfg.live_before[i][r]);
+        let regs = |ks: &[usize]| ks.iter().map(|&k| cfg.register(k)).collect::<Vec<_>>();
+        assert_eq!(live.len(), 3, "{live:?}");
+        assert!(!dead.is_empty(), "{dead:?}");
+        assert!(cfg.is_live_set(i, &regs(&live), false));
+        let mut swapped = live.clone();
+        swapped[0] = dead[0];
+        assert!(!cfg.is_live_set(i, &regs(&swapped), false), "{swapped:?}");
+        let twice = [live[0], live[0], live[1]];
+        assert!(!cfg.is_live_set(i, &regs(&twice), false));
+        assert!(!cfg.is_live_set(i, &regs(&live[1..]), false));
+        assert!(!cfg.is_live_set(i, &regs(&live), true));
     }
 
     #[test]

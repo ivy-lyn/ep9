@@ -25,14 +25,16 @@
 //! | [`kernels`] | the protocol kernels: source files, hot functions, drivers, checks | P0-SPIKEC |
 //! | [`structural`] | `spike-c structural`, the checks of `gate.sh structural` | P0-SPIKEC; SPIKEC-1 adds layout, compile and lattice checks |
 //! | [`facts`] | the FactSnapshot input of one function: live (RUNTIME) or a PROFILED file | P0-SPIKEC; SP-Facts (month 5) |
+//! | [`sp_facts`] | config P (SP-Facts, WI-SC8): a PROFILED file written by a training run, loaded in a new process and the accepted hot set compiled before the first `run()`; the right-file check, the wrong-profile cases and the schema refusals (`gate.sh spfacts`), the t(C)/t(P) report | SPFACTS (M5-P3) |
 //! | [`cfg`](mod@cfg) | reachable bytecode as blocks, register liveness (H02-Q1) | SPIKEC-1 (M4-P1) |
 //! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards with frame states | SPIKEC-1 |
 //! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3; the generic keyed path, doubles, `===`, context loads and calls (the `lin_solve` graph) SPIKEC-4 |
 //! | [`regalloc`] | linear-scan register allocation | SPIKEC-1 |
-//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3; the call stub form and the generic keyed calls SPIKEC-4 |
-//! | [`deopt_meta`] | the per-exit deopt metadata form: pc, guard, bytecode offset, counter, value places; offsets only | SPIKEC-4 |
+//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared exit that calls the VM's deopt entry (H29) | SPIKEC-1; exit stubs SPIKEC-3; the call stub form and the generic keyed calls SPIKEC-4; the deopt entry SPIKEC-5 |
+//! | [`deopt_meta`] | the per-exit deopt metadata: pc, guard, bytecode offset, counter, value places; offsets only; written in the H29 byte form the VM reads | SPIKEC-4; the H29 byte form SPIKEC-5 |
 //! | [`vm_layout`] | the VM layout facts the code reads, from the `ep9_vm::layout` export (each with its owning version), proved on live objects | SPIKEC-1; the export SPIKEC-4 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
+//! | [`diff`](mod@diff) | the tier differential (C3): the gate kernels at n = 1 and a seeded corpus, T0 vs config C byte for byte, every guard forced; no GC-timing compare (a lint) | SPIKEC-7 (M5-P3) |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
 //!
 //! Rules (protocol §1):
@@ -47,12 +49,14 @@
 pub mod build;
 pub mod cfg;
 pub mod deopt_meta;
+pub mod diff;
 pub mod emit_a64;
 pub mod facts;
 pub mod harness;
 pub mod ir;
 pub mod kernels;
 pub mod regalloc;
+pub mod sp_facts;
 pub mod structural;
 pub mod tier;
 pub mod timing;
@@ -149,7 +153,7 @@ pub fn compile_input(
     input: &FunctionInput<'_>,
     facts: &facts::FunctionFacts<'_>,
 ) -> Result<(FunctionCode, CompileReport), Refusal> {
-    compile_input_with(input, facts, emit_a64::StubForm::Movz)
+    compile_input_with(input, facts, emit_a64::StubForm::Call)
 }
 
 /// [`compile_input`] with the exit stubs of `form` (SPIKEC-4: the call form is a report next
@@ -159,13 +163,30 @@ pub fn compile_input_with(
     facts: &facts::FunctionFacts<'_>,
     form: emit_a64::StubForm,
 ) -> Result<(FunctionCode, CompileReport), Refusal> {
+    compile_input_opts(
+        input,
+        facts,
+        &emit_a64::EmitOptions {
+            form,
+            ..Default::default()
+        },
+    )
+}
+
+/// [`compile_input`] with the emitter options `opts` ([`emit_a64::EmitOptions`]: the stub form
+/// and the test builds, forced deopts (WI-SC4) and int32 junk).
+pub fn compile_input_opts(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<(FunctionCode, CompileReport), Refusal> {
     let (graph, stats) = build::build(input, facts)?;
     let alloc = regalloc::allocate(&graph).map_err(Refusal::Limit)?;
     regalloc::verify(&graph, &alloc).map_err(Refusal::Limit)?;
     if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
         return Err(Refusal::Arch);
     }
-    let (code, emit) = emit_a64::emit_with(input, &graph, &alloc, form)?;
+    let (code, emit) = emit_a64::emit_opts(input, &graph, &alloc, opts)?;
     let (fact_guards, unbacked_guards) = graph.guard_counts();
     let report = CompileReport {
         name: input.name.to_string(),
@@ -258,7 +279,12 @@ pub fn graph_report(
         Err(Refusal::Arch.to_string())
     } else {
         emit_a64::emit(input, &graph, &alloc)
-            .map(|(code, e)| (code.code.len(), e.exits_line()))
+            .map(|(code, e)| {
+                (
+                    code.code.len(),
+                    format!("{}; {}", e.exits_line(), e.meta.line()),
+                )
+            })
             .map_err(|r| r.to_string())
     };
     let (fact_guards, unbacked_guards) = graph.guard_counts();
@@ -299,8 +325,74 @@ pub fn compile(
     name: &str,
     facts: &facts::FunctionFacts<'_>,
 ) -> Result<(FunctionCode, CompileReport), String> {
-    let mut probe = harness::Session::new(&spike_b::harness::Config::default())?;
-    vm_layout::check(&mut probe).map_err(|e| format!("vm layout: {e}"))?;
+    vm_layout::check(&spike_b::harness::Config::default())
+        .map_err(|e| format!("vm layout: {e}"))?;
     let input = session.function_input(name)?;
     compile_input(&input, facts).map_err(|r| format!("{name}: {r}"))
+}
+
+/// The H02-Q1 liveness report of one function (plan v10 §6.1 WI-SC9 (3), a B1 input; H02-Q1
+/// asks for a serialized per-function liveness section "computed from `AccUse` and register
+/// operand kinds"): the graph builder's liveness ([`cfg`](mod@cfg): from the opcode table,
+/// no per-opcode list), its size as one bit per register per instruction, the live values at
+/// each guard exit (the frame states the exit records carry) and whether each equals the
+/// liveness at its bytecode offset, and the size of a section that holds only the exit
+/// points. One line per row of the report (`spike-c liveness`).
+pub fn liveness_lines(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+) -> Result<Vec<String>, Refusal> {
+    let c = cfg::Cfg::build(input, build::supported)?;
+    let (graph, _) = build::build(input, facts)?;
+    let width = c.width();
+    let row_bytes = width.div_ceil(8);
+    let mut live_at_exit = Vec::new();
+    let (mut equal, mut acc_live) = (0usize, 0usize);
+    let mut offsets = std::collections::BTreeSet::new();
+    for (_, g) in graph.guard_nodes() {
+        let s = &g.state;
+        let n = s.registers.len() + usize::from(s.acc.is_some());
+        live_at_exit.push(n);
+        acc_live += usize::from(s.acc.is_some());
+        offsets.insert(s.offset);
+        if let Some(i) = c.insns.iter().position(|x| x.offset == s.offset) {
+            let regs: Vec<_> = s.registers.iter().map(|(r, _)| *r).collect();
+            equal += usize::from(c.is_live_set(i, &regs, s.acc.is_some()));
+        }
+    }
+    let exits = live_at_exit.len();
+    let (min, max) = (
+        live_at_exit.iter().copied().min().unwrap_or(0),
+        live_at_exit.iter().copied().max().unwrap_or(0),
+    );
+    let mean = live_at_exit.iter().sum::<usize>() as f64 / exits.max(1) as f64;
+    let points = offsets.len();
+    Ok(vec![
+        format!(
+            "{}: {} reachable instructions, {} blocks; {} registers in the dense index (receiver, {} parameters, {} locals, the accumulator)",
+            input.name,
+            c.insns.len(),
+            c.blocks.len(),
+            width,
+            input.parameter_count,
+            input.register_count
+        ),
+        format!(
+            "{}: liveness (backward, to a fixed point; reads and writes from the opcode table) {} us; one bit per register per instruction: {} bytes ({} B per instruction)",
+            input.name,
+            c.liveness_time.as_micros(),
+            c.liveness_bytes(),
+            row_bytes
+        ),
+        format!(
+            "{}: {exits} guard exits at {points} bytecode offsets; live values per exit (registers + the accumulator) min {min}, mean {mean:.1}, max {max}; the accumulator live at {acc_live}; frame state = the live set at the exit's offset, register by register, for {equal} of {exits} (the builder's own liveness: this checks the state, not the liveness)",
+            input.name
+        ),
+        format!(
+            "{}: a section with only the exit offsets: {points} rows x {row_bytes} B = {} bytes (+ one uleb offset per row), {:.1}% of the full table",
+            input.name,
+            points * row_bytes,
+            100.0 * (points * row_bytes) as f64 / c.liveness_bytes().max(1) as f64
+        ),
+    ])
 }

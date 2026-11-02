@@ -12,7 +12,10 @@
 #   sbx exec    <id> '<cmd>' [timeout_s]           run via `bash -c`, print stdout/stderr, exit with remote code
 #   sbx put     <id> <local-file> <remote-path>    chunked upload, sha256 verified on both sides
 #   sbx get     <id> <remote-path> <local-path>    chunked download, sha256 verified
-#   sbx push-git <id> <git-dir> <commit> <remote-dir>   git archive | zstd -> put -> extract
+#   sbx push-git [--clear] <id> <git-dir> <commit> <remote-dir>
+#                                                  git archive + .sbx-manifest | zstd -> put -> extract;
+#                                                  refuses a non-empty <remote-dir> unless --clear
+#   sbx manifest <git-dir> <commit>                print the .sbx-manifest of <commit> (local only)
 #   sbx bg      <id> <job> '<cmd>'                 start a background job (/work/jobs/<job>.log/.exit)
 #   sbx wait    <id> <job> [poll_s]                poll job (keeps sandbox awake), stream log, exit with job code
 #   sbx destroy <id>                               stop the container now (files are lost)
@@ -28,25 +31,33 @@ PAR=${SBX_PARALLEL:-4}                     # concurrent chunk requests for put/g
 
 die() { echo "sbx: $*" >&2; exit 99; }
 
-[ "$CHUNK" -ge 1024 ] && [ "$CHUNK" -le 6291456 ] || die "SBX_CHUNK_BYTES must be 1024..6291456 (the Worker caps stdout at 8 MiB and base64 adds 1/3)"
-[ -r "$URL_FILE" ] || die "missing URL file $URL_FILE"
-[ -r "$TOKEN_FILE" ] || die "missing token file $TOKEN_FILE"
-URL=$(tr -d ' \n\r' < "$URL_FILE")
-URL=${URL%/}
-# The token is a Bearer header: only ever send it over HTTPS. Plain http is
-# allowed only for a local `wrangler dev` test, and only when asked for.
-LOCAL_HTTP_RE='^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?(/.*)?$'
-case "$URL" in
-	https://*) CURL_PROTO='=https' ;;
-	*)
-		if [[ "$URL" =~ $LOCAL_HTTP_RE ]] && [[ "$URL" != *@* ]] && [ "${SBX_ALLOW_INSECURE_LOCAL:-}" = 1 ]; then
-			CURL_PROTO='=http'
-		else
-			die "refusing non-https URL '$URL' from $URL_FILE (the token must only travel over HTTPS; SBX_ALLOW_INSECURE_LOCAL=1 allows http://localhost / 127.0.0.1 / [::1] for a local test)"
-		fi
-		;;
-esac
-for t in curl jq base64; do command -v "$t" >/dev/null || die "need $t"; done
+# Where uploads land on the box. push-git never extracts into it or into a parent of it.
+UPLOAD_DIR=/work/.upload
+
+# URL, token and the network tools: only the commands that talk to the Worker need them.
+# push-git calls this after its local checks, and `sbx manifest` never calls it.
+sbx_init_remote() {
+	[ "$CHUNK" -ge 1024 ] && [ "$CHUNK" -le 6291456 ] || die "SBX_CHUNK_BYTES must be 1024..6291456 (the Worker caps stdout at 8 MiB and base64 adds 1/3)"
+	[ -r "$URL_FILE" ] || die "missing URL file $URL_FILE"
+	[ -r "$TOKEN_FILE" ] || die "missing token file $TOKEN_FILE"
+	URL=$(tr -d ' \n\r' < "$URL_FILE")
+	URL=${URL%/}
+	# The token is a Bearer header: only ever send it over HTTPS. Plain http is
+	# allowed only for a local `wrangler dev` test, and only when asked for.
+	local re='^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?(/.*)?$'
+	case "$URL" in
+		https://*) CURL_PROTO='=https' ;;
+		*)
+			if [[ "$URL" =~ $re ]] && [[ "$URL" != *@* ]] && [ "${SBX_ALLOW_INSECURE_LOCAL:-}" = 1 ]; then
+				CURL_PROTO='=http'
+			else
+				die "refusing non-https URL '$URL' from $URL_FILE (the token must only travel over HTTPS; SBX_ALLOW_INSECURE_LOCAL=1 allows http://localhost / 127.0.0.1 / [::1] for a local test)"
+			fi
+			;;
+	esac
+	local t
+	for t in curl jq base64; do command -v "$t" >/dev/null || die "need $t"; done
+}
 
 # Hash from stdin: with a path argument, shasum and GNU sha256sum escape a name
 # that has `\` or a newline and put a `\` in front of the hash.
@@ -62,8 +73,10 @@ b64enc() { base64 < "$1" | tr -d '\n\r'; }
 b64dec() { base64 "$B64D"; }
 file_size() { wc -c < "$1" | tr -d ' '; }
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/sbx.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+sbx_make_work() {
+	WORK=$(mktemp -d "${TMPDIR:-/tmp}/sbx.XXXXXX")
+	trap 'rm -rf "$WORK"' EXIT
+}
 
 check_id() { [[ "$1" =~ ^[a-z0-9-]{1,40}$ ]] || die "bad id '$1' (must match ^[a-z0-9-]{1,40}\$)"; }
 check_job() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "bad job name '$1'"; }
@@ -236,7 +249,7 @@ cmd_put() {
 	[ -f "$lf" ] || die "no such file $lf"
 	case "$rp" in /*) ;; *) die "remote path must be absolute" ;; esac
 	size=$(file_size "$lf"); sha=$(sha256_file "$lf")
-	up="/work/.upload/put-$(date +%s)-$$-$RANDOM"
+	up="$UPLOAD_DIR/put-$(date +%s)-$$-$RANDOM"
 	mkdir -p "$WORK/parts"
 	if [ "$size" -eq 0 ]; then : > "$WORK/parts/p.aaaaaa"; else split -b "$CHUNK" -a 6 "$lf" "$WORK/parts/p."; fi
 	nparts=$(ls "$WORK/parts" | wc -l | tr -d ' ')
@@ -290,21 +303,185 @@ cmd_get() {
 	echo "sbx: get ok sha256 $lsha" >&2
 }
 
-cmd_push_git() {
-	[ $# -eq 4 ] || die "usage: sbx push-git <id> <git-dir> <commit> <remote-dir>"
-	local id=$1 gd=$2 commit=$3 rd=$4 full tarz rtar
-	check_id "$id"
-	command -v git >/dev/null && command -v zstd >/dev/null || die "need git and zstd"
-	case "$rd" in /*) ;; *) die "remote dir must be absolute" ;; esac
-	full=$(git -C "$gd" rev-parse --verify "$commit^{commit}") || die "unknown commit $commit in $gd"
-	tarz="$WORK/src.tar.zst"
+# ---- push-git and its local parts (tests/push-git-local.sh tests these with no sandbox) ----
+#
+# .sbx-manifest (written into <remote-dir> by push-git, read by tools/test262):
+#   line 1:    commit <full commit id>
+#   then:      <blob id> <path>    one line per file of the archive (git ls-tree -r <commit>;
+#              gitlinks are skipped: git archive writes no file for them), sorted by path
+#              byte by byte (LC_ALL=C). <path> is the raw path from the root, not quoted; it
+#              is everything after the first space. Every line ends with \n.
+#   last:      end <n>             n = the number of "<blob id> <path>" lines, in decimal; a
+#              manifest cut short has no end line, or a wrong n
+# A path with a newline cannot be written this way, so push-git refuses such a commit.
+
+# pg_check_remote_dir DIR: absolute, no `.`, `..`, `//` or trailing `/`, not `/`, and not
+# UPLOAD_DIR or a parent of it (a --clear there would delete the upload).
+pg_check_remote_dir() {
+	local rd=$1
+	case "$rd" in /*) ;; *) die "remote dir must be absolute: '$rd'" ;; esac
+	[ "$rd" != / ] || die "remote dir must not be /"
+	case "$rd/" in *//* | */./* | */../*) die "remote dir must be a plain path (no '.', '..', '//' or trailing '/'): '$rd'" ;; esac
+	case "$rd" in *$'\n'*) die "remote dir must not hold a newline" ;; esac
+	case "$UPLOAD_DIR/" in "$rd"/*) die "remote dir '$rd' holds the upload dir $UPLOAD_DIR; use a dir of its own, such as /work/src" ;; esac
+}
+
+# pg_parse_args ARGS... -> sets PG_CLEAR PG_ID PG_GD PG_COMMIT PG_RD (no remote call).
+pg_parse_args() {
+	PG_CLEAR=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--clear) PG_CLEAR=1; shift ;;
+			--) shift; break ;;
+			-*) die "push-git: unknown option '$1' (usage: sbx push-git [--clear] <id> <git-dir> <commit> <remote-dir>)" ;;
+			*) break ;;
+		esac
+	done
+	[ $# -eq 4 ] || die "usage: sbx push-git [--clear] <id> <git-dir> <commit> <remote-dir>"
+	PG_ID=$1 PG_GD=$2 PG_COMMIT=$3 PG_RD=$4
+	check_id "$PG_ID"
+	pg_check_remote_dir "$PG_RD"
+}
+
+# sbx_manifest GIT_DIR FULL_COMMIT OUT_FILE -> writes the manifest (format above); 1 on error.
+sbx_manifest() {
+	local gd=$1 full=$2 out=$3 raw="$3.raw" rec meta path mode type sha n
+	git -C "$gd" ls-tree -r -z --full-tree "$full" > "$raw" || { echo "sbx: git ls-tree $full failed" >&2; return 1; }
+	: > "$out.body"
+	while IFS= read -r -d '' rec; do
+		meta=${rec%%$'\t'*}; path=${rec#*$'\t'}
+		read -r mode type sha <<< "$meta"
+		case "$type" in
+			blob) ;;
+			commit) continue ;;  # gitlink: git archive writes an empty dir, no file
+			*) echo "sbx: unexpected ls-tree entry '$rec'" >&2; return 1 ;;
+		esac
+		case "$path" in *$'\n'*) echo "sbx: commit $full has a path with a newline; .sbx-manifest cannot name it" >&2; return 1 ;; esac
+		case "$path" in .sbx-manifest | .sbx-commit) echo "sbx: commit $full has its own $path; push-git writes that file" >&2; return 1 ;; esac
+		[ -n "$mode" ] && [ -n "$sha" ] || { echo "sbx: bad ls-tree entry '$rec'" >&2; return 1; }
+		printf '%s %s\0' "$sha" "$path" >> "$out.body"
+	done < "$raw"
+	n=$(tr -cd '\0' < "$out.body" | wc -c | tr -d ' ')
+	{
+		printf 'commit %s\n' "$full"
+		LC_ALL=C sort -z -t ' ' -k 2 < "$out.body" | tr '\0' '\n'
+		printf 'end %s\n' "$n"
+	} > "$out" || return 1
+	rm -f "$raw" "$out.body"
+}
+
+# pg_verify_tar GIT_DIR TAR MANIFEST CHECK_DIR: the archive holds exactly the manifest's files
+# plus the manifest, and each file hashes to its blob id. A .gitattributes rule (eol=crlf,
+# export-subst, export-ignore, ident, filter) can make git archive write other bytes than the
+# blob; then the manifest would be wrong on the box, so push-git stops here.
+pg_verify_tar() {
+	local gd=$1 tar=$2 man=$3 chk=$4 line sha p want got n
+	mkdir -p "$chk"
+	tar -xf "$tar" -C "$chk" || { echo "sbx: local extract of the archive failed" >&2; return 1; }
+	cmp -s "$man" "$chk/.sbx-manifest" || { echo "sbx: the archive's .sbx-manifest differs from the one written" >&2; return 1; }
+	want=$(($(wc -l < "$man") - 1))  # n files + the commit and end lines - 1 = n files + the manifest itself
+	n=$(find "$chk" \( -type f -o -type l \) | wc -l | tr -d ' ')
+	[ "$n" = "$want" ] || { echo "sbx: the archive has $n files, the manifest names $((want - 1)) plus itself (a .gitattributes export-ignore?)" >&2; return 1; }
+	: > "$chk.paths"; : > "$chk.rel"; : > "$chk.want"
+	while IFS= read -r line; do
+		sha=${line%% *}; p=${line#* }
+		if [ -L "$chk/$p" ]; then
+			got=$(printf '%s' "$(readlink "$chk/$p")" | git -C "$gd" hash-object --stdin) || return 1
+			[ "$got" = "$sha" ] || { echo "sbx: archive symlink $p hashes to $got, the commit has $sha" >&2; return 1; }
+		elif [ -f "$chk/$p" ]; then
+			printf '%s\n' "$chk/$p" >> "$chk.paths"; printf '%s\n' "$p" >> "$chk.rel"; printf '%s\n' "$line" >> "$chk.want"
+		else
+			echo "sbx: the archive has no file $p" >&2; return 1
+		fi
+	done < <(sed '1d;$d' "$man")
+	git -C "$gd" hash-object --no-filters --stdin-paths < "$chk.paths" > "$chk.got" || return 1
+	paste -d ' ' "$chk.got" "$chk.rel" | cmp -s - "$chk.want" || {
+		echo "sbx: archive bytes differ from the commit's blobs (a .gitattributes eol=crlf, export-subst, ident or filter rule?):" >&2
+		paste -d ' ' "$chk.got" "$chk.rel" | diff "$chk.want" - | sed -n '1,10p' >&2
+		return 1
+	}
+	rm -rf "$chk" "$chk.paths" "$chk.rel" "$chk.want" "$chk.got"
+}
+
+# pg_build GIT_DIR FULL_COMMIT DIR -> DIR/.sbx-manifest and DIR/src.tar.zst (manifest inside).
+pg_build() {
+	local gd=$1 full=$2 dir
+	dir=$(cd "$3" && pwd) || return 1  # git -C changes the cwd: --add-file needs an absolute path
+	sbx_manifest "$gd" "$full" "$dir/.sbx-manifest" || return 1
 	# Reads committed objects only; never touches the worktree, index or HEAD.
-	git -C "$gd" archive --format=tar "$full" | zstd -q -T0 -6 -o "$tarz"
-	echo "sbx: push-git $gd@$full ($(file_size "$tarz") B zstd) -> $id:$rd" >&2
-	rtar="/work/.upload/git-$full.tar.zst"
-	cmd_put "$id" "$tarz" "$rtar"
-	rexec_ok "$id" "set -e; mkdir -p $(q "$rd"); zstd -q -dc $(q "$rtar") | tar -xf - -C $(q "$rd"); rm -f $(q "$rtar"); printf '%s\n' $full > $(q "$rd")/.sbx-commit; echo extracted \$(find $(q "$rd") -type f | wc -l) files" 1200 || exit 98
+	git -C "$gd" archive --format=tar --add-file="$dir/.sbx-manifest" "$full" > "$dir/src.tar" || { echo "sbx: git archive failed" >&2; return 1; }
+	pg_verify_tar "$gd" "$dir/src.tar" "$dir/.sbx-manifest" "$dir/chk" || return 1
+	zstd -q -T0 -6 -f -o "$dir/src.tar.zst" "$dir/src.tar" || return 1
+	rm -f "$dir/src.tar"
+}
+
+# pg_remote_script REMOTE_DIR REMOTE_TAR FULL_COMMIT CLEAR -> the bash the box runs.
+# Exit 93: refused (REMOTE_DIR is not an empty dir and CLEAR is 0, or it is not a dir, or its
+# physical path is / or holds UPLOAD_DIR); the upload is removed and REMOTE_DIR is not touched.
+# The box resolves REMOTE_DIR first (cd -P): a symlink in an ancestor can make a path that
+# passed pg_check_remote_dir name /work or /; every step after that uses the resolved dir.
+pg_remote_script() {
+	local rd rt up
+	rd=$(q "$1"); rt=$(q "$2"); up=$(q "$UPLOAD_DIR")
+	cat <<-SCRIPT
+	set -eo pipefail; rd=$rd; rt=$rt; up=$up
+	refuse() { rm -f "\$rt"; echo "sbx push-git: refused: \$1" >&2; exit 93; }
+	if [ -L "\$rd" ]; then refuse "\$rd is a symlink"; fi
+	if [ -e "\$rd" ] && [ ! -d "\$rd" ]; then refuse "\$rd exists and is not a directory"; fi
+	[ -d "\$rd" ] || mkdir -p "\$rd"
+	pd=\$(CDPATH= cd -P -- "\$rd" && pwd -P) || refuse "cannot resolve \$rd"
+	pu=\$(CDPATH= cd -P -- "\$up" && pwd -P) || refuse "cannot resolve the upload dir \$up"
+	if [ "\$pd" = / ]; then refuse "\$rd is / on the box"; fi
+	case "\$pu/" in "\$pd"/*) refuse "\$rd is \$pd on the box, which holds the upload dir \$pu" ;; esac
+	rd=\$pd
+	if [ -n "\$(ls -A "\$rd")" ]; then
+		if [ $4 = 1 ]; then
+			echo "sbx push-git: --clear: deleting the \$(ls -A "\$rd" | wc -l | tr -d ' ') entries of \$rd" >&2
+			find "\$rd" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+		else
+			refuse "\$rd is not empty (\$(ls -A "\$rd" | wc -l | tr -d ' ') entries); pass --clear to delete its contents first, or use a new dir"
+		fi
+	fi
+	zstd -q -dc "\$rt" | tar -xf - -C "\$rd"
+	rm -f "\$rt"
+	printf '%s\n' $3 > "\$rd/.sbx-commit"
+	echo "extracted \$(find "\$rd" \( -type f -o -type l \) | wc -l | tr -d ' ') files"
+	SCRIPT
+}
+
+cmd_push_git() {
+	local full rtar out ec
+	pg_parse_args "$@"
+	command -v git >/dev/null || die "need git"
+	command -v zstd >/dev/null || die "need zstd"
+	case "$(git archive -h 2>&1 || true)" in *add-file*) ;; *) die "git archive has no --add-file (git too old)" ;; esac
+	full=$(git -C "$PG_GD" rev-parse --verify --quiet "$PG_COMMIT^{commit}") || die "unknown commit $PG_COMMIT in $PG_GD"
+	mkdir -p "$WORK/pg"
+	pg_build "$PG_GD" "$full" "$WORK/pg" || { echo "sbx: push-git: nothing was sent" >&2; exit 92; }
+	sbx_init_remote
+	echo "sbx: push-git $PG_GD@$full ($(file_size "$WORK/pg/src.tar.zst") B zstd, $(($(wc -l < "$WORK/pg/.sbx-manifest") - 2)) files) -> $PG_ID:$PG_RD" >&2
+	rtar="$UPLOAD_DIR/git-$full.tar.zst"
+	cmd_put "$PG_ID" "$WORK/pg/src.tar.zst" "$rtar"
+	out="$WORK/pg/extract.json"
+	rexec "$PG_ID" "$(pg_remote_script "$PG_RD" "$rtar" "$full" "$PG_CLEAR")" 1200 "$out" || exit 98
+	ec=$(jq -r '.exitCode' "$out")
+	if [ "$ec" = 93 ]; then jq -j '.stderr' "$out" >&2; exit 93; fi
+	if [ "$ec" != 0 ]; then
+		echo "sbx: push-git extract on $PG_ID failed (exit $ec)" >&2
+		jq -j '.stderr' "$out" >&2; jq -j '.stdout' "$out" >&2
+		exit 98
+	fi
+	jq -j '.stdout' "$out"
 	echo >&2
+}
+
+cmd_manifest() {
+	[ $# -eq 2 ] || die "usage: sbx manifest <git-dir> <commit>"
+	local full
+	command -v git >/dev/null || die "need git"
+	full=$(git -C "$1" rev-parse --verify --quiet "$2^{commit}") || die "unknown commit $2 in $1"
+	sbx_manifest "$1" "$full" "$WORK/manifest" || exit 92
+	cat "$WORK/manifest"
 }
 
 cmd_bg() {
@@ -371,15 +548,27 @@ cmd_health() {
 	[ "$code" = 200 ] || exit 98
 }
 
-sub=${1:-}; [ $# -gt 0 ] && shift
-case "$sub" in
-	exec) cmd_exec "$@" ;;
-	put) cmd_put "$@" ;;
-	get) cmd_get "$@" ;;
-	push-git) cmd_push_git "$@" ;;
-	bg) cmd_bg "$@" ;;
-	wait) cmd_wait "$@" ;;
-	destroy) cmd_destroy "$@" ;;
-	health) cmd_health "$@" ;;
-	*) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
-esac
+sbx_main() {
+	local sub=${1:-}
+	[ $# -gt 0 ] && shift
+	case "$sub" in
+		push-git) sbx_make_work; cmd_push_git "$@" ;;  # local checks first, then sbx_init_remote
+		manifest) sbx_make_work; cmd_manifest "$@" ;;  # local only: no URL, no token
+		exec | put | get | bg | wait | destroy | health)
+			sbx_init_remote; sbx_make_work
+			case "$sub" in
+				exec) cmd_exec "$@" ;;
+				put) cmd_put "$@" ;;
+				get) cmd_get "$@" ;;
+				bg) cmd_bg "$@" ;;
+				wait) cmd_wait "$@" ;;
+				destroy) cmd_destroy "$@" ;;
+				health) cmd_health "$@" ;;
+			esac
+			;;
+		*) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+	esac
+}
+
+# Sourced (tests/push-git-local.sh): define the functions only.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then sbx_main "$@"; fi

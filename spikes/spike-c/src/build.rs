@@ -22,7 +22,7 @@
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
-//! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value); or the generic keyed entry (a key that is not an index, a value that is not an int32; SPIKEC-4) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
+//! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value, WI-SC7; a Float64 load and the Tagged value of an element copy `a[i] = b[j]`, SPIKEC-7); or the generic keyed entry (a key that is not an index, SPIKEC-4; a store of any other Tagged value) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
 //! | `+`, `-`, `*` whose BinaryOp record saw a double (hint inside {int32, int32-overflow, number}, with number), and `/` always | CheckNumber on each Tagged input (an Int32 input converts), a Float64 op (SPIKEC-4) | the check is predicted{source} with the record, else unknown; the op's result PROVEN (a number from numbers) |
 //! | `===` | CheckInt32 on each input (backed by an int32 CompareOp fact), Compare(Eq) (SPIKEC-4) | PROVEN (a boolean) |
 //! | LdaCurrentContextSlot, LdaImmutableCurrentContextSlot | LoadContextSlot (SPIKEC-4) | unknown |
@@ -45,8 +45,8 @@
 //! check; a later backed site upgrades it (the value did not change in between). A loop
 //! phi's entry check (`unbox_loop_phis`) is backed if a check of the phi in the loop header
 //! block was (the header runs with the entry value). The overflow guard of `+`, `-`, Inc and
-//! Dec is always unbacked: T0 leaves an int32 `+` or `-` that overflows implicit int32, so
-//! the hint does not cover it (`*` records its overflow and -0, so its guard keeps the basis).
+//! Dec is always unbacked here; since M5-P1 (MODES-D16) T0 records their overflow as
+//! `INT32_OVERFLOW` (as `*` records its overflow and -0), so a later step may back it.
 //!
 //! **Checks are shared by (value, policy) (SPIKEC-3, MC-w14-20).** The block-local memo keys
 //! a check by its op, its input and the exit policy that the mode gives the site's basis
@@ -67,16 +67,31 @@
 //! | a name, symbol or other key | the generic path: [`ir::Op::GetKeyedGeneric`] / [`ir::Op::SetKeyedGeneric`], no guard (SPIKEC-4) |
 //!
 //! The IC state (the key half: undefined, a receiver shape, or the hole once KEYED writes it)
-//! is not read: the element guards test the receiver's kind and the element, not its shape.
+//! is not read: the element guards test the receiver's elements kind (read from its shape, the
+//! kind source, M5-P1-ORCH-11) and the element.
+//!
+//! **Elements kinds (WI-SC7, ELEM1).** `CheckArray` is the kind guard: an Array whose shape
+//! holds one of the six kinds with elements in an ELEMENTS or ELEMENTS_DOUBLE cell
+//! (`vm_layout::ARRAY_KINDS`); DICTIONARY and the reserved kinds exit. It is shared per block
+//! until an op that may run JS. The element ops take its result as their array input, so no
+//! element op (a raw f64 load included) can be placed before it. Each element op then reads
+//! the elements cell's kind byte, the storage form that follows the kind (H18), and takes one
+//! of two paths: Values (INT32 and ELEMENTS kinds) or raw f64 (DOUBLE kinds); any other cell
+//! exits (fail closed after a store swap, M5-P0 review F1). A load gives a Tagged Value in
+//! both forms (a raw f64 boxes as `Value::number` does: an integral double is an int32 again,
+//! as T0, H18:54), or a Float64 when only number uses read it (SPIKEC-7, `float_loads`). A
+//! store takes an Int32 or a Float64: into raw f64 as a double (every NaN as the pure NaN, so
+//! never the hole), into Values as an int32 Value; a Float64 that is no int32 (or is -0) into
+//! Values calls the generic store out of line (the kind transition, a GC point), as T0 does. A
+//! Tagged copy (SPIKEC-7): an int32 Value into Values and a number into raw f64 in line.
 //! CheckArray, LoadElement and StoreElement stay unbacked in every case (the receiver,
 //! bounds and hole bits come with the month-6 schema bump, MODES-D18).
 //!
 //! **The generic keyed path (SPIKEC-4, P3-ORCH-9).** A site whose record saw a key that is not
 //! an index would exit on those keys from every element guard, so it calls the generic keyed
 //! entries of `ep9_vm::RuntimeTable` that M4-P3 KEYED appended (8 `get_keyed`, 9 `set_keyed`;
-//! `layout::RT_GET_KEYED`, `RT_SET_KEYED`) in place of the refusal SPIKEC-3 made. A
-//! SetKeyedProperty whose value is not an int32 takes the generic store too (the entry does
-//! the store barrier; StoreElement stores only int32s, which need none). Both entries run
+//! `layout::RT_GET_KEYED`, `RT_SET_KEYED`) in place of the refusal SPIKEC-3 made (a Tagged
+//! store value; since SPIKEC-7 an element copy's value takes the element path, above). Both run
 //! the T0 miss-path functions (`slow::prop`: `property::get_keyed` / `set_keyed`), which
 //! record no feedback, so the compiled code still records none (native.rs:149-158;
 //! MC-w15-6: a RuntimeTable entry calls only non-recording generic functions). A generic
@@ -195,6 +210,9 @@ pub enum KeyedPath {
 
 const PLACEHOLDER: NodeId = NodeId(u32::MAX);
 
+/// The memo tag of `CheckArray` (the kind guard): the 4 that `check_array` passes to `memo`.
+const MEMO_CHECK_ARRAY: u8 = 4;
+
 struct Builder<'a> {
     g: Graph,
     cfg: Cfg,
@@ -283,6 +301,11 @@ impl Builder<'_> {
     /// Adds a node at the end of the current block.
     fn emit(&mut self, op: Op, inputs: Vec<NodeId>, repr: Repr, trust: Trust) -> NodeId {
         let off = self.offset();
+        // An op that may run JS may change an array's elements kind (to DICTIONARY, say), so
+        // the element ops after it in the block get a kind guard of their own (WI-SC7).
+        if op.is_call() {
+            self.memo.retain(|m| m.0 != MEMO_CHECK_ARRAY);
+        }
         let n = self.g.add(op, inputs, repr, trust, self.cur, off);
         self.g.blocks[self.cur.0 as usize].nodes.push(n);
         n
@@ -458,8 +481,8 @@ impl Builder<'_> {
     /// The keyed record of `slot` at the access at the current offset (`store` for
     /// SetKeyedProperty): the path of the site, or a refusal for a record of another kind
     /// (see the module docs, "Keyed facts"). `generic` takes the generic path whatever the
-    /// record says (a store of a value that is not an int32). Records the site for the
-    /// report.
+    /// record says (a store of a Tagged value that is no element copy). Records the site for
+    /// the report.
     fn keyed_site(&mut self, slot: u32, store: bool, generic: bool) -> Result<KeyedPath, Refusal> {
         let off = self.offset();
         let refuse = |why: String| Refusal::Limit(format!("keyed access at {off}: {why}"));
@@ -503,9 +526,9 @@ impl Builder<'_> {
             (self.int32(l, basis), self.int32(r, basis))
         };
         // The op's own guard (overflow, and -0 for `*`): T0 records an overflow of `*` in the
-        // BinaryOp hint (INT32_OVERFLOW), but an int32 `+` or `-` (also Inc and Dec) that
-        // overflows stays implicit int32 (ep9_vm profile.rs), so a hint inside {int32} does
-        // not cover that guard: it is unbacked. The input checks keep the site's basis.
+        // BinaryOp hint (INT32_OVERFLOW), and since M5-P1 (MODES-D16) also an int32 `+`, `-`,
+        // Inc or Dec that overflows; the `+`/`-` guard stays unbacked here (a later SPIKEC
+        // step may back it from a hint inside {int32}). The input checks keep the site's basis.
         let op_basis = match op {
             Int32Op::Add | Int32Op::Sub => GuardBasis::Unbacked,
             _ => basis,
@@ -793,10 +816,11 @@ impl Builder<'_> {
                 let o = self.reg(insn.register(0))?;
                 let k = self.reg(insn.register(1))?;
                 let v = self.acc()?;
-                // StoreElement stores an int32 (no barrier); any other value goes through the
-                // generic store, whose entry does the barrier.
-                let not_int32 = self.node(v).repr != Repr::Int32;
-                match self.keyed_site(insn.unsigned(2), true, not_int32)? {
+                // An int32, a double or an element copy (`x[r] = x0[r]`, M5-P2-ORCH-1 limit 2)
+                // is a StoreElement; any other Tagged value the generic store (M5-P3 B F1).
+                let copy = matches!(self.node(v).op, Op::LoadElement);
+                let tagged = !matches!(self.node(v).repr, Repr::Int32 | Repr::Float64) && !copy;
+                match self.keyed_site(insn.unsigned(2), true, tagged)? {
                     KeyedPath::Element(key_basis) => {
                         let a = self.check_array(o);
                         let i = self.int32(k, key_basis);
@@ -840,12 +864,17 @@ impl Builder<'_> {
                 self.set_acc(n);
             }
             LdaCurrentContextSlot | LdaImmutableCurrentContextSlot => {
+                // A guard as an element load's (Codex M5-P2 r1 spikec6 1): the emitted code
+                // checks the frame's context and the slot index (`emit_a64` `load_context`),
+                // and exits on the state before the instruction, which T0 runs again.
+                let st = self.state();
                 let n = self.emit(
                     Op::LoadContextSlot(insn.unsigned(0)),
                     vec![],
                     Repr::Tagged,
                     Trust::Unknown,
                 );
+                self.guard(n, GuardBasis::Unbacked, st);
                 self.set_acc(n);
             }
             CallUndefinedReceiver0 | CallUndefinedReceiver1 | CallUndefinedReceiver2 => {
@@ -993,7 +1022,7 @@ impl Builder<'_> {
             return Err(refuse(format!("IC state {:?}", pf.state)));
         }
         // Every case must read the same place: an in-object field of an ordinary object at
-        // one offset, or an Array's length (the int32 at +24).
+        // one offset, or an Array's length (the Value at +24: an int32, a double from 2^31).
         let mut location: Option<(u32, u64)> = None;
         let mut shapes = Vec::new();
         for c in &pf.cases {
@@ -1109,6 +1138,12 @@ impl Builder<'_> {
     /// A loop phi whose back-edge inputs are all Int32 becomes Int32: its entry input gets an
     /// (unbacked) CheckInt32 at the end of the preheader, with the frame state of the loop
     /// header (T0 would enter the loop there). Repeats to a fixed point (nested phis).
+    ///
+    /// R-SPIKE-P4-1 (M5-P1): the check goes only into a preheader whose one successor is the
+    /// header. A preheader that may branch past the loop (`if (c) { while (..) .. }`) would
+    /// run the check on a path that never enters the loop, and a deopt there would resume T0
+    /// inside the loop. Such a phi stays Tagged (no edge split: the spike keeps blocks in
+    /// bytecode order). [`crate::ir::Graph::check`] refuses the other form.
     fn unbox_loop_phis(&mut self) {
         loop {
             let mut changed = false;
@@ -1122,6 +1157,7 @@ impl Builder<'_> {
                     .collect();
                 let [entry] = fwd[..] else { continue };
                 let pre = preds[entry];
+                let pre_enters_only = self.g.blocks[pre.0 as usize].succs == [BlockId(h as u32)];
                 for (r, phi) in self.loop_phis[h].clone() {
                     let node = self.g.node(phi);
                     if !node.live || node.op != Op::Phi || node.repr != Repr::Tagged {
@@ -1137,6 +1173,9 @@ impl Builder<'_> {
                         continue;
                     }
                     let e = node.inputs[entry];
+                    if self.g.node(e).repr != Repr::Int32 && !pre_enters_only {
+                        continue;
+                    }
                     // Backed only if a check of the phi in the header block is: the header
                     // runs once at each entry with the entry value, so that site's record
                     // saw the entry value of each run. A check elsewhere in the loop (in a
@@ -1240,6 +1279,138 @@ impl Builder<'_> {
         }
     }
 
+    /// The Float64 element load (M5-P2-ORCH-1, lin_solve limit 1; SPIKEC-7): a LoadElement
+    /// whose value only number uses read (CheckNumber, or a Tagged phi that is itself only so
+    /// read and whose other inputs are numbers) loads a Float64: from a raw f64 store the
+    /// bits as they are, from Values an int32 converted or a double Value's bits, and it
+    /// exits on any other Value, as the CheckNumber after it would have. The CheckNumbers of
+    /// such loads (and of such phis, which become Float64 too) are then no-ops and go. So a
+    /// double element no longer boxes at the load and unboxes at its use, and a loop-carried
+    /// double (lin_solve's `lastX`) stays a Float64 phi.
+    ///
+    /// The exit moves earlier, to the load's own guard (its frame state is the load's: T0 runs
+    /// the load again), on the same values: no value takes an exit it would not have taken
+    /// before, but for one case: a non-number element whose only number use is on a path the
+    /// call does not take (a phi into a loop that runs 0 times) now exits at the load. A
+    /// load with no use but frame states stays Tagged, so an element that nothing reads never
+    /// exits.
+    fn float_loads(&mut self) {
+        let order: Vec<NodeId> = self.g.order().collect();
+        let len = self.g.nodes.len();
+        let mut uses: Vec<Vec<NodeId>> = vec![Vec::new(); len];
+        for &n in &order {
+            for &i in &self.g.node(n).inputs {
+                uses[i.0 as usize].push(n);
+            }
+        }
+        let mut set = vec![false; len];
+        // MC-w21-10: the pass moves a CheckNumber's exit to the load's own guard, so it may
+        // run only where both exits deopt (T0 then runs the load again: the same values, the
+        // same output). A guard of another policy (a SLOWPATH guard that runs a generic path
+        // and goes on) changes what runs when its exit moves, so such a load, and such a
+        // CheckNumber, keeps its form. B2 rule: a pass that changes a value's repr across a
+        // guard needs a DEOPT guard ([`exit_may_move`]).
+        for &n in &order {
+            let node = self.g.node(n);
+            set[n.0 as usize] = node.repr == Repr::Tagged
+                && matches!(node.op, Op::LoadElement | Op::Phi)
+                && (node.op == Op::Phi || node.guard.as_ref().is_some_and(exit_may_move))
+                && !uses[n.0 as usize].is_empty();
+        }
+        // The greatest set closed under the two rules (a fixed point that only removes).
+        loop {
+            let mut changed = false;
+            for &n in &order {
+                if !set[n.0 as usize] {
+                    continue;
+                }
+                let node = self.g.node(n);
+                let uses_ok = uses[n.0 as usize].iter().all(|&u| {
+                    let un = self.g.node(u);
+                    (un.op == Op::CheckNumber && un.guard.as_ref().is_some_and(exit_may_move))
+                        || (un.op == Op::Phi && set[u.0 as usize])
+                });
+                let inputs_ok = node.op != Op::Phi
+                    || node.inputs.iter().all(|&v| {
+                        matches!(self.g.node(v).repr, Repr::Float64 | Repr::Int32)
+                            || set[v.0 as usize]
+                    });
+                if !(uses_ok && inputs_ok) {
+                    set[n.0 as usize] = false;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // A phi stays in the set only if a load of the set flows into it (directly or through
+        // phis of the set), or a phi that stays reads it (below): a phi of plain numbers is
+        // left as the repr pass made it. A use that leaves the set only boxes (BoxFloat64).
+        let mut fed = vec![false; len];
+        loop {
+            let mut changed = false;
+            for &n in &order {
+                let node = self.g.node(n);
+                if !set[n.0 as usize] || fed[n.0 as usize] {
+                    continue;
+                }
+                let f = node.op == Op::LoadElement
+                    || node
+                        .inputs
+                        .iter()
+                        .any(|&v| set[v.0 as usize] && fed[v.0 as usize]);
+                if f {
+                    fed[n.0 as usize] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // A phi of the set that a kept phi reads stays too, even if no load feeds it (a
+        // nested merge: `if (b) v = x / y; else v = x / z; if (c) v = a[0];`), else the kept
+        // phi would get a Tagged input that no conversion makes a Float64.
+        loop {
+            let mut changed = false;
+            for &n in &order {
+                let node = self.g.node(n);
+                if node.op != Op::Phi || !set[n.0 as usize] || !fed[n.0 as usize] {
+                    continue;
+                }
+                for &v in &node.inputs {
+                    if set[v.0 as usize] && !fed[v.0 as usize] {
+                        fed[v.0 as usize] = true;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for &n in &order {
+            set[n.0 as usize] &= fed[n.0 as usize];
+        }
+        for &n in &order {
+            if set[n.0 as usize] {
+                self.g.node_mut(n).repr = Repr::Float64;
+            }
+        }
+        for &n in &order {
+            let node = self.g.node(n);
+            if node.live
+                && node.op == Op::CheckNumber
+                && self.g.node(node.inputs[0]).repr == Repr::Float64
+            {
+                let v = node.inputs[0];
+                self.replace(n, v);
+                self.kill(n);
+            }
+        }
+    }
+
     /// True if `v` is an Int32, or a CheckInt32 / TruncateInt32 of `phi` (the phi's own use
     /// inside the loop, which unboxing makes a no-op).
     fn is_int32_or_check_of(&self, v: NodeId, phi: NodeId) -> bool {
@@ -1268,6 +1439,8 @@ impl Builder<'_> {
     /// Inserts the boxes the reprs need: a Tagged use of an Int32 or Bool value (a Tagged phi's
     /// inputs get theirs at the end of the predecessor).
     fn fix_reprs(&mut self) {
+        // Float64 element loads first (SPIKEC-7): they change the reprs this pass reads.
+        self.float_loads();
         let order: Vec<NodeId> = self.g.order().collect();
         for n in order {
             let node = self.g.node(n).clone();
@@ -1282,7 +1455,16 @@ impl Builder<'_> {
                 | Op::Return
                 | Op::LoadField { .. } => vec![Repr::Tagged],
                 Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
-                Op::StoreElement => vec![Repr::Tagged, Repr::Int32, Repr::Int32],
+                // The value: an Int32 or a Float64 stays one; anything else is Tagged (a Bool
+                // boxes).
+                Op::StoreElement => {
+                    let value = match self.g.node(node.inputs[2]).repr {
+                        Repr::Float64 => Repr::Float64,
+                        Repr::Int32 => Repr::Int32,
+                        _ => Repr::Tagged,
+                    };
+                    vec![Repr::Tagged, Repr::Int32, value]
+                }
                 Op::CheckNumber => vec![Repr::Tagged],
                 Op::Int32ToFloat64 => vec![Repr::Int32],
                 Op::Float64(_) => vec![Repr::Float64, Repr::Float64],
@@ -1456,5 +1638,15 @@ fn int_op(op: Opcode) -> Int32Op {
         BitwiseXor | BitwiseXorSmi => Int32Op::Xor,
         ShiftLeft | ShiftLeftSmi => Int32Op::Shl,
         _ => Int32Op::Sar,
+    }
+}
+
+/// True if a pass may move the exit of guard `g` to another guard (MC-w21-10, used by
+/// `float_loads`): only an eager deopt to T0 at the guard's own frame state, whose exit runs
+/// the same bytecode again. A match with no wildcard, so a new [`ExitPolicy`] (H32 SLOWPATH,
+/// PIN) does not compile until this rule names it.
+pub fn exit_may_move(g: &ir::Guard) -> bool {
+    match g.policy {
+        ExitPolicy::Deopt => true,
     }
 }

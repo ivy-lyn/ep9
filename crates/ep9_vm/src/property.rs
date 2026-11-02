@@ -72,7 +72,7 @@ use crate::kinds::{self as kind, is_bound, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{accessor, arguments, bound, shape, string, symbol, wrapper};
+use crate::{accessor, arguments, bound, elements, shape, string, symbol, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -91,10 +91,19 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
     loop {
-        if kind::cell_kind(o) != kind::OBJECT.get()
-            && let Some(r) = exotic::get(cx, o, key, how, receiver)
-        {
-            return r;
+        // A plain object with an elements cell asks the hook too (its index keys, H18-Q3).
+        if kind::cell_kind(o) != kind::OBJECT.get() || object::has_elements_cell(o) {
+            if let Some(r) = exotic::get(cx, o, key, how, receiver) {
+                return r;
+            }
+            // An entry of a DICTIONARY array (H18, M5-P2 ELEM2): exotic.rs reads only the
+            // dense store.
+            if let Some((v, a)) = dict_index(o, key) {
+                if a & attr::ACCESSOR == 0 {
+                    return Ok(v);
+                }
+                return accessor::call_getter(cx, v, receiver);
+            }
         }
         match props::own_value_or_proto(o, key, how) {
             Ok((v, a)) if a & attr::ACCESSOR == 0 => return Ok(v),
@@ -109,17 +118,17 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
 /// property; `None` for an accessor (its getter does not run) or no property. For engine
 /// text that must run no JS: an error's "Name: message" header (`error::error_header`, made
 /// inside `throw_error`, also on stack overflow) and the reported constructor name. GC point
-/// (a lazy `prototype`), but runs no JS and cannot throw. A routed object's hooks
-/// (ARGUMENTS, MODULE_NAMESPACE) are not asked: only its ordinary storage is read, then the
-/// walk goes on to its prototype. A hook may throw (a namespace binding in its TDZ), and the
-/// ReferenceError it makes would read its own header here again (`error::error_header` ->
-/// `get_data_from`) and recurse without bound.
+/// (a lazy `prototype`), but runs no JS and cannot throw. A routed object's hooks are not
+/// asked: ARGUMENTS and MODULE_NAMESPACE read their ordinary storage, then the prototype; a
+/// proxy has none and no prototype of its own, so it reads as empty and ends the walk (its
+/// traps run JS). A hook may throw (a namespace binding in its TDZ), and the ReferenceError
+/// would read its own header here again (`error_header` -> `get_data_from`) without bound.
 pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
     loop {
         let k = kind::cell_kind(o);
-        if k != kind::OBJECT.get() && !exotic::is_routed(k) {
+        if (k != kind::OBJECT.get() || object::has_elements_cell(o)) && !exotic::is_routed(k) {
             // Only non-routed kinds get here, and their `exotic::get` never throws; the
             // `Some(Err)` arm is defensive.
             match exotic::get(cx, o, key, how, o) {
@@ -129,6 +138,9 @@ pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
                     return None;
                 }
                 None => {}
+            }
+            if let Some((v, a)) = dict_index(o, key) {
+                return (a & attr::ACCESSOR == 0).then_some(v);
             }
         }
         match props::own_value_or_proto(o, key, how) {
@@ -356,22 +368,28 @@ fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Re
     if receiver == o {
         if is_array(o) {
             if exotic::is_key(rt, key, how, Atom::Length) {
-                let n = to_uint32_of(cx, v)?;
-                let d = crate::conv::to_number(cx, v)?;
-                if f64::from(n) != d || !object::array_set_length(rt, o, n) {
-                    return Err(throw_error(
-                        cx,
-                        ErrorKind::RangeError,
-                        "Invalid array length",
-                    ));
+                // §10.1.9.2: a non-writable `length` fails before any conversion; else
+                // ArraySetLength (§10.4.2.4) through `[[DefineOwnProperty]]`.
+                if !elements::length_writable(o) {
+                    return Ok(false);
                 }
-                return Ok(true);
+                let desc = Desc {
+                    value: Some(v),
+                    ..Desc::default()
+                };
+                return array_define_length(cx, o, desc);
             }
             if let Some(i) = array_index_of(key)
                 && array_store(rt, o, i, v)
             {
                 return Ok(true);
             }
+        } else if elements::plain_elements_kind(kind::cell_kind(o))
+            && object::has_elements_cell(o)
+            && let Some(i) = array_index_of(key)
+            && plain_store(rt, o, i, v)
+        {
+            return Ok(true);
         } else if is_function(o) && exotic::is_lazy_prototype(rt, o, key, how) {
             // Make `prototype`, so the store below replaces it.
             exotic::function_prototype(rt, o);
@@ -380,8 +398,10 @@ fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Re
     // The first property on the chain decides (§10.1.9.2 steps 1-2 and 4-7).
     let mut cur = o;
     loop {
-        let found = match exotic::own_attrs(rt, cur, key, how) {
-            // Exotic own properties are data properties: the value is not needed.
+        let found = match own_attrs(rt, cur, key, how) {
+            // An entry of a DICTIONARY array may be an accessor: its pair (M5-P2 ELEM2).
+            Some(a) if is_dict_array(cur) => dict_own(rt, cur, key, how).or(Some((UNDEFINED, a))),
+            // Other exotic own properties are data properties: the value is not needed.
             Some(a) => Some((UNDEFINED, a)),
             // The common case, in one lookup: an own data property of the receiver takes the
             // value in place if it is writable (array `length` and elements returned above;
@@ -428,28 +448,28 @@ fn routed_proto_set(cx: &mut Cx, p: u64, key: u64, v: u64, receiver: u64) -> Res
 
 /// §10.1.9.2 steps 2.c-e: the store lands on `receiver`: an existing writable data property
 /// gets the value, a missing one is CreateDataProperty. An array receiver's `length` (which
-/// `own_property` does not see) is an existing writable data property: step 2.d.iv goes to
-/// ArraySetLength (a RangeError for an invalid length). GC point.
+/// `own_property` does not see) is an existing data property: step 2.c.iii returns false
+/// for a non-writable one before any conversion; else step 2.d.iv goes to ArraySetLength (a
+/// RangeError for an invalid length). GC point.
 fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool> {
     if !is_object(receiver) {
         return Ok(false);
     }
+    // Steps 2.d.iii-iv: only the value; the attributes stay.
+    let desc = Desc {
+        value: Some(v),
+        ..Desc::default()
+    };
     if is_array(receiver) && is_atom(cx, key, Atom::Length) {
-        let desc = Desc {
-            value: Some(v),
-            ..Desc::default()
-        };
+        // Step 2.c.iii (Codex M5-P2 r1 elem2 2): no conversion of `v`.
+        if !elements::length_writable(receiver) {
+            return Ok(false);
+        }
         return define_own_property(cx, receiver, key, desc);
     }
     match own_property(cx, receiver, key)? {
         Some((_, a, _)) if a & attr::WRITABLE == 0 => Ok(false),
-        Some(_) => {
-            let desc = Desc {
-                value: Some(v),
-                ..Desc::default()
-            };
-            define_own_property(cx, receiver, key, desc)
-        }
+        Some(_) => define_own_property(cx, receiver, key, desc),
         // Step 2.e: CreateDataProperty(Receiver, P, V). A proxy receiver takes its
         // `[[DefineOwnProperty]]` (its cell's storage holds no property key).
         None if crate::proxy::is_proxy_kind(kind::cell_kind(receiver)) => {
@@ -477,9 +497,136 @@ fn array_store(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
     object::array_set(rt, a, i, v)
 }
 
+/// [`array_store`] for an object `o` of an `elements::plain_elements_kind` (H18-Q3): an
+/// existing element takes the value; a missing one is added to the elements store only if
+/// `o` has a fast shape (extensible, and no index key among its stored properties: an index
+/// key makes a dictionary, OM-10) and no prototype has an index key. False if it stored
+/// nothing (also an index too far for the elements store, `object::element_set`): the caller
+/// takes the key path. GC point.
+fn plain_store(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
+    if object::element_get(o, i).is_none()
+        && (shape::is_dictionary(shape::shape_of(o)) || shape::proto_index_keys(rt))
+    {
+        return false;
+    }
+    object::element_set(rt, o, i, v)
+}
+
+/// Adds the new element `i` with the value `v` to the plain-elements object `o` for
+/// CreateDataProperty (no chain walk): only if `o` has a fast shape (extensible, no stored
+/// index key). False if it stored nothing: the caller takes the key path. GC point.
+fn plain_define(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
+    if object::element_get(o, i).is_none() && shape::is_dictionary(shape::shape_of(o)) {
+        return false;
+    }
+    object::element_set(rt, o, i, v)
+}
+
+// ---- DICTIONARY elements of Arrays (M5-P2 ELEM2; H18-Q2, Q4) ---------------------------------
+//
+// An Array of kind DICTIONARY keeps its elements in an ELEMENTS_DICT cell
+// (`elements::dict`): index -> (value or ACCESSOR_PAIR, attributes), and the flag of a
+// non-writable `length`. `exotic.rs` reads only the dense store (the dict cell's dense
+// capacity is 0, so its Array hooks find no element), so the paths below ask the cell
+// first: [`dict_index`] for `[[Get]]`, [`own_attrs`] and [`dict_own`] for `[[Set]]`,
+// HasOwnProperty and CreateDataProperty, `own_property` for `[[GetOwnProperty]]` and
+// `[[DefineOwnProperty]]`, [`dict_delete`] for `[[Delete]]`, `own_index` for the
+// integer-index paths and the key lists. An Array keeps no index key in its property
+// storage.
+
+/// True if `o` is an Array of elements kind DICTIONARY. Not a GC point.
+#[inline(always)]
+fn is_dict_array(o: u64) -> bool {
+    kind::cell_kind(o) == kind::ARRAY.get() && elements::kind_of(o) == elements::kind::DICTIONARY
+}
+
+/// Entry `key` (an array index) of the DICTIONARY Array `o`: (value or ACCESSOR_PAIR,
+/// attributes). `None` for another object or key. Not a GC point.
+#[inline]
+fn dict_index(o: u64, key: u64) -> Option<(u64, i32)> {
+    if !is_dict_array(o) {
+        return None;
+    }
+    let d = elements::dict_of(o)?;
+    elements::dict_get(d, array_index_of(key)?)
+}
+
+/// The own property `key` of the DICTIONARY Array `o` that `exotic.rs` does not answer
+/// right: an entry of its cell, or `length` when it is not writable (attributes 0). Not a GC
+/// point.
+fn dict_own(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<(u64, i32)> {
+    let d = elements::dict_of(o)?;
+    if let Some(i) = array_index_of(key) {
+        return elements::dict_get(d, i);
+    }
+    (!elements::length_writable(o) && exotic::is_key(rt, key, how, Atom::Length))
+        .then(|| (num(f64::from(object::array_len(o))), 0))
+}
+
+/// `exotic::own_attrs` with the DICTIONARY entries and a non-writable `length` of an Array.
+/// Not a GC point.
+#[inline(always)]
+fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i32> {
+    if is_dict_array(o)
+        && let Some((_, a)) = dict_own(rt, o, key, how)
+    {
+        return Some(a);
+    }
+    exotic::own_attrs(rt, o, key, how)
+}
+
+/// The attributes of the Array `a`'s `length`: {w} or none (DICTIONARY with the flag).
+fn length_attrs(a: u64) -> i32 {
+    if elements::length_writable(a) {
+        attr::WRITABLE
+    } else {
+        0
+    }
+}
+
+/// Element `i` of the Array `a` becomes `v` (a Value or an ACCESSOR_PAIR) with `attrs`: a
+/// DICTIONARY entry (the array moves there first, one-way). An index at or past `length`
+/// raises it (§10.4.2.1 step 3; the callers checked that `length` is writable). A new entry
+/// on a prototype sets `shape::proto_index_keys`; any change of a prototype's element is a
+/// structural change (OM-8). GC point: `a` and `v` live in Rust locals.
+fn dict_define(rt: &Runtime, a: u64, i: u32, v: u64, attrs: i32) {
+    debug_assert!(is_array(a) && i != u32::MAX);
+    elements::to_dictionary(rt, a);
+    let present = elements::dict_of(a)
+        .and_then(|d| elements::dict_get(d, i))
+        .is_some();
+    elements::dict_put(rt, a, i, v, attrs);
+    if i >= object::array_len(a) {
+        object::set_array_len(rt, a, i + 1);
+    }
+    if shape::is_prototype_object(a) {
+        if !present {
+            shape::note_proto_index_key(rt, a);
+        }
+        shape::note_change(rt, a);
+    }
+}
+
+/// `[[Delete]]` of entry `i` of the DICTIONARY Array `a`: false for a non-configurable entry,
+/// else removed (true, also for none). Not a GC point.
+fn dict_delete(rt: &Runtime, a: u64, i: u32) -> bool {
+    let Some(d) = elements::dict_of(a) else {
+        return true;
+    };
+    match elements::dict_get(d, i) {
+        Some((_, at)) if at & attr::CONFIGURABLE == 0 => false,
+        Some(_) => {
+            elements::dict_remove(d, i);
+            shape::note_change(rt, a);
+            true
+        }
+        None => true,
+    }
+}
+
 /// A failed `base[key] = v`: nothing in sloppy code, a TypeError in strict code. The message
 /// names the first property on the chain from `start` (`base`, or the prototype of a
-/// primitive `base`), as V8 does. Not a GC point before the throw.
+/// primitive `base`), or the proxy `set` trap that said false, as V8 does. GC point.
 #[cold]
 #[inline(never)]
 fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
@@ -501,9 +648,9 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
     } else {
         first_attrs_on_chain(rt, start, key)
     };
-    let [w0, w1, w2] = what;
-    let k = Key(key);
+    let ([w0, w1, w2], k) = (what, Key(key));
     let msg = match found {
+        Some(SET_TRAP) => return Err(crate::proxy::falsish(cx, "set", key)),
         Some(a) if a & attr::ACCESSOR != 0 => bounded_message(&[
             Text("Cannot set property "),
             k,
@@ -548,26 +695,27 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
 }
 
 /// The attributes of the first property `key` on the chain from the object `o`, if any, for
-/// an error message. Not a GC point and runs no JS (a lazy `prototype` is not made: it is
-/// {w}). A proxy is not asked: the walk goes on at its target, as the no-trap step does (a
-/// revoked proxy ends it). A proxy may make the chain a cycle: past [`MAX_PROXY_HOPS`]
-/// proxies the walk gives `None` (M4-P4 fixer B, Codex PROXY1 P-2).
+/// an error message; runs no JS (a lazy `prototype` is not made: it is {w}). A proxy with a
+/// data `set` trap gives [`SET_TRAP`] (`proxy::has_data_trap`, a GC point); one with none is
+/// not asked: the walk goes on at its target, as the no-trap step does (a revoked proxy ends
+/// it). Past [`MAX_PROXY_HOPS`] proxies (a cycle) it gives `None` (Codex PROXY1 P-2).
 fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
     let how = key::probe(key);
     let mut hops = 0;
     loop {
         while crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
             hops += 1;
-            if hops > MAX_PROXY_HOPS {
-                return None;
+            if hops > MAX_PROXY_HOPS || crate::proxy::has_data_trap(rt, o, "set") {
+                return (hops <= MAX_PROXY_HOPS).then_some(SET_TRAP);
             }
             o = crate::proxy::target(o);
-            if o == NULL {
+            if !is_object(o) {
+                // Revoked (null, or undefined for one with [[Construct]]).
                 return None;
             }
         }
-        if let Some(a) = exotic::own_attrs(rt, o, key, how)
-            .or_else(|| props::own_get_with(o, key, how).map(|(_, a)| a))
+        if let Some(a) =
+            own_attrs(rt, o, key, how).or_else(|| props::own_get_with(o, key, how).map(|(_, a)| a))
         {
             return Some(a);
         }
@@ -587,6 +735,9 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
     {
         let kd = kind::cell_kind(base);
         if kd == kind::ARRAY.get() && array_store(cx.rt(), base, i as u32, v) {
+            return Ok(());
+        }
+        if elements::plain_elements_kind(kd) && plain_store(cx.rt(), base, i as u32, v) {
             return Ok(());
         }
         if kd == kind::ARGUMENTS.get() && arguments::set_element_value(cx.rt(), base, i as u32, v) {
@@ -619,9 +770,27 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     let how = key::probe(key);
     if is_array(o)
         && let Some(i) = array_index_of(key)
-        // An existing element is {w, e, c}; a new one needs an extensible array.
-        && (object::array_get(o, i).is_some() || is_extensible(o))
-        && object::array_set(rt, o, i, v)
+    {
+        // An existing dense element is {w, e, c}; a new one needs an extensible array. A
+        // DICTIONARY array's `array_set` refuses an entry with other attributes and a new
+        // index past a non-writable `length`: `[[DefineOwnProperty]]` decides those.
+        if (object::array_get(o, i).is_some() || is_extensible(o)) && object::array_set(rt, o, i, v)
+        {
+            return Ok(());
+        }
+        let exists = own_attrs(rt, o, key, how).is_some();
+        return define_slow(cx, o, key, v, exists);
+    }
+    // An index key of a plain-elements object that has an elements cell (H18-Q3): its
+    // element, or a new one when the property storage has no such key (one place per key).
+    // Without a cell, a string index key takes the key path (OM-10), as in v0: the index test
+    // is a call, and every named define would pay it (M5-P1 BENCH-SET, ci-v0).
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && object::has_elements_cell(o)
+        && let Some(i) = array_index_of(key)
+        && (object::element_get(o, i).is_some()
+            || (is_extensible(o) && props::own_get_with(o, key, how).is_none()))
+        && object::element_set(rt, o, i, v)
     {
         return Ok(());
     }
@@ -630,7 +799,7 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     if exotic::is_routed(kind::cell_kind(o)) {
         return define_routed(cx, o, key, v);
     }
-    let exotic = exotic::own_attrs(rt, o, key, how);
+    let exotic = own_attrs(rt, o, key, how);
     let stored = props::own_get_with(o, key, how);
     if exotic.is_none() {
         match stored {
@@ -650,25 +819,25 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
 }
 
 /// [`define`] on a routed kind (out of line: the fast path above stays as it was). The
-/// message of a rejection says whether the property existed; for a proxy that would need its
-/// `[[GetOwnProperty]]` (a trap from PROXY2 on), so a proxy gets V8's trap text. GC point.
+/// message of a rejection says whether the property existed; a proxy picks its text by trap
+/// (V8; M5-P3 PROXY2, H31 PROXY2 list). GC point.
 #[cold]
 #[inline(never)]
 fn define_routed(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
-        if define_own_property(cx, o, key, Desc::data(v, attr::DEFAULT))? {
-            return Ok(());
-        }
-        let msg = bounded_message(&[
-            Text("'defineProperty' on proxy: trap returned falsish for property '"),
-            Key(key),
-            Text("'"),
-        ]);
-        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+        // `proxy::define_by_trap`: the first proxy down the target chain whose handler has a
+        // `defineProperty` trap answers, and a false result gets the trap text; with no trap
+        // on the way, the first target that is not a proxy takes the define and gives its own
+        // text ("Cannot define property k, object is not extensible"), as V8 does.
+        return match crate::proxy::define_by_trap(cx, o, key, Desc::data(v, attr::DEFAULT))? {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(crate::proxy::define_falsish(cx, key)),
+            Err(target) => define(cx, target, key, v),
+        };
     }
     let how = key::probe(key);
-    let exists = exotic::own_attrs(cx.rt(), o, key, how).is_some()
-        || props::own_get_with(o, key, how).is_some();
+    let exists =
+        own_attrs(cx.rt(), o, key, how).is_some() || props::own_get_with(o, key, how).is_some();
     define_slow(cx, o, key, v, exists)
 }
 
@@ -700,6 +869,13 @@ pub(crate) fn define_keyed(cx: &mut Cx, o: u64, k: u64, v: u64) -> Res<()> {
     {
         return Ok(());
     }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(i) = val(k).as_int32()
+        && i >= 0
+        && plain_define(cx.rt(), o, i as u32, v)
+    {
+        return Ok(());
+    }
     let key = to_property_key(cx, k)?;
     define(cx, o, key, v)
 }
@@ -723,7 +899,7 @@ pub(crate) fn delete(cx: &mut Cx, base: u64, k: u64, strict: bool) -> Res<bool> 
     if internal_delete(cx, base, key)? {
         Ok(true)
     } else {
-        deny(cx, key, strict)
+        deny(cx, base, key, strict)
     }
 }
 
@@ -740,12 +916,26 @@ pub(crate) fn internal_delete(cx: &mut Cx, o: u64, key: u64) -> Res<bool> {
 /// dictionary move).
 pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
     let how = key::probe(key);
+    if is_dict_array(o)
+        && let Some(i) = array_index_of(key)
+    {
+        // An entry of a DICTIONARY array (M5-P2 ELEM2): a non-configurable one stays.
+        return dict_delete(rt, o, i);
+    }
     if is_array(o)
         && let Some(i) = array_index_of(key)
         && object::array_get(o, i).is_some()
     {
         // v0: a dense array keeps a hole.
         object::array_set(rt, o, i, crate::frame::HOLE);
+        return true;
+    }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(i) = array_index_of(key)
+        && object::element_get(o, i).is_some()
+    {
+        // An element is {w, e, c}: it becomes a hole.
+        object::element_set(rt, o, i, crate::frame::HOLE);
         return true;
     }
     if let Some(a) = exotic::own_attrs(rt, o, key, how) {
@@ -764,14 +954,14 @@ pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
     }
 }
 
-fn deny(cx: &mut Cx, key: u64, strict: bool) -> Res<bool> {
+/// A false `[[Delete]]` of `o` (§13.5.1.2 step 5.d: `delete` in strict code throws when
+/// `[[Delete]]` gives false): false in sloppy code, the TypeError of [`delete_failed`] in
+/// strict code, whose text names the proxy trap that said false (V8: the trap step throws),
+/// or the key and "of object". `Cx::delete_property_or_throw` (DeletePropertyOrThrow) takes
+/// this path too; `Reflect.deleteProperty` returns the false. GC point.
+fn deny(cx: &mut Cx, o: u64, key: u64, strict: bool) -> Res<bool> {
     if strict {
-        let msg = bounded_message(&[
-            Text("Cannot delete property '"),
-            Key(key),
-            Text("' of object"),
-        ]);
-        Err(throw_error(cx, ErrorKind::TypeError, &msg))
+        Err(delete_failed(cx, o, key))
     } else {
         Ok(false)
     }
@@ -879,7 +1069,7 @@ fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
         !crate::proxy::is_proxy_kind(kind::cell_kind(o)),
         "the ordinary HasProperty met a proxy: use try_has_property"
     );
-    props::own_get_with(o, key, how).is_some() || exotic::own_attrs(rt, o, key, how).is_some()
+    props::own_get_with(o, key, how).is_some() || own_attrs(rt, o, key, how).is_some()
 }
 
 /// InstanceofOperator(V, target) (§13.10.2) for `v instanceof f`:
@@ -1060,8 +1250,8 @@ fn is_has_instance_intrinsic(rt: &Runtime, h: u64) -> bool {
 
 /// The keys a `for-in` loop visits (§14.7.5.9 EnumerateObjectProperties, v0: own and inherited
 /// enumerable string keys, array and String wrapper indices first, no duplicates; symbols are
-/// skipped), as a new array. A routed kind on the chain lists its keys through its
-/// `[[OwnPropertyKeys]]` and `[[GetOwnProperty]]`. GC point.
+/// skipped), as a new array. A routed kind lists its keys through `[[OwnPropertyKeys]]` and
+/// [`for_in_attrs`] (a proxy's key is a candidate; [`for_in_has`] filters it). GC point.
 pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     let rt = cx.rt();
     let keys = object::new_array(rt, 0);
@@ -1080,9 +1270,10 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     // GC: the Rust vectors hold only indices, key atoms of property storage (reachable from
     // `o`) and the `length` atom (a runtime root); a new index string goes into `keys` (a Rust
     // local, so a root) at once. A routed kind's keys come from its key array (`own`), and
-    // each such array goes into `kept` (a Rust local, so a root) until the loop ends: the
-    // keys in `seen_string` stay alive although a proxy's keys may be reachable from nothing
-    // else once its traps run JS (PROXY2).
+    // each such array goes into `kept` (a Rust local, so a root) until the loop ends. From
+    // the first routed hop on, `kept` also holds every key of `seen_string` (an enumerable
+    // one is in `keys`): a proxy trap runs JS that may delete a property whose key was seen
+    // and then collect, and the atom table is weak (PROXY2).
     let mut seen_index: Vec<u32> = Vec::new();
     let mut seen_string: Vec<u64> = Vec::new();
     let mut kept = UNDEFINED;
@@ -1096,11 +1287,17 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
         let mut own = UNDEFINED;
         if exotic::is_routed(kind::cell_kind(cur)) {
             // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy): its `[[OwnPropertyKeys]]`
-            // and `[[GetOwnProperty]]` (the hooks, else the ordinary methods). GC points.
-            own = try_own_property_keys(cx, cur)?;
+            // and, but for a proxy, `[[GetOwnProperty]]` ([`for_in_attrs`]). GC points.
             if kept == UNDEFINED {
+                // Before the first hook runs (no JS has run yet, so every key in
+                // `seen_string` is still in some object's storage): root them all. A trap
+                // may delete those properties and collect, and the atom table is weak.
                 kept = object::new_array(cx.rt(), 0);
+                for (i, &k) in seen_string.iter().enumerate() {
+                    object::array_set(cx.rt(), kept, i as u32, k);
+                }
             }
+            own = try_own_property_keys(cx, cur)?;
             let n = object::array_len(kept);
             object::array_set(cx.rt(), kept, n, own);
             for j in 0..object::array_len(own) {
@@ -1110,7 +1307,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 if is_symbol_key(k) {
                     continue;
                 }
-                let Some((_, a, _)) = own_property(cx, cur, k)? else {
+                let Some(a) = for_in_attrs(cx, cur, k)? else {
                     continue;
                 };
                 let enumerable = a & attr::ENUMERABLE != 0;
@@ -1120,12 +1317,15 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 }
             }
         } else {
-            if is_array(cur) {
-                for i in 0..object::array_len(cur) {
-                    if object::array_get(cur, i).is_some() {
-                        index_keys.push((i, true));
-                    }
-                }
+            if let Some(d) = elements::dict_of(cur) {
+                // A DICTIONARY array's entries keep their own enumerable bits (M5-P2 ELEM2).
+                index_keys.extend(
+                    elements::dict_entries(d)
+                        .into_iter()
+                        .map(|(i, a)| (i, a & attr::ENUMERABLE != 0)),
+                );
+            } else if is_array(cur) || elements::plain_elements_kind(kind::cell_kind(cur)) {
+                index_keys.extend(object::element_indices(cur).map(|i| (i, true)));
             }
             // A String wrapper (§10.4.3.3): its indices come first, and its `length` (not
             // enumerable) first among the strings, so it hides an inherited `length`.
@@ -1165,13 +1365,17 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             if enumerable {
                 let len = object::array_len(keys);
                 object::array_set(cx.rt(), keys, len, k);
+            } else if kept != UNDEFINED {
+                // A key seen after a routed hop: a later trap may delete its property.
+                let n = object::array_len(kept);
+                object::array_set(cx.rt(), kept, n, k);
             }
         }
         std::hint::black_box(own);
-        // GC point (a proxy's [[GetPrototypeOf]], the interrupt poll). A proxy may make the
-        // chain a cycle: the step is bounded ([`prototype_walk_step`]), so `kept` holds at
-        // most one key array per proxy hop up to the bound.
-        let p = prototype_walk_step(cx, cur, &mut hops)?;
+        // GC point (a proxy's [[GetPrototypeOf]], the poll). V8's walk ([`for_in_step`]) ends
+        // after the first proxy unless `o` is one; a proxy `o` may make the chain a cycle, so
+        // the step is bounded and `kept` holds at most one key array per hop up to the bound.
+        let p = for_in_step(cx, o, cur, &mut hops)?;
         if p == NULL {
             break;
         }
@@ -1197,6 +1401,15 @@ enum OwnSlot {
 /// GC point (a constructor's lazy `prototype` object, a routed hook).
 fn own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(u64, i32, OwnSlot)>> {
     let how = key::probe(key);
+    if is_dict_array(o)
+        && let Some(i) = array_index_of(key)
+    {
+        // An entry of a DICTIONARY array (M5-P2 ELEM2): its value or ACCESSOR_PAIR and its
+        // attributes; an Array keeps no index key in its property storage.
+        return Ok(elements::dict_of(o)
+            .and_then(|d| elements::dict_get(d, i))
+            .map(|(v, a)| (v, a, OwnSlot::Exotic(Exotic::Element(i)))));
+    }
     if let Some(r) = exotic::own_property(cx, o, key, how) {
         let (v, a, e) = r?;
         return Ok(Some((v, a, OwnSlot::Exotic(e))));
@@ -1210,8 +1423,11 @@ fn own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(u64, i32, OwnSlot)
 pub(crate) fn own_property_stored(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(u64, i32)>> {
     debug_assert!(is_object(o) && is_property_key(key));
     if is_array(o) && is_atom(cx, key, Atom::Length) {
-        // §10.4.2: {w: true, e: false, c: false} (as `get_own_property`).
-        return Ok(Some((num(f64::from(object::array_len(o))), attr::WRITABLE)));
+        // §10.4.2: {w, e: false, c: false} (as `get_own_property`).
+        return Ok(Some((
+            num(f64::from(object::array_len(o))),
+            length_attrs(o),
+        )));
     }
     Ok(own_property(cx, o, key)?.map(|(v, a, _)| (v, a)))
 }
@@ -1222,9 +1438,9 @@ pub(crate) fn own_property_stored(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(
 pub(crate) fn get_own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<Desc>> {
     debug_assert!(is_object(o) && is_property_key(key));
     if is_array(o) && is_atom(cx, key, Atom::Length) {
-        // §10.4.2: {w: true, e: false, c: false}. v0: `length` is always writable.
+        // §10.4.2: {w, e: false, c: false}; not writable only on a DICTIONARY array (M5-P2).
         let len = num(f64::from(object::array_len(o)));
-        return Ok(Some(Desc::data(len, attr::WRITABLE)));
+        return Ok(Some(Desc::data(len, length_attrs(o))));
     }
     Ok(own_property(cx, o, key)?.map(|(v, a, _)| accessor::stored_desc(v, a)))
 }
@@ -1344,6 +1560,14 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
         }
         return array_define_length(cx, o, desc);
     }
+    // §10.4.2.1 step 3.b: an index at or past a non-writable `length` (DICTIONARY only).
+    if is_array(o)
+        && let Some(i) = array_index_of(key)
+        && i >= object::array_len(o)
+        && !elements::length_writable(o)
+    {
+        return Ok(false);
+    }
     let Some((cur_v, cur_a, slot)) = own_property(cx, o, key)? else {
         // §10.1.6.3 step 2: a new property; absent fields default to undefined / false.
         if !is_extensible(o) {
@@ -1378,11 +1602,15 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
         {
             return Ok(true);
         }
-        if let OwnSlot::Exotic(_) = slot {
-            // Exotic own properties are data properties; only a dense element gets here
-            // (a String wrapper's are not configurable).
-            return Err(not_implemented(cx, "accessor array elements"));
+        if let OwnSlot::Exotic(e) = slot
+            && !matches!(e, Exotic::Element(_))
+        {
+            // Exotic own properties are data properties; a String wrapper's are not
+            // configurable, so validation refused them above.
+            return Err(not_implemented(cx, "an accessor on an exotic property"));
         }
+        // An element becomes an accessor: an Array's goes to its DICTIONARY store, a
+        // plain-elements object's to the property storage (H18-Q3), below.
         // GC point: `o`, `key`, `get` and `set` live in Rust locals.
         (accessor::new_pair(cx.rt(), get, set), attrs)
     } else if current.is_accessor() {
@@ -1404,14 +1632,27 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
     match slot {
         // New attributes move a fast object to dictionary mode (OM-10, props.rs).
         OwnSlot::Storage => props::own_define(rt, o, key, v, attrs),
-        OwnSlot::Exotic(Exotic::Element(i)) => {
-            if attrs != attr::DEFAULT {
-                return Err(not_implemented(
-                    cx,
-                    "array elements that are not writable, enumerable and configurable",
-                ));
+        // An Array element: a {w, e, c} data value of a dense array stays in place; anything
+        // else is a DICTIONARY entry (H18-Q2; M5-P2 ELEM2).
+        OwnSlot::Exotic(Exotic::Element(i)) if is_array(o) => {
+            if attrs == attr::DEFAULT && !is_dict_array(o) {
+                object::array_set(rt, o, i, v);
+            } else {
+                // GC point: `o` and `v` live in Rust locals.
+                dict_define(rt, o, i, v, attrs);
             }
-            object::array_set(rt, o, i, v);
+        }
+        // An element of a plain-elements object (H18-Q3): a {w, e, c} data value stays an
+        // element; anything else (an accessor, other attributes) moves it to the property
+        // storage, as a v0 index key (one place per key: the element goes first).
+        OwnSlot::Exotic(Exotic::Element(i)) => {
+            if attrs == attr::DEFAULT {
+                object::element_set(rt, o, i, v);
+            } else {
+                object::element_set(rt, o, i, crate::frame::HOLE);
+                // GC point: `o`, `key` and `v` live in Rust locals.
+                props::own_define(rt, o, key, v, attrs);
+            }
         }
         // Validation passed on a non-writable, non-configurable property: nothing changes
         // (SameValue held for the value).
@@ -1427,9 +1668,9 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
     Ok(true)
 }
 
-/// ValidateAndApplyPropertyDescriptor (§10.1.6.3) steps 4-5: may `desc` change the existing
-/// property `current` (a complete data or accessor descriptor)?
-fn validate(desc: &Desc, current: &Desc) -> bool {
+/// ValidateAndApplyPropertyDescriptor (§10.1.6.3) steps 4-5 (and IsCompatiblePropertyDescriptor
+/// for `proxy.rs`): may `desc` change the property `current` (a complete descriptor)?
+pub(crate) fn validate(desc: &Desc, current: &Desc) -> bool {
     if current.configurable == Some(true) {
         return true;
     }
@@ -1469,13 +1710,17 @@ fn validate(desc: &Desc, current: &Desc) -> bool {
 /// Adds the new own accessor property `key` with `get`, `set` (callables or undefined) and
 /// the enumerable and configurable bits of `attrs` (the object is extensible). GC point.
 fn add_accessor(cx: &mut Cx, o: u64, key: u64, get: u64, set: u64, attrs: i32) -> Res<bool> {
-    if is_array(o) && array_index_of(key).is_some() {
-        return Err(not_implemented(cx, "accessor array elements"));
-    }
     let rt = cx.rt();
     // GC point: `o`, `key` and the pair live in Rust locals.
     let pair = accessor::new_pair(rt, get, set);
     let attrs = attr::ACCESSOR | (attrs & (attr::ENUMERABLE | attr::CONFIGURABLE));
+    if is_array(o)
+        && let Some(i) = array_index_of(key)
+    {
+        // An accessor element of an Array: a DICTIONARY entry (M5-P2 ELEM2).
+        dict_define(rt, o, i, pair, attrs);
+        return Ok(true);
+    }
     props::own_define(rt, o, key, pair, attrs);
     Ok(true)
 }
@@ -1486,27 +1731,41 @@ fn add_own_property(cx: &mut Cx, o: u64, key: u64, v: u64, attrs: i32) -> Res<bo
     if is_array(o)
         && let Some(i) = array_index_of(key)
     {
-        if attrs != attr::DEFAULT {
-            return Err(not_implemented(
-                cx,
-                "array elements that are not writable, enumerable and configurable",
-            ));
+        // §10.4.2.1 step 3: an index at or past `length` raises it (array_set and
+        // dict_define do), so a non-writable `length` refuses it (step 3.b). A {w, e, c}
+        // element takes the dense path (or DICTIONARY past the dense limit, H18-Q4); other
+        // attributes are a DICTIONARY entry (H18-Q2).
+        if i >= object::array_len(o) && !elements::length_writable(o) {
+            return Ok(false);
         }
-        // §10.4.2.1 step 3: an index at or past `length` raises it (array_set does).
-        if object::array_set(rt, o, i, v) {
-            return Ok(true);
+        if !(attrs == attr::DEFAULT && object::array_set(rt, o, i, v)) {
+            // GC point: `o` and `v` live in Rust locals.
+            dict_define(rt, o, i, v, attrs);
         }
-        // Past the v0 dense limit the index becomes a dictionary property and `length`
-        // stays (H18 v0 notes), as in [[Set]] and literals.
+        return Ok(true);
+    } else if attrs == attr::DEFAULT
+        && elements::plain_elements_kind(kind::cell_kind(o))
+        && object::has_elements_cell(o)
+        && let Some(i) = array_index_of(key)
+        && object::element_set(rt, o, i, v)
+    {
+        // A new {w, e, c} index key of a plain-elements object that has an elements cell
+        // (H18-Q3; without one, a string key takes the key path, as in `define`); an index
+        // too far for its elements store stays a stored property.
+        return Ok(true);
     }
     props::own_define(rt, o, key, v, attrs);
     Ok(true)
 }
 
-/// ArraySetLength (§10.4.2.4) for `[[DefineOwnProperty]]("length", desc)`. v0: `length`
-/// stays writable.
+/// ArraySetLength (§10.4.2.4) for `[[DefineOwnProperty]]("length", desc)`, and the
+/// OrdinaryDefineOwnProperty of `length` without a value (step 1). The value is converted
+/// first (ToUint32, then ToNumber: a RangeError if they differ), then checked against the
+/// current `length` {w, e: false, c: false}. A shorter length deletes the elements from the
+/// highest index down; a non-configurable one stops it (`length` = its index + 1) and the
+/// result is false. `writable: false` is applied after the deletes (step 13's deferral);
+/// it moves the array to DICTIONARY, whose cell holds the flag (M5-P2 ELEM2). GC point.
 fn array_define_length(cx: &mut Cx, a: u64, desc: Desc) -> Res<bool> {
-    let rt = cx.rt();
     let new_len = match desc.value {
         Some(v) => {
             let n = to_uint32_of(cx, v)?;
@@ -1522,23 +1781,25 @@ fn array_define_length(cx: &mut Cx, a: u64, desc: Desc) -> Res<bool> {
         }
         None => None,
     };
-    // The current descriptor is {w: true, e: false, c: false}.
+    let rt = cx.rt();
+    let old = object::array_len(a);
+    // ValidateAndApplyPropertyDescriptor against {old, w, e: false, c: false}.
     if desc.configurable == Some(true) || desc.enumerable == Some(true) {
         return Ok(false);
     }
+    if !elements::length_writable(a) {
+        // Steps 10-11: nothing may change but the same value.
+        return Ok(desc.writable != Some(true) && new_len.is_none_or(|n| n == old));
+    }
+    let ok = match new_len {
+        Some(n) => object::array_set_length(rt, a, n),
+        None => true,
+    };
     if desc.writable == Some(false) {
-        return Err(not_implemented(cx, "a non-writable array length"));
+        // GC point: `a` lives in a Rust local.
+        elements::set_length_readonly(rt, a);
     }
-    if let Some(n) = new_len
-        && !object::array_set_length(rt, a, n)
-    {
-        return Err(throw_error(
-            cx,
-            ErrorKind::RangeError,
-            "Invalid array length",
-        ));
-    }
-    Ok(true)
+    Ok(ok)
 }
 
 /// `o.[[OwnPropertyKeys]]()` (§10.1.11.1 OrdinaryOwnPropertyKeys, §10.4.2 arrays, §10.4.3.3
@@ -1579,8 +1840,10 @@ pub(crate) fn ordinary_own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     };
     // 1. Integer indices ascending: elements, String wrapper indices, stored index keys.
     let mut indices: Vec<u32> = Vec::new();
-    if is_array(o) {
-        indices.extend((0..object::array_len(o)).filter(|&i| object::array_get(o, i).is_some()));
+    if let Some(d) = elements::dict_of(o) {
+        indices.extend(elements::dict_entries(d).into_iter().map(|(i, _)| i));
+    } else if is_array(o) || elements::plain_elements_kind(kind::cell_kind(o)) {
+        indices.extend(object::element_indices(o));
     }
     if let Some(s) = wrapper::wrapper_value(o).filter(|&p| is_string(p)) {
         indices.extend(0..object::str_len(s) as u32);
@@ -1695,8 +1958,18 @@ fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
     }
     let index = array_index_u64(i);
     if let Some(n) = index {
-        if k == kind::ARRAY.get() {
-            if let Some(v) = object::array_get(o, n) {
+        if k == kind::ARRAY.get()
+            && let Some(d) = elements::dict_of(o)
+        {
+            // A DICTIONARY array (M5-P2 ELEM2): its entry, or none (an Array keeps no index
+            // key in its property storage).
+            return match elements::dict_get(d, n) {
+                Some((v, a)) => OwnIndex::Stored(v, a),
+                None => OwnIndex::Absent,
+            };
+        }
+        if k == kind::ARRAY.get() || elements::plain_elements_kind(k) {
+            if let Some(v) = object::element_get(o, n) {
                 return OwnIndex::Stored(v, attr::DEFAULT);
             }
         } else if k == kind::PRIMITIVE_WRAPPER.get()
@@ -1705,7 +1978,8 @@ fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
         {
             return OwnIndex::WrapperChar(s);
         }
-        // An array-index key moves a fast object to dictionary mode (OM-10, `shape::add`).
+        // An array-index key that is a stored property moves a fast object to dictionary mode
+        // (OM-10, `shape::add`); elements were read above.
         if !shape::is_dictionary(shape::shape_of(o)) {
             return OwnIndex::Absent;
         }
@@ -1832,6 +2106,12 @@ pub(crate) fn set_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<bool> {
     {
         return Ok(true);
     }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(n) = array_index_u64(i)
+        && plain_store(cx.rt(), o, n, v)
+    {
+        return Ok(true);
+    }
     // GC point: `o` and `v` live in Rust locals.
     let key = index_key_of(cx.rt(), i);
     ordinary_set(cx, o, key, v)
@@ -1846,6 +2126,12 @@ pub(crate) fn define_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<()> {
         // An existing element is {w, e, c}; a new one needs an extensible array.
         && (object::array_get(o, n).is_some() || is_extensible(o))
         && object::array_set(cx.rt(), o, n, v)
+    {
+        return Ok(());
+    }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(n) = array_index_u64(i)
+        && plain_define(cx.rt(), o, n, v)
     {
         return Ok(());
     }
@@ -1868,6 +2154,13 @@ pub(crate) fn delete_index(cx: &mut Cx, o: u64, i: u64, strict: bool) -> Res<boo
             object::array_set(cx.rt(), o, n, crate::frame::HOLE);
             return Ok(true);
         }
+        if elements::plain_elements_kind(kind::cell_kind(o))
+            && let Some(n) = array_index_u64(i)
+            && object::element_get(o, n).is_some()
+        {
+            object::element_set(cx.rt(), o, n, crate::frame::HOLE);
+            return Ok(true);
+        }
         let mut buf = [0u8; 20];
         if own_index(o, i, index_digits(i, &mut buf)) == OwnIndex::Absent {
             return Ok(true);
@@ -1875,4 +2168,112 @@ pub(crate) fn delete_index(cx: &mut Cx, o: u64, i: u64, strict: bool) -> Res<boo
     }
     let key = index_key_of(cx.rt(), i);
     delete(cx, o, key, strict)
+}
+
+/// The step of the `for-in` walk ([`for_in_keys`]) from `cur`, whose keys are listed, for the
+/// receiver `o`: [`prototype_walk_step`], except that V8 ends the walk after the first proxy
+/// on the chain when `o` is not a proxy (H31, the for-in row; V10-D61). It still asks that
+/// proxy's `[[GetPrototypeOf]]` once and drops the answer. Node v24.22.1 lists `x` for
+/// `a = {x: 1}; p = new Proxy(a, {}); Object.setPrototypeOf(a, p); for (k in a)` and calls
+/// the `getPrototypeOf` trap once; a proxy receiver walks on through proxies, so `for (k in
+/// p)` on that cycle throws the RangeError past [`MAX_PROXY_HOPS`]. GC point.
+fn for_in_step(cx: &mut Cx, o: u64, cur: u64, hops: &mut u32) -> Res<u64> {
+    let p = prototype_walk_step(cx, cur, hops)?;
+    if p != NULL && crate::proxy::is_proxy(cur) && !crate::proxy::is_proxy(o) {
+        return Ok(NULL);
+    }
+    Ok(p)
+}
+
+/// The `first_attrs_on_chain` answer for a proxy whose data `set` trap said false (no
+/// attribute set is negative).
+const SET_TRAP: i32 = -1;
+
+/// The TypeError of a strict `delete o[key]` that got false: V8's text for the proxy
+/// `deleteProperty` trap that said it (of `o` or of a proxy down its target chain,
+/// `proxy::delete_trap_said_false`), else "Cannot delete property 'k' of object". GC point.
+#[cold]
+#[inline(never)]
+fn delete_failed(cx: &mut Cx, o: u64, key: u64) -> ep9_value::Throw {
+    if crate::proxy::delete_trap_said_false(cx.rt(), o) {
+        return crate::proxy::falsish(cx, "deleteProperty", key);
+    }
+    let msg = bounded_message(&[
+        Text("Cannot delete property '"),
+        Key(key),
+        Text("' of object"),
+    ]);
+    throw_error(cx, ErrorKind::TypeError, &msg)
+}
+
+// ---- for-in: the key attributes of a routed kind and the ForInNext filter ------------------
+
+/// The attributes [`for_in_keys`] lists the own key `k` of the routed object `o` with: an
+/// ARGUMENTS or MODULE_NAMESPACE object's `[[GetOwnProperty]]` (`None`: not listed); for a
+/// proxy no trap runs and the key is a candidate (enumerable): [`for_in_has`] asks the
+/// proxy's `[[GetOwnProperty]]` when the loop reaches the key, as V8 does (its for-in keeps
+/// a proxy's keys unfiltered; node lists `ownKeys, getPrototypeOf`, then per key
+/// `getOwnPropertyDescriptor` and the body). GC point.
+fn for_in_attrs(cx: &mut Cx, o: u64, k: u64) -> Res<Option<i32>> {
+    if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        return Ok(Some(attr::ENUMERABLE));
+    }
+    Ok(own_property(cx, o, k)?.map(|(_, a, _)| a))
+}
+
+/// The ForInNext filter (V8 `HasEnumerableProperty`; M5-P3-ORCH-8 reversed, Codex M5-P3 r2
+/// eng 4): whether the receiver `o` still has the listed key `k` on its chain, so that a key
+/// deleted during the loop is skipped (§14.7.5.9). On a chain with no proxy it is the
+/// [`try_has_property`] walk (no trap to run). From the first proxy on, the first object
+/// that has the key answers with its ENUMERABLE bit, a proxy by `[[GetOwnProperty]]` (the
+/// `getOwnPropertyDescriptor` trap), never `[[HasProperty]]`: see [`for_in_has_at_proxy`].
+/// GC point at a proxy only.
+pub(crate) fn for_in_has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
+    debug_assert!(is_object(o));
+    let key = to_property_key(cx, k)?;
+    let how = key::probe(key);
+    let mut cur = o;
+    loop {
+        if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
+            return for_in_has_at_proxy(cx, cur, key);
+        }
+        if has_own_with(cx.rt(), cur, key, how) {
+            return Ok(true);
+        }
+        let p = object::proto_of(cur);
+        if p == NULL {
+            return Ok(false);
+        }
+        cur = p;
+    }
+}
+
+/// The part of [`for_in_has`] from the first proxy `p` on: the first object on the chain
+/// that has the key as an own property answers with its ENUMERABLE bit, so a non-enumerable
+/// property shadows an enumerable one further up (§14.7.5.9: only enumerable properties
+/// are visited; Codex M5-P3 r3 eng, medium). A proxy answers by `[[GetOwnProperty]]`; none:
+/// the walk goes on at the proxy's `[[GetPrototypeOf]]`, a counted hop, [`MAX_PROXY_HOPS`].
+/// Any other object answers by its `[[GetOwnProperty]]` attributes. V8 (node 26) visits a key
+/// that a proxy's `ownKeys` lists when an object past it has the key non-enumerable (its DATA
+/// case does not read the attributes); ep9 does not. A throwing trap or a revoked proxy throws.
+/// GC point: `key` lives in a Rust local.
+#[cold]
+#[inline(never)]
+fn for_in_has_at_proxy(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
+    let (mut cur, mut hops) = (p, 0);
+    loop {
+        if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
+            if let Some((_, a)) = crate::proxy::get_own_property(cx, cur, key)? {
+                return Ok(a & attr::ENUMERABLE != 0);
+            }
+            cur = proxy_walk_step(cx, cur, &mut hops)?;
+        } else if let Some((_, a)) = own_property_stored(cx, cur, key)? {
+            return Ok(a & attr::ENUMERABLE != 0);
+        } else {
+            cur = object::proto_of(cur);
+        }
+        if cur == NULL {
+            return Ok(false);
+        }
+    }
 }

@@ -24,17 +24,32 @@
 //! 5. A cite on a doc 13 line that is new since the base, or on an edited line whose cite
 //!    number changed (the base line the edit replaced, the removed line nearby that shares the
 //!    most words with it, has no such cite; M4-P5 CX5-C7, verifier r1 F1 and r2 F1), was
-//!    written for the files at HEAD: it is checked at HEAD only, and a cite past the
-//!    end of its file at HEAD is BAD AT HEAD. Step 4 is for the other cites, so an edit that
-//!    keeps a stale number still gives MOVED. A range is decided per endpoint (CX6-5): its start
-//!    (its end) keeps step 4 when the paired base line has a cite of that name with the same
-//!    start (the same end).
+//!    written for the files of the commit that added it, not for the base. A cite past the end
+//!    of its file at HEAD is BAD AT HEAD. Else (CX6-3, plan v10 section 3.7) it gets the step 4
+//!    check with that commit in place of the base: the newest commit after the base that
+//!    changed how often the cite's text occurs in the doc (`git log -S`, a merge by its diff
+//!    against its first parent) and whose doc holds more such cites than each of its parents'
+//!    ([`Intro`]; a cite merged from a branch is found at its branch commit, and one that a
+//!    merge resolution added, at the merge). The findings name that commit ("the commit that added the cite");
+//!    a cite past the end of its file there is BAD AT INTRO (rule 31 moves a cite with its file
+//!    in one commit). A cite that no commit added (uncommitted in the work tree) is checked at
+//!    HEAD only. Step 4 is for the other cites, so an edit that keeps a stale number still gives
+//!    MOVED. A range is decided per endpoint (CX6-5): its start (its end) keeps step 4 when the
+//!    paired base line has a cite of that name with the same start (the same end).
 //!
-//! Known limits (M4-P5 CX6-3, CX6-4; month-5 carry): a cite added after `Cites at` is checked
-//! at HEAD only until the next `Cites at` bump, so a move in that window (about one phase) is
-//! not found; CI runs the HEAD check on the push that adds it. The word-overlap pairing is a
-//! heuristic: a reworded row that keeps a stale number can lose its pair to an inserted row, and
-//! its cite is then checked at HEAD only.
+//! 6. A cited line that is the base line with a dated note appended at its end (the rest
+//!    of the line at HEAD starts with `Note (YYYY-MM-DD` or `[YYYY-MM-DD`, as a dated
+//!    addendum that moves no line is written, plan v10 section 3.8 WI-SC3) still names its
+//!    line: a note (`short cite NOTE ADDED`), not a finding, as an edited table row is
+//!    ([`appended_note`]; M5-P1 fixer). Text edited before the note stays CHANGED.
+//!
+//! Known limits (M4-P5 CX6-4; CX6-3 is closed by step 5 in M5-P1): the word-overlap pairing is
+//! a heuristic: a reworded row that keeps a stale number can lose its pair to an inserted row,
+//! and its cite is then checked at the commit that added that number. When one cite text is on
+//! two doc lines added by different commits, both are checked at the newer commit (a move
+//! between the two commits is not found). `git log -S` counts the text, not the cite: an edit
+//! that turns `AR:45` into `AR:4` leaves the count of `AR:4` the same, so that commit is not a
+//! candidate and an older one (or none: HEAD only) is used.
 //!
 //! The part gates from M4-P5 ([`GATE`] true; plan v9 rule 20, P5-ORCH-2: it guards the
 //! doc 13 pointers such as the FR0 row H31:90): a finding fails adr-lint and so m1-exit item 6.
@@ -288,16 +303,18 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
     let pair = paired(&base_v, &head_v);
     // The files of each family dir at HEAD.
     let mut dirs: HashMap<String, Vec<String>> = HashMap::new();
-    let mut files: HashMap<(String, &str), Option<Vec<String>>> = HashMap::new();
+    let mut files: HashMap<(String, String), Option<Vec<String>>> = HashMap::new();
     let mut show = |rev: &str, p: &str| -> Option<Vec<String>> {
         files
-            .entry((p.to_string(), if rev == "HEAD" { "HEAD" } else { "base" }))
+            .entry((p.to_string(), rev.to_string()))
             .or_insert_with(|| {
                 git_raw(root, &format!("{rev}:{p}"))
                     .map(|t| t.lines().map(str::to_string).collect())
             })
             .clone()
     };
+    // CX6-3: the commit that added each new cite ([`Intro`]).
+    let mut intro = Intro::new(root, &base, &forms, &doc);
     for (i, l) in doc.lines().enumerate() {
         if l.starts_with("## 12.") {
             break;
@@ -347,6 +364,9 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
             };
             for (k, is_end) in std::iter::once((n, false)).chain(end.map(|e| (e, true))) {
                 out.total += 1;
+                // The lines the cite is checked against: the base, or for a new cite the commit
+                // that added it (CX6-3: its lines and the text that names it).
+                let mut from: Option<(Option<Vec<String>>, String)> = None;
                 if !carried(k, is_end) {
                     let lines = h.as_ref().map_or(0, Vec::len);
                     if k == 0 || k as usize > lines {
@@ -354,22 +374,39 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                             "SHORT CITE BAD AT HEAD doc13:{} {name}:{k}: {file} has no line {k} at HEAD",
                             i + 1
                         ));
+                        continue;
                     }
-                    continue;
+                    // CX6-3: checked at the commit that added it; at HEAD only when no commit
+                    // after the base added it (an uncommitted cite).
+                    let Some(c) = intro.commit(&(name.clone(), n, end)) else {
+                        continue;
+                    };
+                    let label = format!("{}, the commit that added the cite", &c[..7]);
+                    from = Some((show(&c, &file), label));
                 }
+                let (b, short_base, named, is_intro) = match &from {
+                    Some((lines, label)) => (lines, label.as_str(), true, true),
+                    None => (&b, short_base, named, false),
+                };
                 let at = |v: &Option<Vec<String>>| {
                     v.as_ref()
                         .and_then(|v| v.get((k as usize).wrapping_sub(1)).cloned())
                 };
-                let (lb, lh) = (at(&b), at(&h));
+                let (lb, lh) = (at(b), at(&h));
                 if lb.is_some() && lb == lh {
                     continue;
                 }
                 let cite = format!("doc13:{} {name}:{k}", i + 1);
                 let Some(lb) = lb else {
-                    out.findings.push(format!(
-                        "SHORT CITE BAD AT BASE {cite}: {file} has no line {k} at {short_base}"
-                    ));
+                    out.findings.push(if is_intro {
+                        format!(
+                            "SHORT CITE BAD AT INTRO {cite}: {file} has no line {k} at {short_base}"
+                        )
+                    } else {
+                        format!(
+                            "SHORT CITE BAD AT BASE {cite}: {file} has no line {k} at {short_base}"
+                        )
+                    });
                     continue;
                 };
                 let text = lb.trim();
@@ -395,6 +432,16 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                     ));
                     continue;
                 }
+                // The same line with a dated note appended (step 6): a note, not a finding.
+                if hits.is_empty()
+                    && let Some(lh) = &lh
+                    && appended_note(text, lh.trim())
+                {
+                    out.notes.push(format!(
+                        "short cite NOTE ADDED {cite}: the line at {short_base} with a dated note appended (read the note once): {clip}"
+                    ));
+                    continue;
+                }
                 out.findings.push(match hits.as_slice() {
                     [m] if named => format!("SHORT CITE MOVED {cite} -> {name}:{m} (same text as at {short_base}): {clip}"),
                     // A fallback base may not be the commit the cite was written for: its line
@@ -409,6 +456,99 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
         }
     }
     Ok(out)
+}
+
+/// CX6-3 (M4-P5; plan v10 section 3.7): the commit that added a cite that is new since the base
+/// (step 5 of the module doc). The candidates are the commits after the base that changed the
+/// number of times the cite's text occurs in the doc (`git log -S<cite> <base>..HEAD -- <doc>`,
+/// newest first; a merge by its diff against its first parent); the cite was added by the
+/// newest one whose doc holds more cites of that name and number (above `## 12.`, as
+/// [`cites_in`] reads them) than each of its parents' (so a merge resolution that adds a cite
+/// in no parent is its adder, and a cite merged from a branch keeps its branch commit). None when no
+/// such commit exists, or when the doc in the work tree holds more of the cite than HEAD's (an
+/// uncommitted cite: no commit wrote it).
+struct Intro<'a> {
+    root: &'a Path,
+    base: &'a str,
+    forms: &'a [(String, Form)],
+    /// The cites of the doc at a rev (the doc's cites above `## 12.`); None: no doc there.
+    docs: HashMap<String, Option<Vec<Cite>>>,
+    /// The cites of the work-tree doc.
+    work: Vec<Cite>,
+}
+
+impl<'a> Intro<'a> {
+    fn new(root: &'a Path, base: &'a str, forms: &'a [(String, Form)], doc: &str) -> Self {
+        Intro {
+            root,
+            base,
+            forms,
+            docs: HashMap::new(),
+            work: doc_cites(doc, forms),
+        }
+    }
+
+    /// How many cites equal to `cite` the doc at `rev` holds (0 when it has no doc).
+    fn count(&mut self, rev: &str, cite: &Cite) -> usize {
+        let (root, forms) = (self.root, self.forms);
+        self.docs
+            .entry(rev.to_string())
+            .or_insert_with(|| git_raw(root, &format!("{rev}:{DOC}")).map(|d| doc_cites(&d, forms)))
+            .as_ref()
+            .map_or(0, |v| v.iter().filter(|c| *c == cite).count())
+    }
+
+    fn commit(&mut self, cite: &Cite) -> Option<String> {
+        let at_work = self.work.iter().filter(|c| *c == cite).count();
+        if at_work > self.count("HEAD", cite) {
+            return None;
+        }
+        let (name, n, end) = cite;
+        let text = match end {
+            Some(e) => format!("{name}:{n}-{e}"),
+            None => format!("{name}:{n}"),
+        };
+        // `--diff-merges=first-parent`: a merge is searched by its diff against its first
+        // parent, so a cite that a merge resolution added (in no parent) is a candidate too
+        // (Codex r1 gates6). `%P`: the parents, so a merge counts as the adder only when its
+        // doc holds more of the cite than every parent's; a cite merged from a branch is then
+        // found at its branch commit, as before.
+        let log = git(
+            self.root,
+            &[
+                "log",
+                "--diff-merges=first-parent",
+                "--format=%H %P",
+                &format!("-S{text}"),
+                &format!("{}..HEAD", self.base),
+                "--",
+                DOC,
+            ],
+        )?;
+        for l in log.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let mut ids = l.split(' ');
+            let Some(c) = ids.next() else { continue };
+            let here = self.count(c, cite);
+            let parents: Vec<&str> = ids.filter(|p| !p.is_empty()).collect();
+            let most = parents
+                .iter()
+                .map(|p| self.count(p, cite))
+                .max()
+                .unwrap_or(0);
+            if here > most {
+                return Some(c.to_string());
+            }
+        }
+        None
+    }
+}
+
+/// The cites of a doc text above its `## 12.` heading (step 3 of the module doc).
+fn doc_cites(doc: &str, forms: &[(String, Form)]) -> Vec<Cite> {
+    doc.lines()
+        .take_while(|l| !l.starts_with("## 12."))
+        .flat_map(|l| cites_in(l, forms))
+        .collect()
 }
 
 /// For each line of `head`, the line of `base` it replaced, if any: the lines of a longest
@@ -522,6 +662,33 @@ fn same_row(a: &str, b: &str, base: Option<&[String]>, head: Option<&[String]>) 
         v.is_some_and(|v| v.iter().filter(|l| first_cell(l) == Some(key)).count() == 1)
     };
     first_cell(b) == Some(key) && once(base) && once(head)
+}
+
+/// True if `head` is the line `base` (not blank) with a dated note appended (step 6 of the
+/// module doc): after `base` come blanks, then `Note (YYYY-MM-DD` or `[YYYY-MM-DD`.
+fn appended_note(base: &str, head: &str) -> bool {
+    let Some(rest) = head.strip_prefix(base) else {
+        return false;
+    };
+    if base.is_empty() || !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let rest = rest.trim_start();
+    let Some(date) = rest
+        .strip_prefix("Note (")
+        .or_else(|| rest.strip_prefix('['))
+    else {
+        return false;
+    };
+    let d = date.as_bytes();
+    d.len() >= 10
+        && d[..10].iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
 }
 
 /// The raw stdout of `git show <spec>` (blank lines kept), or None.
@@ -725,6 +892,60 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// Step 6 (M5-P1 fixer): a cited line with a dated note appended at its end is a note, not
+    /// a finding; text after the line that is not a dated note, or an edit before the note,
+    /// stays CHANGED.
+    #[test]
+    fn a_dated_note_appended_to_a_cited_line_is_a_note() {
+        let root = repo("note");
+        write(&root, "docs/adr/README.md", "a\n- Entry in vm.\nc\nd\n");
+        let body = "\nAR:2 and AR:3 and AR:4.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", &base[..7])),
+        );
+        commit(&root, "header");
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\n- Entry in vm. Note (2026-10-29, M5-P1): it is split.\nc [2026-10-29, x:] done\nd and more\n",
+        );
+        commit(&root, "notes");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(c.total, 3);
+        for k in [2, 3] {
+            assert!(
+                c.notes
+                    .iter()
+                    .any(|n| n.starts_with(&format!("short cite NOTE ADDED doc13:6 AR:{k}:"))),
+                "{k}: {:?}",
+                c.notes
+            );
+        }
+        assert_eq!(
+            c.findings,
+            vec![format!(
+                "SHORT CITE CHANGED doc13:6 AR:4: the line at {} is not in the file at HEAD: d",
+                &base[..7]
+            )]
+        );
+        assert!(appended_note("x", "x Note (2026-10-29): y"));
+        assert!(appended_note("x", "x  [2026-10-29, r:] y"));
+        assert!(!appended_note("x", "xNote (2026-10-29)"));
+        assert!(!appended_note("x", "x Note (soon)"));
+        assert!(!appended_note("x", "x [2026-1-29]"));
+        assert!(!appended_note("x", "y x Note (2026-10-29)"));
+        assert!(!appended_note("", " Note (2026-10-29)"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// No commit after "Cites at": the base is the last commit that changed the doc; a cite past
     /// the end of its file at the base is BAD AT BASE.
     #[test]
@@ -868,6 +1089,181 @@ mod tests {
                 "SHORT CITE MOVED doc13:6 AR:2 -> AR:3 (same text as at {}): b",
                 &base[..7]
             )]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// CX6-3 (M4-P5; plan v10 section 3.7): a cite added after `Cites at` is checked at the
+    /// commit that added it, not at HEAD only: a later move of its line is MOVED, also when the
+    /// cite came in on a merged branch. A cite whose file had no such line at that commit is BAD
+    /// AT INTRO. An uncommitted cite is checked at HEAD only.
+    #[test]
+    fn a_new_cite_is_checked_at_its_introduction_commit() {
+        let root = repo("intro");
+        write(&root, "docs/adr/README.md", "a\nb\nc\n");
+        let body = "\nAR:2.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        let head = |extra: &str| format!("{}{body}{extra}", HEADER.replace("{BASE}", &base[..7]));
+        write(&root, DOC, &head(""));
+        commit(&root, "header");
+        // One commit: a 4th README paragraph and a new doc 13 line that cites it.
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\nb\nc\nd, the new paragraph\n",
+        );
+        write(&root, DOC, &head("\nThe new rule: AR:4.\n"));
+        let added = commit(&root, "new paragraph");
+        assert_eq!(short_cites(&root).unwrap().findings, Vec::<String>::new());
+        // A later commit moves both cited lines; doc 13 is not touched. The base cite (AR:2) and
+        // the new one (AR:4, checked at the commit that added it) are both MOVED.
+        write(
+            &root,
+            "docs/adr/README.md",
+            "z\na\nb\nc\nd, the new paragraph\n",
+        );
+        commit(&root, "insert");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(
+            c.findings,
+            vec![
+                format!(
+                    "SHORT CITE MOVED doc13:6 AR:2 -> AR:3 (same text as at {}): b",
+                    &base[..7]
+                ),
+                format!(
+                    "SHORT CITE MOVED doc13:8 AR:4 -> AR:5 (same text as at {}, the commit that added the cite): d, the new paragraph",
+                    &added[..7]
+                ),
+            ]
+        );
+        assert!(!c.pass());
+        // An uncommitted cite is checked at HEAD only (no commit wrote it).
+        write(&root, DOC, &head("\nThe new rule: AR:4.\n\nMore: AR:1.\n"));
+        let c = short_cites(&root).unwrap();
+        assert_eq!(c.findings.len(), 2, "{:?}", c.findings);
+        // The fix commit moves the numbers: the fixed cites were added there, so no finding.
+        write(
+            &root,
+            "docs/adr/README.md",
+            "z\na\nb\nc\nd, the new paragraph\ne\nf\n",
+        );
+        let fixed = |extra: &str| {
+            format!(
+                "{}\nAR:3.\n\nThe new rule: AR:5.\n{extra}",
+                HEADER.replace("{BASE}", &base[..7])
+            )
+        };
+        write(&root, DOC, &fixed(""));
+        commit(&root, "fix");
+        assert_eq!(short_cites(&root).unwrap().findings, Vec::<String>::new());
+        // A cite written ahead of its line: no line 8 at the commit that added it (rule 31
+        // moves a cite with its file in one commit).
+        write(&root, DOC, &fixed("\nAhead: AR:8.\n"));
+        let ahead = commit(&root, "ahead");
+        write(
+            &root,
+            "docs/adr/README.md",
+            "z\na\nb\nc\nd, the new paragraph\ne\nf\ng\n",
+        );
+        commit(&root, "g");
+        assert_eq!(
+            short_cites(&root).unwrap().findings,
+            vec![format!(
+                "SHORT CITE BAD AT INTRO doc13:10 AR:8: docs/adr/README.md has no line 8 at {}, the commit that added the cite",
+                &ahead[..7]
+            )]
+        );
+        write(&root, DOC, &fixed(""));
+        let rows: String = (1..=20).map(|i| format!("row {i}\n")).collect();
+        write(&root, "docs/adr/H31-fuses.md", &rows);
+        commit(&root, "drop ahead");
+        // A cite added on a branch (a role branch) and merged: checked at the branch commit.
+        // The main line inserts a row at the top meanwhile; the merge moves the cited row from
+        // 21 to 22.
+        let main = git_in(&root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        git_in(&root, &["checkout", "-q", "-b", "role"]);
+        write(
+            &root,
+            "docs/adr/H31-fuses.md",
+            &format!("{rows}row 21, the role's row\n"),
+        );
+        write(&root, DOC, &fixed("\nRole: H31:21.\n"));
+        let role = commit(&root, "role");
+        git_in(&root, &["checkout", "-q", &main]);
+        write(&root, "docs/adr/H31-fuses.md", &format!("row 0\n{rows}"));
+        commit(&root, "main moves");
+        git_in(
+            &root,
+            &["merge", "-q", "--no-ff", "-m", "merge role", "role"],
+        );
+        assert_eq!(
+            short_cites(&root).unwrap().findings,
+            vec![format!(
+                "SHORT CITE MOVED doc13:10 H31:21 -> H31:22 (same text as at {}, the commit that added the cite): row 21, the role's row",
+                &role[..7]
+            )]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A cite added in a merge resolution, in neither parent (Codex r1 gates6 [medium], M5-P1
+    /// fixer round 3): it is checked at the merge commit. A later commit moves its line: MOVED.
+    /// Without the merge diff in the `-S` search no commit added it, and the move was missed.
+    #[test]
+    fn a_cite_added_in_a_merge_resolution_is_checked_at_the_merge() {
+        let root = repo("merge-intro");
+        write(&root, "docs/adr/README.md", "a\nb\nc\n");
+        let body = "\nAR:2.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        let head = |extra: &str| format!("{}{body}{extra}", HEADER.replace("{BASE}", &base[..7]));
+        write(&root, DOC, &head(""));
+        commit(&root, "header");
+        let main = git_in(&root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        git_in(&root, &["checkout", "-q", "-b", "side"]);
+        write(&root, "side.txt", "side\n");
+        commit(&root, "side");
+        git_in(&root, &["checkout", "-q", &main]);
+        write(&root, "main.txt", "main\n");
+        commit(&root, "main");
+        // The merge itself adds the README paragraph and the cite (a resolution edit).
+        git_in(&root, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\nb\nc\nd, the merge's paragraph\n",
+        );
+        write(&root, DOC, &head("\nMerge rule: AR:4.\n"));
+        let merge = commit(&root, "merge side");
+        assert_eq!(short_cites(&root).unwrap().findings, Vec::<String>::new());
+        write(
+            &root,
+            "docs/adr/README.md",
+            "z\na\nb\nc\nd, the merge's paragraph\n",
+        );
+        commit(&root, "insert");
+        assert_eq!(
+            short_cites(&root).unwrap().findings,
+            vec![
+                format!(
+                    "SHORT CITE MOVED doc13:6 AR:2 -> AR:3 (same text as at {}): b",
+                    &base[..7]
+                ),
+                format!(
+                    "SHORT CITE MOVED doc13:8 AR:4 -> AR:5 (same text as at {}, the commit that added the cite): d, the merge's paragraph",
+                    &merge[..7]
+                ),
+            ]
         );
         std::fs::remove_dir_all(root).unwrap();
     }

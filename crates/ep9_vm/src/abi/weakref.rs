@@ -187,12 +187,16 @@ impl<'s> Cx<'s> {
     /// when no GC since the last call saw a target or a registry die. Each callback takes one
     /// interrupt budget unit and polls before it runs, as a job does ([`Cx::poll_interrupt`];
     /// a builtin callback such as `Boolean` runs no poll of its own; M4-P4 P4-ORCH-8, Codex
-    /// C2-1), so an interrupt callback runs and a termination stops the run. A callback that
-    /// throws, or a termination, stops the run with its exception (`Err`); the cells not yet
-    /// done stay, and the next call does them. Only with no JS on the stack (as
+    /// C2-1), so an interrupt callback runs and a termination stops the run; a list walk that
+    /// stopped at a termination request (`weakref::walk_step`) runs no callback and ends the
+    /// run with the termination (`Err`). A callback that throws, or a termination, stops the
+    /// run with its exception (`Err`); the cells not yet done stay, and the next call does
+    /// them. Only with no JS on the stack (as
     /// [`Cx::perform_microtask_checkpoint`]): from a host function it throws an Error and runs
     /// nothing. The job loop calls it after the job queue is empty and after
-    /// [`Cx::clear_kept_objects`]; jobs that a callback queues run after it.
+    /// [`Cx::clear_kept_objects`]; jobs that a callback queues run after it. It is also the
+    /// fuse registry's sweep point: after a GC it first drops the fuses that nothing uses
+    /// (`fuse::Registry::sweep_after_gc`; no JS, not a GC point).
     pub fn cleanup_finalization_registries(&mut self) -> JsResult<()> {
         let rt = self.rt();
         if !rt.stack().fp().is_null() {
@@ -201,14 +205,29 @@ impl<'s> Cx<'s> {
                 "FinalizationRegistry cleanup needs an empty JS stack",
             ));
         }
+        rt.fuses.sweep_after_gc(rt);
         if !rt.kept_objects.take_pending() {
             return Ok(());
         }
+        // A walk that stopped at a termination request (`weakref::walk_step`) ends the walks:
+        // the check runs after the unlink and after each registry, before the next link is
+        // read, so no link is followed after the stop (Codex round 3).
         weakref::unlink_dead_registries(rt);
         let mut link = rt.kept_objects.registries();
-        while link != UNDEFINED {
+        while link != UNDEFINED && !rt.kept_objects.walk_stopped() {
             weakref::collect_cleared(rt, weakref::target(link));
-            link = weakref::next(link);
+            if !rt.kept_objects.walk_stopped() {
+                link = weakref::next_link(rt, link);
+            }
+        }
+        // After a stop no callback runs. A poll with no budget left ends the run with the
+        // termination at once (`Err`), also when no cell is in CLEARED (a stop while dead
+        // registries are unlinked) and also for a direct call outside a checkpoint. The rest
+        // (dead links, cells not yet moved, CLEARED) stays, and the pending flag that
+        // `walk_step` set makes the next run do it.
+        if rt.kept_objects.walk_stopped() {
+            self.cx.budget = 0;
+            return self.poll_interrupt();
         }
         // The callbacks. Each one may run any JS and collect, so every read is fresh; `link`
         // and `fr` live in Rust locals (CSS), so the registry stays alive while it is served.
@@ -238,7 +257,7 @@ impl<'s> Cx<'s> {
                     }
                 }
             }
-            link = weakref::next(link);
+            link = weakref::next_link(rt, link);
         }
         Ok(())
     }

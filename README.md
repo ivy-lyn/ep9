@@ -10,6 +10,7 @@ Rust 1.99.1 comes from `rust-toolchain.toml`; rustup installs it on first use.
 
 ```sh
 bash scripts/sync-test262.sh     # third_party/test262 at third_party/test262.commit
+bash scripts/sync-regress.sh     # third_party/regress at third_party/regress.commit; every cargo command needs it
 bash scripts/sync-tsrs.sh        # third_party/tsrs at third_party/tsrs.commit, builds the `tsrs` binary
 cargo build --workspace
 cargo test --workspace

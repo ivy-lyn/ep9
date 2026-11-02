@@ -31,7 +31,7 @@ fn main() -> ExitCode {
     let opts = match args::parse(&argv) {
         Ok(args::Command::Run(opts)) => opts,
         Ok(args::Command::Version) => {
-            println!("{}", args::VERSION_LINE);
+            print!("{}", args::version_text());
             return ExitCode::SUCCESS;
         }
         Ok(args::Command::Help) => {

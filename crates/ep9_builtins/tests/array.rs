@@ -639,6 +639,34 @@ fn push_is_generic() {
     );
 }
 
+/// `Array.prototype.push` on an Array whose `length` is read-only (a DICTIONARY array since
+/// M5-P2 ELEM2) or would pass 2^32 - 1 (§23.1.3.23 steps 5-6, §10.4.2.1): the `[[Set]]` of the
+/// new index or of `length` fails with a TypeError, and a key past the last index is an
+/// ordinary property before `length` throws a RangeError. node v24.22.0 (third_party/shells)
+/// prints the same.
+#[test]
+fn push_on_a_read_only_length_and_at_the_index_limit() {
+    assert_eq!(
+        run_both(
+            r#"var a = [1]; Object.defineProperty(a, 'length', {writable: false});
+             try { a.push(2); print('no throw'); } catch (x) { print(x.constructor.name, a.length, a[1]); }
+             var d = [1, 2]; Object.defineProperty(d, 'length', {writable: false});
+             try { d.push(); print('no throw'); } catch (x) { print(x.constructor.name, d.length); }
+             var f = Object.freeze([]); try { f.push(1); } catch (x) { print(x.constructor.name, f.length); }
+             var b = []; b.length = 4294967295;
+             try { b.push(1); print('no throw'); } catch (x) { print(x.constructor.name, b[4294967295], b.length); }
+             var c = []; c.length = 4294967294; print(c.push(7), c[4294967294], c.length);"#
+        ),
+        lines(&[
+            "TypeError 1 undefined",
+            "TypeError 2",
+            "TypeError 0",
+            "RangeError 1 4294967295",
+            "4294967295 7 4294967295",
+        ])
+    );
+}
+
 /// `Object.fromEntries` (§20.1.2.7) and `Object.groupBy` (§20.1.2.12; defined by this module on
 /// %Object%): groups in first-appearance order on a null-prototype object, and the iterator
 /// closed when the callback throws.

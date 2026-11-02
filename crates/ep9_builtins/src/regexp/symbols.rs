@@ -21,6 +21,7 @@ use ep9_vm::{
     ScratchList,
 };
 
+use super::def;
 use super::exec::{
     self, Exec, advance_string_index, is_builtin_exec, is_regexp_object, number, set_last_index,
     slot, substring,
@@ -41,20 +42,47 @@ fn this_object<'s>(cx: &mut Cx<'s>, this: Local<'s>, name: &str) -> JsResult<Loc
     }
 }
 
-/// ? ToString(? Get(rx, "flags")) as code units.
-fn flags_of<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<Vec<u16>> {
+/// The builtin getters of the `flags` fast path, in the order of
+/// `Cx::regexp_has_initial_flags`: `flags`, then the 8 flag accessors in the order of the
+/// `flags` getter (§22.2.6.4 steps 4-11).
+const FLAG_GETTERS: [ep9_vm::BuiltinId; 9] = [
+    super::MODULE.id(def::FLAGS),
+    super::MODULE.id(def::HAS_INDICES),
+    super::MODULE.id(def::GLOBAL),
+    super::MODULE.id(def::IGNORE_CASE),
+    super::MODULE.id(def::MULTILINE),
+    super::MODULE.id(def::DOT_ALL),
+    super::MODULE.id(def::UNICODE),
+    super::MODULE.id(def::UNICODE_SETS),
+    super::MODULE.id(def::STICKY),
+];
+
+/// ? ToString(? Get(rx, "flags")) as code units. Fast path (M5-P3 RX0b): for a RegExp with
+/// its initial shape and an unmodified `%RegExp.prototype%`
+/// (`Cx::regexp_has_initial_flags`), the Gets run only builtin getters, so the text comes
+/// from the `[[RegExpRecord]]` bits, in the `flags` getter's order.
+pub(super) fn flags_of<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<Vec<u16>> {
+    if cx.regexp_has_initial_flags(rx, &FLAG_GETTERS) {
+        let bits = exec::flag_bits(cx, rx)?;
+        return Ok(b"dgimsuvy"
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| bits & (1 << i) != 0)
+            .map(|(_, &c)| u16::from(c))
+            .collect());
+    }
     let flags = cx.get(rx, "flags")?;
     let flags = cx.to_string(flags)?;
     units(cx, flags)
 }
 
 /// Whether the flags text contains the letter `c`.
-fn has(flags: &[u16], c: u8) -> bool {
+pub(super) fn has(flags: &[u16], c: u8) -> bool {
     flags.contains(&u16::from(c))
 }
 
 /// ? ToLength(? Get(rx, "lastIndex")).
-fn last_index<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<u64> {
+pub(super) fn last_index<'s>(cx: &mut Cx<'s>, rx: Local<'s, JsObject>) -> JsResult<u64> {
     let v = cx.get(rx, "lastIndex")?;
     cx.to_length(v)
 }
@@ -131,13 +159,84 @@ pub(super) fn match_<'s>(
     }
 }
 
-/// One result of the @@replace loop: a record, or the index of an object in the scratch list.
+/// One result of the @@replace loop kept for step 15: the values of a match of the builtin
+/// exec, made at once as JS values in the scratch list (so they live in the heap and count
+/// against its budget, F5), or an object result of another `exec`.
 enum Found {
-    Record(MatchRecord),
+    /// A record: its position and match length; at `at` in the scratch list the matched
+    /// string, then its `n` captures (strings or undefined), then the groups object
+    /// (undefined if the pattern names no group).
+    Record {
+        position: usize,
+        match_length: usize,
+        at: usize,
+        n: usize,
+    },
+    /// The index of the result object in the scratch list.
     Object(usize),
 }
 
+/// The longest string (code units): `crate::string`'s `MAX_LENGTH` (2^29 - 24).
+const MAX_STRING_UNITS: usize = (1 << 29) - 24;
+
+/// The subject S of @@replace, read in place by range (`Cx::regexp_push_units`; M5-P3
+/// RX0b). A path that needs all of S at once (GetSubstitution, a result object, the
+/// captures of a later result) copies it once ([`ReplaceSubject::all`]).
+struct ReplaceSubject<'s> {
+    s: Local<'s, JsString>,
+    copy: Option<Vec<u16>>,
+}
+
+impl<'s> ReplaceSubject<'s> {
+    fn new(s: Local<'s, JsString>) -> ReplaceSubject<'s> {
+        ReplaceSubject { s, copy: None }
+    }
+
+    /// The code units of S (copied at the first call).
+    fn all(&mut self, cx: &mut Cx<'s>) -> &[u16] {
+        let s = self.s;
+        self.copy.get_or_insert_with(|| {
+            let mut v = Vec::with_capacity(cx.string_len(s));
+            cx.regexp_push_units(s, 0, cx.string_len(s), &mut v);
+            v
+        })
+    }
+
+    /// Appends the code units `from..to` of S to `out`; RangeError if the result would pass
+    /// the longest string.
+    fn push(&self, cx: &mut Cx<'s>, out: &mut Vec<u16>, from: usize, to: usize) -> JsResult<()> {
+        if out.len() + (to - from) > MAX_STRING_UNITS {
+            return Err(cx.throw_range_error("Invalid string length"));
+        }
+        match &self.copy {
+            Some(c) => out.extend_from_slice(&c[from..to]),
+            None => cx.regexp_push_units(self.s, from, to, out),
+        }
+        Ok(())
+    }
+}
+
+/// An upper bound of the length of the GetSubstitution text of `template` in a subject of
+/// `length` code units: each template code unit adds at most one subject (a `$` reference
+/// is 2 or more units and adds at most the subject).
+fn substitution_bound(template: &[u16], length: usize) -> usize {
+    if template.contains(&u16::from(b'$')) {
+        template.len().saturating_mul(length.max(1))
+    } else {
+        template.len()
+    }
+}
+
 /// RegExp.prototype [ %Symbol.replace% ] ( string, replaceValue ) (§22.2.6.11).
+///
+/// Step 15 for a template (no replace function) and a match of the builtin exec runs no JS
+/// and reads nothing that JS can change (GetSubstitution reads the new groups object and
+/// strings), so such a result is replaced at once, in the step-12 loop, instead of being
+/// kept in `results` (M5-P2, F5: no per-match memory outside the heap). Each one goes into
+/// the result text in the order of the list, as step 15 would do it; the first result that
+/// is not such a record (an object of another `exec`), and every result after it, takes the
+/// spec's list. A replacement that could pass the string length limit also goes to the list,
+/// so its RangeError comes at its step-15 time, after every exec.
 pub(super) fn replace<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -174,6 +273,13 @@ pub(super) fn replace<'s>(
     if global {
         set_last_index(cx, rx, 0)?;
     }
+    // (S, read in place; step 13 in the spec.)
+    let mut string = ReplaceSubject::new(s);
+    let bound = substitution_bound(&template, length_s);
+    // 13. Let accumulatedResult be the empty String.
+    let mut accumulated = Vec::new();
+    // 14. Let nextSourcePosition be 0.
+    let mut next_source_position = 0;
     // 10. Let results be a new empty List.
     let objects = cx.scratch_list();
     let mut results: Vec<Found> = Vec::new();
@@ -208,77 +314,141 @@ pub(super) fn replace<'s>(
         } else {
             None
         };
-        results.push(match result {
-            Exec::Record(m) => Found::Record(m),
-            Exec::Object(o) => Found::Object(objects.push(o)),
+        match result {
+            Exec::Record(m)
+                if !functional_replace
+                    && results.is_empty()
+                    && accumulated.len()
+                        + (m.start().saturating_sub(next_source_position))
+                        + bound
+                        <= MAX_STRING_UNITS =>
+            {
+                // Step 15 of this result now (the doc above).
+                let r = replacement_of_record(cx, &m, &mut string, &template)?;
+                accumulate(cx, &mut accumulated, &mut next_source_position, &string, r)?;
+            }
+            Exec::Record(m) => {
+                let at = objects.len();
+                let (position, end) = (m.start(), m.end());
+                let string = string.all(cx);
+                objects.push(cx.new_string_utf16(&string[position..end])?);
+                for i in 1..=m.group_count() {
+                    let cap = match m.get(i) {
+                        Some((from, to)) => cx.new_string_utf16(&string[from..to])?.value(),
+                        None => Local::undefined(),
+                    };
+                    objects.push(cap);
+                }
+                let groups = exec::groups_object(cx, s, &m)?;
+                objects.push(groups);
+                results.push(Found::Record {
+                    position,
+                    match_length: end - position,
+                    at,
+                    n: m.group_count(),
+                });
+            }
+            Exec::Object(o) => results.push(Found::Object(objects.push(o))),
             Exec::Null => unreachable!(),
-        });
+        }
         match empty {
             None => break,
             Some(true) => step_past_empty(cx, rx, s, full_unicode)?,
             Some(false) => {}
         }
     }
-    // 13. Let accumulatedResult be the empty String.
-    let string = units(cx, s)?;
-    let mut accumulated = Vec::new();
-    // 14. Let nextSourcePosition be 0.
-    let mut next_source_position = 0;
     // 15. For each element result of results, do
     for found in &results {
         // (one JS call or one string per pass)
         cx.poll_interrupt()?;
-        let replaced = match found {
-            Found::Record(m) => replacement_of_record(
-                cx,
-                m,
-                s,
-                &string,
-                functional_replace,
-                replace_value,
-                &template,
-            )?,
-            Found::Object(i) => replacement_of_object(
-                cx,
-                objects.get(*i),
-                s,
-                &string,
-                functional_replace,
-                replace_value,
-                &template,
-            )?,
+        let replaced = match *found {
+            Found::Record {
+                position,
+                match_length,
+                at,
+                n,
+            } => {
+                //  a-j. The values of a builtin exec's result array (its own data
+                //       properties: reading them runs no JS).
+                let matched = objects.get(at).as_string().expect("the matched substring");
+                let named_captures = objects.get(at + 1 + n);
+                let all = string.all(cx);
+                let replacement = replacement_text(
+                    cx,
+                    matched,
+                    all,
+                    s,
+                    position,
+                    (&objects, at + 1, n),
+                    named_captures,
+                    functional_replace,
+                    replace_value,
+                    &template,
+                )?;
+                Replaced {
+                    position,
+                    match_length,
+                    replacement,
+                }
+            }
+            Found::Object(i) => {
+                let all = string.all(cx);
+                replacement_of_object(
+                    cx,
+                    objects.get(i),
+                    s,
+                    all,
+                    functional_replace,
+                    replace_value,
+                    &template,
+                )?
+            }
         };
-        let Replaced {
-            position,
-            match_length,
-            replacement,
-        } = replaced;
-        //  p. If position ≥ nextSourcePosition, then
-        //     i. NOTE: position should not normally move backwards. If it does, it is an
-        //        indication of an ill-behaving RegExp subclass or use of an access triggered
-        //        side-effect to change the global flag or other characteristics of rx. In
-        //        such cases, the corresponding substitution is ignored.
-        //     ii. Set accumulatedResult to the string-concatenation of accumulatedResult, the
-        //         substring of S from nextSourcePosition to position, and replacement.
-        //     iii. Set nextSourcePosition to position + matchLength.
-        if position >= next_source_position {
-            push_units(
-                cx,
-                &mut accumulated,
-                &string[next_source_position..position],
-            )?;
-            push_units(cx, &mut accumulated, &replacement)?;
-            next_source_position = position + match_length;
-        }
+        accumulate(
+            cx,
+            &mut accumulated,
+            &mut next_source_position,
+            &string,
+            replaced,
+        )?;
     }
     // 16. If nextSourcePosition ≥ lengthS, return accumulatedResult.
     // 17. Return the string-concatenation of accumulatedResult and the substring of S from
     //     nextSourcePosition.
     if next_source_position < length_s {
-        push_units(cx, &mut accumulated, &string[next_source_position..])?;
+        string.push(cx, &mut accumulated, next_source_position, length_s)?;
     }
     drop(objects);
     Ok(cx.new_string_utf16(&accumulated)?.value())
+}
+
+/// Step 15.p of @@replace for one result.
+fn accumulate<'s>(
+    cx: &mut Cx<'s>,
+    accumulated: &mut Vec<u16>,
+    next_source_position: &mut usize,
+    string: &ReplaceSubject<'s>,
+    replaced: Replaced,
+) -> JsResult<()> {
+    let Replaced {
+        position,
+        match_length,
+        replacement,
+    } = replaced;
+    //  p. If position ≥ nextSourcePosition, then
+    //     i. NOTE: position should not normally move backwards. If it does, it is an
+    //        indication of an ill-behaving RegExp subclass or use of an access triggered
+    //        side-effect to change the global flag or other characteristics of rx. In
+    //        such cases, the corresponding substitution is ignored.
+    //     ii. Set accumulatedResult to the string-concatenation of accumulatedResult, the
+    //         substring of S from nextSourcePosition to position, and replacement.
+    //     iii. Set nextSourcePosition to position + matchLength.
+    if position >= *next_source_position {
+        string.push(cx, accumulated, *next_source_position, position)?;
+        push_units(cx, accumulated, &replacement)?;
+        *next_source_position = position + match_length;
+    }
+    Ok(())
 }
 
 /// The part of step 15 of @@replace that depends on one result: its position, the length of
@@ -339,13 +509,14 @@ fn replacement_of_object<'s>(
     }
     //  j. Let namedCaptures be ? Get(result, "groups").
     let named_captures = cx.get(result, "groups")?;
+    let count = captures.len();
     let replacement = replacement_text(
         cx,
         matched,
         string,
         s,
         position,
-        &captures,
+        (&captures, 0, count),
         named_captures,
         functional_replace,
         replace_value,
@@ -359,26 +530,25 @@ fn replacement_of_object<'s>(
     })
 }
 
-/// Steps 15.a-o of @@replace for a match record of the builtin exec (no JS can see its
-/// result array, so its values come from the record).
+/// Steps 15.a-o of @@replace for a match record of the builtin exec and a template (no
+/// replace function): no JS can see the result array, so its values come from the record.
 fn replacement_of_record<'s>(
     cx: &mut Cx<'s>,
     m: &MatchRecord,
-    s: Local<'s, JsString>,
-    string: &[u16],
-    functional_replace: bool,
-    replace_value: Local<'s>,
+    string: &mut ReplaceSubject<'s>,
     template: &[u16],
 ) -> JsResult<Replaced> {
     let (position, end) = (m.start(), m.end());
-    // Fast case: a template without "$" and no named groups needs no capture values.
-    if !functional_replace && !template.contains(&u16::from(b'$')) {
+    // Fast case: a template without "$" needs no capture values.
+    if !template.contains(&u16::from(b'$')) {
         return Ok(Replaced {
             position,
             match_length: end - position,
             replacement: template.to_vec(),
         });
     }
+    let s = string.s;
+    let string = string.all(cx);
     let matched = cx.new_string_utf16(&string[position..end])?;
     let captures = cx.scratch_list();
     for i in 1..=m.group_count() {
@@ -389,16 +559,17 @@ fn replacement_of_record<'s>(
         captures.push(cap);
     }
     let named_captures = exec::groups_object(cx, s, m)?;
+    let count = captures.len();
     let replacement = replacement_text(
         cx,
         matched,
         string,
         s,
         position,
-        &captures,
+        (&captures, 0, count),
         named_captures,
-        functional_replace,
-        replace_value,
+        false,
+        Local::undefined(),
         template,
     )?;
     drop(captures);
@@ -409,7 +580,8 @@ fn replacement_of_record<'s>(
     })
 }
 
-/// Steps 15.k-l of @@replace: the replacement of one match.
+/// Steps 15.k-l of @@replace: the replacement of one match; `captures` are entries of a
+/// scratch list (list, first, count).
 #[allow(clippy::too_many_arguments)]
 fn replacement_text<'s>(
     cx: &mut Cx<'s>,
@@ -417,12 +589,14 @@ fn replacement_text<'s>(
     string: &[u16],
     s: Local<'s, JsString>,
     position: usize,
-    captures: &ScratchList<'s>,
+    (list, first, count): (&ScratchList<'s>, usize, usize),
     named_captures: Local<'s>,
     functional_replace: bool,
     replace_value: Local<'s>,
     template: &[u16],
 ) -> JsResult<Vec<u16>> {
+    // `captures`: the entries `first..first + count` of `list`.
+    let capture = |i: usize| list.get(first + i);
     //  k. If functionalReplace is true, then
     if functional_replace {
         //   i. Let replacerArgs be the list-concatenation of « matched », captures, and
@@ -431,8 +605,8 @@ fn replacement_text<'s>(
         //       1. Append namedCaptures to replacerArgs.
         let mut replacer_args = cx.args_builder();
         replacer_args.push(cx, matched)?;
-        for i in 0..captures.len() {
-            replacer_args.push(cx, captures.get(i))?;
+        for i in 0..count {
+            replacer_args.push(cx, capture(i))?;
         }
         replacer_args.push(cx, number(position as u64))?;
         replacer_args.push(cx, s)?;
@@ -456,9 +630,9 @@ fn replacement_text<'s>(
     //     ii. Let replacement be ? GetSubstitution(matched, S, position, captures,
     //         namedCaptures, replaceValue).
     let matched = units(cx, matched)?;
-    let mut caps = Vec::with_capacity(captures.len());
-    for i in 0..captures.len() {
-        let c = captures.get(i);
+    let mut caps = Vec::with_capacity(count);
+    for i in 0..count {
+        let c = capture(i);
         caps.push(match c.as_string() {
             Some(c) => Some(units(cx, c)?),
             None => None,
@@ -516,7 +690,10 @@ pub(super) fn search<'s>(
 }
 
 /// SpeciesConstructor ( O, %RegExp% ) (§7.3.22).
-fn species_constructor<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>) -> JsResult<Local<'s>> {
+pub(super) fn species_constructor<'s>(
+    cx: &mut Cx<'s>,
+    o: Local<'s, JsObject>,
+) -> JsResult<Local<'s>> {
     // 1. Let C be ? Get(O, "constructor").
     let c = cx.get(o, "constructor")?;
     // 2. If C is undefined, return defaultConstructor.
@@ -718,7 +895,8 @@ pub(super) fn split<'s>(
 /// where the pattern matches, and there it gives the match a search from q finds first, so
 /// one non-sticky search per piece (a second program, the same pattern and flags without
 /// `y`) gives the same pieces as the position loop; the `lastIndex` writes and reads go to
-/// the unreachable splitter and are left out.
+/// the unreachable splitter and are left out. Each match is noted for the Annex B legacy
+/// static values, as each successful sticky exec would note it.
 fn split_by_search<'s>(
     cx: &mut Cx<'s>,
     splitter: Local<'s, JsObject>,
@@ -751,6 +929,9 @@ fn split_by_search<'s>(
         if q >= size {
             break;
         }
+        // (The spec's sticky exec succeeds here: its RegExpBuiltinExec updates the Annex B
+        // legacy static values. The searcher has the splitter's realm and legacy bit.)
+        cx.regexp_note_match(searcher, s, &m);
         let e = m.end().min(size);
         if e == p {
             q = advance_string_index(cx, s, q as u64, unicode_matching)? as usize;
@@ -775,4 +956,108 @@ fn split_by_search<'s>(
     let t = substring(cx, s, p, size)?;
     append(cx, a, &mut length_a, t, lim)?;
     Ok(a.value())
+}
+
+/// The fast paths of M5-P3 RX0b (the `flags` text from the record, S read in place): the
+/// same output as node v24.22.0 for an unmodified RegExp, for one whose own properties or
+/// prototype differ, and after `%RegExp.prototype%` changes once the fuse is armed (each
+/// line also under GC stress).
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
+    use ep9_heap::HeapConfig;
+    use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
+
+    thread_local! {
+        static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn print<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        let mut parts = Vec::new();
+        for v in args.iter() {
+            parts.push(cx.to_rust_string(v)?);
+        }
+        OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
+        Ok(Local::undefined())
+    }
+
+    fn run(src: &'static str, stress: bool) -> Vec<String> {
+        let f = move || {
+            let unit = ep9_frontend::compile(
+                src,
+                SourceOpts::script(Strictness::Sloppy),
+                CompileOptions::default(),
+            )
+            .expect("the script compiles");
+            let mut iso = Isolate::new(IsolateConfig {
+                heap: HeapConfig {
+                    gc_stress: u32::from(stress),
+                    verify_after_gc: stress,
+                    ..HeapConfig::default()
+                },
+                builtins: Some(&crate::TABLE),
+                ..IsolateConfig::default()
+            })
+            .expect("an isolate");
+            iso.register_host_function("print", 1, print);
+            OUT.with(|o| o.borrow_mut().clear());
+            let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
+            assert!(
+                r.is_ok(),
+                "the script throws: {:?}",
+                r.err().map(|e| e.message)
+            );
+            OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
+        };
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn(f)
+            .expect("a thread")
+            .join()
+            .expect("no panic")
+    }
+
+    #[test]
+    fn the_flags_fast_path_keeps_every_observable_get() {
+        let src = r#"var log = [];
+var big = "x"; for (var i = 0; i < 6; i++) big = big + big + "a";
+print("xaxa".replace(/a/g, "b"), "xaxa".replace(/a/, "b"), "a,b,,c".split(/,/).length, "aXa".match(/a/g).length, big.replace(/a/g, "").length);
+print("ĀaĀa".replace(/a/g, "[$&]"), ("x" + "a" + big).replace(/x/, "y").slice(0, 4), "a1b2".replace(/(\d)/g, "<$1>"), [..."a1b2".matchAll(/\d/g)].length);
+var own = /a/g;
+Object.defineProperty(own, "flags", { value: "" });
+print("xaxa".replace(own, "b"), "a,b".split(own).length);
+class R extends RegExp { get flags() { log.push("R.flags"); return ""; } }
+print("xaxa".replace(new R("a", "g"), "b"), log.join());
+log = [];
+var proto = Object.getPrototypeOf(/a/);
+var g = Object.getOwnPropertyDescriptor(proto, "global").get;
+Object.defineProperty(proto, "global", { get: function () { log.push("global"); return false; }, configurable: true });
+print("xaxa".replace(/a/g, "b"), log.join());
+Object.defineProperty(proto, "global", { get: g, configurable: true });
+log = [];
+var u = Object.getOwnPropertyDescriptor(proto, "unicode").get;
+Object.defineProperty(proto, "unicode", { get: function () { log.push("unicode"); return u.call(this); }, configurable: true });
+print("xaxa".replace(/a/g, "b"), "a".split(/(?:)/u).length, log.join());
+Object.prototype.extra = 1;
+print("xaxa".replace(/a/g, "c"), "xaxa".replace(/a/y, "c"));"#;
+        let want = [
+            "xbxb xbxa 4 2 64",
+            "\u{100}[a]\u{100}[a] yaxx a<1>b<2> 2",
+            "xbxa 2",
+            "xbxa R.flags",
+            "xbxa global",
+            "xbxb 1 unicode,unicode",
+            "xcxc xaxa",
+        ];
+        for stress in [false, true] {
+            assert_eq!(run(src, stress), want, "gc stress {stress}");
+        }
+    }
 }

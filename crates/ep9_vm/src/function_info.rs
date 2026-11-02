@@ -81,6 +81,9 @@ pub(crate) struct FunctionInfo {
     /// The feedback slots that more than one instruction names (`literal_site::shared_slot`):
     /// empty until the first literal-site miss that asks, then made by one walk of the code.
     pub shared_slots: OnceCell<crate::literal_site::SharedSlots>,
+    /// The in-object capacity of `new F` (`slack::instance_capacity`), chosen at the first
+    /// construct: 0 not chosen yet, `slack::NO_COUNT` the generous capacity, else capacity + 1.
+    pub slack_capacity: Cell<u8>,
 }
 
 /// The FunctionInfo flags of a unit function.
@@ -153,6 +156,7 @@ impl FunctionInfo {
             feedback: Cell::new(core::ptr::null()),
             invocations: Cell::new(0),
             shared_slots: OnceCell::new(),
+            slack_capacity: Cell::new(0),
         }
     }
 
@@ -180,6 +184,7 @@ impl FunctionInfo {
             feedback: Cell::new(core::ptr::null()),
             invocations: Cell::new(0),
             shared_slots: OnceCell::new(),
+            slack_capacity: Cell::new(0),
         }
     }
 
@@ -202,6 +207,7 @@ impl FunctionInfo {
             feedback: Cell::new(core::ptr::null()),
             invocations: Cell::new(0),
             shared_slots: OnceCell::new(),
+            slack_capacity: Cell::new(0),
         }
     }
 

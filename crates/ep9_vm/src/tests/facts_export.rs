@@ -15,7 +15,7 @@ use ep9_facts::{
     PropAttrs, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TypeSet,
 };
 
-use super::{Asm, config, isolate, meta, on_big_stack, unit};
+use super::{Asm, config, isolate, meta, on_big_stack, profile::isolate as isolate_full, unit};
 use crate::abi::{Local, export_facts};
 use crate::atoms;
 use crate::builtins::IntrinsicId;
@@ -136,7 +136,7 @@ impl T {
     fn new() -> T {
         let mut c = config(Dispatch::DEFAULT, false);
         c.feedback_threshold = 0;
-        let mut iso = isolate(c);
+        let mut iso = isolate_full(c);
         let unit = program();
         let u = unit.clone();
         iso.with_cx(|cx| cx.run_script(u, "facts.js").map(|_| ()))
@@ -616,7 +616,7 @@ fn run_calls(calls: &'static [(usize, &'static str)]) -> (VerifiedUnit, FactSnap
             let (unit, snap) = on_big_stack(move || {
                 let mut c = config(d, stress);
                 c.feedback_threshold = 0;
-                let mut iso = isolate(c);
+                let mut iso = isolate_full(c);
                 let unit = call_program();
                 let u = unit.clone();
                 iso.with_cx(|cx| cx.run_script(u, "calls.js").map(|_| ()))

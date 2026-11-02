@@ -538,6 +538,54 @@ pub(crate) fn search<'s>(
     matcher_call(cx, this, args.get(0), "search")
 }
 
+/// String.prototype.matchAll ( regexp ) (§22.1.3.14; M5-P2 REGEXP2).
+pub(crate) fn match_all<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let regexp = args.get(0);
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    require_object_coercible(cx, this, "matchAll")?;
+    // 2. If regexp is an Object, then
+    if let Some(o) = regexp.as_object() {
+        //  a. Let isRegExp be ? IsRegExp(regexp).
+        //  b. If isRegExp is true, then
+        if is_reg_exp(cx, regexp)? {
+            //   i. Let flags be ? Get(regexp, "flags").
+            let flags = cx.get(o, "flags")?;
+            //   ii. Perform ? RequireObjectCoercible(flags).
+            if flags.is_undefined_or_null() {
+                return Err(cx.throw_type_error(
+                    "String.prototype.matchAll called with a RegExp whose flags are undefined",
+                ));
+            }
+            //   iii. If ? ToString(flags) does not contain "g", throw a TypeError exception.
+            let flags = to_units(cx, flags)?;
+            if !flags.contains(&u16::from(b'g')) {
+                return Err(cx.throw_type_error(
+                    "String.prototype.matchAll called with a non-global RegExp argument",
+                ));
+            }
+        }
+        //  c. Let matcher be ? GetMethod(regexp, %Symbol.matchAll%).
+        //  d. If matcher is not undefined, then
+        //     i. Return ? Call(matcher, regexp, « O »).
+        if let Some(m) = get_method(cx, o, "matchAll")? {
+            return cx.call(m, regexp, &[this]);
+        }
+    }
+    // 3. Let S be ? ToString(O).
+    let s = this_string(cx, this, "matchAll")?;
+    // 4. Let rx be ? RegExpCreate(regexp, "g").
+    let rx = crate::regexp::regexp_create(cx, regexp, "g")?;
+    // 5. Return ? Invoke(rx, %Symbol.matchAll%, « S »).
+    let key = well_known(cx, "matchAll")?;
+    let f = cx.get(rx, key)?;
+    cx.call(f, rx, &[s.value()])
+}
+
 /// The steps of String.prototype.match and search (§22.1.3.13, §22.1.3.22; they differ only
 /// in the symbol, `Symbol.<name>`).
 fn matcher_call<'s>(

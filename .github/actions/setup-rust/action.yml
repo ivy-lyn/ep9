@@ -1,7 +1,10 @@
 name: Set up Rust from rust-toolchain.toml
 description: >
   Installs the channel and components that rust-toolchain.toml names (D8), with no third-party
-  action. The toolchain file then selects it for every cargo run in the repo.
+  action. The toolchain file then selects it for every cargo run in the repo. Then it syncs
+  third_party/regress (the RX0 fork, V9-D15): the root, spikes/spike-b and spikes/spike-c
+  workspaces build regress from that checkout through [patch.crates-io], so every cargo command
+  there needs it first. Callers run actions/checkout before this action.
 runs:
   using: composite
   steps:
@@ -15,3 +18,19 @@ runs:
         rustup show active-toolchain
         rustc --version
         cargo --version
+    # The checkout is keyed by the pin and the patch set, so a pin or patch change misses the
+    # cache (the test262 checkout of ci.yml does the same). The sync checks its stamp anyway.
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: third_party/regress
+        key: regress-${{ runner.os }}-${{ hashFiles('third_party/regress.commit', 'third_party/patches/regress/**') }}
+    # One retry: the fetch is the only network step (a failed fetch leaves no stamp, so the
+    # second run fetches again).
+    - name: Sync third_party/regress
+      shell: bash
+      run: |
+        bash scripts/sync-regress.sh || {
+          echo "::warning::scripts/sync-regress.sh failed; one retry in 20 s"
+          sleep 20
+          bash scripts/sync-regress.sh
+        }

@@ -326,4 +326,38 @@ else
   fi
 fi
 
+# 16) The regress fork is live (V9-D15; third_party/patches/regress/README.md). A [patch] table
+#     applies only at its own workspace root, so the root, spikes/spike-b and spikes/spike-c each
+#     have a `[patch.crates-io] regress` path entry. In each of the 3 workspaces `cargo metadata
+#     --locked` must show regress, and every regress package must have no source (a path
+#     package) and the manifest third_party/regress/Cargo.toml (scripts/sync-regress.sh makes
+#     it). Without the entry regress comes from crates.io (or the lock no longer matches) and
+#     this fails. Controls: a sample graph with a crates.io regress must fail the rule and a
+#     sample with the path package must pass it, so a rule that always (or never) passes fails.
+# fork_live <metadata json>: 0 when the graph has regress and each regress is the path package.
+fork_live() {
+  local rows
+  rows="$(jq -r '.packages[] | select(.name == "regress") | "\(.source // "path")|\(.manifest_path)"' <<< "$1")" || return 1
+  [ -n "$rows" ] || return 1
+  while IFS='|' read -r src mp; do
+    [ "$src" = path ] && [[ "$mp" == */third_party/regress/Cargo.toml ]] || return 1
+  done <<< "$rows"
+}
+reg='{"packages":[{"name":"memchr","source":"registry+https://github.com/rust-lang/crates.io-index","manifest_path":"/c/registry/src/memchr-2.8.3/Cargo.toml"},{"name":"regress","source":"registry+https://github.com/rust-lang/crates.io-index","manifest_path":"/c/registry/src/regress-0.12.0/Cargo.toml"}]}'
+fork='{"packages":[{"name":"regress","source":null,"manifest_path":"/w/third_party/regress/Cargo.toml"}]}'
+if fork_live "$reg" || ! fork_live "$fork" || fork_live '{"packages":[]}'; then
+  bad "(16) control: the fork rule passes a crates.io regress or an empty graph, or fails the path package, in a sample graph"
+else
+  for m in Cargo.toml spikes/spike-b/Cargo.toml spikes/spike-c/Cargo.toml; do
+    if ! wmeta="$(cargo metadata --locked --format-version 1 --manifest-path "$m")"; then
+      bad "(16) cargo metadata --locked --manifest-path $m failed (run scripts/sync-regress.sh first; is the lock up to date?)"
+    elif fork_live "$wmeta"; then
+      ok "(16) $m: regress is the fork checkout third_party/regress (path package, no registry source)"
+    else
+      found="$(jq -r '.packages[] | select(.name == "regress") | "\(.source // "path") \(.manifest_path)"' <<< "$wmeta" | paste -sd ';' -)"
+      bad "(16) $m: regress must be only the third_party/regress path package; found: ${found:-no regress}"
+    fi
+  done
+fi
+
 exit "$fail"

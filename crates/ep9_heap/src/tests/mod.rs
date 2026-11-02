@@ -98,7 +98,8 @@ pub(crate) fn register_test_kinds(heap: &Heap) {
 }
 
 /// A small test heap: a 1 GiB cage (8 MiB under Miri), zapping on, CSS roots recorded,
-/// test kinds registered.
+/// test kinds registered. S0 (`generational: false`): S1 is the default since M5-P2, and the
+/// S1 tests turn it on in `tweak`, as before.
 pub(crate) fn test_heap(tweak: impl FnOnce(&mut HeapConfig)) -> Heap {
     let mut cfg = HeapConfig {
         cage: CageConfig {
@@ -108,6 +109,7 @@ pub(crate) fn test_heap(tweak: impl FnOnce(&mut HeapConfig)) -> Heap {
         },
         zap: true,
         record_conservative_roots: true,
+        generational: false,
         ..HeapConfig::default()
     };
     tweak(&mut cfg);

@@ -55,20 +55,16 @@ pub(crate) fn flag_bits<'s>(cx: &mut Cx<'s>, r: Local<'s, JsObject>) -> JsResult
     Ok(bits.as_int32().expect("[[RegExpRecord]] is an int32") as u8)
 }
 
-/// The code units `from..to` of `s` as a new string.
+/// The code units `from..to` of `s` as a new string (read in place; M5-P3 RX0b). Panics if
+/// the range is not inside `s` (a match span always is).
 pub(crate) fn substring<'s>(
     cx: &mut Cx<'s>,
     s: Local<'s, JsString>,
     from: usize,
     to: usize,
 ) -> JsResult<Local<'s, JsString>> {
-    let flat = cx.flatten(s)?;
-    let units: Vec<u16> = (from..to)
-        .map(|i| {
-            cx.code_unit_at(flat, i)
-                .expect("a match span is inside the string")
-        })
-        .collect();
+    let mut units = Vec::with_capacity(to - from);
+    cx.regexp_push_units(s, from, to, &mut units);
     cx.new_string_utf16(&units)
 }
 
@@ -175,6 +171,9 @@ pub(crate) fn builtin_match<'s>(
     if global || sticky {
         set_last_index(cx, r, m.end() as u64)?;
     }
+    // (Annex B legacy features: UpdateLegacyRegExpStaticProperties or
+    // InvalidateLegacyRegExpStaticProperties of %RegExp% for a RegExp of this realm.)
+    cx.regexp_note_match(r, s, &m);
     Ok(Some(m))
 }
 

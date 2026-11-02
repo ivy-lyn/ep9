@@ -1453,22 +1453,22 @@ impl<'s> Cx<'s> {
         let Some(o) = v.as_object() else {
             return Err(self.throw_type_error("CreateListFromArrayLike called on non-object"));
         };
-        let len = self.get(o, self.atom(Atom::Length))?;
-        let len = self.to_length(len)?;
+        let len = match crate::arguments::list_length(self.rt(), o.bits()) {
+            Some(n) => n, // an unmodified arguments object (V10-D11): no getter, no conversion
+            None => self
+                .get(o, self.atom(Atom::Length))
+                .and_then(|l| self.to_length(l))?,
+        };
         let mut list = self.args_builder();
-        // Get(O, ! ToString(𝔽(i))) without a string key (M4-P3 KEYED, OI-04): a present
-        // array element is read in place, any other array index through `get_int` (an
-        // arguments element, a hole, the chain); each read sees the state after the last
-        // push and the last getter. An index past 2^32 - 2 takes the key.
+        // Get(O, ! ToString(𝔽(i))) with no string key (OI-04, V10-D11): a present array or
+        // arguments element in place, else `get_int`; each read sees the last push and getter.
         for i in 0..len {
             let ob = o.bits();
             let e = match u32::try_from(i) {
-                Ok(n) if n != u32::MAX => {
-                    match kinds::is_array(ob).then(|| object::array_get(ob, n)) {
-                        Some(Some(v)) => v,
-                        _ => property::get_int(self.cx, ob, n)?,
-                    }
-                }
+                Ok(n) if n != u32::MAX => match crate::arguments::list_element(ob, n) {
+                    Some(v) => v,
+                    None => property::get_int(self.cx, ob, n)?,
+                },
                 _ => property::get_keyed(self.cx, ob, conv::num(i as f64))?,
             };
             list.push(self, Self::local::<JsValue>(e))?;
@@ -1490,8 +1490,8 @@ impl<'s> Cx<'s> {
         Ok(match p.as_object() {
             Some(p) => p,
             None => {
+                let realm = crate::realm::try_get_function_realm(self.cx, constructor.bits())?;
                 let rt = self.rt();
-                let realm = crate::realm::get_function_realm(rt, constructor.bits());
                 let v = crate::realm::intrinsic_in(rt, realm, default);
                 assert!(kinds::is_object(v), "{} is not installed", default.name());
                 Self::local(v)
@@ -1516,6 +1516,40 @@ impl<'s> Cx<'s> {
         self.rt().heap.collect();
     }
 
+    /// Runs a minor garbage collection now (the REPRL `gc('minor')`; M5-P1 REPRL2, a part-2
+    /// addition): with the S1 generational heap (`HeapConfig::generational`) it frees only the
+    /// young cells that nothing reaches, and the young cells it keeps become old. A heap that
+    /// is not generational (S0) runs a full collection instead, as `collect_garbage` does. A
+    /// `Local` stays valid across it, as across `collect_garbage`.
+    ///
+    /// ```
+    /// use ep9_heap::HeapConfig;
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let s1 = IsolateConfig {
+    ///     heap: HeapConfig { generational: true, ..HeapConfig::default() },
+    ///     ..IsolateConfig::default()
+    /// };
+    /// let mut iso = Isolate::new(s1).unwrap();
+    /// let before = iso.gc_stats();
+    /// iso.with_cx(|cx| Ok(cx.collect_garbage_minor())).unwrap();
+    /// let after = iso.gc_stats();
+    /// assert_eq!(after.minor_collections, before.minor_collections + 1);
+    /// assert!(after.last_minor);
+    ///
+    /// // S0: a full collection, no minor one.
+    /// let s0 = IsolateConfig {
+    ///     heap: HeapConfig { generational: false, ..HeapConfig::default() },
+    ///     ..IsolateConfig::default()
+    /// };
+    /// let mut iso = Isolate::new(s0).unwrap();
+    /// iso.with_cx(|cx| Ok(cx.collect_garbage_minor())).unwrap();
+    /// assert_eq!(iso.gc_stats().minor_collections, 0);
+    /// assert!(!iso.gc_stats().last_minor);
+    /// ```
+    pub fn collect_garbage_minor(&mut self) {
+        self.rt().heap.collect_minor();
+    }
+
     // ---- Math.random (M4-P0, part 2; V9-D16) ----
 
     /// The next value of `Math.random` (§21.3.2.27): a number in [0, 1) from the isolate's
@@ -1535,5 +1569,89 @@ impl<'s> Cx<'s> {
         // The top 52 bits of the first word as the mantissa of a number in [1, 2), minus 1:
         // every result is a multiple of 2^-52 below 1 (exact operations only, H36).
         f64::from_bits((s0 >> 12) | 0x3FF0_0000_0000_0000) - 1.0
+    }
+
+    // ---- substrings (M5-P3 STR3, part 2; H19, V10-D44) ----
+
+    /// The substring of `s` from `from` to `to`, in UTF-16 code units (the spec's "the
+    /// substring of S from inclusiveStart to exclusiveEnd", §6.1.4.1), for
+    /// String.prototype.substring, slice and substr. The full span gives `s` itself (also
+    /// for an empty `s`); an empty span of a non-empty `s` gives the empty String; a result of
+    /// 13 or more code units is a SLICED string over the flat form of `s`, O(1) after a
+    /// flatten (H19: the kind rule of the runtime `string::substring`; 13 is a tuning value);
+    /// a shorter one is a copy. A slice keeps all of `s` alive while it lives. A GC point (the
+    /// flatten of a rope, the new cell). Never `Err` today. Panics unless
+    /// `from <= to <= string_len(s)`.
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let (long, short) = iso
+    ///     .with_cx(|cx| {
+    ///         let s = cx.new_string("the substring of S from from to to")?;
+    ///         let long = cx.substring(s, 4, 17)?;
+    ///         let short = cx.substring(s, 0, 3)?;
+    ///         Ok((cx.to_rust_string(long)?, cx.to_rust_string(short)?))
+    ///     })
+    ///     .unwrap();
+    /// assert_eq!((long.as_str(), short.as_str()), ("substring of ", "the"));
+    /// ```
+    pub fn substring(
+        &mut self,
+        s: impl Into<Local<'s, JsString>>,
+        from: usize,
+        to: usize,
+    ) -> JsResult<Local<'s, JsString>> {
+        let s = s.into().bits();
+        Ok(Self::local(string::substring(self.rt(), s, from, to)))
+    }
+
+    /// ProxyCreate(target, handler) (§10.5.14; part 2, M5-P3 PROXY2): a new Proxy exotic
+    /// object, callable if `target` is (and a constructor if `target` is); a TypeError if
+    /// either is not an object. For `new Proxy` and `Proxy.revocable`.
+    pub fn proxy_create(
+        &mut self,
+        target: impl Into<Local<'s>>,
+        handler: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let (t, h) = (target.into().bits(), handler.into().bits());
+        crate::proxy::proxy_create(self.cx, t, h).map(Self::local)
+    }
+
+    /// The revoke step of a revocable Proxy (§28.2.2.1.1 steps 3-5; part 2, M5-P3 PROXY2):
+    /// `p.[[ProxyHandler]]` becomes null, so every internal method of `p` throws a TypeError
+    /// from then on; `p.[[ProxyTarget]]` too (the field keeps `undefined` when `p` has
+    /// `[[Construct]]`, §10.5.14 step 7.b). A value that is not a Proxy, or a revoked one, is
+    /// left as it is. Never throws, never allocates.
+    pub fn proxy_revoke(&mut self, p: impl Into<Local<'s>>) {
+        let p = p.into().bits();
+        if crate::proxy::is_proxy(p) {
+            crate::proxy::revoke(self.rt(), p);
+        }
+    }
+
+    /// The primitive inside `v` if it is a Number, String or Boolean wrapper object (it has a
+    /// `[[NumberData]]`, `[[StringData]]` or `[[BooleanData]]` internal slot), else `None`
+    /// (part 2, M5-P3 integration fixer). Any value; never throws, runs no JS and asks a
+    /// proxy nothing (a proxy is no wrapper). For JSON (SerializeJSONProperty step 4, the
+    /// replacer list, `space`).
+    pub fn primitive_data(&self, v: impl Into<Local<'s>>) -> Option<Local<'s>> {
+        let v = v.into().bits();
+        if !kinds::is_object(v) {
+            return None;
+        }
+        let p = wrapper::wrapper_value(v)?;
+        matches!(
+            PrimitiveType::of(p),
+            Some(PrimitiveType::Number | PrimitiveType::String | PrimitiveType::Boolean)
+        )
+        .then(|| Self::local(p))
+    }
+
+    /// Whether `v` is a Proxy exotic object (§10.5), revoked or not (part 2, M5-P3
+    /// integration fixer). Any value; never throws, runs no JS. For a builtin that must not
+    /// ask a proxy for a property where the spec reads none (Function.prototype.toString).
+    pub fn is_proxy(&self, v: impl Into<Local<'s>>) -> bool {
+        crate::proxy::is_proxy(v.into().bits())
     }
 }

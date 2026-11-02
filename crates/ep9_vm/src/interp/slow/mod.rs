@@ -34,7 +34,7 @@ use crate::conv::{Res, describe};
 use crate::error::{self, FrameRef, not_implemented, throw_error};
 use crate::feedback;
 use crate::frame::{TRUE, UNDEFINED, slot};
-use crate::interp::{BUDGET, Cx};
+use crate::interp::Cx;
 use crate::object;
 use crate::runtime::{ErrorKind, Site};
 use crate::unit::FunctionInfo;
@@ -128,7 +128,9 @@ pub(crate) fn bad_opcode(cx: &mut Cx, _fp: *mut u64, pc: *const u8) -> u64 {
 #[cold]
 #[inline(never)]
 pub(crate) fn interrupt(cx: &mut Cx, _fp: *mut u64) -> u64 {
-    cx.budget = BUDGET;
+    // A jittered reset, so the sampled-call window does not come at a fixed period
+    // (`profile::budget_after_poll`, M5-P1 PROFILE5).
+    cx.budget = crate::profile::budget_after_poll(cx.rt());
     let rt = cx.rt();
     // SAFETY: `cx.interrupt` points at the runtime's interrupt word (`Runtime::terminate`, an
     // Arc the Runtime holds), and the Runtime outlives the Cx (Isolate drop order).
