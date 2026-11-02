@@ -129,11 +129,19 @@ fn corrupt_input_never_panics_and_accepted_input_is_canonical() {
     for _ in 0..40 {
         inputs.push(snapshot_of(&random_records(&mut rng), FactSource::Hinted).encode());
     }
-    let mut accepted = 0;
+    let (mut accepted, mut folded) = (0, 0);
     let mut accept = |b: &[u8]| {
         if let Ok(s) = FactSnapshot::decode(b) {
-            assert_eq!(s.encode(), b, "an accepted input re-encodes to itself");
+            let again = s.encode();
             accepted += 1;
+            if again != b {
+                // Only an open value this schema does not name gives another encoding
+                // (FACT_SCHEMA 2, MC-w23-8): that encoding is canonical and means the same.
+                folded += 1;
+                let back = FactSnapshot::decode(&again).expect("a re-encoding decodes");
+                assert_eq!(back, s, "the re-encoding keeps the facts");
+                assert_eq!(back.encode(), again, "the re-encoding is canonical");
+            }
         }
     };
     for bytes in &inputs {
@@ -151,7 +159,206 @@ fn corrupt_input_never_panics_and_accepted_input_is_canonical() {
         accept(&longer);
     }
     // Some flips land in values that stay valid (counts, bits), and those must re-encode.
-    assert!(accepted > 0);
+    assert!(accepted > folded, "{accepted} accepted, {folded} folded");
+}
+
+/// The split kind list and the other open lists (FACT_SCHEMA 2; MC-w23-8, M6-PLAN-D4): a
+/// value this schema does not name never refuses the snapshot. An elements kind reads as none
+/// for that field only, a representation as any, a bit of an open set is dropped; the other
+/// fields decode as written.
+#[test]
+fn an_unknown_open_value_drops_only_its_field() {
+    // One record per open field, each as its own snapshot: a Literal whose shape has every
+    // open field, and a LoadKeyed with a case of an element kind and a kinds set.
+    let shape = common::shape(
+        ProtoRef::Null,
+        ObjectKind::Array,
+        Some(ElementsKind::HoleyDouble),
+        ShapeFlags::EXTENSIBLE,
+        3,
+        vec![field("a", FieldRep::Int32, true), key("b")],
+    );
+    let mut lit = FactSnapshot::new(header());
+    lit.insert(
+        0,
+        0,
+        SlotFacts::Literal(LiteralFacts {
+            count: 4,
+            shape: Some(shape.clone().into()),
+            elements: Some(ElementsKind::PackedElements),
+        }),
+    )
+    .unwrap();
+    let good = lit.encode();
+    // The shape is the first table entry: proto null (1), kind (1), elements (1), flags (1),
+    // capacity (2), count (4), key "a": tag (1), len (4), "a", attrs (1); key "b" alike.
+    let s0 = HEADER_SIZE;
+    let (elements, flags, attrs_a) = (s0 + 2, s0 + 3, s0 + 10 + 6);
+    assert_eq!(good[elements], ElementsKind::HoleyDouble as u8 + 1);
+    assert_eq!(good[attrs_a], 0x07 | (FieldRep::Int32 as u8) << 4 | 0x80);
+    let last = good.len() - 1; // the Literal's own elements kind
+    assert_eq!(good[last], ElementsKind::PackedElements as u8 + 1);
+    let with = |at: usize, v: u8| {
+        let mut b = good.clone();
+        b[at] = v;
+        FactSnapshot::decode(&b).expect("an open value never refuses the snapshot")
+    };
+    let lit_of = |s: &FactSnapshot| match s.get(0, 0) {
+        Some(SlotFacts::Literal(l)) => l.clone(),
+        other => panic!("{other:?}"),
+    };
+    // Every value past the named ones, up to the top of the byte.
+    for v in [
+        ElementsKind::ALL.len() as u8 + 1,
+        ElementsKind::VALUES,
+        0xff,
+    ] {
+        let l = lit_of(&with(elements, v));
+        let want = ShapeDesc {
+            elements: None,
+            ..shape.clone()
+        };
+        assert_eq!(*l.shape.unwrap(), want, "shape elements byte {v}");
+        assert_eq!(l.elements, Some(ElementsKind::PackedElements));
+        let l = lit_of(&with(last, v));
+        assert_eq!(
+            (l.count, l.elements),
+            (4, None),
+            "literal elements byte {v}"
+        );
+        assert_eq!(*l.shape.unwrap(), shape);
+    }
+    // A shape flag bit past the named ones is dropped.
+    let l = lit_of(&with(flags, ShapeFlags::EXTENSIBLE.bits() | 0x80));
+    assert_eq!(*l.shape.unwrap(), shape);
+    // A representation past the named ones (5-7) reads as any; the const bit and the
+    // attributes stay.
+    for rep in 5..8u8 {
+        let l = lit_of(&with(attrs_a, 0x07 | rep << 4 | 0x80));
+        let sh = l.shape.unwrap();
+        assert_eq!(
+            sh.fields[0],
+            FieldHint {
+                rep: FieldRep::Any,
+                constant: true
+            }
+        );
+        assert_eq!(sh.keys[0].1, key("a").1);
+    }
+
+    // A keyed record: the element case's kind and the kinds set.
+    let mut keyed = FactSnapshot::new(header());
+    keyed
+        .insert(
+            0,
+            0,
+            SlotFacts::LoadKeyed(KeyedFacts {
+                property: PropertyFacts {
+                    state: IcState::Monomorphic,
+                    cases: vec![PropertyCase {
+                        receiver: shape.clone().into(),
+                        access: Access::Element {
+                            kind: Some(ElementsKind::HoleyDouble),
+                        },
+                    }],
+                    values: TypeSet::EMPTY,
+                },
+                keys: KeySet::INDEX,
+                hint: KeyedHint::ARRAY | KeyedHint::HOLE,
+                kinds: ElementsKindSet::of(ElementsKind::HoleyDouble),
+            }),
+        )
+        .unwrap();
+    let good = keyed.encode();
+    // The record ends with: access tag (1), kind (1), values (2), keys (1), hint (1), kinds (2).
+    let n = good.len();
+    let (kind_at, kinds_at) = (n - 7, n - 2);
+    assert_eq!(good[kind_at], ElementsKind::HoleyDouble as u8 + 1);
+    let decode = |at: usize, bytes: &[u8]| {
+        let mut b = good.clone();
+        b[at..at + bytes.len()].copy_from_slice(bytes);
+        match FactSnapshot::decode(&b).unwrap().get(0, 0) {
+            Some(SlotFacts::LoadKeyed(k)) => k.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    let k = decode(kind_at, &[0xff]);
+    assert_eq!(k.property.cases[0].access, Access::Element { kind: None });
+    assert_eq!(
+        (k.keys, k.hint),
+        (KeySet::INDEX, KeyedHint::ARRAY | KeyedHint::HOLE)
+    );
+    // Bit 15 (the top value, never the next free one) is dropped; the named bit stays.
+    let raw = ElementsKindSet::of(ElementsKind::HoleyDouble).bits() | 1 << 15;
+    let k = decode(kinds_at, &raw.to_le_bytes());
+    assert_eq!(k.kinds, ElementsKindSet::of(ElementsKind::HoleyDouble));
+    assert_eq!(k.property.cases.len(), 1);
+}
+
+/// Two table shapes that differ only in an open value this schema does not name fold into one
+/// value. The decoder then merges the cases as the exporter does: equal cases become one, and
+/// a receiver with two different accesses is left out. The result is valid and canonical.
+#[test]
+fn shapes_that_fold_into_one_merge_their_cases() {
+    let shape = |k: ElementsKind| ShapeDesc {
+        elements: Some(k),
+        ..bare()
+    };
+    // Kinds 5 and 6 sort in that order; the decoder below is shown 14 and 15 (values no
+    // schema names yet) in their place.
+    let (a, b) = (
+        shape(ElementsKind::HoleyElements),
+        shape(ElementsKind::Dictionary),
+    );
+    let poly = |acc_b: Access| {
+        let mut s = FactSnapshot::new(header());
+        s.insert(
+            0,
+            0,
+            SlotFacts::LoadNamed(PropertyFacts {
+                state: IcState::Polymorphic,
+                cases: vec![
+                    PropertyCase {
+                        receiver: a.clone().into(),
+                        access: Access::Generic,
+                    },
+                    PropertyCase {
+                        receiver: b.clone().into(),
+                        access: acc_b,
+                    },
+                ],
+                values: TypeSet::EMPTY,
+            }),
+        )
+        .unwrap();
+        let mut bytes = s.encode();
+        // bare() is 17 bytes; its elements byte is at +2 of each table entry.
+        bytes[HEADER_SIZE + 2] = 14 + 1;
+        bytes[HEADER_SIZE + 17 + 2] = 15 + 1;
+        let back = FactSnapshot::decode(&bytes).expect("a fold never refuses the snapshot");
+        assert_eq!(FactSnapshot::decode(&back.encode()).unwrap(), back);
+        match back.get(0, 0) {
+            Some(SlotFacts::LoadNamed(p)) => p.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    let folded = ShapeDesc {
+        elements: None,
+        ..bare()
+    };
+    // The same access: one case.
+    let p = poly(Access::Generic);
+    assert_eq!(p.state, IcState::Polymorphic);
+    assert_eq!(
+        p.cases,
+        [PropertyCase {
+            receiver: folded.into(),
+            access: Access::Generic
+        }]
+    );
+    // Different accesses: the receiver is left out.
+    let p = poly(Access::Missing { depth: 0 });
+    assert!(p.cases.is_empty(), "{p:?}");
 }
 
 fn put_u32(b: &mut [u8], at: usize, v: u32) {
@@ -172,14 +379,20 @@ fn header_errors() {
     assert_eq!(with(0, &[0x88]), Err(FactError::Magic));
     assert_eq!(with(7, b"\r"), Err(FactError::Magic));
     // The schema version is read before the rest: another version ends here even when the
-    // rest of the input is short or garbage.
-    assert_eq!(
-        with(offsets::SCHEMA_VERSION, &2u32.to_le_bytes()),
-        Err(FactError::SchemaVersion(2))
-    );
-    let mut v2 = good[..12].to_vec();
-    put_u32(&mut v2, offsets::SCHEMA_VERSION, 2);
-    assert_eq!(FactSnapshot::decode(&v2), Err(FactError::SchemaVersion(2)));
+    // rest of the input is short or garbage. The probes are the top of the range and the
+    // version before this one, never the next value (an append rule, as plan v11 V11-D10).
+    for other in [u32::MAX, FACT_SCHEMA_VERSION - 1] {
+        assert_eq!(
+            with(offsets::SCHEMA_VERSION, &other.to_le_bytes()),
+            Err(FactError::SchemaVersion(other))
+        );
+        let mut short = good[..12].to_vec();
+        put_u32(&mut short, offsets::SCHEMA_VERSION, other);
+        assert_eq!(
+            FactSnapshot::decode(&short),
+            Err(FactError::SchemaVersion(other))
+        );
+    }
     assert_eq!(
         with(offsets::SOURCE, &[3]),
         Err(FactError::BadValue("fact source"))
@@ -229,12 +442,14 @@ fn record_errors() {
         Err(FactError::BadValue("slot kind"))
     );
 
-    // Two records out of order (or equal keys) are a second encoding.
+    // Two records out of order (or equal keys) are a second encoding. A record of the sample
+    // header (PROFILED) is function, slot, kind, flags, confidence (11 bytes), then the
+    // payload (4).
     let mut two = one_loop(5);
     two.insert(0, 1, SlotFacts::JumpLoop(LoopFacts { back_edges: 6 }))
         .unwrap();
     let mut swapped = two.encode();
-    let r2 = rec + 13;
+    let r2 = rec + 15;
     put_u32(&mut swapped, rec + 4, 1);
     put_u32(&mut swapped, r2 + 4, 0);
     assert_eq!(
@@ -252,8 +467,113 @@ fn record_errors() {
     let mut s = FactSnapshot::new(header());
     s.insert(0, 0, SlotFacts::TypeOf(TypeSet::ALL)).unwrap();
     let mut b = s.encode();
-    b[rec + 9 + 1] = 0x10; // TypeSet bit 12
+    b[rec + 11 + 1] = 0x10; // TypeSet bit 12
     assert_eq!(FactSnapshot::decode(&b), Err(FactError::Reserved));
+
+    // A reserved record flag, and the record flags' rules in decode.
+    let b = one_loop(5).encode();
+    let mut flag = b.clone();
+    flag[rec + 9] = 1 << 2;
+    assert_eq!(FactSnapshot::decode(&flag), Err(FactError::Reserved));
+    let mut ran = b.clone();
+    ran[rec + 9] = RecordFlags::RAN.bits(); // JumpLoop has no "ran" bit
+    assert_eq!(
+        FactSnapshot::decode(&ran),
+        Err(FactError::Invalid(
+            "ran is only at BinaryOp, CompareOp and LoadKeyed sites"
+        ))
+    );
+    let mut exited = b.clone();
+    exited[rec + 9] = RecordFlags::EXITED.bits();
+    exited[rec + 10] = 7;
+    let back = FactSnapshot::decode(&exited).unwrap();
+    assert_eq!(
+        back.meta(0, 0),
+        Some(RecordMeta {
+            flags: RecordFlags::EXITED,
+            confidence: 7
+        })
+    );
+}
+
+/// FACT_SCHEMA 2: the record flags and the confidence byte (H29-Q5, MODES-D15, H30-Q1).
+/// A RUNTIME record has no confidence byte; "ran" is only at the MODES-D17 kinds; both round
+/// trip and print in the dump.
+#[test]
+fn record_flags_and_confidence() {
+    use FeedbackSlotKind as K;
+    let meta = |flags, confidence| RecordMeta { flags, confidence };
+    for source in FactSource::ALL {
+        let mut s = FactSnapshot::new(FactHeader {
+            source: *source,
+            ..header()
+        });
+        let runtime = *source == FactSource::Runtime;
+        let c = if runtime { 0 } else { 200 };
+        for (i, &k) in FeedbackSlotKind::ALL.iter().enumerate() {
+            let flags = if RAN_KINDS.contains(&k) {
+                RecordFlags::RAN | RecordFlags::EXITED
+            } else {
+                RecordFlags::EXITED
+            };
+            s.insert_with(1, i as u32, SlotFacts::empty(k), meta(flags, c))
+                .unwrap();
+            if !RAN_KINDS.contains(&k) {
+                assert_eq!(
+                    s.insert_with(2, 0, SlotFacts::empty(k), meta(RecordFlags::RAN, c)),
+                    Err(FactError::Invalid(
+                        "ran is only at BinaryOp, CompareOp and LoadKeyed sites"
+                    ))
+                );
+            }
+        }
+        assert_eq!(
+            RAN_KINDS,
+            [K::BinaryOp, K::CompareOp, K::LoadKeyed],
+            "MODES-D17"
+        );
+        let r = s.insert_with(
+            3,
+            0,
+            SlotFacts::empty(K::JumpLoop),
+            meta(RecordFlags::EMPTY, 1),
+        );
+        assert_eq!(
+            r.is_err(),
+            runtime,
+            "a confidence is refused only in a runtime snapshot"
+        );
+        let bytes = s.encode();
+        let back = FactSnapshot::decode(&bytes).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.encode(), bytes);
+        let k = FeedbackSlotKind::BinaryOp as u32;
+        assert_eq!(
+            back.meta(1, k),
+            Some(meta(RecordFlags::RAN | RecordFlags::EXITED, c))
+        );
+        let line = back
+            .dump()
+            .lines()
+            .find(|l| l.starts_with(&format!("  f1 slot {k} ")))
+            .unwrap()
+            .to_owned();
+        let want = if runtime {
+            "BinaryOp flags={exited,ran}: ".to_owned()
+        } else {
+            "BinaryOp flags={exited,ran} confidence=200: ".to_owned()
+        };
+        assert!(line.contains(&want), "{line}");
+    }
+    // A runtime snapshot's records are 1 byte shorter: no confidence byte.
+    let one = |source| {
+        let mut s = FactSnapshot::new(FactHeader { source, ..header() });
+        s.insert(0, 0, SlotFacts::JumpLoop(LoopFacts { back_edges: 1 }))
+            .unwrap();
+        s.encode().len()
+    };
+    assert_eq!(one(FactSource::Runtime) + 1, one(FactSource::Hinted));
+    assert_eq!(one(FactSource::Runtime), HEADER_SIZE + 4 + 4 + 1 + 1 + 4);
 }
 
 /// A snapshot with one LoadNamed record whose cases are `cases`, built past `insert` (which
@@ -291,12 +611,13 @@ fn raw_load_named(state: IcState, cases: Vec<PropertyCase>) -> Vec<u8> {
     table.for_each_shape(&mut |sh| shapes.push(sh.clone()));
     shapes.sort();
     shapes.dedup();
-    // Rebuild the record body by hand.
-    let shape_end = valid.len() - (9 + 1 + 4 + sorted.len() * 5 + 2);
+    // Rebuild the record body by hand: function, slot, kind, flags, confidence (11 bytes).
+    let shape_end = valid.len() - (11 + 1 + 4 + sorted.len() * 5 + 2);
     let mut out = valid[..shape_end].to_vec();
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     out.push(FeedbackSlotKind::LoadNamed as u8);
+    out.extend_from_slice(&[0, 0]);
     out.push(state as u8);
     out.extend_from_slice(&(cases.len() as u32).to_le_bytes());
     for c in &cases {
@@ -392,10 +713,11 @@ fn case_rules_hold_in_insert_and_in_decode() {
             );
         }
     }
-    // A count of 5 is refused before any case is read. In `ok` the record is 26 bytes:
-    // function, slot, kind (9), state (1), count (4), 2 cases of 5, values (2).
+    // A count of 5 is refused before any case is read. In `ok` the record is 28 bytes:
+    // function, slot, kind, flags, confidence (11), state (1), count (4), 2 cases of 5,
+    // values (2).
     let mut five = ok.clone();
-    let at = ok.len() - 26 + 10;
+    let at = ok.len() - 28 + 12;
     put_u32(&mut five, at, 5);
     assert_eq!(
         FactSnapshot::decode(&five),
@@ -451,27 +773,37 @@ fn shape_and_reference_rules() {
     };
     let insert = |f: SlotFacts| FactSnapshot::new(header()).insert(0, 0, f);
     let mut dict_with_keys = dictionary();
-    dict_with_keys.keys.push(key("a"));
+    push_key(&mut dict_with_keys, key("a"));
     assert_eq!(
         insert(mono(dict_with_keys)),
         Err(FactError::Invalid("a dictionary shape lists keys"))
     );
     let mut twice = point();
-    twice.keys.push(key("x"));
+    push_key(&mut twice, key("x"));
     assert_eq!(
         insert(mono(twice)),
         Err(FactError::Invalid("a key appears twice in a shape"))
     );
     // Two nameless symbols may be different symbols.
     let mut syms = point();
-    syms.keys.push((KeyRef::OtherSymbol, PropAttrs::EMPTY));
-    syms.keys.push((KeyRef::OtherSymbol, PropAttrs::EMPTY));
+    push_key(
+        &mut syms,
+        (KeyRef::OtherSymbol, PropAttrs::EMPTY, FieldHint::default()),
+    );
+    push_key(
+        &mut syms,
+        (KeyRef::OtherSymbol, PropAttrs::EMPTY, FieldHint::default()),
+    );
     assert_eq!(insert(mono(syms)), Ok(()));
     let mut wide = point();
-    wide.keys.push((
-        KeyRef::String(UnitString::Utf16(vec![0x61].into())),
-        PropAttrs::EMPTY,
-    ));
+    push_key(
+        &mut wide,
+        (
+            KeyRef::String(UnitString::Utf16(vec![0x61].into())),
+            PropAttrs::EMPTY,
+            FieldHint::default(),
+        ),
+    );
     assert_eq!(
         insert(mono(wide)),
         Err(FactError::NonCanonical("UTF-16 key that fits Latin-1"))
@@ -527,15 +859,16 @@ fn shape_table_errors() {
     )
     .unwrap();
     let b = one.encode();
-    // bare(): proto null (1) + kind (1) + flags (1) + capacity (2) + count (4) + key "k":
-    // tag (1) + len (4) + 1 byte + attrs (1) = 16 bytes.
-    let shape = &b[HEADER_SIZE..HEADER_SIZE + 16];
+    // bare(): proto null (1) + kind (1) + elements (1) + flags (1) + capacity (2) + count (4)
+    // + key "k": tag (1) + len (4) + 1 byte + attrs (1) = 17 bytes.
+    const N: usize = 17;
+    let shape = &b[HEADER_SIZE..HEADER_SIZE + N];
     let mut bigger = shape.to_vec();
-    bigger[5] = 2; // two keys
+    bigger[6] = 2; // two keys
     bigger.extend_from_slice(&[0, 1, 0, 0, 0, b'l', 7]);
-    let mut extra = b[..HEADER_SIZE + 16].to_vec();
+    let mut extra = b[..HEADER_SIZE + N].to_vec();
     extra.extend_from_slice(&bigger);
-    extra.extend_from_slice(&b[HEADER_SIZE + 16..]);
+    extra.extend_from_slice(&b[HEADER_SIZE + N..]);
     put_u32(&mut extra, offsets::SHAPE_COUNT, 2);
     let total = extra.len() as u32;
     put_u32(&mut extra, offsets::TOTAL_SIZE, total);
@@ -547,7 +880,7 @@ fn shape_table_errors() {
     let mut swapped = b[..HEADER_SIZE].to_vec();
     swapped.extend_from_slice(&bigger);
     swapped.extend_from_slice(shape);
-    swapped.extend_from_slice(&b[HEADER_SIZE + 16..]);
+    swapped.extend_from_slice(&b[HEADER_SIZE + N..]);
     put_u32(&mut swapped, offsets::SHAPE_COUNT, 2);
     let total = swapped.len() as u32;
     put_u32(&mut swapped, offsets::TOTAL_SIZE, total);
@@ -580,7 +913,7 @@ fn bitsets_merge_by_or() {
 #[test]
 fn a_shape_with_many_keys_is_checked_without_a_pairwise_scan() {
     let mut big = point();
-    big.keys = (0..200_000u32).map(|i| key(&format!("k{i}"))).collect();
+    set_keys(&mut big, (0..200_000u32).map(|i| key(&format!("k{i}"))));
     let facts = SlotFacts::Literal(LiteralFacts {
         count: 1,
         shape: Some(big.clone().into()),
@@ -592,7 +925,7 @@ fn a_shape_with_many_keys_is_checked_without_a_pairwise_scan() {
     let back = FactSnapshot::decode(&s.encode()).unwrap();
     assert_eq!(back, s);
     assert!(t.elapsed().as_secs() < 20, "took {:?}", t.elapsed());
-    big.keys.push(key("k7"));
+    push_key(&mut big, key("k7"));
     let dup = SlotFacts::Literal(LiteralFacts {
         count: 1,
         shape: Some(big.into()),
@@ -639,44 +972,54 @@ fn shapes_held(s: &FactSnapshot) -> (usize, usize) {
 }
 
 /// Every reference to a table shape decodes to that one shape, not to a copy of it. With a
-/// copy per reference, 13,385 bytes (one shape of 2,048 keys, 512 records that use it) held
-/// 33.7 MB, and took as much before a corrupt last byte was refused.
+/// copy per reference, 13,385 bytes (one shape of 2,048 keys, 512 records that use it; 14,410
+/// in FACT_SCHEMA 2) held 33.7 MB, and took as much before a corrupt last byte was refused.
 #[test]
 fn every_reference_to_a_table_shape_shares_one_decoded_shape() {
     let mut big = bare();
-    big.keys = vec![(KeyRef::OtherSymbol, PropAttrs::EMPTY); 2048];
+    set_keys(
+        &mut big,
+        vec![(KeyRef::OtherSymbol, PropAttrs::EMPTY, FieldHint::default()); 2048],
+    );
     let literal = SlotFacts::Literal(LiteralFacts {
         count: 1,
         shape: Some(big.into()),
         elements: None,
     });
     let bytes = repeat_record(literal, 512);
-    assert_eq!(bytes.len(), 13_385);
+    assert_eq!(bytes.len(), 14_410);
     let s = FactSnapshot::decode(&bytes).unwrap();
     assert_eq!(shapes_held(&s), (1, 512));
     assert_eq!(s.encode(), bytes);
     // The shared shapes are `Arc`s, so a snapshot stays Send + Sync.
     fn send_sync<T: Send + Sync>(_: &T) {}
     send_sync(&s);
-    let mut bad = bytes;
-    *bad.last_mut().unwrap() = 0xff; // the last record's elements kind
-    assert_eq!(
-        FactSnapshot::decode(&bad),
-        Err(FactError::BadValue("elements kind"))
-    );
+    // The last record's elements kind, a value no schema names: an open list, so that field
+    // reads as none and the rest decodes (MC-w23-8).
+    let mut open = bytes;
+    *open.last_mut().unwrap() = 0xff;
+    let back = FactSnapshot::decode(&open).unwrap();
+    assert_eq!(shapes_held(&back), (1, 512));
+    let SlotFacts::Literal(l) = back.get(0, 511).unwrap() else {
+        panic!()
+    };
+    assert_eq!((l.count, l.elements), (1, None));
 }
 
 /// Decoding checks each shape once, in the table, and the case order on table indices, so
 /// its work grows with the input, not with shape size times references. Two shapes of
-/// 262,144 keys that differ in one last key and 20,000 records with both as cases (1.5 MB)
+/// 262,144 keys that differ in one last key and 20,000 records with both as cases (1.6 MB)
 /// decode in about 0.05 s in a debug build. Comparing the two shapes per record took 36 s
 /// there (9.9 s in release), and checking each record's shapes again took 56 s.
 #[test]
 fn decoding_work_does_not_grow_with_shape_size_times_references() {
     let mut a = bare();
-    a.keys = vec![(KeyRef::OtherSymbol, PropAttrs::EMPTY); 262_144];
+    set_keys(
+        &mut a,
+        vec![(KeyRef::OtherSymbol, PropAttrs::EMPTY, FieldHint::default()); 262_144],
+    );
     let mut b = a.clone();
-    b.keys.push(key("z"));
+    push_key(&mut b, key("z"));
     let poly = SlotFacts::LoadNamed(PropertyFacts {
         state: IcState::Polymorphic,
         cases: [a, b]
@@ -692,7 +1035,7 @@ fn decoding_work_does_not_grow_with_shape_size_times_references() {
     let small = FactSnapshot::decode(&repeat_record(poly.clone(), 2)).unwrap();
     assert_eq!(shapes_held(&small), (2, 4));
     let bytes = repeat_record(poly, 20_000);
-    assert_eq!(bytes.len(), 1_568_665);
+    assert_eq!(bytes.len(), 1_608_667);
     let t = std::time::Instant::now();
     let s = FactSnapshot::decode(&bytes).unwrap();
     assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());

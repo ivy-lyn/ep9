@@ -303,10 +303,11 @@ impl Isolate {
             config.compiler,
         );
         builtins::prepare(&rt, config.builtins);
-        rt.exec.set(exec);
+        // The one write of the feedback mode, before the first realm (`exec::install`).
+        crate::exec::install(&rt, exec);
         realm::init(&rt);
         let mut cx = Box::new(Cx {
-            table: *config.dispatch.table(exec.feedback_mode()),
+            table: *config.dispatch.table(crate::exec::feedback_mode(&rt)),
             rt: &*rt,
             stack_limit: rt.stack().end(),
             budget: BUDGET,

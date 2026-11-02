@@ -4,11 +4,13 @@
 //! ```text
 //!  SlotFacts (one variant per FeedbackSlotKind, exhaustive)
 //!    property kinds ── PropertyFacts { state, cases[≤4]: (ShapeDesc, Access), values }
-//!    keyed kinds ───── KeyedFacts { PropertyFacts, keys: KeySet }
+//!    keyed kinds ───── KeyedFacts { PropertyFacts, keys: KeySet, hint: KeyedHint,
+//!                                   kinds: ElementsKindSet }
 //!    Call / InstanceOf ─ TargetFacts { state, targets[≤4]: FunctionRef } (+ count, result)
 //!    globals ───────── GlobalFacts { bindings, values }
 //!    hints ─────────── TypeSet, BinaryHint, CompareHint, ForInHint (bitsets, merge by OR)
-//!  ShapeDesc { proto: ProtoRef, kind, flags, capacity, keys[(KeyRef, PropAttrs)] }
+//!  ShapeDesc { proto: ProtoRef, kind, elements, flags, capacity,
+//!             keys[(KeyRef, PropAttrs)], fields[FieldHint] (one per key) }
 //!    held as Arc<ShapeDesc>: a decoded snapshot shares one per shape-table entry
 //!  never: a ShapeId, an address, a cell kind id, a closure identity
 //! ```
@@ -22,8 +24,9 @@ use ep9_bytecode::{FeedbackSlotKind, UnitString};
 
 use crate::FactError;
 use crate::bits::{
-    BinaryHint, BindingSet, ClosureCount, CompareHint, ElementsKind, ForInHint, IcState, KeySet,
-    ObjectKind, PropAttrs, ShapeFlags, TypeSet, WellKnownSymbol,
+    BinaryHint, BindingSet, ClosureCount, CompareHint, ElementsKind, ElementsKindSet, FieldHint,
+    ForInHint, IcState, KeySet, KeyedHint, ObjectKind, PropAttrs, ShapeFlags, TypeSet,
+    WellKnownSymbol,
 };
 
 /// Most cases (or targets) one record holds: the H16 polymorphism limit.
@@ -130,13 +133,22 @@ pub struct ShapeDesc {
     pub proto: ProtoRef,
     /// The object kind.
     pub kind: ObjectKind,
-    /// Extensible and dictionary bits.
+    /// The shape's elements kind (FACT_SCHEMA 2; M6-PLAN-D8): with `kind` it is the fact kind
+    /// of the object's elements (M6-PLAN-D5). A hint: a compiled reader still guards the
+    /// shape, which stays the kind source. `None` if the writer gave none, or the value is one
+    /// this reader does not name (an open list, [`ElementsKind`]).
+    pub elements: Option<ElementsKind>,
+    /// Extensible and dictionary bits (an open set, [`ShapeFlags`]).
     pub flags: ShapeFlags,
     /// In-object slot capacity. Key `i` lives in-object slot `i` while `i < capacity`, and in
     /// out-of-line slot `i - capacity` after it.
     pub capacity: u16,
     /// The keys in property order with their attributes. Empty for a dictionary shape.
     pub keys: Vec<(KeyRef, PropAttrs)>,
+    /// FACT_SCHEMA 2 (M6-PLAN-D8): the representation and const hint of the field of each
+    /// key, in key order (`fields[i]` is key `i`'s; as long as `keys`). A hint: a compiled
+    /// reader still guards.
+    pub fields: Vec<FieldHint>,
 }
 
 /// What a property access did for one receiver shape.
@@ -186,8 +198,9 @@ pub enum Access {
     StringLength,
     /// An element access with this H18 elements kind.
     Element {
-        /// The elements kind of the receiver.
-        kind: ElementsKind,
+        /// The elements kind of the receiver; `None` for a value this reader does not name
+        /// (an open list, [`ElementsKind`]).
+        kind: Option<ElementsKind>,
     },
     /// The generic path ran (dictionary receivers, proxies, anything v0 has no handler for).
     Generic,
@@ -249,13 +262,20 @@ pub struct PropertyFacts {
 /// Facts of a keyed property site. Its `property.state` is live only for StoreKeyed (the
 /// present-element fast case writes the IC key half); at the other keyed kinds
 /// `Uninitialized` means "no state", not "never ran", and a keyed `Monomorphic` has no case
-/// in `property.cases` ([`IcState`], MC-w15-1). `keys` is the record that runs.
+/// in `property.cases` ([`IcState`], MC-w15-1). `keys`, `hint` and `kinds` are the records
+/// that run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeyedFacts {
     /// The property facts.
     pub property: PropertyFacts,
     /// The keys seen.
     pub keys: KeySet,
+    /// FACT_SCHEMA 2 (MC-w13-9, MODES-D18): the receivers and what the element accesses
+    /// found (the VM's keyed bits 4-9).
+    pub hint: KeyedHint,
+    /// FACT_SCHEMA 2 (M6-PLAN-D4): the elements kinds of the receivers of an index key (the
+    /// VM's IC_LAYOUT 4 kinds set, bits 10-25). An open set.
+    pub kinds: ElementsKindSet,
 }
 
 /// Call targets or `instanceof` constructors seen at a site.
@@ -550,6 +570,33 @@ impl SlotFacts {
         self.check()
     }
 
+    /// Merges the cases that share a receiver (or a clone source) as the exporter does: equal
+    /// cases become one, and a receiver with two different accesses (or results) is left out
+    /// (a state may have fewer cases than the IC had). The decoder runs it after an open
+    /// value it does not name folded two shapes into one (`codec.rs`); the record stays
+    /// valid, because cases only go.
+    pub(crate) fn merge_cases(&mut self) {
+        fn merge<T: Ord>(cases: &mut Vec<T>, same: impl Fn(&T, &T) -> bool) {
+            cases.sort();
+            cases.dedup();
+            let mut keep = vec![true; cases.len()];
+            for j in 1..cases.len() {
+                if same(&cases[j - 1], &cases[j]) {
+                    keep[j - 1] = false;
+                    keep[j] = false;
+                }
+            }
+            let mut it = keep.into_iter();
+            cases.retain(|_| it.next().unwrap_or(false));
+        }
+        if let Some(p) = self.property_mut() {
+            merge(&mut p.cases, |a, b| a.receiver == b.receiver);
+        }
+        if let SlotFacts::CloneObject(c) = self {
+            merge(&mut c.cases, |a, b| a.source == b.source);
+        }
+    }
+
     /// Checks the format rules of a record: case and target counts against the IC state,
     /// strictly ascending lists (no duplicates, no two cases for one receiver or source),
     /// field indices inside their shape, and every shape and function reference.
@@ -774,6 +821,9 @@ pub(crate) fn check_function(r: &FunctionRef) -> Result<(), FactError> {
 pub(crate) fn check_shape(s: &ShapeDesc) -> Result<(), FactError> {
     if s.flags.contains(ShapeFlags::DICTIONARY) && !s.keys.is_empty() {
         return Err(FactError::Invalid("a dictionary shape lists keys"));
+    }
+    if s.fields.len() != s.keys.len() {
+        return Err(FactError::Invalid("a shape has one field hint per key"));
     }
     if let ProtoRef::FunctionPrototype(r) = &s.proto {
         check_function(r)?;
