@@ -327,9 +327,11 @@ impl FactSnapshot {
         }
         // Each shape takes at least 10 bytes and each record at least 11.
         r.room(shape_count, 10)?;
-        // The order check compares two shapes only if neither folded an open value: a fold
-        // may make two shapes equal, or change their order (the module docs).
-        let mut prev_folded = true;
+        // The order check skips a shape that folded an open value: a fold may make it equal to
+        // another shape, or change its place (the module docs). The other shapes hold only
+        // values this schema names, so each one is compared with the last of them: a folded
+        // shape between two of them does not hide their order.
+        let mut last_known: Option<usize> = None;
         for _ in 0..shape_count {
             let before = r.folded;
             r.folded = false;
@@ -337,10 +339,12 @@ impl FactSnapshot {
             check_shape(&s)?;
             let folded = r.folded;
             r.folded |= before;
-            if !folded && !prev_folded && r.shapes.last().is_some_and(|prev| **prev >= s) {
-                return Err(FactError::NonCanonical("shapes not strictly ascending"));
+            if !folded {
+                if last_known.is_some_and(|i| *r.shapes[i] >= s) {
+                    return Err(FactError::NonCanonical("shapes not strictly ascending"));
+                }
+                last_known = Some(r.shapes.len());
             }
-            prev_folded = folded;
             r.shapes.push(Arc::new(s));
         }
         let shapes_folded = r.folded;

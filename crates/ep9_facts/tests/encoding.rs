@@ -361,6 +361,59 @@ fn shapes_that_fold_into_one_merge_their_cases() {
     assert!(p.cases.is_empty(), "{p:?}");
 }
 
+/// A folded shape does not hide the order of the shapes around it: the shapes that hold only
+/// values this schema names stay strictly ascending among themselves.
+#[test]
+fn a_folded_shape_does_not_hide_the_order_of_its_neighbours() {
+    // Three shapes that differ only in capacity (1, 2, 3), in one Polymorphic LoadNamed
+    // record.
+    let cap = |c: u16| ShapeDesc {
+        capacity: c,
+        ..bare()
+    };
+    let mut s = FactSnapshot::new(header());
+    s.insert(
+        0,
+        0,
+        SlotFacts::LoadNamed(PropertyFacts {
+            state: IcState::Polymorphic,
+            cases: [1, 2, 3]
+                .map(|c| PropertyCase {
+                    receiver: cap(c).into(),
+                    access: Access::Generic,
+                })
+                .to_vec(),
+            values: TypeSet::EMPTY,
+        }),
+    )
+    .unwrap();
+    let b = s.encode();
+    // bare() is 17 bytes; the flags byte is at +3 and the capacity (u16) at +4 of each entry.
+    let at = |i: usize| HEADER_SIZE + 17 * i;
+    assert_eq!([b[at(0) + 4], b[at(1) + 4], b[at(2) + 4]], [1, 2, 3]);
+    let set_cap = |b: &mut [u8], i: usize, c: u8| b[at(i) + 4] = c;
+    // 0x80 is a shape flag bit this schema does not name: shape 1 folds.
+    let fold_1 = |b: &mut [u8]| b[at(1) + 3] |= 0x80;
+    let not_sorted = Err(FactError::NonCanonical("shapes not strictly ascending"));
+
+    // A fold between shapes in order is accepted.
+    let mut ok = b.clone();
+    fold_1(&mut ok);
+    assert!(FactSnapshot::decode(&ok).is_ok());
+    // Shapes 0 and 2 swapped (3, 2, 1), with and without the fold in shape 1.
+    let mut swapped = b.clone();
+    set_cap(&mut swapped, 0, 3);
+    set_cap(&mut swapped, 2, 1);
+    assert_eq!(FactSnapshot::decode(&swapped).map(|_| ()), not_sorted);
+    fold_1(&mut swapped);
+    assert_eq!(FactSnapshot::decode(&swapped).map(|_| ()), not_sorted);
+    // The same shape on both sides of a fold (1, folded, 1).
+    let mut twice = b.clone();
+    set_cap(&mut twice, 2, 1);
+    fold_1(&mut twice);
+    assert_eq!(FactSnapshot::decode(&twice).map(|_| ()), not_sorted);
+}
+
 fn put_u32(b: &mut [u8], at: usize, v: u32) {
     b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
