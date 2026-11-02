@@ -292,6 +292,55 @@ fn val(bits: u64) -> Value {
 /// that gets the second build's report ([`a_child`]).
 const A_CHILD: &str = "SPIKE_B_A_CHILD";
 
+/// Makes a new dir for the second build's report: the first name in `names` that is not a
+/// path yet, with `DirBuilder::create` (mode 0700 on unix). `create` fails for any path that
+/// is there (a dir, a file or a symlink), so the dir is never one that was there before.
+fn new_report_dir(
+    parent: &std::path::Path,
+    names: impl IntoIterator<Item = String>,
+) -> std::io::Result<std::path::PathBuf> {
+    let b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let b = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut b = b;
+        b.mode(0o700);
+        b
+    };
+    for name in names {
+        let p = parent.join(name);
+        match b.create(&p) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "every report dir name tried exists",
+    ))
+}
+
+/// Writes the second build's report to `path` as a new file (`create_new`): it never writes
+/// through a path that was there before (a file or a symlink).
+fn write_report(path: &std::path::Path, report: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?
+        .write_all(report.as_bytes())
+}
+
+/// Removes the report dir of [`second_build`] when it goes out of scope.
+struct ReportDir(std::path::PathBuf);
+
+impl Drop for ReportDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// The texts check (a) scans: units A and B for each target.
 fn a_texts() -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut out = Vec::new();
@@ -322,7 +371,8 @@ fn a_child(path: &std::ffi::OsStr) -> ! {
         }
         Ok(out)
     })();
-    match r.and_then(|out| std::fs::write(path, out).map_err(|e| e.to_string())) {
+    let path = std::path::Path::new(path);
+    match r.and_then(|out| write_report(path, &out).map_err(|e| e.to_string())) {
         Ok(()) => std::process::exit(0),
         Err(e) => {
             eprintln!("spike-b: check (a) second build: {e}");
@@ -366,24 +416,26 @@ fn parse_second(report: &str) -> Result<SecondBuild, String> {
 
 /// Runs check (a) again in a second process (this executable, the same arguments, with
 /// [`A_CHILD`] set) and reads its report. The second process picks its own code range slot;
-/// if it picks the slot of this process (1 in 32767), it runs again (at most 3 times).
+/// if it picks the slot of this process (1 in 32767), it runs again (at most 3 times). The
+/// report goes into a new dir ([`new_report_dir`]), as a new file ([`write_report`]).
 fn second_build(here: usize) -> Result<SecondBuild, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let pid = std::process::id();
+    let dir = new_report_dir(
+        &std::env::temp_dir(),
+        (0..16).map(|i| format!("spike-b-a-second-{pid}-{i}")),
+    )
+    .map_err(|e| format!("the second build's report dir: {e}"))?;
+    let dir = ReportDir(dir);
     for attempt in 0..3 {
-        let path = std::env::temp_dir().join(format!(
-            "spike-b-a-second-{}-{attempt}.txt",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let path = dir.0.join(format!("report-{attempt}.txt"));
         let out = std::process::Command::new(&exe)
             .args(std::env::args_os().skip(1))
             .env(A_CHILD, &path)
             .stdin(std::process::Stdio::null())
             .output()
             .map_err(|e| e.to_string())?;
-        let report = std::fs::read_to_string(&path);
-        let _ = std::fs::remove_file(&path);
-        let report = match report {
+        let report = match std::fs::read_to_string(&path) {
             Ok(r) if out.status.success() => r,
             _ => {
                 return Err(format!(
@@ -401,6 +453,70 @@ fn second_build(here: usize) -> Result<SecondBuild, String> {
     Err(format!(
         "the second build's code range started at {here:#x} 3 times (this process's start)"
     ))
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::{new_report_dir, write_report};
+
+    /// A new dir for one test, under the temp dir.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let pid = std::process::id();
+        new_report_dir(
+            &std::env::temp_dir(),
+            (0..16).map(|i| format!("spike-b-report-test-{tag}-{pid}-{i}")),
+        )
+        .unwrap()
+    }
+
+    /// The report dir is never a path that was there before: an old dir, an old file and
+    /// (unix) an old symlink are skipped; when every name is there, it fails.
+    #[test]
+    fn the_report_dir_is_new() {
+        let root = scratch("dir");
+        std::fs::create_dir(root.join("n0")).unwrap();
+        std::fs::write(root.join("n1"), "old").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("n0"), root.join("n2")).unwrap();
+        #[cfg(not(unix))]
+        std::fs::create_dir(root.join("n2")).unwrap();
+        let names = || (0..4).map(|i| format!("n{i}"));
+        let got = new_report_dir(&root, names()).unwrap();
+        assert_eq!(got, root.join("n3"));
+        assert!(std::fs::symlink_metadata(&got).unwrap().is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&got).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        let e = new_report_dir(&root, names()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The report never goes through a path that was there before: a file planted at the
+    /// path keeps its bytes, and (unix) a symlink planted at the path does not write its
+    /// target.
+    #[test]
+    fn the_report_is_a_new_file() {
+        let root = scratch("file");
+        let target = root.join("target");
+        std::fs::write(&target, "old").unwrap();
+        assert!(write_report(&target, "report").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+        #[cfg(unix)]
+        {
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(write_report(&link, "report").is_err());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+        }
+        let new = root.join("new");
+        write_report(&new, "report").unwrap();
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "report");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
 
 /// The live addresses of a session with unit A loaded (for the window scan). The placed
