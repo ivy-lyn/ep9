@@ -27,9 +27,15 @@
 //! - The regex parser recurses (`prescan::REGEX_WEIGHT`). Here it runs near the base of the
 //!   worker stack, not at the parser's depth, so the stack budget of `stack.rs` still holds.
 //!
-//! Limit: after a fatal parse error, oxc gives an empty token list (and an empty AST). Then
-//! only the parser errors are reported. Before, the regex errors in front of the fatal error
-//! were reported too. The result is a SyntaxError in both cases.
+//! Limits (the result is a SyntaxError in each case, as before):
+//! - After a fatal parse error, oxc gives an empty token list (and an empty AST). Then only
+//!   the parser errors are reported. Before, the regex errors in front of the fatal error
+//!   were reported too.
+//! - The regex errors come after all oxc_parser errors. So the first error (the thrown
+//!   message) can change: for `x = /a/uv;` it is now the parser's `u` and `v` flags error.
+//! - oxc_parser adds "Flow is not supported" (a first comment with `@flow`) only when it
+//!   found an error itself. A regex error does not count now. So `/* @flow */ /(/;` gives the
+//!   regex error and not the Flow error.
 
 use oxc_allocator::Allocator;
 use oxc_diagnostics::OxcDiagnostic;
