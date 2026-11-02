@@ -32,9 +32,29 @@ check_sha() { # check_sha <file> <want>
   [ "$got" = "$2" ] || { echo "sync-shells: sha256 mismatch for $1: got $got, want $2" >&2; exit 1; }
 }
 fresh() { [ "$(cat "$1/.ep9-stamp" 2>/dev/null || true)" = "$2" ]; } # fresh <dir> <stamp>
+# A .zip needs unzip; GNU tar (Linux, Git Bash) cannot read one. The fallbacks, in order:
+# python3's zipfile (it drops the unix mode bits, so the script sets them again; a symlink entry
+# is refused, not written as a file), then bsdtar (macOS tar). None of them: a clear error.
+unzip_py='
+import os, stat, sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(src) as z:
+    for i in z.infolist():
+        mode = i.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            sys.exit(f"sync-shells: {src}: {i.filename} is a symlink; install unzip")
+        path = z.extract(i, dst)
+        if stat.S_IMODE(mode) and not i.is_dir():
+            os.chmod(path, stat.S_IMODE(mode))
+'
 unpack() { # unpack <archive> <dir>
   case "$1" in
-    *.zip) if command -v unzip > /dev/null; then unzip -q -o "$1" -d "$2"; else tar -xf "$1" -C "$2"; fi ;;
+    *.zip)
+      if command -v unzip > /dev/null; then unzip -q -o "$1" -d "$2"
+      elif command -v python3 > /dev/null; then python3 -I -c "$unzip_py" "$1" "$2"
+      elif tar --version 2> /dev/null | grep -q bsdtar; then tar -xf "$1" -C "$2"
+      else echo "sync-shells: cannot unpack $1: no unzip, python3 or bsdtar on PATH (install unzip)" >&2; exit 1
+      fi ;;
     *) tar -xzf "$1" -C "$2" ;;
   esac
 }
