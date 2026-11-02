@@ -309,7 +309,7 @@ impl From<RangeError> for CompileError {
 /// Module for `opts` and is within the depth caps.
 ///
 /// It runs the depth guard (pre-scan, AST-depth pass) and, on the front-end worker,
-/// oxc_parser with `parse_regular_expression`, then (only if the parser found no error)
+/// oxc_parser and the regex literal check (`regex_check`), then (only if neither found an error)
 /// oxc_semantic with syntax checks. Both oxc stages are needed: the parser alone misses about
 /// 30% of the test262 parse-phase negatives, and without regex parsing about 8% \[R04\].
 ///

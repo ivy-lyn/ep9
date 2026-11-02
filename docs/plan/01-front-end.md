@@ -126,7 +126,7 @@ isolate thread:  finalize(CompiledUnit) -> atoms, SharedFunctionInfos, BytecodeA
 ```
 
 - **Parse path.** Parse, semantic and bytecode generation run on a pooled worker thread. Its stack is sized for the depth cap.
-- **Parse options.** ep9 uses `SemanticBuilder::new_compiler()`, `with_check_syntax_error(true)` and `parse_regular_expression = true`. Without regex parsing, oxc catches only 92.3% [R04]. ep9 always sets the source type: script or module, no JSX, TS only for .ts/.mts/.cts.
+- **Parse options.** ep9 uses `SemanticBuilder::new_compiler()`, `with_check_syntax_error(true)` and `parse_regular_expression = true`. Without regex parsing, oxc catches only 92.3% [R04]. ep9 always sets the source type: script or module, no JSX, TS only for .ts/.mts/.cts. [2026-11-02, M6-P0 FUZZFIX-0: ep9 now sets parse_regular_expression = false and checks each regex literal once after the parse, in crates/ep9_frontend/src/regex_check.rs; every input that gave a SyntaxError still gives one; only which messages are reported, and their order, can differ (see the regex_check.rs module doc).]
 - **Scope pass.** It reads oxc `Scoping`. It adds closure capture (about 15 lines [R03]), TDZ-check removal, `with`/eval dynamic lookup and register or context slot allocation.
 - **Stable function id.** The preorder index of the function in the source tree. Units, profiles and hints use it (H2, H37).
 - **Determinism rule (H2).** The same decoded source, flags and ABI version give the same bytes. No hash-map iteration order, pointer values or thread timing may reach the output.
