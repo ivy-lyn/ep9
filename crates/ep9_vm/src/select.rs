@@ -42,14 +42,14 @@ use crate::fuse;
 /// is a fill, and its fill row names every preset accept list that takes it.
 pub(crate) mod lowering {
     /// In-memory JIT code (T1, T2, the hybrid re-tier). Never stored in a unit.
-    pub const JIT: u8 = 0;
+    pub(crate) const JIT: u8 = 0;
     /// Hybrid unit code (DEOPT, then re-tier).
-    pub const HYBRID: u8 = 1;
+    pub(crate) const HYBRID: u8 = 1;
     /// Jitless unit code (SLOWPATH, budget, PIN).
-    pub const JITLESS: u8 = 2;
+    pub(crate) const JITLESS: u8 = 2;
 
     /// True for a class this build knows. The others are refused until appended.
-    pub const fn known(l: u8) -> bool {
+    pub(crate) const fn known(l: u8) -> bool {
         l <= JITLESS
     }
 }
@@ -89,14 +89,14 @@ impl Dep {
 pub(crate) struct CodeObject {
     /// The dispatch kind byte (H14). A byte [`DispatchKind::from_u8`] does not know is never
     /// picked.
-    pub kind: u8,
+    pub(crate) kind: u8,
     /// The lowering class ([`lowering`]).
-    pub lowering: u8,
-    pub state: State,
+    pub(crate) lowering: u8,
+    pub(crate) state: State,
     /// The CPU feature bits the code needs; each must be in [`Session::cpu`].
-    pub cpu: u64,
+    pub(crate) cpu: u64,
     /// Its InvalidatingFuse dependencies.
-    pub deps: Vec<Dep>,
+    pub(crate) deps: Vec<Dep>,
 }
 
 impl CodeObject {
@@ -116,21 +116,21 @@ impl CodeObject {
 /// state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CodeSet {
-    pub objects: Vec<CodeObject>,
+    pub(crate) objects: Vec<CodeObject>,
     /// The function has an Interp debug copy (H24-Q3).
-    pub debug_copy: bool,
+    pub(crate) debug_copy: bool,
     /// The function has a breakpoint (T11).
-    pub breakpoint: bool,
+    pub(crate) breakpoint: bool,
     /// PIN (MODES-D14): no AotOpt variant is picked, also ones installed later.
-    pub pinned: bool,
+    pub(crate) pinned: bool,
 }
 
 /// The parts of `ExecPolicy` that `select()` reads (doc 13 §1.2): the install rank and the
 /// accept list, both in rank order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Policy {
-    pub install: &'static [DispatchKind],
-    pub accept: &'static [u8],
+    pub(crate) install: &'static [DispatchKind],
+    pub(crate) accept: &'static [u8],
 }
 
 impl Policy {
@@ -183,9 +183,9 @@ impl Policy {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Session {
     /// A debugger session is connected (T10, T11).
-    pub connected: bool,
+    pub(crate) connected: bool,
     /// The CPU feature bits of this host.
-    pub cpu: u64,
+    pub(crate) cpu: u64,
 }
 
 /// What the slot runs.
