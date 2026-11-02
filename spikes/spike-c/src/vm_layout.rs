@@ -1049,10 +1049,10 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
         }
         let lines = read_set_lines();
         assert_eq!(lines.len(), 6, "{lines:?}");
-        assert!(lines[0].starts_with("OBJECT_LAYOUT 5: "), "{}", lines[0]);
+        assert!(lines[0].starts_with("OBJECT_LAYOUT 6: "), "{}", lines[0]);
         assert!(lines[0].contains("4 hand facts"), "{}", lines[0]);
         assert!(
-            lines[1].starts_with("IC_LAYOUT 3: ") && lines[1].contains("; 1 hand facts"),
+            lines[1].starts_with("IC_LAYOUT 4: ") && lines[1].contains("; 1 hand facts"),
             "{}",
             lines[1]
         );
@@ -1149,7 +1149,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
             assert_eq!(*value, v, "{name} copies {item}");
             assert_eq!(*owner, "OBJECT_LAYOUT", "{name}");
         }
-        assert_eq!(PINNED[0], ("OBJECT_LAYOUT", 5));
+        assert_eq!(PINNED[0], ("OBJECT_LAYOUT", 6));
         let owners: Vec<&str> = HAND_FACTS.iter().map(|h| h.3).collect();
         assert_eq!(
             owners,
