@@ -236,3 +236,7 @@ pin	13-execution-modes.md	docs/adr/H17-object-layout.md:135	docs/adr/H17-object-
 pin	H17-object-layout.md	docs/adr/README.md:148-149	docs/adr/README.md	^\| H17 \| Object layout \|	0	^\| H18 \| Elements kinds \|	0
 pin	H17-object-layout.md	docs/adr/README.md:148	docs/adr/README.md	^\| H17 \| Object layout \|	0
 pin	H18-elements-kinds.md	docs/adr/README.md:149	docs/adr/README.md	^\| H18 \| Elements kinds \|	0
+# M5-P5 orchestrator: the H17 and H18 Accept review rows cite the README Counts line, which the M1a
+# Frozen steps (b5c8ba44) rewrote. The pattern names the line by its start.
+pin	H17-object-layout.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H18-elements-kinds.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
