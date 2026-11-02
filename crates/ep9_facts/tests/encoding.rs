@@ -361,6 +361,90 @@ fn shapes_that_fold_into_one_merge_their_cases() {
     assert!(p.cases.is_empty(), "{p:?}");
 }
 
+/// The merge after a fold compares shape ranks (`codec.rs`), never shapes. Two `AddField`
+/// cases whose targets fold into one shape are the same case; with targets that stay apart
+/// they differ, and the receiver is left out. A fold that moves a clone source before
+/// another one gives the cases in the new shape order, and the result re-encodes.
+#[test]
+fn a_merge_after_a_fold_follows_the_ranks_of_the_folded_shapes() {
+    let with = |elements: Option<ElementsKind>, capacity: u16| ShapeDesc {
+        elements,
+        capacity,
+        ..bare()
+    };
+    let (s5, s6) = (
+        with(Some(ElementsKind::HoleyElements), 4),
+        with(Some(ElementsKind::Dictionary), 4),
+    );
+    let folded = with(None, 4);
+    let at = |i: usize| HEADER_SIZE + 17 * i;
+    let decode = |facts: SlotFacts, fold: &[(usize, u8)]| {
+        let mut s = FactSnapshot::new(header());
+        s.insert(0, 0, facts).unwrap();
+        let mut bytes = s.encode();
+        for &(i, v) in fold {
+            bytes[at(i) + 2] = v + 1;
+        }
+        let back = FactSnapshot::decode(&bytes).expect("a fold never refuses the snapshot");
+        assert_eq!(FactSnapshot::decode(&back.encode()).unwrap(), back);
+        back.get(0, 0).unwrap().clone()
+    };
+    let store = |b_to: &ShapeDesc| {
+        SlotFacts::StoreNamed(PropertyFacts {
+            state: IcState::Polymorphic,
+            cases: [(&s5, &s5), (&s6, b_to)]
+                .into_iter()
+                .map(|(r, to)| PropertyCase {
+                    receiver: r.clone().into(),
+                    access: Access::AddField {
+                        to: to.clone().into(),
+                        field: 0,
+                    },
+                })
+                .collect(),
+            values: TypeSet::EMPTY,
+        })
+    };
+    // Table: s5, s6. Both fold into `folded`, and so do both targets: one case.
+    let SlotFacts::StoreNamed(p) = decode(store(&s6), &[(0, 14), (1, 15)]) else {
+        panic!()
+    };
+    assert_eq!(
+        p.cases,
+        [PropertyCase {
+            receiver: folded.clone().into(),
+            access: Access::AddField {
+                to: folded.clone().into(),
+                field: 0
+            }
+        }]
+    );
+    // Table: other, s5, s6. The targets `folded` and `other` stay apart: no case.
+    let other = with(None, 9);
+    let SlotFacts::StoreNamed(p) = decode(store(&other), &[(1, 14), (2, 15)]) else {
+        panic!()
+    };
+    assert!(p.cases.is_empty(), "{p:?}");
+
+    // Table: v (none, 5), r (none, 9), u (holey, 4). u folds to (none, 4), before v.
+    let (v, r, u) = (with(None, 5), with(None, 9), s5.clone());
+    let clone = SlotFacts::CloneObject(CloneFacts {
+        state: IcState::Polymorphic,
+        cases: [&v, &u]
+            .into_iter()
+            .map(|src| CloneCase {
+                source: src.clone().into(),
+                result: r.clone().into(),
+            })
+            .collect(),
+    });
+    let SlotFacts::CloneObject(c) = decode(clone, &[(2, 14)]) else {
+        panic!()
+    };
+    let sources: Vec<_> = c.cases.iter().map(|c| (*c.source).clone()).collect();
+    assert_eq!(sources, [folded, v]);
+}
+
 /// A folded shape does not hide the order of the shapes around it: the shapes that hold only
 /// values this schema names stay strictly ascending among themselves.
 #[test]
@@ -1064,6 +1148,11 @@ fn every_reference_to_a_table_shape_shares_one_decoded_shape() {
 /// 262,144 keys that differ in one last key and 20,000 records with both as cases (1.6 MB)
 /// decode in about 0.05 s in a debug build. Comparing the two shapes per record took 36 s
 /// there (9.9 s in release), and checking each record's shapes again took 56 s.
+///
+/// The same bound holds when a shape holds an open value this schema does not name
+/// (FACT_SCHEMA 2, MC-w23-8). Then the decoder merges the cases of each record. When it
+/// compared the shapes of each record for that merge, the input above with one such flag bit
+/// took 5.2 s in release.
 #[test]
 fn decoding_work_does_not_grow_with_shape_size_times_references() {
     let mut a = bare();
@@ -1073,24 +1162,72 @@ fn decoding_work_does_not_grow_with_shape_size_times_references() {
     );
     let mut b = a.clone();
     push_key(&mut b, key("z"));
-    let poly = SlotFacts::LoadNamed(PropertyFacts {
-        state: IcState::Polymorphic,
-        cases: [a, b]
-            .into_iter()
-            .map(|s| PropertyCase {
-                receiver: s.into(),
-                access: Access::Generic,
-            })
-            .collect(),
-        values: TypeSet::EMPTY,
-    });
+    let poly = |a: &ShapeDesc, b: &ShapeDesc| {
+        SlotFacts::LoadNamed(PropertyFacts {
+            state: IcState::Polymorphic,
+            cases: [a, b]
+                .into_iter()
+                .map(|s| PropertyCase {
+                    receiver: s.clone().into(),
+                    access: Access::Generic,
+                })
+                .collect(),
+            values: TypeSet::EMPTY,
+        })
+    };
     // Shared shapes first: with a copy per reference the large input below needs 335 GB.
-    let small = FactSnapshot::decode(&repeat_record(poly.clone(), 2)).unwrap();
+    let small = FactSnapshot::decode(&repeat_record(poly(&a, &b), 2)).unwrap();
     assert_eq!(shapes_held(&small), (2, 4));
-    let bytes = repeat_record(poly, 20_000);
+    let bytes = repeat_record(poly(&a, &b), 20_000);
     assert_eq!(bytes.len(), 1_608_667);
-    let t = std::time::Instant::now();
-    let s = FactSnapshot::decode(&bytes).unwrap();
-    assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
-    assert_eq!(shapes_held(&s), (2, 40_000));
+    let timed = |bytes: &[u8]| {
+        let t = std::time::Instant::now();
+        let s = FactSnapshot::decode(bytes).unwrap();
+        assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
+        s
+    };
+    assert_eq!(shapes_held(&timed(&bytes)), (2, 40_000));
+
+    // 0x80 is a shape flag bit no schema names: shape 0 folds, but stays apart from shape 1.
+    // Both cases of each record stay.
+    let mut flag = bytes.clone();
+    assert_eq!(flag[HEADER_SIZE + 3], ShapeFlags::EXTENSIBLE.bits());
+    flag[HEADER_SIZE + 3] |= 0x80;
+    assert_eq!(shapes_held(&timed(&flag)), (2, 40_000));
+
+    // Two shapes that fold into one: `a` with two elements kinds, which the decoder is shown
+    // as values no schema names (14 and 15), so both read as none. The two cases of each
+    // record then have one receiver and the same access, and merge into one case.
+    let with = |k: ElementsKind| ShapeDesc {
+        elements: Some(k),
+        ..a.clone()
+    };
+    let (x, y) = (
+        with(ElementsKind::HoleyElements),
+        with(ElementsKind::Dictionary),
+    );
+    // The size of one table entry: the input with one record less is one record shorter.
+    let one = repeat_record(poly(&x, &y), 1);
+    let entry = (2 * one.len() - repeat_record(poly(&x, &y), 2).len() - HEADER_SIZE) / 2;
+    let mut same = repeat_record(poly(&x, &y), 20_000);
+    // The elements byte is at +2 of each table entry (`ElementsKind as u8 + 1`).
+    assert_eq!(same[HEADER_SIZE + 2], ElementsKind::HoleyElements as u8 + 1);
+    assert_eq!(
+        same[HEADER_SIZE + entry + 2],
+        ElementsKind::Dictionary as u8 + 1
+    );
+    same[HEADER_SIZE + 2] = 14 + 1;
+    same[HEADER_SIZE + entry + 2] = 15 + 1;
+    let s = timed(&same);
+    assert_eq!(shapes_held(&s), (1, 20_000));
+    let Some(SlotFacts::LoadNamed(p)) = s.get(0, 19_999) else {
+        panic!()
+    };
+    assert_eq!(
+        p.cases,
+        [PropertyCase {
+            receiver: a.into(),
+            access: Access::Generic
+        }]
+    );
 }

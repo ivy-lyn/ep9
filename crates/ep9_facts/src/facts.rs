@@ -573,27 +573,50 @@ impl SlotFacts {
     /// Merges the cases that share a receiver (or a clone source) as the exporter does: equal
     /// cases become one, and a receiver with two different accesses (or results) is left out
     /// (a state may have fewer cases than the IC had). The decoder runs it after an open
-    /// value it does not name folded two shapes into one (`codec.rs`); the record stays
+    /// value it does not name folded shapes of its table (`codec.rs`); the record stays
     /// valid, because cases only go.
-    pub(crate) fn merge_cases(&mut self) {
-        fn merge<T: Ord>(cases: &mut Vec<T>, same: impl Fn(&T, &T) -> bool) {
-            cases.sort();
-            cases.dedup();
-            let mut keep = vec![true; cases.len()];
-            for j in 1..cases.len() {
-                if same(&cases[j - 1], &cases[j]) {
-                    keep[j - 1] = false;
-                    keep[j] = false;
-                }
+    ///
+    /// `rank` gives each shape its place in shape order, and equal shapes the same rank. The
+    /// merge compares ranks and never compares two shapes, so its work does not grow with
+    /// shape size. The cases that stay are in ascending receiver (or source) order.
+    pub(crate) fn merge_cases(&mut self, rank: &impl Fn(&Arc<ShapeDesc>) -> u32) {
+        /// Sorts `cases` by `key`. In each run of cases with one key, one case stays if all
+        /// cases of the run are the same (`same`), and none stays if not.
+        fn merge<T>(cases: &mut Vec<T>, key: impl Fn(&T) -> u32, same: impl Fn(&T, &T) -> bool) {
+            cases.sort_by_key(&key);
+            let mut keep = vec![false; cases.len()];
+            let mut i = 0;
+            while i < cases.len() {
+                let k = key(&cases[i]);
+                let end = (i..cases.len())
+                    .find(|&j| key(&cases[j]) != k)
+                    .unwrap_or(cases.len());
+                keep[i] = cases[i + 1..end].iter().all(|c| same(&cases[i], c));
+                i = end;
             }
             let mut it = keep.into_iter();
             cases.retain(|_| it.next().unwrap_or(false));
         }
         if let Some(p) = self.property_mut() {
-            merge(&mut p.cases, |a, b| a.receiver == b.receiver);
+            merge(
+                &mut p.cases,
+                |c| rank(&c.receiver),
+                |a, b| match (&a.access, &b.access) {
+                    (
+                        Access::AddField { to: x, field: f },
+                        Access::AddField { to: y, field: g },
+                    ) => f == g && rank(x) == rank(y),
+                    // No other access holds a shape.
+                    (x, y) => x == y,
+                },
+            );
         }
         if let SlotFacts::CloneObject(c) = self {
-            merge(&mut c.cases, |a, b| a.source == b.source);
+            merge(
+                &mut c.cases,
+                |c| rank(&c.source),
+                |a, b| rank(&a.result) == rank(&b.result),
+            );
         }
     }
 
