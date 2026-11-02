@@ -4190,3 +4190,11 @@ Wall time: about 85-125 h active (est.; plan v11 §0.4). The roadmap after M1 (p
 | M6-ORCH-5 | `precommit.sh --frozen-step` is an orchestrator allowance. This row names it before M6-P4 | V11-A13: the Frozen commit stays local until W2 writes its records | orchestrator notes; plan v11 §7, §12.2 |
 | M6-ORCH-6 | Accept the cost changes of the audit fixer (SPEC-D after the `m1-exit` tag; SPIKEC-10 +2 agent-days; REALM-CLOSE and RECORDS-M6 +0.5 each) and the G8 counts (the V11-A9 flags change and STR4 are Frozen-part rewrites if they run; both are listed in M1 report §6) | The audit fixer's items 6 and 7 | orchestrator notes; plan v11 §12.2 |
 | M6-ORCH-7 | Fuzz budget: accept the counted Fuzzilli 112 CPU-h on CF (the gate is 100) as a margin. A short box session counts only what it ran | 12% margin (V11-D41) | orchestrator notes; plan v11 §6, §12 |
+
+### 16.2 M6-P0 as built
+
+Rows of M6-P0 decisions. The phase summary follows at the `m6-p0` tag.
+
+| ID | Decision | Reason | Evidence |
+|---|---|---|---|
+| M6-P0-ORCH-H17RW | (2026-11-03) The H17 2026-11-02 VM6 rewrite row (OBJECT_LAYOUT 5 -> 6 and the new part "shape flag bits (append-only)") changes the text of the Frozen part "layout core" (Frozen at M1a): the flags sentence leaves it (V11-A9). It takes the README §3.2 Frozen-part route: the review record (rows 1-4), the benchmark (row 4: NATIVE-INV bench t0-loop, t0-call and richards within 0.02% of a47c4e6e; `disasm-check --all-targets` equal on 5 targets), the orchestrator Approval, a second reviewer agent from another plan role (RECORDS-M6, V11-A9), and this line. The in-place edit of the Frozen-part text is the one named exception to the Frozen-text rule of the phase checker (rule 17); V11-A9 asks for it. G8 counts it; M1 report §6 lists it (M6-ORCH-6) | M6-PLAN-A9; README §3.2 and §3.3 | `docs/adr/H17-object-layout.md` Change-log row 2026-11-02 (VM6) and its review record |
