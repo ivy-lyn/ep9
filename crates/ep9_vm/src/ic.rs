@@ -20,12 +20,13 @@
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | POLY_IC | 69 | 4 cases from +8: key (weak), handler (strong) | 72 |
-//! | IC_HANDLER | 70 | IC_LAYOUT 2 (below): +8 int32 handler kind, +16 the validity cell (strong) or an int32, +24 a weak ref, +32 an int32 | 40 |
+//! | IC_HANDLER | 70 | IC_LAYOUT 4 (below): +8 int32 handler kind, +16 the validity cell (strong) or an int32, +24 a weak ref, +32 an int32 | 40 |
 //!
 //! **IC_LAYOUT 2** (`versions::IC_LAYOUT_VERSION`, M4-P0; plan v9 §2.3, V9-A8), **3** since M5-P0
-//! (the `ALLOC_SITE` handler kind and the keyed kinds-set bits, `profile.rs`). The feedback
-//! slot table (which module writes which slot kind) is in the `profile.rs` module docs. The
-//! IC_HANDLER cell:
+//! (the `ALLOC_SITE` handler kind and the keyed kinds-set bits, `profile.rs`), **4** since M6-P0
+//! (handler kinds 9-11 and the 16-bit keyed kinds set, `elements::KINDS_SET_SHIFT`). The
+//! feedback slot table (which module writes which slot kind) is in the `profile.rs` module docs.
+//! The IC_HANDLER cell:
 //!
 //! | Handler kind ([`hk`]) | +16 | +24 (weak) | +32 (int32) | Writer |
 //! |---|---|---|---|---|
@@ -36,6 +37,8 @@
 //! | `INSTANCEOF` | the validity cell | the rhs function's shape (the slot key is the function) | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
 //! | `CLONE` | int32 count | the result shape (the slot key is the source shape) | int32 0 | `literal_site.rs` (M4-P1 OBJ-ALLOC) |
 //! | `ALLOC_SITE` (IC_LAYOUT 3) | the int32 elements kind the site makes | the result shape | int32 count | `literal_site.rs` (M5-P2 ELEM2) |
+//! | `GETTER`, `SETTER` (IC_LAYOUT 4) | own accessor: int32 0; inherited: the chain's validity cell | own: undefined; inherited: the holder | the ACCESSOR_PAIR location (a smi field handler) | declared, no writer yet (M6-P1 ACCIC) |
+//! | `PROTO_DICT_LOAD` (IC_LAYOUT 4) | the receiver chain's validity cell | the dictionary-mode holder | int32 0 | declared, no writer yet (M6-P1 ACCIC) |
 //!
 //! The size stays 40 B and no kind id is added (construct sites, instanceof and clone caches
 //! are IC_HANDLER cells; a Literal site keeps only its slot halves). The trace function visits +24
