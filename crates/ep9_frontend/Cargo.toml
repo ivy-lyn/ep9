@@ -12,6 +12,8 @@ oxc_allocator = { workspace = true }
 oxc_ast = { workspace = true }
 oxc_diagnostics = { workspace = true }
 oxc_parser = { workspace = true }
+# The regex literal check (regex_check.rs). oxc_parser already pulls it in at the same version.
+oxc_regular_expression = { workspace = true }
 oxc_semantic = { workspace = true }
 oxc_span = { workspace = true }
 # The AST visitor (depth pass, scope pass). oxc_semantic already pulls it in at the same version.
