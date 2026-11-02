@@ -208,19 +208,22 @@ pub(crate) fn value_kind(v: u64) -> u8 {
     }
 }
 
-/// IC_LAYOUT 3: the first bit of the kinds set in a keyed slot's value half (bits 10-16, one
-/// bit per kind value 0-6; bits 0-9 keep their IC_LAYOUT 2 meaning, `profile::keyed`). M5-P1
-/// ELEM1 writes it (`profile::record_keyed_cold`, `profile::keyed_hit_kind`).
+/// IC_LAYOUT 4 (M6-P0, V11-D4; bits 10-16 in IC_LAYOUT 3): the first bit of the kinds set in a
+/// keyed slot's value half (bits 10-25, one bit per kind value 0-15, built or not; bits 0-9
+/// keep their IC_LAYOUT 2 meaning, bit 26 is `profile::keyed::RAN`). M5-P1 ELEM1 writes it
+/// (`profile::record_keyed_cold`, `profile::keyed_hit_kind`).
 pub(crate) const KINDS_SET_SHIFT: u32 = 10;
 
-/// The kinds-set bit of kind `k` (0-6).
+/// The kinds-set bit of kind `k` (0-15).
 pub(crate) const fn kinds_set_bit(k: u8) -> u32 {
     1 << (KINDS_SET_SHIFT + k as u32)
 }
 
-/// The kinds-set bits of a keyed slot's value half (bits 10-16).
-#[cfg_attr(not(test), allow(dead_code))] // tests (layout5, elements)
-pub(crate) const KINDS_SET_MASK: u32 = ((1 << kind::COUNT) - 1) << KINDS_SET_SHIFT;
+/// The kinds-set bits of a keyed slot's value half (bits 10-25): one bit for each of the 16
+/// values of the 4-bit shape field, so a kind append (H18) moves no IC_LAYOUT.
+#[cfg_attr(not(test), allow(dead_code))] // tests (layout5, layout6, elements)
+pub(crate) const KINDS_SET_MASK: u32 = 0xFFFF << KINDS_SET_SHIFT;
+const _: () = assert!(kinds_set_bit(kind::MAX) & KINDS_SET_MASK != 0);
 
 /// The elements kind of the JS object `o` (its shape's, H18-Q3). Not a GC point.
 #[inline(always)]

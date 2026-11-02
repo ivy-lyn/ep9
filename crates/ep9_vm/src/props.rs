@@ -50,7 +50,7 @@ fn trace_props(c: CellPtr, t: &mut Tracer<'_>) {
     trace_from_8(c, t, props_size(c));
 }
 
-/// Registers the PROPS kind.
+/// Registers the PROPS kind, and PROPS_INDEXED (OBJECT_LAYOUT 6, `props_index.rs`).
 pub(crate) fn register_kinds(heap: &Heap) {
     heap.register_kind(
         kind::PROPS,
@@ -61,6 +61,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         },
     )
     .expect("register a VM cell kind");
+    crate::props_index::register_kinds(heap);
 }
 
 // ---- the dictionary table ---------------------------------------------------------------------
@@ -94,6 +95,9 @@ pub(crate) fn new_props(rt: &Runtime, cap: usize) -> CellPtr {
 /// Index of `key` in the PROPS table of `o` (dictionary mode).
 fn dict_find(o: u64, key: u64, how: Probe) -> Option<(CellPtr, usize)> {
     let p = table_of(o)?;
+    if let Some(hit) = crate::props_index::find(p, key, how) {
+        return hit.map(|i| (p, i));
+    }
     let n = props_count(p);
     let i = match how {
         Probe::Bits => (0..n).find(|&i| rd(p, entry(i)) == key),

@@ -1,7 +1,7 @@
 //! Cell kind ids (word0 byte 5), table v1 (v2 of the object layout adds GENERATOR and
 //! SLOT_OBJECT, M2-P0; v3 adds ARGUMENTS, MODULE_NAMESPACE, MODULE, ORDERED_TABLE and REALM,
 //! M3-P0; v4 adds PROXY, PROXY_CALLABLE, VALIDITY_CELL and WEAK_CELL and the CONS, SLICED and
-//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0),
+//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0; v6 adds PROPS_INDEXED and the FUSE layout, M6-P0),
 //! and the kind tests on Value bits.
 //!
 //! | Ids | Kinds | Range test |
@@ -9,7 +9,7 @@
 //! | 1-7 | strings: SEQ_LATIN1, SEQ_UTF16; CONS, SLICED, THIN (layouts below, OBJECT_LAYOUT 4; built by M4-P1 STR1 and M4-P2 STR2); EXT_LATIN1, EXT_UTF16 reserved | [`is_string`] |
 //! | 8 | SYMBOL | [`is_symbol`] |
 //! | 16-63 | JS objects: OBJECT, FUNCTION, ARRAY, ERROR, ITERATOR, PRIMITIVE_WRAPPER, BOUND_FUNCTION, GENERATOR, SLOT_OBJECT, ARGUMENTS, MODULE_NAMESPACE, PROXY, PROXY_CALLABLE; 29-63 reserved | [`is_object`] |
-//! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO, MODULE, ORDERED_TABLE, REALM, VALIDITY_CELL, WEAK_CELL, ELEMENTS_DOUBLE, ELEMENTS_DICT; FUSE (83) reserved | - |
+//! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO, MODULE, ORDERED_TABLE, REALM, VALIDITY_CELL, WEAK_CELL, ELEMENTS_DOUBLE, ELEMENTS_DICT, PROPS_INDEXED (84, OBJECT_LAYOUT 6); FUSE (83) reserved, its layout declared (OBJECT_LAYOUT 6) | - |
 //! | 128 | SHAPE | - |
 //!
 //! OBJECT_LAYOUT 4 (M4-P0; plan v9 V9-D19, V9-D23, V9-A8). The ids below are the whole
@@ -144,12 +144,26 @@ pub(crate) const ELEMENTS_DOUBLE: KindId = k(81);
 /// Dictionary elements (H18-Q2, Q4): index -> (value or ACCESSOR_PAIR, attributes).
 /// OBJECT_LAYOUT 5; built by M5-P2 ELEM2 (`elements.rs`).
 pub(crate) const ELEMENTS_DICT: KindId = k(82);
-/// Reserved for a fuse cell (H31-Q1). OBJECT_LAYOUT 5; M5-P1 FR0 registers it only if a fuse
-/// word needs a cell (`fuse.rs`).
+/// A realm's static fuse block (H31-Q1, Q5; V11-D21): reserved in OBJECT_LAYOUT 5; its layout is
+/// OBJECT_LAYOUT 6 (the table at [`PROPS_INDEXED`]); M6-P2 FUSE-PI registers and builds it.
 pub(crate) const FUSE: KindId = k(83);
 
 // ---- shapes (128) ----
 pub(crate) const SHAPE: KindId = k(128);
+
+// ---- internal cells of OBJECT_LAYOUT 6 (M6-P0) ----
+// Here, after SHAPE, so the id lines above keep their line numbers (H17 "layout core" cites
+// them by line, and that part is Frozen).
+
+/// The property table of a dictionary-mode object with more than 8 entries (Dictionary v1, H17;
+/// V11-D18). OBJECT_LAYOUT 6 (M6-P0; plan v11 §2.3) declares it and the FUSE layout, and
+/// registers PROPS_INDEXED with its size and trace functions (`props_index.rs`):
+///
+/// | Kind | Id | Layout (byte offsets) | Builder |
+/// |---|---|---|---|
+/// | PROPS_INDEXED | 84 | +8 capacity, +16 count (int32 Values), +24 index (a bucket array of int32 entry numbers, or undefined below 9 entries), +32 entries: key, value, attributes (as PROPS 64, which does not change); an object moves from PROPS to it above 8 entries | M6-P1 DICT1 (`props_index.rs`) |
+/// | FUSE | 83 | a realm's static fuse block: from +8 one u32 per entry of `fuse::STATIC` (entry `i` at +8 + 4i; 1 intact, 0 popped), raw words that the GC does not trace; size 8 + 4 x entries, rounded up to 8 (`layout::FUSE_*`); the realm holds it as `IntrinsicId::RealmFuses` and `Root::RealmFuses` mirrors it | M6-P2 FUSE-PI (`fuse.rs`) |
+pub(crate) const PROPS_INDEXED: KindId = k(84);
 
 // ---- word0 flags ----
 /// Objects: the in-object slot count.
@@ -289,6 +303,7 @@ mod tests {
             ELEMENTS_DOUBLE,
             ELEMENTS_DICT,
             FUSE,
+            PROPS_INDEXED,
         ];
         assert!(internal.iter().all(|k| (64..=127).contains(&k.get())));
         assert_eq!(
@@ -300,6 +315,7 @@ mod tests {
             (ELEMENTS_DOUBLE.get(), ELEMENTS_DICT.get(), FUSE.get()),
             (81, 82, 83)
         );
+        assert_eq!(PROPS_INDEXED.get(), 84);
         assert_eq!((CONS.get(), SLICED.get(), THIN.get()), (3, 4, 5));
         assert_eq!(SYMBOL.get(), 8);
         assert_eq!(SHAPE.get(), 128);
@@ -311,8 +327,9 @@ mod tests {
             .collect();
         all.extend([SYMBOL.get(), SHAPE.get()]);
         let n = all.len();
-        // OBJECT_LAYOUT 3: 30 ids before, 35 after; OBJECT_LAYOUT 4: 39; OBJECT_LAYOUT 5: 42.
-        assert_eq!(n, 42);
+        // OBJECT_LAYOUT 3: 30 ids before, 35 after; OBJECT_LAYOUT 4: 39; OBJECT_LAYOUT 5: 42;
+        // OBJECT_LAYOUT 6: 43.
+        assert_eq!(n, 43);
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), n, "kind ids are distinct");

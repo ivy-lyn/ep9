@@ -101,6 +101,12 @@ pub(crate) enum Root {
     /// new function stores it as its `[[Realm]]`; `Cx::realm` holds a copy. Its fields mirror
     /// the roots above (global object, lexical record, the intrinsics).
     Realm,
+    // ---- M6-P0 (OBJECT_LAYOUT 6; V11-D21, MC-w22-17: root slots move once, before any unit) ----
+    /// The current realm's static fuse block: a FUSE cell (kind 83, `kinds::PROPS_INDEXED` has
+    /// the layout table), or undefined until M6-P2 FUSE-PI builds it. It mirrors the realm's
+    /// intrinsic `IntrinsicId::RealmFuses` (`builtins::IntrinsicId::root`), so `realm::switch`
+    /// writes it with the other intrinsics.
+    RealmFuses,
     // ---- M3-P1 REALMS: isolate-wide, not switched with the realm ----
     /// The VM-internal private name under which the global object of each realm holds its
     /// REALM record (`realm::of_global`; no JS code can name it). Made by the first
@@ -553,9 +559,9 @@ mod tests {
         for a in Atom::ALL {
             assert!(seen.insert(a.text()), "duplicate atom {:?}", a.text());
         }
-        assert_eq!(ROOT_COUNT, 34);
-        assert_eq!(REALM_ROOT_COUNT, 33);
-        assert_eq!(ROOT_SLOTS, 34 + Atom::ALL.len() + 256);
+        assert_eq!(ROOT_COUNT, 35); // 34 before M6-P0 (Root::RealmFuses)
+        assert_eq!(REALM_ROOT_COUNT, 34);
+        assert_eq!(ROOT_SLOTS, 35 + Atom::ALL.len() + 256);
         assert_eq!(ErrorKind::UriError.name(), "URIError");
         assert_eq!(crate::frame::HEADER, 8);
     }

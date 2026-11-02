@@ -227,11 +227,16 @@ pub enum IntrinsicId {
     FinalizationRegistry,
     /// `%FinalizationRegistry.prototype%` (§26.2.3; made by M4-P4 WEAKREF).
     FinalizationRegistryPrototype,
+    // ---- M6-P0 (OBJECT_LAYOUT 6; plan v11 V11-D21, rule 18): declared for M6-P2 FUSE-PI ----
+    /// The realm's static fuse block: a FUSE cell (kind 83), not a spec intrinsic and not an
+    /// object; no table makes it. Held in the realm root `Root::RealmFuses`; undefined until
+    /// FUSE-PI builds it.
+    RealmFuses,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 72] = [
+    pub const ALL: [IntrinsicId; 73] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -304,9 +309,11 @@ impl IntrinsicId {
         IntrinsicId::WeakRefPrototype,
         IntrinsicId::FinalizationRegistry,
         IntrinsicId::FinalizationRegistryPrototype,
+        IntrinsicId::RealmFuses,
     ];
 
-    /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
+    /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
+    /// for the VM-internal fuse block.
     pub const fn name(self) -> &'static str {
         match self {
             IntrinsicId::ObjectPrototype => "%Object.prototype%",
@@ -381,6 +388,7 @@ impl IntrinsicId {
             IntrinsicId::WeakRefPrototype => "%WeakRef.prototype%",
             IntrinsicId::FinalizationRegistry => "%FinalizationRegistry%",
             IntrinsicId::FinalizationRegistryPrototype => "%FinalizationRegistry.prototype%",
+            IntrinsicId::RealmFuses => "[[RealmFuses]]",
         }
     }
 
@@ -420,6 +428,7 @@ impl IntrinsicId {
             IntrinsicId::EvalError => Root::EvalErrorConstructor,
             IntrinsicId::UriError => Root::UriErrorConstructor,
             IntrinsicId::Math => Root::Math,
+            IntrinsicId::RealmFuses => Root::RealmFuses,
             IntrinsicId::StringIteratorPrototype
             | IntrinsicId::GeneratorFunction
             | IntrinsicId::GeneratorFunctionPrototype
