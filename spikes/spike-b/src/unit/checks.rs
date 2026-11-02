@@ -288,36 +288,125 @@ fn val(bits: u64) -> Value {
 
 // ---- (a) build -------------------------------------------------------------------------------
 
-/// A text placed a second time: a chunk of `range`, written as LOAD writes the text
-/// (`load::map`), then read back. Returns the chunk start and the bytes there. The chunk goes
-/// back to `range` at the end.
-fn place_again(range: &ep9_platform::CodeRange, text: &[u8]) -> Result<(usize, Vec<u8>), String> {
-    let mut chunk = range.alloc(text.len().max(1)).map_err(|e| e.to_string())?;
-    let mut mem = chunk
-        .commit(ep9_platform::jit::WxMode::DEFAULT)
-        .map_err(|e| e.to_string())?;
-    {
-        let mut w = mem
-            .open_write(0, text.len().max(1))
-            .map_err(|e| e.to_string())?;
-        w.bytes()[..text.len()].copy_from_slice(text);
-        w.close().map_err(|e| e.to_string())?;
+/// The environment variable that makes check (a) the second build: its value is the file
+/// that gets the second build's report ([`a_child`]).
+const A_CHILD: &str = "SPIKE_B_A_CHILD";
+
+/// The texts check (a) scans: units A and B for each target.
+fn a_texts() -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut out = Vec::new();
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        for spec in [unit_a(), unit_b()] {
+            let bytes = build(&spec, arch)?;
+            let text = UnitView::parse(&bytes)?.text.to_vec();
+            out.push((format!("{} {}", spec.name, arch.name()), text));
+        }
     }
-    let start = mem.exec_base();
-    // SAFETY: the chunk is committed and holds the `text.len()` bytes just written from
-    // `start`; `mem` keeps it mapped while the slice lives.
-    let moved = unsafe { std::slice::from_raw_parts(start as *const u8, text.len()) }.to_vec();
-    Ok((start, moved))
+    Ok(out)
+}
+
+/// The second build (check (a) in a second process, M6-ORCH-11): a session with unit A, as in
+/// the first process, then the texts of [`a_texts`]. Writes to `path` the start of this
+/// process's code range, the start of unit A's mapped text, then one line per text (name,
+/// hex bytes). Never returns.
+fn a_child(path: &std::ffi::OsStr) -> ! {
+    let r = (|| -> Result<String, String> {
+        let (a_host, _) = host_units();
+        let _us = session_with(&Config::default(), &[a_host])?;
+        let m = mapping_of(a_host)?;
+        let range = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
+        let mut out = format!("range {:x}\ntext {:x}\n", range.base(), m.text.start);
+        for (name, text) in a_texts()? {
+            let hex: String = text.iter().map(|b| format!("{b:02x}")).collect();
+            out.push_str(&format!("{name} {hex}\n"));
+        }
+        Ok(out)
+    })();
+    match r.and_then(|out| std::fs::write(path, out).map_err(|e| e.to_string())) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("spike-b: check (a) second build: {e}");
+            std::process::exit(3)
+        }
+    }
+}
+
+/// The report of the second build.
+struct SecondBuild {
+    /// The start of its code range.
+    range: usize,
+    /// The start of unit A's mapped text.
+    text: usize,
+    texts: Vec<(String, Vec<u8>)>,
+}
+
+fn parse_second(report: &str) -> Result<SecondBuild, String> {
+    let mut lines = report.lines();
+    let mut addr = |key: &str| -> Result<usize, String> {
+        let l = lines.next().unwrap_or_default();
+        l.strip_prefix(key)
+            .and_then(|h| usize::from_str_radix(h, 16).ok())
+            .ok_or_else(|| format!("second build: {l:?}, want {key:?} and an address"))
+    };
+    let (range, text) = (addr("range ")?, addr("text ")?);
+    let mut texts = Vec::new();
+    for l in lines {
+        let (name, hex) = l
+            .rsplit_once(' ')
+            .ok_or_else(|| format!("second build: {l:?}"))?;
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("x"), 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|e| format!("second build: {name}: {e}"))?;
+        texts.push((name.to_string(), bytes));
+    }
+    Ok(SecondBuild { range, text, texts })
+}
+
+/// Runs check (a) again in a second process (this executable, the same arguments, with
+/// [`A_CHILD`] set) and reads its report. The second process picks its own code range slot;
+/// if it picks the slot of this process (1 in 32767), it runs again (at most 3 times).
+fn second_build(here: usize) -> Result<SecondBuild, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    for attempt in 0..3 {
+        let path = std::env::temp_dir().join(format!(
+            "spike-b-a-second-{}-{attempt}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let out = std::process::Command::new(&exe)
+            .args(std::env::args_os().skip(1))
+            .env(A_CHILD, &path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| e.to_string())?;
+        let report = std::fs::read_to_string(&path);
+        let _ = std::fs::remove_file(&path);
+        let report = match report {
+            Ok(r) if out.status.success() => r,
+            _ => {
+                return Err(format!(
+                    "the second build ended with {:?} and no report: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        };
+        let second = parse_second(&report)?;
+        if second.range != here {
+            return Ok(second);
+        }
+    }
+    Err(format!(
+        "the second build's code range started at {here:#x} 3 times (this process's start)"
+    ))
 }
 
 /// The live addresses of a session with unit A loaded (for the window scan). The placed
-/// ranges (the unit text, the code range) get their second placement in `second`, a code
-/// range of the check's own: another 4 GiB slot, with unit A's text at its first chunk.
-fn live_addresses(
-    us: &mut UnitSession,
-    m: &Mapped,
-    second: &ep9_platform::CodeRange,
-) -> Result<Live, String> {
+/// ranges (the unit text, the code range) start at other places in the `second` build's
+/// process.
+fn live_addresses(us: &mut UnitSession, m: &Mapped, second: &SecondBuild) -> Result<Live, String> {
     let mut l = Live::default();
     let cx = NativeCx::of(&mut us.s.iso);
     l.point("the Cx", cx.addr());
@@ -345,30 +434,26 @@ fn live_addresses(
         l.point("a link cell value", rw.link(0) as usize);
     }
     l.point("the unit directory", us.units.directory());
-    // SAFETY: `m.text` is mapped for the life of the process (`load::map`).
-    let text = unsafe { std::slice::from_raw_parts(m.text.start as *const u8, m.text.len()) };
-    let (moved_text, moved) = place_again(second, text)?;
-    if moved != text {
-        return Err("the text placed a second time differs from the mapped text".into());
-    }
-    l.placed("the unit text", m.text.clone(), moved_text)?;
+    l.placed("the unit text", m.text.clone(), second.text)?;
     let process = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
-    l.placed("the code range", process.range(), second.base())?;
+    l.placed("the code range", process.range(), second.range)?;
     Ok(l)
 }
 
 fn check_build(_: Scale) -> Result<Vec<String>, String> {
+    if let Some(path) = std::env::var_os(A_CHILD) {
+        a_child(&path);
+    }
     let mut out = Vec::new();
     let (a_host, _) = host_units();
     // A live session with unit A, for the addresses the scan looks for.
     let mut us = session_with(&Config::default(), &[a_host])?;
     let m = mapping_of(a_host)?;
-    // The second placement: a code range that does not overlap the process one.
     let process = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
-    let mut config = ep9_platform::CodeRangeConfig::default();
-    config.avoid.push(process.range());
-    let second = ep9_platform::CodeRange::reserve(&config).map_err(|e| e.to_string())?;
+    // The second build: the same texts from a process whose code range is at another slot.
+    let second = second_build(process.base())?;
     let live = live_addresses(&mut us, m, &second)?;
+    let mut others = second.texts.iter();
     let mut fixed = 0;
     for arch in [Arch::Aarch64, Arch::X86_64] {
         for spec in [unit_a(), unit_b()] {
@@ -381,12 +466,19 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
                 ));
             }
             let v = UnitView::parse(&bytes)?;
-            // The text read at the second placement (the build has no address input, so it
-            // is the same text; LOAD copies it unchanged).
-            let (_, moved) = place_again(&second, v.text)?;
-            let w = scan::windows(v.text, &moved, &live);
-            fixed += w.fixed.len();
-            let mut findings = w.found;
+            let name = format!("{} {}", spec.name, arch.name());
+            let other = match others.next() {
+                Some((n, t)) if *n == name => t,
+                o => return Err(format!("second build: {o:?}, want {name}")),
+            };
+            // The byte rule (the second build), then the window rule (it names the address
+            // a difference is).
+            let mut findings: Vec<_> = scan::first_difference(v.text, other).into_iter().collect();
+            if other.len() == v.text.len() {
+                let w = scan::windows(v.text, other, &live);
+                fixed += w.fixed.len();
+                findings.extend(w.found);
+            }
             if arch == Arch::Aarch64 {
                 let fns: Vec<_> = v
                     .functions
@@ -448,13 +540,15 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
         }
     }
     out.push(format!(
-        "scan: {} live addresses (+/- {} KiB) and {} placed ranges of this process (second \
-         placement {:#x}); {fixed} windows in a placed range at this placement only (fixed \
-         bytes, no finding)",
+        "scan: {} live addresses (+/- {} KiB) and {} placed ranges of this process (code \
+         range {:#x}); the second build (another process, code range {:#x}) gave the same \
+         bytes; {fixed} windows in a placed range here with the same bytes there (fixed \
+         values, no finding)",
         live.points.len(),
         scan::MARGIN >> 10,
         live.placed.len(),
-        second.base(),
+        process.base(),
+        second.range,
     ));
     Ok(out)
 }

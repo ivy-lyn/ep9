@@ -3,7 +3,8 @@
 //! | Rule | AArch64 | x86-64 |
 //! |---|---|---|
 //! | no 8-byte window (any alignment) is within 64 KiB of a fixed address of this process (a [`Live`] point: the Cx, the runtime table and its functions, FunctionInfos, bytecode, heap cells, the RW copy, the directory) | yes | yes |
-//! | no 8-byte window is an address in a placed range (a [`Placed`]: the mapped unit text, the code range) that moves with the range: read at a second placement, the window holds the same offset in the moved range | yes | yes |
+//! | the same text, built in a second process (its code range and unit text at other places), has the same bytes ([`first_difference`]) | yes | yes |
+//! | no 8-byte window is an address in a placed range (a [`Placed`]: the mapped unit text, the code range) that differs in the second build; a window that is the same there is a fixed value, not a finding | yes | yes |
 //! | no constant that `movz`/`movn`/`movk` build in a register is near a [`Live`] point | yes | - |
 //! | no `adrp` (a page-relative reference) | yes | - |
 //! | every pc-relative form (`b`, `b.cond`, `cbz`/`cbnz`, `tbz`/`tbnz`, `adr`, `ldr` literal) stays inside its own function; no direct call (`bl`) | yes | - |
@@ -12,19 +13,22 @@
 //! (`jit_b::x64` rule) and has no decoder here; its text gets the window rule and the
 //! file-equals-mapped rule of the load check.
 //!
-//! Why a placed range needs a second placement (M6-ORCH-11): the process picks the place of
-//! the code range at random (a 4 GiB-aligned slot, `ep9_platform::CodeRangeConfig`), and the
+//! Why a placed range needs a second build (M6-ORCH-11): the process picks the place of the
+//! code range at random (a 4 GiB-aligned slot, `ep9_platform::CodeRangeConfig`), and the
 //! first chunk of the range starts at the slot itself, so its address has 32 low zero bits.
 //! Unit text has fixed bytes such as `00 00 00 00 e9 32 00 00` (the imm32 0 of `mov edx, 0`,
 //! then `jmp rel32` 0x32), and they equal the slot address `0x32e9_0000_0000` when the range
-//! happens to be there (CI 41420942032). The text bytes are fixed before the text is placed
-//! (the build has no address input; LOAD copies the bytes unchanged), so such a value stays
-//! the same at a second placement. A real reference into a placed range moves with it. A
-//! window that hits a placed range only at the first placement is a fixed value
-//! ([`Windows::fixed`]), not a finding. Limit: in one process, both readings of a text come
-//! from one build, so a placed-range address that a build read from a static of this process
-//! would not move either; only a build in a second process could show it. The point rule still
-//! finds every fixed address of the live list.
+//! happens to be there (CI 41420942032). One value cannot show if it is such a fixed value or
+//! a real address. Two builds can: check (a) builds the same text in a second process, whose
+//! code range is at another slot (it checks that) and whose unit text is in that range. A
+//! value that the build took from a placed range of its process differs there (by the move of
+//! the range, or in any other way); a fixed value is the same. So a placed-range hit with the
+//! same bytes in the second build is a fixed value ([`Windows::fixed`]), and a hit that
+//! differs is a finding. The result does not depend on where the ranges are. A copy of the
+//! same bytes at a second place (one build) cannot show this: its bytes are always the same.
+//! The byte rule ([`first_difference`]) also finds a process-dependent value that hits no
+//! range and no point. The point rule stays: a fixed address of this process can be at the
+//! same place in the second process (ASLR does not promise a move).
 
 use std::ops::Range;
 
@@ -37,18 +41,18 @@ pub struct Finding {
 }
 
 /// A range whose place the process picks (the mapped unit text, the code range), with the
-/// start of a second placement of the same range.
+/// start of the same range in the second build's process.
 #[derive(Clone, Debug)]
 pub struct Placed {
     pub name: String,
-    /// Where the range is (the first placement).
+    /// Where the range is in this process.
     pub at: Range<u64>,
-    /// The start of the second placement. It differs from `at.start`.
+    /// Where the range starts in the second build's process. It differs from `at.start`.
     pub moved: u64,
 }
 
 impl Placed {
-    /// The second-placement value of a reference to the first-placement address `v`.
+    /// The second-build value of a reference to the address `v` of this process.
     fn moved_value(&self, v: u64) -> u64 {
         v.wrapping_add(self.moved.wrapping_sub(self.at.start))
     }
@@ -71,8 +75,8 @@ impl Live {
         self
     }
 
-    /// Adds the placed range `at`, whose second placement starts at `moved`. Fails if the two
-    /// placements start at the same address: then no window can show that it moves.
+    /// Adds the placed range `at`, which starts at `moved` in the second build's process.
+    /// Fails if the two start at the same address: then a reference into it would not differ.
     pub fn placed(&mut self, name: &str, at: Range<usize>, moved: usize) -> Result<(), String> {
         if moved == at.start {
             return Err(format!(
@@ -102,10 +106,11 @@ impl Live {
 /// The result of the window rule.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Windows {
-    /// Relocations: a window near a fixed address, or one that moves with a placed range.
+    /// Relocations: a window near a fixed address, or one in a placed range that differs in
+    /// the second build.
     pub found: Vec<Finding>,
-    /// Not relocations: a window that is in a placed range at the first placement only (the
-    /// same bytes at the second placement).
+    /// Not relocations: a window in a placed range of this process with the same bytes in the
+    /// second build (a fixed value).
     pub fixed: Vec<Finding>,
 }
 
@@ -113,13 +118,14 @@ fn word(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
 }
 
-/// The window rule over `text` and `moved`: the same text as read at the first and at the
-/// second placement of every [`Placed`] range. Panics if the lengths differ.
-pub fn windows(text: &[u8], moved: &[u8], live: &Live) -> Windows {
-    assert_eq!(text.len(), moved.len(), "the two readings of one text");
+/// The window rule over `text` and `other`: the same text from this build and from the
+/// second build (another process, the [`Placed`] ranges at their `moved` starts). Panics if
+/// the lengths differ.
+pub fn windows(text: &[u8], other: &[u8], live: &Live) -> Windows {
+    assert_eq!(text.len(), other.len(), "the two builds of one text");
     let mut out = Windows::default();
     for at in 0..text.len().saturating_sub(7) {
-        let (v, w) = (word(text, at), word(moved, at));
+        let (v, w) = (word(text, at), word(other, at));
         if let Some(n) = live.hit(v) {
             out.found.push(Finding {
                 at,
@@ -136,22 +142,53 @@ pub fn windows(text: &[u8], moved: &[u8], live: &Live) -> Windows {
             out.found.push(Finding {
                 at,
                 what: format!(
-                    "8 bytes {v:#x} = an address in {}; it moves with it (to {w:#x})",
+                    "8 bytes {v:#x} = an address in {}; it moves with it (to {w:#x} in the \
+                     second build)",
                     p.name
+                ),
+            });
+        } else if w != v {
+            out.found.push(Finding {
+                at,
+                what: format!(
+                    "8 bytes {v:#x} = an address in {}; {w:#x} in the second build",
+                    first.name
                 ),
             });
         } else {
             out.fixed.push(Finding {
                 at,
                 what: format!(
-                    "8 bytes {v:#x} = an address in {} at this placement only ({w:#x} at the \
-                     second)",
+                    "8 bytes {v:#x} = an address in {} here, the same bytes in the second \
+                     build (a fixed value)",
                     first.name
                 ),
             });
         }
     }
     out
+}
+
+/// The byte rule: the first offset where `text` (this build) and `other` (the same text from
+/// the build in a second process) differ, or a length difference. `None` if they are equal.
+pub fn first_difference(text: &[u8], other: &[u8]) -> Option<Finding> {
+    if let Some(at) = text.iter().zip(other).position(|(a, b)| a != b) {
+        return Some(Finding {
+            at,
+            what: format!(
+                "byte {:#04x}, {:#04x} in the second build: the text depends on its process",
+                text[at], other[at]
+            ),
+        });
+    }
+    (text.len() != other.len()).then(|| Finding {
+        at: text.len().min(other.len()),
+        what: format!(
+            "{} bytes, {} in the second build: the text depends on its process",
+            text.len(),
+            other.len()
+        ),
+    })
 }
 
 fn sext(v: u32, bits: u32) -> i64 {
@@ -227,8 +264,8 @@ pub fn aarch64(text: &[u8], fns: &[Range<usize>], live: &Live) -> Vec<Finding> {
             };
             if let Some(v) = built {
                 regs[rd] = Some(v);
-                // Fixed addresses only: a constant of the instruction bits that equals a
-                // placed address has one reading here (the window rule's two readings decide).
+                // Fixed addresses only: a constant that the build took from a placed range
+                // differs in the second build (the byte rule finds it).
                 if let Some(n) = live.hit(v) {
                     out.push(Finding {
                         at,
@@ -261,8 +298,8 @@ mod tests {
     }
 
     /// The process code range at the 4 GiB slot `base` with its first chunk (the unit text,
-    /// `len` bytes) at the slot itself, as LOAD places it, and a second placement 4 GiB
-    /// higher.
+    /// `len` bytes) at the slot itself, as LOAD places it; in the second build's process both
+    /// start 4 GiB higher.
     fn placed_at(base: u64, len: u64) -> Live {
         let (b, m) = (base as usize, base as usize + (4 << 30));
         let mut l = live();
@@ -308,7 +345,7 @@ mod tests {
         let at = t.len();
         t.extend_from_slice(&[0, 0, 0, 0, 0xe9, 0x32, 0, 0, 0, 0xc3]);
         let l = placed_at(0x32e9_0000_0000, t.len() as u64);
-        // The same bytes at both placements (LOAD copies them unchanged).
+        // The same bytes in the second build (they do not come from an address).
         let w = windows(&t, &t, &l);
         assert!(w.found.is_empty(), "{w:?}");
         assert_eq!(w.fixed.len(), 1, "{w:?}");
@@ -320,7 +357,8 @@ mod tests {
             Windows::default()
         );
         // The real x86-64 unit A text, with the code range placed at each 4 GiB slot that
-        // one of its windows names: 0 findings, whatever the slot.
+        // one of its windows names, and the same text as the second build (the build has no
+        // address input): 0 findings, whatever the slot.
         let bytes = build(&unit_a(), Arch::X86_64).expect("unit A");
         let text = UnitView::parse(&bytes).expect("parse").text;
         let mut slots = 0;
@@ -336,20 +374,23 @@ mod tests {
         eprintln!("x86-64 unit A: {slots} windows name a 4 GiB slot");
     }
 
-    /// A real address is still found: one near a fixed address at any placement, and one in
-    /// a placed range that moves with it.
+    /// A real address is still found: one near a fixed address in either build, and one in a
+    /// placed range that differs in the second build. M6-ORCH-11: the rule of 36a61a53 read
+    /// the second text from a copy of the same bytes, so a reference into a placed range was
+    /// never found; here the second text is another build.
     #[test]
     fn a_real_address_is_found() {
         let base = 0x32e9_0000_0000u64;
         let mut t = words(&[0xD65F_03C0, 0xD503_201F]);
         let l = placed_at(base, 0x4000);
-        // The Cx address (a fixed point), the same at both placements.
+        // The Cx address (a fixed point), the same in both builds.
         t.extend_from_slice(&0x0000_7f12_3456_0010u64.to_le_bytes());
         let w = windows(&t, &t, &l);
         assert_eq!(w.found.len(), 1, "{w:?}");
         assert!(w.found[0].what.contains("near cx"), "{w:?}");
-        // A reference to the text's offset 0x40: base + 0x40 at the first placement, and the
-        // second placement's start + 0x40 at the second.
+        assert_eq!(first_difference(&t, &t), None);
+        // A reference to the text's offset 0x40: base + 0x40 here, and the second process's
+        // text start + 0x40 in the second build.
         let at = t.len();
         let mut first = t.clone();
         first.extend_from_slice(&(base + 0x40).to_le_bytes());
@@ -360,10 +401,29 @@ mod tests {
         assert_eq!(w.found[1].at, at);
         assert!(w.found[1].what.contains("moves with it"), "{w:?}");
         assert!(w.fixed.is_empty(), "{w:?}");
-        // The same value at both readings is a fixed value, not a reference.
+        // byte 4 of the value: 0xe9 here, 0xea there.
+        assert_eq!(first_difference(&first, &moved).map(|f| f.at), Some(at + 4));
+        // A value in a placed range that differs, but not by the move: found too.
+        let mut other = t.clone();
+        other.extend_from_slice(&0x1234u64.to_le_bytes());
+        let w = windows(&first, &other, &l);
+        assert_eq!(w.found.len(), 2, "{w:?}");
+        assert!(
+            w.found[1].what.contains("0x1234 in the second build"),
+            "{w:?}"
+        );
+        // The same value in both builds is a fixed value, not a reference.
         let w = windows(&first, &first, &l);
         assert_eq!((w.found.len(), w.fixed.len()), (1, 1), "{w:?}");
-        // Two placements at one address cannot show a move.
+        // A process-dependent value that hits no range and no point: the byte rule finds it.
+        let mut a = t.clone();
+        a.extend_from_slice(&0x0000_0001_0000_0000u64.to_le_bytes());
+        let mut b = t.clone();
+        b.extend_from_slice(&0x0000_0002_0000_0000u64.to_le_bytes());
+        assert_eq!(windows(&a, &b, &l).found.len(), 1, "only the Cx point");
+        assert_eq!(first_difference(&a, &b).map(|f| f.at), Some(at + 4));
+        assert_eq!(first_difference(&a, &a[..at]).map(|f| f.at), Some(at));
+        // Two processes with one range start cannot show a move.
         assert!(Live::default().placed("x", 0x1000..0x2000, 0x1000).is_err());
     }
 }
