@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use ep9_bytecode::{ABI_VERSION, CompiledUnit, FeedbackSlotKind};
 
-use crate::bits::FactSource;
+use crate::bits::{FactSource, RecordFlags};
 use crate::facts::{FunctionRef, SlotFacts, UnitHash};
 
 /// Why a snapshot or a record was refused.
@@ -70,12 +70,49 @@ pub struct SlotKey {
     pub slot: u32,
 }
 
+/// The fields of FACT_SCHEMA 2 that every record has, beside its [`SlotFacts`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RecordMeta {
+    /// The exit flag (H29-Q5) and the "ran" bit (MODES-D15, at the MODES-D17 sites only).
+    pub flags: RecordFlags,
+    /// H30-Q1: the confidence of a record of a PROFILED or HINTED snapshot, 1 (lowest) to 255
+    /// (highest), or 0 if its writer gave none (a reader then uses its source's default; H32
+    /// "HINTED: at lower confidence" reads it, H32-Q1). A RUNTIME record holds 0, and its
+    /// encoding has no confidence byte.
+    pub confidence: u8,
+}
+
+/// The slot kinds that may carry [`RecordFlags::RAN`] (MODES-D17): the sites with an
+/// implicit bit.
+pub const RAN_KINDS: [FeedbackSlotKind; 3] = [
+    FeedbackSlotKind::BinaryOp,
+    FeedbackSlotKind::CompareOp,
+    FeedbackSlotKind::LoadKeyed,
+];
+
+/// The rules of a record's [`RecordMeta`] in a snapshot of `source`.
+pub(crate) fn check_meta(
+    source: FactSource,
+    kind: FeedbackSlotKind,
+    meta: RecordMeta,
+) -> Result<(), FactError> {
+    if meta.flags.contains(RecordFlags::RAN) && !RAN_KINDS.contains(&kind) {
+        return Err(FactError::Invalid(
+            "ran is only at BinaryOp, CompareOp and LoadKeyed sites",
+        ));
+    }
+    if source == FactSource::Runtime && meta.confidence != 0 {
+        return Err(FactError::Invalid("a runtime record has no confidence"));
+    }
+    Ok(())
+}
+
 /// The facts of one unit. Every value is canonical: records are sorted by key and checked,
 /// so equal facts encode to equal bytes whatever order they were added in.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FactSnapshot {
     header: FactHeader,
-    records: BTreeMap<SlotKey, SlotFacts>,
+    records: BTreeMap<SlotKey, (SlotFacts, RecordMeta)>,
 }
 
 /// Why the validator dropped a record.
@@ -133,33 +170,56 @@ impl FactSnapshot {
         &self.header
     }
 
-    /// Adds (or replaces) the record of slot `slot` of function `function`. The facts are
-    /// put in canonical order first ([`SlotFacts::normalize`]); a record that breaks a format
-    /// rule is refused and the snapshot does not change.
-    pub fn insert(
+    /// Adds (or replaces) the record of slot `slot` of function `function`, with no flag and
+    /// no confidence ([`RecordMeta::default`]). The facts are put in canonical order first
+    /// ([`SlotFacts::normalize`]); a record that breaks a format rule is refused and the
+    /// snapshot does not change.
+    pub fn insert(&mut self, function: u32, slot: u32, facts: SlotFacts) -> Result<(), FactError> {
+        self.insert_with(function, slot, facts, RecordMeta::default())
+    }
+
+    /// [`FactSnapshot::insert`] with the record's flags and confidence. Refused if `meta`
+    /// breaks a rule: [`RecordFlags::RAN`] at a kind that is not in [`RAN_KINDS`], or a
+    /// confidence in a RUNTIME snapshot.
+    pub fn insert_with(
         &mut self,
         function: u32,
         slot: u32,
         mut facts: SlotFacts,
+        meta: RecordMeta,
     ) -> Result<(), FactError> {
         facts.normalize()?;
-        self.records.insert(SlotKey { function, slot }, facts);
+        check_meta(self.header.source, facts.kind(), meta)?;
+        self.records
+            .insert(SlotKey { function, slot }, (facts, meta));
         Ok(())
     }
 
     /// The record of a slot.
     pub fn get(&self, function: u32, slot: u32) -> Option<&SlotFacts> {
-        self.records.get(&SlotKey { function, slot })
+        self.records.get(&SlotKey { function, slot }).map(|r| &r.0)
+    }
+
+    /// The flags and confidence of the record of a slot.
+    pub fn meta(&self, function: u32, slot: u32) -> Option<RecordMeta> {
+        self.records.get(&SlotKey { function, slot }).map(|r| r.1)
     }
 
     /// Removes the record of a slot.
     pub fn remove(&mut self, function: u32, slot: u32) -> Option<SlotFacts> {
-        self.records.remove(&SlotKey { function, slot })
+        self.records
+            .remove(&SlotKey { function, slot })
+            .map(|r| r.0)
     }
 
     /// The records in key order.
     pub fn records(&self) -> impl Iterator<Item = (SlotKey, &SlotFacts)> {
-        self.records.iter().map(|(k, v)| (*k, v))
+        self.records.iter().map(|(k, v)| (*k, &v.0))
+    }
+
+    /// The records in key order, each with its flags and confidence.
+    pub fn records_with_meta(&self) -> impl Iterator<Item = (SlotKey, &SlotFacts, RecordMeta)> {
+        self.records.iter().map(|(k, v)| (*k, &v.0, v.1))
     }
 
     /// The number of records.
@@ -173,8 +233,14 @@ impl FactSnapshot {
     }
 
     /// A record from the decoder, which checks the order of keys itself.
-    pub(crate) fn push_decoded(&mut self, key: SlotKey, facts: SlotFacts) {
-        self.records.insert(key, facts);
+    pub(crate) fn push_decoded(&mut self, key: SlotKey, facts: SlotFacts, meta: RecordMeta) {
+        self.records.insert(key, (facts, meta));
+    }
+
+    /// The records, to change in place (the decoder's second pass after an open value folded
+    /// two shapes into one, `codec.rs`).
+    pub(crate) fn records_mut(&mut self) -> impl Iterator<Item = &mut SlotFacts> {
+        self.records.values_mut().map(|r| &mut r.0)
     }
 
     /// Checks the snapshot against `unit`, the unit it claims to describe.
@@ -198,7 +264,7 @@ impl FactSnapshot {
         }
         let mut dropped = Vec::new();
         let unit_hash = self.header.unit_hash;
-        self.records.retain(|&key, facts| {
+        self.records.retain(|&key, (facts, _)| {
             let reason = match unit.functions.get(key.function as usize) {
                 None => Some(DropReason::NoFunction),
                 Some(f) => match f.feedback_slots.get(key.slot as usize) {

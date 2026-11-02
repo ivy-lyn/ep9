@@ -134,52 +134,120 @@ const WEC: PropAttrs = PropAttrs::WRITABLE
     .union(PropAttrs::ENUMERABLE)
     .union(PropAttrs::CONFIGURABLE);
 
-pub fn key(s: &str) -> (KeyRef, PropAttrs) {
-    (KeyRef::String(UnitString::new(s)), WEC)
+/// A key, its attributes and the hint of its field: one entry of `ShapeDesc::keys` with
+/// the same entry of `ShapeDesc::fields`.
+pub type Entry = (KeyRef, PropAttrs, FieldHint);
+
+/// A shape whose keys and field hints are `entries`.
+pub fn shape(
+    proto: ProtoRef,
+    kind: ObjectKind,
+    elements: Option<ElementsKind>,
+    flags: ShapeFlags,
+    capacity: u16,
+    entries: Vec<Entry>,
+) -> ShapeDesc {
+    let mut s = ShapeDesc {
+        proto,
+        kind,
+        elements,
+        flags,
+        capacity,
+        keys: vec![],
+        fields: vec![],
+    };
+    set_keys(&mut s, entries);
+    s
 }
 
-/// `{x, y}` on Object.prototype (intrinsic 1 in the sample), in-object capacity 4.
-pub fn point() -> ShapeDesc {
-    ShapeDesc {
-        proto: ProtoRef::Intrinsic(1),
-        kind: ObjectKind::Ordinary,
-        flags: ShapeFlags::EXTENSIBLE,
-        capacity: 4,
-        keys: vec![key("x"), key("y")],
+/// Appends a key and its field hint.
+pub fn push_key(s: &mut ShapeDesc, (k, a, h): Entry) {
+    s.keys.push((k, a));
+    s.fields.push(h);
+}
+
+/// Replaces the keys and field hints.
+pub fn set_keys(s: &mut ShapeDesc, entries: impl IntoIterator<Item = Entry>) {
+    s.keys.clear();
+    s.fields.clear();
+    for e in entries {
+        push_key(s, e);
     }
 }
 
-/// `point` plus `z`.
+/// A key with no representation hint (as a field before its first store).
+pub fn key(s: &str) -> Entry {
+    (
+        KeyRef::String(UnitString::new(s)),
+        WEC,
+        FieldHint::default(),
+    )
+}
+
+/// A key whose field holds `rep` values; `constant` if never stored twice.
+pub fn field(s: &str, rep: FieldRep, constant: bool) -> Entry {
+    (
+        KeyRef::String(UnitString::new(s)),
+        WEC,
+        FieldHint { rep, constant },
+    )
+}
+
+/// `{x, y}` on Object.prototype (intrinsic 1 in the sample), in-object capacity 4: `x`
+/// holds int32 values and is const, `y` holds doubles.
+pub fn point() -> ShapeDesc {
+    shape(
+        ProtoRef::Intrinsic(1),
+        ObjectKind::Ordinary,
+        Some(ElementsKind::PackedInt32),
+        ShapeFlags::EXTENSIBLE,
+        4,
+        vec![
+            field("x", FieldRep::Int32, true),
+            field("y", FieldRep::Double, false),
+        ],
+    )
+}
+
+/// `point` plus `z` (heap values), with holey elements.
 pub fn point3() -> ShapeDesc {
     let mut s = point();
-    s.keys.push(key("z"));
+    s.elements = Some(ElementsKind::HoleyInt32);
+    push_key(&mut s, field("z", FieldRep::Heap, false));
     s
 }
 
 /// An instance of `new F` (function 2) with a non-Latin-1 key, a well-known symbol key and
 /// a symbol key without a name.
 pub fn instance() -> ShapeDesc {
-    ShapeDesc {
-        proto: ProtoRef::FunctionPrototype(js(2)),
-        kind: ObjectKind::Ordinary,
-        flags: ShapeFlags::EXTENSIBLE,
-        capacity: 8,
-        keys: vec![
-            key("caf\u{e9}"),
+    shape(
+        ProtoRef::FunctionPrototype(js(2)),
+        ObjectKind::Ordinary,
+        Some(ElementsKind::PackedDouble),
+        ShapeFlags::EXTENSIBLE,
+        8,
+        vec![
+            field("caf\u{e9}", FieldRep::Any, false),
             (
                 KeyRef::String(UnitString::new("\u{20ac}")),
                 PropAttrs::WRITABLE,
+                FieldHint {
+                    rep: FieldRep::Any,
+                    constant: true,
+                },
             ),
             (
                 KeyRef::WellKnownSymbol(WellKnownSymbol::Iterator),
                 PropAttrs::CONFIGURABLE,
+                FieldHint::default(),
             ),
             (
                 KeyRef::OtherSymbol,
                 PropAttrs::ACCESSOR.union(PropAttrs::CONFIGURABLE),
+                FieldHint::default(),
             ),
         ],
-    }
+    )
 }
 
 /// A non-extensible dictionary-mode array with no prototype it can name.
@@ -187,32 +255,36 @@ pub fn dictionary() -> ShapeDesc {
     ShapeDesc {
         proto: ProtoRef::Unknown,
         kind: ObjectKind::Array,
+        elements: Some(ElementsKind::Dictionary),
         flags: ShapeFlags::DICTIONARY,
         capacity: 0,
         keys: vec![],
+        fields: vec![],
     }
 }
 
-/// A null-prototype object.
+/// A null-prototype object with no elements kind given.
 pub fn bare() -> ShapeDesc {
-    ShapeDesc {
-        proto: ProtoRef::Null,
-        kind: ObjectKind::Ordinary,
-        flags: ShapeFlags::EXTENSIBLE,
-        capacity: 4,
-        keys: vec![key("k")],
-    }
+    shape(
+        ProtoRef::Null,
+        ObjectKind::Ordinary,
+        None,
+        ShapeFlags::EXTENSIBLE,
+        4,
+        vec![key("k")],
+    )
 }
 
-/// An object of `kind` with one key, on intrinsic `10 + kind`.
+/// An object of `kind` with one key, on intrinsic `10 + kind`, with packed elements.
 pub fn of_kind(kind: ObjectKind) -> ShapeDesc {
-    ShapeDesc {
-        proto: ProtoRef::Intrinsic(10 + kind as u32),
+    shape(
+        ProtoRef::Intrinsic(10 + kind as u32),
         kind,
-        flags: ShapeFlags::EXTENSIBLE,
-        capacity: 2,
-        keys: vec![key("length")],
-    }
+        Some(ElementsKind::PackedElements),
+        ShapeFlags::EXTENSIBLE,
+        2,
+        vec![key("length")],
+    )
 }
 
 fn case(receiver: ShapeDesc, access: Access) -> PropertyCase {
@@ -274,7 +346,7 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                         case(
                             dictionary(),
                             Access::Element {
-                                kind: ElementsKind::Dictionary,
+                                kind: Some(ElementsKind::Dictionary),
                             },
                         ),
                         case(point(), Access::ArrayLength),
@@ -282,6 +354,9 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                     values: TypeSet::ALL,
                 },
                 keys: KeySet::INDEX | KeySet::NAME,
+                hint: KeyedHint::ARRAY | KeyedHint::OUT_OF_BOUNDS | KeyedHint::HOLE,
+                kinds: ElementsKindSet::of(ElementsKind::PackedInt32)
+                    | ElementsKindSet::of(ElementsKind::HoleyElements),
             }),
         ),
         (
@@ -315,6 +390,8 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                     values: TypeSet::STRING,
                 },
                 keys: KeySet::SYMBOL | KeySet::OTHER,
+                hint: KeyedHint::OBJECT | KeyedHint::PRIMITIVE,
+                kinds: ElementsKindSet::EMPTY,
             }),
         ),
         (
@@ -326,14 +403,7 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                 values: TypeSet::FUNCTION,
             }),
         ),
-        (
-            1,
-            6,
-            F::DefineKeyedOwn(KeyedFacts {
-                property: PropertyFacts::default(),
-                keys: KeySet::EMPTY,
-            }),
-        ),
+        (1, 6, F::DefineKeyedOwn(KeyedFacts::default())),
         (
             2,
             0,
@@ -368,6 +438,8 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                     values: TypeSet::EMPTY,
                 },
                 keys: KeySet::NAME,
+                hint: KeyedHint::STRING,
+                kinds: ElementsKindSet::of(ElementsKind::Dictionary),
             }),
         ),
         (2, 4, F::BinaryOp(BinaryHint::ALL)),
@@ -422,13 +494,15 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                         case(
                             point3(),
                             Access::Element {
-                                kind: ElementsKind::HoleyDouble,
+                                kind: Some(ElementsKind::HoleyDouble),
                             },
                         ),
                     ],
                     values: TypeSet::INT32,
                 },
                 keys: KeySet::INDEX,
+                hint: KeyedHint::ARRAY,
+                kinds: ElementsKindSet::of(ElementsKind::HoleyDouble),
             }),
         ),
         (3, 4, F::ForIn(ForInHint::KEYS_AND_INDICES | ForInHint::ANY)),
@@ -490,19 +564,19 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                         case(
                             of_kind(ObjectKind::Function),
                             Access::Element {
-                                kind: ElementsKind::HoleyInt32,
+                                kind: Some(ElementsKind::HoleyInt32),
                             },
                         ),
                         case(
                             of_kind(ObjectKind::Iterator),
                             Access::Element {
-                                kind: ElementsKind::PackedDouble,
+                                kind: Some(ElementsKind::PackedDouble),
                             },
                         ),
                         case(
                             of_kind(ObjectKind::PrimitiveWrapper),
                             Access::Element {
-                                kind: ElementsKind::PackedElements,
+                                kind: Some(ElementsKind::PackedElements),
                             },
                         ),
                         case(of_kind(ObjectKind::BoundFunction), Access::Generic),
@@ -510,16 +584,121 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                     values: TypeSet::INT32,
                 },
                 keys: KeySet::INDEX,
+                hint: KeyedHint::ARRAY,
+                kinds: ElementsKindSet::of(ElementsKind::PackedDouble),
+            }),
+        ),
+        // FACT_SCHEMA 2: the new object kinds, an element access of no named kind, an
+        // extensible dictionary shape and every representation.
+        (
+            4,
+            6,
+            F::StoreKeyed(KeyedFacts {
+                property: PropertyFacts {
+                    state: IcState::Polymorphic,
+                    cases: vec![
+                        case(
+                            of_kind(ObjectKind::Arguments),
+                            Access::Element { kind: None },
+                        ),
+                        case(
+                            of_kind(ObjectKind::TypedArray),
+                            Access::Element {
+                                kind: Some(ElementsKind::PackedInt32),
+                            },
+                        ),
+                        case(
+                            ShapeDesc {
+                                proto: ProtoRef::Null,
+                                kind: ObjectKind::Ordinary,
+                                elements: Some(ElementsKind::HoleyElements),
+                                flags: ShapeFlags::EXTENSIBLE | ShapeFlags::DICTIONARY,
+                                capacity: 0,
+                                keys: vec![],
+                                fields: vec![],
+                            },
+                            Access::Generic,
+                        ),
+                    ],
+                    values: TypeSet::EMPTY,
+                },
+                keys: KeySet::INDEX,
+                hint: KeyedHint::ALL,
+                kinds: ElementsKindSet::from_bits_truncate(u16::MAX),
+            }),
+        ),
+        (
+            4,
+            7,
+            F::Literal(LiteralFacts {
+                count: 2,
+                shape: Some(
+                    shape(
+                        ProtoRef::Intrinsic(2),
+                        ObjectKind::Ordinary,
+                        None,
+                        ShapeFlags::EXTENSIBLE,
+                        1,
+                        vec![field("r", FieldRep::Unset, true)],
+                    )
+                    .into(),
+                ),
+                elements: Some(ElementsKind::HoleyInt32),
             }),
         ),
     ]
 }
 
-/// The sample: [`sample_records`] inserted in order.
+/// The flags and confidence of the sample's records (a PROFILED snapshot): every flag and a
+/// low, a high and an unset confidence, on (function, slot) of [`sample_records`].
+pub fn sample_meta() -> Vec<(u32, u32, RecordMeta)> {
+    vec![
+        (
+            2,
+            4,
+            RecordMeta {
+                flags: RecordFlags::RAN | RecordFlags::EXITED,
+                confidence: 255,
+            },
+        ),
+        (
+            2,
+            5,
+            RecordMeta {
+                flags: RecordFlags::RAN,
+                confidence: 1,
+            },
+        ),
+        (
+            1,
+            2,
+            RecordMeta {
+                flags: RecordFlags::RAN,
+                confidence: 128,
+            },
+        ),
+        (
+            1,
+            1,
+            RecordMeta {
+                flags: RecordFlags::EXITED,
+                confidence: 0,
+            },
+        ),
+    ]
+}
+
+/// The sample: [`sample_records`] inserted in order, with [`sample_meta`].
 pub fn sample() -> FactSnapshot {
     let mut s = FactSnapshot::new(header());
+    let meta = sample_meta();
     for (f, i, facts) in sample_records() {
-        s.insert(f, i, facts).expect("sample record is valid");
+        let m = meta
+            .iter()
+            .find(|(mf, mi, _)| (*mf, *mi) == (f, i))
+            .map_or(RecordMeta::default(), |m| m.2);
+        s.insert_with(f, i, facts, m)
+            .expect("sample record is valid");
     }
     s
 }
@@ -534,8 +713,13 @@ pub fn coverage(s: &FactSnapshot) -> BTreeSet<String> {
     let mut add = |t: &str, n: &str| {
         out.insert(format!("{t}:{n}"));
     };
-    for (_, f) in s.records() {
+    for (_, f, meta) in s.records_with_meta() {
         add("kind", f.kind().name());
+        for (b, n) in RecordFlags::BITS {
+            if meta.flags.contains(*b) {
+                add("RecordFlags", n);
+            }
+        }
         let state = match f {
             SlotFacts::Call(c) => Some(c.callees.state),
             SlotFacts::InstanceOf(t) => Some(t.state),
@@ -572,7 +756,7 @@ pub fn coverage(s: &FactSnapshot) -> BTreeSet<String> {
             SlotFacts::LoadNamed(p) | SlotFacts::StoreNamed(p) | SlotFacts::DefineNamedOwn(p) => {
                 for c in &p.cases {
                     add("Access", Access::TAGS[c.access.tag() as usize]);
-                    if let Access::Element { kind } = c.access {
+                    if let Access::Element { kind: Some(kind) } = c.access {
                         add("ElementsKind", kind.name());
                     }
                 }
@@ -584,9 +768,17 @@ pub fn coverage(s: &FactSnapshot) -> BTreeSet<String> {
             | SlotFacts::StoreInArrayLiteral(k) => {
                 for c in &k.property.cases {
                     add("Access", Access::TAGS[c.access.tag() as usize]);
-                    if let Access::Element { kind } = c.access {
+                    if let Access::Element { kind: Some(kind) } = c.access {
                         add("ElementsKind", kind.name());
                     }
+                }
+                for (b, n) in KeyedHint::BITS {
+                    if k.hint.contains(*b) {
+                        add("KeyedHint", n);
+                    }
+                }
+                for kind in k.kinds.kinds() {
+                    add("ElementsKindSet", kind.name());
                 }
             }
             _ => {}
@@ -595,15 +787,33 @@ pub fn coverage(s: &FactSnapshot) -> BTreeSet<String> {
         f.for_each_shape(&mut |sh| {
             add("ProtoRef", ProtoRef::TAGS[sh.proto.tag() as usize]);
             add("ObjectKind", sh.kind.name());
-            for (k, _) in &sh.keys {
+            if let Some(e) = sh.elements {
+                add("ElementsKind", e.name());
+            }
+            for (b, n) in ShapeFlags::BITS {
+                if sh.flags.contains(*b) {
+                    add("ShapeFlags", n);
+                }
+            }
+            for ((k, _), h) in sh.keys.iter().zip(&sh.fields) {
                 add("KeyRef", KeyRef::TAGS[k.tag() as usize]);
+                add("FieldRep", h.rep.name());
             }
         });
     }
     out
 }
 
-/// Everything [`coverage`] can report.
+/// The values (bits) of each open list that FACT_SCHEMA 2 names. The sample covers these. A
+/// later append is no format change (`bits.rs` module docs), so neither the sample nor the
+/// schema fingerprint needs it; `tests/schema.rs` pins these numbers.
+pub const ELEMENTS_KINDS_AT_2: usize = 7;
+/// See [`ELEMENTS_KINDS_AT_2`].
+pub const FIELD_REPS_AT_2: usize = 5;
+/// See [`ELEMENTS_KINDS_AT_2`].
+pub const SHAPE_FLAGS_AT_2: usize = 2;
+
+/// Everything [`coverage`] can report (of the open lists, the values named at FACT_SCHEMA 2).
 pub fn every_variant() -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut add = |t: &str, names: &mut dyn Iterator<Item = &'static str>| {
@@ -615,7 +825,10 @@ pub fn every_variant() -> BTreeSet<String> {
     add("IcState", &mut IcState::ALL.iter().map(|v| v.name()));
     add(
         "ElementsKind",
-        &mut ElementsKind::ALL.iter().map(|v| v.name()),
+        &mut ElementsKind::ALL
+            .iter()
+            .take(ELEMENTS_KINDS_AT_2)
+            .map(|v| v.name()),
     );
     add(
         "ClosureCount",
@@ -626,6 +839,23 @@ pub fn every_variant() -> BTreeSet<String> {
     add("ProtoRef", &mut ProtoRef::TAGS.iter().copied());
     add("ObjectKind", &mut ObjectKind::ALL.iter().map(|v| v.name()));
     add("KeyRef", &mut KeyRef::TAGS.iter().copied());
+    add("RecordFlags", &mut RecordFlags::BITS.iter().map(|b| b.1));
+    add("KeyedHint", &mut KeyedHint::BITS.iter().map(|b| b.1));
+    add(
+        "ShapeFlags",
+        &mut ShapeFlags::BITS.iter().take(SHAPE_FLAGS_AT_2).map(|b| b.1),
+    );
+    add(
+        "FieldRep",
+        &mut FieldRep::ALL.iter().take(FIELD_REPS_AT_2).map(|v| v.name()),
+    );
+    add(
+        "ElementsKindSet",
+        &mut ElementsKind::ALL
+            .iter()
+            .take(ELEMENTS_KINDS_AT_2)
+            .map(|v| v.name()),
+    );
     out
 }
 
@@ -663,26 +893,34 @@ pub fn random_shape(rng: &mut Rng) -> ShapeDesc {
         _ => ProtoRef::Unknown,
     };
     let dictionary = rng.below(6) == 0;
-    let mut keys: Vec<(KeyRef, PropAttrs)> = Vec::new();
+    let mut keys: Vec<Entry> = Vec::new();
     if !dictionary {
         for _ in 0..rng.below(5) {
             let k = random_key(rng);
-            if k == KeyRef::OtherSymbol || !keys.iter().any(|(o, _)| *o == k) {
-                keys.push((k, PropAttrs::from_bits(rng.below(16) as u8).unwrap()));
+            if k == KeyRef::OtherSymbol || !keys.iter().any(|(o, _, _)| *o == k) {
+                keys.push((
+                    k,
+                    PropAttrs::from_bits(rng.below(16) as u8).unwrap(),
+                    FieldHint {
+                        rep: *rng.pick(FieldRep::ALL),
+                        constant: rng.below(2) == 0,
+                    },
+                ));
             }
         }
     }
-    ShapeDesc {
+    shape(
         proto,
-        kind: *rng.pick(ObjectKind::ALL),
-        flags: if dictionary {
+        *rng.pick(ObjectKind::ALL),
+        (rng.below(3) != 0).then(|| *rng.pick(ElementsKind::ALL)),
+        if dictionary {
             ShapeFlags::DICTIONARY | ShapeFlags::from_bits(rng.below(2) as u8).unwrap()
         } else {
             ShapeFlags::EXTENSIBLE
         },
-        capacity: rng.below(9) as u16,
+        rng.below(9) as u16,
         keys,
-    }
+    )
 }
 
 fn random_access(rng: &mut Rng, receiver: &ShapeDesc) -> Access {
@@ -709,10 +947,14 @@ fn random_access(rng: &mut Rng, receiver: &ShapeDesc) -> Access {
             5 => {
                 let mut to = receiver.clone();
                 to.flags = ShapeFlags::EXTENSIBLE;
-                to.keys.push((
-                    KeyRef::String(UnitString::new("added")),
-                    PropAttrs::WRITABLE,
-                ));
+                push_key(
+                    &mut to,
+                    (
+                        KeyRef::String(UnitString::new("added")),
+                        PropAttrs::WRITABLE,
+                        FieldHint::default(),
+                    ),
+                );
                 Access::AddField {
                     field: to.keys.len() as u16 - 1,
                     to: to.into(),
@@ -721,7 +963,7 @@ fn random_access(rng: &mut Rng, receiver: &ShapeDesc) -> Access {
             6 => Access::ArrayLength,
             7 => Access::StringLength,
             8 => Access::Element {
-                kind: *rng.pick(ElementsKind::ALL),
+                kind: (rng.below(4) != 0).then(|| *rng.pick(ElementsKind::ALL)),
             },
             9 => Access::Generic,
             _ => continue,
@@ -780,6 +1022,8 @@ pub fn random_facts(rng: &mut Rng, kind: FeedbackSlotKind) -> SlotFacts {
     let keyed = |rng: &mut Rng| KeyedFacts {
         property: random_property(rng),
         keys: KeySet::from_bits(rng.below(16) as u8).unwrap(),
+        hint: KeyedHint::from_bits(rng.below(64) as u8).unwrap(),
+        kinds: ElementsKindSet::from_bits_truncate(rng.next() as u16),
     };
     let global = |rng: &mut Rng| GlobalFacts {
         bindings: BindingSet::from_bits(rng.below(16) as u8).unwrap(),
@@ -854,8 +1098,26 @@ pub fn random_records(rng: &mut Rng) -> Vec<(u32, u32, SlotFacts)> {
 pub fn snapshot_of(records: &[(u32, u32, SlotFacts)], source: FactSource) -> FactSnapshot {
     let mut s = FactSnapshot::new(FactHeader { source, ..header() });
     for (f, i, facts) in records {
-        s.insert(*f, *i, facts.clone())
+        s.insert_with(*f, *i, facts.clone(), meta_for(source, facts, *f, *i))
             .expect("random record is valid");
     }
     s
+}
+
+/// Valid flags and a confidence for a record, from its key (so a reordered build of the same
+/// records gets the same ones).
+pub fn meta_for(source: FactSource, facts: &SlotFacts, f: u32, i: u32) -> RecordMeta {
+    let mut rng = Rng::new(u64::from(f) << 32 | u64::from(i));
+    let mut flags = RecordFlags::from_bits(rng.below(4) as u8).unwrap();
+    if !RAN_KINDS.contains(&facts.kind()) {
+        flags = RecordFlags::from_bits(flags.bits() & !RecordFlags::RAN.bits()).unwrap();
+    }
+    RecordMeta {
+        flags,
+        confidence: if source == FactSource::Runtime {
+            0
+        } else {
+            rng.next() as u8
+        },
+    }
 }

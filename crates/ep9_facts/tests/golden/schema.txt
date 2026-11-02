@@ -12,13 +12,13 @@ header 64 bytes:
   60 4 total_size
 body: shapes[shape_count] ShapeDesc, then records[record_count] Record
 types:
-  ShapeDesc = proto ProtoRef, kind u8 ObjectKind, flags u8 ShapeFlags, capacity u16, key_count u32, keys[key_count] (KeyRef, attrs u8 PropAttrs)
+  ShapeDesc = proto ProtoRef, kind u8 ObjectKind, elements u8 (ElementsKind + 1), flags u8 ShapeFlags, capacity u16, key_count u32, keys[key_count] (KeyRef, attrs u8: PropAttrs bits 0-3, the key's field hint: FieldRep bits 4-6, const bit 7)
   ShapeIndex = u32 index into shapes
-  Record = function u32, slot u32, kind u8 FeedbackSlotKind, payload by kind
+  Record = function u32, slot u32, kind u8 FeedbackSlotKind, flags u8 RecordFlags, confidence u8 (only in a profiled or hinted snapshot), payload by kind
   CallFacts = count u32, callees TargetFacts, result u16 TypeSet
   TargetFacts = state u8 IcState, count u32, FunctionRef[count]
   PropertyFacts = state u8 IcState, count u32, (receiver ShapeIndex, Access)[count], values u16 TypeSet
-  KeyedFacts = PropertyFacts, keys u8 KeySet
+  KeyedFacts = PropertyFacts, keys u8 KeySet, hint u8 KeyedHint, kinds u16 ElementsKindSet
   GlobalFacts = bindings u8 BindingSet, values u16 TypeSet
   LiteralFacts = count u32, shape u32 (ShapeIndex + 1), elements u8 (ElementsKind + 1)
   CloneFacts = state u8 IcState, count u32, (source ShapeIndex, result ShapeIndex)[count]
@@ -47,7 +47,7 @@ types:
     5 add-field to ShapeIndex, field u16
     6 array-length
     7 string-length
-    8 element kind u8 ElementsKind
+    8 element kind u8 (ElementsKind + 1)
     9 generic
 kinds (FeedbackSlotKind byte, name, payload):
   0 Call CallFacts
@@ -74,8 +74,7 @@ kinds (FeedbackSlotKind byte, name, payload):
 enums:
   FactSource u8: 0 runtime, 1 profiled, 2 hinted
   IcState u8: 0 uninitialized, 1 monomorphic, 2 polymorphic, 3 megamorphic
-  ObjectKind u8: 0 ordinary, 1 array, 2 function, 3 error, 4 iterator, 5 primitive-wrapper, 6 bound-function
-  ElementsKind u8: 0 packed-int32, 1 packed-double, 2 packed-elements, 3 holey-int32, 4 holey-double, 5 holey-elements, 6 dictionary
+  ObjectKind u8: 0 ordinary, 1 array, 2 function, 3 error, 4 iterator, 5 primitive-wrapper, 6 bound-function, 7 arguments, 8 typed-array
   WellKnownSymbol u8: 0 asyncIterator, 1 hasInstance, 2 isConcatSpreadable, 3 iterator, 4 match, 5 matchAll, 6 replace, 7 search, 8 species, 9 split, 10 toPrimitive, 11 toStringTag, 12 unscopables, 13 dispose, 14 asyncDispose
   ClosureCount u8: 0 none, 1 one, 2 many
 bitsets (reserved bits are 0):
@@ -84,9 +83,15 @@ bitsets (reserved bits are 0):
   CompareHint u16: 0 int32, 1 number, 2 boolean, 3 nullish, 4 atom, 5 string, 6 symbol, 7 bigint, 8 receiver, 9 other
   ForInHint u8: 0 enum-cache-keys-and-indices, 1 enum-cache-keys, 2 any
   KeySet u8: 0 index, 1 name, 2 symbol, 3 other
+  KeyedHint u8: 0 array, 1 object, 2 string, 3 primitive, 4 out-of-bounds, 5 hole
   BindingSet u8: 0 lexical, 1 data-property, 2 accessor-property, 3 missing
   PropAttrs u8: 0 w, 1 e, 2 c, 3 accessor
-  ShapeFlags u8: 0 extensible, 1 dictionary
+  RecordFlags u8: 0 exited, 1 ran
+open lists (a reader never refuses a snapshot for a value or bit it does not name):
+  ElementsKind u8: the H18 elements kind values 0-15; an unnamed value reads as none
+  FieldRep u3: the VM representation values 0-7; an unnamed value reads as any
+  ShapeFlags u8: bits 0-7; an unnamed bit is dropped
+  ElementsKindSet u16: bit i is the ElementsKind of value i; an unnamed bit is dropped
 rules:
   value order: fields in declaration order, variants in tag order, strings Latin-1 before UTF-16 then by code units
   shapes strictly ascending in value order; every shape is used by a record
@@ -98,4 +103,11 @@ rules:
   a js FunctionRef never names function 0
   key i is in-object slot i below capacity, else out-of-line slot i - capacity
   bitsets merge by OR
+  record flags: ran only at BinaryOp, CompareOp and LoadKeyed; a runtime record has no confidence byte; confidence 0 = none given, else 1 (lowest) to 255 (highest)
+  an input holds one encoding per value, but for an unnamed open value: it decodes to the facts this reader names; two shapes it folds into one merge their cases (equal cases merge, a receiver or clone source with two different cases is left out)
   validator: drop the snapshot if bytecode_abi or unit_hash differ from the unit; drop a record if its function or slot does not exist, its kind is not the slot's kind, or a js ref into this unit names no function
+open list names (an append is a fill, no format change; the fingerprint leaves them out):
+  ElementsKind: 0 packed-int32, 1 holey-int32, 2 packed-double, 3 holey-double, 4 packed-elements, 5 holey-elements, 6 dictionary
+  FieldRep: 0 unset, 1 int32, 2 double, 3 heap, 4 any
+  ShapeFlags u8: 0 extensible, 1 dictionary
+  ElementsKindSet u16: 0 packed-int32, 1 holey-int32, 2 packed-double, 3 holey-double, 4 packed-elements, 5 holey-elements, 6 dictionary

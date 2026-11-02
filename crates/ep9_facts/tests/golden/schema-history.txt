@@ -1,2 +1,3 @@
-# ep9 FactSnapshot schema history: <FACT_SCHEMA_VERSION> <SHA-256 of schema.txt + \n + the sample snapshot bytes (facts-v0.hex)>
+# ep9 FactSnapshot schema history: <FACT_SCHEMA_VERSION> <SHA-256 of the format part of schema.txt (schema_format_text; from version 2 it leaves out the open-list names) + \n + the sample snapshot bytes (facts-v0.hex)>
 1 8b1e5411249805200f5c72a63d69505c1dd84f74792f9f6274a91a594a4de372
+2 dca957d4d28c5c67406b4ab078e205b671316058ebbfb641430c68e0bbeb80e9

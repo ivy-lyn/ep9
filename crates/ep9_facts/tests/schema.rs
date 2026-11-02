@@ -1,9 +1,12 @@
 //! Fact-schema version guard (H16), the same rule as the bytecode ABI history (H02).
 //!
-//! The schema fingerprint is SHA-256 over [`schema_text`] (header, types, the kind → payload
-//! table, every enum value and bit, the rules) and the bytes of the sample snapshot (which
-//! uses every kind, tag and enum value). `tests/golden/schema-history.txt` has one line per
-//! schema version: `<FACT_SCHEMA_VERSION> <fingerprint>`.
+//! The schema fingerprint is SHA-256 over [`schema_format_text`] (header, types, the kind →
+//! payload table, every value and bit of the closed lists, the form of the open lists, the
+//! rules) and the bytes of the sample snapshot (which uses every kind, tag and closed enum
+//! value, and every open-list value named at FACT_SCHEMA 2). The names of the open lists are
+//! in [`schema_text`] only: an append to an open list is a fill, no format change (FACT_SCHEMA
+//! 2, MC-w23-8). `tests/golden/schema-history.txt` has one line per schema version:
+//! `<FACT_SCHEMA_VERSION> <fingerprint>`.
 //! - The current (version, fingerprint) must be the last line.
 //! - A version never maps to two fingerprints. So a change to the slot-kind list (an
 //!   `ep9_bytecode` ABI change) or to the fact format fails here until FACT_SCHEMA_VERSION is
@@ -27,7 +30,7 @@ fn fingerprint_of(schema: &str, sample: &[u8]) -> String {
 }
 
 fn fingerprint() -> String {
-    fingerprint_of(&schema_text(), &sample().encode())
+    fingerprint_of(&schema_format_text(), &sample().encode())
 }
 
 /// `Ok(true)` when the last history line is (`version`, `fingerprint`), `Ok(false)` when
@@ -88,8 +91,9 @@ fn schema_history_pins_the_schema() {
         Ok(true) => {}
         Ok(false) if blessing() => {
             let mut out = if text.is_empty() {
-                "# ep9 FactSnapshot schema history: <FACT_SCHEMA_VERSION> <SHA-256 of schema.txt \
-                 + \\n + the sample snapshot bytes (facts-v0.hex)>\n"
+                "# ep9 FactSnapshot schema history: <FACT_SCHEMA_VERSION> <SHA-256 of the format \
+                 part of schema.txt (schema_format_text) + \\n + the sample snapshot bytes \
+                 (facts-v0.hex)>\n"
                     .to_string()
             } else {
                 text
@@ -118,11 +122,71 @@ fn schema_text_lists_every_kind() {
     assert_eq!(FeedbackSlotKind::ALL.len(), 21, "H16 v0 has 21 kinds");
 }
 
+/// The open lists (`bits.rs` module docs): their names are not in the format text, so an
+/// append to one changes `schema.txt` but not the fingerprint; and a value named at
+/// FACT_SCHEMA 2 keeps its number for good (append-only: a value never changes, a retired
+/// value is never reused).
+#[test]
+fn open_list_names_stay_out_of_the_fingerprint_and_keep_their_numbers() {
+    let format = schema_format_text();
+    let full = schema_text();
+    assert!(full.starts_with(&format));
+    // The name lines of the open lists are only in the second part.
+    let names = &full[format.len()..];
+    for line in [
+        "\n  ElementsKind: 0 packed-int32, 1 holey-int32,",
+        "\n  FieldRep: 0 unset, 1 int32,",
+        "\n  ShapeFlags u8: 0 extensible, 1 dictionary",
+        "\n  ElementsKindSet u16: 0 packed-int32,",
+    ] {
+        assert!(!format.contains(line), "{line:?} is in the format text");
+        assert!(names.contains(line), "{line:?}");
+    }
+    let kinds: Vec<(u8, &str)> = ElementsKind::ALL
+        .iter()
+        .take(ELEMENTS_KINDS_AT_2)
+        .map(|k| (*k as u8, k.name()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (0, "packed-int32"),
+            (1, "holey-int32"),
+            (2, "packed-double"),
+            (3, "holey-double"),
+            (4, "packed-elements"),
+            (5, "holey-elements"),
+            (6, "dictionary"),
+        ]
+    );
+    let reps: Vec<(u8, &str)> = FieldRep::ALL
+        .iter()
+        .take(FIELD_REPS_AT_2)
+        .map(|r| (*r as u8, r.name()))
+        .collect();
+    assert_eq!(
+        reps,
+        [
+            (0, "unset"),
+            (1, "int32"),
+            (2, "double"),
+            (3, "heap"),
+            (4, "any")
+        ]
+    );
+    let flags: Vec<(u8, &str)> = ShapeFlags::BITS
+        .iter()
+        .take(SHAPE_FLAGS_AT_2)
+        .map(|(b, n)| (b.bits(), *n))
+        .collect();
+    assert_eq!(flags, [(1, "extensible"), (2, "dictionary")]);
+}
+
 #[test]
 fn a_kind_list_change_without_a_version_bump_fails_the_history_check() {
     // An in-memory history like the golden file, so a bless run that rewrites the file
     // cannot race this test.
-    let schema = schema_text();
+    let schema = schema_format_text();
     let sample = sample().encode();
     let fp = fingerprint_of(&schema, &sample);
     let history = format!("# history\n{FACT_SCHEMA_VERSION} {fp}\n");

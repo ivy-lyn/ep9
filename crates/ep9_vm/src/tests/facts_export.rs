@@ -11,8 +11,9 @@ use std::sync::Arc;
 
 use ep9_bytecode::{FeedbackSlotKind, FunctionBuilder, FunctionCode, FunctionId, VerifiedUnit};
 use ep9_facts::{
-    Access, BindingSet, ClosureCount, FactSnapshot, FunctionRef, IcState, KeyRef, ObjectKind,
-    PropAttrs, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TypeSet,
+    Access, BindingSet, ClosureCount, ElementsKind, FactSnapshot, FieldHint, FieldRep, FunctionRef,
+    IcState, KeyRef, ObjectKind, PropAttrs, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags,
+    SlotFacts, TypeSet,
 };
 
 use super::{Asm, config, isolate, meta, on_big_stack, profile::isolate as isolate_full, unit};
@@ -238,11 +239,14 @@ fn string_key(name: &str) -> KeyRef {
 }
 
 /// The description of an ordinary object made by `object::new_object`: 4 in-object slots
-/// under Object.prototype, 8 under another prototype.
+/// under Object.prototype, 8 under another prototype, no element yet (PACKED_INT32), each key
+/// a field that holds one int32 value (FACT_SCHEMA 2: the shape's elements kind and the
+/// fields' rep/const hints, M6-PLAN-D8).
 fn plain(proto: ProtoRef, keys: &[&str]) -> ShapeDesc {
     ShapeDesc {
         proto,
         kind: ObjectKind::Ordinary,
+        elements: Some(ElementsKind::PackedInt32),
         flags: ShapeFlags::EXTENSIBLE,
         capacity: if proto == object_proto() { 4 } else { 8 },
         keys: keys
@@ -254,6 +258,13 @@ fn plain(proto: ProtoRef, keys: &[&str]) -> ShapeDesc {
                 )
             })
             .collect(),
+        fields: vec![
+            FieldHint {
+                rep: FieldRep::Int32,
+                constant: true,
+            };
+            keys.len()
+        ],
     }
 }
 
@@ -372,7 +383,10 @@ fn each_handler_becomes_its_fact() {
         let p = property(&snap, 3);
         assert!(matches!(record(&snap, 3), SlotFacts::StoreNamed(_)));
         assert_eq!(p.state, IcState::Polymorphic);
-        let y = Arc::new(plain(object_proto(), &["y"]));
+        // FACT_SCHEMA 2: `y` took a second int32 (2 after 1), so its field is not const.
+        let mut y = plain(object_proto(), &["y"]);
+        y.fields[0].constant = false;
+        let y = Arc::new(y);
         let mut want = vec![
             (
                 plain(object_proto(), &[]),
@@ -381,7 +395,7 @@ fn each_handler_becomes_its_fact() {
                     field: 0,
                 },
             ),
-            (plain(object_proto(), &["y"]), Access::OwnField { field: 0 }),
+            ((*y).clone(), Access::OwnField { field: 0 }),
         ];
         want.sort();
         let got: Vec<_> = p
@@ -780,5 +794,168 @@ fn an_instanceof_slot_gets_a_record_once_it_left_its_start_state() {
             }
             r => panic!("{r:?}"),
         }
+    });
+}
+
+// ---- FACT_SCHEMA 2 (M6-P0 SCHEMA6): the keyed hint and kinds set, the "ran" flag, the shape's
+// elements kind, the arguments object kind ----
+
+/// A script with keyed sites on an array `a = [1, , 3]` (PACKED -> HOLEY by the hole) and an
+/// object `o`: (0) `a[0]` a present element (implicit), (1) `a[5]` out of bounds, (2) `a[1]`
+/// a hole, (3) `o["1"]` an object receiver, (4) `a[0] = 1` a StoreKeyed site.
+fn keyed_facts_program() -> (VerifiedUnit, [ep9_bytecode::FeedbackSlot; 5]) {
+    use FeedbackSlotKind::{LoadKeyed, StoreKeyed};
+    let mut s = Asm::script(0);
+    let (a, o, key) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+    s.b.create_empty_array_literal(s.lit).star(a);
+    s.b.create_empty_object_literal().star(o);
+    let st = s.b.feedback_slot(StoreKeyed);
+    for (i, v) in [(0, 1), (2, 3)] {
+        s.b.lda_smi(i)
+            .star(key)
+            .lda_smi(v)
+            .set_keyed_property(a, key, st);
+    }
+    let present = s.b.feedback_slot(LoadKeyed);
+    s.b.lda_zero().get_keyed_property(a, present);
+    let oob = s.b.feedback_slot(LoadKeyed);
+    s.b.lda_smi(5).get_keyed_property(a, oob);
+    let hole = s.b.feedback_slot(LoadKeyed);
+    s.b.lda_smi(1).get_keyed_property(a, hole);
+    let obj = s.b.feedback_slot(LoadKeyed);
+    s.lda_str("1");
+    s.b.get_keyed_property(o, obj);
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), [present, oob, hole, obj, st])
+}
+
+fn keyed_of(s: &FactSnapshot, slot: ep9_bytecode::FeedbackSlot) -> ep9_facts::KeyedFacts {
+    match s.get(0, slot.index() as u32) {
+        Some(SlotFacts::LoadKeyed(k) | SlotFacts::StoreKeyed(k)) => k.clone(),
+        r => panic!("slot {slot:?}: {r:?}"),
+    }
+}
+
+/// The VM's keyed slot bits 4-9 become the record's `KeyedHint`, bits 10-25 its
+/// `ElementsKindSet`; a LoadKeyed record also gets the implicit `INDEX` key and `ARRAY`
+/// receiver. So an out-of-bounds, hole or object read no longer exports the record of a
+/// present int32 read (MC-w13-9, MODES-D18).
+#[test]
+fn keyed_records_show_receivers_bounds_holes_and_kinds() {
+    use ep9_facts::{ElementsKindSet, KeySet, KeyedHint};
+    on_big_stack(|| {
+        let (unit, [present, oob, hole, obj, st]) = keyed_facts_program();
+        let mut c = config(Dispatch::DEFAULT, false);
+        c.feedback_threshold = 0;
+        let mut iso = isolate_full(c);
+        let u = unit.clone();
+        iso.with_cx(|cx| cx.run_script(u, "keyed.js").map(|_| ()))
+            .unwrap();
+        let snap = export_facts(&iso, &unit.content_hash()).unwrap();
+        let k = keyed_of(&snap, present);
+        assert_eq!((k.keys, k.hint), (KeySet::INDEX, KeyedHint::ARRAY), "{k:?}");
+        let k = keyed_of(&snap, oob);
+        assert_eq!(k.hint, KeyedHint::ARRAY | KeyedHint::OUT_OF_BOUNDS, "{k:?}");
+        assert!(!k.kinds.is_empty(), "a miss records its kind: {k:?}");
+        let k = keyed_of(&snap, hole);
+        assert_eq!(k.hint, KeyedHint::ARRAY | KeyedHint::HOLE, "{k:?}");
+        assert!(k.kinds.contains(ElementsKind::HoleyInt32), "{k:?}");
+        let k = keyed_of(&snap, obj);
+        assert_eq!(k.hint, KeyedHint::ARRAY | KeyedHint::OBJECT, "{k:?}");
+        let k = keyed_of(&snap, st);
+        assert!(k.hint.contains(KeyedHint::ARRAY), "{k:?}");
+        // No T0 code writes the "ran" bit yet: every record claims nothing.
+        for (_, _, m) in snap.records_with_meta() {
+            assert_eq!(m, ep9_facts::RecordMeta::default());
+        }
+
+        // The slot bits as the exporter reads them: bit 26 (`profile::keyed::RAN`) is the
+        // LoadKeyed record's RAN flag, and no other keyed kind's; the kinds-set bit of value
+        // 15 (no named kind: an open set) is dropped.
+        let v = {
+            let units = iso.rt.units.borrow();
+            feedback::vector(&units.last().unwrap().infos[0]).unwrap()
+        };
+        let top = crate::elements::kinds_set_bit(15);
+        for slot in [present, st] {
+            let i = slot.index() as u32;
+            let bits = crate::frame::int32_of(feedback::value(v, i)) as u32;
+            let more = bits | crate::profile::keyed::RAN | top;
+            feedback::set_slot(&iso.rt, v, i, feedback::key(v, i), int32_bits(more as i32));
+        }
+        let again = export_facts(&iso, &unit.content_hash()).unwrap();
+        let ran = |slot: ep9_bytecode::FeedbackSlot| {
+            again
+                .meta(0, slot.index() as u32)
+                .unwrap()
+                .flags
+                .contains(ep9_facts::RecordFlags::RAN)
+        };
+        assert!(ran(present));
+        assert!(!ran(st), "StoreKeyed has no ran bit (MODES-D17)");
+        assert_eq!(
+            keyed_of(&again, present).kinds,
+            keyed_of(&snap, present).kinds
+        );
+        assert_eq!(
+            keyed_of(&again, st).kinds,
+            ElementsKindSet::from_bits_truncate(keyed_of(&snap, st).kinds.bits() | 1 << 15)
+        );
+    });
+}
+
+/// A shape's elements kind (FACT_SCHEMA 2, M6-PLAN-D8): two arrays with the same keys but
+/// another elements kind export two shapes (schema 1 exported one, MC-w20-5 / FR-w20-1).
+/// An arguments object exports as `ObjectKind::Arguments` (M6-PLAN-D5), no longer left out.
+#[test]
+fn shapes_name_their_elements_kind_and_arguments_objects_their_kind() {
+    on_big_stack(|| {
+        let mut t = T::new();
+        let op = t.object_prototype();
+        let ints = object::new_array(t.rt(), 0);
+        let doubles = object::new_array(t.rt(), 0);
+        for (arr, v) in [
+            (ints, int32_bits(1)),
+            (doubles, ep9_value::Value::double(1.5).to_bits()),
+        ] {
+            t.iso
+                .with_cx(|cx| {
+                    let a = Local::<crate::abi::JsValue>::from_bits(arr)
+                        .as_object()
+                        .expect("an array");
+                    cx.set_index(a, 0, Local::<crate::abi::JsValue>::from_bits(v), true)
+                        .map(|_| ())
+                })
+                .unwrap();
+        }
+        let args = crate::arguments::new_arguments_object(t.rt(), op);
+        props::own_define(t.rt(), args, t.key("length"), int32_bits(0), attr::DEFAULT);
+        for o in [ints, doubles, args] {
+            t.call(1, o, UNDEFINED); // f1 `a.length`
+        }
+        let snap = t.export();
+        let p = property(&snap, 1);
+        let mut elements: Vec<_> = p
+            .cases
+            .iter()
+            .filter(|c| c.receiver.kind == ObjectKind::Array)
+            .map(|c| c.receiver.elements)
+            .collect();
+        elements.sort();
+        assert_eq!(
+            elements,
+            [
+                Some(ElementsKind::PackedInt32),
+                Some(ElementsKind::PackedDouble)
+            ],
+            "{p:?}"
+        );
+        assert!(
+            p.cases
+                .iter()
+                .any(|c| c.receiver.kind == ObjectKind::Arguments),
+            "{p:?}"
+        );
+        std::hint::black_box((ints, doubles, args));
     });
 }

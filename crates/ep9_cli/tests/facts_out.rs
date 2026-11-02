@@ -1,6 +1,6 @@
 //! `ep9 --facts-out <file>` (M3-P4 FIXES; H16-Q5): after the run, the feedback facts of the
-//! main unit go to `<file>` as an encoded FactSnapshot v0 (`ep9_vm::abi::export_facts`, then
-//! `FactSnapshot::encode`).
+//! main unit go to `<file>` as an encoded FactSnapshot, FACT_SCHEMA 2 since M6-P0
+//! (`ep9_vm::abi::export_facts`, then `FactSnapshot::encode`).
 //!
 //! The header fields are read at the offsets of `ep9_facts::offsets` (ep9_cli does not link
 //! ep9_facts; the decode round trip is `crates/ep9_builtins/tests/facts_export.rs`):
@@ -75,7 +75,7 @@ fn unit_hash(src: &str, opts: SourceOpts) -> [u8; 32] {
 fn check_header(b: &[u8], hash: &[u8; 32]) -> u32 {
     assert!(b.len() >= 64, "{} bytes", b.len());
     assert_eq!(&b[..8], b"\x89EP9FS\r\n", "magic");
-    assert_eq!(u32_at(b, 8), 1, "FACT_SCHEMA_VERSION");
+    assert_eq!(u32_at(b, 8), 2, "FACT_SCHEMA_VERSION");
     assert_eq!(u32_at(b, 12), ep9_bytecode::ABI_VERSION, "bytecode ABI");
     assert_eq!(&b[16..48], hash, "unit hash");
     assert_eq!(b[48], 0, "source: runtime");
@@ -161,7 +161,7 @@ impl Reader<'_> {
             2 => self.function(),
             t => panic!("proto tag {t}"),
         }
-        self.skip(1 + 1 + 2); // kind, flags, capacity
+        self.skip(1 + 1 + 1 + 2); // kind, elements, flags, capacity
         for _ in 0..self.len() {
             match self.u8() {
                 0 => {
@@ -176,7 +176,7 @@ impl Reader<'_> {
                 3 => {}
                 t => panic!("key tag {t}"),
             }
-            self.skip(1); // attrs
+            self.skip(1); // attrs, with the rep/const hint
         }
     }
     fn targets(&mut self) {
@@ -218,7 +218,7 @@ impl Reader<'_> {
             | K::HasKeyed
             | K::StoreInArrayLiteral => {
                 self.property();
-                self.skip(1);
+                self.skip(1 + 1 + 2); // keys, hint, kinds
             }
             K::LoadGlobal | K::LoadGlobalInsideTypeof | K::StoreGlobal => self.skip(1 + 2),
             K::BinaryOp | K::ForIn | K::CreateClosure => self.skip(1),
@@ -246,6 +246,9 @@ fn kinds(b: &[u8]) -> BTreeMap<&'static str, u32> {
         r.skip(4 + 4); // function, slot
         let k = r.u8();
         let k = K::from_u8(k).unwrap_or_else(|| panic!("kind {k}"));
+        // The record flags; a runtime snapshot has no confidence byte (FACT_SCHEMA 2).
+        let flags = r.u8();
+        assert_eq!(flags & !0b11, 0, "record flags {flags:#x}");
         r.payload(k);
         *kinds.entry(k.name()).or_insert(0) += 1;
     }
