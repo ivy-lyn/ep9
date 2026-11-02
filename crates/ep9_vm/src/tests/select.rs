@@ -10,7 +10,9 @@
 use crate::dispatch::DispatchKind::{self, AotBaseline, AotOpt, Baseline, Interp, Opt};
 use crate::exec::Preset;
 use crate::fuse::{STATIC, descriptor};
-use crate::select::{CodeObject, CodeSet, Dep, Pick, Policy, Session, ObjectState, lowering, select};
+use crate::select::{
+    CodeObject, CodeSet, Dep, ObjectState, Pick, Policy, Session, lowering, select,
+};
 
 const ALL: [(&str, Policy); 3] = [
     ("jit", Policy::JIT),
