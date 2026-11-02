@@ -248,6 +248,78 @@ fn body_lines(text: &str) -> Vec<(usize, &str)> {
     out
 }
 
+/// The names [`new_scratch_dir`] tries before it fails.
+const SCRATCH_TRIES: usize = 16;
+
+/// Makes a new, empty dir in `parent` under the first of `names` that does not exist, and
+/// returns its path. It never uses a path that exists: `DirBuilder::create` (not
+/// `create_dir_all`) fails for an existing dir, file or symlink, and the next name is tried.
+/// On unix the dir has mode 0700, so no other user can put a file in it. Err if every name
+/// exists, or for any other error.
+fn new_scratch_dir(
+    parent: &Path,
+    names: impl IntoIterator<Item = String>,
+) -> std::io::Result<std::path::PathBuf> {
+    let b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let b = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut b = b;
+        b.mode(0o700);
+        b
+    };
+    for name in names {
+        let p = parent.join(name);
+        match b.create(&p) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "every scratch dir name tried exists",
+    ))
+}
+
+/// Writes the scratch root of [`drift_fixes`] into `tmp`, a new dir that
+/// [`new_scratch_dir`] made: the `.git` file, the doc `rel` with `text`, and the pin table
+/// of `root` if it has one. It makes subdirs only inside `tmp`, and each file with
+/// `create_new`, so it never writes through a path that was there before.
+fn fill_scratch(
+    tmp: &Path,
+    root: &Path,
+    rel: &str,
+    text: &str,
+    gitdir: &str,
+) -> std::io::Result<()> {
+    fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
+            .write_all(bytes)
+    }
+    let dir_of = |p: &Path| -> std::io::Result<()> {
+        match p.parent() {
+            Some(d) if d != tmp => std::fs::create_dir_all(d),
+            _ => Ok(()),
+        }
+    };
+    write_new(&tmp.join(".git"), format!("gitdir: {gitdir}\n").as_bytes())?;
+    let doc = tmp.join(rel);
+    dir_of(&doc)?;
+    write_new(&doc, text.as_bytes())?;
+    let pins = root.join(super::drift::PINS_FILE);
+    if pins.is_file() {
+        let to = tmp.join(super::drift::PINS_FILE);
+        dir_of(&to)?;
+        write_new(&to, &std::fs::read(&pins)?)?;
+    }
+    Ok(())
+}
+
 /// X15: the FIX values of the drift check for the doc `rel` with the text `text`, by line (1-based):
 /// (old token, new token) in the order the check reads them. The check runs on a scratch root
 /// that holds only this doc and the pin table, and whose `.git` file names this tree's git dir,
@@ -263,24 +335,21 @@ fn drift_fixes(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .ok_or("cannot read the git dir of the tree")?;
-    let k = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = std::env::temp_dir().join(format!("ep9-adrline-{}-{k}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    let made = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(tmp.join(rel).parent().unwrap_or(&tmp))?;
-        std::fs::write(tmp.join(".git"), format!("gitdir: {gitdir}\n"))?;
-        std::fs::write(tmp.join(rel), text)?;
-        let pins = root.join(super::drift::PINS_FILE);
-        if pins.is_file() {
-            let to = tmp.join(super::drift::PINS_FILE);
-            std::fs::create_dir_all(to.parent().unwrap_or(&tmp))?;
-            std::fs::copy(&pins, &to)?;
-        }
-        Ok(())
-    })();
+    let pid = std::process::id();
+    let names = (0..SCRATCH_TRIES).map(|_| {
+        let k = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        format!("ep9-adrline-{pid}-{k}-{nanos}")
+    });
+    let tmp = new_scratch_dir(&std::env::temp_dir(), names)
+        .map_err(|e| format!("cannot make a scratch dir in the temp dir: {e}"))?;
+    let made = fill_scratch(&tmp, root, rel, text, &gitdir);
     let d = made
         .map_err(|e| format!("cannot write the scratch copy {}: {e}", tmp.display()))
         .and_then(|()| super::drift::drift(&tmp));
+    // The dir is this call's own (`new_scratch_dir` made it), so only it is removed.
     let _ = std::fs::remove_dir_all(&tmp);
     let mut out: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
     let at = format!("{rel}:");
@@ -650,6 +719,85 @@ pub(crate) fn counts(root: &Path) -> Result<(String, String, Vec<String>), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GATES8 Codex r1: the scratch root of `drift_fixes` is a new dir, and nothing is
+    /// written through a path that was there before: a dir, a file or (on unix) a symlink
+    /// with a scratch name is skipped, and a file that `fill_scratch` would write is never
+    /// opened if it exists.
+    #[test]
+    fn the_scratch_dir_never_uses_a_path_that_exists() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let parent = new_scratch_dir(
+            &std::env::temp_dir(),
+            [format!("ep9-records-test-{}-{nanos}", std::process::id())],
+        )
+        .unwrap();
+        let victim = parent.join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::write(victim.join("file"), "VICTIM").unwrap();
+        // Planted: a dir with a `.git` file, and a file.
+        std::fs::create_dir(parent.join("taken-dir")).unwrap();
+        std::fs::write(parent.join("taken-dir").join(".git"), "planted").unwrap();
+        std::fs::write(parent.join("taken-file"), "planted").unwrap();
+        let mut names = vec!["taken-dir", "taken-file"];
+        #[cfg(unix)]
+        {
+            // A symlink to a dir, and one to a path that does not exist.
+            std::os::unix::fs::symlink(&victim, parent.join("taken-link")).unwrap();
+            std::os::unix::fs::symlink(parent.join("nothing"), parent.join("taken-dangling"))
+                .unwrap();
+            names.extend(["taken-link", "taken-dangling"]);
+        }
+        let all = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        // Every name exists: an error, and nothing is made.
+        let e = new_scratch_dir(&parent, all(&names)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        // The first free name is used.
+        names.push("fresh");
+        let tmp = new_scratch_dir(&parent, all(&names)).unwrap();
+        assert_eq!(tmp, parent.join("fresh"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&tmp).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        // A root with a pin table.
+        let root = parent.join("root");
+        let pins = root.join(super::super::drift::PINS_FILE);
+        std::fs::create_dir_all(pins.parent().unwrap()).unwrap();
+        std::fs::write(&pins, "pins\n").unwrap();
+        let rel = "docs/adr/H16-ics.md";
+        fill_scratch(&tmp, &root, rel, "doc\n", "/git").unwrap();
+        assert_eq!(read(&tmp.join(".git")).unwrap(), "gitdir: /git\n");
+        assert_eq!(read(&tmp.join(rel)).unwrap(), "doc\n");
+        assert_eq!(
+            read(&tmp.join(super::super::drift::PINS_FILE)).unwrap(),
+            "pins\n"
+        );
+        // Filled twice: each file exists, so the second fill fails and writes nothing.
+        assert!(fill_scratch(&tmp, &root, rel, "other\n", "/other").is_err());
+        assert_eq!(read(&tmp.join(".git")).unwrap(), "gitdir: /git\n");
+        #[cfg(unix)]
+        {
+            // A `.git` symlink in the dir is not written through.
+            let other = new_scratch_dir(&parent, ["other".to_string()]).unwrap();
+            std::os::unix::fs::symlink(victim.join("file"), other.join(".git")).unwrap();
+            assert!(fill_scratch(&other, &root, rel, "doc\n", "/git").is_err());
+            assert!(!parent.join("nothing").exists());
+        }
+        // The planted paths keep their text, and the victim dir its one file.
+        assert_eq!(
+            read(&parent.join("taken-dir").join(".git")).unwrap(),
+            "planted"
+        );
+        assert_eq!(read(&parent.join("taken-file")).unwrap(), "planted");
+        assert_eq!(read(&victim.join("file")).unwrap(), "VICTIM");
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 1);
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
 
     #[test]
     fn helpers() {
