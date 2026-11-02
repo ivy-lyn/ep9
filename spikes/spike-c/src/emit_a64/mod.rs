@@ -1880,7 +1880,8 @@ impl Emitter<'_> {
     /// exit stub, a record and a counter of its own, so the VM's exit counters count the
     /// guard's exits by cause. The first is [`Emitter::trap`]'s (a forced build's countdown
     /// exits there). Every record has the guard's frame state, so each resumes T0 the same
-    /// way; only the cause (not in the H29 bytes) and the stub's pc differ.
+    /// way; only the cause (the record's exit class and reason, V11-D13, V11-D14) and the
+    /// stub's pc differ.
     fn shape_traps(&mut self, n: NodeId) -> Result<[DynamicLabel; 5], Refusal> {
         let first = self.trap(n)?;
         let (_, id, offset, policy, _) = *self.traps.last().expect("the trap just made");
