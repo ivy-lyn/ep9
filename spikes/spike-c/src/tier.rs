@@ -2608,6 +2608,7 @@ mod tests {
                 ..PropertyFacts::default()
             },
             keys,
+            ..KeyedFacts::default()
         };
         let src = FactSource::Profiled;
         let ok = |k: KeySet, s: IcState| keyed_path_of(&rec(k, s), src);
