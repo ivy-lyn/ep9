@@ -1207,3 +1207,74 @@ fn the_storage_form_follows_the_shape_kind() {
         assert!(elements::storage_form_ok(a));
     });
 }
+
+/// H18 elements core "DICTIONARY is never a birth kind" (M5-P5-ORCH-11): 4 times at one
+/// array-literal site `a = [1, 2]; a[0] = "s"; a[5000] = 7` (the store makes the site's
+/// array PACKED_ELEMENTS, which generalizes the site; the far index then moves the array to
+/// DICTIONARY), then print a.length, a[0], a[5000]. The site keeps PACKED_ELEMENTS (at most
+/// HOLEY_ELEMENTS, never DICTIONARY) and a result shape of that kind, while its last array is
+/// DICTIONARY and still points at the site (`elements::generalize_site`, `to_dictionary`).
+#[test]
+fn a_dictionary_array_never_makes_its_site_dictionary() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let mut iso = isolate(IsolateConfig {
+                    feedback_threshold: 0,
+                    ..config(d, stress)
+                });
+                super::take_output();
+                let mut s = Asm::script(0);
+                let (lit, set, get) = (s.lit, s.set_keyed, s.keyed);
+                let (k1, k2) = (s.b.number_constant(1.0), s.b.number_constant(2.0));
+                let bp = s.b.array_boilerplate(vec![Some(k1), Some(k2)]);
+                let (i, a, k) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+                s.b.lda_zero().star(i);
+                let head = s.b.bound_label();
+                let exit = s.b.new_label();
+                s.b.lda_smi(4).test_less_than(i, s.cmp).jump_if_false(exit);
+                s.b.create_array_literal(bp, lit, 1).star(a);
+                s.b.lda_zero().star(k);
+                s.lda_str("s");
+                s.b.set_keyed_property(a, k, set);
+                s.b.lda_smi(5000).star(k);
+                s.b.lda_smi(7).set_keyed_property(a, k, set);
+                s.b.ldar(i).inc(s.bin).star(i).jump_loop(head, 0, s.loop_);
+                s.b.bind(exit);
+                s.get_named(a, "length");
+                s.print_acc();
+                for at in [0, 5000] {
+                    s.b.lda_smi(at).get_keyed_property(a, get);
+                    s.print_acc();
+                }
+                s.b.ldar(a);
+                s.sta_global("a");
+                s.b.lda_undefined().return_();
+                let u = unit("", vec![s.finish()]);
+                let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "site.js").map(|_| ()));
+                assert!(r.is_ok(), "{r:?}");
+                let label = format!("{} stress={stress}", d.name());
+                assert_eq!(super::take_output(), ["5001", "s", "7"], "{label}");
+                let h = {
+                    let units = iso.rt.units.borrow();
+                    let v = feedback::vector(&units.last().unwrap().infos[0]).unwrap();
+                    feedback::value(v, lit.index() as u32)
+                };
+                let (site, count) = crate::literal_site::site_of(h).expect("an ALLOC_SITE");
+                assert_eq!(site, ek::PACKED_ELEMENTS, "{label}: the site kind");
+                assert!(site <= ek::HOLEY_ELEMENTS, "{label}: a birth kind");
+                assert_eq!(count, 1, "{label}: one cold run, 3 hits");
+                let rs = object::rd(object::cell(h), crate::literal_site::ah::RESULT);
+                if shape::is_shape(rs) {
+                    assert_eq!(shape::elements_kind(rs), ek::PACKED_ELEMENTS, "{label}");
+                }
+                let last = iso.global_raw("a").unwrap().to_bits();
+                assert_eq!(elements::kind_of(last), ek::DICTIONARY, "{label}");
+                assert_eq!(object::rd(object::cell(last), object::arr::ALLOC_SITE), h);
+                elements::check(last).unwrap();
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+            });
+        }
+    }
+}
