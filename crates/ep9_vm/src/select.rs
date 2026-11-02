@@ -55,9 +55,10 @@ pub(crate) mod lowering {
 }
 
 /// The state of a code object (doc 13 §3.1). PIN is a function state, not an object state
-/// (MODES-D14).
+/// (MODES-D14). Not named `State`: `cargo xtask gc-lint` reads a type name without its module,
+/// and the `State` of `ep9_builtins` `json/stringify.rs` holds a `Local`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum State {
+pub(crate) enum ObjectState {
     Active,
     Invalidated,
 }
@@ -92,7 +93,7 @@ pub(crate) struct CodeObject {
     pub(crate) kind: u8,
     /// The lowering class ([`lowering`]).
     pub(crate) lowering: u8,
-    pub(crate) state: State,
+    pub(crate) state: ObjectState,
     /// The CPU feature bits the code needs; each must be in [`Session::cpu`].
     pub(crate) cpu: u64,
     /// Its InvalidatingFuse dependencies.
@@ -105,7 +106,7 @@ impl CodeObject {
         CodeObject {
             kind: kind as u8,
             lowering,
-            state: State::Active,
+            state: ObjectState::Active,
             cpu: 0,
             deps: Vec::new(),
         }
@@ -209,7 +210,7 @@ pub(crate) fn select(set: &CodeSet, policy: &Policy, session: &Session) -> Pick 
             let found = set.objects.iter().position(|o| {
                 o.kind == kind as u8
                     && o.lowering == low
-                    && o.state == State::Active
+                    && o.state == ObjectState::Active
                     && !(kind == DispatchKind::AotOpt && set.pinned)
                     && o.deps.iter().all(|d| d.holds())
                     && o.cpu & !session.cpu == 0
