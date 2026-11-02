@@ -25,15 +25,20 @@
 ///   1 HOLEY_INT32, 2 PACKED_DOUBLE, 3 HOLEY_DOUBLE, 4 PACKED_ELEMENTS, 5 HOLEY_ELEMENTS,
 ///   6 DICTIONARY (7-15 reserved, append-only; bit 0 = holey). Storage forms: {0, 1, 4, 5}
 ///   Values in an ELEMENTS cell, {2, 3} raw f64 in an ELEMENTS_DOUBLE cell, {6} an
-///   ELEMENTS_DICT cell (`elements.rs`, `shape.rs`). The bits stay 0 and nothing reads them
-///   until M5-P1 ELEM1 builds the lattice;
-/// - the slack counter of a root shape in its `flags` word, bits 4-7 (`shape::flag`);
+///   ELEMENTS_DICT cell (`elements.rs`, `shape.rs`). M5-P1 ELEM1 built the lattice and M5-P2
+///   ELEM2 DICTIONARY (until ELEM1 the bits were 0 and nothing read them);
+/// - the shape `flags` bits 4-7: always 0 (`shape::flag::SLACK_MASK`, unused since M5-P2 SLACK);
 /// - the representation of a descriptor in details bits 4-6 (0 none, 1 int32, 2 double,
 ///   3 heap object, 4 any) and its const bit 7 (`shape.rs`; reserved and 0 before);
 /// - ARRAY +32: the allocation-site handler (an IC_HANDLER cell of kind ALLOC_SITE, IC_LAYOUT
 ///   3) of an array made at an array-literal site, or undefined (V10-D6; `object::arr`);
 /// - REALM +48 and +56: the cached shapes of mapped and unmapped arguments objects, or
 ///   undefined (V10-D11; `object::realmf`, the cell grows from 48 to 64 B);
+/// - named here in M6-P0 (MC-w20-2, v11in #27): since M5-P2 ELEM2 the ARRAY length (+24) is an
+///   int32 Value below 2^31 and a double Value from 2^31 on (`object::arr::LENGTH`). Declared,
+///   no reader yet: no native code reads the double form as a number (a `length` load passes
+///   the Value on; the element ops read the bound only on the dense kinds, whose length is an
+///   int32, and the Spike C kind guard exits on DICTIONARY), so it moved no version (V11-D39);
 /// - named here, unchanged since 4 (MC-w16-19): PROXY and PROXY_CALLABLE keep `[[ProxyTarget]]`
 ///   at +24 and `[[ProxyHandler]]` at +32 (fixed fields 0 and 1, null once revoked;
 ///   `proxy.rs`); WEAK_CELL (80) is +8 target (weak), +16 held value (strong), +24 unregister

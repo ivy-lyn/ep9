@@ -4,7 +4,7 @@
 //! unit text and Spike C read these values, so each value is part of one contract version
 //! (`versions.rs`).
 //!
-//! Until M5-P0 this was `native::layout`, behind the `spike-native` feature. C-18 (doc 13:672)
+//! Until M5-P0 this was `native::layout`, behind the `spike-native` feature. C-18 (doc 13:694)
 //! moved it out of the gate, with the three native `Cx` fields (`native_limit`,
 //! `runtime_table`, `unit_data`) and the [`RuntimeTable`] type, so every build has one `Cx`
 //! layout. The process table itself (`native::RUNTIME_TABLE`) and every function it calls stay
@@ -267,7 +267,8 @@ pub const OBJECT_FIELDS: u32 = obj::FIXED as u32;
 /// OBJECT_LAYOUT. A JS object's elements store (every JS kind from M5-P1, H18-Q3; arrays
 /// before): an elements cell, or undefined (`object::obj::ELEMENTS`).
 pub const ARRAY_ELEMENTS: u32 = obj::ELEMENTS as u32;
-/// OBJECT_LAYOUT. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
+/// OBJECT_LAYOUT. ARRAY: the length, an int32 Value below 2^31, a double Value from 2^31 on (M5-P2
+/// ELEM2; `object::arr::LENGTH`). The double form is declared, no reader yet (V11-D39).
 pub const ARRAY_LENGTH: u32 = arr::LENGTH as u32;
 /// OBJECT_LAYOUT. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
 pub const ELEMENTS_CAPACITY: u32 = elems::CAPACITY as u32;
@@ -394,8 +395,8 @@ pub const SMI_SHIFT: u32 = smi::SHIFT;
 /// IC_LAYOUT. Smi handler kind: the field at the byte offset of the object cell
 /// (`ic::smi::FIELD_IN_OBJECT`).
 pub const SMI_FIELD_IN_OBJECT: i32 = smi::FIELD_IN_OBJECT;
-/// IC_LAYOUT. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
-/// (`ic::smi::ARRAY_LENGTH`).
+/// IC_LAYOUT. Smi handler kind: an Array's `length`, the Value at [`ARRAY_LENGTH`] (an int32,
+/// or a double from 2^31 on: declared, no reader yet in native code; `ic::smi::ARRAY_LENGTH`).
 pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
 /// IC_LAYOUT (4; 3 for values 0-6). A keyed slot's value half: bit `KEYED_KINDS_SET_SHIFT + k`
 /// is set once the site saw elements kind `k` (0-15, bits 10-25; `elements::KINDS_SET_SHIFT`).
