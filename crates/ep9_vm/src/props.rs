@@ -50,7 +50,7 @@ fn trace_props(c: CellPtr, t: &mut Tracer<'_>) {
     trace_from_8(c, t, props_size(c));
 }
 
-/// Registers the PROPS kind.
+/// Registers the PROPS kind, and PROPS_INDEXED (OBJECT_LAYOUT 6, `props_index.rs`).
 pub(crate) fn register_kinds(heap: &Heap) {
     heap.register_kind(
         kind::PROPS,
@@ -61,6 +61,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         },
     )
     .expect("register a VM cell kind");
+    crate::props_index::register_kinds(heap);
 }
 
 // ---- the dictionary table ---------------------------------------------------------------------

@@ -34,14 +34,11 @@ fn dummy_kind(name: &'static str) -> CellKind {
 /// 5 stay.
 #[test]
 fn month_5_versions() {
-    assert_eq!(
-        (
-            black_box(versions::OBJECT_LAYOUT_VERSION),
-            versions::IC_LAYOUT_VERSION,
-            versions::VM_LAYOUT_VERSION
-        ),
-        (5, 3, 1)
-    );
+    // OBJECT_LAYOUT 6 and IC_LAYOUT 4 (M6-P0) keep every month-5 kind, id and field checked
+    // here; `tests::layout6` pins the version numbers.
+    assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 5);
+    assert!(black_box(versions::IC_LAYOUT_VERSION) >= 3);
+    assert_eq!(versions::VM_LAYOUT_VERSION, 1);
     assert_eq!(
         (
             versions::FRAME_VERSION,

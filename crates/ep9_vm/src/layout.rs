@@ -27,6 +27,7 @@ use crate::frame::{HEADER, slot};
 use crate::ic::smi;
 use crate::interp::Cx;
 use crate::object::{arr, ctxf, delems, elems, fun, obj};
+use crate::props_index::pif;
 use crate::unit::FunctionInfo;
 
 /// The `Cx` that native code gets and passes back to the table functions. Opaque: native code
@@ -332,6 +333,36 @@ pub const SHAPE_COUNTS: u32 = 48;
 pub const KIND_SHAPE: u8 = crate::kinds::SHAPE.get();
 /// OBJECT_LAYOUT. Kind id of a CONTEXT cell (`kinds::CONTEXT`; the `LoadContextSlot` guard).
 pub const KIND_CONTEXT: u8 = crate::kinds::CONTEXT.get();
+// OBJECT_LAYOUT 6 (M6-P0, plan v11 §2.3): the PROPS_INDEXED cell (built by M6-P1 DICT1) and the
+// FUSE cell (built by M6-P2 FUSE-PI). Declared, no reader yet: no native code reads them.
+/// OBJECT_LAYOUT (6). Kind id of a PROPS_INDEXED cell (84; `kinds::PROPS_INDEXED`): the
+/// property table of a dictionary-mode object with more than 8 entries.
+pub const KIND_PROPS_INDEXED: u8 = crate::kinds::PROPS_INDEXED.get();
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the entry capacity, an int32 Value (`props_index::pif`).
+pub const PROPS_INDEXED_CAPACITY: u32 = pif::CAPACITY as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the entries in use, an int32 Value.
+pub const PROPS_INDEXED_COUNT: u32 = pif::COUNT as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the hash index, a bucket array of int32 entry numbers, or
+/// undefined below 9 entries.
+pub const PROPS_INDEXED_INDEX: u32 = pif::INDEX as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: entry `i` (key, value, int32 attributes) is at
+/// `PROPS_INDEXED_ENTRIES + PROPS_INDEXED_ENTRY_SIZE * i`, as in a PROPS cell.
+pub const PROPS_INDEXED_ENTRIES: u32 = pif::ENTRIES as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: bytes per entry.
+pub const PROPS_INDEXED_ENTRY_SIZE: u32 = pif::ENTRY as u32;
+/// OBJECT_LAYOUT (6). Kind id of a FUSE cell (83; `kinds::FUSE`): a realm's static fuse block,
+/// held as the intrinsic `IntrinsicId::RealmFuses` and mirrored by `Root::RealmFuses`.
+pub const KIND_FUSE: u8 = crate::kinds::FUSE.get();
+/// OBJECT_LAYOUT (6). FUSE: static fuse `i` (`fuse::STATIC` index) is the u32 at
+/// `FUSE_ENTRIES + FUSE_ENTRY_SIZE * i` (raw words, no Value; the GC traces none).
+pub const FUSE_ENTRIES: u32 = 8;
+/// OBJECT_LAYOUT (6). FUSE: bytes per entry (an `ldr w`).
+pub const FUSE_ENTRY_SIZE: u32 = 4;
+/// OBJECT_LAYOUT (6). FUSE: the entry value of an intact fuse; a popped one is 0.
+pub const FUSE_INTACT: u32 = 1;
+/// OBJECT_LAYOUT (6). FUSE: the cell size, one entry per static fuse, rounded up to 8.
+pub const FUSE_SIZE: u32 =
+    (FUSE_ENTRIES + FUSE_ENTRY_SIZE * crate::fuse::STATIC.len() as u32).next_multiple_of(8);
 
 // ---- feedback and IC data: IC_LAYOUT ----
 /// IC_LAYOUT. FEEDBACK cell: the FunctionInfo of its function, a native word

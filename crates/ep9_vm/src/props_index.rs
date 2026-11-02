@@ -14,11 +14,51 @@
 //! An object moves from PROPS to PROPS_INDEXED above 8 entries and never moves back.
 //!
 //! M6-P0 stub: no table is indexed; [`find`] answers "not indexed" and the caller scans, as
-//! today.
+//! today. The kind is registered ([`register_kinds`], OBJECT_LAYOUT 6) with the size and trace
+//! functions of the layout above; no cell of it is made before DICT1.
 
-use ep9_heap::CellPtr;
+use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
 
 use crate::key::Probe;
+use crate::kinds as kind;
+use crate::object::{rd_i32, trace_from_8};
+
+/// The PROPS_INDEXED 84 fields (OBJECT_LAYOUT 6; exported as `layout::PROPS_INDEXED_*`).
+pub(crate) mod pif {
+    /// The entry capacity (an int32 Value).
+    pub const CAPACITY: usize = 8;
+    /// The entries in use (an int32 Value).
+    pub const COUNT: usize = 16;
+    /// The hash index: a bucket array of int32 entry numbers, or undefined below 9 entries.
+    pub const INDEX: usize = 24;
+    /// The first entry: key, value, attributes (int32), as in PROPS 64.
+    pub const ENTRIES: usize = 32;
+    /// Bytes per entry.
+    pub const ENTRY: usize = 24;
+}
+
+/// The size of a PROPS_INDEXED cell: the header words and `capacity` entries.
+fn props_indexed_size(c: CellPtr) -> usize {
+    pif::ENTRIES + pif::ENTRY * rd_i32(c, pif::CAPACITY) as usize
+}
+
+/// Every word after word0 is a Value (int32s, the index cell or undefined, the entries).
+fn trace_props_indexed(c: CellPtr, t: &mut Tracer<'_>) {
+    trace_from_8(c, t, props_indexed_size(c));
+}
+
+/// Registers the PROPS_INDEXED kind (OBJECT_LAYOUT 6; `props::register_kinds` calls it).
+pub(crate) fn register_kinds(heap: &Heap) {
+    heap.register_kind(
+        kind::PROPS_INDEXED,
+        CellKind {
+            name: "property-table-indexed",
+            size: CellSize::Dynamic(props_indexed_size),
+            trace: trace_props_indexed,
+        },
+    )
+    .expect("register a VM cell kind");
+}
 
 /// The hook of a dictionary lookup (`props::dict_find`), before the linear scan of the table
 /// `p`: `Some(Some(i))` if the index finds `key` at entry `i`, `Some(None)` if the index proves

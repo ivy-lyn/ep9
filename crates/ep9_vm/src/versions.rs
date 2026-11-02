@@ -38,7 +38,19 @@
 ///   at +24 and `[[ProxyHandler]]` at +32 (fixed fields 0 and 1, null once revoked;
 ///   `proxy.rs`); WEAK_CELL (80) is +8 target (weak), +16 held value (strong), +24 unregister
 ///   token (weak), +32 next cell (strong), 40 B (`weakref.rs`).
-pub const OBJECT_LAYOUT_VERSION: u32 = 5;
+///
+/// 6 (M6-P0; plan v11 §2.3, V11-D3: the one bump of month 6):
+/// - the internal kind PROPS_INDEXED (84): the property table of a dictionary-mode object with
+///   more than 8 entries, +8 capacity, +16 count (int32 Values), +24 index (a bucket array of
+///   int32 entry numbers, or undefined below 9 entries), +32 entries (key, value, attributes)
+///   as in PROPS 64, which does not change (`props_index.rs`; M6-P1 DICT1 builds it);
+/// - the layout of the reserved kind FUSE (83): a realm's static fuse block, one u32 per entry
+///   of `fuse::STATIC` from +8 (1 intact, 0 popped; raw words, no Value, nothing traced;
+///   `layout::FUSE_*`; M6-P2 FUSE-PI builds it). The realm keeps the cell as the intrinsic
+///   `IntrinsicId::RealmFuses`, mirrored by the realm root `Root::RealmFuses` (V11-D21);
+/// - the shape `flags` bits 4-30 are append-only room, lowest free bit first; bit 31 is never
+///   used (V11-D7; H17 "shape flag bits (append-only)").
+pub const OBJECT_LAYOUT_VERSION: u32 = 6;
 /// Inline-cache and feedback data layout (H16). 2 (M4-P0): the feedback slot table of
 /// `profile.rs` (one writer module per slot kind) and the IC_HANDLER layout of `ic.rs` (+8
 /// handler kind, +16 validity cell or int32, +24 weak ref, +32 int32; new handler kinds
