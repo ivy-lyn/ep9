@@ -569,6 +569,8 @@ fn h17_shape_flag_bit_probe_30() {
 /// RuntimeTable entry 11 `load_global` (M6-P0 VM6 step 2, V11-D43): a Rust function stands in
 /// for native code. It is installed as the native code of a bytecode function and calls the
 /// entry for that function's global load, so the entry runs with a real native frame.
+/// Each test name starts with `native_`: CI runs the spike-native tests with the name filter
+/// `native` (`.github/workflows/ci.yml`), and these tests build only with spike-native.
 #[cfg(feature = "spike-native")]
 mod load_global {
     use core::cell::Cell;
@@ -695,7 +697,7 @@ mod load_global {
     /// T0 ReferenceErrors for a missing name and a TDZ binding, and an internal error for an
     /// offset that holds no global load. Each run in a new isolate (one install each).
     #[test]
-    fn load_global_runs_the_t0_lookup() {
+    fn native_load_global_runs_the_t0_lookup() {
         for &d in Dispatch::ALL {
             on_big_stack(move || {
                 let mut iso = defs_isolate(config(d, false));
@@ -741,7 +743,7 @@ mod load_global {
     /// call that skips the load); the native load leaves the slot of the load Uninitialized.
     /// Control: the T0 load of the same function records a case there.
     #[test]
-    fn load_global_records_no_feedback() {
+    fn native_load_global_records_no_feedback() {
         on_big_stack(|| {
             let c = IsolateConfig {
                 feedback_threshold: 0,
@@ -778,12 +780,34 @@ mod load_global {
         });
     }
 
+    /// The CI step that runs the spike-native tests filters them by `native`, so the path of
+    /// each test here must hold that word, or CI never runs it. This reads the source of this
+    /// module: each `#[test]` function name must start with `native_`.
+    #[test]
+    fn native_tests_hold_the_ci_filter() {
+        let ci = include_str!("../../../../.github/workflows/ci.yml");
+        assert!(ci.contains("cargo test -p ep9_vm --features spike-native --locked native\n"));
+        let src = include_str!("layout6.rs");
+        let body = &src[src.find("\nmod load_global {\n").expect("the module")..];
+        let mut lines = body.lines();
+        let mut tests = 0;
+        while let Some(l) = lines.next() {
+            if l.trim() == "#[test]" {
+                let f = lines.next().unwrap_or_default().trim();
+                let name = f.strip_prefix("fn ").expect("a test fn after #[test]");
+                assert!(name.starts_with("native_"), "{name}");
+                tests += 1;
+            }
+        }
+        assert_eq!(tests, 4);
+    }
+
     /// Tests run on parallel threads, so the offset of one test's stand-in must not be the
     /// offset of another. Thread A installs `lg` with its load offset. The test thread then
     /// sets offset 0 (what `install` does for `lt`, `lm`, `lz` and `nl`). After that, the
     /// call in thread A must still load at its own offset and give 7.
     #[test]
-    fn the_offset_is_per_thread() {
+    fn native_offset_is_per_thread() {
         use std::sync::mpsc::channel;
 
         // Channels, not a barrier: if thread A fails before it sends, `recv` returns and
