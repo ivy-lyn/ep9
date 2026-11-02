@@ -94,6 +94,9 @@ pub(crate) fn new_props(rt: &Runtime, cap: usize) -> CellPtr {
 /// Index of `key` in the PROPS table of `o` (dictionary mode).
 fn dict_find(o: u64, key: u64, how: Probe) -> Option<(CellPtr, usize)> {
     let p = table_of(o)?;
+    if let Some(hit) = crate::props_index::find(p, key, how) {
+        return hit.map(|i| (p, i));
+    }
     let n = props_count(p);
     let i = match how {
         Probe::Bits => (0..n).find(|&i| rd(p, entry(i)) == key),
