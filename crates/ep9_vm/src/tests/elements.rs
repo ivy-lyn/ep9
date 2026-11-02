@@ -115,8 +115,12 @@ fn the_lattice_is_one_way() {
     assert_eq!(elements::value_kind(dbl(0.5)), ek::PACKED_DOUBLE);
     assert_eq!(elements::value_kind(dbl(-0.0)), ek::PACKED_DOUBLE);
     assert_eq!(elements::value_kind(UNDEFINED), ek::PACKED_ELEMENTS);
-    // The kinds-set bits: one per kind, all above bit 9.
-    assert_eq!(elements::KINDS_SET_MASK, 0x7F << 10);
+    // The kinds-set bits: one per kind value 0-15 (bits 10-25), all above bit 9. One assert pins
+    // the pair (IC_LAYOUT_VERSION, mask): a change of the mask moves IC_LAYOUT (V11-D4).
+    assert_eq!(
+        (crate::versions::IC_LAYOUT_VERSION, elements::KINDS_SET_MASK),
+        (4, 0xFFFF << 10)
+    );
     assert_eq!(
         elements::KINDS_SET_MASK & 0x3FF,
         0,

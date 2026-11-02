@@ -60,8 +60,18 @@ pub const OBJECT_LAYOUT_VERSION: u32 = 6;
 /// value 0-6 (MC-w15-21; `elements::KINDS_SET_SHIFT`); a new IC_HANDLER handler kind
 /// ALLOC_SITE (`ic::hk`: +16 the int32 elements kind, +24 the result shape (weak), +32 an
 /// int32 count) for array-literal sites (V10-D6, MODES-D19). No other handler kind and no
-/// slot kind changes (the bytecode ABI 5 stays).
-pub const IC_LAYOUT_VERSION: u32 = 3;
+/// slot kind changes (the bytecode ABI 5 stays). Named here (v11in #27): since M5-P2 CONSTREP
+/// the smi handler kinds 9-14 (`ic::smi`, the representation-checked field stores) exist too,
+/// an append that IC_LAYOUT 3 did not name.
+///
+/// 4 (M6-P0; plan v11 §2.3, V11-D3, V11-D4: the one bump of month 6): the keyed kinds set is
+/// bits 10-25 of a keyed slot's value half, one bit per elements kind value 0-15
+/// (`elements::KINDS_SET_MASK` no longer depends on the kinds built), so a new kind value moves
+/// no IC_LAYOUT; bit 26 is the LoadKeyed "ran" bit (`profile::keyed::RAN`; MODES-D15, D17,
+/// D18; declared, no writer yet); bits 27-30 are reserved; bits 0-9 keep their meaning. New
+/// IC_HANDLER handler kinds 9 GETTER, 10 SETTER and 11 PROTO_DICT_LOAD (`ic::hk`; declared,
+/// M6-P1 ACCIC fills them). No slot kind changes (the bytecode ABI 5 stays).
+pub const IC_LAYOUT_VERSION: u32 = 4;
 /// The frame layout: 8-slot header, arguments, registers (H14). 2 (M2-P0): fp-3 holds
 /// new.target, or the generator object in a resumed frame (`frame::slot::NEW_TARGET`).
 pub const FRAME_VERSION: u32 = 2;

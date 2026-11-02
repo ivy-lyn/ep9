@@ -257,6 +257,22 @@ pub(crate) mod hk {
     /// writes it (`literal_site.rs`; an elements transition generalizes it through ARRAY +32),
     /// never a record hook, so `ics_only` keeps it. Built in M5-P2 (ELEM2).
     pub const ALLOC_SITE: i32 = 8;
+    /// IC_LAYOUT 4 (M6-P0, plan v11 §2.3; H17 "Accessor ICs"): a getter case (M6-P1 ACCIC fills
+    /// it). Own accessor: +16 int32 0, +24 undefined; inherited: +16 the chain's validity
+    /// cell, +24 the holder (weak); both: +32 the field location (a smi field handler) of the
+    /// ACCESSOR_PAIR. Declared, no writer yet.
+    #[allow(dead_code)]
+    pub const GETTER: i32 = 9;
+    /// IC_LAYOUT 4: a setter case, the fields of [`GETTER`] (M6-P1 ACCIC). Declared, no writer
+    /// yet.
+    #[allow(dead_code)]
+    pub const SETTER: i32 = 10;
+    /// IC_LAYOUT 4 (H17 "Dictionary v1"): a data property of a dictionary-mode holder on the
+    /// prototype chain: +16 the receiver chain's validity cell, +24 the holder (weak), +32 int32
+    /// 0; a hit looks the key up in the holder's PROPS or PROPS_INDEXED table (M6-P1 ACCIC).
+    /// Declared, no writer yet.
+    #[allow(dead_code)]
+    pub const PROTO_DICT_LOAD: i32 = 11;
 }
 
 /// IC_HANDLER fields.

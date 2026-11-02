@@ -1,8 +1,8 @@
-//! T0 profile recording (owner M4-P1 PROFILE; OI-06, JA-3, H16-Q2) and the IC_LAYOUT 3 feedback
-//! slot table (H16; `versions::IC_LAYOUT_VERSION` 2 since M4-P0, 3 since M5-P0).
+//! T0 profile recording (owner M4-P1 PROFILE; OI-06, JA-3, H16-Q2) and the IC_LAYOUT 4 feedback
+//! slot table (H16; `versions::IC_LAYOUT_VERSION` 2 since M4-P0, 3 since M5-P0, 4 since M6-P0).
 //!
-//! **IC_LAYOUT 3 slot table** (M5-P0: the keyed kinds-set bits and the ALLOC_SITE handler; the
-//! rest as IC_LAYOUT 2). Each slot of a FEEDBACK cell (`feedback.rs`, 16 B) is a key half
+//! **IC_LAYOUT 4 slot table** (M5-P0: the keyed kinds-set bits and the ALLOC_SITE handler; M6-P0:
+//! the kinds set widened to bits 10-25 and the LoadKeyed "ran" bit 26; the rest as IC_LAYOUT 2). Each slot of a FEEDBACK cell (`feedback.rs`, 16 B) is a key half
 //! (weak) and a value half (strong). One module writes each slot kind:
 //!
 //! | Slot kind (ABI byte) | Key half (weak) | Value half (strong) | Writer module (role, phase) |
@@ -10,7 +10,7 @@
 //! | Call (0) at `Call*` sites | **(M4-P1)** the native word of the target's FunctionInfo (not a cell; the FUNCTION cell's +24), or the hole = megamorphic | int32 count of the sampled calls (saturating) | `profile.rs` (PROFILE, M4-P1) |
 //! | Call (0) at `Construct*` sites | the target function, or the hole | a construct-site handler (an IC_HANDLER cell, handler kind `CONSTRUCT_SITE`: +16 int32 count, +24 initial shape (weak), +32 int32 `prototype` field index; V9-A8), or an int32 count | `construct_ic.rs` (OBJ-ALLOC, M4-P1) |
 //! | LoadNamed, StoreNamed, DefineNamedOwn, LoadGlobal*, StoreGlobal (1, 3, 5, 7-9) | as IC_LAYOUT 1 | as IC_LAYOUT 1; the prototype cases keep a validity cell, not the epoch | `ic.rs` (VALIDITY M4-P1, IC2 M4-P3) |
-//! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed (2, 4, 6, 10) | the receiver shape (monomorphic) or the hole (`keyed_ic.rs` writes it, KEYED, M4-P3) | int32 bits: element form seen, key types (int32, string, symbol), out of bounds, hole read (bits 0-9); **IC_LAYOUT 3:** bits 10-16 the set of elements kinds seen, one bit per kind value 0-6 (`elements::KINDS_SET_SHIFT`; one storage form counts as one case, MC-w15-21; M5-P1 ELEM1 writes them) | `profile.rs` writes the bits (M4-P1); `keyed_ic.rs` writes the key half and never reads the bits (KEYED, M4-P3; MC-w14-8); only the StoreKeyed fast case changes the key half, so the exported state is live only for StoreKeyed (MC-w15-1) |
+//! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed (2, 4, 6, 10) | the receiver shape (monomorphic) or the hole (`keyed_ic.rs` writes it, KEYED, M4-P3) | int32 bits: element form seen, key types (int32, string, symbol), out of bounds, hole read (bits 0-9); **IC_LAYOUT 4:** bits 10-25 the set of elements kinds seen, one bit per kind value 0-15 (`elements::KINDS_SET_SHIFT`, `KINDS_SET_MASK`; bits 10-16 for values 0-6 in IC_LAYOUT 3; one storage form counts as one case, MC-w15-21; M5-P1 ELEM1 writes them); bit 26 the LoadKeyed "ran" bit (`keyed::RAN`, declared, no writer yet); bits 27-30 reserved | `profile.rs` writes the bits (M4-P1); `keyed_ic.rs` writes the key half and never reads the bits (KEYED, M4-P3; MC-w14-8); only the StoreKeyed fast case changes the key half, so the exported state is live only for StoreKeyed (MC-w15-1) |
 //! | BinaryOp, CompareOp (11, 12) | undefined | int32 hint bits (int32, number, string, bigint, other) | `profile.rs` |
 //! | TypeOf (13) | undefined | int32 type bits | `profile.rs` |
 //! | InstanceOf (14) | the rhs function, or the hole (2-4 functions, or megamorphic) | an instanceof handler (an IC_HANDLER cell, handler kind `INSTANCEOF`: +16 validity cell, +24 the rhs function's shape (weak; the hit compares it, so the field index holds), +32 int32 `prototype` field index; V9-A8), a POLY_IC cell (2-4 cases: the function (weak), its handler), or an int32 state | `instance_ic.rs` (IC2, M4-P3) |
@@ -25,7 +25,7 @@
 //!
 //! Rules: a slot is written only when its bit or state is new (load, test, rare store;
 //! V9-D6). A hit path never allocates and never calls (H16:103). The IC_HANDLER layout under
-//! IC_LAYOUT 3 is in the `ic.rs` module docs.
+//! IC_LAYOUT 4 is in the `ic.rs` module docs and `ic::hk` (handler kinds 9-11 since M6-P0).
 //!
 //! **Record points** (`interp/ops.rs` calls them; ops.rs has no owner after M4-P0, V9-D5).
 //! Each hook is `#[inline(always)]` and calls nothing on its fast-body path. Not out of line
@@ -151,11 +151,12 @@ use crate::shape;
 use crate::string;
 
 /// Value bits of the keyed slots (2, 4, 6, 10, 17). Bits 0-3 are the `ep9_facts::KeySet`
-/// bits; bits 4-7 the receiver; bits 8-9 what the element access found. IC_LAYOUT 3 (M5-P1
-/// ELEM1): bits 10-16 the set of elements kinds of the receivers of an index key (Arrays and
-/// `elements::plain_elements_kind` objects), one bit per kind value
-/// (`elements::kinds_set_bit`): [`record_keyed_cold`] records it on every miss of an index
-/// key, [`keyed_hit_kind`] on a fast hit in the sampled window only.
+/// bits; bits 4-7 the receiver; bits 8-9 what the element access found. IC_LAYOUT 4 (M6-P0;
+/// bits 10-16 in IC_LAYOUT 3, M5-P1 ELEM1): bits 10-25 the set of elements kinds of the
+/// receivers of an index key (Arrays and `elements::plain_elements_kind` objects), one bit per
+/// kind value 0-15 (`elements::kinds_set_bit`): [`record_keyed_cold`] records it on every miss
+/// of an index key, [`keyed_hit_kind`] on a fast hit in the sampled window only. Bit 26 is
+/// [`keyed::RAN`]; bits 27-30 are reserved.
 pub(crate) mod keyed {
     /// An array index key: an int32 >= 0, a number that is an index, or an index string.
     pub const INDEX: u32 = 1 << 0;
@@ -178,6 +179,11 @@ pub(crate) mod keyed {
     pub const OUT_OF_BOUNDS: u32 = 1 << 8;
     /// An index key below an Array's length whose element is a hole.
     pub const HOLE: u32 = 1 << 9;
+    /// IC_LAYOUT 4 (M6-P0, V11-D4): the LoadKeyed "ran" bit (MODES-D15, D17, D18): the site
+    /// ran inside the sampled window, so an implicit INDEX key means "index", not "never ran"
+    /// (F-R9). Above the kinds set (bits 10-25). Declared, no writer yet.
+    #[allow(dead_code)]
+    pub const RAN: u32 = 1 << 26;
 }
 
 const _: () = {

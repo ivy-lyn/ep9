@@ -138,16 +138,19 @@ fn elements_kind_values_and_storage_forms() {
 }
 
 /// H18 "elements kind values (append-only)": kind 15, the top of the 4 shape bits (never the
-/// next free value 7), is refused today (MODES-CHECK-w22 MC-w22-1). It has no storage form, no
-/// FactSnapshot kind and no kinds-set bit inside the IC_LAYOUT 3 mask, and an object whose
-/// shape holds it fails the storage-form check (`elements::storage_form_ok`, `elements::check`).
+/// next free value 7), is refused today (MODES-CHECK-w22 MC-w22-1). It has no storage form and
+/// no FactSnapshot kind, and an object whose shape holds it fails the storage-form check
+/// (`elements::storage_form_ok`, `elements::check`). Its kinds-set bit (25) is inside the
+/// IC_LAYOUT 4 mask (bits 10-25, V11-D4), so its append will move no IC_LAYOUT (it was outside
+/// the IC_LAYOUT 3 mask, bits 10-16).
 #[test]
 fn h18_kind_value_probe_15() {
     const PROBE: u8 = 15;
     assert_eq!(PROBE, ek::MAX, "15 is the top of the 4 shape bits");
     assert_eq!(elements::storage(PROBE), None);
     assert_eq!(elements::to_fact(PROBE), None);
-    assert_eq!(elements::kinds_set_bit(PROBE) & elements::KINDS_SET_MASK, 0);
+    assert_eq!(elements::kinds_set_bit(PROBE), 1 << 25);
+    assert_ne!(elements::kinds_set_bit(PROBE) & elements::KINDS_SET_MASK, 0);
     let iso = isolate(config(Dispatch::DEFAULT, false));
     let rt = &*iso.rt;
     let a = object::new_array(rt, 1);
