@@ -310,9 +310,9 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    # Plan v10 section 9.2: 90 on every target (>= 1.5 x 54.4 min, the last measured max, with the
-    # atom-key gate inside) until the first run without it is measured.
-    timeout-minutes: 90
+    # Rule 25: 1.5x the last measured max: 62 min (linux-x64, run 41373757725; the no-jit unit
+    # step took 35.1 min there, 19.4 in run 41350992446), so 95 (was 90; M5-P5-ORCH-12).
+    timeout-minutes: 95
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
