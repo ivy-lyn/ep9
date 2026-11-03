@@ -963,8 +963,8 @@ pub(crate) unsafe fn push_construct_stub(
 /// `None` if that frame would end above `limit`: the size test of [`push_frame`] alone, with no
 /// write. The x86-64 T0 call fast path (`interp/ops.rs` `call_fast`, PERF3 item 2) makes this
 /// test before its count and its budget unit, then writes the frame with
-/// [`fill_missing_args`] and [`write_call_frame`]; the three together write what
-/// [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
+/// [`fill_missing_args`], [`write_call_args`] and [`write_call_header`]; the four together
+/// write what [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
 ///
 /// The `& !7` changes no bit (`base` is a slot address, so `fp` is 8-byte aligned). It keeps
 /// LLVM from folding `base + 8 * n + 72` into every later address, so the fast path holds the
@@ -1003,15 +1003,16 @@ pub(crate) unsafe fn fill_missing_args(base: *mut u64, fp: *mut u64, argc: u32) 
     unsafe { fill_undefined(base, fp.offset(slot::PARAM0 + 1 - argc as isize)) }
 }
 
-/// Writes the rest of the call frame (new.target undefined) that [`push_frame`] writes, at the
-/// `fp` that [`call_frame_fp`] gave: the receiver, the arguments, the header and the
-/// registers ([`fill_missing_args`] writes the missing arguments). The receiver and the
-/// arguments go first, so their registers are free for the rest. Up to 2 arguments (the
-/// fixed-count `Call*` forms, whose `argc` is a constant) the copy unrolls fully; a longer
-/// list is copied by a plain pointer loop (LLVM unrolls a counted copy loop 4 times, which
-/// costs the list forms 2 more callee-saved registers on x86-64). `context` runs at its store
-/// (the fast path loads the callee's context there, not before the receiver and argument
-/// stores: one register less for the list forms on x86-64).
+/// Writes the receiver and the arguments of the call frame at `fp` (from [`call_frame_fp`])
+/// that [`push_frame`] writes; `this` is the receiver after [`try_bind_this`] with the global
+/// object (see [`bound_with_global`]). The x86-64 T0 call fast path writes them right after
+/// its frame size test on the forms with a receiver operand (M6-P1 CBC), so that their values
+/// hold no register across its later tests; the slots lie above the top frame until the frame
+/// is complete, where no GC root scan and no reader looks, so a cold exit after this write
+/// leaves them as garbage that the cold path's frame push writes again. `LIST` is false for
+/// the fixed-count forms (`argc` is a constant up to 2: straight stores) and true for the
+/// register-list forms: one pointer loop (a counted `for` loop is unrolled by LLVM, and both
+/// copies in one function cost the list forms 1-2 more callee-saved registers on x86-64).
 ///
 /// # Safety
 /// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
@@ -1021,38 +1022,64 @@ pub(crate) unsafe fn fill_missing_args(base: *mut u64, fp: *mut u64, argc: u32) 
     allow(dead_code)
 )]
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) unsafe fn write_call_frame(
+pub(crate) unsafe fn write_call_args<const LIST: bool>(
     fp: *mut u64,
-    fi: &FunctionInfo,
-    callee: u64,
     this: u64,
     argc: u32,
     arg: impl Fn(u32) -> u64,
+) {
+    // SAFETY: [fp + RECEIVER - argc, fp + RECEIVER] lies in the frame `call_frame_fp` placed
+    // below `limit`, above every live frame (caller contract), so these writes clobber nothing
+    // live.
+    unsafe {
+        *fp.offset(slot::RECEIVER) = this;
+        if !LIST {
+            debug_assert!(argc <= 2);
+            if argc != 0 {
+                *fp.offset(slot::PARAM0) = arg(0);
+                if argc == 2 {
+                    *fp.offset(slot::PARAM0 - 1) = arg(1);
+                }
+            }
+            return;
+        }
+        let mut p = fp.offset(slot::PARAM0);
+        let end = p.wrapping_sub(argc as usize);
+        let mut i = 0;
+        while p > end {
+            // Volatile as in `fill_undefined`: a plain store; LLVM makes no vector loop.
+            p.write_volatile(arg(i));
+            p = p.wrapping_sub(1);
+            i += 1;
+        }
+    }
+}
+
+/// Writes the header (new.target undefined) and the registers of the call frame at `fp` that
+/// [`push_frame`] writes; [`fill_missing_args`] and [`write_call_args`] write the slots below
+/// the header. `context` runs at its store (the fast path loads the callee's context there,
+/// not before: one register less for the list forms on x86-64).
+///
+/// # Safety
+/// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
+/// contract for `base` and `limit`.
+#[cfg_attr(
+    any(feature = "spike-native", not(target_arch = "x86_64")),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) unsafe fn write_call_header(
+    fp: *mut u64,
+    fi: &FunctionInfo,
+    callee: u64,
+    argc: u32,
     caller_fp: *mut u64,
     return_pc: *const u8,
     context: impl FnOnce() -> u64,
 ) {
-    // SAFETY: [fp + RECEIVER - argc, fp + register_count) lies in the frame `call_frame_fp`
-    // placed below `limit`, above every live frame (caller contract), so these writes clobber
-    // nothing live.
+    // SAFETY: [fp + CONTEXT .. fp + register_count) lies in the frame `call_frame_fp` placed
+    // below `limit`, above every live frame (caller contract).
     unsafe {
-        *fp.offset(slot::RECEIVER) = this;
-        if argc <= 2 {
-            for i in 0..argc {
-                *fp.offset(slot::PARAM0 - i as isize) = arg(i);
-            }
-        } else {
-            let mut p = fp.offset(slot::PARAM0);
-            let end = p.wrapping_sub(argc as usize);
-            let mut i = 0;
-            while p > end {
-                // Volatile as in `fill_undefined`: a plain store; LLVM makes no vector loop.
-                p.write_volatile(arg(i));
-                p = p.wrapping_sub(1);
-                i += 1;
-            }
-        }
         *fp.offset(slot::CALLER_FP) = native_of(caller_fp);
         *fp.offset(slot::RETURN_PC) = native_of(return_pc);
         *fp.offset(slot::CALLEE) = callee;

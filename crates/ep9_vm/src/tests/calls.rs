@@ -765,14 +765,18 @@ fn never_called<'s>(
 }
 
 /// PERF3 item 2 (M5-P2): the x86-64 T0 call fast path's frame (`call::call_frame_fp`, then
-/// `call::fill_missing_args` and `call::write_call_frame`) is the frame `call::push_frame`
-/// writes, slot for slot, and both refuse the same sizes: no missing argument, missing
-/// arguments, no register, more arguments than parameters, 0 to 4 arguments (the list forms
-/// take the copy loop from 3), a frame one slot too big, one that just fits and one with room
-/// left.
+/// `call::fill_missing_args`, `call::write_call_args` and `call::write_call_header`) is the
+/// frame `call::push_frame` writes, slot for slot, and both refuse the same sizes: no missing
+/// argument, missing arguments, no register, more arguments than parameters, 0 to 4
+/// arguments, a frame one slot too big, one that just fits and one with room left. The
+/// arguments go in by the list copy (`LIST`, 0 to 4) and by the fixed-count stores (`!LIST`,
+/// 0 to 2), and before or after the header (M6-P1 CBC: the forms with a receiver operand
+/// write them before the later callee tests).
 #[test]
 fn the_fast_frame_write_equals_push_frame() {
-    use crate::call::{call_frame_fp, fill_missing_args, push_frame, write_call_frame};
+    use crate::call::{
+        call_frame_fp, fill_missing_args, push_frame, write_call_args, write_call_header,
+    };
     use crate::frame::{HEADER, UNDEFINED, int32_bits};
     use crate::unit::FunctionInfo;
     const MARK: u64 = 0x7FF8_0000_DEAD_BEEF;
@@ -785,7 +789,17 @@ fn the_fast_frame_write_equals_push_frame() {
         let mut fi = FunctionInfo::host(never_called, "f", 0, false);
         fi.parameter_count = params;
         fi.register_count = regs;
-        for argc in 0..=4u32 {
+        for (argc, list, early) in (0..=4u32)
+            .flat_map(|n| {
+                [
+                    (n, true, false),
+                    (n, true, true),
+                    (n, false, false),
+                    (n, false, true),
+                ]
+            })
+            .filter(|&(n, list, _)| list || n <= 2)
+        {
             let size = argc.max(params) as usize + 1 + HEADER + regs as usize;
             for room in [size - 1, size, size + 3] {
                 let (mut a, mut b) = (vec![MARK; 64], vec![MARK; 64]);
@@ -811,12 +825,25 @@ fn the_fast_frame_write_equals_push_frame() {
                     let base = b.as_mut_ptr().add(4);
                     call_frame_fp(base, base.add(room), &fi, argc).inspect(|&fp| {
                         fill_missing_args(base, fp, argc);
-                        write_call_frame(
-                            fp, &fi, callee, this, argc, arg, caller_fp, return_pc, context_of,
-                        )
+                        let args = || {
+                            if list {
+                                write_call_args::<true>(fp, this, argc, arg)
+                            } else {
+                                write_call_args::<false>(fp, this, argc, arg)
+                            }
+                        };
+                        if early {
+                            args();
+                        }
+                        write_call_header(fp, &fi, callee, argc, caller_fp, return_pc, context_of);
+                        if !early {
+                            args();
+                        }
                     })
                 };
-                let case = format!("params {params} regs {regs} argc {argc} room {room}");
+                let case = format!(
+                    "params {params} regs {regs} argc {argc} room {room} list {list} early {early}"
+                );
                 assert_eq!(
                     pa.map(|p| p.addr() - a.as_ptr().addr()),
                     pb.map(|p| p.addr() - b.as_ptr().addr()),
