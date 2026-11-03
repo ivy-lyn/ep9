@@ -84,7 +84,7 @@ pub(crate) fn fits(r: i32, v: u64) -> bool {
 }
 
 /// The Values a representation holds, as one range of bit patterns (M6-P2 T0OBJ): the table
-/// form of [`fits`] that the store IC hits read ([`table_fits`]). `v` fits
+/// form of [`fits`] that the store IC hits read ([`table_fits`], [`handler_fits`]). `v` fits
 /// when `v - lo < span` (wrapping). The patterns sort heap below double below int32 (H6: a
 /// cell is below 2^47, an immediate is small, a double's top 16 bits are 0x0002..=0xFFF2, an
 /// int32's are 0xFFFE), so each representation is one range:
@@ -172,6 +172,35 @@ pub(crate) fn table_fits(r: i32, v: u64) -> bool {
         "the table differs from the tag test"
     );
     f
+}
+
+/// The range each smi field handler holds (`ic::smi`), by the handler's low byte: a plain
+/// field kind every Value, a checked kind (9-14) its representation's range, any other kind
+/// none. The low byte holds the kind (bits 0-3), so the index needs no mask (aarch64:
+/// `add x, t, w, uxtb #4`).
+static HANDLER_FIT: [Fit; 256] = {
+    use crate::ic::smi;
+    let mut t = [Fit::NONE; 256];
+    let mut b = 0;
+    while b < 256 {
+        let k = b as i32 & smi::KIND_MASK;
+        t[b] = if k == smi::FIELD_IN_OBJECT || k == smi::FIELD_OUT_OF_LINE {
+            Fit::of(rep::ANY)
+        } else if smi::is_checked(k) {
+            Fit::of(smi::rep_of_kind(k))
+        } else {
+            Fit::NONE
+        };
+        b += 1;
+    }
+    t
+};
+
+/// True if the field store hit of the smi handler `x` (`ic::store_with`) may store `v`: `x` is
+/// a field kind and `v` fits a checked kind's representation. One table read for every kind.
+#[inline(always)]
+pub(crate) fn handler_fits(x: i32, v: u64) -> bool {
+    HANDLER_FIT[x as u8 as usize].holds(v)
 }
 
 /// The least representation above both `a` and `b`.

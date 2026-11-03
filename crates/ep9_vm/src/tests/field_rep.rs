@@ -87,12 +87,13 @@ fn the_tag_order_and_the_join() {
 }
 
 /// M6-P2 T0OBJ: the table form that the store IC hits read (`field_rep::Fit`: one range per
-/// representation, `table_fits`) gives `fits` (the tag test) for every representation value
-/// 0-7 and every bit pattern that differs in the tag bits, each with low halves at both ends. The one
+/// representation, `table_fits`; one range per smi handler byte, `handler_fits`) gives
+/// `fits` (the tag test) for every representation value 0-7, every smi handler kind 0-15 and
+/// every bit pattern that differs in the tag bits, each with low halves at both ends. The one
 /// pattern it leaves out is 0 in ANY, which is never a Value (the `ep9_value` niche).
 #[test]
 fn the_fit_tables_are_the_tag_test() {
-    use crate::field_rep::{Fit, fits, table_fits};
+    use crate::field_rep::{Fit, fits, handler_fits, table_fits};
     let mut patterns = vec![0, 1, u64::MAX];
     for top in 0..=0xFFFFu64 {
         for low in [0, 1, 0x7FFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF_FFFF] {
@@ -132,6 +133,121 @@ fn the_fit_tables_are_the_tag_test() {
     assert_eq!(Fit::of(rep::NONE), Fit::NONE);
     assert_eq!(Fit::of(5), Fit::NONE);
     assert_eq!(Fit::of(-1), Fit::NONE);
+    // A smi handler: the kind in bits 0-3, a byte offset above (any offset bits).
+    for k in 0..16 {
+        let field = k == smi::FIELD_IN_OBJECT || k == smi::FIELD_OUT_OF_LINE;
+        for off in [0, 1, 0xF, 0x10, 0x7FF_FFFF] {
+            let x = off << smi::SHIFT | k;
+            for &v in &patterns {
+                let want = if field {
+                    v != 0
+                } else if smi::is_checked(k) {
+                    fits(smi::rep_of_kind(k), v)
+                } else {
+                    false
+                };
+                assert_eq!(handler_fits(x, v), want, "kind {k}, x {x:#x}, {v:#018x}");
+            }
+        }
+    }
+}
+
+/// M6-P2 T0OBJ: the field store hit of every checked kind (in-object and out of line) and
+/// the add hit of every representation store a value that fits as it is, and give any other
+/// value to the miss path, which widens the field: no field holds a value that its bits do
+/// not allow. Each case is on its own shape family (a pad name of its own).
+#[test]
+fn every_checked_kind_and_add_hit_stores_only_what_fits() {
+    each_ic(|c| {
+        // (representation, first value, second value) of a field.
+        fn reps(rt: &Runtime) -> [(i32, u64, u64); 3] {
+            [
+                (rep::INT32, int(1), int(2)),
+                (rep::DOUBLE, dbl(0.5), dbl(1.5)),
+                (rep::HEAP, Value::NULL.to_bits(), text(rt, "h")),
+            ]
+        }
+        fn values(rt: &Runtime) -> [u64; 4] {
+            [int(7), dbl(2.5), text(rt, "s"), Value::UNDEFINED.to_bits()]
+        }
+        let sites = [Site::Set("x", false); 4];
+        for out_of_line in [false, true] {
+            for ri in 0..3 {
+                let mut t = T::new(c.clone(), &sites);
+                let (r, first, second) = reps(t.rt())[ri];
+                let p = object_prototype(t.rt());
+                let vals = values(t.rt());
+                let mut kept = Vec::new();
+                for (i, &v) in vals.iter().enumerate() {
+                    let pad = format!("pad{i}");
+                    let mut props: Vec<(String, u64)> = Vec::new();
+                    let n = if out_of_line { 10 } else { 1 };
+                    for j in 0..n {
+                        props.push((format!("{pad}_{j}"), int(0)));
+                    }
+                    props.push(("x".to_string(), first));
+                    let props: Vec<(&str, u64)> =
+                        props.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+                    let o = object_with(t.rt(), p, &props);
+                    let s = shape::shape_of(o);
+                    let xi = n;
+                    // The miss: a second store, then the checked case.
+                    t.ok(i, o, second);
+                    assert_eq!(bits(o, xi), (r, false));
+                    let h = ic::find_raw(t.vector(i), super::ic::SLOT, s)
+                        .map(crate::frame::int32_of)
+                        .expect("a case");
+                    let k = h & smi::KIND_MASK;
+                    assert!(smi::is_checked(k), "kind {k}");
+                    assert_eq!(smi::rep_of_kind(k), r);
+                    assert_eq!(k & 1 == 0, out_of_line, "kind {k}");
+                    // The hit: a value that fits stays; any other widens the field.
+                    t.ok(i, o, v);
+                    assert_eq!(props::own_get(o, key(t.rt(), "x")).unwrap().0, v);
+                    let fits = crate::field_rep::fits(r, v);
+                    let want = if fits {
+                        r
+                    } else {
+                        crate::field_rep::join(r, crate::field_rep::rep_of(v))
+                    };
+                    assert_eq!(bits(o, xi), (want, false), "rep {r}, value {v:#x}");
+                    assert_eq!(shape::shape_of(o), s);
+                    kept.push(o);
+                }
+                std::hint::black_box(&kept);
+            }
+        }
+        // The add case: a first object adds `y` (the target's new field gets the value's
+        // representation, const); a second object's add hit with each value.
+        for ri in 0..3 {
+            let mut t = T::new(c.clone(), &[Site::Set("y", false); 4]);
+            let (r, first, _) = reps(t.rt())[ri];
+            let p = object_prototype(t.rt());
+            let vals = values(t.rt());
+            let mut kept = Vec::new();
+            for (i, &v) in vals.iter().enumerate() {
+                let pad = format!("add{i}");
+                let a = object_with(t.rt(), p, &[(pad.as_str(), int(0))]);
+                let b = object_with(t.rt(), p, &[(pad.as_str(), int(0))]);
+                t.ok(i, a, first);
+                let target = shape::shape_of(a);
+                assert_eq!(bits(a, 1), (r, true));
+                assert_eq!(t.kind(i, shape::shape_of(b)), Some(super::ic::ADD));
+                t.ok(i, b, v);
+                assert_eq!(shape::shape_of(b), target);
+                assert_eq!(props::own_get(b, key(t.rt(), "y")).unwrap().0, v);
+                let fits = crate::field_rep::fits(r, v);
+                let want = if fits {
+                    r
+                } else {
+                    crate::field_rep::join(r, crate::field_rep::rep_of(v))
+                };
+                assert_eq!(bits(b, 1), (want, true), "add: rep {r}, value {v:#x}");
+                kept.push((a, b));
+            }
+            std::hint::black_box(&kept);
+        }
+    });
 }
 
 #[test]
