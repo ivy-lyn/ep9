@@ -589,7 +589,7 @@ fn store_with<const CHECK_EPOCH: bool>(
     }
     // M5-P2 CONSTREP: the new field's representation must hold the value (the first store
     // keeps the const bit); the miss path widens it.
-    if !crate::field_rep::fits(shape::last_field_rep(target), v) {
+    if !crate::field_rep::table_fits(shape::last_field_rep(target), v) {
         return false;
     }
     #[cfg(debug_assertions)]

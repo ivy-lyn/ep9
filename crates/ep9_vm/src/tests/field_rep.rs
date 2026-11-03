@@ -86,6 +86,54 @@ fn the_tag_order_and_the_join() {
     assert!(!fits(rep::NONE, int(0)) && fits(rep::ANY, int(0)));
 }
 
+/// M6-P2 T0OBJ: the table form that the store IC hits read (`field_rep::Fit`: one range per
+/// representation, `table_fits`) gives `fits` (the tag test) for every representation value
+/// 0-7 and every bit pattern that differs in the tag bits, each with low halves at both ends. The one
+/// pattern it leaves out is 0 in ANY, which is never a Value (the `ep9_value` niche).
+#[test]
+fn the_fit_tables_are_the_tag_test() {
+    use crate::field_rep::{Fit, fits, table_fits};
+    let mut patterns = vec![0, 1, u64::MAX];
+    for top in 0..=0xFFFFu64 {
+        for low in [0, 1, 0x7FFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF_FFFF] {
+            patterns.push(top << 48 | low);
+        }
+    }
+    for v in [
+        Value::UNDEFINED,
+        Value::NULL,
+        Value::TRUE,
+        Value::FALSE,
+        Value::int32(0),
+        Value::int32(-1),
+        Value::int32(i32::MIN),
+        Value::int32(i32::MAX),
+        Value::double(0.0),
+        Value::double(-0.0),
+        Value::double(f64::NAN),
+        Value::double(f64::INFINITY),
+        Value::double(f64::NEG_INFINITY),
+        Value::double(f64::MAX),
+        Value::double(-f64::MAX),
+        Value::double(f64::MIN_POSITIVE),
+        Value::double(5e-324),
+        Value::double(-5e-324),
+    ] {
+        patterns.push(v.to_bits());
+    }
+    patterns.push(crate::frame::HOLE);
+    for r in 0..8 {
+        for &v in &patterns {
+            let want = fits(r, v) && !(r == rep::ANY && v == 0);
+            assert_eq!(table_fits(r, v), want, "rep {r}, {v:#018x}");
+            assert_eq!(Fit::of(r).holds(v), want, "rep {r}, {v:#018x}");
+        }
+    }
+    assert_eq!(Fit::of(rep::NONE), Fit::NONE);
+    assert_eq!(Fit::of(5), Fit::NONE);
+    assert_eq!(Fit::of(-1), Fit::NONE);
+}
+
 #[test]
 fn a_field_widens_one_way_and_the_second_store_clears_const() {
     each(|iso| {

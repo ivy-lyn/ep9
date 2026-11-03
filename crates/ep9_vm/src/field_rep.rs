@@ -83,6 +83,97 @@ pub(crate) fn fits(r: i32, v: u64) -> bool {
     }
 }
 
+/// The Values a representation holds, as one range of bit patterns (M6-P2 T0OBJ): the table
+/// form of [`fits`] that the store IC hits read ([`table_fits`]). `v` fits
+/// when `v - lo < span` (wrapping). The patterns sort heap below double below int32 (H6: a
+/// cell is below 2^47, an immediate is small, a double's top 16 bits are 0x0002..=0xFFF2, an
+/// int32's are 0xFFFE), so each representation is one range:
+///
+/// ```text
+///  rep      lo            span           Values
+///  NONE     0             0              none
+///  INT32    NUMBER_TAG    2^49           [NUMBER_TAG, 2^64)
+///  DOUBLE   2^49          2^64 - 2^49    [2^49, 2^64): every number
+///  HEAP     0             2^49           [0, 2^49): no number
+///  ANY      1             2^64 - 1       every pattern but 0
+/// ```
+///
+/// It gives [`fits`] for every pattern but 0 in ANY, which is never a Value (the niche,
+/// `ep9_value`). A check is one subtract and one compare, with no branch on the
+/// representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Fit {
+    lo: u64,
+    span: u64,
+}
+
+/// The lowest double pattern: every number is at or above it (H6, a double is offset by 2^49).
+const DOUBLE_LO: u64 = 1 << 49;
+
+// The ranges are the tag tests of [`fits`]: the tag bits are the top bits (2^64 - 2^49), so
+// "every bit set" is `v >= NUMBER_TAG` and "one bit set" is `v >= 2^49`.
+const _: () =
+    assert!(NUMBER_TAG == 0xFFFE_0000_0000_0000 && NUMBER_TAG.wrapping_neg() == DOUBLE_LO);
+
+impl Fit {
+    /// Holds no Value (NONE, and a handler kind that is not a field store).
+    pub(crate) const NONE: Fit = Fit { lo: 0, span: 0 };
+
+    /// The range of representation `r` ([`rep`]); NONE for a value that names none.
+    pub(crate) const fn of(r: i32) -> Fit {
+        match r {
+            rep::INT32 => Fit {
+                lo: NUMBER_TAG,
+                span: NUMBER_TAG.wrapping_neg(),
+            },
+            rep::DOUBLE => Fit {
+                lo: DOUBLE_LO,
+                span: DOUBLE_LO.wrapping_neg(),
+            },
+            rep::HEAP => Fit {
+                lo: 0,
+                span: DOUBLE_LO,
+            },
+            rep::ANY => Fit {
+                lo: 1,
+                span: u64::MAX,
+            },
+            _ => Fit::NONE,
+        }
+    }
+
+    /// True if the range holds `v`.
+    #[inline(always)]
+    pub(crate) const fn holds(self, v: u64) -> bool {
+        v.wrapping_sub(self.lo) < self.span
+    }
+}
+
+/// [`Fit::of`] for every 3-bit representation value (5-7 name none).
+static REP_FIT: [Fit; 8] = {
+    let mut t = [Fit::NONE; 8];
+    let mut r = 0;
+    while r < 8 {
+        t[r] = Fit::of(r as i32);
+        r += 1;
+    }
+    t
+};
+
+/// [`fits`] as a table read, for the paths that run on every store: the add hit of the store
+/// IC (`ic::store_with`) and the store hooks below. `r` is a 3-bit representation value
+/// (`shape::rep`); `v` is a Value.
+#[inline(always)]
+pub(crate) fn table_fits(r: i32, v: u64) -> bool {
+    debug_assert!((0..8).contains(&r), "a representation is 3 bits: {r}");
+    let f = REP_FIT[(r & 7) as usize].holds(v);
+    debug_assert!(
+        f == fits(r, v) || (v == 0 && r == rep::ANY),
+        "the table differs from the tag test"
+    );
+    f
+}
+
 /// The least representation above both `a` and `b`.
 pub(crate) fn join(a: i32, b: i32) -> i32 {
     match (a, b) {
@@ -113,7 +204,9 @@ pub(crate) fn initial(v: u64) -> i32 {
 #[inline(always)]
 pub(crate) fn before_field_store(rt: &Runtime, s: u64, f: usize, v: u64) {
     let b = shape::field_bits_at(s, f);
-    if b == shape::ANY_FIELD || (b & DETAILS_CONST == 0 && fits((b & rep::MASK) >> rep::SHIFT, v)) {
+    if b == shape::ANY_FIELD
+        || (b & DETAILS_CONST == 0 && table_fits((b & rep::MASK) >> rep::SHIFT, v))
+    {
         return;
     }
     generalize(rt, s, f, rep_of(v), true);
@@ -126,7 +219,7 @@ pub(crate) fn before_field_store(rt: &Runtime, s: u64, f: usize, v: u64) {
 #[inline]
 pub(crate) fn on_init_store(rt: &Runtime, s: u64, f: usize, v: u64) {
     let b = shape::field_bits_at(s, f);
-    if b & rep::MASK != shape::ANY_FIELD && !fits((b & rep::MASK) >> rep::SHIFT, v) {
+    if b & rep::MASK != shape::ANY_FIELD && !table_fits((b & rep::MASK) >> rep::SHIFT, v) {
         generalize(rt, s, f, rep_of(v), false);
     }
 }
