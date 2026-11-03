@@ -788,6 +788,9 @@ impl<'a> Exporter<'a> {
                     to: self.shape_desc(r)?,
                     field: key_index(r, location)?,
                 },
+                // M6-P1 ACCIC: accessor and dictionary-holder cases read as the SLOW case they
+                // replaced (the generic path) until the Getter and Setter facts get a writer.
+                hk::GETTER | hk::SETTER | hk::PROTO_DICT_LOAD => Access::Generic,
                 _ => return None,
             }
         };
