@@ -39,3 +39,4 @@
 0x0623   3.35         method       2       "with"  (%Array.prototype%.with w-c)
 0x0624   3.36         method       1       "fromEntries"  (%Object%.fromEntries w-c)
 0x0625   3.37         method       2       "groupBy"  (%Object%.groupBy w-c)
+0x0626   3.38         method       1       "fromAsync"  (%Array%.fromAsync w-c)
