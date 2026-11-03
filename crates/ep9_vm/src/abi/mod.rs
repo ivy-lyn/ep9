@@ -585,8 +585,8 @@ impl<'s> Cx<'s> {
         this: impl Into<Local<'s>>,
         args: &[Local<'s>],
     ) -> JsResult<Local<'s>> {
-        let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
         let (f, this) = (f.into().bits(), this.into().bits());
+        let argc = crate::isolate::checked_argc(self.rt(), f, this, args);
         call::call_with(
             self.cx,
             f,
@@ -1653,5 +1653,31 @@ impl<'s> Cx<'s> {
     /// ask a proxy for a property where the spec reads none (Function.prototype.toString).
     pub fn is_proxy(&self, v: impl Into<Local<'s>>) -> bool {
         crate::proxy::is_proxy(v.into().bits())
+    }
+
+    /// The source text of the function `f` (part 2, M6-P2 REALM-CLOSE for FN-SMALL): a new
+    /// String with a copy of the source range `source_start..source_end` of `f`'s compiled
+    /// function, made on each call, when `f` is a bytecode function whose unit embeds its
+    /// source. `Ok(None)` for any other value: a unit with no source, a host (built-in or
+    /// embedder) function, a bound function, a Proxy (asked nothing), a value that is not a
+    /// function. Runs no JS; a GC point (the copy); RangeError past the string length limit.
+    /// For Function.prototype.toString (§20.2.3.5 step 2). The range is the one the compiler
+    /// wrote: `[[SourceText]]` (§10.2) for a function declaration, expression or arrow; for a
+    /// method, an accessor or a class constructor ep9_frontend today records a range that
+    /// starts at the parameters (not the key, and not the class text).
+    pub fn function_source_text(
+        &mut self,
+        f: impl Into<Local<'s>>,
+    ) -> JsResult<Option<Local<'s, JsString>>> {
+        let f = f.into().bits();
+        if !kinds::is_function(f) {
+            return Ok(None);
+        }
+        // The text lives in the unit (Rust memory the isolate keeps), not on the heap, so
+        // the copy's allocation cannot move or free it.
+        match object::function_info(f).source_text() {
+            Some(text) => self.new_string(text).map(Some),
+            None => Ok(None),
+        }
     }
 }

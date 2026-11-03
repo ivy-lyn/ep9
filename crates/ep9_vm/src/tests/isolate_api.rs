@@ -1,7 +1,7 @@
-//! The `with_cx`-scoped embedding forms (`Cx::run_script`, `Cx::global_binding`,
-//! `Cx::display`), the raw global read (`NativeCx::global_value`, the tests' `global_raw`)
-//! and the TDZ, `InterruptHandle::request`, and the heap limit callback (M2-P3 ISOLATE-API;
-//! H20-Q4, H23).
+//! The `with_cx`-scoped embedding forms (`Cx::run_script`, `Cx::global_binding`, `Cx::display`),
+//! the raw global read (`NativeCx::global_value`, the tests' `global_raw`) and the TDZ,
+//! `InterruptHandle::request`, the heap limit callback (M2-P3 ISOLATE-API; H20-Q4, H23), realms
+//! (H22-Q3), function source text (H20 part 2), nested isolates (H22-Q6), the Q9 cage check.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
@@ -647,5 +647,212 @@ fn realms_are_made_used_and_dropped() {
                 iso.verify_heap().unwrap();
             });
         }
+    }
+}
+
+// ---- the source text of a function (H20 part 2; FN-SMALL) ------------------------------------
+
+/// A script whose result is the closure of function 1 (`f`, over source bytes `start..end` of
+/// `src`); the unit embeds `src` when `embed` is true.
+fn closure_script(src: &str, start: u32, end: u32, embed: bool) -> VerifiedUnit {
+    use ep9_bytecode::{FunctionId, UnitBuilder, UnitOptions};
+    let mut s = Asm::script(src.len());
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0).return_();
+    let mut f = Asm::new(super::meta("f", 1, 0, start, end));
+    f.b.lda_undefined().return_();
+    let options = UnitOptions {
+        embed_source: embed,
+        ..super::opts()
+    };
+    let mut u = UnitBuilder::new(src, options);
+    u.set_function(FunctionId(0), s.finish());
+    u.set_function(FunctionId(1), f.finish());
+    u.finish().unwrap()
+}
+
+/// `Cx::function_source_text` copies the unit range of a bytecode function (UTF-8 byte
+/// offsets, a non-ASCII text too): a new String on each call, which a GC keeps while it is
+/// used. It is `None` for a unit with no source, a range off the character boundaries, a host
+/// function and a value that is not a function.
+#[test]
+fn function_source_text_copies_the_unit_range() {
+    const SRC: &str = "function f(a) { return 'ü' + a; }\nf";
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let label = format!("{} stress={stress}", d.name());
+                let end = super::pos(SRC, "\nf");
+                let in_u = super::pos(SRC, "ü") + 1;
+                let mut iso = isolate(config(d, stress));
+                let r = iso.with_cx(|cx| {
+                    let f = cx.run_script(closure_script(SRC, 0, end, true), "src.js")?;
+                    let a = cx.function_source_text(f)?.expect("embedded");
+                    cx.collect_garbage();
+                    let b = cx.function_source_text(f)?.expect("embedded");
+                    let same_cell = a.bits() == b.bits();
+                    let (a, b) = (cx.to_rust_string(a)?, cx.to_rust_string(b)?);
+                    let none = cx.run_script(closure_script(SRC, 0, end, false), "no-src.js")?;
+                    let split = cx.run_script(closure_script(SRC, 0, in_u, true), "split.js")?;
+                    let print = cx.global_binding("print")?.expect("print");
+                    let o = cx.new_object();
+                    let s = cx.new_string("function f() {}")?;
+                    Ok((
+                        a,
+                        b,
+                        same_cell,
+                        cx.function_source_text(none)?.is_none(),
+                        cx.function_source_text(split)?.is_none(),
+                        cx.function_source_text(print)?.is_none(),
+                        cx.function_source_text(o)?.is_none(),
+                        cx.function_source_text(s)?.is_none(),
+                    ))
+                });
+                let text = "function f(a) { return 'ü' + a; }".to_string();
+                assert_eq!(
+                    r,
+                    Ok((text.clone(), text, false, true, true, true, true, true)),
+                    "{label}"
+                );
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+            });
+        }
+    }
+}
+
+// ---- several isolates on one thread (H22-Q6) and the in-cage check (H22-Q9) -------------------
+
+thread_local! {
+    /// The inner isolate of [`run_inner`] (made on the thread of the test).
+    static INNER: std::cell::RefCell<Option<crate::Isolate>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `z = 'zz'; 42` (a sloppy global store; it can run again).
+fn store_z_script() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    s.lda_str("zz");
+    s.sta_global("z");
+    s.b.lda_smi(42).return_();
+    unit("", vec![s.finish()])
+}
+
+/// `inner()`: a host function of the outer isolate that runs [`store_z_script`] in the inner
+/// isolate ([`INNER`]) with a collection there while the outer isolate's frames are live, and
+/// returns the inner result as a string of the outer isolate.
+fn run_inner<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let mut inner = INNER
+        .with_borrow_mut(Option::take)
+        .expect("an inner isolate");
+    let r = inner.with_cx(|icx| {
+        let v = icx.run_script(store_z_script(), "inner.js")?;
+        icx.collect_garbage();
+        let z = icx.global_binding("z")?.expect("z");
+        Ok(format!("{}{}", icx.display(v), icx.display(z)))
+    });
+    inner.collect_garbage();
+    inner.verify_heap().unwrap();
+    INNER.with_borrow_mut(|i| *i = Some(inner));
+    let text = r.map_err(|e| cx.throw_error(crate::ErrorKind::Error, &e.message))?;
+    cx.collect_garbage();
+    Ok(cx.new_string(&text)?.into())
+}
+
+/// H22-Q6: two isolates on one thread, nested (a host function of the outer isolate runs the
+/// inner one) and one after another. Each heap collects with the other's cells on the native
+/// stack: its conservative scan finds only cells of its own cage, and both heaps verify. Every
+/// dispatch, GC stress off and on.
+#[test]
+fn isolates_nest_on_one_thread() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let label = format!("{} stress={stress}", d.name());
+                INNER.with_borrow_mut(|i| *i = Some(isolate(config(d, stress))));
+                let mut outer = isolate(config(d, stress));
+                outer.register_host_function("inner", 0, run_inner);
+                let r = outer.with_cx(|cx| {
+                    let o = cx.new_object();
+                    let g = cx.global();
+                    let inner = cx.get(g, "inner")?;
+                    let a = cx.call(inner, Local::undefined(), &[])?;
+                    let b = cx.call(inner, Local::undefined(), &[])?;
+                    cx.collect_garbage();
+                    let o_alive = cx.get_prototype_of(o)?.is_object();
+                    Ok((cx.display(a), cx.display(b), o_alive))
+                });
+                assert_eq!(r, Ok(("42zz".into(), "42zz".into(), true)), "{label}");
+                outer.collect_garbage();
+                outer.verify_heap().unwrap();
+                // One after another: the inner isolate goes on after the outer one drops.
+                drop(outer);
+                let mut inner = INNER.with_borrow_mut(Option::take).unwrap();
+                let z = inner.with_cx(|cx| {
+                    let z = cx.global_binding("z")?.expect("z");
+                    Ok(cx.display(z))
+                });
+                assert_eq!(z.as_deref(), Ok("zz"), "{label}");
+                inner.collect_garbage();
+                inner.verify_heap().unwrap();
+            });
+        }
+    }
+}
+
+/// H22-Q9: in a debug build `Cx::call` refuses (panics on) a cell of another isolate as the
+/// function, the this value or an argument, before any JS runs; the isolate keeps working
+/// after the caught panic. Values of its own isolate pass (every other test).
+#[cfg(debug_assertions)]
+#[test]
+fn cx_call_refuses_a_cell_of_another_isolate_in_debug_builds() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let mut a = isolate(IsolateConfig::default());
+    let mut b = isolate(IsolateConfig::default());
+    let foreign = a.with_cx(|cx| Ok(cx.new_object().bits())).unwrap();
+    for what in ["function", "this", "argument"] {
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            let _ = b.with_cx(|cx| {
+                let x = Local::<crate::JsValue>::from_bits(foreign);
+                let print = cx.global_binding("print")?.expect("print");
+                match what {
+                    "function" => cx.call(x, Local::undefined(), &[]),
+                    "this" => cx.call(print, x, &[]),
+                    _ => cx.call(print, Local::undefined(), &[Local::int32(1), x]),
+                }
+                .map(|_| ())
+            });
+        }));
+        let msg = r.expect_err(what);
+        let msg = msg
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or("");
+        assert!(msg.starts_with("H22-Q9: "), "{what}: {msg}");
+        assert!(
+            msg.contains(match what {
+                "function" => "the function of Cx::call",
+                "this" => "the this value of Cx::call",
+                _ => "an argument of Cx::call",
+            }),
+            "{what}: {msg}"
+        );
+    }
+    take_output();
+    let r = b.with_cx(|cx| {
+        let print = cx.global_binding("print")?.expect("print");
+        let s = cx.new_string("still here")?;
+        cx.call(print, Local::undefined(), &[s.into()])?;
+        Ok(())
+    });
+    assert_eq!(r, Ok(()));
+    assert_eq!(take_output(), ["still here"]);
+    for iso in [&mut a, &mut b] {
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
     }
 }

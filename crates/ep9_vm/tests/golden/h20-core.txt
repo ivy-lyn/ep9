@@ -127,6 +127,7 @@ abi: impl<'s> Cx<'s> :: pub fn flatten(&mut self, impl Into<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn from_property_descriptor(&mut self, Option<PropertyDescriptor<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn fulfill_promise(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn function_realm_intrinsic(&self, impl Into<Local<'s>>, IntrinsicId) -> Local<'s>
+abi: impl<'s> Cx<'s> :: pub fn function_source_text(&mut self, impl Into<Local<'s>>) -> JsResult<Option<Local<'s, JsString>>>
 abi: impl<'s> Cx<'s> :: pub fn get(&mut self, impl Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn get_index(&mut self, impl Into<Local<'s, JsObject>>, u64) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn get_iterator(&mut self, impl Into<Local<'s>>) -> JsResult<IteratorRecord<'s>>
@@ -372,6 +373,7 @@ embed (not core): impl Isolate :: pub fn dispatch(&self) -> Dispatch
 embed (not core): impl Isolate :: pub fn gc_stats(&self) -> GcStats
 embed (not core): impl Isolate :: pub fn interrupt_handle(&self) -> InterruptHandle
 embed (not core): impl Isolate :: pub fn new_with(IsolateConfig, ExecOptions) -> Result<Isolate, IsolateError>
+embed (not core): impl Isolate :: pub fn set_compile_strings_hook(&mut self, Option<for<'s> fn(&mut Cx<'s>, &[String], &str, bool) -> JsResult<()>>)
 embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>
 embed (not core): impl Isolate :: pub fn terminate_handle(&self) -> TerminateHandle
 embed (not core): impl Isolate :: pub fn verify_heap(&self) -> Result<VerifyReport, VerifyError>
