@@ -1728,11 +1728,6 @@ impl Emitter<'_> {
         }
     }
 
-    /// The SPIKEC-7 forms of an element op on an ELEMENTS_DOUBLE cell, after the bounds and
-    /// hole checks (x16 = the data, x17 = the element's raw f64 bits, `i` the index): with no
-    /// value, the Float64 load of node `n` (the bits as they are: no box); with the Tagged
-    /// value `v`, its store: an int32 Value converts, a double Value is its bits (every NaN as
-    /// the pure NaN, so never the hole), any other Value goes to `slow` (the generic store).
     /// The fast path of an element op with a DoubleElements input `cell` (SPIKEC-9 task 8):
     /// if the cell is not 0, the bounds by `length`, the raw f64 load or store and the hole,
     /// then a jump to `done`; with 0 it falls through to the op's full path. The DOUBLE store
@@ -1806,6 +1801,11 @@ impl Emitter<'_> {
         Ok(())
     }
 
+    /// The SPIKEC-7 forms of an element op on an ELEMENTS_DOUBLE cell, after the bounds and
+    /// hole checks (x16 = the data, x17 = the element's raw f64 bits, `i` the index): with no
+    /// value, the Float64 load of node `n` (the bits as they are: no box); with the Tagged
+    /// value `v`, its store: an int32 Value converts, a double Value is its bits (every NaN as
+    /// the pure NaN, so never the hole), any other Value goes to `slow` (the generic store).
     fn double_form(
         &mut self,
         n: NodeId,
