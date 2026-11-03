@@ -1469,6 +1469,10 @@ pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
     // locals (conservative scan). Each allocation comes before the entry is read, so a key
     // that dies in that GC reads undefined. A prototype case gets its validity cell first
     // ([`chain_cell`]); `None` records nothing.
+    if cold_case(&case.handler) && state(v, i) == State::Megamorphic {
+        // [`stub_insert`] drops this case: make no cell (and no validity cell) for it.
+        return;
+    }
     let key = case.key;
     let handler = match case.handler {
         Handler::Smi(h) => h,
@@ -1592,17 +1596,18 @@ fn stub_insert(rt: &Runtime, case: &Case, handler: u64) {
     let Some((op, name)) = case.stub else {
         return;
     };
-    if case.key == KEY_STRING
-        || handler == SLOW
-        || matches!(
-            case.handler,
-            Handler::Accessor { .. } | Handler::ProtoDict { .. }
-        )
-    {
+    if case.key == KEY_STRING || handler == SLOW || cold_case(&case.handler) {
         return;
     }
     debug_assert!(shape::is_shape(case.key));
     stub_cache::insert(rt, op, case.key as u32, name, handler);
+}
+
+/// True for an accessor or a dictionary-holder case (M6-P1 ACCIC): a cold-body hit, which
+/// the stub cache does not keep ([`stub_insert`]). So [`record`] makes no handler cell for it
+/// at a megamorphic entry.
+fn cold_case(h: &Handler) -> bool {
+    matches!(h, Handler::Accessor { .. } | Handler::ProtoDict { .. })
 }
 
 // ---- accessor and dictionary-holder cases (M6-P1 ACCIC): the cold hits ------------------------

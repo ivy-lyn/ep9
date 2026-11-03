@@ -643,6 +643,54 @@ fn megamorphic_accessor_sites_put_nothing_in_the_stub_cache() {
     });
 }
 
+/// A megamorphic site keeps no accessor or dictionary-holder case, so its miss path makes no
+/// IC_HANDLER cell either: after the warm-up, more inherited-getter loads, inherited-setter
+/// stores and dictionary-holder loads allocate nothing (M6-P1 Claude review R1, Codex
+/// cx-accic-1: each one made a 40-byte cell that was garbage at once).
+#[test]
+fn megamorphic_accessor_and_dictionary_holder_misses_allocate_nothing() {
+    each(|c| {
+        let sites = [Site::Get("x"), Site::Set("x", false), Site::Get("z")];
+        let mut t = T::new(c, &sites);
+        reset();
+        let op = object_prototype(t.rt());
+        let ga = host(t.rt(), get_two, "ga");
+        let set = host(t.rt(), set_record, "s");
+        let h = object_with(t.rt(), op, &[("pad", int(0))]);
+        define_accessor(t.rt(), h, "x", ga, set);
+        let d = object_with(t.rt(), op, &[("z", int(1)), ("w", int(0))]);
+        props::to_dictionary(t.rt(), d);
+        // Six shapes on each holder; each object is rooted when it is made (GC stress).
+        let (mut on_h, mut on_d, mut kept) = (vec![], vec![], vec![]);
+        for p in ["a", "b", "c", "d", "e", "f"] {
+            for (proto, to) in [(h, &mut on_h), (d, &mut on_d)] {
+                let o = object_with(t.rt(), proto, &[(p, int(0))]);
+                kept.push(t.keep(o));
+                to.push(o);
+            }
+        }
+        let round = |t: &mut T| {
+            for (&o, &q) in on_h.iter().zip(&on_d) {
+                assert_eq!(t.ok(0, o, UNDEFINED), int(2));
+                t.ok(1, o, int(3));
+                assert_eq!(t.ok(2, q, UNDEFINED), int(1));
+            }
+        };
+        round(&mut t);
+        assert_eq!(
+            [t.state(0), t.state(1), t.state(2)],
+            [State::Megamorphic; 3]
+        );
+        let before = t.rt().heap.stats().allocated_bytes;
+        for _ in 0..4 {
+            round(&mut t);
+        }
+        assert_eq!(t.rt().heap.stats().allocated_bytes - before, 0);
+        assert_eq!(calls()[1..], [30, 30]);
+        t.release_all(kept);
+    });
+}
+
 // ---- the op lists of these cases ----------------------------------------------------------------
 
 /// `ic_ops::ops_of` reads the cases ACCIC records (CBC need 7; H16 GETTER, SETTER row): an own
