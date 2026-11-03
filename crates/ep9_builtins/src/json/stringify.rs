@@ -8,6 +8,7 @@
 //!             SerializeJSONProperty(wrapper, "") ─┐
 //!   property    Get, toJSON, the replacer, unwrap ├─ object -> serialize_object ─┐
 //!               primitives -> the text            └─ array  -> serialize_array  ─┴─ property
+//!               a raw JSON object -> its `rawJSON` string, as it is (json-parse-with-source)
 //! state       out: the text so far (Vec<u16>, no Values), indent depth, the cycle stack
 //!             (a ScratchList: the objects being serialized, innermost last)
 //! ```
@@ -20,7 +21,7 @@
 //! V8 does. Each object or array level checks the native stack (a RangeError at the limit,
 //! as in V8) and every loop over properties polls.
 
-use ep9_vm::{Args, Cx, JsKey, JsObject, JsResult, Local, ScratchList};
+use ep9_vm::{Args, Cx, JsKey, JsObject, JsResult, JsString, Local, ObjectClass, ScratchList};
 
 use crate::array::{index_key, length_of_array_like};
 
@@ -49,6 +50,8 @@ struct State<'s, 'l> {
     gap: Vec<u16>,
     /// The key `toJSON`.
     to_json: Local<'s, JsKey>,
+    /// The key `rawJSON`.
+    raw_json: Local<'s, JsKey>,
     /// The text.
     out: Vec<u16>,
     /// The text grew longer than MAX_STRING_LENGTH (`out` is then dropped). It stays set;
@@ -165,6 +168,7 @@ pub(super) fn stringify<'s>(
     // pushes from here on.
     let stack = cx.scratch_list();
     let to_json = cx.key("toJSON");
+    let raw_json = cx.key("rawJSON");
     let mut state = State {
         replacer_function,
         property_list: has_property_list.then_some((&property_list, property_count)),
@@ -173,6 +177,7 @@ pub(super) fn stringify<'s>(
         depth: 0,
         gap,
         to_json,
+        raw_json,
         out: Vec::new(),
         overflow: false,
     };
@@ -214,14 +219,22 @@ fn serialize_property<'s>(
     write_value(cx, state, value)
 }
 
+/// What SerializeJSONProperty steps 1-4 give: a value for steps 5-12, or the text of a raw
+/// JSON object (step 4.a returns it as it is).
+#[derive(Clone, Copy)]
+enum Resolved<'s> {
+    Value(Local<'s>),
+    Raw(Local<'s, JsString>),
+}
+
 /// SerializeJSONProperty steps 1-4: the value after Get, toJSON, the replacer and the
-/// unwrap of a Number, String or Boolean object.
+/// unwrap of a Number, String or Boolean object, or the text of a raw JSON object.
 fn property_value<'s>(
     cx: &mut Cx<'s>,
     state: &mut State<'s, '_>,
     key: Name<'s>,
     holder: Local<'s, JsObject>,
-) -> JsResult<Local<'s>> {
+) -> JsResult<Resolved<'s>> {
     // 1. Let value be ? Get(holder, key).
     let mut value = match key {
         Name::Key(k) => cx.get(holder, k)?,
@@ -244,6 +257,18 @@ fn property_value<'s>(
         value = cx.call(state.replacer_function, holder, &[k.into(), value])?;
     }
     // 4. If value is an Object, then
+    //    a. If value has an [[IsRawJSON]] internal slot, return ! Get(value, "rawJSON")
+    //       (json-parse-with-source; the object is frozen, so it is the string it was made
+    //       with).
+    if let Some(o) = value.as_object()
+        && cx.object_class(o) == Some(ObjectClass::RawJson)
+    {
+        let raw = cx.get(o, state.raw_json)?;
+        let raw = raw
+            .as_string()
+            .expect("the rawJSON property of a raw JSON object");
+        return Ok(Resolved::Raw(raw));
+    }
     if let Some(o) = value.as_object()
         && let Some(p) = primitive_data(cx, o)?
     {
@@ -261,12 +286,16 @@ fn property_value<'s>(
             value = p;
         }
     }
-    Ok(value)
+    Ok(Resolved::Value(value))
 }
 
-/// True if SerializeJSONProperty steps 5-12 give a text for `value` (from
-/// `property_value`), not undefined: what `write_value` gives true for.
-fn has_text(value: Local<'_>) -> bool {
+/// True if SerializeJSONProperty gives a text for `value` (from `property_value`), not
+/// undefined: what `write_value` gives true for.
+fn has_text(value: Resolved<'_>) -> bool {
+    let value = match value {
+        Resolved::Raw(_) => return true,
+        Resolved::Value(v) => v,
+    };
     value.is_null()
         || value.as_bool().is_some()
         || value.is_string()
@@ -274,9 +303,21 @@ fn has_text(value: Local<'_>) -> bool {
         || value.as_object().is_some_and(|o| !o.is_callable())
 }
 
-/// SerializeJSONProperty steps 5-12: appends the text of `value` (from `property_value`)
-/// and gives true, or appends nothing and gives false (the spec's undefined).
-fn write_value<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, value: Local<'s>) -> JsResult<bool> {
+/// SerializeJSONProperty step 4.a's text, or steps 5-12: appends the text of `value` (from
+/// `property_value`) and gives true, or appends nothing and gives false (the spec's
+/// undefined).
+fn write_value<'s>(
+    cx: &mut Cx<'s>,
+    state: &mut State<'s, '_>,
+    value: Resolved<'s>,
+) -> JsResult<bool> {
+    let value = match value {
+        Resolved::Raw(s) => {
+            push_string(cx, state, s)?;
+            return Ok(true);
+        }
+        Resolved::Value(v) => v,
+    };
     // 5. If value is null, return "null".
     if value.is_null() {
         push_ascii(cx, state, "null")?;
@@ -555,6 +596,25 @@ fn quote<'s>(
     // 3. Set product to the string-concatenation of product and the code unit 0x0022.
     out.push(0x22);
     // 4. Return product.
+    check_length(cx, state)
+}
+
+/// Appends the code units of `s`, as they are.
+fn push_string<'s>(
+    cx: &mut Cx<'s>,
+    state: &mut State<'s, '_>,
+    s: Local<'s, JsString>,
+) -> JsResult<()> {
+    // The text is already too long: nothing to add (and no long copy of a long string).
+    if state.overflow {
+        return Ok(());
+    }
+    let len = cx.string_len(s);
+    let flat = cx.flatten(s)?;
+    for i in 0..len {
+        let u = cx.code_unit_at(flat, i).expect("i < length");
+        state.out.push(u);
+    }
     check_length(cx, state)
 }
 
