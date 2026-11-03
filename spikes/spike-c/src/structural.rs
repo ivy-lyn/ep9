@@ -87,14 +87,18 @@ fn facts_round_trip() -> Result<String, String> {
     let script = s.script("f.js").ok_or("no script")?;
     let get = *script.functions_named("get").first().ok_or("no get")?;
     let live = facts::live(&s, script)?;
-    let n = facts::for_function(&live, get).records.len();
+    let n = facts::for_function(&live, script.unit.unit(), get)
+        .records
+        .len();
     if n == 0 {
         return Err("no live record for get".into());
     }
     let bytes = facts::to_profiled(&live)?.encode();
     let (back, dropped) = facts::read_profiled(&bytes, script.unit.unit())?;
-    let m = facts::for_function(&back, get);
-    if !dropped.is_empty() || m.records != facts::for_function(&live, get).records {
+    let m = facts::for_function(&back, script.unit.unit(), get);
+    if !dropped.is_empty()
+        || m.records != facts::for_function(&live, script.unit.unit(), get).records
+    {
         return Err(format!(
             "records differ after the round trip; dropped {dropped:?}"
         ));
@@ -140,8 +144,8 @@ fn lattice() -> Result<String, String> {
     let get = *script.functions_named("get").first().ok_or("no get")?;
     let live = facts::live(&s, script)?;
     let input = s.function_input("get")?;
-    let (g, _) =
-        crate::build::build(&input, &facts::for_function(&live, get)).map_err(|e| e.to_string())?;
+    let (g, _) = crate::build::build(&input, &facts::for_function(&live, script.unit.unit(), get))
+        .map_err(|e| e.to_string())?;
     g.check()?;
     let (fact, unbacked) = g.guard_counts();
     if fact == 0 {

@@ -13,7 +13,9 @@
 //!        merge: a phi where the predecessors differ; loop header: a phi per live register,
 //!        back-edge inputs filled when the JumpLoop block is done
 //!  ──> trivial phis removed ──> loop phis unboxed to Int32 (an entry check in the
-//!      preheader) ──> redundant checks removed, boxes inserted ──> dead pure nodes removed
+//!      preheader) ──> redundant checks removed, boxes inserted ──> kind guards of loops
+//!      without calls moved to the preheader, with the DOUBLE store (SPIKEC-9) ──> dead pure
+//!      nodes removed
 //! ```
 //!
 //! | Bytecode | Graph | Trust of the result |
@@ -21,7 +23,7 @@
 //! | `&`, `|`, `^`, `<<`, `>>` (and the Smi forms) | TruncateInt32 on each input, Int32 op | PROVEN (H30 list) |
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
-//! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
+//! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field, an out-of-line one, or an Array's `length`, one location for every case) + LoadField or LoadSlotsField | the check is predicted{source}; the loaded value unknown |
 //! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value, WI-SC7; a Float64 load and the Tagged value of an element copy `a[i] = b[j]`, SPIKEC-7); or the generic keyed entry (a key that is not an index, SPIKEC-4; a store of any other Tagged value) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
 //! | `+`, `-`, `*` whose BinaryOp record saw a double (hint inside {int32, int32-overflow, number}, with number), and `/` always | CheckNumber on each Tagged input (an Int32 input converts), a Float64 op (SPIKEC-4) | the check is predicted{source} with the record, else unknown; the op's result PROVEN (a number from numbers) |
 //! | `===` | CheckInt32 on each input (backed by an int32 CompareOp fact), Compare(Eq) (SPIKEC-4) | PROVEN (a boolean) |
@@ -100,12 +102,15 @@
 //! from the access's bytecode offset.
 
 use ep9_bytecode::{Opcode, Register, decode_at};
-use ep9_facts::{Access, BinaryHint, CompareHint, IcState, KeySet, ObjectKind, SlotFacts};
+use ep9_facts::{
+    Access, BinaryHint, CompareHint, ElementsKind, ElementsKindSet, IcState, KeySet, ObjectKind,
+    SlotFacts,
+};
 use ep9_value::encoding::{VALUE_FALSE, VALUE_NULL, VALUE_TRUE, VALUE_UNDEFINED};
 use spike_b::emit::{FunctionInput, Refusal};
 
 use crate::cfg::Cfg;
-use crate::facts::FunctionFacts;
+use crate::facts::{FunctionFacts, PoolConst};
 use crate::ir::{
     self, BlockId, Cond, ExitPolicy, FloatOp, FrameState, Graph, GuardBasis, Incoming, Int32Op,
     NodeId, Op, RefNode, Repr, Trust,
@@ -125,6 +130,8 @@ pub fn supported(op: Opcode) -> bool {
             | LdaNull
             | LdaTrue
             | LdaFalse
+            | LdaConstant
+            | LdaGlobal
             | GetNamedProperty
             | GetKeyedProperty
             | SetKeyedProperty
@@ -154,6 +161,8 @@ pub fn supported(op: Opcode) -> bool {
             | CallUndefinedReceiver0
             | CallUndefinedReceiver1
             | CallUndefinedReceiver2
+            | CallUndefinedReceiver
+            | CallProperty1
             | TestLessThan
             | TestGreaterThan
             | TestLessThanOrEqual
@@ -229,6 +238,9 @@ struct Builder<'a> {
     /// CSE by value and policy, MC-w14-20).
     memo: Vec<(u8, NodeId, ExitPolicy, NodeId)>,
     keyed: Vec<KeyedSite>,
+    /// SPIKEC-9: each element op and the elements kinds its site's keyed record saw (bits of
+    /// `ElementsKindSet`; 0 without a record), for [`Self::hoist_array_checks`].
+    elem_kinds: Vec<(NodeId, u16)>,
 }
 
 /// Builds the SSA graph of `input` from its bytecode and `facts`.
@@ -276,6 +288,7 @@ pub fn build(
         insn: 0,
         memo: Vec::new(),
         keyed: Vec::new(),
+        elem_kinds: Vec::new(),
     };
     for bi in 0..n {
         b.block(bi)?;
@@ -283,6 +296,7 @@ pub fn build(
     b.remove_trivial_phis();
     b.unbox_loop_phis();
     b.fix_reprs();
+    b.hoist_array_checks();
     b.dce();
     b.g.check().map_err(Refusal::Limit)?;
     stats.keyed = b.keyed;
@@ -359,6 +373,23 @@ impl Builder<'_> {
         self.emit(Op::ConstInt32(v), vec![], Repr::Int32, Trust::Proven)
     }
 
+    /// The Number `x` as an immediate (SPIKEC-9, `LdaConstant`): an int32 that is not -0 as
+    /// an Int32 constant, any other double as a Float64 constant (the forms `Value::number`
+    /// gives, so a deopt rebuilds the Value T0 loads).
+    fn number_const(&mut self, x: f64) -> NodeId {
+        let i = x as i32;
+        if f64::from(i) == x && !(i == 0 && x.is_sign_negative()) {
+            self.int(i)
+        } else {
+            let bits = if x.is_nan() {
+                f64::NAN.to_bits()
+            } else {
+                x.to_bits()
+            };
+            self.emit(Op::ConstFloat64(bits), vec![], Repr::Float64, Trust::Proven)
+        }
+    }
+
     /// The check `tag` of `input` with the exit policy `policy` in the current block: the one
     /// made before, or a new one from `make` (MC-w14-20: shared by value and policy, never by
     /// value alone).
@@ -419,6 +450,18 @@ impl Builder<'_> {
     fn trunc(&mut self, v: NodeId, basis: GuardBasis) -> NodeId {
         match (self.node(v).repr, &self.node(v).op) {
             (Repr::Int32, _) => v,
+            // ToInt32 of a double (SPIKEC-9: advect's `x | 0`): exact truncation, else exit.
+            (Repr::Float64, _) => {
+                let st = self.state();
+                let policy = self.policy(basis);
+                let n = self.memo(7, v, policy, |s| {
+                    let n = s.emit(Op::TruncateFloat64, vec![v], Repr::Int32, Trust::Proven);
+                    s.guard(n, basis, st);
+                    n
+                });
+                self.back(n, basis);
+                n
+            }
             (_, Op::Const(bits)) if vm_layout::int32_of(*bits).is_some() => {
                 let x = vm_layout::int32_of(*bits).expect("int32");
                 self.int(x)
@@ -517,6 +560,14 @@ impl Builder<'_> {
         Ok(path)
     }
 
+    /// The elements kinds (bits) the keyed record of `slot` saw; 0 without one.
+    fn site_kinds(&self, slot: u32) -> u16 {
+        match self.facts.records.iter().find(|(s, _)| *s == slot) {
+            Some((_, SlotFacts::LoadKeyed(k) | SlotFacts::StoreKeyed(k))) => k.kinds.bits(),
+            _ => 0,
+        }
+    }
+
     fn binop(&mut self, op: Int32Op, l: NodeId, r: NodeId, slot: u32) -> NodeId {
         let st = self.state();
         let basis = self.int_basis(slot);
@@ -584,6 +635,17 @@ impl Builder<'_> {
     }
 
     fn compare(&mut self, c: Cond, l: NodeId, r: NodeId, slot: u32) -> NodeId {
+        // A double compare (SPIKEC-9): a Float64 operand, or a CompareOp record that saw a
+        // number that is no int32. CheckNumber on each Tagged operand (backed by a record
+        // with only number bits), then the IEEE compare (NaN rules in `emit_a64`).
+        let float = self.node(l).repr == Repr::Float64
+            || self.node(r).repr == Repr::Float64
+            || compare_saw_double(self.facts, slot);
+        if float {
+            let basis = compare_number_basis_of(self.facts, slot);
+            let (l, r) = (self.number(l, basis), self.number(r, basis));
+            return self.emit(Op::CompareFloat64(c), vec![l, r], Repr::Bool, Trust::Proven);
+        }
         let basis = self.int_basis(slot);
         let (l, r) = (self.int32(l, basis), self.int32(r, basis));
         self.emit(Op::Compare(c), vec![l, r], Repr::Bool, Trust::Proven)
@@ -679,8 +741,17 @@ impl Builder<'_> {
                 env[r] = Some(if vals.iter().all(|&v| v == vals[0]) {
                     vals[0]
                 } else {
-                    let repr = if vals.iter().all(|&v| self.node(v).repr == Repr::Int32) {
+                    let reprs = vals.iter().map(|&v| self.node(v).repr);
+                    let repr = if reprs.clone().all(|r| r == Repr::Int32) {
                         Repr::Int32
+                    } else if reprs
+                        .clone()
+                        .all(|r| matches!(r, Repr::Int32 | Repr::Float64))
+                    {
+                        // A merge of numbers with a double among them (SPIKEC-9: advect's
+                        // clamp `x = 0.5` / `x = Wp5` / `x`): a Float64 phi; an Int32 input
+                        // converts at the end of its predecessor (`fix_reprs`).
+                        Repr::Float64
                     } else {
                         Repr::Tagged
                     };
@@ -770,6 +841,32 @@ impl Builder<'_> {
                 let n = self.int(insn.signed(0));
                 self.set_acc(n);
             }
+            LdaConstant => {
+                // SPIKEC-9 task 1: a Number of the pool is an immediate (P-R2, doc 13:247);
+                // a heap constant is refused (no `UnitConst` ref node is built).
+                let k = insn.unsigned(0);
+                let n = match self.facts.constants.get(k as usize) {
+                    Some(&PoolConst::Number(bits)) => self.number_const(f64::from_bits(bits)),
+                    Some(PoolConst::Heap) => {
+                        return Err(Refusal::Limit(format!(
+                            "LdaConstant at {}: k{k} is a heap constant (P-R2)",
+                            x.offset
+                        )));
+                    }
+                    None => {
+                        return Err(Refusal::Limit(format!(
+                            "LdaConstant at {}: k{k} is not in the function's pool",
+                            x.offset
+                        )));
+                    }
+                };
+                self.set_acc(n);
+            }
+            LdaGlobal => {
+                // SPIKEC-9 task 2: RuntimeTable entry 11 reads the name from the bytecode.
+                let n = self.emit(Op::LoadGlobal, vec![], Repr::Tagged, Trust::Unknown);
+                self.set_acc(n);
+            }
             LdaUndefined | LdaNull | LdaTrue | LdaFalse => {
                 let bits = match x.opcode {
                     LdaUndefined => VALUE_UNDEFINED,
@@ -797,6 +894,8 @@ impl Builder<'_> {
                         let n =
                             self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
                         self.guard(n, GuardBasis::Unbacked, st);
+                        let kinds = self.site_kinds(insn.unsigned(1));
+                        self.elem_kinds.push((n, kinds));
                         n
                     }
                     KeyedPath::Generic => {
@@ -827,6 +926,8 @@ impl Builder<'_> {
                         let n =
                             self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
                         self.guard(n, GuardBasis::Unbacked, st);
+                        let kinds = self.site_kinds(insn.unsigned(2));
+                        self.elem_kinds.push((n, kinds));
                     }
                     KeyedPath::Generic => {
                         let (o, k, v) = (self.tagged(o), self.tagged(k), self.tagged(v));
@@ -884,12 +985,26 @@ impl Builder<'_> {
                     _ => 2,
                 };
                 let regs: Vec<Register> = (0..=argc).map(|i| insn.register(i)).collect();
-                let mut inputs = Vec::new();
-                for &r in &regs {
-                    let v = self.reg(r)?;
-                    inputs.push(self.tagged(v));
-                }
-                let n = self.emit(Op::Call { regs }, inputs, Repr::Tagged, Trust::Unknown);
+                let n = self.call(regs)?;
+                self.set_acc(n);
+            }
+            CallProperty1 => {
+                // SPIKEC-9 task 3: callee, receiver, one argument (`call_any` runs it).
+                let regs: Vec<Register> = (0..3).map(|i| insn.register(i)).collect();
+                let n = self.call(regs)?;
+                self.set_acc(n);
+            }
+            CallUndefinedReceiver => {
+                // SPIKEC-9 task 3: the callee, then the register list (locals only).
+                let first = insn.register(1);
+                let count = insn.unsigned(2);
+                let base = first.local_index().ok_or_else(|| Refusal::Decode {
+                    offset: x.offset,
+                    detail: format!("register list starts at {first}, not a local"),
+                })?;
+                let mut regs = vec![insn.register(0)];
+                regs.extend((0..count).map(|i| Register::local(base + i)));
+                let n = self.call(regs)?;
                 self.set_acc(n);
             }
             AddSmi | SubSmi | MulSmi | BitwiseAndSmi | BitwiseOrSmi | BitwiseXorSmi
@@ -993,6 +1108,16 @@ impl Builder<'_> {
         Ok(false)
     }
 
+    /// A call node of the operand registers `regs` (the callee first): each operand Tagged.
+    fn call(&mut self, regs: Vec<Register>) -> Result<NodeId, Refusal> {
+        let mut inputs = Vec::new();
+        for &r in &regs {
+            let v = self.reg(r)?;
+            inputs.push(self.tagged(v));
+        }
+        Ok(self.emit(Op::Call { regs }, inputs, Repr::Tagged, Trust::Unknown))
+    }
+
     fn check_array(&mut self, o: NodeId) -> NodeId {
         let st = self.state();
         let o = self.tagged(o);
@@ -1022,8 +1147,10 @@ impl Builder<'_> {
             return Err(refuse(format!("IC state {:?}", pf.state)));
         }
         // Every case must read the same place: an in-object field of an ordinary object at
-        // one offset, or an Array's length (the Value at +24: an int32, a double from 2^31).
-        let mut location: Option<(u32, u64)> = None;
+        // one offset, an out-of-line one at one SLOTS offset (SPIKEC-9: `Math.sqrt` is field
+        // 31 of a capacity-4 shape), or an Array's length (the Value at +24: an int32, a
+        // double from 2^31). The bool says "in the SLOTS cell".
+        let mut location: Option<(bool, u32, u64)> = None;
         let mut shapes = Vec::new();
         for c in &pf.cases {
             let here = match c.access {
@@ -1031,11 +1158,18 @@ impl Builder<'_> {
                     if c.receiver.kind == ObjectKind::Ordinary && field < c.receiver.capacity =>
                 {
                     let at = vm_layout::OBJECT_FIELDS + 8 * u32::from(field);
-                    (at, vm_layout::field_in_object_handler(at))
+                    (false, at, vm_layout::field_in_object_handler(at))
                 }
-                Access::ArrayLength if c.receiver.kind == ObjectKind::Array => {
-                    (vm_layout::ARRAY_LENGTH, vm_layout::ARRAY_LENGTH_HANDLER)
+                Access::OwnField { field } if c.receiver.kind == ObjectKind::Ordinary => {
+                    let k = u32::from(field - c.receiver.capacity);
+                    let at = vm_layout::SLOTS_DATA + 8 * k;
+                    (true, at, vm_layout::field_out_of_line_handler(at))
                 }
+                Access::ArrayLength if c.receiver.kind == ObjectKind::Array => (
+                    false,
+                    vm_layout::ARRAY_LENGTH,
+                    vm_layout::ARRAY_LENGTH_HANDLER,
+                ),
                 ref a => {
                     return Err(refuse(format!(
                         "access {a:?} on a {:?} shape",
@@ -1052,7 +1186,7 @@ impl Builder<'_> {
             self.g.add_ref(RefNode::ShapeRef(i));
             shapes.push(i);
         }
-        let (at, handler) = location.expect("a case");
+        let (slots, at, handler) = location.expect("a case");
         self.g.add_ref(RefNode::CellRef(slot));
         let st = self.state();
         let o = self.tagged(o);
@@ -1068,12 +1202,12 @@ impl Builder<'_> {
             Trust::Predicted(source),
         );
         self.guard(chk, GuardBasis::Fact(source), st);
-        Ok(self.emit(
-            Op::LoadField { offset: at },
-            vec![chk],
-            Repr::Tagged,
-            Trust::Unknown,
-        ))
+        let op = if slots {
+            Op::LoadSlotsField { offset: at }
+        } else {
+            Op::LoadField { offset: at }
+        };
+        Ok(self.emit(op, vec![chk], Repr::Tagged, Trust::Unknown))
     }
 
     /// Replaces every use of `old` (inputs and frame states) with `new`.
@@ -1228,6 +1362,45 @@ impl Builder<'_> {
                     changed = true;
                 }
             }
+            // Number phis (SPIKEC-9): a Tagged phi whose inputs (itself aside) are all Int32 or
+            // Float64 values, at least one Float64, is a Float64 phi. The merge in `enter`
+            // types a phi before a loop-invariant double's trivial loop phi goes away (advect's
+            // clamp `x = Wp5`), so the type is set again here; an Int32 input converts at the
+            // end of its predecessor (`fix_reprs`).
+            for i in 0..self.g.nodes.len() {
+                let n = NodeId(i as u32);
+                let node = self.g.node(n);
+                if !node.live || node.op != Op::Phi || node.repr != Repr::Tagged {
+                    continue;
+                }
+                let reprs: Vec<Repr> = node
+                    .inputs
+                    .iter()
+                    .filter(|&&v| v != n)
+                    .map(|&v| self.g.node(v).repr)
+                    .collect();
+                if reprs
+                    .iter()
+                    .all(|r| matches!(r, Repr::Int32 | Repr::Float64))
+                    && reprs.contains(&Repr::Float64)
+                {
+                    self.g.node_mut(n).repr = Repr::Float64;
+                    changed = true;
+                }
+            }
+            // ToInt32 of a value that is now Float64 is the double form (SPIKEC-9), with the
+            // same guard (basis, policy and frame state).
+            for i in 0..self.g.nodes.len() {
+                let n = NodeId(i as u32);
+                let node = self.g.node(n);
+                if node.live
+                    && node.op == Op::TruncateInt32
+                    && self.g.node(node.inputs[0]).repr == Repr::Float64
+                {
+                    self.g.node_mut(n).op = Op::TruncateFloat64;
+                    changed = true;
+                }
+            }
             // Checks of a value that is now Int32 are no-ops; so is a CheckNumber of a value
             // that is now Float64 (a loop-invariant double whose trivial phi went away).
             for i in 0..self.g.nodes.len() {
@@ -1235,7 +1408,9 @@ impl Builder<'_> {
                 let node = self.g.node(n);
                 let input = node.inputs.first().map(|&v| self.g.node(v).repr);
                 let noop = match node.op {
-                    Op::CheckInt32 | Op::TruncateInt32 => input == Some(Repr::Int32),
+                    Op::CheckInt32 | Op::TruncateInt32 | Op::TruncateFloat64 => {
+                        input == Some(Repr::Int32)
+                    }
                     Op::CheckNumber => input == Some(Repr::Float64),
                     _ => false,
                 };
@@ -1453,7 +1628,9 @@ impl Builder<'_> {
                 | Op::IsFalse
                 | Op::IsTrue
                 | Op::Return
-                | Op::LoadField { .. } => vec![Repr::Tagged],
+                | Op::LoadField { .. }
+                | Op::LoadSlotsField { .. }
+                | Op::DoubleElements => vec![Repr::Tagged],
                 Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
                 // The value: an Int32 or a Float64 stays one; anything else is Tagged (a Bool
                 // boxes).
@@ -1473,6 +1650,8 @@ impl Builder<'_> {
                 Op::GetKeyedGeneric => vec![Repr::Tagged, Repr::Tagged],
                 Op::SetKeyedGeneric => vec![Repr::Tagged, Repr::Tagged, Repr::Tagged],
                 Op::Int32(_) | Op::Compare(_) => vec![Repr::Int32, Repr::Int32],
+                Op::CompareFloat64(_) => vec![Repr::Float64, Repr::Float64],
+                Op::TruncateFloat64 => vec![Repr::Float64],
                 Op::BoxInt32 => vec![Repr::Int32],
                 Op::BoxBool | Op::Branch => vec![Repr::Bool],
                 _ => vec![],
@@ -1517,6 +1696,198 @@ impl Builder<'_> {
                 };
                 self.g.node_mut(n).inputs[k] = b;
             }
+        }
+    }
+
+    /// SPIKEC-9 task 8: the kind guards of a loop move to its preheader, one per array.
+    ///
+    /// ```text
+    ///  preheader P (one successor: the header H)   ──>  P: ... CheckArray(o) [exits at H] ; Jump H
+    ///  loop L = H + the blocks that reach a back edge   L: element ops read that one check
+    ///                                                   (and, on DOUBLE facts, P: DoubleElements)
+    /// ```
+    ///
+    /// Only when nothing in L can change what the check proved, an Array whose elements kind
+    /// is in `ARRAY_KINDS`: no call into the runtime table (`Op::is_call`: a call, a global
+    /// load, a generic keyed access may run JS), and every element store stores a number (an
+    /// Int32 or a Float64: an in-bounds number store keeps a kind of `ARRAY_KINDS` there, at
+    /// most INT32 to DOUBLE out of line; the poll runs no JS, H23-Q6). The array must be a
+    /// value from outside L (the same object on every iteration). The check's exit resumes T0
+    /// at the header with the values the preheader passes in (as the loop phi entry checks of
+    /// [`Self::unbox_loop_phis`]; `Graph::check_forward_state`), so T0 runs the whole loop.
+    /// Each element op still checks the bounds and the storage form (but see the DOUBLE
+    /// store form below). Inner loops first, so a check moves out of a nest as far as each
+    /// loop allows.
+    fn hoist_array_checks(&mut self) {
+        for h in (0..self.g.blocks.len()).rev() {
+            if !self.g.blocks[h].loop_header {
+                continue;
+            }
+            let preds = self.g.blocks[h].preds.clone();
+            let fwd: Vec<usize> = (0..preds.len())
+                .filter(|&k| (preds[k].0 as usize) < h)
+                .collect();
+            let [entry] = fwd[..] else { continue };
+            let pre = preds[entry];
+            if self.g.blocks[pre.0 as usize].succs != [BlockId(h as u32)] {
+                continue;
+            }
+            // The natural loop: H and the blocks that reach a back edge without passing H.
+            let mut body = vec![false; self.g.blocks.len()];
+            body[h] = true;
+            let mut work: Vec<usize> = preds
+                .iter()
+                .map(|p| p.0 as usize)
+                .filter(|&p| p >= h)
+                .collect();
+            while let Some(b) = work.pop() {
+                if std::mem::replace(&mut body[b], true) {
+                    continue;
+                }
+                work.extend(self.g.blocks[b].preds.iter().map(|p| p.0 as usize));
+            }
+            let nodes: Vec<NodeId> = (0..self.g.blocks.len())
+                .filter(|&b| body[b])
+                .flat_map(|b| self.g.blocks[b].nodes.clone())
+                .filter(|&n| self.g.node(n).live)
+                .collect();
+            let safe = nodes.iter().all(|&n| {
+                let node = self.g.node(n);
+                !node.op.is_call()
+                    && (node.op != Op::StoreElement
+                        || matches!(
+                            self.g.node(node.inputs[2]).repr,
+                            Repr::Int32 | Repr::Float64
+                        ))
+            });
+            if !safe {
+                continue;
+            }
+            let checks: Vec<NodeId> = nodes
+                .iter()
+                .copied()
+                .filter(|&n| matches!(self.g.node(n).op, Op::CheckArray | Op::DoubleElements))
+                .collect();
+            if checks.is_empty() {
+                continue;
+            }
+            let state = self.header_state(h, entry);
+            // (op, input, policy) -> the node in the preheader (a DoubleElements has no
+            // guard, so no policy).
+            let mut hoisted: Vec<(Op, NodeId, Option<ExitPolicy>, NodeId)> = Vec::new();
+            let mut fresh = Vec::new();
+            for c in checks {
+                let node = self.g.node(c);
+                // Read the input now: a check hoisted before this one may have replaced it.
+                let (op, o, g) = (node.op.clone(), node.inputs[0], node.guard.clone());
+                if body[self.g.node(o).block.0 as usize] {
+                    continue;
+                }
+                let policy = g.as_ref().map(|g| g.policy);
+                if let Some(&(.., k)) = hoisted
+                    .iter()
+                    .find(|m| m.0 == op && m.1 == o && m.2 == policy)
+                {
+                    self.replace(c, k);
+                    self.kill(c);
+                    continue;
+                }
+                let trust = node.trust;
+                let k =
+                    self.insert_before_terminator(pre, op.clone(), vec![o], Repr::Tagged, trust);
+                if let Some(g) = g {
+                    self.g.set_guard(k, g.basis, state.clone());
+                }
+                self.replace(c, k);
+                self.kill(c);
+                hoisted.push((op.clone(), o, policy, k));
+                if op == Op::CheckArray {
+                    fresh.push(k);
+                }
+            }
+            // The storage form, once per array too: if every element op of L on a hoisted
+            // array is one whose site saw only DOUBLE kinds, a DoubleElements after the kind
+            // guard reads the ELEMENTS_DOUBLE cell if the array has one and its length is at
+            // most its capacity, else 0 (no exit: the WI-SC7 INT32 to DOUBLE transition still
+            // runs in the compiled code). With only number stores in place and no call in L,
+            // that cell stays the array's store for the whole loop (no number store into raw
+            // f64 goes out of line), and the length stays. The element ops take it as one more
+            // input: with a cell they check only the bounds and the hole, with 0 they take
+            // their full path.
+            let double = ElementsKindSet::of(ElementsKind::PackedDouble).bits()
+                | ElementsKindSet::of(ElementsKind::HoleyDouble).bits();
+            for k in fresh {
+                let ops: Vec<NodeId> = nodes
+                    .iter()
+                    .copied()
+                    .filter(|&n| {
+                        let node = self.g.node(n);
+                        node.live
+                            && matches!(node.op, Op::LoadElement | Op::StoreElement)
+                            && node.inputs[0] == k
+                    })
+                    .collect();
+                // An op that already has the cell (from an inner loop) keeps it.
+                let plain: Vec<NodeId> = ops
+                    .iter()
+                    .copied()
+                    .filter(|&n| {
+                        let node = self.g.node(n);
+                        node.inputs.len() == if node.op == Op::LoadElement { 2 } else { 3 }
+                    })
+                    .collect();
+                let all_double = !plain.is_empty()
+                    && plain.iter().all(|&n| {
+                        let kinds = self.elem_kinds.iter().find(|m| m.0 == n).map_or(0, |m| m.1);
+                        kinds != 0 && kinds & !double == 0
+                    });
+                if !all_double {
+                    continue;
+                }
+                let e = match hoisted
+                    .iter()
+                    .find(|m| m.0 == Op::DoubleElements && m.1 == k)
+                {
+                    Some(&(.., e)) => e,
+                    None => self.insert_before_terminator(
+                        pre,
+                        Op::DoubleElements,
+                        vec![k],
+                        Repr::Tagged,
+                        Trust::Unknown,
+                    ),
+                };
+                for n in plain {
+                    self.g.node_mut(n).inputs.push(e);
+                }
+            }
+        }
+    }
+
+    /// The frame state at the entry of loop header `h` from its predecessor number `entry`:
+    /// each register live there with the value that predecessor passes in (a loop phi's
+    /// entry input; a register whose trivial phi went away keeps that one value).
+    fn header_state(&self, h: usize, entry: usize) -> FrameState {
+        let acc = self.cfg.acc();
+        let value = |r: usize| -> Option<NodeId> {
+            let &(_, v) = self.loop_phis[h].iter().find(|&&(x, _)| x == r)?;
+            let node = self.g.node(v);
+            Some(
+                if node.live && node.op == Op::Phi && node.block.0 as usize == h {
+                    node.inputs[entry]
+                } else {
+                    v
+                },
+            )
+        };
+        let live = &self.cfg.live_before[self.cfg.blocks[h].insns.start];
+        FrameState {
+            offset: self.cfg.blocks[h].start,
+            registers: (0..acc)
+                .filter(|&x| live[x])
+                .filter_map(|x| value(x).map(|v| (self.cfg.register(x), v)))
+                .collect(),
+            acc: if live[acc] { value(acc) } else { None },
         }
     }
 
@@ -1612,6 +1983,32 @@ pub fn saw_double(facts: &FunctionFacts<'_>, slot: u32) -> bool {
 pub fn number_basis_of(facts: &FunctionFacts<'_>, slot: u32) -> GuardBasis {
     match facts.records.iter().find(|(s, _)| *s == slot) {
         Some((_, SlotFacts::BinaryOp(h))) if NUMBER_HINTS.contains(*h) => {
+            GuardBasis::Fact(facts.source)
+        }
+        _ => GuardBasis::Unbacked,
+    }
+}
+
+/// The CompareOp hints a double compare may see and still back its CheckNumber guards: int32
+/// and number operands (SPIKEC-9).
+const NUMBER_COMPARE_HINTS: CompareHint = CompareHint::INT32.union(CompareHint::NUMBER);
+
+/// True if the CompareOp record of `slot` saw a number operand that is not an int32 and only
+/// numbers: the site takes the double compare (SPIKEC-9).
+pub fn compare_saw_double(facts: &FunctionFacts<'_>, slot: u32) -> bool {
+    matches!(
+        facts.records.iter().find(|(s, _)| *s == slot),
+        Some((_, SlotFacts::CompareOp(h)))
+            if h.contains(CompareHint::NUMBER) && NUMBER_COMPARE_HINTS.contains(*h)
+    )
+}
+
+/// The basis of the CheckNumber guards of a double compare with feedback slot `slot`: a
+/// CompareOp record whose hint has only number bits (the empty set included) is a fact of the
+/// snapshot's source; anything else, or no record, is unbacked.
+pub fn compare_number_basis_of(facts: &FunctionFacts<'_>, slot: u32) -> GuardBasis {
+    match facts.records.iter().find(|(s, _)| *s == slot) {
+        Some((_, SlotFacts::CompareOp(h))) if NUMBER_COMPARE_HINTS.contains(*h) => {
             GuardBasis::Fact(facts.source)
         }
         _ => GuardBasis::Unbacked,

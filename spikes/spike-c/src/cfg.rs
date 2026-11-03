@@ -12,8 +12,9 @@
 //!
 //! Reads and writes come from the opcode table (`OpcodeInfo::acc` and the `Reg`, `RegOut`,
 //! `RegInOut` operands), so the liveness has no per-opcode list. A `Clobber` opcode leaves
-//! the accumulator undefined (a write). Register lists are refused (no supported opcode has
-//! one).
+//! the accumulator undefined (a write). A read list with its count (`RegList` then
+//! `RegCount`, SPIKEC-9) reads each of its registers; the other list forms are refused (no
+//! supported opcode has one).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -180,6 +181,29 @@ impl Cfg {
                         let x = r()?;
                         reads.push(x);
                         writes.push(x);
+                    }
+                    // A read list (SPIKEC-9: `CallUndefinedReceiver r, rA-rB`): the count is
+                    // the next operand (`RegCount`); every register of the list is read.
+                    OperandKind::RegList
+                        if info.operands.get(i + 1).map(|o| o.kind)
+                            == Some(OperandKind::RegCount) =>
+                    {
+                        let first = insn.register(i);
+                        let count = insn.unsigned(i + 1);
+                        let base = first.local_index().ok_or_else(|| Refusal::Decode {
+                            offset: off,
+                            detail: format!("register list at {first}, not a local"),
+                        })?;
+                        for k in 0..count {
+                            let ix = index_of(params, Register::local(base + k));
+                            if ix + 1 >= width {
+                                return Err(Refusal::Decode {
+                                    offset: off,
+                                    detail: format!("register list {first}+{count} out of range"),
+                                });
+                            }
+                            reads.push(ix);
+                        }
                     }
                     OperandKind::RegList
                     | OperandKind::RegOutList

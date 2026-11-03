@@ -12,9 +12,11 @@
 //!                                           build, check and allocate the graph of a hot function
 //!                                           (live facts, n = 1; by function id, so an inner
 //!                                           closure too), then report what the emitter does
-//! spike-c tier <kernel> [--n N] [--stress]  config C: that function compiled, output against T0
+//! spike-c tier <kernel> [--n N] [--stress] [--all]
+//!                                           config C: that function compiled, output against T0
 //!                                           (--stress: GC before every allocation, verifier on;
-//!                                           SPIKE_C_FORCE_DEOPT=<seed>: a forced build)
+//!                                           SPIKE_C_FORCE_DEOPT=<seed>: a forced build; --all:
+//!                                           the whole hot set compiled and installed, SPIKEC-9)
 //! spike-c deopt <kernel> [--n N] [--at A]   each guard forced once (WI-SC4, gate.sh deopt)
 //! spike-c diff [--seeds A..B] [--no-kernels] [--show N]
 //!                                           the tier differential (WI-SC6, gate.sh diff): the
@@ -48,7 +50,7 @@ use spike_c::{facts, structural};
 fn usage() -> ExitCode {
     eprintln!(
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
-         | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] \
+         | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] [--all] \
          | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
          | once <t0|c|p|h0|h1> <kernel> [--n N] [--k K] | sp-facts <write|check|wrong|time> ... \
          | show <kernel> [i] | driver <kernel> [--n N] \
@@ -162,7 +164,7 @@ fn facts_cmd(args: &[String]) -> Result<bool, String> {
                 h.lines.0
             ));
         };
-        let f = facts::for_function(&live, id);
+        let f = facts::for_function(&live, script.unit.unit(), id);
         let mut kinds: Vec<String> = f.records.iter().map(|(_, r)| facts::kind_name(r)).collect();
         kinds.sort();
         kinds.dedup_by(|a, b| a == b);
@@ -228,7 +230,7 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
         },
     };
     let input = s.input_of_target(&target)?;
-    let ff = facts::for_function(&live, id);
+    let ff = facts::for_function(&live, script.unit.unit(), id);
     match spike_c::compile_input(&input, &ff) {
         Ok((code, report)) => {
             if graph {
@@ -293,7 +295,7 @@ fn graph_cmd(args: &[String]) -> Result<bool, String> {
     };
     let live = facts::live(&s, script)?;
     let input = script.unit_input(id, h.name)?;
-    match spike_c::graph_report(&input, &facts::for_function(&live, id)) {
+    match spike_c::graph_report(&input, &facts::for_function(&live, script.unit.unit(), id)) {
         Ok(g) => {
             if show {
                 print!("{}", g.graph);
@@ -322,9 +324,10 @@ fn fnv1a64(b: &[u8]) -> u64 {
 fn tier_cmd(args: &[String]) -> Result<bool, String> {
     let k = kernel_arg(args.first())?;
     let stress = args.iter().any(|a| a == "--stress");
+    let all = args.iter().any(|a| a == "--all");
     let rest: Vec<String> = args[1..]
         .iter()
-        .filter(|a| *a != "--stress")
+        .filter(|a| *a != "--stress" && *a != "--all")
         .cloned()
         .collect();
     let (n, _) = options(&rest)?;
@@ -333,6 +336,42 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
     } else {
         Config::default()
     };
+    if all {
+        // SPIKEC-9 (`gate.sh navier`): the whole hot set compiled and installed together.
+        let seed = match std::env::var("SPIKE_C_FORCE_DEOPT") {
+            Ok(v) => Some(
+                v.parse::<u64>()
+                    .map_err(|_| format!("SPIKE_C_FORCE_DEOPT={v}: not a number"))?,
+            ),
+            Err(_) => None,
+        };
+        let tables = seed
+            .map(|s| spike_c::tier::seeded_tables(k, s))
+            .unwrap_or_default();
+        let force: Vec<Option<&spike_c::emit_a64::ForceTable>> = tables.iter().map(Some).collect();
+        let run = spike_c::tier::run_set(k, n.unwrap_or(k.n), &config, &force)?;
+        for l in run.lines() {
+            println!("{l}");
+        }
+        return Ok(match spike_c::tier::set_ok(&run, stress) {
+            Ok(()) => {
+                if run.forced {
+                    let g: usize = run.members.iter().map(|m| m.report.emit.guards).sum();
+                    println!(
+                        "{}: forced build: every armed guard of the set forced ({g} exits), the exit counters agree, heap verifier clean",
+                        k.name
+                    );
+                }
+                true
+            }
+            Err(lines) => {
+                for l in lines {
+                    println!("{l}");
+                }
+                false
+            }
+        });
+    }
     // `SPIKE_C_FORCE_DEOPT=<seed>` (WI-SC4): a forced build, every guard armed from the seed.
     let force = match std::env::var("SPIKE_C_FORCE_DEOPT") {
         Ok(v) => {
@@ -494,7 +533,7 @@ fn show_cmd(args: &[String]) -> Result<bool, String> {
         ep9_bytecode::disassemble_function(unit, ep9_bytecode::FunctionId(id))
     );
     let live = facts::live(&s, script)?;
-    for (slot, f) in facts::for_function(&live, id).records {
+    for (slot, f) in facts::for_function(&live, script.unit.unit(), id).records {
         println!("slot {slot}: {f:?}");
     }
     Ok(true)
@@ -565,7 +604,7 @@ fn liveness_cmd(args: &[String]) -> Result<bool, String> {
     };
     let live = facts::live(&s, script)?;
     let input = script.unit_input(id, h.name)?;
-    match spike_c::liveness_lines(&input, &facts::for_function(&live, id)) {
+    match spike_c::liveness_lines(&input, &facts::for_function(&live, script.unit.unit(), id)) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");

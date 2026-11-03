@@ -36,6 +36,16 @@
 #        takes no exit (0 required in every unforced run but am3 under GC stress,
 #        `tier::unforced_ok`; Codex M5-P2 r1 spikec6 2)
 #     SKIP without the v8-v7 checkout
+#   gate.sh navier       (plan v11 M6-P1 SPIKEC-9 §3.8) kernel 2's whole hot set:
+#     1  release build (as am3)
+#     2  `spike-c graph navier-stokes 0`, `1`, `2`: lin_solve, project and advect each built
+#        from the live facts of an n = 1 T0 run, checked, allocated and emitted (pool
+#        constants, global loads, calls through call_any, double compares, `x | 0` on a
+#        double, Float64 phis, wide jumps, the out-of-line load of Math.sqrt)
+#     3  `spike-c tier navier-stokes --all --n 1` and `--n 12`: all three compiled and
+#        installed together after the warm-up; output equal to T0 line for line and 0 exits
+#        in loop(n). Each guard of the set is forced in `gate.sh diff` (the kernels part)
+#     SKIP without the v8-v7 checkout
 #   gate.sh deopt        (plan v10 M5-P2 SPIKEC-6 WI-SC4; protocol §4, C2) forced deopts of am3:
 #     1  release build (as am3)
 #     2  `spike-c deopt crypto`: for each guard of am3, a config C run of crypto (n = 1) with
@@ -49,7 +59,7 @@
 #     SKIP without the v8-v7 checkout
 #   gate.sh diff         (plan v10 M5-P3 SPIKEC-7 WI-SC6; protocol C3) the tier differential:
 #     1  release build (as am3)
-#     2  `spike-c diff`: the gate kernels at n = 1 (crypto's am3, navier-stokes' lin_solve): T0
+#     2  `spike-c diff`: the gate kernels at n = 1 (crypto's am3, navier-stokes' hot set): T0
 #        equal to node line for line (node on PATH, else that compare prints SKIP), config C
 #        equal to T0 with 0 exits, then forcing: every guard armed from a seed, then each
 #        guard not forced yet armed at its first pass, every run equal to T0; then the seeded
@@ -84,7 +94,7 @@
 #     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
 #     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
 #   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, `gate.sh linsolve`,
-#                        then `gate.sh diff` and `gate.sh spfacts`
+#                        `gate.sh navier`, then `gate.sh diff` and `gate.sh spfacts`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
 #      SPIKE_C_BENCH_DIR (default: third_party/bench-v8v7/bench/bench-v8).
@@ -189,6 +199,24 @@ linsolve() {
   run "linsolve/tier-n12" "$bin" tier navier-stokes --n 12
 }
 
+navier() {
+  if ! build_release; then
+    record "navier" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/navier-stokes.js" ]; then
+    record "navier" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  run "navier/graph-lin_solve" "$bin" graph navier-stokes 0
+  run "navier/graph-project" "$bin" graph navier-stokes 1
+  run "navier/graph-advect" "$bin" graph navier-stokes 2
+  run "navier/set-n1" "$bin" tier navier-stokes --all --n 1
+  run "navier/set-n12" "$bin" tier navier-stokes --all --n 12
+}
+
 diff_step() {
   if ! build_release; then
     record "diff" FAIL "release build failed"
@@ -243,6 +271,7 @@ case "$step" in
   am3) am3 ;;
   deopt) deopt ;;
   linsolve) linsolve ;;
+  navier) navier ;;
   diff) diff_step ;;
   spfacts) spfacts ;;
   time) timing ;;
@@ -251,11 +280,12 @@ case "$step" in
     am3
     deopt
     linsolve
+    navier
     diff_step
     spfacts
     ;;
   *)
-    echo "usage: gate.sh [structural | am3 | deopt | linsolve | diff | spfacts | time]" >&2
+    echo "usage: gate.sh [structural | am3 | deopt | linsolve | navier | diff | spfacts | time]" >&2
     exit 2
     ;;
 esac

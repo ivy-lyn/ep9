@@ -283,7 +283,10 @@ pub fn compile_hot_set(
             },
         };
         let input = s.input_of_target(&target)?;
-        match crate::compile_input(&input, &facts::for_function(snapshot, id)) {
+        match crate::compile_input(
+            &input,
+            &facts::for_function(snapshot, script.unit.unit(), id),
+        ) {
             Ok((code, report)) => set.compiled.push(Compiled {
                 name: hot.name,
                 target,

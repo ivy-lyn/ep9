@@ -705,6 +705,7 @@ impl Emitter<'_> {
                 let bits = match self.g.node(v).op {
                     Op::Const(b) => b,
                     Op::ConstInt32(i) => u64::from(i as u32),
+                    Op::ConstFloat64(b) => b,
                     ref op => return Err(Refusal::Limit(format!("constant {op:?}"))),
                 };
                 mov64(&mut self.ops, stage, bits);
@@ -774,7 +775,60 @@ impl Emitter<'_> {
         let node = self.g.node(n).clone();
         let ins = node.inputs.clone();
         match &node.op {
-            Op::Incoming(_) | Op::Const(_) | Op::ConstInt32(_) | Op::Phi => {}
+            Op::Incoming(_) | Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) | Op::Phi => {}
+            Op::TruncateFloat64 => {
+                // ToInt32 of a double (SPIKEC-9): truncate toward zero; exact when the
+                // truncated double equals the int32 made back from the result (NaN, an
+                // infinity and a value past int32 differ, and exit).
+                let trap = self.trap(n)?;
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; fmov d16, X(x)
+                    ; fcvtzs w16, d16
+                    ; frintz d17, d16
+                    ; scvtf d18, w16
+                    ; fcmp d17, d18
+                    ; b.ne =>trap
+                    ; mov W(d), w16
+                );
+                self.finish(n);
+            }
+            Op::CompareFloat64(c) => {
+                if crate::regalloc::fused(self.g, n) {
+                    return Ok(());
+                }
+                let l = self.src(ins[0], 12)?;
+                let r = self.src(ins[1], 13)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r) ; fcmp d16, d17);
+                // IEEE order with the JS NaN rule: an unordered compare sets C and V, so `<`
+                // is mi and `<=` is ls (false on NaN), `>` gt and `>=` ge (false: N != V),
+                // `==` eq (false) and `!=` ne (true).
+                match c {
+                    Cond::Lt => dynasm!(self.ops ; .arch aarch64 ; cset W(d), mi),
+                    Cond::Le => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ls),
+                    Cond::Gt => dynasm!(self.ops ; .arch aarch64 ; cset W(d), gt),
+                    Cond::Ge => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ge),
+                    Cond::Eq => dynasm!(self.ops ; .arch aarch64 ; cset W(d), eq),
+                    Cond::Ne => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ne),
+                }
+                self.finish(n);
+            }
+            Op::LoadGlobal => {
+                // RuntimeTable entry 11 (SPIKEC-9): the global the LdaGlobal at this offset
+                // names; the allocatable caller-saved registers saved around it, 0 unwinds.
+                save_caller_saved(&mut self.ops);
+                call_table(&mut self.ops, layout::RT_LOAD_GLOBAL, node.offset)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+                restore_caller_saved(&mut self.ops);
+                let throw = self.throw_at(node.offset);
+                dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov X(d), x16);
+                self.finish(n);
+            }
             Op::CheckInt32 | Op::TruncateInt32 => {
                 let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
@@ -948,6 +1002,50 @@ impl Emitter<'_> {
                 dynasm!(self.ops ; .arch aarch64 ; ldr X(d), [X(x), o]);
                 self.finish(n);
             }
+            Op::LoadSlotsField { offset } => {
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let s = scaled(crate::vm_layout::OBJECT_SLOTS as usize)?;
+                let o = scaled(*offset as usize)?;
+                dynasm!(self.ops ; .arch aarch64 ; ldr x16, [X(x), s] ; ldr X(d), [x16, o]);
+                self.finish(n);
+            }
+            Op::DoubleElements => {
+                // SPIKEC-9 task 8 (`build::hoist_array_checks`, in a loop's preheader): the
+                // array's elements word if it is an ELEMENTS_DOUBLE cell and the array's int32
+                // length is at most the cell's capacity, else 0. No exit.
+                let arr = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let (len, elems, kind) = (
+                    vm_layout::ARRAY_LENGTH,
+                    vm_layout::ARRAY_ELEMENTS,
+                    vm_layout::KIND_BYTE,
+                );
+                let doubles = u32::from(vm_layout::KIND_ELEMENTS_DOUBLE);
+                let cap = vm_layout::ELEMENTS_DOUBLE_CAPACITY;
+                let (zero, done) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+                dynasm!(self.ops ; .arch aarch64 ; ldr x16, [X(arr), elems]);
+                mov64(&mut self.ops, 17, NOT_CELL_MASK);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; tst x16, x17
+                    ; b.ne =>zero
+                    ; cbz x16, =>zero
+                    ; ldrb w17, [x16, kind]
+                    ; cmp w17, doubles
+                    ; b.ne =>zero
+                    ; ldr w17, [x16, cap]
+                    ; ldr w15, [X(arr), len]
+                    ; cmp w15, w17
+                    ; b.hi =>zero
+                    ; mov X(d), x16
+                    ; b =>done
+                    ; =>zero
+                    ; movz X(d), 0
+                    ; =>done
+                );
+                self.finish(n);
+            }
             Op::LoadElement | Op::StoreElement => {
                 // Bounds by `length`; then the storage form by the elements cell's kind byte
                 // (H18: it follows the elements kind): ELEMENTS (Values) or ELEMENTS_DOUBLE (raw
@@ -978,6 +1076,12 @@ impl Emitter<'_> {
                     (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
                 // A Tagged store value's out-of-line path (SPIKEC-7, [`Emitter::tagged_slow`]).
                 let tagged_slow = self.tagged_slow(v, done, node.offset, [arr, i]);
+                // SPIKEC-9 task 8: a last input is the loop's DoubleElements: a cell (the
+                // ELEMENTS_DOUBLE store at the loop's entry, which the loop keeps) or 0.
+                let cell = ins.len() == if store { 4 } else { 3 };
+                if cell {
+                    self.double_fast(n, arr, i, v, *ins.last().expect("the cell"), trap, done)?;
+                }
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; ldr w16, [X(arr), len]
@@ -1359,7 +1463,23 @@ impl Emitter<'_> {
                 let lt = self.edge(bi, t);
                 let lf = self.edge(bi, f);
                 let c = ins[0];
-                if crate::regalloc::fused(self.g, c) {
+                if crate::regalloc::fused(self.g, c)
+                    && let Op::CompareFloat64(cond) = self.g.node(c).op
+                {
+                    // A fused double compare (SPIKEC-9; NaN rule as the unfused form).
+                    let ci = self.g.node(c).inputs.clone();
+                    let l = self.src(ci[0], 12)?;
+                    let r = self.src(ci[1], 13)?;
+                    dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r) ; fcmp d16, d17);
+                    match cond {
+                        Cond::Lt => dynasm!(self.ops ; .arch aarch64 ; b.mi =>lt),
+                        Cond::Le => dynasm!(self.ops ; .arch aarch64 ; b.ls =>lt),
+                        Cond::Gt => dynasm!(self.ops ; .arch aarch64 ; b.gt =>lt),
+                        Cond::Ge => dynasm!(self.ops ; .arch aarch64 ; b.ge =>lt),
+                        Cond::Eq => dynasm!(self.ops ; .arch aarch64 ; b.eq =>lt),
+                        Cond::Ne => dynasm!(self.ops ; .arch aarch64 ; b.ne =>lt),
+                    }
+                } else if crate::regalloc::fused(self.g, c) {
                     let Op::Compare(cond) = self.g.node(c).op else {
                         unreachable!()
                     };
@@ -1606,6 +1726,79 @@ impl Emitter<'_> {
             Some((v, Repr::Tagged)) => self.slow_path(done, offset, [arr, i, v], true),
             _ => self.ops.new_dynamic_label(),
         }
+    }
+
+    /// The fast path of an element op with a DoubleElements input `cell` (SPIKEC-9 task 8):
+    /// if the cell is not 0, the bounds by `length`, the raw f64 load or store and the hole,
+    /// then a jump to `done`; with 0 it falls through to the op's full path. The DOUBLE store
+    /// stays the array's for the whole loop (`build::hoist_array_checks`), and length <=
+    /// capacity held at the loop's entry, so the capacity and form checks are not repeated.
+    #[allow(clippy::too_many_arguments)]
+    fn double_fast(
+        &mut self,
+        n: NodeId,
+        arr: u8,
+        i: u8,
+        v: Option<(u8, Repr)>,
+        cell: NodeId,
+        trap: DynamicLabel,
+        done: DynamicLabel,
+    ) -> Result<(), Refusal> {
+        let full = self.ops.new_dynamic_label();
+        let e = self.src(cell, 15)?;
+        let (len, data) = (vm_layout::ARRAY_LENGTH, vm_layout::ELEMENTS_DOUBLE_DATA);
+        let repr = self.g.node(n).repr;
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cbz X(e), =>full
+            ; ldr w16, [X(arr), len]
+            ; cmp W(i), w16
+            ; b.hs =>trap
+            ; mov x16, X(e)
+            ; add x16, x16, data
+            ; ldr x17, [x16, W(i), uxtw #3]
+        );
+        mov64(&mut self.ops, 15, vm_layout::ELEMENTS_DOUBLE_HOLE);
+        dynasm!(self.ops ; .arch aarch64 ; cmp x17, x15 ; b.eq =>trap);
+        match v {
+            None if repr == Repr::Float64 => self.double_form(n, i, None, trap)?,
+            None => {
+                let d = self.dst(n)?;
+                box_number(&mut self.ops, d, 17);
+            }
+            Some((v, Repr::Float64)) => {
+                let raw = self.ops.new_dynamic_label();
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; mov x17, X(v)
+                    ; fmov d16, x17
+                    ; fcmp d16, d16
+                    ; b.vc =>raw
+                );
+                mov64(&mut self.ops, 17, PURE_NAN_BITS);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; =>raw
+                    ; str x17, [x16, W(i), uxtw #3]
+                );
+            }
+            Some((v, Repr::Int32)) => {
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; scvtf d16, W(v)
+                    ; fmov x17, d16
+                    ; str x17, [x16, W(i), uxtw #3]
+                );
+            }
+            Some((_, r)) => {
+                return Err(Refusal::Limit(format!(
+                    "n{}: a {r:?} store with a DoubleElements input",
+                    n.0
+                )));
+            }
+        }
+        dynasm!(self.ops ; .arch aarch64 ; b =>done ; =>full);
+        Ok(())
     }
 
     /// The SPIKEC-7 forms of an element op on an ELEMENTS_DOUBLE cell, after the bounds and
@@ -2094,7 +2287,7 @@ mod tests {
                 panic!("one fill");
             };
             let live = crate::facts::live(&s, script).expect("facts");
-            let facts = crate::facts::for_function(&live, id);
+            let facts = crate::facts::for_function(&live, script.unit.unit(), id);
             let input = s.input_of(f).expect("input");
             crate::compile_input_with(&input, &facts, StubForm::Movz).expect("compile")
         };
@@ -2177,7 +2370,7 @@ mod tests {
                 panic!("one sum");
             };
             let live = crate::facts::live(&s, script).expect("facts");
-            let facts = crate::facts::for_function(&live, id);
+            let facts = crate::facts::for_function(&live, script.unit.unit(), id);
             let input = s.input_of(f).expect("input");
             let (mut g, _) = crate::build::build(&input, &facts).expect("build");
             let checks: Vec<NodeId> = g

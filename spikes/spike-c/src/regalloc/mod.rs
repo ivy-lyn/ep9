@@ -85,7 +85,7 @@ impl Allocation {
 /// True if the compare `n` is consumed by the branch right after it (only use, same block).
 pub fn fused(g: &Graph, n: NodeId) -> bool {
     let node = g.node(n);
-    if !matches!(node.op, Op::Compare(_)) {
+    if !matches!(node.op, Op::Compare(_) | Op::CompareFloat64(_)) {
         return false;
     }
     let b = g.block(node.block);
@@ -165,7 +165,10 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
         let node = g.node(x);
         node.live
             && node.repr != Repr::None
-            && !matches!(node.op, Op::Const(_) | Op::ConstInt32(_) | Op::Incoming(_))
+            && !matches!(
+                node.op,
+                Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) | Op::Incoming(_)
+            )
             && !fused_set[x.0 as usize]
     };
     for i in 0..n {
@@ -175,7 +178,7 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
             continue;
         }
         loc[i] = match node.op {
-            Op::Const(_) | Op::ConstInt32(_) => Location::Const,
+            Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) => Location::Const,
             Op::Incoming(ir::Incoming::Receiver) => {
                 Location::Frame(ep9_vm::layout::FP_RECEIVER as i32)
             }
