@@ -1104,8 +1104,8 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    # timeout-minutes: the orchestrator sets it (plan v11 section 2.9: 45 for the first run, then
-    # rule 25).
+    timeout-minutes: 45
+    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096): the slowest target took 21 min.
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1129,8 +1129,8 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    # timeout-minutes: the orchestrator sets it (plan v11 section 2.9: 55 for the first run, then
-    # rule 25).
+    timeout-minutes: 55
+    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096) took 20 min.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
