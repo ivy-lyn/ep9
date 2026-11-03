@@ -782,8 +782,8 @@ fn unary(bits: u32, u: Unary) -> Ops {
 }
 
 /// CompareOp (0x4b-0x50): the int32 arms of all six and the number arms of `===` and the
-/// relational four. `==` on doubles, `== null` and the identity arm of `===` have no list
-/// (a list for them is a fill).
+/// relational four. `==` on doubles, `== null`, the identity arm of `===` and its arm for two
+/// atoms (M6-P1) have no list (a list for them is a fill).
 fn compare(bits: u32, c: Compare) -> Ops {
     let ty = match numeric(bits, C_INT32, C_NUMBER) {
         Some(Ty::Number) if c == Compare::Eq => return Ops::of(GENERIC),

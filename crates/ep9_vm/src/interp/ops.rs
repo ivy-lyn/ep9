@@ -260,11 +260,35 @@ fn next_or_record(s: FSlot, bits: u32) -> Flow {
     }
 }
 
+/// The cold body of the binary operators: the record, then the generic operation. A `+` of
+/// two strings (M6-P1 CBC speed arm, V11-D20: splay -2.9% instructions, mac a64) skips the
+/// generic dispatch: ToPrimitive and ToString of a string are the string itself
+/// (§13.15.3 ApplyStringOrNumericBinaryOperator steps 1-2), so the result is the concat
+/// ([`concat_strings`]). A result past the string length limit takes the generic path, which
+/// throws the RangeError.
 #[inline(always)]
 fn binop_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Done {
     profile::record_binary_cold(st, s, op, l, r);
+    if matches!(op, BinOp::Add)
+        && object::is_string(l)
+        && object::is_string(r)
+        && let Some(v) = concat_strings(st, l, r)
+    {
+        st.acc = v;
+        return Done::Next;
+    }
     let v = slow::binary(st.cx, st.fp, st.pc, op, l, r);
     st.result(v)
+}
+
+/// `l + r` for two strings, or `None` (nothing made) when the result would be too long.
+/// GC point: the frame state is recorded first, as every slow path does (`Runtime::enter`);
+/// `l` and `r` stay in the frame's registers and Rust locals. Out of line: only the `Add`
+/// cold body calls it.
+#[inline(never)]
+fn concat_strings(st: &mut St<'_>, l: u64, r: u64) -> Option<u64> {
+    st.rt().enter(st.fp, st.pc);
+    crate::string::concat(st.rt(), l, r)
 }
 
 #[inline(always)]
@@ -1253,7 +1277,14 @@ op!(TestEqualStrict(st, lhs: R, s: FSlot) {
         st.acc = TRUE;
         return Flow::RecordPair(profile::Pair::new(s, l, r));
     }
-    if object::is_string(l) && object::is_string(r) {
+    // Two strings with other bits: equal only by their text (the cold body), except two
+    // atoms, which are interned (one atom per text, `atoms.rs`), so two atoms whose bits
+    // differ have different texts (M6-P1 CBC speed arm, V11-D20: earley-boyer -1.1%
+    // instructions, mac a64). The record is the cold body's (`record_compare`: ATOM).
+    if object::is_string(l)
+        && object::is_string(r)
+        && !(crate::string::is_atom(l) && crate::string::is_atom(r))
+    {
         return Flow::Cold;
     }
     st.acc = FALSE;

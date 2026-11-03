@@ -14,6 +14,9 @@
 //!                    passes the guards)
 //! ```
 //!
+//! The two T0 speed arms of M6-P1 (V11-D20: `===` of two atoms, `+` of two strings) are
+//! tested at the end.
+//!
 //! The named, global, keyed, InstanceOf and Call tests run under every dispatch expansion,
 //! with and without GC stress (`tests::ic::each`); the arithmetic ones under every expansion
 //! without stress (no cell is cached there).
@@ -27,6 +30,7 @@ use super::ic::{SLOT, Site, T, each, int, key, object_prototype, object_with};
 use super::{Asm, config, isolate, meta, on_big_stack, unit};
 use crate::conv::BinOp;
 use crate::external_ref::ExternalRef;
+use crate::feedback;
 use crate::field_rep;
 use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, KEY_STRING, hk, smi};
@@ -763,7 +767,11 @@ fn named_store_lists_match_the_hit_path() {
             })
             .flat_map(|l| l.as_slice().to_vec())
             .collect();
-        assert!(actions.iter().any(|a| matches!(a, Op::GuardType(Val::Value, _))));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Op::GuardType(Val::Value, _)))
+        );
         for want in [
             Op::GuardProtoValidity(Proto::OfShape(Ref::CaseKey)),
             Op::Generic,
@@ -1469,5 +1477,88 @@ fn accessor_and_dictionary_holder_handlers_have_their_lists() {
         // A handler kind no list knows (the next append) is the generic path.
         let next = fake_handler(rt, 12, UNDEFINED, UNDEFINED, 0);
         assert_eq!(l(next, Operation::LoadNamed).as_slice(), &[Op::Generic]);
+    });
+}
+
+// ---- the T0 speed arms (M6-P1 CBC, V11-D20) ---------------------------------------------------------
+
+/// `f0(a, b)` = `a === b`, `f1(a, b)` = `a + b`.
+fn arms_t(c: IsolateConfig) -> T {
+    let fns = vec![
+        site("f0", FeedbackSlotKind::CompareOp, |b, a, x, _, s| {
+            b.ldar(x).test_equal_strict(a, s);
+        }),
+        site("f1", FeedbackSlotKind::BinaryOp, |b, a, x, _, s| {
+            b.ldar(x).add(a, s);
+        }),
+    ];
+    new_t(eager(c), fns, vec![], vec![])
+}
+
+#[test]
+fn strict_equal_of_two_distinct_atoms_is_false_and_records_atom() {
+    each(|c| {
+        let mut t = arms_t(c);
+        let rt = t.rt();
+        let (foo, bar) = (key(rt, "foo"), key(rt, "bar"));
+        let foo2 = string::new_string(rt, "foo");
+        let long = key(rt, "a key text longer than the cons length");
+        assert!(string::is_atom(foo) && string::is_atom(bar) && string::is_atom(long));
+        assert!(!string::is_atom(foo2) && foo2 != foo);
+        // Two atoms: the fast body answers; the text decides.
+        assert_eq!(call(&mut t, "f0", &[foo, bar]), FALSE);
+        assert_eq!(call(&mut t, "f0", &[foo, long]), FALSE);
+        assert_eq!(call(&mut t, "f0", &[foo, foo]), TRUE);
+        let bits = |t: &T| int32_of(feedback::value(t.vector(0), SLOT)) as u32;
+        let atom = u32::from(ep9_facts::CompareHint::ATOM.bits());
+        assert_eq!(bits(&t), atom);
+        // An atom and a string of the same text that is not one: the cold body.
+        assert_eq!(call(&mut t, "f0", &[foo, foo2]), TRUE);
+        assert_eq!(call(&mut t, "f0", &[foo2, bar]), FALSE);
+        let s = u32::from(ep9_facts::CompareHint::STRING.bits());
+        assert_eq!(bits(&t), atom | s);
+        // Other values keep their arms.
+        assert_eq!(call(&mut t, "f0", &[foo, int(1)]), FALSE);
+        assert_eq!(call(&mut t, "f0", &[num(f64::NAN), num(f64::NAN)]), FALSE);
+    });
+}
+
+#[test]
+fn a_string_add_concats_and_a_too_long_one_still_throws() {
+    each(|c| {
+        let mut t = arms_t(c);
+        let rt = t.rt();
+        let (ab, cd) = (string::new_string(rt, "ab"), key(rt, "cd"));
+        let empty = string::new_string(rt, "");
+        let text = |v| string::to_rust_string(v);
+        assert_eq!(text(call(&mut t, "f1", &[ab, cd])), "abcd");
+        assert_eq!(call(&mut t, "f1", &[ab, empty]), ab);
+        assert_eq!(call(&mut t, "f1", &[empty, cd]), cd);
+        let long = string::new_string(t.rt(), "0123456789abcdef");
+        let r = call(&mut t, "f1", &[long, long]);
+        assert_eq!(text(r), "0123456789abcdef0123456789abcdef");
+        // A string and another value: the generic path (ToString of the number).
+        assert_eq!(text(call(&mut t, "f1", &[ab, int(1)])), "ab1");
+        assert_eq!(text(call(&mut t, "f1", &[int(1), cd])), "1cd");
+        let bits = int32_of(feedback::value(t.vector(1), SLOT)) as u32;
+        let hint =
+            u32::from(ep9_facts::BinaryHint::STRING.bits() | ep9_facts::BinaryHint::NUMBER.bits());
+        assert_eq!(bits, hint);
+        // Past the length limit: the RangeError of the generic path.
+        let mut big = long;
+        while string::str_len(big) * 2 <= string::MAX_STRING_LENGTH {
+            big = string::concat(t.rt(), big, big).unwrap();
+        }
+        let f = t.iso.global_raw("f1").unwrap();
+        let e = t
+            .iso
+            .call_raw(f, Value::UNDEFINED, &[val(big), val(big)])
+            .unwrap_err();
+        assert_eq!(
+            e.constructor.as_deref(),
+            Some("RangeError"),
+            "{}",
+            e.message
+        );
     });
 }
