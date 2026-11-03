@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! oxc_parser: parse_regular_expression off, tokens on --> AST, tokens, diagnostics
+//!   (debug builds: only when a first parse with tokens off has no fatal error; see `parse`)
 //!   v
 //! check: for each RegExp token of the final token list
 //!   oxc_regular_expression::LiteralParser (the same pattern text, flags text and span
@@ -38,9 +39,65 @@
 //!   regex error and not the Flow error.
 
 use oxc_allocator::Allocator;
-use oxc_diagnostics::OxcDiagnostic;
-use oxc_parser::{Kind, Token};
+use oxc_diagnostics::{Diagnostics, OxcDiagnostic};
+use oxc_parser::config::TokensParserConfig;
+use oxc_parser::{Kind, ParseOptions, Parser, ParserReturn, Token};
 use oxc_regular_expression::{LiteralParser, Options};
+use oxc_span::SourceType;
+
+/// The oxc parse of the front end (lib.rs `parse`, eval.rs `on_worker`): regex parsing off,
+/// tokens on, then [`check`] on the final token list.
+///
+/// ```text
+/// debug assertions on (tests, fuzz builds, a debug CLI):
+///   pass 1: oxc_parser, tokens off, own arena --fatal error--> Err(its diagnostics)
+///     v no fatal error
+///   pass 2: oxc_parser, tokens on --> check(tokens) --> Ok(parsed)
+/// release: pass 2 only --> Ok(parsed) (the caller reads `fatal_error`)
+/// ```
+///
+/// Why pass 1 (fuzz.yml run 41579263254, frontend_compile; decision M6-ORCH-23): after a
+/// fatal error, oxc_parser 0.155 keeps the current token but moves the lexer to the end of
+/// the text. If that token is `/` or `/=` and the parser then parses an expression
+/// (`export default@import/f`), `Lexer::next_regex` takes the end of the text as the token
+/// start. With tokens on, a `debug_assert!` of the oxc lexer (lexer/mod.rs:328) then fails.
+/// With tokens off nothing fails. A fatal error makes oxc drop the tokens anyway, so pass 1
+/// gives the diagnostics of a tokens-on parse. The tokens setting only adds the token list,
+/// so pass 2 takes the path of pass 1: no fatal error, and the lexer never jumps ahead.
+///
+/// The assert exists only with debug assertions, so release keeps one parse (pass 1 costs
+/// about +11% parse time). Remove pass 1 when an oxc release has the fix.
+///
+/// # Errors
+///
+/// Debug assertions on: the diagnostics of a parse with a fatal error.
+pub(crate) fn parse<'a>(
+    allocator: &'a Allocator,
+    source: &'a str,
+    source_type: SourceType,
+) -> Result<ParserReturn<'a>, Diagnostics> {
+    // Regex literals: oxc_parser keeps the pattern text; `check` parses each one once (with
+    // this option on, oxc parses a pattern again on each rescan of its text).
+    let options = ParseOptions {
+        parse_regular_expression: false,
+        ..ParseOptions::default()
+    };
+    if cfg!(debug_assertions) {
+        let scratch = Allocator::default();
+        let first = Parser::new(&scratch, source, source_type)
+            .with_options(options)
+            .parse();
+        if first.fatal_error {
+            return Err(first.diagnostics);
+        }
+    }
+    let mut parsed = Parser::new(allocator, source, source_type)
+        .with_options(options)
+        .with_config(TokensParserConfig)
+        .parse();
+    check(source, &parsed.tokens, &mut parsed.diagnostics);
+    Ok(parsed)
+}
 
 #[cfg(test)]
 thread_local! {
@@ -299,6 +356,62 @@ mod tests {
             want.sort();
             got.sort();
             assert_eq!(got, want, "{src}");
+        }
+    }
+
+    /// Fuzz crash of fuzz.yml run 41579263254 (frontend_compile; M6-ORCH-23): a fatal error
+    /// in a decorator moves the oxc lexer to the end of the text, and `export default` then
+    /// reads the current `/` as a regex literal. With tokens on, oxc_parser 0.155
+    /// debug-asserts (lexer/mod.rs:328), so [`parse`] runs a tokens-off pass first when
+    /// debug assertions are on. The debug and the release test runs (CI runs both) must give
+    /// the same SyntaxError, with no panic, at each entry point: the messages below are the
+    /// release messages of the one-pass parse.
+    #[test]
+    fn a_slash_after_a_fatal_error_is_a_syntax_error() {
+        fn first(r: Result<(), CompileError>) -> String {
+            match r {
+                Err(CompileError::Syntax(e)) => e.first().to_string(),
+                other => panic!("not a SyntaxError: {other:?}"),
+            }
+        }
+        fn first_of<T>(r: Result<T, CodegenError>) -> String {
+            match r {
+                Err(CodegenError::Compile(e)) => first(Err(e)),
+                Err(e) => panic!("not a SyntaxError: {e:?}"),
+                Ok(_) => panic!("compiled"),
+            }
+        }
+        const MSG: &str = "SyntaxError: Unterminated regular expression";
+        // (text, the position of compile, check_early_errors and eval; of the Function body)
+        for (src, at, body_at) in [
+            ("export default@import/f", "1:23", "4:2"),
+            ("export default @new.x/f", "1:23", "4:2"),
+            ("export default @import.x /=f", "1:27", "4:1"),
+        ] {
+            let want = format!("{at}: {MSG}");
+            for opts in [
+                SourceOpts::script(Strictness::Sloppy),
+                SourceOpts::script(Strictness::Strict),
+                SourceOpts::module(),
+            ] {
+                let got = first_of(compile(src, opts, CompileOptions::default()));
+                assert_eq!(got, want, "compile {src} {opts:?}");
+                let got = first(crate::check_early_errors(src, opts));
+                assert_eq!(got, want, "check_early_errors {src} {opts:?}");
+            }
+            let got = first_of(compile_eval(
+                src,
+                &EvalContext::default(),
+                CompileOptions::default(),
+            ));
+            assert_eq!(got, want, "eval {src}");
+            let got = first_of(compile_function_ctor(
+                FunctionCtorKind::Normal,
+                "",
+                src,
+                CompileOptions::default(),
+            ));
+            assert_eq!(got, format!("{body_at}: {MSG}"), "Function body {src}");
         }
     }
 }
