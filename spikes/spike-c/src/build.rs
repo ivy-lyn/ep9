@@ -1726,6 +1726,10 @@ impl Builder<'_> {
     /// passed at the entry, and nothing in L can change what it proved. (A loop that ends
     /// before its first back edge, 0 iterations or a `break`, can still exit at a moved
     /// guard that its body would not have run: the cost of every move to a preheader.)
+    ///
+    /// The move puts a guard's exit at the loop header, so only a guard whose exit may move
+    /// goes ([`exit_may_move`], the doc 13 B2 rule, as in [`Self::float_loads`]; M6-P1 JIT
+    /// review F2). A guard of another policy stays in place.
     fn hoist_array_checks(&mut self) {
         for h in (0..self.g.blocks.len()).rev() {
             if !self.g.blocks[h].loop_header {
@@ -1801,6 +1805,10 @@ impl Builder<'_> {
                 // Read the input now: a check hoisted before this one may have replaced it.
                 let (op, o, g) = (node.op.clone(), node.inputs[0], node.guard.clone());
                 if body[self.g.node(o).block.0 as usize] {
+                    continue;
+                }
+                // B2 rule: only a guard whose exit may move to the header (F2).
+                if g.as_ref().is_some_and(|g| !exit_may_move(g)) {
                     continue;
                 }
                 let policy = g.as_ref().map(|g| g.policy);
