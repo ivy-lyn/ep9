@@ -37,8 +37,8 @@
 //! | `INSTANCEOF` | the validity cell | the rhs function's shape (the slot key is the function) | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
 //! | `CLONE` | int32 count | the result shape (the slot key is the source shape) | int32 0 | `literal_site.rs` (M4-P1 OBJ-ALLOC) |
 //! | `ALLOC_SITE` (IC_LAYOUT 3) | the int32 elements kind the site makes | the result shape | int32 count | `literal_site.rs` (M5-P2 ELEM2) |
-//! | `GETTER`, `SETTER` (IC_LAYOUT 4) | own accessor: int32 0; inherited: the chain's validity cell | own: undefined; inherited: the holder | the ACCESSOR_PAIR location (a smi field handler) | declared, no writer yet (M6-P1 ACCIC) |
-//! | `PROTO_DICT_LOAD` (IC_LAYOUT 4) | the receiver chain's validity cell | the dictionary-mode holder | int32 0 | declared, no writer yet (M6-P1 ACCIC) |
+//! | `GETTER`, `SETTER` (IC_LAYOUT 4) | own accessor: int32 0; inherited: the chain's validity cell | own: undefined; inherited: the holder | the ACCESSOR_PAIR location (a smi field handler) | `ic.rs` (M6-P1 ACCIC; the cold hits, [`cold_load`], [`cold_setter`]) |
+//! | `PROTO_DICT_LOAD` (IC_LAYOUT 4) | the receiver chain's validity cell | the dictionary-mode holder | int32 0 | `ic.rs` (M6-P1 ACCIC; the cold hit, [`cold_load`]) |
 //!
 //! The size stays 40 B and no kind id is added (construct sites, instanceof and clone caches
 //! are IC_HANDLER cells; a Literal site keeps only its slot halves). The trace function visits +24
@@ -49,7 +49,7 @@
 //! | `FIELD_IN_OBJECT`, `FIELD_OUT_OF_LINE` (smi) | 0x21, 0x22: own data property; 0x24: own writable data property; 0x25: own data property {w, e, c} | one load or one barriered store at the offset (in the SLOTS cell for out of line) |
 //! | `ARRAY_LENGTH` (smi) | 0x21, 0x22 on an array's shape | the length field (+24) |
 //! | `STRING_LENGTH` (smi) | 0x21 on a string, under [`KEY_STRING`] | the string's length, after a kind-byte check |
-//! | `SLOW` (smi) | any: accessor, dictionary, exotic or read-only cases | none: the generic path runs, the case only keeps its place |
+//! | `SLOW` (smi) | any: a dictionary-mode receiver, an accessor of a dictionary-mode holder, a define over an accessor, exotic or read-only cases | none: the generic path runs, the case only keeps its place |
 //! | `PROTO_LOAD` (cell) | 0x21, 0x22 | validity cell valid and holder alive: the holder's field |
 //! | `MISSING` (cell) | 0x21, 0x22 | validity cell valid: undefined |
 //! | `PROTO_LOAD`, `MISSING` (cell) under [`KEY_STRING`] (M4-P3 IC2) | 0x21 on a string: a method (`s.charCodeAt`), from %String.prototype% | as above, after a kind-byte check (a symbol has ShapeId 0 too) |
@@ -260,21 +260,21 @@ pub(crate) mod hk {
     /// writes it (`literal_site.rs`; an elements transition generalizes it through ARRAY +32),
     /// never a record hook, so `ics_only` keeps it. Built in M5-P2 (ELEM2).
     pub const ALLOC_SITE: i32 = 8;
-    /// IC_LAYOUT 4 (M6-P0, plan v11 §2.3; H17 "Accessor ICs"): a getter case (M6-P1 ACCIC fills
-    /// it). Own accessor: +16 int32 0, +24 undefined; inherited: +16 the chain's validity
-    /// cell, +24 the holder (weak); both: +32 the field location (a smi field handler) of the
-    /// ACCESSOR_PAIR. Declared, no writer yet.
-    #[allow(dead_code)]
+    /// IC_LAYOUT 4 (M6-P0, plan v11 §2.3; H17 "Accessor ICs"): a getter case (M6-P1 ACCIC).
+    /// Own accessor: +16 int32 0, +24 undefined; inherited: +16 the chain's validity cell,
+    /// +24 the holder (weak); both: +32 the field location (a smi field handler) of the
+    /// ACCESSOR_PAIR. The fast handler misses; the cold body calls the getter ([`cold_load`]).
+    /// No stub cache entry (v1).
     pub const GETTER: i32 = 9;
-    /// IC_LAYOUT 4: a setter case, the fields of [`GETTER`] (M6-P1 ACCIC). Declared, no writer
-    /// yet.
-    #[allow(dead_code)]
+    /// IC_LAYOUT 4: a setter case of a 0x24 store, the fields of [`GETTER`] (M6-P1 ACCIC);
+    /// the cold body calls the setter ([`cold_setter`]).
+    /// A 0x25 define over an accessor stays `SLOW` (it redefines the property).
     pub const SETTER: i32 = 10;
     /// IC_LAYOUT 4 (H17 "Dictionary v1"): a data property of a dictionary-mode holder on the
     /// prototype chain: +16 the receiver chain's validity cell, +24 the holder (weak), +32 int32
     /// 0; a hit looks the key up in the holder's PROPS or PROPS_INDEXED table (M6-P1 ACCIC).
-    /// Declared, no writer yet.
-    #[allow(dead_code)]
+    /// The fast handler misses; the cold body reads the entry ([`cold_load`]). A receiver in
+    /// dictionary mode stays `SLOW` (H16 K12).
     pub const PROTO_DICT_LOAD: i32 = 11;
 }
 
@@ -442,7 +442,7 @@ fn cross_check(rt: &Runtime, o: u64, key: u64, c: CellPtr) {
         }
         (hk::MISSING, Chain::Missing) => true,
         (hk::ADD, Chain::Missing | Chain::Data(_, _, true)) => true,
-        _ => false,
+        (k, chain) => cold_case_matches(k, chain, c),
     };
     assert!(
         ok,
@@ -859,6 +859,20 @@ pub(crate) enum Handler {
     /// An own data property of the global object (its field) under the lexical record's
     /// shape `lexical`.
     Global { lexical: u64, location: i32 },
+    /// M6-P1 ACCIC: a getter or setter case (`kind` [`hk::GETTER`] or [`hk::SETTER`]): the
+    /// location of the ACCESSOR_PAIR, in the receiver (`chain` `None`, `holder` undefined:
+    /// an own accessor) or in `holder` (`chain`: the validity cell seen, as for `ProtoLoad`),
+    /// and the name.
+    Accessor {
+        kind: i32,
+        holder: u64,
+        location: i32,
+        chain: Option<u64>,
+        name: u64,
+    },
+    /// M6-P1 ACCIC: a data property of the dictionary-mode `holder` on the chain
+    /// ([`hk::PROTO_DICT_LOAD`]), with the validity cell seen and the name.
+    ProtoDict { holder: u64, cell: u64, name: u64 },
     /// A handler that its writer module made (an `INSTANCEOF` IC_HANDLER cell or `SLOW`,
     /// `instance_ic.rs`); recorded as it is.
     Ready(u64),
@@ -918,12 +932,18 @@ fn field_location(s: u64, f: usize) -> u64 {
 }
 
 /// What a walk from the prototype `p` finds for `name` (no property on the receiver).
+#[derive(Clone, Copy)]
 enum Chain {
     /// A data property of the fast-mode holder: (holder, location, writable).
     Data(u64, u64, bool),
+    /// An accessor of the fast-mode holder: (holder, the location of its ACCESSOR_PAIR)
+    /// (M6-P1 ACCIC: a `GETTER` or `SETTER` case).
+    Accessor(u64, u64),
+    /// A data property of the dictionary-mode holder (M6-P1 ACCIC: a `PROTO_DICT_LOAD` case).
+    DictData(u64),
     /// No object has it.
     Missing,
-    /// An accessor, an exotic property, or a dictionary-mode object that has it.
+    /// An exotic property, or an accessor of a dictionary-mode object that has it.
     Other,
 }
 
@@ -935,20 +955,47 @@ fn walk(rt: &Runtime, mut p: u64, name: u64) -> Chain {
             return Chain::Other;
         }
         if shape::is_dictionary(s) {
-            if object::own_get(p, name).is_some() {
-                return Chain::Other;
+            if let Some((_, a)) = object::own_get(p, name) {
+                return if a & attr::ACCESSOR == 0 {
+                    Chain::DictData(p)
+                } else {
+                    Chain::Other
+                };
             }
         } else if let Some(f) = shape::lookup(rt, s, name) {
             let a = f.details.attrs();
-            if a & attr::ACCESSOR != 0 {
-                return Chain::Other;
-            }
             let loc = field_location(s, usize::from(f.details.field()));
+            if a & attr::ACCESSOR != 0 {
+                return Chain::Accessor(p, loc);
+            }
             return Chain::Data(p, loc, a & attr::WRITABLE != 0);
         }
         p = shape::proto(s);
     }
     Chain::Missing
+}
+
+/// The load handler of a case whose receiver lacks `name` and whose chain walk gave `chain`
+/// under the validity cell `cell` (seen, [`chain_cell_seen`]). Not a GC point.
+fn chain_load(chain: Chain, cell: u64, name: u64) -> Handler {
+    match chain {
+        Chain::Data(holder, loc, _) => Handler::ProtoLoad {
+            holder,
+            location: int32_of(loc),
+            cell,
+            name,
+        },
+        Chain::Accessor(holder, loc) => Handler::Accessor {
+            kind: hk::GETTER,
+            holder,
+            location: int32_of(loc),
+            chain: Some(cell),
+            name,
+        },
+        Chain::DictData(holder) => Handler::ProtoDict { holder, cell, name },
+        Chain::Missing => Handler::Missing { cell, name },
+        Chain::Other => Handler::Smi(SLOW),
+    }
 }
 
 /// The case for a named load of `name` from `o` (the receiver of 0x21, the lookup start of
@@ -969,21 +1016,12 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
         // M4-P3 IC2: a method load (`s.charCodeAt`, crypto's misses, plan v9 §12.1) is a
         // prototype case from %String.prototype%, keyed on KEY_STRING. A string's other own
         // properties are its indices, which are never cached.
+        // M6-P1 ACCIC: an inherited getter or a dictionary-mode holder too (the cold hits).
         let p = rt.root(Root::StringPrototype);
         let cell = chain_cell_seen(rt, p);
-        let handler = match walk(rt, p, name) {
-            Chain::Data(holder, loc, _) => Handler::ProtoLoad {
-                holder,
-                location: int32_of(loc),
-                cell,
-                name,
-            },
-            Chain::Missing => Handler::Missing { cell, name },
-            Chain::Other => Handler::Smi(SLOW),
-        };
         return Some(Case {
             key: KEY_STRING,
-            handler,
+            handler: chain_load(walk(rt, p, name), cell, name),
             stub: None,
         });
     }
@@ -1007,7 +1045,18 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
         return smi_case(SLOW);
     }
     match shape::lookup(rt, s, name) {
-        Some(f) if f.details.attrs() & attr::ACCESSOR != 0 => smi_case(SLOW),
+        // M6-P1 ACCIC: an own getter case; its pair is read from the receiver at each hit.
+        Some(f) if f.details.attrs() & attr::ACCESSOR != 0 => Some(Case {
+            key: s,
+            handler: Handler::Accessor {
+                kind: hk::GETTER,
+                holder: UNDEFINED,
+                location: int32_of(field_location(s, usize::from(f.details.field()))),
+                chain: None,
+                name,
+            },
+            stub,
+        }),
         Some(f) => smi_case(field_location(s, usize::from(f.details.field()))),
         // An exotic property that is not in the storage (a lazy `prototype`, a String
         // wrapper's `length`).
@@ -1015,19 +1064,9 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
         None => {
             let p = shape::proto(s);
             let cell = chain_cell_seen(rt, p);
-            let handler = match walk(rt, p, name) {
-                Chain::Data(holder, loc, _) => Handler::ProtoLoad {
-                    holder,
-                    location: int32_of(loc),
-                    cell,
-                    name,
-                },
-                Chain::Missing => Handler::Missing { cell, name },
-                Chain::Other => Handler::Smi(SLOW),
-            };
             Some(Case {
                 key: s,
-                handler,
+                handler: chain_load(walk(rt, p, name), cell, name),
                 stub,
             })
         }
@@ -1064,6 +1103,20 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
     }
     if let Some(f) = shape::lookup(rt, s, name) {
         let a = f.details.attrs();
+        if !define && a & attr::ACCESSOR != 0 {
+            // M6-P1 ACCIC: an own setter case; its pair is read from the receiver at each hit.
+            return Some(StorePre::Done(Case {
+                key: s,
+                handler: Handler::Accessor {
+                    kind: hk::SETTER,
+                    holder: UNDEFINED,
+                    location: int32_of(field_location(s, usize::from(f.details.field()))),
+                    chain: None,
+                    name,
+                },
+                stub,
+            }));
+        }
         // 0x24: a writable data property takes the value. 0x25: only a {w, e, c} data
         // property keeps its attributes (anything else is redefined, OM-10).
         let ok = if define {
@@ -1096,9 +1149,25 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
         // property `name` (§10.1.9.2); a writable data property on the chain is fine. The
         // validity cell guards that answer.
         let p = shape::proto(s);
-        chain = Some(chain_cell_seen(rt, p));
-        if !adds_past(walk(rt, p, name)) {
-            return slow;
+        let seen = chain_cell_seen(rt, p);
+        chain = Some(seen);
+        match walk(rt, p, name) {
+            // M6-P1 ACCIC: an inherited setter case (the holder, under the chain's cell).
+            Chain::Accessor(holder, loc) => {
+                return Some(StorePre::Done(Case {
+                    key: s,
+                    handler: Handler::Accessor {
+                        kind: hk::SETTER,
+                        holder,
+                        location: int32_of(loc),
+                        chain: Some(seen),
+                        name,
+                    },
+                    stub,
+                }));
+            }
+            w if !adds_past(w) => return slow,
+            _ => {}
         }
     }
     Some(StorePre::Add { from: s, chain })
@@ -1443,6 +1512,32 @@ pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
         Handler::Global { lexical, location } => {
             new_handler(rt, hk::GLOBAL, int32_bits(0), lexical, location)
         }
+        Handler::Accessor {
+            kind,
+            location,
+            chain: None,
+            ..
+        } => new_handler(rt, kind, int32_bits(0), UNDEFINED, location),
+        Handler::Accessor {
+            kind,
+            holder,
+            location,
+            chain: Some(seen),
+            name,
+        } => {
+            let same = |c: Chain| matches!(c, Chain::Accessor(h, l) if h == holder && int32_of(l) == location);
+            let Some(c) = chain_cell(rt, key, seen, name, same) else {
+                return;
+            };
+            new_handler(rt, kind, c, holder, location)
+        }
+        Handler::ProtoDict { holder, cell, name } => {
+            let same = |c: Chain| matches!(c, Chain::DictData(h) if h == holder);
+            let Some(c) = chain_cell(rt, key, cell, name, same) else {
+                return;
+            };
+            new_handler(rt, hk::PROTO_DICT_LOAD, c, holder, 0)
+        }
         Handler::Ready(h) => h,
     };
     let key = feedback::key(v, i);
@@ -1490,17 +1585,184 @@ pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
 }
 
 /// Puts the case of a megamorphic entry in the stub cache (`stub_cache.rs`): a named-property
-/// case keyed on a fast shape whose handler is not `SLOW`. Not a GC point (after the last
-/// allocation of [`record`]).
+/// case keyed on a fast shape whose handler is not `SLOW`. Accessor and dictionary-holder
+/// cases (M6-P1 ACCIC) stay out in v1: their hits are cold-body hits, which a stub cache
+/// probe does not run. Not a GC point (after the last allocation of [`record`]).
 fn stub_insert(rt: &Runtime, case: &Case, handler: u64) {
     let Some((op, name)) = case.stub else {
         return;
     };
-    if case.key == KEY_STRING || handler == SLOW {
+    if case.key == KEY_STRING
+        || handler == SLOW
+        || matches!(
+            case.handler,
+            Handler::Accessor { .. } | Handler::ProtoDict { .. }
+        )
+    {
         return;
     }
     debug_assert!(shape::is_shape(case.key));
     stub_cache::insert(rt, op, case.key as u32, name, handler);
+}
+
+// ---- accessor and dictionary-holder cases (M6-P1 ACCIC): the cold hits ------------------------
+//
+// H17 "Accessor ICs" and the H17 Dictionary v1 holder handler (plan v11 V11-D17; H16 K12):
+//
+//   case (miss path)                               handler (IC_HANDLER)              cold hit
+//   own accessor of the receiver's fast shape       GETTER / SETTER, +16 int32 0      pair = receiver's field
+//   accessor of a fast-mode holder on the chain     GETTER / SETTER, +16 cell, +24    pair = holder's field
+//                                                   holder (weak)                     (cell valid, holder alive)
+//   data property of a dictionary-mode holder       PROTO_DICT_LOAD, +16 cell, +24    the holder's own entry
+//                                                   holder (weak)                     (cell valid, holder alive)
+//
+// - The fast handlers (`load`, `store`) miss on these kinds: a hit path never calls JS and never
+//   allocates (`profile.rs` module docs). The cold bodies (`slow::get_named`, `get_super`,
+//   `set_named`) try the slot's case first ([`cold_load`], [`cold_setter`]): no lookup on the
+//   receiver and no chain walk, then the getter or setter call (`accessor::call_getter`,
+//   `call_setter`) with the receiver as `this`. Anything else goes on to the generic path.
+// - An own case never caches a pair or a holder: two objects of one shape hold their own pairs
+//   (H17 Accessor ICs row). A pair is immutable; a redefine stores a new pair in the field
+//   (and, on a prototype, bumps the epoch), so the next hit reads and calls the new pair.
+// - Data <-> accessor and an attribute change are dictionary moves (OM-10), so a case keyed on
+//   a fast shape keeps its kind of property. A holder that turns dictionary, a property added
+//   or deleted on the chain, or a new prototype pops the chain's validity cell (`shape::note_change`).
+// - A load site and a store site have their own slots (BytecodeGen; [`init_vector`]), so a warm
+//   GETTER case never answers a store: a store to an accessor calls the setter every time
+//   (MODES-CHECK-w24 MC-w24-8; the V8 bug class of 64b57c27d1). The hit reads no cached value.
+// - A setter case with no setter in its pair (a getter-only accessor) runs the generic store,
+//   which fails (a TypeError in strict code). A dictionary entry that is an accessor misses.
+// - No stub cache entry ([`stub_insert`]) and no facts description yet (`facts_export.rs`).
+
+/// What the cold body of a named load gets from a cached case ([`cold_load`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ColdLoad {
+    /// The value: a data property of the dictionary-mode holder (`PROTO_DICT_LOAD`).
+    Value(u64),
+    /// The ACCESSOR_PAIR whose getter the cold body calls (`GETTER`).
+    Getter(u64),
+}
+
+/// The IC_HANDLER cell and its kind that slot `i` of the vector `v` keeps for the case key
+/// of `o` (its shape, or [`KEY_STRING`] for a string), if the case has a cell. Not a GC point.
+#[inline]
+fn cold_handler(v: u64, i: u32, o: u64) -> Option<(CellPtr, i32)> {
+    if !is_cell_bits(o) {
+        return None;
+    }
+    let id = shape_id(o);
+    // ShapeId 0 is a string's or a symbol's: only a string has cases under KEY_STRING.
+    if id == 0 && !kind::is_string(o) {
+        return None;
+    }
+    let h = handler_for(feedback::key(v, i), feedback::value(v, i), id)?;
+    if is_i32(h) {
+        return None;
+    }
+    let c = cell(h);
+    Some((c, rd_i32(c, hc::KIND)))
+}
+
+/// The ACCESSOR_PAIR that the GETTER or SETTER handler `c` gives for `o` (the receiver, or the
+/// lookup start of 0x22): the field of `o` itself (an own case, +16 int32 0), or the field of
+/// the cached holder while the chain's validity cell is valid and the holder is alive. `name`
+/// (the site's name) feeds only the debug cross-check. Not a GC point.
+fn cached_pair(rt: &Runtime, o: u64, c: CellPtr, name: u64) -> Option<u64> {
+    let loc = rd_i32(c, hc::LOCATION);
+    let chain = rd(c, hc::CELL);
+    let pair = if chain == int32_bits(0) {
+        debug_assert!(kind::is_object(o), "an own accessor case of a non-object");
+        read_field(o, loc)?
+    } else {
+        if !validity::valid_cell(chain) {
+            return None;
+        }
+        let holder = rd(c, hc::REF);
+        if holder == UNDEFINED {
+            return None;
+        }
+        #[cfg(debug_assertions)]
+        cross_check(rt, o, name, c);
+        read_field(holder, loc)?
+    };
+    debug_assert!(
+        crate::accessor::is_pair(pair),
+        "an accessor case whose field holds no ACCESSOR_PAIR"
+    );
+    #[cfg(not(debug_assertions))]
+    let _ = (rt, name);
+    Some(pair)
+}
+
+/// The cold hit of a named load (0x21 with the receiver `o`, 0x22 with the lookup start `o`)
+/// before the generic load: the `GETTER` or `PROTO_DICT_LOAD` case of slot `i` of the vector
+/// `v` for `o`, if it applies. `name` is the site's name (an atom). `None`: take the generic
+/// path. No allocation, no JS, not a GC point.
+pub(crate) fn cold_load(rt: &Runtime, v: u64, i: u32, o: u64, name: u64) -> Option<ColdLoad> {
+    let (c, k) = cold_handler(v, i, o)?;
+    let r = match k {
+        hk::GETTER => cached_pair(rt, o, c, name).map(ColdLoad::Getter),
+        hk::PROTO_DICT_LOAD => {
+            if !validity::valid_cell(rd(c, hc::CELL)) {
+                return None;
+            }
+            let holder = rd(c, hc::REF);
+            if holder == UNDEFINED {
+                return None;
+            }
+            #[cfg(debug_assertions)]
+            cross_check(rt, o, name, c);
+            debug_assert!(shape::is_dictionary(shape::shape_of(holder)));
+            let (x, a) = crate::props::own_get_with(holder, name, key::probe(name))?;
+            (a & attr::ACCESSOR == 0).then_some(ColdLoad::Value(x))
+        }
+        _ => None,
+    };
+    cold_hit(r)
+}
+
+/// The cold hit of a named store `o.name = v` (0x24 only) before the generic store: the pair
+/// of the `SETTER` case of slot `i` of the vector `v` for the object `o`, if it applies (the
+/// caller calls its setter, or takes the generic path for a pair with no setter). `None`:
+/// take the generic path. No allocation, no JS, not a GC point.
+pub(crate) fn cold_setter(rt: &Runtime, v: u64, i: u32, o: u64, name: u64) -> Option<u64> {
+    if !kind::is_object(o) {
+        return None;
+    }
+    cold_hit(match cold_handler(v, i, o)? {
+        (c, hk::SETTER) => cached_pair(rt, o, c, name),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M6-P1 ACCIC): how many times [`cold_load`] or [`cold_setter`] answered.
+    pub(crate) static COLD_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// `r`, counted in [`COLD_HITS`] (tests) if it is a hit. Nothing else.
+#[inline(always)]
+fn cold_hit<T>(r: Option<T>) -> Option<T> {
+    #[cfg(test)]
+    if r.is_some() {
+        COLD_HITS.with(|c| c.set(c.get() + 1));
+    }
+    r
+}
+
+/// The debug cross-check ([`cross_check`]) of the cold-hit kinds: a `GETTER` or `SETTER` case
+/// needs an accessor of its holder at its location, a `PROTO_DICT_LOAD` case a data property
+/// of its dictionary-mode holder. False for any other pair of kind and answer.
+#[cfg(debug_assertions)]
+fn cold_case_matches(k: i32, chain: Chain, c: CellPtr) -> bool {
+    match (k, chain) {
+        (hk::GETTER | hk::SETTER, Chain::Accessor(holder, loc)) => {
+            holder == rd(c, hc::REF) && int32_of(loc) == rd_i32(c, hc::LOCATION)
+        }
+        (hk::PROTO_DICT_LOAD, Chain::DictData(holder)) => holder == rd(c, hc::REF),
+        _ => false,
+    }
 }
 
 // ---- vectors -----------------------------------------------------------------------------------
