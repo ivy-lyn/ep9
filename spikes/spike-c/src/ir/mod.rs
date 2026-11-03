@@ -633,6 +633,9 @@ impl Graph {
     /// - a frame state after the guard's own instruction (a forward resume, R-SPIKE-P4-1)
     ///   needs a block whose one successor starts at the state's offset and no effect after
     ///   the guard in its block (`Graph::check_forward_state`).
+    ///
+    /// A call's lazy state (SPIKEC-10): each value is live and defined before the call, and
+    /// its offset is the one of the reachable instruction right after the call's own.
     pub fn check(&self) -> Result<(), String> {
         let mut seen = vec![false; self.nodes.len()];
         for b in &self.blocks {
@@ -686,7 +689,29 @@ impl Graph {
                 }
                 // A call's lazy state (SPIKEC-10): the lazy exit reads each value at the call,
                 // so each is still live and defined before the call, as for a guard's state.
+                // T0 resumes at the state's offset after the call ran (the call record's
+                // bytecode offset), so it is the next reachable instruction's: at or before
+                // the call T0 would run the call again; past the next one it would skip code.
                 if let Some(l) = &node.lazy {
+                    let i = self
+                        .insns
+                        .binary_search_by_key(&node.offset, |x| x.0)
+                        .map_err(|_| {
+                            format!(
+                                "{at}: the call's offset @{} is not an instruction",
+                                node.offset
+                            )
+                        })?;
+                    let next = self.insns.get(i + 1).map(|x| x.0);
+                    if next != Some(l.offset) {
+                        return Err(format!(
+                            "{at}: the lazy state resumes T0 at @{}, not at the instruction \
+                             after the call at @{} ({})",
+                            l.offset,
+                            node.offset,
+                            next.map_or("none".to_string(), |o| format!("@{o}"))
+                        ));
+                    }
                     for v in l.registers.iter().map(|&(_, v)| v).chain(l.acc) {
                         if !self.node(v).live {
                             return Err(format!("{at}: a lazy-state value n{} was removed", v.0));
@@ -1073,6 +1098,14 @@ mod tests {
         let early = push(&mut g, Op::ConstInt32(1), vec![], Repr::Int32, 1);
         let call = push(&mut g, Op::Call { regs: vec![] }, vec![p], Repr::Tagged, 2);
         let late = push(&mut g, Op::ConstInt32(2), vec![], Repr::Int32, 6);
+        // The reachable instructions: the lazy state's offset 6 is the one after the call.
+        use ep9_bytecode::Opcode;
+        g.insns = vec![
+            (0, Opcode::LdaZero),
+            (1, Opcode::LdaZero),
+            (2, Opcode::CallUndefinedReceiver0),
+            (6, Opcode::LdaSmi),
+        ];
         for n in [early, late] {
             g.node_mut(n).trust = Trust::Proven;
         }
@@ -1090,6 +1123,68 @@ mod tests {
         g.node_mut(early).live = false;
         let e = g.check().unwrap_err();
         assert!(e.contains("lazy-state value n1 was removed"), "{e}");
+    }
+
+    /// A call's lazy state resumes T0 at the instruction right after the call (the call
+    /// record's bytecode offset, Codex M6-P2 r2): at the call, before it, inside it or past
+    /// the next instruction is refused; a call with no next instruction, or at an offset that
+    /// is not an instruction, too.
+    #[test]
+    fn check_refuses_a_lazy_state_at_the_wrong_offset() {
+        use ep9_bytecode::Opcode;
+        let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+        g.blocks.push(Block::default());
+        g.insns = vec![
+            (0, Opcode::LdaSmi),
+            (2, Opcode::CallUndefinedReceiver0),
+            (6, Opcode::LdaSmi),
+            (8, Opcode::Return),
+        ];
+        let p = g.add(
+            Op::Incoming(Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+            Trust::Unknown,
+            BlockId(0),
+            0,
+        );
+        let call = g.add(
+            Op::Call { regs: vec![] },
+            vec![p],
+            Repr::Tagged,
+            Trust::Unknown,
+            BlockId(0),
+            2,
+        );
+        g.blocks[0].nodes.extend([p, call]);
+        let at = |offset: u32| FrameState {
+            offset,
+            registers: vec![(Register::parameter(0), p)],
+            acc: None,
+        };
+        g.node_mut(call).lazy = Some(at(6));
+        assert!(g.check().is_ok());
+        for bad in [2, 0, 4, 8, 9] {
+            g.node_mut(call).lazy = Some(at(bad));
+            let e = g.check().unwrap_err();
+            assert!(
+                e.contains(&format!(
+                    "resumes T0 at @{bad}, not at the instruction after the call at @2 (@6)"
+                )),
+                "{bad}: {e}"
+            );
+        }
+        // A call with no next instruction, and a call whose offset is not an instruction.
+        g.node_mut(call).lazy = Some(at(6));
+        g.insns.truncate(2);
+        let e = g.check().unwrap_err();
+        assert!(e.contains("after the call at @2 (none)"), "{e}");
+        g.insns = vec![(0, Opcode::LdaSmi), (6, Opcode::LdaSmi)];
+        let e = g.check().unwrap_err();
+        assert!(
+            e.contains("the call's offset @2 is not an instruction"),
+            "{e}"
+        );
     }
 
     /// The graph of `name` in `defs` from the live facts after `warm` (T0).
