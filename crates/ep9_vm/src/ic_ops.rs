@@ -32,9 +32,10 @@
 //!   an uninitialized entry) gets `[Generic]` (H16 "Append-only": an unknown op or kind is
 //!   a miss).
 //! - Ops and their operand values are append-only lists (H16, doc 13 C-24). The v0 ops are
-//!   H16's table; [`Op::BinaryArith`], [`Op::UnaryArith`], [`Op::CompareNumbers`],
-//!   [`Op::OrdinaryHasInstance`], [`Op::LoadHolderDictField`] and the `Heap` type of
-//!   [`Ty`] are appended here (M6-P1).
+//!   H16's table; [`Op::LoadHolderDict`] is H16's append of M6-P1 ACCIC (holder ref, key: the
+//!   key is the site's name); [`Op::BinaryArith`], [`Op::UnaryArith`],
+//!   [`Op::CompareNumbers`], [`Op::OrdinaryHasInstance`] and the `Heap` type of [`Ty`] are
+//!   appended here (M6-P1 CBC).
 //!
 //! The IC_HANDLER cell is read through the `instance_ic::io` field offsets: every handler
 //! kind shares that layout (+8 kind, +16, +24, +32; the `ic.rs` IC_LAYOUT 4 table). A test
@@ -451,10 +452,11 @@ pub(crate) enum Op {
     /// index: a primitive gives false; it misses when `P` is not an object, on a Proxy in the
     /// chain, or when the chain walk uses up the interrupt budget (`instance_ic::hit`).
     OrdinaryHasInstance(i32),
-    /// The value of the site's name in the dictionary-mode holder at the handler's +24 (its
-    /// PROPS or PROPS_INDEXED table; H17 "Dictionary v1"); it misses when the holder died or
-    /// no longer has the name as a data property.
-    LoadHolderDictField(Ref),
+    /// H16 `LoadHolderDict(holder ref, key)` (M6-P1 ACCIC), the key being the site's name:
+    /// the value of that name in the dictionary-mode holder at the handler's +24 (its PROPS
+    /// or PROPS_INDEXED table; H17 "Dictionary v1"); it misses when the holder died or no
+    /// longer has the name as a data property.
+    LoadHolderDict(Ref),
 }
 
 impl Op {
@@ -643,7 +645,7 @@ fn named(key: u64, h: u64, op: Operation) -> Ops {
         }
         hk::PROTO_DICT_LOAD if load => {
             receiver_guards(key, true, &mut l);
-            l.push(Op::LoadHolderDictField(Ref::HandlerRef));
+            l.push(Op::LoadHolderDict(Ref::HandlerRef));
         }
         _ => return Ops::of(GENERIC),
     }

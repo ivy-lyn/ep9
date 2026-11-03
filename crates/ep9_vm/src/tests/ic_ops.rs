@@ -230,7 +230,7 @@ fn act(
             if fits { Out::Stored } else { Out::Miss }
         }
         Op::CallTarget(_) | Op::CallGetter(..) | Op::CallSetter(..) => Out::Call,
-        Op::LoadHolderDictField(_) | Op::Generic => Out::Miss,
+        Op::LoadHolderDict(_) | Op::Generic => Out::Miss,
         Op::BinaryArith(o, t) => binary(o, t, e.lhs, e.rhs),
         Op::UnaryArith(u, t) => unary(u, t, e.lhs),
         Op::CompareNumbers(c, t) => {
@@ -1472,7 +1472,7 @@ fn accessor_and_dictionary_holder_handlers_have_their_lists() {
         assert_eq!(l(own, Operation::StoreNamed).as_slice(), &[Op::Generic]);
         assert_eq!(
             l(dict, Operation::LoadNamed).as_slice(),
-            &[shape, chain, Op::LoadHolderDictField(Ref::HandlerRef)]
+            &[shape, chain, Op::LoadHolderDict(Ref::HandlerRef)]
         );
         // A handler kind no list knows (the next append) is the generic path.
         let next = fake_handler(rt, 12, UNDEFINED, UNDEFINED, 0);
