@@ -39,7 +39,7 @@ use crate::interp::dsl::{
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
-use crate::runtime::ErrorKind;
+use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
     construct_ic, feedback, ic, instance_ic, keyed_ic, kinds, literal_site, object, profile, regexp,
@@ -272,7 +272,7 @@ fn binop_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Done {
     if matches!(op, BinOp::Add)
         && object::is_string(l)
         && object::is_string(r)
-        && let Some(v) = concat_strings(st, l, r)
+        && let Some(v) = concat_strings(st.rt(), st.fp, st.pc, l, r)
     {
         st.acc = v;
         return Done::Next;
@@ -281,14 +281,14 @@ fn binop_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Done {
     st.result(v)
 }
 
-/// `l + r` for two strings, or `None` (nothing made) when the result would be too long.
-/// GC point: the frame state is recorded first, as every slow path does (`Runtime::enter`);
-/// `l` and `r` stay in the frame's registers and Rust locals. Out of line: only the `Add`
-/// cold body calls it.
+/// `l + r` for two strings, or `None` when the result is too long. GC point: the frame state
+/// is recorded first (`Runtime::enter`); `l` and `r` stay in the frame's registers. Out of line
+/// and, as `slow::binary`, with the state by value: a `&mut St` makes `St` escape, and then the
+/// cold handler calls the next handler (no tail jump): one native frame per cold `+` (H15).
 #[inline(never)]
-fn concat_strings(st: &mut St<'_>, l: u64, r: u64) -> Option<u64> {
-    st.rt().enter(st.fp, st.pc);
-    crate::string::concat(st.rt(), l, r)
+fn concat_strings(rt: &Runtime, fp: *mut u64, pc: *const u8, l: u64, r: u64) -> Option<u64> {
+    rt.enter(fp, pc);
+    crate::string::concat(rt, l, r)
 }
 
 #[inline(always)]
