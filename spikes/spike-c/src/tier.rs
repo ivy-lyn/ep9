@@ -218,7 +218,7 @@ pub fn compile_hot_opts(
         ));
     };
     let live = compile_facts(s, script, id, int)?;
-    let facts = facts::for_function(&live, id);
+    let facts = facts::for_function(&live, script.unit.unit(), id);
     let target = match value {
         Some(f) => Target::Value(f),
         None => Target::Id {
@@ -470,6 +470,261 @@ pub fn forced_coverage(
     }
 }
 
+/// One function of a [`SetRun`]: its name, compile report, the exits of loop(n) per record,
+/// and its force table's countdowns before and after the run (empty when not forced).
+#[derive(Clone, Debug)]
+pub struct SetMember {
+    pub function: &'static str,
+    pub report: CompileReport,
+    pub exits: Vec<u64>,
+    pub armed: Vec<u32>,
+    pub left: Vec<u32>,
+}
+
+/// Config C of the whole hot set of a kernel (SPIKEC-9, `gate.sh navier`): every hot function
+/// compiled from the live facts of the warm-up and installed together, loop(n) against T0.
+#[derive(Clone, Debug)]
+pub struct SetRun {
+    pub kernel: &'static str,
+    pub n: u32,
+    pub members: Vec<SetMember>,
+    /// The hot functions the compiler refused (name, refusal): they stay in T0.
+    pub refused: Vec<(&'static str, String)>,
+    pub t0: RunOutput,
+    pub compiled: RunOutput,
+    /// Output equal to T0, no uncaught error, a right driver run.
+    pub equal: bool,
+    pub t0_secs: f64,
+    pub compiled_secs: f64,
+    pub forced: bool,
+}
+
+impl SetRun {
+    /// One line per member and a summary line.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .members
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}{}",
+                    m.report.line(),
+                    exits_text(&m.report, &m.exits, self.forced)
+                )
+            })
+            .collect();
+        for (name, why) in &self.refused {
+            out.push(format!("{name}: refused, stays in T0: {why}"));
+        }
+        let names: Vec<&str> = self.members.iter().map(|m| m.function).collect();
+        out.push(format!(
+            "{} hot set [{}] n = {}: {}; exits {}; T0 {:.3} s, compiled {:.3} s (one run, report \
+             only)",
+            self.kernel,
+            names.join(", "),
+            self.n,
+            if self.equal {
+                "output equal to T0".to_string()
+            } else {
+                format!(
+                    "output differs: compiled {:?} {:?} vs T0 {:?} {:?}",
+                    self.compiled.result, self.compiled.output, self.t0.result, self.t0.output
+                )
+            },
+            self.members.iter().flat_map(|m| &m.exits).sum::<u64>(),
+            self.t0_secs,
+            self.compiled_secs
+        ));
+        out
+    }
+}
+
+/// The force tables of [`run_set`] for `k` from `seed`: one per hot function, every guard
+/// armed from the seed and the function's index (`ForceTable::seeded`).
+pub fn seeded_tables(k: &Kernel, seed: u64) -> Vec<emit_a64::ForceTable> {
+    (0..k.hot.len())
+        .map(|i| emit_a64::ForceTable::seeded(seed ^ ((i as u64) << 32), FORCE_LEN))
+        .collect()
+}
+
+/// Runs config C of the whole hot set of `k` (each hot function the compiler accepts compiled
+/// from the live facts of the warm-up and installed, SPIKEC-9) against T0, with `n` timed runs.
+/// `force[i]`, if there, is the force table of hot function `i` (WI-SC4; the code holds its
+/// address, and the session that runs the code drops before this returns); with any table the
+/// heap verifier runs after loop(n). An empty `force` forces nothing.
+pub fn run_set(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    force: &[Option<&emit_a64::ForceTable>],
+) -> Result<SetRun, String> {
+    let table = |i: usize| force.get(i).copied().flatten();
+    let forced = (0..k.hot.len()).any(|i| table(i).is_some());
+    let d1 = kernels::driver(k, 1)?;
+    let dn = kernels::driver(k, n)?;
+    let (defs, loop1) = split(&d1, k.file)?;
+    let (defs_n, loop_n) = split(&dn, k.file)?;
+    let body = |t: &str| t.split_once('\n').map(|x| x.1.to_string());
+    if body(&defs) != body(&defs_n) || d1.offset != dn.offset {
+        return Err("the drivers differ before the loop".into());
+    }
+    let config = config.threaded();
+    crate::vm_layout::check(&config).map_err(|e| format!("vm layout: {e}"))?;
+
+    let mut t0s = Session::new(&config)?;
+    t0s.run(&defs, "defs.js")
+        .result
+        .map_err(|e| format!("T0 defs: {e}"))?;
+    let w = t0s.run(&loop1, "warm.js");
+    w.result.map_err(|e| format!("T0 warm-up: {e}"))?;
+    let t = Instant::now();
+    let t0 = t0s.run(&loop_n, "loop.js");
+    let t0_secs = t.elapsed().as_secs_f64();
+
+    let mut s = Session::new(&config)?;
+    s.run(&defs, "defs.js")
+        .result
+        .map_err(|e| format!("defs: {e}"))?;
+    let w2 = s.run(&loop1, "warm.js");
+    w2.result.map_err(|e| format!("warm-up: {e}"))?;
+    if w2.output != w.output {
+        return Err("the two warm-up runs differ (both are T0)".into());
+    }
+    let mut targets = Vec::new();
+    let mut codes = Vec::new();
+    let mut metas = Vec::new();
+    let mut members = Vec::new();
+    let mut indexes = Vec::new();
+    let mut refused = Vec::new();
+    for (i, hot) in k.hot.iter().enumerate() {
+        let opts = emit_a64::EmitOptions {
+            force: table(i),
+            ..Default::default()
+        };
+        match compile_hot_opts(&mut s, hot, "defs.js", d1.offset, IntFacts::Live, &opts) {
+            Ok((f, code, report)) => {
+                metas.push(Some(report.emit.meta.encode()));
+                targets.push(f);
+                codes.push(code);
+                members.push(SetMember {
+                    function: hot.name,
+                    report,
+                    exits: Vec::new(),
+                    armed: table(i).map(|t| t.snapshot()).unwrap_or_default(),
+                    left: Vec::new(),
+                });
+                indexes.push(i);
+            }
+            // A refusal names the function; any other error (no such function) fails.
+            Err(e) if e.starts_with(&format!("{}: ", hot.name)) => refused.push((hot.name, e)),
+            Err(e) => return Err(e),
+        }
+    }
+    if !codes.is_empty() {
+        // SAFETY: each code is the placement (b) code `emit_a64` made for its target from
+        // `input_of_target` in `compile_hot_opts` just above (the hot functions of this kernel
+        // have no JS reach, or `function_value` ran a one-line script that calls nothing, and
+        // no other JS ran since), unchanged, and each meta its own exit table. emit_a64 keeps
+        // the (b) contract as for `run_full` (the T0 handler ABI, `ep9_vm::layout` offsets
+        // proved by `vm_layout::check` at the start of this run, only RuntimeTable calls,
+        // callee-saved registers kept, every exit the tail jump to `cx.table[*pc]`). A force
+        // table outlives the code's runs (the caller's, borrowed past this function, and the
+        // session drops at its end).
+        unsafe { s.install_targets(&targets, codes, metas) }?;
+    }
+    for (t, m) in targets.iter().zip(&members) {
+        if s.slot_kind_of(t) != Some(ep9_vm::DispatchKind::Opt) {
+            return Err(format!(
+                "{}: slot kind {:?} after install",
+                m.function,
+                s.slot_kind_of(t)
+            ));
+        }
+    }
+    let t = Instant::now();
+    let compiled = s.run(&loop_n, "loop.js");
+    let compiled_secs = t.elapsed().as_secs_f64();
+    for (t, m) in targets.iter().zip(&mut members) {
+        m.exits = s
+            .exit_counts_of(t)
+            .ok_or_else(|| format!("{}: no exit counters after the install", m.function))?;
+    }
+    if forced {
+        s.verify()?;
+        for (m, &i) in members.iter_mut().zip(&indexes) {
+            m.left = table(i).map(|t| t.snapshot()).unwrap_or_default();
+        }
+    }
+    let equal = compiled == t0 && t0.result.is_ok() && dn.matches(&compiled.output);
+    Ok(SetRun {
+        kernel: k.name,
+        n,
+        members,
+        refused,
+        t0,
+        compiled,
+        equal,
+        t0_secs,
+        compiled_secs,
+        forced,
+    })
+}
+
+/// The verdict of a [`run_set`]: every hot function compiled (none refused), output equal to
+/// T0, and, unforced, no exit in loop(n); forced, per function every armed guard forced (its
+/// countdown went to 0) and its counter as [`forced_coverage`] reads it.
+pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
+    let mut bad = Vec::new();
+    for (name, why) in &run.refused {
+        bad.push(format!("{name}: refused: {why}"));
+    }
+    if !run.equal {
+        bad.push(format!("{}: output differs from T0", run.kernel));
+    }
+    for m in &run.members {
+        let total: u64 = m.exits.iter().sum();
+        if !run.forced {
+            if total != 0 {
+                bad.push(format!(
+                    "{}: {total} exits in an unforced run (0 required; guards {:?})",
+                    m.function,
+                    fired(&m.report, &m.exits)
+                ));
+            }
+            continue;
+        }
+        let exits = &m.report.emit.meta.exits;
+        let mut guards: Vec<u32> = exits.iter().map(|e| e.guard).collect();
+        guards.sort_unstable();
+        guards.dedup();
+        let mut missing = Vec::new();
+        for &g in &guards {
+            let on = m.armed.get(g as usize).is_some_and(|&c| c != 0);
+            let f = u64::from(on && m.left.get(g as usize) == Some(&0));
+            if on && f == 0 {
+                missing.push(format!("g{g}"));
+            }
+            let c: u64 = exits
+                .iter()
+                .zip(&m.exits)
+                .filter(|(r, _)| r.guard == g)
+                .map(|(_, c)| c)
+                .sum();
+            if c < f || (!stress && c != f) {
+                bad.push(format!("{}: g{g}: forced {f}, counted {c}", m.function));
+            }
+        }
+        if !missing.is_empty() {
+            bad.push(format!(
+                "{}: armed guards never forced: {}",
+                m.function,
+                missing.join(" ")
+            ));
+        }
+    }
+    if bad.is_empty() { Ok(()) } else { Err(bad) }
+}
+
 /// One forced run of [`force_each_guard`].
 #[derive(Clone, Debug)]
 pub struct ForcedRun {
@@ -689,7 +944,7 @@ pub fn compiled_script(
             return Err(format!("{name}: {} functions of that name", ids.len()));
         };
         let live = compile_facts(&s, script, id, int)?;
-        let facts = facts::for_function(&live, id);
+        let facts = facts::for_function(&live, script.unit.unit(), id);
         let f = match f {
             Some(f) => Target::Value(f),
             None => Target::Id {
@@ -910,6 +1165,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, r)| (i as u32, r))
                 .collect(),
+            constants: Vec::new(),
         };
         let fact = GuardBasis::Fact(FactSource::Profiled);
         let got: Vec<GuardBasis> = (0..8).map(|s| int_basis_of(&f, s)).collect();
@@ -1241,7 +1497,8 @@ mod tests {
             let input = s.input_of(f).expect("input");
             let key = input.key;
             let (code, report) =
-                crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
+                crate::compile_input(&input, &facts::for_function(&live, script.unit.unit(), id))
+                    .expect("compile");
             (key, code.code, report.emit.meta.encode(), s)
         };
         // Both sessions stay alive, so the two FunctionInfos cannot share an address.
@@ -1871,7 +2128,8 @@ mod tests {
         let live = facts::live(&s, script).expect("facts");
         let input = s.input_of(f).expect("input");
         let (code, report) =
-            crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
+            crate::compile_input(&input, &facts::for_function(&live, script.unit.unit(), id))
+                .expect("compile");
         let meta = report.emit.meta.encode();
         let mut runs = Vec::new();
         for _ in 0..2 {
@@ -2075,7 +2333,8 @@ mod tests {
         let [id] = ids[..] else { panic!("{ids:?}") };
         let live = facts::live(&s, script).expect("facts");
         let input = script.unit_input(id, h.name).expect("input");
-        let g = crate::graph_report(&input, &facts::for_function(&live, id)).expect("graph");
+        let g = crate::graph_report(&input, &facts::for_function(&live, script.unit.unit(), id))
+            .expect("graph");
         let lines = g.lines().join("\n");
         for op in [
             "Float64",
@@ -2521,11 +2780,12 @@ mod tests {
             let script = s.script("defs.js").expect("defs");
             let id = script.functions_named("gen")[0];
             let live = facts::live(s, script).expect("facts");
-            let recs: Vec<(u32, ep9_facts::SlotFacts)> = facts::for_function(&live, id)
-                .records
-                .into_iter()
-                .map(|(k, f)| (k, f.clone()))
-                .collect();
+            let recs: Vec<(u32, ep9_facts::SlotFacts)> =
+                facts::for_function(&live, script.unit.unit(), id)
+                    .records
+                    .into_iter()
+                    .map(|(k, f)| (k, f.clone()))
+                    .collect();
             recs
         };
         let mut t0 = Session::new(&config).expect("session");
@@ -2546,7 +2806,8 @@ mod tests {
             let id = script.functions_named("gen")[0];
             let live = facts::live(&s, script).expect("facts");
             let input = s.input_of(f).expect("input");
-            crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile")
+            crate::compile_input(&input, &facts::for_function(&live, script.unit.unit(), id))
+                .expect("compile")
         };
         // Every site is generic: the ones that saw names, and `t[0] = s` (indexes only, but
         // its value is a Tagged phi, no element copy; M5-P3 reviewer B F1).

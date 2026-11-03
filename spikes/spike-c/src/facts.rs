@@ -6,21 +6,21 @@
 //!  SP-Facts:         training run ──export_facts──> to_profiled ──encode──> file
 //!                    file ──read_profiled (decode, source PROFILED, validate vs the unit)──>
 //!                    FactSnapshot (source PROFILED)
-//!  both:             for_function(snapshot, function id) ──> FunctionFacts ──> build
+//!  both:             for_function(snapshot, unit, function id) ──> FunctionFacts ──> build
 //! ```
 //!
 //! The `.ep9prof` container is H16-Q5b (A3); until then the SP-Facts file is the plain
 //! FactSnapshot encoding with the source byte PROFILED ([`to_profiled`]), the form the
 //! protocol (§6) names.
 
-use ep9_bytecode::{CompiledUnit, FeedbackSlotKind};
+use ep9_bytecode::{CompiledUnit, Constant, FeedbackSlotKind};
 use ep9_facts::{
     BinaryHint, CompareHint, Dropped, FactHeader, FactSnapshot, FactSource, SlotFacts,
 };
 
 use crate::harness::{Script, Session};
 
-/// The facts of one function, in slot order.
+/// The facts of one function, in slot order, and its constant pool.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionFacts<'a> {
     /// The snapshot's source (RUNTIME for the live path, PROFILED for SP-Facts).
@@ -29,15 +29,33 @@ pub struct FunctionFacts<'a> {
     pub function: u32,
     /// `(slot index, facts)` of each slot that has a record.
     pub records: Vec<(u32, &'a SlotFacts)>,
+    /// The function's constant pool, entry `k` at index `k` (SPIKEC-9, M6-P1 task 1). It comes
+    /// from the unit, not from the snapshot (constants are part of the bytecode), so the live
+    /// path and SP-Facts give the same pool. `LdaConstant` reads it (`build`).
+    pub constants: Vec<PoolConst>,
+}
+
+/// One constant-pool entry as the graph builder may use it (P-R2, doc 13:247: no raw heap
+/// constant in a JIT graph).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolConst {
+    /// A Number, as its f64 bits: an immediate in the graph (`ir::Op::ConstInt32` for an int32
+    /// that is not -0, else `ir::Op::ConstFloat64`).
+    Number(u64),
+    /// Any other entry (a string, a BigInt, a function, a scope, a boilerplate, ...): a heap
+    /// constant. The builder refuses a load of it; a `UnitConst` ref node is not built (no
+    /// month-6 kernel loads one).
+    Heap,
 }
 
 impl FunctionFacts<'_> {
-    /// No facts (every value of the graph is then `unknown` or PROVEN).
+    /// No facts (every value of the graph is then `unknown` or PROVEN) and no constants.
     pub fn none(source: FactSource, function: u32) -> FunctionFacts<'static> {
         FunctionFacts {
             source,
             function,
             records: Vec::new(),
+            constants: Vec::new(),
         }
     }
 }
@@ -130,8 +148,14 @@ pub fn with_implicit_int32(
     Ok(out)
 }
 
-/// The records of function `function` in `snapshot`.
-pub fn for_function(snapshot: &FactSnapshot, function: u32) -> FunctionFacts<'_> {
+/// The records of function `function` in `snapshot`, with the function's constant pool from
+/// `unit` (the unit the snapshot describes; a function id past its functions gets no pool, so
+/// every `LdaConstant` is refused).
+pub fn for_function<'a>(
+    snapshot: &'a FactSnapshot,
+    unit: &CompiledUnit,
+    function: u32,
+) -> FunctionFacts<'a> {
     FunctionFacts {
         source: snapshot.header().source,
         function,
@@ -140,7 +164,24 @@ pub fn for_function(snapshot: &FactSnapshot, function: u32) -> FunctionFacts<'_>
             .filter(|(k, _)| k.function == function)
             .map(|(k, f)| (k.slot, f))
             .collect(),
+        constants: pool_of(unit, function),
     }
+}
+
+/// The constant pool of function `function` of `unit` ([`PoolConst`]).
+pub fn pool_of(unit: &CompiledUnit, function: u32) -> Vec<PoolConst> {
+    unit.functions
+        .get(function as usize)
+        .map(|f| {
+            f.constants
+                .iter()
+                .map(|c| match c {
+                    Constant::Number(b) => PoolConst::Number(b.bits()),
+                    _ => PoolConst::Heap,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The record kind name of `f` (reports).
@@ -173,7 +214,7 @@ print(r);\n";
         assert_eq!(sum.len(), 1);
         let live = live(&s, script).expect("live facts");
         assert_eq!(live.header().source, FactSource::Runtime);
-        let f = for_function(&live, sum[0]);
+        let f = for_function(&live, script.unit.unit(), sum[0]);
         assert_eq!(f.source, FactSource::Runtime);
         assert!(
             f.records.iter().any(|(_, r)| kind_name(r) == "LoadNamed"),
@@ -188,7 +229,7 @@ print(r);\n";
         assert!(dropped.is_empty(), "{dropped:?}");
         assert_eq!(back, prof);
         assert_eq!(back.header().source, FactSource::Profiled);
-        let g = for_function(&back, sum[0]);
+        let g = for_function(&back, script.unit.unit(), sum[0]);
         assert_eq!(g.records, f.records);
         // A RUNTIME file is not a PROFILED file.
         let e = read_profiled(&live.encode(), script.unit.unit()).expect_err("runtime");
@@ -226,7 +267,7 @@ for (var k = 0; k < 30; k++) { present(xs, k % 3); oob(xs, 3 + k); hole(hs, 1); 
         let live = live(&s, script).expect("live");
         let keys = |f: &str| {
             let id = script.functions_named(f)[0];
-            let recs = for_function(&live, id).records;
+            let recs = for_function(&live, script.unit.unit(), id).records;
             let [(_, SlotFacts::LoadKeyed(k))] = recs[..] else {
                 panic!("{f}: {recs:?}");
             };

@@ -705,6 +705,7 @@ impl Emitter<'_> {
                 let bits = match self.g.node(v).op {
                     Op::Const(b) => b,
                     Op::ConstInt32(i) => u64::from(i as u32),
+                    Op::ConstFloat64(b) => b,
                     ref op => return Err(Refusal::Limit(format!("constant {op:?}"))),
                 };
                 mov64(&mut self.ops, stage, bits);
@@ -774,7 +775,60 @@ impl Emitter<'_> {
         let node = self.g.node(n).clone();
         let ins = node.inputs.clone();
         match &node.op {
-            Op::Incoming(_) | Op::Const(_) | Op::ConstInt32(_) | Op::Phi => {}
+            Op::Incoming(_) | Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) | Op::Phi => {}
+            Op::TruncateFloat64 => {
+                // ToInt32 of a double (SPIKEC-9): truncate toward zero; exact when the
+                // truncated double equals the int32 made back from the result (NaN, an
+                // infinity and a value past int32 differ, and exit).
+                let trap = self.trap(n)?;
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; fmov d16, X(x)
+                    ; fcvtzs w16, d16
+                    ; frintz d17, d16
+                    ; scvtf d18, w16
+                    ; fcmp d17, d18
+                    ; b.ne =>trap
+                    ; mov W(d), w16
+                );
+                self.finish(n);
+            }
+            Op::CompareFloat64(c) => {
+                if crate::regalloc::fused(self.g, n) {
+                    return Ok(());
+                }
+                let l = self.src(ins[0], 12)?;
+                let r = self.src(ins[1], 13)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r) ; fcmp d16, d17);
+                // IEEE order with the JS NaN rule: an unordered compare sets C and V, so `<`
+                // is mi and `<=` is ls (false on NaN), `>` gt and `>=` ge (false: N != V),
+                // `==` eq (false) and `!=` ne (true).
+                match c {
+                    Cond::Lt => dynasm!(self.ops ; .arch aarch64 ; cset W(d), mi),
+                    Cond::Le => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ls),
+                    Cond::Gt => dynasm!(self.ops ; .arch aarch64 ; cset W(d), gt),
+                    Cond::Ge => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ge),
+                    Cond::Eq => dynasm!(self.ops ; .arch aarch64 ; cset W(d), eq),
+                    Cond::Ne => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ne),
+                }
+                self.finish(n);
+            }
+            Op::LoadGlobal => {
+                // RuntimeTable entry 11 (SPIKEC-9): the global the LdaGlobal at this offset
+                // names; the allocatable caller-saved registers saved around it, 0 unwinds.
+                save_caller_saved(&mut self.ops);
+                call_table(&mut self.ops, layout::RT_LOAD_GLOBAL, node.offset)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+                restore_caller_saved(&mut self.ops);
+                let throw = self.throw_at(node.offset);
+                dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov X(d), x16);
+                self.finish(n);
+            }
             Op::CheckInt32 | Op::TruncateInt32 => {
                 let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
@@ -1359,7 +1413,23 @@ impl Emitter<'_> {
                 let lt = self.edge(bi, t);
                 let lf = self.edge(bi, f);
                 let c = ins[0];
-                if crate::regalloc::fused(self.g, c) {
+                if crate::regalloc::fused(self.g, c)
+                    && let Op::CompareFloat64(cond) = self.g.node(c).op
+                {
+                    // A fused double compare (SPIKEC-9; NaN rule as the unfused form).
+                    let ci = self.g.node(c).inputs.clone();
+                    let l = self.src(ci[0], 12)?;
+                    let r = self.src(ci[1], 13)?;
+                    dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r) ; fcmp d16, d17);
+                    match cond {
+                        Cond::Lt => dynasm!(self.ops ; .arch aarch64 ; b.mi =>lt),
+                        Cond::Le => dynasm!(self.ops ; .arch aarch64 ; b.ls =>lt),
+                        Cond::Gt => dynasm!(self.ops ; .arch aarch64 ; b.gt =>lt),
+                        Cond::Ge => dynasm!(self.ops ; .arch aarch64 ; b.ge =>lt),
+                        Cond::Eq => dynasm!(self.ops ; .arch aarch64 ; b.eq =>lt),
+                        Cond::Ne => dynasm!(self.ops ; .arch aarch64 ; b.ne =>lt),
+                    }
+                } else if crate::regalloc::fused(self.g, c) {
                     let Op::Compare(cond) = self.g.node(c).op else {
                         unreachable!()
                     };
@@ -2094,7 +2164,7 @@ mod tests {
                 panic!("one fill");
             };
             let live = crate::facts::live(&s, script).expect("facts");
-            let facts = crate::facts::for_function(&live, id);
+            let facts = crate::facts::for_function(&live, script.unit.unit(), id);
             let input = s.input_of(f).expect("input");
             crate::compile_input_with(&input, &facts, StubForm::Movz).expect("compile")
         };
@@ -2177,7 +2247,7 @@ mod tests {
                 panic!("one sum");
             };
             let live = crate::facts::live(&s, script).expect("facts");
-            let facts = crate::facts::for_function(&live, id);
+            let facts = crate::facts::for_function(&live, script.unit.unit(), id);
             let input = s.input_of(f).expect("input");
             let (mut g, _) = crate::build::build(&input, &facts).expect("build");
             let checks: Vec<NodeId> = g

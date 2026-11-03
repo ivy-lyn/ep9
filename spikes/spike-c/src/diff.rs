@@ -7,7 +7,8 @@
 //!  spike-c diff [--seeds A..B] [--no-kernels] [--show N]      (gate.sh diff: seeds 1..200;
 //!                                                             --show: a program, its graph)
 //!
-//!  the gate kernels, n = 1:  crypto (am3), navier-stokes (lin_solve)
+//!  the gate kernels, n = 1:  crypto (am3), navier-stokes (its hot set: lin_solve, project,
+//!                            advect, installed together; SPIKEC-9, `run_kernel_set`)
 //!    node runs the driver  ──> its lines == the T0 lines        (node on PATH, else SKIP)
 //!    config C, no forcing  ──> == T0, 0 exits (tier::unforced_ok)
 //!    forcing (below)       ──> == T0 in every run, every guard forced
@@ -1162,6 +1163,54 @@ pub fn run_kernel(k: &'static Kernel, seed: u64) -> Result<KernelRun, String> {
     })
 }
 
+/// The differential of the whole hot set of the gate kernel `k` at n = 1 (SPIKEC-9:
+/// navier-stokes' `lin_solve`, `project` and `advect` compiled and installed together,
+/// `tier::run_set`): node, then config C unforced (every hot function compiled, equal to T0, 0
+/// exits), then forcing of each compiled function in turn ([`force_all`], a force table on
+/// that function only). One [`KernelRun`] per compiled function; a refused hot function fails
+/// the unforced verdict of each.
+pub fn run_kernel_set(k: &'static Kernel, seed: u64) -> Result<Vec<KernelRun>, String> {
+    let config = Config::default();
+    let d = kernels::driver(k, 1)?;
+    lint(&d.text).map_err(|e| format!("{}: {e}", k.name))?;
+    let plain = tier::run_set(k, 1, &config, &[])?;
+    let node = node_lines(&d.text)?.map(|lines| lines == plain.t0.output);
+    let unforced = tier::set_ok(&plain, false).map_err(|l| l.join("; "));
+    let mut out = Vec::new();
+    for m in &plain.members {
+        let hi = k
+            .hot
+            .iter()
+            .position(|h| h.name == m.function)
+            .ok_or("a member that is no hot function")?;
+        let guards: BTreeSet<u32> = m.report.emit.meta.exits.iter().map(|e| e.guard).collect();
+        let forcing = force_all(seed ^ ((hi as u64) << 32), guards, |t| {
+            let mut force: Vec<Option<&ForceTable>> = vec![None; k.hot.len()];
+            force[hi] = Some(t);
+            let r = tier::run_set(k, 1, &config, &force)?;
+            let mm = r
+                .members
+                .iter()
+                .find(|x| x.function == m.function)
+                .ok_or_else(|| format!("{}: not compiled in a forced run", m.function))?;
+            Ok((r.equal, mm.report.clone(), mm.exits.clone()))
+        })?;
+        out.push(KernelRun {
+            kernel: k.name,
+            function: m.function,
+            node,
+            t0_lines: plain.t0.output.len(),
+            unforced: unforced.clone(),
+            forcing,
+            ops: guard_ops(&m.report),
+        });
+    }
+    if out.is_empty() {
+        return Err(format!("{}: no hot function compiled", k.name));
+    }
+    Ok(out)
+}
+
 /// Per guard op: (guards, forced, natural exits) over `runs` (the summary table).
 pub fn by_op(
     rows: impl Iterator<Item = (BTreeMap<u32, String>, BTreeMap<u32, u64>, Forcing)>,
@@ -1238,12 +1287,19 @@ pub fn main(args: &[String]) -> Result<bool, String> {
         } else {
             for name in KERNELS {
                 let k = kernels::kernel(name).ok_or("no kernel")?;
-                let r = run_kernel(k, 1)?;
-                for l in r.lines() {
-                    println!("{l}");
+                // SPIKEC-9: navier-stokes runs as its whole hot set.
+                let runs = if k.name == "navier-stokes" {
+                    run_kernel_set(k, 1)?
+                } else {
+                    vec![run_kernel(k, 1)?]
+                };
+                for r in runs {
+                    for l in r.lines() {
+                        println!("{l}");
+                    }
+                    ok &= r.ok();
+                    rows.push((r.ops.clone(), BTreeMap::new(), r.forcing.clone()));
                 }
-                ok &= r.ok();
-                rows.push((r.ops.clone(), BTreeMap::new(), r.forcing.clone()));
             }
         }
     }

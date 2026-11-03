@@ -191,6 +191,9 @@ pub enum Op {
     Const(u64),
     /// An int32 constant.
     ConstInt32(i32),
+    /// A double constant, as its f64 bits (a Number of the constant pool that is no int32, or
+    /// -0; SPIKEC-9 `LdaConstant`): Float64, PROVEN. An immediate, never a heap constant (P-R2).
+    ConstFloat64(u64),
     /// An SSA phi; inputs in the order of the block's predecessors.
     Phi,
     /// Guard: the Tagged input is an int32, or a double that is an int32 and not -0. Int32.
@@ -199,6 +202,12 @@ pub enum Op {
     /// an int32 (-0 gives 0). Any other input (NaN, a non-integer, an object whose `valueOf`
     /// would run) leaves. Int32, PROVEN by the ToInt32 invariant.
     TruncateInt32,
+    /// Guard: ToInt32 of the Float64 input for a bitwise op (SPIKEC-9: `x | 0` on a double).
+    /// The input truncated toward zero, when that is exact: a double whose integer part is an
+    /// int32 (any fraction, -0 and -0.5 give their ToInt32). NaN, an infinity and a double
+    /// whose integer part is outside int32 leave (their ToInt32 needs the modulo step, which
+    /// the spike does not build). Int32, PROVEN by the ToInt32 invariant.
+    TruncateFloat64,
     /// Guard: the Tagged input is a cell whose ShapeId has a case in the IC entry of `site`
     /// with the handler `handler` (an in-object field, or an Array's `length`): the live T0
     /// IC holds the run-local ids (H30: a ShapeRef lowers to a CellRef). `shapes` are the
@@ -244,10 +253,12 @@ pub enum Op {
     /// Tagged, unknown, a guard (a CONTEXT cell with more slots; M5-P2). Reads mutable memory:
     /// never shared or moved across an effect (SPIKEC-4, lin_solve).
     LoadContextSlot(u32),
-    /// A call with an undefined receiver (`CallUndefinedReceiver0/1/2`): inputs = the callee,
-    /// then the arguments, all Tagged; `regs` are the instruction's operand registers in the
-    /// same order (`RuntimeTable::call_any` reads the operands from their VM frame slots).
-    /// A Tagged, unknown result. An effect and a GC point; a throw unwinds (SPIKEC-4).
+    /// A call (`CallUndefinedReceiver0/1/2`, SPIKEC-4; `CallProperty1` and the register-list
+    /// `CallUndefinedReceiver`, SPIKEC-9): inputs = the callee, then the receiver of a
+    /// `CallProperty1`, then the arguments, all Tagged; `regs` are the instruction's operand
+    /// registers in the same order (a list as its registers one by one;
+    /// `RuntimeTable::call_any` reads the operands from their VM frame slots). A Tagged,
+    /// unknown result. An effect and a GC point; a throw unwinds (SPIKEC-4).
     Call { regs: Vec<Register> },
     /// `o[k]` by the generic keyed load (`ep9_vm::RuntimeTable::get_keyed`, entry 8,
     /// `layout::RT_GET_KEYED`; SPIKEC-4, P3-ORCH-9): the Tagged receiver and key, a Tagged
@@ -264,6 +275,16 @@ pub enum Op {
     Int32(Int32Op),
     /// An int32 comparison: Bool.
     Compare(Cond),
+    /// A double comparison of two Float64 inputs (SPIKEC-9): Bool, PROVEN. IEEE order, as JS:
+    /// every compare with a NaN is false, but `Ne` (`!==`), which is true.
+    CompareFloat64(Cond),
+    /// The global binding that the `LdaGlobal` at the node's bytecode offset names
+    /// (`ep9_vm::RuntimeTable::load_global`, entry 11, `layout::RT_LOAD_GLOBAL`; SPIKEC-9 task
+    /// 2). The entry reads the name from the bytecode, so the graph holds no heap constant
+    /// (P-R2). A Tagged, unknown result. An effect and a GC point (a getter or a proxy trap of
+    /// the global object may run JS); a throw (a ReferenceError) unwinds from the offset. The
+    /// entry records no feedback (MC-w15-6).
+    LoadGlobal,
     /// The Tagged input is the `false` Value: Bool (`JumpIfFalse` on a non-Bool accumulator).
     IsFalse,
     /// The Tagged input is the `true` Value: Bool.
@@ -287,9 +308,10 @@ impl Op {
     /// constants, the int32 bitwise ops, ToInt32, a relational comparison's boolean).
     pub fn proven_by_spec(&self) -> bool {
         match self {
-            Op::Const(_) | Op::ConstInt32(_) | Op::TruncateInt32 => true,
+            Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) => true,
+            Op::TruncateInt32 | Op::TruncateFloat64 => true,
             Op::Int32(o) => o.bitwise(),
-            Op::Compare(_) | Op::IsFalse | Op::IsTrue => true,
+            Op::Compare(_) | Op::CompareFloat64(_) | Op::IsFalse | Op::IsTrue => true,
             // A number from numbers (SPIKEC-4).
             Op::Int32ToFloat64 | Op::Float64(_) => true,
             _ => false,
@@ -301,6 +323,7 @@ impl Op {
         match self {
             Op::CheckInt32
             | Op::TruncateInt32
+            | Op::TruncateFloat64
             | Op::CheckShape { .. }
             | Op::CheckArray
             | Op::CheckNumber
@@ -328,6 +351,7 @@ impl Op {
                 | Op::GetKeyedGeneric
                 | Op::SetKeyedGeneric
                 | Op::Call { .. }
+                | Op::LoadGlobal
         )
     }
 
@@ -336,7 +360,7 @@ impl Op {
     pub fn is_call(&self) -> bool {
         matches!(
             self,
-            Op::GetKeyedGeneric | Op::SetKeyedGeneric | Op::Call { .. }
+            Op::GetKeyedGeneric | Op::SetKeyedGeneric | Op::Call { .. } | Op::LoadGlobal
         )
     }
 
@@ -987,8 +1011,11 @@ mod tests {
         let id = *script.functions_named(name).first().expect("function");
         let live = crate::facts::live(&s, script).expect("facts");
         let input = s.function_input(name).expect("input");
-        let (g, _) =
-            crate::build::build(&input, &crate::facts::for_function(&live, id)).expect("build");
+        let (g, _) = crate::build::build(
+            &input,
+            &crate::facts::for_function(&live, script.unit.unit(), id),
+        )
+        .expect("build");
         g
     }
 

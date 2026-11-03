@@ -215,6 +215,13 @@ pub fn double_bits(x: f64) -> u64 {
     x.to_bits().wrapping_add(DOUBLE_ENCODE_OFFSET)
 }
 
+/// The Value of the number `x` as `Value::number` gives it (SPIKEC-9: a pool constant in a
+/// deopt record): an int32 Value for an integer in int32 range that is not -0, else the
+/// double Value with every NaN as the pure NaN.
+pub fn number_bits(x: f64) -> u64 {
+    ep9_value::Value::number(x).to_bits()
+}
+
 /// The probe script of [`check`]: an object with two fields and an array, read by a
 /// function that runs past the feedback threshold, so its named-load IC holds a case.
 pub const CHECK_SRC: &str = "\
@@ -613,7 +620,7 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
 /// smi handlers ([`ARRAY_LENGTH_HANDLER`], [`field_in_object_handler`]) are derived from the
 /// IC_LAYOUT items here. Since M6-P0 the 6 former hand facts are items of the set too (v11in
 /// #2): no fact the spike bakes is outside it or [`ENCODING_READS`].
-pub const READ_SET: [(&str, &str); 68] = [
+pub const READ_SET: [(&str, &str); 69] = [
     ("ARRAY_ELEMENTS", "OBJECT_LAYOUT"),
     ("ARRAY_LENGTH", "OBJECT_LAYOUT"),
     ("CONTEXT_LENGTH", "OBJECT_LAYOUT"),
@@ -667,6 +674,7 @@ pub const READ_SET: [(&str, &str); 68] = [
     ("RT_CALL_ANY", "VM_LAYOUT"),
     ("RT_DEOPT", "VM_LAYOUT"),
     ("RT_GET_KEYED", "VM_LAYOUT"),
+    ("RT_LOAD_GLOBAL", "VM_LAYOUT"),
     ("RT_POLL", "VM_LAYOUT"),
     ("RT_SET_KEYED", "VM_LAYOUT"),
     ("RT_STACK_OVERFLOW", "VM_LAYOUT"),

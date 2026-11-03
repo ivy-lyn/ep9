@@ -314,6 +314,9 @@ impl ExitTable {
                 let bits = match node.op {
                     Op::Const(b) => b,
                     Op::ConstInt32(i) => crate::vm_layout::int32_bits(i),
+                    // A pool double (SPIKEC-9; never an int32 but -0, `build`): the double
+                    // Value `Value::number` gives it, NaN purified.
+                    Op::ConstFloat64(b) => crate::vm_layout::number_bits(f64::from_bits(b)),
                     ref op => return Err(format!("n{} is a constant op {op:?}", v.0)),
                 };
                 let c = Immediate::new(bits).ok_or(format!("n{} is a heap constant", v.0))?;
