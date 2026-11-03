@@ -498,6 +498,10 @@ pub struct Graph {
     pub register_count: u32,
     /// The reachable bytecode instructions (offset, opcode), in offset order.
     pub insns: Vec<(u32, ep9_bytecode::Opcode)>,
+    /// The feedback slot a guard's exit record names when its op has none of its own: a
+    /// `CheckArray` names the keyed slot of the first element site that made it (MC-w25-6;
+    /// it stays with the guard when the guard moves to a preheader).
+    pub sites: Vec<(NodeId, u32)>,
 }
 
 impl Graph {
@@ -514,6 +518,7 @@ impl Graph {
             parameter_count,
             register_count,
             insns: Vec::new(),
+            sites: Vec::new(),
         }
     }
 

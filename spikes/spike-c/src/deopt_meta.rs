@@ -194,7 +194,7 @@ pub struct ExitRecord {
     pub bytecode: u32,
     /// Index of the exit's counter.
     pub counter: u32,
-    /// The guard's feedback slot (a shape guard's IC site), if it has one.
+    /// The guard's feedback slot (a shape guard's or a CheckArray's IC site), if it has one.
     pub feedback: Option<u32>,
     pub values: Vec<ExitValue>,
 }
@@ -313,7 +313,7 @@ impl ExitTable {
             }
             let feedback = match g.node(n).op {
                 Op::CheckShape { site, .. } => Some(site),
-                _ => None,
+                _ => g.sites.iter().find(|s| s.0 == n).map(|s| s.1),
             };
             t.exits.push(ExitRecord {
                 pc,

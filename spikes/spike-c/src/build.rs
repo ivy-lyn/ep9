@@ -913,7 +913,7 @@ impl Builder<'_> {
                 let k = self.acc()?;
                 let n = match self.keyed_site(insn.unsigned(1), false, false)? {
                     KeyedPath::Element(key_basis) => {
-                        let a = self.check_array(o);
+                        let a = self.check_array(o, insn.unsigned(1));
                         let i = self.int32(k, key_basis);
                         let n =
                             self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
@@ -945,7 +945,7 @@ impl Builder<'_> {
                 let tagged = !matches!(self.node(v).repr, Repr::Int32 | Repr::Float64) && !copy;
                 match self.keyed_site(insn.unsigned(2), true, tagged)? {
                     KeyedPath::Element(key_basis) => {
-                        let a = self.check_array(o);
+                        let a = self.check_array(o, insn.unsigned(2));
                         let i = self.int32(k, key_basis);
                         let n =
                             self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
@@ -1145,13 +1145,16 @@ impl Builder<'_> {
         Ok(self.emit(Op::Call { regs }, inputs, Repr::Tagged, Trust::Unknown))
     }
 
-    fn check_array(&mut self, o: NodeId) -> NodeId {
+    /// The array kind guard of an element op at the keyed site `slot`; its exit record names
+    /// `slot` (the first site, when one guard serves several: MC-w25-6).
+    fn check_array(&mut self, o: NodeId, slot: u32) -> NodeId {
         let st = self.state();
         let o = self.tagged(o);
         let policy = self.policy(GuardBasis::Unbacked);
         self.memo(4, o, policy, |s| {
             let n = s.emit(Op::CheckArray, vec![o], Repr::Tagged, Trust::Unknown);
             s.guard(n, GuardBasis::Unbacked, st);
+            s.g.sites.push((n, slot));
             n
         })
     }
@@ -1239,6 +1242,12 @@ impl Builder<'_> {
 
     /// Replaces every use of `old` (inputs and frame states) with `new`.
     fn replace(&mut self, old: NodeId, new: NodeId) {
+        // A moved guard keeps its feedback slot (MC-w25-6).
+        if let Some(&(_, slot)) = self.g.sites.iter().find(|s| s.0 == old)
+            && !self.g.sites.iter().any(|s| s.0 == new)
+        {
+            self.g.sites.push((new, slot));
+        }
         for n in &mut self.g.nodes {
             for i in &mut n.inputs {
                 if *i == old {
@@ -1763,7 +1772,9 @@ impl Builder<'_> {
     /// a guard reads a moved check of the same array and policy if L has one: that check
     /// passed at the entry, and nothing in L can change what it proved. (A loop that ends
     /// before its first back edge, 0 iterations or a `break`, can still exit at a moved
-    /// guard that its body would not have run: the cost of every move to a preheader.)
+    /// guard that its body would not have run: the cost of every move to a preheader. The
+    /// moved `CheckArray`'s exit record names its element site's keyed slot (MC-w25-6), so a
+    /// recompile could keep that guard in L; Spike C has no recompile on an exit, MC-P1-JIT5.)
     ///
     /// The move puts a guard's exit at the loop header, so only a guard whose exit may move
     /// goes ([`exit_may_move`], the doc 13 B2 rule, as in [`Self::float_loads`]; M6-P1 JIT
@@ -1919,11 +1930,16 @@ impl Builder<'_> {
                         node.inputs.len() == if node.op == Op::LoadElement { 2 } else { 3 }
                     })
                     .collect();
-                let all_double = !plain.is_empty()
-                    && plain.iter().all(|&n| {
-                        let kinds = self.elem_kinds.iter().find(|m| m.0 == n).map_or(0, |m| m.1);
-                        kinds != 0 && kinds & !double == 0
-                    });
+                // MC-P1-JIT3 (SPIKEC-10): a site with no kind yet (a load the IC has not
+                // recorded, as `cpy`'s reads) does not stop it; one DOUBLE site is enough, and
+                // no site may have seen another kind. DoubleElements has no exit, so a wrong
+                // guess only costs the full path (its 0).
+                let kinds: Vec<u16> = plain
+                    .iter()
+                    .map(|&n| self.elem_kinds.iter().find(|m| m.0 == n).map_or(0, |m| m.1))
+                    .collect();
+                let all_double =
+                    kinds.iter().any(|&k| k != 0) && kinds.iter().all(|&k| k & !double == 0);
                 if !all_double {
                     continue;
                 }

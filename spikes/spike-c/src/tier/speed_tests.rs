@@ -229,3 +229,38 @@ fn mov64_takes_movn_for_mostly_ones() {
         assert_eq!(x, v, "{v:#x}");
     }
 }
+
+/// MC-P1-JIT3 and MC-w25-6 (SPIKEC-10). `a[i] = a[i] * f + i`: the load site has no kind yet
+/// (its IC recorded none), the store site saw DOUBLE. One DOUBLE site and no other kind is
+/// enough for the DoubleElements of the moved kind guard (before: every site needed a
+/// DOUBLE-only set, so this loop took the full element path). The moved `CheckArray`'s exit
+/// record names the keyed slot of its element site. Equal to T0 in every build.
+#[test]
+fn a_site_with_no_kind_yet_keeps_the_double_cell_and_the_kind_guard_names_its_site() {
+    if !aarch64() {
+        return;
+    }
+    let defs = "function fill(a, f, n) { for (var i = 0; i < n; i++) { a[i] = a[i] * f + i; } return a; }\n";
+    let warm = "for (var q = 0; q < 30; q++) fill([0.5, 1.5, 2.5, 3.5, 4.5], 0.5, 5);";
+    let main = "print(fill([0.5, 1.5, 2.5, 3.5, 4.5], 1.5, 5).join(), fill([1, 2, 3, 4], 2, 4).join());\n\
+print(fill([0.5, , 2.5], 2, 3).join(), fill([0.5, 1.5], 2, 4).join(), fill([], 2, 0).join());";
+    let (r, bad) = check("jit3", defs, warm, main, "fill");
+    assert_clean(&bad);
+    let g = &r.report.graph;
+    assert!(g.contains("DoubleElements("), "no DoubleElements\n{g}");
+    let kind_guards: Vec<u32> = g
+        .lines()
+        .filter(|l| l.contains("= CheckArray("))
+        .filter_map(|l| l.split(" guard g").nth(1))
+        .filter_map(|t| t.split(' ').next()?.parse().ok())
+        .collect();
+    assert!(!kind_guards.is_empty(), "no kind guard\n{g}");
+    for k in kind_guards {
+        let e = r.report.emit.meta.exits.iter().find(|e| e.guard == k);
+        let e = e.unwrap_or_else(|| panic!("no exit record for g{k}"));
+        assert!(
+            e.feedback.is_some(),
+            "g{k}: the kind guard names no slot: {e:?}"
+        );
+    }
+}
