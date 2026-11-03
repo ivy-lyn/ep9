@@ -373,7 +373,7 @@ pub(crate) struct Kinds(pub u16);
 /// The object an accessor op calls the accessor pair of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Holder {
-    /// An own accessor of the receiver.
+    /// An own accessor of [`Val::Receiver`] (at 0x22: of the lookup start).
     Receiver,
     /// An inherited one: the holder at the handler's +24 (weak).
     Ref(Ref),
@@ -429,8 +429,8 @@ pub(crate) enum Op {
     /// with a primitive receiver, a class constructor, interrupt due, the call that makes the
     /// target's vector, a full VM stack.
     CallTarget(Ref),
-    /// A call of the getter of the ACCESSOR_PAIR at the field of the holder, with the
-    /// receiver (H17 "Accessor ICs").
+    /// A call of the getter of the ACCESSOR_PAIR at the field of the holder (H17 "Accessor ICs").
+    /// `this` is [`Val::Receiver`] at 0x21; at 0x22 it is the site's `this`, not the lookup start.
     CallGetter(Holder, Loc),
     /// A call of the setter, with the receiver and the value.
     CallSetter(Holder, Loc),

@@ -555,6 +555,22 @@ fn a_super_load_calls_the_getter_with_the_receiver() {
         let (kind, chain, ..) = t.describe(0, shape_of(start)).unwrap();
         assert_eq!((kind, chain), (GETTER, int(0)));
         assert_eq!((cold(), calls()[0]), (2, 3));
+        // The op list (`ic_ops::Op::CallGetter` docs; M6-P1 Claude review R4): the guard and
+        // the pair are on the lookup start (`Val::Receiver` at 0x22), and the getter got the
+        // site's `this` (`receiver` above), not `start`.
+        use crate::ic_ops::{Holder, Loc, Op, Operation, Ref, Val, cases, ops_of};
+        let cs = cases(t.vector(0), 0, Operation::LoadNamed);
+        let ops = ops_of(&cs[0], Operation::LoadNamed);
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [
+                    Op::GuardShape(Val::Receiver, Ref::CaseKey),
+                    Op::CallGetter(Holder::Receiver, Loc(_))
+                ]
+            ),
+            "{ops:?}"
+        );
     });
 }
 
