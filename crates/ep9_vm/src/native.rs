@@ -1473,8 +1473,8 @@ impl NativeCx {
     }
 
     /// The return addresses of the native stack's frame records, from the caller of this
-    /// function outward (`deopt::walk_records` from the live x29, at most 4096). Empty on an
-    /// architecture other than AArch64. The probe's backtrace: the walk reads frame records
+    /// function outward (`deopt::walk_records` from the live x29, at most 4096). Empty on a
+    /// target other than Apple AArch64. The probe's backtrace: the walk reads frame records
     /// only, no CFI (a CFI walk through JIT code is the gated part of H29-Q4).
     #[inline(never)]
     pub fn frame_returns() -> Vec<usize> {
@@ -1513,10 +1513,13 @@ impl NativeCx {
     }
 }
 
-/// x29 now: the head of this thread's frame-record chain (AArch64 only).
+/// x29 now: the head of this thread's frame-record chain. Apple AArch64 only: there the
+/// platform ABI makes every frame keep a record and ends the chain at 0, which the safety of
+/// [`NativeCx::frame_returns`] and [`NativeCx::lazy_swap`] needs. Elsewhere (Linux AArch64
+/// code can use x29 as a general register) it is `None`, so the walks are empty.
 #[inline(always)]
 fn current_fp() -> Option<usize> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
     {
         let fp: usize;
         // SAFETY: reads a register; no memory, no stack, no flags.
@@ -1525,7 +1528,7 @@ fn current_fp() -> Option<usize> {
         }
         Some(fp)
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(all(target_arch = "aarch64", target_vendor = "apple")))]
     {
         None
     }
