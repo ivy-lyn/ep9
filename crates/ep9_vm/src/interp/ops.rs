@@ -260,11 +260,35 @@ fn next_or_record(s: FSlot, bits: u32) -> Flow {
     }
 }
 
+/// The cold body of the binary operators: the record, then the generic operation. A `+` of
+/// two strings (M6-P1 CBC speed arm, V11-D20: splay -2.9% instructions, mac a64) skips the
+/// generic dispatch: ToPrimitive and ToString of a string are the string itself
+/// (§13.15.3 ApplyStringOrNumericBinaryOperator steps 1-2), so the result is the concat
+/// ([`concat_strings`]). A result past the string length limit takes the generic path, which
+/// throws the RangeError.
 #[inline(always)]
 fn binop_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Done {
     profile::record_binary_cold(st, s, op, l, r);
+    if matches!(op, BinOp::Add)
+        && object::is_string(l)
+        && object::is_string(r)
+        && let Some(v) = concat_strings(st, l, r)
+    {
+        st.acc = v;
+        return Done::Next;
+    }
     let v = slow::binary(st.cx, st.fp, st.pc, op, l, r);
     st.result(v)
+}
+
+/// `l + r` for two strings, or `None` (nothing made) when the result would be too long.
+/// GC point: the frame state is recorded first, as every slow path does (`Runtime::enter`);
+/// `l` and `r` stay in the frame's registers and Rust locals. Out of line: only the `Add`
+/// cold body calls it.
+#[inline(never)]
+fn concat_strings(st: &mut St<'_>, l: u64, r: u64) -> Option<u64> {
+    st.rt().enter(st.fp, st.pc);
+    crate::string::concat(st.rt(), l, r)
 }
 
 #[inline(always)]
@@ -402,7 +426,7 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 /// (`profile::record_call` in `call_record_cold`; M4-P1 PROFILE-X64). x86-64: at file end.
 #[cfg(all(not(feature = "spike-native"), not(target_arch = "x86_64")))]
 #[inline(always)]
-fn call_fast(
+fn call_fast<const LIST: bool, const EARLY: bool>(
     st: &mut St<'_>,
     s: FSlot,
     callee: u64,
@@ -524,7 +548,7 @@ fn uncount_call(fi: &FunctionInfo) {
 /// cold, as in the default build. The match loop runs the callee's code at both stubs (D4).
 #[cfg(feature = "spike-native")]
 #[inline(always)]
-fn call_fast(
+fn call_fast<const LIST: bool, const EARLY: bool>(
     st: &mut St<'_>,
     s: FSlot,
     callee: u64,
@@ -648,6 +672,20 @@ fn call_cold(st: &mut St<'_>) -> Done {
     st.switch(v)
 }
 
+/// Register `r` of a call operand, read at this point of the handler. On x86-64 the read is
+/// volatile: LLVM then does not sink it into the block after the first callee test, where the
+/// decoded operands (2-3 registers each) would stay live across that test; read here, each
+/// operand holds one register (M6-P1 CBC, `call_fast` x86-64). Elsewhere it is [`St::reg`].
+#[inline(always)]
+fn call_operand(st: &St<'_>, r: R) -> u64 {
+    #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+    // SAFETY: as for `St::reg`: `r` comes from the operand decoder of the current verified
+    // instruction, so it names a slot of the live frame.
+    return unsafe { st.fp.offset(r.0).read_volatile() };
+    #[cfg(not(all(not(feature = "spike-native"), target_arch = "x86_64")))]
+    return st.reg(r);
+}
+
 /// `CallProperty`/`CallAnyReceiver`: the list holds the receiver, then the arguments.
 #[inline(always)]
 fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count, s: FSlot) -> Flow {
@@ -656,7 +694,10 @@ fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count,
         return Flow::Cold;
     }
     let this = st.list(args, 0);
-    call_fast(st, s, f, this, argc.0 - 1, move |s, i| s.list(args, i + 1))
+    // The arguments as a list of their own (not `list(args, i + 1)`: with the `u32` sum the
+    // x86-64 copy loop keeps an index and a base, one register more).
+    let rest = RList(args.0 + 1);
+    call_fast::<true, true>(st, s, f, this, argc.0 - 1, move |s, i| s.list(rest, i))
 }
 
 // ---- special -------------------------------------------------------------------------------
@@ -1253,7 +1294,14 @@ op!(TestEqualStrict(st, lhs: R, s: FSlot) {
         st.acc = TRUE;
         return Flow::RecordPair(profile::Pair::new(s, l, r));
     }
-    if object::is_string(l) && object::is_string(r) {
+    // Two strings with other bits: equal only by their text (the cold body), except two
+    // atoms, which are interned (one atom per text, `atoms.rs`), so two atoms whose bits
+    // differ have different texts (M6-P1 CBC speed arm, V11-D20: earley-boyer -1.1%
+    // instructions, mac a64). The record is the cold body's (`record_compare`: ATOM).
+    if object::is_string(l)
+        && object::is_string(r)
+        && !(crate::string::is_atom(l) && crate::string::is_atom(r))
+    {
         return Flow::Cold;
     }
     st.acc = FALSE;
@@ -1423,44 +1471,45 @@ op!(CallProperty(st, callee: R, args: RList, argc: Count, s: FSlot) {
     call_record_cold(st, callee, s)
 });
 op!(CallProperty0(st, callee: R, receiver: R, s: FSlot) {
-    let (f, this) = (st.reg(callee), st.reg(receiver));
-    call_fast(st, s, f, this, 0, |_, _| UNDEFINED)
+    let (f, this) = (st.reg(callee), call_operand(st, receiver));
+    call_fast::<false, false>(st, s, f, this, 0, |_, _| UNDEFINED)
 } cold {
     call_record_cold(st, callee, s)
 });
 op!(CallProperty1(st, callee: R, receiver: R, a0: R, s: FSlot) {
-    let (f, this, v0) = (st.reg(callee), st.reg(receiver), st.reg(a0));
-    call_fast(st, s, f, this, 1, move |_, _| v0)
+    let (f, this, v0) = (st.reg(callee), call_operand(st, receiver), call_operand(st, a0));
+    call_fast::<false, true>(st, s, f, this, 1, move |_, _| v0)
 } cold {
     call_record_cold(st, callee, s)
 });
 op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
-    let (f, this, v0, v1) = (st.reg(callee), st.reg(receiver), st.reg(a0), st.reg(a1));
-    call_fast(st, s, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
+    let (f, this) = (st.reg(callee), call_operand(st, receiver));
+    let (v0, v1) = (call_operand(st, a0), call_operand(st, a1));
+    call_fast::<false, true>(st, s, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold {
     call_record_cold(st, callee, s)
 });
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
-    call_fast(st, s, f, UNDEFINED, argc.0, move |s, i| s.list(args, i))
+    call_fast::<true, false>(st, s, f, UNDEFINED, argc.0, move |s, i| s.list(args, i))
 } cold {
     call_record_cold(st, callee, s)
 });
 op!(CallUndefinedReceiver0(st, callee: R, s: FSlot) {
     let f = st.reg(callee);
-    call_fast(st, s, f, UNDEFINED, 0, |_, _| UNDEFINED)
+    call_fast::<false, false>(st, s, f, UNDEFINED, 0, |_, _| UNDEFINED)
 } cold {
     call_record_cold(st, callee, s)
 });
 op!(CallUndefinedReceiver1(st, callee: R, a0: R, s: FSlot) {
-    let (f, v0) = (st.reg(callee), st.reg(a0));
-    call_fast(st, s, f, UNDEFINED, 1, move |_, _| v0)
+    let (f, v0) = (st.reg(callee), call_operand(st, a0));
+    call_fast::<false, false>(st, s, f, UNDEFINED, 1, move |_, _| v0)
 } cold {
     call_record_cold(st, callee, s)
 });
 op!(CallUndefinedReceiver2(st, callee: R, a0: R, a1: R, s: FSlot) {
-    let (f, v0, v1) = (st.reg(callee), st.reg(a0), st.reg(a1));
-    call_fast(st, s, f, UNDEFINED, 2, move |_, i| if i == 0 { v0 } else { v1 })
+    let (f, v0, v1) = (st.reg(callee), call_operand(st, a0), call_operand(st, a1));
+    call_fast::<false, true>(st, s, f, UNDEFINED, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold {
     call_record_cold(st, callee, s)
 });
@@ -1911,25 +1960,40 @@ pub(crate) const COLD_COUNT: usize = {
 /// per call, 1-3% of all instructions on t0-call, deltablue, richards and t0-prop; x86-64
 /// callgrind, m5-p0). The order here:
 ///
-/// 1. the callee tests and the receiver test, without the global object
-///    (`call::try_bind_this(.., UNDEFINED)`);
+/// 1. the callee tests (with `EARLY`: only the function test) and the receiver test, without
+///    the global object (`call::try_bind_this(.., UNDEFINED)`);
 /// 2. the frame size test (`call::call_frame_fp`), then the missing arguments are written
 ///    (`call::fill_missing_args`), so the frame base is dead before the next tests;
-/// 3. the unit (`budget <= 1` goes cold, X-PF1) and the count;
-/// 4. the decrement, the global object (`call::bound_with_global`) and the rest of the frame
-///    (`call::write_call_frame`).
+/// 3. with `EARLY` (M6-P1 CBC): the receiver with the global object
+///    (`call::bound_with_global`) and the arguments (`call::write_call_args`), then the
+///    other callee tests (kind, class constructor, realm), so the receiver and the arguments
+///    hold no register across those tests and the count;
+/// 4. the unit (`budget <= 1` goes cold, X-PF1) and the count;
+/// 5. the decrement, without `EARLY` the receiver and the arguments as in step 3, and the
+///    rest of the frame (`call::write_call_header`).
+///
+/// `EARLY` is set where it gives the shorter hot path (x86-64 asm, M6-P1 CBC): `CallProperty1`,
+/// `CallProperty2`, `CallUndefinedReceiver2` and the receiver list form (`CallProperty`,
+/// `CallAnyReceiver`); the other forms (no receiver operand, at most one value) are 1-3
+/// instructions longer with it. `LIST` is set for the register-list forms: their argument
+/// count is not a constant, and the copy is one pointer loop (`call::write_call_args`). The
+/// forms for the other builds take both flags and ignore them. Static hot path (instructions,
+/// push and pop) base to head: `CallProperty` 118 to 109 (12 to 10), `CallProperty0` 92 to
+/// 91, `CallProperty1` 108 to 104 (8 to 6), `CallProperty2` 127 to 118 (12),
+/// `CallUndefinedReceiver` 94 to 93 (8), `CallUndefinedReceiver0` 73, `..1` 87 to 86,
+/// `..2` 103 to 99 (10 to 8).
 ///
 /// Every cold exit comes before the count and the decrement, so no exit gives a unit or a
 /// count back, and `slow::call` sees the VM state the other form leaves at its cold exits
-/// (the units and the R3-2 RangeError as described there). The missing-argument slots that
-/// step 2 writes lie above the top frame: a later cold exit leaves them there, where no GC
-/// root scan and no reader looks (`runtime.rs` trace stops at the top frame), and the cold
-/// path's frame push writes them again. aarch64 keeps the other form: it has 18
-/// caller-saved registers, the other form saves none there on the hot forms, and this order
-/// costs it about 9 instructions per call (Mac a64: t0-call +3.0%, deltablue +2.8%).
+/// (the units and the R3-2 RangeError as described there). The slots that steps 2 and 3
+/// write lie above the top frame: a later cold exit leaves them there, where no GC root scan
+/// and no reader looks (`runtime.rs` trace stops at the top frame), and the cold path's
+/// frame push writes them again. aarch64 keeps the other form: it has 18 caller-saved
+/// registers, the other form saves none there on the hot forms, and this order costs it
+/// about 9 instructions per call (Mac a64: t0-call +3.0%, deltablue +2.8%).
 #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
 #[inline(always)]
-fn call_fast(
+fn call_fast<const LIST: bool, const EARLY: bool>(
     st: &mut St<'_>,
     s: FSlot,
     callee: u64,
@@ -1941,15 +2005,11 @@ fn call_fast(
         return Flow::Cold;
     }
     let fi = object::function_info(callee);
-    if fi.slot.kind_byte() != DispatchKind::Interp as u8 || fi.is_class_constructor() {
-        return Flow::Cold;
-    }
-    // A callee of another realm: `slow::call` runs it in its realm (H22-Q3).
-    if object::function_realm(callee) != st.cx.realm {
+    if !EARLY && !callee_runs_here(st, callee, fi) {
         return Flow::Cold;
     }
     // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2). The global
-    // object comes in at the frame write (`bound_with_global`).
+    // object comes in at the receiver write (`bound_with_global`).
     let Some(this) = call::try_bind_this(fi, this, UNDEFINED) else {
         return Flow::Cold;
     };
@@ -1961,6 +2021,15 @@ fn call_fast(
     // SAFETY: `nfp` is `call_frame_fp` of `base`, the first free slot above the live top frame
     // `fp`, and the VM stack cap.
     unsafe { call::fill_missing_args(base, nfp, argc) };
+    if EARLY {
+        let rd: &St<'_> = st;
+        let this = call::bound_with_global(fi, this, rd.cx.global_this);
+        // SAFETY: as above; `arg` reads registers of the current verified instruction.
+        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd, i)) };
+        if !callee_runs_here(st, callee, fi) {
+            return Flow::Cold;
+        }
+    }
     // The unit of this call would use up the budget (X-PF1).
     if st.cx.budget <= 1 {
         return Flow::Cold;
@@ -1972,26 +2041,33 @@ fn call_fast(
     // above is not kept in a register across the count.
     // SAFETY: a read of a field of the live `Cx`.
     st.cx.budget = unsafe { core::ptr::read_volatile(&raw const st.cx.budget) } - 1;
-    let this = call::bound_with_global(fi, this, st.cx.global_this);
     let (fp, next) = (st.fp, st.next);
-    let rd: &St<'_> = st;
-    // SAFETY: as above; `arg` reads registers of the current verified instruction.
+    if !EARLY {
+        let rd: &St<'_> = st;
+        let this = call::bound_with_global(fi, this, rd.cx.global_this);
+        // SAFETY: as above.
+        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd, i)) };
+    }
+    // SAFETY: as above; the receiver and the arguments are written.
     unsafe {
-        call::write_call_frame(
-            nfp,
-            fi,
-            callee,
-            this,
-            argc,
-            |i| arg(rd, i),
-            fp,
-            next,
-            || object::function_context(callee),
-        )
+        call::write_call_header(nfp, fi, callee, argc, fp, next, || {
+            object::function_context(callee)
+        })
     };
     st.fp = nfp;
     st.acc = UNDEFINED;
     jump_to_callee(st, fi.code, s)
+}
+
+/// The callee tests of the x86-64 `call_fast` after the function test: bytecode that T0 runs
+/// (not native code, not a class constructor), of the current realm (`slow::call` runs a
+/// callee of another realm in its realm, H22-Q3).
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(always)]
+fn callee_runs_here(st: &St<'_>, callee: u64, fi: &FunctionInfo) -> bool {
+    fi.slot.kind_byte() == DispatchKind::Interp as u8
+        && !fi.is_class_constructor()
+        && object::function_realm(callee) == st.cx.realm
 }
 
 /// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit
