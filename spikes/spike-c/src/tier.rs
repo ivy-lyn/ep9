@@ -3264,3 +3264,7 @@ mod tests {
         assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
     }
 }
+
+/// The M6-P1 JIT review tests (`tier/review_tests.rs`).
+#[cfg(test)]
+mod review_tests;
