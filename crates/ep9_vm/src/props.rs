@@ -6,13 +6,14 @@
 //! ```text
 //!  fast mode:        shape descriptors (key, attrs, field i)    field i < capacity: in-object slot i
 //!                                                               field i >= capacity: SLOTS[i - capacity] (+8)
-//!  dictionary mode:  +8 PROPS table: key, value, attrs, in insertion order (shape flag DICTIONARY)
+//!  dictionary mode:  +8 PROPS table (PROPS_INDEXED above 8): key, value, attrs, in insertion order (shape flag DICTIONARY)
 //! ```
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | PROPS | 64 | +8 capacity, +16 count (int32s), +24 entries: key, value, attributes | 24 + 24 cap |
 //! | SLOTS | 71 | +8 capacity, +16 values (`shape.rs` owns the kind) | 16 + 8 cap |
+//! | PROPS_INDEXED | 84 | +8 capacity, +16 count (int32s), +24 index, +32 entries as PROPS (Dictionary v1, `props_index.rs`) | 32 + 24 cap |
 //!
 //! Fast shapes only grow by appending a property and shrink by removing the last one (back
 //! to the parent shape). Everything else moves the object to dictionary mode (OM-10,
@@ -29,8 +30,9 @@ use crate::frame::{UNDEFINED, int32_bits};
 use crate::key::{self, Probe};
 use crate::kinds as kind;
 use crate::object::{self, cell, init, obj, rd, rd_i32, trace_from_8, wr};
+use crate::props_index;
 use crate::runtime::{Atom, Runtime};
-use crate::shape::{self, Added, slf};
+use crate::shape::{self, Added, LINEAR_MAX, slf};
 
 mod propf {
     pub const CAPACITY: usize = 8;
@@ -66,7 +68,8 @@ pub(crate) fn register_kinds(heap: &Heap) {
 
 // ---- the dictionary table ---------------------------------------------------------------------
 
-/// The PROPS table of `o` (dictionary mode), if it has one.
+/// The table of `o` (dictionary mode: a PROPS or PROPS_INDEXED cell), if it has one. Both
+/// kinds keep capacity at +8 and the live count at +16.
 fn table_of(o: u64) -> Option<CellPtr> {
     let p = rd(cell(o), obj::SLOTS);
     (p != UNDEFINED).then(|| cell(p))
@@ -80,9 +83,20 @@ fn props_capacity(p: CellPtr) -> usize {
     rd_i32(p, propf::CAPACITY) as usize
 }
 
+/// Byte offset of entry `i` of a PROPS table.
 #[inline]
 fn entry(i: usize) -> usize {
     propf::ENTRIES + propf::ENTRY * i
+}
+
+/// Byte offset of entry `i` of the table `p` (PROPS or PROPS_INDEXED).
+#[inline]
+fn entry_in(p: CellPtr, i: usize) -> usize {
+    if props_index::is_indexed(p) {
+        props_index::entry(i)
+    } else {
+        entry(i)
+    }
 }
 
 pub(crate) fn new_props(rt: &Runtime, cap: usize) -> CellPtr {
@@ -92,25 +106,36 @@ pub(crate) fn new_props(rt: &Runtime, cap: usize) -> CellPtr {
     c
 }
 
-/// Index of `key` in the PROPS table of `o` (dictionary mode).
+/// Where `key` is in the table of `o` (dictionary mode): the table and the byte offset of the
+/// entry. A PROPS_INDEXED table answers from its index (`props_index::find`); a PROPS table
+/// is scanned. Not a GC point.
 fn dict_find(o: u64, key: u64, how: Probe) -> Option<(CellPtr, usize)> {
     let p = table_of(o)?;
-    if let Some(hit) = crate::props_index::find(p, key, how) {
-        return hit.map(|i| (p, i));
+    if let Some(hit) = props_index::find(p, key, how) {
+        return hit.map(|i| (p, props_index::entry(i)));
     }
     let n = props_count(p);
     let i = match how {
         Probe::Bits => (0..n).find(|&i| rd(p, entry(i)) == key),
         Probe::Content => (0..n).find(|&i| key::key_eq(rd(p, entry(i)), key)),
     }?;
-    Some((p, i))
+    Some((p, entry(i)))
 }
 
-/// Appends an entry to the PROPS table of `o` (dictionary mode; `key` is not in it). GC
-/// point.
+/// Appends an entry to the table of `o` (dictionary mode; `key` is not in it). The entry
+/// after the 8th moves a PROPS table to PROPS_INDEXED (Dictionary v1; never back). GC point.
 fn dict_add(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
     let old = table_of(o);
+    if let Some(p) = old.filter(|&p| props_index::is_indexed(p)) {
+        props_index::add(rt, o, p, key, v, attrs);
+        return;
+    }
     let (count, cap) = old.map_or((0, 0), |p| (props_count(p), props_capacity(p)));
+    if count + 1 > LINEAR_MAX {
+        let p = to_indexed(rt, o, old.expect("a table with 8 entries"));
+        props_index::add(rt, o, p, key, v, attrs);
+        return;
+    }
     let p = if count < cap {
         old.expect("a table with room")
     } else {
@@ -131,8 +156,30 @@ fn dict_add(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
     wr(&rt.heap, p, propf::COUNT, int32_bits(count as i32 + 1));
 }
 
-/// Removes entry `i` of the table `p` (the tail shifts down: insertion order stays).
-fn dict_remove(rt: &Runtime, p: CellPtr, i: usize) {
+/// Moves the full PROPS table `old` of `o` (8 entries) to a new PROPS_INDEXED table and
+/// returns it. GC point: `o` and `old` live in Rust locals.
+fn to_indexed(rt: &Runtime, o: u64, old: CellPtr) -> CellPtr {
+    let count = props_count(old);
+    let n = props_index::alloc(rt, props_index::capacity_for(count));
+    for i in 0..count {
+        for k in 0..3 {
+            // E2: `n` is new and no GC point ran since its allocation.
+            init(n, props_index::entry(i) + 8 * k, rd(old, entry(i) + 8 * k));
+        }
+    }
+    props_index::seal(n, count);
+    wr(&rt.heap, cell(o), obj::SLOTS, n.to_value().to_bits());
+    n
+}
+
+/// Removes the entry at byte offset `off` of the table `p`: a PROPS table shifts its tail
+/// down (insertion order stays); a PROPS_INDEXED table leaves a hole (`props_index::remove`).
+fn dict_remove(rt: &Runtime, p: CellPtr, off: usize) {
+    if props_index::is_indexed(p) {
+        props_index::remove(rt, p, (off - props_index::entry(0)) / propf::ENTRY);
+        return;
+    }
+    let i = (off - entry(0)) / propf::ENTRY;
     let count = props_count(p);
     for j in i * 3..(count - 1) * 3 {
         wr(
@@ -233,7 +280,7 @@ fn field_clear(o: u64, s: u64, f: usize) {
 enum Hit {
     /// Fast mode: the shape and the descriptor (field) index.
     Fast(u64, usize),
-    /// Dictionary mode: the table and the entry index.
+    /// Dictionary mode: the table and the byte offset of the entry.
     Dict(CellPtr, usize),
 }
 
@@ -248,12 +295,8 @@ fn find_own(o: u64, key: u64, how: Probe) -> Option<(Hit, u64, i32)> {
 #[inline(always)]
 fn find_own_in(o: u64, s: u64, key: u64, how: Probe) -> Option<(Hit, u64, i32)> {
     if shape::is_dictionary(s) {
-        let (p, i) = dict_find(o, key, how)?;
-        return Some((
-            Hit::Dict(p, i),
-            rd(p, entry(i) + 8),
-            rd_i32(p, entry(i) + 16),
-        ));
+        let (p, e) = dict_find(o, key, how)?;
+        return Some((Hit::Dict(p, e), rd(p, e + 8), rd_i32(p, e + 16)));
     }
     let f = shape::lookup_with(s, key, how)?;
     let v = field_get(o, s, f.index);
@@ -309,7 +352,7 @@ pub(crate) fn own_store_if_writable(
     }
     match hit {
         Hit::Fast(s, f) => field_set(rt, o, s, f, v),
-        Hit::Dict(p, i) => wr(&rt.heap, p, entry(i) + 8, v),
+        Hit::Dict(p, e) => wr(&rt.heap, p, e + 8, v),
     }
     Some(true)
 }
@@ -327,8 +370,8 @@ pub(crate) fn own_replace_with(rt: &Runtime, o: u64, key: u64, how: Probe, v: u6
             field_set(rt, o, s, f, v);
             true
         }
-        Some((Hit::Dict(p, i), _, _)) => {
-            wr(&rt.heap, p, entry(i) + 8, v);
+        Some((Hit::Dict(p, e), _, _)) => {
+            wr(&rt.heap, p, e + 8, v);
             true
         }
         None => false,
@@ -351,7 +394,7 @@ pub(crate) fn own_define(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
         Some((hit, old_v, old)) if old == attrs => {
             match hit {
                 Hit::Fast(s, f) => field_set(rt, o, s, f, v),
-                Hit::Dict(p, i) => wr(&rt.heap, p, entry(i) + 8, v),
+                Hit::Dict(p, e) => wr(&rt.heap, p, e + 8, v),
             }
             if attrs & object::attr::ACCESSOR != 0 && old_v != v {
                 shape::note_change(rt, o);
@@ -361,9 +404,9 @@ pub(crate) fn own_define(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
             if let Hit::Fast(..) = hit {
                 to_dictionary(rt, o);
             }
-            let (p, i) = dict_find(o, key, how).expect("the key after dictionary mode");
-            wr(&rt.heap, p, entry(i) + 8, v);
-            init(p, entry(i) + 16, int32_bits(attrs));
+            let (p, e) = dict_find(o, key, how).expect("the key after dictionary mode");
+            wr(&rt.heap, p, e + 8, v);
+            init(p, e + 16, int32_bits(attrs));
             shape::note_change(rt, o);
         }
         None => own_add(rt, o, key, v, attrs),
@@ -429,18 +472,19 @@ pub(crate) fn own_delete(rt: &Runtime, o: u64, key: u64) -> Option<i32> {
         }
         Hit::Fast(..) => {
             to_dictionary(rt, o);
-            let (p, i) = dict_find(o, key, how).expect("the key after dictionary mode");
-            dict_remove(rt, p, i);
+            let (p, e) = dict_find(o, key, how).expect("the key after dictionary mode");
+            dict_remove(rt, p, e);
         }
-        Hit::Dict(p, i) => dict_remove(rt, p, i),
+        Hit::Dict(p, e) => dict_remove(rt, p, e),
     }
     shape::note_change(rt, o);
     Some(attrs)
 }
 
-/// Moves `o` to dictionary mode (OM-10): its properties go into a PROPS table in property
-/// order, and it gets the dictionary shape of its prototype (shared), or a new unique one in
-/// prototype mode. No change for an object that is in dictionary mode already. GC point.
+/// Moves `o` to dictionary mode (OM-10): its properties go into a table in property order (a
+/// PROPS table, or PROPS_INDEXED above 8 properties), and it gets the dictionary shape of its
+/// prototype (shared), or a new unique one in prototype mode. No change for an object that is
+/// in dictionary mode already. GC point.
 pub(crate) fn to_dictionary(rt: &Runtime, o: u64) {
     let s = shape::shape_of(o);
     if shape::is_dictionary(s) {
@@ -449,14 +493,24 @@ pub(crate) fn to_dictionary(rt: &Runtime, o: u64) {
     // GC points first: the shape, then the table (filled with initializing stores, E2).
     let ds = shape::dictionary_shape_of(rt, s, true);
     let n = shape::count(s);
-    let p = new_props(rt, (n + 1).next_power_of_two().max(MIN_TABLE));
+    let indexed = n > LINEAR_MAX;
+    let p = if indexed {
+        props_index::alloc(rt, props_index::capacity_for(n))
+    } else {
+        new_props(rt, (n + 1).next_power_of_two().max(MIN_TABLE))
+    };
     for i in 0..n {
         let d = shape::details_at(s, i);
-        init(p, entry(i), shape::key_at(s, i));
-        init(p, entry(i) + 8, field_get(o, s, usize::from(d.field())));
-        init(p, entry(i) + 16, int32_bits(d.attrs()));
+        let e = entry_in(p, i);
+        init(p, e, shape::key_at(s, i));
+        init(p, e + 8, field_get(o, s, usize::from(d.field())));
+        init(p, e + 16, int32_bits(d.attrs()));
     }
-    init(p, propf::COUNT, int32_bits(n as i32));
+    if indexed {
+        props_index::seal(p, n);
+    } else {
+        init(p, propf::COUNT, int32_bits(n as i32));
+    }
     // The in-object slots are unused in dictionary mode (E1: undefined is not a cell).
     let c = cell(o);
     let first = obj::FIXED + 8 * object::fixed_count(object::cell_kind(o));
@@ -490,16 +544,16 @@ pub(crate) fn own_count(o: u64) -> usize {
     }
 }
 
-/// Own named property `i` in insertion order: (key, value, attributes).
+/// Own named property `i` in insertion order: (key, value, attributes). A PROPS_INDEXED
+/// table with holes is compacted first (`props_index::settle`; no allocation), so `i` counts
+/// live entries only. Not a GC point.
 pub(crate) fn own_entry(o: u64, i: usize) -> (u64, u64, i32) {
     let s = shape::shape_of(o);
     if shape::is_dictionary(s) {
         let p = table_of(o).expect("own_entry on an object without properties");
-        return (
-            rd(p, entry(i)),
-            rd(p, entry(i) + 8),
-            rd_i32(p, entry(i) + 16),
-        );
+        props_index::settle(p);
+        let e = entry_in(p, i);
+        return (rd(p, e), rd(p, e + 8), rd_i32(p, e + 16));
     }
     let d = shape::details_at(s, i);
     (
