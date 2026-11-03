@@ -14,7 +14,8 @@
 //!        back-edge inputs filled when the JumpLoop block is done
 //!  ──> trivial phis removed ──> loop phis unboxed to Int32 (an entry check in the
 //!      preheader) ──> redundant checks removed, boxes inserted ──> kind guards of loops
-//!      without calls moved to the preheader, with the DOUBLE store (SPIKEC-9) ──> dead pure
+//!      without calls moved to the preheader, with the DOUBLE store (SPIKEC-9), the context
+//!      slot loads and the checks of values from outside the loop (SPIKEC-10) ──> dead pure
 //!      nodes removed
 //! ```
 //!
@@ -1700,6 +1701,10 @@ impl Builder<'_> {
     }
 
     /// SPIKEC-9 task 8: the kind guards of a loop move to its preheader, one per array.
+    /// SPIKEC-10 (plan v11 §4.8 task 1, the hoisting left): with them, by the same rules,
+    /// the context slot loads (the graph has no context store, and L calls nothing, so a
+    /// slot holds one value in L) and the int32 and number checks of values from outside L
+    /// (a moved slot load included); identical moved nodes share one.
     ///
     /// ```text
     ///  preheader P (one successor: the header H)   ──>  P: ... CheckArray(o) [exits at H] ; Jump H
@@ -1777,15 +1782,27 @@ impl Builder<'_> {
                 continue;
             }
             let every = self.on_every_iteration(h, &body, &latches);
-            // The kind guards of the blocks that run on every iteration first (they move),
-            // then the others (they read a moved one or stay), then the DoubleElements of
-            // inner loops (their input, a kind guard, is final then).
+            // SPIKEC-10: the context slot loads first (L stores no context slot and calls
+            // nothing, so a slot holds one value in L), then the int32 and number checks of
+            // values from outside L (a moved slot load included), then the kind guards. In
+            // each group the guards of the blocks that run on every iteration first (they
+            // move), then the others (they read a moved one or stay); then the DoubleElements
+            // of inner loops (their input, a kind guard, is final then).
+            let rank = |op: &Op| match op {
+                Op::LoadContextSlot(_) => Some(0),
+                Op::CheckInt32 | Op::CheckNumber => Some(1),
+                Op::CheckArray => Some(2),
+                _ => None,
+            };
             let mut checks: Vec<NodeId> = nodes
                 .iter()
                 .copied()
-                .filter(|&n| self.g.node(n).op == Op::CheckArray)
+                .filter(|&n| rank(&self.g.node(n).op).is_some())
                 .collect();
-            checks.sort_by_key(|&n| !every[self.g.node(n).block.0 as usize]);
+            checks.sort_by_key(|&n| {
+                let node = self.g.node(n);
+                (rank(&node.op), !every[node.block.0 as usize])
+            });
             checks.extend(
                 nodes
                     .iter()
@@ -1796,15 +1813,16 @@ impl Builder<'_> {
                 continue;
             }
             let state = self.header_state(h, entry);
-            // (op, input, policy) -> the node in the preheader (a DoubleElements has no
+            // (op, inputs, policy) -> the node in the preheader (a DoubleElements has no
             // guard, so no policy).
-            let mut hoisted: Vec<(Op, NodeId, Option<ExitPolicy>, NodeId)> = Vec::new();
+            type Moved = (Op, Vec<NodeId>, Option<ExitPolicy>, NodeId);
+            let mut hoisted: Vec<Moved> = Vec::new();
             let mut fresh = Vec::new();
             for c in checks {
                 let node = self.g.node(c);
-                // Read the input now: a check hoisted before this one may have replaced it.
-                let (op, o, g) = (node.op.clone(), node.inputs[0], node.guard.clone());
-                if body[self.g.node(o).block.0 as usize] {
+                // Read the inputs now: a node hoisted before this one may have replaced one.
+                let (op, ins, g) = (node.op.clone(), node.inputs.clone(), node.guard.clone());
+                if ins.iter().any(|&o| body[self.g.node(o).block.0 as usize]) {
                     continue;
                 }
                 // B2 rule: only a guard whose exit may move to the header (F2).
@@ -1814,26 +1832,25 @@ impl Builder<'_> {
                 let policy = g.as_ref().map(|g| g.policy);
                 if let Some(&(.., k)) = hoisted
                     .iter()
-                    .find(|m| m.0 == op && m.1 == o && m.2 == policy)
+                    .find(|m| m.0 == op && m.1 == ins && m.2 == policy)
                 {
                     self.replace(c, k);
                     self.kill(c);
                     continue;
                 }
-                // A kind guard of a block that some iterations skip stays in L (F1). A
+                // A guard of a block that some iterations skip stays in L (F1). A
                 // DoubleElements has no exit, so it moves when its kind guard has moved.
-                if op == Op::CheckArray && !every[node.block.0 as usize] {
+                if g.is_some() && !every[node.block.0 as usize] {
                     continue;
                 }
-                let trust = node.trust;
-                let k =
-                    self.insert_before_terminator(pre, op.clone(), vec![o], Repr::Tagged, trust);
+                let (trust, repr) = (node.trust, node.repr);
+                let k = self.insert_before_terminator(pre, op.clone(), ins.clone(), repr, trust);
                 if let Some(g) = g {
                     self.g.set_guard(k, g.basis, state.clone());
                 }
                 self.replace(c, k);
                 self.kill(c);
-                hoisted.push((op.clone(), o, policy, k));
+                hoisted.push((op.clone(), ins, policy, k));
                 if op == Op::CheckArray {
                     fresh.push(k);
                 }
@@ -1879,7 +1896,7 @@ impl Builder<'_> {
                 }
                 let e = match hoisted
                     .iter()
-                    .find(|m| m.0 == Op::DoubleElements && m.1 == k)
+                    .find(|m| m.0 == Op::DoubleElements && m.1 == [k])
                 {
                     Some(&(.., e)) => e,
                     None => self.insert_before_terminator(

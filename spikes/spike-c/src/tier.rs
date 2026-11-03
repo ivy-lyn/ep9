@@ -1199,8 +1199,10 @@ mod tests {
         );
         let g = &r.report.graph;
         for l in g.lines().filter(|l| l.contains(" guard g")) {
-            // @15 is the `s + a` site; every `+` overflow guard is unbacked.
-            if l.contains("Int32(Add)") || l.ends_with("-> @15") {
+            // @15 is the `s + a` site; every `+` overflow guard is unbacked. Its int32
+            // check of `a` (n1, a value from outside the loop) moves to the loop's
+            // preheader (SPIKEC-10) and keeps its unbacked basis there.
+            if l.contains("Int32(Add)") || l.ends_with("-> @15") || l.contains("CheckInt32(n1)") {
                 assert!(l.contains("Unbacked"), "{l}\n{g}");
             } else {
                 assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
@@ -2002,7 +2004,9 @@ mod tests {
         }
         use crate::emit_a64::{EmitOptions, ForceTable};
         let warm = "for (var q = 0; q < 20; q++) { dot([1, 2, 3], [4, 5, 6], 3); dot([0.5, 1.5], [2, 0.25], 2); scale([0.5, 1.5, 2.5], 3, 1.5); }";
-        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), scale([1, 2, 3], 3, 0.5).join());";
+        // `scale` runs twice: its loop-invariant checks run once per call, in the loop's
+        // preheader (SPIKEC-10), and a guard is forced at its second pass.
+        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), scale([1, 2, 3], 3, 0.5).join(), scale([1, 2, 3], 3, 0.5).join());";
         let defs = format!("{DOT}\n{SCALE}");
         for name in ["dot", "scale"] {
             // No natural exit in `main`: each exit below is the forced one.
@@ -3268,3 +3272,7 @@ mod tests {
 /// The M6-P1 JIT review tests (`tier/review_tests.rs`).
 #[cfg(test)]
 mod review_tests;
+
+/// The SPIKEC-10 speed tests (`tier/speed_tests.rs`).
+#[cfg(test)]
+mod speed_tests;
