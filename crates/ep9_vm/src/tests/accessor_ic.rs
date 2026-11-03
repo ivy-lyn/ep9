@@ -642,3 +642,63 @@ fn megamorphic_accessor_sites_put_nothing_in_the_stub_cache() {
         t.release_all(kept);
     });
 }
+
+// ---- the op lists of these cases ----------------------------------------------------------------
+
+/// `ic_ops::ops_of` reads the cases ACCIC records (CBC need 7; H16 GETTER, SETTER row): an own
+/// GETTER is GuardShape, CallGetter on the receiver's pair; an inherited one adds
+/// GuardProtoValidity and reads the holder's pair; a SETTER case of a 0x24 store is GuardShape,
+/// CallSetter on the receiver's pair.
+#[test]
+fn ops_of_reads_the_getter_and_setter_cases() {
+    use crate::ic_ops::{Holder, Loc, Op, Operation, Proto, Ref, Val, cases, ops_of};
+    each(|c| {
+        let mut t = T::new(c, &[Site::Get("x"), Site::Get("x"), Site::Set("x", false)]);
+        let p = object_prototype(t.rt());
+        let ga = host(t.rt(), get_this, "ga");
+        // Site 0: an own getter.
+        let a = object::new_object(t.rt(), p);
+        define_accessor(t.rt(), a, "x", ga, UNDEFINED);
+        t.ok(0, a, UNDEFINED);
+        assert_eq!(t.kind(0, shape_of(a)), Some(GETTER));
+        // Site 1: a getter on the prototype holder `h`.
+        let h = object_with(t.rt(), p, &[("pad", int(0))]);
+        define_accessor(t.rt(), h, "x", ga, UNDEFINED);
+        let o = object_with(t.rt(), h, &[("a", int(1))]);
+        t.ok(1, o, UNDEFINED);
+        assert_eq!(t.kind(1, shape_of(o)), Some(GETTER));
+        // Site 2: an own setter.
+        let set = host(t.rt(), set_record, "s");
+        let d = object::new_object(t.rt(), p);
+        define_accessor(t.rt(), d, "x", UNDEFINED, set);
+        t.ok(2, d, int(3));
+        assert_eq!(t.kind(2, shape_of(d)), Some(SETTER));
+        let lists = |t: &T, i: usize, op| {
+            let cs = cases(t.vector(i), 0, op);
+            cs.iter()
+                .map(|k| ops_of(k, op).as_slice().to_vec())
+                .collect::<Vec<_>>()
+        };
+        let shape = Op::GuardShape(Val::Receiver, Ref::CaseKey);
+        let chain = Op::GuardProtoValidity(Proto::OfShape(Ref::CaseKey));
+        let own = lists(&t, 0, Operation::LoadNamed);
+        assert!(
+            matches!(own[0].as_slice(), [s, Op::CallGetter(Holder::Receiver, Loc(_))] if *s == shape),
+            "{own:?}"
+        );
+        let inh = lists(&t, 1, Operation::LoadNamed);
+        assert!(
+            matches!(
+                inh[0].as_slice(),
+                [s, c, Op::CallGetter(Holder::Ref(Ref::HandlerRef), Loc(_))]
+                    if *s == shape && *c == chain
+            ),
+            "{inh:?}"
+        );
+        let st = lists(&t, 2, Operation::StoreNamed);
+        assert!(
+            matches!(st[0].as_slice(), [s, Op::CallSetter(Holder::Receiver, Loc(_))] if *s == shape),
+            "{st:?}"
+        );
+    });
+}
