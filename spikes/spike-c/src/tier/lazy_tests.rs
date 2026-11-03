@@ -4,6 +4,8 @@
 
 use spike_b::harness::Config;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use super::{IntFacts, Session, Target, compile_facts, facts};
 use super::{LazyRun, lazy_probe};
 
 fn macos_aarch64() -> bool {
@@ -72,8 +74,9 @@ fn a_swapped_call_frame_returns_into_its_lazy_exit() {
     let r = lazy_probe(&Config::default(), DEFS, WARM, MAIN, "f").expect("probe");
     check_swap(&r);
     assert_eq!(r.compiled.output, ["19.25", "21.375", "24.25"]);
-    // The system unwinder (CFI only) is not asked to pass JIT code: no FDE is registered
-    // for it. The probe reports what it printed; the frame-record walk above is the check.
+    // The system unwinder walks through the compiled frame with the FDE that Spike B's
+    // JitModule registers for it (`the_compiled_code_has_a_registered_fde`). The probe
+    // reports what it printed; the frame-record walk above is the check.
     let s = r.swap.as_ref().expect("swap");
     eprintln!(
         "std::backtrace frames before {:?} after {:?}; frame records {}",
@@ -83,6 +86,54 @@ fn a_swapped_call_frame_returns_into_its_lazy_exit() {
     );
     let g = &r.report.graph;
     assert!(g.contains("lazy -> @"), "{g}");
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+unsafe extern "C" {
+    /// The system unwinder's FDE lookup (libunwind): the FDE that covers `pc`, or null.
+    fn _Unwind_Find_FDE(pc: *const std::ffi::c_void, bases: *mut [usize; 3]) -> *const u8;
+}
+
+/// The compiled code of the probe has a registered FDE (Spike B's `JitModule` registers one
+/// per function, `__register_frame`), and the same FDE covers the call's return and the lazy
+/// exit. So the system unwinder walks through a swapped frame with CFI (H29-Q4 fill (4); M6-P2
+/// JIT review J1).
+#[test]
+fn the_compiled_code_has_a_registered_fde() {
+    if !macos_aarch64() {
+        return;
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let mut s = Session::new(&Config::default().threaded()).expect("session");
+        s.run(DEFS, "defs.js").result.expect("defs");
+        s.run(WARM, "warm.js").result.expect("warm");
+        let f = Target::Value(s.function_value("f").expect("f"));
+        let (code, report) = {
+            let script = s.script("defs.js").expect("script");
+            let id = script.functions_named("f")[0];
+            let live = compile_facts(&s, script, id, IntFacts::Live).expect("facts");
+            let facts = facts::for_function(&live, script.unit.unit(), id);
+            let input = s.input_of_target(&f).expect("input");
+            crate::compile_input(&input, &facts).expect("compile")
+        };
+        let meta = report.emit.meta.encode();
+        // SAFETY: as in `compiled_script`.
+        let placed =
+            unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }
+                .expect("install");
+        let start = placed[0].code.start;
+        let c = &report.emit.meta.calls[0];
+        let fde = |pc: usize| {
+            let mut bases = [0usize; 3];
+            // SAFETY: a lookup only; it reads the registered unwind tables.
+            unsafe { _Unwind_Find_FDE(std::ptr::with_exposed_provenance(pc), &mut bases) }
+        };
+        let first = fde(start + 4);
+        assert!(!first.is_null(), "no FDE at the code start");
+        assert_eq!(fde(start + c.ret as usize), first, "the call's return");
+        assert_eq!(fde(start + c.stub as usize), first, "the lazy exit");
+    }
 }
 
 /// The callee throws after the swap: the lazy exit sees 0 (an exception pending) and unwinds

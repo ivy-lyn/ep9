@@ -6,7 +6,7 @@
 //!  config C: f compiled, its call records (deopt_meta::CallRecord: return offset, lazy exit)
 //!  main -> f (compiled) --call_any--> g (T0) --> lazyDeopt() (host function; armed once):
 //!     frame_returns()  (the backtrace before: the frame-record walk, ep9_vm::NativeCx)
-//!     std::backtrace   (the system unwinder: CFI only, no FDE for JIT code)
+//!     std::backtrace   (the system unwinder: CFI, with the FDE Spike B registers for f)
 //!     NativeCx::lazy_swap(f's code, its sites): the record whose return address is f's
 //!        call return gets f's lazy exit
 //!     frame_returns(), std::backtrace again (the backtrace through the swapped frame)
