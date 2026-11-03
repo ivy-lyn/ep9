@@ -129,7 +129,7 @@ pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_
 # changed in place (OBJECT_LAYOUT 5 added +32 to the ARRAY row; the IC hit path lost the epoch
 # argument), and one dated record row that keeps the native.rs lines of its commit.
 pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:21	crates/ep9_vm/src/object.rs	^//! \| ARRAY \| 18 \|	0
-pin	H31-fuse-registry.md	crates/ep9_vm/src/interp/ops.rs:952	crates/ep9_vm/src/interp/ops.rs	match ic::load\(st\.rt\(\), st\.info\(\), object::proto_of\(home\), s\.0, name\.0\) \{	0
+# (M6-P2 integration fixer: the H31 pin of interp/ops.rs:952 was here; H31 names ops.rs:993 since the M6-P1 ADRLINE row, which maps by the diff map, so the pin was unused.)
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/native.rs:285-295	| 4 Data (M4-P3 amendment: the 2026-10-27 RuntimeTable row clarify, K-1)	f0a5557	^    pub const RT_POLL\: usize = offset_of\!\(RuntimeTable, poll\)\;$
 # H23:34: the new number 205 was an older token of H23 with another line (375d953), so the
 # drift map would read it from there.
