@@ -77,9 +77,9 @@
 //!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths,
 //!   plan v9 §3.3 and V9-A25). A value store does neither.
 //! - The first array-index own property on a prototype-mode object (or an object with one, or
-//!   a routed ARGUMENTS or MODULE_NAMESPACE object, becoming a prototype) sets the sticky
-//!   [`proto_index_keys`] flag: until then `[[Set]]` adds array elements without walking the
-//!   prototype chain.
+//!   a routed object, becoming a prototype) pops the static fuse "no-elements prototypes" in
+//!   every realm ([`note_proto_index_key`]; `fuse::NO_ELEMENTS_PROTOTYPES`): while it is intact
+//!   ([`proto_index_keys`] is false) `[[Set]]` adds array elements without the prototype walk.
 //!
 //! Hooks the rest of the VM already calls:
 //!
@@ -284,12 +284,12 @@ pub(crate) struct ShapeState {
     /// No IC hit path compares it since M4-P1 (validity cells); the debug cross-check of the
     /// hit paths reads it (plan v9 V9-A25, R1), and tests do.
     pub proto_epoch: Cell<u32>,
-    /// Sticky, never cleared: set once a prototype-mode object has an array-index own
-    /// property, or a routed kind becomes a prototype ([`proto_index_keys`]). While it is
-    /// false no prototype chain has an index key,
-    /// so `[[Set]]` may add a missing array element without the walk (V8's "no elements"
-    /// protector).
-    proto_index: Cell<bool>,
+    // No `proto_index` flag since M6-P2 FUSE-PI (H31-Q5): the sticky flag of M3-M5 is the
+    // static fuse "no-elements prototypes" (`fuse::NO_ELEMENTS_PROTOTYPES`). It is popped
+    // once, in the isolate and in every realm's FUSE cell ([`note_proto_index_key`]), and
+    // [`proto_index_keys`] reads the current realm's word. While it is intact no prototype
+    // chain has an index key, so `[[Set]]` may add a missing array element without the walk
+    // (V8's "no elements" protector).
     /// A strong root range ([`init`]): see [`root`].
     roots: Box<[Slot]>,
 }
@@ -298,7 +298,7 @@ impl Default for ShapeState {
     fn default() -> Self {
         ShapeState {
             proto_epoch: Cell::new(0),
-            proto_index: Cell::new(false),
+            // (the `proto_index` flag is the static fuse 6 now: `fuse.rs`, M6-P2)
             roots: (0..root::COUNT)
                 .map(|_| Slot::new(Value::UNDEFINED))
                 .collect(),
@@ -1452,23 +1452,23 @@ pub(crate) fn note_change(rt: &Runtime, o: u64) {
     }
 }
 
-/// True if some prototype-mode object has, or once had, an array-index own property: an
-/// element, a stored index key or a String wrapper index; or is a routed kind (ARGUMENTS,
-/// MODULE_NAMESPACE), whose hooks may answer for an index. False means no prototype chain
-/// has an index key, so an inherited setter, getter or read-only property cannot decide a
-/// `[[Set]]` of an index (§10.1.9.2). One load; not a GC point.
+/// True once the static fuse "no-elements prototypes" popped (`fuse::NO_ELEMENTS_PROTOTYPES`):
+/// a prototype-mode object has, or had, an array-index own property (an element, a stored
+/// index key, a String wrapper index) or is a routed kind. False: no prototype chain has an
+/// index key, so no inherited setter, getter or read-only property decides a `[[Set]]` of an
+/// index (§10.1.9.2). Reads the current realm's word (`fuse::realm_intact`); not a GC point.
 #[inline(always)]
 pub(crate) fn proto_index_keys(rt: &Runtime) -> bool {
-    rt.shapes.proto_index.get()
+    !crate::fuse::realm_intact(rt, crate::fuse::NO_ELEMENTS_PROTOTYPES)
 }
 
-/// Records that the prototype-mode object `o` gets an array-index own property (sets the
-/// flag of [`proto_index_keys`]). The callers check that `o` is a prototype and the key an
-/// index: `props::own_add` and `object::array_set`. Not a GC point.
+/// Records that the prototype-mode object `o` gets an array-index own property: pops the fuse
+/// of [`proto_index_keys`] in the isolate and every realm (`fuse::pop_no_elements`). The one
+/// writer; its callers check that `o` is a prototype and the key an index. Not a GC point.
 #[inline]
 pub(crate) fn note_proto_index_key(rt: &Runtime, o: u64) {
     debug_assert!(is_prototype_object(o));
-    rt.shapes.proto_index.set(true);
+    crate::fuse::pop_no_elements(rt);
 }
 
 /// True if the object `o` may have an array-index own property: an array with a non-zero

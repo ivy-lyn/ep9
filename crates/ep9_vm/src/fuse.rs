@@ -1,6 +1,7 @@
 // Most of the registry API has no caller outside `tests::fuse` until the first compiled reader
-// (the link step of a unit, H35; JIT code) and the first wired builtin pop site come (the
-// runtime callers today: `shape::note_change` and the cleanup point's sweep).
+// (the link step of a unit, H35; JIT code) comes (the runtime callers today:
+// `shape::note_change`, the cleanup point's sweep, `realm::init_core` and the static fuse
+// "no-elements prototypes": `shape::proto_index_keys` and `shape::note_proto_index_key`).
 #![cfg_attr(not(test), allow(dead_code))]
 //! The fuse registry v0 (M5-P1 FR0; M5-P2 CONSTREP: descriptor kind 3 and one word per armed
 //! subject; H31, C-01, MC-w16-15, MC-w15-9, V10-D12, M5-P1-ORCH-13): named facts that code
@@ -69,8 +70,7 @@
 //!   [`Registry::intact`] take the caller's subject and refuse ([`Refusal::NotArmed`]) one that
 //!   no arm names or whose state changed (kinds 1-2: its current validity cell is not the one
 //!   the arm kept; kind 3: its field bits are not the ones the arm read) (M5-P1 review, Codex
-//!   r1 fr0). The realm fuse block for static fuses (`Root::RealmFuses`) waits for the first
-//!   wired static fuse (month 6, H31-Q5).
+//!   r1 fr0). Static fuses: the realm fuse block below (M6-P2 FUSE-PI; H31-Q5, V11-D21).
 //! - Kind 3 (M5-P2 CONSTREP, C-02): the subject is any fast shape that has descriptor
 //!   `index` (not an accessor); the arm keeps its field owner (`shape::field_owner`), so every
 //!   shape of the family names one fuse. A widening of the field's bits (`field_rep.rs`) pops
@@ -81,7 +81,9 @@
 //!   one, R17).
 //! - Static fuses are named by index in the H31 Decision order. A static fuse is usable
 //!   ([`Registry::depend`], [`Registry::guard`], an intact read) only once its pop site is
-//!   wired ([`Registry::wire`]); v0 wires none, so each reads not intact.
+//!   wired ([`Registry::wire`]). One is wired: index 6 "no-elements prototypes"
+//!   ([`NO_ELEMENTS_PROTOTYPES`]), popped by `shape::note_proto_index_key` (its one writer).
+//!   The others read not intact.
 //! - Dependents are weak code handles ([`CodeHandle`]): the registry holds `Weak`s and drops
 //!   the dead ones. A pop marks each live one Invalidated; the lazy deopt of its frames and
 //!   the dispatch-slot swap come with H29 lazy deopt (month 6).
@@ -97,23 +99,38 @@
 //!   armed subject that nothing uses (no live dependent and no word held outside the
 //!   registry), with its handles (M5-P1 fixer round 3, Codex r1 fr0).
 //!
-//! The FUSE kind id 83 stays reserved (OBJECT_LAYOUT 5): v0 needs no heap cell (H31-Q1, Q3:
-//! the fuse word is Rust memory until a unit link cell or a root table names it).
+//! The realm fuse block (M6-P2 FUSE-PI; H31-Q5, V11-D21; OBJECT_LAYOUT 6 FUSE 83, `layout`):
+//!
+//! ```text
+//!  realm::init_core -> new_realm_block: a FUSE cell per realm, one u32 per STATIC entry
+//!    (FUSE_INTACT while the static fuse is wired and intact, else 0), in Root::RealmFuses and
+//!    the realm's intrinsics list (IntrinsicId::RealmFuses); the registry keeps a weak handle
+//!  realm_intact(rt, i)    the Rust GuardFuse read: Root::RealmFuses, then the u32 at +8 + 4i
+//!                         (shape::proto_index_keys reads index 6 this way)
+//!  Registry::pop(Static(i)) / wire(i)   the isolate word, then entry i of every live block
+//! ```
+//!
+//! A static pop writes every realm's block: "no-elements prototypes" is a fact about every
+//! prototype, and a prototype chain can cross realms (an object of realm B whose
+//! `[[Prototype]]` is an object of realm A), so a pop in one realm only would leave a stale
+//! "no index keys" read in the others (plan v11 §13 R19, OI R7). The block holds raw words (no
+//! Value, nothing traced); the registry holds each block by a weak handle and drops dead ones.
 
 use core::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use ep9_facts::{FunctionRef, ProtoRef};
-use ep9_heap::{GlobalHandle, Heap, WeakHandle};
+use ep9_heap::{CellKind, CellPtr, CellSize, GlobalHandle, Heap, Tracer, WeakHandle};
 
 use crate::atoms::Atom;
 use crate::builtins::{self, BuiltinId, IntrinsicId};
 use crate::frame::NULL;
 use crate::kinds::{self as kind, is_cell_bits};
+use crate::layout;
 use crate::object::{self, attr};
 use crate::props;
-use crate::runtime::{Runtime, val};
+use crate::runtime::{Root, Runtime, val};
 use crate::shape;
 use crate::validity;
 
@@ -385,9 +402,33 @@ struct Inner {
     popped: Vec<Popped>,
     /// Kinds 1-2: descriptors popped in some realm (blocks `depend`).
     popped_any: HashSet<Descriptor>,
+    /// Every realm's static fuse block (a FUSE cell), weak ([`new_realm_block`]).
+    blocks: Vec<WeakHandle>,
 }
 
 impl Inner {
+    /// Writes `w` into entry `i` of every live realm block (raw words: no barrier). Not a GC
+    /// point.
+    fn write_blocks(&self, rt: &Runtime, i: u32, w: u32) {
+        for &h in &self.blocks {
+            if let Some(v) = rt.heap.weak(h) {
+                // SAFETY: a live FUSE cell (only `new_realm_block` adds a handle), `i` < STATIC.
+                unsafe { block_entry(object::cell(v.to_bits()), i).write(w) };
+            }
+        }
+    }
+
+    /// Drops the handles of dead realm blocks. Not a GC point.
+    fn drop_dead_blocks(&mut self, rt: &Runtime) {
+        self.blocks.retain(|&h| {
+            let live = rt.heap.weak(h).is_some();
+            if !live {
+                rt.heap.drop_weak(h);
+            }
+            live
+        });
+    }
+
     /// True if the subject `id` of `d` popped. Not a GC point.
     fn popped(&self, rt: &Runtime, d: Descriptor, id: u64) -> bool {
         self.popped.iter().any(|p| {
@@ -427,34 +468,41 @@ pub(crate) struct Registry {
     fields_armed: Cell<usize>,
     /// Set by the heap's weak source at every GC; cleared by [`Registry::sweep_after_gc`].
     gc_since_sweep: Rc<Cell<bool>>,
+    /// The isolate word of [`NO_ELEMENTS_PROTOTYPES`] (the one in `statics`): the test of
+    /// [`pop_no_elements`] before it pops, with no borrow.
+    no_elements: Rc<FuseWord>,
 }
 
 impl Registry {
-    /// The registry of a new isolate: every static fuse intact and not wired, no dynamic
-    /// fuse armed. Registers with `heap` a weak source that notes each GC (module doc: the
-    /// runtime sweep). Not a GC point.
+    /// The registry of a new isolate: every static fuse intact, [`NO_ELEMENTS_PROTOTYPES`]
+    /// wired (its pop site, `shape::note_proto_index_key`, always exists) and the others not,
+    /// no dynamic fuse armed, no realm block yet. Registers the FUSE cell kind with `heap`, and
+    /// a weak source that notes each GC (module doc: the runtime sweep). Not a GC point.
     pub(crate) fn new(heap: &Heap) -> Registry {
+        register_kind(heap);
         let gc_since_sweep = Rc::new(Cell::new(false));
         let g = Rc::clone(&gc_since_sweep);
         heap.add_weak_source(move |_| g.set(true));
-        let statics = STATIC
-            .iter()
-            .map(|_| StaticFuse {
+        let statics: Vec<StaticFuse> = (0..STATIC.len() as u32)
+            .map(|i| StaticFuse {
                 word: FuseWord::new(),
-                wired: false,
+                wired: i == NO_ELEMENTS_PROTOTYPES,
                 dependents: Dependents::default(),
             })
             .collect();
+        let no_elements = Rc::clone(&statics[NO_ELEMENTS_PROTOTYPES as usize].word);
         Registry {
             inner: RefCell::new(Inner {
                 statics,
                 armed: HashMap::new(),
                 popped: Vec::new(),
                 popped_any: HashSet::new(),
+                blocks: Vec::new(),
             }),
             armed: Cell::new(0),
             fields_armed: Cell::new(0),
             gc_since_sweep,
+            no_elements,
         }
     }
 
@@ -465,14 +513,17 @@ impl Registry {
     }
 
     /// Marks the static fuse `i` wired: its pop site exists, so code may use it. The owner of
-    /// the pop site calls it when the isolate starts.
-    pub(crate) fn wire(&self, i: u32) -> Result<(), Refusal> {
+    /// the pop site calls it when the isolate starts. Entry `i` of every realm block then
+    /// reads intact, unless the fuse popped. Not a GC point.
+    pub(crate) fn wire(&self, rt: &Runtime, i: u32) -> Result<(), Refusal> {
         let mut inner = self.inner.borrow_mut();
         let s = inner
             .statics
             .get_mut(i as usize)
             .ok_or(Refusal::UnknownStatic)?;
         s.wired = true;
+        let w = block_word(s);
+        inner.write_blocks(rt, i, w);
         Ok(())
     }
 
@@ -641,9 +692,11 @@ impl Registry {
         self.guard(rt, f, subject).is_ok_and(|w| w.intact())
     }
 
-    /// Pops `f`: a static fuse's word reads POPPED from now on and its live dependents are
-    /// Invalidated; a dynamic fuse pops every armed subject ([`Registry::pop_subject`]). A
-    /// popped fuse, or a dynamic one that is not armed, changes nothing. Not a GC point.
+    /// Pops `f`: a static fuse's word reads POPPED from now on, in the isolate and in entry
+    /// `i` of every realm block (module doc: a static pop writes every realm), and its live
+    /// dependents are Invalidated; a dynamic fuse pops every armed subject
+    /// ([`Registry::pop_subject`]). A popped fuse, or a dynamic one that is not armed, changes
+    /// nothing. Not a GC point.
     pub(crate) fn pop(&self, rt: &Runtime, f: FuseRef) {
         match f {
             FuseRef::Static(i) => {
@@ -651,6 +704,7 @@ impl Registry {
                 if let Some(s) = inner.statics.get_mut(i as usize) {
                     s.word.0.set(POPPED);
                     s.dependents.invalidate_all();
+                    inner.write_blocks(rt, i, 0);
                 }
             }
             FuseRef::Dynamic(d) => {
@@ -699,14 +753,15 @@ impl Registry {
         true
     }
 
-    /// Drops dead dependents, dead subjects and dead popped entries, and the armed subjects
-    /// that nothing uses (no live dependent and no word held outside the registry). Not a GC
-    /// point.
+    /// Drops dead dependents, dead subjects, dead popped entries and dead realm blocks, and the
+    /// armed subjects that nothing uses (no live dependent and no word held outside the
+    /// registry). Not a GC point.
     pub(crate) fn sweep(&self, rt: &Runtime) {
         let mut inner = self.inner.borrow_mut();
         for s in &mut inner.statics {
             s.dependents.sweep();
         }
+        inner.drop_dead_blocks(rt);
         let mut empty = Vec::new();
         for (d, subjects) in &mut inner.armed {
             drop_dead_subjects(rt, subjects, &self.armed, &self.fields_armed, *d);
@@ -980,5 +1035,121 @@ fn pop_fields_changed(rt: &Runtime, i: usize) {
         if !rt.fuses.pop_subject(rt, d, id) {
             break;
         }
+    }
+}
+
+// ---- static fuses: "no-elements prototypes" and the realm fuse block (M6-P2 FUSE-PI) --------
+
+/// The static fuse "no-elements prototypes" ([`STATIC`] index 6; H31-Q5, H17 "Index keys on
+/// prototypes"): no prototype-mode object has, or ever had, an array-index own property (an
+/// element, a stored index key or a String wrapper index), and no routed kind (ARGUMENTS,
+/// MODULE_NAMESPACE, PROXY, PROXY_CALLABLE) is a prototype. While it is intact, `[[Set]]` and
+/// `Array.prototype.push` add a missing array element with no prototype walk and an index
+/// read stops at the receiver (V8's "no elements" protector). It replaces the sticky
+/// `ShapeState::proto_index` flag (M3-M5). One writer pops it: `shape::note_proto_index_key`.
+pub(crate) const NO_ELEMENTS_PROTOTYPES: u32 = 6;
+
+/// The entry of a realm block for a wired static fuse: [`layout::FUSE_INTACT`] while it is
+/// intact, else 0 (an unwired fuse reads 0: no reader may use it).
+fn block_word(s: &StaticFuse) -> u32 {
+    if s.wired && s.word.intact() {
+        layout::FUSE_INTACT
+    } else {
+        0
+    }
+}
+
+/// The u32 entry `i` of the FUSE cell `c` (`layout::FUSE_ENTRIES` + 4i).
+///
+/// # Safety
+/// `c` is a live FUSE cell and `i` < `STATIC.len()`.
+#[inline(always)]
+unsafe fn block_entry(c: CellPtr, i: u32) -> *mut u32 {
+    debug_assert!((i as usize) < STATIC.len());
+    // SAFETY: the caller's contract; FUSE_SIZE covers every entry.
+    unsafe { c.field::<u32>((layout::FUSE_ENTRIES + layout::FUSE_ENTRY_SIZE * i) as usize) }
+}
+
+/// A FUSE cell holds raw u32 words: the GC visits none of them (no Value).
+fn trace_block(_c: CellPtr, _t: &mut Tracer<'_>) {}
+
+/// Registers the FUSE cell kind (83, OBJECT_LAYOUT 6; [`Registry::new`] calls it).
+fn register_kind(heap: &Heap) {
+    heap.register_kind(
+        kind::FUSE,
+        CellKind {
+            name: "fuse-block",
+            size: CellSize::Fixed(layout::FUSE_SIZE as usize),
+            trace: trace_block,
+        },
+    )
+    .expect("register the FUSE cell kind");
+}
+
+/// Makes the static fuse block of the realm being made (`realm::init_core` calls it right
+/// after the REALM record, before any other cell of the realm): a FUSE cell whose entry `i`
+/// is [`layout::FUSE_INTACT`] while static fuse `i` is wired and intact, else 0, so a realm
+/// made after a pop starts popped. Puts it in `Root::RealmFuses` and in the REALM record's
+/// intrinsics list (`IntrinsicId::RealmFuses`; `realm::switch` loads it with the other
+/// intrinsics), and keeps a weak handle for later pops. GC point (the cell); `rt.fuses` is
+/// not borrowed across it.
+pub(crate) fn new_realm_block(rt: &Runtime) {
+    let c = rt.alloc(kind::FUSE, layout::FUSE_SIZE as usize);
+    // The padding word after the last entry, then the entries.
+    let pad = (layout::FUSE_ENTRIES + layout::FUSE_ENTRY_SIZE * STATIC.len() as u32) as usize;
+    if pad < layout::FUSE_SIZE as usize {
+        // SAFETY: `c` is live and the u32 at `pad` lies inside FUSE_SIZE.
+        unsafe { c.field::<u32>(pad).write(0) };
+    }
+    let mut inner = rt.fuses.inner.borrow_mut();
+    for (i, s) in inner.statics.iter().enumerate() {
+        // SAFETY: `c` is the live FUSE cell above, `i` < STATIC.len().
+        unsafe { block_entry(c, i as u32).write(block_word(s)) };
+    }
+    let v = c.to_value();
+    if inner.blocks.len() == inner.blocks.capacity() {
+        inner.drop_dead_blocks(rt);
+    }
+    inner.blocks.push(rt.heap.new_weak(v));
+    drop(inner);
+    rt.set_root(Root::RealmFuses, v.to_bits());
+    crate::realm::record_intrinsic(rt, IntrinsicId::RealmFuses, v.to_bits());
+}
+
+/// The Rust GuardFuse read of static fuse `i` in the current realm (H31-Q5): `Root::RealmFuses`,
+/// then the u32 at +8 + 4i; true if it reads [`layout::FUSE_INTACT`]. A realm whose block is
+/// not made yet (`realm::create` blanks the realm roots first) reads not intact, so a reader
+/// takes its slow path. Two loads and a compare, after the root load; not a GC point.
+#[inline(always)]
+pub(crate) fn realm_intact(rt: &Runtime, i: u32) -> bool {
+    let b = rt.root(Root::RealmFuses);
+    if !is_cell_bits(b) {
+        return false;
+    }
+    debug_assert_eq!(kind::cell_kind(b), kind::FUSE.get(), "Root::RealmFuses");
+    // SAFETY: a FUSE cell in a root is live; `i` < STATIC.len() (debug-checked).
+    unsafe { block_entry(object::cell(b), i).read() == layout::FUSE_INTACT }
+}
+
+/// Pops "no-elements prototypes" ([`NO_ELEMENTS_PROTOTYPES`]) in the isolate and in every
+/// realm, the first time: `shape::note_proto_index_key` calls it, the one writer. After the
+/// pop: one load and a branch. Not a GC point.
+#[inline]
+pub(crate) fn pop_no_elements(rt: &Runtime) {
+    if rt.fuses.no_elements.intact() {
+        pop_no_elements_now(rt);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn pop_no_elements_now(rt: &Runtime) {
+    rt.fuses.pop(rt, FuseRef::Static(NO_ELEMENTS_PROTOTYPES));
+}
+
+impl Registry {
+    /// The realm blocks the registry holds (dead ones not yet dropped included).
+    pub(crate) fn block_count(&self) -> usize {
+        self.inner.borrow().blocks.len()
     }
 }
