@@ -262,6 +262,7 @@ fn check_in(session: &mut crate::harness::Session) -> Result<String, String> {
     // SAFETY: the session ran CHECK_SRC just now (check_elem2 is safe: it runs ELEM2_SRC).
     unsafe { check_kinds(session) }.and_then(|()| check_elem2(session))?;
     check_context(session)?;
+    check_slots(session)?;
     let o = session.function_value("layoutObj")?.to_bits();
     let a = session.function_value("layoutObj.b")?.to_bits();
     let f = session.function_value("layoutGet")?;
@@ -326,7 +327,7 @@ fn check_in(session: &mut crate::harness::Session) -> Result<String, String> {
     Ok(format!(
         "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
          as ep9_vm::layout exports them; the elements kind in the shape and both storage forms \
-         on arrays of the 6 kinds, DICTIONARY (3 ways) and site-born ones; a closure's CONTEXT cell; versions {}",
+         on arrays of the 6 kinds, DICTIONARY (3 ways) and site-born ones; a closure's CONTEXT cell; an out-of-line field and its IC handler (the 3 month-6 hand facts); versions {}",
         PINNED
             .iter()
             .map(|(n, v)| format!("{n} {v}"))
@@ -748,6 +749,122 @@ pub fn read_set_lines() -> Vec<String> {
         out.push(line);
     }
     out
+}
+
+// ---- out-of-line fields (SPIKEC-9) ---------------------------------------------------------
+
+/// OBJECT_LAYOUT 6, a hand fact (SPIKEC-9, M6-P1): the object word at +8 holds the SLOTS cell
+/// of the out-of-line fields (ep9_vm `object::obj::SLOTS`). See [`HAND_FACTS_M6`].
+pub const OBJECT_SLOTS: u32 = 8;
+/// OBJECT_LAYOUT 6, a hand fact (SPIKEC-9): out-of-line field `k` (the shape's field number
+/// minus its in-object capacity) is at `SLOTS_DATA + 8k` of the SLOTS cell (`shape::slf::DATA`).
+pub const SLOTS_DATA: u32 = 16;
+/// IC_LAYOUT 4, a hand fact (SPIKEC-9): the smi handler kind of an own data field out of line
+/// (`ic::smi::FIELD_OUT_OF_LINE`); its offset (from bit [`SMI_SHIFT`]) is into the SLOTS cell.
+pub const SMI_FIELD_OUT_OF_LINE: i32 = 2;
+
+/// The hand facts of month 6 (SPIKEC-9): (name, value, owner). Navier-stokes' `project` reads
+/// `Math.sqrt`, an own data field of `Math` past its shape's in-object capacity (field 31,
+/// capacity 4), so the named load reads it out of line. `ep9_vm::layout` exports no out-of-line
+/// fact, and `layout.rs` is frozen after M6-P0 (plan v11 rule 2), so these three are hand facts
+/// until the orchestrator adds the exports (the SPIKEC-9 report names the fixer need). Each is
+/// proved on a live object by [`check`] ([`check_slots`]), as the month-5 hand facts were.
+pub const HAND_FACTS_M6: [(&str, u32, &str); 3] = [
+    ("OBJECT_SLOTS", OBJECT_SLOTS, "OBJECT_LAYOUT"),
+    ("SLOTS_DATA", SLOTS_DATA, "OBJECT_LAYOUT"),
+    (
+        "SMI_FIELD_OUT_OF_LINE",
+        SMI_FIELD_OUT_OF_LINE as u32,
+        "IC_LAYOUT",
+    ),
+];
+
+/// The smi handler (an int32 Value) of an out-of-line field at byte offset `offset` of the
+/// SLOTS cell.
+pub const fn field_out_of_line_handler(offset: u32) -> u64 {
+    NUMBER_TAG | (SMI_FIELD_OUT_OF_LINE | ((offset as i32) << SMI_SHIFT)) as u32 as u64
+}
+
+/// The probe of [`check_slots`]: an object with more fields than its in-object capacity, read
+/// by named loads that run past the feedback threshold.
+const SLOTS_SRC: &str = "\
+var layoutWide = {};\n\
+for (var layoutW = 0; layoutW < 12; layoutW++) layoutWide['w' + layoutW] = 100 + layoutW;\n\
+function layoutWideGet(o) { return o.w11; }\n\
+for (var layoutW = 0; layoutW < 20; layoutW++) layoutWideGet(layoutWide);\n";
+
+/// The out-of-line facts ([`HAND_FACTS_M6`]) on a live object: the live facts of the warmed
+/// load `o.w11` name an own field past the shape's capacity; the IC case of its shape is
+/// [`field_out_of_line_handler`] of `SLOTS_DATA + 8 * (field - capacity)` (the handler kind and
+/// the SLOTS data offset); the object's word at [`OBJECT_SLOTS`] is a cell whose word at that
+/// offset is the field's value, and so is the word 8 below it for `w10`.
+fn check_slots(session: &mut crate::harness::Session) -> Result<(), String> {
+    use ep9_facts::{Access, SlotFacts};
+    let r = session.run(SLOTS_SRC, "layout-slots.js");
+    r.result.map_err(|e| format!("slots probe: {e}"))?;
+    let o = session.function_value("layoutWide")?.to_bits();
+    let f = session.function_value("layoutWideGet")?;
+    let info = session.input_of(f)?.key;
+    let script = session
+        .script("layout-slots.js")
+        .ok_or("no slots probe script")?;
+    let id = *script
+        .functions_named("layoutWideGet")
+        .first()
+        .ok_or("no layoutWideGet")?;
+    let live = crate::facts::live(session, script)?;
+    let facts = crate::facts::for_function(&live, script.unit.unit(), id);
+    let Some((_, SlotFacts::LoadNamed(pf))) = facts.records.first() else {
+        return Err(format!(
+            "layoutWideGet: no LoadNamed record ({:?})",
+            facts.records
+        ));
+    };
+    let [case] = &pf.cases[..] else {
+        return Err(format!("layoutWideGet: {} cases", pf.cases.len()));
+    };
+    let Access::OwnField { field } = case.access else {
+        return Err(format!("layoutWideGet: access {:?}", case.access));
+    };
+    let cap = case.receiver.capacity;
+    if field < cap {
+        return Err(format!(
+            "o.w11: field {field} is in object (capacity {cap}); the probe needs an out-of-line one"
+        ));
+    }
+    let off = SLOTS_DATA + 8 * u32::from(field - cap);
+    if !is_cell(o) {
+        return Err("layoutWide is not a cell".into());
+    }
+    // SAFETY: `o` is a live cell held by a global of the session's isolate and `info` the
+    // FunctionInfo of a live function; the isolate runs nothing while this reads. The SLOTS
+    // word is checked a cell before it is read, and the probe's field is inside the cell (the
+    // IC case for the object's shape names its offset).
+    unsafe {
+        if kind(o) != KIND_OBJECT {
+            return Err(format!("layoutWide has kind {}", kind(o)));
+        }
+        let cell = feedback_cell(info)?.ok_or("layoutWideGet has no feedback vector")?;
+        let (k, v) = feedback_slot(cell, 0);
+        let h = ic_handler_for(k, v, shape_id(o)).ok_or("no IC case for layoutWide's shape")?;
+        if h != field_out_of_line_handler(off) || h as i32 & SMI_KIND_MASK != SMI_FIELD_OUT_OF_LINE
+        {
+            return Err(format!(
+                "IC handler {h:#x}, not FIELD_OUT_OF_LINE at SLOTS +{off} ({:#x})",
+                field_out_of_line_handler(off)
+            ));
+        }
+        let slots = word(o, OBJECT_SLOTS);
+        if !is_cell(slots) {
+            return Err(format!(
+                "layoutWide +{OBJECT_SLOTS} is {slots:#x}, not a cell"
+            ));
+        }
+        if word(slots, off) != int32_bits(111) || word(slots, off - 8) != int32_bits(110) {
+            return Err(format!("SLOTS +{off} and +{} are not w11 and w10", off - 8));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@
 //! | `&`, `|`, `^`, `<<`, `>>` (and the Smi forms) | TruncateInt32 on each input, Int32 op | PROVEN (H30 list) |
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
-//! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
+//! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field, an out-of-line one, or an Array's `length`, one location for every case) + LoadField or LoadSlotsField | the check is predicted{source}; the loaded value unknown |
 //! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value, WI-SC7; a Float64 load and the Tagged value of an element copy `a[i] = b[j]`, SPIKEC-7); or the generic keyed entry (a key that is not an index, SPIKEC-4; a store of any other Tagged value) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
 //! | `+`, `-`, `*` whose BinaryOp record saw a double (hint inside {int32, int32-overflow, number}, with number), and `/` always | CheckNumber on each Tagged input (an Int32 input converts), a Float64 op (SPIKEC-4) | the check is predicted{source} with the record, else unknown; the op's result PROVEN (a number from numbers) |
 //! | `===` | CheckInt32 on each input (backed by an int32 CompareOp fact), Compare(Eq) (SPIKEC-4) | PROVEN (a boolean) |
@@ -1125,8 +1125,10 @@ impl Builder<'_> {
             return Err(refuse(format!("IC state {:?}", pf.state)));
         }
         // Every case must read the same place: an in-object field of an ordinary object at
-        // one offset, or an Array's length (the Value at +24: an int32, a double from 2^31).
-        let mut location: Option<(u32, u64)> = None;
+        // one offset, an out-of-line one at one SLOTS offset (SPIKEC-9: `Math.sqrt` is field
+        // 31 of a capacity-4 shape), or an Array's length (the Value at +24: an int32, a
+        // double from 2^31). The bool says "in the SLOTS cell".
+        let mut location: Option<(bool, u32, u64)> = None;
         let mut shapes = Vec::new();
         for c in &pf.cases {
             let here = match c.access {
@@ -1134,11 +1136,18 @@ impl Builder<'_> {
                     if c.receiver.kind == ObjectKind::Ordinary && field < c.receiver.capacity =>
                 {
                     let at = vm_layout::OBJECT_FIELDS + 8 * u32::from(field);
-                    (at, vm_layout::field_in_object_handler(at))
+                    (false, at, vm_layout::field_in_object_handler(at))
                 }
-                Access::ArrayLength if c.receiver.kind == ObjectKind::Array => {
-                    (vm_layout::ARRAY_LENGTH, vm_layout::ARRAY_LENGTH_HANDLER)
+                Access::OwnField { field } if c.receiver.kind == ObjectKind::Ordinary => {
+                    let k = u32::from(field - c.receiver.capacity);
+                    let at = vm_layout::SLOTS_DATA + 8 * k;
+                    (true, at, vm_layout::field_out_of_line_handler(at))
                 }
+                Access::ArrayLength if c.receiver.kind == ObjectKind::Array => (
+                    false,
+                    vm_layout::ARRAY_LENGTH,
+                    vm_layout::ARRAY_LENGTH_HANDLER,
+                ),
                 ref a => {
                     return Err(refuse(format!(
                         "access {a:?} on a {:?} shape",
@@ -1155,7 +1164,7 @@ impl Builder<'_> {
             self.g.add_ref(RefNode::ShapeRef(i));
             shapes.push(i);
         }
-        let (at, handler) = location.expect("a case");
+        let (slots, at, handler) = location.expect("a case");
         self.g.add_ref(RefNode::CellRef(slot));
         let st = self.state();
         let o = self.tagged(o);
@@ -1171,12 +1180,12 @@ impl Builder<'_> {
             Trust::Predicted(source),
         );
         self.guard(chk, GuardBasis::Fact(source), st);
-        Ok(self.emit(
-            Op::LoadField { offset: at },
-            vec![chk],
-            Repr::Tagged,
-            Trust::Unknown,
-        ))
+        let op = if slots {
+            Op::LoadSlotsField { offset: at }
+        } else {
+            Op::LoadField { offset: at }
+        };
+        Ok(self.emit(op, vec![chk], Repr::Tagged, Trust::Unknown))
     }
 
     /// Replaces every use of `old` (inputs and frame states) with `new`.
@@ -1597,7 +1606,8 @@ impl Builder<'_> {
                 | Op::IsFalse
                 | Op::IsTrue
                 | Op::Return
-                | Op::LoadField { .. } => vec![Repr::Tagged],
+                | Op::LoadField { .. }
+                | Op::LoadSlotsField { .. } => vec![Repr::Tagged],
                 Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
                 // The value: an Int32 or a Float64 stays one; anything else is Tagged (a Bool
                 // boxes).

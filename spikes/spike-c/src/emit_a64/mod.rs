@@ -1002,6 +1002,14 @@ impl Emitter<'_> {
                 dynasm!(self.ops ; .arch aarch64 ; ldr X(d), [X(x), o]);
                 self.finish(n);
             }
+            Op::LoadSlotsField { offset } => {
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let s = scaled(crate::vm_layout::OBJECT_SLOTS as usize)?;
+                let o = scaled(*offset as usize)?;
+                dynasm!(self.ops ; .arch aarch64 ; ldr x16, [X(x), s] ; ldr X(d), [x16, o]);
+                self.finish(n);
+            }
             Op::LoadElement | Op::StoreElement => {
                 // Bounds by `length`; then the storage form by the elements cell's kind byte
                 // (H18: it follows the elements kind): ELEMENTS (Values) or ELEMENTS_DOUBLE (raw

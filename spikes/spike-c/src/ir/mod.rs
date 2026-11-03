@@ -228,6 +228,10 @@ pub enum Op {
     CheckArray,
     /// The field at byte `offset` of the object input (behind a [`Op::CheckShape`]). Tagged.
     LoadField { offset: u32 },
+    /// The out-of-line field at byte `offset` of the object input's SLOTS cell (the word at
+    /// `vm_layout::OBJECT_SLOTS`; behind a [`Op::CheckShape`] whose shapes hold the field past
+    /// their in-object capacity, SPIKEC-9). Tagged.
+    LoadSlotsField { offset: u32 },
     /// Guard: element `index` (Int32) of the array input (a [`Op::CheckArray`]): in `0..length`,
     /// inside the capacity of its ELEMENTS or ELEMENTS_DOUBLE cell (any other store exits), not
     /// a hole. Tagged (a raw f64 boxes as `Value::number`), or Float64 if only number uses read
