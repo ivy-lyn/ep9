@@ -83,14 +83,17 @@ fn report(bad: Vec<String>, runs: &[ScriptRun], op: &str) {
 }
 
 const CMP: &str = "\
-function lt(x, y) { return x * 1 < y * 1; }\n\
-function le(x, y) { return x * 1 <= y * 1; }\n\
-function gt(x, y) { return x * 1 > y * 1; }\n\
-function ge(x, y) { return x * 1 >= y * 1; }\n\
-function eq(x, y) { return x * 1 === y * 1; }\n";
+function lt(x, y) { return x < y; }\n\
+function le(x, y) { return x <= y; }\n\
+function gt(x, y) { return x > y; }\n\
+function ge(x, y) { return x >= y; }\n\
+function eq(x, y) { return x === y; }\n";
 
 /// A double compare whose Bool is a value (not fused into a branch): all 81 pairs of
-/// {0.5, -0.5, 0, -0, NaN, +/-Infinity, 1.5, 3} for <, <=, >, >=, ===.
+/// {0.5, -0.5, 0, -0, NaN, +/-Infinity, 1.5, 3} for <, <=, >, >=, ===. The operands are the
+/// arguments themselves (not `x * 1`: MulSmi guards int32, so a special value would exit to
+/// T0 before the compare), and the unforced run must take no exit: every pair runs the
+/// compiled CompareFloat64.
 #[test]
 fn unfused_double_compares_equal_t0() {
     if !aarch64() {
@@ -108,6 +111,13 @@ print(out.join(''));\n";
             format!("for (var w = 0; w < 300; w++) {{ {f}(w * 0.5, 7.25); {f}(1.5, w * 0.25); }}");
         let (r, b) = check(f, CMP, &warm, &main.replace('F', f), f);
         bad.extend(b);
+        let total: u64 = r.exits.iter().sum();
+        if total != 0 {
+            bad.push(format!(
+                "[{f}] unforced run took {total} exits: {:?}",
+                r.fired()
+            ));
+        }
         runs.push(r);
     }
     report(bad, &runs, "CompareFloat64");
