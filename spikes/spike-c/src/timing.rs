@@ -755,9 +755,10 @@ pub fn time(
         }
     }
     if let Some((b, f, u)) = code {
+        // The C run's hot set, all of it (`sp_facts::compile_hot_set`; SPIKEC-9: navier-stokes
+        // compiles three functions), not only the first hot function.
         report.push_str(&format!(
-            "compiled {}: {b} bytes, guards {f} fact + {u} unbacked",
-            k.hot[0].name
+            "compiled hot set of C: {b} bytes, guards {f} fact + {u} unbacked"
         ));
         if let Some(e) = most_exits {
             report.push_str(&format!(
