@@ -752,25 +752,34 @@ thread_local! {
     static SIZE_PANIC_NOW: Cell<bool> = const { Cell::new(false) };
 }
 
-/// A 16 B leaf whose size function panics on demand.
+/// A leaf whose size function panics on demand.
 const PANICKY_SIZE: KindId = KindId::new(33).unwrap();
+/// Its size: at most a line, so it is not medium, and above 8 B less than a line, so it
+/// reaches into the next line unless it starts at a line start or one granule after it.
+const PANICKY_SIZE_BYTES: usize = 248;
 
 fn panicky_size(_: CellPtr) -> usize {
     if SIZE_PANIC_NOW.get() {
         std::panic::resume_unwind(Box::new("test size panic"));
     }
-    16
+    PANICKY_SIZE_BYTES
 }
 
 /// A size function panics while an S1 sweep walks a page: the walk had cleared the page's
-/// line marks and set only those of the cells before the panic, so the unwind marks every
+/// line marks and set only those of the lines before the panic, so the unwind marks every
 /// line used. After it the page holds no dead cell (the unwind set every mark bit to its VO
 /// bit), so the next S1 sweep keeps those line marks; without the fill, an allocation would
 /// land on the live cells after the panic point. Every cell is old (BLACK) when the walk
 /// panics, as after a major GC; the page unwind does not make a WHITE cell BLACK.
+///
+/// The walk takes the size of a live cell only when it may reach into the next line
+/// (`Inner::mark_live_lines`): the last cell that starts in its line, with no live cell
+/// starting in the next line. So `odd` crosses a line end, and only dead cells start in the
+/// next line when the walk panics.
 #[test]
 #[cfg_attr(miri, ignore)]
 fn a_size_panic_in_an_s1_sweep_leaves_every_line_used() {
+    use crate::layout::LINE_SIZE;
     let heap = gen_heap(false, |_| {});
     heap.register_kind(
         PANICKY_SIZE,
@@ -783,10 +792,24 @@ fn a_size_panic_in_an_s1_sweep_leaves_every_line_used() {
     .unwrap();
     let host = new_node(&heap, 1, 3);
     let g = heap.new_global(host.to_value());
+    // Unrooted 16 B fillers (dead at the first GC) until `odd` would cross a line end.
+    let mut end = host.addr() + NODE_HEADER + 8 * 3;
+    while end % LINE_SIZE <= 8 {
+        end = new_node(&heap, 0, 0).addr() + NODE_HEADER;
+    }
+    let odd = heap.alloc(PANICKY_SIZE, PANICKY_SIZE_BYTES).unwrap();
+    assert_eq!(odd.addr(), end, "one run: the cells follow each other");
+    store(&heap, host, 1, odd.to_value());
+    let next_line_end = (odd.addr() / LINE_SIZE + 2) * LINE_SIZE;
+    assert!(odd.addr() + PANICKY_SIZE_BYTES > next_line_end - LINE_SIZE);
+    // In the next line: `dead` (live until host[2] is cleared), then unrooted fillers to the
+    // line end.
     let dead = new_node(&heap, 2, 0);
     store(&heap, host, 2, dead.to_value());
-    let odd = heap.alloc(PANICKY_SIZE, 16).unwrap();
-    store(&heap, host, 1, odd.to_value());
+    let mut end = dead.addr() + NODE_HEADER;
+    while end < next_line_end {
+        end = new_node(&heap, 0, 0).addr() + NODE_HEADER;
+    }
     let (chain, g_chain) = rooted_chain(&heap, 10, 600);
     store(&heap, host, 0, chain.to_value());
     let page_of = |c: CellPtr| heap.inner.borrow().mem.chunk_index(c.addr());
@@ -798,8 +821,8 @@ fn a_size_panic_in_an_s1_sweep_leaves_every_line_used() {
     assert!(odd.addr() < chain.addr());
     major(&heap);
     heap.finish_sweeping();
-    // `dead` is old and now unreachable: the next sweep walks the host's page and calls the
-    // size function of `odd`, which panics.
+    // `dead` is old and now unreachable: the next sweep walks the host's page; no live cell
+    // starts in the line after `odd`'s, so it calls the size function of `odd`, which panics.
     store(&heap, host, 2, Value::UNDEFINED);
     major(&heap);
     SIZE_PANIC_NOW.set(true);
