@@ -684,6 +684,21 @@ impl Graph {
                         }
                     }
                 }
+                // A call's lazy state (SPIKEC-10): the lazy exit reads each value at the call,
+                // so each is still live and defined before the call, as for a guard's state.
+                if let Some(l) = &node.lazy {
+                    for v in l.registers.iter().map(|&(_, v)| v).chain(l.acc) {
+                        if !self.node(v).live {
+                            return Err(format!("{at}: a lazy-state value n{} was removed", v.0));
+                        }
+                        if !defined[v.0 as usize] {
+                            return Err(format!(
+                                "{at}: lazy-state value n{} is not defined before the call",
+                                v.0
+                            ));
+                        }
+                    }
+                }
                 if node.op.is_effect() {
                     effects.push(node.offset);
                 }
@@ -1035,6 +1050,46 @@ mod tests {
         g.node_mut(c).guard.as_mut().expect("guard").state.acc = Some(late);
         let e = g.check().unwrap_err();
         assert!(e.contains("not defined before the guard"), "{e}");
+    }
+
+    /// A call's lazy state (SPIKEC-10) gets the frame-state checks of a guard: a value that a
+    /// pass removed, or one made after the call, is refused; a value made before passes.
+    #[test]
+    fn check_refuses_a_bad_lazy_state() {
+        let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+        g.blocks.push(Block::default());
+        let push = |g: &mut Graph, op: Op, inputs: Vec<NodeId>, repr: Repr, off: u32| {
+            let n = g.add(op, inputs, repr, Trust::Unknown, BlockId(0), off);
+            g.blocks[0].nodes.push(n);
+            n
+        };
+        let p = push(
+            &mut g,
+            Op::Incoming(Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+            0,
+        );
+        let early = push(&mut g, Op::ConstInt32(1), vec![], Repr::Int32, 1);
+        let call = push(&mut g, Op::Call { regs: vec![] }, vec![p], Repr::Tagged, 2);
+        let late = push(&mut g, Op::ConstInt32(2), vec![], Repr::Int32, 6);
+        for n in [early, late] {
+            g.node_mut(n).trust = Trust::Proven;
+        }
+        let state = |v: NodeId| FrameState {
+            offset: 6,
+            registers: vec![(Register::parameter(0), v)],
+            acc: None,
+        };
+        g.node_mut(call).lazy = Some(state(early));
+        assert!(g.check().is_ok());
+        g.node_mut(call).lazy = Some(state(late));
+        let e = g.check().unwrap_err();
+        assert!(e.contains("not defined before the call"), "{e}");
+        g.node_mut(call).lazy = Some(state(early));
+        g.node_mut(early).live = false;
+        let e = g.check().unwrap_err();
+        assert!(e.contains("lazy-state value n1 was removed"), "{e}");
     }
 
     /// The graph of `name` in `defs` from the live facts after `warm` (T0).
