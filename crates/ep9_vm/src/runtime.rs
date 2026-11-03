@@ -103,9 +103,9 @@ pub(crate) enum Root {
     Realm,
     // ---- M6-P0 (OBJECT_LAYOUT 6; V11-D21, MC-w22-17: root slots move once, before any unit) ----
     /// The current realm's static fuse block: a FUSE cell (kind 83, `kinds::PROPS_INDEXED` has
-    /// the layout table), or undefined until M6-P2 FUSE-PI builds it. It mirrors the realm's
-    /// intrinsic `IntrinsicId::RealmFuses` (`builtins::IntrinsicId::root`), so `realm::switch`
-    /// writes it with the other intrinsics.
+    /// the layout table), made by `fuse::new_realm_block` at realm init (M6-P2 FUSE-PI). It
+    /// mirrors the realm's intrinsic `IntrinsicId::RealmFuses` (`builtins::IntrinsicId::root`),
+    /// so `realm::switch` writes it with the other intrinsics.
     RealmFuses,
     // ---- M3-P1 REALMS: isolate-wide, not switched with the realm ----
     /// The VM-internal private name under which the global object of each realm holds its

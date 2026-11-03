@@ -79,12 +79,13 @@ impl<'s> Cx<'s> {
 
     /// The intrinsic `id` of GetFunctionRealm(`f`) (§7.3.22: the realm of a function, of a
     /// bound function's target, else the current realm), or undefined if no table made it.
+    /// Undefined for `IntrinsicId::RealmFuses` too: the realm's fuse block is VM-internal.
     /// It never throws: a revoked proxy on the walk gives the current realm; a spec step
     /// with `? GetFunctionRealm` uses [`Cx::try_function_realm_intrinsic`]. Not a GC point.
     pub fn function_realm_intrinsic(&self, f: impl Into<Local<'s>>, id: IntrinsicId) -> Local<'s> {
         let rt = self.rt();
         let r = realm::get_function_realm(rt, f.into().bits());
-        Self::local(realm::intrinsic_in(rt, r, id))
+        Self::local(embedder_intrinsic(rt, r, id))
     }
 
     /// [`Cx::function_realm_intrinsic`] with GetFunctionRealm step 4.a (§7.3.22): a revoked
@@ -101,8 +102,17 @@ impl<'s> Cx<'s> {
         id: IntrinsicId,
     ) -> JsResult<Local<'s>> {
         let r = realm::try_get_function_realm(self.cx, f.into().bits())?;
-        Ok(Self::local(realm::intrinsic_in(self.rt(), r, id)))
+        Ok(Self::local(embedder_intrinsic(self.rt(), r, id)))
     }
+}
+
+/// The intrinsic `id` of the REALM record `r` as the ABI gives it: undefined for the
+/// VM-internal `IntrinsicId::RealmFuses` (a FUSE cell, not a value an embedder may hold).
+fn embedder_intrinsic(rt: &crate::runtime::Runtime, r: u64, id: IntrinsicId) -> u64 {
+    if id == IntrinsicId::RealmFuses {
+        return crate::frame::UNDEFINED;
+    }
+    realm::intrinsic_in(rt, r, id)
 }
 
 /// The global object of the REALM record `r`.

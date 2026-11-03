@@ -736,8 +736,10 @@ impl<'s> Cx<'s> {
     }
 
     /// An intrinsic object of the current realm (§6.1.7.4). Panics if no table made it (a
-    /// table names only intrinsics that exist: `builtins::check_tables`).
+    /// table names only intrinsics that exist: `builtins::check_tables`) or `id` is the
+    /// VM-internal `IntrinsicId::RealmFuses`.
     pub fn intrinsic(&self, id: IntrinsicId) -> Local<'s, JsObject> {
+        assert!(id != IntrinsicId::RealmFuses, "RealmFuses is VM-internal");
         let v = builtins::intrinsic(self.rt(), id);
         assert!(kinds::is_object(v), "{} is not installed", id.name());
         Self::local(v)

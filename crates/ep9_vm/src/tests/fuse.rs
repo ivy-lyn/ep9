@@ -1129,3 +1129,64 @@ fn note_proto_index_key_is_the_one_writer() {
         "the callers of note_proto_index_key"
     );
 }
+
+/// The realm's fuse block is VM-internal (FUSE-PI R6-2 remainder): `check_tables` refuses a
+/// table that makes `IntrinsicId::RealmFuses` (its object would replace the block in
+/// `Root::RealmFuses`), and the embedder ABI does not hand the block out: the function-realm
+/// reads give undefined in this realm and in another one, `has_intrinsic` is false and
+/// `Cx::intrinsic` panics ("VM-internal"). The root still holds the realm's FUSE cell.
+#[test]
+fn a_table_or_an_embedder_cannot_read_or_replace_the_fuse_block() {
+    use crate::{BuiltinModule, BuiltinTable, IntrinsicDef, IntrinsicValue};
+    for proto in [Some(IntrinsicId::ObjectPrototype), None] {
+        let intrinsics: &'static [IntrinsicDef] = Box::leak(Box::new([IntrinsicDef {
+            id: IntrinsicId::RealmFuses,
+            value: IntrinsicValue::Object { proto },
+        }]));
+        let modules: &'static [BuiltinModule] = Box::leak(Box::new([BuiltinModule {
+            name: "fuses",
+            block: 101,
+            defs: &[],
+            intrinsics,
+            props: &[],
+        }]));
+        let t: &'static BuiltinTable = Box::leak(Box::new(BuiltinTable::new("fuses", modules)));
+        let e = builtins::check_tables(&[crate::internals::VM_BUILTINS, t]).unwrap_err();
+        assert!(e.contains("[[RealmFuses]] is VM-internal"), "{e}");
+    }
+    each(|iso| {
+        let r = iso.with_cx(|cx| {
+            let block = cx.inner().rt().root(Root::RealmFuses);
+            assert_eq!(crate::kinds::cell_kind(block), crate::kinds::FUSE.get());
+            let g = cx.global();
+            let other = cx.create_realm()?;
+            for f in [g, other] {
+                assert!(
+                    cx.function_realm_intrinsic(f, IntrinsicId::RealmFuses)
+                        .is_undefined()
+                );
+                let v = cx.try_function_realm_intrinsic(f, IntrinsicId::RealmFuses)?;
+                assert!(v.is_undefined());
+            }
+            // The other ids still read as before.
+            let op = cx.function_realm_intrinsic(g, IntrinsicId::ObjectPrototype);
+            assert!(op.is_same_bits(&cx.intrinsic(IntrinsicId::ObjectPrototype)));
+            assert!(!cx.has_intrinsic(IntrinsicId::RealmFuses));
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cx.intrinsic(IntrinsicId::RealmFuses);
+            }))
+            .expect_err("Cx::intrinsic(RealmFuses) panics");
+            assert_eq!(
+                panic.downcast_ref::<&str>(),
+                Some(&"RealmFuses is VM-internal")
+            );
+            assert_eq!(
+                cx.inner().rt().root(Root::RealmFuses),
+                block,
+                "the block stays"
+            );
+            Ok(())
+        });
+        assert!(r.is_ok());
+    });
+}
