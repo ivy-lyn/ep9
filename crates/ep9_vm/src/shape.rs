@@ -1046,7 +1046,7 @@ fn new_unique(rt: &Runtime, proto: u64, d: u64, counts: u64, flags: i32, info: u
 }
 
 /// The child of `shape` for the key and attributes, if the transition is live: the +32 word,
-/// then the sorted table ([`table_find`]: a scan up to [`LINEAR_MAX`] slots, else a binary
+/// then the sorted table ([`table_find`]: a scan up to [`TABLE_SCAN_MAX`] slots, else a binary
 /// search). Debug builds check one child per (key, attributes) ([`debug_one_child`]).
 fn find_transition(shape: u64, key: u64, attrs: i32, how: Probe) -> Option<u64> {
     let s = cell(shape);
@@ -1205,8 +1205,8 @@ fn new_shape(rt: &Runtime, proto: u64, parent: u64, d: u64, counts: u64, flags: 
 
 /// Records `child` as a (weak) transition of `shape`: in the +32 word if it is free, else in
 /// the sorted table ([`table_insert`]). With no table, or a table without a hole, a new table
-/// holds the live entries and `child` in order, spread out ([`table_capacity`]): the holes are
-/// gone. GC point (the new table; `shape`, `child` and the old table are Rust locals, CSS).
+/// holds the live entries and `child` in order ([`table_capacity`], [`slot_for`]): the holes
+/// are gone. GC point (the new table; `shape`, `child` and the old table are Rust locals, CSS).
 fn record_transition(rt: &Runtime, shape: u64, child: u64) {
     let s = cell(shape);
     if rd(s, shf::TRANSITION) == UNDEFINED {
@@ -1221,11 +1221,11 @@ fn record_transition(rt: &Runtime, shape: u64, child: u64) {
     let cap = table_capacity(old.map_or(0, table_live) + 1);
     let nt = rt.alloc(kind::TRANSITIONS, trf::ENTRIES + 8 * cap);
     object::init(nt, trf::CAPACITY, int32_bits(cap as i32));
-    // The allocation may have collected: spread what is still live (entry j of m: j * cap / m).
+    // The allocation may have collected: place what is still live, in order ([`slot_for`]).
     let (m, want) = (old.map_or(0, table_live) + 1, sort_key_of(child));
     let (mut j, mut placed) = (0, false);
     let mut put = |c: u64| {
-        object::init(nt, entry_off(j * cap / m), c);
+        object::init(nt, entry_off(slot_for(j, m, cap)), c);
         j += 1;
     };
     for c in old.into_iter().flat_map(live_entries) {
@@ -1843,22 +1843,29 @@ fn own_descriptors(rt: &Runtime, old: u64) -> u64 {
 //   wherever the holes are, so a cleared child needs no fix-up. A search skips holes; an
 //   insert fills the nearest hole ([`table_insert`]); a new table takes only the live entries,
 //   so [`record_transition`] removes the holes when it grows or rebuilds the table.
-// - Search ([`table_find`]). A table of at most [`LINEAR_MAX`] slots is scanned; a larger one
-//   is binary searched ([`lower_bound`]), then the entries of the equal pair are compared by
-//   key. Debug builds check that the search finds what a full scan finds and that no two live
-//   children have one (key, attributes) ([`debug_one_child`]; OI R1).
-// - Size. A new table spreads its entries over [`table_capacity`] slots (twice the entries, a
-//   power of 2, at least [`MIN_TRANSITIONS`], at most [`MAX_TABLE`]), so a hole is near every
-//   place. A table holds at most [`MAX_TABLE`] = [`MAX_TRANSITIONS`] - 1 entries, so a shape is
-//   at the cap exactly when its +32 word is live and its table has [`MAX_TABLE`] slots and no
-//   hole ([`at_transition_cap`]); a smaller table is not read on an add.
+// - Search ([`table_find`]). A table of at most [`TABLE_SCAN_MAX`] (16) slots is scanned; a
+//   larger one (63 slots: 17 children or more) is binary searched ([`lower_bound`]), then the
+//   entries of the equal pair are compared by key. Not past 8 slots, as the descriptor index:
+//   a probe hashes the key of the child it reads (5 dependent loads), and the binary search of
+//   a 16-slot table cost +1.1% instructions on ci-v0 against the scan (M6-P2 BENCH-SET). Debug
+//   builds check that the search finds what a full scan finds and that no two live children
+//   have one (key, attributes) ([`debug_one_child`]; OI R1).
+// - Size. A new table has [`table_capacity`] slots (twice the entries, a power of 2, at least
+//   [`MIN_TRANSITIONS`], at most [`MAX_TABLE`]). A scanned table packs its entries at the
+//   front, so a scan meets them first; a searched table spreads them out ([`slot_for`]), so a
+//   hole is near every place and an insert moves few entries. A table holds at most
+//   [`MAX_TABLE`] = [`MAX_TRANSITIONS`] - 1 entries, so a shape is at the cap exactly when its
+//   +32 word is live and its table has [`MAX_TABLE`] slots and no hole
+//   ([`at_transition_cap`]); a smaller table is not read on an add.
 //
 // None of these functions is a GC point. The one GC point of the table is the allocation in
 // [`record_transition`], and no slot number is kept across it.
 
 /// The largest TRANSITIONS capacity of a tree shape: the +32 word holds one more child.
 const MAX_TABLE: usize = MAX_TRANSITIONS - 1;
-const _: () = assert!(MIN_TRANSITIONS <= MAX_TABLE && LINEAR_MAX < MAX_TABLE);
+/// Up to this many slots a table is scanned and packed; past it, binary searched and spread.
+const TABLE_SCAN_MAX: usize = 16;
+const _: () = assert!(MIN_TRANSITIONS <= TABLE_SCAN_MAX && TABLE_SCAN_MAX < MAX_TABLE);
 
 /// The byte offset of slot `i` of a TRANSITIONS cell.
 #[inline]
@@ -1899,6 +1906,17 @@ fn table_capacity(n: usize) -> usize {
         .next_power_of_two()
         .clamp(MIN_TRANSITIONS, MAX_TABLE)
         .max(n)
+}
+
+/// The slot of entry `j` of the `m` entries of a new table of `cap` slots (`m <= cap`): `j` in
+/// a scanned table (packed), `j * cap / m` in a searched one (spread; strictly rising in `j`).
+fn slot_for(j: usize, m: usize, cap: usize) -> usize {
+    debug_assert!(j < m && m <= cap);
+    if cap <= TABLE_SCAN_MAX {
+        j
+    } else {
+        j * cap / m
+    }
 }
 
 /// The key the child shape `child` added (its last descriptor) and its attributes. Not a GC
@@ -1943,13 +1961,13 @@ fn lower_bound(t: CellPtr, cap: usize, want: (u32, i32)) -> usize {
 }
 
 /// The child in the table `tab` (a TRANSITIONS cell) that added `key` with `attrs`, if it is
-/// live. Up to [`LINEAR_MAX`] slots a scan; past that the binary search, then the entries of
-/// the equal pair until the first greater one. Not a GC point.
+/// live. Up to [`TABLE_SCAN_MAX`] slots a scan; past that the binary search, then the entries
+/// of the equal pair until the first greater one. Not a GC point.
 fn table_find(tab: u64, key: u64, attrs: i32, how: Probe) -> Option<u64> {
     debug_assert!(kind::cell_kind(tab) == kind::TRANSITIONS.get());
     let t = cell(tab);
     let cap = table_cap(t);
-    if cap <= LINEAR_MAX {
+    if cap <= TABLE_SCAN_MAX {
         return live_entries(t).find(|&c| is_transition_to(c, key, attrs, how));
     }
     let want = (hash_of(key), attrs);

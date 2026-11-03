@@ -544,7 +544,7 @@ fn table_after(n: usize) -> (usize, usize) {
 }
 
 #[test]
-fn a_table_past_8_slots_is_sorted_and_finds_every_child() {
+fn a_table_past_16_slots_is_sorted_and_finds_every_child() {
     stressed(|rt| {
         let roots = rt.heap.scratch_roots();
         let base = keep(&roots, add(rt, null_root(rt), "base"));
