@@ -8,7 +8,7 @@
 | Origin | v1#25; plan status E (extended: `aot`) |
 | Crates | `ep9_cli` (default `jit`), `ep9_vm` (`jit`; `spike-native` and `ic-stats`, never in `ep9`), `ep9_platform` (`jit`, `unwind`), `ep9_unit` (`aot`, empty in M0); later `ep9_masm`, `ep9_baseline`, `ep9_opt`, `ep9_regexp` (RX2 under `jit`), `ep9_aot`, `ep9c` |
 | Owner (plan role) | JIT/platform lead (`jit`); AOT senior (`aot`) |
-| Validated by | SP-JIT-mem (passed on 4 targets, 2026-10-21); dep-guards checks 5, 9, 10, 11, 12 and 13; `cargo xtask feature-matrix` on 4 runners (M0 wk4), in the CI job `feature matrix (<target>)` since M4-P0 (a build-test step before) |
+| Validated by | SP-JIT-mem (passed on 4 targets, 2026-10-21); dep-guards checks 5, 9, 10, 11, 12 and 13; `cargo xtask feature-matrix` on 4 runners (M0 wk4), in the CI job `feature matrix (<target>)` since M4-P0 (a build-test step before); the CI job `no-jit units (linux-x64)` since M6-P0 (the C-10 Rules row) |
 | Plan sources | [02 §6 H27](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [08 §2](../plan/08-repo.md#2-crates), [08 §3](../plan/08-repo.md#3-binaries), [08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks), [04 §5](../plan/04-execution.md#5-jit-infrastructure-and-the-relocatable-macroassembler) |
 
 ## Context
@@ -20,7 +20,7 @@
 
 ## Decision
 
-`jit` (runtime codegen) and `aot` (unit emission). The jitless build keeps T0, the compiler, the unit loader and the deoptimizer (02 §6).
+`jit` (runtime codegen) and `aot` (unit emission). The jitless build keeps T0, the compiler, the unit loader and the deoptimizer (02 §6). [2026-11-03, M6-P1 B3T1; FREEZE-M1 B3, doc 13 C-10, clarify:] It keeps the native entry and the tier manager too, once they are built (T1, A2): they and the deoptimizer build without `jit`, and every call path checks "Interp or not" first (H04, doc 13 §3.4). `jit` adds producers only: the JIT tiers and the regexp JIT (RX2). As built: the deopt reader (`crates/ep9_vm/src/deopt.rs`) has no `cfg`, so every build has it; the only native entry is Spike B's, behind `spike-native`, which implies `jit` and is never in an `ep9` build; no tier manager exists yet. Whether producers may run is the process permit (the Rules row below).
 
 ```text
  ep9_cli  default = ["jit"]
@@ -66,6 +66,8 @@
 | Each build is built, linted (`-D warnings`) and tested per package, never with `--workspace` | `cargo xtask feature-matrix`; CI job `feature matrix (<target>)` on 4 runners (a build-test step until M4-P0) | M0 wk4 |
 | Code under `jit` compiles out without the feature | `#[cfg(any(feature = "jit", test))]` (for example `Reservation::reserve_code_range_at`, `crates/ep9_platform/src/va.rs:135`) | M0 wk3 |
 | The jitless build passes the same test262 set as the JIT build | test262 per mode (10-quality §1) | when T1 exists (M1+) |
+| C-10: the deoptimizer, and the native entry and the tier manager once built, build without `jit`; `jit` adds producers only (the JIT tiers, the regexp JIT) | the CI job `no-jit units (linux-x64)`: `cargo test --locked -p ep9_vm -p ep9_builtins --no-default-features` with `EP9_EXPECT_NO_JIT=1`, so `crates/ep9_vm/tests/no_jit_build.rs` fails when the build has `jit`; the deopt reader tests (`tests::deopt`) run in it; the jitless cells of `cargo xtask feature-matrix` | M6-P0 (CI8); the native entry and the tier manager when built (T1) |
+| C-10: whether producers may run is the process permit (doc 13 layer L-P): one process-wide setting, set once before the first isolate; a worker isolate inherits it; without `jit` it allows no producer (doc 13 M-R2, M-R8) | a permit unit test; a worker test | T1 (the permit); M6 (workers) |
 
 ## Consequences
 
@@ -116,6 +118,7 @@
 | 2026-10-22 | rewrite | Check cell of the guard-13 Rules row (M2-P3-H27-65; closes M2-P2-OPEN-H27-65): it described the old single control ("the scan must find the key in a sample `[profile.dev]` table"). The P2 review fix I7 (06805b7, M2-P2-I7) made the scan flag every TOML spelling of a `panic` key, added `.cargo/config`, and grew the one control sample to 9 must-flag samples, 3 must-not lines and two tests of the Cargo.toml rule; the cell now says so. The kind is rewrite because a Check cell changes (as M2-P2-FIX-H03-KIND) | P3-ACCEPT-2 |
 | 2026-10-22 | clarify | Status Draft -> Accepted (M2-P3-ACCEPT). The §3.1 review record is complete: row 1 P2-ACCEPT-1, row 2 Codex (M2-P2-REVIEW), row 3 P3-ACCEPT-2, row 4 data. The Codex run on the P3 ADR slice (merge 6146ec5) had no finding on this ADR. The decision text does not change | orchestrator |
 | 2026-10-26 | clarify (proposed; Accepted path) | The "Validated by" line, the per-package Rules row and the week-4 check bullet: `cargo xtask feature-matrix` runs in its own CI job `feature matrix (<target>)` on the same 4 runners since M4-P0 (P0-CI moved it out of `build + test` for CI wall time; plan v9 §2.7). Same command, cells and targets; text only; no check changes. Review record for this amendment (README §3.1; plan v9 rule 21): rows 1 and 3 the M4-P0 Claude reviewer (the fixer wrote this row), row 2 the orchestrator's Codex run (row text by the M4-P0 integration fixer from the Codex texts), row 4 data (copied by the M4-P0 integration fixer); the rows are Pending; the orchestrator approves | M4-P0 integration fixer |
+| 2026-11-03 | fill (proposed; Accepted path) | FREEZE-M1 B3, part 1 (plan v11 §3.6; M6-PLAN-D24, M6-PLAN-D26), with doc 13 C-10 for H27. (1) Clarify, an appended dated note on the Decision line: the native entry, the tier manager and the deoptimizer build without `jit`, and `jit` adds producers only (the JIT tiers, the regexp JIT); as built, the deopt reader has no `cfg`, the only native entry is Spike B's behind `spike-native`, and no tier manager exists. (2) Two Rules rows: the C-10 build rule, checked by the CI job `no-jit units (linux-x64)` (M6-P0 CI8: `EP9_EXPECT_NO_JIT=1` and `crates/ep9_vm/tests/no_jit_build.rs`; the deopt reader tests run in it) and the feature matrix; and the process permit (doc 13 L-P, M-R2, M-R8), a fill whose check comes with T1. (3) The Validated by field names the no-jit job. Every existing check, test and golden file keeps its result (README §3.3 fill; doc 13 C-10 asks the reviewer to confirm the kind). Review record (README §3.1; plan v11 rule 21, §3.9, M6-PLAN-A26): row 1 the M6-P1 Claude reviewer; rows 2-4 the M6-P1 fixer (row 4 from the B3T1 acceptance logs); the orchestrator approves | M6-P1 B3T1 (DOCS chain) |
 
 ## Review record
 
