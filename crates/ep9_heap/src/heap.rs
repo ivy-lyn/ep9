@@ -1582,8 +1582,8 @@ impl Inner {
     ///
     /// The walk sets the line marks line by line from the bitmaps ([`Inner::mark_live_lines`]:
     /// a size call only for a live cell that may reach into the next line); `CHECK` sets them
-    /// cell by cell from each live cell's size. Both give the same marks (debug builds check
-    /// it after each walk).
+    /// cell by cell from each live cell's size. Both give the same marks (debug builds other
+    /// than Miri check it after each walk).
     ///
     /// `CHECK` (the verify after a GC): also checks the live cells in
     /// address order (none overlaps the previous one or crosses the page end; each has a
@@ -1719,7 +1719,9 @@ impl Inner {
         if CHECK && self.any_mark_bit(page, sticky) {
             sweep_error(errors, idx, format_args!("mark bit set outside a GC"));
         }
-        #[cfg(debug_assertions)]
+        // Not under Miri: there it would double the cost of every walk, and the line-mark test
+        // (tests/gc.rs) compares the marks itself.
+        #[cfg(all(debug_assertions, not(miri)))]
         if !CHECK {
             self.debug_check_line_marks(page);
         }
@@ -1790,9 +1792,9 @@ impl Inner {
         }
     }
 
-    /// Debug builds: after a walk that is not `CHECK`, the line marks equal the lines of the
-    /// live cells, computed cell by cell from their sizes (the form `CHECK` uses).
-    #[cfg(debug_assertions)]
+    /// Debug builds (not Miri): after a walk that is not `CHECK`, the line marks equal the
+    /// lines of the live cells, computed cell by cell from their sizes (the form `CHECK` uses).
+    #[cfg(all(debug_assertions, not(miri)))]
     fn debug_check_line_marks(&self, page: Page) {
         let mut want = [0u8; LINES_PER_PAGE];
         for w in 0..BITMAP_WORDS {

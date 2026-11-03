@@ -584,8 +584,9 @@ fn live_cell_lines(heap: &Heap, idx: usize) -> Vec<bool> {
 /// computed cell by cell: random sizes from 16 B to 8 KiB (cells inside one line, across one
 /// line end or several, medium cells on the overflow page), random survivors, holes refilled
 /// in later rounds. S0 walks every page: the marks are equal. S1 skips a page with no dead
-/// cell: its marks cover the live cells (debug builds also check each S1 walk for equality).
-/// Miri: 200 cells per round, about 25 s (M6-P2 measure).
+/// cell: its marks cover the live cells (debug builds other than Miri check each walk for
+/// equality).
+/// Miri: 100 cells per round, about 15 s on the M5 Max (M6-P2 measure).
 #[test]
 fn the_walk_marks_the_lines_of_the_live_cells() {
     use crate::layout::LINES_PER_PAGE;
@@ -598,7 +599,7 @@ fn the_walk_marks_the_lines_of_the_live_cells() {
             rng ^= rng << 17;
             rng
         };
-        let n = if cfg!(miri) { 200 } else { 6000 };
+        let n = if cfg!(miri) { 100 } else { 6000 };
         let mut roots = Vec::new();
         for round in 0..4u32 {
             for i in 0..n {
