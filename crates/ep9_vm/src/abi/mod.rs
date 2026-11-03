@@ -585,8 +585,8 @@ impl<'s> Cx<'s> {
         this: impl Into<Local<'s>>,
         args: &[Local<'s>],
     ) -> JsResult<Local<'s>> {
-        let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
         let (f, this) = (f.into().bits(), this.into().bits());
+        let argc = crate::isolate::checked_argc(self.rt(), f, this, args);
         call::call_with(
             self.cx,
             f,

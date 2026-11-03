@@ -373,6 +373,7 @@ embed (not core): impl Isolate :: pub fn dispatch(&self) -> Dispatch
 embed (not core): impl Isolate :: pub fn gc_stats(&self) -> GcStats
 embed (not core): impl Isolate :: pub fn interrupt_handle(&self) -> InterruptHandle
 embed (not core): impl Isolate :: pub fn new_with(IsolateConfig, ExecOptions) -> Result<Isolate, IsolateError>
+embed (not core): impl Isolate :: pub fn set_compile_strings_hook(&mut self, Option<for<'s> fn(&mut Cx<'s>, &[String], &str, bool) -> JsResult<()>>)
 embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>
 embed (not core): impl Isolate :: pub fn terminate_handle(&self) -> TerminateHandle
 embed (not core): impl Isolate :: pub fn verify_heap(&self) -> Result<VerifyReport, VerifyError>

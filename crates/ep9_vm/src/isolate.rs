@@ -1044,3 +1044,34 @@ fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
     let name = property::get_data_from(cx, ctor, rt.atom(Atom::Name))?;
     is_string(name).then(|| string::to_rust_string(name))
 }
+
+/// H22-Q9: the debug in-cage check of a value that an embedder or a builtin passes to the ABI.
+/// In a debug build it panics if `bits` is a cell outside this isolate's cage
+/// (`Heap::contains`, the test the conservative scan uses): a Value of another isolate (H22
+/// rule "A `Value` never moves from one isolate to another"). A release build checks nothing.
+/// `what` names the value in the message.
+#[inline]
+pub(crate) fn debug_check_in_cage(rt: &Runtime, bits: u64, what: &str) {
+    if cfg!(debug_assertions) && bits != 0 && crate::kinds::is_cell_bits(bits) {
+        assert!(
+            rt.heap.contains(bits as usize),
+            "H22-Q9: {what} is a cell outside this isolate's cage ({bits:#x}): a Value never \
+             moves from one isolate to another"
+        );
+    }
+}
+
+/// The argument count of `abi::Cx::call` (`u32::MAX` past it), after the H22-Q9 debug
+/// in-cage check ([`debug_check_in_cage`]) of the function `f`, the this value `this` and
+/// each argument. A release build only counts.
+#[inline]
+pub(crate) fn checked_argc(rt: &Runtime, f: u64, this: u64, args: &[Local<'_>]) -> u32 {
+    if cfg!(debug_assertions) {
+        debug_check_in_cage(rt, f, "the function of Cx::call");
+        debug_check_in_cage(rt, this, "the this value of Cx::call");
+        for a in args {
+            debug_check_in_cage(rt, a.bits(), "an argument of Cx::call");
+        }
+    }
+    u32::try_from(args.len()).unwrap_or(u32::MAX)
+}
