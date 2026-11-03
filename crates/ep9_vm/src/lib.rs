@@ -123,11 +123,11 @@ pub mod versions;
 mod weakref;
 mod wrapper;
 
-// Month-6 modules (M6-P0 VM6, plan v11 §2.4 step 0; V11-A21), stubs (the first line of each
-// marks it) that change nothing until their owners fill them: ic_ops.rs (`ops_of`, the CacheIR-like op lists of the
-// T0 ICs, M6-P1 CBC; no caller), props_index.rs (Dictionary v1, the hash index of a large
-// dictionary, M6-P1 DICT1; hook `props::dict_find` -> `props_index::find`, which answers "not
-// indexed") and select.rs (`select()`, doc 13 C-15, M6-P0 MODES6; no caller).
+// Month-6 modules (M6-P0 VM6, plan v11 §2.4 step 0; V11-A21), stubs that their owners fill:
+// ic_ops.rs (`ops_of`, the CacheIR-like op lists of the T0 ICs; filled by M6-P1 CBC, read only
+// by the tests until a compiled tier reads it), props_index.rs (Dictionary v1, the hash index of
+// a large dictionary; hook `props::dict_find` -> `props_index::find`, built by M6-P1 DICT1) and
+// select.rs (`select()`, doc 13 C-15, M6-P0 MODES6; no caller).
 mod ic_ops;
 mod props_index;
 mod select;

@@ -592,4 +592,32 @@ mod tests {
         assert!(e.contains("AlreadyNative"), "{e}");
         assert_eq!(s.modules().len(), 1);
     }
+
+    /// T0 with the threaded dispatch keeps the native stack flat over many cold `+` of two
+    /// strings and `===` of two strings (the M6-P1 CBC arms in `ep9_vm::interp::ops`). This
+    /// test build optimizes ep9_vm and keeps debug assertions, so a handler that calls the next
+    /// handler instead of a tail jump keeps one native frame per run of it: 100 000 of them
+    /// overflow the 512 KiB thread (M6-P1 fixer: `concat_strings` took `&mut St`, so `St`
+    /// escaped and `Add_cold` lost its tail jump; 176 bytes per cold `+`).
+    #[test]
+    fn cold_string_arms_keep_the_native_stack_flat() {
+        let src = "var a = 'ab', b = 'cd', n = 0, m = 0;\n\
+                   for (var i = 0; i < 100000; i++) {\n\
+                   var t = a + b;\n\
+                   if (t === 'abcd') n++;\n\
+                   if (a === b) m++;\n\
+                   }\n\
+                   print(n, m, t);";
+        let r = std::thread::Builder::new()
+            .stack_size(512 << 10)
+            .spawn(move || {
+                let mut s = Session::new(&Config::default().threaded()).expect("session");
+                s.run(src, "cold.js")
+            })
+            .expect("thread")
+            .join()
+            .expect("no panic");
+        assert_eq!(r.result, Ok("undefined".to_string()));
+        assert_eq!(r.output, ["100000 0 abcd"]);
+    }
 }

@@ -161,7 +161,7 @@ pub(crate) const SHAPE: KindId = k(128);
 ///
 /// | Kind | Id | Layout (byte offsets) | Builder |
 /// |---|---|---|---|
-/// | PROPS_INDEXED | 84 | +8 capacity, +16 count (int32 Values), +24 index (a bucket array of int32 entry numbers, or undefined below 9 entries), +32 entries: key, value, attributes (as PROPS 64, which does not change); an object moves from PROPS to it above 8 entries | M6-P1 DICT1 (`props_index.rs`) |
+/// | PROPS_INDEXED | 84 | +8 capacity, +16 count (int32 Values; count = the live entries), +24 index (an ELEMENTS 65 cell: +16 `used`, int32 buckets from +24 (2 x capacity of them); undefined when 8 or fewer entries are live), +32 entries: key, value, attributes (as PROPS 64, which does not change); an object moves from PROPS to it above 8 entries | M6-P1 DICT1 (`props_index.rs`) |
 /// | FUSE | 83 | a realm's static fuse block: from +8 one u32 per entry of `fuse::STATIC` (entry `i` at +8 + 4i; 1 intact, 0 popped), raw words that the GC does not trace; size 8 + 4 x entries, rounded up to 8 (`layout::FUSE_*`); the realm holds it as `IntrinsicId::RealmFuses` and `Root::RealmFuses` mirrors it | M6-P2 FUSE-PI (`fuse.rs`) |
 pub(crate) const PROPS_INDEXED: KindId = k(84);
 

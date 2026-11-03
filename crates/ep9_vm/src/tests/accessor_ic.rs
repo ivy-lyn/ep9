@@ -555,6 +555,22 @@ fn a_super_load_calls_the_getter_with_the_receiver() {
         let (kind, chain, ..) = t.describe(0, shape_of(start)).unwrap();
         assert_eq!((kind, chain), (GETTER, int(0)));
         assert_eq!((cold(), calls()[0]), (2, 3));
+        // The op list (`ic_ops::Op::CallGetter` docs; M6-P1 Claude review R4): the guard and
+        // the pair are on the lookup start (`Val::Receiver` at 0x22), and the getter got the
+        // site's `this` (`receiver` above), not `start`.
+        use crate::ic_ops::{Holder, Loc, Op, Operation, Ref, Val, cases, ops_of};
+        let cs = cases(t.vector(0), 0, Operation::LoadNamed);
+        let ops = ops_of(&cs[0], Operation::LoadNamed);
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [
+                    Op::GuardShape(Val::Receiver, Ref::CaseKey),
+                    Op::CallGetter(Holder::Receiver, Loc(_))
+                ]
+            ),
+            "{ops:?}"
+        );
     });
 }
 
@@ -639,6 +655,120 @@ fn megamorphic_accessor_sites_put_nothing_in_the_stub_cache() {
         assert_eq!(t.ok(0, last, UNDEFINED), int(2));
         assert_eq!(cold(), 0);
         assert_eq!(calls()[1], 7);
+        t.release_all(kept);
+    });
+}
+
+/// A megamorphic site keeps no accessor or dictionary-holder case, so its miss path makes no
+/// IC_HANDLER cell either: after the warm-up, more inherited-getter loads, inherited-setter
+/// stores and dictionary-holder loads allocate nothing (M6-P1 Claude review R1, Codex
+/// cx-accic-1: each one made a 40-byte cell that was garbage at once).
+#[test]
+fn megamorphic_accessor_and_dictionary_holder_misses_allocate_nothing() {
+    each(|c| {
+        let sites = [Site::Get("x"), Site::Set("x", false), Site::Get("z")];
+        let mut t = T::new(c, &sites);
+        reset();
+        let op = object_prototype(t.rt());
+        let ga = host(t.rt(), get_two, "ga");
+        let set = host(t.rt(), set_record, "s");
+        let h = object_with(t.rt(), op, &[("pad", int(0))]);
+        define_accessor(t.rt(), h, "x", ga, set);
+        let d = object_with(t.rt(), op, &[("z", int(1)), ("w", int(0))]);
+        props::to_dictionary(t.rt(), d);
+        // Six shapes on each holder; each object is rooted when it is made (GC stress).
+        let (mut on_h, mut on_d, mut kept) = (vec![], vec![], vec![]);
+        for p in ["a", "b", "c", "d", "e", "f"] {
+            for (proto, to) in [(h, &mut on_h), (d, &mut on_d)] {
+                let o = object_with(t.rt(), proto, &[(p, int(0))]);
+                kept.push(t.keep(o));
+                to.push(o);
+            }
+        }
+        let round = |t: &mut T| {
+            for (&o, &q) in on_h.iter().zip(&on_d) {
+                assert_eq!(t.ok(0, o, UNDEFINED), int(2));
+                t.ok(1, o, int(3));
+                assert_eq!(t.ok(2, q, UNDEFINED), int(1));
+            }
+        };
+        round(&mut t);
+        assert_eq!(
+            [t.state(0), t.state(1), t.state(2)],
+            [State::Megamorphic; 3]
+        );
+        let before = t.rt().heap.stats().allocated_bytes;
+        for _ in 0..4 {
+            round(&mut t);
+        }
+        assert_eq!(t.rt().heap.stats().allocated_bytes - before, 0);
+        assert_eq!(calls()[1..], [30, 30]);
+        t.release_all(kept);
+    });
+}
+
+// ---- the op lists of these cases ----------------------------------------------------------------
+
+/// `ic_ops::ops_of` reads the cases ACCIC records (CBC need 7; H16 GETTER, SETTER row): an own
+/// GETTER is GuardShape, CallGetter on the receiver's pair; an inherited one adds
+/// GuardProtoValidity and reads the holder's pair; a SETTER case of a 0x24 store is GuardShape,
+/// CallSetter on the receiver's pair.
+#[test]
+fn ops_of_reads_the_getter_and_setter_cases() {
+    use crate::ic_ops::{Holder, Loc, Op, Operation, Proto, Ref, Val, cases, ops_of};
+    each(|c| {
+        let mut t = T::new(c, &[Site::Get("x"), Site::Get("x"), Site::Set("x", false)]);
+        let p = object_prototype(t.rt());
+        let ga = host(t.rt(), get_this, "ga");
+        // Site 0: an own getter.
+        let a = object::new_object(t.rt(), p);
+        // Case keys are weak: root each receiver until its op list is read (tests/ic.rs
+        // `keep_all`; a release frame may drop a local at its last use).
+        let mut kept = vec![t.keep(a)];
+        define_accessor(t.rt(), a, "x", ga, UNDEFINED);
+        t.ok(0, a, UNDEFINED);
+        assert_eq!(t.kind(0, shape_of(a)), Some(GETTER));
+        // Site 1: a getter on the prototype holder `h`.
+        let h = object_with(t.rt(), p, &[("pad", int(0))]);
+        define_accessor(t.rt(), h, "x", ga, UNDEFINED);
+        let o = object_with(t.rt(), h, &[("a", int(1))]);
+        kept.push(t.keep(o));
+        t.ok(1, o, UNDEFINED);
+        assert_eq!(t.kind(1, shape_of(o)), Some(GETTER));
+        // Site 2: an own setter.
+        let set = host(t.rt(), set_record, "s");
+        let d = object::new_object(t.rt(), p);
+        kept.push(t.keep(d));
+        define_accessor(t.rt(), d, "x", UNDEFINED, set);
+        t.ok(2, d, int(3));
+        assert_eq!(t.kind(2, shape_of(d)), Some(SETTER));
+        let lists = |t: &T, i: usize, op| {
+            let cs = cases(t.vector(i), 0, op);
+            cs.iter()
+                .map(|k| ops_of(k, op).as_slice().to_vec())
+                .collect::<Vec<_>>()
+        };
+        let shape = Op::GuardShape(Val::Receiver, Ref::CaseKey);
+        let chain = Op::GuardProtoValidity(Proto::OfShape(Ref::CaseKey));
+        let own = lists(&t, 0, Operation::LoadNamed);
+        assert!(
+            matches!(own[0].as_slice(), [s, Op::CallGetter(Holder::Receiver, Loc(_))] if *s == shape),
+            "{own:?}"
+        );
+        let inh = lists(&t, 1, Operation::LoadNamed);
+        assert!(
+            matches!(
+                inh[0].as_slice(),
+                [s, c, Op::CallGetter(Holder::Ref(Ref::HandlerRef), Loc(_))]
+                    if *s == shape && *c == chain
+            ),
+            "{inh:?}"
+        );
+        let st = lists(&t, 2, Operation::StoreNamed);
+        assert!(
+            matches!(st[0].as_slice(), [s, Op::CallSetter(Holder::Receiver, Loc(_))] if *s == shape),
+            "{st:?}"
+        );
         t.release_all(kept);
     });
 }

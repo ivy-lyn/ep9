@@ -341,10 +341,10 @@ pub const KIND_CONTEXT: u8 = crate::kinds::CONTEXT.get();
 pub const KIND_PROPS_INDEXED: u8 = crate::kinds::PROPS_INDEXED.get();
 /// OBJECT_LAYOUT (6). PROPS_INDEXED: the entry capacity, an int32 Value (`props_index::pif`).
 pub const PROPS_INDEXED_CAPACITY: u32 = pif::CAPACITY as u32;
-/// OBJECT_LAYOUT (6). PROPS_INDEXED: the entries in use, an int32 Value.
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the live entries (not the deleted ones), an int32 Value.
 pub const PROPS_INDEXED_COUNT: u32 = pif::COUNT as u32;
-/// OBJECT_LAYOUT (6). PROPS_INDEXED: the hash index, a bucket array of int32 entry numbers, or
-/// undefined below 9 entries.
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the hash index, an ELEMENTS 65 cell (+16 `used`, int32
+/// buckets from +24), or undefined when 8 or fewer entries are live.
 pub const PROPS_INDEXED_INDEX: u32 = pif::INDEX as u32;
 /// OBJECT_LAYOUT (6). PROPS_INDEXED: entry `i` (key, value, int32 attributes) is at
 /// `PROPS_INDEXED_ENTRIES + PROPS_INDEXED_ENTRY_SIZE * i`, as in a PROPS cell.

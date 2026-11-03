@@ -46,7 +46,7 @@ pub(crate) mod pif {
     pub const CAPACITY: usize = 8;
     /// The entries in use (an int32 Value): the live entries, not the deleted ones.
     pub const COUNT: usize = 16;
-    /// The hash index: a bucket array of int32 entry numbers, or undefined below 9 entries.
+    /// The hash index: an ELEMENTS 65 cell (`ixf`), or undefined at 8 or fewer live entries.
     pub const INDEX: usize = 24;
     /// The first entry: key, value, attributes (int32), as in PROPS 64.
     pub const ENTRIES: usize = 32;

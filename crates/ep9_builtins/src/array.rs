@@ -2478,14 +2478,14 @@ fn promise_intrinsic<'s>(cx: &mut Cx<'s>) -> JsResult<Local<'s, JsObject>> {
     Ok(cx.intrinsic(IntrinsicId::Promise))
 }
 
-/// The closure returns `A`: Call(promiseCapability.[[Resolve]], undefined, « A »).
+/// The closure returns `A`: `Call(promiseCapability.[[Resolve]], undefined, « A »)`.
 fn fa_resolve<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>) -> JsResult<()> {
     let resolve = fa_get(cx, rec, fa::RESOLVE)?;
     let a = fa_get(cx, rec, fa::A)?;
     cx.call(resolve, Local::undefined(), &[a]).map(|_| ())
 }
 
-/// The closure throws `e`: Call(promiseCapability.[[Reject]], undefined, « e »).
+/// The closure throws `e`: `Call(promiseCapability.[[Reject]], undefined, « e »)`.
 fn fa_reject<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>, e: Local<'s>) -> JsResult<()> {
     let reject = fa_get(cx, rec, fa::REJECT)?;
     cx.call(reject, Local::undefined(), &[e]).map(|_| ())

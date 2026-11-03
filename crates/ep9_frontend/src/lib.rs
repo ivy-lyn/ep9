@@ -28,8 +28,6 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{Directive, Program, StringLiteral};
 use oxc_ast::builder::AstBuilder;
 use oxc_diagnostics::OxcDiagnostic;
-use oxc_parser::config::TokensParserConfig;
-use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::{Semantic, SemanticBuilder};
 use oxc_span::{SPAN, SourceType};
 
@@ -387,17 +385,11 @@ pub(crate) fn parse<'a>(
         Goal::Script => SourceType::script(),
         Goal::Module => SourceType::mjs(),
     };
-    // Regex literals: oxc_parser keeps the pattern text; regex_check parses each one once
-    // (with this option on, oxc parses a pattern again on each rescan of its text).
-    let options = ParseOptions {
-        parse_regular_expression: false,
-        ..ParseOptions::default()
+    // oxc_parser, then the regex literal check (regex_check::parse).
+    let mut parsed = match regex_check::parse(allocator, source, source_type) {
+        Ok(parsed) => parsed,
+        Err(fatal) => return Err(early_errors(source, fatal.errors()).into()),
     };
-    let mut parsed = Parser::new(allocator, source, source_type)
-        .with_options(options)
-        .with_config(TokensParserConfig)
-        .parse();
-    regex_check::check(source, &parsed.tokens, &mut parsed.diagnostics);
     if parsed.diagnostics.has_errors() {
         return Err(early_errors(source, parsed.diagnostics.errors()).into());
     }

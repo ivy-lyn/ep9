@@ -55,7 +55,7 @@ use crate::interp::{Cx, EXIT_STUB};
 use crate::isolate::{Exception, Isolate};
 use crate::object;
 use crate::realm;
-use crate::runtime::{ErrorKind, Root, Runtime, val};
+use crate::runtime::{ErrorKind, Runtime, val};
 use crate::unit::FunctionInfo;
 
 pub use crate::layout::{NativeCx, RuntimeTable};
@@ -515,10 +515,9 @@ native_fns! {
 
 /// [`RuntimeTable::load_global`]: the global binding that the `LdaGlobal` or
 /// `LdaGlobalInsideTypeof` at `pc` of the frame `fp` names. GetBindingValue of the global
-/// environment as T0's cold path (`slow::load_global`) gives it, with no IC update: the script
-/// lexical record first (a hole is a TDZ ReferenceError), then HasProperty and `[[Get]]` on the
-/// global object (`property::has`, `property::get`; T0's one-scan walk is a shortcut with the
-/// same result). The value, or 0 with a pending exception. GC point.
+/// environment by the one function T0's cold path uses (`slow::property::global_value`), with no IC
+/// update: the script lexical record first (a hole is a TDZ ReferenceError), then the global
+/// object. The value, or 0 with a pending exception. GC point.
 fn load_global_at(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
     let fi = FrameRef(fp).info();
     // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified bytecode
@@ -534,33 +533,7 @@ fn load_global_at(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
             return 0;
         }
     };
-    let rt = cx.rt();
-    if let Some((v, _)) = object::own_get(rt.root(Root::Lexical), name) {
-        if v == HOLE {
-            return name_error(cx, name, "Cannot access '", "' before initialization");
-        }
-        return v;
-    }
-    let g = rt.global();
-    let r = (|| -> Res<u64> {
-        if !crate::property::has(cx, g, name)? {
-            if in_typeof {
-                return Ok(UNDEFINED);
-            }
-            return Ok(name_error(cx, name, "", " is not defined"));
-        }
-        crate::property::get(cx, g, name)
-    })();
-    ret(r)
-}
-
-/// Throws the ReferenceError `<before><name><after>` (the T0 texts of `slow`). Returns 0.
-fn name_error(cx: &mut Cx, name: u64, before: &str, after: &str) -> u64 {
-    let name = crate::string::flatten(cx, name);
-    let n = crate::string::view(cx, name).to_string_lossy();
-    let msg = format!("{before}{n}{after}");
-    throw_error(cx, ErrorKind::ReferenceError, &msg);
-    0
+    slow::property::global_value(cx, name, in_typeof)
 }
 
 /// The argument registers of a call instruction (frame slot offsets), without a heap copy.

@@ -1718,6 +1718,18 @@ impl Builder<'_> {
     /// Each element op still checks the bounds and the storage form (but see the DOUBLE
     /// store form below). Inner loops first, so a check moves out of a nest as far as each
     /// loop allows.
+    ///
+    /// A kind guard moves only from a block that runs on every iteration: a block that
+    /// dominates every back-edge source of L (M6-P1 JIT review F1). A guard in an `if` arm
+    /// stays there, so a call that never takes the arm does not exit at the loop entry. Such
+    /// a guard reads a moved check of the same array and policy if L has one: that check
+    /// passed at the entry, and nothing in L can change what it proved. (A loop that ends
+    /// before its first back edge, 0 iterations or a `break`, can still exit at a moved
+    /// guard that its body would not have run: the cost of every move to a preheader.)
+    ///
+    /// The move puts a guard's exit at the loop header, so only a guard whose exit may move
+    /// goes ([`exit_may_move`], the doc 13 B2 rule, as in [`Self::float_loads`]; M6-P1 JIT
+    /// review F2). A guard of another policy stays in place.
     fn hoist_array_checks(&mut self) {
         for h in (0..self.g.blocks.len()).rev() {
             if !self.g.blocks[h].loop_header {
@@ -1735,11 +1747,12 @@ impl Builder<'_> {
             // The natural loop: H and the blocks that reach a back edge without passing H.
             let mut body = vec![false; self.g.blocks.len()];
             body[h] = true;
-            let mut work: Vec<usize> = preds
+            let latches: Vec<usize> = preds
                 .iter()
                 .map(|p| p.0 as usize)
                 .filter(|&p| p >= h)
                 .collect();
+            let mut work = latches.clone();
             while let Some(b) = work.pop() {
                 if std::mem::replace(&mut body[b], true) {
                     continue;
@@ -1763,11 +1776,22 @@ impl Builder<'_> {
             if !safe {
                 continue;
             }
-            let checks: Vec<NodeId> = nodes
+            let every = self.on_every_iteration(h, &body, &latches);
+            // The kind guards of the blocks that run on every iteration first (they move),
+            // then the others (they read a moved one or stay), then the DoubleElements of
+            // inner loops (their input, a kind guard, is final then).
+            let mut checks: Vec<NodeId> = nodes
                 .iter()
                 .copied()
-                .filter(|&n| matches!(self.g.node(n).op, Op::CheckArray | Op::DoubleElements))
+                .filter(|&n| self.g.node(n).op == Op::CheckArray)
                 .collect();
+            checks.sort_by_key(|&n| !every[self.g.node(n).block.0 as usize]);
+            checks.extend(
+                nodes
+                    .iter()
+                    .copied()
+                    .filter(|&n| self.g.node(n).op == Op::DoubleElements),
+            );
             if checks.is_empty() {
                 continue;
             }
@@ -1783,6 +1807,10 @@ impl Builder<'_> {
                 if body[self.g.node(o).block.0 as usize] {
                     continue;
                 }
+                // B2 rule: only a guard whose exit may move to the header (F2).
+                if g.as_ref().is_some_and(|g| !exit_may_move(g)) {
+                    continue;
+                }
                 let policy = g.as_ref().map(|g| g.policy);
                 if let Some(&(.., k)) = hoisted
                     .iter()
@@ -1790,6 +1818,11 @@ impl Builder<'_> {
                 {
                     self.replace(c, k);
                     self.kill(c);
+                    continue;
+                }
+                // A kind guard of a block that some iterations skip stays in L (F1). A
+                // DoubleElements has no exit, so it moves when its kind guard has moved.
+                if op == Op::CheckArray && !every[node.block.0 as usize] {
                     continue;
                 }
                 let trust = node.trust;
@@ -1862,6 +1895,32 @@ impl Builder<'_> {
                 }
             }
         }
+    }
+
+    /// For each block of the natural loop `body` with header `h`: true if it runs on every
+    /// iteration, that is, it dominates every back-edge source in `latches` (each path from
+    /// `h` to a back-edge source, in `body` and not through `h` again, passes it).
+    fn on_every_iteration(&self, h: usize, body: &[bool], latches: &[usize]) -> Vec<bool> {
+        let len = self.g.blocks.len();
+        let mut every = vec![false; len];
+        every[h] = true;
+        for b in (0..len).filter(|&b| body[b] && b != h) {
+            // The blocks of L that `h` reaches without passing `b`.
+            let mut seen = vec![false; len];
+            seen[h] = true;
+            seen[b] = true;
+            let mut work = vec![h];
+            while let Some(x) = work.pop() {
+                for s in &self.g.blocks[x].succs {
+                    let s = s.0 as usize;
+                    if body[s] && !std::mem::replace(&mut seen[s], true) {
+                        work.push(s);
+                    }
+                }
+            }
+            every[b] = latches.iter().all(|&l| l == b || !seen[l]);
+        }
+        every
     }
 
     /// The frame state at the entry of loop header `h` from its predecessor number `entry`:

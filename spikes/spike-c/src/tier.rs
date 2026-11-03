@@ -1655,6 +1655,55 @@ mod tests {
         }
     }
 
+    /// M6-P1 JIT review F1 (`build::hoist_array_checks`): a kind guard in an `if` arm stays
+    /// in the loop. A call that never takes the arm (`a` is not an array) takes no exit; before
+    /// the fix the guard moved to the preheader and each such call exited at the loop entry
+    /// (10 exits). In `both` the arm's guard reads the guard that moved from the block that
+    /// runs on every iteration, so no kind guard stays in the loop. Outputs equal to T0.
+    #[test]
+    fn a_kind_guard_in_an_if_arm_stays_in_the_loop() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function cond(a, c, n) { var s = 0; for (var i = 0; i < n; i++) { if (c === 1) { s = s + a[i]; } } return s; }\n\
+            function both(a, c, n) { var s = 0; for (var i = 0; i < n; i++) { if (c === 1) { s = s + a[i]; } s = s + a[i]; } return s; }";
+        let warm = "for (var w = 0; w < 300; w++) { cond([0.5, 1.5], 1, 2); cond([0.5], 0, 2); both([0.5, 1.5], w & 1, 2); }";
+        let skip =
+            "var t = 0; for (var k = 0; k < 10; k++) t = t + cond(undefined, 0, 4); print(t);";
+        let r = run_script(&Config::default(), defs, warm, skip, "cond").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["0"]);
+        assert_eq!(
+            r.exits.iter().sum::<u64>(),
+            0,
+            "exits {:?}\n{}",
+            r.exits,
+            r.report.graph
+        );
+        let take = "print(cond([0.5, 1.5, 2.5], 1, 3), cond([1, 2], 1, 2), cond([0.5], 0, 1), cond([0.5, , 1], 1, 3));\n\
+            print(both([0.5, 1.5], 1, 2), both([0.5, 1.5], 0, 2), both([1, 2], 1, 2), both(['x', 1], 0, 2));";
+        for config in [Config::default(), Config::stress()] {
+            for name in ["cond", "both"] {
+                let r = run_script(&config, defs, warm, take, name).expect("run");
+                assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+            }
+        }
+        let r = run_script(&Config::default(), defs, warm, skip, "both").expect("run");
+        let g = &r.report.graph;
+        let header = g
+            .lines()
+            .position(|l| l.contains(" loop preds"))
+            .unwrap_or_else(|| panic!("no loop\n{g}"));
+        assert!(
+            g.lines().take(header).any(|l| l.contains("CheckArray")),
+            "no kind guard before the loop\n{g}"
+        );
+        assert!(
+            !g.lines().skip(header).any(|l| l.contains("CheckArray")),
+            "a kind guard in the loop\n{g}"
+        );
+    }
+
     /// WI-SC7 (MODES-CHECK-w19 MC-w19-5 (4), outside O3): every element op, a raw f64 load
     /// included, reads its array through a kind guard (`CheckArray`), so no pass can place the
     /// load before the guard; and a Float64 value at an exit is in a general register or a
@@ -3215,3 +3264,7 @@ mod tests {
         assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
     }
 }
+
+/// The M6-P1 JIT review tests (`tier/review_tests.rs`).
+#[cfg(test)]
+mod review_tests;

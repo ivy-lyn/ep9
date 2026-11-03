@@ -115,9 +115,9 @@ const LAYOUT_FILE: &str = "crates/ep9_vm/src/layout.rs";
 /// and `generator.rs` from a grep that missed the turbofish form `native_ptr::<T>(..)`.
 pub(crate) const VM_STACK: &[(&str, &str)] = &[
     // The frame push: caller fp, return pc and FunctionInfo slots (`push_frame`, and
-    // `write_call_frame`, the x86-64 `call_fast` form of M5-P2 PERF3-FIX).
+    // `write_call_header`, the x86-64 `call_fast` form of M5-P2 PERF3-FIX and M6-P1 CBC).
     ("crates/ep9_vm/src/call.rs", "push_frame"),
-    ("crates/ep9_vm/src/call.rs", "write_call_frame"),
+    ("crates/ep9_vm/src/call.rs", "write_call_header"),
     // `FrameRef`: the FunctionInfo, caller fp and return pc of a frame (stack walks).
     ("crates/ep9_vm/src/error.rs", "info"),
     ("crates/ep9_vm/src/error.rs", "caller"),
