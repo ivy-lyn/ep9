@@ -36,6 +36,7 @@
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //! | [`diff`](mod@diff) | the tier differential (C3): the gate kernels at n = 1 and a seeded corpus, T0 vs config C byte for byte, every guard forced; no GC-timing compare (a lint) | SPIKEC-7 (M5-P3) |
 //! | [`lazy`] | the short lazy-deopt probe (H29-Q4): the `lazyDeopt()` hook swaps the return address of a compiled call's frame for its lazy exit and walks the frame records before and after | SPIKEC-10 (M6-P2) |
+//! | [`verdict`] | the SCP §8 Verdict rows of a gate run (`spike-c verdict-rows`, `gate.sh verdict`) and their fixtures | SPIKEC-10 (M6-P2) |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
 //!
 //! Rules (protocol §1):
@@ -62,6 +63,7 @@ pub mod sp_facts;
 pub mod structural;
 pub mod tier;
 pub mod timing;
+pub mod verdict;
 pub mod vm_layout;
 
 use spike_b::emit::{FunctionCode, FunctionInput, Refusal};

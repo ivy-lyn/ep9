@@ -37,6 +37,9 @@
 //! spike-c read-set                          the R17 read set: each `ep9_vm::layout` item Spike C
 //!                                           reads, by owner version (no hand fact since M6-P0)
 //! spike-c liveness <kernel> [hot index]     the H02-Q1 liveness report of a hot function
+//! spike-c verdict-rows <dir>                the SCP §8 Verdict rows of the gate run `gate.sh
+//!                                           verdict` wrote into <dir> (spike_c::verdict)
+//! spike-c verdict-fixtures <dir>            write the fixture inputs of `gate.sh verdict --fixtures`
 //! spike-c lazy                              the short lazy-deopt probe (SPIKEC-10, H29-Q4): a
 //!                                           compiled call's frame swapped to its lazy exit, the
 //!                                           walks before and after, output against T0
@@ -57,7 +60,7 @@ fn usage() -> ExitCode {
          | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
          | once <t0|c|p|h0|h1> <kernel> [--n N] [--k K] | sp-facts <write|check|wrong|time> ... \
          | show <kernel> [i] | driver <kernel> [--n N] \
-         | structural [check...|all] | read-set | liveness <kernel> [i] | lazy]"
+         | structural [check...|all] | read-set | liveness <kernel> [i] | lazy | verdict-rows <dir> | verdict-fixtures <dir>]"
     );
     ExitCode::from(2)
 }
@@ -573,6 +576,17 @@ fn main() -> ExitCode {
         }
         "liveness" => liveness_cmd(rest),
         "lazy" => lazy_cmd(),
+        "verdict-rows" => match rest.first() {
+            Some(dir) => spike_c::verdict::rows(std::path::Path::new(dir)).map(|t| {
+                println!("{t}");
+                true
+            }),
+            None => Err("verdict-rows needs the directory gate.sh verdict wrote".into()),
+        },
+        "verdict-fixtures" => match rest.first() {
+            Some(dir) => spike_c::verdict::write_fixtures(std::path::Path::new(dir)).map(|()| true),
+            None => Err("verdict-fixtures needs a directory".into()),
+        },
         _ => return usage(),
     };
     match r {
