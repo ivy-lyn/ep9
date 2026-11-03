@@ -106,6 +106,10 @@ fn a_class_id_is_its_position_in_the_list() {
         (ObjectClass::Promise.id(), ObjectClass::RegExp.id()),
         (0, 6)
     );
+    // SPEC-B (M6-P1, V11-A3): RawJSON is the appended class 14.
+    assert_eq!(ObjectClass::RawJson.id(), 14);
+    assert_eq!(ObjectClass::from_id(14), Some(ObjectClass::RawJson));
+    assert_eq!(ObjectClass::RawJson.name(), "RawJSON");
 }
 
 // ---- new_object_with_slots, slot, set_slot, object_class ----------------------------------------
