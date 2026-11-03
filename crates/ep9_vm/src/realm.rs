@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! Isolate::new: builtins::check -> Runtime::new -> builtins::prepare
-//!   -> realm::init: atoms, the REALM record, core intrinsics, global object, symbol::install
+//!   -> realm::init: atoms, the REALM record and fuse block, core intrinsics, global, symbols
 //!   -> realm::install: builtins::install (every table), %AggregateError%'s [[Prototype]],
 //!                      fill_intrinsics (the REALM record's intrinsics list)
 //! realm::create (Cx::create_realm, $262.createRealm): blank the current-realm roots
@@ -108,6 +108,7 @@ fn init_core(rt: &Runtime, first: bool) {
     // The REALM record first: every function made from here on stores it (OBJECT_LAYOUT 3).
     let realm = new_realm_record(rt);
     rt.set_root(Root::Realm, realm);
+    crate::fuse::new_realm_block(rt); // then its static fuse block (OBJECT_LAYOUT 6, H31-Q5)
     let object_proto = object::new_object(rt, NULL);
     rt.set_root(Root::ObjectPrototype, object_proto);
     // `new_function` takes a function's [[Prototype]] from this root, and the [[Prototype]]
@@ -186,8 +187,7 @@ fn aggregate_error_prototype(rt: &Runtime) {
 /// A new REALM record: every field undefined, and an intrinsics list of
 /// `IntrinsicId::ALL.len()` undefined entries. GC point.
 pub(crate) fn new_realm_record(rt: &Runtime) -> u64 {
-    // GC points: the list, then the record; the list lives in a Rust local (CSS) until the
-    // record holds it.
+    // GC points: the list, then the record (the list is in a Rust local, CSS, until then).
     let list = object::new_list(rt, IntrinsicId::ALL.len(), UNDEFINED);
     let realm = object::new_record(rt, kinds::REALM);
     object::record_set(rt, realm, realmf::INTRINSICS, list);
