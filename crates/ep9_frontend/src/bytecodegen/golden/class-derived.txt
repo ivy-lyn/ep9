@@ -79,7 +79,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      65 E 11 (1:12)
      71 E 71 (1:72)
      88 E 11 (1:12)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..10
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=0..10
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -88,7 +88,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   handlers (0):
   positions (1):
       0 S 0 (1:1)
-function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=4 range=42..70
+function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=4 range=11..98
   code (46 bytes):
       0    LdaTheHole                                   ; 07
       1    Star r0                                      ; 0c 00
@@ -130,7 +130,7 @@ function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[str
      29 E 57 (1:58)
      34 E 57 (1:58)
      44 E 69 (1:70)
-function f3 method name="m" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=72..96
+function f3 method name="m" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=71..96
   code (32 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r2                                      ; 0c 02

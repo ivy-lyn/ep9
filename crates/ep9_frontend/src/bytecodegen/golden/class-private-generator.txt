@@ -99,7 +99,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      93 E 8 (1:9)
     103 E 8 (1:9)
     118 E 0 (1:1)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=8..72
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=0..72
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
@@ -128,7 +128,7 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
   positions (2):
       0 S 0 (1:1)
       5 E 8 (1:9)
-function f3 method name="#g" parent=f0 outer_scope=scope1 flags=[strict,generator,simple-params] params=0 length=0 regs=3 range=13..28
+function f3 method name="#g" parent=f0 outer_scope=scope1 flags=[strict,generator,simple-params] params=0 length=0 regs=3 range=10..28
   code (87 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r0                                      ; 0c 00
@@ -181,7 +181,7 @@ function f3 method name="#g" parent=f0 outer_scope=scope1 flags=[strict,generato
      58 E 18 (1:19)
      69 E 18 (1:19)
      79 E 18 (1:19)
-function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generator,simple-params] params=0 length=0 regs=3 range=39..44
+function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generator,simple-params] params=0 length=0 regs=3 range=36..44
   code (48 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r0                                      ; 0c 00
@@ -213,7 +213,7 @@ function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generato
      19 E 39 (1:40)
      30 E 39 (1:40)
      40 E 39 (1:40)
-function f5 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=46..70
+function f5 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=45..70
   code (20 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r1                                      ; 0c 01

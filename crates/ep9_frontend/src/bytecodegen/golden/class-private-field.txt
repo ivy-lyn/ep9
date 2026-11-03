@@ -148,7 +148,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     161 E 0 (1:1)
     167 E 8 (1:9)
     181 E 0 (1:1)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=8..214
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=0..214
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
@@ -192,7 +192,7 @@ function f3 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
   positions (2):
       0 S 18 (1:19)
       5 E 25 (1:26)
-function f4 method name="get" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=32..54
+function f4 method name="get" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=29..54
   code (12 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00
@@ -208,7 +208,7 @@ function f4 method name="get" parent=f0 outer_scope=scope1 flags=[strict,simple-
   positions (2):
       0 S 37 (1:38)
       6 E 49 (1:50)
-function f5 method name="set" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=12 range=58..120
+function f5 method name="set" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=12 range=55..120
   code (227 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00
@@ -366,7 +366,7 @@ function f5 method name="set" parent=f0 outer_scope=scope1 flags=[strict,simple-
     198 E 102 (1:103)
     206 E 102 (1:103)
     224 E 102 (1:103)
-function f6 method name="has" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=2 range=124..158
+function f6 method name="has" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=2 range=121..158
   code (33 bytes):
       0 S> Ldar a0                                      ; 0b fe
       2    Star r0                                      ; 0c 00
@@ -396,7 +396,7 @@ function f6 method name="has" parent=f0 outer_scope=scope1 flags=[strict,simple-
      10 E 137 (1:138)
      17 E 154 (1:155)
      27 E 148 (1:149)
-function f7 method name="opt" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=1 range=162..183
+function f7 method name="opt" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=1 range=159..183
   code (17 bytes):
       0 S> Ldar a0                                      ; 0b fe
       2    JumpIfUndefinedOrNull @13                    ; 87 0b
@@ -415,7 +415,7 @@ function f7 method name="opt" parent=f0 outer_scope=scope1 flags=[strict,simple-
   positions (2):
       0 S 168 (1:169)
       8 E 178 (1:179)
-function f8 method name="call" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=188..212
+function f8 method name="call" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=184..212
   code (18 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r1                                      ; 0c 01

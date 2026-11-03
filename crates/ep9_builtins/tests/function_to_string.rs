@@ -1,10 +1,8 @@
 //! `Function.prototype.toString` (§20.2.3.5) with the source text (M6-P2 FN-SMALL): a function
 //! whose unit embeds its source gives the text of its source range (`Cx::function_source_text`,
-//! a copy made on each call) when that range is its whole `[[SourceText]]`; every other
-//! callable gives the NativeFunction form. Expected texts are node's (the same script under
-//! `node`, `print` -> `console.log`), except the NativeFunction lines: there node gives the
-//! source text, which the ep9 frontend does not record yet for methods, accessors, classes
-//! and the `Function` constructor (step 2 lets the host say no per function). Every JS check
+//! a copy made on each call), which ep9_frontend records as its whole `[[SourceText]]` for
+//! every kind (BytecodeGen G12); every other callable gives the NativeFunction form. Expected
+//! texts are node's (the same script under `node`, `print` -> `console.log`). Every JS check
 //! runs with and without GC stress, on an isolate with compiler hooks (eval and the `Function`
 //! constructor; the `common` isolates have none) as in `eval.rs`.
 
@@ -205,42 +203,51 @@ print(f.toString());"
     );
 }
 
-/// The kinds whose source range is not their whole `[[SourceText]]` today (a method, an
-/// accessor, a class, the `Function` constructor's function) give the NativeFunction form,
-/// as does an arrow whose parameters hold a regular expression, a division or a template
-/// (no parse here tells them apart), and a function written in the exact shape of the
-/// `Function` constructor's wrapper text. Bound functions, proxies and builtins as before.
+/// Methods, accessors and classes give the text of their MethodDefinition (from the key, not
+/// `static`), property or class; the `Function` constructor's function gives the
+/// CreateDynamicFunction `sourceText`, with `anonymous`. A function written in the shape of
+/// the old wrapper text, and arrows whose parameters hold a regular expression, a division
+/// or a template, give their own text.
 #[test]
-fn the_other_callables_give_the_native_function_form() {
+fn methods_classes_and_the_function_constructor_give_their_source_text() {
     assert_eq!(
         run_both(
-            "var o = { m() {}, *g() {}, async am() {}, get x() { return 1; }, set x(v) {} };
+            "var o = { m() {}, *g() {}, async am() {}, get x() { return 1; }, set x(v) {}, [ 'c' + 'k' ] (a) {} };
 var d = Object.getOwnPropertyDescriptor(o, 'x');
-print(o.m.toString(), o.g.toString(), o.am.toString());
+print(o.m.toString(), o.g.toString(), o.am.toString(), o.ck.toString());
 print(d.get.toString(), d.set.toString());
-class A { constructor(a) {} m() {} static s() {} }
+class A { constructor(a) {} m() {} static /* s */ s() {} }
 class B {}
 class C extends B {}
 print(A.toString(), B.toString(), C.toString());
 print(A.prototype.m.toString(), A.s.toString());
-print(new Function('a', 'return a').toString(), new Function().toString());
+print(JSON.stringify(new Function('a', 'return a').toString()), JSON.stringify(new Function().toString()));
 var anonymous = function(a\n) {\nreturn a\n};
-print(anonymous.toString());
+print(JSON.stringify(anonymous.toString()));
 var r = [(a = /[)]/) => a, (a = 4 / 2) => a, (a = `)`) => a];
-print(r[0].toString(), r[1].toString(), r[2].toString());
-function f() {}
-print(f.bind().toString(), Function.prototype.toString.call(new Proxy(f, {})), Math.max.toString());"
+print(r[0].toString(), r[1].toString(), r[2].toString());"
         ),
         lines(&[
-            "function m() { [native code] } function g() { [native code] } function am() { [native code] }",
-            "function get x() { [native code] } function set x() { [native code] }",
-            "function A() { [native code] } function B() { [native code] } function C() { [native code] }",
-            "function m() { [native code] } function s() { [native code] }",
-            "function anonymous() { [native code] } function anonymous() { [native code] }",
-            "function anonymous() { [native code] }",
-            "function () { [native code] } function () { [native code] } function () { [native code] }",
-            "function () { [native code] } function () { [native code] } function max() { [native code] }",
+            "m() {} *g() {} async am() {} [ 'c' + 'k' ] (a) {}",
+            "get x() { return 1; } set x(v) {}",
+            "class A { constructor(a) {} m() {} static /* s */ s() {} } class B {} class C extends B {}",
+            "m() {} s() {}",
+            r#""function anonymous(a\n) {\nreturn a\n}" "function anonymous(\n) {\n\n}""#,
+            r#""function(a\n) {\nreturn a\n}""#,
+            "(a = /[)]/) => a (a = 4 / 2) => a (a = `)`) => a",
         ])
+    );
+}
+
+/// Bound functions, proxies and builtins give the NativeFunction form.
+#[test]
+fn the_other_callables_give_the_native_function_form() {
+    assert_eq!(
+        run_both(
+            "function f() {}
+print(f.bind().toString(), Function.prototype.toString.call(new Proxy(f, {})), Math.max.toString());"
+        ),
+        lines(&["function () { [native code] } function () { [native code] } function max() { [native code] }"])
     );
 }
 

@@ -63,7 +63,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      30 E 0 (1:1)
      36 E 71 (1:72)
      53 E 0 (1:1)
-function f1 derived-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=36..70
+function f1 derived-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=0..104
   code (35 bytes):
       0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope2 ; 75 00 03
       3    PushContext r1                               ; 13 01
@@ -119,7 +119,7 @@ function f2 arrow name="f" parent=f1 outer_scope=scope2 flags=[strict,simple-par
       4 E 55 (1:56)
       8 E 55 (1:56)
      17 E 55 (1:56)
-function f3 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=72..102
+function f3 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=71..102
   code (26 bytes):
       0 E> CreateFunctionContext k0, [2]  ; k0 = Scope scope4 ; 75 00 02
       3    PushContext r0                               ; 13 00

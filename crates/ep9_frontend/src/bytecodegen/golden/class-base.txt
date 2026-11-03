@@ -113,7 +113,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     106 E 0 (1:1)
     115 E 134 (1:135)
     132 E 0 (1:1)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=1 range=21..40
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=1 range=0..143
   code (12 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00
@@ -129,7 +129,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   positions (2):
       0 S 27 (1:28)
       6 E 27 (1:28)
-function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=42..63
+function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=41..63
   code (11 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00
@@ -145,7 +145,7 @@ function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
   positions (2):
       0 S 47 (1:48)
       4 E 59 (1:60)
-function f3 method name="s" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=72..88
+function f3 method name="s" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=71..88
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
       2    Return                                       ; 92
@@ -156,7 +156,7 @@ function f3 method name="s" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
   handlers (0):
   positions (1):
       0 S 77 (1:78)
-function f4 getter name="get g" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=94..110
+function f4 getter name="get g" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=89..110
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
       2    Return                                       ; 92
@@ -167,7 +167,7 @@ function f4 getter name="get g" parent=f0 outer_scope=scope1 flags=[strict,simpl
   handlers (0):
   positions (1):
       0 S 99 (1:100)
-function f5 setter name="set g" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=116..122
+function f5 setter name="set g" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=111..122
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -175,7 +175,7 @@ function f5 setter name="set g" parent=f0 outer_scope=scope1 flags=[strict,simpl
   feedback (0):
   handlers (0):
   positions (0):
-function f6 getter name="get sg" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=136..141
+function f6 getter name="get sg" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=130..141
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92

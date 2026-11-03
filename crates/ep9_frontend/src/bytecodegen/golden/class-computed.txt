@@ -116,7 +116,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     112 E 7 (1:8)
     118 E 70 (1:71)
     135 E 7 (1:8)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=15..78
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=7..78
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -125,7 +125,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   handlers (0):
   positions (1):
       0 S 7 (1:8)
-function f2 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=20..25
+function f2 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=17..25
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -133,7 +133,7 @@ function f2 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-para
   feedback (0):
   handlers (0):
   positions (0):
-function f3 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=40..45
+function f3 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=33..45
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -141,7 +141,7 @@ function f3 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-para
   feedback (0):
   handlers (0):
   positions (0):
-function f4 getter name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=53..58
+function f4 getter name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=46..58
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -149,7 +149,7 @@ function f4 getter name=- parent=f0 outer_scope=scope1 flags=[strict,simple-para
   feedback (0):
   handlers (0):
   positions (0):
-function f5 method name="str" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=64..69
+function f5 method name="str" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=59..69
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -157,7 +157,7 @@ function f5 method name="str" parent=f0 outer_scope=scope1 flags=[strict,simple-
   feedback (0):
   handlers (0):
   positions (0):
-function f6 method name="1" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=71..76
+function f6 method name="1" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=70..76
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92

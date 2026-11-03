@@ -16,8 +16,9 @@
 //!       parenthesized function expression whose parameter list ends at the wrapper's `)`  --> Syntax
 //!   (b) "(<prefix> anonymous(\n) {\n" + body + "\n})"   parse, layer 2; the same shape, and
 //!       the body ends at the wrapper's `}`                                                 --> Syntax
-//!   (c) compile_eval("({anonymous: <prefix>(" + P + "\n) {\n" + body + "\n}}).anonymous",
-//!                    indirect sloppy EvalContext)       every early error, scope pass, BytecodeGen
+//!   (c) compile_eval("(<prefix> anonymous(" + P + "\n) {\n" + body + "\n})",
+//!                    indirect sloppy EvalContext)       every early error, scope pass, BytecodeGen;
+//!                    the name `anonymous` gets no binding (F7)
 //!   --> VerifiedUnit (CodeKind::Eval): function 0 returns the closure (function 1, "anonymous")
 //! ```
 //!
@@ -28,9 +29,12 @@
 //! | F1 | Three parses: (a) and (b) each check one part in a wrapper, (c) compiles the joined text | CreateDynamicFunction parses P with the FormalParameters goal and the body with the FunctionBody goal, each on its own, then the joined text. Only the wrapper's shape (one function, the part ends at the wrapper's own `)` or `}`) shows that a part did not leave its place |
 //! | F2 | (a) and (b) run the parser and the depth layers only, not oxc_semantic | (c) has the same parameters and the same body in the same place, so oxc_semantic on (c) reports every early error of (a) and (b); a token cannot cross a part's end in (c) unless it does in (a) or (b) (each part is followed by the same `\n`) |
 //! | F3 | (c) goes through [`compile_eval`](crate::compile_eval) with `EvalContext::default()` (indirect, sloppy): a `CodeKind::Eval` unit whose function 0 returns the completion value (E5), run by the VM as global code (D8) | A Script unit's function 0 ends in `LdaUndefined; Return`; indirect eval is global code over the global env, which is the env of CreateDynamicFunction |
-//! | F4 | (c) wraps the function in `({anonymous: ...}).anonymous`, not `(function anonymous(...) {...})` | A named function expression binds its own name inside its body; CreateDynamicFunction does not (OrdinaryFunctionCreate over the global env, then SetFunctionName(F, "anonymous")). node 24: `new Function("return typeof anonymous")()` is `"undefined"`. The property value gets the name `anonymous` by NamedEvaluation and stays an ordinary function expression (a constructor with a `prototype`, no home object) |
+//! | F4 | (c) is the function expression `(<prefix> anonymous(P\n) {\nbody\n})`, so the unit's source range of function 1 is the CreateDynamicFunction `sourceText` (`<prefix> anonymous(P\n) {\nbody\n}`, §20.2.1.1.1 step 20; `Function.prototype.toString`, M6-P2 FN-SMALL). Before M6-P2 it was `({anonymous: <prefix>(...) {...}}).anonymous`, whose range had no `anonymous` | node 26: `new Function("a", "return a").toString()` is `"function anonymous(a\n) {\nreturn a\n}"` |
 //! | F5 | The Async and AsyncGenerator kinds run the same checks. An async function compiles (M3-P1 ASYNC); an async generator compiles (M3-P2 ASYNCGEN; before, BytecodeGen answered `Unsupported`, "generator functions") | A text that is not valid for the kind is a SyntaxError; a valid one compiles (D7) |
 //! | F6 | Error messages and positions refer to the wrapper text | The VM throws the message only (`CompileFailure`) |
+//! | F7 | The name `anonymous` of (c) gets no binding: while (c) compiles, [`DYNAMIC_FUNCTION`] is set on the worker thread, and the scope pass makes no name scope for function 1 (`scope::collect`). Function 1 keeps the name `anonymous` | A named function expression binds its own name inside its body; CreateDynamicFunction does not (OrdinaryFunctionCreate over the global env, then SetFunctionName(F, "anonymous")). node 26: `new Function("return typeof anonymous")()` is `"undefined"`. The flag is per thread and set only around (c), so eval code and nested functions keep their name scopes |
+
+use std::cell::Cell;
 
 use ep9_bytecode::{EvalContext, FunctionCtorKind, VerifiedUnit};
 use oxc_allocator::Allocator;
@@ -73,7 +77,9 @@ pub fn compile_function_ctor(
     let job = move || {
         check_part(&texts.params, Part::Params)?;
         check_part(&texts.body, Part::Body)?;
-        // On the worker, compile_eval runs inline (worker::run).
+        // On the worker, compile_eval runs inline (worker::run), so the flag reaches its scope
+        // pass (F7).
+        let _flag = DynamicFunction::set();
         crate::compile_eval(&texts.joined, &EvalContext::default(), options)
     };
     match crate::worker::run(crate::stack::WORKER_STACK_BYTES, job) {
@@ -85,6 +91,34 @@ pub fn compile_function_ctor(
             position: None,
         })
         .into()),
+    }
+}
+
+thread_local! {
+    /// Set while (c) compiles on this thread (F7): function 1 of the unit is the function of
+    /// CreateDynamicFunction, and its name `anonymous` gets no binding.
+    static DYNAMIC_FUNCTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Is the unit that compiles on this thread the joined text (c) of the `Function`
+/// constructor (F7)? Read by the scope pass.
+pub(crate) fn is_dynamic_function() -> bool {
+    DYNAMIC_FUNCTION.with(Cell::get)
+}
+
+/// Sets [`DYNAMIC_FUNCTION`] until it drops (also on a panic).
+struct DynamicFunction;
+
+impl DynamicFunction {
+    fn set() -> Self {
+        DYNAMIC_FUNCTION.with(|f| f.set(true));
+        Self
+    }
+}
+
+impl Drop for DynamicFunction {
+    fn drop(&mut self) {
+        DYNAMIC_FUNCTION.with(|f| f.set(false));
     }
 }
 
@@ -104,7 +138,7 @@ impl Texts {
         Self {
             params: format!("({prefix} anonymous({params}\n) {{\n}})"),
             body: format!("({prefix} anonymous(\n) {{\n{body}\n}})"),
-            joined: format!("({{anonymous: {prefix}({params}\n) {{\n{body}\n}}}}).anonymous"),
+            joined: format!("({prefix} anonymous({params}\n) {{\n{body}\n}})"),
         }
     }
 }
@@ -227,7 +261,7 @@ mod tests {
             let name = f1.name.map(|s| u.string(s).clone());
             assert_eq!(name, Some(UnitString::new("anonymous")));
 
-            // Function 0: the closure goes into the object, is read back and returned.
+            // Function 0: the closure is the completion value (F4).
             let d0 = disassemble_function(u, FunctionId(0));
             let code: Vec<&str> = d0
                 .lines()
@@ -239,24 +273,15 @@ mod tests {
                     })
                 })
                 .collect();
-            assert_eq!(
-                code,
-                [
-                    "CreateObjectLiteral",
-                    "Star",
-                    "CreateClosure",
-                    "DefineNamedOwnProperty",
-                    "Ldar",
-                    "Star",
-                    "GetNamedProperty",
-                    "Star",
-                    "Ldar",
-                    "Return"
-                ],
-                "{d0}"
-            );
+            assert_eq!(code, ["CreateClosure", "Star", "Ldar", "Return"], "{d0}");
             assert!(d0.contains("Function f1"), "{d0}");
             assert!(!d0.contains("DeclareEval"), "{d0}");
+            // F4: function 1's source range is the CreateDynamicFunction sourceText.
+            let text = u.source.as_deref().expect("the unit embeds its source");
+            let range = f1.source_start as usize..f1.source_end as usize;
+            let prefix = kind.prefix();
+            let want = format!("{prefix} anonymous(a,b\n) {{\n{body}\n}}");
+            assert_eq!(&text[range], want);
         }
     }
 

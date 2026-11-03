@@ -104,7 +104,7 @@ function f1 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
   positions (2):
       0 S 10 (1:11)
       2 E 10 (1:11)
-function f2 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict] params=1 length=0 regs=3 range=28..56
+function f2 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict] params=1 length=0 regs=3 range=0..58
   code (47 bytes):
       0    LdaCurrentFunction                           ; 0e
       1    Star r1                                      ; 0c 01
@@ -139,7 +139,7 @@ function f2 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
      19 E 38 (1:39)
      35 S 43 (1:44)
      41 E 43 (1:44)
-function f3 class-constructor name="B" parent=f0 outer_scope=scope5 flags=[strict,simple-params] params=0 length=0 regs=2 range=67..86
+function f3 class-constructor name="B" parent=f0 outer_scope=scope5 flags=[strict,simple-params] params=0 length=0 regs=2 range=59..86
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
