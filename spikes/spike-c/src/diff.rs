@@ -42,6 +42,12 @@
 //! an exit placed after a side effect would show), plus a DICTIONARY array (the kind guard
 //! fails closed, R17), strings, `-0`, NaN and a throw inside a call. Every call in `main` is in
 //! its own `try`, so a throw (in both runs) does not cut the rest.
+//!
+//! SPIKEC-9 (M6-P1) adds three families for the kernel-2 ops: `num2` (pool constants, a
+//! Float64 phi from a constant, double compares with NaN, `x | 0` on a double, the int32 0
+//! stored into a DOUBLE array), `glob` (global loads, a throwing one too, `Math.sqrt` read out
+//! of line, CallProperty1 and a 3-argument list call) and `wide` (a loop body past 255 bytes,
+//! so its jumps are wide).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -298,9 +304,9 @@ fn line(expr: &str) -> String {
 }
 
 /// The families of the corpus, in seed order (seed `s` is family `(s - 1) % len`).
-pub const FAMILIES: [&str; 12] = [
+pub const FAMILIES: [&str; 15] = [
     "int-sum", "int-ovf", "dbl", "store", "copy", "named", "branch", "closure", "call", "nested",
-    "div-eq", "lin",
+    "div-eq", "lin", "num2", "glob", "wide",
 ];
 
 /// The program of `seed` (deterministic).
@@ -700,6 +706,124 @@ pub fn program(seed: u64) -> Program {
                 format!("f([1, V(2), 1], 3, 1, {d}) + ' ' + calls"),
                 format!("f(D([1, 2, 3]), 3, 1, {d})"),
                 format!("f([NaN, 1, 2], 3, NaN, {d})"),
+            ];
+            for e in r.some(&edges.each_ref(), 6) {
+                main += &line(e);
+            }
+        }
+        "num2" => {
+            // SPIKEC-9: pool constants (1.5, 0.25, 0.5), a Float64 loop phi from a constant,
+            // a double compare (NaN gives false), `x | 0` on a double (TruncateFloat64: exact
+            // or exit) and the int32 0 stored into a DOUBLE array.
+            name = "f";
+            let m = r.int(1, 4);
+            defs += &format!(
+                "function f(a, b, n, lim) {{ var s = 0.5; for (var i = 0; i < n; i++) {{ var v = a[i] * 1.5; if (v < lim) {{ s = s + v; }} else {{ s = s - 0.25; b[i] = 0; }} }} return (s | 0) + {m}; }}\n"
+            );
+            warm = "var WA = [0.5, 1.5, 2.5, 3.5, 4.5], WB = [0.5, 0.5, 0.5, 0.5, 0.5]; for (var q = 0; q < 20; q++) f(WA, WB, 5, 4);".to_string();
+            for _ in 0..3 {
+                let n = r.int(3, 6) as usize;
+                // Doubles in -9.75..9.75 against a limit near 0: both arms run.
+                main += &line(&shown(&format!(
+                    "(function (a, b) {{ return [f(a, b, {n}, {}), b]; }})({}, {})",
+                    r.int(-1, 1),
+                    r.dbls(n),
+                    r.dbls(n)
+                )));
+            }
+            let edges = [
+                "f([NaN, 1.5, 2.5], [0.5, 0.5, 0.5], 3, 4)".to_string(),
+                "f([0.5, 1.5, 2.5], [0.5, 0.5, 0.5], 3, NaN)".to_string(),
+                "f([1e10, 1e10], [0.5, 0.5], 2, 1e300)".to_string(),
+                "f([-1e10, 0.5], [0.5, 0.5], 2, 1e300)".to_string(),
+                "1 / f([-0.25, 0.25], [0.5, 0.5], 1, 1)".to_string(),
+                "f([0.5, 1.5, 2.5], [1, 2, 3], 3, 1)".to_string(),
+                "f([0.5, 1.5, 2.5], D([0.5, 0.5, 0.5]), 3, 1)".to_string(),
+                "f([0.5, , 2.5], [0.5, 0.5, 0.5], 3, 1)".to_string(),
+                "f([0.5, 1.5], [0.5, 0.5], 4, 1)".to_string(),
+                "f([0.5, V(9.5)], [0.5, 0.5], 2, 1) + ' ' + calls".to_string(),
+                "f([0.5, 1.5, 2.5], [0.5, 0.5, 0.5], 3, '2')".to_string(),
+                "f([0.5, 'x'], [0.5, 0.5], 2, 1)".to_string(),
+                "f([1, 2, 3], [0.5, 0.5, 0.5], 3, 2)".to_string(),
+            ];
+            for e in r.some(&edges.each_ref(), 7) {
+                main += &line(e);
+            }
+        }
+        "glob" => {
+            // SPIKEC-9: global loads (G, U, h, Math), the out-of-line named load `Math.sqrt`,
+            // CallProperty1 (`Math.sqrt(..)`) and a 3-argument call (the register-list
+            // CallUndefinedReceiver), all through the runtime table.
+            name = "f";
+            let g = r.int(1, 9);
+            defs += &format!("var G = {g};\nglobalThis.U = 1;\n");
+            defs += "function P(x, y) { this.x = x; this.y = y; }\n";
+            defs += "function h(x, y, z) { return x * y + z; }\n";
+            defs += "function f(o, n) { var s = 0; for (var i = 0; i < n; i++) { s = s + Math.sqrt(o.x * i) + h(i, G, o.y) + U; } return s; }\n";
+            warm = format!(
+                "var WP = new P({}, {}); for (var q = 0; q < 20; q++) f(WP, 4);",
+                r.int(1, 9),
+                r.int(-9, 9)
+            );
+            for _ in 0..3 {
+                main += &line(&format!(
+                    "f(new P({}, {}), {})",
+                    r.int(0, 500),
+                    r.int(-500, 500),
+                    r.int(1, 8)
+                ));
+            }
+            let edges = [
+                "(function () { var g0 = G; G = 'x'; try { return f(new P(1, 2), 3); } finally { G = g0; } })()".to_string(),
+                "(function () { var q = Math.sqrt; Math.sqrt = function (x) { calls = calls + 1; return -x; }; try { return f(new P(4, 1), 3) + ' ' + calls; } finally { Math.sqrt = q; } })()".to_string(),
+                "(function () { var h0 = h; h = function (x, y, z) { calls = calls + 1; return z; }; try { return f(new P(4, 1), 3) + ' ' + calls; } finally { h = h0; } })()".to_string(),
+                "(function () { delete globalThis.U; try { return f(new P(1, 2), 2); } finally { globalThis.U = 1; } })()".to_string(),
+                "(function () { var h0 = h; h = function () { throw new RangeError('h'); }; try { return f(new P(1, 2), 2); } finally { h = h0; } })()".to_string(),
+                format!("f(new P(-{}, 2), 3)", r.int(1, 9)),
+                format!("f(new P({}, 2), 3)", r.dbl()),
+                "f(new P('9', 2), 3)".to_string(),
+                "f({ x: 4, y: 1 }, 3)".to_string(),
+                "f(null, 3)".to_string(),
+                "f(new P(V(4), 1), 2) + ' ' + calls".to_string(),
+                "f(new P(2147483647, 2147483647), 3)".to_string(),
+            ];
+            for e in r.some(&edges.each_ref(), 7) {
+                main += &line(e);
+            }
+        }
+        "wide" => {
+            // SPIKEC-9: a loop body past 255 bytes of bytecode, so its jumps (the back edge,
+            // and the forward jumps around each arm) take wide operands.
+            name = "f";
+            let arm = |r: &mut Rng, k: usize| {
+                (0..k)
+                    .map(|j| {
+                        let op = r.pick(&["+", "-", "^"]);
+                        format!("s = (s {op} a[i] * {}) | 0;", j as i64 + r.int(1, 5))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let (then, other) = (arm(&mut r, 16), arm(&mut r, 16));
+            defs += &format!(
+                "function f(a, n, t) {{ var s = 0; for (var i = 0; i < n; i++) {{ if (a[i] < t) {{ {then} }} else {{ {other} }} }} return s; }}\n"
+            );
+            warm = "var W = [1, 5, 3, 7, 3, 0]; for (var q = 0; q < 20; q++) f(W, W.length, 3);"
+                .to_string();
+            for _ in 0..3 {
+                let n = r.int(4, 9) as usize;
+                let t = r.int(-3, 3);
+                main += &line(&format!("f({}, {n}, {t})", r.ints_with(n, -5, 5, t - 1)));
+            }
+            let edges = [
+                "f([2147483647, 2147483647, 5], 3, 9)".to_string(),
+                format!("f([1, {}, 3], 3, 2)", r.dbl()),
+                "f([1, , 3], 3, 2)".to_string(),
+                "f([1, 2, 3], 5, 2)".to_string(),
+                "f([1, 'b', 3], 3, 2)".to_string(),
+                "f([1, V(9), 3], 3, 2) + ' ' + calls".to_string(),
+                "f(D([1, 2, 3]), 3, 2)".to_string(),
+                "f([1, 2, 3], 3, NaN)".to_string(),
             ];
             for e in r.some(&edges.each_ref(), 6) {
                 main += &line(e);
