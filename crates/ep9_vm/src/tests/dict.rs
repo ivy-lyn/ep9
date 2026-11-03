@@ -226,11 +226,9 @@ fn growth_reindexes_and_churn_compacts_in_place() {
         for i in 0..60 {
             assert!(del(rt, o, &format!("p{i}")));
         }
-        let mut oldest = 60;
         for i in 100..700 {
-            put(rt, o, &format!("p{i}"), int(i as i32));
-            assert!(del(rt, o, &format!("p{oldest}")));
-            oldest += 1;
+            put(rt, o, &format!("p{i}"), int(i));
+            assert!(del(rt, o, &format!("p{}", i - 40)));
             let (cap, live, used, _) = state(o);
             assert_eq!(live, 40);
             assert!(cap == 128 && used <= cap, "{cap} {used}");
