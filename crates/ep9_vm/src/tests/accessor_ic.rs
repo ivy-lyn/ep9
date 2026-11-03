@@ -722,6 +722,9 @@ fn ops_of_reads_the_getter_and_setter_cases() {
         let ga = host(t.rt(), get_this, "ga");
         // Site 0: an own getter.
         let a = object::new_object(t.rt(), p);
+        // Case keys are weak: root each receiver until its op list is read (tests/ic.rs
+        // `keep_all`; a release frame may drop a local at its last use).
+        let mut kept = vec![t.keep(a)];
         define_accessor(t.rt(), a, "x", ga, UNDEFINED);
         t.ok(0, a, UNDEFINED);
         assert_eq!(t.kind(0, shape_of(a)), Some(GETTER));
@@ -729,11 +732,13 @@ fn ops_of_reads_the_getter_and_setter_cases() {
         let h = object_with(t.rt(), p, &[("pad", int(0))]);
         define_accessor(t.rt(), h, "x", ga, UNDEFINED);
         let o = object_with(t.rt(), h, &[("a", int(1))]);
+        kept.push(t.keep(o));
         t.ok(1, o, UNDEFINED);
         assert_eq!(t.kind(1, shape_of(o)), Some(GETTER));
         // Site 2: an own setter.
         let set = host(t.rt(), set_record, "s");
         let d = object::new_object(t.rt(), p);
+        kept.push(t.keep(d));
         define_accessor(t.rt(), d, "x", UNDEFINED, set);
         t.ok(2, d, int(3));
         assert_eq!(t.kind(2, shape_of(d)), Some(SETTER));
@@ -764,5 +769,6 @@ fn ops_of_reads_the_getter_and_setter_cases() {
             matches!(st[0].as_slice(), [s, Op::CallSetter(Holder::Receiver, Loc(_))] if *s == shape),
             "{st:?}"
         );
+        t.release_all(kept);
     });
 }
