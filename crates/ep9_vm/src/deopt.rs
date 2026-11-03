@@ -616,7 +616,7 @@ fn box_value(repr: Repr, bits: u64) -> Option<u64> {
 /// Rebuilds the T0 state of the record `rec` of `table` in the VM frame `fp` (of `shape`)
 /// from the machine state `exit`: reads every value first, boxes it by its repr, then writes
 /// the VM registers. Returns where T0 resumes and its accumulator. Changes nothing when it
-/// refuses (a record that is not an exit, a target or frame slot the frame does not have,
+/// refuses (a poll record, a target or frame slot the frame does not have,
 /// Tagged bits no Value has).
 ///
 /// # Safety
@@ -629,9 +629,11 @@ pub(crate) unsafe fn rebuild(
     fp: *mut u64,
     shape: FrameShape,
 ) -> Result<Resume, String> {
-    if rec.tag != RecordTag::Exit {
+    // An exit, or a call record (a lazy exit, SPIKEC-10): both resume T0 at the record's
+    // offset. A poll record is not built.
+    if rec.tag == RecordTag::Poll {
         return Err(format!(
-            "the record at pc {} is a {:?} record, not an exit",
+            "the record at pc {} is a {:?} record, not an exit or a call",
             rec.pc, rec.tag
         ));
     }
@@ -798,4 +800,92 @@ impl SideTable {
         *c = c.saturating_add(1);
         Ok(resume)
     }
+}
+
+// ---- the lazy swap (SPIKEC-10, H29-Q4; the short probe) ----
+//
+// **Lazy deopt, the short probe** (M6-P2 SPIKEC-10; H29-Q4; plan v11 §4.8 task 1, the V11-D28
+// speed branch). A call record (tag 2) is a call site's lazy exit: a swap ([`swap_returns`])
+// writes the code's lazy exit of that site over the call's return address in a frame
+// record of the native stack ([`walk_records`]: the AArch64 frame-record chain, AAPCS64
+// §6.2.3), so the call returns into the lazy exit, which takes the shared exit with the
+// record's pc as an exit stub does. [`rebuild`] then resumes T0 at the record's offset (the
+// instruction after the call) with the call's result as the accumulator. The walk and the
+// swap are here, with no cfg (C-10); reading the live x29 is the `spike-native` glue
+// (`native.rs`). What the probe does not prove (a CFI walk where frame records are not
+// kept, signed return addresses, a RuntimeTable entry's own return, freeing dead code) is
+// the gated part of H29 (H29-Q4).
+//
+// ```text
+//  compiled f --blr--> call_any (Rust frame record: [x29] = f's x29, [x29+8] = ret into f)
+//     --> callee runs; an event marks f's code dead --> walk_records from the current x29
+//     --> the record whose ret = f's code + the site's return offset: ret := code + lazy exit
+//  callee returns --> call_any returns into f's lazy exit (x0 = the result)
+//     --> restore what the call saved --> shared exit --> rebuild(call record)
+//     --> T0 resumes after the call, acc = x0
+// ```
+//
+
+/// One AArch64 frame record (AAPCS64 §6.2.3): two words at `at`, the caller's x29 and the
+/// return address `ret`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FrameRecord {
+    pub at: usize,
+    pub ret: usize,
+}
+
+/// The frame records of the chain that starts at `fp` (a live x29), at most `max`: it stops
+/// at a null or misaligned record address, at one that is not above the record before it
+/// (the stack grows down, so each caller's record is higher), and at one at or past `end`.
+///
+/// # Safety
+/// Every record address the walk reaches below `end` is a readable 16-byte record of a live
+/// stack (on macOS arm64 every frame keeps one: the platform ABI makes x29 a frame-record
+/// chain that ends at 0).
+pub(crate) unsafe fn walk_records(fp: usize, end: usize, max: usize) -> Vec<FrameRecord> {
+    let mut out = Vec::new();
+    let mut at = fp;
+    while out.len() < max && at != 0 && at.is_multiple_of(16) && at < end {
+        let p = core::ptr::with_exposed_provenance::<usize>(at);
+        // SAFETY: the caller's contract (a readable record below `end`).
+        let (next, ret) = unsafe { (p.read(), p.add(1).read()) };
+        out.push(FrameRecord { at, ret });
+        if next <= at {
+            break;
+        }
+        at = next;
+    }
+    out
+}
+
+/// The lazy swap of the code at `code` (`len` bytes) with the call sites `sites` (the native
+/// offsets of each site's return address and lazy exit): every record of `records` whose
+/// return address is `code + ret` of a site gets `code + stub` instead. Returns each swapped
+/// record with its old return address. A return address that is no site's is left alone
+/// (a frame of other code, or a site already swapped), so a second swap changes nothing.
+///
+/// # Safety
+/// Each record of `records` is a live frame record (from [`walk_records`] on the current
+/// stack, with no frame left since), and each site's lazy exit is code that runs the call's
+/// return as the module docs say.
+pub(crate) unsafe fn swap_returns(
+    records: &[FrameRecord],
+    code: usize,
+    len: usize,
+    sites: &[(u32, u32)],
+) -> Vec<(FrameRecord, usize)> {
+    let mut out = Vec::new();
+    for r in records {
+        let Some(off) = r.ret.checked_sub(code).filter(|&o| o < len) else {
+            continue;
+        };
+        let Some(&(_, stub)) = sites.iter().find(|&&(ret, _)| ret as usize == off) else {
+            continue;
+        };
+        let p = core::ptr::with_exposed_provenance_mut::<usize>(r.at);
+        // SAFETY: the caller's contract (a live record: its second word is the return address).
+        unsafe { p.add(1).write(code + stub as usize) };
+        out.push((*r, r.ret));
+    }
+    out
 }

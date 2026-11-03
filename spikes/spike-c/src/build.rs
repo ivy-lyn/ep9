@@ -341,6 +341,29 @@ impl Builder<'_> {
         }
     }
 
+    /// SPIKEC-10: the lazy state of the call node `n` of the current instruction (the
+    /// accumulator is set to `n`): the next instruction's offset and the registers live
+    /// there; the accumulator is left out (the lazy exit takes the result from x0).
+    fn lazy_after(&mut self, n: NodeId) -> Result<(), Refusal> {
+        let i = self.insn + 1;
+        let next = self.cfg.insns.get(i).ok_or_else(|| Refusal::Decode {
+            offset: self.offset(),
+            detail: "a call with no next instruction".into(),
+        })?;
+        let live = &self.cfg.live_before[i];
+        let acc = self.cfg.acc();
+        let state = FrameState {
+            offset: next.offset,
+            registers: (0..acc)
+                .filter(|&r| live[r])
+                .filter_map(|r| self.env[r].map(|v| (self.cfg.register(r), v)))
+                .collect(),
+            acc: None,
+        };
+        self.g.node_mut(n).lazy = Some(state);
+        Ok(())
+    }
+
     fn guard(&mut self, n: NodeId, basis: GuardBasis, state: FrameState) {
         self.g.set_guard(n, basis, state);
     }
@@ -988,12 +1011,14 @@ impl Builder<'_> {
                 let regs: Vec<Register> = (0..=argc).map(|i| insn.register(i)).collect();
                 let n = self.call(regs)?;
                 self.set_acc(n);
+                self.lazy_after(n)?;
             }
             CallProperty1 => {
                 // SPIKEC-9 task 3: callee, receiver, one argument (`call_any` runs it).
                 let regs: Vec<Register> = (0..3).map(|i| insn.register(i)).collect();
                 let n = self.call(regs)?;
                 self.set_acc(n);
+                self.lazy_after(n)?;
             }
             CallUndefinedReceiver => {
                 // SPIKEC-9 task 3: the callee, then the register list (locals only).
@@ -1007,6 +1032,7 @@ impl Builder<'_> {
                 regs.extend((0..count).map(|i| Register::local(base + i)));
                 let n = self.call(regs)?;
                 self.set_acc(n);
+                self.lazy_after(n)?;
             }
             AddSmi | SubSmi | MulSmi | BitwiseAndSmi | BitwiseOrSmi | BitwiseXorSmi
             | ShiftLeftSmi | ShiftRightSmi => {
@@ -1219,14 +1245,21 @@ impl Builder<'_> {
                     *i = new;
                 }
             }
-            if let Some(g) = &mut n.guard {
-                for (_, v) in &mut g.state.registers {
+            let lazy = n.lazy.as_mut();
+            for st in n
+                .guard
+                .as_mut()
+                .map(|g| &mut g.state)
+                .into_iter()
+                .chain(lazy)
+            {
+                for (_, v) in &mut st.registers {
                     if *v == old {
                         *v = new;
                     }
                 }
-                if g.state.acc == Some(old) {
-                    g.state.acc = Some(new);
+                if st.acc == Some(old) {
+                    st.acc = Some(new);
                 }
             }
         }
@@ -1982,10 +2015,7 @@ impl Builder<'_> {
             }
             let node = self.g.node(n);
             work.extend(node.inputs.iter().copied());
-            if let Some(g) = &node.guard {
-                work.extend(g.state.registers.iter().map(|&(_, v)| v));
-                work.extend(g.state.acc);
-            }
+            work.extend(node.state_values());
         }
         let dead: Vec<NodeId> = used
             .iter()

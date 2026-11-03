@@ -229,6 +229,8 @@ impl Session {
         iso.register_host_function("print", 1, print);
         iso.register_host_function("gc", 0, gc);
         iso.register_host_function("terminate", 0, terminate);
+        // SPIKEC-10: the lazy-deopt probe's hook (a no-op unless `lazy::arm` armed it).
+        iso.register_host_function("lazyDeopt", 0, crate::lazy::host_lazy_deopt);
         Ok(Session {
             iso,
             modules: Vec::new(),

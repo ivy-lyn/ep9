@@ -37,6 +37,9 @@
 //! spike-c read-set                          the R17 read set: each `ep9_vm::layout` item Spike C
 //!                                           reads, by owner version (no hand fact since M6-P0)
 //! spike-c liveness <kernel> [hot index]     the H02-Q1 liveness report of a hot function
+//! spike-c lazy                              the short lazy-deopt probe (SPIKEC-10, H29-Q4): a
+//!                                           compiled call's frame swapped to its lazy exit, the
+//!                                           walks before and after, output against T0
 //! ```
 
 use std::process::ExitCode;
@@ -54,7 +57,7 @@ fn usage() -> ExitCode {
          | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
          | once <t0|c|p|h0|h1> <kernel> [--n N] [--k K] | sp-facts <write|check|wrong|time> ... \
          | show <kernel> [i] | driver <kernel> [--n N] \
-         | structural [check...|all] | read-set | liveness <kernel> [i]]"
+         | structural [check...|all] | read-set | liveness <kernel> [i] | lazy]"
     );
     ExitCode::from(2)
 }
@@ -569,6 +572,7 @@ fn main() -> ExitCode {
             Ok(true)
         }
         "liveness" => liveness_cmd(rest),
+        "lazy" => lazy_cmd(),
         _ => return usage(),
     };
     match r {
@@ -616,4 +620,71 @@ fn liveness_cmd(args: &[String]) -> Result<bool, String> {
             Ok(false)
         }
     }
+}
+
+/// `spike-c lazy`: the short lazy-deopt probe (SPIKEC-10, H29-Q4; `spike_c::lazy`).
+fn lazy_cmd() -> Result<bool, String> {
+    use spike_c::lazy::{DEFS, MAIN, WARM};
+    let r = spike_c::tier::lazy_probe(&Config::default(), DEFS, WARM, MAIN, "f")?;
+    let equal = r.compiled == r.t0;
+    println!(
+        "lazy probe: f compiled ({} bytes, {} call record(s)); output {}",
+        r.report.emit.code_bytes,
+        r.report.emit.meta.calls.len(),
+        if equal {
+            "equal to T0"
+        } else {
+            "DIFFERS from T0"
+        }
+    );
+    for c in &r.report.emit.meta.calls {
+        println!(
+            "  call record: return at +{}, lazy exit at +{} (exit pc +{}), T0 resumes at @{}, {} values",
+            c.ret,
+            c.stub,
+            c.pc,
+            c.bytecode,
+            c.values.len()
+        );
+    }
+    let Some(s) = &r.swap else {
+        println!("lazy probe: FAIL: lazyDeopt() did not run armed");
+        return Ok(false);
+    };
+    let at = |a: usize| {
+        if r.code.contains(&a) {
+            format!("f+{}", a - r.code.start)
+        } else {
+            format!("{a:#x}")
+        }
+    };
+    for &(rec, old) in &s.swapped {
+        let now = s.after.iter().copied().find(|&x| r.code.contains(&x));
+        println!(
+            "  swapped: frame record {rec:#x}: {} -> {}",
+            at(old),
+            now.map_or("?".into(), at)
+        );
+    }
+    println!(
+        "  frame-record walk: {} records before, {} after; std::backtrace (system unwinder): {} frames before, {} after, reached tier::lazy_probe {} / {}",
+        s.before.len(),
+        s.after.len(),
+        s.std_before.0,
+        s.std_after.0,
+        s.std_before.1,
+        s.std_after.1
+    );
+    println!(
+        "  counters: call records {:?}, guard exits {}",
+        r.call_counts(),
+        r.exit_counts().iter().sum::<u64>()
+    );
+    let ok = equal
+        && s.swapped.len() == 1
+        && s.before.len() == s.after.len()
+        && r.call_counts() == [1]
+        && r.exit_counts().iter().all(|&n| n == 0);
+    println!("lazy probe: {}", if ok { "PASS" } else { "FAIL" });
+    Ok(ok)
 }

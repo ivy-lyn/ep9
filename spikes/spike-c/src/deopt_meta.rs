@@ -53,8 +53,10 @@ use crate::regalloc::{Allocation, Location};
 /// The H29 byte form's tag values (the VM's `deopt::form`; the VM's reader is the check).
 mod form {
     pub const RECORD_EXIT: u8 = 0;
+    pub const RECORD_CALL: u8 = 2;
     pub const CLASS_SHIFT: u32 = 4;
     pub const CLASS_SPECULATION: u8 = 0;
+    pub const CLASS_ENVIRONMENT: u8 = 1;
     pub const CLASS_NOT_FILLED: u8 = 2;
     pub const REASON_UNKNOWN: u32 = 0;
     pub const REASON_SHAPE_DIFFERS: u32 = 1;
@@ -221,6 +223,41 @@ pub struct ExitTable {
     pub consts: Vec<Immediate>,
     /// One record per exit, in stub order (`counter` = the index), so sorted by pc.
     pub exits: Vec<ExitRecord>,
+    /// SPIKEC-10 (the lazy-deopt probe, H29-Q4): one call record per call site (H29 record
+    /// tag 2, exit class environment), after the exits (their stubs follow the exit stubs,
+    /// so the pcs stay sorted; `counter` = the exits' count + the index).
+    pub calls: Vec<CallRecord>,
+}
+
+/// The call record of one call site (SPIKEC-10): where a lazy deopt of the call lands. A
+/// swap writes `stub` (the code's offset of the site's lazy exit) over the return address
+/// `ret` of the call's frame; the lazy exit restores what the call saved and takes the
+/// shared exit with the record's pc, as an exit stub does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallRecord {
+    /// Native offset of the lazy exit's exit instruction (what the shared exit is given).
+    pub pc: u32,
+    /// Native offset of the call's return address (the instruction after the `blr`).
+    pub ret: u32,
+    /// Native offset of the lazy exit's first instruction (the swap target).
+    pub stub: u32,
+    /// The bytecode offset T0 resumes at: the instruction after the call.
+    pub bytecode: u32,
+    /// Index of the record's counter.
+    pub counter: u32,
+    /// Every live VM register after the call, then the accumulator: the call's result in
+    /// x0 (Tagged).
+    pub values: Vec<ExitValue>,
+}
+
+/// A call site of the emitter (SPIKEC-10): the call node, the native offsets of its return
+/// address, of its lazy exit's first instruction and of that exit's exit instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LazySite {
+    pub node: NodeId,
+    pub ret: u32,
+    pub stub: u32,
+    pub pc: u32,
 }
 
 /// The byte offset from x29 of spill slot `k` (the emitter's frame: spill slots from
@@ -254,6 +291,7 @@ impl ExitTable {
         g: &Graph,
         a: &Allocation,
         stubs: &[(u32, u32, Cause)],
+        lazy: &[LazySite],
     ) -> Result<ExitTable, String> {
         let mut t = ExitTable::default();
         for (counter, &(id, pc, cause)) in stubs.iter().enumerate() {
@@ -284,6 +322,37 @@ impl ExitTable {
                 bytecode: guard.state.offset,
                 counter: counter as u32,
                 feedback,
+                values,
+            });
+        }
+        for (k, site) in lazy.iter().enumerate() {
+            let n = site.node;
+            let at = format!("{}: call n{} (lazy)", g.name, n.0);
+            let state = g
+                .node(n)
+                .lazy
+                .as_ref()
+                .ok_or(format!("{at}: no lazy state"))?;
+            let mut values = Vec::new();
+            for &(r, v) in &state.registers {
+                let (repr, loc) = t.place(g, a, v).map_err(|e| format!("{at}: {e}"))?;
+                values.push(ExitValue {
+                    target: Some(r),
+                    repr,
+                    loc,
+                });
+            }
+            values.push(ExitValue {
+                target: None,
+                repr: ValueRepr::Tagged,
+                loc: ValueLoc::Reg(0),
+            });
+            t.calls.push(CallRecord {
+                pc: site.pc,
+                ret: site.ret,
+                stub: site.stub,
+                bytecode: state.offset,
+                counter: (stubs.len() + k) as u32,
                 values,
             });
         }
@@ -338,20 +407,31 @@ impl ExitTable {
     /// The H29 byte form (module docs).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        uleb(&mut out, self.exits.len() as u64);
+        uleb(&mut out, (self.exits.len() + self.calls.len()) as u64);
         uleb(&mut out, self.consts.len() as u64);
         for &c in &self.consts {
             out.extend_from_slice(&c.bits().to_le_bytes());
         }
-        for e in &self.exits {
-            // An eager guard exit: record tag exit, the cause's exit class and reason.
-            out.push(form::RECORD_EXIT | e.cause.class() << form::CLASS_SHIFT);
+        // An eager guard exit: record tag exit, the cause's exit class and reason. A call
+        // record (SPIKEC-10): tag call, class environment (a lazy deopt from an outside
+        // event), no feedback slot, reason 0.
+        let exits = self.exits.iter().map(|e| {
+            let header = form::RECORD_EXIT | e.cause.class() << form::CLASS_SHIFT;
             let feedback = e.feedback.map_or(0, |s| s + 1);
-            for f in [e.pc, e.bytecode, e.counter, feedback, e.cause.reason(), 0] {
+            let fields = [e.pc, e.bytecode, e.counter, feedback, e.cause.reason(), 0];
+            (header, fields, &e.values)
+        });
+        let calls = self.calls.iter().map(|c| {
+            let header = form::RECORD_CALL | form::CLASS_ENVIRONMENT << form::CLASS_SHIFT;
+            (header, [c.pc, c.bytecode, c.counter, 0, 0, 0], &c.values)
+        });
+        for (header, fields, values) in exits.chain(calls) {
+            out.push(header);
+            for f in fields {
                 uleb(&mut out, u64::from(f));
             }
-            uleb(&mut out, e.values.len() as u64);
-            for v in &e.values {
+            uleb(&mut out, values.len() as u64);
+            for v in values {
                 let (loc, payload) = match v.loc {
                     ValueLoc::Reg(r) => (form::LOC_REG, i64::from(r)),
                     ValueLoc::Stack(k) => (form::LOC_STACK, i64::from(stack_offset(k))),
@@ -396,9 +476,14 @@ impl ExitTable {
         let bytes = self.encode().len();
         let n = self.exits.len().max(1) as f64;
         let values: usize = self.exits.iter().map(|e| e.values.len()).sum();
+        let calls = if self.calls.is_empty() {
+            String::new()
+        } else {
+            format!(" + {} call records", self.calls.len())
+        };
         format!(
-            "exit metadata: {} records ({} guards), {} consts, {bytes} bytes ({:.1} per exit, {:.1} \
-             values per exit; values by location: {}); offsets and indexes only",
+            "exit metadata: {} records ({} guards){calls}, {} consts, {bytes} bytes ({:.1} per \
+             exit, {:.1} values per exit; values by location: {}); offsets and indexes only",
             self.exits.len(),
             self.exits
                 .iter()
@@ -419,6 +504,7 @@ mod tests {
 
     fn sample() -> ExitTable {
         ExitTable {
+            calls: Vec::new(),
             consts: [
                 crate::vm_layout::int32_bits(7),
                 ep9_value::encoding::VALUE_UNDEFINED,
@@ -507,6 +593,7 @@ mod tests {
             Cause::Megamorphic,
         ];
         let t = ExitTable {
+            calls: Vec::new(),
             consts: vec![],
             exits: (0u32..)
                 .zip(causes)
@@ -636,6 +723,7 @@ mod tests {
     fn the_vm_reads_the_zigzag_bytes_back() {
         // One exit record with one value: the accumulator in a VM frame slot at `o`.
         let table = |o: i32| ExitTable {
+            calls: Vec::new(),
             consts: vec![],
             exits: vec![ExitRecord {
                 pc: 0,

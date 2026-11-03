@@ -975,6 +975,94 @@ pub fn compiled_script(
     })
 }
 
+/// One run of the short lazy-deopt probe ([`lazy_probe`]).
+#[derive(Clone, Debug)]
+pub struct LazyRun {
+    pub t0: RunOutput,
+    pub compiled: RunOutput,
+    pub report: CompileReport,
+    /// The exit counters after `main` (record order: the exits, then the call records).
+    pub exits: Vec<u64>,
+    /// The compiled code's address range.
+    pub code: std::ops::Range<usize>,
+    /// What the armed `lazyDeopt()` did (`None`: it did not run).
+    pub swap: Option<crate::lazy::Swap>,
+}
+
+impl LazyRun {
+    /// The counters of the call records (after the exits').
+    pub fn call_counts(&self) -> &[u64] {
+        self.exits
+            .get(self.report.emit.meta.exits.len()..)
+            .unwrap_or(&[])
+    }
+
+    /// The counters of the guard exits.
+    pub fn exit_counts(&self) -> &[u64] {
+        &self.exits[..self.report.emit.meta.exits.len().min(self.exits.len())]
+    }
+}
+
+/// The short lazy-deopt probe (SPIKEC-10, H29-Q4; [`crate::lazy`]): `defs`, `warm` and `main`
+/// in T0 and in config C with `name` compiled, where the first `lazyDeopt()` that `main`
+/// reaches swaps the return addresses of `name`'s call frames for their lazy exits.
+pub fn lazy_probe(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+) -> Result<LazyRun, String> {
+    let t0 = t0_script(config, defs, warm, main)?;
+    let config = config.threaded();
+    let mut s = Session::new(&config)?;
+    s.run(defs, "defs.js")
+        .result
+        .map_err(|e| format!("defs: {e}"))?;
+    s.run(warm, "warm.js")
+        .result
+        .map_err(|e| format!("warm: {e}"))?;
+    let f = Target::Value(s.function_value(name)?);
+    let (code, report) = {
+        let script = s.script("defs.js").ok_or("no defs script")?;
+        let ids = script.functions_named(name);
+        let [id] = ids[..] else {
+            return Err(format!("{name}: {} functions of that name", ids.len()));
+        };
+        let live = compile_facts(&s, script, id, IntFacts::Live)?;
+        let facts = facts::for_function(&live, script.unit.unit(), id);
+        let input = s.input_of_target(&f)?;
+        crate::compile_input(&input, &facts).map_err(|r| format!("{name}: {r}"))?
+    };
+    let meta = report.emit.meta.encode();
+    // SAFETY: as in `compiled_script`.
+    let placed =
+        unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
+    let range = placed[0].code.clone();
+    let sites = report
+        .emit
+        .meta
+        .calls
+        .iter()
+        .map(|c| (c.ret, c.stub))
+        .collect();
+    crate::lazy::arm(range.clone(), sites);
+    let compiled = s.run(main, "main.js");
+    let swap = crate::lazy::take();
+    let exits = s
+        .exit_counts_of(&f)
+        .ok_or("no exit counters after the install")?;
+    s.verify()?;
+    Ok(LazyRun {
+        t0,
+        compiled,
+        report,
+        exits,
+        code: range,
+        swap,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3276,3 +3364,7 @@ mod review_tests;
 /// The SPIKEC-10 speed tests (`tier/speed_tests.rs`).
 #[cfg(test)]
 mod speed_tests;
+
+/// The SPIKEC-10 short lazy-deopt probe tests (`tier/lazy_tests.rs`).
+#[cfg(test)]
+mod lazy_tests;

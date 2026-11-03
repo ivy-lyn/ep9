@@ -520,6 +520,11 @@ struct Emitter<'a> {
     /// block start and before any node not in [`keeps_d19`] (a call or an out-of-line path
     /// that comes back may change d19; no other code writes it).
     d19: Option<NodeId>,
+    /// SPIKEC-10 (the lazy-deopt probe): each call site's lazy exit label, its call node,
+    /// the native offset of its return address and its bytecode offset.
+    lazy: Vec<(DynamicLabel, NodeId, u32, u32)>,
+    /// The lazy exits as emitted (the call records).
+    lazy_sites: Vec<crate::deopt_meta::LazySite>,
 }
 
 /// The ops whose code keeps d19 (SPIKEC-10, [`Emitter::d19`]): no out-of-line path that comes
@@ -617,6 +622,8 @@ pub fn emit_opts(
         force: opts.force,
         int32_junk: opts.int32_junk,
         d19: None,
+        lazy: Vec::new(),
+        lazy_sites: Vec::new(),
     };
     let overflow = e.ops.new_dynamic_label();
     e.prologue(overflow)?;
@@ -626,14 +633,15 @@ pub fn emit_opts(
     let epilogue = e.ret_and_leave()?;
     e.out_of_line(overflow)?;
     let report_traps = std::mem::take(&mut e.trap_at);
+    let lazy_sites = std::mem::take(&mut e.lazy_sites);
     let guards = e.traps.len();
     let native_at = std::mem::take(&mut e.native_at);
     let code = e
         .ops
         .finalize()
         .map_err(|e| Refusal::Limit(format!("dynasm: {e}")))?;
-    let meta =
-        crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps).map_err(Refusal::Limit)?;
+    let meta = crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps, &lazy_sites)
+        .map_err(Refusal::Limit)?;
     let report = EmitReport {
         code_bytes: code.len(),
         frame_bytes: frame,
@@ -1479,6 +1487,11 @@ impl Emitter<'_> {
                 save_caller_saved(&mut self.ops);
                 mov64(&mut self.ops, 3, VALUE_UNDEFINED);
                 call_table(&mut self.ops, layout::RT_CALL_ANY, node.offset)?;
+                // SPIKEC-10: the return address; a lazy deopt swaps it for the lazy exit.
+                if node.lazy.is_some() {
+                    let (l, ret) = (self.ops.new_dynamic_label(), self.ops.offset().0 as u32);
+                    self.lazy.push((l, n, ret, node.offset));
+                }
                 dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
                 restore_caller_saved(&mut self.ops);
                 let throw = self.throw_at(node.offset);
@@ -2115,6 +2128,43 @@ impl Emitter<'_> {
             }
         }
         self.stub_bytes = self.ops.offset().0 as u32 - start;
+        // SPIKEC-10 (H29-Q4, the short lazy-deopt probe): a lazy exit per call site, entered
+        // as the call's return (x0 = the result, the callee-saved registers and sp as at the
+        // return): what the call site does after the call up to its result (restore the
+        // saved registers; 0 unwinds from the call), then the shared exit of the Deopt
+        // policy with the site's call record, which resumes T0 after the call with x0 as the
+        // accumulator. Nothing jumps here: only a swapped return address comes here.
+        if !self.lazy.is_empty() && !shared.iter().any(|(p, _)| *p == ExitPolicy::Deopt) {
+            shared.push((ExitPolicy::Deopt, self.ops.new_dynamic_label()));
+        }
+        for (l, node, ret, off) in std::mem::take(&mut self.lazy) {
+            let exit = shared
+                .iter()
+                .find(|(p, _)| *p == ExitPolicy::Deopt)
+                .expect("the Deopt shared exit")
+                .1;
+            let throw = self.throw_at(off);
+            dynasm!(self.ops ; .arch aarch64 ; =>l);
+            let stub = self.ops.offset().0 as u32;
+            dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+            restore_caller_saved(&mut self.ops);
+            dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+            let pc = self.ops.offset().0 as u32;
+            match self.form {
+                StubForm::Call => dynasm!(self.ops ; .arch aarch64 ; bl =>exit),
+                StubForm::Movz => {
+                    mov64(&mut self.ops, 16, u64::from(pc));
+                    mov64(&mut self.ops, 17, 0);
+                    dynasm!(self.ops ; .arch aarch64 ; b =>exit);
+                }
+            }
+            self.lazy_sites.push(crate::deopt_meta::LazySite {
+                node,
+                ret,
+                stub,
+                pc,
+            });
+        }
         let unwind = self.unwind;
         let shared_start = self.ops.offset().0 as u32;
         for (policy, x) in shared {
