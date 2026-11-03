@@ -1114,8 +1114,8 @@ jobs:
         with:
           shared-key: release-${{ matrix.name }}
           save-if: false
-      - name: release tests (ep9_vm, ep9_builtins)
-        run: cargo test --release --locked -p ep9_vm -p ep9_builtins
+      - name: release tests (ep9_vm, ep9_builtins, ep9_frontend)
+        run: cargo test --release --locked -p ep9_vm -p ep9_builtins -p ep9_frontend
 
   # The no-jit unit tests (M5-P3-ORCH-15, MODES-CHECK-w21 MC-w21-21; plan v11 section 2.9,
   # M6-P0): ep9_vm and ep9_builtins without the `jit` feature, every test target (lib,
