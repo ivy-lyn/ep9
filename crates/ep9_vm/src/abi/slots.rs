@@ -76,6 +76,9 @@ pub enum ObjectClass {
     /// A RegExp String Iterator (§22.2.9): `[[IteratingRegExp]]`, `[[IteratedString]]`,
     /// `[[Global]]`, `[[Unicode]]`, `[[Done]]`. Declared in M4-P0; made by M4-P3 REGEXP1.
     RegExpStringIterator,
+    /// A raw JSON object (`JSON.rawJSON`, json-parse-with-source): `[[IsRawJSON]]`. The class
+    /// is the mark; the object has 0 slots. Appended by M6-P1 SPEC-B.
+    RawJson,
 }
 
 impl ObjectClass {
@@ -95,6 +98,7 @@ impl ObjectClass {
         ObjectClass::WeakRef,
         ObjectClass::FinalizationRegistry,
         ObjectClass::RegExpStringIterator,
+        ObjectClass::RawJson,
     ];
 
     /// Most internal slots of one object.
@@ -131,6 +135,7 @@ impl ObjectClass {
             ObjectClass::WeakRef => "WeakRef",
             ObjectClass::FinalizationRegistry => "FinalizationRegistry",
             ObjectClass::RegExpStringIterator => "RegExp String Iterator",
+            ObjectClass::RawJson => "RawJSON",
         }
     }
 }

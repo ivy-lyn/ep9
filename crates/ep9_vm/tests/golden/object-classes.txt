@@ -15,3 +15,4 @@
   11  WeakRef
   12  FinalizationRegistry
   13  RegExp String Iterator
+  14  RawJSON
