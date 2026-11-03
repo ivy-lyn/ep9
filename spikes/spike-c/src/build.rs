@@ -13,7 +13,9 @@
 //!        merge: a phi where the predecessors differ; loop header: a phi per live register,
 //!        back-edge inputs filled when the JumpLoop block is done
 //!  ──> trivial phis removed ──> loop phis unboxed to Int32 (an entry check in the
-//!      preheader) ──> redundant checks removed, boxes inserted ──> dead pure nodes removed
+//!      preheader) ──> redundant checks removed, boxes inserted ──> kind guards of loops
+//!      without calls moved to the preheader, with the DOUBLE store (SPIKEC-9) ──> dead pure
+//!      nodes removed
 //! ```
 //!
 //! | Bytecode | Graph | Trust of the result |
@@ -100,7 +102,10 @@
 //! from the access's bytecode offset.
 
 use ep9_bytecode::{Opcode, Register, decode_at};
-use ep9_facts::{Access, BinaryHint, CompareHint, IcState, KeySet, ObjectKind, SlotFacts};
+use ep9_facts::{
+    Access, BinaryHint, CompareHint, ElementsKind, ElementsKindSet, IcState, KeySet, ObjectKind,
+    SlotFacts,
+};
 use ep9_value::encoding::{VALUE_FALSE, VALUE_NULL, VALUE_TRUE, VALUE_UNDEFINED};
 use spike_b::emit::{FunctionInput, Refusal};
 
@@ -233,6 +238,9 @@ struct Builder<'a> {
     /// CSE by value and policy, MC-w14-20).
     memo: Vec<(u8, NodeId, ExitPolicy, NodeId)>,
     keyed: Vec<KeyedSite>,
+    /// SPIKEC-9: each element op and the elements kinds its site's keyed record saw (bits of
+    /// `ElementsKindSet`; 0 without a record), for [`Self::hoist_array_checks`].
+    elem_kinds: Vec<(NodeId, u16)>,
 }
 
 /// Builds the SSA graph of `input` from its bytecode and `facts`.
@@ -280,6 +288,7 @@ pub fn build(
         insn: 0,
         memo: Vec::new(),
         keyed: Vec::new(),
+        elem_kinds: Vec::new(),
     };
     for bi in 0..n {
         b.block(bi)?;
@@ -287,6 +296,7 @@ pub fn build(
     b.remove_trivial_phis();
     b.unbox_loop_phis();
     b.fix_reprs();
+    b.hoist_array_checks();
     b.dce();
     b.g.check().map_err(Refusal::Limit)?;
     stats.keyed = b.keyed;
@@ -548,6 +558,14 @@ impl Builder<'_> {
             generic: path == KeyedPath::Generic,
         });
         Ok(path)
+    }
+
+    /// The elements kinds (bits) the keyed record of `slot` saw; 0 without one.
+    fn site_kinds(&self, slot: u32) -> u16 {
+        match self.facts.records.iter().find(|(s, _)| *s == slot) {
+            Some((_, SlotFacts::LoadKeyed(k) | SlotFacts::StoreKeyed(k))) => k.kinds.bits(),
+            _ => 0,
+        }
     }
 
     fn binop(&mut self, op: Int32Op, l: NodeId, r: NodeId, slot: u32) -> NodeId {
@@ -876,6 +894,8 @@ impl Builder<'_> {
                         let n =
                             self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
                         self.guard(n, GuardBasis::Unbacked, st);
+                        let kinds = self.site_kinds(insn.unsigned(1));
+                        self.elem_kinds.push((n, kinds));
                         n
                     }
                     KeyedPath::Generic => {
@@ -906,6 +926,8 @@ impl Builder<'_> {
                         let n =
                             self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
                         self.guard(n, GuardBasis::Unbacked, st);
+                        let kinds = self.site_kinds(insn.unsigned(2));
+                        self.elem_kinds.push((n, kinds));
                     }
                     KeyedPath::Generic => {
                         let (o, k, v) = (self.tagged(o), self.tagged(k), self.tagged(v));
@@ -1607,7 +1629,8 @@ impl Builder<'_> {
                 | Op::IsTrue
                 | Op::Return
                 | Op::LoadField { .. }
-                | Op::LoadSlotsField { .. } => vec![Repr::Tagged],
+                | Op::LoadSlotsField { .. }
+                | Op::DoubleElements => vec![Repr::Tagged],
                 Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
                 // The value: an Int32 or a Float64 stays one; anything else is Tagged (a Bool
                 // boxes).
@@ -1673,6 +1696,198 @@ impl Builder<'_> {
                 };
                 self.g.node_mut(n).inputs[k] = b;
             }
+        }
+    }
+
+    /// SPIKEC-9 task 8: the kind guards of a loop move to its preheader, one per array.
+    ///
+    /// ```text
+    ///  preheader P (one successor: the header H)   ──>  P: ... CheckArray(o) [exits at H] ; Jump H
+    ///  loop L = H + the blocks that reach a back edge   L: element ops read that one check
+    ///                                                   (and, on DOUBLE facts, P: DoubleElements)
+    /// ```
+    ///
+    /// Only when nothing in L can change what the check proved, an Array whose elements kind
+    /// is in `ARRAY_KINDS`: no call into the runtime table (`Op::is_call`: a call, a global
+    /// load, a generic keyed access may run JS), and every element store stores a number (an
+    /// Int32 or a Float64: an in-bounds number store keeps a kind of `ARRAY_KINDS` there, at
+    /// most INT32 to DOUBLE out of line; the poll runs no JS, H23-Q6). The array must be a
+    /// value from outside L (the same object on every iteration). The check's exit resumes T0
+    /// at the header with the values the preheader passes in (as the loop phi entry checks of
+    /// [`Self::unbox_loop_phis`]; `Graph::check_forward_state`), so T0 runs the whole loop.
+    /// Each element op still checks the bounds and the storage form (but see the DOUBLE
+    /// store form below). Inner loops first, so a check moves out of a nest as far as each
+    /// loop allows.
+    fn hoist_array_checks(&mut self) {
+        for h in (0..self.g.blocks.len()).rev() {
+            if !self.g.blocks[h].loop_header {
+                continue;
+            }
+            let preds = self.g.blocks[h].preds.clone();
+            let fwd: Vec<usize> = (0..preds.len())
+                .filter(|&k| (preds[k].0 as usize) < h)
+                .collect();
+            let [entry] = fwd[..] else { continue };
+            let pre = preds[entry];
+            if self.g.blocks[pre.0 as usize].succs != [BlockId(h as u32)] {
+                continue;
+            }
+            // The natural loop: H and the blocks that reach a back edge without passing H.
+            let mut body = vec![false; self.g.blocks.len()];
+            body[h] = true;
+            let mut work: Vec<usize> = preds
+                .iter()
+                .map(|p| p.0 as usize)
+                .filter(|&p| p >= h)
+                .collect();
+            while let Some(b) = work.pop() {
+                if std::mem::replace(&mut body[b], true) {
+                    continue;
+                }
+                work.extend(self.g.blocks[b].preds.iter().map(|p| p.0 as usize));
+            }
+            let nodes: Vec<NodeId> = (0..self.g.blocks.len())
+                .filter(|&b| body[b])
+                .flat_map(|b| self.g.blocks[b].nodes.clone())
+                .filter(|&n| self.g.node(n).live)
+                .collect();
+            let safe = nodes.iter().all(|&n| {
+                let node = self.g.node(n);
+                !node.op.is_call()
+                    && (node.op != Op::StoreElement
+                        || matches!(
+                            self.g.node(node.inputs[2]).repr,
+                            Repr::Int32 | Repr::Float64
+                        ))
+            });
+            if !safe {
+                continue;
+            }
+            let checks: Vec<NodeId> = nodes
+                .iter()
+                .copied()
+                .filter(|&n| matches!(self.g.node(n).op, Op::CheckArray | Op::DoubleElements))
+                .collect();
+            if checks.is_empty() {
+                continue;
+            }
+            let state = self.header_state(h, entry);
+            // (op, input, policy) -> the node in the preheader (a DoubleElements has no
+            // guard, so no policy).
+            let mut hoisted: Vec<(Op, NodeId, Option<ExitPolicy>, NodeId)> = Vec::new();
+            let mut fresh = Vec::new();
+            for c in checks {
+                let node = self.g.node(c);
+                // Read the input now: a check hoisted before this one may have replaced it.
+                let (op, o, g) = (node.op.clone(), node.inputs[0], node.guard.clone());
+                if body[self.g.node(o).block.0 as usize] {
+                    continue;
+                }
+                let policy = g.as_ref().map(|g| g.policy);
+                if let Some(&(.., k)) = hoisted
+                    .iter()
+                    .find(|m| m.0 == op && m.1 == o && m.2 == policy)
+                {
+                    self.replace(c, k);
+                    self.kill(c);
+                    continue;
+                }
+                let trust = node.trust;
+                let k =
+                    self.insert_before_terminator(pre, op.clone(), vec![o], Repr::Tagged, trust);
+                if let Some(g) = g {
+                    self.g.set_guard(k, g.basis, state.clone());
+                }
+                self.replace(c, k);
+                self.kill(c);
+                hoisted.push((op.clone(), o, policy, k));
+                if op == Op::CheckArray {
+                    fresh.push(k);
+                }
+            }
+            // The storage form, once per array too: if every element op of L on a hoisted
+            // array is one whose site saw only DOUBLE kinds, a DoubleElements after the kind
+            // guard reads the ELEMENTS_DOUBLE cell if the array has one and its length is at
+            // most its capacity, else 0 (no exit: the WI-SC7 INT32 to DOUBLE transition still
+            // runs in the compiled code). With only number stores in place and no call in L,
+            // that cell stays the array's store for the whole loop (no number store into raw
+            // f64 goes out of line), and the length stays. The element ops take it as one more
+            // input: with a cell they check only the bounds and the hole, with 0 they take
+            // their full path.
+            let double = ElementsKindSet::of(ElementsKind::PackedDouble).bits()
+                | ElementsKindSet::of(ElementsKind::HoleyDouble).bits();
+            for k in fresh {
+                let ops: Vec<NodeId> = nodes
+                    .iter()
+                    .copied()
+                    .filter(|&n| {
+                        let node = self.g.node(n);
+                        node.live
+                            && matches!(node.op, Op::LoadElement | Op::StoreElement)
+                            && node.inputs[0] == k
+                    })
+                    .collect();
+                // An op that already has the cell (from an inner loop) keeps it.
+                let plain: Vec<NodeId> = ops
+                    .iter()
+                    .copied()
+                    .filter(|&n| {
+                        let node = self.g.node(n);
+                        node.inputs.len() == if node.op == Op::LoadElement { 2 } else { 3 }
+                    })
+                    .collect();
+                let all_double = !plain.is_empty()
+                    && plain.iter().all(|&n| {
+                        let kinds = self.elem_kinds.iter().find(|m| m.0 == n).map_or(0, |m| m.1);
+                        kinds != 0 && kinds & !double == 0
+                    });
+                if !all_double {
+                    continue;
+                }
+                let e = match hoisted
+                    .iter()
+                    .find(|m| m.0 == Op::DoubleElements && m.1 == k)
+                {
+                    Some(&(.., e)) => e,
+                    None => self.insert_before_terminator(
+                        pre,
+                        Op::DoubleElements,
+                        vec![k],
+                        Repr::Tagged,
+                        Trust::Unknown,
+                    ),
+                };
+                for n in plain {
+                    self.g.node_mut(n).inputs.push(e);
+                }
+            }
+        }
+    }
+
+    /// The frame state at the entry of loop header `h` from its predecessor number `entry`:
+    /// each register live there with the value that predecessor passes in (a loop phi's
+    /// entry input; a register whose trivial phi went away keeps that one value).
+    fn header_state(&self, h: usize, entry: usize) -> FrameState {
+        let acc = self.cfg.acc();
+        let value = |r: usize| -> Option<NodeId> {
+            let &(_, v) = self.loop_phis[h].iter().find(|&&(x, _)| x == r)?;
+            let node = self.g.node(v);
+            Some(
+                if node.live && node.op == Op::Phi && node.block.0 as usize == h {
+                    node.inputs[entry]
+                } else {
+                    v
+                },
+            )
+        };
+        let live = &self.cfg.live_before[self.cfg.blocks[h].insns.start];
+        FrameState {
+            offset: self.cfg.blocks[h].start,
+            registers: (0..acc)
+                .filter(|&x| live[x])
+                .filter_map(|x| value(x).map(|v| (self.cfg.register(x), v)))
+                .collect(),
+            acc: if live[acc] { value(acc) } else { None },
         }
     }
 

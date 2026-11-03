@@ -232,6 +232,12 @@ pub enum Op {
     /// `vm_layout::OBJECT_SLOTS`; behind a [`Op::CheckShape`] whose shapes hold the field past
     /// their in-object capacity, SPIKEC-9). Tagged.
     LoadSlotsField { offset: u32 },
+    /// SPIKEC-9 task 8 (`build::hoist_array_checks`, in a loop's preheader): the elements
+    /// store of the array input (a [`Op::CheckArray`]) if it is an ELEMENTS_DOUBLE cell and
+    /// the array's length is at most its capacity, else 0. No guard. The element ops of the
+    /// loop take it as a last input: a cell lets them check only the bounds by `length` and
+    /// the hole; 0 sends them down their full path. Tagged repr, but never in a frame state.
+    DoubleElements,
     /// Guard: element `index` (Int32) of the array input (a [`Op::CheckArray`]): in `0..length`,
     /// inside the capacity of its ELEMENTS or ELEMENTS_DOUBLE cell (any other store exits), not
     /// a hole. Tagged (a raw f64 boxes as `Value::number`), or Float64 if only number uses read

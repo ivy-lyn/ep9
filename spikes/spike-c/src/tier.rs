@@ -1611,6 +1611,50 @@ mod tests {
         );
     }
 
+    /// SPIKEC-9 task 8 (`build::hoist_array_checks`): in `scale` (no call, number stores
+    /// only) the kind guard of `a` sits in the loop's preheader, and on DOUBLE facts a
+    /// DoubleElements next to it: the element ops take its cell. On DOUBLE arrays they take
+    /// the short path (bounds, hole); an INT32 array gets 0 and the full path, so its INT32 to
+    /// DOUBLE transition still runs in the compiled code with no exit; a hole and a short
+    /// array exit from the short path. Every output equal to T0, with GC stress too.
+    #[test]
+    fn hoisted_kind_guard_and_double_form_equal_t0() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 200; q++) scale([0.5, 1.5, 2.5], 3, 1.5);";
+        let main = "print(scale([0.5, 1.5, 2.5, 4.5], 4, 0.5).join(), scale([1, 2, 3], 3, 0.5).join());\n\
+            print(scale([0.5, , 2.5], 3, 2).join(), scale([0.5, 1.5], 3, 2).join());\n\
+            print(scale([0.5, 1.5, 2.5], 3, NaN).join(), 1 / scale([0.5], 1, -0)[0]);";
+        let want = [
+            "0.25,0.75,1.25,2.25 0.5,1,1.5",
+            "1,NaN,5 1,3,NaN",
+            "NaN,NaN,NaN -Infinity",
+        ];
+        for config in [Config::default(), Config::stress()] {
+            let r = run_script(&config, SCALE, warm, main, "scale").expect("run");
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            assert_eq!(r.compiled.output, want);
+            let g = &r.report.graph;
+            let header = g
+                .lines()
+                .position(|l| l.contains(" loop preds"))
+                .unwrap_or_else(|| panic!("no loop\n{g}"));
+            let before: Vec<&str> = g.lines().take(header).collect();
+            assert!(
+                before.iter().any(|l| l.contains("CheckArray"))
+                    && before.iter().any(|l| l.contains("DoubleElements")),
+                "the kind guard and DoubleElements are not before the loop\n{g}"
+            );
+            assert!(
+                !g.lines().skip(header).any(|l| l.contains("CheckArray")),
+                "a kind guard in the loop\n{g}"
+            );
+            // The INT32 array took no exit (the hole and the short array exit).
+            assert!(!r.fired().is_empty(), "no exit at all: {:?}", r.exits);
+        }
+    }
+
     /// WI-SC7 (MODES-CHECK-w19 MC-w19-5 (4), outside O3): every element op, a raw f64 load
     /// included, reads its array through a kind guard (`CheckArray`), so no pass can place the
     /// load before the guard; and a Float64 value at an exit is in a general register or a
