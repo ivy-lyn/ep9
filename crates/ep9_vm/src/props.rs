@@ -6,15 +6,14 @@
 //! ```text
 //!  fast mode:        shape descriptors (key, attrs, field i)    field i < capacity: in-object slot i
 //!                                                               field i >= capacity: SLOTS[i - capacity] (+8)
-//!  dictionary mode:  +8 PROPS table: key, value, attrs, in insertion order (shape flag DICTIONARY)
-//!                    above 8 entries a PROPS_INDEXED table with a hash index (`props_index.rs`)
+//!  dictionary mode:  +8 PROPS table (PROPS_INDEXED above 8): key, value, attrs, in insertion order (shape flag DICTIONARY)
 //! ```
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | PROPS | 64 | +8 capacity, +16 count (int32s), +24 entries: key, value, attributes | 24 + 24 cap |
-//! | PROPS_INDEXED | 84 | +8 capacity, +16 count (int32s), +24 index, +32 entries as PROPS (Dictionary v1, `props_index.rs`) | 32 + 24 cap |
 //! | SLOTS | 71 | +8 capacity, +16 values (`shape.rs` owns the kind) | 16 + 8 cap |
+//! | PROPS_INDEXED | 84 | +8 capacity, +16 count (int32s), +24 index, +32 entries as PROPS (Dictionary v1, `props_index.rs`) | 32 + 24 cap |
 //!
 //! Fast shapes only grow by appending a property and shrink by removing the last one (back
 //! to the parent shape). Everything else moves the object to dictionary mode (OM-10,
