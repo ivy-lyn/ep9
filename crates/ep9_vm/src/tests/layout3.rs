@@ -448,10 +448,14 @@ fn every_function_has_the_isolate_realm() {
             // Ids 64-71 (M4-P0) are not made yet either (`tests::layout4`).
             for id in IntrinsicId::ALL[50..63]
                 .iter()
-                .chain(&IntrinsicId::ALL[64..])
+                .chain(&IntrinsicId::ALL[64..72])
             {
                 assert_eq!(intrinsic(rt, *id), UNDEFINED, "{}", id.name());
             }
+            // Id 72 (M6-P0) is the realm's static fuse block, a FUSE cell, not an object
+            // (made at realm init since M6-P2 FUSE-PI; `tests::fuse`).
+            let fuses = intrinsic(rt, IntrinsicId::RealmFuses);
+            assert_eq!(crate::kinds::cell_kind(fuses), crate::kinds::FUSE.get());
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });
