@@ -149,7 +149,7 @@ fn intrinsic_ids_64_to_71_are_declared_not_made() {
 
 #[test]
 fn object_classes_11_to_13() {
-    assert_eq!(ObjectClass::ALL.len(), 14);
+    assert_eq!(ObjectClass::ALL.len(), 15);
     let new = [
         (ObjectClass::WeakRef, "WeakRef"),
         (ObjectClass::FinalizationRegistry, "FinalizationRegistry"),
@@ -160,7 +160,7 @@ fn object_classes_11_to_13() {
         assert_eq!(c.name(), name);
         assert_eq!(ObjectClass::from_id(c.id()), Some(c));
     }
-    assert_eq!(ObjectClass::from_id(14), None);
+    assert_eq!(ObjectClass::from_id(15), None);
 }
 
 // ---- IC_LAYOUT 2 ------------------------------------------------------------------------------
