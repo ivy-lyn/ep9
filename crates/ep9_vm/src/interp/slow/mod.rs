@@ -51,7 +51,7 @@ mod lookup;
 mod module;
 mod ops_misc;
 mod private;
-mod property;
+pub(crate) mod property;
 mod runtime;
 
 pub(crate) use call::call;

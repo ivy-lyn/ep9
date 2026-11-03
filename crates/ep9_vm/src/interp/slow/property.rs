@@ -67,8 +67,9 @@ pub(crate) fn load_global(
 
 /// GetBindingValue of the global environment (§9.1.1.4.6, v0): the script lexical record
 /// first, then the global object. Returns the value, or 0 with a pending ReferenceError (a
-/// TDZ, or a missing name outside `typeof`).
-fn global_value(cx: &mut Cx, name: u64, in_typeof: bool) -> u64 {
+/// TDZ, or a missing name outside `typeof`). Records no feedback: native code's
+/// `RuntimeTable::load_global` (`native.rs`) shares it (R6-4).
+pub(crate) fn global_value(cx: &mut Cx, name: u64, in_typeof: bool) -> u64 {
     let rt = cx.rt();
     if let Some((v, _)) = own_get(rt.root(Root::Lexical), name) {
         if v == HOLE {
