@@ -291,4 +291,19 @@ impl FunctionInfo {
             .map(|p: PositionEntry| p.source_offset)
             .or(Some(f.source_start))
     }
+
+    /// The source text of this unit function: the bytes `source_start..source_end` of its
+    /// unit's decoded source (`ep9_bytecode::Function`; H20 part 2, FN-SMALL). `None` for a
+    /// unit that does not embed its source, a host function, a stub, and a range that does
+    /// not fall on UTF-8 character boundaries (the verifier checks only `start <= end <=
+    /// source_len`). No FunctionInfo field: the range is read from the unit, which lives as
+    /// long as the isolate.
+    pub fn source_text(&self) -> Option<&str> {
+        let u = self.loaded_unit()?;
+        let f = &u.unit.functions[self.function_id as usize];
+        u.unit
+            .source
+            .as_deref()?
+            .get(f.source_start as usize..f.source_end as usize)
+    }
 }

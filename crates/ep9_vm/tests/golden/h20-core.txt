@@ -127,6 +127,7 @@ abi: impl<'s> Cx<'s> :: pub fn flatten(&mut self, impl Into<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn from_property_descriptor(&mut self, Option<PropertyDescriptor<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn fulfill_promise(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn function_realm_intrinsic(&self, impl Into<Local<'s>>, IntrinsicId) -> Local<'s>
+abi: impl<'s> Cx<'s> :: pub fn function_source_text(&mut self, impl Into<Local<'s>>) -> JsResult<Option<Local<'s, JsString>>>
 abi: impl<'s> Cx<'s> :: pub fn get(&mut self, impl Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn get_index(&mut self, impl Into<Local<'s, JsObject>>, u64) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn get_iterator(&mut self, impl Into<Local<'s>>) -> JsResult<IteratorRecord<'s>>

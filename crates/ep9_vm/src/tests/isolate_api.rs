@@ -649,3 +649,74 @@ fn realms_are_made_used_and_dropped() {
         }
     }
 }
+
+// ---- the source text of a function (H20 part 2; FN-SMALL) ------------------------------------
+
+/// A script whose result is the closure of function 1 (`f`, over source bytes `start..end` of
+/// `src`); the unit embeds `src` when `embed` is true.
+fn closure_script(src: &str, start: u32, end: u32, embed: bool) -> VerifiedUnit {
+    use ep9_bytecode::{FunctionId, UnitBuilder, UnitOptions};
+    let mut s = Asm::script(src.len());
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0).return_();
+    let mut f = Asm::new(super::meta("f", 1, 0, start, end));
+    f.b.lda_undefined().return_();
+    let options = UnitOptions {
+        embed_source: embed,
+        ..super::opts()
+    };
+    let mut u = UnitBuilder::new(src, options);
+    u.set_function(FunctionId(0), s.finish());
+    u.set_function(FunctionId(1), f.finish());
+    u.finish().unwrap()
+}
+
+/// `Cx::function_source_text` copies the unit range of a bytecode function (UTF-8 byte
+/// offsets, a non-ASCII text too): a new String on each call, which a GC keeps while it is
+/// used. It is `None` for a unit with no source, a range off the character boundaries, a host
+/// function and a value that is not a function.
+#[test]
+fn function_source_text_copies_the_unit_range() {
+    const SRC: &str = "function f(a) { return 'ü' + a; }\nf";
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let label = format!("{} stress={stress}", d.name());
+                let end = super::pos(SRC, "\nf");
+                let in_u = super::pos(SRC, "ü") + 1;
+                let mut iso = isolate(config(d, stress));
+                let r = iso.with_cx(|cx| {
+                    let f = cx.run_script(closure_script(SRC, 0, end, true), "src.js")?;
+                    let a = cx.function_source_text(f)?.expect("embedded");
+                    cx.collect_garbage();
+                    let b = cx.function_source_text(f)?.expect("embedded");
+                    let same_cell = a.bits() == b.bits();
+                    let (a, b) = (cx.to_rust_string(a)?, cx.to_rust_string(b)?);
+                    let none = cx.run_script(closure_script(SRC, 0, end, false), "no-src.js")?;
+                    let split = cx.run_script(closure_script(SRC, 0, in_u, true), "split.js")?;
+                    let print = cx.global_binding("print")?.expect("print");
+                    let o = cx.new_object();
+                    let s = cx.new_string("function f() {}")?;
+                    Ok((
+                        a,
+                        b,
+                        same_cell,
+                        cx.function_source_text(none)?.is_none(),
+                        cx.function_source_text(split)?.is_none(),
+                        cx.function_source_text(print)?.is_none(),
+                        cx.function_source_text(o)?.is_none(),
+                        cx.function_source_text(s)?.is_none(),
+                    ))
+                });
+                let text = "function f(a) { return 'ü' + a; }".to_string();
+                assert_eq!(
+                    r,
+                    Ok((text.clone(), text, false, true, true, true, true, true)),
+                    "{label}"
+                );
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+            });
+        }
+    }
+}
