@@ -674,7 +674,92 @@ pub fn run_set(
 /// T0, and, unforced, no exit in loop(n); forced, per function every armed guard forced (its
 /// countdown went to 0) and its counter as [`forced_coverage`] reads it.
 pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
+    set_check(run, stress, true).map(|_| ())
+}
+
+/// [`set_ok`] for one round of [`force_set`]: every check but "armed guards never forced";
+/// Ok(the guards forced in this run, per member) or the lines that fail.
+pub fn set_round_ok(run: &SetRun, stress: bool) -> Result<Vec<Vec<u32>>, Vec<String>> {
+    set_check(run, stress, false)
+}
+
+/// MC-P1-JIT4 (M6-P2 SPIKEC-10): `SPIKE_C_FORCE_DEOPT=<seed> spike-c tier <kernel> --all`.
+/// One seeded run cannot force every guard of a hot set: each forced exit sends the rest of
+/// that call to T0, so a call forces at most one guard, and a hot function called fewer
+/// times than it has guards keeps some unforced (navier-stokes at n = 1: about 10 calls of
+/// each function for 40-80 guards). Not a defect of M6-P1 code: the seeded `--all` run had
+/// no second step. As `gate.sh diff` does (its forcing step 2): the seeded run, then rounds
+/// with each guard not forced yet armed at 1 (its first pass exits), while a round forces
+/// one more; every run must pass [`set_round_ok`], and a guard never forced fails.
+pub fn force_set(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    seed: u64,
+    stress: bool,
+) -> Result<(Vec<SetRun>, Vec<String>), String> {
+    let mut tables = seeded_tables(k, seed);
+    let mut runs = Vec::new();
+    let mut forced: Vec<std::collections::BTreeSet<u32>> = Vec::new();
+    loop {
+        let force: Vec<Option<&emit_a64::ForceTable>> = tables.iter().map(Some).collect();
+        let run = run_set(k, n, config, &force)?;
+        let round = match set_round_ok(&run, stress) {
+            Ok(r) => r,
+            Err(bad) => {
+                runs.push(run);
+                return Ok((runs, bad));
+            }
+        };
+        forced.resize(round.len(), Default::default());
+        let before: usize = forced.iter().map(|f| f.len()).sum();
+        for (f, r) in forced.iter_mut().zip(&round) {
+            f.extend(r.iter().copied());
+        }
+        let after: usize = forced.iter().map(|f| f.len()).sum();
+        // Each member's guards not forced yet (members follow the hot set's order).
+        let missing: Vec<(String, Vec<u32>)> = run
+            .members
+            .iter()
+            .zip(&forced)
+            .map(|(m, f)| {
+                let mut g: Vec<u32> = m.report.emit.meta.exits.iter().map(|e| e.guard).collect();
+                g.sort_unstable();
+                g.dedup();
+                g.retain(|x| !f.contains(x));
+                (m.function.to_string(), g)
+            })
+            .collect();
+        tables = (0..k.hot.len())
+            .map(|_| emit_a64::ForceTable::new(FORCE_LEN))
+            .collect();
+        for (i, m) in run.members.iter().enumerate() {
+            let at = k.hot.iter().position(|h| h.name == m.function).unwrap_or(i);
+            for &g in &missing[i].1 {
+                tables[at].arm(g, 1);
+            }
+        }
+        runs.push(run);
+        if missing.iter().all(|(_, g)| g.is_empty()) {
+            return Ok((runs, Vec::new()));
+        }
+        if after == before {
+            let bad = missing
+                .iter()
+                .filter(|(_, g)| !g.is_empty())
+                .map(|(f, g)| {
+                    let names: Vec<String> = g.iter().map(|g| format!("g{g}")).collect();
+                    format!("{f}: guards never forced: {}", names.join(" "))
+                })
+                .collect();
+            return Ok((runs, bad));
+        }
+    }
+}
+
+fn set_check(run: &SetRun, stress: bool, all: bool) -> Result<Vec<Vec<u32>>, Vec<String>> {
     let mut bad = Vec::new();
+    let mut out = Vec::new();
     for (name, why) in &run.refused {
         bad.push(format!("{name}: refused: {why}"));
     }
@@ -691,6 +776,7 @@ pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
                     fired(&m.report, &m.exits)
                 ));
             }
+            out.push(Vec::new());
             continue;
         }
         let exits = &m.report.emit.meta.exits;
@@ -698,11 +784,15 @@ pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
         guards.sort_unstable();
         guards.dedup();
         let mut missing = Vec::new();
+        let mut hit = Vec::new();
         for &g in &guards {
             let on = m.armed.get(g as usize).is_some_and(|&c| c != 0);
             let f = u64::from(on && m.left.get(g as usize) == Some(&0));
             if on && f == 0 {
                 missing.push(format!("g{g}"));
+            }
+            if f == 1 {
+                hit.push(g);
             }
             let c: u64 = exits
                 .iter()
@@ -714,15 +804,16 @@ pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
                 bad.push(format!("{}: g{g}: forced {f}, counted {c}", m.function));
             }
         }
-        if !missing.is_empty() {
+        if all && !missing.is_empty() {
             bad.push(format!(
                 "{}: armed guards never forced: {}",
                 m.function,
                 missing.join(" ")
             ));
         }
+        out.push(hit);
     }
-    if bad.is_empty() { Ok(()) } else { Err(bad) }
+    if bad.is_empty() { Ok(out) } else { Err(bad) }
 }
 
 /// One forced run of [`force_each_guard`].

@@ -351,11 +351,35 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
             ),
             Err(_) => None,
         };
-        let tables = seed
-            .map(|s| spike_c::tier::seeded_tables(k, s))
-            .unwrap_or_default();
-        let force: Vec<Option<&spike_c::emit_a64::ForceTable>> = tables.iter().map(Some).collect();
-        let run = spike_c::tier::run_set(k, n.unwrap_or(k.n), &config, &force)?;
+        if let Some(seed) = seed {
+            // MC-P1-JIT4 (SPIKEC-10): the seeded run, then first-pass rounds until every
+            // guard of the set was forced (`tier::force_set`).
+            let (runs, bad) = spike_c::tier::force_set(k, n.unwrap_or(k.n), &config, seed, stress)?;
+            for (i, run) in runs.iter().enumerate() {
+                println!(
+                    "round {}{}:",
+                    i + 1,
+                    if i == 0 { " (seeded)" } else { " (first pass)" }
+                );
+                for l in run.lines() {
+                    println!("{l}");
+                }
+            }
+            if bad.is_empty() {
+                let g: usize = runs[0].members.iter().map(|m| m.report.emit.guards).sum();
+                println!(
+                    "{}: forced build: every guard of the set forced in {} runs ({g} guards), output equal to T0 in each, the exit counters agree, heap verifier clean",
+                    k.name,
+                    runs.len()
+                );
+                return Ok(true);
+            }
+            for l in bad {
+                println!("{l}");
+            }
+            return Ok(false);
+        }
+        let run = spike_c::tier::run_set(k, n.unwrap_or(k.n), &config, &[])?;
         for l in run.lines() {
             println!("{l}");
         }
