@@ -118,7 +118,7 @@ use crate::key;
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32};
 use crate::runtime::{Atom, Root, Runtime};
-use crate::shape::{self, rep, slf};
+use crate::shape::{self, slf};
 use crate::string;
 use crate::stub_cache;
 use crate::unit::FunctionInfo;
@@ -560,15 +560,15 @@ fn store_with<const CHECK_EPOCH: bool>(
         let off = (x >> smi::SHIFT) as usize;
         // M5-P2 CONSTREP: a checked kind stores only a value whose tag fits the field's
         // representation; the miss path widens it. Odd kinds are in-object.
-        let k = x & smi::KIND_MASK;
-        let fits = |r| crate::field_rep::fits(r, v);
-        match k {
-            smi::FIELD_IN_OBJECT | smi::FIELD_OUT_OF_LINE => {}
-            smi::FIELD_INT32_IN_OBJECT | smi::FIELD_INT32_OUT_OF_LINE if fits(rep::INT32) => {}
-            smi::FIELD_NUMBER_IN_OBJECT | smi::FIELD_NUMBER_OUT_OF_LINE if fits(rep::DOUBLE) => {}
-            smi::FIELD_HEAP_IN_OBJECT | smi::FIELD_HEAP_OUT_OF_LINE if fits(rep::HEAP) => {}
-            _ => return false,
+        // M6-P2 T0OBJ: one table read for every kind, with no branch per kind
+        // (`field_rep::handler_fits`): a plain field kind holds every Value, a checked kind
+        // its representation's range, any other kind (SLOW, a length case) none: a miss.
+        // The add hit below reads the same ranges (`field_rep::table_fits`).
+        if !crate::field_rep::handler_fits(x, v) {
+            return false;
         }
+        let k = x & smi::KIND_MASK;
+        // (Before, a `match` on `k`: 6 aarch64 instructions for kinds 1-2, 9-12 for 9-14.)
         let in_object = k & 1 != 0;
         if in_object {
             object::wr(&rt.heap, c, off, v);
@@ -589,7 +589,7 @@ fn store_with<const CHECK_EPOCH: bool>(
     }
     // M5-P2 CONSTREP: the new field's representation must hold the value (the first store
     // keeps the const bit); the miss path widens it.
-    if !crate::field_rep::fits(shape::last_field_rep(target), v) {
+    if !crate::field_rep::table_fits(shape::last_field_rep(target), v) {
         return false;
     }
     #[cfg(debug_assertions)]
