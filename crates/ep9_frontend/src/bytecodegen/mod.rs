@@ -635,23 +635,37 @@ fn after_static(source: &str, i: u32) -> u32 {
     u32::try_from(at).unwrap_or(i)
 }
 
-/// Skip white space, line terminators and comments from byte `i` of `source`.
+/// Skip white space, line terminators and comments from byte `i` of `source`. The comments
+/// include the Annex B HTML-like ones of script code (B.1.1): `<!--`, and `-->` after a line
+/// terminator (in white space or in a `/* */` comment). Module code has neither text here: a
+/// module with it does not parse.
 fn skip_trivia(source: &str, mut i: usize) -> usize {
+    const LINE_TERMINATORS: [char; 4] = ['\n', '\r', '\u{2028}', '\u{2029}'];
+    // A line terminator comes after the last token: `-->` here starts a comment.
+    let mut line_start = false;
     loop {
         let rest = &source[i..];
-        if let Some(comment) = rest.strip_prefix("//") {
-            let end = comment
-                .find(['\n', '\r', '\u{2028}', '\u{2029}'])
-                .unwrap_or(comment.len());
-            i += 2 + end;
+        let single_line = rest
+            .strip_prefix("//")
+            .or_else(|| rest.strip_prefix("<!--"))
+            .or_else(|| rest.strip_prefix("-->").filter(|_| line_start));
+        if let Some(comment) = single_line {
+            let end = comment.find(LINE_TERMINATORS).unwrap_or(comment.len());
+            i += rest.len() - comment.len() + end;
         } else if let Some(comment) = rest.strip_prefix("/*") {
             match comment.find("*/") {
-                Some(end) => i += 2 + end + 2,
+                Some(end) => {
+                    line_start |= comment[..end].contains(LINE_TERMINATORS);
+                    i += 2 + end + 2;
+                }
                 None => return i,
             }
         } else {
             match rest.chars().next() {
-                Some(c) if c.is_whitespace() || c == '\u{FEFF}' => i += c.len_utf8(),
+                Some(c) if c.is_whitespace() || c == '\u{FEFF}' => {
+                    line_start |= LINE_TERMINATORS.contains(&c);
+                    i += c.len_utf8();
+                }
                 _ => return i,
             }
         }

@@ -283,3 +283,32 @@ print(f.toString(), (x => x).toString());",
         lines(&["function f() { [native code] } function () { [native code] }"])
     );
 }
+
+/// A static method's text starts at its MethodDefinition also when an Annex B HTML-like comment
+/// (B.1.1) comes after `static`: `<!--`, and `-->` at the start of a line (after a line break
+/// in white space or in a `/* */` comment). Expected texts are node's.
+#[test]
+fn an_html_like_comment_after_static_is_not_in_the_text() {
+    assert_eq!(
+        run_both(
+            "class D { static <!-- c
+ m(){} }
+class E { static
+--> c
+ n(){} }
+class F { static /* a
+ */ --> c
+ p(){} }
+class G { static
+ /* x */ --> c
+ q(){} }
+class H { static <!-- a
+  <!-- b
+ --> c
+ get r(){ return 1 } }
+var out = [D.m, E.n, F.p, G.q, Object.getOwnPropertyDescriptor(H, 'r').get].map(function (f) { return f.toString(); });
+print(JSON.stringify(out));"
+        ),
+        lines(&[r#"["m(){}","n(){}","p(){}","q(){}","get r(){ return 1 }"]"#])
+    );
+}
