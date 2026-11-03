@@ -263,17 +263,17 @@ pub(crate) mod hk {
     /// IC_LAYOUT 4 (M6-P0, plan v11 §2.3; H17 "Accessor ICs"): a getter case (M6-P1 ACCIC).
     /// Own accessor: +16 int32 0, +24 undefined; inherited: +16 the chain's validity cell,
     /// +24 the holder (weak); both: +32 the field location (a smi field handler) of the
-    /// ACCESSOR_PAIR. The fast handler misses; the cold body calls the getter ([`cold_load`]).
+    /// ACCESSOR_PAIR. The fast handler misses; the cold body calls the getter ([`super::cold_load`]).
     /// No stub cache entry (v1).
     pub const GETTER: i32 = 9;
     /// IC_LAYOUT 4: a setter case of a 0x24 store, the fields of [`GETTER`] (M6-P1 ACCIC);
-    /// the cold body calls the setter ([`cold_setter`]).
+    /// the cold body calls the setter ([`super::cold_setter`]).
     /// A 0x25 define over an accessor stays `SLOW` (it redefines the property).
     pub const SETTER: i32 = 10;
     /// IC_LAYOUT 4 (H17 "Dictionary v1"): a data property of a dictionary-mode holder on the
     /// prototype chain: +16 the receiver chain's validity cell, +24 the holder (weak), +32 int32
     /// 0; a hit looks the key up in the holder's PROPS or PROPS_INDEXED table (M6-P1 ACCIC).
-    /// The fast handler misses; the cold body reads the entry ([`cold_load`]). A receiver in
+    /// The fast handler misses; the cold body reads the entry ([`super::cold_load`]). A receiver in
     /// dictionary mode stays `SLOW` (H16 K12).
     pub const PROTO_DICT_LOAD: i32 = 11;
 }
@@ -1746,7 +1746,7 @@ thread_local! {
     pub(crate) static COLD_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
-/// `r`, counted in [`COLD_HITS`] (tests) if it is a hit. Nothing else.
+/// `r`, counted in `COLD_HITS` (tests) if it is a hit. Nothing else.
 #[inline(always)]
 fn cold_hit<T>(r: Option<T>) -> Option<T> {
     #[cfg(test)]
