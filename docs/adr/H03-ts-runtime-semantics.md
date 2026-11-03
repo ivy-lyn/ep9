@@ -4,7 +4,7 @@
 |---|---|
 | Status | Accepted (2026-10-22, M2-P3-ACCEPT; review record complete). Header fields built; lowering table not started (M4) |
 | Fix by | Header fields M0 wk3; ADR M0 exit; built M4 |
-| Freeze | Header fields and TS flags: M1 exit. BytecodeGen lowering table: M4 exit ([README §3.4](README.md#34-parts-built-after-m1-exit-p-3)) |
+| Freeze | By part (the Freeze table below, [README §3.4](README.md#34-parts-built-after-m1-exit-p-3)): "header fields" (the header fields and TS flags) at M1 exit; "lowering table" (the BytecodeGen lowering table) at M4 exit |
 | Origin | R16-D14 + R17; plan status N |
 | Crates | `ep9_bytecode` (header fields, this draft); `ep9_frontend` (lowering, M4); `ep9_hints` (`.ep9h` header, H37) |
 | Owner (plan role) | AOT senior (header fields); lead/front end (lowering) |
@@ -64,6 +64,15 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 | H03-Q1 | Does tsconfig `target` (implied `useDefineForClassFields`) resolve in `ep9_runtime` or in `ep9_frontend`? | M4 | `ep9_runtime` resolves tsconfig and passes final `TsFlags` |
 | H03-Q2 | Other TS-only runtime forms found at M4 | M4 | New bits 12-15 + ABI bump |
 
+## Freeze table
+
+README §3.4 form (the Freeze field above; plan v11 §3.6, M6-PLAN-D26). Part names hold no `,` and no ` and `, because the Frozen check reads a Status line that lists several parts (`tools/xtask/src/exit/freeze.rs`).
+
+| Part | What it holds | Freeze point | After the freeze point | Check |
+|---|---|---|---|---|
+| header fields | The plan row's choices (Decision, first paragraph): BytecodeGen lowers the TS-only forms from the TS AST; oxc_transformer only for legacy decorators; the three TS flags live per module in the CompiledUnit header, the `.ep9h` header and the cache key; `[[Define]]` without tsconfig (D20). The unit flag bits 8-11 at H02 header offset 20 with their meaning and D20 default, `UnitHeader::typescript: Option<TsFlags>` and `TsFlags::DEFAULT`. Every Rules row: a JavaScript unit has bits 9-15 clear; bits 12-15 are zero until an H03-Q2 flag is added; the content hash covers the TS flags; the flags round-trip; H35 S3 does not compare them at load; the `.ep9h` header carries the same three flags | M1 exit | Frozen-part rules (README §3.2) | the `ep9_bytecode` tests the Rules rows name; the A2 loader and A1h `ep9_hints` rows when built |
+| lowering table | The BytecodeGen lowering table (01 §9: enums, namespaces, parameter properties, declare fields, `[[Set]]` and `[[Define]]` fields) and the pass order for decorator files; the H03-Q1 and H03-Q2 answers, with any new TS flag in the reserved bits 12-15 and its ABI bump (H2) | M4 exit | Frozen-part rules (README §3.2) | M4 lowering tests |
+
 ## Reopens if
 
 - D20 changes (owner override), or M4 finds a TS flag that changes runtime semantics and does not fit bits 12-15.
@@ -81,6 +90,7 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 | 2026-10-22 | clarify | Status Draft -> Accepted (M2-P3-ACCEPT). The §3.1 review record is complete: row 1 P2-ACCEPT-1, row 2 Codex (M2-P2-REVIEW), row 3 P3-ACCEPT-2, row 4 data. The Codex run on the P3 ADR slice (merge 6146ec5) had no finding on this ADR. The decision text does not change | orchestrator |
 | 2026-10-22 | clarify (proposed; Accepted path, P0-D12) | Rules row "Bits 12-15 are zero": "every ABI so far: 1-5" (was 1-4). ABI 5 (M3-P0, H02 change log) adds runtime ids 32-47, `ScopeFlags::PARAMETER_ENV`, the module records section and the mapped-parameter list; no unit flag bit changes, and the `serialize.rs` `TS_RESERVED` doc says ABI 1-5. No check changes. Review record rows 1-3 for this amendment: the M3-P0 Claude reviewer, Codex, the M3-P0 integration fixer; the orchestrator approves | P0-LANG4 (ABI steward) |
 | 2026-10-23 | clarify (proposed; Accepted path) | 4 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): the reader's defined-bits check (Rules row "A JavaScript unit has bits 9-15 clear" and review record row 3; the stale H03:40 ref that the M3-P0 Codex ADR slice named), and the `ABI_VERSION` table line that the P3-ACCEPT-2 row and review record row 3 cite for ABI 4. That ref named the ABI 3 line since c68971a (off by one); it now names the ABI 4 line (a pin in the drift script). Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it; the orchestrator approves | M3-P0 integration fixer |
+| 2026-11-03 | fill (proposed; Accepted path) | FREEZE-M1 B3, part 1 (plan v11 §3.6; M6-PLAN-D24, M6-PLAN-D26): the Freeze field named two parts but the ADR had no Freeze table, so the one Frozen step (M6-P4) would freeze the M4 lowering table with the rest (the Frozen check reads a Freeze table part by part, else the whole row). New section "Freeze table" with two parts: "header fields" (the plan row's choices, the unit flag bits 8-11 with their D20 defaults, `TsFlags`, and every Rules row) at M1 exit; "lowering table" (the 01 §9 lowering table, the decorator pass order, the H03-Q1 and H03-Q2 answers, with any new flag in the reserved bits 12-15 and its ABI bump) at M4 exit. The Freeze field names the two parts. No Decision or Rules row changes; every check, test and golden file keeps its result (README §3.3 fill). Review record (README §3.1; plan v11 rule 21, §3.9, M6-PLAN-A26): row 1 the M6-P1 Claude reviewer; rows 2-4 the M6-P1 fixer (row 4 from the B3T1 acceptance logs); the orchestrator approves | M6-P1 B3T1 (DOCS chain) |
 
 ## Review record
 
