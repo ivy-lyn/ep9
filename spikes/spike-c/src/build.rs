@@ -14,7 +14,8 @@
 //!        back-edge inputs filled when the JumpLoop block is done
 //!  ──> trivial phis removed ──> loop phis unboxed to Int32 (an entry check in the
 //!      preheader) ──> redundant checks removed, boxes inserted ──> kind guards of loops
-//!      without calls moved to the preheader, with the DOUBLE store (SPIKEC-9) ──> dead pure
+//!      without calls moved to the preheader, with the DOUBLE store (SPIKEC-9), the context
+//!      slot loads and the checks of values from outside the loop (SPIKEC-10) ──> dead pure
 //!      nodes removed
 //! ```
 //!
@@ -338,6 +339,29 @@ impl Builder<'_> {
                 .collect(),
             acc: if live[acc] { self.env[acc] } else { None },
         }
+    }
+
+    /// SPIKEC-10: the lazy state of the call node `n` of the current instruction (the
+    /// accumulator is set to `n`): the next instruction's offset and the registers live
+    /// there; the accumulator is left out (the lazy exit takes the result from x0).
+    fn lazy_after(&mut self, n: NodeId) -> Result<(), Refusal> {
+        let i = self.insn + 1;
+        let next = self.cfg.insns.get(i).ok_or_else(|| Refusal::Decode {
+            offset: self.offset(),
+            detail: "a call with no next instruction".into(),
+        })?;
+        let live = &self.cfg.live_before[i];
+        let acc = self.cfg.acc();
+        let state = FrameState {
+            offset: next.offset,
+            registers: (0..acc)
+                .filter(|&r| live[r])
+                .filter_map(|r| self.env[r].map(|v| (self.cfg.register(r), v)))
+                .collect(),
+            acc: None,
+        };
+        self.g.node_mut(n).lazy = Some(state);
+        Ok(())
     }
 
     fn guard(&mut self, n: NodeId, basis: GuardBasis, state: FrameState) {
@@ -889,7 +913,7 @@ impl Builder<'_> {
                 let k = self.acc()?;
                 let n = match self.keyed_site(insn.unsigned(1), false, false)? {
                     KeyedPath::Element(key_basis) => {
-                        let a = self.check_array(o);
+                        let a = self.check_array(o, insn.unsigned(1));
                         let i = self.int32(k, key_basis);
                         let n =
                             self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
@@ -921,7 +945,7 @@ impl Builder<'_> {
                 let tagged = !matches!(self.node(v).repr, Repr::Int32 | Repr::Float64) && !copy;
                 match self.keyed_site(insn.unsigned(2), true, tagged)? {
                     KeyedPath::Element(key_basis) => {
-                        let a = self.check_array(o);
+                        let a = self.check_array(o, insn.unsigned(2));
                         let i = self.int32(k, key_basis);
                         let n =
                             self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
@@ -987,12 +1011,14 @@ impl Builder<'_> {
                 let regs: Vec<Register> = (0..=argc).map(|i| insn.register(i)).collect();
                 let n = self.call(regs)?;
                 self.set_acc(n);
+                self.lazy_after(n)?;
             }
             CallProperty1 => {
                 // SPIKEC-9 task 3: callee, receiver, one argument (`call_any` runs it).
                 let regs: Vec<Register> = (0..3).map(|i| insn.register(i)).collect();
                 let n = self.call(regs)?;
                 self.set_acc(n);
+                self.lazy_after(n)?;
             }
             CallUndefinedReceiver => {
                 // SPIKEC-9 task 3: the callee, then the register list (locals only).
@@ -1006,6 +1032,7 @@ impl Builder<'_> {
                 regs.extend((0..count).map(|i| Register::local(base + i)));
                 let n = self.call(regs)?;
                 self.set_acc(n);
+                self.lazy_after(n)?;
             }
             AddSmi | SubSmi | MulSmi | BitwiseAndSmi | BitwiseOrSmi | BitwiseXorSmi
             | ShiftLeftSmi | ShiftRightSmi => {
@@ -1118,13 +1145,16 @@ impl Builder<'_> {
         Ok(self.emit(Op::Call { regs }, inputs, Repr::Tagged, Trust::Unknown))
     }
 
-    fn check_array(&mut self, o: NodeId) -> NodeId {
+    /// The array kind guard of an element op at the keyed site `slot`; its exit record names
+    /// `slot` (the first site, when one guard serves several: MC-w25-6).
+    fn check_array(&mut self, o: NodeId, slot: u32) -> NodeId {
         let st = self.state();
         let o = self.tagged(o);
         let policy = self.policy(GuardBasis::Unbacked);
         self.memo(4, o, policy, |s| {
             let n = s.emit(Op::CheckArray, vec![o], Repr::Tagged, Trust::Unknown);
             s.guard(n, GuardBasis::Unbacked, st);
+            s.g.sites.push((n, slot));
             n
         })
     }
@@ -1212,20 +1242,33 @@ impl Builder<'_> {
 
     /// Replaces every use of `old` (inputs and frame states) with `new`.
     fn replace(&mut self, old: NodeId, new: NodeId) {
+        // A moved guard keeps its feedback slot (MC-w25-6).
+        if let Some(&(_, slot)) = self.g.sites.iter().find(|s| s.0 == old)
+            && !self.g.sites.iter().any(|s| s.0 == new)
+        {
+            self.g.sites.push((new, slot));
+        }
         for n in &mut self.g.nodes {
             for i in &mut n.inputs {
                 if *i == old {
                     *i = new;
                 }
             }
-            if let Some(g) = &mut n.guard {
-                for (_, v) in &mut g.state.registers {
+            let lazy = n.lazy.as_mut();
+            for st in n
+                .guard
+                .as_mut()
+                .map(|g| &mut g.state)
+                .into_iter()
+                .chain(lazy)
+            {
+                for (_, v) in &mut st.registers {
                     if *v == old {
                         *v = new;
                     }
                 }
-                if g.state.acc == Some(old) {
-                    g.state.acc = Some(new);
+                if st.acc == Some(old) {
+                    st.acc = Some(new);
                 }
             }
         }
@@ -1700,6 +1743,10 @@ impl Builder<'_> {
     }
 
     /// SPIKEC-9 task 8: the kind guards of a loop move to its preheader, one per array.
+    /// SPIKEC-10 (plan v11 §4.8 task 1, the hoisting left): with them, by the same rules,
+    /// the context slot loads (the graph has no context store, and L calls nothing, so a
+    /// slot holds one value in L) and the int32 and number checks of values from outside L
+    /// (a moved slot load included); identical moved nodes share one.
     ///
     /// ```text
     ///  preheader P (one successor: the header H)   ──>  P: ... CheckArray(o) [exits at H] ; Jump H
@@ -1725,7 +1772,9 @@ impl Builder<'_> {
     /// a guard reads a moved check of the same array and policy if L has one: that check
     /// passed at the entry, and nothing in L can change what it proved. (A loop that ends
     /// before its first back edge, 0 iterations or a `break`, can still exit at a moved
-    /// guard that its body would not have run: the cost of every move to a preheader.)
+    /// guard that its body would not have run: the cost of every move to a preheader. The
+    /// moved `CheckArray`'s exit record names its element site's keyed slot (MC-w25-6), so a
+    /// recompile could keep that guard in L; Spike C has no recompile on an exit, MC-P1-JIT5.)
     ///
     /// The move puts a guard's exit at the loop header, so only a guard whose exit may move
     /// goes ([`exit_may_move`], the doc 13 B2 rule, as in [`Self::float_loads`]; M6-P1 JIT
@@ -1777,15 +1826,27 @@ impl Builder<'_> {
                 continue;
             }
             let every = self.on_every_iteration(h, &body, &latches);
-            // The kind guards of the blocks that run on every iteration first (they move),
-            // then the others (they read a moved one or stay), then the DoubleElements of
-            // inner loops (their input, a kind guard, is final then).
+            // SPIKEC-10: the context slot loads first (L stores no context slot and calls
+            // nothing, so a slot holds one value in L), then the int32 and number checks of
+            // values from outside L (a moved slot load included), then the kind guards. In
+            // each group the guards of the blocks that run on every iteration first (they
+            // move), then the others (they read a moved one or stay); then the DoubleElements
+            // of inner loops (their input, a kind guard, is final then).
+            let rank = |op: &Op| match op {
+                Op::LoadContextSlot(_) => Some(0),
+                Op::CheckInt32 | Op::CheckNumber => Some(1),
+                Op::CheckArray => Some(2),
+                _ => None,
+            };
             let mut checks: Vec<NodeId> = nodes
                 .iter()
                 .copied()
-                .filter(|&n| self.g.node(n).op == Op::CheckArray)
+                .filter(|&n| rank(&self.g.node(n).op).is_some())
                 .collect();
-            checks.sort_by_key(|&n| !every[self.g.node(n).block.0 as usize]);
+            checks.sort_by_key(|&n| {
+                let node = self.g.node(n);
+                (rank(&node.op), !every[node.block.0 as usize])
+            });
             checks.extend(
                 nodes
                     .iter()
@@ -1796,15 +1857,16 @@ impl Builder<'_> {
                 continue;
             }
             let state = self.header_state(h, entry);
-            // (op, input, policy) -> the node in the preheader (a DoubleElements has no
+            // (op, inputs, policy) -> the node in the preheader (a DoubleElements has no
             // guard, so no policy).
-            let mut hoisted: Vec<(Op, NodeId, Option<ExitPolicy>, NodeId)> = Vec::new();
+            type Moved = (Op, Vec<NodeId>, Option<ExitPolicy>, NodeId);
+            let mut hoisted: Vec<Moved> = Vec::new();
             let mut fresh = Vec::new();
             for c in checks {
                 let node = self.g.node(c);
-                // Read the input now: a check hoisted before this one may have replaced it.
-                let (op, o, g) = (node.op.clone(), node.inputs[0], node.guard.clone());
-                if body[self.g.node(o).block.0 as usize] {
+                // Read the inputs now: a node hoisted before this one may have replaced one.
+                let (op, ins, g) = (node.op.clone(), node.inputs.clone(), node.guard.clone());
+                if ins.iter().any(|&o| body[self.g.node(o).block.0 as usize]) {
                     continue;
                 }
                 // B2 rule: only a guard whose exit may move to the header (F2).
@@ -1814,26 +1876,25 @@ impl Builder<'_> {
                 let policy = g.as_ref().map(|g| g.policy);
                 if let Some(&(.., k)) = hoisted
                     .iter()
-                    .find(|m| m.0 == op && m.1 == o && m.2 == policy)
+                    .find(|m| m.0 == op && m.1 == ins && m.2 == policy)
                 {
                     self.replace(c, k);
                     self.kill(c);
                     continue;
                 }
-                // A kind guard of a block that some iterations skip stays in L (F1). A
+                // A guard of a block that some iterations skip stays in L (F1). A
                 // DoubleElements has no exit, so it moves when its kind guard has moved.
-                if op == Op::CheckArray && !every[node.block.0 as usize] {
+                if g.is_some() && !every[node.block.0 as usize] {
                     continue;
                 }
-                let trust = node.trust;
-                let k =
-                    self.insert_before_terminator(pre, op.clone(), vec![o], Repr::Tagged, trust);
+                let (trust, repr) = (node.trust, node.repr);
+                let k = self.insert_before_terminator(pre, op.clone(), ins.clone(), repr, trust);
                 if let Some(g) = g {
                     self.g.set_guard(k, g.basis, state.clone());
                 }
                 self.replace(c, k);
                 self.kill(c);
-                hoisted.push((op.clone(), o, policy, k));
+                hoisted.push((op.clone(), ins, policy, k));
                 if op == Op::CheckArray {
                     fresh.push(k);
                 }
@@ -1869,17 +1930,22 @@ impl Builder<'_> {
                         node.inputs.len() == if node.op == Op::LoadElement { 2 } else { 3 }
                     })
                     .collect();
-                let all_double = !plain.is_empty()
-                    && plain.iter().all(|&n| {
-                        let kinds = self.elem_kinds.iter().find(|m| m.0 == n).map_or(0, |m| m.1);
-                        kinds != 0 && kinds & !double == 0
-                    });
+                // MC-P1-JIT3 (SPIKEC-10): a site with no kind yet (a load the IC has not
+                // recorded, as `cpy`'s reads) does not stop it; one DOUBLE site is enough, and
+                // no site may have seen another kind. DoubleElements has no exit, so a wrong
+                // guess only costs the full path (its 0).
+                let kinds: Vec<u16> = plain
+                    .iter()
+                    .map(|&n| self.elem_kinds.iter().find(|m| m.0 == n).map_or(0, |m| m.1))
+                    .collect();
+                let all_double =
+                    kinds.iter().any(|&k| k != 0) && kinds.iter().all(|&k| k & !double == 0);
                 if !all_double {
                     continue;
                 }
                 let e = match hoisted
                     .iter()
-                    .find(|m| m.0 == Op::DoubleElements && m.1 == k)
+                    .find(|m| m.0 == Op::DoubleElements && m.1 == [k])
                 {
                     Some(&(.., e)) => e,
                     None => self.insert_before_terminator(
@@ -1965,10 +2031,7 @@ impl Builder<'_> {
             }
             let node = self.g.node(n);
             work.extend(node.inputs.iter().copied());
-            if let Some(g) = &node.guard {
-                work.extend(g.state.registers.iter().map(|&(_, v)| v));
-                work.extend(g.state.acc);
-            }
+            work.extend(node.state_values());
         }
         let dead: Vec<NodeId> = used
             .iter()

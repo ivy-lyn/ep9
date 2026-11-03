@@ -93,6 +93,16 @@
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
 #     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
 #     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
+#   gate.sh lazy         (plan v11 M6-P2 SPIKEC-10 §4.8 task 1; H29-Q4) the short lazy-deopt
+#     probe: `spike-c lazy` (a compiled call's frame swapped to its lazy exit while the callee
+#     runs, the frame-record walk before and after, T0 resumes after the call; output equal to
+#     T0). macOS arm64 only (the frame-record walk). A report step: not in `all`
+#   gate.sh verdict [--fixtures]  (plan v11 M6-P2 SPIKEC-10 §4.8 task 4; VERDICT-DRY; SCP §8)
+#     the Verdict rows: the clean-tree and commit checks, the load before, every step of `all`,
+#     C4 (`spike-c time crypto`, `spike-c time navier-stokes`), C5c (`spike-c sp-facts time
+#     crypto`), the load after, then `spike-c verdict-rows` prints the SCP §8 table. On a tree
+#     that is not clean it prints no table and fails. The orchestrator's step (no agent
+#     active; a report before CF). --fixtures: the table of the fixture inputs only (no run)
 #   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, `gate.sh linsolve`,
 #                        `gate.sh navier`, then `gate.sh diff` and `gate.sh spfacts`
 #
@@ -265,6 +275,72 @@ timing() {
   run "time/crypto (report)" "$bin" time crypto
 }
 
+lazy_step() {
+  if ! build_release; then
+    record "lazy" FAIL "release build failed"
+    return
+  fi
+  run "lazy/probe (report)" "$CARGO_TARGET_DIR/release/spike-c$exe" lazy
+}
+
+# The load averages now (the host's 1, 5 and 15 minute loads).
+loads() {
+  if command -v sysctl > /dev/null && sysctl -n vm.loadavg > /dev/null 2>&1; then
+    sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1, $2, $3}'
+  elif [ -r /proc/loadavg ]; then
+    awk '{print $1, $2, $3}' /proc/loadavg
+  else
+    echo "unknown"
+  fi
+}
+
+verdict() {
+  local fixtures="${1:-}"
+  if ! build_release; then
+    record "verdict" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local dir="$CARGO_TARGET_DIR/verdict"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  if [ "$fixtures" = "--fixtures" ]; then
+    run "verdict/fixtures" "$bin" verdict-fixtures "$dir"
+  else
+    local root commit clean=no
+    root="$(git -C "$here" rev-parse --show-toplevel)"
+    commit="$(git -C "$root" rev-parse HEAD)"
+    if [ -z "$(git -C "$root" status --porcelain --untracked-files=no)" ]; then clean=yes; fi
+    local before
+    before="$(loads)"
+    structural
+    am3
+    deopt
+    linsolve
+    navier
+    diff_step
+    spfacts
+    for k in crypto navier-stokes; do
+      run "verdict/c4-$k" sh -c '"$1" time "$2" > "$3"' _ "$bin" "$k" "$dir/c4-$k.txt"
+    done
+    run "verdict/c5c" sh -c '"$1" sp-facts time crypto > "$2"' _ "$bin" "$dir/c5c.txt"
+    {
+      echo "commit=$commit"
+      echo "clean=$clean"
+      echo "host=$(sed -n 's/^host: \(.*\), load .*/\1/p' "$dir/c4-crypto.txt")"
+      echo "load_before=$before"
+      echo "load_after=$(loads)"
+    } > "$dir/meta.txt"
+    for r in "${results[@]}"; do echo "$r"; done > "$dir/steps.txt"
+  fi
+  echo "== [verdict/rows] $bin verdict-rows $dir"
+  if "$bin" verdict-rows "$dir"; then
+    record "verdict/rows" PASS "$dir"
+  else
+    record "verdict/rows" FAIL "no table (see above)"
+  fi
+}
+
 step="${1:-all}"
 case "$step" in
   structural) structural ;;
@@ -275,6 +351,8 @@ case "$step" in
   diff) diff_step ;;
   spfacts) spfacts ;;
   time) timing ;;
+  lazy) lazy_step ;;
+  verdict) verdict "${2:-}" ;;
   all)
     structural
     am3
@@ -285,7 +363,7 @@ case "$step" in
     spfacts
     ;;
   *)
-    echo "usage: gate.sh [structural | am3 | deopt | linsolve | navier | diff | spfacts | time]" >&2
+    echo "usage: gate.sh [structural | am3 | deopt | linsolve | navier | diff | spfacts | time | lazy | verdict [--fixtures]]" >&2
     exit 2
     ;;
 esac

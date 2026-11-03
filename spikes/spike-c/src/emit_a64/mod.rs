@@ -290,6 +290,22 @@ fn scaled(off: usize) -> Result<u32, Refusal> {
 /// tag, an immediate Value or an offset), never an address.
 fn mov64(ops: &mut Ops, rd: u8, v: u64) {
     let h = |i: u32| ((v >> (16 * i)) & 0xFFFF) as u32;
+    // SPIKEC-10: `movn` and a `movk` per halfword that is not 0xFFFF when more halfwords
+    // are 0xFFFF than 0 (the DOUBLE hole: 2 instructions, not 4).
+    let ones = (0..4).filter(|&i| h(i) == 0xFFFF).count();
+    let zeros = (0..4).filter(|&i| h(i) == 0).count();
+    if ones > zeros {
+        let first = (0..4).find(|&i| h(i) != 0xFFFF).unwrap_or(0);
+        let (f, fs) = (!h(first) & 0xFFFF, first * 16);
+        dynasm!(ops ; .arch aarch64 ; movn X(rd), f, lsl fs);
+        for i in first + 1..4 {
+            if h(i) != 0xFFFF {
+                let (p, s) = (h(i), i * 16);
+                dynasm!(ops ; .arch aarch64 ; movk X(rd), p, lsl s);
+            }
+        }
+        return;
+    }
     let first = (0..4).find(|&i| h(i) != 0).unwrap_or(0);
     let (f, fs) = (h(first), first * 16);
     dynasm!(ops ; .arch aarch64 ; movz X(rd), f, lsl fs);
@@ -299,6 +315,14 @@ fn mov64(ops: &mut Ops, rd: u8, v: u64) {
             dynasm!(ops ; .arch aarch64 ; movk X(rd), p, lsl s);
         }
     }
+}
+
+/// The code [`mov64`] makes for x`rd` = `v` (the SPIKEC-10 tests).
+#[cfg(test)]
+pub(crate) fn mov64_words(rd: u8, v: u64) -> Vec<u8> {
+    let mut ops = Ops::new(0);
+    mov64(&mut ops, rd, v);
+    ops.finalize().expect("code")
 }
 
 /// `ep9_vm::layout::NATIVE_WORD_OFFSET`, the offset of a frame's native words, for an `eor`
@@ -490,6 +514,38 @@ struct Emitter<'a> {
     force: Option<&'a ForceTable>,
     /// The int32 junk build ([`EmitOptions::int32_junk`]).
     int32_junk: bool,
+    /// SPIKEC-10: the Float64 node whose value d19 also holds (the last Float64 op's result),
+    /// so the next op reads it there, not through a `fmov` from its register: the chain of a
+    /// loop-carried double (lin_solve's `lastX`) loses two moves per op. Cleared at each
+    /// block start and before any node not in [`keeps_d19`] (a call or an out-of-line path
+    /// that comes back may change d19; no other code writes it).
+    d19: Option<NodeId>,
+    /// SPIKEC-10 (the lazy-deopt probe): each call site's lazy exit label, its call node,
+    /// the native offset of its return address and its bytecode offset.
+    lazy: Vec<(DynamicLabel, NodeId, u32, u32)>,
+    /// The lazy exits as emitted (the call records).
+    lazy_sites: Vec<crate::deopt_meta::LazySite>,
+}
+
+/// The ops whose code keeps d19 (SPIKEC-10, [`Emitter::d19`]): no out-of-line path that comes
+/// back (a guard's exit never does), and no write of d19.
+fn keeps_d19(node: &crate::ir::Node) -> bool {
+    match node.op {
+        Op::Incoming(_)
+        | Op::Const(_)
+        | Op::ConstInt32(_)
+        | Op::ConstFloat64(_)
+        | Op::Phi
+        | Op::Float64(_)
+        | Op::Int32(_)
+        | Op::CheckInt32
+        | Op::TruncateInt32
+        | Op::Int32ToFloat64
+        | Op::CheckNumber => true,
+        // A load has no out-of-line path that comes back (a store's generic path does).
+        Op::LoadElement => true,
+        _ => false,
+    }
 }
 
 /// Emits the code of `graph` (built from `input`) with the registers of `alloc` and the
@@ -565,6 +621,9 @@ pub fn emit_opts(
         form,
         force: opts.force,
         int32_junk: opts.int32_junk,
+        d19: None,
+        lazy: Vec::new(),
+        lazy_sites: Vec::new(),
     };
     let overflow = e.ops.new_dynamic_label();
     e.prologue(overflow)?;
@@ -574,14 +633,15 @@ pub fn emit_opts(
     let epilogue = e.ret_and_leave()?;
     e.out_of_line(overflow)?;
     let report_traps = std::mem::take(&mut e.trap_at);
+    let lazy_sites = std::mem::take(&mut e.lazy_sites);
     let guards = e.traps.len();
     let native_at = std::mem::take(&mut e.native_at);
     let code = e
         .ops
         .finalize()
         .map_err(|e| Refusal::Limit(format!("dynasm: {e}")))?;
-    let meta =
-        crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps).map_err(Refusal::Limit)?;
+    let meta = crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps, &lazy_sites)
+        .map_err(Refusal::Limit)?;
     let report = EmitReport {
         code_bytes: code.len(),
         frame_bytes: frame,
@@ -762,10 +822,14 @@ impl Emitter<'_> {
             .copied()
             .filter(|&n| self.g.node(n).live)
             .collect();
+        self.d19 = None;
         for n in nodes {
             let off = self.g.node(n).offset;
             let here = self.ops.offset().0 as u32;
             self.native_at.entry(off).or_insert(here);
+            if !keeps_d19(self.g.node(n)) {
+                self.d19 = None;
+            }
             self.node(bi, n)?;
         }
         Ok(())
@@ -1215,6 +1279,25 @@ impl Emitter<'_> {
                 }
             }
             Op::Int32(op) => {
+                // SPIKEC-10: `+` and `-` of a constant 0..=4095 take it as an immediate.
+                let imm = match self.g.node(ins[1]).op {
+                    Op::ConstInt32(c) if matches!(op, Int32Op::Add | Int32Op::Sub) => {
+                        u32::try_from(c).ok().filter(|&c| c <= 4095)
+                    }
+                    _ => None,
+                };
+                if let Some(c) = imm {
+                    let trap = self.trap(n)?;
+                    let l = self.src(ins[0], 12)?;
+                    let d = self.dst(n)?;
+                    if *op == Int32Op::Add {
+                        dynasm!(self.ops ; .arch aarch64 ; adds W(d), WSP(l), #c ; b.vs =>trap);
+                    } else {
+                        dynasm!(self.ops ; .arch aarch64 ; subs W(d), WSP(l), #c ; b.vs =>trap);
+                    }
+                    self.finish(n);
+                    return Ok(());
+                }
                 let l = self.src(ins[0], 12)?;
                 let r = self.src(ins[1], 13)?;
                 let d = self.dst(n)?;
@@ -1329,18 +1412,29 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::Float64(op) => {
-                let l = self.src(ins[0], 12)?;
-                let r = self.src(ins[1], 13)?;
-                let d = self.dst(n)?;
-                dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r));
-                match op {
-                    FloatOp::Add => dynasm!(self.ops ; .arch aarch64 ; fadd d16, d16, d17),
-                    FloatOp::Sub => dynasm!(self.ops ; .arch aarch64 ; fsub d16, d16, d17),
-                    FloatOp::Mul => dynasm!(self.ops ; .arch aarch64 ; fmul d16, d16, d17),
-                    FloatOp::Div => dynasm!(self.ops ; .arch aarch64 ; fdiv d16, d16, d17),
+                // The operands in d16 and d17, or in d19 where it holds one (SPIKEC-10); the
+                // result in d19 and in its register.
+                let (dl, dr) = (self.d19 == Some(ins[0]), self.d19 == Some(ins[1]));
+                let l = if dl { 19 } else { 16 };
+                let r = if dr { 19 } else { 17 };
+                if !dl {
+                    let x = self.src(ins[0], 12)?;
+                    dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(x));
                 }
-                dynasm!(self.ops ; .arch aarch64 ; fmov X(d), d16);
+                if !dr {
+                    let x = self.src(ins[1], 13)?;
+                    dynasm!(self.ops ; .arch aarch64 ; fmov d17, X(x));
+                }
+                let d = self.dst(n)?;
+                match op {
+                    FloatOp::Add => dynasm!(self.ops ; .arch aarch64 ; fadd d19, D(l), D(r)),
+                    FloatOp::Sub => dynasm!(self.ops ; .arch aarch64 ; fsub d19, D(l), D(r)),
+                    FloatOp::Mul => dynasm!(self.ops ; .arch aarch64 ; fmul d19, D(l), D(r)),
+                    FloatOp::Div => dynasm!(self.ops ; .arch aarch64 ; fdiv d19, D(l), D(r)),
+                }
+                dynasm!(self.ops ; .arch aarch64 ; fmov X(d), d19);
                 self.finish(n);
+                self.d19 = Some(n);
             }
             Op::BoxFloat64 => {
                 let x = self.src(ins[0], 12)?;
@@ -1393,6 +1487,11 @@ impl Emitter<'_> {
                 save_caller_saved(&mut self.ops);
                 mov64(&mut self.ops, 3, VALUE_UNDEFINED);
                 call_table(&mut self.ops, layout::RT_CALL_ANY, node.offset)?;
+                // SPIKEC-10: the return address; a lazy deopt swaps it for the lazy exit.
+                if node.lazy.is_some() {
+                    let (l, ret) = (self.ops.new_dynamic_label(), self.ops.offset().0 as u32);
+                    self.lazy.push((l, n, ret, node.offset));
+                }
                 dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
                 restore_caller_saved(&mut self.ops);
                 let throw = self.throw_at(node.offset);
@@ -2029,6 +2128,43 @@ impl Emitter<'_> {
             }
         }
         self.stub_bytes = self.ops.offset().0 as u32 - start;
+        // SPIKEC-10 (H29-Q4, the short lazy-deopt probe): a lazy exit per call site, entered
+        // as the call's return (x0 = the result, the callee-saved registers and sp as at the
+        // return): what the call site does after the call up to its result (restore the
+        // saved registers; 0 unwinds from the call), then the shared exit of the Deopt
+        // policy with the site's call record, which resumes T0 after the call with x0 as the
+        // accumulator. Nothing jumps here: only a swapped return address comes here.
+        if !self.lazy.is_empty() && !shared.iter().any(|(p, _)| *p == ExitPolicy::Deopt) {
+            shared.push((ExitPolicy::Deopt, self.ops.new_dynamic_label()));
+        }
+        for (l, node, ret, off) in std::mem::take(&mut self.lazy) {
+            let exit = shared
+                .iter()
+                .find(|(p, _)| *p == ExitPolicy::Deopt)
+                .expect("the Deopt shared exit")
+                .1;
+            let throw = self.throw_at(off);
+            dynasm!(self.ops ; .arch aarch64 ; =>l);
+            let stub = self.ops.offset().0 as u32;
+            dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+            restore_caller_saved(&mut self.ops);
+            dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+            let pc = self.ops.offset().0 as u32;
+            match self.form {
+                StubForm::Call => dynasm!(self.ops ; .arch aarch64 ; bl =>exit),
+                StubForm::Movz => {
+                    mov64(&mut self.ops, 16, u64::from(pc));
+                    mov64(&mut self.ops, 17, 0);
+                    dynasm!(self.ops ; .arch aarch64 ; b =>exit);
+                }
+            }
+            self.lazy_sites.push(crate::deopt_meta::LazySite {
+                node,
+                ret,
+                stub,
+                pc,
+            });
+        }
         let unwind = self.unwind;
         let shared_start = self.ops.offset().0 as u32;
         for (policy, x) in shared {

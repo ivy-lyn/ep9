@@ -445,8 +445,25 @@ pub struct Node {
     /// The bytecode offset of the instruction that made the node.
     pub offset: u32,
     pub guard: Option<Guard>,
+    /// SPIKEC-10 (the lazy-deopt probe, H29-Q4): a [`Op::Call`]'s state after the call (the
+    /// next instruction's offset and its live registers; the accumulator is the call's
+    /// result, which the lazy exit takes from x0). A lazy deopt that swapped the call's return
+    /// address resumes T0 there (a call record, H29 record tag 2).
+    pub lazy: Option<FrameState>,
     /// False once a pass removed it.
     pub live: bool,
+}
+
+impl Node {
+    /// The values the node's frame states name (a guard's state, a call's lazy state): each
+    /// is used at the node (an exit reads it there).
+    pub fn state_values(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.guard
+            .iter()
+            .map(|g| &g.state)
+            .chain(self.lazy.iter())
+            .flat_map(|s| s.registers.iter().map(|&(_, v)| v).chain(s.acc))
+    }
 }
 
 /// One basic block: phis first, the terminator last.
@@ -481,6 +498,10 @@ pub struct Graph {
     pub register_count: u32,
     /// The reachable bytecode instructions (offset, opcode), in offset order.
     pub insns: Vec<(u32, ep9_bytecode::Opcode)>,
+    /// The feedback slot a guard's exit record names when its op has none of its own: a
+    /// `CheckArray` names the keyed slot of the first element site that made it (MC-w25-6;
+    /// it stays with the guard when the guard moves to a preheader).
+    pub sites: Vec<(NodeId, u32)>,
 }
 
 impl Graph {
@@ -497,6 +518,7 @@ impl Graph {
             parameter_count,
             register_count,
             insns: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
@@ -531,6 +553,7 @@ impl Graph {
             block,
             offset,
             guard: None,
+            lazy: None,
             live: true,
         });
         id
@@ -877,9 +900,12 @@ impl fmt::Display for Graph {
                     continue;
                 }
                 let ins: Vec<String> = node.inputs.iter().map(|i| format!("n{}", i.0)).collect();
-                let g = node.guard.as_ref().map_or(String::new(), |g| {
+                let mut g = node.guard.as_ref().map_or(String::new(), |g| {
                     format!("  guard g{} {:?} -> @{}", g.id, g.basis, g.state.offset)
                 });
+                if let Some(l) = &node.lazy {
+                    g += &format!("  lazy -> @{}", l.offset);
+                }
                 writeln!(
                     f,
                     "  n{} = {:?}({}) : {:?} {:?} @{}{g}",

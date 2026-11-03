@@ -9,8 +9,9 @@ use ep9_bytecode::Register;
 use ep9_value::Value;
 
 use crate::deopt::{
-    CodeMeta, DUMP_REGS, ExitClass, ExitReason, ExitState, ExitValue, FrameShape, Loc, Record,
-    RecordTag, Repr, Resume, SideTable, Table, Target, form, rebuild,
+    CodeMeta, DUMP_REGS, ExitClass, ExitReason, ExitState, ExitValue, FrameRecord, FrameShape, Loc,
+    Record, RecordTag, Repr, Resume, SideTable, Table, Target, form, rebuild, swap_returns,
+    walk_records,
 };
 use crate::frame::{HEADER, int32_bits, slot};
 
@@ -487,7 +488,7 @@ fn the_rebuild_refuses_and_writes_nothing() {
     };
     // SAFETY: as above.
     let e = unsafe { rebuild(&poll, &poll.records[0], &state, fpp, shape) }.unwrap_err();
-    assert!(e.contains("not an exit"), "{e}");
+    assert!(e.contains("not an exit or a call"), "{e}");
     assert_eq!(mem, before);
     let t = Table {
         consts: vec![],
@@ -576,4 +577,138 @@ fn the_side_table_counts_each_exit() {
     assert!(st.is_empty());
     let e = deopt(12, fun).unwrap_err();
     assert!(e.contains("no deopt metadata"), "{e}");
+}
+
+/// SPIKEC-10 (the short lazy-deopt probe, H29-Q4): a call record resumes T0 at its offset
+/// (the instruction after the call) with the call's result (x0) as the accumulator and the
+/// live registers rebuilt, as an exit does; the side table counts it.
+#[test]
+fn a_call_record_resumes_after_the_call_with_its_result() {
+    let (mut mem, fp) = frame(1, 3);
+    let mut regs = [0u64; DUMP_REGS];
+    regs[0] = Value::int32(77).to_bits(); // the call's result
+    regs[19] = 5; // an Int32 live across the call
+    regs[20] = 2.5f64.to_bits(); // a Float64
+    let r = |i: u32| Target::Reg(Register::local(i));
+    let call = Record {
+        tag: RecordTag::Call,
+        class: ExitClass::Environment,
+        ..exit(
+            40,
+            27,
+            0,
+            vec![
+                value(r(0), Repr::Int32, Loc::Reg(19)),
+                value(r(2), Repr::Float64, Loc::Reg(20)),
+                value(Target::Acc, Repr::Tagged, Loc::Reg(0)),
+            ],
+        )
+    };
+    let t = Table {
+        consts: vec![],
+        records: vec![exit(8, 3, 0, vec![]), Record { counter: 1, ..call }],
+    };
+    let shape = FrameShape {
+        registers: 3,
+        params: 1,
+    };
+    let state = ExitState {
+        regs: &regs,
+        native_fp: core::ptr::null(),
+    };
+    let fpp = mem.as_mut_ptr().wrapping_add(fp);
+    // SAFETY: `fpp` is the synthetic frame of `shape`; no stack location.
+    let got = unsafe { rebuild(&t, &t.records[1], &state, fpp, shape) }.expect("rebuild");
+    assert_eq!(
+        got,
+        Resume {
+            bytecode: 27,
+            acc: Value::int32(77).to_bits()
+        }
+    );
+    assert_eq!(word(&mem, fp, 0), int32_bits(5));
+    assert_eq!(
+        word(&mem, fp, 1),
+        int32_bits(fp as i32 + 1),
+        "r1 is not live: kept"
+    );
+    assert_eq!(word(&mem, fp, 2), Value::number(2.5).to_bits());
+    // Through the side table: the record is found by its pc and counted.
+    let st = SideTable::new();
+    let (start, fun) = (0x4000, 0x88);
+    let meta = CodeMeta::read(64, fun, &t.encode(), |o| [3, 27].contains(&o)).expect("read");
+    st.insert(start, meta);
+    // SAFETY: as above.
+    let got = unsafe { st.deopt(start, fun, 40, &state, fpp, shape) }.expect("deopt");
+    assert_eq!(got.bytecode, 27);
+    assert_eq!(st.counters(start), Some(vec![0, 1]));
+}
+
+/// A synthetic frame-record chain in `mem` (16-byte aligned): record `k` at word `2k + 2`
+/// links to record `k + 1`; the last links to 0. Returns the record addresses.
+fn chain(mem: &mut [u64], rets: &[u64]) -> Vec<usize> {
+    let base = mem.as_ptr().addr();
+    let first = base.div_ceil(16) * 16;
+    let at: Vec<usize> = (0..rets.len()).map(|k| first + 32 * k).collect();
+    for (k, &a) in at.iter().enumerate() {
+        let w = (a - base) / 8;
+        mem[w] = at.get(k + 1).map_or(0, |&n| n as u64);
+        mem[w + 1] = rets[k];
+    }
+    at
+}
+
+/// SPIKEC-10: the frame-record walk follows the chain to its end (0), and stops at a record
+/// that is not above the one before it, at `end`, and after `max` records; the swap writes a
+/// site's lazy exit over the return addresses that are that site's return (in the code's
+/// range, at its offset), and leaves every other record, so a second swap changes nothing.
+#[test]
+fn the_lazy_swap_writes_only_the_sites_return_addresses() {
+    let mut mem = vec![0u64; 64];
+    let code = 0x1_0000usize;
+    let rets = [
+        0x9999,            // a Rust frame
+        code as u64 + 332, // the call site's return: swapped
+        code as u64 + 100, // the code, but no site's return
+        0x2_0000 + 332,    // another code at the same offset
+        code as u64 + 332, // a second frame of the same site (recursion): swapped
+    ];
+    let at = chain(&mut mem, &rets);
+    // SAFETY: the records are words of `mem`, alive for the walk.
+    let walked = unsafe { walk_records(at[0], usize::MAX, 64) };
+    let want: Vec<FrameRecord> = at
+        .iter()
+        .zip(rets)
+        .map(|(&a, r)| FrameRecord {
+            at: a,
+            ret: r as usize,
+        })
+        .collect();
+    assert_eq!(walked, want);
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(walk_records(at[0], at[2], 64).len(), 2, "end");
+        assert_eq!(walk_records(at[0], usize::MAX, 3).len(), 3, "max");
+        assert_eq!(walk_records(at[0] + 8, usize::MAX, 64), [], "misaligned");
+        assert_eq!(walk_records(0, usize::MAX, 64), [], "null");
+    }
+    // A record that links down (or to itself) ends the walk there.
+    let w = (at[1] - mem.as_ptr().addr()) / 8;
+    mem[w] = at[0] as u64;
+    // SAFETY: as above.
+    assert_eq!(unsafe { walk_records(at[0], usize::MAX, 64) }.len(), 2);
+    mem[w] = at[2] as u64;
+    let sites = [(332u32, 680u32), (500, 720)];
+    // SAFETY: as above (the records are live words of `mem`).
+    let swapped = unsafe { swap_returns(&walked, code, 896, &sites) };
+    assert_eq!(swapped, [(want[1], code + 332), (want[4], code + 332)]);
+    // SAFETY: as above.
+    let after = unsafe { walk_records(at[0], usize::MAX, 64) };
+    let rets_after: Vec<usize> = after.iter().map(|r| r.ret).collect();
+    assert_eq!(
+        rets_after,
+        [0x9999, code + 680, code + 100, 0x2_0000 + 332, code + 680]
+    );
+    // SAFETY: as above.
+    assert_eq!(unsafe { swap_returns(&after, code, 896, &sites) }, []);
 }

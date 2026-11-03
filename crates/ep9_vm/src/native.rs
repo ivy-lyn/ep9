@@ -1462,6 +1462,73 @@ impl NativeCx {
     pub fn check_deopt_meta(meta: &[u8]) -> Result<usize, String> {
         crate::deopt::Table::decode(meta).map(|t| t.records.len())
     }
+
+    // ---- the lazy entry (M6-P2 SPIKEC-10, the short lazy-deopt probe; H29-Q4) ----
+
+    /// The start of the code installed with metadata for function `id` of the loaded unit
+    /// `file` (its Opt slot's entry), if it has some.
+    pub fn code_start_by_id(iso: &Isolate, file: &str, id: u32) -> Option<usize> {
+        let fi = info_by_id(iso, file, id).ok()?;
+        (fi.slot.kind_byte() == DispatchKind::Opt as u8).then(|| fi.slot.entry())
+    }
+
+    /// The return addresses of the native stack's frame records, from the caller of this
+    /// function outward (`deopt::walk_records` from the live x29, at most 4096). Empty on an
+    /// architecture other than AArch64. The probe's backtrace: the walk reads frame records
+    /// only, no CFI (a CFI walk through JIT code is the gated part of H29-Q4).
+    #[inline(never)]
+    pub fn frame_returns() -> Vec<usize> {
+        let Some(fp) = current_fp() else {
+            return Vec::new();
+        };
+        // SAFETY: x29 heads the live frame-record chain of this thread (AAPCS64; on macOS
+        // arm64 every frame keeps a record and the chain ends at 0).
+        let records = unsafe { crate::deopt::walk_records(fp, usize::MAX, 4096) };
+        records.iter().map(|r| r.ret).collect()
+    }
+
+    /// The lazy swap (`deopt::swap_returns`): every frame record on the native stack, from
+    /// the caller of this function outward, whose return address is the return of a call
+    /// site of the code at `code` gets that site's lazy exit instead; `sites` are the
+    /// (return offset, lazy exit offset) pairs of the code's call records. Returns each
+    /// swapped record's address and its old return address. The code stays installed and its
+    /// metadata stays (the lazy exit's call record is read when the call returns); freeing
+    /// dead code waits for its last swapped frame (not built).
+    ///
+    /// # Safety
+    /// `code` is code installed with metadata whose call records name `sites`, and each
+    /// site's lazy exit restores the call's state as Spike C's does; the caller is nested in
+    /// the calls whose frames may be swapped, and none of them has returned yet.
+    #[inline(never)]
+    pub unsafe fn lazy_swap(code: Range<usize>, sites: &[(u32, u32)]) -> Vec<(usize, usize)> {
+        let Some(fp) = current_fp() else {
+            return Vec::new();
+        };
+        // SAFETY: as in `frame_returns`; each record is live (the caller's contract: nested).
+        let swapped = unsafe {
+            let records = crate::deopt::walk_records(fp, usize::MAX, 4096);
+            crate::deopt::swap_returns(&records, code.start, code.end - code.start, sites)
+        };
+        swapped.iter().map(|(r, old)| (r.at, *old)).collect()
+    }
+}
+
+/// x29 now: the head of this thread's frame-record chain (AArch64 only).
+#[inline(always)]
+fn current_fp() -> Option<usize> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let fp: usize;
+        // SAFETY: reads a register; no memory, no stack, no flags.
+        unsafe {
+            core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack, preserves_flags));
+        }
+        Some(fp)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        None
+    }
 }
 
 #[cfg(test)]
