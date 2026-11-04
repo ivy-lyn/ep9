@@ -412,7 +412,7 @@ fn with<'s>(
     create(cx, &r, None)
 }
 
-/// AddDurationToYearMonth(operation, yearMonth, temporalDurationLike, options) (§9.5.?).
+/// AddDurationToYearMonth(operation, yearMonth, temporalDurationLike, options).
 fn add_or_subtract<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -455,7 +455,7 @@ fn subtract<'s>(
     add_or_subtract(cx, this, args, true)
 }
 
-/// DifferenceTemporalPlainYearMonth(operation, yearMonth, other, options) (§9.5.?).
+/// DifferenceTemporalPlainYearMonth(operation, yearMonth, other, options).
 fn difference<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

@@ -30,9 +30,10 @@ impl<'s> Cx<'s> {
         ep9_platform::time::local_offset_ms(t_ms, is_utc)
     }
 
-    /// The host time zone identifier (the host part of SystemTimeZoneIdentifier, Temporal
-    /// §11.1.?): an IANA name, or `None` when the host gives none. The caller (Temporal.Now)
-    /// checks it with its tz data and uses "UTC" for `None` or an unknown name.
+    /// The host time zone identifier (the host part of the Temporal operation
+    /// SystemTimeZoneIdentifier): an IANA name, or `None` when the host gives none. The caller
+    /// (Temporal.Now) checks it with its tz data, maps it to its primary identifier, and uses
+    /// "UTC" for `None` or an unknown name.
     pub fn system_time_zone_id(&mut self) -> Option<String> {
         ep9_platform::time::system_time_zone_id()
     }

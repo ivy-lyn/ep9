@@ -519,7 +519,7 @@ fn with<'s>(
     create(cx, &r, None)
 }
 
-/// ToTimeRecordOrMidnight(item) (§4.5.?): undefined is midnight, else ToTemporalTime.
+/// ToTimeRecordOrMidnight(item): undefined is midnight, else ToTemporalTime.
 pub(crate) fn to_time_or_midnight<'s>(
     cx: &mut Cx<'s>,
     item: Local<'s>,
@@ -558,7 +558,7 @@ fn with_calendar<'s>(
     create(cx, &dt.with_calendar(cal), None)
 }
 
-/// AddDurationToDateTime(operation, dateTime, temporalDurationLike, options) (§5.5.?).
+/// AddDurationToDateTime(operation, dateTime, temporalDurationLike, options).
 fn add_or_subtract<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -601,7 +601,7 @@ fn subtract<'s>(
     add_or_subtract(cx, this, args, true)
 }
 
-/// DifferenceTemporalPlainDateTime(operation, dateTime, other, options) (§5.5.?).
+/// DifferenceTemporalPlainDateTime(operation, dateTime, other, options).
 fn difference<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

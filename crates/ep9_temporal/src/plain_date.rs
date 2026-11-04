@@ -304,7 +304,7 @@ pub(crate) fn to_temporal_date<'s>(
     Ok(d)
 }
 
-/// GetTemporalShowCalendarNameOption (§13.?): the `calendarName` option.
+/// GetTemporalShowCalendarNameOption: the `calendarName` option.
 pub(crate) fn get_show_calendar<'s>(
     cx: &mut Cx<'s>,
     options: crate::options::Options<'s>,
@@ -756,7 +756,7 @@ fn value_of<'s>(
     ))
 }
 
-/// Temporal.PlainDate.prototype.toPlainDateTime ( [ temporalTime ] ) (§3.3.?).
+/// Temporal.PlainDate.prototype.toPlainDateTime ( [ temporalTime ] ).
 fn to_plain_date_time<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -771,7 +771,7 @@ fn to_plain_date_time<'s>(
     crate::plain_date_time::create(cx, &dt, None)
 }
 
-/// Temporal.PlainDate.prototype.toPlainYearMonth ( ) (§3.3.?).
+/// Temporal.PlainDate.prototype.toPlainYearMonth ( ).
 fn to_plain_year_month<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -784,7 +784,7 @@ fn to_plain_year_month<'s>(
     crate::plain_year_month::create(cx, &ym, None)
 }
 
-/// Temporal.PlainDate.prototype.toPlainMonthDay ( ) (§3.3.?).
+/// Temporal.PlainDate.prototype.toPlainMonthDay ( ).
 fn to_plain_month_day<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

@@ -971,7 +971,7 @@ fn to_plain_date_time<'s>(
 
 // ---- toZonedDateTime of the other classes ---------------------------------------------------
 
-/// Temporal.Instant.prototype.toZonedDateTimeISO ( timeZone ) (§8.3.?).
+/// Temporal.Instant.prototype.toZonedDateTimeISO ( timeZone ).
 pub(crate) fn instant_to_zoned_date_time_iso<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -987,7 +987,7 @@ pub(crate) fn instant_to_zoned_date_time_iso<'s>(
     create(cx, &z, None)
 }
 
-/// Temporal.PlainDate.prototype.toZonedDateTime ( item ) (§3.3.?).
+/// Temporal.PlainDate.prototype.toZonedDateTime ( item ).
 pub(crate) fn plain_date_to_zoned_date_time<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

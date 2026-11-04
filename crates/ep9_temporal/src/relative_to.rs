@@ -1,4 +1,4 @@
-//! GetTemporalRelativeToOption (§7.5.?; Duration `compare`, `round`, `total`).
+//! GetTemporalRelativeToOption (Duration `compare`, `round`, `total`).
 //!
 //! ```text
 //! relativeTo undefined          -> none
