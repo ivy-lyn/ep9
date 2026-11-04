@@ -2505,6 +2505,25 @@ mod tests {
         );
     }
 
+    /// A BigInt never runs in compiled code (spec-temporal B2, design SPEC-T-D8): a hot
+    /// `a === b` site warmed on numbers fails its int32 guard on `1n, 1n` and exits; T0 runs
+    /// the compare by value (two cells, one value: true).
+    #[test]
+    fn a_bigint_operand_exits_to_t0() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function same(a, b) { if (a === b) { return 1; } return 0; }";
+        let r = deopts(
+            defs,
+            "for (var q = 0; q < 20; q++) { same(q, q); same(q, 1); }",
+            "print(same(1n, 1n), same(1n, 2n), same(1n, 1), same(2n ** 64n, 18446744073709551616n));",
+            "same",
+        );
+        assert_eq!(r.compiled.output, ["1 0 0 1"]);
+        assert!(r.report.graph.contains("Compare(Eq)"), "{}", r.report.graph);
+    }
+
     /// Context slot loads and calls (SPIKEC-4 built them; WI-SC5 emits them): `inner`, an
     /// inner closure installed by its function id, reads `k` from its context, for a closure
     /// made before the install and one made after (both run the code: one dispatch slot);

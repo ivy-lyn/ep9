@@ -29,6 +29,7 @@ mod arguments;
 mod async_fn;
 mod async_gen;
 mod basic;
+mod bigint;
 mod builtins;
 mod calls;
 mod class_fields;

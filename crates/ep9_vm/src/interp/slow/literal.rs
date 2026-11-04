@@ -135,7 +135,6 @@ fn boilerplate_value(cx: &mut Cx, fi: &FunctionInfo, ci: u32) -> Res<Option<u64>
     match fi.constant_entry(ci) {
         Constant::ArrayBoilerplate(_) => array_from_boilerplate(cx, fi, ci).map(Some),
         Constant::ObjectBoilerplate(_) => object_from_boilerplate(cx, fi, ci).map(Some),
-        Constant::BigInt(_) => Err(not_implemented(cx, "BigInt values")),
         _ => {
             let v = fi.constant(ci);
             Ok((v != HOLE).then_some(v))

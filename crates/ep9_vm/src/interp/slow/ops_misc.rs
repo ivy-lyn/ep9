@@ -2,7 +2,8 @@
 
 use ep9_bytecode::Constant;
 
-use crate::conv::{self, BinOp, CompareOp, Res};
+use crate::bigint;
+use crate::conv::{self, BinOp, CompareOp, Numeric, Res};
 use crate::interp::Cx;
 use crate::property;
 
@@ -36,12 +37,25 @@ pub(crate) enum UnOp {
 pub(crate) fn unary(cx: &mut Cx, fp: *mut u64, pc: *const u8, op: UnOp, v: u64) -> u64 {
     enter(cx, fp, pc);
     let r = (|| -> Res<u64> {
+        // The numeric operators: ToNumeric, then the Number or the BigInt operation.
+        let numeric = |cx: &mut Cx, n: fn(f64) -> f64, b: bigint::UnaryOp| -> Res<u64> {
+            match conv::to_numeric(cx, v)? {
+                Numeric::Number(d) => Ok(conv::num(n(d))),
+                Numeric::BigInt(x) => bigint::unary(cx, b, x),
+            }
+        };
         Ok(match op {
-            UnOp::Inc => conv::num(conv::to_numeric(cx, v)? + 1.0),
-            UnOp::Dec => conv::num(conv::to_numeric(cx, v)? - 1.0),
-            UnOp::Negate => conv::num(-conv::to_numeric(cx, v)?),
-            UnOp::BitNot => conv::num(f64::from(!conv::to_int32_of(cx, v)?)),
-            UnOp::ToNumber | UnOp::ToNumeric => conv::num(conv::to_numeric(cx, v)?),
+            UnOp::Inc => numeric(cx, |d| d + 1.0, bigint::UnaryOp::Inc)?,
+            UnOp::Dec => numeric(cx, |d| d - 1.0, bigint::UnaryOp::Dec)?,
+            UnOp::Negate => numeric(cx, |d| -d, bigint::UnaryOp::Negate)?,
+            UnOp::BitNot => numeric(
+                cx,
+                |d| f64::from(!ep9_value::to_int32(d)),
+                bigint::UnaryOp::BitNot,
+            )?,
+            UnOp::ToNumber => conv::num(conv::to_number(cx, v)?),
+            // ToNumeric keeps a BigInt (`x++` is ToNumeric, then Inc).
+            UnOp::ToNumeric => conv::to_numeric(cx, v)?.bits(),
             UnOp::ToName => conv::to_property_key(cx, v)?,
             UnOp::ToString => conv::to_string(cx, v)?,
             // A wrapper object for a primitive (§7.1.18); TypeError for undefined and null.

@@ -178,6 +178,9 @@ fn get_primitive(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         }
     }
     let Some(proto) = primitive_proto(rt, base) else {
+        if kind::is_bigint(base) {
+            return Err(not_implemented(cx, "BigInt.prototype"));
+        }
         let msg = bounded_message(&[
             Text("Cannot read properties of "),
             Key(base),
@@ -191,8 +194,9 @@ fn get_primitive(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
 }
 
 /// The `[[Prototype]]` of `ToObject(b)` for a primitive `b` (§7.1.18): where a property
-/// access on a string, number, boolean or symbol goes after the primitive's own properties.
-/// `None` for undefined and null. Not a GC point.
+/// access on a string, number, boolean, symbol or BigInt goes after the primitive's own
+/// properties. `None` for undefined and null, and for a BigInt when no builtin table made
+/// `%BigInt.prototype%` (the callers throw "not implemented" then). Not a GC point.
 fn primitive_proto(rt: &Runtime, b: u64) -> Option<u64> {
     if is_string(b) {
         Some(rt.root(Root::StringPrototype))
@@ -203,6 +207,8 @@ fn primitive_proto(rt: &Runtime, b: u64) -> Option<u64> {
     } else if is_symbol(b) {
         // Made by `symbol::install` in realm init, before any script runs.
         Some(symbol::prototype(rt))
+    } else if kind::is_bigint(b) {
+        crate::bigint::prototype(rt)
     } else {
         None
     }
@@ -221,6 +227,8 @@ fn primitive_type(b: u64) -> &'static str {
         "string '"
     } else if is_symbol(b) {
         "symbol '"
+    } else if kind::is_bigint(b) {
+        "bigint '"
     } else if val(b).is_number() {
         "number '"
     } else {
@@ -297,6 +305,9 @@ pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res
 #[inline(never)]
 fn set_primitive(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res<()> {
     let Some(proto) = primitive_proto(cx.rt(), base) else {
+        if kind::is_bigint(base) {
+            return Err(not_implemented(cx, "BigInt.prototype"));
+        }
         let msg = bounded_message(&[
             Text("Cannot set properties of "),
             Key(base),

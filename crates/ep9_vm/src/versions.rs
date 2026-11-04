@@ -55,7 +55,11 @@
 ///   `IntrinsicId::RealmFuses`, mirrored by the realm root `Root::RealmFuses` (V11-D21);
 /// - the shape `flags` bits 4-30 are append-only room, lowest free bit first; bit 31 is never
 ///   used (V11-D7; H17 "shape flag bits (append-only)").
-pub const OBJECT_LAYOUT_VERSION: u32 = 6;
+///
+/// 7 (spec-temporal B2, design SPEC-T-D6): the kind BIGINT (9) and its cell (+8 u32: digit
+/// count in bits 0-30, sign in bit 31; +12 u32 hash; +16 u64 digits, least significant first;
+/// word0 ShapeId 0 and flags 0; `bigint.rs`). No other layout changes.
+pub const OBJECT_LAYOUT_VERSION: u32 = 7;
 /// Inline-cache and feedback data layout (H16). 2 (M4-P0): the feedback slot table of
 /// `profile.rs` (one writer module per slot kind) and the IC_HANDLER layout of `ic.rs` (+8
 /// handler kind, +16 validity cell or int32, +24 weak ref, +32 int32; new handler kinds

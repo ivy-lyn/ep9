@@ -476,12 +476,13 @@ thread_local! {
 #[test]
 fn sample_unit_of_ep9_bytecode_runs() {
     // The hand-written sample of crates/ep9_bytecode/tests/common: globals, a loop, a call,
-    // a switch, a template object, then a BigInt constant (not in v0) whose "not implemented"
-    // error the script's own catch block handles (total = -1).
+    // a switch, a template object, then `print(..., 1n, ...)`: the BigInt constant is a BIGINT
+    // cell (spec-temporal B2), so the catch block does not run (total stays 3).
     for &d in Dispatch::ALL {
-        let (r, rec, total) = on_big_stack(move || {
+        let (r, rec, total, out) = on_big_stack(move || {
             let mut iso = isolate(config(d, true));
             iso.register_host_function("tag", 1, tag);
+            take_output();
             let r = iso.with_cx_checkpoint(|cx| {
                 cx.run_script(common::sample_script_unit(), "sample.js")
                     .map(|v| cx.display(v))
@@ -492,10 +493,13 @@ fn sample_unit_of_ep9_bytecode_runs() {
                 r,
                 RECORD.with(|x| core::mem::take(&mut *x.borrow_mut())),
                 total,
+                take_output(),
             )
         });
         assert_eq!(r.as_deref(), Ok("undefined"), "{}", d.name());
         assert_eq!(rec, ["tag n= n= 3"], "{}", d.name());
-        assert_eq!(total.as_deref(), Some("-1"), "{}", d.name());
+        assert_eq!(total.as_deref(), Some("3"), "{}", d.name());
+        assert_eq!(out.len(), 1, "{}: {out:?}", d.name());
+        assert_eq!(out[0].split(' ').nth(1), Some("1"), "{}: {out:?}", d.name());
     }
 }

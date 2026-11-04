@@ -12,10 +12,9 @@
 //! A context's SCOPE word points at its [`ContextScope`] (object.rs, OBJECT_LAYOUT 2), so
 //! the context names its unit and scope descriptor: `object::context_scope`.
 //!
-//! Constant pool entries become Values: Number → number, String → its atom, Oddball → its
-//! value. The other kinds keep their index as an int32 marker, and handlers read the
-//! `Constant` from the unit. BigInt is the hole marker: `LdaConstant` of a BigInt throws "not
-//! implemented" (v0).
+//! Constant pool entries become Values: Number → number, String → its atom, BigInt → a
+//! BIGINT cell (`bigint.rs`; made eagerly, as the atoms), Oddball → its value. The other kinds
+//! keep their index as an int32 marker, and handlers read the `Constant` from the unit.
 
 use core::cell::OnceCell;
 use core::ptr::NonNull;
@@ -178,9 +177,10 @@ impl LoadedUnit {
                 let b = match c {
                     Constant::Number(n) => Value::number(n.value()).to_bits(),
                     Constant::String(id) => lu.strings[id.index()].bits(),
-                    // v0: no BigInt values; LdaConstant sees the hole and throws "not
-                    // implemented".
-                    Constant::BigInt(_) => HOLE,
+                    // A literal: no size check (`load` cannot throw; the unit bounds it). GC
+                    // point: every const slot is a strong root range and holds undefined or a
+                    // Value before the first allocation (above).
+                    Constant::BigInt(c) => crate::bigint::alloc_literal(rt, c.negative, &c.limbs),
                     Constant::Oddball(o) => match o {
                         Oddball::Undefined => UNDEFINED,
                         Oddball::Null => NULL,

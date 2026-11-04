@@ -47,8 +47,8 @@
 //!   is recorded only from the cold result of a site whose slot no other instruction uses
 //!   ([`shared_slot`]: one walk of the code per function, then O(1) per miss), so the key's
 //!   properties are the boilerplate's keys in order.
-//! - A BigInt constant (the hole marker, `unit.rs`) is not a value: a hit that meets one goes
-//!   cold, and the cold path throws its "not implemented".
+//! - A BigInt constant is a BIGINT cell in the pool (`unit.rs`), a value like a string; the hole
+//!   in the pool is only the Oddball hole (an elision).
 //! - A CloneObject case is recorded only for a source that a hit can copy field by field: a
 //!   fast plain object whose properties are all enumerable data properties, whose result
 //!   has the same keys in the same order, all in-object.
@@ -258,8 +258,8 @@ pub(crate) fn fast_object(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) 
         if let Some(ci) = v {
             let b = fi.constant(ci.0);
             if b == HOLE {
-                // A BigInt (or a hole, which BytecodeGen never puts in an object): the cold
-                // path decides. The new object is garbage.
+                // A hole, which BytecodeGen never puts in an object: the cold path decides.
+                // The new object is garbage.
                 return Flow::Cold;
             }
             init(o, object::OBJECT_FIELD0 + 8 * i, b);
@@ -286,16 +286,6 @@ pub(crate) fn fast_array(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) -
     let Constant::ArrayBoilerplate(elements) = fi.constant_entry(boilerplate.0) else {
         return Flow::Cold;
     };
-    // The hole marker is an elision or a BigInt; only an elision is a value here.
-    let bigint = elements.iter().any(|&e| {
-        e.is_some_and(|ci| {
-            fi.constant(ci.0) == HOLE
-                && !matches!(fi.constant_entry(ci.0), Constant::Oddball(Oddball::Hole))
-        })
-    });
-    if bigint {
-        return Flow::Cold;
-    }
     // The key is the shape of a cold result, which stored these constants (`slow::literal`
     // `array_from_boilerplate`): its elements kind holds them, so a hit makes no kind
     // transition. Checked in debug builds only (a second pass per hit cost splay +4%, M5-P1).
@@ -735,7 +725,7 @@ fn fast_nested_object(st: &mut St<'_>, boilerplate: K, s: FSlot) -> Flow {
 /// nested values are all shallow array boilerplates (`{array: [0, 1, 2], s: ...}`: splay's
 /// leaf nodes), built from the slot's recorded shape as a hit builds a shallow one, with each
 /// nested array made like a shallow array literal. `None` (nothing made) for anything else:
-/// no recorded shape, another nested value, a BigInt, more than `call::INLINE_ARGS` nested
+/// no recorded shape, another nested value (a BigInt too), more than `call::INLINE_ARGS` nested
 /// arrays. Reads the slot only. GC point: the nested arrays live in an inline buffer on the
 /// native stack (the conservative scan) until the object holds them; the object is
 /// allocated last, so its fields are initializing stores (E2).

@@ -132,6 +132,9 @@ mod ic_ops;
 mod props_index;
 mod select;
 
+// BigInt values (spec-temporal B2; OBJECT_LAYOUT 7): the BIGINT cell (kind 9) and its operations.
+mod bigint;
+
 #[cfg(test)]
 mod tests;
 

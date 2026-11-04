@@ -1,13 +1,13 @@
 //! Cell kind ids (word0 byte 5), table v1 (v2 of the object layout adds GENERATOR and
 //! SLOT_OBJECT, M2-P0; v3 adds ARGUMENTS, MODULE_NAMESPACE, MODULE, ORDERED_TABLE and REALM,
 //! M3-P0; v4 adds PROXY, PROXY_CALLABLE, VALIDITY_CELL and WEAK_CELL and the CONS, SLICED and
-//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0; v6 adds PROPS_INDEXED and the FUSE layout, M6-P0),
+//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0; v6 adds PROPS_INDEXED and the FUSE layout, M6-P0; v7 adds BIGINT, [`BIGINT`]),
 //! and the kind tests on Value bits.
 //!
 //! | Ids | Kinds | Range test |
 //! |---|---|---|
 //! | 1-7 | strings: SEQ_LATIN1, SEQ_UTF16; CONS, SLICED, THIN (layouts below, OBJECT_LAYOUT 4; built by M4-P1 STR1 and M4-P2 STR2); EXT_LATIN1, EXT_UTF16 reserved | [`is_string`] |
-//! | 8 | SYMBOL | [`is_symbol`] |
+//! | 8; 9 | SYMBOL; BIGINT (OBJECT_LAYOUT 7, a single-id row: 10-15 stay free and in no range) | [`is_symbol`]; [`is_bigint`] |
 //! | 16-63 | JS objects: OBJECT, FUNCTION, ARRAY, ERROR, ITERATOR, PRIMITIVE_WRAPPER, BOUND_FUNCTION, GENERATOR, SLOT_OBJECT, ARGUMENTS, MODULE_NAMESPACE, PROXY, PROXY_CALLABLE; 29-63 reserved | [`is_object`] |
 //! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO, MODULE, ORDERED_TABLE, REALM, VALIDITY_CELL, WEAK_CELL, ELEMENTS_DOUBLE, ELEMENTS_DICT, PROPS_INDEXED (84, OBJECT_LAYOUT 6); FUSE (83) reserved, its layout declared (OBJECT_LAYOUT 6) | - |
 //! | 128 | SHAPE | - |
@@ -253,6 +253,21 @@ pub(crate) fn is_bound(b: u64) -> bool {
     cell_kind(b) == BOUND_FUNCTION.get()
 }
 
+// ---- the BigInt primitive of OBJECT_LAYOUT 7 (spec-temporal B2) ----
+// Here, after the kind tests, so no line above moves (H17 cites them by line).
+
+/// A BigInt value (§6.1.6.2): a primitive cell, ShapeId 0 as strings and symbols, word0 flags
+/// 0; +8 u32 digit count (bits 0-30) and sign (bit 31), +12 u32 hash, +16 u64 digits
+/// (`bigint.rs`). Its own single-id row 9 of the table above ([`is_bigint`]); ids 10-15 stay
+/// free and in no range. OBJECT_LAYOUT 7.
+pub(crate) const BIGINT: KindId = k(9);
+
+/// A BigInt (kind 9, OBJECT_LAYOUT 7).
+#[inline(always)]
+pub(crate) fn is_bigint(b: u64) -> bool {
+    cell_kind(b) == BIGINT.get()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +333,7 @@ mod tests {
         assert_eq!(PROPS_INDEXED.get(), 84);
         assert_eq!((CONS.get(), SLICED.get(), THIN.get()), (3, 4, 5));
         assert_eq!(SYMBOL.get(), 8);
+        assert_eq!(BIGINT.get(), 9);
         assert_eq!(SHAPE.get(), 128);
         let mut all: Vec<u8> = strings
             .iter()
@@ -325,11 +341,12 @@ mod tests {
             .chain(&internal)
             .map(|k| k.get())
             .collect();
-        all.extend([SYMBOL.get(), SHAPE.get()]);
+        // BIGINT (9) is its own range of one id (OBJECT_LAYOUT 7).
+        all.extend([SYMBOL.get(), BIGINT.get(), SHAPE.get()]);
         let n = all.len();
         // OBJECT_LAYOUT 3: 30 ids before, 35 after; OBJECT_LAYOUT 4: 39; OBJECT_LAYOUT 5: 42;
-        // OBJECT_LAYOUT 6: 43.
-        assert_eq!(n, 43);
+        // OBJECT_LAYOUT 6: 43; OBJECT_LAYOUT 7: 44.
+        assert_eq!(n, 44);
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), n, "kind ids are distinct");

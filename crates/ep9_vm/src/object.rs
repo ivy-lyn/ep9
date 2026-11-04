@@ -672,6 +672,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         heap.register_kind(id, k).expect("register a VM cell kind");
     }
     crate::elements::register_kinds(heap);
+    crate::bigint::register_kind(heap);
     crate::props::register_kinds(heap);
     crate::symbol::register_kinds(heap);
     crate::shape::register_kinds(heap);
