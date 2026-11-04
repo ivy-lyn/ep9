@@ -2,8 +2,8 @@
 //! (AvailableCalendars is « "iso8601" »). Any other calendar id, in an argument, a property
 //! bag or a string annotation, is a RangeError.
 //!
-//! A Temporal object keeps its calendar in a slot as an ep9 code (append-only; the slot
-//! helpers come with the first class that has a calendar, WP T5): 0 = `iso8601`.
+//! A Temporal object keeps its calendar in a slot as an ep9 code (append-only):
+//! [`CAL_ISO8601`] = 0 = `iso8601`.
 
 use core::str::FromStr;
 
@@ -25,7 +25,34 @@ pub(crate) fn require_iso(cx: &mut Cx<'_>, cal: Calendar) -> JsResult<Calendar> 
 
 /// The classes with a `[[Calendar]]` slot (PlainDate, PlainDateTime, PlainYearMonth,
 /// PlainMonthDay, ZonedDateTime), as they are built.
-const CALENDAR_CLASSES: &[ObjectClass] = &[];
+const CALENDAR_CLASSES: &[ObjectClass] = &[ObjectClass::TemporalPlainDate];
+
+/// The calendar code of `iso8601` in a calendar slot (ep9 codes, append-only).
+pub(crate) const CAL_ISO8601: i32 = 0;
+
+/// The slot code of `cal` (a calendar that passed [`require_iso`]).
+pub(crate) fn to_slot(cal: &Calendar) -> i32 {
+    debug_assert!(cal.is_iso());
+    CAL_ISO8601
+}
+
+/// The calendar of a slot code.
+pub(crate) fn from_slot(code: f64) -> Calendar {
+    debug_assert_eq!(code, f64::from(CAL_ISO8601));
+    Calendar::ISO
+}
+
+/// CanonicalizeCalendar (§12.2.1) of the String `id`: its ASCII-lowercase form must be an
+/// available calendar (only `iso8601`), else a RangeError.
+pub(crate) fn canonicalize_calendar(cx: &mut Cx<'_>, id: &str) -> JsResult<Calendar> {
+    if id.eq_ignore_ascii_case("iso8601") {
+        Ok(Calendar::ISO)
+    } else {
+        Err(cx.throw_range_error(&format!(
+            "calendar {id} is not supported (ep9 has only iso8601)"
+        )))
+    }
+}
 
 /// Whether `v` is a Temporal object with a `[[Calendar]]` slot.
 pub(crate) fn has_calendar_slot(cx: &Cx<'_>, v: Local<'_>) -> bool {

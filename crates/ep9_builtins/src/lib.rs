@@ -8,8 +8,8 @@
 //!          block 1  2         3      4       5        6       7       8     9
 //!          promise, reflect, date, collections, json, proxy, regexp, weakref, bigint,
 //!          10       11       12    13           14    15     16      17       18
-//!          ep9_temporal::MODULES: temporal, duration, instant, plain_time]
-//!                                 19        20        21       22
+//!          ep9_temporal::MODULES: temporal, duration, instant, plain_time, plain_date]
+//!                                 19        20        21       22          23
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -66,6 +66,7 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_temporal::duration::MODULE,
     ep9_temporal::instant::MODULE,
     ep9_temporal::plain_time::MODULE,
+    ep9_temporal::plain_date::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

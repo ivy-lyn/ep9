@@ -127,3 +127,5 @@ intrinsic  79  %Temporal.Instant%
 intrinsic  80  %Temporal.Instant.prototype%
 intrinsic  81  %Temporal.PlainTime%
 intrinsic  82  %Temporal.PlainTime.prototype%
+intrinsic  83  %Temporal.PlainDate%
+intrinsic  84  %Temporal.PlainDate.prototype%

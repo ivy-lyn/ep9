@@ -113,7 +113,7 @@ fn is_callable_takes_proxy_callable() {
 
 #[test]
 fn intrinsic_ids_64_to_71_are_declared_not_made() {
-    assert_eq!(IntrinsicId::ALL.len(), 83); // 72 in M4-P0; 73 since M6-P0; 75 since spec-temporal B4; spec-temporal: 83 after T4
+    assert_eq!(IntrinsicId::ALL.len(), 85); // 72 in M4-P0; 73 since M6-P0; 75 since spec-temporal B4; spec-temporal: 85 after T5
     let new = [
         (IntrinsicId::Proxy, "%Proxy%"),
         (IntrinsicId::RegExp, "%RegExp%"),
@@ -149,7 +149,7 @@ fn intrinsic_ids_64_to_71_are_declared_not_made() {
 
 #[test]
 fn object_classes_11_to_13() {
-    assert_eq!(ObjectClass::ALL.len(), 18);
+    assert_eq!(ObjectClass::ALL.len(), 19);
     let new = [
         (ObjectClass::WeakRef, "WeakRef"),
         (ObjectClass::FinalizationRegistry, "FinalizationRegistry"),

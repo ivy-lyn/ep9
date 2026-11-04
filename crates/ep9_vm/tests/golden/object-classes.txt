@@ -19,3 +19,4 @@
   15  Temporal.Duration
   16  Temporal.Instant
   17  Temporal.PlainTime
+  18  Temporal.PlainDate

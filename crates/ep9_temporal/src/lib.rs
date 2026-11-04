@@ -8,6 +8,7 @@
 //!   20 duration   %Temporal.Duration%                    duration.rs
 //!   21 instant    %Temporal.Instant%                     instant.rs
 //!   22 plain_time %Temporal.PlainTime%                   plain_time.rs
+//!   23 plain_date %Temporal.PlainDate%                   plain_date.rs
 //! support: tzdb (provider, no ep9_vm import), error (temporal_rs error -> JS error),
 //!          convert (ToIntegerWithTruncation ...), options (option bags), calendar (iso8601
 //!          only), fields (property bags), relative_to (Duration relativeTo)
@@ -27,6 +28,7 @@ pub(crate) mod fields;
 pub mod instant;
 pub mod namespace;
 pub(crate) mod options;
+pub mod plain_date;
 pub mod plain_time;
 pub(crate) mod relative_to;
 pub mod tzdb;
@@ -39,4 +41,5 @@ pub const MODULES: &[BuiltinModule] = &[
     duration::MODULE,
     instant::MODULE,
     plain_time::MODULE,
+    plain_date::MODULE,
 ];
