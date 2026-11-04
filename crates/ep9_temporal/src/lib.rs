@@ -10,6 +10,8 @@
 //!   22 plain_time %Temporal.PlainTime%                   plain_time.rs
 //!   23 plain_date %Temporal.PlainDate%                   plain_date.rs
 //!   24 plain_date_time %Temporal.PlainDateTime%          plain_date_time.rs
+//!   25 plain_year_month %Temporal.PlainYearMonth%        plain_year_month.rs
+//!   26 plain_month_day %Temporal.PlainMonthDay%          plain_month_day.rs
 //! support: tzdb (provider, no ep9_vm import), error (temporal_rs error -> JS error),
 //!          convert (ToIntegerWithTruncation ...), options (option bags), calendar (iso8601
 //!          only), fields (property bags), relative_to (Duration relativeTo)
@@ -31,7 +33,9 @@ pub mod namespace;
 pub(crate) mod options;
 pub mod plain_date;
 pub mod plain_date_time;
+pub mod plain_month_day;
 pub mod plain_time;
+pub mod plain_year_month;
 pub(crate) mod relative_to;
 pub mod tzdb;
 
@@ -45,4 +49,6 @@ pub const MODULES: &[BuiltinModule] = &[
     plain_time::MODULE,
     plain_date::MODULE,
     plain_date_time::MODULE,
+    plain_year_month::MODULE,
+    plain_month_day::MODULE,
 ];

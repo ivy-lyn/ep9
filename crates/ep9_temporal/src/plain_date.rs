@@ -7,9 +7,8 @@
 //!   3 calendar code (calendar.rs; 0 = iso8601): an int32
 //! ```
 //!
-//! `toPlainDateTime` (id 30) came with PlainDateTime (WP T6); `toPlainYearMonth`,
-//! `toPlainMonthDay` and `toZonedDateTime` are appended with the classes they make (WPs T7,
-//! T8).
+//! `toPlainDateTime` (id 30) came with PlainDateTime (WP T6), `toPlainYearMonth` and
+//! `toPlainMonthDay` (ids 31-32) with WP T7; `toZonedDateTime` is appended with WP T8.
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-plain_date.txt`.
@@ -73,6 +72,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("toLocaleString", 0, to_locale_string), // 28
     BuiltinDef::method("valueOf", 0, value_of),           // 29
     BuiltinDef::method("toPlainDateTime", 0, to_plain_date_time), // 30 (T6)
+    BuiltinDef::method("toPlainYearMonth", 0, to_plain_year_month), // 31 (T7)
+    BuiltinDef::method("toPlainMonthDay", 0, to_plain_month_day), // 32 (T7)
 ];
 
 /// The intrinsics this module makes.
@@ -144,6 +145,8 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("toLocaleString"), 28),
             PropDef::method(PropKey::Atom(Atom::ValueOf), 29),
             PropDef::method(PropKey::Str("toPlainDateTime"), 30),
+            PropDef::method(PropKey::Str("toPlainYearMonth"), 31),
+            PropDef::method(PropKey::Str("toPlainMonthDay"), 32),
         ],
     },
     ObjectProps {
@@ -758,4 +761,30 @@ fn to_plain_date_time<'s>(
     // 4-5. CombineISODateAndTimeRecord; CreateTemporalDateTime (the limits: RangeError).
     let dt = d.to_plain_date_time(t).or_throw(cx)?;
     crate::plain_date_time::create(cx, &dt, None)
+}
+
+/// Temporal.PlainDate.prototype.toPlainYearMonth ( ) (§3.3.?).
+fn to_plain_year_month<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let d = read(cx, this)?;
+    // 3-6. ISODateToFields; CalendarYearMonthFromFields(calendar, fields, constrain).
+    let ym = d.to_plain_year_month().or_throw(cx)?;
+    crate::plain_year_month::create(cx, &ym, None)
+}
+
+/// Temporal.PlainDate.prototype.toPlainMonthDay ( ) (§3.3.?).
+fn to_plain_month_day<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let d = read(cx, this)?;
+    // 3-6. ISODateToFields; CalendarMonthDayFromFields(calendar, fields, constrain).
+    let md = d.to_plain_month_day().or_throw(cx)?;
+    crate::plain_month_day::create(cx, &md, None)
 }

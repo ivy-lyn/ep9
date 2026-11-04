@@ -13,7 +13,7 @@
 //! `era` and `eraYear` are not read: the ISO calendar has no eras (CalendarExtraFields).
 
 use ep9_vm::{Cx, JsObject, JsResult, Local};
-use temporal_rs::fields::CalendarFields;
+use temporal_rs::fields::{CalendarFields, YearMonthCalendarFields};
 use temporal_rs::options::Overflow;
 use temporal_rs::partial::PartialTime;
 use temporal_rs::{MonthCode, TimeZone, UtcOffset};
@@ -34,6 +34,8 @@ pub(crate) const OFFSET: u16 = 1 << 5;
 pub(crate) const TIME_ZONE: u16 = 1 << 6;
 /// year, month, monthCode, day.
 pub(crate) const DATE: u16 = YEAR | MONTH | MONTH_CODE | DAY;
+/// year, month, monthCode.
+pub(crate) const YEAR_MONTH: u16 = YEAR | MONTH | MONTH_CODE;
 
 /// The fields of a property bag, after conversion. Integral values stay `f64` until the
 /// overflow option is known (a negative time field is a RangeError only with `reject`).
@@ -165,6 +167,16 @@ impl Bag {
             era: None,
             era_year: None,
         }
+    }
+
+    /// The year-month fields as a temporal_rs record (ISO: no era).
+    pub(crate) fn year_month_fields(&self) -> YearMonthCalendarFields {
+        let c = self.calendar_fields();
+        let mut f = YearMonthCalendarFields::new();
+        f.year = c.year;
+        f.month = c.month;
+        f.month_code = c.month_code;
+        f
     }
 
     /// The time fields as a temporal_rs record. With `reject`, a negative field is a

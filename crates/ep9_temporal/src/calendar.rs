@@ -28,6 +28,8 @@ pub(crate) fn require_iso(cx: &mut Cx<'_>, cal: Calendar) -> JsResult<Calendar> 
 const CALENDAR_CLASSES: &[ObjectClass] = &[
     ObjectClass::TemporalPlainDate,
     ObjectClass::TemporalPlainDateTime,
+    ObjectClass::TemporalPlainYearMonth,
+    ObjectClass::TemporalPlainMonthDay,
 ];
 
 /// The calendar code of `iso8601` in a calendar slot (ep9 codes, append-only).
@@ -105,4 +107,18 @@ pub(crate) fn get_calendar_with_iso_default<'s>(
     }
     // 4. Return ? ToTemporalCalendarIdentifier(calendarLike).
     to_temporal_calendar_identifier(cx, like)
+}
+
+/// The `calendar` argument of a constructor (PlainDate, PlainDateTime, PlainYearMonth,
+/// PlainMonthDay): undefined is `iso8601`; not a String is a TypeError; else
+/// CanonicalizeCalendar.
+pub(crate) fn constructor_calendar<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<Calendar> {
+    if v.is_undefined() {
+        return Ok(Calendar::ISO);
+    }
+    let Some(s) = v.as_string() else {
+        return Err(cx.throw_type_error("calendar must be a string"));
+    };
+    let id = cx.to_rust_string(s)?;
+    canonicalize_calendar(cx, &id)
 }

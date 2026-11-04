@@ -131,3 +131,7 @@ intrinsic  83  %Temporal.PlainDate%
 intrinsic  84  %Temporal.PlainDate.prototype%
 intrinsic  85  %Temporal.PlainDateTime%
 intrinsic  86  %Temporal.PlainDateTime.prototype%
+intrinsic  87  %Temporal.PlainYearMonth%
+intrinsic  88  %Temporal.PlainYearMonth.prototype%
+intrinsic  89  %Temporal.PlainMonthDay%
+intrinsic  90  %Temporal.PlainMonthDay.prototype%

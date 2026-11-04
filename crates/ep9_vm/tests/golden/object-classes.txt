@@ -21,3 +21,5 @@
   17  Temporal.PlainTime
   18  Temporal.PlainDate
   19  Temporal.PlainDateTime
+  20  Temporal.PlainYearMonth
+  21  Temporal.PlainMonthDay
