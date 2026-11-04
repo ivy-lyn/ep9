@@ -8,13 +8,15 @@
 //! ep9_vm tests cannot compile JS, so this test lives here (ep9_facts is a dev-dependency
 //! of ep9_builtins since M3-P0).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ep9_bytecode::{UnitString, VerifiedUnit};
 use ep9_facts::{
-    Access, BinaryHint, BindingSet, ClosureCount, CompareHint, FactSnapshot, ForInHint,
-    FunctionRef, IcState, KeyRef, KeySet, ObjectKind, PropertyCase, ProtoRef, ShapeDesc, SlotFacts,
-    TypeSet,
+    Access, BinaryHint, BindingSet, ClosureCount, CompareHint, ElementsKind, FactSnapshot,
+    FieldRep, ForInHint, FunctionRef, GlobalFacts, IcState, KeyRef, KeySet, KeyedFacts, KeyedHint,
+    ObjectKind, PropAttrs, PropertyCase, PropertyFacts, ProtoRef, RecordFlags, ShapeDesc,
+    ShapeFlags, SlotFacts, TypeSet, WellKnownSymbol,
 };
 use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
@@ -693,6 +695,499 @@ fn a_periodic_call_pattern_reaches_every_site_through_the_jittered_window() {
             ref r => panic!("{r:?}"),
         }
     });
+}
+
+// ---- MC-w24-5: each field that claims a writer fires -----------------------------------------
+
+/// The sites that richards and [`KINDS`] leave out, so that each item of the schema that
+/// claims a writer is in a record (MC-w24-5; [`every_field_that_claims_a_writer_is_seen`]).
+/// `writers` runs 3,000 times; the comment names the item. The node v26.13.0 run of this
+/// script throws nothing.
+const WRITERS: &str = r#"
+function g() { return 1; }
+function h() { return 2; }
+class P { constructor() { this.x = 1; } m() { return 2; } }
+class Q1 {}
+class Q2 {}
+class Q3 {}
+class Q4 {}
+class Q5 {}
+class Q6 {}
+class FK { #p = 1; ["k" + 1] = 2; }
+let lx = 1;
+var gv = 1;
+Object.defineProperty(globalThis, "ga", { get: function () { return 3; }, configurable: true });
+var shapes = [{x: 1}, {a: 1, x: 2}, {b: 1, x: 3}, {c: 1, x: 4}, {d: 1, x: 5}, {e: 1, x: 6}];
+var ctors = [Q1, Q2, Q3, Q4, Q5, Q6];
+var insts = [new Q1(), new Q2(), new Q3(), new Q4(), new Q5(), new Q6()];
+var fns = [g, h];
+var dict = {x: 1, y: 2, z: 3};
+delete dict.x;
+var nul = Object.create(null);
+nul.x = 1;
+var acc = {get a() { return 1; }};
+var syms = {x: 1};
+syms[Symbol.asyncIterator] = 0; syms[Symbol.hasInstance] = 1; syms[Symbol.isConcatSpreadable] = 2;
+syms[Symbol.iterator] = 3; syms[Symbol.match] = 4; syms[Symbol.matchAll] = 5;
+syms[Symbol.replace] = 6; syms[Symbol.search] = 7; syms[Symbol.species] = 8;
+syms[Symbol.split] = 9; syms[Symbol.toPrimitive] = 10; syms[Symbol.toStringTag] = 11;
+syms[Symbol.unscopables] = 12; syms[Symbol.dispose] = 13; syms[Symbol.asyncDispose] = 14;
+var sym = Symbol("s");
+var wide = {"中": 1, x: 3};
+wide[sym] = 2;
+var bound = g.bind(null);
+function args() { return arguments; }
+var kinds6 = [[1, 2], [, 2], [1.5, 2], [, 2.5], [{}, 2], [, {}]];
+var sparse = [1, 2];
+sparse[1e6] = 1;
+var vals = [1, 1.5, undefined, null, true, "s", sym, {}, [], g, new Error("e")];
+var big = 0x7fffffff;
+function writers(i, s, d, o) {
+  if (i < 0) {
+    g();                              // Call: uninitialized
+    o.zz;                             // LoadNamed: uninitialized
+    var dc = {...o};                  // CloneObject: uninitialized
+    var df = function () {};          // CreateClosure: none
+  }
+  if (i === 0) var one = function () {};  // CreateClosure: one
+  var r = 0;
+  r = fns[i & 1]();                   // Call: megamorphic (2 callees)
+  r = bound();                        // Call: a target with no name
+  r = Math.abs(d);                    // Call: a builtin target
+  var x1 = shapes[i % 2].x;           // LoadNamed: polymorphic
+  var x6 = shapes[i % 6].x;           // LoadNamed: megamorphic
+  var c2 = {...shapes[i % 2]};        // CloneObject: polymorphic
+  var c6 = {...shapes[i % 6]};        // CloneObject: megamorphic
+  var p = new P();
+  var io = p instanceof P;            // InstanceOf: monomorphic, a js target
+  var i2 = insts[i % 2] instanceof ctors[i % 2];  // InstanceOf: polymorphic
+  var i6 = insts[i % 6] instanceof ctors[i % 6];  // InstanceOf: megamorphic
+  var pm = p.m;                       // ProtoField; ProtoRef function-prototype
+  var miss = p.nope;                  // Missing
+  var n = {};
+  n.q = i;                            // AddField
+  n.q = d;                            // a field stored twice: not constant
+  var al = kinds6[0].length;          // ArrayLength
+  var dy = dict.y;                    // ShapeFlags dictionary (the generic case)
+  var nx = nul.x;                     // ProtoRef null
+  var aa = acc.a;                     // PropAttrs accessor
+  var sx = syms.x;                    // each WellKnownSymbol key
+  var wx = wide.x;                    // the utf16 and other-symbol keys
+  var am = args(1, 2).length;         // ObjectKind arguments
+  var em = vals[10].message;          // ObjectKind error
+  var it = [].values().next;          // ObjectKind iterator
+  var nw = new Number(1).x;           // ObjectKind primitive-wrapper
+  var bn = bound.name;                // ObjectKind bound-function
+  var fnm = g.name;                   // ObjectKind function
+  var k = 0;
+  for (var j = 0; j < 6; j++) k = kinds6[j][1];  // LoadKeyed: each elements kind of kinds6
+  kinds6[i & 1][1] = 2;               // StoreKeyed: megamorphic
+  var sp = sparse[1e6];               // the dictionary elements kind
+  var sl = sparse.length;             // a receiver shape of the dictionary elements kind
+  var hk = 0 in kinds6[0];            // HasKeyed
+  var fk = new FK();                  // DefineKeyedOwn
+  var ob = kinds6[0][9];              // KeyedHint out-of-bounds
+  var ho = kinds6[1][0];              // KeyedHint hole
+  var st = s[0];                      // KeyedHint string
+  var pr = (5)[0];                    // KeyedHint primitive
+  var ks = wide[sym];                 // KeySet symbol
+  var ko = wide[1.5];                 // KeySet other
+  var kn = wide[s];                   // KeySet name
+  var l1 = [1], l2 = [1.5], l3 = [o], l4 = [, 1], l5 = [, 1.5], l6 = [, o];  // Literal kinds
+  var b1 = big + i;                   // BinaryHint int32-overflow
+  var b2 = d * 1.5;                   // number
+  var b3 = vals[2] + 1;               // oddball
+  var b4 = s + 1;                     // string
+  var b5 = o + 1;                     // other
+  var t = typeof vals[i % 11];        // TypeOf: each type but bigint
+  var e1 = d < 3.5;                   // CompareHint number
+  var e2 = vals[4] === true;          // boolean
+  var e3 = vals[3] == vals[2];        // nullish
+  var e4 = s === "q";                 // atom
+  var e5 = (s + "x") === (s + "y");   // string
+  var e6 = sym === vals[6];           // symbol
+  var e7 = o === p;                   // receiver
+  var e8 = o === 1;                   // other
+  var tl = typeof lx;                 // BindingSet lexical (LoadGlobalInsideTypeof)
+  lx = i;                             // lexical (StoreGlobal)
+  gv = i;                             // data-property (StoreGlobal)
+  var ga2 = ga;                       // accessor-property
+  return r;
+}
+for (var i = 0; i < 3000; i++) writers(i, "s", 2.5, {});
+"#;
+
+/// A weak InstanceOf key that dies: `t`'s slot keeps its handler, and after a full GC its key
+/// (the function `F`, which nothing else holds) reads undefined, so the record is
+/// `uninitialized` (`instance_ic.rs` "Weak"; `facts_export.rs` `instance_of`). `F` is read
+/// twice: the first read makes its lazy `prototype` and records nothing. [`run_and_collect`]
+/// runs it.
+const DEAD_KEY: &str = r#"
+function t(o, C) { return o instanceof C; }
+function once() { var F = function () {}; t({}, F); return t({}, F); }
+if (once()) throw new Error("instanceof");
+"#;
+
+/// [`run_with`] at threshold 0, then a full GC (`Isolate::collect_garbage`) before the export:
+/// the cells that only a weak key held are dead.
+fn run_and_collect(src: &str) -> (VerifiedUnit, FactSnapshot) {
+    let unit = compile(src);
+    let mut iso = Isolate::new_with(
+        IsolateConfig {
+            builtins: Some(&ep9_builtins::TABLE),
+            feedback_threshold: 0,
+            ..IsolateConfig::default()
+        },
+        ExecOptions::default().feedback(Feedback::FULL),
+    )
+    .expect("an isolate");
+    let u = unit.clone();
+    iso.with_cx(|cx| cx.run_script(u, "facts.js").map(|_| ()))
+        .unwrap_or_else(|e| panic!("the script threw: {}", e.message));
+    iso.collect_garbage();
+    let facts = export_facts(&iso, &unit.content_hash()).expect("the unit is loaded");
+    (unit, facts)
+}
+
+/// The H16 "Declared, no writer" items, each with the words that the H16 paragraph names it
+/// by. No code writes them, so a corpus record never holds one (`ep9_vm`
+/// `tests::facts_export::the_fields_declared_with_no_writer_have_none` scans the code).
+const NO_WRITER_ITEMS: [(&str, &str); 20] = [
+    ("RecordFlags::ran", "`RecordFlags::RAN`"),
+    ("RecordFlags::exited", "`RecordFlags::EXITED`"),
+    ("ObjectKind::typed-array", "`ObjectKind::TypedArray`"),
+    ("Access::getter", "the Access tags getter and setter"),
+    ("Access::setter", "the Access tags getter and setter"),
+    ("Access::string-length", "`Access::StringLength`"),
+    ("Access::element", "`Access::Element`"),
+    ("PropertyFacts.values", "`PropertyFacts.values`"),
+    ("GlobalFacts.values", "`GlobalFacts.values`"),
+    ("CallFacts.result", "`CallFacts.result`"),
+    ("BindingSet::missing", "`BindingSet::MISSING`"),
+    ("ForInHint::enum-cache-keys", FOR_IN_KEYS),
+    ("ForInHint::enum-cache-keys-and-indices", FOR_IN_KEYS),
+    ("BinaryHint::bigint", BIGINT_BITS),
+    ("CompareHint::bigint", BIGINT_BITS),
+    ("TypeOf::bigint", BIGINT_BITS),
+    ("Call.state::polymorphic", POLYMORPHIC),
+    ("KeyedFacts.state::polymorphic", POLYMORPHIC),
+    ("FieldRep::unset", "`FieldRep::Unset`"),
+    (
+        "LiteralFacts.elements::dictionary",
+        "`LiteralFacts.elements` `dictionary`",
+    ),
+];
+const FOR_IN_KEYS: &str =
+    "the `ForInHint` bits `enum-cache-keys` and `enum-cache-keys-and-indices`";
+const BIGINT_BITS: &str =
+    "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`";
+const POLYMORPHIC: &str = "the `polymorphic` IC state of a Call or keyed record";
+
+/// Each item that a record can hold: "kind::<kind>" for each slot kind, and "<place>::<name>"
+/// for each value of a byte enum (`ALL`), each bit of a bitset (`BITS`) and each tag of a
+/// tagged type (`TAGS`) at each place of the schema. A place is a type, or a field where one
+/// type is at more than one place (`IcState`, `ElementsKind`, the TypeOf `TypeSet`, the
+/// `FunctionRef` of a target). A count and a value-type field (`values`, `result`) are one
+/// item each: the field is not 0 (not empty). `FieldHint.constant` has 2 items. A new value,
+/// bit or tag joins at once.
+fn universe() -> BTreeSet<String> {
+    use ep9_bytecode::FeedbackSlotKind;
+    let mut u = BTreeSet::new();
+    let mut add = |place: &str, names: &mut dyn Iterator<Item = &str>| {
+        for n in names {
+            u.insert(format!("{place}::{n}"));
+        }
+    };
+    add("kind", &mut FeedbackSlotKind::ALL.iter().map(|k| k.name()));
+    add("RecordFlags", &mut RecordFlags::BITS.iter().map(|b| b.1));
+    for place in [
+        "Call.state",
+        "InstanceOf.state",
+        "PropertyFacts.state",
+        "KeyedFacts.state",
+        "CloneFacts.state",
+    ] {
+        add(place, &mut IcState::ALL.iter().map(|s| s.name()));
+    }
+    for place in ["Call.targets", "InstanceOf.targets"] {
+        add(place, &mut FunctionRef::TAGS.iter().copied());
+    }
+    add("Access", &mut Access::TAGS.iter().copied());
+    add("KeySet", &mut KeySet::BITS.iter().map(|b| b.1));
+    add("KeyedHint", &mut KeyedHint::BITS.iter().map(|b| b.1));
+    for place in [
+        "KeyedFacts.kinds",
+        "LiteralFacts.elements",
+        "ShapeDesc.elements",
+    ] {
+        add(place, &mut ElementsKind::ALL.iter().map(|k| k.name()));
+    }
+    add("BindingSet", &mut BindingSet::BITS.iter().map(|b| b.1));
+    add("BinaryHint", &mut BinaryHint::BITS.iter().map(|b| b.1));
+    add("CompareHint", &mut CompareHint::BITS.iter().map(|b| b.1));
+    add("TypeOf", &mut TypeSet::BITS.iter().map(|b| b.1));
+    add("ForInHint", &mut ForInHint::BITS.iter().map(|b| b.1));
+    add(
+        "ClosureCount",
+        &mut ClosureCount::ALL.iter().map(|c| c.name()),
+    );
+    add("ProtoRef", &mut ProtoRef::TAGS.iter().copied());
+    add("ObjectKind", &mut ObjectKind::ALL.iter().map(|k| k.name()));
+    add("ShapeFlags", &mut ShapeFlags::BITS.iter().map(|b| b.1));
+    add("KeyRef", &mut KeyRef::TAGS.iter().copied());
+    add(
+        "WellKnownSymbol",
+        &mut WellKnownSymbol::ALL.iter().map(|w| w.name()),
+    );
+    add("PropAttrs", &mut PropAttrs::BITS.iter().map(|b| b.1));
+    add("FieldRep", &mut FieldRep::ALL.iter().map(|r| r.name()));
+    add("FieldHint.constant", &mut ["true", "false"].into_iter());
+    for field in [
+        "CallFacts.count",
+        "CallFacts.result",
+        "PropertyFacts.values",
+        "GlobalFacts.values",
+        "LiteralFacts.count",
+        "LoopFacts.back_edges",
+        "ShapeDesc.capacity",
+    ] {
+        u.insert(field.to_string());
+    }
+    u
+}
+
+/// Adds to `out` the items ([`universe`]) that the records of `s` hold. The matches have no
+/// `_` arm, so a new `SlotFacts` kind, `Access`, `ProtoRef`, `KeyRef` or `FunctionRef` variant
+/// does not compile until it is walked here.
+fn items(s: &FactSnapshot, out: &mut BTreeSet<String>) {
+    fn bits<T: Copy>(
+        place: &str,
+        all: &[(T, &str)],
+        has: impl Fn(T) -> bool,
+        out: &mut BTreeSet<String>,
+    ) {
+        for &(b, n) in all {
+            if has(b) {
+                out.insert(format!("{place}::{n}"));
+            }
+        }
+    }
+    fn state(place: &str, s: IcState, out: &mut BTreeSet<String>) {
+        out.insert(format!("{place}::{}", s.name()));
+    }
+    fn target(place: &str, f: &FunctionRef, out: &mut BTreeSet<String>) {
+        match f {
+            FunctionRef::Js { .. } | FunctionRef::Builtin(_) => {}
+        }
+        out.insert(format!("{place}::{}", FunctionRef::TAGS[f.tag() as usize]));
+    }
+    fn nonzero(field: &str, n: bool, out: &mut BTreeSet<String>) {
+        if n {
+            out.insert(field.to_string());
+        }
+    }
+    fn elements(place: &str, k: Option<ElementsKind>, out: &mut BTreeSet<String>) {
+        if let Some(k) = k {
+            out.insert(format!("{place}::{}", k.name()));
+        }
+    }
+    fn shape(d: &ShapeDesc, out: &mut BTreeSet<String>) {
+        match d.proto {
+            ProtoRef::Null
+            | ProtoRef::Intrinsic(_)
+            | ProtoRef::FunctionPrototype(_)
+            | ProtoRef::Unknown => {}
+        }
+        out.insert(format!(
+            "ProtoRef::{}",
+            ProtoRef::TAGS[d.proto.tag() as usize]
+        ));
+        out.insert(format!("ObjectKind::{}", d.kind.name()));
+        elements("ShapeDesc.elements", d.elements, out);
+        bits("ShapeFlags", ShapeFlags::BITS, |b| d.flags.contains(b), out);
+        nonzero("ShapeDesc.capacity", d.capacity > 0, out);
+        for (k, a) in &d.keys {
+            match k {
+                KeyRef::WellKnownSymbol(w) => {
+                    out.insert(format!("WellKnownSymbol::{}", w.name()));
+                }
+                KeyRef::String(_) | KeyRef::OtherSymbol => {}
+            }
+            out.insert(format!("KeyRef::{}", KeyRef::TAGS[k.tag() as usize]));
+            bits("PropAttrs", PropAttrs::BITS, |b| a.contains(b), out);
+        }
+        for f in &d.fields {
+            out.insert(format!("FieldRep::{}", f.rep.name()));
+            out.insert(format!("FieldHint.constant::{}", f.constant));
+        }
+    }
+    fn access(a: &Access, out: &mut BTreeSet<String>) {
+        match a {
+            Access::AddField { to, .. } => shape(to, out),
+            Access::OwnField { .. }
+            | Access::ProtoField { .. }
+            | Access::Missing { .. }
+            | Access::Getter { .. }
+            | Access::Setter { .. }
+            | Access::ArrayLength
+            | Access::StringLength
+            | Access::Element { .. }
+            | Access::Generic => {}
+        }
+        out.insert(format!("Access::{}", Access::TAGS[a.tag() as usize]));
+    }
+    fn property(p: &PropertyFacts, out: &mut BTreeSet<String>) {
+        state("PropertyFacts.state", p.state, out);
+        nonzero("PropertyFacts.values", !p.values.is_empty(), out);
+        for c in &p.cases {
+            shape(&c.receiver, out);
+            access(&c.access, out);
+        }
+    }
+    fn keyed(k: &KeyedFacts, out: &mut BTreeSet<String>) {
+        state("KeyedFacts.state", k.property.state, out);
+        nonzero("PropertyFacts.values", !k.property.values.is_empty(), out);
+        // A keyed case is an element access (MC-w15-1): no code writes one.
+        for c in &k.property.cases {
+            shape(&c.receiver, out);
+            access(&c.access, out);
+            out.insert("Access::element".to_string());
+        }
+        bits("KeySet", KeySet::BITS, |b| k.keys.contains(b), out);
+        bits("KeyedHint", KeyedHint::BITS, |b| k.hint.contains(b), out);
+        for e in k.kinds.kinds() {
+            elements("KeyedFacts.kinds", Some(e), out);
+        }
+    }
+    fn global(g: &GlobalFacts, out: &mut BTreeSet<String>) {
+        bits(
+            "BindingSet",
+            BindingSet::BITS,
+            |b| g.bindings.contains(b),
+            out,
+        );
+        nonzero("GlobalFacts.values", !g.values.is_empty(), out);
+    }
+    for (_, facts, meta) in s.records_with_meta() {
+        out.insert(format!("kind::{}", facts.kind().name()));
+        bits(
+            "RecordFlags",
+            RecordFlags::BITS,
+            |b| meta.flags.contains(b),
+            out,
+        );
+        match facts {
+            SlotFacts::Call(c) => {
+                nonzero("CallFacts.count", c.count > 0, out);
+                nonzero("CallFacts.result", !c.result.is_empty(), out);
+                state("Call.state", c.callees.state, out);
+                for f in &c.callees.targets {
+                    target("Call.targets", f, out);
+                }
+            }
+            SlotFacts::LoadNamed(p) | SlotFacts::StoreNamed(p) | SlotFacts::DefineNamedOwn(p) => {
+                property(p, out)
+            }
+            SlotFacts::LoadKeyed(k)
+            | SlotFacts::StoreKeyed(k)
+            | SlotFacts::DefineKeyedOwn(k)
+            | SlotFacts::HasKeyed(k)
+            | SlotFacts::StoreInArrayLiteral(k) => keyed(k, out),
+            SlotFacts::LoadGlobal(g)
+            | SlotFacts::LoadGlobalInsideTypeof(g)
+            | SlotFacts::StoreGlobal(g) => global(g, out),
+            SlotFacts::BinaryOp(h) => bits("BinaryHint", BinaryHint::BITS, |b| h.contains(b), out),
+            SlotFacts::CompareOp(h) => {
+                bits("CompareHint", CompareHint::BITS, |b| h.contains(b), out)
+            }
+            SlotFacts::TypeOf(t) => bits("TypeOf", TypeSet::BITS, |b| t.contains(b), out),
+            SlotFacts::InstanceOf(t) => {
+                state("InstanceOf.state", t.state, out);
+                for f in &t.targets {
+                    target("InstanceOf.targets", f, out);
+                }
+            }
+            SlotFacts::Literal(l) => {
+                nonzero("LiteralFacts.count", l.count > 0, out);
+                if let Some(d) = &l.shape {
+                    shape(d, out);
+                }
+                elements("LiteralFacts.elements", l.elements, out);
+            }
+            SlotFacts::CloneObject(c) => {
+                state("CloneFacts.state", c.state, out);
+                for case in &c.cases {
+                    shape(&case.source, out);
+                    shape(&case.result, out);
+                }
+            }
+            SlotFacts::ForIn(h) => bits("ForInHint", ForInHint::BITS, |b| h.contains(b), out),
+            SlotFacts::JumpLoop(l) => nonzero("LoopFacts.back_edges", l.back_edges > 0, out),
+            SlotFacts::CreateClosure(c) => {
+                out.insert(format!("ClosureCount::{}", c.closures.name()));
+            }
+        }
+    }
+}
+
+/// MC-w24-5, the half that `the_fields_declared_with_no_writer_have_none` (`ep9_vm`) does not
+/// do: each item of the schema ([`universe`]) that claims a writer is in a record of the
+/// corpus, so a writer that stops firing fails here with the item's name. The corpus is
+/// richards, [`KINDS`] and [`WRITERS`] with full feedback and the default threshold, and
+/// [`DEAD_KEY`] with a full GC before its export. No item of [`NO_WRITER_ITEMS`] is in a record,
+/// and the H16 paragraph "Declared, no writer" names each of them.
+#[test]
+fn every_field_that_claims_a_writer_is_seen() {
+    let h16 = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/adr/H16-ics-and-feedback.md"),
+    )
+    .expect("H16");
+    let para = h16
+        .lines()
+        .find(|l| l.starts_with("**Declared, no writer"))
+        .expect("the H16 paragraph \"Declared, no writer\"");
+    for (item, named) in NO_WRITER_ITEMS {
+        assert!(
+            para.contains(named),
+            "H16 \"Declared, no writer\" does not name {item}"
+        );
+    }
+
+    let seen = on_big_stack(|| {
+        let mut seen = BTreeSet::new();
+        for src in [source(), KINDS.to_string(), WRITERS.to_string()] {
+            let (unit, facts) = run(&src);
+            assert_round_trip(&unit, &facts);
+            items(&facts, &mut seen);
+        }
+        let (unit, facts) = run_and_collect(DEAD_KEY);
+        assert_round_trip(&unit, &facts);
+        items(&facts, &mut seen);
+        seen
+    });
+    let all = universe();
+    let unknown: Vec<_> = seen.difference(&all).collect();
+    assert!(unknown.is_empty(), "items not in the universe: {unknown:?}");
+    let no_writer: BTreeSet<String> = NO_WRITER_ITEMS.iter().map(|(i, _)| i.to_string()).collect();
+    let stray: Vec<_> = no_writer.difference(&all).collect();
+    assert!(
+        stray.is_empty(),
+        "NO_WRITER_ITEMS not in the universe: {stray:?}"
+    );
+    let written: Vec<_> = seen.intersection(&no_writer).collect();
+    assert!(
+        written.is_empty(),
+        "declared with no writer, but seen (MC-w24-5): {written:?}"
+    );
+    let never: Vec<_> = all
+        .iter()
+        .filter(|i| !no_writer.contains(*i) && !seen.contains(*i))
+        .collect();
+    assert!(
+        never.is_empty(),
+        "claims a writer, never seen (MC-w24-5): {never:?}"
+    );
 }
 
 const RICHARDS: &str = r##"// Copyright 2006-2008 the V8 project authors. All rights reserved.

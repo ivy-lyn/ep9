@@ -1007,8 +1007,10 @@ fn names(d: &ShapeDesc, field: u16, name: &str) -> bool {
 }
 
 /// MC-w25-5: the exported access of one case (`None`: the exporter left the case out) agrees
-/// with the case's `ops_of` list at a site of operation `op`. A typed access needs the list
-/// that does that access (its guards and its action); a `[Generic]` list allows only Generic
+/// with the case's `ops_of` list at a site of operation `op`, by kind. A typed access needs the
+/// list of that access kind (its guard form and its action op); operands (`field`, `depth`, the
+/// action's `Loc`, the store `Ty`) are checked by `each_handler_becomes_its_fact` and
+/// `tests::ic_ops` (`eval`), not here. A `[Generic]` list allows only Generic
 /// or no case; Generic comes only from a `[Generic]` list or from the accessor and
 /// dictionary-holder kinds GETTER, SETTER and PROTO_DICT_LOAD, which export as Generic until a
 /// typed writer exists (H16 "Declared, no writer"). The exporter leaves out a case whose key
@@ -1270,6 +1272,10 @@ fn ops_of_list(case: &ic_ops::Case, op: Operation) -> Vec<Op> {
 /// `EXITED` alone is enough); the module that writes the field's slot source, where that
 /// identifier is a needle too; and, for a `TypeSet` field, its name: in a file that uses
 /// `ep9_facts`, a line that sets that name to a value other than `TypeSet::EMPTY` writes it.
+/// An entry with no needle, word or name has no code scan (its writer is a value that other
+/// facts share, such as an `IcState` or an elements kind); the snapshots check it, and so does
+/// the corpus test `every_field_that_claims_a_writer_is_seen` (`ep9_builtins`
+/// `tests/facts_export.rs`), whose list is this list.
 struct NoWriter {
     field: &'static str,
     named: &'static str,
@@ -1279,7 +1285,7 @@ struct NoWriter {
     types: Option<&'static str>,
 }
 
-const NO_WRITER: [NoWriter; 11] = [
+const NO_WRITER: [NoWriter; 20] = [
     NoWriter {
         field: "RecordFlags::RAN",
         named: "`RecordFlags::RAN`",
@@ -1368,12 +1374,86 @@ const NO_WRITER: [NoWriter; 11] = [
         source: None,
         types: None,
     },
+    NoWriter {
+        field: "ForInHint::KEYS",
+        named: "the `ForInHint` bits `enum-cache-keys` and `enum-cache-keys-and-indices`",
+        // Also matches `ForInHint::KEYS_AND_INDICES`.
+        needles: &["ForInHint::KEYS"],
+        word: None,
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "ForInHint::KEYS_AND_INDICES",
+        named: "the `ForInHint` bits `enum-cache-keys` and `enum-cache-keys-and-indices`",
+        needles: &["ForInHint::KEYS_AND_INDICES"],
+        word: None,
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "BinaryHint::BIGINT",
+        named: "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`",
+        needles: &["BinaryHint::BIGINT"],
+        word: Some("BIGINT"),
+        source: Some("profile.rs"),
+        types: None,
+    },
+    NoWriter {
+        field: "CompareHint::BIGINT",
+        named: "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`",
+        needles: &["CompareHint::BIGINT"],
+        word: None,
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "TypeSet::BIGINT",
+        named: "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`",
+        needles: &["TypeSet::BIGINT"],
+        word: None,
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "CallFacts.callees.state Polymorphic",
+        named: "the `polymorphic` IC state of a Call or keyed record",
+        needles: &[],
+        word: None,
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "KeyedFacts.property.state Polymorphic",
+        named: "the `polymorphic` IC state of a Call or keyed record",
+        needles: &[],
+        word: None,
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "FieldRep::Unset",
+        named: "`FieldRep::Unset`",
+        needles: &["FieldRep::Unset", "rep::NONE"],
+        word: None,
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "LiteralFacts.elements Dictionary",
+        named: "`LiteralFacts.elements` `dictionary`",
+        needles: &[],
+        word: None,
+        source: None,
+        types: None,
+    },
 ];
 
 /// The code lines (file, trimmed text) that hold a needle today and write no field: the
 /// exporter's read of the LoadKeyed slot bit 26, which no T0 code sets (H16 "Declared, no
-/// writer"), the definition of that bit, and a fuse name.
-const NOT_WRITERS: [(&str, &str); 4] = [
+/// writer"), the definition of that bit, a fuse name, and the representation join, which
+/// gives `NONE` only for two `NONE` inputs.
+const NOT_WRITERS: [(&str, &str); 5] = [
     (
         "facts_export.rs",
         "let flags = if ran && bits & crate::profile::keyed::RAN != 0 {",
@@ -1381,6 +1461,7 @@ const NOT_WRITERS: [(&str, &str); 4] = [
     ("facts_export.rs", "RecordFlags::RAN"),
     ("profile.rs", "pub const RAN: u32 = 1 << 26;"),
     ("fuse.rs", "\"TypedArray species\","),
+    ("field_rep.rs", "(rep::NONE, x) | (x, rep::NONE) => x,"),
 ];
 
 /// True if `code` has `word` with no identifier character on either side.
@@ -1408,7 +1489,7 @@ fn sets_types(code: &str, name: &str) -> bool {
 /// `Access` tag, `ObjectKind`, `RecordFlags` bit or `BindingSet` bit fails here (to compile,
 /// or with its name) until it is sorted as written or as declared with no writer (Codex r1
 /// D4). A keyed record with a case is `Access::Element`: no T0 code writes a keyed case
-/// (MC-w15-1).
+/// (MC-w15-1). The other items of [`NO_WRITER`] are read where they can be.
 fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Vec<&'static str>) {
     use ep9_facts::RecordFlags;
     for &(bit, name) in RecordFlags::BITS {
@@ -1422,6 +1503,9 @@ fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Ve
         }
     }
     fn shape(s: &ShapeDesc, out: &mut Vec<&'static str>) {
+        if s.fields.iter().any(|f| f.rep == FieldRep::Unset) {
+            out.push("FieldRep::Unset");
+        }
         match s.kind {
             ObjectKind::Ordinary
             | ObjectKind::Array
@@ -1455,6 +1539,9 @@ fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Ve
         }
     }
     fn keyed(k: &ep9_facts::KeyedFacts, out: &mut Vec<&'static str>) {
+        if k.property.state == IcState::Polymorphic {
+            out.push("KeyedFacts.property.state Polymorphic");
+        }
         if !k.property.cases.is_empty() {
             out.push("Access::Element");
         }
@@ -1481,6 +1568,9 @@ fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Ve
             if c.result != TypeSet::EMPTY {
                 out.push("CallFacts.result");
             }
+            if c.callees.state == IcState::Polymorphic {
+                out.push("CallFacts.callees.state Polymorphic");
+            }
         }
         SlotFacts::LoadNamed(p) | SlotFacts::StoreNamed(p) | SlotFacts::DefineNamedOwn(p) => {
             property(p, out)
@@ -1497,6 +1587,9 @@ fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Ve
             if let Some(s) = &l.shape {
                 shape(s, out);
             }
+            if l.elements == Some(ElementsKind::Dictionary) {
+                out.push("LiteralFacts.elements Dictionary");
+            }
         }
         SlotFacts::CloneObject(c) => {
             for case in &c.cases {
@@ -1504,13 +1597,30 @@ fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Ve
                 shape(&case.result, out);
             }
         }
-        SlotFacts::BinaryOp(_)
-        | SlotFacts::CompareOp(_)
-        | SlotFacts::TypeOf(_)
-        | SlotFacts::InstanceOf(_)
-        | SlotFacts::ForIn(_)
-        | SlotFacts::JumpLoop(_)
-        | SlotFacts::CreateClosure(_) => {}
+        SlotFacts::BinaryOp(h) => {
+            if h.contains(ep9_facts::BinaryHint::BIGINT) {
+                out.push("BinaryHint::BIGINT");
+            }
+        }
+        SlotFacts::CompareOp(h) => {
+            if h.contains(ep9_facts::CompareHint::BIGINT) {
+                out.push("CompareHint::BIGINT");
+            }
+        }
+        SlotFacts::TypeOf(t) => {
+            if t.contains(TypeSet::BIGINT) {
+                out.push("TypeSet::BIGINT");
+            }
+        }
+        SlotFacts::ForIn(h) => {
+            if h.contains(ep9_facts::ForInHint::KEYS) {
+                out.push("ForInHint::KEYS");
+            }
+            if h.contains(ep9_facts::ForInHint::KEYS_AND_INDICES) {
+                out.push("ForInHint::KEYS_AND_INDICES");
+            }
+        }
+        SlotFacts::InstanceOf(_) | SlotFacts::JumpLoop(_) | SlotFacts::CreateClosure(_) => {}
     }
 }
 
@@ -1532,11 +1642,13 @@ fn assert_no_declared_field(snap: &FactSnapshot) -> usize {
     n
 }
 
-/// MC-w24-5: each field of H16 "Declared, no writer" has no writer in ep9_vm. A writer
-/// fails this test with the field's name and the line; then the field leaves [`NO_WRITER`]
-/// and the H16 paragraph (an ADR change). The H16 paragraph names every field of the list,
-/// and snapshots of the T0 cases ([`scenario`]), the call sites ([`run_calls`]) and the keyed
-/// sites ([`keyed_facts_program`]) hold none of them.
+/// MC-w24-5, the negative half: each field of H16 "Declared, no writer" has no writer in
+/// ep9_vm. A writer fails this test with the field's name and the line; then the field leaves
+/// [`NO_WRITER`] and the H16 paragraph (an ADR change). The H16 paragraph names every field of
+/// the list, and snapshots of the T0 cases ([`scenario`]), the call sites ([`run_calls`]) and
+/// the keyed sites ([`keyed_facts_program`]) hold none of them. The positive half (each other
+/// field is seen on a JS corpus) is `every_field_that_claims_a_writer_is_seen` (`ep9_builtins`
+/// `tests/facts_export.rs`).
 #[test]
 fn the_fields_declared_with_no_writer_have_none() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
