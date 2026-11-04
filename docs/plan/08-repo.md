@@ -71,6 +71,7 @@ The 4 new expectation files pin HINT-SET, TYPED-KERNELS, SHORT-RUN and JITLESS-S
 | `ep9_builtins` | ECMA-262 spec layer. Until M1a: one crate, one module per test262 area; its engine dependencies are `ep9_vm` and `ep9_math` only (W4-BUILTINS-CRATE; dep-guards check 8). The split into one `ep9_builtins_*` crate per test262 area (C10) is checked again at M1a | forbid | default | x | x | x | - |
 | `ep9_numconv` | dtoa ports, radix, StringToNumber, f16 | no (Miri) | default | x | x | x | - |
 | `ep9_math` (new) | One Rust Math (H36): CR libm-class functions, `pow_js`, V8 `hypot`, exact `fmod`, `fma_exact`. No dependencies | one fn (fma dispatch); Miri skips corpus tests | default | x | x | x | - |
+| `ep9_bigint` (new) | BigInt digits on dashu; V8 `src/bigint` port at M8. Only `ep9_vm` depends on it (dep-guards check 17) | forbid | default | x | x | x | - |
 | `ep9_regexp` | Backend trait. RX0 regress fork; RX1 and RX2 irregexp port | backend only | default; RX2 under `jit` | x | x (RX1) | x | - |
 | `ep9_intl` | ECMA-402 on ICU4X | forbid | `intl` | x | x | x | - |
 | `ep9_temporal` | temporal_rs glue; tz provider (Date later, below ep9_vm) | forbid | default | x | x | x | - |

@@ -61,7 +61,7 @@ The first weekly check (MODES-CHECK-w13, plan v9 rule 29) found no broken mode r
 
 | Layer | Fixed when | Decides | Home | Today |
 |---|---|---|---|---|
-| L-A build capability | link time | which code **producers** exist | Cargo features `jit` (runtime codegen) and `aot` (unit emission) (P02:184; P08:115-118) | `jit` forwards to `ep9_platform` (`crates/ep9_vm/Cargo.toml:25`). Since M5-P0 (C-23) `ep9_vm` reads it only to pick its presets: the `jit` preset needs it (`crates/ep9_vm/src/exec.rs:75-77`) and it makes `jit` the default preset (`crates/ep9_vm/src/exec.rs:143-149`); no code producer exists yet |
+| L-A build capability | link time | which code **producers** exist | Cargo features `jit` (runtime codegen) and `aot` (unit emission) (P02:184; P08:116-119) | `jit` forwards to `ep9_platform` (`crates/ep9_vm/Cargo.toml:25`). Since M5-P0 (C-23) `ep9_vm` reads it only to pick its presets: the `jit` preset needs it (`crates/ep9_vm/src/exec.rs:75-77`) and it makes `jit` the default preset (`crates/ep9_vm/src/exec.rs:143-149`); no code producer exists yet |
 | L-P process permit (new, F13) | before the first isolate | which producers may **run** in this process; bounded by L-A | one process-wide setting; workers inherit it | none. One 128 MiB code range serves every isolate (H07:52; H22:40), so W^X is a process property |
 | L-B isolate policy | isolate creation | which code kinds may be **installed**, their rank, accepted lowering classes, thresholds, run-time fact inputs, load policy; bounded by L-P | new `ExecOptions` (opaque) passed to a new entry point `Isolate::new_with(IsolateConfig, ExecOptions)` (proposal, section 1.2) | `IsolateConfig` has 8 public fields (`crates/ep9_vm/src/isolate.rs:52-74`), among them `feedback_threshold` and `compiler: Option<&'static CompilerHooks>`. It is a core `embed:` line of the Frozen H20 core (golden:521; `crates/ep9_vm/tests/h20_core.rs:33-34`; H20:88). `--jitless` and `--unit` are named in `crates/ep9_cli/src/main.rs:2` but not parsed. Since M5-P0 (P0-VM5, C-23) `Isolate::new_with(IsolateConfig, ExecOptions)` exists (`crates/ep9_vm/src/isolate.rs:277`) with the opaque `ExecOptions` of `crates/ep9_vm/src/exec.rs` (presets `jit` and `jitless`, the `feedback` setter); its golden lines are `embed (not core)` (golden:376; orchestrator decision M5-P0-ORCH-1: FREEZE-M1 decides on the core). M5-P0 stored the options. Since M5-P3 (PROFILE6) the feedback mode is read: `Isolate::new_with` picks the `ics_only` T0 handler table per `Cx` (`Dispatch::table`), and `profile::records` reads the mode on the cold paths, at polls and at the match-loop entry (the `exec.rs` module doc; the PROFILE6 H16 rewrite row of 2026-10-29); the preset is read only by the M-R6 check of `new_with` |
 | L-C function state | run time | which code a function **has** and **runs** | code set + dispatch slot (section 3) | one slot `{kind, entry}` per FunctionInfo (H14:69; `crates/ep9_vm/src/function_info.rs:58`) |
@@ -102,7 +102,7 @@ Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:521). 
              ics_only: T0 keeps its ICs and runs no record hook (a second T0 handler table, below);
              it keeps every object-model input, allocation-site element kinds included (MODES-D19, M-R9)
    load      policy auto | strict (strict = `--unit-strict`, P05:282; H35:90)
-             forms  {o, ep9u}: which unit forms may load. iOS takes `.o` only (P08:117)
+             forms  {o, ep9u}: which unit forms may load. iOS takes `.o` only (P08:118)
 
  preset    install rank                                     accept                 produce             unit facts at run time                     type feedback
  JIT       Opt > Baseline > Interp                          jit                    all producers       none in v1 (warm start reserved, F17)      full
@@ -193,7 +193,7 @@ The layering of P02:236-259 stays. Compilers sit above `ep9_vm` (P02:245-249).
 | S-2 TierHooks | A struct of function pointers inside `ExecOptions` (never in `IsolateConfig`, section 1.2): `on_hot(fn, reason)`, `on_osr(fn, offset)`, `on_invalidate(code)`. A missing hook is a no-op | `ep9_vm` cannot link the compilers. This is the `CompilerHooks` pattern (`crates/ep9_vm/src/compiler.rs:43-56`). [2026-10-29, M5-P1 fixer; MC-w18-8:] `ExecOptions` derives `Copy, PartialEq, Eq` (an H20 golden line), so a hook field is `Copy` data behind a `&'static` type with its own equality: `derive(PartialEq)` over a fn-pointer field fails under `-D warnings` (`unpredictable_function_pointer_comparisons`); REPRL2's fuzz-hook seat follows this (`FuzzHooks`). `Runtime::exec` is a `pub` `Cell` set after `builtins::prepare` (`Isolate::new_with`), so code that reaches the `Runtime` could change it; "fixed at creation" is a rule of the callers until FREEZE-M1 B3 decides the core | none: no hook from `ep9_vm` to a compiler, no hotness counter after the vector exists (`crates/ep9_vm/src/function_info.rs:78-80`) |
 | S-3 one merge | `ep9_facts::merge(sources) -> FactSet`, used by the JIT and by `ep9_aot` | P04:226-229 draws two merge boxes today. `ep9_facts` depends on `ep9_bytecode` only (H16:98), so both sides can call it | none |
 
-A jitless build installs no TierHooks. Its tier manager still does unit load, PIN, deopt and fuse swaps. This keeps H27 true: the jitless build keeps the loader and the deoptimizer (P02:184; P08:116).
+A jitless build installs no TierHooks. Its tier manager still does unit load, PIN, deopt and fuse swaps. This keeps H27 true: the jitless build keeps the loader and the deoptimizer (P02:184; P08:117).
 
 ### 2.2 The pipeline and its three mode branches
 
@@ -527,7 +527,7 @@ Exit-record content. Only tag values are reserved now. The record format (bytes 
 **Build-id rule (C-19).**
 
 - Today the id hashes the commit, rustc, the target and `ep9_unit`'s own Cargo features (`crates/ep9_unit/build.rs:108-115`; H35:118).
-- `ep9c` turns on `aot` (P08:118); the runtime does not. So their ids differ, and every `ep9c` unit would load as SOURCE in `ep9`.
+- `ep9c` turns on `aot` (P08:119); the runtime does not. So their ids differ, and every `ep9c` unit would load as SOURCE in `ep9`.
 - Rule: the id hashes commit, rustc, target and a fixed list of features that change native contracts (today `become`, `crates/ep9_vm/Cargo.toml:28`). It never hashes `aot` or `jit`. Then the JIT build, the jitless build and `ep9c` of one commit share one id, and one unit can serve hybrid and jitless isolates (with `hybrid` and `jitless` variants). C-18 must land with C-19.
 
 ### 5.3 Container v2 (A2 start; container bump while no unit exists)
