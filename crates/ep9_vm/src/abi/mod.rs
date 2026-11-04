@@ -40,6 +40,7 @@
 //! FinalizationRegistry, M4-P4 WEAKREF). `Cx::math_random` (Math.random over the isolate's
 //! xorshift128+ state, V9-D16) is in this file.
 
+mod bigint;
 mod collections;
 mod index;
 mod iter;
@@ -784,8 +785,8 @@ impl<'s> Cx<'s> {
         Ok(Self::local(a))
     }
 
-    /// A new primitive wrapper object (§10.4.3 String exotic, or a Number, Boolean or Symbol
-    /// object) of the primitive `value` with prototype `proto` (`wrapper::new_wrapper`).
+    /// A new primitive wrapper object (§10.4.3 String exotic, or a Number, Boolean, Symbol or
+    /// BigInt object) of the primitive `value` with prototype `proto` (`wrapper::new_wrapper`).
     /// TypeError if `value` has no wrapper type (undefined, null, an object). The wrapper must
     /// hold `value` as its `[[...Data]]`: while `wrapper.rs` is the P0 stub (a plain object),
     /// this throws "not implemented" rather than return an object without the primitive.
@@ -795,7 +796,9 @@ impl<'s> Cx<'s> {
         value: impl Into<Local<'s>>,
     ) -> JsResult<Local<'s, JsObject>> {
         let (p, v) = (proto.into().bits(), value.into().bits());
-        if PrimitiveType::of(v).is_none() {
+        // A BigInt has no PrimitiveType (a frozen core enum): it is checked by kind
+        // (spec-temporal B4).
+        if PrimitiveType::of(v).is_none() && !kinds::is_bigint(v) {
             let msg = format!("Cannot wrap {} in an object", conv::describe(v));
             return Err(self.throw_type_error(&msg));
         }
@@ -1298,6 +1301,14 @@ impl<'s> Cx<'s> {
         if let Some(o) = v.as_object() {
             return Ok(o);
         }
+        if kinds::is_bigint(v.bits()) {
+            // %BigInt.prototype% (spec-temporal B4; no PrimitiveType: a frozen core enum).
+            if !self.has_intrinsic(IntrinsicId::BigIntPrototype) {
+                return Err(self.not_implemented("BigInt.prototype"));
+            }
+            let proto = self.intrinsic(IntrinsicId::BigIntPrototype);
+            return self.new_wrapper(proto, v);
+        }
         let Some(ty) = PrimitiveType::of(v.bits()) else {
             return Err(self.throw_type_error("Cannot convert undefined or null to object"));
         };
@@ -1632,9 +1643,10 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// The primitive inside `v` if it is a Number, String or Boolean wrapper object (it has a
-    /// `[[NumberData]]`, `[[StringData]]` or `[[BooleanData]]` internal slot), else `None`
-    /// (part 2, M5-P3 integration fixer). Any value; never throws, runs no JS and asks a
+    /// The primitive inside `v` if it is a Number, String, Boolean or BigInt wrapper object (it
+    /// has a `[[NumberData]]`, `[[StringData]]`, `[[BooleanData]]` or `[[BigIntData]]` internal
+    /// slot), else `None` (part 2, M5-P3 integration fixer; `[[BigIntData]]` since
+    /// spec-temporal B4, H20-Q5). Any value; never throws, runs no JS and asks a
     /// proxy nothing (a proxy is no wrapper). For JSON (SerializeJSONProperty step 4, the
     /// replacer list, `space`).
     pub fn primitive_data(&self, v: impl Into<Local<'s>>) -> Option<Local<'s>> {
@@ -1643,10 +1655,10 @@ impl<'s> Cx<'s> {
             return None;
         }
         let p = wrapper::wrapper_value(v)?;
-        matches!(
+        (matches!(
             PrimitiveType::of(p),
             Some(PrimitiveType::Number | PrimitiveType::String | PrimitiveType::Boolean)
-        )
+        ) || kinds::is_bigint(p))
         .then(|| Self::local(p))
     }
 

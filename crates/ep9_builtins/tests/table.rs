@@ -51,6 +51,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("proxy", 15),
             ("regexp", 16),
             ("weakref", 17),
+            ("bigint", 18),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);
@@ -63,6 +64,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_builtins::proxy::BLOCK, 15);
     assert_eq!(ep9_builtins::regexp::BLOCK, 16);
     assert_eq!(ep9_builtins::weakref::BLOCK, 17);
+    assert_eq!(ep9_builtins::bigint::BLOCK, 18);
 }
 
 #[test]

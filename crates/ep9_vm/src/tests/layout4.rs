@@ -113,7 +113,7 @@ fn is_callable_takes_proxy_callable() {
 
 #[test]
 fn intrinsic_ids_64_to_71_are_declared_not_made() {
-    assert_eq!(IntrinsicId::ALL.len(), 73); // 72 in M4-P0; 73 since M6-P0
+    assert_eq!(IntrinsicId::ALL.len(), 75); // 72 in M4-P0; 73 since M6-P0; 75 since spec-temporal B4
     let new = [
         (IntrinsicId::Proxy, "%Proxy%"),
         (IntrinsicId::RegExp, "%RegExp%"),

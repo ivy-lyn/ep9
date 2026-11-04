@@ -24,8 +24,9 @@ use ep9_bigint::{self as digits, Big, View};
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
 use ep9_value::Throw;
 
-use crate::conv::{BinOp, Res};
+use crate::conv::{self, BinOp, Res};
 use crate::error::throw_error;
+use crate::frame::{FALSE, TRUE};
 use crate::interp::Cx;
 use crate::kinds::{self, is_bigint};
 use crate::object::cell;
@@ -264,8 +265,79 @@ pub(crate) fn unary(cx: &mut Cx, op: UnaryOp, a: u64) -> Res<u64> {
 }
 
 /// `%BigInt.prototype%` of the current realm (the ToObject prototype of a BigInt), or `None`
-/// when no builtin table made it (an isolate without `ep9_builtins`). Not a GC point.
-pub(crate) fn prototype(_rt: &Runtime) -> Option<u64> {
-    // The builtins (block 18) make it from spec-temporal B4 on.
-    None
+/// when no builtin table made it (an isolate without `ep9_builtins`: a slot intrinsic is
+/// undefined then, and undefined is never a prototype). Not a GC point.
+pub(crate) fn prototype(rt: &Runtime) -> Option<u64> {
+    let p = crate::builtins::intrinsic(rt, crate::builtins::IntrinsicId::BigIntPrototype);
+    kinds::is_object(p).then_some(p)
+}
+
+// ---- conversions for the builtin ABI (spec-temporal B4) ---------------------------------
+
+/// ToBigInt (§7.1.13): ToPrimitive (hint number), then by type: a BigInt as it is; true and
+/// false give 1n and 0n; a String gives StringToBigInt or a SyntaxError; undefined, null, a
+/// Number and a Symbol are a TypeError. GC point.
+pub(crate) fn to_bigint(cx: &mut Cx, v: u64) -> Res<u64> {
+    let p = conv::to_primitive(cx, v, conv::Hint::Number)?;
+    if is_bigint(p) {
+        return Ok(p);
+    }
+    if p == TRUE || p == FALSE {
+        return Ok(alloc(cx.rt(), &digits::from_i64(i64::from(p == TRUE))));
+    }
+    if crate::object::is_string(p) {
+        return match string_to_big(cx, p)? {
+            Some(b) => Ok(alloc(cx.rt(), &b)),
+            None => {
+                let msg = format!(
+                    "Cannot convert {} to a BigInt",
+                    crate::string::to_rust_string(p)
+                );
+                Err(throw_error(cx, ErrorKind::SyntaxError, &msg))
+            }
+        };
+    }
+    let msg = format!("Cannot convert {} to a BigInt", conv::describe(p));
+    Err(throw_error(cx, ErrorKind::TypeError, &msg))
+}
+
+/// NumberToBigInt (§21.2.1.1.1): RangeError if `n` is not an integral Number. GC point.
+pub(crate) fn number_to_bigint(cx: &mut Cx, n: f64) -> Res<u64> {
+    match digits::from_f64_exact(n) {
+        Some(b) => Ok(alloc(cx.rt(), &b)),
+        None => {
+            let msg = format!(
+                "The number {} cannot be converted to a BigInt because it is not an integer",
+                conv::describe(conv::num(n))
+            );
+            Err(throw_error(cx, ErrorKind::RangeError, &msg))
+        }
+    }
+}
+
+/// 𝔽(ℝ(b)): the Number nearest to the BigInt `b` (round half to even; Infinity past the
+/// largest finite Number). Not a GC point.
+pub(crate) fn to_f64(b: u64) -> f64 {
+    digits::to_f64(view(&b))
+}
+
+/// BigInt.asIntN (`signed`) or BigInt.asUintN of the BigInt `b` with `bits` (already
+/// ToIndex). RangeError above the size limit. GC point.
+pub(crate) fn as_n(cx: &mut Cx, b: u64, bits: u64, signed: bool) -> Res<u64> {
+    let r = if signed {
+        digits::as_int_n(view(&b), bits)
+    } else {
+        digits::as_uint_n(view(&b), bits)
+    };
+    from_result(cx, r)
+}
+
+/// The BigInt of `n`. GC point.
+pub(crate) fn from_i128(rt: &Runtime, n: i128) -> u64 {
+    alloc(rt, &digits::from_i128(n))
+}
+
+/// The BigInt `b` as an i128, if it fits. Not a GC point.
+pub(crate) fn to_i128(b: u64) -> Option<i128> {
+    digits::to_i128(view(&b))
 }

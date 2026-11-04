@@ -27,15 +27,15 @@
 //!
 //! | Spec step | Here |
 //! |---|---|
-//! | `[[NumberData]]`, `[[StringData]]`, `[[BooleanData]]` tests (SerializeJSONProperty step 4, the replacer list, `space`) | `primitive_data` |
+//! | `[[NumberData]]`, `[[StringData]]`, `[[BooleanData]]`, `[[BigIntData]]` tests (SerializeJSONProperty step 4, the replacer list, `space`) | `primitive_data` |
 //! | EnumerableOwnProperties(O, key) (§7.3.23) | `enumerable_own_keys`: the keys array of `[[OwnPropertyKeys]]`, compacted in place |
 //! | Number::toString of a finite number | `Cx::to_string` (numconv `number_to_string`, with the even-tie rule of §6.1.6.1.20 step 5) |
 //!
 //! json-parse-with-source (M6-P1 SPEC-B; the proposal's spec text; test262 lists it as a
 //! standard feature): the reviver `context` argument, `JSON.rawJSON` and `JSON.isRawJSON`, and
 //! the raw JSON step of SerializeJSONProperty. The `[[IsRawJSON]]` internal slot is `ObjectClass::RawJson` (H20
-//! part 2, an appended class). v0 has no BigInt values, so the BigInt steps (toJSON of a
-//! BigInt, the TypeError, `rawJSON` of a BigInt) cannot be reached.
+//! part 2, an appended class). The BigInt steps (spec-temporal B4): toJSON of a BigInt
+//! (step 2), the `[[BigIntData]]` unwrap (step 4.d) and the TypeError (step 10).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-json.txt`.

@@ -117,3 +117,5 @@ intrinsic  69  %WeakRef.prototype%
 intrinsic  70  %FinalizationRegistry%
 intrinsic  71  %FinalizationRegistry.prototype%
 intrinsic  72  [[RealmFuses]]
+intrinsic  73  %BigInt%
+intrinsic  74  %BigInt.prototype%

@@ -432,7 +432,7 @@ fn every_function_has_the_isolate_realm() {
             assert_eq!(object::record_get(realm, realmf::HOST_DEFINED), UNDEFINED);
             let list = object::record_get(realm, realmf::INTRINSICS);
             assert_eq!(object::list_len(list), IntrinsicId::ALL.len());
-            assert_eq!(IntrinsicId::ALL.len(), 73); // 64 in M3-P0; 72 since M4-P0; 73 since M6-P0
+            assert_eq!(IntrinsicId::ALL.len(), 75); // 64 in M3-P0; 72 since M4-P0; 73 since M6-P0; 75 since spec-temporal B4
             for id in IntrinsicId::ALL {
                 assert_eq!(
                     object::list_get(list, id as usize),

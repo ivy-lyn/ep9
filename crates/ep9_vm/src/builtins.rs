@@ -232,11 +232,17 @@ pub enum IntrinsicId {
     /// object; no table makes it (`check_tables` refuses one). Held in the realm root
     /// `Root::RealmFuses`; made by `fuse::new_realm_block` at realm init (M6-P2 FUSE-PI).
     RealmFuses,
+    // ---- spec-temporal B4 (BigInt; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%BigInt%` (§21.2.1; made by `ep9_builtins` bigint.rs, block 18).
+    BigInt,
+    /// `%BigInt.prototype%` (§21.2.3, an ordinary object; made by `ep9_builtins` bigint.rs).
+    /// The prototype of a BigInt's ToObject and of a property access on a BigInt.
+    BigIntPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 73] = [
+    pub const ALL: [IntrinsicId; 75] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -310,6 +316,8 @@ impl IntrinsicId {
         IntrinsicId::FinalizationRegistry,
         IntrinsicId::FinalizationRegistryPrototype,
         IntrinsicId::RealmFuses,
+        IntrinsicId::BigInt,
+        IntrinsicId::BigIntPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -389,6 +397,8 @@ impl IntrinsicId {
             IntrinsicId::FinalizationRegistry => "%FinalizationRegistry%",
             IntrinsicId::FinalizationRegistryPrototype => "%FinalizationRegistry.prototype%",
             IntrinsicId::RealmFuses => "[[RealmFuses]]",
+            IntrinsicId::BigInt => "%BigInt%",
+            IntrinsicId::BigIntPrototype => "%BigInt.prototype%",
         }
     }
 
@@ -468,7 +478,9 @@ impl IntrinsicId {
             | IntrinsicId::WeakRef
             | IntrinsicId::WeakRefPrototype
             | IntrinsicId::FinalizationRegistry
-            | IntrinsicId::FinalizationRegistryPrototype => return None,
+            | IntrinsicId::FinalizationRegistryPrototype
+            | IntrinsicId::BigInt
+            | IntrinsicId::BigIntPrototype => return None,
         })
     }
 
@@ -516,6 +528,8 @@ impl IntrinsicId {
             IntrinsicId::WeakRefPrototype => Some(37),
             IntrinsicId::FinalizationRegistry => Some(38),
             IntrinsicId::FinalizationRegistryPrototype => Some(39),
+            IntrinsicId::BigInt => Some(40),
+            IntrinsicId::BigIntPrototype => Some(41),
             _ => None,
         }
     }
@@ -1182,7 +1196,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 40;
+const INTRINSIC_SLOTS: usize = 42;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

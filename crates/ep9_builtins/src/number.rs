@@ -177,11 +177,16 @@ fn number<'s>(
     //    c. Otherwise, let n be prim.
     // 2. Else,
     //    a. Let n be +0𝔽.
-    // (v0 has no BigInt: ToNumeric is ToNumber.)
     let n = if args.is_empty() {
         0.0
     } else {
-        cx.to_number(args.get(0))?
+        let prim = cx.to_numeric(args.get(0))?;
+        if cx.is_bigint(prim) {
+            cx.bigint_to_number(prim)
+        } else {
+            prim.as_number()
+                .expect("ToNumeric gives a Number or a BigInt")
+        }
     };
     let n = Local::number(n);
     // 3. If NewTarget is undefined, return n.
