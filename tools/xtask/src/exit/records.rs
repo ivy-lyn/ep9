@@ -395,6 +395,41 @@ fn numbers_only(old: &str, new: &str) -> bool {
     a == b && a.len() < old.len() && b.len() < new.len()
 }
 
+/// The byte offset in `line`, at or after `from`, where the reference `old` stands whole: the
+/// next character is not a digit or `-`. R6-8 (M6-P0 fixer check F3): a plain `find` read
+/// `lib.rs:2` inside `lib.rs:23` or `lib.rs:2-5`.
+fn find_ref(line: &str, from: usize, old: &str) -> Option<usize> {
+    let mut at = from;
+    while let Some(k) = line[at..].find(old) {
+        let start = at + k;
+        let next = line[start + old.len()..].chars().next();
+        if !next.is_some_and(|c| c.is_ascii_digit() || c == '-') {
+            return Some(start);
+        }
+        at = start + old.chars().next().map_or(1, char::len_utf8);
+    }
+    None
+}
+
+/// X15: the base text of line `n` with the drift check's FIX values `fs` put in, left to right.
+fn apply_fixes(n: usize, base: &str, fs: &[(String, String)]) -> Result<String, String> {
+    let mut line = base.to_string();
+    let mut from = 0;
+    for (old, new) in fs {
+        if !numbers_only(old, new) {
+            return Err(format!(
+                "line {n}: the drift check's FIX {old} -> {new} changes more than its line numbers"
+            ));
+        }
+        let Some(start) = find_ref(&line, from, old) else {
+            return Err(format!("line {n}: no {old:?} in its base text"));
+        };
+        line.replace_range(start..start + old.len(), new);
+        from = start + new.len();
+    }
+    Ok(line)
+}
+
 /// X15: is the body change of the ADR `rel` since the base only `path:N` numbers that the drift
 /// check moves? Ok(the number of changed body lines) or Err(why not).
 fn lint_proven(root: &Path, rel: &str, base: Option<&str>, head: &str) -> Result<usize, String> {
@@ -428,21 +463,7 @@ fn lint_proven(root: &Path, rel: &str, base: Option<&str>, head: &str) -> Result
                 "line {n} changed, and the drift check moves no reference on its base text"
             ));
         };
-        // The FIX values, left to right, on the base line.
-        let mut line = b[i].1.to_string();
-        let mut from = 0;
-        for (old, new) in fs {
-            if !numbers_only(old, new) {
-                return Err(format!(
-                    "line {n}: the drift check's FIX {old} -> {new} changes more than its line numbers"
-                ));
-            }
-            let Some(k) = line[from..].find(old.as_str()) else {
-                return Err(format!("line {n}: no {old:?} in its base text"));
-            };
-            line.replace_range(from + k..from + k + old.len(), new);
-            from += k + new.len();
-        }
+        let line = apply_fixes(n, b[i].1, fs)?;
         if line != h[i].1 {
             return Err(format!(
                 "line {n} is not its base text with the drift check's FIX values ({})",
@@ -830,6 +851,45 @@ mod tests {
         assert!(!numbers_only("`a.rs` line 3", "`a.rs` lines 3-5"));
         assert!(!numbers_only("a.rs:2", "a.rs:"));
         assert!(!numbers_only("a.rs", "a.rs"));
+    }
+
+    /// R6-8: a FIX value replaces the whole reference, never the head of a longer number or of
+    /// a range (`lib.rs:2` in `lib.rs:23` or `lib.rs:2-5`); left to right, as the check reads.
+    #[test]
+    fn a_fix_replaces_only_a_whole_reference() {
+        let f = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        assert_eq!(find_ref("lib.rs:23 and lib.rs:2", 0, "lib.rs:2"), Some(14));
+        assert_eq!(find_ref("lib.rs:2-5, lib.rs:2.", 0, "lib.rs:2"), Some(12));
+        assert_eq!(find_ref("lib.rs:2", 0, "lib.rs:2"), Some(0));
+        assert_eq!(find_ref("lib.rs:23 lib.rs:2-4", 0, "lib.rs:2"), None);
+        assert_eq!(
+            apply_fixes(
+                7,
+                "see lib.rs:23 and lib.rs:2",
+                &f(&[("lib.rs:2", "lib.rs:3")])
+            )
+            .unwrap(),
+            "see lib.rs:23 and lib.rs:3"
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "lib.rs:2-5, lib.rs:2 and lib.rs:23",
+                &f(&[("lib.rs:2", "lib.rs:4"), ("lib.rs:23", "lib.rs:25")])
+            )
+            .unwrap(),
+            "lib.rs:2-5, lib.rs:4 and lib.rs:25"
+        );
+        // Only `lib.rs:23` is there: no whole `lib.rs:2`.
+        assert_eq!(
+            apply_fixes(7, "lib.rs:23", &f(&[("lib.rs:2", "lib.rs:3")])).unwrap_err(),
+            "line 7: no \"lib.rs:2\" in its base text"
+        );
     }
 
     #[test]
