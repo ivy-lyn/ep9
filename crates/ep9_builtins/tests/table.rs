@@ -60,6 +60,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("plain_date_time", 24),
             ("plain_year_month", 25),
             ("plain_month_day", 26),
+            ("zoned_date_time", 27),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);

@@ -219,7 +219,10 @@ pub(crate) fn to_temporal_time_zone_identifier<'s>(
     v: Local<'s>,
 ) -> JsResult<TimeZone> {
     // 1. If temporalTimeZoneLike is an Object and has [[InitializedTemporalZonedDateTime]],
-    //    return temporalTimeZoneLike.[[TimeZone]]. (ZonedDateTime comes with WP T8.)
+    //    return temporalTimeZoneLike.[[TimeZone]].
+    if let Some(tz) = crate::zoned_date_time::time_zone_of_object(cx, v)? {
+        return Ok(tz);
+    }
     // 2. If temporalTimeZoneLike is not a String, throw a TypeError exception.
     let Some(s) = v.as_string() else {
         return Err(cx.throw_type_error("time zone must be a string"));

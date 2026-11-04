@@ -18,3 +18,4 @@
 0x2a0e   21.14        method       0       "toJSON"  (%Temporal.Instant.prototype%.toJSON w-c)
 0x2a0f   21.15        method       0       "toLocaleString"  (%Temporal.Instant.prototype%.toLocaleString w-c)
 0x2a10   21.16        method       0       "valueOf"  (%Temporal.Instant.prototype%.valueOf w-c)
+0x2a11   21.17        method       1       "toZonedDateTimeISO"  (%Temporal.Instant.prototype%.toZonedDateTimeISO w-c)

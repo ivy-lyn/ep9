@@ -277,11 +277,16 @@ pub enum IntrinsicId {
     TemporalPlainMonthDay,
     /// `%Temporal.PlainMonthDay.prototype%` (§10.3, an ordinary object; made by `ep9_temporal` plain_month_day.rs).
     TemporalPlainMonthDayPrototype,
+    // ---- spec-temporal T8 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.ZonedDateTime%` (§6.1; made by `ep9_temporal` zoned_date_time.rs, block 27).
+    TemporalZonedDateTime,
+    /// `%Temporal.ZonedDateTime.prototype%` (§6.3, an ordinary object; made by `ep9_temporal` zoned_date_time.rs).
+    TemporalZonedDateTimePrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 91] = [
+    pub const ALL: [IntrinsicId; 93] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -373,6 +378,8 @@ impl IntrinsicId {
         IntrinsicId::TemporalPlainYearMonthPrototype,
         IntrinsicId::TemporalPlainMonthDay,
         IntrinsicId::TemporalPlainMonthDayPrototype,
+        IntrinsicId::TemporalZonedDateTime,
+        IntrinsicId::TemporalZonedDateTimePrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -470,6 +477,8 @@ impl IntrinsicId {
             IntrinsicId::TemporalPlainYearMonthPrototype => "%Temporal.PlainYearMonth.prototype%",
             IntrinsicId::TemporalPlainMonthDay => "%Temporal.PlainMonthDay%",
             IntrinsicId::TemporalPlainMonthDayPrototype => "%Temporal.PlainMonthDay.prototype%",
+            IntrinsicId::TemporalZonedDateTime => "%Temporal.ZonedDateTime%",
+            IntrinsicId::TemporalZonedDateTimePrototype => "%Temporal.ZonedDateTime.prototype%",
         }
     }
 
@@ -567,7 +576,9 @@ impl IntrinsicId {
             | IntrinsicId::TemporalPlainYearMonth
             | IntrinsicId::TemporalPlainYearMonthPrototype
             | IntrinsicId::TemporalPlainMonthDay
-            | IntrinsicId::TemporalPlainMonthDayPrototype => return None,
+            | IntrinsicId::TemporalPlainMonthDayPrototype
+            | IntrinsicId::TemporalZonedDateTime
+            | IntrinsicId::TemporalZonedDateTimePrototype => return None,
         })
     }
 
@@ -633,6 +644,8 @@ impl IntrinsicId {
             IntrinsicId::TemporalPlainYearMonthPrototype => Some(55),
             IntrinsicId::TemporalPlainMonthDay => Some(56),
             IntrinsicId::TemporalPlainMonthDayPrototype => Some(57),
+            IntrinsicId::TemporalZonedDateTime => Some(58),
+            IntrinsicId::TemporalZonedDateTimePrototype => Some(59),
             _ => None,
         }
     }
@@ -1299,7 +1312,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 58;
+const INTRINSIC_SLOTS: usize = 60;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

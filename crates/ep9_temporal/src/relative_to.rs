@@ -101,6 +101,10 @@ pub(crate) fn get_relative_to_option<'s>(
 /// The relativeTo value of a ZonedDateTime, PlainDate or PlainDateTime object (steps 5.a-c),
 /// else `None`. The classes join this list as they are built.
 fn of_object<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<Option<RelativeTo>> {
-    // b-c. A PlainDate, or a PlainDateTime's date (ZonedDateTime: WP T8).
+    // b. A ZonedDateTime gives itself.
+    if let Some(z) = crate::zoned_date_time::of_object(cx, v)? {
+        return Ok(Some(RelativeTo::ZonedDateTime(z)));
+    }
+    // c. A PlainDate, or a PlainDateTime's date.
     Ok(crate::plain_date::date_of_object(cx, v)?.map(RelativeTo::PlainDate))
 }

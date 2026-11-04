@@ -41,3 +41,4 @@
 0x3025   24.37        method       0       "valueOf"  (%Temporal.PlainDateTime.prototype%.valueOf w-c)
 0x3026   24.38        method       0       "toPlainDate"  (%Temporal.PlainDateTime.prototype%.toPlainDate w-c)
 0x3027   24.39        method       0       "toPlainTime"  (%Temporal.PlainDateTime.prototype%.toPlainTime w-c)
+0x3028   24.40        method       1       "toZonedDateTime"  (%Temporal.PlainDateTime.prototype%.toZonedDateTime w-c)

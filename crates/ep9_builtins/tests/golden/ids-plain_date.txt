@@ -34,3 +34,4 @@
 0x2e1e   23.30        method       0       "toPlainDateTime"  (%Temporal.PlainDate.prototype%.toPlainDateTime w-c)
 0x2e1f   23.31        method       0       "toPlainYearMonth"  (%Temporal.PlainDate.prototype%.toPlainYearMonth w-c)
 0x2e20   23.32        method       0       "toPlainMonthDay"  (%Temporal.PlainDate.prototype%.toPlainMonthDay w-c)
+0x2e21   23.33        method       1       "toZonedDateTime"  (%Temporal.PlainDate.prototype%.toZonedDateTime w-c)

@@ -8,7 +8,7 @@
 //!   4-5 as PlainTime (second of the day, nanosecond of it)   plain_time::{to,from}_slots
 //! ```
 //!
-//! `toZonedDateTime` is appended with ZonedDateTime (WP T8).
+//! `toZonedDateTime` (id 40) came with ZonedDateTime (WP T8).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-plain_date_time.txt`.
@@ -87,6 +87,11 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("valueOf", 0, value_of),               // 37
     BuiltinDef::method("toPlainDate", 0, to_plain_date),      // 38
     BuiltinDef::method("toPlainTime", 0, to_plain_time),      // 39
+    BuiltinDef::method(
+        "toZonedDateTime",
+        1,
+        crate::zoned_date_time::plain_date_time_to_zoned_date_time,
+    ), // 40 (T8)
 ];
 
 /// The intrinsics this module makes.
@@ -167,6 +172,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Atom(Atom::ValueOf), 37),
             PropDef::method(PropKey::Str("toPlainDate"), 38),
             PropDef::method(PropKey::Str("toPlainTime"), 39),
+            PropDef::method(PropKey::Str("toZonedDateTime"), 40),
         ],
     },
     ObjectProps {
@@ -222,13 +228,16 @@ pub(crate) fn create<'s>(
 
 // ---- abstract operations --------------------------------------------------------------------
 
-/// The date-time of a PlainDateTime object (ZonedDateTime comes with WP T8), else `None`.
+/// The date-time of a PlainDateTime or ZonedDateTime object, else `None`.
 pub(crate) fn date_time_of_object<'s>(
     cx: &mut Cx<'s>,
     v: Local<'s>,
 ) -> JsResult<Option<PlainDateTime>> {
     match cx.object_class(v) {
         Some(CLASS) => read(cx, v).map(Some),
+        Some(ObjectClass::TemporalZonedDateTime) => {
+            crate::zoned_date_time::read(cx, v).map(|z| Some(z.to_plain_date_time()))
+        }
         _ => Ok(None),
     }
 }

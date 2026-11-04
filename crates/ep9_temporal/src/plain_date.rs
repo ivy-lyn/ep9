@@ -8,7 +8,7 @@
 //! ```
 //!
 //! `toPlainDateTime` (id 30) came with PlainDateTime (WP T6), `toPlainYearMonth` and
-//! `toPlainMonthDay` (ids 31-32) with WP T7; `toZonedDateTime` is appended with WP T8.
+//! `toPlainMonthDay` (ids 31-32) with WP T7, `toZonedDateTime` (id 33) with WP T8.
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-plain_date.txt`.
@@ -74,6 +74,11 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("toPlainDateTime", 0, to_plain_date_time), // 30 (T6)
     BuiltinDef::method("toPlainYearMonth", 0, to_plain_year_month), // 31 (T7)
     BuiltinDef::method("toPlainMonthDay", 0, to_plain_month_day), // 32 (T7)
+    BuiltinDef::method(
+        "toZonedDateTime",
+        1,
+        crate::zoned_date_time::plain_date_to_zoned_date_time,
+    ), // 33 (T8)
 ];
 
 /// The intrinsics this module makes.
@@ -147,6 +152,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("toPlainDateTime"), 30),
             PropDef::method(PropKey::Str("toPlainYearMonth"), 31),
             PropDef::method(PropKey::Str("toPlainMonthDay"), 32),
+            PropDef::method(PropKey::Str("toZonedDateTime"), 33),
         ],
     },
     ObjectProps {
@@ -235,13 +241,15 @@ pub(crate) fn create<'s>(
 
 // ---- abstract operations --------------------------------------------------------------------
 
-/// The date of a Temporal object with a date (PlainDate, PlainDateTime; ZonedDateTime
-/// comes with WP T8), else `None`.
+/// The date of a PlainDate, PlainDateTime or ZonedDateTime object, else `None`.
 pub(crate) fn date_of_object<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<Option<PlainDate>> {
     match cx.object_class(v) {
         Some(CLASS) => read(cx, v).map(Some),
         Some(ObjectClass::TemporalPlainDateTime) => {
             crate::plain_date_time::read(cx, v).map(|dt| Some(dt.to_plain_date()))
+        }
+        Some(ObjectClass::TemporalZonedDateTime) => {
+            crate::zoned_date_time::read(cx, v).map(|z| Some(z.to_plain_date()))
         }
         _ => Ok(None),
     }

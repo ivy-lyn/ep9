@@ -56,6 +56,11 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("toJSON", 0, to_json),           // 14
     BuiltinDef::method("toLocaleString", 0, to_locale_string), // 15
     BuiltinDef::method("valueOf", 0, value_of),         // 16
+    BuiltinDef::method(
+        "toZonedDateTimeISO",
+        1,
+        crate::zoned_date_time::instant_to_zoned_date_time_iso,
+    ), // 17 (T8)
 ];
 
 /// The intrinsics this module makes.
@@ -113,6 +118,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("toJSON"), 14),
             PropDef::method(PropKey::Str("toLocaleString"), 15),
             PropDef::method(PropKey::Atom(Atom::ValueOf), 16),
+            PropDef::method(PropKey::Str("toZonedDateTimeISO"), 17),
         ],
     },
     ObjectProps {
@@ -210,10 +216,13 @@ pub(crate) fn to_temporal_instant<'s>(cx: &mut Cx<'s>, item: Local<'s>) -> JsRes
     Instant::from_utf8(t.as_bytes()).or_throw(cx)
 }
 
-/// The instant of an Instant object (and of a ZonedDateTime, with WP T8), else `None`.
+/// The instant of an Instant or ZonedDateTime object, else `None`.
 fn instant_of_object<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<Option<Instant>> {
     match cx.object_class(v) {
         Some(CLASS) => read(cx, v).map(Some),
+        Some(ObjectClass::TemporalZonedDateTime) => {
+            crate::zoned_date_time::read(cx, v).map(|z| Some(z.to_instant()))
+        }
         _ => Ok(None),
     }
 }

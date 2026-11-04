@@ -30,6 +30,7 @@ const CALENDAR_CLASSES: &[ObjectClass] = &[
     ObjectClass::TemporalPlainDateTime,
     ObjectClass::TemporalPlainYearMonth,
     ObjectClass::TemporalPlainMonthDay,
+    ObjectClass::TemporalZonedDateTime,
 ];
 
 /// The calendar code of `iso8601` in a calendar slot (ep9 codes, append-only).

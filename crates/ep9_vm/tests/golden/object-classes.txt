@@ -23,3 +23,4 @@
   19  Temporal.PlainDateTime
   20  Temporal.PlainYearMonth
   21  Temporal.PlainMonthDay
+  22  Temporal.ZonedDateTime

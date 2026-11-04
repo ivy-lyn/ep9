@@ -197,13 +197,15 @@ pub(crate) fn get_overflow<'s>(cx: &mut Cx<'s>, options: Options<'s>) -> JsResul
     Ok(get_parsed_option::<Overflow>(cx, options, "overflow")?.unwrap_or(Overflow::Constrain))
 }
 
-/// The time of a Temporal object with a time (PlainTime, PlainDateTime; ZonedDateTime
-/// comes with WP T8), else `None`.
+/// The time of a PlainTime, PlainDateTime or ZonedDateTime object, else `None`.
 fn time_of_object<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<Option<PlainTime>> {
     match cx.object_class(v) {
         Some(CLASS) => read(cx, v).map(Some),
         Some(ObjectClass::TemporalPlainDateTime) => {
             crate::plain_date_time::read(cx, v).map(|dt| Some(dt.to_plain_time()))
+        }
+        Some(ObjectClass::TemporalZonedDateTime) => {
+            crate::zoned_date_time::read(cx, v).map(|z| Some(z.to_plain_time()))
         }
         _ => Ok(None),
     }
