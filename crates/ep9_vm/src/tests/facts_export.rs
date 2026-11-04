@@ -1263,55 +1263,110 @@ fn ops_of_list(case: &ic_ops::Case, op: Operation) -> Vec<Op> {
 
 // ---- MC-w24-5: the fields that H16 declares with no writer ---------------------------------------
 
-/// H16 "Declared, no writer" (MC-w24-5; MC-w25-7, M6-ORCH-26): the FACT_SCHEMA 2 fields that
-/// no ep9_vm code writes at M1 exit. Each entry: the field; the text of that H16 paragraph that
-/// names it; the code a writer needs in any `src` file outside `src/tests` (needles); the
-/// identifier a writer needs in a file that uses `ep9_facts` (with a `use`, `EXITED` alone
-/// is enough); and the module that writes the field's slot source, where that identifier is
-/// a needle too.
+/// H16 "Declared, no writer" (MC-w24-5; MC-w25-7, M6-ORCH-26; Codex r1 D4): the FACT_SCHEMA 2
+/// fields that no ep9_vm code writes at M1 exit. Each entry: the field; the text of that H16
+/// paragraph that names it; the code a writer needs in any `src` file outside `src/tests`
+/// (needles); the identifier a writer needs in a file that uses `ep9_facts` (with a `use`,
+/// `EXITED` alone is enough); the module that writes the field's slot source, where that
+/// identifier is a needle too; and, for a `TypeSet` field, its name: in a file that uses
+/// `ep9_facts`, a line that sets that name to a value other than `TypeSet::EMPTY` writes it.
 struct NoWriter {
     field: &'static str,
     named: &'static str,
     needles: &'static [&'static str],
-    word: &'static str,
+    word: Option<&'static str>,
     source: Option<&'static str>,
+    types: Option<&'static str>,
 }
 
-const NO_WRITER: [NoWriter; 5] = [
+const NO_WRITER: [NoWriter; 11] = [
     NoWriter {
         field: "RecordFlags::RAN",
         named: "`RecordFlags::RAN`",
         needles: &["RecordFlags::RAN", "keyed::RAN"],
-        word: "RAN",
+        word: Some("RAN"),
         source: Some("profile.rs"),
+        types: None,
     },
     NoWriter {
         field: "RecordFlags::EXITED",
         named: "`RecordFlags::EXITED`",
         needles: &["RecordFlags::EXITED"],
-        word: "EXITED",
+        word: Some("EXITED"),
         source: None,
+        types: None,
     },
     NoWriter {
         field: "ObjectKind::TypedArray",
         named: "`ObjectKind::TypedArray`",
         needles: &["ObjectKind::TypedArray"],
-        word: "TypedArray",
+        word: Some("TypedArray"),
         source: None,
+        types: None,
     },
     NoWriter {
         field: "Access::Getter",
         named: "the Access tags getter and setter",
         needles: &["Access::Getter"],
-        word: "Getter",
+        word: Some("Getter"),
         source: None,
+        types: None,
     },
     NoWriter {
         field: "Access::Setter",
         named: "the Access tags getter and setter",
         needles: &["Access::Setter"],
-        word: "Setter",
+        word: Some("Setter"),
         source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "Access::StringLength",
+        named: "`Access::StringLength`",
+        needles: &["Access::StringLength"],
+        word: Some("StringLength"),
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "Access::Element",
+        named: "`Access::Element`",
+        needles: &["Access::Element"],
+        word: Some("Element"),
+        source: None,
+        types: None,
+    },
+    NoWriter {
+        field: "PropertyFacts.values",
+        named: "`PropertyFacts.values`",
+        needles: &[],
+        word: None,
+        source: None,
+        types: Some("values"),
+    },
+    NoWriter {
+        field: "GlobalFacts.values",
+        named: "`GlobalFacts.values`",
+        needles: &[],
+        word: None,
+        source: None,
+        types: Some("values"),
+    },
+    NoWriter {
+        field: "CallFacts.result",
+        named: "`CallFacts.result`",
+        needles: &[],
+        word: None,
+        source: None,
+        types: Some("result"),
+    },
+    NoWriter {
+        field: "BindingSet::MISSING",
+        named: "`BindingSet::MISSING`",
+        needles: &["BindingSet::MISSING"],
+        word: None,
+        source: None,
+        types: None,
     },
 ];
 
@@ -1335,25 +1390,153 @@ fn has_word(code: &str, word: &str) -> bool {
         .any(|(i, _)| !code[..i].ends_with(ident) && !code[i + word.len()..].starts_with(ident))
 }
 
-/// No record of `snap` has a field of [`NO_WRITER`].
-fn assert_no_declared_field(snap: &FactSnapshot) {
-    for (key, facts, meta) in snap.records_with_meta() {
-        assert_eq!(
-            meta.flags,
-            ep9_facts::RecordFlags::EMPTY,
-            "{key:?} {facts:?}"
-        );
-        let text = format!("{facts:?}");
-        for tag in ["TypedArray", "Getter {", "Setter {"] {
-            assert!(!text.contains(tag), "{key:?}: {tag} in {text}");
+/// True if `code` sets the `TypeSet` field `name` to a value other than `TypeSet::EMPTY`: a
+/// field init `name: v` or an assignment `.name = v` / `.name |= v`.
+fn sets_types(code: &str, name: &str) -> bool {
+    let init = code
+        .strip_prefix(name)
+        .and_then(|r| r.strip_prefix(':'))
+        .is_some_and(|v| v.trim() != "TypeSet::EMPTY,");
+    let assign = [" =", " |="]
+        .iter()
+        .any(|op| code.contains(&format!(".{name}{op}")));
+    init || assign
+}
+
+/// The H16 "Declared, no writer" items that a record holds, as [`NO_WRITER`] names them. The
+/// matches have no `_` arm, and each bit list is read in full: a new `SlotFacts` kind,
+/// `Access` tag, `ObjectKind`, `RecordFlags` bit or `BindingSet` bit fails here (to compile,
+/// or with its name) until it is sorted as written or as declared with no writer (Codex r1
+/// D4). A keyed record with a case is `Access::Element`: no T0 code writes a keyed case
+/// (MC-w15-1).
+fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Vec<&'static str>) {
+    use ep9_facts::RecordFlags;
+    for &(bit, name) in RecordFlags::BITS {
+        let field = match name {
+            "exited" => "RecordFlags::EXITED",
+            "ran" => "RecordFlags::RAN",
+            _ => panic!("RecordFlags bit {name:?} is not sorted (H16 \"Declared, no writer\")"),
+        };
+        if flags.contains(bit) {
+            out.push(field);
         }
     }
+    fn shape(s: &ShapeDesc, out: &mut Vec<&'static str>) {
+        match s.kind {
+            ObjectKind::Ordinary
+            | ObjectKind::Array
+            | ObjectKind::Function
+            | ObjectKind::Error
+            | ObjectKind::Iterator
+            | ObjectKind::PrimitiveWrapper
+            | ObjectKind::BoundFunction
+            | ObjectKind::Arguments => {}
+            ObjectKind::TypedArray => out.push("ObjectKind::TypedArray"),
+        }
+    }
+    fn property(p: &PropertyFacts, out: &mut Vec<&'static str>) {
+        if p.values != TypeSet::EMPTY {
+            out.push("PropertyFacts.values");
+        }
+        for c in &p.cases {
+            shape(&c.receiver, out);
+            match &c.access {
+                Access::OwnField { .. }
+                | Access::ProtoField { .. }
+                | Access::Missing { .. }
+                | Access::ArrayLength
+                | Access::Generic => {}
+                Access::AddField { to, .. } => shape(to, out),
+                Access::Getter { .. } => out.push("Access::Getter"),
+                Access::Setter { .. } => out.push("Access::Setter"),
+                Access::StringLength => out.push("Access::StringLength"),
+                Access::Element { .. } => out.push("Access::Element"),
+            }
+        }
+    }
+    fn keyed(k: &ep9_facts::KeyedFacts, out: &mut Vec<&'static str>) {
+        if !k.property.cases.is_empty() {
+            out.push("Access::Element");
+        }
+        property(&k.property, out);
+    }
+    fn global(g: &ep9_facts::GlobalFacts, out: &mut Vec<&'static str>) {
+        if g.values != TypeSet::EMPTY {
+            out.push("GlobalFacts.values");
+        }
+        for &(bit, name) in BindingSet::BITS {
+            match name {
+                "lexical" | "data-property" | "accessor-property" => {}
+                "missing" => {
+                    if g.bindings.contains(bit) {
+                        out.push("BindingSet::MISSING");
+                    }
+                }
+                _ => panic!("BindingSet bit {name:?} is not sorted (H16 \"Declared, no writer\")"),
+            }
+        }
+    }
+    match facts {
+        SlotFacts::Call(c) => {
+            if c.result != TypeSet::EMPTY {
+                out.push("CallFacts.result");
+            }
+        }
+        SlotFacts::LoadNamed(p) | SlotFacts::StoreNamed(p) | SlotFacts::DefineNamedOwn(p) => {
+            property(p, out)
+        }
+        SlotFacts::LoadKeyed(k)
+        | SlotFacts::StoreKeyed(k)
+        | SlotFacts::DefineKeyedOwn(k)
+        | SlotFacts::HasKeyed(k)
+        | SlotFacts::StoreInArrayLiteral(k) => keyed(k, out),
+        SlotFacts::LoadGlobal(g)
+        | SlotFacts::LoadGlobalInsideTypeof(g)
+        | SlotFacts::StoreGlobal(g) => global(g, out),
+        SlotFacts::Literal(l) => {
+            if let Some(s) = &l.shape {
+                shape(s, out);
+            }
+        }
+        SlotFacts::CloneObject(c) => {
+            for case in &c.cases {
+                shape(&case.source, out);
+                shape(&case.result, out);
+            }
+        }
+        SlotFacts::BinaryOp(_)
+        | SlotFacts::CompareOp(_)
+        | SlotFacts::TypeOf(_)
+        | SlotFacts::InstanceOf(_)
+        | SlotFacts::ForIn(_)
+        | SlotFacts::JumpLoop(_)
+        | SlotFacts::CreateClosure(_) => {}
+    }
+}
+
+/// No record of `snap` has a field of [`NO_WRITER`]. Returns the number of records read.
+fn assert_no_declared_field(snap: &FactSnapshot) -> usize {
+    let mut n = 0;
+    for (key, facts, meta) in snap.records_with_meta() {
+        let mut found = Vec::new();
+        declared_items(facts, meta.flags, &mut found);
+        for f in &found {
+            assert!(
+                NO_WRITER.iter().any(|w| w.field == *f),
+                "{f} is not in NO_WRITER"
+            );
+        }
+        assert!(found.is_empty(), "{key:?}: {found:?} in {facts:?}");
+        n += 1;
+    }
+    n
 }
 
 /// MC-w24-5: each field of H16 "Declared, no writer" has no writer in ep9_vm. A writer
 /// fails this test with the field's name and the line; then the field leaves [`NO_WRITER`]
 /// and the H16 paragraph (an ADR change). The H16 paragraph names every field of the list,
-/// and a snapshot of the T0 cases ([`scenario`]) holds none of them.
+/// and snapshots of the T0 cases ([`scenario`]), the call sites ([`run_calls`]) and the keyed
+/// sites ([`keyed_facts_program`]) hold none of them.
 #[test]
 fn the_fields_declared_with_no_writer_have_none() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1400,8 +1583,11 @@ fn the_fields_declared_with_no_writer_have_none() {
         for (n, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("").trim();
             for w in &NO_WRITER {
-                let hit = w.needles.iter().any(|x| code.contains(x))
-                    || ((facts_user || w.source == Some(rel.as_str())) && has_word(code, w.word));
+                let by_word = w.word.is_some_and(|word| {
+                    (facts_user || w.source == Some(rel.as_str())) && has_word(code, word)
+                });
+                let by_types = w.types.is_some_and(|t| facts_user && sets_types(code, t));
+                let hit = w.needles.iter().any(|x| code.contains(x)) || by_word || by_types;
                 if !hit {
                     continue;
                 }
@@ -1419,8 +1605,20 @@ fn the_fields_declared_with_no_writer_have_none() {
     );
     assert!(allowed.is_empty(), "lines that are gone: {allowed:?}");
 
-    on_big_stack(|| {
-        let (_t, snap) = scenario();
-        assert_no_declared_field(&snap);
+    // Each snapshot has records, and none holds a declared field.
+    let snap = on_big_stack(|| scenario().1);
+    assert!(assert_no_declared_field(&snap) > 0, "scenario: no record");
+    let (_, snap) = run_calls(&[(0, "g"), (1, "g")]);
+    assert!(assert_no_declared_field(&snap) > 0, "calls: no record");
+    let snap = on_big_stack(|| {
+        let (unit, _) = keyed_facts_program();
+        let mut c = config(Dispatch::DEFAULT, false);
+        c.feedback_threshold = 0;
+        let mut iso = isolate_full(c);
+        let u = unit.clone();
+        iso.with_cx(|cx| cx.run_script(u, "keyed.js").map(|_| ()))
+            .unwrap();
+        export_facts(&iso, &unit.content_hash()).unwrap()
     });
+    assert!(assert_no_declared_field(&snap) > 0, "keyed: no record");
 }
