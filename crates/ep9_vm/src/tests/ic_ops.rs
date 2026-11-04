@@ -1474,9 +1474,10 @@ fn accessor_and_dictionary_holder_handlers_have_their_lists() {
             l(dict, Operation::LoadNamed).as_slice(),
             &[shape, chain, Op::LoadHolderDict(Ref::HandlerRef)]
         );
-        // A handler kind no list knows (the next append) is the generic path.
-        let next = fake_handler(rt, 12, UNDEFINED, UNDEFINED, 0);
-        assert_eq!(l(next, Operation::LoadNamed).as_slice(), &[Op::Generic]);
+        // A handler kind no list knows is the generic path. The probe is the top of the int32
+        // kind range (K10), never the next free kind 12 (README §3.4 "Append-only parts").
+        let unknown = fake_handler(rt, i32::MAX, UNDEFINED, UNDEFINED, 0);
+        assert_eq!(l(unknown, Operation::LoadNamed).as_slice(), &[Op::Generic]);
     });
 }
 
