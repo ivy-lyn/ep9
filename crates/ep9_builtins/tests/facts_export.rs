@@ -23,6 +23,8 @@ use ep9_heap::HeapConfig;
 use ep9_vm::abi::export_facts;
 use ep9_vm::{ExecOptions, Feedback, Isolate, IsolateConfig};
 
+mod common;
+
 /// richards, then 3 runs (the first calls make the feedback vectors: 8 calls, or a loop's
 /// budget poll).
 fn source() -> String {
@@ -821,16 +823,38 @@ for (var i = 0; i < 3000; i++) writers(i, "s", 2.5, {});
 /// (the function `F`, which nothing else holds) reads undefined, so the record is
 /// `uninitialized` (`instance_ic.rs` "Weak"; `facts_export.rs` `instance_of`). `F` is read
 /// twice: the first read makes its lazy `prototype` and records nothing. [`run_and_collect`]
-/// runs it.
+/// runs it and collects through the rule-35 helpers (`common`).
 const DEAD_KEY: &str = r#"
 function t(o, C) { return o instanceof C; }
 function once() { var F = function () {}; t({}, F); return t({}, F); }
 if (once()) throw new Error("instanceof");
 "#;
 
-/// [`run_with`] at threshold 0, then a full GC (`Isolate::collect_garbage`) before the export:
-/// the cells that only a weak key held are dead.
+/// [`run_with`] at threshold 0, then a check that the weak InstanceOf key dies, then the
+/// export. Plan rule 35 (`common` module doc): the collections go through
+/// [`common::assert_dies`], which scrubs the stack in this frame before and after each one, and
+/// the script (which makes the target) runs in a frame that has returned ([`run_dead_key`]).
+/// This frame holds no struct with padding across a collection but the isolate: it compiles
+/// the unit again after the check (the compile is deterministic). If the key is still alive,
+/// the test fails with the cause: "kept by the conservative scan" (a stale stack word) or
+/// "still alive" (a reference).
 fn run_and_collect(src: &str) -> (VerifiedUnit, FactSnapshot) {
+    let (mut iso, hash) = run_dead_key(src);
+    common::assert_dies(
+        &mut iso,
+        "the DEAD_KEY function F (InstanceOf key)",
+        |iso| dead_key_cleared(iso, &hash),
+    );
+    let unit = compile(src);
+    assert_eq!(unit.content_hash(), hash);
+    let facts = export_facts(&iso, &hash).expect("the unit is loaded");
+    (unit, facts)
+}
+
+/// Compiles and runs `src` (threshold 0, full feedback) on a fresh isolate: the isolate and the
+/// unit's content hash. Out of line, so the script's frames have returned before a collection.
+#[inline(never)]
+fn run_dead_key(src: &str) -> (Isolate, [u8; 32]) {
     let unit = compile(src);
     let mut iso = Isolate::new_with(
         IsolateConfig {
@@ -841,12 +865,19 @@ fn run_and_collect(src: &str) -> (VerifiedUnit, FactSnapshot) {
         ExecOptions::default().feedback(Feedback::FULL),
     )
     .expect("an isolate");
-    let u = unit.clone();
-    iso.with_cx(|cx| cx.run_script(u, "facts.js").map(|_| ()))
+    let hash = unit.content_hash();
+    iso.with_cx(|cx| cx.run_script(unit, "facts.js").map(|_| ()))
         .unwrap_or_else(|e| panic!("the script threw: {}", e.message));
-    iso.collect_garbage();
-    let facts = export_facts(&iso, &unit.content_hash()).expect("the unit is loaded");
-    (unit, facts)
+    (iso, hash)
+}
+
+/// True if an InstanceOf record of the unit `hash` is `uninitialized`: its weak key died. The
+/// export reads the heap and allocates nothing, so it keeps nothing alive.
+fn dead_key_cleared(iso: &mut Isolate, hash: &[u8; 32]) -> bool {
+    export_facts(iso, hash)
+        .expect("the unit is loaded")
+        .records()
+        .any(|(_, r)| matches!(r, SlotFacts::InstanceOf(t) if t.state == IcState::Uninitialized))
 }
 
 /// The H16 "Declared, no writer" items, each with the words that the H16 paragraph names it
@@ -1134,8 +1165,9 @@ fn items(s: &FactSnapshot, out: &mut BTreeSet<String>) {
 /// do: each item of the schema ([`universe`]) that claims a writer is in a record of the
 /// corpus, so a writer that stops firing fails here with the item's name. The corpus is
 /// richards, [`KINDS`] and [`WRITERS`] with full feedback and the default threshold, and
-/// [`DEAD_KEY`] with a full GC before its export. No item of [`NO_WRITER_ITEMS`] is in a record,
-/// and the H16 paragraph "Declared, no writer" names each of them.
+/// [`DEAD_KEY`] with scrubbed full GCs before its export (rule 35, [`run_and_collect`]). No
+/// item of [`NO_WRITER_ITEMS`] is in a record, and the H16 paragraph "Declared, no writer"
+/// names each of them.
 #[test]
 fn every_field_that_claims_a_writer_is_seen() {
     let h16 = std::fs::read_to_string(
