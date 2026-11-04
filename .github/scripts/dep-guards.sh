@@ -373,4 +373,48 @@ else
   if [ "$users" = ep9_bigint ]; then ok "(17) only ep9_bigint depends on dashu-int"; else bad "(17) dashu-int must have ep9_bigint as its only dependent; it has: ${users:-none}"; fi
 fi
 
+# 18) ep9_temporal (design SPEC-T-D11, D12, D19) reaches the engine only through ep9_vm's Cx;
+#     its other normal edges are temporal_rs, its time-zone provider and data reader, and libm
+#     (for `force-soft-floats` only).
+deps_within 18 ep9_temporal ep9_vm temporal_rs timezone_provider zoneinfo64 libm
+
+# 19) temporal_rs, timezone_provider and zoneinfo64 have ep9_temporal as their only workspace
+#     dependent, so builtins reach Temporal only through ep9_temporal's modules. Control: check
+#     14's query on its sample graph (above) must find a second dependent.
+if ! member_exists ep9_temporal; then
+  ok "(19) ep9_temporal does not exist yet"
+else
+  for c in temporal_rs timezone_provider zoneinfo64; do
+    users="$(dependents_of "$c" "$meta" | paste -sd ' ' -)"
+    if [ "$users" = ep9_temporal ]; then ok "(19) only ep9_temporal depends on $c"; else bad "(19) $c must have ep9_temporal as its only dependent; it has: ${users:-none}"; fi
+  done
+fi
+
+# 20) Features in the shipped graph (-p ep9_cli, default and jitless): temporal_rs has no `sys`,
+#     `sys-local`, `compiled_data` or `tzdb` (no host clock or zone outside ep9_platform, C20;
+#     no tzif provider, wrong at 0.2.6); timezone_provider has no `tzif` and has `zoneinfo64`
+#     (the control: a query that sees no features fails here); libm has `force-soft-floats`
+#     (H36: no hardware FMA). Before ep9_temporal is in the ep9 graph the check reads
+#     -p ep9_temporal.
+if member_exists ep9_temporal; then
+  if present_in ep9_cli -e normal -i ep9_temporal 2>/dev/null; then
+    graphs=("-p ep9_cli" "-p ep9_cli --no-default-features")
+  else
+    graphs=("-p ep9_temporal")
+  fi
+  for g in "${graphs[@]}"; do
+    # shellcheck disable=SC2086
+    {
+      for feat in sys sys-local compiled_data tzdb; do
+        feature_check 20 temporal_rs "$feat" off "$g" $g
+      done
+      feature_check 20 timezone_provider tzif off "$g" $g
+      feature_check 20 timezone_provider zoneinfo64 on "control: $g" $g
+      feature_check 20 libm force-soft-floats on "$g" $g
+    }
+  done
+else
+  ok "(20) ep9_temporal does not exist yet"
+fi
+
 exit "$fail"

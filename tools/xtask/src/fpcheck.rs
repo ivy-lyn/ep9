@@ -6,7 +6,7 @@
 //! |---|---|---|
 //! | banned symbols | No undefined reference to a libm-class symbol (`BANNED_BASE` and `BANNED_EXTRA`: transcendental `math.h` names with their `f`/`l` forms, `fma`, `fmod`, `remainder`, `remquo`, the compiler-rt `__powi*` helpers, Apple/MSVC/glibc aliases) unless `expectations/fp-check-allow.toml` lists that symbol in that function | `llvm-nm -u` on the object; `llvm-objdump -dr -C` names the function of each relocation to the symbol |
 //! | FMA instructions | FMA mnemonics (aarch64 `fmadd fmsub fnmadd fnmsub fmla* fmls* fnmla fnmls`, SVE `fmad fmsb fnmad fnmsb`, `bfmla bfmls`; x86 `vfmadd* vfmsub* vfnmadd* vfnmsub*`) only in `ep9_math::` functions | the same disassembly; on x86-64 Mach-O without the jump-table bytes (LC_DATA_IN_CODE), and decoded again from each table end, as in `disasm-check` |
-//! | second math crate | `libm`, `pxfm`, `core_maths` and `micromath` are not in the package's normal or build graph, on any target | `cargo tree -e normal,build --target all` |
+//! | second math crate | `libm`, `pxfm`, `core_maths` and `micromath` are not in the package's normal or build graph, on any target, unless an `[[allow-crate]]` entry lists the crate and every path from the package to it goes through one of the entry's `via` crates | `cargo tree -e normal,build --target all`; for an allowed crate, the inverted tree `-i <crate> --no-dedupe --prefix depth` |
 //! | allow sites | `clippy::disallowed_methods` is named (allow, expect, cfg_attr) only in `crates/ep9_math/src/exact.rs`; `tools/*` may name it | text scan of `crates/**/*.rs`; syn names the enclosing item |
 //!
 //! The object is what ships: `cargo rustc --release --target T -p ep9_cli --bin ep9 --
@@ -18,7 +18,8 @@
 //! `-Ctarget-cpu=x86-64-v3` for every crate (where `mul_add` becomes an inline `vfmadd`).
 //!
 //! The allow file is the subset of TOML below; fp-check reads it by hand (the lock has no TOML
-//! crate). More than 5 entries reopens H36 and fails the check.
+//! crate). More than 5 entries (`[[allow]]` and `[[allow-crate]]` together) reopens H36 and
+//! fails the check.
 //!
 //! ```toml
 //! [[allow]]
@@ -27,7 +28,18 @@
 //! targets = "all"                           # or ["x86_64-pc-windows-msvc", ...]
 //! reopen = "when the entry can go"
 //! reason = "why it is harmless"             # optional
+//!
+//! [[allow-crate]]                           # H36 Rules row 4 "unless allowlisted"
+//! crates = ["core_maths", "libm"]           # math crates (MATH_CRATES) this entry lets in
+//! via = ["temporal_rs"]                     # every path to each crate must pass one of these
+//! reopen = "when the entry can go"
+//! reason = "why it is harmless"             # optional
 //! ```
+//!
+//! An `[[allow-crate]]` entry only lets the crate into the graph. The symbol and FMA scans of
+//! the object still run: code of the crate that reaches the object passes only if it has no
+//! banned symbol and no FMA instruction (for `libm`, `force-soft-floats` keeps `fma` in soft
+//! code).
 //!
 //! Exit codes: 0 pass, 1 a finding that the allow file does not cover (each finding names its
 //! function), 2 usage error, tool error (a missing llvm tool or rustup target) or build error.
@@ -255,19 +267,31 @@ pub fn main(args: &[String]) -> Result<bool, String> {
         Some(p) => (p.clone(), true),
         None => (o.root.join("expectations/fp-check-allow.toml"), false),
     };
-    let allow = if allow_path.exists() || required {
+    let file = if allow_path.exists() || required {
         let text = fs::read_to_string(&allow_path)
             .map_err(|e| format!("{}: {e}", allow_path.display()))?;
-        parse_allow(&text).map_err(|e| format!("{}: {e}", allow_path.display()))?
+        parse_allow_file(&text).map_err(|e| format!("{}: {e}", allow_path.display()))?
     } else {
-        Vec::new()
+        AllowFile::default()
     };
+    let total = file.len();
+    let allow = &file.symbols;
     println!(
         "fp-check: allow list {}: {} entr{}",
         allow_path.display(),
-        allow.len(),
-        if allow.len() == 1 { "y" } else { "ies" }
+        total,
+        if total == 1 { "y" } else { "ies" }
     );
+    for (i, a) in file.crates.iter().enumerate() {
+        println!(
+            "fp-check: allow-crate entry {}: {} via {} (reopen: {}; reason: {})",
+            i + 1,
+            a.crates.join(", "),
+            a.via.join(", "),
+            a.reopen,
+            a.reason.as_deref().unwrap_or("-")
+        );
+    }
     for (i, a) in allow.iter().enumerate() {
         println!(
             "fp-check: allow entry {}: {} in {} on {} (reopen: {}; reason: {})",
@@ -286,11 +310,10 @@ pub fn main(args: &[String]) -> Result<bool, String> {
     let mut used = vec![0usize; allow.len()];
 
     // 0. The allow list itself.
-    let ok = allow.len() <= MAX_ALLOW_ENTRIES;
+    let ok = total <= MAX_ALLOW_ENTRIES;
     if !ok {
         println!(
-            "fp-check FAIL allow list: {} entries; more than {MAX_ALLOW_ENTRIES} reopens H36",
-            allow.len()
+            "fp-check FAIL allow list: {total} entries; more than {MAX_ALLOW_ENTRIES} reopens H36"
         );
     }
     results.push(("allow list size".into(), ok));
@@ -312,11 +335,41 @@ pub fn main(args: &[String]) -> Result<bool, String> {
 
     // 2. Second math crate.
     let found = math_crates(&o)?;
+    let mut graph_ok = true;
     for c in &found {
-        println!(
-            "fp-check FAIL graph: {} depends on the math crate {c} (H36: only ep9_math)",
-            o.package
-        );
+        let Some((i, entry)) = file
+            .crates
+            .iter()
+            .enumerate()
+            .find(|(_, a)| a.crates.iter().any(|x| x == c))
+        else {
+            graph_ok = false;
+            println!(
+                "fp-check FAIL graph: {} depends on the math crate {c} (H36: only ep9_math)",
+                o.package
+            );
+            continue;
+        };
+        let tree = inverted_tree(&o, c)?;
+        let bad = paths_not_via(&tree, &entry.via);
+        if bad.is_empty() {
+            println!(
+                "fp-check graph: {c}: allowed by allow-crate entry {} (every path goes through {}; reopen: {})",
+                i + 1,
+                entry.via.join(" or "),
+                entry.reopen
+            );
+        } else {
+            graph_ok = false;
+            for p in &bad {
+                println!(
+                    "fp-check FAIL graph: {c} is reached by {} not through {} (allow-crate entry {})",
+                    p.join(" <- "),
+                    entry.via.join(" or "),
+                    i + 1
+                );
+            }
+        }
     }
     println!(
         "fp-check graph: {} has {} of {}",
@@ -328,7 +381,7 @@ pub fn main(args: &[String]) -> Result<bool, String> {
         },
         MATH_CRATES.join(", ")
     );
-    results.push(("graph (second math crate)".into(), found.is_empty()));
+    results.push(("graph (second math crate)".into(), graph_ok));
 
     // 3. Each build.
     for spec in &o.specs {
@@ -399,6 +452,32 @@ pub fn main(args: &[String]) -> Result<bool, String> {
 
 // ---------------------------------------------------------------------------------------------
 // Allow list
+
+/// The parsed allow file.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AllowFile {
+    /// `[[allow]]`: banned symbols in one function.
+    symbols: Vec<AllowEntry>,
+    /// `[[allow-crate]]`: math crates in the graph, reached only through `via` crates.
+    crates: Vec<AllowCrate>,
+}
+
+impl AllowFile {
+    fn len(&self) -> usize {
+        self.symbols.len() + self.crates.len()
+    }
+}
+
+/// An `[[allow-crate]]` entry (H36 Rules row 4, "unless allowlisted").
+#[derive(Debug, PartialEq, Eq)]
+struct AllowCrate {
+    /// Math crates ([`MATH_CRATES`]) that may be in the graph.
+    crates: Vec<String>,
+    /// Every path from the package to each crate must go through one of these packages.
+    via: Vec<String>,
+    reopen: String,
+    reason: Option<String>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct AllowEntry {
@@ -495,9 +574,16 @@ fn toml_value(s: &str) -> Result<TomlValue, String> {
     }
 }
 
-/// Parses the allow file: `[[allow]]` tables with the keys of [`AllowEntry`].
+/// The `[[allow]]` entries of the allow file (tests).
+#[cfg(test)]
 fn parse_allow(text: &str) -> Result<Vec<AllowEntry>, String> {
-    let mut tables: Vec<BTreeMap<String, TomlValue>> = Vec::new();
+    parse_allow_file(text).map(|f| f.symbols)
+}
+
+/// Parses the allow file: `[[allow]]` tables with the keys of [`AllowEntry`] and
+/// `[[allow-crate]]` tables with the keys of [`AllowCrate`].
+fn parse_allow_file(text: &str) -> Result<AllowFile, String> {
+    let mut tables: Vec<(bool, BTreeMap<String, TomlValue>)> = Vec::new();
     for (n, raw) in text.lines().enumerate() {
         let line = raw.trim();
         let at = |e: String| format!("line {}: {e}", n + 1);
@@ -506,19 +592,23 @@ fn parse_allow(text: &str) -> Result<Vec<AllowEntry>, String> {
         }
         if line.starts_with('[') {
             let head = line.split('#').next().unwrap_or("").trim();
-            if head != "[[allow]]" {
-                return Err(at(format!(
-                    "only [[allow]] tables are allowed, found {head}"
-                )));
-            }
-            tables.push(BTreeMap::new());
+            let is_crate = match head {
+                "[[allow]]" => false,
+                "[[allow-crate]]" => true,
+                _ => {
+                    return Err(at(format!(
+                        "only [[allow]] and [[allow-crate]] tables are allowed, found {head}"
+                    )));
+                }
+            };
+            tables.push((is_crate, BTreeMap::new()));
             continue;
         }
         let (k, v) = line
             .split_once('=')
             .ok_or_else(|| at("expected key = value".into()))?;
         let k = k.trim().to_string();
-        let t = tables
+        let (_, t) = tables
             .last_mut()
             .ok_or_else(|| at("key outside an [[allow]] table".into()))?;
         let v = toml_value(v).map_err(at)?;
@@ -526,50 +616,96 @@ fn parse_allow(text: &str) -> Result<Vec<AllowEntry>, String> {
             return Err(at(format!("duplicate key {k}")));
         }
     }
-    tables
-        .into_iter()
-        .enumerate()
-        .map(|(i, mut t)| {
-            let at = |e: &str| format!("[[allow]] entry {}: {e}", i + 1);
-            let symbols = match t.remove("symbols") {
-                Some(TomlValue::List(v)) if !v.is_empty() => v,
-                _ => return Err(at("symbols must be a non-empty array of strings")),
-            };
-            let function = match t.remove("function") {
-                Some(TomlValue::Str(s)) if !s.is_empty() => s,
-                _ => return Err(at("function must be a non-empty string")),
-            };
-            let targets = match t.remove("targets") {
-                Some(TomlValue::Str(s)) if s == "all" => None,
-                Some(TomlValue::List(v)) if !v.is_empty() => Some(v),
-                _ => return Err(at("targets must be \"all\" or a non-empty array")),
-            };
-            let reopen = match t.remove("reopen") {
-                Some(TomlValue::Str(s)) if !s.is_empty() => s,
-                _ => return Err(at("reopen must be a non-empty string")),
-            };
-            let reason = match t.remove("reason") {
-                None => None,
-                Some(TomlValue::Str(s)) => Some(s),
-                Some(_) => return Err(at("reason must be a string")),
-            };
-            if let Some(k) = t.keys().next() {
-                return Err(at(&format!("unknown key {k}")));
-            }
-            for s in &symbols {
-                if !is_banned(s) {
-                    return Err(at(&format!("{s} is not a banned symbol")));
-                }
-            }
-            Ok(AllowEntry {
-                symbols,
-                function,
-                targets,
-                reopen,
-                reason,
-            })
-        })
-        .collect()
+    let mut file = AllowFile::default();
+    for (i, (is_crate, t)) in tables.into_iter().enumerate() {
+        if is_crate {
+            file.crates.push(parse_allow_crate(i, t)?);
+        } else {
+            file.symbols.push(parse_allow_entry(i, t)?);
+        }
+    }
+    Ok(file)
+}
+
+/// One `[[allow-crate]]` table (the `i`-th table of the file).
+fn parse_allow_crate(i: usize, mut t: BTreeMap<String, TomlValue>) -> Result<AllowCrate, String> {
+    let at = |e: &str| format!("[[allow-crate]] entry {}: {e}", i + 1);
+    let crates = match t.remove("crates") {
+        Some(TomlValue::List(v)) if !v.is_empty() => v,
+        _ => return Err(at("crates must be a non-empty array of strings")),
+    };
+    let via = match t.remove("via") {
+        Some(TomlValue::List(v)) if !v.is_empty() && v.iter().all(|s| !s.is_empty()) => v,
+        _ => return Err(at("via must be a non-empty array of package names")),
+    };
+    let reopen = match t.remove("reopen") {
+        Some(TomlValue::Str(s)) if !s.is_empty() => s,
+        _ => return Err(at("reopen must be a non-empty string")),
+    };
+    let reason = match t.remove("reason") {
+        None => None,
+        Some(TomlValue::Str(s)) => Some(s),
+        Some(_) => return Err(at("reason must be a string")),
+    };
+    if let Some(k) = t.keys().next() {
+        return Err(at(&format!("unknown key {k}")));
+    }
+    for c in &crates {
+        if !MATH_CRATES.contains(&c.as_str()) {
+            return Err(at(&format!(
+                "{c} is not a math crate ({})",
+                MATH_CRATES.join(", ")
+            )));
+        }
+    }
+    Ok(AllowCrate {
+        crates,
+        via,
+        reopen,
+        reason,
+    })
+}
+
+/// One `[[allow]]` table (the `i`-th table of the file).
+fn parse_allow_entry(i: usize, mut t: BTreeMap<String, TomlValue>) -> Result<AllowEntry, String> {
+    let at = |e: &str| format!("[[allow]] entry {}: {e}", i + 1);
+    let symbols = match t.remove("symbols") {
+        Some(TomlValue::List(v)) if !v.is_empty() => v,
+        _ => return Err(at("symbols must be a non-empty array of strings")),
+    };
+    let function = match t.remove("function") {
+        Some(TomlValue::Str(s)) if !s.is_empty() => s,
+        _ => return Err(at("function must be a non-empty string")),
+    };
+    let targets = match t.remove("targets") {
+        Some(TomlValue::Str(s)) if s == "all" => None,
+        Some(TomlValue::List(v)) if !v.is_empty() => Some(v),
+        _ => return Err(at("targets must be \"all\" or a non-empty array")),
+    };
+    let reopen = match t.remove("reopen") {
+        Some(TomlValue::Str(s)) if !s.is_empty() => s,
+        _ => return Err(at("reopen must be a non-empty string")),
+    };
+    let reason = match t.remove("reason") {
+        None => None,
+        Some(TomlValue::Str(s)) => Some(s),
+        Some(_) => return Err(at("reason must be a string")),
+    };
+    if let Some(k) = t.keys().next() {
+        return Err(at(&format!("unknown key {k}")));
+    }
+    for s in &symbols {
+        if !is_banned(s) {
+            return Err(at(&format!("{s} is not a banned symbol")));
+        }
+    }
+    Ok(AllowEntry {
+        symbols,
+        function,
+        targets,
+        reopen,
+        reason,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -945,6 +1081,76 @@ fn parse_tree_packages(out: &str) -> BTreeSet<String> {
         .filter_map(|l| l.split_whitespace().next())
         .map(str::to_string)
         .collect()
+}
+
+/// The inverted dependency tree of `krate` in the package's normal and build graph on every
+/// target: `(depth, package name)` per line, every path printed (`--no-dedupe`).
+fn inverted_tree(o: &Opts, krate: &str) -> Result<Vec<(usize, String)>, String> {
+    let out = run_capture(
+        cargo()
+            .arg("tree")
+            .args(locked(&o.root))
+            .arg("--manifest-path")
+            .arg(o.root.join("Cargo.toml"))
+            .args([
+                "-p",
+                &o.package,
+                "-e",
+                "normal,build",
+                "--target",
+                "all",
+                "-i",
+                krate,
+                "--no-dedupe",
+                "--prefix",
+                "depth",
+                "-f",
+                "{p}",
+            ]),
+    )?;
+    let tree = parse_depth_tree(&out)?;
+    if tree.first().is_none_or(|(d, n)| *d != 0 || n != krate) {
+        return Err(format!("cargo tree -i {krate} did not start with {krate}"));
+    }
+    Ok(tree)
+}
+
+/// Parses `cargo tree --prefix depth -f {p}` output: each line is the depth, then
+/// `name vX.Y.Z ...`.
+fn parse_depth_tree(out: &str) -> Result<Vec<(usize, String)>, String> {
+    out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let digits = l.len() - l.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            let depth = l[..digits]
+                .parse()
+                .map_err(|_| format!("cargo tree line without a depth: {l:?}"))?;
+            let name = l[digits..]
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| format!("cargo tree line without a package: {l:?}"))?;
+            Ok((depth, name.to_string()))
+        })
+        .collect()
+}
+
+/// The paths of an inverted tree (crate first, then each dependent up to a root) that pass
+/// no `via` package. A path ends at a leaf of the inverted tree: the package itself or
+/// another root.
+fn paths_not_via(tree: &[(usize, String)], via: &[String]) -> Vec<Vec<String>> {
+    let mut bad = Vec::new();
+    // stack[d] = (name, covered): the path from the crate to the current line.
+    let mut stack: Vec<(String, bool)> = Vec::new();
+    for (k, (depth, name)) in tree.iter().enumerate() {
+        stack.truncate(*depth);
+        let covered = via.iter().any(|v| v == name) || stack.last().is_some_and(|(_, c)| *c);
+        stack.push((name.clone(), covered));
+        let leaf = tree.get(k + 1).is_none_or(|(d, _)| d <= depth);
+        if leaf && !covered {
+            bad.push(stack.iter().map(|(n, _)| n.clone()).collect());
+        }
+    }
+    bad
 }
 
 fn math_crates(o: &Opts) -> Result<Vec<String>, String> {
@@ -1327,8 +1533,89 @@ reopen = "x"
     }
 
     #[test]
+    fn allow_crate_tables() {
+        let text = r#"
+[[allow]]
+symbols = ["pow"]
+function = "a::b"
+targets = "all"
+reopen = "x"
+
+[[allow-crate]]
+crates = ["core_maths", "libm"]
+via = ["temporal_rs", "calendrical_calculations"]
+reopen = "r"
+reason = "why"
+"#;
+        let f = parse_allow_file(text).unwrap();
+        assert_eq!(f.len(), 2);
+        assert_eq!(f.symbols.len(), 1);
+        assert_eq!(f.crates[0].crates, ["core_maths", "libm"]);
+        assert_eq!(f.crates[0].via, ["temporal_rs", "calendrical_calculations"]);
+        assert_eq!(f.crates[0].reason.as_deref(), Some("why"));
+        for bad in [
+            "[[allow-crate]]\ncrates = [\"serde\"]\nvia = [\"a\"]\nreopen = \"r\"", // not a math crate
+            "[[allow-crate]]\ncrates = [\"libm\"]\nreopen = \"r\"",                 // no via
+            "[[allow-crate]]\ncrates = [\"libm\"]\nvia = []\nreopen = \"r\"",       // empty via
+            "[[allow-crate]]\ncrates = [\"libm\"]\nvia = [\"a\"]\nreopen = \"r\"\nfunction = \"f\"",
+            "[[allow-crates]]\ncrates = [\"libm\"]",
+        ] {
+            assert!(parse_allow_file(bad).is_err(), "{bad}");
+        }
+    }
+
+    // `cargo tree -p ep9_cli -i libm --no-dedupe --prefix depth -f {p}` shape: libm is reached
+    // through core_maths from temporal_rs and calendrical_calculations.
+    const LIBM_TREE: &str = "0libm v0.2.16
+1core_maths v0.1.1
+2calendrical_calculations v0.2.4
+3temporal_rs v0.2.6
+4ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+5ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+6ep9_cli v0.0.0 (/w/crates/ep9_cli)
+2temporal_rs v0.2.6
+3ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+4ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+5ep9_cli v0.0.0 (/w/crates/ep9_cli)
+1ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+2ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+3ep9_cli v0.0.0 (/w/crates/ep9_cli)
+";
+
+    #[test]
+    fn allow_crate_paths() {
+        let t = parse_depth_tree(LIBM_TREE).unwrap();
+        assert_eq!(t[0], (0, "libm".to_string()));
+        assert_eq!(t.len(), 14);
+        let via = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Every path passes temporal_rs or calendrical_calculations, or ep9_temporal (the
+        // direct force-soft-floats edge).
+        assert!(
+            paths_not_via(
+                &t,
+                &via(&["temporal_rs", "calendrical_calculations", "ep9_temporal"])
+            )
+            .is_empty()
+        );
+        // Control: without ep9_temporal in `via`, the direct edge fails, and the failure
+        // names the path.
+        let bad = paths_not_via(&t, &via(&["temporal_rs", "calendrical_calculations"]));
+        assert_eq!(
+            bad,
+            [via(&["libm", "ep9_temporal", "ep9_builtins", "ep9_cli"])]
+        );
+        // Control: a `via` that no path passes fails every path.
+        assert_eq!(paths_not_via(&t, &via(&["serde"])).len(), 3);
+        assert!(parse_depth_tree("libm v1").is_err());
+    }
+
+    #[test]
     fn repo_allow_file_parses() {
         let p = repo_root().join("expectations/fp-check-allow.toml");
+        let f = parse_allow_file(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(f.len() <= MAX_ALLOW_ENTRIES);
+        assert_eq!(f.crates.len(), 1);
+        assert_eq!(f.crates[0].crates, ["core_maths", "libm"]);
         let v = parse_allow(&fs::read_to_string(p).unwrap()).unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].symbols, ["fmod", "pow"]);

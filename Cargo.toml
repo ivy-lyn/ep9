@@ -39,6 +39,17 @@ regress = "=0.12.0"
 # BigInt digits (plan 06 §4-§5: dashu first, the V8 `src/bigint` port at M8), exact pin. Only
 # ep9_bigint imports it, and only ep9_vm depends on ep9_bigint (dep-guards check 17).
 dashu-int = { version = "=0.6.2", default-features = false }
+# Temporal (plan Q2; design SPEC-T-D12, D13, D19), exact pins. Only ep9_temporal imports them
+# (dep-guards checks 18-20). No `sys`, `sys-local` or `compiled_data` (= the `tzif` provider,
+# wrong offsets at 0.2.6, temporal_rs issue 759): the clock and the host zone come through Cx,
+# and the zone data is ICU zoneinfo64.res in crates/ep9_temporal/data.
+temporal_rs = { version = "=0.2.6", default-features = false }
+timezone_provider = { version = "=0.2.6", default-features = false }
+zoneinfo64 = { version = "=0.3.0", default-features = false }
+# H36 (design SPEC-T-D19): temporal_rs reaches libm through core_maths. ep9_temporal has a
+# direct edge only to turn on `force-soft-floats`, so `libm::fma` is the soft, correctly rounded
+# code (no `fmadd`/`vfmadd`) on every target.
+libm = { version = "=0.2.16", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

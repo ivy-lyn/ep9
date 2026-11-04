@@ -193,17 +193,22 @@ fn clippy_toml_repeats_the_root_bans() {
     };
     let root_paths = paths(&root);
     assert!(root_paths.len() > 50, "the root bans: {}", root_paths.len());
-    let our_paths = paths(&ours);
-    for p in &root_paths {
-        assert!(
-            our_paths.contains(p),
-            "crates/ep9_builtins/clippy.toml lacks {p}"
-        );
+    // ep9_temporal (design SPEC-T §3.1) keeps a copy of this file plus a libm ban.
+    let temporal = std::fs::read_to_string(dir.join("../ep9_temporal/clippy.toml")).unwrap();
+    for (name, text) in [
+        ("crates/ep9_builtins/clippy.toml", &ours),
+        ("crates/ep9_temporal/clippy.toml", &temporal),
+    ] {
+        let our_paths = paths(text);
+        for p in &root_paths {
+            assert!(our_paths.contains(p), "{name} lacks {p}");
+        }
+        for p in ["ep9_value::Value", "ep9_heap::CellPtr", "ep9_heap::Heap"] {
+            assert!(
+                our_paths.iter().any(|q| q == p),
+                "{name}: no disallowed-types entry {p}"
+            );
+        }
     }
-    for p in ["ep9_value::Value", "ep9_heap::CellPtr", "ep9_heap::Heap"] {
-        assert!(
-            our_paths.iter().any(|q| q == p),
-            "no disallowed-types entry {p}"
-        );
-    }
+    assert!(paths(&temporal).iter().any(|q| q == "libm::fma"));
 }
