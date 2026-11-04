@@ -224,19 +224,30 @@ pub fn kernel(name: &str) -> Option<&'static Kernel> {
 /// named (SCP §3, the config C clarify of 2026-11-04; V11-D31). crypto's `montReduce`
 /// (`SetNamedProperty`) and `bnpSquareTo` (`CallProperty0`) stay in T0 by V11-D30: the
 /// pre-read low end of C4 crypto was at or above 3.3, so `SetNamedProperty` is not built
-/// (M6-P3 SC-FIX, MC-P2-SCLEFT). `spike-c tier <kernel> --all` names a refusal of one of these
-/// and fails on any other (`tier::set_ok`).
-pub const STAYS_IN_T0: [(&str, &str, &str); 2] = [
-    ("crypto", "montReduce", "V11-D30"),
-    ("crypto", "bnpSquareTo", "V11-D30"),
+/// (M6-P3 SC-FIX, MC-P2-SCLEFT). Each entry also names the opcode the decision is about
+/// (kernel, function, decision, opcode): only a refusal for that opcode is the decided one.
+/// `spike-c tier <kernel> --all` names such a refusal and fails on any other, of any function
+/// or for any other cause (`tier::set_ok`).
+pub const STAYS_IN_T0: [(&str, &str, &str, &str); 2] = [
+    ("crypto", "montReduce", "V11-D30", "SetNamedProperty"),
+    ("crypto", "bnpSquareTo", "V11-D30", "CallProperty0"),
 ];
 
-/// The decision that keeps `function` of `kernel` in T0 ([`STAYS_IN_T0`]), if one does.
-pub fn stays_in_t0(kernel: &str, function: &str) -> Option<&'static str> {
+/// The decision that keeps `function` of `kernel` in T0 ([`STAYS_IN_T0`]), if one does and
+/// `why` (the refusal as `tier::run_set` holds it: `<function>: <spike_b::emit::Refusal>`) is
+/// the decided cause: `opcode <opcode> at offset <n> has no native code`.
+pub fn stays_in_t0(kernel: &str, function: &str, why: &str) -> Option<&'static str> {
     STAYS_IN_T0
         .iter()
-        .find(|(k, f, _)| *k == kernel && *f == function)
-        .map(|(_, _, d)| *d)
+        .find(|(k, f, _, op)| {
+            *k == kernel
+                && *f == function
+                && why
+                    .strip_prefix(&format!("{function}: opcode {op} at offset "))
+                    .and_then(|r| r.strip_suffix(" has no native code"))
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(|(_, _, d, _)| *d)
 }
 
 /// The directory of the v8-v7 files: `SPIKE_C_BENCH_DIR`, else the pinned checkout.
@@ -745,5 +756,53 @@ mod tests {
         assert_eq!(same, pinned);
         let e = refused.expect_err("a changed crypto.js");
         assert!(e.contains("not the pinned blob"), "{e}");
+    }
+
+    /// M6-P3 fixer (J1): a function stays in T0 by a decision only for the decided cause, the
+    /// `spike_b::emit::Refusal::Opcode` text of its opcode; another cause, another opcode,
+    /// another function or another kernel gets no decision.
+    #[test]
+    fn stays_in_t0_needs_the_decided_cause() {
+        let m = "montReduce: opcode SetNamedProperty at offset 43 has no native code";
+        let b = "bnpSquareTo: opcode CallProperty0 at offset 10 has no native code";
+        assert_eq!(stays_in_t0("crypto", "montReduce", m), Some("V11-D30"));
+        assert_eq!(stays_in_t0("crypto", "bnpSquareTo", b), Some("V11-D30"));
+        for (kernel, function, why) in [
+            (
+                "crypto",
+                "montReduce",
+                "montReduce: frame-state value n12 is not defined (a builder defect)",
+            ),
+            ("crypto", "montReduce", "montReduce: limit: a jump too far"),
+            (
+                "crypto",
+                "montReduce",
+                "montReduce: opcode CallProperty0 at offset 43 has no native code",
+            ),
+            (
+                "crypto",
+                "montReduce",
+                "montReduce: opcode SetNamedProperty at offset  has no native code",
+            ),
+            (
+                "crypto",
+                "montReduce",
+                "montReduce: opcode SetNamedProperty at offset 4x has no native code",
+            ),
+            ("crypto", "montReduce", b),
+            ("crypto", "bnpSquareTo", m),
+            (
+                "crypto",
+                "am3",
+                "am3: opcode SetNamedProperty at offset 43 has no native code",
+            ),
+            ("richards", "montReduce", m),
+        ] {
+            assert_eq!(
+                stays_in_t0(kernel, function, why),
+                None,
+                "{kernel} {function}: {why}"
+            );
+        }
     }
 }
