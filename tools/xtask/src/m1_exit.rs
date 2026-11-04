@@ -82,8 +82,10 @@
 //! The extra rows (no exit-code effect): the carried M0 item-5 cell (SP-Dispatch, read from the
 //! newest `*-m0-spike-review.md`, and the H15 Freeze-table part "x86-64 Zen 3 condition" when
 //! H15 has one: X9), the stub markers (`m2`, `m3`, `m4`, plan v9 rule 4; `m5`, plan v10 rule 4;
-//! `m6`, plan v11 rule 4) and the ADR Counts line. The tree root is `--root`, or this workspace (as
-//! m0-exit). The shared readers are in `crate::exit`.
+//! `m6`, plan v11 rule 4) and the ADR Counts line (PASS only when adr-lint part 3 finds nothing:
+//! the line and the index column equal the Status lines, and the index parses; else FAIL with the
+//! findings). The tree root is `--root`, or this workspace (as m0-exit). The shared readers are in
+//! `crate::exit`.
 //!
 //! Exit 0 when every cell is PASS or N/A, 1 otherwise, 2 on a usage error or an input that
 //! cannot be read.
@@ -93,13 +95,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::adr_lint;
-use crate::exit::adr::counts_line;
+use crate::exit::adr::{counts_line, index_findings};
 use crate::exit::ci::{CI_MATRIX, CI_TRIPLE, Ci, gh_run};
 use crate::exit::cross::fresh_since;
 use crate::exit::freeze::{Due, find_part, frozen_by_m1};
 use crate::exit::gc_shards::{GC_JOB, merge_gc_shards, test262_files};
 use crate::exit::json::{Json, parse_json};
 use crate::exit::logs::{cargo_failure, invocation_check, invocations};
+use crate::exit::records::counts;
 use crate::exit::report::{Cell, Status, all_ok, cell, not_given, some_paths, stub_markers};
 use crate::exit::t262::{committed, count, exec_health, expectation_set, pct, recheck};
 use crate::exit::verdict::{VerdictRow, newest_spike_review, verdict_rows, verdict_table};
@@ -2756,20 +2759,46 @@ fn extra_rows(root: &Path) -> Vec<(&'static str, Cell)> {
         },
     };
     let m0_item5 = with_zen3_part(root, m0_item5);
-    let counts = counts_line(root);
-    let counts = if counts.is_empty() {
-        cell(Status::NotRun, "docs/adr/README.md has no Counts line")
-    } else {
-        cell(Status::Pass, format!("docs/adr/README.md: {counts}"))
-    };
     vec![
         ("carried M0 item 5 (SP-Dispatch condition 2)", m0_item5),
         (
             "stub markers (plan v9, v10 and v11 rule 4)",
             stub_markers(root, &STUB_MARKERS, &STUB_DIRS),
         ),
-        ("ADR Counts line", counts),
+        ("ADR Counts line", counts_cell(root)),
     ]
+}
+
+/// The ADR Counts extra row, read as adr-lint part 3 reads it (`exit::records::counts` and the
+/// README index parse): PASS when it finds nothing, else FAIL with the findings. The M6-P2
+/// DRYRUN of 138c56bd read this row PASS next to an adr-lint Counts FAIL (the line said 7 Draft
+/// and 25 Accepted; the Status lines gave 0 and 32).
+fn counts_cell(root: &Path) -> Cell {
+    let line = counts_line(root);
+    if line.is_empty() {
+        return cell(Status::NotRun, "docs/adr/README.md has no Counts line");
+    }
+    let (files, mut findings) = match counts(root) {
+        Ok((_, files, f)) => (files, f),
+        Err(e) => (String::from("not read"), vec![e]),
+    };
+    match read(&root.join("docs/adr/README.md")) {
+        Ok(readme) => findings.extend(index_findings(&readme)),
+        Err(e) => findings.push(e),
+    }
+    if findings.is_empty() {
+        cell(Status::Pass, format!("docs/adr/README.md: {line}"))
+    } else {
+        cell(
+            Status::Fail,
+            format!(
+                "docs/adr/README.md: {line}; the Status lines give {files}; {} finding{} (as `cargo xtask adr-lint` part 3): {}",
+                findings.len(),
+                if findings.len() == 1 { "" } else { "s" },
+                findings.join("; ")
+            ),
+        )
+    }
 }
 
 /// X9 (plan v11 GF-4; V9-D30): the H15 Freeze-table part that carries SP-Dispatch condition 2
@@ -3096,6 +3125,8 @@ mod tests {
         assert_eq!(r.extra[0].1.status, Status::Open, "{:?}", r.extra[0]);
         assert_eq!(r.extra[1].1.status, Status::Pass, "{:?}", r.extra[1]);
         assert!(r.extra[2].1.evidence.contains("Counts on 2026-10-26"));
+        // The fixture README has one index row and no ADR file: adr-lint part 3 fails it.
+        assert_eq!(r.extra[2].1.status, Status::Fail, "{:?}", r.extra[2]);
         // main() writes the file and returns "not a pass".
         let out = root.join("main.md");
         let args: Vec<String> = [
@@ -5096,6 +5127,76 @@ mod tests {
             let md = md.replace(&format!("| {bad} | GO |"), &format!("| {bad} | NO-GO |"));
             assert_eq!(item7(&mut o, &md).status, Status::Fail, "{bad}");
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The ADR Counts extra row reads as adr-lint part 3: PASS when the Counts line and the
+    /// index column equal the Status lines and the index parses; else FAIL with the findings
+    /// (the M6-P2 DRYRUN read PASS next to an adr-lint Counts FAIL).
+    #[test]
+    fn the_counts_row_reads_as_adr_lint() {
+        let root = fake_repo("counts");
+        let readme = |counts: &str| -> String {
+            let mut t = String::from(
+                "# ADR index\n\n| ADR | Topic | Fix by | Owner | Status | File |\n|---|---|---|---|---|---|\n",
+            );
+            for n in 1..=37 {
+                let st = if n == 2 { "Draft (x)" } else { "Not started" };
+                t.push_str(&format!("| H{n} | t | M1 | o | {st} | f |\n"));
+            }
+            t.push_str(&format!(
+                "\nCounts on 2026-11-04 (test): {counts}. More text.\n"
+            ));
+            t
+        };
+        write(
+            &root,
+            "docs/adr/H02-x.md",
+            &adr("H2", "Draft (2026-10-21)", false),
+        );
+        write(
+            &root,
+            "docs/adr/README.md",
+            &readme("1 Draft, 36 Not started, 0 Accepted, 0 Frozen"),
+        );
+        let row = |root: &Path| extra_rows(root).pop().unwrap();
+        let (what, c) = row(&root);
+        assert_eq!(what, "ADR Counts line");
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert_eq!(
+            c.evidence,
+            "docs/adr/README.md: Counts on 2026-11-04 (test): 1 Draft, 36 Not started, 0 Accepted, 0 Frozen"
+        );
+        // The Status line moves on, the Counts line does not: FAIL, as adr-lint.
+        write(
+            &root,
+            "docs/adr/H02-x.md",
+            &adr("H2", "Accepted (2026-11-04)", false),
+        );
+        let (_, c) = row(&root);
+        assert_eq!(c.status, Status::Fail, "{c:?}");
+        assert!(
+            c.evidence.contains(
+                "the Status lines give 0 Draft, 36 Not started, 1 Accepted, 0 Frozen; 3 findings \
+                 (as `cargo xtask adr-lint` part 3): README Counts line says 1 Draft, the Status \
+                 lines give 0; README Counts line says 0 Accepted, the Status lines give 1; README \
+                 index row H2 says \"Draft\", its Status line says \"Accepted\""
+            ),
+            "{}",
+            c.evidence
+        );
+        // An index that m0-exit cannot parse: FAIL.
+        write(
+            &root,
+            "docs/adr/H02-x.md",
+            &adr("H2", "Draft (2026-10-21)", false),
+        );
+        let short =
+            readme("1 Draft, 36 Not started, 0 Accepted, 0 Frozen").replace("| H37 |", "| X37 |");
+        write(&root, "docs/adr/README.md", &short);
+        let (_, c) = row(&root);
+        assert_eq!(c.status, Status::Fail, "{c:?}");
+        assert!(c.evidence.contains("expected H1-H37"), "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
