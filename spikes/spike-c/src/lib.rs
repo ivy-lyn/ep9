@@ -135,7 +135,10 @@ impl CompileReport {
                             if k.store { "set_keyed" } else { "get_keyed" }
                         )
                     } else {
-                        format!("key check {:?}", k.key_basis)
+                        format!(
+                            "key check {:?}, kind guard {:?}, element guard {:?}",
+                            k.key_basis, k.element_bases.0, k.element_bases.1
+                        )
                     },
                 )
             })

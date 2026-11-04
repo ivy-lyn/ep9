@@ -2714,9 +2714,11 @@ mod tests {
     }
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
-    /// the element guards stay unbacked (FACT_SCHEMA 1 has no receiver, bounds or hole field);
-    /// a site that saw a key that is not an index takes the generic keyed entry (SPIKEC-4;
-    /// SPIKEC-3 refused it).
+    /// since M6-P3 (FACT_SCHEMA 2's keyed bits, `build::element_bases_of`) a record of present
+    /// reads of int32 Arrays backs the kind and element guards too, and one that saw an index
+    /// out of bounds backs only the kind guard; a site that saw a key that is not an index
+    /// takes the generic keyed entry (SPIKEC-4; SPIKEC-3 refused it). The name stays (the
+    /// SPIKEC-3 test): the basis is a label, so the code bytes are the same either way.
     const AT: &str = "function at(a, k) { return a[k] | 0; }";
 
     #[test]
@@ -2735,16 +2737,38 @@ mod tests {
             .collect();
         assert_eq!(key.len(), 1, "{g}");
         assert!(key[0].contains("Fact(Runtime)"), "{g}");
-        for l in g
-            .lines()
-            .filter(|l| l.contains("CheckArray") || l.contains("LoadElement"))
-        {
-            assert!(l.contains("Unbacked"), "{l}\n{g}");
+        let element = |g: &str| -> Vec<String> {
+            g.lines()
+                .filter(|l| l.contains("CheckArray") || l.contains("LoadElement"))
+                .map(str::to_string)
+                .collect()
+        };
+        let el = element(g);
+        assert_eq!(el.len(), 2, "{g}");
+        for l in &el {
+            assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
         let sites = &r.report.build.keyed;
         assert_eq!(sites.len(), 1, "{sites:?}");
         assert_eq!(sites[0].keys, Some(ep9_facts::KeySet::INDEX));
         assert!(!sites[0].store);
+        let fact = crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime);
+        assert_eq!(sites[0].element_bases, (fact, fact));
+        // A warm-up that also read past the end: the kind guard keeps its fact, the element
+        // guard is unbacked; the same code bytes, and the output equals T0.
+        let oob = run_script(
+            &Config::default(),
+            AT,
+            "var w = [1, 2, 3, 4]; for (var q = 0; q < 20; q++) { at(w, q & 3); at(w, 4 + q); }",
+            "print(at([7, 8, 9], 2), at([5], 0), at([5], 3));",
+            "at",
+        )
+        .expect("run");
+        assert!(oob.equal(), "{:?} vs {:?}", oob.compiled, oob.t0);
+        assert_eq!(oob.compiled.output, ["9 5 0"]);
+        let s = &oob.report.build.keyed;
+        assert_eq!(s[0].element_bases, (fact, crate::ir::GuardBasis::Unbacked));
+        assert_eq!(oob.report.emit.code_bytes, r.report.emit.code_bytes);
         // An index of another form (a string) fails the int32 key check: a deopt, never a
         // wrong value (T0 prints 8).
         let t = deopts(AT, warm, "print(at([7, 8, 9], '1'));", "at");
@@ -3311,19 +3335,21 @@ mod tests {
         assert!(r.equal, "{}", r.line());
         assert_eq!(r.probe_exit, Some(0), "{}", r.line());
         // Since FACTS2 (M4-P2) the live facts back the int32 input checks too, as with the
-        // stand-in (`am3_with_int_facts_equals_t0`): 11 fact guards; unbacked are the 6 keyed
-        // guards, the 9 overflow guards of `+` and `-`, and the entry checks of the loop
-        // phis `i`, `j` and `c`, whose only checks are in the loop body, not the header.
+        // stand-in (`am3_with_int_facts_equals_t0`); since M6-P3 (FACT_SCHEMA 2's keyed
+        // bits) the kind guards and element guards of the 3 loads too: 16 fact guards;
+        // unbacked are the 1 keyed guard of the store, the 9 overflow guards of `+` and
+        // `-`, and the entry checks of the loop phis `i`, `j` and `c`, whose only checks are
+        // in the loop body, not the header.
         assert_eq!(
             (r.report.fact_guards, r.report.unbacked_guards),
-            (11, 18),
+            (16, 13),
             "{}",
             r.report.graph
         );
         // Keyed facts (SPIKEC-3): the 4 keyed sites (3 loads, 1 store) have index-only
         // records, so each key check would be a fact guard; but every key is a loop phi
-        // (`i`, `j`) that is already int32, so no key check is left in the graph, and the
-        // element guards stay unbacked (no receiver, bounds or hole field in schema 1).
+        // (`i`, `j`) that is already int32, so no key check is left in the graph. The loads'
+        // records saw only present elements of int32 Arrays (M6-P3: they back the guards).
         let k = &r.report.build.keyed;
         assert_eq!(k.len(), 4, "{k:?}");
         assert_eq!(k.iter().filter(|s| s.store).count(), 1, "{k:?}");
@@ -3393,9 +3419,9 @@ mod tests {
     }
 
     /// am3 with the FACTS2 stand-in int records: the int32 input checks are fact guards; the
-    /// keyed element guards (no schema-1 field backs them), the overflow guards of `+` and `-` and the entry
-    /// checks of the phis that the header does not check stay unbacked, and the output still
-    /// equals T0.
+    /// keyed guard of the store (the loads' guards have FACT_SCHEMA 2 facts since M6-P3), the
+    /// overflow guards of `+` and `-` and the entry checks of the phis that the header does
+    /// not check stay unbacked, and the output still equals T0.
     #[test]
     fn am3_with_int_facts_equals_t0() {
         if !aarch64() {
@@ -3427,7 +3453,7 @@ mod tests {
         assert_eq!(r.report.unbacked_guards, unbacked.len());
         assert_eq!(
             (keyed, overflow, entry, unbacked.len()),
-            (6, 9, 3, 18),
+            (1, 9, 3, 13),
             "{}",
             r.report.graph
         );

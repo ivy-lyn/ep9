@@ -25,7 +25,7 @@
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field, an out-of-line one, or an Array's `length`, one location for every case) + LoadField or LoadSlotsField | the check is predicted{source}; the loaded value unknown |
-//! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value, WI-SC7; a Float64 load and the Tagged value of an element copy `a[i] = b[j]`, SPIKEC-7); or the generic keyed entry (a key that is not an index, SPIKEC-4; a store of any other Tagged value) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
+//! | GetKeyedProperty, SetKeyedProperty | CheckArray (the kind guard), CheckInt32 on the key, LoadElement / StoreElement (an int32 or a double value, WI-SC7; a Float64 load and the Tagged value of an element copy `a[i] = b[j]`, SPIKEC-7); or the generic keyed entry (a key that is not an index, SPIKEC-4; a store of any other Tagged value) | unknown; the key check is backed by an index-only keyed record; at a GetKeyedProperty the kind and element guards by the keyed bits of FACT_SCHEMA 2 ([`element_bases_of`], M6-P3), else unbacked (keyed facts, SPIKEC-3, below) |
 //! | `+`, `-`, `*` whose BinaryOp record saw a double (hint inside {int32, int32-overflow, number}, with number), and `/` always | CheckNumber on each Tagged input (an Int32 input converts), a Float64 op (SPIKEC-4) | the check is predicted{source} with the record, else unknown; the op's result PROVEN (a number from numbers) |
 //! | `===` | CheckInt32 on each input (backed by an int32 CompareOp fact), Compare(Eq) (SPIKEC-4) | PROVEN (a boolean) |
 //! | LdaCurrentContextSlot, LdaImmutableCurrentContextSlot | LoadContextSlot (SPIKEC-4) | unknown |
@@ -87,8 +87,11 @@
 //! never the hole), into Values as an int32 Value; a Float64 that is no int32 (or is -0) into
 //! Values calls the generic store out of line (the kind transition, a GC point), as T0 does. A
 //! Tagged copy (SPIKEC-7): an int32 Value into Values and a number into raw f64 in line.
-//! CheckArray, LoadElement and StoreElement stay unbacked in every case (the receiver,
-//! bounds and hole bits come with the month-6 schema bump, MODES-D18).
+//! CheckArray, LoadElement and StoreElement stayed unbacked in every case until the receiver,
+//! bounds and hole bits came with FACT_SCHEMA 2 (MODES-D18). Since M6-P3 (SC-FIX, plan v11
+//! §4.8 task 2) a LoadKeyed record's keyed bits back the kind guard and the element guard of
+//! its GetKeyedProperty site ([`element_bases_of`]); StoreElement and the kind guard of a
+//! SetKeyedProperty stay unbacked.
 //!
 //! **The generic keyed path (SPIKEC-4, P3-ORCH-9).** A site whose record saw a key that is not
 //! an index would exit on those keys from every element guard, so it calls the generic keyed
@@ -104,8 +107,8 @@
 
 use ep9_bytecode::{Opcode, Register, decode_at};
 use ep9_facts::{
-    Access, BinaryHint, CompareHint, ElementsKind, ElementsKindSet, IcState, KeySet, ObjectKind,
-    SlotFacts,
+    Access, BinaryHint, CompareHint, ElementsKind, ElementsKindSet, IcState, KeySet, KeyedHint,
+    ObjectKind, SlotFacts,
 };
 use ep9_value::encoding::{VALUE_FALSE, VALUE_NULL, VALUE_TRUE, VALUE_UNDEFINED};
 use spike_b::emit::{FunctionInput, Refusal};
@@ -207,6 +210,9 @@ pub struct KeyedSite {
     pub key_basis: GuardBasis,
     /// True if the site takes the generic keyed entry (SPIKEC-4).
     pub generic: bool,
+    /// The bases of its kind guard and its element guard ([`element_bases_of`] at a load;
+    /// unbacked at a store and on the generic path, which has neither guard).
+    pub element_bases: (GuardBasis, GuardBasis),
 }
 
 /// How a keyed site is compiled (see the module docs, "Keyed facts").
@@ -580,6 +586,10 @@ impl Builder<'_> {
                 KeyedPath::Generic => GuardBasis::Unbacked,
             },
             generic: path == KeyedPath::Generic,
+            element_bases: match path {
+                KeyedPath::Element(_) if !store => element_bases_of(self.facts, slot),
+                _ => (GuardBasis::Unbacked, GuardBasis::Unbacked),
+            },
         });
         Ok(path)
     }
@@ -913,11 +923,13 @@ impl Builder<'_> {
                 let k = self.acc()?;
                 let n = match self.keyed_site(insn.unsigned(1), false, false)? {
                     KeyedPath::Element(key_basis) => {
-                        let a = self.check_array(o, insn.unsigned(1));
+                        let (kind_basis, element_basis) =
+                            element_bases_of(self.facts, insn.unsigned(1));
+                        let a = self.check_array(o, insn.unsigned(1), kind_basis);
                         let i = self.int32(k, key_basis);
                         let n =
                             self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
-                        self.guard(n, GuardBasis::Unbacked, st);
+                        self.guard(n, element_basis, st);
                         let kinds = self.site_kinds(insn.unsigned(1));
                         self.elem_kinds.push((n, kinds));
                         n
@@ -945,7 +957,8 @@ impl Builder<'_> {
                 let tagged = !matches!(self.node(v).repr, Repr::Int32 | Repr::Float64) && !copy;
                 match self.keyed_site(insn.unsigned(2), true, tagged)? {
                     KeyedPath::Element(key_basis) => {
-                        let a = self.check_array(o, insn.unsigned(2));
+                        // A StoreKeyed record backs no element guard (`element_bases_of`).
+                        let a = self.check_array(o, insn.unsigned(2), GuardBasis::Unbacked);
                         let i = self.int32(k, key_basis);
                         let n =
                             self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
@@ -1147,16 +1160,20 @@ impl Builder<'_> {
 
     /// The array kind guard of an element op at the keyed site `slot`; its exit record names
     /// `slot` (the first site, when one guard serves several: MC-w25-6).
-    fn check_array(&mut self, o: NodeId, slot: u32) -> NodeId {
+    fn check_array(&mut self, o: NodeId, slot: u32, basis: GuardBasis) -> NodeId {
         let st = self.state();
         let o = self.tagged(o);
-        let policy = self.policy(GuardBasis::Unbacked);
-        self.memo(4, o, policy, |s| {
+        let policy = self.policy(basis);
+        let n = self.memo(4, o, policy, |s| {
             let n = s.emit(Op::CheckArray, vec![o], Repr::Tagged, Trust::Unknown);
-            s.guard(n, GuardBasis::Unbacked, st);
+            s.guard(n, basis, st);
             s.g.sites.push((n, slot));
             n
-        })
+        });
+        // A check shared with an earlier site of the same array: this site's record may back
+        // it (the same value, checked once; as `back` for an int32 check).
+        self.back(n, basis);
+        n
     }
 
     /// `o.name` from the LoadNamed fact of `slot`: a shape guard through the IC cell and an
@@ -2089,6 +2106,51 @@ pub fn keyed_path_of(k: &ep9_facts::KeyedFacts, source: ep9_facts::FactSource) -
     } else {
         KeyedPath::Element(GuardBasis::Unbacked)
     }
+}
+
+/// The elements kinds whose elements are numbers in both storage forms (INT32 Values, raw
+/// f64): a load from one gives a number, as the Float64 form of `LoadElement` checks.
+const NUMBER_KINDS: u16 = ElementsKindSet::of(ElementsKind::PackedInt32).bits()
+    | ElementsKindSet::of(ElementsKind::HoleyInt32).bits()
+    | ElementsKindSet::of(ElementsKind::PackedDouble).bits()
+    | ElementsKindSet::of(ElementsKind::HoleyDouble).bits();
+
+/// FACT_SCHEMA 2 adoption (M6-P3 SC-FIX; plan v11 §4.8 task 2, MC-P2-SCLEFT): the bases of the
+/// kind guard (`CheckArray`) and the element guard (`LoadElement`) of the GetKeyedProperty
+/// site with feedback slot `slot`, from the keyed bits of its LoadKeyed record (`KeyedHint`,
+/// the VM's keyed bits 4-9, and the elements kinds set, bits 10-25; MODES-D18, M6-PLAN-D4):
+///
+/// | The record | Kind guard | Element guard |
+/// |---|---|---|
+/// | receivers only Arrays (`ARRAY`; implicit at LoadKeyed: "an Array, or never ran", MODES-D10, as the implicit int32 bits back the int32 guards), and a kinds set that is not empty and inside `vm_layout::ARRAY_KINDS` | the record | unbacked, unless the next row |
+/// | the same, and no `OUT_OF_BOUNDS`, no `HOLE`, and only number kinds (INT32, DOUBLE): a load finds a present number | the record | the record |
+/// | anything else, a StoreKeyed record (no implicit bits, and the T0 fast store records nothing) or no record | unbacked | unbacked |
+///
+/// The kinds set is open (a kind the schema does not name is dropped), and the T0 fast path
+/// records a kind only in the sampled window (`profile.rs` `keyed`), so an empty set backs
+/// nothing. Only the keyed bits are read: no accessor or getter state (IC_HANDLER kinds 9-11
+/// stay `Access::Generic` through M1, MC-w25-4). The basis is a label (the module docs of
+/// [`crate::ir`]): the code of both guards is the same bytes either way.
+pub fn element_bases_of(facts: &FunctionFacts<'_>, slot: u32) -> (GuardBasis, GuardBasis) {
+    let Some((_, SlotFacts::LoadKeyed(k))) = facts.records.iter().find(|(s, _)| *s == slot) else {
+        return (GuardBasis::Unbacked, GuardBasis::Unbacked);
+    };
+    let receivers = KeyedHint::ARRAY
+        .union(KeyedHint::OBJECT)
+        .union(KeyedHint::STRING)
+        .union(KeyedHint::PRIMITIVE);
+    let kinds = k.kinds.bits();
+    let arrays = k.hint.bits() & receivers.bits() == KeyedHint::ARRAY.bits()
+        && kinds != 0
+        && kinds & !vm_layout::ARRAY_KINDS == 0;
+    if !arrays {
+        return (GuardBasis::Unbacked, GuardBasis::Unbacked);
+    }
+    let fact = GuardBasis::Fact(facts.source);
+    let present = !k.hint.contains(KeyedHint::OUT_OF_BOUNDS)
+        && !k.hint.contains(KeyedHint::HOLE)
+        && kinds & !NUMBER_KINDS == 0;
+    (fact, if present { fact } else { GuardBasis::Unbacked })
 }
 
 /// The doubles a BinaryOp site may see and still back its CheckNumber guards: int32

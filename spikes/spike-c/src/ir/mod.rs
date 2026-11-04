@@ -29,8 +29,8 @@
 //!   report. An int32 BinaryOp or CompareOp record makes the int32 guards of its site fact
 //!   guards (SPIKEC-2, [`crate::build`]; the exporter writes those records from FACTS2, M4-P2,
 //!   on); an index-only keyed record of FACTS2 does the same for the key's int32 check of
-//!   its site, while the element guards stay unbacked (SPIKEC-3: FACT_SCHEMA 1 has no
-//!   receiver, bounds or hole field; [`crate::build`] "Keyed facts"). A value that an
+//!   its site, and (M6-P3, FACT_SCHEMA 2's keyed bits) a LoadKeyed record of Array receivers
+//!   for the kind and element guards of its load ([`crate::build::element_bases_of`]). A value that an
 //!   unbacked guard narrows keeps the trust [`Trust::Unknown`]: no fact knows it. The basis
 //!   is a label: the emitted code of a guard is the same either way.
 //!
