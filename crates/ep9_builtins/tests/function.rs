@@ -505,3 +505,41 @@ fn to_string_names_a_builtin_by_its_initial_name() {
         ])
     );
 }
+
+/// H20-Q3: `call` forwards with `Cx::tail_call_args`, so the VM calls a FUNCTION callee after
+/// the `call` host frame is gone, with the arguments where they are (`call::tail_call`). The
+/// argument shift (fewer, more and no arguments), `call` that calls `call`, a bound function
+/// and a proxy (called at once, not in place), the class-constructor TypeError and a value that
+/// is not callable after a forward, and a recursion through `call` (500 deep: a debug build
+/// overflows the native stack between 1,000 and 1,500 on aarch64-apple-darwin). Expected lines
+/// are node v26.13.0's (with `print` as `console.log`).
+#[test]
+fn call_tail_calls_its_callee() {
+    assert_eq!(
+        run_both(
+            "function show(a, b, c) { 'use strict'; return [typeof this, this, a, b, c, arguments.length].join(); }
+             print(show.call(1, 2, 3));
+             print(show.call());
+             print(show.call(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11));
+             print(Function.prototype.call.call(Function.prototype.call, show, 7, 8));
+             print(show.bind(9, 1).call(0, 2));
+             print(new Proxy(show, { apply(t, th, args) { return 'trap:' + args.length; } }).call(1, 2, 3));
+             class A {}
+             try { A.call(); } catch (e) { print(e.constructor.name, e.message); }
+             try { Function.prototype.call.call(Function.prototype.call, 5); } catch (e) { print(e.constructor.name); }
+             function deep(n) { return n === 0 ? 0 : 1 + deep.call(null, n - 1); }
+             print(deep(500));"
+        ),
+        lines(&[
+            "number,1,2,3,,2",
+            "undefined,,,,,0",
+            "number,1,2,3,4,10",
+            "number,7,8,,,1",
+            "number,9,1,2,,2",
+            "trap:2",
+            "TypeError Class constructor A cannot be invoked without 'new'",
+            "TypeError",
+            "500",
+        ])
+    );
+}

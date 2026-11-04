@@ -450,7 +450,7 @@ test("CLI: the JSON says whether the fresh paths had uncommitted changes (CX5-C5
   const r = f.run(["--host", f.host(1000)]);
   assert.equal(r.status, 0, r.stderr);
   const res = JSON.parse(readFileSync(f.out, "utf8"));
-  // The list of kernels.mjs's treeState(): the FRESH_PATHS entries with changes ([] = clean).
+  // The list of kernels.mjs's treeState(): the TREE_PATHS entries with changes ([] = clean).
   assert.deepEqual(res.commit.dirty, treeState().dirty);
   assert.ok(Array.isArray(res.commit.dirty), JSON.stringify(res.commit));
 });
@@ -800,7 +800,7 @@ test("m1-exit item 1 reads the tree ids kernels.mjs writes: FRESH_PATHS, then th
   assert.deepEqual(list("FRESH_PATHS"), FRESH_PATHS);
   assert.deepEqual(list("REGRESS_PATHS"), REGRESS_PATHS);
   assert.deepEqual(TREE_PATHS, [...FRESH_PATHS, ...REGRESS_PATHS]);
-  // treeState() writes one id per TREE_PATHS entry (null outside a git tree), dirty for FRESH_PATHS only.
+  // treeState() writes one id per TREE_PATHS entry (null outside a git tree), dirty for TREE_PATHS.
   const st = treeState();
   assert.deepEqual(Object.keys(st.tree), TREE_PATHS);
   for (const p of TREE_PATHS) assert.ok(st.tree[p] === null || /^[0-9a-f]{40}$/.test(st.tree[p]), `${p}: ${st.tree[p]}`);

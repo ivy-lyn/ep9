@@ -5172,10 +5172,21 @@ mod tests {
         assert!(
             c10.evidence.contains(
                 "sp-facts C5c: crypto from a PROFILED file, output equal; Q = t(C) / t(P) 1.002 \
-                 [0.980, 1.020], 15 rounds, IQR 1.5%: go (rows.md;"
+                 [0.980, 1.020], 15 rounds, IQR 1.5%; stays in T0: montReduce, bnpSquareTo: go \
+                 (rows.md;"
             ),
             "{}",
             c10.evidence
+        );
+        // The functions that stay in T0 (SC-FIX, MC-P2-SCLEFT) are in the C1 and C4 crypto
+        // Condition cells; the label is read as it is.
+        assert!(
+            c7.evidence.contains(
+                "spike c C4 crypto: R 3.930 [3.812, 4.055], 15 rounds, IQR 4.0%; stays in T0: \
+                 montReduce, bnpSquareTo: go (rows.md;"
+            ),
+            "{}",
+            c7.evidence
         );
         for c in [&c7, &c10] {
             assert!(
