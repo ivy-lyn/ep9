@@ -321,9 +321,10 @@ const VERDICTS_HOW: &str = "the Spike C and SP-Facts Verdict tables (a markdown 
 /// Files outside the repo (cargo's home config, `RUSTFLAGS`) are out by design: the Verdict row
 /// records the host (protocol §8).
 /// The test `verdict_fresh_paths_are_the_spike_c_closure` reads the closure and compares.
-const VERDICT_FRESH_PATHS: [&str; 18] = [
+const VERDICT_FRESH_PATHS: [&str; 19] = [
     "spikes/spike-c",
     "spikes/spike-b",
+    "crates/ep9_bigint",
     "crates/ep9_builtins",
     "crates/ep9_bytecode",
     "crates/ep9_facts",
