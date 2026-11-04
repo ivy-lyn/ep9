@@ -55,6 +55,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("temporal", 19),
             ("duration", 20),
             ("instant", 21),
+            ("plain_time", 22),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);

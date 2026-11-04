@@ -18,3 +18,4 @@
   14  RawJSON
   15  Temporal.Duration
   16  Temporal.Instant
+  17  Temporal.PlainTime

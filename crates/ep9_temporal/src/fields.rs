@@ -216,3 +216,33 @@ pub(crate) fn to_temporal_time_zone_identifier<'s>(
     let t = temporal_text(cx, s)?;
     TimeZone::try_from_str_with_provider(&t, crate::tzdb::provider()).or_throw(cx)
 }
+
+/// IsPartialTemporalObject (§13.42): the object, or `None` when it is not one (not an
+/// object, a Temporal date or time object, or it has a `calendar` or `timeZone` property).
+pub(crate) fn is_partial_temporal_object<'s>(
+    cx: &mut Cx<'s>,
+    v: Local<'s>,
+) -> JsResult<Option<Local<'s, JsObject>>> {
+    // 1. If value is not an Object, return false.
+    let Some(o) = v.as_object() else {
+        return Ok(None);
+    };
+    // 2. If value has an [[InitializedTemporalDate]], [[InitializedTemporalDateTime]],
+    //    [[InitializedTemporalMonthDay]], [[InitializedTemporalTime]],
+    //    [[InitializedTemporalYearMonth]] or [[InitializedTemporalZonedDateTime]] internal
+    //    slot, return false.
+    if crate::calendar::has_calendar_slot(cx, v)
+        || cx.object_class(v) == Some(ep9_vm::ObjectClass::TemporalPlainTime)
+    {
+        return Ok(None);
+    }
+    // 3-6. If Get(value, "calendar") or Get(value, "timeZone") is not undefined, return false.
+    for name in ["calendar", "timeZone"] {
+        let k = cx.key(name);
+        if !cx.get(o, k)?.is_undefined() {
+            return Ok(None);
+        }
+    }
+    // 7. Return true.
+    Ok(Some(o))
+}

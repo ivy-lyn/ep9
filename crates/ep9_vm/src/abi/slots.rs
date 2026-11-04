@@ -83,6 +83,8 @@ pub enum ObjectClass {
     TemporalDuration,
     /// A Temporal.Instant instance (spec-temporal T3): `[[EpochNanoseconds]]` as slot 0 the epoch seconds (an integral Number) and slot 1 the nanosecond of that second (an int32), `ep9_temporal` instant.rs.
     TemporalInstant,
+    /// A Temporal.PlainTime instance (spec-temporal T4): `[[Time]]` as slot 0 the second of the day (0..86,399, an int32) and slot 1 the nanosecond of that second (an int32), `ep9_temporal` plain_time.rs.
+    TemporalPlainTime,
 }
 
 impl ObjectClass {
@@ -105,6 +107,7 @@ impl ObjectClass {
         ObjectClass::RawJson,
         ObjectClass::TemporalDuration,
         ObjectClass::TemporalInstant,
+        ObjectClass::TemporalPlainTime,
     ];
 
     /// Most internal slots of one object.
@@ -144,6 +147,7 @@ impl ObjectClass {
             ObjectClass::RawJson => "RawJSON",
             ObjectClass::TemporalDuration => "Temporal.Duration",
             ObjectClass::TemporalInstant => "Temporal.Instant",
+            ObjectClass::TemporalPlainTime => "Temporal.PlainTime",
         }
     }
 }
