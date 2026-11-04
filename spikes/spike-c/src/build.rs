@@ -1744,9 +1744,10 @@ impl Builder<'_> {
 
     /// SPIKEC-9 task 8: the kind guards of a loop move to its preheader, one per array.
     /// SPIKEC-10 (plan v11 §4.8 task 1, the hoisting left): with them, by the same rules,
-    /// the context slot loads (the graph has no context store, and L calls nothing, so a
-    /// slot holds one value in L) and the int32 and number checks of values from outside L
-    /// (a moved slot load included); identical moved nodes share one.
+    /// the context slot loads (no op of L writes a context slot or changes the current
+    /// context, `Op::writes_context`, so a slot holds one value in L; M6-P3 SC-FIX, MC-w26-8)
+    /// and the int32 and number checks of values from outside L (a moved slot load
+    /// included); identical moved nodes share one.
     ///
     /// ```text
     ///  preheader P (one successor: the header H)   ──>  P: ... CheckArray(o) [exits at H] ; Jump H
@@ -1756,9 +1757,10 @@ impl Builder<'_> {
     ///
     /// Only when nothing in L can change what the check proved, an Array whose elements kind
     /// is in `ARRAY_KINDS`: no call into the runtime table (`Op::is_call`: a call, a global
-    /// load, a generic keyed access may run JS), and every element store stores a number (an
-    /// Int32 or a Float64: an in-bounds number store keeps a kind of `ARRAY_KINDS` there, at
-    /// most INT32 to DOUBLE out of line; the poll runs no JS, H23-Q6). The array must be a
+    /// load, a generic keyed access may run JS), no op that writes a context slot
+    /// (`Op::writes_context`), and every element store stores a number (an Int32 or a
+    /// Float64: an in-bounds number store keeps a kind of `ARRAY_KINDS` there, at most INT32
+    /// to DOUBLE out of line; the poll runs no JS, H23-Q6); [`loop_may_hoist`]. The array must be a
     /// value from outside L (the same object on every iteration). The check's exit resumes T0
     /// at the header with the values the preheader passes in (as the loop phi entry checks of
     /// [`Self::unbox_loop_phis`]; `Graph::check_forward_state`), so T0 runs the whole loop.
@@ -1813,21 +1815,12 @@ impl Builder<'_> {
                 .flat_map(|b| self.g.blocks[b].nodes.clone())
                 .filter(|&n| self.g.node(n).live)
                 .collect();
-            let safe = nodes.iter().all(|&n| {
-                let node = self.g.node(n);
-                !node.op.is_call()
-                    && (node.op != Op::StoreElement
-                        || matches!(
-                            self.g.node(node.inputs[2]).repr,
-                            Repr::Int32 | Repr::Float64
-                        ))
-            });
-            if !safe {
+            if !loop_may_hoist(&self.g, &nodes) {
                 continue;
             }
             let every = self.on_every_iteration(h, &body, &latches);
-            // SPIKEC-10: the context slot loads first (L stores no context slot and calls
-            // nothing, so a slot holds one value in L), then the int32 and number checks of
+            // SPIKEC-10: the context slot loads first (`loop_may_hoist`: L writes no context
+            // slot and calls nothing, so a slot holds one value in L), then the int32 and number checks of
             // values from outside L (a moved slot load included), then the kind guards. In
             // each group the guards of the blocks that run on every iteration first (they
             // move), then the others (they read a moved one or stay); then the DoubleElements
@@ -2068,6 +2061,20 @@ pub fn int_basis_of(facts: &FunctionFacts<'_>, slot: u32) -> GuardBasis {
     } else {
         GuardBasis::Unbacked
     }
+}
+
+/// True if `body`, the live nodes of a loop, lets `Builder::hoist_array_checks` move its
+/// checks and loads to the preheader: no op may run JS (`Op::is_call`), no op may write a
+/// context slot or change the current context (`Op::writes_context`; MC-w26-8: a moved
+/// `LoadContextSlot` would read a stale value), and every element store stores a number.
+pub fn loop_may_hoist(g: &Graph, body: &[NodeId]) -> bool {
+    body.iter().all(|&n| {
+        let node = g.node(n);
+        !node.op.is_call()
+            && !node.op.writes_context()
+            && (node.op != Op::StoreElement
+                || matches!(g.node(node.inputs[2]).repr, Repr::Int32 | Repr::Float64))
+    })
 }
 
 /// The path that the keyed record `k` (of a snapshot of `source`) gives its site: the

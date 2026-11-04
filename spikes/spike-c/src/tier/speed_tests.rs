@@ -186,6 +186,47 @@ var p = mk(4), fill = p[0], setw = p[1];\n";
     assert_eq!(r.exits.iter().sum::<u64>(), 1, "{:?}", r.exits);
 }
 
+/// MC-w26-8 (M6-P3 SC-FIX): a closure's loop that writes the outer `var` it reads. The
+/// builder translates no `StaCurrentContextSlot` today, so the function stays in T0 (the
+/// refusal names the opcode) and no slot load moved to a preheader can go stale. The day the
+/// builder translates the store, its graph op must answer true in `Op::writes_context`
+/// (`ir::tests::ops_that_may_write_a_context_slot` fails first), `build::loop_may_hoist`
+/// then keeps the slot load in the loop, and this test checks that branch: the load is not
+/// in the loop's preheader, and the output equals T0.
+#[test]
+fn a_loop_that_writes_a_context_slot_keeps_its_slot_load() {
+    if !aarch64() {
+        return;
+    }
+    let defs = "\
+function mk(w) {\n\
+  return function shrink(a) { for (var i = 0; i < w; i++) { a[i] = a[i] + 1; if (a[i] > 3) w = i; } return a; };\n\
+}\n\
+var shrink = mk(4);\n";
+    let warm = "for (var q = 0; q < 30; q++) shrink([0, 0, 0, 0]);";
+    let main = "print(shrink([0, 1, 2, 3]).join(), shrink([5, 0, 0]).join());";
+    match run_script(&Config::default(), defs, warm, main, "shrink") {
+        Err(e) => assert!(
+            e.contains("StaCurrentContextSlot"),
+            "a refusal that names another cause: {e}"
+        ),
+        Ok(r) => {
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            let g = &r.report.graph;
+            let header = g
+                .lines()
+                .find(|l| l.contains(" loop preds"))
+                .expect("a loop");
+            for (b, _) in block_of(g, "LoadContextSlot") {
+                assert!(
+                    !header.contains(&format!("preds [{b} ")),
+                    "a slot load in the preheader {b} of a loop that writes the slot\n{g}"
+                );
+            }
+        }
+    }
+}
+
 /// `mov64` takes `movn` when more halfwords are 0xFFFF than 0 (the DOUBLE hole: 2
 /// instructions), else `movz` as before; each form makes the same value.
 #[test]
