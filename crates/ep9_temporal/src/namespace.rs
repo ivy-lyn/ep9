@@ -7,8 +7,8 @@
 //! Temporal.Now               %Temporal.Now%  [@@toStringTag] "Temporal.Now" {c},
 //!                                            timeZoneId, instant, plainDateTimeISO,
 //!                                            zonedDateTimeISO, plainDateISO, plainTimeISO
-//! clock: Cx::now_epoch_ns; host zone: Cx::system_time_zone_id, checked with the tz data
-//!        (None or an unknown name: "UTC", design SPEC-T-D16)
+//! clock: Cx::now_epoch_ns; host zone: Cx::system_time_zone_id, checked with the tz data and
+//!        mapped to its primary identifier (None or an unknown name: "UTC", design SPEC-T-D16)
 //! ```
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
@@ -109,21 +109,23 @@ pub const MODULE: BuiltinModule = BuiltinModule {
 
 // ---- Temporal.Now (§2) ----------------------------------------------------------------------
 
-/// SystemTimeZoneIdentifier (§2.3.?): the host zone name if the tz data knows it, else "UTC".
+/// SystemTimeZoneIdentifier: the primary identifier of the host zone name if the tz data knows
+/// it (a link such as "US/Pacific" gives "America/Los_Angeles"), else "UTC".
 fn system_time_zone(cx: &mut Cx<'_>) -> TimeZone {
     cx.system_time_zone_id()
         .and_then(|id| TimeZone::try_from_identifier_str_with_provider(&id, provider()).ok())
+        .and_then(|tz| tz.primary_identifier_with_provider(provider()).ok())
         .unwrap_or_else(|| TimeZone::utc_with_provider(provider()))
 }
 
-/// SystemUTCEpochNanoseconds (§2.3.?): the clock, clamped to the Instant range.
+/// SystemUTCEpochNanoseconds: the clock, clamped to the Instant range.
 fn system_instant(cx: &mut Cx<'_>) -> JsResult<Instant> {
     const LIMIT: i128 = 8_640_000_000_000_000_000_000;
     let ns = cx.now_epoch_ns().clamp(-LIMIT, LIMIT);
     Instant::try_new(ns).or_throw(cx)
 }
 
-/// SystemDateTime(temporalTimeZoneLike) as a ZonedDateTime (§2.3.?): undefined is the system
+/// SystemDateTime(temporalTimeZoneLike) as a ZonedDateTime: undefined is the system
 /// zone, else ToTemporalTimeZoneIdentifier; the time is the clock's.
 fn system_zoned<'s>(cx: &mut Cx<'s>, tz_like: Local<'s>) -> JsResult<ZonedDateTime> {
     let tz = if tz_like.is_undefined() {

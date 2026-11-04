@@ -1,6 +1,6 @@
 //! Temporal.Now (WP T9): the clock (`Cx::now_epoch_ns`) and the host zone
-//! (`Cx::system_time_zone_id`, checked with the tz data; "UTC" when the host gives none or an
-//! unknown name), with and without GC stress.
+//! (`Cx::system_time_zone_id`, checked with the tz data and mapped to its primary identifier;
+//! "UTC" when the host gives none or an unknown name), with and without GC stress.
 
 mod common;
 use common::{lines, run_both};
@@ -29,7 +29,8 @@ fn now_functions_give_the_current_time() {
     );
 }
 
-/// `TZ` in a child process: a known zone is the system zone; an unknown one gives "UTC".
+/// `TZ` in a child process: a known zone is the system zone (a link gives its primary
+/// identifier); an unknown one gives "UTC".
 #[test]
 #[cfg(unix)]
 fn system_zone_from_tz_in_a_child() {
@@ -46,6 +47,8 @@ fn system_zone_from_tz_in_a_child() {
     for (tz, want) in [
         ("Asia/Tokyo", "Asia/Tokyo"),
         (":America/New_York", "America/New_York"),
+        ("US/Pacific", "America/Los_Angeles"),
+        ("Asia/Calcutta", "Asia/Kolkata"),
         ("Mars/Olympus_Mons", "UTC"),
         ("EST5EDT,M3.2.0,M11.1.0", "UTC"),
     ] {
