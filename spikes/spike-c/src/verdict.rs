@@ -18,10 +18,17 @@
 //! | C1 | every am3, linsolve and navier step PASS | a FAIL: no-go; a missing or SKIP step: open |
 //! | C2 | every deopt step PASS | as C1 |
 //! | C3 | the diff step PASS | as C1 |
-//! | C4 `<kernel>` | every run right and the R interval at or above 3.0 | a wrong run or the interval below 3.0: no-go; marginal, void, too few rounds: that word (OPEN) |
+//! | C4 `<kernel>` | the `verdict/c4-<kernel>` step PASS, every run right and the R interval at or above 3.0 | as C1 for the step; then a wrong run or the interval below 3.0: no-go; marginal, void, too few rounds: that word (OPEN) |
 //! | C5a | the unit tests and the structural step PASS | as C1 |
 //! | C5b | the unit tests, the structural and the deopt steps PASS | as C1 |
-//! | C5c | every spfacts step PASS, every run right, the Q interval at or above 0.90 | a FAIL or a wrong run: no-go; a speed-only miss: "speed-only miss" (H30 after the time box, OPEN) |
+//! | C5c | every spfacts step and the `verdict/c5c` step PASS, every run right, the Q interval at or above 0.90 | as C1 for the steps; then a wrong run: no-go; a speed-only miss: "speed-only miss" (H30 after the time box, OPEN) |
+//!
+//! A row reads only its own steps ([`C1_STEPS`] .. [`C5C_STEPS`], [`c4_step`]), each by its
+//! full id, so a step that is missing reads open, not go (M6-P3 SC-FIX, Codex r1: C4 and C5c
+//! read the report and not the step that wrote it). When a row's steps are not go, its
+//! verdict is theirs, and a report that cannot be read gives the Condition cell `no report`
+//! (not an error). The timing steps FAIL only on a wrong run, never on a speed miss
+//! (`spike-c time`, `spike-c sp-facts time`).
 //!
 //! A tree that is not clean, or a commit that is not 40 hex, gives no table (an error): a row
 //! must name the tree it measured (SCP §8, Commit).
@@ -143,38 +150,93 @@ pub fn ratio_verdict(r: &Ratio, bar: f64, speed_only_miss: &str) -> String {
     }
 }
 
-/// The verdict of the steps whose ids start with one of `prefixes`: go if each of them ran
-/// and passed (at least one), no-go on a FAIL, open on a SKIP or none.
-pub fn steps_verdict(steps: &[(String, String)], prefixes: &[&str]) -> String {
-    let mine: Vec<&(String, String)> = steps
+/// The steps of one gate group a row needs: the group (a `gate.sh` function's id) and its
+/// steps, recorded as `<group>/<step>`; a group with no steps is one step, recorded as
+/// `<group>`. A group the gate could not run is one line `<group> SKIP|FAIL <note>` (no
+/// checkout, a failed release build).
+pub type Need<'a> = (&'a str, &'a [&'a str]);
+
+const UNIT_TESTS: Need = ("unit-tests", &[]);
+const STRUCTURAL: Need = ("structural", &["release"]);
+const DEOPT: Need = ("deopt", &["each-guard", "seeded-stress"]);
+
+/// C1: `gate.sh am3`, `linsolve` and `navier`.
+pub const C1_STEPS: &[Need] = &[
+    ("am3", &["compile", "tier-n1", "tier-n8", "stress"]),
+    ("linsolve", &["graph", "tier-n1", "tier-n12"]),
+    (
+        "navier",
+        &[
+            "graph-lin_solve",
+            "graph-project",
+            "graph-advect",
+            "set-n1",
+            "set-n12",
+        ],
+    ),
+];
+/// C2: `gate.sh deopt`.
+pub const C2_STEPS: &[Need] = &[DEOPT];
+/// C3: `gate.sh diff`.
+pub const C3_STEPS: &[Need] = &[("diff", &["kernels+corpus"])];
+/// C5a: the unit tests and `gate.sh structural`.
+pub const C5A_STEPS: &[Need] = &[UNIT_TESTS, STRUCTURAL];
+/// C5b: as C5a, and `gate.sh deopt`.
+pub const C5B_STEPS: &[Need] = &[UNIT_TESTS, STRUCTURAL, DEOPT];
+/// C5c: `gate.sh spfacts` and the timing step of `gate.sh verdict` that wrote `c5c.txt`.
+pub const C5C_STEPS: &[Need] = &[
+    ("spfacts", &["write", "p-n1", "p-n8", "p-ics-only", "wrong"]),
+    ("verdict/c5c", &[]),
+];
+
+/// C4 `<kernel>`: the timing step of `gate.sh verdict` that wrote `c4-<kernel>.txt`.
+pub fn c4_step(kernel: &str) -> String {
+    format!("verdict/c4-{kernel}")
+}
+
+/// The verdict of the steps `need`: go if each of them ran and passed; no-go if a step of one
+/// of the groups FAILed; else open, naming what did not run (a SKIP, or no line).
+pub fn steps_verdict(steps: &[(String, String)], need: &[Need]) -> String {
+    let in_group =
+        |id: &str, g: &str| id == g || id.strip_prefix(g).is_some_and(|r| r.starts_with('/'));
+    let failed: Vec<&str> = steps
         .iter()
-        .filter(|(id, _)| {
-            prefixes
-                .iter()
-                .any(|p| id == p || id.starts_with(&format!("{p}/")))
-        })
+        .filter(|(id, s)| s == "FAIL" && need.iter().any(|(g, _)| in_group(id, g)))
+        .map(|(id, _)| id.as_str())
         .collect();
-    if mine.iter().any(|(_, s)| s == "FAIL") {
-        let failed: Vec<&str> = mine
-            .iter()
-            .filter(|(_, s)| s == "FAIL")
-            .map(|(id, _)| id.as_str())
-            .collect();
+    if !failed.is_empty() {
         return format!("no-go (FAIL: {})", failed.join(" "));
     }
-    let missing: Vec<&str> = prefixes
-        .iter()
-        .copied()
-        .filter(|p| {
-            !mine
-                .iter()
-                .any(|(id, _)| id == p || id.starts_with(&format!("{p}/")))
-        })
-        .collect();
-    if !missing.is_empty() || mine.iter().any(|(_, s)| s != "PASS") {
-        return format!("open (not run: {})", missing.join(" "));
+    // PASS: at least one line with this id, and every line with it PASS.
+    let passed = |id: &str| {
+        let mut lines = steps.iter().filter(|(i, _)| i == id).peekable();
+        lines.peek().is_some() && lines.all(|(_, s)| s == "PASS")
+    };
+    let mut not_run: Vec<String> = Vec::new();
+    for (g, subs) in need {
+        if subs.is_empty() {
+            if !passed(g) {
+                not_run.push((*g).to_string());
+            }
+            continue;
+        }
+        let bad: Vec<String> = subs
+            .iter()
+            .map(|s| format!("{g}/{s}"))
+            .filter(|id| !passed(id))
+            .collect();
+        let group_line = steps.iter().any(|(id, s)| id == g && s != "PASS");
+        if group_line || (!bad.is_empty() && bad.len() == subs.len()) {
+            not_run.push((*g).to_string());
+        } else {
+            not_run.extend(bad);
+        }
     }
-    "go".into()
+    if not_run.is_empty() {
+        "go".into()
+    } else {
+        format!("open (not run: {})", not_run.join(" "))
+    }
 }
 
 /// The gate's result lines (`<id> PASS|FAIL|SKIP [note]`, `gate.sh` `record`).
@@ -221,15 +283,15 @@ pub fn rows(dir: &Path) -> Result<String, String> {
         format!("| {spike} | {cond} | {verdict} | {commit} | {lowering} | {host} | {adrs} |")
     };
     let mut out = vec![HEADER.to_string()];
-    let c4: Vec<(&str, String)> = C4_KERNELS
+    let c4: Vec<(&str, Result<String, String>)> = C4_KERNELS
         .iter()
-        .map(|k| Ok((*k, read(dir, &format!("c4-{k}.txt"))?)))
-        .collect::<Result<_, String>>()?;
-    let spike_c = |id: &str, what: &str, prefixes: &[&str]| {
+        .map(|k| (*k, read(dir, &format!("c4-{k}.txt"))))
+        .collect();
+    let spike_c = |id: &str, what: &str, need: &[Need]| {
         row(
             "Spike C",
             format!("{id}: {what}"),
-            steps_verdict(&steps, prefixes),
+            steps_verdict(&steps, need),
             "jit",
             SPIKE_C_ADRS,
         )
@@ -237,7 +299,7 @@ pub fn rows(dir: &Path) -> Result<String, String> {
     let in_t0: Vec<String> = c4
         .iter()
         .filter_map(|(k, text)| {
-            let names = refused_names(text);
+            let names = refused_names(text.as_deref().ok()?);
             (!names.is_empty()).then(|| format!("{k} {}", names.join(", ")))
         })
         .collect();
@@ -249,36 +311,49 @@ pub fn rows(dir: &Path) -> Result<String, String> {
             format!("; stays in T0: {}", in_t0.join("; "))
         }
     );
-    out.push(spike_c("C1", &c1, &["am3", "linsolve", "navier"]));
+    out.push(spike_c("C1", &c1, C1_STEPS));
     out.push(spike_c(
         "C2",
         "each guard of am3 forced alone deopts to T0, output equal, one counted exit",
-        &["deopt"],
+        C2_STEPS,
     ));
     out.push(spike_c(
         "C3",
         "the tier differential, kernels and corpus, every guard forced, 0 mismatches",
-        &["diff"],
+        C3_STEPS,
     ));
     for (k, text) in &c4 {
-        let r = parse_ratio(text, "R = t(T0) / t(C) (gate unit):")
-            .map_err(|e| format!("c4-{k}.txt: {e}"))?;
-        let iv = r
-            .interval
-            .map_or("-".into(), |(lo, hi)| format!("[{lo:.3}, {hi:.3}]"));
-        out.push(row(
-            "Spike C",
-            format!(
-                "C4 {k}: R {:.3} {iv}, {} rounds, IQR {:.1}%{}",
-                r.median,
-                r.rounds,
-                r.iqr_percent,
-                stays(&refused_names(text))
-            ),
-            ratio_verdict(&r, 3.0, "no-go (the interval is below 3.0)"),
-            "jit",
-            SPIKE_C_ADRS,
-        ));
+        let step = c4_step(k);
+        let step = steps_verdict(&steps, &[(step.as_str(), &[])]);
+        let report = text.as_ref().map_err(String::clone).and_then(|t| {
+            parse_ratio(t, "R = t(T0) / t(C) (gate unit):")
+                .map(|r| (t, r))
+                .map_err(|e| format!("c4-{k}.txt: {e}"))
+        });
+        let (cond, verdict) = match report {
+            Ok((text, r)) => {
+                let iv = r
+                    .interval
+                    .map_or("-".into(), |(lo, hi)| format!("[{lo:.3}, {hi:.3}]"));
+                let cond = format!(
+                    "C4 {k}: R {:.3} {iv}, {} rounds, IQR {:.1}%{}",
+                    r.median,
+                    r.rounds,
+                    r.iqr_percent,
+                    stays(&refused_names(text))
+                );
+                let verdict = if step == "go" {
+                    ratio_verdict(&r, 3.0, "no-go (the interval is below 3.0)")
+                } else {
+                    step
+                };
+                (cond, verdict)
+            }
+            // The step did not pass: its verdict stands, with no numbers.
+            Err(_) if step != "go" => (format!("C4 {k}: no report"), step),
+            Err(e) => return Err(e),
+        };
+        out.push(row("Spike C", cond, verdict, "jit", SPIKE_C_ADRS));
     }
     let sp = |id: &str, what: String, verdict: String| {
         row(
@@ -292,38 +367,49 @@ pub fn rows(dir: &Path) -> Result<String, String> {
     out.push(sp(
         "C5a",
         "the lattice and ref-node checks on every compiled graph".into(),
-        steps_verdict(&steps, &["unit-tests", "structural"]),
+        steps_verdict(&steps, C5A_STEPS),
     ));
     out.push(sp(
         "C5b",
         "the metadata holds offsets only; a moved copy deopts the same".into(),
-        steps_verdict(&steps, &["unit-tests", "structural", "deopt"]),
+        steps_verdict(&steps, C5B_STEPS),
     ));
-    let text = read(dir, "c5c.txt")?;
-    let q = parse_ratio(&text, "Q = t(C) / t(P) (C5c):").map_err(|e| format!("c5c.txt: {e}"))?;
-    let speed = ratio_verdict(&q, 0.90, "speed-only miss (an H30 row after the time box)");
-    let steps_c5c = steps_verdict(&steps, &["spfacts"]);
-    let verdict = if steps_c5c == "go" { speed } else { steps_c5c };
-    let iv = q
-        .interval
-        .map_or("-".into(), |(lo, hi)| format!("[{lo:.3}, {hi:.3}]"));
-    out.push(sp(
-        "C5c",
-        format!(
-            "crypto from a PROFILED file, output equal; Q = t(C) / t(P) {:.3} {iv}, {} rounds, IQR {:.1}%{}",
-            q.median,
-            q.rounds,
-            q.iqr_percent,
-            stays(&refused_names(&text))
-        ),
-        verdict,
-    ));
+    let steps_c5c = steps_verdict(&steps, C5C_STEPS);
+    let report = read(dir, "c5c.txt").and_then(|t| {
+        parse_ratio(&t, "Q = t(C) / t(P) (C5c):")
+            .map(|q| (t, q))
+            .map_err(|e| format!("c5c.txt: {e}"))
+    });
+    let (cond, verdict) = match report {
+        Ok((text, q)) => {
+            let iv = q
+                .interval
+                .map_or("-".into(), |(lo, hi)| format!("[{lo:.3}, {hi:.3}]"));
+            let cond = format!(
+                "crypto from a PROFILED file, output equal; Q = t(C) / t(P) {:.3} {iv}, {} rounds, IQR {:.1}%{}",
+                q.median,
+                q.rounds,
+                q.iqr_percent,
+                stays(&refused_names(&text))
+            );
+            let verdict = if steps_c5c == "go" {
+                ratio_verdict(&q, 0.90, "speed-only miss (an H30 row after the time box)")
+            } else {
+                steps_c5c
+            };
+            (cond, verdict)
+        }
+        // The steps did not pass: their verdict stands, with no numbers.
+        Err(_) if steps_c5c != "go" => ("no report".to_string(), steps_c5c),
+        Err(e) => return Err(e),
+    };
+    out.push(sp("C5c", cond, verdict));
     Ok(out.join("\n"))
 }
 
 /// The fixture run of `gate.sh verdict --fixtures` (VERDICT-DRY on fixtures): the inputs of a
-/// gate run, written to `dir`: every step PASS, a clean tree, C4 crypto on the pass side, C4
-/// navier-stokes marginal, C5c on the pass side.
+/// gate run, written to `dir`: every step PASS (the timing steps too), a clean tree, C4 crypto
+/// on the pass side, C4 navier-stokes marginal, C5c on the pass side.
 pub fn write_fixtures(dir: &Path) -> Result<(), String> {
     let files = [
         (
@@ -332,7 +418,7 @@ pub fn write_fixtures(dir: &Path) -> Result<(), String> {
         ),
         (
             "steps.txt",
-            "unit-tests               PASS\nbuild-release            PASS\nstructural/release       PASS\nam3/compile              PASS\nam3/tier-n1              PASS\nam3/tier-n8              PASS\nam3/stress               PASS\ndeopt/each-guard         PASS\ndeopt/seeded-stress      PASS\nlinsolve/graph           PASS\nlinsolve/tier-n1         PASS\nlinsolve/tier-n12        PASS\nnavier/graph-lin_solve   PASS\nnavier/graph-project     PASS\nnavier/graph-advect      PASS\nnavier/set-n1            PASS\nnavier/set-n12           PASS\ndiff/kernels+corpus      PASS\nspfacts/write            PASS\nspfacts/p-n1             PASS\nspfacts/p-n8             PASS\nspfacts/p-ics-only       PASS\nspfacts/wrong            PASS\n",
+            "unit-tests               PASS\nbuild-release            PASS\nstructural/release       PASS\nam3/compile              PASS\nam3/tier-n1              PASS\nam3/tier-n8              PASS\nam3/stress               PASS\ndeopt/each-guard         PASS\ndeopt/seeded-stress      PASS\nlinsolve/graph           PASS\nlinsolve/tier-n1         PASS\nlinsolve/tier-n12        PASS\nnavier/graph-lin_solve   PASS\nnavier/graph-project     PASS\nnavier/graph-advect      PASS\nnavier/set-n1            PASS\nnavier/set-n12           PASS\ndiff/kernels+corpus      PASS\nspfacts/write            PASS\nspfacts/p-n1             PASS\nspfacts/p-n8             PASS\nspfacts/p-ics-only       PASS\nspfacts/wrong            PASS\nverdict/c4-crypto        PASS\nverdict/c4-navier-stokes PASS\nverdict/c5c              PASS\n",
         ),
         (
             "c4-crypto.txt",
@@ -515,6 +601,215 @@ mod tests {
                 .contains("| speed-only miss (an H30 row after the time box) |")
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The Verdict cell of the row labelled `label` (the Condition text before its first `:`).
+    fn verdict_of(t: &str, label: &str) -> String {
+        t.lines()
+            .find_map(|l| {
+                let c: Vec<&str> = l.trim_matches('|').split('|').map(str::trim).collect();
+                (c.len() == 7 && c[1].split(':').next() == Some(label)).then(|| c[2].to_string())
+            })
+            .unwrap_or_else(|| panic!("no row {label} in {t}"))
+    }
+
+    /// The fixture's steps.txt with the line of step `id` replaced by `line` ("" drops it).
+    fn with_step(steps: &str, id: &str, line: &str) -> String {
+        let mut found = false;
+        let out: String = steps
+            .lines()
+            .filter_map(|l| {
+                if l.split_whitespace().next() == Some(id) {
+                    found = true;
+                    (!line.is_empty()).then(|| format!("{line}\n"))
+                } else {
+                    Some(format!("{l}\n"))
+                }
+            })
+            .collect();
+        assert!(found, "no step {id}");
+        out
+    }
+
+    /// Codex r1 on M6-P3 SC-FIX: a C4 or C5c row needs its own timing step to pass, not only
+    /// a passing report. For each timing step: FAIL is no-go, SKIP or missing is open, and
+    /// only that step's row changes (C4 navier-stokes stays marginal when its step passes).
+    #[test]
+    fn a_timing_row_needs_its_own_step() {
+        let d = fixture_dir("timing-steps");
+        let steps = std::fs::read_to_string(d.join("steps.txt")).unwrap();
+        let good = rows(&d).expect("rows");
+        let cases = [
+            ("verdict/c4-crypto", "C4 crypto"),
+            ("verdict/c4-navier-stokes", "C4 navier-stokes"),
+            ("verdict/c5c", "C5c"),
+        ];
+        for (id, label) in cases {
+            for (line, want) in [
+                (
+                    format!("{id:<24} FAIL  exit 1"),
+                    format!("no-go (FAIL: {id})"),
+                ),
+                (
+                    format!("{id:<24} SKIP  no v8-v7 checkout"),
+                    format!("open (not run: {id})"),
+                ),
+                (String::new(), format!("open (not run: {id})")),
+            ] {
+                std::fs::write(d.join("steps.txt"), with_step(&steps, id, &line)).unwrap();
+                let t = rows(&d).expect("rows");
+                assert_eq!(verdict_of(&t, label), want, "{line:?}\n{t}");
+                for (_, other) in cases.iter().filter(|(_, l)| *l != label) {
+                    assert_eq!(verdict_of(&t, other), verdict_of(&good, other), "{t}");
+                }
+                for other in ["C1", "C2", "C3", "C5a", "C5b"] {
+                    assert_eq!(verdict_of(&t, other), "go", "{t}");
+                }
+            }
+        }
+        // A step that failed may leave no report: the row keeps its verdict, with no numbers.
+        // A passing step with no report still gives no table.
+        std::fs::write(
+            d.join("steps.txt"),
+            with_step(&steps, "verdict/c4-crypto", "verdict/c4-crypto FAIL exit 2"),
+        )
+        .unwrap();
+        std::fs::write(d.join("c4-crypto.txt"), "").unwrap();
+        let t = rows(&d).expect("rows");
+        assert!(
+            t.contains("| C4 crypto: no report | no-go (FAIL: verdict/c4-crypto) |"),
+            "{t}"
+        );
+        // C1 names no T0 function of crypto then (its report is gone).
+        assert!(t.contains("output equal to T0 | go |"), "{t}");
+        std::fs::write(d.join("steps.txt"), &steps).unwrap();
+        assert!(rows(&d).unwrap_err().contains("c4-crypto.txt: no line"));
+        std::fs::remove_file(d.join("c4-crypto.txt")).unwrap();
+        assert!(rows(&d).unwrap_err().starts_with("c4-crypto.txt: "));
+        std::fs::write(
+            d.join("steps.txt"),
+            with_step(&steps, "verdict/c4-crypto", "verdict/c4-crypto SKIP"),
+        )
+        .unwrap();
+        let t = rows(&d).expect("rows");
+        assert!(
+            t.contains("| C4 crypto: no report | open (not run: verdict/c4-crypto) |"),
+            "{t}"
+        );
+        write_fixtures(&d).expect("fixtures");
+        std::fs::write(d.join("steps.txt"), with_step(&steps, "verdict/c5c", "")).unwrap();
+        std::fs::remove_file(d.join("c5c.txt")).unwrap();
+        let t = rows(&d).expect("rows");
+        assert!(
+            t.contains("| C5c: no report | open (not run: verdict/c5c) |"),
+            "{t}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Every row needs each of its steps by its full id: one step missing or SKIP is open (it
+    /// names that step), a group the gate skipped or failed as one line names the group.
+    #[test]
+    fn a_row_needs_each_of_its_steps() {
+        let d = fixture_dir("each-step");
+        let steps = std::fs::read_to_string(d.join("steps.txt")).unwrap();
+        let am3: String = ["am3/compile", "am3/tier-n1", "am3/tier-n8"]
+            .iter()
+            .fold(steps.clone(), |s, id| with_step(&s, id, ""));
+        for (s, label, want) in [
+            (
+                with_step(&steps, "am3/stress", ""),
+                "C1",
+                "open (not run: am3/stress)",
+            ),
+            (
+                with_step(&steps, "navier/set-n12", "navier/set-n12 SKIP"),
+                "C1",
+                "open (not run: navier/set-n12)",
+            ),
+            (
+                with_step(&am3, "am3/stress", "am3 SKIP  no v8-v7 checkout"),
+                "C1",
+                "open (not run: am3)",
+            ),
+            (
+                with_step(&am3, "am3/stress", "am3 FAIL  release build failed"),
+                "C1",
+                "no-go (FAIL: am3)",
+            ),
+            (
+                with_step(&steps, "deopt/seeded-stress", ""),
+                "C2",
+                "open (not run: deopt/seeded-stress)",
+            ),
+            (
+                with_step(&steps, "deopt/seeded-stress", ""),
+                "C5b",
+                "open (not run: deopt/seeded-stress)",
+            ),
+            (
+                with_step(&steps, "unit-tests", ""),
+                "C5a",
+                "open (not run: unit-tests)",
+            ),
+            (
+                with_step(&steps, "structural/release", "structural/release FAIL"),
+                "C5a",
+                "no-go (FAIL: structural/release)",
+            ),
+            (
+                with_step(&steps, "spfacts/p-ics-only", ""),
+                "C5c",
+                "open (not run: spfacts/p-ics-only)",
+            ),
+            (
+                format!("{steps}spfacts/wrong            SKIP\n"),
+                "C5c",
+                "open (not run: spfacts/wrong)",
+            ),
+        ] {
+            std::fs::write(d.join("steps.txt"), &s).unwrap();
+            let t = rows(&d).expect("rows");
+            assert_eq!(verdict_of(&t, label), want, "{t}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The step ids the rows need are the ids `gate.sh` records: every `run` step of the
+    /// groups `all` runs and of `gate.sh verdict` is read by a row (the report-only steps and
+    /// the fixture step are not), and every id a row needs is one the gate records.
+    #[test]
+    fn the_row_steps_are_the_gate_steps() {
+        let gate = include_str!("../gate.sh");
+        let mut ran: Vec<String> = gate
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("run \""))
+            .filter_map(|r| r.split('"').next())
+            .filter(|id| !id.ends_with(" (report)") && *id != "verdict/fixtures")
+            .map(String::from)
+            .collect();
+        let c4 = format!("for k in {}; do", C4_KERNELS.join(" "));
+        assert!(gate.contains(&c4), "gate.sh: no `{c4}`");
+        let at = ran.iter().position(|id| id == "verdict/c4-$k").expect("c4");
+        ran.splice(at..=at, C4_KERNELS.iter().map(|k| c4_step(k)));
+        ran.sort();
+        let mut needed: Vec<String> = [
+            C1_STEPS, C2_STEPS, C3_STEPS, C5A_STEPS, C5B_STEPS, C5C_STEPS,
+        ]
+        .iter()
+        .flat_map(|n| n.iter())
+        .flat_map(|(g, subs)| {
+            if subs.is_empty() {
+                vec![(*g).to_string()]
+            } else {
+                subs.iter().map(|s| format!("{g}/{s}")).collect()
+            }
+        })
+        .chain(C4_KERNELS.iter().map(|k| c4_step(k)))
+        .collect();
+        needed.sort();
+        needed.dedup();
+        assert_eq!(needed, ran);
     }
 
     /// The writer reads the real report lines of `timing.rs` (the same words).
