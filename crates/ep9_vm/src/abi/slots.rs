@@ -87,6 +87,8 @@ pub enum ObjectClass {
     TemporalPlainTime,
     /// A Temporal.PlainDate instance (spec-temporal T5): `[[ISODate]]` as slots 0-2 (ISO year, month, day: int32s) and `[[Calendar]]` as slot 3 (an ep9 calendar code, 0 = iso8601), `ep9_temporal` plain_date.rs.
     TemporalPlainDate,
+    /// A Temporal.PlainDateTime instance (spec-temporal T6): `[[ISODateTime]]` as slots 0-2 (ISO year, month, day) and 4-5 (the second of the day, the nanosecond of that second), `[[Calendar]]` as slot 3 (an ep9 calendar code, 0 = iso8601); all int32s, `ep9_temporal` plain_date_time.rs.
+    TemporalPlainDateTime,
 }
 
 impl ObjectClass {
@@ -111,6 +113,7 @@ impl ObjectClass {
         ObjectClass::TemporalInstant,
         ObjectClass::TemporalPlainTime,
         ObjectClass::TemporalPlainDate,
+        ObjectClass::TemporalPlainDateTime,
     ];
 
     /// Most internal slots of one object.
@@ -152,6 +155,7 @@ impl ObjectClass {
             ObjectClass::TemporalInstant => "Temporal.Instant",
             ObjectClass::TemporalPlainTime => "Temporal.PlainTime",
             ObjectClass::TemporalPlainDate => "Temporal.PlainDate",
+            ObjectClass::TemporalPlainDateTime => "Temporal.PlainDateTime",
         }
     }
 }

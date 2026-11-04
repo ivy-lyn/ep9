@@ -25,7 +25,10 @@ pub(crate) fn require_iso(cx: &mut Cx<'_>, cal: Calendar) -> JsResult<Calendar> 
 
 /// The classes with a `[[Calendar]]` slot (PlainDate, PlainDateTime, PlainYearMonth,
 /// PlainMonthDay, ZonedDateTime), as they are built.
-const CALENDAR_CLASSES: &[ObjectClass] = &[ObjectClass::TemporalPlainDate];
+const CALENDAR_CLASSES: &[ObjectClass] = &[
+    ObjectClass::TemporalPlainDate,
+    ObjectClass::TemporalPlainDateTime,
+];
 
 /// The calendar code of `iso8601` in a calendar slot (ep9 codes, append-only).
 pub(crate) const CAL_ISO8601: i32 = 0;

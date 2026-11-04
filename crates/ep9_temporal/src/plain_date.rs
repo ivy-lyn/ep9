@@ -7,8 +7,9 @@
 //!   3 calendar code (calendar.rs; 0 = iso8601): an int32
 //! ```
 //!
-//! `toPlainDateTime`, `toPlainYearMonth`, `toPlainMonthDay` and `toZonedDateTime` are
-//! appended with the classes they make (WPs T6, T7, T8).
+//! `toPlainDateTime` (id 30) came with PlainDateTime (WP T6); `toPlainYearMonth`,
+//! `toPlainMonthDay` and `toZonedDateTime` are appended with the classes they make (WPs T7,
+//! T8).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-plain_date.txt`.
@@ -71,6 +72,7 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("toJSON", 0, to_json),             // 27
     BuiltinDef::method("toLocaleString", 0, to_locale_string), // 28
     BuiltinDef::method("valueOf", 0, value_of),           // 29
+    BuiltinDef::method("toPlainDateTime", 0, to_plain_date_time), // 30 (T6)
 ];
 
 /// The intrinsics this module makes.
@@ -141,6 +143,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("toJSON"), 27),
             PropDef::method(PropKey::Str("toLocaleString"), 28),
             PropDef::method(PropKey::Atom(Atom::ValueOf), 29),
+            PropDef::method(PropKey::Str("toPlainDateTime"), 30),
         ],
     },
     ObjectProps {
@@ -164,11 +167,17 @@ pub const MODULE: BuiltinModule = BuiltinModule {
 
 // ---- slots ----------------------------------------------------------------------------------
 
-/// The PlainDate in `v` (RequireInternalSlot: a TypeError if `v` is not a PlainDate).
-pub(crate) fn read<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<PlainDate> {
-    let mut f = [0.0f64; SLOTS];
+/// The date in slots `base..base + 4` of `v` (RequireInternalSlot for `class`). PlainDate
+/// and PlainDateTime keep the date the same way (design §3.2).
+pub(crate) fn read_date_slots<'s>(
+    cx: &mut Cx<'s>,
+    v: Local<'s>,
+    class: ObjectClass,
+    base: usize,
+) -> JsResult<PlainDate> {
+    let mut f = [0.0f64; 4];
     for (i, x) in f.iter_mut().enumerate() {
-        *x = cx.slot(v, CLASS, i)?.as_number().unwrap_or(0.0);
+        *x = cx.slot(v, class, base + i)?.as_number().unwrap_or(0.0);
     }
     PlainDate::try_new(
         f[0] as i32,
@@ -177,6 +186,30 @@ pub(crate) fn read<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<PlainDate> {
         calendar::from_slot(f[3]),
     )
     .or_throw(cx)
+}
+
+/// Writes the date `d` to slots `base..base + 4` of `o`.
+pub(crate) fn write_date_slots<'s>(
+    cx: &mut Cx<'s>,
+    o: Local<'s, JsObject>,
+    class: ObjectClass,
+    base: usize,
+    d: &PlainDate,
+) -> JsResult<()> {
+    cx.set_slot(o, class, base, Local::int32(d.year()))?;
+    cx.set_slot(o, class, base + 1, Local::int32(i32::from(d.month())))?;
+    cx.set_slot(o, class, base + 2, Local::int32(i32::from(d.day())))?;
+    cx.set_slot(
+        o,
+        class,
+        base + 3,
+        Local::int32(calendar::to_slot(d.calendar())),
+    )
+}
+
+/// The PlainDate in `v` (RequireInternalSlot: a TypeError if `v` is not a PlainDate).
+pub(crate) fn read<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<PlainDate> {
+    read_date_slots(cx, v, CLASS, 0)
 }
 
 /// CreateTemporalDate(isoDate, calendar, newTarget): a new PlainDate object. `d` is in
@@ -193,20 +226,20 @@ pub(crate) fn create<'s>(
         None => cx.intrinsic(IntrinsicId::TemporalPlainDatePrototype),
     };
     let o = cx.new_object_with_slots(proto, CLASS, SLOTS);
-    cx.set_slot(o, CLASS, 0, Local::int32(d.year()))?;
-    cx.set_slot(o, CLASS, 1, Local::int32(i32::from(d.month())))?;
-    cx.set_slot(o, CLASS, 2, Local::int32(i32::from(d.day())))?;
-    cx.set_slot(o, CLASS, 3, Local::int32(calendar::to_slot(d.calendar())))?;
+    write_date_slots(cx, o, CLASS, 0, d)?;
     Ok(o.value())
 }
 
 // ---- abstract operations --------------------------------------------------------------------
 
-/// The date of a Temporal object with a date (PlainDate; PlainDateTime and ZonedDateTime
-/// come with WPs T6 and T8), else `None`.
+/// The date of a Temporal object with a date (PlainDate, PlainDateTime; ZonedDateTime
+/// comes with WP T8), else `None`.
 pub(crate) fn date_of_object<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<Option<PlainDate>> {
     match cx.object_class(v) {
         Some(CLASS) => read(cx, v).map(Some),
+        Some(ObjectClass::TemporalPlainDateTime) => {
+            crate::plain_date_time::read(cx, v).map(|dt| Some(dt.to_plain_date()))
+        }
         _ => Ok(None),
     }
 }
@@ -710,4 +743,19 @@ fn value_of<'s>(
     Err(cx.throw_type_error(
         "Temporal.PlainDate cannot be converted to a primitive; use compare() or equals()",
     ))
+}
+
+/// Temporal.PlainDate.prototype.toPlainDateTime ( [ temporalTime ] ) (§3.3.?).
+fn to_plain_date_time<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let d = read(cx, this)?;
+    // 3. Let time be ? ToTimeRecordOrMidnight(temporalTime).
+    let t = crate::plain_date_time::to_time_or_midnight(cx, args.get(0))?;
+    // 4-5. CombineISODateAndTimeRecord; CreateTemporalDateTime (the limits: RangeError).
+    let dt = d.to_plain_date_time(t).or_throw(cx)?;
+    crate::plain_date_time::create(cx, &dt, None)
 }

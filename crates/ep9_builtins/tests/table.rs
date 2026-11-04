@@ -57,6 +57,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("instant", 21),
             ("plain_time", 22),
             ("plain_date", 23),
+            ("plain_date_time", 24),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);
