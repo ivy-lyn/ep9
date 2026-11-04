@@ -1,3 +1,9 @@
 # ep9 builtin ids: module temporal, block 19. Append-only (H20, W4-BUILTIN-IDS): never
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
+0x2600   19.0         method       0       "timeZoneId"  (%Temporal.Now%.timeZoneId w-c)
+0x2601   19.1         method       0       "instant"  (%Temporal.Now%.instant w-c)
+0x2602   19.2         method       0       "plainDateTimeISO"  (%Temporal.Now%.plainDateTimeISO w-c)
+0x2603   19.3         method       0       "zonedDateTimeISO"  (%Temporal.Now%.zonedDateTimeISO w-c)
+0x2604   19.4         method       0       "plainDateISO"  (%Temporal.Now%.plainDateISO w-c)
+0x2605   19.5         method       0       "plainTimeISO"  (%Temporal.Now%.plainTimeISO w-c)

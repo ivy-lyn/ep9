@@ -16,6 +16,15 @@
 //!                                 (the move overflows i64: offset 0; TimeClip gives NaN)
 //! ```
 //!
+//! system_time_zone_id()        the host zone id for Temporal.Now (SystemTimeZoneIdentifier):
+//!                                unix     TZ (a leading ':' is dropped; the part after
+//!                                         "zoneinfo/" of a path; a POSIX rule with ',' or
+//!                                         '<' gives None), else the /etc/localtime link
+//!                                         target after "zoneinfo/"
+//!                                windows  None
+//!                              the caller checks the id with its tz data (None or an
+//!                              unknown id: "UTC")
+//!
 //! Offsets are in milliseconds, positive east of Greenwich. Later the body of
 //! `Cx::local_tz_offset_ms` calls the tz provider that Temporal shares
 //! (docs/plan/06-object-model-and-spec.md "Same tz provider as Temporal"); this module is the
@@ -32,6 +41,48 @@ pub fn now_epoch_ns() -> i128 {
         Ok(d) => d.as_nanos() as i128,
         Err(e) => -(e.duration().as_nanos() as i128),
     }
+}
+
+/// The host time zone identifier, for Temporal.Now (the host part of
+/// SystemTimeZoneIdentifier): an IANA name such as "Europe/Paris", or `None` when the host
+/// gives no name. The caller checks the name with its tz data.
+pub fn system_time_zone_id() -> Option<String> {
+    #[cfg(unix)]
+    {
+        if let Some(tz) = std::env::var_os("TZ") {
+            return zone_id_from_tz(&tz.to_string_lossy());
+        }
+        let target = std::fs::read_link("/etc/localtime").ok()?;
+        zone_id_after_zoneinfo(&target.to_string_lossy())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// The zone name of a `TZ` value: a leading ':' is dropped; a path gives the part after
+/// "zoneinfo/" (another path: `None`); a POSIX rule string (it has ',' or '<') gives `None`;
+/// an empty value gives `None`.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn zone_id_from_tz(tz: &str) -> Option<String> {
+    let tz = tz.strip_prefix(':').unwrap_or(tz);
+    if tz.is_empty() || tz.contains([',', '<', '>']) {
+        return None;
+    }
+    if tz.starts_with('/') || tz.contains("zoneinfo/") {
+        return zone_id_after_zoneinfo(tz);
+    }
+    Some(tz.to_string())
+}
+
+/// The part of a path after the last "zoneinfo/" ("/usr/share/zoneinfo/Europe/Paris" ->
+/// "Europe/Paris"), or `None`.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn zone_id_after_zoneinfo(path: &str) -> Option<String> {
+    let i = path.rfind("zoneinfo/")?;
+    let id = &path[i + "zoneinfo/".len()..];
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 /// The local time zone offset in milliseconds at the time `t_ms` (LocalTZA, ECMA-262
@@ -177,6 +228,64 @@ fn sys_offset_secs(secs: i64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_ids_from_tz_values() {
+        let id = |s: &str| zone_id_from_tz(s);
+        assert_eq!(id("America/New_York").as_deref(), Some("America/New_York"));
+        assert_eq!(id(":Europe/Paris").as_deref(), Some("Europe/Paris"));
+        assert_eq!(id("UTC").as_deref(), Some("UTC"));
+        assert_eq!(
+            id("/usr/share/zoneinfo/Asia/Tokyo").as_deref(),
+            Some("Asia/Tokyo")
+        );
+        assert_eq!(
+            id(":/var/db/timezone/zoneinfo/Europe/Berlin").as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(id("/etc/mytz"), None);
+        assert_eq!(id("EST5EDT,M3.2.0,M11.1.0"), None);
+        assert_eq!(id("<+0330>-3:30"), None);
+        assert_eq!(id(""), None);
+        assert_eq!(id(":"), None);
+        assert_eq!(zone_id_after_zoneinfo("/usr/share/zoneinfo/"), None);
+    }
+
+    /// `system_time_zone_id` reads `TZ` (set in a child process: the test process keeps its
+    /// own environment).
+    #[test]
+    #[cfg(unix)]
+    fn system_zone_from_tz_in_a_child() {
+        const CHILD: &str = "EP9_PLATFORM_TZ_CHILD";
+        if let Some(want) = std::env::var_os(CHILD) {
+            assert_eq!(
+                system_time_zone_id().as_deref(),
+                Some(want.to_string_lossy().as_ref())
+            );
+            return;
+        }
+        for (tz, want) in [
+            ("America/New_York", "America/New_York"),
+            (":Europe/Paris", "Europe/Paris"),
+        ] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "time::tests::system_zone_from_tz_in_a_child",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD, want)
+                .env("TZ", tz)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && text.contains("1 passed"),
+                "child with TZ={tz} failed:\n{text}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
 
     #[test]
     fn now_is_after_2020_and_moves_forward() {
