@@ -18,17 +18,19 @@
 //! | C1 | every am3, linsolve and navier step PASS | a FAIL: no-go; a missing or SKIP step: open |
 //! | C2 | every deopt step PASS | as C1 |
 //! | C3 | the diff step PASS | as C1 |
-//! | C4 `<kernel>` | the `verdict/c4-<kernel>` step PASS, every run right and the R interval at or above 3.0 | as C1 for the step; then a wrong run or the interval below 3.0: no-go; marginal, void, too few rounds: that word (OPEN) |
+//! | C4 `<kernel>` | the `verdict/c4-<kernel>` step PASS, every run right, the R interval at or above 3.0 and the report's own words `interval on the pass side` | as C1 for the step; then a wrong run or the interval below 3.0: no-go; marginal, void, too few rounds: that word (OPEN) |
 //! | C5a | the unit tests and the structural step PASS | as C1 |
 //! | C5b | the unit tests, the structural and the deopt steps PASS | as C1 |
-//! | C5c | every spfacts step and the `verdict/c5c` step PASS, every run right, the Q interval at or above 0.90 | as C1 for the steps; then a wrong run: no-go; a speed-only miss: "speed-only miss" (H30 after the time box, OPEN) |
+//! | C5c | every spfacts step and the `verdict/c5c` step PASS, every run right, the Q interval at or above 0.90 and the report's own words `interval on the pass side` | as C1 for the steps; then a wrong run: no-go; a speed-only miss: "speed-only miss" (H30 after the time box, OPEN) |
 //!
 //! A row reads only its own steps ([`C1_STEPS`] .. [`C5C_STEPS`], [`c4_step`]), each by its
 //! full id, so a step that is missing reads open, not go (M6-P3 SC-FIX, Codex r1: C4 and C5c
 //! read the report and not the step that wrote it). When a row's steps are not go, its
 //! verdict is theirs, and a report that cannot be read gives the Condition cell `no report`
 //! (not an error). The timing steps FAIL only on a wrong run, never on a speed miss
-//! (`spike-c time`, `spike-c sp-facts time`).
+//! (`spike-c time`, `spike-c sp-facts time`). The report rounds its numbers, so a row reads
+//! go only when the producer's words (`timing::Summary::side`, from the unrounded numbers)
+//! agree; a ratio line with no such words reads marginal (M6-P3 Codex r2 T1).
 //!
 //! A tree that is not clean, or a commit that is not 40 hex, gives no table (an error): a row
 //! must name the tree it measured (SCP §8, Commit).
@@ -60,6 +62,9 @@ pub struct Ratio {
     pub rounds: u32,
     /// "every run right" was printed (no wrong run).
     pub right: bool,
+    /// The producer's verdict words after `; vs <bar>: ` (`timing::Summary::side`, decided on
+    /// the unrounded numbers), or "" when the line has none.
+    pub side: String,
 }
 
 /// The ratio line that starts with `prefix` (`R = t(T0) / t(C) (gate unit):` or `Q = t(C) /
@@ -95,6 +100,10 @@ pub fn parse_ratio(text: &str, prefix: &str) -> Result<Ratio, String> {
         Some((num(lo)?, num(hi)?))
     };
     let iqr_percent = num(after("IQR ")?.split('%').next().unwrap_or(""))?;
+    let side = line
+        .split_once("; vs ")
+        .and_then(|(_, r)| r.split_once(": "))
+        .map_or(String::new(), |(_, w)| w.trim().to_string());
     let rounds = text
         .lines()
         .find_map(|l| l.strip_prefix("rounds: "))
@@ -110,6 +119,7 @@ pub fn parse_ratio(text: &str, prefix: &str) -> Result<Ratio, String> {
         iqr_percent,
         rounds,
         right,
+        side,
     })
 }
 
@@ -139,13 +149,17 @@ pub fn ratio_verdict(r: &Ratio, bar: f64, speed_only_miss: &str) -> String {
     if !r.right {
         return "no-go (a wrong run: correctness)".into();
     }
-    if r.iqr_percent > 5.0 {
+    // The printed numbers are rounded (IQR to 0.1%, the interval to 0.001): the producer's
+    // words, decided on the unrounded numbers, must agree before a row reads go.
+    if r.iqr_percent > 5.0 || r.side.starts_with("void") {
         return "void (IQR > 5% of the median; run again)".into();
     }
     match r.interval {
         None => "too few rounds".into(),
-        Some((lo, _)) if lo >= bar => "go".into(),
-        Some((_, hi)) if hi < bar => speed_only_miss.into(),
+        Some((_, hi)) if hi < bar || r.side == "interval on the fail side" => {
+            speed_only_miss.into()
+        }
+        Some((lo, _)) if lo >= bar && r.side == "interval on the pass side" => "go".into(),
         Some(_) => "marginal (2x rounds; the median decides)".into(),
     }
 }
@@ -826,5 +840,41 @@ mod tests {
         assert_eq!(r.rounds, 15);
         assert!((r.median - s.median).abs() < 5e-4);
         assert_eq!(ratio_verdict(&r, 3.0, "miss"), "go");
+    }
+
+    /// Codex r2 T1: the report rounds the IQR to 0.1% and the interval to 0.001, so a void or
+    /// marginal run can print numbers that pass. The producer's words decide those cases.
+    #[test]
+    fn a_rounded_report_keeps_the_producer_verdict() {
+        use crate::timing::Summary;
+        let read = |s: &Summary, bar: f64| {
+            let p = "R = t(T0) / t(C) (gate unit):";
+            let text = format!(
+                "rounds: 15 + 1 warm-up (dropped)\n{p} {}\ncorrectness: every run right\n",
+                s.line(bar)
+            );
+            ratio_verdict(&parse_ratio(&text, p).expect("parse"), bar, "miss")
+        };
+        let void = Summary {
+            median: 3.9,
+            interval: Some((3.5, 4.2)),
+            iqr_share: 0.0504,
+        };
+        assert!(void.line(3.0).contains("IQR 5.0%"));
+        assert!(read(&void, 3.0).starts_with("void"));
+        let edge = Summary {
+            median: 3.2,
+            interval: Some((2.9996, 3.4)),
+            iqr_share: 0.02,
+        };
+        assert!(edge.line(3.0).contains("[3.000, 3.400]"));
+        assert!(read(&edge, 3.0).starts_with("marginal"));
+        let low = Summary {
+            median: 0.8,
+            interval: Some((0.7, 0.8996)),
+            iqr_share: 0.02,
+        };
+        assert!(low.line(0.9).contains("0.900]"));
+        assert_eq!(read(&low, 0.9), "miss");
     }
 }
