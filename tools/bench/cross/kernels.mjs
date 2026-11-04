@@ -35,7 +35,7 @@
 // The JSON keeps what m1-exit needs for "15/15 on a fresh tree": the commit, the git tree ids
 // of crates, tools/bench, the root Cargo.toml, Cargo.lock and rust-toolchain.toml at HEAD and of
 // the regress fork (third_party/regress.commit, third_party/patches/regress; TREE_PATHS), and the
-// FRESH_PATHS entries with uncommitted changes (`dirty`; not fresh when it is not empty). A CI
+// TREE_PATHS entries with uncommitted changes (`dirty`; not fresh when it is not empty). A CI
 // pull_request run names GitHub's merge commit, which a local repository does not have: m1-exit
 // item 1 then reads the 7 tree ids against HEAD's (plan v11 GF-1, X10). `ep9.engine_build` is the
 // build line of the checked binary's `--version` ("features <list>; preset <name>", M5-P0,
@@ -293,11 +293,11 @@ function git(args) {
   }
 }
 
-/** HEAD, the tree ids of TREE_PATHS at HEAD, and the FRESH_PATHS entries with uncommitted changes. */
+/** HEAD, the tree ids of TREE_PATHS at HEAD, and the TREE_PATHS entries with uncommitted changes. */
 export function treeState() {
   const head = git(["rev-parse", "HEAD"])?.trim() ?? null;
   const tree = Object.fromEntries(TREE_PATHS.map((p) => [p, head ? (git(["rev-parse", `HEAD:${p}`])?.trim() ?? null) : null]));
-  const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...FRESH_PATHS]);
+  const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...TREE_PATHS]);
   const dirty = status === null ? null : status.split("\n").filter(Boolean).map((l) => l.slice(3));
   return { head, tree, dirty };
 }
