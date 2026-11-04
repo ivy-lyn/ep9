@@ -1682,4 +1682,28 @@ impl<'s> Cx<'s> {
             None => Ok(None),
         }
     }
+
+    /// PrepareForTailCall, then Call(F, thisArg, rest) (§9.4.5, §7.3.14), as the last step of
+    /// a host function, with a tail of this call's arguments (part 2, M6-P3 H20Q; H20-Q3):
+    /// `return cx.tail_call_args(f, this, args.rest(1));`. The host function must return the
+    /// result at once. When `f` is a FUNCTION, the call runs after the host frame is gone, in
+    /// its place: the callee frame takes the host frame's slots and the arguments stay where
+    /// they are, with no copy, and a chain of such forwards adds no frame (V8's
+    /// Function.prototype.call shifts its arguments and tail-calls Call). Any other `f` (a
+    /// bound function, a proxy, a value that is not callable) is called at once, as
+    /// [`Cx::call_args`] (the TypeError of a value that is not callable is made in the host
+    /// function's realm). The returned value is a marker that the VM reads only as the host
+    /// function's own result: use it for nothing else.
+    pub fn tail_call_args(
+        &mut self,
+        f: impl Into<Local<'s>>,
+        this: impl Into<Local<'s>>,
+        args: Rest<'s>,
+    ) -> JsResult<Local<'s>> {
+        let (f, this) = (f.into().bits(), this.into().bits());
+        if call::request_tail(self.cx, f, this, args.a0, args.len) {
+            return Ok(Self::local(crate::frame::HOLE));
+        }
+        call::call_with(self.cx, f, this, args.len, |k| args.bits(k), UNDEFINED).map(Self::local)
+    }
 }

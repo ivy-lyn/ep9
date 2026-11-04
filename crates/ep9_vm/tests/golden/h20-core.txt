@@ -223,6 +223,7 @@ abi: impl<'s> Cx<'s> :: pub fn string_len(&self, impl Into<Local<'s, JsString>>)
 abi: impl<'s> Cx<'s> :: pub fn substring(&mut self, impl Into<Local<'s, JsString>>, usize, usize) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn symbol_description(&self, Local<'s, JsSymbol>) -> Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn symbol_for(&mut self, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, JsSymbol>>
+abi: impl<'s> Cx<'s> :: pub fn tail_call_args(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, Rest<'s>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn this_primitive_value(&mut self, impl Into<Local<'s>>, PrimitiveType) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn throw(&mut self, impl Into<Local<'s>>) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn throw_error(&mut self, ErrorKind, &str) -> Throw

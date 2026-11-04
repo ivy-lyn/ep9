@@ -7,8 +7,8 @@
 //!
 //! | Builtin | Template | Pattern |
 //! |---|---|---|
-//! | `call` | 6 | IsCallable(this); forward `args.rest(1)` with `Cx::call_args` (one copy, into the callee frame) |
-//! | `apply` | companion | CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` |
+//! | `call` | 6 | IsCallable(this); forward `args.rest(1)` with `Cx::tail_call_args` (the callee frame takes this host frame's place; no copy, H20-Q3) |
+//! | `apply` | companion | CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` (one copy, into the callee frame; H20-Q3) |
 //! | `bind` | 7 | BoundFunctionCreate (`Cx::new_bound_function`: a BOUND_FUNCTION cell; its `[[Call]]` and `[[Construct]]` are in the VM), then SetFunctionLength and SetFunctionName |
 //! | `toString` | companion | the source text (`Cx::function_source_text`, a copy of the unit range, the whole `[[SourceText]]`, made on each call) when the unit embeds its source; else the NativeFunction form, a builtin's named by its `[[InitialName]]` (`Cx::initial_name`); TypeError for a value that is not callable |
 //!
@@ -83,10 +83,11 @@ fn call<'s>(
     if !func.is_callable() {
         return Err(not_callable(cx, "call", func));
     }
-    // 3. Perform PrepareForTailCall() (v0: no tail call; H20-Q3).
-    // 4. Return ? Call(func, thisArg, args). The arguments after thisArg go to the callee
-    //    frame in one copy (`call_args`), never through a heap list.
-    cx.call_args(func, args.get(0), args.rest(1))
+    // 3. Perform PrepareForTailCall() (H20-Q3: `tail_call_args` returns a marker, and the VM
+    //    makes the call after this host frame is gone).
+    // 4. Return ? Call(func, thisArg, args). The arguments after thisArg stay where they are:
+    //    the callee frame takes the place of this one, never through a heap list.
+    cx.tail_call_args(func, args.get(0), args.rest(1))
 }
 
 /// Function.prototype.apply ( thisArg, argArray ) (§20.2.3.1).
@@ -112,7 +113,9 @@ fn apply<'s>(
     // 4. Let argList be ? CreateListFromArrayLike(argArray). It is built on the VM stack
     //    (an ArgsBuilder: precise roots, no heap list).
     let arg_list = cx.create_list_from_array_like(arg_array)?;
-    // 5. Perform PrepareForTailCall().
+    // 5. Perform PrepareForTailCall() (H20-Q3: not here; the list is copied once, into the
+    //    callee frame, as V8 copies it to the stack, and a tail form would only add the
+    //    request to that copy).
     // 6. Return ? Call(func, thisArg, argList).
     cx.call_built(func, this_arg, arg_list)
 }
