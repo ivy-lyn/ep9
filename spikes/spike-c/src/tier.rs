@@ -514,7 +514,9 @@ impl SetRun {
             })
             .collect();
         for (name, why) in &self.refused {
-            out.push(format!("{name}: refused, stays in T0: {why}"));
+            let by = kernels::stays_in_t0(self.kernel, name)
+                .map_or(String::new(), |d| format!(" (by {d}, SCP §3 config C)"));
+            out.push(format!("{name}: refused, stays in T0{by}: {why}"));
         }
         let names: Vec<&str> = self.members.iter().map(|m| m.function).collect();
         out.push(format!(
@@ -670,9 +672,11 @@ pub fn run_set(
     })
 }
 
-/// The verdict of a [`run_set`]: every hot function compiled (none refused), output equal to
-/// T0, and, unforced, no exit in loop(n); forced, per function every armed guard forced (its
-/// countdown went to 0) and its counter as [`forced_coverage`] reads it.
+/// The verdict of a [`run_set`]: every hot function compiled (none refused but those that
+/// stay in T0 by a decision, `kernels::STAYS_IN_T0`: [`SetRun::lines`] names them; M6-P3
+/// SC-FIX, MC-P2-SCLEFT), output equal to T0, and, unforced, no exit in loop(n); forced, per
+/// function every armed guard forced (its countdown went to 0) and its counter as
+/// [`forced_coverage`] reads it.
 pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
     set_check(run, stress, true).map(|_| ())
 }
@@ -761,7 +765,9 @@ fn set_check(run: &SetRun, stress: bool, all: bool) -> Result<Vec<Vec<u32>>, Vec
     let mut bad = Vec::new();
     let mut out = Vec::new();
     for (name, why) in &run.refused {
-        bad.push(format!("{name}: refused: {why}"));
+        if kernels::stays_in_t0(run.kernel, name).is_none() {
+            bad.push(format!("{name}: refused: {why}"));
+        }
     }
     if !run.equal {
         bad.push(format!("{}: output differs from T0", run.kernel));
@@ -3455,6 +3461,37 @@ mod tests {
             "{}",
             e.exits_line()
         );
+    }
+
+    /// MC-P2-SCLEFT (M6-P3 SC-FIX): `spike-c tier crypto --all` compiles am3; montReduce and
+    /// bnpSquareTo stay in T0 by V11-D30 (`kernels::STAYS_IN_T0`), so the set run names them
+    /// and passes. A refusal of any other hot function still fails.
+    #[test]
+    fn crypto_all_names_the_functions_that_stay_in_t0() {
+        if !aarch64() {
+            return;
+        }
+        if !kernels::bench_present() {
+            eprintln!("skip: no v8-v7 checkout");
+            return;
+        }
+        let k = kernels::kernel("crypto").expect("crypto");
+        let mut run = run_set(k, 1, &Config::default(), &[]).expect("run");
+        let names: Vec<&str> = run.members.iter().map(|m| m.function).collect();
+        assert_eq!(names, ["am3"]);
+        let refused: Vec<&str> = run.refused.iter().map(|(n, _)| *n).collect();
+        assert_eq!(refused, ["montReduce", "bnpSquareTo"]);
+        assert_eq!(set_ok(&run, false), Ok(()), "{:?}", run.lines());
+        let lines = run.lines();
+        assert!(
+            lines.iter().any(|l| l
+                .starts_with("montReduce: refused, stays in T0 (by V11-D30, SCP §3 config C): ")),
+            "{lines:?}"
+        );
+        run.refused
+            .push(("am3", "am3: a refusal no decision names".into()));
+        let bad = set_ok(&run, false).expect_err("a refusal of am3");
+        assert_eq!(bad, ["am3: refused: am3: a refusal no decision names"]);
     }
 
     /// am3 with the FACTS2 stand-in int records: the int32 input checks are fact guards; the

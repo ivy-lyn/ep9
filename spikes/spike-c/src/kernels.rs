@@ -219,6 +219,26 @@ pub fn kernel(name: &str) -> Option<&'static Kernel> {
     KERNELS.iter().find(|k| k.name == name)
 }
 
+/// The hot functions that stay in T0 by a decision: (kernel, function, decision). Config C
+/// compiles each hot function the compiler accepts, and a refused one stays in T0 and is
+/// named (SCP §3, the config C clarify of 2026-11-04; V11-D31). crypto's `montReduce`
+/// (`SetNamedProperty`) and `bnpSquareTo` (`CallProperty0`) stay in T0 by V11-D30: the
+/// pre-read low end of C4 crypto was at or above 3.3, so `SetNamedProperty` is not built
+/// (M6-P3 SC-FIX, MC-P2-SCLEFT). `spike-c tier <kernel> --all` names a refusal of one of these
+/// and fails on any other (`tier::set_ok`).
+pub const STAYS_IN_T0: [(&str, &str, &str); 2] = [
+    ("crypto", "montReduce", "V11-D30"),
+    ("crypto", "bnpSquareTo", "V11-D30"),
+];
+
+/// The decision that keeps `function` of `kernel` in T0 ([`STAYS_IN_T0`]), if one does.
+pub fn stays_in_t0(kernel: &str, function: &str) -> Option<&'static str> {
+    STAYS_IN_T0
+        .iter()
+        .find(|(k, f, _)| *k == kernel && *f == function)
+        .map(|(_, _, d)| *d)
+}
+
 /// The directory of the v8-v7 files: `SPIKE_C_BENCH_DIR`, else the pinned checkout.
 pub fn bench_dir() -> PathBuf {
     match std::env::var_os("SPIKE_C_BENCH_DIR") {

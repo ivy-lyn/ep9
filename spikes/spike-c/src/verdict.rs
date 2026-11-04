@@ -25,6 +25,13 @@
 //!
 //! A tree that is not clean, or a commit that is not 40 hex, gives no table (an error): a row
 //! must name the tree it measured (SCP §8, Commit).
+//!
+//! The hot functions config C (or P) left in T0 (SCP §3 config C: a refused function stays in
+//! T0 and is named; crypto's `montReduce` and `bnpSquareTo` by V11-D30) are named in the
+//! Condition cell after the numbers: `; stays in T0: <names>` in C4 `<kernel>` and C5c, and
+//! `; stays in T0: <kernel> <names>` in C1, from the `stays in T0:` lines of the timing
+//! reports (`timing::refused_lines`; M6-P3 SC-FIX, MC-P2-SCLEFT). The label m1-exit reads,
+//! the text before the first `:`, does not change.
 
 use std::path::Path;
 
@@ -97,6 +104,26 @@ pub fn parse_ratio(text: &str, prefix: &str) -> Result<Ratio, String> {
         rounds,
         right,
     })
+}
+
+/// The names of the hot functions a timing report says stay in T0 (its `stays in T0: <name>:
+/// <refusal>` lines, `timing::refused_lines`), in report order.
+pub fn refused_names(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix(crate::timing::REFUSED_PREFIX))
+        .filter_map(|r| r.split(':').next())
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// `; stays in T0: a, b` for `names`, or "" for none (the Condition cell's tail).
+fn stays(names: &[String]) -> String {
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("; stays in T0: {}", names.join(", "))
+    }
 }
 
 /// The protocol §3 words for `r` against `bar`: `go`, `no-go (...)` or a word m1-exit reads
@@ -194,6 +221,10 @@ pub fn rows(dir: &Path) -> Result<String, String> {
         format!("| {spike} | {cond} | {verdict} | {commit} | {lowering} | {host} | {adrs} |")
     };
     let mut out = vec![HEADER.to_string()];
+    let c4: Vec<(&str, String)> = C4_KERNELS
+        .iter()
+        .map(|k| Ok((*k, read(dir, &format!("c4-{k}.txt"))?)))
+        .collect::<Result<_, String>>()?;
     let spike_c = |id: &str, what: &str, prefixes: &[&str]| {
         row(
             "Spike C",
@@ -203,11 +234,22 @@ pub fn rows(dir: &Path) -> Result<String, String> {
             SPIKE_C_ADRS,
         )
     };
-    out.push(spike_c(
-        "C1",
-        "the hot sets of crypto and navier-stokes compile from live facts, output equal to T0",
-        &["am3", "linsolve", "navier"],
-    ));
+    let in_t0: Vec<String> = c4
+        .iter()
+        .filter_map(|(k, text)| {
+            let names = refused_names(text);
+            (!names.is_empty()).then(|| format!("{k} {}", names.join(", ")))
+        })
+        .collect();
+    let c1 = format!(
+        "the hot sets of crypto and navier-stokes compile from live facts, output equal to T0{}",
+        if in_t0.is_empty() {
+            String::new()
+        } else {
+            format!("; stays in T0: {}", in_t0.join("; "))
+        }
+    );
+    out.push(spike_c("C1", &c1, &["am3", "linsolve", "navier"]));
     out.push(spike_c(
         "C2",
         "each guard of am3 forced alone deopts to T0, output equal, one counted exit",
@@ -218,9 +260,8 @@ pub fn rows(dir: &Path) -> Result<String, String> {
         "the tier differential, kernels and corpus, every guard forced, 0 mismatches",
         &["diff"],
     ));
-    for k in C4_KERNELS {
-        let text = read(dir, &format!("c4-{k}.txt"))?;
-        let r = parse_ratio(&text, "R = t(T0) / t(C) (gate unit):")
+    for (k, text) in &c4 {
+        let r = parse_ratio(text, "R = t(T0) / t(C) (gate unit):")
             .map_err(|e| format!("c4-{k}.txt: {e}"))?;
         let iv = r
             .interval
@@ -228,8 +269,11 @@ pub fn rows(dir: &Path) -> Result<String, String> {
         out.push(row(
             "Spike C",
             format!(
-                "C4 {k}: R {:.3} {iv}, {} rounds, IQR {:.1}%",
-                r.median, r.rounds, r.iqr_percent
+                "C4 {k}: R {:.3} {iv}, {} rounds, IQR {:.1}%{}",
+                r.median,
+                r.rounds,
+                r.iqr_percent,
+                stays(&refused_names(text))
             ),
             ratio_verdict(&r, 3.0, "no-go (the interval is below 3.0)"),
             "jit",
@@ -266,8 +310,11 @@ pub fn rows(dir: &Path) -> Result<String, String> {
     out.push(sp(
         "C5c",
         format!(
-            "crypto from a PROFILED file, output equal; Q = t(C) / t(P) {:.3} {iv}, {} rounds, IQR {:.1}%",
-            q.median, q.rounds, q.iqr_percent
+            "crypto from a PROFILED file, output equal; Q = t(C) / t(P) {:.3} {iv}, {} rounds, IQR {:.1}%{}",
+            q.median,
+            q.rounds,
+            q.iqr_percent,
+            stays(&refused_names(&text))
         ),
         verdict,
     ));
@@ -281,7 +328,7 @@ pub fn write_fixtures(dir: &Path) -> Result<(), String> {
     let files = [
         (
             "meta.txt",
-            "commit=0123456789abcdef0123456789abcdef01234567\nclean=yes\nhost=aarch64 on Apple M5 Max (fixture)\nload_before=1.10 1.20 1.30\nload_after=1.40 1.50 1.60\n",
+            "commit=0123456789abcdef0123456789abcdef01234567\nclean=yes\nhost=aarch64-apple-darwin, Apple M5 Max (fixture)\nload_before=1.10 1.20 1.30\nload_after=1.40 1.50 1.60\n",
         ),
         (
             "steps.txt",
@@ -289,7 +336,7 @@ pub fn write_fixtures(dir: &Path) -> Result<(), String> {
         ),
         (
             "c4-crypto.txt",
-            "Spike C class S timing, crypto (report only, never a reading: protocol §3)\nhost: aarch64 on Apple M5 Max, load { 1.10 1.20 1.30 }\nrounds: 15 + 1 warm-up (dropped); n = 8 run() per benchmark; hot calls k = 10\nR = t(T0) / t(C) (gate unit): median 3.930, interval [3.812, 4.055], IQR 4.0% of the median; vs 3: interval on the pass side\ncorrectness: every run right (T0 a right driver run, C = T0, H1 = H0)\n",
+            "Spike C class S timing, crypto (report only, never a reading: protocol §3)\nhost: aarch64 on Apple M5 Max, load { 1.10 1.20 1.30 }\nrounds: 15 + 1 warm-up (dropped); n = 8 run() per benchmark; hot calls k = 10\nR = t(T0) / t(C) (gate unit): median 3.930, interval [3.812, 4.055], IQR 4.0% of the median; vs 3: interval on the pass side\ncompiled hot set of C: 2776 bytes, guards 16 fact + 13 unbacked\nstays in T0: montReduce: opcode SetNamedProperty at offset 43 has no native code\nstays in T0: bnpSquareTo: opcode CallProperty0 at offset 10 has no native code\ncorrectness: every run right (T0 a right driver run, C = T0, H1 = H0)\n",
         ),
         (
             "c4-navier-stokes.txt",
@@ -297,7 +344,7 @@ pub fn write_fixtures(dir: &Path) -> Result<(), String> {
         ),
         (
             "c5c.txt",
-            "rounds: 15 + 1 warm-up (dropped)\nQ = t(C) / t(P) (C5c): median 1.002, interval [0.980, 1.020], IQR 1.5% of the median; vs 0.9: interval on the pass side\ncorrectness: every run right (T0 a right driver run, C = T0, P = T0)\n",
+            "rounds: 15 + 1 warm-up (dropped)\nQ = t(C) / t(P) (C5c): median 1.002, interval [0.980, 1.020], IQR 1.5% of the median; vs 0.9: interval on the pass side\nstays in T0: montReduce: opcode SetNamedProperty at offset 43 has no native code\nstays in T0: bnpSquareTo: opcode CallProperty0 at offset 10 has no native code\ncorrectness: every run right (T0 a right driver run, C = T0, P = T0)\n",
         ),
     ];
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -360,10 +407,46 @@ mod tests {
             ]
         );
         assert!(
-            t.contains("C4 crypto: R 3.930 [3.812, 4.055], 15 rounds, IQR 4.0%"),
+            t.contains(
+                "| C4 crypto: R 3.930 [3.812, 4.055], 15 rounds, IQR 4.0%; stays in T0: montReduce, bnpSquareTo |"
+            ),
+            "{t}"
+        );
+        // MC-P2-SCLEFT: the hot functions left in T0 are named (C1, C4 crypto, C5c); the
+        // navier-stokes row names none (its whole hot set compiles).
+        assert!(
+            t.contains("output equal to T0; stays in T0: crypto montReduce, bnpSquareTo |"),
+            "{t}"
+        );
+        assert!(
+            t.contains("IQR 2.0% |")
+                && t.contains("IQR 1.5%; stays in T0: montReduce, bnpSquareTo |"),
+            "{t}"
+        );
+        // SCP §8 Host/CPU: the host, its CPU model and the load.
+        assert!(
+            t.contains("| aarch64-apple-darwin, Apple M5 Max (fixture), load 1.10 1.20 1.30 before, 1.40 1.50 1.60 after |"),
             "{t}"
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The names come from the `stays in T0:` lines the timing reports print (the same words).
+    #[test]
+    fn the_writer_reads_the_refused_lines_of_timing() {
+        let refused = vec![
+            (
+                "montReduce".to_string(),
+                "montReduce: opcode SetNamedProperty at offset 43 has no native code".to_string(),
+            ),
+            ("bnpSquareTo".to_string(), "limit: a: b".to_string()),
+        ];
+        let text = format!(
+            "rounds: 15\n{}correctness: x\n",
+            crate::timing::refused_lines(&refused)
+        );
+        assert_eq!(refused_names(&text), ["montReduce", "bnpSquareTo"]);
+        assert!(refused_names("rounds: 15\n").is_empty());
     }
 
     /// A dirty tree or a short commit gives no table; a FAIL step is no-go and a missing one

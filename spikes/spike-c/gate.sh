@@ -327,7 +327,8 @@ verdict() {
     {
       echo "commit=$commit"
       echo "clean=$clean"
-      echo "host=$(sed -n 's/^host: \(.*\), load .*/\1/p' "$dir/c4-crypto.txt")"
+      # SCP §8 Host/CPU: the host (the target triple) and its CPU model (from the report).
+      echo "host=$host, $(sed -n 's/^host: .* on \(.*\), load .*/\1/p' "$dir/c4-crypto.txt")"
       echo "load_before=$before"
       echo "load_after=$(loads)"
     } > "$dir/meta.txt"
