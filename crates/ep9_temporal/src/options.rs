@@ -11,11 +11,12 @@
 //! | [`get_unit`] | GetTemporalUnitValuedOption (the group check is [`validate_unit`]) |
 //! | [`get_fractional_second_digits`] | GetTemporalFractionalSecondDigitsOption |
 //! | [`string_or_options`] | `round`/`total`: a String is { smallestUnit or unit }, undefined a TypeError |
+//! | [`get_difference_settings`] | GetDifferenceSettings: the 4 reads in alphabetical order (temporal_rs validates) |
 
 use core::str::FromStr;
 
 use ep9_vm::{Cx, JsObject, JsResult, Local};
-use temporal_rs::options::{RoundingIncrement, Unit, UnitGroup};
+use temporal_rs::options::{DifferenceSettings, RoundingIncrement, RoundingMode, Unit, UnitGroup};
 use temporal_rs::parsers::Precision;
 
 use crate::error::OrThrow;
@@ -171,4 +172,19 @@ pub(crate) fn string_or_options<'s>(
         return Ok(Some(o));
     }
     get_options_object(cx, v)
+}
+
+/// GetDifferenceSettings (§13.42) up to the reads: largestUnit, roundingIncrement,
+/// roundingMode, smallestUnit (alphabetical). The unit groups, the defaults and the
+/// increment check are temporal_rs's (after every read, as the spec orders them).
+pub(crate) fn get_difference_settings<'s>(
+    cx: &mut Cx<'s>,
+    options: Options<'s>,
+) -> JsResult<DifferenceSettings> {
+    let mut d = DifferenceSettings::default();
+    d.largest_unit = get_unit(cx, options, "largestUnit")?;
+    d.increment = get_rounding_increment(cx, options)?;
+    d.rounding_mode = get_parsed_option::<RoundingMode>(cx, options, "roundingMode")?;
+    d.smallest_unit = get_unit(cx, options, "smallestUnit")?;
+    Ok(d)
 }

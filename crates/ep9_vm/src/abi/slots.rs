@@ -81,6 +81,8 @@ pub enum ObjectClass {
     RawJson,
     /// A Temporal.Duration instance (spec-temporal T2): `[[Years]]` .. `[[Nanoseconds]]`, slots 0-9, each an integral Number (`ep9_temporal` duration.rs).
     TemporalDuration,
+    /// A Temporal.Instant instance (spec-temporal T3): `[[EpochNanoseconds]]` as slot 0 the epoch seconds (an integral Number) and slot 1 the nanosecond of that second (an int32), `ep9_temporal` instant.rs.
+    TemporalInstant,
 }
 
 impl ObjectClass {
@@ -102,6 +104,7 @@ impl ObjectClass {
         ObjectClass::RegExpStringIterator,
         ObjectClass::RawJson,
         ObjectClass::TemporalDuration,
+        ObjectClass::TemporalInstant,
     ];
 
     /// Most internal slots of one object.
@@ -140,6 +143,7 @@ impl ObjectClass {
             ObjectClass::RegExpStringIterator => "RegExp String Iterator",
             ObjectClass::RawJson => "RawJSON",
             ObjectClass::TemporalDuration => "Temporal.Duration",
+            ObjectClass::TemporalInstant => "Temporal.Instant",
         }
     }
 }
