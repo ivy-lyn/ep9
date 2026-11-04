@@ -60,15 +60,15 @@
 #   gate.sh diff         (plan v10 M5-P3 SPIKEC-7 WI-SC6; protocol C3) the tier differential:
 #     1  release build (as am3)
 #     2  `spike-c diff`: the gate kernels at n = 1 (crypto's am3, navier-stokes' hot set): T0
-#        equal to node line for line (node on PATH, else that compare prints SKIP), config C
-#        equal to T0 with 0 exits, then forcing: every guard armed from a seed, then each
-#        guard not forced yet armed at its first pass, every run equal to T0; then the seeded
-#        corpus, seeds 1..200 (src/diff.rs: int32 overflow, double/int mixes, holes,
-#        out-of-bounds, shape changes, valueOf, DICTIONARY arrays, throws), each program
-#        T0 vs config C byte for byte, unforced and forced the same way. FAIL on any
-#        difference, a refused compile or a guard never forced. No GC-timing compare
-#        (MC-w17-10): a lint refuses WeakRef, FinalizationRegistry and gc in every program
-#     SKIP without the v8-v7 checkout
+#        equal to node line for line (node on PATH, else SKIP), config C equal to T0 with 0
+#        exits, then forcing: every guard armed from a seed, then each guard not forced yet
+#        armed at its first pass, every run equal to T0; then the seeded corpus, seeds 1..200
+#        (src/diff.rs: int32 overflow, double/int mixes, holes, out-of-bounds, shape changes,
+#        valueOf, DICTIONARY arrays, throws), T0 vs config C byte for byte, unforced and
+#        forced the same way; then the corpus on ics_only isolates (MC-w21-9, M6-P3: a guard
+#        never reached is named). FAIL on any difference, a refused compile or (feedback
+#        full) a guard never forced. No GC-timing compare (MC-w17-10): a lint refuses WeakRef,
+#        FinalizationRegistry and gc in every program. SKIP without the v8-v7 checkout
 #   gate.sh spfacts      (plan v10 M5-P3 SPFACTS WI-SC8; protocol §6.3, C5c) SP-Facts, config P:
 #     1  release build (as am3)
 #     2  `spike-c sp-facts write crypto <file>`: a training run (loop(1) in T0) writes the live

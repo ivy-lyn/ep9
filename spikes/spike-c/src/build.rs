@@ -1257,7 +1257,8 @@ impl Builder<'_> {
         Ok(self.emit(op, vec![chk], Repr::Tagged, Trust::Unknown))
     }
 
-    /// Replaces every use of `old` (inputs and frame states) with `new`.
+    /// Replaces every use of `old` (inputs and frame states, and the block-end environments
+    /// that later passes build frame states from) with `new`.
     fn replace(&mut self, old: NodeId, new: NodeId) {
         // A moved guard keeps its feedback slot (MC-w25-6).
         if let Some(&(_, slot)) = self.g.sites.iter().find(|s| s.0 == old)
@@ -1293,6 +1294,17 @@ impl Builder<'_> {
             for (_, p) in phis.iter_mut() {
                 if *p == old {
                     *p = new;
+                }
+            }
+        }
+        // `unbox_loop_phis` makes a loop phi's entry check with the preheader's environment
+        // as the header state: a trivial phi removed before it must not stay there (M6-P3
+        // SC-FIX: the corpus's ics_only column found a state that named a removed phi, which
+        // `Graph::check` refused, so the function stayed in T0).
+        for env in self.out_env.iter_mut().flatten() {
+            for v in env.iter_mut().flatten() {
+                if *v == old {
+                    *v = new;
                 }
             }
         }

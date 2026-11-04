@@ -981,8 +981,20 @@ pub fn run_script_full(
 /// The T0 half of [`run_script`]: `defs`, `warm` and `main` in a T0 session of their own
 /// (the threaded dispatch, as the compiled half); the output of `main`.
 pub fn t0_script(config: &Config, defs: &str, warm: &str, main: &str) -> Result<RunOutput, String> {
+    t0_script_exec(config, ep9_vm::ExecOptions::default(), defs, warm, main)
+}
+
+/// [`t0_script`] on an isolate that runs `exec` (MC-w21-9, M6-P3 SC-FIX: the tier diff's
+/// `ics_only` column, `ExecOptions::jit()` with `Feedback::ICS_ONLY`).
+pub fn t0_script_exec(
+    config: &Config,
+    exec: ep9_vm::ExecOptions,
+    defs: &str,
+    warm: &str,
+    main: &str,
+) -> Result<RunOutput, String> {
     let config = config.threaded();
-    let mut t0s = Session::new(&config)?;
+    let mut t0s = Session::new_exec(&config, exec)?;
     t0s.run(defs, "defs.js")
         .result
         .map_err(|e| format!("T0 defs: {e}"))?;
@@ -1014,8 +1026,35 @@ pub fn compiled_script(
     int: IntFacts,
     opts: &emit_a64::EmitOptions<'_>,
 ) -> Result<CompiledRun, String> {
+    compiled_script_exec(
+        config,
+        ep9_vm::ExecOptions::default(),
+        defs,
+        warm,
+        main,
+        name,
+        int,
+        opts,
+    )
+}
+
+/// [`compiled_script`] on an isolate that runs `exec` (MC-w21-9, M6-P3 SC-FIX): the facts are
+/// the live export of that isolate (under `ics_only` T0 keeps every IC and drops the profile
+/// records, MODES-D19, so the code is compiled from the IC facts alone), and the code runs on
+/// it.
+#[allow(clippy::too_many_arguments)]
+pub fn compiled_script_exec(
+    config: &Config,
+    exec: ep9_vm::ExecOptions,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<CompiledRun, String> {
     let config = config.threaded();
-    let mut s = Session::new(&config)?;
+    let mut s = Session::new_exec(&config, exec)?;
     s.run(defs, "defs.js")
         .result
         .map_err(|e| format!("defs: {e}"))?;

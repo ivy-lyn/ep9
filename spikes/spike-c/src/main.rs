@@ -18,10 +18,11 @@
 //!                                           SPIKE_C_FORCE_DEOPT=<seed>: a forced build; --all:
 //!                                           the whole hot set compiled and installed, SPIKEC-9)
 //! spike-c deopt <kernel> [--n N] [--at A]   each guard forced once (WI-SC4, gate.sh deopt)
-//! spike-c diff [--seeds A..B] [--no-kernels] [--show N]
+//! spike-c diff [--seeds A..B] [--no-kernels] [--show N] [--ics-only]
 //!                                           the tier differential (WI-SC6, gate.sh diff): the
 //!                                           gate kernels at n = 1 and the seeded corpus, T0 vs
-//!                                           config C, every guard forced
+//!                                           config C, every guard forced; the corpus again on
+//!                                           ics_only isolates (MC-w21-9; --ics-only: only it)
 //! spike-c time <kernel> [--rounds R] [--n N] [--k K]
 //!                                           class S timing (protocol §3): T0, C, H0, H1 in new
 //!                                           processes, paired ratios; a report, never a reading
