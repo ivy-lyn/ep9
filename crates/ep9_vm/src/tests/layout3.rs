@@ -268,8 +268,8 @@ fn a_cell_of_a_never_assigned_kind_passes_no_kind_test() {
 }
 
 /// The smi handler kinds (H16, C-24; MODES-CHECK-w20 MC-w20-10): a 4-bit field (bits 0-3)
-/// below the byte offset (bits 4-31). Kinds 1-6 and 9-14 are assigned; 0, 7, 8 and 15 are not,
-/// and the hit and widening helpers leave them alone. The field is full for the paired kinds:
+/// below the byte offset (bits 4-31). Kinds 1-6 and 9-14 are assigned; 0 and 15 are not, and
+/// the hit and widening helpers leave them alone. The field is full for the paired kinds:
 /// the next in-object / out-of-line pair (15, 16) does not fit, because 16 would wrap into
 /// the offset. So a new smi handler kind past the field is an IC_HANDLER cell kind (one more
 /// load), never a wrapped value. The IC_HANDLER kinds (the int32 at +8) are 1-8.
@@ -296,9 +296,11 @@ fn ic_handler_kind_lists_state_their_width() {
     for k in assigned {
         assert_eq!(k & !smi::KIND_MASK, 0, "kind {k} fits the field");
     }
-    // The never-assigned values: no helper treats them as a checked field kind, and the
-    // field handler made at an offset keeps them (no wrap into the offset).
-    for k in [0, 7, 8, 15] {
+    // 0 and 15 (the probe at the top of the range): no helper treats them as a checked field
+    // kind, and the field handler made at an offset keeps them (no wrap into the offset). 7
+    // and 8 are free for the next checked representation (H16 K9), so they are not probed
+    // (README §3.4: a negative test probes the top of the range, never the next free value).
+    for k in [0, 15] {
         assert!(!assigned.contains(&k));
         assert!(!smi::is_checked(k), "kind {k}");
         let x = (40 << smi::SHIFT) | k;
