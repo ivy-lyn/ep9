@@ -119,3 +119,5 @@ intrinsic  71  %FinalizationRegistry.prototype%
 intrinsic  72  [[RealmFuses]]
 intrinsic  73  %BigInt%
 intrinsic  74  %BigInt.prototype%
+intrinsic  75  %Temporal%
+intrinsic  76  %Temporal.Now%

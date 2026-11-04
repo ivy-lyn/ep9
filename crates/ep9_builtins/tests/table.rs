@@ -52,6 +52,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("regexp", 16),
             ("weakref", 17),
             ("bigint", 18),
+            ("temporal", 19),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);
@@ -65,6 +66,15 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_builtins::regexp::BLOCK, 16);
     assert_eq!(ep9_builtins::weakref::BLOCK, 17);
     assert_eq!(ep9_builtins::bigint::BLOCK, 18);
+    // The Temporal modules end the table, in the order of ep9_temporal::MODULES.
+    let tail = &ep9_builtins::MODULES[ep9_builtins::MODULES.len() - ep9_temporal::MODULES.len()..];
+    assert_eq!(
+        tail.iter().map(|m| (m.name, m.block)).collect::<Vec<_>>(),
+        ep9_temporal::MODULES
+            .iter()
+            .map(|m| (m.name, m.block))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -2,15 +2,26 @@
 //! `temporal_rs`. The crate has no `unsafe` and reaches the heap only through `Cx`.
 //!
 //! ```text
-//! ep9_builtins::MODULES = [.., bigint, ep9_temporal::MODULES..]      one table per isolate
-//! ep9_temporal
-//!   tzdb      ICU zoneinfo64.res (data/) -> one provider per process (no ep9_vm import)
-//!   T0: data and provider only; the Temporal classes come in later work packages
+//! ep9_builtins::MODULES = [.., bigint, ep9_temporal::MODULES..]   one table per isolate
+//! ep9_temporal::MODULES (blocks, append-only)
+//!   19 temporal   %Temporal%, %Temporal.Now%            namespace.rs
+//! support: tzdb (provider, no ep9_vm import), error (temporal_rs error -> JS error),
+//!          convert (ToIntegerWithTruncation ...), options (option bags)
 //! ```
 //!
 //! Rules of the glue (design §3.1): only the `*_with_provider` forms of temporal_rs; a
-//! temporal_rs value lives only on the Rust stack during one builtin call; no `Local` in a
-//! Rust container; `Err` only from a `cx.throw_*` call.
+//! temporal_rs value lives only on the Rust stack during one builtin call (the object keeps
+//! its fields as Values in internal slots); no `Local` in a Rust container; `Err` only from a
+//! `cx.throw_*` call.
 #![forbid(unsafe_code)]
 
+pub(crate) mod convert;
+pub(crate) mod error;
+pub mod namespace;
+pub(crate) mod options;
 pub mod tzdb;
+
+use ep9_vm::BuiltinModule;
+
+/// The Temporal modules, in block order; `ep9_builtins::MODULES` lists them after its own.
+pub const MODULES: &[BuiltinModule] = &[namespace::MODULE];

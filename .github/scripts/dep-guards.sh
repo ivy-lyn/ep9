@@ -154,8 +154,9 @@ deps_within 6 ep9_math
 # 7) ep9_facts depends on ep9_bytecode only (H16: a fact holds no VM or heap type).
 deps_within 7 ep9_facts ep9_bytecode
 
-# 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math for Math (H20).
-deps_within 8 ep9_builtins ep9_vm ep9_math
+# 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math for Math (H20) and
+#    ep9_temporal for the Temporal modules (design SPEC-T-D11; check 18 keeps its edges).
+deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal
 
 # 9) The jitless ep9 has no `jit` feature anywhere in its graph (H27): no ep9_platform "jit".
 #    Control: the default ep9 must show it, so a broken jit chain or a cargo output change that

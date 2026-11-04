@@ -143,6 +143,7 @@ dependencies = [
  "ep9_frontend",
  "ep9_heap",
  "ep9_math",
+ "ep9_temporal",
  "ep9_vm",
 ]
 
