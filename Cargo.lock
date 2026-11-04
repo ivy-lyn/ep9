@@ -220,8 +220,8 @@ name = "ep9_temporal"
 version = "0.0.0"
 dependencies = [
  "ep9_builtins",
- "ep9_bytecode",
  "ep9_frontend",
+ "ep9_heap",
  "ep9_vm",
  "libm",
  "temporal_rs",

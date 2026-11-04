@@ -53,6 +53,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("weakref", 17),
             ("bigint", 18),
             ("temporal", 19),
+            ("duration", 20),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);

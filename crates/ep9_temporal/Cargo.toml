@@ -21,10 +21,11 @@ zoneinfo64 = { workspace = true }
 # crate calls libm (clippy.toml bans `libm::*`).
 libm = { workspace = true, features = ["force-soft-floats"] }
 
+# The tests run JS on an isolate with ep9_builtins::TABLE (which lists this crate's modules).
 [dev-dependencies]
 ep9_builtins = { path = "../ep9_builtins" }
-ep9_bytecode = { path = "../ep9_bytecode" }
 ep9_frontend = { path = "../ep9_frontend" }
+ep9_heap = { path = "../ep9_heap" }
 
 [lints]
 workspace = true

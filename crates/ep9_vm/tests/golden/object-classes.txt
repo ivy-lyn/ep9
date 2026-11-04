@@ -16,3 +16,4 @@
   12  FinalizationRegistry
   13  RegExp String Iterator
   14  RawJSON
+  15  Temporal.Duration

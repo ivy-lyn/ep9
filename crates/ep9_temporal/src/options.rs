@@ -10,9 +10,7 @@
 //! | [`get_rounding_increment`] | GetRoundingIncrementOption |
 //! | [`get_unit`] | GetTemporalUnitValuedOption (the group check is [`validate_unit`]) |
 //! | [`get_fractional_second_digits`] | GetTemporalFractionalSecondDigitsOption |
-
-// T1: the helpers get their first callers in T2 (Duration).
-#![allow(dead_code)]
+//! | [`string_or_options`] | `round`/`total`: a String is { smallestUnit or unit }, undefined a TypeError |
 
 use core::str::FromStr;
 
@@ -153,4 +151,24 @@ pub(crate) fn get_fractional_second_digits<'s>(
     }
     // 7. Return digitCount.
     Ok(Precision::Digit(d as u8))
+}
+
+/// A string argument `s` as the bag { [key]: s } (null prototype), else GetOptionsObject;
+/// `undefined` is a TypeError (`round` and `total` steps 3-5).
+pub(crate) fn string_or_options<'s>(
+    cx: &mut Cx<'s>,
+    v: Local<'s>,
+    key: &str,
+    what: &str,
+) -> JsResult<Options<'s>> {
+    if v.is_undefined() {
+        return Err(cx.throw_type_error(&format!("{what} is required")));
+    }
+    if let Some(s) = v.as_string() {
+        let o = cx.new_object_with_proto(Local::null());
+        let k = cx.key(key);
+        cx.create_data_property_or_throw(o, k, s)?;
+        return Ok(Some(o));
+    }
+    get_options_object(cx, v)
 }

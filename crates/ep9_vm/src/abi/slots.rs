@@ -79,6 +79,8 @@ pub enum ObjectClass {
     /// A raw JSON object (`JSON.rawJSON`, json-parse-with-source): `[[IsRawJSON]]`. The class
     /// is the mark; the object has 0 slots. Appended by M6-P1 SPEC-B.
     RawJson,
+    /// A Temporal.Duration instance (spec-temporal T2): `[[Years]]` .. `[[Nanoseconds]]`, slots 0-9, each an integral Number (`ep9_temporal` duration.rs).
+    TemporalDuration,
 }
 
 impl ObjectClass {
@@ -99,6 +101,7 @@ impl ObjectClass {
         ObjectClass::FinalizationRegistry,
         ObjectClass::RegExpStringIterator,
         ObjectClass::RawJson,
+        ObjectClass::TemporalDuration,
     ];
 
     /// Most internal slots of one object.
@@ -136,6 +139,7 @@ impl ObjectClass {
             ObjectClass::FinalizationRegistry => "FinalizationRegistry",
             ObjectClass::RegExpStringIterator => "RegExp String Iterator",
             ObjectClass::RawJson => "RawJSON",
+            ObjectClass::TemporalDuration => "Temporal.Duration",
         }
     }
 }

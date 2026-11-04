@@ -113,7 +113,7 @@ fn is_callable_takes_proxy_callable() {
 
 #[test]
 fn intrinsic_ids_64_to_71_are_declared_not_made() {
-    assert_eq!(IntrinsicId::ALL.len(), 77); // 72 in M4-P0; 73 since M6-P0; 75 since spec-temporal B4; spec-temporal: 77 after T1
+    assert_eq!(IntrinsicId::ALL.len(), 79); // 72 in M4-P0; 73 since M6-P0; 75 since spec-temporal B4; spec-temporal: 79 after T2
     let new = [
         (IntrinsicId::Proxy, "%Proxy%"),
         (IntrinsicId::RegExp, "%RegExp%"),
@@ -149,7 +149,7 @@ fn intrinsic_ids_64_to_71_are_declared_not_made() {
 
 #[test]
 fn object_classes_11_to_13() {
-    assert_eq!(ObjectClass::ALL.len(), 15);
+    assert_eq!(ObjectClass::ALL.len(), 16);
     let new = [
         (ObjectClass::WeakRef, "WeakRef"),
         (ObjectClass::FinalizationRegistry, "FinalizationRegistry"),
@@ -160,7 +160,8 @@ fn object_classes_11_to_13() {
         assert_eq!(c.name(), name);
         assert_eq!(ObjectClass::from_id(c.id()), Some(c));
     }
-    assert_eq!(ObjectClass::from_id(15), None);
+    // The first id past the list (15 before spec-temporal T2).
+    assert_eq!(ObjectClass::from_id(ObjectClass::ALL.len() as u16), None);
 }
 
 // ---- IC_LAYOUT 2 ------------------------------------------------------------------------------

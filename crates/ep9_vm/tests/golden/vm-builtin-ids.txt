@@ -121,3 +121,5 @@ intrinsic  73  %BigInt%
 intrinsic  74  %BigInt.prototype%
 intrinsic  75  %Temporal%
 intrinsic  76  %Temporal.Now%
+intrinsic  77  %Temporal.Duration%
+intrinsic  78  %Temporal.Duration.prototype%

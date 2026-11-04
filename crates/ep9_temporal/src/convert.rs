@@ -8,9 +8,6 @@
 //! | [`temporal_text`] | The text of a Temporal string argument: ASCII, or U+2212 (the grammar has no other char), else a RangeError |
 //! | [`required_string`] | "If x is not a String, throw a TypeError" |
 
-// T1: the helpers get their first callers in T2 (Duration).
-#![allow(dead_code)]
-
 use ep9_vm::{Cx, JsResult, JsString, Local, ToPrimitiveHint};
 
 /// ToIntegerWithTruncation (§13.38): an integral `f64` (never -0).
@@ -85,9 +82,4 @@ pub(crate) fn to_primitive_string<'s>(
     let p = cx.to_primitive(v, ToPrimitiveHint::String)?;
     let s = required_string(cx, p, what)?;
     cx.to_rust_string(s)
-}
-
-/// A finite integral `f64` as an `i64` (callers pass values in range).
-pub(crate) fn int(n: f64) -> i64 {
-    n as i64
 }

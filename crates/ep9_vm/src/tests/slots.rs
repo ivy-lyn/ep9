@@ -95,12 +95,13 @@ fn swapping_two_object_classes_fails_the_golden() {
 
 #[test]
 fn a_class_id_is_its_position_in_the_list() {
-    assert_eq!(ObjectClass::ALL.len(), 15);
+    assert_eq!(ObjectClass::ALL.len(), 16);
     for (i, &c) in ObjectClass::ALL.iter().enumerate() {
         assert_eq!(usize::from(c.id()), i, "{}", c.name());
         assert_eq!(ObjectClass::from_id(c.id()), Some(c));
     }
-    assert_eq!(ObjectClass::from_id(15), None);
+    // The first id past the list (15 before spec-temporal T2 appended the Temporal classes).
+    assert_eq!(ObjectClass::from_id(ObjectClass::ALL.len() as u16), None);
     assert_eq!(ObjectClass::from_id(u16::MAX), None);
     assert_eq!(
         (ObjectClass::Promise.id(), ObjectClass::RegExp.id()),

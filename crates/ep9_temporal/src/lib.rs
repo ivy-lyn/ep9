@@ -5,8 +5,10 @@
 //! ep9_builtins::MODULES = [.., bigint, ep9_temporal::MODULES..]   one table per isolate
 //! ep9_temporal::MODULES (blocks, append-only)
 //!   19 temporal   %Temporal%, %Temporal.Now%            namespace.rs
+//!   20 duration   %Temporal.Duration%                    duration.rs
 //! support: tzdb (provider, no ep9_vm import), error (temporal_rs error -> JS error),
-//!          convert (ToIntegerWithTruncation ...), options (option bags)
+//!          convert (ToIntegerWithTruncation ...), options (option bags), calendar (iso8601
+//!          only), fields (property bags), relative_to (Duration relativeTo)
 //! ```
 //!
 //! Rules of the glue (design §3.1): only the `*_with_provider` forms of temporal_rs; a
@@ -15,13 +17,17 @@
 //! `cx.throw_*` call.
 #![forbid(unsafe_code)]
 
+pub(crate) mod calendar;
 pub(crate) mod convert;
+pub mod duration;
 pub(crate) mod error;
+pub(crate) mod fields;
 pub mod namespace;
 pub(crate) mod options;
+pub(crate) mod relative_to;
 pub mod tzdb;
 
 use ep9_vm::BuiltinModule;
 
 /// The Temporal modules, in block order; `ep9_builtins::MODULES` lists them after its own.
-pub const MODULES: &[BuiltinModule] = &[namespace::MODULE];
+pub const MODULES: &[BuiltinModule] = &[namespace::MODULE, duration::MODULE];
