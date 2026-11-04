@@ -487,7 +487,7 @@ export async function run(o, deps = {}) {
   const commit = o.commit ?? git(["rev-parse", "HEAD"]);
   const runnerCommit = git(["rev-parse", "HEAD"]);
   const runnerDirty = git(["status", "--porcelain", "--untracked-files=no"]);
-  // The fresh paths (kernels.mjs FRESH_PATHS) with uncommitted changes, as kernels.mjs writes
+  // The fresh paths (kernels.mjs TREE_PATHS) with uncommitted changes, as kernels.mjs writes
   // them ([] = clean, null = git cannot say); m1-exit item 2 gives OPEN unless it is [] (CX5-C5).
   const dirty = treeState().dirty;
 
