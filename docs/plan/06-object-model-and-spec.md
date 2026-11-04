@@ -137,7 +137,7 @@ The GC side of word0 (gc_state, kind, forwarding in S3) is owned by [03-gc.md](.
 | RegExp RX1 | Port | irregexp parser, compiler, bytecode interpreter (BSD-3). Top RegExp tier in AOT-jitless mode | 4-8 | M2-M5 | High (test262 + node diff) |
 | RegExp RX2 | Port | irregexp native backend on `ep9_masm`; needs runtime codegen (JIT build only) | 2-4 | M5 | Medium |
 | Intl | Reuse | icu 2.3.x baked data + icu_experimental 0.6.0 | 9-15 (less with agents) | M3 | High |
-| Temporal | Reuse | temporal_rs 0.2.6 + timezone_provider (jiff-tzdb) | 1-3 glue (Boa glue is 11.7k lines) | M3 | High |
+| Temporal | Reuse | temporal_rs 0.2.6 + timezone_provider (zoneinfo64, ICU tzdata in `crates/ep9_temporal/data`) | 1-3 glue (Boa glue is 11.7k lines) | M3 | High |
 | Date | Build | Own code + port of V8's legacy date parser. Same tz provider as Temporal | 1-2 | M3 | High |
 | Number to string | Reuse | dragonbox_ecma 0.1.12 (already in oxc's graph). ryu-js 1.0.3 as the alternative | < 0.25 | M1 | High |
 | toFixed, toPrecision, toExponential, radix | Build | Port of V8 fixed-dtoa, bignum-dtoa, DoubleToRadixCString | part of 1 | M1 | High |

@@ -73,7 +73,7 @@ The 4 new expectation files pin HINT-SET, TYPED-KERNELS, SHORT-RUN and JITLESS-S
 | `ep9_math` (new) | One Rust Math (H36): CR libm-class functions, `pow_js`, V8 `hypot`, exact `fmod`, `fma_exact`. No dependencies | one fn (fma dispatch); Miri skips corpus tests | default | x | x | x | - |
 | `ep9_regexp` | Backend trait. RX0 regress fork; RX1 and RX2 irregexp port | backend only | default; RX2 under `jit` | x | x (RX1) | x | - |
 | `ep9_intl` | ECMA-402 on ICU4X | forbid | `intl` | x | x | x | - |
-| `ep9_temporal` | temporal_rs glue; shared tz provider for Date | forbid | default | x | x | x | - |
+| `ep9_temporal` | temporal_rs glue; tz provider (Date later, below ep9_vm) | forbid | default | x | x | x | - |
 | `ep9_snapshot` | Heap serializer and deserializer, external-reference table; + stable index tables (H13) | yes | default | x | x | x | - |
 | `ep9_facts` (new) | FactSnapshot schema (= feedback schema, H16), `.ep9prof` format, HINTED entries for the hint section | no | default | x | x | x | - |
 | `ep9_hints` (new) | `.ep9h` reader and writer (H37). **Zero dependencies** | no | default | x | x | x | x |
