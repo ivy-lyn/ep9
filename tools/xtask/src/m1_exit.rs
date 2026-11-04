@@ -5130,6 +5130,203 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// WI-SC15 (plan v11 X18): producer to reader. `verdict-rows.md` and
+    /// `verdict-rows-marginal.md` are the output of the producer, `spike-c verdict-rows`, made by
+    /// `make-verdict-rows.sh`. As made, items 7 and 10 read PASS (H2-H19 Frozen), also when the
+    /// table stands in the whole `gate.sh verdict` log. Each other word the producer writes reads
+    /// OPEN (marginal, void, too few rounds, open, a speed-only miss) or FAIL (no-go). A wrong
+    /// Spike, Condition or Lowering label reads OPEN.
+    #[test]
+    fn items7_and_10_read_the_spike_c_verdict_rows_output() {
+        let root = fake_repo("sc15");
+        let mut o = opts(&root);
+        write_adrs(&root, &ITEM7_ADRS, "Frozen (2026-12-01, M1 exit)", false);
+        let head = commit_all(&root, "adrs");
+        let made = |f: &str| {
+            read(&fixture(f))
+                .unwrap()
+                .replace(VERDICT_PLACEHOLDER, &head)
+        };
+        let rows = made("verdict-rows.md");
+        let mut cells = |md: &str| -> (Cell, Cell) {
+            o.verdicts = vec![input(&root, "rows.md", md)];
+            let r = run(&o).unwrap();
+            (r.cells[6].0.clone(), r.cells[9].0.clone())
+        };
+        // As made: PASS and PASS, each row read with its commit and lowering, none refused.
+        let (c7, c10) = cells(&rows);
+        assert_eq!(
+            (c7.status, c10.status),
+            (Status::Pass, Status::Pass),
+            "{c7:?}\n{c10:?}"
+        );
+        assert!(
+            c7.evidence.contains(&format!(
+                "spike c C4 navier-stokes: R 3.410 [3.320, 3.505], 15 rounds, IQR 2.0%: go \
+                 (rows.md; commit `{}`: this tree (HEAD); lowering jit)",
+                short(&head)
+            )),
+            "{}",
+            c7.evidence
+        );
+        assert!(
+            c10.evidence.contains(
+                "sp-facts C5c: crypto from a PROFILED file, output equal; Q = t(C) / t(P) 1.002 \
+                 [0.980, 1.020], 15 rounds, IQR 1.5%: go (rows.md;"
+            ),
+            "{}",
+            c10.evidence
+        );
+        for c in [&c7, &c10] {
+            assert!(
+                !c.evidence.contains("refused") && !c.evidence.contains("no row"),
+                "{}",
+                c.evidence
+            );
+        }
+        // The whole `gate.sh verdict` log (its step lines around the table): the same reading.
+        let log = format!(
+            "== [verdict/rows] target/release/spike-c verdict-rows target/verdict\n{rows}\n\n\
+             == Spike C gate (verdict) on aarch64-apple-darwin\nbuild-release            PASS  \n\
+             verdict/rows             PASS  target/verdict\nSPIKEC(verdict): PASS\n"
+        );
+        let (c7, c10) = cells(&log);
+        assert_eq!((c7.status, c10.status), (Status::Pass, Status::Pass));
+        // The producer's fixture inputs as written: C4 navier-stokes is marginal, so OPEN.
+        let (c7, c10) = cells(&made("verdict-rows-marginal.md"));
+        assert_eq!((c7.status, c10.status), (Status::Open, Status::Pass));
+        assert!(
+            c7.evidence.contains(
+                "spike c C4 navier-stokes: R 3.010 [2.950, 3.120], 15 rounds, IQR 2.0%: marginal \
+                 (2x rounds; the median decides) (rows.md;"
+            ),
+            "{}",
+            c7.evidence
+        );
+        // Each other verdict word of the producer (spikes/spike-c/src/verdict.rs), in the row it
+        // can stand in.
+        let with_word = |label: &str, word: &str| -> String {
+            rows.lines()
+                .map(|l| {
+                    if l.contains(&format!("| {label}:")) {
+                        l.replacen("| go |", &format!("| {word} |"), 1)
+                    } else {
+                        l.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for (label, word, item, want) in [
+            ("C1", "no-go (FAIL: am3/compile)", 6, Status::Fail),
+            ("C3", "open (not run: diff)", 6, Status::Open),
+            ("C2", "open (not run: )", 6, Status::Open),
+            (
+                "C4 crypto",
+                "no-go (a wrong run: correctness)",
+                6,
+                Status::Fail,
+            ),
+            (
+                "C4 crypto",
+                "void (IQR > 5% of the median; run again)",
+                6,
+                Status::Open,
+            ),
+            ("C4 crypto", "too few rounds", 6, Status::Open),
+            (
+                "C4 crypto",
+                "marginal (2x rounds; the median decides)",
+                6,
+                Status::Open,
+            ),
+            (
+                "C4 navier-stokes",
+                "no-go (the interval is below 3.0)",
+                6,
+                Status::Fail,
+            ),
+            ("C5a", "no-go (FAIL: structural/release)", 9, Status::Fail),
+            ("C5b", "open (not run: deopt)", 9, Status::Open),
+            (
+                "C5c",
+                "speed-only miss (an H30 row after the time box)",
+                9,
+                Status::Open,
+            ),
+            ("C5c", "no-go (a wrong run: correctness)", 9, Status::Fail),
+        ] {
+            let md = with_word(label, word);
+            assert_ne!(md, rows, "{label}: no row changed");
+            let (c7, c10) = cells(&md);
+            let (got, other) = if item == 6 { (c7, c10) } else { (c10, c7) };
+            assert_eq!(got.status, want, "{label} {word:?}: {got:?}");
+            assert_eq!(other.status, Status::Pass, "{label} {word:?}: {other:?}");
+            assert!(
+                got.evidence.contains(&format!(": {word} (rows.md;")),
+                "{}",
+                got.evidence
+            );
+        }
+        // A wrong label: OPEN, with the reason.
+        for (from, to, item, why) in [
+            (
+                "| C4 navier-stokes:",
+                "| C4 navier:",
+                6,
+                &[
+                    "its Condition label \"C4 navier\" names no one gate kernel",
+                    "spike c: no row for C4 navier-stokes",
+                ][..],
+            ),
+            (
+                "| C3:",
+                "| C3a:",
+                6,
+                &["is none of C1, C2, C3, C4", "spike c: no row for C3"][..],
+            ),
+            (
+                "| C5c:",
+                "| C5:",
+                9,
+                &["is none of C5a, C5b, C5c", "sp-facts: no row for C5c"][..],
+            ),
+            (
+                "| Spike C |",
+                "| Spike-C |",
+                6,
+                &["spike c: no verdict"][..],
+            ),
+            (
+                "| SP-Facts |",
+                "| SP Facts |",
+                9,
+                &["sp-facts: no verdict"][..],
+            ),
+        ] {
+            let md = rows.replace(from, to);
+            assert_ne!(md, rows, "{from}");
+            let (c7, c10) = cells(&md);
+            let (got, other) = if item == 6 { (c7, c10) } else { (c10, c7) };
+            assert_eq!(got.status, Status::Open, "{from} -> {to}: {got:?}");
+            assert_eq!(other.status, Status::Pass, "{from} -> {to}: {other:?}");
+            for w in why {
+                assert!(got.evidence.contains(w), "{from} -> {to}: {}", got.evidence);
+            }
+        }
+        // A wrong Lowering label: OPEN, refused.
+        let md = rows.replace("| jit, PROFILED input |", "| jit |");
+        let (c7, c10) = cells(&md);
+        assert_eq!((c7.status, c10.status), (Status::Pass, Status::Open));
+        assert!(
+            c10.evidence
+                .contains("refused: lowering `jit`, the gate reads `jit, PROFILED input`"),
+            "{}",
+            c10.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// The ADR Counts extra row reads as adr-lint part 3: PASS when the Counts line and the
     /// index column equal the Status lines and the index parses; else FAIL with the findings
     /// (the M6-P2 DRYRUN read PASS next to an adr-lint Counts FAIL).
