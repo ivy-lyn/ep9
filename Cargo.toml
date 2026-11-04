@@ -36,6 +36,9 @@ oxc_span = "=0.155.0"
 # Since M5-P0 the build uses the fork: [patch.crates-io] at the end of this file points at the
 # git-ignored checkout third_party/regress (scripts/sync-regress.sh; third_party/patches/regress).
 regress = "=0.12.0"
+# BigInt digits (plan 06 §4-§5: dashu first, the V8 `src/bigint` port at M8), exact pin. Only
+# ep9_bigint imports it, and only ep9_vm depends on ep9_bigint (dep-guards check 17).
+dashu-int = { version = "=0.6.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

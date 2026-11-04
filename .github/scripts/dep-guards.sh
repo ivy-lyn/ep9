@@ -360,4 +360,17 @@ else
   done
 fi
 
+# 17) ep9_bigint (BigInt digits on dashu; design SPEC-T-D3) is reached only from ep9_vm, as
+#     ep9_regexp in check 14: no other workspace member has an edge to it, of any kind, so
+#     builtins and ep9_temporal reach BigInt only through Cx methods. dashu-int has ep9_bigint as
+#     its only workspace dependent. Control: check 14's query on its sample graph (above).
+if ! member_exists ep9_bigint; then
+  ok "(17) ep9_bigint does not exist yet"
+else
+  users="$(dependents_of ep9_bigint "$meta" | paste -sd ' ' -)"
+  if [ "$users" = ep9_vm ] || [ -z "$users" ]; then ok "(17) ep9_bigint has no dependent but ep9_vm (${users:-none yet})"; else bad "(17) ep9_bigint must have ep9_vm as its only dependent; it has: $users"; fi
+  users="$(dependents_of dashu-int "$meta" | paste -sd ' ' -)"
+  if [ "$users" = ep9_bigint ]; then ok "(17) only ep9_bigint depends on dashu-int"; else bad "(17) dashu-int must have ep9_bigint as its only dependent; it has: ${users:-none}"; fi
+fi
+
 exit "$fail"

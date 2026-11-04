@@ -1,0 +1,18 @@
+[package]
+name = "ep9_bigint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# BigInt digit arithmetic (ECMA-262 §6.1.6.2) on digit slices. Only ep9_vm depends on this crate
+# (.github/scripts/dep-guards.sh check 17); the M8 port of V8 `src/bigint` replaces only it.
+[dependencies]
+# `default-features = false`: no `std`. With `std`, dashu-base's `EstimatedLog2` calls the host
+# `log2f`, which H36 bans (fp-check); without it, dashu uses a fixed-point estimate. No
+# `num-order` either: this crate does not use it. `clippy.toml` bans the `EstimatedLog2` methods.
+dashu-int = { workspace = true, default-features = false }
+
+[lints]
+workspace = true
