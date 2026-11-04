@@ -397,13 +397,22 @@ fn numbers_only(old: &str, new: &str) -> bool {
 
 /// The byte offset in `line`, at or after `from`, where the reference `old` stands whole: the
 /// next character is not a digit or `-`. R6-8 (M6-P0 fixer check F3): a plain `find` read
-/// `lib.rs:2` inside `lib.rs:23` or `lib.rs:2-5`.
+/// `lib.rs:2` inside `lib.rs:23` or `lib.rs:2-5`. The start is whole as drift.rs `tokens` reads
+/// it (M6-P3 fixer, R1): a bare `:N` has a backtick before it, a `path:N` has no path
+/// character before it, and a `` `path` lines N `` starts at its own backtick, so `README.md:149` is not read inside `docs/adr/README.md:149` and
+/// `:530` not inside `h20-core.txt:530`.
 fn find_ref(line: &str, from: usize, old: &str) -> Option<usize> {
     let mut at = from;
     while let Some(k) = line[at..].find(old) {
         let start = at + k;
         let next = line[start + old.len()..].chars().next();
-        if !next.is_some_and(|c| c.is_ascii_digit() || c == '-') {
+        let prev = line[..start].chars().next_back();
+        let start_whole = if old.starts_with(':') {
+            prev == Some('`')
+        } else {
+            old.starts_with('`') || !prev.is_some_and(super::drift::path_char)
+        };
+        if start_whole && !next.is_some_and(|c| c.is_ascii_digit() || c == '-') {
             return Some(start);
         }
         at = start + old.chars().next().map_or(1, char::len_utf8);
@@ -889,6 +898,56 @@ mod tests {
         assert_eq!(
             apply_fixes(7, "lib.rs:23", &f(&[("lib.rs:2", "lib.rs:3")])).unwrap_err(),
             "line 7: no \"lib.rs:2\" in its base text"
+        );
+        // M6-P3 fixer (R1): the start is whole too, as drift.rs `tokens` reads it. A `path:N`
+        // has no path character before it; a bare `:N` has a backtick before it.
+        assert_eq!(
+            find_ref(
+                "docs/adr/README.md:149 and README.md:149",
+                0,
+                "README.md:149"
+            ),
+            Some(27)
+        );
+        assert_eq!(find_ref("docs/adr/README.md:149", 0, "README.md:149"), None);
+        assert_eq!(find_ref("x-lib.rs:2 (lib.rs:2)", 0, "lib.rs:2"), Some(12));
+        assert_eq!(find_ref("`h20-core.txt:530`, `:530`", 0, ":530"), Some(21));
+        assert_eq!(find_ref("`h20-core.txt:530`", 0, ":530"), None);
+        assert_eq!(find_ref("`a.rs` line 3", 0, "`a.rs` line 3"), Some(0));
+        assert_eq!(
+            find_ref("x`a.rs` lines 3-5", 0, "`a.rs` lines 3-5"),
+            Some(1)
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "docs/adr/README.md:149 and README.md:149",
+                &f(&[("README.md:149", "README.md:150")])
+            )
+            .unwrap(),
+            "docs/adr/README.md:149 and README.md:150"
+        );
+        assert_eq!(
+            apply_fixes(7, "`h20-core.txt:530` and `:530`", &f(&[(":530", ":531")])).unwrap(),
+            "`h20-core.txt:530` and `:531`"
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "`h20-core.txt:530` and `:530`",
+                &f(&[("h20-core.txt:530", "h20-core.txt:531"), (":530", ":532")])
+            )
+            .unwrap(),
+            "`h20-core.txt:531` and `:532`"
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "docs/adr/README.md:149",
+                &f(&[("README.md:149", "README.md:150")])
+            )
+            .unwrap_err(),
+            "line 7: no \"README.md:149\" in its base text"
         );
     }
 
