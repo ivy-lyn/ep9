@@ -2228,7 +2228,7 @@ impl Emitter<'_> {
 }
 
 /// The CFI of the frame (code alignment 4, data alignment -8): `stp x29, x30, [sp, #-S]!` at
-/// 0, `mov x29, sp` at 4, then one `stp` per pair of [`SAVED`]. The epilogue at `epilogue`
+/// 0, `mov x29, sp` at 4, then one `stp` per pair of `SAVED`. The epilogue at `epilogue`
 /// restores the pairs (one `ldp` each, reversed), then `ldp x29, x30`, then `br`; its rows sit
 /// between remember/restore state, so the out-of-line code after the `br` has the body's rule.
 impl ForceTable {

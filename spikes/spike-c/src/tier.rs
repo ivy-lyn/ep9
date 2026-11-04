@@ -514,7 +514,9 @@ impl SetRun {
             })
             .collect();
         for (name, why) in &self.refused {
-            out.push(format!("{name}: refused, stays in T0: {why}"));
+            let by = kernels::stays_in_t0(self.kernel, name)
+                .map_or(String::new(), |d| format!(" (by {d}, SCP §3 config C)"));
+            out.push(format!("{name}: refused, stays in T0{by}: {why}"));
         }
         let names: Vec<&str> = self.members.iter().map(|m| m.function).collect();
         out.push(format!(
@@ -670,9 +672,11 @@ pub fn run_set(
     })
 }
 
-/// The verdict of a [`run_set`]: every hot function compiled (none refused), output equal to
-/// T0, and, unforced, no exit in loop(n); forced, per function every armed guard forced (its
-/// countdown went to 0) and its counter as [`forced_coverage`] reads it.
+/// The verdict of a [`run_set`]: every hot function compiled (none refused but those that
+/// stay in T0 by a decision, `kernels::STAYS_IN_T0`: [`SetRun::lines`] names them; M6-P3
+/// SC-FIX, MC-P2-SCLEFT), output equal to T0, and, unforced, no exit in loop(n); forced, per
+/// function every armed guard forced (its countdown went to 0) and its counter as
+/// [`forced_coverage`] reads it.
 pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
     set_check(run, stress, true).map(|_| ())
 }
@@ -761,7 +765,9 @@ fn set_check(run: &SetRun, stress: bool, all: bool) -> Result<Vec<Vec<u32>>, Vec
     let mut bad = Vec::new();
     let mut out = Vec::new();
     for (name, why) in &run.refused {
-        bad.push(format!("{name}: refused: {why}"));
+        if kernels::stays_in_t0(run.kernel, name).is_none() {
+            bad.push(format!("{name}: refused: {why}"));
+        }
     }
     if !run.equal {
         bad.push(format!("{}: output differs from T0", run.kernel));
@@ -981,8 +987,20 @@ pub fn run_script_full(
 /// The T0 half of [`run_script`]: `defs`, `warm` and `main` in a T0 session of their own
 /// (the threaded dispatch, as the compiled half); the output of `main`.
 pub fn t0_script(config: &Config, defs: &str, warm: &str, main: &str) -> Result<RunOutput, String> {
+    t0_script_exec(config, ep9_vm::ExecOptions::default(), defs, warm, main)
+}
+
+/// [`t0_script`] on an isolate that runs `exec` (MC-w21-9, M6-P3 SC-FIX: the tier diff's
+/// `ics_only` column, `ExecOptions::jit()` with `Feedback::ICS_ONLY`).
+pub fn t0_script_exec(
+    config: &Config,
+    exec: ep9_vm::ExecOptions,
+    defs: &str,
+    warm: &str,
+    main: &str,
+) -> Result<RunOutput, String> {
     let config = config.threaded();
-    let mut t0s = Session::new(&config)?;
+    let mut t0s = Session::new_exec(&config, exec)?;
     t0s.run(defs, "defs.js")
         .result
         .map_err(|e| format!("T0 defs: {e}"))?;
@@ -1014,8 +1032,35 @@ pub fn compiled_script(
     int: IntFacts,
     opts: &emit_a64::EmitOptions<'_>,
 ) -> Result<CompiledRun, String> {
+    compiled_script_exec(
+        config,
+        ep9_vm::ExecOptions::default(),
+        defs,
+        warm,
+        main,
+        name,
+        int,
+        opts,
+    )
+}
+
+/// [`compiled_script`] on an isolate that runs `exec` (MC-w21-9, M6-P3 SC-FIX): the facts are
+/// the live export of that isolate (under `ics_only` T0 keeps every IC and drops the profile
+/// records, MODES-D19, so the code is compiled from the IC facts alone), and the code runs on
+/// it.
+#[allow(clippy::too_many_arguments)]
+pub fn compiled_script_exec(
+    config: &Config,
+    exec: ep9_vm::ExecOptions,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<CompiledRun, String> {
     let config = config.threaded();
-    let mut s = Session::new(&config)?;
+    let mut s = Session::new_exec(&config, exec)?;
     s.run(defs, "defs.js")
         .result
         .map_err(|e| format!("defs: {e}"))?;
@@ -2714,9 +2759,11 @@ mod tests {
     }
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
-    /// the element guards stay unbacked (FACT_SCHEMA 1 has no receiver, bounds or hole field);
-    /// a site that saw a key that is not an index takes the generic keyed entry (SPIKEC-4;
-    /// SPIKEC-3 refused it).
+    /// since M6-P3 (FACT_SCHEMA 2's keyed bits, `build::element_bases_of`) a record of present
+    /// reads of int32 Arrays backs the kind and element guards too, and one that saw an index
+    /// out of bounds backs only the kind guard; a site that saw a key that is not an index
+    /// takes the generic keyed entry (SPIKEC-4; SPIKEC-3 refused it). The name stays (the
+    /// SPIKEC-3 test): the basis is a label, so the code bytes are the same either way.
     const AT: &str = "function at(a, k) { return a[k] | 0; }";
 
     #[test]
@@ -2735,16 +2782,38 @@ mod tests {
             .collect();
         assert_eq!(key.len(), 1, "{g}");
         assert!(key[0].contains("Fact(Runtime)"), "{g}");
-        for l in g
-            .lines()
-            .filter(|l| l.contains("CheckArray") || l.contains("LoadElement"))
-        {
-            assert!(l.contains("Unbacked"), "{l}\n{g}");
+        let element = |g: &str| -> Vec<String> {
+            g.lines()
+                .filter(|l| l.contains("CheckArray") || l.contains("LoadElement"))
+                .map(str::to_string)
+                .collect()
+        };
+        let el = element(g);
+        assert_eq!(el.len(), 2, "{g}");
+        for l in &el {
+            assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
         let sites = &r.report.build.keyed;
         assert_eq!(sites.len(), 1, "{sites:?}");
         assert_eq!(sites[0].keys, Some(ep9_facts::KeySet::INDEX));
         assert!(!sites[0].store);
+        let fact = crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime);
+        assert_eq!(sites[0].element_bases, (fact, fact));
+        // A warm-up that also read past the end: the kind guard keeps its fact, the element
+        // guard is unbacked; the same code bytes, and the output equals T0.
+        let oob = run_script(
+            &Config::default(),
+            AT,
+            "var w = [1, 2, 3, 4]; for (var q = 0; q < 20; q++) { at(w, q & 3); at(w, 4 + q); }",
+            "print(at([7, 8, 9], 2), at([5], 0), at([5], 3));",
+            "at",
+        )
+        .expect("run");
+        assert!(oob.equal(), "{:?} vs {:?}", oob.compiled, oob.t0);
+        assert_eq!(oob.compiled.output, ["9 5 0"]);
+        let s = &oob.report.build.keyed;
+        assert_eq!(s[0].element_bases, (fact, crate::ir::GuardBasis::Unbacked));
+        assert_eq!(oob.report.emit.code_bytes, r.report.emit.code_bytes);
         // An index of another form (a string) fails the int32 key check: a deopt, never a
         // wrong value (T0 prints 8).
         let t = deopts(AT, warm, "print(at([7, 8, 9], '1'));", "at");
@@ -3311,19 +3380,21 @@ mod tests {
         assert!(r.equal, "{}", r.line());
         assert_eq!(r.probe_exit, Some(0), "{}", r.line());
         // Since FACTS2 (M4-P2) the live facts back the int32 input checks too, as with the
-        // stand-in (`am3_with_int_facts_equals_t0`): 11 fact guards; unbacked are the 6 keyed
-        // guards, the 9 overflow guards of `+` and `-`, and the entry checks of the loop
-        // phis `i`, `j` and `c`, whose only checks are in the loop body, not the header.
+        // stand-in (`am3_with_int_facts_equals_t0`); since M6-P3 (FACT_SCHEMA 2's keyed
+        // bits) the kind guards and element guards of the 3 loads too: 16 fact guards;
+        // unbacked are the 1 keyed guard of the store, the 9 overflow guards of `+` and
+        // `-`, and the entry checks of the loop phis `i`, `j` and `c`, whose only checks are
+        // in the loop body, not the header.
         assert_eq!(
             (r.report.fact_guards, r.report.unbacked_guards),
-            (11, 18),
+            (16, 13),
             "{}",
             r.report.graph
         );
         // Keyed facts (SPIKEC-3): the 4 keyed sites (3 loads, 1 store) have index-only
         // records, so each key check would be a fact guard; but every key is a loop phi
-        // (`i`, `j`) that is already int32, so no key check is left in the graph, and the
-        // element guards stay unbacked (no receiver, bounds or hole field in schema 1).
+        // (`i`, `j`) that is already int32, so no key check is left in the graph. The loads'
+        // records saw only present elements of int32 Arrays (M6-P3: they back the guards).
         let k = &r.report.build.keyed;
         assert_eq!(k.len(), 4, "{k:?}");
         assert_eq!(k.iter().filter(|s| s.store).count(), 1, "{k:?}");
@@ -3392,10 +3463,41 @@ mod tests {
         );
     }
 
+    /// MC-P2-SCLEFT (M6-P3 SC-FIX): `spike-c tier crypto --all` compiles am3; montReduce and
+    /// bnpSquareTo stay in T0 by V11-D30 (`kernels::STAYS_IN_T0`), so the set run names them
+    /// and passes. A refusal of any other hot function still fails.
+    #[test]
+    fn crypto_all_names_the_functions_that_stay_in_t0() {
+        if !aarch64() {
+            return;
+        }
+        if !kernels::bench_present() {
+            eprintln!("skip: no v8-v7 checkout");
+            return;
+        }
+        let k = kernels::kernel("crypto").expect("crypto");
+        let mut run = run_set(k, 1, &Config::default(), &[]).expect("run");
+        let names: Vec<&str> = run.members.iter().map(|m| m.function).collect();
+        assert_eq!(names, ["am3"]);
+        let refused: Vec<&str> = run.refused.iter().map(|(n, _)| *n).collect();
+        assert_eq!(refused, ["montReduce", "bnpSquareTo"]);
+        assert_eq!(set_ok(&run, false), Ok(()), "{:?}", run.lines());
+        let lines = run.lines();
+        assert!(
+            lines.iter().any(|l| l
+                .starts_with("montReduce: refused, stays in T0 (by V11-D30, SCP §3 config C): ")),
+            "{lines:?}"
+        );
+        run.refused
+            .push(("am3", "am3: a refusal no decision names".into()));
+        let bad = set_ok(&run, false).expect_err("a refusal of am3");
+        assert_eq!(bad, ["am3: refused: am3: a refusal no decision names"]);
+    }
+
     /// am3 with the FACTS2 stand-in int records: the int32 input checks are fact guards; the
-    /// keyed element guards (no schema-1 field backs them), the overflow guards of `+` and `-` and the entry
-    /// checks of the phis that the header does not check stay unbacked, and the output still
-    /// equals T0.
+    /// keyed guard of the store (the loads' guards have FACT_SCHEMA 2 facts since M6-P3), the
+    /// overflow guards of `+` and `-` and the entry checks of the phis that the header does
+    /// not check stay unbacked, and the output still equals T0.
     #[test]
     fn am3_with_int_facts_equals_t0() {
         if !aarch64() {
@@ -3427,7 +3529,7 @@ mod tests {
         assert_eq!(r.report.unbacked_guards, unbacked.len());
         assert_eq!(
             (keyed, overflow, entry, unbacked.len()),
-            (6, 9, 3, 18),
+            (1, 9, 3, 13),
             "{}",
             r.report.graph
         );

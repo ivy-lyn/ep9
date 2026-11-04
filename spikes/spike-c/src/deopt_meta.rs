@@ -29,7 +29,7 @@
 //!                           const index (uleb) or VM frame byte offset from fp (ZigZag + uleb)
 //! ```
 //!
-//! A signed field is ZigZag + uleb, `uleb((v << 1) ^ (v >> 63))` ([`zigzag`]), not SLEB128
+//! A signed field is ZigZag + uleb, `uleb((v << 1) ^ (v >> 63))` (`zigzag`), not SLEB128
 //! (H29-Q2).
 //!
 //! **Position independent.** Every field is an offset or an index: the pc from the code

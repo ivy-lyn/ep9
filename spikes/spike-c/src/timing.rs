@@ -188,6 +188,9 @@ pub struct Once {
     pub exits: Option<u64>,
     /// For P: the exits counted in the warm-up `run()` after the install (the start-up).
     pub startup: Option<u64>,
+    /// For C and P: the hot functions the compiler refused, each with its refusal (they stay
+    /// in T0; SCP §3 config C names them, M6-P3 SC-FIX, MC-P2-SCLEFT).
+    pub refused: Vec<(String, String)>,
 }
 
 impl Once {
@@ -203,6 +206,10 @@ impl Once {
         if let Some(e) = self.startup {
             s.push_str(&format!("startup {e}\n"));
         }
+        for (name, why) in &self.refused {
+            // One line each; a refusal is one line of text (no line break in it).
+            s.push_str(&format!("refused {name} {}\n", why.replace('\n', " ")));
+        }
         for l in &self.output {
             s.push_str(&format!("| {l}\n"));
         }
@@ -214,6 +221,7 @@ impl Once {
         let mut code = None;
         let mut exits = None;
         let mut startup = None;
+        let mut refused = Vec::new();
         let mut output = Vec::new();
         for l in text.lines() {
             if let Some(o) = l.strip_prefix("| ") {
@@ -232,6 +240,9 @@ impl Once {
                 exits = Some(v.parse::<u64>().map_err(|e| format!("exits {v}: {e}"))?);
             } else if let Some(v) = l.strip_prefix("startup ") {
                 startup = Some(v.parse::<u64>().map_err(|e| format!("startup {v}: {e}"))?);
+            } else if let Some(v) = l.strip_prefix("refused ") {
+                let (name, why) = v.split_once(' ').unwrap_or((v, ""));
+                refused.push((name.to_string(), why.to_string()));
             }
         }
         Ok(Once {
@@ -240,9 +251,29 @@ impl Once {
             code,
             exits,
             startup,
+            refused,
         })
     }
 }
+
+/// The report lines of the hot functions config C (or P) left in T0, one each:
+/// `stays in T0: <name>: <refusal>` (SCP §3 config C, the clarify of 2026-11-04; M6-P3
+/// SC-FIX, MC-P2-SCLEFT). `spike-c verdict-rows` reads the names (`verdict::refused_names`).
+pub fn refused_lines(refused: &[(String, String)]) -> String {
+    refused
+        .iter()
+        .map(|(name, why)| {
+            // A refusal names its function first (`name: why`); print the why once.
+            let why = why
+                .strip_prefix(&format!("{name}: "))
+                .unwrap_or(why.as_str());
+            format!("{REFUSED_PREFIX}{name}: {why}\n")
+        })
+        .collect()
+}
+
+/// The start of a [`refused_lines`] line.
+pub const REFUSED_PREFIX: &str = "stays in T0: ";
 
 /// The order of the four configs in `round`: the pairs (T0, C) and (H0, H1) each swap their
 /// two runs every round, and the pairs swap places every two rounds, so over rounds 1..=15
@@ -317,6 +348,7 @@ pub fn once_with(
     let mut compiled: Vec<Target> = Vec::new();
     let mut timed_exits = 0u64;
     let mut startup = None;
+    let mut refused = Vec::new();
     let mut secs = 0.0;
     match which {
         Which::T0 | Which::C | Which::P => {
@@ -343,6 +375,7 @@ pub fn once_with(
                     sp_facts::Source::Profiled(&snap),
                 )?;
                 code = Some(set.code());
+                refused = refused_of(&set);
                 // SAFETY: `set` is `compile_hot_set`'s result for `s` just above, unchanged,
                 // with no JS run since.
                 let inst = unsafe { set.install(&mut s) }?;
@@ -372,6 +405,7 @@ pub fn once_with(
                 )?;
                 if which == Which::C {
                     code = Some(set.code());
+                    refused = refused_of(&set);
                     // SAFETY: as for config P above: `compile_hot_set`'s result for `s`,
                     // unchanged, with no JS run since.
                     let inst = unsafe { set.install(&mut s) }?;
@@ -482,7 +516,16 @@ pub fn once_with(
         code,
         exits: (!compiled.is_empty()).then_some(timed_exits),
         startup,
+        refused,
     })
+}
+
+/// The refused hot functions of `set`, as [`Once::refused`] holds them.
+fn refused_of(set: &sp_facts::HotSet) -> Vec<(String, String)> {
+    set.refused
+        .iter()
+        .map(|(n, why)| (n.to_string(), why.clone()))
+        .collect()
 }
 
 /// The median of `v` (not empty).
@@ -649,6 +692,7 @@ pub fn time(
     let mut ref_h0: Option<Vec<String>> = None;
     let mut wrong = Vec::new();
     let mut code = None;
+    let mut refused: Option<Vec<(String, String)>> = None;
     // The most exits one C or H1 run counted in its timed region.
     let mut most_exits: Option<u64> = None;
     for round in 0..=rounds {
@@ -705,6 +749,7 @@ pub fn time(
             }
             if which == Which::C {
                 code = code.or(o.code);
+                refused.get_or_insert(o.refused.clone());
             }
             if let Some(e) = o.exits {
                 most_exits = Some(most_exits.map_or(e, |m| m.max(e)));
@@ -768,6 +813,8 @@ pub fn time(
         }
         report.push('\n');
     }
+    // The hot functions C left in T0 (SCP §3 config C: named, not a failure).
+    report.push_str(&refused_lines(refused.as_deref().unwrap_or(&[])));
     if ok {
         report.push_str("correctness: every run right (T0 a right driver run, C = T0, H1 = H0)\n");
     } else {
@@ -819,6 +866,7 @@ pub fn time_p(
     let mut ref_t0: Option<Vec<String>> = None;
     let mut wrong = Vec::new();
     let (mut code_c, mut code_p) = (None, None);
+    let (mut refused_c, mut refused_p): (Option<Vec<_>>, Option<Vec<_>>) = (None, None);
     let (mut startup, mut timed_p): (Vec<u64>, Vec<u64>) = (Vec::new(), Vec::new());
     for round in 0..=rounds {
         let mut times = [None; 3];
@@ -852,9 +900,13 @@ pub fn time_p(
                 ));
             }
             match which {
-                Which::C => code_c = code_c.or(o.code),
+                Which::C => {
+                    code_c = code_c.or(o.code);
+                    refused_c.get_or_insert(o.refused.clone());
+                }
                 Which::P => {
                     code_p = code_p.or(o.code);
+                    refused_p.get_or_insert(o.refused.clone());
                     startup.extend(o.startup);
                     timed_p.extend(o.exits);
                 }
@@ -915,6 +967,15 @@ pub fn time_p(
         set(code_c),
         set(code_p)
     ));
+    // The hot functions C and P left in T0, by name (SCP §3 config C); P compiles the set C
+    // compiles (the `spfacts/p-*` steps check it), so a name only P refused is printed too.
+    let mut refused = refused_c.unwrap_or_default();
+    for r in refused_p.unwrap_or_default() {
+        if !refused.iter().any(|x| x.0 == r.0) {
+            refused.push(r);
+        }
+    }
+    report.push_str(&refused_lines(&refused));
     if !startup.is_empty() {
         report.push_str(&format!(
             "P start-up exits (the warm-up run() after the install): min {}, max {} per run; \
@@ -1036,8 +1097,19 @@ mod tests {
             code: Some((3292, 2, 27)),
             exits: Some(4),
             startup: Some(9),
+            refused: vec![
+                (
+                    "montReduce".into(),
+                    "montReduce: opcode SetNamedProperty at offset 43 has no native code".into(),
+                ),
+                ("f".into(), String::new()),
+            ],
         };
         assert_eq!(Once::parse(&o.text()).expect("parse"), o);
+        assert_eq!(
+            refused_lines(&o.refused[..1]),
+            "stays in T0: montReduce: opcode SetNamedProperty at offset 43 has no native code\n"
+        );
     }
 
     /// SP-Facts (M5-P3): `once p` parses; in [`order_p`] each of C and P comes first in 7 or

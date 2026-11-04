@@ -74,9 +74,9 @@ fn a_swapped_call_frame_returns_into_its_lazy_exit() {
     let r = lazy_probe(&Config::default(), DEFS, WARM, MAIN, "f").expect("probe");
     check_swap(&r);
     assert_eq!(r.compiled.output, ["19.25", "21.375", "24.25"]);
-    // The system unwinder walks through the compiled frame with the FDE that Spike B's
-    // JitModule registers for it (`the_compiled_code_has_a_registered_fde`). The probe
-    // reports what it printed; the frame-record walk above is the check.
+    // The system unwinder most likely walks through the compiled frame with the FDE that
+    // Spike B's JitModule registers (`the_compiled_code_has_a_registered_fde`; not proven,
+    // H29-Q4). The probe reports what it printed; the frame-record walk above is the check.
     let s = r.swap.as_ref().expect("swap");
     eprintln!(
         "std::backtrace frames before {:?} after {:?}; frame records {}",
@@ -96,8 +96,8 @@ unsafe extern "C" {
 
 /// The compiled code of the probe has a registered FDE (Spike B's `JitModule` registers one
 /// per function, `__register_frame`), and the same FDE covers the call's return and the lazy
-/// exit. So the system unwinder walks through a swapped frame with CFI (H29-Q4 fill (4); M6-P2
-/// JIT review J1).
+/// exit. So the system unwinder finds CFI for a swapped frame; that it walks through it with CFI
+/// is likely, not proven (H29-Q4 fill (4); H29 A4-built gated part (1); M6-P2 JIT review J1).
 #[test]
 fn the_compiled_code_has_a_registered_fde() {
     if !macos_aarch64() {

@@ -29,8 +29,8 @@
 //!   report. An int32 BinaryOp or CompareOp record makes the int32 guards of its site fact
 //!   guards (SPIKEC-2, [`crate::build`]; the exporter writes those records from FACTS2, M4-P2,
 //!   on); an index-only keyed record of FACTS2 does the same for the key's int32 check of
-//!   its site, while the element guards stay unbacked (SPIKEC-3: FACT_SCHEMA 1 has no
-//!   receiver, bounds or hole field; [`crate::build`] "Keyed facts"). A value that an
+//!   its site, and (M6-P3, FACT_SCHEMA 2's keyed bits) a LoadKeyed record of Array receivers
+//!   for the kind and element guards of its load ([`crate::build::element_bases_of`]). A value that an
 //!   unbacked guard narrows keeps the trust [`Trust::Unknown`]: no fact knows it. The basis
 //!   is a label: the emitted code of a guard is the same either way.
 //!
@@ -407,6 +407,53 @@ impl Mode {
     pub fn exit_policy(self, basis: GuardBasis) -> ExitPolicy {
         match (self, basis) {
             (Mode::Jit, _) => ExitPolicy::Deopt,
+        }
+    }
+}
+
+impl Op {
+    /// True for an op that may write a slot of a context or change the frame's current
+    /// context (MODES-CHECK-w26 MC-w26-8): `build::hoist_array_checks` moves a
+    /// [`Op::LoadContextSlot`] out of a loop only if no op of the loop gives true here. No op
+    /// of the graph stores into a context today: the builder translates no
+    /// `StaContextSlot`, `StaCurrentContextSlot`, `PushContext` or `PopContext`
+    /// (`build::supported`). An op that may run JS (a call, a global load, a generic keyed
+    /// access) may write any slot: the code it runs can close over the same context. The
+    /// match has no wildcard, so a new op must give its answer here.
+    pub fn writes_context(&self) -> bool {
+        match self {
+            Op::Call { .. } | Op::LoadGlobal | Op::GetKeyedGeneric | Op::SetKeyedGeneric => true,
+            Op::Incoming(_)
+            | Op::Const(_)
+            | Op::ConstInt32(_)
+            | Op::ConstFloat64(_)
+            | Op::Phi
+            | Op::CheckInt32
+            | Op::TruncateInt32
+            | Op::TruncateFloat64
+            | Op::CheckShape { .. }
+            | Op::CheckArray
+            | Op::LoadField { .. }
+            | Op::LoadSlotsField { .. }
+            | Op::DoubleElements
+            | Op::LoadElement
+            | Op::StoreElement
+            | Op::CheckNumber
+            | Op::Int32ToFloat64
+            | Op::Float64(_)
+            | Op::BoxFloat64
+            | Op::LoadContextSlot(_)
+            | Op::Int32(_)
+            | Op::Compare(_)
+            | Op::CompareFloat64(_)
+            | Op::IsFalse
+            | Op::IsTrue
+            | Op::BoxInt32
+            | Op::BoxBool
+            | Op::Poll
+            | Op::Jump
+            | Op::Branch
+            | Op::Return => false,
         }
     }
 }
@@ -982,6 +1029,114 @@ mod tests {
         assert!(Graph::const_tagged(0x1000).is_none(), "a cell address");
         assert!(Graph::const_tagged(ep9_value::encoding::VALUE_UNDEFINED).is_some());
         assert!(Graph::const_tagged(crate::vm_layout::int32_bits(3)).is_some());
+    }
+
+    /// MC-w26-8 (M6-P3 SC-FIX): every op that may run JS may write a context slot; a slot
+    /// load writes none. And no opcode the builder translates stores into a context or
+    /// changes the current context: the day one does, its graph op must answer true in
+    /// [`Op::writes_context`], so the loop that holds it keeps its slot loads (this test
+    /// fails first, as a reminder).
+    #[test]
+    fn ops_that_may_write_a_context_slot() {
+        let ops = [
+            Op::Incoming(Incoming::Param(0)),
+            Op::Const(0),
+            Op::ConstInt32(0),
+            Op::ConstFloat64(0),
+            Op::Phi,
+            Op::CheckInt32,
+            Op::TruncateInt32,
+            Op::TruncateFloat64,
+            Op::CheckShape {
+                site: 0,
+                shapes: vec![],
+                handler: 0,
+            },
+            Op::CheckArray,
+            Op::LoadField { offset: 24 },
+            Op::LoadSlotsField { offset: 16 },
+            Op::DoubleElements,
+            Op::LoadElement,
+            Op::StoreElement,
+            Op::CheckNumber,
+            Op::Int32ToFloat64,
+            Op::Float64(FloatOp::Add),
+            Op::BoxFloat64,
+            Op::LoadContextSlot(2),
+            Op::Call { regs: vec![] },
+            Op::GetKeyedGeneric,
+            Op::SetKeyedGeneric,
+            Op::Int32(Int32Op::Add),
+            Op::Compare(Cond::Lt),
+            Op::CompareFloat64(Cond::Lt),
+            Op::LoadGlobal,
+            Op::IsFalse,
+            Op::IsTrue,
+            Op::BoxInt32,
+            Op::BoxBool,
+            Op::Poll,
+            Op::Jump,
+            Op::Branch,
+            Op::Return,
+        ];
+        for op in &ops {
+            if op.is_call() {
+                assert!(op.writes_context(), "{op:?} may run JS");
+            }
+        }
+        let writers: Vec<&Op> = ops.iter().filter(|o| o.writes_context()).collect();
+        assert_eq!(writers.len(), 4, "{writers:?}");
+        assert!(!Op::LoadContextSlot(2).writes_context());
+        use ep9_bytecode::Opcode;
+        for op in [
+            Opcode::StaContextSlot,
+            Opcode::StaCurrentContextSlot,
+            Opcode::PushContext,
+            Opcode::PopContext,
+        ] {
+            assert!(
+                !crate::build::supported(op),
+                "{op:?} is translated now: give its graph op `writes_context` true (MC-w26-8)"
+            );
+        }
+    }
+
+    /// MC-w26-8: [`crate::build::loop_may_hoist`] reads [`Op::writes_context`]. A loop body of
+    /// a slot load, a number store and its poll may move its checks and loads; the same body
+    /// with an op that writes a context slot may not, and neither may one with a Tagged store.
+    #[test]
+    fn a_loop_that_may_write_a_context_slot_keeps_its_loads() {
+        use crate::build::loop_may_hoist;
+        let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+        g.blocks.push(Block::default());
+        let b = BlockId(0);
+        let add = |g: &mut Graph, op: Op, inputs: Vec<NodeId>, repr: Repr| {
+            let n = g.add(op, inputs, repr, Trust::Unknown, b, 0);
+            g.blocks[0].nodes.push(n);
+            n
+        };
+        let p = add(
+            &mut g,
+            Op::Incoming(Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+        );
+        let slot = add(&mut g, Op::LoadContextSlot(2), vec![], Repr::Tagged);
+        let i = add(&mut g, Op::ConstInt32(0), vec![], Repr::Int32);
+        let store = add(&mut g, Op::StoreElement, vec![p, i, i], Repr::None);
+        let poll = add(&mut g, Op::Poll, vec![], Repr::None);
+        assert!(loop_may_hoist(&g, &[slot, store, poll]));
+        for op in [
+            Op::Call { regs: vec![] },
+            Op::LoadGlobal,
+            Op::GetKeyedGeneric,
+            Op::SetKeyedGeneric,
+        ] {
+            let w = add(&mut g, op.clone(), vec![], Repr::Tagged);
+            assert!(!loop_may_hoist(&g, &[slot, w, store, poll]), "{op:?}");
+        }
+        let tagged = add(&mut g, Op::StoreElement, vec![p, i, p], Repr::None);
+        assert!(!loop_may_hoist(&g, &[slot, tagged, poll]));
     }
 
     /// The checker refuses a PROVEN value that is not on the H30 list, a predicted value with

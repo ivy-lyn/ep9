@@ -768,7 +768,7 @@ pub const SMI_FIELD_OUT_OF_LINE: i32 = 2;
 /// capacity 4), so the named load reads it out of line. `ep9_vm::layout` exports no out-of-line
 /// fact, and `layout.rs` is frozen after M6-P0 (plan v11 rule 2), so these three are hand facts
 /// until the orchestrator adds the exports (the SPIKEC-9 report names the fixer need). Each is
-/// proved on a live object by [`check`] ([`check_slots`]), as the month-5 hand facts were.
+/// proved on a live object by [`check`] (`check_slots`), as the month-5 hand facts were.
 pub const HAND_FACTS_M6: [(&str, u32, &str); 3] = [
     ("OBJECT_SLOTS", OBJECT_SLOTS, "OBJECT_LAYOUT"),
     ("SLOTS_DATA", SLOTS_DATA, "OBJECT_LAYOUT"),

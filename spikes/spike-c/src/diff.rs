@@ -5,7 +5,8 @@
 //!
 //! ```text
 //!  spike-c diff [--seeds A..B] [--no-kernels] [--show N]      (gate.sh diff: seeds 1..200;
-//!                                                             --show: a program, its graph)
+//!               [--ics-only]                                  --show: a program, its graph;
+//!                                                             --ics-only: that column only)
 //!
 //!  the gate kernels, n = 1:  crypto (am3), navier-stokes (its hot set: lin_solve, project,
 //!                            advect, installed together; SPIKEC-9, `run_kernel_set`)
@@ -16,6 +17,10 @@
 //!    lint (no GC-timing output: no WeakRef, FinalizationRegistry or gc)
 //!    T0:        defs ; warm ; main                      -> output A
 //!    config C:  defs ; warm ; compile + install ; main  -> output B == A   (natural exits counted)
+//!  the corpus again, the ics_only column (MC-w21-9; M6-P3 SC-FIX): T0 and config C on
+//!    isolates of the jit preset with ics_only feedback, C compiled from that isolate's
+//!    facts (IC facts only, no profile records; `run_program_exec`), the same rule but step
+//!    3: a guard never forced is named, not a failure (`ProgramRun::ok_unreached`)
 //!  forcing (each compiled function):
 //!    1  every guard armed from the seed (countdown 1-8, emit_a64::ForceTable::seeded)
 //!    2  each guard not forced yet armed at 1 (its first pass exits), again while one more is
@@ -1022,6 +1027,20 @@ impl ProgramRun {
             && !self.forcing.guards.is_empty()
     }
 
+    /// The rule of the `ics_only` column (MC-w21-9; M6-P3 SC-FIX): as [`ProgramRun::ok`], but
+    /// a guard never forced is named in [`ProgramRun::line`], not a failure. Compiled from
+    /// the IC facts alone (`ics_only` drops the BinaryOp, CompareOp and keyed records), the
+    /// code may take a natural exit on every call before it reaches a later guard (an int32
+    /// check on a double, say), so no forced run reaches that guard either: code this run
+    /// never executes, not a gap of the program (the full column forces every guard).
+    pub fn ok_unreached(&self) -> bool {
+        self.error.is_none()
+            && self.report.is_some()
+            && self.equal
+            && self.forcing.bad.is_empty()
+            && !self.forcing.guards.is_empty()
+    }
+
     /// One report line.
     pub fn line(&self) -> String {
         let p = &self.program;
@@ -1075,6 +1094,19 @@ impl ProgramRun {
 
 /// Runs the program of `seed` (module doc).
 pub fn run_program(seed: u64, config: &Config) -> ProgramRun {
+    run_program_exec(seed, config, ep9_vm::ExecOptions::default())
+}
+
+/// The isolate options of the corpus's `ics_only` column (MC-w21-9, M6-P3 SC-FIX): the jit
+/// preset with `ics_only` feedback, where T0 keeps every IC and drops the profile records
+/// (MODES-D19), the closest model of a jitless AOT unit compiled from a profile (C-27/D19).
+pub fn ics_only() -> ep9_vm::ExecOptions {
+    ep9_vm::ExecOptions::jit().feedback(ep9_vm::Feedback::ICS_ONLY)
+}
+
+/// [`run_program`] with T0 and config C on isolates that run `exec` (the `ics_only` column:
+/// [`ics_only`]); the facts are that isolate's live export.
+pub fn run_program_exec(seed: u64, config: &Config, exec: ep9_vm::ExecOptions) -> ProgramRun {
     let program = program(seed);
     let mut out = ProgramRun {
         program: program.clone(),
@@ -1089,7 +1121,7 @@ pub fn run_program(seed: u64, config: &Config) -> ProgramRun {
         return out;
     }
     let p = &program;
-    let t0 = match tier::t0_script(config, &p.defs, &p.warm, &p.main) {
+    let t0 = match tier::t0_script_exec(config, exec, &p.defs, &p.warm, &p.main) {
         Ok(t0) => t0,
         Err(e) => {
             out.error = Some(e);
@@ -1101,8 +1133,9 @@ pub fn run_program(seed: u64, config: &Config) -> ProgramRun {
         return out;
     }
     let compiled = |opts: &EmitOptions<'_>| {
-        tier::compiled_script(
+        tier::compiled_script_exec(
             config,
+            exec,
             &p.defs,
             &p.warm,
             &p.main,
@@ -1356,7 +1389,9 @@ pub fn by_op(
 pub fn main(args: &[String]) -> Result<bool, String> {
     let mut seeds = SEEDS;
     let mut kernels_on = true;
-    let mut it = args.iter();
+    // `--ics-only`: only the corpus's ics_only column (and `--show` compiles on it).
+    let only_ics = args.iter().any(|a| a == "--ics-only");
+    let mut it = args.iter().filter(|a| *a != "--ics-only");
     while let Some(a) = it.next() {
         match a.as_str() {
             "--seeds" => {
@@ -1377,8 +1412,14 @@ pub fn main(args: &[String]) -> Result<bool, String> {
                 print!("{}", p.text());
                 // The graph too, where the emitter runs.
                 if spike_b::emit::Arch::HOST == Some(spike_b::emit::Arch::Aarch64) {
-                    let c = tier::compiled_script(
+                    let exec = if only_ics {
+                        ics_only()
+                    } else {
+                        ep9_vm::ExecOptions::default()
+                    };
+                    let c = tier::compiled_script_exec(
                         &Config::default(),
+                        exec,
                         &p.defs,
                         &p.warm,
                         &p.main,
@@ -1402,7 +1443,7 @@ pub fn main(args: &[String]) -> Result<bool, String> {
     }
     let mut ok = true;
     let mut rows = Vec::new();
-    if kernels_on {
+    if kernels_on && !only_ics {
         if !kernels::bench_present() {
             println!(
                 "diff: the gate kernels need the v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
@@ -1430,7 +1471,7 @@ pub fn main(args: &[String]) -> Result<bool, String> {
     let config = Config::default();
     let (mut pass, mut total, mut guards, mut forced) = (0, 0, 0, 0);
     let mut by_family: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
-    for seed in seeds.clone() {
+    for seed in seeds.clone().filter(|_| !only_ics) {
         let r = run_program(seed, &config);
         println!("{}", r.line());
         total += 1;
@@ -1448,16 +1489,38 @@ pub fn main(args: &[String]) -> Result<bool, String> {
             rows.push((guard_ops(rep), r.natural.clone(), r.forcing.clone()));
         }
     }
+    if !only_ics {
+        println!(
+            "corpus seeds {}..{}: {pass} of {total} programs right (output equal to T0 unforced and in every forced run, every guard forced); {forced} of {guards} guards forced",
+            seeds.start(),
+            seeds.end()
+        );
+        let fams: Vec<String> = by_family
+            .iter()
+            .map(|(f, (n, p))| format!("{f} {p}/{n}"))
+            .collect();
+        println!("by family: {}", fams.join(", "));
+    }
+    // The ics_only column (MC-w21-9; M6-P3 SC-FIX): the same programs with T0 and config C on
+    // isolates of the jit preset with ics_only feedback, compiled from that isolate's facts.
+    let (mut ipass, mut itotal, mut iguards, mut iforced) = (0, 0, 0, 0);
+    for seed in seeds.clone() {
+        let r = run_program_exec(seed, &config, ics_only());
+        println!("ics_only {}", r.line());
+        itotal += 1;
+        if r.ok_unreached() {
+            ipass += 1;
+        } else {
+            ok = false;
+        }
+        iguards += r.forcing.guards.len();
+        iforced += r.forcing.forced.len();
+    }
     println!(
-        "corpus seeds {}..{}: {pass} of {total} programs right (output equal to T0 unforced and in every forced run, every guard forced); {forced} of {guards} guards forced",
+        "corpus ics_only seeds {}..{}: {ipass} of {itotal} programs right (T0 and config C on ics_only isolates: output equal to T0 unforced and in every forced run, each forced exit counted; a guard behind an exit every call takes is never reached, named, not a failure); {iforced} of {iguards} guards forced",
         seeds.start(),
         seeds.end()
     );
-    let fams: Vec<String> = by_family
-        .iter()
-        .map(|(f, (n, p))| format!("{f} {p}/{n}"))
-        .collect();
-    println!("by family: {}", fams.join(", "));
     println!("exits per guard op (kernels and corpus): guards, forced, natural exits");
     for (op, (g, f, n)) in by_op(rows.into_iter()) {
         println!("  {op:<16} {g:>6} {f:>6} {n:>6}");
@@ -1687,6 +1750,30 @@ mod tests {
             let r = run_program(s, &Config::default());
             assert!(r.ok(), "{}\n{}", r.line(), r.program.text());
         }
+    }
+
+    /// The ics_only column (MC-w21-9; M6-P3 SC-FIX): one program per family on ics_only
+    /// isolates passes its rule. The `lin` family (seed 12) needs the builder fix of M6-P3:
+    /// its inner loop phi's entry check took the header state from the preheader's
+    /// environment, which still named an outer trivial phi that was removed, and
+    /// `Graph::check` refused the graph ("frame-state value ... is not defined").
+    #[test]
+    fn one_program_per_family_passes_on_ics_only() {
+        if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
+            return;
+        }
+        for s in 1..=FAMILIES.len() as u64 {
+            let r = run_program_exec(s, &Config::default(), ics_only());
+            assert!(r.ok_unreached(), "{}\n{}", r.line(), r.program.text());
+        }
+        let lin = run_program_exec(12, &Config::default(), ics_only());
+        assert_eq!(lin.program.family, "lin");
+        assert!(lin.ok_unreached(), "{}", lin.line());
+        // On ics_only the unforced run exits (no BinaryOp record, so the double ops take
+        // the int32 path), and a guard behind such an exit is never reached.
+        let dbl = run_program_exec(3, &Config::default(), ics_only());
+        assert!(dbl.ok_unreached() && !dbl.ok(), "{}", dbl.line());
+        assert!(!dbl.forcing.never().is_empty(), "{}", dbl.line());
     }
 
     /// The method fails when a guard is never forced: a guard on a path `main` never takes.
