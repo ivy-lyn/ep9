@@ -733,8 +733,10 @@ impl<'a> Builder<'a> {
                 .body
                 .as_ref()
                 .is_some_and(|b| b.has_use_strict_directive());
+        // The `Function` constructor's function binds no name (function_ctor.rs F7).
+        let own_name = fid.0 != 1 || !crate::function_ctor::is_dynamic_function();
         let name_scope = match (&it.id, it.r#type) {
-            (Some(id), FunctionType::FunctionExpression) => {
+            (Some(id), FunctionType::FunctionExpression) if own_name => {
                 let s = self.new_scope(
                     ScopeKind::FunctionName,
                     Some(outer),

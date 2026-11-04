@@ -421,8 +421,9 @@ fn rust_calls_reach_the_bound_internal_methods() {
     }
 }
 
-/// v0 Function.prototype.toString: the NativeFunction form for every callable (no source text
-/// is kept), with the `name` when it fits the syntax; a TypeError for anything else.
+/// Function.prototype.toString: the source text of a function of a unit with its source (M6-P2
+/// FN-SMALL; more cases in `function_to_string.rs`), else the NativeFunction form, with the
+/// `name` when it fits the syntax; a TypeError for anything else.
 #[test]
 fn to_string_gives_the_native_function_form() {
     assert_eq!(
@@ -435,17 +436,18 @@ fn to_string_gives_the_native_function_form() {
              print(Function.prototype.toString.call(Function.prototype.call), Array.prototype.pop.toString());
              print(f.bind().toString(), Function.prototype.toString.length, Function.prototype.toString.name);
              class C {} print(C.toString(), (() => 1).toString());
-             Object.defineProperty(f, 'name', {value: 'not an identifier'});
-             print(f.toString());
-             Object.defineProperty(f, 'name', {value: 'get x'});
-             print(f.toString());"
+             var m = f.bind();
+             Object.defineProperty(m, 'name', {value: 'not an identifier'});
+             print(m.toString());
+             Object.defineProperty(m, 'name', {value: 'get x'});
+             print(m.toString());"
         ),
         lines(&[
-            "function f() { [native code] }",
-            "true function m() { [native code] }",
+            "function f(a) { return a; }",
+            "false function () {}",
             "function call() { [native code] } function pop() { [native code] }",
             "function () { [native code] } 0 toString",
-            "function C() { [native code] } function () { [native code] }",
+            "class C {} () => 1",
             "function () { [native code] }",
             "function get x() { [native code] }",
         ])

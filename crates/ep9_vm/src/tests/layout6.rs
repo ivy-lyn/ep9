@@ -14,7 +14,7 @@ use crate::builtins::{self, IntrinsicId};
 use crate::frame::{UNDEFINED, int32_bits, int32_of};
 use crate::object::{cell, realmf};
 use crate::runtime::{REALM_ROOT_COUNT, ROOT_COUNT, Root, Runtime};
-use crate::{Dispatch, IsolateConfig, kinds, layout, object, props, realm, shape, versions};
+use crate::{Dispatch, IsolateConfig, kinds, layout, object, props, shape, versions};
 
 fn no_trace(_: ep9_heap::CellPtr, _: &mut ep9_heap::Tracer<'_>) {}
 
@@ -304,9 +304,10 @@ fn kind_84_is_registered_with_its_size_and_trace() {
 
 /// The FUSE 83 layout of OBJECT_LAYOUT 6 (built by M6-P2 FUSE-PI): one u32 per static fuse
 /// from +8, and `Root::RealmFuses`, the realm root before `Root::RealmKey` that mirrors the
-/// intrinsic `IntrinsicId::RealmFuses`. Kind 83 is free today, so the test registers it with
-/// the exported size and puts a live cell in the first realm: the entries read as written,
-/// a second realm has its own (undefined) block, and a realm switch carries the root.
+/// intrinsic `IntrinsicId::RealmFuses`. Each realm's block is made at realm init with the
+/// exported kind and size: the entries read at the exported offsets (only static fuse 6,
+/// "no-elements prototypes", is wired and intact), a second realm has its own block, and a
+/// realm switch carries the root.
 #[test]
 fn the_fuse_layout_and_the_realm_fuses_root() {
     let n = crate::fuse::STATIC.len();
@@ -334,48 +335,35 @@ fn the_fuse_layout_and_the_realm_fuses_root() {
         let mut iso = isolate(config(Dispatch::DEFAULT, false));
         let first = iso.cx.realm;
         let rt = &*iso.rt;
-        // Nothing builds the block yet: undefined in the root, the intrinsic and the record.
-        assert_eq!(rt.root(Root::RealmFuses), UNDEFINED);
-        assert_eq!(builtins::intrinsic(rt, IntrinsicId::RealmFuses), UNDEFINED);
+        // The realm's block: in the root, the intrinsic and the record; kind 83 is taken.
+        let cv = rt.root(Root::RealmFuses);
+        assert_eq!(builtins::intrinsic(rt, IntrinsicId::RealmFuses), cv);
         let list = object::record_get(first, realmf::INTRINSICS);
         assert_eq!(object::list_len(list), IntrinsicId::ALL.len());
-        assert_eq!(object::list_get(list, 72), UNDEFINED);
-        // A FUSE cell with the exported layout.
-        rt.heap
-            .register_kind(
-                kinds::FUSE,
-                CellKind {
-                    name: "fuse-block (test)",
-                    size: CellSize::Fixed(layout::FUSE_SIZE as usize),
-                    trace: no_trace,
-                },
-            )
-            .expect("kind 83 is free before FUSE-PI");
-        let c = rt.alloc(kinds::FUSE, layout::FUSE_SIZE as usize);
-        let base = c.addr() + layout::FUSE_ENTRIES as usize;
-        for i in 0..n {
-            let w = if i == 6 { 0 } else { layout::FUSE_INTACT };
-            // SAFETY: entry `i` is inside the cell (FUSE_SIZE covers n entries), live and
-            // written once here.
-            unsafe { ((base + layout::FUSE_ENTRY_SIZE as usize * i) as *mut u32).write(w) };
-        }
-        let cv = c.to_value().to_bits();
-        builtins::load_intrinsic(rt, IntrinsicId::RealmFuses, cv);
-        realm::record_intrinsic(rt, IntrinsicId::RealmFuses, cv);
-        assert_eq!(rt.root(Root::RealmFuses), cv);
-        // SAFETY: `c` is a live cell of this heap.
+        assert_eq!(object::list_get(list, 72), cv);
+        assert_eq!(
+            rt.heap
+                .register_kind(kinds::FUSE, dummy_kind("fuse-block (test)")),
+            Err(KindError::Taken(kinds::FUSE)),
+            "FUSE-PI registers kind 83"
+        );
+        let c = cell(cv);
+        // SAFETY: `c` is a live cell of this heap (the root holds it).
         assert_eq!(unsafe { rt.heap.cell_size(c) }, 56);
         let read = |c: u64, i: usize| {
             let at =
                 c as usize + (layout::FUSE_ENTRIES + layout::FUSE_ENTRY_SIZE * i as u32) as usize;
-            // SAFETY: `c` is the live FUSE cell above, entry `i` < n.
+            // SAFETY: `c` is a live FUSE cell, entry `i` < n.
             unsafe { (at as *const u32).read() }
         };
         let r = iso.with_cx(|cx| {
             let g = cx.create_realm()?;
             cx.with_realm(g, |cx| {
                 let rt: &Runtime = cx.inner().rt();
-                assert_eq!(rt.root(Root::RealmFuses), UNDEFINED, "a realm's own block");
+                let own = rt.root(Root::RealmFuses);
+                assert!(own != cv && own != UNDEFINED, "a realm's own block");
+                // SAFETY: the root holds the second realm's live block.
+                assert_eq!(unsafe { kind_byte(own) }, layout::KIND_FUSE);
                 rt.heap.collect();
                 Ok(())
             })?;
@@ -395,7 +383,7 @@ fn the_fuse_layout_and_the_realm_fuses_root() {
             assert_eq!(kind_byte(cv), layout::KIND_FUSE);
         }
         let words: Vec<u32> = (0..n).map(|i| read(cv, i)).collect();
-        assert_eq!(words, [1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]);
+        assert_eq!(words, [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
     });
 }
 

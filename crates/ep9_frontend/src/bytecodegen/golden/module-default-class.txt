@@ -60,7 +60,7 @@ function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 l
      29 E 15 (1:16)
      43 E 0 (1:1)
      49 E 23 (1:24)
-function f1 class-constructor name="default" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=21..31
+function f1 class-constructor name="default" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=15..31
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -69,7 +69,7 @@ function f1 class-constructor name="default" parent=f0 outer_scope=scope1 flags=
   handlers (0):
   positions (1):
       0 S 15 (1:16)
-function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=24..29
+function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=23..29
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92

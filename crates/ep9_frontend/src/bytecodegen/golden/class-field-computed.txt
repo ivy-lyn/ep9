@@ -105,7 +105,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      90 E 7 (1:8)
      96 E 15 (1:16)
     110 E 7 (1:8)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=15..77
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=7..77
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
@@ -167,7 +167,7 @@ function f4 normal name=- parent=f3 outer_scope=scope4 flags=[strict,simple-para
   feedback (0):
   handlers (0):
   positions (0):
-function f5 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=61..66
+function f5 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=58..66
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92

@@ -229,8 +229,8 @@ pub enum IntrinsicId {
     FinalizationRegistryPrototype,
     // ---- M6-P0 (OBJECT_LAYOUT 6; plan v11 V11-D21, rule 18): declared for M6-P2 FUSE-PI ----
     /// The realm's static fuse block: a FUSE cell (kind 83), not a spec intrinsic and not an
-    /// object; no table makes it. Held in the realm root `Root::RealmFuses`; undefined until
-    /// FUSE-PI builds it.
+    /// object; no table makes it (`check_tables` refuses one). Held in the realm root
+    /// `Root::RealmFuses`; made by `fuse::new_realm_block` at realm init (M6-P2 FUSE-PI).
     RealmFuses,
 }
 
@@ -1014,13 +1014,13 @@ pub(crate) fn check(embedder: Option<&'static BuiltinTable>) -> Result<(), Strin
 }
 
 /// The table rules: blocks below 128 and unique; at most 512 definitions per block; each
-/// intrinsic made once, and a core one only named (by the VM table, as the builtin realm init
-/// makes it from); the prototype of a new intrinsic object made before it (walk order); every
-/// index in range and of the right kind; every named intrinsic made by realm init or a
-/// module; every alias names a data key (not an accessor) defined earlier on the same object;
-/// no key twice on one object; the first key of a constructor a module makes is `prototype`, a
-/// data property with attributes {} (§20: `Number.prototype` and the others), and every such
-/// constructor but `%Proxy%` (§28.2.2) has one.
+/// intrinsic made once (never the VM-internal `IntrinsicId::RealmFuses`), and a core one only
+/// named (by the VM table, as the builtin realm init makes it from); the prototype of a new
+/// intrinsic object made before it (walk order); every index in range and of the right kind;
+/// every named intrinsic made by realm init or a module; every alias names a data key (not an
+/// accessor) defined earlier on the same object; no key twice on one object; the first key of
+/// a constructor a module makes is `prototype`, a data property with attributes {} (§20:
+/// `Number.prototype` and others), and every such constructor but `%Proxy%` (§28.2.2) has one.
 pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
     let modules = || tables.iter().flat_map(|t| t.modules.iter());
     let mut blocks = HashSet::new();
@@ -1050,6 +1050,12 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     "{} has the prototype {}, which is not made before it",
                     d.id.name(),
                     p.name()
+                )));
+            }
+            if d.id == IntrinsicId::RealmFuses {
+                return Err(at(format!(
+                    "{} is VM-internal: no table makes it",
+                    d.id.name()
                 )));
             }
             let core_builtin = d.id.is_core()

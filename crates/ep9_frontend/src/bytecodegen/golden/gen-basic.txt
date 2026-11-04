@@ -170,7 +170,7 @@ function f2 normal name="e" parent=f0 outer_scope=scope0 flags=[generator,simple
      19 E 74 (1:75)
      30 E 74 (1:75)
      40 E 74 (1:75)
-function f3 method name="m" parent=f0 outer_scope=scope0 flags=[generator,simple-params] params=0 length=0 regs=3 range=96..114
+function f3 method name="m" parent=f0 outer_scope=scope0 flags=[generator,simple-params] params=0 length=0 regs=3 range=94..114
   code (87 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r0                                      ; 0c 00

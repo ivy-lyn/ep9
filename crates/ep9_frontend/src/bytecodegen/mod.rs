@@ -32,6 +32,7 @@
 //! | G9 | Runtime calls for what has no opcode: global init, direct eval, classes, super, accessors, object spread, `__proto__` (ABI 2 ids 6-18) | Opcode table unchanged |
 //! | G10 | A position entry before every instruction that may throw; statement positions at every statement | M0 exit 7 (`throw` prints file:line:col) |
 //! | G11 | Unsupported constructs fail the whole unit with [`CodegenError::Unsupported`] (async generators, `for await`, top-level `await`, class auto-accessors, decorators, ...) | No silent wrong code |
+//! | G12 | `FunctionMeta::source_start..source_end` is the function's `[[SourceText]]` (§15.4-§15.7): the function node for a declaration, an expression and an arrow; the MethodDefinition without `static` for a class method or accessor; the property for an object literal method or accessor; the Class for a class constructor, the default one too ([`SourceTexts`]). The scope pass span (`FunctionInfo::span`) stays the function node: throw and statement positions use it | `Function.prototype.toString` copies the range (M6-P2 FN-SMALL); positions do not move |
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -40,7 +41,11 @@ use ep9_bytecode::{
     BuildError, CodeKind, FeedbackSlotKind, FunctionBuilder, FunctionFlags, FunctionMeta, Register,
     RuntimeId, ScopeFlags, UnitBuilder, UnitOptions, UnitString, VariableMode, VerifiedUnit,
 };
-use oxc_ast::ast::{ArrowFunctionExpression, Class, FormalParameters, Function, Program};
+use oxc_ast::ast::{
+    ArrowFunctionExpression, Class, Expression, FormalParameters, Function, MethodDefinition,
+    MethodDefinitionKind, ObjectProperty, Program, PropertyKind,
+};
+use oxc_ast_visit::{Visit, walk};
 
 use crate::scope::{
     BindingId, BindingKind, BindingLocation, FunctionId, FunctionInfo, FunctionKind, Resolution,
@@ -258,6 +263,8 @@ pub(crate) struct UnitCtx<'s> {
     /// The descriptor of the script top-level context (G3): unit scope 1, when it exists.
     pub(crate) script_ctx_scope: Option<ep9_bytecode::ScopeId>,
     pub(crate) lines: std::cell::OnceCell<LineMap>,
+    /// The `[[SourceText]]` ranges that are not the function node (G12).
+    pub(crate) source_texts: SourceTexts,
 }
 
 impl UnitCtx<'_> {
@@ -337,6 +344,7 @@ pub(crate) fn generate(
         cells: module_cells(sa),
         script_ctx_scope: None,
         lines: std::cell::OnceCell::new(),
+        source_texts: SourceTexts::of(fe, sa),
     };
     let mut cx = cx;
     cx.needs_entry_ctx = entry_contexts(sa, &cx.depth);
@@ -426,7 +434,14 @@ fn gen_job<'a>(
         }
         Job::DefaultConstructor { class, id, name } => {
             let info = sa.function(id);
-            let meta = function_meta(cx, info, None, name);
+            let mut meta = function_meta(cx, info, None, name);
+            if matches!(
+                info.kind,
+                FunctionKind::DefaultConstructor | FunctionKind::DefaultDerivedConstructor
+            ) {
+                // G12: the default constructor's [[SourceText]] is its class.
+                (meta.source_start, meta.source_end) = (class.span.start, class.span.end);
+            }
             let mut g = FnGen::new(cx, info, meta);
             g.gen_default_constructor(class)?;
             let (code, jobs) = g.finish()?;
@@ -487,6 +502,7 @@ fn function_meta(
     if info.simple_params {
         flags = flags | FunctionFlags::SIMPLE_PARAMETERS;
     }
+    let source = cx.source_texts.of_function(info);
     let (parameter_count, length) = match params {
         Some(p) => {
             let count = u32::try_from(p.items.len()).unwrap_or(u32::MAX);
@@ -511,10 +527,148 @@ fn function_meta(
         name,
         parent: info.parent.map(|p| ep9_bytecode::FunctionId(p.0)),
         outer_scope: info.outer_scope.map(|s| cx.context_scope(s)),
-        source_start: info.span.start,
-        source_end: info.span.end,
+        source_start: source.start,
+        source_end: source.end,
         parameter_count,
         length,
+    }
+}
+
+/// The `[[SourceText]]` ranges of the methods, accessors and class constructors of a unit
+/// (G12), by the start of their function node: the oxc `Function` of a method starts at its
+/// parameters, so its own span is not the text. Empty when the unit has no such function
+/// (no walk then).
+pub(crate) struct SourceTexts {
+    /// (function node start, `[[SourceText]]`), sorted by the start.
+    at: Vec<(u32, ByteSpan)>,
+}
+
+impl SourceTexts {
+    fn of(fe: &FrontEnd<'_>, sa: &ScopeAnalysis) -> Self {
+        let needed = sa.functions().iter().any(|f| {
+            matches!(
+                f.kind,
+                FunctionKind::Method
+                    | FunctionKind::Getter
+                    | FunctionKind::Setter
+                    | FunctionKind::ClassConstructor
+                    | FunctionKind::DerivedConstructor
+            )
+        });
+        let mut walk = SourceTextWalk {
+            source: fe.source,
+            classes: Vec::new(),
+            at: Vec::new(),
+        };
+        if needed {
+            walk.visit_program(fe.program);
+        }
+        walk.at.sort_unstable_by_key(|&(start, _)| start);
+        Self { at: walk.at }
+    }
+
+    /// The `[[SourceText]]` range of `info`: the recorded one, else the function node.
+    fn of_function(&self, info: &FunctionInfo) -> ByteSpan {
+        match self
+            .at
+            .binary_search_by_key(&info.span.start, |&(start, _)| start)
+        {
+            Ok(i) => self.at[i].1,
+            Err(_) => info.span,
+        }
+    }
+}
+
+/// The walk of [`SourceTexts::of`].
+struct SourceTextWalk<'s> {
+    source: &'s str,
+    /// The spans of the classes around the walk.
+    classes: Vec<oxc_span::Span>,
+    at: Vec<(u32, ByteSpan)>,
+}
+
+impl<'a> Visit<'a> for SourceTextWalk<'_> {
+    fn visit_class(&mut self, it: &Class<'a>) {
+        self.classes.push(it.span);
+        walk::walk_class(self, it);
+        self.classes.pop();
+    }
+
+    fn visit_method_definition(&mut self, it: &MethodDefinition<'a>) {
+        let text = match (it.kind, self.classes.last()) {
+            // ClassTail: the constructor's [[SourceText]] is the class (§15.7.14 step 14).
+            (MethodDefinitionKind::Constructor, Some(&class)) => ByteSpan::of(class),
+            _ => {
+                // ClassElement : static MethodDefinition: the text is the MethodDefinition.
+                let mut start = it.decorators.last().map_or(it.span.start, |d| d.span.end);
+                if it.r#static {
+                    start = after_static(self.source, start);
+                }
+                ByteSpan {
+                    start,
+                    end: it.span.end,
+                }
+            }
+        };
+        self.at.push((it.value.span.start, text));
+        walk::walk_method_definition(self, it);
+    }
+
+    fn visit_object_property(&mut self, it: &ObjectProperty<'a>) {
+        if (it.method || it.kind != PropertyKind::Init)
+            && let Expression::FunctionExpression(f) = &it.value
+        {
+            // PropertyDefinition : MethodDefinition: the whole property.
+            self.at.push((f.span.start, ByteSpan::of(it.span)));
+        }
+        walk::walk_object_property(self, it);
+    }
+}
+
+/// The offset after the `static` keyword at `i` and the white space, line terminators and
+/// comments around it; `i` past leading trivia when no `static` is there.
+fn after_static(source: &str, i: u32) -> u32 {
+    let mut at = skip_trivia(source, i as usize);
+    if source[at..].starts_with("static") {
+        at = skip_trivia(source, at + "static".len());
+    }
+    u32::try_from(at).unwrap_or(i)
+}
+
+/// Skip white space, line terminators and comments from byte `i` of `source`. The comments
+/// include the Annex B HTML-like ones of script code (B.1.1): `<!--`, and `-->` after a line
+/// terminator (in white space or in a `/* */` comment). Module code has neither text here: a
+/// module with it does not parse.
+fn skip_trivia(source: &str, mut i: usize) -> usize {
+    const LINE_TERMINATORS: [char; 4] = ['\n', '\r', '\u{2028}', '\u{2029}'];
+    // A line terminator comes after the last token: `-->` here starts a comment.
+    let mut line_start = false;
+    loop {
+        let rest = &source[i..];
+        let single_line = rest
+            .strip_prefix("//")
+            .or_else(|| rest.strip_prefix("<!--"))
+            .or_else(|| rest.strip_prefix("-->").filter(|_| line_start));
+        if let Some(comment) = single_line {
+            let end = comment.find(LINE_TERMINATORS).unwrap_or(comment.len());
+            i += rest.len() - comment.len() + end;
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            match comment.find("*/") {
+                Some(end) => {
+                    line_start |= comment[..end].contains(LINE_TERMINATORS);
+                    i += 2 + end + 2;
+                }
+                None => return i,
+            }
+        } else {
+            match rest.chars().next() {
+                Some(c) if c.is_whitespace() || c == '\u{FEFF}' => {
+                    line_start |= LINE_TERMINATORS.contains(&c);
+                    i += c.len_utf8();
+                }
+                _ => return i,
+            }
+        }
     }
 }
 

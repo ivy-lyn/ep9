@@ -10,7 +10,7 @@
 //! | `call` | 6 | IsCallable(this); forward `args.rest(1)` with `Cx::call_args` (one copy, into the callee frame) |
 //! | `apply` | companion | CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` |
 //! | `bind` | 7 | BoundFunctionCreate (`Cx::new_bound_function`: a BOUND_FUNCTION cell; its `[[Call]]` and `[[Construct]]` are in the VM), then SetFunctionLength and SetFunctionName |
-//! | `toString` | companion | the source text (`Cx::function_source_text`, a copy of the unit range made on each call) when the range is the whole `[[SourceText]]` (see [`is_whole_source_text`]); else the NativeFunction form, a builtin's named by its `[[InitialName]]` (`Cx::initial_name`); TypeError for a value that is not callable |
+//! | `toString` | companion | the source text (`Cx::function_source_text`, a copy of the unit range, the whole `[[SourceText]]`, made on each call) when the unit embeds its source; else the NativeFunction form, a builtin's named by its `[[InitialName]]` (`Cx::initial_name`); TypeError for a value that is not callable |
 //!
 //! Owner of the templates: P3-BLTA (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-function.txt`.
@@ -206,7 +206,7 @@ fn to_string<'s>(
     //    is a sequence of Unicode code points, and HostHasSourceTextAvailable(func) is true,
     //    then return CodePointsToString(func.[[SourceText]]).
     // HostHasSourceTextAvailable(func) is true for a bytecode function whose unit embeds its
-    // source and whose source range is its whole [[SourceText]]; false for every other one,
+    // source (its source range is its whole [[SourceText]]); false for every other one,
     // which then takes step 4 (the spec lets the host answer per function).
     if let Some(text) = source_text(cx, func)? {
         return Ok(text);
@@ -250,224 +250,10 @@ fn to_string<'s>(
 }
 
 /// Step 2 of `toString`: the source text of `func` (a new String, copied from the unit on
-/// each call), or `None` when `func` has none we can give: no embedded source (a host,
-/// bound or proxy function, a unit compiled without its source), or a range that is not
-/// the whole `[[SourceText]]` ([`is_whole_source_text`]). Runs no JS.
+/// each call), or `None` when it has none: a host, bound or proxy function, or a unit compiled
+/// without its source. ep9_frontend records the whole `[[SourceText]]` as the range of every
+/// function kind (BytecodeGen G12: a method from its key, a class constructor as its class,
+/// the `Function` constructor's function with `anonymous`). Runs no JS.
 fn source_text<'s>(cx: &mut Cx<'s>, func: Local<'s, JsFunction>) -> JsResult<Option<Local<'s>>> {
-    let Some(text) = cx.function_source_text(func)? else {
-        return Ok(None);
-    };
-    let constructor = cx.is_constructor(func);
-    let rust = cx.to_rust_string(text)?;
-    Ok(is_whole_source_text(&rust, constructor).then(|| text.value()))
-}
-
-/// Is `text`, the source range ep9_frontend recorded for a function, its whole
-/// `[[SourceText]]` (§15.2-§15.8: the text the function's syntax node matched)?
-/// `constructor` is IsConstructor of the function.
-///
-/// The range is right for a function declaration or expression of each kind (`function`,
-/// `function*`, `async function`, `async function*`) and for an arrow function (plain or
-/// `async`). For a method, a getter, a setter and a class constructor the frontend today
-/// records the text from the parameters on (`(a) { }`) or the class body (`{ }`), not from
-/// the key or the `class` keyword (`Cx::function_source_text`); the `Function`
-/// constructor's function has the text `function(a\n) {\n...\n}` of its wrapper (no
-/// `anonymous`, ep9_frontend `function_ctor.rs` F4). Those take the NativeFunction form, as
-/// does any text whose shape this check cannot read without a full parse: an arrow whose
-/// parameters hold a `/` that is not a comment (a regular expression or a division) or a
-/// template. So a `true` is the exact text and a `false` is always safe (step 4).
-///
-/// | Text starts with | Kind | `true` when |
-/// |---|---|---|
-/// | `function`, `async` `function` | declaration or expression | not the `Function` constructor's wrapper text |
-/// | `class` | class constructor (the frontend does not record this yet) | `constructor` |
-/// | `(`, an identifier, `async` | arrow, or a method from its parameters | not `constructor`, and the parameters are followed by `=>` |
-/// | anything else (`{` of a class body) | - | never |
-fn is_whole_source_text(text: &str, constructor: bool) -> bool {
-    let s = text.as_bytes();
-    // `function` or `async function` (comments or white space between the two words).
-    let function_at = match keyword(s, 0, b"async") {
-        Some(after) => {
-            let next = skip_trivia(s, after);
-            (next > after).then_some(next)
-        }
-        None => Some(0),
-    };
-    if function_at.is_some_and(|at| keyword(s, at, b"function").is_some()) {
-        return !is_function_ctor_text(text);
-    }
-    if keyword(s, 0, b"class").is_some() {
-        return constructor;
-    }
-    // An arrow function is never a constructor (§15.3.4); a class constructor is one.
-    !constructor && is_arrow_function(s)
-}
-
-/// The wrapper text of a function the `Function` constructor made (`function_ctor.rs`
-/// `Texts::new`): one of the four kind prefixes right before `(`, then the parameters,
-/// `\n) {\n`, the body and `\n}`. Its `[[SourceText]]` (§20.2.1.1.1 step 20) has `anonymous`
-/// after the prefix, which the range does not. A function written in this exact shape takes
-/// the NativeFunction form too (safe).
-fn is_function_ctor_text(text: &str) -> bool {
-    [
-        "function(",
-        "function*(",
-        "async function(",
-        "async function*(",
-    ]
-    .iter()
-    .any(|prefix| text.starts_with(prefix))
-        && text.contains("\n) {\n")
-        && text.ends_with("\n}")
-}
-
-/// Does `s` start with an arrow function's parameters (`x`, `(...)`, `async x`, `async (...)`)
-/// followed by `=>`?
-fn is_arrow_function(s: &[u8]) -> bool {
-    let arrow_after = |params_at: usize| {
-        arrow_params_end(s, params_at)
-            .is_some_and(|end| s[skip_trivia(s, end)..].starts_with(b"=>"))
-    };
-    // `x =>` and `(...) =>` (this also takes `async => 0`, a parameter named `async`).
-    if arrow_after(0) {
-        return true;
-    }
-    // `async x =>` and `async (...) =>`.
-    keyword(s, 0, b"async").is_some_and(|after| arrow_after(skip_trivia(s, after)))
-}
-
-/// The end of the arrow parameters at `i`: one identifier, or a parenthesized list.
-fn arrow_params_end(s: &[u8], i: usize) -> Option<usize> {
-    if s.get(i) == Some(&b'(') {
-        balanced_end(s, i)
-    } else {
-        identifier_end(s, i)
-    }
-}
-
-/// The end of the identifier at `i` (ASCII `[A-Za-z$_][A-Za-z0-9$_]*`, or any non-ASCII
-/// alphanumeric character); `None` when none starts there. A `\u` escape is not read (the
-/// caller then gives the NativeFunction form).
-fn identifier_end(s: &[u8], i: usize) -> Option<usize> {
-    let text = std::str::from_utf8(s.get(i..)?).ok()?;
-    let mut end = 0;
-    for (k, c) in text.char_indices() {
-        let ok = c == '$'
-            || c == '_'
-            || c.is_ascii_alphabetic()
-            || (k > 0 && c.is_ascii_digit())
-            || (!c.is_ascii() && c.is_alphanumeric());
-        if !ok {
-            break;
-        }
-        end = k + c.len_utf8();
-    }
-    (end > 0).then_some(i + end)
-}
-
-/// The end of the word `word` at `i` when it is a whole word there (the next byte is not an
-/// identifier byte).
-fn keyword(s: &[u8], i: usize, word: &[u8]) -> Option<usize> {
-    let end = i + word.len();
-    let whole = s.get(i..end) == Some(word)
-        && !s.get(end).is_some_and(|&b| {
-            b == b'$' || b == b'_' || b == b'\\' || b.is_ascii_alphanumeric() || b >= 0x80
-        });
-    whole.then_some(end)
-}
-
-/// Skip white space, line terminators and comments from `i`.
-fn skip_trivia(s: &[u8], mut i: usize) -> usize {
-    loop {
-        match s.get(i..) {
-            Some([b'/', b'/', ..]) => i = line_comment_end(s, i),
-            Some([b'/', b'*', ..]) => match block_comment_end(s, i) {
-                Some(end) => i = end,
-                None => return i,
-            },
-            Some([b, ..]) if b.is_ascii_whitespace() || *b == 0x0B => i += 1,
-            Some([b, ..]) if *b >= 0x80 => {
-                // A non-ASCII white space or line terminator (NBSP, ZWNBSP, LS, PS, Zs).
-                match std::str::from_utf8(&s[i..])
-                    .ok()
-                    .and_then(|t| t.chars().next())
-                {
-                    Some(c) if c.is_whitespace() || c == '\u{FEFF}' => i += c.len_utf8(),
-                    _ => return i,
-                }
-            }
-            _ => return i,
-        }
-    }
-}
-
-/// The end of the `//` comment at `i`: the next line terminator (LF, CR, LS, PS) or the end.
-fn line_comment_end(s: &[u8], i: usize) -> usize {
-    let mut j = i + 2;
-    while j < s.len() {
-        match &s[j..] {
-            [b'\n' | b'\r', ..] | [0xE2, 0x80, 0xA8 | 0xA9, ..] => return j,
-            _ => j += 1,
-        }
-    }
-    j
-}
-
-/// The end of the `/*` comment at `i` (after its `*/`); `None` when it does not close.
-fn block_comment_end(s: &[u8], i: usize) -> Option<usize> {
-    s.get(i + 2..)?
-        .windows(2)
-        .position(|w| w == b"*/")
-        .map(|k| i + 2 + k + 2)
-}
-
-/// The end of the bracketed text that starts with the `(` at `i` (after its matching `)`),
-/// skipping strings and comments. `None` (so the NativeFunction form) when the text holds a
-/// template or a `/` that is not a comment (a regular expression or a division: telling
-/// them apart needs the parser), or when the brackets do not match.
-fn balanced_end(s: &[u8], i: usize) -> Option<usize> {
-    let mut open: Vec<u8> = Vec::new();
-    let mut j = i;
-    while j < s.len() {
-        match s[j] {
-            b'(' | b'[' | b'{' => {
-                open.push(s[j]);
-                j += 1;
-            }
-            b')' | b']' | b'}' => {
-                let want = match s[j] {
-                    b')' => b'(',
-                    b']' => b'[',
-                    _ => b'{',
-                };
-                if open.pop() != Some(want) {
-                    return None;
-                }
-                j += 1;
-                if open.is_empty() {
-                    return Some(j);
-                }
-            }
-            q @ (b'\'' | b'"') => {
-                j += 1;
-                loop {
-                    match *s.get(j)? {
-                        b'\\' => j += 2,
-                        b'\n' | b'\r' => return None,
-                        b if b == q => break,
-                        _ => j += 1,
-                    }
-                }
-                j += 1;
-            }
-            b'/' => match s.get(j + 1) {
-                Some(b'/') => j = line_comment_end(s, j),
-                Some(b'*') => j = block_comment_end(s, j)?,
-                _ => return None,
-            },
-            b'`' => return None,
-            _ => j += 1,
-        }
-    }
-    None
+    Ok(cx.function_source_text(func)?.map(|text| text.value()))
 }

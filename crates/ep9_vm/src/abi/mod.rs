@@ -736,8 +736,10 @@ impl<'s> Cx<'s> {
     }
 
     /// An intrinsic object of the current realm (§6.1.7.4). Panics if no table made it (a
-    /// table names only intrinsics that exist: `builtins::check_tables`).
+    /// table names only intrinsics that exist: `builtins::check_tables`) or `id` is the
+    /// VM-internal `IntrinsicId::RealmFuses`.
     pub fn intrinsic(&self, id: IntrinsicId) -> Local<'s, JsObject> {
+        assert!(id != IntrinsicId::RealmFuses, "RealmFuses is VM-internal");
         let v = builtins::intrinsic(self.rt(), id);
         assert!(kinds::is_object(v), "{} is not installed", id.name());
         Self::local(v)
@@ -1662,9 +1664,9 @@ impl<'s> Cx<'s> {
     /// embedder) function, a bound function, a Proxy (asked nothing), a value that is not a
     /// function. Runs no JS; a GC point (the copy); RangeError past the string length limit.
     /// For Function.prototype.toString (§20.2.3.5 step 2). The range is the one the compiler
-    /// wrote: `[[SourceText]]` (§10.2) for a function declaration, expression or arrow; for a
-    /// method, an accessor or a class constructor ep9_frontend today records a range that
-    /// starts at the parameters (not the key, and not the class text).
+    /// wrote: ep9_frontend writes the `[[SourceText]]` (§10.2) of every function kind (its
+    /// BytecodeGen G12: a method from its key, a class constructor as its class, and the
+    /// `Function` constructor's function with `anonymous`).
     pub fn function_source_text(
         &mut self,
         f: impl Into<Local<'s>>,

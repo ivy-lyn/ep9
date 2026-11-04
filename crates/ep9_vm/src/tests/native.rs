@@ -5218,3 +5218,16 @@ fn the_layout_export_reads_live_cells() {
         );
     }
 }
+
+/// The frame-record walk of the lazy probe (SPIKEC-10, H29-Q4) runs only on Apple AArch64,
+/// where the platform ABI makes every frame keep a record (M6-P2 JIT review J4). Elsewhere
+/// it is empty, so this safe function never reads a word that is not a frame record.
+#[test]
+fn the_frame_record_walk_runs_on_apple_aarch64_only() {
+    let returns = NativeCx::frame_returns();
+    if cfg!(all(target_arch = "aarch64", target_vendor = "apple")) {
+        assert!(!returns.is_empty(), "the test's callers");
+    } else {
+        assert!(returns.is_empty(), "{returns:x?}");
+    }
+}

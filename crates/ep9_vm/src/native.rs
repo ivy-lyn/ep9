@@ -1473,17 +1473,17 @@ impl NativeCx {
     }
 
     /// The return addresses of the native stack's frame records, from the caller of this
-    /// function outward (`deopt::walk_records` from the live x29, at most 4096). Empty on an
-    /// architecture other than AArch64. The probe's backtrace: the walk reads frame records
+    /// function outward (`deopt::walk_records` from the live x29, at most 4096). Empty on a
+    /// target other than Apple AArch64. The probe's backtrace: the walk reads frame records
     /// only, no CFI (a CFI walk through JIT code is the gated part of H29-Q4).
     #[inline(never)]
     pub fn frame_returns() -> Vec<usize> {
-        let Some(fp) = current_fp() else {
+        let (Some(fp), Some(end)) = (current_fp(), stack_end()) else {
             return Vec::new();
         };
         // SAFETY: x29 heads the live frame-record chain of this thread (AAPCS64; on macOS
-        // arm64 every frame keeps a record and the chain ends at 0).
-        let records = unsafe { crate::deopt::walk_records(fp, usize::MAX, 4096) };
+        // arm64 every frame keeps a record and the chain ends at 0), below the stack top `end`.
+        let records = unsafe { crate::deopt::walk_records(fp, end, 4096) };
         records.iter().map(|r| r.ret).collect()
     }
 
@@ -1501,22 +1501,33 @@ impl NativeCx {
     /// the calls whose frames may be swapped, and none of them has returned yet.
     #[inline(never)]
     pub unsafe fn lazy_swap(code: Range<usize>, sites: &[(u32, u32)]) -> Vec<(usize, usize)> {
-        let Some(fp) = current_fp() else {
+        let (Some(fp), Some(end)) = (current_fp(), stack_end()) else {
             return Vec::new();
         };
         // SAFETY: as in `frame_returns`; each record is live (the caller's contract: nested).
         let swapped = unsafe {
-            let records = crate::deopt::walk_records(fp, usize::MAX, 4096);
+            let records = crate::deopt::walk_records(fp, end, 4096);
             crate::deopt::swap_returns(&records, code.start, code.end - code.start, sites)
         };
         swapped.iter().map(|(r, old)| (r.at, *old)).collect()
     }
 }
 
-/// x29 now: the head of this thread's frame-record chain (AArch64 only).
+/// The top (highest address) of this thread's stack: the frame-record walks stop there.
+/// `None` when the platform cannot tell, so the walks are empty.
+fn stack_end() -> Option<usize> {
+    ep9_platform::current_thread_stack_bounds()
+        .ok()
+        .map(|b| b.high)
+}
+
+/// x29 now: the head of this thread's frame-record chain. Apple AArch64 only: there the
+/// platform ABI makes every frame keep a record and ends the chain at 0, which the safety of
+/// [`NativeCx::frame_returns`] and [`NativeCx::lazy_swap`] needs. Elsewhere (Linux AArch64
+/// code can use x29 as a general register) it is `None`, so the walks are empty.
 #[inline(always)]
 fn current_fp() -> Option<usize> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
     {
         let fp: usize;
         // SAFETY: reads a register; no memory, no stack, no flags.
@@ -1525,7 +1536,7 @@ fn current_fp() -> Option<usize> {
         }
         Some(fp)
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(all(target_arch = "aarch64", target_vendor = "apple")))]
     {
         None
     }

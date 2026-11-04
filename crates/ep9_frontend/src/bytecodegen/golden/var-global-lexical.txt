@@ -79,7 +79,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      80 E 24 (1:25)
      87 S 35 (1:36)
      90 E 35 (1:36)
-function f1 class-constructor name="C" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=32..34
+function f1 class-constructor name="C" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=24..34
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92

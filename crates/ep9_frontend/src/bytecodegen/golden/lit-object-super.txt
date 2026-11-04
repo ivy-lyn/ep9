@@ -54,7 +54,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      29 E 1 (1:2)
      41 E 1 (1:2)
      48 E 1 (1:2)
-function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=3 range=3..25
+function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=3 range=2..25
   code (23 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00
@@ -76,7 +76,7 @@ function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] p
       0 S 8 (1:9)
       7 E 15 (1:16)
      16 E 21 (1:22)
-function f2 method name="n" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=6 range=28..64
+function f2 method name="n" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=6 range=27..64
   code (68 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00

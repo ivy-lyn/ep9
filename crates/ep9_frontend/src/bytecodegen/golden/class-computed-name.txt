@@ -109,7 +109,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     105 E 63 (1:64)
     111 E 29 (1:30)
     118 E 25 (1:26)
-function f1 class-constructor name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=42..44
+function f1 class-constructor name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=36..44
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -118,7 +118,7 @@ function f1 class-constructor name=- parent=f0 outer_scope=scope1 flags=[strict,
   handlers (0):
   positions (1):
       0 S 36 (1:37)
-function f2 class-constructor name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=0 range=63..88
+function f2 class-constructor name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=0 range=57..88
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
