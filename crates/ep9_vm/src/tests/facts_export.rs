@@ -1285,7 +1285,7 @@ struct NoWriter {
     types: Option<&'static str>,
 }
 
-const NO_WRITER: [NoWriter; 20] = [
+const NO_WRITER: [NoWriter; 17] = [
     NoWriter {
         field: "RecordFlags::RAN",
         named: "`RecordFlags::RAN`",
@@ -1387,30 +1387,6 @@ const NO_WRITER: [NoWriter; 20] = [
         field: "ForInHint::KEYS_AND_INDICES",
         named: "the `ForInHint` bits `enum-cache-keys` and `enum-cache-keys-and-indices`",
         needles: &["ForInHint::KEYS_AND_INDICES"],
-        word: None,
-        source: None,
-        types: None,
-    },
-    NoWriter {
-        field: "BinaryHint::BIGINT",
-        named: "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`",
-        needles: &["BinaryHint::BIGINT"],
-        word: Some("BIGINT"),
-        source: Some("profile.rs"),
-        types: None,
-    },
-    NoWriter {
-        field: "CompareHint::BIGINT",
-        named: "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`",
-        needles: &["CompareHint::BIGINT"],
-        word: None,
-        source: None,
-        types: None,
-    },
-    NoWriter {
-        field: "TypeSet::BIGINT",
-        named: "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`",
-        needles: &["TypeSet::BIGINT"],
         word: None,
         source: None,
         types: None,
@@ -1597,21 +1573,8 @@ fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Ve
                 shape(&case.result, out);
             }
         }
-        SlotFacts::BinaryOp(h) => {
-            if h.contains(ep9_facts::BinaryHint::BIGINT) {
-                out.push("BinaryHint::BIGINT");
-            }
-        }
-        SlotFacts::CompareOp(h) => {
-            if h.contains(ep9_facts::CompareHint::BIGINT) {
-                out.push("CompareHint::BIGINT");
-            }
-        }
-        SlotFacts::TypeOf(t) => {
-            if t.contains(TypeSet::BIGINT) {
-                out.push("TypeSet::BIGINT");
-            }
-        }
+        // The BIGINT bits have their writers since spec-temporal B3 (`profile.rs`).
+        SlotFacts::BinaryOp(_) | SlotFacts::CompareOp(_) | SlotFacts::TypeOf(_) => {}
         SlotFacts::ForIn(h) => {
             if h.contains(ep9_facts::ForInHint::KEYS) {
                 out.push("ForInHint::KEYS");

@@ -500,8 +500,11 @@ fn binary_operand(v: u64) -> u32 {
         BinaryHint::ODDBALL
     } else if kinds::is_string(v) {
         BinaryHint::STRING
+    } else if kinds::is_bigint(v) {
+        // A BigInt operand (spec-temporal B3; H16 "Declared, no writer" lost this bit).
+        BinaryHint::BIGINT
     } else {
-        // v0 has no BigInt values; objects and symbols take the generic path.
+        // Objects and symbols take the generic path.
         BinaryHint::OTHER
     };
     u32::from(h.bits())
@@ -619,6 +622,7 @@ fn compare_operand(v: u64) -> u16 {
             1..=7 if string::is_atom(v) => CompareHint::ATOM,
             1..=7 => CompareHint::STRING,
             8 => CompareHint::SYMBOL,
+            9 => CompareHint::BIGINT,
             16..=63 => CompareHint::RECEIVER,
             _ => CompareHint::OTHER,
         }
@@ -696,6 +700,8 @@ fn type_of(v: u64) -> u32 {
             TypeSet::STRING
         } else if k == kinds::SYMBOL.get() {
             TypeSet::SYMBOL
+        } else if k == kinds::BIGINT.get() {
+            TypeSet::BIGINT
         } else {
             TypeSet::OTHER_OBJECT
         }

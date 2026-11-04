@@ -927,6 +927,54 @@ fn typeof_sites_record_the_type_of_each_operand() {
     assert_eq!(value(&got, 0, one), ty(TypeSet::STRING));
 }
 
+// ---- BigInt operands (spec-temporal B3) ----------------------------------------------------
+
+/// The slots of [`bigint_program`]: `1n + a`, `-a`, `1n < a`, `1 < a`, `typeof a`.
+struct BigSlots {
+    add: FeedbackSlot,
+    neg: FeedbackSlot,
+    lt: FeedbackSlot,
+    mix: FeedbackSlot,
+    ty: FeedbackSlot,
+}
+
+fn bigint_program() -> (VerifiedUnit, BigSlots) {
+    let mut s = Asm::script(0);
+    let k = BigSlots {
+        add: s.b.feedback_slot(FeedbackSlotKind::BinaryOp),
+        neg: s.b.feedback_slot(FeedbackSlotKind::BinaryOp),
+        lt: s.b.feedback_slot(FeedbackSlotKind::CompareOp),
+        mix: s.b.feedback_slot(FeedbackSlotKind::CompareOp),
+        ty: s.b.feedback_slot(FeedbackSlotKind::TypeOf),
+    };
+    let a = s.b.new_register();
+    let one =
+        s.b.bigint_constant(ep9_bytecode::BigIntConst::new(false, &[1]));
+    s.b.lda_constant(one).star(a);
+    s.b.lda_constant(one).add(a, k.add);
+    s.b.ldar(a).negate(k.neg);
+    s.b.lda_constant(one).test_less_than(a, k.lt);
+    s.b.lda_smi(1).test_less_than(a, k.mix);
+    s.b.ldar(a).type_of(k.ty);
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), k)
+}
+
+/// H16 "Declared, no writer" lost the bigint bits (design SPEC-T-D7): a BigInt operand
+/// records `BinaryHint::BIGINT` (a binary and a unary operator), `CompareHint::BIGINT` for
+/// two BigInts and OTHER for a BigInt and an int32, and `TypeSet::BIGINT` (before, a BigInt
+/// fell to OTHER_OBJECT: a wrong fact).
+#[test]
+fn bigint_operands_record_the_bigint_bits() {
+    let got = slots(RUN, || bigint_program().0);
+    let k = bigint_program().1;
+    assert_eq!(value(&got, 0, k.add), bin(BinaryHint::BIGINT));
+    assert_eq!(value(&got, 0, k.neg), bin(BinaryHint::BIGINT));
+    assert_eq!(value(&got, 0, k.lt), cmp(CompareHint::BIGINT));
+    assert_eq!(value(&got, 0, k.mix), cmp(CompareHint::OTHER));
+    assert_eq!(value(&got, 0, k.ty), ty(TypeSet::BIGINT));
+}
+
 // ---- keyed ---------------------------------------------------------------------------------
 
 fn keyed_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
