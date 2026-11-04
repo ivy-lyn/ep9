@@ -617,21 +617,31 @@ fn a_table_past_16_slots_is_sorted_and_finds_every_child() {
     });
 }
 
-/// Adds t0 .. t39 to `s`, keeps every 4th child (t0, t4, .., t36, in that order, at the end of
-/// `roots`) and returns the masked addresses of the others. Run it [`below_a_pad`].
+/// Adds t0 .. t39 to `s` and keeps all 40 children (in that order, at the end of `roots`)
+/// until the table is full grown, so no collection under GC stress clears one of them early
+/// (CI run 41758706017, Windows release: the dropped children died as they went, their holes
+/// were reused, and the table stayed at 16 slots). Then drops all but every 4th child (t0,
+/// t4, .., t36 stay rooted) by clearing their roots, and returns the masked addresses of the
+/// 30 dropped ones. Run it [`below_a_pad`].
 #[inline(never)]
 fn made_a_wide_table(rt: &Runtime, roots: &ScratchRoots<'_>, s: u64) -> Vec<usize> {
+    let first = roots.len();
     let mut dead = Vec::new();
     for i in 0..40 {
         let c = add(rt, s, &format!("t{i}"));
-        if i % 4 == 0 {
-            keep(roots, c);
-        } else {
+        keep(roots, c);
+        if i % 4 != 0 {
             dead.push(black_box(c as usize) ^ MASK);
         }
     }
-    // Under GC stress the dropped children die as they go; the table never grew past 63.
-    assert_eq!(shape::transition_table(s).0, MAX_TRANSITIONS - 1);
+    // All 40 live: t0 in the +32 word, 39 in a table of 63 slots. This reads every entry, so
+    // it runs here, below the pad.
+    assert_eq!(shape::transition_table(s), (MAX_TRANSITIONS - 1, 39));
+    // From here on only a scratch root could keep them, and none does: nothing allocates
+    // before the caller's collection.
+    for i in (0..40).filter(|i| i % 4 != 0) {
+        roots.set(first + i, val(UNDEFINED));
+    }
     dead
 }
 
@@ -641,17 +651,18 @@ fn holes_of_dead_children_are_skipped_by_the_search_and_reused_by_an_add() {
         let roots = rt.heap.scratch_roots();
         let base = keep(&roots, add(rt, null_root(rt), "base"));
         let s = kept(&roots, base);
+        let first = roots.len();
         let (dead, pad_low) = below_a_pad(|| made_a_wide_table(rt, &roots, s));
+        assert_eq!(dead.len(), 30);
         collect_after_a_pad(rt, pad_low, &dead);
         // 10 children live: t0 in the +32 word, 9 in the table of 63 slots; 54 holes.
-        let kept_at = roots.len() - 10;
         assert_eq!(shape::transition_count(kept(&roots, base)), 10);
         assert_eq!(shape::transition_table(kept(&roots, base)), (63, 9));
         shape::check(rt, kept(&roots, base)).unwrap();
         // The search skips the holes: each live child is found, no new child is made.
         for j in 0..10 {
             let again = add(rt, kept(&roots, base), &format!("t{}", 4 * j));
-            assert_eq!(again, kept(&roots, kept_at + j), "t{}", 4 * j);
+            assert_eq!(again, kept(&roots, first + 4 * j), "t{}", 4 * j);
         }
         assert_eq!(shape::transition_count(kept(&roots, base)), 10);
         // The dead keys again: new children fill holes in order; the table does not grow.
