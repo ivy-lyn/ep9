@@ -16,19 +16,25 @@ use ep9_facts::{
     SlotFacts, TypeSet,
 };
 
+use super::ic::{SLOT, Site as IcSite, T as IcT, int, object_prototype, object_with};
 use super::{Asm, config, isolate, meta, on_big_stack, profile::isolate as isolate_full, unit};
 use crate::abi::{Local, export_facts};
+use crate::accessor;
 use crate::atoms;
 use crate::builtins::IntrinsicId;
 use crate::feedback;
-use crate::frame::{NULL, UNDEFINED, int32_bits};
-use crate::ic::{self, State};
+use crate::frame::{NULL, UNDEFINED, int32_bits, int32_of};
+use crate::ic::{self, KEY_STRING, State, hk, smi};
+use crate::ic_ops::{self, Op, Operation, Ops, Ref, Val};
+use crate::instance_ic::io;
+use crate::kinds;
 use crate::object::{self, attr};
 use crate::props;
-use crate::runtime::{Root, Runtime};
+use crate::realm;
+use crate::runtime::{Root, Runtime, val};
 use crate::shape;
 use crate::string;
-use crate::{Dispatch, Isolate};
+use crate::{Args, Cx, Dispatch, Isolate, JsResult, Value};
 
 /// The site of one test function `f<i>(a, b)`; slot 0 is the site's, slot 1 a Call slot that
 /// no T0 IC uses.
@@ -957,5 +963,464 @@ fn shapes_name_their_elements_kind_and_arguments_objects_their_kind() {
             "{p:?}"
         );
         std::hint::black_box((ints, doubles, args));
+    });
+}
+
+// ---- MC-w25-5: the exported Access and `ops_of` agree for each handler kind ----------------------
+
+/// The handler kind of a case as its stored word gives it: a smi handler kind (`ic::smi`, 1-6
+/// and the representation-checked store kinds 9-14), an IC_HANDLER cell kind (`ic::hk`, 1-11),
+/// or a megamorphic entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum HandlerKind {
+    Smi(i32),
+    Cell(i32),
+    Mega,
+}
+
+fn handler_kind(h: u64) -> HandlerKind {
+    if val(h).is_int32() {
+        HandlerKind::Smi(int32_of(h) & smi::KIND_MASK)
+    } else {
+        HandlerKind::Cell(ic_ops::handler_parts(h).0)
+    }
+}
+
+/// A getter or setter for the accessor cases: returns undefined.
+fn nop<'s>(_: &mut Cx<'s>, _: Local<'s>, _: Args<'s>, _: Local<'s>) -> JsResult<Local<'s>> {
+    Ok(Local::undefined())
+}
+
+/// Defines the accessor `name` {get, set, enumerable, configurable} of `o`. GC point: `get`
+/// and `set` live in Rust locals.
+fn define_accessor(rt: &Runtime, o: u64, name: &str, get: u64, set: u64) {
+    let pair = accessor::new_pair(rt, get, set);
+    let a = attr::ACCESSOR | attr::ENUMERABLE | attr::CONFIGURABLE;
+    props::own_define(rt, o, atoms::intern_str(rt, name), pair, a);
+}
+
+/// True if key `field` of `d` is the string key `name`.
+fn names(d: &ShapeDesc, field: u16, name: &str) -> bool {
+    d.keys
+        .get(usize::from(field))
+        .is_some_and(|(k, _)| *k == string_key(name))
+}
+
+/// MC-w25-5: the exported access of one case (`None`: the exporter left the case out) agrees
+/// with the case's `ops_of` list at a site of operation `op`. A typed access needs the list
+/// that does that access (its guards and its action); a `[Generic]` list allows only Generic
+/// or no case; Generic comes only from a `[Generic]` list or from the accessor and
+/// dictionary-holder kinds GETTER, SETTER and PROTO_DICT_LOAD, which export as Generic until a
+/// typed writer exists (H16 "Declared, no writer"). The exporter leaves out a case whose key
+/// is not a shape (KEY_STRING) and one whose handler is no named-site kind (cell kinds 4-8:
+/// their list is `[Generic]`).
+fn check_agree(
+    what: &str,
+    kind: HandlerKind,
+    key: u64,
+    op: Operation,
+    access: Option<&Access>,
+    receiver: Option<&ShapeDesc>,
+    ops: &Ops,
+) {
+    let list = ops.as_slice();
+    let generic = list == [Op::Generic];
+    let guards = &list[..list.len() - 1];
+    let checks_chain = guards
+        .iter()
+        .any(|g| matches!(g, Op::GuardProtoValidity(_)));
+    let shape_guard = guards.first() == Some(&Op::GuardShape(Val::Receiver, Ref::CaseKey));
+    let accessor_kind = matches!(
+        kind,
+        HandlerKind::Cell(hk::GETTER | hk::SETTER | hk::PROTO_DICT_LOAD)
+    );
+    let load = op == Operation::LoadNamed;
+    let ok = match access {
+        None => generic || key == KEY_STRING,
+        Some(Access::Generic) => generic || accessor_kind,
+        Some(_) if generic || accessor_kind => false,
+        Some(Access::OwnField { field }) => {
+            receiver.is_some_and(|r| names(r, *field, "x"))
+                && shape_guard
+                && guards[1..]
+                    .iter()
+                    .all(|g| !load && matches!(g, Op::GuardType(Val::Value, _)))
+                && matches!(
+                    (load, ops.action()),
+                    (true, Op::LoadField(Val::Receiver, _))
+                        | (false, Op::StoreField(Val::Receiver, _))
+                )
+        }
+        Some(Access::ArrayLength) => load && ops.action() == Op::LoadArrayLength,
+        Some(Access::ProtoField { .. }) => {
+            load && shape_guard
+                && checks_chain
+                && matches!(ops.action(), Op::LoadHolderField(Ref::HandlerRef, _))
+        }
+        Some(Access::Missing { .. }) => {
+            load && shape_guard && checks_chain && ops.action() == Op::LoadUndefined
+        }
+        Some(Access::AddField { to, field }) => {
+            !load
+                && names(to, *field, "x")
+                && shape_guard
+                && checks_chain == (op == Operation::StoreNamed)
+                && matches!(
+                    ops.action(),
+                    Op::AddField(Val::Receiver, Ref::HandlerRef, _)
+                )
+        }
+        // Getter and Setter have no writer (H16 "Declared, no writer"); Element is keyed only.
+        Some(_) => false,
+    };
+    assert!(
+        ok,
+        "{what}: handler kind {kind:?} at {op:?}: the facts give {access:?}, ops_of gives {list:?}"
+    );
+}
+
+/// MC-w25-5 (MODES-CHECK-w25; the SM b3e803f64871 class: a second reader of the cache
+/// drifts): for each handler kind, made by T0 in a named slot (smi kinds 1-5 and 9-14, cell
+/// kinds 1-3 and 9-11, a megamorphic entry) or put in one (cell kinds 4-8, which no named site
+/// makes), the access `facts_export` gives and the list `ic_ops::ops_of` gives agree
+/// ([`check_agree`]); GETTER, SETTER and PROTO_DICT_LOAD give Generic.
+#[test]
+fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
+    on_big_stack(|| {
+        use IcSite::{Define, Get, Set};
+        const LOADS: usize = 9; // f0-f8
+        const STORES: usize = 9; // f9-f17
+        const DEFINE: usize = LOADS + STORES; // f18
+        const PUT: usize = DEFINE + 1; // f19-f23: cell kinds 4-8
+        const MEGA: usize = PUT + 5; // f24
+        let mut sites = vec![Get("x"); LOADS];
+        sites[2] = Get("length");
+        sites[3] = Get("length");
+        sites.extend([Set("x", false); STORES]);
+        sites.push(Define("x"));
+        sites.extend([Get("x"); 6]);
+        let mut c = config(Dispatch::DEFAULT, false);
+        c.feedback_threshold = 0;
+        let mut t = IcT::new(c, &sites);
+        let rt = t.rt();
+        let op = object_prototype(rt);
+        let num = |d: f64| Value::number(d).to_bits();
+        // `x` after 12 fields: out of line. The tag names a shape family of its own, so one
+        // family's representation does not widen another's.
+        let wide = |rt: &Runtime, tag: &str, x: u64| {
+            let mut ps: Vec<(String, u64)> =
+                (0..12).map(|k| (format!("{tag}{k}"), int(k))).collect();
+            ps.push(("x".into(), x));
+            let ps: Vec<(&str, u64)> = ps.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+            object_with(rt, op, &ps)
+        };
+        let get = realm::new_host_function(rt, nop, "get", 0, false);
+        let set = realm::new_host_function(rt, nop, "set", 1, false);
+        // Loads: own field in object, out of line, array and string length, a dictionary
+        // receiver (SLOW), a prototype field, a missing name, an own getter, a field of a
+        // dictionary-mode prototype.
+        let dict = object_with(rt, op, &[("w", int(0)), ("x", int(1))]);
+        props::to_dictionary(rt, dict);
+        let holder = object_with(rt, op, &[("x", int(2))]);
+        let dict_holder = object_with(rt, op, &[("x", int(3)), ("pad", int(0))]);
+        let getter = object::new_object(rt, op);
+        define_accessor(rt, getter, "x", get, UNDEFINED);
+        let loads = [
+            object_with(rt, op, &[("x", int(1))]),
+            wide(rt, "p", int(1)),
+            object::new_array(rt, 0),
+            string::new_string(rt, "abc"),
+            dict,
+            object_with(rt, holder, &[("b", int(0))]),
+            object_with(rt, op, &[("z", int(0))]),
+            getter,
+            object_with(rt, dict_holder, &[("b", int(0))]),
+        ];
+        props::to_dictionary(rt, dict_holder);
+        // Stores of `x`: an add, then int32, double and heap fields in object and out of line
+        // (the checked kinds 9-14 on the second store of one representation), an own setter
+        // and a read-only field (SLOW).
+        let setter = object::new_object(rt, op);
+        define_accessor(rt, setter, "x", UNDEFINED, set);
+        let read_only = object::new_object(rt, op);
+        let ro = attr::DEFAULT & !attr::WRITABLE;
+        props::own_define(rt, read_only, atoms::intern_str(rt, "x"), int(1), ro);
+        let heap = |rt: &Runtime| object::new_plain_object(rt);
+        let stores: [(u64, u64); STORES] = [
+            (object::new_plain_object(rt), int(1)),
+            (object_with(rt, op, &[("i", int(0)), ("x", int(1))]), int(2)),
+            (wide(rt, "i", int(1)), int(2)),
+            (
+                object_with(rt, op, &[("d", int(0)), ("x", num(0.5))]),
+                num(1.5),
+            ),
+            (wide(rt, "d", num(0.5)), num(1.5)),
+            (
+                object_with(rt, op, &[("h", int(0)), ("x", heap(rt))]),
+                heap(rt),
+            ),
+            (wide(rt, "h", heap(rt)), heap(rt)),
+            (setter, int(1)),
+            (read_only, int(2)),
+        ];
+        let define = object::new_plain_object(rt);
+        let mut keep: Vec<u64> = loads.to_vec();
+        keep.extend(stores.iter().flat_map(|&(o, v)| [o, v]));
+        keep.extend([define, holder, dict_holder, get, set]);
+        let handles = t.keep_all(&keep);
+        for (i, &o) in loads.iter().enumerate() {
+            t.ok(i, o, UNDEFINED);
+        }
+        for (i, &(o, v)) in stores.iter().enumerate() {
+            t.ok(LOADS + i, o, v);
+        }
+        t.ok(DEFINE, define, int(1));
+        // Cell kinds 4-8 put in a named load slot, keyed on the shape of `{x}`: no named site
+        // makes them, so the exporter has no case for them and `ops_of` gives `[Generic]`.
+        let plain_x = object_with(t.rt(), op, &[("x", int(1))]);
+        keep.push(plain_x);
+        let more = t.keep_all(&[plain_x]);
+        for (j, k) in (hk::GLOBAL..=hk::ALLOC_SITE).enumerate() {
+            t.ok(PUT + j, plain_x, UNDEFINED);
+            let rt = t.rt();
+            let h = rt.alloc(kinds::IC_HANDLER, io::SIZE);
+            object::init(h, io::KIND, int32_bits(k));
+            object::init(h, io::CELL, int32_bits(0));
+            object::init(h, io::SHAPE, UNDEFINED);
+            object::init(h, io::FIELD, int32_bits(0));
+            let v = t.vector(PUT + j);
+            feedback::set_slot(
+                rt,
+                v,
+                SLOT,
+                shape::shape_of(plain_x),
+                h.to_value().to_bits(),
+            );
+        }
+        // Megamorphic: 5 shapes.
+        for n in 0..5 {
+            let o = object_with(t.rt(), op, &[(&format!("m{n}"), int(0)), ("x", int(n))]);
+            t.ok(MEGA, o, UNDEFINED);
+        }
+        let hash = t.iso.rt.units.borrow().last().unwrap().unit.content_hash();
+        let snap = export_facts(&t.iso, &hash).expect("the unit is loaded");
+
+        let mut seen = Vec::new();
+        for (i, site) in sites.iter().enumerate() {
+            let op = match site {
+                Get(_) => Operation::LoadNamed,
+                Set(..) => Operation::StoreNamed,
+                _ => Operation::DefineNamed,
+            };
+            let facts = property(&snap, i);
+            let cs = ic_ops::cases(t.vector(i), SLOT, op);
+            if i == MEGA {
+                assert_eq!(cs, [ic_ops::Case::Mega], "f{i}");
+                assert_eq!(ops_of_list(&cs[0], op), [Op::Generic]);
+                assert_eq!((facts.state, facts.cases.len()), (IcState::Megamorphic, 0));
+                seen.push(HandlerKind::Mega);
+                continue;
+            }
+            assert_eq!(facts.state, IcState::Monomorphic, "f{i}: {facts:?}");
+            let [ic_ops::Case::Handler { key, handler }] = cs[..] else {
+                panic!("f{i}: {cs:?}");
+            };
+            let kind = handler_kind(handler);
+            assert!(facts.cases.len() <= 1, "f{i}: {facts:?}");
+            let case = facts.cases.first();
+            check_agree(
+                &format!("f{i}"),
+                kind,
+                key,
+                op,
+                case.map(|c| &c.access),
+                case.map(|c| &*c.receiver),
+                &ic_ops::ops_of(&cs[0], op),
+            );
+            seen.push(kind);
+        }
+        // Every kind is in the test.
+        seen.sort();
+        seen.dedup();
+        let mut want: Vec<HandlerKind> = [1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14]
+            .map(HandlerKind::Smi)
+            .to_vec();
+        want.extend((hk::PROTO_LOAD..=hk::PROTO_DICT_LOAD).map(HandlerKind::Cell));
+        want.push(HandlerKind::Mega);
+        want.sort();
+        assert_eq!(seen, want);
+        // The accessor cases are in this snapshot; no declared field has a value (MC-w24-5).
+        assert_no_declared_field(&snap);
+        t.release_all(handles);
+        t.release_all(more);
+        std::hint::black_box(keep);
+    });
+}
+
+fn ops_of_list(case: &ic_ops::Case, op: Operation) -> Vec<Op> {
+    ic_ops::ops_of(case, op).as_slice().to_vec()
+}
+
+// ---- MC-w24-5: the fields that H16 declares with no writer ---------------------------------------
+
+/// H16 "Declared, no writer" (MC-w24-5; MC-w25-7, M6-ORCH-26): the FACT_SCHEMA 2 fields that
+/// no ep9_vm code writes at M1 exit. Each entry: the field; the text of that H16 paragraph that
+/// names it; the code a writer needs in any `src` file outside `src/tests` (needles); the
+/// identifier a writer needs in a file that uses `ep9_facts` (with a `use`, `EXITED` alone
+/// is enough); and the module that writes the field's slot source, where that identifier is
+/// a needle too.
+struct NoWriter {
+    field: &'static str,
+    named: &'static str,
+    needles: &'static [&'static str],
+    word: &'static str,
+    source: Option<&'static str>,
+}
+
+const NO_WRITER: [NoWriter; 5] = [
+    NoWriter {
+        field: "RecordFlags::RAN",
+        named: "`RecordFlags::RAN`",
+        needles: &["RecordFlags::RAN", "keyed::RAN"],
+        word: "RAN",
+        source: Some("profile.rs"),
+    },
+    NoWriter {
+        field: "RecordFlags::EXITED",
+        named: "`RecordFlags::EXITED`",
+        needles: &["RecordFlags::EXITED"],
+        word: "EXITED",
+        source: None,
+    },
+    NoWriter {
+        field: "ObjectKind::TypedArray",
+        named: "`ObjectKind::TypedArray`",
+        needles: &["ObjectKind::TypedArray"],
+        word: "TypedArray",
+        source: None,
+    },
+    NoWriter {
+        field: "Access::Getter",
+        named: "the Access tags getter and setter",
+        needles: &["Access::Getter"],
+        word: "Getter",
+        source: None,
+    },
+    NoWriter {
+        field: "Access::Setter",
+        named: "the Access tags getter and setter",
+        needles: &["Access::Setter"],
+        word: "Setter",
+        source: None,
+    },
+];
+
+/// The code lines (file, trimmed text) that hold a needle today and write no field: the
+/// exporter's read of the LoadKeyed slot bit 26, which no T0 code sets (H16 "Declared, no
+/// writer"), the definition of that bit, and a fuse name.
+const NOT_WRITERS: [(&str, &str); 4] = [
+    (
+        "facts_export.rs",
+        "let flags = if ran && bits & crate::profile::keyed::RAN != 0 {",
+    ),
+    ("facts_export.rs", "RecordFlags::RAN"),
+    ("profile.rs", "pub const RAN: u32 = 1 << 26;"),
+    ("fuse.rs", "\"TypedArray species\","),
+];
+
+/// True if `code` has `word` with no identifier character on either side.
+fn has_word(code: &str, word: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    code.match_indices(word)
+        .any(|(i, _)| !code[..i].ends_with(ident) && !code[i + word.len()..].starts_with(ident))
+}
+
+/// No record of `snap` has a field of [`NO_WRITER`].
+fn assert_no_declared_field(snap: &FactSnapshot) {
+    for (key, facts, meta) in snap.records_with_meta() {
+        assert_eq!(
+            meta.flags,
+            ep9_facts::RecordFlags::EMPTY,
+            "{key:?} {facts:?}"
+        );
+        let text = format!("{facts:?}");
+        for tag in ["TypedArray", "Getter {", "Setter {"] {
+            assert!(!text.contains(tag), "{key:?}: {tag} in {text}");
+        }
+    }
+}
+
+/// MC-w24-5: each field of H16 "Declared, no writer" has no writer in ep9_vm. A writer
+/// fails this test with the field's name and the line; then the field leaves [`NO_WRITER`]
+/// and the H16 paragraph (an ADR change). The H16 paragraph names every field of the list,
+/// and a snapshot of the T0 cases ([`scenario`]) holds none of them.
+#[test]
+fn the_fields_declared_with_no_writer_have_none() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let h16 =
+        std::fs::read_to_string(root.join("../../docs/adr/H16-ics-and-feedback.md")).expect("H16");
+    let para = h16
+        .lines()
+        .find(|l| l.starts_with("**Declared, no writer"))
+        .expect("the H16 paragraph \"Declared, no writer\"");
+    for w in &NO_WRITER {
+        assert!(
+            para.contains(w.named),
+            "H16 \"Declared, no writer\" does not name {}",
+            w.field
+        );
+    }
+
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "tests") {
+                    walk(&p, out);
+                }
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let src = root.join("src");
+    let mut files = Vec::new();
+    walk(&src, &mut files);
+    files.sort();
+    let mut allowed: Vec<(&str, &str)> = NOT_WRITERS.to_vec();
+    let mut writers = Vec::new();
+    for f in &files {
+        let rel = f
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(f).unwrap();
+        let facts_user = text.contains("ep9_facts");
+        for (n, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("").trim();
+            for w in &NO_WRITER {
+                let hit = w.needles.iter().any(|x| code.contains(x))
+                    || ((facts_user || w.source == Some(rel.as_str())) && has_word(code, w.word));
+                if !hit {
+                    continue;
+                }
+                if let Some(at) = allowed.iter().position(|&(af, at)| af == rel && at == code) {
+                    allowed.remove(at);
+                } else {
+                    writers.push(format!("{}: src/{rel}:{} `{code}`", w.field, n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        writers.is_empty(),
+        "H16 \"Declared, no writer\" fields with code that may write them (MC-w24-5): {writers:#?}"
+    );
+    assert!(allowed.is_empty(), "lines that are gone: {allowed:?}");
+
+    on_big_stack(|| {
+        let (_t, snap) = scenario();
+        assert_no_declared_field(&snap);
     });
 }
