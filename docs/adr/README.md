@@ -93,7 +93,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H37 | (none) | Schema v0 (A1h) | A4 start |
 | H29 | Contract: Decision and Rules, the Q1-Q7 fills | A4-built part: resume in non-T0 code, the osr-entry record format, the materialize payload | A4 gates (M8 exit) |
 | H30 | Model: Decision and Rules, the Q1 and Q4 fills, the M1 list of the Q3 fill, the provenance set | VERIFIED region table: format and ranking against RUNTIME (Q5), only if the D17 rule picks (d) | End of A5 (the K-A5v decision) |
-| H31 | API: the fuse kinds, FuseRef and the registry API, fuse scope, the GuardFuse word, the T0 and Rust use | A5v fuses F1-F8 (Q4), only if the D17 rule picks (d) | End of A5 (the K-A5v decision) |
+| H31 | API: the fuse kinds, FuseRef and the registry API, fuse scope, the GuardFuse word, the T0 and Rust use | A5v fuses F1-F8 (Q4), only if the D17 rule picks (d) | End of A5 (the K-A5v decision) [2026-11-05, M6-P4 B2W (W20C-5): a second later part of H31: "Compiled fuse reads (gated)", the read form of compiled code and the MC-w26-3 rule for compiled readers; it freezes at the A2 gate (a JIT-only form at the milestone M5 exit)] |
 | H32 | Policy: the JIT and jitless columns, PIN, the counter unit and rule, the lowering-class filter, the JIT and jitless accept lists | Budget numbers (4 per site, 16 per function, est.) | A4 gate (M8 exit) |
 | H32 | (the Policy part) | Hybrid part: the hybrid column, lowering `hybrid` and the hybrid accept list, a failed guard in hybrid code, PIN and the re-tier start, the rule that lifts PIN | K-A4P (M8 exit); removed before its freeze point if K-A4P fails |
 | H32 | (the Policy part) | D17 rows: SOUND THROW (D17 c), VERIFIED (D17 d) | End of A5, only if the D17 rule picks them |
