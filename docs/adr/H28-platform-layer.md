@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20). SP-JIT-mem passed on 4 targets (2026-10-21); Accept needs the review record (README §3.1) |
+| Status | Frozen (2026-11-05, M1 exit). Was: Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20). SP-JIT-mem passed on 4 targets (2026-10-21); Accept needs the review record (README §3.1) |
 | Fix by | M0 wk1-3 |
 | Freeze point | M1 exit |
 | Origin | v1#26; plan status U (unchanged; unit parts added in A2) |
@@ -148,6 +148,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | 2026-10-28 | clarify (proposed; Accepted path) | 1 `path:line` reference moved by hand after the M5-P0 merges (CI5 and its only-rest patch; the drift check found no unique new line, UNFIXABLE): the H28-Q2 cell cited the `build-test` matrix at `.github/workflows/ci.yml` 199-202 (4 `include` lines); the matrix is now the 4-line `fromJSON` expression at 215-218, read at the M5-P0 fixer head. A dated note in the cell says that a dispatch run with the input `only` keeps 2 of the 4 targets. Text only; no check, test or golden changes result (README §3.3 clarify). Review record (README §3.1; plan v10 §10, rule 21): rows 1 and 3 the M5-P0 Claude reviewer (the fixer wrote this row), row 2 from the orchestrator's Codex texts, row 4 the fixer | M5-P0 integration fixer |
 | 2026-10-29 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M5-P2 merges (GC6, CONSTREP, SLACK, ELEM2, VMIC, REGEXP2, SPIKEC-6) and the M5-P2 fixer's code fixes (`cargo xtask adr-lint --base m4-p5` FIX lines at d751a6d; M2-P4-FIX-ADRLINE-ROWS): `.github/workflows/ci.yml` 215-218 -> 229-232. Each ref names the same line text as before (both ends of each range read at the ref's intro commit and at d751a6d). Text only; no check, test or golden changes result (README §3.3 clarify). Review record (README §3.1; plan v10 §10, rule 21): rows 1 and 3 the M5-P2 Claude reviewer (the fixer wrote this row), row 2 from the orchestrator's Codex texts, row 4 the fixer | M5-P2 integration fixer |
 | 2026-10-29 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M5-P3 merges (STR3, PROFILE6, M1A-CODE, RX0b, PROXY2, SPIKEC-7, SPFACTS) and the M5-P3 fixer's code fixes (`cargo xtask adr-lint --base m5-p2` FIX lines at d475120b; M2-P4-FIX-ADRLINE-ROWS): `.github/workflows/ci.yml` 229-232 -> 232-235. Each ref names the same line text as before (adr-lint's diff map from the ref's intro commit). Text only; no check, test or golden changes result (README §3.3 clarify). Review record (README §3.1; plan v10 rule 21): rows 1 and 3 the M5-P3 Claude reviewer (the fixer wrote this row), row 2 from the orchestrator's Codex texts, row 4 the fixer | M5-P3 integration fixer |
+| 2026-11-05 | clarify (Frozen step; M1 exit) | H28 is Frozen whole at M1 exit, its freeze point (plan v11 §7.3 step 2 and rule 52, V11-D24; README §2). It has no Freeze table, so the Status line freezes the whole ADR. From now on a change to H28 follows the Frozen rules (README §2 and §3.2). Text only | orchestrator (README §3.2; it wrote the Status line, the README §5 cell and the Counts line only) |
 
 ## Review record
 

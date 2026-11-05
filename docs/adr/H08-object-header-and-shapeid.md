@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-25, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-20; Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B) |
+| Status | Frozen (2026-11-05, M1 exit). Was: Accepted (2026-10-25, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-20; Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B) |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#4 + R16-D5 (as corrected by R17); plan status E (extended: ShapeId rule) |
@@ -165,6 +165,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-25 | clarify | Review record: the Approval row of the M3-P3 clarify row c3d7f70 goes from Pending to **Approved** (orchestrator, 2026-10-25, M3-P3-APPROVE-CLARIFY; it wrote none of these rows). Rows 1-4 are present, and row 2 has Codex round 4, docs-wf2 slice, with no finding on this ADR. No text outside the record changes; no check changes | M3-P3 records3 accept writer |
 | 2026-10-26 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M4-P0 merge (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `tools/xtask/src/m0_exit.rs` 1965-2001 -> 1183-1219 (the item 8 `cargo check -p ep9_value` build check; P0-XTASK moved the shared parts of `m0_exit.rs` into `tools/xtask/src/exit/`). Text only; no check changes. Review record for this amendment (README §3.1; plan v9 rule 21): rows 1 and 3 the M4-P0 Claude reviewer (the fixer wrote this row), row 2 the orchestrator's Codex run (row text by the M4-P0 integration fixer from the Codex texts), row 4 the ADRLINE output (copied by the M4-P0 integration fixer); the rows are Pending; the orchestrator approves | M4-P0 integration fixer |
 | 2026-11-03 | clarify (proposed; Accepted path) | FREEZE-M1 B3, part 1 (plan v11 §3.6; M6-PLAN-D24, M6-PLAN-D26): the Open question due at M1, so the text is ready for the one Frozen step (M6-P4). H08-Q4 re-dated, with its reason: no M1 item runs Miri on `ep9_vm` (the CI job `miri` runs `ep9_value`, `ep9_heap` and `ep9_math`), and either answer is a test set-up under `cfg(miri)` that changes no ShapeId rule. Its Needed-by cell now names the point: when a plan puts `ep9_vm` in the Miri set. Text only; no Decision or Rules row changes; no check, test or golden file changes result (README §3.3 clarify). Review record (README §3.1; plan v11 rule 21, §3.9, M6-PLAN-A26): row 1 the M6-P1 Claude reviewer; rows 2-4 the M6-P1 fixer (row 4 from the B3T1 acceptance logs); the orchestrator approves | M6-P1 B3T1 (DOCS chain) |
+| 2026-11-05 | clarify (Frozen step; M1 exit) | H8 is Frozen whole at M1 exit, its freeze point (plan v11 §7.3 step 2 and rule 52, V11-D24; README §2). It has no Freeze table, so the Status line freezes the whole ADR. From now on a change to H8 follows the Frozen rules (README §2 and §3.2). Text only | orchestrator (README §3.2; it wrote the Status line, the README §5 cell and the Counts line only) |
 
 ## Review record
 

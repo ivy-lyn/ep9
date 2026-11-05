@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-25, M3-P3-ACCEPT-7; review record complete). Was: Draft (2026-10-20). S0 heap code (2026-10-21, `crates/ep9_heap`) has no `Drop` or finalizer hook for cells and no identity hash. M0 wk4: the `needs_drop` check is built; H12-Q1, Q2 and Q3 filled. M0 month 3 (M3-P1 B-COLLECTIONS): H12-Q1 filled again, the identity hash is built (Map, Set, WeakMap, WeakSet) |
+| Status | Frozen (2026-11-05, M1 exit). Was: Accepted (2026-10-25, M3-P3-ACCEPT-7; review record complete). Was: Draft (2026-10-20). S0 heap code (2026-10-21, `crates/ep9_heap`) has no `Drop` or finalizer hook for cells and no identity hash. M0 wk4: the `needs_drop` check is built; H12-Q1, Q2 and Q3 filled. M0 month 3 (M3-P1 B-COLLECTIONS): H12-Q1 filled again, the identity hash is built (Map, Set, WeakMap, WeakSet) |
 | Fix by | M0 |
 | Freeze point | M1 exit |
 | Origin | v1#8; plan status U (unchanged) |
@@ -110,6 +110,7 @@ Identity hash stored lazily. No raw address escapes. No Rust `Drop` on heap obje
 | 2026-10-26 | clarify | Review record: the Approval row of the M3-P4 ADRLINE clarify rows 4dd30fa, d455fa4 and eed6c3a goes from Pending to **Approved** (orchestrator approval under README §3.2, given by the M3-P4 approver, 2026-10-26; the orchestrator wrote none of these rows). Rows 1-4 are present and true; the approver checked each moved ref at 5df39c1 and the Codex texts. No text outside the record changes; no check changes | M3-P4 approver |
 | 2026-10-26 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M4-P0 merge (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `runtime.rs` 269 -> 271 (the template cache `templates`; P0-VM4 added 2 lines to the `runtime.rs` module doc). Text only; no check changes. Review record for this amendment (README §3.1; plan v9 rule 21): rows 1 and 3 the M4-P0 Claude reviewer (the fixer wrote this row), row 2 the orchestrator's Codex run (row text by the M4-P0 integration fixer from the Codex texts), row 4 the ADRLINE output (copied by the M4-P0 integration fixer); the rows are Pending; the orchestrator approves | M4-P0 integration fixer |
 | 2026-11-03 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M6-P0 merges (VM6, SCHEMA6, SC-0, MODES6, GATES8, CI8, FUZZFIX-0, RECORDS-M6) and the M6-P0 fixer's code fixes (`cargo xtask adr-lint --base m1a` FIX lines at e059e28a; M2-P4-FIX-ADRLINE-ROWS): `crates/ep9_vm/src/runtime.rs` 271 -> 277. Each ref names the same line text as before (adr-lint's diff map from the ref's intro commit; both ends of each range read at m1a and at e059e28a). Text only; no check, test or golden changes result (README §3.3 clarify). A lint-proven ADRLINE row (README §3.1; plan v11 V11-D23 (c)): the text outside the Change log and Review record changed since m1a only in these FIX values, so no review record | M6-P0 integration fixer |
+| 2026-11-05 | clarify (Frozen step; M1 exit) | H12 is Frozen whole at M1 exit, its freeze point (plan v11 §7.3 step 2 and rule 52, V11-D24; README §2). It has no Freeze table, so the Status line freezes the whole ADR. From now on a change to H12 follows the Frozen rules (README §2 and §3.2). Text only | orchestrator (README §3.2; it wrote the Status line, the README §5 cell and the Counts line only) |
 
 ## Review record
 

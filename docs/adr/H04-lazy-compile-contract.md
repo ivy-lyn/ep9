@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-24, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-21). The SFI fields exist in v0; every function compiles eagerly (L0) |
+| Status | Frozen (2026-11-05, M1 exit). Was: Accepted (2026-10-24, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-21). The SFI fields exist in v0; every function compiles eagerly (L0) |
 | Fix by | M0 |
 | Freeze point | M1 exit |
 | Origin | v1#20; plan status U |
@@ -112,6 +112,7 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | 2026-10-27 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M4-P3 merges (GC3, KEYED, IC2, REGEXP1, TOOLS) and the M4-P3 integration fixer's code commits (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS; the ADRLINE run of fixer part B, after its code fixes): `crates/ep9_vm/src/interp/ops.rs` 390 -> 391. Each ref names the same line text as before (both ends of each range read at the ref's intro commit and at the new head). Text only; no check changes. Review record for this amendment (README §3.1; plan v9 rule 21): the fixer wrote this row, so rows 1 and 3 are the M4-P3 Claude reviewer's, row 2 the orchestrator's Codex run (row text by the M4-P3 integration fixer from the Codex texts), row 4 the ADRLINE output (copied by the fixer); rows 1-3 Pending; the orchestrator approves | M4-P3 integration fixer (part B) |
 | 2026-10-29 | clarify (proposed; Accepted path) | 1 `path:line` references moved to the code after the M5-P1 merges (GC5, FR0, ELEM1, PROFILE5, REPRL2, GATES6, SPIKEC-5) and the M5-P1 fixer's code fixes (`cargo xtask adr-lint --base m4-p5` FIX lines at d35848a; M2-P4-FIX-ADRLINE-ROWS): `crates/ep9_vm/src/interp/ops.rs` 391 -> 417. Each ref names the same line text as before (both ends of each range read at the ref's intro commit and at d35848a). Text only; no check, test or golden changes result (README §3.3 clarify). Review record (README §3.1; plan v10 §10, rule 21): rows 1 and 3 the M5-P1 Claude reviewer (the fixer wrote this row), row 2 from the orchestrator's Codex texts, row 4 the fixer | M5-P1 integration fixer |
 | 2026-11-03 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M6-P1 merges (ACCIC, DICT1, CBC, B3T1, SPEC-A, SPEC-B, SPIKEC-9) and the M6-P1 fixer's code fixes (`cargo xtask adr-lint --base m1a` FIX lines at 11878442; M2-P4-FIX-ADRLINE-ROWS): `crates/ep9_vm/src/interp/ops.rs` 417 -> 441 (M6-P1 CBC). Each ref names the same line text as before (adr-lint's diff map from the ref's intro commit; both ends of each range read at the intro commit and at 11878442). Text only; no check, test or golden changes result (README §3.3 clarify). A lint-proven ADRLINE row (README §3.1; plan v11 V11-D23 (c)): the text outside the Change log and Review record changed since m1a only in these FIX values, so no review record | M6-P1 integration fixer |
+| 2026-11-05 | clarify (Frozen step; M1 exit) | H4 is Frozen whole at M1 exit, its freeze point (plan v11 §7.3 step 2 and rule 52, V11-D24; README §2). It has no Freeze table, so the Status line freezes the whole ADR. From now on a change to H4 follows the Frozen rules (README §2 and §3.2). Text only | orchestrator (README §3.2; it wrote the Status line, the README §5 cell and the Counts line only) |
 
 ## Review record
 

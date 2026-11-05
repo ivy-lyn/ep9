@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20) |
+| Status | Frozen (2026-11-05, M1 exit). Was: Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20) |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#2; plan status U (unchanged) |
@@ -104,6 +104,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 | 2026-10-25 | clarify | Review record for the M3-P3 clarify row of c3d7f70: a row-2 addendum (Codex round 4, docs-wf2 slice, 8ef7da2..2178586, holds c3d7f70; its 3 findings are on H20, none on this ADR) and a row-3 addendum by the second M3-P3 records writer (nothing to sort; the moved ref still names the same text at 3f20289). The c3d7f70 Approval row stays **Pending** for the orchestrator; its Result cell now says what the record holds. No text outside the record changes; no check changes | second M3-P3 records writer |
 | 2026-10-25 | clarify | Review record: the Approval row of the M3-P3 clarify row c3d7f70 goes from Pending to **Approved** (orchestrator, 2026-10-25, M3-P3-APPROVE-CLARIFY; it wrote none of these rows). Rows 1-4 are present, and row 2 has Codex round 4, docs-wf2 slice, with no finding on this ADR. No text outside the record changes; no check changes | M3-P3 records3 accept writer |
 | 2026-10-26 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M4-P0 merge (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `tools/xtask/src/m0_exit.rs` 1965-2001 -> 1183-1219 (the item 8 `cargo check -p ep9_value` build check; P0-XTASK moved the shared parts of `m0_exit.rs` into `tools/xtask/src/exit/`). Text only; no check changes. Review record for this amendment (README §3.1; plan v9 rule 21): rows 1 and 3 the M4-P0 Claude reviewer (the fixer wrote this row), row 2 the orchestrator's Codex run (row text by the M4-P0 integration fixer from the Codex texts), row 4 the ADRLINE output (copied by the M4-P0 integration fixer); the rows are Pending; the orchestrator approves | M4-P0 integration fixer |
+| 2026-11-05 | clarify (Frozen step; M1 exit) | H6 is Frozen whole at M1 exit, its freeze point (plan v11 §7.3 step 2 and rule 52, V11-D24; README §2). It has no Freeze table, so the Status line freezes the whole ADR. From now on a change to H6 follows the Frozen rules (README §2 and §3.2). Text only | orchestrator (README §3.2; it wrote the Status line, the README §5 cell and the Counts line only) |
 
 ## Review record
 

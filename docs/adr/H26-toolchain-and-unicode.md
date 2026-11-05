@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-22, M2-P5-ACCEPT; review record complete). Was: Draft (2026-10-20) |
+| Status | Frozen (2026-11-05, M1 exit). Was: Accepted (2026-10-22, M2-P5-ACCEPT; review record complete). Was: Draft (2026-10-20) |
 | Fix by | M0 wk1 |
 | Freeze point | M1 exit |
 | Origin | v1#24; plan status U (unchanged) |
@@ -97,6 +97,7 @@ State on 2026-10-28 (M5-P0; dated clarify, plan v10 §2.5, V10-D41): the fork th
 | 2026-10-26 | clarify | H26-Q2 "Needed by": the tsrs pin bump f527e984 -> 745eb10a kept `channel = "1.99.1"` in tsrs's `rust-toolchain.toml`, the same as the root pin, so Q2 is now due at the first bump that moves tsrs's channel. The question and its proposed default are unchanged. Text only; no check changes. Review record rows 1-4 and Approval: pending | tsrs bump implementer |
 | 2026-10-28 | clarify (proposed; Accepted path) | A "State on 2026-10-28 (M5-P0)" paragraph after the 2026-10-26 one: the regress fork is made with 0 patches (pin aae35dee1596cc9a9caaad2425b088081c09e5d5, `third_party/patches/regress/` with no patch, `scripts/sync-regress.sh`, `[patch.crates-io]` in the 3 workspaces, dep-guards check 16). The 2026-10-26 paragraph stays as history. Text only; no check, test or golden changes result (README §3.3 clarify). Review record (README §3.1; plan v10 §10, rule 21): rows 1 and 3 the M5-P0 Claude reviewer (the fixer wrote this row), row 2 from the orchestrator's Codex texts, row 4 the fixer from the P0-PLAT5 runs | M5-P0 integration fixer |
 | 2026-11-03 | fill (proposed; Accepted path) | FREEZE-M1 B3, part 1 (plan v11 §3.6; M6-PLAN-D24, M6-PLAN-D26): the Open question due at M1, so the text is ready for the one Frozen step (M6-P4). H26-Q3 filled as built: one nightly date, `nightly-2026-10-04`, pinned in `fuzz/rust-toolchain.toml` and used by the fuzz workflow, the CI job `miri` and the SP-Dispatch `become` build (M4-PLAN-D38: one nightly pin). Only the Open questions table changes. Every Rules check, test and golden file keeps its result (README §3.3 fill). Review record (README §3.1; plan v11 rule 21, §3.9, M6-PLAN-A26): row 1 the M6-P1 Claude reviewer; rows 2-4 the M6-P1 fixer (row 4 from the B3T1 acceptance logs); the orchestrator approves | M6-P1 B3T1 (DOCS chain) |
+| 2026-11-05 | clarify (Frozen step; M1 exit) | H26 is Frozen whole at M1 exit, its freeze point (plan v11 §7.3 step 2 and rule 52, V11-D24; README §2). It has no Freeze table, so the Status line freezes the whole ADR. From now on a change to H26 follows the Frozen rules (README §2 and §3.2). Text only | orchestrator (README §3.2; it wrote the Status line, the README §5 cell and the Counts line only) |
 
 ## Review record
 
