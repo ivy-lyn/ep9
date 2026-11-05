@@ -336,7 +336,7 @@ fn a_unit_literal_above_the_limit_loads() {
         s.b.ldar(a).type_of(tyof);
         print(&mut s);
         s.b.lda_constant(k1).div(a, s.bin);
-        print(&mut s);
+        // No print of the quotient: without the check, its toString runs for minutes.
         s.b.lda_undefined().return_();
         unit("", vec![s.finish()])
     }

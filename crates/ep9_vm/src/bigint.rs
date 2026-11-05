@@ -16,8 +16,8 @@
 //!   BigInt size exceeded" (H23 "BigInt size"). Every operator result and every `asIntN` and
 //!   `asUintN` result passes one check, [`from_result`], before its cell is allocated (some
 //!   operations also have an early guard before the work). A literal from a unit is not
-//!   checked ([`alloc_literal`]: the loader cannot throw): a literal above the limit loads, and
-//!   the first operation on it throws, also one that does not grow (`x / 1n`, `-x`, `x >> 0n`).
+//!   checked ([`alloc_literal`]: the loader cannot throw): a literal above the limit loads, and its
+//!   first operator, asIntN or asUintN result throws, also one that does not grow (`x / 1n`, `-x`, `x >> 0n`).
 //! - GC rule: an operation reads its operands into an `ep9_bigint::Big` first, then allocates
 //!   the result once; no [`View`] is held across an allocation.
 
