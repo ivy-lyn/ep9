@@ -69,3 +69,25 @@ fn errors_have_the_spec_types() {
         ])
     );
 }
+
+/// ToTemporalDate, ToTemporalDateTime and ToTemporalYearMonth of a string read the options
+/// (GetOptionsObject, then the overflow Get) before the ISO limits check (CreateTemporalDate,
+/// CreateTemporalDateTime, ISOYearMonthWithinLimits) (spec-temporal Codex r1 T2).
+#[test]
+fn string_limits_are_checked_after_the_options() {
+    assert_eq!(
+        run_both(
+            r#"var r = [];
+            var cases = [[Temporal.PlainDate, "+999999-01-01"], [Temporal.PlainDate, "+275760-09-14"], [Temporal.PlainDateTime, "+999999-01-01T00:00"], [Temporal.PlainDateTime, "-271821-04-19T00:00"], [Temporal.PlainYearMonth, "+999999-01"]];
+            for (var [C, s] of cases) {
+              try { C.from(s, null); r.push("ok"); } catch (e) { r.push(e.constructor.name); }
+              var n = 0;
+              try { C.from(s, { get overflow() { n++; return "constrain"; } }); r.push("ok"); } catch (e) { r.push(e.constructor.name + n); }
+            }
+            print(r.join(" "));"#
+        ),
+        lines(&[
+            "TypeError RangeError1 TypeError RangeError1 TypeError RangeError1 TypeError RangeError1 TypeError RangeError1"
+        ])
+    );
+}

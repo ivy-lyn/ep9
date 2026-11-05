@@ -17,6 +17,7 @@ use ep9_vm::{
 };
 use temporal_rs::PlainYearMonth;
 use temporal_rs::options::{DisplayCalendar, Overflow};
+use temporal_rs::parsed_intermediates::ParsedDate;
 use temporal_rs::partial::PartialYearMonth;
 
 use crate::calendar::{self, constructor_calendar, get_calendar_with_iso_default, require_iso};
@@ -223,15 +224,22 @@ pub(crate) fn to_temporal_year_month<'s>(
     let Some(s) = item.as_string() else {
         return Err(cx.throw_type_error("a year-month must be an object or a string"));
     };
-    // 4-7. ParseISODateTime(item, « TemporalYearMonthString »); the calendar.
+    // 4. ParseISODateTime(item, « TemporalYearMonthString »): the syntax, a valid ISO date and
+    //    a known calendar id.
     let text = temporal_text(cx, s)?;
-    let ym = PlainYearMonth::from_utf8(text.as_bytes()).or_throw(cx)?;
-    require_iso(cx, ym.calendar().clone())?;
+    let parsed = ParsedDate::year_month_from_utf8(text.as_bytes()).or_throw(cx)?;
+    // 10-. ISOYearMonthWithinLimits; CalendarYearMonthFromFields (temporal_rs): built here,
+    //      thrown after the options.
+    let built = PlainYearMonth::from_parsed(parsed);
+    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17). ParsedDate hides its calendar,
+    //      so a year-month out of the limits skips this check (as in ToTemporalDate).
+    if let Ok(ym) = &built {
+        require_iso(cx, ym.calendar().clone())?;
+    }
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
-    // 10-. ISOYearMonthWithinLimits; CalendarYearMonthFromFields (temporal_rs, above).
-    Ok(ym)
+    built.or_throw(cx)
 }
 
 // ---- constructor and statics ----------------------------------------------------------------

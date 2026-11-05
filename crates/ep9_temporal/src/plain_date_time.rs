@@ -21,6 +21,7 @@ use ep9_vm::{
 use temporal_rs::options::{
     RoundingMode, RoundingOptions, ToStringRoundingOptions, Unit, UnitGroup,
 };
+use temporal_rs::parsed_intermediates::ParsedDateTime;
 use temporal_rs::partial::PartialDateTime;
 use temporal_rs::{Calendar, PlainDate, PlainDateTime, PlainTime};
 
@@ -288,14 +289,22 @@ pub(crate) fn to_temporal_date_time<'s>(
     let Some(s) = item.as_string() else {
         return Err(cx.throw_type_error("a date-time must be an object or a string"));
     };
-    // b-f. ParseISODateTime(item, « TemporalDateTimeString[~Zoned] »); the calendar.
+    // b-c. ParseISODateTime(item, « TemporalDateTimeString[~Zoned] »): the syntax, a valid ISO
+    //      date and time and a known calendar id.
     let text = temporal_text(cx, s)?;
-    let dt = PlainDateTime::from_utf8(text.as_bytes()).or_throw(cx)?;
-    require_iso(cx, dt.calendar().clone())?;
+    let parsed = ParsedDateTime::from_utf8(text.as_bytes()).or_throw(cx)?;
+    // i-j, 4. CreateTemporalDateTime (ISODateTimeWithinLimits): built here, thrown after the
+    //         options.
+    let built = PlainDateTime::from_parsed(parsed);
+    // d-f. CanonicalizeCalendar: iso8601 only (SPEC-T-D17). ParsedDateTime hides its
+    //      calendar, so a date-time out of the limits skips this check (as in ToTemporalDate).
+    if let Ok(dt) = &built {
+        require_iso(cx, dt.calendar().clone())?;
+    }
     // g-h. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
-    Ok(dt)
+    built.or_throw(cx)
 }
 
 // ---- constructor and statics ----------------------------------------------------------------

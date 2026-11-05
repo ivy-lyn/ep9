@@ -20,6 +20,7 @@ use ep9_vm::{
 };
 use temporal_rs::PlainDate;
 use temporal_rs::options::DisplayCalendar;
+use temporal_rs::parsed_intermediates::ParsedDate;
 use temporal_rs::partial::PartialDate;
 
 use crate::calendar::{
@@ -293,15 +294,22 @@ pub(crate) fn to_temporal_date<'s>(
     let Some(s) = item.as_string() else {
         return Err(cx.throw_type_error("a date must be an object or a string"));
     };
-    // 4-7. ParseISODateTime(item, « TemporalDateTimeString[~Zoned] »); the calendar.
+    // 4. ParseISODateTime(item, « TemporalDateTimeString[~Zoned] »): the syntax, a valid ISO
+    //    date and a known calendar id.
     let text = temporal_text(cx, s)?;
-    let d = PlainDate::from_utf8(text.as_bytes()).or_throw(cx)?;
-    let cal = d.calendar().clone();
-    require_iso(cx, cal)?;
+    let parsed = ParsedDate::from_utf8(text.as_bytes()).or_throw(cx)?;
+    // 11. CreateTemporalDate (ISODateWithinLimits): built here, thrown after the options.
+    let built = PlainDate::from_parsed(parsed);
+    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17). ParsedDate hides its calendar,
+    //      so a date out of the limits skips this check: with a non-ISO id and bad options it
+    //      gives the options' TypeError, not this RangeError.
+    if let Ok(d) = &built {
+        require_iso(cx, d.calendar().clone())?;
+    }
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
-    Ok(d)
+    built.or_throw(cx)
 }
 
 /// GetTemporalShowCalendarNameOption: the `calendarName` option.
