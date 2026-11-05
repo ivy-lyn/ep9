@@ -183,7 +183,9 @@ fn the_ic_and_deopt_hand_fact_exports_hold() {
 
 /// The month-6 versions (V11-D3, plan v11 rule 2): OBJECT_LAYOUT 5 -> 6 and IC_LAYOUT 3 -> 4
 /// move once, in M6-P0; VM_LAYOUT 1 (a RuntimeTable append moves none, C-18), FRAME 2,
-/// DEOPT_META 0 (V11-D12), the builtin ABI 1 and the bytecode ABI 5 stay.
+/// DEOPT_META 0 (V11-D12), the builtin ABI 1 and the bytecode ABI 5 stay. Then OBJECT_LAYOUT
+/// 6 -> 7 for the BIGINT kind (spec-temporal B2, design SPEC-T-D6), the only version that
+/// moves with BigInt: [`month_7_versions`].
 #[test]
 fn month_6_versions() {
     assert_eq!(
@@ -194,12 +196,23 @@ fn month_6_versions() {
             versions::FRAME_VERSION,
             versions::DEOPT_META_VERSION
         ),
-        (6, 4, 1, 2, 0)
+        (7, 4, 1, 2, 0)
     );
     assert_eq!(
         (versions::BUILTIN_ABI_VERSION, ep9_bytecode::ABI_VERSION),
         (1, 5)
     );
+}
+
+/// OBJECT_LAYOUT 7 (spec-temporal B2): the BIGINT kind 9 and its cell. Every other version
+/// stays: IC_LAYOUT 4, VM_LAYOUT 1, FRAME 2, DEOPT_META 0, the builtin ABI 1, the bytecode
+/// ABI 5, Value encoding 1 and FACT_SCHEMA 2 (the BIGINT feedback bits were declared in it).
+#[test]
+fn month_7_versions() {
+    assert_eq!(black_box(versions::OBJECT_LAYOUT_VERSION), 7);
+    assert_eq!(ep9_value::encoding::VERSION, 1);
+    assert_eq!(ep9_facts::FACT_SCHEMA_VERSION, 2);
+    assert_eq!(crate::kinds::BIGINT.get(), 9);
 }
 
 // ---- OBJECT_LAYOUT 6: kind 84, the FUSE cell, Root::RealmFuses ------------------------------

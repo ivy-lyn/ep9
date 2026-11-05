@@ -95,12 +95,12 @@ fn swapping_two_object_classes_fails_the_golden() {
 
 #[test]
 fn a_class_id_is_its_position_in_the_list() {
-    assert_eq!(ObjectClass::ALL.len(), 15);
+    // Append-safe (README §3.4): no count pin; each id is its place in ALL; the negative probe is
+    // the top of the u16 range, never the next free id.
     for (i, &c) in ObjectClass::ALL.iter().enumerate() {
         assert_eq!(usize::from(c.id()), i, "{}", c.name());
         assert_eq!(ObjectClass::from_id(c.id()), Some(c));
     }
-    assert_eq!(ObjectClass::from_id(15), None);
     assert_eq!(ObjectClass::from_id(u16::MAX), None);
     assert_eq!(
         (ObjectClass::Promise.id(), ObjectClass::RegExp.id()),

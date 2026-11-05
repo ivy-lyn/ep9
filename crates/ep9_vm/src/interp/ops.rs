@@ -804,10 +804,7 @@ op!(LdaConstant(st, k: K) {
     st.acc = v;
     Flow::Next
 } cold {
-    // The hole is a BigInt (v0: no BigInt values) or the Oddball hole.
-    if matches!(st.info().constant_entry(k.0), ep9_bytecode::Constant::BigInt(_)) {
-        return not_impl(st, "BigInt values");
-    }
+    // The Oddball hole (a BigInt constant is a BIGINT cell since spec-temporal B2).
     st.acc = HOLE;
     Done::Next
 });
@@ -1304,6 +1301,10 @@ op!(TestEqualStrict(st, lhs: R, s: FSlot) {
     {
         return Flow::Cold;
     }
+    // Two BigInt cells with other bits: equal by their value (the cold body).
+    if kinds::is_bigint(l) && kinds::is_bigint(r) {
+        return Flow::Cold;
+    }
     st.acc = FALSE;
     Flow::RecordPair(profile::Pair::new(s, l, r))
 } cold {
@@ -1389,7 +1390,8 @@ op!(TestTypeOf(st, literal: TyLit) {
             v == NULL || (object::is_object(v) && !kinds::is_callable(v))
         }
         Some(TypeOfLiteral::Symbol) => kinds::is_symbol(v),
-        // v0: no BigInts (and no symbol values exist yet).
+        Some(TypeOfLiteral::BigInt) => kinds::is_bigint(v),
+        // `Other`: a literal that no value's typeof gives.
         _ => false,
     };
     st.acc = boolean(r);

@@ -94,6 +94,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("toLocaleDateString", 0, to_date_string), // 47
     BuiltinDef::method("toLocaleTimeString", 0, to_time_string), // 48
     BuiltinDef::method("[Symbol.toPrimitive]", 1, to_primitive), // 49
+    // spec-temporal T3 (Temporal §14.1.1).
+    BuiltinDef::method("toTemporalInstant", 0, to_temporal_instant), // 50
 ];
 
 /// The intrinsics this module makes.
@@ -193,6 +195,8 @@ pub const PROPS: &[ObjectProps] = &[
             m("toLocaleString", 46),
             m("toLocaleDateString", 47),
             m("toLocaleTimeString", 48),
+            // Temporal §14.1.1 Date.prototype.toTemporalInstant ( ) (spec-temporal T3).
+            m("toTemporalInstant", 50),
             // §21.4.4.45 Date.prototype [ %Symbol.toPrimitive% ] ({c}).
             PropDef {
                 key: PropKey::Symbol(WellKnownSymbol::TO_PRIMITIVE),
@@ -771,6 +775,25 @@ fn to_json<'s>(
     // 4. Return ? Invoke(O, "toISOString").
     let f = cx.get(o, "toISOString")?;
     cx.call(f, o, &[])
+}
+
+/// Date.prototype.toTemporalInstant ( ) (Temporal §14.1.1; spec-temporal T3). The Instant
+/// object comes from `ep9_temporal`.
+fn to_temporal_instant<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1-2. Let dateObject be the this value; ? RequireInternalSlot(dateObject, [[DateValue]]).
+    // 3. Let t be dateObject.[[DateValue]].
+    let t = this_time_value(cx, this)?;
+    // 4. Let ns be ? NumberToBigInt(t) × ℤ(10**6) (a RangeError for NaN).
+    if t.is_nan() {
+        return Err(cx.throw_range_error("Invalid time value"));
+    }
+    // 5. Return ! CreateTemporalInstant(ns).
+    ep9_temporal::instant::create_from_epoch_milliseconds(cx, t)
 }
 
 /// Date.prototype [ %Symbol.toPrimitive% ] ( hint ) (§21.4.4.45).

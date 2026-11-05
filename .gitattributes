@@ -34,6 +34,8 @@
 *.ep9u binary
 *.ep9h binary
 *.ep9prof binary
+# ICU resource bundles (crates/ep9_temporal/data/zoneinfo64.res).
+*.res binary
 
 # Recorded measurement data: collapsed in PR diffs on GitHub, still diffable.
 docs/measurements/*.json linguist-generated=true

@@ -1,9 +1,9 @@
 //! Primitive wrappers read without a throw (H20-Q5, M6-P3 H20Q). `Cx::primitive_data` gives
-//! the primitive in a `[[NumberData]]`, `[[StringData]]` or `[[BooleanData]]` slot, else
-//! `None`; it runs no JS and never throws. json.rs `primitive_data` is one call to it, so
-//! `JSON.stringify` (SerializeJSONProperty step 4, the replacer list, `space`) reads the slot
-//! instead of calling `this_primitive_value` and catching the TypeError (the M3-P1 B-JSON
-//! cost). ep9 has no BigInt yet, so `[[BigIntData]]` has no case here.
+//! the primitive in a `[[NumberData]]`, `[[StringData]]`, `[[BooleanData]]` or (since
+//! spec-temporal B4) `[[BigIntData]]` slot, else `None`; it runs no JS and never throws.
+//! json.rs `primitive_data` is one call to it, so `JSON.stringify` (SerializeJSONProperty
+//! step 4, the replacer list, `space`) reads the slot instead of calling
+//! `this_primitive_value` and catching the TypeError (the M3-P1 B-JSON cost).
 //!
 //! The JSON lines are node v26.13.0's output for the same script (`print` = the arguments'
 //! ToString joined by a space). Each script runs with and without GC stress (a collection
@@ -175,12 +175,15 @@ fn primitive_data_reads_the_slot_and_never_throws() {
         print([Object(Symbol("d")), Symbol("e"), 1, "x", true, null, undefined].map(show).join());
         print([{}, Object.create(Number.prototype), Object.create(String.prototype), function () {}, [1], p, r.proxy].map(show).join());
         print(1 / pd(new Number(-0)), pd(new String("")).length, log.length);
+        var bw = Object(10n ** 20n); bw.valueOf = w.valueOf; bw.toString = w.valueOf;
+        print([bw, 1n, Object.create(BigInt.prototype)].map(show).join());
     "#;
     let expected = lines(&[
         "number:5,string:ab,boolean:false,number:0,number:2.5,string:q,boolean:true",
         "string:none,string:none,string:none,string:none,string:none,string:none,string:none",
         "string:none,string:none,string:none,string:none,string:none,string:none,string:none",
         "-Infinity 0 0",
+        "bigint:100000000000000000000,string:none,string:none",
     ]);
     for stress in [false, true] {
         let got = common::on_big_stack(move || run(src, stress));

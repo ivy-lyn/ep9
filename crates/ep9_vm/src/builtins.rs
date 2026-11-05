@@ -232,11 +232,61 @@ pub enum IntrinsicId {
     /// object; no table makes it (`check_tables` refuses one). Held in the realm root
     /// `Root::RealmFuses`; made by `fuse::new_realm_block` at realm init (M6-P2 FUSE-PI).
     RealmFuses,
+    // ---- spec-temporal B4 (BigInt; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%BigInt%` (§21.2.1; made by `ep9_builtins` bigint.rs, block 18).
+    BigInt,
+    /// `%BigInt.prototype%` (§21.2.3, an ordinary object; made by `ep9_builtins` bigint.rs).
+    /// The prototype of a BigInt's ToObject and of a property access on a BigInt.
+    BigIntPrototype,
+    // ---- spec-temporal T1 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal%` (§1 the Temporal namespace object; made by `ep9_temporal` namespace.rs, block 19).
+    Temporal,
+    /// `%Temporal.Now%` (the Temporal.Now namespace object; made by `ep9_temporal` namespace.rs).
+    TemporalNow,
+    // ---- spec-temporal T2 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.Duration%` (§7.1; made by `ep9_temporal` duration.rs, block 20).
+    TemporalDuration,
+    /// `%Temporal.Duration.prototype%` (§7.3, an ordinary object; made by `ep9_temporal` duration.rs).
+    TemporalDurationPrototype,
+    // ---- spec-temporal T3 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.Instant%` (§8.1; made by `ep9_temporal` instant.rs, block 21).
+    TemporalInstant,
+    /// `%Temporal.Instant.prototype%` (§8.3, an ordinary object; made by `ep9_temporal` instant.rs).
+    TemporalInstantPrototype,
+    // ---- spec-temporal T4 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainTime%` (§4.1; made by `ep9_temporal` plain_time.rs, block 22).
+    TemporalPlainTime,
+    /// `%Temporal.PlainTime.prototype%` (§4.3, an ordinary object; made by `ep9_temporal` plain_time.rs).
+    TemporalPlainTimePrototype,
+    // ---- spec-temporal T5 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainDate%` (§3.1; made by `ep9_temporal` plain_date.rs, block 23).
+    TemporalPlainDate,
+    /// `%Temporal.PlainDate.prototype%` (§3.3, an ordinary object; made by `ep9_temporal` plain_date.rs).
+    TemporalPlainDatePrototype,
+    // ---- spec-temporal T6 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainDateTime%` (§5.1; made by `ep9_temporal` plain_date_time.rs, block 24).
+    TemporalPlainDateTime,
+    /// `%Temporal.PlainDateTime.prototype%` (§5.3, an ordinary object; made by `ep9_temporal` plain_date_time.rs).
+    TemporalPlainDateTimePrototype,
+    // ---- spec-temporal T7 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainYearMonth%` (§9.1; made by `ep9_temporal` plain_year_month.rs, block 25).
+    TemporalPlainYearMonth,
+    /// `%Temporal.PlainYearMonth.prototype%` (§9.3, an ordinary object; made by `ep9_temporal` plain_year_month.rs).
+    TemporalPlainYearMonthPrototype,
+    /// `%Temporal.PlainMonthDay%` (§10.1; made by `ep9_temporal` plain_month_day.rs, block 26).
+    TemporalPlainMonthDay,
+    /// `%Temporal.PlainMonthDay.prototype%` (§10.3, an ordinary object; made by `ep9_temporal` plain_month_day.rs).
+    TemporalPlainMonthDayPrototype,
+    // ---- spec-temporal T8 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.ZonedDateTime%` (§6.1; made by `ep9_temporal` zoned_date_time.rs, block 27).
+    TemporalZonedDateTime,
+    /// `%Temporal.ZonedDateTime.prototype%` (§6.3, an ordinary object; made by `ep9_temporal` zoned_date_time.rs).
+    TemporalZonedDateTimePrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 73] = [
+    pub const ALL: [IntrinsicId; 93] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -310,6 +360,26 @@ impl IntrinsicId {
         IntrinsicId::FinalizationRegistry,
         IntrinsicId::FinalizationRegistryPrototype,
         IntrinsicId::RealmFuses,
+        IntrinsicId::BigInt,
+        IntrinsicId::BigIntPrototype,
+        IntrinsicId::Temporal,
+        IntrinsicId::TemporalNow,
+        IntrinsicId::TemporalDuration,
+        IntrinsicId::TemporalDurationPrototype,
+        IntrinsicId::TemporalInstant,
+        IntrinsicId::TemporalInstantPrototype,
+        IntrinsicId::TemporalPlainTime,
+        IntrinsicId::TemporalPlainTimePrototype,
+        IntrinsicId::TemporalPlainDate,
+        IntrinsicId::TemporalPlainDatePrototype,
+        IntrinsicId::TemporalPlainDateTime,
+        IntrinsicId::TemporalPlainDateTimePrototype,
+        IntrinsicId::TemporalPlainYearMonth,
+        IntrinsicId::TemporalPlainYearMonthPrototype,
+        IntrinsicId::TemporalPlainMonthDay,
+        IntrinsicId::TemporalPlainMonthDayPrototype,
+        IntrinsicId::TemporalZonedDateTime,
+        IntrinsicId::TemporalZonedDateTimePrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -389,6 +459,26 @@ impl IntrinsicId {
             IntrinsicId::FinalizationRegistry => "%FinalizationRegistry%",
             IntrinsicId::FinalizationRegistryPrototype => "%FinalizationRegistry.prototype%",
             IntrinsicId::RealmFuses => "[[RealmFuses]]",
+            IntrinsicId::BigInt => "%BigInt%",
+            IntrinsicId::BigIntPrototype => "%BigInt.prototype%",
+            IntrinsicId::Temporal => "%Temporal%",
+            IntrinsicId::TemporalNow => "%Temporal.Now%",
+            IntrinsicId::TemporalDuration => "%Temporal.Duration%",
+            IntrinsicId::TemporalDurationPrototype => "%Temporal.Duration.prototype%",
+            IntrinsicId::TemporalInstant => "%Temporal.Instant%",
+            IntrinsicId::TemporalInstantPrototype => "%Temporal.Instant.prototype%",
+            IntrinsicId::TemporalPlainTime => "%Temporal.PlainTime%",
+            IntrinsicId::TemporalPlainTimePrototype => "%Temporal.PlainTime.prototype%",
+            IntrinsicId::TemporalPlainDate => "%Temporal.PlainDate%",
+            IntrinsicId::TemporalPlainDatePrototype => "%Temporal.PlainDate.prototype%",
+            IntrinsicId::TemporalPlainDateTime => "%Temporal.PlainDateTime%",
+            IntrinsicId::TemporalPlainDateTimePrototype => "%Temporal.PlainDateTime.prototype%",
+            IntrinsicId::TemporalPlainYearMonth => "%Temporal.PlainYearMonth%",
+            IntrinsicId::TemporalPlainYearMonthPrototype => "%Temporal.PlainYearMonth.prototype%",
+            IntrinsicId::TemporalPlainMonthDay => "%Temporal.PlainMonthDay%",
+            IntrinsicId::TemporalPlainMonthDayPrototype => "%Temporal.PlainMonthDay.prototype%",
+            IntrinsicId::TemporalZonedDateTime => "%Temporal.ZonedDateTime%",
+            IntrinsicId::TemporalZonedDateTimePrototype => "%Temporal.ZonedDateTime.prototype%",
         }
     }
 
@@ -468,7 +558,27 @@ impl IntrinsicId {
             | IntrinsicId::WeakRef
             | IntrinsicId::WeakRefPrototype
             | IntrinsicId::FinalizationRegistry
-            | IntrinsicId::FinalizationRegistryPrototype => return None,
+            | IntrinsicId::FinalizationRegistryPrototype
+            | IntrinsicId::BigInt
+            | IntrinsicId::BigIntPrototype
+            | IntrinsicId::Temporal
+            | IntrinsicId::TemporalNow
+            | IntrinsicId::TemporalDuration
+            | IntrinsicId::TemporalDurationPrototype
+            | IntrinsicId::TemporalInstant
+            | IntrinsicId::TemporalInstantPrototype
+            | IntrinsicId::TemporalPlainTime
+            | IntrinsicId::TemporalPlainTimePrototype
+            | IntrinsicId::TemporalPlainDate
+            | IntrinsicId::TemporalPlainDatePrototype
+            | IntrinsicId::TemporalPlainDateTime
+            | IntrinsicId::TemporalPlainDateTimePrototype
+            | IntrinsicId::TemporalPlainYearMonth
+            | IntrinsicId::TemporalPlainYearMonthPrototype
+            | IntrinsicId::TemporalPlainMonthDay
+            | IntrinsicId::TemporalPlainMonthDayPrototype
+            | IntrinsicId::TemporalZonedDateTime
+            | IntrinsicId::TemporalZonedDateTimePrototype => return None,
         })
     }
 
@@ -516,6 +626,26 @@ impl IntrinsicId {
             IntrinsicId::WeakRefPrototype => Some(37),
             IntrinsicId::FinalizationRegistry => Some(38),
             IntrinsicId::FinalizationRegistryPrototype => Some(39),
+            IntrinsicId::BigInt => Some(40),
+            IntrinsicId::BigIntPrototype => Some(41),
+            IntrinsicId::Temporal => Some(42),
+            IntrinsicId::TemporalNow => Some(43),
+            IntrinsicId::TemporalDuration => Some(44),
+            IntrinsicId::TemporalDurationPrototype => Some(45),
+            IntrinsicId::TemporalInstant => Some(46),
+            IntrinsicId::TemporalInstantPrototype => Some(47),
+            IntrinsicId::TemporalPlainTime => Some(48),
+            IntrinsicId::TemporalPlainTimePrototype => Some(49),
+            IntrinsicId::TemporalPlainDate => Some(50),
+            IntrinsicId::TemporalPlainDatePrototype => Some(51),
+            IntrinsicId::TemporalPlainDateTime => Some(52),
+            IntrinsicId::TemporalPlainDateTimePrototype => Some(53),
+            IntrinsicId::TemporalPlainYearMonth => Some(54),
+            IntrinsicId::TemporalPlainYearMonthPrototype => Some(55),
+            IntrinsicId::TemporalPlainMonthDay => Some(56),
+            IntrinsicId::TemporalPlainMonthDayPrototype => Some(57),
+            IntrinsicId::TemporalZonedDateTime => Some(58),
+            IntrinsicId::TemporalZonedDateTimePrototype => Some(59),
             _ => None,
         }
     }
@@ -1182,7 +1312,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 40;
+const INTRINSIC_SLOTS: usize = 60;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

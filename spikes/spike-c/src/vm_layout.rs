@@ -10,15 +10,15 @@
 //!
 //! | Fact | Export (`ep9_vm::layout`) | Owning version |
 //! |---|---|---|
-//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 6 |
-//! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 6 |
-//! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 6 |
-//! | ARRAY: elements store, length (an int32 Value below 2^31, a double Value from 2^31 on, M5-P2 ELEM2; only a DICTIONARY array is that long, and `CheckArray` exits on it, so `LoadElement` and `StoreElement` read the low 32 bits as the dense bound) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 6 |
-//! | the two elements storage forms the element ops read: an ELEMENTS cell (kind 65, Values) or an ELEMENTS_DOUBLE cell (kind 81, raw f64); `LoadElement` and `StoreElement` exit on any other elements store (an ELEMENTS_DICT cell, 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS`, `KIND_ELEMENTS_DOUBLE`, `KIND_ELEMENTS_DICT` | OBJECT_LAYOUT 6 |
-//! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 6 |
-//! | ELEMENTS_DOUBLE: capacity (an int32 Value), raw f64 from `ELEMENTS_DOUBLE_DATA`; the hole is a NaN no store writes; a store writes every NaN as the pure NaN (`PURE_NAN_BITS`, proved below) | `ELEMENTS_DOUBLE_CAPACITY`, `ELEMENTS_DOUBLE_DATA`, `ELEMENTS_DOUBLE_HOLE` | OBJECT_LAYOUT 6 |
-//! | a shape's elements kind: `counts` bits 28-31; kinds 0-5 hold elements in the two forms above (INT32 and ELEMENTS kinds: Values; DOUBLE kinds: raw f64), 6 is DICTIONARY, 7-15 reserved. `CheckArray` (the kind guard, M5-P1-ORCH-11) reads it from the receiver's shape and exits unless it is in [`ARRAY_KINDS`] | `SHAPE_ELEMENTS_KIND_SHIFT`, `ELEMENTS_KIND_*` | OBJECT_LAYOUT 6 |
-//! | a cell's shape is the cell `(address & !(SHAPE_CAGE_ALIGN - 1)) \| ShapeId` (kind `KIND_SHAPE`), its `counts` word is at `SHAPE_COUNTS` (proved below on live arrays of each kind); the CONTEXT kind id (the `LoadContextSlot` guard; proved on a live closure). Spike C hand facts until M6-P0 | `SHAPE_CAGE_ALIGN`, `SHAPE_COUNTS`, `KIND_SHAPE`, `KIND_CONTEXT` | OBJECT_LAYOUT 6 |
+//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 7 |
+//! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 7 |
+//! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 7 |
+//! | ARRAY: elements store, length (an int32 Value below 2^31, a double Value from 2^31 on, M5-P2 ELEM2; only a DICTIONARY array is that long, and `CheckArray` exits on it, so `LoadElement` and `StoreElement` read the low 32 bits as the dense bound) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 7 |
+//! | the two elements storage forms the element ops read: an ELEMENTS cell (kind 65, Values) or an ELEMENTS_DOUBLE cell (kind 81, raw f64); `LoadElement` and `StoreElement` exit on any other elements store (an ELEMENTS_DICT cell, 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS`, `KIND_ELEMENTS_DOUBLE`, `KIND_ELEMENTS_DICT` | OBJECT_LAYOUT 7 |
+//! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 7 |
+//! | ELEMENTS_DOUBLE: capacity (an int32 Value), raw f64 from `ELEMENTS_DOUBLE_DATA`; the hole is a NaN no store writes; a store writes every NaN as the pure NaN (`PURE_NAN_BITS`, proved below) | `ELEMENTS_DOUBLE_CAPACITY`, `ELEMENTS_DOUBLE_DATA`, `ELEMENTS_DOUBLE_HOLE` | OBJECT_LAYOUT 7 |
+//! | a shape's elements kind: `counts` bits 28-31; kinds 0-5 hold elements in the two forms above (INT32 and ELEMENTS kinds: Values; DOUBLE kinds: raw f64), 6 is DICTIONARY, 7-15 reserved. `CheckArray` (the kind guard, M5-P1-ORCH-11) reads it from the receiver's shape and exits unless it is in [`ARRAY_KINDS`] | `SHAPE_ELEMENTS_KIND_SHIFT`, `ELEMENTS_KIND_*` | OBJECT_LAYOUT 7 |
+//! | a cell's shape is the cell `(address & !(SHAPE_CAGE_ALIGN - 1)) \| ShapeId` (kind `KIND_SHAPE`), its `counts` word is at `SHAPE_COUNTS` (proved below on live arrays of each kind); the CONTEXT kind id (the `LoadContextSlot` guard; proved on a live closure). Spike C hand facts until M6-P0 | `SHAPE_CAGE_ALIGN`, `SHAPE_COUNTS`, `KIND_SHAPE`, `KIND_CONTEXT` | OBJECT_LAYOUT 7 |
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
 //! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 4 |
 //! | the key half of an IC entry (a feedback slot or a POLY_IC case) that no site filled: `undefined`; the shape guard's "unfilled" exit compares with it (a hand fact until M6-P0) | `VALUE_UNDEFINED` | IC_LAYOUT 4 |
@@ -432,7 +432,7 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
 /// the shared exit stores (`DUMP_BYTES`): it stays 0 in month 6 and moves to 1 at A2 start, and
 /// the spike moves with it.
 pub const PINNED: [(&str, u32); 6] = [
-    ("OBJECT_LAYOUT", 6),
+    ("OBJECT_LAYOUT", 7),
     ("IC_LAYOUT", 4),
     ("FRAME", 2),
     ("VM_LAYOUT", 1),
@@ -753,10 +753,10 @@ pub fn read_set_lines() -> Vec<String> {
 
 // ---- out-of-line fields (SPIKEC-9) ---------------------------------------------------------
 
-/// OBJECT_LAYOUT 6, a hand fact (SPIKEC-9, M6-P1): the object word at +8 holds the SLOTS cell
+/// OBJECT_LAYOUT 7, a hand fact (SPIKEC-9, M6-P1): the object word at +8 holds the SLOTS cell
 /// of the out-of-line fields (ep9_vm `object::obj::SLOTS`). See [`HAND_FACTS_M6`].
 pub const OBJECT_SLOTS: u32 = 8;
-/// OBJECT_LAYOUT 6, a hand fact (SPIKEC-9): out-of-line field `k` (the shape's field number
+/// OBJECT_LAYOUT 7, a hand fact (SPIKEC-9): out-of-line field `k` (the shape's field number
 /// minus its in-object capacity) is at `SLOTS_DATA + 8k` of the SLOTS cell (`shape::slf::DATA`).
 pub const SLOTS_DATA: u32 = 16;
 /// IC_LAYOUT 4, a hand fact (SPIKEC-9): the smi handler kind of an own data field out of line
@@ -1107,7 +1107,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
         let lines = read_set_lines();
         assert_eq!(lines.len(), 6, "{lines:?}");
         assert!(
-            lines[0].starts_with("OBJECT_LAYOUT 6: ") && lines[0].contains("SHAPE_CAGE_ALIGN"),
+            lines[0].starts_with("OBJECT_LAYOUT 7: ") && lines[0].contains("SHAPE_CAGE_ALIGN"),
             "{}",
             lines[0]
         );

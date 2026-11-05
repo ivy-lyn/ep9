@@ -137,6 +137,8 @@ fn declared_kinds() -> Vec<(&'static str, KindId)> {
         ("EXT_LATIN1", kinds::EXT_LATIN1),
         ("EXT_UTF16", kinds::EXT_UTF16),
         ("SYMBOL", kinds::SYMBOL),
+        // OBJECT_LAYOUT 7 (spec-temporal B2): its own single-id range.
+        ("BIGINT", kinds::BIGINT),
         ("OBJECT", kinds::OBJECT),
         ("FUNCTION", kinds::FUNCTION),
         ("ARRAY", kinds::ARRAY),
@@ -192,8 +194,8 @@ fn kind_ids_are_an_append_only_byte_list() {
     assert_eq!(
         ids,
         [
-            1, 2, 3, 4, 5, 6, 7, 8, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 64, 65, 66,
-            67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 128
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 64, 65,
+            66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 128
         ],
         "kind ids as built (append-only: a new id is added at the end of its range)"
     );
@@ -202,6 +204,7 @@ fn kind_ids_are_an_append_only_byte_list() {
         let range = match id {
             1..=7 => "strings",
             8 => "symbol",
+            9 => "bigint",
             16..=63 => "JS objects",
             64..=127 => "internal cells",
             128 => "shape",
@@ -429,7 +432,8 @@ fn every_function_has_the_isolate_realm() {
             assert_eq!(object::record_get(realm, realmf::HOST_DEFINED), UNDEFINED);
             let list = object::record_get(realm, realmf::INTRINSICS);
             assert_eq!(object::list_len(list), IntrinsicId::ALL.len());
-            assert_eq!(IntrinsicId::ALL.len(), 73); // 64 in M3-P0; 72 since M4-P0; 73 since M6-P0
+            // Append-safe (README §3.4): a pin on one id, not on the count of the list.
+            assert_eq!(IntrinsicId::RealmFuses as usize, 72);
             for id in IntrinsicId::ALL {
                 assert_eq!(
                     object::list_get(list, id as usize),

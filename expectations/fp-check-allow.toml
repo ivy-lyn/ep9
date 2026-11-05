@@ -1,12 +1,17 @@
 # cargo xtask fp-check allow list (H36, docs/adr/H36-fp-semantics.md; tools/xtask/src/fpcheck.rs).
 #
-# Each entry lets a banned libm symbol appear in one function of the shipped ep9 object. The
-# file is a small TOML subset that fp-check reads by hand: [[allow]] tables; string values and
-# one-line arrays of strings. More than 5 entries reopens H36 (fp-check then fails).
+# An [[allow]] entry lets a banned libm symbol appear in one function of the shipped ep9
+# object. An [[allow-crate]] entry lets a math crate (libm, pxfm, core_maths, micromath) into
+# the graph of ep9 when every path to it goes through a `via` package; the symbol and FMA
+# scans of the object still apply to its code. The file is a small TOML subset that fp-check
+# reads by hand: string values and one-line arrays of strings. More than 5 entries of both
+# kinds together reopens H36 (fp-check then fails).
 #
 #   symbols   banned symbols, by C name ("pow", not "_pow" or "__imp_pow")
 #   function  demangled function path; its generic instances and closures match too
 #   targets   "all", or an array of target triples
+#   crates    ([[allow-crate]]) math crates that may be in the graph
+#   via       ([[allow-crate]]) every path from ep9 to each crate passes one of these packages
 #   reopen    when the entry can go
 #   reason    why the call cannot change a JS-visible number
 
@@ -16,3 +21,9 @@ function = "oxc_semantic::ts_enum::eval::evaluate_expression"
 targets = "all"
 reopen = "H3 enum lowering (M4): BytecodeGen folds TS enums with ep9_math"
 reason = "oxc_semantic folds TS enum `%` and `**` with host fmod/powf; BytecodeGen rejects TSEnumDeclaration (crates/ep9_frontend/src/bytecodegen/stmt.rs), so ep9 never reads those values"
+
+[[allow-crate]]
+crates = ["core_maths", "libm"]
+via = ["ep9_temporal"]
+reopen = "temporal_rs routes its float math through ep9_math, or Temporal moves to an ep9 calendar and duration core"
+reason = "design SPEC-T-D19: temporal_rs and calendrical_calculations reach libm through core_maths, and ep9_temporal has a direct edge only to turn on libm force-soft-floats; so every path goes through ep9_temporal, and the via list names only it (a path that does not pass it, for example icu_calendar from another crate, fails; MODES-CHECK-w29-B0 MC-w29-B0-1). (1) The one FMA site is temporal_rs Fraction::to_finite_f64_slow in the ISO Duration.prototype.total path: libm::fma is then the soft, correctly rounded code, so the result bits are the same on every target and the object scan finds no FMA instruction. (2) The transcendental code serves only non-ISO calendars, which ep9 rejects with a RangeError (SPEC-T-D17)"

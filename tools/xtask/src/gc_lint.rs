@@ -113,7 +113,11 @@ const OPAQUE: &[&str] = &["PhantomData"];
 /// `<X>::new` and `<X>::pin` move their argument into heap memory.
 const BOXING: &[&str] = &["Box", "Rc", "Arc"];
 
-const DEFAULT_PATHS: &[&str] = &["crates/ep9_vm/src", "crates/ep9_builtins/src"];
+const DEFAULT_PATHS: &[&str] = &[
+    "crates/ep9_vm/src",
+    "crates/ep9_builtins/src",
+    "crates/ep9_temporal/src",
+];
 
 const ALLOW_PREFIX: &str = "gc-lint:";
 

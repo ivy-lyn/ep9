@@ -80,6 +80,12 @@ abi: impl<'s> ArgsBuilder<'s> :: pub fn is_empty(&self) -> bool
 abi: impl<'s> ArgsBuilder<'s> :: pub fn len(&self) -> usize
 abi: impl<'s> ArgsBuilder<'s> :: pub fn push(&mut self, &mut Cx<'s>, impl Into<Local<'s>>) -> JsResult<()>
 abi: impl<'s> Cx<'s> :: pub fn args_builder(&self) -> ArgsBuilder<'s>
+abi: impl<'s> Cx<'s> :: pub fn bigint_as_int_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn bigint_as_uint_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn bigint_from_i128(&mut self, i128) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn bigint_to_i128(&self, impl Into<Local<'s>>) -> Option<i128>
+abi: impl<'s> Cx<'s> :: pub fn bigint_to_number(&self, impl Into<Local<'s>>) -> f64
+abi: impl<'s> Cx<'s> :: pub fn bigint_to_string(&mut self, impl Into<Local<'s>>, u32) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn call(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, &[Local<'s>]) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn call_args(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, Rest<'s>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn call_built(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, ArgsBuilder<'s>) -> JsResult<Local<'s>>
@@ -148,6 +154,7 @@ abi: impl<'s> Cx<'s> :: pub fn intern(&mut self, Local<'s, JsString>) -> Local<'
 abi: impl<'s> Cx<'s> :: pub fn intrinsic(&self, IntrinsicId) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn is_array(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_array_or_throw(&mut self, impl Into<Local<'s>>) -> JsResult<bool>
+abi: impl<'s> Cx<'s> :: pub fn is_bigint(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_builtin(&self, impl Into<Local<'s>>, BuiltinId) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_callable(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_constructor(&self, impl Into<Local<'s>>) -> bool
@@ -181,6 +188,7 @@ abi: impl<'s> Cx<'s> :: pub fn new_weak_ref(&mut self, impl Into<Local<'s>>, imp
 abi: impl<'s> Cx<'s> :: pub fn new_wrapper(&mut self, impl Into<Local<'s, JsObject>>, impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn not_implemented(&mut self, &str) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn now_epoch_ns(&mut self) -> i128
+abi: impl<'s> Cx<'s> :: pub fn number_to_bigint(&mut self, f64) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn object_class(&self, impl Into<Local<'s>>) -> Option<ObjectClass>
 abi: impl<'s> Cx<'s> :: pub fn ordinary_create_from_constructor(&mut self, impl Into<Local<'s, JsObject>>, IntrinsicId) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn own_property_keys(&mut self, impl Into<Local<'s, JsObject>>) -> JsResult<Local<'s, JsArray>>
@@ -223,17 +231,21 @@ abi: impl<'s> Cx<'s> :: pub fn string_len(&self, impl Into<Local<'s, JsString>>)
 abi: impl<'s> Cx<'s> :: pub fn substring(&mut self, impl Into<Local<'s, JsString>>, usize, usize) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn symbol_description(&self, Local<'s, JsSymbol>) -> Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn symbol_for(&mut self, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, JsSymbol>>
+abi: impl<'s> Cx<'s> :: pub fn system_time_zone_id(&mut self) -> Option<String>
 abi: impl<'s> Cx<'s> :: pub fn tail_call_args(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, Rest<'s>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn this_bigint_value(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn this_primitive_value(&mut self, impl Into<Local<'s>>, PrimitiveType) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn throw(&mut self, impl Into<Local<'s>>) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn throw_error(&mut self, ErrorKind, &str) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn throw_range_error(&mut self, &str) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn throw_type_error(&mut self, &str) -> Throw
+abi: impl<'s> Cx<'s> :: pub fn to_bigint(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn to_boolean(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn to_int32(&mut self, impl Into<Local<'s>>) -> JsResult<i32>
 abi: impl<'s> Cx<'s> :: pub fn to_integer_or_infinity(&mut self, impl Into<Local<'s>>) -> JsResult<f64>
 abi: impl<'s> Cx<'s> :: pub fn to_length(&mut self, impl Into<Local<'s>>) -> JsResult<u64>
 abi: impl<'s> Cx<'s> :: pub fn to_number(&mut self, impl Into<Local<'s>>) -> JsResult<f64>
+abi: impl<'s> Cx<'s> :: pub fn to_numeric(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn to_object(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn to_primitive(&mut self, impl Into<Local<'s>>, ToPrimitiveHint) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn to_property_descriptor(&mut self, impl Into<Local<'s>>) -> JsResult<PropertyDescriptor<'s>>

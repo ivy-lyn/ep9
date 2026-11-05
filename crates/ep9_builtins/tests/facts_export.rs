@@ -802,6 +802,9 @@ function writers(i, s, d, o) {
   var b4 = s + 1;                     // string
   var b5 = o + 1;                     // other
   var t = typeof vals[i % 11];        // TypeOf: each type but bigint
+  var tb = typeof (i % 2 ? 1n : o);   // TypeOf bigint (and plain object)
+  var bb = (i % 2 ? 1n : 2n) + 1n;    // BinaryHint bigint
+  var eb = (i % 2 ? 1n : 3n) < 2n;    // CompareHint bigint
   var e1 = d < 3.5;                   // CompareHint number
   var e2 = vals[4] === true;          // boolean
   var e3 = vals[3] == vals[2];        // nullish
@@ -883,7 +886,7 @@ fn dead_key_cleared(iso: &mut Isolate, hash: &[u8; 32]) -> bool {
 /// The H16 "Declared, no writer" items, each with the words that the H16 paragraph names it
 /// by. No code writes them, so a corpus record never holds one (`ep9_vm`
 /// `tests::facts_export::the_fields_declared_with_no_writer_have_none` scans the code).
-const NO_WRITER_ITEMS: [(&str, &str); 20] = [
+const NO_WRITER_ITEMS: [(&str, &str); 17] = [
     ("RecordFlags::ran", "`RecordFlags::RAN`"),
     ("RecordFlags::exited", "`RecordFlags::EXITED`"),
     ("ObjectKind::typed-array", "`ObjectKind::TypedArray`"),
@@ -897,9 +900,6 @@ const NO_WRITER_ITEMS: [(&str, &str); 20] = [
     ("BindingSet::missing", "`BindingSet::MISSING`"),
     ("ForInHint::enum-cache-keys", FOR_IN_KEYS),
     ("ForInHint::enum-cache-keys-and-indices", FOR_IN_KEYS),
-    ("BinaryHint::bigint", BIGINT_BITS),
-    ("CompareHint::bigint", BIGINT_BITS),
-    ("TypeOf::bigint", BIGINT_BITS),
     ("Call.state::polymorphic", POLYMORPHIC),
     ("KeyedFacts.state::polymorphic", POLYMORPHIC),
     ("FieldRep::unset", "`FieldRep::Unset`"),
@@ -910,8 +910,6 @@ const NO_WRITER_ITEMS: [(&str, &str); 20] = [
 ];
 const FOR_IN_KEYS: &str =
     "the `ForInHint` bits `enum-cache-keys` and `enum-cache-keys-and-indices`";
-const BIGINT_BITS: &str =
-    "the `bigint` bits of `BinaryHint`, `CompareHint` and the TypeOf `TypeSet`";
 const POLYMORPHIC: &str = "the `polymorphic` IC state of a Call or keyed record";
 
 /// Each item that a record can hold: "kind::<kind>" for each slot kind, and "<place>::<name>"

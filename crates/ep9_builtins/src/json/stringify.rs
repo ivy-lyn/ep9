@@ -240,8 +240,8 @@ fn property_value<'s>(
         Name::Key(k) => cx.get(holder, k)?,
         Name::Index(i) => cx.get_index(holder, i)?,
     };
-    // 2. If value is an Object or value is a BigInt, then (v0: no BigInt)
-    if value.is_object() {
+    // 2. If value is an Object or value is a BigInt, then
+    if value.is_object() || cx.is_bigint(value) {
         // a. Let toJSON be ? GetV(value, "toJSON").
         let to_json = cx.get_v(value, state.to_json)?;
         // b. If IsCallable(toJSON) is true, then set value to ? Call(toJSON, value, « key »).
@@ -282,7 +282,8 @@ fn property_value<'s>(
         } else {
             // c. Else if value has a [[BooleanData]] internal slot, set value to
             //    value.[[BooleanData]].
-            // d. (BigInt: not in v0.)
+            // d. Else if value has a [[BigIntData]] internal slot, set value to
+            //    value.[[BigIntData]].
             value = p;
         }
     }
@@ -290,8 +291,9 @@ fn property_value<'s>(
 }
 
 /// True if SerializeJSONProperty gives a text for `value` (from `property_value`), not
-/// undefined: what `write_value` gives true for.
-fn has_text(value: Resolved<'_>) -> bool {
+/// undefined: what `write_value` gives true for. A BigInt counts: `write_value` throws its
+/// TypeError (step 10), which must not be skipped as an undefined member.
+fn has_text(cx: &Cx<'_>, value: Resolved<'_>) -> bool {
     let value = match value {
         Resolved::Raw(_) => return true,
         Resolved::Value(v) => v,
@@ -300,6 +302,7 @@ fn has_text(value: Resolved<'_>) -> bool {
         || value.as_bool().is_some()
         || value.is_string()
         || value.is_number()
+        || cx.is_bigint(value)
         || value.as_object().is_some_and(|o| !o.is_callable())
 }
 
@@ -349,7 +352,10 @@ fn write_value<'s>(
         }
         return Ok(true);
     }
-    // 10. (BigInt: a TypeError; not in v0.)
+    // 10. If value is a BigInt, throw a TypeError exception.
+    if cx.is_bigint(value) {
+        return Err(cx.throw_type_error("Do not know how to serialize a BigInt"));
+    }
     // 11. If value is an Object and IsCallable(value) is false, then
     if let Some(o) = value.as_object()
         && !o.is_callable()
@@ -459,7 +465,7 @@ fn serialize_object<'s>(
         // not undefined, the separator of steps 10-11, the member's key and strP's text go
         // into the buffer.
         let v = property_value(cx, state, Name::Key(p), value)?;
-        if !has_text(v) {
+        if !has_text(cx, v) {
             continue;
         }
         if any {

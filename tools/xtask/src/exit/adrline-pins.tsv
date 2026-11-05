@@ -7,7 +7,7 @@
 pin	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:67	crates/ep9_heap/src/layout.rs	^pub const PAGE_REMEMBERED_OFFSET: usize = 16;$	0
 pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/slow/call.rs:600	crates/ep9_vm/src/interp/slow/call.rs	// One unit, also when the frame does not fit \(R3-2\), as in `do_call`\.	1
 pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/mod.rs:175	crates/ep9_vm/src/interp/mod.rs	pub const TERMINATE: u32 = 1;	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:378	crates/ep9_vm/src/abi/mod.rs	^pub struct ScratchList<'s> \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:379	crates/ep9_vm/src/abi/mod.rs	^pub struct ScratchList<'s> \{	0
 pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:412	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn well_known\(	0
 pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:418	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn prototype\(	0
 pin	H34-relocation-kinds.md	docs/adr/H07-address-space-and-code-range.md:88	docs/adr/H07-address-space-and-code-range.md	^\| H07-Q2 \|	0
@@ -266,6 +266,31 @@ history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:460-463	**The set 
 # the drift map would read them from that older commit, so each is pinned to its line at HEAD. The H16
 # F-R7 pin of facts_export.rs:86-100 is gone: the doc now cites 96-110 (its FIX value). H20:66 names
 # builtins.rs:1024 by its full path (the bare `:1024` was an older H20 token of abi/mod.rs).
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:593	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:723	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:184	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
 pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:581	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
+# spec-int merge (spec-temporal on m1m6/p5, 2026-11-05): dated record and Change-log rows keep the line of the
+# commit they name (M3-P1-REVIEWROW-REFS); the BigInt and Temporal code moved those lines.
+history	H05-always-linked-compiler.md	.github/scripts/dep-guards.sh:191-213	| 1 Reviewer	b34fd01e	\# 12\) H5\: the bytecode compiler is always linked\. ep9 \(the runtime crate\, ep9_cl
+history	H08-object-header-and-shapeid.md	crates/ep9_vm/src/kinds.rs:336-337	| 1 Reviewer (M6-P4 amendment: the 2026-11-05 clarify row, Frozen step at M1 exit, whole)	3dd4f46c	assert_eq\!\(FLAG_INOBJECT_MASK \& FLAG_IS_PROTOTYPE\, 0\)\;
+history	H16-ics-and-feedback.md	`:1158-1165`	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, MODES-D16 built, PROFILE5)	d1db3137	\/\/ \`INT32_OVERFLOW\` \(MODES\-D16\)\, so the arm that fits does not change\.
+history	H16-ics-and-feedback.md	`:1182-1189`	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, MODES-D16 built, PROFILE5)	d1db3137	\/\/ \`INT32_OVERFLOW\` \(MODES\-D16\)\, so the arm that fits does not change\.
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| 3 Verifier (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| 4 Data (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| 1b Second reviewer (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2; README §3.2 Frozen part, M1-CHECK role)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:171	| 3 Verifier (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	f0d3010b	fn ic_layout_2_constants\(\) \{
+history	H16-ics-and-feedback.md	`:193`	| 3 Verifier (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	f0d3010b	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:171	| 1b Second reviewer (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2; README §3.2 Frozen part, M1-CHECK role)	f0d3010b	fn ic_layout_2_constants\(\) \{
+history	H16-ics-and-feedback.md	`:193`	| 1b Second reviewer (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2; README §3.2 Frozen part, M1-CHECK role)	f0d3010b	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| Approval (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:153-162	| 2026-10-27 | clarify (proposed; an Open-question row of a Frozen ADR, no core text) | H20-Q1 answered by H14	91c3af1e	\/\/\/ \`new\.target\`\: the constructor of a \`\[\[Construct\]\]\` call\, undefined for a cal
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:153-162	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 clarify row, H20-Q1, ADR-A0)	91c3af1e	\/\/\/ \`new\.target\`\: the constructor of a \`\[\[Construct\]\]\` call\, undefined for a cal
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:153-162	| 3 Verifier (M4-P2 amendment: the 2026-10-27 H20-Q1 clarify row, ADR-A0)	91c3af1e	\/\/\/ \`new\.target\`\: the constructor of a \`\[\[Construct\]\]\` call\, undefined for a cal
+history	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1024	| 1 Reviewer (M6-P0 amendment: the 2026-11-03 clarify row, ADRLINE and the IntrinsicId 0-72 text, M6-P0 integration fixer)	d667ae9e	pub fn check_tables\(tables\: \&\[\&BuiltinTable\]\) \-\> Result\<\(\)\, String\> \{
+history	H26-toolchain-and-unicode.md	Cargo.toml:71-72	| 2 Codex (M5-P0 amendment: the 2026-10-28 regress fork state clarify row)	036a0efe	\[patch\.crates\-io\]
+history	H27-compiler-features.md	.github/scripts/dep-guards.sh:215-277	| 3 Verifier	cb01df11	\# 13\) H23\: release builds abort on a panic\, so no panic unwinds through a JIT or
+# spec-int merge: three FIX values equal an older token of the same doc with another line (the H23:34
+# case), so the drift map would read them from that older commit; each is pinned to its line at HEAD.
+pin	H19-strings.md	`:286`	crates/ep9_vm/src/conv.rs	^pub\(crate\) fn type_of\(b: u64\) -> Atom \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:488	crates/ep9_vm/src/abi/mod.rs	^impl Drop for ArgsBuilder<'_> \{	0
+pin	13-execution-modes.md	crates/ep9_vm/Cargo.toml:28	crates/ep9_vm/Cargo.toml	^jit = \["ep9_platform/jit"\]	0
