@@ -1,0 +1,361 @@
+{
+ "schema": "ep9-exit2/v1",
+ "source_schema": "ep9-cross/v1",
+ "commit": "ef0c1ae60aeb0435b05cff5c3f41f8de0216dad2",
+ "dirty": false,
+ "dirty_paths": [],
+ "runner_commit": "ef0c1ae60aeb0435b05cff5c3f41f8de0216dad2",
+ "engine_build": "features jit; preset jit",
+ "started": "2026-11-05T03:00:23.315Z",
+ "host": {
+  "id": null,
+  "gate_host": false,
+  "cpu": "AMD EPYC",
+  "platform": "linux-x64",
+  "transparent_hugepage": "never"
+ },
+ "provisional": true,
+ "readings": [
+  {
+   "id": "octane7-vs-qjs",
+   "label": "Octane-7 geomean vs QuickJS",
+   "comparator": "qjs",
+   "threshold": 1,
+   "workloads": [
+    "octane-richards",
+    "octane-deltablue",
+    "octane-crypto",
+    "octane-raytrace",
+    "octane-earley-boyer",
+    "octane-splay",
+    "octane-navier-stokes"
+   ],
+   "status": "provisional",
+   "gate": "no gate verdict (the interval reads pass)",
+   "reasons": [
+    "provisional run (no host file (not a gate host))",
+    "not a gate host"
+   ],
+   "net": {
+    "n": 10,
+    "median": 1.3747729041651793,
+    "interval": [
+     1.3496891971712002,
+     1.393967177239898
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 1.9134538733326092,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.3705293950849589,
+     1.389134065933639,
+     1.3496891971712002,
+     1.3300196658175274,
+     1.3645519646142001,
+     1.3934246015103413,
+     1.3718293344220445,
+     1.393967177239898,
+     1.4116010381068804,
+     1.3777164739083143
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.3707555933373343,
+    "interval": [
+     1.3447088097586612,
+     1.3882528828193612
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 1.5792444270607544,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.3646275917574138,
+     1.3830884328159052,
+     1.3447088097586612,
+     1.324356991299715,
+     1.3600240042157556,
+     1.3820246312225792,
+     1.3689448606576893,
+     1.3882528828193612,
+     1.404891583696854,
+     1.3725663260169791
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.3790388538775542,
+    "gross": 1.3734071975859221
+   },
+   "kernels": [
+    {
+     "workload": "octane-richards",
+     "metric": "net",
+     "median": 1.3616130852420167,
+     "interval": [
+      1.3230304822738863,
+      1.396690538598273
+     ],
+     "status": [
+      "provisional"
+     ]
+    },
+    {
+     "workload": "octane-deltablue",
+     "metric": "net",
+     "median": 1.5574931592861079,
+     "interval": [
+      1.5097250608704926,
+      1.5892304860423878
+     ],
+     "status": [
+      "provisional"
+     ]
+    },
+    {
+     "workload": "octane-crypto",
+     "metric": "net",
+     "median": 1.4012458933612975,
+     "interval": [
+      1.2575390272470668,
+      1.4481659002935598
+     ],
+     "status": [
+      "provisional"
+     ]
+    },
+    {
+     "workload": "octane-raytrace",
+     "metric": "net",
+     "median": 1.2627669881166121,
+     "interval": [
+      1.1727082856896136,
+      1.315367747627102
+     ],
+     "status": [
+      "provisional",
+      "void (IQR 5.6% > 5%)"
+     ]
+    },
+    {
+     "workload": "octane-earley-boyer",
+     "metric": "net",
+     "median": 2.166585530886355,
+     "interval": [
+      2.135261501464959,
+      2.2295412612334524
+     ],
+     "status": [
+      "provisional"
+     ]
+    },
+    {
+     "workload": "octane-splay",
+     "metric": "net",
+     "median": 1.4021333291177638,
+     "interval": [
+      1.3423867457734064,
+      1.4456617301693717
+     ],
+     "status": [
+      "provisional",
+      "void (IQR 5.6% > 5%)"
+     ]
+    },
+    {
+     "workload": "octane-navier-stokes",
+     "metric": "net",
+     "median": 0.8320567131365639,
+     "interval": [
+      0.8189893937772302,
+      0.8769853761176373
+     ],
+     "status": [
+      "provisional"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "v8v7-7-vs-node-jitless",
+   "label": "v8-v7 7-kernel geomean vs node --jitless",
+   "comparator": "node-jitless",
+   "threshold": 0.75,
+   "workloads": [
+    "richards",
+    "deltablue",
+    "crypto",
+    "raytrace",
+    "earley-boyer",
+    "splay",
+    "navier-stokes"
+   ],
+   "status": "provisional",
+   "gate": "no gate verdict (the interval reads pass)",
+   "reasons": [
+    "provisional run (no host file (not a gate host))",
+    "not a gate host"
+   ],
+   "net": {
+    "n": 10,
+    "median": 0.8709975282863329,
+    "interval": [
+     0.854748430702942,
+     0.8850850075124167
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 2.3035889843567987,
+    "void": false,
+    "threshold": 0.75,
+    "side": "above",
+    "series": [
+     0.8438349187223952,
+     0.881128929189192,
+     0.8583488693052107,
+     0.8850850075124167,
+     0.8685875547296772,
+     0.900155820337415,
+     0.872236060447089,
+     0.854748430702942,
+     0.8697589961255768,
+     0.8805041875402293
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 0.9062335834207298,
+    "interval": [
+     0.8878358972181468,
+     0.9217457916605464
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 1.470269266535409,
+    "void": false,
+    "threshold": 0.75,
+    "side": "above",
+    "series": [
+     0.8784058951645105,
+     0.9141555076816543,
+     0.900986842265282,
+     0.9217457916605464,
+     0.902602426995337,
+     0.9332951047895822,
+     0.9071454711184831,
+     0.8878358972181468,
+     0.9053216957229765,
+     0.9149012471832528
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 0.8687161319175171,
+    "gross": 0.9040512742183919
+   },
+   "kernels": [
+    {
+     "workload": "richards",
+     "metric": "net",
+     "median": 0.891818776685843,
+     "interval": [
+      0.818004328376986,
+      0.9518929234124507
+     ],
+     "status": [
+      "provisional",
+      "void (IQR 6.2% > 5%)"
+     ]
+    },
+    {
+     "workload": "deltablue",
+     "metric": "net",
+     "median": 0.897127545524167,
+     "interval": [
+      0.852654055776069,
+      0.946513056728997
+     ],
+     "status": [
+      "provisional",
+      "void (IQR 6.1% > 5%)"
+     ]
+    },
+    {
+     "workload": "crypto",
+     "metric": "net",
+     "median": 1.210602814030695,
+     "interval": [
+      1.0904180831506174,
+      1.2780718903326083
+     ],
+     "status": [
+      "provisional"
+     ]
+    },
+    {
+     "workload": "raytrace",
+     "metric": "net",
+     "median": 0.6046317639598526,
+     "interval": [
+      0.5747394570077028,
+      0.6331458762943165
+     ],
+     "status": [
+      "provisional"
+     ]
+    },
+    {
+     "workload": "earley-boyer",
+     "metric": "net",
+     "median": 0.9817892862500324,
+     "interval": [
+      0.9279121408063538,
+      1.035138060500829
+     ],
+     "status": [
+      "provisional",
+      "void (IQR 6.2% > 5%)"
+     ]
+    },
+    {
+     "workload": "splay",
+     "metric": "net",
+     "median": 0.5984728434979959,
+     "interval": [
+      0.5691265942761407,
+      0.6416884573802121
+     ],
+     "status": [
+      "provisional",
+      "void (IQR 7.4% > 5%)"
+     ]
+    },
+    {
+     "workload": "navier-stokes",
+     "metric": "net",
+     "median": 1.0850731727307994,
+     "interval": [
+      1.053451162902587,
+      1.1146889341531734
+     ],
+     "status": [
+      "provisional"
+     ]
+    }
+   ]
+  }
+ ],
+ "pass": false
+}
