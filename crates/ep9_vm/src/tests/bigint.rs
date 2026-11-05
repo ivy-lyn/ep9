@@ -281,7 +281,7 @@ fn above_the_limit(extra: u64) -> Vec<u64> {
 }
 
 /// H23 "BigInt size": a unit literal above the limit is not checked (`alloc_literal`), so each
-/// operation that does not grow its input must still refuse it, through the one check of
+/// operation whose result stays above the limit must still refuse it, through the one check of
 /// `bigint::from_result`. A literal of exactly the limit passes.
 #[test]
 fn an_oversized_literal_throws_on_every_operation() {
@@ -604,4 +604,31 @@ fn a_bigint_in_an_array_literal() {
     let r = run_all(make);
     ok(&r);
     assert_eq!(r.output, ["-5"]);
+}
+
+/// H23 "BigInt size" (SPECINT-CODEX-FINAL): a result from a unit literal above the limit that
+/// shrinks to at most the limit is a value, not a RangeError (`bigint::from_result` checks the
+/// result only): `BigInt.asIntN(0, x)`, `BigInt.asUintN(0, x)`, `asIntN(64, x)`, `x * 0n`,
+/// `x & 1n` and `x - x` are 0n.
+#[test]
+fn an_oversized_literal_gives_a_shrinking_result() {
+    with_cx(false, |cx| {
+        let rt = cx.rt();
+        let x = bigint::alloc_literal(rt, false, &above_the_limit(0));
+        assert_eq!(bigint::view(&x).bit_len(), ep9_bigint::MAX_BITS + 1);
+        let zero = big(cx, "0");
+        let one = big(cx, "1");
+        for (bits, signed) in [(0, true), (0, false), (64, true), (64, false)] {
+            let r = bigint::as_n(cx, x, bits, signed).unwrap();
+            assert_eq!(bigint::view(&r).bit_len(), 0, "as_n({bits}, x) {signed}");
+        }
+        for (name, op, rhs) in [
+            ("x * 0n", BinOp::Mul, zero),
+            ("x & 1n", BinOp::BitAnd, one),
+            ("x - x", BinOp::Sub, x),
+        ] {
+            let r = conv::binary(cx, op, x, rhs).unwrap();
+            assert_eq!(bigint::view(&r).bit_len(), 0, "{name}");
+        }
+    });
 }
