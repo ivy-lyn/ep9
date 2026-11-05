@@ -310,19 +310,19 @@ fn shr_mag(a: View, n: View) -> Big {
 
 // ---- bitwise (§6.1.6.2.18-§6.1.6.2.20: infinite two's complement) -----------------------------
 
-/// BigInt::bitwiseAND.
-pub fn and(a: View, b: View) -> Big {
-    bitwise(a, b, |x, y| x & y)
+/// BigInt::bitwiseAND. Two negative values can give one bit more than the larger operand.
+pub fn and(a: View, b: View) -> Result<Big, Error> {
+    checked(bitwise(a, b, |x, y| x & y))
 }
 
-/// BigInt::bitwiseOR.
-pub fn or(a: View, b: View) -> Big {
-    bitwise(a, b, |x, y| x | y)
+/// BigInt::bitwiseOR. Never larger than the larger operand; checked as the other operations.
+pub fn or(a: View, b: View) -> Result<Big, Error> {
+    checked(bitwise(a, b, |x, y| x | y))
 }
 
-/// BigInt::bitwiseXOR.
-pub fn xor(a: View, b: View) -> Big {
-    bitwise(a, b, |x, y| x ^ y)
+/// BigInt::bitwiseXOR. Can give one bit more than the larger operand.
+pub fn xor(a: View, b: View) -> Result<Big, Error> {
+    checked(bitwise(a, b, |x, y| x ^ y))
 }
 
 /// Applies `op` to each 64-bit digit of the two's complement forms of `a` and `b`, with one

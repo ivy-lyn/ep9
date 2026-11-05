@@ -223,9 +223,9 @@ pub(crate) fn binary(cx: &mut Cx, op: BinOp, a: u64, b: u64) -> Res<u64> {
         BinOp::Div => digits::div_trunc(x, y),
         BinOp::Mod => digits::rem_trunc(x, y),
         BinOp::Exp => digits::pow(x, y),
-        BinOp::BitOr => Ok(digits::or(x, y)),
-        BinOp::BitXor => Ok(digits::xor(x, y)),
-        BinOp::BitAnd => Ok(digits::and(x, y)),
+        BinOp::BitOr => digits::or(x, y),
+        BinOp::BitXor => digits::xor(x, y),
+        BinOp::BitAnd => digits::and(x, y),
         BinOp::Shl => digits::shl(x, y),
         BinOp::Sar => digits::shr(x, y),
         BinOp::Shr => {

@@ -121,3 +121,17 @@ fn size_limits_are_range_errors() {
         ])
     );
 }
+
+/// `^` and `&` can give one bit more than the larger operand: the result is checked as for `~`
+/// (spec-temporal Codex r1 B1). `x` has exactly 2^30 bits (the limit); `|` cannot grow.
+#[test]
+fn bitwise_results_above_the_size_limit_are_range_errors() {
+    assert_eq!(
+        common::run_both(
+            r#"var x = BigInt.asUintN(2 ** 30, -1n), a = -x, b = -(1n << 1073741823n), r = []; for (var [f, want] of [[() => ~x], [() => x ^ -1n], [() => a & b], [() => a | b, b + 1n], [() => x ^ 0n, x]]) { try { r.push(f() === want ? 'ok' : 'wrong'); } catch (e) { r.push(e.constructor.name + ': ' + e.message); } } print(r.join('; '))"#
+        ),
+        lines(&[
+            "RangeError: Maximum BigInt size exceeded; RangeError: Maximum BigInt size exceeded; RangeError: Maximum BigInt size exceeded; ok; ok"
+        ])
+    );
+}

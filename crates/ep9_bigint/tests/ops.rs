@@ -54,9 +54,21 @@ fn arithmetic_matches_i128() {
                 assert_eq!(int(&b::div_trunc(bx.view(), by.view()).unwrap()), x / y);
                 assert_eq!(int(&b::rem_trunc(bx.view(), by.view()).unwrap()), x % y);
             }
-            assert_eq!(int(&b::and(bx.view(), by.view())), x & y, "{x} & {y}");
-            assert_eq!(int(&b::or(bx.view(), by.view())), x | y, "{x} | {y}");
-            assert_eq!(int(&b::xor(bx.view(), by.view())), x ^ y, "{x} ^ {y}");
+            assert_eq!(
+                int(&b::and(bx.view(), by.view()).unwrap()),
+                x & y,
+                "{x} & {y}"
+            );
+            assert_eq!(
+                int(&b::or(bx.view(), by.view()).unwrap()),
+                x | y,
+                "{x} | {y}"
+            );
+            assert_eq!(
+                int(&b::xor(bx.view(), by.view()).unwrap()),
+                x ^ y,
+                "{x} ^ {y}"
+            );
             assert_eq!(b::cmp(bx.view(), by.view()), x.cmp(&y));
         }
         assert_eq!(int(&b::neg(big(x).view())), -x);
@@ -78,7 +90,7 @@ fn arithmetic_matches_i128() {
 #[test]
 fn spec_cases() {
     // design §2.4: two's complement of negatives, >> floor, / and % signs.
-    assert_eq!(int(&b::and(big(-5).view(), big(3).view())), 3);
+    assert_eq!(int(&b::and(big(-5).view(), big(3).view()).unwrap()), 3);
     assert_eq!(int(&b::shr(big(-5).view(), big(1).view()).unwrap()), -3);
     assert_eq!(
         int(&b::div_trunc(big(-7).view(), big(2).view()).unwrap()),
@@ -333,6 +345,22 @@ fn size_limit_edges() {
     assert_eq!(
         b::pow(big(2).view(), big(i128::from(MAX_BITS) - 1).view()).unwrap(),
         top
+    );
+    // `~`, `^` and `&` can give one bit more than the larger operand (Codex r1 B1).
+    let ones = b::as_uint_n(big(-1).view(), MAX_BITS).unwrap(); // MAX_BITS bits
+    assert_eq!(ones.view().bit_len(), MAX_BITS);
+    assert_eq!(b::not(ones.view()), Err(Error::TooBig));
+    assert_eq!(b::xor(ones.view(), big(-1).view()), Err(Error::TooBig));
+    assert_eq!(b::xor(ones.view(), View::ZERO).unwrap(), ones);
+    let neg_ones = b::neg(ones.view()); // -(2^MAX - 1)
+    let neg_top = b::neg(top.view()); // -2^(MAX-1)
+    assert_eq!(b::and(neg_ones.view(), neg_top.view()), Err(Error::TooBig));
+    assert!(
+        b::or(neg_ones.view(), neg_top.view())
+            .unwrap()
+            .view()
+            .bit_len()
+            <= MAX_BITS
     );
     // A right shift by a huge count is 0n or -1n.
     let huge = parse("99999999999999999999999");
