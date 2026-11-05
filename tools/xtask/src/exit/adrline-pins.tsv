@@ -200,6 +200,7 @@ pin	H18-elements-kinds.md	docs/adr/README.md:149	docs/adr/README.md	^\| H18 \| E
 # Frozen steps (b5c8ba44) rewrote. The pattern names the line by its start.
 pin	H17-object-layout.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
 pin	H18-elements-kinds.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H19-strings.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
 # M6-P0 integration fixer, records part (ADRLINE at e059e28a, the M6-P0 merge head plus the fixer code):
 # tokens in dated record and Change-log rows keep their numbers; each pattern is the token's first
 # line at the commit that added it (FIX or UNFIXABLE at HEAD). Doc 13: two module-doc ranges and the

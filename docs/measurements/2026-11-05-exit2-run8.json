@@ -1,0 +1,349 @@
+{
+ "schema": "ep9-exit2/v1",
+ "source_schema": "ep9-cross/v1",
+ "commit": "ef0c1ae60aeb0435b05cff5c3f41f8de0216dad2",
+ "dirty": false,
+ "dirty_paths": [],
+ "runner_commit": "ef0c1ae60aeb0435b05cff5c3f41f8de0216dad2",
+ "engine_build": "features jit; preset jit",
+ "started": "2026-11-05T02:39:11.035Z",
+ "host": {
+  "id": "m5max-macos",
+  "gate_host": true,
+  "cpu": "Apple M5 Max",
+  "platform": "darwin-arm64",
+  "transparent_hugepage": null
+ },
+ "provisional": false,
+ "readings": [
+  {
+   "id": "octane7-vs-qjs",
+   "label": "Octane-7 geomean vs QuickJS",
+   "comparator": "qjs",
+   "threshold": 1,
+   "workloads": [
+    "octane-richards",
+    "octane-deltablue",
+    "octane-crypto",
+    "octane-raytrace",
+    "octane-earley-boyer",
+    "octane-splay",
+    "octane-navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.4380748470227493,
+    "interval": [
+     1.4316231629157001,
+     1.4434577947613971
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.6113873703070397,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.44268726796659,
+     1.4311689851439735,
+     1.4327280692274575,
+     1.4316231629157001,
+     1.4386521529904508,
+     1.4468931619573444,
+     1.4336497479958745,
+     1.437497541055048,
+     1.4389409837395144,
+     1.4434577947613971
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.4323375425485798,
+    "interval": [
+     1.426494383354533,
+     1.4357631485066875
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.3258503171266214,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.434403066419844,
+     1.4287504169171594,
+     1.426494383354533,
+     1.4253666314822695,
+     1.4322365213516846,
+     1.4383006209494238,
+     1.4324385637454748,
+     1.431228607790802,
+     1.432939764981621,
+     1.4357631485066875
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.4348365504290819,
+    "gross": 1.4295232622041323
+   },
+   "kernels": [
+    {
+     "workload": "octane-richards",
+     "metric": "net",
+     "median": 1.495701174478039,
+     "interval": [
+      1.4769808191677396,
+      1.5023187751309197
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-deltablue",
+     "metric": "net",
+     "median": 1.6312068150361543,
+     "interval": [
+      1.6128574839561638,
+      1.6510974923705737
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-crypto",
+     "metric": "net",
+     "median": 1.4188804374069393,
+     "interval": [
+      1.4065562911199343,
+      1.4534474939986604
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-raytrace",
+     "metric": "net",
+     "median": 1.32960866036957,
+     "interval": [
+      1.3148950173025074,
+      1.3526007818709516
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-earley-boyer",
+     "metric": "net",
+     "median": 1.945521618998238,
+     "interval": [
+      1.9418384461396956,
+      1.9670099635427372
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-splay",
+     "metric": "net",
+     "median": 1.4455787894546632,
+     "interval": [
+      1.4171048051733932,
+      1.4572329109535926
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-navier-stokes",
+     "metric": "net",
+     "median": 0.9671986723902712,
+     "interval": [
+      0.9607107890853585,
+      0.9817459391967417
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "v8v7-7-vs-node-jitless",
+   "label": "v8-v7 7-kernel geomean vs node --jitless",
+   "comparator": "node-jitless",
+   "threshold": 0.75,
+   "workloads": [
+    "richards",
+    "deltablue",
+    "crypto",
+    "raytrace",
+    "earley-boyer",
+    "splay",
+    "navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.0111782306750374,
+    "interval": [
+     1.005949214154504,
+     1.0181707641975364
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.9019536644558983,
+    "void": false,
+    "threshold": 0.75,
+    "side": "above",
+    "series": [
+     1.0181707641975364,
+     1.005949214154504,
+     1.007981193147311,
+     1.0054395887322105,
+     1.0136206609728755,
+     1.0209755241198668,
+     1.0087358003771996,
+     1.0164379516823483,
+     1.014525487684508,
+     1.0064589043870755
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.0876159106789467,
+    "interval": [
+     1.0845067449824302,
+     1.0945649359809224
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.661209911013664,
+    "void": false,
+    "threshold": 0.75,
+    "side": "above",
+    "series": [
+     1.0931252234123185,
+     1.0945649359809224,
+     1.086242649362887,
+     1.0845067449824302,
+     1.0868494156895003,
+     1.1002882225021358,
+     1.0840543811076628,
+     1.0937392790488418,
+     1.0882867118882067,
+     1.0869451094696867
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.012728409397655,
+    "gross": 1.090711214386703
+   },
+   "kernels": [
+    {
+     "workload": "richards",
+     "metric": "net",
+     "median": 1.100164880772468,
+     "interval": [
+      1.0867132562645594,
+      1.1149385211534897
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "deltablue",
+     "metric": "net",
+     "median": 1.0542959843466604,
+     "interval": [
+      1.0365010030734567,
+      1.0650608847963663
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "crypto",
+     "metric": "net",
+     "median": 1.457793996667946,
+     "interval": [
+      1.4450289649551076,
+      1.4734456716068773
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "raytrace",
+     "metric": "net",
+     "median": 0.7184880829522005,
+     "interval": [
+      0.7105902759563701,
+      0.7224032449950047
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "earley-boyer",
+     "metric": "net",
+     "median": 1.0324088743711597,
+     "interval": [
+      1.0192394046957192,
+      1.0466159526282304
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "splay",
+     "metric": "net",
+     "median": 0.7105220923653093,
+     "interval": [
+      0.6965413398656088,
+      0.7164739125023626
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "navier-stokes",
+     "metric": "net",
+     "median": 1.2259861965427683,
+     "interval": [
+      1.212628836594153,
+      1.2362166536571928
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ]
+  }
+ ],
+ "pass": true
+}
