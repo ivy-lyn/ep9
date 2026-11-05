@@ -178,7 +178,7 @@ impl LoadedUnit {
                     Constant::Number(n) => Value::number(n.value()).to_bits(),
                     Constant::String(id) => lu.strings[id.index()].bits(),
                     // A literal: no size check (`load` cannot throw). A literal above MAX_BITS
-                    // loads; its first operator result throws (`bigint::from_result`). GC
+                    // loads; a result above MAX_BITS throws (`bigint::from_result`). GC
                     // point: every const slot is a strong root range and holds undefined or a
                     // Value before the first allocation (above).
                     Constant::BigInt(c) => crate::bigint::alloc_literal(rt, c.negative, &c.limbs),
