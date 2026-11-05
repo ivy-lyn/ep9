@@ -115,3 +115,23 @@ const PINNED: [&str; 2] = [
     "1152921504.606847 320255.97350190196 1152921504606.847",
     "38334640028.17767 443687.9632890934 75059993789508.28",
 ];
+
+/// A relativeTo string with a calendar annotation: only iso8601 (CanonicalizeCalendar, ep9 has
+/// only the ISO calendar, design SPEC-T-D17), as for a property bag (spec-temporal Codex r1 T1).
+#[test]
+fn relative_to_strings_take_only_the_iso_calendar() {
+    assert_eq!(
+        run_both(
+            r#"var r = [];
+            for (var rt of ["2020-01-01[u-ca=gregory]", "2020-01-01T00:00[UTC][u-ca=chinese]", "2020-01-01[u-ca=iso8601]", "2020-01-01T00:00[UTC][u-ca=iso8601]"]) {
+              for (var f of [() => Temporal.Duration.compare("P40D", "P39D", { relativeTo: rt }), () => Temporal.Duration.from("P40D").round({ largestUnit: "months", relativeTo: rt }), () => Temporal.Duration.from("P40D").total({ unit: "months", relativeTo: rt })]) {
+                try { r.push(String(f())); } catch (e) { r.push(e.constructor.name); }
+              }
+            }
+            print(r.join(" "));"#
+        ),
+        lines(&[
+            "RangeError RangeError RangeError RangeError RangeError RangeError 1 P1M9D 1.3103448275862069 1 P1M9D 1.3103448275862069"
+        ])
+    );
+}

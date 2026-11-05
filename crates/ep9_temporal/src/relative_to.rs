@@ -6,7 +6,8 @@
 //! another object (property bag) -> calendar (ISO), PrepareCalendarFields(date, time, offset,
 //!                                  timeZone), constrain; no timeZone: a PlainDate, else a
 //!                                  ZonedDateTime (offset "reject", disambiguation "compatible")
-//! a String                      -> ParseTemporalRelativeToString (temporal_rs)
+//! a String                      -> ParseTemporalRelativeToString (temporal_rs), then the
+//!                                  calendar (ISO)
 //! anything else                 -> TypeError
 //! ```
 
@@ -16,7 +17,7 @@ use temporal_rs::options::{Overflow, RelativeTo};
 use temporal_rs::partial::{PartialDate, PartialZonedDateTime};
 use temporal_rs::{PlainDate, ZonedDateTime};
 
-use crate::calendar::get_calendar_with_iso_default;
+use crate::calendar::{get_calendar_with_iso_default, require_iso};
 use crate::convert::temporal_text;
 use crate::error::OrThrow;
 use crate::fields;
@@ -93,9 +94,14 @@ pub(crate) fn get_relative_to_option<'s>(
     };
     // b-k. ParseTemporalRelativeToString and the rest.
     let t = temporal_text(cx, s)?;
-    RelativeTo::try_from_str_with_provider(&t, crate::tzdb::provider())
-        .or_throw(cx)
-        .map(Some)
+    let r = RelativeTo::try_from_str_with_provider(&t, crate::tzdb::provider()).or_throw(cx)?;
+    // CanonicalizeCalendar of the annotation: iso8601 only (SPEC-T-D17).
+    let cal = match &r {
+        RelativeTo::PlainDate(d) => d.calendar().clone(),
+        RelativeTo::ZonedDateTime(z) => z.calendar().clone(),
+    };
+    require_iso(cx, cal)?;
+    Ok(Some(r))
 }
 
 /// The relativeTo value of a ZonedDateTime, PlainDate or PlainDateTime object (steps 5.a-c),
