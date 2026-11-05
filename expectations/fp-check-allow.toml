@@ -24,6 +24,6 @@ reason = "oxc_semantic folds TS enum `%` and `**` with host fmod/powf; BytecodeG
 
 [[allow-crate]]
 crates = ["core_maths", "libm"]
-via = ["temporal_rs", "calendrical_calculations", "ep9_temporal"]
+via = ["ep9_temporal"]
 reopen = "temporal_rs routes its float math through ep9_math, or Temporal moves to an ep9 calendar and duration core"
-reason = "design SPEC-T-D19: temporal_rs and calendrical_calculations reach libm through core_maths; ep9_temporal has a direct edge only to turn on libm force-soft-floats. (1) The one FMA site is temporal_rs Fraction::to_finite_f64_slow in the ISO Duration.prototype.total path: libm::fma is then the soft, correctly rounded code, so the result bits are the same on every target and the object scan finds no FMA instruction. (2) The transcendental code serves only non-ISO calendars, which ep9 rejects with a RangeError (SPEC-T-D17)"
+reason = "design SPEC-T-D19: temporal_rs and calendrical_calculations reach libm through core_maths, and ep9_temporal has a direct edge only to turn on libm force-soft-floats; so every path goes through ep9_temporal, and the via list names only it (a path that does not pass it, for example icu_calendar from another crate, fails; MODES-CHECK-w29-B0 MC-w29-B0-1). (1) The one FMA site is temporal_rs Fraction::to_finite_f64_slow in the ISO Duration.prototype.total path: libm::fma is then the soft, correctly rounded code, so the result bits are the same on every target and the object scan finds no FMA instruction. (2) The transcendental code serves only non-ISO calendars, which ep9 rejects with a RangeError (SPEC-T-D17)"

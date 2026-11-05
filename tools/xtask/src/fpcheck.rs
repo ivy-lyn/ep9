@@ -1626,6 +1626,80 @@ reason = "why"
         assert_eq!(v[0].targets, None);
     }
 
+    // The B0 shape of `cargo tree -p ep9_cli -e normal,build --target all -i libm --no-dedupe
+    // --prefix depth -f {p}` (every path goes through ep9_temporal), plus one new path that
+    // does not: icu_calendar from another crate (an INTL crate, MODES-CHECK-w29-B0 MC-w29-B0-1).
+    const LIBM_TREE_B0_PLUS_INTL: &str = "0libm v0.2.16
+1core_maths v0.1.1
+2calendrical_calculations v0.2.4
+3icu_calendar v2.3.0
+4temporal_rs v0.2.6
+5ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+6ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+7ep9_cli v0.0.0 (/w/crates/ep9_cli)
+4ep9_intl v0.0.0 (/w/crates/ep9_intl)
+5ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+6ep9_cli v0.0.0 (/w/crates/ep9_cli)
+3temporal_rs v0.2.6
+4ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+5ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+6ep9_cli v0.0.0 (/w/crates/ep9_cli)
+3zoneinfo64 v0.3.0
+4ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+5ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+6ep9_cli v0.0.0 (/w/crates/ep9_cli)
+4timezone_provider v0.2.6
+5ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+6ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+7ep9_cli v0.0.0 (/w/crates/ep9_cli)
+5temporal_rs v0.2.6
+6ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+7ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+8ep9_cli v0.0.0 (/w/crates/ep9_cli)
+2temporal_rs v0.2.6
+3ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+4ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+5ep9_cli v0.0.0 (/w/crates/ep9_cli)
+1ep9_temporal v0.0.0 (/w/crates/ep9_temporal)
+2ep9_builtins v0.0.0 (/w/crates/ep9_builtins)
+3ep9_cli v0.0.0 (/w/crates/ep9_cli)
+";
+
+    #[test]
+    fn allow_crate_via_is_only_ep9_temporal() {
+        let p = repo_root().join("expectations/fp-check-allow.toml");
+        let f = parse_allow_file(&fs::read_to_string(p).unwrap()).unwrap();
+        let via = &f.crates[0].via;
+        assert_eq!(via, &["ep9_temporal"]);
+        let t = parse_depth_tree(LIBM_TREE_B0_PLUS_INTL).unwrap();
+        let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // The B0 paths pass: drop the ep9_intl lines (8, 9, 10) and every path is covered.
+        let b0: Vec<_> = t
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| !(8..=10).contains(k))
+            .map(|(_, l)| l.clone())
+            .collect();
+        assert!(paths_not_via(&b0, via).is_empty());
+        // The new icu_calendar path from another crate fails, and the failure names it.
+        assert_eq!(
+            paths_not_via(&t, via),
+            [s(&[
+                "libm",
+                "core_maths",
+                "calendrical_calculations",
+                "icu_calendar",
+                "ep9_intl",
+                "ep9_builtins",
+                "ep9_cli"
+            ])]
+        );
+        // Control: the wide list of round 1 lets the same path pass (it goes through
+        // calendrical_calculations), so the narrow list is what makes it fail.
+        let wide = s(&["temporal_rs", "calendrical_calculations", "ep9_temporal"]);
+        assert!(paths_not_via(&t, &wide).is_empty());
+    }
+
     fn block(raw: &str, addr: u64, insns: &[(&str, Option<&str>)]) -> Block {
         Block {
             member: String::new(),
