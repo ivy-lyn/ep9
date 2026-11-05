@@ -13,7 +13,7 @@
 //! | Rule | Where |
 //! |---|---|
 //! | Values are canonical: no zero top digit; zero is no digits and `neg = false` (no `-0n`) | [`View`], [`Big`] |
-//! | A result above [`MAX_BITS`] bits is [`Error::TooBig`]; the check runs before the work for `*`, `**`, `<<`, parse and `asUintN` | each operation |
+//! | A result above [`MAX_BITS`] bits is [`Error::TooBig`]. Every operation that can grow checks its result; `<<` and `asUintN` also refuse before the work (exact), and `*`, `**` and parse refuse before the work only from a lower bound | each operation |
 //! | Signed operations follow the spec: `/` and `%` truncate, `>>` rounds toward -infinity, `&` `\|` `^` `~` act on infinite two's complement | [`div_trunc`], [`shr`], [`and`] |
 //! | No float math except [`to_f64`], [`cmp_f64`] and [`from_f64_exact`], which use bit operations and the u64 -> f64 conversion (correctly rounded) only (H36) | the `f64` section |
 #![forbid(unsafe_code)]

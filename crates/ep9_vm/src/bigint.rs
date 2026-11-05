@@ -13,8 +13,9 @@
 //! - Canonical: the top digit is not 0; `0n` has n = 0 and sign 0 (no `-0n`).
 //! - Immutable after allocation, except the hash cache. No word is a Value: the GC traces none.
 //! - Size: a computed result above `ep9_bigint::MAX_BITS` (2^30) bits is a RangeError "Maximum
-//!   BigInt size exceeded" (H23 "BigInt size"), checked before the work. A literal from a unit
-//!   is not checked ([`alloc_literal`]: the loader cannot throw, and the unit bounds it).
+//!   BigInt size exceeded" (H23 "BigInt size"), checked before the cell is allocated (some
+//!   operations also have an early guard before the work). A literal from a unit is not
+//!   checked ([`alloc_literal`]: the loader cannot throw, and the unit bounds it).
 //! - GC rule: an operation reads its operands into an `ep9_bigint::Big` first, then allocates
 //!   the result once; no [`View`] is held across an allocation.
 
