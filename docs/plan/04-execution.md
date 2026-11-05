@@ -198,7 +198,7 @@ ep9_baseline / ep9_opt
 **PROVEN producers** (facts ep9 proves from JS semantics) [R14][R16]:
 - module bindings that are never reassigned (ESM graph), and `const` bindings;
 - scopes with no direct eval and no `with`;
-- bitwise results are int32, except `>>>`, whose result is uint32 (a double when ≥ 2^31); own range analysis;
+- bitwise results are int32, except `>>>`, whose result is uint32 (a double when ≥ 2^31), for Number operands (with BigInt operands they give a BigInt, and `>>>` or a BigInt mixed with a Number throws a TypeError; [2026-11-06, spec-int fixer (checker F3), the H30 2026-11-06 rewrite row]); own range analysis;
 - spec invariants (for example, `typeof` gives a string).
 
 TS types are never PROVEN in full-ECMAScript mode. They enter only as HINTED facts behind guards (N11) [R12][R17].
