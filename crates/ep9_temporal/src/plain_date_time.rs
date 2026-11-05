@@ -26,7 +26,7 @@ use temporal_rs::partial::PartialDateTime;
 use temporal_rs::{Calendar, PlainDate, PlainDateTime, PlainTime};
 
 use crate::calendar::{
-    canonicalize_calendar, get_calendar_with_iso_default, require_iso,
+    canonicalize_calendar, get_calendar_with_iso_default, parsed_string_calendar, require_iso,
     to_temporal_calendar_identifier,
 };
 use crate::convert::{temporal_text, to_integer_with_truncation};
@@ -296,11 +296,14 @@ pub(crate) fn to_temporal_date_time<'s>(
     // i-j, 4. CreateTemporalDateTime (ISODateTimeWithinLimits): built here, thrown after the
     //         options.
     let built = PlainDateTime::from_parsed(parsed);
-    // d-f. CanonicalizeCalendar: iso8601 only (SPEC-T-D17). ParsedDateTime hides its
-    //      calendar, so a date-time out of the limits skips this check (as in ToTemporalDate).
-    if let Ok(dt) = &built {
-        require_iso(cx, dt.calendar().clone())?;
-    }
+    // d-f. CanonicalizeCalendar: iso8601 only (SPEC-T-D17), before the options.
+    //      ParsedDateTime hides its calendar, so a date-time out of the limits reads it from
+    //      the string (as in ToTemporalDate).
+    let cal = match &built {
+        Ok(dt) => dt.calendar().clone(),
+        Err(_) => parsed_string_calendar(cx, &text)?,
+    };
+    require_iso(cx, cal)?;
     // g-h. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;

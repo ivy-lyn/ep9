@@ -24,8 +24,8 @@ use temporal_rs::parsed_intermediates::ParsedDate;
 use temporal_rs::partial::PartialDate;
 
 use crate::calendar::{
-    self, canonicalize_calendar, get_calendar_with_iso_default, require_iso,
-    to_temporal_calendar_identifier,
+    self, canonicalize_calendar, get_calendar_with_iso_default, parsed_string_calendar,
+    require_iso, to_temporal_calendar_identifier,
 };
 use crate::convert::{temporal_text, to_integer_with_truncation};
 use crate::duration::{create as create_duration, to_temporal_duration};
@@ -300,12 +300,13 @@ pub(crate) fn to_temporal_date<'s>(
     let parsed = ParsedDate::from_utf8(text.as_bytes()).or_throw(cx)?;
     // 11. CreateTemporalDate (ISODateWithinLimits): built here, thrown after the options.
     let built = PlainDate::from_parsed(parsed);
-    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17). ParsedDate hides its calendar,
-    //      so a date out of the limits skips this check: with a non-ISO id and bad options it
-    //      gives the options' TypeError, not this RangeError.
-    if let Ok(d) = &built {
-        require_iso(cx, d.calendar().clone())?;
-    }
+    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17), before the options. ParsedDate
+    //      hides its calendar, so a date out of the limits reads it from the string.
+    let cal = match &built {
+        Ok(d) => d.calendar().clone(),
+        Err(_) => parsed_string_calendar(cx, &text)?,
+    };
+    require_iso(cx, cal)?;
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;

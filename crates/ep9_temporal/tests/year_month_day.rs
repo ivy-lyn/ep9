@@ -91,3 +91,26 @@ fn string_limits_are_checked_after_the_options() {
         ])
     );
 }
+
+/// ToTemporalDate, ToTemporalDateTime and ToTemporalYearMonth of a string check the calendar
+/// (CanonicalizeCalendar; ep9 has only iso8601, SPEC-T-D17) before GetOptionsObject and the
+/// overflow Get, also when the date is out of the ISO limits: a RangeError, and the overflow
+/// getter does not run. An in-limits date gives the same result (spec-temporal Codex r2).
+#[test]
+fn string_calendar_is_checked_before_the_options() {
+    assert_eq!(
+        run_both(
+            r#"var r = [];
+            var cases = [[Temporal.PlainDate, "+999999-01-01[u-ca=gregory]"], [Temporal.PlainDate, "+275760-09-14[u-ca=gregory]"], [Temporal.PlainDate, "2020-01-01[u-ca=gregory]"], [Temporal.PlainDateTime, "+999999-01-01T00:00[u-ca=gregory]"], [Temporal.PlainDateTime, "-271821-04-19T00:00[u-ca=gregory]"], [Temporal.PlainDateTime, "2020-01-01T00:00[u-ca=gregory]"], [Temporal.PlainYearMonth, "+999999-01-01[u-ca=gregory]"], [Temporal.PlainYearMonth, "-271821-03-01[u-ca=gregory]"], [Temporal.PlainYearMonth, "2020-01-01[u-ca=gregory]"]];
+            for (var [C, s] of cases) {
+              try { C.from(s, null); r.push("ok"); } catch (e) { r.push(e.constructor.name); }
+              var n = 0;
+              try { C.from(s, { get overflow() { n++; return "constrain"; } }); r.push("ok"); } catch (e) { r.push(e.constructor.name + n); }
+            }
+            print(r.join(" "));"#
+        ),
+        lines(&[
+            "RangeError RangeError0 RangeError RangeError0 RangeError RangeError0 RangeError RangeError0 RangeError RangeError0 RangeError RangeError0 RangeError RangeError0 RangeError RangeError0 RangeError RangeError0"
+        ])
+    );
+}

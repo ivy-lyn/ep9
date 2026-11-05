@@ -20,7 +20,9 @@ use temporal_rs::options::{DisplayCalendar, Overflow};
 use temporal_rs::parsed_intermediates::ParsedDate;
 use temporal_rs::partial::PartialYearMonth;
 
-use crate::calendar::{self, constructor_calendar, get_calendar_with_iso_default, require_iso};
+use crate::calendar::{
+    self, constructor_calendar, get_calendar_with_iso_default, parsed_string_calendar, require_iso,
+};
 use crate::convert::{temporal_text, to_integer_with_truncation};
 use crate::duration::{create as create_duration, to_temporal_duration};
 use crate::error::OrThrow;
@@ -231,11 +233,14 @@ pub(crate) fn to_temporal_year_month<'s>(
     // 10-. ISOYearMonthWithinLimits; CalendarYearMonthFromFields (temporal_rs): built here,
     //      thrown after the options.
     let built = PlainYearMonth::from_parsed(parsed);
-    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17). ParsedDate hides its calendar,
-    //      so a year-month out of the limits skips this check (as in ToTemporalDate).
-    if let Ok(ym) = &built {
-        require_iso(cx, ym.calendar().clone())?;
-    }
+    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17), before the options. ParsedDate
+    //      hides its calendar, so a year-month out of the limits reads it from the string
+    //      (as in ToTemporalDate).
+    let cal = match &built {
+        Ok(ym) => ym.calendar().clone(),
+        Err(_) => parsed_string_calendar(cx, &text)?,
+    };
+    require_iso(cx, cal)?;
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;

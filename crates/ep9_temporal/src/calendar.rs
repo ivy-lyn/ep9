@@ -90,6 +90,16 @@ pub(crate) fn to_temporal_calendar_identifier<'s>(
     require_iso(cx, cal)
 }
 
+/// The calendar of a Temporal string that `ParsedDate` or `ParsedDateTime` accepted, for a
+/// string that `from_parsed` rejects (out of the ISO limits). temporal_rs 0.2.6 keeps the
+/// parsed calendar private. `Calendar::from_str` (ParseTemporalCalendarString) reads the
+/// annotation with the same temporal_rs parser (`parse_allowed_calendar_formats`: the
+/// DateTime parse first, which that string passed) and canonicalizes it the same way
+/// (`Calendar::try_from_utf8`), so it gives the calendar that `from_parsed` would keep.
+pub(crate) fn parsed_string_calendar(cx: &mut Cx<'_>, text: &str) -> JsResult<Calendar> {
+    Calendar::from_str(text).map_err(|e| crate::error::throw(cx, e))
+}
+
 /// GetTemporalCalendarIdentifierWithISODefault (§12.2.10).
 pub(crate) fn get_calendar_with_iso_default<'s>(
     cx: &mut Cx<'s>,
