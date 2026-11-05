@@ -13,9 +13,11 @@
 //! - Canonical: the top digit is not 0; `0n` has n = 0 and sign 0 (no `-0n`).
 //! - Immutable after allocation, except the hash cache. No word is a Value: the GC traces none.
 //! - Size: a computed result above `ep9_bigint::MAX_BITS` (2^30) bits is a RangeError "Maximum
-//!   BigInt size exceeded" (H23 "BigInt size"), checked before the cell is allocated (some
+//!   BigInt size exceeded" (H23 "BigInt size"). Every operator result and every `asIntN` and
+//!   `asUintN` result passes one check, [`from_result`], before its cell is allocated (some
 //!   operations also have an early guard before the work). A literal from a unit is not
-//!   checked ([`alloc_literal`]: the loader cannot throw, and the unit bounds it).
+//!   checked ([`alloc_literal`]: the loader cannot throw): a literal above the limit loads, and
+//!   the first operation on it throws, also one that does not grow (`x / 1n`, `-x`, `x >> 0n`).
 //! - GC rule: an operation reads its operands into an `ep9_bigint::Big` first, then allocates
 //!   the result once; no [`View`] is held across an allocation.
 
@@ -97,10 +99,13 @@ pub(crate) fn alloc(rt: &Runtime, b: &Big) -> u64 {
     alloc_literal(rt, b.neg, &b.digits)
 }
 
-/// The cell for a result of `ep9_bigint`, or the RangeError of its error. GC point.
+/// The cell for a result of `ep9_bigint`, or the RangeError of its error. The one size check
+/// of every operation result (H23 "BigInt size"): a unit literal can be above `MAX_BITS`, so a
+/// result that does not grow (`x / 1n`, `-x`, `x >> 0n`) can be above it too. GC point.
 pub(crate) fn from_result(cx: &mut Cx, r: Result<Big, digits::Error>) -> Res<u64> {
     match r {
-        Ok(b) => Ok(alloc(cx.rt(), &b)),
+        Ok(b) if b.view().bit_len() <= digits::MAX_BITS => Ok(alloc(cx.rt(), &b)),
+        Ok(_) => Err(range_error(cx, digits::Error::TooBig)),
         Err(e) => Err(range_error(cx, e)),
     }
 }

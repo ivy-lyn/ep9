@@ -271,6 +271,85 @@ fn the_size_and_string_length_limits() {
     });
 }
 
+/// The digits of a literal of 2^30 + 1 bits (one above `ep9_bigint::MAX_BITS`; 128 MiB) plus
+/// `extra` in its low digit.
+fn above_the_limit(extra: u64) -> Vec<u64> {
+    let mut d = vec![0u64; 1 << 24];
+    d[0] = extra;
+    d.push(1);
+    d
+}
+
+/// H23 "BigInt size": a unit literal above the limit is not checked (`alloc_literal`), so each
+/// operation that does not grow its input must still refuse it, through the one check of
+/// `bigint::from_result`. A literal of exactly the limit passes.
+#[test]
+fn an_oversized_literal_throws_on_every_operation() {
+    with_cx(false, |cx| {
+        let rt = cx.rt();
+        let x = bigint::alloc_literal(rt, false, &above_the_limit(0));
+        assert_eq!(bigint::view(&x).bit_len(), ep9_bigint::MAX_BITS + 1);
+        let x2 = bigint::alloc_literal(rt, false, &above_the_limit(1)); // x + 1n
+        let zero = big(cx, "0");
+        let one = big(cx, "1");
+        let too_big = "RangeError: Maximum BigInt size exceeded";
+        for (name, op, rhs) in [
+            ("x / 1n", BinOp::Div, one),
+            ("x >> 0n", BinOp::Sar, zero),
+            ("x % (x + 1n)", BinOp::Mod, x2),
+        ] {
+            assert!(conv::binary(cx, op, x, rhs).is_err(), "{name}");
+            assert_eq!(err(cx), too_big, "{name}");
+        }
+        assert!(bigint::unary(cx, bigint::UnaryOp::Negate, x).is_err(), "-x");
+        assert_eq!(err(cx), too_big, "-x");
+        for signed in [true, false] {
+            assert!(
+                bigint::as_n(cx, x, 1 << 31, signed).is_err(),
+                "asIntN {signed}"
+            );
+            assert_eq!(err(cx), too_big, "asIntN {signed}");
+        }
+        // Exactly MAX_BITS bits: x / 1n is the same value.
+        let mut d = vec![0u64; (1 << 24) - 1];
+        d.push(1 << 63);
+        let rt = cx.rt();
+        let m = bigint::alloc_literal(rt, false, &d);
+        assert_eq!(bigint::view(&m).bit_len(), ep9_bigint::MAX_BITS);
+        let q = conv::binary(cx, BinOp::Div, m, one).unwrap();
+        assert_eq!(bigint::view(&q).bit_len(), ep9_bigint::MAX_BITS);
+    });
+}
+
+/// A unit literal above the limit loads with no throw (the loader cannot throw), `typeof` of
+/// it is "bigint", and the first operation on it (`x / 1n`, which does not grow) ends the run
+/// with the RangeError. One dispatch, no GC stress (the literal is 128 MiB).
+#[test]
+fn a_unit_literal_above_the_limit_loads() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let a = s.b.new_register();
+        let kx = s.b.bigint_constant(bigc(&above_the_limit(0), false));
+        let k1 = s.b.bigint_constant(bigc(&[1], false));
+        let tyof = s.b.feedback_slot(FeedbackSlotKind::TypeOf);
+        s.b.lda_constant(kx).star(a);
+        s.b.ldar(a).type_of(tyof);
+        print(&mut s);
+        s.b.lda_constant(k1).div(a, s.bin);
+        print(&mut s);
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    let r = on_big_stack(|| super::run_in(config(Dispatch::DEFAULT, false), make()));
+    assert_eq!(r.output, ["bigint"]);
+    let e = r.result.expect_err("x / 1n throws");
+    assert!(
+        e.message
+            .contains("RangeError: Maximum BigInt size exceeded"),
+        "{e}"
+    );
+}
+
 #[test]
 fn equality() {
     with_cx(true, |cx| {
