@@ -31,38 +31,41 @@ fn the_table_passes_the_checks() {
 #[test]
 fn modules_have_fixed_blocks_in_a_fixed_order() {
     let got: Vec<(&str, u8)> = MODULES.iter().map(|m| (m.name, m.block)).collect();
-    assert_eq!(
-        got,
-        [
-            ("object", 1),
-            ("function", 2),
-            ("array", 3),
-            ("number", 4),
-            ("boolean", 5),
-            ("string", 6),
-            ("symbol", 7),
-            ("math", 8),
-            ("global", 9),
-            ("promise", 10),
-            ("reflect", 11),
-            ("date", 12),
-            ("collections", 13),
-            ("json", 14),
-            ("proxy", 15),
-            ("regexp", 16),
-            ("weakref", 17),
-            ("bigint", 18),
-            ("temporal", 19),
-            ("duration", 20),
-            ("instant", 21),
-            ("plain_time", 22),
-            ("plain_date", 23),
-            ("plain_date_time", 24),
-            ("plain_year_month", 25),
-            ("plain_month_day", 26),
-            ("zoned_date_time", 27),
-        ]
-    );
+    // Append-safe (README §3.4): each listed module keeps its place and block, and every block is
+    // its place + 1, so a new module at the end passes; no pin on the length of the list.
+    let fixed = [
+        ("object", 1),
+        ("function", 2),
+        ("array", 3),
+        ("number", 4),
+        ("boolean", 5),
+        ("string", 6),
+        ("symbol", 7),
+        ("math", 8),
+        ("global", 9),
+        ("promise", 10),
+        ("reflect", 11),
+        ("date", 12),
+        ("collections", 13),
+        ("json", 14),
+        ("proxy", 15),
+        ("regexp", 16),
+        ("weakref", 17),
+        ("bigint", 18),
+        ("temporal", 19),
+        ("duration", 20),
+        ("instant", 21),
+        ("plain_time", 22),
+        ("plain_date", 23),
+        ("plain_date_time", 24),
+        ("plain_year_month", 25),
+        ("plain_month_day", 26),
+        ("zoned_date_time", 27),
+    ];
+    assert_eq!(&got[..fixed.len()], &fixed[..]);
+    for (i, &(name, block)) in got.iter().enumerate() {
+        assert_eq!(usize::from(block), i + 1, "{name}");
+    }
     assert_eq!(ep9_builtins::object::BLOCK, 1);
     assert_eq!(ep9_builtins::global::BLOCK, 9);
     assert_eq!(ep9_builtins::promise::BLOCK, 10);
@@ -74,10 +77,15 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_builtins::regexp::BLOCK, 16);
     assert_eq!(ep9_builtins::weakref::BLOCK, 17);
     assert_eq!(ep9_builtins::bigint::BLOCK, 18);
-    // The Temporal modules end the table, in the order of ep9_temporal::MODULES.
-    let tail = &ep9_builtins::MODULES[ep9_builtins::MODULES.len() - ep9_temporal::MODULES.len()..];
+    // The Temporal modules are one run, in the order of ep9_temporal::MODULES (not a pin on the
+    // end of the table: a later module can follow them).
+    let start = got
+        .iter()
+        .position(|&(name, _)| name == ep9_temporal::MODULES[0].name)
+        .unwrap();
+    let run = &MODULES[start..start + ep9_temporal::MODULES.len()];
     assert_eq!(
-        tail.iter().map(|m| (m.name, m.block)).collect::<Vec<_>>(),
+        run.iter().map(|m| (m.name, m.block)).collect::<Vec<_>>(),
         ep9_temporal::MODULES
             .iter()
             .map(|m| (m.name, m.block))
