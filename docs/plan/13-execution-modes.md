@@ -128,7 +128,7 @@ Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:521). 
 | Interp (0) | bytecode compiler, any time (H5) | start, deopt target | cold code, eval, fallback, deopt target | eval, cold, fallback, deopt target | n/a | full FeedbackVector; ICs only under `ics_only` (jitless default, 1.2) |
 | Baseline (1) | `ep9_baseline`, run time | yes (M5) | no | re-tier tier (= instrumented T1) | n/a (data ICs) | full FeedbackVector |
 | Opt (2) | `ep9_opt`, run time | yes (M7) | no | re-tier target | DEOPT + exit counter (H32:28) | exit counters |
-| AotBaseline (3) | `ep9_baseline` via `ep9c` | no | all reachable fns if K-A3 (P02:147) | optional | n/a (data ICs) | full schema via IC cells (H33:28) |
+| AotBaseline (3) | `ep9_baseline` via `ep9c` | no | all reachable fns if K-A3 (P02:147) | optional | n/a (data ICs) | full schema via IC cells (H33:28) [2026-11-05, M6-P4 B2W (M6-PLAN-D15; plan v11 inputs #17; H33-Q3): what it writes follows the isolate's type feedback mode: full under `full`; under `ics_only` (the jitless default, 1.2) its IC cells keep their IC state and it writes no record kind, as T0] |
 | AotOpt (4) | `ep9_opt` via `ep9c` | no | PGO hot set if K-A4J (P02:148) | PGO hot set, start tier | lowering jitless: SLOWPATH / DEOPT in budget / PIN; lowering hybrid: DEOPT, then PIN + re-tier at the function budget (T4) | budget and exit counters (C-08) |
 | GenInterp (candidate 5) | M5c, engine build | no | top tier if K-A3 trips (P04:316-318; P05:378) | no | n/a | full FeedbackVector |
 | Lazy (candidate 6) | none: "no bytecode yet" state (H04-Q1, H04:78) | all | all | all | n/a | n/a |
