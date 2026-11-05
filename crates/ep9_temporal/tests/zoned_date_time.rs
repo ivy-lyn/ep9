@@ -78,3 +78,20 @@ fn errors_have_the_spec_types() {
         ])
     );
 }
+
+/// PrepareCalendarFields with requiredFieldNames « time-zone »: an undefined `timeZone` is a
+/// TypeError at its Get, so `year` (after it in the order) is not read (spec-temporal Codex r1
+/// T3).
+#[test]
+fn a_bag_with_no_time_zone_throws_before_the_year() {
+    assert_eq!(
+        run_both(
+            r#"var r = [], log = [];
+            for (var f of [() => Temporal.ZonedDateTime.from({ year: NaN }), () => Temporal.ZonedDateTime.from({ year: Infinity, month: 1, day: 1 }), () => new Temporal.ZonedDateTime(0n, "UTC").until({ year: NaN, month: 1, day: 1 }), () => Temporal.ZonedDateTime.from({ get month() { log.push("month"); return 1; }, get timeZone() { log.push("timeZone"); }, get year() { log.push("year"); return 2020; } })]) {
+              try { f(); r.push("ok"); } catch (e) { r.push(e.constructor.name); }
+            }
+            print(r.join(" "), log.join());"#
+        ),
+        lines(&["TypeError TypeError TypeError TypeError month,timeZone"])
+    );
+}

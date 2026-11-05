@@ -331,8 +331,13 @@ pub(crate) fn to_temporal_zoned_date_time<'s>(
         let bag = fields::read(
             cx,
             o,
-            fields::DATE | fields::TIME | fields::OFFSET | fields::TIME_ZONE,
+            fields::DATE
+                | fields::TIME
+                | fields::OFFSET
+                | fields::TIME_ZONE
+                | fields::TIME_ZONE_REQUIRED,
         )?;
+        // fields::read threw already for an undefined timeZone; kept as a defensive check.
         let Some(tz) = bag.time_zone else {
             return Err(cx.throw_type_error("a zoned date-time needs a timeZone"));
         };

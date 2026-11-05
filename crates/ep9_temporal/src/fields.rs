@@ -32,6 +32,8 @@ pub(crate) const DAY: u16 = 1 << 3;
 pub(crate) const TIME: u16 = 1 << 4;
 pub(crate) const OFFSET: u16 = 1 << 5;
 pub(crate) const TIME_ZONE: u16 = 1 << 6;
+/// `timeZone` is in requiredFieldNames: undefined is a TypeError at its Get (with [`TIME_ZONE`]).
+pub(crate) const TIME_ZONE_REQUIRED: u16 = 1 << 7;
 /// year, month, monthCode, day.
 pub(crate) const DATE: u16 = YEAR | MONTH | MONTH_CODE | DAY;
 /// year, month, monthCode.
@@ -65,7 +67,8 @@ fn get<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, name: &str) -> JsResult<Opti
 }
 
 /// PrepareCalendarFields for the ISO calendar over the fields in `want`, in alphabetical
-/// order. No required-field check: the caller does it.
+/// order. No required-field check: the caller does it, except for `timeZone` with
+/// [`TIME_ZONE_REQUIRED`] (step 9: the TypeError comes before the later fields are read).
 pub(crate) fn read<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, want: u16) -> JsResult<Bag> {
     let mut b = Bag::default();
     let int = |cx: &mut Cx<'s>, v| to_integer_with_truncation(cx, v);
@@ -115,10 +118,15 @@ pub(crate) fn read<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, want: u16) -> Js
     {
         b.second = Some(int(cx, v)?);
     }
-    if want & TIME_ZONE != 0
-        && let Some(v) = get(cx, o, "timeZone")?
-    {
-        b.time_zone = Some(to_temporal_time_zone_identifier(cx, v)?);
+    if want & TIME_ZONE != 0 {
+        match get(cx, o, "timeZone")? {
+            Some(v) => b.time_zone = Some(to_temporal_time_zone_identifier(cx, v)?),
+            // 9. A required field that is undefined: TypeError.
+            None if want & TIME_ZONE_REQUIRED != 0 => {
+                return Err(cx.throw_type_error("a zoned date-time needs a timeZone"));
+            }
+            None => {}
+        }
     }
     if want & YEAR != 0
         && let Some(v) = get(cx, o, "year")?
