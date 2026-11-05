@@ -2,7 +2,7 @@
 
 - **For:** the owner. [ADR README §2](../adr/README.md#2-status-and-life-cycle) says the milestone report tells the user about each move to Frozen. [§3.3](../adr/README.md#33-change-kinds-and-g8-p-2) says it lists the Frozen-part rewrites between M1a and M1 exit by name.
 - **Milestone:** M1 = the perf vertical slice and A0 part 2 ([09 §2.2](../plan/09-milestones.md#22-scope-and-exit-criteria), the 10 M1 exit items). M1a (H17, H18, H19 cores Frozen) was the month-5 step ([M1a report](2026-11-02-m1a-report.md)).
-- **Head:** the columns ran at X = `c5588318` on `m1m6/p5` (decisions log M6-P5-FUZZ-TOPUP). The report commit is the child of X and changes only `docs/measurements` (this file). The code is the code of CF `ef0c1ae6` (the tag `m6-p3`). Since CF only `docs/**` changed, plus one line in `tools/xtask/src/exit/adrline-pins.tsv` (the H19 pin, decisions log M6-P4-FROZEN).
+- **Head:** the columns ran at X = `c5588318` on `m1m6/p5` (decisions log M6-P5-FUZZ-TOPUP). The report commits after X (this file, then its M1-CHECK fixes) change only `docs/measurements` (this file). The code is the code of CF `ef0c1ae6` (the tag `m6-p3`). Since CF only `docs/**` changed, plus one line in `tools/xtask/src/exit/adrline-pins.tsv` (the H19 pin, decisions log M6-P4-FROZEN).
 - **CI:** run 41864288129 on CF (event `pull_request`, attempt 5: 62 of 62 jobs `success`; decisions log §16.6). Every CI input of this report is an artifact of that run.
 - **Sources:** [decisions log](../decisions-log.md) §16.5 to §16.7; [perf run 8](2026-11-05-perf-v0-run8.md); [x86 run 8](2026-11-05-perf-v0-run8-x86.md); [Spike C Verdict rows](2026-11-05-spike-c.md); the ADR files at HEAD.
 - **Rule for numbers:** each number names the file it comes from. Files that are not in the repo are "scratchpad" files of the orchestrator. A number that this report could not check is marked **(not verified)**.
@@ -15,14 +15,14 @@
         ├─ M6-P4  B2 text; the one Frozen step aa3807aa; records; APPROVER-M6 8e50ed4f  = tag m6-p4 (1637b798)
         ├─ M6-P5  Frozen-part notes (H16, H17, H32); records; APPROVER-M6 ae834773
         ├─ Fuzzilli top-up cf8-fz-9, cf8-fz-10 (44.67 CPU-h); DL row c5588318 = X
-        └─ M1-EXIT: m1-exit x 4 columns at X (this file); report commit = child of X
+        └─ M1-EXIT: m1-exit x 4 columns at X (this file); report commits after X (report, M1-CHECK fixes)
 ```
 
 ## 1. Result
 
 **Rule (plan v11 V11-D33).** M1 exit holds when all 40 cells (10 items x 4 columns) are PASS or N/A, except the one named cell "item 2, linux x86-64, OPEN marginal (no gate host)" (V9-D31). There is no tool waiver and no other named exception (V11-A11).
 
-**Result (the final run, 2026-11-05 UTC): M1 exit holds.** 39 cells are PASS or N/A. The one other cell is the named cell (item 2, linux x86-64, OPEN), as the rule allows. Item 5 is PASS in all 4 columns: Fuzzilli has 100.67 of 100 counted CPU-h after the month-end top-up (cf8-fz-9 and cf8-fz-10, 44.67 CPU-h; section 4). The 4 columns ran at X = `c5588318` (the tree that the m1-exit outputs name: "tree at commit `c5588318…`"). This report commit is the child of X and changes only `docs/measurements`.
+**Result (the final run, 2026-11-05 UTC): M1 exit holds.** 39 cells are PASS or N/A. The one other cell is the named cell (item 2, linux x86-64, OPEN), as the rule allows. Item 5 is PASS in all 4 columns: Fuzzilli has 100.67 of 100 counted CPU-h after the month-end top-up (cf8-fz-9 and cf8-fz-10, 44.67 CPU-h; section 4). The 4 columns ran at X = `c5588318` (the tree that the m1-exit outputs name: "tree at commit `c5588318…`"). The report commits after X change only `docs/measurements`.
 
 How it ran:
 
@@ -260,9 +260,9 @@ Only the first row is an exit exception (V11-D33). The other rows have no exit c
 
 ### 7.2 Routed rows due M2, A2, A3, M7 (open)
 
-Source: the routes list (scratchpad m1m6/routes.tsv; plan v11 rule 47, §14). 48 rows are open with these due tags: M2 13, A2 20, A3 4, M7 11. (Other open rows: A4 4, A1 1, M3 1, "after M1" 1.)
+Source: the routes list (scratchpad m1m6/routes.tsv; plan v11 rule 47, §14). 50 rows are open with these due tags: M2 15, A2 20, A3 4, M7 11. (Other open rows: A4 4, A1 1, M3 1, "after M1" 1.)
 
-**M2 (13)**
+**M2 (15)**
 
 | Id | One line |
 |---|---|
@@ -279,6 +279,8 @@ Source: the routes list (scratchpad m1m6/routes.tsv; plan v11 rule 47, §14). 48
 | MC-w28-10 | doc 13 §5.4 Kind A: add rows for the H2 appends part and H16 "declared fields (shrink-only)" |
 | MC-P5-VECMOM | H14:42, H14:86 and H16 K6 name 2 of the 4 feedback-vector moments at CF: add dated clarify notes |
 | MC-P5-FBDOC | `crates/ep9_vm/src/feedback.rs` module doc table: the function-0 and call-budget rows |
+| V11IN-12 | plan v11 inputs #12: regress patch 0005 (resumable scanner), for the M2 RegExp chain (V11-D39; no M1 item) |
+| V11IN-22 | plan v11 inputs #22: the extref-lint evasion forms, after M1 (V11-D39) |
 
 **A2 (20)**
 
@@ -330,7 +332,7 @@ Source: the routes list (scratchpad m1m6/routes.tsv; plan v11 rule 47, §14). 48
 | MC-w27-5a | the T2 pin of the context ops 0x1e and 0x20 for the H32:61 hoist rule |
 | MC-w28-6 | H6 freezes the immediate list; 0x22 is both the array hole and TDZ |
 
-Plan v11 inputs rows that §14 routes after M1 and that have no routes row: #12 regress patch 0005 (resumable scanner; M2 RegExp chain, V11-D39) and #22 extref-lint evasion forms (after M1, (c)). Row #4 (the verifier at T2) and row #33 (doc 13 room-note tests at T1, A2, T2) are lane work of M5 to M7.
+Plan v11 inputs rows #12 and #22 have the routes rows V11IN-12 and V11IN-22 (due M2, above). Row #4 (the verifier at T2) and row #33 (doc 13 room-note tests at T1, A2, T2) are lane work of M5 to M7.
 
 ### 7.3 Other open items for the M2 plan
 
@@ -339,4 +341,4 @@ Plan v11 inputs rows that §14 routes after M1 and that have no routes row: #12 
 
 ## 8. Statement: M1 holds, the M2 plan starts
 
-The final m1-exit run at X = `c5588318` (the 4 columns with the cf8-fz-9 and cf8-fz-10 records added) gives item 5 PASS in all 4 columns: 39 cells are PASS or N/A and the one other cell is the named item 2 linux x86-64 OPEN. By V11-D33, **M1 holds at `c5588318`**: the H-row core of the engine is Frozen (35 of 37 ADRs), the Spike C and SP-Facts gates are go, gate window 8 passes on the gate host, and the counted fuzz has 0 crashes. Then the tag `m6-p5` and the annotated tag `m1-exit` go on the report commit after its CI is green (plan v11 §8 item 4), and **the M2 plan (plan v12) starts** with section 7 as its input.
+The final m1-exit run at X = `c5588318` (the 4 columns with the cf8-fz-9 and cf8-fz-10 records added) gives item 5 PASS in all 4 columns: 39 cells are PASS or N/A and the one other cell is the named item 2 linux x86-64 OPEN. By V11-D33, **M1 holds at `c5588318`**: the H-row core of the engine is Frozen (35 of 37 ADRs), the Spike C and SP-Facts gates are go, gate window 8 passes on the gate host, and the counted fuzz has 0 crashes. Then the tag `m6-p5` and the annotated tag `m1-exit` go on the last report commit (the M1-CHECK fixes) after its CI is green (plan v11 §8 item 4), and **the M2 plan (plan v12) starts** with section 7 as its input.
