@@ -4,7 +4,7 @@
 // fake time tool (FAKE_TIME_SH below): no shells and no ep9 build needed. Unix only (shell
 // scripts), as run.test.mjs.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -148,6 +148,33 @@ test("measureRss: a timeout kills the engine under the RSS tool too (M7-P0 Codex
   assert.match(r.error ?? "", /timed out after 0\.1 s/);
   await new Promise((res) => setTimeout(res, 2500));
   assert.equal(existsSync(marker), false, "the engine ran to its end after the timeout");
+});
+
+// M7-P0 Codex r2 C2-4: the engine group is not in the terminal's foreground group, so a Ctrl-C
+// (SIGINT to the runner's group) or a SIGTERM to the runner left the engine running.
+test("runGroup: an interrupt of the runner kills the engine under the RSS tool (M7-P0 Codex r2 C2-4)", { skip: !["darwin", "linux"].includes(process.platform) && "POSIX process groups" }, async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-mem-sigint-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const runner = path.join(dir, "runner.mjs");
+  writeFileSync(
+    runner,
+    `const { runGroup } = await import(${JSON.stringify(new URL("./mem.mjs", import.meta.url).href)});
+const p = runGroup("/bin/sh", ["-c", 'sleep 2; echo done > "$0"', process.argv[2]], 30);
+process.stdout.write("ready\\n");
+await p;
+`,
+  );
+  for (const [sig, toGroup] of [["SIGINT", true], ["SIGTERM", false]]) {
+    const marker = path.join(dir, `marker-${sig}`);
+    // The runner leads its own group, as a shell's foreground job does.
+    const r = spawn(process.execPath, [runner, marker], { detached: true, stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise((ok) => r.stdout.once("data", ok));
+    const ended = new Promise((ok) => r.on("exit", (code, signal) => ok(signal ?? code)));
+    process.kill(toGroup ? -r.pid : r.pid, sig);
+    assert.equal(await ended, sig, `${sig}: the runner ends by the signal`);
+    await new Promise((ok) => setTimeout(ok, 3000));
+    assert.equal(existsSync(marker), false, `${sig}${toGroup ? " to the group" : " to the runner"}: the engine ran to its end`);
+  }
 });
 
 test("checkMemRun: a failed run, a wrong output or no RSS is refused", () => {

@@ -169,15 +169,53 @@ export function parseGnuM(text) {
   return lines.length ? Number(lines[lines.length - 1]) * 1024 : null;
 }
 
+// The process groups of runGroup that are still live. A group is not in the terminal's
+// foreground group, so Ctrl-C (or a SIGTERM or SIGHUP to the runner) does not reach it: while a
+// group is live, a handler kills every live group, then raises the signal again (M7-P0 Codex r2
+// C2-4). The handlers go when no group is live, so importers keep the default behaviour.
+const liveGroups = new Set();
+const GROUP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+function killLiveGroups() {
+  for (const pid of liveGroups) {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {}
+  }
+  liveGroups.clear();
+}
+const onGroupSignal = Object.fromEntries(
+  GROUP_SIGNALS.map((sig) => [
+    sig,
+    () => {
+      killLiveGroups();
+      unhookGroups();
+      process.kill(process.pid, sig);
+    },
+  ]),
+);
+function hookGroups() {
+  for (const sig of GROUP_SIGNALS) process.on(sig, onGroupSignal[sig]);
+  process.on("exit", killLiveGroups);
+}
+function unhookGroups() {
+  for (const sig of GROUP_SIGNALS) process.off(sig, onGroupSignal[sig]);
+  process.off("exit", killLiveGroups);
+}
+
 /**
  * Runs `program args` with its own process group (POSIX): after `timeoutS` the whole group gets
  * SIGKILL, so the engine under the RSS tool stops too, not only the tool (M7-P0 Codex r1
- * BENCH10-2). Resolves to { status, signal, error, stdout, stderr } when the process closes.
+ * BENCH10-2); a SIGINT, SIGTERM or SIGHUP of the runner kills the group too (M7-P0 Codex r2
+ * C2-4). Resolves to { status, signal, error, stdout, stderr } when the process closes.
  */
 export function runGroup(program, args, timeoutS) {
   return new Promise((resolve) => {
     const group = process.platform !== "win32";
     const child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
+    if (group && child.pid !== undefined) {
+      if (!liveGroups.size) hookGroups();
+      liveGroups.add(child.pid);
+    }
     let stdout = "";
     let stderr = "";
     let error = null;
@@ -187,6 +225,7 @@ export function runGroup(program, args, timeoutS) {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      if (liveGroups.delete(child.pid) && !liveGroups.size) unhookGroups();
       resolve({ status, signal, error: timedOut ? `timed out after ${timeoutS} s (the process group was killed)` : error, stdout, stderr });
     };
     const timer = setTimeout(() => {
