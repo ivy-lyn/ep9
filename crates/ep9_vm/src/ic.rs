@@ -87,9 +87,9 @@
 //!   site misses in the hit path ([`load`], [`store`] are unchanged, so a monomorphic hit
 //!   costs no more); its miss path first probes a per-isolate table by (operation, receiver
 //!   ShapeId, name) and runs the handler it finds with the code above ([`mega_load`],
-//!   [`mega_store`]); on a table miss it computes the case for an object receiver
-//!   ([`skip_miss`], if [`MEGA_FILL`]) and [`record`] puts it in the table (not `SLOW`, not a
-//!   string). The table is emptied at every GC.
+//!   [`mega_store`]; 0x21 in its cold body, [`get_named_cold`]); on a table miss it computes
+//!   the case for an object receiver ([`skip_miss`], if [`MEGA_FILL`]) and [`record`] puts it
+//!   in the table (not `SLOW`, not a string). The table is emptied at every GC.
 //! - A string's method load (M4-P3 IC2) is a prototype case keyed on [`KEY_STRING`]: its chain
 //!   starts at %String.prototype% (which gets its PROTO_INFO, prototype mode, when the first
 //!   such case is recorded). Global and InstanceOf cases (`instance_ic.rs`) never reach the
@@ -458,10 +458,10 @@ fn cross_check(rt: &Runtime, o: u64, key: u64, c: CellPtr) {
 /// (an index into the constants of `fi`): it feeds only the debug cross-check
 /// ([`cross_check`]); release builds do not read it.
 ///
-/// A megamorphic entry misses here: its miss path probes the stub cache ([`mega_load`], M4-P3
-/// IC2). A probe here would cost every monomorphic hit two loads (the site's name operand and
-/// the runtime pointer are arguments that the handler loads before any branch; measured
-/// +1.4% instructions on t0-prop, mac a64), so the hit path stays as it was.
+/// A megamorphic entry misses here: its miss path probes the stub cache ([`mega_load`]; 0x21
+/// in its cold body, [`get_named_cold`]). A probe here, even after the compares (M7-P1), costs
+/// each monomorphic hit two loads (the site's name operand and the runtime pointer, loaded
+/// before any branch; +1.4% instructions on t0-prop, mac a64), so the hit path stays as it was.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, name: u32) -> Option<u64> {
@@ -1768,6 +1768,70 @@ fn cold_case_matches(k: i32, chain: Chain, c: CellPtr) -> bool {
         (hk::PROTO_DICT_LOAD, Chain::DictData(holder)) => holder == rd(c, hc::REF),
         _ => false,
     }
+}
+
+// ---- the stub cache probe of the GetNamedProperty handler (M7-P1 NAMEDLOAD) ------------------
+
+/// The cold body of `GetNamedProperty` (0x21; M7-P1 NAMEDLOAD): `o.key` after the hit path
+/// ([`load`]) missed, with the site's name `key` (an atom) and slot `slot`. First the stub
+/// cache probe ([`handler_mega_load`]), then the runtime call (`slow::get_named`) if it gives
+/// nothing. The value, or 0 if an exception is pending (the runtime call's result). GC point
+/// (the runtime call); the probe is not one.
+#[inline(always)]
+pub(crate) fn get_named_cold(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    o: u64,
+    key: u64,
+    slot: u32,
+) -> u64 {
+    match handler_mega_load(cx.rt(), FrameRef(fp).info(), o, slot, key) {
+        Some(v) => v,
+        None => slow::get_named(cx, fp, pc, o, key, slot),
+    }
+}
+
+/// The stub cache probe of the `GetNamedProperty` handler: in its cold body
+/// ([`get_named_cold`]), after the monomorphic and polymorphic compares of [`load`] missed, and
+/// before the runtime call. V8's load handler probes its stub cache there too. If slot `slot`
+/// of the vector of `fi` is megamorphic and the stub cache has an entry for `o`'s shape and
+/// the name `key` (an atom), the value its handler gives ([`load_with`]). `None`: the runtime
+/// call runs as before (it probes again, [`mega_load`], then takes the generic path, which
+/// fills the entry, [`record`]).
+///
+/// The hit path ([`load`]) does not change: the cold body is a handler of its own (H15), so a
+/// monomorphic hit loads neither the name operand nor the runtime pointer (the +1.4% on
+/// t0-prop that the note of [`load`] names). A hit here skips the runtime call: the frame
+/// record (`Runtime::enter`), the call, and its vector and slot reads. No allocation, no JS,
+/// not a GC point.
+#[inline(always)]
+fn handler_mega_load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, key: u64) -> Option<u64> {
+    if !kind::is_object(o) {
+        return None;
+    }
+    let v = feedback::vector(fi)?;
+    if !is_mega(v, slot) {
+        return None;
+    }
+    let id = shape_id(o);
+    let r = stub_cache::probe(rt, stub_cache::Op::Load, id, key)
+        .and_then(|h| load_with(rt, o, id, || key, h));
+    // `ic-stats`: a hit counts here; a miss counts in the probe of the runtime call
+    // ([`mega_load`]), so each probe counts once.
+    if r.is_some() {
+        stub_stats!(Load, true);
+        #[cfg(test)]
+        HANDLER_PROBE_HITS.with(|c| c.set(c.get() + 1));
+    }
+    r
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M7-P1 NAMEDLOAD): how many loads the probe of the `GetNamedProperty` handler
+    /// ([`handler_mega_load`]) answered.
+    pub(crate) static HANDLER_PROBE_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 // ---- vectors -----------------------------------------------------------------------------------
