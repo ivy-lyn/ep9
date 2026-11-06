@@ -753,53 +753,53 @@ const _: () = {
     }
 };
 
-/// The number of `Root` values ([`ROOT_COUNT`]): the last one + 1. The match names every
-/// `Root` with no wildcard arm, so a new `Root` fails to build until it has an arm here. A root
-/// appended after A2 start goes after the last one and takes the arm that gives the count; then
-/// it needs its [`APPENDED`] item and its line in the `Root` golden. (M7-P1 JIT reviewer F2: the
-/// count was `RealmKey + 1`, so a root after it built, passed the golden and panicked at its
-/// first use.)
+/// The number of `Root` values ([`ROOT_COUNT`]). The `count!` list names each `Root` once, in
+/// value order. It makes a match with no wildcard arm, so a `Root` that is not in the list fails
+/// to build; the count is the list length, and a name out of order or named twice fails the
+/// const assert. A root appended after A2 start goes last in this list; then it needs its
+/// [`APPENDED`] item and its line in the `Root` golden. (M7-P1 JIT reviewer F2 and MC-w31-1: the
+/// count read one arm, so a new root in another arm built and panicked at its first use.)
 const fn root_count() -> usize {
-    const fn count(r: Root) -> usize {
-        match r {
-            Root::GlobalObject
-            | Root::Lexical
-            | Root::ObjectPrototype
-            | Root::FunctionPrototype
-            | Root::ArrayPrototype
-            | Root::StringPrototype
-            | Root::NumberPrototype
-            | Root::BooleanPrototype
-            | Root::ErrorPrototype
-            | Root::TypeErrorPrototype
-            | Root::RangeErrorPrototype
-            | Root::ReferenceErrorPrototype
-            | Root::SyntaxErrorPrototype
-            | Root::EvalErrorPrototype
-            | Root::UriErrorPrototype
-            | Root::ArrayIteratorPrototype
-            | Root::IteratorPrototype
-            | Root::ObjectConstructor
-            | Root::FunctionConstructor
-            | Root::ArrayConstructor
-            | Root::NumberConstructor
-            | Root::BooleanConstructor
-            | Root::StringConstructor
-            | Root::SymbolConstructor
-            | Root::ErrorConstructor
-            | Root::TypeErrorConstructor
-            | Root::RangeErrorConstructor
-            | Root::ReferenceErrorConstructor
-            | Root::SyntaxErrorConstructor
-            | Root::EvalErrorConstructor
-            | Root::UriErrorConstructor
-            | Root::Math
-            | Root::Realm
-            | Root::RealmFuses => 0,
-            Root::RealmKey => Root::RealmKey as usize + 1,
-        }
+    macro_rules! count {
+        ($(Root::$r:ident)|+) => {{
+            const fn _every(r: Root) {
+                match r {
+                    $(Root::$r)|+ => {}
+                }
+            }
+            let all = [$(Root::$r),+];
+            let mut i = 0;
+            while i < all.len() {
+                assert!(all[i] as usize == i, "count!: not each Root once, in value order");
+                i += 1;
+            }
+            all.len()
+        }};
     }
-    count(Root::RealmKey)
+    count! {
+        // The 35 roots of A2 start (`A2_ROOT_COUNT`), in value order.
+        Root::GlobalObject | Root::Lexical
+        | Root::ObjectPrototype | Root::FunctionPrototype | Root::ArrayPrototype
+        | Root::StringPrototype | Root::NumberPrototype | Root::BooleanPrototype
+        | Root::ErrorPrototype | Root::TypeErrorPrototype | Root::RangeErrorPrototype
+        | Root::ReferenceErrorPrototype | Root::SyntaxErrorPrototype
+        | Root::EvalErrorPrototype | Root::UriErrorPrototype
+        | Root::ArrayIteratorPrototype
+        // week 4
+        | Root::IteratorPrototype
+        | Root::ObjectConstructor | Root::FunctionConstructor | Root::ArrayConstructor
+        | Root::NumberConstructor | Root::BooleanConstructor | Root::StringConstructor
+        | Root::SymbolConstructor | Root::ErrorConstructor | Root::TypeErrorConstructor
+        | Root::RangeErrorConstructor | Root::ReferenceErrorConstructor
+        | Root::SyntaxErrorConstructor | Root::EvalErrorConstructor
+        | Root::UriErrorConstructor
+        | Root::Math
+        // M3-P0, M6-P0
+        | Root::Realm | Root::RealmFuses
+        // M3-P1: isolate-wide
+        | Root::RealmKey
+        // A root appended after A2 start goes here, with its `APPENDED` item.
+    }
 }
 
 /// The slot of root `r` ([`SLOT_MAP`]). A root of A2 start is its own slot; the compare folds
@@ -1064,5 +1064,32 @@ mod tests {
             realm, want,
             "the appended realm root is cleared with the others"
         );
+    }
+
+    /// MC-w31-1: `ROOT_COUNT` is the number of `Root` values. The `enum Root` source (one
+    /// `Name,` line per value) and the `count!` list of `root_count` name the values of `ROOTS`,
+    /// in order. A `Root` that is not in the `count!` list fails to build first: error E0004,
+    /// "pattern `Root::Foo` not covered"; one named twice fails the `count!` const assert.
+    #[test]
+    fn root_count_is_the_number_of_root_values() {
+        let src = include_str!("runtime.rs");
+        let part = |start: &str, end: &str| {
+            let (_, rest) = src.split_once(start).expect(start);
+            rest.split_once(end).expect(end).0
+        };
+        let names = |text: &str, sep: char| -> Vec<String> {
+            let code = text.lines().filter(|l| !l.trim_start().starts_with("//"));
+            let code: String = code.collect::<Vec<_>>().join("\n");
+            code.split(sep)
+                .map(|n| n.trim().trim_start_matches("Root::").to_string())
+                .filter(|n| !n.is_empty())
+                .collect()
+        };
+        let in_enum = names(part("pub(crate) enum Root {\n", "\n}\n"), ',');
+        let in_count = names(part("    count! {\n", "\n    }\n"), '|');
+        let golden: Vec<String> = ROOTS.iter().map(|r| format!("{r:?}")).collect();
+        assert_eq!(in_enum.len(), ROOT_COUNT, "{in_enum:?}");
+        assert_eq!(in_enum, golden, "enum Root and ROOTS");
+        assert_eq!(in_count, golden, "the count! list and ROOTS");
     }
 }
