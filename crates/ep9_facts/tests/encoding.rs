@@ -1131,7 +1131,7 @@ fn every_reference_to_a_table_shape_shares_one_decoded_shape() {
     let bytes = repeat_record(literal.clone(), 512);
     // The header, one table entry and 512 records (14,410 bytes at FACT_SCHEMA 2), with the
     // sizes read from the bytes, so a field append keeps the result.
-    let record = repeat_record(literal.clone(), 2).len() - repeat_record(literal, 1).len();
+    let record = repeat_record(literal.clone(), 2).len() - repeat_record(literal.clone(), 1).len();
     assert_eq!(bytes.len(), HEADER_SIZE + entry_size(&big) + 512 * record);
     let s = FactSnapshot::decode(&bytes).unwrap();
     assert_eq!(shapes_held(&s), (1, 512));
@@ -1140,9 +1140,13 @@ fn every_reference_to_a_table_shape_shares_one_decoded_shape() {
     fn send_sync<T: Send + Sync>(_: &T) {}
     send_sync(&s);
     // The last record's elements kind, a value no schema names: an open list, so that field
-    // reads as none and the rest decodes (MC-w23-8).
+    // reads as none and the rest decodes (MC-w23-8). Its place in a record is read from the
+    // bytes.
+    let single = FactSnapshot::decode(&repeat_record(literal, 1)).unwrap();
+    let in_record = literal_elements_at(&single) - record_start(&single);
     let mut open = bytes;
-    *open.last_mut().unwrap() = 0xff;
+    let at = open.len() - record + in_record;
+    open[at] = 0xff;
     let back = FactSnapshot::decode(&open).unwrap();
     assert_eq!(shapes_held(&back), (1, 512));
     let SlotFacts::Literal(l) = back.get(0, 511).unwrap() else {
@@ -1327,7 +1331,7 @@ fn literal_elements_at(s: &FactSnapshot) -> usize {
         panic!("{s:?}")
     };
     let mut other = l.clone();
-    other.elements = Some(other_kind(l.elements.unwrap()));
+    other.elements = Some(l.elements.map_or(ElementsKind::PackedInt32, other_kind));
     let mut t = FactSnapshot::new(*s.header());
     t.insert(0, 0, SlotFacts::Literal(other)).unwrap();
     changed_at(&s.encode(), &t.encode(), 1)
