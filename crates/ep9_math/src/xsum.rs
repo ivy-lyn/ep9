@@ -1,7 +1,7 @@
 //! `Math.sumPrecise` (ECMA-262, sec-math.sumprecise; H36 row `sumPrecise`): the exact sum of a
 //! list of Numbers, rounded once (ties to even). [`ExactSum`] keeps the spec's state (minus-zero,
 //! finite, plus-infinity, minus-infinity, not-a-number) and, for the finite values, Radford M.
-//! Neal's "small superaccumulator" (xsum): 67 signed 64-bit chunks of 32 bits each, which hold
+//! Neal's "small superaccumulator" (xsum): 68 signed 64-bit chunks of 32 bits each, which hold
 //! every double exactly. Integer operations only: no FP rounding happens before the one in
 //! [`ExactSum::sum`], so the result is the same on every target (H36).
 //!
@@ -49,9 +49,12 @@
 //!   result.
 //! - `CarryPropagate` finds the top and the bottom non-zero chunk with plain loops (V8 unrolls
 //!   them in groups of 4); the result is the same.
-//! - A carry out of the top chunk sets `overflow`, and [`ExactSum::sum`] then gives NaN, where
-//!   V8 adds a NaN through `AddInfNan` (the same result). It needs more than 2^45 values near
-//!   the top of the double range, so no real program reaches it.
+//! - 68 chunks, not V8's 67 (M7-P0 Codex r1 SPEC-MATH-1). With 67 the top chunk holds
+//!   |sum| < 2^1069, so about 2^45 values near the top of the double range carry out of it,
+//!   and V8 then gives NaN (`AddInfNan`) where the spec gives ±∞ or the exact sum. With 68 it
+//!   holds |sum| < 2^1101, more than any prefix of fewer than 2^53 finite values (the caller's
+//!   count limit) can reach (< 2^53 x 2^1024 = 2^1077), so no carry leaves the top chunk. The
+//!   `overflow` check stays as a guard (NaN; a debug assert).
 
 /// Bits of the fraction field of a double.
 const MANTISSA_BITS: u32 = 52;
@@ -67,8 +70,8 @@ const SIGN_MASK: u64 = 1 << 63;
 const LOW_EXP_BITS: u32 = 5;
 const LOW_EXP_MASK: i64 = (1 << LOW_EXP_BITS) - 1;
 const HIGH_EXP_BITS: u32 = EXP_BITS - LOW_EXP_BITS;
-/// The number of chunks: 64 for the exponents, plus 3 for carries.
-const SCHUNKS: usize = (1 << HIGH_EXP_BITS) + 3;
+/// The number of chunks: 64 for the exponents, plus 4 for carries (V8 has 3; module doc).
+const SCHUNKS: usize = (1 << HIGH_EXP_BITS) + 4;
 
 /// Each chunk holds 32 bits of the sum when the carries are propagated.
 const LOW_MANTISSA_BITS: u32 = 1 << LOW_EXP_BITS;
@@ -99,7 +102,7 @@ pub struct ExactSum {
     /// Adds left before the carries must move up.
     adds_until_propagate: u32,
     state: State,
-    /// A carry left the top chunk (see the module doc).
+    /// A carry left the top chunk: never for fewer than 2^53 values (see the module doc).
     overflow: bool,
 }
 
@@ -263,6 +266,7 @@ impl ExactSum {
             }
             self.chunk[i] = clow;
             if i + 1 >= SCHUNKS {
+                debug_assert!(false, "a carry out of the top chunk");
                 self.overflow = true;
                 u = i;
             } else {
@@ -809,6 +813,62 @@ mod tests {
         assert_eq!(sum_precise(&[f64::MAX, f64::MAX]), f64::INFINITY);
         assert_eq!(sum_precise(&[f64::MAX, f64::MAX, -f64::MAX]), f64::MAX);
         assert_eq!(sum_precise(&[-f64::MAX, -f64::MAX]), f64::NEG_INFINITY);
+    }
+
+    impl ExactSum {
+        /// Adds `x * 2^k` (`x` finite, not -0) to the chunks, as `2^k` adds of `x` would (a
+        /// seed for the tests of very many adds), then moves the carries.
+        fn add_scaled(&mut self, x: f64, k: u32) {
+            let mut one = ExactSum::new();
+            one.add1_no_carry(x);
+            let (q, r) = ((k / LOW_MANTISSA_BITS) as usize, k % LOW_MANTISSA_BITS);
+            for (j, c) in one.chunk.iter().enumerate().filter(|(_, c)| **c != 0) {
+                let v = i128::from(*c) << r;
+                for (t, part) in [v & 0xffff_ffff, (v >> 32) & 0xffff_ffff, v >> 64]
+                    .into_iter()
+                    .enumerate()
+                {
+                    if part != 0 {
+                        self.chunk[j + q + t] += part as i64;
+                    }
+                }
+            }
+            self.state = State::Finite;
+            self.carry_propagate();
+        }
+    }
+
+    /// M7-P0 Codex r1 SPEC-MATH-1: with V8's 67 chunks, 2^45 adds of MAX filled the top chunk
+    /// and one more add gave NaN (and the flag stayed set). The spec gives +∞ (or the exact
+    /// sum when later values cancel).
+    #[test]
+    fn very_many_large_values_do_not_overflow_the_chunks() {
+        let m = f64::MAX;
+        for x in [m, -m] {
+            let inf = if x > 0.0 { f64::INFINITY } else { f64::NEG_INFINITY };
+            let mut s = ExactSum::new();
+            s.add_scaled(x, 45);
+            assert_eq!(s.clone().sum(), inf);
+            s.add(x);
+            assert_eq!(s.clone().sum(), inf);
+            assert!(!s.overflow);
+            // A suffix that cancels all but one value gives that value back.
+            s.add_scaled(-x, 45);
+            assert_eq!(s.clone().sum(), x);
+            s.add(-x);
+            assert_eq!(s.sum(), 0.0);
+        }
+        // Near the count limit: 2^52 adds of MAX, then 2^52 - 1 of -MAX, gives MAX.
+        let mut s = ExactSum::new();
+        s.add_scaled(m, 52);
+        assert_eq!(s.clone().sum(), f64::INFINITY);
+        s.add_scaled(-m, 51);
+        s.add_scaled(-m, 50);
+        for k in (0..50).rev() {
+            s.add_scaled(-m, k);
+        }
+        assert!(!s.overflow);
+        assert_eq!(s.sum(), m);
     }
 
     #[test]
