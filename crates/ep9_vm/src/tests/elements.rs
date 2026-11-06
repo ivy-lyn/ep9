@@ -1370,7 +1370,7 @@ fn the_density_check_keeps_dense_stores_dense() {
                 ek::HOLEY_INT32,
                 "every {step}th: dense"
             );
-            assert!(capacity(a) >= N - step as u64 + 1);
+            assert!(capacity(a) > N - step as u64);
             if step == 8 {
                 assert!(capacity(o) >= N - 7);
                 assert!(!shape::is_dictionary(shape::shape_of(o)));
