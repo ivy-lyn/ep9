@@ -139,3 +139,6 @@ intrinsic  91  %Temporal.ZonedDateTime%
 intrinsic  92  %Temporal.ZonedDateTime.prototype%
 intrinsic  93  %Function.prototype.apply%
 intrinsic  94  %Function.prototype.call%
+intrinsic  95  %Iterator%
+intrinsic  96  %IteratorHelperPrototype%
+intrinsic  97  %WrapForValidIteratorPrototype%

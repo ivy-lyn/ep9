@@ -287,11 +287,18 @@ pub enum IntrinsicId {
     FunctionPrototypeApply,
     /// `%Function.prototype.call%` (§20.2.3.3; `Cx::forward_call`).
     FunctionPrototypeCall,
+    // ---- M7-P1 SPEC-ITER (iterator helpers; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Iterator%` (§27.1.3.1; made by `ep9_builtins` iterator.rs, block 28).
+    Iterator,
+    /// `%IteratorHelperPrototype%` (§27.1.2.1; made by `ep9_builtins` iterator.rs).
+    IteratorHelperPrototype,
+    /// `%WrapForValidIteratorPrototype%` (§27.1.3.2.1.1; made by `ep9_builtins` iterator.rs).
+    WrapForValidIteratorPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 95] = [
+    pub const ALL: [IntrinsicId; 98] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -387,6 +394,9 @@ impl IntrinsicId {
         IntrinsicId::TemporalZonedDateTimePrototype,
         IntrinsicId::FunctionPrototypeApply,
         IntrinsicId::FunctionPrototypeCall,
+        IntrinsicId::Iterator,
+        IntrinsicId::IteratorHelperPrototype,
+        IntrinsicId::WrapForValidIteratorPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -488,6 +498,9 @@ impl IntrinsicId {
             IntrinsicId::TemporalZonedDateTimePrototype => "%Temporal.ZonedDateTime.prototype%",
             IntrinsicId::FunctionPrototypeApply => "%Function.prototype.apply%",
             IntrinsicId::FunctionPrototypeCall => "%Function.prototype.call%",
+            IntrinsicId::Iterator => "%Iterator%",
+            IntrinsicId::IteratorHelperPrototype => "%IteratorHelperPrototype%",
+            IntrinsicId::WrapForValidIteratorPrototype => "%WrapForValidIteratorPrototype%",
         }
     }
 
@@ -589,7 +602,10 @@ impl IntrinsicId {
             | IntrinsicId::TemporalZonedDateTime
             | IntrinsicId::TemporalZonedDateTimePrototype
             | IntrinsicId::FunctionPrototypeApply
-            | IntrinsicId::FunctionPrototypeCall => return None,
+            | IntrinsicId::FunctionPrototypeCall
+            | IntrinsicId::Iterator
+            | IntrinsicId::IteratorHelperPrototype
+            | IntrinsicId::WrapForValidIteratorPrototype => return None,
         })
     }
 
@@ -659,6 +675,9 @@ impl IntrinsicId {
             IntrinsicId::TemporalZonedDateTimePrototype => Some(59),
             IntrinsicId::FunctionPrototypeApply => Some(60),
             IntrinsicId::FunctionPrototypeCall => Some(61),
+            IntrinsicId::Iterator => Some(62),
+            IntrinsicId::IteratorHelperPrototype => Some(63),
+            IntrinsicId::WrapForValidIteratorPrototype => Some(64),
             _ => None,
         }
     }
@@ -1325,7 +1344,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 62;
+const INTRINSIC_SLOTS: usize = 65;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
