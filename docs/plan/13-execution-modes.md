@@ -346,7 +346,7 @@ Rules:
 
 - Today the shipped call path cannot enter native code. T0 `call_fast` sends any non-Interp kind cold (`crates/ep9_vm/src/interp/ops.rs:441`). `call_with` throws "not implemented" (`crates/ep9_vm/src/call.rs:467-469`). The native entry exists only under `spike-native` (`crates/ep9_vm/src/lib.rs:102-103`), which implies `jit` (`crates/ep9_vm/Cargo.toml:35`). Since M5-P0 (C-18) the 3 native `Cx` fields, the `RuntimeTable` type and the layout export `ep9_vm::layout` are in every build; the table itself and the functions it calls stay behind `spike-native` (`crates/ep9_vm/src/layout.rs:7-11`).
 - Rule (H27 clarify, C-10): the production native entry, the tier manager and the deoptimizer build without `jit`. `jit` adds producers only. Every call path branches on "Interp or not". H04 already says "every call path checks the slot kind first" (H04:52). So a new kind byte later needs no caller change.
-- Rule (MC-w15-6): a RuntimeTable entry calls only non-recording generic functions, so native code records no feedback (`crates/ep9_vm/src/native.rs` "records none"). A T0 cold body passes its feedback site in; a generic function never finds a site by itself (today `property::instance_of` finds the `TestInstanceOf` site of the top frame and records there, so no RuntimeTable entry may reach it).
+- Rule (MC-w15-6): a RuntimeTable entry calls only non-recording generic functions, so native code records no feedback (`crates/ep9_vm/src/native.rs` "records none"). A T0 cold body passes its feedback site in; a generic function never finds a site by itself (today `property::instance_of` finds the `TestInstanceOf` site of the top frame and records there, so no RuntimeTable entry may reach it). [2026-11-06, M7-P0 AOT0 (plan v12 V12-D15; r-modes MD-7):] The 12 entries at B0 (0 `poll` to 11 `load_global`, `crates/ep9_vm/src/layout.rs` `RuntimeTable`) stay non-recording: `load_global` reads the binding by `slow::property::global_value` with no IC update. A later entry that records feedback (for T1 or A3 baseline-AOT code, whose ICs write the FeedbackVector, H33:27) is a RuntimeTable append (a fill: the length is no VM_LAYOUT fact, C-18) that takes the feedback site in as an argument (the FunctionInfo and the slot); it never finds a site by itself, and no existing entry changes to record.
 - Build: M5 (T1) and A2 (loader). Nothing in M1.
 
 ### 3.5 Fuses across modes and realms
@@ -812,6 +812,27 @@ R9 (the AR §3.4 reading is refused) and R10 (the C-22 R2 rewrite is refused) ar
 | One flag test in each record hook as the first choice (MC-w13-10 option C) | Costs instructions in JIT mode too; kept only as the MODES-D11 fallback |
 | T2 and optimized-AOT v1 inline only callees that make no runtime call and no poll (the old C-22 fallback, R10) | Costs T2 and AOT peak speed for the life of v1. Every production engine with inlining maps positions to an inline chain. MODES-D2 accepted the C-22 (1) rewrite instead |
 | A new AR §3.3 clause for parts built later (the old C-13 fallback, R9) | A process change that needs a second reviewer from another role (AR:65, AR:68). AR:84 and the H20 part-2 form (H20:89) already cover it (MODES-D1) |
+
+## 11A. T1 contract note (2026-11-06, M7-P0 AOT0; plan v12 V12-D15)
+
+Plan text, not an ADR row. It writes down the rules that the T1 writer must keep before any T1 code exists, so the T1 writer stays inside the frozen room (r-modes F8 and MD-5). It is placed before section 12 so that no cited line of this file moves. The V8 cites are at V8 40f4b69c3b (2026-11-02); the JSC cites are at WebKit 4ab70932d7c (2026-11-02).
+
+**T1 keeps the vector threshold 8 and makes no vector.** T1 compiles only a function that already has a FeedbackVector. The vector appears only at one of the 4 T0 moments (H32:92, its M6-P5 note; H14:86; H16:34, the K6 cell): the threshold call, the entry of function 0, a `JumpLoop` budget poll, and a budget poll at a call. The threshold stays `IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD` = 8 (`crates/ep9_vm/src/isolate.rs`). V8 also uses 8 calls (`invocation_count_for_feedback_allocation`). Any other moment, or a vector that T1 makes, is a G8 rewrite of these Frozen rows.
+
+| Rule for ep9 T1 | V8 evidence | JSC evidence | ep9 home |
+|---|---|---|---|
+| T1 compiles only a function that has a vector; it makes no vector | [V8 `src/execution/tiering-manager.cc:590-593`] (a function without a vector is a tier of its own), :606-623 (the vector is made first), :637-649 (then Sparkplug is enqueued or compiled); Sparkplug debug code checks the vector (`src/baseline/baseline-compiler.cc:620-629`); 8 calls make the vector (`src/flags/flag-definitions.h:1110`) | none | H32:92 (M6-P5 note); H14:86; H16:34 (K6) |
+| T1 does not wait for stable feedback; T2 does | "baseline code is feedback independent" (`tiering-manager.cc:505-506`); T2 waits `minimum_invocations_after_ic_update` = 500 after an IC change (`flag-definitions.h:1142`) | LLInt to Baseline at 500 (`Source/JavaScriptCore/runtime/OptionsList.h:369`); Baseline to DFG at 1000 (:372) | 13:312 (about 500 units (est.), P04:104); H33 hybrid part (gated) |
+| T1 hotness counts tier units only (one per call and one per back edge), never library work | a per-function budget in the feedback cell (`tiering-manager.cc:520`) | a per-CodeBlock execute counter (`bytecode/CodeBlock.h:605-608`) | H23:61 (2), the "tier unit"; 13:264 |
+| A compile refusal is kept per function with its cause; a hot trigger does not retry it | a Maglev abort sets `kDelayMaglev` (V8 9e0dcab298, 2026-08-27; `src/codegen/compiler.cc:1221`) | `dontJITAnytimeSoon()` defers the counter (`llint/LLIntSlowPaths.cpp:439`; `CodeBlock.h:605-608`) | MC-w27-9 (T1 lane, due M5) |
+| No T1 compile while a breakpoint or a call hook needs T0 | `CanCompileWithBaseline` refuses (`src/baseline/baseline.cc:38-43`) | none | 13:292 (the debug copy); T11 (13:340) |
+| The jitless build has no T1 producer | `DEFINE_NEG_IMPLICATION(jitless, sparkplug)` (`flag-definitions.h:978`) | none | M-R2 (13:74); the jitless preset `produce` is empty (13:109) |
+| T1 ICs write the shared vector through the T0 IC paths | Sparkplug passes `FeedbackVector()` to the IC builtins (`baseline-compiler.cc:1254`, :2479) | Baseline JIT code writes value profiles (`jit/JITInlines.h:312`) | H33:27; P05:336; H16:16 (its 2026-11-06 note) |
+| T1 text can be shared when it bakes no per-isolate constant | none | one baseline code per UnlinkedCodeBlock (`OptionsList.h:657`; `LLIntSlowPaths.cpp:386-396`) | P-R2 (13:247): HeapConst only in `finalize_jit`; T1 is also the A3 emitter (P04:57, P04:312) |
+| T1 reads a fuse as GuardFuse at each use; no invalidation dependency until H29 A4 proves the lazy swap | none | none | H31:138 (the JIT read form of compiled fuse reads) |
+| Every T1 poll and call is a lazy-deopt point with H29 records | none | none | P04:286; H29:107-108 (the records need DEOPT_META 1, from A2 start) |
+
+Notes. (1) A T1 IC that records goes through the T0 IC paths; a RuntimeTable entry that records is an append that takes the feedback site in (the 2026-11-06 note on the MC-w15-6 rule of 3.4). (2) The recheck after a pin (M-R7, 13:79; V8 d4e08193a7, 2026-10-29) is a T2 inliner rule, not a T1 rule. (3) T1 is not built in month 7: no JIT tier runs JS before the M2 gate (M09:36-37); A2 tests run hand-written stub code.
 
 ---
 
