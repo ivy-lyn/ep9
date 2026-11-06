@@ -450,3 +450,32 @@ C2.resolve = 5; Promise.allKeyed.call(C2, { a: 1 });
         ])
     );
 }
+
+/// The key loop of Promise.allKeyed and allSettledKeyed polls (H23 "Interrupt poll": a builtin
+/// loop with no unit of its own; M7-P0 Codex r1 SPEC-POST-3): 200,000 non-enumerable keys
+/// (made before the termination) stop the call, and the termination is not turned into a
+/// rejection. Before the fix the call ran to its end.
+#[test]
+fn a_long_keyed_combinator_key_loop_stops_on_a_termination() {
+    for f in ["allKeyed", "allSettledKeyed"] {
+        let (terminated, stage) = common::on_big_stack(move || {
+            let mut i = log_isolate(false);
+            run(
+                &mut i,
+                "var o = {}; for (var k = 0; k < 200000; k++) Object.defineProperty(o, 'k' + k, { value: k });",
+                "make.js",
+            )
+            .unwrap();
+            i.terminate_handle().terminate();
+            let src = format!(
+                "var stage = 'before'; Promise.{f}(o).then(function () {{ log('settled'); }}, function () {{ log('rejected'); }}); stage = 'after';"
+            );
+            let r = run(&mut i, &src, "keyed.js");
+            let terminated = r.is_err_and(|e| e.terminated);
+            (terminated, common::global_text(&mut i, "stage"))
+        });
+        assert!(terminated, "{f}");
+        assert_eq!(stage.as_deref(), Some("before"), "{f}");
+        assert!(take_log().is_empty(), "{f}");
+    }
+}

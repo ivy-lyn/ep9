@@ -779,6 +779,9 @@ fn perform_keyed<'s>(
     let mut index = 0.0f64;
     // 6. For each element key of allKeys, do
     for i in 0..count {
+        // A builtin loop polls once per pass (H23 "Interrupt poll"); a termination is not
+        // caught by IfAbruptRejectPromise (`catch_exception`).
+        cx.poll_interrupt()?;
         let key = cx.get(all_keys, i.to_string().as_str())?;
         let key = cx.to_property_key(key)?;
         // a. Let desc be ? promises.[[GetOwnProperty]](key).
@@ -863,6 +866,7 @@ fn keyed_result_object<'s>(
     // 3. For each integer i such that 0 ≤ i < the number of elements in keys, in ascending
     //    order, do
     for i in 0..n {
+        cx.poll_interrupt()?;
         let index = i.to_string();
         let key = cx.get(keys, index.as_str())?;
         let key = cx.to_property_key(key)?;
