@@ -1,7 +1,7 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 52 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3 and 1 B0 test. 15 of them also fail
+# 53 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3 and 2 B0 tests. 15 of them also fail
 # without GC-stress and are listed in every expectations/test262.<triple>.jit.txt: 8 month-2
 # tests (S7.4_A5.js, S7.4_A6.js, the 5 tco-* tests and ownkeys-linear.js), the M3-P1 test
 # two-digit-years.js and 6 of the M4-P3 tests. The other 36 pass without GC-stress: the 3
@@ -73,11 +73,12 @@
 # toString/built-in-function-object.js (macos-arm64 6/6; it visits every built-in function, and
 # B0 adds the Temporal and BigInt ones) and staging/sm/expressions/short-circuit-compound-
 # assignment.js (linux-arm64 2/6). The B0 realm is larger, so each stress collection marks more
-# (the same shard: 76.8 -> 127.1 ms per run). short-circuit-compound-assignment.js left this
-# list at the M7-P1 merge head, after the lazy namespace (INTL-I1-D8, role LAZYNS; route
-# B0-GCSKIP). built-in-function-object.js stays: it reads every built-in function, so it installs
-# the Temporal group itself and its time does not drop (mac a64: 72.6 s for its 2 runs alone;
-# a 60 s timeout with 16 workers).
+# (the same shard: 76.8 -> 127.1 ms per run). Both stay on this list (route GCSKIP-BFO). The
+# lazy namespace (INTL-I1-D8, role LAZYNS) cut short-circuit-compound-assignment.js to 27.0 s
+# on mac a64, but it ran past the 60 s timeout in CI run 42280247874 (linux-x64 2/6).
+# built-in-function-object.js reads every built-in function, so it installs the Temporal group
+# itself and its time does not drop (mac a64: 72.6 s for its 2 runs alone; a 60 s timeout with
+# 16 workers).
 # Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
 # head; the M4-P3 tests: on x86_64-unknown-linux-gnu). Paths are relative to the test262 root.
 test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js
@@ -130,5 +131,6 @@ test/staging/sm/Date/two-digit-years.js
 test/staging/sm/Function/has-instance-jitted.js
 test/staging/sm/Proxy/ownkeys-linear.js
 test/staging/sm/String/string-upper-lower-mapping.js
+test/staging/sm/expressions/short-circuit-compound-assignment.js
 test/staging/sm/extensions/recursion.js
 test/staging/sm/regress/regress-1507322-deep-weakmap.js
