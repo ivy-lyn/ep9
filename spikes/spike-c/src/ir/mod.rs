@@ -1380,7 +1380,7 @@ mod tests {
     /// Codex round 1 (spikec3): a guard whose frame state lies before its block must not
     /// resume T0 there when an effect on the way (here the StoreElement of `a[0] = ...` in
     /// the entry block) already ran: T0 would increment the element twice. The graph of
-    /// `bump` with the last CheckInt32's state moved back to the first one's (@8) is refused.
+    /// `bump` with the last CheckInt32's state moved back to the first one's (@6) is refused.
     #[test]
     fn check_refuses_a_cross_block_resume_past_an_effect() {
         let g = graph_of(
@@ -1398,14 +1398,14 @@ mod tests {
         let (first, _) = g.guard_nodes().next().expect("a guard");
         assert_ne!(g.node(first).block, g.node(last).block, "{g}");
         let early = g.node(first).guard.as_ref().expect("guard").state.clone();
-        assert_eq!(early.offset, 8, "{g}");
+        assert_eq!(early.offset, 6, "{g}");
         let mut bad = g.clone();
         bad.node_mut(last).guard.as_mut().expect("guard").state = early.clone();
         let e = bad
             .check()
             .expect_err(&format!("resume at @{} passed\n{bad}", early.offset));
         assert!(e.contains("not replayable"), "{e}");
-        assert!(e.contains("effect at @17"), "{e}");
+        assert!(e.contains("effect at @15"), "{e}");
         // The same move with no effect on the way (no store) passes: T0 replays only checks.
         let g = graph_of(
             "function inc(k, n) { var z = n | 0; if (z < 0) return 0; return k + 1; }",

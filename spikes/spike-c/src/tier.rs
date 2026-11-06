@@ -2619,11 +2619,11 @@ mod tests {
         crate::harness::PATCH.with(|p| *p.borrow_mut() = None);
     }
 
-    /// Call operands and parameters (WI-SC5): the frontend copies each call operand into a
-    /// fresh local register, so `call_any` reads them from local slots the code writes, and a
-    /// parameter's slot (where its incoming value lives, read by later nodes) is never
-    /// written: `b` keeps the incoming `a` after `a` changes and is passed. The emitter
-    /// refuses a parameter operand that holds a new value (the frontend makes none today).
+    /// Call operands and parameters (WI-SC5): a call operand is a local register, or a
+    /// parameter that the function never writes (regopt O4), so a parameter slot that holds
+    /// a new value is never passed, and a parameter's slot (where its incoming value lives,
+    /// read by later nodes) is never written: `b` keeps the incoming `a` after `a` changes
+    /// and is passed. The emitter refuses a parameter operand that holds a new value.
     #[test]
     fn a_call_never_writes_over_an_incoming_parameter() {
         if !aarch64() {
@@ -2649,7 +2649,10 @@ mod tests {
                 .lines()
                 .find(|l| l.contains("Call {"))
                 .expect("a call");
-            assert!(!call.contains("Register(-"), "{call}");
+            // `swap` writes its parameter `a` (a0): the call passes it from a local.
+            if name == "swap" {
+                assert!(!call.contains("Register(-2)"), "{call}");
+            }
         }
     }
 
