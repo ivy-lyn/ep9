@@ -211,10 +211,19 @@ function unhookGroups() {
 export function runGroup(program, args, timeoutS) {
   return new Promise((resolve) => {
     const group = process.platform !== "win32";
-    const child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
-    if (group && child.pid !== undefined) {
-      if (!liveGroups.size) hookGroups();
-      liveGroups.add(child.pid);
+    // Hook before spawn: the child exists before spawn returns, and a signal handler (a JS
+    // callback) runs only after this synchronous part, so it sees the pid (M7-P0 Codex r3 C3-2).
+    if (group && !liveGroups.size) hookGroups();
+    let child;
+    try {
+      child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
+    } catch (e) {
+      if (group && !liveGroups.size) unhookGroups();
+      throw e;
+    }
+    if (group) {
+      if (child.pid !== undefined) liveGroups.add(child.pid);
+      else if (!liveGroups.size) unhookGroups();
     }
     let stdout = "";
     let stderr = "";

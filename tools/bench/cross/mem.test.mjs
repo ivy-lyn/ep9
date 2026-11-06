@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { cpuModel } from "../lib/host.mjs";
-import { analyze, CAPS, checkMemRun, measureRss, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, renderMarkdown, rssTool, run, SCHEMA } from "./mem.mjs";
+import { analyze, CAPS, checkMemRun, measureRss, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, renderMarkdown, rssTool, run, runGroup, SCHEMA } from "./mem.mjs";
 import { platformId, Refusal, schedule } from "./run.mjs";
 import { SETS, V8V7_7, WORKLOADS } from "./workloads.mjs";
 
@@ -175,6 +175,28 @@ await p;
     await new Promise((ok) => setTimeout(ok, 3000));
     assert.equal(existsSync(marker), false, `${sig}${toGroup ? " to the group" : " to the runner"}: the engine ran to its end`);
   }
+});
+
+// M7-P0 Codex r3 C3-2: spawn() forks the detached group before it returns. If the handlers go on
+// only after spawn, a SIGINT in that window ends the runner by the default action and the group
+// runs on. An argument's toString runs inside spawn(), before the fork: the handlers must be on.
+test("runGroup: the signal handlers are on before the fork (M7-P0 Codex r3 C3-2)", { skip: !["darwin", "linux"].includes(process.platform) && "POSIX process groups" }, async () => {
+  const sigs = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const count = () => sigs.map((s) => process.listenerCount(s));
+  const base = count();
+  const plus1 = base.map((n) => n + 1);
+  let seen = null;
+  const arg = { toString: () => ((seen = count()), "exit 0") };
+  const r = await runGroup("/bin/sh", ["-c", arg], 10);
+  assert.equal(r.status, 0);
+  assert.deepEqual(seen, plus1, "the handlers at the fork (SIGINT, SIGTERM, SIGHUP)");
+  assert.deepEqual(count(), base, "the handlers after a normal run");
+  // A spawn that fails (ENOENT) and a spawn that throws (a NUL byte) leave no handler.
+  const e = await runGroup("/nonexistent/ep9-no-such-program", [], 10);
+  assert.match(e.error ?? "", /ENOENT/);
+  assert.deepEqual(count(), base, "the handlers after ENOENT");
+  await assert.rejects(runGroup("/bin/sh", ["-c", "a\0b"], 10), { code: "ERR_INVALID_ARG_VALUE" });
+  assert.deepEqual(count(), base, "the handlers after a spawn throw");
 });
 
 test("checkMemRun: a failed run, a wrong output or no RSS is refused", () => {
