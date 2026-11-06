@@ -309,7 +309,9 @@ impl<T: Send> Work<T> {
     }
 }
 
-/// One wait step of an idle marker: spin, then yield, then sleep.
+/// One wait step of an idle marker: spin, then yield, then sleep. The sleep is a
+/// `park_timeout` (an unpark only ends it early: the caller reads the counters again), not a
+/// `thread::sleep`: the pool uses no libc function that the rest of `ep9` does not (pool doc).
 fn pause(spins: &mut u32) {
     #[cfg(loom)]
     {
@@ -324,7 +326,7 @@ fn pause(spins: &mut u32) {
         } else if *spins < 128 {
             std::thread::yield_now();
         } else {
-            std::thread::sleep(std::time::Duration::from_micros(20));
+            std::thread::park_timeout(std::time::Duration::from_micros(20));
         }
     }
 }
@@ -368,13 +370,21 @@ pub(crate) fn run<M: Marker>(work: &Work<M::Item>, me: usize, m: &mut M, mut has
 mod loom_tests;
 
 /// The marker pool of the process (module doc).
+///
+/// Its waits are `thread::park` loops on `STATE`, not `Condvar`s: on macOS std's `Condvar`
+/// and `thread::sleep` import `pthread_cond_*` and `nanosleep`, and dyld binds each import at
+/// every process start, a run with no GC too (the 4 imports: about 250K instructions on the
+/// M5 Max, also for `ep9 --version`). `park` uses the dispatch semaphores std already imports.
+/// A park can return early (an unpark token, or a spurious wake), so each wait reads the
+/// state again.
 #[cfg(not(loom))]
 mod pool {
     use core::sync::atomic::AtomicBool;
     use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::any::Any;
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-    use std::sync::{Condvar, Mutex, MutexGuard};
+    use std::sync::{Mutex, MutexGuard};
+    use std::thread::Thread;
 
     use super::{Grey, SHARE_EVERY, Work, run};
     use crate::cell::KindTable;
@@ -414,8 +424,11 @@ mod pool {
         want: usize,
         joined: usize,
         finished: usize,
-        /// Helper threads started so far.
+        /// Helper threads started so far, and their handles (the job start unparks each).
         spawned: usize,
+        threads: Vec<Thread>,
+        /// The heap's thread of the open job: a helper that is done unparks it.
+        waiter: Option<Thread>,
     }
 
     static STATE: Mutex<State> = Mutex::new(State {
@@ -425,10 +438,9 @@ mod pool {
         joined: 0,
         finished: 0,
         spawned: 0,
+        threads: Vec::new(),
+        waiter: None,
     });
-    /// Helpers wait here for a job; the heap's thread waits on `END` for the helpers.
-    static START: Condvar = Condvar::new();
-    static END: Condvar = Condvar::new();
     /// A heap's mark holds the pool.
     static BUSY: AtomicBool = AtomicBool::new(false);
 
@@ -459,9 +471,10 @@ mod pool {
                 let started = std::thread::Builder::new()
                     .name(format!("ep9-gc-marker-{}", s.spawned + 1))
                     .spawn(helper_main);
-                if started.is_err() {
+                let Ok(handle) = started else {
                     break;
-                }
+                };
+                s.threads.push(handle.thread().clone());
                 s.spawned += 1;
             }
             let helpers = n.min(s.spawned);
@@ -504,7 +517,10 @@ mod pool {
                             break (job, s.joined);
                         }
                     }
-                    s = START.wait(s).unwrap_or_else(|e| e.into_inner());
+                    // Wait for the next job: `run_job` unparks every helper after it opens one.
+                    drop(s);
+                    std::thread::park();
+                    s = state();
                 }
             };
             // SAFETY: the heap's thread keeps the job alive until `finished == joined`, and
@@ -519,7 +535,9 @@ mod pool {
             }
             let mut s = state();
             s.finished += 1;
-            END.notify_all();
+            if let Some(w) = &s.waiter {
+                w.unpark();
+            }
         }
     }
 
@@ -548,8 +566,12 @@ mod pool {
             let mut s = state();
             s.job = None;
             while s.finished < s.joined {
-                s = END.wait(s).unwrap_or_else(|e| e.into_inner());
+                // A helper that is done unparks `waiter` (this thread) under the lock.
+                drop(s);
+                std::thread::park();
+                s = state();
             }
+            s.waiter = None;
         }
     }
 
@@ -570,8 +592,11 @@ mod pool {
             s.want = claim.helpers;
             s.joined = 0;
             s.finished = 0;
+            s.waiter = Some(std::thread::current());
+            for h in &s.threads {
+                h.unpark();
+            }
         }
-        START.notify_all();
         #[cfg(test)]
         super::test_controls::PARALLEL_DRAINS.set(super::test_controls::PARALLEL_DRAINS.get() + 1);
         {
