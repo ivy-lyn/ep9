@@ -266,7 +266,7 @@ history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:460-463	**The set 
 # the drift map would read them from that older commit, so each is pinned to its line at HEAD. The H16
 # F-R7 pin of facts_export.rs:86-100 is gone: the doc now cites 96-110 (its FIX value). H20:66 names
 # builtins.rs:1024 by its full path (the bare `:1024` was an older H20 token of abi/mod.rs).
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:723	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:736	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:184	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
 pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:581	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
 # spec-int merge (spec-temporal on m1m6/p5, 2026-11-05): dated record and Change-log rows keep the line of the
