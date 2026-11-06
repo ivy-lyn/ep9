@@ -32,31 +32,30 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 7 (1:8)
      20 S 4 (1:5)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=3 range=7..76
-  code (61 bytes):
+  code (58 bytes):
       0 S> Ldar a2                                      ; 0b fc
       2 E> AddSmi [1], s0                               ; 36 01 00
       5    Star a2                                      ; 0c fc
       7 S> Ldar a2                                      ; 0b fc
       9    Ldar a0                                      ; 0b fe
      11 E> Sub a2, s1                                   ; 2b fc 01
-     14    Mov a2, r0                                   ; 0d fc 00
-     17    Star a2                                      ; 0c fc
-     19 S> LdaGlobal k0, s2  ; k0 = String str0 "g"     ; 10 00 02
-     22 E> MulSmi [2], s3                               ; 38 02 03
-     25 E> StaGlobal k0, s4  ; k0 = String str0 "g"     ; 12 00 04
-     28 S> Ldar a0                                      ; 0b fe
-     30 E> GetNamedProperty a0, k1, s5  ; k1 = String str2 "x" ; 21 fe 01 05
-     34 E> BitwiseOrSmi [1], s6                         ; 3c 01 06
-     37 E> SetNamedProperty a0, k1, s7  ; k1 = String str2 "x" ; 24 fe 01 07
-     41 S> Ldar a0                                      ; 0b fe
-     43    Ldar a1                                      ; 0b fd
-     45 E> GetKeyedProperty a0, s8                      ; 23 fe 08
-     48    Star r2                                      ; 0c 02
-     50    Ldar a2                                      ; 0b fc
-     52 E> Exp r2, s9                                   ; 2f 02 09
-     55 E> SetKeyedProperty a0, a1, s10                 ; 26 fe fd 0a
-     59    LdaUndefined                                 ; 05
-     60    Return                                       ; 92
+     14    Star a2                                      ; 0c fc
+     16 S> LdaGlobal k0, s2  ; k0 = String str0 "g"     ; 10 00 02
+     19 E> MulSmi [2], s3                               ; 38 02 03
+     22 E> StaGlobal k0, s4  ; k0 = String str0 "g"     ; 12 00 04
+     25 S> Ldar a0                                      ; 0b fe
+     27 E> GetNamedProperty a0, k1, s5  ; k1 = String str2 "x" ; 21 fe 01 05
+     31 E> BitwiseOrSmi [1], s6                         ; 3c 01 06
+     34 E> SetNamedProperty a0, k1, s7  ; k1 = String str2 "x" ; 24 fe 01 07
+     38 S> Ldar a0                                      ; 0b fe
+     40    Ldar a1                                      ; 0b fd
+     42 E> GetKeyedProperty a0, s8                      ; 23 fe 08
+     45    Star r2                                      ; 0c 02
+     47    Ldar a2                                      ; 0b fc
+     49 E> Exp r2, s9                                   ; 2f 02 09
+     52 E> SetKeyedProperty a0, a1, s10                 ; 26 fe fd 0a
+     56    LdaUndefined                                 ; 05
+     57    Return                                       ; 92
   constants (2):
       0 String str0 "g"
       1 String str2 "x"
@@ -78,14 +77,14 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       2 E 29 (1:30)
       7 S 37 (1:38)
      11 E 37 (1:38)
-     19 S 45 (1:46)
+     16 S 45 (1:46)
+     19 E 45 (1:46)
      22 E 45 (1:46)
-     25 E 45 (1:46)
-     28 S 53 (1:54)
-     30 E 53 (1:54)
+     25 S 53 (1:54)
+     27 E 53 (1:54)
+     31 E 53 (1:54)
      34 E 53 (1:54)
-     37 E 53 (1:54)
-     41 S 63 (1:64)
-     45 E 63 (1:64)
+     38 S 63 (1:64)
+     42 E 63 (1:64)
+     49 E 63 (1:64)
      52 E 63 (1:64)
-     55 E 63 (1:64)

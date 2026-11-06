@@ -21,42 +21,38 @@ scopes (9):
   scope7 function outer=scope5 flags=[needs-context,strict] slots=["this":var]
   scope8 function outer=scope7 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..86
-  code (103 bytes):
+  code (93 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> LdaTheHole                                   ; 07
       6    Star r3                                      ; 0c 03
       8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f2 ; 74 00 00 00
      12    Star r2                                      ; 0c 02
      14 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
-     19    Star r4                                      ; 0c 04
-     21    Mov r2, r0                                   ; 0d 02 00
-     24 E> CreateClosure k1, s1, #0x00  ; k1 = Function f1 ; 74 01 01 00
-     28    Star r5                                      ; 0c 05
-     30    Mov r0, r6                                   ; 0d 00 06
-     33    Mov r5, r7                                   ; 0d 05 07
-     36 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
-     41    LdaConstant k2  ; k2 = String str0 "A"       ; 0a 02
-     43    Star r2                                      ; 0c 02
-     45    Mov r0, r3                                   ; 0d 00 03
-     48 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
-     53 S> LdaTheHole                                   ; 07
-     54    Star r3                                      ; 0c 03
-     56 E> CreateClosure k3, s2, #0x00  ; k3 = Function f3 ; 74 03 02 00
-     60    Star r2                                      ; 0c 02
-     62 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
-     67    Star r4                                      ; 0c 04
-     69    Mov r2, r1                                   ; 0d 02 01
-     72 E> CreateClosure k4, s3, #0x00  ; k4 = Function f4 ; 74 04 03 00
-     76    Star r5                                      ; 0c 05
-     78    Mov r1, r6                                   ; 0d 01 06
-     81    Mov r5, r7                                   ; 0d 05 07
-     84 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
-     89    LdaConstant k5  ; k5 = String str1 "B"       ; 0a 05
-     91    Star r2                                      ; 0c 02
-     93    Mov r1, r3                                   ; 0d 01 03
-     96 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
-    101    LdaUndefined                                 ; 05
-    102    Return                                       ; 92
+     19    Mov r2, r0                                   ; 0d 02 00
+     22 E> CreateClosure k1, s1, #0x00  ; k1 = Function f1 ; 74 01 01 00
+     26    Star r7                                      ; 0c 07
+     28    Mov r0, r6                                   ; 0d 00 06
+     31 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
+     36    LdaConstant k2  ; k2 = String str0 "A"       ; 0a 02
+     38    Star r2                                      ; 0c 02
+     40    Mov r0, r3                                   ; 0d 00 03
+     43 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     48 S> LdaTheHole                                   ; 07
+     49    Star r3                                      ; 0c 03
+     51 E> CreateClosure k3, s2, #0x00  ; k3 = Function f3 ; 74 03 02 00
+     55    Star r2                                      ; 0c 02
+     57 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     62    Mov r2, r1                                   ; 0d 02 01
+     65 E> CreateClosure k4, s3, #0x00  ; k4 = Function f4 ; 74 04 03 00
+     69    Star r7                                      ; 0c 07
+     71    Mov r1, r6                                   ; 0d 01 06
+     74 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
+     79    LdaConstant k5  ; k5 = String str1 "B"       ; 0a 05
+     81    Star r2                                      ; 0c 02
+     83    Mov r1, r3                                   ; 0d 01 03
+     86 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     91    LdaUndefined                                 ; 05
+     92    Return                                       ; 92
   constants (6):
       0 Function f2
       1 Function f1
@@ -75,15 +71,15 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 S 0 (1:1)
       8 E 0 (1:1)
      14 E 0 (1:1)
-     24 E 0 (1:1)
-     36 E 8 (1:9)
-     48 E 0 (1:1)
-     53 S 59 (1:60)
-     56 E 59 (1:60)
-     62 E 59 (1:60)
-     72 E 59 (1:60)
-     84 E 67 (1:68)
-     96 E 59 (1:60)
+     22 E 0 (1:1)
+     31 E 8 (1:9)
+     43 E 0 (1:1)
+     48 S 59 (1:60)
+     51 E 59 (1:60)
+     57 E 59 (1:60)
+     65 E 59 (1:60)
+     74 E 67 (1:68)
+     86 E 59 (1:60)
 function f1 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..58
   code (8 bytes):
       0 S> LdaSmi [1]                                   ; 04 01

@@ -30,7 +30,7 @@ scopes (10):
   scope8 function outer=scope1 flags=[strict] slots=[]
   scope9 function outer=scope1 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..176
-  code (157 bytes):
+  code (154 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
       7    PushContext r3                               ; 13 03
@@ -73,21 +73,20 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     110    Ldar r0                                      ; 0b 00
     112    StaCurrentContextSlot [0]                    ; 1b 00
     114 E> CreateClosure k10, s7, #0x00  ; k10 = Function f2 ; 74 0a 07 00
-    118    Star r4                                      ; 0c 04
+    118    Star r6                                      ; 0c 06
     120    Mov r0, r5                                   ; 0d 00 05
-    123    Mov r4, r6                                   ; 0d 04 06
-    126 E> CallRuntime SetClassFieldsInitializer, r5-r6 ; 68 18 00 05 02
-    131    LdaCurrentContextSlot [6]                    ; 18 06
-    133    Star r5                                      ; 0c 05
-    135    LdaUndefined                                 ; 05
-    136 E> DefineKeyedOwnProperty r0, r5, #0x02, s8     ; 27 00 05 02 08
-    141    PopContext r3                                ; 14 03
-    143    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
-    145    Mov r0, r1                                   ; 0d 00 01
-    148    Star r0                                      ; 0c 00
-    150 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-    155    LdaUndefined                                 ; 05
-    156    Return                                       ; 92
+    123 E> CallRuntime SetClassFieldsInitializer, r5-r6 ; 68 18 00 05 02
+    128    LdaCurrentContextSlot [6]                    ; 18 06
+    130    Star r5                                      ; 0c 05
+    132    LdaUndefined                                 ; 05
+    133 E> DefineKeyedOwnProperty r0, r5, #0x02, s8     ; 27 00 05 02 08
+    138    PopContext r3                                ; 14 03
+    140    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+    142    Mov r0, r1                                   ; 0d 00 01
+    145    Star r0                                      ; 0c 00
+    147 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+    152    LdaUndefined                                 ; 05
+    153    Return                                       ; 92
   constants (11):
       0 Scope scope1
       1 String str0 "A"
@@ -127,9 +126,9 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      96 E 0 (1:1)
     105 E 110 (1:111)
     114 E 0 (1:1)
-    126 E 8 (1:9)
-    136 E 8 (1:9)
-    150 E 0 (1:1)
+    123 E 8 (1:9)
+    133 E 8 (1:9)
+    147 E 0 (1:1)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=0..176
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
@@ -171,16 +170,15 @@ function f3 method name="#m" parent=f0 outer_scope=scope1 flags=[strict,simple-p
   positions (1):
       0 S 17 (1:18)
 function f4 method name="#s" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=36..60
-  code (19 bytes):
+  code (17 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    LdaCurrentFunction                           ; 0e
       3    Star r2                                      ; 0c 02
       5 E> CallRuntime GetHomeObject, r2                ; 68 0e 00 02 01
-     10    Star r1                                      ; 0c 01
-     12 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str10 "x" ; 22 ff 00 00
+     10 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str10 "x" ; 22 ff 00 00
+     14    Return                                       ; 92
+     15    LdaUndefined                                 ; 05
      16    Return                                       ; 92
-     17    LdaUndefined                                 ; 05
-     18    Return                                       ; 92
   constants (1):
       0 String str10 "x"
   feedback (1):
@@ -189,7 +187,7 @@ function f4 method name="#s" parent=f0 outer_scope=scope1 flags=[strict,simple-p
   positions (3):
       0 S 43 (1:44)
       5 E 50 (1:51)
-     12 E 56 (1:57)
+     10 E 56 (1:57)
 function f5 getter name="get #a" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=61..83
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01

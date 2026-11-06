@@ -14,7 +14,7 @@ scopes (4):
   scope2 function outer=scope1 flags=[strict] slots=[]
   scope3 function outer=scope0 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=4 range=0..72
-  code (85 bytes):
+  code (83 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f2 ; 74 00 00 00
       9    Star r2                                      ; 0c 02
@@ -36,16 +36,15 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      49 E> CreateClosure k4, s1, #0x00  ; k4 = Function f1 ; 74 04 01 00
      53    Star r1                                      ; 0c 01
      55 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
-     60    Star r3                                      ; 0c 03
-     62    Mov r1, r0                                   ; 0d 01 00
-     65    LdaConstant k5  ; k5 = String str2 "C"       ; 0a 05
-     67    Star r1                                      ; 0c 01
-     69    Mov r0, r2                                   ; 0d 00 02
-     72 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
-     77 S> LdaGlobal k3, s2  ; k3 = String str1 "b"     ; 10 03 02
-     80 E> StaGlobal k2, s3  ; k2 = String str0 "a"     ; 12 02 03
-     83    LdaUndefined                                 ; 05
-     84    Return                                       ; 92
+     60    Mov r1, r0                                   ; 0d 01 00
+     63    LdaConstant k5  ; k5 = String str2 "C"       ; 0a 05
+     65    Star r1                                      ; 0c 01
+     67    Mov r0, r2                                   ; 0d 00 02
+     70 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     75 S> LdaGlobal k3, s2  ; k3 = String str1 "b"     ; 10 03 02
+     78 E> StaGlobal k2, s3  ; k2 = String str0 "a"     ; 12 02 03
+     81    LdaUndefined                                 ; 05
+     82    Return                                       ; 92
   constants (6):
       0 Function f2
       1 String str3 "g"
@@ -70,9 +69,9 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      46 S 24 (1:25)
      49 E 24 (1:25)
      55 E 24 (1:25)
-     72 E 24 (1:25)
-     77 S 35 (1:36)
-     80 E 35 (1:36)
+     70 E 24 (1:25)
+     75 S 35 (1:36)
+     78 E 35 (1:36)
 function f1 class-constructor name="C" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=24..34
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05

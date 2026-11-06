@@ -13,7 +13,7 @@ scopes (5):
   scope3 function outer=scope1 flags=[strict] slots=[]
   scope4 function outer=scope3 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..35
-  code (66 bytes):
+  code (63 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
       7    PushContext r3                               ; 13 03
@@ -24,22 +24,21 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
      19    Star r0                                      ; 0c 00
      21 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
-     26    Star r2                                      ; 0c 02
+     26    Star r4                                      ; 0c 04
      28    LdaConstant k2  ; k2 = String str1 "m"       ; 0a 02
      30    Star r5                                      ; 0c 05
      32 E> CreateClosure k3, s1, #0x00  ; k3 = Function f2 ; 74 03 01 00
      36    Star r6                                      ; 0c 06
-     38    Mov r2, r4                                   ; 0d 02 04
-     41 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
-     46    Ldar r0                                      ; 0b 00
-     48    StaCurrentContextSlot [0]                    ; 1b 00
-     50    PopContext r3                                ; 14 03
-     52    LdaConstant k4  ; k4 = String str0 "A"       ; 0a 04
-     54    Mov r0, r1                                   ; 0d 00 01
-     57    Star r0                                      ; 0c 00
-     59 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     64    LdaUndefined                                 ; 05
-     65    Return                                       ; 92
+     38 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+     43    Ldar r0                                      ; 0b 00
+     45    StaCurrentContextSlot [0]                    ; 1b 00
+     47    PopContext r3                                ; 14 03
+     49    LdaConstant k4  ; k4 = String str0 "A"       ; 0a 04
+     51    Mov r0, r1                                   ; 0d 00 01
+     54    Star r0                                      ; 0c 00
+     56 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     61    LdaUndefined                                 ; 05
+     62    Return                                       ; 92
   constants (5):
       0 Scope scope1
       1 Function f1
@@ -56,8 +55,8 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
      21 E 0 (1:1)
      32 E 0 (1:1)
-     41 E 10 (1:11)
-     59 E 0 (1:1)
+     38 E 10 (1:11)
+     56 E 0 (1:1)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=0..35
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05

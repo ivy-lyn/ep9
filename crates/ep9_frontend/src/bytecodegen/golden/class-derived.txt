@@ -16,38 +16,36 @@ scopes (6):
   scope4 function outer=scope3 flags=[strict] slots=[]
   scope5 function outer=scope3 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..98
-  code (89 bytes):
+  code (84 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> LdaTheHole                                   ; 07
       6    Star r3                                      ; 0c 03
       8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
      12    Star r2                                      ; 0c 02
      14 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
-     19    Star r4                                      ; 0c 04
-     21    Mov r2, r0                                   ; 0d 02 00
-     24    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
-     26    Star r2                                      ; 0c 02
-     28    Mov r0, r3                                   ; 0d 00 03
-     31 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
-     36 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
-     39    Star r3                                      ; 0c 03
-     41 E> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
-     45    Star r2                                      ; 0c 02
-     47 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
-     52    Star r4                                      ; 0c 04
-     54    LdaConstant k3  ; k3 = String str2 "m"       ; 0a 03
-     56    Star r6                                      ; 0c 06
-     58 E> CreateClosure k4, s3, #0x00  ; k4 = Function f3 ; 74 04 03 00
-     62    Star r7                                      ; 0c 07
-     64    Mov r4, r5                                   ; 0d 04 05
-     67 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
-     72    Mov r2, r1                                   ; 0d 02 01
-     75    LdaConstant k5  ; k5 = String str1 "B"       ; 0a 05
-     77    Star r2                                      ; 0c 02
-     79    Mov r1, r3                                   ; 0d 01 03
-     82 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
-     87    LdaUndefined                                 ; 05
-     88    Return                                       ; 92
+     19    Mov r2, r0                                   ; 0d 02 00
+     22    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+     24    Star r2                                      ; 0c 02
+     26    Mov r0, r3                                   ; 0d 00 03
+     29 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     34 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
+     37    Star r3                                      ; 0c 03
+     39 E> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
+     43    Star r2                                      ; 0c 02
+     45 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     50    Star r5                                      ; 0c 05
+     52    LdaConstant k3  ; k3 = String str2 "m"       ; 0a 03
+     54    Star r6                                      ; 0c 06
+     56 E> CreateClosure k4, s3, #0x00  ; k4 = Function f3 ; 74 04 03 00
+     60    Star r7                                      ; 0c 07
+     62 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
+     67    Mov r2, r1                                   ; 0d 02 01
+     70    LdaConstant k5  ; k5 = String str1 "B"       ; 0a 05
+     72    Star r2                                      ; 0c 02
+     74    Mov r1, r3                                   ; 0d 01 03
+     77 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     82    LdaUndefined                                 ; 05
+     83    Return                                       ; 92
   constants (6):
       0 Function f1
       1 String str0 "A"
@@ -66,13 +64,13 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 S 0 (1:1)
       8 E 0 (1:1)
      14 E 0 (1:1)
-     31 E 0 (1:1)
-     36 S 11 (1:12)
-     41 E 11 (1:12)
-     47 E 11 (1:12)
-     58 E 11 (1:12)
-     67 E 71 (1:72)
-     82 E 11 (1:12)
+     29 E 0 (1:1)
+     34 S 11 (1:12)
+     39 E 11 (1:12)
+     45 E 11 (1:12)
+     56 E 11 (1:12)
+     62 E 71 (1:72)
+     77 E 11 (1:12)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=0..10
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
@@ -123,18 +121,17 @@ function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[str
      31 E 57 (1:58)
      41 E 69 (1:70)
 function f3 method name="m" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=71..96
-  code (25 bytes):
+  code (23 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    LdaCurrentFunction                           ; 0e
       3    Star r4                                      ; 0c 04
       5 E> CallRuntime GetHomeObject, r4                ; 68 0e 00 04 01
-     10    Star r3                                      ; 0c 03
-     12 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str2 "m" ; 22 ff 00 00
-     16    Star r0                                      ; 0c 00
-     18 E> CallProperty0 r0, <this>, s1                 ; 60 00 ff 01
+     10 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str2 "m" ; 22 ff 00 00
+     14    Star r0                                      ; 0c 00
+     16 E> CallProperty0 r0, <this>, s1                 ; 60 00 ff 01
+     20    Return                                       ; 92
+     21    LdaUndefined                                 ; 05
      22    Return                                       ; 92
-     23    LdaUndefined                                 ; 05
-     24    Return                                       ; 92
   constants (1):
       0 String str2 "m"
   feedback (2):
@@ -144,5 +141,5 @@ function f3 method name="m" parent=f0 outer_scope=scope3 flags=[strict,simple-pa
   positions (4):
       0 S 77 (1:78)
       5 E 84 (1:85)
-     12 E 90 (1:91)
-     18 E 90 (1:91)
+     10 E 90 (1:91)
+     16 E 90 (1:91)

@@ -20,7 +20,7 @@
 //! | O2 | Every load from a binding register (`Ldar` or `Mov` from a parameter or a named local) is emitted | H24 R4 "no binding folds": each read of a binding loads the binding |
 //! | O3 | A transfer between the accumulator and temporaries is deferred: the destination joins the equivalence set of the source and is not materialized | BytecodeGen copies values to temporaries freely (G4) |
 //! | O4 | A register operand that is a temporary reads a materialized equivalent (never the accumulator). A call operand reads only a local, or a parameter or the receiver that the function never writes. A read of the accumulator, of a list, a pair or an in-out register materializes it | V8 `GetInputRegister`; lists and pairs must stay consecutive locals; JIT code passes call operands from frame slots, and a parameter's slot keeps its incoming value (Spike C `tier.rs`) |
-//! | O5 | Before a materialized register or the accumulator gets a new value, one other member of its set gets the value if no other member holds it | no value is lost; this keeps the G4 hazard `a + (a = 1)` correct |
+//! | O5 | Before a materialized register or the accumulator gets a new value, one other member of its set gets the value if no other member holds it and the member's value is not dead (a scan to its next write or release in the block) | no value is lost; this keeps the G4 hazard `a + (a = 1)` correct; a dead copy costs a `Mov` |
 //! | O6 | Flush (materialize every live register, then end every set) before a jump, a switch, `Debugger`, `SuspendGenerator` and `ResumeGenerator`, and at each label that a jump, a jump table or a handler uses | each edge into a join point has the same state |
 //! | O7 | Inside a handler range, before an instruction that may throw, materialize every temporary that was allocated at the range start | the handler reads only registers allocated before its range (stack allocation, G1) |
 //! | O8 | At a statement position, materialize every temporary that is in a set with an observable register | a debugger write at a breakpoint does not change a temporary copy |
@@ -125,8 +125,8 @@ impl Emitter {
             b: FunctionBuilder::new(meta),
             optimize,
             named,
-            events: Vec::new(),
-            args: Vec::new(),
+            events: Vec::with_capacity(64),
+            args: Vec::with_capacity(64),
             table_labels: Vec::new(),
             handlers: Vec::new(),
             instructions: 0,
@@ -313,14 +313,14 @@ impl Emitter {
             optimize,
             named,
             events,
-            mut args,
+            args,
             table_labels,
             handlers,
             ..
         } = self;
         let inner_at = if optimize {
             let mut r = Replay::new(&mut b, named, &events, &args, &table_labels, &handlers);
-            r.run(&events, &mut args);
+            r.run();
             if let Some(e) = r.error {
                 return Err(CodegenError::Internal(e));
             }
@@ -506,6 +506,10 @@ ep9_bytecode::for_each_opcode!(regopt_emitters []);
 
 // ---- The replay with the optimizer ----
 
+/// The scan window of [`Replay::dead`], in events. A temporary copy of a value is almost
+/// always written again or released within a few instructions.
+const DEAD_SCAN: usize = 32;
+
 /// "No set": the register is alone in its set.
 const NONE: u32 = u32::MAX;
 /// Key of the accumulator.
@@ -515,6 +519,10 @@ const RECEIVER: usize = 1;
 
 struct Replay<'b> {
     b: &'b mut FunctionBuilder,
+    events: &'b [Ev],
+    args: &'b [Arg],
+    /// The event that the replay is at.
+    at: usize,
     named: usize,
     /// Key of `r0`.
     base: usize,
@@ -528,7 +536,8 @@ struct Replay<'b> {
     unmat: Vec<usize>,
     /// Locals allocated now (the replay copy of the allocation state).
     top: usize,
-    /// Sets of two or more keys, each sorted. Empty entries are free (`free`).
+    /// Sets of two or more keys, each sorted. Empty entries are free (`free`) and keep their
+    /// allocations.
     sets: Vec<Vec<usize>>,
     free: Vec<u32>,
     /// A position for the next emitted instruction of the function (builder rules).
@@ -543,14 +552,17 @@ struct Replay<'b> {
     /// The instruction index of each bound label.
     inner_at: HashMap<Label, u32>,
     error: Option<String>,
+    /// Scratch buffers that keep their allocations (`save_where`, `save_binding_copies`).
+    todo: Vec<usize>,
+    with_obs: Vec<bool>,
 }
 
 impl<'b> Replay<'b> {
     fn new(
         b: &'b mut FunctionBuilder,
         named: u32,
-        events: &[Ev],
-        args: &[Arg],
+        events: &'b [Ev],
+        args: &'b [Arg],
         table_labels: &[Label],
         handlers: &[Handler],
     ) -> Self {
@@ -601,6 +613,9 @@ impl<'b> Replay<'b> {
         live[..base + named as usize].fill(true);
         Self {
             b,
+            events,
+            args,
+            at: 0,
             named: named as usize,
             base,
             set: vec![NONE; keys],
@@ -616,15 +631,19 @@ impl<'b> Replay<'b> {
             handler_top,
             inner_at: HashMap::new(),
             error: None,
+            todo: Vec::new(),
+            with_obs: Vec::new(),
         }
     }
 
-    fn run(&mut self, events: &[Ev], args: &mut [Arg]) {
+    fn run(&mut self) {
+        let (events, args) = (self.events, self.args);
         for (i, ev) in events.iter().enumerate() {
+            self.at = i;
             match *ev {
                 Ev::Insn { op, at, n } => {
-                    let a = &mut args[at as usize..at as usize + n as usize];
-                    match (op, &*a) {
+                    let a = &args[at as usize..at as usize + n as usize];
+                    match (op, a) {
                         (Opcode::Ldar, [Arg::Reg(r)]) => {
                             let k = self.key(*r);
                             self.transfer(k, ACC);
@@ -809,11 +828,92 @@ impl<'b> Replay<'b> {
         let target = self.sets[s as usize]
             .iter()
             .copied()
-            .find(|&m| m != k && (m == ACC || self.live[m]));
+            .find(|&m| m != k && (m == ACC || (self.live[m] && !self.dead(m))));
         if let Some(m) = target {
             self.emit_transfer(k, m);
             self.mat[m] = true;
         }
+    }
+
+    /// O5: no instruction from the current event on reads the value of temporary `k`: the next
+    /// access to `k` in this block is a write, or `k` is released first. A jump, a switch, a
+    /// terminator, a generator instruction, a label that a jump uses, or a throw into a handler
+    /// that may read `k` ends the scan with "not dead"; so does the end of the scan window
+    /// ([`DEAD_SCAN`] events), which keeps the compile time linear.
+    fn dead(&self, k: usize) -> bool {
+        if k < self.base + self.named {
+            return false;
+        }
+        let r = (k - self.base) as u32;
+        let is_r = |x: Register| x.local_index() == Some(r);
+        let in_list = |l: RegisterList| {
+            !l.is_empty()
+                && l.first()
+                    .local_index()
+                    .is_some_and(|f| f <= r && r < f + l.len())
+        };
+        let end = (self.at + DEAD_SCAN).min(self.events.len());
+        for (j, ev) in self.events.iter().enumerate().take(end).skip(self.at) {
+            match *ev {
+                Ev::Insn { op, at, n } => {
+                    let a = &self.args[at as usize..at as usize + n as usize];
+                    match (op, a) {
+                        (Opcode::Ldar, [Arg::Reg(x)]) if is_r(*x) => return false,
+                        (Opcode::Star, [Arg::Reg(x)]) if is_r(*x) => return true,
+                        (Opcode::Mov, [Arg::Reg(x), _]) if is_r(*x) => return false,
+                        (Opcode::Mov, [_, Arg::Reg(x)]) if is_r(*x) => return true,
+                        (Opcode::Ldar | Opcode::Star | Opcode::Mov, _) => continue,
+                        _ => {}
+                    }
+                    let info = op.info();
+                    let f = info.flags;
+                    if f.contains(OpcodeFlags::JUMP)
+                        || f.contains(OpcodeFlags::SWITCH)
+                        || f.contains(OpcodeFlags::TERMINATOR)
+                        || f.contains(OpcodeFlags::GENERATOR)
+                        || op == Opcode::Debugger
+                    {
+                        return false;
+                    }
+                    if f.contains(OpcodeFlags::THROWS)
+                        && self
+                            .handler_top
+                            .get(j)
+                            .is_some_and(|&t| t != u32::MAX && r < t)
+                    {
+                        return false;
+                    }
+                    let mut writes = false;
+                    for (spec, a) in info.operands.iter().zip(a) {
+                        match (spec.kind, *a) {
+                            (OperandKind::Reg | OperandKind::RegInOut, Arg::Reg(x)) if is_r(x) => {
+                                return false;
+                            }
+                            (OperandKind::RegList | OperandKind::RegPair, Arg::List(l))
+                                if in_list(l) =>
+                            {
+                                return false;
+                            }
+                            (OperandKind::RegOut, Arg::Reg(x)) if is_r(x) => writes = true,
+                            (
+                                OperandKind::RegOutList
+                                | OperandKind::RegOutPair
+                                | OperandKind::RegOutTriple,
+                                Arg::List(l),
+                            ) if in_list(l) => writes = true,
+                            _ => {}
+                        }
+                    }
+                    if writes {
+                        return true;
+                    }
+                }
+                Ev::Bind(l) if self.used.contains(&l) => return false,
+                Ev::Release(top) if r >= top => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     /// `k` is written next: save its value for its set, then make it a set of its own.
@@ -904,16 +1004,27 @@ impl<'b> Replay<'b> {
             for &x in &members {
                 self.set[x] = NONE;
             }
+            // Keep the allocation for the next set.
+            let mut members = members;
+            members.clear();
+            self.sets[s] = members;
         }
-        self.sets.clear();
+        self.free_all_sets();
+    }
+
+    /// Marks every entry of `sets` free (each is empty) and keeps the allocations. The free
+    /// list gives the low indices first, as a new `sets` would.
+    fn free_all_sets(&mut self) {
         self.free.clear();
+        self.free.extend((0..self.sets.len() as u32).rev());
     }
 
     /// Materializes each live, unmaterialized member of a set for which `need` is true, and
     /// keeps the sets.
     fn save_where(&mut self, need: impl Fn(&Self, usize) -> bool) {
+        let mut todo = std::mem::take(&mut self.todo);
         for s in 0..self.sets.len() {
-            let mut todo: Vec<usize> = Vec::new();
+            todo.clear();
             for &x in &self.sets[s] {
                 if x != ACC && !self.mat[x] && self.live[x] && need(self, x) {
                     todo.push(x);
@@ -926,11 +1037,12 @@ impl<'b> Replay<'b> {
                 self.fail("a set with live registers and no value");
                 continue;
             };
-            for x in todo {
+            for &x in &todo {
                 self.emit_transfer(h, x);
                 self.mat[x] = true;
             }
         }
+        self.todo = todo;
     }
 
     /// O7: before a throw inside a handler range.
@@ -944,12 +1056,15 @@ impl<'b> Replay<'b> {
         if self.sets.iter().all(|v| v.is_empty()) {
             return;
         }
-        let with_obs: Vec<bool> = self
-            .sets
-            .iter()
-            .map(|v| v.iter().any(|&m| self.observable(m)))
-            .collect();
+        let mut with_obs = std::mem::take(&mut self.with_obs);
+        with_obs.clear();
+        with_obs.extend(
+            self.sets
+                .iter()
+                .map(|v| v.iter().any(|&m| self.observable(m))),
+        );
         self.save_where(|r, x| with_obs[r.set[x] as usize]);
+        self.with_obs = with_obs;
     }
 
     /// O10: after a terminator.
@@ -958,9 +1073,9 @@ impl<'b> Replay<'b> {
             for &x in &self.sets[s] {
                 self.set[x] = NONE;
             }
+            self.sets[s].clear();
         }
-        self.sets.clear();
-        self.free.clear();
+        self.free_all_sets();
         let mut unmat = std::mem::take(&mut self.unmat);
         unmat.retain(|&k| {
             if k == ACC || self.live[k] {
@@ -1021,7 +1136,10 @@ impl<'b> Replay<'b> {
     }
 
     /// Any other instruction (V8 `PrepareForBytecode`, then the operands).
-    fn instruction(&mut self, at: usize, op: Opcode, args: &mut [Arg]) {
+    fn instruction(&mut self, at: usize, op: Opcode, recorded: &[Arg]) {
+        let mut buf = [Arg::Lit(0u32.into_pending()); MAX_OPERANDS];
+        buf[..recorded.len()].copy_from_slice(recorded);
+        let args = &mut buf[..recorded.len()];
         let info = op.info();
         let flags = info.flags;
         if flags.contains(OpcodeFlags::JUMP)
