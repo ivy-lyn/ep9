@@ -22,13 +22,13 @@
 //!        cleared with its key unless its cell is live by another path
 //! ```
 //!
-//! The shape that word0 names is a strong edge of every cell, so no trace function visits
-//! it. Without a shape space, word0's shape_id is not a heap reference and is ignored.
-//!
-//! The same `Tracer` runs in verify mode for the heap verifier: it checks each edge instead of
-//! marking. A checked mark (`verify_after_gc`, M4-P1) does both: it marks, and it checks each
-//! edge, weak slot and word0 shape the way the verifier does, so the verify after that GC does
-//! not trace the heap again (V9-D22 step 1).
+//! The shape that word0 names is a strong edge of every cell, so no trace function visits it.
+//! Without a shape space, word0's shape_id is not a heap reference and is ignored. The same
+//! `Tracer` runs in verify mode for the heap verifier: it checks each edge instead of marking.
+//! A checked mark (`verify_after_gc`, M4-P1) marks and checks each edge, weak slot and word0
+//! shape the way the verifier does, so the verify after that GC does not trace the heap again
+//! (V9-D22 step 1). The parallel mark (S2a, parallel.rs) drains with one Shared tracer per
+//! marker thread; its mark bits are set by atomic OR, the sequential mark's by load and store.
 //!
 //! ```text
 //! edge(addr), mark mode:  chunk_index -> Small: offset >= first cell, VO bit -> mark bit
@@ -38,13 +38,11 @@
 //! ```
 //!
 //! A mark bit that is already set when the checked mark reaches a cell means "traced in this
-//! GC". A bit left from before the GC would make the mark skip that cell (no trace, no
-//! check), so the verify after the GC compares the cells the sweep keeps with the cells this
-//! tracer pushed ([`Tracer::pushed_cells`], verify.rs).
-//!
-//! The S1 minor GC (heap.rs) uses the same tracer: an old cell keeps its mark bit (sticky
-//! marks), so the mark stops at it as at a cell already traced in this GC. The hosts that the
-//! S1 logs name are traced again on purpose:
+//! GC". A bit left from before the GC would make the mark skip that cell (no trace, no check),
+//! so the verify after the GC compares the cells the sweep keeps with the cells the tracers
+//! pushed ([`Tracer::pushed_cells`], verify.rs). The S1 minor GC (heap.rs) uses the same
+//! tracer: an old cell keeps its mark bit (sticky marks), so the mark stops at it as at a cell
+//! already traced in this GC. The hosts that the S1 logs name are traced again on purpose:
 //!
 //! ```text
 //! remembered small host (GREY, marked):  retrace: set BLACK, push (not counted as pushed)
@@ -74,6 +72,7 @@ use crate::memory::{Chunk, Memory};
 pub(crate) enum Mode {
     Mark,
     Verify,
+    Shared, // a marker of the parallel mark (S2a, parallel.rs): mark bits by atomic OR
 }
 
 /// Where the verifier is, for its messages.
@@ -94,7 +93,9 @@ pub(crate) enum Context {
 /// | [`Tracer::visit_weak`] | a weak `Value` slot inside a cell: cleared at GC end if its cell dies |
 /// | [`Tracer::visit_ephemeron`] | a (key, value) pair inside a cell: the key is weak, the value is strong only while the key is live |
 ///
-/// A trace function or root source must not call into the [`crate::Heap`].
+/// A trace function or root source must not call into the [`crate::Heap`]. A trace function
+/// may run on a GC helper thread (S2a): it reads only cells and data that lives as long as the
+/// isolate, and no thread-local state.
 pub struct Tracer<'h> {
     mem: &'h Memory,
     kinds: &'h KindTable,
@@ -117,8 +118,7 @@ pub struct Tracer<'h> {
     pub(crate) marked_cells: usize,
     pub(crate) marked_bytes: usize,
     /// Cells whose mark bit this tracer set (each is pushed once). After a checked mark, the
-    /// checked sweep keeps exactly these cells, unless a mark bit was set before the GC
-    /// (verify.rs).
+    /// checked sweep keeps exactly these cells, unless a bit was set before the GC (verify.rs).
     pub(crate) pushed_cells: usize,
     pub(crate) errors: Vec<String>,
     pub(crate) context: Context,
@@ -307,7 +307,7 @@ impl<'h> Tracer<'h> {
             let n = ((card_end - addr) / 8).max(1).min(slots.len() - i);
             let dirty = cards.dirty(card);
             match self.mode {
-                Mode::Mark => {
+                Mode::Mark | Mode::Shared => {
                     if dirty {
                         for s in &slots[i..i + n] {
                             self.visit(s);
@@ -365,7 +365,7 @@ impl<'h> Tracer<'h> {
     pub fn visit_weak(&mut self, slot: &Slot) {
         let bits = slot.bits();
         match self.mode {
-            Mode::Mark => {
+            Mode::Mark | Mode::Shared => {
                 debug_assert!(
                     self.mem.contains(core::ptr::from_ref(slot).addr()),
                     "visit_weak on a slot outside the heap"
@@ -485,6 +485,7 @@ impl<'h> Tracer<'h> {
                     self.young_edge_error(addr);
                 }
             }
+            Mode::Shared => self.edge_shared(addr),
         }
     }
 
@@ -594,12 +595,11 @@ impl<'h> Tracer<'h> {
         }
     }
 
-    /// Traces until the mark stack is empty. With a shape space, it also marks the shape that
-    /// each traced cell's word0 names. Ephemerons whose key is still unmarked stay pending
-    /// ([`Tracer::drain_to_fixpoint`] resolves them).
+    /// Traces until the mark stack is empty (with a shape space, also each word0 shape); keyless
+    /// ephemerons stay pending ([`Tracer::drain_to_fixpoint`]). The sequential drain.
     pub(crate) fn drain(&mut self) {
         while let Some(c) = self.stack.pop() {
-            self.trace_one(c);
+            self.trace_one::<false>(c);
         }
     }
 
@@ -623,7 +623,7 @@ impl<'h> Tracer<'h> {
 
     #[inline(never)]
     fn trace_one_outlined(&mut self, c: CellPtr) {
-        self.trace_one(c);
+        self.trace_one::<false>(c);
     }
 
     /// Marks everything reachable from the roots given so far, ephemerons included: drains,
@@ -632,7 +632,7 @@ impl<'h> Tracer<'h> {
     /// value slots join the weak slots, so [`Tracer::clear_weak_slots`] clears each one whose
     /// cell is unmarked. Called once per GC, after the last root.
     pub(crate) fn drain_to_fixpoint(&mut self) {
-        self.drain();
+        crate::parallel::drain(self);
         let mut rounds = 0;
         while !self.ephemerons.is_empty() {
             if rounds == EPHEMERON_ROUNDS {
@@ -645,7 +645,7 @@ impl<'h> Tracer<'h> {
                 // No key was marked since the last round: the rest stays dead.
                 break;
             }
-            self.drain();
+            crate::parallel::drain(self);
         }
         self.ephemeron_rounds = rounds;
         let dead = self.ephemerons.drain(..).map(|(_, v)| v);
@@ -690,9 +690,9 @@ impl<'h> Tracer<'h> {
         self.drain_linear();
     }
 
-    /// Traces one marked cell.
+    /// Traces one marked cell (`SHARED`: by a marker of the parallel mark).
     #[inline(always)]
-    fn trace_one(&mut self, c: CellPtr) {
+    fn trace_one<const SHARED: bool>(&mut self, c: CellPtr) {
         // SAFETY: only marked cell starts are pushed.
         let h = unsafe { c.header() };
         let kind = h.kind();
@@ -715,7 +715,7 @@ impl<'h> Tracer<'h> {
         if self.shape_bytes != 0 {
             let id = h.shape_id().get() as usize;
             if id != 0 {
-                self.mark_shape(c, id);
+                self.mark_shape::<SHARED>(c, id);
             }
         }
         (k.trace)(c, self);
@@ -743,10 +743,10 @@ impl<'h> Tracer<'h> {
     /// Marks the shape cell at offset `id` of the region (the word0 shape of `host`). Inlined
     /// into the drain: it runs for every traced cell with a shape.
     #[inline(always)]
-    fn mark_shape(&mut self, host: CellPtr, id: usize) {
+    fn mark_shape<const SHARED: bool>(&mut self, host: CellPtr, id: usize) {
         match self.shape_at(id) {
             Some(s) => {
-                self.mark(s);
+                self.mark_any::<SHARED>(s);
             }
             None if self.check => self.error(format_args!(
                 "word0 ShapeId {id:#x} does not name a live shape-space cell"
@@ -986,5 +986,223 @@ pub(crate) fn is_marked(mem: &Memory, addr: usize) -> bool {
             large.header().mark.load(Relaxed) != 0
         }
         _ => false,
+    }
+}
+
+// ---- S2a: the parallel mark (parallel.rs drives it) -----------------------------------------
+//
+// One Shared tracer per marker thread. It differs from a mark-mode tracer only in how it sets a
+// mark bit: an atomic OR (a LOS cell: the same `swap` as before), so two markers never both
+// trace a cell and never lose each other's bits of a mark word. Its weak slots, pending
+// ephemerons, counts and errors go to the heap's thread's tracer at the end ([`Harvest`]).
+
+/// What the tracer of a helper marker found, for the heap's thread ([`Tracer::absorb`]).
+pub(crate) struct Harvest {
+    weak: Vec<NonNull<Slot>>,
+    ephemerons: Vec<(NonNull<Slot>, NonNull<Slot>)>,
+    marked_cells: usize,
+    marked_bytes: usize,
+    pushed_cells: usize,
+    errors: Vec<String>,
+}
+
+// SAFETY: the slots lie in cells that this GC marked. The heap's thread reads them after every
+// helper is done and while the mutator is still stopped; nothing is freed before.
+unsafe impl Send for Harvest {}
+
+impl Harvest {
+    /// Cells the helper traced.
+    #[cfg(test)]
+    pub(crate) fn marked_cells(&self) -> usize {
+        self.marked_cells
+    }
+}
+
+impl<'h> Tracer<'h> {
+    /// The tracer of a helper marker: Shared mode, empty lists, and `check` as in the heap's
+    /// thread's tracer (a checked mark checks on every marker).
+    pub(crate) fn new_helper(mem: &'h Memory, kinds: &'h KindTable, check: bool) -> Tracer<'h> {
+        let mut t = Tracer::new(mem, kinds, Mode::Shared, Vec::new(), Vec::new());
+        t.check = check;
+        t
+    }
+
+    pub(crate) fn checking(&self) -> bool {
+        self.check
+    }
+
+    /// The drain may run in parallel: a mark-mode tracer with no card view, before the linear
+    /// form of the ephemeron fixpoint.
+    pub(crate) fn may_share(&self) -> bool {
+        self.mode == Mode::Mark && self.cards.is_none() && self.waiting.is_none()
+    }
+
+    /// The heap's thread's tracer becomes marker 0 of the parallel mark (`true`), or a
+    /// mark-mode tracer again once every helper is done (`false`).
+    pub(crate) fn set_shared(&mut self, on: bool) {
+        debug_assert!(matches!(self.mode, Mode::Mark | Mode::Shared));
+        self.mode = if on { Mode::Shared } else { Mode::Mark };
+    }
+
+    /// The sequential drain of at most `n` cells: true if work is left.
+    pub(crate) fn drain_up_to(&mut self, n: usize) -> bool {
+        for _ in 0..n {
+            let Some(c) = self.stack.pop() else {
+                return false;
+            };
+            self.trace_one::<false>(c);
+        }
+        !self.stack.is_empty()
+    }
+
+    /// The results of a helper's tracer.
+    pub(crate) fn harvest(mut self) -> Harvest {
+        Harvest {
+            weak: core::mem::take(&mut self.weak),
+            ephemerons: core::mem::take(&mut self.ephemerons),
+            marked_cells: self.marked_cells,
+            marked_bytes: self.marked_bytes,
+            pushed_cells: self.pushed_cells,
+            errors: core::mem::take(&mut self.errors),
+        }
+    }
+
+    /// Adds a helper's results to this tracer (the heap's thread's, after the parallel drain).
+    pub(crate) fn absorb(&mut self, h: Harvest) {
+        debug_assert!(h.ephemerons.is_empty() || self.waiting.is_none());
+        self.weak.extend(h.weak);
+        self.ephemerons.extend(h.ephemerons);
+        self.marked_cells += h.marked_cells;
+        self.marked_bytes += h.marked_bytes;
+        self.pushed_cells += h.pushed_cells;
+        for e in h.errors {
+            if self.errors.len() < MAX_ERRORS {
+                self.errors.push(e);
+            } else {
+                if self.errors.len() == MAX_ERRORS {
+                    self.errors.push("more errors not shown".into());
+                }
+                break;
+            }
+        }
+    }
+
+    /// [`Tracer::edge`] of a Shared tracer.
+    fn edge_shared(&mut self, addr: usize) {
+        if !self.mark_start_shared(addr) {
+            if self.check {
+                self.error(format_args!(
+                    "reference {addr:#x} is not the start of a live cell"
+                ));
+            } else {
+                debug_assert!(false, "{addr:#x} is not the start of a cell of this heap");
+            }
+        }
+    }
+
+    /// [`Tracer::mark_start`] with the mark bit set by atomic OR.
+    #[inline]
+    fn mark_start_shared(&mut self, addr: usize) -> bool {
+        if !addr.is_multiple_of(8) {
+            return false;
+        }
+        let Some(idx) = self.mem.chunk_index(addr) else {
+            return false;
+        };
+        let newly = match self.mem.chunk(idx) {
+            Chunk::Small => {
+                let page = self.mem.page(idx);
+                if addr - page.addr() < FIRST_CELL_OFFSET || !page.vo(addr) {
+                    return false;
+                }
+                mark_small_shared(self.mem, idx, addr)
+            }
+            Chunk::LargeHead { .. } => {
+                // SAFETY: chunk `idx` is the committed first chunk of a large object.
+                let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
+                if addr != large.cell_addr() {
+                    return false;
+                }
+                large.header().mark.swap(1, Relaxed) == 0
+            }
+            _ => return false,
+        };
+        if newly {
+            // SAFETY: a live cell of this heap starts at `addr` (checked above).
+            let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+            self.pushed(c);
+        }
+        true
+    }
+
+    /// [`Tracer::mark`] (`SHARED` false) or [`Tracer::mark_shared`].
+    #[inline(always)]
+    fn mark_any<const SHARED: bool>(&mut self, c: CellPtr) -> bool {
+        if SHARED {
+            self.mark_shared(c)
+        } else {
+            self.mark(c)
+        }
+    }
+
+    /// [`Tracer::mark`] with the mark bit set by atomic OR.
+    fn mark_shared(&mut self, c: CellPtr) -> bool {
+        let addr = c.addr();
+        let newly = match self
+            .mem
+            .chunk_index(addr)
+            .map(|idx| (idx, self.mem.chunk(idx)))
+        {
+            Some((idx, Chunk::Small)) => mark_small_shared(self.mem, idx, addr),
+            Some((idx, Chunk::LargeHead { .. })) => {
+                // SAFETY: as in `cell_start`.
+                let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
+                large.header().mark.swap(1, Relaxed) == 0
+            }
+            _ => false,
+        };
+        if newly {
+            self.pushed(c);
+        }
+        newly
+    }
+}
+
+/// Sets the mark bit of the small cell at `addr` (chunk `idx`) by atomic OR; true if this call
+/// set it. The first load keeps the OR off the many edges to cells already marked.
+#[inline(always)]
+fn mark_small_shared(mem: &Memory, idx: usize, addr: usize) -> bool {
+    let page = mem.page(idx);
+    let (w, m) = page.bit(addr);
+    let word = page.mark_word(w);
+    if word.load(Relaxed) & m != 0 {
+        return false;
+    }
+    word.fetch_or(m, Relaxed) & m == 0
+}
+
+impl crate::parallel::Marker for Tracer<'_> {
+    type Item = crate::parallel::Grey;
+
+    #[inline]
+    fn pop(&mut self) -> Option<Self::Item> {
+        self.stack.pop().map(crate::parallel::Grey)
+    }
+
+    #[inline]
+    fn trace(&mut self, item: Self::Item) {
+        self.trace_one::<true>(item.0);
+    }
+
+    fn len(&self) -> usize {
+        self.stack.len()
+    }
+
+    fn take_oldest(&mut self, n: usize) -> Vec<Self::Item> {
+        self.stack.drain(..n).map(crate::parallel::Grey).collect()
+    }
+
+    fn refill(&mut self, seg: Vec<Self::Item>) {
+        self.stack.extend(seg.into_iter().map(|g| g.0));
     }
 }
