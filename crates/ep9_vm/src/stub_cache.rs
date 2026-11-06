@@ -150,9 +150,10 @@ fn index(op: Op, id: u32, name: u64) -> usize {
     (h.wrapping_mul(0x9E37_79B1) >> (32 - BITS)) as usize
 }
 
-/// The handler of the entry for (`op`, ShapeId `id`, `name`), or `None`. Called only from
-/// `ic::mega_load` and `ic::mega_store` (the miss path); never allocates, never calls. A ShapeId
-/// of 0 (a string or a symbol) never matches.
+/// The handler of the entry for (`op`, ShapeId `id`, `name`), or `None`. Called only from the
+/// miss paths `ic::mega_load`, `ic::handler_mega_load` (the cold body of the 0x21 handler) and
+/// `ic::mega_store`; never allocates, never calls. A ShapeId of 0 (a string or a symbol) never
+/// matches.
 #[inline(always)]
 pub(crate) fn probe(rt: &Runtime, op: Op, id: u32, name: u64) -> Option<u64> {
     let e = &rt.stub_cache.entries[index(op, id, name)];

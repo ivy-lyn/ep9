@@ -114,7 +114,7 @@ pub(crate) enum Root {
     RealmKey,
 }
 
-pub(crate) const ROOT_COUNT: usize = Root::RealmKey as usize + 1;
+pub(crate) const ROOT_COUNT: usize = root_count();
 
 /// The roots that belong to the current realm: every root before [`Root::RealmKey`].
 pub(crate) const REALM_ROOT_COUNT: usize = Root::RealmKey as usize;
@@ -753,6 +753,55 @@ const _: () = {
     }
 };
 
+/// The number of `Root` values ([`ROOT_COUNT`]): the last one + 1. The match names every
+/// `Root` with no wildcard arm, so a new `Root` fails to build until it has an arm here. A root
+/// appended after A2 start goes after the last one and takes the arm that gives the count; then
+/// it needs its [`APPENDED`] item and its line in the `Root` golden. (M7-P1 JIT reviewer F2: the
+/// count was `RealmKey + 1`, so a root after it built, passed the golden and panicked at its
+/// first use.)
+const fn root_count() -> usize {
+    const fn count(r: Root) -> usize {
+        match r {
+            Root::GlobalObject
+            | Root::Lexical
+            | Root::ObjectPrototype
+            | Root::FunctionPrototype
+            | Root::ArrayPrototype
+            | Root::StringPrototype
+            | Root::NumberPrototype
+            | Root::BooleanPrototype
+            | Root::ErrorPrototype
+            | Root::TypeErrorPrototype
+            | Root::RangeErrorPrototype
+            | Root::ReferenceErrorPrototype
+            | Root::SyntaxErrorPrototype
+            | Root::EvalErrorPrototype
+            | Root::UriErrorPrototype
+            | Root::ArrayIteratorPrototype
+            | Root::IteratorPrototype
+            | Root::ObjectConstructor
+            | Root::FunctionConstructor
+            | Root::ArrayConstructor
+            | Root::NumberConstructor
+            | Root::BooleanConstructor
+            | Root::StringConstructor
+            | Root::SymbolConstructor
+            | Root::ErrorConstructor
+            | Root::TypeErrorConstructor
+            | Root::RangeErrorConstructor
+            | Root::ReferenceErrorConstructor
+            | Root::SyntaxErrorConstructor
+            | Root::EvalErrorConstructor
+            | Root::UriErrorConstructor
+            | Root::Math
+            | Root::Realm
+            | Root::RealmFuses => 0,
+            Root::RealmKey => Root::RealmKey as usize + 1,
+        }
+    }
+    count(Root::RealmKey)
+}
+
 /// The slot of root `r` ([`SLOT_MAP`]). A root of A2 start is its own slot; the compare folds
 /// away while no root is appended (a `Root` value is below `ROOT_COUNT`).
 #[inline(always)]
@@ -796,8 +845,8 @@ mod tests {
 
     // ---- the `Root` golden (H13 "root slots" item (5); doc 13 C-18; M7-P1 A2-START) ----
 
-    /// Every `Root`, in value order (a new `Root` makes this list one item too short, so the
-    /// test fails to build until the root is named here).
+    /// Every `Root`, in value order (a new `Root` fails to build in `root_count` until it has
+    /// an arm there, then makes this list one item too short until it is named here).
     const ROOTS: [Root; ROOT_COUNT] = [
         Root::GlobalObject,
         Root::Lexical,
