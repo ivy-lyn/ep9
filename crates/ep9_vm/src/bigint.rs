@@ -260,8 +260,8 @@ pub(crate) fn string_to_big(cx: &mut Cx, s: u64) -> Res<Option<Big>> {
     r.map_err(|e| range_error(cx, e))
 }
 
-/// `a OP b` on two BigInts (§6.1.6.2). `>>>` is a TypeError. Takes the budget units of the
-/// operands first, and `**` polls in its steps. GC point (the result).
+/// `a OP b` on two BigInts (§6.1.6.2). `>>>` is a TypeError. GC point (the result).
+/// It takes the budget units of the operands first, and `**` polls in its steps.
 pub(crate) fn binary(cx: &mut Cx, op: BinOp, a: u64, b: u64) -> Res<u64> {
     let (x, y) = (view(&a), view(&b));
     charge(cx, x.digits.len() + y.digits.len())?;
