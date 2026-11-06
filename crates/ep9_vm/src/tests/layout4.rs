@@ -190,7 +190,7 @@ fn ic_layout_2_constants() {
     for (k, b) in bytes {
         assert_eq!(k as u8, b, "{k:?}");
     }
-    assert_eq!(F::ALL.len(), 21);
+    assert!(F::ALL.len() >= 21, "H16 v0 has 21 kinds (an append adds more)");
     let hk = [
         ic::hk::PROTO_LOAD,
         ic::hk::MISSING,

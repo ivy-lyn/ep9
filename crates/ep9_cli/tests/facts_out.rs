@@ -75,7 +75,14 @@ fn unit_hash(src: &str, opts: SourceOpts) -> [u8; 32] {
 fn check_header(b: &[u8], hash: &[u8; 32]) -> u32 {
     assert!(b.len() >= 64, "{} bytes", b.len());
     assert_eq!(&b[..8], b"\x89EP9FS\r\n", "magic");
-    assert_eq!(u32_at(b, 8), 2, "FACT_SCHEMA_VERSION");
+    // `ep9_facts::FACT_SCHEMA_VERSION`, read from its source line: ep9_cli does not link
+    // ep9_facts (above), and a literal fails on every bump (MC-P5-FACTTOP).
+    let version: u32 = include_str!("../../ep9_facts/src/lib.rs")
+        .lines()
+        .find_map(|l| l.strip_prefix("pub const FACT_SCHEMA_VERSION: u32 = "))
+        .and_then(|v| v.strip_suffix(';')?.parse().ok())
+        .expect("FACT_SCHEMA_VERSION in crates/ep9_facts/src/lib.rs");
+    assert_eq!(u32_at(b, 8), version, "FACT_SCHEMA_VERSION");
     assert_eq!(u32_at(b, 12), ep9_bytecode::ABI_VERSION, "bytecode ABI");
     assert_eq!(&b[16..48], hash, "unit hash");
     assert_eq!(b[48], 0, "source: runtime");
