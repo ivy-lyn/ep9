@@ -940,6 +940,28 @@ fn fapply<'s>(
     cx.forward_apply(args)
 }
 
+/// `fcall` and `fapply` as the definitions of a builtin table, installed as globals: a
+/// forwarder records only a function made from a table definition (M7-P0 JIT reviewer F1).
+static FORWARDERS: crate::BuiltinTable = crate::BuiltinTable::new(
+    "forwarders",
+    &[crate::BuiltinModule {
+        name: "forwarders",
+        block: 104,
+        defs: &[
+            crate::BuiltinDef::method("fcall", 1, fcall),
+            crate::BuiltinDef::method("fapply", 2, fapply),
+        ],
+        intrinsics: &[],
+        props: &[crate::ObjectProps {
+            target: crate::IntrinsicId::GlobalObject,
+            props: &[
+                crate::PropDef::method(crate::PropKey::Str("fcall"), 0),
+                crate::PropDef::method(crate::PropKey::Str("fapply"), 1),
+            ],
+        }],
+    }],
+);
+
 /// The 9 fixed-operand call shapes.
 #[derive(Clone, Copy, Debug)]
 enum Shape {
@@ -1007,10 +1029,10 @@ fn run_host(
 ) -> (Result<String, String>, Vec<String>, u64, u64) {
     use crate::call::{FORWARDED_CALLS, HOST_ENTRY_HITS};
     super::on_big_stack(move || {
-        let mut iso = isolate(super::config(d, stress));
+        let mut c = super::config(d, stress);
+        c.builtins = Some(&FORWARDERS);
+        let mut iso = isolate(c);
         iso.register_host_function("echo", 0, echo);
-        iso.register_host_function("fcall", 1, fcall);
-        iso.register_host_function("fapply", 2, fapply);
         take_output();
         HOST_ENTRY_HITS.with(|h| h.set(0));
         FORWARDED_CALLS.with(|h| h.set(0));
@@ -1021,6 +1043,13 @@ fn run_host(
         let out = take_output();
         iso.collect_garbage();
         iso.verify_heap().unwrap();
+        // The switch is process-wide and keyed by the isolate id: turn it on again, so a dropped
+        // isolate leaves no id behind (else every later host call takes the lock; M7-P0 JIT
+        // reviewer F5).
+        let _ = iso.with_cx(|cx| {
+            cx.set_human_fast_paths(true);
+            Ok(())
+        });
         (
             r.map_err(|e| e.message),
             out,

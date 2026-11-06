@@ -1731,6 +1731,18 @@ fn define(
     Ok(())
 }
 
+/// Whether the function object `f` was made from a definition of an installed builtin table
+/// (in any realm: every realm's function objects share the definition's FunctionInfo), not by
+/// `Isolate::register_host_function` or a closure. Not a GC point.
+pub(crate) fn is_table_function(rt: &Runtime, f: u64) -> bool {
+    let info = core::ptr::from_ref(object::function_info(f));
+    rt.builtins
+        .modules
+        .borrow()
+        .iter()
+        .any(|st| st.infos.as_ptr_range().contains(&info))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,8 +16,12 @@
 //!
 //! The record is safe because the builtin's whole body after its IsCallable test is the
 //! method: the VM then knows every step that the function object takes, and `slow::call`
-//! takes the same steps. The record is made only for the running host function's own
-//! [`Args`] (its host frame is the top frame), so a call with other values records nothing.
+//! takes the same steps. So both methods are doc-hidden, not embedder API: only a builtin
+//! table definition whose body is exactly that (ep9_builtins `function.rs`) may call them. The
+//! record is made only for the running host function's own [`Args`] (its host frame is the
+//! top frame), and only for a function made from a builtin table definition: a host function
+//! of `Isolate::register_host_function` or a closure that calls them runs its body on every
+//! call (M7-P0 JIT reviewer F1).
 //!
 //! [`Cx::set_human_fast_paths`] is doc-hidden: the FASTDIFF tests
 //! (`ep9_builtins/tests/fastpath_diff.rs`) turn the human fast paths off with it, to compare
@@ -44,6 +48,7 @@ impl<'s> Cx<'s> {
     /// `return cx.forward_apply(args)`.
     ///
     /// [`ArgsBuilder`]: super::ArgsBuilder
+    #[doc(hidden)]
     pub fn forward_apply(&mut self, args: Args<'s>) -> JsResult<Local<'s>> {
         self.record_forwarder(&args, IntrinsicId::FunctionPrototypeApply);
         let (func, this_arg, arg_array) = (args.this(), args.get(0), args.get(1));
@@ -69,6 +74,7 @@ impl<'s> Cx<'s> {
     ///
     /// It also records `args.callee()` as `%Function.prototype.call%` of its realm
     /// ([`IntrinsicId::FunctionPrototypeCall`]), as [`Cx::forward_apply`] does.
+    #[doc(hidden)]
     pub fn forward_call(&mut self, args: Args<'s>) -> JsResult<Local<'s>> {
         self.record_forwarder(&args, IntrinsicId::FunctionPrototypeCall);
         self.tail_call_args(args.this(), args.get(0), args.rest(1))
@@ -84,14 +90,18 @@ impl<'s> Cx<'s> {
 
     /// Records the function of the running host call `args` as the intrinsic `id` of the
     /// current realm (its own realm: `call::call_host` switched to it), if `args` belongs to
-    /// the top frame and the intrinsic is not that function already. Not a GC point.
+    /// the top frame, the intrinsic is not that function already, and the function was made
+    /// from a builtin table definition (`builtins::is_table_function`). Not a GC point.
     fn record_forwarder(&mut self, args: &Args<'s>, id: IntrinsicId) {
         let rt = self.rt();
         if rt.stack().fp().cast_const() != args.fp {
             return;
         }
         let f = args.callee().bits();
-        if builtins::intrinsic(rt, id) != f && crate::object::function_realm(f) == self.cx.realm {
+        if builtins::intrinsic(rt, id) != f
+            && crate::object::function_realm(f) == self.cx.realm
+            && builtins::is_table_function(rt, f)
+        {
             builtins::load_intrinsic(rt, id, f);
             realm::record_intrinsic(rt, id, f);
         }

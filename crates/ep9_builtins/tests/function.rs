@@ -543,3 +543,41 @@ fn call_tail_calls_its_callee() {
         ])
     );
 }
+
+/// An embedder host function that ends in `Cx::forward_apply` (doc-hidden) is never recorded
+/// as %Function.prototype.apply%: only a builtin table definition is (M7-P0 JIT reviewer F1).
+/// So its body runs on every call; before the fix it ran once and the VM forward path
+/// skipped it after that.
+#[test]
+fn an_embedder_forwarder_runs_its_body_on_every_call() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    fn counted_apply<'s>(
+        cx: &mut ep9_vm::Cx<'s>,
+        _this: ep9_vm::Local<'s>,
+        args: ep9_vm::Args<'s>,
+        _nt: ep9_vm::Local<'s>,
+    ) -> ep9_vm::JsResult<ep9_vm::Local<'s>> {
+        COUNT.fetch_add(1, Ordering::Relaxed);
+        cx.forward_apply(args)
+    }
+    let (s, n) = common::on_big_stack(|| {
+        let mut iso = common::isolate(false);
+        iso.register_host_function("capply", 2, counted_apply);
+        let src = "Function.prototype.capply = capply; function g(a) { return a; } var s = ''; for (var i = 0; i < 5; i++) s += g.capply(null, [i]);";
+        let unit = ep9_frontend::compile(
+            src,
+            ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+            ep9_frontend::CompileOptions::default(),
+        )
+        .expect("compiles");
+        iso.with_cx(|cx| cx.run_script(unit, "capply.js").map(|_| ()))
+            .expect("runs");
+        (
+            common::global_text(&mut iso, "s"),
+            COUNT.load(Ordering::Relaxed),
+        )
+    });
+    assert_eq!(s.as_deref(), Some("01234"));
+    assert_eq!(n, 5, "the body ran {n} times for 5 calls");
+}

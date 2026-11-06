@@ -477,10 +477,12 @@ pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
 /// when `i` is a present element of the array or arguments object `o` (an object; a mapped
 /// index reads its parameter, [`element_value`]); `None`: the caller reads it through
 /// `property::get_int` (a hole, an index past the elements, an accessor, the chain, any other
-/// kind). Not a GC point.
+/// kind; and every element while the human fast paths are off, FASTDIFF). Not a GC point.
 #[inline]
-pub(crate) fn list_element(o: u64, i: u32) -> Option<u64> {
-    if kind::is_array(o) {
+pub(crate) fn list_element(rt: &Runtime, o: u64, i: u32) -> Option<u64> {
+    if !crate::call::human_fast_paths(rt) {
+        None
+    } else if kind::is_array(o) {
         object::array_get(o, i)
     } else if kind::cell_kind(o) == kind::ARGUMENTS.get() {
         element_value(o, i)

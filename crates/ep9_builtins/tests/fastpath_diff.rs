@@ -102,15 +102,16 @@ const INVENTORY: &[FastPath] = &[
         site: "crates/ep9_vm/src/arguments.rs:463 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
-               place (its element reads in place, list_element :479, are not switched)",
+               place",
     },
-    // ---- B0, a guard form ----
     FastPath {
         id: "clfal-elements",
         site: "crates/ep9_vm/src/arguments.rs:479 (list_element; abi/mod.rs create_list_from_array_like)",
-        off: Off::Guard,
-        what: "CreateListFromArrayLike reads a present Array or arguments element in place",
+        off: Off::Switch,
+        what: "CreateListFromArrayLike reads a present Array or arguments element in place \
+               (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
     },
+    // ---- B0, a guard form ----
     FastPath {
         id: "t0-call",
         site: "crates/ep9_vm/src/interp/ops.rs:402 (call_fast; x86-64 form call.rs:960)",
@@ -393,18 +394,18 @@ const CASES: &[Case] = &[
               for (var i = 0; i < 3; i++) print(f(1, 2, 3), g(1, 2, 3), h(1, 2, 3), f());",
         spec: None,
     },
-    // ---- the Guard rows ----
     Case {
         path: "clfal-elements",
         name: "in place or through [[Get]]",
         src: "function f() { return Reflect.apply(show, null, arguments); }\n\
-              print(f(1, 2, 3), Reflect.apply(show, null, [4, 5]));",
-        spec: Some(
-            "function f() { arguments.extra = 1; return Reflect.apply(show, null, arguments); }\n\
-             var a = [4, 5]; Object.defineProperty(a, 0, { get: function () { return 4; } });\n\
-             print(f(1, 2, 3), Reflect.apply(show, null, a));",
-        ),
+              function g() { delete arguments[1]; return Reflect.apply(show, null, arguments); }\n\
+              var a = [4, 5]; Object.defineProperty(a, 0, { get: function () { return 6; } });\n\
+              Object.prototype[1] = 'p'; var h = [7]; h.length = 2;\n\
+              print(f(1, 2, 3), g(1, 2, 3), Reflect.apply(show, null, [4, 5]), Reflect.apply(show, null, a), Reflect.apply(show, null, h));\n\
+              delete Object.prototype[1];",
+        spec: None,
     },
+    // ---- the Guard rows ----
     Case {
         path: "t0-call",
         name: "a JS call in the handler or from Rust",
@@ -604,6 +605,13 @@ fn run(src: &'static str, on: bool, stress: bool) -> RunOut {
             let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
             iso.collect_garbage();
             iso.verify_heap().expect("a valid heap");
+            // The switch is process-wide and keyed by the isolate id: turn it on again, so
+            // a dropped isolate leaves no id behind (else every later host call takes the
+            // lock; M7-P0 JIT reviewer F5).
+            let _ = iso.with_cx(|cx| {
+                cx.set_human_fast_paths(true);
+                Ok(())
+            });
             (out, r.err().map(|e| e.message))
         })
         .expect("a thread")
@@ -745,6 +753,7 @@ fn every_fast_path_matches_its_spec_steps() {
                 .is_none_or(|o| c.path.contains(o) || c.name.contains(o))
         })
         .collect();
+    assert!(!todo.is_empty(), "EP9_FASTDIFF_ONLY={only:?} matches no case");
     // The cases run in parallel (each run on its own isolate and thread).
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results = std::sync::Mutex::new(Vec::new());

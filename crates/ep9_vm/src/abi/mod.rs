@@ -1478,7 +1478,7 @@ impl<'s> Cx<'s> {
         for i in 0..len {
             let ob = o.bits();
             let e = match u32::try_from(i) {
-                Ok(n) if n != u32::MAX => match crate::arguments::list_element(ob, n) {
+                Ok(n) if n != u32::MAX => match crate::arguments::list_element(self.rt(), ob, n) {
                     Some(v) => v,
                     None => property::get_int(self.cx, ob, n)?,
                 },
