@@ -264,9 +264,9 @@ pub(crate) fn plain_elements_kind(k: u8) -> bool {
 }
 
 /// The largest distance past the capacity at which a new element of an object that is not
-/// an Array still goes to its elements store (H18-Q2's gap, est.); a farther index stays a
-/// stored property, so `o[1e6] = x` allocates no dense range. Arrays keep the v0 rule (dense up
-/// to `object::arr::MAX_LENGTH`) until DICTIONARY (M5-P2 ELEM2).
+/// an Array still goes to its elements store (H18-Q2's gap, est.); a farther index, or one that
+/// the density check of [`sparse_growth`] refuses, stays a stored property, so `o[1e6] = x`
+/// allocates no dense range. Arrays use [`ARRAY_GAP`] and DICTIONARY (M5-P2 ELEM2).
 pub(crate) const PLAIN_GAP: u32 = 1024;
 
 /// Moves the object `o` to elements kind `to` (a store needs it; `to` is more general than
@@ -449,10 +449,10 @@ pub(crate) mod dict {
 
 const _: () = assert!(dict::CAPACITY == object::elems::CAPACITY);
 
-/// The distance past the capacity from which a new element of an Array does not go to its
-/// dense store (H18-Q2's gap, V8's `kMaxGap`, est.): it moves the array to DICTIONARY, so one
-/// high index allocates no dense range (H18 Rules, "one high index keeps RSS flat"); the
-/// density check of [`sparse_growth`] does so for a nearer one too.
+/// The largest distance past the capacity at which a new element of an Array still goes to its
+/// dense store (H18-Q2's gap, V8's `kMaxGap`, est.): a farther one moves the array to
+/// DICTIONARY, so one high index allocates no dense range (H18 Rules, "one high index keeps
+/// RSS flat").
 pub(crate) const ARRAY_GAP: u32 = 1024;
 
 fn dict_cell_size(c: CellPtr) -> usize {
@@ -745,56 +745,87 @@ pub(crate) const DENSE_UNCHECKED: usize = 5_000;
 /// est.; H18 "elements tuning").
 pub(crate) const SPARSE_FACTOR: usize = 3;
 
-/// The far-index rule of every JS object with an elements store (H18-Q2 and Q3; M7-P1 OBJ1,
-/// route OBJ-FARKEY; V8's `ShouldConvertToSlowElements`, `js-objects-inl.h`): true if a new
-/// element `i` of the JS object `o`, whose dense store has capacity `cap`, must not grow
-/// that store. That is: `i` is the gap or more past `cap` ([`ARRAY_GAP`] for an Array,
-/// [`PLAIN_GAP`] for another object), or the grown cell (max(i + 1, 2 × `cap`, 4) slots, the
+/// The far-index rule of a JS object that is not an Array (H18-Q3; M7-P1 OBJ1, route
+/// OBJ-FARKEY; V8's `ShouldConvertToSlowElements`, `js-objects-inl.h`): true if a new element
+/// `i` of `o`, whose dense store has capacity `cap`, must not grow that store. That is: `i` is
+/// [`PLAIN_GAP`] or more past `cap`, or the grown cell (max(i + 1, 2 × `cap`, 4) slots, the
 /// growth of `object::store_element_slow`) would pass [`DENSE_UNCHECKED`] slots and take
-/// [`SPARSE_FACTOR`] times or more the words of an ELEMENTS_DICT cell for its present
-/// elements and `i` (the density check). An Array then moves to DICTIONARY; another object
-/// keeps the index as a stored property (H18-Q3). So the bit-flag enum form `o[1 << k] = v`,
-/// whose capacity doubles at each store and whose gap is 0, stops at a few thousand slots
-/// (it grew to 2^28 slots before: RTS FE-3). False for `i` below `cap`. Not a GC point; it
-/// reads the present elements only when the cell would pass [`DENSE_UNCHECKED`] (once per
-/// doubling).
-pub(crate) fn sparse_growth(o: u64, cap: u32, i: u32) -> bool {
+/// [`SPARSE_FACTOR`] times or more the words of an ELEMENTS_DICT cell for its present elements
+/// and `i` (the density check). The caller then keeps the index as a stored property. So the
+/// bit-flag enum form `o[1 << k] = v`, whose capacity doubles at each store and whose gap is
+/// 0, stops at a few thousand slots (it grew to 2^28 slots before: RTS FE-3). Arrays keep the
+/// H18-Q2 Decided rule ([`ARRAY_GAP`] and the dense limit in `object::store_element_slow`; no
+/// density check: M6-ORCH-173, route ARRAY-DENSITY). False for `i` below `cap`. Not a GC point.
+///
+/// The density check counts the present elements, O(`cap`). A refusal keeps the store as it
+/// is, so a refused (cell, capacity) goes into [`REFUSED`]: a later far store into the same
+/// store is refused with no new count (M7-P1 review F4: each one counted the whole store
+/// again). So one dense cell is counted once per refusal, and a count costs no more than the
+/// growth that made the cell.
+pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
+    debug_assert!(!kinds_::is_array(o), "Arrays keep the H18-Q2 rule");
     if i < cap {
         return false;
     }
-    let gap = if kinds_::is_array(o) {
-        ARRAY_GAP
-    } else {
-        PLAIN_GAP
-    };
-    if i - cap >= gap {
+    if i - cap >= PLAIN_GAP {
         return true;
     }
     let grown = (i as usize + 1).max(cap as usize * 2).max(4);
     if grown <= DENSE_UNCHECKED {
         return false;
     }
-    let used = present_elements(o, cap as usize) + 1;
+    // Past DENSE_UNCHECKED slots `cap` is above 0, so the object has its elements cell.
+    let e = object::rd(object::cell(o), obj::ELEMENTS);
+    let memo = (rt.id, e, cap);
+    let entry = refused_entry(e);
+    if REFUSED.with(|r| r[entry].get() == memo) {
+        return true;
+    }
+    #[cfg(test)]
+    DENSITY_COUNTS.with(|n| n.set(n.get() + 1));
+    let used = present_elements(o, e, cap as usize) + 1;
     // The bucket count of `to_dictionary` for `used` entries, 3 words each, plus the header.
     let buckets = (used * 2).next_power_of_two().max(dict::MIN_BUCKETS);
     let dict_words = (dict::DATA + dict::ENTRY * buckets) / 8;
-    grown >= SPARSE_FACTOR * dict_words
+    let refuse = grown >= SPARSE_FACTOR * dict_words;
+    if refuse {
+        REFUSED.with(|r| r[entry].set(memo));
+    }
+    refuse
 }
 
-/// The number of present elements in the dense store (capacity `cap`) of the JS object `o`:
-/// the `length` of a packed Array (no hole below it, nothing past it), else a count of the
-/// words that are not the hole of the cell's storage form. Not a GC point.
-fn present_elements(o: u64, cap: usize) -> usize {
-    let k = kind_of(o);
-    if kinds_::is_array(o) && !is_holey(k) {
-        return object::array_len(o) as usize;
-    }
-    let e = object::rd(object::cell(o), obj::ELEMENTS);
-    if e == crate::frame::UNDEFINED {
-        return 0;
-    }
+std::thread_local! {
+    /// The dense stores that [`sparse_growth`] refused last on this thread, by entry
+    /// ([`refused_entry`]): (`Runtime::id`, the elements cell, its capacity). The cell is
+    /// only compared, never read through, so it is not a root (plan rule 8): a stale entry
+    /// (the cell died and its address took a new cell of the same capacity, or the store got
+    /// denser after the count) only keeps a new index in the property storage, where any
+    /// index may live (H18-Q3). The runtime id keeps two isolates of one thread apart.
+    static REFUSED: [core::cell::Cell<(u64, u64, u32)>; REFUSED_ENTRIES] =
+        const { [const { core::cell::Cell::new((0, 0, 0)) }; REFUSED_ENTRIES] };
+}
+
+/// The entries of [`REFUSED`] (a power of two): a few objects that take far stores in turn
+/// each keep their entry.
+const REFUSED_ENTRIES: usize = 8;
+
+/// The [`REFUSED`] entry of the elements cell `e` (bits of an 8-byte aligned address).
+fn refused_entry(e: u64) -> usize {
+    ((e >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize & (REFUSED_ENTRIES - 1)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Tests: the present-element counts [`sparse_growth`] ran on this thread.
+    pub(crate) static DENSITY_COUNTS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// The number of present elements in the dense store `e` (capacity `cap`) of the JS object
+/// `o`, which is not an Array (its kind is holey): a count of the words that are not the hole
+/// of the cell's storage form. Not a GC point.
+fn present_elements(o: u64, e: u64, cap: usize) -> usize {
     let c = object::cell(e);
-    if storage(k) == Some(Storage::Doubles) {
+    if storage(kind_of(o)) == Some(Storage::Doubles) {
         (0..cap)
             .filter(|&j| object::raw_get(c, delems::DATA + 8 * j) != delems::HOLE)
             .count()

@@ -1231,7 +1231,7 @@ fn store_element(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
 pub(crate) fn element_set(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
     debug_assert!(crate::elements::plain_elements_kind(cell_kind(o)));
     let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as u32);
-    if i >= cap && (i >= arr::MAX_LENGTH || crate::elements::sparse_growth(o, cap, i)) {
+    if i >= cap && (i >= arr::MAX_LENGTH || crate::elements::sparse_growth(rt, o, cap, i)) {
         if v == HOLE {
             return true;
         }
@@ -1255,10 +1255,10 @@ fn store_element_slow(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
     use crate::elements::{Storage, storage};
     // Only a prototype pays for more than the flag test.
     let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as usize);
-    if v != HOLE && kind::is_array(o) && crate::elements::sparse_growth(o, cap as u32, i) {
-        // H18-Q2: a far index, or a growth the density check refuses, moves the array to
-        // DICTIONARY (no dense kind on the way, so the site of a literal array is not
-        // generalized), not to a dense allocation. GC point: `o` and `v` live in Rust locals.
+    if v != HOLE && (i as usize) >= cap + crate::elements::ARRAY_GAP as usize && kind::is_array(o) {
+        // H18-Q2: a far index moves the array to DICTIONARY (no dense kind on the way, so the
+        // site of a literal array is not generalized), not to a dense allocation. GC point:
+        // `o` and `v` live in Rust locals.
         let stored = array_set_sparse(rt, o, i, v);
         debug_assert!(
             stored,
