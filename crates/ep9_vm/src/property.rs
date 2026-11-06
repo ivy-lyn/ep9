@@ -65,7 +65,7 @@ use crate::error::{
     Part::Key, Part::Text, bounded_message, not_implemented, stack_overflow, throw_error,
 };
 use crate::exotic::{self, Exotic};
-use crate::frame::{NULL, UNDEFINED};
+use crate::frame::{HOLE, NULL, UNDEFINED};
 use crate::interp::Cx;
 use crate::key::{self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key};
 use crate::kinds::{self as kind, is_bound, is_callable, is_symbol};
@@ -106,7 +106,13 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
             }
         }
         match props::own_value_or_proto(o, key, how) {
-            Ok((v, a)) if a & attr::ACCESSOR == 0 => return Ok(v),
+            // HOLE: a lazy namespace key not installed yet (INTL-I1-D8) swaps on this read.
+            Ok((v, a)) if a & attr::ACCESSOR == 0 => {
+                if v == HOLE {
+                    return Ok(crate::realm::resolve_global(cx.rt(), o, key));
+                }
+                return Ok(v);
+            }
             Ok((pair, _)) => return accessor::call_getter(cx, pair, receiver),
             Err(NULL) => return Ok(UNDEFINED),
             Err(p) => o = p,
@@ -144,6 +150,10 @@ pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
             }
         }
         match props::own_value_or_proto(o, key, how) {
+            // HOLE: a lazy namespace key swaps on this read (INTL-I1-D8; no JS runs).
+            Ok((HOLE, a)) if a & attr::ACCESSOR == 0 => {
+                return Some(crate::realm::resolve_global(cx.rt(), o, key));
+            }
             Ok((v, a)) => return (a & attr::ACCESSOR == 0).then_some(v),
             Err(NULL) => return None,
             Err(p) => o = p,
@@ -1425,7 +1435,15 @@ fn own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(u64, i32, OwnSlot)
         let (v, a, e) = r?;
         return Ok(Some((v, a, OwnSlot::Exotic(e))));
     }
-    Ok(props::own_get_with(o, key, how).map(|(v, a)| (v, a, OwnSlot::Storage)))
+    match props::own_get_with(o, key, how) {
+        // HOLE: a lazy namespace key swaps on this read (INTL-I1-D8), so [[GetOwnProperty]],
+        // [[DefineOwnProperty]] and a proxy's target form see the installed value.
+        Some((HOLE, a)) if a & attr::ACCESSOR == 0 => {
+            let v = crate::realm::resolve_global(cx.rt(), o, key);
+            Ok(Some((v, a, OwnSlot::Storage)))
+        }
+        found => Ok(found.map(|(v, a)| (v, a, OwnSlot::Storage))),
+    }
 }
 
 /// `o.[[GetOwnProperty]](key)` in the stored form: (value, attribute bits), where an

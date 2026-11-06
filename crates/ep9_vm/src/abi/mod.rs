@@ -741,7 +741,9 @@ impl<'s> Cx<'s> {
     /// VM-internal `IntrinsicId::RealmFuses`.
     pub fn intrinsic(&self, id: IntrinsicId) -> Local<'s, JsObject> {
         assert!(id != IntrinsicId::RealmFuses, "RealmFuses is VM-internal");
-        let v = builtins::intrinsic(self.rt(), id);
+        let rt = self.rt();
+        // A lazy group's intrinsic installs its group first (INTL-I1-D8; a GC point then).
+        let v = crate::realm::intrinsic_for_use(rt, rt.root(crate::runtime::Root::Realm), id);
         assert!(kinds::is_object(v), "{} is not installed", id.name());
         Self::local(v)
     }
@@ -749,7 +751,10 @@ impl<'s> Cx<'s> {
     /// Does the realm have the intrinsic `id`? (The core ones always; the others when a
     /// table made them.)
     pub fn has_intrinsic(&self, id: IntrinsicId) -> bool {
-        kinds::is_object(builtins::intrinsic(self.rt(), id))
+        // A lazy group's intrinsic exists in every realm, installed or not (M6-ORCH-132): the
+        // answer comes from the group map, with no install and no GC point.
+        let rt = self.rt();
+        kinds::is_object(builtins::intrinsic(rt, id)) || builtins::lazy_group(rt, id).is_some()
     }
 
     /// OrdinaryObjectCreate(%Object.prototype%).
@@ -1505,7 +1510,8 @@ impl<'s> Cx<'s> {
             None => {
                 let realm = crate::realm::try_get_function_realm(self.cx, constructor.bits())?;
                 let rt = self.rt();
-                let v = crate::realm::intrinsic_in(rt, realm, default);
+                // Installs a lazy group into that realm first (INTL-I1-D8; V8 b5666f7d85).
+                let v = crate::realm::intrinsic_for_use(rt, realm, default);
                 assert!(kinds::is_object(v), "{} is not installed", default.name());
                 Self::local(v)
             }
