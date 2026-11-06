@@ -225,6 +225,10 @@ node tools/bench/cross/run.mjs --ep9 target/release/ep9 --host tools/bench/hosts
   --engines ep9,qjs,node-jitless --workloads m2 --harness base --count target/release/ep9-bench \
   --out run-jit.json --md run-jit.md
 node tools/bench/cross/m2gate.mjs run-jit.json run-jitless.json --out m2gate.json   # items 1-3, 6, 10, D11
+node tools/bench/cross/mem.mjs --ep9 target/release/ep9 --ep9-jitless <jitless ep9> \
+  --host tools/bench/hosts/m5max-macos.toml --out mem.json --md mem.md               # item 4
+node tools/bench/jetstream/run.mjs --list expectations/jetstream-m2.txt --config ep9=ep9@target/release/ep9 \
+  --config jitless=node:--jitless,cli:--no-prefetch --out jetstream.json             # item 7
 cargo xtask m2-exit --host aarch64-apple-darwin --gate m2gate.json --mem mem.json \
   --exec test262-exec.json --fastdiff fastdiff.json --jetstream jetstream.json \
   --fuzz <record>... --p-gates docs/measurements/<date>-p-gates.md --out m2-exit.md
@@ -258,6 +262,9 @@ cargo xtask m2-exit --host aarch64-apple-darwin --gate m2gate.json --mem mem.jso
 - The tree readers (`adr-lint`, `m1-exit`, `m2-exit`) read the git top dir of the current dir
   unless `--root` is given, so one xtask build serves two worktrees; `m0-exit` refuses to run in
   another ep9 tree.
+- **mem.mjs** and **jetstream/run.mjs** (BENCH10): the usage is in the header comment of each
+  file. mem.mjs writes ep9-mem/v1 (engine `ep9` is the jit preset build, `ep9-jitless` the
+  jitless build); run.mjs writes the `ep9` block (`commit`, `dirty`) that item 7 reads.
 - Tests: `node --test tools/bench/cross/m2gate.test.mjs` (also loaded by `run.test.mjs`); the
   m2-exit fixtures `gate-*.json` are its output (`EP9_BLESS=1` writes them again);
   `cargo test --locked -p xtask` (m2-exit and the two-worktree test `tests/root_default.rs`).
