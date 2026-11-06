@@ -542,7 +542,7 @@ pub(crate) fn to_time_or_midnight<'s>(
     to_temporal_time(cx, item, Local::undefined()).map(Some)
 }
 
-/// Temporal.PlainDateTime.prototype.withPlainTime ( [ plainTimeLike ] ) (§5.3.27).
+/// Temporal.PlainDateTime.prototype.withPlainTime ( \[ plainTimeLike \] ) (§5.3.27).
 fn with_plain_time<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -702,7 +702,7 @@ fn equals<'s>(
     ))
 }
 
-/// Temporal.PlainDateTime.prototype.toString ( [ options ] ) (§5.3.35).
+/// Temporal.PlainDateTime.prototype.toString ( \[ options \] ) (§5.3.35).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

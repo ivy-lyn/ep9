@@ -474,7 +474,7 @@ fn equals<'s>(
     Ok(Local::boolean(i.as_i128() == other.as_i128()))
 }
 
-/// Temporal.Instant.prototype.toString ( [ options ] ) (§8.3.11).
+/// Temporal.Instant.prototype.toString ( \[ options \] ) (§8.3.11).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

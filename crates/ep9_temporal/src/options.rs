@@ -154,7 +154,7 @@ pub(crate) fn get_fractional_second_digits<'s>(
     Ok(Precision::Digit(d as u8))
 }
 
-/// A string argument `s` as the bag { [key]: s } (null prototype), else GetOptionsObject;
+/// A string argument `s` as the bag { \[key\]: s } (null prototype), else GetOptionsObject;
 /// `undefined` is a TypeError (`round` and `total` steps 3-5).
 pub(crate) fn string_or_options<'s>(
     cx: &mut Cx<'s>,

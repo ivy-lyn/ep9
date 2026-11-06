@@ -543,7 +543,7 @@ fn equals<'s>(
     Ok(Local::boolean(t == other))
 }
 
-/// Temporal.PlainTime.prototype.toString ( [ options ] ) (§4.3.16).
+/// Temporal.PlainTime.prototype.toString ( \[ options \] ) (§4.3.16).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -575,7 +575,7 @@ fn to_string<'s>(
     cx.new_string(&s).map(|s| s.value())
 }
 
-/// TimeRecordToString(temporalTime.[[Time]], auto).
+/// TimeRecordToString(temporalTime.\[\[Time\]\], auto).
 fn default_text<'s>(cx: &mut Cx<'s>, this: Local<'s>) -> JsResult<Local<'s>> {
     let t = read(cx, this)?;
     let s = t

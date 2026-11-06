@@ -708,7 +708,7 @@ fn equals<'s>(
     ))
 }
 
-/// Temporal.PlainDate.prototype.toString ( [ options ] ) (§3.3.30).
+/// Temporal.PlainDate.prototype.toString ( \[ options \] ) (§3.3.30).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -765,7 +765,7 @@ fn value_of<'s>(
     ))
 }
 
-/// Temporal.PlainDate.prototype.toPlainDateTime ( [ temporalTime ] ).
+/// Temporal.PlainDate.prototype.toPlainDateTime ( \[ temporalTime \] ).
 fn to_plain_date_time<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

@@ -350,7 +350,7 @@ fn equals<'s>(
     ))
 }
 
-/// Temporal.PlainMonthDay.prototype.toString ( [ options ] ) (§10.3.8).
+/// Temporal.PlainMonthDay.prototype.toString ( \[ options \] ) (§10.3.8).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

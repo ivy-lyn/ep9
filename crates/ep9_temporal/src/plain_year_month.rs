@@ -525,7 +525,7 @@ fn equals<'s>(
     ))
 }
 
-/// Temporal.PlainYearMonth.prototype.toString ( [ options ] ) (§9.3.19).
+/// Temporal.PlainYearMonth.prototype.toString ( \[ options \] ) (§9.3.19).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

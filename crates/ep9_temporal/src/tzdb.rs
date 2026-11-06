@@ -18,7 +18,7 @@ use zoneinfo64::ZoneInfo64;
 /// The ICU `zoneinfo64.res` (tzdb 2026f), the `le` build: all ep9 targets are little-endian.
 static RES: &[u8] = include_bytes!("../data/zoneinfo64.res");
 
-/// The tzdb version of [`RES`] (`data/README.md`).
+/// The tzdb version of `RES` (`data/README.md`).
 pub const TZDB_VERSION: &str = "2026f";
 
 static WORDS: OnceLock<Box<[u32]>> = OnceLock::new();

@@ -551,7 +551,7 @@ fn total<'s>(
     Ok(Local::number(t.as_inner()))
 }
 
-/// Temporal.Duration.prototype.toString ( [ options ] ) (§7.3.21).
+/// Temporal.Duration.prototype.toString ( \[ options \] ) (§7.3.21).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

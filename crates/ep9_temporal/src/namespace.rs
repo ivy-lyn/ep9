@@ -160,7 +160,7 @@ fn now_instant<'s>(
     crate::instant::create(cx, &i, None)
 }
 
-/// Temporal.Now.plainDateTimeISO ( [ temporalTimeZoneLike ] ) (§2.2.3).
+/// Temporal.Now.plainDateTimeISO ( \[ temporalTimeZoneLike \] ) (§2.2.3).
 fn now_plain_date_time_iso<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -171,7 +171,7 @@ fn now_plain_date_time_iso<'s>(
     crate::plain_date_time::create(cx, &z.to_plain_date_time(), None)
 }
 
-/// Temporal.Now.zonedDateTimeISO ( [ temporalTimeZoneLike ] ) (§2.2.4).
+/// Temporal.Now.zonedDateTimeISO ( \[ temporalTimeZoneLike \] ) (§2.2.4).
 fn now_zoned_date_time_iso<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -182,7 +182,7 @@ fn now_zoned_date_time_iso<'s>(
     crate::zoned_date_time::create(cx, &z, None)
 }
 
-/// Temporal.Now.plainDateISO ( [ temporalTimeZoneLike ] ) (§2.2.5).
+/// Temporal.Now.plainDateISO ( \[ temporalTimeZoneLike \] ) (§2.2.5).
 fn now_plain_date_iso<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -193,7 +193,7 @@ fn now_plain_date_iso<'s>(
     crate::plain_date::create(cx, &z.to_plain_date(), None)
 }
 
-/// Temporal.Now.plainTimeISO ( [ temporalTimeZoneLike ] ) (§2.2.6).
+/// Temporal.Now.plainTimeISO ( \[ temporalTimeZoneLike \] ) (§2.2.6).
 fn now_plain_time_iso<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,

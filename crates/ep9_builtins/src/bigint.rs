@@ -172,7 +172,7 @@ fn as_uint_n<'s>(
     cx.bigint_as_uint_n(bits, b)
 }
 
-/// BigInt.prototype.toString ( [ radix ] ) (§21.2.3.3).
+/// BigInt.prototype.toString ( \[ radix \] ) (§21.2.3.3).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

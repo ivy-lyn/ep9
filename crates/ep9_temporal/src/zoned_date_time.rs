@@ -644,7 +644,7 @@ fn with<'s>(
     create(cx, &r, None)
 }
 
-/// Temporal.ZonedDateTime.prototype.withPlainTime ( [ plainTimeLike ] ) (§6.3.33).
+/// Temporal.ZonedDateTime.prototype.withPlainTime ( \[ plainTimeLike \] ) (§6.3.33).
 fn with_plain_time<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -811,7 +811,7 @@ fn equals<'s>(
     Ok(Local::boolean(eq))
 }
 
-/// Temporal.ZonedDateTime.prototype.toString ( [ options ] ) (§6.3.42).
+/// Temporal.ZonedDateTime.prototype.toString ( \[ options \] ) (§6.3.42).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
