@@ -190,7 +190,7 @@ const MEM_CMD: &str = "node tools/bench/cross/mem.mjs --out mem.json (BENCH10)";
 const EXEC_CMD: &str = "cargo run --release --locked -p ep9_test262 -- exec --json exec.json (or the test262-exec.json artifact of the CI test262 job of this host)";
 const FASTDIFF_CMD: &str =
     "cargo test --locked -p ep9_builtins --test fastpath_diff (its ep9-fastdiff/v1 JSON)";
-const JETSTREAM_CMD: &str = "node tools/bench/jetstream/run.mjs --list expectations/jetstream-m2.txt --config ep9=<ep9> --config jitless=node:--jitless,cli:--no-prefetch --out jetstream.json";
+const JETSTREAM_CMD: &str = "node tools/bench/jetstream/run.mjs --list expectations/jetstream-m2.txt --config ep9=ep9@<ep9 binary> --config jitless=node:--jitless,cli:--no-prefetch --out jetstream.json";
 const FUZZ_HOW: &str = "one ep9-fuzz/v1 record per counted Fuzzilli campaign (the month-end batch)";
 const P_GATES_HOW: &str = "docs/measurements/<date>-p-gates.md: a table with Gate and Result columns, one row each for P1, P2 and P4 (Result: not tripped or tripped)";
 
@@ -683,6 +683,11 @@ fn speed_cell(c: &Ctx, ids: &[&str], builds: &[&str]) -> Cell {
             };
             if host != WINDOWS_X64 {
                 status = status.max(s);
+            } else if s == Status::Open {
+                // Windows: no pass or fail against the M2 threshold (the ratio to Linux x64
+                // decides), but a reading with no verdict (provisional, marginal, none) is no
+                // reading (M7-P0 Codex r1 GATES10-1).
+                status = status.max(Status::Open);
             }
             let reasons: Vec<String> = r
                 .get("reasons")
@@ -778,9 +783,39 @@ fn windows_ratio(
         if cpu(wb).is_none() || cpu(wb) != cpu(lb) {
             same_cpu = false;
         }
+        // The Linux x64 run must be valid too, as a --gate run (M7-P0 Codex r1 GATES10-1): its
+        // build line, fresh, not provisional, and each reading with a verdict.
+        if let Some(lb) = lb {
+            if let Err(e) = build_line_check(b, lb.get("engine_build").and_then(Json::str)) {
+                status = status.max(Status::Open);
+                ratios.push(format!("{b}: the Linux x64 run: {e}"));
+            }
+            if let Err(e) = fresh(
+                &c.o.root,
+                lb.get("commit").and_then(Json::str),
+                lb.get("dirty"),
+                &FRESH_PATHS,
+            ) {
+                status = status.max(Status::Open);
+                ratios.push(format!("{b}: the Linux x64 run is stale: {e}"));
+            }
+            if lb.get("provisional").and_then(Json::bool) != Some(false) {
+                status = status.max(Status::Open);
+                ratios.push(format!("{b}: the Linux x64 run is provisional"));
+            }
+        }
         for &id in ids {
             let w = reading(win, id, b).and_then(|r| speed(id, r));
-            let l = reading(lin, id, b).and_then(|r| speed(id, r));
+            let lr = reading(lin, id, b);
+            let lgate = lr.and_then(|r| r.get("gate")).and_then(Json::str);
+            if !matches!(lgate, Some("pass" | "fail")) {
+                status = status.max(Status::Open);
+                ratios.push(format!(
+                    "{b} {id}: the Linux x64 reading has no gate verdict ({})",
+                    lgate.unwrap_or("no gate field")
+                ));
+            }
+            let l = lr.and_then(|r| speed(id, r));
             match (w, l) {
                 (Some(w), Some(l)) if l > 0.0 => {
                     let q = w / l;
@@ -1020,6 +1055,43 @@ fn t262_cell(c: &Ctx, p: &Path, j: &Json) -> Cell {
             None
         }
     };
+    // Coverage (M7-P0 Codex r1 GATES10-3): the run ran every file of each gated dir of this
+    // checkout. A filtered run names the files it ran (`run_paths`): each file of a gated dir
+    // is there or in `skipped_paths`, else OPEN. A full run has no list: its `by_dir` count of
+    // each top dir (language, annexB, built-ins) is the checkout's (missing: OPEN; another
+    // count: FAIL).
+    let run_paths: Option<BTreeSet<&str>> = j
+        .get("run_paths")
+        .and_then(Json::arr)
+        .map(|a| a.iter().filter_map(Json::str).collect());
+    let skipped: BTreeSet<&str> = j
+        .get("skipped_paths")
+        .and_then(Json::arr)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(Json::str)
+        .collect();
+    if let (None, Some(files)) = (&run_paths, &files) {
+        for key in ["language", "annexB", "built-ins"] {
+            let prefix = format!("test/{key}/");
+            let total = files.iter().filter(|f| f.starts_with(&prefix)).count() as u64;
+            match count(j, &["by_dir", key, "files"]) {
+                Some((_, t)) if t == total => {}
+                Some((_, t)) => {
+                    status = Status::Fail;
+                    why.push(format!(
+                        "{t} {key} files in the run, the checkout has {total} (a filtered run?)"
+                    ));
+                }
+                None => {
+                    status = status.max(Status::Open);
+                    why.push(format!(
+                        "the run has no by_dir {key} count and no run_paths list (a filtered run?)"
+                    ));
+                }
+            }
+        }
+    }
     let mut dirs = Vec::new();
     for (dir, need) in T262_DIRS {
         let prefix = format!("test/{dir}/");
@@ -1029,15 +1101,16 @@ fn t262_cell(c: &Ctx, p: &Path, j: &Json) -> Cell {
         let total = files.iter().filter(|f| f.starts_with(&prefix)).count() as u64;
         let failed = not_pass.iter().filter(|f| f.starts_with(&prefix)).count() as u64;
         let passed = total.saturating_sub(failed);
-        // The top dirs: the run must have run the whole dir of this checkout.
-        if !dir.contains('/')
-            && let Some((_, t)) = count(j, &["by_dir", dir, "files"])
-            && t != total
-        {
-            status = Status::Fail;
-            why.push(format!(
-                "{t} {dir} files in the run, the checkout has {total} (a filtered run?)"
-            ));
+        if let Some(run) = &run_paths {
+            let missed = files
+                .iter()
+                .filter(|f| f.starts_with(&prefix))
+                .filter(|f| !run.contains(f.as_str()) && !skipped.contains(f.as_str()))
+                .count();
+            if missed > 0 {
+                status = status.max(Status::Open);
+                why.push(format!("{dir}: {missed} files not run (a filtered run)"));
+            }
         }
         let ok = total > 0 && passed * 100 >= total * need;
         if !ok {
@@ -1920,6 +1993,116 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// M7-P0 Codex r1 GATES10-1: gate hosts and one CPU on both sides, but Windows readings
+    /// with no verdict (a provisional run) and a Linux x64 run that is dirty, names another
+    /// commit and has a wrong jitless build line: every Windows speed cell reads OPEN (it read
+    /// PASS, ratio 1.000).
+    #[test]
+    fn windows_needs_valid_readings_on_both_hosts() {
+        let r = repo("windows-valid");
+        let gate_host = |t: String| t.replace("\"gate_host\": false", "\"gate_host\": true");
+        let lin = gate_host(fixture("gate-linux.json"))
+            .replace("\"dirty\": false", "\"dirty\": true")
+            .replace(
+                "\"engine_build\": \"features none; preset jitless\"",
+                "\"engine_build\": \"features jit; preset jit\"",
+            );
+        write(&r.root, "inputs/gate-lin.json", &lin.replace(SHA, &"f".repeat(40)));
+        let win = gate_host(fixture("gate-linux.json"))
+            .replace(SHA, &r.head)
+            .replace("\"platform\": \"linux-x64\"", "\"platform\": \"win32-x64\"")
+            .replace("\"provisional\": false", "\"provisional\": true");
+        write(&r.root, "inputs/gate-win.json", &win);
+        let o = Options {
+            gate: Some(r.root.join("inputs/gate-win.json")),
+            linux_gate: Some(r.root.join("inputs/gate-lin.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in [0, 1, 2, 5, 9, 10] {
+            let c = &rep.cells[i];
+            assert_eq!(c.status, Status::Open, "cell {i}: {}", c.evidence);
+            for want in [
+                "the Linux x64 reading has no gate verdict",
+                "the Linux x64 run is stale",
+            ] {
+                assert!(c.evidence.contains(want), "cell {i}: {want}: {}", c.evidence);
+            }
+        }
+        let c = &rep.cells[0];
+        assert!(
+            c.evidence
+                .contains("jitless: the Linux x64 run: the jitless run's build line"),
+            "{}",
+            c.evidence
+        );
+        // Valid Linux x64 readings (pass, fresh, not provisional), the Windows readings still
+        // with no verdict: OPEN from the Windows side alone.
+        let lin = gate_host(fixture("gate-pass.json"))
+            .replace(SHA, &r.head)
+            .replace("\"platform\": \"darwin-arm64\"", "\"platform\": \"linux-x64\"")
+            .replace("\"cpu\": \"Apple M5 Max\"", "\"cpu\": \"AMD EPYC 7763\"");
+        write(&r.root, "inputs/gate-lin.json", &lin);
+        let rep = run(&o).unwrap();
+        for i in [0, 1, 2, 5, 9, 10] {
+            let c = &rep.cells[i];
+            assert_eq!(c.status, Status::Open, "cell {i}: {}", c.evidence);
+            assert!(!c.evidence.contains("the Linux x64"), "cell {i}: {}", c.evidence);
+        }
+    }
+
+    /// M7-P0 Codex r1 GATES10-3: a run of language/ and annexB/ only (no built-ins result, no
+    /// skipped built-ins file, no by_dir built-ins count) read PASS with every built-ins dir at
+    /// 20 / 20. Now OPEN; and a filtered run (run_paths) that misses one Math file is OPEN.
+    #[test]
+    fn item5_a_run_without_built_ins_is_not_a_pass() {
+        let r = repo("t262-cover");
+        let full = fixture("exec.json").replace(SHA, &r.head);
+        let no_bi = full.replace(
+            "  },\n  \"built-ins\": {\n   \"files\": {\n    \"passed\": 157,\n    \"total\": 160\n   }\n  }\n",
+            "  }\n",
+        );
+        assert_ne!(no_bi, full, "the fixture has a by_dir built-ins count");
+        write(&r.root, "inputs/exec-nobi.json", &no_bi);
+        let o = Options {
+            exec: Some(r.root.join("inputs/exec-nobi.json")),
+            ..all(&r, "gate-pass.json")
+        };
+        let c = &run(&o).unwrap().cells[4];
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("no by_dir built-ins count"), "{}", c.evidence);
+        // A filtered run that names every file but one Math file.
+        let mut ran: Vec<String> = test262_files(&r.root.join("third_party/test262"))
+            .unwrap()
+            .into_iter()
+            .filter(|f| f != "test/built-ins/Math/m3.js")
+            .map(|f| format!("\"{f}\""))
+            .collect();
+        ran.sort();
+        let filtered = full.replacen('{', &format!("{{\"run_paths\": [{}], ", ran.join(", ")), 1);
+        write(&r.root, "inputs/exec-run.json", &filtered);
+        let o = Options {
+            exec: Some(r.root.join("inputs/exec-run.json")),
+            ..all(&r, "gate-pass.json")
+        };
+        let c = &run(&o).unwrap().cells[4];
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(
+            c.evidence.contains("built-ins/Math: 1 files not run"),
+            "{}",
+            c.evidence
+        );
+    }
+
+    /// The JetStream hint names an ep9 config: run.mjs reads a bare path as a d8 engine, so
+    /// an ep9 build needs `ep9@<path>` (M7-P0 reviewer R3).
+    #[test]
+    fn the_jetstream_hint_names_an_ep9_engine() {
+        let cfg = JETSTREAM_CMD.split(" --config ").nth(1).unwrap();
+        let engine = cfg.split_once('=').unwrap().1;
+        assert!(engine.starts_with("ep9@"), "{cfg}");
     }
 
     #[test]
