@@ -449,10 +449,10 @@ pub(crate) mod dict {
 
 const _: () = assert!(dict::CAPACITY == object::elems::CAPACITY);
 
-/// The largest distance past the capacity at which a new element of an Array still goes to its
-/// dense store (H18-Q2's gap, V8's `kMaxGap`, est.): a farther one moves the array to
-/// DICTIONARY, so one high index allocates no dense range (H18 Rules, "one high index keeps
-/// RSS flat").
+/// The distance past the capacity from which a new element of an Array does not go to its
+/// dense store (H18-Q2's gap, V8's `kMaxGap`, est.): it moves the array to DICTIONARY, so one
+/// high index allocates no dense range (H18 Rules, "one high index keeps RSS flat"); the
+/// density check of [`sparse_growth`] does so for a nearer one too.
 pub(crate) const ARRAY_GAP: u32 = 1024;
 
 fn dict_cell_size(c: CellPtr) -> usize {
@@ -733,6 +733,76 @@ pub(crate) fn storage_form_ok(o: u64) -> bool {
         return k != kind::DICTIONARY;
     }
     kinds_::cell_kind(e) == want
+}
+
+/// The cell size (in slots) up to which a dense store that must grow always grows, the gap
+/// rule aside (V8's `kMaxUncheckedFastElementsLength`, 5,000; est.; H18 "elements tuning").
+/// Past it, [`sparse_growth`] checks the density first.
+pub(crate) const DENSE_UNCHECKED: usize = 5_000;
+
+/// How many times the words of a dictionary of the same elements a dense cell may take
+/// before [`sparse_growth`] refuses to grow it (V8's `kPreferFastElementsSizeFactor`, 3;
+/// est.; H18 "elements tuning").
+pub(crate) const SPARSE_FACTOR: usize = 3;
+
+/// The far-index rule of every JS object with an elements store (H18-Q2 and Q3; M7-P1 OBJ1,
+/// route OBJ-FARKEY; V8's `ShouldConvertToSlowElements`, `js-objects-inl.h`): true if a new
+/// element `i` of the JS object `o`, whose dense store has capacity `cap`, must not grow
+/// that store. That is: `i` is the gap or more past `cap` ([`ARRAY_GAP`] for an Array,
+/// [`PLAIN_GAP`] for another object), or the grown cell (max(i + 1, 2 × `cap`, 4) slots, the
+/// growth of `object::store_element_slow`) would pass [`DENSE_UNCHECKED`] slots and take
+/// [`SPARSE_FACTOR`] times or more the words of an ELEMENTS_DICT cell for its present
+/// elements and `i` (the density check). An Array then moves to DICTIONARY; another object
+/// keeps the index as a stored property (H18-Q3). So the bit-flag enum form `o[1 << k] = v`,
+/// whose capacity doubles at each store and whose gap is 0, stops at a few thousand slots
+/// (it grew to 2^28 slots before: RTS FE-3). False for `i` below `cap`. Not a GC point; it
+/// reads the present elements only when the cell would pass [`DENSE_UNCHECKED`] (once per
+/// doubling).
+pub(crate) fn sparse_growth(o: u64, cap: u32, i: u32) -> bool {
+    if i < cap {
+        return false;
+    }
+    let gap = if kinds_::is_array(o) {
+        ARRAY_GAP
+    } else {
+        PLAIN_GAP
+    };
+    if i - cap >= gap {
+        return true;
+    }
+    let grown = (i as usize + 1).max(cap as usize * 2).max(4);
+    if grown <= DENSE_UNCHECKED {
+        return false;
+    }
+    let used = present_elements(o, cap as usize) + 1;
+    // The bucket count of `to_dictionary` for `used` entries, 3 words each, plus the header.
+    let buckets = (used * 2).next_power_of_two().max(dict::MIN_BUCKETS);
+    let dict_words = (dict::DATA + dict::ENTRY * buckets) / 8;
+    grown >= SPARSE_FACTOR * dict_words
+}
+
+/// The number of present elements in the dense store (capacity `cap`) of the JS object `o`:
+/// the `length` of a packed Array (no hole below it, nothing past it), else a count of the
+/// words that are not the hole of the cell's storage form. Not a GC point.
+fn present_elements(o: u64, cap: usize) -> usize {
+    let k = kind_of(o);
+    if kinds_::is_array(o) && !is_holey(k) {
+        return object::array_len(o) as usize;
+    }
+    let e = object::rd(object::cell(o), obj::ELEMENTS);
+    if e == crate::frame::UNDEFINED {
+        return 0;
+    }
+    let c = object::cell(e);
+    if storage(k) == Some(Storage::Doubles) {
+        (0..cap)
+            .filter(|&j| object::raw_get(c, delems::DATA + 8 * j) != delems::HOLE)
+            .count()
+    } else {
+        (0..cap)
+            .filter(|&j| object::rd(c, elems::DATA + 8 * j) != HOLE)
+            .count()
+    }
 }
 
 /// Checks the elements invariants of the JS object `o` (tests): the cell's storage form is

@@ -1282,3 +1282,99 @@ fn a_dictionary_array_never_makes_its_site_dictionary() {
         }
     }
 }
+
+// ---- the density check: H18-Q2 for every object (M7-P1 OBJ1, route OBJ-FARKEY) -------------
+
+/// The bit-flag enum form (`o[1 << k] = v`, k = 0..27; RTS FE-3: TypeScript's flag enums): each
+/// store lands at the capacity, so the gap rule never fires and the dense store doubled at
+/// each one, to 2^28 slots before the density check. Now the store that would grow
+/// a cell past `elements::DENSE_UNCHECKED` slots for a few present elements does not: an
+/// Array moves to DICTIONARY, a plain object keeps the index as a stored property (H18-Q3;
+/// `tests/far_keys.rs` of ep9_builtins runs the JS form on more object kinds). Every value
+/// reads back, own keys stay in ascending order, and with no collection on the way the heap
+/// grows by less than 1 MiB for both objects (2 GiB each before).
+#[test]
+fn the_flag_enum_form_stays_small_on_every_object() {
+    const FLAT: u64 = 1 << 20;
+    each(|cx, rt| {
+        let plain = object::new_plain_object(rt);
+        let array = object::new_array(rt, 0);
+        let (before, gcs) = (rt.heap.stats().allocated_bytes, rt.heap.stats().collections);
+        for k in 0..28 {
+            for o in [plain, array] {
+                assert!(property::set_index(cx, o, 1 << k, int(k)).unwrap());
+            }
+        }
+        // The page counter takes new pages after each collection, so GC stress inflates it:
+        // the byte bound is read on the run with no collection (the capacity bound below holds
+        // in both).
+        let grew = rt.heap.stats().allocated_bytes - before;
+        if rt.heap.stats().collections == gcs {
+            assert!(grew < FLAT, "o[1 << k] for k = 0..27 allocated {grew} B");
+        }
+        assert_eq!(elements::kind_of(array), ek::DICTIONARY);
+        assert_eq!(object::array_len(array), (1 << 27) + 1);
+        assert!(
+            capacity(plain) as usize <= elements::DENSE_UNCHECKED,
+            "a bounded dense store"
+        );
+        // The far indices are stored properties now: a dictionary-mode object (OM-10).
+        assert!(shape::is_dictionary(shape::shape_of(plain)));
+        for k in 0..28 {
+            for o in [plain, array] {
+                assert_eq!(
+                    property::get_index(cx, o, 1 << k).unwrap(),
+                    int(k),
+                    "o[1 << {k}]"
+                );
+            }
+        }
+        let want: Vec<String> = (0..28).map(|k| (1u64 << k).to_string()).collect();
+        assert_eq!(texts(property::own_property_keys(cx, plain)), want);
+        checked(rt, array);
+        checked(rt, plain);
+    });
+}
+
+/// The density check keeps dense stores dense: a packed Array that grows by one, a holey
+/// Array and a plain object with every 8th index, each to 3 x `elements::DENSE_UNCHECKED`,
+/// keep a dense store (the same kinds as before the check). With every 64th index the store
+/// is too sparse past `DENSE_UNCHECKED` slots: the Array moves to DICTIONARY, the plain object
+/// keeps the far indices as stored properties. Every value reads back.
+#[test]
+fn the_density_check_keeps_dense_stores_dense() {
+    const N: u64 = 3 * elements::DENSE_UNCHECKED as u64;
+    each(|cx, rt| {
+        let packed = object::new_array(rt, 0);
+        for i in 0..N {
+            assert!(property::set_index(cx, packed, i, int(i as i32)).unwrap());
+        }
+        assert_eq!(elements::kind_of(packed), ek::PACKED_INT32);
+        for step in [8, 64] {
+            let a = object::new_array(rt, 0);
+            let o = object::new_plain_object(rt);
+            for i in (0..N).step_by(step) {
+                assert!(property::set_index(cx, a, i, int(i as i32)).unwrap());
+                assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+            }
+            if step == 8 {
+                assert_eq!(elements::kind_of(a), ek::HOLEY_INT32, "every 8th: dense");
+                assert!(capacity(a) >= N - 7);
+                assert!(capacity(o) >= N - 7);
+                assert!(!shape::is_dictionary(shape::shape_of(o)));
+            } else {
+                assert_eq!(elements::kind_of(a), ek::DICTIONARY, "every 64th: sparse");
+                assert!(capacity(o) as usize <= elements::DENSE_UNCHECKED);
+                assert!(shape::is_dictionary(shape::shape_of(o)));
+            }
+            for i in (0..N).step_by(step) {
+                assert_eq!(property::get_index(cx, a, i).unwrap(), int(i as i32));
+                assert_eq!(property::get_index(cx, o, i).unwrap(), int(i as i32));
+                assert!(!property::has_index(cx, o, i + 1));
+            }
+            checked(rt, a);
+            checked(rt, o);
+        }
+        checked(rt, packed);
+    });
+}
