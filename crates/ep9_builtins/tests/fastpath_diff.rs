@@ -127,7 +127,7 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "ic-named",
-        site: "crates/ep9_vm/src/ic.rs:1875 (IC hits)",
+        site: "crates/ep9_vm/src/ic.rs:1939 (IC hits)",
         off: Off::Guard,
         what: "a named load or store answered by the inline cache",
     },
@@ -139,7 +139,7 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "define-own",
-        site: "crates/ep9_vm/src/property.rs:14, :773 (define)",
+        site: "crates/ep9_vm/src/property.rs:14, :783 (define)",
         off: Off::Guard,
         what: "CreateDataPropertyOrThrow: a new key on an extensible object, or a configurable \
                data property",
@@ -164,7 +164,7 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "instanceof",
-        site: "crates/ep9_vm/src/instance_ic.rs:336; property.rs:1259",
+        site: "crates/ep9_vm/src/instance_ic.rs:336; property.rs:1269",
         off: Off::Guard,
         what: "instanceof with the builtin @@hasInstance: OrdinaryHasInstance in place",
     },
