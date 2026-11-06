@@ -79,6 +79,7 @@ abi: impl<'s> ArgsBuilder<'s> :: pub fn get(&self, usize) -> Local<'s>
 abi: impl<'s> ArgsBuilder<'s> :: pub fn is_empty(&self) -> bool
 abi: impl<'s> ArgsBuilder<'s> :: pub fn len(&self) -> usize
 abi: impl<'s> ArgsBuilder<'s> :: pub fn push(&mut self, &mut Cx<'s>, impl Into<Local<'s>>) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: #[doc(hidden)] pub fn set_human_fast_paths(&mut self, bool)
 abi: impl<'s> Cx<'s> :: pub fn args_builder(&self) -> ArgsBuilder<'s>
 abi: impl<'s> Cx<'s> :: pub fn bigint_as_int_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn bigint_as_uint_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
@@ -130,6 +131,8 @@ abi: impl<'s> Cx<'s> :: pub fn evaluate_script_in(&mut self, impl Into<Local<'s,
 abi: impl<'s> Cx<'s> :: pub fn finalization_registry_register(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<()>
 abi: impl<'s> Cx<'s> :: pub fn finalization_registry_unregister(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<bool>
 abi: impl<'s> Cx<'s> :: pub fn flatten(&mut self, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, FlatStr>>
+abi: impl<'s> Cx<'s> :: pub fn forward_apply(&mut self, Args<'s>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn forward_call(&mut self, Args<'s>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn from_property_descriptor(&mut self, Option<PropertyDescriptor<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn fulfill_promise(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn function_realm_intrinsic(&self, impl Into<Local<'s>>, IntrinsicId) -> Local<'s>

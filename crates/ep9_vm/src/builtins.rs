@@ -282,11 +282,16 @@ pub enum IntrinsicId {
     TemporalZonedDateTime,
     /// `%Temporal.ZonedDateTime.prototype%` (§6.3, an ordinary object; made by `ep9_temporal` zoned_date_time.rs).
     TemporalZonedDateTimePrototype,
+    // ---- M7-P0 CALLHOST: made by no table; each builtin records itself (abi/forward.rs) ----
+    /// `%Function.prototype.apply%` (§20.2.3.1; `Cx::forward_apply`).
+    FunctionPrototypeApply,
+    /// `%Function.prototype.call%` (§20.2.3.3; `Cx::forward_call`).
+    FunctionPrototypeCall,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 93] = [
+    pub const ALL: [IntrinsicId; 95] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -380,6 +385,8 @@ impl IntrinsicId {
         IntrinsicId::TemporalPlainMonthDayPrototype,
         IntrinsicId::TemporalZonedDateTime,
         IntrinsicId::TemporalZonedDateTimePrototype,
+        IntrinsicId::FunctionPrototypeApply,
+        IntrinsicId::FunctionPrototypeCall,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -479,6 +486,8 @@ impl IntrinsicId {
             IntrinsicId::TemporalPlainMonthDayPrototype => "%Temporal.PlainMonthDay.prototype%",
             IntrinsicId::TemporalZonedDateTime => "%Temporal.ZonedDateTime%",
             IntrinsicId::TemporalZonedDateTimePrototype => "%Temporal.ZonedDateTime.prototype%",
+            IntrinsicId::FunctionPrototypeApply => "%Function.prototype.apply%",
+            IntrinsicId::FunctionPrototypeCall => "%Function.prototype.call%",
         }
     }
 
@@ -578,7 +587,9 @@ impl IntrinsicId {
             | IntrinsicId::TemporalPlainMonthDay
             | IntrinsicId::TemporalPlainMonthDayPrototype
             | IntrinsicId::TemporalZonedDateTime
-            | IntrinsicId::TemporalZonedDateTimePrototype => return None,
+            | IntrinsicId::TemporalZonedDateTimePrototype
+            | IntrinsicId::FunctionPrototypeApply
+            | IntrinsicId::FunctionPrototypeCall => return None,
         })
     }
 
@@ -646,6 +657,8 @@ impl IntrinsicId {
             IntrinsicId::TemporalPlainMonthDayPrototype => Some(57),
             IntrinsicId::TemporalZonedDateTime => Some(58),
             IntrinsicId::TemporalZonedDateTimePrototype => Some(59),
+            IntrinsicId::FunctionPrototypeApply => Some(60),
+            IntrinsicId::FunctionPrototypeCall => Some(61),
             _ => None,
         }
     }
@@ -1312,7 +1325,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 60;
+const INTRINSIC_SLOTS: usize = 62;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
