@@ -52,15 +52,18 @@
 //! - ep9-m2gate/v1 (m2gate.mjs): `builds[]` with `build`, `commit`, `dirty`, `engine_build`,
 //!   `host.{id, gate_host, cpu, platform}`; `readings[]` with `id`, `build`, `gate`, `value`,
 //!   `interval`, `reasons`, and for `v8v7-7-vs-node-jitless` the list `parity_debt`.
-//! - ep9-mem/v1 (mem.mjs): `commit`, `dirty`, `host.platform`, `load_guard.pass`, `rows[]` with
-//!   `kernel`, `engine` (`ep9`, `node-jitless`, `d8-jitless`), `build` (ep9 rows), `runs` and
-//!   `median_peak_rss_bytes`.
+//! - ep9-mem/v1 (mem.mjs): `commit.{ep9, runner_dirty}`, `host.measured.platform`,
+//!   `load.{before, after}.pass`, `engines[]` with `id` and `engine_build` (the `ep9 --version`
+//!   build line), and `table[]` with `workload`, `engine` (an engine id: `ep9` is the jit preset
+//!   build, `ep9-jitless` the jitless build, then `node-jitless`, `d8-jitless`), `n` (the runs)
+//!   and `median_bytes` (the median peak RSS).
 //! - ep9-fastdiff/v1 (the FASTDIFF test): `commit`, `dirty`, `fast_paths[]` with `name`, `cases`
 //!   and `mismatches`.
 //! - JetStream (jetstream/run.mjs): `list`, `jetstream_commit`, `reps`, `host.{platform, arch}`,
 //!   `ep9.{commit, dirty}`, `configs[]` (`name`, `engine`, `flags`) and `table[]` (per workload
 //!   `<config>` median score and `<config>_n` scores). The ep9 configs are the ones whose name
-//!   starts with `ep9`; node --jitless is the `node` config with the flag `--jitless`.
+//!   starts with `ep9`; node --jitless is the config of engine `node` (or kind `node`: a
+//!   `node@<path>` engine) with the flag `--jitless`.
 //! - P-gate file: a Markdown table with the columns `Gate` and `Result`.
 //!
 //! The extra rows (no exit-code effect): the parity debt of item 2 and the tripped P-gates.
@@ -849,50 +852,69 @@ fn item4(c: &Ctx) -> Cell {
     let mut why = Vec::new();
     status = status.max(platform_check(
         &c.o.host,
-        j.path(&["host", "platform"]).and_then(Json::str),
+        j.path(&["host", "measured", "platform"])
+            .and_then(Json::str),
         "the MEMREAD run",
         &mut why,
     ));
-    if j.path(&["load_guard", "pass"]).and_then(Json::bool) != Some(true) {
+    let guard = |when: &str| j.path(&["load", when, "pass"]).and_then(Json::bool);
+    if guard("before") != Some(true) || guard("after") != Some(true) {
         status = status.max(Status::Open);
         why.push(
-            "the load guard did not pass (class Mem needs it, 10-quality.md section 3)".into(),
+            "the load guard did not pass before and after the run (class Mem needs it, \
+             10-quality.md section 3)"
+                .into(),
         );
     }
-    let rows = j.get("rows").and_then(Json::arr).unwrap_or(&[]);
-    let row = |kernel: &str, engine: &str, build: Option<&str>| {
+    let rows = j.get("table").and_then(Json::arr).unwrap_or(&[]);
+    let row = |kernel: &str, engine: &str| {
         rows.iter().find(|r| {
-            r.get("kernel").and_then(Json::str) == Some(kernel)
+            r.get("workload").and_then(Json::str) == Some(kernel)
                 && r.get("engine").and_then(Json::str) == Some(engine)
-                && build.is_none_or(|b| r.get("build").and_then(Json::str) == Some(b))
         })
     };
     let rss = |r: &Json, what: &str, why: &mut Vec<String>, status: &mut Status| -> Option<f64> {
-        let runs = num(r, "runs").unwrap_or(0.0);
+        let runs = num(r, "n").unwrap_or(0.0);
         if runs < MEM_RUNS {
             *status = (*status).max(Status::Open);
             why.push(format!(
                 "{what}: {runs} runs (class Mem needs >= {MEM_RUNS})"
             ));
         }
-        num(r, "median_peak_rss_bytes").filter(|x| *x > 0.0)
+        num(r, "median_bytes").filter(|x| *x > 0.0)
     };
+    let engines = j.get("engines").and_then(Json::arr).unwrap_or(&[]);
     let mut worst: BTreeMap<String, (f64, String)> = BTreeMap::new();
     for b in BUILDS {
+        // mem.mjs names the jit preset build `ep9` and the jitless build `ep9-jitless`, and it
+        // refuses a binary whose build line names another preset; read the line again here.
+        let id = if b == "jit" { "ep9" } else { "ep9-jitless" };
+        let line = engines
+            .iter()
+            .find(|e| e.get("id").and_then(Json::str) == Some(id))
+            .and_then(|e| e.get("engine_build"))
+            .and_then(Json::str);
+        if !line.is_some_and(|l| l.split("; ").any(|w| w == format!("preset {b}"))) {
+            status = status.max(Status::Open);
+            why.push(format!(
+                "engine {id}: its build line {:?} does not name preset {b}",
+                line.unwrap_or("none")
+            ));
+        }
         for k in V8V7_7 {
-            let Some(e) = row(k, "ep9", Some(b)) else {
+            let Some(e) = row(k, id) else {
                 status = status.max(Status::Open);
                 why.push(format!("no ep9 {b} row for {k}"));
                 continue;
             };
             let Some(ev) = rss(e, &format!("ep9 {b} {k}"), &mut why, &mut status) else {
                 status = status.max(Status::Open);
-                why.push(format!("ep9 {b} {k}: no median_peak_rss_bytes"));
+                why.push(format!("ep9 {b} {k}: no median_bytes"));
                 continue;
             };
             for (cmp, cap) in MEM_CAPS {
-                let Some(cv) = row(k, cmp, None)
-                    .and_then(|r| rss(r, &format!("{cmp} {k}"), &mut why, &mut status))
+                let Some(cv) =
+                    row(k, cmp).and_then(|r| rss(r, &format!("{cmp} {k}"), &mut why, &mut status))
                 else {
                     status = status.max(Status::Open);
                     why.push(format!("no {cmp} row with a peak RSS for {k}"));
@@ -931,8 +953,8 @@ fn item4(c: &Ctx) -> Cell {
         ),
         fresh(
             &c.o.root,
-            j.get("commit").and_then(Json::str),
-            j.get("dirty"),
+            j.path(&["commit", "ep9"]).and_then(Json::str),
+            j.path(&["commit", "runner_dirty"]),
             &FRESH_PATHS,
         ),
     )
@@ -1182,7 +1204,9 @@ fn item7(c: &Ctx) -> Cell {
     let jitless = configs
         .iter()
         .find(|x| {
-            x.get("engine").and_then(Json::str) == Some("node")
+            // `node` (this node) or `node@<path>`: run.mjs writes the kind of both as `node`.
+            (x.get("engine").and_then(Json::str) == Some("node")
+                || x.get("kind").and_then(Json::str) == Some("node"))
                 && x.get("flags")
                     .and_then(Json::arr)
                     .is_some_and(|f| f.iter().any(|f| f.str() == Some("--jitless")))
@@ -1983,8 +2007,8 @@ mod tests {
             c.evidence
         );
         let few = fixture("mem.json").replace(SHA, &r.head).replacen(
-            "\"runs\": 5, \"median_peak_rss_bytes\": 45000000",
-            "\"runs\": 3, \"median_peak_rss_bytes\": 45000000",
+            "\"n\": 5, \"median_bytes\": 45000000",
+            "\"n\": 3, \"median_bytes\": 45000000",
             1,
         );
         write(&r.root, "inputs/mem3.json", &few);
@@ -1999,6 +2023,28 @@ mod tests {
             "{}",
             c.evidence
         );
+        // A failed load guard after the run, and a jitless engine whose build line names the
+        // jit preset: each makes the cell OPEN.
+        let busy = fixture("mem.json")
+            .replace(SHA, &r.head)
+            .replace(
+                "\"after\": { \"load1\": 1.1, \"limit\": 1.5, \"pass\": true }",
+                "\"after\": { \"load1\": 9, \"limit\": 1.5, \"pass\": false }",
+            )
+            .replace("features none; preset jitless", "features jit; preset jit");
+        write(&r.root, "inputs/mem4.json", &busy);
+        let o = Options {
+            mem: Some(r.root.join("inputs/mem4.json")),
+            ..opts(&r, HOST)
+        };
+        let c = &run(&o).unwrap().cells[3];
+        assert_eq!(c.status, Status::Open);
+        for want in [
+            "the load guard did not pass before and after the run",
+            "engine ep9-jitless: its build line \"features jit; preset jit\" does not name preset jitless",
+        ] {
+            assert!(c.evidence.contains(want), "{want}: {}", c.evidence);
+        }
     }
 
     #[test]

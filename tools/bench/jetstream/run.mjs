@@ -217,11 +217,19 @@ for (const cfg of opts.configs) {
     ratio_vs_first: complete && ok.length ? geomean(ok.map((r) => r[cfg.name] / r[base])) : null,
   };
 }
+// The ep9 tree of this checkout: `cargo xtask m2-exit` item 7 reads it to know that the run is
+// fresh (null when git cannot say).
+function gitOut(args) {
+  const r = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+const status = gitOut(["status", "--porcelain", "--untracked-files=no"]);
 const result = {
   started,
   finished: new Date().toISOString(),
   host: { platform: process.platform, arch: process.arch, cpus: os.cpus().length, node: process.version },
   loadavg_after_each_rep: load,
+  ep9: { commit: gitOut(["rev-parse", "HEAD"]), dirty: status === null ? null : status !== "" },
   jetstream_commit: fs.readFileSync(path.join(root, "third_party/bench-jetstream.commit"), "utf8").trim(),
   list: path.relative(root, path.resolve(opts.list)),
   reps: opts.reps,

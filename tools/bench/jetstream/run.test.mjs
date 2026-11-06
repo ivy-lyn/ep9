@@ -45,6 +45,9 @@ test("all samples present: exit 0 and a ratio", { skip }, () => {
   assert.equal(out.complete, true);
   assert.deepEqual(out.missing, []);
   assert.equal(out.summary.cand.complete, true);
+  // The ep9 block that cargo xtask m2-exit item 7 reads (this checkout's commit; dirty or not).
+  assert.match(out.ep9.commit, /^[0-9a-f]{40}$/);
+  assert.equal(typeof out.ep9.dirty, "boolean");
 });
 
 // Review finding: the candidate crashed on "hard" in all reps, and the runner reported

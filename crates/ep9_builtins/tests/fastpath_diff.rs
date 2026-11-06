@@ -20,8 +20,10 @@
 //! A run gives the printed lines and the uncaught exception ("Name: message"). The cases of
 //! the Switch rows also run under GC stress (a collection at each allocation), on and off.
 //!
-//! The JSON report (schema `ep9-fastdiff/v1`): each fast path with its case count, the runs
-//! and the mismatches. It goes to `$EP9_FASTDIFF_JSON` if set, else to
+//! The JSON report (schema `ep9-fastdiff/v1`, the form that `cargo xtask m2-exit` item 5
+//! reads): the ep9 commit and whether its tree was dirty (`commit`, `dirty`; `null` when git
+//! cannot say), `fast_paths[]` with each fast path's `name`, `cases` and `mismatches`, and the
+//! totals. It goes to `$EP9_FASTDIFF_JSON` if set, else to
 //! `$CARGO_TARGET_TMPDIR/fastdiff.json`. `EP9_FASTDIFF_DUMP=<dir>` also writes each case
 //! form as a `.js` file (with `print`), so node can run it.
 //!
@@ -626,6 +628,25 @@ fn json_str(s: &str) -> String {
     o
 }
 
+/// The ep9 commit of this tree (a JSON string) and whether the tree has uncommitted changes to
+/// tracked files (a JSON bool), from git; each is `null` when git cannot say (no git, no repo).
+fn git_state() -> (String, String) {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(env!("CARGO_MANIFEST_DIR"))
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let commit = git(&["rev-parse", "HEAD"]).map_or("null".to_string(), |c| json_str(&c));
+    let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
+        .map_or("null".to_string(), |s| (!s.is_empty()).to_string());
+    (commit, dirty)
+}
+
 fn report_path() -> PathBuf {
     match std::env::var_os("EP9_FASTDIFF_JSON") {
         Some(p) => PathBuf::from(p),
@@ -743,14 +764,20 @@ fn every_fast_path_matches_its_spec_steps() {
     let mut results = results.into_inner().unwrap();
     results.sort_by_key(|(i, _)| *i);
     let mut mismatches = Vec::new();
+    let mut per_path = std::collections::BTreeMap::<&str, usize>::new();
     let mut runs = 0;
-    for (_, (m, n)) in results {
+    for (i, (m, n)) in results {
+        *per_path.entry(todo[i].path).or_default() += m.len();
         mismatches.extend(m);
         runs += n;
     }
-    let mut j = String::from("{\"schema\":\"ep9-fastdiff/v1\",\"paths\":[");
+    let (commit, dirty) = git_state();
+    let mut j = format!(
+        "{{\"schema\":\"ep9-fastdiff/v1\",\"commit\":{commit},\"dirty\":{dirty},\"fast_paths\":["
+    );
     for (i, p) in INVENTORY.iter().enumerate() {
-        let n = CASES.iter().filter(|c| c.path == p.id).count();
+        // With EP9_FASTDIFF_ONLY, a path whose cases did not run has 0 cases in this report.
+        let n = todo.iter().filter(|c| c.path == p.id).count();
         let off = if p.off == Off::Switch {
             "switch"
         } else {
@@ -758,18 +785,19 @@ fn every_fast_path_matches_its_spec_steps() {
         };
         let _ = write!(
             j,
-            "{}{{\"id\":{},\"site\":{},\"off\":\"{off}\",\"cases\":{n},\"what\":{}}}",
+            "{}{{\"name\":{},\"site\":{},\"off\":\"{off}\",\"cases\":{n},\"mismatches\":{},\"what\":{}}}",
             if i > 0 { "," } else { "" },
             json_str(p.id),
             json_str(p.site),
+            per_path.get(p.id).copied().unwrap_or(0),
             json_str(p.what)
         );
     }
     let _ = write!(
         j,
-        "],\"fast_paths\":{},\"cases\":{},\"runs\":{runs},\"mismatches\":{},\"details\":[",
+        "],\"paths\":{},\"cases\":{},\"runs\":{runs},\"mismatches\":{},\"details\":[",
         INVENTORY.len(),
-        CASES.len(),
+        todo.len(),
         mismatches.len()
     );
     for (i, m) in mismatches.iter().enumerate() {
