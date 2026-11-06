@@ -1,4 +1,5 @@
-// node --test tools/bench/cross/mem.test.mjs
+// node --test tools/bench/cross/mem.test.mjs (run.test.mjs imports this file, so the CI step
+// `node --test tools/bench/cross/run.test.mjs` runs these tests too).
 // Tests of mem.mjs (the G7 peak RSS reader) with fake engines (testdata/fake-engine.sh) and a
 // fake time tool (FAKE_TIME_SH below): no shells and no ep9 build needed. Unix only (shell
 // scripts), as run.test.mjs.

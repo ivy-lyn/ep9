@@ -9,6 +9,10 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+// The ep9 host and the ep9 configs (ep9-host.test.mjs): CI's step runs this file only, so it
+// loads those tests too.
+import "./ep9-host.test.mjs";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fake = path.join(here, "testdata/fake-d8.mjs");
 // run.mjs starts a d8-style engine in the JetStream checkout. The fake engine needs no checkout,

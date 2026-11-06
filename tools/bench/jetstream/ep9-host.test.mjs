@@ -3,7 +3,8 @@
 // testdata/fake-jetstream/cli.js, so no ep9 build and no JetStream checkout are needed. One test
 // runs the real driver of third_party/bench-jetstream on the fake engine; it skips when the
 // checkout is not synced.
-// usage: node --test tools/bench/jetstream/ep9-host.test.mjs
+// usage: node --test tools/bench/jetstream/ep9-host.test.mjs (run.test.mjs imports this file, so
+// the CI step `node --test tools/bench/jetstream/run.test.mjs` runs these tests too)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
