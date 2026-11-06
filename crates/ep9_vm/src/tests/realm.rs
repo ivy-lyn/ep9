@@ -564,3 +564,42 @@ fn a_group_with_an_implicit_key_collision_stays_eager() {
         }
     });
 }
+
+/// The raw global read of the tests and of `NativeCx::global_value` (`isolate.rs`
+/// `global_data`) installs a lazy group at its first use, as `[[Get]]` does (Codex r1 LAZYNS
+/// 1): it gives the namespace object, never HOLE.
+#[test]
+fn the_raw_global_read_installs_a_lazy_group() {
+    on_big_stack(|| {
+        let mut cfg = config(Dispatch::DEFAULT, false);
+        cfg.builtins = Some(&lazy::TABLE);
+        let iso = isolate(cfg);
+        let rt: &Runtime = &iso.rt;
+        assert_eq!(
+            raw_global(rt, "Temporal").map(|(v, _)| v),
+            Some(crate::frame::HOLE)
+        );
+        let v = iso.global_raw("Temporal").expect("a binding").to_bits();
+        assert!(object::is_object(v));
+        assert_eq!(v, intrinsic(rt, IntrinsicId::Temporal));
+        assert_eq!(raw_global(rt, "Temporal").map(|(v, _)| v), Some(v));
+    });
+}
+
+/// `NativeCx::intrinsic`, the link value of a unit cell "intrinsic by stable index", installs
+/// the group of a lazy id first (MC-w30-3; Codex r1 LAZYNS 2): a link before any JS read gets
+/// the object that a later JS read gets.
+#[cfg(feature = "spike-native")]
+#[test]
+fn the_native_intrinsic_read_installs_a_lazy_group() {
+    on_big_stack(|| {
+        let mut cfg = config(Dispatch::DEFAULT, false);
+        cfg.builtins = Some(&lazy::TABLE);
+        let iso = isolate(cfg);
+        let rt: &Runtime = &iso.rt;
+        assert_eq!(intrinsic(rt, IntrinsicId::TemporalDuration), UNDEFINED);
+        let v = crate::NativeCx::intrinsic(&iso, IntrinsicId::TemporalDuration).to_bits();
+        assert!(object::is_object(v));
+        assert_eq!(v, intrinsic(rt, IntrinsicId::TemporalDuration));
+    });
+}

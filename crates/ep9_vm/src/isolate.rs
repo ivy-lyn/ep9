@@ -798,19 +798,19 @@ fn run_unit(cx: &mut Cx, unit: VerifiedUnit, file: &str) -> Res<u64> {
 }
 
 /// The raw read of the global binding `name` (the tests and `NativeCx::global_value`): the
-/// script lexical record first (`None` in its TDZ), then an own data property of the global
-/// object (`None` for an accessor). Runs no JS; interning `name` may allocate.
+/// script lexical record first, then an own data property of the global object. Runs no JS.
 #[cfg(any(test, feature = "spike-native"))]
 fn global_data(rt: &Runtime, name: &str) -> Option<u64> {
-    let key = atoms::intern_str(rt, name);
-    match own_get(rt.root(Root::Lexical), key) {
-        // The TDZ hole never leaves the VM.
-        Some((v, _)) => (v != HOLE).then_some(v),
-        None => own_get(rt.global(), key)
-            // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
-            .filter(|&(_, a)| a & attr::ACCESSOR == 0)
-            .map(|(v, _)| v),
-    }
+    let key = atoms::intern_str(rt, name); // may allocate, as an install may
+    let v = match own_get(rt.root(Root::Lexical), key) {
+        Some((v, _)) => v, // HOLE in its TDZ
+        None => match own_get(rt.global(), key)? {
+            (_, a) if a & attr::ACCESSOR != 0 => HOLE, // an ACCESSOR_PAIR cell: not a JS value
+            (HOLE, _) => realm::resolve_global(rt, rt.global(), key), // a lazy group: install it
+            (v, _) => v,
+        },
+    };
+    (v != HOLE).then_some(v) // HOLE never leaves the VM, as at `[[Get]]` (Codex r1 LAZYNS 1)
 }
 
 // The raw `Value` reads of the in-crate tests and of the spike-native API.
