@@ -334,8 +334,40 @@ mod lazy {
         }],
     };
 
+    /// A key module whose key value is a function with a table `name`: the function object
+    /// has `name` already (`object::new_function`), which `check_tables` does not see.
+    const NAMED_FUNCTION_KEY: BuiltinModule = BuiltinModule {
+        name: "named-function-key",
+        block: 107,
+        defs: &[BuiltinDef::method("T", 0, realm_global)],
+        intrinsics: &[IntrinsicDef {
+            id: IntrinsicId::Temporal,
+            value: IntrinsicValue::Builtin(0),
+        }],
+        props: &[
+            ObjectProps {
+                target: IntrinsicId::Temporal,
+                props: &[PropDef::constant(
+                    PropKey::Str("name"),
+                    ConstValue::Str("T2"),
+                    PropAttrs::NONE,
+                )],
+            },
+            ObjectProps {
+                target: IntrinsicId::GlobalObject,
+                props: &[PropDef::intrinsic(
+                    PropKey::Str("Temporal"),
+                    IntrinsicId::Temporal,
+                    PropAttrs::METHOD,
+                )],
+            },
+        ],
+    };
+
     pub(super) static TABLE: BuiltinTable =
         BuiltinTable::new("lazy", &[EAGER, FIRST_KEY, FIRST_MEMBER, SECOND_KEY]);
+    pub(super) static NAMED_FUNCTION: BuiltinTable =
+        BuiltinTable::new("lazy-named-function", &[EAGER, NAMED_FUNCTION_KEY]);
     pub(super) static LEAKED: BuiltinTable =
         BuiltinTable::new("lazy-leaked", &[EAGER, LEAKED_KEY, LEAKER]);
 }
@@ -505,5 +537,30 @@ fn a_named_group_stays_eager() {
         let v = intrinsic(rt, IntrinsicId::TemporalInstant);
         assert!(object::is_object(v));
         assert_eq!(raw_global(rt, "Temporal").map(|(v, _)| v), Some(v));
+    });
+}
+
+/// A group whose table defines a key that its function object has already (`name` from
+/// `object::new_function`) stays eager (Codex r1 LAZYNS 3): `check_tables` passes the table,
+/// and `Isolate::new` reports the install error, as for an eager module, instead of a panic
+/// at the first use of the key.
+#[test]
+fn a_group_with_an_implicit_key_collision_stays_eager() {
+    let t: &'static builtins::BuiltinTable = &lazy::NAMED_FUNCTION;
+    assert_eq!(
+        builtins::check_tables(&[crate::internals::VM_BUILTINS, t]),
+        Ok(())
+    );
+    on_big_stack(move || {
+        let mut cfg = config(Dispatch::DEFAULT, false);
+        cfg.builtins = Some(t);
+        match crate::Isolate::new(cfg) {
+            Err(crate::IsolateError::BuiltinTable(e)) => assert!(
+                e.contains("%Temporal%.name: the object has this key already"),
+                "{e}"
+            ),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("the table was accepted"),
+        }
     });
 }

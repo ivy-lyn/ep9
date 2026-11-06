@@ -2017,8 +2017,30 @@ impl LazyGroups {
                 || IntrinsicId::ALL
                     .into_iter()
                     .any(|id| ids[id as usize] && (id.is_core() || FIXED_PROTOTYPES.contains(&id)));
+            // A table key that a group function object makes itself (`length` and `name`,
+            // `object::new_function`): `check_tables` does not see such a key, only the
+            // install finds it. Such a group stays eager, so `Isolate::new` still reports the
+            // table error, not the first use (Codex r1 LAZYNS 3).
+            let mut function: Ids = [false; IntrinsicId::ALL.len()];
+            for (i, m) in modules.iter().enumerate() {
+                for d in m.intrinsics {
+                    if member[i] && matches!(d.value, IntrinsicValue::Builtin(_)) {
+                        function[d.id as usize] = true;
+                    }
+                }
+            }
+            let implicit = modules.iter().enumerate().any(|(i, m)| {
+                member[i]
+                    && m.props.iter().any(|op| {
+                        function[op.target as usize]
+                            && op
+                                .props
+                                .iter()
+                                .any(|p| matches!(p.key.string_text(), Some("length" | "name")))
+                    })
+            });
             // The first intrinsic in walk order is the key's value (the installed mark).
-            if leaks || pinned || member.iter().position(|&b| b) != Some(km) {
+            if leaks || pinned || implicit || member.iter().position(|&b| b) != Some(km) {
                 continue;
             }
             let g = out.groups.len() as u8;
