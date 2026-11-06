@@ -845,7 +845,11 @@ mod tests {
     fn very_many_large_values_do_not_overflow_the_chunks() {
         let m = f64::MAX;
         for x in [m, -m] {
-            let inf = if x > 0.0 { f64::INFINITY } else { f64::NEG_INFINITY };
+            let inf = if x > 0.0 {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            };
             let mut s = ExactSum::new();
             s.add_scaled(x, 45);
             assert_eq!(s.clone().sum(), inf);

@@ -2009,7 +2009,11 @@ mod tests {
                 "\"engine_build\": \"features none; preset jitless\"",
                 "\"engine_build\": \"features jit; preset jit\"",
             );
-        write(&r.root, "inputs/gate-lin.json", &lin.replace(SHA, &"f".repeat(40)));
+        write(
+            &r.root,
+            "inputs/gate-lin.json",
+            &lin.replace(SHA, &"f".repeat(40)),
+        );
         let win = gate_host(fixture("gate-linux.json"))
             .replace(SHA, &r.head)
             .replace("\"platform\": \"linux-x64\"", "\"platform\": \"win32-x64\"")
@@ -2028,7 +2032,11 @@ mod tests {
                 "the Linux x64 reading has no gate verdict",
                 "the Linux x64 run is stale",
             ] {
-                assert!(c.evidence.contains(want), "cell {i}: {want}: {}", c.evidence);
+                assert!(
+                    c.evidence.contains(want),
+                    "cell {i}: {want}: {}",
+                    c.evidence
+                );
             }
         }
         let c = &rep.cells[0];
@@ -2042,14 +2050,21 @@ mod tests {
         // with no verdict: OPEN from the Windows side alone.
         let lin = gate_host(fixture("gate-pass.json"))
             .replace(SHA, &r.head)
-            .replace("\"platform\": \"darwin-arm64\"", "\"platform\": \"linux-x64\"")
+            .replace(
+                "\"platform\": \"darwin-arm64\"",
+                "\"platform\": \"linux-x64\"",
+            )
             .replace("\"cpu\": \"Apple M5 Max\"", "\"cpu\": \"AMD EPYC 7763\"");
         write(&r.root, "inputs/gate-lin.json", &lin);
         let rep = run(&o).unwrap();
         for i in [0, 1, 2, 5, 9, 10] {
             let c = &rep.cells[i];
             assert_eq!(c.status, Status::Open, "cell {i}: {}", c.evidence);
-            assert!(!c.evidence.contains("the Linux x64"), "cell {i}: {}", c.evidence);
+            assert!(
+                !c.evidence.contains("the Linux x64"),
+                "cell {i}: {}",
+                c.evidence
+            );
         }
     }
 
@@ -2072,7 +2087,11 @@ mod tests {
         };
         let c = &run(&o).unwrap().cells[4];
         assert_eq!(c.status, Status::Open, "{}", c.evidence);
-        assert!(c.evidence.contains("no by_dir built-ins count"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("no by_dir built-ins count"),
+            "{}",
+            c.evidence
+        );
         // A filtered run that names every file but one Math file.
         let mut ran: Vec<String> = test262_files(&r.root.join("third_party/test262"))
             .unwrap()

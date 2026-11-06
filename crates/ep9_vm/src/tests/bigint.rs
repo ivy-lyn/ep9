@@ -722,7 +722,10 @@ fn long_bigint_work_stops_on_a_termination() {
             ("spaces then 1", " ".repeat(1 << 20) + "1"),
             ("1 then spaces", "1".to_string() + &" ".repeat(1 << 20)),
             ("zeros", "0".repeat(1 << 20)),
-            ("digits then a non-ASCII unit", "1".repeat(1 << 20) + "\u{100}"),
+            (
+                "digits then a non-ASCII unit",
+                "1".repeat(1 << 20) + "\u{100}",
+            ),
             ("digits then z", "1".repeat(1 << 20) + "z"),
         ];
         for (name, t) in texts {

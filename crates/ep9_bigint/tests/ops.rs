@@ -568,10 +568,18 @@ fn pow_with_exponent_1_gives_the_base_back() {
         let x = b::add(pow2(bits).view(), big(1).view()).unwrap();
         for v in [x.clone(), b::neg(x.view())] {
             let (_, mut poll) = counter(u64::MAX);
-            assert_eq!(b::pow(v.view(), big(1).view(), &mut poll).unwrap(), v, "{bits} bits");
+            assert_eq!(
+                b::pow(v.view(), big(1).view(), &mut poll).unwrap(),
+                v,
+                "{bits} bits"
+            );
             let sq = b::mul(v.view(), v.view()).unwrap();
             let (_, mut poll) = counter(u64::MAX);
-            assert_eq!(b::pow(v.view(), big(2).view(), &mut poll).unwrap(), sq, "{bits} bits");
+            assert_eq!(
+                b::pow(v.view(), big(2).view(), &mut poll).unwrap(),
+                sq,
+                "{bits} bits"
+            );
         }
     }
 }
@@ -613,5 +621,9 @@ fn a_parse_above_the_limit_is_refused_before_the_work() {
         b::parse_literal(hex.as_bytes(), &mut poll),
         Err(Error::TooBig)
     );
-    assert!(n.get() <= (nines.len() + hex.len()) as u64 / 4096, "{}", n.get());
+    assert!(
+        n.get() <= (nines.len() + hex.len()) as u64 / 4096,
+        "{}",
+        n.get()
+    );
 }

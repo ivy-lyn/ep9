@@ -753,7 +753,10 @@ fn every_fast_path_matches_its_spec_steps() {
                 .is_none_or(|o| c.path.contains(o) || c.name.contains(o))
         })
         .collect();
-    assert!(!todo.is_empty(), "EP9_FASTDIFF_ONLY={only:?} matches no case");
+    assert!(
+        !todo.is_empty(),
+        "EP9_FASTDIFF_ONLY={only:?} matches no case"
+    );
     // The cases run in parallel (each run on its own isolate and thread).
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results = std::sync::Mutex::new(Vec::new());
