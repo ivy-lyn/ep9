@@ -8,3 +8,5 @@
 0x1204   9.4          method       1       "encodeURI"  (globalThis.encodeURI w-c)
 0x1205   9.5          method       1       "encodeURIComponent"  (globalThis.encodeURIComponent w-c)
 0x1206   9.6          method       1       "isError"  (%Error%.isError w-c)
+0x1207   9.7          method       1       "escape"  (globalThis.escape w-c)
+0x1208   9.8          method       1       "unescape"  (globalThis.unescape w-c)

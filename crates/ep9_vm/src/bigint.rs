@@ -20,6 +20,12 @@
 //!   operator, asIntN or asUintN result above the limit throws, also one that does not grow (`x / 1n`, `-x`, `x >> 0n`); a result that shrinks (`x * 0n`, `asIntN(0, x)`) is a value.
 //! - GC rule: an operation reads its operands into an `ep9_bigint::Big` first, then allocates
 //!   the result once; no [`View`] is held across an allocation.
+//! - Interrupt poll (H23 "Interrupt poll", MC-SPEC-BIGPOLL): BigInt work takes one interrupt
+//!   budget unit per `ep9_bigint::POLL_WORDS` digits, through `Cx::poll_interrupt` ([`poller`]).
+//!   An operator takes the units of its operands before the work and of its result after it
+//!   ([`charge`], [`from_result`]); `**`, StringToBigInt and toString also poll inside the work
+//!   (`ep9_bigint` runs them in steps). A poll allocates nothing and runs no collection, so a
+//!   [`View`] may be held across it.
 
 use core::cmp::Ordering;
 
@@ -101,21 +107,43 @@ pub(crate) fn alloc(rt: &Runtime, b: &Big) -> u64 {
 
 /// The cell for a result of `ep9_bigint`, or the RangeError of its error. The one size check
 /// of every operation result (H23 "BigInt size"): a unit literal can be above `MAX_BITS`, so a
-/// result that does not grow (`x / 1n`, `-x`, `x >> 0n`) can be above it too. GC point.
+/// result that does not grow (`x / 1n`, `-x`, `x >> 0n`) can be above it too. A result takes
+/// its interrupt budget units first ([`charge`]). GC point.
 pub(crate) fn from_result(cx: &mut Cx, r: Result<Big, digits::Error>) -> Res<u64> {
     match r {
-        Ok(b) if b.view().bit_len() <= digits::MAX_BITS => Ok(alloc(cx.rt(), &b)),
+        Ok(b) if b.view().bit_len() <= digits::MAX_BITS => {
+            charge(cx, b.digits.len())?;
+            Ok(alloc(cx.rt(), &b))
+        }
         Ok(_) => Err(range_error(cx, digits::Error::TooBig)),
         Err(e) => Err(range_error(cx, e)),
     }
 }
 
-/// The RangeError of an `ep9_bigint` error (V8's messages).
+/// The poll callback that `ep9_bigint` calls in long work: one interrupt budget unit per call
+/// through `Cx::poll_interrupt` (H23 "Interrupt poll"); `false` when the isolate must stop
+/// (the termination is then pending). Not a GC point.
+pub(crate) fn poller(cx: &mut Cx) -> impl FnMut() -> bool + '_ {
+    move || crate::abi::Cx::new(cx).poll_interrupt().is_ok()
+}
+
+/// Takes the interrupt budget units of `words` digits of BigInt work: one per
+/// `ep9_bigint::POLL_WORDS` (none below it), through [`poller`]. `Err` with the termination
+/// pending when the isolate must stop. Not a GC point.
+pub(crate) fn charge(cx: &mut Cx, words: usize) -> Res<()> {
+    digits::Work::new(&mut poller(cx))
+        .add(words)
+        .map_err(|_| Throw)
+}
+
+/// The exception of an `ep9_bigint` error: the RangeError (V8's messages), or for
+/// `Interrupted` no new error (the poll left the termination pending).
 pub(crate) fn range_error(cx: &mut Cx, e: digits::Error) -> Throw {
     let msg = match e {
         digits::Error::TooBig => "Maximum BigInt size exceeded",
         digits::Error::DivByZero => "Division by zero",
         digits::Error::NegExponent => "Exponent must be non-negative",
+        digits::Error::Interrupted => return Throw,
     };
     throw_error(cx, ErrorKind::RangeError, msg)
 }
@@ -170,14 +198,25 @@ pub(crate) fn cmp_number(a: u64, x: f64) -> Option<Ordering> {
     digits::cmp_f64(view(&a), x)
 }
 
-/// The decimal text of `b` (no `n`), for messages and `describe`.
+/// The most digits that [`decimal`] converts (V8's `BigInt::NoSideEffectsToString` limit): the
+/// text of a larger value is not useful in a message, and its conversion would need polls.
+const DECIMAL_MAX_WORDS: usize = 100;
+
+/// The decimal text of `b` (no `n`), for messages and `describe`. A value of more than
+/// [`DECIMAL_MAX_WORDS`] digits gives `<a very large BigInt>` (V8's text), so a message never
+/// runs long work. Not a GC point.
 pub(crate) fn decimal(b: u64) -> String {
-    digits::to_string_radix(view(&b), 10)
+    let v = view(&b);
+    if v.digits.len() > DECIMAL_MAX_WORDS {
+        return "<a very large BigInt>".to_string();
+    }
+    // At most 100 digits: no poll (the work is below one per call of `poller`).
+    digits::to_string_radix(v, 10, &mut || true).expect("a poll that never stops")
 }
 
 /// BigInt::toString(b, radix) as a heap string. RangeError "Invalid string length" when the
 /// text could pass `string::MAX_STRING_LENGTH` (checked from the bit length, before the
-/// work). GC point.
+/// work; exact for a power-of-2 radix). Polls ([`poller`]). GC point.
 pub(crate) fn to_string(cx: &mut Cx, b: u64, radix: u32) -> Res<u64> {
     let bound = digits::string_len_bound(view(&b), radix);
     if bound > crate::string::MAX_STRING_LENGTH as u64 {
@@ -187,13 +226,14 @@ pub(crate) fn to_string(cx: &mut Cx, b: u64, radix: u32) -> Res<u64> {
             "Invalid string length",
         ));
     }
-    let text = digits::to_string_radix(view(&b), radix);
+    let r = digits::to_string_radix(view(&b), radix, &mut poller(cx));
+    let text = r.map_err(|e| range_error(cx, e))?;
     Ok(crate::string::new_string_latin1(cx.rt(), text.as_bytes()))
 }
 
 /// StringToBigInt (§7.1.14) of the string `s` as digits: `Ok(None)` when the text is not a
-/// StringIntegerLiteral; RangeError above the size limit. Not a GC point (a rope is
-/// flattened first: that is the one GC point).
+/// StringIntegerLiteral; RangeError above the size limit. A long text polls ([`poller`]). Not
+/// a GC point (a rope is flattened first: that is the one GC point).
 pub(crate) fn string_to_big(cx: &mut Cx, s: u64) -> Res<Option<Big>> {
     let s = crate::string::flatten(cx, s);
     let units = crate::string::view(cx, s).to_utf16();
@@ -216,19 +256,22 @@ pub(crate) fn string_to_big(cx: &mut Cx, s: u64) -> Res<Option<Big>> {
     else {
         return Ok(None);
     };
-    digits::parse_literal(&ascii).map_err(|e| range_error(cx, e))
+    let r = digits::parse_literal(&ascii, &mut poller(cx));
+    r.map_err(|e| range_error(cx, e))
 }
 
 /// `a OP b` on two BigInts (§6.1.6.2). `>>>` is a TypeError. GC point (the result).
+/// It takes the budget units of the operands first, and `**` polls in its steps.
 pub(crate) fn binary(cx: &mut Cx, op: BinOp, a: u64, b: u64) -> Res<u64> {
     let (x, y) = (view(&a), view(&b));
+    charge(cx, x.digits.len() + y.digits.len())?;
     let r = match op {
         BinOp::Add => digits::add(x, y),
         BinOp::Sub => digits::sub(x, y),
         BinOp::Mul => digits::mul(x, y),
         BinOp::Div => digits::div_trunc(x, y),
         BinOp::Mod => digits::rem_trunc(x, y),
-        BinOp::Exp => digits::pow(x, y),
+        BinOp::Exp => digits::pow(x, y, &mut poller(cx)),
         BinOp::BitOr => digits::or(x, y),
         BinOp::BitXor => digits::xor(x, y),
         BinOp::BitAnd => digits::and(x, y),
@@ -254,9 +297,11 @@ pub(crate) enum UnaryOp {
     BitNot,
 }
 
-/// `OP a` on a BigInt: `a + 1n`, `a - 1n`, `-a`, `~a`. GC point (the result).
+/// `OP a` on a BigInt: `a + 1n`, `a - 1n`, `-a`, `~a`. Takes the budget units of the operand
+/// first. GC point (the result).
 pub(crate) fn unary(cx: &mut Cx, op: UnaryOp, a: u64) -> Res<u64> {
     let x = view(&a);
+    charge(cx, x.digits.len())?;
     let one = Big {
         neg: false,
         digits: vec![1],
@@ -328,8 +373,9 @@ pub(crate) fn to_f64(b: u64) -> f64 {
 }
 
 /// BigInt.asIntN (`signed`) or BigInt.asUintN of the BigInt `b` with `bits` (already
-/// ToIndex). RangeError above the size limit. GC point.
+/// ToIndex). RangeError above the size limit. Takes the budget units of `b` first. GC point.
 pub(crate) fn as_n(cx: &mut Cx, b: u64, bits: u64, signed: bool) -> Res<u64> {
+    charge(cx, view(&b).digits.len())?;
     let r = if signed {
         digits::as_int_n(view(&b), bits)
     } else {

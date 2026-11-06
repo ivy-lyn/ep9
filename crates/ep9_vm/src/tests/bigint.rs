@@ -2,8 +2,9 @@
 //! conversions and operators of `conv.rs` on BigInts (each §2.3 row, both operand orders),
 //! `===` of two equal cells in T0, `typeof`, the unary operators, Map keys by value, the size
 //! and string-length limits, the not-implemented error with no builtin table, and a BigInt
-//! held only by a register across collections (GC stress). JS-level tests with the builtins
-//! are in `crates/ep9_builtins/tests/bigint.rs`.
+//! held only by a register across collections (GC stress), and the interrupt polls of long
+//! BigInt work (MC-SPEC-BIGPOLL). JS-level tests with the builtins are in
+//! `crates/ep9_builtins/tests/bigint.rs`.
 
 use ep9_bytecode::{BigIntConst, FeedbackSlotKind, Register, TypeOfLiteral, VerifiedUnit};
 
@@ -40,7 +41,9 @@ where
 
 /// A BIGINT cell from a StringIntegerLiteral.
 fn big(cx: &mut Cx, s: &str) -> u64 {
-    let b = ep9_bigint::parse_literal(s.as_bytes()).unwrap().unwrap();
+    let b = ep9_bigint::parse_literal(s.as_bytes(), &mut || true)
+        .unwrap()
+        .unwrap();
     bigint::alloc(cx.rt(), &b)
 }
 
@@ -630,5 +633,100 @@ fn an_oversized_literal_gives_a_shrinking_result() {
             let r = conv::binary(cx, op, x, rhs).unwrap();
             assert_eq!(bigint::view(&r).bit_len(), 0, "{name}");
         }
+    });
+}
+
+// ---- interrupt polls (MC-SPEC-BIGPOLL; H23 "Interrupt poll") -------------------------------
+
+/// `2^bits - 1` (`bits` one bits).
+fn ones(cx: &mut Cx, bits: u64) -> u64 {
+    let b = ep9_bigint::as_uint_n(ep9_bigint::from_i64(-1).view(), bits).unwrap();
+    bigint::alloc(cx.rt(), &b)
+}
+
+#[test]
+fn long_bigint_work_takes_one_budget_unit_per_poll_words() {
+    with_cx(false, |cx| {
+        // 2^20 bits = 16,384 digits = 256 units of 64 digits.
+        let x = ones(cx, 1 << 20);
+        let units = (1 << 20) / 64 / ep9_bigint::POLL_WORDS as i64;
+        cx.budget = 1 << 40;
+        let s = bigint::to_string(cx, x, 2).unwrap();
+        assert_eq!(string::view(cx, s).len(), 1 << 20);
+        assert_eq!((1i64 << 40) - cx.budget, units, "toString(2)");
+        // An operator: the operands before (x and 1n: 256 units), the result after (256).
+        cx.budget = 1 << 40;
+        let one = big(cx, "1");
+        conv::binary(cx, BinOp::Add, x, one).unwrap();
+        assert_eq!((1i64 << 40) - cx.budget, 2 * units, "x + 1n");
+        // Small work takes no unit.
+        cx.budget = 1 << 40;
+        let y = big(cx, "123456789012345678901234567890");
+        conv::binary(cx, BinOp::Mul, y, y).unwrap();
+        bigint::to_string(cx, y, 10).unwrap();
+        assert_eq!(cx.budget, 1 << 40, "small work");
+    });
+}
+
+/// The watchdog test of MC-SPEC-BIGPOLL: with a termination requested, a huge toString(2), a
+/// long `**`, a long StringToBigInt and an operator on huge values stop at their first poll,
+/// with the termination pending (no RangeError), and with only a part of the work done.
+#[test]
+fn long_bigint_work_stops_on_a_termination() {
+    on_big_stack(|| {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        let cx = &mut iso.cx;
+        // 2^26 bits: toString(2) would make 67,108,864 chars (16,384 units).
+        let x = ones(cx, 1 << 26);
+        let three = big(cx, "3");
+        let e = big(cx, "600000000");
+        let nines = s(cx, &"9".repeat(1 << 20));
+        type Op = fn(&mut Cx, u64, u64, u64, u64) -> bool;
+        let ops: [(&str, Op); 5] = [
+            ("toString(2)", |cx, x, _, _, _| {
+                bigint::to_string(cx, x, 2).is_err()
+            }),
+            ("toString(10)", |cx, x, _, _, _| {
+                bigint::to_string(cx, x, 10).is_err()
+            }),
+            ("3n ** 600000000n", |cx, _, t, e, _| {
+                conv::binary(cx, BinOp::Exp, t, e).is_err()
+            }),
+            ("BigInt(9 x 2^20)", |cx, _, _, _, n| {
+                bigint::string_to_big(cx, n).is_err()
+            }),
+            ("x * x", |cx, x, _, _, _| {
+                conv::binary(cx, BinOp::Mul, x, x).is_err()
+            }),
+        ];
+        for (name, op) in ops {
+            iso.terminate_handle().terminate();
+            let cx = &mut iso.cx;
+            cx.budget = 1;
+            let t = std::time::Instant::now();
+            assert!(op(cx, x, three, e, nines), "{name}");
+            // Stopped at the first poll: far below the time of the whole work (seconds).
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(2),
+                "{name}: {:?}",
+                t.elapsed()
+            );
+            assert!(cx.rt().terminating.get(), "{name}");
+            assert_eq!(cx.rt().take_pending(), UNDEFINED, "{name}: no RangeError");
+            cx.rt().terminating.set(false);
+        }
+    });
+}
+
+/// V8's `BigInt::NoSideEffectsToString` rule: a message never converts a value of more than
+/// 100 digits (that would be long work with no poll).
+#[test]
+fn a_message_names_a_very_large_bigint_without_its_digits() {
+    with_cx(false, |cx| {
+        let small = ones(cx, 64 * 100);
+        assert_eq!(bigint::decimal(small).len(), 1927);
+        let large = ones(cx, 64 * 100 + 1);
+        assert_eq!(bigint::decimal(large), "<a very large BigInt>");
+        assert_eq!(conv::describe(large), "<a very large BigInt>n");
     });
 }
