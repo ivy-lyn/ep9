@@ -559,3 +559,12 @@ fn a_super_load_does_not_use_the_probe_of_the_get_named_handler() {
         t.release_all(kept);
     });
 }
+
+#[test]
+fn a_new_stub_cache_is_empty() {
+    each(|c| {
+        let t = T::new(c, &[Site::Get("x")]);
+        assert_eq!(t.rt().stub_cache.len(), 0);
+        assert_eq!(stub_cache::ENTRIES, 8192);
+    });
+}
