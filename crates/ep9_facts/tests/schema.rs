@@ -18,7 +18,7 @@
 mod common;
 
 use common::*;
-use ep9_bytecode::{FeedbackSlotKind, sha256};
+use ep9_bytecode::{FeedbackSlotKind, UnitString, sha256};
 use ep9_facts::*;
 
 fn fingerprint_of(schema: &str, sample: &[u8]) -> String {
@@ -119,7 +119,40 @@ fn schema_text_lists_every_kind() {
         assert!(text.contains(&line), "missing kind line {line:?}");
         assert_eq!(SlotFacts::empty(k).kind(), k);
     }
-    assert_eq!(FeedbackSlotKind::ALL.len(), 21, "H16 v0 has 21 kinds");
+    // The 21 kinds of H16 v0 keep their bytes and names (a per-byte pin, MC-P5-FACTTOP). No
+    // count pin: a slot-kind append at the next free byte keeps this result.
+    let v0: Vec<(u8, &str)> = FeedbackSlotKind::ALL
+        .iter()
+        .take(21)
+        .map(|&k| (k as u8, k.name()))
+        .collect();
+    assert_eq!(
+        v0,
+        [
+            (0, "Call"),
+            (1, "LoadNamed"),
+            (2, "LoadKeyed"),
+            (3, "StoreNamed"),
+            (4, "StoreKeyed"),
+            (5, "DefineNamedOwn"),
+            (6, "DefineKeyedOwn"),
+            (7, "LoadGlobal"),
+            (8, "LoadGlobalInsideTypeof"),
+            (9, "StoreGlobal"),
+            (10, "HasKeyed"),
+            (11, "BinaryOp"),
+            (12, "CompareOp"),
+            (13, "TypeOf"),
+            (14, "InstanceOf"),
+            (15, "Literal"),
+            (16, "CloneObject"),
+            (17, "StoreInArrayLiteral"),
+            (18, "ForIn"),
+            (19, "JumpLoop"),
+            (20, "CreateClosure"),
+        ],
+        "H16 v0 has 21 kinds"
+    );
 }
 
 /// The open lists (`bits.rs` module docs): their names are not in the format text, so an
@@ -242,11 +275,90 @@ fn tag_tables_match_the_tags() {
         names.dedup();
         assert_eq!(names.len(), tags.len());
     }
-    assert_eq!(Access::Generic.tag() as usize, Access::TAGS.len() - 1);
-    assert_eq!(ProtoRef::Unknown.tag() as usize, ProtoRef::TAGS.len() - 1);
-    assert_eq!(KeyRef::OtherSymbol.tag() as usize, KeyRef::TAGS.len() - 1);
+    // Each tag byte of FACT_SCHEMA 2 is pinned with its name; no pin of the last tag or of the
+    // table length, so an append at the next free tag keeps this result (MC-P5-FACTTOP).
+    let f = FunctionRef::Builtin(0);
+    let tags = [
+        (
+            Access::TAGS,
+            Access::OwnField { field: 0 }.tag(),
+            "own-field",
+        ),
+        (
+            Access::TAGS,
+            Access::ProtoField { depth: 0, field: 0 }.tag(),
+            "proto-field",
+        ),
+        (Access::TAGS, Access::Missing { depth: 0 }.tag(), "missing"),
+        (
+            Access::TAGS,
+            Access::Getter {
+                depth: 0,
+                getter: f,
+            }
+            .tag(),
+            "getter",
+        ),
+        (
+            Access::TAGS,
+            Access::Setter {
+                depth: 0,
+                setter: f,
+            }
+            .tag(),
+            "setter",
+        ),
+        (
+            Access::TAGS,
+            Access::AddField {
+                to: bare().into(),
+                field: 0,
+            }
+            .tag(),
+            "add-field",
+        ),
+        (Access::TAGS, Access::ArrayLength.tag(), "array-length"),
+        (Access::TAGS, Access::StringLength.tag(), "string-length"),
+        (
+            Access::TAGS,
+            Access::Element { kind: None }.tag(),
+            "element",
+        ),
+        (Access::TAGS, Access::Generic.tag(), "generic"),
+        (ProtoRef::TAGS, ProtoRef::Null.tag(), "null"),
+        (ProtoRef::TAGS, ProtoRef::Intrinsic(0).tag(), "intrinsic"),
+        (
+            ProtoRef::TAGS,
+            ProtoRef::FunctionPrototype(f).tag(),
+            "function-prototype",
+        ),
+        (ProtoRef::TAGS, ProtoRef::Unknown.tag(), "unknown"),
+        (
+            KeyRef::TAGS,
+            KeyRef::String(UnitString::new("a")).tag(),
+            "latin1",
+        ),
+        (
+            KeyRef::TAGS,
+            KeyRef::String(UnitString::new("\u{3b1}")).tag(),
+            "utf16",
+        ),
+        (
+            KeyRef::TAGS,
+            KeyRef::WellKnownSymbol(WellKnownSymbol::ALL[0]).tag(),
+            "well-known-symbol",
+        ),
+        (KeyRef::TAGS, KeyRef::OtherSymbol.tag(), "other-symbol"),
+        (FunctionRef::TAGS, common::js(1).tag(), "js"),
+        (FunctionRef::TAGS, f.tag(), "builtin"),
+    ];
+    let got: Vec<(u8, &str)> = tags.iter().map(|(t, b, _)| (*b, t[*b as usize])).collect();
+    let want: Vec<(u8, &str)> = tags.iter().map(|(_, b, n)| (*b, *n)).collect();
+    assert_eq!(got, want);
+    let bytes: Vec<u8> = tags.iter().map(|(_, b, _)| *b).collect();
     assert_eq!(
-        FunctionRef::Builtin(0).tag() as usize,
-        FunctionRef::TAGS.len() - 1
+        bytes,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1],
+        "the tag bytes at FACT_SCHEMA 2"
     );
 }

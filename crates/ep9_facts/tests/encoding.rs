@@ -196,7 +196,7 @@ fn an_unknown_open_value_drops_only_its_field() {
     let (elements, flags, attrs_a) = (s0 + 2, s0 + 3, s0 + 10 + 6);
     assert_eq!(good[elements], ElementsKind::HoleyDouble as u8 + 1);
     assert_eq!(good[attrs_a], 0x07 | (FieldRep::Int32 as u8) << 4 | 0x80);
-    let last = good.len() - 1; // the Literal's own elements kind
+    let last = literal_elements_at(&lit); // the Literal's own elements kind
     assert_eq!(good[last], ElementsKind::PackedElements as u8 + 1);
     let with = |at: usize, v: u8| {
         let mut b = good.clone();
@@ -231,9 +231,9 @@ fn an_unknown_open_value_drops_only_its_field() {
     // A shape flag bit past the named ones is dropped.
     let l = lit_of(&with(flags, ShapeFlags::EXTENSIBLE.bits() | 0x80));
     assert_eq!(*l.shape.unwrap(), shape);
-    // A representation past the named ones (5-7) reads as any; the const bit and the
-    // attributes stay.
-    for rep in 5..8u8 {
+    // A representation past the named ones (5-7 at FACT_SCHEMA 2) reads as any; the const
+    // bit and the attributes stay.
+    for rep in FieldRep::ALL.len() as u8..8 {
         let l = lit_of(&with(attrs_a, 0x07 | rep << 4 | 0x80));
         let sh = l.shape.unwrap();
         assert_eq!(
@@ -270,9 +270,8 @@ fn an_unknown_open_value_drops_only_its_field() {
         )
         .unwrap();
     let good = keyed.encode();
-    // The record ends with: access tag (1), kind (1), values (2), keys (1), hint (1), kinds (2).
-    let n = good.len();
-    let (kind_at, kinds_at) = (n - 7, n - 2);
+    // The case's elements kind byte and the kinds set (u16), found by the bytes they change.
+    let (kind_at, kinds_at) = keyed_offsets(&keyed);
     assert_eq!(good[kind_at], ElementsKind::HoleyDouble as u8 + 1);
     let decode = |at: usize, bytes: &[u8]| {
         let mut b = good.clone();
@@ -304,8 +303,8 @@ fn shapes_that_fold_into_one_merge_their_cases() {
         elements: Some(k),
         ..bare()
     };
-    // Kinds 5 and 6 sort in that order; the decoder below is shown 14 and 15 (values no
-    // schema names yet) in their place.
+    // Kinds 5 and 6 sort in that order; the decoder below is shown the top two bytes
+    // (UNNAMED: values no schema names) in their place.
     let (a, b) = (
         shape(ElementsKind::HoleyElements),
         shape(ElementsKind::Dictionary),
@@ -332,9 +331,9 @@ fn shapes_that_fold_into_one_merge_their_cases() {
         )
         .unwrap();
         let mut bytes = s.encode();
-        // bare() is 17 bytes; its elements byte is at +2 of each table entry.
-        bytes[HEADER_SIZE + 2] = 14 + 1;
-        bytes[HEADER_SIZE + 17 + 2] = 15 + 1;
+        // Each table entry is as long as bare()'s; its elements byte is at +2.
+        bytes[HEADER_SIZE + 2] = UNNAMED[0];
+        bytes[HEADER_SIZE + entry_size(&a) + 2] = UNNAMED[1];
         let back = FactSnapshot::decode(&bytes).expect("a fold never refuses the snapshot");
         assert_eq!(FactSnapshot::decode(&back.encode()).unwrap(), back);
         match back.get(0, 0) {
@@ -377,13 +376,13 @@ fn a_merge_after_a_fold_follows_the_ranks_of_the_folded_shapes() {
         with(Some(ElementsKind::Dictionary), 4),
     );
     let folded = with(None, 4);
-    let at = |i: usize| HEADER_SIZE + 17 * i;
+    let at = |i: usize| HEADER_SIZE + entry_size(&folded) * i;
     let decode = |facts: SlotFacts, fold: &[(usize, u8)]| {
         let mut s = FactSnapshot::new(header());
         s.insert(0, 0, facts).unwrap();
         let mut bytes = s.encode();
         for &(i, v) in fold {
-            bytes[at(i) + 2] = v + 1;
+            bytes[at(i) + 2] = v;
         }
         let back = FactSnapshot::decode(&bytes).expect("a fold never refuses the snapshot");
         assert_eq!(FactSnapshot::decode(&back.encode()).unwrap(), back);
@@ -406,7 +405,7 @@ fn a_merge_after_a_fold_follows_the_ranks_of_the_folded_shapes() {
         })
     };
     // Table: s5, s6. Both fold into `folded`, and so do both targets: one case.
-    let SlotFacts::StoreNamed(p) = decode(store(&s6), &[(0, 14), (1, 15)]) else {
+    let SlotFacts::StoreNamed(p) = decode(store(&s6), &[(0, UNNAMED[0]), (1, UNNAMED[1])]) else {
         panic!()
     };
     assert_eq!(
@@ -421,7 +420,8 @@ fn a_merge_after_a_fold_follows_the_ranks_of_the_folded_shapes() {
     );
     // Table: other, s5, s6. The targets `folded` and `other` stay apart: no case.
     let other = with(None, 9);
-    let SlotFacts::StoreNamed(p) = decode(store(&other), &[(1, 14), (2, 15)]) else {
+    let SlotFacts::StoreNamed(p) = decode(store(&other), &[(1, UNNAMED[0]), (2, UNNAMED[1])])
+    else {
         panic!()
     };
     assert!(p.cases.is_empty(), "{p:?}");
@@ -438,7 +438,7 @@ fn a_merge_after_a_fold_follows_the_ranks_of_the_folded_shapes() {
             })
             .collect(),
     });
-    let SlotFacts::CloneObject(c) = decode(clone, &[(2, 14)]) else {
+    let SlotFacts::CloneObject(c) = decode(clone, &[(2, UNNAMED[0])]) else {
         panic!()
     };
     let sources: Vec<_> = c.cases.iter().map(|c| (*c.source).clone()).collect();
@@ -472,8 +472,8 @@ fn a_folded_shape_does_not_hide_the_order_of_its_neighbours() {
     )
     .unwrap();
     let b = s.encode();
-    // bare() is 17 bytes; the flags byte is at +3 and the capacity (u16) at +4 of each entry.
-    let at = |i: usize| HEADER_SIZE + 17 * i;
+    // Each entry is as long as bare()'s; the flags byte is at +3 and the capacity (u16) at +4.
+    let at = |i: usize| HEADER_SIZE + entry_size(&cap(1)) * i;
     assert_eq!([b[at(0) + 4], b[at(1) + 4], b[at(2) + 4]], [1, 2, 3]);
     let set_cap = |b: &mut [u8], i: usize, c: u8| b[at(i) + 4] = c;
     // 0x80 is a shape flag bit this schema does not name: shape 1 folds.
@@ -586,7 +586,7 @@ fn record_errors() {
     two.insert(0, 1, SlotFacts::JumpLoop(LoopFacts { back_edges: 6 }))
         .unwrap();
     let mut swapped = two.encode();
-    let r2 = rec + 15;
+    let r2 = rec + (two.encode().len() - b.len()); // the record size, from the bytes
     put_u32(&mut swapped, rec + 4, 1);
     put_u32(&mut swapped, r2 + 4, 0);
     assert_eq!(
@@ -604,13 +604,13 @@ fn record_errors() {
     let mut s = FactSnapshot::new(header());
     s.insert(0, 0, SlotFacts::TypeOf(TypeSet::ALL)).unwrap();
     let mut b = s.encode();
-    b[rec + 11 + 1] = 0x10; // TypeSet bit 12
+    b[rec + 11 + 1] = 0x80; // TypeSet bit 15, the top bit (never the next free one)
     assert_eq!(FactSnapshot::decode(&b), Err(FactError::Reserved));
 
     // A reserved record flag, and the record flags' rules in decode.
     let b = one_loop(5).encode();
     let mut flag = b.clone();
-    flag[rec + 9] = 1 << 2;
+    flag[rec + 9] = 1 << 7; // the top bit (never the next free one)
     assert_eq!(FactSnapshot::decode(&flag), Err(FactError::Reserved));
     let mut ran = b.clone();
     ran[rec + 9] = RecordFlags::RAN.bits(); // JumpLoop has no "ran" bit
@@ -710,7 +710,10 @@ fn record_flags_and_confidence() {
         s.encode().len()
     };
     assert_eq!(one(FactSource::Runtime) + 1, one(FactSource::Hinted));
-    assert_eq!(one(FactSource::Runtime), HEADER_SIZE + 4 + 4 + 1 + 1 + 4);
+    assert_eq!(
+        loop_payload_at(FactSource::Runtime),
+        HEADER_SIZE + 4 + 4 + 1 + 1
+    );
 }
 
 /// A snapshot with one LoadNamed record whose cases are `cases`, built past `insert` (which
@@ -749,7 +752,7 @@ fn raw_load_named(state: IcState, cases: Vec<PropertyCase>) -> Vec<u8> {
     shapes.sort();
     shapes.dedup();
     // Rebuild the record body by hand: function, slot, kind, flags, confidence (11 bytes).
-    let shape_end = valid.len() - (11 + 1 + 4 + sorted.len() * 5 + 2);
+    let shape_end = record_start(&s);
     let mut out = valid[..shape_end].to_vec();
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
@@ -769,7 +772,8 @@ fn raw_load_named(state: IcState, cases: Vec<PropertyCase>) -> Vec<u8> {
             _ => unimplemented!(),
         }
     }
-    out.extend_from_slice(&0u16.to_le_bytes());
+    // The rest of the record as encode() wrote it (the values, and any field after them).
+    out.extend_from_slice(&valid[shape_end + 11 + 1 + 4 + sorted.len() * 5..]);
     let total = out.len() as u32;
     put_u32(&mut out, offsets::TOTAL_SIZE, total);
     out
@@ -850,11 +854,10 @@ fn case_rules_hold_in_insert_and_in_decode() {
             );
         }
     }
-    // A count of 5 is refused before any case is read. In `ok` the record is 28 bytes:
-    // function, slot, kind, flags, confidence (11), state (1), count (4), 2 cases of 5,
-    // values (2).
+    // A count of 5 is refused before any case is read. The count follows function, slot,
+    // kind, flags, confidence (11) and the state (1).
     let mut five = ok.clone();
-    let at = ok.len() - 28 + 12;
+    let at = record_start(&decoded) + 12;
     put_u32(&mut five, at, 5);
     assert_eq!(
         FactSnapshot::decode(&five),
@@ -882,10 +885,12 @@ fn clone_sources_out_of_order_are_refused_by_decode() {
     )
     .unwrap();
     let ok = s.encode();
-    // The record ends with its 2 cases: (source u32, result u32) each.
-    let cases = ok.len() - 16;
+    // The 2 cases (source u32, result u32 each) follow the record header (11), the state (1)
+    // and the count (4).
+    let cases = record_start(&s) + 11 + 1 + 4;
     let mut swapped = ok.clone();
-    swapped[cases..].copy_from_slice(&[&ok[cases + 8..], &ok[cases..cases + 8]].concat());
+    swapped[cases..cases + 16]
+        .copy_from_slice(&[&ok[cases + 8..cases + 16], &ok[cases..cases + 8]].concat());
     let mut same = ok.clone();
     same.copy_within(cases..cases + 4, cases + 8);
     for bad in [swapped, same] {
@@ -996,16 +1001,16 @@ fn shape_table_errors() {
     )
     .unwrap();
     let b = one.encode();
-    // bare(): proto null (1) + kind (1) + elements (1) + flags (1) + capacity (2) + count (4)
-    // + key "k": tag (1) + len (4) + 1 byte + attrs (1) = 17 bytes.
-    const N: usize = 17;
-    let shape = &b[HEADER_SIZE..HEADER_SIZE + N];
-    let mut bigger = shape.to_vec();
-    bigger[6] = 2; // two keys
-    bigger.extend_from_slice(&[0, 1, 0, 0, 0, b'l', 7]);
-    let mut extra = b[..HEADER_SIZE + N].to_vec();
+    // The table entry of bare() (17 bytes at FACT_SCHEMA 2) and the entry of bare() with one
+    // more key, both as encode() writes them.
+    let n = entry_size(&bare());
+    let shape = &b[HEADER_SIZE..HEADER_SIZE + n];
+    let mut with_l = bare();
+    push_key(&mut with_l, key("l"));
+    let bigger = table_entry(&with_l);
+    let mut extra = b[..HEADER_SIZE + n].to_vec();
     extra.extend_from_slice(&bigger);
-    extra.extend_from_slice(&b[HEADER_SIZE + N..]);
+    extra.extend_from_slice(&b[HEADER_SIZE + n..]);
     put_u32(&mut extra, offsets::SHAPE_COUNT, 2);
     let total = extra.len() as u32;
     put_u32(&mut extra, offsets::TOTAL_SIZE, total);
@@ -1017,7 +1022,7 @@ fn shape_table_errors() {
     let mut swapped = b[..HEADER_SIZE].to_vec();
     swapped.extend_from_slice(&bigger);
     swapped.extend_from_slice(shape);
-    swapped.extend_from_slice(&b[HEADER_SIZE + N..]);
+    swapped.extend_from_slice(&b[HEADER_SIZE + n..]);
     put_u32(&mut swapped, offsets::SHAPE_COUNT, 2);
     let total = swapped.len() as u32;
     put_u32(&mut swapped, offsets::TOTAL_SIZE, total);
@@ -1036,7 +1041,7 @@ fn bitsets_merge_by_or() {
     assert_eq!(m, a.union(b));
     assert!(m.contains(a) && m.contains(b));
     assert_eq!(m | m, m);
-    assert_eq!(TypeSet::from_bits(1 << 12), None);
+    assert_eq!(TypeSet::from_bits(1 << 15), None); // the top bit
     assert_eq!(ForInHint::EMPTY.hint(), None);
     assert_eq!(
         (ForInHint::KEYS_AND_INDICES | ForInHint::KEYS).hint(),
@@ -1120,11 +1125,14 @@ fn every_reference_to_a_table_shape_shares_one_decoded_shape() {
     );
     let literal = SlotFacts::Literal(LiteralFacts {
         count: 1,
-        shape: Some(big.into()),
+        shape: Some(big.clone().into()),
         elements: None,
     });
-    let bytes = repeat_record(literal, 512);
-    assert_eq!(bytes.len(), 14_410);
+    let bytes = repeat_record(literal.clone(), 512);
+    // The header, one table entry and 512 records (14,410 bytes at FACT_SCHEMA 2), with the
+    // sizes read from the bytes, so a field append keeps the result.
+    let record = repeat_record(literal.clone(), 2).len() - repeat_record(literal.clone(), 1).len();
+    assert_eq!(bytes.len(), HEADER_SIZE + entry_size(&big) + 512 * record);
     let s = FactSnapshot::decode(&bytes).unwrap();
     assert_eq!(shapes_held(&s), (1, 512));
     assert_eq!(s.encode(), bytes);
@@ -1132,9 +1140,13 @@ fn every_reference_to_a_table_shape_shares_one_decoded_shape() {
     fn send_sync<T: Send + Sync>(_: &T) {}
     send_sync(&s);
     // The last record's elements kind, a value no schema names: an open list, so that field
-    // reads as none and the rest decodes (MC-w23-8).
+    // reads as none and the rest decodes (MC-w23-8). Its place in a record is read from the
+    // bytes.
+    let single = FactSnapshot::decode(&repeat_record(literal, 1)).unwrap();
+    let in_record = literal_elements_at(&single) - record_start(&single);
     let mut open = bytes;
-    *open.last_mut().unwrap() = 0xff;
+    let at = open.len() - record + in_record;
+    open[at] = 0xff;
     let back = FactSnapshot::decode(&open).unwrap();
     assert_eq!(shapes_held(&back), (1, 512));
     let SlotFacts::Literal(l) = back.get(0, 511).unwrap() else {
@@ -1179,7 +1191,10 @@ fn decoding_work_does_not_grow_with_shape_size_times_references() {
     let small = FactSnapshot::decode(&repeat_record(poly(&a, &b), 2)).unwrap();
     assert_eq!(shapes_held(&small), (2, 4));
     let bytes = repeat_record(poly(&a, &b), 20_000);
-    assert_eq!(bytes.len(), 1_608_667);
+    // The header, two table entries and 20,000 records (1,608,667 bytes at FACT_SCHEMA 2).
+    let record = repeat_record(poly(&a, &b), 2).len() - repeat_record(poly(&a, &b), 1).len();
+    let table = entry_size(&a) + entry_size(&b);
+    assert_eq!(bytes.len(), HEADER_SIZE + table + 20_000 * record);
     let timed = |bytes: &[u8]| {
         let t = std::time::Instant::now();
         let s = FactSnapshot::decode(bytes).unwrap();
@@ -1196,7 +1211,7 @@ fn decoding_work_does_not_grow_with_shape_size_times_references() {
     assert_eq!(shapes_held(&timed(&flag)), (2, 40_000));
 
     // Two shapes that fold into one: `a` with two elements kinds, which the decoder is shown
-    // as values no schema names (14 and 15), so both read as none. The two cases of each
+    // as values no schema names (UNNAMED), so both read as none. The two cases of each
     // record then have one receiver and the same access, and merge into one case.
     let with = |k: ElementsKind| ShapeDesc {
         elements: Some(k),
@@ -1216,8 +1231,8 @@ fn decoding_work_does_not_grow_with_shape_size_times_references() {
         same[HEADER_SIZE + entry + 2],
         ElementsKind::Dictionary as u8 + 1
     );
-    same[HEADER_SIZE + 2] = 14 + 1;
-    same[HEADER_SIZE + entry + 2] = 15 + 1;
+    same[HEADER_SIZE + 2] = UNNAMED[0];
+    same[HEADER_SIZE + entry + 2] = UNNAMED[1];
     let s = timed(&same);
     assert_eq!(shapes_held(&s), (1, 20_000));
     let Some(SlotFacts::LoadNamed(p)) = s.get(0, 19_999) else {
@@ -1230,4 +1245,253 @@ fn decoding_work_does_not_grow_with_shape_size_times_references() {
             access: Access::Generic
         }]
     );
+}
+
+// ---- MC-P5-FACTTOP: places and sizes read from the bytes, and the top values -------------------
+//
+// A closed-list append (H16 "IC lists (append-only)", the M6-P5 note) adds a value at the next
+// free place, or a field at the end of a payload or of `ShapeDesc`. So these tests never pin a
+// count, a last value or a fixed entry size, and never probe the next free value: they read
+// places and sizes from the bytes that `encode` writes, and they probe the top value or bit
+// (README section 3.4). Then an append keeps every result (H16:236).
+
+/// Two elements-kind bytes of a shape entry (kind + 1) that no schema names: the top two values
+/// of the byte, in order. They read as none (an open list), and no append reaches them (the
+/// kinds set has 16 bits).
+const UNNAMED: [u8; 2] = [0xfe, 0xff];
+
+/// The first byte where `a` and `b` differ. They differ only in the `width` bytes from there.
+fn changed_at(a: &[u8], b: &[u8], width: usize) -> usize {
+    assert_eq!(a.len(), b.len());
+    let first = a
+        .iter()
+        .zip(b)
+        .position(|(x, y)| x != y)
+        .expect("the bytes differ");
+    let last = a.iter().zip(b).rposition(|(x, y)| x != y).unwrap();
+    assert!(last < first + width, "bytes {first} to {last} differ");
+    first
+}
+
+/// The start of the one record of `s`: a copy of it in the next slot makes the bytes one record
+/// longer, and the shape table stays.
+fn record_start(s: &FactSnapshot) -> usize {
+    assert_eq!(s.len(), 1);
+    let (key, facts, meta) = s.records_with_meta().next().unwrap();
+    let mut two = s.clone();
+    two.insert_with(key.function, key.slot + 1, facts.clone(), meta)
+        .unwrap();
+    let one = s.encode().len();
+    one - (two.encode().len() - one)
+}
+
+/// A snapshot with one monomorphic LoadNamed record on `shape`: the only table entry.
+fn one_shape(shape: &ShapeDesc) -> FactSnapshot {
+    let mut s = FactSnapshot::new(header());
+    s.insert(
+        0,
+        0,
+        SlotFacts::LoadNamed(PropertyFacts {
+            state: IcState::Monomorphic,
+            cases: vec![PropertyCase {
+                receiver: shape.clone().into(),
+                access: Access::Generic,
+            }],
+            values: TypeSet::EMPTY,
+        }),
+    )
+    .unwrap();
+    s
+}
+
+/// The size of the shape-table entry of `shape`, from the bytes.
+fn entry_size(shape: &ShapeDesc) -> usize {
+    record_start(&one_shape(shape)) - HEADER_SIZE
+}
+
+/// The shape-table entry of `shape`, as `encode` writes it.
+fn table_entry(shape: &ShapeDesc) -> Vec<u8> {
+    let b = one_shape(shape).encode();
+    b[HEADER_SIZE..HEADER_SIZE + entry_size(shape)].to_vec()
+}
+
+/// Another named elements kind than `k`.
+fn other_kind(k: ElementsKind) -> ElementsKind {
+    if k == ElementsKind::PackedInt32 {
+        ElementsKind::HoleyInt32
+    } else {
+        ElementsKind::PackedInt32
+    }
+}
+
+/// The elements-kind byte of the one Literal record of `s` (the record's own kind, not the
+/// shape's).
+fn literal_elements_at(s: &FactSnapshot) -> usize {
+    let Some(SlotFacts::Literal(l)) = s.get(0, 0) else {
+        panic!("{s:?}")
+    };
+    let mut other = l.clone();
+    other.elements = Some(l.elements.map_or(ElementsKind::PackedInt32, other_kind));
+    let mut t = FactSnapshot::new(*s.header());
+    t.insert(0, 0, SlotFacts::Literal(other)).unwrap();
+    changed_at(&s.encode(), &t.encode(), 1)
+}
+
+/// The elements-kind byte of the one case (an Element access) and the kinds set (u16) of the
+/// one LoadKeyed record of `s`.
+fn keyed_offsets(s: &FactSnapshot) -> (usize, usize) {
+    let Some(SlotFacts::LoadKeyed(k)) = s.get(0, 0) else {
+        panic!("{s:?}")
+    };
+    let with = |k: KeyedFacts| {
+        let mut t = FactSnapshot::new(*s.header());
+        t.insert(0, 0, SlotFacts::LoadKeyed(k)).unwrap();
+        t.encode()
+    };
+    let mut case = k.clone();
+    let Access::Element { kind } = &mut case.property.cases[0].access else {
+        panic!("{k:?}")
+    };
+    *kind = Some(other_kind(kind.unwrap()));
+    let mut kinds = k.clone();
+    let first = k.kinds.kinds().next().unwrap();
+    kinds.kinds = ElementsKindSet::of(other_kind(first));
+    let b = s.encode();
+    (
+        changed_at(&b, &with(case), 1),
+        changed_at(&b, &with(kinds), 2),
+    )
+}
+
+/// Where the payload of a one-JumpLoop snapshot of `source` starts: the first byte that
+/// another back-edge count changes.
+fn loop_payload_at(source: FactSource) -> usize {
+    let bytes = |n: u32| {
+        let mut s = FactSnapshot::new(FactHeader { source, ..header() });
+        s.insert(0, 0, SlotFacts::JumpLoop(LoopFacts { back_edges: n }))
+            .unwrap();
+        s.encode()
+    };
+    changed_at(&bytes(0), &bytes(u32::MAX), 4)
+}
+
+/// MC-P5-FACTTOP: the top value of each closed enum, tag and bitset byte is refused, and so is
+/// every value past the named ones (a range that moves with each append, so no result
+/// changes).
+#[test]
+fn the_top_values_of_the_closed_lists_are_refused() {
+    // FactSource: the top byte, and every byte past the named sources. (Byte 3 is also
+    // `header_errors`'s probe: the H30 provenance set names three sources.)
+    let good = sample().encode();
+    for v in FactSource::ALL.len()..=0xff {
+        let mut b = good.clone();
+        b[offsets::SOURCE] = v as u8;
+        assert_eq!(
+            FactSnapshot::decode(&b),
+            Err(FactError::BadValue("fact source")),
+            "source byte {v}"
+        );
+    }
+
+    // The slot-kind byte of a record (MC-P4-SLOTTOP): the top, and every byte past the kinds.
+    let b = one_loop(5).encode();
+    let rec = HEADER_SIZE;
+    for v in FeedbackSlotKind::ALL.len()..=0xff {
+        let mut m = b.clone();
+        m[rec + 8] = v as u8;
+        assert_eq!(
+            FactSnapshot::decode(&m),
+            Err(FactError::BadValue("slot kind")),
+            "kind byte {v}"
+        );
+    }
+
+    // RecordFlags (u8): bit 7, the top bit, and every bit no flag names.
+    let unnamed = !RecordFlags::ALL.bits();
+    assert_ne!(unnamed & 0x80, 0);
+    for bit in (0..8).filter(|i| unnamed & 1 << i != 0) {
+        let mut m = b.clone();
+        m[rec + 9] = 1 << bit;
+        assert_eq!(
+            FactSnapshot::decode(&m),
+            Err(FactError::Reserved),
+            "flag bit {bit}"
+        );
+    }
+
+    // TypeSet (u16): bit 15, the top bit, and every bit no type names; the same in
+    // `from_bits`.
+    let mut s = FactSnapshot::new(header());
+    s.insert(0, 0, SlotFacts::TypeOf(TypeSet::ALL)).unwrap();
+    let t = s.encode();
+    let unnamed = !TypeSet::ALL.bits();
+    assert_ne!(unnamed & 0x8000, 0);
+    for bit in (0..16).filter(|i| unnamed & 1 << i != 0) {
+        assert_eq!(TypeSet::from_bits(1 << bit), None, "type bit {bit}");
+        let mut m = t.clone();
+        let at = rec + 11;
+        let v = u16::from_le_bytes([m[at], m[at + 1]]) | 1 << bit;
+        m[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        assert_eq!(
+            FactSnapshot::decode(&m),
+            Err(FactError::Reserved),
+            "type bit {bit}"
+        );
+    }
+
+    // The tags: Access (one case: its tag byte is the byte that another tag changes),
+    // ProtoRef and KeyRef (at +0 and +10 of the entry of bare(): proto null, kind, elements,
+    // flags, capacity, count, then the tag of key "k"), FunctionRef (the byte before a
+    // builtin id). Each refuses the top byte 0xff.
+    let generic = one_shape(&bare());
+    let mut length = FactSnapshot::new(header());
+    length
+        .insert(
+            0,
+            0,
+            SlotFacts::LoadNamed(PropertyFacts {
+                state: IcState::Monomorphic,
+                cases: vec![PropertyCase {
+                    receiver: bare().into(),
+                    access: Access::ArrayLength,
+                }],
+                values: TypeSet::EMPTY,
+            }),
+        )
+        .unwrap();
+    let g = generic.encode();
+    let access_at = changed_at(&g, &length.encode(), 1);
+    assert_eq!(g[access_at], Access::Generic.tag());
+    let call = |id: u16| {
+        let mut s = FactSnapshot::new(header());
+        s.insert(
+            0,
+            0,
+            SlotFacts::Call(CallFacts {
+                count: 1,
+                callees: TargetFacts {
+                    state: IcState::Monomorphic,
+                    targets: vec![FunctionRef::Builtin(id)],
+                },
+                result: TypeSet::EMPTY,
+            }),
+        )
+        .unwrap();
+        s.encode()
+    };
+    let c = call(5);
+    let function_at = changed_at(&c, &call(6), 1) - 1;
+    assert_eq!(c[function_at], FunctionRef::Builtin(5).tag());
+    assert_eq!(g[HEADER_SIZE], ProtoRef::Null.tag());
+    assert_eq!(g[HEADER_SIZE + 10], key("k").0.tag());
+    for (what, bytes, at) in [
+        ("access tag", &g, access_at),
+        ("proto ref tag", &g, HEADER_SIZE),
+        ("key tag", &g, HEADER_SIZE + 10),
+        ("function ref tag", &c, function_at),
+    ] {
+        let mut m = bytes.clone();
+        m[at] = 0xff;
+        assert_eq!(FactSnapshot::decode(&m), Err(FactError::BadValue(what)));
+    }
 }

@@ -25,10 +25,10 @@ use crate::builtins::IntrinsicId;
 use crate::feedback;
 use crate::frame::{NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, KEY_STRING, State, hk, smi};
-use crate::ic_ops::{self, Op, Operation, Ops, Ref, Val};
+use crate::ic_ops::{self, Loc, Op, Operation, Ops, Ref, Ty, Val};
 use crate::instance_ic::io;
 use crate::kinds;
-use crate::object::{self, attr};
+use crate::object::{self, attr, obj};
 use crate::props;
 use crate::realm;
 use crate::runtime::{Root, Runtime, val};
@@ -1009,8 +1009,8 @@ fn names(d: &ShapeDesc, field: u16, name: &str) -> bool {
 /// MC-w25-5: the exported access of one case (`None`: the exporter left the case out) agrees
 /// with the case's `ops_of` list at a site of operation `op`, by kind. A typed access needs the
 /// list of that access kind (its guard form and its action op); operands (`field`, `depth`, the
-/// action's `Loc`, the store `Ty`) are checked by `each_handler_becomes_its_fact` and
-/// `tests::ic_ops` (`eval`), not here. A `[Generic]` list allows only Generic
+/// action's `Loc`, the store `Ty`) are checked by [`operands_agree`] (MC-P3-OPAGREE), and by
+/// `each_handler_becomes_its_fact` and `tests::ic_ops` (`eval`). A `[Generic]` list allows only Generic
 /// or no case; Generic comes only from a `[Generic]` list or from the accessor and
 /// dictionary-holder kinds GETTER, SETTER and PROTO_DICT_LOAD, which export as Generic until a
 /// typed writer exists (H16 "Declared, no writer"). The exporter leaves out a case whose key
@@ -1208,6 +1208,7 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
         let snap = export_facts(&t.iso, &hash).expect("the unit is loaded");
 
         let mut seen = Vec::new();
+        let (mut typed, mut controls) = (0, 0);
         for (i, site) in sites.iter().enumerate() {
             let op = match site {
                 Get(_) => Operation::LoadNamed,
@@ -1230,6 +1231,7 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
             let kind = handler_kind(handler);
             assert!(facts.cases.len() <= 1, "f{i}: {facts:?}");
             let case = facts.cases.first();
+            let ops = ic_ops::ops_of(&cs[0], op);
             check_agree(
                 &format!("f{i}"),
                 kind,
@@ -1237,8 +1239,45 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
                 op,
                 case.map(|c| &c.access),
                 case.map(|c| &*c.receiver),
-                &ic_ops::ops_of(&cs[0], op),
+                &ops,
             );
+            // MC-P3-OPAGREE: the operands agree too, and each changed operand is refused (the
+            // negative control).
+            if let Some(c) = case {
+                let rt = t.rt();
+                let o = if i < LOADS {
+                    loads[i]
+                } else if i < DEFINE {
+                    let (o, v) = stores[i - LOADS];
+                    if !matches!(c.access, Access::Generic) {
+                        let x = atoms::intern_str(rt, "x");
+                        assert_eq!(props::own_get(o, x).map(|p| p.0), Some(v), "f{i}: stored");
+                    }
+                    o
+                } else {
+                    define
+                };
+                let list = ops.as_slice();
+                operands_agree(rt, o, handler, &c.access, &c.receiver, list)
+                    .unwrap_or_else(|e| panic!("f{i}: {e}"));
+                for bad in changed_accesses(&c.access) {
+                    assert!(
+                        operands_agree(rt, o, handler, &bad, &c.receiver, list).is_err(),
+                        "f{i}: {bad:?} agrees with {list:?}"
+                    );
+                    controls += 1;
+                }
+                let operands = !matches!(c.access, Access::Generic | Access::ArrayLength);
+                for bad in changed_lists(list).into_iter().filter(|_| operands) {
+                    assert!(
+                        operands_agree(rt, o, handler, &c.access, &c.receiver, &bad).is_err(),
+                        "f{i}: {:?} agrees with {bad:?}",
+                        c.access
+                    );
+                    controls += 1;
+                }
+                typed += usize::from(!matches!(c.access, Access::Generic));
+            }
             seen.push(kind);
         }
         // Every kind is in the test.
@@ -1251,6 +1290,14 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
         want.push(HandlerKind::Mega);
         want.sort();
         assert_eq!(seen, want);
+        // The typed cases: 2 own loads, length, prototype field, missing, add, 6 checked
+        // stores and define (13). The controls: 13 changed accesses (the prototype field has
+        // 2), 11 lists with a lower Loc and 6 with another store Ty.
+        assert_eq!(
+            (typed, controls),
+            (13, 30),
+            "MC-P3-OPAGREE cases and controls"
+        );
         // The accessor cases are in this snapshot; no declared field has a value (MC-w24-5).
         assert_no_declared_field(&snap);
         t.release_all(handles);
@@ -1261,6 +1308,157 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
 
 fn ops_of_list(case: &ic_ops::Case, op: Operation) -> Vec<Op> {
     ic_ops::ops_of(case, op).as_slice().to_vec()
+}
+
+// ---- MC-P3-OPAGREE: the operands of the exported access and of `ops_of` agree -------------------
+
+/// The word that the field `loc` names in the object `o` (in the object cell or its SLOTS
+/// cell), read as T0 reads it.
+fn read_at(o: u64, loc: Loc) -> u64 {
+    if loc.in_object() {
+        object::rd(object::cell(o), loc.offset())
+    } else {
+        object::rd(
+            object::cell(object::rd(object::cell(o), obj::SLOTS)),
+            loc.offset(),
+        )
+    }
+}
+
+/// MC-P3-OPAGREE (Codex M6-P3 r2 X1): the operands of the exported access of one case agree
+/// with the operands of its `ops_of` list `list`. The check reads the live objects, not the
+/// exporter's own index map (`facts_export::key_index`): the property is `x` at every site.
+/// - `OwnField { field }`: key `field` of the receiver `o`'s shape is `x`, and the action's
+///   `Loc` reads the value of `x` (`props::own_get`). A checked store's `GuardType` is the
+///   field's exported representation (int32: Int32, double: Number, heap: Heap).
+/// - `ProtoField { depth, field }`: `depth` prototype steps from `o` reach the holder at the
+///   handler's +24, key `field` of the holder's shape is `x`, and the `Loc` reads its `x`.
+/// - `Missing { depth }`: `o` has `depth` prototypes up to null.
+/// - `AddField { field, .. }`: key `field` of `o`'s shape after the add is `x`, and the `Loc`
+///   reads it.
+/// - `ArrayLength` and `Generic` have no operands.
+fn operands_agree(
+    rt: &Runtime,
+    o: u64,
+    handler: u64,
+    access: &Access,
+    receiver: &ShapeDesc,
+    list: &[Op],
+) -> Result<(), String> {
+    let x = atoms::intern_str(rt, "x");
+    let key_is_x = |obj: u64, field: u16| {
+        let s = shape::shape_of(obj);
+        usize::from(field) < shape::count(s) && shape::key_at(s, usize::from(field)) == x
+    };
+    let reads_x =
+        |obj: u64, loc: Loc| props::own_get(obj, x).map(|p| p.0) == Some(read_at(obj, loc));
+    let ty = list.iter().find_map(|op| match op {
+        Op::GuardType(Val::Value, t) => Some(*t),
+        _ => None,
+    });
+    let ok = match (access, list.last()) {
+        (
+            Access::OwnField { field },
+            Some(&(Op::LoadField(Val::Receiver, loc) | Op::StoreField(Val::Receiver, loc))),
+        ) => {
+            let rep = receiver.fields.get(usize::from(*field)).map(|h| h.rep);
+            let ty_ok = match ty {
+                None => true,
+                Some(Ty::Int32) => rep == Some(FieldRep::Int32),
+                Some(Ty::Number) => rep == Some(FieldRep::Double),
+                Some(Ty::Heap) => rep == Some(FieldRep::Heap),
+            };
+            key_is_x(o, *field) && reads_x(o, loc) && ty_ok
+        }
+        (Access::ProtoField { depth, field }, Some(&Op::LoadHolderField(Ref::HandlerRef, loc))) => {
+            let holder = ic_ops::handler_parts(handler).2;
+            let mut p = o;
+            for _ in 0..*depth {
+                if p != NULL {
+                    p = object::proto_of(p);
+                }
+            }
+            p == holder && key_is_x(holder, *field) && reads_x(holder, loc)
+        }
+        (Access::Missing { depth }, Some(Op::LoadUndefined)) => {
+            let (mut n, mut p) = (0u32, object::proto_of(o));
+            while p != NULL {
+                n += 1;
+                p = object::proto_of(p);
+            }
+            n == u32::from(*depth)
+        }
+        (
+            Access::AddField { field, .. },
+            Some(&Op::AddField(Val::Receiver, Ref::HandlerRef, loc)),
+        ) => key_is_x(o, *field) && reads_x(o, loc),
+        (Access::ArrayLength | Access::Generic, Some(_)) => true,
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "the operands of {access:?} do not agree with {list:?}"
+        ))
+    }
+}
+
+/// The negative control of [`operands_agree`]: `access` with one operand changed (a field
+/// index or a depth one more).
+fn changed_accesses(access: &Access) -> Vec<Access> {
+    match access {
+        Access::OwnField { field } => vec![Access::OwnField { field: field + 1 }],
+        Access::ProtoField { depth, field } => vec![
+            Access::ProtoField {
+                depth: depth + 1,
+                field: *field,
+            },
+            Access::ProtoField {
+                depth: *depth,
+                field: field + 1,
+            },
+        ],
+        Access::Missing { depth } => vec![Access::Missing { depth: depth + 1 }],
+        Access::AddField { to, field } => vec![Access::AddField {
+            to: to.clone(),
+            field: field + 1,
+        }],
+        _ => Vec::new(),
+    }
+}
+
+/// The negative control of [`operands_agree`]: `list` with the action's `Loc` one word lower
+/// (still inside the cell: a field is never the first word), or with another store `Ty`.
+fn changed_lists(list: &[Op]) -> Vec<Vec<Op>> {
+    let lower = |l: Loc| Loc(l.0 - (8 << smi::SHIFT));
+    let mut out = Vec::new();
+    let last = list.len() - 1;
+    let moved = match list[last] {
+        Op::LoadField(v, l) => Some(Op::LoadField(v, lower(l))),
+        Op::StoreField(v, l) => Some(Op::StoreField(v, lower(l))),
+        Op::LoadHolderField(r, l) => Some(Op::LoadHolderField(r, lower(l))),
+        Op::AddField(v, r, l) => Some(Op::AddField(v, r, lower(l))),
+        _ => None,
+    };
+    if let Some(op) = moved {
+        let mut l = list.to_vec();
+        l[last] = op;
+        out.push(l);
+    }
+    for (i, op) in list.iter().enumerate() {
+        if let Op::GuardType(v, t) = *op {
+            let other = match t {
+                Ty::Int32 => Ty::Heap,
+                Ty::Number => Ty::Int32,
+                Ty::Heap => Ty::Number,
+            };
+            let mut l = list.to_vec();
+            l[i] = Op::GuardType(v, other);
+            out.push(l);
+        }
+    }
+    out
 }
 
 // ---- MC-w24-5: the fields that H16 declares with no writer ---------------------------------------
@@ -1696,4 +1894,113 @@ fn the_fields_declared_with_no_writer_have_none() {
         export_facts(&iso, &unit.content_hash()).unwrap()
     });
     assert!(assert_no_declared_field(&snap) > 0, "keyed: no record");
+}
+
+// ---- MC-P3-KEYEDKIND: per-slot-kind evidence for the 5 keyed kinds -----------------------------
+
+/// One site of each keyed slot kind on fresh receivers: (0) StoreKeyed `a[0] = 1` on `[]` (out
+/// of bounds: the array grows), (1) LoadKeyed `a[0]` (a present element), (2) HasKeyed
+/// `"x" in o`, (3) DefineKeyedOwn of `o["y"]`, (4) StoreInArrayLiteral at index 0 of a new
+/// array literal (the `profile.rs` keyed program, one site per kind).
+fn keyed_kinds_program() -> (
+    VerifiedUnit,
+    [(FeedbackSlotKind, ep9_bytecode::FeedbackSlot); 5],
+) {
+    use FeedbackSlotKind::{DefineKeyedOwn, HasKeyed, LoadKeyed, StoreInArrayLiteral, StoreKeyed};
+    let mut s = Asm::script(0);
+    let (a, o, key, lit) = (
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+    );
+    s.b.create_empty_array_literal(s.lit).star(a);
+    s.b.create_empty_object_literal().star(o);
+    let store = s.b.feedback_slot(StoreKeyed);
+    s.b.lda_zero()
+        .star(key)
+        .lda_smi(1)
+        .set_keyed_property(a, key, store);
+    let load = s.b.feedback_slot(LoadKeyed);
+    s.b.lda_zero().get_keyed_property(a, load);
+    let has = s.b.feedback_slot(HasKeyed);
+    s.lda_str("x");
+    s.b.star(key).ldar(o).test_in(key, has);
+    let define = s.b.feedback_slot(DefineKeyedOwn);
+    s.lda_str("y");
+    s.b.star(key)
+        .lda_smi(1)
+        .define_keyed_own_property(o, key, 0, define);
+    let in_literal = s.b.feedback_slot(StoreInArrayLiteral);
+    s.b.create_empty_array_literal(s.lit).star(lit);
+    s.b.lda_zero()
+        .star(key)
+        .lda_smi(1)
+        .sta_in_array_literal(lit, key, in_literal);
+    s.b.lda_undefined().return_();
+    (
+        unit("", vec![s.finish()]),
+        [
+            (StoreKeyed, store),
+            (LoadKeyed, load),
+            (HasKeyed, has),
+            (DefineKeyedOwn, define),
+            (StoreInArrayLiteral, in_literal),
+        ],
+    )
+}
+
+/// MC-P3-KEYEDKIND (Codex M6-P3 r3): each of the 5 keyed slot kinds exports its own record,
+/// with the payload its own site recorded, so no kind can export a default `KeyedFacts` while
+/// the others supply the evidence (a pooled check misses an exporter arm that drops one kind's
+/// facts). Mutation check: an exporter whose StoreInArrayLiteral arm gives
+/// `KeyedFacts::default()` fails here.
+#[test]
+fn each_keyed_slot_kind_exports_its_own_payload() {
+    use FeedbackSlotKind as K;
+    use ep9_facts::{KeySet, KeyedFacts, KeyedHint};
+    on_big_stack(|| {
+        let (unit, sites) = keyed_kinds_program();
+        let mut c = config(Dispatch::DEFAULT, false);
+        c.feedback_threshold = 0;
+        let mut iso = isolate_full(c);
+        let u = unit.clone();
+        iso.with_cx(|cx| cx.run_script(u, "keyed-kinds.js").map(|_| ()))
+            .unwrap();
+        let snap = export_facts(&iso, &unit.content_hash()).unwrap();
+        let oob = KeyedHint::ARRAY | KeyedHint::OUT_OF_BOUNDS;
+        let name = (KeySet::NAME, KeyedHint::OBJECT);
+        let mut kinds = Vec::new();
+        for (kind, slot) in sites {
+            let record = snap.get(0, slot.index() as u32);
+            let k = match (kind, record) {
+                (K::LoadKeyed, Some(SlotFacts::LoadKeyed(k)))
+                | (K::StoreKeyed, Some(SlotFacts::StoreKeyed(k)))
+                | (K::HasKeyed, Some(SlotFacts::HasKeyed(k)))
+                | (K::DefineKeyedOwn, Some(SlotFacts::DefineKeyedOwn(k)))
+                | (K::StoreInArrayLiteral, Some(SlotFacts::StoreInArrayLiteral(k))) => k,
+                _ => panic!("{kind:?}: {record:?}"),
+            };
+            assert_ne!(*k, KeyedFacts::default(), "{kind:?}: a default payload");
+            let want = match kind {
+                K::StoreKeyed | K::StoreInArrayLiteral => (KeySet::INDEX, oob),
+                K::LoadKeyed => (KeySet::INDEX, KeyedHint::ARRAY),
+                _ => name,
+            };
+            assert_eq!((k.keys, k.hint), want, "{kind:?}: {k:?}");
+            kinds.push(kind);
+        }
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            [
+                K::LoadKeyed,
+                K::StoreKeyed,
+                K::DefineKeyedOwn,
+                K::HasKeyed,
+                K::StoreInArrayLiteral
+            ],
+            "every keyed kind has its own site"
+        );
+    });
 }
