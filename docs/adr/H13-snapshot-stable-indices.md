@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Frozen (rules; 2026-11-05, M1 exit; root slots; 2026-11-06, A2 start: the A2-START merge cd4e4766, plan v12 V12-D13). Was: Accepted (2026-10-25, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1). H13-Q3 filled 2026-10-23 (M3-P1 SP-UNIT): the native runtime table is an append-only list with a golden |
+| Status | Frozen (rules, root slots; rules 2026-11-05, M1 exit; root slots 2026-11-06, A2 start: the A2-START merge cd4e4766, plan v12 V12-D13). Was: Accepted (2026-10-25, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1). H13-Q3 filled 2026-10-23 (M3-P1 SP-UNIT): the native runtime table is an append-only list with a golden |
 | Fix by | Rules M0; index lists M1; built M4 (A1) |
 | Freeze point | Freeze table (README §3.4): rules and index lists at M1 exit; snapshot build at M4 exit. [2026-11-04, M6-P3 B3T2:] The table names four parts: "rules" (with the index-list table) at M1 exit; "index ids (append-only)", no freeze point; "root slots", append-only from A2 start; "snapshot build" at M4 exit |
 | Origin | v1#19 + R16-D5; plan status E |
