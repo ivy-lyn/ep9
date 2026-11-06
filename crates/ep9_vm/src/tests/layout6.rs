@@ -196,7 +196,7 @@ fn month_6_versions() {
             versions::FRAME_VERSION,
             versions::DEOPT_META_VERSION
         ),
-        (7, 4, 1, 2, 0)
+        (7, 4, 1, 2, 1)
     );
     assert_eq!(
         (versions::BUILTIN_ABI_VERSION, ep9_bytecode::ABI_VERSION),
