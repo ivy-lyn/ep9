@@ -3,9 +3,9 @@
 
 use crate::codes::{Versions, cpu, target_abi, target_arch};
 
-/// The engine build id this build writes and accepts (H35-Q8): the first 16 bytes of SHA-256
-/// over the git commit, `rustc -vV`, the target and this crate's features, or the 32 hex
-/// digits of `EP9_BUILD_ID` at build time (`build.rs`). `ep9_frontend` still writes 16 zero
+/// The engine build id this build writes and accepts (H35-Q8, C-19): the first 16 bytes of
+/// SHA-256 over the git commit, `rustc -vV`, the target and the embedder string, with no Cargo
+/// feature, tree state or profile, or the 32 hex digits of `EP9_BUILD_ID` (`build.rs`). `ep9_frontend` still writes 16 zero
 /// bytes into every CompiledUnit, so the bytecode corpus digest does not depend on it.
 pub const ENGINE_BUILD_ID: [u8; 16] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/engine_build_id.bin"));
@@ -167,7 +167,7 @@ mod tests {
         let digest = ep9_bytecode::sha256::sha256(INPUT.as_bytes());
         assert_eq!(ENGINE_BUILD_ID[..], digest[..16]);
         let lines: Vec<&str> = INPUT.lines().collect();
-        assert_eq!(lines[0], "ep9 engine build id v1");
+        assert_eq!(lines[0], "ep9 engine build id v2");
         let commit = lines[1].strip_prefix("commit ").expect("commit line");
         assert!(
             commit == "unknown"
@@ -180,14 +180,54 @@ mod tests {
                 .is_some_and(|t| !t.is_empty()),
             "{INPUT}"
         );
-        assert!(lines[3].starts_with("features"), "{INPUT}");
+        assert_eq!(
+            lines[3].strip_prefix("embedder "),
+            Some(option_env!("EP9_EMBEDDER").unwrap_or("")),
+            "{INPUT}"
+        );
         assert_eq!(lines[4], "rustc");
         assert!(
             lines[5..].iter().any(|l| l.starts_with("host: ")),
             "{INPUT}"
         );
-        assert_eq!(lines[3] == "features AOT", cfg!(feature = "aot"), "{INPUT}");
         assert_ne!(ENGINE_BUILD_ID, [0; 16]);
+    }
+
+    /// C-19 (MC-w27-6): the id text names no Cargo feature, no tree state and no profile, so
+    /// the `aot` build (ep9c), the jit and the jitless builds of one commit have one id. The
+    /// same test runs with `--features aot`; the report compares the two ids.
+    #[test]
+    fn the_build_id_names_no_feature_tree_state_or_profile() {
+        if INPUT.starts_with("override ") {
+            return;
+        }
+        let head: Vec<&str> = INPUT.lines().take(5).collect();
+        let keys: Vec<&str> = head
+            .iter()
+            .map(|l| l.split(' ').next().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            keys,
+            ["ep9", "commit", "target", "embedder", "rustc"],
+            "{INPUT}"
+        );
+        let lower = head.join("\n").to_ascii_lowercase();
+        for word in [
+            "feature",
+            "aot",
+            "jit",
+            "dirty",
+            "debug",
+            "release",
+            "profile",
+            "opt-level",
+        ] {
+            let hit = head[..4]
+                .iter()
+                .any(|l| l.to_ascii_lowercase().split([' ', ',']).any(|w| w == word));
+            assert!(!hit, "the id text names {word:?}: {lower}");
+        }
+        println!("engine build id {}", hex(&ENGINE_BUILD_ID));
     }
 
     /// The commit in the id is the one checked out now: cargo reran build.rs when HEAD moved.
