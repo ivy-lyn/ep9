@@ -51,6 +51,11 @@
 //!   policy: a minor GC when the allocation budget is spent (budget = max(initial budget,
 //!     old bytes / 2)); a major GC instead once the old bytes passed twice the live bytes of
 //!     the last major GC (est.), or when an allocation finds no memory after its GC
+//!   nursery policy (S2a part 2): a minor GC that kept at least 3/4 of the young bytes
+//!     (high survival: its trace mostly promoted cells that die old, splay) makes the next
+//!     budget GC major, once the heap holds 5/2 of the live bytes of the last major GC; after
+//!     that major GC one minor GC at the initial budget reads the survival again (est. 3/4
+//!     and 5/2, measured on splay)
 //!
 //! verify_after_gc (GC-stress turns it on): the verify costs no second trace of the heap
 //!   mark:  a checked mark (trace.rs) checks every edge, weak slot, word0 shape, kind, size
@@ -494,6 +499,8 @@ pub(crate) struct Inner {
     major_limit: usize,
     /// S1 GC-stress: collections so far (every `stress_major_every`th is major).
     stress_gcs: u32,
+    /// The nursery policy (module doc): the last minor GC kept at least 3/4 of the young bytes.
+    high_survival: bool,
     /// GC-stress collections since the last one that used the parallel paths (`u32::MAX`:
     /// none yet; [`crate::parallel::STRESS_PARALLEL_EVERY`]).
     stress_parallel: u32,
@@ -594,6 +601,7 @@ impl Heap {
                 old_bytes: 0,
                 major_limit: s.initial_budget.saturating_mul(2),
                 stress_gcs: 0,
+                high_survival: false,
                 stress_parallel: u32::MAX,
                 #[cfg(test)]
                 sweeper_pages: 0,
@@ -1390,6 +1398,22 @@ impl Inner {
         self.next_major = self.old_bytes > self.major_limit;
         // The sweep visits every page (it walks cells only where one died): grow with the heap.
         self.budget = initial.max(self.old_bytes / 2);
+        // The nursery policy (S2a part 2; module doc). A minor GC that kept most young bytes
+        // freed little: its trace mostly promoted cells that the next major GC traces again.
+        // So the GCs skip the minor GCs: the next budget GC is major, once the heap holds 5/2
+        // of the live bytes of the last major GC. After that major GC, a small minor GC (the
+        // initial budget) reads the survival again. (est. 3/4 and 5/2: measured on splay.)
+        if minor {
+            let young = self.allocated_since_gc;
+            self.high_survival = young > 0 && promoted_bytes >= young / 4 * 3;
+            if self.high_survival {
+                let peak = (self.major_limit / 4).saturating_mul(5);
+                self.next_major = true;
+                self.budget = initial.max(peak.saturating_sub(self.old_bytes));
+            }
+        } else if self.high_survival {
+            self.budget = initial;
+        }
     }
 
     fn sync_limit(&self, hot: &Hot) {

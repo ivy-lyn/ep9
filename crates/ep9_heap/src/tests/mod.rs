@@ -10,7 +10,7 @@
 //! | `css.rs` | conservative stack scan: locals, interior and one-past-end pointers, S7 (not Miri) |
 //! | `stress.rs` | randomized mutator against a model of the object graph |
 //! | `s1.rs` | S1 step 1 behind `HeapConfig::generational`: remembered lists, LOS cards, sticky marks, the verifier's S1 rules, GC-stress, a caught panic |
-//! | `minor.rs` | S1 step 2: the minor GC (old cells stay, remembered hosts and dirty cards traced, weak parts and young-key ephemerons), the major GC, the policy, generational GC-stress, the generational invariant check, a caught panic |
+//! | `minor.rs` | S1 step 2: the minor GC (old cells stay, remembered hosts and dirty cards traced, weak parts and young-key ephemerons), the major GC, the policy and the nursery policy (high survival), generational GC-stress, the generational invariant check, a caught panic |
 //! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, shared commit limit, config |
 //! | `verify.rs` | the verify after a GC (checked mark + checked sweep) finds each fault `Heap::verify` finds; the planted dangling slot; the E2 check |
 //! | `parallel.rs` | S2a part 1, the parallel mark: the reachable set and the marked counts equal the sequential mark's (S0, S1 major, minor with V1, checked mark, word0 shapes, weak slots, ephemerons, the random mutators), a panic on any marker, two heaps at once, the `EP9_GC_HELPERS` value |
