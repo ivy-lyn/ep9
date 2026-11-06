@@ -1,7 +1,8 @@
 //! loom: the shared work structure of the parallel mark (parallel.rs [`Work`] and [`run`])
-//! with 2 markers (10-quality: loom on concurrent GC structures; plan v12 rule 8). Under
-//! `--cfg loom` the structure uses the loom primitives, so loom runs every interleaving of
-//! the two markers up to the preemption bound:
+//! with 2 markers, and the page claims of the concurrent sweep ([`Claims`]) with the sweeper
+//! thread and the heap's thread (10-quality: loom on concurrent GC structures; plan v12 rule
+//! 8). Under `--cfg loom` both use the loom primitives, so loom runs every interleaving of the
+//! two threads up to the preemption bound:
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test --release -p ep9_heap --lib parallel::loom_tests
@@ -14,13 +15,21 @@
 //! marker ends with work left. `share_every` is 1, so a marker looks at the shared counters
 //! after every node and segments really move between the markers.
 //!
+//! The sweep models: a page is a `loom::cell::UnsafeCell` that the sweeping thread writes
+//! (its sweep). The sweeper thread claims with `claim_open` and ends each claim with `done`;
+//! the heap's thread claims the rest (a join) or takes them all with `close` (a dropped heap),
+//! then waits with `wait_settled` and reads every page. loom reports a data race if the end
+//! wait could return while the sweeper still writes a page; the models also check that each
+//! page is swept at most once, and exactly once in a join.
+//!
 //! [`Work`]: crate::parallel::Work
 //! [`run`]: crate::parallel::run
+//! [`Claims`]: crate::parallel::Claims
 
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 
-use crate::parallel::{Marker, Work, run};
+use crate::parallel::{Claims, Marker, Work, run};
 
 struct Graph {
     edges: Vec<Vec<usize>>,
@@ -163,4 +172,55 @@ fn a_stop_ends_an_idle_marker() {
         work.stop();
         helper.join().unwrap();
     });
+}
+
+/// The sweeper thread and the heap's thread on `pages` pages; `close`: the heap's thread takes
+/// every page left at once (a dropped heap), else it claims and sweeps them (a join).
+fn check_claims(pages: usize, close: bool, bound: usize) {
+    let mut b = loom::model::Builder::new();
+    b.preemption_bound = Some(bound);
+    b.check(move || {
+        let claims = Arc::new(Claims::new(pages));
+        let page: Arc<Vec<loom::cell::UnsafeCell<u32>>> =
+            Arc::new((0..pages).map(|_| loom::cell::UnsafeCell::new(0)).collect());
+        let sweeper = {
+            let (claims, page) = (Arc::clone(&claims), Arc::clone(&page));
+            loom::thread::spawn(move || {
+                while let Some(i) = claims.claim_open() {
+                    // SAFETY: the claim gives page `i` to this thread until `done`.
+                    page[i].with_mut(|p| unsafe { *p += 1 });
+                    claims.done();
+                }
+            })
+        };
+        if close {
+            claims.close();
+        } else {
+            while let Some(i) = claims.claim() {
+                // SAFETY: the claim gives page `i` to this thread.
+                page[i].with_mut(|p| unsafe { *p += 1 });
+            }
+        }
+        claims.wait_settled();
+        // After the end wait the heap's thread owns every page (no race with the sweeper).
+        for (i, p) in page.iter().enumerate() {
+            // SAFETY: no claim is open and none can succeed (`Claims` doc).
+            let n = p.with(|p| unsafe { *p });
+            assert!(n <= 1, "page {i} swept {n} times");
+            assert!(close || n == 1, "page {i} not swept in a join");
+        }
+        sweeper.join().unwrap();
+    });
+}
+
+/// A join: the heap's thread sweeps the pages the sweeper has not taken, then waits.
+#[test]
+fn a_join_sweeps_each_page_once_and_owns_them_after_the_wait() {
+    check_claims(2, false, 3);
+}
+
+/// A dropped heap: `close` takes every page left; after the wait no page is touched again.
+#[test]
+fn a_close_ends_the_sweepers_claims() {
+    check_claims(2, true, 3);
 }

@@ -19,12 +19,16 @@
 //!                 VO bit set (small pages)
 //!
 //! collect(): spill registers (ep9_platform) -> retire TLABs and the shape hole -> finish the
-//!   last lazy sweep
+//!   last lazy sweep (and end the last concurrent sweep: the sweeper thread never runs during
+//!   a GC)
 //!   -> mark: CSS [sp, stack high) + handles + scratch roots + root ranges + root sources
 //!   -> drain (trace by kind; with a shape space, also mark the shape that word0 names)
 //!   -> clear dead weak slots -> free dead LOS cells now
 //!   -> queue every small page for lazy sweep, shape pages in their own queue (mark bits stay
-//!      until the page is swept)
+//!      until the page is swept); S2a part 2: with GC helpers and at least 16 pages, the
+//!      sweeper thread gets them instead and sweeps them while the mutator runs, and an
+//!      allocation that needs a page files the sweeper's pages or sweeps one itself
+//!      (parallel.rs part 2; EP9_GC_HELPERS=0: the lazy sweep)
 //! a callback (root source, trace, size, weak source) panics while marking: every mark bit
 //!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
 //!   (generational: set to the VO bits instead, so every cell counts as old, and the logs stay;
@@ -74,6 +78,7 @@ use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 
 use ep9_platform::CageConfig;
 use ep9_value::encoding::VALUE_UNDEFINED;
@@ -447,6 +452,9 @@ fn reset_page_marks(page: Page, sticky: bool) {
 }
 
 pub(crate) struct Inner {
+    /// The concurrent sweep of the last GC, if one runs (S2a part 2). The first field: its
+    /// drop ends the job before `mem` unmaps the cage.
+    concurrent: ConcurrentSweep,
     pub(crate) mem: Memory,
     pub(crate) kinds: KindTable,
     pub(crate) s: Settings,
@@ -486,6 +494,14 @@ pub(crate) struct Inner {
     major_limit: usize,
     /// S1 GC-stress: collections so far (every `stress_major_every`th is major).
     stress_gcs: u32,
+    /// GC-stress collections since the last one that used the parallel paths (`u32::MAX`:
+    /// none yet; [`crate::parallel::STRESS_PARALLEL_EVERY`]).
+    stress_parallel: u32,
+    /// Tests: pages the sweeper thread swept for this heap so far, and concurrent sweeps started.
+    #[cfg(test)]
+    sweeper_pages: u64,
+    #[cfg(test)]
+    jobs: u64,
     /// V1 runs so far (one before each minor GC with `verify_after_gc` or GC-stress).
     pub(crate) v1_runs: u64,
 }
@@ -547,6 +563,7 @@ impl Heap {
             kind_sizes: [const { Cell::new(NOT_REGISTERED) }; 256],
             _generational: generational,
             inner: RefCell::new(Inner {
+                concurrent: ConcurrentSweep(None),
                 mem,
                 kinds: KindTable::new(),
                 s,
@@ -577,6 +594,11 @@ impl Heap {
                 old_bytes: 0,
                 major_limit: s.initial_budget.saturating_mul(2),
                 stress_gcs: 0,
+                stress_parallel: u32::MAX,
+                #[cfg(test)]
+                sweeper_pages: 0,
+                #[cfg(test)]
+                jobs: 0,
                 v1_runs: 0,
             }),
             roots: RefCell::new(Roots::default()),
@@ -939,6 +961,17 @@ impl Heap {
             let verify = inner.s.verify_after_gc;
             let sticky = inner.s.generational;
             let minor = sticky && kind == GcKind::Minor;
+            // GC-stress: the first GC, then a major GC at most every STRESS_PARALLEL_EVERY GCs,
+            // use the parallel mark and the concurrent sweep with low thresholds (parallel.rs;
+            // route GCPAR-STRESS), so GC-stress runs reach them.
+            let stress_parallel = inner.s.gc_stress > 0 && {
+                let since = inner.stress_parallel.saturating_add(1);
+                let pick = since == u32::MAX
+                    || (!minor && since >= crate::parallel::STRESS_PARALLEL_EVERY - 1);
+                inner.stress_parallel = if pick { 0 } else { since };
+                pick
+            };
+            let _stress = crate::parallel::StressParallel::new(stress_parallel);
             // V1 (H11, 03-gc §7): a minor GC keeps the old cells' marks, so its mark does not
             // trace them. Before the mark, V1 checks them (no old cell outside the S1 logs
             // holds a young cell) and counts them (the sweeps then keep the old cells and the
@@ -1064,10 +1097,14 @@ impl Heap {
                 .mem
                 .small_pages()
                 .partition(|&i| inner.mem.is_shape_chunk(i));
-            pages.reverse(); // pop() takes low pages first
-            shape_pages.reverse();
-            inner.sweep_queue = pages;
-            inner.shape_sweep_queue = shape_pages;
+            // The sweeper thread sweeps them while the mutator runs (S2a part 2), or the
+            // allocations sweep them lazily.
+            if !inner.start_concurrent_sweep(&pages, &shape_pages, verify, stress_parallel) {
+                pages.reverse(); // pop() takes low pages first
+                shape_pages.reverse();
+                inner.sweep_queue = pages;
+                inner.shape_sweep_queue = shape_pages;
+            }
 
             inner.after_gc(minor, marked_bytes, promoted_bytes);
             inner.allocated_since_gc = 0;
@@ -1114,6 +1151,11 @@ impl Heap {
     pub fn stats(&self) -> GcStats {
         let inner = self.inner.borrow();
         let mut s = inner.stats.clone();
+        if let Some(job) = &inner.concurrent.0 {
+            let (cells, bytes) = job.freed_so_far();
+            s.freed_cells += cells;
+            s.freed_bytes += bytes;
+        }
         s.committed_bytes = inner.mem.committed_bytes();
         s.small_pages = inner.mem.small_pages().count();
         s.shape_pages = inner
@@ -1440,6 +1482,9 @@ impl Inner {
                 }
                 continue;
             }
+            if self.concurrent.0.is_some() && self.sweep_from_job(false) {
+                continue;
+            }
             let idx = self.fresh_page()?;
             self.cur_page = Some(idx);
             self.cur_line = FIRST_LINE;
@@ -1509,6 +1554,9 @@ impl Inner {
                 }
                 continue;
             }
+            if self.concurrent.0.is_some() && self.sweep_from_job(true) {
+                continue;
+            }
             // A fresh page is one hole of PAGE_CELL_BYTES >= MAX_SMALL_SIZE, so the next turn
             // places the cell.
             let idx = self.mem.alloc_shape_page()?;
@@ -1528,7 +1576,9 @@ impl Inner {
     #[cold]
     #[inline(never)]
     fn sweep_before_out_of_memory(&mut self) -> bool {
-        let queued = !self.sweep_queue.is_empty() || !self.shape_sweep_queue.is_empty();
+        let queued = !self.sweep_queue.is_empty()
+            || !self.shape_sweep_queue.is_empty()
+            || self.concurrent.0.is_some();
         self.finish_sweeping();
         queued
     }
@@ -1546,6 +1596,9 @@ impl Inner {
     /// Returns the number of cells kept.
     fn finish_sweeping_with<const CHECK: bool>(&mut self, errors: &mut Vec<String>) -> usize {
         let mut kept = 0;
+        if let Some(job) = self.concurrent.0.take() {
+            kept += self.join_job::<CHECK>(&job, errors);
+        }
         while let Some(idx) = self.sweep_queue.pop() {
             if self.sweep_page_with::<CHECK>(idx, errors, &mut kept) == Swept::Recyclable {
                 self.recyclable.push(idx);
@@ -2109,6 +2162,174 @@ impl Inner {
     }
 }
 
+/// The concurrent sweep of the last GC (S2a part 2; `crate::parallel` part 2), if one runs.
+/// Dropped with the heap: the drop takes every page left and waits until the sweeper thread
+/// is done with its page, so the sweeper never touches the cage after the heap is gone.
+struct ConcurrentSweep(Option<Arc<crate::parallel::Job>>);
+
+impl Drop for ConcurrentSweep {
+    fn drop(&mut self) {
+        if let Some(job) = self.0.take() {
+            job.claims.close();
+            job.claims.wait_settled();
+        }
+    }
+}
+
+impl Inner {
+    /// Gives the pages that this GC queued to the sweeper thread, if the concurrent sweep is
+    /// on ([`crate::parallel::sweeper_on`]) and the GC queued at least
+    /// [`crate::parallel::SWEEP_START_PAGES`] pages (one under a GC-stress GC that uses the
+    /// parallel paths). `check`: the job sweeps with the verifier's checks (the verify after
+    /// this GC joins it at once). False: the caller queues the pages for the lazy sweep.
+    fn start_concurrent_sweep(
+        &mut self,
+        pages: &[usize],
+        shape_pages: &[usize],
+        check: bool,
+        stress: bool,
+    ) -> bool {
+        debug_assert!(self.concurrent.0.is_none(), "the GC joined the last sweep");
+        let n = pages.len() + shape_pages.len();
+        let least = if stress {
+            1
+        } else {
+            crate::parallel::sweep_start_pages()
+        };
+        if n < least || !crate::parallel::sweeper_on() {
+            return false;
+        }
+        let list = pages.iter().chain(shape_pages).map(|&i| i as u32).collect();
+        let job = Arc::new(crate::parallel::Job::new(
+            self.mem.base(),
+            &self.kinds,
+            self.s.generational,
+            self.s.zap,
+            check,
+            list,
+        ));
+        if !crate::parallel::publish(&job) {
+            return false;
+        }
+        self.concurrent.0 = Some(job);
+        #[cfg(test)]
+        {
+            self.jobs += 1;
+        }
+        true
+    }
+
+    /// The lazy sweep's step when a concurrent sweep runs: files the pages that the sweeper
+    /// thread has swept, then sweeps pages of the job here until one of the wanted space
+    /// (`shape`: the shape region) is recyclable. True if such a page is now in its
+    /// recyclable list. Ends the job once every page is taken and the sweeper thread is done.
+    #[cold]
+    #[inline(never)]
+    fn sweep_from_job(&mut self, shape: bool) -> bool {
+        let Some(job) = self.concurrent.0.clone() else {
+            return false;
+        };
+        if self.file_done(&job, shape) {
+            return true;
+        }
+        while let Some(i) = job.claims.claim() {
+            let idx = job.pages[i] as usize;
+            if self.sweep_page(idx) == Swept::Recyclable && self.file_recyclable(idx) == shape {
+                return true;
+            }
+        }
+        if !job.claims.settled() {
+            return false;
+        }
+        let got = self.file_done(&job, shape);
+        self.concurrent.0 = None;
+        self.take_job_counts(&job, &mut Vec::new());
+        got
+    }
+
+    /// Puts recyclable page `idx` in the recyclable list of its space; true for the shape
+    /// region.
+    fn file_recyclable(&mut self, idx: usize) -> bool {
+        let shape = self.mem.is_shape_chunk(idx);
+        if shape {
+            self.shape_recyclable.push(idx);
+        } else {
+            self.recyclable.push(idx);
+        }
+        shape
+    }
+
+    /// Files the results of the pages that the sweeper thread swept: a recyclable page goes
+    /// to its recyclable list, a free page back to the chunk pool (only the heap's thread
+    /// changes `Memory`). True if a page of the wanted space was filed. Raises a panic of the
+    /// sweeper thread again here.
+    fn file_done(&mut self, job: &crate::parallel::Job, shape: bool) -> bool {
+        let mut done = Vec::new();
+        job.take_done(&mut done);
+        #[cfg(test)]
+        {
+            self.sweeper_pages += done.len() as u64;
+        }
+        let mut got = false;
+        for (idx, swept) in done {
+            let idx = idx as usize;
+            match swept {
+                Swept::Free => self.mem.free_small_page(idx),
+                Swept::Recyclable => got |= self.file_recyclable(idx) == shape,
+                Swept::Full => {}
+            }
+        }
+        if let Some(p) = job.take_panic() {
+            std::panic::resume_unwind(p);
+        }
+        got
+    }
+
+    /// Adds the sweeper thread's counts of `job` to the stats; returns its kept cells (the
+    /// checked sweep) and appends its errors.
+    fn take_job_counts(&mut self, job: &crate::parallel::Job, errors: &mut Vec<String>) -> usize {
+        let (cells, bytes, kept) = job.take_counts(errors);
+        self.stats.freed_cells += cells;
+        self.stats.freed_bytes += bytes;
+        kept
+    }
+
+    /// Ends the concurrent sweep `job` (taken off `concurrent`): sweeps every page left here
+    /// (`CHECK`: with the verifier's checks), waits until the sweeper thread is done with its
+    /// page, then files the sweeper's pages. Returns the cells kept (both threads; `CHECK`).
+    fn join_job<const CHECK: bool>(
+        &mut self,
+        job: &crate::parallel::Job,
+        errors: &mut Vec<String>,
+    ) -> usize {
+        debug_assert!(!CHECK || job.check(), "a checked sweep joins a checked job");
+        #[cfg(test)]
+        if crate::parallel::test_controls::SWEEPER_FIRST.get() {
+            let t0 = std::time::Instant::now();
+            let ten = std::time::Duration::from_secs(10);
+            while !job.claims.taken() && !job.panicked() && t0.elapsed() < ten {
+                std::thread::yield_now();
+            }
+        }
+        let mut kept = 0;
+        while let Some(i) = job.claims.claim() {
+            let idx = job.pages[i] as usize;
+            if self.sweep_page_with::<CHECK>(idx, errors, &mut kept) == Swept::Recyclable {
+                self.file_recyclable(idx);
+            }
+        }
+        job.claims.wait_settled();
+        // The counts first: `file_done` raises a panic of the sweeper thread.
+        let mut sweeper_errors = Vec::new();
+        kept += self.take_job_counts(job, &mut sweeper_errors);
+        if CHECK {
+            errors.append(&mut sweeper_errors);
+        }
+        self.file_done(job, false);
+        kept
+    }
+}
+
 /// VO words per block in the sweep's empty-block test.
 const SKIP_WORDS: usize = 8;
 const _: () = assert!(BITMAP_WORDS.is_multiple_of(SKIP_WORDS));
@@ -2191,9 +2412,11 @@ pub(crate) mod sweep_counter {
 #[cfg(test)]
 impl Heap {
     /// True if a cell starting at `addr` survived the last GC, without sweeping: on a page that
-    /// waits for its lazy sweep, the mark bit decides.
+    /// waits for its lazy sweep, the mark bit decides. A concurrent sweep is ended first (its
+    /// pages are being swept on another thread).
     pub(crate) fn live_after_gc(&self, addr: usize) -> bool {
         use crate::memory::Chunk;
+        self.end_concurrent_sweep();
         let inner = self.inner.borrow();
         let Some(idx) = inner.mem.chunk_index(addr) else {
             return false;
@@ -2233,6 +2456,46 @@ impl Heap {
     pub(crate) fn unswept_pages(&self) -> usize {
         let inner = self.inner.borrow();
         inner.sweep_queue.len() + inner.shape_sweep_queue.len()
+    }
+
+    /// Ends the concurrent sweep of the last GC, if one runs (every page of it swept); the
+    /// lazy sweep queues stay.
+    pub(crate) fn end_concurrent_sweep(&self) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(job) = inner.concurrent.0.take() {
+            inner.join_job::<false>(&job, &mut Vec::new());
+        }
+    }
+
+    /// A concurrent sweep runs (the last GC gave its pages to the sweeper thread).
+    pub(crate) fn sweeping_concurrently(&self) -> bool {
+        self.inner.borrow().concurrent.0.is_some()
+    }
+
+    /// Waits (at most 10 s) until the sweeper thread has taken and swept every page of the
+    /// concurrent sweep; false if none runs or the time ran out.
+    pub(crate) fn wait_for_sweeper(&self) -> bool {
+        let Some(job) = self.inner.borrow().concurrent.0.clone() else {
+            return false;
+        };
+        let t0 = std::time::Instant::now();
+        while !(job.claims.taken() && job.claims.settled()) {
+            if t0.elapsed() > std::time::Duration::from_secs(10) {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        true
+    }
+
+    /// Pages the sweeper thread swept for this heap so far (filed by the heap's thread).
+    pub(crate) fn sweeper_pages(&self) -> u64 {
+        self.inner.borrow().sweeper_pages
+    }
+
+    /// Concurrent sweeps this heap started so far.
+    pub(crate) fn concurrent_jobs(&self) -> u64 {
+        self.inner.borrow().jobs
     }
 }
 

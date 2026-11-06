@@ -34,10 +34,10 @@ fn parallel<R>(helpers: usize, f: impl FnOnce() -> R) -> R {
     test_controls::with(helpers, 0, f)
 }
 
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
-    fn below(&mut self, n: usize) -> usize {
+    pub(super) fn below(&mut self, n: usize) -> usize {
         // SplitMix64.
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
@@ -67,12 +67,12 @@ fn the_helper_count_follows_ep9_gc_helpers() {
 /// A random graph for the major-GC tests: nodes with 0-4 slots (edges to random nodes),
 /// weak boxes (a weak slot and a strong slot), roots by global handles, and (with a shape
 /// space) a word0 shape on some nodes.
-struct Graph {
-    cells: Vec<CellPtr>,
+pub(super) struct Graph {
+    pub(super) cells: Vec<CellPtr>,
     /// Strong edges and weak edges by cell index.
     strong: Vec<Vec<usize>>,
     weak: Vec<Option<usize>>,
-    roots: Vec<usize>,
+    pub(super) roots: Vec<usize>,
     handles: Vec<GlobalHandle>,
     /// Shape cells (in `cells`) and the shape index of each cell, if any.
     shape_of: Vec<Option<usize>>,
@@ -90,7 +90,7 @@ fn pshape_trace(c: CellPtr, t: &mut Tracer<'_>) {
     t.visit(unsafe { c.slot(8) });
 }
 
-fn graph_heap(generational: bool, checked: bool, shapes: bool) -> Heap {
+pub(super) fn graph_heap(generational: bool, checked: bool, shapes: bool) -> Heap {
     let heap = test_heap(|c| {
         c.generational = generational;
         c.verify_after_gc = checked;
@@ -113,7 +113,7 @@ fn graph_heap(generational: bool, checked: bool, shapes: bool) -> Heap {
     heap
 }
 
-fn build(heap: &Heap, rng: &mut Rng, n: usize, shapes: bool) -> Graph {
+pub(super) fn build(heap: &Heap, rng: &mut Rng, n: usize, shapes: bool) -> Graph {
     let mut g = Graph {
         cells: Vec::new(),
         strong: Vec::new(),
@@ -220,7 +220,7 @@ impl Graph {
     }
 
     /// The model: the cells reachable from the roots (strong edges and word0 shapes).
-    fn reachable(&self) -> BTreeSet<usize> {
+    pub(super) fn reachable(&self) -> BTreeSet<usize> {
         let mut live = BTreeSet::new();
         let mut work = self.roots.clone();
         while let Some(i) = work.pop() {
@@ -234,7 +234,7 @@ impl Graph {
 
     /// Checks the heap against the model after a GC: exactly the reachable cells are live,
     /// and a live weak box's weak slot holds its target if the target lives, else undefined.
-    fn check(&mut self, heap: &Heap, live: &BTreeSet<usize>, what: &str) {
+    pub(super) fn check(&mut self, heap: &Heap, live: &BTreeSet<usize>, what: &str) {
         for (i, c) in self.cells.iter().enumerate() {
             if self.gone.contains(&i) {
                 continue;
@@ -261,7 +261,7 @@ impl Graph {
         }
     }
 
-    fn drop_roots(self, heap: &Heap) {
+    pub(super) fn drop_roots(self, heap: &Heap) {
         for h in self.handles {
             heap.drop_global(h);
         }
