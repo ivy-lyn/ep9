@@ -19,16 +19,12 @@
 //!                 VO bit set (small pages)
 //!
 //! collect(): spill registers (ep9_platform) -> retire TLABs and the shape hole -> finish the
-//!   last lazy sweep (and end the last concurrent sweep: the sweeper thread never runs during
-//!   a GC)
+//!   last lazy or concurrent sweep (the sweeper thread never runs during a GC)
 //!   -> mark: CSS [sp, stack high) + handles + scratch roots + root ranges + root sources
 //!   -> drain (trace by kind; with a shape space, also mark the shape that word0 names)
 //!   -> clear dead weak slots -> free dead LOS cells now
 //!   -> queue every small page for lazy sweep, shape pages in their own queue (mark bits stay
-//!      until the page is swept); S2a part 2: with GC helpers and at least 16 pages, the
-//!      sweeper thread gets them instead and sweeps them while the mutator runs, and an
-//!      allocation that needs a page files the sweeper's pages or sweeps one itself
-//!      (parallel.rs part 2; EP9_GC_HELPERS=0: the lazy sweep)
+//!      until the page is swept), or give them to the sweeper thread (parallel.rs part 2)
 //! a callback (root source, trace, size, weak source) panics while marking: every mark bit
 //!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
 //!   (generational: set to the VO bits instead, so every cell counts as old, and the logs stay;
@@ -49,13 +45,8 @@
 //!     become old)
 //!   sweep: frees the unmarked cells and keeps the mark bits of the others (old = marked)
 //!   policy: a minor GC when the allocation budget is spent (budget = max(initial budget,
-//!     old bytes / 2)); a major GC instead once the old bytes passed twice the live bytes of
-//!     the last major GC (est.), or when an allocation finds no memory after its GC
-//!   nursery policy (S2a part 2): a minor GC that kept at least 3/4 of the young bytes
-//!     (high survival: its trace mostly promoted cells that die old, splay) makes the next
-//!     budget GC major, once the heap holds 5/2 of the live bytes of the last major GC; after
-//!     that major GC one minor GC at the initial budget reads the survival again (est. 3/4
-//!     and 5/2, measured on splay)
+//!     old bytes / 2)); a major GC once the old bytes pass twice the last major GC's live
+//!     bytes (est.), after a minor GC with high survival (Inner::after_gc), or on no memory
 //!
 //! verify_after_gc (GC-stress turns it on): the verify costs no second trace of the heap
 //!   mark:  a checked mark (trace.rs) checks every edge, weak slot, word0 shape, kind, size
@@ -83,7 +74,6 @@ use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering::Relaxed;
-use std::sync::Arc;
 
 use ep9_platform::CageConfig;
 use ep9_value::encoding::VALUE_UNDEFINED;
@@ -499,7 +489,7 @@ pub(crate) struct Inner {
     major_limit: usize,
     /// S1 GC-stress: collections so far (every `stress_major_every`th is major).
     stress_gcs: u32,
-    /// The nursery policy (module doc): the last minor GC kept at least 3/4 of the young bytes.
+    /// The nursery policy (`after_gc`): the last minor GC kept at least 3/4 of the young bytes.
     high_survival: bool,
     /// GC-stress collections since the last one that used the parallel paths (`u32::MAX`:
     /// none yet; [`crate::parallel::STRESS_PARALLEL_EVERY`]).
@@ -1398,7 +1388,7 @@ impl Inner {
         self.next_major = self.old_bytes > self.major_limit;
         // The sweep visits every page (it walks cells only where one died): grow with the heap.
         self.budget = initial.max(self.old_bytes / 2);
-        // The nursery policy (S2a part 2; module doc). A minor GC that kept most young bytes
+        // The nursery policy (S2a part 2). A minor GC that kept most young bytes
         // freed little: its trace mostly promoted cells that the next major GC traces again.
         // So the GCs skip the minor GCs: the next budget GC is major, once the heap holds 5/2
         // of the live bytes of the last major GC. After that major GC, a small minor GC (the
@@ -2189,7 +2179,7 @@ impl Inner {
 /// The concurrent sweep of the last GC (S2a part 2; `crate::parallel` part 2), if one runs.
 /// Dropped with the heap: the drop takes every page left and waits until the sweeper thread
 /// is done with its page, so the sweeper never touches the cage after the heap is gone.
-struct ConcurrentSweep(Option<Arc<crate::parallel::Job>>);
+struct ConcurrentSweep(Option<std::sync::Arc<crate::parallel::Job>>);
 
 impl Drop for ConcurrentSweep {
     fn drop(&mut self) {
@@ -2224,7 +2214,7 @@ impl Inner {
             return false;
         }
         let list = pages.iter().chain(shape_pages).map(|&i| i as u32).collect();
-        let job = Arc::new(crate::parallel::Job::new(
+        let job = std::sync::Arc::new(crate::parallel::Job::new(
             self.mem.base(),
             &self.kinds,
             self.s.generational,
