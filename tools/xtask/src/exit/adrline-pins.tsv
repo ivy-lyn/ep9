@@ -406,3 +406,9 @@ pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:53	crates/ep9_vm/src/builti
 pin	H31-fuse-registry.md	crates/ep9_vm/src/property.rs:132	crates/ep9_vm/src/property.rs	^pub\(crate\) fn get_data_from\(	0
 pin	H13-snapshot-stable-indices.md	docs/adr/README.md:144	docs/adr/README.md	^\| H13 \| Snapshot readiness and stable indices \|	0
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/realm.rs:266	4 Data (M7-P0 amendment: the 2026-11-06 fill row, AOT0, the C-18 root-slot form)	0fd056e4	^pub\(crate\) fn switch\(
+# M7-P1 fixer r2b: the 4 H20:64-66 builtins.rs refs came in the merge 385e6560 (git log -S does not read a
+# merge), and 978 and 1058 are older H20 tokens of other lines: each is pinned to its line at HEAD.
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:978	crates/ep9_vm/src/builtins.rs	^pub struct PropDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1058	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1137	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1187	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
