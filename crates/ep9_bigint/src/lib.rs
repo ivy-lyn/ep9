@@ -16,10 +16,12 @@
 //! | A result above [`MAX_BITS`] bits is [`Error::TooBig`]. Every operation that can grow checks its result; `<<` and `asUintN` also refuse before the work (exact), and `*`, `**` and parse refuse before the work only from a lower bound | each operation |
 //! | Signed operations follow the spec: `/` and `%` truncate, `>>` rounds toward -infinity, `&` `\|` `^` `~` act on infinite two's complement | [`div_trunc`], [`shr`], [`and`] |
 //! | No float math except [`to_f64`], [`cmp_f64`] and [`from_f64_exact`], which use bit operations and the u64 -> f64 conversion (correctly rounded) only (H36) | the `f64` section |
+//! | Long work polls: [`pow`], [`parse_literal`], [`parse_digits`] and [`to_string_radix`] run in steps and call the caller's poll callback once per [`POLL_WORDS`] digits of work; a `false` from it stops the work with [`Error::Interrupted`] (H23 "Interrupt poll"). This crate does not depend on `ep9_vm` (dep-guards check 17): the VM passes a callback that calls `Cx::poll_interrupt` | [`Work`] |
 #![forbid(unsafe_code)]
 
 use core::cmp::Ordering;
 
+use dashu_int::ops::DivRem;
 use dashu_int::{IBig, Sign, UBig, Word};
 
 // The digit slices are `&[u64]`, which is `&[Word]` only on 64-bit targets (all ep9 targets).
@@ -54,6 +56,49 @@ pub enum Error {
     DivByZero,
     /// `**` with a negative exponent: RangeError "Exponent must be non-negative".
     NegExponent,
+    /// The poll callback returned `false`: the caller must stop (an isolate termination). No
+    /// result and no error object.
+    Interrupted,
+}
+
+// ---- interrupt polls (H23 "Interrupt poll") ---------------------------------------------------
+
+/// The work of one poll: a long operation calls its poll callback once per this many 64-bit
+/// digits that it reads or makes (4096 bits). An operation with less work than this does not
+/// poll. A T0 tuning value (H23 Freeze table "tuning (gated)"), as the 256 code units of a
+/// string search step.
+pub const POLL_WORDS: u64 = 64;
+
+/// The poll counter of one long operation: [`Work::add`] counts digits and calls the callback
+/// once per [`POLL_WORDS`] digits.
+pub struct Work<'p> {
+    poll: &'p mut dyn FnMut() -> bool,
+    words: u64,
+}
+
+impl<'p> Work<'p> {
+    /// A counter at 0 that calls `poll`.
+    pub fn new(poll: &'p mut dyn FnMut() -> bool) -> Work<'p> {
+        Work { poll, words: 0 }
+    }
+
+    /// Counts `words` digits of work and calls the callback once per [`POLL_WORDS`] of them.
+    /// `Err(Interrupted)` as soon as a call returns `false`.
+    pub fn add(&mut self, words: usize) -> Result<(), Error> {
+        self.words += words as u64;
+        while self.words >= POLL_WORDS {
+            self.words -= POLL_WORDS;
+            if !(self.poll)() {
+                return Err(Error::Interrupted);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The digit count of `x`.
+fn words(x: &UBig) -> usize {
+    x.as_words().len()
 }
 
 impl<'a> View<'a> {
@@ -223,7 +268,10 @@ fn div_rem_mag(a: View, b: View) -> (UBig, UBig) {
 }
 
 /// BigInt::exponentiate. A negative `exp` is [`Error::NegExponent`]; `0n ** 0n` is `1n`.
-pub fn pow(base: View, exp: View) -> Result<Big, Error> {
+/// A result of more than [`POW_STEP_BITS`] bits (at most) is made by squaring and multiplying,
+/// one step at a time: each step polls (`poll`, [`Work`]) and first refuses a result that must
+/// be above [`MAX_BITS`] bits (a lower bound from the bits made so far).
+pub fn pow(base: View, exp: View, poll: &mut dyn FnMut() -> bool) -> Result<Big, Error> {
     if exp.neg {
         return Err(Error::NegExponent);
     }
@@ -246,8 +294,47 @@ pub fn pow(base: View, exp: View) -> Result<Big, Error> {
     if (base.bit_len() - 1).saturating_mul(e) >= MAX_BITS {
         return Err(Error::TooBig);
     }
-    let m = base.ubig().pow(e as usize);
+    let b = base.ubig();
+    // A power of 2 is one bit (no digit work); a small result is one dashu call.
+    let pow2 = base.digits.iter().rev().skip(1).all(|d| *d == 0)
+        && base.digits.last().is_some_and(|d| d.is_power_of_two());
+    let m = if base.bit_len().saturating_mul(e) <= POW_STEP_BITS || pow2 {
+        let m = b.pow(e as usize);
+        Work::new(poll).add(words(&m))?;
+        m
+    } else {
+        pow_steps(&b, e, &mut Work::new(poll))?
+    };
     checked(Big::from_ubig(base.neg && odd, &m))
+}
+
+/// The largest result (an upper bound, bit length of the base x exponent) that [`pow`] makes in
+/// one dashu call.
+pub const POW_STEP_BITS: u64 = 64 * POLL_WORDS;
+
+/// `b ** e` (`e` >= 2, `b` >= 3) by left-to-right squaring and multiplying. Before each square
+/// it refuses a result that must be above [`MAX_BITS`] bits: after the exponent bits above bit
+/// `i`, `acc = b ** p` has `L` bits and `e >= p * 2^(i + 1)`, so the result has at least
+/// `(L - 1) * 2^(i + 1) + 1` bits. Each step counts its result in `work` (one poll per
+/// [`POLL_WORDS`]).
+fn pow_steps(b: &UBig, e: u64, work: &mut Work) -> Result<UBig, Error> {
+    debug_assert!(e >= 2);
+    let top = 63 - e.leading_zeros();
+    let mut acc = b.clone();
+    for i in (0..top).rev() {
+        let l = bit_len(acc.as_words());
+        // l <= MAX_BITS + 64 and i < 30 (e <= MAX_BITS), so the shift does not overflow.
+        if (l - 1) << (i + 1) >= MAX_BITS {
+            return Err(Error::TooBig);
+        }
+        acc = acc.sqr();
+        work.add(words(&acc))?;
+        if (e >> i) & 1 == 1 {
+            acc *= b;
+            work.add(words(&acc))?;
+        }
+    }
+    Ok(acc)
 }
 
 // ---- shifts (§6.1.6.2.9-§6.1.6.2.11) ---------------------------------------------------------
@@ -494,8 +581,8 @@ fn any_bit_below(digits: &[u64], shift: u64) -> bool {
 /// The StringIntegerLiteral grammar: empty is `0n`; `0x`/`0o`/`0b` (any case) with at least one
 /// digit and no sign; else an optional sign and at least one decimal digit. No `_`, no `n`, no
 /// `.`, no exponent. `Ok(None)` for a string that does not match; `Err(TooBig)` above
-/// [`MAX_BITS`].
-pub fn parse_literal(s: &[u8]) -> Result<Option<Big>, Error> {
+/// [`MAX_BITS`]. A long string polls ([`parse_digits`]).
+pub fn parse_literal(s: &[u8], poll: &mut dyn FnMut() -> bool) -> Result<Option<Big>, Error> {
     if s.is_empty() {
         return Ok(Some(Big::zero()));
     }
@@ -507,19 +594,26 @@ pub fn parse_literal(s: &[u8]) -> Result<Option<Big>, Error> {
             _ => None,
         };
         if let Some(r) = radix {
-            return parse_digits(&s[2..], r, false);
+            return parse_digits(&s[2..], r, false, poll);
         }
     }
     match s[0] {
-        b'+' => parse_digits(&s[1..], 10, false),
-        b'-' => parse_digits(&s[1..], 10, true),
-        _ => parse_digits(s, 10, false),
+        b'+' => parse_digits(&s[1..], 10, false, poll),
+        b'-' => parse_digits(&s[1..], 10, true, poll),
+        _ => parse_digits(s, 10, false, poll),
     }
 }
 
 /// Digits of `radix` (2-36, either letter case) with the sign `neg`. `Ok(None)` for an empty
-/// string or a char that is not a digit of `radix`.
-pub fn parse_digits(s: &[u8], radix: u32, neg: bool) -> Result<Option<Big>, Error> {
+/// string or a char that is not a digit of `radix`. A string of more than [`PARSE_LEAF`]
+/// digits in a radix that is not a power of 2 is parsed in halves (`parse_halves`), and
+/// each step polls; a power-of-2 radix is one linear dashu call, counted after it.
+pub fn parse_digits(
+    s: &[u8],
+    radix: u32,
+    neg: bool,
+    poll: &mut dyn FnMut() -> bool,
+) -> Result<Option<Big>, Error> {
     debug_assert!((2..=36).contains(&radix));
     if s.is_empty() || !s.iter().all(|c| char::from(*c).is_digit(radix)) {
         return Ok(None);
@@ -529,14 +623,157 @@ pub fn parse_digits(s: &[u8], radix: u32, neg: bool) -> Result<Option<Big>, Erro
         return Ok(Some(Big::zero()));
     };
     let body = &s[first..];
-    // The value is at least radix^(len - 1) >= 2^((len - 1) * floor(log2 radix)).
-    let log2_floor = u64::from(31 - radix.leading_zeros());
-    if (body.len() as u64 - 1).saturating_mul(log2_floor) >= MAX_BITS {
+    // The value is at least radix^(len - 1), so it has more than (len - 1) * log2(radix) bits:
+    // refused before the work when that is at least MAX_BITS (LOG2_RADIX is a lower bound).
+    let low = (body.len() as u128 - 1) * u128::from(LOG2_RADIX[radix as usize - 2]);
+    if low >> 32 >= u128::from(MAX_BITS) {
         return Err(Error::TooBig);
     }
-    let text = core::str::from_utf8(body).expect("ASCII digits");
-    let m = UBig::from_str_radix(text, radix).expect("digits checked above");
+    let mut work = Work::new(poll);
+    let m = if body.len() <= PARSE_LEAF || radix.is_power_of_two() {
+        let m = parse_leaf(body, radix);
+        work.add(words(&m))?;
+        m
+    } else {
+        let leaf = power_base(radix);
+        parse_halves(body, radix, leaf, &mut Powers::new(radix, leaf), &mut work)?
+    };
     checked(Big::from_ubig(neg, &m)).map(Some)
+}
+
+/// `floor(log2(r) * 2^32)` for `r` = 2..=36 (exact for a power of 2; from an 80-digit decimal
+/// computation): a lower bound of the bits per digit, for the size guard of [`parse_digits`].
+const LOG2_RADIX: [u64; 35] = [
+    4294967296,
+    6807362105,
+    8589934592,
+    9972605231,
+    11102329401,
+    12057497578,
+    12884901888,
+    13614724211,
+    14267572527,
+    14858145664,
+    15397296697,
+    15893267570,
+    16352464874,
+    16779967337,
+    17179869184,
+    17555519226,
+    17909691507,
+    18244709746,
+    18562539823,
+    18864859684,
+    19153112960,
+    19428550662,
+    19692263993,
+    19945210462,
+    20188234866,
+    20422086317,
+    20647432170,
+    20864869498,
+    21074934633,
+    21278111131,
+    21474836480,
+    21665507770,
+    21850486522,
+    22030102809,
+    22204658803,
+];
+
+/// The longest text that [`parse_digits`] parses in one dashu call when the radix is not a
+/// power of 2.
+pub const PARSE_LEAF: usize = 8192;
+
+/// The digits of `radix` that fit in a 64-bit word (dashu's `digits_per_word`): the largest
+/// `d` with `radix^d < 2^64`.
+fn word_digits(radix: u32) -> usize {
+    let (mut d, mut p) = (0, 1u128);
+    while p * u128::from(radix) <= u128::from(u64::MAX) {
+        p *= u128::from(radix);
+        d += 1;
+    }
+    d
+}
+
+/// The leaf length of `parse_halves` and `to_string_halves` and the base length of their
+/// powers: 16 words of digits (dashu's chunk), so `radix^(base * 2^k)` has about `16 * 2^k`
+/// words, a size that dashu multiplies and divides well.
+fn power_base(radix: u32) -> usize {
+    16 * word_digits(radix)
+}
+
+/// The value of the digits `s` (checked ones) in one dashu call.
+fn parse_leaf(s: &[u8], radix: u32) -> UBig {
+    let text = core::str::from_utf8(s).expect("ASCII digits");
+    UBig::from_str_radix(text, radix).expect("digits checked above")
+}
+
+/// `radix ** (base_len * 2^k)` for k = 0, 1, ..., each made once (by squaring) when first
+/// asked for.
+struct Powers {
+    list: Vec<UBig>,
+    radix: u32,
+    base_len: usize,
+}
+
+impl Powers {
+    fn new(radix: u32, base_len: usize) -> Powers {
+        Powers {
+            list: Vec::new(),
+            radix,
+            base_len,
+        }
+    }
+
+    /// `radix ** (base_len * 2^k)`; each new square counts in `work`.
+    fn get(&mut self, k: usize, work: &mut Work) -> Result<&UBig, Error> {
+        if self.list.is_empty() {
+            let p = UBig::from(self.radix).pow(self.base_len);
+            work.add(words(&p))?;
+            self.list.push(p);
+        }
+        while self.list.len() <= k {
+            let p = self.list.last().expect("not empty").sqr();
+            work.add(words(&p))?;
+            self.list.push(p);
+        }
+        Ok(&self.list[k])
+    }
+}
+
+/// The value of the digits `s`, divide and conquer: `value(hi) * radix^len(lo) + value(lo)`,
+/// where `lo` is the last `leaf * 2^k` digits for the largest such count below `len(s)` (so
+/// `hi` is not longer than `lo`; `pows` has the base length `leaf`), and a text of at most
+/// `leaf` digits is one dashu call. Each step counts its result in `work`, and refuses a
+/// result that must be above [`MAX_BITS`] bits (`hi * radix^len(lo)` has at least
+/// `bits(hi) + bits(radix^len(lo)) - 1` bits).
+fn parse_halves(
+    s: &[u8],
+    radix: u32,
+    leaf: usize,
+    pows: &mut Powers,
+    work: &mut Work,
+) -> Result<UBig, Error> {
+    if s.len() <= leaf {
+        let m = parse_leaf(s, radix);
+        work.add(words(&m))?;
+        return Ok(m);
+    }
+    let mut k = 0;
+    while leaf << (k + 1) < s.len() {
+        k += 1;
+    }
+    let (hi, lo) = s.split_at(s.len() - (leaf << k));
+    let h = parse_halves(hi, radix, leaf, pows, work)?;
+    let l = parse_halves(lo, radix, leaf, pows, work)?;
+    let p = pows.get(k, work)?;
+    if !h.is_zero() && bit_len(h.as_words()) + bit_len(p.as_words()) - 1 > MAX_BITS {
+        return Err(Error::TooBig);
+    }
+    let m = h * p + l;
+    work.add(words(&m))?;
+    Ok(m)
 }
 
 /// `ceil(2^32 / log2(r))` for `r` = 2..=36: digits per bit, as a 32-bit fixed-point fraction
@@ -558,14 +795,120 @@ pub fn string_len_bound(a: View, radix: u32) -> u64 {
     ((a.bit_len() * k) >> 32) + 1 + u64::from(a.neg)
 }
 
-/// BigInt::toString(a, radix): lower-case digits, a `-` for a negative value.
-pub fn to_string_radix(a: View, radix: u32) -> String {
+/// The largest value (in digits) that [`to_string_radix`] converts in one dashu call when the
+/// radix is not a power of 2.
+pub const STRING_LEAF_WORDS: usize = 1024;
+
+/// BigInt::toString(a, radix): lower-case digits, a `-` for a negative value. A power-of-2
+/// radix is converted in steps of 960 digits (64-bit words); another radix in halves
+/// (`to_string_halves`) when the value has more than [`STRING_LEAF_WORDS`] digits. Both poll
+/// (`poll`, [`Work`]).
+pub fn to_string_radix(
+    a: View,
+    radix: u32,
+    poll: &mut dyn FnMut() -> bool,
+) -> Result<String, Error> {
     debug_assert!((2..=36).contains(&radix));
     if a.is_zero() {
-        return "0".to_string();
+        return Ok("0".to_string());
     }
-    let digits = a.ubig().in_radix(radix as u8).to_string();
-    if a.neg { format!("-{digits}") } else { digits }
+    let mut work = Work::new(poll);
+    let mut out = Vec::new();
+    if a.neg {
+        out.push(b'-');
+    }
+    if radix.is_power_of_two() {
+        to_string_pow2(a.digits, radix.trailing_zeros(), &mut out, &mut work)?;
+    } else if a.digits.len() <= STRING_LEAF_WORDS {
+        out.extend_from_slice(a.ubig().in_radix(radix as u8).to_string().as_bytes());
+        work.add(a.digits.len())?;
+    } else {
+        // The value has at most `chars` digits, so it is below radix^(leaf * 2^levels).
+        let chars = (string_len_bound(a, radix) - u64::from(a.neg)) as usize;
+        let leaf = power_base(radix);
+        let mut levels = 0;
+        while leaf << levels < chars {
+            levels += 1;
+        }
+        let mut pows = Powers::new(radix, leaf);
+        to_string_halves(a.ubig(), radix, levels, 0, &mut pows, &mut out, &mut work)?;
+    }
+    Ok(String::from_utf8(out).expect("ASCII digits"))
+}
+
+/// The digits of one step of the power-of-2 conversion: 960 = 15 x 64, so its bit count is a
+/// multiple of each digit width 1-5, and a step ends on a digit boundary.
+const POW2_STEP_WORDS: usize = 960;
+
+/// Appends the digits of the magnitude `digits` (not 0) in radix `2^b` (`b` = 1-5), most
+/// significant first, in steps of [`POW2_STEP_WORDS`] digits (one dashu call each; every step
+/// but the top one padded to `64 * POW2_STEP_WORDS / b` digits), each counted in `work`.
+fn to_string_pow2(digits: &[u64], b: u32, out: &mut Vec<u8>, work: &mut Work) -> Result<(), Error> {
+    let radix = 1u8 << b;
+    let step_digits = 64 * POW2_STEP_WORDS / b as usize;
+    out.reserve(bit_len(digits).div_ceil(u64::from(b)) as usize);
+    let top = match digits.len() % POW2_STEP_WORDS {
+        0 => POW2_STEP_WORDS,
+        n => n,
+    };
+    let mut hi = digits.len();
+    let mut lo = hi - top;
+    loop {
+        let text = UBig::from_words(&digits[lo..hi])
+            .in_radix(radix)
+            .to_string();
+        if hi != digits.len() {
+            out.resize(out.len() + step_digits - text.len(), b'0');
+        }
+        out.extend_from_slice(text.as_bytes());
+        work.add(hi - lo)?;
+        if lo == 0 {
+            return Ok(());
+        }
+        hi = lo;
+        lo -= POW2_STEP_WORDS;
+    }
+}
+
+/// Appends the digits of `x < radix^(leaf * 2^level)` in `radix` (not a power of 2), divide
+/// and conquer (`pows` has the base length `leaf`): `x` divided by `radix^(leaf * 2^(level -
+/// 1))` gives the high digits (the quotient) and exactly `leaf * 2^(level - 1)` low digits
+/// (the remainder), each below that power; at level 0, one dashu call. `pad` > 0: exactly
+/// `pad` digits, with leading zeros; 0: no leading zero (and a value below the power is not
+/// divided). Each step counts the digits it reads in `work`.
+fn to_string_halves(
+    x: UBig,
+    radix: u32,
+    level: usize,
+    pad: usize,
+    pows: &mut Powers,
+    out: &mut Vec<u8>,
+    work: &mut Work,
+) -> Result<(), Error> {
+    let n = words(&x);
+    if level == 0 {
+        let text = x.in_radix(radix as u8).to_string();
+        out.resize(out.len() + pad.saturating_sub(text.len()), b'0');
+        out.extend_from_slice(text.as_bytes());
+        return work.add(n);
+    }
+    let low_len = pows.base_len << (level - 1);
+    let p = pows.get(level - 1, work)?;
+    if pad == 0 && x < *p {
+        return to_string_halves(x, radix, level - 1, 0, pows, out, work);
+    }
+    let (q, r) = x.div_rem(p);
+    work.add(n)?;
+    to_string_halves(
+        q,
+        radix,
+        level - 1,
+        pad.saturating_sub(low_len),
+        pows,
+        out,
+        work,
+    )?;
+    to_string_halves(r, radix, level - 1, low_len, pows, out, work)
 }
 
 // ---- asIntN, asUintN (§21.2.2.1, §21.2.2.2) ---------------------------------------------------
