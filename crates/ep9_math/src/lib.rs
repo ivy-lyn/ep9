@@ -12,8 +12,7 @@
 //! | [`sinh()`], [`cosh()`], [`tanh()`], [`asinh()`], [`acosh()`], [`atanh()`] | `Math.sinh` ... `Math.atanh` | correctly rounded (CORE-MATH ports, M4-P4) |
 //! | [`log2()`], [`log10()`], [`log1p()`], [`expm1()`], [`cbrt()`] | the `Math` functions of the same names | correctly rounded (CORE-MATH ports, M4-P4) |
 //! | [`hypot_js`] | `Math.hypot` | V8 `MathHypot` port: IEEE operations only, the same bits as node (M4-P4) |
-//! | [`round_js`], [`fround`], [`f16round()`] | `Math.round`, `Math.fround`, `Math.f16round` | exact |
-//! | [`ExactSum`], [`sum_precise`] | `Math.sumPrecise` | exact (the xsum algorithm; V8 port, M7-P0) |
+//! | [`round_js`], [`fround`], [`f16round()`]; [`ExactSum`], [`sum_precise`] | `Math.round`, `Math.fround`, `Math.f16round`; `Math.sumPrecise` | exact (sumPrecise: the xsum algorithm, a V8 port, M7-P0) |
 //! | [`fma_exact`], [`two_prod`], [`two_sum`], [`fma_soft`] | building blocks of the CR functions | exact |
 //!
 //! Rules (H36): every public function is `#[inline(never)]`, so FMA instructions stay inside
