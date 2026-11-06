@@ -198,6 +198,13 @@ const INVENTORY: &[FastPath] = &[
         off: Off::Guard,
         what: "a JSON string with no escape: a slice of the text",
     },
+    // ---- M7-P1 OBJ1 (the literal clone) ----
+    FastPath {
+        id: "nested-literal",
+        site: "crates/ep9_vm/src/literal_site.rs:732 (nested_object; NestedPlan, M7-P1 OBJ1)",
+        off: Off::Guard,
+        what: "an object literal with flat nested arrays built from the recorded shape and the checked boilerplate",
+    },
 ];
 
 /// Prints `typeof this`, the count and the joined arguments (the forwarded callee).
@@ -443,6 +450,26 @@ const CASES: &[Case] = &[
         ),
     },
     Case {
+        path: "ic-named",
+        name: "a megamorphic load (the stub cache probe of the GetNamedProperty handler) or Reflect.get",
+        src: "function mk(i) { var o = {}; o['p' + i] = i; o.x = i; return o; }\n\
+              function getx(o) { return o.x; }\n\
+              var os = []; for (var i = 0; i < 12; i++) os.push(mk(i));\n\
+              var s = 0; for (var r = 0; r < 30; r++) for (var i = 0; i < 12; i++) s += getx(os[i]);\n\
+              var P = { x: 100 }; var c = Object.create(P); c.k = 1; s += getx(c) + getx(c);\n\
+              P.x = 7; s += getx(c); Object.defineProperty(c, 'x', { value: 9 }); s += getx(c);\n\
+              print(s, getx({}), getx(Object.create(null)), getx('str'), getx(5));",
+        spec: Some(
+            "function mk(i) { var o = {}; o['p' + i] = i; o.x = i; return o; }\n\
+             function getx(o) { return Reflect.get(Object(o), 'x', o); }\n\
+             var os = []; for (var i = 0; i < 12; i++) os.push(mk(i));\n\
+             var s = 0; for (var r = 0; r < 30; r++) for (var i = 0; i < 12; i++) s += getx(os[i]);\n\
+             var P = { x: 100 }; var c = Object.create(P); c.k = 1; s += getx(c) + getx(c);\n\
+             P.x = 7; s += getx(c); Object.defineProperty(c, 'x', { value: 9 }); s += getx(c);\n\
+             print(s, getx({}), getx(Object.create(null)), getx('str'), getx(5));",
+        ),
+    },
+    Case {
         path: "keyed-access",
         name: "an int32 key or a string key",
         src: "var a = [1, 2, 3]; var s = 0; for (var i = 0; i < 3; i++) { a[i] = a[i] * 2; s += a[i]; }\n\
@@ -547,6 +574,18 @@ const CASES: &[Case] = &[
         src: "var v = JSON.parse('{\"ab\":\"cd\",\"e\":[\"f\",\"\"]}'); print(v.ab, v.e.join('|'), JSON.parse('\"xyz\"'));",
         spec: Some(
             "var v = JSON.parse('{\"a\\\\u0062\":\"c\\\\u0064\",\"e\":[\"\\\\u0066\",\"\"]}'); print(v.ab, v.e.join('|'), JSON.parse('\"x\\\\u0079z\"'));",
+        ),
+    },
+    Case {
+        path: "nested-literal",
+        name: "flat nested arrays or computed ones",
+        src: "function f(t) { return { a: [1, 2.5, , 's'], b: t, c: [7, 8] }; }\n\
+              var p = f(0), o; for (var i = 1; i < 20; i++) { o = f(i); o.c[0] += i; }\n\
+              print(JSON.stringify(o), o.a === p.a, 2 in o.a, o.c[0] + p.c[0], Object.keys(o).join());",
+        spec: Some(
+            "function f(t) { var one = 1; return { a: [one, 2.5, , 's'], b: t, c: [one * 7, 8] }; }\n\
+             var p = f(0), o; for (var i = 1; i < 20; i++) { o = f(i); o.c[0] += i; }\n\
+             print(JSON.stringify(o), o.a === p.a, 2 in o.a, o.c[0] + p.c[0], Object.keys(o).join());",
         ),
     },
 ];
