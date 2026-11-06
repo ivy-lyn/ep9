@@ -32,7 +32,7 @@ use crate::object::{self, attr, obj};
 use crate::props;
 use crate::realm;
 use crate::runtime::{Root, Runtime, val};
-use crate::shape;
+use crate::shape::{self, slf};
 use crate::string;
 use crate::{Args, Cx, Dispatch, Isolate, JsResult, Value};
 
@@ -1208,7 +1208,7 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
         let snap = export_facts(&t.iso, &hash).expect("the unit is loaded");
 
         let mut seen = Vec::new();
-        let (mut typed, mut controls) = (0, 0);
+        let (mut typed, mut controls, mut same_value) = (0, 0, 0);
         for (i, site) in sites.iter().enumerate() {
             let op = match site {
                 Get(_) => Operation::LoadNamed,
@@ -1276,6 +1276,15 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
                     );
                     controls += 1;
                 }
+                let same = same_value_lists(rt, o, handler, list);
+                for bad in same.into_iter().filter(|_| operands) {
+                    assert!(
+                        operands_agree(rt, o, handler, &c.access, &c.receiver, &bad).is_err(),
+                        "f{i}: {:?} agrees with {bad:?} (a field with the same value)",
+                        c.access
+                    );
+                    same_value += 1;
+                }
                 typed += usize::from(!matches!(c.access, Access::Generic));
             }
             seen.push(kind);
@@ -1298,6 +1307,9 @@ fn each_handler_kind_has_an_access_that_agrees_with_ops_of() {
             (13, 30),
             "MC-P3-OPAGREE cases and controls"
         );
+        // The place controls (Codex M7-P0 r1 CONTRACT10-1): a `Loc` on another field with the
+        // value of `x`: the `wide` load (`p1` = 1) and the `wide` int32 store (`i2` = 2).
+        assert_eq!(same_value, 2, "MC-P3-OPAGREE place controls");
         // The accessor cases are in this snapshot; no declared field has a value (MC-w24-5).
         assert_no_declared_field(&snap);
         t.release_all(handles);
@@ -1325,11 +1337,22 @@ fn read_at(o: u64, loc: Loc) -> u64 {
     }
 }
 
+/// The `Loc` of field `f` of a fast shape with the field layout `(cap, k)`
+/// (`shape::field_layout`), by the rule of ic.rs `field_location`.
+fn field_loc(cap: usize, k: u8, f: usize) -> Loc {
+    if f < cap {
+        let off = obj::FIXED + 8 * (object::fixed_count(k) + f);
+        Loc(smi::FIELD_IN_OBJECT | ((off as i32) << smi::SHIFT))
+    } else {
+        Loc(smi::FIELD_OUT_OF_LINE | (((slf::DATA + 8 * (f - cap)) as i32) << smi::SHIFT))
+    }
+}
+
 /// MC-P3-OPAGREE (Codex M6-P3 r2 X1): the operands of the exported access of one case agree
 /// with the operands of its `ops_of` list `list`. The check reads the live objects, not the
 /// exporter's own index map (`facts_export::key_index`): the property is `x` at every site.
 /// - `OwnField { field }`: key `field` of the receiver `o`'s shape is `x`, and the action's
-///   `Loc` reads the value of `x` (`props::own_get`). A checked store's `GuardType` is the
+///   `Loc` is the place of field `field` and reads the value of `x` (`props::own_get`). A checked store's `GuardType` is the
 ///   field's exported representation (int32: Int32, double: Number, heap: Heap).
 /// - `ProtoField { depth, field }`: `depth` prototype steps from `o` reach the holder at the
 ///   handler's +24, key `field` of the holder's shape is `x`, and the `Loc` reads its `x`.
@@ -1350,8 +1373,14 @@ fn operands_agree(
         let s = shape::shape_of(obj);
         usize::from(field) < shape::count(s) && shape::key_at(s, usize::from(field)) == x
     };
-    let reads_x =
-        |obj: u64, loc: Loc| props::own_get(obj, x).map(|p| p.0) == Some(read_at(obj, loc));
+    // The `Loc` names the place of field `field` in the live shape (the rule of ic.rs
+    // `field_location`), and that place holds the value of `x`. The place check catches a
+    // `Loc` on another field with the same value (Codex M7-P0 r1 CONTRACT10-1).
+    let reads_x = |obj: u64, field: u16, loc: Loc| {
+        let (cap, k) = shape::field_layout(shape::shape_of(obj));
+        loc == field_loc(cap, k, usize::from(field))
+            && props::own_get(obj, x).map(|p| p.0) == Some(read_at(obj, loc))
+    };
     let ty = list.iter().find_map(|op| match op {
         Op::GuardType(Val::Value, t) => Some(*t),
         _ => None,
@@ -1368,7 +1397,7 @@ fn operands_agree(
                 Some(Ty::Number) => rep == Some(FieldRep::Double),
                 Some(Ty::Heap) => rep == Some(FieldRep::Heap),
             };
-            key_is_x(o, *field) && reads_x(o, loc) && ty_ok
+            key_is_x(o, *field) && reads_x(o, *field, loc) && ty_ok
         }
         (Access::ProtoField { depth, field }, Some(&Op::LoadHolderField(Ref::HandlerRef, loc))) => {
             let holder = ic_ops::handler_parts(handler).2;
@@ -1378,7 +1407,7 @@ fn operands_agree(
                     p = object::proto_of(p);
                 }
             }
-            p == holder && key_is_x(holder, *field) && reads_x(holder, loc)
+            p == holder && key_is_x(holder, *field) && reads_x(holder, *field, loc)
         }
         (Access::Missing { depth }, Some(Op::LoadUndefined)) => {
             let (mut n, mut p) = (0u32, object::proto_of(o));
@@ -1391,7 +1420,7 @@ fn operands_agree(
         (
             Access::AddField { field, .. },
             Some(&Op::AddField(Val::Receiver, Ref::HandlerRef, loc)),
-        ) => key_is_x(o, *field) && reads_x(o, loc),
+        ) => key_is_x(o, *field) && reads_x(o, *field, loc),
         (Access::ArrayLength | Access::Generic, Some(_)) => true,
         _ => false,
     };
@@ -1457,6 +1486,41 @@ fn changed_lists(list: &[Op]) -> Vec<Vec<Op>> {
             l[i] = Op::GuardType(v, other);
             out.push(l);
         }
+    }
+    out
+}
+
+/// The negative control of [`operands_agree`] for the place check (Codex M7-P0 r1
+/// CONTRACT10-1): `list` with the action's `Loc` on another field of the same object that holds
+/// the value of `x` (a padding field: `p1` of a `wide` fixture is int(1), as its `x`).
+fn same_value_lists(rt: &Runtime, o: u64, handler: u64, list: &[Op]) -> Vec<Vec<Op>> {
+    let x = atoms::intern_str(rt, "x");
+    let last = list.len() - 1;
+    let obj = match list[last] {
+        Op::LoadHolderField(..) => ic_ops::handler_parts(handler).2,
+        Op::LoadField(..) | Op::StoreField(..) | Op::AddField(..) => o,
+        _ => return Vec::new(),
+    };
+    let Some(want) = props::own_get(obj, x).map(|p| p.0) else {
+        return Vec::new();
+    };
+    let s = shape::shape_of(obj);
+    let (cap, k) = shape::field_layout(s);
+    let mut out = Vec::new();
+    for g in (0..shape::count(s)).filter(|&g| shape::key_at(s, g) != x) {
+        let loc = field_loc(cap, k, g);
+        if read_at(obj, loc) != want {
+            continue;
+        }
+        let mut l = list.to_vec();
+        l[last] = match list[last] {
+            Op::LoadField(v, _) => Op::LoadField(v, loc),
+            Op::StoreField(v, _) => Op::StoreField(v, loc),
+            Op::LoadHolderField(r, _) => Op::LoadHolderField(r, loc),
+            Op::AddField(v, r, _) => Op::AddField(v, r, loc),
+            _ => unreachable!(),
+        };
+        out.push(l);
     }
     out
 }
