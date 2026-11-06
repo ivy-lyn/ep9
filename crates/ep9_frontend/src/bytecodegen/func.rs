@@ -14,15 +14,16 @@
 use std::collections::HashMap;
 
 use ep9_bytecode::{
-    ConstIndex, FeedbackSlot, FeedbackSlotKind, FunctionBuilder, FunctionCode, FunctionMeta,
-    HandlerKind, Label, Register, RegisterList, RegisterMark, RuntimeId, UnitString,
+    ConstIndex, FeedbackSlot, FeedbackSlotKind, FunctionCode, FunctionMeta, HandlerKind, Label,
+    Register, RegisterList, RuntimeId, UnitString,
 };
 use oxc_ast::ast::{
     ArrowFunctionExpression, BindingPattern, Class, FormalParameters, Function, Program, Statement,
 };
 use oxc_span::{GetSpan, Span};
 
-use super::{CodegenError, Job, UnitCtx, build_error, new_builder};
+use super::regopt::{Emitter, Mark};
+use super::{CodegenError, Job, UnitCtx, new_builder};
 use crate::scope::{
     Binding, BindingId, BindingKind, BindingLocation, FrameSlot, FunctionInfo, FunctionKind,
     NameId, PerIteration, Reference, Resolution, ScopeAnalysis, ScopeId, ScopeKind,
@@ -84,7 +85,8 @@ pub(crate) struct FnGen<'a, 's> {
     pub(crate) cx: &'s UnitCtx<'s>,
     pub(crate) sa: &'s ScopeAnalysis,
     pub(crate) info: &'s FunctionInfo,
-    pub(crate) b: FunctionBuilder,
+    /// The builder, through the register optimizer (`regopt.rs`).
+    pub(crate) b: Emitter,
     pub(crate) jobs: Vec<Job<'a>>,
     /// The current analysis scope.
     pub(crate) scope: ScopeId,
@@ -114,7 +116,7 @@ pub(crate) struct FnGen<'a, 's> {
 
 impl<'a, 's> FnGen<'a, 's> {
     pub(crate) fn new(cx: &'s UnitCtx<'s>, info: &'s FunctionInfo, meta: FunctionMeta) -> Self {
-        let mut b = new_builder(info, meta);
+        let mut b = new_builder(info, meta, cx.regopt);
         // Prologue code (context set-up, frame bindings) reports the function start.
         b.set_throw_position(Some(info.span.start));
         let entry_ctx = cx.needs_entry_ctx[info.id.index()].then(|| {
@@ -145,7 +147,7 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     pub(crate) fn finish(self) -> Gen<(FunctionCode, Vec<Job<'a>>)> {
-        let code = self.b.finish().map_err(build_error)?;
+        let code = self.b.finish().map_err(Box::new)?;
         Ok((code, self.jobs))
     }
 
@@ -195,11 +197,11 @@ impl<'a, 's> FnGen<'a, 's> {
         self.b.new_register_list(n)
     }
 
-    pub(crate) fn mark(&self) -> RegisterMark {
+    pub(crate) fn mark(&self) -> Mark {
         self.b.register_mark()
     }
 
-    pub(crate) fn release(&mut self, m: RegisterMark) {
+    pub(crate) fn release(&mut self, m: Mark) {
         self.b.release_registers(m);
     }
 

@@ -13,16 +13,15 @@ scopes (4):
   scope2 function outer=scope1 flags=[] slots=[]
   scope3 block outer=scope1 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..54
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "f"
@@ -34,7 +33,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 E 0 (1:1)
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 length=0 regs=5 range=0..54
-  code (45 bytes):
+  code (44 bytes):
       0 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope1 ; 75 00 01
       3    PushContext r3                               ; 13 03
       5    LdaTheHole                                   ; 07
@@ -46,18 +45,17 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
      18    Jump @24                                     ; 7e 06
      20    Ldar a0                                      ; 0b fe
      22    Star r4                                      ; 0c 04
-     24    Ldar r4                                      ; 0b 04
-     26    Star r0                                      ; 0c 00
-     28    Ldar a1                                      ; 0b fd
-     30    StaCurrentContextSlot [0]                    ; 1b 00
-     32    LdaCurrentContextSlot [0]                    ; 18 00
-     34    Star r1                                      ; 0c 01
-     36    Ldar r0                                      ; 0b 00
-     38    Star r2                                      ; 0c 02
-     40 S> Ldar r2                                      ; 0b 02
-     42    Return                                       ; 92
-     43    LdaUndefined                                 ; 05
-     44    Return                                       ; 92
+     24    Mov r4, r0                                   ; 0d 04 00
+     27    Ldar a1                                      ; 0b fd
+     29    StaCurrentContextSlot [0]                    ; 1b 00
+     31    LdaCurrentContextSlot [0]                    ; 18 00
+     33    Star r1                                      ; 0c 01
+     35    Ldar r0                                      ; 0b 00
+     37    Star r2                                      ; 0c 02
+     39 S> Ldar r2                                      ; 0b 02
+     41    Return                                       ; 92
+     42    LdaUndefined                                 ; 05
+     43    Return                                       ; 92
   constants (2):
       0 Scope scope1
       1 Function f2
@@ -67,7 +65,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
   positions (3):
       0 E 0 (1:1)
      12 E 15 (1:16)
-     40 S 43 (1:44)
+     39 S 43 (1:44)
 function f2 arrow name="a" parent=f1 outer_scope=scope1 flags=[simple-params] params=0 length=0 regs=0 range=15..22
   code (5 bytes):
       0 S> LdaCurrentContextSlot [0]                    ; 18 00

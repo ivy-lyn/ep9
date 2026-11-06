@@ -22,54 +22,52 @@ scopes (9):
   scope7 function outer=scope0 flags=[] slots=[]
   scope8 function outer=scope0 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=5 range=0..139
-  code (134 bytes):
+  code (129 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateObjectLiteral k1, s0, #0x01  ; k1 = ObjectBoilerplate {k0: _} ; 70 01 00 01
       9    Star r0                                      ; 0c 00
      11 E> CreateClosure k2, s1, #0x00  ; k2 = Function f1 ; 74 02 01 00
      15 E> DefineNamedOwnProperty r0, k0, s2  ; k0 = String str1 "m" ; 25 00 00 02
-     19    Mov r0, r1                                   ; 0d 00 01
-     22    LdaConstant k3  ; k3 = String str2 "g"       ; 0a 03
-     24    Star r2                                      ; 0c 02
-     26 E> CreateClosure k4, s3, #0x00  ; k4 = Function f2 ; 74 04 03 00
-     30    Star r3                                      ; 0c 03
-     32    LdaUndefined                                 ; 05
-     33    Star r4                                      ; 0c 04
+     19    LdaConstant k3  ; k3 = String str2 "g"       ; 0a 03
+     21    Star r2                                      ; 0c 02
+     23 E> CreateClosure k4, s3, #0x00  ; k4 = Function f2 ; 74 04 03 00
+     27    Star r3                                      ; 0c 03
+     29    LdaUndefined                                 ; 05
+     30    Star r4                                      ; 0c 04
+     32    Mov r0, r1                                   ; 0d 00 01
      35 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
-     40    Mov r0, r1                                   ; 0d 00 01
-     43    LdaConstant k3  ; k3 = String str2 "g"       ; 0a 03
-     45    Star r2                                      ; 0c 02
-     47 E> CreateClosure k5, s4, #0x00  ; k5 = Function f3 ; 74 05 04 00
-     51    Star r4                                      ; 0c 04
-     53    LdaUndefined                                 ; 05
-     54    Star r3                                      ; 0c 03
-     56 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
-     61 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
-     64 E> ToName                                       ; 58
-     65    Star r1                                      ; 0c 01
-     67 E> CreateClosure k7, s6, #0x00  ; k7 = Function f4 ; 74 07 06 00
-     71 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x01, s7 ; 29 00 01 01 07
-     76    Mov r0, r1                                   ; 0d 00 01
-     79 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
-     82 E> ToName                                       ; 58
-     83    Star r2                                      ; 0c 02
-     85 E> CreateClosure k8, s8, #0x00  ; k8 = Function f5 ; 74 08 08 00
-     89    Star r3                                      ; 0c 03
-     91    LdaUndefined                                 ; 05
-     92    Star r4                                      ; 0c 04
-     94 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
-     99 E> CreateClosure k9, s9, #0x00  ; k9 = Function f6 ; 74 09 09 00
-    103 E> DefineNamedOwnProperty r0, k10, s10  ; k10 = String str3 "f" ; 25 00 0a 0a
-    107 E> CreateClosure k11, s11, #0x00  ; k11 = Function f7 ; 74 0b 0b 00
-    111 E> DefineNamedOwnProperty r0, k12, s12  ; k12 = String str4 "a" ; 25 00 0c 0c
-    115 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
-    118 E> ToName                                       ; 58
-    119    Star r1                                      ; 0c 01
-    121 E> CreateClosure k13, s13, #0x00  ; k13 = Function f8 ; 74 0d 0d 00
-    125 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x01, s14 ; 29 00 01 01 0e
-    130    Ldar r0                                      ; 0b 00
-    132    LdaUndefined                                 ; 05
-    133    Return                                       ; 92
+     40    LdaConstant k3  ; k3 = String str2 "g"       ; 0a 03
+     42    Star r2                                      ; 0c 02
+     44 E> CreateClosure k5, s4, #0x00  ; k5 = Function f3 ; 74 05 04 00
+     48    Star r4                                      ; 0c 04
+     50    LdaUndefined                                 ; 05
+     51    Star r3                                      ; 0c 03
+     53 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
+     58 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
+     61 E> ToName                                       ; 58
+     62    Star r1                                      ; 0c 01
+     64 E> CreateClosure k7, s6, #0x00  ; k7 = Function f4 ; 74 07 06 00
+     68 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x01, s7 ; 29 00 01 01 07
+     73 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
+     76 E> ToName                                       ; 58
+     77    Star r2                                      ; 0c 02
+     79 E> CreateClosure k8, s8, #0x00  ; k8 = Function f5 ; 74 08 08 00
+     83    Star r3                                      ; 0c 03
+     85    LdaUndefined                                 ; 05
+     86    Star r4                                      ; 0c 04
+     88    Mov r0, r1                                   ; 0d 00 01
+     91 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
+     96 E> CreateClosure k9, s9, #0x00  ; k9 = Function f6 ; 74 09 09 00
+    100 E> DefineNamedOwnProperty r0, k10, s10  ; k10 = String str3 "f" ; 25 00 0a 0a
+    104 E> CreateClosure k11, s11, #0x00  ; k11 = Function f7 ; 74 0b 0b 00
+    108 E> DefineNamedOwnProperty r0, k12, s12  ; k12 = String str4 "a" ; 25 00 0c 0c
+    112 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
+    115 E> ToName                                       ; 58
+    116    Star r1                                      ; 0c 01
+    118 E> CreateClosure k13, s13, #0x00  ; k13 = Function f8 ; 74 0d 0d 00
+    122 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x01, s14 ; 29 00 01 01 0e
+    127    LdaUndefined                                 ; 05
+    128    Return                                       ; 92
   constants (14):
       0 String str1 "m"
       1 ObjectBoilerplate {k0: _}
@@ -107,26 +105,26 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 S 7 (1:8)
      11 E 8 (1:9)
      15 E 8 (1:9)
-     26 E 8 (1:9)
+     23 E 8 (1:9)
      35 E 8 (1:9)
-     47 E 8 (1:9)
-     56 E 8 (1:9)
+     44 E 8 (1:9)
+     53 E 8 (1:9)
+     58 E 65 (1:66)
      61 E 65 (1:66)
-     64 E 65 (1:66)
-     67 E 8 (1:9)
-     71 E 8 (1:9)
-     79 E 79 (1:80)
-     82 E 79 (1:80)
-     85 E 8 (1:9)
-     94 E 8 (1:9)
-     99 E 91 (1:92)
-    103 E 8 (1:9)
-    107 E 109 (1:110)
-    111 E 8 (1:9)
+     64 E 8 (1:9)
+     68 E 8 (1:9)
+     73 E 79 (1:80)
+     76 E 79 (1:80)
+     79 E 8 (1:9)
+     91 E 8 (1:9)
+     96 E 91 (1:92)
+    100 E 8 (1:9)
+    104 E 109 (1:110)
+    108 E 8 (1:9)
+    112 E 119 (1:120)
     115 E 119 (1:120)
-    118 E 119 (1:120)
-    121 E 123 (1:124)
-    125 E 8 (1:9)
+    118 E 123 (1:124)
+    122 E 8 (1:9)
 function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=9..26
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01

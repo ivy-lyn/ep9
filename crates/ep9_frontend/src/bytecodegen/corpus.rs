@@ -13,7 +13,10 @@
 //! A test262 file runs in the modes the harness uses: module, strict only, sloppy only (or
 //! `raw`), or both strict and sloppy. Every compile goes through [`super::check_determinism`]:
 //! two builds on two threads, bytes and content hash compared. Any `Internal` error (builder or
-//! verifier rejection) or any determinism mismatch fails the test.
+//! verifier rejection) or any determinism mismatch fails the test. In the release run, each
+//! unit is also compiled with the register optimizer off (`regopt.rs`): the two units must have
+//! the same binding loads and stores (H24 R4, V12-D46) and the same instructions other than
+//! transfers.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -248,6 +251,21 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                                     Some(bad_context.join(", ")),
                                 ));
                             }
+                            // The register optimizer guard (V12-D46, H24 R4): against the
+                            // plain output, every binding load and store stays and only
+                            // transfers change. Release run only: the result does not depend
+                            // on the profile, and the debug run is the slow one.
+                            let regopt = if cfg!(debug_assertions) {
+                                Vec::new()
+                            } else {
+                                super::tests::regopt_differences(&src, opts)
+                            };
+                            if !regopt.is_empty() {
+                                local.push((
+                                    "REGOPT guard failure".to_owned(),
+                                    Some(regopt.join(", ")),
+                                ));
+                            }
                         }
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             check_determinism(&src, opts)
@@ -284,7 +302,9 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                     rep.hashes.append(&mut hashes);
                     for (class, err) in local {
                         rep.units += usize::from(
-                            !class.starts_with("NO POSITION") && !class.starts_with("CONTEXT"),
+                            !class.starts_with("NO POSITION")
+                                && !class.starts_with("CONTEXT")
+                                && !class.starts_with("REGOPT"),
                         );
                         *rep.classes.entry(class.clone()).or_insert(0) += 1;
                         if let Some(err) = err {
@@ -335,12 +355,14 @@ fn corpus_verifier_clean_and_deterministic() {
                 || c.starts_with("PANIC")
                 || c.starts_with("NO POSITION")
                 || c.starts_with("CONTEXT")
+                || c.starts_with("REGOPT")
         })
         .map(|(_, n)| n)
         .sum();
     assert_eq!(
         bad, 0,
-        "internal errors, panics, determinism mismatches, missing positions or context errors"
+        "internal errors, panics, determinism mismatches, missing positions, context errors or \
+         register optimizer guard failures"
     );
     // Coverage at the pinned corpus (decisions-log BCG-CORPUS): an unreadable file or a partial
     // checkout drops out without a failure above.
