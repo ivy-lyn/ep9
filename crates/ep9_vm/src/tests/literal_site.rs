@@ -579,3 +579,170 @@ fn a_clone_past_the_in_object_slots_is_not_cached() {
         assert_eq!(slot_of(iso, slots[0]), (UNDEFINED, int32_bits(0)));
     });
 }
+
+// ---- the checked boilerplate of a nested literal (M7-P1 OBJ1) ------------------------------
+
+/// The nested-literal plan (`literal_site::NestedPlan`): 6 times, `p = o; o = {x: [1, 2.5, ,
+/// "s"], y: 3, z: (computed), w: [7, 8], d: [1.5, 2]}`, then `o.w[0] = i`. Print `o.x === p.x`,
+/// `o.w === p.w`, `p.w[0] + o.w[0]` (4 + 5: each hit has its own arrays), `o.x[1]`, `o.x[3]`,
+/// `o.x.length`, `2 in o.x` (a hole), `o.y`, `o.z`, `o.d[0]`.
+fn nested_mixed() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+    let has = s.b.feedback_slot(FeedbackSlotKind::HasKeyed);
+    let [kx, ky, kz, kw, kd] = ["x", "y", "z", "w", "d"].map(|n| s.b.string_constant(n));
+    let [n1, n25, n3, n7, n8, n15, n2] =
+        [1.0, 2.5, 3.0, 7.0, 8.0, 1.5, 2.0].map(|n| s.b.number_constant(n));
+    let (ks, hole) = (
+        s.b.string_constant("s"),
+        s.b.oddball_constant(Oddball::Hole),
+    );
+    let x =
+        s.b.array_boilerplate(vec![Some(n1), Some(n25), Some(hole), Some(ks)]);
+    let w = s.b.array_boilerplate(vec![Some(n7), Some(n8)]);
+    let d = s.b.array_boilerplate(vec![Some(n15), Some(n2)]);
+    let bp = s.b.object_boilerplate(vec![
+        (kx, Some(x)),
+        (ky, Some(n3)),
+        (kz, None),
+        (kw, Some(w)),
+        (kd, Some(d)),
+    ]);
+    let [o, p, t, u, zero] = [(); 5].map(|_| s.b.new_register());
+    s.b.lda_zero().star(zero);
+    s.b.create_empty_object_literal().star(o);
+    repeat(&mut s, 6, |s, i| {
+        s.b.mov(o, p);
+        s.b.create_object_literal(bp, lit, 0).star(o);
+        s.get_named(o, "w");
+        s.b.star(t).ldar(i).set_keyed_property(t, zero, s.set_keyed);
+    });
+    for name in ["x", "w"] {
+        s.get_named(p, name);
+        s.b.star(t);
+        s.get_named(o, name);
+        s.b.test_equal_strict(t, s.cmp);
+        s.print_acc();
+    }
+    s.get_named(p, "w");
+    s.b.star(t)
+        .lda_zero()
+        .get_keyed_property(t, s.keyed)
+        .star(u);
+    s.get_named(o, "w");
+    s.b.star(t)
+        .lda_zero()
+        .get_keyed_property(t, s.keyed)
+        .add(u, s.bin);
+    s.print_acc();
+    s.get_named(o, "x");
+    s.b.star(t);
+    for j in [1, 3] {
+        s.b.lda_smi(j).get_keyed_property(t, s.keyed);
+        s.print_acc();
+    }
+    s.get_named(t, "length");
+    s.print_acc();
+    s.b.lda_smi(2).star(u).ldar(t).test_in(u, has);
+    s.print_acc();
+    for name in ["y", "z"] {
+        s.get_named(o, name);
+        s.print_acc();
+    }
+    s.get_named(o, "d");
+    s.b.star(t).lda_zero().get_keyed_property(t, s.keyed);
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), vec![lit])
+}
+
+/// A hit builds from the plan made once at site birth: one cold run (count 1), no cold build
+/// (`COLD_BUILDS` 0), and fresh nested arrays per hit with the kinds of their constants
+/// (HOLEY_ELEMENTS for `[1, 2.5, , "s"]`, PACKED_INT32, PACKED_DOUBLE); a computed value is
+/// undefined until code defines it. Every dispatch expansion, with and without GC stress.
+#[test]
+fn a_nested_literal_hit_copies_its_checked_boilerplate() {
+    run_checked(
+        nested_mixed,
+        &[
+            "false",
+            "false",
+            "9",
+            "2.5",
+            "s",
+            "4",
+            "false",
+            "3",
+            "undefined",
+            "1.5",
+        ],
+        |iso, slots| {
+            let (key, value) = slot_of(iso, slots[0]);
+            assert!(shape::is_shape(key));
+            assert_eq!(value, int32_bits(1), "one cold run, 5 hits");
+            assert_eq!(crate::literal_site::COLD_BUILDS.with(|c| c.get()), 0);
+            let units = iso.rt.units.borrow();
+            let fi = &units.last().unwrap().infos[0];
+            let kinds = crate::literal_site::plan_kinds(fi, slots[0].0).expect("a plan");
+            use crate::elements::kind as ek;
+            assert_eq!(
+                kinds,
+                [ek::HOLEY_ELEMENTS, ek::PACKED_INT32, ek::PACKED_DOUBLE]
+            );
+        },
+    );
+}
+
+/// Two nested sites: `{a: {b: 1}}` (a nested object: no plan, so no hit) and `{c: [1]}` (a
+/// plan); 4 times each, then print `o.a.b + q.c[0]`. The plans come from the one code walk of
+/// the function's first literal miss: the first site counts 4 cold runs, the second 1.
+fn nested_two_sites() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let (l1, l2) = (
+        s.b.feedback_slot(FeedbackSlotKind::Literal),
+        s.b.feedback_slot(FeedbackSlotKind::Literal),
+    );
+    let [ka, kb, kc] = ["a", "b", "c"].map(|n| s.b.string_constant(n));
+    let n1 = s.b.number_constant(1.0);
+    let inner = s.b.object_boilerplate(vec![(kb, Some(n1))]);
+    let outer = s.b.object_boilerplate(vec![(ka, Some(inner))]);
+    let arr = s.b.array_boilerplate(vec![Some(n1)]);
+    let flat = s.b.object_boilerplate(vec![(kc, Some(arr))]);
+    let [o, q, t, u] = [(); 4].map(|_| s.b.new_register());
+    repeat(&mut s, 4, |s, _| {
+        s.b.create_object_literal(outer, l1, 0).star(o);
+        s.b.create_object_literal(flat, l2, 0).star(q);
+    });
+    s.get_named(o, "a");
+    s.b.star(t);
+    s.get_named(t, "b");
+    s.b.star(u);
+    s.get_named(q, "c");
+    s.b.star(t)
+        .lda_zero()
+        .get_keyed_property(t, s.keyed)
+        .add(u, s.bin);
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), vec![l1, l2])
+}
+
+#[test]
+fn only_a_flat_nested_boilerplate_gets_a_plan() {
+    run_checked(nested_two_sites, &["2"], |iso, slots| {
+        let units = iso.rt.units.borrow();
+        let fi = &units.last().unwrap().infos[0];
+        assert_eq!(crate::literal_site::plan_kinds(fi, slots[0].0), None);
+        assert_eq!(
+            crate::literal_site::plan_kinds(fi, slots[1].0),
+            Some(vec![crate::elements::kind::PACKED_INT32])
+        );
+        drop(units);
+        assert_eq!(
+            slot_of(iso, slots[0]).1,
+            int32_bits(4),
+            "no plan: every run cold"
+        );
+        assert_eq!(slot_of(iso, slots[1]).1, int32_bits(1), "a plan: 3 hits");
+    });
+}

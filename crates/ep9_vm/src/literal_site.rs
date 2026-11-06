@@ -6,8 +6,8 @@
 //! (weak), clone handler) or the int32 [`ic::MEGA`]. A hit allocates with the result shape and
 //! copies the constants (Literal) or the source's fields (CloneObject); computed values stay
 //! off the T0 hit. An object literal whose nested values are all shallow arrays (splay's leaf
-//! nodes) is built from the recorded shape ([`nested_object`]) by its T0 hit (M5-P2 ELEM2) and
-//! by its cold path ([`cold_object`]), not by the generic per-key define. An array-literal site
+//! nodes) is built from the recorded shape and a boilerplate checked once ([`nested_object`],
+//! [`NestedPlan`]) by its T0 hit and its cold path ([`cold_object`]). An array-literal site
 //! keeps an ALLOC_SITE handler ([`ah`], IC_LAYOUT 3; V10-D6): its arrays are born in the
 //! elements kind its earlier arrays reached ([`array_site`], [`generalize`]).
 //!
@@ -53,7 +53,7 @@
 //!   fast plain object whose properties are all enumerable data properties, whose result
 //!   has the same keys in the same order, all in-object.
 
-use ep9_bytecode::{Constant, Instructions, Oddball, OperandKind};
+use ep9_bytecode::{Constant, Instructions, Oddball, Opcode, OperandKind};
 
 use crate::elements;
 use crate::error::FrameRef;
@@ -148,48 +148,43 @@ fn alloc_array(rt: &Runtime, shape: u64, n: usize, value: impl Fn(usize) -> u64)
     a.to_value().to_bits()
 }
 
-/// A new array for a nested array boilerplate of [`cold_object`]: as [`alloc_array`], with
-/// the elements kind its values need, found while they are stored (one pass: a hole makes
-/// it holey; a DOUBLE kind copies the Values cell into an ELEMENTS_DOUBLE cell). `ashape` is
-/// the realm's array root shape. GC point: each cell lives in a Rust local while the next
-/// one, the shape and the array are made; each is filled right after its allocation (E2).
-fn alloc_nested_array(rt: &Runtime, ashape: u64, n: usize, value: impl Fn(usize) -> u64) -> u64 {
-    let mut ek = elements::kind::PACKED_INT32;
-    let e = if n > 0 {
-        let e = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * n);
-        init(e, elems::CAPACITY, int32_bits(n as i32));
-        for i in 0..n {
-            let v = value(i);
-            ek = if v == HOLE {
-                elements::holey(ek)
-            } else {
-                elements::join(ek, elements::value_kind(v))
-            };
-            init(e, elems::DATA + 8 * i, v);
-        }
-        if elements::storage(ek) == Some(elements::Storage::Doubles) {
-            let d = elements::new_double_cell(rt, n);
-            for i in 0..n {
-                let v = rd(e, elems::DATA + 8 * i);
-                if v != HOLE {
-                    object::raw_set(d, delems::DATA + 8 * i, object::double_bits(v));
-                }
-            }
-            d.to_value().to_bits()
-        } else {
-            e.to_value().to_bits()
-        }
-    } else {
-        UNDEFINED
-    };
+/// A new array for a nested array boilerplate of [`nested_object`] (the T0 hit and the cold
+/// path [`cold_object`]): as [`alloc_array`], with the shape of elements kind `ek` over
+/// `root`, the realm's array root shape. `ek` is the kind the array's values need (a hole
+/// makes it holey; a DOUBLE kind gives an ELEMENTS_DOUBLE cell, a string ELEMENTS). It is
+/// found once at site birth from the constants ([`NestedPlan`]), not per value per hit: the
+/// constants of a pool never change, so the kind of the same values is the same each time.
+/// GC points: the cells of [`alloc_array`]; `root` and the shape of kind `ek` live in Rust
+/// locals.
+#[inline(always)]
+fn alloc_nested_array(rt: &Runtime, root: u64, ek: u8, n: usize, v: impl Fn(usize) -> u64) -> u64 {
     // A root array shape of the realm: never `None`.
-    let shape = shape::with_elements_kind(rt, ashape, ek).expect("a root array shape");
-    let a = alloc_from_shape(rt, kind::ARRAY, shape);
-    init(a, arr::LENGTH, int32_bits(n as i32));
-    if n > 0 {
-        init(a, obj::ELEMENTS, e);
-    }
-    a.to_value().to_bits()
+    let shape = shape::with_elements_kind(rt, root, ek).expect("a root array shape");
+    alloc_array(rt, shape, n, v)
+}
+
+/// What a [`nested_object`] build stores in field `j` of the object (boilerplate entry `j`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    /// A computed value: undefined until code after the creation defines it.
+    Computed,
+    /// Constant `c` of the pool: a number, a string, or an oddball that is not the hole.
+    Const(u32),
+    /// The next array of [`NestedPlan::arrays`] (they are in field order).
+    Array,
+}
+
+/// The pool index of a hole in [`NestedArray::items`] (an elision, or an element computed
+/// by code after the creation).
+const NO_CONST: u32 = u32::MAX;
+
+/// One nested array of a [`NestedPlan`].
+#[derive(Debug)]
+struct NestedArray {
+    /// The elements kind its values need (`alloc_nested_array`).
+    kind: u8,
+    /// The pool index of each element, or [`NO_CONST`] for a hole.
+    items: Box<[u32]>,
 }
 
 /// The elements kind an array literal needs for its constant elements (`elements`: `None` for
@@ -465,22 +460,27 @@ fn shallow_boilerplate(fi: &FunctionInfo, k: u32) -> bool {
 
 /// The feedback slots of one function that more than one instruction names
 /// ([`FunctionInfo::shared_slots`]): bit `s % 32` of word `s / 32` is set for slot `s`. `None`: the
-/// code did not decode (verified code always does), so every slot counts as shared.
-pub(crate) struct SharedSlots(Option<Box<[u32]>>);
+/// code did not decode (verified code always does), so every slot counts as shared. Then the
+/// checked boilerplates of its nested object-literal sites ([`NestedPlan`]), by slot.
+pub(crate) struct SharedSlots(Option<Box<[u32]>>, Box<[(u32, NestedPlan)]>);
 
 impl SharedSlots {
     /// One walk of the code of `fi`. Not a GC point.
     fn of(fi: &FunctionInfo) -> SharedSlots {
         // SAFETY: as in `slot_at`.
         let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
-        let (mut seen, mut shared) = (Vec::<u32>::new(), Vec::<u32>::new());
+        let (mut seen, mut shared, mut nested) = (Vec::<u32>::new(), Vec::<u32>::new(), Vec::new());
         for insn in Instructions::new(code) {
             #[cfg(test)]
             SCANNED.with(|c| c.set(c.get() + 1));
             let Ok(insn) = insn else {
                 debug_assert!(false, "verified code decodes");
-                return SharedSlots(None);
+                return SharedSlots(None, Box::default());
             };
+            // A nested object-literal site (operands: boilerplate, slot, flags): checked below.
+            if insn.opcode == Opcode::CreateObjectLiteral && insn.unsigned(2) as u8 & SHALLOW == 0 {
+                nested.push((insn.unsigned(1), insn.unsigned(0)));
+            }
             let slots = (0..insn.operand_count())
                 .filter(|&j| insn.operand_kind(j) == OperandKind::Slot)
                 .map(|j| insn.unsigned(j) as usize);
@@ -500,7 +500,7 @@ impl SharedSlots {
                 seen[w] |= bit;
             }
         }
-        SharedSlots(Some(shared.into_boxed_slice()))
+        SharedSlots::with_plans(fi, shared.into_boxed_slice(), nested)
     }
 
     fn contains(&self, slot: u32) -> bool {
@@ -723,12 +723,12 @@ fn fast_nested_object(st: &mut St<'_>, boilerplate: K, s: FSlot) -> Flow {
 
 /// An object literal (boilerplate constant `k`, Literal slot `i`) that is not shallow, whose
 /// nested values are all shallow array boilerplates (`{array: [0, 1, 2], s: ...}`: splay's
-/// leaf nodes), built from the slot's recorded shape as a hit builds a shallow one, with each
-/// nested array made like a shallow array literal. `None` (nothing made) for anything else:
-/// no recorded shape, another nested value (a BigInt too), more than `call::INLINE_ARGS` nested
-/// arrays. Reads the slot only. GC point: the nested arrays live in an inline buffer on the
-/// native stack (the conservative scan) until the object holds them; the object is
-/// allocated last, so its fields are initializing stores (E2).
+/// leaf nodes), built from the slot's recorded shape and the site's checked boilerplate
+/// ([`NestedPlan`], made once at site birth, M7-P1 OBJ1), with no check per value. `None`
+/// (nothing made) for anything else: no recorded shape, no plan (another nested value, a
+/// BigInt too, more than `call::INLINE_ARGS` nested arrays). Reads the slot only. GC point: the nested arrays live
+/// in an inline buffer on the native stack (the conservative scan) until the object holds
+/// them; the object is allocated last, so its fields are initializing stores (E2).
 fn nested_object(rt: &Runtime, fi: &FunctionInfo, i: u32, k: u32) -> Option<u64> {
     let v = feedback::vector(fi)?;
     if i >= feedback::slot_count(v) {
@@ -738,10 +738,9 @@ fn nested_object(rt: &Runtime, fi: &FunctionInfo, i: u32, k: u32) -> Option<u64>
     if !is_cell_bits(shape) {
         return None;
     }
-    let Constant::ObjectBoilerplate(props) = fi.constant_entry(k) else {
-        return None;
-    };
-    let n = props.len();
+    // A key exists only after a miss asked `shared_slot`, which made the plans.
+    let plan = fi.shared_slots.get()?.plan(i, k)?;
+    let n = plan.fields.len();
     let (cap, ok) = shape::field_layout(shape);
     if ok != kind::OBJECT.get()
         || shape::count(shape) != n
@@ -750,55 +749,26 @@ fn nested_object(rt: &Runtime, fi: &FunctionInfo, i: u32, k: u32) -> Option<u64>
     {
         return None;
     }
-    // Check every value before the first allocation.
-    let mut nested = 0;
-    for &(_, val) in props.iter() {
-        let Some(ci) = val else { continue };
-        match fi.constant_entry(ci.0) {
-            Constant::ArrayBoilerplate(elements) => {
-                let flat = elements.iter().all(|&e| {
-                    e.is_none_or(|c| {
-                        matches!(
-                            fi.constant_entry(c.0),
-                            Constant::Number(_) | Constant::String(_) | Constant::Oddball(_)
-                        )
-                    })
-                });
-                if !flat {
-                    return None;
-                }
-                nested += 1;
-            }
-            Constant::Number(_) | Constant::String(_) => {}
-            Constant::Oddball(o) if *o != Oddball::Hole => {}
-            _ => return None,
-        }
-    }
-    if nested == 0 || nested > crate::call::INLINE_ARGS {
-        return None;
-    }
     // GC points. The array shape of the current realm (made once, then found).
     let ashape = shape::initial_shape(rt, rt.root(Root::ArrayPrototype), kind::ARRAY, 0);
-    let mut arrays: crate::call::ArgBuf<u64> = crate::call::ArgBuf::new();
-    for &(_, val) in props.iter() {
-        if let Some(ci) = val
-            && let Constant::ArrayBoilerplate(items) = fi.constant_entry(ci.0)
-        {
-            let a = alloc_nested_array(rt, ashape, items.len(), |j| {
-                items[j].map_or(HOLE, |c| fi.constant(c.0))
-            });
-            arrays.push(a);
-        }
+    let mut arrays = [UNDEFINED; crate::call::INLINE_ARGS];
+    for (j, a) in plan.arrays.iter().enumerate() {
+        arrays[j] = alloc_nested_array(rt, ashape, a.kind, a.items.len(), |x| {
+            let c = a.items[x];
+            if c == NO_CONST { HOLE } else { fi.constant(c) }
+        });
     }
     let o = alloc_from_shape(rt, kind::OBJECT, shape);
     let mut next = 0;
-    for (j, &(_, val)) in props.iter().enumerate() {
-        let Some(ci) = val else { continue };
-        let b = if matches!(fi.constant_entry(ci.0), Constant::ArrayBoilerplate(_)) {
-            next += 1;
-            arrays[next - 1]
-        } else {
-            fi.constant(ci.0)
+    for (j, f) in plan.fields.iter().enumerate() {
+        let b = match *f {
+            // A computed value stays undefined: code after the creation defines it.
+            Field::Computed => continue,
+            Field::Const(c) => fi.constant(c),
+            Field::Array => {
+                next += 1;
+                arrays[next - 1]
+            }
         };
         init(o, object::OBJECT_FIELD0 + 8 * j, b);
     }
@@ -964,4 +934,114 @@ fn is_birth_shape(rt: &Runtime, shape: u64) -> bool {
     use shape::flag;
     let mask = flag::EXTENSIBLE | flag::DICTIONARY | flag::PROTOTYPE | flag::UNIQUE;
     is_array_shape(rt, shape) && shape::flags(shape) & mask == flag::EXTENSIBLE
+}
+
+// ---- the checked boilerplate of a nested object literal (M7-P1 OBJ1) ----------------------
+
+/// The checked boilerplate of one nested object-literal site (M7-P1 OBJ1): boilerplate
+/// constant `k` checked once, when the function's first literal miss makes its
+/// [`SharedSlots`], instead of on each hit (the per-hit check was splay's `nested_object`
+/// cost, plan v12 §4.3). It holds pool indices and kinds only, no Value (plan rule 8): a hit
+/// reads each constant from the pool, which the unit keeps.
+#[derive(Debug)]
+pub(crate) struct NestedPlan {
+    k: u32,
+    fields: Box<[Field]>,
+    arrays: Box<[NestedArray]>,
+}
+
+impl SharedSlots {
+    /// The [`SharedSlots`] of `fi` from the walk of [`SharedSlots::of`]: the shared bits and
+    /// a [`NestedPlan`] for each nested object-literal site `(slot, boilerplate)` whose slot
+    /// is not shared (the hit trusts that the slot's key fits this boilerplate) and whose
+    /// boilerplate [`nested_plan`] accepts. Not a GC point.
+    fn with_plans(fi: &FunctionInfo, shared: Box<[u32]>, sites: Vec<(u32, u32)>) -> Self {
+        let mut s = SharedSlots(Some(shared), Box::default());
+        let mut plans: Vec<(u32, NestedPlan)> = sites
+            .into_iter()
+            .filter(|&(slot, _)| !s.contains(slot))
+            .filter_map(|(slot, k)| nested_plan(fi, k).map(|p| (slot, p)))
+            .collect();
+        plans.sort_unstable_by_key(|&(slot, _)| slot);
+        s.1 = plans.into_boxed_slice();
+        s
+    }
+
+    /// The plan of the nested object-literal site with slot `slot` and boilerplate `k`.
+    #[inline(always)]
+    fn plan(&self, slot: u32, k: u32) -> Option<&NestedPlan> {
+        let at = self.1.binary_search_by_key(&slot, |&(s, _)| s).ok()?;
+        let p = &self.1[at].1;
+        (p.k == k).then_some(p)
+    }
+}
+
+/// The elements kinds of the nested arrays in the plan of the nested object-literal site
+/// with slot `slot` of `fi`, if it has one (tests).
+#[cfg(test)]
+pub(crate) fn plan_kinds(fi: &FunctionInfo, slot: u32) -> Option<Vec<u8>> {
+    let s = fi.shared_slots.get()?;
+    let at = s.1.binary_search_by_key(&slot, |&(s, _)| s).ok()?;
+    Some(s.1[at].1.arrays.iter().map(|a| a.kind).collect())
+}
+
+/// The check of [`nested_object`] for the boilerplate constant `k` of `fi`, done once: an
+/// object boilerplate whose values are numbers, strings, oddballs other than the hole,
+/// computed values, and 1 to `call::INLINE_ARGS` array boilerplates of numbers, strings and
+/// oddballs (holes too). `None` for anything else (a nested object, a BigInt, a function).
+/// Not a GC point.
+fn nested_plan(fi: &FunctionInfo, k: u32) -> Option<NestedPlan> {
+    let flat = |c: u32| {
+        matches!(
+            fi.constant_entry(c),
+            Constant::Number(_) | Constant::String(_) | Constant::Oddball(_)
+        )
+    };
+    let Constant::ObjectBoilerplate(props) = fi.constant_entry(k) else {
+        return None;
+    };
+    let mut fields = Vec::with_capacity(props.len());
+    let mut arrays = Vec::new();
+    for &(_, val) in props.iter() {
+        let Some(ci) = val else {
+            fields.push(Field::Computed);
+            continue;
+        };
+        match fi.constant_entry(ci.0) {
+            Constant::ArrayBoilerplate(elements) => {
+                let mut ek = elements::kind::PACKED_INT32;
+                let mut items = Vec::with_capacity(elements.len());
+                for &e in elements.iter() {
+                    let c = match e {
+                        None => NO_CONST,
+                        Some(c) if flat(c.0) => c.0,
+                        Some(_) => return None,
+                    };
+                    let v = if c == NO_CONST { HOLE } else { fi.constant(c) };
+                    ek = if v == HOLE {
+                        elements::holey(ek)
+                    } else {
+                        elements::join(ek, elements::value_kind(v))
+                    };
+                    items.push(c);
+                }
+                arrays.push(NestedArray {
+                    kind: ek,
+                    items: items.into_boxed_slice(),
+                });
+                fields.push(Field::Array);
+            }
+            Constant::Number(_) | Constant::String(_) => fields.push(Field::Const(ci.0)),
+            Constant::Oddball(o) if *o != Oddball::Hole => fields.push(Field::Const(ci.0)),
+            _ => return None,
+        }
+    }
+    if arrays.is_empty() || arrays.len() > crate::call::INLINE_ARGS {
+        return None;
+    }
+    Some(NestedPlan {
+        k,
+        fields: fields.into_boxed_slice(),
+        arrays: arrays.into_boxed_slice(),
+    })
 }
