@@ -124,11 +124,11 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
     }
 }
 
-/// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, schema 1) of the VM kind `k`, or
-/// `None` for a reserved value (7-15). The two numberings differ at 1-4 (VM: OBJECT_LAYOUT 5,
-/// V10-A21; facts: holey kinds after the packed ones), so every reader converts through this
-/// one map, never a cast (MODES-CHECK-w18 MC-w18-4; the month-6 schema bump either renumbers
-/// `ElementsKind` to the VM order or keeps the map).
+/// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, FACT_SCHEMA 2) of the VM kind
+/// `k`, or `None` for a reserved value (7-15). Since FACT_SCHEMA 2 (M6-P0) the two numberings
+/// are the same (0-6 in the VM order, OBJECT_LAYOUT 5, V10-A21); schema 1 put the holey kinds
+/// after the packed ones, so they differed at 1-4. Every reader still converts through this
+/// one map, never a cast (MODES-CHECK-w18 MC-w18-4), so a later append changes one place.
 pub(crate) const fn to_fact(k: u8) -> Option<ep9_facts::ElementsKind> {
     use ep9_facts::ElementsKind as F;
     match k {
