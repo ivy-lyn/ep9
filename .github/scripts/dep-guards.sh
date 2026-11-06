@@ -418,4 +418,8 @@ else
   ok "(20) ep9_temporal does not exist yet"
 fi
 
+# 21) ep9_masm has 0 normal and build dependencies (H34: one instruction stream for JIT and unit
+#     code, no LLVM; an encoder crate, 04-execution section 5, joins this list when T1 needs one).
+deps_within 21 ep9_masm
+
 exit "$fail"
