@@ -195,6 +195,32 @@ test("m2gate: no gate verdict for a provisional run or too few rounds; a missing
   assert.match(byId(g, "octane7-vs-qjs", "jit").reasons.join(), /not a gate host/);
 });
 
+test("m2gate: TS needs both comparator readings and no void ratio (M7-P0 Codex r1 GATES10-2)", () => {
+  // (a) No TS rows of M.ratios in either run: no gate verdict (it read pass).
+  const noRows = (res) => {
+    res.M.ratios = res.M.ratios.filter((x) => x.workload !== TS_WORKLOAD);
+    return res;
+  };
+  let g = readM2Gate(runs(noRows(fakeRun({ build: "jit" })), noRows(fakeRun({ build: "jitless" }))));
+  for (const b of ["jit", "jitless"]) {
+    const ts = byId(g, "ts", b);
+    assert.match(ts.gate, /^no gate verdict/, b);
+    assert.match(ts.reasons.join(), /no node-jitless row.*no qjs row/, b);
+  }
+  assert.equal(g.pass, false);
+  // (b) A void net ratio to node --jitless: no gate verdict.
+  const voidNode = (res) => {
+    const row = res.M.ratios.find((x) => x.workload === TS_WORKLOAD && x.comparator === "node-jitless");
+    row.net = { ...row.net, void: true, iqrPct: 66.8 };
+    return res;
+  };
+  g = readM2Gate(runs(voidNode(fakeRun({ build: "jit" })), fakeRun({ build: "jitless" })));
+  assert.match(byId(g, "ts", "jit").gate, /^no gate verdict/);
+  assert.match(byId(g, "ts", "jit").reasons.join(), /ratios to node-jitless void \(IQR 66\.8% > 5%\)/);
+  assert.equal(byId(g, "ts", "jitless").gate, "pass");
+  assert.equal(g.pass, false);
+});
+
 test("m2gate: usage errors: another build, the same build twice, two hosts, not a cross run", () => {
   const odd = fakeRun();
   odd.engines[0].engine_build = "features none; preset jit";

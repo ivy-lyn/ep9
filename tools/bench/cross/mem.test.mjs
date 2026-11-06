@@ -5,14 +5,14 @@
 // scripts), as run.test.mjs.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { cpuModel } from "../lib/host.mjs";
-import { analyze, CAPS, checkMemRun, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, renderMarkdown, rssTool, run, SCHEMA } from "./mem.mjs";
+import { analyze, CAPS, checkMemRun, measureRss, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, renderMarkdown, rssTool, run, SCHEMA } from "./mem.mjs";
 import { platformId, Refusal, schedule } from "./run.mjs";
 import { SETS, V8V7_7, WORKLOADS } from "./workloads.mjs";
 
@@ -103,7 +103,9 @@ test("analyze: medians, per-workload ratios, per-round ratios, and the caps per 
   assert.ok(Math.abs(cap("ep9", "node-jitless").geomean_ratio - Math.sqrt(1.5)) < 1e-12);
   assert.equal(cap("ep9-jitless", "node-jitless").holds, true);
   assert.deepEqual([cap("ep9-jitless", "d8-jitless").holds, cap("ep9-jitless", "d8-jitless").over], [false, ["a", "b"]]);
-  assert.equal(r.g7.holds, false);
+  // Workloads a and b are not the 7 v8-v7 kernels: G7 has no reading.
+  assert.equal(r.g7.holds, null);
+  assert.deepEqual(r.g7.missing, V8V7_7);
   // A cap passes at exactly the cap; without d8 in the run G7 has no reading.
   const ok = analyze(
     samples({ ep9: { a: [120, 120, 120, 120, 120] }, "node-jitless": { a: [100, 100, 100, 100, 100] } }),
@@ -111,7 +113,41 @@ test("analyze: medians, per-workload ratios, per-round ratios, and the caps per 
   );
   assert.equal(ok.caps[0].holds, true);
   assert.equal(ok.g7.holds, null);
+  assert.deepEqual(ok.g7.missing.slice(0, 2), ["d8-jitless", "ep9-jitless"]);
   assert.throws(() => analyze(samples({ ep9: { a: [1, null, 1, 1, 1] } }), { engines: ["ep9"], workloads: ["a"] }), /no full set/);
+});
+
+test("analyze: G7 reads only the whole matrix: both caps, both ep9 builds, the 7 kernels (M7-P0 Codex r1 BENCH10-1)", () => {
+  const M = 1 << 20;
+  const engines = ["ep9", "ep9-jitless", "node-jitless", "d8-jitless"];
+  const all = (ep9) =>
+    samples({
+      ep9: Object.fromEntries(V8V7_7.map((w) => [w, [ep9, ep9, ep9, ep9, ep9].map((x) => x * M)])),
+      "ep9-jitless": Object.fromEntries(V8V7_7.map((w) => [w, [100, 100, 100, 100, 100].map((x) => x * M)])),
+      "node-jitless": Object.fromEntries(V8V7_7.map((w) => [w, [100, 100, 100, 100, 100].map((x) => x * M)])),
+      "d8-jitless": Object.fromEntries(V8V7_7.map((w) => [w, [100, 100, 100, 100, 100].map((x) => x * M)])),
+    });
+  assert.equal(analyze(all(110), { engines, workloads: V8V7_7 }).g7.holds, true);
+  assert.equal(analyze(all(130), { engines, workloads: V8V7_7 }).g7.holds, false);
+  // One ep9 build, or one kernel: no reading (it read true before).
+  const one = analyze(all(110), { engines: ["ep9", "node-jitless", "d8-jitless"], workloads: V8V7_7 });
+  assert.deepEqual([one.g7.holds, one.g7.missing], [null, ["ep9-jitless"]]);
+  const k = analyze(all(110), { engines, workloads: ["richards"] });
+  assert.deepEqual([k.g7.holds, k.g7.missing], [null, V8V7_7.filter((w) => w !== "richards")]);
+});
+
+test("measureRss: a timeout kills the engine under the RSS tool too (M7-P0 Codex r1 BENCH10-2)", { skip: !["darwin", "linux"].includes(process.platform) && "POSIX process groups" }, async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-mem-timeout-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = path.join(dir, "marker");
+  // A "tool" that runs its command as a child (as /usr/bin/time does), and an engine that
+  // writes the marker after 2 s.
+  const tool = { name: "sh", unit: "bytes", program: "/bin/sh", args: () => ["-c", '"$@"; true', "sh"], parse: () => null };
+  const engine = { bin: "/bin/sh", args: ["-c", `sleep 2; echo done > "${marker}"`] };
+  const r = await measureRss(tool, engine, "unused.js", 0.1);
+  assert.match(r.error ?? "", /timed out after 0\.1 s/);
+  await new Promise((res) => setTimeout(res, 2500));
+  assert.equal(existsSync(marker), false, "the engine ran to its end after the timeout");
 });
 
 test("checkMemRun: a failed run, a wrong output or no RSS is refused", () => {
@@ -140,8 +176,9 @@ test("run: the output check, then rotated rounds; every sample in the JSON", asy
   assert.deepEqual(calls.slice(6), plan.map((p) => `${p.engine} ${p.workload}`));
   assert.equal(res.samples.length, 30);
   assert.deepEqual(res.caps.map((c) => [c.comparator, c.holds]), [["node-jitless", true], ["d8-jitless", true]]);
-  assert.equal(res.g7.holds, true);
-  assert.match(renderMarkdown(res), /G7 \(both caps, every ep9 build in the run\): holds \(provisional\)/);
+  // One ep9 build and 2 workloads: no G7 reading (the caps still read).
+  assert.equal(res.g7.holds, null);
+  assert.match(renderMarkdown(res), /G7 \(both caps, both ep9 builds, the 7 v8-v7 kernels\): no reading \(missing: ep9-jitless, richards, /);
 });
 
 /** A temp dir with fake engines (symlinks to fake-engine.sh), a jit-preset fake ep9 and a shells file. */
@@ -184,7 +221,7 @@ test("CLI: a class Mem reading with the load guard; ratios and caps from the RSS
   assert.equal(c["node-jitless"].holds, false);
   assert.ok(Math.abs(c["node-jitless"].max_ratio - 1.3) < 1e-12);
   assert.equal(c["d8-jitless"].holds, false);
-  assert.equal(res.g7.holds, false);
+  assert.equal(res.g7.holds, null);
   assert.equal(r.stdout, readFileSync(f.md, "utf8"));
   assert.match(r.stdout, /\| t0-loop \| 130\.0 \[130\.0-130\.0\] \| 100\.0/);
 });

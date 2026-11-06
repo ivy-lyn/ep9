@@ -46,7 +46,7 @@
 // Exit status: 0 done; 1 refused or another error; 2 usage error; 3 host busy.
 // Tests: node --test tools/bench/cross/mem.test.mjs
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -58,7 +58,7 @@ import { geomean, median } from "../lib/stats.mjs";
 import { splitVersion } from "./kernels.mjs";
 import { ENGINES as CROSS_ENGINES, HostBusy, Refusal, resolveEngines, schedule, UsageError } from "./run.mjs";
 import { DEFAULT_HARNESS, HARNESSES, ROOT } from "./v8v7.mjs";
-import { expandWorkloads, materialize, WORKLOADS } from "./workloads.mjs";
+import { expandWorkloads, materialize, V8V7_7, WORKLOADS } from "./workloads.mjs";
 
 export const SCHEMA = "ep9-mem/v1";
 /** Class Mem minimum (10-quality section 3). */
@@ -169,24 +169,56 @@ export function parseGnuM(text) {
   return lines.length ? Number(lines[lines.length - 1]) * 1024 : null;
 }
 
+/**
+ * Runs `program args` with its own process group (POSIX): after `timeoutS` the whole group gets
+ * SIGKILL, so the engine under the RSS tool stops too, not only the tool (M7-P0 Codex r1
+ * BENCH10-2). Resolves to { status, signal, error, stdout, stderr } when the process closes.
+ */
+export function runGroup(program, args, timeoutS) {
+  return new Promise((resolve) => {
+    const group = process.platform !== "win32";
+    const child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
+    let stdout = "";
+    let stderr = "";
+    let error = null;
+    let timedOut = false;
+    let done = false;
+    const finish = (status, signal) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ status, signal, error: timedOut ? `timed out after ${timeoutS} s (the process group was killed)` : error, stdout, stderr });
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (group) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {}
+    }, timeoutS * 1000);
+    child.stdout.setEncoding("utf8").on("data", (d) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
+    child.on("error", (e) => {
+      error = e.message;
+      if (child.pid === undefined) finish(null, null);
+    });
+    child.on("close", (status, signal) => finish(status, signal));
+  });
+}
+
 /** Runs one engine on one file under the RSS tool: { rss, ms, status, signal, error, stdout, stderr }. */
-export function measureRss(tool, engine, file, timeoutS) {
+export async function measureRss(tool, engine, file, timeoutS) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "ep9-mem-"));
   try {
     const report = path.join(tmp, "time.txt");
     const t0 = process.hrtime.bigint();
-    const r = spawnSync(tool.program, [...tool.args(report), engine.bin, ...engine.args, file], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 1 << 26,
-      timeout: timeoutS * 1000,
-    });
+    const r = await runGroup(tool.program, [...tool.args(report), engine.bin, ...engine.args, file], timeoutS);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     let text = "";
     try {
       text = readFileSync(report, "utf8");
     } catch {}
-    return { rss: tool.parse(text), ms, status: r.status, signal: r.signal, error: r.error?.message ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+    return { rss: tool.parse(text), ms, status: r.status, signal: r.signal, error: r.error, stdout: r.stdout, stderr: r.stderr };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -267,11 +299,19 @@ export function analyze(samples, { engines, workloads }) {
       });
     }
   }
-  // G7 holds when both caps are in the run and hold for every ep9 build in the run.
+  // G7 has a reading only for the whole matrix (plan v12 section 3.4; M7-P0 Codex r1 BENCH10-1):
+  // both caps, both ep9 builds (V12-D6) and the 7 v8-v7 kernels; then it holds when every cap
+  // holds for both builds.
+  const missing = [
+    ...CAPS.filter((c) => !engines.includes(c.comparator)).map((c) => c.comparator),
+    ...["ep9", "ep9-jitless"].filter((b) => !subjects.includes(b)),
+    ...V8V7_7.filter((w) => !workloads.includes(w)),
+  ];
   const g7 = {
     caps_in_run: CAPS.filter((c) => engines.includes(c.comparator)).map((c) => c.comparator),
     builds: subjects,
-    holds: CAPS.every((c) => engines.includes(c.comparator)) ? caps.every((c) => c.holds) : null,
+    missing,
+    holds: missing.length ? null : caps.every((c) => c.holds),
   };
   return { table, ratios, caps, g7 };
 }
@@ -323,12 +363,12 @@ export async function run(o, deps = {}) {
   const work = mkdtempSync(path.join(os.tmpdir(), "ep9-mem-work-"));
   try {
     const files = materialize(o.workloads, work, { harness: o.harness });
-    const once = (e, w) => {
-      const r = exec(byId[e], files[w].file);
+    const once = async (e, w) => {
+      const r = await exec(byId[e], files[w].file);
       checkMemRun(r, { engine: e, workload: w, expect: files[w].expect });
       return r;
     };
-    for (const w of o.workloads) for (const e of o.engines) once(e, w);
+    for (const w of o.workloads) for (const e of o.engines) await once(e, w);
     log(`output check: ${o.workloads.length} workloads x ${o.engines.length} engines ok`);
 
     let before = null;
@@ -349,14 +389,14 @@ export async function run(o, deps = {}) {
     const plan = schedule(o.engines, o.workloads, o.runs);
     const samples = [];
     const roundLoad = [];
-    plan.forEach((p, seq) => {
-      const r = once(p.engine, p.workload);
+    for (const [seq, p] of plan.entries()) {
+      const r = await once(p.engine, p.workload);
       samples.push({ seq, round: p.round, workload: p.workload, engine: p.engine, rss_bytes: r.rss, ms: Number(r.ms.toFixed(3)) });
       if (seq + 1 === plan.length || plan[seq + 1].round !== p.round) {
         roundLoad.push(load());
         log(`round ${p.round + 1}/${o.runs}: load ${roundLoad.at(-1)}`);
       }
-    });
+    }
 
     let after = null;
     if (hostFile) {
@@ -427,7 +467,7 @@ export function renderMarkdown(res) {
     L.push(`| ${c.text} | ${eng[c.subject].label} | ${Object.values(c.ratios).map(f3).join(" | ")} | ${f3(c.max_ratio)} (${c.max_workload}) | ${f3(c.geomean_ratio)} | ${c.holds ? "yes" : `no (${c.over.join(", ")})`} |`);
   }
   L.push("");
-  L.push(`G7 (both caps, every ep9 build in the run): ${res.g7.holds === null ? "no reading (a cap comparator is not in the run)" : res.g7.holds ? "holds" : "does not hold"}${res.provisional ? " (provisional)" : ""}.`);
+  L.push(`G7 (both caps, both ep9 builds, the 7 v8-v7 kernels): ${res.g7.holds === null ? `no reading (missing: ${(res.g7.missing ?? []).join(", ")})` : res.g7.holds ? "holds" : "does not hold"}${res.provisional ? " (provisional)" : ""}.`);
   return `${L.join("\n")}\n`;
 }
 

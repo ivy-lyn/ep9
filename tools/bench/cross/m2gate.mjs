@@ -27,7 +27,8 @@
 //
 // TS reading (V12-D5): ep9's process wall time of octane-typescript per paired round, gross and
 // net (minus ep9's empty-script time in the same round), median and the order-statistic interval
-// (n = 10: ranks 2 and 9, 97.9%), and the paired ratios to node --jitless and QuickJS. The rule
+// (n = 10: ranks 2 and 9, 97.9%), and the paired ratios to node --jitless and QuickJS (on every
+// host both must have a value and not be void, else no gate verdict). The rule
 // depends on the host: on m5max-macos the upper end of the gross interval must be <= 2.8 s
 // ("fail" when its low end is above 2.8 s); on a Linux x64 host the net ratio to node --jitless
 // must be >= 1.0 (the interval rule); on any other host there is no TS rule (no gate verdict).
@@ -147,6 +148,15 @@ export function tsReading(res, build) {
   };
   const vsNode = ratio("node-jitless");
   const vsQjs = ratio("qjs");
+  // V12-D5: both comparators are part of the reading on every host (class M; the paired ratio
+  // to node --jitless is always reported), so a missing or void ratio gives no gate verdict
+  // (M7-P0 Codex r1 GATES10-2).
+  for (const [name, r] of [["node-jitless", vsNode], ["qjs", vsQjs]]) {
+    const v = r?.net ?? r?.gross;
+    if (!r) reasons.push(`no ${name} row`);
+    else if (!v || !Number.isFinite(v.median)) reasons.push(`the ratio to ${name} has no value`);
+    else if (v.void) reasons.push(`ratios to ${name} void (IQR ${v.iqrPct.toFixed(1)}% > 5%)`);
+  }
   let rule = null;
   let side = null;
   if (res.host?.id === TS.macHost) {
@@ -157,9 +167,8 @@ export function tsReading(res, build) {
   } else if (res.host?.measured?.platform === TS.linuxPlatform) {
     rule = `${TS.linuxPlatform}: the net ratio to node --jitless >= ${TS.minRatio} (the whole interval)`;
     const v = vsNode?.net;
-    if (!vsNode) reasons.push("no node-jitless row");
-    else if (!v) reasons.push("the net ratio to node --jitless is invalid");
-    else if (v.void) reasons.push(`ratios void (IQR ${v.iqrPct.toFixed(1)}% > 5%)`);
+    // A missing row or a void ratio already has its reason (above).
+    if (vsNode && !v) reasons.push("the net ratio to node --jitless is invalid");
     side = gateSide(v?.interval, TS.minRatio);
   } else {
     reasons.push(`no TS rule for host ${res.host?.id ?? "(no host file)"} (${res.host?.measured?.platform ?? "?"}): V12-D5 names m5max-macos and Linux x64`);
