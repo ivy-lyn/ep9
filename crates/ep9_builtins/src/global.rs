@@ -9,6 +9,10 @@
 //! isFinite(v)   ToNumber(v) is finite
 //! isNaN(v)      ToNumber(v) is NaN
 //! Error.isError(v)                      §20.5.2.1: v has [[ErrorData]] (Cx::is_error)
+//! escape(s)     Annex B §B.2.1.1: %XX below U+0100, %uXXXX above, upper case; the ASCII
+//!               word chars and "@*+-./" stay
+//! unescape(s)   Annex B §B.2.1.2: %uXXXX and %XX (hex digits of either case) back to code
+//!               units; any other "%" stays
 //! ```
 //!
 //! The global value properties (`globalThis`, `Infinity`, `NaN`, `undefined`) come from the VM
@@ -16,7 +20,7 @@
 //! builtin (`%eval%`). `parseFloat` and `parseInt` are definitions of the `number` module
 //! (number.rs), which installs each one function object as both `Number.parseX` and the global
 //! `parseX` (§21.1.2.12-13; M2-P5-PLAN-D4): here, `Number.parseInt` would land after
-//! `Number.EPSILON`, out of V8's key order. Not built yet: `escape`, `unescape` (Annex B).
+//! `Number.EPSILON`, out of V8's key order.
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-global.txt`.
@@ -38,6 +42,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("encodeURI", 1, encode_uri), // 4
     BuiltinDef::method("encodeURIComponent", 1, encode_uri_component), // 5
     BuiltinDef::method("isError", 1, is_error),     // 6
+    BuiltinDef::method("escape", 1, escape),        // 7
+    BuiltinDef::method("unescape", 1, unescape),    // 8
 ];
 
 /// Definition indices (ids `BLOCK.i`).
@@ -49,6 +55,8 @@ mod def {
     pub const ENCODE_URI: u16 = 4;
     pub const ENCODE_URI_COMPONENT: u16 = 5;
     pub const IS_ERROR: u16 = 6;
+    pub const ESCAPE: u16 = 7;
+    pub const UNESCAPE: u16 = 8;
 }
 
 /// The intrinsics this module makes.
@@ -58,7 +66,7 @@ pub const INTRINSICS: &[IntrinsicDef] = &[];
 pub const PROPS: &[ObjectProps] = &[
     ObjectProps {
         target: IntrinsicId::GlobalObject,
-        // §19.2.6.1-4, §19.2.2, §19.2.3 ({w, c}), in V8's order.
+        // §19.2.6.1-4, §B.2.1.1-2, §19.2.2, §19.2.3 ({w, c}), in V8's order.
         props: &[
             PropDef::method(PropKey::Str("decodeURI"), def::DECODE_URI),
             PropDef::method(
@@ -70,6 +78,8 @@ pub const PROPS: &[ObjectProps] = &[
                 PropKey::Str("encodeURIComponent"),
                 def::ENCODE_URI_COMPONENT,
             ),
+            PropDef::method(PropKey::Str("escape"), def::ESCAPE),
+            PropDef::method(PropKey::Str("unescape"), def::UNESCAPE),
             PropDef::method(PropKey::Str("isFinite"), def::IS_FINITE),
             PropDef::method(PropKey::Str("isNaN"), def::IS_NAN),
         ],
@@ -367,6 +377,161 @@ fn encode_uri_component<'s>(
     // 3. Return ? Encode(componentString, extraUnescaped).
     let r = encode(&units, b"");
     uri_result(cx, r)
+}
+
+// ---- escape, unescape (Annex B §B.2.1) ---------------------------------------------------------
+
+/// The length of S for the code unit C in escape (§B.2.1.1 step 6.b-c): 1 for a code unit of
+/// unescapedSet (the ASCII word characters and "@*+-./"), 3 for "%XX", 6 for "%uXXXX".
+fn escaped_width(c: u16) -> usize {
+    match u8::try_from(c) {
+        Ok(b) if b.is_ascii_alphanumeric() || b"_@*+-./".contains(&b) => 1,
+        _ if c < 256 => 3,
+        _ => 6,
+    }
+}
+
+/// The length of escape(`units`), so the caller can refuse a text above the String length
+/// limit before it allocates.
+pub fn escaped_len(units: &[u16]) -> usize {
+    units.iter().map(|&c| escaped_width(c)).sum()
+}
+
+/// The code units of escape(`units`) (§B.2.1.1 steps 2-7).
+pub fn escape_units(units: &[u16]) -> Vec<u16> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let hex = |n: u16, shift: u32| u16::from(HEX[usize::from((n >> shift) & 0xF)]);
+    // 2. Let len be the length of string.
+    // 3. Let R be the empty String.
+    let mut r: Vec<u16> = Vec::with_capacity(escaped_len(units));
+    // 4. Let unescapedSet be the string-concatenation of the ASCII word characters and
+    //    "@*+-./" (`escaped_width` 1).
+    // 5. Let k be 0.
+    // 6. Repeat, while k < len,
+    //    a. Let C be the code unit at index k within string.
+    for &c in units {
+        // b. If unescapedSet contains C, then
+        //    i. Let S be C.
+        if escaped_width(c) == 1 {
+            r.push(c);
+        // c. Else,
+        //    i. Let n be the numeric value of C.
+        //    ii. If n < 256, then
+        //        1. Let hex be the String representation of n, formatted as an uppercase
+        //           hexadecimal number.
+        //        2. Let S be the string-concatenation of "%" and ! StringPad(hex, 2, "0",
+        //           start).
+        } else if c < 256 {
+            r.extend_from_slice(&[u16::from(b'%'), hex(c, 4), hex(c, 0)]);
+        //    iii. Else,
+        //        1. Let hex be the String representation of n, formatted as an uppercase
+        //           hexadecimal number.
+        //        2. Let S be the string-concatenation of "%u" and ! StringPad(hex, 4, "0",
+        //           start).
+        } else {
+            r.extend_from_slice(&[
+                u16::from(b'%'),
+                u16::from(b'u'),
+                hex(c, 12),
+                hex(c, 8),
+                hex(c, 4),
+                hex(c, 0),
+            ]);
+        }
+        // d. Set R to the string-concatenation of R and S.
+        // e. Set k to k + 1.
+    }
+    // 7. Return R.
+    r
+}
+
+/// The code units of unescape(`units`) (§B.2.1.2 steps 2-6).
+pub fn unescape_units(units: &[u16]) -> Vec<u16> {
+    // ParseText(hexDigits, HexDigits[~Sep]): every code unit is a hex digit (no separator).
+    let hex_value = |digits: &[u16]| {
+        digits.iter().try_fold(0u16, |v, &u| {
+            let d = char::from_u32(u32::from(u))?.to_digit(16)?;
+            Some(v * 16 + d as u16)
+        })
+    };
+    // 2. Let len be the length of string.
+    let len = units.len();
+    // 3. Let R be the empty String.
+    let mut r: Vec<u16> = Vec::with_capacity(len);
+    // 4. Let k be 0.
+    let mut k = 0;
+    // 5. Repeat, while k < len,
+    while k < len {
+        // a. Let C be the code unit at index k within string.
+        let mut c = units[k];
+        // b. If C is the code unit 0x0025 (PERCENT SIGN), then
+        if c == u16::from(b'%') {
+            // i. Let hexDigits be the empty String.
+            // ii. Let optionalAdvance be 0.
+            // iii. If k + 5 < len and the code unit at index k + 1 within string is the code
+            //      unit 0x0075 (LATIN SMALL LETTER U), then
+            //      1. Set hexDigits to the substring of string from k + 2 to k + 6.
+            //      2. Set optionalAdvance to 5.
+            // iv. Else if k + 3 ≤ len, then
+            //      1. Set hexDigits to the substring of string from k + 1 to k + 3.
+            //      2. Set optionalAdvance to 2.
+            let (hex_digits, optional_advance) = if k + 5 < len && units[k + 1] == u16::from(b'u') {
+                (&units[k + 2..k + 6], 5)
+            } else if k + 3 <= len {
+                (&units[k + 1..k + 3], 2)
+            } else {
+                (&units[..0], 0)
+            };
+            // v. Let parseResult be ParseText(hexDigits, HexDigits[~Sep]).
+            // vi. If parseResult is a Parse Node, then
+            //     1. Let n be the MV of parseResult.
+            //     2. Set C to the code unit whose numeric value is n.
+            //     3. Set k to k + optionalAdvance.
+            if !hex_digits.is_empty()
+                && let Some(n) = hex_value(hex_digits)
+            {
+                c = n;
+                k += optional_advance;
+            }
+        }
+        // c. Set R to the string-concatenation of R and C.
+        r.push(c);
+        // d. Set k to k + 1.
+        k += 1;
+    }
+    // 6. Return R.
+    r
+}
+
+/// escape ( string ) (Annex B §B.2.1.1).
+fn escape<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Set string to ? ToString(string).
+    let units = string_units(cx, args.get(0))?;
+    // A text above the String length limit is the RangeError of `new_string_utf16`, before
+    // the up to 6 code units per code unit are allocated.
+    if escaped_len(&units) > crate::string::MAX_LENGTH {
+        return Err(cx.throw_range_error("Invalid string length"));
+    }
+    let r = escape_units(&units);
+    Ok(cx.new_string_utf16(&r)?.value())
+}
+
+/// unescape ( string ) (Annex B §B.2.1.2).
+fn unescape<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Set string to ? ToString(string).
+    let units = string_units(cx, args.get(0))?;
+    let r = unescape_units(&units);
+    Ok(cx.new_string_utf16(&r)?.value())
 }
 
 // ---- Error.isError (§20.5.2.1) ------------------------------------------------------------------
