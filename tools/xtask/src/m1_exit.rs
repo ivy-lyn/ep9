@@ -84,8 +84,8 @@
 //! H15 has one: X9), the stub markers (`m2`, `m3`, `m4`, plan v9 rule 4; `m5`, plan v10 rule 4;
 //! `m6`, plan v11 rule 4) and the ADR Counts line (PASS only when adr-lint part 3 finds nothing:
 //! the line and the index column equal the Status lines, and the index parses; else FAIL with the
-//! findings). The tree root is `--root`, or this workspace (as m0-exit). The shared readers are in
-//! `crate::exit`.
+//! findings). The tree root is `--root`, or the git top dir of the current dir
+//! (`exit::default_root`; plan v12 PR-15). The shared readers are in `crate::exit`.
 //!
 //! Exit 0 when every cell is PASS or N/A, 1 otherwise, 2 on a usage error or an input that
 //! cannot be read.
@@ -456,9 +456,15 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
 
 /// Entry point: writes the report to `--out` and prints the table and the missing inputs.
 pub fn main(args: &[String]) -> Result<bool, String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let root = std::fs::canonicalize(&root).unwrap_or(root);
-    let opts = parse_args(args, root)?;
+    // PR-15: the default root is the git top dir of the current dir; `--root` replaces it, so a
+    // run with `--root` needs no git tree here.
+    let default = crate::exit::default_root();
+    let opts = parse_args(args, default.clone().unwrap_or_default())?;
+    if opts.root.as_os_str().is_empty() {
+        return Err(default
+            .err()
+            .unwrap_or_else(|| format!("--root needs a dir\n{USAGE}")));
+    }
     let report = run(&opts)?;
     std::fs::write(&opts.out, &report.markdown)
         .map_err(|e| format!("cannot write {}: {e}", opts.out.display()))?;
