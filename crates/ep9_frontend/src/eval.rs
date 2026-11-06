@@ -4,14 +4,16 @@
 //! has no edge to this crate.
 //!
 //! ```text
-//! caller thread: prescan (layer 0)
+//! caller thread: the shim text -> the parse text (E8, surrogate.rs), prescan (layer 0)
 //! front-end worker (own job: crate::parse / crate::semantic return on the first diagnostic):
 //!   oxc_parser, Script goal -------------- fatal, or an error not in the allowed set --> Syntax
+//!     (E8: a regex literal with a lone surrogate is checked again with escapes)
 //!   depth::check_ast_depth (layer 2) ----- too deep --------------------------------> Range
 //!   allowed set: the spans of the new.target, super.x / super[x], super(...) and #x nodes
 //!     that the caller permits (EvalContext); a parser or semantic diagnostic is dropped only
 //!     when it is the context-dependent error of that node kind and its label span is the
 //!     node's
+//!   E8: string, template and regex literals with a lone surrogate get the real code units
 //!   completion rewrite (V8 Rewriter model): `.result = <value>` stores, see below
 //!   caller strict: force_strict (a synthetic "use strict" directive)
 //!   oxc_semantic (new_compiler) ---------- an error not in the allowed set --------> Syntax
@@ -20,6 +22,7 @@
 //!   scope::analyze_eval (ScopeKind::Eval root; direct: free names Dynamic, indirect: Global)
 //!     + the kinds of the caller's private names (E9)
 //!   bytecodegen::generate (CodeKind::Eval; gen_eval_program)  --> VerifiedUnit
+//!   E8: the placeholder strings -> the real code units, verify again --> VerifiedUnit
 //! ```
 //!
 //! # Decisions

@@ -31,7 +31,7 @@
 //! | S2 | Only the eval entry decodes ([`compile_eval`](crate::compile_eval); `compile_function_ctor` reaches it for the joined text). Scripts and modules from a host never hold a lone surrogate, so `compile`, `compile_script` and `compile_module` do not decode | A host text with U+FDD0 stays as it is |
 //! | S3 | The decoder is total: an ESC that does not start one of the 2 forms is a real U+FDD0. Two escaped surrogates that make a pair are that pair | Fuzz input and an old VM can give any text; the result is still deterministic |
 //! | S4 | The unit keeps the parse text as its source (U+FFFD for each lone surrogate). `Function.prototype.toString` of a function in such eval code gives U+FFFD there | `CompiledUnit::source` is a `String` (H05 A2); the VM side of 07 §7 ("toString reads the original string") is not built |
-//! | S5 | The placeholder is ESC2 = U+FDD1 repeated (m + 1) times, then the decimal index, where m is the longest run of U+FDD1 in any string value, template value or regex pattern of the AST | No string of the unit can be equal to a placeholder, so the swap after BytecodeGen changes only the placeholder strings |
+//! | S5 | The placeholder is U+FDD1 repeated (m + 1) times, then the decimal index. m bounds the longest run of U+FDD1 in any string value, template value or regex pattern: the U+FDD1 characters of the text plus its `FDD1` hex digit groups (`mark_bound`) | No string of the unit can be equal to a placeholder, so the swap after BytecodeGen changes only the placeholder strings. A text bound needs no second AST walk (each walk is a new copy of the oxc visitor code) |
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -39,11 +39,12 @@ use std::fmt::Write as _;
 use ep9_bytecode::{UnitString, VerifiedUnit};
 use oxc_allocator::{Allocator, CloneIn};
 use oxc_ast::ast::{
-    Expression, Program, RegExpLiteral, Str, StringLiteral, TaggedTemplateExpression,
+    Expression, Program, RegExpLiteral, Statement, Str, StringLiteral, TaggedTemplateExpression,
     TemplateElement,
 };
-use oxc_ast_visit::{Visit, VisitMut};
+use oxc_ast_visit::VisitMut;
 use oxc_diagnostics::{Diagnostics, OxcDiagnostic};
+use oxc_parser::config::TokensParserConfig;
 use oxc_parser::{Kind, Parser, Token};
 use oxc_regular_expression::{LiteralParser, Options};
 use oxc_span::{SourceType, Span};
@@ -324,13 +325,11 @@ impl Shim {
         if self.is_empty() {
             return Ok(());
         }
-        let mut longest = Longest::default();
-        longest.visit_program(program);
         let mut patcher = Patcher {
             shim: self,
             allocator,
             text,
-            mark: String::from_utf16_lossy(&vec![MARK; longest.run + 1]),
+            mark: String::from_utf16_lossy(&vec![MARK; mark_bound(text) + 1]),
             error: None,
         };
         patcher.visit_program(program);
@@ -384,37 +383,21 @@ impl Shim {
     }
 }
 
-/// The longest run of U+FDD1 in any string value, template value or regex pattern (S5).
-#[derive(Default)]
-struct Longest {
-    run: usize,
-}
-
-impl Longest {
-    fn see(&mut self, units: impl Iterator<Item = u16>) {
-        let mut run = 0;
-        for u in units {
-            run = if u == MARK { run + 1 } else { 0 };
-            self.run = self.run.max(run);
-        }
-    }
-}
-
-impl<'a> Visit<'a> for Longest {
-    fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
-        self.see(it.value.encode_utf16());
-    }
-
-    fn visit_template_element(&mut self, it: &TemplateElement<'a>) {
-        self.see(it.value.raw.as_str().encode_utf16());
-        if let Some(c) = it.value.cooked {
-            self.see(c.encode_utf16());
-        }
-    }
-
-    fn visit_reg_exp_literal(&mut self, it: &RegExpLiteral<'a>) {
-        self.see(it.regex.pattern.text.as_str().encode_utf16());
-    }
+/// A bound on the longest run of U+FDD1 in any string value, template value or regex pattern
+/// of `text` (S5): each U+FDD1 of a value is a U+FDD1 of the text or a `\u` escape whose hex
+/// digits hold `FDD1` in any case (`\x` and octal escapes stay below U+0100). One text scan,
+/// so no second AST walk.
+fn mark_bound(text: &str) -> usize {
+    let raw = text
+        .chars()
+        .filter(|&c| u32::from(c) == u32::from(MARK))
+        .count();
+    let hex = text
+        .as_bytes()
+        .windows(4)
+        .filter(|w| w.eq_ignore_ascii_case(b"fdd1"))
+        .count();
+    raw + hex
 }
 
 struct Patcher<'s, 'a, 't> {
@@ -474,14 +457,30 @@ impl<'a> Patcher<'_, 'a, '_> {
 
     /// Parse `source` again (one string literal or one template literal) and give what `take`
     /// reads from it, copied into the program's arena.
+    ///
+    /// The parse is the script `(source)` with the front end's own parser configuration
+    /// (`TokensParserConfig`, as `regex_check::parse`): a second configuration would link a
+    /// second copy of the oxc parser (+337 KB, and more start-up work in every run).
     fn reparse<R>(
         &mut self,
         source: &str,
         take: impl for<'b> FnOnce(&Expression<'b>, &'a Allocator) -> Option<R>,
     ) -> Option<R> {
         let scratch = Allocator::default();
-        let parsed = Parser::new(&scratch, source, SourceType::script()).parse_expression();
-        let value = parsed.ok().and_then(|e| take(&e, self.allocator));
+        let script = format!("({source})");
+        let parsed = Parser::new(&scratch, &script, SourceType::script())
+            .with_config(TokensParserConfig)
+            .parse();
+        let expression = match parsed.program.body.first() {
+            Some(Statement::ExpressionStatement(s)) if !parsed.diagnostics.has_errors() => {
+                match &s.expression {
+                    Expression::ParenthesizedExpression(p) => Some(&p.expression),
+                    e => Some(e),
+                }
+            }
+            _ => None,
+        };
+        let value = expression.and_then(|e| take(e, self.allocator));
         if value.is_none() {
             self.error
                 .get_or_insert_with(|| format!("lone-surrogate shim: no value for {source:?}"));
