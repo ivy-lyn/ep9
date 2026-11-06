@@ -668,8 +668,8 @@ impl IntrinsicId {
     }
 }
 
-/// The intrinsic `id` of the current realm: an object, or undefined if no table made it (or,
-/// for `%Symbol.prototype%`, until symbols exist).
+/// The intrinsic `id` of the current realm, a raw read: an object, or undefined if no table made
+/// it, until symbols exist (`%Symbol.prototype%`) or until its lazy group installs (INTL-I1-D8).
 pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
     match (id.root(), id.slot()) {
         (Some(r), _) => rt.root(r),
