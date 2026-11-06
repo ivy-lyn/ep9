@@ -79,9 +79,9 @@ impl<'s> Cx<'s> {
 
     /// The intrinsic `id` of GetFunctionRealm(`f`) (§7.3.22: the realm of a function, of a
     /// bound function's target, else the current realm), or undefined if no table made it.
-    /// Undefined for `IntrinsicId::RealmFuses` too: the realm's fuse block is VM-internal.
-    /// It never throws: a revoked proxy on the walk gives the current realm; a spec step
-    /// with `? GetFunctionRealm` uses [`Cx::try_function_realm_intrinsic`]. Not a GC point.
+    /// Undefined for `IntrinsicId::RealmFuses` too (VM-internal). It never throws (a revoked
+    /// proxy on the walk gives the current realm; [`Cx::try_function_realm_intrinsic`] throws).
+    /// A GC point when `id` is in a lazy group not yet installed in that realm (INTL-I1-D8).
     pub fn function_realm_intrinsic(&self, f: impl Into<Local<'s>>, id: IntrinsicId) -> Local<'s> {
         let rt = self.rt();
         let r = realm::get_function_realm(rt, f.into().bits());
@@ -91,7 +91,7 @@ impl<'s> Cx<'s> {
     /// [`Cx::function_realm_intrinsic`] with GetFunctionRealm step 4.a (§7.3.22): a revoked
     /// proxy on the walk (also behind a bound function) throws a TypeError. For the spec
     /// steps that take `? GetFunctionRealm(C)`, as ArraySpeciesCreate step 4.b (§10.4.2.3).
-    /// Not a GC point before the throw.
+    /// Not a GC point before the throw; the lazy group install after the walk is one.
     ///
     /// # Errors
     ///

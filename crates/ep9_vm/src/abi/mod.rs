@@ -736,9 +736,9 @@ impl<'s> Cx<'s> {
         Self::local(self.rt().global())
     }
 
-    /// An intrinsic object of the current realm (§6.1.7.4). Panics if no table made it (a
-    /// table names only intrinsics that exist: `builtins::check_tables`) or `id` is the
-    /// VM-internal `IntrinsicId::RealmFuses`.
+    /// An intrinsic object of the current realm (§6.1.7.4). A lazy group's intrinsic installs
+    /// its group first (INTL-I1-D8), a GC point then. Panics if no table made it (a table names
+    /// only existing intrinsics: `builtins::check_tables`) or `id` is `IntrinsicId::RealmFuses`.
     pub fn intrinsic(&self, id: IntrinsicId) -> Local<'s, JsObject> {
         assert!(id != IntrinsicId::RealmFuses, "RealmFuses is VM-internal");
         let rt = self.rt();
