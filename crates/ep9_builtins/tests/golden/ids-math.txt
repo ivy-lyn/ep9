@@ -36,3 +36,5 @@
 0x1020   8.32         method       1       "sinh"  (%Math%.sinh w-c)
 0x1021   8.33         method       1       "tan"  (%Math%.tan w-c)
 0x1022   8.34         method       1       "tanh"  (%Math%.tanh w-c)
+0x1023   8.35         method       1       "f16round"  (%Math%.f16round w-c)
+0x1024   8.36         method       1       "sumPrecise"  (%Math%.sumPrecise w-c)

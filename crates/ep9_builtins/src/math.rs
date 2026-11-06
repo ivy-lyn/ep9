@@ -4,8 +4,9 @@
 //! ```text
 //! %Math%     E, LN10, LN2, LOG10E, LOG2E, PI, SQRT1_2, SQRT2 ({}), [@@toStringTag] "Math" ({c})
 //!            abs, acos, acosh, asin, asinh, atan, atanh, atan2, ceil, cbrt, expm1, clz32, cos,
-//!            cosh, exp, floor, fround, hypot, imul, log, log1p, log2, log10, max, min, pow,
-//!            random, round, sign, sin, sinh, sqrt, tan, tanh, trunc ({w, c})
+//!            cosh, exp, floor, f16round, fround, hypot, imul, log, log1p, log2, log10, max,
+//!            min, pow, random, round, sign, sin, sinh, sqrt, sumPrecise, tan, tanh, trunc
+//!            ({w, c})
 //! global     Math {w, c}
 //! ```
 //!
@@ -13,15 +14,14 @@
 //! |---|---|
 //! | abs, ceil, floor, trunc, sqrt | the exact `f64` operations (IEEE 754; allowed by clippy.toml) |
 //! | sign, max, min | the spec steps |
-//! | round, fround | `ep9_math::round_js`, `ep9_math::fround` |
+//! | round, fround, f16round | `ep9_math::round_js`, `ep9_math::fround`, `ep9_math::f16round` (one rounding, ties to even) |
 //! | pow | `ep9_math::pow_js`: the JS special cases, then the correctly rounded pow (CORE-MATH port; the same function as `**`) |
 //! | exp, log | `ep9_math::exp`, `ep9_math::log`: correctly rounded (CORE-MATH ports, M4-P1) |
 //! | acos, acosh, asin, asinh, atan, atanh, atan2, cbrt, cos, cosh, expm1, log1p, log10, log2, sin, sinh, tan, tanh | the `ep9_math` function of the same name: correctly rounded (CORE-MATH ports, M4-P4) |
 //! | hypot | `ep9_math::hypot_js`: V8's `MathHypot` (IEEE operations only, the same bits as node) |
 //! | clz32, imul | ToUint32, then the exact integer operation |
 //! | random | `Cx::math_random`: the isolate's xorshift128+ state (V9-D16) |
-//!
-//! Not yet: f16round.
+//! | sumPrecise | the iterator protocol here, then `ep9_math::ExactSum`: the exact sum, rounded once (the xsum algorithm, as V8) |
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-math.txt`.
@@ -71,6 +71,10 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("sinh", 1, sinh),     // 32 (M4-P4)
     BuiltinDef::method("tan", 1, tan),       // 33 (M4-P4)
     BuiltinDef::method("tanh", 1, tanh),     // 34 (M4-P4)
+    // 35 (M7-P0)
+    BuiltinDef::method("f16round", 1, f16round),
+    // 36 (M7-P0)
+    BuiltinDef::method("sumPrecise", 1, sum_precise),
 ];
 
 /// The intrinsics this module makes.
@@ -94,8 +98,8 @@ const fn constant(name: &'static str, value: f64) -> PropDef {
 pub const PROPS: &[ObjectProps] = &[
     ObjectProps {
         target: IntrinsicId::Math,
-        // V8's order: the functions, then the constants, then @@toStringTag (node 24 also
-        // has f16round, not built yet).
+        // V8's order: the functions, then the constants, then @@toStringTag (V8 main
+        // `bootstrapper.cc`; node 26 has the same order, without sumPrecise).
         props: &[
             PropDef::method(PropKey::Str("abs"), 0),
             PropDef::method(PropKey::Str("acos"), 16),
@@ -113,6 +117,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("cosh"), 25),
             PropDef::method(PropKey::Str("exp"), 12),
             PropDef::method(PropKey::Str("floor"), 2),
+            PropDef::method(PropKey::Str("f16round"), 35),
             PropDef::method(PropKey::Str("fround"), 3),
             PropDef::method(PropKey::Str("hypot"), 27),
             PropDef::method(PropKey::Str("imul"), 13),
@@ -129,6 +134,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("sin"), 31),
             PropDef::method(PropKey::Str("sinh"), 32),
             PropDef::method(PropKey::Str("sqrt"), 9),
+            PropDef::method(PropKey::Str("sumPrecise"), 36),
             PropDef::method(PropKey::Str("tan"), 33),
             PropDef::method(PropKey::Str("tanh"), 34),
             PropDef::method(PropKey::Str("trunc"), 10),
@@ -323,6 +329,77 @@ fn fround<'s>(
     // 5. Let n64 be the result of converting n32 to IEEE 754-2019 binary64 format.
     // 6. Return the ECMAScript Number value corresponding to n64.
     unary(cx, args, ep9_math::fround)
+}
+
+/// Math.f16round ( x ) (sec-math.f16round).
+fn f16round<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let n be ? ToNumber(x).
+    // 2. If n is NaN, return NaN.
+    // 3. If n is one of +0𝔽, -0𝔽, +∞𝔽, or -∞𝔽, return n.
+    // 4. Let n16 be the result of converting n to IEEE 754-2019 binary16 format using
+    //    roundTiesToEven mode.
+    // 5. Let n64 be the result of converting n16 to IEEE 754-2019 binary64 format.
+    // 6. Return the ECMAScript Number value corresponding to n64.
+    // (`ep9_math::f16round`: steps 2-6, one rounding by integer steps; H36.)
+    unary(cx, args, ep9_math::f16round)
+}
+
+/// Math.sumPrecise ( items ) (sec-math.sumprecise).
+fn sum_precise<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let items = args.get(0);
+    // 1. Perform ? RequireObjectCoercible(items).
+    if items.is_undefined_or_null() {
+        return Err(cx.throw_type_error("Math.sumPrecise called on null or undefined"));
+    }
+    // 2. Let iteratorRecord be ? GetIterator(items, sync).
+    let mut rec = cx.get_iterator(items)?;
+    // 3. Let state be minus-zero.
+    // 4. Let sum be 0.
+    // (`ExactSum` holds state and sum: integers only, no Value, so no GC root; rule 8.)
+    let mut sum = ep9_math::ExactSum::new();
+    // 5. Let count be 0.
+    let mut count: u64 = 0;
+    // 6. Let next be not-started.
+    // 7. Repeat, while next is not done,
+    //    a. Set next to ? IteratorStepValue(iteratorRecord).
+    //    b. If next is not done, then
+    while let Some(next) = cx.iterator_step_value(&mut rec)? {
+        // i. Set count to count + 1.
+        count += 1;
+        // ii. If count ≥ 2^53, then
+        //     1. Let error be ThrowCompletion(a newly created RangeError object).
+        //     2. Return ? IteratorClose(iteratorRecord, error).
+        // iii. NOTE: The above case is not expected to be reached in practice and is included
+        //      only so that implementations may rely on inputs being "reasonably sized"
+        //      without violating this specification.
+        if count >= 1 << 53 {
+            let error = Err(cx.throw_range_error("Math.sumPrecise: too many values"));
+            return cx.iterator_close(&rec, error);
+        }
+        // iv. If next is not a Number, then
+        //     1. Let error be ThrowCompletion(a newly created TypeError object).
+        //     2. Return ? IteratorClose(iteratorRecord, error).
+        let Some(n) = next.as_number() else {
+            let error =
+                Err(cx.throw_type_error("Math.sumPrecise: an iterator value is not a number"));
+            return cx.iterator_close(&rec, error);
+        };
+        // v. Let n be next.
+        // vi. If state is not not-a-number, then ... (the state steps and sum + ℝ(n)).
+        sum.add(n);
+    }
+    // 8.-12. NaN, ±∞, -0, or 𝔽(sum).
+    Ok(Local::number(sum.sum()))
 }
 
 fn is_plus_zero(x: f64) -> bool {
