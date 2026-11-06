@@ -1,6 +1,6 @@
 //! S2a part 1: the parallel mark (03-gc §4 S2a). The world stays stopped: the heap's thread and
-//! up to [`MAX_HELPERS`] helper threads drain the mark stack together, then the heap's thread
-//! goes on alone (the ephemeron rounds, weak slots, sweep).
+//! the helpers (at most [`MAX_HELPERS`] by default) drain the mark stack together, also after
+//! each ephemeron round; the heap's thread alone resolves the ephemerons, then the weak slots.
 //!
 //! ```text
 //! drain_to_fixpoint -> parallel::drain(t)
@@ -28,7 +28,7 @@
 //! | No lost mark | every mark-bit write of a Shared tracer is an atomic RMW; the sequential mark keeps its load and store |
 //! | Fields seen | the mutator is stopped; the job hand-off and every segment pass through a lock, so each marker sees every store made before the GC (H11: GC-visible fields are Relaxed atomics) |
 //! | Trace functions | run on any marker thread: they read only cells and data that lives as long as the isolate, never thread-local state, and never call into the heap (trace.rs) |
-//! | Roots, CSS, S1 logs, ephemeron rounds, weak slots | the heap's thread only, before or after the parallel drain |
+//! | Roots, CSS, S1 logs, ephemeron resolve steps, weak slots | the heap's thread only, before or after a parallel drain (the drain after an ephemeron round is parallel too) |
 //! | A panic | a helper's panic is caught and raised again on the heap's thread after every helper is done; a panic of the heap's thread stops the helpers first; the unwind then resets the marks (heap.rs `UnmarkOnUnwind`) |
 //!
 //! The control `EP9_GC_HELPERS` (V12-D47): unset or not a number gives min(available cores - 1,

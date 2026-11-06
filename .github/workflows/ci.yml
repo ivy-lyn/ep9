@@ -920,7 +920,7 @@ jobs:
       - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap -p ep9_math
       # The S2a loom test (plan v12 rule 8; M7-P1 GCPAR1): 2 markers on the shared work
       # structure. Miri does not cover the parallel mark (helpers() is 0 under Miri).
-      - run: RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom cargo test --locked --release -p ep9_heap --lib loom
+      - run: RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom cargo "+$MIRI_TOOLCHAIN" test --locked --release -p ep9_heap --lib parallel::loom_tests
 
   dep-guards:
     name: dependency guards

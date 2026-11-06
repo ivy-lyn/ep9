@@ -4,7 +4,7 @@
 //! the two markers up to the preemption bound:
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test --release -p ep9_heap --lib tests::loom
+//! RUSTFLAGS="--cfg loom" cargo test --release -p ep9_heap --lib parallel::loom_tests
 //! ```
 //!
 //! The markers trace a small synthetic graph: an item is a node id; a node's "mark bit" is an
