@@ -338,7 +338,7 @@ enum Scan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Swept {
+pub(crate) enum Swept {
     Free,
     Recyclable,
     Full,
@@ -1569,7 +1569,77 @@ impl Inner {
         self.sweep_page_with::<false>(idx, &mut Vec::new(), &mut 0)
     }
 
-    /// [`Inner::sweep_page`]. S1 (sticky marks), not `CHECK`: a page with cells but no dead
+    /// [`Sweeper::sweep_page_with`] with the heap's own kinds and settings (the lazy sweep, the
+    /// sweep before out of memory and the heap's share of a concurrent sweep): the counts go to
+    /// the stats, and a page with no cell goes back to the chunk pool.
+    fn sweep_page_with<const CHECK: bool>(
+        &mut self,
+        idx: usize,
+        errors: &mut Vec<String>,
+        kept: &mut usize,
+    ) -> Swept {
+        let mut sw = Sweeper::new(
+            self.mem.base(),
+            &self.kinds,
+            self.s.generational,
+            self.s.zap,
+        );
+        let swept = sw.sweep_page_with::<CHECK>(idx, errors, kept);
+        self.stats.freed_cells += sw.freed_cells;
+        self.stats.freed_bytes += sw.freed_bytes;
+        if swept == Swept::Free {
+            self.mem.free_small_page(idx);
+        }
+        swept
+    }
+}
+
+/// What the sweep of a small page reads and counts: the cage, the kinds and two settings. The
+/// heap's thread uses one over its own kind table ([`Inner::sweep_page_with`]); the sweeper
+/// thread of a concurrent sweep uses one over the job's copy of the table (parallel.rs). It
+/// reaches nothing else of the heap, so the mutator may run while the sweeper thread uses one.
+pub(crate) struct Sweeper<'a> {
+    /// The cage base, with the provenance of the whole reservation.
+    base: NonNull<u8>,
+    base_addr: usize,
+    kinds: &'a KindTable,
+    /// S1: a kept cell keeps its mark bit ([`HeapConfig::generational`]).
+    sticky: bool,
+    zap: bool,
+    /// Cells and bytes this sweeper freed so far.
+    pub(crate) freed_cells: u64,
+    pub(crate) freed_bytes: u64,
+}
+
+impl<'a> Sweeper<'a> {
+    pub(crate) fn new(base: NonNull<u8>, kinds: &'a KindTable, sticky: bool, zap: bool) -> Self {
+        Sweeper {
+            base,
+            base_addr: base.addr().get(),
+            kinds,
+            sticky,
+            zap,
+            freed_cells: 0,
+            freed_bytes: 0,
+        }
+    }
+
+    /// The address `addr` of the cage, with the cage's provenance.
+    #[inline(always)]
+    fn ptr(&self, addr: usize) -> NonNull<u8> {
+        // SAFETY: every caller derives `addr` from a page or cell of this cage, so the offset
+        // stays inside the reservation and is not null.
+        unsafe { self.base.add(addr - self.base_addr) }
+    }
+
+    /// Small page `idx` (a committed small page that this sweep holds).
+    #[inline(always)]
+    fn page(&self, idx: usize) -> Page {
+        // SAFETY: callers pass a committed small page of this cage (one from a sweep queue).
+        unsafe { Page::from_base(self.ptr(self.base_addr + idx * PAGE_SIZE)) }
+    }
+
+    /// [`Inner::sweep_page`] of chunk `idx`. S1 (sticky marks), not `CHECK`: a page with cells but no dead
     /// cell (every VO bit has its mark bit) is not walked. The walk would free nothing, keep
     /// every mark bit and only recompute the line marks, and those already cover every live
     /// cell: the last walk set them from the live cells, and every run handed out since was
@@ -1580,7 +1650,7 @@ impl Inner {
     /// measure). `CHECK` walks every page and checks that rule: no live cell lies in a line
     /// marked free before the walk.
     ///
-    /// The walk sets the line marks line by line from the bitmaps ([`Inner::mark_live_lines`]:
+    /// The walk sets the line marks line by line from the bitmaps ([`Sweeper::mark_live_lines`]:
     /// a size call only for a live cell that may reach into the next line); `CHECK` sets them
     /// cell by cell from each live cell's size. Both give the same marks (debug builds other
     /// than Miri check it after each walk).
@@ -1592,14 +1662,17 @@ impl Inner {
     /// size would zap a live cell after its checks). Errors go to `errors`; a live cell whose
     /// size cannot be known counts as one granule, a dead cell with a bad extent is not
     /// zapped. Adds the number of live cells to `kept`.
-    fn sweep_page_with<const CHECK: bool>(
+    ///
+    /// [`Swept::Free`]: the page holds no cell; the caller gives it back to the chunk pool
+    /// (`Memory::free_small_page`, on the heap's thread only).
+    pub(crate) fn sweep_page_with<const CHECK: bool>(
         &mut self,
         idx: usize,
         errors: &mut Vec<String>,
         kept: &mut usize,
     ) -> Swept {
-        let page = self.mem.page(idx);
-        let sticky = self.s.generational;
+        let page = self.page(idx);
+        let sticky = self.sticky;
         if sticky && !CHECK && !self.needs_walk(page) {
             #[cfg(test)]
             sweep_counter::bump();
@@ -1631,7 +1704,6 @@ impl Inner {
         // CHECK: the end of the previous live cell.
         let mut prev_end = page.addr() + FIRST_CELL_OFFSET;
         let vo_bits = self
-            .mem
             .ptr(page.addr() + VO_BITS_OFFSET)
             .cast::<u64>()
             .as_ptr();
@@ -1699,16 +1771,16 @@ impl Inner {
                     } else {
                         self.size_at(addr)
                     };
-                    if self.s.zap {
-                        let p = self.mem.ptr(addr).cast::<u64>();
+                    if self.zap {
+                        let p = self.ptr(addr).cast::<u64>();
                         for i in 0..size / 8 {
                             // SAFETY: the dead cell [addr, addr + size) is committed memory that no
                             // live cell or root reaches; nothing reads it after this sweep.
                             unsafe { p.add(i).write(ZAP_WORD) };
                         }
                     }
-                    self.stats.freed_cells += 1;
-                    self.stats.freed_bytes += size as u64;
+                    self.freed_cells += 1;
+                    self.freed_bytes += size as u64;
                 }
                 page.mark_word(w).store(vo & mk & keep_marks, Relaxed);
             }
@@ -1728,7 +1800,6 @@ impl Inner {
         core::mem::forget(unmark);
         *kept += live;
         if live == 0 {
-            self.mem.free_small_page(idx);
             return Swept::Free;
         }
         if (FIRST_LINE..LINES_PER_PAGE).any(|l| !page.line_used(l)) {
@@ -1822,14 +1893,15 @@ impl Inner {
     /// One pass over the 4 KiB mark bitmap with plain loads, so that it vectorizes (most pages
     /// under GC-stress hold few cells, so this pass is most of the checked sweep's extra cost).
     fn any_mark_bit(&self, page: Page, sticky: bool) -> bool {
-        let mk = self.mem.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
-        let vo = self.mem.ptr(page.addr() + VO_BITS_OFFSET).cast::<u64>();
+        let mk = self.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
+        let vo = self.ptr(page.addr() + VO_BITS_OFFSET).cast::<u64>();
         let mut any = 0u64;
         for w in 0..BITMAP_WORDS {
             let outside = if sticky {
                 // SAFETY: both bitmaps lie in the page's committed metadata area, 8-aligned,
-                // with the provenance of the reservation. Only this thread touches them (S0
-                // and S1 are stop-the-world), and no atomic access runs during this loop.
+                // with the provenance of the reservation. Only the thread that sweeps the page
+                // touches them (the GC is stop-the-world; a concurrent sweep gives each page
+                // to one thread, parallel.rs), and no atomic access runs during this loop.
                 unsafe { !vo.add(w).read() }
             } else {
                 u64::MAX
@@ -1844,13 +1916,14 @@ impl Inner {
     /// bit: a cell the last mark did not reach), or no cell at all (the walk frees the page).
     /// One pass over both bitmaps with plain loads, as in `any_mark_bit`.
     fn needs_walk(&self, page: Page) -> bool {
-        let mk = self.mem.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
-        let vo = self.mem.ptr(page.addr() + VO_BITS_OFFSET).cast::<u64>();
+        let mk = self.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
+        let vo = self.ptr(page.addr() + VO_BITS_OFFSET).cast::<u64>();
         let (mut dead, mut any) = (0u64, 0u64);
         for w in 0..BITMAP_WORDS {
             // SAFETY: both bitmaps lie in the page's committed metadata area, 8-aligned, with
-            // the provenance of the reservation. Only this thread touches them (S0 and S1 are
-            // stop-the-world), and no atomic access runs during this loop.
+            // the provenance of the reservation. Only the thread that sweeps the page touches
+            // them (the GC is stop-the-world; a concurrent sweep gives each page to one
+            // thread, parallel.rs), and no atomic access runs during this loop.
             let v = unsafe { vo.add(w).read() };
             // SAFETY: as above.
             dead |= v & !unsafe { mk.add(w).read() };
@@ -1871,7 +1944,7 @@ impl Inner {
         errors: &mut Vec<String>,
     ) -> usize {
         // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
-        let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+        let c = unsafe { CellPtr::from_raw(self.ptr(addr).cast()) };
         let page_end = (addr & PAGE_MASK) + PAGE_SIZE;
         let size = self.kinds.cell_size(c).unwrap_or(GRANULE);
         if addr < *prev_end || size > MAX_SMALL_SIZE || addr + size > page_end {
@@ -1895,8 +1968,8 @@ impl Inner {
         errors: &mut Vec<String>,
     ) -> Option<usize> {
         // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
-        let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
-        let idx = (addr - self.mem.base_addr()) / PAGE_SIZE;
+        let c = unsafe { CellPtr::from_raw(self.ptr(addr).cast()) };
+        let idx = (addr - self.base_addr) / PAGE_SIZE;
         let Some(size) = self.kinds.cell_size(c) else {
             // SAFETY: as above: `c` is a cell start with a word0.
             let kind = unsafe { c.header() }.kind();
@@ -1949,7 +2022,7 @@ impl Inner {
         prev_end: usize,
         errors: &mut Vec<String>,
     ) {
-        let idx = (addr - self.mem.base_addr()) / PAGE_SIZE;
+        let idx = (addr - self.base_addr) / PAGE_SIZE;
         if addr < prev_end {
             let msg = format_args!(
                 "cell {addr:#x} overlaps the previous cell or the metadata (ends {prev_end:#x})"
@@ -1973,12 +2046,14 @@ impl Inner {
     /// corruption.
     fn size_at(&self, addr: usize) -> usize {
         // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
-        let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+        let c = unsafe { CellPtr::from_raw(self.ptr(addr).cast()) };
         self.kinds
             .cell_size(c)
             .unwrap_or_else(|| panic!("heap corrupt: cell {c:?} has an unregistered kind"))
     }
+}
 
+impl Inner {
     /// Frees every unmarked large object and clears the marks of the others (generational:
     /// keeps them). Returns the number of large objects kept.
     fn sweep_large(&mut self) -> usize {
@@ -2053,8 +2128,8 @@ fn block_is_empty(vo: *const u64, w: usize) -> bool {
     let mut any = 0u64;
     for i in w..w + SKIP_WORDS {
         // SAFETY: `vo` is the VO bitmap of a committed page (BITMAP_WORDS words, 8-aligned,
-        // with the reservation's provenance) and `i < BITMAP_WORDS`. Only this thread writes
-        // it (S0), and no write runs during this read.
+        // with the reservation's provenance) and `i < BITMAP_WORDS`. Only the thread that
+        // sweeps the page writes it, and no write runs during this read.
         any |= unsafe { vo.add(i).read() };
     }
     any == 0
