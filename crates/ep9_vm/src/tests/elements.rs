@@ -1390,10 +1390,11 @@ fn the_density_check_keeps_dense_stores_dense() {
     });
 }
 
-/// A refused store is counted once (M7-P1 review F4): a plain object's dense store of 4004
-/// slots with 4 elements refuses each far store in [4004, 5028), and each one used to count
-/// the whole store again. Now the first refusal keeps (cell, capacity) and the next 99 far
-/// stores are refused with no count. The store does not move and every index reads back.
+/// A refused store is counted once per `cap` / `REFUSED_RECOUNT` far stores (M7-P1 review F4,
+/// Codex r2): a plain object's dense store of 4004 slots with 4 elements refuses each far
+/// store in [4004, 5028), and each one used to count the whole store again. Now a count keeps
+/// (cell, capacity) and the next 62 far stores are refused with no count: 2 counts for 100
+/// stores. The store does not move and every index reads back.
 #[test]
 fn a_refused_store_is_counted_once() {
     each(|cx, rt| {
@@ -1409,7 +1410,8 @@ fn a_refused_store_is_counted_once() {
         for k in 0..100 {
             assert!(property::set_index(cx, o, cap + 1 + k, int(k as i32)).unwrap());
         }
-        assert_eq!(counts() - before, 1, "one count for 100 refused stores");
+        let budget = cap / u64::from(elements::REFUSED_RECOUNT);
+        assert_eq!(u64::from(counts() - before), 100u64.div_ceil(budget + 1));
         assert_eq!(capacity(o), cap);
         assert!(shape::is_dictionary(shape::shape_of(o)));
         for k in 0..100 {
@@ -1420,6 +1422,44 @@ fn a_refused_store_is_counted_once() {
         }
         for i in [0, 1000, 2000, 3000] {
             assert_eq!(property::get_index(cx, o, i).unwrap(), int(i as i32));
+        }
+        checked(rt, o);
+    });
+}
+
+/// A refusal is counted again after `cap` / `REFUSED_RECOUNT` far stores (M7-P1 Codex r2): the
+/// holes of a refused dense store are filled (same cell, same capacity), so the store is dense
+/// and the next far stores must grow it. They kept all later indices in the property storage
+/// for the life of the object before (the Codex r2 script: o[4004], fill 0..4004, o[4005..]).
+#[test]
+fn a_refused_store_that_fills_up_grows_again() {
+    each(|cx, rt| {
+        let o = object::new_plain_object(rt);
+        for i in [0, 1000, 2000, 3000] {
+            assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+        }
+        let cap = capacity(o);
+        assert_eq!(cap, 4004);
+        assert!(property::set_index(cx, o, cap, int(-1)).unwrap());
+        assert_eq!(capacity(o), cap, "the density check refuses o[4004]");
+        for i in 0..cap {
+            assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+        }
+        assert_eq!(capacity(o), cap, "a hole store does not grow the store");
+        let budget = cap / u64::from(elements::REFUSED_RECOUNT);
+        for k in 1..=budget + 1 {
+            assert!(property::set_index(cx, o, cap + k, int(k as i32)).unwrap());
+        }
+        assert!(
+            capacity(o) > cap,
+            "the filled store grows within cap / 64 + 1 far stores"
+        );
+        for i in 0..cap {
+            assert_eq!(property::get_index(cx, o, i).unwrap(), int(i as i32));
+        }
+        assert_eq!(property::get_index(cx, o, cap).unwrap(), int(-1));
+        for k in 1..=budget + 1 {
+            assert_eq!(property::get_index(cx, o, cap + k).unwrap(), int(k as i32));
         }
         checked(rt, o);
     });

@@ -758,10 +758,9 @@ pub(crate) const SPARSE_FACTOR: usize = 3;
 /// density check: M6-ORCH-173, route ARRAY-DENSITY). False for `i` below `cap`. Not a GC point.
 ///
 /// The density check counts the present elements, O(`cap`). A refusal keeps the store as it
-/// is, so a refused (cell, capacity) goes into [`REFUSED`]: a later far store into the same
-/// store is refused with no new count (M7-P1 review F4: each one counted the whole store
-/// again). So one dense cell is counted once per refusal, and a count costs no more than the
-/// growth that made the cell.
+/// is, so a refused (cell, capacity) goes into [`REFUSED`]: the next far stores into it are
+/// refused with no count (M7-P1 review F4: each one counted the whole store again) until
+/// [`REFUSED_RECOUNT`] says to count again, as filled holes can make it dense (Codex r2).
 pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
     debug_assert!(!kinds_::is_array(o), "Arrays keep the H18-Q2 rule");
     if i < cap {
@@ -776,9 +775,10 @@ pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
     }
     // Past DENSE_UNCHECKED slots `cap` is above 0, so the object has its elements cell.
     let e = object::rd(object::cell(o), obj::ELEMENTS);
-    let memo = (rt.id, e, cap);
     let entry = refused_entry(e);
-    if REFUSED.with(|r| r[entry].get() == memo) {
+    let (id, cell, c, hits) = REFUSED.with(|r| r[entry].get());
+    if (id, cell, c) == (rt.id, e, cap) && hits < cap / REFUSED_RECOUNT {
+        REFUSED.with(|r| r[entry].set((id, cell, c, hits + 1)));
         return true;
     }
     #[cfg(test)]
@@ -789,25 +789,25 @@ pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
     let dict_words = (dict::DATA + dict::ENTRY * buckets) / 8;
     let refuse = grown >= SPARSE_FACTOR * dict_words;
     if refuse {
-        REFUSED.with(|r| r[entry].set(memo));
+        REFUSED.with(|r| r[entry].set((rt.id, e, cap, 0)));
     }
     refuse
 }
 
 std::thread_local! {
     /// The dense stores that [`sparse_growth`] refused last on this thread, by entry
-    /// ([`refused_entry`]): (`Runtime::id`, the elements cell, its capacity). The cell is
-    /// only compared, never read through, so it is not a root (plan rule 8): a stale entry
-    /// (the cell died and its address took a new cell of the same capacity, or the store got
-    /// denser after the count) only keeps a new index in the property storage, where any
-    /// index may live (H18-Q3). The runtime id keeps two isolates of one thread apart.
-    static REFUSED: [core::cell::Cell<(u64, u64, u32)>; REFUSED_ENTRIES] =
-        const { [const { core::cell::Cell::new((0, 0, 0)) }; REFUSED_ENTRIES] };
+    /// ([`refused_entry`]): (`Runtime::id`, the elements cell, its capacity, the refusals since
+    /// the count). The cell is only compared, so it is not a root (plan rule 8). A stale entry
+    /// (a new cell at the address, filled holes) keeps few indices as properties (H18-Q3).
+    static REFUSED: [core::cell::Cell<(u64, u64, u32, u32)>; REFUSED_ENTRIES] =
+        const { [const { core::cell::Cell::new((0, 0, 0, 0)) }; REFUSED_ENTRIES] };
 }
 
 /// The entries of [`REFUSED`] (a power of two): a few objects that take far stores in turn
 /// each keep their entry.
 const REFUSED_ENTRIES: usize = 8;
+/// A [`REFUSED`] entry of capacity `cap` refuses `cap` / this far stores, then counts again.
+pub(crate) const REFUSED_RECOUNT: u32 = 64;
 
 /// The [`REFUSED`] entry of the elements cell `e` (bits of an 8-byte aligned address).
 fn refused_entry(e: u64) -> usize {
