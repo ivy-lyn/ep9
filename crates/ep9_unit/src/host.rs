@@ -4,9 +4,9 @@
 use crate::codes::{Versions, cpu, target_abi, target_arch};
 
 /// The engine build id this build writes and accepts (H35-Q8, C-19): the first 16 bytes of
-/// SHA-256 over the git commit, `rustc -vV`, the target and the embedder string, with no Cargo
-/// feature, tree state or profile, or the 32 hex digits of `EP9_BUILD_ID` (`build.rs`). `ep9_frontend` still writes 16 zero
-/// bytes into every CompiledUnit, so the bytecode corpus digest does not depend on it.
+/// SHA-256 over the git commit, `rustc -vV`, the target and the embedder string (no Cargo
+/// feature, tree state or profile), or the 32 hex digits of `EP9_BUILD_ID` (`build.rs`).
+/// `ep9_frontend` writes 16 zero bytes into each CompiledUnit, so the corpus digest keeps.
 pub const ENGINE_BUILD_ID: [u8; 16] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/engine_build_id.bin"));
 
