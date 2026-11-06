@@ -298,7 +298,8 @@ pub fn pow(base: View, exp: View, poll: &mut dyn FnMut() -> bool) -> Result<Big,
     // A power of 2 is one bit (no digit work); a small result is one dashu call.
     let pow2 = base.digits.iter().rev().skip(1).all(|d| *d == 0)
         && base.digits.last().is_some_and(|d| d.is_power_of_two());
-    let m = if base.bit_len().saturating_mul(e) <= POW_STEP_BITS || pow2 {
+    // `e == 1` is a copy (pow_steps needs `e >= 2`).
+    let m = if e == 1 || base.bit_len().saturating_mul(e) <= POW_STEP_BITS || pow2 {
         let m = b.pow(e as usize);
         Work::new(poll).add(words(&m))?;
         m
@@ -615,10 +616,24 @@ pub fn parse_digits(
     poll: &mut dyn FnMut() -> bool,
 ) -> Result<Option<Big>, Error> {
     debug_assert!((2..=36).contains(&radix));
-    if s.is_empty() || !s.iter().all(|c| char::from(*c).is_digit(radix)) {
+    let mut work = Work::new(poll);
+    if s.is_empty() {
         return Ok(None);
     }
-    let first = s.iter().position(|c| *c != b'0');
+    // The digit check and the leading-zero scan poll too: one call per SCAN_BYTES bytes.
+    let mut first = None;
+    for (k, chunk) in s.chunks(SCAN_BYTES).enumerate() {
+        if !chunk.iter().all(|c| char::from(*c).is_digit(radix)) {
+            return Ok(None);
+        }
+        if first.is_none() {
+            first = chunk
+                .iter()
+                .position(|c| *c != b'0')
+                .map(|i| k * SCAN_BYTES + i);
+        }
+        work.add(chunk.len() / 64)?;
+    }
     let Some(first) = first else {
         return Ok(Some(Big::zero()));
     };
@@ -629,7 +644,6 @@ pub fn parse_digits(
     if low >> 32 >= u128::from(MAX_BITS) {
         return Err(Error::TooBig);
     }
-    let mut work = Work::new(poll);
     let m = if body.len() <= PARSE_LEAF || radix.is_power_of_two() {
         let m = parse_leaf(body, radix);
         work.add(words(&m))?;
@@ -680,6 +694,10 @@ const LOG2_RADIX: [u64; 35] = [
     22030102809,
     22204658803,
 ];
+
+/// The bytes of text that [`parse_digits`] checks per poll (64 bytes count as one digit of
+/// work, so one poll per [`POLL_WORDS`] x 64 bytes).
+const SCAN_BYTES: usize = 64 * POLL_WORDS as usize;
 
 /// The longest text that [`parse_digits`] parses in one dashu call when the radix is not a
 /// power of 2.

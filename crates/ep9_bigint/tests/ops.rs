@@ -538,19 +538,41 @@ fn long_work_polls_once_per_poll_words() {
 fn a_false_poll_stops_long_work() {
     let x = b::sub(pow2(1 << 20).view(), big(1).view()).unwrap();
     let nines = "9".repeat(100_000);
-    let cases: [LongOp; 6] = [
+    let zeros = "0".repeat(1 << 20);
+    let bad = "1".repeat(1 << 20) + "z";
+    let cases: [LongOp; 8] = [
         &|p| b::to_string_radix(x.view(), 2, p).map(|_| ()),
         &|p| b::to_string_radix(x.view(), 8, p).map(|_| ()),
         &|p| b::to_string_radix(x.view(), 10, p).map(|_| ()),
         &|p| b::pow(big(3).view(), big(400_000).view(), p).map(|_| ()),
         &|p| b::parse_literal(nines.as_bytes(), p).map(|_| ()),
         &|p| b::parse_digits(nines.as_bytes(), 36, false, p).map(|_| ()),
+        // The digit check and the leading-zero scan poll too (M7-P0 r1 SPEC-POST-2): a long
+        // run of zeros (the value is 0n) and a long text with a bad last char.
+        &|p| b::parse_literal(zeros.as_bytes(), p).map(|_| ()),
+        &|p| b::parse_literal(bad.as_bytes(), p).map(|_| ()),
     ];
     for (i, f) in cases.iter().enumerate() {
         let (n, mut poll) = counter(3);
         assert_eq!(f(&mut poll), Err(Error::Interrupted), "case {i}");
         // It stops at the call that said stop.
         assert_eq!(n.get(), 3, "case {i}");
+    }
+}
+
+#[test]
+fn pow_with_exponent_1_gives_the_base_back() {
+    // M7-P0 r1 SPEC-POST-1: a base above POW_STEP_BITS / e bits went to the squaring steps,
+    // which need e >= 2 (a debug assert). Exponent 1 is a copy; 2 still squares.
+    for bits in [4095u64, 4096, 4097, 1 << 16] {
+        let x = b::add(pow2(bits).view(), big(1).view()).unwrap();
+        for v in [x.clone(), b::neg(x.view())] {
+            let (_, mut poll) = counter(u64::MAX);
+            assert_eq!(b::pow(v.view(), big(1).view(), &mut poll).unwrap(), v, "{bits} bits");
+            let sq = b::mul(v.view(), v.view()).unwrap();
+            let (_, mut poll) = counter(u64::MAX);
+            assert_eq!(b::pow(v.view(), big(2).view(), &mut poll).unwrap(), sq, "{bits} bits");
+        }
     }
 }
 
@@ -578,7 +600,8 @@ fn pow_refuses_a_too_big_result_before_the_last_squares() {
 #[test]
 fn a_parse_above_the_limit_is_refused_before_the_work() {
     // 323,228,498 decimal digits make more than 2^30 bits (10^323228497 > 2^1073741825):
-    // refused from the length, before the work and with no poll.
+    // refused from the length, before the digit work. Only the digit check polls (one call
+    // per 4096 bytes, M7-P0 r1 SPEC-POST-2), so no poll comes from digit work.
     let (n, mut poll) = counter(u64::MAX);
     let nines = "9".repeat(323_228_498);
     assert_eq!(
@@ -590,5 +613,5 @@ fn a_parse_above_the_limit_is_refused_before_the_work() {
         b::parse_literal(hex.as_bytes(), &mut poll),
         Err(Error::TooBig)
     );
-    assert_eq!(n.get(), 0);
+    assert!(n.get() <= (nines.len() + hex.len()) as u64 / 4096, "{}", n.get());
 }

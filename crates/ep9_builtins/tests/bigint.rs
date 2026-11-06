@@ -208,3 +208,15 @@ fn an_interrupt_callback_runs_inside_long_bigint_work() {
         assert!(ran, "{src}");
     }
 }
+
+/// An uncaught BigInt shows all its digits, as d8 and node do (M7-P0 reviewer R2): the
+/// 100-digit limit is for messages that name a BigInt, not for the thrown value itself.
+#[test]
+fn an_uncaught_bigint_shows_all_its_digits() {
+    assert_eq!(common::run_both("throw 5n"), Err("5n".to_string()));
+    let msg = common::run_both("throw 2n ** 7000n").unwrap_err();
+    // 2^7000 has 2,108 decimal digits.
+    assert_eq!(msg.len(), 2108 + 1, "{msg}");
+    assert!(msg.starts_with("16216967556622020264"), "{msg}");
+    assert!(msg.ends_with("2553829376n"), "{msg}");
+}

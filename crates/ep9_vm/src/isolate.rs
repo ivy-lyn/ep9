@@ -688,6 +688,21 @@ impl Isolate {
                     display_bits(exc)
                 }
             }
+        } else if crate::kinds::is_bigint(exc) {
+            // A thrown BigInt shows all its digits, as d8 does: BigInt::toString, which polls
+            // (`describe` keeps the 100-digit limit of messages). If it throws (a termination
+            // or the String length RangeError), drop that and use the message form.
+            match crate::bigint::to_string(&mut self.cx, exc, 10) {
+                Ok(s) => format!("{}n", string::to_rust_string(s)),
+                Err(Throw) => {
+                    rt.take_pending();
+                    rt.shared.throw_site.take();
+                    if end_termination(rt) {
+                        return terminated();
+                    }
+                    display_bits(exc)
+                }
+            }
         } else {
             display_bits(exc)
         };

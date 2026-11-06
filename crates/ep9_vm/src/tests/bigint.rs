@@ -715,6 +715,27 @@ fn long_bigint_work_stops_on_a_termination() {
             assert_eq!(cx.rt().take_pending(), UNDEFINED, "{name}: no RangeError");
             cx.rt().terminating.set(false);
         }
+        // The text scans of StringToBigInt poll too (M7-P0 r1 SPEC-POST-2): the white space
+        // trim, the ASCII check and the digit check. Each text is valid or invalid only at its
+        // end, so with no poll in the scan it would give a result, not stop.
+        let texts = [
+            ("spaces then 1", " ".repeat(1 << 20) + "1"),
+            ("1 then spaces", "1".to_string() + &" ".repeat(1 << 20)),
+            ("zeros", "0".repeat(1 << 20)),
+            ("digits then a non-ASCII unit", "1".repeat(1 << 20) + "\u{100}"),
+            ("digits then z", "1".repeat(1 << 20) + "z"),
+        ];
+        for (name, t) in texts {
+            let cx = &mut iso.cx;
+            let v = s(cx, &t);
+            iso.terminate_handle().terminate();
+            let cx = &mut iso.cx;
+            cx.budget = 1;
+            assert!(bigint::string_to_big(cx, v).is_err(), "{name}");
+            assert!(cx.rt().terminating.get(), "{name}");
+            assert_eq!(cx.rt().take_pending(), UNDEFINED, "{name}");
+            cx.rt().terminating.set(false);
+        }
     });
 }
 

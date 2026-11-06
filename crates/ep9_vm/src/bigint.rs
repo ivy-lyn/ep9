@@ -237,25 +237,36 @@ pub(crate) fn to_string(cx: &mut Cx, b: u64, radix: u32) -> Res<u64> {
 pub(crate) fn string_to_big(cx: &mut Cx, s: u64) -> Res<Option<Big>> {
     let s = crate::string::flatten(cx, s);
     let units = crate::string::view(cx, s).to_utf16();
-    let mut t = &units[..];
-    while let [first, rest @ ..] = t
-        && crate::numconv::is_js_whitespace(*first)
-    {
-        t = rest;
+    // The scans poll as the digit work does: one poll per SCAN_UNITS code units (H23).
+    const SCAN_UNITS: usize = 64 * digits::POLL_WORDS as usize;
+    let ws = |u: &u16| crate::numconv::is_js_whitespace(*u);
+    let mut start = 0;
+    while start < units.len() && ws(&units[start]) {
+        start += 1;
+        if start.is_multiple_of(SCAN_UNITS) {
+            charge(cx, digits::POLL_WORDS as usize)?;
+        }
     }
-    while let [rest @ .., last] = t
-        && crate::numconv::is_js_whitespace(*last)
-    {
-        t = rest;
+    let mut end = units.len();
+    while end > start && ws(&units[end - 1]) {
+        end -= 1;
+        if (units.len() - end).is_multiple_of(SCAN_UNITS) {
+            charge(cx, digits::POLL_WORDS as usize)?;
+        }
     }
     // The grammar is ASCII: any other code unit makes the text invalid.
-    let Some(ascii) = t
-        .iter()
-        .map(|&u| u8::try_from(u).ok().filter(u8::is_ascii))
-        .collect::<Option<Vec<u8>>>()
-    else {
-        return Ok(None);
-    };
+    let mut ascii = Vec::with_capacity(end - start);
+    for chunk in units[start..end].chunks(SCAN_UNITS) {
+        for &u in chunk {
+            match u8::try_from(u).ok().filter(u8::is_ascii) {
+                Some(c) => ascii.push(c),
+                None => return Ok(None),
+            }
+        }
+        if chunk.len() == SCAN_UNITS {
+            charge(cx, digits::POLL_WORDS as usize)?;
+        }
+    }
     let r = digits::parse_literal(&ascii, &mut poller(cx));
     r.map_err(|e| range_error(cx, e))
 }
