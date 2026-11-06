@@ -59,6 +59,9 @@ export function expandWorkloads(list) {
   return out;
 }
 
+/** The G7 memory set of mem.mjs (class Mem): the 7 v8-v7 kernels (02-architecture G7; BENCH10). */
+SETS.mem = V8V7_7;
+
 /** Run 1 (week-4 plan section 11). deltablue joins in run 2, once Function.prototype.call lands. */
 export const DEFAULT_WORKLOADS = ["t0-loop", "t0-branchy", "t0-call", "t0-prop", "ci-v0", "richards"];
 
