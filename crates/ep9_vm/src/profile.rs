@@ -36,18 +36,18 @@
 //! its cold body (which runs only after the fast body returned `Flow::Cold`, `interp::dsl`).
 //!
 //! **No record code in a fast handler (M4-P1 PROFILE-X64).** A record inlined into a fast
-//! handler made x86-64 LLVM save 1-4 callee-saved registers on entry to 22 handlers (and one
-//! more on 2 call handlers per x64 target), on every execution, also on the implicit int32
-//! paths that record nothing: up to +9% instructions on the T0 kernels, while aarch64 (18
-//! scratch registers) did not change. A plain `#[cold]` out-of-line call made it worse (a
-//! call forces the frame). So a fast body that must record finishes its result and returns
-//! one of three `interp::Flow` values; the sibling handler then tail-calls an out-of-line
-//! function with the handler's state that records and dispatches (`interp::dsl`):
+//! handler made x86-64 LLVM save 1-4 callee-saved registers on entry to 22 handlers (and 1
+//! more on 2 call handlers per x64 target), on every execution, also on the int32 paths that
+//! record nothing: up to +9% instructions on the T0 kernels; a `#[cold]` call was worse. On
+//! aarch64 an inline record saves no register, but LLVM then merges the dispatch tails and the
+//! int32 paths run 1 more instruction (M7-P2 RECCOST: crypto +0.6%). So a fast body that must
+//! record returns one of three `interp::Flow` values, and the sibling handler tail-calls an
+//! out-of-line function with its state that records and dispatches (`interp::dsl`):
 //!
 //! | Flow | Fast bodies | Record (sibling: tail-called function) |
 //! |---|---|---|
-//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next`: it reads the slot operand again from the bytecode) |
-//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next`: it gets the pair) |
+//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next::<PLACE>`: it reads the slot operand at its constant offset) |
+//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<PLACE>`: it gets the pair) |
 //! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
 //!
 //! The match loop, `become` and the prefixed step record inline (`Flow::recorded`).
@@ -376,9 +376,9 @@ fn add_bits(st: &St<'_>, s: FSlot, bits: u32) {
 
 /// A record that a fast body leaves to its dispatch (`interp::Flow::Record`): add `bits` to the
 /// int32 value half of one slot. The fast body only computes the bits; [`record`] runs after
-/// it, in `interp::dsl::record_next` (the sibling expansion: an out-of-line function that the
-/// handler reaches by a tail call, so the handler itself has no record code and, on x86-64,
-/// saves no register on entry) or inline (the match loop, `become`, prefixed instructions).
+/// it, in `interp::dsl::record_next` (the sibling expansion: a tail-called out-of-line
+/// function, so the handler has no record code and saves no register on entry) or inline (the
+/// match loop, `become`, prefixed instructions).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Rec(u64);
 
@@ -390,19 +390,18 @@ impl Rec {
         Rec((u64::from(s.0) << 32) | u64::from(bits))
     }
 
-    /// The bits and `place` (the instruction's `interp::dsl::slot_place`: where its slot
-    /// operand lies and its length) as one register-wide word: the last argument of
-    /// `interp::dsl::record_next`. The slot index is left out, so a handler keeps no register
-    /// for it.
+    /// The bits: the last argument of `interp::dsl::record_next` (M7-P2 RECCOST). Its const
+    /// parameter (the instruction's `interp::dsl::slot_place`) says where the slot operand
+    /// lies, so `record_next` reads it again at a constant offset and decodes no word, and a
+    /// handler keeps no register for the slot index.
     #[inline(always)]
-    pub(crate) fn sib_word(self, place: u64) -> u64 {
-        (place << 32) | (self.0 & 0xFFFF_FFFF)
+    pub(crate) fn bits(self) -> u64 {
+        self.0 & 0xFFFF_FFFF
     }
 }
 
 /// A comparison record that a fast body leaves to its dispatch (`interp::Flow::RecordPair`):
-/// the operand pair, whose class ([`compare_bits`]) needs cell reads, so it is computed after
-/// the fast body, in `interp::dsl::record_pair_next` (sibling expansion) or inline.
+/// the operand pair. Its class ([`compare_bits`]) needs cell reads, so it runs after the body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Pair {
     s: FSlot,
@@ -416,7 +415,8 @@ impl Pair {
         Pair { s, l, r }
     }
 
-    /// The pair (the slot is left out: `record_pair_next` reads its operand again).
+    /// The pair, for `interp::dsl::record_pair_next`, which reads the slot operand again at
+    /// its constant offset (as for [`Rec::bits`]).
     #[inline(always)]
     pub(crate) fn operands(self) -> (u64, u64) {
         (self.l, self.r)
