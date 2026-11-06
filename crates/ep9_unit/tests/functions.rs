@@ -99,6 +99,8 @@ fn the_reader_refuses_a_bad_table() {
     assert_eq!(with(v2 + 24, 3), Err(BadTable::Rodata)); // 3 fuse ids past rodata
     // NO_META with a length.
     assert_eq!(with(v0 + 16, 1), Err(BadTable::Rodata));
+    // No fuse id, but a fuse-list offset: one table has one encoding (JIT reviewer F6).
+    assert_eq!(with(v0 + 20, 8), Err(BadTable::Reserved));
     // An unknown lowering is not a format error: the loader skips that variant.
     assert!(with(v0 + 1, 9).is_ok());
 }

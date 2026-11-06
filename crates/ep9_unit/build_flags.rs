@@ -1,9 +1,11 @@
-//! The build-flag rule of MC-w28-9.1 (doc 13 C-19, the A2 build rule): an ep9 build does not
-//! opt in to a hardware shadow stack (x86-64 CET, AArch64 GCS). Lazy deopt replaces a native
-//! return address in a frame record (the H29 Contract: "lazy deopt by return-address swap
-//! only"), and a shadow stack faults on that return. The H29 A4 part decides with data; until
-//! then `build.rs` refuses a flag that turns one on. `build.rs` and `tests/build_flags.rs` both
-//! include this file with `#[path]`.
+//! The build-flag rule of MC-w28-9.1 (doc 13 C-19, the A2 build rule): a build of `ep9_unit`
+//! (and of what links it: Spike B today) does not opt in to a hardware shadow stack (x86-64 CET,
+//! AArch64 GCS). Lazy deopt replaces a native return address in a frame record (the H29
+//! Contract: "lazy deopt by return-address swap only"), and a shadow stack faults on that
+//! return. The H29 A4 part decides with data; until then `build.rs` refuses a flag that turns
+//! one on. The `ep9` engine does not link `ep9_unit` yet, so its build has no such check (no
+//! engine code outside `spike-native` swaps a return address today; M7-P1 JIT reviewer F1).
+//! `build.rs` and `tests/build_flags.rs` both include this file with `#[path]`.
 //!
 //! ```text
 //! -Zcf-protection=return | full        rustc: x86-64 CET shadow stack (IBT alone is "branch")
@@ -37,6 +39,26 @@ pub fn shadow_stack_opt_in(flags: &[&str]) -> Option<String> {
             .or_else(|| s.strip_prefix("-clink-args="))?;
         Some(v.to_string())
     };
+    // The linker words of every link-arg item, in order, each with its item: the driver's
+    // forwarding words are dropped (`-Wl,` splits at commas into the same words; `-Xlinker`),
+    // so an option split over two items (`-Clink-arg=-Wl,-z -Clink-arg=-Wl,shstk`) is seen
+    // whole (Codex r1 A2-START 2).
+    let mut words: Vec<(usize, String)> = Vec::new();
+    for (n, item) in items.iter().enumerate() {
+        if let Some(v) = link_args(&item.to_ascii_lowercase()) {
+            for w in v.split([' ', ',']) {
+                if !w.is_empty() && w != "-wl" && w != "-xlinker" {
+                    words.push((n, w.to_string()));
+                }
+            }
+        }
+    }
+    // The item of the first linker opt-in: `-z shstk`, `-zshstk` or `/CETCOMPAT`.
+    let link_opt_in = words.iter().enumerate().find_map(|(k, (n, w))| {
+        let shstk =
+            w == "-zshstk" || (w == "-z" && words.get(k + 1).is_some_and(|(_, x)| x == "shstk"));
+        (shstk || w.trim_start_matches(['/', '-']) == "cetcompat").then_some(*n)
+    });
     for (n, item) in items.iter().enumerate() {
         let lower = item.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("-zcf-protection=")
@@ -49,22 +71,8 @@ pub fn shadow_stack_opt_in(flags: &[&str]) -> Option<String> {
         {
             return Some(item.clone());
         }
-        if let Some(v) = link_args(&lower) {
-            let words: Vec<&str> = v.split([' ', ',']).filter(|w| !w.is_empty()).collect();
-            let shstk = words.windows(2).any(|w| w[0] == "-z" && w[1] == "shstk")
-                || words.contains(&"-zshstk")
-                || (words.last() == Some(&"-z")
-                    && items
-                        .get(n + 1)
-                        .and_then(|x| link_args(&x.to_ascii_lowercase()))
-                        .is_some_and(|x| x == "shstk"));
-            if shstk
-                || words
-                    .iter()
-                    .any(|w| w.trim_start_matches(['/', '-']) == "cetcompat")
-            {
-                return Some(item.clone());
-            }
+        if link_opt_in == Some(n) {
+            return Some(item.clone());
         }
     }
     None

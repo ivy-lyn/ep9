@@ -17,7 +17,8 @@
 //!                     4 entry u32, 8 text_len u32 (the code in the text section)
 //!                    12 meta u32, 16 meta_len u32 (its H29 format-1 table in rodata;
 //!                       meta = NO_META: no deopt point)
-//!                    20 fuse_refs u32 (rodata offset of fuse_count u32 fuse ids), 24 fuse_count u16
+//!                    20 fuse_refs u32 (rodata offset of fuse_count u32 fuse ids; 0 with no fuse id)
+//!                    24 fuse_count u16
 //!                    26 reserved u16 = 0   28 osr u32 = 0 (OSR entries: later)
 //!                    32 cpu_required u64 (H35-Q5 bits)   40 resume u32 = 0 (resume map: later)
 //!                    44 reserved u32 = 0
@@ -248,6 +249,11 @@ pub fn decode(rodata: &[u8], text_len: usize) -> Result<(Vec<Entry>, usize), Bad
             };
             if !meta_ok || !in_rodata(var.fuse_refs, u64::from(var.fuse_count) * 4) {
                 return Err(BadTable::Rodata);
+            }
+            // No fuse id: `fuse_refs` is 0, so one table has one encoding (M7-P1 JIT
+            // reviewer F6: any offset in rodata decoded the same).
+            if var.fuse_count == 0 && var.fuse_refs != 0 {
+                return Err(BadTable::Reserved);
             }
             variants.push(var);
         }

@@ -21,6 +21,16 @@ fn every_shadow_stack_opt_in_is_found() {
         &["-Clink-arg=-zshstk"],
         &["-Clink-arg=-z", "-Clink-arg=shstk"],
         &["-Copt-level=3", "-Clink-args=-z shstk"],
+        // One option split over two forwarded items (Codex r1 A2-START 2).
+        &["-Clink-arg=-Wl,-z", "-Clink-arg=-Wl,shstk"],
+        &["-C", "link-arg=-Wl,-z", "-C", "link-arg=-Wl,shstk"],
+        &["-Clink-arg=-Wl,-zshstk"],
+        &[
+            "-Clink-arg=-Xlinker",
+            "-Clink-arg=-z",
+            "-Clink-arg=-Xlinker",
+            "-Clink-arg=shstk",
+        ],
     ] {
         assert!(shadow_stack_opt_in(flags).is_some(), "{flags:?}");
     }
@@ -37,6 +47,8 @@ fn other_flags_pass() {
         &["-Clink-arg=-zstack-size=8388608"],
         &["-Clink-arg=/STACK:8388608"],
         &["-Cforce-frame-pointers=yes", "-Dwarnings"],
+        &["-Clink-arg=-Wl,-z", "-Clink-arg=-Wl,now"],
+        &["-Clink-args=-Wl,-z,relro,-z,now"],
     ] {
         assert_eq!(shadow_stack_opt_in(flags), None, "{flags:?}");
     }
