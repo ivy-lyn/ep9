@@ -3,8 +3,9 @@
 // The M2 gate reader (m2gate.mjs) on synthetic ep9-cross/v1 runs made with run.mjs's own
 // analyze() and label(), and the TS workload (octane.mjs kernel `typescript`). The Octane tests
 // skip when third_party/bench-octane is not synced. The m2-exit fixtures
-// (tools/xtask/tests/m2_exit/gate-*.json) are this reader's output: `EP9_BLESS=1 node --test
-// tools/bench/cross/m2gate.test.mjs` writes them again.
+// (tools/xtask/tests/m2_exit/gate-*.json) are this reader's output, each number at 10
+// significant digits (fixtureText): `EP9_BLESS=1 node --test tools/bench/cross/m2gate.test.mjs`
+// writes them again.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -315,7 +316,16 @@ test("m2gate: CLI exit status and JSON", (t) => {
   assert.equal(r.status, 2);
 });
 
-// The m2-exit fixtures: what this reader writes for 3 cases. m2-exit's tests replace the
+// The fixture text of a reader result: JSON.stringify(g, null, 1), each number that is not an
+// integer at 10 significant digits. Math.log is not the same in the last bit on every V8 build
+// (node 24.22 on Linux x64 and arm64: Math.log(1.3004568674698793) is 0x3fd0d05541acb0c2; on
+// macOS arm64 and in node 26: ...c3, the correctly rounded value), so the per-round geomeans
+// (lib/stats.mjs geomean, exp of the mean log) and the IQR of them change in the last digits
+// from host to host (CI run 42180919357). 10 digits are the same on every host; m2-exit reads
+// `value` and `interval` and prints them to 3 decimals.
+const fixtureText = (g) => `${JSON.stringify(g, (_, v) => (typeof v === "number" && !Number.isInteger(v) ? Number(v.toPrecision(10)) : v), 1)}\n`;
+
+// The m2-exit fixtures: what this reader writes for 5 cases. m2-exit's tests replace the
 // commit SHA with the HEAD of their scratch repository.
 test("m2gate: the m2-exit fixtures are this reader's output", () => {
   const linux = { id: "linux-box", gate_host: false, cpu: "AMD EPYC 7763", platform: "linux-x64" };
@@ -332,7 +342,7 @@ test("m2gate: the m2-exit fixtures are this reader's output", () => {
     ["gate-win-linux.json", runs(fakeRun({ build: "jit", host: LIN_GATE, ratio: (w, c) => (c === "qjs" ? 1.33 : 1.4) }), fakeRun({ build: "jitless", host: LIN_GATE }))],
   ];
   for (const [name, input] of cases) {
-    const text = `${JSON.stringify(readM2Gate(input), null, 1)}\n`;
+    const text = fixtureText(readM2Gate(input));
     const file = path.join(ROOT, "tools/xtask/tests/m2_exit", name);
     if (process.env.EP9_BLESS === "1") writeFileSync(file, text);
     assert.equal(readFileSync(file, "utf8"), text, `${name}: run EP9_BLESS=1 node --test tools/bench/cross/m2gate.test.mjs`);
