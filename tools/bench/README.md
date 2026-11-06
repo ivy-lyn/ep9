@@ -10,12 +10,15 @@ Benchmark tools ([10-quality](../../docs/plan/10-quality.md) section 2; perf CI 
 | `jetstream/node-host.mjs` | JSC-shell host API on node, so JetStream's `cli.js` runs under node |
 | `jetstream/lists.mjs` | Writes `expectations/jetstream-m2.txt` and `jetstream-m7.txt` from the pinned JetStream |
 | `jetstream/run.mjs` | Runs JetStream workloads, one process each, under several configs; prints median scores |
+| `jetstream/ep9-host.mjs` | The JSC-shell host API for an ep9 realm: the JetStream driver runs on node and each workload realm on ep9 (M2 exit 7) |
 | `cross/run.mjs` | Cross-engine runner: ep9 against QuickJS, node `--jitless`, d8 `--jitless` and Brimstone. Wall time in paired rounds (class M) and instruction counts (class R). Writes ep9-cross/v1 JSON and Markdown |
 | `cross/v8v7.mjs` | Generates a V8 suite v7 kernel with the real `base.js` (the default since MATH1, V9-D14) or a stub harness (`--harness stub`) from the pinned `third_party/bench-v8v7`; `--blockers` shows which kernels an engine runs |
-| `cross/octane.mjs` | Generates an Octane-7 kernel with the real Octane `base.js` and a fixed iteration count from the pinned `third_party/bench-octane`; `--blockers` as in v8v7.mjs |
+| `cross/octane.mjs` | Generates an Octane-7 kernel with the real Octane `base.js` and a fixed iteration count from the pinned `third_party/bench-octane`; `--blockers` as in v8v7.mjs; `--kernel typescript` = the TS workload (3 files, N = 5) |
 | `cross/kernels.mjs` | M1 exit 1: `--check ENGINE` runs the 15 kernels (8 v8-v7 with the default harness `base`, Octane-7) once on node and on ep9, compares the output, names the blockers, writes ep9-kernels/v1 JSON for `cargo xtask m1-exit --kernels` (item 1 passes at 15 of 15 on a fresh tree) |
 | `cross/exit2.mjs` | M1 exit 2: reads an ep9-cross/v1 run of the `exit2` set; Octane-7 geomean vs QuickJS and v8-v7 7-kernel geomean vs node `--jitless`, with intervals |
-| `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, the 8 v8-v7 kernels, Octane-7 (`octane-<kernel>`), and the sets `v8v7-8`, `v8v7-7`, `octane-7`, `exit2` |
+| `cross/m2gate.mjs` | M2 exit 1, 2, 3, 6, 10, D11: reads the ep9-cross/v1 runs of the jit preset and the jitless build; writes ep9-m2gate/v1 for `cargo xtask m2-exit --gate` |
+| `cross/mem.mjs` | M2 exit 4 (G7): median peak RSS of ep9 (both builds), node `--jitless` and d8 `--jitless` on the 7 v8-v7 kernels, >= 5 runs; both caps; writes ep9-mem/v1 for `cargo xtask m2-exit --mem` |
+| `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, the 8 v8-v7 kernels, Octane-7 (`octane-<kernel>`), `octane-typescript`, and the sets `v8v7-8`, `v8v7-7`, `octane-7`, `exit2`, `ts`, `m2` |
 | `cross/idle.mjs` | Measures a host's idle baseline for its host file |
 | `lib/stats.mjs` | PERF-NOISE statistics: median, order-statistic interval, verdict, IQR void rule, geomean. Shared by `cross/run.mjs` and `workloads/t0-dispatch.mjs` |
 | `lib/host.mjs` | Host facts, host files, the load guard; `thpMode`, the transparent huge page mode of a Linux host (the bracketed word of `/sys/kernel/mm/transparent_hugepage/enabled`, null elsewhere), which `cross/run.mjs` writes to `host.measured` and `cross/exit2.mjs` copies for m1-exit item 2 |
