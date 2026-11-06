@@ -86,8 +86,8 @@ pub const IC_LAYOUT_VERSION: u32 = 4;
 pub const FRAME_VERSION: u32 = 2;
 /// The builtin (host function) ABI (H20).
 pub const BUILTIN_ABI_VERSION: u32 = 1;
-/// Deoptimization metadata (H29): none exists yet.
-pub const DEOPT_META_VERSION: u32 = 0;
+/// Deoptimization metadata (H29). 1 (M7-P1, A2 start): format 1, the `deopt.rs` byte form.
+pub const DEOPT_META_VERSION: u32 = 1;
 /// The VM layout (C-18, doc 13 C-18; MC-w15-5: one owner per fact): the layout facts native
 /// code bakes in that no other version owns. They are the interpreter `Cx` field offsets
 /// (`layout::CX_*`), the FunctionInfo offsets (`layout::FI_*`, `FI_FEEDBACK` included) and the
