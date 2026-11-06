@@ -27,11 +27,13 @@ mod layout;
 pub use check::{Outcome, Verdict, check, verdict};
 pub use codes::{Contract, SectionKind, Versions, cpu, target_abi, target_arch};
 pub use header::{
-    BadUnit, CONTAINER_VERSION, FROZEN_PREFIX_SIZE, HASH_SHA256, HEADER_SIZE, MAGIC, MAX_SECTIONS,
-    MIN_SECTIONS, SECTION_ENTRY_SIZE, SECTION_TABLE_OFFSET, SOURCE_FLAGS_DEFINED, SectionEntry,
-    UnitHeader, entry_offsets, header_flags, offsets, source_flags_valid,
+    BadUnit, CONTAINER_VERSION, EXTENSION_ALIGN_LOG2, EXTENSION_KIND_MIN, ExtensionEntry,
+    FROZEN_PREFIX_SIZE, HASH_SHA256, HEADER_SIZE, MAGIC, MAX_SECTIONS, MIN_SECTIONS,
+    SECTION_ENTRY_SIZE, SECTION_TABLE_OFFSET, SOURCE_FLAGS_DEFINED, SectionEntry, TableEntry,
+    UNIT_DATA_SLOTS, UnitHeader, compat_flags, entry_flags, entry_offsets, header_flags,
+    incompat_flags, offsets, source_flags_valid,
 };
-pub use host::{ENGINE_BUILD_ID, HostInfo};
+pub use host::{ENGINE_BUILD_ID, HostInfo, RUNTIME_TABLE_LEN};
 pub use layout::{ENTRY_FIELDS, Field, HEADER_FIELDS, OnChange, layout_text};
 
 /// The unit writer (A2). Empty until then: tests build units with their own encoder

@@ -25,7 +25,18 @@ pub struct HostInfo {
     pub heap_page_log2: u8,
     /// [`cpu`] bits this CPU has.
     pub cpu_features: u64,
+    /// The RuntimeTable length of this build (entries; C-18): a unit may call entries below it.
+    pub runtime_table_len: u32,
+    /// The root-shape hash of this build's snapshot; 0 (no snapshot: no root shape is baked).
+    pub root_shapes: [u8; 8],
+    /// The codegen-flag hash of this run; 0 (no run-time flag changes emitted code yet).
+    pub codegen_flags: [u8; 8],
 }
+
+/// The RuntimeTable length of this build: one function pointer per entry
+/// (`ep9_vm::layout::RuntimeTable`, an append-only list, H13-Q3).
+pub const RUNTIME_TABLE_LEN: u32 =
+    (core::mem::size_of::<ep9_vm::layout::RuntimeTable>() / core::mem::size_of::<usize>()) as u32;
 
 impl Versions {
     /// The versions this build was compiled with.
@@ -41,6 +52,7 @@ impl Versions {
             deopt_meta: vm::DEOPT_META_VERSION,
             fact_schema: ep9_facts::FACT_SCHEMA_VERSION,
             builtin_abi: vm::BUILTIN_ABI_VERSION,
+            vm_layout: vm::VM_LAYOUT_VERSION,
         }
     }
 }
@@ -56,6 +68,9 @@ impl HostInfo {
             target_abi: current_abi(),
             heap_page_log2: ep9_heap::layout::PAGE_SIZE.trailing_zeros() as u8,
             cpu_features: detect_cpu(),
+            runtime_table_len: RUNTIME_TABLE_LEN,
+            root_shapes: [0; 8],
+            codegen_flags: [0; 8],
         }
     }
 }
