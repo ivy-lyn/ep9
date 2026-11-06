@@ -13,9 +13,10 @@
 //! A test262 file runs in the modes the harness uses: module, strict only, sloppy only (or
 //! `raw`), or both strict and sloppy. Every compile goes through [`super::check_determinism`]:
 //! two builds on two threads, bytes and content hash compared. Any `Internal` error (builder or
-//! verifier rejection) or any determinism mismatch fails the test. Each unit is also compiled
-//! with the register optimizer off (`regopt.rs`): the two units must have the same binding
-//! loads and stores (H24 R4, V12-D46) and the same instructions other than transfers.
+//! verifier rejection) or any determinism mismatch fails the test. In the release run, each
+//! unit is also compiled with the register optimizer off (`regopt.rs`): the two units must have
+//! the same binding loads and stores (H24 R4, V12-D46) and the same instructions other than
+//! transfers.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -252,8 +253,13 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                             }
                             // The register optimizer guard (V12-D46, H24 R4): against the
                             // plain output, every binding load and store stays and only
-                            // transfers change.
-                            let regopt = super::tests::regopt_differences(&src, opts);
+                            // transfers change. Release run only: the result does not depend
+                            // on the profile, and the debug run is the slow one.
+                            let regopt = if cfg!(debug_assertions) {
+                                Vec::new()
+                            } else {
+                                super::tests::regopt_differences(&src, opts)
+                            };
                             if !regopt.is_empty() {
                                 local.push((
                                     "REGOPT guard failure".to_owned(),
