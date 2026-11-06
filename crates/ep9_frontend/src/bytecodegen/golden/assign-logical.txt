@@ -10,16 +10,15 @@ scopes (2):
   scope0 script outer=- flags=[] slots=["f":function]
   scope1 function outer=scope0 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..70
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "f"
@@ -31,7 +30,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 E 0 (1:1)
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=2 range=0..70
-  code (67 bytes):
+  code (68 bytes):
       0 S> Ldar a1                                      ; 0b fd
       2    JumpIfToBooleanTrue @8                       ; 81 06
       4    LdaSmi [1]                                   ; 04 01
@@ -46,23 +45,22 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      22    LdaSmi [3]                                   ; 04 03
      24    Star a1                                      ; 0c fd
      26 S> Ldar a0                                      ; 0b fe
-     28    Star r0                                      ; 0c 00
-     30 E> GetNamedProperty r0, k0, s0  ; k0 = String str1 "x" ; 21 00 00 00
-     34    JumpIfUndefinedOrNull @38                    ; 87 04
-     36    Jump @44                                     ; 7e 08
-     38    LdaSmi [4]                                   ; 04 04
-     40 E> SetNamedProperty r0, k0, s1  ; k0 = String str1 "x" ; 24 00 00 01
-     44 S> Ldar a0                                      ; 0b fe
-     46    Star r0                                      ; 0c 00
-     48    Ldar a1                                      ; 0b fd
-     50    Star r1                                      ; 0c 01
-     52    Ldar r1                                      ; 0b 01
-     54 E> GetKeyedProperty r0, s2                      ; 23 00 02
-     57    JumpIfToBooleanTrue @65                      ; 81 08
-     59    LdaSmi [5]                                   ; 04 05
-     61 E> SetKeyedProperty r0, r1, s3                  ; 26 00 01 03
-     65    LdaUndefined                                 ; 05
-     66    Return                                       ; 92
+     28 E> GetNamedProperty a0, k0, s0  ; k0 = String str1 "x" ; 21 fe 00 00
+     32    Mov a0, r0                                   ; 0d fe 00
+     35    JumpIfUndefinedOrNull @39                    ; 87 04
+     37    Jump @45                                     ; 7e 08
+     39    LdaSmi [4]                                   ; 04 04
+     41 E> SetNamedProperty r0, k0, s1  ; k0 = String str1 "x" ; 24 00 00 01
+     45 S> Ldar a0                                      ; 0b fe
+     47    Ldar a1                                      ; 0b fd
+     49 E> GetKeyedProperty a0, s2                      ; 23 fe 02
+     52    Mov a0, r0                                   ; 0d fe 00
+     55    Mov a1, r1                                   ; 0d fd 01
+     58    JumpIfToBooleanTrue @66                      ; 81 08
+     60    LdaSmi [5]                                   ; 04 05
+     62 E> SetKeyedProperty r0, r1, s3                  ; 26 00 01 03
+     66    LdaUndefined                                 ; 05
+     67    Return                                       ; 92
   constants (1):
       0 String str1 "x"
   feedback (4):
@@ -76,8 +74,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       8 S 28 (1:29)
      16 S 37 (1:38)
      26 S 46 (1:47)
-     30 E 46 (1:47)
-     40 E 46 (1:47)
-     44 S 57 (1:58)
-     54 E 57 (1:58)
-     61 E 57 (1:58)
+     28 E 46 (1:47)
+     41 E 46 (1:47)
+     45 S 57 (1:58)
+     49 E 57 (1:58)
+     62 E 57 (1:58)

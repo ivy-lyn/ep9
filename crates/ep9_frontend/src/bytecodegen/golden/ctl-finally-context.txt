@@ -13,16 +13,15 @@ scopes (5):
   scope3 function outer=scope2 flags=[] slots=[]
   scope4 block outer=scope1 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..75
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "f"
@@ -34,7 +33,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 E 0 (1:1)
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=6 range=0..75
-  code (82 bytes):
+  code (78 bytes):
       0 S> LdaCurrentContext                            ; 15
       1    Star r2                                      ; 0c 02
       3 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
@@ -44,40 +43,38 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      10 S> LdaSmi [1]                                   ; 04 01
      12    StaCurrentContextSlot [0]                    ; 1b 00
      14 S> Ldar a0                                      ; 0b fe
-     16    Star r4                                      ; 0c 04
-     18 E> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
-     22    Star r5                                      ; 0c 05
-     24 E> CallUndefinedReceiver1 r4, r5, s1            ; 65 04 05 01
-     28 S> LdaCurrentContextSlot [0]                    ; 18 00
+     16 E> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
+     20    Star r5                                      ; 0c 05
+     22 E> CallUndefinedReceiver1 a0, r5, s1            ; 65 fe 05 01
+     26 S> LdaCurrentContextSlot [0]                    ; 18 00
+     28    PopContext r3                                ; 14 03
      30    Star r1                                      ; 0c 01
-     32    PopContext r3                                ; 14 03
-     34    LdaSmi [1]                                   ; 04 01
-     36    Star r0                                      ; 0c 00
-     38    Jump @53                                     ; 7e 0f
-     40    PopContext r3                                ; 14 03
-     42    LdaSmi [-1]                                  ; 04 ff
-     44    Star r0                                      ; 0c 00
-     46    Jump @53                                     ; 7e 07
-     48    Star r1                                      ; 0c 01
-     50    LdaZero                                      ; 03
-     51    Star r0                                      ; 0c 00
-     53    LdaTheHole                                   ; 07
-     54    SetPendingMessage                            ; 93
-     55    Star r4                                      ; 0c 04
-     57 S> Ldar a0                                      ; 0b fe
-     59    Star r5                                      ; 0c 05
-     61 E> CallUndefinedReceiver0 r5, s2                ; 64 05 02
-     64    Ldar r4                                      ; 0b 04
-     66    SetPendingMessage                            ; 93
-     67    Ldar r0                                      ; 0b 00
-     69    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+5, +8] ; 8a 02 00
-     72    Jump @80                                     ; 7e 08
-     74    Ldar r1                                      ; 0b 01
-     76 E> ReThrow                                      ; 91
-     77    Ldar r1                                      ; 0b 01
-     79    Return                                       ; 92
-     80    LdaUndefined                                 ; 05
-     81    Return                                       ; 92
+     32    LdaSmi [1]                                   ; 04 01
+     34    Star r0                                      ; 0c 00
+     36    Jump @51                                     ; 7e 0f
+     38    PopContext r3                                ; 14 03
+     40    LdaSmi [-1]                                  ; 04 ff
+     42    Star r0                                      ; 0c 00
+     44    Jump @51                                     ; 7e 07
+     46    Star r1                                      ; 0c 01
+     48    LdaZero                                      ; 03
+     49    Star r0                                      ; 0c 00
+     51    LdaTheHole                                   ; 07
+     52    SetPendingMessage                            ; 93
+     53    Star r4                                      ; 0c 04
+     55 S> Ldar a0                                      ; 0b fe
+     57 E> CallUndefinedReceiver0 a0, s2                ; 64 fe 02
+     60    Ldar r4                                      ; 0b 04
+     62    SetPendingMessage                            ; 93
+     63    Ldar r0                                      ; 0b 00
+     65    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+5, +8] ; 8a 02 00
+     68    Jump @76                                     ; 7e 08
+     70    Ldar r1                                      ; 0b 01
+     72 E> ReThrow                                      ; 91
+     73    Ldar r1                                      ; 0b 01
+     75    Return                                       ; 92
+     76    LdaUndefined                                 ; 05
+     77    Return                                       ; 92
   constants (3):
       0 Scope scope2
       1 Function f2
@@ -87,18 +84,18 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       1 Call
       2 Call
   handlers (1):
-        [3, 42) -> @48 context=r2 uncaught
+        [1, 40) -> @46 context=r2 uncaught
   positions (10):
       0 S 16 (1:17)
       3 E 16 (1:17)
      10 S 26 (1:27)
      14 S 33 (1:34)
-     18 E 35 (1:36)
-     24 E 33 (1:34)
-     28 S 45 (1:46)
-     57 S 67 (1:68)
-     61 E 67 (1:68)
-     76 E 16 (1:17)
+     16 E 35 (1:36)
+     22 E 33 (1:34)
+     26 S 45 (1:46)
+     55 S 67 (1:68)
+     57 E 67 (1:68)
+     72 E 16 (1:17)
 function f2 arrow name=- parent=f1 outer_scope=scope2 flags=[simple-params] params=0 length=0 regs=0 range=35..42
   code (5 bytes):
       0 S> LdaCurrentContextSlot [0]                    ; 18 00

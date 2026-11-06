@@ -128,13 +128,12 @@ function f2 class-constructor name=- parent=f0 outer_scope=scope3 flags=[strict,
   positions (1):
       0 S 57 (1:58)
 function f3 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=1 range=63..88
-  code (14 bytes):
+  code (12 bytes):
       0 S> Ldar <this>                                  ; 0b ff
-      2    Star r0                                      ; 0c 00
-      4 E> GetNamedProperty r0, k0, s0  ; k0 = String str5 "name" ; 21 00 00 00
-      8 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str6 "y" ; 25 ff 01 01
-     12    LdaUndefined                                 ; 05
-     13    Return                                       ; 92
+      2 E> GetNamedProperty <this>, k0, s0  ; k0 = String str5 "name" ; 21 ff 00 00
+      6 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str6 "y" ; 25 ff 01 01
+     10    LdaUndefined                                 ; 05
+     11    Return                                       ; 92
   constants (2):
       0 String str5 "name"
       1 String str6 "y"
@@ -144,5 +143,5 @@ function f3 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[
   handlers (0):
   positions (3):
       0 S 65 (1:66)
-      4 E 81 (1:82)
-      8 E 72 (1:73)
+      2 E 81 (1:82)
+      6 E 72 (1:73)

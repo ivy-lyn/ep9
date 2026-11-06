@@ -13,7 +13,7 @@ strings (6):
 scopes (1):
   scope0 script outer=- flags=[] slots=["x":var, "y":var]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=6 range=0..86
-  code (149 bytes):
+  code (139 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateEmptyArrayLiteral s0                   ; 6e 00
       7 S> CreateArrayLiteral k3, s1, #0x01  ; k3 = ArrayBoilerplate [k0, k1, k2] ; 6d 03 01 01
@@ -27,48 +27,43 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      29    Star r1                                      ; 0c 01
      31 E> LdaGlobal k6, s5  ; k6 = String str1 "y"     ; 10 06 05
      34 E> StaInArrayLiteral r0, r1, s3                 ; 28 00 01 03
-     38    Ldar r0                                      ; 0b 00
-     40 S> CreateArrayLiteral k8, s6, #0x01  ; k8 = ArrayBoilerplate [k0, k7, k1] ; 6d 08 06 01
-     44 S> CreateArrayLiteral k11, s7, #0x00  ; k11 = ArrayBoilerplate [k9, k10] ; 6d 0b 07 00
-     48 S> LdaGlobal k5, s4  ; k5 = String str0 "x"     ; 10 05 04
-     51 E> CreateArrayFromIterable                      ; 6f
-     52 S> CreateArrayLiteral k12, s8, #0x01  ; k12 = ArrayBoilerplate [k0] ; 6d 0c 08 01
-     56    Star r0                                      ; 0c 00
-     58    LdaSmi [1]                                   ; 04 01
-     60    Star r1                                      ; 0c 01
-     62 E> LdaGlobal k5, s4  ; k5 = String str0 "x"     ; 10 05 04
-     65    Star r5                                      ; 0c 05
-     67 E> GetIterator r5, s11, s12                     ; 8f 05 0b 0c
-     71    Star r2                                      ; 0c 02
-     73 E> GetNamedProperty r2, k13, s13  ; k13 = String str2 "next" ; 21 02 0d 0d
-     77    Star r3                                      ; 0c 03
-     79 E> CallProperty0 r3, r2, s14                    ; 60 03 02 0e
-     83    Star r4                                      ; 0c 04
-     85    JumpIfJSReceiver @92                         ; 88 07
-     87 E> CallRuntime ThrowIteratorResultNotAnObject, r4 ; 68 01 00 04 01
-     92 E> GetNamedProperty r4, k14, s15  ; k14 = String str3 "done" ; 21 04 0e 0f
-     96    JumpIfToBooleanTrue @120                     ; 81 18
-     98 E> GetNamedProperty r4, k15, s16  ; k15 = String str4 "value" ; 21 04 0f 10
-    102    Star r4                                      ; 0c 04
-    104    Ldar r4                                      ; 0b 04
-    106 E> StaInArrayLiteral r0, r1, s17                ; 28 00 01 11
-    110    Ldar r1                                      ; 0b 01
-    112 E> Inc s18                                      ; 42 12
-    114    Star r1                                      ; 0c 01
-    116    JumpLoop @79, [0], s19                       ; 7d 25 00 13
-    120 E> LdaGlobal k6, s5  ; k6 = String str1 "y"     ; 10 06 05
-    123 E> StaInArrayLiteral r0, r1, s9                 ; 28 00 01 09
-    127    Ldar r1                                      ; 0b 01
+     38 S> CreateArrayLiteral k8, s6, #0x01  ; k8 = ArrayBoilerplate [k0, k7, k1] ; 6d 08 06 01
+     42 S> CreateArrayLiteral k11, s7, #0x00  ; k11 = ArrayBoilerplate [k9, k10] ; 6d 0b 07 00
+     46 S> LdaGlobal k5, s4  ; k5 = String str0 "x"     ; 10 05 04
+     49 E> CreateArrayFromIterable                      ; 6f
+     50 S> CreateArrayLiteral k12, s8, #0x01  ; k12 = ArrayBoilerplate [k0] ; 6d 0c 08 01
+     54    Star r0                                      ; 0c 00
+     56    LdaSmi [1]                                   ; 04 01
+     58    Star r1                                      ; 0c 01
+     60 E> LdaGlobal k5, s4  ; k5 = String str0 "x"     ; 10 05 04
+     63    Star r5                                      ; 0c 05
+     65 E> GetIterator r5, s11, s12                     ; 8f 05 0b 0c
+     69    Star r2                                      ; 0c 02
+     71 E> GetNamedProperty r2, k13, s13  ; k13 = String str2 "next" ; 21 02 0d 0d
+     75    Star r3                                      ; 0c 03
+     77 E> CallProperty0 r3, r2, s14                    ; 60 03 02 0e
+     81    Star r4                                      ; 0c 04
+     83    JumpIfJSReceiver @90                         ; 88 07
+     85 E> CallRuntime ThrowIteratorResultNotAnObject, r4 ; 68 01 00 04 01
+     90 E> GetNamedProperty r4, k14, s15  ; k14 = String str3 "done" ; 21 04 0e 0f
+     94    JumpIfToBooleanTrue @116                     ; 81 16
+     96 E> GetNamedProperty r4, k15, s16  ; k15 = String str4 "value" ; 21 04 0f 10
+    100    Star r4                                      ; 0c 04
+    102 E> StaInArrayLiteral r0, r1, s17                ; 28 00 01 11
+    106    Ldar r1                                      ; 0b 01
+    108 E> Inc s18                                      ; 42 12
+    110    Star r1                                      ; 0c 01
+    112    JumpLoop @77, [0], s19                       ; 7d 23 00 13
+    116 E> LdaGlobal k6, s5  ; k6 = String str1 "y"     ; 10 06 05
+    119 E> StaInArrayLiteral r0, r1, s9                 ; 28 00 01 09
+    123    Ldar r1                                      ; 0b 01
+    125 E> Inc s10                                      ; 42 0a
+    127    Star r1                                      ; 0c 01
     129 E> Inc s10                                      ; 42 0a
     131    Star r1                                      ; 0c 01
-    133    Ldar r1                                      ; 0b 01
-    135 E> Inc s10                                      ; 42 0a
-    137    Star r1                                      ; 0c 01
-    139    Ldar r1                                      ; 0b 01
-    141 E> SetNamedProperty r0, k16, s20  ; k16 = String str5 "length" ; 24 00 10 14
-    145    Ldar r0                                      ; 0b 00
-    147    LdaUndefined                                 ; 05
-    148    Return                                       ; 92
+    133 E> SetNamedProperty r0, k16, s20  ; k16 = String str5 "length" ; 24 00 10 14
+    137    LdaUndefined                                 ; 05
+    138    Return                                       ; 92
   constants (17):
       0 Number 1.0
       1 Number 2.0
@@ -119,22 +114,22 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      23 E 25 (1:26)
      31 E 32 (1:33)
      34 E 25 (1:26)
-     40 S 36 (1:37)
-     44 S 46 (1:47)
-     48 S 61 (1:62)
-     51 E 62 (1:63)
-     52 S 69 (1:70)
-     62 E 76 (1:77)
-     67 E 73 (1:74)
-     73 E 69 (1:70)
-     79 E 73 (1:74)
-     87 E 69 (1:70)
-     92 E 69 (1:70)
-     98 E 69 (1:70)
-    106 E 69 (1:70)
-    112 E 69 (1:70)
-    120 E 79 (1:80)
-    123 E 69 (1:70)
+     38 S 36 (1:37)
+     42 S 46 (1:47)
+     46 S 61 (1:62)
+     49 E 62 (1:63)
+     50 S 69 (1:70)
+     60 E 76 (1:77)
+     65 E 73 (1:74)
+     71 E 69 (1:70)
+     77 E 73 (1:74)
+     85 E 69 (1:70)
+     90 E 69 (1:70)
+     96 E 69 (1:70)
+    102 E 69 (1:70)
+    108 E 69 (1:70)
+    116 E 79 (1:80)
+    119 E 69 (1:70)
+    125 E 69 (1:70)
     129 E 69 (1:70)
-    135 E 69 (1:70)
-    141 E 69 (1:70)
+    133 E 69 (1:70)

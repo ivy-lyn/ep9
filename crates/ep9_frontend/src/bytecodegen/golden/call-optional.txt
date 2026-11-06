@@ -12,7 +12,7 @@ strings (5):
 scopes (1):
   scope0 script outer=- flags=[] slots=["o":var, "f":var]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=3 range=0..78
-  code (164 bytes):
+  code (158 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
       8    JumpIfUndefinedOrNull @18                    ; 87 0a
@@ -47,41 +47,38 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      76    Star r1                                      ; 0c 01
      78 E> GetNamedProperty r1, k3, s7  ; k3 = String str4 "m" ; 21 01 03 07
      82    Star r0                                      ; 0c 00
-     84    Ldar r0                                      ; 0b 00
-     86    JumpIfUndefinedOrNull @94                    ; 87 08
-     88 E> CallProperty0 r0, r1, s8                     ; 60 00 01 08
-     92    Jump @95                                     ; 7e 03
-     94    LdaUndefined                                 ; 05
-     95 S> LdaGlobal k4, s9  ; k4 = String str1 "f"     ; 10 04 09
-     98    Star r0                                      ; 0c 00
-    100    Ldar r0                                      ; 0b 00
-    102    JumpIfUndefinedOrNull @109                   ; 87 07
-    104 E> CallUndefinedReceiver0 r0, s10               ; 64 00 0a
-    107    Jump @110                                    ; 7e 03
-    109    LdaUndefined                                 ; 05
-    110 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
-    113    JumpIfUndefinedOrNull @141                   ; 87 1c
-    115    Star r2                                      ; 0c 02
-    117 E> GetNamedProperty r2, k0, s11  ; k0 = String str2 "a" ; 21 02 00 0b
-    121    JumpIfUndefinedOrNull @141                   ; 87 14
-    123    Star r1                                      ; 0c 01
-    125 E> GetNamedProperty r1, k2, s12  ; k2 = String str3 "b" ; 21 01 02 0c
-    129    Star r0                                      ; 0c 00
-    131    Ldar r0                                      ; 0b 00
-    133    JumpIfUndefinedOrNull @141                   ; 87 08
-    135 E> CallProperty0 r0, r1, s13                    ; 60 00 01 0d
-    139    Jump @142                                    ; 7e 03
-    141    LdaUndefined                                 ; 05
-    142 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
-    145    JumpIfUndefinedOrNull @155                   ; 87 0a
-    147    Star r1                                      ; 0c 01
-    149 E> GetNamedProperty r1, k0, s14  ; k0 = String str2 "a" ; 21 01 00 0e
-    153    Jump @156                                    ; 7e 03
-    155    LdaUndefined                                 ; 05
-    156    Star r0                                      ; 0c 00
-    158 E> GetNamedProperty r0, k2, s15  ; k2 = String str3 "b" ; 21 00 02 0f
-    162    LdaUndefined                                 ; 05
-    163    Return                                       ; 92
+     84    JumpIfUndefinedOrNull @92                    ; 87 08
+     86 E> CallProperty0 r0, r1, s8                     ; 60 00 01 08
+     90    Jump @93                                     ; 7e 03
+     92    LdaUndefined                                 ; 05
+     93 S> LdaGlobal k4, s9  ; k4 = String str1 "f"     ; 10 04 09
+     96    Star r0                                      ; 0c 00
+     98    JumpIfUndefinedOrNull @105                   ; 87 07
+    100 E> CallUndefinedReceiver0 r0, s10               ; 64 00 0a
+    103    Jump @106                                    ; 7e 03
+    105    LdaUndefined                                 ; 05
+    106 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
+    109    JumpIfUndefinedOrNull @135                   ; 87 1a
+    111    Star r2                                      ; 0c 02
+    113 E> GetNamedProperty r2, k0, s11  ; k0 = String str2 "a" ; 21 02 00 0b
+    117    JumpIfUndefinedOrNull @135                   ; 87 12
+    119    Star r1                                      ; 0c 01
+    121 E> GetNamedProperty r1, k2, s12  ; k2 = String str3 "b" ; 21 01 02 0c
+    125    Star r0                                      ; 0c 00
+    127    JumpIfUndefinedOrNull @135                   ; 87 08
+    129 E> CallProperty0 r0, r1, s13                    ; 60 00 01 0d
+    133    Jump @136                                    ; 7e 03
+    135    LdaUndefined                                 ; 05
+    136 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
+    139    JumpIfUndefinedOrNull @149                   ; 87 0a
+    141    Star r1                                      ; 0c 01
+    143 E> GetNamedProperty r1, k0, s14  ; k0 = String str2 "a" ; 21 01 00 0e
+    147    Jump @150                                    ; 7e 03
+    149    LdaUndefined                                 ; 05
+    150    Star r0                                      ; 0c 00
+    152 E> GetNamedProperty r0, k2, s15  ; k2 = String str3 "b" ; 21 00 02 0f
+    156    LdaUndefined                                 ; 05
+    157    Return                                       ; 92
   constants (5):
       0 String str2 "a"
       1 String str0 "o"
@@ -120,13 +117,13 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      66 E 35 (1:36)
      73 S 40 (1:41)
      78 E 42 (1:43)
-     88 E 42 (1:43)
-     95 S 49 (1:50)
-    104 E 49 (1:50)
-    110 S 56 (1:57)
-    117 E 59 (1:60)
-    125 E 62 (1:63)
-    135 E 62 (1:63)
-    142 S 69 (1:70)
-    149 E 73 (1:74)
-    158 E 76 (1:77)
+     86 E 42 (1:43)
+     93 S 49 (1:50)
+    100 E 49 (1:50)
+    106 S 56 (1:57)
+    113 E 59 (1:60)
+    121 E 62 (1:63)
+    129 E 62 (1:63)
+    136 S 69 (1:70)
+    143 E 73 (1:74)
+    152 E 76 (1:77)

@@ -19,7 +19,7 @@ scopes (7):
   scope5 function outer=scope1 flags=[strict] slots=[]
   scope6 function outer=scope1 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..72
-  code (127 bytes):
+  code (123 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
       7    PushContext r4                               ; 13 04
@@ -41,32 +41,29 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      51    StaCurrentContextSlot [0]                    ; 1b 00
      53 E> CreateClosure k4, s2, #0x00  ; k4 = Function f4 ; 74 04 02 00
      57    StaCurrentContextSlot [1]                    ; 1b 01
-     59    Mov r3, r5                                   ; 0d 03 05
-     62    LdaConstant k5  ; k5 = String str5 "t"       ; 0a 05
-     64    Star r6                                      ; 0c 06
-     66 E> CreateClosure k6, s3, #0x00  ; k6 = Function f5 ; 74 06 03 00
-     70    Star r7                                      ; 0c 07
+     59    LdaConstant k5  ; k5 = String str5 "t"       ; 0a 05
+     61    Star r6                                      ; 0c 06
+     63 E> CreateClosure k6, s3, #0x00  ; k6 = Function f5 ; 74 06 03 00
+     67    Star r7                                      ; 0c 07
+     69    Mov r3, r5                                   ; 0d 03 05
      72 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
-     77    Ldar r1                                      ; 0b 01
-     79    Star r0                                      ; 0c 00
-     81 E> CreateClosure k7, s4, #0x00  ; k7 = Function f2 ; 74 07 04 00
-     85    Star r5                                      ; 0c 05
-     87    Mov r1, r6                                   ; 0d 01 06
-     90    Mov r5, r7                                   ; 0d 05 07
-     93 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
-     98    LdaCurrentContextSlot [3]                    ; 18 03
-    100    Star r6                                      ; 0c 06
-    102    LdaUndefined                                 ; 05
-    103 E> DefineKeyedOwnProperty r1, r6, #0x02, s5     ; 27 01 06 02 05
-    108    PopContext r4                                ; 14 04
-    110    Ldar r1                                      ; 0b 01
-    112    Star r2                                      ; 0c 02
-    114    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
-    116    Star r1                                      ; 0c 01
-    118 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
-    123    Ldar r2                                      ; 0b 02
-    125    LdaUndefined                                 ; 05
-    126    Return                                       ; 92
+     77    Mov r1, r0                                   ; 0d 01 00
+     80 E> CreateClosure k7, s4, #0x00  ; k7 = Function f2 ; 74 07 04 00
+     84    Star r5                                      ; 0c 05
+     86    Mov r0, r6                                   ; 0d 00 06
+     89    Mov r5, r7                                   ; 0d 05 07
+     92 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
+     97    LdaCurrentContextSlot [3]                    ; 18 03
+     99    Star r6                                      ; 0c 06
+    101    LdaUndefined                                 ; 05
+    102 E> DefineKeyedOwnProperty r1, r6, #0x02, s5     ; 27 01 06 02 05
+    107    PopContext r4                                ; 14 04
+    109    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+    111    Star r1                                      ; 0c 01
+    113    Mov r0, r2                                   ; 0d 00 02
+    116 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+    121    LdaUndefined                                 ; 05
+    122    Return                                       ; 92
   constants (8):
       0 Scope scope1
       1 String str0 "A"
@@ -93,12 +90,12 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      40 E 0 (1:1)
      47 E 0 (1:1)
      53 E 0 (1:1)
-     66 E 0 (1:1)
+     63 E 0 (1:1)
      72 E 45 (1:46)
-     81 E 0 (1:1)
-     93 E 8 (1:9)
-    103 E 8 (1:9)
-    118 E 0 (1:1)
+     80 E 0 (1:1)
+     92 E 8 (1:9)
+    102 E 8 (1:9)
+    116 E 0 (1:1)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=0..72
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
@@ -129,10 +126,10 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       0 S 0 (1:1)
       5 E 8 (1:9)
 function f3 method name="#g" parent=f0 outer_scope=scope1 flags=[strict,generator,simple-params] params=0 length=0 regs=3 range=10..28
-  code (87 bytes):
+  code (83 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r0                                      ; 0c 00
-      3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21, +60] ; 99 00 00
+      3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21, +58] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
       9    Mov <this>, r2                               ; 0d ff 02
@@ -147,26 +144,24 @@ function f3 method name="#g" parent=f0 outer_scope=scope1 flags=[strict,generato
      40 E> Throw                                        ; 90
      41    Ldar r1                                      ; 0b 01
      43    Return                                       ; 92
-     44    Ldar r1                                      ; 0b 01
-     46 S> LdaSmi [1]                                   ; 04 01
-     48    Star r1                                      ; 0c 01
-     50    LdaFalse                                     ; 09
-     51    Star r2                                      ; 0c 02
-     53 E> CallRuntime CreateIterResultObject, r1-r2    ; 68 03 00 01 02
-     58 E> SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01
-     63    ResumeGenerator r0, r0                       ; 9b 00 00 01
-     67    Star r1                                      ; 0c 01
-     69 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
-     74    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+9, +6] ; 8a 02 00
-     77    Ldar r1                                      ; 0b 01
-     79 E> Throw                                        ; 90
-     80    Ldar r1                                      ; 0b 01
+     44 S> LdaSmi [1]                                   ; 04 01
+     46    Star r1                                      ; 0c 01
+     48    LdaFalse                                     ; 09
+     49    Star r2                                      ; 0c 02
+     51 E> CallRuntime CreateIterResultObject, r1-r2    ; 68 03 00 01 02
+     56 E> SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01
+     61    ResumeGenerator r0, r0                       ; 9b 00 00 01
+     65    Star r1                                      ; 0c 01
+     67 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
+     72    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+9, +6] ; 8a 02 00
+     75    Ldar r1                                      ; 0b 01
+     77 E> Throw                                        ; 90
+     78    Ldar r1                                      ; 0b 01
+     80    Return                                       ; 92
+     81    LdaUndefined                                 ; 05
      82    Return                                       ; 92
-     83    Ldar r1                                      ; 0b 01
-     85    LdaUndefined                                 ; 05
-     86    Return                                       ; 92
   constants (3):
-      0 JumpTable [+21, +60]
+      0 JumpTable [+21, +58]
       1 JumpTable [+9, +6]
       2 JumpTable [+9, +6]
   feedback (0):
@@ -176,13 +171,13 @@ function f3 method name="#g" parent=f0 outer_scope=scope1 flags=[strict,generato
      19 E 13 (1:14)
      30 E 13 (1:14)
      40 E 13 (1:14)
-     46 S 18 (1:19)
-     53 E 18 (1:19)
-     58 E 18 (1:19)
-     69 E 18 (1:19)
-     79 E 18 (1:19)
+     44 S 18 (1:19)
+     51 E 18 (1:19)
+     56 E 18 (1:19)
+     67 E 18 (1:19)
+     77 E 18 (1:19)
 function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generator,simple-params] params=0 length=0 regs=3 range=36..44
-  code (48 bytes):
+  code (46 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r0                                      ; 0c 00
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21] ; 99 00 00
@@ -200,9 +195,8 @@ function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generato
      40 E> Throw                                        ; 90
      41    Ldar r1                                      ; 0b 01
      43    Return                                       ; 92
-     44    Ldar r1                                      ; 0b 01
-     46    LdaUndefined                                 ; 05
-     47    Return                                       ; 92
+     44    LdaUndefined                                 ; 05
+     45    Return                                       ; 92
   constants (2):
       0 JumpTable [+21]
       1 JumpTable [+9, +6]
@@ -214,17 +208,16 @@ function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generato
      30 E 39 (1:40)
      40 E 39 (1:40)
 function f5 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=45..70
-  code (20 bytes):
+  code (18 bytes):
       0 S> Ldar <this>                                  ; 0b ff
-      2    Star r1                                      ; 0c 01
-      4    LdaCurrentContextSlot [2]                    ; 18 02
-      6 E> GetKeyedProperty r1, s0                      ; 23 01 00
-      9    LdaCurrentContextSlot [0]                    ; 18 00
-     11    Star r0                                      ; 0c 00
-     13 E> CallProperty0 r0, r1, s1                     ; 60 00 01 01
+      2    LdaCurrentContextSlot [2]                    ; 18 02
+      4 E> GetKeyedProperty <this>, s0                  ; 23 ff 00
+      7    LdaCurrentContextSlot [0]                    ; 18 00
+      9    Star r0                                      ; 0c 00
+     11 E> CallProperty0 r0, <this>, s1                 ; 60 00 ff 01
+     15    Return                                       ; 92
+     16    LdaUndefined                                 ; 05
      17    Return                                       ; 92
-     18    LdaUndefined                                 ; 05
-     19    Return                                       ; 92
   constants (0):
   feedback (2):
       0 LoadKeyed
@@ -232,5 +225,5 @@ function f5 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
   handlers (0):
   positions (3):
       0 S 51 (1:52)
-      6 E 63 (1:64)
-     13 E 58 (1:59)
+      4 E 63 (1:64)
+     11 E 58 (1:59)

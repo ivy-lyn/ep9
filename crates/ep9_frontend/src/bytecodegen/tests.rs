@@ -690,6 +690,243 @@ fn golden_disassembly() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+// ---- The register optimizer (regopt.rs) ----
+
+/// The binding loads and stores of one function, sorted (H24 R4, V12-D46): `Ldar` from a
+/// parameter or a named local ("load"), `Mov` from one ("copy"), every write of one
+/// ("store"), and every context, global, lookup and module variable access (opcode and its
+/// operands other than registers).
+pub(crate) fn binding_accesses(f: &ep9_bytecode::Function, named: u32) -> Vec<String> {
+    use ep9_bytecode::{OperandKind as K, Register};
+    let binding =
+        |r: Register| r.parameter_index().is_some() || r.local_index().is_some_and(|i| i < named);
+    let reg = |v: i64| Register::from_operand(v as i32);
+    let mut out = Vec::new();
+    for insn in ep9_bytecode::Instructions::new(&f.bytecode) {
+        let insn = insn.expect("verified code decodes");
+        let info = insn.opcode.info();
+        let op = insn.opcode;
+        let name = format!("{op:?}");
+        let variable = name.contains("ContextSlot")
+            || name.contains("Global")
+            || name.contains("LookupSlot")
+            || name.contains("ModuleVariable");
+        if variable {
+            let kind = if name.starts_with("Lda") {
+                "load"
+            } else {
+                "store"
+            };
+            let mut text = format!("{kind} {name}");
+            for (k, spec) in info.operands.iter().enumerate() {
+                if !spec.kind.is_register() && spec.kind != K::Slot {
+                    write!(text, " {}", insn.operand(k)).unwrap();
+                }
+            }
+            out.push(text);
+        }
+        if op == Opcode::Ldar && binding(reg(insn.operand(0))) {
+            out.push(format!("load {}", reg(insn.operand(0))));
+        }
+        if op == Opcode::Mov && binding(reg(insn.operand(0))) {
+            out.push(format!("copy {}", reg(insn.operand(0))));
+        }
+        for (k, spec) in info.operands.iter().enumerate() {
+            let n = match spec.kind {
+                K::RegOut | K::RegInOut => 1,
+                K::RegOutList => insn.operand(k + 1),
+                K::RegOutPair => 2,
+                K::RegOutTriple => 3,
+                _ => 0,
+            };
+            for i in 0..n {
+                let r = reg(insn.operand(k) + i);
+                if binding(r) {
+                    out.push(format!("store {r}"));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The instructions other than `Ldar`, `Star` and `Mov`, with their operands other than
+/// registers, in order: the register optimizer adds and drops only transfers.
+fn non_transfers(f: &ep9_bytecode::Function) -> Vec<String> {
+    let mut out = Vec::new();
+    for insn in ep9_bytecode::Instructions::new(&f.bytecode) {
+        let insn = insn.expect("verified code decodes");
+        if matches!(insn.opcode, Opcode::Ldar | Opcode::Star | Opcode::Mov) {
+            continue;
+        }
+        let info = insn.opcode.info();
+        let mut text = format!("{:?}", insn.opcode);
+        for (k, spec) in info.operands.iter().enumerate() {
+            let jump = matches!(
+                spec.kind,
+                ep9_bytecode::OperandKind::JumpFwd | ep9_bytecode::OperandKind::JumpBack
+            );
+            if !spec.kind.is_register() && !jump {
+                write!(text, " {}", insn.operand(k)).unwrap();
+            }
+        }
+        out.push(text);
+    }
+    out
+}
+
+/// The statement positions of a function (source offsets, in order; H24 R5).
+fn statement_positions(f: &ep9_bytecode::Function) -> Vec<u32> {
+    f.positions
+        .iter()
+        .filter(|p| p.is_statement)
+        .map(|p| p.source_offset)
+        .collect()
+}
+
+/// Constants equal, except jump tables (they hold code offsets).
+fn same_constants(a: &[ep9_bytecode::Constant], b: &[ep9_bytecode::Constant]) -> bool {
+    use ep9_bytecode::Constant;
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| match (x, y) {
+            (Constant::JumpTable(p), Constant::JumpTable(q)) => p.len() == q.len(),
+            _ => x == y,
+        })
+}
+
+/// The checks of one source text: the plain and the optimized unit have the same binding
+/// loads and stores (H24 R4), the same other instructions in the same order, the same
+/// statement positions (H24 R5) and the same side tables except code offsets.
+pub(crate) fn regopt_differences(src: &str, opts: SourceOpts) -> Vec<String> {
+    let (plain, opt, named) = match super::compile_both(src, opts) {
+        Ok(t) => t,
+        Err(e) => return vec![format!("compile: {e}")],
+    };
+    let (p, o) = (plain.unit(), opt.unit());
+    let mut out = Vec::new();
+    for (i, (fp, fo)) in p.functions.iter().zip(&o.functions).enumerate() {
+        let n = named[i];
+        let (ap, ao) = (binding_accesses(fp, n), binding_accesses(fo, n));
+        // Stores and variable accesses are the same.
+        let fixed = |v: &[String]| -> Vec<String> {
+            v.iter()
+                .filter(|a| !a.starts_with("load r") && !a.starts_with("load a"))
+                .filter(|a| !a.starts_with("copy "))
+                .cloned()
+                .collect()
+        };
+        if fixed(&ap) != fixed(&ao) {
+            out.push(format!(
+                "f{i}: binding stores or variable accesses differ (H24 R4)"
+            ));
+        }
+        // Each `Ldar` and `Mov` from a binding stays (regopt O2). The optimizer may add more:
+        // it reads a binding that holds a temporary's value (O4, O5).
+        let mut extra: Vec<&String> = ao.iter().collect();
+        for a in ap
+            .iter()
+            .filter(|a| !fixed(std::slice::from_ref(a)).contains(a))
+        {
+            match extra.iter().position(|x| *x == a) {
+                Some(at) => {
+                    extra.remove(at);
+                }
+                None => out.push(format!("f{i}: a binding load is gone (H24 R4): {a}")),
+            }
+        }
+        if non_transfers(fp) != non_transfers(fo) {
+            out.push(format!("f{i}: instructions other than transfers differ"));
+        }
+        if statement_positions(fp) != statement_positions(fo) {
+            out.push(format!("f{i}: statement positions differ"));
+        }
+        if fp.register_count != fo.register_count
+            || !same_constants(&fp.constants, &fo.constants)
+            || fp.feedback_slots != fo.feedback_slots
+            || fp.handlers.len() != fo.handlers.len()
+        {
+            out.push(format!("f{i}: frame size or side tables differ"));
+        }
+        let count =
+            |f: &ep9_bytecode::Function| ep9_bytecode::Instructions::new(&f.bytecode).count();
+        if count(fo) > count(fp) {
+            out.push(format!(
+                "f{i}: more instructions ({} > {})",
+                count(fo),
+                count(fp)
+            ));
+        }
+    }
+    if p.functions.len() != o.functions.len() {
+        out.push("function counts differ".into());
+    }
+    out
+}
+
+/// V12-D46 guard: every golden case (the H24 R4 goldens among them, for example `var-closure`
+/// and `assign-const`) keeps every binding load and store of its source with the register
+/// optimizer, and the optimizer changes only transfers.
+#[test]
+fn register_optimizer_keeps_binding_loads_and_stores() {
+    let mut failures = Vec::new();
+    for &(name, mode, src) in CASES {
+        for d in regopt_differences(src, mode.opts()) {
+            failures.push(format!("{name}: {d}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The optimizer drops transfers between temporaries: `this.a` reads the receiver directly,
+/// `--n >= 0` reads `n` directly, and `a[i++]` reads `a` directly.
+#[test]
+fn register_optimizer_drops_temporary_transfers() {
+    let count = |src: &str, regopt: bool| {
+        let (plain, opt, _) =
+            super::compile_both(src, SourceOpts::script(Strictness::Sloppy)).expect("compiles");
+        let u = if regopt { opt } else { plain };
+        ep9_bytecode::Instructions::new(&u.unit().functions[1].bytecode)
+            .filter(|i| {
+                matches!(
+                    i.as_ref().unwrap().opcode,
+                    Opcode::Ldar | Opcode::Star | Opcode::Mov
+                )
+            })
+            .count()
+    };
+    for src in [
+        "function f() { return this.a + this.b; }",
+        "function f(n) { var c = 0; while (--n >= 0) c++; return c; }",
+        "function f(a, i) { return a[i++]; }",
+    ] {
+        let (before, after) = (count(src, false), count(src, true));
+        assert!(after < before, "{src}: {before} -> {after} transfers");
+    }
+}
+
+/// G4 hazard (`bytecodegen/mod.rs` G4): in `a + (a = 1)` the left operand keeps the old value.
+/// The store to `a` first saves the old value in the temporary (regopt O5), so `Add` reads
+/// the temporary, not `a`.
+#[test]
+fn register_optimizer_keeps_the_g4_hazard() {
+    let unit = compile_script("function f(a) { return a + (a = 1); }", Strictness::Sloppy)
+        .expect("compiles");
+    let text = ep9_bytecode::disassemble(unit.unit());
+    let f1 = text.split("function f1").nth(1).expect("f1");
+    let lines: Vec<&str> = f1.lines().filter(|l| l.contains("    ")).collect();
+    let pos = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle} in\n{f1}"))
+    };
+    let save = pos("Mov a0, r0");
+    let store = pos("Star a0");
+    let add = pos("Add r0");
+    assert!(save < store && store < add, "{f1}");
+}
+
 /// Every golden case gives the same bytes twice (two threads).
 #[test]
 fn golden_cases_are_deterministic() {

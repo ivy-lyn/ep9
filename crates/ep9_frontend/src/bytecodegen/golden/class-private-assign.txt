@@ -31,7 +31,7 @@ scopes (9):
   scope7 function outer=scope1 flags=[strict] slots=[]
   scope8 function outer=scope1 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..149
-  code (118 bytes):
+  code (114 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
       7    PushContext r4                               ; 13 04
@@ -53,28 +53,25 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      52    StaCurrentContextSlot [4]                    ; 1b 04
      54 E> CreateClosure k6, s4, #0x00  ; k6 = Function f6 ; 74 06 04 00
      58    StaCurrentContextSlot [2]                    ; 1b 02
-     60    Mov r3, r5                                   ; 0d 03 05
-     63    LdaConstant k7  ; k7 = String str7 "t"       ; 0a 07
-     65    Star r6                                      ; 0c 06
-     67 E> CreateClosure k8, s5, #0x00  ; k8 = Function f7 ; 74 08 05 00
-     71    Star r7                                      ; 0c 07
+     60    LdaConstant k7  ; k7 = String str7 "t"       ; 0a 07
+     62    Star r6                                      ; 0c 06
+     64 E> CreateClosure k8, s5, #0x00  ; k8 = Function f7 ; 74 08 05 00
+     68    Star r7                                      ; 0c 07
+     70    Mov r3, r5                                   ; 0d 03 05
      73 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
-     78    Ldar r1                                      ; 0b 01
-     80    Star r0                                      ; 0c 00
-     82 E> CreateClosure k9, s6, #0x00  ; k9 = Function f2 ; 74 09 06 00
-     86    Star r5                                      ; 0c 05
-     88    Mov r1, r6                                   ; 0d 01 06
-     91    Mov r5, r7                                   ; 0d 05 07
-     94 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
-     99    PopContext r4                                ; 14 04
-    101    Ldar r1                                      ; 0b 01
-    103    Star r2                                      ; 0c 02
-    105    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
-    107    Star r1                                      ; 0c 01
-    109 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
-    114    Ldar r2                                      ; 0b 02
-    116    LdaUndefined                                 ; 05
-    117    Return                                       ; 92
+     78    Mov r1, r0                                   ; 0d 01 00
+     81 E> CreateClosure k9, s6, #0x00  ; k9 = Function f2 ; 74 09 06 00
+     85    Star r5                                      ; 0c 05
+     87    Mov r0, r6                                   ; 0d 00 06
+     90    Mov r5, r7                                   ; 0d 05 07
+     93 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
+     98    PopContext r4                                ; 14 04
+    100    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+    102    Star r1                                      ; 0c 01
+    104    Mov r0, r2                                   ; 0d 00 02
+    107 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+    112    LdaUndefined                                 ; 05
+    113    Return                                       ; 92
   constants (10):
       0 Scope scope1
       1 String str0 "A"
@@ -105,11 +102,11 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      42 E 0 (1:1)
      48 E 0 (1:1)
      54 E 0 (1:1)
-     67 E 0 (1:1)
+     64 E 0 (1:1)
      73 E 66 (1:67)
-     82 E 0 (1:1)
-     94 E 8 (1:9)
-    109 E 0 (1:1)
+     81 E 0 (1:1)
+     93 E 8 (1:9)
+    107 E 0 (1:1)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=0..149
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
@@ -175,167 +172,153 @@ function f6 getter name="get #g" parent=f0 outer_scope=scope1 flags=[strict,simp
   handlers (0):
   positions (0):
 function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=2 length=2 regs=13 range=66..147
-  code (364 bytes):
+  code (338 bytes):
       0 S> Ldar a0                                      ; 0b fe
-      2    Star r0                                      ; 0c 00
-      4    LdaCurrentContextSlot [3]                    ; 18 03
-      6    Star r1                                      ; 0c 01
-      8    LdaCurrentContextSlot [1]                    ; 18 01
-     10    Star r2                                      ; 0c 02
-     12    LdaCurrentContextSlot [4]                    ; 18 04
-     14    Star r3                                      ; 0c 03
-     16    Ldar a1                                      ; 0b fd
-     18    Star r4                                      ; 0c 04
-     20    Ldar r1                                      ; 0b 01
-     22 E> GetKeyedProperty r0, s0                      ; 23 00 00
-     25 E> CallProperty1 r3, r0, r4, s1                 ; 61 03 00 04 01
-     30 S> Ldar a0                                      ; 0b fe
-     32    Star r0                                      ; 0c 00
-     34    LdaCurrentContextSlot [3]                    ; 18 03
-     36    Star r1                                      ; 0c 01
-     38    LdaCurrentContextSlot [1]                    ; 18 01
-     40    Star r2                                      ; 0c 02
-     42    LdaCurrentContextSlot [4]                    ; 18 04
-     44    Star r3                                      ; 0c 03
-     46    Ldar r1                                      ; 0b 01
-     48 E> GetKeyedProperty r0, s2                      ; 23 00 02
-     51 E> CallProperty0 r2, r0, s3                     ; 60 02 00 03
-     55 E> AddSmi [1], s4                               ; 36 01 04
-     58    Star r4                                      ; 0c 04
-     60    Ldar r1                                      ; 0b 01
-     62 E> GetKeyedProperty r0, s5                      ; 23 00 05
-     65 E> CallProperty1 r3, r0, r4, s6                 ; 61 03 00 04 06
-     70 S> Ldar a0                                      ; 0b fe
-     72    Star r0                                      ; 0c 00
-     74    LdaCurrentContextSlot [3]                    ; 18 03
-     76    Star r1                                      ; 0c 01
-     78    LdaCurrentContextSlot [1]                    ; 18 01
-     80    Star r2                                      ; 0c 02
-     82    LdaCurrentContextSlot [4]                    ; 18 04
-     84    Star r3                                      ; 0c 03
-     86    Ldar r1                                      ; 0b 01
-     88 E> GetKeyedProperty r0, s7                      ; 23 00 07
-     91 E> CallProperty0 r2, r0, s8                     ; 60 02 00 08
-     95 E> Inc s9                                       ; 42 09
-     97    Star r4                                      ; 0c 04
-     99    Ldar r1                                      ; 0b 01
-    101 E> GetKeyedProperty r0, s10                     ; 23 00 0a
-    104 E> CallProperty1 r3, r0, r4, s11                ; 61 03 00 04 0b
-    109 S> CreateArrayLiteral k0, s12, #0x01  ; k0 = ArrayBoilerplate [_] ; 6d 00 0c 01
-    113    Star r0                                      ; 0c 00
-    115    LdaZero                                      ; 03
-    116    Star r1                                      ; 0c 01
-    118    Ldar a1                                      ; 0b fd
-    120 E> StaInArrayLiteral r0, r1, s13                ; 28 00 01 0d
-    124    Ldar r0                                      ; 0b 00
-    126    Star r0                                      ; 0c 00
-    128    Ldar r0                                      ; 0b 00
-    130    Star r5                                      ; 0c 05
-    132 E> GetIterator r5, s14, s15                     ; 8f 05 0e 0f
-    136    Star r1                                      ; 0c 01
-    138 E> GetNamedProperty r1, k1, s16  ; k1 = String str11 "next" ; 21 01 01 10
-    142    Star r2                                      ; 0c 02
-    144    LdaCurrentContext                            ; 15
-    145    Star r7                                      ; 0c 07
-    147    LdaFalse                                     ; 09
-    148    Star r3                                      ; 0c 03
-    150    Ldar a0                                      ; 0b fe
-    152    Star r8                                      ; 0c 08
-    154    LdaCurrentContextSlot [3]                    ; 18 03
-    156    Star r9                                      ; 0c 09
-    158    LdaCurrentContextSlot [1]                    ; 18 01
-    160    Star r10                                     ; 0c 0a
-    162    LdaCurrentContextSlot [4]                    ; 18 04
-    164    Star r11                                     ; 0c 0b
-    166    Ldar r3                                      ; 0b 03
-    168    JumpIfTrue @203                              ; 7f 23
-    170    LdaTrue                                      ; 08
-    171    Star r3                                      ; 0c 03
-    173 E> CallProperty0 r2, r1, s17                    ; 60 02 01 11
-    177    Star r4                                      ; 0c 04
-    179    JumpIfJSReceiver @186                        ; 88 07
-    181 E> CallRuntime ThrowIteratorResultNotAnObject, r4 ; 68 01 00 04 01
-    186 E> GetNamedProperty r4, k2, s18  ; k2 = String str12 "done" ; 21 04 02 12
-    190    JumpIfToBooleanTrue @203                     ; 81 0d
-    192 E> GetNamedProperty r4, k3, s19  ; k3 = String str13 "value" ; 21 04 03 13
-    196    Star r4                                      ; 0c 04
-    198    LdaFalse                                     ; 09
-    199    Star r3                                      ; 0c 03
-    201    Jump @206                                    ; 7e 05
-    203    LdaUndefined                                 ; 05
-    204    Star r4                                      ; 0c 04
-    206    Ldar r4                                      ; 0b 04
-    208    Star r12                                     ; 0c 0c
-    210    Ldar r9                                      ; 0b 09
-    212 E> GetKeyedProperty r8, s20                     ; 23 08 14
-    215 E> CallProperty1 r11, r8, r12, s21              ; 61 0b 08 0c 15
-    220    LdaSmi [-1]                                  ; 04 ff
-    222    Star r5                                      ; 0c 05
-    224    Jump @231                                    ; 7e 07
-    226    Star r6                                      ; 0c 06
-    228    LdaZero                                      ; 03
-    229    Star r5                                      ; 0c 05
-    231    LdaTheHole                                   ; 07
-    232    SetPendingMessage                            ; 93
-    233    Star r8                                      ; 0c 08
-    235    Ldar r3                                      ; 0b 03
-    237    JumpIfTrue @284                              ; 7f 2f
-    239    LdaZero                                      ; 03
-    240    TestReferenceEqual r5                        ; 51 05
-    242    JumpIfTrue @267                              ; 7f 19
-    244 E> GetNamedProperty r1, k4, s22  ; k4 = String str14 "return" ; 21 01 04 16
-    248    JumpIfUndefinedOrNull @284                   ; 87 24
-    250    Star r9                                      ; 0c 09
-    252 E> CallProperty0 r9, r1, s23                    ; 60 09 01 17
-    256    JumpIfJSReceiver @284                        ; 88 1c
-    258    Star r10                                     ; 0c 0a
-    260 E> CallRuntime ThrowIteratorResultNotAnObject, r10 ; 68 01 00 0a 01
-    265    Jump @284                                    ; 7e 13
-    267    LdaCurrentContext                            ; 15
-    268    Star r11                                     ; 0c 0b
-    270 E> GetNamedProperty r1, k4, s22  ; k4 = String str14 "return" ; 21 01 04 16
-    274    JumpIfUndefinedOrNull @284                   ; 87 0a
-    276    Star r9                                      ; 0c 09
-    278 E> CallProperty0 r9, r1, s23                    ; 60 09 01 17
-    282    Jump @284                                    ; 7e 02
-    284    Ldar r8                                      ; 0b 08
-    286    SetPendingMessage                            ; 93
-    287    Ldar r5                                      ; 0b 05
-    289    SwitchOnSmi k5, [0]  ; k5 = JumpTable [+5]   ; 8a 05 00
-    292    Jump @297                                    ; 7e 05
-    294    Ldar r6                                      ; 0b 06
-    296 E> ReThrow                                      ; 91
-    297 S> Ldar a0                                      ; 0b fe
-    299    Star r0                                      ; 0c 00
-    301    LdaCurrentContextSlot [3]                    ; 18 03
-    303    Star r1                                      ; 0c 01
-    305    LdaCurrentContextSlot [0]                    ; 18 00
-    307    Star r2                                      ; 0c 02
-    309    Ldar a1                                      ; 0b fd
-    311    Star r3                                      ; 0c 03
-    313    Ldar r1                                      ; 0b 01
-    315 E> GetKeyedProperty r0, s24                     ; 23 00 18
-    318    LdaConstant k6  ; k6 = String str15 "Private method '#m' is not writable" ; 0a 06
-    320    Star r4                                      ; 0c 04
-    322 E> CallRuntime ThrowTypeError, r4               ; 68 2d 00 04 01
-    327 S> Ldar a0                                      ; 0b fe
-    329    Star r0                                      ; 0c 00
-    331    LdaCurrentContextSlot [3]                    ; 18 03
-    333    Star r1                                      ; 0c 01
-    335    LdaCurrentContextSlot [2]                    ; 18 02
-    337    Star r2                                      ; 0c 02
-    339    LdaCurrentContextSlot [5]                    ; 18 05
-    341    Star r3                                      ; 0c 03
-    343    Ldar a1                                      ; 0b fd
-    345    Star r4                                      ; 0c 04
-    347    Star r5                                      ; 0c 05
-    349    Ldar r1                                      ; 0b 01
-    351 E> GetKeyedProperty r0, s25                     ; 23 00 19
-    354 E> CallProperty1 r3, r0, r5, s26                ; 61 03 00 05 1a
-    359    Ldar r4                                      ; 0b 04
-    361    Return                                       ; 92
-    362    LdaUndefined                                 ; 05
-    363    Return                                       ; 92
+      2    LdaCurrentContextSlot [3]                    ; 18 03
+      4    Star r1                                      ; 0c 01
+      6    LdaCurrentContextSlot [1]                    ; 18 01
+      8    Star r2                                      ; 0c 02
+     10    LdaCurrentContextSlot [4]                    ; 18 04
+     12    Star r3                                      ; 0c 03
+     14    Ldar a1                                      ; 0b fd
+     16    Ldar r1                                      ; 0b 01
+     18 E> GetKeyedProperty a0, s0                      ; 23 fe 00
+     21 E> CallProperty1 r3, a0, a1, s1                 ; 61 03 fe fd 01
+     26 S> Ldar a0                                      ; 0b fe
+     28    LdaCurrentContextSlot [3]                    ; 18 03
+     30    Star r1                                      ; 0c 01
+     32    LdaCurrentContextSlot [1]                    ; 18 01
+     34    Star r2                                      ; 0c 02
+     36    LdaCurrentContextSlot [4]                    ; 18 04
+     38    Star r3                                      ; 0c 03
+     40    Ldar r1                                      ; 0b 01
+     42 E> GetKeyedProperty a0, s2                      ; 23 fe 02
+     45 E> CallProperty0 r2, a0, s3                     ; 60 02 fe 03
+     49 E> AddSmi [1], s4                               ; 36 01 04
+     52    Star r4                                      ; 0c 04
+     54    Ldar r1                                      ; 0b 01
+     56 E> GetKeyedProperty a0, s5                      ; 23 fe 05
+     59 E> CallProperty1 r3, a0, r4, s6                 ; 61 03 fe 04 06
+     64 S> Ldar a0                                      ; 0b fe
+     66    LdaCurrentContextSlot [3]                    ; 18 03
+     68    Star r1                                      ; 0c 01
+     70    LdaCurrentContextSlot [1]                    ; 18 01
+     72    Star r2                                      ; 0c 02
+     74    LdaCurrentContextSlot [4]                    ; 18 04
+     76    Star r3                                      ; 0c 03
+     78    Ldar r1                                      ; 0b 01
+     80 E> GetKeyedProperty a0, s7                      ; 23 fe 07
+     83 E> CallProperty0 r2, a0, s8                     ; 60 02 fe 08
+     87 E> Inc s9                                       ; 42 09
+     89    Star r4                                      ; 0c 04
+     91    Ldar r1                                      ; 0b 01
+     93 E> GetKeyedProperty a0, s10                     ; 23 fe 0a
+     96 E> CallProperty1 r3, a0, r4, s11                ; 61 03 fe 04 0b
+    101 S> CreateArrayLiteral k0, s12, #0x01  ; k0 = ArrayBoilerplate [_] ; 6d 00 0c 01
+    105    Star r0                                      ; 0c 00
+    107    LdaZero                                      ; 03
+    108    Star r1                                      ; 0c 01
+    110    Ldar a1                                      ; 0b fd
+    112 E> StaInArrayLiteral r0, r1, s13                ; 28 00 01 0d
+    116 E> GetIterator r0, s14, s15                     ; 8f 00 0e 0f
+    120    Star r1                                      ; 0c 01
+    122 E> GetNamedProperty r1, k1, s16  ; k1 = String str11 "next" ; 21 01 01 10
+    126    Star r2                                      ; 0c 02
+    128    LdaCurrentContext                            ; 15
+    129    Star r7                                      ; 0c 07
+    131    LdaFalse                                     ; 09
+    132    Star r3                                      ; 0c 03
+    134    Ldar a0                                      ; 0b fe
+    136    LdaCurrentContextSlot [3]                    ; 18 03
+    138    Star r9                                      ; 0c 09
+    140    LdaCurrentContextSlot [1]                    ; 18 01
+    142    Star r10                                     ; 0c 0a
+    144    LdaCurrentContextSlot [4]                    ; 18 04
+    146    Star r11                                     ; 0c 0b
+    148    Mov r0, r5                                   ; 0d 00 05
+    151    Mov a0, r8                                   ; 0d fe 08
+    154    Ldar r3                                      ; 0b 03
+    156    JumpIfTrue @191                              ; 7f 23
+    158    LdaTrue                                      ; 08
+    159    Star r3                                      ; 0c 03
+    161 E> CallProperty0 r2, r1, s17                    ; 60 02 01 11
+    165    Star r4                                      ; 0c 04
+    167    JumpIfJSReceiver @174                        ; 88 07
+    169 E> CallRuntime ThrowIteratorResultNotAnObject, r4 ; 68 01 00 04 01
+    174 E> GetNamedProperty r4, k2, s18  ; k2 = String str12 "done" ; 21 04 02 12
+    178    JumpIfToBooleanTrue @191                     ; 81 0d
+    180 E> GetNamedProperty r4, k3, s19  ; k3 = String str13 "value" ; 21 04 03 13
+    184    Star r4                                      ; 0c 04
+    186    LdaFalse                                     ; 09
+    187    Star r3                                      ; 0c 03
+    189    Jump @194                                    ; 7e 05
+    191    LdaUndefined                                 ; 05
+    192    Star r4                                      ; 0c 04
+    194    Ldar r9                                      ; 0b 09
+    196 E> GetKeyedProperty r8, s20                     ; 23 08 14
+    199 E> CallProperty1 r11, r8, r4, s21               ; 61 0b 08 04 15
+    204    LdaSmi [-1]                                  ; 04 ff
+    206    Star r5                                      ; 0c 05
+    208    Jump @215                                    ; 7e 07
+    210    Star r6                                      ; 0c 06
+    212    LdaZero                                      ; 03
+    213    Star r5                                      ; 0c 05
+    215    LdaTheHole                                   ; 07
+    216    SetPendingMessage                            ; 93
+    217    Star r8                                      ; 0c 08
+    219    Ldar r3                                      ; 0b 03
+    221    JumpIfTrue @268                              ; 7f 2f
+    223    LdaZero                                      ; 03
+    224    TestReferenceEqual r5                        ; 51 05
+    226    JumpIfTrue @251                              ; 7f 19
+    228 E> GetNamedProperty r1, k4, s22  ; k4 = String str14 "return" ; 21 01 04 16
+    232    JumpIfUndefinedOrNull @268                   ; 87 24
+    234    Star r9                                      ; 0c 09
+    236 E> CallProperty0 r9, r1, s23                    ; 60 09 01 17
+    240    JumpIfJSReceiver @268                        ; 88 1c
+    242    Star r10                                     ; 0c 0a
+    244 E> CallRuntime ThrowIteratorResultNotAnObject, r10 ; 68 01 00 0a 01
+    249    Jump @268                                    ; 7e 13
+    251    LdaCurrentContext                            ; 15
+    252    Star r11                                     ; 0c 0b
+    254 E> GetNamedProperty r1, k4, s22  ; k4 = String str14 "return" ; 21 01 04 16
+    258    JumpIfUndefinedOrNull @268                   ; 87 0a
+    260    Star r9                                      ; 0c 09
+    262 E> CallProperty0 r9, r1, s23                    ; 60 09 01 17
+    266    Jump @268                                    ; 7e 02
+    268    Ldar r8                                      ; 0b 08
+    270    SetPendingMessage                            ; 93
+    271    Ldar r5                                      ; 0b 05
+    273    SwitchOnSmi k5, [0]  ; k5 = JumpTable [+5]   ; 8a 05 00
+    276    Jump @281                                    ; 7e 05
+    278    Ldar r6                                      ; 0b 06
+    280 E> ReThrow                                      ; 91
+    281 S> Ldar a0                                      ; 0b fe
+    283    LdaCurrentContextSlot [3]                    ; 18 03
+    285    Star r1                                      ; 0c 01
+    287    LdaCurrentContextSlot [0]                    ; 18 00
+    289    Star r2                                      ; 0c 02
+    291    Ldar a1                                      ; 0b fd
+    293    Ldar r1                                      ; 0b 01
+    295 E> GetKeyedProperty a0, s24                     ; 23 fe 18
+    298    LdaConstant k6  ; k6 = String str15 "Private method '#m' is not writable" ; 0a 06
+    300    Star r4                                      ; 0c 04
+    302 E> CallRuntime ThrowTypeError, r4               ; 68 2d 00 04 01
+    307 S> Ldar a0                                      ; 0b fe
+    309    LdaCurrentContextSlot [3]                    ; 18 03
+    311    Star r1                                      ; 0c 01
+    313    LdaCurrentContextSlot [2]                    ; 18 02
+    315    Star r2                                      ; 0c 02
+    317    LdaCurrentContextSlot [5]                    ; 18 05
+    319    Star r3                                      ; 0c 03
+    321    Ldar a1                                      ; 0b fd
+    323    Ldar r1                                      ; 0b 01
+    325 E> GetKeyedProperty a0, s25                     ; 23 fe 19
+    328 E> CallProperty1 r3, a0, a1, s26                ; 61 03 fe fd 1a
+    333    Ldar a1                                      ; 0b fd
+    335    Return                                       ; 92
+    336    LdaUndefined                                 ; 05
+    337    Return                                       ; 92
   constants (7):
       0 ArrayBoilerplate [_]
       1 String str11 "next"
@@ -373,43 +356,43 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
      25 LoadKeyed
      26 Call
   handlers (2):
-        [147, 220) -> @226 context=r7 uncaught
-        [270, 282) -> @284 context=r11 caught
+        [129, 204) -> @210 context=r7 uncaught
+        [252, 266) -> @268 context=r11 caught
   positions (37):
       0 S 76 (1:77)
-     22 E 78 (1:79)
-     25 E 78 (1:79)
-     30 S 86 (1:87)
-     48 E 88 (1:89)
-     51 E 88 (1:89)
-     55 E 86 (1:87)
-     62 E 88 (1:89)
-     65 E 88 (1:89)
-     70 S 97 (1:98)
-     88 E 99 (1:100)
-     91 E 99 (1:100)
-     95 E 97 (1:98)
-    101 E 99 (1:100)
-    104 E 99 (1:100)
-    109 S 105 (1:106)
-    120 E 114 (1:115)
-    132 E 105 (1:106)
-    138 E 105 (1:106)
-    173 E 105 (1:106)
-    181 E 105 (1:106)
-    186 E 105 (1:106)
-    192 E 105 (1:106)
-    212 E 108 (1:109)
-    215 E 108 (1:109)
+     18 E 78 (1:79)
+     21 E 78 (1:79)
+     26 S 86 (1:87)
+     42 E 88 (1:89)
+     45 E 88 (1:89)
+     49 E 86 (1:87)
+     56 E 88 (1:89)
+     59 E 88 (1:89)
+     64 S 97 (1:98)
+     80 E 99 (1:100)
+     83 E 99 (1:100)
+     87 E 97 (1:98)
+     93 E 99 (1:100)
+     96 E 99 (1:100)
+    101 S 105 (1:106)
+    112 E 114 (1:115)
+    116 E 105 (1:106)
+    122 E 105 (1:106)
+    161 E 105 (1:106)
+    169 E 105 (1:106)
+    174 E 105 (1:106)
+    180 E 105 (1:106)
+    196 E 108 (1:109)
+    199 E 108 (1:109)
+    228 E 105 (1:106)
+    236 E 105 (1:106)
     244 E 105 (1:106)
-    252 E 105 (1:106)
-    260 E 105 (1:106)
-    270 E 105 (1:106)
-    278 E 105 (1:106)
-    296 E 105 (1:106)
-    297 S 119 (1:120)
-    315 E 121 (1:122)
-    322 E 121 (1:122)
-    327 S 129 (1:130)
-    351 E 138 (1:139)
-    354 E 138 (1:139)
+    254 E 105 (1:106)
+    262 E 105 (1:106)
+    280 E 105 (1:106)
+    281 S 119 (1:120)
+    295 E 121 (1:122)
+    302 E 121 (1:122)
+    307 S 129 (1:130)
+    325 E 138 (1:139)
+    328 E 138 (1:139)

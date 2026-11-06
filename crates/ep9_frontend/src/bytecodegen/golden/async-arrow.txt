@@ -38,10 +38,10 @@ function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=
      12 S 45 (1:46)
      16 E 45 (1:46)
 function f1 arrow name="f" parent=f0 outer_scope=scope0 flags=[strict,async] params=2 length=1 regs=7 range=8..39
-  code (111 bytes):
+  code (112 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r2                                      ; 0c 02
-      3    SwitchOnGeneratorState r2, k0  ; k0 = JumpTable [+62] ; 99 02 00
+      3    SwitchOnGeneratorState r2, k0  ; k0 = JumpTable [+63] ; 99 02 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r3                                      ; 0c 03
       9    Mov <this>, r4                               ; 0d ff 04
@@ -58,52 +58,51 @@ function f1 arrow name="f" parent=f0 outer_scope=scope0 flags=[strict,async] par
      34    Jump @40                                     ; 7e 06
      36    Ldar a1                                      ; 0b fd
      38    Star r4                                      ; 0c 04
-     40    Ldar r4                                      ; 0b 04
-     42    Star r1                                      ; 0c 01
-     44 S> Ldar r0                                      ; 0b 00
-     46    Star r4                                      ; 0c 04
-     48    Ldar r1                                      ; 0b 01
-     50    Star r6                                      ; 0c 06
-     52    Mov r2, r5                                   ; 0d 02 05
-     55 E> CallRuntime AsyncFunctionAwait, r5-r6        ; 68 21 00 05 02
-     60 E> SuspendGenerator r2, r0-r4, [0]              ; 9a 02 00 05 00
-     65    ResumeGenerator r2, r0-r4                    ; 9b 02 00 05
-     69    Star r5                                      ; 0c 05
-     71 E> CallRuntime GeneratorGetResumeMode, r2       ; 68 14 00 02 01
-     76    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+6]   ; 8a 01 00
-     79    Ldar r5                                      ; 0b 05
-     81 E> Throw                                        ; 90
-     82    Ldar r5                                      ; 0b 05
-     84 E> Add r4, s0                                   ; 2a 04 00
-     87    Star r5                                      ; 0c 05
-     89    Mov r2, r4                                   ; 0d 02 04
-     92 E> CallRuntime AsyncFunctionResolve, r4-r5      ; 68 22 00 04 02
-     97    Return                                       ; 92
-     98    Star r5                                      ; 0c 05
-    100    LdaTheHole                                   ; 07
-    101    SetPendingMessage                            ; 93
-    102    Mov r2, r4                                   ; 0d 02 04
-    105 E> CallRuntime AsyncFunctionReject, r4-r5       ; 68 23 00 04 02
-    110    Return                                       ; 92
+     40    Mov r4, r1                                   ; 0d 04 01
+     43 S> Ldar r0                                      ; 0b 00
+     45    Ldar r1                                      ; 0b 01
+     47    Mov r2, r5                                   ; 0d 02 05
+     50    Mov r1, r6                                   ; 0d 01 06
+     53 E> CallRuntime AsyncFunctionAwait, r5-r6        ; 68 21 00 05 02
+     58    Mov r0, r4                                   ; 0d 00 04
+     61 E> SuspendGenerator r2, r0-r4, [0]              ; 9a 02 00 05 00
+     66    ResumeGenerator r2, r0-r4                    ; 9b 02 00 05
+     70    Star r5                                      ; 0c 05
+     72 E> CallRuntime GeneratorGetResumeMode, r2       ; 68 14 00 02 01
+     77    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+6]   ; 8a 01 00
+     80    Ldar r5                                      ; 0b 05
+     82 E> Throw                                        ; 90
+     83    Ldar r5                                      ; 0b 05
+     85 E> Add r4, s0                                   ; 2a 04 00
+     88    Star r5                                      ; 0c 05
+     90    Mov r2, r4                                   ; 0d 02 04
+     93 E> CallRuntime AsyncFunctionResolve, r4-r5      ; 68 22 00 04 02
+     98    Return                                       ; 92
+     99    Star r5                                      ; 0c 05
+    101    LdaTheHole                                   ; 07
+    102    SetPendingMessage                            ; 93
+    103    Mov r2, r4                                   ; 0d 02 04
+    106 E> CallRuntime AsyncFunctionReject, r4-r5       ; 68 23 00 04 02
+    111    Return                                       ; 92
   constants (2):
-      0 JumpTable [+62]
+      0 JumpTable [+63]
       1 JumpTable [+6]
   feedback (1):
       0 BinaryOp
   handlers (1):
-        [22, 98) -> @98 context=r3 promise
+        [20, 99) -> @99 context=r3 promise
   positions (9):
      12 E 8 (1:9)
-     44 S 28 (1:29)
-     55 E 32 (1:33)
-     60 E 32 (1:33)
-     71 E 32 (1:33)
-     81 E 32 (1:33)
-     84 E 28 (1:29)
-     92 E 8 (1:9)
-    105 E 8 (1:9)
+     43 S 28 (1:29)
+     53 E 32 (1:33)
+     61 E 32 (1:33)
+     72 E 32 (1:33)
+     82 E 32 (1:33)
+     85 E 28 (1:29)
+     93 E 8 (1:9)
+    106 E 8 (1:9)
 function f2 arrow name="g" parent=f0 outer_scope=scope0 flags=[strict,async,simple-params] params=0 length=0 regs=4 range=49..73
-  code (82 bytes):
+  code (80 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r0                                      ; 0c 00
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+35] ; 99 00 00
@@ -125,24 +124,23 @@ function f2 arrow name="g" parent=f0 outer_scope=scope0 flags=[strict,async,simp
      49    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+6]   ; 8a 01 00
      52    Ldar r2                                      ; 0b 02
      54 E> Throw                                        ; 90
-     55    Ldar r2                                      ; 0b 02
-     57    LdaUndefined                                 ; 05
-     58    Star r3                                      ; 0c 03
-     60    Mov r0, r2                                   ; 0d 00 02
-     63 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
-     68    Return                                       ; 92
-     69    Star r3                                      ; 0c 03
-     71    LdaTheHole                                   ; 07
-     72    SetPendingMessage                            ; 93
-     73    Mov r0, r2                                   ; 0d 00 02
-     76 E> CallRuntime AsyncFunctionReject, r2-r3       ; 68 23 00 02 02
-     81    Return                                       ; 92
+     55    LdaUndefined                                 ; 05
+     56    Star r3                                      ; 0c 03
+     58    Mov r0, r2                                   ; 0d 00 02
+     61 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+     66    Return                                       ; 92
+     67    Star r3                                      ; 0c 03
+     69    LdaTheHole                                   ; 07
+     70    SetPendingMessage                            ; 93
+     71    Mov r0, r2                                   ; 0d 00 02
+     74 E> CallRuntime AsyncFunctionReject, r2-r3       ; 68 23 00 02 02
+     79    Return                                       ; 92
   constants (2):
       0 JumpTable [+35]
       1 JumpTable [+6]
   feedback (0):
   handlers (1):
-        [22, 69) -> @69 context=r1 promise
+        [20, 67) -> @67 context=r1 promise
   positions (8):
      12 E 49 (1:50)
      22 S 63 (1:64)
@@ -150,5 +148,5 @@ function f2 arrow name="g" parent=f0 outer_scope=scope0 flags=[strict,async,simp
      33 E 63 (1:64)
      44 E 63 (1:64)
      54 E 63 (1:64)
-     63 E 49 (1:50)
-     76 E 49 (1:50)
+     61 E 49 (1:50)
+     74 E 49 (1:50)

@@ -14,16 +14,15 @@ scopes (5):
   scope3 block outer=scope2 flags=[] slots=[]
   scope4 function outer=scope3 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..69
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "f"
@@ -43,8 +42,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       7 S> LdaZero                                      ; 03
       8    StaCurrentContextSlot [0]                    ; 1b 00
      10    LdaCurrentContext                            ; 15
-     11    Star r1                                      ; 0c 01
-     13    PopContext r0                                ; 14 00
+     11    PopContext r0                                ; 14 00
+     13    Star r1                                      ; 0c 01
      15 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
      17    PushContext r0                               ; 13 00
      19    LdaContextSlot r1, [0], [0]                  ; 16 01 00 00
@@ -60,8 +59,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      45    Star r2                                      ; 0c 02
      47 E> CallUndefinedReceiver1 r1, r2, s3            ; 65 01 02 03
      51    LdaCurrentContext                            ; 15
-     52    Star r1                                      ; 0c 01
-     54    PopContext r0                                ; 14 00
+     52    PopContext r0                                ; 14 00
+     54    Star r1                                      ; 0c 01
      56 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
      58    PushContext r0                               ; 13 00
      60    LdaContextSlot r1, [0], [0]                  ; 16 01 00 00
