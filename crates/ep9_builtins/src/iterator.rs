@@ -490,12 +490,15 @@ fn from<'s>(
     let (iterator, next) = get_iterator_flattenable(cx, args.get(0), true)?;
     // 2. Let hasInstance be ? OrdinaryHasInstance(%Iterator%, iteratorRecord.[[Iterator]]).
     //    (%Iterator%.prototype is non-writable and non-configurable: the Get gives
-    //    %Iterator.prototype% and runs no JS.)
+    //    %Iterator.prototype% and runs no JS.) Each step polls and counts the proxies it asks:
+    //    a proxy can make the chain a cycle, which ends in a RangeError, as in V8 (Codex r1
+    //    SPEC-ITER 1).
     let p = cx.intrinsic(IntrinsicId::IteratorPrototype).value();
     let mut o = iterator;
+    let mut hops = 0;
     let has_instance = loop {
         // a. Set O to ? O.[[GetPrototypeOf]]().
-        let proto = cx.get_prototype_of(o)?;
+        let proto = cx.prototype_walk_step(o, &mut hops)?;
         // b. If O is null, return false.
         let Some(proto) = proto.as_object() else {
             break false;
@@ -808,10 +811,26 @@ fn helper_next<'s>(
         state::DONE
     };
     set_state(cx, o, kind | after)?;
+    if after == state::DONE {
+        release(cx, o, kind)?;
+    }
     match r? {
         Some(v) => iter_result(cx, v, false),
         None => iter_result(cx, Local::undefined(), true),
     }
+}
+
+/// A helper of `kind` is completed: it drops the values that only its closure used, the
+/// callback and (flatMap) the inner iterator with its `next`, as a completed generator keeps
+/// no closure values (Codex r1 SPEC-ITER 2). The underlying iterator stays: `return` reads
+/// the state only once the helper is completed.
+fn release<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, kind: i32) -> JsResult<()> {
+    cx.set_slot(o, CLASS, slot::FUNC, Local::undefined())?;
+    if kind == kind::FLAT_MAP {
+        cx.set_slot(o, CLASS, slot::INNER, Local::undefined())?;
+        cx.set_slot(o, CLASS, slot::INNER_NEXT, Local::undefined())?;
+    }
+    Ok(())
 }
 
 /// One run of the closure of a helper of `kind` up to its next Yield: the yielded value, or
@@ -1013,6 +1032,7 @@ fn helper_return<'s>(
         state::START => {
             // a. Set O.[[GeneratorState]] to completed.
             set_state(cx, o, kind | state::DONE)?;
+            release(cx, o, kind)?;
             // c. Perform ? IteratorClose(O.[[UnderlyingIterator]], NormalCompletion(unused)).
             close(cx, iterator, Ok(()))?;
             // d. Return CreateIteratorResultObject(undefined, true).
@@ -1028,6 +1048,7 @@ fn helper_return<'s>(
             set_state(cx, o, kind | state::RUNNING)?;
             let r = return_at_yield(cx, o, kind, iterator);
             set_state(cx, o, kind | state::DONE)?;
+            release(cx, o, kind)?;
             r?;
             iter_result(cx, Local::undefined(), true)
         }

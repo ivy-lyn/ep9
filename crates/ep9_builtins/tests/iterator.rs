@@ -223,3 +223,119 @@ print(r.join(), closed);
         lines(&["RangeError,true,true,RangeError,true,true 2"])
     );
 }
+
+/// Iterator.from walks the prototype chain of an object that is not an Iterator with the
+/// VM's bounded step (Codex r1 SPEC-ITER 1): a proxy that makes the chain a cycle ends in a
+/// RangeError, as in node (before, the walk never ended and no interrupt stopped it); a proxy
+/// on the way to %Iterator.prototype% still finds it.
+#[test]
+fn a_proxy_cycle_in_from_is_a_range_error() {
+    assert_eq!(
+        common::run_both(script!(
+            r#"
+var a = { [Symbol.iterator]: null, next: function () {} };
+var p = new Proxy(a, {});
+Object.setPrototypeOf(a, p);
+t('from cycle', function () { return Iterator.from(a); });
+var b = { next: function () {} };
+Object.setPrototypeOf(b, new Proxy(Object.create(IP), {}));
+t('from proxy', function () { return Iterator.from(b) === b; });
+"#
+        )),
+        lines(&["from cycle: throws RangeError", "from proxy: true"])
+    );
+}
+
+thread_local! {
+    static LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `log(...args)`: ToString of each argument, joined by a space.
+fn log<'s>(
+    cx: &mut ep9_vm::Cx<'s>,
+    _this: ep9_vm::Local<'s>,
+    args: ep9_vm::Args<'s>,
+    _nt: ep9_vm::Local<'s>,
+) -> ep9_vm::JsResult<ep9_vm::Local<'s>> {
+    let mut parts = Vec::new();
+    for v in args.iter() {
+        parts.push(cx.to_rust_string(v)?);
+    }
+    LOG.with(|o| o.borrow_mut().push(parts.join(" ")));
+    Ok(ep9_vm::Local::undefined())
+}
+
+fn take_log() -> Vec<String> {
+    LOG.with(|o| core::mem::take(&mut *o.borrow_mut()))
+}
+
+/// Runs the sloppy script `src` below a 64 KiB pad, so its native frames leave no stale words
+/// above the next collection's stack scan (plan rule 35; `weakref.rs` `run`).
+#[inline(never)]
+fn run_padded(i: &mut ep9_vm::Isolate, src: &str) -> Result<(), String> {
+    let mut pad = [0u8; 64 << 10];
+    std::hint::black_box(&mut pad);
+    let unit = ep9_frontend::compile(
+        src,
+        ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+        ep9_frontend::CompileOptions::default(),
+    )
+    .expect("compiles");
+    let r = i
+        .with_cx(|cx| cx.run_script(unit, "iterator.js").map(|_| ()))
+        .map_err(|e| e.message);
+    std::hint::black_box(&mut pad);
+    r
+}
+
+/// A completed helper drops the values that only its closure used (Codex r1 SPEC-ITER 2), as
+/// a completed generator does: each helper below stays reachable from a global, but the
+/// object its callback closes over (map run to its end, filter closed by `return` at a yield,
+/// a callback that threw, `return` before the first `next`) and the inner iterator of a
+/// flatMap closed at a yield die at the next GC. The lines before the GC are node v26.13.0's;
+/// the cleanup lines are the spec's (node runs the cleanup jobs in a later task).
+#[test]
+fn a_completed_helper_drops_its_closure_values() {
+    const SRC: &str = r#"
+var fr = new FinalizationRegistry(function (held) { log('cleanup', held); });
+function mapper(name) { var big = {}; fr.register(big, name); return function (x) { return big ? x : 0; }; }
+var m = [1].values().map(mapper('map'));
+log(m.next().value, m.next().done);
+var f = [1, 2].values().filter(mapper('filter'));
+log(f.next().value, f.return().done);
+var g = [1].values().flatMap(function (x) { var inner = [x, x].values(); fr.register(inner, 'inner'); return inner; });
+log(g.next().value, g.return().done);
+var h = [1].values().map((function () { var big = {}; fr.register(big, 'throw'); return function () { if (big) throw new Error('x'); }; })());
+try { h.next(); } catch (e) { log(e.message, h.next().done); }
+var s = [1].values().map(mapper('start'));
+log(s.return().done, s.next().done);
+"#;
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = common::isolate(stress);
+            i.register_host_function("log", 1, log);
+            take_log();
+            run_padded(&mut i, SRC).unwrap();
+            assert_eq!(
+                take_log(),
+                ["1 true", "1 true", "1 true", "x true", "true true"],
+                "stress={stress}"
+            );
+            let mut seen = Vec::new();
+            common::assert_dies(&mut i, "the closure values of completed helpers", |i| {
+                i.with_cx(|cx| cx.cleanup_finalization_registries())
+                    .unwrap();
+                seen.extend(take_log());
+                seen.sort();
+                seen == [
+                    "cleanup filter",
+                    "cleanup inner",
+                    "cleanup map",
+                    "cleanup start",
+                    "cleanup throw",
+                ]
+            });
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
