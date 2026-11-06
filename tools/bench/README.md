@@ -269,7 +269,8 @@ cargo xtask m2-exit --host aarch64-apple-darwin --gate m2gate.json --mem mem.jso
 - **mem.mjs** and **jetstream/run.mjs** (BENCH10): the usage is in the header comment of each
   file. mem.mjs writes ep9-mem/v1 (engine `ep9` is the jit preset build, `ep9-jitless` the
   jitless build); run.mjs writes the `ep9` block (`commit`, `dirty`) and the `kind` and
-  `version` of each config that item 7 reads (an ep9 config is one of kind `ep9`).
+  `version` of each config that item 7 reads (an ep9 config is one of kind `ep9`). Config names
+  must differ: run.mjs exits 2 on a repeated name, and item 7 reads such a file OPEN.
 - Tests: `node --test tools/bench/cross/m2gate.test.mjs` (also loaded by `run.test.mjs`); the
   m2-exit fixtures `gate-*.json` are its output (`EP9_BLESS=1` writes them again);
   `cargo test --locked -p xtask` (m2-exit and the two-worktree test `tests/root_default.rs`).

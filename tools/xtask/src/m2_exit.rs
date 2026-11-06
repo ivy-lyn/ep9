@@ -65,7 +65,8 @@
 //!   `table[]` (per workload `<config>` median score and `<config>_n` scores). The ep9 configs are
 //!   the ones of kind `ep9` (an `ep9` or `ep9@<path>` engine), and the version of each holds the
 //!   build line of `ep9 --version`; node --jitless is the config of engine `node` (or kind
-//!   `node`: a `node@<path>` engine) with the flag `--jitless`.
+//!   `node`: a `node@<path>` engine) with the flag `--jitless`. Two configs of one name read
+//!   OPEN (the table is keyed by name).
 //! - P-gate file: a Markdown table with the columns `Gate` and `Result`.
 //!
 //! The extra rows (no exit-code effect): the parity debt of item 2 and the tripped P-gates.
@@ -1277,6 +1278,17 @@ fn item7(c: &Ctx) -> Cell {
     let reps = num(j, "reps").unwrap_or(0.0);
     let configs = j.get("configs").and_then(Json::arr).unwrap_or(&[]);
     let cname = |x: &Json| x.get("name").and_then(Json::str).unwrap_or("").to_string();
+    // run.mjs keys the table and the summary by config name, so two configs of one name share
+    // their scores (M7-P0 Codex r3 C3-1): such a run is no reading.
+    let mut seen = BTreeSet::new();
+    for n in configs.iter().map(cname) {
+        if !seen.insert(n.clone()) {
+            status = status.max(Status::Open);
+            why.push(format!(
+                "two configs have the name {n:?} (run.mjs merges their scores)"
+            ));
+        }
+    }
     // An ep9 config is one that run.mjs ran on an ep9 binary (kind `ep9`, through ep9-host.mjs),
     // not one by its name: a d8 or node engine under the name `ep9` read PASS (M7-P0 Codex r2
     // C2-2 part A). Its version must hold the build line of `ep9 --version`.
@@ -2361,6 +2373,54 @@ mod tests {
             let c = &run(&o).unwrap().cells[6];
             assert_eq!(c.status, Status::Open, "{name}: {}", c.evidence);
             assert!(c.evidence.contains(want), "{name}: {}", c.evidence);
+        }
+    }
+
+    /// M7-P0 Codex r3 C3-1: run.mjs keys the table and the summary by config name. With a node
+    /// --jitless config and an ep9 config of one name, and every ep9 run failed, the file holds
+    /// only the node scores under that name (`<name>_n` = reps, complete). Item 7 read PASS,
+    /// ratio 1.000, with 0 ep9 scores.
+    #[test]
+    fn item7_rejects_duplicate_config_names() {
+        let r = repo("js-dup");
+        let base = fixture("jetstream.json").replace(SHA, &r.head);
+        for name in ["jitless", "ep9"] {
+            let configs = base
+                .replace(
+                    "{ \"name\": \"jitless\", \"engine\"",
+                    "{ \"name\": \"N\", \"engine\"",
+                )
+                .replace(
+                    "{ \"name\": \"ep9\", \"engine\"",
+                    "{ \"name\": \"N\", \"engine\"",
+                );
+            // The node scores only, under the shared name.
+            let mut text = String::new();
+            for line in configs.lines() {
+                if line.starts_with("  \"ep9\": { \"complete\"") {
+                    continue;
+                }
+                let line = line
+                    .replace(", \"ep9\": 16, \"ep9_n\": 3 }", " }")
+                    .replace("\"jitless\": 20, \"jitless_n\": 3", "\"N\": 20, \"N_n\": 3")
+                    .replace("  \"jitless\": { \"complete\"", "  \"N\": { \"complete\"")
+                    .replace("\"ratio_vs_first\": 1 },", "\"ratio_vs_first\": 1 }");
+                text.push_str(&line.replace("\"N", &format!("\"{name}")));
+                text.push('\n');
+            }
+            assert_eq!(text.matches(&format!("\"name\": \"{name}\"")).count(), 2);
+            assert!(!text.contains(": 16"), "{text}");
+            assert!(parse_json(&text).is_ok(), "{text}");
+            let f = format!("inputs/js-dup-{name}.json");
+            write(&r.root, &f, &text);
+            let o = Options {
+                jetstream: Some(r.root.join(&f)),
+                ..opts(&r, HOST)
+            };
+            let c = &run(&o).unwrap().cells[6];
+            assert_eq!(c.status, Status::Open, "{name}: {}", c.evidence);
+            let want = format!("two configs have the name \"{name}\"");
+            assert!(c.evidence.contains(&want), "{name}: {}", c.evidence);
         }
     }
 

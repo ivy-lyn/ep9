@@ -12,6 +12,8 @@
 //            --config jitless=node:--jitless,cli:--no-prefetch   (no Wasm: see scripts/sync-bench.sh)
 //            --config node-jitless=node@third_party/shells/.../bin/node:--jitless,cli:--no-prefetch
 //            --config ep9=ep9@target/release/ep9               (the M2 list: 09-milestones M2 exit 7)
+//   names: each config name must differ, and must not be "name" or "<other name>_n" (the table
+//          rows use those keys): exit 2.
 //   ep9: the JetStream driver runs on node and each workload realm on ep9 (ep9-host.mjs says how
 //   and what differs from a JSC realm). The "ep9-host:" lines of its stderr go into "notes" of
 //   each run. An ep9 config cannot take cli:--no-prefetch (the realm cannot read files).
@@ -64,6 +66,21 @@ for (let i = 0; i < argv.length; i++) {
 if (!opts.list || !opts.out || !opts.configs.length) {
   console.error("usage: run.mjs --list <file> --out <json> --config <name>=<engine>[:flags] [--reps n]");
   process.exit(2);
+}
+// table[], summary and the `<name>_n` counts are keyed by config name: two configs of one name
+// share one score list (a node config hid an ep9 config that failed every run: M7-P0 Codex r3
+// C3-1), and a name "name" or "<other>_n" hits a row key.
+const cfgNames = new Set(opts.configs.map((c) => c.name));
+for (const [i, cfg] of opts.configs.entries()) {
+  const n = cfg.name;
+  const why = opts.configs.findIndex((c) => c.name === n) !== i ? "is given twice"
+    : n === "name" ? 'is "name", a row key'
+    : n.endsWith("_n") && cfgNames.has(n.slice(0, -2)) ? `is the count key of config ${n.slice(0, -2)}`
+    : null;
+  if (why) {
+    console.error(`config ${n}: the name ${why} (the table and the summary are keyed by name)`);
+    process.exit(2);
+  }
 }
 // Engine kinds: node-host.mjs on a node binary, ep9-host.mjs on an ep9 binary, or a d8 binary.
 for (const cfg of opts.configs) {

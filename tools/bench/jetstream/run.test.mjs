@@ -92,3 +92,29 @@ test("base fails a workload: invalid, exit 1", { skip }, () => {
   assert.equal(out.summary.cand.complete, false);
   assert.equal(out.summary.cand.ratio_vs_first, null);
 });
+
+// M7-P0 Codex r3 C3-1: table[], summary and the `<name>_n` counts are keyed by config name. Two
+// configs of one name shared one score list: a node config and an ep9 config that failed every
+// run read as one complete config with the node scores. A name "name" or "<other>_n" also hits a
+// row key. Such a run is refused before any engine runs (exit 2, no JSON).
+test("a config name given twice, or one that hits a row key: exit 2, no JSON", { skip }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ep9-jetstream-names-"));
+  try {
+    const list = path.join(dir, "list.txt");
+    fs.writeFileSync(list, "easy\nhard\n");
+    for (const names of [["a", "a"], ["base", "name"], ["a", "a_n"], ["a_n", "a"]]) {
+      const out = path.join(dir, `out-${names.join("-")}.json`);
+      const configs = names.flatMap((n) => ["--config", `${n}=${process.execPath}:${fake},--plan=easy:100;hard:100`]);
+      const p = spawnSync(
+        process.execPath,
+        [path.join(here, "run.mjs"), "--list", list, "--reps", "1", "--out", out, ...configs],
+        { encoding: "utf8", env: { ...process.env, FAKE_STATE: dir, EP9_JETSTREAM_DIR: dir } },
+      );
+      assert.equal(p.status, 2, `${names}: ${p.stderr}`);
+      assert.match(p.stderr, /^config \S+: the name /m, `${names}`);
+      assert.equal(fs.existsSync(out), false, `${names}: no JSON`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
