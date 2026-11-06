@@ -4,17 +4,26 @@
 // third_party/bench-octane.commit).
 //
 //   node tools/bench/cross/octane.mjs --kernel richards [--n N] [--out FILE]   (stdout without --out)
+//   node tools/bench/cross/octane.mjs --kernel typescript [--out FILE]         the TS workload (3 files)
 //   node tools/bench/cross/octane.mjs --list                                   kernels and default N
 //   node tools/bench/cross/octane.mjs --blockers target/release/ep9           which kernels run
 //
 // Octane-7 = richards, deltablue, crypto, raytrace, earley-boyer, splay, navier-stokes (the
 // M1 exit-2 set, docs/research/06-execution-tiers.md; regexp is not in it).
 //
+// The TS workload (M2 exit 3; expectations/jitless-set.txt `octane/typescript`; plan v12
+// V12-D5) is the kernel `typescript` (`--kernel typescript`; not in Octane-7). It has 3 files,
+// in the load order of the pinned run.js (typescript.js, typescript-input.js,
+// typescript-compiler.js), and N = 5: the benchmark's own deterministic iteration count
+// (typescript.js `new Benchmark("Typescript", false, true, 5, ...)`), with no warm-up.
+//
 // The generated file is: the print prelude, the pinned base.js unchanged, the pinned kernel
-// unchanged, then a driver. d8 loads base.js and the kernel as two scripts (run.js); both are
-// sloppy scripts with no top-level let, const or class, so one script with both texts in that
-// order runs the same code (generate() refuses a base.js that starts with "use strict"). One
-// script keeps every error line in a file: line L of base.js or of the kernel is line L + offset.
+// files unchanged, then a driver. d8 loads base.js and the kernel files as separate scripts
+// (run.js); all are sloppy scripts with no top-level let, const or class, so one script with the
+// texts in that order runs the same code (generate() refuses a file that starts with "use
+// strict"). One difference: a function declaration of a later file exists from the start of the
+// one script, not only from its own script; the pinned files read no such name before their own
+// script runs. One script keeps every error line in a file: line L of a part is line L + offset.
 //
 // The driver changes data, not base.js code: BenchmarkSuite.config makes base.js run without
 // warm-up in its deterministic mode, and each benchmark's deterministicIterations and
@@ -58,26 +67,52 @@ export const KERNELS = {
 };
 
 /**
- * The generated text of a kernel and what it prints. `n` defaults to the KERNELS table.
- * Returns { text, expect, kernel, n, pin, blob, source, harness, harness_blob, offset, parts }.
- * `offset`: line L of the kernel file is line L + offset of the generated file. `parts`: the
- * same for base.js and the kernel ({ file, offset, lines }), for error lines.
+ * Kernels outside Octane-7: the TS workload (M2 exit 3), with its files in run.js order and the
+ * benchmark's own N (typescript.js:28-38 at the pin).
+ */
+export const EXTRA_KERNELS = {
+  typescript: { files: ["typescript.js", "typescript-input.js", "typescript-compiler.js"], n: 5 },
+};
+
+/** The kernel name of the TS workload. */
+export const TS_KERNEL = "typescript";
+
+/** The file list of a kernel of KERNELS or EXTRA_KERNELS, or null. */
+function kernelFiles(kernel) {
+  const k = KERNELS[kernel] ?? EXTRA_KERNELS[kernel];
+  if (!k) return null;
+  return { files: k.files ?? [k.file], n: k.n };
+}
+
+const STRICT = /^\s*(\/\/[^\n]*\n\s*)*["']use strict["']/;
+
+/**
+ * The generated text of a kernel and what it prints. `n` defaults to the KERNELS (or
+ * EXTRA_KERNELS) table. Returns { text, expect, kernel, n, pin, blob, source, harness,
+ * harness_blob, offset, parts, blobs }. `offset`: line L of the (first) kernel file is line
+ * L + offset of the generated file. `parts`: the same for base.js and each kernel file
+ * ({ file, offset, lines }), for error lines. `blobs`: each kernel file and its blob, in load
+ * order; `blob` and `source` name the first file (one file for an Octane-7 kernel), `source`
+ * then lists all of them.
  */
 export function generate(kernel, { n, root = ROOT } = {}) {
-  const k = KERNELS[kernel];
-  if (!k) throw new Error(`unknown Octane-7 kernel ${kernel} (known: ${Object.keys(KERNELS).join(", ")})`);
+  const k = kernelFiles(kernel);
+  if (!k) throw new Error(`unknown Octane kernel ${kernel} (known: ${[...Object.keys(KERNELS), ...Object.keys(EXTRA_KERNELS)].join(", ")})`);
   const iterations = n ?? k.n;
   if (!Number.isInteger(iterations) || iterations < 1) throw new Error(`bad --n ${n}`);
   const at = checkPin(root, "bench-octane");
-  const src = pinned(at, k.file);
+  const srcs = k.files.map((f) => pinned(at, f));
+  const src = srcs[0];
   const base = pinned(at, "base.js");
-  if (/^\s*(\/\/[^\n]*\n\s*)*["']use strict["']/.test(base.text)) throw new Error(`${base.rel}: a strict base.js cannot share a script with the kernel`);
-  const names = benchmarkNames(src.text);
-  if (!names.length) throw new Error(`${src.rel}: no "new Benchmark(" call`);
+  for (const f of [base, ...srcs]) {
+    if (STRICT.test(f.text)) throw new Error(`${f.rel}: a strict file cannot share a script with the others`);
+  }
+  const names = srcs.flatMap((f) => benchmarkNames(f.text));
+  if (!names.length) throw new Error(`${srcs.map((f) => f.rel).join(", ")}: no "new Benchmark(" call`);
   const header = [
     "// Generated by tools/bench/cross/octane.mjs. Do not edit; generate it again.",
-    `// Source: chromium/octane at ${at.pin}, ${src.rel} (blob ${src.blob}),`,
-    `// with its harness ${base.rel} (blob ${base.blob}); both unchanged, in d8's load order.`,
+    ...srcs.map((f, i) => `// ${i ? "and" : "Source: chromium/octane at " + at.pin + ","} ${f.rel} (blob ${f.blob}),`),
+    `// with its harness ${base.rel} (blob ${base.blob}); ${srcs.length > 1 ? "all" : "both"} unchanged, in d8's load order.`,
     `// The driver below sets base.js's deterministic mode with N = ${iterations} run() calls per benchmark`,
     `// (no warm-up), then runs base.js's RunSuites. Prints "<name> ${iterations}" per benchmark.`,
   ].join("\n");
@@ -101,12 +136,17 @@ export function generate(kernel, { n, root = ROOT } = {}) {
     '  NotifyScore: function (score) { if (!(Number(score) > 0)) print("ERROR score " + score); }',
     "});",
   ].join("\n");
-  const beforeBase = `${header}\n${PRINT_PRELUDE}// ---- ${base.rel} ----\n`;
-  const beforeKernel = `${beforeBase}${base.text}${end(base.text)}// ---- end of ${base.rel} ----\n// ---- ${src.rel} ----\n`;
-  const text = `${beforeKernel}${src.text}${end(src.text)}// ---- end of ${src.rel} ----\n${driver}\n`;
   const lines = (t) => t.split("\n").length - (t.endsWith("\n") ? 1 : 0);
-  const baseOffset = beforeBase.split("\n").length - 1;
-  const offset = beforeKernel.split("\n").length - 1;
+  const offsetOf = (t) => t.split("\n").length - 1;
+  let text = `${header}\n${PRINT_PRELUDE}// ---- ${base.rel} ----\n`;
+  const parts = [{ file: base.rel, offset: offsetOf(text), lines: lines(base.text) }];
+  text += `${base.text}${end(base.text)}// ---- end of ${base.rel} ----\n`;
+  for (const f of srcs) {
+    text += `// ---- ${f.rel} ----\n`;
+    parts.push({ file: f.rel, offset: offsetOf(text), lines: lines(f.text) });
+    text += `${f.text}${end(f.text)}// ---- end of ${f.rel} ----\n`;
+  }
+  text += `${driver}\n`;
   return {
     text,
     expect: names.map((x) => `${x} ${iterations}`).join("\n"),
@@ -114,14 +154,12 @@ export function generate(kernel, { n, root = ROOT } = {}) {
     n: iterations,
     pin: at.pin,
     blob: src.blob,
-    source: src.rel,
+    source: srcs.map((f) => f.rel).join(", "),
     harness: HARNESS,
     harness_blob: base.blob,
-    offset,
-    parts: [
-      { file: base.rel, offset: baseOffset, lines: lines(base.text) },
-      { file: src.rel, offset, lines: lines(src.text) },
-    ],
+    offset: parts[1].offset,
+    parts,
+    blobs: srcs.map((f) => ({ file: f.rel, blob: f.blob })),
   };
 }
 
@@ -191,6 +229,7 @@ function main() {
   }
   if (o.list) {
     for (const [k, v] of Object.entries(KERNELS)) console.log(`${k}\tN = ${v.n}\t${v.file}`);
+    for (const [k, v] of Object.entries(EXTRA_KERNELS)) console.log(`${k}\tN = ${v.n}\t${v.files.join(", ")} (not in Octane-7)`);
     return;
   }
   try {

@@ -103,7 +103,7 @@ All exit items of a milestone must hold. All 4 targets are tier-1 from week 1, W
 - Exit:
   1. Octane-7 ≥ 1.33x QuickJS.
   2. v8-v7 7-kernel geomean (no RegExp) ≥ 1.0x node --jitless. Each of the 7 ≥ 0.8x, or it becomes parity debt (§5).
-  3. TS workload ≤ 2.8 s.
+  3. TS workload ≤ 2.8 s. [2026-11-06, plan v12 V12-D5 (decisions-log M7-PLAN-D5): the TS workload is `octane/typescript` at the pin (`expectations/jitless-set.txt`), the benchmark's own 5 deterministic iterations, no warm-up, process wall time, class M (≥ 10 paired rounds, the load guard), with node --jitless and QuickJS as comparators. On m5max-macos it passes when the upper end of the interval of the median gross ep9 time is ≤ 2.8 s (2.8 s is the V8-jitless time on that host; an absolute time does not carry to another host). On a Linux x64 gate host it passes at ≥ 1.0x node --jitless. The net time and the paired ratio to node --jitless are always reported. Reader: `tools/bench/cross/m2gate.mjs`, reading `ts`.]
   4. Both G7 memory caps hold.
   5. `language/` ≥ 95%, `annexB/` ≥ 90%. built-ins/{Array, String, Object, Function, Math, JSON, Number, RegExp} each ≥ 95% (est.). Every human fast path matches its spec-layer path: 0 mismatches.
   6. Splay ≥ 1.0x node --jitless.

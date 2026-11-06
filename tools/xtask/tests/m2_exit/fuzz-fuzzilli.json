@@ -1,0 +1,1 @@
+{"schema": "ep9-fuzz/v1", "tool": "fuzzilli", "campaign": "m2-fz-1", "target": "ep9", "commit": "0123456789abcdef0123456789abcdef01234567", "dirty": false, "cpu_hours": 260.5, "counted": true, "crashes": []}

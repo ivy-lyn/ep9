@@ -9,10 +9,18 @@
 //! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |
 //! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host and the Windows CI column, as a table |
 //! | `m1-exit` | `m1_exit.rs` | the 10 M1 exit items per host and the Windows CI column, as a table (M4-P0: the skeleton, every item NOT-RUN) |
+//! | `m2-exit` | `m2_exit.rs` | the 10 M2 exit items and the D11 row for one host, as a table (plan v12 GATES10) |
 //! | `adr-lint` | `adr_lint.rs` | M1 exit item 6: ADR trailers and review records (M4-P0: only `--trailers-only`) |
 //! | `extref-lint` | `extref_lint.rs` | native words in heap cells only through `ExternalRef` (H25-Q2, C-26; M5-P0: the task name only, exits 2) |
 //!
-//! `m0_exit.rs` and `m1_exit.rs` share the input readers and the cell type in `exit/`.
+//! `m0_exit.rs`, `m1_exit.rs` and `m2_exit.rs` share the input readers and the cell type in
+//! `exit/`.
+//!
+//! The tree readers adr-lint, m1-exit and m2-exit read the tree of `--root`, by default the git
+//! top dir of the current dir (`exit::default_root`; plan v12 PR-15), not the tree the binary was
+//! built from: with one target dir for two worktrees, a binary built in one worktree reads the
+//! worktree it runs in. m0-exit has no `--root` and reads its build tree; it refuses to run when
+//! the current dir is in another ep9 tree.
 //!
 //! Each module's doc says how far it is built. Exit codes for every task: 0 pass, 1 fail,
 //! 2 usage error, tool error or a task that is not implemented yet. An unknown task exits 2.
@@ -26,6 +34,7 @@ mod fpcheck;
 mod gc_lint;
 mod m0_exit;
 mod m1_exit;
+mod m2_exit;
 
 use std::process::ExitCode;
 
@@ -37,8 +46,9 @@ fn main() -> ExitCode {
         "fp-check" => fpcheck::main(&args[1..]),
         "feature-matrix" => features::main(&args[1..]),
         "gc-lint" => gc_lint::main(&args[1..]),
-        "m0-exit" => m0_exit::main(&args[1..]),
+        "m0-exit" => m0_guard().and_then(|()| m0_exit::main(&args[1..])),
         "m1-exit" => m1_exit::main(&args[1..]),
+        "m2-exit" => m2_exit::main(&args[1..]),
         "adr-lint" => adr_lint::main(&args[1..]),
         "extref-lint" => extref_lint::main(&args[1..]),
         _ => {
@@ -53,5 +63,25 @@ fn main() -> ExitCode {
             eprintln!("xtask {task}: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// m0-exit reads the tree it was built from (it has no `--root`). With one target dir for two
+/// worktrees that is the wrong tree, so it refuses to run when the current dir is in another ep9
+/// tree (outside any ep9 tree it runs as before).
+fn m0_guard() -> Result<(), String> {
+    let Ok(here) = exit::default_root() else {
+        return Ok(());
+    };
+    let built = exit::build_root();
+    // Compared only (never given to git), so both sides may be canonical.
+    if std::fs::canonicalize(&here).is_ok_and(|h| h == built) {
+        Ok(())
+    } else {
+        Err(format!(
+            "this xtask was built from {} but the current dir is in {}; m0-exit reads its build tree, so build xtask in this tree (one target dir per worktree)",
+            built.display(),
+            here.display()
+        ))
     }
 }

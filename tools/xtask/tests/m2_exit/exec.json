@@ -1,0 +1,65 @@
+{
+ "command": "exec",
+ "mode": "jit",
+ "preset": "jit",
+ "features": [
+  "jit"
+ ],
+ "feedback": "full",
+ "target": "aarch64-apple-darwin",
+ "commit": "0123456789abcdef0123456789abcdef01234567",
+ "dirty": false,
+ "made_by": "host:test",
+ "tree": {},
+ "gc_stress": 0,
+ "skipped": 1,
+ "skipped_paths": [
+  "test/built-ins/Math/m0.js"
+ ],
+ "files": {
+  "passed": 0,
+  "total": 0
+ },
+ "by_dir": {
+  "language": {
+   "files": {
+    "passed": 19,
+    "total": 20
+   }
+  },
+  "annexB": {
+   "files": {
+    "passed": 9,
+    "total": 10
+   }
+  },
+  "built-ins": {
+   "files": {
+    "passed": 157,
+    "total": 160
+   }
+  }
+ },
+ "results": [
+  {
+   "path": "test/language/l0.js",
+   "status": "fail",
+   "cause": "Test262Error"
+  },
+  {
+   "path": "test/annexB/a0.js",
+   "status": "fail",
+   "cause": "Test262Error"
+  },
+  {
+   "path": "test/built-ins/Function/f0.js",
+   "status": "fail",
+   "cause": "Test262Error"
+  }
+ ],
+ "expectations": {
+  "file": "/w/expectations/test262.aarch64-apple-darwin.jit.txt",
+  "new_failures": [],
+  "now_passing": []
+ }
+}

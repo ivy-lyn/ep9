@@ -13,7 +13,9 @@
 //                       scripts/sync-shells.sh)
 //   --workloads LIST    default t0-loop,t0-branchy,t0-call,t0-prop,ci-v0,richards (workloads.mjs).
 //                       Set names expand: v8v7-8, v8v7-7 (no regexp), octane-7, exit2 (v8v7-7 +
-//                       octane-7, the M1 exit-2 run that exit2.mjs reads)
+//                       octane-7, the M1 exit-2 run that exit2.mjs reads), ts (octane-typescript,
+//                       the TS workload: 3 Octane files in one script, TSREAD) and m2 (v8v7-7 +
+//                       octane-7 + octane-typescript, the run that m2gate.mjs reads)
 //   --harness H         the v8v7 harness: stub (runs 1 and 2) or base (the real base.js, run 3;
 //                       v8v7.mjs); default DEFAULT_HARNESS of v8v7.mjs. The Octane kernels always
 //                       run with Octane's base.js (octane.mjs). The JSON names it per workload
@@ -58,6 +60,9 @@
 // be 0. Otherwise the runner stops with "REFUSED" and exit 1, and writes no report. Counted runs
 // (class R) too: ep9-bench gets --expect-stdout, so a run that is right in the output check and
 // wrong in a counted run gets no count (exit 4: REFUSED; same rule as perf-ci-v0, W4-PERF-REFUSE).
+//
+// A kernel of more than one file (the TS workload) runs as one script; a refused run names the
+// file and line of the first error line (workloads.mjs `parts`).
 //
 // Exit status: 0 done; 1 refused or another error; 2 usage error; 3 host busy.
 // Tests (fake engines, no shells needed): node --test tools/bench/cross/run.test.mjs
@@ -262,6 +267,21 @@ export function spawnRun(engine, file, timeoutS) {
   });
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   return { ms, status: r.status, signal: r.signal, error: r.error?.message ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
+/**
+ * Where the first `<file>:<line>:<col>: ` line of `stderr` is in a multi-file kernel: the part
+ * file and its own line (`parts` of workloads.mjs: { file, offset, lines }), or null.
+ */
+export function partPlace(parts, file, stderr) {
+  for (const l of (stderr ?? "").split("\n")) {
+    const m = l.match(/^(.*?):(\d+):(\d+): /);
+    if (!m || m[1] !== file) continue;
+    const at = Number(m[2]);
+    const p = parts.find((x) => at > x.offset && at <= x.offset + x.lines);
+    return p ? `${p.file}:${at - p.offset}` : `generated:${at}`;
+  }
+  return null;
 }
 
 /** Throws a Refusal unless the run exited with 0 and printed exactly `expect`. */
@@ -500,7 +520,13 @@ export async function run(o, deps = {}) {
     const byId = Object.fromEntries(engines.map((e) => [e.id, e]));
     const once = (e, w) => {
       const r = exec(byId[e], files[w].file);
-      checkRun(r, { engine: e, workload: w, expect: files[w].expect });
+      try {
+        checkRun(r, { engine: e, workload: w, expect: files[w].expect });
+      } catch (err) {
+        const at = err instanceof Refusal && files[w].parts && partPlace(files[w].parts, files[w].file, r.stderr);
+        if (at) err.message += `\n    (the first error line is at ${at})`;
+        throw err;
+      }
       return r.ms;
     };
 
