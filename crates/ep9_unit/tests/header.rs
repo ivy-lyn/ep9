@@ -34,6 +34,7 @@ fn sample() -> UnitHeader {
             deopt_meta: 0x27,
             fact_schema: 0x28,
             builtin_abi: 0x29,
+            vm_layout: 0x2a,
         },
         target_arch: target_arch::AARCH64,
         target_abi: target_abi::WINDOWS,
@@ -43,6 +44,12 @@ fn sample() -> UnitHeader {
             | unit_flags::TYPESCRIPT
             | unit_flags::TS_USE_DEFINE_FOR_CLASS_FIELDS,
         cpu_required: cpu::A64_LSE | cpu::A64_JSCONV,
+        compat_flags: 0x3132_3334,
+        incompat_flags: 0x4142_4344,
+        runtime_table_len: 0x51,
+        unit_data_slot: 0x3f,
+        root_shapes: core::array::from_fn(|i| 0x60 + i as u8),
+        codegen_flags: core::array::from_fn(|i| 0x70 + i as u8),
     }
 }
 
@@ -91,6 +98,12 @@ fn decode_round_trips() {
         h.heap_page_log2 = rng.next() as u8;
         h.source_flags = valid_flags[rng.below(valid_flags.len() as u64) as usize];
         h.cpu_required = rng.next();
+        h.compat_flags = rng.next() as u32;
+        h.incompat_flags = rng.next() as u32;
+        h.runtime_table_len = rng.next() as u32;
+        h.unit_data_slot = rng.next() as u8;
+        h.root_shapes = core::array::from_fn(|_| rng.next() as u8);
+        h.codegen_flags = core::array::from_fn(|_| rng.next() as u8);
         let b = h.encode();
         assert_eq!(UnitHeader::decode(&b), Ok(h));
         assert_eq!(UnitHeader::decode(&b).unwrap().encode(), b);
@@ -138,6 +151,12 @@ fn perturb(h: &mut UnitHeader, name: &str) -> bool {
         "heap_page_log2" => h.heap_page_log2 ^= 0xff,
         "source_flags" => h.source_flags = 0,
         "cpu_required" => h.cpu_required ^= u64::MAX,
+        "compat_flags" => h.compat_flags ^= 1,
+        "incompat_flags" => h.incompat_flags ^= 1,
+        "runtime_table_len" => h.runtime_table_len ^= 1,
+        "unit_data_slot" => h.unit_data_slot ^= 1,
+        "root_shapes" => h.root_shapes[0] ^= 1,
+        "codegen_flags" => h.codegen_flags[7] ^= 1,
         other => match Contract::ALL.into_iter().find(|c| c.name() == other) {
             Some(c) => h.versions.set(c, !h.versions.get(c)),
             None => return false,
@@ -179,8 +198,8 @@ fn layout_table_matches_the_codec() {
         };
         assert_eq!(&base_bytes[range], &expected[..], "{}", f.name);
     }
-    assert_eq!(perturbed, 19);
-    assert_eq!(offsets::RESERVED2 + 116, HEADER_SIZE);
+    assert_eq!(perturbed, 26);
+    assert_eq!(offsets::RESERVED2 + 80, HEADER_SIZE);
 }
 
 #[test]
@@ -197,10 +216,12 @@ fn decode_rejects_bad_headers() {
     assert_eq!(UnitHeader::decode(&[]), Err(BadUnit::Truncated));
     assert_eq!(with(0, &[0x88]), Err(BadUnit::Magic));
     assert_eq!(with(7, b"\r"), Err(BadUnit::Magic));
-    assert_eq!(
-        with(offsets::CONTAINER_VERSION, &le(2)),
-        Err(BadUnit::ContainerVersion(2))
-    );
+    for v in [1, 3] {
+        assert_eq!(
+            with(offsets::CONTAINER_VERSION, &le(v)),
+            Err(BadUnit::ContainerVersion(v))
+        );
+    }
     assert_eq!(
         with(offsets::HEADER_SIZE, &le(160)),
         Err(BadUnit::HeaderSize)
@@ -265,7 +286,7 @@ fn section_entries_round_trip_and_reject_bad_bytes() {
         assert_eq!(b[entry_offsets::ALIGN_LOG2], 3);
     }
     let good = SectionEntry {
-        kind: SectionKind::Hints,
+        kind: SectionKind::Facts,
         offset: 512,
         size: 8,
     }
@@ -275,7 +296,7 @@ fn section_entries_round_trip_and_reject_bad_bytes() {
         b[at] = v;
         SectionEntry::decode(&b)
     };
-    for kind in [0u8, 10, 0xff] {
+    for kind in [0u8, 12, 0xff] {
         assert_eq!(
             with(entry_offsets::KIND, kind),
             Err(BadUnit::SectionTable("unknown section kind"))
@@ -378,7 +399,7 @@ fn a_layout_change_without_a_version_bump_fails_the_history_check() {
     let text = format!("# history\n{CONTAINER_VERSION} {fp}\n");
     assert_eq!(history_state(&text, CONTAINER_VERSION, &fp), Ok(true));
     // One changed byte in the layout text (here: one more reserved byte), same version.
-    let changed = layout_text().replace("140 116 reserved2", "140 117 reserved2");
+    let changed = layout_text().replace("176 80 reserved2", "176 81 reserved2");
     assert_ne!(changed, layout_text());
     let changed_fp = sha256::to_hex(&sha256::sha256(changed.as_bytes()));
     let e = history_state(&text, CONTAINER_VERSION, &changed_fp).unwrap_err();
@@ -393,4 +414,85 @@ fn a_layout_change_without_a_version_bump_fails_the_history_check() {
     assert!(history_state(&two, CONTAINER_VERSION, &fp).is_err());
     assert!(history_state("2 aa\n1 bb\n", 2, "aa").is_err());
     assert!(history_state("1 aa\n1 aa\n", 1, "aa").is_err());
+}
+
+/// Container v2: an extension entry (kind >= 0x100) carries its own alignment and the
+/// "native code needs it" flag; a named kind has flags 0.
+#[test]
+fn extension_entries_round_trip_and_reject_bad_bytes() {
+    for (kind, needs, align) in [(0x100, false, 3), (0x1234, true, 16), (u32::MAX, true, 12)] {
+        let e = ExtensionEntry {
+            kind,
+            native_needs: needs,
+            align_log2: align,
+            offset: 0x0102_0304_0506_0708,
+            size: 0x1112_1314_1516_1718,
+        };
+        let b = e.encode();
+        assert_eq!(TableEntry::decode(&b), Ok(TableEntry::Extension(e)));
+        assert_eq!(TableEntry::Extension(e).encode(), b);
+        // The named-kind reader refuses it.
+        assert_eq!(
+            SectionEntry::decode(&b),
+            Err(BadUnit::SectionTable("unknown section kind"))
+        );
+    }
+    let good = ExtensionEntry {
+        kind: 0x100,
+        native_needs: false,
+        align_log2: 3,
+        offset: 512,
+        size: 8,
+    }
+    .encode();
+    let with = |at: usize, v: u8| {
+        let mut b = good;
+        b[at] = v;
+        TableEntry::decode(&b)
+    };
+    for a in [0u8, 2, 17, 0xff] {
+        assert_eq!(
+            with(entry_offsets::ALIGN_LOG2, a),
+            Err(BadUnit::SectionTable("section alignment")),
+            "align {a}"
+        );
+    }
+    for bit in 1..32 {
+        let mut b = good;
+        b[entry_offsets::FLAGS..entry_offsets::FLAGS + 4]
+            .copy_from_slice(&(1u32 << bit).to_le_bytes());
+        assert_eq!(
+            TableEntry::decode(&b),
+            Err(BadUnit::SectionTable("section flags")),
+            "bit {bit}"
+        );
+    }
+    // Kinds 12..0x100 are not named: a LOAD ERROR, as before.
+    for kind in [12u32, 0x42, 0xff] {
+        let mut b = good;
+        b[0..4].copy_from_slice(&kind.to_le_bytes());
+        assert_eq!(
+            TableEntry::decode(&b),
+            Err(BadUnit::SectionTable("unknown section kind"))
+        );
+    }
+    // A named kind with the "native needs" bit is a LOAD ERROR.
+    let named = SectionEntry {
+        kind: SectionKind::Debug,
+        offset: 512,
+        size: 8,
+    }
+    .encode();
+    let mut b = named;
+    b[entry_offsets::FLAGS] = 1;
+    assert_eq!(
+        TableEntry::decode(&b),
+        Err(BadUnit::SectionTable("section flags"))
+    );
+    assert_eq!(EXTENSION_KIND_MIN, 0x100);
+    assert_eq!(
+        SectionKind::from_u32(6).map(SectionKind::name),
+        Some("facts")
+    );
+    assert!(SectionKind::Deps.reserved() && SectionKind::SnapshotBinding.reserved());
 }

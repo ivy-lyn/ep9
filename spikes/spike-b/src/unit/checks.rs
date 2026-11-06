@@ -618,18 +618,15 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
             } else {
                 matches!(spike, Verdict::Target { .. })
             };
-            // This engine: the spike's deopt-metadata version differs (BYTECODE); a header
-            // with this engine's versions has no native form (BYTECODE).
+            // This engine: since A2 start (DEOPT_META 1, M7-P1) it is the spike host, so the
+            // verdicts agree; a header with DEOPT_META 0 has no native form (BYTECODE).
             let own = with_u32(&bytes, Contract::DeoptMeta.offset(), |_| 0);
-            let own = ep9_unit::verdict(&own, &HostInfo::current());
-            let real_ok = matches!(
-                real,
-                Verdict::Version {
-                    contract: Contract::DeoptMeta,
-                    ..
-                }
-            ) && (arch != host_arch()
-                || matches!(own, Verdict::NoNativeForm(Contract::DeoptMeta)));
+            let mut old = HostInfo::current();
+            old.versions.deopt_meta = 0;
+            let own = ep9_unit::verdict(&own, &old);
+            let real_ok = real == spike
+                && (arch != host_arch()
+                    || matches!(own, Verdict::NoNativeForm(Contract::DeoptMeta)));
             if !want_spike || !real_ok {
                 return Err(format!(
                     "unit {} ({}): spike host {spike}, real host {real}",
@@ -1239,24 +1236,41 @@ struct Case {
 fn check_fallback(scale: Scale) -> Result<Vec<String>, String> {
     let (a, _) = host_units();
     let spike = spike_host();
-    let real = HostInfo::current();
+    // An engine of DEOPT_META 0 (every engine before A2 start, M7-P1); since then this engine
+    // has DEOPT_META 1, as the spike host does.
+    let mut real = HostInfo::current();
+    real.versions.deopt_meta = 0;
     let n = scale.n(true);
     let main = main_a(n);
     let want_out = t0(&Config::default(), LOOP_DEFS, &main)?;
     let mut cases = vec![
         Case {
-            name: "this engine (DEOPT_META 0)",
+            name: "an engine of DEOPT_META 0",
             bytes: a.clone(),
             want: "BYTECODE",
             reason: "deopt_meta",
             host: real,
         },
         Case {
-            name: "this engine's header (DEOPT_META 0)",
+            name: "a header of DEOPT_META 0 (no native form)",
             bytes: with_u32(a, Contract::DeoptMeta.offset(), |_| 0),
             want: "BYTECODE",
             reason: "no native form",
             host: real,
+        },
+        Case {
+            name: "another VM layout (container v2, H35-Q10)",
+            bytes: with_u32(a, Contract::VmLayout.offset(), |v| v + 1),
+            want: "BYTECODE",
+            reason: "vm_layout",
+            host: spike,
+        },
+        Case {
+            name: "a RuntimeTable entry this engine lacks (container v2)",
+            bytes: with_u32(a, offsets::RUNTIME_TABLE_LEN, |v| v + 1),
+            want: "BYTECODE",
+            reason: "runtime table",
+            host: spike,
         },
         Case {
             name: "another target (cross-built text)",

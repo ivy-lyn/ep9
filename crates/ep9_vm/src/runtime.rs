@@ -120,9 +120,9 @@ pub(crate) const ROOT_COUNT: usize = Root::RealmKey as usize + 1;
 pub(crate) const REALM_ROOT_COUNT: usize = Root::RealmKey as usize;
 
 /// Root slots: realm roots, then the `atoms!` list, then the 256 single-character atoms
-/// (undefined until first use, string.rs `single_char`).
-const ATOM_ROOTS: usize = ROOT_COUNT;
-const SINGLE_CHAR_ROOTS: usize = ATOM_ROOTS + Atom::ALL.len();
+/// (undefined until first use, string.rs `single_char`); the slots at A2 start ([`APPENDED`]).
+const ATOM_ROOTS: usize = A2_ROOT_COUNT;
+const SINGLE_CHAR_ROOTS: usize = ATOM_ROOTS + A2_ATOM_COUNT;
 const ROOT_SLOTS: usize = SINGLE_CHAR_ROOTS + 256;
 
 /// The ECMAScript native error types (§20.5.5) plus the plain `Error`.
@@ -199,7 +199,7 @@ impl Shared {
             pending: Cell::new(0),
             pending_message: Cell::new(UNDEFINED),
             throw_site: Cell::new(None),
-            roots: (0..ROOT_SLOTS).map(|_| Cell::new(UNDEFINED)).collect(),
+            roots: (0..TABLE_SLOTS).map(|_| Cell::new(UNDEFINED)).collect(),
         }
     }
 
@@ -458,27 +458,27 @@ impl Runtime {
     }
 
     pub fn root(&self, r: Root) -> u64 {
-        self.shared.roots[r as usize].get()
+        self.shared.roots[root_slot(r)].get()
     }
 
     pub fn set_root(&self, r: Root, v: u64) {
-        self.shared.roots[r as usize].set(v);
+        self.shared.roots[root_slot(r)].set(v);
     }
 
-    /// Makes every current-realm root (all before `Root::RealmKey`) undefined: the first step
-    /// of a new realm's init (`realm::create`).
+    /// Makes every current-realm root (the A2 ones before `Root::RealmKey`, and each appended
+    /// realm root, [`APPENDED`]) undefined: the first step of a new realm's init.
     pub fn clear_realm_roots(&self) {
-        for r in &self.shared.roots[..REALM_ROOT_COUNT] {
-            r.set(UNDEFINED);
+        for i in SLOT_MAP.realm_slots() {
+            self.shared.roots[i].set(UNDEFINED);
         }
     }
 
     pub fn atom(&self, a: Atom) -> u64 {
-        self.shared.roots[ATOM_ROOTS + usize::from(a.id())].get()
+        self.shared.roots[atom_slot(a)].get()
     }
 
     pub fn set_atom(&self, a: Atom, v: u64) {
-        self.shared.roots[ATOM_ROOTS + usize::from(a.id())].set(v);
+        self.shared.roots[atom_slot(a)].set(v);
     }
 
     /// The single-character atom of `c`, or undefined before its first use.
@@ -549,6 +549,233 @@ pub(crate) fn val(b: u64) -> Value {
     unsafe { Value::from_bits_unchecked(b) }
 }
 
+// ---- the root table form of A2 start (H13 "root slots", doc 13 C-18; M7-P1 A2-START) ----
+//
+// ```text
+//  slot 0 .. 35          the `Root` values at A2 start (34 realm roots, then RealmKey)
+//  slot 35 .. 71         the `atoms!` atoms at A2 start (atom id + 35)
+//  slot 71 .. 327        the 256 single-character atoms (char code + 71)    = ROOT_SLOTS
+//  slot 327 ..           APPENDED: each root or atom added after A2 start, in add order
+// ```
+//
+// Unit code loads slot n at byte 8n of the table (H34 `RootIndex(n)`), so a slot number is
+// the contract: from A2 start no slot moves, none is reused and none holds another item. A
+// new `Root` value or a new atom does not take a slot inside a range above; it is appended to
+// [`APPENDED`] and takes the next free slot at the end. The `Root` golden
+// (`crates/ep9_unit/tests/golden/root-slots.txt`) records every slot, and is the same in every
+// `ep9_vm` feature set: nothing here has a `cfg` (the build id names no feature, C-19).
+
+/// The number of `Root` values at A2 start (`GlobalObject` ..= `RealmKey`). Root `r` below it
+/// is in slot `r as usize`. Never change it.
+const A2_ROOT_COUNT: usize = 35;
+/// The realm roots at A2 start: the `Root` values below it (all but `RealmKey`).
+const A2_REALM_ROOT_COUNT: usize = 34;
+/// The number of `atoms!` atoms at A2 start (ids `0..A2_ATOM_COUNT`). Never change it.
+const A2_ATOM_COUNT: usize = 36;
+
+/// A root or an atom added after A2 start (an item of [`APPENDED`]), by its `Root` value or
+/// atom id. Make one with [`Appended::realm_root`], [`Appended::root`] or [`Appended::atom`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // the list is empty until the first append
+pub(crate) enum Appended {
+    /// A root of the current realm: [`Runtime::clear_realm_roots`] clears it.
+    RealmRoot(u8),
+    /// An isolate-wide root (as `Root::RealmKey`).
+    Root(u8),
+    /// An atom of the `atoms!` list.
+    Atom(u16),
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // the list is empty until the first append
+impl Appended {
+    /// A realm root added after A2 start.
+    pub(crate) const fn realm_root(r: Root) -> Appended {
+        Appended::RealmRoot(r as u8)
+    }
+
+    /// An isolate-wide root added after A2 start.
+    pub(crate) const fn root(r: Root) -> Appended {
+        Appended::Root(r as u8)
+    }
+
+    /// An atom added after A2 start.
+    pub(crate) const fn atom(a: Atom) -> Appended {
+        Appended::Atom(a.id())
+    }
+}
+
+/// The roots and atoms added after A2 start, in add order: item `i` is in slot
+/// `ROOT_SLOTS + i`. Append only: never reorder, remove or reuse an item; a retired root keeps
+/// its item (its slot then holds undefined). A new `Root` value goes after the last one in the
+/// enum (and `ROOT_COUNT` names it); a new atom goes at the end of `atoms!`.
+const APPENDED: &[Appended] = &[];
+
+/// The slots of the whole table: the A2 ranges and [`APPENDED`].
+const TABLE_SLOTS: usize = ROOT_SLOTS + APPENDED.len();
+
+/// A root table layout: the A2 counts and the appended items. The isolate uses [`SLOT_MAP`];
+/// the tests build other maps (a scratch append) to prove that an append moves no slot.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SlotMap<'a> {
+    pub roots: usize,
+    pub realm_roots: usize,
+    pub atoms: usize,
+    pub appended: &'a [Appended],
+}
+
+/// The layout of this build.
+pub(crate) const SLOT_MAP: SlotMap<'static> = SlotMap {
+    roots: A2_ROOT_COUNT,
+    realm_roots: A2_REALM_ROOT_COUNT,
+    atoms: A2_ATOM_COUNT,
+    appended: APPENDED,
+};
+
+impl SlotMap<'_> {
+    /// The first slot of the single-character atoms.
+    pub(crate) const fn char_base(&self) -> usize {
+        self.roots + self.atoms
+    }
+
+    /// The first slot of the appended range.
+    pub(crate) const fn appended_base(&self) -> usize {
+        self.char_base() + 256
+    }
+
+    /// The number of slots.
+    pub(crate) const fn len(&self) -> usize {
+        self.appended_base() + self.appended.len()
+    }
+
+    /// The slot of the root with value `r`, or None if the map has no such root.
+    pub(crate) const fn root_slot(&self, r: usize) -> Option<usize> {
+        if r < self.roots {
+            return Some(r);
+        }
+        let mut i = 0;
+        while i < self.appended.len() {
+            if let Appended::RealmRoot(x) | Appended::Root(x) = self.appended[i]
+                && x as usize == r
+            {
+                return Some(self.appended_base() + i);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The slot of the atom with id `a`, or None if the map has no such atom.
+    pub(crate) const fn atom_slot(&self, a: usize) -> Option<usize> {
+        if a < self.atoms {
+            return Some(self.roots + a);
+        }
+        let mut i = 0;
+        while i < self.appended.len() {
+            if let Appended::Atom(x) = self.appended[i]
+                && x as usize == a
+            {
+                return Some(self.appended_base() + i);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The slots of the realm roots, in slot order: the A2 range, then each appended realm
+    /// root.
+    pub(crate) fn realm_slots(&self) -> impl Iterator<Item = usize> + '_ {
+        let base = self.appended_base();
+        (0..self.realm_roots).chain(
+            self.appended
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| matches!(x, Appended::RealmRoot(_)))
+                .map(move |(i, _)| base + i),
+        )
+    }
+}
+
+/// The slot of each root added after A2 start, by `Root` value - `A2_ROOT_COUNT`.
+const APPENDED_ROOT_SLOTS: [usize; ROOT_COUNT - A2_ROOT_COUNT] = {
+    let mut out = [0; ROOT_COUNT - A2_ROOT_COUNT];
+    let mut r = A2_ROOT_COUNT;
+    while r < ROOT_COUNT {
+        out[r - A2_ROOT_COUNT] = match SLOT_MAP.root_slot(r) {
+            Some(s) => s,
+            None => panic!("a Root added after A2 start is not in APPENDED"),
+        };
+        r += 1;
+    }
+    out
+};
+
+/// The slot of each atom added after A2 start, by atom id - `A2_ATOM_COUNT`.
+const APPENDED_ATOM_SLOTS: [usize; Atom::ALL.len() - A2_ATOM_COUNT] = {
+    let mut out = [0; Atom::ALL.len() - A2_ATOM_COUNT];
+    let mut a = A2_ATOM_COUNT;
+    while a < Atom::ALL.len() {
+        out[a - A2_ATOM_COUNT] = match SLOT_MAP.atom_slot(a) {
+            Some(s) => s,
+            None => panic!("an atom added after A2 start is not in APPENDED"),
+        };
+        a += 1;
+    }
+    out
+};
+
+// Each appended item names a new root or atom, once (the root range is empty until one is).
+#[allow(clippy::impossible_comparisons)]
+const _: () = {
+    assert!(ROOT_SLOTS == SLOT_MAP.appended_base() && TABLE_SLOTS == SLOT_MAP.len());
+    assert!(A2_REALM_ROOT_COUNT == REALM_ROOT_COUNT && A2_ROOT_COUNT <= ROOT_COUNT);
+    assert!(A2_ATOM_COUNT <= Atom::ALL.len());
+    let mut i = 0;
+    while i < APPENDED.len() {
+        let ok = match APPENDED[i] {
+            Appended::RealmRoot(r) | Appended::Root(r) => {
+                let r = r as usize;
+                r >= A2_ROOT_COUNT
+                    && r < ROOT_COUNT
+                    && APPENDED_ROOT_SLOTS[r - A2_ROOT_COUNT] == ROOT_SLOTS + i
+            }
+            Appended::Atom(a) => {
+                let a = a as usize;
+                a >= A2_ATOM_COUNT
+                    && a < Atom::ALL.len()
+                    && APPENDED_ATOM_SLOTS[a - A2_ATOM_COUNT] == ROOT_SLOTS + i
+            }
+        };
+        assert!(
+            ok,
+            "an APPENDED item names no new root or atom, or names one twice"
+        );
+        i += 1;
+    }
+};
+
+/// The slot of root `r` ([`SLOT_MAP`]). A root of A2 start is its own slot; the compare folds
+/// away while no root is appended (a `Root` value is below `ROOT_COUNT`).
+#[inline(always)]
+fn root_slot(r: Root) -> usize {
+    let v = r as usize;
+    if v < A2_ROOT_COUNT {
+        v
+    } else {
+        APPENDED_ROOT_SLOTS[v - A2_ROOT_COUNT]
+    }
+}
+
+/// The slot of atom `a` ([`SLOT_MAP`]).
+#[inline(always)]
+fn atom_slot(a: Atom) -> usize {
+    let v = usize::from(a.id());
+    if v < A2_ATOM_COUNT {
+        ATOM_ROOTS + v
+    } else {
+        APPENDED_ATOM_SLOTS[v - A2_ATOM_COUNT]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,8 +788,232 @@ mod tests {
         }
         assert_eq!(ROOT_COUNT, 35); // 34 before M6-P0 (Root::RealmFuses)
         assert_eq!(REALM_ROOT_COUNT, 34);
-        assert_eq!(ROOT_SLOTS, 35 + Atom::ALL.len() + 256);
+        assert_eq!(ROOT_SLOTS, 35 + A2_ATOM_COUNT + 256);
+        assert_eq!(TABLE_SLOTS, ROOT_SLOTS + APPENDED.len());
         assert_eq!(ErrorKind::UriError.name(), "URIError");
         assert_eq!(crate::frame::HEADER, 8);
+    }
+
+    // ---- the `Root` golden (H13 "root slots" item (5); doc 13 C-18; M7-P1 A2-START) ----
+
+    /// Every `Root`, in value order (a new `Root` makes this list one item too short, so the
+    /// test fails to build until the root is named here).
+    const ROOTS: [Root; ROOT_COUNT] = [
+        Root::GlobalObject,
+        Root::Lexical,
+        Root::ObjectPrototype,
+        Root::FunctionPrototype,
+        Root::ArrayPrototype,
+        Root::StringPrototype,
+        Root::NumberPrototype,
+        Root::BooleanPrototype,
+        Root::ErrorPrototype,
+        Root::TypeErrorPrototype,
+        Root::RangeErrorPrototype,
+        Root::ReferenceErrorPrototype,
+        Root::SyntaxErrorPrototype,
+        Root::EvalErrorPrototype,
+        Root::UriErrorPrototype,
+        Root::ArrayIteratorPrototype,
+        Root::IteratorPrototype,
+        Root::ObjectConstructor,
+        Root::FunctionConstructor,
+        Root::ArrayConstructor,
+        Root::NumberConstructor,
+        Root::BooleanConstructor,
+        Root::StringConstructor,
+        Root::SymbolConstructor,
+        Root::ErrorConstructor,
+        Root::TypeErrorConstructor,
+        Root::RangeErrorConstructor,
+        Root::ReferenceErrorConstructor,
+        Root::SyntaxErrorConstructor,
+        Root::EvalErrorConstructor,
+        Root::UriErrorConstructor,
+        Root::Math,
+        Root::Realm,
+        Root::RealmFuses,
+        Root::RealmKey,
+    ];
+
+    /// The golden file. It is in `ep9_unit` (the unit container is the reader of root slots);
+    /// `EP9_BLESS=1` rewrites it.
+    fn golden_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../ep9_unit/tests/golden/root-slots.txt")
+    }
+
+    /// The name of root value `r` (a value no `Root` has is a scratch root of a test map).
+    fn root_name(r: usize) -> String {
+        ROOTS
+            .get(r)
+            .map_or_else(|| format!("scratch-root-{r}"), |x| format!("{x:?}"))
+    }
+
+    /// The name of atom id `a`.
+    fn atom_name(a: usize) -> String {
+        Atom::ALL.get(a).map_or_else(
+            || format!("scratch-atom-{a} \"\""),
+            |x| format!("{x:?} {:?}", x.text()),
+        )
+    }
+
+    /// The golden text of `map`: one line per slot, `<slot> <kind> <id> <name>`.
+    fn slot_text(map: &SlotMap<'_>) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::from(
+            "# ep9 isolate root table: one line per slot, <slot> <kind> <id> <name>. H13 \"root slots\"\n\
+             # (doc 13 C-18): from A2 start a slot never moves; a new root or atom is appended at\n\
+             # the end (runtime.rs APPENDED). Kinds: realm-root, root, atom (id + text), char (code).\n\
+             # Generated by ep9_vm runtime::tests (EP9_BLESS=1); the same in every feature set.\n",
+        );
+        for r in 0..map.roots {
+            let kind = if r < map.realm_roots {
+                "realm-root"
+            } else {
+                "root"
+            };
+            let _ = writeln!(s, "{r} {kind} {r} {}", root_name(r));
+        }
+        for a in 0..map.atoms {
+            let _ = writeln!(s, "{} atom {a} {}", map.roots + a, atom_name(a));
+        }
+        for c in 0..256 {
+            let _ = writeln!(s, "{} char {c} {c:#04x}", map.char_base() + c);
+        }
+        for (i, x) in map.appended.iter().enumerate() {
+            let slot = map.appended_base() + i;
+            let _ = match *x {
+                Appended::RealmRoot(r) => {
+                    writeln!(s, "{slot} realm-root {r} {}", root_name(r.into()))
+                }
+                Appended::Root(r) => writeln!(s, "{slot} root {r} {}", root_name(r.into())),
+                Appended::Atom(a) => writeln!(s, "{slot} atom {a} {}", atom_name(a.into())),
+            };
+        }
+        s
+    }
+
+    /// The `Root` golden: every slot of this build's table, the same in the jit and the
+    /// no-jit builds (run it in both; H13 "root slots" item (5)).
+    #[test]
+    fn the_root_golden_names_every_slot() {
+        let actual = slot_text(&SLOT_MAP);
+        let path = golden_path();
+        if std::env::var_os("EP9_BLESS").is_some() {
+            std::fs::write(&path, &actual).unwrap();
+            return;
+        }
+        let golden = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}; run with EP9_BLESS=1", path.display()))
+            .replace("\r\n", "\n");
+        assert_eq!(
+            golden,
+            actual,
+            "the root slots differ from {}",
+            path.display()
+        );
+        assert_eq!(
+            actual.lines().filter(|l| !l.starts_with('#')).count(),
+            TABLE_SLOTS
+        );
+    }
+
+    /// Each accessor reads the slot the golden names, and the realm roots are the ones that
+    /// `clear_realm_roots` clears.
+    #[test]
+    fn the_accessors_use_the_slot_map() {
+        for r in ROOTS {
+            assert_eq!(Some(root_slot(r)), SLOT_MAP.root_slot(r as usize), "{r:?}");
+        }
+        for &a in Atom::ALL {
+            assert_eq!(
+                Some(atom_slot(a)),
+                SLOT_MAP.atom_slot(a.id().into()),
+                "{a:?}"
+            );
+        }
+        assert_eq!(SINGLE_CHAR_ROOTS, SLOT_MAP.char_base());
+        let realm: Vec<usize> = SLOT_MAP.realm_slots().collect();
+        let want: Vec<usize> = ROOTS
+            .iter()
+            .filter(|&&r| r != Root::RealmKey)
+            .map(|&r| root_slot(r))
+            .collect();
+        assert_eq!(realm, want);
+        // Every slot holds one item.
+        let mut seen = std::collections::HashSet::new();
+        for r in ROOTS {
+            assert!(seen.insert(root_slot(r)));
+        }
+        for &a in Atom::ALL {
+            assert!(seen.insert(atom_slot(a)));
+        }
+        for c in 0..256 {
+            assert!(seen.insert(SINGLE_CHAR_ROOTS + c));
+        }
+        assert_eq!(seen.len(), TABLE_SLOTS);
+        assert!(seen.iter().all(|&s| s < TABLE_SLOTS));
+    }
+
+    /// C-18 item (5): a scratch root appended at the end adds one golden line and changes
+    /// none; so does a scratch atom (the case that moved the 256 character slots before A2
+    /// start), and a realm root appended later is cleared with the A2 realm roots.
+    #[test]
+    fn an_append_adds_one_golden_line_and_moves_no_slot() {
+        let base = slot_text(&SLOT_MAP);
+        let mut appended = APPENDED.to_vec();
+        let scratch_root = ROOT_COUNT as u8;
+        let scratch_atom = Atom::ALL.len() as u16;
+        let steps = [
+            Appended::RealmRoot(scratch_root),
+            Appended::Atom(scratch_atom),
+            Appended::Root(scratch_root + 1),
+        ];
+        // The constructors name an item by its `Root` value or atom id.
+        assert_eq!(Appended::realm_root(Root::Math), Appended::RealmRoot(31));
+        assert_eq!(Appended::root(Root::RealmKey), Appended::Root(34));
+        assert_eq!(Appended::atom(Atom::Callee), Appended::Atom(35));
+        let mut before = base;
+        for step in steps {
+            appended.push(step);
+            let map = SlotMap {
+                appended: &appended,
+                ..SLOT_MAP
+            };
+            let after = slot_text(&map);
+            let new_line = after
+                .strip_prefix(before.as_str())
+                .unwrap_or_else(|| panic!("an append changed an existing golden line ({step:?})"));
+            assert_eq!(new_line.lines().count(), 1, "{step:?}: {new_line:?}");
+            assert!(
+                new_line.starts_with(&format!("{} ", map.len() - 1)),
+                "{new_line:?}"
+            );
+            // No item of A2 start moves.
+            for r in 0..ROOT_COUNT {
+                assert_eq!(map.root_slot(r), SLOT_MAP.root_slot(r));
+            }
+            for a in 0..Atom::ALL.len() {
+                assert_eq!(map.atom_slot(a), SLOT_MAP.atom_slot(a));
+            }
+            assert_eq!(map.char_base(), SINGLE_CHAR_ROOTS);
+            before = after;
+        }
+        let map = SlotMap {
+            appended: &appended,
+            ..SLOT_MAP
+        };
+        let base = TABLE_SLOTS;
+        assert_eq!(map.root_slot(scratch_root.into()), Some(base));
+        assert_eq!(map.atom_slot(scratch_atom.into()), Some(base + 1));
+        assert_eq!(map.root_slot(usize::from(scratch_root) + 1), Some(base + 2));
+        let realm: Vec<usize> = map.realm_slots().collect();
+        let mut want: Vec<usize> = SLOT_MAP.realm_slots().collect();
+        want.push(base);
+        assert_eq!(
+            realm, want,
+            "the appended realm root is cleared with the others"
+        );
     }
 }

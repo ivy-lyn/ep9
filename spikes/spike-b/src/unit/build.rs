@@ -103,6 +103,14 @@ pub fn build(spec: &UnitSpec, arch: Arch) -> Result<Vec<u8>, String> {
         heap_page_log2: host.heap_page_log2,
         source_flags: flags,
         cpu_required: 0,
+        // Container v2 (M7-P1 A2-START): the spike calls entries of the process table and
+        // reads its RW copy through the slot of its layout; it bakes no root shape.
+        compat_flags: 0,
+        incompat_flags: 0,
+        runtime_table_len: host.runtime_table_len,
+        unit_data_slot: layout.slot as u8,
+        root_shapes: host.root_shapes,
+        codegen_flags: host.codegen_flags,
     };
     UnitFinalizer {
         header,

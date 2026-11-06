@@ -33,10 +33,10 @@ use ep9_vm::IntrinsicId;
 use super::emit::{Assigned, RwLayout};
 use crate::emit::{Arch, Finalize, FunctionCode};
 
-/// The deopt-metadata version the spike's units and its loader use. `ep9_vm` has
-/// `DEOPT_META_VERSION` 0 ("no native form yet", H35 S6), so the real host gives BYTECODE for
-/// every unit with a text section. Spike code has no deopt point, so the spike loads its own
-/// units against a host with this version (a decision row for the orchestrator).
+/// The deopt-metadata version the spike's units and its loader use. Until A2 start `ep9_vm`
+/// had `DEOPT_META_VERSION` 0 ("no native form yet", H35 S6), so the spike loaded its own units
+/// against a host with this version. Since A2 start (M7-P1) `ep9_vm` has 1 (format 1), so
+/// [`spike_host`] is the real host.
 pub const SPIKE_DEOPT_META: u32 = 1;
 
 /// What the spike's loader compares a unit with: [`HostInfo::current`] with
