@@ -68,7 +68,6 @@ mod lookup;
 mod module;
 mod pattern;
 mod private;
-mod regopt;
 mod stmt;
 
 #[cfg(test)]
@@ -909,6 +908,10 @@ fn add_scopes(
 fn unit_scope_id(s: ScopeId, shifted: bool) -> ep9_bytecode::ScopeId {
     ep9_bytecode::ScopeId(if s.0 == 0 || !shifted { s.0 } else { s.0 + 1 })
 }
+
+// The register optimizer: every FnGen emits through it. Declared here, not with the modules at
+// the top, so that the ADR cites of the lines above keep their line numbers.
+mod regopt;
 
 /// A fresh function builder with the named locals reserved, through the register optimizer
 /// when `optimize` is on (`regopt.rs`).
