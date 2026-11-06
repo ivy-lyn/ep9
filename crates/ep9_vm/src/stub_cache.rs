@@ -3,14 +3,16 @@
 //! named-property site. V8's stub cache, one level.
 //!
 //! ```text
-//!  megamorphic site (slot = hole, int32 MEGA)       Runtime::stub_cache (1024 entries, Rust memory)
-//!   hit path: ic::load / ic::store: a miss            index = hash(op, ShapeId, name)
-//!   miss path: slow::get_named / get_super / set_named
-//!     ic::mega_load / ic::mega_store                  entry: key = op << 32 | ShapeId
-//!       probe(op, ShapeId of o, name) ─────────────>         name (an atom's bits)
-//!         Some(handler) -> the handler code of ic.rs         handler (a smi handler or an
-//!         None          -> the generic op, then              IC_HANDLER cell of ic.rs)
-//!     ic::record on a megamorphic entry ────insert─>  (the entry there is replaced)
+//!  megamorphic site (slot = hole, int32 MEGA)     Runtime::stub_cache (8192 entries, Rust memory)
+//!   hit path: ic::load / ic::store: a miss          index = hash(op, ShapeId, name)
+//!   0x21 cold body: ic::get_named_cold (M7-P1)      entry: key = op << 32 | ShapeId
+//!     ic::handler_mega_load ───────────probe──>            name (an atom's bits)
+//!       None -> the runtime call below                     handler (a smi handler or an
+//!   miss path: slow::get_named / get_super / set_named     IC_HANDLER cell of ic.rs)
+//!     ic::mega_load / ic::mega_store ──probe──>
+//!       Some(handler) -> the handler code of ic.rs
+//!       None          -> the generic op, then
+//!     ic::record on a megamorphic entry ──insert─>  (the entry there is replaced)
 //!
 //!  every GC (a weak source of the heap) ──flush──> every entry empty
 //! ```
@@ -19,6 +21,12 @@
 //! - The probe is on the miss path, not in `ic::load` / `ic::store`: there it would cost every
 //!   monomorphic hit two more loads (the site's name operand and the runtime pointer; measured
 //!   +1.4% instructions on t0-prop, mac a64). The miss path still saves the generic lookup.
+//!   M7-P1 NAMEDLOAD: the `GetNamedProperty` (0x21) handler probes in its cold body, before
+//!   its runtime call (`ic::get_named_cold`; V8's load handler probes there too). The cold
+//!   body is a handler of its own (H15), so the hit path still loads neither value; a hit
+//!   there skips the runtime call (`slow::get_named`), which probes again only after a miss.
+//!   On the TS workload (`octane-typescript`) 29.09 M of the 29.16 M megamorphic loads hit
+//!   there; the probe in the handler alone took 2.3% off its instructions (mac a64).
 //! - Handlers are the IC handlers of `ic.rs`, so a hit runs the same handler code as a
 //!   monomorphic or polymorphic case: smi field handlers and `ARRAY_LENGTH` (loads and stores),
 //!   `PROTO_LOAD` and `MISSING` (loads, through their validity cell), `ADD` (stores; a 0x24
@@ -38,11 +46,13 @@
 //!   point: [`insert`] runs after the miss path's last allocation, and [`probe`] neither
 //!   allocates nor calls.
 //! - The flush costs one flag test when nothing was inserted since the last GC (the GC-stress
-//!   mode collects at every allocation), else one store per entry.
+//!   mode collects at every allocation), else one store per entry. A new table costs no
+//!   store: it is zeroed memory ([`StubCache::new`]).
 //! - The table is not part of any export (facts, layout): compiled code reaches a megamorphic
 //!   site through the generic path (H16 CacheIR `Generic`; MC-w14 IC2 line).
 
 use core::cell::Cell;
+use core::mem::MaybeUninit;
 use std::rc::Rc;
 
 use ep9_heap::Heap;
@@ -62,12 +72,16 @@ pub(crate) enum Op {
     Define = 3,
 }
 
-/// log2 of the number of entries.
-const BITS: u32 = 10;
-/// The number of entries (24 KiB per isolate).
+/// log2 of the number of entries (a tuning value, H16 "recording policy (gated)"). 10 up to
+/// M7-P1; 13 since M7-P1 NAMEDLOAD: on the TS workload (`octane-typescript`, 22 GCs) the
+/// load probes that missed went from 363,397 to 69,354 and the store probes that missed from
+/// 1,516,355 to 832,815 (`ic-stats`, mac a64): most misses of the 1024-entry table were
+/// conflicts, not refills after a GC.
+const BITS: u32 = 13;
+/// The number of entries (192 KiB per isolate).
 pub(crate) const ENTRIES: usize = 1 << BITS;
 
-/// One entry. An empty entry has key 0.
+/// One entry. An empty entry has key 0 (a new table is all zeros, [`StubCache::new`]).
 struct Entry {
     /// `op << 32 | ShapeId` of the receiver shape.
     key: Cell<u64>,
@@ -75,16 +89,6 @@ struct Entry {
     name: Cell<u64>,
     /// The handler (`ic.rs`).
     handler: Cell<u64>,
-}
-
-impl Entry {
-    fn empty() -> Entry {
-        Entry {
-            key: Cell::new(0),
-            name: Cell::new(0),
-            handler: Cell::new(0),
-        }
-    }
 }
 
 /// The isolate's stub cache (`Runtime::stub_cache`). The heap's weak source shares the table
@@ -100,11 +104,16 @@ impl StubCache {
     /// The empty cache of a new isolate; registers the flush with `heap` (a weak source, which
     /// runs in every collection). Not a GC point.
     pub(crate) fn new(heap: &Heap) -> StubCache {
-        let all: Box<[Entry]> = (0..ENTRIES).map(|_| Entry::empty()).collect();
-        let Ok(all): Result<Box<[Entry; ENTRIES]>, _> = all.try_into() else {
+        // Zeroed memory is the empty table (every word of an empty entry is 0), so a new
+        // isolate writes no entry: the allocator gives zero pages, and a page is touched only
+        // when the first entry in it is used (M7-P1 NAMEDLOAD: 8192 entries).
+        let all: Rc<[MaybeUninit<Entry>]> = Rc::new_zeroed_slice(ENTRIES);
+        // SAFETY: an `Entry` is three `Cell<u64>`, and the all-zero bit pattern is a valid
+        // `Cell<u64>` (0), so each zeroed element is an initialized empty entry.
+        let all: Rc<[Entry]> = unsafe { all.assume_init() };
+        let Ok(entries): Result<Rc<[Entry; ENTRIES]>, _> = all.try_into() else {
             unreachable!("ENTRIES entries")
         };
-        let entries: Rc<[Entry; ENTRIES]> = Rc::from(all);
         let used = Rc::new(Cell::new(false));
         let (e, u) = (Rc::clone(&entries), Rc::clone(&used));
         heap.add_weak_source(move |_| flush(&e[..], &u));
