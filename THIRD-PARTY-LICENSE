@@ -196,9 +196,16 @@ Ported:   crates/ep9_math/src/hypot.rs (Math.hypot, H36) from src/builtins/math.
           (MathHypot, its general path with the Kahan sum), at main
           f8008f466663464cf3f14474da2c8c91b1be1fcb (2026-10-27), to Rust. The caller
           does ToNumber; the IEEE operations and their order are V8's (M4-P4).
+          crates/ep9_math/src/xsum.rs (Math.sumPrecise, H36) from
+          src/builtins/builtins-math-xsum.h and src/builtins/builtins-math-xsum.cc
+          (class Xsum), at main 40f4b69c3bc25f2a9c1c4137e27c545b6b1183d0
+          (2026-11-02; the files last changed in b76957af9c52), to Rust. V8 adapted
+          that code from xsum by Radford M. Neal (entry "xsum" below) (M7-P0).
 Copyright: math.tq: "Copyright 2019 the V8 project authors. All rights reserved.
           Use of this source code is governed by a BSD-style license that can be
           found in the LICENSE file."
+          builtins-math-xsum.h, builtins-math-xsum.cc: "Copyright 2026 the V8
+          project authors. All rights reserved."
 
 The V8 LICENSE file gives these terms for V8's own code:
 
@@ -229,6 +236,42 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+----------------------------------------------------------------------
+
+xsum (MIT)
+----------
+
+Project:  xsum, exact summation of floating-point numbers by Radford M. Neal,
+          https://gitlab.com/radfordneal/xsum
+Ported:   crates/ep9_math/src/xsum.rs (Math.sumPrecise, H36), through V8's
+          adaptation (V8 entry above): the small superaccumulator of xsum.c and
+          xsum.h (M7-P0).
+Copyright: "Copyright 2015, 2018, 2021 Radford M. Neal" (the license header that
+          V8's builtins-math-xsum.cc keeps).
+
+The xsum license header:
+
+----------------------------------------------------------------------
+Copyright 2015, 2018, 2021 Radford M. Neal
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----------------------------------------------------------------------
 
 regress (MIT)
