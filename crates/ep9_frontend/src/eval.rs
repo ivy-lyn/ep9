@@ -34,7 +34,7 @@
 //! | E6 | (M3-P4) `super()` in eval code (allowed only when the caller's receiver function is a derived constructor: PerformEval step 10.b.iv inDerivedConstructor, also through arrows and nested eval) reaches the caller's `.callee`, `new.target` and `this` slots by name: `super_call` (expr.rs) binds `this` with `StaLookupSlot "this"`, which the VM runs as BindThisValue, and then always calls `RunClassFieldsInitializer`. Before M3-P4 it was Unsupported | No new id or opcode (ABI 5): no source text can store to `this`, so the store to that name was free to define (slow/lookup.rs) |
 //! | E7 | (M3-P2 VM-ARGS) An Annex B.3.2.3 block function of sloppy eval code: the prologue calls `DeclareEvalAnnexBFunction(name)` (ABI 5 id 46) after the eval code's own declarations and keeps its answer in a register; the declaration, when it runs, calls `StoreEvalAnnexBFunction(name, f)` (id 47) if the answer was true (`gen_eval_program`, `store_annex_b_var`). A var binding that only Annex B made gets no `DeclareEvalVar` | Whether it gets a var binding depends on the caller's environments at run time (B.3.2.3 steps ii.2.a-f): the VM decides it (`interp/slow/eval.rs`). Before M3-P2 this was Unsupported |
 //! | E7-ORDER | (M3-P2, RV2-ARGS1) The E7 Annex B bindings are declared after the eval code's own function and var bindings, in V8's order. The spec runs the B.3.2.3 steps at EvalDeclarationInstantiation step 13, before steps 17-18. Only the order of new global properties differs: `var aa1; { function bb1() {} } function cc1() {}` adds cc1, aa1, bb1 (spec: bb1, cc1, aa1; node v24.22.1: aa1, cc1, bb1) | Node is the oracle (plan rule): bb1 comes last, as in V8. The names never overlap, so no binding and no error changes |
-//! | E8 | Lone surrogates never reach this function in M0 (the hook takes `&str`) | D8: the shim is milestone-M3 work (01-front-end.md:159) |
+//! | E8 | (M7-P2 FE-SHIM; H05-Q3) `source` is shim text: the VM writes a lone surrogate of the JS string as U+FDD0 and 4 hex digits, and U+FDD0 as U+FDD0 U+FDD0 (`eval_source_text`). This function decodes it (surrogate.rs): oxc parses the text with U+FFFD for each lone surrogate, regex literals with one are checked again with escapes, and string, template and regex values get the real code units. Before M7-P2 the VM threw a not-implemented Error for such text | The hook type stays `fn(&str, ..)` (the H20 core golden); 07-runtime.md §7 |
 //! | E9 | (M3-P4) A `#x` that only the caller's class declares (`EvalContext::private_names`) resolves `Dynamic` in the scope pass; BytecodeGen compiles it by its kind from the `EvalContext` lists (`ScopeAnalysis::caller_private`; bytecodegen/private.rs `caller_private`): a field by `LdaLookupSlot "#x"` (the key), a method or accessor by the slots of the `#x` class context (`ResolveLookupSlot` once, then `LoadLookupSlotResolved` of `#x`, the brand and `#.set-x`). Before M3-P4 it was Unsupported | No new id or opcode (ABI 5). The kind is not in the unit's slot modes (all `const`), so the scope pass adds kind marker slots to a class whose body holds a direct eval (scope/collect.rs `private_kind_markers`), and the VM reads them (ep9_bytecode `eval_context.rs`) |
 
 use ep9_bytecode::{EvalContext, VerifiedUnit};
@@ -55,6 +55,7 @@ use oxc_span::{GetSpan, SPAN, SourceType, Span};
 
 use crate::bytecodegen::{self, CodegenError, CompileOptions, EVAL_RESULT};
 use crate::scope::{self, EvalKind, PrivateKind};
+use crate::surrogate::Shim;
 use crate::{
     AST_CAP, ByteSpan, CompileError, DepthLayer, EarlyErrors, FrontEnd, Goal, LineMap, PRESCAN_CAP,
     RangeError, RangeErrorKind, SourceOpts, Strictness, SyntaxError,
@@ -77,16 +78,19 @@ pub fn compile_eval(
     ctx: &EvalContext,
     options: CompileOptions,
 ) -> Result<VerifiedUnit, CodegenError> {
+    // E8: the shim text of a JS string (lone surrogates, U+FDD0) -> the parse text.
+    let (source, mut shim) = crate::surrogate::decode(source);
     let estimate = crate::prescan::estimate(source.as_bytes(), false);
     if estimate.depth > PRESCAN_CAP {
-        return Err(too_deep(DepthLayer::PreScan, source, estimate.at));
+        return Err(too_deep(DepthLayer::PreScan, &source, estimate.at));
     }
-    let owned = source.to_owned();
+    let owned = source.into_owned();
     let allow = Allow::from_context(ctx);
     let job = move || {
-        on_worker(&owned, &allow, |fe, analysis| {
+        let unit = on_worker(&owned, &allow, &mut shim, |fe, analysis| {
             bytecodegen::generate(fe, analysis, options)
-        })
+        })?;
+        shim.finish(unit)
     };
     match crate::worker::run(crate::stack::WORKER_STACK_BYTES, job) {
         Ok(result) => result,
@@ -174,6 +178,7 @@ impl Allow {
 fn on_worker<R>(
     source: &str,
     allow: &Allow,
+    shim: &mut Shim,
     codegen: impl FnOnce(&FrontEnd<'_>, &scope::ScopeAnalysis) -> Result<R, CodegenError>,
 ) -> Result<R, CodegenError> {
     let allocator = Allocator::default();
@@ -182,6 +187,8 @@ fn on_worker<R>(
         Ok(parsed) => parsed,
         Err(fatal) => return Err(syntax(source, fatal.errors())),
     };
+    // E8, 07 §7 step 5: a regex literal with a lone surrogate is checked again.
+    shim.check_regex_literals(source, &parsed.tokens, &mut parsed.diagnostics);
     let has_parse_errors = parsed.diagnostics.has_errors();
     if parsed.fatal_error {
         return Err(syntax(source, parsed.diagnostics.errors()));
@@ -204,6 +211,8 @@ fn on_worker<R>(
             return Err(syntax(source, kept.into_iter()));
         }
     }
+    // E8, 07 §7 steps 4-5: the literals get the real code units (after layer 2: it walks).
+    shim.patch(&allocator, source, &mut parsed.program)?;
 
     let ast = AstBuilder::new(&allocator);
     rewrite_completion(&ast, &mut parsed.program);
@@ -850,7 +859,7 @@ mod tests {
         let allow = Allow::from_context(ctx);
         let owned = src.to_owned();
         let r = crate::worker::run(crate::stack::WORKER_STACK_BYTES, move || {
-            on_worker(&owned, &allow, |_, _| Ok(()))
+            on_worker(&owned, &allow, &mut Shim::default(), |_, _| Ok(()))
         })
         .expect("a worker");
         match r {
