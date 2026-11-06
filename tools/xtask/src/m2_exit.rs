@@ -34,7 +34,8 @@
 //! when a run is not from a gate host (10-quality.md section 3, "Owner action"). On
 //! `aarch64-unknown-linux-gnu` the speed cells are N/A by design (no gate host). On
 //! `x86_64-pc-windows-msvc` a speed cell gives the ratio of each Windows reading to the Linux x64
-//! one (`--linux-gate`; 09:66: within 10%), and reads OPEN "marginal (no gate host)" until both
+//! one (`--linux-gate`; 09:66: within 10%; each reading on both hosts must have the status
+//! `valid`, a gate verdict is not needed), and reads OPEN "marginal (no gate host)" until both
 //! runs are gate-host runs on the same CPU model (a dual-boot or identical host, 10:157).
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
@@ -60,10 +61,11 @@
 //! - ep9-fastdiff/v1 (the FASTDIFF test): `commit`, `dirty`, `fast_paths[]` with `name`, `cases`
 //!   and `mismatches`.
 //! - JetStream (jetstream/run.mjs): `list`, `jetstream_commit`, `reps`, `host.{platform, arch}`,
-//!   `ep9.{commit, dirty}`, `configs[]` (`name`, `engine`, `flags`) and `table[]` (per workload
-//!   `<config>` median score and `<config>_n` scores). The ep9 configs are the ones whose name
-//!   starts with `ep9`; node --jitless is the config of engine `node` (or kind `node`: a
-//!   `node@<path>` engine) with the flag `--jitless`.
+//!   `ep9.{commit, dirty}`, `configs[]` (`name`, `engine`, `kind`, `version`, `flags`) and
+//!   `table[]` (per workload `<config>` median score and `<config>_n` scores). The ep9 configs are
+//!   the ones of kind `ep9` (an `ep9` or `ep9@<path>` engine), and the version of each holds the
+//!   build line of `ep9 --version`; node --jitless is the config of engine `node` (or kind
+//!   `node`: a `node@<path>` engine) with the flag `--jitless`.
 //! - P-gate file: a Markdown table with the columns `Gate` and `Result`.
 //!
 //! The extra rows (no exit-code effect): the parity debt of item 2 and the tripped P-gates.
@@ -683,10 +685,12 @@ fn speed_cell(c: &Ctx, ids: &[&str], builds: &[&str]) -> Cell {
             };
             if host != WINDOWS_X64 {
                 status = status.max(s);
-            } else if s == Status::Open {
+            } else if r.get("status").and_then(Json::str) != Some("valid") {
                 // Windows: no pass or fail against the M2 threshold (the ratio to Linux x64
-                // decides), but a reading with no verdict (provisional, marginal, none) is no
-                // reading (M7-P0 Codex r1 GATES10-1).
+                // decides, 09:66), so the measurement validity decides, not the gate verdict: a
+                // provisional, incomplete or void reading is no reading (M7-P0 Codex r1
+                // GATES10-1); a valid reading with no TS rule or a marginal one is read (M7-P0
+                // Codex r2 C2-3).
                 status = status.max(Status::Open);
             }
             let reasons: Vec<String> = r
@@ -807,11 +811,15 @@ fn windows_ratio(
         for &id in ids {
             let w = reading(win, id, b).and_then(|r| speed(id, r));
             let lr = reading(lin, id, b);
-            let lgate = lr.and_then(|r| r.get("gate")).and_then(Json::str);
-            if !matches!(lgate, Some("pass" | "fail")) {
+            // The Linux x64 reading must be a valid measurement; a marginal one is still read
+            // (M7-P0 Codex r2 C2-3).
+            let lstatus = lr.and_then(|r| r.get("status")).and_then(Json::str);
+            if lstatus != Some("valid") {
+                let lgate = lr.and_then(|r| r.get("gate")).and_then(Json::str);
                 status = status.max(Status::Open);
                 ratios.push(format!(
-                    "{b} {id}: the Linux x64 reading has no gate verdict ({})",
+                    "{b} {id}: the Linux x64 reading is not valid ({}; {})",
+                    lstatus.unwrap_or("no status field"),
                     lgate.unwrap_or("no gate field")
                 ));
             }
@@ -1269,11 +1277,28 @@ fn item7(c: &Ctx) -> Cell {
     let reps = num(j, "reps").unwrap_or(0.0);
     let configs = j.get("configs").and_then(Json::arr).unwrap_or(&[]);
     let cname = |x: &Json| x.get("name").and_then(Json::str).unwrap_or("").to_string();
+    // An ep9 config is one that run.mjs ran on an ep9 binary (kind `ep9`, through ep9-host.mjs),
+    // not one by its name: a d8 or node engine under the name `ep9` read PASS (M7-P0 Codex r2
+    // C2-2 part A). Its version must hold the build line of `ep9 --version`.
     let subjects: Vec<String> = configs
         .iter()
+        .filter(|x| x.get("kind").and_then(Json::str) == Some("ep9"))
         .map(cname)
-        .filter(|n| n.starts_with("ep9"))
         .collect();
+    for x in configs
+        .iter()
+        .filter(|x| x.get("kind").and_then(Json::str) == Some("ep9"))
+    {
+        let v = x.get("version").and_then(Json::str);
+        if !v.is_some_and(|v| v.contains("; features ") && v.contains("; preset ")) {
+            status = status.max(Status::Open);
+            why.push(format!(
+                "{}: the version has no ep9 build line (`features <list>; preset <name>`): {}",
+                cname(x),
+                v.unwrap_or("null")
+            ));
+        }
+    }
     let jitless = configs
         .iter()
         .find(|x| {
@@ -1287,7 +1312,7 @@ fn item7(c: &Ctx) -> Cell {
         .map(cname);
     if subjects.is_empty() {
         status = status.max(Status::Open);
-        why.push("no ep9 config (a config name starting with \"ep9\")".into());
+        why.push("no ep9 config (a config of kind \"ep9\": engine ep9 or ep9@<path>)".into());
     }
     let Some(jitless) = jitless else {
         return cell(
@@ -2029,7 +2054,7 @@ mod tests {
             let c = &rep.cells[i];
             assert_eq!(c.status, Status::Open, "cell {i}: {}", c.evidence);
             for want in [
-                "the Linux x64 reading has no gate verdict",
+                "the Linux x64 reading is not valid",
                 "the Linux x64 run is stale",
             ] {
                 assert!(
@@ -2066,6 +2091,46 @@ mod tests {
                 c.evidence
             );
         }
+    }
+
+    /// M7-P0 Codex r2 C2-3: a Windows TS reading has no TS rule (no gate verdict, V12-D5), and a
+    /// valid "marginal" geomean reading on Windows or on the Linux x64 side has no pass verdict.
+    /// Both read OPEN; the measurement validity decides now, so the ratio cells read PASS.
+    #[test]
+    fn windows_ts_reads_the_ratio_without_a_ts_rule() {
+        let r = repo("windows-ts");
+        let o = Options {
+            gate: Some(input(&r, "gate-win.json")),
+            linux_gate: Some(input(&r, "gate-win-linux.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in [0, 1, 2, 5, 9, 10] {
+            let c = &rep.cells[i];
+            assert_eq!(c.status, Status::Pass, "cell {i}: {}", c.evidence);
+            assert!(
+                !c.evidence.contains("not valid"),
+                "cell {i}: {}",
+                c.evidence
+            );
+        }
+        let ts = &rep.cells[2].evidence;
+        for want in [
+            "jit ts Windows / Linux x64 = 1.000",
+            "jitless ts Windows / Linux x64 = 1.000",
+            "no gate verdict (no TS rule for host win-gate (win32-x64)",
+        ] {
+            assert!(ts.contains(want), "{want}: {ts}");
+        }
+        let oct = &rep.cells[0].evidence;
+        assert!(
+            oct.contains("jitless octane7-vs-qjs Windows / Linux x64 = 0.950"),
+            "{oct}"
+        );
+        assert!(
+            oct.contains("jit octane7-vs-qjs Windows / Linux x64 = 1.053"),
+            "{oct}"
+        );
     }
 
     /// M7-P0 Codex r1 GATES10-3: a run of language/ and annexB/ only (no built-ins result, no
@@ -2246,6 +2311,56 @@ mod tests {
             "engine ep9-jitless: its build line \"features jit; preset jit\" does not name preset jitless",
         ] {
             assert!(c.evidence.contains(want), "{want}: {}", c.evidence);
+        }
+    }
+
+    /// M7-P0 Codex r2 C2-2 part A: item 7 took its subjects by config name, so a d8 or node
+    /// engine under the name `ep9` read PASS. Now a subject is a config of kind `ep9`, and its
+    /// version holds the `ep9 --version` build line.
+    #[test]
+    fn item7_needs_an_ep9_engine() {
+        let r = repo("js-kind");
+        let o = Options {
+            jetstream: Some(input(&r, "jetstream.json")),
+            ..opts(&r, HOST)
+        };
+        let c = &run(&o).unwrap().cells[6];
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(
+            c.evidence
+                .contains("ep9: 3 of 3 workloads ran, geomean score ratio to jitless 0.800"),
+            "{}",
+            c.evidence
+        );
+        let ep9 = "\"kind\": \"ep9\", \"version\": \"ep9 0.0.0; features jit; preset jit\"";
+        let base = fixture("jetstream.json").replace(SHA, &r.head);
+        assert!(base.contains(ep9));
+        for (name, to, want) in [
+            (
+                "d8",
+                "\"kind\": \"d8\", \"version\": null",
+                "no ep9 config (a config of kind \"ep9\"",
+            ),
+            (
+                "no-version",
+                "\"kind\": \"ep9\", \"version\": null",
+                "ep9: the version has no ep9 build line (`features <list>; preset <name>`): null",
+            ),
+            (
+                "no-build-line",
+                "\"kind\": \"ep9\", \"version\": \"ep9 0.0.0\"",
+                "ep9: the version has no ep9 build line (`features <list>; preset <name>`): ep9 0.0.0",
+            ),
+        ] {
+            let f = format!("inputs/js-{name}.json");
+            write(&r.root, &f, &base.replace(ep9, to));
+            let o = Options {
+                jetstream: Some(r.root.join(&f)),
+                ..opts(&r, HOST)
+            };
+            let c = &run(&o).unwrap().cells[6];
+            assert_eq!(c.status, Status::Open, "{name}: {}", c.evidence);
+            assert!(c.evidence.contains(want), "{name}: {}", c.evidence);
         }
     }
 

@@ -28,10 +28,12 @@
 // TS reading (V12-D5): ep9's process wall time of octane-typescript per paired round, gross and
 // net (minus ep9's empty-script time in the same round), median and the order-statistic interval
 // (n = 10: ranks 2 and 9, 97.9%), and the paired ratios to node --jitless and QuickJS (on every
-// host both must have a value and not be void, else no gate verdict). The rule
+// host both must have a valid net ratio, not a gross fallback, and not be void, else no gate
+// verdict). The rule
 // depends on the host: on m5max-macos the upper end of the gross interval must be <= 2.8 s
 // ("fail" when its low end is above 2.8 s); on a Linux x64 host the net ratio to node --jitless
-// must be >= 1.0 (the interval rule); on any other host there is no TS rule (no gate verdict).
+// must be >= 1.0 (the interval rule); on any other host there is no TS rule (no gate verdict,
+// but the status is "valid" when the measurement is: the Windows x64 ratio to Linux x64 reads it).
 // `value` is the gross median in seconds.
 //
 // Exit status: 0 every reading of both builds passes; 1 not; 2 usage error.
@@ -150,15 +152,19 @@ export function tsReading(res, build) {
   const vsQjs = ratio("qjs");
   // V12-D5: both comparators are part of the reading on every host (class M; the paired ratio
   // to node --jitless is always reported), so a missing or void ratio gives no gate verdict
-  // (M7-P0 Codex r1 GATES10-2).
+  // (M7-P0 Codex r1 GATES10-2). Gates read net ratios only: a gross fallback (net time <= 0 in
+  // a round) gives no gate verdict, and the row status must be "valid", as in exit2.mjs
+  // reading() (M7-P0 Codex r2 C2-1).
   for (const [name, r] of [["node-jitless", vsNode], ["qjs", vsQjs]]) {
-    const v = r?.net ?? r?.gross;
+    const v = r?.net;
     if (!r) reasons.push(`no ${name} row`);
-    else if (!v || !Number.isFinite(v.median)) reasons.push(`the ratio to ${name} has no value`);
+    else if (!v || !Number.isFinite(v.median)) reasons.push(`the net ratio to ${name} is invalid (${(r.status ?? []).join(", ") || "no status"})`);
     else if (v.void) reasons.push(`ratios to ${name} void (IQR ${v.iqrPct.toFixed(1)}% > 5%)`);
+    else if (!res.provisional && !(r.status?.length === 1 && r.status[0] === "valid")) reasons.push(`the ${name} row is not valid: ${(r.status ?? ["no status"]).join(", ")}`);
   }
   let rule = null;
   let side = null;
+  let noRule = null;
   if (res.host?.id === TS.macHost) {
     rule = `${TS.macHost}: the upper end of the 97.9% interval of the median gross ep9 time <= ${TS.maxSeconds} s`;
     if (gross.void) reasons.push(`gross times void (IQR ${gross.iqrPct.toFixed(1)}% > 5%)`);
@@ -166,18 +172,22 @@ export function tsReading(res, build) {
     side = !gross.interval ? null : gross.interval[1] <= TS.maxSeconds ? "pass" : gross.interval[0] > TS.maxSeconds ? "fail" : "marginal";
   } else if (res.host?.measured?.platform === TS.linuxPlatform) {
     rule = `${TS.linuxPlatform}: the net ratio to node --jitless >= ${TS.minRatio} (the whole interval)`;
-    const v = vsNode?.net;
-    // A missing row or a void ratio already has its reason (above).
-    if (vsNode && !v) reasons.push("the net ratio to node --jitless is invalid");
-    side = gateSide(v?.interval, TS.minRatio);
+    // A missing row, an invalid net ratio or a void ratio already has its reason (above).
+    side = gateSide(vsNode?.net?.interval, TS.minRatio);
   } else {
-    reasons.push(`no TS rule for host ${res.host?.id ?? "(no host file)"} (${res.host?.measured?.platform ?? "?"}): V12-D5 names m5max-macos and Linux x64`);
+    // No TS threshold on this host (V12-D5): no gate verdict, but the measurement can still be
+    // valid, so that the Windows x64 ratio to Linux x64 (09:66) can read it (M7-P0 Codex r2
+    // C2-3). "valid" here means: the gross times are not void and have an interval.
+    noRule = `no TS rule for host ${res.host?.id ?? "(no host file)"} (${res.host?.measured?.platform ?? "?"}): V12-D5 names m5max-macos and Linux x64`;
+    rule = noRule;
+    if (gross.void) reasons.push(`gross times void (IQR ${gross.iqrPct.toFixed(1)}% > 5%)`);
+    if (!gross.interval) reasons.push(`no interval (n = ${gross.n})`);
   }
   const iv = (v) => v && { median: v.median, interval: v.interval, iqrPct: v.iqrPct, void: v.void, n: v.n };
   return {
     ...out,
     status: reasons.length ? "provisional" : "valid",
-    gate: reasons.length ? `no gate verdict (the interval reads ${side ?? "nothing"})` : side,
+    gate: reasons.length ? `no gate verdict (the interval reads ${side ?? "nothing"})` : noRule ? `no gate verdict (${noRule})` : side,
     reasons,
     rule,
     value: gross.median,

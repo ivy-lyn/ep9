@@ -251,13 +251,15 @@ cargo xtask m2-exit --host aarch64-apple-darwin --gate m2gate.json --mem mem.jso
   interval rule, and `ts`: the median gross ep9 time with its interval, the net time, and the
   paired ratios to node `--jitless` and QuickJS. On m5max-macos `ts` passes when the upper end of
   the gross interval is <= 2.8 s; on Linux x64 at >= 1.0x node `--jitless`; on another host it
-  has no rule. `pass` needs every reading of both builds (V12-D6). Exit 0 pass; 1 not; 2 usage.
+  has no rule (no gate verdict, but the status is `valid` when the measurement is). `ts` needs a
+  valid net ratio to both comparators. `pass` needs every reading of both builds (V12-D6). Exit
+  0 pass; 1 not; 2 usage.
 - **cargo xtask m2-exit** (`tools/xtask/src/m2_exit.rs`) gives one column per host: items 1-10
   and a D11 row. The speed cells read m2gate.json (both builds), check the host platform, the
   build line and that the commit is fresh. A Linux x64 speed cell reads "marginal (no gate host)"
   without a gate host; a Windows x64 speed cell gives the ratio to the Linux x64 run
-  (`--linux-gate`) and reads "marginal (no gate host)" until a dual-boot or identical gate host
-  exists. Item 4 reads mem.json (ep9-mem/v1), item 5 the test262 exec JSON by directory (G1 file
+  (`--linux-gate`; each reading on both hosts must have the status `valid`) and reads "marginal
+  (no gate host)" until a dual-boot or identical gate host exists. Item 4 reads mem.json (ep9-mem/v1), item 5 the test262 exec JSON by directory (G1 file
   rule) and the FASTDIFF JSON (ep9-fastdiff/v1; a fast path with 0 cases is OPEN), item 7 the
   JetStream run, item 8 the ep9-fuzz/v1 records (Fuzzilli >= 500 counted CPU-h, 0 open crashes),
   item 9 the P-gate file. The module doc lists the fields each input needs; the fixtures are in
@@ -266,7 +268,8 @@ cargo xtask m2-exit --host aarch64-apple-darwin --gate m2gate.json --mem mem.jso
   current dir unless `--root` is given, so one xtask build serves two worktrees.
 - **mem.mjs** and **jetstream/run.mjs** (BENCH10): the usage is in the header comment of each
   file. mem.mjs writes ep9-mem/v1 (engine `ep9` is the jit preset build, `ep9-jitless` the
-  jitless build); run.mjs writes the `ep9` block (`commit`, `dirty`) that item 7 reads.
+  jitless build); run.mjs writes the `ep9` block (`commit`, `dirty`) and the `kind` and
+  `version` of each config that item 7 reads (an ep9 config is one of kind `ep9`).
 - Tests: `node --test tools/bench/cross/m2gate.test.mjs` (also loaded by `run.test.mjs`); the
   m2-exit fixtures `gate-*.json` are its output (`EP9_BLESS=1` writes them again);
   `cargo test --locked -p xtask` (m2-exit and the two-worktree test `tests/root_default.rs`).

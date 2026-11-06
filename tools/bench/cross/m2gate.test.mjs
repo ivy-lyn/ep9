@@ -25,6 +25,8 @@ const SHA = "0123456789abcdef0123456789abcdef01234567";
 const COMPARATORS = ["qjs", "node-jitless"];
 const BUILD_LINE = { jit: "features jit; preset jit", jitless: "features none; preset jitless" };
 const MAC = { id: "m5max-macos", gate_host: true, cpu: "Apple M5 Max", platform: "darwin-arm64" };
+const WIN_GATE = { id: "win-gate", gate_host: true, cpu: "AMD EPYC 7763", platform: "win32-x64" };
+const LIN_GATE = { id: "lin-gate", gate_host: true, cpu: "AMD EPYC 7763", platform: "linux-x64" };
 
 /**
  * A synthetic m2 run: ep9 takes `ms` per workload (TS: `tsMs`), each comparator takes `ratio(w, c)`
@@ -176,8 +178,32 @@ test("m2gate: TS on Linux x64 needs >= 1.0x node --jitless; another host has no 
   assert.equal(tsReading(fakeRun({ host: linux, tsMs: 9000, ratio: () => 1.1 }), "jit").gate, "pass");
   assert.equal(tsReading(fakeRun({ host: linux, tsMs: 1000, ratio: () => 0.9 }), "jit").gate, "fail");
   const other = tsReading(fakeRun({ host: { id: "other", gate_host: true, cpu: "x", platform: "linux-arm64" } }), "jit");
-  assert.match(other.gate, /^no gate verdict/);
-  assert.match(other.reasons.join(), /no TS rule for host other/);
+  assert.match(other.gate, /^no gate verdict \(no TS rule for host other/);
+  assert.match(other.rule, /^no TS rule for host other/);
+});
+
+// M7-P0 Codex r2 C2-3: on a host with no TS rule (Windows x64), a valid measurement keeps the
+// status "valid" (the Windows ratio to Linux x64 reads it), with no gate verdict; a void gross
+// time or a provisional run still is not valid.
+test("m2gate: a Windows TS reading is valid with no gate verdict (M7-P0 Codex r2 C2-3)", () => {
+  const WIN = { id: "win-gate", gate_host: true, cpu: "AMD EPYC 7763", platform: "win32-x64" };
+  const g = readM2Gate(runs(fakeRun({ build: "jit", host: WIN }), fakeRun({ build: "jitless", host: WIN })));
+  for (const b of ["jit", "jitless"]) {
+    const ts = byId(g, "ts", b);
+    assert.equal(ts.status, "valid", `${b}: ${ts.reasons.join("; ")}`);
+    assert.notEqual(ts.gate, "pass", b);
+    assert.match(ts.gate, /^no gate verdict \(no TS rule for host win-gate \(win32-x64\)/, b);
+    assert.deepEqual(ts.reasons, [], b);
+  }
+  assert.equal(g.pass, false);
+  // A provisional run, no gate host, or void gross times: not valid.
+  assert.equal(tsReading(fakeRun({ host: WIN, provisional: true }), "jit").status, "provisional");
+  assert.match(tsReading(fakeRun({ host: { ...WIN, gate_host: false } }), "jit").reasons.join(), /not a gate host/);
+  const noisy = fakeRun({ host: WIN });
+  for (const x of noisy.M.samples) if (x.workload === TS_WORKLOAD && x.engine === "ep9" && x.round % 2) x.ms *= 1.5;
+  const r = tsReading(noisy, "jit");
+  assert.equal(r.status, "provisional");
+  assert.match(r.reasons.join(), /gross times void/);
 });
 
 test("m2gate: no gate verdict for a provisional run or too few rounds; a missing TS workload is incomplete", () => {
@@ -221,6 +247,43 @@ test("m2gate: TS needs both comparator readings and no void ratio (M7-P0 Codex r
   assert.equal(g.pass, false);
 });
 
+// M7-P0 Codex r2 C2-1: a comparator whose TS net time is <= 0 in a round gets a gross fallback
+// row (status "net invalid", metric "gross"). That row read pass on m5max-macos and, for
+// QuickJS, on Linux x64. The TS reading needs a valid net ratio to both comparators.
+test("m2gate: TS needs valid net ratios to both comparators (M7-P0 Codex r2 C2-1)", () => {
+  const LINUX = { id: "linux-gate", gate_host: true, cpu: "AMD EPYC 7763", platform: "linux-x64" };
+  const netInvalid = (res, engines) => {
+    // In counted round 3, the comparator's TS time (5 ms) is below its empty-script time (10 ms).
+    for (const x of res.M.samples) if (x.workload === TS_WORKLOAD && engines.includes(x.engine) && x.round === 3) x.ms = 5;
+    Object.assign(res.M, label(analyze(res.M.samples, { subject: "ep9", comparators: COMPARATORS, workloads: SETS.m2, warmup: 1 }), false));
+    return res;
+  };
+  for (const [name, engines, host] of [
+    ["mac, qjs net invalid", ["qjs"], MAC],
+    ["mac, both net invalid", ["qjs", "node-jitless"], MAC],
+    ["linux, qjs net invalid", ["qjs"], LINUX],
+  ]) {
+    const mk = (build) => netInvalid(fakeRun({ build, host }), engines);
+    const g = readM2Gate(runs(mk("jit"), mk("jitless")));
+    for (const b of ["jit", "jitless"]) {
+      const ts = byId(g, "ts", b);
+      assert.equal(ts.vs_qjs.metric, "gross", `${name} ${b}`);
+      assert.equal(ts.status, "provisional", `${name} ${b}`);
+      assert.notEqual(ts.gate, "pass", `${name} ${b}`);
+      assert.match(ts.gate, /^no gate verdict/, `${name} ${b}`);
+      for (const e of engines) assert.match(ts.reasons.join("; "), new RegExp(`the net ratio to ${e} is invalid \\(net invalid`), `${name} ${b} ${e}`);
+    }
+    assert.equal(g.pass, false, name);
+  }
+  // A row that is not "valid" for another reason (a hand-edited status) in a run that is not
+  // provisional: no gate verdict.
+  const odd = fakeRun();
+  odd.M.ratios.find((x) => x.workload === TS_WORKLOAD && x.comparator === "qjs").status = ["void (IQR 9.0% > 5%)", "provisional"];
+  const r = tsReading(odd, "jit");
+  assert.match(r.gate, /^no gate verdict/);
+  assert.match(r.reasons.join(), /the qjs row is not valid: void/);
+});
+
 test("m2gate: usage errors: another build, the same build twice, two hosts, not a cross run", () => {
   const odd = fakeRun();
   odd.engines[0].engine_build = "features none; preset jit";
@@ -262,6 +325,11 @@ test("m2gate: the m2-exit fixtures are this reader's output", () => {
     ["gate-mixed.json", runs(fakeRun({ build: "jit" }), fakeRun({ build: "jitless", tsMs: 2800, ratio: (w, c) => (c === "qjs" ? 1.2 : w === "raytrace" ? 0.7 : 1.2) }))],
     // Linux x64, not a gate host (the readings have no gate verdict).
     ["gate-linux.json", runs(fakeRun({ build: "jit", host: linux }), fakeRun({ build: "jitless", host: linux }))],
+    // The Windows x64 ratio (M7-P0 Codex r2 C2-3): a Windows gate host and a Linux x64 gate host
+    // with one CPU model. The TS readings on Windows have no TS rule but are valid; Octane-7 at
+    // 1.33x QuickJS is marginal (valid) in the Windows jitless run and in the Linux jit run.
+    ["gate-win.json", runs(fakeRun({ build: "jit", host: WIN_GATE }), fakeRun({ build: "jitless", host: WIN_GATE, ratio: (w, c) => (c === "qjs" ? 1.33 : 1.4) }))],
+    ["gate-win-linux.json", runs(fakeRun({ build: "jit", host: LIN_GATE, ratio: (w, c) => (c === "qjs" ? 1.33 : 1.4) }), fakeRun({ build: "jitless", host: LIN_GATE }))],
   ];
   for (const [name, input] of cases) {
     const text = `${JSON.stringify(readM2Gate(input), null, 1)}\n`;

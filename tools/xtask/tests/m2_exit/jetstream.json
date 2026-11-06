@@ -7,8 +7,8 @@
  "reps": 3,
  "ep9": { "commit": "0123456789abcdef0123456789abcdef01234567", "dirty": false },
  "configs": [
-  { "name": "jitless", "engine": "node", "flags": ["--jitless"], "cliFlags": ["--no-prefetch"] },
-  { "name": "ep9", "engine": "ep9", "flags": [], "cliFlags": ["--no-prefetch"] }
+  { "name": "jitless", "engine": "node", "flags": ["--jitless"], "cliFlags": ["--no-prefetch"], "hostFlags": [], "kind": "node", "version": "v24.22.0" },
+  { "name": "ep9", "engine": "ep9@target/release/ep9", "flags": [], "cliFlags": [], "hostFlags": [], "kind": "ep9", "version": "ep9 0.0.0; features jit; preset jit" }
  ],
  "complete": true,
  "missing": [],
