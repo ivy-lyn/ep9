@@ -491,6 +491,7 @@ embed (not core): pub const NATIVE_WORD_OFFSET: u64
 embed (not core): pub const NO_CODE: u8
 embed (not core): pub const OBJECT_FIELDS: u32
 embed (not core): pub const OBJECT_LAYOUT_VERSION: u32
+embed (not core): pub const OBJECT_SLOTS: u32
 embed (not core): pub const POLY_CASES: u32
 embed (not core): pub const POLY_CASE_SIZE: u32
 embed (not core): pub const POLY_COUNT: u32
@@ -516,8 +517,10 @@ embed (not core): pub const SHAPE_CAGE_ALIGN: u64
 embed (not core): pub const SHAPE_COUNTS: u32
 embed (not core): pub const SHAPE_ELEMENTS_KIND_SHIFT: u32
 embed (not core): pub const SHAPE_ID_BYTE: u32
+embed (not core): pub const SLOTS_DATA: u32
 embed (not core): pub const SMI_ARRAY_LENGTH: i32
 embed (not core): pub const SMI_FIELD_IN_OBJECT: i32
+embed (not core): pub const SMI_FIELD_OUT_OF_LINE: i32
 embed (not core): pub const SMI_KIND_MASK: i32
 embed (not core): pub const SMI_SHIFT: u32
 embed (not core): pub const THREADED_HANDLERS: usize
