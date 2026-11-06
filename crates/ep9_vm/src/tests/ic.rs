@@ -22,13 +22,13 @@ use ep9_heap::GlobalHandle;
 use super::{Asm, config, isolate, meta, on_big_stack, print, unit};
 use crate::atoms;
 use crate::feedback;
-use crate::frame::{NULL, UNDEFINED, int32_bits, int32_of};
+use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, KEY_STRING, State, hk, smi};
 use crate::object::{self, attr};
 use crate::property;
 use crate::props;
 use crate::realm;
-use crate::runtime::{Runtime, val};
+use crate::runtime::{Root, Runtime, val};
 use crate::shape;
 use crate::string;
 use crate::validity;
@@ -1088,6 +1088,147 @@ fn a_global_store_miss_checks_the_entry_and_computes_the_case_once() {
         // A miss on the recorded SLOW case: one entry check, no case, the generic store.
         assert_eq!(store_miss_work(&mut t, 0, int(7)), (3, 1));
         assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(5));
+    });
+}
+
+// ---- M7-P2 GLOBALS: what makes a global case miss, and the hole --------------------------------
+
+/// The load hit path itself (`ic::load_global`) at the site of `f<i>`.
+fn load_hit(t: &T, i: usize) -> Option<u64> {
+    let units = t.rt().units.borrow();
+    ic::load_global(&t.iso.cx, &units.last().unwrap().infos[i + 1], SLOT)
+}
+
+/// The store hit path itself (`ic::store_global`) at the `StaGlobal` site of `f<i>`.
+fn store_hit(t: &T, i: usize, v: u64) -> bool {
+    let units = t.rt().units.borrow();
+    ic::store_global(&t.iso.cx, &units.last().unwrap().infos[i + 1], SLOT, v)
+}
+
+#[test]
+fn a_global_case_follows_a_redefine() {
+    each(|c| {
+        let sites = [Site::Global("icD"), Site::StoreGlobal("icD")];
+        let mut t = T::new(c, &sites);
+        let g = t.rt().global();
+        let k = key(t.rt(), "icD");
+        props::own_define(t.rt(), g, k, int(5), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(5));
+        t.ok(1, int(6), UNDEFINED);
+        let gs = shape::shape_of(g);
+        assert_eq!((t.kind(0, gs), t.kind(1, gs)), (Some(GLOBAL), Some(GLOBAL)));
+        // A new value with the same attributes (DefinePropertyOrThrow {value}): the shape
+        // stays, and the hit reads the new value.
+        props::own_define(t.rt(), g, k, int(7), attr::DEFAULT);
+        assert_eq!(shape::shape_of(g), gs);
+        assert_eq!(load_hit(&t, 0), Some(int(7)));
+        // New attributes (read-only): a new shape, so both cases miss. The sloppy store then
+        // has no effect, and the load gives the value.
+        props::own_define(t.rt(), g, k, int(8), attr::DEFAULT & !attr::WRITABLE);
+        assert_ne!(shape::shape_of(g), gs);
+        assert_eq!(load_hit(&t, 0), None);
+        assert!(!store_hit(&t, 1, int(9)));
+        t.ok(1, int(9), UNDEFINED);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(8));
+        assert_eq!(
+            props::own_get(g, k),
+            Some((int(8), attr::DEFAULT & !attr::WRITABLE))
+        );
+    });
+}
+
+#[test]
+fn a_global_case_misses_after_a_delete_of_an_older_property() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Global("icA"), Site::Global("icB")]);
+        let g = t.rt().global();
+        let (ka, kb) = (key(t.rt(), "icA"), key(t.rt(), "icB"));
+        props::own_define(t.rt(), g, ka, int(1), attr::DEFAULT);
+        props::own_define(t.rt(), g, kb, int(2), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(1));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(2));
+        let gs = shape::shape_of(g);
+        assert_eq!((t.kind(0, gs), t.kind(1, gs)), (Some(GLOBAL), Some(GLOBAL)));
+        // `icA` is not the last property: the delete moves the global object to dictionary
+        // mode (OM-10). Both cases miss; the generic path then records SLOW.
+        assert!(property::delete(&mut t.iso.cx, g, ka, false).unwrap());
+        let ds = shape::shape_of(g);
+        assert!(shape::is_dictionary(ds));
+        assert_eq!(load_hit(&t, 1), None);
+        t.throws(0, UNDEFINED, UNDEFINED, "ReferenceError");
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(2));
+        assert_eq!(t.kind(1, ds), Some(smi::SLOW));
+    });
+}
+
+#[test]
+fn a_let_that_shadows_a_global_makes_its_global_cases_miss() {
+    each(|c| {
+        let sites = [
+            Site::Global("icL"),
+            Site::StoreGlobal("icL"),
+            Site::GlobalTypeof("icL"),
+        ];
+        let mut t = T::new(c, &sites);
+        let g = t.rt().global();
+        let k = key(t.rt(), "icL");
+        props::own_define(t.rt(), g, k, int(5), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(5));
+        t.ok(1, int(6), UNDEFINED);
+        assert_eq!(t.ok(2, UNDEFINED, UNDEFINED), int(6));
+        let gs = shape::shape_of(g);
+        for i in 0..3 {
+            assert_eq!(t.kind(i, gs), Some(GLOBAL));
+        }
+        // A later script's `let icL` (DeclareGlobals, `realm::declare_globals`): the binding
+        // in its TDZ (the hole). The global object keeps its shape; the record does not.
+        let lex = t.rt().root(Root::Lexical);
+        let ls = shape::shape_of(lex);
+        props::own_define(t.rt(), lex, k, HOLE, attr::WRITABLE);
+        assert_eq!(shape::shape_of(g), gs);
+        assert_ne!(shape::shape_of(lex), ls);
+        assert_eq!((load_hit(&t, 0), load_hit(&t, 2)), (None, None));
+        assert!(!store_hit(&t, 1, int(0)));
+        t.throws(0, UNDEFINED, UNDEFINED, "ReferenceError");
+        t.throws(1, int(7), UNDEFINED, "ReferenceError");
+        t.throws(2, UNDEFINED, UNDEFINED, "ReferenceError");
+        // Its initialization: the binding answers; the global property keeps its value.
+        assert!(props::own_replace(t.rt(), lex, k, int(10)));
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(10));
+        t.ok(1, int(11), UNDEFINED);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(11));
+        assert_eq!(t.ok(2, UNDEFINED, UNDEFINED), int(11));
+        assert_eq!(load_hit(&t, 0), Some(int(11)));
+        assert_eq!(props::own_get(g, k), Some((int(6), attr::DEFAULT)));
+        assert_eq!(props::own_get(lex, k), Some((int(11), attr::WRITABLE)));
+    });
+}
+
+/// The hole in a global property's field is the reserved value of a lazy namespace key that
+/// is not installed yet (INTL-I1-D8). The value store keeps the shape, so the case stays, but
+/// the hit paths miss: a load never gives the hole, a store never writes over it.
+#[test]
+fn the_global_hit_paths_never_give_or_overwrite_the_hole() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Global("icH"), Site::StoreGlobal("icH")]);
+        let g = t.rt().global();
+        let k = key(t.rt(), "icH");
+        props::own_define(t.rt(), g, k, int(5), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(5));
+        t.ok(1, int(6), UNDEFINED);
+        let gs = shape::shape_of(g);
+        assert_eq!(load_hit(&t, 0), Some(int(6)));
+        props::own_define(t.rt(), g, k, HOLE, attr::DEFAULT);
+        assert_eq!(shape::shape_of(g), gs);
+        assert_eq!((t.kind(0, gs), t.kind(1, gs)), (Some(GLOBAL), Some(GLOBAL)));
+        assert_eq!(load_hit(&t, 0), None);
+        assert!(!store_hit(&t, 1, int(7)));
+        assert_eq!(props::own_get(g, k), Some((HOLE, attr::DEFAULT)));
+        // Any other value: the cases hit again.
+        props::own_define(t.rt(), g, k, int(8), attr::DEFAULT);
+        assert_eq!(load_hit(&t, 0), Some(int(8)));
+        assert!(store_hit(&t, 1, int(9)));
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(9));
     });
 }
 
