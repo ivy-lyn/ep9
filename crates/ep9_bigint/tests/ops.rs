@@ -250,10 +250,26 @@ fn to_string_radixes() {
         let back = parse_digits(&s.as_bytes()[1..], r, true).unwrap().unwrap();
         assert_eq!(back, x, "radix {r}");
     }
-    // The bound is tight enough: radix 2 of a 1000-bit value.
+    // The bound is exact for a power-of-2 radix (MC-SPEC-BIGPOLL: it was 1 over for radix 2),
+    // and at most 1 over for another radix.
     let p = pow2(999);
-    assert_eq!(b::string_len_bound(p.view(), 2), 1001);
+    assert_eq!(b::string_len_bound(p.view(), 2), 1000);
     assert_eq!(to_string_radix(p.view(), 2).len(), 1000);
+    for bits in [1u64, 2, 3, 4, 5, 63, 64, 65, 999, 1000, 4096, 4097] {
+        let x = b::sub(pow2(bits).view(), big(1).view()).unwrap(); // `bits` one bits
+        let y = pow2(bits - 1); // `bits` bits, one 1
+        for r in 2..=36u32 {
+            for v in [&x, &y, &b::neg(x.view())] {
+                let len = to_string_radix(v.view(), r).len() as u64;
+                let bound = b::string_len_bound(v.view(), r);
+                if r.is_power_of_two() {
+                    assert_eq!(bound, len, "radix {r}, {bits} bits");
+                } else {
+                    assert!(len <= bound && bound <= len + 1, "radix {r}, {bits} bits");
+                }
+            }
+        }
+    }
 }
 
 #[test]

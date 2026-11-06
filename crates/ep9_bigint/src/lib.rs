@@ -788,11 +788,20 @@ const DIGITS_PER_BIT: [u64; 35] = [
 
 /// An upper bound of the length of [`to_string_radix`] (the sign included), computed from the
 /// bit length only, so a caller can refuse a string above its length limit before the work.
+/// Exact for a power-of-2 radix (2, 4, 8, 16, 32): `ceil(bits / log2(radix))` digits. For
+/// another radix it can be 1 over.
 pub fn string_len_bound(a: View, radix: u32) -> u64 {
     debug_assert!((2..=36).contains(&radix));
+    let sign = u64::from(a.neg);
+    if a.is_zero() {
+        return 1;
+    }
+    if radix.is_power_of_two() {
+        return a.bit_len().div_ceil(u64::from(radix.trailing_zeros())) + sign;
+    }
     let k = DIGITS_PER_BIT[radix as usize - 2];
     // A value below 2^bits has at most ceil(bits / log2(radix)) digits.
-    ((a.bit_len() * k) >> 32) + 1 + u64::from(a.neg)
+    ((a.bit_len() * k) >> 32) + 1 + sign
 }
 
 /// The largest value (in digits) that [`to_string_radix`] converts in one dashu call when the

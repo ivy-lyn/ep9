@@ -216,7 +216,7 @@ pub(crate) fn decimal(b: u64) -> String {
 
 /// BigInt::toString(b, radix) as a heap string. RangeError "Invalid string length" when the
 /// text could pass `string::MAX_STRING_LENGTH` (checked from the bit length, before the
-/// work). Polls ([`poller`]). GC point.
+/// work; exact for a power-of-2 radix). Polls ([`poller`]). GC point.
 pub(crate) fn to_string(cx: &mut Cx, b: u64, radix: u32) -> Res<u64> {
     let bound = digits::string_len_bound(view(&b), radix);
     if bound > crate::string::MAX_STRING_LENGTH as u64 {
