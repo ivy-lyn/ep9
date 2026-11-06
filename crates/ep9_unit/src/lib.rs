@@ -20,9 +20,11 @@
 
 mod check;
 mod codes;
+pub mod functions;
 mod header;
 mod host;
 mod layout;
+pub mod size;
 
 pub use check::{Outcome, Verdict, check, verdict};
 pub use codes::{Contract, SectionKind, Versions, cpu, target_abi, target_arch};

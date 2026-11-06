@@ -246,6 +246,7 @@ version = "0.0.0"
 dependencies = [
  "ep9_bytecode",
  "ep9_facts",
+ "ep9_frontend",
  "ep9_heap",
  "ep9_value",
  "ep9_vm",
