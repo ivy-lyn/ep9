@@ -2,7 +2,7 @@
 //! (one build, as with one target dir shared by two worktrees) run in two worktrees of one
 //! scratch repository reads the tree of the current dir, not the tree it was built from.
 //!
-//! adr-lint and m1-exit default to the git top dir of the current dir; m0-exit (no
+//! adr-lint, m1-exit and m2-exit default to the git top dir of the current dir; m0-exit (no
 //! `--root`) refuses to run in another ep9 tree. The scratch trees are small fixtures (plan
 //! rule 24): no live ADR or expectation file is read.
 
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The exit checks with a `--host` and an `--out` and the git-top-dir default.
-const EXIT_TASKS: [&str; 1] = ["m1-exit"];
+const EXIT_TASKS: [&str; 2] = ["m1-exit", "m2-exit"];
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -108,6 +108,53 @@ fn two_worktrees(name: &str) -> (Scratch, PathBuf, PathBuf, String) {
         &["commit", "-q", "-am", "vm: change b\n\nADR: none (test)"],
     );
     (Scratch(s), a, b, base)
+}
+
+#[test]
+fn m2_exit_reads_the_worktree_of_the_current_dir() {
+    let (s, a, b, _) = two_worktrees("m2");
+    for (wt, sub) in [(&a, ""), (&b, ""), (&a, "crates/ep9_vm")] {
+        let out = s.0.join("out.md");
+        let o = xtask(
+            &wt.join(sub),
+            &[
+                "m2-exit",
+                "--host",
+                "aarch64-apple-darwin",
+                "--out",
+                out.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+        let head = git(wt, &["rev-parse", "HEAD"]);
+        let md = fs::read_to_string(&out).unwrap();
+        assert!(
+            md.contains(&format!("tree at commit `{head}`")),
+            "{} ({sub}): {md}",
+            wt.display()
+        );
+    }
+    // --root still wins over the current dir.
+    let out = s.0.join("out.md");
+    let o = xtask(
+        &a,
+        &[
+            "m2-exit",
+            "--host",
+            "aarch64-apple-darwin",
+            "--out",
+            out.to_str().unwrap(),
+            "--root",
+            b.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+    let head_b = git(&b, &["rev-parse", "HEAD"]);
+    assert!(
+        fs::read_to_string(&out)
+            .unwrap()
+            .contains(&format!("tree at commit `{head_b}`"))
+    );
 }
 
 #[test]

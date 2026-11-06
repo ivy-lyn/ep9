@@ -35,8 +35,8 @@ pub(crate) mod verdict;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The default tree root of the tree readers (adr-lint, m1-exit; plan v12 GATES10 task 4,
-/// PR-15): the git top dir of the current dir. Before this, the default was the tree the
+/// The default tree root of the tree readers (adr-lint, m1-exit, m2-exit; plan v12 GATES10 task
+/// 4, PR-15): the git top dir of the current dir. Before this, the default was the tree the
 /// xtask binary was built from (`CARGO_MANIFEST_DIR`), so with one target dir for two worktrees
 /// a run in one worktree read the other (decisions M6-ORCH-94). The top dir must hold
 /// `tools/xtask/Cargo.toml`: a current dir inside a nested checkout (`third_party/test262`) or

@@ -9,12 +9,14 @@
 //! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |
 //! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host and the Windows CI column, as a table |
 //! | `m1-exit` | `m1_exit.rs` | the 10 M1 exit items per host and the Windows CI column, as a table (M4-P0: the skeleton, every item NOT-RUN) |
+//! | `m2-exit` | `m2_exit.rs` | the 10 M2 exit items and the D11 row for one host, as a table (plan v12 GATES10) |
 //! | `adr-lint` | `adr_lint.rs` | M1 exit item 6: ADR trailers and review records (M4-P0: only `--trailers-only`) |
 //! | `extref-lint` | `extref_lint.rs` | native words in heap cells only through `ExternalRef` (H25-Q2, C-26; M5-P0: the task name only, exits 2) |
 //!
-//! `m0_exit.rs` and `m1_exit.rs` share the input readers and the cell type in `exit/`.
+//! `m0_exit.rs`, `m1_exit.rs` and `m2_exit.rs` share the input readers and the cell type in
+//! `exit/`.
 //!
-//! The tree readers adr-lint and m1-exit read the tree of `--root`, by default the git
+//! The tree readers adr-lint, m1-exit and m2-exit read the tree of `--root`, by default the git
 //! top dir of the current dir (`exit::default_root`; plan v12 PR-15), not the tree the binary was
 //! built from: with one target dir for two worktrees, a binary built in one worktree reads the
 //! worktree it runs in. m0-exit has no `--root` and reads its build tree; it refuses to run when
@@ -32,6 +34,7 @@ mod fpcheck;
 mod gc_lint;
 mod m0_exit;
 mod m1_exit;
+mod m2_exit;
 
 use std::process::ExitCode;
 
@@ -45,6 +48,7 @@ fn main() -> ExitCode {
         "gc-lint" => gc_lint::main(&args[1..]),
         "m0-exit" => m0_guard().and_then(|()| m0_exit::main(&args[1..])),
         "m1-exit" => m1_exit::main(&args[1..]),
+        "m2-exit" => m2_exit::main(&args[1..]),
         "adr-lint" => adr_lint::main(&args[1..]),
         "extref-lint" => extref_lint::main(&args[1..]),
         _ => {
