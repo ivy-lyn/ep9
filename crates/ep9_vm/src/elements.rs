@@ -66,7 +66,7 @@
 //! ([`plain_elements_kind`]), so such a key no longer moves a fast object to dictionary mode
 //! (OM-10). An index key that the elements store cannot hold stays a stored property, as in
 //! v0: an accessor, other attributes (`Object.freeze` moves each element there), an index
-//! [`PLAIN_GAP`] or more past the capacity, or one at or past `object::arr::MAX_LENGTH`.
+//! that [`sparse_growth`] refuses (the gap or the density check), or one at or past `MAX_LENGTH`.
 //! One index key lives in one place: the paths of `property.rs` read the elements first,
 //! then the property storage, and add to the elements only when the storage has no such
 //! key. An int32 key (`o[i] = v`, `property::set_index`, `define_index`) makes the elements
