@@ -18,7 +18,7 @@ use ep9_unit::size::{FunctionStats, Policy, SAMPLE, size};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() || args.len() % 2 != 0 {
+    if args.is_empty() || !args.len().is_multiple_of(2) {
         eprintln!("usage: size_report <file.js> <file.facts> [...]");
         std::process::exit(2);
     }

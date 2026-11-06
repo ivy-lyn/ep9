@@ -152,13 +152,17 @@ mod a64 {
     }
 }
 
+/// One measured form: it runs `n` entries and returns the value that proves they ran.
+#[cfg(target_arch = "aarch64")]
+type Form = fn(&a64::World, u64) -> u64;
+
 #[cfg(target_arch = "aarch64")]
 fn main() {
     use std::time::Instant;
     const N: u64 = 200_000_000;
     const REPS: usize = 7;
     let w = a64::world();
-    let forms: [(&str, fn(&a64::World, u64) -> u64); 4] = [
+    let forms: [(&str, Form); 4] = [
         ("fixed slot, chain", a64::fixed_chain),
         ("slot word, chain", a64::word_chain),
         ("fixed slot, stream", a64::fixed_stream),

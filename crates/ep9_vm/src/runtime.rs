@@ -723,8 +723,8 @@ const APPENDED_ATOM_SLOTS: [usize; Atom::ALL.len() - A2_ATOM_COUNT] = {
     out
 };
 
-// Every appended item names a root or an atom that exists, once; the realm roots of A2 start
-// are the roots before `RealmKey`.
+// Each appended item names a new root or atom, once (the root range is empty until one is).
+#[allow(clippy::impossible_comparisons)]
 const _: () = {
     assert!(ROOT_SLOTS == SLOT_MAP.appended_base() && TABLE_SLOTS == SLOT_MAP.len());
     assert!(A2_REALM_ROOT_COUNT == REALM_ROOT_COUNT && A2_ROOT_COUNT <= ROOT_COUNT);
