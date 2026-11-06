@@ -67,8 +67,8 @@ pub(crate) fn root_of(dir: &Path) -> Result<PathBuf, String> {
     Ok(top)
 }
 
-/// The tree this xtask binary was built from (`CARGO_MANIFEST_DIR/../..`). m0-exit still reads
-/// it (it has no `--root`); `main` refuses an m0-exit run whose current tree is another one.
+/// The tree this xtask binary was built from (`CARGO_MANIFEST_DIR/../..`). Only `m0-exit
+/// --gc-shard` reads it, and only outside a git work tree (a CI shard step).
 pub(crate) fn build_root() -> PathBuf {
     let r = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     std::fs::canonicalize(&r).unwrap_or(r)

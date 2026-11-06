@@ -259,9 +259,8 @@ cargo xtask m2-exit --host aarch64-apple-darwin --gate m2gate.json --mem mem.jso
   JetStream run, item 8 the ep9-fuzz/v1 records (Fuzzilli >= 500 counted CPU-h, 0 open crashes),
   item 9 the P-gate file. The module doc lists the fields each input needs; the fixtures are in
   `tools/xtask/tests/m2_exit/`. Read the cell lines and the Evidence lines, not the exit code.
-- The tree readers (`adr-lint`, `m1-exit`, `m2-exit`) read the git top dir of the current dir
-  unless `--root` is given, so one xtask build serves two worktrees; `m0-exit` refuses to run in
-  another ep9 tree.
+- The tree readers (`adr-lint`, `m0-exit`, `m1-exit`, `m2-exit`) read the git top dir of the
+  current dir unless `--root` is given, so one xtask build serves two worktrees.
 - **mem.mjs** and **jetstream/run.mjs** (BENCH10): the usage is in the header comment of each
   file. mem.mjs writes ep9-mem/v1 (engine `ep9` is the jit preset build, `ep9-jitless` the
   jitless build); run.mjs writes the `ep9` block (`commit`, `dirty`) that item 7 reads.

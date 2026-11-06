@@ -2,16 +2,15 @@
 //! (one build, as with one target dir shared by two worktrees) run in two worktrees of one
 //! scratch repository reads the tree of the current dir, not the tree it was built from.
 //!
-//! adr-lint, m1-exit and m2-exit default to the git top dir of the current dir; m0-exit (no
-//! `--root`) refuses to run in another ep9 tree. The scratch trees are small fixtures (plan
-//! rule 24): no live ADR or expectation file is read.
+//! adr-lint, m0-exit, m1-exit and m2-exit default to the git top dir of the current dir. The
+//! scratch trees are small fixtures (plan rule 24): no live ADR or expectation file is read.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The exit checks with a `--host` and an `--out` and the git-top-dir default.
-const EXIT_TASKS: [&str; 2] = ["m1-exit", "m2-exit"];
+const EXIT_TASKS: [&str; 3] = ["m0-exit", "m1-exit", "m2-exit"];
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -235,24 +234,31 @@ fn no_ep9_tree_needs_root() {
 }
 
 #[test]
-fn m0_exit_refuses_another_ep9_tree() {
-    let (s, a, _, _) = two_worktrees("m0");
-    let out = s.0.join("m0.md");
-    let o = xtask(
-        &a,
-        &[
-            "m0-exit",
-            "--host",
-            "aarch64-apple-darwin",
-            "--out",
-            out.to_str().unwrap(),
-        ],
-    );
-    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
-    assert!(
-        text(&o).contains("m0-exit reads its build tree"),
-        "{}",
-        text(&o)
-    );
-    assert!(!out.exists());
+fn m0_exit_reads_the_worktree_of_the_current_dir() {
+    let (s, a, b, _) = two_worktrees("m0");
+    for (wt, sub) in [(&a, ""), (&b, ""), (&a, "crates/ep9_vm")] {
+        let out = s.0.join("m0.md");
+        let o = xtask(
+            &wt.join(sub),
+            &[
+                "m0-exit",
+                "--host",
+                "aarch64-apple-darwin",
+                "--out",
+                out.to_str().unwrap(),
+                "--no-build-check",
+            ],
+        );
+        // The scratch tree has no ADR index, so m0-exit stops at its first read: a file of the
+        // worktree of the current dir (the git top dir as git prints it), not of the build tree.
+        let top = git(wt, &["rev-parse", "--show-toplevel"]);
+        assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+        assert!(
+            text(&o).contains(&format!("cannot read {top}")),
+            "{}",
+            text(&o)
+        );
+        assert!(text(&o).contains("README.md"), "{}", text(&o));
+        assert!(!out.exists());
+    }
 }
