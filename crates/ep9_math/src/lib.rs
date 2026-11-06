@@ -12,7 +12,8 @@
 //! | [`sinh()`], [`cosh()`], [`tanh()`], [`asinh()`], [`acosh()`], [`atanh()`] | `Math.sinh` ... `Math.atanh` | correctly rounded (CORE-MATH ports, M4-P4) |
 //! | [`log2()`], [`log10()`], [`log1p()`], [`expm1()`], [`cbrt()`] | the `Math` functions of the same names | correctly rounded (CORE-MATH ports, M4-P4) |
 //! | [`hypot_js`] | `Math.hypot` | V8 `MathHypot` port: IEEE operations only, the same bits as node (M4-P4) |
-//! | [`round_js`], [`fround`] | `Math.round`, `Math.fround` | exact |
+//! | [`round_js`], [`fround`], [`f16round()`] | `Math.round`, `Math.fround`, `Math.f16round` | exact |
+//! | [`ExactSum`], [`sum_precise`] | `Math.sumPrecise` | exact (the xsum algorithm; V8 port, M7-P0) |
 //! | [`fma_exact`], [`two_prod`], [`two_sum`], [`fma_soft`] | building blocks of the CR functions | exact |
 //!
 //! Rules (H36): every public function is `#[inline(never)]`, so FMA instructions stay inside
@@ -58,6 +59,7 @@ mod sinh;
 mod tan;
 mod tanh;
 mod trig;
+mod xsum;
 
 pub use acos::acos;
 pub use acosh::acosh;
@@ -79,11 +81,12 @@ pub use log1p::log1p;
 pub use log2::log2;
 pub use log10::log10;
 pub use pow::pow_js;
-pub use round::{fround, round_js};
+pub use round::{f16round, fround, round_js};
 pub use sin::sin;
 pub use sinh::sinh;
 pub use tan::tan;
 pub use tanh::tanh;
+pub use xsum::{ExactSum, sum_precise};
 
 /// The value of a C99 hexadecimal floating literal such as `"0x1.62e42fefa39efp-13"`,
 /// `"-0x1p-1074"` or `"0x0p+0"`, at compile time. The CORE-MATH ports write their tables with
