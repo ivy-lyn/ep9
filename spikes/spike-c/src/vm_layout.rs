@@ -26,7 +26,7 @@
 //! | an out-of-line field: the object's SLOTS cell at `OBJECT_SLOTS`, field `k` past the in-object capacity at `SLOTS_DATA + 8k` of it, and its smi handler kind `SMI_FIELD_OUT_OF_LINE` (the named load of SPIKEC-9; proved below on a live object). Spike C hand facts (`HAND_FACTS_M6`) from M6-P1 until M7-P0 (MC-P1-LAYOUTX) | `OBJECT_SLOTS`, `SLOTS_DATA`, `SMI_FIELD_OUT_OF_LINE` | OBJECT_LAYOUT 7 (the first two), IC_LAYOUT 4 (the handler kind) |
 //! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler at `+ POLY_HANDLER` (MC-w16-4); `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_HANDLER`, `POLY_COUNT` | IC_LAYOUT 4 |
 //! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT 1 (C-18) |
-//! | the shared exit's register dump below sp: word n = xn for x0-x30, 16-aligned (a hand fact until M6-P0; the emitter's `deopt_exit`) | `DUMP_BYTES` | DEOPT_META 0 |
+//! | the shared exit's register dump below sp: word n = xn for x0-x30, 16-aligned (a hand fact until M6-P0; the emitter's `deopt_exit`) | `DUMP_BYTES` | DEOPT_META 1 (0 until A2 start) |
 //!
 //! Since M5-P0 the export is `ep9_vm::layout`, in every ep9_vm build (C-18). What is left here
 //! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
@@ -431,15 +431,15 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
 /// MODES-CHECK-w22 MC-w22-11) owns `HOLE`, `NATIVE_WORD_OFFSET` and the [`ENCODING_READS`]
 /// constants, which the emitter and the graph builder bake into code. DEOPT_META (since M6-P0;
 /// MC-w23-9, V11-D12) owns the H29 byte form [`crate::deopt_meta`] writes and the register dump
-/// the shared exit stores (`DUMP_BYTES`): it stays 0 in month 6 and moves to 1 at A2 start, and
-/// the spike moves with it.
+/// the shared exit stores (`DUMP_BYTES`): 0 in month 6, 1 from A2 start (M7-P1, format 1 with no
+/// byte changed); the spike moved with it.
 pub const PINNED: [(&str, u32); 6] = [
     ("OBJECT_LAYOUT", 7),
     ("IC_LAYOUT", 4),
     ("FRAME", 2),
     ("VM_LAYOUT", 1),
     ("Value encoding", 1),
-    ("DEOPT_META", 0),
+    ("DEOPT_META", 1),
 ];
 
 /// The VM's own versions, in [`PINNED`] order (Value encoding is `ep9_value`'s).
@@ -1101,7 +1101,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
             "{}",
             lines[1]
         );
-        assert_eq!(lines[5], "DEOPT_META 0: 1 exported: DUMP_BYTES");
+        assert_eq!(lines[5], "DEOPT_META 1: 1 exported: DUMP_BYTES");
         // No hand fact is left (v11in #2): every line lists exports only.
         assert!(!lines.iter().any(|l| l.contains("hand")), "{lines:?}");
         assert!(
@@ -1186,7 +1186,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
             );
             assert!(READ_SET.contains(&item), "{item:?} in READ_SET");
         }
-        assert_eq!(PINNED[5], ("DEOPT_META", 0));
+        assert_eq!(PINNED[5], ("DEOPT_META", 1));
         assert_eq!(VM_VERSIONS[5], ep9_vm::versions::DEOPT_META_VERSION);
     }
 
