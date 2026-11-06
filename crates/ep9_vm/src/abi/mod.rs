@@ -1719,3 +1719,7 @@ impl<'s> Cx<'s> {
         call::call_with(self.cx, f, this, args.len, |k| args.bits(k), UNDEFINED).map(Self::local)
     }
 }
+
+// M7-P0 CALLHOST (H20 part 2): the forwarded calls of `apply` and `call`, and the human
+// fast-path switch of the FASTDIFF tests.
+mod forward;
