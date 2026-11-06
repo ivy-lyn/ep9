@@ -972,6 +972,7 @@ jobs:
       - run: cargo build --release --locked -p ep9_bench -p ep9_cli
       - name: Count instructions
         id: count
+        env: { EP9_GC_HELPERS: "0" }
         run: >-
           node .github/scripts/perf-ci-v0.mjs --ep9 target/release/ep9 --bench target/release/ep9-bench
           --counter cachegrind --runs 3 --warmup 0 --out perf-ci-v0.json --md "$GITHUB_STEP_SUMMARY"

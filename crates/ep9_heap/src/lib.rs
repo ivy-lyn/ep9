@@ -39,6 +39,7 @@ mod css;
 mod heap;
 pub mod layout;
 mod memory;
+mod parallel;
 mod remembered;
 mod roots;
 mod trace;
