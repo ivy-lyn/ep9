@@ -107,12 +107,14 @@ impl<'s> Cx<'s> {
 }
 
 /// The intrinsic `id` of the REALM record `r` as the ABI gives it: undefined for the
-/// VM-internal `IntrinsicId::RealmFuses` (a FUSE cell, not a value an embedder may hold).
+/// VM-internal `IntrinsicId::RealmFuses` (a FUSE cell, not a value an embedder may hold). An
+/// intrinsic of a lazy group installs its group into `r` first (INTL-I1-D8), so this is a GC
+/// point then.
 fn embedder_intrinsic(rt: &crate::runtime::Runtime, r: u64, id: IntrinsicId) -> u64 {
     if id == IntrinsicId::RealmFuses {
         return crate::frame::UNDEFINED;
     }
-    realm::intrinsic_in(rt, r, id)
+    realm::intrinsic_for_use(rt, r, id)
 }
 
 /// The global object of the REALM record `r`.
