@@ -173,6 +173,12 @@ pub(crate) const fn is_b_or_bl(w: u32) -> bool {
     w & 0x7c00_0000 == 0x1400_0000
 }
 
+/// AArch64 BL.
+#[cfg(feature = "aot")]
+pub(crate) const fn is_bl(w: u32) -> bool {
+    w & 0xfc00_0000 == 0x9400_0000
+}
+
 /// AArch64 B.cond.
 pub(crate) const fn is_b_cond(w: u32) -> bool {
     w & 0xff00_0010 == 0x5400_0000
@@ -196,6 +202,18 @@ const fn is_imm19(w: u32) -> bool {
 /// AArch64 TBZ or TBNZ.
 pub(crate) const fn is_tbz(w: u32) -> bool {
     w & 0x7e00_0000 == 0x3600_0000
+}
+
+/// AArch64 ADR.
+#[cfg(feature = "aot")]
+pub(crate) const fn is_adr(w: u32) -> bool {
+    w & 0x9f00_0000 == 0x1000_0000
+}
+
+/// AArch64 ADRP.
+#[cfg(feature = "aot")]
+pub(crate) const fn is_adrp(w: u32) -> bool {
+    w & 0x9f00_0000 == 0x9000_0000
 }
 
 /// AArch64 LDR or STR of an X register, unsigned offset.
