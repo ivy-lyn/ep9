@@ -2,7 +2,7 @@
 //! that picks the code object a function's dispatch slot caches, from its code set, the
 //! execution policy and the session. A pure function with no caller yet, tested with fake code
 //! objects and no codegen (`tests/select.rs`: the T1-T11 table, the append-only lists, JIT and
-//! hybrid tier-up, PIN). The first caller comes with T1 (MODES-D6).
+//! hybrid tier-up, PIN). The first caller is the A2 unit loader, not the T1 tier (MODES-D6).
 //!
 //! ```text
 //!  select(code set, policy, session) -> Pick       (slot := select(..) after every event)

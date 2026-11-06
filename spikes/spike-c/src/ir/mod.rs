@@ -1035,7 +1035,9 @@ mod tests {
     /// load writes none. And no opcode the builder translates stores into a context or
     /// changes the current context: the day one does, its graph op must answer true in
     /// [`Op::writes_context`], so the loop that holds it keeps its slot loads (this test
-    /// fails first, as a reminder).
+    /// fails first, as a reminder). Since M7-P0 (MC-w27-5a) it pins the two stores that H32:61
+    /// names and the builder does not translate: `StaLookupSlot` (0x1e) and `StaModuleVariable`
+    /// (0x20).
     #[test]
     fn ops_that_may_write_a_context_slot() {
         let ops = [
@@ -1097,6 +1099,21 @@ mod tests {
             assert!(
                 !crate::build::supported(op),
                 "{op:?} is translated now: give its graph op `writes_context` true (MC-w26-8)"
+            );
+        }
+        // MC-w27-5a (the T2 code part of MC-w27-5; H32:61, hoist rule (1)): a lookup-slot store
+        // and a module-variable store may write what a moved load read. The builder translates
+        // neither; the day one of them is translated, its graph op must answer true in
+        // [`Op::writes_context`] too. The pins name each op by its byte (H2 "ABI core").
+        for (op, byte) in [
+            (Opcode::StaLookupSlot, 0x1e),
+            (Opcode::StaModuleVariable, 0x20),
+        ] {
+            assert_eq!(op as u8, byte, "{op:?}");
+            assert_eq!(Opcode::from_u8(byte), Some(op));
+            assert!(
+                !crate::build::supported(op),
+                "{op:?} is translated now: give its graph op `writes_context` true (MC-w27-5a)"
             );
         }
     }

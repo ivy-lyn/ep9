@@ -413,3 +413,16 @@ pub const VALUE_UNDEFINED: u64 = crate::frame::UNDEFINED;
 /// stays 16-aligned (M5-P5-ORCH-8, MODES-CHECK-w22 MC-w22-6). Was a Spike C hand fact until
 /// M6-P0 (v11in #2, MC-w23-9).
 pub const DUMP_BYTES: u32 = (crate::deopt::DUMP_REGS * 8).next_multiple_of(16) as u32;
+
+// ---- out-of-line named fields (M7-P0 AOT0, MC-P1-LAYOUTX) ----
+// Spike C hand facts (`HAND_FACTS_M6`, SPIKEC-9, M6-P1) until M7-P0: `layout.rs` was frozen
+// from M6-P0 to the m6-p5 tag (plan v11 rule 2). Appended at the end, so no line above moves.
+/// OBJECT_LAYOUT. A JS object's out-of-line field store: a SLOTS cell in fast mode, a PROPS cell
+/// in dictionary mode, or undefined (`object::obj::SLOTS`).
+pub const OBJECT_SLOTS: u32 = obj::SLOTS as u32;
+/// OBJECT_LAYOUT. SLOTS cell: out-of-line field `k` (the shape's field number minus its
+/// in-object capacity) is at `SLOTS_DATA + 8k` (`shape::slf::DATA`).
+pub const SLOTS_DATA: u32 = crate::shape::slf::DATA as u32;
+/// IC_LAYOUT. Smi handler kind: an own data field out of line; its byte offset (from bit
+/// [`SMI_SHIFT`]) is into the SLOTS cell at [`OBJECT_SLOTS`] (`ic::smi::FIELD_OUT_OF_LINE`).
+pub const SMI_FIELD_OUT_OF_LINE: i32 = smi::FIELD_OUT_OF_LINE;
