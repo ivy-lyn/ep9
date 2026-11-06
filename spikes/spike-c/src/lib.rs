@@ -35,6 +35,8 @@
 //! | [`vm_layout`] | the VM layout facts the code reads, from the `ep9_vm::layout` export (each with its owning version), proved on live objects | SPIKEC-1; the export SPIKEC-4 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //! | [`diff`](mod@diff) | the tier differential (C3): the gate kernels at n = 1 and a seeded corpus, T0 vs config C byte for byte, every guard forced; no GC-timing compare (a lint) | SPIKEC-7 (M5-P3) |
+//! | [`lazy`] | the short lazy-deopt probe (H29-Q4): the `lazyDeopt()` hook swaps the return address of a compiled call's frame for its lazy exit and walks the frame records before and after | SPIKEC-10 (M6-P2) |
+//! | [`verdict`] | the SCP §8 Verdict rows of a gate run (`spike-c verdict-rows`, `gate.sh verdict`) and their fixtures | SPIKEC-10 (M6-P2) |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
 //!
 //! Rules (protocol §1):
@@ -55,11 +57,13 @@ pub mod facts;
 pub mod harness;
 pub mod ir;
 pub mod kernels;
+pub mod lazy;
 pub mod regalloc;
 pub mod sp_facts;
 pub mod structural;
 pub mod tier;
 pub mod timing;
+pub mod verdict;
 pub mod vm_layout;
 
 use spike_b::emit::{FunctionCode, FunctionInput, Refusal};
@@ -131,7 +135,10 @@ impl CompileReport {
                             if k.store { "set_keyed" } else { "get_keyed" }
                         )
                     } else {
-                        format!("key check {:?}", k.key_basis)
+                        format!(
+                            "key check {:?}, kind guard {:?}, element guard {:?}",
+                            k.key_basis, k.element_bases.0, k.element_bases.1
+                        )
                     },
                 )
             })

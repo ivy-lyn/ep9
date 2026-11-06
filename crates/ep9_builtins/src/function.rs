@@ -2,21 +2,22 @@
 //! `%Function.prototype%` (`IntrinsicId::Function`, `IntrinsicId::FunctionPrototype`).
 //!
 //! `%Function.prototype%` itself and the `Function` constructor (v0: throws) are VM builtins
-//! (block 0). Week 4 (P3-BLTA): `Function.prototype.call`, `apply`, `bind`.
+//! (block 0). Week 4 (P3-BLTA): `Function.prototype.call`, `apply`, `bind`. M6-P2 FN-SMALL:
+//! `toString` gives the source text of a function whose unit embeds its source.
 //!
 //! | Builtin | Template | Pattern |
 //! |---|---|---|
-//! | `call` | 6 | IsCallable(this); forward `args.rest(1)` with `Cx::call_args` (one copy, into the callee frame) |
-//! | `apply` | companion | CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` |
+//! | `call` | 6 | IsCallable(this); forward `args.rest(1)` with `Cx::tail_call_args` (the callee frame takes this host frame's place; no copy, H20-Q3) |
+//! | `apply` | companion | CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` (one copy, into the callee frame; H20-Q3) |
 //! | `bind` | 7 | BoundFunctionCreate (`Cx::new_bound_function`: a BOUND_FUNCTION cell; its `[[Call]]` and `[[Construct]]` are in the VM), then SetFunctionLength and SetFunctionName |
-//! | `toString` | companion | v0: the NativeFunction form for every callable (no `[[SourceText]]` is kept yet), a builtin's named by its `[[InitialName]]` (`Cx::initial_name`); TypeError otherwise |
+//! | `toString` | companion | the source text (`Cx::function_source_text`, a copy of the unit range, the whole `[[SourceText]]`, made on each call) when the unit embeds its source; else the NativeFunction form, a builtin's named by its `[[InitialName]]` (`Cx::initial_name`); TypeError for a value that is not callable |
 //!
 //! Owner of the templates: P3-BLTA (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-function.txt`.
 
 use ep9_vm::{
-    Args, Atom, BuiltinDef, BuiltinModule, Cx, IntrinsicDef, IntrinsicId, JsResult, Local,
-    ObjectProps, PropDef, PropKey,
+    Args, Atom, BuiltinDef, BuiltinModule, Cx, IntrinsicDef, IntrinsicId, JsFunction, JsResult,
+    Local, ObjectProps, PropDef, PropKey,
 };
 
 /// This module's block of builtin ids.
@@ -82,10 +83,11 @@ fn call<'s>(
     if !func.is_callable() {
         return Err(not_callable(cx, "call", func));
     }
-    // 3. Perform PrepareForTailCall() (v0: no tail call; H20-Q3).
-    // 4. Return ? Call(func, thisArg, args). The arguments after thisArg go to the callee
-    //    frame in one copy (`call_args`), never through a heap list.
-    cx.call_args(func, args.get(0), args.rest(1))
+    // 3. Perform PrepareForTailCall() (H20-Q3: `tail_call_args` returns a marker, and the VM
+    //    makes the call after this host frame is gone).
+    // 4. Return ? Call(func, thisArg, args). The arguments after thisArg stay where they are:
+    //    the callee frame takes the place of this one, never through a heap list.
+    cx.tail_call_args(func, args.get(0), args.rest(1))
 }
 
 /// Function.prototype.apply ( thisArg, argArray ) (§20.2.3.1).
@@ -111,7 +113,9 @@ fn apply<'s>(
     // 4. Let argList be ? CreateListFromArrayLike(argArray). It is built on the VM stack
     //    (an ArgsBuilder: precise roots, no heap list).
     let arg_list = cx.create_list_from_array_like(arg_array)?;
-    // 5. Perform PrepareForTailCall().
+    // 5. Perform PrepareForTailCall() (H20-Q3: not here; the list is copied once, into the
+    //    callee frame, as V8 copies it to the stack, and a tail form would only add the
+    //    request to that copy).
     // 6. Return ? Call(func, thisArg, argList).
     cx.call_built(func, this_arg, arg_list)
 }
@@ -194,11 +198,6 @@ fn to_string<'s>(
 ) -> JsResult<Local<'s>> {
     // 1. Let func be the this value.
     let func = this;
-    // 2. If func is an Object, func has a [[SourceText]] internal slot, func.[[SourceText]]
-    //    is a sequence of Unicode code points, and HostHasSourceTextAvailable(func) is true,
-    //    then return CodePointsToString(func.[[SourceText]]).
-    // v0: no function keeps its [[SourceText]] (HostHasSourceTextAvailable is false), so
-    // steps 3-4 give every callable the NativeFunction form.
     // 5. Throw a TypeError exception (moved up: a non-callable reaches no other step).
     let Some(func) = func.as_function() else {
         let what = cx.type_of(func);
@@ -206,6 +205,15 @@ fn to_string<'s>(
             format!("Function.prototype.toString requires that 'this' be a Function ({what})");
         return Err(cx.throw_type_error(&msg));
     };
+    // 2. If func is an Object, func has a [[SourceText]] internal slot, func.[[SourceText]]
+    //    is a sequence of Unicode code points, and HostHasSourceTextAvailable(func) is true,
+    //    then return CodePointsToString(func.[[SourceText]]).
+    // HostHasSourceTextAvailable(func) is true for a bytecode function whose unit embeds its
+    // source (its source range is its whole [[SourceText]]); false for every other one,
+    // which then takes step 4 (the spec lets the host answer per function).
+    if let Some(text) = source_text(cx, func)? {
+        return Ok(text);
+    }
     // 3. If func is a built-in function object, return an implementation-defined String
     //    source code representation of func. The representation must have the syntax of a
     //    NativeFunction. Additionally, if func has an [[InitialName]] internal slot and
@@ -219,7 +227,7 @@ fn to_string<'s>(
         // 4. If func is an Object and IsCallable(func) is true, return an
         //    implementation-defined String source code representation of func. The
         //    representation must have the syntax of a NativeFunction.
-        // v0 name: the own data property `name` (no getter runs) when it is a string of the
+        // The name: the own data property `name` (no getter runs) when it is a string of the
         // NativeFunction syntax: an IdentifierName, or "get " / "set " and one. Else none
         // (a proxy too: it is asked nothing, so no trap runs, as in V8).
         let mut name = String::new();
@@ -242,4 +250,13 @@ fn to_string<'s>(
     // As V8 prints it: `function f() { [native code] }`, `function () { [native code] }`.
     let text = format!("function {name}() {{ [native code] }}");
     Ok(cx.new_string(&text)?.value())
+}
+
+/// Step 2 of `toString`: the source text of `func` (a new String, copied from the unit on
+/// each call), or `None` when it has none: a host, bound or proxy function, or a unit compiled
+/// without its source. ep9_frontend records the whole `[[SourceText]]` as the range of every
+/// function kind (BytecodeGen G12: a method from its key, a class constructor as its class,
+/// the `Function` constructor's function with `anonymous`). Runs no JS.
+fn source_text<'s>(cx: &mut Cx<'s>, func: Local<'s, JsFunction>) -> JsResult<Option<Local<'s>>> {
+    Ok(cx.function_source_text(func)?.map(|text| text.value()))
 }

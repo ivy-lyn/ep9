@@ -1,38 +1,47 @@
 //! JSON (§25.5): module `json`, block 14. Owner: M3-P1 B-JSON. Makes `%JSON%`
 //! (`IntrinsicId::Json`), an ordinary object whose prototype is `%Object.prototype%`, with
-//! `parse` and `stringify` ({w, c}) and `@@toStringTag` "JSON" ({c}), and the global binding
-//! `JSON` {w, c}.
+//! `parse`, `stringify`, `rawJSON` and `isRawJSON` ({w, c}) and `@@toStringTag` "JSON" ({c}),
+//! and the global binding `JSON` {w, c}.
 //!
 //! ```text
 //! JSON.parse(text, reviver)            json/parse.rs
 //!   ToString(text) -> code units -> one loop over the text (no Rust recursion):
 //!     the open arrays and objects and the pending keys are on a ScratchList (precise roots),
 //!     so the nesting depth is bounded by the heap, not by the native stack (as in V8)
-//!   reviver callable -> InternalizeJSONProperty: recursive, Cx::check_native_stack per level
-//!     (and at most MAX_DEPTH levels), Cx::poll_interrupt per property
+//!   reviver callable -> the same loop also makes the JSON Parse Records (json-parse-with-
+//!     source: each value, its source range, its elements or entries), then
+//!     InternalizeJSONProperty: recursive, Cx::check_native_stack per level (and at most
+//!     MAX_DEPTH levels), Cx::poll_interrupt per property; the reviver gets a context object
+//!     with `source` for an unchanged primitive
 //! JSON.stringify(value, replacer, space)  json/stringify.rs
 //!   SerializeJSONProperty / SerializeJSONObject / SerializeJSONArray: recursive,
 //!     Cx::check_native_stack per level and at most MAX_DEPTH levels (a RangeError at the
 //!     limit, as in V8)
 //!   the cycle stack is a ScratchList; the property list of an array replacer is another one
 //!   the text is a Rust Vec<u16> of code units (no Values), made a string once at the end
+//!   a raw JSON object (the [[IsRawJSON]] class) -> its `rawJSON` string, as it is
+//! JSON.rawJSON(text), JSON.isRawJSON(O)  json/raw.rs
+//!   rawJSON: ToString, the edge and JSON-text checks (the parse loop above), then a frozen
+//!     null-prototype object of ObjectClass::RawJson with one property `rawJSON`
 //! ```
 //!
 //! | Spec step | Here |
 //! |---|---|
-//! | `[[NumberData]]`, `[[StringData]]`, `[[BooleanData]]` tests (SerializeJSONProperty step 4, the replacer list, `space`) | `primitive_data` |
+//! | `[[NumberData]]`, `[[StringData]]`, `[[BooleanData]]`, `[[BigIntData]]` tests (SerializeJSONProperty step 4, the replacer list, `space`) | `primitive_data` |
 //! | EnumerableOwnProperties(O, key) (§7.3.23) | `enumerable_own_keys`: the keys array of `[[OwnPropertyKeys]]`, compacted in place |
 //! | Number::toString of a finite number | `Cx::to_string` (numconv `number_to_string`, with the even-tie rule of §6.1.6.1.20 step 5) |
 //!
-//! Not built: `json-parse-with-source` (`JSON.rawJSON`, `JSON.isRawJSON` and the reviver
-//! `context` argument). `rawJSON` objects need an `[[IsRawJSON]]` internal slot, that is a new
-//! `ObjectClass`, and the class list is not this module's. v0 has no BigInt values, so the
-//! BigInt steps (toJSON of a BigInt, the TypeError) cannot be reached.
+//! json-parse-with-source (M6-P1 SPEC-B; the proposal's spec text; test262 lists it as a
+//! standard feature): the reviver `context` argument, `JSON.rawJSON` and `JSON.isRawJSON`, and
+//! the raw JSON step of SerializeJSONProperty. The `[[IsRawJSON]]` internal slot is `ObjectClass::RawJson` (H20
+//! part 2, an appended class). The BigInt steps (spec-temporal B4): toJSON of a BigInt
+//! (step 2), the `[[BigIntData]]` unwrap (step 4.d) and the TypeError (step 10).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-json.txt`.
 
 mod parse;
+mod raw;
 mod stringify;
 
 use ep9_vm::{
@@ -55,12 +64,16 @@ pub const BLOCK: u8 = 14;
 mod def {
     pub const PARSE: u16 = 0;
     pub const STRINGIFY: u16 = 1;
+    pub const RAW_JSON: u16 = 2;
+    pub const IS_RAW_JSON: u16 = 3;
 }
 
 /// The builtin functions, in id order (append-only).
 pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("parse", 2, parse::parse), // 14.0
     BuiltinDef::method("stringify", 3, stringify::stringify), // 14.1
+    BuiltinDef::method("rawJSON", 1, raw::raw_json), // 14.2
+    BuiltinDef::method("isRawJSON", 1, raw::is_raw_json), // 14.3
 ];
 
 /// The intrinsics this module makes: `%JSON%` (§25.5: an ordinary object, not a function).
@@ -75,11 +88,13 @@ pub const INTRINSICS: &[IntrinsicDef] = &[IntrinsicDef {
 pub const PROPS: &[ObjectProps] = &[
     ObjectProps {
         target: IntrinsicId::Json,
-        // §25.5.1-2 ({w, c}), then §25.5.3 JSON [ %Symbol.toStringTag% ] ({c}); V8's order
-        // (node 24 `Reflect.ownKeys(JSON)` without rawJSON and isRawJSON).
+        // §25.5.1-2 and json-parse-with-source's rawJSON and isRawJSON ({w, c}), then §25.5.3
+        // JSON [ %Symbol.toStringTag% ] ({c}); V8's order (node 24 `Reflect.ownKeys(JSON)`).
         props: &[
             PropDef::method(PropKey::Str("parse"), def::PARSE),
             PropDef::method(PropKey::Str("stringify"), def::STRINGIFY),
+            PropDef::method(PropKey::Str("rawJSON"), def::RAW_JSON),
+            PropDef::method(PropKey::Str("isRawJSON"), def::IS_RAW_JSON),
             PropDef::constant(
                 PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
                 ConstValue::Str("JSON"),

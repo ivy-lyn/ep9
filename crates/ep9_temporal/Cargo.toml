@@ -1,0 +1,31 @@
+[package]
+name = "ep9_temporal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Temporal (plan Q2; design SPEC-T-D11): glue from the Cx builtin ABI (H20) to temporal_rs.
+# `#![forbid(unsafe_code)]`; the heap only through ep9_vm's Cx. ep9_builtins lists its
+# modules in ep9_builtins::MODULES. Edges: .github/scripts/dep-guards.sh checks 18-20.
+[dependencies]
+ep9_vm = { path = "../ep9_vm" }
+# `float64_representable_durations`: the spec keeps Duration fields as float64 integers
+# (temporal_rs issue 613); Boa sets the same feature.
+temporal_rs = { workspace = true, features = ["float64_representable_durations"] }
+# The zoneinfo64 provider (ICU zoneinfo64.res); no `tzif`, no `experimental_tzif`.
+timezone_provider = { workspace = true, features = ["zoneinfo64"] }
+zoneinfo64 = { workspace = true }
+# H36, SPEC-T-D19: only for `force-soft-floats` (no hardware FMA in libm::fma). No code in this
+# crate calls libm (clippy.toml bans `libm::*`).
+libm = { workspace = true, features = ["force-soft-floats"] }
+
+# The tests run JS on an isolate with ep9_builtins::TABLE (which lists this crate's modules).
+[dev-dependencies]
+ep9_builtins = { path = "../ep9_builtins" }
+ep9_frontend = { path = "../ep9_frontend" }
+ep9_heap = { path = "../ep9_heap" }
+
+[lints]
+workspace = true

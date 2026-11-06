@@ -3,6 +3,13 @@
 //!
 //! Bitsets only grow: two facts about one slot merge by OR (`|`), whatever their source. A
 //! reserved bit is never set; the decoder rejects it.
+//!
+//! Open lists (FACT_SCHEMA 2; MC-w23-8, M6-PLAN-D4): a list that the VM appends to after the
+//! M1 freeze is open, so an append moves no `FACT_SCHEMA_VERSION`. A reader never refuses a
+//! snapshot for a value of an open list that it does not name: it reads an elements kind as
+//! none ([`ElementsKind`]), a representation as any ([`FieldRep`]), and drops a bit of an open
+//! set ([`ElementsKindSet`], [`ShapeFlags`]). The schema text lists their names apart from the
+//! format (`schema_text`), and the schema fingerprint leaves them out.
 
 /// A `u8` enum with dense values 0, 1, 2, ...: `ALL`, `from_u8` and `name`.
 macro_rules! byte_enum {
@@ -74,6 +81,12 @@ macro_rules! bitset {
             /// The set for `bits`, or `None` if a reserved bit is set.
             pub const fn from_bits(bits: $repr) -> Option<$name> {
                 if bits & !Self::ALL.0 == 0 { Some($name(bits)) } else { None }
+            }
+
+            /// The set for `bits` with every bit this schema does not name dropped: the read
+            /// of an open set (the module docs).
+            pub const fn from_bits_truncate(bits: $repr) -> $name {
+                $name(bits & Self::ALL.0)
             }
 
             /// True if every bit of `other` is set in `self`.
@@ -170,26 +183,171 @@ byte_enum! {
         PrimitiveWrapper = 5 => "primitive-wrapper",
         /// A bound function exotic object.
         BoundFunction = 6 => "bound-function",
+        /// An arguments exotic object (VM kind ARGUMENTS; FACT_SCHEMA 2). With the shape's
+        /// elements kind it is the fact kind of an arguments object (M6-PLAN-D5).
+        Arguments = 7 => "arguments",
+        /// A typed array (FACT_SCHEMA 2, declared): with the shape's elements kind it is the
+        /// fact kind of a typed array (M6-PLAN-D5). The VM has no typed array kind yet, so no
+        /// exporter writes it.
+        TypedArray = 8 => "typed-array",
     }
 }
 
 byte_enum! {
-    /// The H18 elements kinds. Transitions go only from a smaller to a larger general kind.
+    /// The H18 elements kinds, by their VM kind value (FACT_SCHEMA 2: the VM order,
+    /// `elements::kind`; schema 1 put the holey kinds after the packed ones). Transitions go
+    /// only from a smaller to a larger general kind.
+    ///
+    /// An open list (the module docs): the values are the H18 part "elements kind values
+    /// (append-only)", 0-15 (4 shape bits); 7-15 are free. Every elements-kind field is a byte
+    /// `value + 1` (0 = none), and a reader reads a value it does not name as none for that
+    /// field only, never as a refusal of the snapshot (MC-w23-8). The fact kinds of typed
+    /// arrays, arguments objects and string wrappers take no value here: they are the pair
+    /// (`ShapeDesc::kind`, `ShapeDesc::elements`) (M6-PLAN-D5).
     pub enum ElementsKind {
         /// Int32 values, no holes.
         PackedInt32 = 0 => "packed-int32",
-        /// Numbers as raw f64, no holes.
-        PackedDouble = 1 => "packed-double",
-        /// Any values, no holes.
-        PackedElements = 2 => "packed-elements",
         /// Int32 values with holes.
-        HoleyInt32 = 3 => "holey-int32",
+        HoleyInt32 = 1 => "holey-int32",
+        /// Numbers as raw f64, no holes.
+        PackedDouble = 2 => "packed-double",
         /// Numbers as raw f64 with holes.
-        HoleyDouble = 4 => "holey-double",
+        HoleyDouble = 3 => "holey-double",
+        /// Any values, no holes.
+        PackedElements = 4 => "packed-elements",
         /// Any values with holes.
         HoleyElements = 5 => "holey-elements",
         /// Sparse: a dictionary.
         Dictionary = 6 => "dictionary",
+    }
+}
+
+impl ElementsKind {
+    /// The values an elements-kind field can name: 0-15, the 4 shape bits (H17 layout core).
+    pub const VALUES: u8 = 16;
+
+    /// The read of an open elements-kind value (the module docs): the kind, or `None` for a
+    /// value this schema does not name.
+    pub const fn from_open(v: u8) -> Option<ElementsKind> {
+        ElementsKind::from_u8(v)
+    }
+}
+
+/// The elements kinds a keyed site saw (FACT_SCHEMA 2; M6-PLAN-D4): bit `i` is the elements
+/// kind of value `i` (0-15), the same bits as the IC_LAYOUT 4 kinds set of a keyed slot
+/// (`elements::KINDS_SET_MASK`, shifted down by 10). An open set: a reader drops the bit of a
+/// value it does not name ([`ElementsKind::from_open`]). Merges by OR.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ElementsKindSet(u16);
+
+impl ElementsKindSet {
+    /// No kind.
+    pub const EMPTY: ElementsKindSet = ElementsKindSet(0);
+
+    /// The set of the one kind `k`.
+    pub const fn of(k: ElementsKind) -> ElementsKindSet {
+        ElementsKindSet(1 << k as u8)
+    }
+
+    /// The raw bits.
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    /// The set for `bits`, the bits of the kinds this schema does not name dropped (the read
+    /// of an open set).
+    pub const fn from_bits_truncate(bits: u16) -> ElementsKindSet {
+        let mut known = 0u16;
+        let mut i = 0;
+        while i < ElementsKind::ALL.len() {
+            known |= 1 << ElementsKind::ALL[i] as u8;
+            i += 1;
+        }
+        ElementsKindSet(bits & known)
+    }
+
+    /// True if `k` is in the set.
+    pub const fn contains(self, k: ElementsKind) -> bool {
+        self.0 & (1 << k as u8) != 0
+    }
+
+    /// True if no kind is in the set.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The merge of two facts: bitwise OR.
+    pub const fn union(self, other: ElementsKindSet) -> ElementsKindSet {
+        ElementsKindSet(self.0 | other.0)
+    }
+
+    /// The kinds in the set, in value order.
+    pub fn kinds(self) -> impl Iterator<Item = ElementsKind> {
+        ElementsKind::ALL
+            .iter()
+            .copied()
+            .filter(move |&k| self.contains(k))
+    }
+}
+
+impl core::ops::BitOr for ElementsKindSet {
+    type Output = ElementsKindSet;
+    fn bitor(self, other: ElementsKindSet) -> ElementsKindSet {
+        self.union(other)
+    }
+}
+
+impl core::ops::BitOrAssign for ElementsKindSet {
+    fn bitor_assign(&mut self, other: ElementsKindSet) {
+        *self = self.union(other);
+    }
+}
+
+byte_enum! {
+    /// The representation hint of a field (FACT_SCHEMA 2; M6-PLAN-D8): the VM's details bits
+    /// 4-6 (`shape::rep`, H17 "representation values (append-only)"). A hint: a compiled reader
+    /// still guards (the shape guard stays the source). An open list: a reader reads a value it
+    /// does not name (5-7 are free) as [`FieldRep::Any`], the hint that claims nothing.
+    pub enum FieldRep {
+        /// No value stored yet (the VM's `rep::NONE`).
+        Unset = 0 => "unset",
+        /// Every value stored was an int32.
+        Int32 = 1 => "int32",
+        /// Every value stored was a number.
+        Double = 2 => "double",
+        /// No value stored was a number.
+        Heap = 3 => "heap",
+        /// Any value.
+        Any = 4 => "any",
+    }
+}
+
+impl FieldRep {
+    /// The read of an open representation value (3 bits): unknown values are `Any`.
+    pub const fn from_open(v: u8) -> FieldRep {
+        match FieldRep::from_u8(v) {
+            Some(r) => r,
+            None => FieldRep::Any,
+        }
+    }
+}
+
+/// The representation and const hint of one key of a shape (FACT_SCHEMA 2; M6-PLAN-D8): the
+/// VM's details bits 4-7 for the key (`shape::rep`, `shape::DETAILS_CONST`). Encoded with the
+/// key's [`PropAttrs`] in one byte, as the VM's details bits 0-7.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FieldHint {
+    /// The representation of the values stored.
+    pub rep: FieldRep,
+    /// No object of the shape's family stored a second value into the field.
+    pub constant: bool,
+}
+
+// `byte_enum!` derives a fixed trait list, so the default is written out here.
+#[allow(clippy::derivable_impls)]
+impl Default for FieldRep {
+    fn default() -> FieldRep {
+        FieldRep::Unset
     }
 }
 
@@ -375,7 +533,44 @@ bitset! {
 }
 
 bitset! {
-    /// Shape flags. The same bits as the VM's shape flags 1 and 2.
+    /// What the element accesses of a keyed site found (FACT_SCHEMA 2; MC-w13-9, MODES-D18):
+    /// the receiver kinds and the access results, the VM's keyed slot bits 4-9
+    /// (`profile::keyed`) shifted down by 4. Merges by OR.
+    pub struct KeyedHint(u8) {
+        /// An Array receiver.
+        ARRAY = 0 => "array",
+        /// Another object receiver.
+        OBJECT = 1 => "object",
+        /// A string receiver.
+        STRING = 2 => "string",
+        /// Another primitive receiver (number, boolean, symbol, undefined, null).
+        PRIMITIVE = 3 => "primitive",
+        /// An index key at or past an Array's length.
+        OUT_OF_BOUNDS = 4 => "out-of-bounds",
+        /// An index key below an Array's length whose element is a hole.
+        HOLE = 5 => "hole",
+    }
+}
+
+bitset! {
+    /// Per-record flags (FACT_SCHEMA 2), for every slot kind. Merge by OR.
+    pub struct RecordFlags(u8) {
+        /// H29-Q5: a deopt exit of compiled code that guarded on this record's facts was
+        /// taken, so a later compile does not speculate on them again.
+        EXITED = 0 => "exited",
+        /// MODES-D15: the site ran inside a sampled window, so an implicit bit (an int32 at a
+        /// BinaryOp or CompareOp site, an int32 index of an Array at a LoadKeyed site) means
+        /// "seen", not "seen or never ran" (F-R9). Only at the MODES-D17 sites: BinaryOp,
+        /// CompareOp and LoadKeyed; at LoadKeyed only with the keyed hint bits (MODES-D18,
+        /// [`KeyedHint`]). Clear means the site has no sampled run on record.
+        RAN = 1 => "ran",
+    }
+}
+
+bitset! {
+    /// Shape flags. The same bits as the VM's shape flags 1 and 2. An open set (FACT_SCHEMA 2,
+    /// the module docs): a later flag (the H18 extra element kinds take shape flag bits first,
+    /// M6-PLAN-D6) is an append, and a reader drops a bit it does not name.
     pub struct ShapeFlags(u8) {
         /// New properties may be added.
         EXTENSIBLE = 0 => "extensible",

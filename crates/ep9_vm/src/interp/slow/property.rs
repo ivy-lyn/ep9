@@ -10,6 +10,7 @@
 //!                                                              store_global
 //! ```
 
+use crate::accessor;
 use crate::conv::{self, Res, describe};
 use crate::error::{not_implemented, throw_error};
 use crate::exotic;
@@ -66,8 +67,9 @@ pub(crate) fn load_global(
 
 /// GetBindingValue of the global environment (§9.1.1.4.6, v0): the script lexical record
 /// first, then the global object. Returns the value, or 0 with a pending ReferenceError (a
-/// TDZ, or a missing name outside `typeof`).
-fn global_value(cx: &mut Cx, name: u64, in_typeof: bool) -> u64 {
+/// TDZ, or a missing name outside `typeof`). Records no feedback: native code's
+/// `RuntimeTable::load_global` (`native.rs`) shares it (R6-4).
+pub(crate) fn global_value(cx: &mut Cx, name: u64, in_typeof: bool) -> u64 {
     let rt = cx.rt();
     if let Some((v, _)) = own_get(rt.root(Root::Lexical), name) {
         if v == HOLE {
@@ -325,6 +327,13 @@ pub(crate) fn get_named(
     if let Some(r) = vector.and_then(|v| ic::mega_load(rt, v, slot, o, key)) {
         return ret(Ok(r));
     }
+    // A GETTER or PROTO_DICT_LOAD case (M6-P1 ACCIC): no lookup and no chain walk.
+    // GC point (a getter runs JS): the pair and `o` live in Rust locals.
+    match vector.and_then(|v| ic::cold_load(rt, v, slot, o, key)) {
+        Some(ic::ColdLoad::Value(x)) => return ret(Ok(x)),
+        Some(ic::ColdLoad::Getter(pair)) => return ret(accessor::call_getter(cx, pair, o)),
+        None => {}
+    }
     let case = vector
         .filter(|&v| !ic::skip_miss(v, slot, o))
         .and_then(|_| ic::load_case(rt, o, key));
@@ -365,6 +374,13 @@ pub(crate) fn get_super(
     if let Some(r) = vector.and_then(|v| ic::mega_load(rt, v, slot, start, key)) {
         return ret(Ok(r));
     }
+    // A GETTER or PROTO_DICT_LOAD case of the lookup start (M6-P1 ACCIC); a getter gets
+    // `receiver` as `this`.
+    match vector.and_then(|v| ic::cold_load(rt, v, slot, start, key)) {
+        Some(ic::ColdLoad::Value(x)) => return ret(Ok(x)),
+        Some(ic::ColdLoad::Getter(pair)) => return ret(accessor::call_getter(cx, pair, receiver)),
+        None => {}
+    }
     let case = vector
         .filter(|&v| !ic::skip_miss(v, slot, start))
         .and_then(|_| ic::load_case(rt, start, key));
@@ -400,8 +416,19 @@ pub(crate) fn set_named(
     if vector.is_some_and(|vec| ic::mega_store(rt, vec, slot, o, key, v, define)) {
         return ret(Ok(v));
     }
+    // A SETTER case of a 0x24 store (M6-P1 ACCIC): the setter runs with no lookup and no
+    // chain walk. A pair with no setter takes the generic store, which fails; its case is
+    // known, so no case is computed again.
+    let known = !define
+        && match vector.and_then(|vec| ic::cold_setter(rt, vec, slot, o, key)) {
+            Some(pair) if accessor::setter(pair) != UNDEFINED => {
+                return ret(accessor::call_setter(cx, pair, o, v).map(|_| v));
+            }
+            Some(_) => true,
+            None => false,
+        };
     let pre = vector
-        .filter(|&vec| !ic::skip_miss(vec, slot, o))
+        .filter(|&vec| !known && !ic::skip_miss(vec, slot, o))
         .and_then(|_| ic::store_pre(rt, o, key, define));
     let r = if define {
         define_checked(cx, o, key, v, false)

@@ -288,8 +288,241 @@ fn val(bits: u64) -> Value {
 
 // ---- (a) build -------------------------------------------------------------------------------
 
-/// The live addresses of a session with unit A loaded (for the window scan).
-fn live_addresses(us: &mut UnitSession, m: &Mapped) -> Live {
+/// The environment variable that makes check (a) the second build: its value is the file
+/// that gets the second build's report ([`a_child`]).
+const A_CHILD: &str = "SPIKE_B_A_CHILD";
+
+/// Makes a new dir for the second build's report: the first name in `names` that is not a
+/// path yet, with `DirBuilder::create` (mode 0700 on unix). `create` fails for any path that
+/// is there (a dir, a file or a symlink), so the dir is never one that was there before.
+fn new_report_dir(
+    parent: &std::path::Path,
+    names: impl IntoIterator<Item = String>,
+) -> std::io::Result<std::path::PathBuf> {
+    let b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let b = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut b = b;
+        b.mode(0o700);
+        b
+    };
+    for name in names {
+        let p = parent.join(name);
+        match b.create(&p) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "every report dir name tried exists",
+    ))
+}
+
+/// Writes the second build's report to `path` as a new file (`create_new`): it never writes
+/// through a path that was there before (a file or a symlink).
+fn write_report(path: &std::path::Path, report: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?
+        .write_all(report.as_bytes())
+}
+
+/// Removes the report dir of [`second_build`] when it goes out of scope.
+struct ReportDir(std::path::PathBuf);
+
+impl Drop for ReportDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The texts check (a) scans: units A and B for each target.
+fn a_texts() -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut out = Vec::new();
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        for spec in [unit_a(), unit_b()] {
+            let bytes = build(&spec, arch)?;
+            let text = UnitView::parse(&bytes)?.text.to_vec();
+            out.push((format!("{} {}", spec.name, arch.name()), text));
+        }
+    }
+    Ok(out)
+}
+
+/// The second build (check (a) in a second process, M6-ORCH-11): a session with unit A, as in
+/// the first process, then the texts of [`a_texts`]. Writes to `path` the start of this
+/// process's code range, the start of unit A's mapped text, then one line per text (name,
+/// hex bytes). Never returns.
+fn a_child(path: &std::ffi::OsStr) -> ! {
+    let r = (|| -> Result<String, String> {
+        let (a_host, _) = host_units();
+        let _us = session_with(&Config::default(), &[a_host])?;
+        let m = mapping_of(a_host)?;
+        let range = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
+        let mut out = format!("range {:x}\ntext {:x}\n", range.base(), m.text.start);
+        for (name, text) in a_texts()? {
+            let hex: String = text.iter().map(|b| format!("{b:02x}")).collect();
+            out.push_str(&format!("{name} {hex}\n"));
+        }
+        Ok(out)
+    })();
+    let path = std::path::Path::new(path);
+    match r.and_then(|out| write_report(path, &out).map_err(|e| e.to_string())) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("spike-b: check (a) second build: {e}");
+            std::process::exit(3)
+        }
+    }
+}
+
+/// The report of the second build.
+struct SecondBuild {
+    /// The start of its code range.
+    range: usize,
+    /// The start of unit A's mapped text.
+    text: usize,
+    texts: Vec<(String, Vec<u8>)>,
+}
+
+fn parse_second(report: &str) -> Result<SecondBuild, String> {
+    let mut lines = report.lines();
+    let mut addr = |key: &str| -> Result<usize, String> {
+        let l = lines.next().unwrap_or_default();
+        l.strip_prefix(key)
+            .and_then(|h| usize::from_str_radix(h, 16).ok())
+            .ok_or_else(|| format!("second build: {l:?}, want {key:?} and an address"))
+    };
+    let (range, text) = (addr("range ")?, addr("text ")?);
+    let mut texts = Vec::new();
+    for l in lines {
+        let (name, hex) = l
+            .rsplit_once(' ')
+            .ok_or_else(|| format!("second build: {l:?}"))?;
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("x"), 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|e| format!("second build: {name}: {e}"))?;
+        texts.push((name.to_string(), bytes));
+    }
+    Ok(SecondBuild { range, text, texts })
+}
+
+/// Runs check (a) again in a second process (this executable, the same arguments, with
+/// [`A_CHILD`] set) and reads its report. The second process picks its own code range slot;
+/// if it picks the slot of this process (1 in 32767), it runs again (at most 3 times). The
+/// report goes into a new dir ([`new_report_dir`]), as a new file ([`write_report`]).
+fn second_build(here: usize) -> Result<SecondBuild, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let pid = std::process::id();
+    let dir = new_report_dir(
+        &std::env::temp_dir(),
+        (0..16).map(|i| format!("spike-b-a-second-{pid}-{i}")),
+    )
+    .map_err(|e| format!("the second build's report dir: {e}"))?;
+    let dir = ReportDir(dir);
+    for attempt in 0..3 {
+        let path = dir.0.join(format!("report-{attempt}.txt"));
+        let out = std::process::Command::new(&exe)
+            .args(std::env::args_os().skip(1))
+            .env(A_CHILD, &path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| e.to_string())?;
+        let report = match std::fs::read_to_string(&path) {
+            Ok(r) if out.status.success() => r,
+            _ => {
+                return Err(format!(
+                    "the second build ended with {:?} and no report: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        };
+        let second = parse_second(&report)?;
+        if second.range != here {
+            return Ok(second);
+        }
+    }
+    Err(format!(
+        "the second build's code range started at {here:#x} 3 times (this process's start)"
+    ))
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::{new_report_dir, write_report};
+
+    /// A new dir for one test, under the temp dir.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let pid = std::process::id();
+        new_report_dir(
+            &std::env::temp_dir(),
+            (0..16).map(|i| format!("spike-b-report-test-{tag}-{pid}-{i}")),
+        )
+        .unwrap()
+    }
+
+    /// The report dir is never a path that was there before: an old dir, an old file and
+    /// (unix) an old symlink are skipped; when every name is there, it fails.
+    #[test]
+    fn the_report_dir_is_new() {
+        let root = scratch("dir");
+        std::fs::create_dir(root.join("n0")).unwrap();
+        std::fs::write(root.join("n1"), "old").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("n0"), root.join("n2")).unwrap();
+        #[cfg(not(unix))]
+        std::fs::create_dir(root.join("n2")).unwrap();
+        let names = || (0..4).map(|i| format!("n{i}"));
+        let got = new_report_dir(&root, names()).unwrap();
+        assert_eq!(got, root.join("n3"));
+        assert!(std::fs::symlink_metadata(&got).unwrap().is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&got).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        let e = new_report_dir(&root, names()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The report never goes through a path that was there before: a file planted at the
+    /// path keeps its bytes, and (unix) a symlink planted at the path does not write its
+    /// target.
+    #[test]
+    fn the_report_is_a_new_file() {
+        let root = scratch("file");
+        let target = root.join("target");
+        std::fs::write(&target, "old").unwrap();
+        assert!(write_report(&target, "report").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+        #[cfg(unix)]
+        {
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(write_report(&link, "report").is_err());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+        }
+        let new = root.join("new");
+        write_report(&new, "report").unwrap();
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "report");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+/// The live addresses of a session with unit A loaded (for the window scan). The placed
+/// ranges (the unit text, the code range) start at other places in the `second` build's
+/// process.
+fn live_addresses(us: &mut UnitSession, m: &Mapped, second: &SecondBuild) -> Result<Live, String> {
     let mut l = Live::default();
     let cx = NativeCx::of(&mut us.s.iso);
     l.point("the Cx", cx.addr());
@@ -317,20 +550,27 @@ fn live_addresses(us: &mut UnitSession, m: &Mapped) -> Live {
         l.point("a link cell value", rw.link(0) as usize);
     }
     l.point("the unit directory", us.units.directory());
-    l.range("the unit text", m.text.clone());
-    if let Ok(r) = ep9_platform::CodeRange::process() {
-        l.range("the code range", r.range());
-    }
-    l
+    l.placed("the unit text", m.text.clone(), second.text)?;
+    let process = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
+    l.placed("the code range", process.range(), second.range)?;
+    Ok(l)
 }
 
 fn check_build(_: Scale) -> Result<Vec<String>, String> {
+    if let Some(path) = std::env::var_os(A_CHILD) {
+        a_child(&path);
+    }
     let mut out = Vec::new();
     let (a_host, _) = host_units();
     // A live session with unit A, for the addresses the scan looks for.
     let mut us = session_with(&Config::default(), &[a_host])?;
     let m = mapping_of(a_host)?;
-    let live = live_addresses(&mut us, m);
+    let process = ep9_platform::CodeRange::process().map_err(|e| e.to_string())?;
+    // The second build: the same texts from a process whose code range is at another slot.
+    let second = second_build(process.base())?;
+    let live = live_addresses(&mut us, m, &second)?;
+    let mut others = second.texts.iter();
+    let mut fixed = 0;
     for arch in [Arch::Aarch64, Arch::X86_64] {
         for spec in [unit_a(), unit_b()] {
             let bytes = build(&spec, arch)?;
@@ -342,7 +582,19 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
                 ));
             }
             let v = UnitView::parse(&bytes)?;
-            let mut findings = scan::windows(v.text, &live);
+            let name = format!("{} {}", spec.name, arch.name());
+            let other = match others.next() {
+                Some((n, t)) if *n == name => t,
+                o => return Err(format!("second build: {o:?}, want {name}")),
+            };
+            // The byte rule (the second build), then the window rule (it names the address
+            // a difference is).
+            let mut findings: Vec<_> = scan::first_difference(v.text, other).into_iter().collect();
+            if other.len() == v.text.len() {
+                let w = scan::windows(v.text, other, &live);
+                fixed += w.fixed.len();
+                findings.extend(w.found);
+            }
             if arch == Arch::Aarch64 {
                 let fns: Vec<_> = v
                     .functions
@@ -404,10 +656,15 @@ fn check_build(_: Scale) -> Result<Vec<String>, String> {
         }
     }
     out.push(format!(
-        "scan: {} live addresses (+/- {} KiB) and {} ranges of this process",
+        "scan: {} live addresses (+/- {} KiB) and {} placed ranges of this process (code \
+         range {:#x}); the second build (another process, code range {:#x}) gave the same \
+         bytes; {fixed} windows in a placed range here with the same bytes there (fixed \
+         values, no finding)",
         live.points.len(),
         scan::MARGIN >> 10,
-        live.ranges.len()
+        live.placed.len(),
+        process.base(),
+        second.range,
     ));
     Ok(out)
 }
@@ -626,7 +883,7 @@ fn scrub_stack() {
 // ---- (d) threads -----------------------------------------------------------------------------
 
 /// Calls of each runtime-table entry through the counting table.
-static COUNTS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+static COUNTS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
 
 macro_rules! counting {
     ($($name:ident = $idx:literal, $field:ident, ($($a:ident: $t:ty),*);)*) => {$(
@@ -657,6 +914,7 @@ counting! {
     c_get_keyed = 8, get_keyed, (cx: *mut NativeCx, fp: *mut u64, off: u32, o: u64, k: u64);
     c_set_keyed = 9, set_keyed, (cx: *mut NativeCx, fp: *mut u64, off: u32, o: u64, k: u64, v: u64);
     c_deopt = 10, deopt, (cx: *mut NativeCx, fp: *mut u64, off: u32, dump: u64, native_fp: u64);
+    c_load_global = 11, load_global, (cx: *mut NativeCx, fp: *mut u64, off: u32);
 }
 
 /// A runtime table that counts each call, then runs the process table's entry.
@@ -672,6 +930,7 @@ static COUNTING: RuntimeTable = RuntimeTable {
     get_keyed: c_get_keyed,
     set_keyed: c_set_keyed,
     deopt: c_deopt,
+    load_global: c_load_global,
 };
 
 /// What one thread of check (d) saw.

@@ -61,6 +61,13 @@ fn a_switch_loads_every_intrinsic_and_puts_them_back() {
                     let (a, b) = (first_values[i], second_values[i]);
                     if a == UNDEFINED {
                         assert_eq!(b, UNDEFINED, "{} is made in one realm only", id.name());
+                    } else if *id == IntrinsicId::RealmFuses {
+                        // The realm's static fuse block (M6-P2 FUSE-PI): a FUSE cell, not an
+                        // object, and each realm's own.
+                        for v in [a, b] {
+                            assert_eq!(crate::kinds::cell_kind(v), crate::kinds::FUSE.get());
+                        }
+                        assert_ne!(a, b, "{} is per realm", id.name());
                     } else {
                         assert!(object::is_object(b), "{}", id.name());
                         assert_ne!(a, b, "{} is per realm", id.name());

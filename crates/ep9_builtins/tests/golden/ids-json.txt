@@ -3,3 +3,5 @@
 # id     block.index  kind         length  name  (installed as)
 0x1c00   14.0         method       2       "parse"  (%JSON%.parse w-c)
 0x1c01   14.1         method       3       "stringify"  (%JSON%.stringify w-c)
+0x1c02   14.2         method       1       "rawJSON"  (%JSON%.rawJSON w-c)
+0x1c03   14.3         method       1       "isRawJSON"  (%JSON%.isRawJSON w-c)

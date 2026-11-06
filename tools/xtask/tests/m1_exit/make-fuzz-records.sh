@@ -20,6 +20,12 @@ bash "$rec" --tool fuzzilli --campaign fz-fixture-1 --target ep9 --commit "$comm
 bash "$rec" --tool fuzzilli --campaign fz-fixture-1 --target ep9 --commit "$commit" \
   --dirty true --counted true --seconds 90000 --workers 4 --binary "$tmp/ep9" \
   --runner ep9-fuzz --out "$here/fuzz-fuzzilli-dirty.json"
+# Fuzzilli in the box-session form of infra/fuzz/run.sh (its `rec` arguments: target reprl,
+# --preset, no --runner), as the live month-5 campaign records are (plan v11 X11, V11-A23):
+# 14400 s x 4 workers = 16 CPU-h, clean and counted.
+bash "$rec" --tool fuzzilli --campaign fz-fixture-box-1 --target reprl --commit "$commit" \
+  --dirty false --counted true --seconds 14400 --workers 4 --binary "$tmp/ep9" --preset jit \
+  --out "$here/fuzz-fuzzilli-box.json"
 # cargo-fuzz in the fuzz.yml form (--run with a fuzz/scripts/run.sh summary): 21600 s x fork 4
 # = 24 CPU-h.
 printf '{"tool":"cargo-fuzz","target":"frontend_compile","mode":"fuzz","seconds":21600,"fork":4,"workers":4,"binary_sha256":"%s","libfuzzer_exit":0,"executed_units":123456,"crashes":0,"crash_sha256":[],"slow_units":0,"slow_sha256":[]}\n' \

@@ -218,7 +218,7 @@ pub fn compile_hot_opts(
         ));
     };
     let live = compile_facts(s, script, id, int)?;
-    let facts = facts::for_function(&live, id);
+    let facts = facts::for_function(&live, script.unit.unit(), id);
     let target = match value {
         Some(f) => Target::Value(f),
         None => Target::Id {
@@ -470,6 +470,358 @@ pub fn forced_coverage(
     }
 }
 
+/// One function of a [`SetRun`]: its name, compile report, the exits of loop(n) per record,
+/// and its force table's countdowns before and after the run (empty when not forced).
+#[derive(Clone, Debug)]
+pub struct SetMember {
+    pub function: &'static str,
+    pub report: CompileReport,
+    pub exits: Vec<u64>,
+    pub armed: Vec<u32>,
+    pub left: Vec<u32>,
+}
+
+/// Config C of the whole hot set of a kernel (SPIKEC-9, `gate.sh navier`): every hot function
+/// compiled from the live facts of the warm-up and installed together, loop(n) against T0.
+#[derive(Clone, Debug)]
+pub struct SetRun {
+    pub kernel: &'static str,
+    pub n: u32,
+    pub members: Vec<SetMember>,
+    /// The hot functions the compiler refused (name, refusal): they stay in T0.
+    pub refused: Vec<(&'static str, String)>,
+    pub t0: RunOutput,
+    pub compiled: RunOutput,
+    /// Output equal to T0, no uncaught error, a right driver run.
+    pub equal: bool,
+    pub t0_secs: f64,
+    pub compiled_secs: f64,
+    pub forced: bool,
+}
+
+impl SetRun {
+    /// One line per member and a summary line.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .members
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}{}",
+                    m.report.line(),
+                    exits_text(&m.report, &m.exits, self.forced)
+                )
+            })
+            .collect();
+        for (name, why) in &self.refused {
+            let by = kernels::stays_in_t0(self.kernel, name, why)
+                .map_or(String::new(), |d| format!(" (by {d}, SCP §3 config C)"));
+            out.push(format!("{name}: refused, stays in T0{by}: {why}"));
+        }
+        let names: Vec<&str> = self.members.iter().map(|m| m.function).collect();
+        out.push(format!(
+            "{} hot set [{}] n = {}: {}; exits {}; T0 {:.3} s, compiled {:.3} s (one run, report \
+             only)",
+            self.kernel,
+            names.join(", "),
+            self.n,
+            if self.equal {
+                "output equal to T0".to_string()
+            } else {
+                format!(
+                    "output differs: compiled {:?} {:?} vs T0 {:?} {:?}",
+                    self.compiled.result, self.compiled.output, self.t0.result, self.t0.output
+                )
+            },
+            self.members.iter().flat_map(|m| &m.exits).sum::<u64>(),
+            self.t0_secs,
+            self.compiled_secs
+        ));
+        out
+    }
+}
+
+/// The force tables of [`run_set`] for `k` from `seed`: one per hot function, every guard
+/// armed from the seed and the function's index (`ForceTable::seeded`).
+pub fn seeded_tables(k: &Kernel, seed: u64) -> Vec<emit_a64::ForceTable> {
+    (0..k.hot.len())
+        .map(|i| emit_a64::ForceTable::seeded(seed ^ ((i as u64) << 32), FORCE_LEN))
+        .collect()
+}
+
+/// Runs config C of the whole hot set of `k` (each hot function the compiler accepts compiled
+/// from the live facts of the warm-up and installed, SPIKEC-9) against T0, with `n` timed runs.
+/// `force[i]`, if there, is the force table of hot function `i` (WI-SC4; the code holds its
+/// address, and the session that runs the code drops before this returns); with any table the
+/// heap verifier runs after loop(n). An empty `force` forces nothing.
+pub fn run_set(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    force: &[Option<&emit_a64::ForceTable>],
+) -> Result<SetRun, String> {
+    let table = |i: usize| force.get(i).copied().flatten();
+    let forced = (0..k.hot.len()).any(|i| table(i).is_some());
+    let d1 = kernels::driver(k, 1)?;
+    let dn = kernels::driver(k, n)?;
+    let (defs, loop1) = split(&d1, k.file)?;
+    let (defs_n, loop_n) = split(&dn, k.file)?;
+    let body = |t: &str| t.split_once('\n').map(|x| x.1.to_string());
+    if body(&defs) != body(&defs_n) || d1.offset != dn.offset {
+        return Err("the drivers differ before the loop".into());
+    }
+    let config = config.threaded();
+    crate::vm_layout::check(&config).map_err(|e| format!("vm layout: {e}"))?;
+
+    let mut t0s = Session::new(&config)?;
+    t0s.run(&defs, "defs.js")
+        .result
+        .map_err(|e| format!("T0 defs: {e}"))?;
+    let w = t0s.run(&loop1, "warm.js");
+    w.result.map_err(|e| format!("T0 warm-up: {e}"))?;
+    let t = Instant::now();
+    let t0 = t0s.run(&loop_n, "loop.js");
+    let t0_secs = t.elapsed().as_secs_f64();
+
+    let mut s = Session::new(&config)?;
+    s.run(&defs, "defs.js")
+        .result
+        .map_err(|e| format!("defs: {e}"))?;
+    let w2 = s.run(&loop1, "warm.js");
+    w2.result.map_err(|e| format!("warm-up: {e}"))?;
+    if w2.output != w.output {
+        return Err("the two warm-up runs differ (both are T0)".into());
+    }
+    let mut targets = Vec::new();
+    let mut codes = Vec::new();
+    let mut metas = Vec::new();
+    let mut members = Vec::new();
+    let mut indexes = Vec::new();
+    let mut refused = Vec::new();
+    for (i, hot) in k.hot.iter().enumerate() {
+        let opts = emit_a64::EmitOptions {
+            force: table(i),
+            ..Default::default()
+        };
+        match compile_hot_opts(&mut s, hot, "defs.js", d1.offset, IntFacts::Live, &opts) {
+            Ok((f, code, report)) => {
+                metas.push(Some(report.emit.meta.encode()));
+                targets.push(f);
+                codes.push(code);
+                members.push(SetMember {
+                    function: hot.name,
+                    report,
+                    exits: Vec::new(),
+                    armed: table(i).map(|t| t.snapshot()).unwrap_or_default(),
+                    left: Vec::new(),
+                });
+                indexes.push(i);
+            }
+            // A refusal names the function; any other error (no such function) fails.
+            Err(e) if e.starts_with(&format!("{}: ", hot.name)) => refused.push((hot.name, e)),
+            Err(e) => return Err(e),
+        }
+    }
+    if !codes.is_empty() {
+        // SAFETY: each code is the placement (b) code `emit_a64` made for its target from
+        // `input_of_target` in `compile_hot_opts` just above (the hot functions of this kernel
+        // have no JS reach, or `function_value` ran a one-line script that calls nothing, and
+        // no other JS ran since), unchanged, and each meta its own exit table. emit_a64 keeps
+        // the (b) contract as for `run_full` (the T0 handler ABI, `ep9_vm::layout` offsets
+        // proved by `vm_layout::check` at the start of this run, only RuntimeTable calls,
+        // callee-saved registers kept, every exit the tail jump to `cx.table[*pc]`). A force
+        // table outlives the code's runs (the caller's, borrowed past this function, and the
+        // session drops at its end).
+        unsafe { s.install_targets(&targets, codes, metas) }?;
+    }
+    for (t, m) in targets.iter().zip(&members) {
+        if s.slot_kind_of(t) != Some(ep9_vm::DispatchKind::Opt) {
+            return Err(format!(
+                "{}: slot kind {:?} after install",
+                m.function,
+                s.slot_kind_of(t)
+            ));
+        }
+    }
+    let t = Instant::now();
+    let compiled = s.run(&loop_n, "loop.js");
+    let compiled_secs = t.elapsed().as_secs_f64();
+    for (t, m) in targets.iter().zip(&mut members) {
+        m.exits = s
+            .exit_counts_of(t)
+            .ok_or_else(|| format!("{}: no exit counters after the install", m.function))?;
+    }
+    if forced {
+        s.verify()?;
+        for (m, &i) in members.iter_mut().zip(&indexes) {
+            m.left = table(i).map(|t| t.snapshot()).unwrap_or_default();
+        }
+    }
+    let equal = compiled == t0 && t0.result.is_ok() && dn.matches(&compiled.output);
+    Ok(SetRun {
+        kernel: k.name,
+        n,
+        members,
+        refused,
+        t0,
+        compiled,
+        equal,
+        t0_secs,
+        compiled_secs,
+        forced,
+    })
+}
+
+/// The verdict of a [`run_set`]: every hot function compiled (none refused but those that
+/// stay in T0 by a decision, `kernels::STAYS_IN_T0`, for the decided cause: [`SetRun::lines`]
+/// names them; M6-P3 SC-FIX, MC-P2-SCLEFT), output equal to T0, and, unforced, no exit in loop(n); forced, per
+/// function every armed guard forced (its countdown went to 0) and its counter as
+/// [`forced_coverage`] reads it.
+pub fn set_ok(run: &SetRun, stress: bool) -> Result<(), Vec<String>> {
+    set_check(run, stress, true).map(|_| ())
+}
+
+/// [`set_ok`] for one round of [`force_set`]: every check but "armed guards never forced";
+/// Ok(the guards forced in this run, per member) or the lines that fail.
+pub fn set_round_ok(run: &SetRun, stress: bool) -> Result<Vec<Vec<u32>>, Vec<String>> {
+    set_check(run, stress, false)
+}
+
+/// MC-P1-JIT4 (M6-P2 SPIKEC-10): `SPIKE_C_FORCE_DEOPT=<seed> spike-c tier <kernel> --all`.
+/// One seeded run cannot force every guard of a hot set: each forced exit sends the rest of
+/// that call to T0, so a call forces at most one guard, and a hot function called fewer
+/// times than it has guards keeps some unforced (navier-stokes at n = 1: about 10 calls of
+/// each function for 40-80 guards). Not a defect of M6-P1 code: the seeded `--all` run had
+/// no second step. As `gate.sh diff` does (its forcing step 2): the seeded run, then rounds
+/// with each guard not forced yet armed at 1 (its first pass exits), while a round forces
+/// one more; every run must pass [`set_round_ok`], and a guard never forced fails.
+pub fn force_set(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    seed: u64,
+    stress: bool,
+) -> Result<(Vec<SetRun>, Vec<String>), String> {
+    let mut tables = seeded_tables(k, seed);
+    let mut runs = Vec::new();
+    let mut forced: Vec<std::collections::BTreeSet<u32>> = Vec::new();
+    loop {
+        let force: Vec<Option<&emit_a64::ForceTable>> = tables.iter().map(Some).collect();
+        let run = run_set(k, n, config, &force)?;
+        let round = match set_round_ok(&run, stress) {
+            Ok(r) => r,
+            Err(bad) => {
+                runs.push(run);
+                return Ok((runs, bad));
+            }
+        };
+        forced.resize(round.len(), Default::default());
+        let before: usize = forced.iter().map(|f| f.len()).sum();
+        for (f, r) in forced.iter_mut().zip(&round) {
+            f.extend(r.iter().copied());
+        }
+        let after: usize = forced.iter().map(|f| f.len()).sum();
+        // Each member's guards not forced yet (members follow the hot set's order).
+        let missing: Vec<(String, Vec<u32>)> = run
+            .members
+            .iter()
+            .zip(&forced)
+            .map(|(m, f)| {
+                let mut g: Vec<u32> = m.report.emit.meta.exits.iter().map(|e| e.guard).collect();
+                g.sort_unstable();
+                g.dedup();
+                g.retain(|x| !f.contains(x));
+                (m.function.to_string(), g)
+            })
+            .collect();
+        tables = (0..k.hot.len())
+            .map(|_| emit_a64::ForceTable::new(FORCE_LEN))
+            .collect();
+        for (i, m) in run.members.iter().enumerate() {
+            let at = k.hot.iter().position(|h| h.name == m.function).unwrap_or(i);
+            for &g in &missing[i].1 {
+                tables[at].arm(g, 1);
+            }
+        }
+        runs.push(run);
+        if missing.iter().all(|(_, g)| g.is_empty()) {
+            return Ok((runs, Vec::new()));
+        }
+        if after == before {
+            let bad = missing
+                .iter()
+                .filter(|(_, g)| !g.is_empty())
+                .map(|(f, g)| {
+                    let names: Vec<String> = g.iter().map(|g| format!("g{g}")).collect();
+                    format!("{f}: guards never forced: {}", names.join(" "))
+                })
+                .collect();
+            return Ok((runs, bad));
+        }
+    }
+}
+
+fn set_check(run: &SetRun, stress: bool, all: bool) -> Result<Vec<Vec<u32>>, Vec<String>> {
+    let mut bad = Vec::new();
+    let mut out = Vec::new();
+    for (name, why) in &run.refused {
+        if kernels::stays_in_t0(run.kernel, name, why).is_none() {
+            bad.push(format!("{name}: refused: {why}"));
+        }
+    }
+    if !run.equal {
+        bad.push(format!("{}: output differs from T0", run.kernel));
+    }
+    for m in &run.members {
+        let total: u64 = m.exits.iter().sum();
+        if !run.forced {
+            if total != 0 {
+                bad.push(format!(
+                    "{}: {total} exits in an unforced run (0 required; guards {:?})",
+                    m.function,
+                    fired(&m.report, &m.exits)
+                ));
+            }
+            out.push(Vec::new());
+            continue;
+        }
+        let exits = &m.report.emit.meta.exits;
+        let mut guards: Vec<u32> = exits.iter().map(|e| e.guard).collect();
+        guards.sort_unstable();
+        guards.dedup();
+        let mut missing = Vec::new();
+        let mut hit = Vec::new();
+        for &g in &guards {
+            let on = m.armed.get(g as usize).is_some_and(|&c| c != 0);
+            let f = u64::from(on && m.left.get(g as usize) == Some(&0));
+            if on && f == 0 {
+                missing.push(format!("g{g}"));
+            }
+            if f == 1 {
+                hit.push(g);
+            }
+            let c: u64 = exits
+                .iter()
+                .zip(&m.exits)
+                .filter(|(r, _)| r.guard == g)
+                .map(|(_, c)| c)
+                .sum();
+            if c < f || (!stress && c != f) {
+                bad.push(format!("{}: g{g}: forced {f}, counted {c}", m.function));
+            }
+        }
+        if all && !missing.is_empty() {
+            bad.push(format!(
+                "{}: armed guards never forced: {}",
+                m.function,
+                missing.join(" ")
+            ));
+        }
+        out.push(hit);
+    }
+    if bad.is_empty() { Ok(out) } else { Err(bad) }
+}
+
 /// One forced run of [`force_each_guard`].
 #[derive(Clone, Debug)]
 pub struct ForcedRun {
@@ -635,8 +987,20 @@ pub fn run_script_full(
 /// The T0 half of [`run_script`]: `defs`, `warm` and `main` in a T0 session of their own
 /// (the threaded dispatch, as the compiled half); the output of `main`.
 pub fn t0_script(config: &Config, defs: &str, warm: &str, main: &str) -> Result<RunOutput, String> {
+    t0_script_exec(config, ep9_vm::ExecOptions::default(), defs, warm, main)
+}
+
+/// [`t0_script`] on an isolate that runs `exec` (MC-w21-9, M6-P3 SC-FIX: the tier diff's
+/// `ics_only` column, `ExecOptions::jit()` with `Feedback::ICS_ONLY`).
+pub fn t0_script_exec(
+    config: &Config,
+    exec: ep9_vm::ExecOptions,
+    defs: &str,
+    warm: &str,
+    main: &str,
+) -> Result<RunOutput, String> {
     let config = config.threaded();
-    let mut t0s = Session::new(&config)?;
+    let mut t0s = Session::new_exec(&config, exec)?;
     t0s.run(defs, "defs.js")
         .result
         .map_err(|e| format!("T0 defs: {e}"))?;
@@ -668,8 +1032,35 @@ pub fn compiled_script(
     int: IntFacts,
     opts: &emit_a64::EmitOptions<'_>,
 ) -> Result<CompiledRun, String> {
+    compiled_script_exec(
+        config,
+        ep9_vm::ExecOptions::default(),
+        defs,
+        warm,
+        main,
+        name,
+        int,
+        opts,
+    )
+}
+
+/// [`compiled_script`] on an isolate that runs `exec` (MC-w21-9, M6-P3 SC-FIX): the facts are
+/// the live export of that isolate (under `ics_only` T0 keeps every IC and drops the profile
+/// records, MODES-D19, so the code is compiled from the IC facts alone), and the code runs on
+/// it.
+#[allow(clippy::too_many_arguments)]
+pub fn compiled_script_exec(
+    config: &Config,
+    exec: ep9_vm::ExecOptions,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    opts: &emit_a64::EmitOptions<'_>,
+) -> Result<CompiledRun, String> {
     let config = config.threaded();
-    let mut s = Session::new(&config)?;
+    let mut s = Session::new_exec(&config, exec)?;
     s.run(defs, "defs.js")
         .result
         .map_err(|e| format!("defs: {e}"))?;
@@ -689,7 +1080,7 @@ pub fn compiled_script(
             return Err(format!("{name}: {} functions of that name", ids.len()));
         };
         let live = compile_facts(&s, script, id, int)?;
-        let facts = facts::for_function(&live, id);
+        let facts = facts::for_function(&live, script.unit.unit(), id);
         let f = match f {
             Some(f) => Target::Value(f),
             None => Target::Id {
@@ -717,6 +1108,94 @@ pub fn compiled_script(
         output,
         report,
         exits,
+    })
+}
+
+/// One run of the short lazy-deopt probe ([`lazy_probe`]).
+#[derive(Clone, Debug)]
+pub struct LazyRun {
+    pub t0: RunOutput,
+    pub compiled: RunOutput,
+    pub report: CompileReport,
+    /// The exit counters after `main` (record order: the exits, then the call records).
+    pub exits: Vec<u64>,
+    /// The compiled code's address range.
+    pub code: std::ops::Range<usize>,
+    /// What the armed `lazyDeopt()` did (`None`: it did not run).
+    pub swap: Option<crate::lazy::Swap>,
+}
+
+impl LazyRun {
+    /// The counters of the call records (after the exits').
+    pub fn call_counts(&self) -> &[u64] {
+        self.exits
+            .get(self.report.emit.meta.exits.len()..)
+            .unwrap_or(&[])
+    }
+
+    /// The counters of the guard exits.
+    pub fn exit_counts(&self) -> &[u64] {
+        &self.exits[..self.report.emit.meta.exits.len().min(self.exits.len())]
+    }
+}
+
+/// The short lazy-deopt probe (SPIKEC-10, H29-Q4; [`crate::lazy`]): `defs`, `warm` and `main`
+/// in T0 and in config C with `name` compiled, where the first `lazyDeopt()` that `main`
+/// reaches swaps the return addresses of `name`'s call frames for their lazy exits.
+pub fn lazy_probe(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+) -> Result<LazyRun, String> {
+    let t0 = t0_script(config, defs, warm, main)?;
+    let config = config.threaded();
+    let mut s = Session::new(&config)?;
+    s.run(defs, "defs.js")
+        .result
+        .map_err(|e| format!("defs: {e}"))?;
+    s.run(warm, "warm.js")
+        .result
+        .map_err(|e| format!("warm: {e}"))?;
+    let f = Target::Value(s.function_value(name)?);
+    let (code, report) = {
+        let script = s.script("defs.js").ok_or("no defs script")?;
+        let ids = script.functions_named(name);
+        let [id] = ids[..] else {
+            return Err(format!("{name}: {} functions of that name", ids.len()));
+        };
+        let live = compile_facts(&s, script, id, IntFacts::Live)?;
+        let facts = facts::for_function(&live, script.unit.unit(), id);
+        let input = s.input_of_target(&f)?;
+        crate::compile_input(&input, &facts).map_err(|r| format!("{name}: {r}"))?
+    };
+    let meta = report.emit.meta.encode();
+    // SAFETY: as in `compiled_script`.
+    let placed =
+        unsafe { s.install_targets(std::slice::from_ref(&f), vec![code], vec![Some(meta)]) }?;
+    let range = placed[0].code.clone();
+    let sites = report
+        .emit
+        .meta
+        .calls
+        .iter()
+        .map(|c| (c.ret, c.stub))
+        .collect();
+    crate::lazy::arm(range.clone(), sites);
+    let compiled = s.run(main, "main.js");
+    let swap = crate::lazy::take();
+    let exits = s
+        .exit_counts_of(&f)
+        .ok_or("no exit counters after the install")?;
+    s.verify()?;
+    Ok(LazyRun {
+        t0,
+        compiled,
+        report,
+        exits,
+        code: range,
+        swap,
     })
 }
 
@@ -910,6 +1389,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, r)| (i as u32, r))
                 .collect(),
+            constants: Vec::new(),
         };
         let fact = GuardBasis::Fact(FactSource::Profiled);
         let got: Vec<GuardBasis> = (0..8).map(|s| int_basis_of(&f, s)).collect();
@@ -943,8 +1423,10 @@ mod tests {
         );
         let g = &r.report.graph;
         for l in g.lines().filter(|l| l.contains(" guard g")) {
-            // @15 is the `s + a` site; every `+` overflow guard is unbacked.
-            if l.contains("Int32(Add)") || l.ends_with("-> @15") {
+            // @15 is the `s + a` site; every `+` overflow guard is unbacked. Its int32
+            // check of `a` (n1, a value from outside the loop) moves to the loop's
+            // preheader (SPIKEC-10) and keeps its unbacked basis there.
+            if l.contains("Int32(Add)") || l.ends_with("-> @15") || l.contains("CheckInt32(n1)") {
                 assert!(l.contains("Unbacked"), "{l}\n{g}");
             } else {
                 assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
@@ -1241,7 +1723,8 @@ mod tests {
             let input = s.input_of(f).expect("input");
             let key = input.key;
             let (code, report) =
-                crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
+                crate::compile_input(&input, &facts::for_function(&live, script.unit.unit(), id))
+                    .expect("compile");
             (key, code.code, report.emit.meta.encode(), s)
         };
         // Both sessions stay alive, so the two FunctionInfos cannot share an address.
@@ -1351,6 +1834,99 @@ mod tests {
             r.report.graph.contains("StoreElement") && !r.report.graph.contains("SetKeyedGeneric"),
             "{}",
             r.report.graph
+        );
+    }
+
+    /// SPIKEC-9 task 8 (`build::hoist_array_checks`): in `scale` (no call, number stores
+    /// only) the kind guard of `a` sits in the loop's preheader, and on DOUBLE facts a
+    /// DoubleElements next to it: the element ops take its cell. On DOUBLE arrays they take
+    /// the short path (bounds, hole); an INT32 array gets 0 and the full path, so its INT32 to
+    /// DOUBLE transition still runs in the compiled code with no exit; a hole and a short
+    /// array exit from the short path. Every output equal to T0, with GC stress too.
+    #[test]
+    fn hoisted_kind_guard_and_double_form_equal_t0() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 200; q++) scale([0.5, 1.5, 2.5], 3, 1.5);";
+        let main = "print(scale([0.5, 1.5, 2.5, 4.5], 4, 0.5).join(), scale([1, 2, 3], 3, 0.5).join());\n\
+            print(scale([0.5, , 2.5], 3, 2).join(), scale([0.5, 1.5], 3, 2).join());\n\
+            print(scale([0.5, 1.5, 2.5], 3, NaN).join(), 1 / scale([0.5], 1, -0)[0]);";
+        let want = [
+            "0.25,0.75,1.25,2.25 0.5,1,1.5",
+            "1,NaN,5 1,3,NaN",
+            "NaN,NaN,NaN -Infinity",
+        ];
+        for config in [Config::default(), Config::stress()] {
+            let r = run_script(&config, SCALE, warm, main, "scale").expect("run");
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            assert_eq!(r.compiled.output, want);
+            let g = &r.report.graph;
+            let header = g
+                .lines()
+                .position(|l| l.contains(" loop preds"))
+                .unwrap_or_else(|| panic!("no loop\n{g}"));
+            let before: Vec<&str> = g.lines().take(header).collect();
+            assert!(
+                before.iter().any(|l| l.contains("CheckArray"))
+                    && before.iter().any(|l| l.contains("DoubleElements")),
+                "the kind guard and DoubleElements are not before the loop\n{g}"
+            );
+            assert!(
+                !g.lines().skip(header).any(|l| l.contains("CheckArray")),
+                "a kind guard in the loop\n{g}"
+            );
+            // The INT32 array took no exit (the hole and the short array exit).
+            assert!(!r.fired().is_empty(), "no exit at all: {:?}", r.exits);
+        }
+    }
+
+    /// M6-P1 JIT review F1 (`build::hoist_array_checks`): a kind guard in an `if` arm stays
+    /// in the loop. A call that never takes the arm (`a` is not an array) takes no exit; before
+    /// the fix the guard moved to the preheader and each such call exited at the loop entry
+    /// (10 exits). In `both` the arm's guard reads the guard that moved from the block that
+    /// runs on every iteration, so no kind guard stays in the loop. Outputs equal to T0.
+    #[test]
+    fn a_kind_guard_in_an_if_arm_stays_in_the_loop() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function cond(a, c, n) { var s = 0; for (var i = 0; i < n; i++) { if (c === 1) { s = s + a[i]; } } return s; }\n\
+            function both(a, c, n) { var s = 0; for (var i = 0; i < n; i++) { if (c === 1) { s = s + a[i]; } s = s + a[i]; } return s; }";
+        let warm = "for (var w = 0; w < 300; w++) { cond([0.5, 1.5], 1, 2); cond([0.5], 0, 2); both([0.5, 1.5], w & 1, 2); }";
+        let skip =
+            "var t = 0; for (var k = 0; k < 10; k++) t = t + cond(undefined, 0, 4); print(t);";
+        let r = run_script(&Config::default(), defs, warm, skip, "cond").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+        assert_eq!(r.compiled.output, ["0"]);
+        assert_eq!(
+            r.exits.iter().sum::<u64>(),
+            0,
+            "exits {:?}\n{}",
+            r.exits,
+            r.report.graph
+        );
+        let take = "print(cond([0.5, 1.5, 2.5], 1, 3), cond([1, 2], 1, 2), cond([0.5], 0, 1), cond([0.5, , 1], 1, 3));\n\
+            print(both([0.5, 1.5], 1, 2), both([0.5, 1.5], 0, 2), both([1, 2], 1, 2), both(['x', 1], 0, 2));";
+        for config in [Config::default(), Config::stress()] {
+            for name in ["cond", "both"] {
+                let r = run_script(&config, defs, warm, take, name).expect("run");
+                assert!(r.equal(), "{name}: {:?} vs {:?}", r.compiled, r.t0);
+            }
+        }
+        let r = run_script(&Config::default(), defs, warm, skip, "both").expect("run");
+        let g = &r.report.graph;
+        let header = g
+            .lines()
+            .position(|l| l.contains(" loop preds"))
+            .unwrap_or_else(|| panic!("no loop\n{g}"));
+        assert!(
+            g.lines().take(header).any(|l| l.contains("CheckArray")),
+            "no kind guard before the loop\n{g}"
+        );
+        assert!(
+            !g.lines().skip(header).any(|l| l.contains("CheckArray")),
+            "a kind guard in the loop\n{g}"
         );
     }
 
@@ -1652,7 +2228,9 @@ mod tests {
         }
         use crate::emit_a64::{EmitOptions, ForceTable};
         let warm = "for (var q = 0; q < 20; q++) { dot([1, 2, 3], [4, 5, 6], 3); dot([0.5, 1.5], [2, 0.25], 2); scale([0.5, 1.5, 2.5], 3, 1.5); }";
-        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), scale([1, 2, 3], 3, 0.5).join());";
+        // `scale` runs twice: its loop-invariant checks run once per call, in the loop's
+        // preheader (SPIKEC-10), and a guard is forced at its second pass.
+        let main = "print(dot([1, 2, 3], [4, 5, 6], 3), dot([0.5, 1.5], [2, 0.25], 2), scale([1, 2, 3], 3, 0.5).join(), scale([1, 2, 3], 3, 0.5).join());";
         let defs = format!("{DOT}\n{SCALE}");
         for name in ["dot", "scale"] {
             // No natural exit in `main`: each exit below is the forced one.
@@ -1871,7 +2449,8 @@ mod tests {
         let live = facts::live(&s, script).expect("facts");
         let input = s.input_of(f).expect("input");
         let (code, report) =
-            crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
+            crate::compile_input(&input, &facts::for_function(&live, script.unit.unit(), id))
+                .expect("compile");
         let meta = report.emit.meta.encode();
         let mut runs = Vec::new();
         for _ in 0..2 {
@@ -1924,6 +2503,25 @@ mod tests {
             "print(ratio(1, 4, '1'));",
             "ratio",
         );
+    }
+
+    /// A BigInt never runs in compiled code (spec-temporal B2, design SPEC-T-D8): a hot
+    /// `a === b` site warmed on numbers fails its int32 guard on `1n, 1n` and exits; T0 runs
+    /// the compare by value (two cells, one value: true).
+    #[test]
+    fn a_bigint_operand_exits_to_t0() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function same(a, b) { if (a === b) { return 1; } return 0; }";
+        let r = deopts(
+            defs,
+            "for (var q = 0; q < 20; q++) { same(q, q); same(q, 1); }",
+            "print(same(1n, 1n), same(1n, 2n), same(1n, 1), same(2n ** 64n, 18446744073709551616n));",
+            "same",
+        );
+        assert_eq!(r.compiled.output, ["1 0 0 1"]);
+        assert!(r.report.graph.contains("Compare(Eq)"), "{}", r.report.graph);
     }
 
     /// Context slot loads and calls (SPIKEC-4 built them; WI-SC5 emits them): `inner`, an
@@ -2075,7 +2673,8 @@ mod tests {
         let [id] = ids[..] else { panic!("{ids:?}") };
         let live = facts::live(&s, script).expect("facts");
         let input = script.unit_input(id, h.name).expect("input");
-        let g = crate::graph_report(&input, &facts::for_function(&live, id)).expect("graph");
+        let g = crate::graph_report(&input, &facts::for_function(&live, script.unit.unit(), id))
+            .expect("graph");
         let lines = g.lines().join("\n");
         for op in [
             "Float64",
@@ -2179,9 +2778,11 @@ mod tests {
     }
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
-    /// the element guards stay unbacked (FACT_SCHEMA 1 has no receiver, bounds or hole field);
-    /// a site that saw a key that is not an index takes the generic keyed entry (SPIKEC-4;
-    /// SPIKEC-3 refused it).
+    /// since M6-P3 (FACT_SCHEMA 2's keyed bits, `build::element_bases_of`) a record of present
+    /// reads of int32 Arrays backs the kind and element guards too, and one that saw an index
+    /// out of bounds backs only the kind guard; a site that saw a key that is not an index
+    /// takes the generic keyed entry (SPIKEC-4; SPIKEC-3 refused it). The name stays (the
+    /// SPIKEC-3 test): the basis is a label, so the code bytes are the same either way.
     const AT: &str = "function at(a, k) { return a[k] | 0; }";
 
     #[test]
@@ -2200,16 +2801,38 @@ mod tests {
             .collect();
         assert_eq!(key.len(), 1, "{g}");
         assert!(key[0].contains("Fact(Runtime)"), "{g}");
-        for l in g
-            .lines()
-            .filter(|l| l.contains("CheckArray") || l.contains("LoadElement"))
-        {
-            assert!(l.contains("Unbacked"), "{l}\n{g}");
+        let element = |g: &str| -> Vec<String> {
+            g.lines()
+                .filter(|l| l.contains("CheckArray") || l.contains("LoadElement"))
+                .map(str::to_string)
+                .collect()
+        };
+        let el = element(g);
+        assert_eq!(el.len(), 2, "{g}");
+        for l in &el {
+            assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
         let sites = &r.report.build.keyed;
         assert_eq!(sites.len(), 1, "{sites:?}");
         assert_eq!(sites[0].keys, Some(ep9_facts::KeySet::INDEX));
         assert!(!sites[0].store);
+        let fact = crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime);
+        assert_eq!(sites[0].element_bases, (fact, fact));
+        // A warm-up that also read past the end: the kind guard keeps its fact, the element
+        // guard is unbacked; the same code bytes, and the output equals T0.
+        let oob = run_script(
+            &Config::default(),
+            AT,
+            "var w = [1, 2, 3, 4]; for (var q = 0; q < 20; q++) { at(w, q & 3); at(w, 4 + q); }",
+            "print(at([7, 8, 9], 2), at([5], 0), at([5], 3));",
+            "at",
+        )
+        .expect("run");
+        assert!(oob.equal(), "{:?} vs {:?}", oob.compiled, oob.t0);
+        assert_eq!(oob.compiled.output, ["9 5 0"]);
+        let s = &oob.report.build.keyed;
+        assert_eq!(s[0].element_bases, (fact, crate::ir::GuardBasis::Unbacked));
+        assert_eq!(oob.report.emit.code_bytes, r.report.emit.code_bytes);
         // An index of another form (a string) fails the int32 key check: a deopt, never a
         // wrong value (T0 prints 8).
         let t = deopts(AT, warm, "print(at([7, 8, 9], '1'));", "at");
@@ -2521,11 +3144,12 @@ mod tests {
             let script = s.script("defs.js").expect("defs");
             let id = script.functions_named("gen")[0];
             let live = facts::live(s, script).expect("facts");
-            let recs: Vec<(u32, ep9_facts::SlotFacts)> = facts::for_function(&live, id)
-                .records
-                .into_iter()
-                .map(|(k, f)| (k, f.clone()))
-                .collect();
+            let recs: Vec<(u32, ep9_facts::SlotFacts)> =
+                facts::for_function(&live, script.unit.unit(), id)
+                    .records
+                    .into_iter()
+                    .map(|(k, f)| (k, f.clone()))
+                    .collect();
             recs
         };
         let mut t0 = Session::new(&config).expect("session");
@@ -2546,7 +3170,8 @@ mod tests {
             let id = script.functions_named("gen")[0];
             let live = facts::live(&s, script).expect("facts");
             let input = s.input_of(f).expect("input");
-            crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile")
+            crate::compile_input(&input, &facts::for_function(&live, script.unit.unit(), id))
+                .expect("compile")
         };
         // Every site is generic: the ones that saw names, and `t[0] = s` (indexes only, but
         // its value is a Tagged phi, no element copy; M5-P3 reviewer B F1).
@@ -2608,6 +3233,7 @@ mod tests {
                 ..PropertyFacts::default()
             },
             keys,
+            ..KeyedFacts::default()
         };
         let src = FactSource::Profiled;
         let ok = |k: KeySet, s: IcState| keyed_path_of(&rec(k, s), src);
@@ -2773,19 +3399,21 @@ mod tests {
         assert!(r.equal, "{}", r.line());
         assert_eq!(r.probe_exit, Some(0), "{}", r.line());
         // Since FACTS2 (M4-P2) the live facts back the int32 input checks too, as with the
-        // stand-in (`am3_with_int_facts_equals_t0`): 11 fact guards; unbacked are the 6 keyed
-        // guards, the 9 overflow guards of `+` and `-`, and the entry checks of the loop
-        // phis `i`, `j` and `c`, whose only checks are in the loop body, not the header.
+        // stand-in (`am3_with_int_facts_equals_t0`); since M6-P3 (FACT_SCHEMA 2's keyed
+        // bits) the kind guards and element guards of the 3 loads too: 16 fact guards;
+        // unbacked are the 1 keyed guard of the store, the 9 overflow guards of `+` and
+        // `-`, and the entry checks of the loop phis `i`, `j` and `c`, whose only checks are
+        // in the loop body, not the header.
         assert_eq!(
             (r.report.fact_guards, r.report.unbacked_guards),
-            (11, 18),
+            (16, 13),
             "{}",
             r.report.graph
         );
         // Keyed facts (SPIKEC-3): the 4 keyed sites (3 loads, 1 store) have index-only
         // records, so each key check would be a fact guard; but every key is a loop phi
-        // (`i`, `j`) that is already int32, so no key check is left in the graph, and the
-        // element guards stay unbacked (no receiver, bounds or hole field in schema 1).
+        // (`i`, `j`) that is already int32, so no key check is left in the graph. The loads'
+        // records saw only present elements of int32 Arrays (M6-P3: they back the guards).
         let k = &r.report.build.keyed;
         assert_eq!(k.len(), 4, "{k:?}");
         assert_eq!(k.iter().filter(|s| s.store).count(), 1, "{k:?}");
@@ -2854,10 +3482,54 @@ mod tests {
         );
     }
 
+    /// MC-P2-SCLEFT (M6-P3 SC-FIX): `spike-c tier crypto --all` compiles am3; montReduce and
+    /// bnpSquareTo stay in T0 by V11-D30 (`kernels::STAYS_IN_T0`), so the set run names them
+    /// and passes. A refusal of any other hot function still fails, and so does a refusal of
+    /// montReduce for a cause other than the decided opcode (M6-P3 fixer, J1).
+    #[test]
+    fn crypto_all_names_the_functions_that_stay_in_t0() {
+        if !aarch64() {
+            return;
+        }
+        if !kernels::bench_present() {
+            eprintln!("skip: no v8-v7 checkout");
+            return;
+        }
+        let k = kernels::kernel("crypto").expect("crypto");
+        let mut run = run_set(k, 1, &Config::default(), &[]).expect("run");
+        let names: Vec<&str> = run.members.iter().map(|m| m.function).collect();
+        assert_eq!(names, ["am3"]);
+        let refused: Vec<&str> = run.refused.iter().map(|(n, _)| *n).collect();
+        assert_eq!(refused, ["montReduce", "bnpSquareTo"]);
+        assert_eq!(set_ok(&run, false), Ok(()), "{:?}", run.lines());
+        let lines = run.lines();
+        assert!(
+            lines.iter().any(|l| l
+                .starts_with("montReduce: refused, stays in T0 (by V11-D30, SCP §3 config C): ")),
+            "{lines:?}"
+        );
+        run.refused
+            .push(("am3", "am3: a refusal no decision names".into()));
+        let bad = set_ok(&run, false).expect_err("a refusal of am3");
+        assert_eq!(bad, ["am3: refused: am3: a refusal no decision names"]);
+        run.refused.pop();
+        let other = "montReduce: frame-state value n12 is not defined (a builder defect)";
+        run.refused[0].1 = other.into();
+        let bad = set_ok(&run, false).expect_err("montReduce refused for another cause");
+        assert_eq!(bad, [format!("montReduce: refused: {other}")]);
+        let lines = run.lines();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == &format!("montReduce: refused, stays in T0: {other}")),
+            "{lines:?}"
+        );
+    }
+
     /// am3 with the FACTS2 stand-in int records: the int32 input checks are fact guards; the
-    /// keyed element guards (no schema-1 field backs them), the overflow guards of `+` and `-` and the entry
-    /// checks of the phis that the header does not check stay unbacked, and the output still
-    /// equals T0.
+    /// keyed guard of the store (the loads' guards have FACT_SCHEMA 2 facts since M6-P3), the
+    /// overflow guards of `+` and `-` and the entry checks of the phis that the header does
+    /// not check stay unbacked, and the output still equals T0.
     #[test]
     fn am3_with_int_facts_equals_t0() {
         if !aarch64() {
@@ -2889,7 +3561,7 @@ mod tests {
         assert_eq!(r.report.unbacked_guards, unbacked.len());
         assert_eq!(
             (keyed, overflow, entry, unbacked.len()),
-            (6, 9, 3, 18),
+            (1, 9, 3, 13),
             "{}",
             r.report.graph
         );
@@ -2909,3 +3581,15 @@ mod tests {
         assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
     }
 }
+
+/// The M6-P1 JIT review tests (`tier/review_tests.rs`).
+#[cfg(test)]
+mod review_tests;
+
+/// The SPIKEC-10 speed tests (`tier/speed_tests.rs`).
+#[cfg(test)]
+mod speed_tests;
+
+/// The SPIKEC-10 short lazy-deopt probe tests (`tier/lazy_tests.rs`).
+#[cfg(test)]
+mod lazy_tests;

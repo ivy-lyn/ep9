@@ -34,14 +34,11 @@ fn dummy_kind(name: &'static str) -> CellKind {
 /// 5 stay.
 #[test]
 fn month_5_versions() {
-    assert_eq!(
-        (
-            black_box(versions::OBJECT_LAYOUT_VERSION),
-            versions::IC_LAYOUT_VERSION,
-            versions::VM_LAYOUT_VERSION
-        ),
-        (5, 3, 1)
-    );
+    // OBJECT_LAYOUT 6 and IC_LAYOUT 4 (M6-P0) keep every month-5 kind, id and field checked
+    // here; `tests::layout6` pins the version numbers.
+    assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 5);
+    assert!(black_box(versions::IC_LAYOUT_VERSION) >= 3);
+    assert_eq!(versions::VM_LAYOUT_VERSION, 1);
     assert_eq!(
         (
             versions::FRAME_VERSION,
@@ -141,16 +138,19 @@ fn elements_kind_values_and_storage_forms() {
 }
 
 /// H18 "elements kind values (append-only)": kind 15, the top of the 4 shape bits (never the
-/// next free value 7), is refused today (MODES-CHECK-w22 MC-w22-1). It has no storage form, no
-/// FactSnapshot kind and no kinds-set bit inside the IC_LAYOUT 3 mask, and an object whose
-/// shape holds it fails the storage-form check (`elements::storage_form_ok`, `elements::check`).
+/// next free value 7), is refused today (MODES-CHECK-w22 MC-w22-1). It has no storage form and
+/// no FactSnapshot kind, and an object whose shape holds it fails the storage-form check
+/// (`elements::storage_form_ok`, `elements::check`). Its kinds-set bit (25) is inside the
+/// IC_LAYOUT 4 mask (bits 10-25, V11-D4), so its append will move no IC_LAYOUT (it was outside
+/// the IC_LAYOUT 3 mask, bits 10-16).
 #[test]
 fn h18_kind_value_probe_15() {
     const PROBE: u8 = 15;
     assert_eq!(PROBE, ek::MAX, "15 is the top of the 4 shape bits");
     assert_eq!(elements::storage(PROBE), None);
     assert_eq!(elements::to_fact(PROBE), None);
-    assert_eq!(elements::kinds_set_bit(PROBE) & elements::KINDS_SET_MASK, 0);
+    assert_eq!(elements::kinds_set_bit(PROBE), 1 << 25);
+    assert_ne!(elements::kinds_set_bit(PROBE) & elements::KINDS_SET_MASK, 0);
     let iso = isolate(config(Dispatch::DEFAULT, false));
     let rt = &*iso.rt;
     let a = object::new_array(rt, 1);
@@ -268,11 +268,11 @@ fn h29_value_repr_probe_7() {
         PROBE,
         "7 is the top of the field"
     );
-    // One exit record (pc 8, bytecode 0, counter 0, no feedback slot, no inline frame) with
-    // one value: machine register 0 into the accumulator, in the repr `repr`.
+    // One exit record (pc 8, bytecode 0, counter 0, no feedback slot, reason 0, no inline
+    // frame) with one value: machine register 0 into the accumulator, in the repr `repr`.
     let table = |repr: u8| -> Vec<u8> {
         let tag = form::LOC_REG | repr << form::REPR_SHIFT | form::ACC;
-        vec![1, 0, form::RECORD_EXIT, 8, 0, 0, 0, 0, 1, tag, 0]
+        vec![1, 0, form::RECORD_EXIT, 8, 0, 0, 0, 0, 0, 1, tag, 0]
     };
     // The wire values as built, and the Repr each decodes to (Spike C `deopt_meta.rs` writes
     // the same values): a swap or a reuse of a value fails here.

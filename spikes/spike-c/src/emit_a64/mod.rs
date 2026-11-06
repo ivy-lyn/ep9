@@ -97,9 +97,9 @@ use crate::vm_layout;
 
 type Ops = VecAssembler<Aarch64Relocation>;
 
-/// The bytes of the shared exit's register dump below sp: x0-x30, one word each (word n =
-/// xn, `ep9_vm` `deopt::DUMP_REGS`), rounded up to keep sp 16-aligned.
-const DUMP_BYTES: u32 = 256;
+/// The bytes of the shared exit's register dump below sp: x0-x30, one word each (word n = xn,
+/// `ep9_vm` `deopt::DUMP_REGS`), 16-aligned: the DEOPT_META export (a hand fact until M6-P0).
+const DUMP_BYTES: u32 = layout::DUMP_BYTES;
 
 /// The form of the exit stubs (V10-D31: the call form is the default; MC-w15-14: the movz
 /// form stays as a report).
@@ -290,6 +290,22 @@ fn scaled(off: usize) -> Result<u32, Refusal> {
 /// tag, an immediate Value or an offset), never an address.
 fn mov64(ops: &mut Ops, rd: u8, v: u64) {
     let h = |i: u32| ((v >> (16 * i)) & 0xFFFF) as u32;
+    // SPIKEC-10: `movn` and a `movk` per halfword that is not 0xFFFF when more halfwords
+    // are 0xFFFF than 0 (the DOUBLE hole: 2 instructions, not 4).
+    let ones = (0..4).filter(|&i| h(i) == 0xFFFF).count();
+    let zeros = (0..4).filter(|&i| h(i) == 0).count();
+    if ones > zeros {
+        let first = (0..4).find(|&i| h(i) != 0xFFFF).unwrap_or(0);
+        let (f, fs) = (!h(first) & 0xFFFF, first * 16);
+        dynasm!(ops ; .arch aarch64 ; movn X(rd), f, lsl fs);
+        for i in first + 1..4 {
+            if h(i) != 0xFFFF {
+                let (p, s) = (h(i), i * 16);
+                dynasm!(ops ; .arch aarch64 ; movk X(rd), p, lsl s);
+            }
+        }
+        return;
+    }
     let first = (0..4).find(|&i| h(i) != 0).unwrap_or(0);
     let (f, fs) = (h(first), first * 16);
     dynasm!(ops ; .arch aarch64 ; movz X(rd), f, lsl fs);
@@ -299,6 +315,14 @@ fn mov64(ops: &mut Ops, rd: u8, v: u64) {
             dynasm!(ops ; .arch aarch64 ; movk X(rd), p, lsl s);
         }
     }
+}
+
+/// The code [`mov64`] makes for x`rd` = `v` (the SPIKEC-10 tests).
+#[cfg(test)]
+pub(crate) fn mov64_words(rd: u8, v: u64) -> Vec<u8> {
+    let mut ops = Ops::new(0);
+    mov64(&mut ops, rd, v);
+    ops.finalize().expect("code")
 }
 
 /// `ep9_vm::layout::NATIVE_WORD_OFFSET`, the offset of a frame's native words, for an `eor`
@@ -490,6 +514,38 @@ struct Emitter<'a> {
     force: Option<&'a ForceTable>,
     /// The int32 junk build ([`EmitOptions::int32_junk`]).
     int32_junk: bool,
+    /// SPIKEC-10: the Float64 node whose value d19 also holds (the last Float64 op's result),
+    /// so the next op reads it there, not through a `fmov` from its register: the chain of a
+    /// loop-carried double (lin_solve's `lastX`) loses two moves per op. Cleared at each
+    /// block start and before any node not in [`keeps_d19`] (a call or an out-of-line path
+    /// that comes back may change d19; no other code writes it).
+    d19: Option<NodeId>,
+    /// SPIKEC-10 (the lazy-deopt probe): each call site's lazy exit label, its call node,
+    /// the native offset of its return address and its bytecode offset.
+    lazy: Vec<(DynamicLabel, NodeId, u32, u32)>,
+    /// The lazy exits as emitted (the call records).
+    lazy_sites: Vec<crate::deopt_meta::LazySite>,
+}
+
+/// The ops whose code keeps d19 (SPIKEC-10, [`Emitter::d19`]): no out-of-line path that comes
+/// back (a guard's exit never does), and no write of d19.
+fn keeps_d19(node: &crate::ir::Node) -> bool {
+    match node.op {
+        Op::Incoming(_)
+        | Op::Const(_)
+        | Op::ConstInt32(_)
+        | Op::ConstFloat64(_)
+        | Op::Phi
+        | Op::Float64(_)
+        | Op::Int32(_)
+        | Op::CheckInt32
+        | Op::TruncateInt32
+        | Op::Int32ToFloat64
+        | Op::CheckNumber => true,
+        // A load has no out-of-line path that comes back (a store's generic path does).
+        Op::LoadElement => true,
+        _ => false,
+    }
 }
 
 /// Emits the code of `graph` (built from `input`) with the registers of `alloc` and the
@@ -565,6 +621,9 @@ pub fn emit_opts(
         form,
         force: opts.force,
         int32_junk: opts.int32_junk,
+        d19: None,
+        lazy: Vec::new(),
+        lazy_sites: Vec::new(),
     };
     let overflow = e.ops.new_dynamic_label();
     e.prologue(overflow)?;
@@ -574,14 +633,15 @@ pub fn emit_opts(
     let epilogue = e.ret_and_leave()?;
     e.out_of_line(overflow)?;
     let report_traps = std::mem::take(&mut e.trap_at);
+    let lazy_sites = std::mem::take(&mut e.lazy_sites);
     let guards = e.traps.len();
     let native_at = std::mem::take(&mut e.native_at);
     let code = e
         .ops
         .finalize()
         .map_err(|e| Refusal::Limit(format!("dynasm: {e}")))?;
-    let meta =
-        crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps).map_err(Refusal::Limit)?;
+    let meta = crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps, &lazy_sites)
+        .map_err(Refusal::Limit)?;
     let report = EmitReport {
         code_bytes: code.len(),
         frame_bytes: frame,
@@ -705,6 +765,7 @@ impl Emitter<'_> {
                 let bits = match self.g.node(v).op {
                     Op::Const(b) => b,
                     Op::ConstInt32(i) => u64::from(i as u32),
+                    Op::ConstFloat64(b) => b,
                     ref op => return Err(Refusal::Limit(format!("constant {op:?}"))),
                 };
                 mov64(&mut self.ops, stage, bits);
@@ -761,10 +822,14 @@ impl Emitter<'_> {
             .copied()
             .filter(|&n| self.g.node(n).live)
             .collect();
+        self.d19 = None;
         for n in nodes {
             let off = self.g.node(n).offset;
             let here = self.ops.offset().0 as u32;
             self.native_at.entry(off).or_insert(here);
+            if !keeps_d19(self.g.node(n)) {
+                self.d19 = None;
+            }
             self.node(bi, n)?;
         }
         Ok(())
@@ -774,7 +839,60 @@ impl Emitter<'_> {
         let node = self.g.node(n).clone();
         let ins = node.inputs.clone();
         match &node.op {
-            Op::Incoming(_) | Op::Const(_) | Op::ConstInt32(_) | Op::Phi => {}
+            Op::Incoming(_) | Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) | Op::Phi => {}
+            Op::TruncateFloat64 => {
+                // ToInt32 of a double (SPIKEC-9): truncate toward zero; exact when the
+                // truncated double equals the int32 made back from the result (NaN, an
+                // infinity and a value past int32 differ, and exit).
+                let trap = self.trap(n)?;
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; fmov d16, X(x)
+                    ; fcvtzs w16, d16
+                    ; frintz d17, d16
+                    ; scvtf d18, w16
+                    ; fcmp d17, d18
+                    ; b.ne =>trap
+                    ; mov W(d), w16
+                );
+                self.finish(n);
+            }
+            Op::CompareFloat64(c) => {
+                if crate::regalloc::fused(self.g, n) {
+                    return Ok(());
+                }
+                let l = self.src(ins[0], 12)?;
+                let r = self.src(ins[1], 13)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r) ; fcmp d16, d17);
+                // IEEE order with the JS NaN rule: an unordered compare sets C and V, so `<`
+                // is mi and `<=` is ls (false on NaN), `>` gt and `>=` ge (false: N != V),
+                // `==` eq (false) and `!=` ne (true).
+                match c {
+                    Cond::Lt => dynasm!(self.ops ; .arch aarch64 ; cset W(d), mi),
+                    Cond::Le => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ls),
+                    Cond::Gt => dynasm!(self.ops ; .arch aarch64 ; cset W(d), gt),
+                    Cond::Ge => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ge),
+                    Cond::Eq => dynasm!(self.ops ; .arch aarch64 ; cset W(d), eq),
+                    Cond::Ne => dynasm!(self.ops ; .arch aarch64 ; cset W(d), ne),
+                }
+                self.finish(n);
+            }
+            Op::LoadGlobal => {
+                // RuntimeTable entry 11 (SPIKEC-9): the global the LdaGlobal at this offset
+                // names; the allocatable caller-saved registers saved around it, 0 unwinds.
+                save_caller_saved(&mut self.ops);
+                call_table(&mut self.ops, layout::RT_LOAD_GLOBAL, node.offset)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+                restore_caller_saved(&mut self.ops);
+                let throw = self.throw_at(node.offset);
+                dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov X(d), x16);
+                self.finish(n);
+            }
             Op::CheckInt32 | Op::TruncateInt32 => {
                 let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
@@ -826,8 +944,8 @@ impl Emitter<'_> {
                 // The kind guard (WI-SC7; M5-P1-ORCH-11: the shape is the kind source): an
                 // Array whose shape's elements kind (counts bits 28-31) is in ARRAY_KINDS.
                 // DICTIONARY and the reserved kinds exit, fail closed (V10-D9b). The shape is
-                // the cell at (address & !(SHAPE_CAGE_ALIGN - 1)) | ShapeId (vm_layout: hand
-                // facts, proved on live arrays). The element ops read this node's result, so
+                // the cell at (address & !(SHAPE_CAGE_ALIGN - 1)) | ShapeId (layout exports,
+                // which vm_layout::check proves on live arrays). The element ops read this node's result, so
                 // none of them, a raw f64 load included, runs before the guard (MC-w19-5).
                 let trap = self.trap(n)?;
                 let x = self.src(ins[0], 12)?;
@@ -871,7 +989,7 @@ impl Emitter<'_> {
                 let fi_word = layout::FP_FUNCTION_INFO as i32;
                 let entry = vm_layout::FEEDBACK_SLOTS + vm_layout::FEEDBACK_SLOT_SIZE * site;
                 let (poly, hit) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
-                let (hole, undefined) = (vm_layout::HOLE as u32, VALUE_UNDEFINED as u32);
+                let (hole, undefined) = (vm_layout::HOLE as u32, layout::VALUE_UNDEFINED as u32);
                 let native_word = native_word_offset()?;
                 let (shape_id, key, value) = (
                     vm_layout::SHAPE_ID_BYTE,
@@ -948,6 +1066,50 @@ impl Emitter<'_> {
                 dynasm!(self.ops ; .arch aarch64 ; ldr X(d), [X(x), o]);
                 self.finish(n);
             }
+            Op::LoadSlotsField { offset } => {
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let s = scaled(crate::vm_layout::OBJECT_SLOTS as usize)?;
+                let o = scaled(*offset as usize)?;
+                dynasm!(self.ops ; .arch aarch64 ; ldr x16, [X(x), s] ; ldr X(d), [x16, o]);
+                self.finish(n);
+            }
+            Op::DoubleElements => {
+                // SPIKEC-9 task 8 (`build::hoist_array_checks`, in a loop's preheader): the
+                // array's elements word if it is an ELEMENTS_DOUBLE cell and the array's int32
+                // length is at most the cell's capacity, else 0. No exit.
+                let arr = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let (len, elems, kind) = (
+                    vm_layout::ARRAY_LENGTH,
+                    vm_layout::ARRAY_ELEMENTS,
+                    vm_layout::KIND_BYTE,
+                );
+                let doubles = u32::from(vm_layout::KIND_ELEMENTS_DOUBLE);
+                let cap = vm_layout::ELEMENTS_DOUBLE_CAPACITY;
+                let (zero, done) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+                dynasm!(self.ops ; .arch aarch64 ; ldr x16, [X(arr), elems]);
+                mov64(&mut self.ops, 17, NOT_CELL_MASK);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; tst x16, x17
+                    ; b.ne =>zero
+                    ; cbz x16, =>zero
+                    ; ldrb w17, [x16, kind]
+                    ; cmp w17, doubles
+                    ; b.ne =>zero
+                    ; ldr w17, [x16, cap]
+                    ; ldr w15, [X(arr), len]
+                    ; cmp w15, w17
+                    ; b.hi =>zero
+                    ; mov X(d), x16
+                    ; b =>done
+                    ; =>zero
+                    ; movz X(d), 0
+                    ; =>done
+                );
+                self.finish(n);
+            }
             Op::LoadElement | Op::StoreElement => {
                 // Bounds by `length`; then the storage form by the elements cell's kind byte
                 // (H18: it follows the elements kind): ELEMENTS (Values) or ELEMENTS_DOUBLE (raw
@@ -978,6 +1140,12 @@ impl Emitter<'_> {
                     (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
                 // A Tagged store value's out-of-line path (SPIKEC-7, [`Emitter::tagged_slow`]).
                 let tagged_slow = self.tagged_slow(v, done, node.offset, [arr, i]);
+                // SPIKEC-9 task 8: a last input is the loop's DoubleElements: a cell (the
+                // ELEMENTS_DOUBLE store at the loop's entry, which the loop keeps) or 0.
+                let cell = ins.len() == if store { 4 } else { 3 };
+                if cell {
+                    self.double_fast(n, arr, i, v, *ins.last().expect("the cell"), trap, done)?;
+                }
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; ldr w16, [X(arr), len]
@@ -1111,6 +1279,25 @@ impl Emitter<'_> {
                 }
             }
             Op::Int32(op) => {
+                // SPIKEC-10: `+` and `-` of a constant 0..=4095 take it as an immediate.
+                let imm = match self.g.node(ins[1]).op {
+                    Op::ConstInt32(c) if matches!(op, Int32Op::Add | Int32Op::Sub) => {
+                        u32::try_from(c).ok().filter(|&c| c <= 4095)
+                    }
+                    _ => None,
+                };
+                if let Some(c) = imm {
+                    let trap = self.trap(n)?;
+                    let l = self.src(ins[0], 12)?;
+                    let d = self.dst(n)?;
+                    if *op == Int32Op::Add {
+                        dynasm!(self.ops ; .arch aarch64 ; adds W(d), WSP(l), #c ; b.vs =>trap);
+                    } else {
+                        dynasm!(self.ops ; .arch aarch64 ; subs W(d), WSP(l), #c ; b.vs =>trap);
+                    }
+                    self.finish(n);
+                    return Ok(());
+                }
                 let l = self.src(ins[0], 12)?;
                 let r = self.src(ins[1], 13)?;
                 let d = self.dst(n)?;
@@ -1225,18 +1412,29 @@ impl Emitter<'_> {
                 self.finish(n);
             }
             Op::Float64(op) => {
-                let l = self.src(ins[0], 12)?;
-                let r = self.src(ins[1], 13)?;
-                let d = self.dst(n)?;
-                dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r));
-                match op {
-                    FloatOp::Add => dynasm!(self.ops ; .arch aarch64 ; fadd d16, d16, d17),
-                    FloatOp::Sub => dynasm!(self.ops ; .arch aarch64 ; fsub d16, d16, d17),
-                    FloatOp::Mul => dynasm!(self.ops ; .arch aarch64 ; fmul d16, d16, d17),
-                    FloatOp::Div => dynasm!(self.ops ; .arch aarch64 ; fdiv d16, d16, d17),
+                // The operands in d16 and d17, or in d19 where it holds one (SPIKEC-10); the
+                // result in d19 and in its register.
+                let (dl, dr) = (self.d19 == Some(ins[0]), self.d19 == Some(ins[1]));
+                let l = if dl { 19 } else { 16 };
+                let r = if dr { 19 } else { 17 };
+                if !dl {
+                    let x = self.src(ins[0], 12)?;
+                    dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(x));
                 }
-                dynasm!(self.ops ; .arch aarch64 ; fmov X(d), d16);
+                if !dr {
+                    let x = self.src(ins[1], 13)?;
+                    dynasm!(self.ops ; .arch aarch64 ; fmov d17, X(x));
+                }
+                let d = self.dst(n)?;
+                match op {
+                    FloatOp::Add => dynasm!(self.ops ; .arch aarch64 ; fadd d19, D(l), D(r)),
+                    FloatOp::Sub => dynasm!(self.ops ; .arch aarch64 ; fsub d19, D(l), D(r)),
+                    FloatOp::Mul => dynasm!(self.ops ; .arch aarch64 ; fmul d19, D(l), D(r)),
+                    FloatOp::Div => dynasm!(self.ops ; .arch aarch64 ; fdiv d19, D(l), D(r)),
+                }
+                dynasm!(self.ops ; .arch aarch64 ; fmov X(d), d19);
                 self.finish(n);
+                self.d19 = Some(n);
             }
             Op::BoxFloat64 => {
                 let x = self.src(ins[0], 12)?;
@@ -1289,6 +1487,11 @@ impl Emitter<'_> {
                 save_caller_saved(&mut self.ops);
                 mov64(&mut self.ops, 3, VALUE_UNDEFINED);
                 call_table(&mut self.ops, layout::RT_CALL_ANY, node.offset)?;
+                // SPIKEC-10: the return address; a lazy deopt swaps it for the lazy exit.
+                if node.lazy.is_some() {
+                    let (l, ret) = (self.ops.new_dynamic_label(), self.ops.offset().0 as u32);
+                    self.lazy.push((l, n, ret, node.offset));
+                }
                 dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
                 restore_caller_saved(&mut self.ops);
                 let throw = self.throw_at(node.offset);
@@ -1359,7 +1562,23 @@ impl Emitter<'_> {
                 let lt = self.edge(bi, t);
                 let lf = self.edge(bi, f);
                 let c = ins[0];
-                if crate::regalloc::fused(self.g, c) {
+                if crate::regalloc::fused(self.g, c)
+                    && let Op::CompareFloat64(cond) = self.g.node(c).op
+                {
+                    // A fused double compare (SPIKEC-9; NaN rule as the unfused form).
+                    let ci = self.g.node(c).inputs.clone();
+                    let l = self.src(ci[0], 12)?;
+                    let r = self.src(ci[1], 13)?;
+                    dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r) ; fcmp d16, d17);
+                    match cond {
+                        Cond::Lt => dynasm!(self.ops ; .arch aarch64 ; b.mi =>lt),
+                        Cond::Le => dynasm!(self.ops ; .arch aarch64 ; b.ls =>lt),
+                        Cond::Gt => dynasm!(self.ops ; .arch aarch64 ; b.gt =>lt),
+                        Cond::Ge => dynasm!(self.ops ; .arch aarch64 ; b.ge =>lt),
+                        Cond::Eq => dynasm!(self.ops ; .arch aarch64 ; b.eq =>lt),
+                        Cond::Ne => dynasm!(self.ops ; .arch aarch64 ; b.ne =>lt),
+                    }
+                } else if crate::regalloc::fused(self.g, c) {
                     let Op::Compare(cond) = self.g.node(c).op else {
                         unreachable!()
                     };
@@ -1608,6 +1827,79 @@ impl Emitter<'_> {
         }
     }
 
+    /// The fast path of an element op with a DoubleElements input `cell` (SPIKEC-9 task 8):
+    /// if the cell is not 0, the bounds by `length`, the raw f64 load or store and the hole,
+    /// then a jump to `done`; with 0 it falls through to the op's full path. The DOUBLE store
+    /// stays the array's for the whole loop (`build::hoist_array_checks`), and length <=
+    /// capacity held at the loop's entry, so the capacity and form checks are not repeated.
+    #[allow(clippy::too_many_arguments)]
+    fn double_fast(
+        &mut self,
+        n: NodeId,
+        arr: u8,
+        i: u8,
+        v: Option<(u8, Repr)>,
+        cell: NodeId,
+        trap: DynamicLabel,
+        done: DynamicLabel,
+    ) -> Result<(), Refusal> {
+        let full = self.ops.new_dynamic_label();
+        let e = self.src(cell, 15)?;
+        let (len, data) = (vm_layout::ARRAY_LENGTH, vm_layout::ELEMENTS_DOUBLE_DATA);
+        let repr = self.g.node(n).repr;
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cbz X(e), =>full
+            ; ldr w16, [X(arr), len]
+            ; cmp W(i), w16
+            ; b.hs =>trap
+            ; mov x16, X(e)
+            ; add x16, x16, data
+            ; ldr x17, [x16, W(i), uxtw #3]
+        );
+        mov64(&mut self.ops, 15, vm_layout::ELEMENTS_DOUBLE_HOLE);
+        dynasm!(self.ops ; .arch aarch64 ; cmp x17, x15 ; b.eq =>trap);
+        match v {
+            None if repr == Repr::Float64 => self.double_form(n, i, None, trap)?,
+            None => {
+                let d = self.dst(n)?;
+                box_number(&mut self.ops, d, 17);
+            }
+            Some((v, Repr::Float64)) => {
+                let raw = self.ops.new_dynamic_label();
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; mov x17, X(v)
+                    ; fmov d16, x17
+                    ; fcmp d16, d16
+                    ; b.vc =>raw
+                );
+                mov64(&mut self.ops, 17, PURE_NAN_BITS);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; =>raw
+                    ; str x17, [x16, W(i), uxtw #3]
+                );
+            }
+            Some((v, Repr::Int32)) => {
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; scvtf d16, W(v)
+                    ; fmov x17, d16
+                    ; str x17, [x16, W(i), uxtw #3]
+                );
+            }
+            Some((_, r)) => {
+                return Err(Refusal::Limit(format!(
+                    "n{}: a {r:?} store with a DoubleElements input",
+                    n.0
+                )));
+            }
+        }
+        dynasm!(self.ops ; .arch aarch64 ; b =>done ; =>full);
+        Ok(())
+    }
+
     /// The SPIKEC-7 forms of an element op on an ELEMENTS_DOUBLE cell, after the bounds and
     /// hole checks (x16 = the data, x17 = the element's raw f64 bits, `i` the index): with no
     /// value, the Float64 load of node `n` (the bits as they are: no box); with the Tagged
@@ -1836,6 +2128,43 @@ impl Emitter<'_> {
             }
         }
         self.stub_bytes = self.ops.offset().0 as u32 - start;
+        // SPIKEC-10 (H29-Q4, the short lazy-deopt probe): a lazy exit per call site, entered
+        // as the call's return (x0 = the result, the callee-saved registers and sp as at the
+        // return): what the call site does after the call up to its result (restore the
+        // saved registers; 0 unwinds from the call), then the shared exit of the Deopt
+        // policy with the site's call record, which resumes T0 after the call with x0 as the
+        // accumulator. Nothing jumps here: only a swapped return address comes here.
+        if !self.lazy.is_empty() && !shared.iter().any(|(p, _)| *p == ExitPolicy::Deopt) {
+            shared.push((ExitPolicy::Deopt, self.ops.new_dynamic_label()));
+        }
+        for (l, node, ret, off) in std::mem::take(&mut self.lazy) {
+            let exit = shared
+                .iter()
+                .find(|(p, _)| *p == ExitPolicy::Deopt)
+                .expect("the Deopt shared exit")
+                .1;
+            let throw = self.throw_at(off);
+            dynasm!(self.ops ; .arch aarch64 ; =>l);
+            let stub = self.ops.offset().0 as u32;
+            dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+            restore_caller_saved(&mut self.ops);
+            dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+            let pc = self.ops.offset().0 as u32;
+            match self.form {
+                StubForm::Call => dynasm!(self.ops ; .arch aarch64 ; bl =>exit),
+                StubForm::Movz => {
+                    mov64(&mut self.ops, 16, u64::from(pc));
+                    mov64(&mut self.ops, 17, 0);
+                    dynasm!(self.ops ; .arch aarch64 ; b =>exit);
+                }
+            }
+            self.lazy_sites.push(crate::deopt_meta::LazySite {
+                node,
+                ret,
+                stub,
+                pc,
+            });
+        }
         let unwind = self.unwind;
         let shared_start = self.ops.offset().0 as u32;
         for (policy, x) in shared {
@@ -1880,7 +2209,8 @@ impl Emitter<'_> {
     /// exit stub, a record and a counter of its own, so the VM's exit counters count the
     /// guard's exits by cause. The first is [`Emitter::trap`]'s (a forced build's countdown
     /// exits there). Every record has the guard's frame state, so each resumes T0 the same
-    /// way; only the cause (not in the H29 bytes) and the stub's pc differ.
+    /// way; only the cause (the record's exit class and reason, V11-D13, V11-D14) and the
+    /// stub's pc differ.
     fn shape_traps(&mut self, n: NodeId) -> Result<[DynamicLabel; 5], Refusal> {
         let first = self.trap(n)?;
         let (_, id, offset, policy, _) = *self.traps.last().expect("the trap just made");
@@ -1898,7 +2228,7 @@ impl Emitter<'_> {
 }
 
 /// The CFI of the frame (code alignment 4, data alignment -8): `stp x29, x30, [sp, #-S]!` at
-/// 0, `mov x29, sp` at 4, then one `stp` per pair of [`SAVED`]. The epilogue at `epilogue`
+/// 0, `mov x29, sp` at 4, then one `stp` per pair of `SAVED`. The epilogue at `epilogue`
 /// restores the pairs (one `ldp` each, reversed), then `ldp x29, x30`, then `br`; its rows sit
 /// between remember/restore state, so the out-of-line code after the `br` has the body's rule.
 impl ForceTable {
@@ -2093,7 +2423,7 @@ mod tests {
                 panic!("one fill");
             };
             let live = crate::facts::live(&s, script).expect("facts");
-            let facts = crate::facts::for_function(&live, id);
+            let facts = crate::facts::for_function(&live, script.unit.unit(), id);
             let input = s.input_of(f).expect("input");
             crate::compile_input_with(&input, &facts, StubForm::Movz).expect("compile")
         };
@@ -2176,7 +2506,7 @@ mod tests {
                 panic!("one sum");
             };
             let live = crate::facts::live(&s, script).expect("facts");
-            let facts = crate::facts::for_function(&live, id);
+            let facts = crate::facts::for_function(&live, script.unit.unit(), id);
             let input = s.input_of(f).expect("input");
             let (mut g, _) = crate::build::build(&input, &facts).expect("build");
             let checks: Vec<NodeId> = g

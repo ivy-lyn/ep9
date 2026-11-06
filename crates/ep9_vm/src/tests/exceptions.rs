@@ -316,11 +316,12 @@ fn type_errors_and_not_implemented_are_catchable() {
         try_print_message(&mut s, ctx, |s| {
             s.construct_global("print", RegisterList::EMPTY);
         });
-        // 1n
+        // 1n + 1
         try_print_message(&mut s, ctx, |s| {
             let k =
                 s.b.bigint_constant(ep9_bytecode::BigIntConst::new(false, &[1]));
-            s.b.lda_constant(k);
+            s.b.lda_constant(k).star(t);
+            s.b.lda_smi(1).add(t, s.bin);
         });
         // x is not defined
         try_print_message(&mut s, ctx, |s| {
@@ -337,7 +338,7 @@ fn type_errors_and_not_implemented_are_catchable() {
             "undefined is not a function",
             "Cannot read properties of undefined (reading 'x')",
             "function print is not a constructor",
-            "not implemented in ep9 v0: BigInt values",
+            "Cannot mix BigInt and other types, use explicit conversions",
             "x is not defined",
         ]
     );

@@ -275,8 +275,8 @@ pub(crate) fn normalize(k: u64) -> u64 {
     }
 }
 
-/// SameValueZero of two normalized keys: the same bits, or two strings with the same code
-/// units.
+/// SameValueZero of two normalized keys: the same bits, two strings with the same code units,
+/// or two BigInts with the same value.
 #[inline]
 fn same_key(a: u64, b: u64) -> bool {
     a == b
@@ -284,6 +284,7 @@ fn same_key(a: u64, b: u64) -> bool {
             && is_string(b)
             && !(string::is_atom(a) && string::is_atom(b))
             && string::equals(a, b))
+        || (kind::is_bigint(a) && kind::is_bigint(b) && crate::bigint::equals(a, b))
 }
 
 /// A 32-bit mix of 64 bits (the splitmix64 finalizer), for keys that are not cells.
@@ -345,6 +346,9 @@ fn hash_of(rt: &Runtime, k: u64, create: bool) -> Option<u32> {
         Some(symbol::hash(k))
     } else if is_object(k) {
         identity_hash(rt, k, create)
+    } else if kind::is_bigint(k) {
+        // By value (H12-Q2: no address input), so equal BigInts share a bucket.
+        Some(crate::bigint::hash(k))
     } else {
         Some(mix(k))
     }

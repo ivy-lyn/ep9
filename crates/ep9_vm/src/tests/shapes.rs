@@ -529,3 +529,209 @@ fn the_fast_property_limit_is_1020() {
         shape::check(rt, last).unwrap();
     });
 }
+
+// ---- the transition table form (M6-P2 TRANS; H17 "Transition table form") -------------------
+
+/// The (capacity, live entries) of a transition table after `n` children of one shape, all
+/// kept: the first child is in the +32 word, a table of 4 holds 4, of 16 holds 16, then 63.
+fn table_after(n: usize) -> (usize, usize) {
+    match n {
+        0 | 1 => (0, 0),
+        2..=5 => (4, n - 1),
+        6..=17 => (16, n - 1),
+        _ => (MAX_TRANSITIONS - 1, n - 1),
+    }
+}
+
+#[test]
+fn a_table_past_16_slots_is_sorted_and_finds_every_child() {
+    stressed(|rt| {
+        let roots = rt.heap.scratch_roots();
+        let base = keep(&roots, add(rt, null_root(rt), "base"));
+        let first = roots.len();
+        for i in 0..40 {
+            let c = add(rt, kept(&roots, base), &format!("t{i}"));
+            keep(&roots, c);
+            assert_eq!(
+                shape::transition_table(kept(&roots, base)),
+                table_after(i + 1),
+                "after child {i}"
+            );
+            // Sorted, every child once (the table check runs at every size).
+            shape::check(rt, kept(&roots, base)).unwrap();
+        }
+        // One key with other attributes, and symbol keys: more children in the same table.
+        let hidden = keep(
+            &roots,
+            child(shape::add(
+                rt,
+                kept(&roots, base),
+                k(rt, "t5"),
+                attr::HIDDEN,
+            )),
+        );
+        let getter = keep(
+            &roots,
+            child(shape::add(
+                rt,
+                kept(&roots, base),
+                k(rt, "t5"),
+                ACCESSOR | attr::CONFIGURABLE,
+            )),
+        );
+        let syms: Vec<usize> = (0..3)
+            .map(|_| keep(&roots, crate::symbol::new_symbol(rt, UNDEFINED)))
+            .collect();
+        let sym_kids: Vec<usize> = syms
+            .iter()
+            .map(|&s| {
+                let c = shape::add(rt, kept(&roots, base), kept(&roots, s), attr::DEFAULT);
+                keep(&roots, child(c))
+            })
+            .collect();
+        assert_eq!(shape::transition_count(kept(&roots, base)), 45);
+        shape::check(rt, kept(&roots, base)).unwrap();
+        // Each child again: the same shape, through the binary search (63 slots).
+        for i in 0..40 {
+            let again = add(rt, kept(&roots, base), &format!("t{i}"));
+            assert_eq!(again, kept(&roots, first + i), "t{i}");
+        }
+        let again = shape::add(rt, kept(&roots, base), k(rt, "t5"), attr::HIDDEN);
+        assert_eq!(again, Added::Shape(kept(&roots, hidden)));
+        let again = shape::add(
+            rt,
+            kept(&roots, base),
+            k(rt, "t5"),
+            ACCESSOR | attr::CONFIGURABLE,
+        );
+        assert_eq!(again, Added::Shape(kept(&roots, getter)));
+        for (s, c) in syms.iter().zip(&sym_kids) {
+            let again = shape::add(rt, kept(&roots, base), kept(&roots, *s), attr::DEFAULT);
+            assert_eq!(again, Added::Shape(kept(&roots, *c)));
+        }
+        // No new child was made by those finds.
+        assert_eq!(shape::transition_count(kept(&roots, base)), 45);
+        // Property order is the add order, not the table order.
+        assert_eq!(key_text(kept(&roots, first + 39), 1), "t39");
+        assert_eq!(index_of(rt, kept(&roots, first + 39), "base"), Some(0));
+    });
+}
+
+/// Adds t0 .. t39 to `s` and keeps all 40 children (in that order, at the end of `roots`)
+/// until the table is full grown, so no collection under GC stress clears one of them early
+/// (CI run 41758706017, Windows release: the dropped children died as they went, their holes
+/// were reused, and the table stayed at 16 slots). Then drops all but every 4th child (t0,
+/// t4, .., t36 stay rooted) by clearing their roots, and returns the masked addresses of the
+/// 30 dropped ones. Run it [`below_a_pad`].
+#[inline(never)]
+fn made_a_wide_table(rt: &Runtime, roots: &ScratchRoots<'_>, s: u64) -> Vec<usize> {
+    let first = roots.len();
+    let mut dead = Vec::new();
+    for i in 0..40 {
+        let c = add(rt, s, &format!("t{i}"));
+        keep(roots, c);
+        if i % 4 != 0 {
+            dead.push(black_box(c as usize) ^ MASK);
+        }
+    }
+    // All 40 live: t0 in the +32 word, 39 in a table of 63 slots. This reads every entry, so
+    // it runs here, below the pad.
+    assert_eq!(shape::transition_table(s), (MAX_TRANSITIONS - 1, 39));
+    // From here on only a scratch root could keep them, and none does: nothing allocates
+    // before the caller's collection.
+    for i in (0..40).filter(|i| i % 4 != 0) {
+        roots.set(first + i, val(UNDEFINED));
+    }
+    dead
+}
+
+#[test]
+fn holes_of_dead_children_are_skipped_by_the_search_and_reused_by_an_add() {
+    stressed(|rt| {
+        let roots = rt.heap.scratch_roots();
+        let base = keep(&roots, add(rt, null_root(rt), "base"));
+        let s = kept(&roots, base);
+        let first = roots.len();
+        let (dead, pad_low) = below_a_pad(|| made_a_wide_table(rt, &roots, s));
+        assert_eq!(dead.len(), 30);
+        collect_after_a_pad(rt, pad_low, &dead);
+        // 10 children live: t0 in the +32 word, 9 in the table of 63 slots; 54 holes.
+        assert_eq!(shape::transition_count(kept(&roots, base)), 10);
+        assert_eq!(shape::transition_table(kept(&roots, base)), (63, 9));
+        shape::check(rt, kept(&roots, base)).unwrap();
+        // The search skips the holes: each live child is found, no new child is made.
+        for j in 0..10 {
+            let again = add(rt, kept(&roots, base), &format!("t{}", 4 * j));
+            assert_eq!(again, kept(&roots, first + 4 * j), "t{}", 4 * j);
+        }
+        assert_eq!(shape::transition_count(kept(&roots, base)), 10);
+        // The dead keys again: new children fill holes in order; the table does not grow.
+        for i in (0..40).filter(|i| i % 4 != 0) {
+            let c = add(rt, kept(&roots, base), &format!("t{i}"));
+            keep(&roots, c);
+            assert_eq!(shape::transition_table(kept(&roots, base)).0, 63, "t{i}");
+            shape::check(rt, kept(&roots, base)).unwrap();
+        }
+        assert_eq!(shape::transition_table(kept(&roots, base)), (63, 39));
+        // Every key finds its one child.
+        for i in 0..40 {
+            let a = add(rt, kept(&roots, base), &format!("t{i}"));
+            let b = add(rt, kept(&roots, base), &format!("t{i}"));
+            assert_eq!(a, b, "t{i}");
+        }
+        assert_eq!(shape::transition_count(kept(&roots, base)), 40);
+        // The cap counts live children: 24 more fill the table, the 65th is refused.
+        for i in 40..64 {
+            keep(&roots, add(rt, kept(&roots, base), &format!("t{i}")));
+        }
+        assert_eq!(shape::transition_table(kept(&roots, base)), (63, 63));
+        assert_eq!(
+            shape::add(rt, kept(&roots, base), k(rt, "t64"), attr::DEFAULT),
+            Added::Dictionary
+        );
+        shape::check(rt, kept(&roots, base)).unwrap();
+    });
+}
+
+/// Two key names whose keys have one hash ([`crate::key::key_hash`] of their atoms), found
+/// from the text alone: no string is made.
+fn names_with_one_hash() -> (String, String) {
+    let mut seen = std::collections::HashMap::new();
+    for i in 0u32.. {
+        let name = format!("h{i}");
+        let (_, hash) = string::hash_text(string::JsStr::Latin1(name.as_bytes()));
+        if let Some(first) = seen.insert(hash, name.clone()) {
+            return (first, name);
+        }
+    }
+    unreachable!("no two of 2^32 names share a 30-bit hash")
+}
+
+#[test]
+fn keys_with_one_hash_are_told_apart_across_the_holes_between_them() {
+    stressed(|rt| {
+        let (a, b) = names_with_one_hash();
+        assert_eq!(
+            crate::key::key_hash(k(rt, &a)),
+            crate::key::key_hash(k(rt, &b))
+        );
+        let roots = rt.heap.scratch_roots();
+        let base = keep(&roots, add(rt, null_root(rt), "base"));
+        keep(&roots, add(rt, kept(&roots, base), "f0"));
+        // a and b have one sort key: they sit next to each other in the table, b first (an
+        // add goes before the equal entries).
+        let ka = keep(&roots, add(rt, kept(&roots, base), &a));
+        let kb = keep(&roots, add(rt, kept(&roots, base), &b));
+        // 16 more children: the table grows to 4, 16, then 63 slots, and the last new table
+        // spreads its 17 entries out, so holes lie between b and a.
+        for i in 1..=16 {
+            keep(&roots, add(rt, kept(&roots, base), &format!("f{i}")));
+        }
+        assert_eq!(shape::transition_table(kept(&roots, base)), (63, 18));
+        // The search lands on b, then must step over the holes to a.
+        assert_eq!(add(rt, kept(&roots, base), &a), kept(&roots, ka));
+        assert_eq!(add(rt, kept(&roots, base), &b), kept(&roots, kb));
+        assert_eq!(shape::transition_count(kept(&roots, base)), 19);
+        shape::check(rt, kept(&roots, base)).unwrap();
+    });
+}

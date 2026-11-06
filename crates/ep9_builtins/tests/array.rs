@@ -23,7 +23,7 @@ fn the_functions_are_installed() {
         lines(&[
             "isArray 1 0 1",
             "true false true",
-            "length,name,prototype,isArray,from,of"
+            "length,name,prototype,isArray,from,fromAsync,of"
         ])
     );
 }
@@ -270,7 +270,7 @@ fn termination_stops_the_m2_p4_index_walks() {
 }
 
 /// M2-P4 (B-ARRAY): names, lengths and attributes of the new methods, `get Array[@@species]`,
-/// and the two Object statics of this module. (`Array.fromAsync` is month 3: async functions.)
+/// and the two Object statics of this module. (`Array.fromAsync`: M6-P1, `array_from_async.rs`.)
 #[test]
 fn the_m2_p4_functions_are_installed() {
     assert_eq!(
@@ -291,7 +291,7 @@ fn the_m2_p4_functions_are_installed() {
             "1 0 1 2 groupBy",
             "function undefined false true get [Symbol.species] true",
             "true false true",
-            "length,name,prototype,isArray,from,of",
+            "length,name,prototype,isArray,from,fromAsync,of",
             "false true",
         ])
     );

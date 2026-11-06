@@ -36,6 +36,16 @@
 #        takes no exit (0 required in every unforced run but am3 under GC stress,
 #        `tier::unforced_ok`; Codex M5-P2 r1 spikec6 2)
 #     SKIP without the v8-v7 checkout
+#   gate.sh navier       (plan v11 M6-P1 SPIKEC-9 §3.8) kernel 2's whole hot set:
+#     1  release build (as am3)
+#     2  `spike-c graph navier-stokes 0`, `1`, `2`: lin_solve, project and advect each built
+#        from the live facts of an n = 1 T0 run, checked, allocated and emitted (pool
+#        constants, global loads, calls through call_any, double compares, `x | 0` on a
+#        double, Float64 phis, wide jumps, the out-of-line load of Math.sqrt)
+#     3  `spike-c tier navier-stokes --all --n 1` and `--n 12`: all three compiled and
+#        installed together after the warm-up; output equal to T0 line for line and 0 exits
+#        in loop(n). Each guard of the set is forced in `gate.sh diff` (the kernels part)
+#     SKIP without the v8-v7 checkout
 #   gate.sh deopt        (plan v10 M5-P2 SPIKEC-6 WI-SC4; protocol §4, C2) forced deopts of am3:
 #     1  release build (as am3)
 #     2  `spike-c deopt crypto`: for each guard of am3, a config C run of crypto (n = 1) with
@@ -49,20 +59,20 @@
 #     SKIP without the v8-v7 checkout
 #   gate.sh diff         (plan v10 M5-P3 SPIKEC-7 WI-SC6; protocol C3) the tier differential:
 #     1  release build (as am3)
-#     2  `spike-c diff`: the gate kernels at n = 1 (crypto's am3, navier-stokes' lin_solve): T0
-#        equal to node line for line (node on PATH, else that compare prints SKIP), config C
-#        equal to T0 with 0 exits, then forcing: every guard armed from a seed, then each
-#        guard not forced yet armed at its first pass, every run equal to T0; then the seeded
-#        corpus, seeds 1..200 (src/diff.rs: int32 overflow, double/int mixes, holes,
-#        out-of-bounds, shape changes, valueOf, DICTIONARY arrays, throws), each program
-#        T0 vs config C byte for byte, unforced and forced the same way. FAIL on any
-#        difference, a refused compile or a guard never forced. No GC-timing compare
-#        (MC-w17-10): a lint refuses WeakRef, FinalizationRegistry and gc in every program
-#     SKIP without the v8-v7 checkout
+#     2  `spike-c diff`: the gate kernels at n = 1 (crypto's am3, navier-stokes' hot set): T0
+#        equal to node line for line (node on PATH, else SKIP), config C equal to T0 with 0
+#        exits, then forcing: every guard armed from a seed, then each guard not forced yet
+#        armed at its first pass, every run equal to T0; then the seeded corpus, seeds 1..200
+#        (src/diff.rs: int32 overflow, double/int mixes, holes, out-of-bounds, shape changes,
+#        valueOf, DICTIONARY arrays, throws), T0 vs config C byte for byte, unforced and
+#        forced the same way; then the corpus on ics_only isolates (MC-w21-9, M6-P3: a guard
+#        never reached is named). FAIL on any difference, a refused compile or (feedback
+#        full) a guard never forced. No GC-timing compare (MC-w17-10): a lint refuses WeakRef,
+#        FinalizationRegistry and gc in every program. SKIP without the v8-v7 checkout
 #   gate.sh spfacts      (plan v10 M5-P3 SPFACTS WI-SC8; protocol §6.3, C5c) SP-Facts, config P:
 #     1  release build (as am3)
 #     2  `spike-c sp-facts write crypto <file>`: a training run (loop(1) in T0) writes the live
-#        facts of the kernel's unit as a PROFILED file (FACT_SCHEMA_VERSION 1)
+#        facts of the kernel's unit as a PROFILED file (FACT_SCHEMA_VERSION 2)
 #     3  `spike-c sp-facts check crypto <file> --n 1` and `--n 8`, a new process: the file read
 #        and validated (no record dropped), the hot set compiled from it and installed before
 #        the first run(), then loop(1) (the start-up exits are counted and printed) and loop(n);
@@ -83,8 +93,18 @@
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
 #     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
 #     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
+#   gate.sh lazy         (plan v11 M6-P2 SPIKEC-10 §4.8 task 1; H29-Q4) the short lazy-deopt
+#     probe: `spike-c lazy` (a compiled call's frame swapped to its lazy exit while the callee
+#     runs, the frame-record walk before and after, T0 resumes after the call; output equal to
+#     T0). macOS arm64 only (the frame-record walk). A report step: not in `all`
+#   gate.sh verdict [--fixtures]  (plan v11 M6-P2 SPIKEC-10 §4.8 task 4; VERDICT-DRY; SCP §8)
+#     the Verdict rows: the clean-tree and commit checks, the load before, every step of `all`,
+#     C4 (`spike-c time crypto`, `spike-c time navier-stokes`), C5c (`spike-c sp-facts time
+#     crypto`), the load after, then `spike-c verdict-rows` prints the SCP §8 table. On a tree
+#     that is not clean it prints no table and fails. The orchestrator's step (no agent
+#     active; a report before CF). --fixtures: the table of the fixture inputs only (no run)
 #   gate.sh              `gate.sh structural`, `gate.sh am3`, `gate.sh deopt`, `gate.sh linsolve`,
-#                        then `gate.sh diff` and `gate.sh spfacts`
+#                        `gate.sh navier`, then `gate.sh diff` and `gate.sh spfacts`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
 #      SPIKE_C_BENCH_DIR (default: third_party/bench-v8v7/bench/bench-v8).
@@ -189,6 +209,24 @@ linsolve() {
   run "linsolve/tier-n12" "$bin" tier navier-stokes --n 12
 }
 
+navier() {
+  if ! build_release; then
+    record "navier" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/navier-stokes.js" ]; then
+    record "navier" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  run "navier/graph-lin_solve" "$bin" graph navier-stokes 0
+  run "navier/graph-project" "$bin" graph navier-stokes 1
+  run "navier/graph-advect" "$bin" graph navier-stokes 2
+  run "navier/set-n1" "$bin" tier navier-stokes --all --n 1
+  run "navier/set-n12" "$bin" tier navier-stokes --all --n 12
+}
+
 diff_step() {
   if ! build_release; then
     record "diff" FAIL "release build failed"
@@ -237,25 +275,96 @@ timing() {
   run "time/crypto (report)" "$bin" time crypto
 }
 
+lazy_step() {
+  if ! build_release; then
+    record "lazy" FAIL "release build failed"
+    return
+  fi
+  run "lazy/probe (report)" "$CARGO_TARGET_DIR/release/spike-c$exe" lazy
+}
+
+# The load averages now (the host's 1, 5 and 15 minute loads).
+loads() {
+  if command -v sysctl > /dev/null && sysctl -n vm.loadavg > /dev/null 2>&1; then
+    sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1, $2, $3}'
+  elif [ -r /proc/loadavg ]; then
+    awk '{print $1, $2, $3}' /proc/loadavg
+  else
+    echo "unknown"
+  fi
+}
+
+verdict() {
+  local fixtures="${1:-}"
+  if ! build_release; then
+    record "verdict" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local dir="$CARGO_TARGET_DIR/verdict"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  if [ "$fixtures" = "--fixtures" ]; then
+    run "verdict/fixtures" "$bin" verdict-fixtures "$dir"
+  else
+    local root commit clean=no
+    root="$(git -C "$here" rev-parse --show-toplevel)"
+    commit="$(git -C "$root" rev-parse HEAD)"
+    if [ -z "$(git -C "$root" status --porcelain --untracked-files=no)" ]; then clean=yes; fi
+    local before
+    before="$(loads)"
+    structural
+    am3
+    deopt
+    linsolve
+    navier
+    diff_step
+    spfacts
+    for k in crypto navier-stokes; do
+      run "verdict/c4-$k" sh -c '"$1" time "$2" > "$3"' _ "$bin" "$k" "$dir/c4-$k.txt"
+    done
+    run "verdict/c5c" sh -c '"$1" sp-facts time crypto > "$2"' _ "$bin" "$dir/c5c.txt"
+    {
+      echo "commit=$commit"
+      echo "clean=$clean"
+      # SCP §8 Host/CPU: the host (the target triple) and its CPU model (from the report).
+      echo "host=$host, $(sed -n 's/^host: .* on \(.*\), load .*/\1/p' "$dir/c4-crypto.txt")"
+      echo "load_before=$before"
+      echo "load_after=$(loads)"
+    } > "$dir/meta.txt"
+    for r in "${results[@]}"; do echo "$r"; done > "$dir/steps.txt"
+  fi
+  echo "== [verdict/rows] $bin verdict-rows $dir"
+  if "$bin" verdict-rows "$dir"; then
+    record "verdict/rows" PASS "$dir"
+  else
+    record "verdict/rows" FAIL "no table (see above)"
+  fi
+}
+
 step="${1:-all}"
 case "$step" in
   structural) structural ;;
   am3) am3 ;;
   deopt) deopt ;;
   linsolve) linsolve ;;
+  navier) navier ;;
   diff) diff_step ;;
   spfacts) spfacts ;;
   time) timing ;;
+  lazy) lazy_step ;;
+  verdict) verdict "${2:-}" ;;
   all)
     structural
     am3
     deopt
     linsolve
+    navier
     diff_step
     spfacts
     ;;
   *)
-    echo "usage: gate.sh [structural | am3 | deopt | linsolve | diff | spfacts | time]" >&2
+    echo "usage: gate.sh [structural | am3 | deopt | linsolve | navier | diff | spfacts | time | lazy | verdict [--fixtures]]" >&2
     exit 2
     ;;
 esac

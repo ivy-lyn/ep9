@@ -12,14 +12,17 @@
 //!                                           build, check and allocate the graph of a hot function
 //!                                           (live facts, n = 1; by function id, so an inner
 //!                                           closure too), then report what the emitter does
-//! spike-c tier <kernel> [--n N] [--stress]  config C: that function compiled, output against T0
+//! spike-c tier <kernel> [--n N] [--stress] [--all]
+//!                                           config C: that function compiled, output against T0
 //!                                           (--stress: GC before every allocation, verifier on;
-//!                                           SPIKE_C_FORCE_DEOPT=<seed>: a forced build)
+//!                                           SPIKE_C_FORCE_DEOPT=<seed>: a forced build; --all:
+//!                                           the whole hot set compiled and installed, SPIKEC-9)
 //! spike-c deopt <kernel> [--n N] [--at A]   each guard forced once (WI-SC4, gate.sh deopt)
-//! spike-c diff [--seeds A..B] [--no-kernels] [--show N]
+//! spike-c diff [--seeds A..B] [--no-kernels] [--show N] [--ics-only]
 //!                                           the tier differential (WI-SC6, gate.sh diff): the
 //!                                           gate kernels at n = 1 and the seeded corpus, T0 vs
-//!                                           config C, every guard forced
+//!                                           config C, every guard forced; the corpus again on
+//!                                           ics_only isolates (MC-w21-9; --ics-only: only it)
 //! spike-c time <kernel> [--rounds R] [--n N] [--k K]
 //!                                           class S timing (protocol §3): T0, C, H0, H1 in new
 //!                                           processes, paired ratios; a report, never a reading
@@ -33,8 +36,14 @@
 //! spike-c driver <kernel> [--n N]          print the driver script (node runs the same text)
 //! spike-c structural [check... | all]       the checks of `gate.sh structural`
 //! spike-c read-set                          the R17 read set: each `ep9_vm::layout` item Spike C
-//!                                           reads, by owner version, and the hand facts (HAND_FACTS)
+//!                                           reads, by owner version (no hand fact since M6-P0)
 //! spike-c liveness <kernel> [hot index]     the H02-Q1 liveness report of a hot function
+//! spike-c verdict-rows <dir>                the SCP §8 Verdict rows of the gate run `gate.sh
+//!                                           verdict` wrote into <dir> (spike_c::verdict)
+//! spike-c verdict-fixtures <dir>            write the fixture inputs of `gate.sh verdict --fixtures`
+//! spike-c lazy                              the short lazy-deopt probe (SPIKEC-10, H29-Q4): a
+//!                                           compiled call's frame swapped to its lazy exit, the
+//!                                           walks before and after, output against T0
 //! ```
 
 use std::process::ExitCode;
@@ -48,11 +57,11 @@ use spike_c::{facts, structural};
 fn usage() -> ExitCode {
     eprintln!(
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
-         | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] \
+         | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] [--all] \
          | deopt <kernel> [--n N] [--at A] | diff [--seeds A..B] [--no-kernels] [--show N] | time <kernel> [--rounds R] [--n N] [--k K] \
          | once <t0|c|p|h0|h1> <kernel> [--n N] [--k K] | sp-facts <write|check|wrong|time> ... \
          | show <kernel> [i] | driver <kernel> [--n N] \
-         | structural [check...|all] | read-set | liveness <kernel> [i]]"
+         | structural [check...|all] | read-set | liveness <kernel> [i] | lazy | verdict-rows <dir> | verdict-fixtures <dir>]"
     );
     ExitCode::from(2)
 }
@@ -162,7 +171,7 @@ fn facts_cmd(args: &[String]) -> Result<bool, String> {
                 h.lines.0
             ));
         };
-        let f = facts::for_function(&live, id);
+        let f = facts::for_function(&live, script.unit.unit(), id);
         let mut kinds: Vec<String> = f.records.iter().map(|(_, r)| facts::kind_name(r)).collect();
         kinds.sort();
         kinds.dedup_by(|a, b| a == b);
@@ -228,7 +237,7 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
         },
     };
     let input = s.input_of_target(&target)?;
-    let ff = facts::for_function(&live, id);
+    let ff = facts::for_function(&live, script.unit.unit(), id);
     match spike_c::compile_input(&input, &ff) {
         Ok((code, report)) => {
             if graph {
@@ -293,7 +302,7 @@ fn graph_cmd(args: &[String]) -> Result<bool, String> {
     };
     let live = facts::live(&s, script)?;
     let input = script.unit_input(id, h.name)?;
-    match spike_c::graph_report(&input, &facts::for_function(&live, id)) {
+    match spike_c::graph_report(&input, &facts::for_function(&live, script.unit.unit(), id)) {
         Ok(g) => {
             if show {
                 print!("{}", g.graph);
@@ -322,9 +331,10 @@ fn fnv1a64(b: &[u8]) -> u64 {
 fn tier_cmd(args: &[String]) -> Result<bool, String> {
     let k = kernel_arg(args.first())?;
     let stress = args.iter().any(|a| a == "--stress");
+    let all = args.iter().any(|a| a == "--all");
     let rest: Vec<String> = args[1..]
         .iter()
-        .filter(|a| *a != "--stress")
+        .filter(|a| *a != "--stress" && *a != "--all")
         .cloned()
         .collect();
     let (n, _) = options(&rest)?;
@@ -333,6 +343,66 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
     } else {
         Config::default()
     };
+    if all {
+        // SPIKEC-9 (`gate.sh navier`): the whole hot set compiled and installed together.
+        let seed = match std::env::var("SPIKE_C_FORCE_DEOPT") {
+            Ok(v) => Some(
+                v.parse::<u64>()
+                    .map_err(|_| format!("SPIKE_C_FORCE_DEOPT={v}: not a number"))?,
+            ),
+            Err(_) => None,
+        };
+        if let Some(seed) = seed {
+            // MC-P1-JIT4 (SPIKEC-10): the seeded run, then first-pass rounds until every
+            // guard of the set was forced (`tier::force_set`).
+            let (runs, bad) = spike_c::tier::force_set(k, n.unwrap_or(k.n), &config, seed, stress)?;
+            for (i, run) in runs.iter().enumerate() {
+                println!(
+                    "round {}{}:",
+                    i + 1,
+                    if i == 0 { " (seeded)" } else { " (first pass)" }
+                );
+                for l in run.lines() {
+                    println!("{l}");
+                }
+            }
+            if bad.is_empty() {
+                let g: usize = runs[0].members.iter().map(|m| m.report.emit.guards).sum();
+                println!(
+                    "{}: forced build: every guard of the set forced in {} runs ({g} guards), output equal to T0 in each, the exit counters agree, heap verifier clean",
+                    k.name,
+                    runs.len()
+                );
+                return Ok(true);
+            }
+            for l in bad {
+                println!("{l}");
+            }
+            return Ok(false);
+        }
+        let run = spike_c::tier::run_set(k, n.unwrap_or(k.n), &config, &[])?;
+        for l in run.lines() {
+            println!("{l}");
+        }
+        return Ok(match spike_c::tier::set_ok(&run, stress) {
+            Ok(()) => {
+                if run.forced {
+                    let g: usize = run.members.iter().map(|m| m.report.emit.guards).sum();
+                    println!(
+                        "{}: forced build: every armed guard of the set forced ({g} exits), the exit counters agree, heap verifier clean",
+                        k.name
+                    );
+                }
+                true
+            }
+            Err(lines) => {
+                for l in lines {
+                    println!("{l}");
+                }
+                false
+            }
+        });
+    }
     // `SPIKE_C_FORCE_DEOPT=<seed>` (WI-SC4): a forced build, every guard armed from the seed.
     let force = match std::env::var("SPIKE_C_FORCE_DEOPT") {
         Ok(v) => {
@@ -494,7 +564,7 @@ fn show_cmd(args: &[String]) -> Result<bool, String> {
         ep9_bytecode::disassemble_function(unit, ep9_bytecode::FunctionId(id))
     );
     let live = facts::live(&s, script)?;
-    for (slot, f) in facts::for_function(&live, id).records {
+    for (slot, f) in facts::for_function(&live, script.unit.unit(), id).records {
         println!("slot {slot}: {f:?}");
     }
     Ok(true)
@@ -530,6 +600,18 @@ fn main() -> ExitCode {
             Ok(true)
         }
         "liveness" => liveness_cmd(rest),
+        "lazy" => lazy_cmd(),
+        "verdict-rows" => match rest.first() {
+            Some(dir) => spike_c::verdict::rows(std::path::Path::new(dir)).map(|t| {
+                println!("{t}");
+                true
+            }),
+            None => Err("verdict-rows needs the directory gate.sh verdict wrote".into()),
+        },
+        "verdict-fixtures" => match rest.first() {
+            Some(dir) => spike_c::verdict::write_fixtures(std::path::Path::new(dir)).map(|()| true),
+            None => Err("verdict-fixtures needs a directory".into()),
+        },
         _ => return usage(),
     };
     match r {
@@ -565,7 +647,7 @@ fn liveness_cmd(args: &[String]) -> Result<bool, String> {
     };
     let live = facts::live(&s, script)?;
     let input = script.unit_input(id, h.name)?;
-    match spike_c::liveness_lines(&input, &facts::for_function(&live, id)) {
+    match spike_c::liveness_lines(&input, &facts::for_function(&live, script.unit.unit(), id)) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -577,4 +659,71 @@ fn liveness_cmd(args: &[String]) -> Result<bool, String> {
             Ok(false)
         }
     }
+}
+
+/// `spike-c lazy`: the short lazy-deopt probe (SPIKEC-10, H29-Q4; `spike_c::lazy`).
+fn lazy_cmd() -> Result<bool, String> {
+    use spike_c::lazy::{DEFS, MAIN, WARM};
+    let r = spike_c::tier::lazy_probe(&Config::default(), DEFS, WARM, MAIN, "f")?;
+    let equal = r.compiled == r.t0;
+    println!(
+        "lazy probe: f compiled ({} bytes, {} call record(s)); output {}",
+        r.report.emit.code_bytes,
+        r.report.emit.meta.calls.len(),
+        if equal {
+            "equal to T0"
+        } else {
+            "DIFFERS from T0"
+        }
+    );
+    for c in &r.report.emit.meta.calls {
+        println!(
+            "  call record: return at +{}, lazy exit at +{} (exit pc +{}), T0 resumes at @{}, {} values",
+            c.ret,
+            c.stub,
+            c.pc,
+            c.bytecode,
+            c.values.len()
+        );
+    }
+    let Some(s) = &r.swap else {
+        println!("lazy probe: FAIL: lazyDeopt() did not run armed");
+        return Ok(false);
+    };
+    let at = |a: usize| {
+        if r.code.contains(&a) {
+            format!("f+{}", a - r.code.start)
+        } else {
+            format!("{a:#x}")
+        }
+    };
+    for &(rec, old) in &s.swapped {
+        let now = s.after.iter().copied().find(|&x| r.code.contains(&x));
+        println!(
+            "  swapped: frame record {rec:#x}: {} -> {}",
+            at(old),
+            now.map_or("?".into(), at)
+        );
+    }
+    println!(
+        "  frame-record walk: {} records before, {} after; std::backtrace (system unwinder): {} frames before, {} after, reached tier::lazy_probe {} / {}",
+        s.before.len(),
+        s.after.len(),
+        s.std_before.0,
+        s.std_after.0,
+        s.std_before.1,
+        s.std_after.1
+    );
+    println!(
+        "  counters: call records {:?}, guard exits {}",
+        r.call_counts(),
+        r.exit_counts().iter().sum::<u64>()
+    );
+    let ok = equal
+        && s.swapped.len() == 1
+        && s.before.len() == s.after.len()
+        && r.call_counts() == [1]
+        && r.exit_counts().iter().all(|&n| n == 0);
+    println!("lazy probe: {}", if ok { "PASS" } else { "FAIL" });
+    Ok(ok)
 }

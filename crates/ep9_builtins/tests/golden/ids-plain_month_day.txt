@@ -1,0 +1,15 @@
+# ep9 builtin ids: module plain_month_day, block 26. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x3400   26.0         constructor  2       "PlainMonthDay"  (%Temporal.PlainMonthDay%)
+0x3401   26.1         method       1       "from"  (%Temporal.PlainMonthDay%.from w-c)
+0x3402   26.2         getter       0       "calendarId"  (%Temporal.PlainMonthDay.prototype%.calendarId --c)
+0x3403   26.3         getter       0       "monthCode"  (%Temporal.PlainMonthDay.prototype%.monthCode --c)
+0x3404   26.4         getter       0       "day"  (%Temporal.PlainMonthDay.prototype%.day --c)
+0x3405   26.5         method       1       "with"  (%Temporal.PlainMonthDay.prototype%.with w-c)
+0x3406   26.6         method       1       "equals"  (%Temporal.PlainMonthDay.prototype%.equals w-c)
+0x3407   26.7         method       0       "toString"  (%Temporal.PlainMonthDay.prototype%.toString w-c)
+0x3408   26.8         method       0       "toJSON"  (%Temporal.PlainMonthDay.prototype%.toJSON w-c)
+0x3409   26.9         method       0       "toLocaleString"  (%Temporal.PlainMonthDay.prototype%.toLocaleString w-c)
+0x340a   26.10        method       0       "valueOf"  (%Temporal.PlainMonthDay.prototype%.valueOf w-c)
+0x340b   26.11        method       1       "toPlainDate"  (%Temporal.PlainMonthDay.prototype%.toPlainDate w-c)

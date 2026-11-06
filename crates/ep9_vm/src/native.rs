@@ -102,13 +102,14 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     get_keyed: rt_get_keyed,
     set_keyed: rt_set_keyed,
     deopt: rt_deopt,
+    load_global: rt_load_global,
 };
 
 impl RuntimeTable {
     /// The entries in declaration order: name, byte offset, function type. The list is an
     /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
     /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
-    pub const ENTRIES: [(&'static str, usize, &'static str); 11] = [
+    pub const ENTRIES: [(&'static str, usize, &'static str); 12] = [
         ("poll", layout::RT_POLL, "RtFn0"),
         ("call_any", layout::RT_CALL_ANY, "RtFn1"),
         ("add", layout::RT_ADD, "RtFn2"),
@@ -120,6 +121,7 @@ impl RuntimeTable {
         ("get_keyed", layout::RT_GET_KEYED, "RtFn2"),
         ("set_keyed", layout::RT_SET_KEYED, "RtFn3"),
         ("deopt", layout::RT_DEOPT, "RtFn2"),
+        ("load_global", layout::RT_LOAD_GLOBAL, "RtFn0"),
     ];
 
     /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
@@ -478,6 +480,20 @@ native_fns! {
         unsafe { deopt_at(cx, fp, pc, dump, native_fp) }
     }
 
+    /// [`RuntimeTable::load_global`] (M6-P0 VM6, V11-D43). Calls no recording function
+    /// (MC-w15-6).
+    ///
+    /// # Safety
+    /// As [`rt_poll`].
+    unsafe fn rt_load_global(cx: *mut NativeCx, fp: *mut u64, off: u32) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, pc) = unsafe { enter(cx, fp, off) };
+        let Some(pc) = pc else {
+            return bad_offset(cx, off);
+        };
+        load_global_at(cx, fp, pc)
+    }
+
     /// [`RuntimeTable::unwind`].
     ///
     /// # Safety
@@ -495,6 +511,29 @@ native_fns! {
         let pc = pc.unwrap_or(FrameRef(fp).info().code);
         crate::error::unwind(cx, fp, pc)
     }
+}
+
+/// [`RuntimeTable::load_global`]: the global binding that the `LdaGlobal` or
+/// `LdaGlobalInsideTypeof` at `pc` of the frame `fp` names. GetBindingValue of the global
+/// environment by the one function T0's cold path uses (`slow::property::global_value`), with no IC
+/// update: the script lexical record first (a hole is a TDZ ReferenceError), then the global
+/// object. The value, or 0 with a pending exception. GC point.
+fn load_global_at(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
+    let fi = FrameRef(fp).info();
+    // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified bytecode
+    // (`enter` checked that `pc` lies in it).
+    let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let off = pc.addr() - fi.code.addr();
+    let (name, in_typeof) = match ep9_bytecode::decode_at(code, off as u32) {
+        Ok(i) if i.opcode == Opcode::LdaGlobal => (fi.constant(i.unsigned(0)), false),
+        Ok(i) if i.opcode == Opcode::LdaGlobalInsideTypeof => (fi.constant(i.unsigned(0)), true),
+        _ => {
+            let msg = format!("ep9 internal error: no global load at offset {off}");
+            throw_error(cx, ErrorKind::Error, &msg);
+            return 0;
+        }
+    };
+    slow::property::global_value(cx, name, in_typeof)
 }
 
 /// The argument registers of a call instruction (frame slot offsets), without a heap copy.
@@ -1422,6 +1461,84 @@ impl NativeCx {
     /// `deopt::Table::decode`), with no install: the number of records, or why it refuses.
     pub fn check_deopt_meta(meta: &[u8]) -> Result<usize, String> {
         crate::deopt::Table::decode(meta).map(|t| t.records.len())
+    }
+
+    // ---- the lazy entry (M6-P2 SPIKEC-10, the short lazy-deopt probe; H29-Q4) ----
+
+    /// The start of the code installed with metadata for function `id` of the loaded unit
+    /// `file` (its Opt slot's entry), if it has some.
+    pub fn code_start_by_id(iso: &Isolate, file: &str, id: u32) -> Option<usize> {
+        let fi = info_by_id(iso, file, id).ok()?;
+        (fi.slot.kind_byte() == DispatchKind::Opt as u8).then(|| fi.slot.entry())
+    }
+
+    /// The return addresses of the native stack's frame records, from the caller of this
+    /// function outward (`deopt::walk_records` from the live x29, at most 4096). Empty on a
+    /// target other than Apple AArch64. The probe's backtrace: the walk reads frame records
+    /// only, no CFI (a CFI walk through JIT code is the gated part of H29-Q4).
+    #[inline(never)]
+    pub fn frame_returns() -> Vec<usize> {
+        let (Some(fp), Some(end)) = (current_fp(), stack_end()) else {
+            return Vec::new();
+        };
+        // SAFETY: x29 heads the live frame-record chain of this thread (AAPCS64; on macOS
+        // arm64 every frame keeps a record and the chain ends at 0), below the stack top `end`.
+        let records = unsafe { crate::deopt::walk_records(fp, end, 4096) };
+        records.iter().map(|r| r.ret).collect()
+    }
+
+    /// The lazy swap (`deopt::swap_returns`): every frame record on the native stack, from
+    /// the caller of this function outward, whose return address is the return of a call
+    /// site of the code at `code` gets that site's lazy exit instead; `sites` are the
+    /// (return offset, lazy exit offset) pairs of the code's call records. Returns each
+    /// swapped record's address and its old return address. The code stays installed and its
+    /// metadata stays (the lazy exit's call record is read when the call returns); freeing
+    /// dead code waits for its last swapped frame (not built).
+    ///
+    /// # Safety
+    /// `code` is code installed with metadata whose call records name `sites`, and each
+    /// site's lazy exit restores the call's state as Spike C's does; the caller is nested in
+    /// the calls whose frames may be swapped, and none of them has returned yet.
+    #[inline(never)]
+    pub unsafe fn lazy_swap(code: Range<usize>, sites: &[(u32, u32)]) -> Vec<(usize, usize)> {
+        let (Some(fp), Some(end)) = (current_fp(), stack_end()) else {
+            return Vec::new();
+        };
+        // SAFETY: as in `frame_returns`; each record is live (the caller's contract: nested).
+        let swapped = unsafe {
+            let records = crate::deopt::walk_records(fp, end, 4096);
+            crate::deopt::swap_returns(&records, code.start, code.end - code.start, sites)
+        };
+        swapped.iter().map(|(r, old)| (r.at, *old)).collect()
+    }
+}
+
+/// The top (highest address) of this thread's stack: the frame-record walks stop there.
+/// `None` when the platform cannot tell, so the walks are empty.
+fn stack_end() -> Option<usize> {
+    ep9_platform::current_thread_stack_bounds()
+        .ok()
+        .map(|b| b.high)
+}
+
+/// x29 now: the head of this thread's frame-record chain. Apple AArch64 only: there the
+/// platform ABI makes every frame keep a record and ends the chain at 0, which the safety of
+/// [`NativeCx::frame_returns`] and [`NativeCx::lazy_swap`] needs. Elsewhere (Linux AArch64
+/// code can use x29 as a general register) it is `None`, so the walks are empty.
+#[inline(always)]
+fn current_fp() -> Option<usize> {
+    #[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+    {
+        let fp: usize;
+        // SAFETY: reads a register; no memory, no stack, no flags.
+        unsafe {
+            core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack, preserves_flags));
+        }
+        Some(fp)
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_vendor = "apple")))]
+    {
+        None
     }
 }
 

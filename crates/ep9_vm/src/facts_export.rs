@@ -1,5 +1,6 @@
 //! The facts exporter (H16-Q5, the exporter half): the feedback vectors of one loaded unit as
-//! an `ep9_facts::FactSnapshot` v0 (FeedbackVector -> FactSnapshot). Public as
+//! an `ep9_facts::FactSnapshot` (FeedbackVector -> FactSnapshot; FACT_SCHEMA 2 since M6-P0
+//! SCHEMA6). Public as
 //! `ep9_vm::abi::export_facts` (V8-A13); not part of the H20 core (FREEZE-PREP lists it in
 //! the H20 part-2 table). The `.ep9prof` container that stores a snapshot is H16-Q5b (A3).
 //!
@@ -16,7 +17,8 @@
 //!         JumpLoop ─ LoopFacts       CreateClosure ─ ClosureFacts   (M4-P2 FACTS2)
 //!  IC entry (ic.rs)   ── state: uninitialized | monomorphic | polymorphic | megamorphic
 //!   case (key, handler)
-//!     key: a live shape ──root walk──> ShapeDesc {proto, kind, flags, capacity, keys}
+//!     key: a live shape ──root walk──> ShapeDesc {proto, kind, elements, flags, capacity,
+//!                                                 keys (with each field's rep/const hint)}
 //!     handler: own field ─> OwnField     array length ─> ArrayLength    SLOW ─> Generic
 //!              PROTO_LOAD ─> ProtoField  MISSING ─> Missing             ADD ─> AddField
 //!  call target (a FunctionInfo word, or a FUNCTION cell) ──address──> FunctionRef
@@ -52,7 +54,8 @@
 //! - A case that has no description is left out (the `ep9_facts` rule: a state may have
 //!   fewer cases than the IC had): the string key ([`ic::KEY_STRING`]), a dead key, an object
 //!   kind with no [`ObjectKind`] (generators, arguments, objects with internal slots, module
-//!   namespaces), a prototype handler whose validity cell is invalid (`validity.rs`: it
+//!   namespaces; an arguments object has `ObjectKind::Arguments` since FACT_SCHEMA 2), a
+//!   prototype handler whose validity cell is invalid (`validity.rs`: it
 //!   misses from now on, and its chain may have changed) or whose holder or target shape is
 //!   dead, and
 //!   two cases whose receivers have equal descriptions but different accesses.
@@ -71,18 +74,25 @@
 //!   at a CompareOp site, and a present int32 index of an Array at `GetKeyedProperty`. The
 //!   reader adds them to every slot of the kind in a function that has a vector: every
 //!   BinaryOp record has `BinaryHint::INT32`, every CompareOp record `CompareHint::INT32`,
-//!   every LoadKeyed record `KeySet::INDEX`. So a BinaryOp or CompareOp record whose only
-//!   bit is that one is an empty slot, and it means **"int32 or never ran"**: T0 cannot tell
-//!   a cold site from an int32 site (a slot starts as int32 0, `feedback.rs`). A LoadKeyed
-//!   record whose only bit is `INDEX` is not always an empty slot: it means **"only int32
-//!   index keys, or never ran"**, and it says nothing of the receiver, bounds or holes. The
-//!   cold path writes the receiver bits 4-7 and the out-of-bounds and hole bits 8-9 there
-//!   (`profile.rs`), but schema 1 has no field for them (`keyed` below drops them), so an index
-//!   read of a non-array receiver, out of bounds or of a hole exports the same record
-//!   (MODES-D17, MODES-D18: the "ran" bit comes with those bits in the month-6 bump). AOT
-//!   treats these records so, and the H32 site budget bounds the cost when the site later
-//!   sees other values. A bit next to it is a prediction too (T0 may also have seen int32
-//!   there): a consumer guards (H16 Consequences).
+//!   every LoadKeyed record `KeySet::INDEX` and `KeyedHint::ARRAY`. So a BinaryOp or
+//!   CompareOp record whose only bit is that one is an empty slot, and it means **"int32 or
+//!   never ran"**: T0 cannot tell a cold site from an int32 site (a slot starts as int32 0,
+//!   `feedback.rs`). A LoadKeyed record whose only bits are those two means **"only int32
+//!   index keys of present Array elements, or never ran"**. Since FACT_SCHEMA 2 the cold
+//!   path's receiver bits 4-7 and out-of-bounds and hole bits 8-9 (`profile.rs`) are its
+//!   `KeyedHint` and the IC_LAYOUT 4 kinds set (bits 10-25) its `ElementsKindSet`, so an
+//!   index read of a non-array receiver, out of bounds or of a hole no longer exports the
+//!   same record as a present int32 read (MC-w13-9, MODES-D18). The record flag
+//!   `RecordFlags::RAN` (MODES-D15, at the MODES-D17 sites) marks a site that ran inside a
+//!   sampled window; it comes from the LoadKeyed slot's bit 26 (`profile::keyed::RAN`), and
+//!   BinaryOp and CompareOp have no such slot bit yet. No T0 code writes either yet, so every
+//!   record has it clear, which claims nothing (as before the bump). AOT treats these
+//!   records so, and the H32 site budget bounds the cost when the site later sees other
+//!   values. A bit next to it is a prediction too (T0 may also have seen int32 there): a
+//!   consumer guards (H16 Consequences).
+//! - **Record flags and confidence (FACT_SCHEMA 2).** A RUNTIME snapshot has no confidence
+//!   (H30-Q1). No VM code records a deopt exit per site yet, so no record has
+//!   `RecordFlags::EXITED` (H29-Q5).
 //! - **Count units (F-R7, MC-w13-2).** Each count names its unit, and a merge adds counts of
 //!   one unit only (H16-Q5b):
 //!
@@ -121,10 +131,10 @@ use std::sync::Arc;
 use ep9_bytecode::{ABI_VERSION, FeedbackSlotKind, Instructions, Opcode, OperandKind, UnitString};
 use ep9_facts::{
     Access, BinaryHint, BindingSet, CallFacts, CloneCase, CloneFacts, ClosureCount, ClosureFacts,
-    CompareHint, FactHeader, FactSnapshot, FactSource, ForInHint, FunctionRef, GlobalFacts,
-    IcState, KeyRef, KeySet, KeyedFacts, LiteralFacts, LoopFacts, ObjectKind, PropAttrs,
-    PropertyCase, PropertyFacts, ProtoRef, ShapeDesc, ShapeFlags, SlotFacts, TargetFacts, TypeSet,
-    UnitHash,
+    CompareHint, ElementsKindSet, FactHeader, FactSnapshot, FactSource, FieldHint, FieldRep,
+    ForInHint, FunctionRef, GlobalFacts, IcState, KeyRef, KeySet, KeyedFacts, KeyedHint,
+    LiteralFacts, LoopFacts, ObjectKind, PropAttrs, PropertyCase, PropertyFacts, ProtoRef,
+    RecordFlags, RecordMeta, ShapeDesc, ShapeFlags, SlotFacts, TargetFacts, TypeSet, UnitHash,
 };
 
 use crate::Isolate;
@@ -210,10 +220,15 @@ pub fn export_facts(
         debug_assert_eq!(feedback::slot_count(v) as usize, kinds.len());
         for (i, (&k, u)) in kinds.iter().zip(&uses).enumerate() {
             let i = i as u32;
-            let Some(facts) = ex.slot(&units, v, i, k, u).filter(|_| keep(rt, k, u)) else {
+            let Some((facts, flags)) = ex.slot(&units, v, i, k, u).filter(|_| keep(rt, k, u))
+            else {
                 continue;
             };
-            let r = snapshot.insert(f as u32, i, facts);
+            let meta = RecordMeta {
+                flags,
+                confidence: 0,
+            };
+            let r = snapshot.insert_with(f as u32, i, facts, meta);
             // The cases are distinct and checked above: a refusal is an exporter bug.
             debug_assert!(r.is_ok(), "facts export: record ({f}, {i}) refused: {r:?}");
         }
@@ -306,27 +321,49 @@ fn int_value(v: u64, i: u32) -> Option<u32> {
     }
 }
 
+/// The VM's keyed slot bits 4-9 (receiver, out of bounds, hole; `profile::keyed`) are the
+/// `KeyedHint` bits 0-5.
+const KEYED_HINT_SHIFT: u32 = 4;
+
 /// A keyed slot (2, 4, 6, 10, 17; `profile.rs` writes the value half, KEYED (M4-P3) the key
-/// half): the `KeySet` bits 0-3 of the value, with `implicit` added (H16-Q2 (1)). The state is
-/// the key half's (`keyed_ic.rs`), live only for StoreKeyed (MC-w15-1): undefined (no state:
-/// new, the shape died, or another kind: a LoadKeyed state stays undefined), a receiver shape
-/// (monomorphic: the fast case missed once with it; no case: schema 1 has no element access)
-/// or the hole (megamorphic). Bits 4-9 (receiver, out of bounds, hole): month-6 bump, MC-w13-9.
-fn keyed(v: u64, i: u32, implicit: KeySet) -> Option<KeyedFacts> {
+/// half): the `KeySet` bits 0-3 of the value, the `KeyedHint` bits 4-9 and the kinds set bits
+/// 10-25 (FACT_SCHEMA 2; MC-w13-9, M6-PLAN-D4), with `implicit` added (H16-Q2 (1)), and the
+/// LoadKeyed "ran" bit 26 as the record flag (`ran`: only a LoadKeyed slot, MODES-D17). The
+/// state is the key half's (`keyed_ic.rs`), live only for StoreKeyed (MC-w15-1): undefined (no
+/// state: new, the shape died, or another kind: a LoadKeyed state stays undefined), a receiver
+/// shape (monomorphic: the fast case missed once with it; no case: no element access is
+/// exported) or the hole (megamorphic).
+fn keyed(
+    v: u64,
+    i: u32,
+    implicit: (KeySet, KeyedHint),
+    ran: bool,
+) -> Option<(KeyedFacts, RecordFlags)> {
     let bits = int_value(v, i)?;
     let state = match feedback::key(v, i) {
         UNDEFINED => IcState::Uninitialized,
         HOLE => IcState::Megamorphic,
         _ => IcState::Monomorphic,
     };
-    Some(KeyedFacts {
+    let hint = (bits >> KEYED_HINT_SHIFT) & KeyedHint::ALL.bits() as u32;
+    let kinds = (bits & crate::elements::KINDS_SET_MASK) >> crate::elements::KINDS_SET_SHIFT;
+    let flags = if ran && bits & crate::profile::keyed::RAN != 0 {
+        RecordFlags::RAN
+    } else {
+        RecordFlags::EMPTY
+    };
+    let facts = KeyedFacts {
         property: PropertyFacts {
             state,
             cases: Vec::new(),
             values: TypeSet::EMPTY,
         },
-        keys: known(KeySet::from_bits((bits & KeySet::ALL.bits() as u32) as u8))?.union(implicit),
-    })
+        keys: known(KeySet::from_bits((bits & KeySet::ALL.bits() as u32) as u8))?.union(implicit.0),
+        hint: known(KeyedHint::from_bits(hint as u8))?.union(implicit.1),
+        // An open set: the bit of a kind value the schema does not name yet is dropped.
+        kinds: ElementsKindSet::from_bits_truncate(kinds as u16),
+    };
+    Some((facts, flags))
 }
 
 /// `bits` as a set of a schema bitset, or `None` if a bit is not in it (a VM bug: `profile.rs`
@@ -367,8 +404,8 @@ impl<'a> Exporter<'a> {
         }
     }
 
-    /// The record of slot `i` (kind `k`, used as `u`) of the vector `v`, or `None` if no T0
-    /// site writes it (the module docs).
+    /// The record of slot `i` (kind `k`, used as `u`) of the vector `v` with its flags, or
+    /// `None` if no T0 site writes it (the module docs).
     fn slot(
         &mut self,
         units: &[Box<LoadedUnit>],
@@ -376,8 +413,10 @@ impl<'a> Exporter<'a> {
         i: u32,
         k: FeedbackSlotKind,
         u: &SlotUse,
-    ) -> Option<SlotFacts> {
+    ) -> Option<(SlotFacts, RecordFlags)> {
         use FeedbackSlotKind as K;
+        const NONE: (KeySet, KeyedHint) = (KeySet::EMPTY, KeyedHint::EMPTY);
+        let mut flags = RecordFlags::EMPTY;
         let facts = match (k, u.name) {
             (K::LoadNamed, Some(_)) => SlotFacts::LoadNamed(self.property(v, i, true)),
             (K::StoreNamed, Some(_)) => SlotFacts::StoreNamed(self.property(v, i, true)),
@@ -414,13 +453,18 @@ impl<'a> Exporter<'a> {
                 (false, false) => return None,
             }),
             _ if !u.other => return None,
-            // The implicit present int32 index of an Array (`GetKeyedProperty`, H16-Q2 (1)).
-            (K::LoadKeyed, _) => SlotFacts::LoadKeyed(keyed(v, i, KeySet::INDEX)?),
-            (K::StoreKeyed, _) => SlotFacts::StoreKeyed(keyed(v, i, KeySet::EMPTY)?),
-            (K::DefineKeyedOwn, _) => SlotFacts::DefineKeyedOwn(keyed(v, i, KeySet::EMPTY)?),
-            (K::HasKeyed, _) => SlotFacts::HasKeyed(keyed(v, i, KeySet::EMPTY)?),
+            // The implicit present int32 index of an Array (`GetKeyedProperty`, H16-Q2 (1);
+            // `profile::keyed::INDEX | ARRAY`).
+            (K::LoadKeyed, _) => {
+                let (f, ran) = keyed(v, i, (KeySet::INDEX, KeyedHint::ARRAY), true)?;
+                flags = ran;
+                SlotFacts::LoadKeyed(f)
+            }
+            (K::StoreKeyed, _) => SlotFacts::StoreKeyed(keyed(v, i, NONE, false)?.0),
+            (K::DefineKeyedOwn, _) => SlotFacts::DefineKeyedOwn(keyed(v, i, NONE, false)?.0),
+            (K::HasKeyed, _) => SlotFacts::HasKeyed(keyed(v, i, NONE, false)?.0),
             (K::StoreInArrayLiteral, _) => {
-                SlotFacts::StoreInArrayLiteral(keyed(v, i, KeySet::EMPTY)?)
+                SlotFacts::StoreInArrayLiteral(keyed(v, i, NONE, false)?.0)
             }
             // The implicit int32 bits (H16-Q2 (1)): "int32 or never ran" (MODES-D10).
             (K::BinaryOp, _) => SlotFacts::BinaryOp(
@@ -454,7 +498,7 @@ impl<'a> Exporter<'a> {
                 },
             }),
         };
-        Some(facts)
+        Some((facts, flags))
     }
 
     /// The name of the FunctionInfo at address `addr`: `Js` for a unit function (but
@@ -744,6 +788,9 @@ impl<'a> Exporter<'a> {
                     to: self.shape_desc(r)?,
                     field: key_index(r, location)?,
                 },
+                // M6-P1 ACCIC: accessor and dictionary-holder cases read as the SLOW case they
+                // replaced (the generic path) until the Getter and Setter facts get a writer.
+                hk::GETTER | hk::SETTER | hk::PROTO_DICT_LOAD => Access::Generic,
                 _ => return None,
             }
         };
@@ -838,6 +885,7 @@ impl<'a> Exporter<'a> {
             (kind::ITERATOR, ObjectKind::Iterator),
             (kind::PRIMITIVE_WRAPPER, ObjectKind::PrimitiveWrapper),
             (kind::BOUND_FUNCTION, ObjectKind::BoundFunction),
+            (kind::ARGUMENTS, ObjectKind::Arguments),
         ]
         .into_iter()
         .find(|(id, _)| id.get() == k)
@@ -851,22 +899,34 @@ impl<'a> Exporter<'a> {
         if dictionary {
             flags |= ShapeFlags::DICTIONARY;
         }
-        let keys = if dictionary {
-            Vec::new()
+        let (keys, fields) = if dictionary {
+            (Vec::new(), Vec::new())
         } else {
             (0..shape::count(s))
                 .map(|i| {
-                    let a = shape::details_at(s, i).attrs();
-                    (self.key_ref(shape::key_at(s, i)), prop_attrs(a))
+                    let d = shape::details_at(s, i);
+                    let hint = FieldHint {
+                        // An open list (H17 "representation values (append-only)"): a value
+                        // the schema does not name is the hint that claims nothing.
+                        rep: FieldRep::from_open(d.rep() as u8),
+                        constant: d.is_const(),
+                    };
+                    (
+                        (self.key_ref(shape::key_at(s, i)), prop_attrs(d.attrs())),
+                        hint,
+                    )
                 })
-                .collect()
+                .unzip()
         };
         Some(ShapeDesc {
             proto: self.proto_ref(shape::proto(s)),
             kind,
+            // FACT_SCHEMA 2 (M6-PLAN-D8): a hint; a compiled reader guards the shape.
+            elements: crate::elements::to_fact(shape::elements_kind(s)),
             flags,
             capacity: u16::from(shape::capacity(s)),
             keys,
+            fields,
         })
     }
 
@@ -1006,7 +1066,8 @@ fn chain_depth(mut p: u64, holder: Option<u64>) -> Option<u8> {
 /// `Call*` site, keyed kind (its facts are the record bits and a key half that only StoreKeyed
 /// keeps live, MC-w15-1), BinaryOp, CompareOp, TypeOf, ForIn, JumpLoop or CreateClosure. A
 /// `full` export keeps every kind. The header and the format are the same. No wildcard: a new
-/// slot kind must say which it is.
+/// slot kind must say which it is. The mode test is `exec::records`, the one that
+/// `profile::records` makes too (MC-w22-13).
 fn keep(rt: &Runtime, k: FeedbackSlotKind, u: &SlotUse) -> bool {
     use FeedbackSlotKind as K;
     let record_only = match k {
@@ -1032,5 +1093,5 @@ fn keep(rt: &Runtime, k: FeedbackSlotKind, u: &SlotUse) -> bool {
         | K::Literal
         | K::CloneObject => false,
     };
-    !record_only || rt.exec.get().feedback_mode() != crate::exec::Feedback::ICS_ONLY
+    !record_only || crate::exec::records(rt)
 }

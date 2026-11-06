@@ -51,3 +51,4 @@
 0x182f   12.47        method       0       "toLocaleDateString"  (%Date.prototype%.toLocaleDateString w-c)
 0x1830   12.48        method       0       "toLocaleTimeString"  (%Date.prototype%.toLocaleTimeString w-c)
 0x1831   12.49        method       1       "[Symbol.toPrimitive]"  (%Date.prototype%.[Symbol.toPrimitive] --c)
+0x1832   12.50        method       0       "toTemporalInstant"  (%Date.prototype%.toTemporalInstant w-c)

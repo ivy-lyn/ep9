@@ -127,7 +127,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     118 E 119 (1:120)
     121 E 123 (1:124)
     125 E 8 (1:9)
-function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=10..26
+function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=9..26
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
       2    Return                                       ; 92
@@ -138,7 +138,7 @@ function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] p
   handlers (0):
   positions (1):
       0 S 15 (1:16)
-function f2 getter name="get g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=33..49
+function f2 getter name="get g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=28..49
   code (5 bytes):
       0 S> LdaSmi [2]                                   ; 04 02
       2    Return                                       ; 92
@@ -149,7 +149,7 @@ function f2 getter name="get g" parent=f0 outer_scope=scope0 flags=[simple-param
   handlers (0):
   positions (1):
       0 S 38 (1:39)
-function f3 setter name="set g" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=0 range=56..62
+function f3 setter name="set g" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=0 range=51..62
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -157,7 +157,7 @@ function f3 setter name="set g" parent=f0 outer_scope=scope0 flags=[simple-param
   feedback (0):
   handlers (0):
   positions (0):
-function f4 method name=- parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=67..72
+function f4 method name=- parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=64..72
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -165,7 +165,7 @@ function f4 method name=- parent=f0 outer_scope=scope0 flags=[simple-params] par
   feedback (0):
   handlers (0):
   positions (0):
-function f5 getter name=- parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=81..86
+function f5 getter name=- parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=74..86
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92

@@ -29,8 +29,8 @@
 //!   report. An int32 BinaryOp or CompareOp record makes the int32 guards of its site fact
 //!   guards (SPIKEC-2, [`crate::build`]; the exporter writes those records from FACTS2, M4-P2,
 //!   on); an index-only keyed record of FACTS2 does the same for the key's int32 check of
-//!   its site, while the element guards stay unbacked (SPIKEC-3: FACT_SCHEMA 1 has no
-//!   receiver, bounds or hole field; [`crate::build`] "Keyed facts"). A value that an
+//!   its site, and (M6-P3, FACT_SCHEMA 2's keyed bits) a LoadKeyed record of Array receivers
+//!   for the kind and element guards of its load ([`crate::build::element_bases_of`]). A value that an
 //!   unbacked guard narrows keeps the trust [`Trust::Unknown`]: no fact knows it. The basis
 //!   is a label: the emitted code of a guard is the same either way.
 //!
@@ -191,6 +191,9 @@ pub enum Op {
     Const(u64),
     /// An int32 constant.
     ConstInt32(i32),
+    /// A double constant, as its f64 bits (a Number of the constant pool that is no int32, or
+    /// -0; SPIKEC-9 `LdaConstant`): Float64, PROVEN. An immediate, never a heap constant (P-R2).
+    ConstFloat64(u64),
     /// An SSA phi; inputs in the order of the block's predecessors.
     Phi,
     /// Guard: the Tagged input is an int32, or a double that is an int32 and not -0. Int32.
@@ -199,6 +202,12 @@ pub enum Op {
     /// an int32 (-0 gives 0). Any other input (NaN, a non-integer, an object whose `valueOf`
     /// would run) leaves. Int32, PROVEN by the ToInt32 invariant.
     TruncateInt32,
+    /// Guard: ToInt32 of the Float64 input for a bitwise op (SPIKEC-9: `x | 0` on a double).
+    /// The input truncated toward zero, when that is exact: a double whose integer part is an
+    /// int32 (any fraction, -0 and -0.5 give their ToInt32). NaN, an infinity and a double
+    /// whose integer part is outside int32 leave (their ToInt32 needs the modulo step, which
+    /// the spike does not build). Int32, PROVEN by the ToInt32 invariant.
+    TruncateFloat64,
     /// Guard: the Tagged input is a cell whose ShapeId has a case in the IC entry of `site`
     /// with the handler `handler` (an in-object field, or an Array's `length`): the live T0
     /// IC holds the run-local ids (H30: a ShapeRef lowers to a CellRef). `shapes` are the
@@ -219,6 +228,16 @@ pub enum Op {
     CheckArray,
     /// The field at byte `offset` of the object input (behind a [`Op::CheckShape`]). Tagged.
     LoadField { offset: u32 },
+    /// The out-of-line field at byte `offset` of the object input's SLOTS cell (the word at
+    /// `vm_layout::OBJECT_SLOTS`; behind a [`Op::CheckShape`] whose shapes hold the field past
+    /// their in-object capacity, SPIKEC-9). Tagged.
+    LoadSlotsField { offset: u32 },
+    /// SPIKEC-9 task 8 (`build::hoist_array_checks`, in a loop's preheader): the elements
+    /// store of the array input (a [`Op::CheckArray`]) if it is an ELEMENTS_DOUBLE cell and
+    /// the array's length is at most its capacity, else 0. No guard. The element ops of the
+    /// loop take it as a last input: a cell lets them check only the bounds by `length` and
+    /// the hole; 0 sends them down their full path. Tagged repr, but never in a frame state.
+    DoubleElements,
     /// Guard: element `index` (Int32) of the array input (a [`Op::CheckArray`]): in `0..length`,
     /// inside the capacity of its ELEMENTS or ELEMENTS_DOUBLE cell (any other store exits), not
     /// a hole. Tagged (a raw f64 boxes as `Value::number`), or Float64 if only number uses read
@@ -244,10 +263,12 @@ pub enum Op {
     /// Tagged, unknown, a guard (a CONTEXT cell with more slots; M5-P2). Reads mutable memory:
     /// never shared or moved across an effect (SPIKEC-4, lin_solve).
     LoadContextSlot(u32),
-    /// A call with an undefined receiver (`CallUndefinedReceiver0/1/2`): inputs = the callee,
-    /// then the arguments, all Tagged; `regs` are the instruction's operand registers in the
-    /// same order (`RuntimeTable::call_any` reads the operands from their VM frame slots).
-    /// A Tagged, unknown result. An effect and a GC point; a throw unwinds (SPIKEC-4).
+    /// A call (`CallUndefinedReceiver0/1/2`, SPIKEC-4; `CallProperty1` and the register-list
+    /// `CallUndefinedReceiver`, SPIKEC-9): inputs = the callee, then the receiver of a
+    /// `CallProperty1`, then the arguments, all Tagged; `regs` are the instruction's operand
+    /// registers in the same order (a list as its registers one by one;
+    /// `RuntimeTable::call_any` reads the operands from their VM frame slots). A Tagged,
+    /// unknown result. An effect and a GC point; a throw unwinds (SPIKEC-4).
     Call { regs: Vec<Register> },
     /// `o[k]` by the generic keyed load (`ep9_vm::RuntimeTable::get_keyed`, entry 8,
     /// `layout::RT_GET_KEYED`; SPIKEC-4, P3-ORCH-9): the Tagged receiver and key, a Tagged
@@ -264,6 +285,16 @@ pub enum Op {
     Int32(Int32Op),
     /// An int32 comparison: Bool.
     Compare(Cond),
+    /// A double comparison of two Float64 inputs (SPIKEC-9): Bool, PROVEN. IEEE order, as JS:
+    /// every compare with a NaN is false, but `Ne` (`!==`), which is true.
+    CompareFloat64(Cond),
+    /// The global binding that the `LdaGlobal` at the node's bytecode offset names
+    /// (`ep9_vm::RuntimeTable::load_global`, entry 11, `layout::RT_LOAD_GLOBAL`; SPIKEC-9 task
+    /// 2). The entry reads the name from the bytecode, so the graph holds no heap constant
+    /// (P-R2). A Tagged, unknown result. An effect and a GC point (a getter or a proxy trap of
+    /// the global object may run JS); a throw (a ReferenceError) unwinds from the offset. The
+    /// entry records no feedback (MC-w15-6).
+    LoadGlobal,
     /// The Tagged input is the `false` Value: Bool (`JumpIfFalse` on a non-Bool accumulator).
     IsFalse,
     /// The Tagged input is the `true` Value: Bool.
@@ -287,9 +318,10 @@ impl Op {
     /// constants, the int32 bitwise ops, ToInt32, a relational comparison's boolean).
     pub fn proven_by_spec(&self) -> bool {
         match self {
-            Op::Const(_) | Op::ConstInt32(_) | Op::TruncateInt32 => true,
+            Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) => true,
+            Op::TruncateInt32 | Op::TruncateFloat64 => true,
             Op::Int32(o) => o.bitwise(),
-            Op::Compare(_) | Op::IsFalse | Op::IsTrue => true,
+            Op::Compare(_) | Op::CompareFloat64(_) | Op::IsFalse | Op::IsTrue => true,
             // A number from numbers (SPIKEC-4).
             Op::Int32ToFloat64 | Op::Float64(_) => true,
             _ => false,
@@ -301,6 +333,7 @@ impl Op {
         match self {
             Op::CheckInt32
             | Op::TruncateInt32
+            | Op::TruncateFloat64
             | Op::CheckShape { .. }
             | Op::CheckArray
             | Op::CheckNumber
@@ -328,6 +361,7 @@ impl Op {
                 | Op::GetKeyedGeneric
                 | Op::SetKeyedGeneric
                 | Op::Call { .. }
+                | Op::LoadGlobal
         )
     }
 
@@ -336,7 +370,7 @@ impl Op {
     pub fn is_call(&self) -> bool {
         matches!(
             self,
-            Op::GetKeyedGeneric | Op::SetKeyedGeneric | Op::Call { .. }
+            Op::GetKeyedGeneric | Op::SetKeyedGeneric | Op::Call { .. } | Op::LoadGlobal
         )
     }
 
@@ -377,6 +411,53 @@ impl Mode {
     }
 }
 
+impl Op {
+    /// True for an op that may write a slot of a context or change the frame's current
+    /// context (MODES-CHECK-w26 MC-w26-8): `build::hoist_array_checks` moves a
+    /// [`Op::LoadContextSlot`] out of a loop only if no op of the loop gives true here. No op
+    /// of the graph stores into a context today: the builder translates no
+    /// `StaContextSlot`, `StaCurrentContextSlot`, `PushContext` or `PopContext`
+    /// (`build::supported`). An op that may run JS (a call, a global load, a generic keyed
+    /// access) may write any slot: the code it runs can close over the same context. The
+    /// match has no wildcard, so a new op must give its answer here.
+    pub fn writes_context(&self) -> bool {
+        match self {
+            Op::Call { .. } | Op::LoadGlobal | Op::GetKeyedGeneric | Op::SetKeyedGeneric => true,
+            Op::Incoming(_)
+            | Op::Const(_)
+            | Op::ConstInt32(_)
+            | Op::ConstFloat64(_)
+            | Op::Phi
+            | Op::CheckInt32
+            | Op::TruncateInt32
+            | Op::TruncateFloat64
+            | Op::CheckShape { .. }
+            | Op::CheckArray
+            | Op::LoadField { .. }
+            | Op::LoadSlotsField { .. }
+            | Op::DoubleElements
+            | Op::LoadElement
+            | Op::StoreElement
+            | Op::CheckNumber
+            | Op::Int32ToFloat64
+            | Op::Float64(_)
+            | Op::BoxFloat64
+            | Op::LoadContextSlot(_)
+            | Op::Int32(_)
+            | Op::Compare(_)
+            | Op::CompareFloat64(_)
+            | Op::IsFalse
+            | Op::IsTrue
+            | Op::BoxInt32
+            | Op::BoxBool
+            | Op::Poll
+            | Op::Jump
+            | Op::Branch
+            | Op::Return => false,
+        }
+    }
+}
+
 /// The state a deopt at a guard rebuilds: the bytecode offset where T0 goes on and the SSA
 /// value of each register that is live there (the graph builder's liveness, H02-Q1).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -411,8 +492,25 @@ pub struct Node {
     /// The bytecode offset of the instruction that made the node.
     pub offset: u32,
     pub guard: Option<Guard>,
+    /// SPIKEC-10 (the lazy-deopt probe, H29-Q4): a [`Op::Call`]'s state after the call (the
+    /// next instruction's offset and its live registers; the accumulator is the call's
+    /// result, which the lazy exit takes from x0). A lazy deopt that swapped the call's return
+    /// address resumes T0 there (a call record, H29 record tag 2).
+    pub lazy: Option<FrameState>,
     /// False once a pass removed it.
     pub live: bool,
+}
+
+impl Node {
+    /// The values the node's frame states name (a guard's state, a call's lazy state): each
+    /// is used at the node (an exit reads it there).
+    pub fn state_values(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.guard
+            .iter()
+            .map(|g| &g.state)
+            .chain(self.lazy.iter())
+            .flat_map(|s| s.registers.iter().map(|&(_, v)| v).chain(s.acc))
+    }
 }
 
 /// One basic block: phis first, the terminator last.
@@ -447,6 +545,10 @@ pub struct Graph {
     pub register_count: u32,
     /// The reachable bytecode instructions (offset, opcode), in offset order.
     pub insns: Vec<(u32, ep9_bytecode::Opcode)>,
+    /// The feedback slot a guard's exit record names when its op has none of its own: a
+    /// `CheckArray` names the keyed slot of the first element site that made it (MC-w25-6;
+    /// it stays with the guard when the guard moves to a preheader).
+    pub sites: Vec<(NodeId, u32)>,
 }
 
 impl Graph {
@@ -463,6 +565,7 @@ impl Graph {
             parameter_count,
             register_count,
             insns: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
@@ -497,6 +600,7 @@ impl Graph {
             block,
             offset,
             guard: None,
+            lazy: None,
             live: true,
         });
         id
@@ -576,6 +680,9 @@ impl Graph {
     /// - a frame state after the guard's own instruction (a forward resume, R-SPIKE-P4-1)
     ///   needs a block whose one successor starts at the state's offset and no effect after
     ///   the guard in its block (`Graph::check_forward_state`).
+    ///
+    /// A call's lazy state (SPIKEC-10): each value is live and defined before the call, and
+    /// its offset is the one of the reachable instruction right after the call's own.
     pub fn check(&self) -> Result<(), String> {
         let mut seen = vec![false; self.nodes.len()];
         for b in &self.blocks {
@@ -624,6 +731,43 @@ impl Graph {
                                 ));
                             }
                             Ok(None) => {}
+                        }
+                    }
+                }
+                // A call's lazy state (SPIKEC-10): the lazy exit reads each value at the call,
+                // so each is still live and defined before the call, as for a guard's state.
+                // T0 resumes at the state's offset after the call ran (the call record's
+                // bytecode offset), so it is the next reachable instruction's: at or before
+                // the call T0 would run the call again; past the next one it would skip code.
+                if let Some(l) = &node.lazy {
+                    let i = self
+                        .insns
+                        .binary_search_by_key(&node.offset, |x| x.0)
+                        .map_err(|_| {
+                            format!(
+                                "{at}: the call's offset @{} is not an instruction",
+                                node.offset
+                            )
+                        })?;
+                    let next = self.insns.get(i + 1).map(|x| x.0);
+                    if next != Some(l.offset) {
+                        return Err(format!(
+                            "{at}: the lazy state resumes T0 at @{}, not at the instruction \
+                             after the call at @{} ({})",
+                            l.offset,
+                            node.offset,
+                            next.map_or("none".to_string(), |o| format!("@{o}"))
+                        ));
+                    }
+                    for v in l.registers.iter().map(|&(_, v)| v).chain(l.acc) {
+                        if !self.node(v).live {
+                            return Err(format!("{at}: a lazy-state value n{} was removed", v.0));
+                        }
+                        if !defined[v.0 as usize] {
+                            return Err(format!(
+                                "{at}: lazy-state value n{} is not defined before the call",
+                                v.0
+                            ));
                         }
                     }
                 }
@@ -843,9 +987,12 @@ impl fmt::Display for Graph {
                     continue;
                 }
                 let ins: Vec<String> = node.inputs.iter().map(|i| format!("n{}", i.0)).collect();
-                let g = node.guard.as_ref().map_or(String::new(), |g| {
+                let mut g = node.guard.as_ref().map_or(String::new(), |g| {
                     format!("  guard g{} {:?} -> @{}", g.id, g.basis, g.state.offset)
                 });
+                if let Some(l) = &node.lazy {
+                    g += &format!("  lazy -> @{}", l.offset);
+                }
                 writeln!(
                     f,
                     "  n{} = {:?}({}) : {:?} {:?} @{}{g}",
@@ -882,6 +1029,114 @@ mod tests {
         assert!(Graph::const_tagged(0x1000).is_none(), "a cell address");
         assert!(Graph::const_tagged(ep9_value::encoding::VALUE_UNDEFINED).is_some());
         assert!(Graph::const_tagged(crate::vm_layout::int32_bits(3)).is_some());
+    }
+
+    /// MC-w26-8 (M6-P3 SC-FIX): every op that may run JS may write a context slot; a slot
+    /// load writes none. And no opcode the builder translates stores into a context or
+    /// changes the current context: the day one does, its graph op must answer true in
+    /// [`Op::writes_context`], so the loop that holds it keeps its slot loads (this test
+    /// fails first, as a reminder).
+    #[test]
+    fn ops_that_may_write_a_context_slot() {
+        let ops = [
+            Op::Incoming(Incoming::Param(0)),
+            Op::Const(0),
+            Op::ConstInt32(0),
+            Op::ConstFloat64(0),
+            Op::Phi,
+            Op::CheckInt32,
+            Op::TruncateInt32,
+            Op::TruncateFloat64,
+            Op::CheckShape {
+                site: 0,
+                shapes: vec![],
+                handler: 0,
+            },
+            Op::CheckArray,
+            Op::LoadField { offset: 24 },
+            Op::LoadSlotsField { offset: 16 },
+            Op::DoubleElements,
+            Op::LoadElement,
+            Op::StoreElement,
+            Op::CheckNumber,
+            Op::Int32ToFloat64,
+            Op::Float64(FloatOp::Add),
+            Op::BoxFloat64,
+            Op::LoadContextSlot(2),
+            Op::Call { regs: vec![] },
+            Op::GetKeyedGeneric,
+            Op::SetKeyedGeneric,
+            Op::Int32(Int32Op::Add),
+            Op::Compare(Cond::Lt),
+            Op::CompareFloat64(Cond::Lt),
+            Op::LoadGlobal,
+            Op::IsFalse,
+            Op::IsTrue,
+            Op::BoxInt32,
+            Op::BoxBool,
+            Op::Poll,
+            Op::Jump,
+            Op::Branch,
+            Op::Return,
+        ];
+        for op in &ops {
+            if op.is_call() {
+                assert!(op.writes_context(), "{op:?} may run JS");
+            }
+        }
+        let writers: Vec<&Op> = ops.iter().filter(|o| o.writes_context()).collect();
+        assert_eq!(writers.len(), 4, "{writers:?}");
+        assert!(!Op::LoadContextSlot(2).writes_context());
+        use ep9_bytecode::Opcode;
+        for op in [
+            Opcode::StaContextSlot,
+            Opcode::StaCurrentContextSlot,
+            Opcode::PushContext,
+            Opcode::PopContext,
+        ] {
+            assert!(
+                !crate::build::supported(op),
+                "{op:?} is translated now: give its graph op `writes_context` true (MC-w26-8)"
+            );
+        }
+    }
+
+    /// MC-w26-8: [`crate::build::loop_may_hoist`] reads [`Op::writes_context`]. A loop body of
+    /// a slot load, a number store and its poll may move its checks and loads; the same body
+    /// with an op that writes a context slot may not, and neither may one with a Tagged store.
+    #[test]
+    fn a_loop_that_may_write_a_context_slot_keeps_its_loads() {
+        use crate::build::loop_may_hoist;
+        let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+        g.blocks.push(Block::default());
+        let b = BlockId(0);
+        let add = |g: &mut Graph, op: Op, inputs: Vec<NodeId>, repr: Repr| {
+            let n = g.add(op, inputs, repr, Trust::Unknown, b, 0);
+            g.blocks[0].nodes.push(n);
+            n
+        };
+        let p = add(
+            &mut g,
+            Op::Incoming(Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+        );
+        let slot = add(&mut g, Op::LoadContextSlot(2), vec![], Repr::Tagged);
+        let i = add(&mut g, Op::ConstInt32(0), vec![], Repr::Int32);
+        let store = add(&mut g, Op::StoreElement, vec![p, i, i], Repr::None);
+        let poll = add(&mut g, Op::Poll, vec![], Repr::None);
+        assert!(loop_may_hoist(&g, &[slot, store, poll]));
+        for op in [
+            Op::Call { regs: vec![] },
+            Op::LoadGlobal,
+            Op::GetKeyedGeneric,
+            Op::SetKeyedGeneric,
+        ] {
+            let w = add(&mut g, op.clone(), vec![], Repr::Tagged);
+            assert!(!loop_may_hoist(&g, &[slot, w, store, poll]), "{op:?}");
+        }
+        let tagged = add(&mut g, Op::StoreElement, vec![p, i, p], Repr::None);
+        assert!(!loop_may_hoist(&g, &[slot, tagged, poll]));
     }
 
     /// The checker refuses a PROVEN value that is not on the H30 list, a predicted value with
@@ -977,6 +1232,116 @@ mod tests {
         assert!(e.contains("not defined before the guard"), "{e}");
     }
 
+    /// A call's lazy state (SPIKEC-10) gets the frame-state checks of a guard: a value that a
+    /// pass removed, or one made after the call, is refused; a value made before passes.
+    #[test]
+    fn check_refuses_a_bad_lazy_state() {
+        let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+        g.blocks.push(Block::default());
+        let push = |g: &mut Graph, op: Op, inputs: Vec<NodeId>, repr: Repr, off: u32| {
+            let n = g.add(op, inputs, repr, Trust::Unknown, BlockId(0), off);
+            g.blocks[0].nodes.push(n);
+            n
+        };
+        let p = push(
+            &mut g,
+            Op::Incoming(Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+            0,
+        );
+        let early = push(&mut g, Op::ConstInt32(1), vec![], Repr::Int32, 1);
+        let call = push(&mut g, Op::Call { regs: vec![] }, vec![p], Repr::Tagged, 2);
+        let late = push(&mut g, Op::ConstInt32(2), vec![], Repr::Int32, 6);
+        // The reachable instructions: the lazy state's offset 6 is the one after the call.
+        use ep9_bytecode::Opcode;
+        g.insns = vec![
+            (0, Opcode::LdaZero),
+            (1, Opcode::LdaZero),
+            (2, Opcode::CallUndefinedReceiver0),
+            (6, Opcode::LdaSmi),
+        ];
+        for n in [early, late] {
+            g.node_mut(n).trust = Trust::Proven;
+        }
+        let state = |v: NodeId| FrameState {
+            offset: 6,
+            registers: vec![(Register::parameter(0), v)],
+            acc: None,
+        };
+        g.node_mut(call).lazy = Some(state(early));
+        assert!(g.check().is_ok());
+        g.node_mut(call).lazy = Some(state(late));
+        let e = g.check().unwrap_err();
+        assert!(e.contains("not defined before the call"), "{e}");
+        g.node_mut(call).lazy = Some(state(early));
+        g.node_mut(early).live = false;
+        let e = g.check().unwrap_err();
+        assert!(e.contains("lazy-state value n1 was removed"), "{e}");
+    }
+
+    /// A call's lazy state resumes T0 at the instruction right after the call (the call
+    /// record's bytecode offset, Codex M6-P2 r2): at the call, before it, inside it or past
+    /// the next instruction is refused; a call with no next instruction, or at an offset that
+    /// is not an instruction, too.
+    #[test]
+    fn check_refuses_a_lazy_state_at_the_wrong_offset() {
+        use ep9_bytecode::Opcode;
+        let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+        g.blocks.push(Block::default());
+        g.insns = vec![
+            (0, Opcode::LdaSmi),
+            (2, Opcode::CallUndefinedReceiver0),
+            (6, Opcode::LdaSmi),
+            (8, Opcode::Return),
+        ];
+        let p = g.add(
+            Op::Incoming(Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+            Trust::Unknown,
+            BlockId(0),
+            0,
+        );
+        let call = g.add(
+            Op::Call { regs: vec![] },
+            vec![p],
+            Repr::Tagged,
+            Trust::Unknown,
+            BlockId(0),
+            2,
+        );
+        g.blocks[0].nodes.extend([p, call]);
+        let at = |offset: u32| FrameState {
+            offset,
+            registers: vec![(Register::parameter(0), p)],
+            acc: None,
+        };
+        g.node_mut(call).lazy = Some(at(6));
+        assert!(g.check().is_ok());
+        for bad in [2, 0, 4, 8, 9] {
+            g.node_mut(call).lazy = Some(at(bad));
+            let e = g.check().unwrap_err();
+            assert!(
+                e.contains(&format!(
+                    "resumes T0 at @{bad}, not at the instruction after the call at @2 (@6)"
+                )),
+                "{bad}: {e}"
+            );
+        }
+        // A call with no next instruction, and a call whose offset is not an instruction.
+        g.node_mut(call).lazy = Some(at(6));
+        g.insns.truncate(2);
+        let e = g.check().unwrap_err();
+        assert!(e.contains("after the call at @2 (none)"), "{e}");
+        g.insns = vec![(0, Opcode::LdaSmi), (6, Opcode::LdaSmi)];
+        let e = g.check().unwrap_err();
+        assert!(
+            e.contains("the call's offset @2 is not an instruction"),
+            "{e}"
+        );
+    }
+
     /// The graph of `name` in `defs` from the live facts after `warm` (T0).
     fn graph_of(defs: &str, warm: &str, name: &str) -> Graph {
         use crate::harness::Session;
@@ -987,8 +1352,11 @@ mod tests {
         let id = *script.functions_named(name).first().expect("function");
         let live = crate::facts::live(&s, script).expect("facts");
         let input = s.function_input(name).expect("input");
-        let (g, _) =
-            crate::build::build(&input, &crate::facts::for_function(&live, id)).expect("build");
+        let (g, _) = crate::build::build(
+            &input,
+            &crate::facts::for_function(&live, script.unit.unit(), id),
+        )
+        .expect("build");
         g
     }
 

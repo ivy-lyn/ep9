@@ -89,7 +89,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      80 E 55 (1:56)
      86 E 70 (1:71)
      93 E 51 (1:52)
-function f1 class-constructor name="Inner" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=20..45
+function f1 class-constructor name="Inner" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..45
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -98,7 +98,7 @@ function f1 class-constructor name="Inner" parent=f0 outer_scope=scope1 flags=[s
   handlers (0):
   positions (1):
       0 S 8 (1:9)
-function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=23..43
+function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=22..43
   code (7 bytes):
       0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
       2 E> ThrowReferenceErrorIfHole k0  ; k0 = String str2 "Inner" ; 94 00
@@ -112,7 +112,7 @@ function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
   positions (2):
       0 S 28 (1:29)
       2 E 35 (1:36)
-function f3 class-constructor name="D" parent=f0 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=61..89
+function f3 class-constructor name="D" parent=f0 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=55..89
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -121,7 +121,7 @@ function f3 class-constructor name="D" parent=f0 outer_scope=scope4 flags=[stric
   handlers (0):
   positions (1):
       0 S 55 (1:56)
-function f4 method name="n" parent=f0 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=71..87
+function f4 method name="n" parent=f0 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=70..87
   code (6 bytes):
       0 S> LdaGlobal k0, s0  ; k0 = String str1 "D"     ; 10 00 00
       3    Return                                       ; 92

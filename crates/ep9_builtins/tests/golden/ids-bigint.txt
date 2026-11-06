@@ -1,0 +1,9 @@
+# ep9 builtin ids: module bigint, block 18. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x2400   18.0         constructor  1       "BigInt"  (%BigInt%)
+0x2401   18.1         method       2       "asIntN"  (%BigInt%.asIntN w-c)
+0x2402   18.2         method       2       "asUintN"  (%BigInt%.asUintN w-c)
+0x2403   18.3         method       0       "toString"  (%BigInt.prototype%.toString w-c)
+0x2404   18.4         method       0       "toLocaleString"  (%BigInt.prototype%.toLocaleString w-c)
+0x2405   18.5         method       0       "valueOf"  (%BigInt.prototype%.valueOf w-c)

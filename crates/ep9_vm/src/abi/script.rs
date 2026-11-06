@@ -63,7 +63,7 @@ impl<'s> Cx<'s> {
     /// construct that is not built yet (the v0 not-implemented `Error`), `EvalError` on an
     /// isolate without compiler hooks, or whatever the script throws.
     pub fn evaluate_script(&mut self, source: &str, file: &str) -> JsResult<Local<'s>> {
-        let unit = self.compile_with(|h| (h.compile_script)(source))?;
+        let unit = self.compile_with(None, |h| (h.compile_script)(source))?;
         let f = self.load_entry(unit, file, UNDEFINED, EvalReceiver::default(), Box::new([]));
         let global = self.global();
         self.call(f, global, &[])
@@ -85,11 +85,14 @@ impl<'s> Cx<'s> {
     }
 
     /// Runs `compile` with the isolate's compiler hooks and turns a failure into the thrown
-    /// error (see the module doc).
+    /// error (see the module doc). First HostEnsureCanCompileStrings(`strings`) for eval and
+    /// `Function()` (`host.rs`; it may throw); `None`, a host's own script, asks no hook.
     pub(crate) fn compile_with(
         &mut self,
+        strings: Option<(&[String], &str, bool)>,
         compile: impl FnOnce(&CompilerHooks) -> CompileResult,
     ) -> JsResult<VerifiedUnit> {
+        crate::host::ensure_can_compile_strings(self, strings)?;
         let Some(hooks) = self.rt().compiler else {
             return Err(self.throw_error(ErrorKind::EvalError, NO_COMPILER));
         };
@@ -150,7 +153,7 @@ impl<'s> Cx<'s> {
         private: Box<[EvalPrivateName]>,
     ) -> JsResult<Local<'s, JsFunction>> {
         let text = self.source_text(source)?;
-        let unit = self.compile_with(|h| (h.compile_eval)(&text, ctx))?;
+        let unit = self.compile_with(Some((&[], &text, true)), |h| (h.compile_eval)(&text, ctx))?;
         Ok(self.load_entry(unit, EVAL_FILE, context, EvalReceiver::of(ctx), private))
     }
 
@@ -165,7 +168,8 @@ impl<'s> Cx<'s> {
         };
         let text = self.source_text(s)?;
         let ctx = EvalContext::default();
-        let unit = self.compile_with(|h| (h.compile_eval)(&text, &ctx))?;
+        let unit =
+            self.compile_with(Some((&[], &text, false)), |h| (h.compile_eval)(&text, &ctx))?;
         let f = self.load_entry(
             unit,
             EVAL_FILE,
@@ -182,6 +186,7 @@ impl<'s> Cx<'s> {
     ///
     /// ```text
     /// ToString of each parameter argument, then of the body (the last argument, or "")
+    /// HostEnsureCanCompileStrings(params, body, false)     before any parse (host.rs; may throw)
     /// compile_function(kind, params joined by ",", body)    the FNCTOR unit contract (D8):
     ///   a CodeKind::Eval unit whose function 0 returns the new closure
     /// GetPrototypeFromConstructor(newTarget, fallback)      step 27 (a proxy trap may run)
@@ -203,21 +208,16 @@ impl<'s> Cx<'s> {
             None => constructor.into(),
         };
         let n = args.len();
-        let mut params = String::new();
-        for i in 0..n.saturating_sub(1) {
+        let mut strings = Vec::with_capacity(n);
+        for i in 0..n {
             let p = self.to_string(args.get(i))?;
-            if i > 0 {
-                params.push(',');
-            }
-            params.push_str(&self.source_text(p)?);
+            strings.push(self.source_text(p)?);
         }
-        let body = if n == 0 {
-            String::new()
-        } else {
-            let b = self.to_string(args.get(n - 1))?;
-            self.source_text(b)?
-        };
-        let unit = self.compile_with(|h| (h.compile_function)(kind, &params, &body))?;
+        let body = strings.pop().unwrap_or_default();
+        let params = strings.join(",");
+        let unit = self.compile_with(Some((&strings, &body, false)), |h| {
+            (h.compile_function)(kind, &params, &body)
+        })?;
         let fallback = match kind {
             FunctionCtorKind::Generator => IntrinsicId::GeneratorFunctionPrototype,
             // §20.2.1.1.1 step 6: fallbackProto of kind async generator is

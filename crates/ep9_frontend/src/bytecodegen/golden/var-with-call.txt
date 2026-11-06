@@ -71,7 +71,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      56 S 35 (1:36)
      63 E 36 (1:37)
      69 E 35 (1:36)
-function f1 method name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=10..15
+function f1 method name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=9..15
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92

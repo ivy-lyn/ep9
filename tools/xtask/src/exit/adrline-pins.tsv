@@ -6,48 +6,11 @@
 # A pattern is a literal with optional ^ and $ anchors; write \ before a punctuation character.
 pin	H09-pages-and-side-metadata.md	crates/ep9_heap/src/layout.rs:67	crates/ep9_heap/src/layout.rs	^pub const PAGE_REMEMBERED_OFFSET: usize = 16;$	0
 pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/slow/call.rs:600	crates/ep9_vm/src/interp/slow/call.rs	// One unit, also when the frame does not fit \(R3-2\), as in `do_call`\.	1
-pin	H19-strings.md	crates/ep9_vm/src/string.rs:63	crates/ep9_vm/src/string.rs	^mod strf \{$	0
-pin	H19-strings.md	crates/ep9_vm/src/string.rs:586	crates/ep9_vm/src/string.rs	^pub\(crate\) fn flatten\(cx: &mut Cx, s: u64\) -> u64 \{$	0
 pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/mod.rs:175	crates/ep9_vm/src/interp/mod.rs	pub const TERMINATE: u32 = 1;	0
-pin	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:434	crates/ep9_heap/src/heap.rs	Page::from_base\(self\.base\.add\(\(addr & PAGE_MASK\)	0
-pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:14	crates/ep9_vm/src/object.rs	^//! \| ARRAY \| 18 \|	0
-pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:17	crates/ep9_vm/src/object.rs	^//! \| ELEMENTS \| 65 \|	0
-pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:85-87	crates/ep9_vm/src/object.rs	pub const MAX_LENGTH: u32 = 1 << 26;	-1	pub const MAX_LENGTH: u32 = 1 << 26;	0
-pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:198-200	crates/ep9_vm/src/property.rs	&& array_store\(rt, o, i, v\)	-1	&& array_store\(rt, o, i, v\)	3
-pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:189-195	crates/ep9_vm/src/property.rs	if f64::from\(n\) != d \|\| !object::array_set_length\(rt, o, n\)	0	if f64::from\(n\) != d \|\| !object::array_set_length\(rt, o, n\)	6
-pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:319-324	crates/ep9_vm/src/property.rs	&& object::array_get\(base, i\)\.is_some\(\)	-2	object::array_set\(rt, base, i, crate::frame::HOLE\);	2
-pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:176-178	crates/ep9_vm/src/runtime.rs	roots: \(0\.\.ROOT_SLOTS\)	0
-pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/object.rs:103	crates/ep9_vm/src/string.rs	^pub\(crate\) const MAX_STRING_LENGTH	0
-pin	H23-limits-and-failure-policy.md	`Cargo.toml` lines 38-42	Cargo.toml	^\[profile\.release\]	0	^debug = "line-tables-only"	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:95	crates/ep9_vm/src/builtins.rs	^pub enum IntrinsicId	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:300	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:513	crates/ep9_vm/src/builtins.rs	^pub struct PropDef	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:593	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:672	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable	0
-pin	H20-builtin-abi.md	`:715`	crates/ep9_vm/src/builtins.rs	^pub fn check_tables	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/natives.rs:289	crates/ep9_vm/src/natives.rs	^pub\(crate\) static VM_TABLE	0
-pin	H10-rooting.md	.github/workflows/ci.yml:600-602	.github/workflows/ci.yml	^      - name: SP-GC gate$	0	^      - name: SP-GC gate$	2
-pin	H24-debug-and-profiling-hooks.md	.github/workflows/ci.yml:610-616	.github/workflows/ci.yml	^      # Spike B structural gate \(plan-v4	0	run: bash spikes/spike-b/gate\.sh structural$	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:378	crates/ep9_vm/src/abi/mod.rs	^pub struct ScratchList<'s> \{	0
-pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:394	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn symbol_for\(	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:379	crates/ep9_vm/src/abi/mod.rs	^pub struct ScratchList<'s> \{	0
 pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:412	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn well_known\(	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:80	crates/ep9_vm/src/abi/mod.rs	^// H20 sizes: one word each	1
-pin	H20-builtin-abi.md	crates/ep9_vm/src/property.rs:868	crates/ep9_vm/src/property.rs	^pub\(crate\) fn get_own_property\(	0
-pin	H20-builtin-abi.md	`:868`	crates/ep9_vm/src/property.rs	^pub\(crate\) fn get_own_property\(	0
-pin	H18-elements-kinds.md	crates/ep9_vm/src/property.rs:520-527	crates/ep9_vm/src/property.rs	// v0: a dense array keeps a hole\.$	-4	// v0: a dense array keeps a hole\.$	3
-pin	H03-ts-runtime-semantics.md	crates/ep9_bytecode/src/unit.rs:30	crates/ep9_bytecode/src/unit.rs	^/// \| 4 \| Runtime ids 29-31	0
-pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:51	crates/ep9_vm/src/runtime.rs	^pub\(crate\) enum Root \{	0
-pin	H29-deopt-contract.md	docs/adr/H14-frames-and-dispatch.md:62-63	docs/adr/H14-frames-and-dispatch.md	^\*\*JIT frames \(Spike B, D21 placement \(a\)	0	^\*\*JIT frames, placement \(b\)	0
-pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:402	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn prototype\(	0
-pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:166	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/local.rs:117	crates/ep9_vm/src/abi/local.rs	^    fn get\(&self\) -> Value	0
 pin	H19-strings.md	crates/ep9_vm/src/symbol.rs:418	crates/ep9_vm/src/symbol.rs	^pub\(crate\) fn prototype\(	0
-pin	H25-sandbox-readiness.md	crates/ep9_vm/src/object.rs:919	crates/ep9_vm/src/object.rs	init\(f, fun::INFO, native_of\(info\)\);	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/call.rs:206	crates/ep9_vm/src/call.rs	^pub\(crate\) fn top_of\(	0
-pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:176	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
-pin	H12-no-address-identity.md	crates/ep9_vm/src/runtime.rs:269	crates/ep9_vm/src/runtime.rs	pub templates: RefCell<HashMap<\(usize, u32\),	0
 pin	H34-relocation-kinds.md	docs/adr/H07-address-space-and-code-range.md:88	docs/adr/H07-address-space-and-code-range.md	^\| H07-Q2 \|	0
-pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/interp/ops.rs:381	crates/ep9_vm/src/interp/ops.rs	^fn budget_out\(st: &mut St<'_>\)	0
 pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/local.rs:147	crates/ep9_vm/src/abi/local.rs	^pub struct Local<'s, T = JsValue> \{	0
 history	H06-value-encoding.md	tools/xtask/src/m0_exit.rs:1270-1306	Checked at 0c4c70e	0c4c70e	^        Ok\(text\) => \{$
 history	H36-fp-semantics.md	crates/ep9_builtins/tests/table.rs:169	Row added for 077d1fe	077d1fe	^fn clippy_toml_repeats_the_root_bans\(
@@ -166,7 +129,7 @@ pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_
 # changed in place (OBJECT_LAYOUT 5 added +32 to the ARRAY row; the IC hit path lost the epoch
 # argument), and one dated record row that keeps the native.rs lines of its commit.
 pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:21	crates/ep9_vm/src/object.rs	^//! \| ARRAY \| 18 \|	0
-pin	H31-fuse-registry.md	crates/ep9_vm/src/interp/ops.rs:952	crates/ep9_vm/src/interp/ops.rs	match ic::load\(st\.rt\(\), st\.info\(\), object::proto_of\(home\), s\.0, name\.0\) \{	0
+# (M6-P2 integration fixer: the H31 pin of interp/ops.rs:952 was here; H31 names ops.rs:993 since the M6-P1 ADRLINE row, which maps by the diff map, so the pin was unused.)
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/native.rs:285-295	| 4 Data (M4-P3 amendment: the 2026-10-27 RuntimeTable row clarify, K-1)	f0a5557	^    pub const RT_POLL\: usize = offset_of\!\(RuntimeTable, poll\)\;$
 # H23:34: the new number 205 was an older token of H23 with another line (375d953), so the
 # drift map would read it from there.
@@ -192,9 +155,6 @@ history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:13-18	Spike C cov
 history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:294-306	Spike C covers them in its own form	6e60ebd	let repr \= match tag \& 3 \{
 history	13-execution-modes.md	spikes/spike-c/src/deopt_meta.rs:13-18	SPIKEC-4 built its own form	6e60ebd	^\/\/\!  value   \:\= u8 tag
 history	13-execution-modes.md	spikes/spike-c/src/deopt_meta.rs:294-306	SPIKEC-4 built its own form	6e60ebd	let repr \= match tag \& 3 \{
-# H16 F-R7 paragraph: the count-units block of the exporter doc keeps lines 86-100; PROFILE5 rewrote
-# its last 3 lines in place (the jittered window).
-pin	H16-ics-and-feedback.md	crates/ep9_vm/src/facts_export.rs:86-100	crates/ep9_vm/src/facts_export.rs	^\/\/\! \- \*\*Count units \(F\-R7\, MC\-w13\-2\)\.\*\*	0	longer keeps a site out of every window \(MC\-w13\-17\;	0
 # H31:79: the new number exotic.rs:210 was an older H31 token with another line (e902a53), so the
 # drift map would read it from there.
 pin	H31-fuse-registry.md	crates/ep9_vm/src/exotic.rs:210	crates/ep9_vm/src/exotic.rs	^pub\(crate\) fn own_attrs\(rt\: \&Runtime\, o\: u64\, key\: u64\, how\: Probe\)	0
@@ -240,3 +200,97 @@ pin	H18-elements-kinds.md	docs/adr/README.md:149	docs/adr/README.md	^\| H18 \| E
 # Frozen steps (b5c8ba44) rewrote. The pattern names the line by its start.
 pin	H17-object-layout.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
 pin	H18-elements-kinds.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H19-strings.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+# M6-P0 integration fixer, records part (ADRLINE at e059e28a, the M6-P0 merge head plus the fixer code):
+# tokens in dated record and Change-log rows keep their numbers; each pattern is the token's first
+# line at the commit that added it (FIX or UNFIXABLE at HEAD). Doc 13: two module-doc ranges and the
+# DUMP_BYTES lines whose text VM6 and SC-0 changed in place (same place, same subject), and the
+# month-5 cites of FACT_SCHEMA 1 and of the Spike C hand facts that SC-0 removed (dated notes give the new state).
+history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/layout.rs:81	| 1 Reviewer (M5-P0 amendment: the 2026-10-28 H13-Q3 note clarify row, RuntimeTable entry 10)	b7f5d2a6	pub struct RuntimeTable \{
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/facts_export.rs:656	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row, P2-ORCH-12)	2dbf2b06	fn a\_call\_key\_becomes\_a\_function\_ref\_or\_megamorphic\(\) \{
+history	H16-ics-and-feedback.md	`:706`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row, P2-ORCH-12)	2dbf2b06	fn a\_shared\_call\_and\_construct\_slot\_is\_megamorphic\(\) \{
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/runtime.rs:292	| 4 Data (M4-P3 amendment: the 2026-10-27 H16-Q3 fill row, IC2)	dd823913	pub stub\_cache\: crate\:\:stub\_cache\:\:StubCache\,
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/versions.rs:41	| 2 Codex (M5-P0 amendment: the 2026-10-28 rewrite (version) row, IC_LAYOUT 2 -> 3)	036a0efe	pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 5\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/profile.rs:814-819	| 2 Codex (M5-P1 amendment: the 2026-10-29 rewrite (T0 recording policy) row, the keyed kinds set, ELEM1)	886aa508	\/\/\/ string\, or a Number whose \`ToString\` is one\, \-0 included\) the inde
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/profile.rs:222-227	| 2 Codex (M5-P1 amendment: the 2026-10-28 rewrite row, MODES-D16 built, PROFILE5)	886aa508	\/\/\/ window unless its call pattern follows this sequence\. The state is
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/profile.rs:222-227	| 2 Codex (M5-P1 amendment: the 2026-10-28 rewrite row, sampled-call window jitter, PROFILE5)	886aa508	\/\/\/ window unless its call pattern follows this sequence\. The state is
+history	H17-object-layout.md	crates/ep9_vm/src/layout.rs:230	| 2026-11-01 | clarify (H17 is Draft)	59a400be	\/\/\/ Value encoding \(\`ep9\_value\:\:encoding\:\:VERSION\`\)\. A frame\'s caller 
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:41	| 2 Codex (M5-P0 amendment: the 2026-10-28 rewrite (version) row, OBJECT_LAYOUT 4 -> 5)	036a0efe	pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 5\;
+history	H17-object-layout.md	crates/ep9_vm/src/layout.rs:230	| 4 Data (M5-P4 amendment: the 2026-11-01 clarify row, the native-word owner)	59a400be	\/\/\/ Value encoding \(\`ep9\_value\:\:encoding\:\:VERSION\`\)\. A frame\'s caller 
+history	H17-object-layout.md	crates/ep9_vm/src/layout.rs:230	| 1 Reviewer (M5-P4 amendment: the 2026-11-01 clarify row, the native-word owner)	59a400be	\/\/\/ Value encoding \(\`ep9\_value\:\:encoding\:\:VERSION\`\)\. A frame\'s caller 
+history	H17-object-layout.md	crates/ep9_vm/src/layout.rs:230	| 4 Data (M5-P5 amendment: the 2026-11-02 clarify row, the native-word version sentence, FREEZE-FIX)	59a400be	\/\/\/ Value encoding \(\`ep9\_value\:\:encoding\:\:VERSION\`\)\. A frame\'s caller 
+history	H17-object-layout.md	crates/ep9_vm/src/ic.rs:223	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, representation values (append-only), FREEZE-FIX)	e3f7cbe9	\_ \=\> return None\,
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:41	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 clarify row, the native-word version sentence, FREEZE-FIX)	036a0efe	pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 5\;
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:41	| 3 Verifier (M5-P5 amendment: the 2026-11-02 clarify row, the native-word version sentence, FREEZE-FIX; the Claude reviewer's check)	036a0efe	pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 5\;
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:41	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, layout core)	036a0efe	pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 5\;
+history	H17-object-layout.md	crates/ep9_vm/src/layout.rs:233	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, layout core)	98b7fd37	pub const NATIVE\_WORD\_OFFSET\: u64 \= ep9\_value\:\:encoding\:\:DOUBLE\_ENCODE
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:41	| 3 Verifier (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, layout core)	036a0efe	pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 5\;
+history	H17-object-layout.md	crates/ep9_vm/src/layout.rs:233	| 3 Verifier (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, layout core)	98b7fd37	pub const NATIVE\_WORD\_OFFSET\: u64 \= ep9\_value\:\:encoding\:\:DOUBLE\_ENCODE
+history	H18-elements-kinds.md	crates/ep9_vm/src/profile.rs:814-819	| 2 Codex (M5-P1 amendment: the 2026-10-29 fill row, M5-P1 notes as built, ELEM1)	886aa508	\/\/\/ string\, or a Number whose \`ToString\` is one\, \-0 included\) the inde
+history	H18-elements-kinds.md	crates/ep9_facts/src/bits.rs:176-194	| 1 Reviewer (M5-P4 amendment: the 2026-11-01 fill row, the H18 Freeze table, FREEZE-PREP)	05e6b15d	byte\_enum\! \{
+history	H18-elements-kinds.md	spikes/spike-c/src/vm_layout.rs:64	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	e3f7cbe9	pub const ARRAY\_KINDS\: u16 \= 1 \<\< ELEMENTS\_KIND\_PACKED\_INT32
+history	H18-elements-kinds.md	crates/ep9_vm/src/tests/layout5.rs:107	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	e3f7cbe9	assert\_eq\!\(
+history	H18-elements-kinds.md	crates/ep9_vm/src/tests/elements.rs:119	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	e3f7cbe9	assert\_eq\!\(elements\:\:KINDS\_SET\_MASK\, 0x7F \<\< 10\)\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/tests/elements.rs:119	| 2 Codex (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	e3f7cbe9	assert\_eq\!\(elements\:\:KINDS\_SET\_MASK\, 0x7F \<\< 10\)\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:223	| 3 Verifier (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX; the Claude reviewer's check)	3d8a986f	pub\(crate\) const KINDS\_SET\_MASK\: u32 \= \(\(1 \<\< kind\:\:COUNT\) \- 1\) \<\< KIN
+history	H18-elements-kinds.md	crates/ep9_vm/src/tests/layout5.rs:151	| 3 Verifier (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX; the Claude reviewer's check)	3d8a986f	assert\_eq\!\(elements\:\:storage\(PROBE\)\, None\)\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/tests/elements.rs:119	| 3 Verifier (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX; the Claude reviewer's check)	e3f7cbe9	assert\_eq\!\(elements\:\:KINDS\_SET\_MASK\, 0x7F \<\< 10\)\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:223	| Approval (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	3d8a986f	pub\(crate\) const KINDS\_SET\_MASK\: u32 \= \(\(1 \<\< kind\:\:COUNT\) \- 1\) \<\< KIN
+history	H18-elements-kinds.md	crates/ep9_vm/src/versions.rs:52	| Approval (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	1254c896	pub const IC\_LAYOUT\_VERSION\: u32 \= 3\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/tests/elements.rs:119	| Approval (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	e3f7cbe9	assert\_eq\!\(elements\:\:KINDS\_SET\_MASK\, 0x7F \<\< 10\)\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:330	| 3 Verifier (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, elements core)	51a3d56f	if h \=\= crate\:\:frame\:\:UNDEFINED \|\| to \>\= kind\:\:DICTIONARY \{
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:330	| Approval (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, elements core)	51a3d56f	if h \=\= crate\:\:frame\:\:UNDEFINED \|\| to \>\= kind\:\:DICTIONARY \{
+history	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1363-1367	| 1 Reviewer (M4-P3 amendment: the 2026-10-27 fill (API addition) row, REGEXP1, part 2)	1ac4dcdb	pub\(crate\) fn existing\_function\(rt\: \&Runtime\, id\: BuiltinId\) \-\> Option
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/layout.rs:230	| 2026-11-01 | clarify (proposed; Accepted path)	a1bec6fb	\/\/\/ Value encoding \(\`ep9\_value\:\:encoding\:\:VERSION\`\)\. A frame\'s caller 
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/layout.rs:230	| 4 Data (M5-P4 amendment: the 2026-11-01 clarify row, the native-word owner)	a1bec6fb	\/\/\/ Value encoding \(\`ep9\_value\:\:encoding\:\:VERSION\`\)\. A frame\'s caller 
+history	H29-deopt-contract.md	crates/ep9_vm/src/deopt.rs:670-677	| 2 Codex (M5-P1 amendment: the 2026-10-29 fill row, the SPIKEC-5 deopt core as built)	886aa508	\/\/\/ Keeps \`meta\` for the code at \`start\`\. Replaces what an earlier cod
+history	H29-deopt-contract.md	crates/ep9_vm/src/deopt.rs:101-106	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, the value repr part, MC-w22-19)	e3f7cbe9	pub const REPR\_TAGGED\: u8 \= 0\;
+history	H29-deopt-contract.md	crates/ep9_vm/src/deopt.rs:424-429	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, the value repr part, MC-w22-19)	e3f7cbe9	let repr \= match \(tag \& form\:\:REPR\_MASK\) \>\> form\:\:REPR\_SHIFT \{
+history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:58-61	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, the value repr part, MC-w22-19)	e3f7cbe9	Tagged \= 0\,
+history	H29-deopt-contract.md	spikes/spike-c/src/vm_layout.rs:704	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, the Q1 note, the Q3 dump owner and the Q5 budget wording, MC-w22-3, -6, -20)	e3f7cbe9	pub const HAND\_FACTS\: \[\(\&str\, \&str\, u64\, \&str\)\; 6\] \= \[
+history	H29-deopt-contract.md	crates/ep9_vm/src/native.rs:1417	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, the Q1 note, the Q3 dump owner and the Q5 budget wording, MC-w22-3, -6, -20)	e3f7cbe9	pub fn deopt\_counts\_by\_id\(iso\: \&Isolate\, file\: \&str\, id\: u32\) \-\> Optio
+history	H29-deopt-contract.md	crates/ep9_vm/src/native.rs:1417	| 3 Verifier (M5-P5 amendment: the 2026-11-02 rewrite row, the Q1 note, the Q3 dump owner and the Q5 budget wording, MC-w22-3, -6, -20)	e3f7cbe9	pub fn deopt\_counts\_by\_id\(iso\: \&Isolate\, file\: \&str\, id\: u32\) \-\> Optio
+history	H29-deopt-contract.md	crates/ep9_vm/src/deopt.rs:424-429	| 3 Verifier (M5-P5 amendment: the 2026-11-02 rewrite row, the value repr part, MC-w22-19; the Claude reviewer's check)	e3f7cbe9	let repr \= match \(tag \& form\:\:REPR\_MASK\) \>\> form\:\:REPR\_SHIFT \{
+history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:58-61	| 3 Verifier (M5-P5 amendment: the 2026-11-02 rewrite row, the value repr part, MC-w22-19; the Claude reviewer's check)	e3f7cbe9	Tagged \= 0\,
+history	H35-aot-unit-format.md	crates/ep9_vm/src/versions.rs:60-63	| 4 Data (M5-P5 amendment: the 2026-11-02 clarify row, H35-Q10 and the RuntimeTable length, FREEZE-FIX)	fc992ea3	\/\/\/ The VM layout \(C\-18\, doc 13 C\-18\; MC\-w15\-5\: one owner per fact\)\: t
+history	H35-aot-unit-format.md	crates/ep9_vm/src/versions.rs:63	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 clarify row, H35-Q10 and the RuntimeTable length, FREEZE-FIX)	e3f7cbe9	\/\/\/ RuntimeTable offsets \(\`layout\:\:RT\_\*\`\) with the table\'s length\. 1 \(
+history	H35-aot-unit-format.md	crates/ep9_vm/src/versions.rs:60-63	| 3 Verifier (M5-P5 amendment: the 2026-11-02 clarify row, H35-Q10 and the RuntimeTable length, FREEZE-FIX)	fc992ea3	\/\/\/ The VM layout \(C\-18\, doc 13 C\-18\; MC\-w15\-5\: one owner per fact\)\: t
+pin	13-execution-modes.md	crates/ep9_vm/src/layout.rs:7-11	crates/ep9_vm/src/layout.rs	^\/\/\! Until M5\-P0 this was \`native\:\:layout\`	0	^\/\/\! behind \`spike\-native\`\: a default build	0
+pin	13-execution-modes.md	crates/ep9_vm/src/layout.rs:13-17	crates/ep9_vm/src/layout.rs	^\/\/\! Each export names the one version that owns it	0	^\/\/\! change of any value moves its owner	0
+pin	13-execution-modes.md	spikes/spike-c/src/emit_a64/mod.rs:100-102	spikes/spike-c/src/emit_a64/mod.rs	^\/\/\/ The bytes of the shared exit\'s register dump below sp	0	^const DUMP\_BYTES\: u32 \= layout\:\:DUMP\_BYTES\;	0
+history	13-execution-modes.md	crates/ep9_facts/src/lib.rs:53	| FactSnapshot | L1 |	8374ed99	pub const FACT\_SCHEMA\_VERSION\: u32 \= 1\;
+history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:704	**The set includes `FI_FEEDBACK` (MC-w13-14).**	7461bd28	pub const HAND\_FACTS\: \[\(\&str\, \&str\, u64\, \&str\)\; 6\] \= \[
+history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:49-59	**The set includes `FI_FEEDBACK` (MC-w13-14).**	d38a7282	\/\/\/ Not exported \(hand fact\, OBJECT\_LAYOUT 5\; \`shape\:\:CAGE\_ALIGN\`\)\: an
+history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:460-463	**The set includes `FI_FEEDBACK` (MC-w13-14).**	cbed293f	\/\/\/ Not exported \(hand fact\, OBJECT\_LAYOUT 5\; \`kinds\:\:CONTEXT\`\)\: the k
+# The FIX values above that equal an older token of the same doc with another line (the H23:34 case):
+# the drift map would read them from that older commit, so each is pinned to its line at HEAD. The H16
+# F-R7 pin of facts_export.rs:86-100 is gone: the doc now cites 96-110 (its FIX value). H20:66 names
+# builtins.rs:1024 by its full path (the bare `:1024` was an older H20 token of abi/mod.rs).
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:723	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
+pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:184	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
+pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:581	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
+# spec-int merge (spec-temporal on m1m6/p5, 2026-11-05): dated record and Change-log rows keep the line of the
+# commit they name (M3-P1-REVIEWROW-REFS); the BigInt and Temporal code moved those lines.
+history	H05-always-linked-compiler.md	.github/scripts/dep-guards.sh:191-213	| 1 Reviewer	b34fd01e	\# 12\) H5\: the bytecode compiler is always linked\. ep9 \(the runtime crate\, ep9_cl
+history	H08-object-header-and-shapeid.md	crates/ep9_vm/src/kinds.rs:336-337	| 1 Reviewer (M6-P4 amendment: the 2026-11-05 clarify row, Frozen step at M1 exit, whole)	3dd4f46c	assert_eq\!\(FLAG_INOBJECT_MASK \& FLAG_IS_PROTOTYPE\, 0\)\;
+history	H16-ics-and-feedback.md	`:1158-1165`	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, MODES-D16 built, PROFILE5)	d1db3137	\/\/ \`INT32_OVERFLOW\` \(MODES\-D16\)\, so the arm that fits does not change\.
+history	H16-ics-and-feedback.md	`:1182-1189`	| 3 Verifier (M5-P1 amendment: the 2026-10-28 rewrite row, MODES-D16 built, PROFILE5)	d1db3137	\/\/ \`INT32_OVERFLOW\` \(MODES\-D16\)\, so the arm that fits does not change\.
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| 3 Verifier (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| 4 Data (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| 1b Second reviewer (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2; README §3.2 Frozen part, M1-CHECK role)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:171	| 3 Verifier (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	f0d3010b	fn ic_layout_2_constants\(\) \{
+history	H16-ics-and-feedback.md	`:193`	| 3 Verifier (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	f0d3010b	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:171	| 1b Second reviewer (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2; README §3.2 Frozen part, M1-CHECK role)	f0d3010b	fn ic_layout_2_constants\(\) \{
+history	H16-ics-and-feedback.md	`:193`	| 1b Second reviewer (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2; README §3.2 Frozen part, M1-CHECK role)	f0d3010b	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/tests/layout4.rs:193	| Approval (M6-P5 amendment: the 2026-11-05 rewrite row, Frozen part 'feedback core', MC-w28-2)	d95f4e85	assert_eq\!\(F\:\:ALL\.len\(\)\, 21\)\;
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:153-162	| 2026-10-27 | clarify (proposed; an Open-question row of a Frozen ADR, no core text) | H20-Q1 answered by H14	91c3af1e	\/\/\/ \`new\.target\`\: the constructor of a \`\[\[Construct\]\]\` call\, undefined for a cal
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:153-162	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 clarify row, H20-Q1, ADR-A0)	91c3af1e	\/\/\/ \`new\.target\`\: the constructor of a \`\[\[Construct\]\]\` call\, undefined for a cal
+history	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:153-162	| 3 Verifier (M4-P2 amendment: the 2026-10-27 H20-Q1 clarify row, ADR-A0)	91c3af1e	\/\/\/ \`new\.target\`\: the constructor of a \`\[\[Construct\]\]\` call\, undefined for a cal
+history	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1024	| 1 Reviewer (M6-P0 amendment: the 2026-11-03 clarify row, ADRLINE and the IntrinsicId 0-72 text, M6-P0 integration fixer)	d667ae9e	pub fn check_tables\(tables\: \&\[\&BuiltinTable\]\) \-\> Result\<\(\)\, String\> \{
+history	H26-toolchain-and-unicode.md	Cargo.toml:71-72	| 2 Codex (M5-P0 amendment: the 2026-10-28 regress fork state clarify row)	036a0efe	\[patch\.crates\-io\]
+history	H27-compiler-features.md	.github/scripts/dep-guards.sh:215-277	| 3 Verifier	cb01df11	\# 13\) H23\: release builds abort on a panic\, so no panic unwinds through a JIT or
+# spec-int merge: three FIX values equal an older token of the same doc with another line (the H23:34
+# case), so the drift map would read them from that older commit; each is pinned to its line at HEAD.
+pin	H19-strings.md	`:286`	crates/ep9_vm/src/conv.rs	^pub\(crate\) fn type_of\(b: u64\) -> Atom \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/abi/mod.rs:488	crates/ep9_vm/src/abi/mod.rs	^impl Drop for ArgsBuilder<'_> \{	0
+pin	13-execution-modes.md	crates/ep9_vm/Cargo.toml:28	crates/ep9_vm/Cargo.toml	^jit = \["ep9_platform/jit"\]	0

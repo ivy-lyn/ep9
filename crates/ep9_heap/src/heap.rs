@@ -1580,6 +1580,11 @@ impl Inner {
     /// measure). `CHECK` walks every page and checks that rule: no live cell lies in a line
     /// marked free before the walk.
     ///
+    /// The walk sets the line marks line by line from the bitmaps ([`Inner::mark_live_lines`]:
+    /// a size call only for a live cell that may reach into the next line); `CHECK` sets them
+    /// cell by cell from each live cell's size. Both give the same marks (debug builds other
+    /// than Miri check it after each walk).
+    ///
     /// `CHECK` (the verify after a GC): also checks the live cells in
     /// address order (none overlaps the previous one or crosses the page end; each has a
     /// small-page size) and that no mark bit lies outside a VO bit; and, before it zaps a dead
@@ -1646,19 +1651,21 @@ impl Inner {
                     sweep_error(errors, idx, format_args!("mark bit without a VO bit"));
                 }
                 debug_assert!(CHECK || mk & !vo == 0, "mark bit without a VO bit");
-                let mut alive = vo & mk;
-                while alive != 0 {
-                    let bit = alive.trailing_zeros() as usize;
-                    alive &= alive - 1;
+                let alive = vo & mk;
+                if !CHECK {
+                    live += alive.count_ones() as usize;
+                    self.mark_live_lines(page, w, vo, alive);
+                }
+                // CHECK: every live cell, with its checks and its own line marks.
+                let mut rest = if CHECK { alive } else { 0 };
+                while rest != 0 {
+                    let bit = rest.trailing_zeros() as usize;
+                    rest &= rest - 1;
                     let addr = page.addr() + (w * 64 + bit) * 8;
-                    let size = if CHECK {
-                        self.check_live_cell(addr, &mut prev_end, errors)
-                    } else {
-                        self.size_at(addr)
-                    };
+                    let size = self.check_live_cell(addr, &mut prev_end, errors);
                     let first = (addr - page.addr()) / LINE_SIZE;
                     let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
-                    if CHECK && lines_before[first..=last].contains(&0) {
+                    if lines_before[first..=last].contains(&0) {
                         sweep_error(
                             errors,
                             idx,
@@ -1712,6 +1719,12 @@ impl Inner {
         if CHECK && self.any_mark_bit(page, sticky) {
             sweep_error(errors, idx, format_args!("mark bit set outside a GC"));
         }
+        // Not under Miri: there it would double the cost of every walk, and the line-mark test
+        // (tests/gc.rs) compares the marks itself.
+        #[cfg(all(debug_assertions, not(miri)))]
+        if !CHECK {
+            self.debug_check_line_marks(page);
+        }
         core::mem::forget(unmark);
         *kept += live;
         if live == 0 {
@@ -1722,6 +1735,86 @@ impl Inner {
             Swept::Recyclable
         } else {
             Swept::Full
+        }
+    }
+
+    /// The line marks of the live cells that start in VO word `w` of `page` (the walk of a
+    /// sweep that is not `CHECK`). `vo`: the word's VO bits before the sweep; `alive`: the
+    /// bits of its live cells. A line is used if a live cell starts in it, or if a live cell
+    /// that starts in an earlier line reaches into it. Cells never overlap, so only the last
+    /// live cell of a line can reach the next line, and only when no other cell (live or
+    /// dead) starts after it in its line. Even then it reaches no line after the next one if a
+    /// live cell starts in the next line, and that line is used anyway. So a size call is
+    /// needed only for such a last cell when no live cell starts in the next line, and each
+    /// line costs one line-mark write, not each cell. (Before
+    /// M6-P2 the walk took the size of every live cell and wrote its lines: on the splay
+    /// kernel the walks were about 10% of all instructions, the largest sweep cost; M6-P2
+    /// GCSPEED measure.)
+    #[inline(always)]
+    fn mark_live_lines(&self, page: Page, w: usize, vo: u64, alive: u64) {
+        for h in 0..LINES_PER_WORD {
+            let in_line = LINE_BITS << (h * GRANULES_PER_LINE);
+            let here = alive & in_line;
+            if here == 0 {
+                continue;
+            }
+            let line = w * LINES_PER_WORD + h;
+            // SAFETY: `w` < BITMAP_WORDS, so `line` < LINES_PER_PAGE: inside the line-mark
+            // array of this committed page.
+            unsafe { page.line_marks().add(line).write(1) };
+            let bit = 63 - here.leading_zeros() as usize;
+            // A cell starts after the last live one in this line: the live one ends before it.
+            if vo & in_line & (u64::MAX << bit << 1) != 0 {
+                continue;
+            }
+            let next = line + 1;
+            if next == LINES_PER_PAGE {
+                continue; // a cell never crosses the page end
+            }
+            let nw = next / LINES_PER_WORD;
+            // Word `nw` > `w` is not swept yet: its VO and mark bits are the ones of this GC.
+            let next_alive = if nw == w {
+                alive
+            } else {
+                page.vo_word(nw).load(Relaxed) & page.mark_word(nw).load(Relaxed)
+            };
+            if next_alive & (LINE_BITS << (next % LINES_PER_WORD * GRANULES_PER_LINE)) != 0 {
+                continue;
+            }
+            let addr = page.addr() + (w * 64 + bit) * GRANULE;
+            let last = (addr + self.size_at(addr) - 1 - page.addr()) / LINE_SIZE;
+            debug_assert!(last < LINES_PER_PAGE, "cell {addr:#x} crosses the page end");
+            if last > line {
+                // SAFETY: lines next..=last lie inside the line-mark array (a cell never
+                // crosses the page end).
+                unsafe { page.line_marks().add(next).write_bytes(1, last - line) };
+            }
+        }
+    }
+
+    /// Debug builds (not Miri): after a walk that is not `CHECK`, the line marks equal the
+    /// lines of the live cells, computed cell by cell from their sizes (the form `CHECK` uses).
+    #[cfg(all(debug_assertions, not(miri)))]
+    fn debug_check_line_marks(&self, page: Page) {
+        let mut want = [0u8; LINES_PER_PAGE];
+        for w in 0..BITMAP_WORDS {
+            let mut v = page.vo_word(w).load(Relaxed);
+            while v != 0 {
+                let bit = v.trailing_zeros() as usize;
+                v &= v - 1;
+                let addr = page.addr() + (w * 64 + bit) * GRANULE;
+                let first = (addr - page.addr()) / LINE_SIZE;
+                let last = (addr + self.size_at(addr) - 1 - page.addr()) / LINE_SIZE;
+                want[first..=last].fill(1);
+            }
+        }
+        for (l, &want) in want.iter().enumerate() {
+            assert_eq!(
+                u8::from(page.line_used(l)),
+                want,
+                "page {:#x}: the sweep's line mark of line {l} is not the live cells' one",
+                page.addr()
+            );
         }
     }
 
@@ -1944,6 +2037,14 @@ impl Inner {
 /// VO words per block in the sweep's empty-block test.
 const SKIP_WORDS: usize = 8;
 const _: () = assert!(BITMAP_WORDS.is_multiple_of(SKIP_WORDS));
+
+/// Bitmap bits per line, lines per bitmap word, and the bits of line 0 of a word
+/// (`Inner::mark_live_lines`).
+const GRANULES_PER_LINE: usize = LINE_SIZE / GRANULE;
+const LINES_PER_WORD: usize = 64 / GRANULES_PER_LINE;
+const LINE_BITS: u64 = u64::MAX >> (64 - GRANULES_PER_LINE);
+const _: () =
+    assert!(64 % GRANULES_PER_LINE == 0 && BITMAP_WORDS * LINES_PER_WORD == LINES_PER_PAGE);
 
 /// True if the VO words `[w, w + SKIP_WORDS)` at `vo` are all 0. Plain loads, so the test
 /// vectorizes.

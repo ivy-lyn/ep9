@@ -7,7 +7,7 @@ then add commits on top.
 
 | File | Copied to | Used for |
 |---|---|---|
-| `adr-README.md` | `docs/adr/README.md` | the Counts line and the index (part 3) |
+| `adr-README.md` | `docs/adr/README.md` | the Counts line and the index (part 3): one row per ADR H1-H37, as m0-exit parses it (plan v11 X16) |
 | `H16-accepted.md` | `docs/adr/H16-ics.md` | an Accepted ADR: its Crates row (part 1), its Change log and Review record (part 2), a `path:line` reference (part 4) |
 | `H29-draft.md` | `docs/adr/H29-deopt.md` | a Draft ADR (part 2 skips it) |
 | `vm-lib.rs.txt` | `crates/ep9_vm/src/lib.rs` | the code file that the reference names |

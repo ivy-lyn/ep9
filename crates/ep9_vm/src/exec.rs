@@ -24,6 +24,19 @@
 //! every object-model input (allocation-site element-kind feedback included) and drops only
 //! the `profile.rs` record hooks (MODES-D19).
 //!
+//! **Written once (M6-P0 SCHEMA6; MC-w21-8, MC-w22-13).** One place holds the mode:
+//! `Runtime::exec`. [`install`] is its one writer, and `Isolate::new_with` calls it once,
+//! before the isolate's first realm exists, so before any JS runs. Every reader takes the mode
+//! from it through [`feedback_mode`] or [`records`]:
+//!
+//! ```text
+//! Isolate::new_with ── install(rt, exec) ──> Runtime::exec   (a second write panics)
+//!                                                │
+//!       ┌──────────────────────┬────────────────┼───────────────────────────┐
+//!   Cx::table (picked once,   profile::records   facts_export::keep        exec tests
+//!   isolate.rs)               (the cold hooks)   (what an export keeps)
+//! ```
+//!
 //! [`Isolate::new_with`]: crate::Isolate::new_with
 
 /// An execution preset (doc 13 §1.2). Opaque: a new preset (hybrid) is a new associated
@@ -159,6 +172,35 @@ impl Default for ExecOptions {
     fn default() -> Self {
         ExecOptions::build_default()
     }
+}
+
+/// Stores `exec` as the execution options of the isolate of `rt` (the module docs): once,
+/// before its first realm exists, so before any JS runs. `Isolate::new_with` is the one
+/// caller. A second write panics in every build (it costs one load per isolate): it would
+/// leave `Cx::table`, picked from the first mode, and the cold hooks, which read the second,
+/// on two modes (MC-w21-8). The test is the realm key: the first realm makes it, and no later
+/// realm or JS clears it.
+pub(crate) fn install(rt: &crate::runtime::Runtime, exec: ExecOptions) {
+    assert!(
+        rt.root(crate::runtime::Root::RealmKey) == crate::frame::UNDEFINED,
+        "the execution options of an isolate are written once, before its first realm \
+         (MC-w21-8)"
+    );
+    rt.exec.set(exec);
+}
+
+/// The feedback mode of the isolate of `rt`: what [`install`] stored.
+#[inline(always)]
+pub(crate) fn feedback_mode(rt: &crate::runtime::Runtime) -> Feedback {
+    rt.exec.get().feedback_mode()
+}
+
+/// True if the isolate of `rt` runs the `profile.rs` record hooks: its feedback mode is not
+/// `ics_only` (MODES-D11). The one test of the mode that `profile::records` (the cold hooks)
+/// and `facts_export::keep` (what an export keeps) share (MC-w22-13).
+#[inline(always)]
+pub(crate) fn records(rt: &crate::runtime::Runtime) -> bool {
+    feedback_mode(rt) != Feedback::ICS_ONLY
 }
 
 /// What this build of ep9_vm is (MC-w17-5): its features and the preset of

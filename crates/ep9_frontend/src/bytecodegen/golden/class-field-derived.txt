@@ -157,7 +157,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     182 E 112 (1:113)
     194 E 130 (1:131)
     207 E 112 (1:113)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..10
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=0..10
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -180,7 +180,7 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[
   positions (2):
       0 S 31 (1:32)
       2 E 31 (1:32)
-function f3 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=49..64
+function f3 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=11..66
   code (44 bytes):
       0    LdaTheHole                                   ; 07
       1    Star r0                                      ; 0c 00
@@ -216,7 +216,7 @@ function f3 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[str
      18 E 54 (1:55)
      29 E 54 (1:55)
      42 E 63 (1:64)
-function f4 derived-constructor name="C" parent=f0 outer_scope=scope6 flags=[strict,simple-params] params=0 length=0 regs=5 range=85..111
+function f4 derived-constructor name="C" parent=f0 outer_scope=scope6 flags=[strict,simple-params] params=0 length=0 regs=5 range=67..111
   code (30 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    GetSuperConstructor r0                       ; 98 00
@@ -281,7 +281,7 @@ function f6 class-fields-initializer name=- parent=f0 outer_scope=scope9 flags=[
   positions (2):
       0 S 132 (1:133)
       1 E 132 (1:133)
-function f7 derived-constructor name="D" parent=f0 outer_scope=scope9 flags=[strict,simple-params] params=0 length=0 regs=3 range=146..180
+function f7 derived-constructor name="D" parent=f0 outer_scope=scope9 flags=[strict,simple-params] params=0 length=0 regs=3 range=112..182
   code (35 bytes):
       0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope11 ; 75 00 03
       3    PushContext r1                               ; 13 01

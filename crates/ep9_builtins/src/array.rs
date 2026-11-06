@@ -6,12 +6,14 @@
 //! `entries` are VM builtins (block 0, `natives.rs`).
 //! Week 4 (P3-BLTA): `Array.isArray`, `Array.prototype.pop`, `indexOf`. M2-P4 (B-ARRAY): the
 //! rest of ES2025 §23.1 except `@@unscopables` (it needs an object-valued table entry).
+//! M6-P1 (SPEC-A): `Array.fromAsync` (ES2026 §23.1.2.2).
 //!
 //! | Builtin | Template | Pattern |
 //! |---|---|---|
 //! | `Array.isArray` | 1 | a pure static predicate |
 //! | `pop`, `indexOf` and the other generic methods | 6 | generic over array-likes: every element access goes through the index ObjectOps (`get_index`, `has_index`, `set_index`, `delete_index`), which need no key for an element or a missing index; each loop polls once per pass |
 //! | `Array.from`, `Object.fromEntries`, `Object.groupBy` | 7 | an iterable (`get_iterator`, `iterator_step_value`, `iterator_close`) |
+//! | `Array.fromAsync` | 7 | an async iterable, an iterable or an array-like, read by an async closure: a state record and one built-in closure pair per Await (`from_async`) |
 //! | `map`, `filter`, `slice`, `splice`, `concat`, `flat`, `flatMap` | 6 | ArraySpeciesCreate (`array_species_create`): `@@species` read through `%Symbol%` |
 //! | `sort`, `toSorted` | 6 | SortIndexedProperties: the values in a `ScratchList`, a stable merge sort of indices (`merge_sort`) |
 //! | `get Array[@@species]` | 5 | a getter with a symbol key |
@@ -21,9 +23,11 @@
 
 use core::cmp::Ordering;
 
+use ep9_vm::abi::{ObjectClass, PromiseCapability};
 use ep9_vm::{
-    Args, BuiltinDef, BuiltinModule, Cx, IntrinsicDef, IntrinsicId, JsKey, JsObject, JsResult,
-    JsString, JsSymbol, Local, ObjectProps, PropDef, PropKey, ScratchList, WellKnownSymbol,
+    Args, BuiltinDef, BuiltinModule, Cx, HostFn, IntrinsicDef, IntrinsicId, JsKey, JsObject,
+    JsResult, JsString, JsSymbol, Local, ObjectProps, PropDef, PropKey, ScratchList, Throw,
+    WellKnownSymbol,
 };
 
 /// This module's block of builtin ids.
@@ -70,6 +74,8 @@ mod def {
     pub const WITH: u16 = 35;
     pub const FROM_ENTRIES: u16 = 36;
     pub const GROUP_BY: u16 = 37;
+    // ---- M6-P1 (SPEC-A) ----
+    pub const FROM_ASYNC: u16 = 38;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -113,6 +119,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("with", 2, with),              // 3.35
     BuiltinDef::method("fromEntries", 1, object_from_entries), // 3.36
     BuiltinDef::method("groupBy", 2, object_group_by), // 3.37
+    // ---- M6-P1 (SPEC-A) ----
+    BuiltinDef::method("fromAsync", 1, from_async), // 3.38
 ];
 
 /// The intrinsics this module makes.
@@ -125,6 +133,7 @@ pub const PROPS: &[ObjectProps] = &[
         props: &[
             PropDef::method(PropKey::Str("isArray"), def::IS_ARRAY),
             PropDef::method(PropKey::Str("from"), def::FROM),
+            PropDef::method(PropKey::Str("fromAsync"), def::FROM_ASYNC),
             PropDef::method(PropKey::Str("of"), def::OF),
             // §23.1.2.5: an accessor {c} with a getter and no setter.
             PropDef::accessor(
@@ -2367,4 +2376,729 @@ fn index_of<'s>(
     }
     // 11. Return -1𝔽.
     Ok(Local::int32(-1))
+}
+
+// ---- Array.fromAsync (M6-P1 SPEC-A) -----------------------------------------------------------
+//
+// The spec runs Array.fromAsync's steps as an async Abstract Closure (AsyncFunctionStart). Here
+// the closure is a state machine: the state lives in one internal record, and each Await is
+// PromiseResolve(%Promise%, v) plus PerformPromiseThen with a built-in closure pair over the
+// record (no result capability), as the spec's Await does, so the job order is the spec's:
+//
+// ```text
+// from_async                 capability, record; run the closure up to its first Await
+//   iterable path            fa_iterate -> Await(next result) -> fa_on_next
+//                            -> [mapping: Call(mapper) -> Await -> fa_on_mapped] -> fa_define
+//                            -> fa_iterate ...    done: Set(A, "length"), resolve A
+//   array-like path          fa_like_step -> Await(Get(arrayLike, k)) -> fa_on_like_value
+//                            -> [mapping: Call(mapper) -> Await -> fa_on_like_mapped]
+//                            -> fa_like_define -> fa_like_step ...
+//   abrupt completion        reject; IfAbruptCloseAsyncIterator -> fa_close (AsyncIteratorClose:
+//                            Await the `return` result, then reject with the kept error)
+// ```
+//
+// A sync iterable is read through CreateAsyncFromSyncIterator (§27.1.6.1). The async-from-sync
+// iterator object is never visible to JS, so its `next` and `return` steps (§27.1.6.2.1-2 and
+// AsyncFromSyncIteratorContinuation, §27.1.6.4) run here on the sync iterator directly
+// (`afs_next`, `afs_return`); they make the same promises and jobs.
+//
+// The record is an internal slot object of the class `PromiseReaction` with a null prototype,
+// as `promise.rs` keeps its shared records: JS never sees it. The await closures hold it as
+// their closure data and the pending promise reactions hold the closures, so every Value of the
+// state lives in a traced heap cell (plan rule 8). An Await handler has no result capability,
+// so it never throws: each one ends in a resolve, a reject or the next Await (a termination
+// passes on).
+
+/// The slots of a fromAsync record.
+mod fa {
+    /// The `[[Resolve]]` and `[[Reject]]` of the returned promise's capability.
+    pub const RESOLVE: usize = 0;
+    pub const REJECT: usize = 1;
+    /// `mapper`: undefined when mapping is false.
+    pub const MAPPER: usize = 2;
+    pub const THIS_ARG: usize = 3;
+    /// `A`.
+    pub const A: usize = 4;
+    /// `k`, a Number.
+    pub const K: usize = 5;
+    /// The iterable path: `[[Iterator]]`. The array-like path: `arrayLike`.
+    pub const SOURCE: usize = 6;
+    /// The iterable path: `[[NextMethod]]`. The array-like path: `len`, a Number.
+    pub const NEXT: usize = 7;
+    /// true: `SOURCE` is a sync iterator, read through the async-from-sync steps.
+    pub const SYNC: usize = 8;
+    /// The thrown value that an AsyncIteratorClose gives back once `return` settled.
+    pub const ERROR: usize = 9;
+    pub const COUNT: usize = 10;
+}
+
+fn fa_get<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>, i: usize) -> JsResult<Local<'s>> {
+    cx.slot(rec, ObjectClass::PromiseReaction, i)
+}
+
+fn fa_set<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    i: usize,
+    v: impl Into<Local<'s>>,
+) -> JsResult<()> {
+    cx.set_slot(rec, ObjectClass::PromiseReaction, i, v)
+}
+
+/// A slot that holds an object (`A`, `SOURCE`).
+fn fa_object<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    i: usize,
+) -> JsResult<Local<'s, JsObject>> {
+    Ok(fa_get(cx, rec, i)?
+        .as_object()
+        .expect("a fromAsync record slot that holds an object"))
+}
+
+/// A slot that holds a Number below 2^53 (`K`, `NEXT` of the array-like path).
+fn fa_index<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>, i: usize) -> JsResult<u64> {
+    Ok(fa_get(cx, rec, i)?
+        .as_number()
+        .expect("a fromAsync record slot that holds a number") as u64)
+}
+
+/// The record a fromAsync closure captured.
+fn fa_record<'s>(cx: &Cx<'s>, args: &Args<'s>) -> Local<'s, JsObject> {
+    cx.closure_data(args.callee())
+        .as_object()
+        .expect("a fromAsync closure has its record")
+}
+
+/// `%Promise%` of the current realm.
+fn promise_intrinsic<'s>(cx: &mut Cx<'s>) -> JsResult<Local<'s, JsObject>> {
+    if !cx.has_intrinsic(IntrinsicId::Promise) {
+        return Err(cx.not_implemented("Array.fromAsync without the Promise module"));
+    }
+    Ok(cx.intrinsic(IntrinsicId::Promise))
+}
+
+/// The closure returns `A`: `Call(promiseCapability.[[Resolve]], undefined, « A »)`.
+fn fa_resolve<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>) -> JsResult<()> {
+    let resolve = fa_get(cx, rec, fa::RESOLVE)?;
+    let a = fa_get(cx, rec, fa::A)?;
+    cx.call(resolve, Local::undefined(), &[a]).map(|_| ())
+}
+
+/// The closure throws `e`: `Call(promiseCapability.[[Reject]], undefined, « e »)`.
+fn fa_reject<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>, e: Local<'s>) -> JsResult<()> {
+    let reject = fa_get(cx, rec, fa::REJECT)?;
+    cx.call(reject, Local::undefined(), &[e]).map(|_| ())
+}
+
+/// The closure ends with the throw completion `t`: reject with its value. A termination passes
+/// on.
+fn fa_throw<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>, t: Throw) -> JsResult<()> {
+    let e = cx.catch_exception(t)?;
+    fa_reject(cx, rec, e)
+}
+
+/// The end of a resumed step: a throw completion `r` rejects. The value of an Await handler.
+fn fa_settle<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    r: JsResult<()>,
+) -> JsResult<Local<'s>> {
+    if let Err(t) = r {
+        fa_throw(cx, rec, t)?;
+    }
+    Ok(Local::undefined())
+}
+
+/// Await(v) (§6.2.3.1): `? PromiseResolve(%Promise%, v)` (a throw is the Await's throw), then
+/// PerformPromiseThen(promise, on_fulfilled, on_rejected) with two built-in closures over the
+/// record. The closure resumes in a job.
+fn fa_await<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    v: Local<'s>,
+    on_fulfilled: HostFn,
+    on_rejected: HostFn,
+) -> JsResult<()> {
+    let c = promise_intrinsic(cx)?;
+    let p = cx.promise_resolve(c, v)?;
+    let p = p.as_object().expect("PromiseResolve gives a promise");
+    let f = cx.new_builtin_closure(on_fulfilled, "", 1, rec);
+    let r = cx.new_builtin_closure(on_rejected, "", 1, rec);
+    cx.perform_promise_then(p, f, r, None);
+    Ok(())
+}
+
+/// GetMethod(V, @@name) (§7.3.10): `None` for undefined or null, a TypeError for a value that
+/// is not callable; GetV throws for undefined and null.
+fn get_symbol_method<'s>(cx: &mut Cx<'s>, v: Local<'s>, name: &str) -> JsResult<Option<Local<'s>>> {
+    let symbol = well_known(cx, name)?;
+    if v.is_undefined_or_null() {
+        return Err(cx.throw_type_error("Array.fromAsync: the items are undefined or null"));
+    }
+    let method = cx.get_v(v, symbol)?;
+    if method.is_undefined_or_null() {
+        return Ok(None);
+    }
+    if !cx.is_callable(method) {
+        let msg = format!("Array.fromAsync: items[Symbol.{name}] is not a function");
+        return Err(cx.throw_type_error(&msg));
+    }
+    Ok(Some(method))
+}
+
+/// Array.fromAsync ( asyncItems [ , mapper [ , thisArg ] ] ) (ES2026 §23.1.2.2).
+fn from_async<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let (items, mapper, this_arg) = (args.get(0), args.get(1), args.get(2));
+    // 1. Let C be the this value.
+    let c = this;
+    // 2. Let promiseCapability be ! NewPromiseCapability(%Promise%).
+    let promise = promise_intrinsic(cx)?;
+    let cap = cx.new_promise_capability(promise)?;
+    // 3. fromAsyncClosure captures C, mapper and thisArg (the record; C is used only before
+    //    the first Await).
+    let rec = cx.new_object_with_slots(Local::null(), ObjectClass::PromiseReaction, fa::COUNT);
+    fa_set(cx, rec, fa::RESOLVE, cap.resolve)?;
+    fa_set(cx, rec, fa::REJECT, cap.reject)?;
+    fa_set(cx, rec, fa::MAPPER, mapper)?;
+    fa_set(cx, rec, fa::THIS_ARG, this_arg)?;
+    fa_set(cx, rec, fa::K, Local::int32(0))?;
+    fa_set(cx, rec, fa::SYNC, Local::boolean(false))?;
+    // 4. Perform AsyncFunctionStart(promiseCapability, fromAsyncClosure): the closure runs now,
+    //    up to its first Await; a throw before it rejects.
+    let r = from_async_start(cx, rec, c, items, mapper);
+    fa_settle(cx, rec, r)?;
+    // 5. Return promiseCapability.[[Promise]].
+    Ok(cap.promise.value())
+}
+
+/// fromAsyncClosure (§23.1.2.2 step 3) up to its first Await.
+fn from_async_start<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    c: Local<'s>,
+    items: Local<'s>,
+    mapper: Local<'s>,
+) -> JsResult<()> {
+    // a. If mapper is undefined, let mapping be false.
+    // b. Else, if IsCallable(mapper) is false, throw a TypeError exception; mapping is true.
+    if !mapper.is_undefined() && !cx.is_callable(mapper) {
+        return Err(cx.throw_type_error("Array.fromAsync: the mapper is not a function"));
+    }
+    // c. Let usingAsyncIterator be ? GetMethod(asyncItems, %Symbol.asyncIterator%).
+    let using_async_iterator = get_symbol_method(cx, items, "asyncIterator")?;
+    // d. If usingAsyncIterator is undefined, then
+    //    i. Let usingSyncIterator be ? GetMethod(asyncItems, %Symbol.iterator%).
+    let using_sync_iterator = match using_async_iterator {
+        Some(_) => None,
+        None => get_symbol_method(cx, items, "iterator")?,
+    };
+    // e. Let iteratorRecord be undefined.
+    // f. If usingAsyncIterator is not undefined, then
+    //    i. Set iteratorRecord to ? GetIteratorFromMethod(asyncItems, usingAsyncIterator).
+    // g. Else if usingSyncIterator is not undefined, then
+    //    i. Set iteratorRecord to CreateAsyncFromSyncIterator(? GetIteratorFromMethod(
+    //       asyncItems, usingSyncIterator)) (the sync record; `afs_next` and `afs_return` are
+    //       the async-from-sync iterator's methods).
+    let iterator_record = match (using_async_iterator, using_sync_iterator) {
+        (Some(method), _) => Some((cx.get_iterator_from_method(items, method)?, false)),
+        (None, Some(method)) => Some((cx.get_iterator_from_method(items, method)?, true)),
+        (None, None) => None,
+    };
+    // h. If iteratorRecord is not undefined, then
+    if let Some((iterator_record, sync)) = iterator_record {
+        // i. If IsConstructor(C) is true, then let A be ? Construct(C).
+        // ii. Else, let A be ! ArrayCreate(0).
+        let a = if cx.is_constructor(c) {
+            cx.construct(c, &[], c)?
+        } else {
+            array_create(cx, 0)?
+        };
+        fa_set(cx, rec, fa::A, a)?;
+        fa_set(cx, rec, fa::SOURCE, iterator_record.iterator())?;
+        fa_set(cx, rec, fa::NEXT, iterator_record.next_method())?;
+        fa_set(cx, rec, fa::SYNC, Local::boolean(sync))?;
+        // iii. Let k be 0. (K is 0.)
+        // iv. Repeat,
+        return fa_iterate(cx, rec);
+    }
+    // i. Else,
+    //    i. NOTE: asyncItems is neither an AsyncIterable nor an Iterable so assume it is an
+    //       array-like object.
+    //    ii. Let arrayLike be ! ToObject(asyncItems).
+    let array_like = cx.to_object(items)?;
+    //    iii. Let len be ? LengthOfArrayLike(arrayLike).
+    let len = length_of_array_like(cx, array_like)?;
+    //    iv. If IsConstructor(C) is true, then let A be ? Construct(C, « 𝔽(len) »).
+    //    v. Else, let A be ? ArrayCreate(len).
+    let a = if cx.is_constructor(c) {
+        cx.construct(c, &[number(len)], c)?
+    } else {
+        array_create(cx, len)?
+    };
+    fa_set(cx, rec, fa::A, a)?;
+    fa_set(cx, rec, fa::SOURCE, array_like)?;
+    fa_set(cx, rec, fa::NEXT, number(len))?;
+    //    vi. Let k be 0. (K is 0.)
+    //    vii. Repeat, while k < len,
+    fa_like_step(cx, rec)
+}
+
+// ---- the iterable path (step 3.h.iv) ----
+
+/// Steps 1-4 of one pass: the k limit, the `next` call and the Await of its result.
+fn fa_iterate<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>) -> JsResult<()> {
+    let k = fa_index(cx, rec, fa::K)?;
+    // 1. If k ≥ 2^53 - 1, then
+    //    a. Let error be ThrowCompletion(a newly created TypeError object).
+    //    b. Return ? AsyncIteratorClose(iteratorRecord, error).
+    if k >= MAX_SAFE_INTEGER {
+        let t = cx.throw_type_error("Array.fromAsync: too many items");
+        return fa_close_throw(cx, rec, t);
+    }
+    // 2. Let Pk be ! ToString(𝔽(k)). (`create_index` takes k.)
+    // 3. Let nextResult be ? Call(iteratorRecord.[[NextMethod]], iteratorRecord.[[Iterator]]).
+    let next_result = if fa_get(cx, rec, fa::SYNC)?.as_bool() == Some(true) {
+        afs_next(cx, rec)?
+    } else {
+        let next = fa_get(cx, rec, fa::NEXT)?;
+        let iterator = fa_get(cx, rec, fa::SOURCE)?;
+        cx.call(next, iterator, &[])?
+    };
+    // 4. Set nextResult to ? Await(nextResult).
+    fa_await(cx, rec, next_result, fa_on_next, fa_on_rejected)
+}
+
+/// Resumes step 4 with the awaited next result.
+fn fa_on_next<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rec = fa_record(cx, &args);
+    let r = fa_next_result(cx, rec, args.get(0));
+    fa_settle(cx, rec, r)
+}
+
+/// Steps 5-10 of one pass.
+fn fa_next_result<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    next_result: Local<'s>,
+) -> JsResult<()> {
+    // 5. If nextResult is not an Object, throw a TypeError exception.
+    let Some(next_result) = next_result.as_object() else {
+        return Err(cx.throw_type_error("Array.fromAsync: the iterator result is not an object"));
+    };
+    // 6. Let done be ? IteratorComplete(nextResult).
+    let done = cx.get(next_result, "done")?;
+    // 7. If done is true, then
+    if cx.to_boolean(done) {
+        // a. Perform ? Set(A, "length", 𝔽(k), true).
+        let a = fa_object(cx, rec, fa::A)?;
+        let k = fa_index(cx, rec, fa::K)?;
+        set_length(cx, a, k)?;
+        // b. Return Completion Record { [[Type]]: return, [[Value]]: A, [[Target]]: empty }.
+        return fa_resolve(cx, rec);
+    }
+    // 8. Let nextValue be ? IteratorValue(nextResult).
+    let next_value = cx.get(next_result, "value")?;
+    // 9. If mapping is true, then
+    let mapper = fa_get(cx, rec, fa::MAPPER)?;
+    if !mapper.is_undefined() {
+        // a. Let mappedValue be Completion(Call(mapper, thisArg, « nextValue, 𝔽(k) »)).
+        // b. IfAbruptCloseAsyncIterator(mappedValue, iteratorRecord).
+        let this_arg = fa_get(cx, rec, fa::THIS_ARG)?;
+        let k = fa_index(cx, rec, fa::K)?;
+        let mapped = match cx.call(mapper, this_arg, &[next_value, number(k)]) {
+            Ok(v) => v,
+            Err(t) => return fa_close_throw(cx, rec, t),
+        };
+        // c. Set mappedValue to Completion(Await(mappedValue)).
+        // d. IfAbruptCloseAsyncIterator(mappedValue, iteratorRecord).
+        if let Err(t) = fa_await(cx, rec, mapped, fa_on_mapped, fa_on_mapped_rejected) {
+            return fa_close_throw(cx, rec, t);
+        }
+        return Ok(());
+    }
+    // 10. Else, let mappedValue be nextValue.
+    fa_define(cx, rec, next_value)
+}
+
+/// Resumes step 9.c with the awaited mapped value.
+fn fa_on_mapped<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rec = fa_record(cx, &args);
+    let r = fa_define(cx, rec, args.get(0));
+    fa_settle(cx, rec, r)
+}
+
+/// Resumes step 9.c with a throw completion: 9.d IfAbruptCloseAsyncIterator.
+fn fa_on_mapped_rejected<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rec = fa_record(cx, &args);
+    let r = fa_close(cx, rec, args.get(0));
+    fa_settle(cx, rec, r)
+}
+
+/// Steps 11-13 of one pass, then the next pass.
+fn fa_define<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    mapped_value: Local<'s>,
+) -> JsResult<()> {
+    let a = fa_object(cx, rec, fa::A)?;
+    let k = fa_index(cx, rec, fa::K)?;
+    // 11. Let defineStatus be Completion(CreateDataPropertyOrThrow(A, Pk, mappedValue)).
+    // 12. If defineStatus is an abrupt completion, return ? AsyncIteratorClose(iteratorRecord,
+    //     defineStatus).
+    if let Err(t) = create_index(cx, a, k, mapped_value) {
+        return fa_close_throw(cx, rec, t);
+    }
+    // 13. Set k to k + 1.
+    fa_set(cx, rec, fa::K, number(k + 1))?;
+    fa_iterate(cx, rec)
+}
+
+/// A rejected Await whose throw is the closure's (no iterator close): reject.
+fn fa_on_rejected<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rec = fa_record(cx, &args);
+    let r = fa_reject(cx, rec, args.get(0));
+    fa_settle(cx, rec, r)
+}
+
+/// AsyncIteratorClose(iteratorRecord, completion) (§7.4.13) for the throw completion `t`.
+fn fa_close_throw<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>, t: Throw) -> JsResult<()> {
+    let e = cx.catch_exception(t)?;
+    fa_close(cx, rec, e)
+}
+
+/// AsyncIteratorClose(iteratorRecord, ThrowCompletion(e)) (§7.4.13): the completion is a throw
+/// in every fromAsync use, so the result is always `e`; only the `return` call and the Await
+/// of its result are observable, and the rejection waits for that Await.
+fn fa_close<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>, e: Local<'s>) -> JsResult<()> {
+    fa_set(cx, rec, fa::ERROR, e)?;
+    // 3. Let innerResult be Completion(GetMethod(iterator, "return")).
+    // 4. If innerResult is a normal completion, then
+    //    a. Let return be innerResult.[[Value]].
+    //    b. If return is undefined, return ? completion.
+    //    c. Set innerResult to Completion(Call(return, iterator)).
+    // (The async-from-sync iterator always has `return`: `afs_return` is its call.)
+    let inner = if fa_get(cx, rec, fa::SYNC)?.as_bool() == Some(true) {
+        afs_return(cx, rec).map(Some)
+    } else {
+        let iterator = fa_object(cx, rec, fa::SOURCE)?;
+        call_return_method(cx, iterator)
+    };
+    match inner {
+        //    d. If innerResult is a normal completion, set innerResult to
+        //       Completion(Await(innerResult.[[Value]])).
+        Ok(Some(result)) => match fa_await(cx, rec, result, fa_on_closed, fa_on_closed) {
+            Ok(()) => return Ok(()),
+            Err(t) => {
+                cx.catch_exception(t)?;
+            }
+        },
+        Ok(None) => {}
+        Err(t) => {
+            cx.catch_exception(t)?;
+        }
+    }
+    // 5. If completion is a throw completion, return ? completion.
+    fa_reject(cx, rec, e)
+}
+
+/// GetMethod(iterator, "return") and its call: `None` when the method is undefined or null.
+fn call_return_method<'s>(
+    cx: &mut Cx<'s>,
+    iterator: Local<'s, JsObject>,
+) -> JsResult<Option<Local<'s>>> {
+    let method = cx.get(iterator, "return")?;
+    if method.is_undefined_or_null() {
+        return Ok(None);
+    }
+    if !cx.is_callable(method) {
+        return Err(cx.throw_type_error("The iterator's 'return' is not a function"));
+    }
+    cx.call(method, iterator, &[]).map(Some)
+}
+
+/// Resumes AsyncIteratorClose step 4.d (fulfilled or rejected): 5. the completion is a throw,
+/// so reject with the kept error.
+fn fa_on_closed<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rec = fa_record(cx, &args);
+    let r = fa_get(cx, rec, fa::ERROR).and_then(|e| fa_reject(cx, rec, e));
+    fa_settle(cx, rec, r)
+}
+
+// ---- the array-like path (step 3.i.vii) ----
+
+/// Steps vii.1-3 (or viii-ix once k = len).
+fn fa_like_step<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>) -> JsResult<()> {
+    let k = fa_index(cx, rec, fa::K)?;
+    let len = fa_index(cx, rec, fa::NEXT)?;
+    if k < len {
+        // 1. Let Pk be ! ToString(𝔽(k)).
+        // 2. Let kValue be ? Get(arrayLike, Pk).
+        let array_like = fa_object(cx, rec, fa::SOURCE)?;
+        let k_value = cx.get_index(array_like, k)?;
+        // 3. Set kValue to ? Await(kValue).
+        return fa_await(cx, rec, k_value, fa_on_like_value, fa_on_rejected);
+    }
+    // viii. Perform ? Set(A, "length", 𝔽(len), true).
+    let a = fa_object(cx, rec, fa::A)?;
+    set_length(cx, a, len)?;
+    // ix. Return Completion Record { [[Type]]: return, [[Value]]: A, [[Target]]: empty }.
+    fa_resolve(cx, rec)
+}
+
+/// Resumes step vii.3 with the awaited kValue: steps 4-5.
+fn fa_on_like_value<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rec = fa_record(cx, &args);
+    let k_value = args.get(0);
+    let r = (|| {
+        let mapper = fa_get(cx, rec, fa::MAPPER)?;
+        // 4. If mapping is true, then
+        if !mapper.is_undefined() {
+            // a. Let mappedValue be ? Call(mapper, thisArg, « kValue, 𝔽(k) »).
+            let this_arg = fa_get(cx, rec, fa::THIS_ARG)?;
+            let k = fa_index(cx, rec, fa::K)?;
+            let mapped = cx.call(mapper, this_arg, &[k_value, number(k)])?;
+            // b. Set mappedValue to ? Await(mappedValue).
+            return fa_await(cx, rec, mapped, fa_on_like_mapped, fa_on_rejected);
+        }
+        // 5. Else, let mappedValue be kValue.
+        fa_like_define(cx, rec, k_value)
+    })();
+    fa_settle(cx, rec, r)
+}
+
+/// Resumes step vii.4.b with the awaited mapped value.
+fn fa_on_like_mapped<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rec = fa_record(cx, &args);
+    let r = fa_like_define(cx, rec, args.get(0));
+    fa_settle(cx, rec, r)
+}
+
+/// Steps vii.6-7, then the next pass.
+fn fa_like_define<'s>(
+    cx: &mut Cx<'s>,
+    rec: Local<'s, JsObject>,
+    mapped_value: Local<'s>,
+) -> JsResult<()> {
+    let a = fa_object(cx, rec, fa::A)?;
+    let k = fa_index(cx, rec, fa::K)?;
+    // 6. Perform ? CreateDataPropertyOrThrow(A, Pk, mappedValue).
+    create_index(cx, a, k, mapped_value)?;
+    // 7. Set k to k + 1.
+    fa_set(cx, rec, fa::K, number(k + 1))?;
+    fa_like_step(cx, rec)
+}
+
+// ---- the async-from-sync iterator steps (§27.1.6) ----
+
+/// Rejects the capability with the throw completion `t` (IfAbruptRejectPromise).
+fn afs_reject<'s>(cx: &mut Cx<'s>, cap: PromiseCapability<'s>, t: Throw) -> JsResult<Local<'s>> {
+    let e = cx.catch_exception(t)?;
+    cx.call(cap.reject, Local::undefined(), &[e])?;
+    Ok(cap.promise.value())
+}
+
+/// `%AsyncFromSyncIteratorPrototype%.next()` (§27.1.6.2.1) with no value, as fromAsync calls
+/// it: a promise for the next `{ value, done }` of the sync iterator.
+fn afs_next<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>) -> JsResult<Local<'s>> {
+    // 3. Let promiseCapability be ! NewPromiseCapability(%Promise%).
+    let promise = promise_intrinsic(cx)?;
+    let cap = cx.new_promise_capability(promise)?;
+    // 4. Let syncIteratorRecord be O.[[SyncIteratorRecord]].
+    let iterator = fa_object(cx, rec, fa::SOURCE)?;
+    let next = fa_get(cx, rec, fa::NEXT)?;
+    // 5-6. Let result be Completion(IteratorNext(syncIteratorRecord)) (no value);
+    //      IfAbruptRejectPromise(result, promiseCapability).
+    let result = match cx.call(next, iterator, &[]) {
+        Ok(r) => r,
+        Err(t) => return afs_reject(cx, cap, t),
+    };
+    let Some(result) = result.as_object() else {
+        let t = cx.throw_type_error("The iterator result is not an object");
+        return afs_reject(cx, cap, t);
+    };
+    // 7. Return AsyncFromSyncIteratorContinuation(result, promiseCapability,
+    //    syncIteratorRecord, true).
+    afs_continuation(cx, result, cap, iterator, true)
+}
+
+/// `%AsyncFromSyncIteratorPrototype%.return()` (§27.1.6.2.2) with no value, as
+/// AsyncIteratorClose calls it.
+fn afs_return<'s>(cx: &mut Cx<'s>, rec: Local<'s, JsObject>) -> JsResult<Local<'s>> {
+    // 2. Let promiseCapability be ! NewPromiseCapability(%Promise%).
+    let promise = promise_intrinsic(cx)?;
+    let cap = cx.new_promise_capability(promise)?;
+    // 3-4. Let syncIterator be syncIteratorRecord.[[Iterator]].
+    let iterator = fa_object(cx, rec, fa::SOURCE)?;
+    // 5-6. Let return be Completion(GetMethod(syncIterator, "return"));
+    //      IfAbruptRejectPromise(return, promiseCapability).
+    let method = match cx.get(iterator, "return") {
+        Ok(m) => m,
+        Err(t) => return afs_reject(cx, cap, t),
+    };
+    // 7. If return is undefined, then
+    if method.is_undefined_or_null() {
+        // a. Let iteratorResult be CreateIteratorResultObject(undefined, true).
+        let result = iter_result(cx, Local::undefined(), true)?;
+        // b. Perform ! Call(promiseCapability.[[Resolve]], undefined, « iteratorResult »).
+        cx.call(cap.resolve, Local::undefined(), &[result])?;
+        // c. Return promiseCapability.[[Promise]].
+        return Ok(cap.promise.value());
+    }
+    if !cx.is_callable(method) {
+        let t = cx.throw_type_error("The iterator's 'return' is not a function");
+        return afs_reject(cx, cap, t);
+    }
+    // 8-9. Let result be Completion(Call(return, syncIterator)) (no value);
+    //      IfAbruptRejectPromise(result, promiseCapability).
+    let result = match cx.call(method, iterator, &[]) {
+        Ok(r) => r,
+        Err(t) => return afs_reject(cx, cap, t),
+    };
+    // 10. If result is not an Object, then reject with a TypeError.
+    let Some(result) = result.as_object() else {
+        let t = cx.throw_type_error("The iterator result is not an object");
+        return afs_reject(cx, cap, t);
+    };
+    // 11. Return AsyncFromSyncIteratorContinuation(result, promiseCapability,
+    //     syncIteratorRecord, false).
+    afs_continuation(cx, result, cap, iterator, false)
+}
+
+/// AsyncFromSyncIteratorContinuation(result, promiseCapability, syncIteratorRecord,
+/// closeOnRejection) (§27.1.6.4).
+fn afs_continuation<'s>(
+    cx: &mut Cx<'s>,
+    result: Local<'s, JsObject>,
+    cap: PromiseCapability<'s>,
+    iterator: Local<'s, JsObject>,
+    close_on_rejection: bool,
+) -> JsResult<Local<'s>> {
+    // 1-3. Let done be Completion(IteratorComplete(result)); IfAbruptRejectPromise.
+    let done = match cx.get(result, "done") {
+        Ok(d) => cx.to_boolean(d),
+        Err(t) => return afs_reject(cx, cap, t),
+    };
+    // 4-5. Let value be Completion(IteratorValue(result)); IfAbruptRejectPromise.
+    let value = match cx.get(result, "value") {
+        Ok(v) => v,
+        Err(t) => return afs_reject(cx, cap, t),
+    };
+    // 6. Let valueWrapper be Completion(PromiseResolve(%Promise%, value)).
+    let promise = promise_intrinsic(cx)?;
+    let value_wrapper = match cx.promise_resolve(promise, value) {
+        Ok(w) => w.as_object().expect("PromiseResolve gives a promise"),
+        Err(t) => {
+            // 7. If valueWrapper is an abrupt completion, done is false, and closeOnRejection
+            //    is true, then set valueWrapper to Completion(IteratorClose(syncIteratorRecord,
+            //    valueWrapper)) (the throw stays).
+            let e = cx.catch_exception(t)?;
+            if !done && close_on_rejection {
+                sync_close_quietly(cx, iterator)?;
+            }
+            // 8. IfAbruptRejectPromise(valueWrapper, promiseCapability).
+            cx.call(cap.reject, Local::undefined(), &[e])?;
+            return Ok(cap.promise.value());
+        }
+    };
+    // 9-11. onFulfilled: unwrap(v) = CreateIteratorResultObject(v, done) (length 1, name "").
+    let on_fulfilled = cx.new_builtin_closure(afs_unwrap, "", 1, Local::boolean(done));
+    // 12-13. If done is true, or if closeOnRejection is false, then onRejected is undefined;
+    //        else closeIterator(error): IteratorClose(syncIteratorRecord, ThrowCompletion(error)).
+    let on_rejected: Local<'s> = if done || !close_on_rejection {
+        Local::undefined()
+    } else {
+        cx.new_builtin_closure(afs_close_iterator, "", 1, iterator)
+            .into()
+    };
+    // 14. Perform PerformPromiseThen(valueWrapper, onFulfilled, onRejected, promiseCapability).
+    cx.perform_promise_then(value_wrapper, on_fulfilled, on_rejected, Some(cap));
+    // 15. Return promiseCapability.[[Promise]].
+    Ok(cap.promise.value())
+}
+
+/// unwrap (§27.1.6.4 step 9): CreateIteratorResultObject(v, done).
+fn afs_unwrap<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let done = cx.closure_data(args.callee()).as_bool() == Some(true);
+    iter_result(cx, args.get(0), done)
+}
+
+/// closeIterator (§27.1.6.4 step 13.a): IteratorClose(syncIteratorRecord,
+/// ThrowCompletion(error)), which gives the throw back.
+fn afs_close_iterator<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let iterator = cx
+        .closure_data(args.callee())
+        .as_object()
+        .expect("closeIterator has the sync iterator");
+    let error = args.get(0);
+    sync_close_quietly(cx, iterator)?;
+    Err(cx.throw(error))
+}
+
+/// IteratorClose(iteratorRecord, completion) (§7.4.11) of a sync iterator for a throw
+/// completion: whatever `return` does is dropped (the caller keeps its throw); a termination
+/// passes on.
+fn sync_close_quietly<'s>(cx: &mut Cx<'s>, iterator: Local<'s, JsObject>) -> JsResult<()> {
+    if let Err(t) = call_return_method(cx, iterator) {
+        cx.catch_exception(t)?;
+    }
+    Ok(())
+}
+
+/// CreateIteratorResultObject(value, done) (§7.4.14).
+fn iter_result<'s>(cx: &mut Cx<'s>, value: Local<'s>, done: bool) -> JsResult<Local<'s>> {
+    let o = cx.new_object();
+    cx.create_data_property_or_throw(o, "value", value)?;
+    cx.create_data_property_or_throw(o, "done", Local::boolean(done))?;
+    Ok(o.value())
 }

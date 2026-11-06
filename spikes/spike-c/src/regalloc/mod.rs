@@ -85,7 +85,7 @@ impl Allocation {
 /// True if the compare `n` is consumed by the branch right after it (only use, same block).
 pub fn fused(g: &Graph, n: NodeId) -> bool {
     let node = g.node(n);
-    if !matches!(node.op, Op::Compare(_)) {
+    if !matches!(node.op, Op::Compare(_) | Op::CompareFloat64(_)) {
         return false;
     }
     let b = g.block(node.block);
@@ -106,20 +106,15 @@ pub fn fused(g: &Graph, n: NodeId) -> bool {
     }
     // No other use anywhere (frame states included).
     g.order().all(|m| {
-        m == next
-            || (!g.node(m).inputs.contains(&n)
-                && g.node(m).guard.as_ref().is_none_or(|gd| {
-                    gd.state.acc != Some(n) && gd.state.registers.iter().all(|&(_, v)| v != n)
-                }))
+        m == next || (!g.node(m).inputs.contains(&n) && g.node(m).state_values().all(|v| v != n))
     })
 }
 
-/// The values a guard's frame state names (its live registers and the accumulator): each is
-/// used at the guard (the deopt exit reads it there).
+/// The values a guard's frame state names (its live registers and the accumulator), and a
+/// call's lazy state (SPIKEC-10): each is used at the node (the deopt exit reads it there; a
+/// lazy exit reads it when the call returns, and writes no register first).
 fn frame_state_values(node: &ir::Node) -> impl Iterator<Item = NodeId> + '_ {
-    node.guard
-        .iter()
-        .flat_map(|g| g.state.registers.iter().map(|&(_, v)| v).chain(g.state.acc))
+    node.state_values()
 }
 
 /// The linear positions: per node id, and the end of each block (where its phi moves are).
@@ -165,7 +160,10 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
         let node = g.node(x);
         node.live
             && node.repr != Repr::None
-            && !matches!(node.op, Op::Const(_) | Op::ConstInt32(_) | Op::Incoming(_))
+            && !matches!(
+                node.op,
+                Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) | Op::Incoming(_)
+            )
             && !fused_set[x.0 as usize]
     };
     for i in 0..n {
@@ -175,7 +173,7 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
             continue;
         }
         loc[i] = match node.op {
-            Op::Const(_) | Op::ConstInt32(_) => Location::Const,
+            Op::Const(_) | Op::ConstInt32(_) | Op::ConstFloat64(_) => Location::Const,
             Op::Incoming(ir::Incoming::Receiver) => {
                 Location::Frame(ep9_vm::layout::FP_RECEIVER as i32)
             }

@@ -33,8 +33,11 @@
 // of another type, NaN, an infinity or undefined never hashes as a number or string node gave.
 //
 // The JSON keeps what m1-exit needs for "15/15 on a fresh tree": the commit, the git tree ids
-// of crates, tools/bench, the root Cargo.toml, Cargo.lock and rust-toolchain.toml at HEAD, and the paths among them
-// with uncommitted changes (`dirty`; not fresh when it is not empty). `ep9.engine_build` is the
+// of crates, tools/bench, the root Cargo.toml, Cargo.lock and rust-toolchain.toml at HEAD and of
+// the regress fork (third_party/regress.commit, third_party/patches/regress; TREE_PATHS), and the
+// TREE_PATHS entries with uncommitted changes (`dirty`; not fresh when it is not empty). A CI
+// pull_request run names GitHub's merge commit, which a local repository does not have: m1-exit
+// item 1 then reads the 7 tree ids against HEAD's (plan v11 GF-1, X10). `ep9.engine_build` is the
 // build line of the checked binary's `--version` ("features <list>; preset <name>", M5-P0,
 // MC-w17-5), or null for a binary that prints none.
 //
@@ -67,8 +70,17 @@ export const KERNEL_IDS = [
  */
 export const FRESH_PATHS = ["crates", "tools/bench", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"];
 
-/** Rust target triples by node's platform-arch (the m1-exit column names). */
-const TRIPLES = {
+/**
+ * The regress fork: its pin and its patch set. ep9 builds regress from the checkout these two
+ * make (scripts/sync-regress.sh), so m1-exit holds them fresh too (its REGRESS_PATHS).
+ */
+export const REGRESS_PATHS = ["third_party/regress.commit", "third_party/patches/regress"];
+
+/** The paths whose git tree ids the JSON writes (`tree`): FRESH_PATHS, then REGRESS_PATHS. */
+export const TREE_PATHS = [...FRESH_PATHS, ...REGRESS_PATHS];
+
+/** Rust target triples by node's platform-arch (the m1-exit column names; m1-exit item 2 reads it back, TRIPLE_PLATFORMS). */
+export const TRIPLES = {
   "darwin-arm64": "aarch64-apple-darwin",
   "darwin-x64": "x86_64-apple-darwin",
   "linux-arm64": "aarch64-unknown-linux-gnu",
@@ -281,11 +293,11 @@ function git(args) {
   }
 }
 
-/** HEAD, the tree ids of FRESH_PATHS at HEAD, and the FRESH_PATHS entries with uncommitted changes. */
+/** HEAD, the tree ids of TREE_PATHS at HEAD, and the TREE_PATHS entries with uncommitted changes. */
 export function treeState() {
   const head = git(["rev-parse", "HEAD"])?.trim() ?? null;
-  const tree = Object.fromEntries(FRESH_PATHS.map((p) => [p, head ? (git(["rev-parse", `HEAD:${p}`])?.trim() ?? null) : null]));
-  const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...FRESH_PATHS]);
+  const tree = Object.fromEntries(TREE_PATHS.map((p) => [p, head ? (git(["rev-parse", `HEAD:${p}`])?.trim() ?? null) : null]));
+  const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...TREE_PATHS]);
   const dirty = status === null ? null : status.split("\n").filter(Boolean).map((l) => l.slice(3));
   return { head, tree, dirty };
 }

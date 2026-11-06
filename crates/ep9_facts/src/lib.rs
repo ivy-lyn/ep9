@@ -31,8 +31,9 @@ mod snapshot;
 mod text;
 
 pub use bits::{
-    BinaryHint, BindingSet, ClosureCount, CompareHint, ElementsKind, FactSource, ForInHint,
-    IcState, KeySet, ObjectKind, PropAttrs, ShapeFlags, TypeSet, WellKnownSymbol,
+    BinaryHint, BindingSet, ClosureCount, CompareHint, ElementsKind, ElementsKindSet, FactSource,
+    FieldHint, FieldRep, ForInHint, IcState, KeySet, KeyedHint, ObjectKind, PropAttrs, RecordFlags,
+    ShapeFlags, TypeSet, WellKnownSymbol,
 };
 pub use codec::{HEADER_SIZE, offsets};
 pub use facts::{
@@ -40,8 +41,10 @@ pub use facts::{
     KeyedFacts, LiteralFacts, LoopFacts, MAX_CASES, Payload, PropertyCase, PropertyFacts, ProtoRef,
     ShapeDesc, SlotFacts, TargetFacts, UnitHash,
 };
-pub use snapshot::{DropReason, Dropped, FactError, FactHeader, FactSnapshot, SlotKey, Stale};
-pub use text::schema_text;
+pub use snapshot::{
+    DropReason, Dropped, FactError, FactHeader, FactSnapshot, RAN_KINDS, RecordMeta, SlotKey, Stale,
+};
+pub use text::{schema_format_text, schema_text};
 
 /// Version of the FactSnapshot schema. A unit header records it (H35); a unit whose version
 /// differs loads without its hints. Any change to [`schema_text`] or to the encoding bumps it
@@ -50,7 +53,8 @@ pub use text::schema_text;
 /// | Version | Change |
 /// |---|---|
 /// | 1 | FactSnapshot v0 (H16 v0 slot kinds, M0 week 4) |
-pub const FACT_SCHEMA_VERSION: u32 = 1;
+/// | 2 | The one month-6 bump (M6-P0; M6-PLAN-D10, V10-D58): per-record flags (H29-Q5 exit flag, MODES-D15 "ran" bit at the MODES-D17 sites) and the H30-Q1 confidence byte; `ShapeDesc` elements kind and per-key rep/const hints (M6-PLAN-D8); the keyed hint (bits 4-9) and kinds set (M6-PLAN-D4); `ElementsKind` in the VM order; `ObjectKind` arguments and typed array (M6-PLAN-D5); the open lists (MC-w23-8) |
+pub const FACT_SCHEMA_VERSION: u32 = 2;
 
 /// The first 8 bytes of an encoded snapshot: `"\x89EP9FS\r\n"` (PNG style, like the unit and
 /// CompiledUnit magics).

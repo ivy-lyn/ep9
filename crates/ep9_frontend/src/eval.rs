@@ -48,7 +48,8 @@ use oxc_ast::ast::{
 use oxc_ast::builder::AstBuilder;
 use oxc_ast_visit::{Visit, walk};
 use oxc_diagnostics::OxcDiagnostic;
-use oxc_parser::{ParseOptions, Parser};
+#[cfg(test)]
+use oxc_parser::Parser;
 use oxc_semantic::{ScopeFlags, SemanticBuilder};
 use oxc_span::{GetSpan, SPAN, SourceType, Span};
 
@@ -176,13 +177,11 @@ fn on_worker<R>(
     codegen: impl FnOnce(&FrontEnd<'_>, &scope::ScopeAnalysis) -> Result<R, CodegenError>,
 ) -> Result<R, CodegenError> {
     let allocator = Allocator::default();
-    let parse_options = ParseOptions {
-        parse_regular_expression: true,
-        ..ParseOptions::default()
+    // As crate::parse: oxc_parser, then the regex literal check (regex_check::parse).
+    let mut parsed = match crate::regex_check::parse(&allocator, source, SourceType::script()) {
+        Ok(parsed) => parsed,
+        Err(fatal) => return Err(syntax(source, fatal.errors())),
     };
-    let mut parsed = Parser::new(&allocator, source, SourceType::script())
-        .with_options(parse_options)
-        .parse();
     let has_parse_errors = parsed.diagnostics.has_errors();
     if parsed.fatal_error {
         return Err(syntax(source, parsed.diagnostics.errors()));

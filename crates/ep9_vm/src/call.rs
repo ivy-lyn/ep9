@@ -310,8 +310,8 @@ pub(crate) fn call_host(
         .map(|v| v.bits())
     };
     realm::leave(cx, saved_realm);
-    rt.stack().set_fp(caller_fp);
-    restore_scratch(rt, saved);
+    // H20-Q3: pops the host frame, or makes the call of `h`'s tail-call request in its place.
+    let r = host_return(cx, r, caller_fp, saved);
     // H20 R4: the throw protocol.
     debug_assert!(
         r.is_ok() || rt.pending() != 0,
@@ -963,8 +963,8 @@ pub(crate) unsafe fn push_construct_stub(
 /// `None` if that frame would end above `limit`: the size test of [`push_frame`] alone, with no
 /// write. The x86-64 T0 call fast path (`interp/ops.rs` `call_fast`, PERF3 item 2) makes this
 /// test before its count and its budget unit, then writes the frame with
-/// [`fill_missing_args`] and [`write_call_frame`]; the three together write what
-/// [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
+/// [`fill_missing_args`], [`write_call_args`] and [`write_call_header`]; the four together
+/// write what [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
 ///
 /// The `& !7` changes no bit (`base` is a slot address, so `fp` is 8-byte aligned). It keeps
 /// LLVM from folding `base + 8 * n + 72` into every later address, so the fast path holds the
@@ -1003,15 +1003,16 @@ pub(crate) unsafe fn fill_missing_args(base: *mut u64, fp: *mut u64, argc: u32) 
     unsafe { fill_undefined(base, fp.offset(slot::PARAM0 + 1 - argc as isize)) }
 }
 
-/// Writes the rest of the call frame (new.target undefined) that [`push_frame`] writes, at the
-/// `fp` that [`call_frame_fp`] gave: the receiver, the arguments, the header and the
-/// registers ([`fill_missing_args`] writes the missing arguments). The receiver and the
-/// arguments go first, so their registers are free for the rest. Up to 2 arguments (the
-/// fixed-count `Call*` forms, whose `argc` is a constant) the copy unrolls fully; a longer
-/// list is copied by a plain pointer loop (LLVM unrolls a counted copy loop 4 times, which
-/// costs the list forms 2 more callee-saved registers on x86-64). `context` runs at its store
-/// (the fast path loads the callee's context there, not before the receiver and argument
-/// stores: one register less for the list forms on x86-64).
+/// Writes the receiver and the arguments of the call frame at `fp` (from [`call_frame_fp`])
+/// that [`push_frame`] writes; `this` is the receiver after [`try_bind_this`] with the global
+/// object (see [`bound_with_global`]). The x86-64 T0 call fast path writes them right after
+/// its frame size test on the forms with a receiver operand (M6-P1 CBC), so that their values
+/// hold no register across its later tests; the slots lie above the top frame until the frame
+/// is complete, where no GC root scan and no reader looks, so a cold exit after this write
+/// leaves them as garbage that the cold path's frame push writes again. `LIST` is false for
+/// the fixed-count forms (`argc` is a constant up to 2: straight stores) and true for the
+/// register-list forms: one pointer loop (a counted `for` loop is unrolled by LLVM, and both
+/// copies in one function cost the list forms 1-2 more callee-saved registers on x86-64).
 ///
 /// # Safety
 /// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
@@ -1021,38 +1022,64 @@ pub(crate) unsafe fn fill_missing_args(base: *mut u64, fp: *mut u64, argc: u32) 
     allow(dead_code)
 )]
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) unsafe fn write_call_frame(
+pub(crate) unsafe fn write_call_args<const LIST: bool>(
     fp: *mut u64,
-    fi: &FunctionInfo,
-    callee: u64,
     this: u64,
     argc: u32,
     arg: impl Fn(u32) -> u64,
+) {
+    // SAFETY: [fp + RECEIVER - argc, fp + RECEIVER] lies in the frame `call_frame_fp` placed
+    // below `limit`, above every live frame (caller contract), so these writes clobber nothing
+    // live.
+    unsafe {
+        *fp.offset(slot::RECEIVER) = this;
+        if !LIST {
+            debug_assert!(argc <= 2);
+            if argc != 0 {
+                *fp.offset(slot::PARAM0) = arg(0);
+                if argc == 2 {
+                    *fp.offset(slot::PARAM0 - 1) = arg(1);
+                }
+            }
+            return;
+        }
+        let mut p = fp.offset(slot::PARAM0);
+        let end = p.wrapping_sub(argc as usize);
+        let mut i = 0;
+        while p > end {
+            // Volatile as in `fill_undefined`: a plain store; LLVM makes no vector loop.
+            p.write_volatile(arg(i));
+            p = p.wrapping_sub(1);
+            i += 1;
+        }
+    }
+}
+
+/// Writes the header (new.target undefined) and the registers of the call frame at `fp` that
+/// [`push_frame`] writes; [`fill_missing_args`] and [`write_call_args`] write the slots below
+/// the header. `context` runs at its store (the fast path loads the callee's context there,
+/// not before: one register less for the list forms on x86-64).
+///
+/// # Safety
+/// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
+/// contract for `base` and `limit`.
+#[cfg_attr(
+    any(feature = "spike-native", not(target_arch = "x86_64")),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) unsafe fn write_call_header(
+    fp: *mut u64,
+    fi: &FunctionInfo,
+    callee: u64,
+    argc: u32,
     caller_fp: *mut u64,
     return_pc: *const u8,
     context: impl FnOnce() -> u64,
 ) {
-    // SAFETY: [fp + RECEIVER - argc, fp + register_count) lies in the frame `call_frame_fp`
-    // placed below `limit`, above every live frame (caller contract), so these writes clobber
-    // nothing live.
+    // SAFETY: [fp + CONTEXT .. fp + register_count) lies in the frame `call_frame_fp` placed
+    // below `limit`, above every live frame (caller contract).
     unsafe {
-        *fp.offset(slot::RECEIVER) = this;
-        if argc <= 2 {
-            for i in 0..argc {
-                *fp.offset(slot::PARAM0 - i as isize) = arg(i);
-            }
-        } else {
-            let mut p = fp.offset(slot::PARAM0);
-            let end = p.wrapping_sub(argc as usize);
-            let mut i = 0;
-            while p > end {
-                // Volatile as in `fill_undefined`: a plain store; LLVM makes no vector loop.
-                p.write_volatile(arg(i));
-                p = p.wrapping_sub(1);
-                i += 1;
-            }
-        }
         *fp.offset(slot::CALLER_FP) = native_of(caller_fp);
         *fp.offset(slot::RETURN_PC) = native_of(return_pc);
         *fp.offset(slot::CALLEE) = callee;
@@ -1207,4 +1234,474 @@ fn construct_proxy(
     let r = crate::proxy::construct(cx, p, list, new_target);
     restore_scratch(cx.rt(), saved);
     r
+}
+
+// ---- tail calls from host functions (H20-Q3) ------------------------------------------------
+//
+// PrepareForTailCall (§9.4.5) for a host function: `Cx::tail_call_args` (abi/mod.rs) makes a
+// request ([`request_tail`]) and returns the marker `HOLE`; [`call_host`] then pops the host
+// frame and makes the call in its place ([`host_return`], [`tail_call`]), as V8's
+// Function.prototype.call shifts its arguments and tail-calls Call. The request is three
+// words in header slots of the host frame that a host frame does not use once its function
+// has returned (a host frame has no bytecode and no context, and `Args::new_target` reads
+// its new.target slot only for a `[[Construct]]`):
+//
+// ```text
+// host frame:  [args .. receiver] CALLER_FP RETURN_PC CALLEE ARGC FUNCTION_INFO
+//              NEW_TARGET <- f   CONTEXT <- this   BYTECODE_OFFSET <- marker   | fp
+// marker (int32): 0 = no request (as `push_frame` writes it); from + 1 = a request whose
+//                 argument k is host argument from + k
+// ```
+//
+// The frame slots are scanned as every frame slot, so `f` and `this` stay rooted until the
+// host frame pops. The callee frame then goes at the host frame's base (the comment above
+// [`tail_call`]): its arguments stay where they are, and the host frame takes no stack room
+// while the callee runs. A bytecode callee still runs in a nested dispatch run, one native
+// level, as from `call_function_object`; the host function's Rust frames are gone.
+
+/// Makes a tail-call request of the running host function: Call(`f`, `this`, args) after
+/// its host frame is gone, where the `len` args are a tail of its arguments: argument `k` at
+/// `a0 - k` (an `Args::rest`). Returns false, and changes nothing, when the request cannot be
+/// made: `f` is not a FUNCTION (a bound function or a proxy is called at once, in the host
+/// function's realm, as before), the top frame is not a host frame, or the args are not a
+/// tail of its arguments. Not a GC point.
+#[inline]
+pub(crate) fn request_tail(cx: &Cx, f: u64, this: u64, a0: *const u64, len: u32) -> bool {
+    let fp = cx.rt().stack().fp();
+    if !is_function(f) || fp.is_null() || FrameRef(fp).info().host.is_none() {
+        return false;
+    }
+    // `a0` is argument `from` of this frame: `fp + PARAM0 - from`, `from + len = argc`.
+    let gap = fp
+        .wrapping_offset(slot::PARAM0)
+        .addr()
+        .wrapping_sub(a0.addr());
+    let from = gap / 8;
+    if !gap.is_multiple_of(8) || from + len as usize != FrameRef(fp).argc() as usize {
+        return false;
+    }
+    // SAFETY: header slots of the live host frame `fp`; after its function returns nothing
+    // reads them but `host_hole` (module comment above). The words are valid Values.
+    unsafe {
+        *fp.offset(slot::NEW_TARGET) = f;
+        *fp.offset(slot::CONTEXT) = this;
+        *fp.offset(slot::BYTECODE_OFFSET) = crate::frame::int32_bits(from as i32 + 1);
+    }
+    true
+}
+
+/// The end of a host call ([`call_host`]): the host frame pops (the top frame goes back to
+/// `caller_fp`) and the scratch top goes back to `saved`. When the host function returned
+/// the marker `HOLE`, [`host_hole`] runs the call of its tail-call request, if it made one.
+/// The host frame is still the top frame here (every call from Rust puts the top frame back
+/// when it returns), so this path keeps no more values live across the host function than
+/// before.
+#[inline(always)]
+fn host_return(cx: &mut Cx, r: Res<u64>, caller_fp: *mut u64, saved: *mut u64) -> Res<u64> {
+    if matches!(r, Ok(HOLE)) {
+        return host_hole(cx, caller_fp, saved);
+    }
+    let rt = cx.rt();
+    rt.stack().set_fp(caller_fp);
+    restore_scratch(rt, saved);
+    r
+}
+
+/// [`host_return`] for the result `HOLE`: the call of the tail-call request in the host frame
+/// (the top frame) if it holds one (its marker slot is not 0; [`tail_call`]), else the pop
+/// and the result `HOLE`, as before.
+#[cold]
+#[inline(never)]
+fn host_hole(cx: &mut Cx, caller_fp: *mut u64, saved: *mut u64) -> Res<u64> {
+    let fp = cx.rt().stack().fp();
+    debug_assert!(FrameRef(fp).info().host.is_some() && FrameRef(fp).caller().0 == caller_fp);
+    // SAFETY: a header slot of the host frame `fp`, still on the stack.
+    if unsafe { *fp.offset(slot::BYTECODE_OFFSET) } != int32_bits(0) {
+        return tail_call(cx, fp, caller_fp, saved);
+    }
+    let rt = cx.rt();
+    rt.stack().set_fp(caller_fp);
+    restore_scratch(rt, saved);
+    Ok(HOLE)
+}
+
+/// The call of the tail-call request in the host frame at `fp` (pushed at `base` above
+/// `caller_fp`; [`request_tail`]), after the frame is gone: Call(f, this, args) through
+/// [`call_function_object`], so a host callee runs in its realm and a bytecode callee in a
+/// nested dispatch run, also in its realm (`f` is a FUNCTION). The host function's realm is
+/// left already.
+///
+/// The callee frame fits in place, at `base` (a host frame of a call has `argc` arguments
+/// and no registers, so `base = fp - argc - 1 - HEADER`): its `fp` is
+/// `base + max(len, parameter_count) + 1 + HEADER`, at or above `fp - from` (as
+/// `len = argc - from`), so callee argument `k` goes to a slot at or above host argument
+/// `from + k`, the one it is read from. [`push_frame`] writes the header and the receiver
+/// first (above every argument it reads), then argument `k` right after it reads it, then the
+/// missing arguments and the registers: so a write lands only on an argument read before it.
+///
+/// GC: the scratch top comes down to `base` and the push starts there. On the success path
+/// nothing from here to that `push_frame` allocates (`call_function_object`:
+/// `native_stack_ok`, the realm switch, then the `call_host` push, or `call_bytecode`'s
+/// checks, the interrupt poll (its callbacks run no JS and make no Value), `try_bind_this` and
+/// the push), so the host frame's slots need no root meanwhile (`f` and `this` are Rust
+/// locals, which the conservative stack scan sees). The GC-stress tests of `tail_tests` below
+/// check it with arguments that only the host frame roots. Every other path throws, and then
+/// no argument is read again.
+#[inline(always)]
+fn tail_call(cx: &mut Cx, fp: *mut u64, caller_fp: *mut u64, saved: *mut u64) -> Res<u64> {
+    // SAFETY: header slots of the host frame `fp`, still on the stack (`request_tail`).
+    let (f, this, marker) = unsafe {
+        (
+            *fp.offset(slot::NEW_TARGET),
+            *fp.offset(slot::CONTEXT),
+            crate::frame::int32_of(*fp.offset(slot::BYTECODE_OFFSET)),
+        )
+    };
+    debug_assert!(is_function(f) && marker > 0);
+    let argc = FrameRef(fp).argc();
+    let from = (marker - 1) as u32;
+    debug_assert!(from <= argc);
+    let a0 = fp
+        .wrapping_offset(slot::PARAM0 - from as isize)
+        .cast_const();
+    // The host frame's base: `argc` arguments, the receiver and the header (no registers).
+    let base = fp.wrapping_sub(argc as usize + 1 + HEADER);
+    let rt = cx.rt();
+    // The host frame is gone: a stack walk from here sees the caller as the top frame, and a
+    // push from here starts at `base` (`top_of`).
+    rt.stack().set_fp(caller_fp);
+    rt.stack().set_scratch_top(base);
+    // SAFETY: argument `k < argc - from` of the host frame; `call_function_object` reads each
+    // one in its push before it writes over it (above).
+    let r = call_function_object(
+        cx,
+        f,
+        this,
+        argc - from,
+        |k| unsafe { *a0.sub(k as usize) },
+        UNDEFINED,
+    );
+    restore_scratch(rt, saved);
+    r
+}
+
+/// H20-Q3 tail calls through `Cx::tail_call_args`, from hand-assembled bytecode (ep9_vm tests
+/// cannot compile JS): the argument shift, missing and extra arguments, a host callee, a
+/// chain, the receiver wrap of a sloppy callee (a GC point after the in-place push), the
+/// class-constructor TypeError, a value that is not a function, and the VM stack room.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tail_tests {
+    use ep9_bytecode::{
+        FeedbackSlotKind, FunctionFlags, FunctionId, FunctionKind, RegisterList, VerifiedUnit,
+    };
+
+    use crate::tests::{Asm, config, isolate, meta, on_big_stack, take_output, unit};
+    use crate::{Args, Cx, Dispatch, IsolateConfig, JsResult, Local};
+
+    /// `fwd(f, thisArg, ...args)`: Call(f, thisArg, args) as a tail call (the form of
+    /// Function.prototype.call, with the callee as argument 0).
+    fn fwd<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        cx.tail_call_args(args.get(0), args.get(1), args.rest(2))
+    }
+
+    /// `fwdNow(f, thisArg, ...args)`: the same call made at once, inside the host frame.
+    fn fwd_now<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        cx.call_args(args.get(0), args.get(1), args.rest(2))
+    }
+
+    /// `keep(fwd, f, ...args)`: calls `fwd(f, undefined, ...args)` from Rust while an
+    /// ArgsBuilder holds 41 under the scratch top; returns "kept" if it still holds 41 after
+    /// the call (the tail callee's frame must go above the caller's scratch Values).
+    fn keep<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        let mut b = cx.args_builder();
+        b.push(cx, Local::int32(41))?;
+        let mut list = cx.args_builder();
+        list.push(cx, args.get(1))?;
+        list.push(cx, Local::undefined())?;
+        for v in args.rest(2).iter() {
+            list.push(cx, v)?;
+        }
+        cx.call_built(args.get(0), Local::undefined(), list)?;
+        let kept = b.get(0).as_number() == Some(41.0);
+        drop(b);
+        Ok(cx.key(if kept { "kept" } else { "clobbered" }).value())
+    }
+
+    /// Runs `make()` with `fwd` and `fwdNow` registered; returns the result text and the
+    /// printed lines; checks the heap after the run.
+    fn run(
+        config: IsolateConfig,
+        make: impl FnOnce() -> VerifiedUnit + Send + 'static,
+    ) -> (String, Vec<String>) {
+        on_big_stack(move || {
+            let mut iso = isolate(config);
+            iso.register_host_function("fwd", 2, fwd);
+            iso.register_host_function("fwdNow", 2, fwd_now);
+            iso.register_host_function("keep", 2, keep);
+            take_output();
+            let r = iso
+                .with_cx_checkpoint(|cx| cx.run_script(make(), "tail.js").map(|v| cx.display(v)));
+            let out = take_output();
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            (r.unwrap(), out)
+        })
+    }
+
+    /// `try { body } catch (e) { print(e.message); }`
+    fn try_print_message(s: &mut Asm, body: impl FnOnce(&mut Asm)) {
+        let (ctx, t) = (s.b.new_register(), s.b.new_register());
+        let (start, end, handler, done) = (
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+        );
+        s.b.lda_current_context().star(ctx);
+        s.b.add_handler(start, end, handler, ctx, ep9_bytecode::HandlerKind::Caught);
+        s.b.bind(start);
+        body(s);
+        s.b.bind(end);
+        s.b.jump(done);
+        s.b.bind(handler);
+        s.b.star(t);
+        s.get_named(t, "message");
+        s.print_acc();
+        s.b.bind(done);
+    }
+
+    /// `acc = g(l[0], .., l[n - 1])` for the global `g` (clobbers `s.f`).
+    fn call_global(s: &mut Asm, g: &str, l: RegisterList, n: u32) {
+        s.lda_global(g);
+        let f = s.f;
+        s.b.star(f);
+        s.b.call_undefined_receiver(
+            f,
+            RegisterList::new(l.get(0).local_index().unwrap(), n),
+            n,
+            s.call,
+        );
+    }
+
+    fn semantics() -> VerifiedUnit {
+        // f1: function show(a, b, c) { "use strict"; print(this); print(a); print(b);
+        //     print(c); return "r"; }
+        let mut m = meta("show", 3, 0, 0, 0);
+        m.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+        let mut show = Asm::new(m);
+        let recv = show.b.receiver();
+        show.b.ldar(recv);
+        show.print_acc();
+        for i in 0..3 {
+            let p = show.b.parameter(i);
+            show.b.ldar(p);
+            show.print_acc();
+        }
+        show.lda_str("r");
+        show.b.return_();
+        // f2: function sloppyThis() { return typeof this; }
+        let mut sloppy = Asm::new(meta("sloppyThis", 0, 0, 0, 0));
+        let ts = sloppy.b.feedback_slot(FeedbackSlotKind::TypeOf);
+        let recv = sloppy.b.receiver();
+        sloppy.b.ldar(recv).type_of(ts).return_();
+        // f3: class A { constructor() {} }
+        let mut ma = meta("A", 0, 0, 0, 0);
+        ma.kind = FunctionKind::ClassConstructor;
+        ma.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+        let mut a = Asm::new(ma);
+        a.b.lda_undefined().return_();
+
+        let mut s = Asm::script(0);
+        for (id, name) in [(1, "show"), (2, "sloppyThis"), (3, "A")] {
+            let k = s.b.function_constant(FunctionId(id));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global(name);
+        }
+        let l = s.b.new_register_list(7);
+        let set = |s: &mut Asm, i: u32, v: i32| {
+            s.b.lda_smi(v).star(l.get(i));
+        };
+        // print(fwd(show, 7, 1, 2)): one argument missing.
+        s.lda_global("show");
+        s.b.star(l.get(0));
+        set(&mut s, 1, 7);
+        set(&mut s, 2, 1);
+        set(&mut s, 3, 2);
+        call_global(&mut s, "fwd", l, 4);
+        s.print_acc();
+        // print(fwd(show, 7, 1, 2, 3, 4, 5)): more arguments than parameters.
+        set(&mut s, 4, 3);
+        set(&mut s, 5, 4);
+        set(&mut s, 6, 5);
+        call_global(&mut s, "fwd", l, 7);
+        s.print_acc();
+        // print(fwd(fwd, undefined, show, 8, 1)): a host forward of a host forward.
+        s.lda_global("fwd");
+        s.b.star(l.get(0));
+        s.b.lda_undefined().star(l.get(1));
+        s.lda_global("show");
+        s.b.star(l.get(2));
+        set(&mut s, 3, 8);
+        set(&mut s, 4, 1);
+        call_global(&mut s, "fwd", l, 5);
+        s.print_acc();
+        // print(fwd(sloppyThis, 5)): the callee wraps the receiver after the push.
+        s.lda_global("sloppyThis");
+        s.b.star(l.get(0));
+        set(&mut s, 1, 5);
+        call_global(&mut s, "fwd", l, 2);
+        s.print_acc();
+        // fwd(print, undefined, 6): a host callee.
+        s.lda_global("print");
+        s.b.star(l.get(0));
+        s.b.lda_undefined().star(l.get(1));
+        set(&mut s, 2, 6);
+        call_global(&mut s, "fwd", l, 3);
+        // print(keep(fwd, show, 3)): a Rust caller with scratch Values.
+        s.lda_global("fwd");
+        s.b.star(l.get(0));
+        s.lda_global("show");
+        s.b.star(l.get(1));
+        set(&mut s, 2, 3);
+        call_global(&mut s, "keep", l, 3);
+        s.print_acc();
+        // try { fwd(A) } catch (e) { print(e.message) }: the class-constructor TypeError.
+        try_print_message(&mut s, |s| {
+            s.lda_global("A");
+            s.b.star(l.get(0));
+            call_global(s, "fwd", l, 1);
+        });
+        // try { fwd(9) } catch (e) { print(e.message) }: not a function (no request).
+        try_print_message(&mut s, |s| {
+            s.b.lda_smi(9).star(l.get(0));
+            call_global(s, "fwd", l, 1);
+        });
+        s.lda_str("end");
+        s.b.return_();
+        unit(
+            "",
+            vec![s.finish(), show.finish(), sloppy.finish(), a.finish()],
+        )
+    }
+
+    #[test]
+    fn a_tail_call_shifts_the_arguments_in_place() {
+        let want = [
+            "7",
+            "1",
+            "2",
+            "undefined",
+            "r", // missing argument
+            "7",
+            "1",
+            "2",
+            "3",
+            "r", // extra arguments
+            "8",
+            "1",
+            "undefined",
+            "undefined",
+            "r",      // a chain
+            "object", // the wrap of a primitive receiver
+            "6",      // a host callee
+            "undefined",
+            "3",
+            "undefined",
+            "undefined",
+            "kept", // a Rust caller's scratch
+            "Class constructor A cannot be invoked without 'new'",
+            "9 is not a function",
+        ];
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let (r, out) = run(config(d, stress), semantics);
+                assert_eq!(r, "end", "{} stress={stress}", d.name());
+                assert_eq!(out, want, "{} stress={stress}", d.name());
+            }
+        }
+    }
+
+    /// `depth = 0; try { rec(); } catch (e) {} print(depth);` where
+    /// `rec() { depth = depth + 1; via(rec, undefined); }` (or `rec()` for `via` "").
+    fn recursion(via: &'static str) -> VerifiedUnit {
+        let mut rec = Asm::new(meta("rec", 0, 0, 0, 0));
+        rec.lda_global("depth");
+        rec.b.inc(rec.bin);
+        rec.sta_global("depth");
+        let l = rec.b.new_register_list(2);
+        rec.lda_global("rec");
+        rec.b.star(l.get(0));
+        if via.is_empty() {
+            let f = rec.f;
+            rec.b.star(f).call_undefined_receiver0(f, rec.call);
+        } else {
+            rec.b.lda_undefined().star(l.get(1));
+            call_global(&mut rec, via, l, 2);
+        }
+        rec.b.lda_undefined().return_();
+        let mut s = Asm::script(0);
+        s.b.lda_zero();
+        s.sta_global("depth");
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("rec");
+        let ctx = s.b.new_register();
+        let (start, end, handler, done) = (
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+        );
+        s.b.lda_current_context().star(ctx);
+        s.b.add_handler(start, end, handler, ctx, ep9_bytecode::HandlerKind::Caught);
+        s.b.bind(start);
+        s.lda_global("rec");
+        let f = s.f;
+        s.b.star(f).call_undefined_receiver0(f, s.call);
+        s.b.bind(end);
+        s.b.jump(done);
+        s.b.bind(handler);
+        s.b.bind(done);
+        s.lda_global("depth");
+        s.b.return_();
+        unit("", vec![s.finish(), rec.finish()])
+    }
+
+    #[test]
+    fn a_tail_call_takes_no_stack_room_for_its_host_frame() {
+        // A small VM stack, so its end, not the native stack, stops each recursion.
+        let cfg = || IsolateConfig {
+            vm_stack_slots: 16 * 1024,
+            ..config(Dispatch::DEFAULT, false)
+        };
+        let depth =
+            |via: &'static str| -> u64 { run(cfg(), move || recursion(via)).0.parse().unwrap() };
+        let (direct, tail, now) = (depth(""), depth("fwd"), depth("fwdNow"));
+        // The callee frame of `fwd` takes the host frame's slots: each level costs the frame
+        // of `rec` alone, as a direct call. `fwdNow` keeps its host frame below the callee.
+        assert!(
+            tail * 10 >= direct * 9,
+            "direct {direct}, tail {tail}, now {now}"
+        );
+        assert!(
+            now * 10 <= direct * 7,
+            "direct {direct}, tail {tail}, now {now}"
+        );
+    }
 }

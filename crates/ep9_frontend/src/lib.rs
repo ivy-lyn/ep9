@@ -28,7 +28,6 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{Directive, Program, StringLiteral};
 use oxc_ast::builder::AstBuilder;
 use oxc_diagnostics::OxcDiagnostic;
-use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::{Semantic, SemanticBuilder};
 use oxc_span::{SPAN, SourceType};
 
@@ -38,6 +37,7 @@ mod eval;
 mod function_ctor;
 mod position;
 mod prescan;
+mod regex_check;
 pub mod scope;
 mod stack;
 mod strict_filter;
@@ -307,7 +307,7 @@ impl From<RangeError> for CompileError {
 /// Module for `opts` and is within the depth caps.
 ///
 /// It runs the depth guard (pre-scan, AST-depth pass) and, on the front-end worker,
-/// oxc_parser with `parse_regular_expression`, then (only if the parser found no error)
+/// oxc_parser and the regex literal check (`regex_check`), then (only if neither found an error)
 /// oxc_semantic with syntax checks. Both oxc stages are needed: the parser alone misses about
 /// 30% of the test262 parse-phase negatives, and without regex parsing about 8% \[R04\].
 ///
@@ -385,13 +385,11 @@ pub(crate) fn parse<'a>(
         Goal::Script => SourceType::script(),
         Goal::Module => SourceType::mjs(),
     };
-    let options = ParseOptions {
-        parse_regular_expression: true,
-        ..ParseOptions::default()
+    // oxc_parser, then the regex literal check (regex_check::parse).
+    let mut parsed = match regex_check::parse(allocator, source, source_type) {
+        Ok(parsed) => parsed,
+        Err(fatal) => return Err(early_errors(source, fatal.errors()).into()),
     };
-    let mut parsed = Parser::new(allocator, source, source_type)
-        .with_options(options)
-        .parse();
     if parsed.diagnostics.has_errors() {
         return Err(early_errors(source, parsed.diagnostics.errors()).into());
     }

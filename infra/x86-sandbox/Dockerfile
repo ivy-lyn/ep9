@@ -25,7 +25,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential pkg-config \
       valgrind linux-perf gdb strace \
-      git curl ca-certificates xz-utils zstd file \
+      git curl ca-certificates xz-utils zstd unzip file \
       python3 time jq procps util-linux \
  && rm -rf /var/lib/apt/lists/*
 

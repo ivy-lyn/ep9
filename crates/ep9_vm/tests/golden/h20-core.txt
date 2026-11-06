@@ -80,6 +80,12 @@ abi: impl<'s> ArgsBuilder<'s> :: pub fn is_empty(&self) -> bool
 abi: impl<'s> ArgsBuilder<'s> :: pub fn len(&self) -> usize
 abi: impl<'s> ArgsBuilder<'s> :: pub fn push(&mut self, &mut Cx<'s>, impl Into<Local<'s>>) -> JsResult<()>
 abi: impl<'s> Cx<'s> :: pub fn args_builder(&self) -> ArgsBuilder<'s>
+abi: impl<'s> Cx<'s> :: pub fn bigint_as_int_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn bigint_as_uint_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn bigint_from_i128(&mut self, i128) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn bigint_to_i128(&self, impl Into<Local<'s>>) -> Option<i128>
+abi: impl<'s> Cx<'s> :: pub fn bigint_to_number(&self, impl Into<Local<'s>>) -> f64
+abi: impl<'s> Cx<'s> :: pub fn bigint_to_string(&mut self, impl Into<Local<'s>>, u32) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn call(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, &[Local<'s>]) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn call_args(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, Rest<'s>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn call_built(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, ArgsBuilder<'s>) -> JsResult<Local<'s>>
@@ -127,6 +133,7 @@ abi: impl<'s> Cx<'s> :: pub fn flatten(&mut self, impl Into<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn from_property_descriptor(&mut self, Option<PropertyDescriptor<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn fulfill_promise(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn function_realm_intrinsic(&self, impl Into<Local<'s>>, IntrinsicId) -> Local<'s>
+abi: impl<'s> Cx<'s> :: pub fn function_source_text(&mut self, impl Into<Local<'s>>) -> JsResult<Option<Local<'s, JsString>>>
 abi: impl<'s> Cx<'s> :: pub fn get(&mut self, impl Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn get_index(&mut self, impl Into<Local<'s, JsObject>>, u64) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn get_iterator(&mut self, impl Into<Local<'s>>) -> JsResult<IteratorRecord<'s>>
@@ -147,6 +154,7 @@ abi: impl<'s> Cx<'s> :: pub fn intern(&mut self, Local<'s, JsString>) -> Local<'
 abi: impl<'s> Cx<'s> :: pub fn intrinsic(&self, IntrinsicId) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn is_array(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_array_or_throw(&mut self, impl Into<Local<'s>>) -> JsResult<bool>
+abi: impl<'s> Cx<'s> :: pub fn is_bigint(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_builtin(&self, impl Into<Local<'s>>, BuiltinId) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_callable(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_constructor(&self, impl Into<Local<'s>>) -> bool
@@ -180,6 +188,7 @@ abi: impl<'s> Cx<'s> :: pub fn new_weak_ref(&mut self, impl Into<Local<'s>>, imp
 abi: impl<'s> Cx<'s> :: pub fn new_wrapper(&mut self, impl Into<Local<'s, JsObject>>, impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn not_implemented(&mut self, &str) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn now_epoch_ns(&mut self) -> i128
+abi: impl<'s> Cx<'s> :: pub fn number_to_bigint(&mut self, f64) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn object_class(&self, impl Into<Local<'s>>) -> Option<ObjectClass>
 abi: impl<'s> Cx<'s> :: pub fn ordinary_create_from_constructor(&mut self, impl Into<Local<'s, JsObject>>, IntrinsicId) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn own_property_keys(&mut self, impl Into<Local<'s, JsObject>>) -> JsResult<Local<'s, JsArray>>
@@ -222,16 +231,21 @@ abi: impl<'s> Cx<'s> :: pub fn string_len(&self, impl Into<Local<'s, JsString>>)
 abi: impl<'s> Cx<'s> :: pub fn substring(&mut self, impl Into<Local<'s, JsString>>, usize, usize) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn symbol_description(&self, Local<'s, JsSymbol>) -> Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn symbol_for(&mut self, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, JsSymbol>>
+abi: impl<'s> Cx<'s> :: pub fn system_time_zone_id(&mut self) -> Option<String>
+abi: impl<'s> Cx<'s> :: pub fn tail_call_args(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, Rest<'s>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn this_bigint_value(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn this_primitive_value(&mut self, impl Into<Local<'s>>, PrimitiveType) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn throw(&mut self, impl Into<Local<'s>>) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn throw_error(&mut self, ErrorKind, &str) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn throw_range_error(&mut self, &str) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn throw_type_error(&mut self, &str) -> Throw
+abi: impl<'s> Cx<'s> :: pub fn to_bigint(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn to_boolean(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn to_int32(&mut self, impl Into<Local<'s>>) -> JsResult<i32>
 abi: impl<'s> Cx<'s> :: pub fn to_integer_or_infinity(&mut self, impl Into<Local<'s>>) -> JsResult<f64>
 abi: impl<'s> Cx<'s> :: pub fn to_length(&mut self, impl Into<Local<'s>>) -> JsResult<u64>
 abi: impl<'s> Cx<'s> :: pub fn to_number(&mut self, impl Into<Local<'s>>) -> JsResult<f64>
+abi: impl<'s> Cx<'s> :: pub fn to_numeric(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn to_object(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn to_primitive(&mut self, impl Into<Local<'s>>, ToPrimitiveHint) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn to_property_descriptor(&mut self, impl Into<Local<'s>>) -> JsResult<PropertyDescriptor<'s>>
@@ -300,8 +314,8 @@ embed (not core): #[derive(Clone)] pub struct InterruptHandle { .. }
 embed (not core): #[derive(Clone, Copy, Debug)] pub enum JsStr<'a> { Latin1(&'a [u8]), Utf16(&'a [u16]) }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ErrorKind { Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError, UriError }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum RegistryError { Empty, Overlap(usize) }
-embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct BuildInfo { pub features: &'static [&'static str], pub preset: &'static str }
-embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct CodeEntry { pub kind: DispatchKind, pub start: usize, pub len: usize, pub function: usize }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct BuildInfo { one line per pub field }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct CodeEntry { one line per pub field }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct ExecOptions { .. }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] #[repr(u8)] pub enum DispatchKind { Interp = 0, Baseline = 1, Opt = 2, AotBaseline = 3, AotOpt = 4 }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub enum Dispatch { Match, Sibling, #[cfg(feature = "become")] Become }
@@ -310,9 +324,27 @@ embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub struct 
 embed (not core): #[derive(Clone, Debug)] pub struct TerminateHandle(_)
 embed (not core): #[derive(Debug)] #[repr(C)] pub struct DispatchSlot { .. }
 embed (not core): #[derive(Debug, Default)] pub struct RangeRegistry { .. }
-embed (not core): #[repr(C)] #[derive(Debug)] pub struct RuntimeTable { pub poll: RtFn0, pub call_any: RtFn1, pub add: RtFn2, pub inc: RtFn1, pub compare: RtCompareFn, pub stack_overflow: RtFn0, pub throw: RtFn1, pub unwind: RtFn0, pub get_keyed: RtFn2, pub set_keyed: RtFn3, pub deopt: RtFn2 }
+embed (not core): #[repr(C)] #[derive(Debug)] pub struct RuntimeTable { one line per pub field }
 embed (not core): #[repr(C)] pub struct NativeCx { .. }
 embed (not core): Atom: no item in the source text (a macro makes it: M3-P3-H20-GOLDEN-LIMIT)
+embed (not core): BuildInfo field 00: pub features: &'static [&'static str]
+embed (not core): BuildInfo field 01: pub preset: &'static str
+embed (not core): CodeEntry field 00: pub kind: DispatchKind
+embed (not core): CodeEntry field 01: pub start: usize
+embed (not core): CodeEntry field 02: pub len: usize
+embed (not core): CodeEntry field 03: pub function: usize
+embed (not core): RuntimeTable field 00: pub poll: RtFn0
+embed (not core): RuntimeTable field 01: pub call_any: RtFn1
+embed (not core): RuntimeTable field 02: pub add: RtFn2
+embed (not core): RuntimeTable field 03: pub inc: RtFn1
+embed (not core): RuntimeTable field 04: pub compare: RtCompareFn
+embed (not core): RuntimeTable field 05: pub stack_overflow: RtFn0
+embed (not core): RuntimeTable field 06: pub throw: RtFn1
+embed (not core): RuntimeTable field 07: pub unwind: RtFn0
+embed (not core): RuntimeTable field 08: pub get_keyed: RtFn2
+embed (not core): RuntimeTable field 09: pub set_keyed: RtFn3
+embed (not core): RuntimeTable field 10: pub deopt: RtFn2
+embed (not core): RuntimeTable field 11: pub load_global: RtFn0
 embed (not core): impl CodeEntry :: pub fn contains(&self, usize) -> bool
 embed (not core): impl CodeEntry :: pub fn range(&self) -> Range<usize>
 embed (not core): impl CodeRegistry for RangeRegistry { fn register(&mut self, CodeEntry) -> Result<(), RegistryError>; fn unregister(&mut self, usize) -> Option<CodeEntry>; fn lookup(&self, usize) -> Option<CodeEntry>; fn len(&self) -> usize }
@@ -354,6 +386,7 @@ embed (not core): impl Isolate :: pub fn dispatch(&self) -> Dispatch
 embed (not core): impl Isolate :: pub fn gc_stats(&self) -> GcStats
 embed (not core): impl Isolate :: pub fn interrupt_handle(&self) -> InterruptHandle
 embed (not core): impl Isolate :: pub fn new_with(IsolateConfig, ExecOptions) -> Result<Isolate, IsolateError>
+embed (not core): impl Isolate :: pub fn set_compile_strings_hook(&mut self, Option<for<'s> fn(&mut Cx<'s>, &[String], &str, bool) -> JsResult<()>>)
 embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>
 embed (not core): impl Isolate :: pub fn terminate_handle(&self) -> TerminateHandle
 embed (not core): impl Isolate :: pub fn verify_heap(&self) -> Result<VerifyReport, VerifyError>
@@ -395,6 +428,7 @@ embed (not core): pub const CX_STACK_LIMIT: usize
 embed (not core): pub const CX_TABLE: usize
 embed (not core): pub const CX_UNIT_DATA: usize
 embed (not core): pub const DEOPT_META_VERSION: u32
+embed (not core): pub const DUMP_BYTES: u32
 embed (not core): pub const ELEMENTS_CAPACITY: u32
 embed (not core): pub const ELEMENTS_DATA: u32
 embed (not core): pub const ELEMENTS_DOUBLE_CAPACITY: u32
@@ -432,16 +466,24 @@ embed (not core): pub const FRAME_VERSION: u32
 embed (not core): pub const FUNCTION_CONTEXT: usize
 embed (not core): pub const FUNCTION_INFO: isize
 embed (not core): pub const FUNCTION_INFO: usize
+embed (not core): pub const FUSE_ENTRIES: u32
+embed (not core): pub const FUSE_ENTRY_SIZE: u32
+embed (not core): pub const FUSE_INTACT: u32
+embed (not core): pub const FUSE_SIZE: u32
 embed (not core): pub const HOLE: u32
 embed (not core): pub const HOLE: u64
 embed (not core): pub const IC_LAYOUT_VERSION: u32
 embed (not core): pub const KEYED_KINDS_SET_SHIFT: u32
 embed (not core): pub const KIND_ARRAY: u8
 embed (not core): pub const KIND_BYTE: u32
+embed (not core): pub const KIND_CONTEXT: u8
 embed (not core): pub const KIND_ELEMENTS: u8
 embed (not core): pub const KIND_ELEMENTS_DICT: u8
 embed (not core): pub const KIND_ELEMENTS_DOUBLE: u8
+embed (not core): pub const KIND_FUSE: u8
 embed (not core): pub const KIND_OBJECT: u8
+embed (not core): pub const KIND_PROPS_INDEXED: u8
+embed (not core): pub const KIND_SHAPE: u8
 embed (not core): pub const NATIVE_WORD_OFFSET: u64
 embed (not core): pub const NO_CODE: u8
 embed (not core): pub const OBJECT_FIELDS: u32
@@ -450,17 +492,25 @@ embed (not core): pub const POLY_CASES: u32
 embed (not core): pub const POLY_CASE_SIZE: u32
 embed (not core): pub const POLY_COUNT: u32
 embed (not core): pub const POLY_HANDLER: u32
+embed (not core): pub const PROPS_INDEXED_CAPACITY: u32
+embed (not core): pub const PROPS_INDEXED_COUNT: u32
+embed (not core): pub const PROPS_INDEXED_ENTRIES: u32
+embed (not core): pub const PROPS_INDEXED_ENTRY_SIZE: u32
+embed (not core): pub const PROPS_INDEXED_INDEX: u32
 embed (not core): pub const RT_ADD: usize
 embed (not core): pub const RT_CALL_ANY: usize
 embed (not core): pub const RT_COMPARE: usize
 embed (not core): pub const RT_DEOPT: usize
 embed (not core): pub const RT_GET_KEYED: usize
 embed (not core): pub const RT_INC: usize
+embed (not core): pub const RT_LOAD_GLOBAL: usize
 embed (not core): pub const RT_POLL: usize
 embed (not core): pub const RT_SET_KEYED: usize
 embed (not core): pub const RT_STACK_OVERFLOW: usize
 embed (not core): pub const RT_THROW: usize
 embed (not core): pub const RT_UNWIND: usize
+embed (not core): pub const SHAPE_CAGE_ALIGN: u64
+embed (not core): pub const SHAPE_COUNTS: u32
 embed (not core): pub const SHAPE_ELEMENTS_KIND_SHIFT: u32
 embed (not core): pub const SHAPE_ID_BYTE: u32
 embed (not core): pub const SMI_ARRAY_LENGTH: i32
@@ -468,6 +518,7 @@ embed (not core): pub const SMI_FIELD_IN_OBJECT: i32
 embed (not core): pub const SMI_KIND_MASK: i32
 embed (not core): pub const SMI_SHIFT: u32
 embed (not core): pub const THREADED_HANDLERS: usize
+embed (not core): pub const VALUE_UNDEFINED: u64
 embed (not core): pub const VM_LAYOUT_VERSION: u32
 embed (not core): pub const fn fp_param(u32) -> isize
 embed (not core): pub const fn fp_register(u32) -> isize

@@ -7,16 +7,16 @@
 #   scope ............ docs_only for the pushed range                (Linux x64)
 #                      (.github/scripts/ci-scope.sh, its self-test first)
 #   build-test ....... build + test; clippy on the other 3 targets;  (4 targets)
-#                      ep9_vm spike-native tests (Spike B native entry);
-#                      ep9_vm and ep9_builtins tests in release
+#                      ep9_vm spike-native tests (Spike B native entry)
+#   release-tests .... ep9_vm and ep9_builtins tests in release      (4 targets)
+#   no-jit-units ..... ep9_vm and ep9_builtins tests without `jit`;  (Linux x64)
+#                      EP9_EXPECT_NO_JIT=1 checks that jit is off
 #   feature-matrix ... default, jitless, aot (H27; cargo xtask        (4 targets)
 #                      feature-matrix), out of build-test for wall time
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
-#                      exec with eager feedback; bytecodegen corpus
-#                      digest (G1), debug too (not windows-x64); the
-#                      nesting-cap tests (not windows-x64); the
-#                      m0-exit inputs as an artifact; GC-stress S1
-#                      with major GCs only, on a few prefixes
+#                      exec with eager feedback; bytecodegen corpus digest (G1), debug too
+#                      (not windows-x64); the nesting-cap tests (not windows-x64); the m0-exit
+#                      inputs as an artifact; GC-stress S1 with major GCs only, on a few prefixes
 #   test262-gc ....... exec with GC-stress (S1) + eager feedback,     (4 targets)
 #                      6 shards (S0 with the dispatch input gc_mode)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
@@ -46,10 +46,10 @@
 # 57 jobs: lint 1, scope 1, build-test 4, feature-matrix 4, test262 4, atomgate 1, test262-gc 24,
 # fp-check 1, disasm 4, spikes 4, bench-run 4, miri 1, dep-guards 1, perf-ci-v0 1, sp-tsrs-win 1,
 # fuzz-smoke 1.
+# M6-P0 (plan v11 section 2.9) adds release-tests 4 and no-jit-units 1: 62 jobs.
 #
 # The dispatch input `only` (plan v10 rule 27, a CI probe of a merge head): windows-x64,linux-x64
-# keeps only those two entries in every 4-target matrix (33 jobs); the one-runner jobs (Linux
-# x64, Windows x64) all run. Default `all`.
+# keeps those two in every 4-target matrix (36 jobs); the one-runner jobs all run. Default `all`.
 #
 # The dispatch input `gc_mode` (plan v10 V10-D19, V9-D27): `s1` (the default, and every push and
 # pull_request run) runs the GC-stress shards with the S1 generational heap, the heap default
@@ -62,7 +62,7 @@
 # docs/measurements/ (code reads both); anything else fails closed to docs_only=false. A
 # docs-only change runs scope and lint only (lint stays: its adr-lint step, from M4-P3, must see
 # ADR commits). If scope fails, the other jobs still run (`!cancelled()`). GitHub counts a skipped job as green,
-# so on a code change CI is done only when every one of the 57 jobs ran and none is pending or
+# so on a code change CI is done only when every one of the 62 jobs ran and none is pending or
 # skipped. Timeouts follow the plan v10 section 9.2 budget table (rule 25: >= 1.5x the last
 # measured time).
 #
@@ -234,9 +234,9 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: 1.5x the last measured max: 80 min (windows-x64, run 41350992446: cargo test 56.5
-    # min + release tests 19.3 min), so 120 (was 110, plan v10 section 9.2; M5-P5-ORCH-9).
-    timeout-minutes: 120
+    # Rule 25: 1.5x the last measured max: 110 min (windows-x64, run 42135182874, the first run
+    # after the spec-temporal merge B0), so 165 (was 120; M6-ORCH-136).
+    timeout-minutes: 165
     steps:
       # Windows: keep LF in our files and in test262 (scripts break on CRLF), allow long paths.
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
@@ -257,11 +257,11 @@ jobs:
       - name: spike-native tests (ep9_vm)
         if: ${{ !cancelled() }}
         run: cargo test -p ep9_vm --features spike-native --locked native
-      # Release-only faults (plan v10 section 2.8 task 1): the profile of ep9 and ep9-test262
-      # (fat LTO, no debug assertions). Mac a64 (18 CPUs), cold build: 100 s for 995 tests.
-      - name: release tests (ep9_vm, ep9_builtins)
-        if: ${{ !cancelled() }}
-        run: cargo test --release --locked -p ep9_vm -p ep9_builtins
+      # The release tests of ep9_vm and ep9_builtins (plan v10 section 2.8 task 1) ran here until
+      # M6-P0. They have their own job now, release-tests (plan v11 section 2.9, rule 25): here
+      # they took 19.3 of the 80 min of windows-x64 (run 41350992446), after the debug tests.
+      # There they run next to them, on the release cache of their target. The two steps above
+      # keep their names: m0-exit and m1-exit read them.
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -285,7 +285,7 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -364,15 +364,15 @@ jobs:
       - name: test262 exec, no-jit build (jitless, ics_only)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
         run: cargo run --release --locked -p ep9_test262 --no-default-features -- exec --preset jitless --json test262-exec-jitless.json
-      # The no-jit unit tests (M5-P3-ORCH-15, MODES-CHECK-w21 MC-w21-21): ep9_vm and ep9_builtins
-      # without the `jit` feature, every test target (lib, integration and doc tests), so the
-      # jitless preset and `ics_only`, the defaults of that build, run the unit tests too (doc 13
-      # M-R9). linux-x64 only, next to the no-jit test262 column (rule 25): est. +12-20 min (a
-      # debug test build of the two crates without `jit`, then 1,160 tests; 13.3 min on the Mac,
-      # 18 CPUs at load 20-28, M5-P4). The job took 27 min in run 41285628624; timeout stays 90.
-      - name: no-jit unit tests (ep9_vm, ep9_builtins)
-        if: ${{ !cancelled() && matrix.name == 'linux-x64' }}
-        run: cargo test --locked -p ep9_vm -p ep9_builtins --no-default-features
+      # The no-jit unit tests (M5-P3-ORCH-15, MODES-CHECK-w21 MC-w21-21) ran here until M6-P0:
+      # ep9_vm and ep9_builtins without the `jit` feature, a debug build. The release cache of
+      # this job did not help that build: the step took 35.1 of the 62 min of linux-x64 in run
+      # 41373757725 (19.4 in run 41350992446). They have their own job now, no-jit-units (plan
+      # v11 section 2.9, rule 25), with its own debug cache and a test that fails when that
+      # build has `jit` (crates/ep9_vm/tests/no_jit_build.rs, MC-w22-12). The no-jit test262
+      # column above stays here: it is a release build of the runner, like the other exec
+      # steps, and it reads the test262 checkout of this job. No xtask reads either step.
+      # Without that step, linux-x64 of run 41373757725 took about 27 min (62 - 35.1).
       # The S1 major path (plan v10 V10-D19, V9-D27): GC-stress with S1 where every GC is a major
       # one (EP9_GC_STRESS_MAJOR_EVERY=1: the sticky marks cleared and a full mark each time; the
       # shards run mostly minor GCs, a major one every 64th), on the weak-reference, collection,
@@ -487,9 +487,9 @@ jobs:
         shards: [6]
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.target.os }}
-    # Plan v10 section 9.2 and V10-D19: 1.5x the measured max of the first S1 run (26.6 min,
-    # windows-x64 6/6, run 40872022094), so 40 (rule 25).
-    timeout-minutes: 40
+    # Rule 25: run 42135182874 (after B0) cut 8 of 24 shards at 40 min; the same shard grew
+    # 1.66x, so about 50 min (est.) x 1.5: 80 (was 40; feature-matrix 60 -> 75; DL B0-GCSKIP).
+    timeout-minutes: 80
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1083,3 +1083,68 @@ jobs:
             bash fuzz/scripts/run.sh "$t" "$s" "fuzz/corpus/$t" "fuzz/seeds/$t" || rc=1
           done
           exit "$rc"
+
+  # The release tests (plan v10 section 2.8 task 1; plan v11 section 2.9, M6-P0): ep9_vm and
+  # ep9_builtins in the release profile of ep9 and ep9-test262 (fat LTO, no debug assertions),
+  # where release-only faults show (M5-P0-CI-1: x86-64 stack-scan cases). In build-test until
+  # M6-P0; its own job for wall time (rule 25). Mac a64 (18 CPUs), cold build: 100 s for 995
+  # tests. It restores the release cache of its target (test262, test262-gc and bench-run, one
+  # entry per target: 10 GB cache limit) and never saves it, so the entry those jobs save keeps
+  # the ep9 and ep9-test262 builds. No xtask reads this job.
+  release-tests:
+    name: release tests (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The 4 targets, or the 2 of the dispatch input `only` (header).
+        include: ${{ fromJSON(inputs.only == 'windows-x64,linux-x64'
+          && '[{"name":"linux-x64","os":"ubuntu-24.04"}, {"name":"windows-x64","os":"windows-2025"}]'
+          || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
+               {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096): the slowest target took 21 min.
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-${{ matrix.name }}
+          save-if: false
+      - name: release tests (ep9_vm, ep9_builtins, ep9_frontend)
+        run: cargo test --release --locked -p ep9_vm -p ep9_builtins -p ep9_frontend
+
+  # The no-jit unit tests (M5-P3-ORCH-15, MODES-CHECK-w21 MC-w21-21; plan v11 section 2.9,
+  # M6-P0): ep9_vm and ep9_builtins without the `jit` feature, every test target (lib,
+  # integration and doc tests), so the jitless preset and `ics_only`, the defaults of that build,
+  # run the unit tests too (doc 13 M-R9). EP9_EXPECT_NO_JIT=1 turns on
+  # crates/ep9_vm/tests/no_jit_build.rs: it fails if this build has `jit` (MC-w22-12), for
+  # example when feature unification turns it back on. In the test262 job until M6-P0; its own
+  # job for wall time, with its own debug cache (rule 25). linux-x64 only. No xtask reads it.
+  no-jit-units:
+    name: no-jit units (linux-x64)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096) took 20 min. Rule 25: run 42135182874
+    # (after B0) was cut at 55 min (37 min before B0): 95 (est. 60 min x 1.5; M6-ORCH-136).
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The test262 checkout, as in the test262 job: crates/ep9_builtins/tests/object.rs compares
+      # its embedded propertyHelper.js lines with the pinned harness and skips without it. No
+      # other job that runs the ep9_builtins tests has the checkout.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      - name: no-jit unit tests (ep9_vm, ep9_builtins)
+        env:
+          EP9_EXPECT_NO_JIT: "1"
+        run: cargo test --locked -p ep9_vm -p ep9_builtins --no-default-features

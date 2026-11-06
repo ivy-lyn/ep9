@@ -14,22 +14,28 @@
 //! `weakref`); `layout4` holds the OBJECT_LAYOUT 4 and IC_LAYOUT 2 tests, the others are empty
 //! until their owners fill them. M5-P0 declared the month-5 modules (`deopt`, `elements`,
 //! `exec`, `external_ref`, `field_rep`, `fuse`, `layout5`, `slack`); `layout5` holds the
-//! OBJECT_LAYOUT 5, IC_LAYOUT 3 and VM_LAYOUT 1 tests and `exec` the C-23 tests.
+//! OBJECT_LAYOUT 5, IC_LAYOUT 3 and VM_LAYOUT 1 tests and `exec` the C-23 tests. M6-P0
+//! declared the month-6 modules (`accessor_ic`, `dict`, `ic_ops`, `layout6`, `select`);
+//! `layout6` holds the OBJECT_LAYOUT 6, IC_LAYOUT 4 and VM_LAYOUT 1 tests, the others are empty
+//! until their owners fill them.
 
 #![allow(clippy::unwrap_used)]
 
 mod abi;
 mod abi_index;
+mod accessor_ic;
 mod accessors;
 mod arguments;
 mod async_fn;
 mod async_gen;
 mod basic;
+mod bigint;
 mod builtins;
 mod calls;
 mod class_fields;
 mod construct;
 mod deopt;
+mod dict;
 mod elements;
 mod eval;
 mod exceptions;
@@ -42,6 +48,7 @@ mod fuse;
 mod gc;
 mod generator;
 mod ic;
+mod ic_ops;
 mod instance_ic;
 mod interp;
 mod isolate_api;
@@ -51,6 +58,7 @@ mod keyed;
 mod layout3;
 mod layout4;
 mod layout5;
+mod layout6;
 mod literal_site;
 mod module;
 #[cfg(feature = "spike-native")]
@@ -61,6 +69,7 @@ mod profile;
 mod proxy;
 mod realm;
 mod regexp;
+mod select;
 mod shapes;
 mod slack;
 mod slots;

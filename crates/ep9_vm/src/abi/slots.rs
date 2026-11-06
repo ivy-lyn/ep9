@@ -76,6 +76,25 @@ pub enum ObjectClass {
     /// A RegExp String Iterator (§22.2.9): `[[IteratingRegExp]]`, `[[IteratedString]]`,
     /// `[[Global]]`, `[[Unicode]]`, `[[Done]]`. Declared in M4-P0; made by M4-P3 REGEXP1.
     RegExpStringIterator,
+    /// A raw JSON object (`JSON.rawJSON`, json-parse-with-source): `[[IsRawJSON]]`. The class
+    /// is the mark; the object has 0 slots. Appended by M6-P1 SPEC-B.
+    RawJson,
+    /// A Temporal.Duration instance (spec-temporal T2): `[[Years]]` .. `[[Nanoseconds]]`, slots 0-9, each an integral Number (`ep9_temporal` duration.rs).
+    TemporalDuration,
+    /// A Temporal.Instant instance (spec-temporal T3): `[[EpochNanoseconds]]` as slot 0 the epoch seconds (an integral Number) and slot 1 the nanosecond of that second (an int32), `ep9_temporal` instant.rs.
+    TemporalInstant,
+    /// A Temporal.PlainTime instance (spec-temporal T4): `[[Time]]` as slot 0 the second of the day (0..86,399, an int32) and slot 1 the nanosecond of that second (an int32), `ep9_temporal` plain_time.rs.
+    TemporalPlainTime,
+    /// A Temporal.PlainDate instance (spec-temporal T5): `[[ISODate]]` as slots 0-2 (ISO year, month, day: int32s) and `[[Calendar]]` as slot 3 (an ep9 calendar code, 0 = iso8601), `ep9_temporal` plain_date.rs.
+    TemporalPlainDate,
+    /// A Temporal.PlainDateTime instance (spec-temporal T6): `[[ISODateTime]]` as slots 0-2 (ISO year, month, day) and 4-5 (the second of the day, the nanosecond of that second), `[[Calendar]]` as slot 3 (an ep9 calendar code, 0 = iso8601); all int32s, `ep9_temporal` plain_date_time.rs.
+    TemporalPlainDateTime,
+    /// A Temporal.PlainYearMonth instance (spec-temporal T7): `[[ISODate]]` as slots 0-2 (ISO year, month, reference day) and `[[Calendar]]` as slot 3 (an ep9 calendar code); all int32s, `ep9_temporal` plain_year_month.rs.
+    TemporalPlainYearMonth,
+    /// A Temporal.PlainMonthDay instance (spec-temporal T7): `[[ISODate]]` as slots 0-2 (reference ISO year, month, day) and `[[Calendar]]` as slot 3 (an ep9 calendar code); all int32s, `ep9_temporal` plain_month_day.rs.
+    TemporalPlainMonthDay,
+    /// A Temporal.ZonedDateTime instance (spec-temporal T8): `[[EpochNanoseconds]]` as slot 0 the epoch seconds (an integral Number) and slot 1 the nanosecond of that second (an int32), `[[TimeZone]]` as slot 2 (the time zone identifier, a String) and `[[Calendar]]` as slot 3 (an ep9 calendar code, an int32), `ep9_temporal` zoned_date_time.rs.
+    TemporalZonedDateTime,
 }
 
 impl ObjectClass {
@@ -95,6 +114,15 @@ impl ObjectClass {
         ObjectClass::WeakRef,
         ObjectClass::FinalizationRegistry,
         ObjectClass::RegExpStringIterator,
+        ObjectClass::RawJson,
+        ObjectClass::TemporalDuration,
+        ObjectClass::TemporalInstant,
+        ObjectClass::TemporalPlainTime,
+        ObjectClass::TemporalPlainDate,
+        ObjectClass::TemporalPlainDateTime,
+        ObjectClass::TemporalPlainYearMonth,
+        ObjectClass::TemporalPlainMonthDay,
+        ObjectClass::TemporalZonedDateTime,
     ];
 
     /// Most internal slots of one object.
@@ -131,6 +159,15 @@ impl ObjectClass {
             ObjectClass::WeakRef => "WeakRef",
             ObjectClass::FinalizationRegistry => "FinalizationRegistry",
             ObjectClass::RegExpStringIterator => "RegExp String Iterator",
+            ObjectClass::RawJson => "RawJSON",
+            ObjectClass::TemporalDuration => "Temporal.Duration",
+            ObjectClass::TemporalInstant => "Temporal.Instant",
+            ObjectClass::TemporalPlainTime => "Temporal.PlainTime",
+            ObjectClass::TemporalPlainDate => "Temporal.PlainDate",
+            ObjectClass::TemporalPlainDateTime => "Temporal.PlainDateTime",
+            ObjectClass::TemporalPlainYearMonth => "Temporal.PlainYearMonth",
+            ObjectClass::TemporalPlainMonthDay => "Temporal.PlainMonthDay",
+            ObjectClass::TemporalZonedDateTime => "Temporal.ZonedDateTime",
         }
     }
 }

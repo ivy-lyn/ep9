@@ -189,7 +189,7 @@ enum Kind {
 }
 
 /// A char of `[\w./-]` (a path run).
-fn path_char(c: char) -> bool {
+pub(crate) fn path_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '.' | '/' | '-')
 }
 

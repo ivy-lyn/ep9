@@ -25,7 +25,7 @@
 //! | SLOTS | 71 | +8 capacity, +16 values | 16 + 8 cap |
 //! | DESCRIPTORS | 72 | +8 capacity, +16 length, +24 DESC_INDEX or undefined, +32 entries: key, details | 32 + 16 cap |
 //! | DESC_INDEX | 73 | +8 bucket count (a power of 2), +16 buckets: descriptor index or undefined | 16 + 8 buckets |
-//! | TRANSITIONS | 74 | +8 capacity, +16 child shapes (weak) or undefined; the same weak array is the users list of a VALIDITY_CELL (`validity.rs`) | 16 + 8 cap |
+//! | TRANSITIONS | 74 | +8 capacity, +16 child shapes (weak) or undefined; a shape's table keeps its children sorted by (key hash, attributes), and an undefined slot is a hole (the transition table section at the end); the same weak array is the users list of a VALIDITY_CELL (`validity.rs`) | 16 + 8 cap |
 //! | PROTO_INFO | 75 | +8 prototype (or null), +16 shape count, +24 SLOTS of shapes, +32 the prototype's current VALIDITY_CELL (79, `validity.rs`; undefined until an IC case needs it; the null prototype's is made in [`init`]; traced strongly) | 40 |
 //!
 //! - **counts** (int32): property count in bits 0-11, in-object capacity in bits 12-19, the
@@ -77,9 +77,9 @@
 //!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths,
 //!   plan v9 §3.3 and V9-A25). A value store does neither.
 //! - The first array-index own property on a prototype-mode object (or an object with one, or
-//!   a routed ARGUMENTS or MODULE_NAMESPACE object, becoming a prototype) sets the sticky
-//!   [`proto_index_keys`] flag: until then `[[Set]]` adds array elements without walking the
-//!   prototype chain.
+//!   a routed object, becoming a prototype) pops the static fuse "no-elements prototypes" in
+//!   every realm ([`note_proto_index_key`]; `fuse::NO_ELEMENTS_PROTOTYPES`): while it is intact
+//!   ([`proto_index_keys`] is false) `[[Set]]` adds array elements without the prototype walk.
 //!
 //! Hooks the rest of the VM already calls:
 //!
@@ -284,12 +284,12 @@ pub(crate) struct ShapeState {
     /// No IC hit path compares it since M4-P1 (validity cells); the debug cross-check of the
     /// hit paths reads it (plan v9 V9-A25, R1), and tests do.
     pub proto_epoch: Cell<u32>,
-    /// Sticky, never cleared: set once a prototype-mode object has an array-index own
-    /// property, or a routed kind becomes a prototype ([`proto_index_keys`]). While it is
-    /// false no prototype chain has an index key,
-    /// so `[[Set]]` may add a missing array element without the walk (V8's "no elements"
-    /// protector).
-    proto_index: Cell<bool>,
+    // No `proto_index` flag since M6-P2 FUSE-PI (H31-Q5): the sticky flag of M3-M5 is the
+    // static fuse "no-elements prototypes" (`fuse::NO_ELEMENTS_PROTOTYPES`). It is popped
+    // once, in the isolate and in every realm's FUSE cell ([`note_proto_index_key`]), and
+    // [`proto_index_keys`] reads the current realm's word. While it is intact no prototype
+    // chain has an index key, so `[[Set]]` may add a missing array element without the walk
+    // (V8's "no elements" protector).
     /// A strong root range ([`init`]): see [`root`].
     roots: Box<[Slot]>,
 }
@@ -298,7 +298,7 @@ impl Default for ShapeState {
     fn default() -> Self {
         ShapeState {
             proto_epoch: Cell::new(0),
-            proto_index: Cell::new(false),
+            // (the `proto_index` flag is the static fuse 6 now: `fuse.rs`, M6-P2)
             roots: (0..root::COUNT)
                 .map(|_| Slot::new(Value::UNDEFINED))
                 .collect(),
@@ -934,10 +934,8 @@ pub(crate) fn add_with(rt: &Runtime, shape: u64, key: u64, attrs: i32, bits: i32
         return Added::Shape(child);
     }
     let n = count(shape);
-    if n >= MAX_FAST_PROPERTIES
-        || transition_count(shape) >= MAX_TRANSITIONS
-        || key::is_index_key(key)
-    {
+    // The cap reads no table slot below the largest table size ([`at_transition_cap`]).
+    if n >= MAX_FAST_PROPERTIES || at_transition_cap(shape) || key::is_index_key(key) {
         return Added::Dictionary;
     }
     // GC points below: `shape`, `key`, `d` and `child` live in Rust locals (CSS).
@@ -1047,22 +1045,24 @@ fn new_unique(rt: &Runtime, proto: u64, d: u64, counts: u64, flags: i32, info: u
     s
 }
 
-/// The child of `shape` for the key and attributes, if the transition is live.
+/// The child of `shape` for the key and attributes, if the transition is live: the +32 word,
+/// then the sorted table ([`table_find`]: a scan up to [`TABLE_SCAN_MAX`] slots, else a binary
+/// search). Debug builds check one child per (key, attributes) ([`debug_one_child`]).
 fn find_transition(shape: u64, key: u64, attrs: i32, how: Probe) -> Option<u64> {
     let s = cell(shape);
     let t = rd(s, shf::TRANSITION);
-    if t != UNDEFINED && is_transition_to(t, key, attrs, how) {
-        return Some(t);
-    }
     let tab = rd(s, shf::TABLE);
-    if tab == UNDEFINED {
-        return None;
-    }
-    debug_assert!(kind::cell_kind(tab) == kind::TRANSITIONS.get());
-    let tc = cell(tab);
-    (0..rd_i32(tc, trf::CAPACITY) as usize)
-        .map(|i| rd(tc, trf::ENTRIES + 8 * i))
-        .find(|&c| c != UNDEFINED && is_transition_to(c, key, attrs, how))
+    let found = if t != UNDEFINED && is_transition_to(t, key, attrs, how) {
+        Some(t)
+    } else if tab == UNDEFINED {
+        None
+    } else {
+        table_find(tab, key, attrs, how)
+    };
+    // OI R1: a search that missed a child behind a hole would give one key a second child.
+    #[cfg(debug_assertions)]
+    debug_one_child(s, key, attrs, how, found);
+    found
 }
 
 /// True if `child` added `key` with `attrs` (its last descriptor).
@@ -1203,7 +1203,10 @@ fn new_shape(rt: &Runtime, proto: u64, parent: u64, d: u64, counts: u64, flags: 
     s.to_value().to_bits()
 }
 
-/// Records `child` as a (weak) transition of `shape`. GC point.
+/// Records `child` as a (weak) transition of `shape`: in the +32 word if it is free, else in
+/// the sorted table ([`table_insert`]). With no table, or a table without a hole, a new table
+/// holds the live entries and `child` in order ([`table_capacity`], [`slot_for`]): the holes
+/// are gone. GC point (the new table; `shape`, `child` and the old table are Rust locals, CSS).
 fn record_transition(rt: &Runtime, shape: u64, child: u64) {
     let s = cell(shape);
     if rd(s, shf::TRANSITION) == UNDEFINED {
@@ -1211,34 +1214,31 @@ fn record_transition(rt: &Runtime, shape: u64, child: u64) {
         return;
     }
     let tab = rd(s, shf::TABLE);
-    if tab != UNDEFINED {
-        let t = cell(tab);
-        let cap = rd_i32(t, trf::CAPACITY) as usize;
-        if let Some(i) = (0..cap).find(|&i| rd(t, trf::ENTRIES + 8 * i) == UNDEFINED) {
-            wr(&rt.heap, t, trf::ENTRIES + 8 * i, child);
-            return;
-        }
+    let old = (tab != UNDEFINED).then(|| cell(tab));
+    if old.is_some_and(|t| table_insert(rt, t, child)) {
+        return;
     }
-    let cap = if tab == UNDEFINED {
-        MIN_TRANSITIONS
-    } else {
-        2 * rd_i32(cell(tab), trf::CAPACITY) as usize
-    };
+    let cap = table_capacity(old.map_or(0, table_live) + 1);
     let nt = rt.alloc(kind::TRANSITIONS, trf::ENTRIES + 8 * cap);
     object::init(nt, trf::CAPACITY, int32_bits(cap as i32));
-    // The allocation may have collected: copy the entries that are still live.
-    let mut n = 0;
-    if tab != UNDEFINED {
-        let t = cell(tab);
-        for i in 0..rd_i32(t, trf::CAPACITY) as usize {
-            let c = rd(t, trf::ENTRIES + 8 * i);
-            if c != UNDEFINED {
-                object::init(nt, trf::ENTRIES + 8 * n, c);
-                n += 1;
-            }
+    // The allocation may have collected: place what is still live, in order ([`slot_for`]).
+    let (m, want) = (old.map_or(0, table_live) + 1, sort_key_of(child));
+    let (mut j, mut placed) = (0, false);
+    let mut put = |c: u64| {
+        object::init(nt, entry_off(slot_for(j, m, cap)), c);
+        j += 1;
+    };
+    for c in old.into_iter().flat_map(live_entries) {
+        if !placed && sort_key_of(c) >= want {
+            put(child);
+            placed = true;
         }
+        put(c);
     }
-    object::init(nt, trf::ENTRIES + 8 * n, child);
+    if !placed {
+        put(child);
+    }
+    debug_assert!(j == m && m <= cap);
     wr(&rt.heap, s, shf::TABLE, nt.to_value().to_bits());
 }
 
@@ -1452,23 +1452,23 @@ pub(crate) fn note_change(rt: &Runtime, o: u64) {
     }
 }
 
-/// True if some prototype-mode object has, or once had, an array-index own property: an
-/// element, a stored index key or a String wrapper index; or is a routed kind (ARGUMENTS,
-/// MODULE_NAMESPACE), whose hooks may answer for an index. False means no prototype chain
-/// has an index key, so an inherited setter, getter or read-only property cannot decide a
-/// `[[Set]]` of an index (§10.1.9.2). One load; not a GC point.
+/// True once the static fuse "no-elements prototypes" popped (`fuse::NO_ELEMENTS_PROTOTYPES`):
+/// a prototype-mode object has, or had, an array-index own property (an element, a stored
+/// index key, a String wrapper index) or is a routed kind. False: no prototype chain has an
+/// index key, so no inherited setter, getter or read-only property decides a `[[Set]]` of an
+/// index (§10.1.9.2). Reads the current realm's word (`fuse::realm_intact`); not a GC point.
 #[inline(always)]
 pub(crate) fn proto_index_keys(rt: &Runtime) -> bool {
-    rt.shapes.proto_index.get()
+    !crate::fuse::realm_intact(rt, crate::fuse::NO_ELEMENTS_PROTOTYPES)
 }
 
-/// Records that the prototype-mode object `o` gets an array-index own property (sets the
-/// flag of [`proto_index_keys`]). The callers check that `o` is a prototype and the key an
-/// index: `props::own_add` and `object::array_set`. Not a GC point.
+/// Records that the prototype-mode object `o` gets an array-index own property: pops the fuse
+/// of [`proto_index_keys`] in the isolate and every realm (`fuse::pop_no_elements`). The one
+/// writer; its callers check that `o` is a prototype and the key an index. Not a GC point.
 #[inline]
 pub(crate) fn note_proto_index_key(rt: &Runtime, o: u64) {
     debug_assert!(is_prototype_object(o));
-    rt.shapes.proto_index.set(true);
+    crate::fuse::pop_no_elements(rt);
 }
 
 /// True if the object `o` may have an array-index own property: an array with a non-zero
@@ -1711,7 +1711,8 @@ pub(crate) fn with_elements_kind(rt: &Runtime, shape: u64, ek: u8) -> Option<u64
 // ---- checks ---------------------------------------------------------------------------------
 
 /// Checks the invariants of `shape` and its parent chain: counts, the prefix rule, distinct
-/// keys, field indices and the hash index.
+/// keys, field indices and the hash index; and the transitions of `shape` itself
+/// ([`check_transitions`]).
 #[cfg(test)]
 pub(crate) fn check(rt: &Runtime, shape: u64) -> Result<(), String> {
     if !is_shape(shape) {
@@ -1725,6 +1726,9 @@ pub(crate) fn check(rt: &Runtime, shape: u64) -> Result<(), String> {
             || kind::cell_kind(unique_info(shape)) != kind::PROTO_INFO.get())
     {
         return Err("a unique shape without PROTOTYPE or PROTO_INFO, or with a parent".into());
+    }
+    if !unique {
+        check_transitions(shape)?;
     }
     if is_dictionary(shape) || n == 0 {
         return if n == 0 && parent(shape) == UNDEFINED && descriptors(shape) == UNDEFINED {
@@ -1820,4 +1824,287 @@ fn own_descriptors(rt: &Runtime, old: u64) -> u64 {
         build_index(rt, nd);
     }
     nd
+}
+
+// ---- the transition table (M6-P2 TRANS; H17 "Transition table form") -------------------------
+//
+// A tree shape's first child is in the weak +32 word, the others in a TRANSITIONS cell at +40
+// (layout core: +8 capacity, +16 weak entries; no field is added). Rules:
+//
+// - Order. The live entries are sorted by ([`sort_key_of`]) the hash of the key the child
+//   added, then its attributes. Children with one equal pair sit next to each other, in any
+//   order. The key hash is seeded per process ([`key::key_hash`]), so the order is a fact of
+//   the run: only the search reads it, no exporter writes it, and property order comes from
+//   the descriptors, never from this table (P-R4; MODES-CHECK-w25).
+// - Holes. An undefined slot is a hole: spare room, or a child that a GC cleared (the entry of
+//   a dead child reads undefined after the collection, major or minor; a GC writes nothing
+//   else into a weak slot, and the heap moves no cell; a moved child would keep its place,
+//   since the order is a hash, never an address, H12). The order holds among the live entries
+//   wherever the holes are, so a cleared child needs no fix-up. A search skips holes; an
+//   insert fills the nearest hole ([`table_insert`]); a new table takes only the live entries,
+//   so [`record_transition`] removes the holes when it grows or rebuilds the table.
+// - Search ([`table_find`]). A table of at most [`TABLE_SCAN_MAX`] (16) slots is scanned; a
+//   larger one (63 slots: 17 children or more) is binary searched ([`lower_bound`]), then the
+//   entries of the equal pair are compared by key. Not past 8 slots, as the descriptor index:
+//   a probe hashes the key of the child it reads (5 dependent loads), and the binary search of
+//   a 16-slot table cost +1.1% instructions on ci-v0 against the scan (M6-P2 BENCH-SET). Debug
+//   builds check that the search finds what a full scan finds and that no two live children
+//   have one (key, attributes) ([`debug_one_child`]; OI R1).
+// - Size. A new table has [`table_capacity`] slots (twice the entries, a power of 2, at least
+//   [`MIN_TRANSITIONS`], at most [`MAX_TABLE`]). A scanned table packs its entries at the
+//   front, so a scan meets them first; a searched table spreads them out ([`slot_for`]), so a
+//   hole is near every place and an insert moves few entries. A table holds at most
+//   [`MAX_TABLE`] = [`MAX_TRANSITIONS`] - 1 entries, so a shape is at the cap exactly when its
+//   +32 word is live and its table has [`MAX_TABLE`] slots and no hole
+//   ([`at_transition_cap`]); a smaller table is not read on an add.
+//
+// None of these functions is a GC point. The one GC point of the table is the allocation in
+// [`record_transition`], and no slot number is kept across it.
+
+/// The largest TRANSITIONS capacity of a tree shape: the +32 word holds one more child.
+const MAX_TABLE: usize = MAX_TRANSITIONS - 1;
+/// Up to this many slots a table is scanned and packed; past it, binary searched and spread.
+const TABLE_SCAN_MAX: usize = 16;
+const _: () = assert!(MIN_TRANSITIONS <= TABLE_SCAN_MAX && TABLE_SCAN_MAX < MAX_TABLE);
+
+/// The byte offset of slot `i` of a TRANSITIONS cell.
+#[inline]
+fn entry_off(i: usize) -> usize {
+    trf::ENTRIES + 8 * i
+}
+
+/// The capacity of the TRANSITIONS cell `t`.
+#[inline]
+fn table_cap(t: CellPtr) -> usize {
+    rd_i32(t, trf::CAPACITY) as usize
+}
+
+/// Slot `i` of the TRANSITIONS cell `t`: a child shape, or undefined (a hole).
+#[inline]
+fn entry(t: CellPtr, i: usize) -> u64 {
+    rd(t, entry_off(i))
+}
+
+/// The live entries of the TRANSITIONS cell `t`, in slot order. Not a GC point.
+fn live_entries(t: CellPtr) -> impl Iterator<Item = u64> {
+    (0..table_cap(t))
+        .map(move |i| entry(t, i))
+        .filter(|&c| c != UNDEFINED)
+}
+
+/// The number of live entries of the TRANSITIONS cell `t`. Not a GC point.
+fn table_live(t: CellPtr) -> usize {
+    live_entries(t).count()
+}
+
+/// The capacity of a new table for `n` entries: `2 n` rounded up to a power of 2, at least
+/// [`MIN_TRANSITIONS`] and at most [`MAX_TABLE`] (4, 16, 63 as `n` grows past each), and never
+/// below `n`.
+fn table_capacity(n: usize) -> usize {
+    debug_assert!(n <= MAX_TABLE, "{n} entries for one transition table");
+    (2 * n)
+        .next_power_of_two()
+        .clamp(MIN_TRANSITIONS, MAX_TABLE)
+        .max(n)
+}
+
+/// The slot of entry `j` of the `m` entries of a new table of `cap` slots (`m <= cap`): `j` in
+/// a scanned table (packed), `j * cap / m` in a searched one (spread; strictly rising in `j`).
+fn slot_for(j: usize, m: usize, cap: usize) -> usize {
+    debug_assert!(j < m && m <= cap);
+    if cap <= TABLE_SCAN_MAX {
+        j
+    } else {
+        j * cap / m
+    }
+}
+
+/// The key the child shape `child` added (its last descriptor) and its attributes. Not a GC
+/// point.
+fn added_by(child: u64) -> (u64, i32) {
+    let c = cell(child);
+    let last = count_of(c) - 1;
+    let d = cell(rd(c, shf::DESCRIPTORS));
+    (d_key(d, last), d_details(d, last).attrs())
+}
+
+/// The sort key of the child shape `child` in a table: the hash of the key it added
+/// ([`hash_of`], seeded per process), then its attributes. Not a GC point.
+fn sort_key_of(child: u64) -> (u32, i32) {
+    let (k, attrs) = added_by(child);
+    (hash_of(k), attrs)
+}
+
+/// The first slot `p` of the TRANSITIONS cell `t` (`cap` slots) such that every live entry
+/// below `p` sorts before `want` and no live entry at or above `p` does: a binary search that
+/// skips holes. When the middle slot is a hole, the probe moves down to the nearest live entry
+/// not below `lo`; the holes it passes leave the range on either branch, so each hole is read
+/// at most once: O(log cap + holes) reads. Not a GC point.
+fn lower_bound(t: CellPtr, cap: usize, want: (u32, i32)) -> usize {
+    // Every live entry below `lo` sorts before `want`; no live entry at or above `hi` does.
+    let (mut lo, mut hi) = (0, cap);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let mut m = mid;
+        while m > lo && entry(t, m) == UNDEFINED {
+            m -= 1;
+        }
+        let c = entry(t, m);
+        if c == UNDEFINED || sort_key_of(c) < want {
+            // Slots m + 1 ..= mid are holes (all of lo ..= mid if `c` is one).
+            lo = mid + 1;
+        } else {
+            hi = m;
+        }
+    }
+    lo
+}
+
+/// The child in the table `tab` (a TRANSITIONS cell) that added `key` with `attrs`, if it is
+/// live. Up to [`TABLE_SCAN_MAX`] slots a scan; past that the binary search, then the entries
+/// of the equal pair until the first greater one. Not a GC point.
+fn table_find(tab: u64, key: u64, attrs: i32, how: Probe) -> Option<u64> {
+    debug_assert!(kind::cell_kind(tab) == kind::TRANSITIONS.get());
+    let t = cell(tab);
+    let cap = table_cap(t);
+    if cap <= TABLE_SCAN_MAX {
+        return live_entries(t).find(|&c| is_transition_to(c, key, attrs, how));
+    }
+    let want = (hash_of(key), attrs);
+    for i in lower_bound(t, cap, want)..cap {
+        let c = entry(t, i);
+        if c == UNDEFINED {
+            continue;
+        }
+        if sort_key_of(c) != want {
+            return None;
+        }
+        if is_transition_to(c, key, attrs, how) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Puts `child` into the TRANSITIONS cell `t` and keeps the order: at the slot the search
+/// gives, after the live entries between that slot and the nearest hole move one slot toward
+/// the hole. False (nothing written) if `t` has no hole. Not a GC point.
+fn table_insert(rt: &Runtime, t: CellPtr, child: u64) -> bool {
+    let cap = table_cap(t);
+    let p = lower_bound(t, cap, sort_key_of(child));
+    // At step d the slots p .. p + d and p - d .. p are live (a smaller d read them).
+    for d in 0..cap {
+        if p + d < cap && entry(t, p + d) == UNDEFINED {
+            for i in (p..p + d).rev() {
+                wr(&rt.heap, t, entry_off(i + 1), entry(t, i));
+            }
+            wr(&rt.heap, t, entry_off(p), child);
+            debug_assert!(table_sorted(t));
+            return true;
+        }
+        if d < p && entry(t, p - 1 - d) == UNDEFINED {
+            for i in p - 1 - d..p - 1 {
+                wr(&rt.heap, t, entry_off(i), entry(t, i + 1));
+            }
+            wr(&rt.heap, t, entry_off(p - 1), child);
+            debug_assert!(table_sorted(t));
+            return true;
+        }
+    }
+    false
+}
+
+/// True if the live entries of the TRANSITIONS cell `t` are in order. Not a GC point.
+fn table_sorted(t: CellPtr) -> bool {
+    let mut keys = live_entries(t).map(sort_key_of);
+    let mut prev = keys.next();
+    for k in keys {
+        if prev.is_some_and(|p| p > k) {
+            return false;
+        }
+        prev = Some(k);
+    }
+    true
+}
+
+/// True if the tree shape `shape` has [`MAX_TRANSITIONS`] live transitions, so [`add`] gives
+/// [`Added::Dictionary`] for a new key. A table holds at most [`MAX_TABLE`] entries, so this
+/// is: the +32 word is live and the table has [`MAX_TABLE`] slots and no hole. A smaller
+/// table is not read; at that size the scan stops at the first hole. Not a GC point.
+fn at_transition_cap(shape: u64) -> bool {
+    let s = cell(shape);
+    let tab = rd(s, shf::TABLE);
+    let at = rd(s, shf::TRANSITION) != UNDEFINED
+        && tab != UNDEFINED
+        && table_cap(cell(tab)) >= MAX_TABLE
+        && (0..table_cap(cell(tab))).all(|i| entry(cell(tab), i) != UNDEFINED);
+    debug_assert_eq!(at, transition_count(shape) >= MAX_TRANSITIONS);
+    at
+}
+
+/// Debug builds, after a search of the tree shape cell `s` for (`key`, `attrs`): no two live
+/// children of `s` added that pair, and `found` is the one there is (OI R1: a search that
+/// missed a child behind a hole would give one key a second child).
+#[cfg(debug_assertions)]
+fn debug_one_child(s: CellPtr, key: u64, attrs: i32, how: Probe, found: Option<u64>) {
+    let tab = rd(s, shf::TABLE);
+    let table = (tab != UNDEFINED).then(|| cell(tab));
+    let mut all = core::iter::once(rd(s, shf::TRANSITION))
+        .chain(table.into_iter().flat_map(live_entries))
+        .filter(|&c| c != UNDEFINED && is_transition_to(c, key, attrs, how));
+    let first = all.next();
+    assert!(
+        all.next().is_none(),
+        "two live children of one shape for one (key, attributes)"
+    );
+    assert_eq!(first, found, "the transition search missed a live child");
+}
+
+/// [`check`] of a tree shape's transitions: +40 is undefined or a TRANSITIONS cell whose live
+/// entries are in order; every live child (the +32 word too) has `shape` as its parent and one
+/// more property; no two live children added one (key, attributes).
+#[cfg(test)]
+fn check_transitions(shape: u64) -> Result<(), String> {
+    let s = cell(shape);
+    let tab = rd(s, shf::TABLE);
+    if tab != UNDEFINED && kind::cell_kind(tab) != kind::TRANSITIONS.get() {
+        return Err("+40 of a tree shape is not a TRANSITIONS cell".into());
+    }
+    let table = (tab != UNDEFINED).then(|| cell(tab));
+    if table.is_some_and(|t| !table_sorted(t)) {
+        return Err("the transition table is not sorted".into());
+    }
+    let first = core::iter::once(rd(s, shf::TRANSITION)).filter(|&c| c != UNDEFINED);
+    let children = || {
+        first
+            .clone()
+            .chain(table.into_iter().flat_map(live_entries))
+    };
+    for (i, c) in children().enumerate() {
+        if parent(c) != shape || count(c) != count(shape) + 1 {
+            return Err(format!("transition {i} is not a child of the shape"));
+        }
+        let (k, a) = added_by(c);
+        if children()
+            .skip(i + 1)
+            .any(|o| added_by(o).1 == a && key::key_eq(added_by(o).0, k))
+        {
+            return Err(format!(
+                "transition {i} has a twin (one key and attributes)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Tests: the capacity and the live entries of the transition table of `shape` ((0, 0) with
+/// no table).
+#[cfg(test)]
+pub(crate) fn transition_table(shape: u64) -> (usize, usize) {
+    let tab = rd(cell(shape), shf::TABLE);
+    if tab == UNDEFINED {
+        return (0, 0);
+    }
+    let t = cell(tab);
+    (table_cap(t), table_live(t))
 }

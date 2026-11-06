@@ -1,5 +1,5 @@
-//! Type conversions and operators (ECMA-262 §7.1, §7.2, §13). v0: no BigInt values, so
-//! ToNumeric is ToNumber and `typeof` never says "bigint".
+//! Type conversions and operators (ECMA-262 §7.1, §7.2, §13). ToNumeric gives a Number or a
+//! BigInt ([`Numeric`]); the BigInt arithmetic is `bigint.rs`.
 //!
 //! Functions that can run JS (ToPrimitive calls `@@toPrimitive`, `valueOf`/`toString`) take
 //! `&mut Cx` and return `Res`: `Err(Throw)` means the exception is pending in the runtime.
@@ -15,13 +15,29 @@
 //! | ToPropertyKey | the symbol itself (`key.rs`) |
 //! | ToObject | a Symbol wrapper (`wrapper.rs`) |
 //! | `describe`, `key::key_text` | `Symbol(desc)` (SymbolDescriptiveString, `symbol::descriptive_text`) |
+//!
+//! BigInts (§6.1.6.2; spec-temporal B2):
+//!
+//! | Operation | On a BigInt |
+//! |---|---|
+//! | `typeof` | "bigint" |
+//! | ToBoolean | false for `0n` only |
+//! | ToNumber (`+x`, `Math.f(x)`) | TypeError "Cannot convert a BigInt value to a number" |
+//! | ToNumeric | the BigInt itself |
+//! | ToString, ToPropertyKey | the decimal digits (`o[1n]` is `o["1"]`) |
+//! | ToObject | a BigInt wrapper (`%BigInt.prototype%`) |
+//! | arithmetic, bitwise, shifts | `bigint::binary`; a BigInt with a Number: TypeError "Cannot mix BigInt and other types, use explicit conversions"; `>>>`: TypeError |
+//! | `===`, SameValue, SameValueZero | by value |
+//! | `==`, `<` | by value; with a Number exactly; with a String by StringToBigInt |
+//! | `describe`, `key::key_text` | the digits and `n` |
 
 use ep9_value::{Throw, Value, to_int32, to_uint32};
 
+use crate::bigint;
 use crate::error::{not_implemented, throw_error};
 use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
-use crate::kinds::{is_callable, is_symbol};
+use crate::kinds::{is_bigint, is_callable, is_symbol};
 use crate::numconv::{exponentiate, fmod, number_to_string, string_to_number};
 use crate::object::{self, is_function, is_object, is_string};
 use crate::runtime::{Atom, ErrorKind, Root, val};
@@ -62,6 +78,8 @@ pub(crate) fn to_boolean(b: u64) -> bool {
                 !(d == 0.0 || d.is_nan())
             } else if is_string(b) {
                 object::str_len(b) != 0
+            } else if is_bigint(b) {
+                !bigint::is_zero(b)
             } else {
                 // Symbols and objects (v0: no document.all).
                 true
@@ -163,13 +181,45 @@ pub(crate) fn to_number(cx: &mut Cx, b: u64) -> Res<f64> {
                 "Cannot convert a Symbol value to a number",
             ));
         }
+        _ if is_bigint(b) => {
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Cannot convert a BigInt value to a number",
+            ));
+        }
         _ => return Err(not_implemented(cx, "ToNumber of this value")),
     })
 }
 
-/// ToNumeric (§7.1.3). v0: no BigInt.
-pub(crate) fn to_numeric(cx: &mut Cx, b: u64) -> Res<f64> {
-    to_number(cx, b)
+/// A Numeric (§6.1.6): the result of ToNumeric.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Numeric {
+    Number(f64),
+    /// A BIGINT cell (Value bits).
+    BigInt(u64),
+}
+
+impl Numeric {
+    /// The Value bits.
+    pub(crate) fn bits(self) -> u64 {
+        match self {
+            Numeric::Number(d) => num(d),
+            Numeric::BigInt(b) => b,
+        }
+    }
+}
+
+/// ToNumeric (§7.1.3): ToPrimitive (hint number), then a BigInt as it is, else ToNumber.
+pub(crate) fn to_numeric(cx: &mut Cx, b: u64) -> Res<Numeric> {
+    if let Some(d) = as_number(b) {
+        return Ok(Numeric::Number(d));
+    }
+    let p = to_primitive(cx, b, Hint::Number)?;
+    if is_bigint(p) {
+        return Ok(Numeric::BigInt(p));
+    }
+    to_number(cx, p).map(Numeric::Number)
 }
 
 pub(crate) fn to_int32_of(cx: &mut Cx, b: u64) -> Res<i32> {
@@ -220,6 +270,7 @@ pub(crate) fn to_string(cx: &mut Cx, b: u64) -> Res<u64> {
                 "Cannot convert a Symbol value to a string",
             ));
         }
+        _ if is_bigint(b) => return bigint::to_string(cx, b, 10),
         _ => return Err(not_implemented(cx, "ToString of this value")),
     })
 }
@@ -240,14 +291,16 @@ pub(crate) fn type_of(b: u64) -> Atom {
         _ if val(b).is_number() => Atom::Number,
         _ if is_string(b) => Atom::String,
         _ if is_symbol(b) => Atom::Symbol,
+        _ if is_bigint(b) => Atom::Bigint,
         _ if is_callable(b) => Atom::Function,
         _ => Atom::Object,
     }
 }
 
-/// ToObject (§7.1.18): an object as it is; a wrapper object for a string, number, boolean or
-/// symbol (its prototype is the realm's `%String.prototype%`, `%Number.prototype%`,
-/// `%Boolean.prototype%` or `%Symbol.prototype%`); TypeError for undefined and null. GC point.
+/// ToObject (§7.1.18): an object as it is; a wrapper object for a string, number, boolean,
+/// symbol or BigInt (its prototype is the realm's `%String.prototype%`, `%Number.prototype%`,
+/// `%Boolean.prototype%`, `%Symbol.prototype%` or `%BigInt.prototype%`); TypeError for
+/// undefined and null. GC point.
 pub(crate) fn to_object(cx: &mut Cx, b: u64) -> Res<u64> {
     if is_object(b) {
         return Ok(b);
@@ -265,6 +318,11 @@ pub(crate) fn to_object(cx: &mut Cx, b: u64) -> Res<u64> {
         _ if val(b).is_number() => rt.root(Root::NumberPrototype),
         _ if is_string(b) => rt.root(Root::StringPrototype),
         _ if is_symbol(b) => symbol::prototype(rt),
+        // Undefined when no builtin table made %BigInt.prototype%: never a prototype then.
+        _ if is_bigint(b) => match bigint::prototype(rt) {
+            Some(p) => p,
+            None => return Err(not_implemented(cx, "BigInt.prototype")),
+        },
         _ => return Err(not_implemented(cx, "ToObject of this value")),
     };
     Ok(wrapper::new_wrapper(rt, proto, b))
@@ -278,6 +336,7 @@ pub(crate) fn strict_equals(a: u64, b: u64) -> bool {
     }
     match (as_number(a), as_number(b)) {
         (Some(x), Some(y)) => x == y,
+        _ if is_bigint(a) => is_bigint(b) && bigint::equals(a, b),
         _ => is_string(a) && is_string(b) && crate::string::equals(a, b),
     }
 }
@@ -288,9 +347,10 @@ pub(crate) fn loose_equals(cx: &mut Cx, a: u64, b: u64) -> Res<bool> {
     let (sa, sb) = (is_string(a), is_string(b));
     let (oa, ob) = (is_object(a), is_object(b));
     let (ya, yb) = (is_symbol(a), is_symbol(b));
+    let (ba, bb) = (is_bigint(a), is_bigint(b));
     let nullish = |x: u64| x == UNDEFINED || x == NULL;
     let boolish = |x: u64| x == TRUE || x == FALSE;
-    if (na && nb) || (sa && sb) || (oa && ob) || a == b {
+    if (na && nb) || (sa && sb) || (oa && ob) || (ba && bb) || a == b {
         return Ok(strict_equals(a, b));
     }
     if nullish(a) || nullish(b) {
@@ -304,6 +364,15 @@ pub(crate) fn loose_equals(cx: &mut Cx, a: u64, b: u64) -> Res<bool> {
         let x = to_number(cx, a)?;
         return Ok(Some(x) == as_number(b));
     }
+    // Steps 6-7: a BigInt and a String: StringToBigInt; a text that is not one is unequal.
+    if ba && sb {
+        return Ok(bigint::string_to_big(cx, b)?
+            .is_some_and(|y| ep9_bigint::cmp(bigint::view(&a), y.view()).is_eq()));
+    }
+    if sa && bb {
+        return Ok(bigint::string_to_big(cx, a)?
+            .is_some_and(|x| ep9_bigint::cmp(x.view(), bigint::view(&b)).is_eq()));
+    }
     if boolish(a) {
         let x = num(f64::from(u8::from(a == TRUE)));
         return loose_equals(cx, x, b);
@@ -312,14 +381,25 @@ pub(crate) fn loose_equals(cx: &mut Cx, a: u64, b: u64) -> Res<bool> {
         let y = num(f64::from(u8::from(b == TRUE)));
         return loose_equals(cx, a, y);
     }
-    // Steps 11-12 (BigInt: not in v0).
-    if (na || sa || ya) && ob {
+    // Steps 10-11: a primitive and an object.
+    if (na || sa || ya || ba) && ob {
         let p = to_primitive(cx, b, Hint::Default)?;
         return loose_equals(cx, a, p);
     }
-    if oa && (nb || sb || yb) {
+    if oa && (nb || sb || yb || bb) {
         let p = to_primitive(cx, a, Hint::Default)?;
         return loose_equals(cx, p, b);
+    }
+    // Step 12: a BigInt and a Number: equal values (NaN and the infinities are never equal).
+    if ba && nb {
+        return Ok(as_number(b)
+            .and_then(|y| bigint::cmp_number(a, y))
+            .is_some_and(|o| o.is_eq()));
+    }
+    if na && bb {
+        return Ok(as_number(a)
+            .and_then(|x| bigint::cmp_number(b, x))
+            .is_some_and(|o| o.is_eq()));
     }
     Ok(false)
 }
@@ -340,12 +420,34 @@ pub(crate) fn less_than(cx: &mut Cx, a: u64, b: u64, left_first: bool) -> Res<Op
             crate::string::compare(pa, pb) == core::cmp::Ordering::Less,
         ));
     }
-    let x = to_number(cx, pa)?;
-    let y = to_number(cx, pb)?;
-    if x.is_nan() || y.is_nan() {
-        return Ok(None);
+    // Steps 4-5: a BigInt and a String: StringToBigInt; undefined if the text is not one.
+    if is_bigint(pa) && is_string(pb) {
+        let Some(y) = bigint::string_to_big(cx, pb)? else {
+            return Ok(None);
+        };
+        return Ok(Some(ep9_bigint::cmp(bigint::view(&pa), y.view()).is_lt()));
     }
-    Ok(Some(x < y))
+    if is_string(pa) && is_bigint(pb) {
+        let Some(x) = bigint::string_to_big(cx, pa)? else {
+            return Ok(None);
+        };
+        return Ok(Some(ep9_bigint::cmp(x.view(), bigint::view(&pb)).is_lt()));
+    }
+    // Steps 6-12: ToNumeric of both (a Symbol throws here), then by type.
+    let x = to_numeric(cx, pa)?;
+    let y = to_numeric(cx, pb)?;
+    Ok(match (x, y) {
+        (Numeric::Number(x), Numeric::Number(y)) => {
+            if x.is_nan() || y.is_nan() {
+                None
+            } else {
+                Some(x < y)
+            }
+        }
+        (Numeric::BigInt(x), Numeric::BigInt(y)) => Some(bigint::compare(x, y).is_lt()),
+        (Numeric::BigInt(x), Numeric::Number(y)) => bigint::cmp_number(x, y).map(|o| o.is_lt()),
+        (Numeric::Number(x), Numeric::BigInt(y)) => bigint::cmp_number(y, x).map(|o| o.is_gt()),
+    })
 }
 
 /// The relational operators: `lhs OP rhs` as a boolean (§13.10.1).
@@ -421,11 +523,25 @@ pub(crate) fn binary(cx: &mut Cx, op: BinOp, lhs: u64, rhs: u64) -> Res<u64> {
         }
         let x = to_numeric(cx, lp)?;
         let y = to_numeric(cx, rp)?;
-        return number_op(cx, op, x, y);
+        return numeric_op(cx, op, x, y);
     }
     let x = to_numeric(cx, lhs)?;
     let y = to_numeric(cx, rhs)?;
-    number_op(cx, op, x, y)
+    numeric_op(cx, op, x, y)
+}
+
+/// Steps 6-8 of ApplyStringOrNumericBinaryOperator: two Numbers or two BigInts; a mix is a
+/// TypeError.
+fn numeric_op(cx: &mut Cx, op: BinOp, x: Numeric, y: Numeric) -> Res<u64> {
+    match (x, y) {
+        (Numeric::Number(x), Numeric::Number(y)) => number_op(cx, op, x, y),
+        (Numeric::BigInt(x), Numeric::BigInt(y)) => bigint::binary(cx, op, x, y),
+        _ => Err(throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "Cannot mix BigInt and other types, use explicit conversions",
+        )),
+    }
 }
 
 /// Text of a value for error messages (never runs JS).
@@ -450,6 +566,7 @@ pub(crate) fn describe(b: u64) -> String {
             }
         }
         _ if is_symbol(b) => symbol::descriptive_text(b),
+        _ if is_bigint(b) => format!("{}n", bigint::decimal(b)),
         _ if is_callable(b) => "function".into(),
         _ if object::is_array(b) => "array".into(),
         _ => "object".into(),

@@ -13,10 +13,12 @@ use super::ic::{int, key, object_prototype, object_with};
 use super::{config, isolate, on_big_stack};
 use crate::builtins::{self, BuiltinId, IntrinsicId};
 use crate::frame::NULL;
-use crate::fuse::{CodeHandle, Descriptor, FuseRef, Refusal, STATIC, descriptor};
+use crate::fuse::{
+    CodeHandle, Descriptor, FuseRef, NO_ELEMENTS_PROTOTYPES, Refusal, STATIC, descriptor,
+};
 use crate::object::{self, attr};
-use crate::runtime::Runtime;
-use crate::{Dispatch, Isolate, natives, props, proxy, shape};
+use crate::runtime::{Root, Runtime};
+use crate::{Dispatch, Isolate, fuse, layout, natives, property, props, proxy, realm, shape};
 
 /// Runs `test` on a fresh isolate, with and without GC stress, on a big stack; collects and
 /// verifies the heap after it.
@@ -85,8 +87,8 @@ fn a_pop_invalidates_every_dependent() {
 
         // A static fuse: wired, three dependents, an explicit pop; the others stay.
         let (s, other) = (FuseRef::Static(7), FuseRef::Static(8));
-        fuses.wire(7).unwrap();
-        fuses.wire(8).unwrap();
+        fuses.wire(rt, 7).unwrap();
+        fuses.wire(rt, 8).unwrap();
         let sc: Vec<CodeHandle> = (0..3).map(|_| CodeHandle::new()).collect();
         // A static fuse ignores the subject (NULL here).
         for c in &sc {
@@ -607,10 +609,18 @@ fn static_fuses_keep_their_order_and_need_a_pop_site() {
         let rt = &iso.rt;
         let fuses = &rt.fuses;
         let n = STATIC.len() as u32;
-        // No pop site is wired in v0: nothing may use a static fuse, and each reads not
-        // intact.
+        // One pop site is wired (M6-P2 FUSE-PI): index 6 "no-elements prototypes" reads
+        // intact in a new isolate. Nothing may use another static fuse: each reads not intact.
+        assert_eq!(
+            STATIC[NO_ELEMENTS_PROTOTYPES as usize],
+            "no-elements prototypes"
+        );
         for i in 0..n {
             let f = FuseRef::Static(i);
+            if i == NO_ELEMENTS_PROTOTYPES {
+                assert!(fuses.intact(rt, f, NULL));
+                continue;
+            }
             assert!(!fuses.intact(rt, f, NULL));
             assert_eq!(fuses.guard(rt, f, NULL).err(), Some(Refusal::NotWired));
             assert_eq!(
@@ -619,7 +629,7 @@ fn static_fuses_keep_their_order_and_need_a_pop_site() {
             );
         }
         let past = FuseRef::Static(u32::MAX);
-        assert_eq!(fuses.wire(u32::MAX), Err(Refusal::UnknownStatic));
+        assert_eq!(fuses.wire(rt, u32::MAX), Err(Refusal::UnknownStatic));
         assert_eq!(
             fuses.guard(rt, past, NULL).err(),
             Some(Refusal::UnknownStatic)
@@ -630,11 +640,11 @@ fn static_fuses_keep_their_order_and_need_a_pop_site() {
         );
         fuses.pop(rt, past);
         // Wired: intact until popped, then never again.
-        fuses.wire(0).unwrap();
+        fuses.wire(rt, 0).unwrap();
         let w = fuses.guard(rt, FuseRef::Static(0), NULL).unwrap();
         assert!(w.intact());
         fuses.pop(rt, FuseRef::Static(0));
-        fuses.wire(0).unwrap();
+        fuses.wire(rt, 0).unwrap();
         assert!(!w.intact() && !fuses.intact(rt, FuseRef::Static(0), NULL));
     });
 }
@@ -651,4 +661,532 @@ fn descriptor_kinds_are_a_known_list() {
     for k in [0, 0x7f, 0xff] {
         assert!(!descriptor::known(k));
     }
+}
+
+// ---- the static fuse "no-elements prototypes" and the realm fuse block (M6-P2 FUSE-PI) -----
+//
+// H31-Q5, V11-D21, MODES-CHECK-w25 MC-w25-11. The fuse replaces the sticky `proto_index`
+// flag; `shape::note_proto_index_key` is its one writer and pops it in every realm (a
+// prototype chain can cross realms, plan v11 §13 R19). Each test runs with GC stress off and
+// on (a collection before every allocation), then the heap verifier.
+
+/// The index of "no-elements prototypes" in a realm block.
+const NE: usize = NO_ELEMENTS_PROTOTYPES as usize;
+
+/// The u32 words of the realm block `b` (a FUSE cell).
+fn block_words(b: u64) -> Vec<u32> {
+    assert!(crate::kinds::is_cell_bits(b), "a realm block is a cell");
+    assert_eq!(crate::kinds::cell_kind(b), crate::kinds::FUSE.get());
+    let c = object::cell(b);
+    (0..STATIC.len())
+        .map(|i| {
+            let off = (layout::FUSE_ENTRIES + layout::FUSE_ENTRY_SIZE * i as u32) as usize;
+            // SAFETY: `b` is a live FUSE cell (a realm holds it) and entry `i` is inside it.
+            unsafe { c.field::<u32>(off).read() }
+        })
+        .collect()
+}
+
+/// The realm block of the REALM record `r`, from its intrinsics list.
+fn block_of(rt: &Runtime, r: u64) -> u64 {
+    realm::intrinsic_in(rt, r, IntrinsicId::RealmFuses)
+}
+
+/// The words of a new isolate's blocks: only "no-elements prototypes" is wired and intact.
+fn fresh_words() -> Vec<u32> {
+    (0..STATIC.len()).map(|i| u32::from(i == NE)).collect()
+}
+
+/// The words after a pop of "no-elements prototypes".
+fn popped_words() -> Vec<u32> {
+    vec![0; STATIC.len()]
+}
+
+/// Each realm gets its own block, made with the realm (`realm::init_core`): a FUSE cell (kind
+/// 83, 56 bytes) in `Root::RealmFuses` and in the realm's intrinsics list, whose entries are
+/// the isolate's static words (1 = wired and intact). A realm switch carries the root. A
+/// `wire` and a static pop write the entry in every realm's block.
+#[test]
+fn each_realm_has_a_block_with_the_static_words() {
+    each(|iso| {
+        let r = iso.with_cx(|cx| {
+            // R6-2: no embedder sees the block as an intrinsic object.
+            assert!(!cx.has_intrinsic(IntrinsicId::RealmFuses));
+            let first = cx.inner().realm;
+            let b1 = {
+                let rt: &Runtime = cx.inner().rt();
+                let b1 = rt.root(Root::RealmFuses);
+                assert_eq!(block_of(rt, first), b1, "the record mirrors the root");
+                assert_eq!(builtins::intrinsic(rt, IntrinsicId::RealmFuses), b1);
+                assert!(!crate::kinds::is_object(b1), "not a JS value");
+                // SAFETY: `b1` is a live cell of this heap.
+                let size = unsafe { rt.heap.cell_size(object::cell(b1)) };
+                assert_eq!(size, layout::FUSE_SIZE as usize);
+                assert_eq!(block_words(b1), fresh_words());
+                assert!(fuse::realm_intact(rt, NO_ELEMENTS_PROTOTYPES));
+                assert!(!fuse::realm_intact(rt, 0), "an unwired fuse reads 0");
+                assert!(!shape::proto_index_keys(rt));
+                assert_eq!(rt.fuses.block_count(), 1);
+                b1
+            };
+            let g = cx.create_realm()?;
+            let rt: &Runtime = cx.inner().rt();
+            let second = realm::of_global(rt, g.bits()).expect("a realm's global");
+            let b2 = block_of(rt, second);
+            assert_ne!(b1, b2, "a realm's own block");
+            assert_eq!(block_words(b2), fresh_words());
+            assert_eq!(rt.fuses.block_count(), 2);
+            assert_eq!(
+                rt.root(Root::RealmFuses),
+                b1,
+                "create_realm leaves realm 1 current"
+            );
+            cx.with_realm(g, |cx| {
+                let rt: &Runtime = cx.inner().rt();
+                assert_eq!(rt.root(Root::RealmFuses), b2, "the switch loads the root");
+                assert!(!shape::proto_index_keys(rt));
+                rt.heap.collect();
+                Ok(())
+            })?;
+            let rt: &Runtime = cx.inner().rt();
+            assert_eq!(rt.root(Root::RealmFuses), b1, "and puts realm 1's back");
+            // `wire` and a static pop write every realm's entry.
+            rt.fuses.wire(rt, 0).unwrap();
+            for b in [b1, b2] {
+                assert_eq!(block_words(b)[0], layout::FUSE_INTACT);
+            }
+            assert!(fuse::realm_intact(rt, 0));
+            rt.fuses.pop(rt, FuseRef::Static(0));
+            for b in [b1, b2] {
+                assert_eq!(block_words(b), fresh_words());
+            }
+            assert!(!fuse::realm_intact(rt, 0) && !rt.fuses.intact(rt, FuseRef::Static(0), NULL));
+            rt.fuses.wire(rt, 0).unwrap();
+            assert_eq!(block_words(b1)[0], 0, "a popped fuse stays popped");
+            Ok(())
+        });
+        assert_eq!(r, Ok(()));
+    });
+}
+
+/// A way an index key reaches a prototype: it makes a prototype-mode object `p` in the current
+/// realm and gives `p` an array-index own property (or makes an object that has one a
+/// prototype).
+type Way = fn(&mut crate::interp::Cx);
+
+/// Every way an index key reaches a prototype (MC-w25-11; `shape::note_proto_index_key` has
+/// these 5 callers), with the caller each one reaches.
+const WAYS: [(&str, Way); 6] = [
+    (
+        "object.rs array_set_sparse: a DICTIONARY entry",
+        way_sparse_element,
+    ),
+    ("object.rs store_element_slow: an element", way_element),
+    (
+        "property.rs dict_define: an entry with attributes",
+        way_dict_define,
+    ),
+    ("props.rs own_add: a stored index key", way_stored_key),
+    (
+        "shape.rs proto_info_for: an array with an element",
+        way_becomes_prototype,
+    ),
+    (
+        "shape.rs proto_info_for: a routed object (a proxy)",
+        way_routed_prototype,
+    ),
+];
+
+/// A new empty Array in prototype mode (an object has it as `[[Prototype]]`). An empty array
+/// may have no index key, so making it a prototype pops nothing.
+fn empty_array_prototype(rt: &Runtime) -> u64 {
+    let p = object::new_array(rt, 0);
+    let _child = object::new_object(rt, p);
+    assert!(shape::is_prototype_object(p));
+    assert!(!shape::proto_index_keys(rt), "an empty array prototype");
+    p
+}
+
+fn way_sparse_element(cx: &mut crate::interp::Cx) {
+    let rt = cx.rt();
+    let p = empty_array_prototype(rt);
+    // At the dense limit: the array moves to DICTIONARY (`array_set_sparse`).
+    assert!(object::array_set(rt, p, object::arr::MAX_LENGTH, int(1)));
+    assert_eq!(
+        crate::elements::kind_of(p),
+        crate::elements::kind::DICTIONARY
+    );
+}
+
+fn way_element(cx: &mut crate::interp::Cx) {
+    let rt = cx.rt();
+    let p = empty_array_prototype(rt);
+    assert!(object::array_set(rt, p, 0, int(1)));
+    assert_eq!(object::array_get(p, 0), Some(int(1)));
+}
+
+fn way_dict_define(cx: &mut crate::interp::Cx) {
+    let p = empty_array_prototype(cx.rt());
+    // A read-only element: not {w, e, c}, so a DICTIONARY entry (`dict_define`).
+    let k = key(cx.rt(), "0");
+    let desc = crate::descriptor::Desc::data(int(1), attr::ENUMERABLE);
+    assert!(property::define_own_property(cx, p, k, desc).unwrap());
+    assert_eq!(
+        crate::elements::kind_of(p),
+        crate::elements::kind::DICTIONARY
+    );
+}
+
+fn way_stored_key(cx: &mut crate::interp::Cx) {
+    let rt = cx.rt();
+    let p = object_with(rt, object_prototype(rt), &[]);
+    let _child = object::new_object(rt, p);
+    assert!(!shape::proto_index_keys(rt), "a plain prototype");
+    // A raw store of a new index key: `props::own_add`.
+    props::own_define(rt, p, key(rt, "3"), int(1), attr::DEFAULT);
+}
+
+fn way_becomes_prototype(cx: &mut crate::interp::Cx) {
+    let rt = cx.rt();
+    let a = object::new_array(rt, 0);
+    assert!(object::array_set(rt, a, 0, int(1)));
+    assert!(
+        !shape::proto_index_keys(rt),
+        "an element of a non-prototype"
+    );
+    let _child = object::new_object(rt, a);
+}
+
+fn way_routed_prototype(cx: &mut crate::interp::Cx) {
+    let target = object::new_plain_object(cx.rt());
+    let handler = object::new_plain_object(cx.rt());
+    let p = proxy::proxy_create(cx, target, handler).expect("proxy_create");
+    let rt = cx.rt();
+    assert!(!shape::proto_index_keys(rt), "a proxy that is no prototype");
+    let o = object::new_plain_object(rt);
+    assert!(property::set_prototype_of(rt, o, p));
+}
+
+/// MC-w25-11 (V8 4635ddd858: one write path that did not pop its protector): each way an index
+/// key reaches a prototype pops "no-elements prototypes", in realm 1 or in realm 2, and the
+/// pop shows in every realm: both blocks read 0 at entry 6 (the other entries keep their
+/// value), `shape::proto_index_keys` is true in each realm, a dependent is Invalidated, a new
+/// one is refused, and a realm made after the pop starts popped.
+#[test]
+fn each_way_an_index_key_reaches_a_prototype_pops_the_fuse_in_every_realm() {
+    for (name, way) in WAYS {
+        for in_second in [false, true] {
+            for stress in [false, true] {
+                on_big_stack(move || {
+                    let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                    let r = iso.with_cx(|cx| {
+                        let g = cx.create_realm()?;
+                        let first = cx.inner().realm;
+                        let rt: &Runtime = cx.inner().rt();
+                        let second = realm::of_global(rt, g.bits()).unwrap();
+                        let code = CodeHandle::new();
+                        let f = FuseRef::Static(NO_ELEMENTS_PROTOTYPES);
+                        rt.fuses.depend(rt, f, NULL, &code).unwrap();
+                        for r in [first, second] {
+                            assert_eq!(block_words(block_of(rt, r)), fresh_words(), "{name}");
+                        }
+                        if in_second {
+                            cx.with_realm(g, |cx| {
+                                way(cx.inner());
+                                Ok(())
+                            })?;
+                        } else {
+                            way(cx.inner());
+                        }
+                        let rt: &Runtime = cx.inner().rt();
+                        for r in [first, second] {
+                            assert_eq!(
+                                block_words(block_of(rt, r)),
+                                popped_words(),
+                                "{name} (in realm {}): popped in every realm",
+                                if in_second { 2 } else { 1 }
+                            );
+                        }
+                        assert!(shape::proto_index_keys(rt), "{name}: realm 1 reads it");
+                        cx.with_realm(g, |cx| {
+                            let rt: &Runtime = cx.inner().rt();
+                            assert!(shape::proto_index_keys(rt), "{name}: realm 2 reads it");
+                            Ok(())
+                        })?;
+                        let rt: &Runtime = cx.inner().rt();
+                        assert!(code.is_invalidated(), "{name}");
+                        assert!(!rt.fuses.intact(rt, f, NULL));
+                        assert_eq!(
+                            rt.fuses.depend(rt, f, NULL, &CodeHandle::new()),
+                            Err(Refusal::Popped)
+                        );
+                        let g3 = cx.create_realm()?;
+                        let rt: &Runtime = cx.inner().rt();
+                        let third = realm::of_global(rt, g3.bits()).unwrap();
+                        assert_eq!(block_words(block_of(rt, third)), popped_words(), "{name}");
+                        Ok(())
+                    });
+                    assert_eq!(r, Ok(()));
+                    iso.collect_garbage();
+                    iso.verify_heap().unwrap();
+                });
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// The calls of [`index_setter`] on this thread.
+    static SETTER_CALLS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// A setter host function: counts its calls.
+fn index_setter<'s>(
+    _cx: &mut crate::Cx<'s>,
+    _this: crate::Local<'s>,
+    _args: crate::Args<'s>,
+    _nt: crate::Local<'s>,
+) -> crate::JsResult<crate::Local<'s>> {
+    SETTER_CALLS.with(|c| c.set(c.get() + 1));
+    Ok(crate::Local::undefined())
+}
+
+/// The stale-read case of a per-realm pop (plan v11 §13 R19, OI R7): a prototype `p` of one
+/// realm gets a setter at index 0 (`props::own_add` pops the fuse there); an Array of the
+/// other realm has `p` as `[[Prototype]]`. `arr[0] = 5` in the other realm must walk to the
+/// inherited setter (§10.1.9.2), so the other realm's word must read popped. With a pop that
+/// wrote only the current realm's block, the other realm adds the element and the setter
+/// never runs.
+#[test]
+fn a_cross_realm_prototype_chain_sees_the_pop_of_the_other_realm() {
+    for pop_in_second in [false, true] {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                SETTER_CALLS.with(|c| c.set(0));
+                let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                let r = iso.with_cx(|cx| {
+                    let g = cx.create_realm()?;
+                    // The prototype with the setter, in the popping realm.
+                    let make = |cx: &mut crate::interp::Cx| {
+                        let rt = cx.rt();
+                        let p = object::new_plain_object(rt);
+                        let _child = object::new_object(rt, p);
+                        assert!(!shape::proto_index_keys(rt));
+                        let f = realm::new_host_function(rt, index_setter, "set0", 1, false);
+                        let desc = crate::descriptor::Desc {
+                            set: Some(f),
+                            enumerable: Some(true),
+                            configurable: Some(true),
+                            ..Default::default()
+                        };
+                        let k = key(rt, "0");
+                        assert!(property::define_own_property(cx, p, k, desc).unwrap());
+                        p
+                    };
+                    // `arr[0] = 5` on an Array of the reading realm whose prototype is `p`.
+                    let store = |cx: &mut crate::interp::Cx, p: u64| -> crate::conv::Res<u64> {
+                        let rt = cx.rt();
+                        assert!(
+                            shape::proto_index_keys(rt),
+                            "the reading realm sees the pop"
+                        );
+                        let arr = object::new_array(rt, 0);
+                        assert!(property::set_prototype_of(rt, arr, p));
+                        property::set_keyed(cx, arr, int(0), int(5), true)?;
+                        Ok(arr)
+                    };
+                    let arr = if pop_in_second {
+                        let p = cx.with_realm(g, |cx| Ok(make(cx.inner())))?;
+                        store(cx.inner(), p)
+                    } else {
+                        let p = make(cx.inner());
+                        cx.with_realm(g, |cx| Ok(store(cx.inner(), p)))?
+                    };
+                    let arr = arr.expect("the setter returns normally");
+                    assert_eq!(
+                        SETTER_CALLS.with(|c| c.get()),
+                        1,
+                        "the inherited setter ran"
+                    );
+                    assert_eq!(object::array_get(arr, 0), None, "no own element");
+                    assert_eq!(object::array_len(arr), 0);
+                    Ok(())
+                });
+                assert_eq!(r, Ok(()));
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+            });
+        }
+    }
+}
+
+/// The registry holds each realm block weakly: a realm that nothing holds dies with its block,
+/// and the sweep drops the handle; a later pop writes the live blocks only.
+#[test]
+fn a_dead_realms_block_is_dropped_by_the_sweep() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut c = config(Dispatch::DEFAULT, stress);
+            c.heap.record_conservative_roots = true;
+            let mut iso = isolate(c);
+            let masked = make_a_realm_and_drop_it(&mut iso);
+            scrub_stack();
+            iso.collect_garbage();
+            let rt = &*iso.rt;
+            let css = rt.heap.last_conservative_roots();
+            assert!(
+                !css.iter().any(|c| c.addr() == masked ^ MASK),
+                "the conservative scan kept the dead block: the check proves nothing"
+            );
+            assert_eq!(rt.fuses.block_count(), 2, "not swept yet");
+            rt.fuses.sweep(rt);
+            assert_eq!(
+                rt.fuses.block_count(),
+                1,
+                "the dead realm's block is dropped"
+            );
+            rt.fuses.pop(rt, FuseRef::Static(NO_ELEMENTS_PROTOTYPES));
+            assert_eq!(block_words(rt.root(Root::RealmFuses)), popped_words());
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// Masks a cell address so the test's frame never holds it (the conservative scan, H10).
+const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
+
+/// Overwrites 256 KiB of stack below the caller (plan v10 rule 35), so stale words of returned
+/// frames hold no cell for the conservative scan.
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// Makes a second realm in its own `with_cx` (its handle scope ends there) and gives the
+/// masked address of its block; out of line, so no frame of the caller holds it.
+#[inline(never)]
+fn make_a_realm_and_drop_it(iso: &mut Isolate) -> usize {
+    let r = iso.with_cx(|cx| {
+        let g = cx.create_realm()?;
+        let rt: &Runtime = cx.inner().rt();
+        let second = realm::of_global(rt, g.bits()).unwrap();
+        let b = block_of(rt, second);
+        assert_eq!(rt.fuses.block_count(), 2);
+        Ok(std::hint::black_box(b as usize) ^ MASK)
+    });
+    r.unwrap()
+}
+
+/// The one writer (MC-w25-11, V8 4635ddd858): only `shape::note_proto_index_key` pops the
+/// fuse, and it has exactly the 5 callers of [`WAYS`]. A new path that gives a prototype an
+/// index key must call it and add a test above; this list then fails until it is updated.
+#[test]
+fn note_proto_index_key_is_the_one_writer() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut pops = Vec::new();
+    let mut notes = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                if !p.ends_with("tests") {
+                    stack.push(p);
+                }
+                continue;
+            }
+            if p.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            let rel = p.strip_prefix(&src).unwrap().display().to_string();
+            for line in std::fs::read_to_string(&p).unwrap().lines() {
+                let code = line.split("//").next().unwrap();
+                if code.contains("pop_no_elements(") && !code.contains("fn pop_no_elements(") {
+                    pops.push(rel.clone());
+                }
+                if code.contains("Static(NO_ELEMENTS_PROTOTYPES)") {
+                    pops.push(format!("{rel} (Static)"));
+                }
+                if code.contains("note_proto_index_key(") && !code.contains("fn note_") {
+                    notes.push(rel.clone());
+                }
+            }
+        }
+    }
+    pops.sort();
+    notes.sort();
+    assert_eq!(pops, ["fuse.rs (Static)", "shape.rs"], "the pop sites");
+    assert_eq!(
+        notes,
+        [
+            "object.rs",
+            "object.rs",
+            "property.rs",
+            "props.rs",
+            "shape.rs"
+        ],
+        "the callers of note_proto_index_key"
+    );
+}
+
+/// The realm's fuse block is VM-internal (FUSE-PI R6-2 remainder): `check_tables` refuses a
+/// table that makes `IntrinsicId::RealmFuses` (its object would replace the block in
+/// `Root::RealmFuses`), and the embedder ABI does not hand the block out: the function-realm
+/// reads give undefined in this realm and in another one, `has_intrinsic` is false and
+/// `Cx::intrinsic` panics ("VM-internal"). The root still holds the realm's FUSE cell.
+#[test]
+fn a_table_or_an_embedder_cannot_read_or_replace_the_fuse_block() {
+    use crate::{BuiltinModule, BuiltinTable, IntrinsicDef, IntrinsicValue};
+    for proto in [Some(IntrinsicId::ObjectPrototype), None] {
+        let intrinsics: &'static [IntrinsicDef] = Box::leak(Box::new([IntrinsicDef {
+            id: IntrinsicId::RealmFuses,
+            value: IntrinsicValue::Object { proto },
+        }]));
+        let modules: &'static [BuiltinModule] = Box::leak(Box::new([BuiltinModule {
+            name: "fuses",
+            block: 101,
+            defs: &[],
+            intrinsics,
+            props: &[],
+        }]));
+        let t: &'static BuiltinTable = Box::leak(Box::new(BuiltinTable::new("fuses", modules)));
+        let e = builtins::check_tables(&[crate::internals::VM_BUILTINS, t]).unwrap_err();
+        assert!(e.contains("[[RealmFuses]] is VM-internal"), "{e}");
+    }
+    each(|iso| {
+        let r = iso.with_cx(|cx| {
+            let block = cx.inner().rt().root(Root::RealmFuses);
+            assert_eq!(crate::kinds::cell_kind(block), crate::kinds::FUSE.get());
+            let g = cx.global();
+            let other = cx.create_realm()?;
+            for f in [g, other] {
+                assert!(
+                    cx.function_realm_intrinsic(f, IntrinsicId::RealmFuses)
+                        .is_undefined()
+                );
+                let v = cx.try_function_realm_intrinsic(f, IntrinsicId::RealmFuses)?;
+                assert!(v.is_undefined());
+            }
+            // The other ids still read as before.
+            let op = cx.function_realm_intrinsic(g, IntrinsicId::ObjectPrototype);
+            assert!(op.is_same_bits(&cx.intrinsic(IntrinsicId::ObjectPrototype)));
+            assert!(!cx.has_intrinsic(IntrinsicId::RealmFuses));
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cx.intrinsic(IntrinsicId::RealmFuses);
+            }))
+            .expect_err("Cx::intrinsic(RealmFuses) panics");
+            assert_eq!(
+                panic.downcast_ref::<&str>(),
+                Some(&"RealmFuses is VM-internal")
+            );
+            assert_eq!(
+                cx.inner().rt().root(Root::RealmFuses),
+                block,
+                "the block stays"
+            );
+            Ok(())
+        });
+        assert!(r.is_ok());
+    });
 }

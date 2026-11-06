@@ -342,7 +342,7 @@ print(new Date(0) == new Date(0).toString(), new Date(0) < new Date(1));
             "TypeError TypeError [Symbol.toPrimitive] 1",
             "false false true",
             "false false false true",
-            "length,name,prototype,now,parse,UTC 47",
+            "length,name,prototype,now,parse,UTC 48", // 47 + toTemporalInstant
             "true true",
         ])
     );

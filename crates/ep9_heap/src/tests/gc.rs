@@ -555,3 +555,99 @@ fn caught_size_panic_in_lazy_sweep_leaves_no_marks() {
     assert!(!heap.is_cell(dead_node) && !heap.is_cell(dead_odd));
     heap.drop_global(g);
 }
+
+/// The lines of the live cells of small page `idx`, cell by cell from their sizes (the form
+/// of the checked sweep).
+fn live_cell_lines(heap: &Heap, idx: usize) -> Vec<bool> {
+    use crate::layout::{BITMAP_WORDS, LINE_SIZE, LINES_PER_PAGE};
+    let inner = heap.inner.borrow();
+    let page = inner.mem.page(idx);
+    let mut lines = vec![false; LINES_PER_PAGE];
+    for w in 0..BITMAP_WORDS {
+        let mut vo = page.vo_word(w).load(core::sync::atomic::Ordering::Relaxed);
+        while vo != 0 {
+            let addr = page.addr() + (w * 64 + vo.trailing_zeros() as usize) * 8;
+            vo &= vo - 1;
+            // SAFETY: a VO bit marks a live cell start (the lazy sweep is finished).
+            let c = unsafe { CellPtr::from_raw(inner.mem.ptr(addr).cast()) };
+            let size = inner.kinds.cell_size(c).expect("a test kind");
+            let (first, last) = (addr - page.addr(), addr + size - 1 - page.addr());
+            lines[first / LINE_SIZE..=last / LINE_SIZE].fill(true);
+        }
+    }
+    lines
+}
+
+/// M6-P2 GCSPEED: the sweep's walk sets the line marks line by line from the bitmaps, and
+/// takes the size only of a live cell that may reach into the next line
+/// (`Inner::mark_live_lines`). After the walk the line marks are the lines of the live cells,
+/// computed cell by cell: random sizes from 16 B to 8 KiB (cells inside one line, across one
+/// line end or several, medium cells on the overflow page), random survivors, holes refilled
+/// in later rounds. S0 walks every page: the marks are equal. S1 skips a page with no dead
+/// cell: its marks cover the live cells (debug builds other than Miri check each walk for
+/// equality).
+/// Miri: 100 cells per round, about 15 s on the M5 Max (M6-P2 measure).
+#[test]
+fn the_walk_marks_the_lines_of_the_live_cells() {
+    use crate::layout::LINES_PER_PAGE;
+    for generational in [false, true] {
+        let heap = test_heap(|c| c.generational = generational);
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let n = if cfg!(miri) { 100 } else { 6000 };
+        let mut roots = Vec::new();
+        for round in 0..4u32 {
+            for i in 0..n {
+                let r = next();
+                let slots = match r % 16 {
+                    0 => 31 + (r >> 8) as usize % 990, // medium: 264 B ..= 8,128 B
+                    1..=3 => 0,                        // 16 B
+                    _ => (r >> 8) as usize % 31,       // 16 B ..= 256 B
+                };
+                let c = new_node(&heap, i, slots);
+                if (r >> 40) % 3 == 0 {
+                    roots.push(heap.new_global(c.to_value()));
+                }
+            }
+            // A third of the older survivors die too.
+            let mut i = 0;
+            roots.retain(|&g| {
+                i += 1;
+                let keep = i % 3 != 0;
+                if !keep {
+                    heap.drop_global(g);
+                }
+                keep
+            });
+            if generational && round % 2 == 1 {
+                heap.collect_minor_with_words(&[]);
+            } else {
+                precise_gc(&heap);
+            }
+            heap.finish_sweeping();
+            let pages: Vec<usize> = heap.inner.borrow().mem.small_pages().collect();
+            assert!(pages.len() >= if cfg!(miri) { 1 } else { 8 });
+            for idx in pages {
+                let want = live_cell_lines(&heap, idx);
+                let inner = heap.inner.borrow();
+                let page = inner.mem.page(idx);
+                for (l, &live) in want.iter().enumerate().take(LINES_PER_PAGE) {
+                    let used = page.line_used(l);
+                    if generational {
+                        assert!(used || !live, "S1 round {round}: page {idx} line {l} free");
+                    } else {
+                        assert_eq!(used, live, "S0 round {round}: page {idx} line {l}");
+                    }
+                }
+            }
+        }
+        for g in roots {
+            heap.drop_global(g);
+        }
+    }
+}

@@ -15,3 +15,12 @@
   11  WeakRef
   12  FinalizationRegistry
   13  RegExp String Iterator
+  14  RawJSON
+  15  Temporal.Duration
+  16  Temporal.Instant
+  17  Temporal.PlainTime
+  18  Temporal.PlainDate
+  19  Temporal.PlainDateTime
+  20  Temporal.PlainYearMonth
+  21  Temporal.PlainMonthDay
+  22  Temporal.ZonedDateTime

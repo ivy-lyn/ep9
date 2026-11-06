@@ -40,6 +40,7 @@
 //! FinalizationRegistry, M4-P4 WEAKREF). `Cx::math_random` (Math.random over the isolate's
 //! xorshift128+ state, V9-D16) is in this file.
 
+mod bigint;
 mod collections;
 mod index;
 mod iter;
@@ -585,8 +586,8 @@ impl<'s> Cx<'s> {
         this: impl Into<Local<'s>>,
         args: &[Local<'s>],
     ) -> JsResult<Local<'s>> {
-        let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
         let (f, this) = (f.into().bits(), this.into().bits());
+        let argc = crate::isolate::checked_argc(self.rt(), f, this, args);
         call::call_with(
             self.cx,
             f,
@@ -736,8 +737,10 @@ impl<'s> Cx<'s> {
     }
 
     /// An intrinsic object of the current realm (§6.1.7.4). Panics if no table made it (a
-    /// table names only intrinsics that exist: `builtins::check_tables`).
+    /// table names only intrinsics that exist: `builtins::check_tables`) or `id` is the
+    /// VM-internal `IntrinsicId::RealmFuses`.
     pub fn intrinsic(&self, id: IntrinsicId) -> Local<'s, JsObject> {
+        assert!(id != IntrinsicId::RealmFuses, "RealmFuses is VM-internal");
         let v = builtins::intrinsic(self.rt(), id);
         assert!(kinds::is_object(v), "{} is not installed", id.name());
         Self::local(v)
@@ -782,8 +785,8 @@ impl<'s> Cx<'s> {
         Ok(Self::local(a))
     }
 
-    /// A new primitive wrapper object (§10.4.3 String exotic, or a Number, Boolean or Symbol
-    /// object) of the primitive `value` with prototype `proto` (`wrapper::new_wrapper`).
+    /// A new primitive wrapper object (§10.4.3 String exotic, or a Number, Boolean, Symbol or
+    /// BigInt object) of the primitive `value` with prototype `proto` (`wrapper::new_wrapper`).
     /// TypeError if `value` has no wrapper type (undefined, null, an object). The wrapper must
     /// hold `value` as its `[[...Data]]`: while `wrapper.rs` is the P0 stub (a plain object),
     /// this throws "not implemented" rather than return an object without the primitive.
@@ -793,7 +796,9 @@ impl<'s> Cx<'s> {
         value: impl Into<Local<'s>>,
     ) -> JsResult<Local<'s, JsObject>> {
         let (p, v) = (proto.into().bits(), value.into().bits());
-        if PrimitiveType::of(v).is_none() {
+        // A BigInt has no PrimitiveType (a frozen core enum): it is checked by kind
+        // (spec-temporal B4).
+        if PrimitiveType::of(v).is_none() && !kinds::is_bigint(v) {
             let msg = format!("Cannot wrap {} in an object", conv::describe(v));
             return Err(self.throw_type_error(&msg));
         }
@@ -1296,6 +1301,14 @@ impl<'s> Cx<'s> {
         if let Some(o) = v.as_object() {
             return Ok(o);
         }
+        if kinds::is_bigint(v.bits()) {
+            // %BigInt.prototype% (spec-temporal B4; no PrimitiveType: a frozen core enum).
+            if !self.has_intrinsic(IntrinsicId::BigIntPrototype) {
+                return Err(self.not_implemented("BigInt.prototype"));
+            }
+            let proto = self.intrinsic(IntrinsicId::BigIntPrototype);
+            return self.new_wrapper(proto, v);
+        }
         let Some(ty) = PrimitiveType::of(v.bits()) else {
             return Err(self.throw_type_error("Cannot convert undefined or null to object"));
         };
@@ -1630,9 +1643,10 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// The primitive inside `v` if it is a Number, String or Boolean wrapper object (it has a
-    /// `[[NumberData]]`, `[[StringData]]` or `[[BooleanData]]` internal slot), else `None`
-    /// (part 2, M5-P3 integration fixer). Any value; never throws, runs no JS and asks a
+    /// The primitive inside `v` if it is a Number, String, Boolean or BigInt wrapper object (it
+    /// has a `[[NumberData]]`, `[[StringData]]`, `[[BooleanData]]` or `[[BigIntData]]` internal
+    /// slot), else `None` (part 2, M5-P3 integration fixer; `[[BigIntData]]` since
+    /// spec-temporal B4, H20-Q5). Any value; never throws, runs no JS and asks a
     /// proxy nothing (a proxy is no wrapper). For JSON (SerializeJSONProperty step 4, the
     /// replacer list, `space`).
     pub fn primitive_data(&self, v: impl Into<Local<'s>>) -> Option<Local<'s>> {
@@ -1641,10 +1655,10 @@ impl<'s> Cx<'s> {
             return None;
         }
         let p = wrapper::wrapper_value(v)?;
-        matches!(
+        (matches!(
             PrimitiveType::of(p),
             Some(PrimitiveType::Number | PrimitiveType::String | PrimitiveType::Boolean)
-        )
+        ) || kinds::is_bigint(p))
         .then(|| Self::local(p))
     }
 
@@ -1653,5 +1667,55 @@ impl<'s> Cx<'s> {
     /// ask a proxy for a property where the spec reads none (Function.prototype.toString).
     pub fn is_proxy(&self, v: impl Into<Local<'s>>) -> bool {
         crate::proxy::is_proxy(v.into().bits())
+    }
+
+    /// The source text of the function `f` (part 2, M6-P2 REALM-CLOSE for FN-SMALL): a new
+    /// String with a copy of the source range `source_start..source_end` of `f`'s compiled
+    /// function, made on each call, when `f` is a bytecode function whose unit embeds its
+    /// source. `Ok(None)` for any other value: a unit with no source, a host (built-in or
+    /// embedder) function, a bound function, a Proxy (asked nothing), a value that is not a
+    /// function. Runs no JS; a GC point (the copy); RangeError past the string length limit.
+    /// For Function.prototype.toString (§20.2.3.5 step 2). The range is the one the compiler
+    /// wrote: ep9_frontend writes the `[[SourceText]]` (§10.2) of every function kind (its
+    /// BytecodeGen G12: a method from its key, a class constructor as its class, and the
+    /// `Function` constructor's function with `anonymous`).
+    pub fn function_source_text(
+        &mut self,
+        f: impl Into<Local<'s>>,
+    ) -> JsResult<Option<Local<'s, JsString>>> {
+        let f = f.into().bits();
+        if !kinds::is_function(f) {
+            return Ok(None);
+        }
+        // The text lives in the unit (Rust memory the isolate keeps), not on the heap, so
+        // the copy's allocation cannot move or free it.
+        match object::function_info(f).source_text() {
+            Some(text) => self.new_string(text).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// PrepareForTailCall, then Call(F, thisArg, rest) (§9.4.5, §7.3.14), as the last step of
+    /// a host function, with a tail of this call's arguments (part 2, M6-P3 H20Q; H20-Q3):
+    /// `return cx.tail_call_args(f, this, args.rest(1));`. The host function must return the
+    /// result at once. When `f` is a FUNCTION, the call runs after the host frame is gone, in
+    /// its place: the callee frame takes the host frame's slots and the arguments stay where
+    /// they are, with no copy, and a chain of such forwards adds no frame (V8's
+    /// Function.prototype.call shifts its arguments and tail-calls Call). Any other `f` (a
+    /// bound function, a proxy, a value that is not callable) is called at once, as
+    /// [`Cx::call_args`] (the TypeError of a value that is not callable is made in the host
+    /// function's realm). The returned value is a marker that the VM reads only as the host
+    /// function's own result: use it for nothing else.
+    pub fn tail_call_args(
+        &mut self,
+        f: impl Into<Local<'s>>,
+        this: impl Into<Local<'s>>,
+        args: Rest<'s>,
+    ) -> JsResult<Local<'s>> {
+        let (f, this) = (f.into().bits(), this.into().bits());
+        if call::request_tail(self.cx, f, this, args.a0, args.len) {
+            return Ok(Self::local(crate::frame::HOLE));
+        }
+        call::call_with(self.cx, f, this, args.len, |k| args.bits(k), UNDEFINED).map(Self::local)
     }
 }

@@ -227,11 +227,66 @@ pub enum IntrinsicId {
     FinalizationRegistry,
     /// `%FinalizationRegistry.prototype%` (§26.2.3; made by M4-P4 WEAKREF).
     FinalizationRegistryPrototype,
+    // ---- M6-P0 (OBJECT_LAYOUT 6; plan v11 V11-D21, rule 18): declared for M6-P2 FUSE-PI ----
+    /// The realm's static fuse block: a FUSE cell (kind 83), not a spec intrinsic and not an
+    /// object; no table makes it (`check_tables` refuses one). Held in the realm root
+    /// `Root::RealmFuses`; made by `fuse::new_realm_block` at realm init (M6-P2 FUSE-PI).
+    RealmFuses,
+    // ---- spec-temporal B4 (BigInt; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%BigInt%` (§21.2.1; made by `ep9_builtins` bigint.rs, block 18).
+    BigInt,
+    /// `%BigInt.prototype%` (§21.2.3, an ordinary object; made by `ep9_builtins` bigint.rs).
+    /// The prototype of a BigInt's ToObject and of a property access on a BigInt.
+    BigIntPrototype,
+    // ---- spec-temporal T1 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal%` (§1 the Temporal namespace object; made by `ep9_temporal` namespace.rs, block 19).
+    Temporal,
+    /// `%Temporal.Now%` (the Temporal.Now namespace object; made by `ep9_temporal` namespace.rs).
+    TemporalNow,
+    // ---- spec-temporal T2 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.Duration%` (§7.1; made by `ep9_temporal` duration.rs, block 20).
+    TemporalDuration,
+    /// `%Temporal.Duration.prototype%` (§7.3, an ordinary object; made by `ep9_temporal` duration.rs).
+    TemporalDurationPrototype,
+    // ---- spec-temporal T3 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.Instant%` (§8.1; made by `ep9_temporal` instant.rs, block 21).
+    TemporalInstant,
+    /// `%Temporal.Instant.prototype%` (§8.3, an ordinary object; made by `ep9_temporal` instant.rs).
+    TemporalInstantPrototype,
+    // ---- spec-temporal T4 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainTime%` (§4.1; made by `ep9_temporal` plain_time.rs, block 22).
+    TemporalPlainTime,
+    /// `%Temporal.PlainTime.prototype%` (§4.3, an ordinary object; made by `ep9_temporal` plain_time.rs).
+    TemporalPlainTimePrototype,
+    // ---- spec-temporal T5 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainDate%` (§3.1; made by `ep9_temporal` plain_date.rs, block 23).
+    TemporalPlainDate,
+    /// `%Temporal.PlainDate.prototype%` (§3.3, an ordinary object; made by `ep9_temporal` plain_date.rs).
+    TemporalPlainDatePrototype,
+    // ---- spec-temporal T6 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainDateTime%` (§5.1; made by `ep9_temporal` plain_date_time.rs, block 24).
+    TemporalPlainDateTime,
+    /// `%Temporal.PlainDateTime.prototype%` (§5.3, an ordinary object; made by `ep9_temporal` plain_date_time.rs).
+    TemporalPlainDateTimePrototype,
+    // ---- spec-temporal T7 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.PlainYearMonth%` (§9.1; made by `ep9_temporal` plain_year_month.rs, block 25).
+    TemporalPlainYearMonth,
+    /// `%Temporal.PlainYearMonth.prototype%` (§9.3, an ordinary object; made by `ep9_temporal` plain_year_month.rs).
+    TemporalPlainYearMonthPrototype,
+    /// `%Temporal.PlainMonthDay%` (§10.1; made by `ep9_temporal` plain_month_day.rs, block 26).
+    TemporalPlainMonthDay,
+    /// `%Temporal.PlainMonthDay.prototype%` (§10.3, an ordinary object; made by `ep9_temporal` plain_month_day.rs).
+    TemporalPlainMonthDayPrototype,
+    // ---- spec-temporal T8 (Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Temporal.ZonedDateTime%` (§6.1; made by `ep9_temporal` zoned_date_time.rs, block 27).
+    TemporalZonedDateTime,
+    /// `%Temporal.ZonedDateTime.prototype%` (§6.3, an ordinary object; made by `ep9_temporal` zoned_date_time.rs).
+    TemporalZonedDateTimePrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 72] = [
+    pub const ALL: [IntrinsicId; 93] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -304,9 +359,31 @@ impl IntrinsicId {
         IntrinsicId::WeakRefPrototype,
         IntrinsicId::FinalizationRegistry,
         IntrinsicId::FinalizationRegistryPrototype,
+        IntrinsicId::RealmFuses,
+        IntrinsicId::BigInt,
+        IntrinsicId::BigIntPrototype,
+        IntrinsicId::Temporal,
+        IntrinsicId::TemporalNow,
+        IntrinsicId::TemporalDuration,
+        IntrinsicId::TemporalDurationPrototype,
+        IntrinsicId::TemporalInstant,
+        IntrinsicId::TemporalInstantPrototype,
+        IntrinsicId::TemporalPlainTime,
+        IntrinsicId::TemporalPlainTimePrototype,
+        IntrinsicId::TemporalPlainDate,
+        IntrinsicId::TemporalPlainDatePrototype,
+        IntrinsicId::TemporalPlainDateTime,
+        IntrinsicId::TemporalPlainDateTimePrototype,
+        IntrinsicId::TemporalPlainYearMonth,
+        IntrinsicId::TemporalPlainYearMonthPrototype,
+        IntrinsicId::TemporalPlainMonthDay,
+        IntrinsicId::TemporalPlainMonthDayPrototype,
+        IntrinsicId::TemporalZonedDateTime,
+        IntrinsicId::TemporalZonedDateTimePrototype,
     ];
 
-    /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
+    /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
+    /// for the VM-internal fuse block.
     pub const fn name(self) -> &'static str {
         match self {
             IntrinsicId::ObjectPrototype => "%Object.prototype%",
@@ -381,6 +458,27 @@ impl IntrinsicId {
             IntrinsicId::WeakRefPrototype => "%WeakRef.prototype%",
             IntrinsicId::FinalizationRegistry => "%FinalizationRegistry%",
             IntrinsicId::FinalizationRegistryPrototype => "%FinalizationRegistry.prototype%",
+            IntrinsicId::RealmFuses => "[[RealmFuses]]",
+            IntrinsicId::BigInt => "%BigInt%",
+            IntrinsicId::BigIntPrototype => "%BigInt.prototype%",
+            IntrinsicId::Temporal => "%Temporal%",
+            IntrinsicId::TemporalNow => "%Temporal.Now%",
+            IntrinsicId::TemporalDuration => "%Temporal.Duration%",
+            IntrinsicId::TemporalDurationPrototype => "%Temporal.Duration.prototype%",
+            IntrinsicId::TemporalInstant => "%Temporal.Instant%",
+            IntrinsicId::TemporalInstantPrototype => "%Temporal.Instant.prototype%",
+            IntrinsicId::TemporalPlainTime => "%Temporal.PlainTime%",
+            IntrinsicId::TemporalPlainTimePrototype => "%Temporal.PlainTime.prototype%",
+            IntrinsicId::TemporalPlainDate => "%Temporal.PlainDate%",
+            IntrinsicId::TemporalPlainDatePrototype => "%Temporal.PlainDate.prototype%",
+            IntrinsicId::TemporalPlainDateTime => "%Temporal.PlainDateTime%",
+            IntrinsicId::TemporalPlainDateTimePrototype => "%Temporal.PlainDateTime.prototype%",
+            IntrinsicId::TemporalPlainYearMonth => "%Temporal.PlainYearMonth%",
+            IntrinsicId::TemporalPlainYearMonthPrototype => "%Temporal.PlainYearMonth.prototype%",
+            IntrinsicId::TemporalPlainMonthDay => "%Temporal.PlainMonthDay%",
+            IntrinsicId::TemporalPlainMonthDayPrototype => "%Temporal.PlainMonthDay.prototype%",
+            IntrinsicId::TemporalZonedDateTime => "%Temporal.ZonedDateTime%",
+            IntrinsicId::TemporalZonedDateTimePrototype => "%Temporal.ZonedDateTime.prototype%",
         }
     }
 
@@ -420,6 +518,7 @@ impl IntrinsicId {
             IntrinsicId::EvalError => Root::EvalErrorConstructor,
             IntrinsicId::UriError => Root::UriErrorConstructor,
             IntrinsicId::Math => Root::Math,
+            IntrinsicId::RealmFuses => Root::RealmFuses,
             IntrinsicId::StringIteratorPrototype
             | IntrinsicId::GeneratorFunction
             | IntrinsicId::GeneratorFunctionPrototype
@@ -459,7 +558,27 @@ impl IntrinsicId {
             | IntrinsicId::WeakRef
             | IntrinsicId::WeakRefPrototype
             | IntrinsicId::FinalizationRegistry
-            | IntrinsicId::FinalizationRegistryPrototype => return None,
+            | IntrinsicId::FinalizationRegistryPrototype
+            | IntrinsicId::BigInt
+            | IntrinsicId::BigIntPrototype
+            | IntrinsicId::Temporal
+            | IntrinsicId::TemporalNow
+            | IntrinsicId::TemporalDuration
+            | IntrinsicId::TemporalDurationPrototype
+            | IntrinsicId::TemporalInstant
+            | IntrinsicId::TemporalInstantPrototype
+            | IntrinsicId::TemporalPlainTime
+            | IntrinsicId::TemporalPlainTimePrototype
+            | IntrinsicId::TemporalPlainDate
+            | IntrinsicId::TemporalPlainDatePrototype
+            | IntrinsicId::TemporalPlainDateTime
+            | IntrinsicId::TemporalPlainDateTimePrototype
+            | IntrinsicId::TemporalPlainYearMonth
+            | IntrinsicId::TemporalPlainYearMonthPrototype
+            | IntrinsicId::TemporalPlainMonthDay
+            | IntrinsicId::TemporalPlainMonthDayPrototype
+            | IntrinsicId::TemporalZonedDateTime
+            | IntrinsicId::TemporalZonedDateTimePrototype => return None,
         })
     }
 
@@ -507,6 +626,26 @@ impl IntrinsicId {
             IntrinsicId::WeakRefPrototype => Some(37),
             IntrinsicId::FinalizationRegistry => Some(38),
             IntrinsicId::FinalizationRegistryPrototype => Some(39),
+            IntrinsicId::BigInt => Some(40),
+            IntrinsicId::BigIntPrototype => Some(41),
+            IntrinsicId::Temporal => Some(42),
+            IntrinsicId::TemporalNow => Some(43),
+            IntrinsicId::TemporalDuration => Some(44),
+            IntrinsicId::TemporalDurationPrototype => Some(45),
+            IntrinsicId::TemporalInstant => Some(46),
+            IntrinsicId::TemporalInstantPrototype => Some(47),
+            IntrinsicId::TemporalPlainTime => Some(48),
+            IntrinsicId::TemporalPlainTimePrototype => Some(49),
+            IntrinsicId::TemporalPlainDate => Some(50),
+            IntrinsicId::TemporalPlainDatePrototype => Some(51),
+            IntrinsicId::TemporalPlainDateTime => Some(52),
+            IntrinsicId::TemporalPlainDateTimePrototype => Some(53),
+            IntrinsicId::TemporalPlainYearMonth => Some(54),
+            IntrinsicId::TemporalPlainYearMonthPrototype => Some(55),
+            IntrinsicId::TemporalPlainMonthDay => Some(56),
+            IntrinsicId::TemporalPlainMonthDayPrototype => Some(57),
+            IntrinsicId::TemporalZonedDateTime => Some(58),
+            IntrinsicId::TemporalZonedDateTimePrototype => Some(59),
             _ => None,
         }
     }
@@ -1005,13 +1144,13 @@ pub(crate) fn check(embedder: Option<&'static BuiltinTable>) -> Result<(), Strin
 }
 
 /// The table rules: blocks below 128 and unique; at most 512 definitions per block; each
-/// intrinsic made once, and a core one only named (by the VM table, as the builtin realm init
-/// makes it from); the prototype of a new intrinsic object made before it (walk order); every
-/// index in range and of the right kind; every named intrinsic made by realm init or a
-/// module; every alias names a data key (not an accessor) defined earlier on the same object;
-/// no key twice on one object; the first key of a constructor a module makes is `prototype`, a
-/// data property with attributes {} (§20: `Number.prototype` and the others), and every such
-/// constructor but `%Proxy%` (§28.2.2) has one.
+/// intrinsic made once (never the VM-internal `IntrinsicId::RealmFuses`), and a core one only
+/// named (by the VM table, as the builtin realm init makes it from); the prototype of a new
+/// intrinsic object made before it (walk order); every index in range and of the right kind;
+/// every named intrinsic made by realm init or a module; every alias names a data key (not an
+/// accessor) defined earlier on the same object; no key twice on one object; the first key of
+/// a constructor a module makes is `prototype`, a data property with attributes {} (§20:
+/// `Number.prototype` and others), and every such constructor but `%Proxy%` (§28.2.2) has one.
 pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
     let modules = || tables.iter().flat_map(|t| t.modules.iter());
     let mut blocks = HashSet::new();
@@ -1041,6 +1180,12 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     "{} has the prototype {}, which is not made before it",
                     d.id.name(),
                     p.name()
+                )));
+            }
+            if d.id == IntrinsicId::RealmFuses {
+                return Err(at(format!(
+                    "{} is VM-internal: no table makes it",
+                    d.id.name()
                 )));
             }
             let core_builtin = d.id.is_core()
@@ -1167,7 +1312,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 40;
+const INTRINSIC_SLOTS: usize = 60;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

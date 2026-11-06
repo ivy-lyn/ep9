@@ -6,28 +6,38 @@
 //!  48  1  source                        49  3  reserved, 0
 //!  52  4  shape_count                   56  4  record_count       60  4  total_size
 //!  64     shapes[shape_count]: the distinct ShapeDescs of all records, ascending
-//!         records[record_count]: function u32, slot u32, kind u8, payload(kind); ascending
+//!         records[record_count]: function u32, slot u32, kind u8, flags u8,
+//!                                [confidence u8: PROFILED and HINTED only], payload(kind);
+//!                                ascending
 //! ```
 //!
 //! The decoder accepts exactly one encoding per value: anything [`FactSnapshot::encode`]
-//! would not write is an error, so `encode(decode(b)) == b` for every accepted `b`. The full
-//! field list is in [`crate::schema_text`].
+//! would not write is an error, so `encode(decode(b)) == b` for every accepted `b` whose open
+//! fields hold only values this schema names. The one exception (FACT_SCHEMA 2; MC-w23-8):
+//! a value of an open list that this reader does not name (`bits.rs` module docs) is read as
+//! none, as any or as a dropped bit, for its field only; the snapshot is never refused for it.
+//! Such an input decodes to the facts this reader knows, and its re-encoding is canonical
+//! (it may differ from the input). When that folds two shapes of the table into one value,
+//! the decoder merges the cases that now share a receiver (or a clone source) as the exporter
+//! does: equal cases merge, a receiver with two different accesses is left out
+//! ([`SlotFacts::merge_cases`]). The full field list is in [`crate::schema_text`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use ep9_bytecode::{FeedbackSlotKind, UnitString};
 
 use crate::bits::{
-    BinaryHint, BindingSet, ClosureCount, CompareHint, ElementsKind, FactSource, ForInHint,
-    IcState, KeySet, ObjectKind, PropAttrs, ShapeFlags, TypeSet, WellKnownSymbol,
+    BinaryHint, BindingSet, ClosureCount, CompareHint, ElementsKind, ElementsKindSet, FactSource,
+    FieldHint, FieldRep, ForInHint, IcState, KeySet, KeyedHint, ObjectKind, PropAttrs, RecordFlags,
+    ShapeFlags, TypeSet, WellKnownSymbol,
 };
 use crate::facts::{
     Access, CallFacts, CloneCase, CloneFacts, ClosureFacts, FunctionRef, GlobalFacts, KeyRef,
     KeyedFacts, LiteralFacts, LoopFacts, MAX_CASES, PropertyCase, PropertyFacts, ProtoRef,
     ShapeDesc, SlotFacts, TargetFacts, check_shape,
 };
-use crate::snapshot::{FactError, FactHeader, FactSnapshot, SlotKey};
+use crate::snapshot::{FactError, FactHeader, FactSnapshot, RecordMeta, SlotKey, check_meta};
 use crate::{FACT_SCHEMA_VERSION, MAGIC};
 
 /// Size of the fixed header.
@@ -64,6 +74,20 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).expect("more than u32::MAX items in a fact snapshot")
 }
 
+/// An elements-kind field: `value + 1`, 0 = none.
+fn elements_byte(k: Option<ElementsKind>) -> u8 {
+    k.map_or(0, |k| k as u8 + 1)
+}
+
+/// A key's attribute byte: the VM's details bits 0-7 ([`PropAttrs`] bits 0-3, the
+/// [`FieldRep`] value in bits 4-6, the const bit 7).
+fn attrs_byte(attrs: PropAttrs, hint: FieldHint) -> u8 {
+    attrs.bits() | (hint.rep as u8) << 4 | u8::from(hint.constant) << 7
+}
+
+/// The bits of an attribute byte that hold the [`FieldRep`] value.
+const REP_SHIFT: u32 = 4;
+
 impl<'a> Writer<'a> {
     fn u8(&mut self, v: u8) {
         self.out.push(v);
@@ -94,10 +118,11 @@ impl<'a> Writer<'a> {
             ProtoRef::FunctionPrototype(r) => self.function(r),
         }
         self.u8(s.kind as u8);
+        self.u8(elements_byte(s.elements));
         self.u8(s.flags.bits());
         self.u16(s.capacity);
         self.u32(count(s.keys.len()));
-        for (k, attrs) in &s.keys {
+        for ((k, attrs), hint) in s.keys.iter().zip(&s.fields) {
             self.u8(k.tag());
             match k {
                 KeyRef::String(UnitString::Latin1(b)) => {
@@ -111,7 +136,7 @@ impl<'a> Writer<'a> {
                 KeyRef::WellKnownSymbol(w) => self.u8(*w as u8),
                 KeyRef::OtherSymbol => {}
             }
-            self.u8(attrs.bits());
+            self.u8(attrs_byte(*attrs, *hint));
         }
     }
 
@@ -149,7 +174,7 @@ impl<'a> Writer<'a> {
                     self.shape(to);
                     self.u16(*field);
                 }
-                Access::Element { kind } => self.u8(*kind as u8),
+                Access::Element { kind } => self.u8(elements_byte(*kind)),
                 Access::ArrayLength | Access::StringLength | Access::Generic => {}
             }
         }
@@ -159,6 +184,8 @@ impl<'a> Writer<'a> {
     fn keyed(&mut self, k: &KeyedFacts) {
         self.property(&k.property);
         self.u8(k.keys.bits());
+        self.u8(k.hint.bits());
+        self.u16(k.kinds.bits());
     }
 
     fn global(&mut self, g: &GlobalFacts) {
@@ -197,7 +224,7 @@ impl<'a> Writer<'a> {
                     }
                     None => self.u32(0),
                 }
-                self.u8(l.elements.map_or(0, |k| k as u8 + 1));
+                self.u8(elements_byte(l.elements));
             }
             SlotFacts::CloneObject(c) => {
                 self.u8(c.state as u8);
@@ -251,10 +278,14 @@ impl FactSnapshot {
         for s in &table {
             w.shape_desc(s);
         }
-        for (key, f) in self.records() {
+        for (key, f, meta) in self.records_with_meta() {
             w.u32(key.function);
             w.u32(key.slot);
             w.u8(f.kind() as u8);
+            w.u8(meta.flags.bits());
+            if h.source != FactSource::Runtime {
+                w.u8(meta.confidence);
+            }
             w.payload(f);
         }
         let total = count(w.out.len()).to_le_bytes();
@@ -271,6 +302,7 @@ impl FactSnapshot {
             shapes: Vec::new(),
             used: Vec::new(),
             order: Vec::new(),
+            folded: false,
         };
         if r.take(8)? != MAGIC {
             return Err(FactError::Magic);
@@ -293,23 +325,44 @@ impl FactSnapshot {
         if r.u32()? as usize != bytes.len() {
             return Err(FactError::TotalSize);
         }
-        // Each shape takes at least 9 bytes and each record at least 10.
-        r.room(shape_count, 9)?;
+        // Each shape takes at least 10 bytes and each record at least 11.
+        r.room(shape_count, 10)?;
+        // The order check skips a shape that folded an open value: a fold may make it equal to
+        // another shape, or change its place (the module docs). The other shapes hold only
+        // values this schema names, so each one is compared with the last of them: a folded
+        // shape between two of them does not hide their order.
+        let mut last_known: Option<usize> = None;
         for _ in 0..shape_count {
+            let before = r.folded;
+            r.folded = false;
             let s = r.shape_desc()?;
             check_shape(&s)?;
-            if r.shapes.last().is_some_and(|prev| **prev >= s) {
-                return Err(FactError::NonCanonical("shapes not strictly ascending"));
+            let folded = r.folded;
+            r.folded |= before;
+            if !folded {
+                if last_known.is_some_and(|i| *r.shapes[i] >= s) {
+                    return Err(FactError::NonCanonical("shapes not strictly ascending"));
+                }
+                last_known = Some(r.shapes.len());
             }
             r.shapes.push(Arc::new(s));
         }
+        // A fold may make two shapes of the table equal, or change their order. Then the
+        // records need a merge of their cases (below). The table is ranked once here, so the
+        // merge compares ranks and never two shapes: its work per record does not grow with
+        // shape size.
+        let rank = if r.folded {
+            Some(r.rank_shapes())
+        } else {
+            None
+        };
         r.used = vec![false; r.shapes.len()];
         let mut snap = FactSnapshot::new(FactHeader {
             bytecode_abi,
             unit_hash,
             source,
         });
-        r.room(record_count, 10)?;
+        r.room(record_count, 11)?;
         let mut last: Option<SlotKey> = None;
         for _ in 0..record_count {
             let key = SlotKey {
@@ -322,16 +375,32 @@ impl FactSnapshot {
             last = Some(key);
             let kind =
                 FeedbackSlotKind::from_u8(r.u8()?).ok_or(FactError::BadValue("slot kind"))?;
+            let flags = RecordFlags::from_bits(r.u8()?).ok_or(FactError::Reserved)?;
+            let confidence = if source == FactSource::Runtime {
+                0
+            } else {
+                r.u8()?
+            };
+            let meta = RecordMeta { flags, confidence };
+            check_meta(source, kind, meta)?;
             r.order.clear();
             let facts = r.payload(kind)?;
             facts.check_decoded(&r.order)?;
-            snap.push_decoded(key, facts);
+            snap.push_decoded(key, facts, meta);
         }
         if r.at != bytes.len() {
             return Err(FactError::NonCanonical("bytes after the last record"));
         }
         if r.used.iter().any(|u| !u) {
             return Err(FactError::NonCanonical("a shape no record uses"));
+        }
+        if let Some(rank) = rank {
+            // Every shape of a record is an `Arc` of the ranked table, so each has a rank.
+            let rank = |s: &Arc<ShapeDesc>| rank[&Arc::as_ptr(s)];
+            for f in snap.records_mut() {
+                // A merge only removes cases, so the record keeps every rule.
+                f.merge_cases(&rank);
+            }
         }
         Ok(snap)
     }
@@ -348,6 +417,9 @@ struct Reader<'a> {
     /// The table index of each case's receiver (or clone source) in the current record, for
     /// [`SlotFacts::check_decoded`].
     order: Vec<u32>,
+    /// An open value this schema does not name was read (and folded) since the flag was last
+    /// cleared.
+    folded: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -422,11 +494,15 @@ impl<'a> Reader<'a> {
             _ => return Err(FactError::BadValue("proto ref tag")),
         };
         let kind = ObjectKind::from_u8(self.u8()?).ok_or(FactError::BadValue("object kind"))?;
-        let flags = ShapeFlags::from_bits(self.u8()?).ok_or(FactError::Reserved)?;
+        let elements = self.elements()?;
+        let raw = self.u8()?;
+        let flags = ShapeFlags::from_bits_truncate(raw);
+        self.folded |= flags.bits() != raw;
         let capacity = self.u16()?;
         let n = self.u32()?;
         self.room(n, 2)?;
         let mut keys = Vec::with_capacity(n as usize);
+        let mut fields = Vec::with_capacity(n as usize);
         for _ in 0..n {
             let key = match self.u8()? {
                 0 => {
@@ -452,16 +528,62 @@ impl<'a> Reader<'a> {
                 3 => KeyRef::OtherSymbol,
                 _ => return Err(FactError::BadValue("key tag")),
             };
-            let attrs = PropAttrs::from_bits(self.u8()?).ok_or(FactError::Reserved)?;
+            let b = self.u8()?;
+            let attrs =
+                PropAttrs::from_bits(b & PropAttrs::ALL.bits()).ok_or(FactError::Reserved)?;
+            let v = (b >> REP_SHIFT) & 0x7;
+            let rep = FieldRep::from_open(v);
+            self.folded |= rep as u8 != v;
+            let hint = FieldHint {
+                rep,
+                constant: b & 0x80 != 0,
+            };
             keys.push((key, attrs));
+            fields.push(hint);
         }
         Ok(ShapeDesc {
             proto,
             kind,
+            elements,
             flags,
             capacity,
             keys,
+            fields,
         })
+    }
+
+    /// An elements-kind field (`value + 1`, 0 = none): an open list, so a value this schema
+    /// does not name reads as none (and sets `folded`).
+    fn elements(&mut self) -> Result<Option<ElementsKind>, FactError> {
+        Ok(match self.u8()? {
+            0 => None,
+            b => {
+                let k = ElementsKind::from_open(b - 1);
+                self.folded |= k.is_none();
+                k
+            }
+        })
+    }
+
+    /// Ranks the shape table after a fold: sorts it once, gives equal shapes one `Arc` (the
+    /// first of them) and one rank, and gives each `Arc` its place in shape order. Its work is
+    /// one sort of the table, whatever the number of records.
+    fn rank_shapes(&mut self) -> HashMap<*const ShapeDesc, u32> {
+        let mut by_shape: Vec<usize> = (0..self.shapes.len()).collect();
+        by_shape.sort_by(|&a, &b| self.shapes[a].cmp(&self.shapes[b]));
+        let mut rank = HashMap::with_capacity(by_shape.len());
+        let mut next = 0u32;
+        for (j, &i) in by_shape.iter().enumerate() {
+            if let Some(&prev) = j.checked_sub(1).map(|p| &by_shape[p])
+                && self.shapes[prev] == self.shapes[i]
+            {
+                self.shapes[i] = Arc::clone(&self.shapes[prev]);
+                continue;
+            }
+            rank.insert(Arc::as_ptr(&self.shapes[i]), next);
+            next += 1;
+        }
+        rank
     }
 
     /// Table entry `i`, shared: a reference costs one `Arc`, whatever the shape's size.
@@ -522,8 +644,7 @@ impl<'a> Reader<'a> {
                 6 => Access::ArrayLength,
                 7 => Access::StringLength,
                 8 => Access::Element {
-                    kind: ElementsKind::from_u8(self.u8()?)
-                        .ok_or(FactError::BadValue("elements kind"))?,
+                    kind: self.elements()?,
                 },
                 9 => Access::Generic,
                 _ => return Err(FactError::BadValue("access tag")),
@@ -541,7 +662,17 @@ impl<'a> Reader<'a> {
     fn keyed(&mut self) -> Result<KeyedFacts, FactError> {
         let property = self.property()?;
         let keys = KeySet::from_bits(self.u8()?).ok_or(FactError::Reserved)?;
-        Ok(KeyedFacts { property, keys })
+        let hint = KeyedHint::from_bits(self.u8()?).ok_or(FactError::Reserved)?;
+        // An open set: the bit of a kind this schema does not name is dropped.
+        let raw = self.u16()?;
+        let kinds = ElementsKindSet::from_bits_truncate(raw);
+        self.folded |= kinds.bits() != raw;
+        Ok(KeyedFacts {
+            property,
+            keys,
+            hint,
+            kinds,
+        })
     }
 
     fn global(&mut self) -> Result<GlobalFacts, FactError> {
@@ -585,12 +716,7 @@ impl<'a> Reader<'a> {
                     0 => None,
                     i => Some(self.shape_at(i as usize - 1)?),
                 };
-                let elements = match self.u8()? {
-                    0 => None,
-                    k => Some(
-                        ElementsKind::from_u8(k - 1).ok_or(FactError::BadValue("elements kind"))?,
-                    ),
-                };
+                let elements = self.elements()?;
                 SlotFacts::Literal(LiteralFacts {
                     count,
                     shape,

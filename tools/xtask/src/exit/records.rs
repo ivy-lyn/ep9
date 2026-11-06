@@ -32,6 +32,16 @@
 //!   at least one amendment row (README section 3: an amendment adds a dated Change-log line).
 //!   No amendment row is a gap.
 //!
+//! - **Lint-proven ADRLINE rows** (plan v11 V11-D23 (c), W-FM11, X15; README section 3.1). A
+//!   new `clarify` row whose Change text names `ADRLINE` needs no record when the drift check
+//!   proves the body change: since the base the text outside the two sections changed only in
+//!   `path:N` numbers, each one the value the `path:line` drift check ([`super::drift`]) gives
+//!   as FIX for the old number. The check runs the drift check on a scratch copy of the ADR
+//!   with the changed body lines as they were at the base (the copy shares this tree's git
+//!   repository and reads its history only), and applies its FIX values to those lines: each
+//!   must give the line as it is now. Proven rows count as rows that need none and cover the
+//!   body change; else they are amendment rows like any other (with a `note:` that says why).
+//!
 //! The date links a record to its Change-log rows: a label names no row id, so two rows of one
 //! day share their records by count, and one amendment row covers every body change of the
 //! range. That is the limit of this check.
@@ -204,9 +214,276 @@ pub(crate) struct Records {
     pub(crate) adrs: usize,
     /// Amendment rows since the base (needing a record).
     pub(crate) rows: usize,
-    /// Rows that need none: record-only rows, and edits of rows dated before the base.
+    /// Rows that need none: record-only rows, edits of rows dated before the base, and
+    /// lint-proven ADRLINE rows.
     pub(crate) skipped: usize,
+    /// Of `skipped`: the lint-proven ADRLINE rows (X15).
+    pub(crate) adrline: usize,
     pub(crate) gaps: Vec<String>,
+    /// Why an ADRLINE row is not lint-proven (no effect of its own: the row then needs its
+    /// record like any other).
+    pub(crate) notes: Vec<String>,
+}
+
+/// X15: a Change-log row that may be a lint-proven ADRLINE row: kind `clarify`, and its Change
+/// text names `ADRLINE` (the drift-fix rows of the M2-P4-FIX-ADRLINE-ROWS form do).
+fn adrline_row(kind_word: &str, change: &str) -> bool {
+    kind_word == "clarify" && change.contains("ADRLINE")
+}
+
+/// The lines of the text outside the `## Change log` and `## Review record` sections (as
+/// [`body`]), each with its 0-based line index in `text`.
+fn body_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut on = true;
+    let mut out = Vec::new();
+    for (i, l) in text.lines().enumerate() {
+        if l.starts_with("## ") {
+            let t = l.trim();
+            on = t != "## Change log" && t != "## Review record";
+        }
+        if on {
+            out.push((i, l));
+        }
+    }
+    out
+}
+
+/// The names [`new_scratch_dir`] tries before it fails.
+const SCRATCH_TRIES: usize = 16;
+
+/// Makes a new, empty dir in `parent` under the first of `names` that does not exist, and
+/// returns its path. It never uses a path that exists: `DirBuilder::create` (not
+/// `create_dir_all`) fails for an existing dir, file or symlink, and the next name is tried.
+/// On unix the dir has mode 0700, so no other user can put a file in it. Err if every name
+/// exists, or for any other error.
+fn new_scratch_dir(
+    parent: &Path,
+    names: impl IntoIterator<Item = String>,
+) -> std::io::Result<std::path::PathBuf> {
+    let b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let b = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut b = b;
+        b.mode(0o700);
+        b
+    };
+    for name in names {
+        let p = parent.join(name);
+        match b.create(&p) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "every scratch dir name tried exists",
+    ))
+}
+
+/// Writes the scratch root of [`drift_fixes`] into `tmp`, a new dir that
+/// [`new_scratch_dir`] made: the `.git` file, the doc `rel` with `text`, and the pin table
+/// of `root` if it has one. It makes subdirs only inside `tmp`, and each file with
+/// `create_new`, so it never writes through a path that was there before.
+fn fill_scratch(
+    tmp: &Path,
+    root: &Path,
+    rel: &str,
+    text: &str,
+    gitdir: &str,
+) -> std::io::Result<()> {
+    fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
+            .write_all(bytes)
+    }
+    let dir_of = |p: &Path| -> std::io::Result<()> {
+        match p.parent() {
+            Some(d) if d != tmp => std::fs::create_dir_all(d),
+            _ => Ok(()),
+        }
+    };
+    write_new(&tmp.join(".git"), format!("gitdir: {gitdir}\n").as_bytes())?;
+    let doc = tmp.join(rel);
+    dir_of(&doc)?;
+    write_new(&doc, text.as_bytes())?;
+    let pins = root.join(super::drift::PINS_FILE);
+    if pins.is_file() {
+        let to = tmp.join(super::drift::PINS_FILE);
+        dir_of(&to)?;
+        write_new(&to, &std::fs::read(&pins)?)?;
+    }
+    Ok(())
+}
+
+/// X15: the FIX values of the drift check for the doc `rel` with the text `text`, by line (1-based):
+/// (old token, new token) in the order the check reads them. The check runs on a scratch root
+/// that holds only this doc and the pin table, and whose `.git` file names this tree's git dir,
+/// so the history and HEAD are this tree's. The drift check runs only `git show`, `git log` and
+/// `git diff <commit> HEAD` there (no command that reads or writes an index or a work tree).
+fn drift_fixes(
+    root: &Path,
+    rel: &str,
+    text: &str,
+) -> Result<BTreeMap<usize, Vec<(String, String)>>, String> {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let gitdir = git(root, &["rev-parse", "--absolute-git-dir"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or("cannot read the git dir of the tree")?;
+    let pid = std::process::id();
+    let names = (0..SCRATCH_TRIES).map(|_| {
+        let k = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        format!("ep9-adrline-{pid}-{k}-{nanos}")
+    });
+    let tmp = new_scratch_dir(&std::env::temp_dir(), names)
+        .map_err(|e| format!("cannot make a scratch dir in the temp dir: {e}"))?;
+    let made = fill_scratch(&tmp, root, rel, text, &gitdir);
+    let d = made
+        .map_err(|e| format!("cannot write the scratch copy {}: {e}", tmp.display()))
+        .and_then(|()| super::drift::drift(&tmp));
+    // The dir is this call's own (`new_scratch_dir` made it), so only it is removed.
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mut out: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
+    let at = format!("{rel}:");
+    for l in d?.lines {
+        // `FIX       <rel>:<n> <old> -> <new> (<tag>, <how>)`, then a line with the HEAD text.
+        let Some(first) = l
+            .strip_prefix("FIX")
+            .and_then(|r| r.trim_start().lines().next())
+        else {
+            continue;
+        };
+        let Some((place, rest)) = first.split_once(' ') else {
+            continue;
+        };
+        let Some(n) = place
+            .strip_prefix(&at)
+            .and_then(|n| n.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let Some((old, rest)) = rest.split_once(" -> ") else {
+            continue;
+        };
+        let Some((new, _)) = rest.rsplit_once(" (") else {
+            continue;
+        };
+        out.entry(n)
+            .or_default()
+            .push((old.to_string(), new.to_string()));
+    }
+    Ok(out)
+}
+
+/// X15: does the FIX `old -> new` change only line numbers? Each token ends with its number
+/// or range (`path:N`, `:N-M`, `` `path` line N ``; drift.rs `render`). Without that end
+/// (ASCII digits and `-`), the two must be the same bytes, so the path and every other
+/// character stay. A pin can point a token at another path, so a FIX may change more.
+fn numbers_only(old: &str, new: &str) -> bool {
+    fn head(t: &str) -> &str {
+        t.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-')
+    }
+    let (a, b) = (head(old), head(new));
+    a == b && a.len() < old.len() && b.len() < new.len()
+}
+
+/// The byte offset in `line`, at or after `from`, where the reference `old` stands whole: the
+/// next character is not a digit or `-`. R6-8 (M6-P0 fixer check F3): a plain `find` read
+/// `lib.rs:2` inside `lib.rs:23` or `lib.rs:2-5`. The start is whole as drift.rs `tokens` reads
+/// it (M6-P3 fixer, R1): a bare `:N` has a backtick before it, a `path:N` has no path
+/// character before it, and a `` `path` lines N `` starts at its own backtick, so `README.md:149` is not read inside `docs/adr/README.md:149` and
+/// `:530` not inside `h20-core.txt:530`.
+fn find_ref(line: &str, from: usize, old: &str) -> Option<usize> {
+    let mut at = from;
+    while let Some(k) = line[at..].find(old) {
+        let start = at + k;
+        let next = line[start + old.len()..].chars().next();
+        let prev = line[..start].chars().next_back();
+        let start_whole = if old.starts_with(':') {
+            prev == Some('`')
+        } else {
+            old.starts_with('`') || !prev.is_some_and(super::drift::path_char)
+        };
+        if start_whole && !next.is_some_and(|c| c.is_ascii_digit() || c == '-') {
+            return Some(start);
+        }
+        at = start + old.chars().next().map_or(1, char::len_utf8);
+    }
+    None
+}
+
+/// X15: the base text of line `n` with the drift check's FIX values `fs` put in, left to right.
+fn apply_fixes(n: usize, base: &str, fs: &[(String, String)]) -> Result<String, String> {
+    let mut line = base.to_string();
+    let mut from = 0;
+    for (old, new) in fs {
+        if !numbers_only(old, new) {
+            return Err(format!(
+                "line {n}: the drift check's FIX {old} -> {new} changes more than its line numbers"
+            ));
+        }
+        let Some(start) = find_ref(&line, from, old) else {
+            return Err(format!("line {n}: no {old:?} in its base text"));
+        };
+        line.replace_range(start..start + old.len(), new);
+        from = start + new.len();
+    }
+    Ok(line)
+}
+
+/// X15: is the body change of the ADR `rel` since the base only `path:N` numbers that the drift
+/// check moves? Ok(the number of changed body lines) or Err(why not).
+fn lint_proven(root: &Path, rel: &str, base: Option<&str>, head: &str) -> Result<usize, String> {
+    let base = base.ok_or("the file is new since the base")?;
+    let (b, h) = (body_lines(base), body_lines(head));
+    if b.len() != h.len() {
+        return Err(format!(
+            "the text outside the two sections has {} lines at the base and {} now",
+            b.len(),
+            h.len()
+        ));
+    }
+    let changed: Vec<usize> = (0..h.len()).filter(|&i| b[i].1 != h[i].1).collect();
+    if changed.is_empty() {
+        return Err("no line outside the two sections changed".into());
+    }
+    // The doc as it is now, with the changed body lines as they were at the base.
+    let mut lines: Vec<&str> = head.lines().collect();
+    for &i in &changed {
+        lines[h[i].0] = b[i].1;
+    }
+    let mut doc = lines.join("\n");
+    if head.ends_with('\n') {
+        doc.push('\n');
+    }
+    let fixes = drift_fixes(root, rel, &doc)?;
+    for &i in &changed {
+        let n = h[i].0 + 1;
+        let Some(fs) = fixes.get(&n) else {
+            return Err(format!(
+                "line {n} changed, and the drift check moves no reference on its base text"
+            ));
+        };
+        let line = apply_fixes(n, b[i].1, fs)?;
+        if line != h[i].1 {
+            return Err(format!(
+                "line {n} is not its base text with the drift check's FIX values ({})",
+                fs.iter()
+                    .map(|(o, n)| format!("{o} -> {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(changed.len())
 }
 
 pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
@@ -237,6 +514,8 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
             *old_records.entry(row).or_default() += 1;
         }
         let mut need: BTreeMap<String, usize> = BTreeMap::new();
+        // X15: the dates of the new ADRLINE rows, proven below.
+        let mut adrline: Vec<String> = Vec::new();
         for row in section_rows(&text, "Change log") {
             if old.contains(&row) {
                 continue;
@@ -258,11 +537,15 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
                 r.skipped += 1;
                 continue;
             }
-            r.rows += 1;
             let word = kind
                 .split(|ch: char| ch.is_whitespace() || "(;,".contains(ch))
                 .next()
                 .unwrap_or("");
+            if adrline_row(word, change) {
+                adrline.push(d.to_string());
+                continue;
+            }
+            r.rows += 1;
             if !KINDS.contains(&word) {
                 r.gaps.push(format!(
                     "{rel}: the {d} row of kind {kind:?} is not an amendment kind (clarify, fill, rewrite or reopen; README section 3.3): {:?}",
@@ -271,8 +554,30 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
             }
             *need.entry(d.to_string()).or_default() += 1;
         }
+        // X15: lint-proven ADRLINE rows need no record and cover the body change; the others
+        // are amendment rows.
+        let mut body_covered = false;
+        if !adrline.is_empty() {
+            match lint_proven(root, &rel, base_text.as_deref(), &text) {
+                Ok(_) => {
+                    r.skipped += adrline.len();
+                    r.adrline += adrline.len();
+                    body_covered = true;
+                }
+                Err(why) => {
+                    r.notes.push(format!(
+                        "{rel}: {} ADRLINE row(s) not lint-proven, so each needs its review record: {why}",
+                        adrline.len()
+                    ));
+                    for d in adrline {
+                        r.rows += 1;
+                        *need.entry(d).or_default() += 1;
+                    }
+                }
+            }
+        }
         if need.is_empty() {
-            if base_text.as_deref().is_some_and(|b| body(b) != body(&text)) {
+            if !body_covered && base_text.as_deref().is_some_and(|b| body(b) != body(&text)) {
                 r.gaps.push(format!(
                     "{rel}: the text outside `## Change log` and `## Review record` changed since the base, and no new Change-log row dated on or after {base_day} records it (README section 3: an amendment adds a dated Change-log line, then needs its review record)"
                 ));
@@ -461,6 +766,190 @@ pub(crate) fn counts(root: &Path) -> Result<(String, String, Vec<String>), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GATES8 Codex r1: the scratch root of `drift_fixes` is a new dir, and nothing is
+    /// written through a path that was there before: a dir, a file or (on unix) a symlink
+    /// with a scratch name is skipped, and a file that `fill_scratch` would write is never
+    /// opened if it exists.
+    #[test]
+    fn the_scratch_dir_never_uses_a_path_that_exists() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let parent = new_scratch_dir(
+            &std::env::temp_dir(),
+            [format!("ep9-records-test-{}-{nanos}", std::process::id())],
+        )
+        .unwrap();
+        let victim = parent.join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::write(victim.join("file"), "VICTIM").unwrap();
+        // Planted: a dir with a `.git` file, and a file.
+        std::fs::create_dir(parent.join("taken-dir")).unwrap();
+        std::fs::write(parent.join("taken-dir").join(".git"), "planted").unwrap();
+        std::fs::write(parent.join("taken-file"), "planted").unwrap();
+        let mut names = vec!["taken-dir", "taken-file"];
+        #[cfg(unix)]
+        {
+            // A symlink to a dir, and one to a path that does not exist.
+            std::os::unix::fs::symlink(&victim, parent.join("taken-link")).unwrap();
+            std::os::unix::fs::symlink(parent.join("nothing"), parent.join("taken-dangling"))
+                .unwrap();
+            names.extend(["taken-link", "taken-dangling"]);
+        }
+        let all = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        // Every name exists: an error, and nothing is made.
+        let e = new_scratch_dir(&parent, all(&names)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        // The first free name is used.
+        names.push("fresh");
+        let tmp = new_scratch_dir(&parent, all(&names)).unwrap();
+        assert_eq!(tmp, parent.join("fresh"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&tmp).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        // A root with a pin table.
+        let root = parent.join("root");
+        let pins = root.join(super::super::drift::PINS_FILE);
+        std::fs::create_dir_all(pins.parent().unwrap()).unwrap();
+        std::fs::write(&pins, "pins\n").unwrap();
+        let rel = "docs/adr/H16-ics.md";
+        fill_scratch(&tmp, &root, rel, "doc\n", "/git").unwrap();
+        assert_eq!(read(&tmp.join(".git")).unwrap(), "gitdir: /git\n");
+        assert_eq!(read(&tmp.join(rel)).unwrap(), "doc\n");
+        assert_eq!(
+            read(&tmp.join(super::super::drift::PINS_FILE)).unwrap(),
+            "pins\n"
+        );
+        // Filled twice: each file exists, so the second fill fails and writes nothing.
+        assert!(fill_scratch(&tmp, &root, rel, "other\n", "/other").is_err());
+        assert_eq!(read(&tmp.join(".git")).unwrap(), "gitdir: /git\n");
+        #[cfg(unix)]
+        {
+            // A `.git` symlink in the dir is not written through.
+            let other = new_scratch_dir(&parent, ["other".to_string()]).unwrap();
+            std::os::unix::fs::symlink(victim.join("file"), other.join(".git")).unwrap();
+            assert!(fill_scratch(&other, &root, rel, "doc\n", "/git").is_err());
+            assert!(!parent.join("nothing").exists());
+        }
+        // The planted paths keep their text, and the victim dir its one file.
+        assert_eq!(
+            read(&parent.join("taken-dir").join(".git")).unwrap(),
+            "planted"
+        );
+        assert_eq!(read(&parent.join("taken-file")).unwrap(), "planted");
+        assert_eq!(read(&victim.join("file")).unwrap(), "VICTIM");
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 1);
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[test]
+    fn a_fix_changes_only_line_numbers() {
+        assert!(numbers_only("crates/a/lib.rs:2", "crates/a/lib.rs:3"));
+        assert!(numbers_only("crates/a/lib.rs:2", "crates/a/lib.rs:12-14"));
+        assert!(numbers_only(":7-9", ":8"));
+        assert!(numbers_only("`ci.yml` lines 38-42", "`ci.yml` lines 40-44"));
+        // Another path, also one that differs only in digits or `-`.
+        assert!(!numbers_only("crates/a/lib.rs:2", "crates/a/other.rs:2"));
+        assert!(!numbers_only("docs/adr/H16-x.md:2", "docs/adr/H17-x.md:2"));
+        assert!(!numbers_only("a-1.rs:2", "a-2.rs:2"));
+        // Another form, or no number.
+        assert!(!numbers_only("`a.rs` line 3", "`a.rs` lines 3-5"));
+        assert!(!numbers_only("a.rs:2", "a.rs:"));
+        assert!(!numbers_only("a.rs", "a.rs"));
+    }
+
+    /// R6-8: a FIX value replaces the whole reference, never the head of a longer number or of
+    /// a range (`lib.rs:2` in `lib.rs:23` or `lib.rs:2-5`); left to right, as the check reads.
+    #[test]
+    fn a_fix_replaces_only_a_whole_reference() {
+        let f = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        assert_eq!(find_ref("lib.rs:23 and lib.rs:2", 0, "lib.rs:2"), Some(14));
+        assert_eq!(find_ref("lib.rs:2-5, lib.rs:2.", 0, "lib.rs:2"), Some(12));
+        assert_eq!(find_ref("lib.rs:2", 0, "lib.rs:2"), Some(0));
+        assert_eq!(find_ref("lib.rs:23 lib.rs:2-4", 0, "lib.rs:2"), None);
+        assert_eq!(
+            apply_fixes(
+                7,
+                "see lib.rs:23 and lib.rs:2",
+                &f(&[("lib.rs:2", "lib.rs:3")])
+            )
+            .unwrap(),
+            "see lib.rs:23 and lib.rs:3"
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "lib.rs:2-5, lib.rs:2 and lib.rs:23",
+                &f(&[("lib.rs:2", "lib.rs:4"), ("lib.rs:23", "lib.rs:25")])
+            )
+            .unwrap(),
+            "lib.rs:2-5, lib.rs:4 and lib.rs:25"
+        );
+        // Only `lib.rs:23` is there: no whole `lib.rs:2`.
+        assert_eq!(
+            apply_fixes(7, "lib.rs:23", &f(&[("lib.rs:2", "lib.rs:3")])).unwrap_err(),
+            "line 7: no \"lib.rs:2\" in its base text"
+        );
+        // M6-P3 fixer (R1): the start is whole too, as drift.rs `tokens` reads it. A `path:N`
+        // has no path character before it; a bare `:N` has a backtick before it.
+        assert_eq!(
+            find_ref(
+                "docs/adr/README.md:149 and README.md:149",
+                0,
+                "README.md:149"
+            ),
+            Some(27)
+        );
+        assert_eq!(find_ref("docs/adr/README.md:149", 0, "README.md:149"), None);
+        assert_eq!(find_ref("x-lib.rs:2 (lib.rs:2)", 0, "lib.rs:2"), Some(12));
+        assert_eq!(find_ref("`h20-core.txt:530`, `:530`", 0, ":530"), Some(21));
+        assert_eq!(find_ref("`h20-core.txt:530`", 0, ":530"), None);
+        assert_eq!(find_ref("`a.rs` line 3", 0, "`a.rs` line 3"), Some(0));
+        assert_eq!(
+            find_ref("x`a.rs` lines 3-5", 0, "`a.rs` lines 3-5"),
+            Some(1)
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "docs/adr/README.md:149 and README.md:149",
+                &f(&[("README.md:149", "README.md:150")])
+            )
+            .unwrap(),
+            "docs/adr/README.md:149 and README.md:150"
+        );
+        assert_eq!(
+            apply_fixes(7, "`h20-core.txt:530` and `:530`", &f(&[(":530", ":531")])).unwrap(),
+            "`h20-core.txt:530` and `:531`"
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "`h20-core.txt:530` and `:530`",
+                &f(&[("h20-core.txt:530", "h20-core.txt:531"), (":530", ":532")])
+            )
+            .unwrap(),
+            "`h20-core.txt:531` and `:532`"
+        );
+        assert_eq!(
+            apply_fixes(
+                7,
+                "docs/adr/README.md:149",
+                &f(&[("README.md:149", "README.md:150")])
+            )
+            .unwrap_err(),
+            "line 7: no \"README.md:149\" in its base text"
+        );
+    }
 
     #[test]
     fn helpers() {

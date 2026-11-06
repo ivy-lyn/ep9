@@ -4,17 +4,17 @@
 //! unit text and Spike C read these values, so each value is part of one contract version
 //! (`versions.rs`).
 //!
-//! Until M5-P0 this was `native::layout`, behind the `spike-native` feature. C-18 (doc 13:672)
+//! Until M5-P0 this was `native::layout`, behind the `spike-native` feature. C-18 (doc 13:694)
 //! moved it out of the gate, with the three native `Cx` fields (`native_limit`,
 //! `runtime_table`, `unit_data`) and the [`RuntimeTable`] type, so every build has one `Cx`
 //! layout. The process table itself (`native::RUNTIME_TABLE`) and every function it calls stay
 //! behind `spike-native`: a default build has `Cx::runtime_table` = null.
 //!
 //! Each export names the one version that owns it (MC-w15-5; doc 13 C-18 and §7.3): VM_LAYOUT
-//! (`Cx`, FunctionInfo and RuntimeTable offsets, the table length), FRAME (frame offsets from
-//! fp, MC-w16-18), OBJECT_LAYOUT (cells, fields and kind ids), IC_LAYOUT (feedback and IC
-//! data) or the Value encoding. The current numbers are in `versions.rs`; a change of any
-//! value moves its owner's version.
+//! (`Cx`, FunctionInfo and RuntimeTable offsets, not the table length: C-18), FRAME (frame
+//! offsets from fp, MC-w16-18), OBJECT_LAYOUT (cells, fields and kind ids), IC_LAYOUT (feedback
+//! and IC data), DEOPT_META (the deopt exit) or the Value encoding. Numbers: `versions.rs`; a
+//! change of any value moves its owner's version (a RuntimeTable append moves none, H13-Q3).
 //!
 //! No item here is read by T0 code; the module adds no instruction to a handler.
 
@@ -27,6 +27,7 @@ use crate::frame::{HEADER, slot};
 use crate::ic::smi;
 use crate::interp::Cx;
 use crate::object::{arr, ctxf, delems, elems, fun, obj};
+use crate::props_index::pif;
 use crate::unit::FunctionInfo;
 
 /// The `Cx` that native code gets and passes back to the table functions. Opaque: native code
@@ -123,6 +124,13 @@ pub struct RuntimeTable {
     /// accumulator there. It calls no recording function (MC-w15-6). M5-P0: a stub that
     /// throws "deopt not built" and returns 0; M5-P1 SPIKEC-5 builds it.
     pub deopt: RtFn2,
+    /// The global load (M6-P0 VM6, V11-D43; SC D4): the value of the global binding that the
+    /// `LdaGlobal` or `LdaGlobalInsideTypeof` at `off` names (its name constant comes from the
+    /// bytecode, so native code bakes no heap constant). It runs T0's GetBindingValue of the
+    /// global environment (the script lexical record, then the global object) and records no
+    /// feedback (MC-w15-6). The value, or 0 with a pending exception: the ReferenceError of a
+    /// TDZ binding or of a missing name outside `typeof`, or the throw of a getter or a trap.
+    pub load_global: RtFn0,
 }
 
 // ---- Cx (the isolate register points at it): VM_LAYOUT ----
@@ -177,6 +185,8 @@ pub const RT_GET_KEYED: usize = offset_of!(RuntimeTable, get_keyed);
 pub const RT_SET_KEYED: usize = offset_of!(RuntimeTable, set_keyed);
 /// VM_LAYOUT. Entry 10 (M5-P0, V10-D39): the eager deopt entry.
 pub const RT_DEOPT: usize = offset_of!(RuntimeTable, deopt);
+/// VM_LAYOUT. Entry 11 (M6-P0 VM6, V11-D43): the global load.
+pub const RT_LOAD_GLOBAL: usize = offset_of!(RuntimeTable, load_global);
 
 // ---- FunctionInfo: VM_LAYOUT ----
 /// VM_LAYOUT. FunctionInfo: the start of its bytecode (`*const u8`).
@@ -257,7 +267,8 @@ pub const OBJECT_FIELDS: u32 = obj::FIXED as u32;
 /// OBJECT_LAYOUT. A JS object's elements store (every JS kind from M5-P1, H18-Q3; arrays
 /// before): an elements cell, or undefined (`object::obj::ELEMENTS`).
 pub const ARRAY_ELEMENTS: u32 = obj::ELEMENTS as u32;
-/// OBJECT_LAYOUT. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
+/// OBJECT_LAYOUT. ARRAY: the length, an int32 Value below 2^31, a double Value from 2^31 on (M5-P2
+/// ELEM2; `object::arr::LENGTH`). The double form is declared, no reader yet (V11-D39).
 pub const ARRAY_LENGTH: u32 = arr::LENGTH as u32;
 /// OBJECT_LAYOUT. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
 pub const ELEMENTS_CAPACITY: u32 = elems::CAPACITY as u32;
@@ -309,6 +320,50 @@ pub const ELEMENTS_KIND_PACKED_ELEMENTS: u8 = ek::PACKED_ELEMENTS;
 pub const ELEMENTS_KIND_HOLEY_ELEMENTS: u8 = ek::HOLEY_ELEMENTS;
 /// OBJECT_LAYOUT (5).
 pub const ELEMENTS_KIND_DICTIONARY: u8 = ek::DICTIONARY;
+// The 4 OBJECT_LAYOUT facts below were Spike C hand facts until M6-P0 (`HAND_FACTS`,
+// MC-w20-7, MC-w23-9; plan v11 §2.4 step 3, v11in #2): the M5-P2 guards read them.
+/// OBJECT_LAYOUT. The cage alignment of the shape rule: an ep9_vm cage is aligned to this and
+/// no larger, so the shape of a cell is the cell at `(address & !(SHAPE_CAGE_ALIGN - 1)) |
+/// ShapeId` (`shape::CAGE_ALIGN`, `shape::shape_of`).
+pub const SHAPE_CAGE_ALIGN: u64 = crate::shape::CAGE_ALIGN as u64;
+/// OBJECT_LAYOUT. A shape's `counts` word, an int32 Value whose bits 28-31
+/// ([`SHAPE_ELEMENTS_KIND_SHIFT`]) are the elements kind of its objects (`shape.rs`
+/// `shf::COUNTS`, a private module: `tests::layout6` proves the value on live shapes).
+pub const SHAPE_COUNTS: u32 = 48;
+/// OBJECT_LAYOUT. Kind id of a shape cell (`kinds::SHAPE`).
+pub const KIND_SHAPE: u8 = crate::kinds::SHAPE.get();
+/// OBJECT_LAYOUT. Kind id of a CONTEXT cell (`kinds::CONTEXT`; the `LoadContextSlot` guard).
+pub const KIND_CONTEXT: u8 = crate::kinds::CONTEXT.get();
+// OBJECT_LAYOUT 6 (M6-P0, plan v11 §2.3): the PROPS_INDEXED cell (built by M6-P1 DICT1) and the
+// FUSE cell (built by M6-P2 FUSE-PI). Declared, no reader yet: no native code reads them.
+/// OBJECT_LAYOUT (6). Kind id of a PROPS_INDEXED cell (84; `kinds::PROPS_INDEXED`): the
+/// property table of a dictionary-mode object with more than 8 entries.
+pub const KIND_PROPS_INDEXED: u8 = crate::kinds::PROPS_INDEXED.get();
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the entry capacity, an int32 Value (`props_index::pif`).
+pub const PROPS_INDEXED_CAPACITY: u32 = pif::CAPACITY as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the live entries (not the deleted ones), an int32 Value.
+pub const PROPS_INDEXED_COUNT: u32 = pif::COUNT as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: the hash index, an ELEMENTS 65 cell (+16 `used`, int32
+/// buckets from +24), or undefined when 8 or fewer entries are live.
+pub const PROPS_INDEXED_INDEX: u32 = pif::INDEX as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: entry `i` (key, value, int32 attributes) is at
+/// `PROPS_INDEXED_ENTRIES + PROPS_INDEXED_ENTRY_SIZE * i`, as in a PROPS cell.
+pub const PROPS_INDEXED_ENTRIES: u32 = pif::ENTRIES as u32;
+/// OBJECT_LAYOUT (6). PROPS_INDEXED: bytes per entry.
+pub const PROPS_INDEXED_ENTRY_SIZE: u32 = pif::ENTRY as u32;
+/// OBJECT_LAYOUT (6). Kind id of a FUSE cell (83; `kinds::FUSE`): a realm's static fuse block,
+/// held as the intrinsic `IntrinsicId::RealmFuses` and mirrored by `Root::RealmFuses`.
+pub const KIND_FUSE: u8 = crate::kinds::FUSE.get();
+/// OBJECT_LAYOUT (6). FUSE: static fuse `i` (`fuse::STATIC` index) is the u32 at
+/// `FUSE_ENTRIES + FUSE_ENTRY_SIZE * i` (raw words, no Value; the GC traces none).
+pub const FUSE_ENTRIES: u32 = 8;
+/// OBJECT_LAYOUT (6). FUSE: bytes per entry (an `ldr w`).
+pub const FUSE_ENTRY_SIZE: u32 = 4;
+/// OBJECT_LAYOUT (6). FUSE: the entry value of an intact fuse; a popped one is 0.
+pub const FUSE_INTACT: u32 = 1;
+/// OBJECT_LAYOUT (6). FUSE: the cell size, one entry per static fuse, rounded up to 8.
+pub const FUSE_SIZE: u32 =
+    (FUSE_ENTRIES + FUSE_ENTRY_SIZE * crate::fuse::STATIC.len() as u32).next_multiple_of(8);
 
 // ---- feedback and IC data: IC_LAYOUT ----
 /// IC_LAYOUT. FEEDBACK cell: the FunctionInfo of its function, a native word
@@ -340,9 +395,21 @@ pub const SMI_SHIFT: u32 = smi::SHIFT;
 /// IC_LAYOUT. Smi handler kind: the field at the byte offset of the object cell
 /// (`ic::smi::FIELD_IN_OBJECT`).
 pub const SMI_FIELD_IN_OBJECT: i32 = smi::FIELD_IN_OBJECT;
-/// IC_LAYOUT. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
-/// (`ic::smi::ARRAY_LENGTH`).
+/// IC_LAYOUT. Smi handler kind: an Array's `length`, the Value at [`ARRAY_LENGTH`] (an int32,
+/// or a double from 2^31 on: declared, no reader yet in native code; `ic::smi::ARRAY_LENGTH`).
 pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
-/// IC_LAYOUT (3). A keyed slot's value half: bit `KEYED_KINDS_SET_SHIFT + k` is set once the
-/// site saw elements kind `k` (0-6; `elements::KINDS_SET_SHIFT`).
+/// IC_LAYOUT (4; 3 for values 0-6). A keyed slot's value half: bit `KEYED_KINDS_SET_SHIFT + k`
+/// is set once the site saw elements kind `k` (0-15, bits 10-25; `elements::KINDS_SET_SHIFT`).
 pub const KEYED_KINDS_SET_SHIFT: u32 = crate::elements::KINDS_SET_SHIFT;
+/// IC_LAYOUT. The key half of a feedback slot, or of a POLY_IC case, that no site filled:
+/// `undefined` (`ic::state` reads the slot as Uninitialized; a new FEEDBACK or POLY_IC cell
+/// keeps the allocator's `undefined` fill). A shape guard compares a key with it for its
+/// "unfilled" exit. Was a Spike C hand fact until M6-P0 (v11in #2, MC-w23-9).
+pub const VALUE_UNDEFINED: u64 = crate::frame::UNDEFINED;
+
+// ---- the deopt exit: DEOPT_META ----
+/// DEOPT_META. Bytes of the shared exit's register dump below sp: word `n` is `xn` for
+/// x0-x30 (`deopt::DUMP_REGS` words, which `RuntimeTable::deopt` reads), rounded up to 16 so sp
+/// stays 16-aligned (M5-P5-ORCH-8, MODES-CHECK-w22 MC-w22-6). Was a Spike C hand fact until
+/// M6-P0 (v11in #2, MC-w23-9).
+pub const DUMP_BYTES: u32 = (crate::deopt::DUMP_REGS * 8).next_multiple_of(16) as u32;

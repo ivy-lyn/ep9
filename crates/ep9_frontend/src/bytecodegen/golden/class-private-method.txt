@@ -132,7 +132,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     126 E 8 (1:9)
     136 E 8 (1:9)
     151 E 0 (1:1)
-function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=8..176
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=0..176
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
@@ -161,7 +161,7 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
   positions (2):
       0 S 0 (1:1)
       5 E 8 (1:9)
-function f3 method name="#m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=12..28
+function f3 method name="#m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=10..28
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
       2    Return                                       ; 92
@@ -172,7 +172,7 @@ function f3 method name="#m" parent=f0 outer_scope=scope1 flags=[strict,simple-p
   handlers (0):
   positions (1):
       0 S 17 (1:18)
-function f4 method name="#s" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=38..60
+function f4 method name="#s" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=36..60
   code (23 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00
@@ -194,7 +194,7 @@ function f4 method name="#s" parent=f0 outer_scope=scope1 flags=[strict,simple-p
       0 S 43 (1:44)
       7 E 50 (1:51)
      16 E 56 (1:57)
-function f5 getter name="get #a" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=67..83
+function f5 getter name="get #a" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=61..83
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
       2    Return                                       ; 92
@@ -205,7 +205,7 @@ function f5 getter name="get #a" parent=f0 outer_scope=scope1 flags=[strict,simp
   handlers (0):
   positions (1):
       0 S 72 (1:73)
-function f6 setter name="set #a" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=90..96
+function f6 setter name="set #a" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=84..96
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -213,7 +213,7 @@ function f6 setter name="set #a" parent=f0 outer_scope=scope1 flags=[strict,simp
   feedback (0):
   handlers (0):
   positions (0):
-function f7 setter name="set #w" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=103..109
+function f7 setter name="set #w" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=97..109
   code (2 bytes):
       0    LdaUndefined                                 ; 05
       1    Return                                       ; 92
@@ -221,7 +221,7 @@ function f7 setter name="set #w" parent=f0 outer_scope=scope1 flags=[strict,simp
   feedback (0):
   handlers (0):
   positions (0):
-function f8 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=4 range=111..174
+function f8 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=4 range=110..174
   code (153 bytes):
       0 S> CreateArrayLiteral k0, s0, #0x01  ; k0 = ArrayBoilerplate [_, _, _, _, _, _] ; 6d 00 00 01
       4    Star r0                                      ; 0c 00

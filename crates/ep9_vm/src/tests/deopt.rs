@@ -1,6 +1,6 @@
 //! Tests of the deopt core (`deopt.rs`) (owner M5-P1 SPIKEC-5; H29, V10-D29, V10-D30): the H29
-//! byte form and its refusals with the list widths (w17 O4: fill each list, then the next
-//! value and tag 15 are refused), the frame rebuild on a synthetic VM frame and machine
+//! byte form and its refusals with the list widths (w17 O4: fill each list, then the top of
+//! its field is refused, never the next free value; v11in #6), the frame rebuild on a synthetic VM frame and machine
 //! state, and the side table's counters. No `jit` and no `spike-native`: they run in the
 //! jitless build (C-10). The native glue (`rt_deopt`) is tested in `tests::native` and by
 //! Spike C.
@@ -9,8 +9,9 @@ use ep9_bytecode::Register;
 use ep9_value::Value;
 
 use crate::deopt::{
-    CodeMeta, DUMP_REGS, ExitClass, ExitState, ExitValue, FrameShape, Loc, Record, RecordTag, Repr,
-    Resume, SideTable, Table, Target, form, rebuild,
+    CodeMeta, DUMP_REGS, ExitClass, ExitReason, ExitState, ExitValue, FrameRecord, FrameShape, Loc,
+    Record, RecordTag, Repr, Resume, SideTable, Table, Target, form, rebuild, swap_returns,
+    walk_records,
 };
 use crate::frame::{HEADER, int32_bits, slot};
 
@@ -26,12 +27,13 @@ fn exit(pc: u32, bytecode: u32, counter: u32, values: Vec<ExitValue>) -> Record 
         bytecode,
         counter,
         feedback: None,
+        reason: ExitReason::Unknown,
         values,
     }
 }
 
-/// A table with every location tag, every repr, the accumulator, a parameter and a local
-/// target, a feedback slot, an environment-class record and a poll and a call record.
+/// A table with every location tag, every repr, every exit class, the accumulator, a parameter
+/// and a local target, a feedback slot, a reason, and a poll and a call record.
 fn sample() -> Table {
     let r = |i| Target::Reg(Register::local(i));
     Table {
@@ -43,6 +45,7 @@ fn sample() -> Table {
         records: vec![
             Record {
                 feedback: Some(4),
+                reason: ExitReason::ShapeDiffers,
                 ..exit(
                     40,
                     17,
@@ -63,6 +66,12 @@ fn sample() -> Table {
             Record {
                 class: ExitClass::Environment,
                 ..exit(44, 0, 2, vec![value(r(0), Repr::Tagged, Loc::Const(1))])
+            },
+            Record {
+                class: ExitClass::NotFilled,
+                feedback: Some(4),
+                reason: ExitReason::NoVector,
+                ..exit(46, 17, 4, vec![value(r(0), Repr::Int32, Loc::Reg(19))])
             },
             Record {
                 tag: RecordTag::Poll,
@@ -88,6 +97,12 @@ fn the_byte_form_round_trips() {
     assert_eq!(Table::decode(&b), Ok(t.clone()));
     assert_eq!(t.record_at(44).map(|r| r.counter), Some(2));
     assert!(t.record_at(45).is_none());
+    // The not-filled record: class 2 in header bits 4-7, reason 3 after the feedback field.
+    let nf = t.record_at(46).expect("record at pc 46");
+    assert_eq!(
+        (nf.class, nf.reason),
+        (ExitClass::NotFilled, ExitReason::NoVector)
+    );
     // Every cut of the table is refused, and so is a byte after it.
     for n in 0..b.len() {
         assert!(
@@ -105,13 +120,30 @@ fn the_byte_form_round_trips() {
 }
 
 /// The bytes of one record of a 1-record table with no const: a header byte, then pc 8,
-/// bytecode 0, counter 0, no feedback, no inline frame, and the value bytes `values`.
-fn one_record(header: u8, inline: u8, values: &[&[u8]]) -> Vec<u8> {
-    let mut b = vec![1, 0, header, 8, 0, 0, 0, inline, values.len() as u8];
+/// bytecode 0, counter 0, no feedback, the uleb reason `reason`, `inline` inline frames, and
+/// the value bytes `values`.
+fn one_record(header: u8, reason: &[u8], inline: u8, values: &[&[u8]]) -> Vec<u8> {
+    let mut b = vec![1, 0, header, 8, 0, 0, 0];
+    b.extend_from_slice(reason);
+    b.extend_from_slice(&[inline, values.len() as u8]);
     for v in values {
         b.extend_from_slice(v);
     }
     b
+}
+
+/// The uleb bytes of `v`.
+fn uleb(mut v: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(b);
+            return out;
+        }
+        out.push(b | 0x80);
+    }
 }
 
 /// The value bytes of `tag` with the accumulator as target and payload `payload`.
@@ -119,53 +151,108 @@ fn acc_value(tag: u8, payload: u8) -> Vec<u8> {
     vec![tag | form::ACC, payload]
 }
 
-/// The H29 lists, filled to their last legal value: the next value and tag 15 (the top of the
-/// 4-bit field, never the next free value, H29 Freeze table) are refused, and so is every
-/// reserved bit.
+/// The H29 lists, filled to their last legal value: each built value decodes to its own name
+/// (a swap or a reuse fails), and the top of each field is refused: record tag 15, exit class
+/// 15, location tag 15, repr 7, reason `u32::MAX` (the reader's width). The next free value
+/// is never probed: a later append fills it (README append rule, H29 Freeze table; v11in #6).
 #[test]
-fn the_list_widths_refuse_the_next_value_and_tag_15() {
-    // Record tags: 0 exit, 1 poll, 2 call.
-    for tag in 0..form::RECORD_TAGS {
-        Table::decode(&one_record(tag, 0, &[])).unwrap_or_else(|e| panic!("record tag {tag}: {e}"));
+fn the_lists_refuse_the_top_value_of_each_field() {
+    let decode = |b: &[u8]| Table::decode(b).map(|t| t.records[0].clone());
+    // Record tags (bits 0-3): 0 exit, 1 poll, 2 call.
+    let tags = [RecordTag::Exit, RecordTag::Poll, RecordTag::Call];
+    assert_eq!(usize::from(form::RECORD_TAGS), tags.len());
+    for (tag, want) in (0u8..).zip(tags) {
+        let r = decode(&one_record(tag, &[0], 0, &[]))
+            .unwrap_or_else(|e| panic!("record tag {tag}: {e}"));
+        assert_eq!(r.tag, want, "record tag {tag}");
     }
-    for tag in [form::RECORD_TAGS, 15] {
-        let e = Table::decode(&one_record(tag, 0, &[])).unwrap_err();
-        assert!(e.contains(&format!("unknown record tag {tag}")), "{e}");
+    assert_eq!(form::RECORD_TAG_MASK, 15, "15 is the top of the field");
+    let e = decode(&one_record(15, &[0], 0, &[])).unwrap_err();
+    assert!(e.contains("unknown record tag 15"), "{e}");
+    // Exit classes (bits 4-7): 0 speculation, 1 environment, 2 not filled.
+    let classes = [
+        ExitClass::Speculation,
+        ExitClass::Environment,
+        ExitClass::NotFilled,
+    ];
+    assert_eq!(usize::from(form::CLASSES), classes.len());
+    for (class, want) in (0u8..).zip(classes) {
+        let r = decode(&one_record(class << form::CLASS_SHIFT, &[0], 0, &[]))
+            .unwrap_or_else(|e| panic!("exit class {class}: {e}"));
+        assert_eq!(r.class, want, "exit class {class}");
     }
-    // Exit classes (bits 4-7): 0 and 1 built; 15 (0xF0) refused, not the next class 2 (H29).
-    Table::decode(&one_record(form::ENVIRONMENT, 0, &[])).expect("environment class");
-    for bit in [0x40, 0x80, 0xF0] {
-        let e = Table::decode(&one_record(bit, 0, &[])).unwrap_err();
-        assert!(e.contains("reserved bits 5-7"), "{e}");
+    assert_eq!(
+        u8::MAX >> form::CLASS_SHIFT,
+        15,
+        "15 is the top of the field"
+    );
+    let e = decode(&one_record(0xF0, &[0], 0, &[])).unwrap_err();
+    assert!(e.contains("unknown exit class 15"), "{e}");
+    // Reasons (a uleb read as a u32): 0 unknown, 1-5 the shape-guard causes.
+    let reasons = [
+        ExitReason::Unknown,
+        ExitReason::ShapeDiffers,
+        ExitReason::NotCell,
+        ExitReason::NoVector,
+        ExitReason::Unfilled,
+        ExitReason::Megamorphic,
+    ];
+    assert_eq!(form::REASONS as usize, reasons.len());
+    for (reason, want) in (0u32..).zip(reasons) {
+        let r = decode(&one_record(0, &uleb(reason.into()), 0, &[]))
+            .unwrap_or_else(|e| panic!("reason {reason}: {e}"));
+        assert_eq!(r.reason, want, "reason {reason}");
     }
+    let e = decode(&one_record(0, &uleb(u32::MAX.into()), 0, &[])).unwrap_err();
+    assert!(
+        e.contains(&format!("unknown exit reason {}", u32::MAX)),
+        "{e}"
+    );
+    let e = decode(&one_record(0, &uleb(u64::from(u32::MAX) + 1), 0, &[])).unwrap_err();
+    assert!(e.contains("too large"), "{e}");
     // Inline frames: none is built.
-    let e = Table::decode(&one_record(0, 1, &[])).unwrap_err();
+    let e = decode(&one_record(0, &[0], 1, &[])).unwrap_err();
     assert!(e.contains("1 inline frames"), "{e}");
-    // Location tags: 0 reg, 1 stack, 2 const-index, 3 VM frame slot (payload 0 is legal for
-    // each but const-index, which needs a const: the table below has none, so it is refused
-    // for its index, not its tag).
-    for loc in [form::LOC_REG, form::LOC_STACK, form::LOC_FRAME] {
-        Table::decode(&one_record(0, 0, &[&acc_value(loc, 0)]))
-            .unwrap_or_else(|e| panic!("location tag {loc}: {e}"));
+    // Location tags (bits 0-3): 0 reg, 1 stack, 2 const-index, 3 VM frame slot (payload 0 is
+    // legal for each but const-index, which needs a const: the table below has none, so it is
+    // refused for its index, not its tag).
+    let locs = [Loc::Reg(0), Loc::Stack(0), Loc::Const(0), Loc::Frame(0)];
+    assert_eq!(usize::from(form::LOC_TAGS), locs.len());
+    for (loc, want) in (0u8..).zip(locs) {
+        let r = decode(&one_record(0, &[0], 0, &[&acc_value(loc, 0)]));
+        if loc == form::LOC_CONST {
+            let e = r.unwrap_err();
+            assert!(e.contains("const 0 of 0"), "{e}");
+            continue;
+        }
+        let r = r.unwrap_or_else(|e| panic!("location tag {loc}: {e}"));
+        assert_eq!(r.values[0].loc, want, "location tag {loc}");
     }
-    let e = Table::decode(&one_record(0, 0, &[&acc_value(form::LOC_CONST, 0)])).unwrap_err();
-    assert!(e.contains("const 0 of 0"), "{e}");
-    assert_eq!(form::LOC_TAGS, form::LOC_FRAME + 1);
-    for loc in [form::LOC_TAGS, 15] {
-        let e = Table::decode(&one_record(0, 0, &[&acc_value(loc, 0)])).unwrap_err();
-        assert!(e.contains(&format!("unknown location tag {loc}")), "{e}");
-    }
-    // Reprs: 0 Tagged, 1 Int32, 2 Bool, 3 Float64 in a 3-bit field; 4 and 7 are refused.
-    for repr in 0..form::REPRS {
+    assert_eq!(form::LOC_MASK, 15, "15 is the top of the field");
+    let e = decode(&one_record(0, &[0], 0, &[&acc_value(15, 0)])).unwrap_err();
+    assert!(e.contains("unknown location tag 15"), "{e}");
+    // Reprs (bits 4-6): 0 Tagged, 1 Int32, 2 Bool, 3 Float64; 7 is the top of the field.
+    let reprs = [Repr::Tagged, Repr::Int32, Repr::Bool, Repr::Float64];
+    assert_eq!(usize::from(form::REPRS), reprs.len());
+    for (repr, want) in (0u8..).zip(reprs) {
         let tag = repr << form::REPR_SHIFT;
-        Table::decode(&one_record(0, 0, &[&acc_value(tag, 0)]))
+        let r = decode(&one_record(0, &[0], 0, &[&acc_value(tag, 0)]))
             .unwrap_or_else(|e| panic!("repr {repr}: {e}"));
+        assert_eq!(r.values[0].repr, want, "repr {repr}");
     }
-    for repr in [form::REPRS, 7] {
-        let tag = repr << form::REPR_SHIFT;
-        let e = Table::decode(&one_record(0, 0, &[&acc_value(tag, 0)])).unwrap_err();
-        assert!(e.contains(&format!("unknown repr {repr}")), "{e}");
-    }
+    assert_eq!(
+        form::REPR_MASK >> form::REPR_SHIFT,
+        7,
+        "7 is the top of the field"
+    );
+    let e = decode(&one_record(
+        0,
+        &[0],
+        0,
+        &[&acc_value(7 << form::REPR_SHIFT, 0)],
+    ))
+    .unwrap_err();
+    assert!(e.contains("unknown repr 7"), "{e}");
 }
 
 /// Each malformed table is refused with its reason.
@@ -192,8 +279,8 @@ fn the_reader_refuses_what_the_form_does_not_allow() {
     refused(&d, "sorted by pc");
     // A counter index past the records.
     let mut k = t.clone();
-    k.records[0].counter = 4;
-    refused(&k, "counter 4 of 4 records");
+    k.records[0].counter = 5;
+    refused(&k, "counter 5 of 5 records");
     // A register past the dump, a stack or frame offset that is not a word, a const index
     // past the list.
     let mut r = t.clone();
@@ -211,8 +298,8 @@ fn the_reader_refuses_what_the_form_does_not_allow() {
     two.records[0].values.push(v);
     refused(&two, "a second value for");
     let mut acc = t.clone();
-    let v = acc.records[3].values[0];
-    acc.records[3].values.push(ExitValue {
+    let v = acc.records[4].values[0];
+    acc.records[4].values.push(ExitValue {
         loc: Loc::Reg(1),
         ..v
     });
@@ -401,7 +488,7 @@ fn the_rebuild_refuses_and_writes_nothing() {
     };
     // SAFETY: as above.
     let e = unsafe { rebuild(&poll, &poll.records[0], &state, fpp, shape) }.unwrap_err();
-    assert!(e.contains("not an exit"), "{e}");
+    assert!(e.contains("not an exit or a call"), "{e}");
     assert_eq!(mem, before);
     let t = Table {
         consts: vec![],
@@ -490,4 +577,138 @@ fn the_side_table_counts_each_exit() {
     assert!(st.is_empty());
     let e = deopt(12, fun).unwrap_err();
     assert!(e.contains("no deopt metadata"), "{e}");
+}
+
+/// SPIKEC-10 (the short lazy-deopt probe, H29-Q4): a call record resumes T0 at its offset
+/// (the instruction after the call) with the call's result (x0) as the accumulator and the
+/// live registers rebuilt, as an exit does; the side table counts it.
+#[test]
+fn a_call_record_resumes_after_the_call_with_its_result() {
+    let (mut mem, fp) = frame(1, 3);
+    let mut regs = [0u64; DUMP_REGS];
+    regs[0] = Value::int32(77).to_bits(); // the call's result
+    regs[19] = 5; // an Int32 live across the call
+    regs[20] = 2.5f64.to_bits(); // a Float64
+    let r = |i: u32| Target::Reg(Register::local(i));
+    let call = Record {
+        tag: RecordTag::Call,
+        class: ExitClass::Environment,
+        ..exit(
+            40,
+            27,
+            0,
+            vec![
+                value(r(0), Repr::Int32, Loc::Reg(19)),
+                value(r(2), Repr::Float64, Loc::Reg(20)),
+                value(Target::Acc, Repr::Tagged, Loc::Reg(0)),
+            ],
+        )
+    };
+    let t = Table {
+        consts: vec![],
+        records: vec![exit(8, 3, 0, vec![]), Record { counter: 1, ..call }],
+    };
+    let shape = FrameShape {
+        registers: 3,
+        params: 1,
+    };
+    let state = ExitState {
+        regs: &regs,
+        native_fp: core::ptr::null(),
+    };
+    let fpp = mem.as_mut_ptr().wrapping_add(fp);
+    // SAFETY: `fpp` is the synthetic frame of `shape`; no stack location.
+    let got = unsafe { rebuild(&t, &t.records[1], &state, fpp, shape) }.expect("rebuild");
+    assert_eq!(
+        got,
+        Resume {
+            bytecode: 27,
+            acc: Value::int32(77).to_bits()
+        }
+    );
+    assert_eq!(word(&mem, fp, 0), int32_bits(5));
+    assert_eq!(
+        word(&mem, fp, 1),
+        int32_bits(fp as i32 + 1),
+        "r1 is not live: kept"
+    );
+    assert_eq!(word(&mem, fp, 2), Value::number(2.5).to_bits());
+    // Through the side table: the record is found by its pc and counted.
+    let st = SideTable::new();
+    let (start, fun) = (0x4000, 0x88);
+    let meta = CodeMeta::read(64, fun, &t.encode(), |o| [3, 27].contains(&o)).expect("read");
+    st.insert(start, meta);
+    // SAFETY: as above.
+    let got = unsafe { st.deopt(start, fun, 40, &state, fpp, shape) }.expect("deopt");
+    assert_eq!(got.bytecode, 27);
+    assert_eq!(st.counters(start), Some(vec![0, 1]));
+}
+
+/// A synthetic frame-record chain in `mem` (16-byte aligned): record `k` at word `2k + 2`
+/// links to record `k + 1`; the last links to 0. Returns the record addresses.
+fn chain(mem: &mut [u64], rets: &[u64]) -> Vec<usize> {
+    let base = mem.as_ptr().addr();
+    let first = base.div_ceil(16) * 16;
+    let at: Vec<usize> = (0..rets.len()).map(|k| first + 32 * k).collect();
+    for (k, &a) in at.iter().enumerate() {
+        let w = (a - base) / 8;
+        mem[w] = at.get(k + 1).map_or(0, |&n| n as u64);
+        mem[w + 1] = rets[k];
+    }
+    at
+}
+
+/// SPIKEC-10: the frame-record walk follows the chain to its end (0), and stops at a record
+/// that is not above the one before it, at `end`, and after `max` records; the swap writes a
+/// site's lazy exit over the return addresses that are that site's return (in the code's
+/// range, at its offset), and leaves every other record, so a second swap changes nothing.
+#[test]
+fn the_lazy_swap_writes_only_the_sites_return_addresses() {
+    let mut mem = vec![0u64; 64];
+    let code = 0x1_0000usize;
+    let rets = [
+        0x9999,            // a Rust frame
+        code as u64 + 332, // the call site's return: swapped
+        code as u64 + 100, // the code, but no site's return
+        0x2_0000 + 332,    // another code at the same offset
+        code as u64 + 332, // a second frame of the same site (recursion): swapped
+    ];
+    let at = chain(&mut mem, &rets);
+    // SAFETY: the records are words of `mem`, alive for the walk.
+    let walked = unsafe { walk_records(at[0], usize::MAX, 64) };
+    let want: Vec<FrameRecord> = at
+        .iter()
+        .zip(rets)
+        .map(|(&a, r)| FrameRecord {
+            at: a,
+            ret: r as usize,
+        })
+        .collect();
+    assert_eq!(walked, want);
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(walk_records(at[0], at[2], 64).len(), 2, "end");
+        assert_eq!(walk_records(at[0], usize::MAX, 3).len(), 3, "max");
+        assert_eq!(walk_records(at[0] + 8, usize::MAX, 64), [], "misaligned");
+        assert_eq!(walk_records(0, usize::MAX, 64), [], "null");
+    }
+    // A record that links down (or to itself) ends the walk there.
+    let w = (at[1] - mem.as_ptr().addr()) / 8;
+    mem[w] = at[0] as u64;
+    // SAFETY: as above.
+    assert_eq!(unsafe { walk_records(at[0], usize::MAX, 64) }.len(), 2);
+    mem[w] = at[2] as u64;
+    let sites = [(332u32, 680u32), (500, 720)];
+    // SAFETY: as above (the records are live words of `mem`).
+    let swapped = unsafe { swap_returns(&walked, code, 896, &sites) };
+    assert_eq!(swapped, [(want[1], code + 332), (want[4], code + 332)]);
+    // SAFETY: as above.
+    let after = unsafe { walk_records(at[0], usize::MAX, 64) };
+    let rets_after: Vec<usize> = after.iter().map(|r| r.ret).collect();
+    assert_eq!(
+        rets_after,
+        [0x9999, code + 680, code + 100, 0x2_0000 + 332, code + 680]
+    );
+    // SAFETY: as above.
+    assert_eq!(unsafe { swap_returns(&after, code, 896, &sites) }, []);
 }

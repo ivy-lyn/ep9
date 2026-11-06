@@ -113,7 +113,8 @@ fn is_callable_takes_proxy_callable() {
 
 #[test]
 fn intrinsic_ids_64_to_71_are_declared_not_made() {
-    assert_eq!(IntrinsicId::ALL.len(), 72);
+    // Append-safe (README §3.4): a pin on one id, not on the count of the list.
+    assert_eq!(IntrinsicId::RealmFuses as usize, 72);
     let new = [
         (IntrinsicId::Proxy, "%Proxy%"),
         (IntrinsicId::RegExp, "%RegExp%"),
@@ -144,12 +145,11 @@ fn intrinsic_ids_64_to_71_are_declared_not_made() {
     }
     let realm = iso.rt.root(crate::runtime::Root::Realm);
     let list = object::record_get(realm, object::realmf::INTRINSICS);
-    assert_eq!(object::list_len(list), 72);
+    assert_eq!(object::list_len(list), IntrinsicId::ALL.len()); // 72 in M4-P0
 }
 
 #[test]
 fn object_classes_11_to_13() {
-    assert_eq!(ObjectClass::ALL.len(), 14);
     let new = [
         (ObjectClass::WeakRef, "WeakRef"),
         (ObjectClass::FinalizationRegistry, "FinalizationRegistry"),
@@ -160,7 +160,7 @@ fn object_classes_11_to_13() {
         assert_eq!(c.name(), name);
         assert_eq!(ObjectClass::from_id(c.id()), Some(c));
     }
-    assert_eq!(ObjectClass::from_id(14), None);
+    assert_eq!(ObjectClass::from_id(u16::MAX), None); // the top of the range (README §3.4)
 }
 
 // ---- IC_LAYOUT 2 ------------------------------------------------------------------------------
