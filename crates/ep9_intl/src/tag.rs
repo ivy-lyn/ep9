@@ -492,9 +492,12 @@ pub fn canonicalize_locale_list<'s>(cx: &mut Cx<'s>, locales: Local<'s>) -> JsRe
     // 5. Let len be ? LengthOfArrayLike(O).
     let len = cx.get(o, "length")?;
     let len = cx.to_length(len)?;
-    // 6-7. For each k < len: if ? HasProperty(O, Pk), read and check the element.
+    // 6-7. For each k < len: if ? HasProperty(O, Pk), read and check the element. A hole runs
+    //      no JS, so the walk to len (up to 2^53 - 1) takes one interrupt budget unit per
+    //      pass (H23 "Interrupt poll").
     let mut k: u64 = 0;
     while k < len {
+        cx.poll_interrupt()?;
         if cx.has_index(o, k)? {
             let v = cx.get_index(o, k)?;
             // 7.c.ii. If kValue is not a String or an Object, throw a TypeError exception.

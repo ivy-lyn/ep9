@@ -68,3 +68,21 @@ print(r.join(" "));"#
         lines(&["TypeError SyntaxError ok"])
     );
 }
+
+/// CanonicalizeLocaleList walks every index below `length` (up to 2^53 - 1), and a hole runs
+/// no JS, so each pass takes one interrupt budget unit (`Cx::poll_interrupt`): a termination
+/// stops the walk. Without the poll the walk of 2^53 - 1 holes runs for about two years.
+#[test]
+fn termination_stops_the_locale_list_walk() {
+    for call in [
+        "Intl.getCanonicalLocales({ length: 2 ** 53 - 1 })",
+        "Intl.Collator.supportedLocalesOf({ length: 2 ** 53 - 1 })",
+        "new Intl.Collator({ length: 2 ** 53 - 1 })",
+    ] {
+        assert_eq!(
+            common::terminate_during(call),
+            Some((true, Some("before".to_string()), Some("again".to_string()))),
+            "{call}"
+        );
+    }
+}

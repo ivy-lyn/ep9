@@ -69,3 +69,58 @@ pub fn run_both(src: &str) -> Result<Vec<String>, String> {
 pub fn lines(v: &[&str]) -> Result<Vec<String>, String> {
     Ok(v.iter().map(|s| s.to_string()).collect())
 }
+
+/// Runs `var stage = 'before'; var r = <call>; stage = 'reached';` on a fresh isolate (no
+/// GC stress) with the termination requested before the script runs, on its own thread.
+/// Nothing polls between the start of the script and the call, so only a poll in the
+/// builtin's loop (`Cx::poll_interrupt`, once the budget of 10,000 units runs out) stops it.
+/// The result: (terminated, `stage` after the run, `stage` after one more script on the same
+/// isolate), or `None` if the run did not end in 60 s (the wait only stops a hung test).
+pub fn terminate_during(call: &str) -> Option<(bool, Option<String>, Option<String>)> {
+    let src = format!("var stage = 'before'; var r = {call}; stage = 'reached';");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(move || {
+            let unit = |src: &str| {
+                ep9_frontend::compile(
+                    src,
+                    SourceOpts::script(Strictness::Sloppy),
+                    CompileOptions::default(),
+                )
+                .expect("compiles")
+            };
+            let mut iso = Isolate::new(IsolateConfig {
+                builtins: Some(&ep9_builtins::TABLE),
+                ..IsolateConfig::default()
+            })
+            .expect("an isolate");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx(|cx| cx.run_script(unit(&src), "call.js").map(|_| ()));
+            let terminated = r.is_err_and(|e| e.terminated);
+            let stage = |iso: &mut Isolate| {
+                iso.with_cx(|cx| {
+                    let v = cx.global_binding("stage")?;
+                    Ok(v.map(|v| cx.display(v)))
+                })
+                .expect("reads")
+            };
+            let before = stage(&mut iso);
+            // The isolate keeps working.
+            iso.with_cx(|cx| {
+                cx.run_script(unit("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let _ = tx.send((terminated, before, stage(&mut iso)));
+        })
+        .expect("a thread");
+    rx.recv_timeout(std::time::Duration::from_secs(60)).ok()
+}
+
+/// The wall time of [`run`] of `src` (no GC stress), and its result.
+pub fn timed(src: &str) -> (std::time::Duration, Result<Vec<String>, String>) {
+    let t = std::time::Instant::now();
+    let r = run(src, false);
+    (t.elapsed(), r)
+}
