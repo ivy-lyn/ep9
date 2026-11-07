@@ -177,3 +177,60 @@ fn finalize_unit_refuses_text_that_fails_the_check() {
         ]))
     );
 }
+
+/// x86-64: a disp32 field ([`Form::X64Disp32`], register-relative) must be the disp32 of a
+/// `[reg + disp32]` operand, whose ModRM byte has mod = 10 (Codex r1 A2-MASM 1 (ii)). The
+/// check reads the ModRM byte before the field, or the one before a SIB byte. Negative
+/// controls: `[rip + disp32]` (mod = 00, rm = 101: a pc-relative field that the form label
+/// would hide), `[disp32 + index]` with no base (mod = 00, SIB base = 101: an absolute
+/// address) and a disp8 operand (mod = 01). `finalize_unit` refuses the RIP-relative one.
+#[test]
+fn an_x64_disp32_field_needs_a_reg_plus_disp32_operand() {
+    let field = |bytes: &[u8]| {
+        let mut t = bytes.to_vec();
+        let at = t.len() as u32;
+        t.extend_from_slice(&0x50i32.to_le_bytes());
+        t.push(0x90);
+        let f = [Field {
+            at,
+            form: Form::X64Disp32,
+        }];
+        check_text(Arch::X64, &t, &f)
+    };
+    // mov rax, [r14 + disp32]; mov rax, [rsp + disp32] (ModRM rm = 100, a SIB byte).
+    assert_eq!(field(&[0x49, 0x8b, 0x86]), []);
+    assert_eq!(field(&[0x48, 0x8b, 0x84, 0x24]), []);
+    // mov rax, [rip + disp32]; mov rax, [disp32] (SIB, no base); mov rax, [rsi + disp8].
+    assert_eq!(
+        field(&[0x48, 0x8b, 0x05]),
+        [Finding::NotRegisterRelative { at: 3 }]
+    );
+    assert_eq!(
+        field(&[0x48, 0x8b, 0x04, 0x25]),
+        [Finding::NotRegisterRelative { at: 4 }]
+    );
+    assert_eq!(
+        field(&[0x48, 0x8b, 0x46]),
+        [Finding::NotRegisterRelative { at: 3 }]
+    );
+    // A field at offset 0 has no ModRM byte.
+    assert_eq!(field(&[]), [Finding::NotRegisterRelative { at: 0 }]);
+
+    // The Codex probe: 48 8b 05 <disp32> as X64Disp32 / LinkSlot(0) gave unit text
+    // `mov rax, [rip + 0x50]`.
+    let mut a = Assembler::new(Arch::X64);
+    a.x64(
+        &[0x48, 0x8b, 0x05, 0, 0, 0, 0],
+        3,
+        Form::X64Disp32,
+        Target::LinkSlot(0),
+    )
+    .unwrap();
+    a.put(&x64::NOP);
+    assert_eq!(
+        finalize_unit(&a.finish().unwrap(), &common::TestUnit),
+        Err(FinalizeError::TextRelocations(vec![
+            Finding::NotRegisterRelative { at: 3 }
+        ]))
+    );
+}

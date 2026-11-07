@@ -213,6 +213,13 @@ pub enum Finding {
         /// The text length.
         len: u32,
     },
+    /// An x86-64 disp32 field ([`Form::X64Disp32`]) that is not the disp32 of a
+    /// `[reg + disp32]` operand: no ModRM byte with mod = 10 before it (for example
+    /// `[rip + disp32]`, a pc-relative field under a register-relative label).
+    NotRegisterRelative {
+        /// The field offset.
+        at: u32,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -228,6 +235,9 @@ impl fmt::Display for Finding {
             Finding::Adrp { at } => write!(f, "+{at:#x}: adrp"),
             Finding::DirectCall { at } => write!(f, "+{at:#x}: bl"),
             Finding::Misaligned { len } => write!(f, "text length {len} is not a multiple of 4"),
+            Finding::NotRegisterRelative { at } => {
+                write!(f, "+{at:#x}: disp32 field not in a [reg + disp32] operand")
+            }
         }
     }
 }
@@ -238,6 +248,7 @@ impl fmt::Display for Finding {
 /// |---|---|---|
 /// | no field is absolute ([`Form::Abs64`]) | yes | yes |
 /// | each pc-relative field reaches a byte of this function's text | yes | yes |
+/// | each [`Form::X64Disp32`] field follows a ModRM byte with mod = 10 (`[reg + disp32]`) | - | yes |
 /// | no `adrp`, no `bl` | yes | - |
 /// | each `b`, `b.cond`, `cbz`/`cbnz`, `tbz`/`tbnz`, `adr` and `ldr` (literal) word reaches a byte of this function's text, with or without a field | yes | - |
 ///
@@ -257,7 +268,11 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
                     out.push(Finding::OutsideFunction { at: f.at, target });
                 }
             }
-            FormClass::RegisterRelative => {}
+            FormClass::RegisterRelative => {
+                if f.form == Form::X64Disp32 && !x64_reg_disp32(text, f.at as usize) {
+                    out.push(Finding::NotRegisterRelative { at: f.at });
+                }
+            }
         }
     }
     if arch == Arch::A64 {
@@ -300,6 +315,19 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// True if the x86-64 disp32 field at `at` is the disp32 of a `[reg + disp32]` operand: the
+/// byte before it is a ModRM byte with mod = 10 and rm != 100, or the byte before that is one
+/// with rm = 100 (a SIB byte between them). Other forms with a disp32 are not register-relative:
+/// mod = 00 with rm = 101 is `[rip + disp32]`, and mod = 00 with SIB base 101 has no base
+/// register. No decoder: the bytes before the field are taken as its operand's ModRM (and SIB).
+fn x64_reg_disp32(text: &[u8], at: usize) -> bool {
+    let modrm = |i: Option<usize>| i.and_then(|i| text.get(i)).map(|&b| (b >> 6, b & 7));
+    match modrm(at.checked_sub(1)) {
+        Some((0b10, rm)) if rm != 0b100 => true,
+        _ => modrm(at.checked_sub(2)) == Some((0b10, 0b100)),
+    }
 }
 
 /// [`check_text`] of a finished unit: empty for every [`UnitCode`] (`finalize_unit` checks
