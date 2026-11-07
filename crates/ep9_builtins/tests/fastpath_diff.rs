@@ -6,8 +6,8 @@
 //! steps beside it in the same build. [`INVENTORY`] lists every one at B0 (the grep
 //! `fast path` over `ep9_vm` and `ep9_builtins`, the RX0b list of `regexp/symbols.rs` and the
 //! JSON string slice of `json/parse.rs`), the fast paths that the same "is this still the
-//! intrinsic?" test guards (`builtins::existing_function`, `Cx::is_builtin`), and the
-//! M7-P0 CALLHOST paths. Each row says how its spec steps run:
+//! intrinsic?" test guards (`builtins::existing_function`, `Cx::is_builtin`), the
+//! M7-P0 CALLHOST paths and the M7-P3 CONSTRUCT row. Each row says how its spec steps run:
 //!
 //! ```text
 //! Off::Switch  Cx::set_human_fast_paths(false) turns it off (ep9_vm call::human_fast_paths):
@@ -121,6 +121,14 @@ const INVENTORY: &[FastPath] = &[
         site: "crates/ep9_vm/src/interp/ops.rs:402 (call_fast; x86-64 form call.rs:960)",
         off: Off::Guard,
         what: "the T0 JS-to-JS call: the frame pushed in the handler",
+    },
+    // ---- M7-P3 CONSTRUCT, a guard form ----
+    FastPath {
+        id: "construct-site",
+        site: "crates/ep9_vm/src/construct_ic.rs fast (the Construct handler, interp/ops.rs)",
+        off: Off::Guard,
+        what: "`new F(...)` of a plain bytecode constructor at a monomorphic site: `this` from \
+               the site's initial shape, the stub and callee frames written in the handler",
     },
     FastPath {
         id: "t0-operators",
@@ -432,6 +440,124 @@ const CASES: &[Case] = &[
         spec: Some(
             "function f(a, b) { return [typeof this, a, b, arguments.length].join(); }\n\
              var o = { f: f }; print(Reflect.apply(f, o, [1]), Reflect.apply(f, o, [1, 2, 3]), Reflect.apply(f, undefined, []), f.length);",
+        ),
+    },
+    // ---- construct-site: the spec form first constructs other functions at each site, 20
+    // times (after the threshold calls the caller has its vector), so the site is megamorphic
+    // and every construct takes the cold path ----
+    Case {
+        path: "construct-site",
+        name: "a plain constructor",
+        src: "function P(x, y) { this.x = x; this.y = y; }\n\
+              P.prototype.sum = function () { return this.x + this.y; };\n\
+              function mk(C, a, b) { return new C(a, b); }\n\
+              var s = 0, o; for (var i = 0; i < 30; i++) { o = mk(P, i, 2); s += o.sum(); }\n\
+              print(s, Object.keys(o).join(), Object.getPrototypeOf(o) === P.prototype, o instanceof P, o.constructor === P, JSON.stringify(o));",
+        spec: Some(
+            "function P(x, y) { this.x = x; this.y = y; }\n\
+             P.prototype.sum = function () { return this.x + this.y; };\n\
+             function mk(C, a, b) { return new C(a, b); } for (var k = 0; k < 20; k++) mk(function D() {}, 0, 0);\n\
+             var s = 0, o; for (var i = 0; i < 30; i++) { o = mk(P, i, 2); s += o.sum(); }\n\
+             print(s, Object.keys(o).join(), Object.getPrototypeOf(o) === P.prototype, o instanceof P, o.constructor === P, JSON.stringify(o));",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "missing and extra arguments, arguments and new.target",
+        src: "function A(a, b, c) { this.n = arguments.length; this.t = new.target === A; this.v = [a, b, c].join('/'); this.s = show.apply(this, arguments); }\n\
+              function mk0(C) { return new C(); } function mk1(C) { return new C(1); } function mk4(C) { return new C(1, 2, 3, 4); }\n\
+              var r; for (var i = 0; i < 20; i++) { r = [mk0(A), mk1(A), mk4(A)]; }\n\
+              print(JSON.stringify(r));",
+        spec: Some(
+            "function A(a, b, c) { this.n = arguments.length; this.t = new.target === A; this.v = [a, b, c].join('/'); this.s = show.apply(this, arguments); }\n\
+             function mk0(C) { return new C(); } function mk1(C) { return new C(1); } function mk4(C) { return new C(1, 2, 3, 4); }\n\
+             for (var k = 0; k < 20; k++) { mk0(function D() {}); mk1(function D() {}); mk4(function D() {}); }\n\
+             var r; for (var i = 0; i < 20; i++) { r = [mk0(A), mk1(A), mk4(A)]; }\n\
+             print(JSON.stringify(r));",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "a new prototype, a prototype that is not an object, a returned object",
+        src: "function P() { this.k = 1; }\n\
+              function R(o) { this.k = 2; return o; }\n\
+              function mk(C, a) { return new C(a); } function mkr(C, a) { return new C(a); }\n\
+              var out = '', rs = [];\n\
+              for (var i = 0; i < 30; i++) {\n\
+                if (i === 10) P.prototype = { tag: 'b' };\n\
+                if (i === 20) P.prototype = 5;\n\
+                var p = mk(P); out += Object.getPrototypeOf(p) === Object.prototype ? 'O' : (p.tag || 'a');\n\
+                var x = mkr(R, i % 3 === 0 ? { z: i } : (i % 3 === 1 ? i : null)); rs.push(x.z === undefined ? x.k : x.z);\n\
+              }\n\
+              print(out, rs.join());",
+        spec: Some(
+            "function P() { this.k = 1; }\n\
+             function R(o) { this.k = 2; return o; }\n\
+             function mk(C, a) { return new C(a); } function mkr(C, a) { return new C(a); }\n\
+             for (var k = 0; k < 20; k++) { mk(function D() {}); mkr(function D() {}); }\n\
+             var out = '', rs = [];\n\
+             for (var i = 0; i < 30; i++) {\n\
+               if (i === 10) P.prototype = { tag: 'b' };\n\
+               if (i === 20) P.prototype = 5;\n\
+               var p = mk(P); out += Object.getPrototypeOf(p) === Object.prototype ? 'O' : (p.tag || 'a');\n\
+               var x = mkr(R, i % 3 === 0 ? { z: i } : (i % 3 === 1 ? i : null)); rs.push(x.z === undefined ? x.k : x.z);\n\
+             }\n\
+             print(out, rs.join());",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "class constructors, field initializers and a derived class",
+        src: "class B { constructor(x) { this.x = x; } get dbl() { return this.x * 2; } }\n\
+              class F { a = 1; b = this.a + 1; constructor(c) { this.c = c; } }\n\
+              class E extends B { constructor(x) { super(x); this.e = new.target === E; } }\n\
+              function mkB(C, a) { return new C(a); } function mkF(C, a) { return new C(a); } function mkE(C, a) { return new C(a); }\n\
+              var s = 0, f, e; for (var i = 0; i < 20; i++) { s += mkB(B, i).dbl; f = mkF(F, i); e = mkE(E, i); }\n\
+              print(s, JSON.stringify(f), JSON.stringify(e), e instanceof B, Object.keys(f).join());",
+        spec: Some(
+            "class B { constructor(x) { this.x = x; } get dbl() { return this.x * 2; } }\n\
+             class F { a = 1; b = this.a + 1; constructor(c) { this.c = c; } }\n\
+             class E extends B { constructor(x) { super(x); this.e = new.target === E; } }\n\
+             function mkB(C, a) { return new C(a); } function mkF(C, a) { return new C(a); } function mkE(C, a) { return new C(a); }\n\
+             for (var k = 0; k < 20; k++) { mkB(class D {}); mkF(class D {}); mkE(class D {}); }\n\
+             var s = 0, f, e; for (var i = 0; i < 20; i++) { s += mkB(B, i).dbl; f = mkF(F, i); e = mkE(E, i); }\n\
+             print(s, JSON.stringify(f), JSON.stringify(e), e instanceof B, Object.keys(f).join());",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "a throw in the constructor and a stack overflow of constructs",
+        src: "function T(n) { if (n === 15) throw new RangeError('at ' + n); this.n = n; }\n\
+              function mk(C, a) { return new C(a); }\n\
+              var r = []; for (var i = 0; i < 20; i++) { try { r.push(mk(T, i).n); } catch (e) { r.push(e.name + ':' + e.message); } }\n\
+              function D(n) { this.d = n > 0 ? mkd(D, n - 1) : null; }\n\
+              function mkd(C, a) { return new C(a); }\n\
+              var depth = 'none'; try { mkd(D, 1e6); } catch (e) { depth = e.name; }\n\
+              print(r.join(), depth, mkd(D, 3).d.d.d.d);",
+        spec: Some(
+            "function T(n) { if (n === 15) throw new RangeError('at ' + n); this.n = n; }\n\
+             function mk(C, a) { return new C(a); } for (var k = 0; k < 20; k++) mk(function X() {});\n\
+             var r = []; for (var i = 0; i < 20; i++) { try { r.push(mk(T, i).n); } catch (e) { r.push(e.name + ':' + e.message); } }\n\
+             function D(n) { this.d = n > 0 ? mkd(D, n - 1) : null; }\n\
+             function mkd(C, a) { return new C(a); } for (var k = 0; k < 20; k++) mkd(function X() {});\n\
+             var depth = 'none'; try { mkd(D, 1e6); } catch (e) { depth = e.name; }\n\
+             print(r.join(), depth, mkd(D, 3).d.d.d.d);",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "a long list of constructed cells across collections",
+        src: "function N(v, next) { this.v = v; this.next = next; }\n\
+              function mk(C, a, b) { return new C(a, b); }\n\
+              var l = null; for (var i = 0; i < 50000; i++) l = mk(N, i, l);\n\
+              var s = 0, n = 0; for (var p = l; p; p = p.next) { s += p.v; n++; }\n\
+              print(n, s, l.v, Object.keys(l).join());",
+        spec: Some(
+            "function N(v, next) { this.v = v; this.next = next; }\n\
+             function mk(C, a, b) { return new C(a, b); } for (var k = 0; k < 20; k++) mk(function D() {});\n\
+             var l = null; for (var i = 0; i < 50000; i++) l = mk(N, i, l);\n\
+             var s = 0, n = 0; for (var p = l; p; p = p.next) { s += p.v; n++; }\n\
+             print(n, s, l.v, Object.keys(l).join());",
         ),
     },
     Case {
