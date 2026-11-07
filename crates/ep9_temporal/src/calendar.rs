@@ -8,7 +8,7 @@
 //! astronomy code of `calendrical_calculations` has no runtime caller (INTL-I1-D2;
 //! `tools/calprobe` counts the calls).
 //!
-//! A Temporal object keeps its calendar in a slot as an ep9 code (append-only; [`CODES`]):
+//! A Temporal object keeps its calendar in a slot as an ep9 code (append-only; `CODES`):
 //!
 //! ```text
 //!  0 iso8601    4 dangi      8 hebrew          12 islamic-umalqura
