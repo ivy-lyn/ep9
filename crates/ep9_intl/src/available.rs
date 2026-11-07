@@ -995,7 +995,7 @@ mod tests {
         for l in locales() {
             assert_eq!(
                 crate::tag::canonicalize_tag(l).as_deref(),
-                Some(l.as_str()),
+                Ok(l.as_str()),
                 "{l}"
             );
         }

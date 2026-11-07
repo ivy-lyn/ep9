@@ -417,7 +417,7 @@ pub fn initialize<'s>(
     let opt = [("co", collation), ("kn", numeric), ("kf", case_first)];
     let r = resolve::resolve_locale(cx, &requested, &opt, &["co", "kf", "kn"], &|l, k| {
         key_data(l, k, search)
-    });
+    })?;
     let keyword = |k: &str| {
         r.keywords
             .iter()

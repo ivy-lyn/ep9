@@ -33,7 +33,7 @@ use icu_locale_core::LanguageIdentifier;
 
 use crate::locale_info;
 use crate::options::{coerce_options_to_object, get_boolean_option, get_string_option};
-use crate::tag::{self, canonicalize_tag, canonicalize_unicode_value};
+use crate::tag::{self, TagError, canonicalize_tag, canonicalize_unicode_value};
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 30;
@@ -229,11 +229,12 @@ impl BaseName {
 }
 
 /// The canonical form of the structurally valid tag `tag` with the case of its base name set
-/// (see [`BaseName::text`]), or `None` if it is not structurally valid.
-pub fn canonical_locale(tag: &str) -> Option<String> {
+/// (see [`BaseName::text`]), or the [`TagError`] of `tag::parse` (not structurally valid, or
+/// over the tag length limit).
+pub fn canonical_locale(tag: &str) -> Result<String, TagError> {
     let c = canonicalize_tag(tag)?;
     let (base, rest) = BaseName::split(&c);
-    Some(format!("{}{rest}", base.text()))
+    Ok(format!("{}{rest}", base.text()))
 }
 
 /// Matches the `type` nonterminal of UTS 35 (`alphanum{3,8} (sep alphanum{3,8})*`).
@@ -258,7 +259,7 @@ pub fn weekday_to_string(fw: &str) -> String {
 fn unicode_components(tag: &str) -> (Vec<String>, Vec<(String, String)>) {
     let mut attributes = Vec::new();
     let mut keywords: Vec<(String, String)> = Vec::new();
-    let Some(p) = tag::parse(tag) else {
+    let Some(p) = tag::parse_canonical(tag) else {
         return (attributes, keywords);
     };
     let Some((_, subtags)) = p.extensions.iter().find(|(s, _)| *s == b'u') else {
@@ -290,9 +291,13 @@ pub struct LocaleRecord {
 
 /// MakeLocaleRecord ( tag, options, localeExtensionKeys ) (14.1.2) for the canonical tag
 /// `tag` and the option value of each key of [`KEYS`] (`None`: undefined), then the canonical
-/// form of the result (InsertUnicodeExtensionAndCanonicalize). `None` if the result is not
-/// structurally valid (it does not happen for values that match the `type` nonterminal).
-pub fn make_locale_record(tag: &str, options: &[Option<String>; 7]) -> Option<LocaleRecord> {
+/// form of the result (InsertUnicodeExtensionAndCanonicalize). An error if the result is not
+/// structurally valid (it does not happen for values that match the `type` nonterminal) or
+/// is over the tag length limit (a long option value).
+pub fn make_locale_record(
+    tag: &str,
+    options: &[Option<String>; 7],
+) -> Result<LocaleRecord, TagError> {
     let (attributes, mut keywords) = unicode_components(tag);
     for (i, key) in KEYS.iter().enumerate() {
         // a-b. The value of the keyword `key` in the tag, if there is one (read back from the
@@ -345,7 +350,7 @@ pub fn make_locale_record(tag: &str, options: &[Option<String>; 7]) -> Option<Lo
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.clone())
     });
-    Some(LocaleRecord { locale, keys })
+    Ok(LocaleRecord { locale, keys })
 }
 
 /// The ICU4X language id of `base` (language, script, region; no variants), or `None` if
@@ -440,9 +445,8 @@ fn create<'s>(
 /// A new Intl.Locale object (prototype `%Intl.Locale.prototype%` of the current realm) for the
 /// canonical tag `tag`: Construct(%Intl.Locale%, « tag ») with no options.
 fn create_from_tag<'s>(cx: &mut Cx<'s>, tag: &str) -> JsResult<Local<'s>> {
-    let Some(r) = make_locale_record(tag, &Default::default()) else {
-        return Err(cx.throw_range_error(&format!("Incorrect locale information provided: {tag}")));
-    };
+    let r = make_locale_record(tag, &Default::default())
+        .map_err(|e| cx.throw_range_error(&e.message(tag)))?;
     let proto = cx.intrinsic(IntrinsicId::IntlLocalePrototype);
     create(cx, proto, &r)
 }
@@ -525,12 +529,7 @@ fn update_language_id<'s>(
         },
     };
     let new_tag = format!("{}{extensions}", new_base.text());
-    match canonical_locale(&new_tag) {
-        Some(t) => Ok(t),
-        None => {
-            Err(cx.throw_range_error(&format!("Incorrect locale information provided: {new_tag}")))
-        }
-    }
+    canonical_locale(&new_tag).map_err(|e| cx.throw_range_error(&e.message(&new_tag)))
 }
 
 /// A Unicode extension option (GetOption string, then the `type` check): calendar,
@@ -574,9 +573,7 @@ fn constructor<'s>(
     // 10. Set options to ? CoerceOptionsToObject(options).
     let options = coerce_options_to_object(cx, args.get(1))?;
     // 11-12. IsStructurallyValidLanguageTag, CanonicalizeUnicodeLocaleId.
-    let Some(tag) = canonical_locale(&tag) else {
-        return Err(cx.throw_range_error(&format!("Incorrect locale information provided: {tag}")));
-    };
+    let tag = canonical_locale(&tag).map_err(|e| cx.throw_range_error(&e.message(&tag)))?;
     // 13. Set tag to ? UpdateLanguageId(tag, options).
     let tag = update_language_id(cx, &tag, options)?;
     // 14-33. The Unicode extension options, in KEYS order of reading:
@@ -605,9 +602,7 @@ fn constructor<'s>(
     opt[5] = get_boolean_option(cx, options, "numeric", None)?.map(|b| b.to_string());
     opt[6] = type_option(cx, options, "numberingSystem")?;
     // 34. Let r be MakeLocaleRecord(tag, opt, localeExtensionKeys).
-    let Some(r) = make_locale_record(&tag, &opt) else {
-        return Err(cx.throw_range_error(&format!("Incorrect locale information provided: {tag}")));
-    };
+    let r = make_locale_record(&tag, &opt).map_err(|e| cx.throw_range_error(&e.message(&tag)))?;
     // 35-44. The slots; return locale.
     create(cx, proto, &r)
 }
@@ -846,7 +841,7 @@ mod tests {
         assert_eq!((b.region, b.variants.len()), (None, 2));
         assert_eq!(
             canonical_locale("abcdefgh-latn-us").as_deref(),
-            Some("abcdefgh-Latn-US")
+            Ok("abcdefgh-Latn-US")
         );
     }
 

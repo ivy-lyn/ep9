@@ -36,7 +36,7 @@ pub fn default_locale(cx: &mut Cx<'_>) -> String {
     DEFAULT
         .get_or_init(|| {
             cx.default_locale()
-                .and_then(|t| tag::canonicalize_tag(&t))
+                .and_then(|t| tag::canonicalize_tag(&t).ok())
                 .map(|t| tag::remove_unicode_extension(&t))
                 .and_then(|t| best_available_locale(&t))
                 .unwrap_or_else(|| FALLBACK_LOCALE.to_string())
@@ -102,14 +102,15 @@ pub struct ResolvedLocale {
 /// ResolveLocale ( availableLocales, requestedLocales, options, relevantExtensionKeys,
 /// localeData ) (9.2.7). `options` holds the option value of each key that the constructor
 /// read (`None`: undefined). `locale_data(found_locale, key)` gives the key's data list,
-/// default first.
+/// default first. A RangeError only if the result tag is over the tag length limit
+/// (`tag::MAX_TAG_LEN`; it does not happen: an available locale and supported values).
 pub fn resolve_locale(
     cx: &mut Cx<'_>,
     requested: &[String],
     options: &[(&str, Option<String>)],
     relevant_keys: &[&str],
     locale_data: &dyn Fn(&str, &str) -> KeyData,
-) -> ResolvedLocale {
+) -> JsResult<ResolvedLocale> {
     // 1-3. matcher: both values run the lookup matcher; none matched: DefaultLocale.
     let r = lookup_matching_locale(requested).unwrap_or_else(|| Match {
         locale: default_locale(cx),
@@ -160,19 +161,26 @@ pub fn resolve_locale(
     let locale = if supported.is_empty() {
         found.clone()
     } else {
-        insert_unicode_extension(&found, &supported)
+        match insert_unicode_extension(&found, &supported) {
+            Ok(l) => l,
+            Err(e) => return Err(cx.throw_range_error(&e.message(&found))),
+        }
     };
-    ResolvedLocale {
+    Ok(ResolvedLocale {
         locale,
         data_locale: found,
         keywords,
-    }
+    })
 }
 
 /// InsertUnicodeExtensionAndCanonicalize ( locale, attributes, keywords ) (6.2.3) with no
 /// attributes: `locale` (no Unicode extension) with `-u-<key>[-<value>]...` put before any
-/// private-use part, then canonicalized.
-pub fn insert_unicode_extension(locale: &str, keywords: &[(String, String)]) -> String {
+/// private-use part, then canonicalized. The error of the canonicalization (a result over
+/// the tag length limit) is kept, not hidden.
+pub fn insert_unicode_extension(
+    locale: &str,
+    keywords: &[(String, String)],
+) -> Result<String, tag::TagError> {
     let mut ext = String::from("-u");
     for (k, v) in keywords {
         ext.push('-');
@@ -186,7 +194,7 @@ pub fn insert_unicode_extension(locale: &str, keywords: &[(String, String)]) -> 
         Some(i) => format!("{}{ext}{}", &locale[..i], &locale[i..]),
         None => format!("{locale}{ext}"),
     };
-    tag::canonicalize_tag(&joined).unwrap_or(joined)
+    tag::canonicalize_tag(&joined)
 }
 
 /// LookupSupportedLocales ( availableLocales, requestedLocales ) (9.2.8): the requested
@@ -253,11 +261,11 @@ mod tests {
                     ("co".into(), "phonebk".into())
                 ]
             ),
-            "de-u-co-phonebk-kn"
+            Ok("de-u-co-phonebk-kn".to_string())
         );
         assert_eq!(
             insert_unicode_extension("de-x-priv", &[("co".into(), "phonebk".into())]),
-            "de-u-co-phonebk-x-priv"
+            Ok("de-u-co-phonebk-x-priv".to_string())
         );
     }
 }

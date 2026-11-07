@@ -131,10 +131,59 @@ fn owned(s: &[&str]) -> Vec<String> {
     s.iter().map(|t| (*t).to_string()).collect()
 }
 
+/// The engine limit on the length of a language tag, in code units (H23 "Size limits"): a
+/// longer tag is a RangeError ([`TagError::TooLong`]). No ECMA-402 text gives a limit; it
+/// bounds the time of the ICU4X steps, whose subtag lists grow by one reallocation per
+/// subtag (icu_locale_core `ShortBoxSlice`, O(n^2) past about 120,000 subtags). At this
+/// length the worst list takes about 67 ms; the longest test262 tag has 80 characters.
+pub const MAX_TAG_LEN: usize = 65_536;
+
+/// Why a language tag gives a RangeError.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagError {
+    /// It is not structurally valid (IsStructurallyValidLanguageTag, 6.2.1).
+    Invalid,
+    /// It is longer than [`MAX_TAG_LEN`] code units (an engine limit): its length.
+    TooLong(usize),
+}
+
+impl TagError {
+    /// The RangeError message for the tag `tag` (the input of the step that failed). A tag
+    /// that is too long is not put in the message.
+    pub fn message(self, tag: &str) -> String {
+        match self {
+            TagError::Invalid => format!("Incorrect locale information provided: {tag}"),
+            TagError::TooLong(n) => format!(
+                "Incorrect locale information provided: a language tag of {n} code units is \
+                 longer than the limit of {MAX_TAG_LEN}"
+            ),
+        }
+    }
+}
+
 /// Parses `tag` by the `unicode_locale_id` grammar of UTS 35 with the ECMA-402 limits
-/// (IsStructurallyValidLanguageTag, 6.2.1): `None` if it is not structurally valid. The
-/// subtags of the result are lower case.
-pub fn parse(tag: &str) -> Option<Parsed> {
+/// (IsStructurallyValidLanguageTag, 6.2.1): [`TagError::Invalid`] if it is not structurally
+/// valid, [`TagError::TooLong`] if it is longer than [`MAX_TAG_LEN`] code units (checked
+/// first, before the subtag split). The subtags of the result are lower case.
+pub fn parse(tag: &str) -> Result<Parsed, TagError> {
+    if tag.is_empty() || !tag.is_ascii() {
+        return Err(TagError::Invalid);
+    }
+    // ASCII: one byte is one code unit.
+    if tag.len() > MAX_TAG_LEN {
+        return Err(TagError::TooLong(tag.len()));
+    }
+    parse_grammar(tag).ok_or(TagError::Invalid)
+}
+
+/// [`parse`] with no length limit, for a tag that this crate made from a tag that passed
+/// [`parse`] (a canonical tag can be a little longer than its input: an alias value).
+pub fn parse_canonical(tag: &str) -> Option<Parsed> {
+    parse_grammar(tag)
+}
+
+/// The grammar of [`parse`], with no length limit.
+fn parse_grammar(tag: &str) -> Option<Parsed> {
     if tag.is_empty() || !tag.is_ascii() {
         return None;
     }
@@ -222,9 +271,9 @@ pub fn parse(tag: &str) -> Option<Parsed> {
     Some(out)
 }
 
-/// IsStructurallyValidLanguageTag ( locale ) (6.2.1).
+/// IsStructurallyValidLanguageTag ( locale ) (6.2.1), with no length limit.
 pub fn is_structurally_valid_language_tag(tag: &str) -> bool {
-    parse(tag).is_some()
+    parse_grammar(tag).is_some()
 }
 
 /// The -u- and -t- value aliases of the CLDR bcp47 data (`common/bcp47/*.xml`, the `alias`
@@ -431,8 +480,8 @@ pub fn canonicalize_parsed(p: &Parsed) -> String {
     }
 }
 
-/// The canonical form of `tag` (6.2.2), or `None` if it is not structurally valid (6.2.1).
-pub fn canonicalize_tag(tag: &str) -> Option<String> {
+/// The canonical form of `tag` (6.2.2), or the [`TagError`] of [`parse`].
+pub fn canonicalize_tag(tag: &str) -> Result<String, TagError> {
     parse(tag).map(|p| canonicalize_parsed(&p))
 }
 
@@ -462,7 +511,9 @@ pub fn remove_unicode_extension(tag: &str) -> String {
 /// (value "" for "true"). Attributes are left out.
 pub fn unicode_keywords(tag: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    let Some(p) = parse(tag) else { return out };
+    let Some(p) = parse_canonical(tag) else {
+        return out;
+    };
     let Some((_, subtags)) = p.extensions.iter().find(|(s, _)| *s == b'u') else {
         return out;
     };
@@ -538,10 +589,7 @@ fn element_tag<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<String> {
     } else {
         cx.to_rust_string(v)?
     };
-    match canonicalize_tag(&tag) {
-        Some(t) => Ok(t),
-        None => Err(cx.throw_range_error(&format!("Incorrect locale information provided: {tag}"))),
-    }
+    canonicalize_tag(&tag).map_err(|e| cx.throw_range_error(&e.message(&tag)))
 }
 
 #[cfg(test)]
@@ -610,7 +658,10 @@ mod tests {
         let tag = format!("en-{}", variants.join("-"));
         let repeat = format!("{tag}-v1000000");
         let t = std::time::Instant::now();
-        assert_eq!(parse(&tag).map(|p| p.variants.len()), Some(100_000));
+        assert_eq!(
+            parse_canonical(&tag).map(|p| p.variants.len()),
+            Some(100_000)
+        );
         assert!(!is_structurally_valid_language_tag(&repeat));
         let took = t.elapsed();
         assert!(took < std::time::Duration::from_secs(5), "{took:?}");
@@ -659,7 +710,7 @@ mod tests {
             ("abcdefgh", "abcdefgh"),
             ("abcde-hepburn-heploc", "abcde-alalc97"),
         ] {
-            assert_eq!(canonicalize_tag(t).as_deref(), Some(want), "{t}");
+            assert_eq!(canonicalize_tag(t).as_deref(), Ok(want), "{t}");
         }
     }
 
