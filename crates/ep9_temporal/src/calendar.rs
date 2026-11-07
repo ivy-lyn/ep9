@@ -91,11 +91,11 @@ const CALENDAR_SLOT: usize = 3;
 /// The slot code of `cal` (a calendar from [`canonicalize_calendar`], [`string_calendar`] or
 /// a slot).
 pub(crate) fn to_slot(cal: &Calendar) -> i32 {
-    let id = cal.identifier();
-    match CODES.iter().position(|c| c.identifier() == id) {
+    let kind = cal.kind();
+    match CODES.iter().position(|c| c.kind() == kind) {
         Some(i) => i as i32,
         None => {
-            debug_assert!(false, "calendar {id} has no slot code");
+            debug_assert!(false, "calendar {} has no slot code", cal.identifier());
             CAL_ISO8601
         }
     }
@@ -111,7 +111,10 @@ pub(crate) fn from_slot(code: f64) -> Calendar {
 /// CalendarSupportsEra (ECMA-402 Temporal): every available calendar but `chinese`, `dangi`
 /// and `iso8601` has eras.
 pub(crate) fn supports_era(cal: &Calendar) -> bool {
-    !matches!(cal.identifier(), "chinese" | "dangi" | "iso8601")
+    let kind = cal.kind();
+    kind != Calendar::ISO.kind()
+        && kind != Calendar::CHINESE.kind()
+        && kind != Calendar::DANGI.kind()
 }
 
 /// CanonicalizeCalendar (§12.2.1) of the String `id`: its ASCII-lowercase form must be an
@@ -159,7 +162,7 @@ pub(crate) fn string_calendar(
 /// "If CalendarEquals(one, two) is false, throw a RangeError exception" (the `until`,
 /// `since` step before the options are read).
 pub(crate) fn require_same(cx: &mut Cx<'_>, one: &Calendar, two: &Calendar) -> JsResult<()> {
-    if one.identifier() == two.identifier() {
+    if one.kind() == two.kind() {
         Ok(())
     } else {
         let msg = format!(
@@ -335,8 +338,12 @@ impl CalendarBag {
 
 // ---- ISO dates of temporal_rs values ---------------------------------------------------------
 
-/// The ISO date (year, month, day) of `d` (its `[[ISODate]]`; `d.year()` is the calendar year).
+/// The ISO date (year, month, day) of `d` (its `[[ISODate]]`; `d.year()` is the calendar year,
+/// equal to the ISO year only for iso8601).
 pub(crate) fn iso_of_date(d: &PlainDate) -> (i32, u8, u8) {
+    if d.calendar().is_iso() {
+        return (d.year(), d.month(), d.day());
+    }
     let iso = d.with_calendar(Calendar::ISO);
     (iso.year(), iso.month(), iso.day())
 }
@@ -345,6 +352,10 @@ pub(crate) fn iso_of_date(d: &PlainDate) -> (i32, u8, u8) {
 /// private; `epoch_ns_for_utc` is that date at noon UTC, so its day number gives it back.
 pub(crate) fn iso_of_year_month(ym: &PlainYearMonth) -> (i32, u8, u8) {
     const NS_PER_DAY: i128 = 86_400_000_000_000;
+    // iso8601: the calendar fields are the ISO fields.
+    if ym.calendar().is_iso() {
+        return (ym.year(), ym.month(), ym.reference_day());
+    }
     let days = ym.epoch_ns_for_utc().0.div_euclid(NS_PER_DAY);
     iso_date_of_epoch_days(days as i64)
 }
