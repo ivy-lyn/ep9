@@ -318,10 +318,10 @@ impl Isolate {
             feedback_threshold: config.feedback_threshold,
             interrupt: Arc::as_ptr(&rt.terminate),
             native_limit: rt.native_limit,
-            #[cfg(feature = "spike-native")]
+            // The process table in every build (MC-w30-8, M7-P3 A2-ENTRY): until then it was
+            // null without `spike-native`. Native code and unit text call its entries by
+            // their byte offsets (`layout::RT_*`, `tests/golden/runtime-table.txt`).
             runtime_table: &crate::native::RUNTIME_TABLE,
-            #[cfg(not(feature = "spike-native"))]
-            runtime_table: core::ptr::null(),
             realm: rt.root(Root::Realm),
             unit_data: 0,
         });

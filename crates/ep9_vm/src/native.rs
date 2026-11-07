@@ -1,5 +1,5 @@
-//! The native entry for spike-made code (Spike B, D21; feature `spike-native` only, never in
-//! the ep9 graph: dep-guards check 11). Owners: P1-NATIVE-ENTRY, then P2-SPIKE-B.
+//! The native entry (Spike B, D21): in every build since M7-P3 A2-ENTRY (C-10, no `jit`); the
+//! spike API stays behind `spike-native` (dep-guards check 11). Owners: P2-SPIKE-B, A2-ENTRY.
 //!
 //! ```text
 //! T0 call (slow/call.rs) --FUNCTION, not host, not class ctor, Baseline / AotBaseline
@@ -23,7 +23,7 @@
 //! | The T0 entry records no feedback and does not count the call (`feedback::count_call`) | the spike JIT records no feedback (plan-v3 §5 P2-SPIKE-B) |
 //! | The T0 entry checks no native stack limit | the native prologue compares `Cx::native_limit` (H23-Q5); `call_any` checks it before every nested native or T0 entry, so T0↔native recursion ends in a catchable RangeError |
 //!
-//! Rust -> native: [`call_from_rust`] (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
+//! Rust -> native: `call_from_rust` (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
 //! native-slotted function from Rust with an entry frame (return pc = the `Exit` stub), as
 //! `call::call_function_object` does for T0. The general paths still refuse native code: a call
 //! from Rust through `call::call_function_object` (for example `Cx::call` or a builtin
@@ -36,10 +36,10 @@
 //! Realms (H22-Q3): native code runs in its function's realm, as T0 code does. The T0 entries
 //! (`native_entry`, `call_native`, `enter_b_cold`, `call_fast`) take a callee of the caller's
 //! realm only. A native-slotted or (b) callee of another realm is entered nested from
-//! `slow::call` ([`call_in_its_realm`]), and `call_any`, [`call_from_rust`] and [`run_b`]
+//! `slow::call` ([`call_in_its_realm`]), and `call_any`, `call_from_rust` and [`run_b`]
 //! switch too: `realm::enter_realm_of` before OrdinaryCallBindThis, `realm::leave` after the
 //! return or throw.
-
+#![cfg_attr(not(feature = "spike-native"), allow(dead_code, unused_imports))]
 use core::ops::Range;
 
 use ep9_bytecode::Opcode;
@@ -104,7 +104,7 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     deopt: rt_deopt,
     load_global: rt_load_global,
 };
-
+#[cfg(feature = "spike-native")]
 impl RuntimeTable {
     /// The entries in declaration order: name, byte offset, function type. The list is an
     /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
@@ -131,7 +131,7 @@ impl RuntimeTable {
         &RUNTIME_TABLE
     }
 }
-
+#[cfg(feature = "spike-native")]
 impl NativeCx {
     /// The `Cx` of `iso` as native code gets it (the isolate register). Only native code and
     /// the table functions may use the pointer, and only while `iso` lives and runs nothing
@@ -472,7 +472,7 @@ native_fns! {
     ///
     /// # Safety
     /// As [`rt_poll`], from a shared exit: `dump` holds x0-x30 at the exit and `native_fp` is
-    /// its x29, and the code runs with the metadata [`NativeCx::install_b_with_deopt`] took.
+    /// its x29, and the code runs with the metadata `NativeCx::install_b_with_deopt` took.
     unsafe fn rt_deopt(cx: *mut NativeCx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64) -> u64 {
         // SAFETY: caller contract: `cx` is the Cx native code got (see `enter`).
         let cx = unsafe { &mut *cx.cast::<Cx>() };
@@ -655,7 +655,7 @@ fn not_call(cx: &mut Cx, off: usize) -> Throw {
 
 // ---- the spike API -------------------------------------------------------------------------
 
-/// Why [`install_native`] or [`uninstall_native`] refused.
+/// Why [`install_code`] or [`uninstall_code`] (or the spike `install_native`) refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallError {
     /// The value is not a FUNCTION with bytecode (a host or bound function, or no function).
@@ -669,14 +669,14 @@ pub enum InstallError {
     Generator,
     /// The kind is not [`DispatchKind::Baseline`] or [`DispatchKind::AotBaseline`].
     Kind(DispatchKind),
-    /// The function already has native code ([`uninstall_native`] first).
+    /// The function already has native code (`uninstall_native` first).
     AlreadyNative,
     /// The function runs T0 (nothing to uninstall).
     NotNative,
     /// The code registry refused the range.
     Registry(RegistryError),
 }
-
+#[cfg(feature = "spike-native")]
 /// What native code for a function needs to know about it.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeTarget<'i> {
@@ -708,7 +708,7 @@ fn bytecode_info<'i>(f: Value) -> Result<&'i FunctionInfo, InstallError> {
     }
     Ok(fi)
 }
-
+#[cfg(feature = "spike-native")]
 /// The facts native code for the function `f` needs, or `None` if `f` is not a FUNCTION with
 /// bytecode. The bytecode lives as long as the isolate (loaded units are never freed).
 pub fn native_target(_iso: &Isolate, f: Value) -> Option<NativeTarget<'_>> {
@@ -730,7 +730,7 @@ pub fn native_target(_iso: &Isolate, f: Value) -> Option<NativeTarget<'_>> {
         info: core::ptr::from_ref(fi).addr(),
     })
 }
-
+#[cfg(feature = "spike-native")]
 /// Installs the native code `code` (its first byte is the entry) for the function `f`: one
 /// dispatch slot write of `kind` (every closure of the function shares the slot, H14), plus a
 /// [`CodeEntry`] in the isolate's code registry. From then on a T0 call of `f` (no construct,
@@ -776,7 +776,7 @@ pub unsafe fn install_native(
     fi.slot.install(kind, code.start);
     Ok(())
 }
-
+#[cfg(feature = "spike-native")]
 /// Puts the function `f` back on T0 (slot kind Interp, entry = its bytecode) and removes the
 /// registry entry [`install_native`] added, and the deopt side-table entry of the code start
 /// if [`NativeCx::install_b_with_deopt`] made one (V10-D32: a later code at the same start
@@ -796,7 +796,7 @@ pub fn uninstall_native(iso: &Isolate, f: Value) -> Result<CodeEntry, InstallErr
         .unregister(start)
         .ok_or(InstallError::NotNative)
 }
-
+#[cfg(feature = "spike-native")]
 /// The registry entry that holds `pc` in the isolate's code registry (H14: JIT, unit and
 /// bytecode ranges).
 pub fn lookup_code(iso: &Isolate, pc: usize) -> Option<CodeEntry> {
@@ -804,7 +804,7 @@ pub fn lookup_code(iso: &Isolate, pc: usize) -> Option<CodeEntry> {
 }
 
 // ---- Rust -> native ------------------------------------------------------------------------
-
+#[cfg(feature = "spike-native")]
 /// Call(`f`, `this`, `args`) from Rust into native code (M2-P2-SPIKEB-RUSTENTRY; Spike B
 /// configs J and JC time `drive` through it). It takes and returns raw `Value`s by design.
 ///
@@ -861,8 +861,8 @@ pub fn call_from_rust(
     r.map(|b| val(if b == HOLE { UNDEFINED } else { b }))
 }
 
-/// [`call_from_rust`] for the native-slotted function `f` (`fi` from [`native_callee`]).
-fn enter_from_rust(
+/// `call_from_rust` for the native-slotted function `f` (`fi` from [`native_callee`]).
+pub(crate) fn enter_from_rust(
     cx: &mut Cx,
     f: u64,
     fi: &FunctionInfo,
@@ -941,12 +941,12 @@ pub(crate) unsafe fn call_in_its_realm(
 /// The stub byte of the M2-P4-B-AB report: its handler runs the placement (a) code of an
 /// AotBaseline slot that T0's `call_fast` entered (`a_hot_call`).
 pub(crate) const OP_ENTER_A_HOT: u8 = 0xFC;
-/// The pc `call_fast` and `slow::call` continue at after they pushed the frame of a (b)
-/// callee: one `OP_ENTER_B` byte (never in verified bytecode).
+/// The pc that `call_fast` and `slow::call` run after the frame push of a (b) callee.
+#[cfg(feature = "spike-native")]
 pub(crate) static ENTER_B_STUB: [u8; 1] = [crate::interp::OP_ENTER_B];
 /// The pc `call_fast` continues at after it pushed the frame of an A-hot callee.
 pub(crate) static ENTER_A_HOT_STUB: [u8; 1] = [OP_ENTER_A_HOT];
-
+#[cfg(feature = "spike-native")]
 const _: () = {
     use crate::interp::{OP_CONSTRUCT_RETURN, OP_ENTER_B, OP_EXIT};
     assert!(Opcode::from_u8(OP_ENTER_B).is_none());
@@ -955,7 +955,7 @@ const _: () = {
     assert!(OP_ENTER_A_HOT != OP_EXIT && OP_ENTER_A_HOT != OP_CONSTRUCT_RETURN);
     assert!(OP_ENTER_A_HOT != OP_ENTER_B);
 };
-
+#[cfg(feature = "spike-native")]
 /// The stub pc for a callee with slot kind byte `kind` that T0's `call_fast` enters on its hot
 /// path: `ENTER_B_STUB` for a (b) slot (`DispatchKind::Opt`, [`install_native_b`]),
 /// `ENTER_A_HOT_STUB` for an AotBaseline slot (the M2-P4-B-AB report). `None` for every other
@@ -975,7 +975,7 @@ pub(crate) fn hot_stub(kind: u8) -> Option<*const u8> {
 /// (the pc the entry gets).
 ///
 /// # Safety
-/// `fp` is a live frame of a function with a (b) slot ([`install_native_b`]).
+/// `fp` is a live frame of a function with a (b) slot (`install_native_b`).
 #[inline(always)]
 pub(crate) unsafe fn b_target(fp: *mut u64) -> (crate::interp::Handler, *const u8) {
     let fi = FrameRef(fp).info();
@@ -998,7 +998,7 @@ pub(crate) unsafe fn b_target(fp: *mut u64) -> (crate::interp::Handler, *const u
 pub(crate) fn bytecode_of(fp: *mut u64) -> *const u8 {
     FrameRef(fp).info().code
 }
-
+#[cfg(feature = "spike-native")]
 /// The FunctionInfo of `callee` if it has a (b) slot ([`install_native_b`]): a FUNCTION (not
 /// bound, not host) whose slot kind is `DispatchKind::Opt`. The install refuses class
 /// constructors and generator functions.
@@ -1052,7 +1052,7 @@ pub(crate) unsafe fn a_hot_call(cx: &mut Cx, fp: *mut u64) -> u64 {
     cx.out_pc = f.return_pc();
     r
 }
-
+#[cfg(feature = "spike-native")]
 /// Calls the (b) function `callee` (`fi` from [`b_callee`]) from Rust code that runs under a
 /// frame (`call_any`, [`call_from_rust`]): pushes its frame at `base` with return pc = the
 /// `Exit` stub, publishes it, runs a nested dispatch from `ENTER_B_STUB` (the (b) code under
@@ -1085,7 +1085,7 @@ unsafe fn run_b(
     realm::leave(cx, saved);
     r
 }
-
+#[cfg(feature = "spike-native")]
 /// [`run_b`] after its native stack check and realm switch.
 ///
 /// # Safety
@@ -1139,7 +1139,7 @@ unsafe fn run_b_in_realm(
     rt.stack().set_fp(caller_fp);
     if r == 0 { Err(Throw) } else { Ok(r) }
 }
-
+#[cfg(feature = "spike-native")]
 /// [`call_from_rust`] for the (b) function `f` (`fi` from [`b_callee`]); the state rules of
 /// [`enter_from_rust`].
 fn b_from_rust(
@@ -1168,7 +1168,7 @@ fn b_from_rust(
     }
     r
 }
-
+#[cfg(feature = "spike-native")]
 /// Installs the placement (b) code `code` (its first byte is the entry) for the function `f`
 /// (P4-PLACEMENT-B, plan-v6 D3): one dispatch slot write of kind `DispatchKind::Opt` and a
 /// [`CodeEntry`] of that kind. The Opt byte is the spike's (b) marker only, so placement (a)
@@ -1205,10 +1205,10 @@ pub unsafe fn install_native_b(
     unsafe { install_b_info(iso, bytecode_info(f)?, code) }
 }
 
-/// [`install_native_b`] for the bytecode FunctionInfo `fi` (also install by function id).
+/// `install_native_b` for the bytecode FunctionInfo `fi` (also install by function id).
 ///
 /// # Safety
-/// As [`install_native_b`], for the function of `fi`.
+/// As `install_native_b`, for the function of `fi`.
 unsafe fn install_b_info(
     iso: &Isolate,
     fi: &FunctionInfo,
@@ -1307,10 +1307,10 @@ fn fatal_deopt(pc: u32, why: &str) -> ! {
     std::process::abort()
 }
 
-/// The body of [`NativeCx::install_b_with_deopt`] for the bytecode FunctionInfo `fi`.
+/// The body of `NativeCx::install_b_with_deopt` for the bytecode FunctionInfo `fi`.
 ///
 /// # Safety
-/// As [`NativeCx::install_b_with_deopt`], for the function of `fi`.
+/// As `NativeCx::install_b_with_deopt`, for the function of `fi`.
 unsafe fn install_meta(
     iso: &Isolate,
     fi: &FunctionInfo,
@@ -1342,7 +1342,7 @@ fn counts_of(iso: &Isolate, fi: &FunctionInfo) -> Option<Vec<u64>> {
     }
     iso.rt.deopt.counters(fi.slot.entry())
 }
-
+#[cfg(feature = "spike-native")]
 /// The [`NativeTarget`] of the bytecode FunctionInfo `fi` (as [`native_target`] makes it for
 /// a function value).
 fn target_of<'i>(fi: &'i FunctionInfo) -> NativeTarget<'i> {
@@ -1387,7 +1387,7 @@ fn info_by_id<'i>(iso: &'i Isolate, file: &str, id: u32) -> Result<&'i FunctionI
     }
     Ok(fi)
 }
-
+#[cfg(feature = "spike-native")]
 /// The deopt part of the spike API (M5-P1 SPIKEC-5), as associated functions of
 /// [`NativeCx`] (like `NativeCx::global_value`): `lib.rs` re-exports the free functions of
 /// this module by name, and its export list is not this role's to change.
@@ -1523,7 +1523,7 @@ fn stack_end() -> Option<usize> {
 
 /// x29 now: the head of this thread's frame-record chain. Apple AArch64 only: there the
 /// platform ABI makes every frame keep a record and ends the chain at 0, which the safety of
-/// [`NativeCx::frame_returns`] and [`NativeCx::lazy_swap`] needs. Elsewhere (Linux AArch64
+/// `NativeCx::frame_returns` and `NativeCx::lazy_swap` needs. Elsewhere (Linux AArch64
 /// code can use x29 as a general register) it is `None`, so the walks are empty.
 #[inline(always)]
 fn current_fp() -> Option<usize> {
@@ -1556,3 +1556,147 @@ std::thread_local! {
     /// Tests only: how many A-hot calls (`a_hot_call`) this thread ran.
     pub(crate) static A_HOT_ENTRIES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
+
+// ---- the production entry (M7-P3 A2-ENTRY; doc 13 §3.4, C-10) ------------------------------
+//
+// The module is in every build since M7-P3; `jit` is not needed (H27:23). The production part
+// is: the process RuntimeTable (`Cx::runtime_table` points at it in every build, MC-w30-8) and
+// its table functions, the T0 and Rust entries (`enter_native`, `enter_from_rust`,
+// `call_in_its_realm`), the eager deopt entry, and the registry entries below
+// (`install_code`, `uninstall_code`). Its first production caller is the A2 unit loader
+// (plan v12 §7.3); until then only tests call the Rust entry and the registry entries, and T0
+// sends every non-Interp kind cold (`interp/ops.rs` `call_fast`). The spike API (`pub` items,
+// placement (b), install with deopt metadata) stays behind `spike-native`.
+
+/// No placement (b) without `spike-native`: no slot is a (b) slot, so `call_at` and
+/// `call_in_its_realm` never take the (b) path.
+#[cfg(not(feature = "spike-native"))]
+#[inline(always)]
+pub(crate) fn b_callee<'a>(_callee: u64) -> Option<&'a FunctionInfo> {
+    None
+}
+
+/// Never called without `spike-native` ([`b_callee`] is always `None` there).
+///
+/// # Safety
+/// None: it only ends the process.
+#[cfg(not(feature = "spike-native"))]
+#[allow(clippy::too_many_arguments)]
+unsafe fn run_b(
+    _cx: &mut Cx,
+    _base: *mut u64,
+    _caller_fp: *mut u64,
+    _callee: u64,
+    _fi: &FunctionInfo,
+    _this: u64,
+    _argc: u32,
+    _arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    unreachable!("placement (b) needs the spike-native feature")
+}
+
+/// The Rust entry of the production path: Call(`f`, `this`, args) from Rust code for a
+/// function with native code ([`native_callee`]), through [`enter_from_rust`] (an entry frame
+/// with the `Exit` stub as its return pc, the stack and budget checks, the realm switch, and
+/// the D20 state rule: the top frame, the scratch top and `Cx::out_fp`/`out_pc` are put back
+/// on every exit). `None` if `f` has no native code: the caller takes the T0 path
+/// (`call::call_with`). `arg(i)` gives valid Value bits for `i < argc`; it is read before the
+/// first GC point.
+#[cfg_attr(feature = "spike-native", allow(dead_code))] // first caller: the A2 unit loader
+pub(crate) fn call_native(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Option<Res<u64>> {
+    let fi = native_callee(f)?;
+    let (out_fp, out_pc) = (cx.out_fp, cx.out_pc);
+    let r = enter_from_rust(cx, f, fi, this, argc, arg);
+    // Nested T0 calls under native code set them (`slow::call`); put them back.
+    cx.out_fp = out_fp;
+    cx.out_pc = out_pc;
+    Some(r)
+}
+
+/// The registry entries of native code (H14; doc 13 §3.4): installs the code `code` (its
+/// first byte is the entry) of kind `kind` for the bytecode function `fi`, as one dispatch
+/// slot write (every closure of the function shares the slot) plus one [`CodeEntry`] in the
+/// isolate's code registry (the pc lookup of stack walks, Error.stack, the profiler and the
+/// deoptimizer). From then on [`native_callee`] names the function, so `call_any` and the Rust
+/// entry ([`call_native`]) enter the code. Refused before the slot or the registry changes:
+/// a kind other than Baseline or AotBaseline (Opt is the spike's placement (b) marker; the
+/// optimizing tiers come with T2), a function that is not bytecode (a host function), a class
+/// constructor, a generator function, a function that already has native code, and an empty
+/// range or one that overlaps a registered range. Returns the new entry.
+///
+/// The check trusts `code` and `kind`: it reads no byte of the code. The unwind information of
+/// the code is the installer's (`ep9_platform::unwind`; H28): this entry only names the range.
+///
+/// # Safety
+/// `code.start` is the entry of a function with the [`NativeEntry`] ABI that runs the
+/// bytecode of `fi` against its VM frame and follows the [`RuntimeTable`] rules (0 only with a
+/// pending exception, valid Value bits otherwise). The code stays mapped and unchanged until
+/// [`uninstall_code`] or the isolate drops.
+#[cfg_attr(feature = "spike-native", allow(dead_code))] // first caller: the A2 unit loader
+pub(crate) unsafe fn install_code(
+    rt: &Runtime,
+    fi: &FunctionInfo,
+    kind: DispatchKind,
+    code: Range<usize>,
+) -> Result<CodeEntry, InstallError> {
+    if !matches!(kind, DispatchKind::Baseline | DispatchKind::AotBaseline) {
+        return Err(InstallError::Kind(kind));
+    }
+    if fi.host.is_some() || !fi.is_bytecode() || fi.code.is_null() {
+        return Err(InstallError::NotBytecode);
+    }
+    if fi.is_class_constructor() {
+        return Err(InstallError::ClassConstructor);
+    }
+    if fi.is_generator() {
+        return Err(InstallError::Generator);
+    }
+    if fi.slot.kind_byte() != DispatchKind::Interp as u8 {
+        return Err(InstallError::AlreadyNative);
+    }
+    let entry = CodeEntry {
+        kind,
+        start: code.start,
+        len: code.end.saturating_sub(code.start),
+        function: core::ptr::from_ref(fi).addr(),
+    };
+    rt.registry
+        .borrow_mut()
+        .register(entry)
+        .map_err(InstallError::Registry)?;
+    fi.slot.install(kind, code.start);
+    Ok(entry)
+}
+
+/// Puts the function `fi` back on T0 (slot kind Interp, entry = its bytecode), removes the
+/// registry entry that [`install_code`] added and the deopt side-table entry of the code
+/// start (V10-D32: a later code at the same start must not read old records), and returns
+/// the registry entry. `NotNative` if `fi` runs T0. The caller frees the code only when no
+/// frame of it is on the stack.
+#[cfg_attr(feature = "spike-native", allow(dead_code))] // first caller: the A2 unit loader
+pub(crate) fn uninstall_code(rt: &Runtime, fi: &FunctionInfo) -> Result<CodeEntry, InstallError> {
+    if fi.slot.kind_byte() == DispatchKind::Interp as u8 {
+        return Err(InstallError::NotNative);
+    }
+    let start = fi.slot.entry();
+    let entry = rt
+        .registry
+        .borrow_mut()
+        .unregister(start)
+        .ok_or(InstallError::NotNative)?;
+    fi.slot
+        .install(DispatchKind::Interp, fi.code.expose_provenance());
+    rt.deopt.remove(start);
+    Ok(entry)
+}
+
+// The tests of the production entry (every build; the spike-native ones are `tests/native.rs`).
+#[cfg(test)]
+#[path = "tests/native_entry.rs"]
+mod entry_tests;
