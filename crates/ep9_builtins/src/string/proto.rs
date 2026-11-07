@@ -304,9 +304,8 @@ pub(super) fn last_index_of<'s>(
     Ok(index_value(None))
 }
 
-/// String.prototype.localeCompare ( that [ , reserved1 [ , reserved2 ] ] ) (§22.1.3.12).
-/// v0 (no ECMA-402): the order of the code units, so canonically equivalent strings in
-/// different normal forms do not compare as 0 (normalization is M1).
+/// String.prototype.localeCompare ( that [ , locales [ , options ] ] ) (ECMA-402 §19.1.1): the
+/// Intl.Collator order of `ep9_intl` (INTL-I1 §1.5); canonical equivalents compare as 0.
 pub(super) fn locale_compare<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -318,9 +317,10 @@ pub(super) fn locale_compare<'s>(
     let s = this_string(cx, this, "localeCompare")?;
     // 3. Let thatValue be ? ToString(that).
     let that_value = to_units(cx, args.get(0))?;
-    // 4. ... an implementation-defined comparison.
     let s = units(cx, s)?;
-    Ok(Local::int32(match s.cmp(&that_value) {
+    // 4-5. CompareStrings(? Construct(%Intl.Collator%, « locales, options »), S, thatValue).
+    let order = ep9_intl::collator::locale_compare(cx, &s, &that_value, args.get(1), args.get(2))?;
+    Ok(Local::int32(match order {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
