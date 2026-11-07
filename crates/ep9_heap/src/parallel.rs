@@ -700,8 +700,8 @@ pub(crate) const SWEEP_START_PAGES: usize = 16;
 /// the last such GC, use the parallel paths: the parallel mark from [`STRESS_START_AFTER`]
 /// cells and the concurrent sweep from one page (route GCPAR-STRESS: GC-stress marks never
 /// reach [`START_AFTER`]). With S1's default `stress_major_every` (64) that is every major
-/// stress GC; in S0 every 63rd GC. The other stress GCs keep the default thresholds, so a
-/// GC-stress run does not pay a wake per allocation.
+/// stress GC; in S0 every 63rd GC. The other stress GCs keep the mark's default threshold and
+/// sweep lazily, so a GC-stress run does not pay a wake per allocation.
 pub(crate) const STRESS_PARALLEL_EVERY: u32 = 64;
 
 /// The start threshold of a parallel mark in a GC that [`STRESS_PARALLEL_EVERY`] picks.

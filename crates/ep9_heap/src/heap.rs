@@ -2194,8 +2194,9 @@ impl Inner {
     /// Gives the pages that this GC queued to the sweeper thread, if the concurrent sweep is
     /// on ([`crate::parallel::sweeper_on`]) and the GC queued at least
     /// [`crate::parallel::SWEEP_START_PAGES`] pages (one under a GC-stress GC that uses the
-    /// parallel paths). `check`: the job sweeps with the verifier's checks (the verify after
-    /// this GC joins it at once). False: the caller queues the pages for the lazy sweep.
+    /// parallel paths; never under another GC-stress GC). `check`: the job sweeps with the
+    /// verifier's checks (the verify after this GC joins it at once). False: the caller queues
+    /// the pages for the lazy sweep.
     fn start_concurrent_sweep(
         &mut self,
         pages: &[usize],
@@ -2205,8 +2206,13 @@ impl Inner {
     ) -> bool {
         debug_assert!(self.concurrent.0.is_none(), "the GC joined the last sweep");
         let n = pages.len() + shape_pages.len();
+        // The other GC-stress GCs sweep lazily: the verify joins a job at once, so a job
+        // gains nothing there and costs a wake per allocation (measured: a GC-stress test262
+        // subset took 59 s of system time with these jobs, 16 s without).
         let least = if stress {
             1
+        } else if self.s.gc_stress > 0 {
+            return false;
         } else {
             crate::parallel::sweep_start_pages()
         };

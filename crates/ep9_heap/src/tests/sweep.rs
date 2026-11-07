@@ -317,8 +317,8 @@ fn the_random_mutators_with_the_concurrent_sweep() {
 /// A small generational heap (2,000 rooted nodes, under `SWEEP_START_PAGES` pages and over
 /// `STRESS_START_AFTER` cells): the parallel drains and the concurrent sweeps that `n`
 /// allocations start, with GC-stress 1 (every allocation collects) or without it (a full GC
-/// every 50 allocations).
-fn small_heap_parallel_paths(gc_stress: bool, n: u32) -> (u64, u64) {
+/// every 50 allocations). `sweep_from`: the sweep start threshold in pages.
+fn small_heap_parallel_paths(gc_stress: bool, n: u32, sweep_from: usize) -> (u64, u64) {
     let heap = test_heap(|c| {
         c.generational = true;
         c.verify_after_gc = true;
@@ -338,7 +338,7 @@ fn small_heap_parallel_paths(gc_stress: bool, n: u32) -> (u64, u64) {
     let drains = test_controls::PARALLEL_DRAINS.get();
     let jobs = heap.concurrent_jobs();
     test_controls::with_helpers(2, || {
-        test_controls::with_sweeper(SWEEP_START_PAGES, false, || {
+        test_controls::with_sweeper(sweep_from, false, || {
             for i in 0..n {
                 new_node(&heap, 2_000 + i, 0);
                 if !gc_stress && i % 50 == 0 {
@@ -363,11 +363,24 @@ fn small_heap_parallel_paths(gc_stress: bool, n: u32) -> (u64, u64) {
 #[test]
 fn gc_stress_reaches_the_parallel_mark_and_the_concurrent_sweep() {
     let n = 3 * crate::parallel::STRESS_PARALLEL_EVERY;
-    let (drains, jobs) = small_heap_parallel_paths(true, n);
+    let (drains, jobs) = small_heap_parallel_paths(true, n, SWEEP_START_PAGES);
     assert!(drains >= 3, "{drains} parallel drains in {n} GC-stress GCs");
     assert!(jobs >= 3, "{jobs} concurrent sweeps in {n} GC-stress GCs");
-    let (drains, jobs) = small_heap_parallel_paths(false, n);
+    let (drains, jobs) = small_heap_parallel_paths(false, n, SWEEP_START_PAGES);
     assert_eq!((drains, jobs), (0, 0), "a small heap without GC-stress");
+}
+
+/// The other GC-stress GCs sweep lazily, also over the start threshold: their verify joins a
+/// job at once, so a job in each of them only costs a wake per allocation. The picked GCs of
+/// 192: the first one and the majors at 64, 128 and 192.
+#[test]
+fn gc_stress_sweeps_concurrently_only_in_the_picked_gcs() {
+    let n = 3 * crate::parallel::STRESS_PARALLEL_EVERY;
+    let (_, jobs) = small_heap_parallel_paths(true, n, 1);
+    assert!(
+        (3..=4).contains(&jobs),
+        "{jobs} concurrent sweeps in {n} GC-stress GCs (from 1 page)"
+    );
 }
 
 #[test]
