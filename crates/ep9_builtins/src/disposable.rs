@@ -22,7 +22,7 @@
 //!
 //! A stack is a SLOT_OBJECT of its class: slot 0 `[[DisposableState]]` (true = disposed), slot
 //! 1 `[[DisposeCapability]]`, the resource list: an internal JS array that only this file
-//! sees, 3 entries per resource ([`res`]: a kind, then 2 values). All state is in slots and
+//! sees, 3 entries per resource (module `res`: a kind, then 2 values). All state is in slots and
 //! arrays (heap cells), never in Rust memory (plan rule 8). `disposeAsync` runs
 //! DisposeResources as a state machine: a record (a `PromiseReaction`-class slot object, null
 //! prototype, as `promise.rs` keeps its captures) and two builtin closures that continue it
@@ -300,7 +300,7 @@ fn name(asynchronous: bool) -> &'static str {
     }
 }
 
-/// RequireInternalSlot(this, [[DisposableState]]): the stack, or a TypeError.
+/// RequireInternalSlot(this, `[[DisposableState]]`): the stack, or a TypeError.
 fn this_stack<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -1000,7 +1000,7 @@ fn async_iterator_dispose<'s>(
     Ok(cap.promise.value())
 }
 
-/// Steps 3-6 of %AsyncIteratorPrototype% [ @@asyncDispose ]: an error is an abrupt completion
+/// Steps 3-6 of `%AsyncIteratorPrototype% [ @@asyncDispose ]`: an error is an abrupt completion
 /// that the caller turns into a rejection.
 fn iterator_dispose_steps<'s>(
     cx: &mut Cx<'s>,
