@@ -92,7 +92,7 @@ impl<'s> Cx<'s> {
         strings: Option<(&[String], &str, bool)>,
         compile: impl FnOnce(&CompilerHooks) -> CompileResult,
     ) -> JsResult<VerifiedUnit> {
-        crate::host::ensure_can_compile_strings(self, strings)?;
+        ensure_can_compile_strings(self, strings)?;
         let Some(hooks) = self.rt().compiler else {
             return Err(self.throw_error(ErrorKind::EvalError, NO_COMPILER));
         };
@@ -276,6 +276,55 @@ fn shim_text(units: &[u16]) -> String {
                 // Writing to a String cannot fail.
                 let _ = write!(out, "{:04x}", lone.unpaired_surrogate());
             }
+        }
+    }
+    out
+}
+
+/// HostEnsureCanCompileStrings (`host.rs`) with the text of the JS strings, not their shim
+/// text ([`shim_text`], which `Cx::source_text` gives the compiler hooks): a real U+FDD0 is
+/// itself again, and a lone surrogate is U+FFFD (a `&str` cannot hold it). The strings are
+/// copied only when one holds U+FDD0. Out of `compile_with`, so its line count stays (H31
+/// and other docs cite lines below it).
+fn ensure_can_compile_strings(
+    cx: &mut Cx<'_>,
+    strings: Option<(&[String], &str, bool)>,
+) -> JsResult<()> {
+    let shown;
+    let strings = match strings {
+        Some((p, b, d)) if b.contains(SHIM_ESC) || p.iter().any(|s| s.contains(SHIM_ESC)) => {
+            shown = (
+                p.iter().map(|s| host_text(s)).collect::<Vec<_>>(),
+                host_text(b),
+            );
+            Some((&shown.0[..], &shown.1[..], d))
+        }
+        s => s,
+    };
+    crate::host::ensure_can_compile_strings(cx, strings)
+}
+
+/// The escape char of the shim text ([`shim_text`]).
+const SHIM_ESC: char = '\u{FDD0}';
+
+/// The text that the HostEnsureCanCompileStrings hook gets for the shim text `shim`
+/// ([`shim_text`]): U+FDD0 U+FDD0 is U+FDD0 again, and U+FDD0 with 4 hex digits (a lone
+/// surrogate) is U+FFFD. Every other char stays.
+fn host_text(shim: &str) -> String {
+    let mut out = String::with_capacity(shim.len());
+    let mut it = shim.chars();
+    while let Some(c) = it.next() {
+        if c != SHIM_ESC {
+            out.push(c);
+        } else if it.clone().next() == Some(SHIM_ESC) {
+            it.next();
+            out.push(SHIM_ESC);
+        } else {
+            // A lone surrogate: skip its 4 hex digits.
+            for _ in 0..4 {
+                it.next();
+            }
+            out.push(char::REPLACEMENT_CHARACTER);
         }
     }
     out
