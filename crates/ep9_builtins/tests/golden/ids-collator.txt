@@ -2,3 +2,6 @@
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
 0x3e00   31.0         constructor  0       "Collator"  (%Intl.Collator%)
+0x3e01   31.1         method       1       "supportedLocalesOf"  (%Intl.Collator%.supportedLocalesOf w-c)
+0x3e02   31.2         getter       0       "compare"  (%Intl.Collator.prototype%.compare --c)
+0x3e03   31.3         method       0       "resolvedOptions"  (%Intl.Collator.prototype%.resolvedOptions w-c)
