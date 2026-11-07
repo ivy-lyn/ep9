@@ -8,7 +8,8 @@
 //! Isolate::new: builtins::check -> Runtime::new -> builtins::prepare
 //!   -> realm::init: atoms, the REALM record and fuse block, core intrinsics, global, symbols
 //!   -> realm::install: builtins::install (every table but the lazy groups; each lazy key
-//!                      gets its place with HOLE), %AggregateError%'s [[Prototype]],
+//!                      gets its place with HOLE), the [[Prototype]] of %AggregateError%
+//!                      and %SuppressedError%,
 //!                      fill_intrinsics (the REALM record's intrinsics list)
 //! realm::create (Cx::create_realm, $262.createRealm): blank the current-realm roots
 //!   -> init_core (a new REALM record, core intrinsics, global object, %Symbol.prototype%)
@@ -181,8 +182,8 @@ fn init_core(rt: &Runtime, first: bool) {
 /// Installs the builtin tables into the current realm (made by [`init`] or [`create`]): every
 /// table of the isolate (`builtins::install`: the VM table, then the embedder's, so every
 /// module of `ep9_builtins::MODULES` too, but the modules of a lazy group, whose global key
-/// gets HOLE), then the `[[Prototype]]` of `%AggregateError%`, then the REALM record's
-/// intrinsics list. The one install function of every realm (H22-Q3); a lazy group installs
+/// gets HOLE), then the `[[Prototype]]` of `%AggregateError%` and `%SuppressedError%`, then
+/// the REALM record's intrinsics list. The one install function of every realm (H22-Q3); a lazy group installs
 /// later through `builtins::install_group` (INTL-I1-D8). GC points.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
     builtins::install(cx.rt())?;
@@ -194,12 +195,17 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
 /// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
 /// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
 /// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
+///
+/// The explicit resource management proposal (Properties of the SuppressedError
+/// Constructor): the same for `%SuppressedError%` (`ep9_builtins` disposable.rs, M7-P3).
 fn aggregate_error_prototype(rt: &Runtime) {
-    let c = builtins::intrinsic(rt, IntrinsicId::AggregateError);
     let error = builtins::intrinsic(rt, IntrinsicId::Error);
-    if object::is_object(c) && object::is_object(error) {
-        let ok = property::set_prototype_of(rt, c, error);
-        debug_assert!(ok, "%AggregateError% is extensible");
+    for id in [IntrinsicId::AggregateError, IntrinsicId::SuppressedError] {
+        let c = builtins::intrinsic(rt, id);
+        if object::is_object(c) && object::is_object(error) {
+            let ok = property::set_prototype_of(rt, c, error);
+            debug_assert!(ok, "{} is extensible", id.name());
+        }
     }
 }
 

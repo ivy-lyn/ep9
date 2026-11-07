@@ -100,6 +100,13 @@ pub enum ObjectClass {
     /// slots 1-2 the underlying iterator and its `next`, then the callback, the counter and
     /// the inner iterator of flatMap (`ep9_builtins` iterator.rs).
     IteratorHelper,
+    /// A DisposableStack instance (explicit resource management, M7-P3 SPEC-ERM): slot 0
+    /// `[[DisposableState]]` (true = disposed), slot 1 `[[DisposeCapability]]` (the resource
+    /// list, an internal array; `ep9_builtins` disposable.rs).
+    DisposableStack,
+    /// An AsyncDisposableStack instance (M7-P3 SPEC-ERM): slot 0 `[[AsyncDisposableState]]`,
+    /// slot 1 `[[DisposeCapability]]`, as [`ObjectClass::DisposableStack`].
+    AsyncDisposableStack,
 }
 
 impl ObjectClass {
@@ -129,6 +136,8 @@ impl ObjectClass {
         ObjectClass::TemporalPlainMonthDay,
         ObjectClass::TemporalZonedDateTime,
         ObjectClass::IteratorHelper,
+        ObjectClass::DisposableStack,
+        ObjectClass::AsyncDisposableStack,
     ];
 
     /// Most internal slots of one object.
@@ -175,6 +184,8 @@ impl ObjectClass {
             ObjectClass::TemporalPlainMonthDay => "Temporal.PlainMonthDay",
             ObjectClass::TemporalZonedDateTime => "Temporal.ZonedDateTime",
             ObjectClass::IteratorHelper => "Iterator Helper",
+            ObjectClass::DisposableStack => "DisposableStack",
+            ObjectClass::AsyncDisposableStack => "AsyncDisposableStack",
         }
     }
 }

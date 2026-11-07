@@ -144,3 +144,9 @@ intrinsic  94  %Function.prototype.call%
 intrinsic  95  %Iterator%
 intrinsic  96  %IteratorHelperPrototype%
 intrinsic  97  %WrapForValidIteratorPrototype%
+intrinsic  98  %SuppressedError%
+intrinsic  99  %SuppressedError.prototype%
+intrinsic 100  %DisposableStack%
+intrinsic 101  %DisposableStack.prototype%
+intrinsic 102  %AsyncDisposableStack%
+intrinsic 103  %AsyncDisposableStack.prototype%
