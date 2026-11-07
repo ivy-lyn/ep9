@@ -859,26 +859,9 @@ pub fn is_available(tag: &str) -> bool {
 }
 
 /// AvailableCalendars (8.3.2 step 2; INTL-I1-D2): the 16 CLDR ids that temporal_rs 0.2.6 maps
-/// to an icu_calendar `AnyCalendarKind`, sorted. The W1 CAL builder makes the same list
-/// `ep9_temporal` `AVAILABLE_CALENDARS`; then this one reads it (one list, INTL-I1 §2.2).
-pub const CALENDARS: &[&str] = &[
-    "buddhist",
-    "chinese",
-    "coptic",
-    "dangi",
-    "ethioaa",
-    "ethiopic",
-    "gregory",
-    "hebrew",
-    "indian",
-    "islamic-civil",
-    "islamic-tbla",
-    "islamic-umalqura",
-    "iso8601",
-    "japanese",
-    "persian",
-    "roc",
-];
+/// to an icu_calendar `AnyCalendarKind`, sorted. It is `ep9_temporal`'s `AVAILABLE_CALENDARS`:
+/// one list for Temporal and Intl (INTL-I1 §2.2, §4.4).
+pub const CALENDARS: &[&str] = &ep9_temporal::calendar::AVAILABLE_CALENDARS;
 
 /// AvailableCollations (8.3.2 step 3): the CLDR collation types (not "standard" or "search"),
 /// sorted. W1 COLLATOR checks each against the ICU4X tailoring data
@@ -996,6 +979,14 @@ mod tests {
             assert!(sorted_unique(list), "{name}");
         }
         assert!(locales().windows(2).all(|w| w[0] < w[1]));
+    }
+
+    /// AvailableCalendars is one list for Temporal and Intl (INTL-I1 §2.2): `CALENDARS` is
+    /// `ep9_temporal::calendar::AVAILABLE_CALENDARS`. This does not build while that module is
+    /// private (the state at the INTL W1 merge head).
+    #[test]
+    fn calendars_are_the_temporal_list() {
+        assert_eq!(CALENDARS, &ep9_temporal::calendar::AVAILABLE_CALENDARS[..]);
     }
 
     #[test]
