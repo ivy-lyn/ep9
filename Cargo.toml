@@ -61,6 +61,10 @@ libm = { version = "=0.2.16", default-features = false }
 icu_locale_core = { version = "=2.3.0", default-features = false, features = ["alloc"] }
 icu_locale = { version = "=2.3.1", default-features = false, features = ["compiled_data"] }
 icu_collator = { version = "=2.3.1", default-features = false, features = ["compiled_data", "latin1"] }
+# NFD and the canonical combining class for the collator's stream-safe step (ep9_intl
+# collator.rs; Codex r1 COLLATOR-1): already in the graph through icu_collator, with the same
+# version, features and data.
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data", "utf16_iter"] }
 icu_decimal = { version = "=2.3.0", default-features = false, features = ["compiled_data", "unstable"] }
 fixed_decimal = { version = "=0.7.2", default-features = false }
 icu_plurals = { version = "=2.3.0", default-features = false, features = ["compiled_data", "unstable"] }

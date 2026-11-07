@@ -33,6 +33,7 @@
 //! `crates/ep9_builtins/tests/golden/ids-collator.txt`.
 
 use core::cmp::Ordering;
+use std::borrow::Cow;
 
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
@@ -43,6 +44,11 @@ use icu_collator::options::{AlternateHandling, CaseLevel, CollatorOptions, Stren
 use icu_collator::preferences::{CollationCaseFirst, CollationNumericOrdering, CollationType};
 use icu_collator::{CollatorBorrowed, CollatorPreferences};
 use icu_locale_core::Locale;
+use icu_normalizer::DecomposingNormalizerBorrowed;
+use icu_normalizer::properties::{
+    CanonicalCombiningClassMap, CanonicalCombiningClassMapBorrowed, CanonicalDecompositionBorrowed,
+    Decomposed,
+};
 
 use crate::cache::{self, Service};
 use crate::options::{
@@ -506,11 +512,99 @@ fn collator_for(locale: &str, options: Packed) -> Option<std::rc::Rc<CollatorBor
     })
 }
 
+/// The most non-starters in a row that the collator gets (UAX #15 §13, Stream-Safe Text
+/// Format).
+const MAX_NON_STARTERS: usize = 30;
+
+/// U+034F COMBINING GRAPHEME JOINER: a starter with no collation weight (completely
+/// ignorable), so it ends a run of non-starters and changes no order by itself. The step
+/// puts in two: the collator's identical-prefix step goes back from the first difference
+/// until it finds two starters in a row, one code point at a time, each with a shift of its
+/// list (`prepend_upcoming_before_init`, icu_collator `elements.rs`), so with one CGJ a long
+/// identical prefix of runs still cost O(n^2).
+const CGJ: u16 = 0x034F;
+
+/// The canonical combining class, the one-step canonical decomposition and NFD of the
+/// ICU4X normalizer (compiled data: the NFD tables that the collator reads too).
+const CCC: CanonicalCombiningClassMapBorrowed<'static> = CanonicalCombiningClassMap::new();
+const DECOMPOSITION: CanonicalDecompositionBorrowed<'static> =
+    CanonicalDecompositionBorrowed::new();
+const NFD: DecomposingNormalizerBorrowed<'static> = DecomposingNormalizerBorrowed::new_nfd();
+
+/// Adds the code points of the full canonical decomposition of `c` to `run`, the count of
+/// non-starters in a row (a starter sets it to 0); true once `run` is above
+/// [`MAX_NON_STARTERS`]. The canonical reorder of NFD moves no starter, so this counts the
+/// runs of NFD.
+fn nfd_run(c: char, run: &mut usize) -> bool {
+    match DECOMPOSITION.decompose(c) {
+        Decomposed::Default => {
+            if CCC.get_u8(c) == 0 {
+                *run = 0;
+            } else {
+                *run += 1;
+            }
+            *run > MAX_NON_STARTERS
+        }
+        Decomposed::Singleton(d) => nfd_run(d, run),
+        Decomposed::Expansion(a, b) => nfd_run(a, run) || nfd_run(b, run),
+    }
+}
+
+/// The UAX #15 stream-safe form of `s` for the collator. The ICU4X 2.3 collator gathers a
+/// run of non-starters in a list that it shifts once per character (`upcoming.remove(0)`,
+/// icu_collator `elements.rs`), so a run of n costs O(n^2) ('a' + 320,000 U+0301 took
+/// 14.9 s, Codex r1 COLLATOR-1). If NFD(`s`) has a run of more than 30 non-starters, the
+/// result is NFD(`s`) with two CGJs before each non-starter that has 30 non-starters right
+/// before it, so the collator sees runs of at most 30 and the cost is linear. Else `s` is
+/// returned as it is (no copy), so such text gets the same order as before. The test and
+/// the result depend only on NFD(`s`), so canonically equivalent strings still compare
+/// equal (ECMA-262 `localeCompare`); text with a longer run gets the order of its
+/// stream-safe form. Code units below U+00C0 are starters with no decomposition (no
+/// lookup); a lone surrogate counts as U+FFFD, as in the collator.
+fn stream_safe(s: &[u16]) -> Cow<'_, [u16]> {
+    let mut run = 0usize;
+    let long = char::decode_utf16(s.iter().copied()).any(|c| match c {
+        Ok(c) if u32::from(c) >= 0xC0 => nfd_run(c, &mut run),
+        _ => {
+            run = 0;
+            false
+        }
+    });
+    if !long {
+        return Cow::Borrowed(s);
+    }
+    let nfd = NFD.normalize_utf16(s);
+    let mut out: Vec<u16> = Vec::with_capacity(nfd.len() + nfd.len() / MAX_NON_STARTERS + 1);
+    let mut run = 0usize;
+    let mut buf = [0u16; 2];
+    for c in char::decode_utf16(nfd.iter().copied()) {
+        let c = c.unwrap_or(char::REPLACEMENT_CHARACTER);
+        if CCC.get_u8(c) == 0 {
+            run = 0;
+        } else {
+            if run == MAX_NON_STARTERS {
+                out.extend_from_slice(&[CGJ, CGJ]);
+                run = 0;
+            }
+            run += 1;
+        }
+        out.extend_from_slice(c.encode_utf16(&mut buf));
+    }
+    Cow::Owned(out)
+}
+
+/// The ICU4X compare of the stream-safe forms of `x` and `y` ([`stream_safe`]).
+fn icu_compare(c: &CollatorBorrowed<'static>, x: &[u16], y: &[u16]) -> Ordering {
+    c.compare_utf16(&stream_safe(x), &stream_safe(y))
+}
+
 /// CompareStrings ( collator, x, y ) (10.3.3.2) of the UTF-16 strings `x` and `y`.
-/// Canonically equivalent strings compare as equal (the ICU4X collator normalizes).
+/// Canonically equivalent strings compare as equal (the ICU4X collator normalizes); text
+/// whose NFD has a run of more than 30 non-starters is compared in its stream-safe form
+/// (`stream_safe`).
 pub fn compare_strings(locale: &str, options: Packed, x: &[u16], y: &[u16]) -> Ordering {
     match collator_for(locale, options) {
-        Some(c) => c.compare_utf16(x, y),
+        Some(c) => icu_compare(&c, x, y),
         // No data at all (not the case with the compiled data): the code-unit order.
         None => x.cmp(y),
     }
@@ -544,7 +638,7 @@ pub fn locale_compare<'s>(
             make_collator(&r.locale, r.options).or_else(|| make_collator("und", r.options))
         });
         if let Some(c) = c {
-            return Ok(c.compare_utf16(s, that));
+            return Ok(icu_compare(&c, s, that));
         }
     }
     let r = initialize(cx, locales, options)?;

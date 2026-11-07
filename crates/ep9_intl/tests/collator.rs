@@ -187,3 +187,49 @@ fn compare_gives_the_node_lines() {
         ])
     );
 }
+
+/// Long runs of combining marks (Codex r1 COLLATOR-1): the ICU4X 2.3 collator shifts a list
+/// once per mark of a run, and once per code point when it goes back over an identical
+/// prefix, so 'a' + 320,000 U+0301 took 14.9 s (release) and a termination was not honored.
+/// The UAX #15 stream-safe step (two CGJs after each 30 non-starters of NFD) makes each
+/// compare linear: each case of 320,000 marks (a difference at the first mark, an identical
+/// prefix of marks, Tibetan vowel signs that decompose to two marks, astral marks) ends in
+/// well under 1 s in a release build; the 5 s bound covers a slow debug build. The results
+/// are node v26.13.0's (node takes about 25 s for the Tibetan case at 40,000).
+#[test]
+fn long_combining_runs_compare_in_linear_time() {
+    let (took, r) = common::timed(
+        r#"var c = new Intl.Collator("en"), n = 320000, out = [];
+var a = "a" + "́".repeat(n), b = "a" + "̀".repeat(n);
+out.push(c.compare(a, b), a.localeCompare(b), c.compare(a + "b", a + "c"), (a + "c").localeCompare(a + "b"));
+out.push(c.compare("a" + "ཱི".repeat(n / 2), "a" + "ཱུ".repeat(n / 2)));
+out.push(c.compare("a" + "\u{1D165}".repeat(n / 2), "a" + "\u{1D166}".repeat(n / 2)));
+print(out.join());"#,
+    );
+    assert_eq!(r, lines(&["-1,-1,-1,1,-1,0"]));
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
+
+/// The stream-safe step works on NFD and only on text whose NFD has a run of more than 30
+/// non-starters, so canonically equivalent strings still compare equal (ECMA-262
+/// `localeCompare`), with runs of 20 to 2,000 marks in another order or with a precomposed
+/// first letter. A CGJ in the input is ignorable. node v26.13.0 gives the same lines.
+#[test]
+fn the_stream_safe_step_keeps_canonical_equivalence() {
+    assert_eq!(
+        run_both(
+            r#"var c = new Intl.Collator("en"), eq = [];
+for (var k of [10, 15, 16, 30, 31, 40, 1000]) {
+  var x = "a" + "̖́".repeat(k), y = "a" + "̖".repeat(k) + "́".repeat(k);
+  var z = "á" + "̖".repeat(k) + "́".repeat(k - 1);
+  eq.push(c.compare(x, y) + "," + c.compare(x, z) + "," + x.localeCompare(z) + "," + c.compare(x, "a" + "́".repeat(2 * k)));
+}
+print(eq.join(" "));
+print(c.compare("a͏b", "ab"), c.compare("e" + "́".repeat(31), "é" + "́".repeat(30)), "ṩ".repeat(40).localeCompare("ṩ".repeat(40)));"#
+        ),
+        lines(&[
+            "0,0,0,1 0,0,0,1 0,0,0,1 0,0,0,1 0,0,0,1 0,0,0,1 0,0,0,1",
+            "0 0 0",
+        ])
+    );
+}
