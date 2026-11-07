@@ -1509,6 +1509,8 @@ fn close_all<'s, T>(
     };
     // 1. For each element iter of iters, in reverse List order, do
     for i in (0..count).rev() {
+        // A pass that closes no iterator calls no JS: one budget unit per pass (H23).
+        cx.poll_interrupt()?;
         if skip == Some(i) {
             continue;
         }
@@ -1745,6 +1747,7 @@ fn zip<'s>(
             // a. If paddingOption is undefined, then
             //    i. Perform the following steps iterCount times: Append undefined to padding.
             for _ in 0..count {
+                cx.poll_interrupt()?;
                 list_push(cx, padding, &mut p, Local::undefined())?;
             }
         } else {
@@ -1771,8 +1774,10 @@ fn zip<'s>(
                         Err(t) => return close_all(cx, iters, count, None, Err(t)),
                     }
                 }
-                // 2. If usingIterator is false, append undefined to padding.
+                // 2. If usingIterator is false, append undefined to padding (no step: one
+                //    budget unit, H23).
                 if !using {
+                    cx.poll_interrupt()?;
                     list_push(cx, padding, &mut p, Local::undefined())?;
                 }
             }
@@ -1829,8 +1834,10 @@ fn zip_keyed<'s>(
     let all_keys = cx.own_property_keys(iterables)?;
     let all_len = cx.get(all_keys, "length")?;
     let all_len = all_len.as_number().expect("an array length is a Number") as u64;
-    // 12. For each element key of allKeys, do
+    // 12. For each element key of allKeys, do (a key that is skipped calls no JS: one budget
+    //     unit per pass, H23)
     for j in 0..all_len {
+        cx.poll_interrupt()?;
         let key = cx.get_index(all_keys, j)?;
         let key = cx.to_property_key(key)?;
         // a. Let desc be Completion(iterables.[[GetOwnProperty]](key)).
@@ -1872,6 +1879,7 @@ fn zip_keyed<'s>(
         let padding: Local<'s, JsObject> = cx.new_array().into();
         let mut p = 0;
         for i in 0..count {
+            cx.poll_interrupt()?;
             // a. If paddingOption is undefined, then
             //    i. Perform the following steps iterCount times: Append undefined to padding.
             // b. Else,
@@ -1981,6 +1989,8 @@ fn resume_zip<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, keyed: bool) -> JsRes
             //    a. Assert: mode is "longest".
             //    b. Let result be padding[i].
             None => {
+                // No step: one budget unit (H23).
+                cx.poll_interrupt()?;
                 let padding = list_slot(cx, o, slot::PADDING)?;
                 cx.get_index(padding, i)?
             }
@@ -2227,6 +2237,7 @@ fn ring_array<'s>(
     let out: Local<'s, JsObject> = cx.new_array().into();
     let mut n = 0;
     for j in 0..len {
+        cx.poll_interrupt()?;
         let v = cx.get_index(buffer, (start + j) % size)?;
         list_push(cx, out, &mut n, v)?;
     }

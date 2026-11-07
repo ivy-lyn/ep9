@@ -668,3 +668,103 @@ fn a_zip_of_many_done_inputs_is_linear() {
     let got = rx.recv_timeout(std::time::Duration::from_secs(30));
     assert_eq!(got, Ok(lines(&["true undefined true"])));
 }
+
+fn compile_sloppy(src: &str) -> ep9_bytecode::VerifiedUnit {
+    ep9_frontend::compile(
+        src,
+        ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+        ep9_frontend::CompileOptions::default(),
+    )
+    .expect("compiles")
+}
+
+/// Runs the script `setup`, then a loop that a termination stops at its first poll (a poll
+/// sets the interrupt budget to at least 10,000 units, `budget_after_poll`), then requests
+/// termination again and runs `call` in a third script, on a thread with a 60 s wait (it
+/// only stops a hung test). Each `call` below takes less than 10,000 units before the loop
+/// it tests and more than 10,128 in all, so only a poll in that loop stops it. True if the
+/// call ended terminated and the isolate kept working.
+fn terminates_in(setup: &'static str, call: &'static str) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let mut iso = common::isolate(false);
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy(setup), "setup.js").map(|_| ())
+            })
+            .expect("the setup runs");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy("for (;;) {}"), "fill.js")
+                    .map(|_| ())
+            });
+            assert!(
+                r.is_err_and(|e| e.terminated),
+                "the budget fill loop ends terminated"
+            );
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile_sloppy(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached';"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
+            let terminated = r.is_err_and(|e| e.terminated);
+            let stage = common::global_text(&mut iso, "stage");
+            // The isolate keeps working.
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
+            let _ = tx.send((terminated, stage, again));
+        })
+        .expect("a thread");
+    let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+    got == Ok((true, Some("before".to_string()), Some("again".to_string())))
+}
+
+/// The zip loops that step no iterator and call no JS take one interrupt budget unit per
+/// pass (`Cx::poll_interrupt`; the H23 Facts row "Interrupt poll"; Codex r1 SPEC-ITER2 2):
+/// the zipKeyed key loop (keys whose value is undefined), the padding loops of zip and
+/// zipKeyed, the ring copy of windows, IteratorCloseAll and the result loop over done
+/// inputs. A termination stops each.
+#[test]
+fn termination_stops_the_zip_and_windows_loops() {
+    const KEYS_UNDEFINED: &str =
+        "var o = {}; for (var i = 0; i < 30000; i++) o['k' + i] = undefined;";
+    const ARRAYS: &str = "var a = []; for (var i = 0; i < 6000; i++) a.push([]);";
+    const KEYS_ARRAYS: &str = "var o = {}; for (var i = 0; i < 6000; i++) o['k' + i] = [];";
+    const WINDOW: &str = "var w = Array(20001).fill(0).values().windows(20000); w.next();";
+    const CLOSE: &str =
+        "var a = [[]]; for (var i = 0; i < 20000; i++) a.push([1]); var z = Iterator.zip(a);";
+    const NULLS: &str = "var a = []; for (var i = 0; i < 20000; i++) a.push([]); \
+         a.push([1, 2, 3]); var z = Iterator.zip(a, { mode: 'longest' }); z.next();";
+    let not_stopped = [
+        (KEYS_UNDEFINED, "Iterator.zipKeyed(o)"),
+        (ARRAYS, "Iterator.zip(a, { mode: 'longest' })"),
+        (ARRAYS, "Iterator.zip(a, { mode: 'longest', padding: [] })"),
+        (KEYS_ARRAYS, "Iterator.zipKeyed(o, { mode: 'longest' })"),
+        (
+            KEYS_ARRAYS,
+            "Iterator.zipKeyed(o, { mode: 'longest', padding: {} })",
+        ),
+        (WINDOW, "w.next().length"),
+        (CLOSE, "z.next()"),
+        (NULLS, "z.next().length"),
+    ]
+    .into_iter()
+    .filter(|&(setup, call)| !terminates_in(setup, call))
+    .map(|(_, call)| call)
+    .collect::<Vec<_>>();
+    assert_eq!(
+        not_stopped,
+        Vec::<&str>::new(),
+        "calls that a termination did not stop"
+    );
+}
