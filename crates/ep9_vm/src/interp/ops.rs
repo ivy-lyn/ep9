@@ -837,7 +837,7 @@ op!(LdaNewTarget(st) {
 
 // Global ICs (H16, `ic.rs`): a lexical binding or an own data property of the global object.
 op!(LdaGlobal(st, name: K, s: FSlot) {
-    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+    match ic::load_global(st.cx, st.info(), s.0) {
         Some(v) => {
             ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
@@ -854,7 +854,7 @@ op!(LdaGlobal(st, name: K, s: FSlot) {
     st.result(r)
 });
 op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
-    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+    match ic::load_global(st.cx, st.info(), s.0) {
         Some(v) => {
             ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
@@ -872,7 +872,7 @@ op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
 });
 op!(StaGlobal(st, name: K, s: FSlot) {
     let v = st.acc;
-    if ic::store_global(st.rt(), st.info(), st.cx.global_this, s.0, v) {
+    if ic::store_global(st.cx, st.info(), s.0, v) {
         ic::ic_count!(hit, StoreGlobal);
         Flow::Next
     } else {
