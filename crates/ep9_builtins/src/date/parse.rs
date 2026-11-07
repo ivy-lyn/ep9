@@ -1,15 +1,25 @@
 //! Date.parse (ECMA-262 §21.4.3.2) without the time zone: the Date Time String Format
-//! (§21.4.1.32) and the forms that `toString`, `toDateString` and `toUTCString` produce. Any
-//! other string gives `None` (NaN). V8's legacy parser (the other strings browsers accept) is
-//! milestone M3 work (docs/plan/06-object-model-and-spec.md), not M0.
+//! (§21.4.1.32), the forms that `toString`, `toDateString` and `toUTCString` produce, and the
+//! numeric slash dates of V8's legacy parser. Any other string gives `None` (NaN). The rest of
+//! V8's legacy parser (the other strings browsers accept) is not built.
 //!
 //! ```text
 //! ISO     YYYY | ±YYYYYY  [-MM [-DD]]  [THH:mm [:ss [.s+]] [Z | ±HH:mm]]
 //!         ("-000000" is not a year; a date-only form is UTC, a date-time form without an
 //!          offset is local time; T24:00 is the end of the day)
-//! legacy  [Www[,]]  (Mmm DD | DD Mmm)  [-]Y+  [HH:mm[:ss]]  [GMT[±HHMM] | UTC | Z]  [(text)]
+//! legacy  [Www[,]]  (Mmm DD Y | DD Mmm Y | M/D/Y | Y/M/D)
+//!         [HH:mm[:ss]]  [GMT[±HHMM] | UTC | Z]  [(text)]
 //!         (no GMT: local time)
+//! slash   M/D/Y: M and D 1-2 digits, Y 1-6 digits; Y/M/D: Y 3-6 digits, M and D 1-2
+//!         digits. A year below 100 is 2000 + Y (0-49) or 1900 + Y (50-99), as V8's
+//!         DayComposer. M is 1-12 and D is 1-31; a D past the month end runs on into the
+//!         next month (MakeDay), as in V8.
 //! ```
+//!
+//! §21.4.3.2 lets a string that is not in the Date Time String Format fall back to
+//! "implementation-specific heuristics or implementation-specific date formats". The slash
+//! forms are the ones the web uses most (JetStream validatorjs: `isBefore` with
+//! "08/04/2011"); every slash string this parser takes gives the value that node gives.
 
 use super::math::{make_date, make_day, make_time};
 
@@ -195,23 +205,28 @@ fn parse_legacy(s: &str) -> Option<Parsed> {
             words.next();
         }
     }
-    // "Mmm DD" (toString) or "DD Mmm" (toUTCString).
     let a = words.next()?;
-    let b = words.next()?;
-    let (month, day) = match name_index(&MONTH_NAMES, a) {
-        Some(m) => (m, number(b, 2)?),
-        None => (name_index(&MONTH_NAMES, b)?, number(a, 2)?),
+    let date = if a.contains('/') {
+        // "M/D/Y" or "Y/M/D" (V8's legacy parser).
+        slash_date(a)?
+    } else {
+        // "Mmm DD" (toString) or "DD Mmm" (toUTCString).
+        let b = words.next()?;
+        let (month, day) = match name_index(&MONTH_NAMES, a) {
+            Some(m) => (m, number(b, 2)?),
+            None => (name_index(&MONTH_NAMES, b)?, number(a, 2)?),
+        };
+        if !(1.0..=31.0).contains(&day) {
+            return None;
+        }
+        // The year: an optional '-' and digits.
+        let y = words.next()?;
+        let year = match y.strip_prefix('-') {
+            Some(digits) => -number(digits, 6)?,
+            None => number(y, 6)?,
+        };
+        make_day(year, month as f64, day)
     };
-    if !(1.0..=31.0).contains(&day) {
-        return None;
-    }
-    // The year: an optional '-' and digits.
-    let y = words.next()?;
-    let year = match y.strip_prefix('-') {
-        Some(digits) => -number(digits, 6)?,
-        None => number(y, 6)?,
-    };
-    let date = make_day(year, month as f64, day);
     let mut time = None;
     let mut offset = None;
     for w in words {
@@ -237,6 +252,10 @@ fn parse_legacy(s: &str) -> Option<Parsed> {
             if parts.next().is_some() || h > 24.0 || m > 59.0 || sec > 59.0 {
                 return None;
             }
+            // 24:00 is the end of the day; V8 gives NaN for 24:30 and 24:00:01.
+            if h == 24.0 && (m != 0.0 || sec != 0.0) {
+                return None;
+            }
             time = Some(make_time(h, m, sec, 0.0));
         } else {
             return None;
@@ -247,6 +266,36 @@ fn parse_legacy(s: &str) -> Option<Parsed> {
         Some(o) => Parsed::Utc(tv - o),
         None => Parsed::Local(tv),
     })
+}
+
+/// A numeric slash date as a day number (MakeDay): "M/D/Y" (M and D 1-2 digits, Y 1-6) or
+/// "Y/M/D" (Y 3-6 digits, M and D 1-2). Exactly three fields, each only ASCII digits, so an
+/// empty field ("8//4/2011"), a sign or a fourth field gives `None`. V8 takes more forms
+/// ("8/4", "99/1/1", "8/4/2011/"); this function gives `None` for them (NaN), never a value
+/// that differs from V8's.
+fn slash_date(w: &str) -> Option<f64> {
+    let mut parts = w.split('/');
+    let (a, b, c) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let (year, month, day) = if (3..=6).contains(&a.len()) {
+        (number(a, 6)?, number(b, 2)?, number(c, 2)?)
+    } else {
+        (number(c, 6)?, number(a, 2)?, number(b, 2)?)
+    };
+    if !(1.0..=12.0).contains(&month) || !(1.0..=31.0).contains(&day) {
+        return None;
+    }
+    // V8 DayComposer::Write: a year of 0-49 is 20YY, 50-99 is 19YY (by value, so "0099" too).
+    let year = if year < 50.0 {
+        year + 2000.0
+    } else if year < 100.0 {
+        year + 1900.0
+    } else {
+        year
+    };
+    Some(make_day(year, month - 1.0, day))
 }
 
 /// "+HHMM" or "-HHMM" as milliseconds.
@@ -348,6 +397,8 @@ mod tests {
         assert_eq!(utc("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0.0));
         assert_eq!(utc("Thu Jan 01 1970 07:30:00 GMT+0730"), Some(0.0));
         assert_eq!(parse("Thu Jan 01 1970 07:30:00 GMT+0730 (x"), None);
+        assert_eq!(parse("Jan 01 2011 24:30"), None);
+        assert_eq!(parse("Jan 01 2011 24:00:01"), None);
         assert_eq!(parse("Jan 01 1970 07:30:00 PST"), None);
         assert_eq!(parse("Foo Jan 01 1970"), None);
         // A 4-byte offset word with a multibyte char in it (no panic; node gives NaN).
@@ -359,6 +410,89 @@ mod tests {
             "Jan 01 1970 GMT+1\u{800}",
         ] {
             assert_eq!(parse(s), None, "{s}");
+        }
+    }
+
+    /// The slash forms (route JS3-VALIDATOR). Each value is node's (v26, `TZ=UTC`).
+    #[test]
+    fn slash_forms() {
+        let day = |y: f64, m: f64, d: f64| make_date(make_day(y, m - 1.0, d), 0.0);
+        let local = |s: &str| match parse(s) {
+            Some(Parsed::Local(t)) => t,
+            other => panic!("{s}: {other:?}"),
+        };
+        assert_eq!(local("08/04/2011"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("8/4/2011"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("Thu 08/04/2011"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("Thu, 08/04/2011"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("  08/04/2011  "), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("08/04/2011 (x)"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("2011/08/04"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("2011/8/4"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("08/04/11"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("8/4/99"), day(1999.0, 8.0, 4.0));
+        assert_eq!(local("8/4/49"), day(2049.0, 8.0, 4.0));
+        assert_eq!(local("8/4/50"), day(1950.0, 8.0, 4.0));
+        assert_eq!(local("8/4/0"), day(2000.0, 8.0, 4.0));
+        assert_eq!(local("1/1/0099"), day(1999.0, 1.0, 1.0));
+        assert_eq!(local("0099/1/1"), day(1999.0, 1.0, 1.0));
+        assert_eq!(local("1/1/100"), day(100.0, 1.0, 1.0));
+        assert_eq!(local("100/1/1"), day(100.0, 1.0, 1.0));
+        assert_eq!(local("08/04/12345"), day(12345.0, 8.0, 4.0));
+        // A day past the month end runs on (MakeDay), as in V8.
+        assert_eq!(local("02/30/2011"), day(2011.0, 3.0, 2.0));
+        assert_eq!(
+            local("8/4/2011 1:2:3"),
+            day(2011.0, 8.0, 4.0) + make_time(1.0, 2.0, 3.0, 0.0)
+        );
+        assert_eq!(local("08/04/2011 24:00"), day(2011.0, 8.0, 5.0));
+        assert_eq!(
+            utc("08/04/2011 10:00 GMT"),
+            Some(day(2011.0, 8.0, 4.0) + make_time(10.0, 0.0, 0.0, 0.0))
+        );
+        assert_eq!(
+            utc("08/04/2011 GMT+0200"),
+            Some(day(2011.0, 8.0, 3.0) + make_time(22.0, 0.0, 0.0, 0.0))
+        );
+        assert_eq!(
+            utc("12/31/1969 23:59:59 GMT-0100"),
+            Some(make_time(0.0, 59.0, 59.0, 0.0))
+        );
+        assert_eq!(utc("1/1/1970 00:00 UTC"), Some(0.0));
+        assert_eq!(
+            utc("8/4/2011 12:00:00 Z"),
+            Some(day(2011.0, 8.0, 4.0) + 43_200_000.0)
+        );
+        // node gives NaN for these.
+        for bad in [
+            "13/04/2011",
+            "08/32/2011",
+            "00/04/2011",
+            "08/00/2011",
+            "2011/13/01",
+            "08/04/-2011",
+            "1/+1/2011",
+            "1/1/1e3",
+            "8/4/2011 24:30",
+            "8/4/2011 10:60",
+            "8/4/2011 10:00:60",
+            "8/4/2011 10:00 10:00",
+            "8/4/2011 Thu",
+            "\u{ff11}/1/2011",
+        ] {
+            assert_eq!(parse(bad), None, "{bad}");
+        }
+        // node gives a value for these; this parser does not take them (NaN, a subset).
+        for gap in [
+            "08/04",
+            "08/04/2011/",
+            "08//04/2011",
+            "99/1/1",
+            "32/1/1",
+            "008/04/2011",
+            "08/004/2011",
+        ] {
+            assert_eq!(parse(gap), None, "{gap}");
         }
     }
 }
