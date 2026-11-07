@@ -17,7 +17,8 @@
 //!   near_limit callback (H23), and if it raised the limit, retry once; then OutOfMemory
 //! every new cell: word0 = {shape 0, WHITE, kind, flags 0}; every other word = undefined;
 //!                 VO bit set (small pages). A main-TLAB cell writes only word0 and the VO
-//!                 bit: each hole is filled with undefined when the TLAB takes it (GCPAR3)
+//!                 bit: the TLAB fills its hole with undefined ahead of the cursor, 4 KiB
+//!                 at a time, and its limit is the end of the filled part (GCPAR3)
 //!
 //! collect(): spill registers (ep9_platform) -> retire TLABs and the shape hole -> finish the
 //!   last lazy or concurrent sweep (the sweeper thread never runs during a GC)
@@ -306,10 +307,15 @@ const _: () = {
 /// survival again after at most 4 major GCs. (est. 3: measured on splay, which skips 1.)
 const MAX_PROBE_SKIPS: u32 = 3;
 
+/// The main TLAB fills its hole with `undefined` in steps of this many bytes ahead of the
+/// cursor (`Inner::fill_tlab`, GCPAR3): 16 lines, so a step serves about 100 cells of 40 B
+/// and the slow path runs once per step. (est.: measured on splay.)
+pub(crate) const TLAB_FILL_STEP: usize = 4096;
+
 /// Where [`Inner::alloc_in`] placed a cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Place {
-    /// The main TLAB: the hole is already filled with `undefined`.
+    /// The main TLAB: the cell's words already hold `undefined` (`Inner::fill_tlab`).
     Tlab,
     /// The overflow TLAB of a small page (a cell larger than one line).
     Overflow,
@@ -473,8 +479,11 @@ pub(crate) struct Inner {
     pub(crate) s: Settings,
     #[cfg(not(miri))]
     stack: ep9_platform::StackBounds,
-    /// End of the main TLAB's hole (`Hot::limit` mirrors it unless GC-stress is on).
+    /// End of the main TLAB's hole.
     pub(crate) tlab_end: usize,
+    /// End of the part of the main TLAB's hole that holds `undefined` (GCPAR3; at most
+    /// `tlab_end`). `Hot::limit` mirrors it unless GC-stress is on.
+    pub(crate) tlab_filled: usize,
     cur_page: Option<usize>,
     cur_line: usize,
     recyclable: Vec<usize>,
@@ -590,6 +599,7 @@ impl Heap {
                 #[cfg(not(miri))]
                 stack,
                 tlab_end: 0,
+                tlab_filled: 0,
                 cur_page: None,
                 cur_line: FIRST_LINE,
                 recyclable: Vec::new(),
@@ -810,6 +820,21 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn alloc_slow(&self, kind: KindId, size: usize) -> Result<CellPtr, AllocError> {
+        // A small cell that fits the TLAB hole past its filled part needs only the next fill
+        // step (GCPAR3), and no GC trigger: the budget counted the whole hole when the TLAB
+        // took it, so the GCs run where they ran before the step fill. GC stress counts every
+        // allocation, so it skips this.
+        if size <= MAX_SMALL_SIZE {
+            let mut inner = self.inner.borrow_mut();
+            if inner.s.gc_stress == 0
+                && let Some(addr) = inner.alloc_in_tlab(&self.hot, size)
+            {
+                drop(inner);
+                // SAFETY: `alloc_in_tlab` returned free, committed memory of the main TLAB
+                // for a cell of `size`, already filled with `undefined`.
+                return Ok(unsafe { self.init_tlab_cell(addr, kind) });
+            }
+        }
         let mut collected = self.collect_if_triggered(size);
         let mut swept = false;
         let mut asked = false;
@@ -888,7 +913,7 @@ impl Heap {
     }
 
     /// Writes word0 and sets the VO bit of a cell in the main TLAB. The other words already
-    /// hold `undefined`: `Inner::alloc_in` fills each TLAB hole when it takes it (GCPAR3).
+    /// hold `undefined`: `Inner::alloc_in` fills the TLAB hole ahead of the cursor (GCPAR3).
     ///
     /// # Safety
     /// `addr` is the start of a cell in the main TLAB hole: committed memory of a small page
@@ -1002,6 +1027,7 @@ impl Heap {
             self.hot.cursor.set(0);
             self.hot.limit.set(0);
             inner.tlab_end = 0;
+            inner.tlab_filled = 0;
             inner.cur_page = None;
             inner.ov_cursor = 0;
             inner.ov_end = 0;
@@ -1488,8 +1514,43 @@ impl Inner {
         hot.limit.set(if self.s.gc_stress > 0 {
             0
         } else {
-            self.tlab_end
+            self.tlab_filled
         });
+    }
+
+    /// Fills the main TLAB's hole with `undefined` from `tlab_filled` to at least `need`: one
+    /// step of [`TLAB_FILL_STEP`] bytes, or more if `need` asks, and at most to `tlab_end`.
+    fn fill_tlab(&mut self, need: usize) {
+        debug_assert!(self.tlab_filled < need && need <= self.tlab_end);
+        let to = need
+            .max(self.tlab_filled + TLAB_FILL_STEP)
+            .min(self.tlab_end);
+        // SAFETY: [tlab_filled, to) lies in the main TLAB's hole, a free-line run of a
+        // committed small page of this heap (`next_free_run`), past the cursor: it holds no
+        // cell, and nothing reads it until a cell is placed there.
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.mem.ptr(self.tlab_filled).cast::<u64>().as_ptr(),
+                (to - self.tlab_filled) / 8,
+            )
+            .fill(VALUE_UNDEFINED);
+        }
+        self.tlab_filled = to;
+    }
+
+    /// A cell of `size` (already rounded, small) in the main TLAB's current hole, if it fits;
+    /// fills the next step of the hole first if the cell passes the filled part.
+    fn alloc_in_tlab(&mut self, hot: &Hot, size: usize) -> Option<usize> {
+        let cur = hot.cursor.get();
+        if cur == 0 || cur + size > self.tlab_end {
+            return None;
+        }
+        if cur + size > self.tlab_filled {
+            self.fill_tlab(cur + size);
+            self.sync_limit(hot);
+        }
+        hot.cursor.set(cur + size);
+        Some(cur)
     }
 
     /// Finds memory for a cell of `size` (already rounded). Returns its address and place.
@@ -1497,10 +1558,8 @@ impl Inner {
         if size > MAX_SMALL_SIZE {
             return self.alloc_large(size).map(|a| (a, Place::Large));
         }
-        let cur = hot.cursor.get();
-        if cur != 0 && cur + size <= self.tlab_end {
-            hot.cursor.set(cur + size);
-            return Some((cur, Place::Tlab));
+        if let Some(a) = self.alloc_in_tlab(hot, size) {
+            return Some((a, Place::Tlab));
         }
         if size > MAX_LINE_CELL {
             if self.ov_cursor == 0 || self.ov_cursor + size > self.ov_end {
@@ -1523,21 +1582,17 @@ impl Inner {
         let (start, end) = self.next_hole()?;
         self.note_allocated(end - start);
         debug_assert!(end - start >= LINE_SIZE && size <= LINE_SIZE);
-        // The allocation fast path (GCPAR3): fill the whole hole with `undefined` once, so a
-        // TLAB cell needs only its word0 and VO bit. One long fill is cheaper than one short
-        // fill per cell (on macOS each short fill was a `memset_pattern16` call). The hole
-        // holds no cell until the GC retires the TLAB, and only TLAB cells use it.
-        // SAFETY: [start, end) is a free-line run of a committed small page of this heap
-        // (`next_free_run`): it holds no cell, and nothing reads it until a cell is placed.
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                self.mem.ptr(start).cast::<u64>().as_ptr(),
-                (end - start) / 8,
-            )
-            .fill(VALUE_UNDEFINED);
-        }
-        hot.cursor.set(start + size);
+        // The allocation fast path (GCPAR3): the TLAB fills its hole with `undefined` ahead
+        // of the cursor, one step at a time (`fill_tlab`), so a TLAB cell needs only its word0
+        // and VO bit. One long fill is cheaper than one short fill per cell (on macOS each
+        // short fill was a `memset_pattern16` call). The limit is the end of the filled part,
+        // so a cell that passes it takes this slow path, which fills the next step. The hole
+        // holds no cell until the GC retires the TLAB, and only TLAB cells use it. (The step,
+        // not the whole hole: a GC-stress allocation takes a new hole each time.)
         self.tlab_end = end;
+        self.tlab_filled = start;
+        self.fill_tlab(start + size);
+        hot.cursor.set(start + size);
         self.sync_limit(hot);
         Some((start, Place::Tlab))
     }

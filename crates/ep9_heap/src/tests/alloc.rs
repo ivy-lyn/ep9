@@ -6,6 +6,7 @@ use ep9_value::encoding::VALUE_UNDEFINED;
 use ep9_value::{ShapeId, Value};
 
 use super::*;
+use crate::heap::TLAB_FILL_STEP;
 use crate::layout::{FIRST_CELL_OFFSET, LARGE_CELL_OFFSET, LINE_SIZE, PAGE_MASK, PAGE_SIZE};
 use crate::{AllocError, KindError, gc_state};
 
@@ -65,10 +66,12 @@ fn tlab_bumps_and_fixed_offsets_match() {
     let (cursor, limit) = raw_tlab(&heap);
     assert_eq!(cursor, c.addr() + 256);
     assert_eq!(
-        limit,
+        heap.inner.borrow().tlab_end,
         (a.addr() & PAGE_MASK) + PAGE_SIZE,
         "the fresh page is one hole"
     );
+    // The limit is the end of the part of the hole that holds `undefined` (GCPAR3).
+    assert_eq!(limit, a.addr() + TLAB_FILL_STEP, "one fill step");
     black_box((a, b, c));
 }
 
@@ -200,23 +203,26 @@ fn holes_and_overflow() {
     black_box((small, medium));
 }
 
-/// The allocation fast path (GCPAR3): the TLAB fills its whole hole with `undefined` when
-/// it takes the hole, so a TLAB cell writes only word0 and its VO bit. Checked on a fresh
-/// page (zero memory before) and on a reused hole whose dead cells still hold other bits (no
-/// zap), on the fast path and on the slow path (GC stress). Before GCPAR3 each cell filled
+/// The allocation fast path (GCPAR3): the TLAB fills its hole with `undefined` ahead of the
+/// cursor (one 4 KiB step, then the next step when a cell passes the limit), so a TLAB cell
+/// writes only word0 and its VO bit. Checked on a fresh page (zero memory before) and on a
+/// reused hole whose dead cells still hold other bits (no zap), on the fast path and on the
+/// slow path (GC stress), and for cells past several steps. Before GCPAR3 each cell filled
 /// only its own words, so the rest of the hole kept the old bits.
 #[test]
 #[cfg_attr(miri, ignore = "slow under Miri")]
 fn a_tlab_fills_its_hole_with_undefined() {
     fn hole_is_undefined(heap: &Heap, what: &str) {
         let (cursor, limit) = raw_tlab(heap);
-        let end = if limit == 0 {
-            // GC stress keeps the limit at 0: read the inner TLAB end.
-            heap.inner.borrow().tlab_end
-        } else {
-            limit
+        let (end, filled) = {
+            let inner = heap.inner.borrow();
+            (inner.tlab_end, inner.tlab_filled)
         };
-        assert!(cursor != 0 && cursor < end, "{what}: a TLAB");
+        // GC stress keeps the limit at 0; else the limit is the end of the filled part.
+        assert!(limit == 0 || limit == filled, "{what}: limit {limit:#x}");
+        assert!(filled <= end, "{what}");
+        let end = filled;
+        assert!(cursor != 0 && cursor <= end, "{what}: a TLAB");
         for a in (cursor..end).step_by(8) {
             // SAFETY: [cursor, end) is the committed, unused rest of the TLAB hole.
             let w = unsafe { heap_ptr(heap, a).cast::<u64>().read() };
@@ -233,6 +239,14 @@ fn a_tlab_fills_its_hole_with_undefined() {
         heap.set_global(keep, list.to_value());
         let a = new_node(&heap, 1, 2);
         hole_is_undefined(&heap, "fresh page");
+        // Cells past several fill steps (a fresh page is one hole of 256 KiB).
+        for i in 0..100 {
+            let c = new_node(&heap, 5000 + i, 30);
+            for j in 0..30 {
+                assert_eq!(slot(c, j).bits(), VALUE_UNDEFINED, "cell {i} slot {j}");
+            }
+        }
+        hole_is_undefined(&heap, "after 25 KiB");
         // Fill the page with cells whose slots hold numbers; keep every 4th one.
         for i in 0..800 {
             let c = new_node(&heap, i + 2, 30); // 256 B, one line
