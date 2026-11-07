@@ -26,7 +26,7 @@ fn the_three_methods_are_on_function_prototype() {
         lines(&[
             "call 1 apply 2 bind 1",
             "true false true function",
-            "length,name,constructor,apply,bind,call,toString",
+            "length,name,constructor,caller,arguments,apply,bind,call,toString",
         ])
     );
 }
@@ -616,6 +616,56 @@ fn restricted_functions_have_no_own_caller_or_arguments() {
             "15",
             "false false",
             "length,name,prototype length,name,prototype",
+        ])
+    );
+}
+
+/// %Function.prototype% `caller` and `arguments` (§10.2.4 AddRestrictedFunctionProperties,
+/// CreateIntrinsics step 3): accessors {e: false, c: true} with one getter ("get caller")
+/// and one setter ("set caller") for both keys. They throw the TypeError of %ThrowTypeError%
+/// (§10.2.4.1) for every function of §17.1 (strict, bound, arrow, method, class, generator,
+/// async and built-in functions) and for a value that is not a function. A non-strict
+/// ordinary function has no own `caller` or `arguments`, so the accessor reaches it too: a
+/// get gives undefined and a set does nothing. This is the web-legacy form of V8,
+/// SpiderMonkey and JavaScriptCore, so the halves are not %ThrowTypeError% (ECMA-262 asks
+/// for it). The lines differ from node v26.13.0 in 3 places: V8 has 4 accessor
+/// functions (line 1: `function false false false`), its sloppy `caller` gives null or the
+/// calling function (line 4: `null null [Function: outer] ok`), and its key order ends
+/// in `toString,arguments,caller` (line 6).
+#[test]
+fn function_prototype_caller_and_arguments_are_restricted() {
+    assert_eq!(
+        run_both(
+            "var p = Function.prototype;
+             var c = Object.getOwnPropertyDescriptor(p, 'caller');
+             var a = Object.getOwnPropertyDescriptor(p, 'arguments');
+             print(typeof c.get, c.get === c.set, c.get === a.get, c.set === a.set);
+             print(c.enumerable, c.configurable, a.enumerable, a.configurable,
+                   c.get.length, c.get.name, c.set.length, c.set.name);
+             function t(f) {
+               try { f(); return 'ok'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; }
+             }
+             function strict() { 'use strict'; }
+             var cases = [strict, (function () {}).bind(null), () => 0, {m() {}}.m, class {},
+                          function* () {}, async function () {}, Math.max, p];
+             print(cases.map(function (f) {
+               return [t(function () { return f.caller; }), t(function () { return f.arguments; }),
+                       t(function () { f.caller = 1; }), t(function () { f.arguments = 1; })].join('/');
+             }).every(function (r) { return r === 'TypeError/TypeError/TypeError/TypeError'; }));
+             function sloppy() { return sloppy.caller; }
+             function outer() { return sloppy(); }
+             print(sloppy.caller, sloppy.arguments, outer(), t(function () { sloppy.caller = 1; }));
+             print(t(function () { c.get.call({}); }), t(function () { c.get.call(undefined); }),
+                   t(function () { a.set.call(1, 1); }));
+             print(Object.getOwnPropertyNames(p).join());"
+        ),
+        lines(&[
+            "function false true true",
+            "false true false true 0 get caller 1 set caller",
+            "true",
+            "undefined undefined undefined ok",
+            "TypeError TypeError TypeError",
+            "length,name,constructor,caller,arguments,apply,bind,call,toString",
         ])
     );
 }

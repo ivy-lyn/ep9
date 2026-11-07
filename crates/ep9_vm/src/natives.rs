@@ -20,6 +20,7 @@
 //! | `%AsyncGeneratorFunction%`, `%AsyncGeneratorPrototype%` `next`/`return`/`throw`, `%AsyncIteratorPrototype%[@@asyncIterator]`, `%AsyncFromSyncIteratorPrototype%` `next`/`return`/`throw` (`generator.rs`, M3-P2 ASYNCGEN; `%AsyncGeneratorFunction%` compiles through the compiler hook like `Function`) | §27.4.1.1, §27.6.1.2-4, §27.1.3.1, §27.1.6.2.1-3 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
 //! | `%ThrowTypeError%` (the strict arguments `callee` accessor; `arguments.rs` sets its attributes) | §10.2.4.1 |
+//! | `Function.prototype.caller`, `Function.prototype.arguments` (accessors; one getter and one setter, which throw the TypeError of %ThrowTypeError% but for a non-strict ordinary function, where they give undefined) | §10.2.4 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value, the next index
 //! and the iteration kind (`object::iter_kind`). The iterated value tells an array iterator
@@ -50,7 +51,7 @@ use crate::conv::{self, num};
 use crate::error;
 use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
-use crate::kinds::{is_callable, is_string};
+use crate::kinds::{self, is_callable, is_string};
 use crate::object::{self, attr, is_array, is_object, own_define};
 use crate::property;
 use crate::runtime::{ErrorKind, Root, Runtime};
@@ -135,6 +136,11 @@ pub(crate) mod vm {
     /// `%ThrowTypeError%` (§10.2.4.1): the `callee` accessor of an unmapped arguments object
     /// (`arguments.rs` gives it its attributes on first use).
     pub const THROW_TYPE_ERROR: u16 = 41;
+    // ---- M7-P2 (SPEC-D fixer need F1) ----
+    /// The getter of the `%Function.prototype%` accessors `caller` and `arguments` (§10.2.4).
+    pub const RESTRICTED_GET: u16 = 42;
+    /// The setter of the `%Function.prototype%` accessors `caller` and `arguments`.
+    pub const RESTRICTED_SET: u16 = 43;
 }
 
 /// The VM's block.
@@ -191,6 +197,8 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("return", 1, generator::async_from_sync_return),
     BuiltinDef::method("throw", 1, generator::async_from_sync_throw),
     BuiltinDef::method("", 0, throw_type_error),
+    BuiltinDef::getter("caller", restricted_function_property),
+    BuiltinDef::setter("caller", restricted_function_property),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -433,6 +441,19 @@ const VM_PROPS: &[ObjectProps] = &[
                 value: PropValue::Builtin(vm::FUNCTION_HAS_INSTANCE),
                 attrs: PropAttrs::NONE,
             },
+            // §10.2.4 AddRestrictedFunctionProperties(%Function.prototype%) steps 3-4: {e:
+            // false, c: true}, one getter and one setter for both keys (the legacy form of
+            // `restricted_function_property`).
+            PropDef::accessor(
+                PropKey::Str("caller"),
+                Some(vm::RESTRICTED_GET),
+                Some(vm::RESTRICTED_SET),
+            ),
+            PropDef::accessor(
+                PropKey::Str("arguments"),
+                Some(vm::RESTRICTED_GET),
+                Some(vm::RESTRICTED_SET),
+            ),
         ],
     },
     ObjectProps {
@@ -720,6 +741,40 @@ pub(crate) fn throw_type_error<'s>(
         "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode \
          functions or the arguments objects for calls to them",
     ))
+}
+
+/// The getter and the setter of the `%Function.prototype%` accessors `caller` and
+/// `arguments` (§10.2.4 AddRestrictedFunctionProperties). The receiver `this` is the
+/// function whose key a get or a set reached. A non-strict ordinary function (a `function`
+/// declaration or expression, or a function of the `Function` constructor, in non-strict
+/// code) has no own `caller` or `arguments`, so for it a get gives undefined (as when the
+/// key was missing) and a set does nothing. Every other receiver gets the TypeError of
+/// %ThrowTypeError% (§10.2.4.1): the functions of §17.1 that must not have these own
+/// properties (strict, arrow, method, class, generator, async, built-in and bound
+/// functions) and every value that is not a function. ECMA-262 makes both halves
+/// %ThrowTypeError%, so a non-strict function would throw too; this is the web-legacy form
+/// of V8, SpiderMonkey and JavaScriptCore instead (test262 `prop-desc.js` of `caller` and
+/// `arguments` fails on it, as on those engines).
+pub(crate) fn restricted_function_property<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let f = this.bits();
+    if kinds::is_function(f) {
+        let fi = object::function_info(f);
+        if fi.is_bytecode()
+            && !fi.is_strict()
+            && fi.kind == Some(ep9_bytecode::FunctionKind::Normal)
+            && !fi.is_generator()
+            && !fi.is_async_function()
+            && !fi.is_async_generator()
+        {
+            return Ok(local(UNDEFINED));
+        }
+    }
+    throw_type_error(cx, this, args, nt)
 }
 
 /// `%Function.prototype%` (§20.2.3): accepts any arguments and returns undefined.

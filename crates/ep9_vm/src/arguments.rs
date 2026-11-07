@@ -298,8 +298,8 @@ fn array_values(rt: &Runtime) -> u64 {
 /// the first use in a realm it gets the attributes the spec gives it: `length` and `name`
 /// {w: false, e: false, c: false} (a table gives a builtin function {c}) and
 /// `[[Extensible]]` false. The strict `callee` accessor is the only way JS code reaches it
-/// (no month-3 role builds the Function.prototype `caller` and `arguments` accessors), so
-/// no code sees it before this runs. GC point (the dictionary move of the redefinitions).
+/// (`caller` and `arguments` of %Function.prototype% use `natives::restricted_function_property`),
+/// so no code sees it before this runs. GC point (the dictionary move of the redefinitions).
 fn throw_type_error(rt: &Runtime) -> Option<u64> {
     let t = builtins::intrinsic(rt, IntrinsicId::ThrowTypeError);
     if !kind::is_callable(t) {
