@@ -723,10 +723,12 @@ fn check_compare_pairs(values: &[u64]) -> usize {
 /// every pair of a value set gives the bits of the old test chain. The set: numbers at the
 /// edges of the int32 and double tags; every immediate below 256 with `OTHER_TAG` (true, false,
 /// null, undefined, the hole and the bit patterns no Value has); fake cells of all 256 kind
-/// bytes with and without the atom flag (only the header is read); and real cells of an
-/// isolate (strings, an atom, a symbol, a BigInt, objects, an array, a function).
+/// bytes with and without the atom flag (only the header is read; the headers are in a small
+/// cage below 2^47, as cells are); and real cells of an isolate (strings, an atom, a symbol, a
+/// BigInt, objects, an array, a function).
 #[test]
 fn compare_classes_equal_the_old_test_chain() {
+    use ep9_platform::va;
     use ep9_value::{ShapeId, Word0};
     let mut values: Vec<u64> = Vec::new();
     for i in [0, 1, -1, 7, i32::MAX, i32::MIN] {
@@ -746,19 +748,44 @@ fn compare_classes_equal_the_old_test_chain() {
         values.push(Value::number(d).to_bits());
     }
     values.extend((0u64..256).filter(|v| v & ep9_value::encoding::OTHER_TAG != 0));
-    // Fake cells: one 8-byte header each, 8-aligned, below 2^48, so `OTHER_TAG` is clear.
+    // Fake cells: one 8-byte header each, 8-aligned, in a small cage, so each address is below
+    // 2^47 (H7) and a valid cell Value on every host. Not in the Rust heap: on linux-arm64 (48-bit
+    // VA) malloc gives addresses above 2^47 (CI 42331111457: 0xff8d4c005160), which
+    // `runtime::val` refuses.
     let fakes: Vec<Word0> = (0..=255u8)
         .flat_map(|k| {
             [0, kinds::FLAG_ATOM, 0xFFFE, 0xFFFF].map(|f| Word0::new(ShapeId::new(0), 0, k, f))
         })
         .collect();
-    for w in &fakes {
-        let bits = (w as *const Word0).expose_provenance() as u64;
+    let size = (fakes.len() * size_of::<Word0>()).next_multiple_of(va::allocation_granularity());
+    let cage = va::Cage::reserve(&va::CageConfig {
+        cage_size: size,
+        ..va::CageConfig::default()
+    })
+    .expect("a cage below 2^47");
+    cage.heap()
+        .commit(0, size)
+        .expect("commit the fake-cell pages");
+    let base = std::ptr::with_exposed_provenance_mut::<Word0>(cage.heap().base());
+    for (i, w) in fakes.into_iter().enumerate() {
+        // SAFETY: `base` is the start of `size` committed read-write bytes of `cage`, 8-aligned
+        // (a granularity multiple), and `(i + 1) * 8 <= size`.
+        let at = unsafe {
+            let at = base.add(i);
+            at.write(w);
+            at
+        };
+        let bits = at.expose_provenance() as u64;
         assert!(kinds::is_cell_bits(bits) && bits != 0);
+        assert!(
+            Value::is_valid_bits(bits),
+            "a fake cell at {bits:#x} is not a valid Value"
+        );
         values.push(bits);
     }
     let fake_pairs = check_compare_pairs(&values);
     assert_eq!(fake_pairs, values.len() * values.len());
+    drop(cage);
 
     let real = on_big_stack(|| {
         let mut iso = isolate(config(Dispatch::DEFAULT, false));
