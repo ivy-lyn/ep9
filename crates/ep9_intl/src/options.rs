@@ -116,10 +116,15 @@ pub fn get_boolean_or_string_number_format_option<'s>(
     }
     // 5. Set value to ? ToString(value).
     let s = cx.to_rust_string(value)?;
-    // 6. If stringValues does not contain value, throw a RangeError exception.
+    // 6. If value is "true" or "false", return fallback.
+    if s == "true" || s == "false" {
+        return Ok(fallback);
+    }
+    // 7. If stringValues does not contain value, throw a RangeError exception.
     if !string_values.contains(&s.as_str()) {
         return Err(cx.throw_range_error(&format!("Value {s} out of range for {property}")));
     }
+    // 8. Return value.
     Ok(BoolOrString::Str(s))
 }
 
