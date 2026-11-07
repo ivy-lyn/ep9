@@ -1751,6 +1751,55 @@ pub(crate) fn set_human_fast_paths(rt: &Runtime, on: bool) {
     ANY_OFF.store(!off.is_empty(), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The FASTDIFF hit counters (route P0-FASTHITS; feature `fastdiff-hits`, which only the
+/// FASTDIFF test turns on, so no shipped build counts): per Switch human fast path, the times it
+/// was taken on this thread. A run with the fast paths off must count 0 for each.
+#[cfg(feature = "fastdiff-hits")]
+pub(crate) mod fast_hits {
+    use core::cell::Cell;
+
+    /// The Switch rows of the FASTDIFF inventory, in counter order.
+    pub const NAMES: [&str; 6] = [
+        "host-entry",
+        "forward-apply",
+        "forward-call",
+        "args-create",
+        "clfal-length",
+        "clfal-elements",
+    ];
+
+    thread_local! {
+        static HITS: [Cell<u64>; NAMES.len()] = const { [const { Cell::new(0) }; NAMES.len()] };
+    }
+
+    /// Counts one hit of fast path `i` (an index of [`NAMES`]).
+    #[inline(always)]
+    pub(crate) fn hit(i: usize) {
+        HITS.with(|h| h[i].set(h[i].get() + 1));
+    }
+
+    /// The count of each fast path on this thread, then 0 for each.
+    pub(crate) fn take() -> Vec<(&'static str, u64)> {
+        HITS.with(|h| {
+            NAMES
+                .iter()
+                .zip(h)
+                .map(|(n, c)| (*n, c.replace(0)))
+                .collect()
+        })
+    }
+}
+
+/// Counts a hit of the FASTDIFF Switch path `$i` (`fast_hits::NAMES`) with feature
+/// `fastdiff-hits`; nothing without it.
+macro_rules! fast_hit {
+    ($i:expr) => {
+        #[cfg(feature = "fastdiff-hits")]
+        $crate::call::fast_hits::hit($i);
+    };
+}
+pub(crate) use fast_hit;
+
 #[cfg(test)]
 thread_local! {
     /// The calls that `interp/slow/call.rs` `host_entry` took on this thread (the tests check

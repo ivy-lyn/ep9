@@ -59,7 +59,8 @@
 //!   build, `ep9-jitless` the jitless build, then `node-jitless`, `d8-jitless`), `n` (the runs)
 //!   and `median_bytes` (the median peak RSS).
 //! - ep9-fastdiff/v1 (the FASTDIFF test): `commit`, `dirty`, `fast_paths[]` with `name`, `cases`
-//!   and `mismatches`.
+//!   and `mismatches`, and for a row with `off` `switch` its `hits_on` and `hits_off` (route
+//!   P0-FASTHITS: the fast path ran with the fast paths on, never with them off).
 //! - JetStream (jetstream/run.mjs): `list`, `jetstream_commit`, `reps`, `host.{platform, arch}`,
 //!   `ep9.{commit, dirty}`, `configs[]` (`name`, `engine`, `kind`, `version`, `flags`) and
 //!   `table[]` (per workload `<config>` median score and `<config>_n` scores). The ep9 configs are
@@ -1199,6 +1200,26 @@ fn fastdiff_cell(c: &Ctx, p: &Path, j: &Json) -> Cell {
                 why.push(format!("{name}: no mismatch count"));
             }
         }
+        // P0-FASTHITS: 0 mismatches from cases that never took a Switch fast path is no
+        // evidence; a hit with the fast paths off means the switch did not turn it off.
+        if f.get("off").and_then(Json::str) == Some("switch") {
+            match (num(f, "hits_on"), num(f, "hits_off")) {
+                (Some(on), Some(off)) => {
+                    if on < 1.0 {
+                        status = Status::Fail;
+                        why.push(format!("{name}: 0 fast path hits"));
+                    }
+                    if off != 0.0 {
+                        status = Status::Fail;
+                        why.push(format!("{name}: {off} hits with the fast paths off"));
+                    }
+                }
+                _ => {
+                    status = status.max(Status::Open);
+                    why.push(format!("{name}: no hit count"));
+                }
+            }
+        }
     }
     with_fresh(
         cell(
@@ -2222,9 +2243,13 @@ mod tests {
                 .evidence
                 .contains("built-ins/Function/ 18 / 20 = 90.00% (>= 95%) FAIL")
         );
-        // A fast path with 0 cases is OPEN; a mismatch is FAIL.
+        // A fast path with 0 cases is OPEN; a mismatch is FAIL. A Switch row (P0-FASTHITS):
+        // 0 hits on or a hit off is FAIL, no hit count is OPEN.
         for (from, to, want) in [
             ("\"cases\": 4", "\"cases\": 0", Status::Open),
+            ("\"hits_on\": 3", "\"hits_on\": 0", Status::Fail),
+            ("\"hits_off\": 0", "\"hits_off\": 1", Status::Fail),
+            (", \"hits_on\": 3, \"hits_off\": 0", "", Status::Open),
             (
                 "\"cases\": 4, \"mismatches\": 0",
                 "\"cases\": 4, \"mismatches\": 2",

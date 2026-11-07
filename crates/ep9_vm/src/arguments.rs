@@ -82,7 +82,10 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
     // A human fast path (FASTDIFF): off, every object is made the spec way.
     let cached = crate::call::human_fast_paths(rt).then(|| cached_shape(rt, realm, mapped));
     match cached.flatten() {
-        Some(s) => create_fast(rt, f, s, mapped, map),
+        Some(s) => {
+            crate::call::fast_hit!(3);
+            create_fast(rt, f, s, mapped, map)
+        }
         None => {
             let o = create_slow(rt, f, mapped, map);
             remember_shape(rt, realm, mapped, o);
@@ -470,7 +473,11 @@ pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
     if kind::cell_kind(o) != kind::ARGUMENTS.get() || !crate::call::human_fast_paths(rt) {
         return None;
     }
-    unmodified_length(rt, o).map(u64::from)
+    let n = unmodified_length(rt, o).map(u64::from);
+    if n.is_some() {
+        crate::call::fast_hit!(4);
+    }
+    n
 }
 
 /// `Get(o, ! ToString(𝔽(i)))` of CreateListFromArrayLike (§7.3.19 step 6.b) read in place
@@ -480,7 +487,7 @@ pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
 /// kind; and every element while the human fast paths are off, FASTDIFF). Not a GC point.
 #[inline]
 pub(crate) fn list_element(rt: &Runtime, o: u64, i: u32) -> Option<u64> {
-    if !crate::call::human_fast_paths(rt) {
+    let v = if !crate::call::human_fast_paths(rt) {
         None
     } else if kind::is_array(o) {
         object::array_get(o, i)
@@ -488,7 +495,11 @@ pub(crate) fn list_element(rt: &Runtime, o: u64, i: u32) -> Option<u64> {
         element_value(o, i)
     } else {
         None
+    };
+    if v.is_some() {
+        crate::call::fast_hit!(5);
     }
+    v
 }
 
 /// `o.[[Set]](i, v, o)` (§10.4.4.4, receiver `o`) for a writable element `i` of the arguments

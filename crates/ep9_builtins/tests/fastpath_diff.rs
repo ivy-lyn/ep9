@@ -19,11 +19,15 @@
 //!
 //! A run gives the printed lines and the uncaught exception ("Name: message"). The cases of
 //! the Switch rows also run under GC stress (a collection at each allocation), on and off.
+//! Route P0-FASTHITS: a run also gives the hit count of each Switch fast path (ep9_vm feature
+//! `fastdiff-hits`, `internals::take_fastdiff_hits`). Over its cases, a Switch row must count at
+//! least 1 hit with the fast paths on and 0 with them off: 0 mismatches from cases that never
+//! took the fast path is no evidence.
 //!
 //! The JSON report (schema `ep9-fastdiff/v1`, the form that `cargo xtask m2-exit` item 5
 //! reads): the ep9 commit and whether its tree was dirty (`commit`, `dirty`; `null` when git
-//! cannot say), `fast_paths[]` with each fast path's `name`, `cases` and `mismatches`, and the
-//! totals. It goes to `$EP9_FASTDIFF_JSON` if set, else to
+//! cannot say), `fast_paths[]` with each fast path's `name`, `cases` and `mismatches` (and for
+//! a Switch row `hits_on` and `hits_off`), and the totals. It goes to `$EP9_FASTDIFF_JSON` if set, else to
 //! `$CARGO_TARGET_TMPDIR/fastdiff.json`. `EP9_FASTDIFF_DUMP=<dir>` also writes each case
 //! form as a `.js` file (with `print`), so node can run it.
 //!
@@ -93,20 +97,20 @@ const INVENTORY: &[FastPath] = &[
     // ---- B0, the switch ----
     FastPath {
         id: "args-create",
-        site: "crates/ep9_vm/src/arguments.rs:62 (create_fast, :212)",
+        site: "crates/ep9_vm/src/arguments.rs:62 (create_fast, :222)",
         off: Off::Switch,
         what: "a new arguments object takes the realm's cached shape (V10-D11)",
     },
     FastPath {
         id: "clfal-length",
-        site: "crates/ep9_vm/src/arguments.rs:463 (list_length)",
+        site: "crates/ep9_vm/src/arguments.rs:466 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
                place",
     },
     FastPath {
         id: "clfal-elements",
-        site: "crates/ep9_vm/src/arguments.rs:479 (list_element; abi/mod.rs create_list_from_array_like)",
+        site: "crates/ep9_vm/src/arguments.rs:486 (list_element; abi/mod.rs create_list_from_array_like)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads a present Array or arguments element in place \
                (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
@@ -681,10 +685,19 @@ fn print<'s>(
 /// What a run gives: the printed lines and the uncaught exception.
 type RunOut = (Vec<String>, Option<String>);
 
+/// The Switch fast path hits of one run, by row name (P0-FASTHITS).
+type Hits = Vec<(&'static str, u64)>;
+
 /// Runs the sloppy script `SHOW + src` on a fresh isolate with the human fast paths `on` or
 /// off; `stress`: a collection at each allocation, then the heap verifier. On a big stack
 /// (debug builds and the overflow cases).
 fn run(src: &'static str, on: bool, stress: bool) -> RunOut {
+    run_hits(src, on, stress).0
+}
+
+/// [`run`], and the Switch fast path hits of the run (the counters are per thread, and the run
+/// has its own thread).
+fn run_hits(src: &'static str, on: bool, stress: bool) -> (RunOut, Hits) {
     std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
@@ -707,11 +720,13 @@ fn run(src: &'static str, on: bool, stress: bool) -> RunOut {
             .expect("an isolate");
             iso.register_host_function("print", 1, print);
             OUT.with(|o| o.borrow_mut().clear());
+            let _ = ep9_vm::internals::take_fastdiff_hits();
             let r = iso.with_cx_checkpoint(|cx| {
                 cx.set_human_fast_paths(on);
                 cx.run_script(unit, "case.js").map(|_| ())
             });
             let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+            let hits = ep9_vm::internals::take_fastdiff_hits();
             iso.collect_garbage();
             iso.verify_heap().expect("a valid heap");
             // The switch is process-wide and keyed by the isolate id: turn it on again, so
@@ -721,7 +736,7 @@ fn run(src: &'static str, on: bool, stress: bool) -> RunOut {
                 cx.set_human_fast_paths(true);
                 Ok(())
             });
-            (out, r.err().map(|e| e.message))
+            ((out, r.err().map(|e| e.message)), hits)
         })
         .expect("a thread")
         .join()
@@ -793,15 +808,21 @@ fn every_fast_path_has_a_case_and_every_case_a_fast_path() {
     assert_eq!(ids.len(), INVENTORY.len(), "an id twice");
 }
 
+/// The hits of the row `id` in `h` (0 if it is not a counted row).
+fn hits_of(h: &Hits, id: &str) -> u64 {
+    h.iter().find(|(n, _)| *n == id).map_or(0, |(_, n)| *n)
+}
+
 /// Runs case `c` on and off (and its spec form, and for a Switch row under GC stress with the
-/// fast paths on): the mismatches and the number of runs.
-fn check_case(c: &Case) -> (Vec<String>, usize) {
+/// fast paths on): the mismatches, the number of runs and the hits of its row (on, off).
+fn check_case(c: &Case) -> (Vec<String>, usize, (u64, u64)) {
     let started = std::time::Instant::now();
     let p = INVENTORY.iter().find(|p| p.id == c.path).expect("a row");
     let label = format!("{} / {}", c.path, c.name);
     let mut mismatches = Vec::new();
-    let on = run(c.src, true, false);
-    let off = run(c.src, false, false);
+    let (on, hits_on) = run_hits(c.src, true, false);
+    let (off, hits_off) = run_hits(c.src, false, false);
+    let hits = (hits_of(&hits_on, p.id), hits_of(&hits_off, p.id));
     let mut runs = 2;
     if on.1.is_some() {
         mismatches.push(format!("{label}: uncaught {:?}", on.1));
@@ -830,7 +851,7 @@ fn check_case(c: &Case) -> (Vec<String>, usize) {
         }
     }
     eprintln!("{label}: {:.1} s", started.elapsed().as_secs_f64());
-    (mismatches, runs)
+    (mismatches, runs, hits)
 }
 
 #[test]
@@ -886,11 +907,29 @@ fn every_fast_path_matches_its_spec_steps() {
     results.sort_by_key(|(i, _)| *i);
     let mut mismatches = Vec::new();
     let mut per_path = std::collections::BTreeMap::<&str, usize>::new();
+    let mut hits = std::collections::BTreeMap::<&str, (u64, u64)>::new();
     let mut runs = 0;
-    for (i, (m, n)) in results {
+    for (i, (m, n, (h_on, h_off))) in results {
         *per_path.entry(todo[i].path).or_default() += m.len();
+        let h = hits.entry(todo[i].path).or_default();
+        (h.0, h.1) = (h.0 + h_on, h.1 + h_off);
         mismatches.extend(m);
         runs += n;
+    }
+    // P0-FASTHITS: each Switch row whose cases ran took its fast path, and never with the fast
+    // paths off.
+    for p in INVENTORY.iter().filter(|p| p.off == Off::Switch) {
+        let Some(&(h_on, h_off)) = hits.get(p.id) else {
+            continue;
+        };
+        if h_on == 0 {
+            mismatches.push(format!("{}: no case took the fast path (0 hits on)", p.id));
+            *per_path.entry(p.id).or_default() += 1;
+        }
+        if h_off != 0 {
+            mismatches.push(format!("{}: {h_off} hits with the fast paths off", p.id));
+            *per_path.entry(p.id).or_default() += 1;
+        }
     }
     let (commit, dirty) = git_state();
     let mut j = format!(
@@ -904,9 +943,15 @@ fn every_fast_path_matches_its_spec_steps() {
         } else {
             "guard"
         };
+        let h = if p.off == Off::Switch {
+            let (h_on, h_off) = hits.get(p.id).copied().unwrap_or((0, 0));
+            format!("\"hits_on\":{h_on},\"hits_off\":{h_off},")
+        } else {
+            String::new()
+        };
         let _ = write!(
             j,
-            "{}{{\"name\":{},\"site\":{},\"off\":\"{off}\",\"cases\":{n},\"mismatches\":{},\"what\":{}}}",
+            "{}{{\"name\":{},\"site\":{},\"off\":\"{off}\",\"cases\":{n},\"mismatches\":{},{h}\"what\":{}}}",
             if i > 0 { "," } else { "" },
             json_str(p.id),
             json_str(p.site),

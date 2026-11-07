@@ -816,6 +816,7 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64
     }
     #[cfg(test)]
     call::HOST_ENTRY_HITS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(0);
     let len = |o: O| pc.wrapping_add(o.info().size(OperandScale::Single));
     // Register lists hold locals only, so the list operand is the slot offset itself.
     let first = isize::from(byte(1) as i8);
@@ -954,6 +955,7 @@ fn forward(
     };
     #[cfg(test)]
     call::FORWARDED_CALLS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(if apply { 1 } else { 2 });
     Some(r)
 }
 
