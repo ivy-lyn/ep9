@@ -581,3 +581,41 @@ fn an_embedder_forwarder_runs_its_body_on_every_call() {
     assert_eq!(s.as_deref(), Some("01234"));
     assert_eq!(n, 5, "the body ran {n} times for 5 calls");
 }
+
+/// §17.1 (forbidden extensions): strict functions, arrow functions, methods, accessors,
+/// classes, generators, async functions, built-in functions and bound functions have no own
+/// `caller` or `arguments` property (the `Function` constructor's strict functions need the
+/// compiler hook: test262 `StrictFunction_restricted-properties.js`). This guards the
+/// `caller` and `arguments` accessors of %Function.prototype% (§10.2.4
+/// AddRestrictedFunctionProperties): a fix puts them there, never on these functions. ep9
+/// gives a non-strict ordinary function no own `caller` or `arguments` either, as V8 does.
+/// Expected lines are node v26.13.0's.
+#[test]
+fn restricted_functions_have_no_own_caller_or_arguments() {
+    assert_eq!(
+        run_both(
+            "function strict() { 'use strict'; }
+             var o = {m() {}, get g() { return 1; }, set s(v) {}};
+             var cases = [strict, () => 0, o.m,
+                          Object.getOwnPropertyDescriptor(o, 'g').get,
+                          Object.getOwnPropertyDescriptor(o, 's').set,
+                          class {}, class extends Object {}, function* () {},
+                          async function () {}, async () => 0, async function* () {},
+                          Math.max, Function.prototype.call, (function () {}).bind(null),
+                          strict.bind(null)];
+             print(cases.map(function (f) {
+               return f.hasOwnProperty('caller') + '/' + f.hasOwnProperty('arguments');
+             }).join(' ') === cases.map(function () { return 'false/false'; }).join(' '));
+             print(cases.length);
+             function sloppy() {}
+             print(sloppy.hasOwnProperty('caller'), sloppy.hasOwnProperty('arguments'));
+             print(Object.getOwnPropertyNames(strict).join(), Object.getOwnPropertyNames(sloppy).join());"
+        ),
+        lines(&[
+            "true",
+            "15",
+            "false false",
+            "length,name,prototype length,name,prototype",
+        ])
+    );
+}
