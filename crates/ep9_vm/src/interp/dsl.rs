@@ -176,12 +176,12 @@ pub(crate) mod kind {
         };
     }
 
-    operand!(Reg, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegInOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOutTriple, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOutPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
+    operand!(Reg, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegInOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegPair, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOutTriple, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOutPair, R, |p, S| R::of_operand(read_signed::<S>(p)));
     operand!(RegList, RList, |p, S| RList(read_signed::<S>(p) as isize));
     operand!(
         RegOutList,
@@ -1186,6 +1186,40 @@ macro_rules! expand_scaled {
 }
 pub(crate) use expand_scaled;
 
+// ---- the x86-64 register operand decode ------------------------------------------------------
+
+impl R {
+    /// [`R::from_operand`] for the register operand decoders of the handlers (`kind::Reg` and
+    /// the other register kinds). x86-64: the same map as a select, which LLVM keeps as `lea`,
+    /// `test`, `cmov` and puts the slot offset into the load or store address (3 instructions;
+    /// the shift form of `from_operand` gave 4-5 there: `xor`, `test`, `setns`, `shl`, `add`
+    /// or `mov`, `sar`, `and`, `add`). Other targets: `from_operand` (their code does not
+    /// change).
+    #[inline(always)]
+    pub fn of_operand(v: i32) -> R {
+        #[cfg(target_arch = "x86_64")]
+        {
+            R::from_operand_select(v)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            R::from_operand(v)
+        }
+    }
+
+    /// The x86-64 form of [`R::of_operand`]. It builds on every target for the test.
+    #[cfg(any(target_arch = "x86_64", test))]
+    #[inline(always)]
+    fn from_operand_select(v: i32) -> R {
+        let o = v as isize;
+        R(core::hint::select_unpredictable(
+            o < 0,
+            o - HEADER as isize,
+            o,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,6 +1232,32 @@ mod tests {
         assert_eq!(R::from_operand(-1).0, crate::frame::slot::RECEIVER);
         assert_eq!(R::from_operand(-2).0, crate::frame::slot::PARAM0);
         assert_eq!(R::from_operand(-2 - 7).0, crate::frame::slot::PARAM0 - 7);
+    }
+
+    /// The decoder map of every target and the x86-64 select form are `from_operand`, for
+    /// every 1-byte and 2-byte operand and the 4-byte ends.
+    #[test]
+    fn register_operand_decoder_is_from_operand() {
+        let ends = [
+            i32::MIN,
+            i32::MIN + 1,
+            -65_536,
+            65_535,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        for v in (i32::from(i16::MIN)..=i32::from(i16::MAX)).chain(ends) {
+            assert_eq!(R::of_operand(v), R::from_operand(v), "operand {v}");
+            assert_eq!(R::from_operand_select(v), R::from_operand(v), "operand {v}");
+        }
+        // The receiver operand (-1) at the 3 scales: fp - 9 (H14).
+        let b = [0xffu8, 0xff, 0xff, 0xff];
+        // SAFETY: `b` has 4 readable bytes.
+        unsafe {
+            assert_eq!(<kind::Reg as Operand>::read::<S1>(b.as_ptr()).0, -9);
+            assert_eq!(<kind::RegOut as Operand>::read::<S2>(b.as_ptr()).0, -9);
+            assert_eq!(<kind::RegPair as Operand>::read::<S4>(b.as_ptr()).0, -9);
+        }
     }
 
     #[test]
