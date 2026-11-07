@@ -46,7 +46,7 @@ fn month_5_versions() {
             versions::DEOPT_META_VERSION,
             ep9_bytecode::ABI_VERSION
         ),
-        (2, 1, 1, 5)
+        (2, 1, 1, 6)
     );
 }
 
