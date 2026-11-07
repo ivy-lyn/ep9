@@ -16,6 +16,7 @@ use ep9_vm::{
     PropKey, WellKnownSymbol,
 };
 use temporal_rs::PlainMonthDay;
+use temporal_rs::fields::CalendarFields;
 use temporal_rs::options::{DisplayCalendar, Overflow};
 use temporal_rs::partial::PartialDate;
 
@@ -415,9 +416,27 @@ fn to_plain_date<'s>(
     let Some(item) = args.get(0).as_object() else {
         return Err(cx.throw_type_error("toPlainDate() needs an object with a year"));
     };
-    // 6. Let inputFields be ? PrepareCalendarFields(calendar, item, « year », « », « »).
-    let bag = prepare_fields(cx, item, fields::YEAR, md.calendar())?;
-    // 7-9. CalendarMergeFields; CalendarDateFromFields(calendar, mergedFields, constrain).
-    let d = md.to_plain_date(Some(bag.calendar_fields())).or_throw(cx)?;
+    // 6. Let inputFields be ? PrepareCalendarFields(calendar, item, « year », « », « »)
+    //    (with era and eraYear for a calendar with eras: CalendarExtraFields).
+    let input = prepare_fields(cx, item, fields::YEAR, md.calendar())?.calendar_fields();
+    // 5, 7. CalendarMergeFields(calendar, ISODateToFields(.., month-day), inputFields): the
+    //    monthCode and day of this, and year, era and eraYear of the input (none of them is a
+    //    key to ignore for monthCode or day). temporal_rs `to_plain_date` drops era and
+    //    eraYear when year is there, so it is not used: NonISOResolveFields needs all three,
+    //    for the RangeError of an unknown era or of a year that eraYear does not give.
+    let merged = CalendarFields {
+        year: input.year,
+        era: input.era,
+        era_year: input.era_year,
+        ..CalendarFields::new()
+            .with_month_code(md.month_code())
+            .with_day(md.day())
+    };
+    // 8. Let isoDate be ? CalendarDateFromFields(calendar, mergedFields, constrain).
+    let d = md
+        .calendar()
+        .date_from_fields(merged, Overflow::Constrain)
+        .or_throw(cx)?;
+    // 9. Return ! CreateTemporalDate(isoDate, calendar).
     plain_date::create(cx, &d, None)
 }

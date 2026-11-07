@@ -245,3 +245,56 @@ fn calendar_mismatch_and_string_calendar_order() {
         ])
     );
 }
+
+/// PlainMonthDay.prototype.toPlainDate merges the monthCode and day of the month-day with the
+/// year, era and eraYear of the input, and CalendarDateFromFields resolves them as one bag
+/// (NonISOResolveFields of the Intl era and monthCode proposal): an unknown era and a year
+/// that era and eraYear do not give are RangeErrors, era without eraYear (or the reverse) is
+/// a TypeError, as for Temporal.PlainDate.from. node 26 (temporal_rs 0.2) keeps the year and
+/// drops era and eraYear, so it gives "2020-01-01" on lines 1-3 and 10-11; the expected lines
+/// follow the spec text. The ISO calendar reads no era fields.
+#[test]
+fn month_day_to_plain_date_resolves_era_fields_with_the_year() {
+    assert_eq!(
+        run_both(
+            r#"var g = Temporal.PlainMonthDay.from({ calendar: "gregory", monthCode: "M01", day: 1 });
+            var j = Temporal.PlainMonthDay.from({ calendar: "japanese", monthCode: "M01", day: 1 });
+            var iso = new Temporal.PlainMonthDay(2, 29);
+            var cases = [
+              () => g.toPlainDate({ year: 2020, era: "ce", eraYear: 1 }),
+              () => g.toPlainDate({ year: 2020, era: "xyz", eraYear: 1 }),
+              () => j.toPlainDate({ year: 2020, era: "heisei", eraYear: 1 }),
+              () => g.toPlainDate({ year: 2020, era: "ce", eraYear: 2020 }),
+              () => g.toPlainDate({ year: -5, era: "bce", eraYear: 6 }),
+              () => g.toPlainDate({ era: "bce", eraYear: 6 }),
+              () => j.toPlainDate({ era: "reiwa", eraYear: 2 }),
+              () => j.toPlainDate({ era: "heisei", eraYear: 32 }),
+              () => g.toPlainDate({ year: 2021 }),
+              () => g.toPlainDate({ year: 2020, era: "ce" }),
+              () => g.toPlainDate({ year: 2020, eraYear: 2020 }),
+              () => g.toPlainDate({}),
+              () => iso.toPlainDate({ year: 2021 }),
+              () => iso.toPlainDate({ year: 2020, era: "xyz", eraYear: 1 }),
+              () => Temporal.PlainDate.from({ calendar: "gregory", year: 2020, era: "ce", eraYear: 1, monthCode: "M01", day: 1 }),
+            ];
+            for (var f of cases) { try { print(f().toString()); } catch (e) { print(e.constructor.name); } }"#
+        ),
+        lines(&[
+            "RangeError",
+            "RangeError",
+            "RangeError",
+            "2020-01-01[u-ca=gregory]",
+            "-000005-01-01[u-ca=gregory]",
+            "-000005-01-01[u-ca=gregory]",
+            "2020-01-01[u-ca=japanese]",
+            "2020-01-01[u-ca=japanese]",
+            "2021-01-01[u-ca=gregory]",
+            "TypeError",
+            "TypeError",
+            "TypeError",
+            "2021-02-28",
+            "2020-02-29",
+            "RangeError",
+        ])
+    );
+}
