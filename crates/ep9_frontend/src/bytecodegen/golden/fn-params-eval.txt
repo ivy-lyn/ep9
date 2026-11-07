@@ -1,6 +1,6 @@
 # fn-params-eval: script (sloppy)
 # | function f(a = 1, b = eval('var a = 2')) { return a; } function g({ a }) { eval('var a'); }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=91 source=embedded hints=none
 source_hash=b94a273dfc08f3668d55f8d94e28b8674d915d4674f51d8136fa51641ff286dc
 strings (11):

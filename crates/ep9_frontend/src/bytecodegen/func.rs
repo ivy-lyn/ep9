@@ -112,6 +112,8 @@ pub(crate) struct FnGen<'a, 's> {
     /// (B.3.2.3) and the register that holds what `DeclareEvalAnnexBFunction` answered for it
     /// (`gen_eval_program`; `stmt.rs` `store_annex_b_var` reads it).
     pub(crate) eval_annex_b: Vec<(BindingId, Register)>,
+    /// The using regions being generated, innermost last (`stmt.rs`, `using`).
+    pub(crate) using: Vec<super::stmt::UsingRegion>,
 }
 
 impl<'a, 's> FnGen<'a, 's> {
@@ -143,6 +145,7 @@ impl<'a, 's> FnGen<'a, 's> {
             generator: None,
             last_stmt: u32::MAX,
             eval_annex_b: Vec::new(),
+            using: Vec::new(),
         }
     }
 
@@ -1224,6 +1227,10 @@ impl<'a, 's> FnGen<'a, 's> {
 
     /// Statements of a body.
     pub(crate) fn statements(&mut self, list: &'a oxc_allocator::Vec<'a, Statement<'a>>) -> Gen {
+        let kinds = super::stmt::using_kinds(list);
+        if !kinds.is_empty() {
+            return self.using_statements(list, &kinds);
+        }
         for s in list {
             self.statement(s)?;
         }

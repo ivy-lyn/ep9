@@ -1,6 +1,6 @@
 # async-try-finally: script (strict)
 # | async function f(p) { try { return await p; } catch (e) { await e; } finally { await 0; } }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=91 source=embedded hints=none
 source_hash=6609a1e08aab97a764394afab4c624bfb6e127c9ff5e3eafa3da7ee91c1b3aac
 strings (1):

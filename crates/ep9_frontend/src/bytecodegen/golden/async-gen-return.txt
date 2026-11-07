@@ -1,6 +1,6 @@
 # async-gen-return: script (strict)
 # | async function* g(p) { try { yield 1; return p; } finally { return; } }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=71 source=embedded hints=none
 source_hash=0055477a4307cda417d44ad4abd8e5c08030755e51248af3b9e7715b7b8bcbdf
 strings (1):

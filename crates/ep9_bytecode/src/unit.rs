@@ -34,7 +34,8 @@ use crate::string::UnitString;
 /// | 3 | Generator opcodes 0x99-0x9b valid in generator and async functions (flag `Generator`, no longer `Reserved`); `CallRuntimeForPair` 0x9d with operand kind `RegOutPair`; `DefineKeyedOwnProperty` flag bit 1 (private add); runtime ids 19-28 and the `pair` mark in the runtime table |
 /// | 4 | Runtime ids 29-31: a dynamic reference resolved before the right-hand side (`ResolveLookupSlot`, `LoadLookupSlotResolved`, `StoreLookupSlotResolved`; M2-P2 review fix L1); `VariableMode::FunctionName` = 5 (M2-P2 review fix L4); a use-site `strict` argument for ids 26 and 30 (`LoadLookupSlotForCall` 2, `LoadLookupSlotResolved` 3; M2-P2 review fix L6) |
 /// | 5 | Runtime ids 32-47 (async functions 32-35, async generators 36-41, modules 42-43, `SetFunctionName` 44, `ThrowTypeError` 45, Annex B.3.2.3 eval functions 46-47); `ScopeFlags::PARAMETER_ENV` (bit 3); the module records section (section 5, header 168 bytes); the mapped-parameter list per function (M3-P0 P0-LANG4) |
-pub const ABI_VERSION: u32 = 5;
+/// | 6 | Runtime ids 48-49 (`GetDisposeMethod`, `CreateSuppressedError`) for `using` and `await using` (M7-P3 SPEC-ERM) |
+pub const ABI_VERSION: u32 = 6;
 
 /// The ECMA-262 code kind of the unit's entry function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

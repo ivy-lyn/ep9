@@ -1,2 +1,3 @@
 # ep9 FeedbackSlotKind table history (MC-P4-SLOTABI, from ABI 5): <ABI_VERSION> <SHA-256 of the slot-kind table text, one line "<byte> <name>" per kind>
 5 2a0084d0052a7536acba8473881edc0acb49021ce7cb87c034b9cb377885ae40
+6 2a0084d0052a7536acba8473881edc0acb49021ce7cb87c034b9cb377885ae40
