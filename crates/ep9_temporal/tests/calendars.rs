@@ -1,0 +1,247 @@
+//! Non-ISO calendars (INTL-I1-D2; SPEC-T-D17 as changed for ECMA-402): AvailableCalendars,
+//! the ISO date in the slots, the era fields of a property bag, the calendar checks, with and
+//! without GC stress. Expected lines come from node 26 (V8 uses temporal_rs with ICU4X too);
+//! the doc comment of a test names any line where V8 does not follow ECMA-402.
+
+mod common;
+use common::{lines, run_both};
+
+/// CanonicalizeCalendar on every path (constructors, a property bag, `withCalendar`, a string
+/// annotation): the 16 ids of AvailableCalendars and the aliases `islamicc` and
+/// `ethiopic-amete-alem` give the canonical id (any case); `islamic` and `islamic-rgsa` are
+/// RangeErrors (INTL-I1-D2, test262 `*/from/islamic*.js`), as are ids that no calendar has.
+/// node 26 gives the same lines, except that V8 accepts `islamic` in a string annotation.
+#[test]
+fn available_calendar_ids_on_every_path() {
+    assert_eq!(
+        run_both(
+            r#"var ids = ["buddhist", "chinese", "coptic", "dangi", "ethioaa", "ethiopic", "gregory", "hebrew", "indian", "islamic-civil", "islamic-tbla", "islamic-umalqura", "iso8601", "japanese", "persian", "roc", "islamicc", "ethiopic-amete-alem", "GREGORY", "islamic", "islamic-rgsa", "gregorian", "julian", ""];
+            for (var id of ids) {
+              var row = [];
+              function t(f) { try { row.push(f()); } catch (e) { row.push(e.constructor.name); } }
+              t(() => new Temporal.PlainDate(2020, 1, 1, id).calendarId);
+              t(() => Temporal.PlainDate.from({ year: 2020, monthCode: "M01", day: 1, calendar: id }).calendarId);
+              t(() => new Temporal.PlainDate(2020, 1, 1).withCalendar(id).calendarId);
+              t(() => Temporal.PlainDate.from("2020-01-01[u-ca=" + id + "]").calendarId);
+              t(() => new Temporal.PlainDateTime(2020, 1, 1, 0, 0, 0, 0, 0, 0, id).calendarId);
+              t(() => new Temporal.PlainYearMonth(2020, 1, id).calendarId);
+              t(() => new Temporal.PlainMonthDay(1, 1, id).calendarId);
+              t(() => new Temporal.ZonedDateTime(0n, "UTC", id).calendarId);
+              t(() => Temporal.ZonedDateTime.from("2020-01-01T00:00[UTC][u-ca=" + id + "]").calendarId);
+              print(JSON.stringify(id), row.join(" "));
+            }"#
+        ),
+        lines(&[
+            "\"buddhist\" buddhist buddhist buddhist buddhist buddhist buddhist buddhist buddhist buddhist",
+            "\"chinese\" chinese chinese chinese chinese chinese chinese chinese chinese chinese",
+            "\"coptic\" coptic coptic coptic coptic coptic coptic coptic coptic coptic",
+            "\"dangi\" dangi dangi dangi dangi dangi dangi dangi dangi dangi",
+            "\"ethioaa\" ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa",
+            "\"ethiopic\" ethiopic ethiopic ethiopic ethiopic ethiopic ethiopic ethiopic ethiopic ethiopic",
+            "\"gregory\" gregory gregory gregory gregory gregory gregory gregory gregory gregory",
+            "\"hebrew\" hebrew hebrew hebrew hebrew hebrew hebrew hebrew hebrew hebrew",
+            "\"indian\" indian indian indian indian indian indian indian indian indian",
+            "\"islamic-civil\" islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil",
+            "\"islamic-tbla\" islamic-tbla islamic-tbla islamic-tbla islamic-tbla islamic-tbla islamic-tbla islamic-tbla islamic-tbla islamic-tbla",
+            "\"islamic-umalqura\" islamic-umalqura islamic-umalqura islamic-umalqura islamic-umalqura islamic-umalqura islamic-umalqura islamic-umalqura islamic-umalqura islamic-umalqura",
+            "\"iso8601\" iso8601 iso8601 iso8601 iso8601 iso8601 iso8601 iso8601 iso8601 iso8601",
+            "\"japanese\" japanese japanese japanese japanese japanese japanese japanese japanese japanese",
+            "\"persian\" persian persian persian persian persian persian persian persian persian",
+            "\"roc\" roc roc roc roc roc roc roc roc roc",
+            "\"islamicc\" islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil islamic-civil",
+            "\"ethiopic-amete-alem\" ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa ethioaa",
+            "\"GREGORY\" gregory gregory gregory gregory gregory gregory gregory gregory gregory",
+            "\"islamic\" RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError",
+            "\"islamic-rgsa\" RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError",
+            "\"gregorian\" RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError",
+            "\"julian\" RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError",
+            "\"\" RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError",
+        ])
+    );
+}
+
+/// The calendar fields of one ISO date in each calendar, and the ISO date the slots keep: the
+/// ISO date comes back unchanged through `withCalendar("iso8601")`, PlainYearMonth and
+/// PlainMonthDay keep their ISO reference date, and the fields round-trip through a property
+/// bag. The same lines as node 26.
+#[test]
+fn calendar_fields_and_the_iso_date_slots() {
+    assert_eq!(
+        run_both(
+            r#"var ids = ["buddhist", "chinese", "coptic", "dangi", "ethioaa", "ethiopic", "gregory", "hebrew", "indian", "islamic-civil", "islamic-tbla", "islamic-umalqura", "iso8601", "japanese", "persian", "roc"];
+            for (var id of ids) {
+              var d = Temporal.PlainDate.from("2024-03-15[u-ca=" + id + "]");
+              var ym = d.toPlainYearMonth();
+              var md = d.toPlainMonthDay();
+              var dt = d.toPlainDateTime("12:00");
+              var z = d.toZonedDateTime("UTC");
+              print(id, d.era, d.eraYear, d.year, d.month, d.monthCode, d.day, d.dayOfYear, d.daysInMonth, d.daysInYear, d.monthsInYear, d.inLeapYear, d.weekOfYear,
+                d.withCalendar("iso8601").toString(), ym.toString(), md.toString(), dt.year, z.monthCode,
+                Temporal.PlainDate.from({ year: d.year, monthCode: d.monthCode, day: d.day, calendar: id }).equals(d),
+                d.add({ months: 13 }).toString(), d.until(d.add({ years: 1, days: 3 }), { largestUnit: "years" }).toString());
+            }"#
+        ),
+        lines(&[
+            "buddhist be 2567 2567 3 M03 15 75 31 366 12 true undefined 2024-03-15 2024-03-01[u-ca=buddhist] 1972-03-15[u-ca=buddhist] 2567 M03 true 2025-04-15[u-ca=buddhist] P1Y3D",
+            "chinese undefined undefined 2024 2 M02 6 35 30 354 12 false undefined 2024-03-15 2024-03-10[u-ca=chinese] 1972-03-20[u-ca=chinese] 2024 M02 true 2025-04-03[u-ca=chinese] P1Y3D",
+            "coptic am 1740 1740 7 M07 6 186 30 365 13 false undefined 2024-03-15 2024-03-10[u-ca=coptic] 1972-03-15[u-ca=coptic] 1740 M07 true 2025-03-15[u-ca=coptic] P1Y3D",
+            "dangi undefined undefined 2024 2 M02 6 35 30 354 12 false undefined 2024-03-15 2024-03-10[u-ca=dangi] 1972-03-20[u-ca=dangi] 2024 M02 true 2025-04-03[u-ca=dangi] P1Y3D",
+            "ethioaa aa 7516 7516 7 M07 6 186 30 365 13 false undefined 2024-03-15 2024-03-10[u-ca=ethioaa] 1972-03-15[u-ca=ethioaa] 7516 M07 true 2025-03-15[u-ca=ethioaa] P1Y3D",
+            "ethiopic am 2016 2016 7 M07 6 186 30 365 13 false undefined 2024-03-15 2024-03-10[u-ca=ethiopic] 1972-03-15[u-ca=ethiopic] 2016 M07 true 2025-03-15[u-ca=ethiopic] P1Y3D",
+            "gregory ce 2024 2024 3 M03 15 75 31 366 12 true undefined 2024-03-15 2024-03-01[u-ca=gregory] 1972-03-15[u-ca=gregory] 2024 M03 true 2025-04-15[u-ca=gregory] P1Y3D",
+            "hebrew am 5784 5784 7 M06 5 182 29 383 13 true undefined 2024-03-15 2024-03-11[u-ca=hebrew] 1972-02-20[u-ca=hebrew] 5784 M06 true 2025-04-03[u-ca=hebrew] P1Y3D",
+            "indian shaka 1945 1945 12 M12 25 360 30 365 12 false undefined 2024-03-15 2024-02-20[u-ca=indian] 1972-03-15[u-ca=indian] 1945 M12 true 2025-04-15[u-ca=indian] P1Y3D",
+            "islamic-civil ah 1445 1445 9 M09 5 241 30 355 12 true undefined 2024-03-15 2024-03-11[u-ca=islamic-civil] 1972-10-13[u-ca=islamic-civil] 1445 M09 true 2025-04-04[u-ca=islamic-civil] P1Y3D",
+            "islamic-tbla ah 1445 1445 9 M09 6 242 30 355 12 true undefined 2024-03-15 2024-03-10[u-ca=islamic-tbla] 1972-10-13[u-ca=islamic-tbla] 1445 M09 true 2025-04-04[u-ca=islamic-tbla] P1Y3D",
+            "islamic-umalqura ah 1445 1445 9 M09 5 241 30 354 12 false undefined 2024-03-15 2024-03-11[u-ca=islamic-umalqura] 1972-10-13[u-ca=islamic-umalqura] 1445 M09 true 2025-04-03[u-ca=islamic-umalqura] P1Y3D",
+            "iso8601 undefined undefined 2024 3 M03 15 75 31 366 12 true 11 2024-03-15 2024-03 03-15 2024 M03 true 2025-04-15 P1Y3D",
+            "japanese reiwa 6 2024 3 M03 15 75 31 366 12 true undefined 2024-03-15 2024-03-01[u-ca=japanese] 1972-03-15[u-ca=japanese] 2024 M03 true 2025-04-15[u-ca=japanese] P1Y3D",
+            "persian ap 1402 1402 12 M12 25 361 29 365 12 false undefined 2024-03-15 2024-02-20[u-ca=persian] 1972-03-15[u-ca=persian] 1402 M12 true 2025-04-14[u-ca=persian] P1Y3D",
+            "roc roc 113 113 3 M03 15 75 31 366 12 true undefined 2024-03-15 2024-03-01[u-ca=roc] 1972-03-15[u-ca=roc] 113 M03 true 2025-04-15[u-ca=roc] P1Y3D",
+        ])
+    );
+}
+
+/// Chinese and Dangi dates across the Temporal range, inside and outside the baked year table
+/// (1900-2102) of icu_calendar: its integer model gives each year (INTL-I1-D2; no astronomy
+/// code runs, `tools/calprobe`). The same lines as node 26.
+#[test]
+fn chinese_and_dangi_across_the_temporal_range() {
+    assert_eq!(
+        run_both(
+            r#"for (var y of [-271820, -10000, 1, 1800, 1899, 1900, 1912, 2050, 2101, 2200, 3000, 10000, 275759]) {
+              for (var id of ["chinese", "dangi"]) {
+                var iso = new Temporal.PlainDate(y, 6, 15);
+                var d = iso.withCalendar(id);
+                print(id, y, d.year, d.monthCode, d.day, d.monthsInYear, d.daysInYear, d.inLeapYear,
+                  Temporal.PlainDate.from({ year: d.year, monthCode: d.monthCode, day: d.day, calendar: id }).withCalendar("iso8601").toString());
+              }
+            }"#
+        ),
+        lines(&[
+            "chinese -271820 -271820 M04 26 13 384 true -271820-06-15",
+            "dangi -271820 -271820 M04 26 13 384 true -271820-06-15",
+            "chinese -10000 -10000 M05 4 12 354 false -010000-06-15",
+            "dangi -10000 -10000 M05 4 12 354 false -010000-06-15",
+            "chinese 1 1 M05 8 12 354 false 0001-06-15",
+            "dangi 1 1 M05 8 12 354 false 0001-06-15",
+            "chinese 1800 1800 M04L 23 13 384 true 1800-06-15",
+            "dangi 1800 1800 M04L 23 13 384 true 1800-06-15",
+            "chinese 1899 1899 M05 7 12 355 false 1899-06-15",
+            "dangi 1899 1899 M05 7 12 355 false 1899-06-15",
+            "chinese 1900 1900 M05 19 13 384 true 1900-06-15",
+            "dangi 1900 1900 M05 19 13 384 true 1900-06-15",
+            "chinese 1912 1912 M05 1 12 354 false 1912-06-15",
+            "dangi 1912 1912 M05 1 12 354 false 1912-06-15",
+            "chinese 2050 2050 M04 26 13 384 true 2050-06-15",
+            "dangi 2050 2050 M04 26 13 384 true 2050-06-15",
+            "chinese 2101 2101 M05 19 13 384 true 2101-06-15",
+            "dangi 2101 2101 M05 19 13 384 true 2101-06-15",
+            "chinese 2200 2200 M05 3 12 354 false 2200-06-15",
+            "dangi 2200 2200 M05 3 12 354 false 2200-06-15",
+            "chinese 3000 3000 M05 21 13 384 true 3000-06-15",
+            "dangi 3000 3000 M05 21 13 384 true 3000-06-15",
+            "chinese 10000 10000 M05 20 13 384 true +010000-06-15",
+            "dangi 10000 10000 M05 20 13 384 true +010000-06-15",
+            "chinese 275759 275759 M05 17 13 384 true +275759-06-15",
+            "dangi 275759 275759 M05 17 13 384 true +275759-06-15",
+        ])
+    );
+}
+
+/// PrepareCalendarFields reads `era` and `eraYear` (CalendarExtraFields) in alphabetical order
+/// for a calendar with eras, and not for `iso8601` or `chinese`; property bags with eras on
+/// every type and in relativeTo. The same lines as node 26.
+#[test]
+fn era_fields_are_read_for_calendars_with_eras() {
+    assert_eq!(
+        run_both(
+            r#"var log = [];
+            var bag = new Proxy({ era: "bce", eraYear: 5, month: 3, day: 2, calendar: "gregory" }, {
+              get(t, k) { if (typeof k === "string") log.push(k); return t[k]; },
+              has(t, k) { return k in t; },
+            });
+            var d = Temporal.PlainDate.from(bag);
+            print(d.toString(), d.year, d.era, d.eraYear, log.join(","));
+            log.length = 0;
+            var bag2 = new Proxy({ year: 2020, month: 3, day: 2 }, {
+              get(t, k) { if (typeof k === "string") log.push(k); return t[k]; },
+            });
+            Temporal.PlainDate.from(bag2);
+            print(log.join(","));
+            log.length = 0;
+            var cn = new Proxy({ year: 2020, month: 3, day: 2, calendar: "chinese" }, {
+              get(t, k) { if (typeof k === "string") log.push(k); return t[k]; },
+            });
+            print(Temporal.PlainDate.from(cn).toString(), log.join(","));
+            var r = [];
+            function t(f) { try { r.push(String(f())); } catch (e) { r.push(e.constructor.name); } }
+            t(() => Temporal.PlainDate.from({ era: "ce", eraYear: 2020, monthCode: "M02", day: 29, calendar: "gregory" }).toString());
+            t(() => Temporal.PlainDate.from({ era: "ce", month: 2, day: 29, calendar: "gregory" }));
+            t(() => Temporal.PlainDate.from({ era: "xyz", eraYear: 1, month: 2, day: 1, calendar: "gregory" }));
+            t(() => Temporal.PlainDate.from({ era: "reiwa", eraYear: 2, month: 5, day: 1, calendar: "japanese" }).toString());
+            t(() => new Temporal.PlainDate(2020, 5, 1, "japanese").with({ eraYear: 1 }).toString());
+            t(() => new Temporal.PlainDate(2020, 5, 1, "japanese").with({ era: "heisei", eraYear: 1 }).toString());
+            t(() => Temporal.PlainYearMonth.from({ era: "roc", eraYear: 100, month: 7, calendar: "roc" }).toString());
+            t(() => new Temporal.PlainYearMonth(2020, 7, "roc").with({ eraYear: 1 }).toString());
+            t(() => Temporal.PlainMonthDay.from({ monthCode: "M05L", day: 1, calendar: "chinese" }).toString());
+            t(() => Temporal.PlainMonthDay.from({ era: "am", eraYear: 5784, monthCode: "M05L", day: 1, calendar: "hebrew" }).toString());
+            t(() => Temporal.PlainMonthDay.from({ monthCode: "M02", day: 30, calendar: "hebrew" }).toPlainDate({ era: "am", eraYear: 5785 }).toString());
+            t(() => Temporal.PlainDateTime.from({ era: "be", eraYear: 2563, month: 1, day: 1, hour: 5, calendar: "buddhist" }).toString());
+            t(() => Temporal.ZonedDateTime.from({ era: "ah", eraYear: 1445, month: 1, day: 1, timeZone: "UTC", calendar: "islamic-civil" }).toString());
+            t(() => new Temporal.ZonedDateTime(0n, "UTC", "persian").with({ eraYear: 1400 }).toString());
+            t(() => Temporal.Duration.from("P1M").total({ unit: "days", relativeTo: { era: "am", eraYear: 5784, monthCode: "M05L", day: 1, calendar: "hebrew" } }));
+            print(r.join(" | "));"#
+        ),
+        lines(&[
+            "-000004-03-02[u-ca=gregory] -4 bce 5 calendar,day,era,eraYear,month,monthCode,year",
+            "calendar,day,month,monthCode,year",
+            "2020-03-25[u-ca=chinese] calendar,day,month,monthCode,year",
+            "2020-02-29[u-ca=gregory] | TypeError | RangeError | 2020-05-01[u-ca=japanese] | TypeError | 1989-05-01[u-ca=japanese] | 2011-07-01[u-ca=roc] | TypeError | 1971-06-23[u-ca=chinese] | 1970-02-07[u-ca=hebrew] | 2024-12-01[u-ca=hebrew] | 2020-01-01T05:00:00[u-ca=buddhist] | 2023-07-19T00:00:00+00:00[UTC][u-ca=islamic-civil] | TypeError | 30",
+        ])
+    );
+}
+
+/// `until` and `since` throw for two calendars before they read the options (CalendarEquals);
+/// `equals` compares the calendar too. A string's calendar is checked before the options: an
+/// available one reads them (then the range check throws), `islamic` and `islamic-rgsa` throw
+/// first. node 26 gives the same lines, except that V8 accepts `islamic` in a string.
+#[test]
+fn calendar_mismatch_and_string_calendar_order() {
+    assert_eq!(
+        run_both(
+            r#"var r = [];
+            function t(f) { var n = 0; var o = { get largestUnit() { n++; return undefined; } }; try { r.push(String(f(o))); } catch (e) { r.push(e.constructor.name + n); } }
+            var g = new Temporal.PlainDate(2020, 1, 1, "gregory"), i = new Temporal.PlainDate(2020, 1, 1);
+            t((o) => g.until(i, o));
+            t((o) => g.since(i, o));
+            t((o) => g.until(g, o));
+            t((o) => g.toPlainDateTime().until(i.toPlainDateTime(), o));
+            t((o) => g.toPlainDateTime().since(i.toPlainDateTime(), o));
+            t((o) => g.toPlainYearMonth().until(i.toPlainYearMonth(), o));
+            t((o) => g.toPlainYearMonth().since(i.toPlainYearMonth(), o));
+            t((o) => g.toZonedDateTime("UTC").until(i.toZonedDateTime("UTC"), o));
+            t((o) => g.toZonedDateTime("UTC").since(i.toZonedDateTime("UTC"), o));
+            t((o) => g.equals(i));
+            t((o) => g.toPlainMonthDay().equals(i.toPlainMonthDay()));
+            t((o) => g.toPlainMonthDay().equals(new Temporal.PlainMonthDay(1, 1, "gregory")));
+            t((o) => g.toPlainYearMonth().equals(new Temporal.PlainYearMonth(2020, 1, "gregory", 1)));
+            print(r.join(" "));
+            r = [];
+            function u(C, s) { var n = 0; try { C.from(s, { get overflow() { n++; return "constrain"; } }); r.push("ok" + n); } catch (e) { r.push(e.constructor.name + n); } }
+            u(Temporal.PlainDate, "+999999-01-01[u-ca=gregory]");
+            u(Temporal.PlainDate, "2020-01-01[u-ca=hebrew]");
+            u(Temporal.PlainDate, "2020-01-01[u-ca=islamic]");
+            u(Temporal.PlainDateTime, "-271821-04-19T00:00[u-ca=japanese]");
+            u(Temporal.PlainYearMonth, "+999999-01-01[u-ca=coptic]");
+            u(Temporal.PlainYearMonth, "2020-01-01[u-ca=coptic]");
+            u(Temporal.PlainMonthDay, "2020-01-01[u-ca=coptic]");
+            u(Temporal.PlainMonthDay, "2020-01-01[u-ca=islamic-rgsa]");
+            print(r.join(" "));"#
+        ),
+        lines(&[
+            "RangeError0 RangeError0 PT0S RangeError0 RangeError0 RangeError0 RangeError0 RangeError0 RangeError0 false false true true",
+            "RangeError1 ok1 RangeError0 RangeError1 RangeError1 ok1 ok1 RangeError0",
+        ])
+    );
+}

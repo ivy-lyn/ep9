@@ -3,11 +3,12 @@
 //! ```text
 //! relativeTo undefined          -> none
 //! a ZonedDateTime / PlainDate   -> that value (PlainDateTime -> its date)   (as the classes land)
-//! another object (property bag) -> calendar (ISO), PrepareCalendarFields(date, time, offset,
-//!                                  timeZone), constrain; no timeZone: a PlainDate, else a
-//!                                  ZonedDateTime (offset "reject", disambiguation "compatible")
+//! another object (property bag) -> calendar, PrepareCalendarFields(date, time, offset,
+//!                                  timeZone, and era with eraYear for a calendar with eras),
+//!                                  constrain; no timeZone: a PlainDate, else a ZonedDateTime
+//!                                  (offset "reject", disambiguation "compatible")
 //! a String                      -> ParseTemporalRelativeToString (temporal_rs), then the
-//!                                  calendar (ISO)
+//!                                  calendar (AvailableCalendars, calendar.rs)
 //! anything else                 -> TypeError
 //! ```
 
@@ -17,7 +18,7 @@ use temporal_rs::options::{Overflow, RelativeTo};
 use temporal_rs::partial::{PartialDate, PartialZonedDateTime};
 use temporal_rs::{PlainDate, ZonedDateTime};
 
-use crate::calendar::{get_calendar_with_iso_default, require_iso};
+use crate::calendar::{get_calendar_with_iso_default, prepare_fields, string_calendar};
 use crate::convert::temporal_text;
 use crate::error::OrThrow;
 use crate::fields;
@@ -49,15 +50,16 @@ pub(crate) fn get_relative_to_option<'s>(
         // e. Let fields be ? PrepareCalendarFields(calendar, value, « year, month, month-code,
         //    day », « hour, minute, second, millisecond, microsecond, nanosecond, offset,
         //    time-zone », «»).
-        let bag = fields::read(
+        let bag = prepare_fields(
             cx,
             obj,
             fields::DATE | fields::TIME | fields::OFFSET | fields::TIME_ZONE,
+            &calendar,
         )?;
         // f. Let result be ? InterpretTemporalDateTimeFields(calendar, fields, constrain).
-        let time = bag.partial_time(cx, Overflow::Constrain)?;
+        let time = bag.bag.partial_time(cx, Overflow::Constrain)?;
         // i. If timeZone is unset: a PlainDate.
-        let Some(tz) = bag.time_zone else {
+        let Some(tz) = bag.bag.time_zone else {
             let date = PlainDate::from_partial(
                 PartialDate {
                     calendar_fields: bag.calendar_fields(),
@@ -75,7 +77,7 @@ pub(crate) fn get_relative_to_option<'s>(
                 fields: ZonedDateTimeFields {
                     calendar_fields: bag.calendar_fields(),
                     time,
-                    offset: bag.offset,
+                    offset: bag.bag.offset,
                 },
                 timezone: Some(tz),
                 calendar,
@@ -95,12 +97,12 @@ pub(crate) fn get_relative_to_option<'s>(
     // b-k. ParseTemporalRelativeToString and the rest.
     let t = temporal_text(cx, s)?;
     let r = RelativeTo::try_from_str_with_provider(&t, crate::tzdb::provider()).or_throw(cx)?;
-    // CanonicalizeCalendar of the annotation: iso8601 only (SPEC-T-D17).
+    // CanonicalizeCalendar of the annotation (AvailableCalendars, calendar.rs).
     let cal = match &r {
-        RelativeTo::PlainDate(d) => d.calendar().clone(),
-        RelativeTo::ZonedDateTime(z) => z.calendar().clone(),
+        RelativeTo::PlainDate(d) => d.calendar(),
+        RelativeTo::ZonedDateTime(z) => z.calendar(),
     };
-    require_iso(cx, cal)?;
+    string_calendar(cx, &t, Some(cal))?;
     Ok(Some(r))
 }
 

@@ -26,8 +26,8 @@ use temporal_rs::partial::PartialDateTime;
 use temporal_rs::{Calendar, PlainDate, PlainDateTime, PlainTime};
 
 use crate::calendar::{
-    canonicalize_calendar, get_calendar_with_iso_default, parsed_string_calendar, require_iso,
-    to_temporal_calendar_identifier,
+    canonicalize_calendar, get_calendar_with_iso_default, prepare_fields, require_same,
+    string_calendar, to_temporal_calendar_identifier,
 };
 use crate::convert::{temporal_text, to_integer_with_truncation};
 use crate::duration::{create as create_duration, to_temporal_duration};
@@ -267,12 +267,12 @@ pub(crate) fn to_temporal_date_time<'s>(
         let cal = get_calendar_with_iso_default(cx, o)?;
         // e. Let fields be ? PrepareCalendarFields(calendar, item, « year, month, month-code,
         //    day », « hour, minute, second, millisecond, microsecond, nanosecond », «»).
-        let bag = fields::read(cx, o, fields::DATE | fields::TIME)?;
+        let bag = prepare_fields(cx, o, fields::DATE | fields::TIME, &cal)?;
         // f-g. Let resolvedOptions be ? GetOptionsObject(options); overflow.
         let options = get_options_object(cx, options)?;
         let overflow = get_overflow(cx, options)?;
         // h. Let result be ? InterpretTemporalDateTimeFields(calendar, fields, overflow).
-        let time = bag.partial_time(cx, overflow)?;
+        let time = bag.bag.partial_time(cx, overflow)?;
         return PlainDateTime::from_partial(
             PartialDateTime {
                 fields: temporal_rs::fields::DateTimeFields {
@@ -296,14 +296,10 @@ pub(crate) fn to_temporal_date_time<'s>(
     // i-j, 4. CreateTemporalDateTime (ISODateTimeWithinLimits): built here, thrown after the
     //         options.
     let built = PlainDateTime::from_parsed(parsed);
-    // d-f. CanonicalizeCalendar: iso8601 only (SPEC-T-D17), before the options.
+    // d-f. CanonicalizeCalendar (AvailableCalendars, calendar.rs), before the options.
     //      ParsedDateTime hides its calendar, so a date-time out of the limits reads it from
     //      the string (as in ToTemporalDate).
-    let cal = match &built {
-        Ok(dt) => dt.calendar().clone(),
-        Err(_) => parsed_string_calendar(cx, &text)?,
-    };
-    require_iso(cx, cal)?;
+    string_calendar(cx, &text, built.as_ref().ok().map(PlainDateTime::calendar))?;
     // g-h. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
@@ -510,15 +506,15 @@ fn with<'s>(
     };
     // 6. Let partialDateTime be ? PrepareCalendarFields(calendar, temporalDateTimeLike,
     //    « year, month, month-code, day », « hour, ..., nanosecond », partial).
-    let bag = fields::read(cx, like, fields::DATE | fields::TIME)?;
-    if !bag.any {
+    let bag = prepare_fields(cx, like, fields::DATE | fields::TIME, dt.calendar())?;
+    if !bag.any() {
         return Err(cx.throw_type_error("with() needs at least one date or time field"));
     }
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); overflow.
     let options = get_options_object(cx, args.get(1))?;
     let overflow = get_overflow(cx, options)?;
     // 4-5, 7, 10. CalendarMergeFields and InterpretTemporalDateTimeFields (temporal_rs).
-    let time = bag.partial_time(cx, overflow)?;
+    let time = bag.bag.partial_time(cx, overflow)?;
     let r = dt
         .with(
             temporal_rs::fields::DateTimeFields {
@@ -623,7 +619,8 @@ fn difference<'s>(
     let dt = read(cx, this)?;
     // 1. Set other to ? ToTemporalDateTime(other).
     let other = to_temporal_date_time(cx, args.get(0), Local::undefined())?;
-    // 2. CalendarEquals (always equal: iso8601).
+    // 2. If CalendarEquals(...) is false, throw a RangeError exception.
+    require_same(cx, dt.calendar(), other.calendar())?;
     // 3. Let resolvedOptions be ? GetOptionsObject(options).
     let options = get_options_object(cx, args.get(1))?;
     // 4. Let settings be ? GetDifferenceSettings(operation, resolvedOptions, datetime, « »,

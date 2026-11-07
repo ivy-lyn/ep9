@@ -50,7 +50,7 @@ fn errors_have_the_spec_types() {
             t(() => Temporal.PlainYearMonth(2020, 1));                    // no new
             t(() => new Temporal.PlainYearMonth(2020, 13));               // month out of range
             t(() => new Temporal.PlainYearMonth(275760, 10));             // past the limits
-            t(() => new Temporal.PlainYearMonth(2020, 1, "gregory"));     // only iso8601
+            t(() => new Temporal.PlainYearMonth(2020, 1, "islamic"));     // not available
             t(() => Temporal.PlainYearMonth.from({ year: 2020 }));        // no month
             t(() => Temporal.PlainYearMonth.from({ year: 2020, month: 13 }, { overflow: "reject" }));
             t(() => new Temporal.PlainYearMonth(2020, 1).toPlainDate("1"));
@@ -93,7 +93,8 @@ fn string_limits_are_checked_after_the_options() {
 }
 
 /// ToTemporalDate, ToTemporalDateTime and ToTemporalYearMonth of a string check the calendar
-/// (CanonicalizeCalendar; ep9 has only iso8601, SPEC-T-D17) before GetOptionsObject and the
+/// (CanonicalizeCalendar: `islamic` is not in AvailableCalendars, INTL-I1-D2, though temporal_rs
+/// accepts it) before GetOptionsObject and the
 /// overflow Get, also when the date is out of the ISO limits: a RangeError, and the overflow
 /// getter does not run. An in-limits date gives the same result (spec-temporal Codex r2).
 #[test]
@@ -101,7 +102,7 @@ fn string_calendar_is_checked_before_the_options() {
     assert_eq!(
         run_both(
             r#"var r = [];
-            var cases = [[Temporal.PlainDate, "+999999-01-01[u-ca=gregory]"], [Temporal.PlainDate, "+275760-09-14[u-ca=gregory]"], [Temporal.PlainDate, "2020-01-01[u-ca=gregory]"], [Temporal.PlainDateTime, "+999999-01-01T00:00[u-ca=gregory]"], [Temporal.PlainDateTime, "-271821-04-19T00:00[u-ca=gregory]"], [Temporal.PlainDateTime, "2020-01-01T00:00[u-ca=gregory]"], [Temporal.PlainYearMonth, "+999999-01-01[u-ca=gregory]"], [Temporal.PlainYearMonth, "-271821-03-01[u-ca=gregory]"], [Temporal.PlainYearMonth, "2020-01-01[u-ca=gregory]"]];
+            var cases = [[Temporal.PlainDate, "+999999-01-01[u-ca=islamic]"], [Temporal.PlainDate, "+275760-09-14[u-ca=islamic]"], [Temporal.PlainDate, "2020-01-01[u-ca=islamic]"], [Temporal.PlainDateTime, "+999999-01-01T00:00[u-ca=islamic]"], [Temporal.PlainDateTime, "-271821-04-19T00:00[u-ca=islamic]"], [Temporal.PlainDateTime, "2020-01-01T00:00[u-ca=islamic]"], [Temporal.PlainYearMonth, "+999999-01-01[u-ca=islamic]"], [Temporal.PlainYearMonth, "-271821-03-01[u-ca=islamic]"], [Temporal.PlainYearMonth, "2020-01-01[u-ca=islamic]"]];
             for (var [C, s] of cases) {
               try { C.from(s, null); r.push("ok"); } catch (e) { r.push(e.constructor.name); }
               var n = 0;

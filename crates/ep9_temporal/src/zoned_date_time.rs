@@ -30,8 +30,8 @@ use temporal_rs::provider::TransitionDirection;
 use temporal_rs::{Instant, TimeZone, ZonedDateTime};
 
 use crate::calendar::{
-    self, constructor_calendar, get_calendar_with_iso_default, require_iso,
-    to_temporal_calendar_identifier,
+    self, constructor_calendar, get_calendar_with_iso_default, prepare_fields, require_same,
+    string_calendar, to_temporal_calendar_identifier,
 };
 use crate::convert::temporal_text;
 use crate::duration::{create as create_duration, to_temporal_duration};
@@ -328,7 +328,7 @@ pub(crate) fn to_temporal_zoned_date_time<'s>(
         let cal = get_calendar_with_iso_default(cx, o)?;
         // c. Let fields be ? PrepareCalendarFields(calendar, item, « year, month, month-code,
         //    day », « hour, ..., nanosecond, offset, time-zone », « time-zone »).
-        let bag = fields::read(
+        let bag = prepare_fields(
             cx,
             o,
             fields::DATE
@@ -336,9 +336,10 @@ pub(crate) fn to_temporal_zoned_date_time<'s>(
                 | fields::OFFSET
                 | fields::TIME_ZONE
                 | fields::TIME_ZONE_REQUIRED,
+            &cal,
         )?;
         // fields::read threw already for an undefined timeZone; kept as a defensive check.
-        let Some(tz) = bag.time_zone else {
+        let Some(tz) = bag.bag.time_zone else {
             return Err(cx.throw_type_error("a zoned date-time needs a timeZone"));
         };
         // f-j. Options: disambiguation, offset (reject), overflow.
@@ -346,13 +347,13 @@ pub(crate) fn to_temporal_zoned_date_time<'s>(
         let (d, off, overflow) = zoned_options(cx, options, OffsetDisambiguation::Reject)?;
         // k-. InterpretTemporalDateTimeFields; InterpretISODateTimeOffset (temporal_rs; no
         //     offset field is the wall behaviour).
-        let time = bag.partial_time(cx, overflow)?;
+        let time = bag.bag.partial_time(cx, overflow)?;
         return ZonedDateTime::from_partial_with_provider(
             PartialZonedDateTime {
                 fields: ZonedDateTimeFields {
                     calendar_fields: bag.calendar_fields(),
                     time,
-                    offset: bag.offset,
+                    offset: bag.bag.offset,
                 },
                 timezone: Some(tz),
                 calendar: cal,
@@ -372,13 +373,14 @@ pub(crate) fn to_temporal_zoned_date_time<'s>(
     let text = temporal_text(cx, s)?;
     let parsed =
         ParsedZonedDateTime::from_utf8_with_provider(text.as_bytes(), provider()).or_throw(cx)?;
+    // k. CanonicalizeCalendar (AvailableCalendars, calendar.rs), before the options.
+    //    ParsedZonedDateTime hides its calendar, so it is read from the string.
+    string_calendar(cx, &text, None)?;
     // m-p. Options: disambiguation, offset (reject), overflow.
     let options = get_options_object(cx, options)?;
     let (d, off, _) = zoned_options(cx, options, OffsetDisambiguation::Reject)?;
-    // 6-8. InterpretISODateTimeOffset (temporal_rs); the calendar (iso8601 only).
-    let z = ZonedDateTime::from_parsed_with_provider(parsed, d, off, provider()).or_throw(cx)?;
-    require_iso(cx, z.calendar().clone())?;
-    Ok(z)
+    // 6-8. InterpretISODateTimeOffset (temporal_rs).
+    ZonedDateTime::from_parsed_with_provider(parsed, d, off, provider()).or_throw(cx)
 }
 
 // ---- constructor and statics ----------------------------------------------------------------
@@ -618,8 +620,13 @@ fn with<'s>(
     };
     // 12. Let partialZonedDateTime be ? PrepareCalendarFields(calendar, like, « year, month,
     //     month-code, day », « hour, ..., nanosecond, offset », partial).
-    let bag = fields::read(cx, like, fields::DATE | fields::TIME | fields::OFFSET)?;
-    if !bag.any {
+    let bag = prepare_fields(
+        cx,
+        like,
+        fields::DATE | fields::TIME | fields::OFFSET,
+        z.calendar(),
+    )?;
+    if !bag.any() {
         return Err(cx.throw_type_error("with() needs at least one field"));
     }
     // 14-17. Options: disambiguation, offset (prefer), overflow.
@@ -627,13 +634,13 @@ fn with<'s>(
     let (d, off, overflow) = zoned_options(cx, options, OffsetDisambiguation::Prefer)?;
     // 13, 18-. CalendarMergeFields, InterpretTemporalDateTimeFields and
     //     InterpretISODateTimeOffset (temporal_rs).
-    let time = bag.partial_time(cx, overflow)?;
+    let time = bag.bag.partial_time(cx, overflow)?;
     let r = z
         .with_with_provider(
             ZonedDateTimeFields {
                 calendar_fields: bag.calendar_fields(),
                 time,
-                offset: bag.offset,
+                offset: bag.bag.offset,
             },
             Some(d),
             Some(off),
@@ -738,6 +745,8 @@ fn difference<'s>(
     let z = read(cx, this)?;
     // 1. Set other to ? ToTemporalZonedDateTime(other).
     let other = to_temporal_zoned_date_time(cx, args.get(0), Local::undefined())?;
+    // 2. If CalendarEquals(...) is false, throw a RangeError exception.
+    require_same(cx, z.calendar(), other.calendar())?;
     // 3-4. Let resolvedOptions be ? GetOptionsObject(options); GetDifferenceSettings(
     //      operation, resolvedOptions, datetime, « », nanosecond, hour).
     let options = get_options_object(cx, args.get(1))?;
