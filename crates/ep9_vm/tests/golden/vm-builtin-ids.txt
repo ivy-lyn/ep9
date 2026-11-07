@@ -142,3 +142,8 @@ intrinsic  94  %Function.prototype.call%
 intrinsic  95  %Iterator%
 intrinsic  96  %IteratorHelperPrototype%
 intrinsic  97  %WrapForValidIteratorPrototype%
+intrinsic  98  %Intl%
+intrinsic  99  %Intl.Locale%
+intrinsic 100  %Intl.Locale.prototype%
+intrinsic 101  %Intl.Collator%
+intrinsic 102  %Intl.Collator.prototype%

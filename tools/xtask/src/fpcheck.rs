@@ -1628,7 +1628,7 @@ reason = "why"
 
     // The B0 shape of `cargo tree -p ep9_cli -e normal,build --target all -i libm --no-dedupe
     // --prefix depth -f {p}` (every path goes through ep9_temporal), plus one new path that
-    // does not: icu_calendar from another crate (an INTL crate, MODES-CHECK-w29-B0 MC-w29-B0-1).
+    // does not: icu_calendar from ep9_intl (MODES-CHECK-w29-B0 MC-w29-B0-1; INTL-I1-D2).
     const LIBM_TREE_B0_PLUS_INTL: &str = "0libm v0.2.16
 1core_maths v0.1.1
 2calendrical_calculations v0.2.4
@@ -1666,24 +1666,20 @@ reason = "why"
 ";
 
     #[test]
-    fn allow_crate_via_is_only_ep9_temporal() {
+    fn allow_crate_via_is_ep9_temporal_or_ep9_intl() {
         let p = repo_root().join("expectations/fp-check-allow.toml");
         let f = parse_allow_file(&fs::read_to_string(p).unwrap()).unwrap();
         let via = &f.crates[0].via;
-        assert_eq!(via, &["ep9_temporal"]);
+        assert_eq!(via, &["ep9_temporal", "ep9_intl"]);
         let t = parse_depth_tree(LIBM_TREE_B0_PLUS_INTL).unwrap();
         let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // The B0 paths pass: drop the ep9_intl lines (8, 9, 10) and every path is covered.
-        let b0: Vec<_> = t
-            .iter()
-            .enumerate()
-            .filter(|(k, _)| !(8..=10).contains(k))
-            .map(|(_, l)| l.clone())
-            .collect();
-        assert!(paths_not_via(&b0, via).is_empty());
-        // The new icu_calendar path from another crate fails, and the failure names it.
+        // Every path passes: the B0 paths through ep9_temporal and the icu_calendar path
+        // through ep9_intl (INTL-I1-D2).
+        assert!(paths_not_via(&t, via).is_empty());
+        // Control: the B0 list (ep9_temporal only) fails the ep9_intl path and names it, so
+        // the ep9_intl name is what lets it pass.
         assert_eq!(
-            paths_not_via(&t, via),
+            paths_not_via(&t, &s(&["ep9_temporal"])),
             [s(&[
                 "libm",
                 "core_maths",
@@ -1694,10 +1690,31 @@ reason = "why"
                 "ep9_cli"
             ])]
         );
-        // Control: the wide list of round 1 lets the same path pass (it goes through
-        // calendrical_calculations), so the narrow list is what makes it fail.
-        let wide = s(&["temporal_rs", "calendrical_calculations", "ep9_temporal"]);
-        assert!(paths_not_via(&t, &wide).is_empty());
+        // Control: a path through a third crate fails. The same tree with ep9_other in place
+        // of ep9_intl (line 8) fails on that path only.
+        let third: Vec<_> = t
+            .iter()
+            .map(|(d, n)| {
+                let n = if n == "ep9_intl" {
+                    "ep9_other".to_string()
+                } else {
+                    n.clone()
+                };
+                (*d, n)
+            })
+            .collect();
+        assert_eq!(
+            paths_not_via(&third, via),
+            [s(&[
+                "libm",
+                "core_maths",
+                "calendrical_calculations",
+                "icu_calendar",
+                "ep9_other",
+                "ep9_builtins",
+                "ep9_cli"
+            ])]
+        );
     }
 
     fn block(raw: &str, addr: u64, insns: &[(&str, Option<&str>)]) -> Block {

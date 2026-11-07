@@ -79,18 +79,25 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_builtins::bigint::BLOCK, 18);
     // The Temporal modules are one run, in the order of ep9_temporal::MODULES (not a pin on the
     // end of the table: a later module can follow them).
-    let start = got
-        .iter()
-        .position(|&(name, _)| name == ep9_temporal::MODULES[0].name)
-        .unwrap();
-    let run = &MODULES[start..start + ep9_temporal::MODULES.len()];
-    assert_eq!(
-        run.iter().map(|m| (m.name, m.block)).collect::<Vec<_>>(),
-        ep9_temporal::MODULES
+    // The Intl modules (INTL-I1-D1) are one run too, in the order of ep9_intl::MODULES.
+    for crate_modules in [ep9_temporal::MODULES, ep9_intl::MODULES] {
+        let start = got
             .iter()
-            .map(|m| (m.name, m.block))
-            .collect::<Vec<_>>()
-    );
+            .position(|&(name, _)| name == crate_modules[0].name)
+            .unwrap();
+        let run = &MODULES[start..start + crate_modules.len()];
+        assert_eq!(
+            run.iter().map(|m| (m.name, m.block)).collect::<Vec<_>>(),
+            crate_modules
+                .iter()
+                .map(|m| (m.name, m.block))
+                .collect::<Vec<_>>()
+        );
+    }
+    // The Intl blocks follow iterator (block 28).
+    assert_eq!(ep9_intl::intl::BLOCK, 29);
+    assert_eq!(ep9_intl::locale::BLOCK, 30);
+    assert_eq!(ep9_intl::collator::BLOCK, 31);
 }
 
 #[test]
@@ -219,11 +226,14 @@ fn clippy_toml_repeats_the_root_bans() {
     };
     let root_paths = paths(&root);
     assert!(root_paths.len() > 50, "the root bans: {}", root_paths.len());
-    // ep9_temporal (design SPEC-T §3.1) keeps a copy of this file plus a libm ban.
+    // ep9_temporal (design SPEC-T §3.1) and ep9_intl (INTL-I1-D1) keep a copy of this file
+    // plus a libm ban.
     let temporal = std::fs::read_to_string(dir.join("../ep9_temporal/clippy.toml")).unwrap();
+    let intl = std::fs::read_to_string(dir.join("../ep9_intl/clippy.toml")).unwrap();
     for (name, text) in [
         ("crates/ep9_builtins/clippy.toml", &ours),
         ("crates/ep9_temporal/clippy.toml", &temporal),
+        ("crates/ep9_intl/clippy.toml", &intl),
     ] {
         let our_paths = paths(text);
         for p in &root_paths {
@@ -237,4 +247,5 @@ fn clippy_toml_repeats_the_root_bans() {
         }
     }
     assert!(paths(&temporal).iter().any(|q| q == "libm::fma"));
+    assert!(paths(&intl).iter().any(|q| q == "libm::fma"));
 }

@@ -100,6 +100,14 @@ pub enum ObjectClass {
     /// slots 1-2 the underlying iterator and its `next`, then the callback, the counter and
     /// the inner iterator of flatMap (`ep9_builtins` iterator.rs).
     IteratorHelper,
+    /// An Intl.Locale instance (ECMA-402 §14, INTL W1): slot 0 `[[Locale]]` (the canonical
+    /// tag, a String); the other slots (`[[Calendar]]` .. `[[Numeric]]`) are named in
+    /// `ep9_intl` locale.rs.
+    IntlLocale,
+    /// An Intl.Collator instance (ECMA-402 §10, INTL W1): slot 0 `[[Locale]]` (a String); the
+    /// other slots (the packed options, `[[Collation]]`, `[[BoundCompare]]`) are named in
+    /// `ep9_intl` collator.rs. No ICU4X object is in a slot (INTL-I1-D7).
+    IntlCollator,
 }
 
 impl ObjectClass {
@@ -129,6 +137,8 @@ impl ObjectClass {
         ObjectClass::TemporalPlainMonthDay,
         ObjectClass::TemporalZonedDateTime,
         ObjectClass::IteratorHelper,
+        ObjectClass::IntlLocale,
+        ObjectClass::IntlCollator,
     ];
 
     /// Most internal slots of one object.
@@ -175,6 +185,8 @@ impl ObjectClass {
             ObjectClass::TemporalPlainMonthDay => "Temporal.PlainMonthDay",
             ObjectClass::TemporalZonedDateTime => "Temporal.ZonedDateTime",
             ObjectClass::IteratorHelper => "Iterator Helper",
+            ObjectClass::IntlLocale => "Intl.Locale",
+            ObjectClass::IntlCollator => "Intl.Collator",
         }
     }
 }

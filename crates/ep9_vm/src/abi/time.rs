@@ -7,6 +7,8 @@
 //!                                     _localtime64_s; LocalTZA, §21.4.1.25)
 //! Cx::system_time_zone_id()        -> ep9_platform::time::system_time_zone_id  (TZ or the
 //!                                     /etc/localtime link; Temporal.Now)
+//! Cx::default_locale()             -> ep9_platform::time::default_locale  (LC_ALL,
+//!                                     LC_MESSAGES or LANG; Intl DefaultLocale, INTL W1)
 //! ```
 //!
 //! This is the seam of docs/plan/06-object-model-and-spec.md "Same tz provider as Temporal":
@@ -36,5 +38,12 @@ impl<'s> Cx<'s> {
     /// "UTC" for `None` or an unknown name.
     pub fn system_time_zone_id(&mut self) -> Option<String> {
         ep9_platform::time::system_time_zone_id()
+    }
+
+    /// The host locale (the host part of the ECMA-402 operation DefaultLocale): a BCP 47 tag
+    /// such as "de-DE", or `None` when the host gives none. The caller (`ep9_intl`) checks it
+    /// with its data and uses "en-US" for `None` or a tag it has no data for.
+    pub fn default_locale(&mut self) -> Option<String> {
+        ep9_platform::time::default_locale()
     }
 }

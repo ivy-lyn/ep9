@@ -10,7 +10,9 @@ members = ["crates/*", "tools/*"]
 # - fuzz: own workspace on nightly.
 # - tools/ep9-typecheck: own [workspace] with tsrs's exact lock; never part of the engine graph.
 # - spikes: throwaway code, each spike has its own empty [workspace].
-exclude = ["third_party", "fuzz", "tools/ep9-typecheck", "spikes"]
+# - tools/calprobe: own [workspace] with a copy of this lock; the icu_calendar runtime probe
+#   (INTL-I1-D2), run at each icu_calendar bump; never part of the engine graph.
+exclude = ["third_party", "fuzz", "tools/ep9-typecheck", "spikes", "tools/calprobe"]
 
 [workspace.package]
 version = "0.0.0"
@@ -50,6 +52,26 @@ zoneinfo64 = { version = "=0.3.0", default-features = false }
 # direct edge only to turn on `force-soft-floats`, so `libm::fma` is the soft, correctly rounded
 # code (no `fmadd`/`vfmadd`) on every target.
 libm = { version = "=0.2.16", default-features = false }
+# Intl (ECMA-402 on ICU4X; INTL-I1-D5): the 2.3.x line of the icu_calendar that temporal_rs
+# pins, exact pins (the `unstable` APIs can change in a minor release), no default features.
+# Only ep9_intl imports them (dep-guards checks 21-23). Data: the baked compiled data (D10,
+# INTL-I1-D4). Not used: the `icu` meta crate (its default turns on icu_segmenter/auto, so
+# lstm and core_maths), serde, datagen, logging, log, ryu, lstm, auto, ixdtf,
+# icu_provider_blob. One BUMP step moves them all at once (INTL-I1-D5).
+icu_locale_core = { version = "=2.3.0", default-features = false, features = ["alloc"] }
+icu_locale = { version = "=2.3.1", default-features = false, features = ["compiled_data"] }
+icu_collator = { version = "=2.3.1", default-features = false, features = ["compiled_data", "latin1"] }
+icu_decimal = { version = "=2.3.0", default-features = false, features = ["compiled_data", "unstable"] }
+fixed_decimal = { version = "=0.7.2", default-features = false }
+icu_plurals = { version = "=2.3.0", default-features = false, features = ["compiled_data", "unstable"] }
+icu_list = { version = "=2.3.0", default-features = false, features = ["compiled_data", "alloc"] }
+icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_casemap = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_experimental = { version = "=0.6.0", default-features = false, features = ["compiled_data"] }
+icu_calendar = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_time = { version = "=2.3.0", default-features = false, features = ["compiled_data", "alloc"] }
+icu_datetime = { version = "=2.3.0", default-features = false, features = ["compiled_data", "unstable"] }
+icu_provider = { version = "=2.3.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
