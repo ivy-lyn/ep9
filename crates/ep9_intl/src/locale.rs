@@ -294,13 +294,9 @@ pub struct LocaleRecord {
 /// structurally valid (it does not happen for values that match the `type` nonterminal).
 pub fn make_locale_record(tag: &str, options: &[Option<String>; 7]) -> Option<LocaleRecord> {
     let (attributes, mut keywords) = unicode_components(tag);
-    let mut keys: [Option<String>; 7] = Default::default();
     for (i, key) in KEYS.iter().enumerate() {
-        // a-b. The value of the keyword `key` in the tag, if there is one.
-        let mut value = keywords
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone());
+        // a-b. The value of the keyword `key` in the tag, if there is one (read back from the
+        //      canonical tag below).
         // d-e. An option value overrides it: CanonicalizeUValue(key, overrideValue), the UTS 35
         //      canonical form, where "true" is the empty value.
         if let Some(ov) = &options[i] {
@@ -309,12 +305,10 @@ pub fn make_locale_record(tag: &str, options: &[Option<String>; 7]) -> Option<Lo
                 v.clear();
             }
             match keywords.iter_mut().find(|(k, _)| k == key) {
-                Some(entry) => entry.1 = v.clone(),
-                None => keywords.push(((*key).to_string(), v.clone())),
+                Some(entry) => entry.1 = v,
+                None => keywords.push(((*key).to_string(), v)),
             }
-            value = Some(v);
         }
-        keys[i] = value;
     }
     // 5. The tag without its Unicode locale extension sequence.
     let mut locale = tag::remove_unicode_extension(tag);
@@ -338,10 +332,20 @@ pub fn make_locale_record(tag: &str, options: &[Option<String>; 7]) -> Option<Lo
             None => format!("{locale}{ext}"),
         };
     }
-    Some(LocaleRecord {
-        locale: canonical_locale(&locale)?,
-        keys,
-    })
+    let locale = canonical_locale(&locale)?;
+    // The canonical form can differ from the keywords above: ICU4X drops each "true" subtag
+    // of a type value ("gregory-true" -> "gregory"; icu_locale_core extensions/unicode/
+    // value.rs). So the value of each key comes from the canonical tag, and toString() and
+    // the getters agree (Codex r1 LOCALE-2; node keeps "gregory-true" in both: route
+    // INTL-LOCALE-TRUE).
+    let (_, canonical) = unicode_components(&locale);
+    let keys = KEYS.map(|key| {
+        canonical
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    });
+    Some(LocaleRecord { locale, keys })
 }
 
 /// The ICU4X language id of `base` (language, script, region; no variants), or `None` if

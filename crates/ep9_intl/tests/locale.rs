@@ -110,3 +110,27 @@ print(s instanceof L, s.maximize() instanceof L, Object.getPrototypeOf(s.maximiz
         ])
     );
 }
+
+/// An option value with a "true" subtag inside it: the canonical tag drops that subtag (ICU4X
+/// removes each "true" subtag of a type value), and the getters and the Locale info methods
+/// read the same value as toString() (Codex r1 LOCALE-2). node 26 keeps "gregory-true" in the
+/// tag and in the getters (UTS 35 removes only a whole value "true"; route INTL-LOCALE-TRUE),
+/// so these lines are ep9's own: the point is that each line agrees with itself.
+#[test]
+fn option_values_agree_with_the_canonical_tag() {
+    assert_eq!(
+        run_both(
+            r#"const a = new Intl.Locale("en", { calendar: "gregory-true" });
+print(a.toString(), a.calendar, a.getCalendars().join(), new Intl.Locale(a.toString()).calendar, a.maximize().calendar);
+const b = new Intl.Locale("de", { collation: "phonebk-true", numberingSystem: "true-latn" });
+print(b.toString(), b.collation, b.numberingSystem, b.getCollations().join(), b.getNumberingSystems().join());
+const c = new Intl.Locale("en-u-ca-buddhist", { calendar: "true", numeric: true, caseFirst: "upper" });
+print(c.toString(), JSON.stringify(c.calendar), c.numeric, c.caseFirst);"#
+        ),
+        lines(&[
+            "en-u-ca-gregory gregory gregory gregory gregory",
+            "de-u-co-phonebk-nu-latn phonebk latn phonebk latn",
+            r#"en-u-ca-kf-upper-kn "" true upper"#,
+        ])
+    );
+}
