@@ -46,3 +46,29 @@ fn date_parse_takes_slash_dates() {
         ])
     );
 }
+
+/// Number.prototype.toLocaleString (§21.1.3.4): {w, c}, length 0, thisNumberValue; with no
+/// ECMA-402 it gives the `toString()` text (as BigInt's). node with ICU gives the same lines
+/// for these values (it prints "1,234.5" for 1234.5, so the test uses no such value).
+#[test]
+fn number_to_locale_string() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            var P = Number.prototype, d = Object.getOwnPropertyDescriptor(P, "toLocaleString");
+            print(typeof d.value, d.writable, d.enumerable, d.configurable, d.value.length, d.value.name);
+            print((12).toLocaleString(), new Number(-7).toLocaleString(), NaN.toLocaleString());
+            print(Object.getOwnPropertyNames(P).join());
+            try { P.toLocaleString.call("1"); } catch (e) { print(e.name); }
+            try { new P.toLocaleString(); } catch (e) { print(e.name); }
+            "#
+        ),
+        lines(&[
+            "function true false true 0 toLocaleString",
+            "12 -7 NaN",
+            "constructor,toExponential,toFixed,toPrecision,toString,valueOf,toLocaleString",
+            "TypeError",
+            "TypeError",
+        ])
+    );
+}
