@@ -28,10 +28,16 @@
 //! `cache` module; no `Local` in a Rust container; `Err` only from a `cx.throw_*` call.
 #![forbid(unsafe_code)]
 
+pub mod available;
+pub mod cache;
 pub mod collator;
+pub mod digits;
 pub mod intl;
 pub mod locale;
 pub mod locale_info;
+pub mod options;
+pub mod resolve;
+pub mod tag;
 
 use ep9_vm::BuiltinModule;
 
