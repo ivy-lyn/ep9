@@ -1929,6 +1929,14 @@ fn iterator_zip<'s>(
     Ok(o.value())
 }
 
+/// Removes iterator `i` from the pair list `iters`: a null iterator and no cached `next`
+/// method, so neither stays alive with the helper (the spec removes the whole record).
+fn remove_iter<'s>(cx: &mut Cx<'s>, iters: Local<'s, JsObject>, i: u64) -> JsResult<()> {
+    cx.set_index(iters, 2 * i, Local::null(), true)?;
+    cx.set_index(iters, 2 * i + 1, Local::undefined(), true)?;
+    Ok(())
+}
+
 /// True if no iterator of the pair list `iters` is open.
 fn none_open<'s>(cx: &mut Cx<'s>, iters: Local<'s, JsObject>, count: u64) -> JsResult<bool> {
     for i in 0..count {
@@ -1984,7 +1992,7 @@ fn resume_zip<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, keyed: bool) -> JsRes
                     // d. If result is done, then
                     Ok(None) => {
                         // i. Remove iter from openIters.
-                        cx.set_index(iters, 2 * i, Local::null(), true)?;
+                        remove_iter(cx, iters, i)?;
                         match mode {
                             // ii. If mode is "shortest", then
                             //     1. Return ? IteratorCloseAll(openIters,
@@ -2057,7 +2065,7 @@ fn zip_strict_end<'s>(
             // d. If open is done, then
             //    i. Remove iters[k] from openIters.
             Ok(None) => {
-                cx.set_index(iters, 2 * k, Local::null(), true)?;
+                remove_iter(cx, iters, k)?;
             }
             // e. Else,
             //    i. Return ? IteratorCloseAll(openIters, ThrowCompletion(a newly created

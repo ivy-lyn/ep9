@@ -613,3 +613,35 @@ log(w.next().done);
         });
     }
 }
+
+/// A zip input that is done leaves the list with its cached `next` method (Codex r1
+/// SPEC-ITER2 3; IteratorZip step 3.b.iii.3.d removes the whole record): the `next` closure
+/// of the first input dies at the next GC, while the zip (longest mode) stays reachable from a
+/// global and its second input is still open. The lines before the GC are the spec's (node
+/// v26.13.0 has no zip); the cleanup line too.
+#[test]
+fn a_done_zip_input_drops_its_next_method() {
+    const SRC: &str = r#"
+var fr = new FinalizationRegistry(function (held) { log('cleanup', held); });
+function once(name) { var big = {}; fr.register(big, name); var n = 0; return { next: function () { return big && n++ < 1 ? { value: 1, done: false } : { done: true }; } }; }
+var z = Iterator.zip([once('next'), [1, 2, 3]], { mode: 'longest' });
+log(z.next().value.join(), z.next().value.join());
+"#;
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = common::isolate(stress);
+            i.register_host_function("log", 1, log);
+            take_log();
+            run_padded(&mut i, SRC).unwrap();
+            assert_eq!(take_log(), ["1,1 ,2"], "stress={stress}");
+            let mut seen = Vec::new();
+            common::assert_dies(&mut i, "the next method of a done zip input", |i| {
+                i.with_cx(|cx| cx.cleanup_finalization_registries())
+                    .unwrap();
+                seen.extend(take_log());
+                seen == ["cleanup next"]
+            });
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
