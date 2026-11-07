@@ -1610,7 +1610,7 @@ impl Inner {
     /// Returns the number of cells kept.
     fn finish_sweeping_with<const CHECK: bool>(&mut self, errors: &mut Vec<String>) -> usize {
         let mut kept = 0;
-        if let Some(job) = self.concurrent.0.take() {
+        if let Some(job) = self.concurrent.0.clone() {
             kept += self.join_job::<CHECK>(&job, errors);
         }
         while let Some(idx) = self.sweep_queue.pop() {
@@ -2314,9 +2314,11 @@ impl Inner {
         kept
     }
 
-    /// Ends the concurrent sweep `job` (taken off `concurrent`): sweeps every page left here
+    /// Ends the concurrent sweep `job` (a copy of `concurrent`): sweeps every page left here
     /// (`CHECK`: with the verifier's checks), waits until the sweeper thread is done with its
-    /// page, then files the sweeper's pages. Returns the cells kept (both threads; `CHECK`).
+    /// page, takes the job off `concurrent`, then files the sweeper's pages. Returns the cells
+    /// kept (both threads; `CHECK`). The job stays registered until the wait: if a size
+    /// function panics here, the next join and the heap's drop still wait for the sweeper.
     fn join_job<const CHECK: bool>(
         &mut self,
         job: &crate::parallel::Job,
@@ -2339,6 +2341,7 @@ impl Inner {
             }
         }
         job.claims.wait_settled();
+        self.concurrent.0 = None;
         // The counts first: `file_done` raises a panic of the sweeper thread.
         let mut sweeper_errors = Vec::new();
         kept += self.take_job_counts(job, &mut sweeper_errors);
@@ -2482,7 +2485,7 @@ impl Heap {
     /// lazy sweep queues stay.
     pub(crate) fn end_concurrent_sweep(&self) {
         let mut inner = self.inner.borrow_mut();
-        if let Some(job) = inner.concurrent.0.take() {
+        if let Some(job) = inner.concurrent.0.clone() {
             inner.join_job::<false>(&job, &mut Vec::new());
         }
     }

@@ -9,6 +9,7 @@
 //! | `allocation_takes_the_pages_the_sweeper_swept` | the allocations file the sweeper's pages and reuse them: no new page |
 //! | `a_checked_sweep_on_the_sweeper_*` | the verify after a GC with a checked job: no false error, the kept count; a planted fault on a page the sweeper swept fails the verify |
 //! | `a_panic_in_a_size_function_on_the_sweeper_reaches_the_heaps_thread` | the panic comes out of `finish_sweeping`; the heap still works |
+//! | `a_panic_in_the_join_keeps_the_job_registered` | a panic of the heap's thread in the join leaves the job registered until the sweeper thread is done (Codex r1 GCPAR2 1): the next GC joins it, and the drop waits for it |
 //! | `a_heap_dropped_during_a_concurrent_sweep` | the drop waits for the sweeper thread (it never touches the unmapped cage) |
 //! | `two_heaps_sweep_concurrently` | two heaps on two threads, one sweeper thread: both keep the right cells |
 //! | `the_random_mutators_with_the_concurrent_sweep` | the random mutators of stress.rs (S0 GC-stress, S1 checked GC-stress, S1 budget policy) |
@@ -260,6 +261,66 @@ fn a_panic_in_a_size_function_on_the_sweeper_reaches_the_heaps_thread() {
     assert!(!heap.sweeping_concurrently());
     // The heap still works: the next GC keeps the rooted node and frees the rest.
     heap.collect_with_words(&[]);
+    assert!(heap.is_cell(keep.addr()));
+    heap.verify().expect("verifier");
+    heap.drop_global(g);
+}
+
+/// A kind whose size function panics on the heap's thread while `PANIC_ON_HEAP_THREAD` is set,
+/// and is slow on the sweeper thread (20 µs per call), so the sweeper thread is still busy
+/// with its page when the join on the heap's thread panics.
+const JOIN_PANICKER: KindId = KindId::new(43).unwrap();
+static PANIC_ON_HEAP_THREAD: AtomicBool = AtomicBool::new(false);
+
+fn join_panicker_size(_: CellPtr) -> usize {
+    if PANIC_ON_HEAP_THREAD.load(Relaxed) {
+        if std::thread::current().name() == Some("ep9-gc-sweeper") {
+            std::thread::sleep(std::time::Duration::from_micros(20));
+        } else {
+            std::panic::resume_unwind(Box::new("test join size panic"));
+        }
+    }
+    24
+}
+
+#[test]
+fn a_panic_in_the_join_keeps_the_job_registered() {
+    let heap = test_heap(|_| {});
+    heap.register_kind(
+        JOIN_PANICKER,
+        CellKind {
+            name: "test-join-panicker",
+            size: CellSize::Dynamic(join_panicker_size),
+            trace: no_trace,
+        },
+    )
+    .unwrap();
+    let keep = new_node(&heap, 1, 1);
+    let g = heap.new_global(keep.to_value());
+    // Dead panicking cells on every page: the sweep reads their size to free them.
+    for _ in 0..40_000 {
+        heap.alloc(JOIN_PANICKER, 24).expect("alloc");
+    }
+    PANIC_ON_HEAP_THREAD.store(true, Relaxed);
+    let r = test_controls::with_helpers(2, || {
+        test_controls::with_sweeper(1, false, || {
+            heap.collect_with_words(&[]);
+            assert!(heap.sweeping_concurrently());
+            catch_unwind(AssertUnwindSafe(|| heap.finish_sweeping()))
+        })
+    });
+    let p = r.expect_err("the join on the heap's thread did not panic");
+    assert_eq!(p.downcast_ref::<&str>(), Some(&"test join size panic"));
+    // The sweeper thread may still sweep a page of the job: the job stays registered, so the
+    // next join and the heap's drop wait for it.
+    let registered = heap.sweeping_concurrently();
+    PANIC_ON_HEAP_THREAD.store(false, Relaxed);
+    assert!(registered, "the job left the heap before the join ended");
+    // The heap still works: the next GC joins the job, keeps the rooted node and frees the
+    // rest.
+    heap.collect_with_words(&[]);
+    heap.finish_sweeping();
+    assert!(!heap.sweeping_concurrently());
     assert!(heap.is_cell(keep.addr()));
     heap.verify().expect("verifier");
     heap.drop_global(g);
