@@ -5,7 +5,7 @@
 //! C2).
 //!
 //! ```text
-//! source text --source_text--> &str (a lone surrogate: not implemented, D8/E8: the shim is M3)
+//! source text --source_text--> &str (shim text: lone surrogate = U+FDD0 + 4 hex digits, H05-Q3)
 //!   --compile (hook)--> VerifiedUnit | CompileFailure -> SyntaxError, RangeError,
 //!                                                       "unsupported: <f>", internal error
 //!                       no hook -> EvalError (O2)
@@ -69,19 +69,19 @@ impl<'s> Cx<'s> {
         self.call(f, global, &[])
     }
 
-    /// The text of the string `s` for the compiler hook (which takes `&str`). Source text with
-    /// a lone surrogate cannot be UTF-8: it throws the v0 not-implemented `Error` (the shim is
-    /// milestone-M3 work, D8; H05-Q3).
+    /// The shim text of the string `s` for the hooks `compile_eval` and `compile_function`,
+    /// which take `&str` (`shim_text`; H05-Q3). The front end decodes it (the lone-surrogate
+    /// shim, 07-runtime.md §7). A Latin-1 string holds no lone surrogate and no U+FDD0.
     pub(crate) fn source_text(&mut self, s: Local<'s, JsString>) -> JsResult<String> {
         let b = string::flatten(self.cx, s.bits());
         let text = match string::view(self.cx, b) {
-            JsStr::Latin1(bytes) => Some(bytes.iter().map(|&c| char::from(c)).collect()),
-            JsStr::Utf16(units) => String::from_utf16(units).ok(),
+            JsStr::Latin1(bytes) => bytes.iter().map(|&c| char::from(c)).collect(),
+            JsStr::Utf16(units) => shim_text(units),
         };
-        match text {
-            Some(t) => Ok(t),
-            None => Err(self.not_implemented("source text with a lone surrogate")),
-        }
+        // Every JS string has a shim text, so the v0 not-implemented Error for a lone
+        // surrogate (D8) is gone. The function keeps its line count: H31 and other docs
+        // cite lines below it.
+        Ok(text)
     }
 
     /// Runs `compile` with the isolate's compiler hooks and turns a failure into the thrown
@@ -255,4 +255,28 @@ impl<'s> Cx<'s> {
         debug_assert!(v == UNDEFINED || kinds::is_object(v));
         v
     }
+}
+
+/// The shim text of the WTF-16 string `units` (the form of `ep9_frontend::eval_source_text`,
+/// H05-Q3): a lone surrogate becomes U+FDD0 and its 4 lower-case hex digits, U+FDD0 becomes
+/// U+FDD0 U+FDD0, and every other code point stays.
+fn shim_text(units: &[u16]) -> String {
+    use std::fmt::Write as _;
+    const ESC: char = '\u{FDD0}';
+    let mut out = String::with_capacity(units.len());
+    for c in char::decode_utf16(units.iter().copied()) {
+        match c {
+            Ok(ESC) => {
+                out.push(ESC);
+                out.push(ESC);
+            }
+            Ok(c) => out.push(c),
+            Err(lone) => {
+                out.push(ESC);
+                // Writing to a String cannot fail.
+                let _ = write!(out, "{:04x}", lone.unpaired_surrogate());
+            }
+        }
+    }
+    out
 }
