@@ -593,9 +593,39 @@ fn stream_safe(s: &[u16]) -> Cow<'_, [u16]> {
     Cow::Owned(out)
 }
 
+/// The common prefix length (code units) of the two stream-safe inputs above which
+/// [`icu_compare`] compares sort keys, not `compare_utf16`.
+const LONG_PREFIX: usize = 1024;
+
 /// The ICU4X compare of the stream-safe forms of `x` and `y` ([`stream_safe`]).
+///
+/// When the two forms share a prefix of more than [`LONG_PREFIX`] code units, it compares
+/// their sort keys (`write_sort_key_utf16_to`) instead. The identical-prefix step of the
+/// ICU4X 2.3 compare goes back from the first difference until it finds a safe boundary
+/// (two starters in a row, no contraction or prefix rule; icu_collator `comparison.rs`), one
+/// code point at a time with an `insert(0)` into its list, and then takes each element with
+/// a `remove(0)` (`elements.rs`): O(n^2) for a prefix with no such boundary ('a' + U+0301
+/// repeated 64k times: 17.5 s). A sort key is built with no identical-prefix step, so it is
+/// linear, and UTS #10 defines the order as the binary order of the sort keys (S3, S4): the
+/// same result (0 differences against `compare_utf16` on 220,000 random pairs, 11 locales,
+/// 5 option sets). The keys are Rust vectors that live only in this call (no GC slot).
 fn icu_compare(c: &CollatorBorrowed<'static>, x: &[u16], y: &[u16]) -> Ordering {
-    c.compare_utf16(&stream_safe(x), &stream_safe(y))
+    let (x, y) = (stream_safe(x), stream_safe(y));
+    let prefix = x.iter().zip(y.iter()).take_while(|(a, b)| a == b).count();
+    if prefix <= LONG_PREFIX {
+        return c.compare_utf16(&x, &y);
+    }
+    if prefix == x.len() && prefix == y.len() {
+        return Ordering::Equal;
+    }
+    sort_key(c, &x).cmp(&sort_key(c, &y))
+}
+
+/// The ICU4X sort key of `s` (a stream-safe form).
+fn sort_key(c: &CollatorBorrowed<'static>, s: &[u16]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(s.len() * 3);
+    let Ok(()) = c.write_sort_key_utf16_to(s, &mut key);
+    key
 }
 
 /// CompareStrings ( collator, x, y ) (10.3.3.2) of the UTF-16 strings `x` and `y`.
@@ -813,6 +843,136 @@ mod tests {
     use super::*;
     use crate::available;
     use icu_collator::options::{AlternateHandling, CaseLevel, Strength};
+
+    /// A small seeded generator (xorshift64*), so the pairs are the same on every run.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// The text parts of the random pairs: contractions ("ch", "dz", "ll"), U+00DF, Hangul
+    /// syllables and jamo, kana and U+30FC, digits, U+0301, U+0316, U+034F CGJ, U+FFFD, a lone
+    /// surrogate, case and punctuation.
+    const PARTS: &[&str] = &[
+        "a", "b", "c", "h", "d", "z", "l", "s", "i", "e", "A", "C", "ch", "Ch", "dz", "ll", "ss",
+        "\u{df}", "\u{e9}", "\u{c5}", "\u{ac00}", "\u{ac01}", "\u{1100}", "\u{1161}", "\u{304b}",
+        "\u{304c}", "\u{30ab}", "\u{30fc}", "0", "1", "9", "10", "\u{301}", "\u{316}", "\u{34f}",
+        "\u{fffd}", "-", " ", "'",
+    ];
+
+    /// A random string of 0 to `max` parts (a lone surrogate now and then).
+    fn random_text(r: &mut Rng, max: usize) -> Vec<u16> {
+        let mut out = Vec::new();
+        for _ in 0..r.below(max + 1) {
+            if r.below(64) == 0 {
+                out.push(0xD800);
+            } else {
+                out.extend(PARTS[r.below(PARTS.len())].encode_utf16());
+            }
+        }
+        out
+    }
+
+    /// The sort-key order equals `compare_utf16` (UTS #10 S3, S4), so the long-prefix path of
+    /// [`icu_compare`] gives the same results: random pairs with a common prefix, for 11
+    /// locales and 6 option sets (the verifier's 5: default, primary, secondary + numeric,
+    /// identical, quaternary + numeric; and the ep9 "case" + ignorePunctuation form: primary,
+    /// case level, shifted, upper first). 400 pairs per set (26,400) in the test run;
+    /// `EP9_SORT_KEY_PAIRS=4000` gives the 264,000 of the evidence run.
+    #[test]
+    fn sort_keys_order_as_compare_on_random_pairs() {
+        let per_set: usize = std::env::var("EP9_SORT_KEY_PAIRS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(400);
+        let locales = [
+            "en",
+            "cs",
+            "sk",
+            "ja",
+            "de-u-co-phonebk",
+            "fr-CA",
+            "es-u-co-trad",
+            "ko",
+            "sv",
+            "hu",
+            "ca",
+        ];
+        let sets: [(Strength, bool, CaseLevel, bool, bool); 6] = [
+            (Strength::Tertiary, false, CaseLevel::Off, false, false),
+            (Strength::Primary, false, CaseLevel::Off, false, false),
+            (Strength::Secondary, true, CaseLevel::Off, false, false),
+            (Strength::Identical, false, CaseLevel::Off, false, false),
+            (Strength::Quaternary, true, CaseLevel::Off, false, false),
+            (Strength::Primary, false, CaseLevel::On, true, true),
+        ];
+        let mut r = Rng(0x9E37_79B9_7F4A_7C15);
+        let (mut pairs, mut diffs, mut long) = (0usize, Vec::new(), 0usize);
+        for l in locales {
+            for (strength, numeric, case_level, shifted, upper) in sets {
+                let mut prefs = CollatorPreferences::from(&Locale::try_from_str(l).unwrap());
+                if numeric {
+                    prefs.numeric_ordering = Some(CollationNumericOrdering::True);
+                }
+                if upper {
+                    prefs.case_first = Some(CollationCaseFirst::Upper);
+                }
+                let mut o = CollatorOptions::default();
+                o.strength = Some(strength);
+                o.case_level = Some(case_level);
+                if shifted {
+                    o.alternate_handling = Some(AlternateHandling::Shifted);
+                }
+                let c = icu_collator::Collator::try_new(prefs, o).unwrap();
+                for i in 0..per_set {
+                    let prefix = random_text(&mut r, 6);
+                    let mut x = prefix.clone();
+                    x.extend(random_text(&mut r, 6));
+                    let mut y = prefix;
+                    y.extend(random_text(&mut r, 6));
+                    let want = c.compare_utf16(&x, &y);
+                    if sort_key(&c, &x).cmp(&sort_key(&c, &y)) != want {
+                        diffs.push(format!("{l} {strength:?} {x:04x?} {y:04x?} {want:?}"));
+                    }
+                    // Every 50th pair also goes through icu_compare with a common prefix of
+                    // 1,100 parts in front (the sort-key path).
+                    if i % 50 == 0 {
+                        let mut head: Vec<u16> = Vec::new();
+                        while head.len() <= LONG_PREFIX {
+                            head.extend(PARTS[r.below(PARTS.len())].encode_utf16());
+                        }
+                        let (hx, hy) = ([&head[..], &x].concat(), [&head[..], &y].concat());
+                        let want = c.compare_utf16(&stream_safe(&hx), &stream_safe(&hy));
+                        if icu_compare(&c, &hx, &hy) != want {
+                            diffs.push(format!("long {l} {strength:?} {x:04x?} {y:04x?}"));
+                        }
+                        long += 1;
+                    }
+                    pairs += 1;
+                }
+            }
+        }
+        eprintln!(
+            "sort keys: {pairs} pairs, {long} long-prefix pairs, {} differences",
+            diffs.len()
+        );
+        assert!(pairs >= 20_000);
+        assert!(
+            diffs.is_empty(),
+            "{} differences: {:?}",
+            diffs.len(),
+            &diffs[..diffs.len().min(5)]
+        );
+    }
 
     /// The `kf` and `ignorePunctuation` defaults ([`UPPER_FIRST`], [`SHIFTED`]) equal the
     /// ICU4X data defaults for every available locale, and no locale has another default

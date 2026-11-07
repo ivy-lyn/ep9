@@ -210,6 +210,28 @@ print(out.join());"#,
     assert!(took < std::time::Duration::from_secs(5), "{took:?}");
 }
 
+/// A long common prefix with no safe boundary ('a' + U+0301 repeated: no two starters in a
+/// row) made the ICU4X identical-prefix step O(n^2): 64k pairs took 17.5 s in a release
+/// build (4.1 s for the compare alone). Past a common prefix of 1,024 code units the compare
+/// uses sort keys (linear; the same order, UTS #10), so this takes well under 1 s in a
+/// release build; the 5 s bound covers a slow debug build. The Czech rows check a
+/// contraction ("ch") right after a long prefix. The results are node v26.13.0's.
+#[test]
+fn a_long_common_prefix_compares_in_linear_time() {
+    let (took, r) = common::timed(
+        r#"var c = new Intl.Collator("en"), n = 65536, out = [];
+var p = "a\u0301".repeat(n);
+out.push(c.compare(p + "b", p + "c"), (p + "c").localeCompare(p + "b"), c.compare(p, p), c.compare(p + "b", p));
+var q = "q\u0301".repeat(n / 2), s = "a\u0316".repeat(n / 2);
+out.push(c.compare(q + "b", q + "c"), c.compare(s + "c", s + "b"));
+var cs = new Intl.Collator("cs"), h = "a\u0301".repeat(2000);
+out.push(cs.compare(h + "ach", h + "aci"), cs.compare(h + "ch", h + "h"), new Intl.Collator("en", {sensitivity: "base"}).compare(p + "B", p + "b"));
+print(out.join());"#,
+    );
+    assert_eq!(r, lines(&["-1,1,0,1,-1,1,1,1,0"]));
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
+
 /// The stream-safe step works on NFD and only on text whose NFD has a run of more than 30
 /// non-starters, so canonically equivalent strings still compare equal (ECMA-262
 /// `localeCompare`), with runs of 20 to 2,000 marks in another order or with a precomposed
