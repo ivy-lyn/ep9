@@ -5,7 +5,7 @@
 //! where ECMA-402 or the ep9 data differ from V8 (each says why).
 
 mod common;
-use common::{lines, run_both};
+use common::{lines, run, run_both};
 
 const SHAPE: &str = r#"const C = Intl.Collator;
 print(typeof C, C.length, C.name, Object.getPrototypeOf(C) === Function.prototype);
@@ -192,44 +192,50 @@ fn compare_gives_the_node_lines() {
 /// once per mark of a run, and once per code point when it goes back over an identical
 /// prefix, so 'a' + 320,000 U+0301 took 14.9 s (release) and a termination was not honored.
 /// The UAX #15 stream-safe step (two CGJs after each 30 non-starters of NFD) makes each
-/// compare linear: each case of 320,000 marks (a difference at the first mark, an identical
-/// prefix of marks, Tibetan vowel signs that decompose to two marks, astral marks) ends in
-/// well under 1 s in a release build; the 5 s bound covers a slow debug build. The results
-/// are node v26.13.0's (node takes about 25 s for the Tibetan case at 40,000).
+/// compare linear. The cases: a difference at the first mark, an identical prefix of marks,
+/// Tibetan vowel signs that decompose to two marks, astral marks. The check is the growth of
+/// the time from 20,000 to 80,000 marks ([`common::growth`]: 80,000 marks against 4 runs of
+/// 20,000; about 1 for a linear cost, about 4 for the old one), not a wall time, so a slow
+/// host or a debug build does not change it (a 5 s bound failed on the CI debug runs,
+/// M6-ORCH-226). The results are node v26.13.0's
+/// (20,000 marks; node takes about 25 s for the Tibetan case at 40,000).
 #[test]
 fn long_combining_runs_compare_in_linear_time() {
-    let (took, r) = common::timed(
-        r#"var c = new Intl.Collator("en"), n = 320000, out = [];
+    let ratio = common::growth(20_000, 80_000, |n| {
+        let src = r#"var c = new Intl.Collator("en"), n = @N@, out = [];
 var a = "a" + "́".repeat(n), b = "a" + "̀".repeat(n);
 out.push(c.compare(a, b), a.localeCompare(b), c.compare(a + "b", a + "c"), (a + "c").localeCompare(a + "b"));
-out.push(c.compare("a" + "ཱི".repeat(n / 2), "a" + "ཱུ".repeat(n / 2)));
+out.push(c.compare("a" + "\u0F73".repeat(n / 2), "a" + "\u0F75".repeat(n / 2)));
 out.push(c.compare("a" + "\u{1D165}".repeat(n / 2), "a" + "\u{1D166}".repeat(n / 2)));
-print(out.join());"#,
-    );
-    assert_eq!(r, lines(&["-1,-1,-1,1,-1,0"]));
-    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+print(out.join());"#
+            .replace("@N@", &n.to_string());
+        assert_eq!(run(&src, false), lines(&["-1,-1,-1,1,-1,0"]), "{n}");
+    });
+    assert!(ratio < common::LINEAR, "growth {ratio:.2}");
 }
 
 /// A long common prefix with no safe boundary ('a' + U+0301 repeated: no two starters in a
 /// row) made the ICU4X identical-prefix step O(n^2): 64k pairs took 17.5 s in a release
 /// build (4.1 s for the compare alone). Past a common prefix of 1,024 code units the compare
-/// uses sort keys (linear; the same order, UTS #10), so this takes well under 1 s in a
-/// release build; the 5 s bound covers a slow debug build. The Czech rows check a
-/// contraction ("ch") right after a long prefix. The results are node v26.13.0's.
+/// uses sort keys (linear; the same order, UTS #10). The check is the growth of the time from
+/// 4,096 to 16,384 pairs ([`common::growth`]: a linear cost gives about 1, the old one about
+/// 4), not a wall time (M6-ORCH-226). The Czech rows check a contraction ("ch") right after a long prefix.
+/// The results are node v26.13.0's (at both sizes).
 #[test]
 fn a_long_common_prefix_compares_in_linear_time() {
-    let (took, r) = common::timed(
-        r#"var c = new Intl.Collator("en"), n = 65536, out = [];
+    let ratio = common::growth(4096, 16_384, |n| {
+        let src = r#"var c = new Intl.Collator("en"), n = @N@, out = [];
 var p = "a\u0301".repeat(n);
 out.push(c.compare(p + "b", p + "c"), (p + "c").localeCompare(p + "b"), c.compare(p, p), c.compare(p + "b", p));
 var q = "q\u0301".repeat(n / 2), s = "a\u0316".repeat(n / 2);
 out.push(c.compare(q + "b", q + "c"), c.compare(s + "c", s + "b"));
 var cs = new Intl.Collator("cs"), h = "a\u0301".repeat(2000);
 out.push(cs.compare(h + "ach", h + "aci"), cs.compare(h + "ch", h + "h"), new Intl.Collator("en", {sensitivity: "base"}).compare(p + "B", p + "b"));
-print(out.join());"#,
-    );
-    assert_eq!(r, lines(&["-1,1,0,1,-1,1,1,1,0"]));
-    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+print(out.join());"#
+            .replace("@N@", &n.to_string());
+        assert_eq!(run(&src, false), lines(&["-1,1,0,1,-1,1,1,1,0"]), "{n}");
+    });
+    assert!(ratio < common::LINEAR, "growth {ratio:.2}");
 }
 
 /// The stream-safe step works on NFD and only on text whose NFD has a run of more than 30

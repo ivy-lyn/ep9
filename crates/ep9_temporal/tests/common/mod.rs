@@ -117,3 +117,44 @@ pub fn terminate_during(call: &str) -> Option<(bool, Option<String>, Option<Stri
         .expect("a thread");
     rx.recv_timeout(std::time::Duration::from_secs(60)).ok()
 }
+
+/// The best of 3 wall times of `work(big)` over the best of 3 wall times of `reps` runs of
+/// `work(small)`, the two in turn (so a change of the host load hits both).
+fn ratio(work: &mut impl FnMut(usize), small: usize, reps: usize, big: usize) -> f64 {
+    let (mut s, mut b) = (std::time::Duration::MAX, std::time::Duration::MAX);
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        for _ in 0..reps {
+            work(small);
+        }
+        s = s.min(t.elapsed());
+        let t = std::time::Instant::now();
+        work(big);
+        b = b.min(t.elapsed());
+    }
+    let r = b.as_secs_f64() / s.as_secs_f64().max(1e-6);
+    eprintln!("{small} x {reps} -> {big}: best {s:?} -> {b:?}: {r:.2}");
+    r
+}
+
+/// How the cost of `work` grows from the size `small` to the size `big` (a count of marks,
+/// subtags, years, ...): the wall time of one `work(big)` over the wall time of `big / small`
+/// (rounded down) runs of `work(small)`, each the best of 3. Under a linear cost the two take
+/// the same time, so a slow host, a debug build or a change of the host load hits both alike:
+/// the ratio is about 1, and about `big / small` for a cost of n^2. A test with
+/// `big = 4 * small` bounds it at [`LINEAR`]. (Codex r2 and M6-ORCH-226: an absolute
+/// wall-time bound failed on a slow CI runner in a debug build.)
+pub fn growth(small: usize, big: usize, mut work: impl FnMut(usize)) -> f64 {
+    ratio(&mut work, small, big / small, big)
+}
+
+/// The bound on [`growth`] for 4 times the size: twice the linear ratio (1) and half the
+/// ratio of a cost of n^2 (4).
+pub const LINEAR: f64 = 2.0;
+
+/// The wall time of `work(big)` over the wall time of `work(small)`, each the best of 3: about
+/// 1 when the cost does not depend on the size (both runs then take the same time, so the host
+/// speed and load hit both alike), and about `big / small` for a linear cost.
+pub fn size_ratio(small: usize, big: usize, mut work: impl FnMut(usize)) -> f64 {
+    ratio(&mut work, small, 1, big)
+}

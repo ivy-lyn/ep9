@@ -43,3 +43,35 @@ use ep9_vm::BuiltinModule;
 
 /// The Intl modules, in block order; `ep9_builtins::MODULES` lists them after its own.
 pub const MODULES: &[BuiltinModule] = &[intl::MODULE, locale::MODULE, collator::MODULE];
+
+/// Helpers of the unit tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    /// How the cost of `work` grows from the size `small` to the size `big`: the wall time of
+    /// one `work(big)` over the wall time of `big / small` runs of `work(small)`, each the best
+    /// of 3, the two in turn. Under a linear cost the two take the same time, so the host
+    /// speed, the build and a change of the host load hit both alike: about 1, and about
+    /// `big / small` for a cost of n^2 (the form of `growth` in `tests/common/mod.rs`; an
+    /// absolute wall-time bound failed on a slow CI runner, M6-ORCH-226).
+    pub fn growth(small: usize, big: usize, mut work: impl FnMut(usize)) -> f64 {
+        let reps = big / small;
+        let (mut s, mut b) = (std::time::Duration::MAX, std::time::Duration::MAX);
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            for _ in 0..reps {
+                work(small);
+            }
+            s = s.min(t.elapsed());
+            let t = std::time::Instant::now();
+            work(big);
+            b = b.min(t.elapsed());
+        }
+        let r = b.as_secs_f64() / s.as_secs_f64().max(1e-6);
+        eprintln!("growth {small} x {reps} -> {big}: best {s:?} -> {b:?}: {r:.2}");
+        r
+    }
+
+    /// The bound on [`growth`] for 4 times the size: twice the linear ratio (1) and half the
+    /// ratio of a cost of n^2 (4).
+    pub const LINEAR: f64 = 2.0;
+}

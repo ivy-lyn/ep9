@@ -338,10 +338,24 @@ fn month_day_from_string_reads_the_options_before_the_limits_error() {
 /// 2.2-3.4 s per call over 20,000 years in a release build, with no poll. The patch of
 /// third_party/patches/icu4x does a binary search over the same check: the same results (the
 /// lines are those of the unpatched code and of node 26), 29-91 ms per call in a release build.
-/// The 120 s bound covers a slow debug build (about 15 s; the unpatched code: minutes).
+/// The time check comes first: the growth of one chinese and one dangi `until` from 2,000 to
+/// 8,000 years ([`common::growth`]: O(years log years) gives about 1.1, the old O(years^2)
+/// about 4), not a wall time, so a slow host or a debug build does not change it
+/// (M6-ORCH-226).
 #[test]
 fn chinese_and_dangi_until_in_months_over_20000_years() {
-    let t = std::time::Instant::now();
+    let ratio = common::growth(2000, 8000, |years| {
+        let src = format!(
+            r#"var r = [];
+            for (var cal of ["chinese", "dangi"]) {{
+              var a = Temporal.PlainDate.from("2000-01-15").withCalendar(cal), b = Temporal.PlainDate.from({{ year: 2000 + {years}, month: 1, day: 1 }}).withCalendar(cal);
+              r.push(a.until(b, {{ largestUnit: "months" }}).months > 12 * {years});
+            }}
+            print(r.join());"#
+        );
+        assert_eq!(common::run(&src, false), lines(&["true,true"]), "{years}");
+    });
+    assert!(ratio < common::LINEAR, "growth {ratio:.2}");
     assert_eq!(
         common::run(
             r#"var a = Temporal.PlainDate.from("2000-01-15").withCalendar("chinese"), b = Temporal.PlainDate.from("+022000-06-20").withCalendar("chinese");
@@ -358,8 +372,6 @@ fn chinese_and_dangi_until_in_months_over_20000_years() {
             "P247370M26D",
         ])
     );
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_secs(120), "{took:?}");
 }
 
 /// The binary search gives the month count of the spec loop (NonISODateUntil steps 5-6): for
@@ -430,19 +442,29 @@ fn a_long_month_difference_ends_with_a_termination_pending() {
 /// The full Temporal range with largestUnit "months" (6,772,638 months), with a termination
 /// pending: icu_calendar has no poll, so the call must end on its own. With the binary search
 /// it ends after O(log(months)) checks (2.2-3.4 s in a release build); the unpatched loop ran
-/// for more than 120 s. The run is in release builds only: a debug build of icu_calendar takes
-/// several minutes for one call.
+/// for more than 120 s. The time check is the growth from a quarter of the range (136,895
+/// years) to the full range (547,581 years) ([`common::growth`]: about 1.1 for O(years log
+/// years); the old loop about 4), not a wall time (M6-ORCH-226). The run is in release
+/// builds only: a debug build of icu_calendar takes several minutes for one call.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release only (cargo test --release)")]
 fn the_full_range_month_difference_ends_with_a_termination_pending() {
-    for call in [
-        "new Temporal.PlainDate(-271821, 4, 19, 'chinese').until(new Temporal.PlainDate(275760, 9, 13, 'chinese'), { largestUnit: 'months' }).toString()",
-        "new Temporal.PlainDate(275760, 9, 13, 'dangi').since(new Temporal.PlainDate(-271821, 4, 19, 'dangi'), { largestUnit: 'months' }).toString()",
+    // The far end of each call is `years` away from its first date (547,581: the range).
+    for (call, far) in [
+        (
+            "new Temporal.PlainDate(-271821, 4, 19, 'chinese').until(new Temporal.PlainDate(@Y@, 9, 13, 'chinese'), { largestUnit: 'months' }).toString()",
+            (|years| -271_821 + years) as fn(i64) -> i64,
+        ),
+        (
+            "new Temporal.PlainDate(275760, 9, 13, 'dangi').since(new Temporal.PlainDate(@Y@, 4, 19, 'dangi'), { largestUnit: 'months' }).toString()",
+            |years| 275_760 - years,
+        ),
     ] {
-        let t = std::time::Instant::now();
-        let r = common::terminate_during(call);
-        let took = t.elapsed();
-        assert!(r.is_some(), "not done in 60 s: {call}");
-        assert!(took < std::time::Duration::from_secs(30), "{took:?}");
+        let ratio = common::growth(136_895, 547_581, |years| {
+            let call = call.replace("@Y@", &far(years as i64).to_string());
+            let r = common::terminate_during(&call);
+            assert!(r.is_some(), "not done in 60 s: {call}");
+        });
+        assert!(ratio < common::LINEAR, "growth {ratio:.2}: {call}");
     }
 }

@@ -677,25 +677,21 @@ mod tests {
         }
     }
 
-    /// The variant repeat check is a set: 100,000 variants (900 KB of tag) parse in linear
-    /// time, with and without a repeat at the end (Codex r1 CORE-3: the list scan was
-    /// O(n^2), 8.2 s for 100,000 variants in a release build, and it has no poll). The 5 s
-    /// bound is far above the linear time of a debug build and far below the old time.
+    /// The variant repeat check is a set: 12,500 and 50,000 variants parse in linear time,
+    /// with and without a repeat at the end (Codex r1 CORE-3: the list scan was O(n^2), 8.2 s
+    /// for 100,000 variants in a release build, and it has no poll). The check is the growth
+    /// of the time ([`crate::testing::growth`]: about 1 for a linear cost; the old scan about
+    /// 4), not a wall time (M6-ORCH-226).
     #[test]
     fn many_variants_parse_in_linear_time() {
-        let variants: Vec<String> = (0..100_000)
-            .map(|i| format!("v{}", 1_000_000 + i))
-            .collect();
-        let tag = format!("en-{}", variants.join("-"));
-        let repeat = format!("{tag}-v1000000");
-        let t = std::time::Instant::now();
-        assert_eq!(
-            parse_canonical(&tag).map(|p| p.variants.len()),
-            Some(100_000)
-        );
-        assert!(!is_structurally_valid_language_tag(&repeat));
-        let took = t.elapsed();
-        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+        let ratio = crate::testing::growth(12_500, 50_000, |n| {
+            let variants: Vec<String> = (0..n).map(|i| format!("v{}", 1_000_000 + i)).collect();
+            let tag = format!("en-{}", variants.join("-"));
+            let repeat = format!("{tag}-v1000000");
+            assert_eq!(parse_canonical(&tag).map(|p| p.variants.len()), Some(n));
+            assert!(!is_structurally_valid_language_tag(&repeat));
+        });
+        assert!(ratio < crate::testing::LINEAR, "growth {ratio:.2}");
     }
 
     /// node v26.13.0 `Intl.getCanonicalLocales` results.

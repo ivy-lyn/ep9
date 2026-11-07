@@ -67,28 +67,38 @@ print(f(() => Intl.getCanonicalLocales('en-' + 'x'.repeat(9))), f(() => Intl.get
 /// literal, so no JS runs before the call. The termination is requested before the script
 /// runs; the call must end at once with the RangeError (not terminated: no poll is needed).
 /// Before the limit the first call ran for about 30 s (debug build) inside ICU4X with the
-/// termination pending, and ended with no error.
+/// termination pending, and ended with no error. The time check is the growth from 40,000 to
+/// 160,000 subtags ([`common::growth`]: the limit check comes before any work that grows
+/// faster than the tag, so about 1; the ICU4X lists grow as n^2 past about 120,000 subtags),
+/// not a wall time (M6-ORCH-226).
 #[test]
 fn a_320k_subtag_tag_through_the_options_path_ends_at_once() {
+    let calls = |n: usize| {
+        let variants: Vec<String> = (0..n).map(|i| format!("a{i:06}")).collect();
+        let calendar = vec!["abcde"; n].join("-");
+        [
+            format!(
+                "new Intl.Locale('en', {{ variants: '{}' }})",
+                variants.join("-")
+            ),
+            format!("new Intl.Locale('en', {{ calendar: '{calendar}' }})"),
+            format!("Intl.getCanonicalLocales('en-u-ca-{calendar}')"),
+        ]
+    };
+    for which in 0..3 {
+        let ratio = common::growth(40_000, 160_000, |n| {
+            let call = &calls(n)[which];
+            assert_eq!(
+                common::terminate_during(call),
+                Some((false, Some("before".to_string()), Some("again".to_string()))),
+                "{}",
+                &call[..40]
+            );
+        });
+        assert!(ratio < common::LINEAR, "call {which}: growth {ratio:.2}");
+    }
     let variants: Vec<String> = (0..320_000).map(|i| format!("a{i:06}")).collect();
     let variants = variants.join("-");
-    let calendar = vec!["abcde"; 320_000].join("-");
-    for call in [
-        format!("new Intl.Locale('en', {{ variants: '{variants}' }})"),
-        format!("new Intl.Locale('en', {{ calendar: '{calendar}' }})"),
-        format!("Intl.getCanonicalLocales('en-u-ca-{calendar}')"),
-    ] {
-        let t = std::time::Instant::now();
-        assert_eq!(
-            common::terminate_during(&call),
-            Some((false, Some("before".to_string()), Some("again".to_string()))),
-            "{}",
-            &call[..40]
-        );
-        // Far above the time of a debug build (about 0.5 s), far below the old one.
-        let took = t.elapsed();
-        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
-    }
     let src = format!(
         "try {{ new Intl.Locale('en', {{ variants: '{variants}' }}); }} \
          catch (e) {{ print(e.constructor.name, e.message.includes('of 2560002 code units')); }}"

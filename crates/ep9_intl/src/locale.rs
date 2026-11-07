@@ -806,20 +806,20 @@ mod tests {
             .locale
     }
 
-    /// The variants option check is linear: 100,000 subtags of 8 characters (900 KB) with and
-    /// without a repeat at the end, under 5 s (Codex r1 LOCALE-1: the scan of the subtags
-    /// before each one was O(n^2), 27.8 s in a release build, with no poll).
+    /// The variants option check is linear: 12,500 and 50,000 subtags of 8 characters, with
+    /// and without a repeat at the end (Codex r1 LOCALE-1: the scan of the subtags before each
+    /// one was O(n^2), 27.8 s for 100,000 in a release build, with no poll). The check is the
+    /// growth of the time ([`crate::testing::growth`]: about 1 for a linear cost; the old
+    /// scan about 4), not a wall time (M6-ORCH-226).
     #[test]
     fn a_long_variants_option_is_checked_in_linear_time() {
-        let v: Vec<String> = (0..100_000)
-            .map(|i| format!("v{}", 1_000_000 + i))
-            .collect();
-        let option = v.join("-");
-        let t = std::time::Instant::now();
-        assert!(is_variants_option(&option));
-        assert!(!is_variants_option(&format!("{option}-V1000000")));
-        let took = t.elapsed();
-        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+        let ratio = crate::testing::growth(12_500, 50_000, |n| {
+            let v: Vec<String> = (0..n).map(|i| format!("v{}", 1_000_000 + i)).collect();
+            let option = v.join("-");
+            assert!(is_variants_option(&option));
+            assert!(!is_variants_option(&format!("{option}-V1000000")));
+        });
+        assert!(ratio < crate::testing::LINEAR, "growth {ratio:.2}");
         assert!(is_variants_option("fonipa-1996"));
         assert!(!is_variants_option("fonipa-FONIPA"));
         assert!(!is_variants_option(""));
