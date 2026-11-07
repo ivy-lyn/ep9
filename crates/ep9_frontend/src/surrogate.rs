@@ -31,9 +31,10 @@
 //! | S2 | Only the eval entry decodes ([`compile_eval`](crate::compile_eval); `compile_function_ctor` reaches it for the joined text). Scripts and modules from a host never hold a lone surrogate, so `compile`, `compile_script` and `compile_module` do not decode | A host text with U+FDD0 stays as it is |
 //! | S3 | The decoder is total: an ESC that does not start one of the 2 forms is a real U+FDD0. Two escaped surrogates that make a pair are that pair | Fuzz input and an old VM can give any text; the result is still deterministic |
 //! | S4 | The unit keeps the parse text as its source (U+FFFD for each lone surrogate). `Function.prototype.toString` of a function in such eval code gives U+FFFD there | `CompiledUnit::source` is a `String` (H05 A2); the VM side of 07 §7 ("toString reads the original string") is not built |
-//! | S5 | The placeholder is U+FDD1 repeated (m + 1) times, then the decimal index. m bounds the longest run of U+FDD1 in any string value, template value or regex pattern: the U+FDD1 characters of the text plus its `FDD1` hex digit groups (`mark_bound`) | No string of the unit can be equal to a placeholder, so the swap after BytecodeGen changes only the placeholder strings. A text bound needs no second AST walk (each walk is a new copy of the oxc visitor code) |
+//! | S5 | The placeholder is U+FDD1, a decimal number, U+FDD1 (`MARK n MARK`). If the text can give a value with U+FDD1 (a U+FDD1 of the text or an `FDD1` hex digit group, `may_hold_mark`), a first walk of the same visitor notes the number of each string value, template value and regex pattern of that form, and the numbers skip them. [2026-11-07, M7-P2 fixer r2a, Codex r1 FE-SHIM 2: before, the placeholder was U+FDD1 repeated once per U+FDD1 of the whole text, comments too, so K U+FDD1 and N placeholders took K * N work; now a placeholder has at most 22 characters, and `finish` swaps through one map.] | No string of the unit can be equal to a placeholder (BytecodeGen makes a unit string with U+FDD1 only from one of these values), so the swap after BytecodeGen changes only the placeholder strings. The first walk is the same `Patcher` type (no new copy of the oxc visitor code) and runs only when a value can hold U+FDD1 |
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use ep9_bytecode::{UnitString, VerifiedUnit};
@@ -55,7 +56,7 @@ use crate::bytecodegen::CodegenError;
 pub(crate) const ESC: char = '\u{FDD0}';
 
 /// The placeholder character (S5).
-const MARK: u16 = 0xFDD1;
+const MARK: char = '\u{FDD1}';
 
 /// The shim text of the WTF-16 string `units`: the text that the VM gives the compiler hooks
 /// `compile_eval` and `compile_function` (H05-Q3). A lone surrogate becomes U+FDD0 and its
@@ -325,13 +326,21 @@ impl Shim {
         if self.is_empty() {
             return Ok(());
         }
+        let note = may_hold_mark(text);
         let mut patcher = Patcher {
             shim: self,
             allocator,
             text,
-            mark: String::from_utf16_lossy(&vec![MARK; mark_bound(text) + 1]),
+            note,
+            taken: HashSet::new(),
+            next: 0,
             error: None,
         };
+        // S5: the numbers that a value of the placeholder form holds, then the patch walk.
+        if note {
+            patcher.visit_program(program);
+            patcher.note = false;
+        }
         patcher.visit_program(program);
         match patcher.error {
             Some(e) => Err(CodegenError::Internal(e)),
@@ -349,9 +358,14 @@ impl Shim {
         if self.swaps.is_empty() {
             return Ok(unit);
         }
+        let swaps: HashMap<UnitString, &[u16]> = self
+            .swaps
+            .iter()
+            .map(|(p, real)| (UnitString::new(p), real.as_slice()))
+            .collect();
         let mut unit = unit.into_inner();
         for s in &mut unit.strings {
-            if let Some((_, real)) = self.swaps.iter().find(|(p, _)| *s == UnitString::new(p)) {
+            if let Some(real) = swaps.get(s) {
                 *s = UnitString::from_utf16(real);
             }
         }
@@ -383,28 +397,48 @@ impl Shim {
     }
 }
 
-/// A bound on the longest run of U+FDD1 in any string value, template value or regex pattern
-/// of `text` (S5): each U+FDD1 of a value is a U+FDD1 of the text or a `\u` escape whose hex
-/// digits hold `FDD1` in any case (`\x` and octal escapes stay below U+0100). One text scan,
-/// so no second AST walk.
-fn mark_bound(text: &str) -> usize {
-    let raw = text
-        .chars()
-        .filter(|&c| u32::from(c) == u32::from(MARK))
-        .count();
-    let hex = text
-        .as_bytes()
-        .windows(4)
-        .filter(|w| w.eq_ignore_ascii_case(b"fdd1"))
-        .count();
-    raw + hex
+/// True if a string value, template value or regex pattern of `text` can hold U+FDD1 (S5):
+/// each U+FDD1 of a value is a U+FDD1 of the text or a `\u` escape whose hex digits hold
+/// `FDD1` in any case (`\x` and octal escapes stay below U+0100). One text scan.
+fn may_hold_mark(text: &str) -> bool {
+    text.contains(MARK)
+        || text
+            .as_bytes()
+            .windows(4)
+            .any(|w| w.eq_ignore_ascii_case(b"fdd1"))
+}
+
+/// The number `n` of a value of the placeholder form `MARK n MARK` (S5; the code units, as
+/// BytecodeGen makes the unit string), if it is one. A number above `u64::MAX` gives
+/// `u64::MAX` (no placeholder takes it).
+fn placeholder_number(mut units: impl Iterator<Item = u16>) -> Option<u64> {
+    let mark = MARK as u16;
+    if units.next() != Some(mark) {
+        return None;
+    }
+    let (mut n, mut digits) = (0u64, 0usize);
+    loop {
+        match units.next()? {
+            d @ 0x30..=0x39 => {
+                n = n.saturating_mul(10).saturating_add(u64::from(d - 0x30));
+                digits += 1;
+            }
+            u if u == mark && digits > 0 => return units.next().is_none().then_some(n),
+            _ => return None,
+        }
+    }
 }
 
 struct Patcher<'s, 'a, 't> {
     shim: &'s mut Shim,
     allocator: &'a Allocator,
     text: &'t str,
-    mark: String,
+    /// The first walk (S5): only note the numbers of the values of the placeholder form.
+    note: bool,
+    /// The numbers that the first walk noted; no placeholder takes them.
+    taken: HashSet<u64>,
+    /// The number of the next placeholder (before the skip of `taken`).
+    next: u64,
     error: Option<String>,
 }
 
@@ -413,9 +447,21 @@ impl<'a> Patcher<'_, 'a, '_> {
         !self.shim.within(span.start, span.end).is_empty()
     }
 
-    /// A new placeholder for the real code units `real`.
+    /// The first walk: note the number of the value `units` if it has the placeholder form.
+    fn note_value(&mut self, units: impl Iterator<Item = u16>) {
+        if let Some(n) = placeholder_number(units) {
+            self.taken.insert(n);
+        }
+    }
+
+    /// A new placeholder for the real code units `real`: `MARK n MARK`, with the next number
+    /// that no value holds (S5). Its length does not grow with the text.
     fn placeholder(&mut self, real: Vec<u16>) -> Str<'a> {
-        let p = format!("{}{}", self.mark, self.shim.swaps.len());
+        while self.taken.contains(&self.next) {
+            self.next += 1;
+        }
+        let p = format!("{MARK}{}{MARK}", self.next);
+        self.next += 1;
         let s = Str::from(self.allocator.alloc_str(&p));
         self.shim.swaps.push((p, real));
         s
@@ -423,6 +469,13 @@ impl<'a> Patcher<'_, 'a, '_> {
 
     /// Patch a template element: its cooked value, and for a tagged template its raw value.
     fn template_element(&mut self, it: &mut TemplateElement<'a>, tagged: bool) {
+        if self.note {
+            if let Some(cooked) = it.value.cooked {
+                self.note_value(cooked.encode_utf16());
+            }
+            self.note_value(it.value.raw.encode_utf16());
+            return;
+        }
         if !self.has_lone(it.span) {
             return;
         }
@@ -491,6 +544,10 @@ impl<'a> Patcher<'_, 'a, '_> {
 
 impl<'a> VisitMut<'a> for Patcher<'_, 'a, '_> {
     fn visit_string_literal(&mut self, it: &mut StringLiteral<'a>) {
+        if self.note {
+            self.note_value(it.value.encode_utf16());
+            return;
+        }
         if !self.has_lone(it.span) {
             return;
         }
@@ -523,6 +580,10 @@ impl<'a> VisitMut<'a> for Patcher<'_, 'a, '_> {
     }
 
     fn visit_reg_exp_literal(&mut self, it: &mut RegExpLiteral<'a>) {
+        if self.note {
+            self.note_value(it.regex.pattern.text.encode_utf16());
+            return;
+        }
         if !self.has_lone(it.span) {
             return;
         }

@@ -445,12 +445,90 @@ fn shim_real_fdd0_and_fdd1_strings_keep_their_value() {
     assert!(has_string(&u, &[P::T("\u{FDD1}0")]));
     assert!(has_string(&u, &[P::T("\u{FDD1}\u{FDD1}0")]));
     assert!(has_string(&u, &[P::U(0xD800)]));
-    let marks = u
-        .strings
+    assert_eq!(
+        placeholders_left(&u),
+        0,
+        "a placeholder is left in the unit"
+    );
+}
+
+/// The unit strings of the placeholder form U+FDD1, decimal digits, U+FDD1 (surrogate.rs S5).
+fn placeholders_left(unit: &ep9_bytecode::VerifiedUnit) -> usize {
+    unit.strings
         .iter()
-        .filter(|s| s.to_utf16().windows(3).any(|w| w == [0xFDD1; 3]))
-        .count();
-    assert_eq!(marks, 0, "a placeholder is left in the unit");
+        .filter(|s| {
+            let u = s.to_utf16();
+            u.len() > 2
+                && u[0] == 0xFDD1
+                && u[u.len() - 1] == 0xFDD1
+                && u[1..u.len() - 1]
+                    .iter()
+                    .all(|&c| (u16::from(b'0')..=u16::from(b'9')).contains(&c))
+        })
+        .count()
+}
+
+/// Values of the placeholder form keep their value next to placeholders, also when they come
+/// after the regex literal that needs a placeholder: the numbers skip them (surrogate.rs S5).
+#[test]
+fn shim_values_of_the_placeholder_form_keep_their_value() {
+    let u = eval_shim(&[
+        P::T("[/"),
+        P::U(0xD800),
+        P::T("/, /"),
+        P::U(0xDC00),
+        P::T("/, '\\uFDD10\\uFDD1', '\u{FDD1}1\u{FDD1}', `\\u{FDD1}2\\u{fdd1}`]"),
+    ])
+    .expect("compiles");
+    assert!(has_string(&u, &[P::U(0xD800)]));
+    assert!(has_string(&u, &[P::U(0xDC00)]));
+    for n in ["0", "1", "2"] {
+        assert!(
+            has_string(&u, &[P::T("\u{FDD1}"), P::T(n), P::T("\u{FDD1}")]),
+            "{n}"
+        );
+    }
+    assert_eq!(placeholders_left(&u), 3, "only the 3 values");
+}
+
+/// The placeholder work does not grow with the U+FDD1 of the text (Codex r1 FE-SHIM 2): K =
+/// 2,000 U+FDD1 in a comment and N = 2,000 regex literals with a lone surrogate. Before, each
+/// placeholder held K + 1 U+FDD1 and `finish` built a unit string per (unit string,
+/// placeholder) pair: about 95 s in a debug build. The wait of 20 s only stops a test that
+/// hangs.
+#[test]
+fn shim_placeholders_do_not_grow_with_the_text() {
+    const K: usize = 2000;
+    const N: usize = 2000;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut units: Vec<u16> = Vec::new();
+        units.extend("/*".encode_utf16());
+        units.extend(std::iter::repeat_n(0xFDD1, K));
+        units.extend("*/".encode_utf16());
+        for i in 0..N {
+            units.extend("/".encode_utf16());
+            units.push(0xD800);
+            units.extend(format!("{i}/;").encode_utf16());
+        }
+        let t0 = std::time::Instant::now();
+        let r = compile_eval(
+            &shim_text(&units),
+            &ep9_bytecode::EvalContext::default(),
+            CompileOptions::default(),
+        );
+        let _ = tx.send((r, t0.elapsed()));
+    });
+    let (r, took) = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the compile ends in 20 s");
+    let u = r.expect("compiles");
+    for i in [0, N / 2, N - 1] {
+        let i = i.to_string();
+        assert!(has_string(&u, &[P::U(0xD800), P::T(&i)]), "{i}");
+    }
+    assert_eq!(placeholders_left(&u), 0);
+    eprintln!("K = {K}, N = {N}: {took:?}");
 }
 
 /// The `Function` constructor reaches the shim through its joined text.
