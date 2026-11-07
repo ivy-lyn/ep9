@@ -131,11 +131,17 @@ fn owned(s: &[&str]) -> Vec<String> {
     s.iter().map(|t| (*t).to_string()).collect()
 }
 
-/// The engine limit on the length of a language tag, in code units (H23 "Size limits"): a
-/// longer tag is a RangeError ([`TagError::TooLong`]). No ECMA-402 text gives a limit; it
-/// bounds the time of the ICU4X steps, whose subtag lists grow by one reallocation per
-/// subtag (icu_locale_core `ShortBoxSlice`, O(n^2) past about 120,000 subtags). At this
-/// length the worst list takes about 67 ms; the longest test262 tag has 80 characters.
+/// The engine limit on the length of a language tag string that JS gives, in code units (H23
+/// "Language tag length"): a longer input tag is a RangeError ([`TagError::TooLong`]), and so
+/// is a longer value of one of the free-form Intl.Locale options (variants, calendar,
+/// collation, numberingSystem, firstDayOfWeek). No ECMA-402 text gives a limit; it bounds the
+/// time of the ICU4X steps, whose subtag lists grow by one reallocation per subtag
+/// (icu_locale_core `ShortBoxSlice`, O(n^2) past about 120,000 subtags). At this length the
+/// worst list takes about 67 ms; the longest test262 tag has 80 characters. A tag that the
+/// engine made from such inputs (an `[[Locale]]`, the tags of UpdateLanguageId and
+/// MakeLocaleRecord) is not checked again ([`canonicalize_made_tag`]): it can be a little
+/// longer (an alias value: "islamicc" -> "islamic-civil") or up to about 5 times longer
+/// (the options), and each of its subtag lists stays below the knee (Codex r2 F3).
 pub const MAX_TAG_LEN: usize = 65_536;
 
 /// Why a language tag gives a RangeError.
@@ -176,8 +182,9 @@ pub fn parse(tag: &str) -> Result<Parsed, TagError> {
     parse_grammar(tag).ok_or(TagError::Invalid)
 }
 
-/// [`parse`] with no length limit, for a tag that this crate made from a tag that passed
-/// [`parse`] (a canonical tag can be a little longer than its input: an alias value).
+/// [`parse`] with no length limit, for a tag that this crate made from inputs that passed the
+/// limit ([`MAX_TAG_LEN`]; a canonical tag can be longer than its input: an alias value, the
+/// Intl.Locale options).
 pub fn parse_canonical(tag: &str) -> Option<Parsed> {
     parse_grammar(tag)
 }
@@ -511,9 +518,22 @@ pub fn canonicalize_parsed(p: &Parsed) -> String {
     out
 }
 
-/// The canonical form of `tag` (6.2.2), or the [`TagError`] of [`parse`].
+/// The canonical form of `tag` (6.2.2), or the [`TagError`] of [`parse`]: for a tag string
+/// that JS gives (the limit applies).
 pub fn canonicalize_tag(tag: &str) -> Result<String, TagError> {
     parse(tag).map(|p| canonicalize_parsed(&p))
+}
+
+/// The canonical form of `tag`, a tag that the engine made (an Intl.Locale `[[Locale]]`, the
+/// new tag of UpdateLanguageId, MakeLocaleRecord or ResolveLocale), with no length limit
+/// ([`parse_canonical`]): the spec steps that take such a tag do not fail on it
+/// (MakeLocaleRecord returns a Record; maximize and minimize use `! Construct`), so the limit
+/// of the inputs must not reject it (Codex r2 F3). [`TagError::Invalid`] only if it is not
+/// structurally valid (not reached: the inputs were checked).
+pub fn canonicalize_made_tag(tag: &str) -> Result<String, TagError> {
+    parse_canonical(tag)
+        .map(|p| canonicalize_parsed(&p))
+        .ok_or(TagError::Invalid)
 }
 
 /// `tag` without its Unicode locale extension sequence (the `-u-...` part), as the
@@ -612,15 +632,21 @@ pub fn canonicalize_locale_list<'s>(cx: &mut Cx<'s>, locales: Local<'s>) -> JsRe
 }
 
 /// Steps 7.c.iii-vii of CanonicalizeLocaleList for one element `v` (a String or an Object):
-/// its tag, checked and canonicalized.
+/// its tag, checked and canonicalized. The `[[Locale]]` of an Intl.Locale is a tag that the
+/// engine made, so it has no length limit ([`canonicalize_made_tag`]); a String has it.
 fn element_tag<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<String> {
-    let tag = if cx.object_class(v) == Some(ObjectClass::IntlLocale) {
+    let (tag, made) = if cx.object_class(v) == Some(ObjectClass::IntlLocale) {
         let t = cx.slot(v, ObjectClass::IntlLocale, 0)?;
-        cx.to_rust_string(t)?
+        (cx.to_rust_string(t)?, true)
     } else {
-        cx.to_rust_string(v)?
+        (cx.to_rust_string(v)?, false)
     };
-    canonicalize_tag(&tag).map_err(|e| cx.throw_range_error(&e.message(&tag)))
+    let c = if made {
+        canonicalize_made_tag(&tag)
+    } else {
+        canonicalize_tag(&tag)
+    };
+    c.map_err(|e| cx.throw_range_error(&e.message(&tag)))
 }
 
 #[cfg(test)]

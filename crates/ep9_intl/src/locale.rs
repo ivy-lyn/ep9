@@ -33,7 +33,10 @@ use icu_locale_core::LanguageIdentifier;
 
 use crate::locale_info;
 use crate::options::{coerce_options_to_object, get_boolean_option, get_string_option};
-use crate::tag::{self, TagError, canonicalize_tag, canonicalize_unicode_value};
+use crate::tag::{
+    self, MAX_TAG_LEN, TagError, canonicalize_made_tag, canonicalize_tag,
+    canonicalize_unicode_value,
+};
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 30;
@@ -230,11 +233,22 @@ impl BaseName {
 
 /// The canonical form of the structurally valid tag `tag` with the case of its base name set
 /// (see [`BaseName::text`]), or the [`TagError`] of `tag::parse` (not structurally valid, or
-/// over the tag length limit).
+/// over the tag length limit): for a tag string that JS gives.
 pub fn canonical_locale(tag: &str) -> Result<String, TagError> {
-    let c = canonicalize_tag(tag)?;
-    let (base, rest) = BaseName::split(&c);
-    Ok(format!("{}{rest}", base.text()))
+    Ok(case_base_name(&canonicalize_tag(tag)?))
+}
+
+/// [`canonical_locale`] of a tag that the engine made (an `[[Locale]]`, the tags of
+/// UpdateLanguageId and MakeLocaleRecord), with no length limit
+/// (`tag::canonicalize_made_tag`; Codex r2 F3).
+pub fn canonical_made_locale(tag: &str) -> Result<String, TagError> {
+    Ok(case_base_name(&canonicalize_made_tag(tag)?))
+}
+
+/// The canonical tag `c` with the case of its base name set ([`BaseName::text`]).
+fn case_base_name(c: &str) -> String {
+    let (base, rest) = BaseName::split(c);
+    format!("{}{rest}", base.text())
 }
 
 /// Matches the `type` nonterminal of UTS 35 (`alphanum{3,8} (sep alphanum{3,8})*`).
@@ -292,8 +306,9 @@ pub struct LocaleRecord {
 /// MakeLocaleRecord ( tag, options, localeExtensionKeys ) (14.1.2) for the canonical tag
 /// `tag` and the option value of each key of [`KEYS`] (`None`: undefined), then the canonical
 /// form of the result (InsertUnicodeExtensionAndCanonicalize). An error if the result is not
-/// structurally valid (it does not happen for values that match the `type` nonterminal) or
-/// is over the tag length limit (a long option value).
+/// structurally valid (it does not happen for values that match the `type` nonterminal). The
+/// result tag has no length limit: the spec step returns a Record (no throw), and the option
+/// values were checked as inputs ([`limited_option`]).
 pub fn make_locale_record(
     tag: &str,
     options: &[Option<String>; 7],
@@ -337,7 +352,7 @@ pub fn make_locale_record(
             None => format!("{locale}{ext}"),
         };
     }
-    let locale = canonical_locale(&locale)?;
+    let locale = canonical_made_locale(&locale)?;
     // The canonical form can differ from the keywords above: ICU4X drops each "true" subtag
     // of a type value ("gregory-true" -> "gregory"; icu_locale_core extensions/unicode/
     // value.rs). So the value of each key comes from the canonical tag, and toString() and
@@ -471,6 +486,21 @@ fn option_error(cx: &mut Cx<'_>, property: &str, value: &str) -> ep9_vm::Throw {
     ))
 }
 
+/// The engine limit on a free-form Intl.Locale option value (variants, calendar, collation,
+/// numberingSystem, firstDayOfWeek): at most [`MAX_TAG_LEN`] code units, as an input tag
+/// (H23 "Language tag length"; Codex r2 F3). A longer value is a RangeError that names the
+/// limit, checked before its grammar. The other options are short by their grammar.
+fn limited_option(cx: &mut Cx<'_>, property: &str, value: &str) -> JsResult<()> {
+    let n = value.encode_utf16().count();
+    if n > MAX_TAG_LEN {
+        return Err(cx.throw_range_error(&format!(
+            "Value of {n} code units for Intl.Locale options property {property} is longer \
+             than the limit of {MAX_TAG_LEN}"
+        )));
+    }
+    Ok(())
+}
+
 /// Reads the string option `property` and checks it with `valid` (a RangeError if it does not
 /// match).
 fn subtag_option<'s>(
@@ -480,10 +510,16 @@ fn subtag_option<'s>(
     valid: fn(&str) -> bool,
 ) -> JsResult<Option<String>> {
     let v = get_string_option(cx, options, property, &[], None)?;
-    if let Some(s) = &v
-        && !valid(s)
-    {
-        return Err(option_error(cx, property, s));
+    if let Some(s) = &v {
+        if matches!(
+            property,
+            "variants" | "calendar" | "collation" | "numberingSystem"
+        ) {
+            limited_option(cx, property, s)?;
+        }
+        if !valid(s) {
+            return Err(option_error(cx, property, s));
+        }
     }
     Ok(v)
 }
@@ -501,7 +537,8 @@ fn is_variants_option(s: &str) -> bool {
 }
 
 /// UpdateLanguageId ( tag, options ) (14.1.3) on the canonical tag `tag`, then the canonical
-/// form of the new tag.
+/// form of the new tag. The new tag has no length limit (the step throws only on option
+/// values; the variants value was checked as an input).
 fn update_language_id<'s>(
     cx: &mut Cx<'s>,
     tag: &str,
@@ -529,7 +566,7 @@ fn update_language_id<'s>(
         },
     };
     let new_tag = format!("{}{extensions}", new_base.text());
-    canonical_locale(&new_tag).map_err(|e| cx.throw_range_error(&e.message(&new_tag)))
+    canonical_made_locale(&new_tag).map_err(|e| cx.throw_range_error(&e.message(&new_tag)))
 }
 
 /// A Unicode extension option (GetOption string, then the `type` check): calendar,
@@ -564,16 +601,22 @@ fn constructor<'s>(
         ));
     }
     // 8-9. An Intl.Locale gives its [[Locale]]; else ? ToString(tag).
-    let tag = if cx.object_class(tag) == Some(CLASS) {
+    let (tag, made) = if cx.object_class(tag) == Some(CLASS) {
         let t = cx.slot(tag, CLASS, SLOT_LOCALE)?;
-        cx.to_rust_string(t)?
+        (cx.to_rust_string(t)?, true)
     } else {
-        cx.to_rust_string(tag)?
+        (cx.to_rust_string(tag)?, false)
     };
     // 10. Set options to ? CoerceOptionsToObject(options).
     let options = coerce_options_to_object(cx, args.get(1))?;
-    // 11-12. IsStructurallyValidLanguageTag, CanonicalizeUnicodeLocaleId.
-    let tag = canonical_locale(&tag).map_err(|e| cx.throw_range_error(&e.message(&tag)))?;
+    // 11-12. IsStructurallyValidLanguageTag, CanonicalizeUnicodeLocaleId. The length limit is
+    //        on a String tag (an input); an [[Locale]] is a tag the engine made.
+    let canonical = if made {
+        canonical_made_locale(&tag)
+    } else {
+        canonical_locale(&tag)
+    };
+    let tag = canonical.map_err(|e| cx.throw_range_error(&e.message(&tag)))?;
     // 13. Set tag to ? UpdateLanguageId(tag, options).
     let tag = update_language_id(cx, &tag, options)?;
     // 14-33. The Unicode extension options, in KEYS order of reading:
@@ -584,6 +627,7 @@ fn constructor<'s>(
     opt[1] = type_option(cx, options, "collation")?;
     // firstDayOfWeek: WeekdayToString, then the type check.
     if let Some(fw) = get_string_option(cx, options, "firstDayOfWeek", &[], None)? {
+        limited_option(cx, "firstDayOfWeek", &fw)?;
         let fw = weekday_to_string(&fw);
         if !is_unicode_type(&fw) {
             return Err(option_error(cx, "firstDayOfWeek", &fw));

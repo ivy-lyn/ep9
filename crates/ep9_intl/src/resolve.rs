@@ -102,8 +102,8 @@ pub struct ResolvedLocale {
 /// ResolveLocale ( availableLocales, requestedLocales, options, relevantExtensionKeys,
 /// localeData ) (9.2.7). `options` holds the option value of each key that the constructor
 /// read (`None`: undefined). `locale_data(found_locale, key)` gives the key's data list,
-/// default first. A RangeError only if the result tag is over the tag length limit
-/// (`tag::MAX_TAG_LEN`; it does not happen: an available locale and supported values).
+/// default first. A RangeError only if the result tag is not structurally valid (it does not
+/// happen: an available locale and supported values).
 pub fn resolve_locale(
     cx: &mut Cx<'_>,
     requested: &[String],
@@ -175,8 +175,9 @@ pub fn resolve_locale(
 
 /// InsertUnicodeExtensionAndCanonicalize ( locale, attributes, keywords ) (6.2.3) with no
 /// attributes: `locale` (no Unicode extension) with `-u-<key>[-<value>]...` put before any
-/// private-use part, then canonicalized. The error of the canonicalization (a result over
-/// the tag length limit) is kept, not hidden.
+/// private-use part, then canonicalized. The tag is one that the engine made, so it has no
+/// length limit (`tag::canonicalize_made_tag`); the error of the canonicalization (not
+/// reached: the parts are valid) is kept, not hidden.
 pub fn insert_unicode_extension(
     locale: &str,
     keywords: &[(String, String)],
@@ -194,7 +195,7 @@ pub fn insert_unicode_extension(
         Some(i) => format!("{}{ext}{}", &locale[..i], &locale[i..]),
         None => format!("{locale}{ext}"),
     };
-    tag::canonicalize_tag(&joined)
+    tag::canonicalize_made_tag(&joined)
 }
 
 /// LookupSupportedLocales ( availableLocales, requestedLocales ) (9.2.8): the requested
