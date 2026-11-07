@@ -308,7 +308,7 @@ pub struct LocaleRecord {
 /// form of the result (InsertUnicodeExtensionAndCanonicalize). An error if the result is not
 /// structurally valid (it does not happen for values that match the `type` nonterminal). The
 /// result tag has no length limit: the spec step returns a Record (no throw), and the option
-/// values were checked as inputs ([`limited_option`]).
+/// values were checked as inputs (`limited_option`, private to this module).
 pub fn make_locale_record(
     tag: &str,
     options: &[Option<String>; 7],
