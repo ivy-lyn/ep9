@@ -19,7 +19,9 @@ use temporal_rs::PlainMonthDay;
 use temporal_rs::options::{DisplayCalendar, Overflow};
 use temporal_rs::partial::PartialDate;
 
-use crate::calendar::{self, constructor_calendar, get_calendar_with_iso_default, require_iso};
+use crate::calendar::{
+    self, constructor_calendar, get_calendar_with_iso_default, prepare_fields, string_calendar,
+};
 use crate::convert::{temporal_text, to_integer_with_truncation};
 use crate::error::OrThrow;
 use crate::fields::{self, is_partial_temporal_object};
@@ -151,11 +153,11 @@ pub(crate) fn create<'s>(
         None => cx.intrinsic(IntrinsicId::TemporalPlainMonthDayPrototype),
     };
     let o = cx.new_object_with_slots(proto, CLASS, SLOTS);
-    // iso8601 only (SPEC-T-D17): the month code M01..M12 gives the ISO month.
-    let month = md.month_code().to_month_integer();
-    cx.set_slot(o, CLASS, 0, Local::int32(md.reference_year()))?;
-    cx.set_slot(o, CLASS, 1, Local::int32(i32::from(month)))?;
-    cx.set_slot(o, CLASS, 2, Local::int32(i32::from(md.day())))?;
+    // The ISO date (`[[ISODate]]`: reference ISO year, ISO month, ISO day), not the calendar
+    // fields (calendar.rs).
+    cx.set_slot(o, CLASS, 0, Local::int32(md.iso.year))?;
+    cx.set_slot(o, CLASS, 1, Local::int32(i32::from(md.iso.month)))?;
+    cx.set_slot(o, CLASS, 2, Local::int32(i32::from(md.iso.day)))?;
     cx.set_slot(o, CLASS, 3, Local::int32(calendar::to_slot(md.calendar())))?;
     Ok(o.value())
 }
@@ -181,7 +183,7 @@ fn to_temporal_month_day<'s>(
         let cal = get_calendar_with_iso_default(cx, o)?;
         // c. Let fields be ? PrepareCalendarFields(calendar, item, « year, month, month-code,
         //    day », «», «»).
-        let bag = fields::read(cx, o, fields::DATE)?;
+        let bag = prepare_fields(cx, o, fields::DATE, &cal)?;
         // d-e. Let resolvedOptions be ? GetOptionsObject(options); overflow.
         let options = get_options_object(cx, options)?;
         let overflow = get_overflow(cx, options)?;
@@ -202,11 +204,11 @@ fn to_temporal_month_day<'s>(
     // 4-7. ParseISODateTime(item, « TemporalMonthDayString »); the calendar.
     let text = temporal_text(cx, s)?;
     let md = PlainMonthDay::from_utf8(text.as_bytes()).or_throw(cx)?;
-    require_iso(cx, md.calendar().clone())?;
+    string_calendar(cx, &text, Some(md.calendar()))?;
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
-    // 10-. iso8601: the reference year is 1972 (temporal_rs, above).
+    // 10-. The reference year: 1972 for iso8601, else the calendar's (temporal_rs, above).
     Ok(md)
 }
 
@@ -317,8 +319,8 @@ fn with<'s>(
     };
     // 6. Let partialMonthDay be ? PrepareCalendarFields(calendar, temporalMonthDayLike,
     //    « year, month, month-code, day », « », partial).
-    let bag = fields::read(cx, like, fields::DATE)?;
-    if !bag.any {
+    let bag = prepare_fields(cx, like, fields::DATE, md.calendar())?;
+    if !bag.any() {
         return Err(cx.throw_type_error("with() needs at least one date field"));
     }
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); overflow.
@@ -343,10 +345,7 @@ fn equals<'s>(
     let other = to_temporal_month_day(cx, args.get(0), Local::undefined())?;
     // 4-5. CompareISODate (with the reference years) = 0 and CalendarEquals.
     Ok(Local::boolean(
-        md.reference_year() == other.reference_year()
-            && md.month_code() == other.month_code()
-            && md.day() == other.day()
-            && md.calendar_id() == other.calendar_id(),
+        md.iso == other.iso && md.calendar_id() == other.calendar_id(),
     ))
 }
 
@@ -417,7 +416,7 @@ fn to_plain_date<'s>(
         return Err(cx.throw_type_error("toPlainDate() needs an object with a year"));
     };
     // 6. Let inputFields be ? PrepareCalendarFields(calendar, item, « year », « », « »).
-    let bag = fields::read(cx, item, fields::YEAR)?;
+    let bag = prepare_fields(cx, item, fields::YEAR, md.calendar())?;
     // 7-9. CalendarMergeFields; CalendarDateFromFields(calendar, mergedFields, constrain).
     let d = md.to_plain_date(Some(bag.calendar_fields())).or_throw(cx)?;
     plain_date::create(cx, &d, None)

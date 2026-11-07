@@ -52,7 +52,7 @@ fn errors_have_the_spec_types() {
             t(() => Temporal.PlainDateTime(2020, 1, 1));                   // no new
             t(() => new Temporal.PlainDateTime(2020, 1, 1, 24));           // hour out of range
             t(() => new Temporal.PlainDateTime(-271821, 4, 19));           // before the limits
-            t(() => new Temporal.PlainDateTime(2020, 1, 1, 0, 0, 0, 0, 0, 0, "gregory"));
+            t(() => new Temporal.PlainDateTime(2020, 1, 1, 0, 0, 0, 0, 0, 0, "islamic"));
             t(() => Temporal.PlainDateTime.from("2020-01-01T25:00"));      // bad string
             t(() => Temporal.PlainDateTime.from({ year: 2020, month: 1 })); // no day
             t(() => Temporal.PlainDateTime.from({ year: 2020, month: 1, day: 1, hour: -1 }, { overflow: "reject" }));

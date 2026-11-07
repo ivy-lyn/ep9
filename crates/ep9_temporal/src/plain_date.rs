@@ -24,8 +24,8 @@ use temporal_rs::parsed_intermediates::ParsedDate;
 use temporal_rs::partial::PartialDate;
 
 use crate::calendar::{
-    self, canonicalize_calendar, get_calendar_with_iso_default, parsed_string_calendar,
-    require_iso, to_temporal_calendar_identifier,
+    self, canonicalize_calendar, get_calendar_with_iso_default, prepare_fields, require_same,
+    string_calendar, to_temporal_calendar_identifier,
 };
 use crate::convert::{temporal_text, to_integer_with_truncation};
 use crate::duration::{create as create_duration, to_temporal_duration};
@@ -206,9 +206,11 @@ pub(crate) fn write_date_slots<'s>(
     base: usize,
     d: &PlainDate,
 ) -> JsResult<()> {
-    cx.set_slot(o, class, base, Local::int32(d.year()))?;
-    cx.set_slot(o, class, base + 1, Local::int32(i32::from(d.month())))?;
-    cx.set_slot(o, class, base + 2, Local::int32(i32::from(d.day())))?;
+    // The ISO date, not the calendar fields (calendar.rs).
+    let (y, m, day) = calendar::iso_of_date(d);
+    cx.set_slot(o, class, base, Local::int32(y))?;
+    cx.set_slot(o, class, base + 1, Local::int32(i32::from(m)))?;
+    cx.set_slot(o, class, base + 2, Local::int32(i32::from(day)))?;
     cx.set_slot(
         o,
         class,
@@ -275,7 +277,7 @@ pub(crate) fn to_temporal_date<'s>(
         let cal = get_calendar_with_iso_default(cx, o)?;
         // e. Let fields be ? PrepareCalendarFields(calendar, item, « year, month, month-code,
         //    day », «», «»).
-        let bag = fields::read(cx, o, fields::DATE)?;
+        let bag = prepare_fields(cx, o, fields::DATE, &cal)?;
         // f. Let resolvedOptions be ? GetOptionsObject(options).
         let options = get_options_object(cx, options)?;
         // g. Let overflow be ? GetTemporalOverflowOption(resolvedOptions).
@@ -300,13 +302,9 @@ pub(crate) fn to_temporal_date<'s>(
     let parsed = ParsedDate::from_utf8(text.as_bytes()).or_throw(cx)?;
     // 11. CreateTemporalDate (ISODateWithinLimits): built here, thrown after the options.
     let built = PlainDate::from_parsed(parsed);
-    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17), before the options. ParsedDate
-    //      hides its calendar, so a date out of the limits reads it from the string.
-    let cal = match &built {
-        Ok(d) => d.calendar().clone(),
-        Err(_) => parsed_string_calendar(cx, &text)?,
-    };
-    require_iso(cx, cal)?;
+    // 5-7. CanonicalizeCalendar (AvailableCalendars, calendar.rs), before the options.
+    //      ParsedDate hides its calendar, so a date out of the limits reads it from the string.
+    string_calendar(cx, &text, built.as_ref().ok().map(PlainDate::calendar))?;
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
@@ -619,8 +617,8 @@ fn with<'s>(
     };
     // 6. Let partialDate be ? PrepareCalendarFields(calendar, temporalDateLike, « year,
     //    month, month-code, day », « », partial).
-    let bag = fields::read(cx, like, fields::DATE)?;
-    if !bag.any {
+    let bag = prepare_fields(cx, like, fields::DATE, d.calendar())?;
+    if !bag.any() {
         return Err(cx.throw_type_error("with() needs at least one date field"));
     }
     // 8. Let resolvedOptions be ? GetOptionsObject(options).
@@ -656,7 +654,8 @@ fn difference<'s>(
     let d = read(cx, this)?;
     // 1. Set other to ? ToTemporalDate(other).
     let other = to_temporal_date(cx, args.get(0), Local::undefined())?;
-    // 2. If CalendarEquals(...) is false, throw a RangeError exception (always equal: iso8601).
+    // 2. If CalendarEquals(...) is false, throw a RangeError exception.
+    require_same(cx, d.calendar(), other.calendar())?;
     // 3. Let resolvedOptions be ? GetOptionsObject(options).
     let options = get_options_object(cx, args.get(1))?;
     // 4. Let settings be ? GetDifferenceSettings(operation, resolvedOptions, date, « », day, day).

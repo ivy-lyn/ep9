@@ -21,7 +21,8 @@ use temporal_rs::parsed_intermediates::ParsedDate;
 use temporal_rs::partial::PartialYearMonth;
 
 use crate::calendar::{
-    self, constructor_calendar, get_calendar_with_iso_default, parsed_string_calendar, require_iso,
+    self, constructor_calendar, get_calendar_with_iso_default, prepare_fields, require_same,
+    string_calendar,
 };
 use crate::convert::{temporal_text, to_integer_with_truncation};
 use crate::duration::{create as create_duration, to_temporal_duration};
@@ -179,10 +180,11 @@ pub(crate) fn create<'s>(
         None => cx.intrinsic(IntrinsicId::TemporalPlainYearMonthPrototype),
     };
     let o = cx.new_object_with_slots(proto, CLASS, SLOTS);
-    // iso8601 only (SPEC-T-D17): the calendar fields are the ISO fields.
-    cx.set_slot(o, CLASS, 0, Local::int32(ym.year()))?;
-    cx.set_slot(o, CLASS, 1, Local::int32(i32::from(ym.month())))?;
-    cx.set_slot(o, CLASS, 2, Local::int32(i32::from(ym.reference_day())))?;
+    // The ISO date (`[[ISODate]]`, calendar.rs), not the calendar fields.
+    let (y, m, d) = calendar::iso_of_year_month(ym);
+    cx.set_slot(o, CLASS, 0, Local::int32(y))?;
+    cx.set_slot(o, CLASS, 1, Local::int32(i32::from(m)))?;
+    cx.set_slot(o, CLASS, 2, Local::int32(i32::from(d)))?;
     cx.set_slot(o, CLASS, 3, Local::int32(calendar::to_slot(ym.calendar())))?;
     Ok(o.value())
 }
@@ -208,7 +210,7 @@ pub(crate) fn to_temporal_year_month<'s>(
         let cal = get_calendar_with_iso_default(cx, o)?;
         // c. Let fields be ? PrepareCalendarFields(calendar, item, « year, month,
         //    month-code », «», «»).
-        let bag = fields::read(cx, o, fields::YEAR_MONTH)?;
+        let bag = prepare_fields(cx, o, fields::YEAR_MONTH, &cal)?;
         // d-e. Let resolvedOptions be ? GetOptionsObject(options); overflow.
         let options = get_options_object(cx, options)?;
         let overflow = get_overflow(cx, options)?;
@@ -233,14 +235,10 @@ pub(crate) fn to_temporal_year_month<'s>(
     // 10-. ISOYearMonthWithinLimits; CalendarYearMonthFromFields (temporal_rs): built here,
     //      thrown after the options.
     let built = PlainYearMonth::from_parsed(parsed);
-    // 5-7. CanonicalizeCalendar: iso8601 only (SPEC-T-D17), before the options. ParsedDate
-    //      hides its calendar, so a year-month out of the limits reads it from the string
-    //      (as in ToTemporalDate).
-    let cal = match &built {
-        Ok(ym) => ym.calendar().clone(),
-        Err(_) => parsed_string_calendar(cx, &text)?,
-    };
-    require_iso(cx, cal)?;
+    // 5-7. CanonicalizeCalendar (AvailableCalendars, calendar.rs), before the options.
+    //      ParsedDate hides its calendar, so a year-month out of the limits reads it from the
+    //      string (as in ToTemporalDate).
+    string_calendar(cx, &text, built.as_ref().ok().map(PlainYearMonth::calendar))?;
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
@@ -411,8 +409,8 @@ fn with<'s>(
     };
     // 6. Let partialYearMonth be ? PrepareCalendarFields(calendar, temporalYearMonthLike,
     //    « year, month, month-code », « », partial).
-    let bag = fields::read(cx, like, fields::YEAR_MONTH)?;
-    if !bag.any {
+    let bag = prepare_fields(cx, like, fields::YEAR_MONTH, ym.calendar())?;
+    if !bag.any() {
         return Err(cx.throw_type_error("with() needs at least one year or month field"));
     }
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); overflow.
@@ -478,6 +476,8 @@ fn difference<'s>(
     let ym = read(cx, this)?;
     // 1. Set other to ? ToTemporalYearMonth(other).
     let other = to_temporal_year_month(cx, args.get(0), Local::undefined())?;
+    // 2. If CalendarEquals(...) is false, throw a RangeError exception.
+    require_same(cx, ym.calendar(), other.calendar())?;
     // 3-4. Let resolvedOptions be ? GetOptionsObject(options); GetDifferenceSettings(
     //      operation, resolvedOptions, date, « week, day », month, year).
     let options = get_options_object(cx, args.get(1))?;
