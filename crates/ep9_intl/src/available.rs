@@ -1060,4 +1060,24 @@ mod tests {
         // The ICU4X 2.3 data has 28 of the 78 systems (latn included).
         assert!(with_data >= 20, "{with_data}");
     }
+
+    /// The two tz sources can differ in version (INTL-I1 §4.4): every primary zone id of the
+    /// Temporal tz data (read through `ep9_temporal::tzdb::zone_ids`, no zoneinfo64 edge)
+    /// parses in the ICU4X `icu_time` IANA parser, except the ids in `NEWER` (zones of tzdb
+    /// 2026f that the ICU4X 2.3 data does not have yet; DateTimeFormat (W4) formats their
+    /// names with the offset form). A new id in either source fails this test.
+    #[test]
+    fn every_zone_id_parses_in_icu_time() {
+        use icu_time::TimeZone;
+        use icu_time::zone::IanaParser;
+        let parser = IanaParser::new();
+        let unknown: Vec<&str> = time_zones()
+            .iter()
+            .copied()
+            .filter(|id| parser.parse(id) == TimeZone::UNKNOWN)
+            .collect();
+        const NEWER: &[&str] = &["Asia/Hanoi"];
+        assert_eq!(unknown, NEWER);
+        assert!(time_zones().len() > 400, "{}", time_zones().len());
+    }
 }
