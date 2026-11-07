@@ -599,20 +599,35 @@ const LONG_PREFIX: usize = 1024;
 
 /// The ICU4X compare of the stream-safe forms of `x` and `y` ([`stream_safe`]).
 ///
-/// When the two forms share a prefix of more than [`LONG_PREFIX`] code units, it compares
-/// their sort keys (`write_sort_key_utf16_to`) instead. The identical-prefix step of the
-/// ICU4X 2.3 compare goes back from the first difference until it finds a safe boundary
-/// (two starters in a row, no contraction or prefix rule; icu_collator `comparison.rs`), one
-/// code point at a time with an `insert(0)` into its list, and then takes each element with
-/// a `remove(0)` (`elements.rs`): O(n^2) for a prefix with no such boundary ('a' + U+0301
-/// repeated 64k times: 17.5 s). A sort key is built with no identical-prefix step, so it is
-/// linear, and UTS #10 defines the order as the binary order of the sort keys (S3, S4): the
-/// same result (0 differences against `compare_utf16` on 220,000 random pairs, 11 locales,
-/// 5 option sets). The keys are Rust vectors that live only in this call (no GC slot).
+/// It compares their sort keys (`write_sort_key_utf16_to`) instead in two cases. UTS #10
+/// defines the order as the binary order of the sort keys (S3, S4), and a sort key is built
+/// with no identical-prefix step:
+///
+/// - The two forms share a prefix of more than [`LONG_PREFIX`] code units. The
+///   identical-prefix step of the ICU4X 2.3 compare goes back from the first difference until
+///   it finds a safe boundary (two starters in a row, no contraction or prefix rule;
+///   icu_collator `comparison.rs`), one code point at a time with an `insert(0)` into its
+///   list, and then takes each element with a `remove(0)` (`elements.rs`): O(n^2) for a
+///   prefix with no such boundary ('a' + U+0301 repeated 64k times: 17.5 s). The sort keys
+///   are linear. With non-ignorable variables the two give the same result (0 differences on
+///   220,000 random pairs, 11 locales, 5 option sets).
+/// - The collator is shifted (`ignorePunctuation`: alternate handling Shifted) and the two
+///   forms share a prefix at all (Codex r2 F1). The boundary of the identical-prefix step can
+///   be after a variable ('-' U+034F: two starters), so the compare does not see that the
+///   ignorables right after it follow a variable, and gives them weight: '-' U+034F 'a' is
+///   less than '-' U+034F U+0301 'a' at sensitivity accent. UTS #10 section 4 (Shifted) sets
+///   those ignorables to zero: the two are equal, as their sort keys say (and the ICU4C sort
+///   keys). Without this the result changed with the prefix length (a long common prefix
+///   took the sort keys), and the order was not consistent: a = b, b = c, a > c (ECMA-262
+///   `localeCompare` asks for a total order). With no common prefix there is no
+///   identical-prefix step, and `compare_utf16` equals the sort keys.
+///
+/// The keys are Rust vectors that live only in this call (no GC slot).
 fn icu_compare(c: &CollatorBorrowed<'static>, x: &[u16], y: &[u16]) -> Ordering {
     let (x, y) = (stream_safe(x), stream_safe(y));
     let prefix = x.iter().zip(y.iter()).take_while(|(a, b)| a == b).count();
-    if prefix <= LONG_PREFIX {
+    let shifted = c.resolved_options().alternate_handling == AlternateHandling::Shifted;
+    if prefix <= LONG_PREFIX && !(shifted && prefix > 0) {
         return c.compare_utf16(&x, &y);
     }
     if prefix == x.len() && prefix == y.len() {
@@ -966,6 +981,191 @@ mod tests {
             diffs.len()
         );
         assert!(pairs >= 20_000);
+        assert!(
+            diffs.is_empty(),
+            "{} differences: {:?}",
+            diffs.len(),
+            &diffs[..diffs.len().min(5)]
+        );
+    }
+
+    /// UTF-16 of `s`.
+    fn u16s(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    /// The sign of the sort-key order of the stream-safe forms of `x` and `y` (the UTS #10
+    /// order, S3 and S4) with the "en" collator of `p`.
+    fn key_order(p: Packed, x: &[u16], y: &[u16]) -> Ordering {
+        let c = collator_for("en", p).unwrap();
+        sort_key(&c, &stream_safe(x)).cmp(&sort_key(&c, &stream_safe(y)))
+    }
+
+    /// `x` and `y` with 1,025 'b' in front of each (a common prefix past [`LONG_PREFIX`]).
+    fn long(x: &[u16]) -> Vec<u16> {
+        let mut v = u16s(&"b".repeat(1025));
+        v.extend_from_slice(x);
+        v
+    }
+
+    /// Codex r2 F1: with `ignorePunctuation` (shifted), '-' U+034F 'a' and '-' U+034F U+0301 'a'
+    /// are equal by UTS #10 section 4 (the ignorables right after a variable get zero weight),
+    /// and so by their sort keys, at each sensitivity and with numeric. The old compare path
+    /// gave -1 at accent, variant and numeric for the short pair and 0 for the long one (the
+    /// sort keys). node v26.13.0 (ICU4C `ucol_strcoll`) gives -1 at both lengths: its
+    /// identical-prefix step has the same back-up as ICU4X, and its own sort keys give 0 (the
+    /// verifier's C probe), so node is not a total order there (see
+    /// `shifted_compare_is_a_total_order`). ep9 follows UTS #10 and the sort keys. Without
+    /// `ignorePunctuation` (control) the pair is -1 (base and case 0) at both lengths.
+    #[test]
+    fn shifted_compare_with_a_common_prefix_follows_the_sort_keys() {
+        let x = u16s("-\u{34f}a");
+        let y = u16s("-\u{34f}\u{301}a");
+        // (sensitivity index: base, accent, case, variant; numeric)
+        for (s, numeric) in [(0, false), (1, false), (2, false), (3, false), (3, true)] {
+            let shifted = Packed::new(false, s, true, numeric, 0, 0);
+            let short = compare_strings("en", shifted, &x, &y);
+            let long_ = compare_strings("en", shifted, &long(&x), &long(&y));
+            assert_eq!(short, Ordering::Equal, "shifted {s} {numeric}");
+            assert_eq!(long_, Ordering::Equal, "shifted long {s} {numeric}");
+            assert_eq!(key_order(shifted, &x, &y), Ordering::Equal);
+            let plain = Packed::new(false, s, false, numeric, 0, 0);
+            let want = if s == 0 || s == 2 {
+                Ordering::Equal
+            } else {
+                Ordering::Less
+            };
+            assert_eq!(compare_strings("en", plain, &x, &y), want, "plain {s}");
+            assert_eq!(
+                compare_strings("en", plain, &long(&x), &long(&y)),
+                want,
+                "plain long {s}"
+            );
+        }
+    }
+
+    /// Codex r2 F1, the stream-safe case (43357dea): '-' + 31 U+0301 + 'a' and '-' + 32
+    /// U+0301 + 'a' (shifted, variant). The stream-safe form puts CGJ CGJ after 30 marks, and
+    /// two CGJs are a safe boundary for the identical-prefix step inside a run that follows a
+    /// variable: the old short path gave -1. By UTS #10 (and the sort keys) every mark after
+    /// the '-' has zero weight: 0 at both lengths, as for 28 to 30 marks. node gives 0.
+    #[test]
+    fn shifted_compare_of_a_long_run_after_a_variable() {
+        let p = Packed::new(false, 3, true, false, 0, 0);
+        for n in [28, 30, 31, 40] {
+            let x = u16s(&format!("-{}a", "\u{301}".repeat(n)));
+            let y = u16s(&format!("-{}a", "\u{301}".repeat(n + 1)));
+            assert_eq!(compare_strings("en", p, &x, &y), Ordering::Equal, "{n}");
+            assert_eq!(
+                compare_strings("en", p, &long(&x), &long(&y)),
+                Ordering::Equal,
+                "long {n}"
+            );
+        }
+    }
+
+    /// Codex r2 F1: a = '-' U+034F U+0301 'a', b = '_' U+034F 'a', c = '-' U+034F 'a' (shifted,
+    /// variant). The old compare gave a = b, b = c and a > c, which is not a consistent
+    /// comparator (ECMA-262 `localeCompare`: "a total ordering on the set of all Strings").
+    /// Now all three are equal (UTS #10). node gives 0, 0, 1 (its compare has the old back-up).
+    #[test]
+    fn shifted_compare_is_a_total_order() {
+        let p = Packed::new(false, 3, true, false, 0, 0);
+        let (a, b, c) = (
+            u16s("-\u{34f}\u{301}a"),
+            u16s("_\u{34f}a"),
+            u16s("-\u{34f}a"),
+        );
+        let r = [
+            compare_strings("en", p, &a, &b),
+            compare_strings("en", p, &b, &c),
+            compare_strings("en", p, &a, &c),
+        ];
+        assert_eq!(r, [Ordering::Equal; 3]);
+    }
+
+    /// The verifier's deterministic set of Codex r2 F1 (gen.js: xorshift32, seed 0x9E3779B9;
+    /// 17 symbols: variables, CGJ, U+0000, U+00AD, accents, letters, digits; a shared prefix of
+    /// 0-3 symbols; a third of the pairs are x with one symbol put in): 20,000 pairs, "en",
+    /// sensitivity base, accent, case, variant and numeric, each with and without
+    /// `ignorePunctuation`. On each pair the short path and the sort-key order give the same
+    /// sign, and so does the long path (1,025 'b' in front) on every 20th pair (on every pair
+    /// with `EP9_VERIFIER_SET_ALL=1`: the evidence run of the INTL W1 fixer r4; a debug build
+    /// makes two sort keys of 1,030 code units per long pair): 0 differences. The old code had 37 pairs per
+    /// shifted accent, variant and numeric set where the short path differed from the sort
+    /// keys. node v26.13.0 differs from the sort keys (UTS #10) on 45 pairs of each of those
+    /// sets, at both lengths: each has a variable, then ignorables, then an accent, in the
+    /// shared prefix, where ICU4C `ucol_strcoll` has the same identical-prefix back-up (not a
+    /// total order there; the ICU4C sort keys agree with ep9). The set is the one node made
+    /// (a hash of its 20,000 pairs).
+    #[test]
+    fn short_and_long_paths_agree_on_the_verifier_set() {
+        const SYMBOLS: [u16; 17] = [
+            0x2D, 0x20, 0x5F, 0x2E, 0x34F, 0x301, 0x316, 0x61, 0x62, 0x41, 0x31, 0x32, 0xE9, 0xAD,
+            0x63, 0x68, 0x00,
+        ];
+        let mut st: u32 = 0x9E37_79B9;
+        let mut rnd = |n: usize| {
+            st ^= st << 13;
+            st ^= st >> 17;
+            st ^= st << 5;
+            (st % n as u32) as usize
+        };
+        fn word(n: usize, rnd: &mut impl FnMut(usize) -> usize) -> Vec<u16> {
+            (0..n).map(|_| SYMBOLS[rnd(SYMBOLS.len())]).collect()
+        }
+        let mut pairs: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+        for _ in 0..20_000 {
+            let n = rnd(4);
+            let pre = word(n, &mut rnd);
+            let n = 1 + rnd(5);
+            let x = [&pre[..], &word(n, &mut rnd)].concat();
+            let n = 1 + rnd(5);
+            let mut y = [&pre[..], &word(n, &mut rnd)].concat();
+            if rnd(3) == 0 {
+                let k = rnd(x.len() + 1);
+                y = [&x[..k], &[SYMBOLS[rnd(SYMBOLS.len())]], &x[k..]].concat();
+            }
+            pairs.push((x, y));
+        }
+        // FNV-1a over the code units, 0xFFFF after each string: the node dump's value.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for (x, y) in &pairs {
+            for w in [x, y] {
+                for &u in w.iter().chain(&[0xFFFF]) {
+                    h ^= u64::from(u);
+                    h = h.wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        }
+        assert_eq!(h, 0x020d_7695_a8f2_4297, "not the verifier's set");
+        let every = if std::env::var_os("EP9_VERIFIER_SET_ALL").is_some() {
+            1
+        } else {
+            20
+        };
+        let (mut diffs, mut longs) = (Vec::new(), 0usize);
+        for shifted in [true, false] {
+            for (s, numeric) in [(0, false), (1, false), (2, false), (3, false), (3, true)] {
+                let p = Packed::new(false, s, shifted, numeric, 0, 0);
+                for (i, (x, y)) in pairs.iter().enumerate() {
+                    let short = compare_strings("en", p, x, y);
+                    let mut bad = short != key_order(p, x, y);
+                    if i % every == 0 {
+                        bad |= short != compare_strings("en", p, &long(x), &long(y));
+                        longs += 1;
+                    }
+                    if bad {
+                        diffs.push(format!("{shifted} {s} {numeric} {x:04x?} {y:04x?}"));
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "verifier set: {} pairs x 10 sets, {longs} long pairs, {} differences",
+            pairs.len(),
+            diffs.len()
+        );
         assert!(
             diffs.is_empty(),
             "{} differences: {:?}",
