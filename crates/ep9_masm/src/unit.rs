@@ -305,7 +305,7 @@ impl fmt::Display for Finding {
 /// | each field is one instruction word: a 4-byte aligned offset with `insn = at` (else [`Finding::MisalignedField`], and no other rule reads it) | yes | - |
 /// | no field is absolute ([`Form::Abs64`]) | yes | yes |
 /// | each pc-relative field reaches a byte of this function's text | yes | yes |
-/// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field. The check trusts `insn`: [`crate::Assembler::x64`] records a chunk start only at a known instruction boundary (else `insn = at`, which fails this rule), but a record made by hand with a false `insn` is not found | - | yes |
+/// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field. The check trusts `insn`: [`crate::Assembler::x64`] records a chunk start only at a known instruction boundary (else `insn = at`, which fails this rule), but a record made by hand with a false `insn` is not found, and a boundary that a later field write changed is not found (the boundary is set from the bytes as emitted) | - | yes |
 /// | no `adrp`, no `bl` | yes | - |
 /// | each `b`, `b.cond`, `cbz`/`cbnz`, `tbz`/`tbnz`, `adr` and `ldr` (literal) word reaches a byte of this function's text, with or without a field | yes | - |
 ///
@@ -313,7 +313,8 @@ impl fmt::Display for Finding {
 /// checked too (the spike-b `unit/scan.rs` rules). x86-64 has no linear decoder of the whole
 /// text here, as in the spike: its text gets the field rules (one instruction decoded per
 /// disp32 field, from the record's start), and [`UnitEnv`] gives no address to write. A
-/// decode of the whole text that needs no record is route UNIT-X64-DECODE.
+/// decode of the whole final text (after all field writes) that needs no record is route
+/// UNIT-X64-DECODE.
 pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let len = text.len() as i64;
     let inside = |t: i64| (0..len).contains(&t);
@@ -455,7 +456,8 @@ pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Fi
 /// [`check_text`] and [`check_register_loads`] of a finished unit: empty for every
 /// [`UnitCode`] (`finalize_unit` checks its output), so a test can state the rules on each
 /// unit it emits. It reads the fields that `finalize_unit` took, with the same `insn`: it
-/// has the same trust in the record as [`check_text`].
+/// has the same trust in the record as [`check_text`]: a false `insn`, or a boundary that a
+/// later field write changed, is not found.
 pub fn zero_text_relocations(code: &UnitCode) -> Result<(), Vec<Finding>> {
     let mut v = check_text(code.arch, &code.text, &code.fields);
     v.extend(check_register_loads(code.arch, &code.text, &code.fields));

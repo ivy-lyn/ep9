@@ -354,7 +354,8 @@ pub struct Assembler {
     relocs: Vec<Reloc>,
     labels: Vec<Option<u32>>,
     /// x86-64: the end of the last chunk that is one whole known instruction and that starts
-    /// at a known boundary (0 = the text start). Only [`Assembler::x64`] reads it.
+    /// at a known boundary (0 = the text start). Only [`Assembler::x64`] reads it. It is set
+    /// from the bytes as emitted: a later field write into those bytes does not change it.
     x64_end: u32,
 }
 
@@ -386,7 +387,8 @@ impl Assembler {
     /// [`Assembler::x64`] only if the chunk starts at a known boundary and is exactly one of
     /// `nop` (90), `ret` (c3), `call reg` (ff d0-d7, 41 ff d0-d7) or `jmp reg` (ff e0-e7,
     /// 41 ff e0-e7). The stream has no decoder for other bytes, so after any other chunk the
-    /// boundary is not known.
+    /// boundary is not known. The boundary is set from the bytes as written here: a later
+    /// field write into them ([`Assembler::reloc`]) is not found (route UNIT-X64-DECODE).
     pub fn put(&mut self, bytes: &[u8]) {
         let whole = self.offset() == self.x64_end && x64_plain(bytes);
         self.text.extend_from_slice(bytes);
@@ -466,7 +468,11 @@ impl Assembler {
     /// load that the unit check decodes, with the field at its end; or a [`Assembler::put`]
     /// chunk of the list there). Otherwise the record has `insn = at`, and the unit check
     /// refuses an `X64Disp32` field recorded so: a prefix or a partial instruction from `put`
-    /// cannot become part of a unit load.
+    /// cannot become part of a unit load. The boundary is set from the bytes as emitted: a
+    /// later field write into the bytes of a chunk that set it is not found (for example an
+    /// `X64Rel32` field from [`Assembler::reloc`] over 4 `put` `nop` bytes gives `b8 imm32`,
+    /// and that instruction takes the REX byte of the next load). A decode of the final text
+    /// after all field writes is route UNIT-X64-DECODE.
     pub fn x64(
         &mut self,
         bytes: &[u8],
