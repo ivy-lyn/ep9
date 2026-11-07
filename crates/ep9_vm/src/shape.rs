@@ -1714,7 +1714,7 @@ pub(crate) fn with_elements_kind(rt: &Runtime, shape: u64, ek: u8) -> Option<u64
 /// elements kind is dense (0-5), beside the elements-kind lattice. NONEXTENSIBLE is
 /// [`flag::EXTENSIBLE`] clear, the level below them; the levels are one-way, in the order
 /// NONEXTENSIBLE, SEALED, FROZEN. The bits sit only on a dictionary shape (OM-10: a
-/// non-extensible object is in dictionary mode; [`check`] asserts it). Every shape made from
+/// non-extensible object is in dictionary mode; `check` asserts it in tests). Every shape made from
 /// a level shape keeps them ([`dictionary_shape_of`], [`with_proto`], [`with_elements_kind`],
 /// [`proto_info_for`], one shared dictionary shape per flags), except a move to DICTIONARY
 /// elements (`elements::to_dictionary` writes the level into each entry).
