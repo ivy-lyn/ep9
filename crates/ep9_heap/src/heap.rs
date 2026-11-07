@@ -16,7 +16,8 @@
 //!   (the spaces share max_heap_bytes), retry once with no second GC; still none: the
 //!   near_limit callback (H23), and if it raised the limit, retry once; then OutOfMemory
 //! every new cell: word0 = {shape 0, WHITE, kind, flags 0}; every other word = undefined;
-//!                 VO bit set (small pages)
+//!                 VO bit set (small pages). A main-TLAB cell writes only word0 and the VO
+//!                 bit: each hole is filled with undefined when the TLAB takes it (GCPAR3)
 //!
 //! collect(): spill registers (ep9_platform) -> retire TLABs and the shape hole -> finish the
 //!   last lazy or concurrent sweep (the sweeper thread never runs during a GC)
@@ -305,6 +306,17 @@ const _: () = {
 /// survival again after at most 4 major GCs. (est. 3: measured on splay, which skips 1.)
 const MAX_PROBE_SKIPS: u32 = 3;
 
+/// Where [`Inner::alloc_in`] placed a cell.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Place {
+    /// The main TLAB: the hole is already filled with `undefined`.
+    Tlab,
+    /// The overflow TLAB of a small page (a cell larger than one line).
+    Overflow,
+    /// A new large object.
+    Large,
+}
+
 /// `kind_sizes` entry of a kind byte with no registration.
 const NOT_REGISTERED: usize = 0;
 /// `kind_sizes` entry of a kind with a dynamic size. Not a multiple of 8, so no rounded size
@@ -462,7 +474,7 @@ pub(crate) struct Inner {
     #[cfg(not(miri))]
     stack: ep9_platform::StackBounds,
     /// End of the main TLAB's hole (`Hot::limit` mirrors it unless GC-stress is on).
-    tlab_end: usize,
+    pub(crate) tlab_end: usize,
     cur_page: Option<usize>,
     cur_line: usize,
     recyclable: Vec<usize>,
@@ -688,8 +700,8 @@ impl Heap {
             if end <= self.hot.limit.get() && end > cur {
                 self.hot.cursor.set(end);
                 // SAFETY: [cur, end) lies in the current TLAB hole: committed, inside a small
-                // page, holding no cell.
-                return Ok(unsafe { self.init_cell(cur, kind, size, true) });
+                // page, holding no cell, and filled with `undefined` (`Inner::alloc_in`).
+                return Ok(unsafe { self.init_tlab_cell(cur, kind) });
             }
         }
         self.alloc_slow(kind, size)
@@ -804,9 +816,15 @@ impl Heap {
         loop {
             let placed = self.inner.borrow_mut().alloc_in(&self.hot, size);
             match placed {
-                Some((addr, small)) => {
+                Some((addr, Place::Tlab)) => {
+                    // SAFETY: `alloc_in` returned free, committed memory of the main TLAB for
+                    // a cell of `size`, already filled with `undefined`.
+                    return Ok(unsafe { self.init_tlab_cell(addr, kind) });
+                }
+                Some((addr, place)) => {
+                    let small = place == Place::Overflow;
                     // SAFETY: `alloc_in` returned free, committed memory of this heap for a
-                    // cell of `size`: a TLAB hole of a small page, or a new LOS cell area.
+                    // cell of `size`: the overflow TLAB of a small page, or a new LOS cell area.
                     return Ok(unsafe { self.init_cell(addr, kind, size, small) });
                 }
                 None if !collected => {
@@ -867,6 +885,32 @@ impl Heap {
     /// [`HeapConfig::near_limit`] callback raised it to.
     pub fn max_heap_bytes(&self) -> usize {
         self.inner.borrow().mem.max_committed()
+    }
+
+    /// Writes word0 and sets the VO bit of a cell in the main TLAB. The other words already
+    /// hold `undefined`: `Inner::alloc_in` fills each TLAB hole when it takes it (GCPAR3).
+    ///
+    /// # Safety
+    /// `addr` is the start of a cell in the main TLAB hole: committed memory of a small page
+    /// that holds no cell, and every word of the cell holds `undefined`.
+    #[inline(always)]
+    unsafe fn init_tlab_cell(&self, addr: usize, kind: KindId) -> CellPtr {
+        // SAFETY: `addr` is inside the reservation (caller contract), so the offset is in
+        // bounds of the provenance of `base`.
+        let p = unsafe { self.base.add(addr - self.hot.cage_base) };
+        // SAFETY: the caller guarantees an unused, committed, 8-aligned cell. No reference to
+        // it exists yet; the GC reads it only after the VO bit is set below.
+        unsafe {
+            p.cast::<Word0>()
+                .write(Word0::new(ShapeId::new(0), gc_state::WHITE, kind.get(), 0));
+        }
+        // SAFETY: a TLAB cell lies in a committed small page; its base is the address masked
+        // to 256 KiB, inside the reservation.
+        let page =
+            unsafe { Page::from_base(self.base.add((addr & PAGE_MASK) - self.hot.cage_base)) };
+        page.set_vo(addr);
+        // SAFETY: a new cell of this heap starts at `p`.
+        unsafe { CellPtr::from_raw(p.cast()) }
     }
 
     /// Writes word0, pre-fills the other words with `undefined`, and sets the VO bit.
@@ -1448,15 +1492,15 @@ impl Inner {
         });
     }
 
-    /// Finds memory for a cell of `size` (already rounded). Returns (address, small).
-    fn alloc_in(&mut self, hot: &Hot, size: usize) -> Option<(usize, bool)> {
+    /// Finds memory for a cell of `size` (already rounded). Returns its address and place.
+    fn alloc_in(&mut self, hot: &Hot, size: usize) -> Option<(usize, Place)> {
         if size > MAX_SMALL_SIZE {
-            return self.alloc_large(size).map(|a| (a, false));
+            return self.alloc_large(size).map(|a| (a, Place::Large));
         }
         let cur = hot.cursor.get();
         if cur != 0 && cur + size <= self.tlab_end {
             hot.cursor.set(cur + size);
-            return Some((cur, true));
+            return Some((cur, Place::Tlab));
         }
         if size > MAX_LINE_CELL {
             if self.ov_cursor == 0 || self.ov_cursor + size > self.ov_end {
@@ -1474,15 +1518,28 @@ impl Inner {
             }
             let a = self.ov_cursor;
             self.ov_cursor += size;
-            return Some((a, true));
+            return Some((a, Place::Overflow));
         }
         let (start, end) = self.next_hole()?;
         self.note_allocated(end - start);
         debug_assert!(end - start >= LINE_SIZE && size <= LINE_SIZE);
+        // The allocation fast path (GCPAR3): fill the whole hole with `undefined` once, so a
+        // TLAB cell needs only its word0 and VO bit. One long fill is cheaper than one short
+        // fill per cell (on macOS each short fill was a `memset_pattern16` call). The hole
+        // holds no cell until the GC retires the TLAB, and only TLAB cells use it.
+        // SAFETY: [start, end) is a free-line run of a committed small page of this heap
+        // (`next_free_run`): it holds no cell, and nothing reads it until a cell is placed.
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.mem.ptr(start).cast::<u64>().as_ptr(),
+                (end - start) / 8,
+            )
+            .fill(VALUE_UNDEFINED);
+        }
         hot.cursor.set(start + size);
         self.tlab_end = end;
         self.sync_limit(hot);
-        Some((start, true))
+        Some((start, Place::Tlab))
     }
 
     fn note_allocated(&mut self, bytes: usize) {

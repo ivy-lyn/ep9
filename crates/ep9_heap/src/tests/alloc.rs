@@ -200,6 +200,67 @@ fn holes_and_overflow() {
     black_box((small, medium));
 }
 
+/// The allocation fast path (GCPAR3): the TLAB fills its whole hole with `undefined` when
+/// it takes the hole, so a TLAB cell writes only word0 and its VO bit. Checked on a fresh
+/// page (zero memory before) and on a reused hole whose dead cells still hold other bits (no
+/// zap), on the fast path and on the slow path (GC stress). Before GCPAR3 each cell filled
+/// only its own words, so the rest of the hole kept the old bits.
+#[test]
+#[cfg_attr(miri, ignore = "slow under Miri")]
+fn a_tlab_fills_its_hole_with_undefined() {
+    fn hole_is_undefined(heap: &Heap, what: &str) {
+        let (cursor, limit) = raw_tlab(heap);
+        let end = if limit == 0 {
+            // GC stress keeps the limit at 0: read the inner TLAB end.
+            heap.inner.borrow().tlab_end
+        } else {
+            limit
+        };
+        assert!(cursor != 0 && cursor < end, "{what}: a TLAB");
+        for a in (cursor..end).step_by(8) {
+            // SAFETY: [cursor, end) is the committed, unused rest of the TLAB hole.
+            let w = unsafe { heap_ptr(heap, a).cast::<u64>().read() };
+            assert_eq!(w, VALUE_UNDEFINED, "{what}: word {a:#x} of the hole");
+        }
+    }
+    for stress in [0, 1] {
+        let heap = test_heap(|c| {
+            c.zap = false;
+            c.gc_stress = stress;
+        });
+        let keep = heap.new_global(Value::UNDEFINED);
+        let list = new_node(&heap, 0, 1100); // a LOS cell
+        heap.set_global(keep, list.to_value());
+        let a = new_node(&heap, 1, 2);
+        hole_is_undefined(&heap, "fresh page");
+        // Fill the page with cells whose slots hold numbers; keep every 4th one.
+        for i in 0..800 {
+            let c = new_node(&heap, i + 2, 30); // 256 B, one line
+            for j in 0..30 {
+                store(&heap, c, j, Value::int32(j as i32 + 1));
+            }
+            if i % 4 == 0 {
+                store(&heap, list, i as usize / 4, c.to_value());
+            }
+        }
+        heap.collect_with_words(&[]);
+        heap.finish_sweeping();
+        // The next hole is a free run of the old page: dead cells with number bits.
+        let b = new_node(&heap, 9000, 4);
+        for j in 0..4 {
+            assert_eq!(
+                slot(b, j).bits(),
+                VALUE_UNDEFINED,
+                "slot {j} of a reused hole"
+            );
+        }
+        hole_is_undefined(&heap, "reused hole");
+        heap.verify().expect("verifier");
+        heap.drop_global(keep);
+        black_box((a, b));
+    }
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "slow under Miri")]
 fn out_of_memory_after_one_collection() {
