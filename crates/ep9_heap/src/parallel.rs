@@ -42,6 +42,34 @@
 //!
 //! [`Work`] is the shared work structure. Under `--cfg loom` it uses the loom primitives
 //! (tests/loom.rs: 2 markers), and the pool is not built.
+//!
+//! S2a part 2: the concurrent sweep (03-gc §4 S2a; the part-2 note there is the design note).
+//! One sweeper thread per process sweeps the small pages of a GC while the mutator runs:
+//!
+//! ```text
+//! end of a GC (heap.rs): helpers() > 0 and >= SWEEP_START_PAGES pages queued (1 page in a
+//!   GC-stress GC that STRESS_PARALLEL_EVERY picks), else the lazy sweep as before
+//!   Job { cage base, a copy of the kind table, the page list, Claims } -> publish
+//! sweeper thread: claim_open -> sweep the page (heap.rs Sweeper) -> result, counts and
+//!   errors into the job -> done; until every page is taken
+//! heap's thread, an allocation that needs a page: file the sweeper's results (recyclable
+//!   lists; a free page back to Memory: only the heap's thread changes Memory), else claim
+//!   and sweep a page itself, else a fresh page
+//! heap's thread, the next GC / finish_sweeping / a verify / is_cell / the drop: claim and
+//!   sweep every page left (the drop: close), wait until no sweeper claim is open, file
+//! ```
+//!
+//! | Rule (TSan-free) | How |
+//! |---|---|
+//! | One thread per page | a page belongs to the thread whose claim took it ([`Claims`]: one atomic counter) until its result is filed; the mutator allocates only in pages it took from its own lists |
+//! | No sweep during a GC | every GC ends the last sweep before its root and CSS scan (`finish_sweeping` first); the sweeper never overlaps the roots, the CSS or the markers |
+//! | What the sweeper reads of a live cell | the kind byte (an atomic) and the size fields of its kind, which the mutator never writes after the cell's first GC (a THIN string changes its kind, but CONS, SLICED and THIN are all 32 B) |
+//! | What the sweeper writes | the page's bitmaps, line marks and dead cells (zap); never a live cell, a page header, `Memory`, the heap's stats or kind table |
+//! | Hand-offs | the job through the sweeper's mutex; each result through the job's mutex; the end wait reads `open` with SeqCst after every index is taken ([`Claims`] doc) |
+//! | A panic | caught on the sweeper thread and raised again on the heap's thread at the next filing (release builds abort, `panic = "abort"`) |
+//!
+//! The control: `EP9_GC_HELPERS=0` (no helpers) is also the lazy sweep, so the instruction
+//! floors read the sequential mark and the sequential sweep (V12-D47).
 
 // `cfg(loom)` is set only by the loom test command (RUSTFLAGS="--cfg loom").
 #![allow(unexpected_cfgs)]
@@ -106,6 +134,9 @@ fn start_after() -> usize {
     if let Some(n) = test_controls::START_AFTER.get() {
         return n;
     }
+    if STRESS_PARALLEL.get() {
+        return STRESS_START_AFTER;
+    }
     START_AFTER
 }
 
@@ -123,6 +154,43 @@ pub(crate) mod test_controls {
         /// Parallel drains run on this thread so far, and the cells their helpers traced.
         pub(crate) static PARALLEL_DRAINS: Cell<u64> = const { Cell::new(0) };
         pub(crate) static HELPER_CELLS: Cell<usize> = const { Cell::new(0) };
+        /// The GCs of this thread's heaps sweep concurrently from this many queued pages
+        /// ([`with_sweeper`]); `None`: the lazy sweep (the default of the unit tests, which
+        /// read its queues).
+        pub(crate) static SWEEPER: Cell<Option<usize>> = const { Cell::new(None) };
+        /// A join of a concurrent sweep first waits (at most 10 s) until the sweeper thread
+        /// has taken every page, so the sweeper sweeps them all.
+        pub(crate) static SWEEPER_FIRST: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Runs `f` with the concurrent sweep on for this thread's GCs from `start` queued pages;
+    /// `first`: a join waits until the sweeper thread has taken every page.
+    pub(crate) fn with_sweeper<R>(start: usize, first: bool, f: impl FnOnce() -> R) -> R {
+        let old = (SWEEPER.replace(Some(start)), SWEEPER_FIRST.replace(first));
+        struct Reset(Option<usize>, bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                SWEEPER.set(self.0);
+                SWEEPER_FIRST.set(self.1);
+            }
+        }
+        let _reset = Reset(old.0, old.1);
+        f()
+    }
+
+    /// Runs `f` with `helpers` helpers and the default start threshold (the GC-stress
+    /// control picks it); a mark waits for a busy pool.
+    pub(crate) fn with_helpers<R>(helpers: usize, f: impl FnOnce() -> R) -> R {
+        let old = (HELPERS.replace(Some(helpers)), WAIT_FOR_POOL.replace(true));
+        struct Reset(Option<usize>, bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                HELPERS.set(self.0);
+                WAIT_FOR_POOL.set(self.1);
+            }
+        }
+        let _reset = Reset(old.0, old.1);
+        f()
     }
 
     /// Runs `f` with `helpers` helpers and the start threshold `start`; a mark waits for a
@@ -364,7 +432,8 @@ pub(crate) fn run<M: Marker>(work: &Work<M::Item>, me: usize, m: &mut M, mut has
     }
 }
 
-/// The loom test of [`Work`] and [`run`] (declared here, where `cfg(loom)` is allowed).
+/// The loom tests of [`Work`] and [`run`], and of [`Claims`] (declared here, where
+/// `cfg(loom)` is allowed).
 #[cfg(all(test, loom))]
 #[path = "tests/loom.rs"]
 mod loom_tests;
@@ -616,6 +685,380 @@ mod pool {
             super::test_controls::HELPER_CELLS
                 .set(super::test_controls::HELPER_CELLS.get() + h.marked_cells());
             t.absorb(h);
+        }
+    }
+}
+
+// ---- S2a part 2: the concurrent sweep ---------------------------------------------------------
+
+/// Small pages a GC must queue before its sweep runs on the sweeper thread (4 MiB of pages).
+/// A smaller heap sweeps lazily on the heap's thread: waking the sweeper costs more than the
+/// sweep of a few pages. (est.: a page sweep is 1-20 us on the M5 Max, a wake 5-20 us.)
+pub(crate) const SWEEP_START_PAGES: usize = 16;
+
+/// Under GC-stress the first GC, then a major GC once this many GCs (less one) passed since
+/// the last such GC, use the parallel paths: the parallel mark from [`STRESS_START_AFTER`]
+/// cells and the concurrent sweep from one page (route GCPAR-STRESS: GC-stress marks never
+/// reach [`START_AFTER`]). With S1's default `stress_major_every` (64) that is every major
+/// stress GC; in S0 every 63rd GC. The other stress GCs keep the mark's default threshold and
+/// sweep lazily, so a GC-stress run does not pay a wake per allocation.
+pub(crate) const STRESS_PARALLEL_EVERY: u32 = 64;
+
+/// The start threshold of a parallel mark in a GC that [`STRESS_PARALLEL_EVERY`] picks.
+pub(crate) const STRESS_START_AFTER: usize = 256;
+
+std::thread_local! {
+    /// The GC of this thread's heap is a GC-stress GC that uses the parallel paths
+    /// ([`StressParallel`]).
+    static STRESS_PARALLEL: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// While it lives, the marks on this thread start in parallel after [`STRESS_START_AFTER`]
+/// cells (a GC-stress GC that [`STRESS_PARALLEL_EVERY`] picks). Dropped at the mark's end, or
+/// by the unwind of a panic.
+pub(crate) struct StressParallel(bool);
+
+impl StressParallel {
+    pub(crate) fn new(on: bool) -> StressParallel {
+        StressParallel(STRESS_PARALLEL.replace(on))
+    }
+}
+
+impl Drop for StressParallel {
+    fn drop(&mut self) {
+        STRESS_PARALLEL.set(self.0);
+    }
+}
+
+/// The concurrent sweep may run for a GC on this thread: there are helpers (so not with
+/// `EP9_GC_HELPERS=0`, not under Miri or loom), and in this crate's unit tests only inside
+/// `test_controls::with_sweeper`.
+pub(crate) fn sweeper_on() -> bool {
+    #[cfg(test)]
+    if test_controls::SWEEPER.get().is_none() {
+        return false;
+    }
+    helpers() > 0
+}
+
+/// Queued pages from which a GC sweeps concurrently ([`SWEEP_START_PAGES`]; a unit test may
+/// set it, `test_controls::with_sweeper`).
+pub(crate) fn sweep_start_pages() -> usize {
+    #[cfg(test)]
+    if let Some(n) = test_controls::SWEEPER.get() {
+        return n;
+    }
+    SWEEP_START_PAGES
+}
+
+/// The page claims of one concurrent sweep (module doc, part 2). Each index in `0..len` goes
+/// to exactly one claim: the sweeper thread's or the heap's thread's.
+///
+/// The end rule: the sweeper thread adds 1 to `open` before it claims, and takes it off after
+/// the claimed page's result is in the job's done list (or after a claim that failed). The
+/// heap's thread first sees every index taken (a claim that fails, or [`Claims::close`]),
+/// then waits until `open` is 0. Every access is SeqCst, so a sweeper claim that got an index
+/// comes before the heap's thread's failed claim in the one total order, and so does the add
+/// to `open` before it: the heap's thread then reads `open` after that add, and waits for the
+/// take-off (a release; the wait reads with acquire). After the wait no sweeper claim is open
+/// and none can succeed, so the sweeper thread touches no page of the job again.
+pub(crate) struct Claims {
+    next: AtomicUsize,
+    len: usize,
+    open: AtomicUsize,
+}
+
+impl Claims {
+    pub(crate) fn new(len: usize) -> Claims {
+        Claims {
+            next: AtomicUsize::new(0),
+            len,
+            open: AtomicUsize::new(0),
+        }
+    }
+
+    /// The next index for the heap's thread, or `None` when every index is taken.
+    pub(crate) fn claim(&self) -> Option<usize> {
+        if self.next.load(SeqCst) >= self.len {
+            return None;
+        }
+        let i = self.next.fetch_add(1, SeqCst);
+        (i < self.len).then_some(i)
+    }
+
+    /// The next index for the sweeper thread, with `open` counted; `None` when every index is
+    /// taken (then `open` is as before). After a `Some`, the sweeper calls [`Claims::done`].
+    pub(crate) fn claim_open(&self) -> Option<usize> {
+        self.open.fetch_add(1, SeqCst);
+        let got = self.claim();
+        if got.is_none() {
+            self.open.fetch_sub(1, SeqCst);
+        }
+        got
+    }
+
+    /// The sweeper thread is done with the page of its last claim.
+    pub(crate) fn done(&self) {
+        self.open.fetch_sub(1, SeqCst);
+    }
+
+    /// Takes every index left, so no claim succeeds again (a heap that is dropped).
+    pub(crate) fn close(&self) {
+        self.next.fetch_max(self.len, SeqCst);
+    }
+
+    /// Every index is taken.
+    pub(crate) fn taken(&self) -> bool {
+        self.next.load(SeqCst) >= self.len
+    }
+
+    /// No sweeper claim is open. Read after [`Claims::taken`] is true, a `true` here means
+    /// the sweeper thread has finished every page it took (struct doc).
+    pub(crate) fn settled(&self) -> bool {
+        self.open.load(SeqCst) == 0
+    }
+
+    /// Waits until [`Claims::settled`] (struct doc: call it only once every index is taken).
+    /// The wait is at most the sweep of one page.
+    pub(crate) fn wait_settled(&self) {
+        debug_assert!(self.taken());
+        let mut spins = 0;
+        while !self.settled() {
+            pause(&mut spins);
+        }
+    }
+}
+
+pub(crate) use sweeper::{Job, publish};
+
+/// The sweeper thread and its jobs (module doc, part 2). It builds under loom too (the heap
+/// names [`Job`]), but no job is made there: [`sweeper_on`] is false.
+mod sweeper {
+    use core::ptr::NonNull;
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
+    use std::any::Any;
+    use std::collections::VecDeque;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::thread::Thread;
+
+    use super::Claims;
+    use crate::cell::{KindId, KindTable};
+    use crate::heap::{Sweeper, Swept};
+
+    /// One concurrent sweep: the small pages that one GC queued, and what the sweep of a page
+    /// reads. The heap's thread makes it at the end of the GC; the sweeper thread and the
+    /// heap's thread then sweep its pages ([`Claims`]) while the mutator runs.
+    pub(crate) struct Job {
+        /// The cage base, with the provenance of the reservation.
+        base: NonNull<u8>,
+        /// A copy of the heap's kind table at the GC: the sweeper never reads the heap's
+        /// own (the mutator may register a kind meanwhile; no cell of a new kind is in a
+        /// page of this job).
+        kinds: Box<KindTable>,
+        sticky: bool,
+        zap: bool,
+        /// The checked sweep (the verify after a GC): errors and kept cells are collected.
+        check: bool,
+        /// The pages: small-page chunk indices, ordinary pages first (low first), then shape
+        /// pages.
+        pub(crate) pages: Box<[u32]>,
+        pub(crate) claims: Claims,
+        /// Results of the pages the sweeper thread swept, for the heap's thread to file.
+        done: Mutex<Vec<(u32, Swept)>>,
+        /// The sweeper thread's counts: freed cells and bytes, kept cells (checked sweep).
+        freed_cells: AtomicU64,
+        freed_bytes: AtomicU64,
+        kept: AtomicUsize,
+        errors: Mutex<Vec<String>>,
+        /// A panic of the sweeper thread, raised again on the heap's thread.
+        panicked: AtomicBool,
+        panic: Mutex<Option<Box<dyn Any + Send>>>,
+    }
+
+    // SAFETY: `base` is the address of the cage, which lives until the heap is dropped; the
+    // heap's thread closes the job and waits until it settles before that (heap.rs
+    // `ConcurrentSweep`), and the sweeper thread touches a page only between a claim and its
+    // `done` (`Claims`). Each page goes to one thread. The cells of a page are read only for
+    // their kind byte (an atomic) and the size fields of their kind, which the mutator never
+    // writes after the cell's first GC (03-gc S2a part-2 note); dead cells are zapped, and no
+    // thread reaches a dead cell. The other fields are atomics, mutexes, or not written after
+    // the job is made.
+    unsafe impl Send for Job {}
+    // SAFETY: as for `Send`.
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// A job for `pages` with a copy of `kinds`.
+        pub(crate) fn new(
+            base: NonNull<u8>,
+            kinds: &KindTable,
+            sticky: bool,
+            zap: bool,
+            check: bool,
+            pages: Box<[u32]>,
+        ) -> Job {
+            let mut copy = Box::new(KindTable::new());
+            for k in 1..=u8::MAX {
+                if let (Some(kind), Some(id)) = (kinds.get(k), KindId::new(k)) {
+                    copy.register_in(id, *kind, kinds.space(k))
+                        .expect("the heap's table registered it");
+                }
+            }
+            Job {
+                base,
+                kinds: copy,
+                sticky,
+                zap,
+                check,
+                claims: Claims::new(pages.len()),
+                pages,
+                done: Mutex::new(Vec::new()),
+                freed_cells: AtomicU64::new(0),
+                freed_bytes: AtomicU64::new(0),
+                kept: AtomicUsize::new(0),
+                errors: Mutex::new(Vec::new()),
+                panicked: AtomicBool::new(false),
+                panic: Mutex::new(None),
+            }
+        }
+
+        pub(crate) fn check(&self) -> bool {
+            self.check
+        }
+
+        /// Takes the results of the pages the sweeper thread swept so far.
+        pub(crate) fn take_done(&self, into: &mut Vec<(u32, Swept)>) {
+            into.append(&mut lock(&self.done));
+        }
+
+        /// Takes the sweeper thread's counts (freed cells, freed bytes, kept cells) and errors.
+        pub(crate) fn take_counts(&self, errors: &mut Vec<String>) -> (u64, u64, usize) {
+            errors.append(&mut lock(&self.errors));
+            (
+                self.freed_cells.swap(0, Relaxed),
+                self.freed_bytes.swap(0, Relaxed),
+                self.kept.swap(0, Relaxed),
+            )
+        }
+
+        /// The freed cells and bytes the sweeper thread counted and the heap has not taken.
+        pub(crate) fn freed_so_far(&self) -> (u64, u64) {
+            (
+                self.freed_cells.load(Relaxed),
+                self.freed_bytes.load(Relaxed),
+            )
+        }
+
+        /// The sweeper thread panicked in this job (its panic is not taken yet).
+        #[cfg(test)]
+        pub(crate) fn panicked(&self) -> bool {
+            self.panicked.load(Relaxed)
+        }
+
+        /// The panic of the sweeper thread, if it panicked.
+        pub(crate) fn take_panic(&self) -> Option<Box<dyn Any + Send>> {
+            if !self.panicked.load(Relaxed) {
+                return None;
+            }
+            lock(&self.panic).take()
+        }
+
+        /// The sweeper thread's part: claims and sweeps pages until none is left. Each page's
+        /// counts, errors and result are in the job before its claim ends (`Claims::done`):
+        /// the heap's thread reads them after the end wait.
+        fn run(&self) {
+            let mut sw = Sweeper::new(self.base, &self.kinds, self.sticky, self.zap);
+            let mut errors = Vec::new();
+            let mut open = false;
+            let r = catch_unwind(AssertUnwindSafe(|| {
+                while let Some(i) = self.claims.claim_open() {
+                    open = true;
+                    let idx = self.pages[i];
+                    let mut kept = 0;
+                    let swept = if self.check {
+                        sw.sweep_page_with::<true>(idx as usize, &mut errors, &mut kept)
+                    } else {
+                        sw.sweep_page_with::<false>(idx as usize, &mut errors, &mut kept)
+                    };
+                    self.freed_cells.fetch_add(sw.freed_cells, Relaxed);
+                    self.freed_bytes.fetch_add(sw.freed_bytes, Relaxed);
+                    (sw.freed_cells, sw.freed_bytes) = (0, 0);
+                    self.kept.fetch_add(kept, Relaxed);
+                    if !errors.is_empty() {
+                        lock(&self.errors).append(&mut errors);
+                    }
+                    lock(&self.done).push((idx, swept));
+                    open = false;
+                    self.claims.done();
+                }
+            }));
+            if let Err(p) = r {
+                // The page of the open claim: its marks were reset by the unwind
+                // (`UnmarkPageOnUnwind`); it goes to no list until the next GC, as after a
+                // panic of the lazy sweep. The heap's thread sweeps the pages left.
+                lock(&self.panic).get_or_insert(p);
+                self.panicked.store(true, Relaxed);
+                if open {
+                    self.claims.done();
+                }
+            }
+        }
+    }
+
+    fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct State {
+        /// Jobs not started yet, oldest first: at most one per heap that has a job (each
+        /// publish drops the jobs whose pages are all taken).
+        jobs: VecDeque<Arc<Job>>,
+        thread: Option<Thread>,
+    }
+
+    static STATE: Mutex<State> = Mutex::new(State {
+        jobs: VecDeque::new(),
+        thread: None,
+    });
+
+    /// Gives `job` to the sweeper thread (started at the first job). False if the thread
+    /// could not start: the heap's thread then sweeps lazily.
+    pub(crate) fn publish(job: &Arc<Job>) -> bool {
+        let mut s = lock(&STATE);
+        s.jobs.retain(|j| !j.claims.taken());
+        if s.thread.is_none() {
+            let started = std::thread::Builder::new()
+                .name("ep9-gc-sweeper".into())
+                .spawn(sweeper_main);
+            let Ok(handle) = started else {
+                return false;
+            };
+            s.thread = Some(handle.thread().clone());
+        }
+        s.jobs.push_back(Arc::clone(job));
+        if let Some(t) = &s.thread {
+            t.unpark();
+        }
+        true
+    }
+
+    /// The sweeper thread: takes the oldest job and sweeps its pages, then waits (parked) for
+    /// the next one. It lives as long as the process.
+    fn sweeper_main() {
+        loop {
+            let job = {
+                let mut s = lock(&STATE);
+                loop {
+                    if let Some(j) = s.jobs.pop_front() {
+                        break j;
+                    }
+                    drop(s);
+                    std::thread::park();
+                    s = lock(&STATE);
+                }
+            };
+            job.run();
         }
     }
 }
