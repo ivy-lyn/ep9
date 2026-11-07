@@ -35,8 +35,8 @@
 //!   shape, a new prototype's root); only [`with_elements_kind`] changes it, and the roots and
 //!   dictionary shapes of a PROTO_INFO are kept per elements kind.
 //! - **flags** (int32): [`flag`]. A fast shape is always extensible; a non-extensible object
-//!   is in dictionary mode (OM-10). OBJECT_LAYOUT 5: bits 4-7 ([`flag::SLACK_SHIFT`]) are
-//!   reserved and unused since M5-P2: SLACK reads the count from the bytecode (`slack.rs`).
+//!   is in dictionary mode (OM-10). Bits 4 and 5 ([`level`], M7-P3) are the integrity level of
+//!   a non-extensible Array with dense elements; bits 6-7 are unused ([`flag::SLACK_SHIFT`]).
 //! - **details** (int32, [`Details`]): attributes in bits 0-3 (writable, enumerable,
 //!   configurable, [`ACCESSOR`]), representation in bits 4-6 and const in bit 7 (OBJECT_LAYOUT
 //!   5 names the values, [`rep`] and [`DETAILS_CONST`]; M5-P2 CONSTREP writes them, the rules
@@ -168,9 +168,9 @@ pub(crate) mod flag {
     /// no transitions. A change makes a new unique shape.
     pub const UNIQUE: i32 = 8;
     /// OBJECT_LAYOUT 5: bits 4-7 of a shape's flags, declared for a slack counter (H17 slack
-    /// row). Reserved and unused since M5-P2: SLACK reads the count from the bytecode
-    /// (`slack.rs`), and `shape::add` copies flags to children, so a root counter would reach
-    /// them. Always 0.
+    /// row) and never used for it: SLACK reads the count from the bytecode (`slack.rs`), and
+    /// `shape::add` copies flags to children. Since M7-P3 bits 4 and 5 are [`super::level`]
+    /// (H17 "shape flag bits (append-only)"); this name marks only the old range.
     #[allow(dead_code)] // reserved
     pub const SLACK_SHIFT: u32 = 4;
     /// OBJECT_LAYOUT 5: the reserved bits 4-7.
@@ -1331,20 +1331,20 @@ pub(crate) fn dictionary_shape_for(
     object_kind: KindId,
     extensible: bool,
 ) -> u64 {
-    dictionary_shape_for_kind(rt, proto_info, object_kind, extensible, 0)
+    dictionary_shape_for_kind(rt, proto_info, object_kind, dict_flags(extensible), 0)
 }
 
-/// [`dictionary_shape_for`] with the elements kind `ek` (one shared dictionary shape per
-/// (object kind, extensible, elements kind)). GC point.
+/// [`dictionary_shape_for`] with the flags `fl` and the elements kind `ek` (one shared
+/// dictionary shape per (object kind, flags in [`DICT_FLAGS`], elements kind)). GC point.
 fn dictionary_shape_for_kind(
     rt: &Runtime,
     proto_info: u64,
     object_kind: KindId,
-    extensible: bool,
+    fl: i32,
     ek: u8,
 ) -> u64 {
     debug_assert!(is_object_kind(object_kind));
-    let fl = flag::DICTIONARY | if extensible { flag::EXTENSIBLE } else { 0 };
+    debug_assert!(fl & flag::DICTIONARY != 0 && fl & !DICT_FLAGS == 0);
     let want = pack_counts_ek(0, 0, object_kind.get(), ek_bits(ek));
     if let Some(s) = find_in_info(proto_info, |s| {
         flags(s) == fl && rd(cell(s), shf::COUNTS) == want
@@ -1501,7 +1501,7 @@ pub(crate) fn proto_info_for(rt: &Runtime, p: u64) -> u64 {
     // GC points below (`own_descriptors` too): `p`, `info` and `old` live in Rust locals (CSS).
     let info = new_proto_info(rt, p);
     let old = shape_of(p);
-    let fl = flags(old) & (flag::EXTENSIBLE | flag::DICTIONARY);
+    let fl = flags(old) & DICT_FLAGS;
     let u = new_unique(
         rt,
         proto(old),
@@ -1612,7 +1612,7 @@ fn cached_function_shape(rt: &Runtime, fp: u64, slot: usize) -> u64 {
 /// (it keeps the PROTO_INFO). GC point.
 pub(crate) fn dictionary_shape_of(rt: &Runtime, shape: u64, extensible: bool) -> u64 {
     let k = KindId::new(object_kind(shape)).expect("an object kind");
-    let ext = if extensible { flag::EXTENSIBLE } else { 0 };
+    let ext = ext_or_level(shape, extensible);
     let ek = elements_kind(shape);
     if flags(shape) & flag::UNIQUE != 0 {
         let counts = pack_counts_ek(0, 0, k.get(), ek_bits(ek));
@@ -1626,7 +1626,7 @@ pub(crate) fn dictionary_shape_of(rt: &Runtime, shape: u64, extensible: bool) ->
         );
     }
     let info = proto_info_for(rt, proto(shape));
-    dictionary_shape_for_kind(rt, info, k, extensible, ek)
+    dictionary_shape_for_kind(rt, info, k, flag::DICTIONARY | ext, ek)
 }
 
 /// The shape for an object with `shape` (a unique one, or one without properties) after its
@@ -1647,7 +1647,7 @@ pub(crate) fn with_proto(rt: &Runtime, shape: u64, p: u64, capacity: u8) -> u64 
         return new_unique(rt, p, d, counts, fl, unique_info(shape));
     }
     if fl & flag::DICTIONARY != 0 {
-        dictionary_shape_for_kind(rt, info, k, fl & flag::EXTENSIBLE != 0, ek)
+        dictionary_shape_for_kind(rt, info, k, fl & DICT_FLAGS, ek)
     } else {
         debug_assert!(count(shape) == 0, "a shared fast shape with properties");
         root_shape_for_kind(rt, info, k, capacity, ek)
@@ -1666,7 +1666,12 @@ pub(crate) fn with_elements_kind(rt: &Runtime, shape: u64, ek: u8) -> Option<u64
     if elements_kind(shape) == ek {
         return Some(shape);
     }
-    let fl = flags(shape);
+    let mut fl = flags(shape);
+    if ek == crate::elements::kind::DICTIONARY {
+        // M7-P3 ELEMKINDS: a level is a fact of dense elements only, so a move to DICTIONARY
+        // drops it; `elements::to_dictionary` writes it into each entry first.
+        fl &= !level::INTEGRITY;
+    }
     if fl & flag::UNIQUE != 0 {
         let c = (counts(cell(shape)) & !ELEMENTS_KIND_MASK) | ek_bits(ek);
         let d = descriptors(shape);
@@ -1684,13 +1689,7 @@ pub(crate) fn with_elements_kind(rt: &Runtime, shape: u64, ek: u8) -> Option<u64
     // mode already, so this makes nothing.
     let info = proto_info_for(rt, proto(shape));
     if fl & flag::DICTIONARY != 0 {
-        return Some(dictionary_shape_for_kind(
-            rt,
-            info,
-            k,
-            fl & flag::EXTENSIBLE != 0,
-            ek,
-        ));
+        return Some(dictionary_shape_for_kind(rt, info, k, fl & DICT_FLAGS, ek));
     }
     let mut s = root_shape_for_kind(rt, info, k, capacity(shape), ek);
     for i in 0..count(shape) {
@@ -1706,6 +1705,88 @@ pub(crate) fn with_elements_kind(rt: &Runtime, shape: u64, ek: u8) -> Option<u64
     // (M5-P2 CONSTREP; not a GC point).
     crate::field_rep::join_fields(rt, shape, s);
     Some(s)
+}
+
+// ---- integrity levels: the extra element kinds of H18, flags first (M7-P3 ELEMKINDS) -------
+
+/// Shape flag bits 4 and 5 (H17 "shape flag bits (append-only)": appended in M7-P3 at the
+/// lowest free bits; V11-D5, V11-D6): the integrity level of a non-extensible Array whose
+/// elements kind is dense (0-5), beside the elements-kind lattice. NONEXTENSIBLE is
+/// [`flag::EXTENSIBLE`] clear, the level below them; the levels are one-way, in the order
+/// NONEXTENSIBLE, SEALED, FROZEN. The bits sit only on a dictionary shape (OM-10: a
+/// non-extensible object is in dictionary mode; [`check`] asserts it). Every shape made from
+/// a level shape keeps them ([`dictionary_shape_of`], [`with_proto`], [`with_elements_kind`],
+/// [`proto_info_for`], one shared dictionary shape per flags), except a move to DICTIONARY
+/// elements (`elements::to_dictionary` writes the level into each entry).
+pub(crate) mod level {
+    /// Every element of the Array is not configurable.
+    pub const SEALED: i32 = 1 << 4;
+    /// Every element is also not writable, and `length` is not writable. Always set with
+    /// [`SEALED`].
+    pub const FROZEN: i32 = 1 << 5;
+    /// The level bits.
+    pub const INTEGRITY: i32 = SEALED | FROZEN;
+}
+
+/// The flags a dictionary shape may have: DICTIONARY, EXTENSIBLE and a level.
+const DICT_FLAGS: i32 = flag::DICTIONARY | flag::EXTENSIBLE | level::INTEGRITY;
+
+/// The flags of a dictionary shape with no level.
+const fn dict_flags(extensible: bool) -> i32 {
+    flag::DICTIONARY | if extensible { flag::EXTENSIBLE } else { 0 }
+}
+
+/// EXTENSIBLE if `extensible`, else the level of `shape` (`Object.preventExtensions` of a
+/// frozen Array keeps it frozen; a level shape is never extensible).
+fn ext_or_level(shape: u64, extensible: bool) -> i32 {
+    debug_assert!(!extensible || integrity(shape) == 0);
+    if extensible {
+        flag::EXTENSIBLE
+    } else {
+        integrity(shape)
+    }
+}
+
+/// The integrity level bits of `shape` ([`level::INTEGRITY`]: 0, SEALED, or SEALED | FROZEN).
+/// Not a GC point.
+#[inline(always)]
+pub(crate) fn integrity(shape: u64) -> i32 {
+    flags(shape) & level::INTEGRITY
+}
+
+/// The shape for an object with `shape` (the dictionary shape of a non-extensible Array whose
+/// elements kind is dense) after its integrity level becomes `bits` (SEALED, or SEALED |
+/// FROZEN; never lower than the level it has: one-way). The same prototype, object kind and
+/// elements kind: the shared dictionary shape of those flags, or a new unique one for a
+/// prototype-mode object. GC point.
+#[cfg_attr(not(test), allow(dead_code))] // tests; the caller is `elements::set_integrity`
+pub(crate) fn with_integrity(rt: &Runtime, shape: u64, bits: i32) -> u64 {
+    let fl = flags(shape);
+    debug_assert!(
+        fl & (flag::DICTIONARY | flag::EXTENSIBLE) == flag::DICTIONARY,
+        "a level needs a non-extensible dictionary shape"
+    );
+    debug_assert!(bits == level::SEALED || bits == level::INTEGRITY);
+    debug_assert!(fl & level::INTEGRITY & !bits == 0, "the levels are one-way");
+    if fl & level::INTEGRITY == bits {
+        return shape;
+    }
+    if fl & flag::UNIQUE != 0 {
+        // A dictionary shape has no property and no in-object slot: the same counts.
+        return new_unique(
+            rt,
+            proto(shape),
+            UNDEFINED,
+            rd(cell(shape), shf::COUNTS),
+            flag::DICTIONARY | bits,
+            unique_info(shape),
+        );
+    }
+    let k = KindId::new(object_kind(shape)).expect("an object kind");
+    // GC point: `shape` lives in a Rust local (CSS); its prototype is in prototype mode
+    // already, so this makes nothing.
+    let info = proto_info_for(rt, proto(shape));
+    dictionary_shape_for_kind(rt, info, k, flag::DICTIONARY | bits, elements_kind(shape))
 }
 
 // ---- checks ---------------------------------------------------------------------------------
@@ -1729,6 +1810,17 @@ pub(crate) fn check(rt: &Runtime, shape: u64) -> Result<(), String> {
     }
     if !unique {
         check_transitions(shape)?;
+    }
+    // M7-P3 ELEMKINDS: a level only on a non-extensible dictionary shape of an Array with
+    // dense elements, and FROZEN only with SEALED.
+    let lv = integrity(shape);
+    if lv != 0
+        && (flags(shape) & (flag::DICTIONARY | flag::EXTENSIBLE) != flag::DICTIONARY
+            || lv & level::SEALED == 0
+            || object_kind(shape) != kind::ARRAY.get()
+            || elements_kind(shape) >= crate::elements::kind::DICTIONARY)
+    {
+        return Err(format!("level bits {lv:#x} on flags {:#x}", flags(shape)));
     }
     if is_dictionary(shape) || n == 0 {
         return if n == 0 && parent(shape) == UNDEFINED && descriptors(shape) == UNDEFINED {
