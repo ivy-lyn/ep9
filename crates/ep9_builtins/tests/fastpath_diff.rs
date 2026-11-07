@@ -132,6 +132,13 @@ const INVENTORY: &[FastPath] = &[
         what: "a named load or store answered by the inline cache",
     },
     FastPath {
+        id: "ic-global",
+        site: "crates/ep9_vm/src/ic.rs:668-745 (the global IC hits, M7-P2 GLOBALS)",
+        off: Off::Guard,
+        what: "a global load or store (LdaGlobal, LdaGlobalInsideTypeof, StaGlobal) answered by \
+               the inline cache",
+    },
+    FastPath {
         id: "keyed-access",
         site: "crates/ep9_vm/src/profile.rs:870, :902 (the T0 keyed fast body)",
         off: Off::Guard,
@@ -467,6 +474,69 @@ const CASES: &[Case] = &[
              var P = { x: 100 }; var c = Object.create(P); c.k = 1; s += getx(c) + getx(c);\n\
              P.x = 7; s += getx(c); Object.defineProperty(c, 'x', { value: 9 }); s += getx(c);\n\
              print(s, getx({}), getx(Object.create(null)), getx('str'), getx(5));",
+        ),
+    },
+    // ---- ic-global (M7-P2 GLOBALS) ----
+    Case {
+        path: "ic-global",
+        name: "a var, a function and a builtin: IC hits or Reflect on globalThis",
+        src: "var g = 1; function inc() { g = g + 1; return g; }\n\
+              function rd() { return g + (typeof Math).length + parseInt('7'); }\n\
+              var s = 0; for (var i = 0; i < 30; i++) { inc(); s += rd(); }\n\
+              print(s, g, typeof notThere);",
+        spec: Some(
+            "var g = 1; function inc() { Reflect.set(globalThis, 'g', Reflect.get(globalThis, 'g') + 1); return Reflect.get(globalThis, 'g'); }\n\
+             function rd() { return Reflect.get(globalThis, 'g') + (typeof Reflect.get(globalThis, 'Math')).length + Reflect.get(globalThis, 'parseInt')('7'); }\n\
+             var s = 0; for (var i = 0; i < 30; i++) { inc(); s += rd(); }\n\
+             print(s, g, typeof notThere);",
+        ),
+    },
+    Case {
+        path: "ic-global",
+        name: "the global object's shape changes between hits (polymorphic), then deletes",
+        src: "var g = 3; function f() { return typeof h1 === 'undefined' ? g : g + h1; }\n\
+              var s = 0; for (var r = 0; r < 3; r++) s += f();\n\
+              globalThis.h1 = 1; s += f() + f(); globalThis.h2 = 2; s += f() + f();\n\
+              globalThis.h3 = 3; s += f() + f(); g = 10; s += f();\n\
+              delete globalThis.h1; s += f() + f(); delete globalThis.h3; s += f() + f();\n\
+              print(s, typeof h1, typeof h2, typeof h3);",
+        spec: Some(
+            "var g = 3; function f() { return Reflect.has(globalThis, 'h1') ? Reflect.get(globalThis, 'g') + Reflect.get(globalThis, 'h1') : Reflect.get(globalThis, 'g'); }\n\
+             var s = 0; for (var r = 0; r < 3; r++) s += f();\n\
+             globalThis.h1 = 1; s += f() + f(); globalThis.h2 = 2; s += f() + f();\n\
+             globalThis.h3 = 3; s += f() + f(); g = 10; s += f();\n\
+             delete globalThis.h1; s += f() + f(); delete globalThis.h3; s += f() + f();\n\
+             print(s, typeof h1, typeof h2, typeof h3);",
+        ),
+    },
+    Case {
+        path: "ic-global",
+        name: "let and const bindings and the TDZ: IC hits or a with-scope lookup",
+        src: "function early() { return T; }\n\
+              try { early(); } catch (e) { print(e.name); } try { early(); } catch (e) { print(e.name); }\n\
+              let T = 4; let L = 2; const C = 5; function f() { L = L + C; return L; }\n\
+              var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
+              try { (function () { C = 1; })(); } catch (e) { print(e.name); }\n\
+              print(s, L, C, typeof T);",
+        spec: Some(
+            "function early() { with ({}) return T; }\n\
+             try { early(); } catch (e) { print(e.name); } try { early(); } catch (e) { print(e.name); }\n\
+             let T = 4; let L = 2; const C = 5; function f() { with ({}) { L = L + C; return L; } }\n\
+             var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
+             try { (function () { with ({}) C = 1; })(); } catch (e) { print(e.name); }\n\
+             print(s, L, C, typeof T);",
+        ),
+    },
+    Case {
+        path: "ic-global",
+        name: "a lazy namespace key (Temporal): the first load installs it, later loads hit",
+        src: "function t() { return typeof Temporal; } function g() { return Temporal; }\n\
+              var a = g(), b = g(); print(t(), t(), Object.prototype.toString.call(a), a === b, a === globalThis.Temporal);\n\
+              function w(v) { Temporal = v; } w(1); w(2); print(g(), typeof Temporal);",
+        spec: Some(
+            "function t() { return typeof Reflect.get(globalThis, 'Temporal'); } function g() { return Reflect.get(globalThis, 'Temporal'); }\n\
+             var a = g(), b = g(); print(t(), t(), Object.prototype.toString.call(a), a === b, a === globalThis.Temporal);\n\
+             function w(v) { Reflect.set(globalThis, 'Temporal', v); } w(1); w(2); print(g(), typeof Temporal);",
         ),
     },
     Case {
