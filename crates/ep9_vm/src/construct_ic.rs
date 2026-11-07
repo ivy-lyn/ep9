@@ -31,10 +31,11 @@
 //!   constructor is non-configurable, so in fast mode it keeps its field index: a delete of an
 //!   earlier property, a prototype change and `preventExtensions` all go to dictionary mode,
 //!   which the hit checks.
-//! - The hit is a GC point (the allocation of `this`): it publishes its frame first
-//!   (`Runtime::enter`). The callee and the arguments are in caller registers, the initial
-//!   shape in a Rust local. It counts the call (`count_call`, as `call_fast`) and takes one
-//!   budget unit before the allocation.
+//! - The hit is a GC point (the allocation of `this`): it publishes its frame first, with the
+//!   words of `Runtime::enter` (the top frame, and its bytecode offset from the caller's
+//!   FunctionInfo that the hit already holds; M7-P3 CONSTRUCT). The callee and the arguments
+//!   are in caller registers, the initial shape in a Rust local. It counts the call
+//!   (`count_call`, as `call_fast`) and takes one budget unit before the allocation.
 //! - The hit pushes the same two frames as the cold path (H14: the stub frame that holds
 //!   `this`, then the callee frame with return pc `ConstructReturn`), with one size test for
 //!   both before it counts anything (M7-P3 CONSTRUCT): the stub has no arguments and no
@@ -129,7 +130,13 @@ pub(crate) fn fast<const SPREAD: bool>(
         return Flow::Cold;
     }
     let rt = st.rt();
-    rt.enter(st.fp, st.pc);
+    // `Runtime::enter(fp, pc)`, with the caller's info at hand: `pc` is the current
+    // instruction of the running bytecode function `caller`, so its offset is `pc - code`.
+    rt.stack().set_fp(st.fp);
+    let off = st.pc.addr().wrapping_sub(caller.code.addr());
+    debug_assert_eq!(caller.offset_of(st.pc), Some(off as u32));
+    // SAFETY: header slot 7 of the live top frame.
+    unsafe { *st.fp.offset(slot::BYTECODE_OFFSET) = int32_bits(off as i32) };
     // GC point: `f` and the arguments are in this frame's registers, `shape` in a Rust local.
     let this = alloc_from_shape(rt, kind::OBJECT, shape)
         .to_value()
