@@ -16,6 +16,10 @@
 //! | DeoptExit | a register-relative form | a load of the shared deopt entry through the isolate register; the exit goes into [`UnitCode::exits`] |
 //! | HeapConst | none | **rejected by the unit writer** ([`FinalizeError::HeapConstInUnit`]) |
 //!
+//! `finalize_unit` checks the base register of the 3 unit-data rows: each LinkSlot, IcCell and
+//! Stub field must be in a 64-bit load through x27/r14 ([`check_unit_data_loads`]). It does
+//! not check the base register of the isolate-register rows (the emitter picks it).
+//!
 //! [`UnitCode`] has no public constructor: only `finalize_unit` makes one, and it runs
 //! [`check_text`] on its output, so a writer that takes a `UnitCode` gets only checked text
 //! with no HeapConst. (The ep9_unit writer, behind its `aot` feature, is still empty.) These forms are the gated H34 parts "Unit finalize forms" (baseline-AOT at the A3
@@ -106,7 +110,8 @@ impl UnitCode {
 ///
 /// Refuses the whole stream on the first problem: an unknown kind code, a HeapConst, an
 /// absolute form, a form that the kind has not here, an operand that `env` cannot resolve, a
-/// value that does not fit its field, or a finding of [`check_text`] on the output.
+/// value that does not fit its field, or a finding of [`check_text`] or
+/// [`check_unit_data_loads`] on the output.
 pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, FinalizeError> {
     let sites = fin::sites(desc)?;
     let mut text = desc.text.clone();
@@ -170,7 +175,8 @@ pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, Fin
             form: s.form,
         })
         .collect();
-    let findings = check_text(desc.arch, &text, &fields);
+    let mut findings = check_text(desc.arch, &text, &fields);
+    findings.extend(check_unit_data_loads(desc.arch, &text, &rw));
     if !findings.is_empty() {
         return Err(FinalizeError::TextRelocations(findings));
     }
@@ -220,6 +226,19 @@ pub enum Finding {
         /// The field offset.
         at: u32,
     },
+    /// A field that is not inside the text (`at + size` is past the end). No other rule reads
+    /// such a field.
+    FieldOutsideText {
+        /// The field offset.
+        at: u32,
+    },
+    /// A LinkSlot, IcCell or Stub field ([`RwUse`]) that is not in a 64-bit load through the
+    /// unit-data register (H34-Q1): see [`check_unit_data_loads`]. A store, or a load through
+    /// another base register, reads or writes another cell.
+    NotUnitDataLoad {
+        /// The field offset.
+        at: u32,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -238,6 +257,10 @@ impl fmt::Display for Finding {
             Finding::NotRegisterRelative { at } => {
                 write!(f, "+{at:#x}: disp32 field not in a [reg + disp32] operand")
             }
+            Finding::FieldOutsideText { at } => write!(f, "+{at:#x}: field outside the text"),
+            Finding::NotUnitDataLoad { at } => {
+                write!(f, "+{at:#x}: not a load through the unit-data register")
+            }
         }
     }
 }
@@ -246,6 +269,7 @@ impl fmt::Display for Finding {
 ///
 /// | Rule | AArch64 | x86-64 |
 /// |---|---|---|
+/// | each field is inside the text (else [`Finding::FieldOutsideText`], and no other rule reads it) | yes | yes |
 /// | no field is absolute ([`Form::Abs64`]) | yes | yes |
 /// | each pc-relative field reaches a byte of this function's text | yes | yes |
 /// | each [`Form::X64Disp32`] field follows a ModRM byte with mod = 10 (`[reg + disp32]`) | - | yes |
@@ -260,10 +284,20 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let inside = |t: i64| (0..len).contains(&t);
     let mut out = Vec::new();
     for f in fields {
+        // `fields` can come from outside (a check of a unit read back): a field past the end
+        // is a finding, not a panic.
+        let end = (f.at as usize).checked_add(f.form.size());
+        if end.is_none_or(|end| end > text.len()) {
+            out.push(Finding::FieldOutsideText { at: f.at });
+            continue;
+        }
         match f.form.class() {
             FormClass::Absolute => out.push(Finding::AbsoluteField { at: f.at }),
             FormClass::PcRelative => {
-                let target = (f.at + f.form.pc_base()) as i64 + f.form.read(text, f.at as usize);
+                // In i64: `at + pc_base` cannot overflow.
+                let target = i64::from(f.at)
+                    + i64::from(f.form.pc_base())
+                    + f.form.read(text, f.at as usize);
                 if !inside(target) {
                     out.push(Finding::OutsideFunction { at: f.at, target });
                 }
@@ -330,9 +364,60 @@ fn x64_reg_disp32(text: &[u8], at: usize) -> bool {
     }
 }
 
-/// [`check_text`] of a finished unit: empty for every [`UnitCode`] (`finalize_unit` checks
-/// its output), so a test can state the rule on each unit it emits.
+/// The unit-data register (H34-Q1, H35-Q9) on AArch64: x27.
+const UNIT_DATA_A64: u32 = 27;
+
+/// The unit-data load check: each [`RwUse`] field (LinkSlot, IcCell, the stub's link cell) is
+/// the offset of a 64-bit load through the unit-data register (H34-Q1), or the finding
+/// [`Finding::NotUnitDataLoad`] (or [`Finding::FieldOutsideText`]).
+///
+/// | Arch | The one form accepted |
+/// |---|---|
+/// | AArch64 | the field word is `ldr Xt, [x27, #imm]` (LDR X, unsigned offset, Rn = 27): exact, the word is the instruction |
+/// | x86-64 | the 3 bytes before the field are REX (W = 1, B = 1), `8B`, ModRM (mod = 10, rm = 110): `mov r64, [r14 + disp32]`. No decoder: these bytes are read as the field's instruction, so a prefix before the REX byte is not seen |
+pub fn check_unit_data_loads(arch: Arch, text: &[u8], rw: &[RwUse]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for u in rw {
+        let at = u.at as usize;
+        let ok = match arch {
+            Arch::A64 => match at.checked_add(4).and_then(|end| text.get(at..end)) {
+                Some(b) => {
+                    let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                    // LDR X, unsigned offset (any imm12, any Rt), with Rn = x27.
+                    w & 0xffc0_03e0 == 0xf940_0000 | (UNIT_DATA_A64 << 5)
+                }
+                None => {
+                    out.push(Finding::FieldOutsideText { at: u.at });
+                    continue;
+                }
+            },
+            Arch::X64 => {
+                if at.checked_add(4).is_none_or(|end| end > text.len()) {
+                    out.push(Finding::FieldOutsideText { at: u.at });
+                    continue;
+                }
+                match at.checked_sub(3).map(|i| &text[i..at]) {
+                    // REX.W + REX.B (REX.R free: any destination), MOV r64, r/m64, then
+                    // mod = 10 and rm = 110 (with REX.B: r14), any reg.
+                    Some(&[rex, op, modrm]) => {
+                        rex & 0xf9 == 0x49 && op == 0x8b && modrm & 0xc7 == 0x86
+                    }
+                    _ => false,
+                }
+            }
+        };
+        if !ok {
+            out.push(Finding::NotUnitDataLoad { at: u.at });
+        }
+    }
+    out
+}
+
+/// [`check_text`] and [`check_unit_data_loads`] of a finished unit: empty for every
+/// [`UnitCode`] (`finalize_unit` checks its output), so a test can state the rules on each
+/// unit it emits.
 pub fn zero_text_relocations(code: &UnitCode) -> Result<(), Vec<Finding>> {
-    let v = check_text(code.arch, &code.text, &code.fields);
+    let mut v = check_text(code.arch, &code.text, &code.fields);
+    v.extend(check_unit_data_loads(code.arch, &code.text, &code.rw));
     if v.is_empty() { Ok(()) } else { Err(v) }
 }

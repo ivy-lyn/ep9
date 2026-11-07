@@ -11,8 +11,8 @@ mod common;
 
 use common::{a64, x64};
 use ep9_masm::{
-    Arch, Assembler, CodeDesc, Field, FinalizeError, Finding, Form, Target, check_text,
-    finalize_unit, zero_text_relocations,
+    Arch, Assembler, CodeDesc, Field, FinalizeError, Finding, Form, RelocKind, RwUse, Target,
+    check_text, check_unit_data_loads, finalize_unit, zero_text_relocations,
 };
 
 /// Every unit that the ep9_masm tests emit: the corpus of `tests/common`.
@@ -217,7 +217,7 @@ fn an_x64_disp32_field_needs_a_reg_plus_disp32_operand() {
     assert_eq!(field(&[]), [Finding::NotRegisterRelative { at: 0 }]);
 
     // The Codex probe: 48 8b 05 <disp32> as X64Disp32 / LinkSlot(0) gave unit text
-    // `mov rax, [rip + 0x50]`.
+    // `mov rax, [rip + 0x50]`. It is not a load through r14 either (J1).
     let mut a = Assembler::new(Arch::X64);
     a.x64(
         &[0x48, 0x8b, 0x05, 0, 0, 0, 0],
@@ -230,7 +230,125 @@ fn an_x64_disp32_field_needs_a_reg_plus_disp32_operand() {
     assert_eq!(
         finalize_unit(&a.finish().unwrap(), &common::TestUnit),
         Err(FinalizeError::TextRelocations(vec![
-            Finding::NotRegisterRelative { at: 3 }
+            Finding::NotRegisterRelative { at: 3 },
+            Finding::NotUnitDataLoad { at: 3 }
         ]))
     );
 }
+
+/// LinkSlot, IcCell and the stub's link cell are loads through the unit-data register x27/r14
+/// (H34-Q1; Claude JIT reviewer J1). `finalize_unit` refuses each such field in another
+/// instruction: a load through the isolate register, a store, a `lea`, a 32-bit load, or a
+/// load with an index register. Each of these 8 inputs gave a unit (`Ok`) on the old code.
+#[test]
+fn a_unit_data_field_needs_a_load_through_the_unit_data_register() {
+    let a64_one = |w: u32, t: Target| {
+        let mut a = Assembler::new(Arch::A64);
+        a.a64(w, Form::A64Ldst64Imm12, t).unwrap();
+        finalize_unit(&a.finish().unwrap(), &common::TestUnit).map(|u| u.rw().len())
+    };
+    let x64_one = |b: &[u8], t: Target| {
+        let mut a = Assembler::new(Arch::X64);
+        let mut v = b.to_vec();
+        v.extend_from_slice(&[0; 4]);
+        a.x64(&v, b.len() as u32, Form::X64Disp32, t).unwrap();
+        a.put(&x64::NOP);
+        finalize_unit(&a.finish().unwrap(), &common::TestUnit).map(|u| u.rw().len())
+    };
+    let refused = |at| {
+        Err(FinalizeError::TextRelocations(vec![
+            Finding::NotUnitDataLoad { at },
+        ]))
+    };
+    // AArch64: ldr x0, [x28]; str x0, [x27]; ldr x16, [x28].
+    assert_eq!(a64_one(a64::LDR_X0_X28, Target::LinkSlot(2)), refused(0));
+    assert_eq!(a64_one(STR_X0_X27, Target::IcCell(3)), refused(0));
+    assert_eq!(a64_one(a64::LDR_X16_X28, Target::Stub(1)), refused(0));
+    // x86-64: mov rax, [r15 + d32]; mov [r14 + d32], rax; lea rax, [r14 + d32];
+    // mov eax, [r14 + d32]; mov rax, [r14 + r12 + d32].
+    assert_eq!(
+        x64_one(&[0x49, 0x8b, 0x87], Target::LinkSlot(2)),
+        refused(3)
+    );
+    assert_eq!(x64_one(&[0x49, 0x89, 0x86], Target::IcCell(1)), refused(3));
+    assert_eq!(x64_one(&[0x49, 0x8d, 0x86], Target::Stub(1)), refused(3));
+    assert_eq!(
+        x64_one(&[0x41, 0x8b, 0x86], Target::LinkSlot(1)),
+        refused(3)
+    );
+    assert_eq!(
+        x64_one(&[0x4b, 0x8b, 0x84, 0x26], Target::IcCell(1)),
+        refused(4)
+    );
+    // The loads of the form: ldr x16, [x27]; ldr x0, [x27]; mov rax, [r14 + d32];
+    // mov r8, [r14 + d32] (REX.R: any destination).
+    assert_eq!(a64_one(a64::LDR_X16_X27, Target::LinkSlot(2)), Ok(1));
+    assert_eq!(a64_one(0xf940_0360, Target::IcCell(3)), Ok(1));
+    assert_eq!(x64_one(&[0x49, 0x8b, 0x86], Target::Stub(1)), Ok(1));
+    assert_eq!(x64_one(&[0x4d, 0x8b, 0x86], Target::IcCell(1)), Ok(1));
+    // The isolate-register rows are not checked here: Runtime through x28 is a unit.
+    assert_eq!(a64_one(a64::LDR_X16_X28, Target::Runtime(4)), Ok(0));
+
+    // The check alone, on records read back: a field past the end, and an x86-64 field with
+    // fewer than 3 bytes before it.
+    let rw = |at| RwUse {
+        at,
+        kind: RelocKind::LinkSlot,
+        index: 0,
+        word: 0,
+    };
+    assert_eq!(
+        check_unit_data_loads(Arch::A64, &a64::LDR_X16_X27.to_le_bytes(), &[rw(4)]),
+        [Finding::FieldOutsideText { at: 4 }]
+    );
+    assert_eq!(
+        check_unit_data_loads(Arch::X64, &[0x8b, 0x86, 0, 0, 0, 0], &[rw(2)]),
+        [Finding::NotUnitDataLoad { at: 2 }]
+    );
+    assert_eq!(
+        check_unit_data_loads(Arch::X64, &[0x49, 0x8b, 0x86, 0, 0, 0], &[rw(3)]),
+        [Finding::FieldOutsideText { at: 3 }]
+    );
+}
+
+/// `check_text` is public, and a check of a unit read back gives it fields from outside: a
+/// field past the end of the text is a finding, not a panic (Claude JIT reviewer J2). On the
+/// old code the first input panicked (a slice index) and the second overflowed `at + 4`.
+#[test]
+fn check_text_gives_a_finding_for_a_field_outside_the_text() {
+    let one =
+        |arch, len: usize, at: u32, form| check_text(arch, &vec![0; len], &[Field { at, form }]);
+    assert_eq!(
+        one(Arch::X64, 4, 10, Form::X64Rel32),
+        [Finding::FieldOutsideText { at: 10 }]
+    );
+    assert_eq!(
+        one(Arch::X64, 4, u32::MAX, Form::X64Rel32),
+        [Finding::FieldOutsideText { at: u32::MAX }]
+    );
+    assert_eq!(
+        one(Arch::X64, 12, 5, Form::Abs64),
+        [Finding::FieldOutsideText { at: 5 }]
+    );
+    // A field inside the text gets the other rules.
+    assert_eq!(
+        one(Arch::X64, 8, 2, Form::X64Disp32),
+        [Finding::NotRegisterRelative { at: 2 }]
+    );
+    // AArch64: a word field at the last word is inside; one word later it is not.
+    let b = |at| Field {
+        at,
+        form: Form::A64Branch26,
+    };
+    // nop; b +0 (a branch to itself: inside).
+    let mut t = a64::NOP.to_le_bytes().repeat(2);
+    t[4..].copy_from_slice(&a64::B.to_le_bytes());
+    assert_eq!(check_text(Arch::A64, &t, &[b(4)]), []);
+    assert_eq!(
+        check_text(Arch::A64, &t, &[b(8)]),
+        [Finding::FieldOutsideText { at: 8 }]
+    );
+}
+
+/// `str x0, [x27, #0]`.
+const STR_X0_X27: u32 = 0xf900_0360;

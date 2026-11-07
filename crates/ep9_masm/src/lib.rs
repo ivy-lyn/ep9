@@ -16,6 +16,7 @@
 //! | a new kind is handled or rejected by both finalizers | each finalizer matches every kind with no wildcard arm; an unknown code is `FinalizeError::UnknownKind` |
 //! | the unit writer rejects HeapConst | `finalize_unit` gives `FinalizeError::HeapConstInUnit`; a `UnitCode` has no public constructor, so a writer that takes one gets no HeapConst (the ep9_unit writer is still empty) |
 //! | zero text relocations | `finalize_unit` runs `check_text` on every unit it makes |
+//! | LinkSlot, IcCell and the stub's link cell through the unit-data register (H34-Q1) | `finalize_unit` runs `check_unit_data_loads` on every unit it makes |
 //!
 //! No tier code uses this crate in month 7 (plan v12 rule 71): the tests write their stub
 //! code by hand. The crate has no dependencies (dep-guards check 21) and no `unsafe` code; it
@@ -40,5 +41,6 @@ pub use kind::{KIND_COUNT, Label, RelocKind, Target};
 pub use stream::{Arch, Assembler, CodeDesc, EmitError, FieldError, Form, FormClass, Reloc};
 #[cfg(feature = "aot")]
 pub use unit::{
-    Field, Finding, RwUse, UnitCode, UnitEnv, check_text, finalize_unit, zero_text_relocations,
+    Field, Finding, RwUse, UnitCode, UnitEnv, check_text, check_unit_data_loads, finalize_unit,
+    zero_text_relocations,
 };
