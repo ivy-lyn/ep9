@@ -298,3 +298,34 @@ fn month_day_to_plain_date_resolves_era_fields_with_the_year() {
         ])
     );
 }
+
+/// Temporal.PlainMonthDay.from(string, options) (ToTemporalMonthDay steps 4-12): the syntax
+/// and the calendar id first, then GetOptionsObject and the overflow option, and only then
+/// the RangeError of a date outside the Temporal limits (a non-ISO month-day string keeps its
+/// year), in the form of PlainYearMonth.from. So `null` options give a TypeError, and the
+/// overflow getter runs before the RangeError. node 26 gives the same lines.
+#[test]
+fn month_day_from_string_reads_the_options_before_the_limits_error() {
+    assert_eq!(
+        run_both(
+            r#"for (var s of ["+999999-01-01[u-ca=gregory]", "+999999-01-01[u-ca=japanese]", "-271821-04-18[u-ca=gregory]", "-271821-04-19[u-ca=gregory]", "01-01", "2020-13-01[u-ca=gregory]", "2020-01-01[u-ca=julian]"]) {
+              var row = [];
+              var log = [];
+              var opts = { get overflow() { log.push("overflow"); return "constrain"; } };
+              function t(f) { try { row.push(f().toString()); } catch (e) { row.push(e.constructor.name); } }
+              t(() => Temporal.PlainMonthDay.from(s, opts));
+              t(() => Temporal.PlainMonthDay.from(s, null));
+              print(s, row.join(" "), log.join());
+            }"#
+        ),
+        lines(&[
+            "+999999-01-01[u-ca=gregory] RangeError TypeError overflow",
+            "+999999-01-01[u-ca=japanese] RangeError TypeError overflow",
+            "-271821-04-18[u-ca=gregory] RangeError TypeError overflow",
+            "-271821-04-19[u-ca=gregory] 1972-04-19[u-ca=gregory] TypeError overflow",
+            "01-01 01-01 TypeError overflow",
+            "2020-13-01[u-ca=gregory] RangeError RangeError ",
+            "2020-01-01[u-ca=julian] RangeError RangeError ",
+        ])
+    );
+}

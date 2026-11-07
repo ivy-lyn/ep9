@@ -18,6 +18,7 @@ use ep9_vm::{
 use temporal_rs::PlainMonthDay;
 use temporal_rs::fields::CalendarFields;
 use temporal_rs::options::{DisplayCalendar, Overflow};
+use temporal_rs::parsed_intermediates::ParsedDate;
 use temporal_rs::partial::PartialDate;
 
 use crate::calendar::{
@@ -202,15 +203,21 @@ fn to_temporal_month_day<'s>(
     let Some(s) = item.as_string() else {
         return Err(cx.throw_type_error("a month-day must be an object or a string"));
     };
-    // 4-7. ParseISODateTime(item, « TemporalMonthDayString »); the calendar.
+    // 4. ParseISODateTime(item, « TemporalMonthDayString »): the syntax, a valid ISO date and
+    //    a known calendar id.
     let text = temporal_text(cx, s)?;
-    let md = PlainMonthDay::from_utf8(text.as_bytes()).or_throw(cx)?;
-    string_calendar(cx, &text, Some(md.calendar()))?;
+    let parsed = ParsedDate::month_day_from_utf8(text.as_bytes()).or_throw(cx)?;
+    // 10-. The reference year: 1972 for iso8601, else ISODateWithinLimits and the
+    //      calendar's reference year (temporal_rs): built here, thrown after the options.
+    let built = PlainMonthDay::from_parsed(parsed);
+    // 5-7. CanonicalizeCalendar (AvailableCalendars, calendar.rs), before the options.
+    //      ParsedDate hides its calendar, so a month-day out of the limits reads it from the
+    //      string (as in ToTemporalDate).
+    string_calendar(cx, &text, built.as_ref().ok().map(PlainMonthDay::calendar))?;
     // 8-9. Let resolvedOptions be ? GetOptionsObject(options); GetTemporalOverflowOption.
     let options = get_options_object(cx, options)?;
     get_overflow(cx, options)?;
-    // 10-. The reference year: 1972 for iso8601, else the calendar's (temporal_rs, above).
-    Ok(md)
+    built.or_throw(cx)
 }
 
 // ---- constructor and statics ----------------------------------------------------------------
