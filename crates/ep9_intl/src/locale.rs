@@ -21,6 +21,8 @@
 //! are in this block. Ids are append-only: definition `i` of [`DEFS`] is
 //! `BuiltinId::new(BLOCK, i)`, pinned by `crates/ep9_builtins/tests/golden/ids-locale.txt`.
 
+use std::collections::HashSet;
+
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
     IntrinsicValue, JsObject, JsResult, Local, ObjectClass, ObjectProps, PropAttrs, PropDef,
@@ -480,15 +482,14 @@ fn subtag_option<'s>(
 
 /// The variants option check (UpdateLanguageId step 9): not empty, each subtag a
 /// `unicode_variant_subtag`, no repeat (after ASCII lower case).
+/// The repeat check is a set, so n subtags cost O(n), not O(n^2).
 fn is_variants_option(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
-    let subtags: Vec<&str> = lower.split('-').collect();
+    let mut seen: HashSet<&str> = HashSet::new();
     !s.is_empty()
-        && subtags.iter().all(|v| tag::is_variant_subtag(v))
-        && subtags
-            .iter()
-            .enumerate()
-            .all(|(i, v)| !subtags[..i].contains(v))
+        && lower
+            .split('-')
+            .all(|v| tag::is_variant_subtag(v) && seen.insert(v))
 }
 
 /// UpdateLanguageId ( tag, options ) (14.1.3) on the canonical tag `tag`, then the canonical
@@ -804,6 +805,27 @@ mod tests {
         make_locale_record(&canonical_locale(tag).unwrap(), &o)
             .unwrap()
             .locale
+    }
+
+    /// The variants option check is linear: 100,000 subtags of 8 characters (900 KB) with and
+    /// without a repeat at the end, under 5 s (Codex r1 LOCALE-1: the scan of the subtags
+    /// before each one was O(n^2), 27.8 s in a release build, with no poll).
+    #[test]
+    fn a_long_variants_option_is_checked_in_linear_time() {
+        let v: Vec<String> = (0..100_000)
+            .map(|i| format!("v{}", 1_000_000 + i))
+            .collect();
+        let option = v.join("-");
+        let t = std::time::Instant::now();
+        assert!(is_variants_option(&option));
+        assert!(!is_variants_option(&format!("{option}-V1000000")));
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+        assert!(is_variants_option("fonipa-1996"));
+        assert!(!is_variants_option("fonipa-FONIPA"));
+        assert!(!is_variants_option(""));
+        assert!(!is_variants_option("fonipa-"));
+        assert!(!is_variants_option("abc"));
     }
 
     #[test]
