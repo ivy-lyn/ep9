@@ -93,30 +93,35 @@ fn is_tkey(s: &str) -> bool {
 /// if the first subtag is no language subtag, or a variant repeats.
 #[allow(clippy::type_complexity)]
 fn language_id(
-    subtags: &[String],
+    subtags: &[&str],
     i: &mut usize,
 ) -> Option<(String, Option<String>, Option<String>, Vec<String>)> {
-    let lang = subtags.get(*i).filter(|s| is_language_subtag(s))?.clone();
+    let lang = subtags.get(*i).filter(|s| is_language_subtag(s))?.to_string();
     *i += 1;
     let mut script = None;
     let mut region = None;
     let mut variants: Vec<String> = Vec::new();
     if let Some(s) = subtags.get(*i).filter(|s| is_script_subtag(s)) {
-        script = Some(s.clone());
+        script = Some(s.to_string());
         *i += 1;
     }
     if let Some(s) = subtags.get(*i).filter(|s| is_region_subtag(s)) {
-        region = Some(s.clone());
+        region = Some(s.to_string());
         *i += 1;
     }
     while let Some(s) = subtags.get(*i).filter(|s| is_variant_subtag(s)) {
-        if variants.contains(s) {
+        if variants.iter().any(|v| v == s) {
             return None;
         }
-        variants.push(s.clone());
+        variants.push(s.to_string());
         *i += 1;
     }
     Some((lang, script, region, variants))
+}
+
+/// The subtags `s` as owned strings.
+fn owned(s: &[&str]) -> Vec<String> {
+    s.iter().map(|t| (*t).to_string()).collect()
 }
 
 /// Parses `tag` by the `unicode_locale_id` grammar of UTS 35 with the ECMA-402 limits
@@ -126,13 +131,16 @@ pub fn parse(tag: &str) -> Option<Parsed> {
     if tag.is_empty() || !tag.is_ascii() {
         return None;
     }
-    let subtags: Vec<String> = tag.split('-').map(|s| s.to_ascii_lowercase()).collect();
-    if subtags
-        .iter()
+    // Each subtag is 1-8 ASCII letters or digits: checked on the input before any subtag list
+    // is made, so a long invalid tag ("-".repeat(n)) is rejected with no allocation.
+    if tag
+        .split('-')
         .any(|s| s.is_empty() || s.len() > 8 || !is_alnum(s))
     {
         return None;
     }
+    let lower = tag.to_ascii_lowercase();
+    let subtags: Vec<&str> = lower.split('-').collect();
     let mut i = 0;
     let (language, script, region, variants) = language_id(&subtags, &mut i)?;
     let mut out = Parsed {
@@ -161,7 +169,7 @@ pub fn parse(tag: &str) -> Option<Parsed> {
                 if i == subtags.len() {
                     return None;
                 }
-                out.private = subtags[i..].to_vec();
+                out.private = owned(&subtags[i..]);
                 return Some(out);
             }
             b'u' => {
@@ -202,7 +210,7 @@ pub fn parse(tag: &str) -> Option<Parsed> {
         if i == start {
             return None;
         }
-        out.extensions.push((singleton, subtags[start..i].to_vec()));
+        out.extensions.push((singleton, owned(&subtags[start..i])));
     }
     Some(out)
 }
