@@ -16,6 +16,8 @@
 //! No `Cx` in this module except [`canonicalize_locale_list`], so the tag code has unit tests
 //! with no isolate.
 
+use std::collections::HashSet;
+
 use ep9_vm::{Cx, JsResult, Local, ObjectClass};
 use icu_locale::LocaleCanonicalizer;
 use icu_locale_core::Locale;
@@ -96,11 +98,16 @@ fn language_id(
     subtags: &[&str],
     i: &mut usize,
 ) -> Option<(String, Option<String>, Option<String>, Vec<String>)> {
-    let lang = subtags.get(*i).filter(|s| is_language_subtag(s))?.to_string();
+    let lang = subtags
+        .get(*i)
+        .filter(|s| is_language_subtag(s))?
+        .to_string();
     *i += 1;
     let mut script = None;
     let mut region = None;
     let mut variants: Vec<String> = Vec::new();
+    // The repeat check: a set, so a tag of n variants costs O(n), not O(n^2).
+    let mut seen: HashSet<&str> = HashSet::new();
     if let Some(s) = subtags.get(*i).filter(|s| is_script_subtag(s)) {
         script = Some(s.to_string());
         *i += 1;
@@ -110,7 +117,7 @@ fn language_id(
         *i += 1;
     }
     while let Some(s) = subtags.get(*i).filter(|s| is_variant_subtag(s)) {
-        if variants.iter().any(|v| v == s) {
+        if !seen.insert(s) {
             return None;
         }
         variants.push(s.to_string());
@@ -589,6 +596,24 @@ mod tests {
         ] {
             assert!(!is_structurally_valid_language_tag(t), "{t}");
         }
+    }
+
+    /// The variant repeat check is a set: 100,000 variants (900 KB of tag) parse in linear
+    /// time, with and without a repeat at the end (Codex r1 CORE-3: the list scan was
+    /// O(n^2), 8.2 s for 100,000 variants in a release build, and it has no poll). The 5 s
+    /// bound is far above the linear time of a debug build and far below the old time.
+    #[test]
+    fn many_variants_parse_in_linear_time() {
+        let variants: Vec<String> = (0..100_000)
+            .map(|i| format!("v{}", 1_000_000 + i))
+            .collect();
+        let tag = format!("en-{}", variants.join("-"));
+        let repeat = format!("{tag}-v1000000");
+        let t = std::time::Instant::now();
+        assert_eq!(parse(&tag).map(|p| p.variants.len()), Some(100_000));
+        assert!(!is_structurally_valid_language_tag(&repeat));
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
     }
 
     /// node v26.13.0 `Intl.getCanonicalLocales` results.
