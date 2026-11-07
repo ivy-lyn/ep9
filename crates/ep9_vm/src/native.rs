@@ -655,7 +655,7 @@ fn not_call(cx: &mut Cx, off: usize) -> Throw {
 
 // ---- the spike API -------------------------------------------------------------------------
 
-/// Why [`install_code`] or [`uninstall_code`] (or the spike `install_native`) refused.
+/// Why `install_code` or `uninstall_code` (or the spike `install_native`) refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallError {
     /// The value is not a FUNCTION with bytecode (a host or bound function, or no function).
