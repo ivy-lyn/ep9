@@ -247,8 +247,12 @@ impl Shim {
     /// group name (its escapes are always Unicode mode); `\uXXXX` else. After a `\` the lone
     /// surrogate is an identity escape: outside Unicode mode the `\` goes and the escape is
     /// written as above; in Unicode mode the U+FFFD stays, so the escape stays an error.
+    /// `\k<` starts a group name only if the pattern has named groups (Unicode mode, or a
+    /// `(?<name>` group: the N parameter, §22.2.3.4 and B.1.2); else `\k` is an identity
+    /// escape and `<` a plain character.
     fn escaped_pattern(&self, text: &str, start: u32, end: u32, unicode: bool) -> String {
         let slice = &text[start as usize..end as usize];
+        let named = unicode || has_group_name(slice);
         let mut out = String::with_capacity(slice.len() + 16);
         let (mut in_class, mut in_name, mut escaped) = (false, false, false);
         let mut chars = slice.char_indices().peekable();
@@ -270,7 +274,7 @@ impl Shim {
                 }
                 out.push('\\');
                 out.push(c);
-                if c == 'k' && !in_class && chars.peek().map(|&(_, n)| n) == Some('<') {
+                if c == 'k' && named && !in_class && chars.peek().map(|&(_, n)| n) == Some('<') {
                     in_name = true;
                 }
                 continue;
@@ -395,6 +399,31 @@ impl Shim {
         }
         out
     }
+}
+
+/// True if the regex pattern `pattern` has a `(?<name>` group outside a class (not `(?<=` or
+/// `(?<!`, and not after a `\`): a pattern with named groups, where `\k<` is a group name.
+fn has_group_name(pattern: &str) -> bool {
+    let (mut in_class, mut escaped) = (false, false);
+    for (i, c) in pattern.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '[' => in_class = true,
+            ']' => in_class = false,
+            '(' if !in_class => {
+                let rest = &pattern[i + 1..];
+                if rest.starts_with("?<") && !rest.starts_with("?<=") && !rest.starts_with("?<!") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// True if a string value, template value or regex pattern of `text` can hold U+FDD1 (S5):
@@ -714,9 +743,26 @@ mod tests {
             pattern(&[("(?<=a", Some(0xD801)), (")", None)], false),
             "(?<=a\\uD801)"
         );
+        // `\k<` is a group name only with named groups (Codex r1 FE-SHIM 3).
         assert_eq!(
             pattern(&[("\\k<a", Some(0xD801)), (">", None)], false),
+            "\\k<a\\uD801>"
+        );
+        assert_eq!(
+            pattern(&[("\\k<a", Some(0xD801)), (">", None)], true),
             "\\k<a\\u{D801}>"
+        );
+        assert_eq!(
+            pattern(&[("(?<a>.)\\k<a", Some(0xD801)), (">", None)], false),
+            "(?<a>.)\\k<a\\u{D801}>"
+        );
+        assert_eq!(
+            pattern(&[("[(?<a>]\\k<[z-", Some(0xD800)), ("]>", None)], false),
+            "[(?<a>]\\k<[z-\\uD800]>"
+        );
+        assert_eq!(
+            pattern(&[("\\(?<a>\\k<[z-", Some(0xD800)), ("]>", None)], false),
+            "\\(?<a>\\k<[z-\\uD800]>"
         );
         assert_eq!(
             pattern(&[("[(?<", Some(0xD801)), ("]", None)], false),

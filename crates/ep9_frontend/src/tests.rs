@@ -430,6 +430,22 @@ fn shim_regex_literals() {
     ])));
 }
 
+/// `\k<` is a group name only in a pattern with named groups (Codex r1 FE-SHIM 3): with no
+/// u or v flag and no `(?<name>` group, `\k` is an identity escape (B.1.2), so `[z-` and a
+/// lone surrogate after it are a class in order (node: `/\k<[z-\uD800]>/` compiles). With a
+/// group or the u flag, `\k<[z-...]>` is a bad group name: a SyntaxError.
+#[test]
+fn shim_k_escape_is_a_group_name_only_with_named_groups() {
+    let plain = eval_shim(&[P::T("/\\k<[z-"), P::U(0xD800), P::T("]>/")]);
+    assert!(plain.is_ok(), "{plain:?}");
+    let u = plain.expect("compiles");
+    assert!(has_string(&u, &[P::T("\\k<[z-"), P::U(0xD800), P::T("]>")]));
+    for (head, flags) in [("/(?<a>.)\\k<[z-", ""), ("/\\k<[z-", "u")] {
+        let r = eval_shim(&[P::T(head), P::U(0xD800), P::T("]>/"), P::T(flags)]);
+        assert!(is_syntax(&r), "{head} {flags}: {r:?}");
+    }
+}
+
 /// A real U+FDD0 (shim text U+FDD0 U+FDD0) stays U+FDD0, also before 4 hex digits; a string
 /// with U+FDD1 runs keeps its value next to a placeholder (surrogate.rs S5).
 #[test]
