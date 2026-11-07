@@ -154,9 +154,8 @@ deps_within 6 ep9_math
 # 7) ep9_facts depends on ep9_bytecode only (H16: a fact holds no VM or heap type).
 deps_within 7 ep9_facts ep9_bytecode
 
-# 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math for Math (H20),
-#    ep9_temporal for the Temporal modules (design SPEC-T-D11; check 18 keeps its edges) and
-#    ep9_intl for the Intl modules (INTL-I1-D1, layout B; check 21 keeps its edges).
+# 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math (Math, H20), ep9_temporal
+#    (Temporal; SPEC-T-D11, check 18 keeps its edges) and ep9_intl (Intl; INTL-I1-D1, check 21).
 deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal ep9_intl
 
 # 9) The jitless ep9 has no `jit` feature anywhere in its graph (H27): no ep9_platform "jit".

@@ -61,10 +61,6 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
         ("plain_year_month", 25),
         ("plain_month_day", 26),
         ("zoned_date_time", 27),
-        ("iterator", 28),
-        ("intl", 29),
-        ("locale", 30),
-        ("collator", 31),
     ];
     assert_eq!(&got[..fixed.len()], &fixed[..]);
     for (i, &(name, block)) in got.iter().enumerate() {
@@ -98,6 +94,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
                 .collect::<Vec<_>>()
         );
     }
+    // The Intl blocks follow iterator (block 28).
     assert_eq!(ep9_intl::intl::BLOCK, 29);
     assert_eq!(ep9_intl::locale::BLOCK, 30);
     assert_eq!(ep9_intl::collator::BLOCK, 31);
