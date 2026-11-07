@@ -316,10 +316,11 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 // ---- (b) and (c): threaded handlers --------------------------------------------------------
 
 /// The `Flow::Record` arm of a threaded fast handler. (b) (`return`): a tail call of
-/// [`record_next`] with the handler's state (the instruction's own pc) and a constant word
-/// (the record's bits, the slot operand's offset and the instruction length,
-/// [`slot_place`]), so the handler holds no value for the record: `record_next` reads the slot
-/// operand again and finds the next pc. (c) (`become` needs the same signature): records
+/// [`record_next`] with the handler's state (the instruction's own pc) and the record's bits;
+/// its const parameter is the instruction's [`slot_place`] (the slot operand's offset and the
+/// instruction length), so the handler holds no value for the slot: `record_next` reads the
+/// slot operand at its constant offset and finds the next pc. (c) (`become` needs the same
+/// signature): records
 /// inline and continues at the next pc. The `ics_only` expansions (MODES-D11, MODES-D19; M5-P3
 /// PROFILE6) drop the record: (b) tail-calls [`skip_next`] (no record, the next pc), (c)
 /// continues at the next pc. Their fast handlers have no record code; the bits are dead there.
@@ -336,10 +337,13 @@ macro_rules! record_exit {
         let St {
             cx, pc, fp, acc, ..
         } = $st;
-        let w = $r.sib_word(const { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) });
         // SAFETY: `pc` is this one-byte-scale instruction of verified code in the live frame
         // `fp`; `slot_place` gives its slot operand and its length.
-        unsafe { return $crate::interp::dsl::record_next(cx, pc, fp, acc, w) }
+        unsafe {
+            return $crate::interp::dsl::record_next::<
+                { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) },
+            >(cx, pc, fp, acc, $r.bits());
+        }
     }};
     (become, full, $name:ident, $st:ident, $r:ident) => {{
         $crate::profile::record(&$st, $r);
@@ -519,25 +523,26 @@ macro_rules! record_next_fn {
         /// frame `fp`, then dispatches the next instruction as the handler would have.
         /// Out of line (a fast handler reaches it by a tail call), so on x86-64 the record's
         /// registers are saved here, not on entry to every handler that may record
-        /// (M4-P1 PROFILE-X64). `cargo xtask disasm-check` follows the jump to it as part of
-        /// the handler.
+        /// (M4-P1 PROFILE-X64). One copy per `PLACE` (M7-P2 RECCOST): the slot operand's
+        /// offset and the instruction length are constants, so it decodes no word (x86-64: 16
+        /// instructions on the path that adds no bit, 22 before). `cargo xtask disasm-check`
+        /// follows the jump to it as part of the handler.
         ///
         /// # Safety
         /// `pc` is an instruction of verified code at one-byte scale in the live top frame
-        /// `fp`, and `rec` is a `profile::Rec::sib_word` with its `slot_place`.
+        /// `fp`, `PLACE` is its `slot_place`, and `bits` is a `profile::Rec::bits`.
         #[cfg($cfg)]
         #[inline(never)]
-        #[unsafe(export_name = "ep9rec__sib__record_next")]
-        pub(crate) unsafe extern $abi fn record_next(
+        pub(crate) unsafe extern $abi fn record_next<const PLACE: u64>(
             cx: &mut $crate::interp::Cx,
             pc: *const u8,
             fp: *mut u64,
             acc: u64,
-            rec: u64,
+            bits: u64,
         ) -> u64 {
             #[cfg(debug_assertions)]
             debug_native_stack_check(cx);
-            let (off, len) = (((rec >> 32) & 0xFF) as usize, ((rec >> 40) & 0xFF) as usize);
+            let (off, len) = ((PLACE & 0xFF) as usize, ((PLACE >> 8) & 0xFF) as usize);
             debug_assert!(off != 0, "Flow::Record from an opcode without a slot operand");
             // SAFETY: caller contract: the one-byte slot operand is at `pc + off` and the
             // instruction is `len` bytes long, in verified code.
@@ -545,7 +550,7 @@ macro_rules! record_next_fn {
             let slot = $crate::interp::dsl::FSlot(slot);
             // SAFETY: caller contract (`St::new`: `next` is an instruction start of `fp`).
             let st = unsafe { crate::interp::St::new(cx, next, fp, acc, next) };
-            $crate::profile::record(&st, $crate::profile::Rec::new(slot, rec as u32));
+            $crate::profile::record(&st, $crate::profile::Rec::new(slot, bits as u32));
             let crate::interp::St { cx, fp, acc, .. } = st;
             // SAFETY: `next` is an instruction start of verified code.
             let h = cx.table[unsafe { *next } as usize];
