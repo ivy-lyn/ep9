@@ -1,0 +1,40 @@
+[package]
+name = "ep9_intl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Intl (ECMA-402 on ICU4X; INTL-I1-D1, layout B): glue from the Cx builtin ABI (H20) to ICU4X.
+# `#![forbid(unsafe_code)]`; the heap only through ep9_vm's Cx. ep9_builtins lists its modules
+# in ep9_builtins::MODULES. Edges: .github/scripts/dep-guards.sh checks 21-23. ep9_intl reads
+# Temporal objects and the tz data only through ep9_temporal's pub API (std types): no
+# temporal_rs, timezone_provider or zoneinfo64 edge of any kind (check 19, INTL-I1-D9).
+[dependencies]
+ep9_temporal = { path = "../ep9_temporal" }
+ep9_vm = { path = "../ep9_vm" }
+# The ICU4X 2.3.x components (INTL-I1-D5); the features are in the root Cargo.toml.
+icu_calendar = { workspace = true }
+icu_casemap = { workspace = true }
+icu_collator = { workspace = true }
+icu_datetime = { workspace = true }
+icu_decimal = { workspace = true }
+icu_experimental = { workspace = true }
+fixed_decimal = { workspace = true }
+icu_list = { workspace = true }
+icu_locale = { workspace = true }
+icu_locale_core = { workspace = true }
+icu_plurals = { workspace = true }
+icu_provider = { workspace = true }
+icu_segmenter = { workspace = true }
+icu_time = { workspace = true }
+
+# The tests run JS on an isolate with ep9_builtins::TABLE (which lists this crate's modules).
+[dev-dependencies]
+ep9_builtins = { path = "../ep9_builtins" }
+ep9_frontend = { path = "../ep9_frontend" }
+ep9_heap = { path = "../ep9_heap" }
+
+[lints]
+workspace = true
