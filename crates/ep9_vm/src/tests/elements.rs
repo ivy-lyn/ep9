@@ -1464,3 +1464,374 @@ fn a_refused_store_that_fills_up_grows_again() {
         checked(rt, o);
     });
 }
+
+// ---- the extra element kinds: integrity levels as shape flags (M7-P3 ELEMKINDS) ---------
+
+/// A new Array with the int32 values `vs` (dense, PACKED_INT32), or with `d` at index 1 when
+/// `d` is a double (PACKED_DOUBLE).
+fn dense(rt: &Runtime, vs: &[i32], d: Option<f64>) -> u64 {
+    let a = object::new_array(rt, vs.len());
+    for (i, &v) in vs.iter().enumerate() {
+        assert!(object::array_set(rt, a, i as u32, int(v)));
+    }
+    if let Some(d) = d {
+        assert!(object::array_set(rt, a, 1, dbl(d)));
+    }
+    a
+}
+
+/// The elements cell at +16 of `o` and its capacity word.
+fn cell_and_capacity(o: u64) -> (u64, u64) {
+    let e = object::rd(object::cell(o), obj::ELEMENTS);
+    (e, object::rd(object::cell(e), object::elems::CAPACITY))
+}
+
+/// H18 "extra element kinds", flags first (V11-D5, V11-D6): SEALED and FROZEN are shape flag
+/// bits 4 and 5 (H17 "shape flag bits (append-only)", lowest free bits first), not elements
+/// kind values. `elements::set_integrity` sets them on a non-extensible Array with dense
+/// elements; the kind, the storage form and the elements cell stay; the element attributes
+/// follow the level; the levels are one-way; and every other object takes the defines one by
+/// one (false). On the old code (3dd68d10, 18492a40) the only form was DICTIONARY elements.
+#[test]
+fn a_level_is_a_shape_flag_and_the_storage_form_stays() {
+    use shape::{flag, level};
+    assert_eq!((level::SEALED, level::FROZEN), (1 << 4, 1 << 5));
+    assert_eq!(level::INTEGRITY & (flag::EXTENSIBLE | flag::DICTIONARY), 0);
+    assert_eq!(level::INTEGRITY & (flag::PROTOTYPE | flag::UNIQUE), 0);
+    each(|_, rt| {
+        let a = dense(rt, &[1, 2, 3], Some(2.5));
+        assert_eq!(elements::kind_of(a), ek::PACKED_DOUBLE);
+        // An extensible array takes the defines: no level.
+        assert!(!elements::set_integrity(rt, a, false));
+        assert_eq!(elements::integrity_of(a), 0);
+        assert_eq!(elements::dense_attrs(a), attr::DEFAULT);
+        assert!(property::prevent_extensions(rt, a));
+        let (cell, cap) = cell_and_capacity(a);
+        assert!(elements::set_integrity(rt, a, false));
+        assert_eq!(elements::integrity_of(a), level::SEALED);
+        assert_eq!(elements::dense_attrs(a), attr::WRITABLE | attr::ENUMERABLE);
+        assert!(elements::length_writable(a));
+        assert_eq!(
+            elements::kind_of(a),
+            ek::PACKED_DOUBLE,
+            "the storage form stays"
+        );
+        assert_eq!(
+            cell_and_capacity(a),
+            (cell, cap),
+            "the same cell, the same size"
+        );
+        assert_eq!(object::array_get(a, 1), Some(dbl(2.5)));
+        assert!(!shape::is_extensible(shape::shape_of(a)));
+        checked(rt, a);
+        assert!(elements::set_integrity(rt, a, true));
+        assert_eq!(elements::integrity_of(a), level::INTEGRITY);
+        assert_eq!(elements::dense_attrs(a), attr::ENUMERABLE);
+        assert!(!elements::length_writable(a), "a FROZEN `length`");
+        assert_eq!(cell_and_capacity(a), (cell, cap));
+        // One-way: sealing a frozen array keeps it frozen.
+        let s = shape::shape_of(a);
+        assert!(elements::set_integrity(rt, a, false));
+        assert_eq!(shape::shape_of(a), s);
+        checked(rt, a);
+
+        // An empty frozen array keeps its kind (no DICTIONARY for its read-only `length`).
+        let e = object::new_array(rt, 0);
+        assert!(property::prevent_extensions(rt, e));
+        assert!(elements::set_integrity(rt, e, true));
+        assert_eq!(elements::kind_of(e), ek::PACKED_INT32);
+        assert!(!elements::length_writable(e));
+        checked(rt, e);
+
+        // DICTIONARY elements and objects that are not Arrays: false, nothing changes.
+        let d = dense(rt, &[1], None);
+        elements::to_dictionary(rt, d);
+        assert!(property::prevent_extensions(rt, d));
+        let ds = shape::shape_of(d);
+        assert!(!elements::set_integrity(rt, d, true));
+        assert_eq!(shape::shape_of(d), ds);
+        let o = object::new_plain_object(rt);
+        assert!(property::prevent_extensions(rt, o));
+        assert!(!elements::set_integrity(rt, o, true));
+        assert_eq!(elements::integrity_of(o), 0);
+    });
+}
+
+/// The raw stores refuse what a level forbids, so a caller that gets false takes the
+/// attribute-aware path: `object::array_set` stores a new value into a SEALED array (also with
+/// a kind transition, which keeps the level), but not the hole, and nothing into a FROZEN one;
+/// `object::array_set_length` grows a SEALED array and cuts over holes in the dense form, and
+/// a cut over an element moves it to DICTIONARY first, whose non-configurable entries stop
+/// the cut at the highest element (§10.4.2.4 step 17). On the old code no array had a level,
+/// so each store here went through.
+#[test]
+fn the_raw_stores_refuse_what_a_level_forbids() {
+    use shape::level;
+    each(|_, rt| {
+        let s = dense(rt, &[1, 2, 3], None);
+        assert!(property::prevent_extensions(rt, s));
+        assert!(elements::set_integrity(rt, s, false));
+        assert!(
+            object::array_set(rt, s, 0, int(7)),
+            "a write of a writable element"
+        );
+        assert_eq!(object::array_get(s, 0), Some(int(7)));
+        assert!(
+            !object::array_set(rt, s, 1, HOLE),
+            "no delete of a sealed element"
+        );
+        assert_eq!(object::array_get(s, 1), Some(int(2)));
+        // A double: PACKED_INT32 -> PACKED_DOUBLE, still SEALED.
+        assert!(object::array_set(rt, s, 2, dbl(0.5)));
+        assert_eq!(elements::kind_of(s), ek::PACKED_DOUBLE);
+        assert_eq!(elements::integrity_of(s), level::SEALED);
+        // Any other Value: PACKED_ELEMENTS, still SEALED.
+        let k = key(rt, "k");
+        assert!(object::array_set(rt, s, 2, k));
+        assert_eq!(elements::kind_of(s), ek::PACKED_ELEMENTS);
+        assert_eq!(elements::integrity_of(s), level::SEALED);
+        checked(rt, s);
+        // Growth and a cut over holes keep the dense form and the level.
+        assert!(object::array_set_length(rt, s, 5));
+        assert_eq!(object::array_len(s), 5);
+        assert_eq!(elements::kind_of(s), ek::HOLEY_ELEMENTS);
+        assert_eq!(elements::integrity_of(s), level::SEALED);
+        assert!(
+            !object::array_set(rt, s, 4, HOLE),
+            "no raw hole store at all"
+        );
+        assert!(
+            object::array_set_length(rt, s, 3),
+            "a cut over the holes 3 and 4"
+        );
+        assert_eq!(elements::kind_of(s), ek::HOLEY_ELEMENTS);
+        assert_eq!(elements::integrity_of(s), level::SEALED);
+        checked(rt, s);
+        // A cut over an element: DICTIONARY, and the entry 2 stops it.
+        assert!(!object::array_set_length(rt, s, 1));
+        assert_eq!(object::array_len(s), 3);
+        assert_eq!(elements::kind_of(s), ek::DICTIONARY);
+        assert_eq!(elements::integrity_of(s), 0);
+        assert!(!object::array_set_length(rt, s, 0));
+        assert_eq!(object::array_len(s), 3);
+        let sealed = attr::WRITABLE | attr::ENUMERABLE;
+        let d = elements::dict_of(s).unwrap();
+        assert_eq!(
+            elements::dict_entries(d),
+            [(0, sealed), (1, sealed), (2, sealed)]
+        );
+        assert_eq!(elements::dict_get(d, 2), Some((k, sealed)));
+        checked(rt, s);
+
+        let f = dense(rt, &[1, 2], Some(1.5));
+        assert!(property::prevent_extensions(rt, f));
+        assert!(elements::set_integrity(rt, f, true));
+        for v in [int(9), dbl(9.5), k, HOLE] {
+            assert!(
+                !object::array_set(rt, f, 0, v),
+                "nothing into a FROZEN array"
+            );
+        }
+        assert_eq!(object::array_get(f, 0), Some(int(1)));
+        assert_eq!(object::array_get(f, 1), Some(dbl(1.5)));
+        assert_eq!(elements::kind_of(f), ek::PACKED_DOUBLE);
+        checked(rt, f);
+    });
+}
+
+/// A move to DICTIONARY elements (a far index, a `length` past the dense limit, a read-only
+/// `length`, an element with other attributes) drops the level from the shape and keeps it in
+/// each entry: SEALED {w, e}, FROZEN {e} and the cell's read-only `length` flag. The
+/// `[[GetOwnProperty]]` of `property.rs` then reads the entries.
+#[test]
+fn a_move_to_dictionary_keeps_the_level_in_each_entry() {
+    each(|cx, rt| {
+        for (frozen, want) in [
+            (false, attr::WRITABLE | attr::ENUMERABLE),
+            (true, attr::ENUMERABLE),
+        ] {
+            let a = dense(rt, &[1, 2, 3], Some(2.5));
+            assert!(property::prevent_extensions(rt, a));
+            assert!(elements::set_integrity(rt, a, frozen));
+            elements::to_dictionary(rt, a);
+            assert_eq!(elements::kind_of(a), ek::DICTIONARY);
+            assert_eq!(elements::integrity_of(a), 0, "the entries hold the level");
+            let d = elements::dict_of(a).unwrap();
+            assert_eq!(
+                elements::dict_entries(d),
+                [(0, want), (1, want), (2, want)],
+                "frozen={frozen}"
+            );
+            assert_eq!(elements::length_writable(a), !frozen);
+            let k1 = crate::key::index_key(rt, 1);
+            let got = property::get_own_property(cx, a, k1).unwrap().unwrap();
+            assert_eq!(
+                (got.value, got.writable, got.configurable),
+                (Some(dbl(2.5)), Some(!frozen), Some(false))
+            );
+            assert!(!property::internal_delete(cx, a, k1).unwrap());
+            checked(rt, a);
+        }
+        // A read-only `length` on a SEALED array (`Object.defineProperty(s, "length",
+        // {writable: false})`) moves it to DICTIONARY with sealed entries.
+        let s = dense(rt, &[4, 5], None);
+        assert!(property::prevent_extensions(rt, s));
+        assert!(elements::set_integrity(rt, s, false));
+        elements::set_length_readonly(rt, s);
+        let d = elements::dict_of(s).unwrap();
+        let sealed = attr::WRITABLE | attr::ENUMERABLE;
+        assert_eq!(elements::dict_entries(d), [(0, sealed), (1, sealed)]);
+        assert!(!elements::length_writable(s));
+        checked(rt, s);
+    });
+}
+
+/// Every shape made from a level shape keeps the level (H17 flags rule, `shape.rs`): one shared
+/// dictionary shape per (kind, flags, elements kind), a kind transition, a new prototype
+/// (`object::set_proto`), `[[PreventExtensions]]` again, and prototype mode (a unique shape
+/// with the PROTO_INFO). A prototype's level change pops its validity cell (OM-8).
+#[test]
+fn every_shape_made_from_a_level_shape_keeps_it() {
+    use shape::level;
+    each(|_, rt| {
+        let a = dense(rt, &[1], None);
+        let b = dense(rt, &[2, 3], None);
+        let c = dense(rt, &[4], None);
+        for x in [a, b, c] {
+            assert!(property::prevent_extensions(rt, x));
+        }
+        assert!(elements::set_integrity(rt, a, false));
+        assert!(elements::set_integrity(rt, b, false));
+        assert!(elements::set_integrity(rt, c, true));
+        assert_eq!(
+            shape::shape_of(a),
+            shape::shape_of(b),
+            "one shared shape per flags"
+        );
+        assert_ne!(shape::shape_of(a), shape::shape_of(c));
+        // `[[PreventExtensions]]` again keeps the level.
+        assert!(property::prevent_extensions(rt, c));
+        assert_eq!(elements::integrity_of(c), level::INTEGRITY);
+        // A new prototype keeps it.
+        let p = object::new_plain_object(rt);
+        assert!(object::set_proto(rt, a, p));
+        assert_eq!(elements::integrity_of(a), level::SEALED);
+        assert_eq!(shape::proto(shape::shape_of(a)), p);
+        checked(rt, a);
+        // Prototype mode keeps it: `c` becomes the prototype of a new object.
+        let child = object::new_object(rt, c);
+        assert!(shape::is_prototype_object(c));
+        assert_eq!(elements::integrity_of(c), level::INTEGRITY);
+        assert!(!elements::length_writable(c));
+        checked(rt, c);
+        // A level change of a prototype (a unique shape) pops its validity cell.
+        let d = dense(rt, &[5], None);
+        assert!(property::prevent_extensions(rt, d));
+        let _child2 = object::new_object(rt, d);
+        let cell0 = crate::validity::cell_for(rt, d).expect("a cell");
+        assert!(crate::validity::is_valid(cell0));
+        assert!(elements::set_integrity(rt, d, false));
+        assert!(
+            !crate::validity::is_valid(cell0),
+            "a structural change of a prototype"
+        );
+        assert_eq!(elements::integrity_of(d), level::SEALED);
+        checked(rt, d);
+        let _ = child;
+    });
+}
+
+/// MODES-CHECK-w32 MC-w32-6 (the GCPAR2 sweeper reads the size fields of live cells; only
+/// `init` writes one): no level path shrinks or resizes a cell in place. Each keeps the old
+/// elements cell with its capacity word, and a move to DICTIONARY (also the one before a cut
+/// of a SEALED array over an element) makes a new cell. The sweep of every GC mode then runs
+/// over them (`each`: GC stress 1 and the heap verifier).
+#[test]
+fn no_level_path_writes_a_size_field() {
+    each(|_, rt| {
+        let a = dense(rt, &[1, 2, 3, 4], None);
+        assert!(property::prevent_extensions(rt, a));
+        let (cell, cap) = cell_and_capacity(a);
+        assert!(elements::set_integrity(rt, a, false));
+        assert!(object::array_set_length(rt, a, 6));
+        assert!(object::array_set_length(rt, a, 4));
+        assert_eq!(cell_and_capacity(a), (cell, cap));
+        assert!(elements::set_integrity(rt, a, true));
+        assert_eq!(cell_and_capacity(a), (cell, cap));
+        let kept = object::cell(cell);
+        elements::to_dictionary(rt, a);
+        assert_ne!(
+            object::rd(object::cell(a), obj::ELEMENTS),
+            cell,
+            "a new cell"
+        );
+        assert_eq!(
+            object::rd(kept, object::elems::CAPACITY),
+            cap,
+            "the old size stays"
+        );
+        let b = dense(rt, &[1, 2, 3], None);
+        assert!(property::prevent_extensions(rt, b));
+        assert!(elements::set_integrity(rt, b, false));
+        let (cell, cap) = cell_and_capacity(b);
+        assert!(!object::array_set_length(rt, b, 0));
+        assert_ne!(cell_and_capacity(b).0, cell, "the cut makes a new cell");
+        assert_eq!(object::rd(object::cell(cell), object::elems::CAPACITY), cap);
+    });
+}
+
+/// MODES-CHECK-w23 MC-w23-19, the birth-kind rule (decided in M7-P3): a level is never a
+/// birth form. A SEALED literal array that takes a double moves its site's kind to
+/// PACKED_DOUBLE (the kind is the storage form, as for any array), but the site's result shape
+/// never becomes a level shape (it is not extensible), so the site's next arrays are born
+/// with no level; DICTIONARY stays no birth kind.
+#[test]
+fn a_level_never_becomes_a_birth_form() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(IsolateConfig {
+                feedback_threshold: 0,
+                ..config(Dispatch::DEFAULT, stress)
+            });
+            let mut s = Asm::script(0);
+            let lit = s.lit;
+            let (k1, k2) = (s.b.number_constant(1.0), s.b.number_constant(2.0));
+            let bp = s.b.array_boilerplate(vec![Some(k1), Some(k2)]);
+            let (i, a) = (s.b.new_register(), s.b.new_register());
+            s.b.lda_zero().star(i);
+            let head = s.b.bound_label();
+            let exit = s.b.new_label();
+            s.b.lda_smi(3).test_less_than(i, s.cmp).jump_if_false(exit);
+            s.b.create_array_literal(bp, lit, 1).star(a);
+            s.b.ldar(i).inc(s.bin).star(i).jump_loop(head, 0, s.loop_);
+            s.b.bind(exit);
+            s.b.ldar(a);
+            s.sta_global("a");
+            s.b.lda_undefined().return_();
+            let u = unit("", vec![s.finish()]);
+            let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "birth.js").map(|_| ()));
+            assert!(r.is_ok(), "{r:?}");
+            let a = iso.global_raw("a").unwrap().to_bits();
+            let h = object::rd(object::cell(a), object::arr::ALLOC_SITE);
+            let (site, _) = crate::literal_site::site_of(h).expect("an ALLOC_SITE");
+            assert_eq!(site, ek::PACKED_INT32, "stress={stress}");
+            let rt = &iso.rt;
+            assert!(property::prevent_extensions(rt, a));
+            assert!(elements::set_integrity(rt, a, false));
+            // The store-side transition generalizes the site (`elements::generalize_site`).
+            assert!(object::array_set(rt, a, 0, dbl(0.5)));
+            assert_eq!(elements::kind_of(a), ek::PACKED_DOUBLE);
+            assert_eq!(elements::integrity_of(a), shape::level::SEALED);
+            let (site, _) = crate::literal_site::site_of(h).unwrap();
+            assert_eq!(site, ek::PACKED_DOUBLE, "stress={stress}: the kind moves");
+            let rs = object::rd(object::cell(h), crate::literal_site::ah::RESULT);
+            if shape::is_shape(rs) {
+                assert_eq!(shape::integrity(rs), 0, "stress={stress}: no level is born");
+                assert!(shape::is_extensible(rs), "stress={stress}");
+                assert_ne!(rs, shape::shape_of(a));
+            }
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
