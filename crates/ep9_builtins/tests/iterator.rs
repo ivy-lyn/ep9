@@ -645,3 +645,26 @@ log(z.next().value.join(), z.next().value.join());
         });
     }
 }
+
+/// The open inputs of a zip in longest mode are counted once per `next`, not once per done
+/// input (Codex r1 SPEC-ITER2 1): 40,000 empty inputs that are all done in the first `next`
+/// take one pass over the list. The old scan from index 0 at each done input took about
+/// 40,000^2 / 2 list reads (over 100 s in a debug build); the wait of 30 s only stops a test
+/// that hangs.
+#[test]
+fn a_zip_of_many_done_inputs_is_linear() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let r = common::run(
+                "var z = Iterator.zip(Array(40000).fill([]), { mode: 'longest' }); \
+                 var r = z.next(); print(r.done + ' ' + r.value + ' ' + z.next().done);",
+                false,
+            );
+            let _ = tx.send(r);
+        })
+        .expect("a thread");
+    let got = rx.recv_timeout(std::time::Duration::from_secs(30));
+    assert_eq!(got, Ok(lines(&["true undefined true"])));
+}

@@ -1937,14 +1937,17 @@ fn remove_iter<'s>(cx: &mut Cx<'s>, iters: Local<'s, JsObject>, i: u64) -> JsRes
     Ok(())
 }
 
-/// True if no iterator of the pair list `iters` is open.
-fn none_open<'s>(cx: &mut Cx<'s>, iters: Local<'s, JsObject>, count: u64) -> JsResult<bool> {
+/// The number of open iterators of the pair list `iters` (`count` pairs). One pass with no
+/// JS call: one interrupt budget unit per pair (`Cx::poll_interrupt`, H23).
+fn open_count<'s>(cx: &mut Cx<'s>, iters: Local<'s, JsObject>, count: u64) -> JsResult<u64> {
+    let mut open = 0;
     for i in 0..count {
+        cx.poll_interrupt()?;
         if cx.get_index(iters, 2 * i)?.is_object() {
-            return Ok(false);
+            open += 1;
         }
     }
-    Ok(true)
+    Ok(open)
 }
 
 /// IteratorZip step 3 (the closure): one result of the zip (an array, or a null-prototype
@@ -1966,6 +1969,9 @@ fn resume_zip<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, keyed: bool) -> JsRes
     } else {
         cx.new_array().into()
     };
+    // The number of open iterators (longest mode): counted in one pass at the first input
+    // that is done in this call, then 1 less for each later one (no scan per done input).
+    let mut open: Option<u64> = None;
     //    iii. For each integer i such that 0 ≤ i < iterCount, in ascending order, do
     for i in 0..count {
         // 1. Let iter be iters[i].
@@ -2008,7 +2014,12 @@ fn resume_zip<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, keyed: bool) -> JsRes
                             //     3. Set iters[i] to null.
                             //     4. Set result to padding[i].
                             _ => {
-                                if none_open(cx, iters, count)? {
+                                let left = match open {
+                                    Some(n) => n - 1,
+                                    None => open_count(cx, iters, count)?,
+                                };
+                                open = Some(left);
+                                if left == 0 {
                                     return Ok(Resumed::Return);
                                 }
                                 let padding = list_slot(cx, o, slot::PADDING)?;
