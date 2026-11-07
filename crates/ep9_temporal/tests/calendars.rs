@@ -418,6 +418,40 @@ fn chinese_and_dangi_month_counts_equal_the_spec_loop() {
     );
 }
 
+/// Codex r2 F2: largestUnit "years" with 1 month left, chinese and dangi, both directions
+/// (until, the reverse until, since). The years are taken first (set_years), then the month
+/// search of patch 0002 runs; its bound came from the whole year difference, so the search took
+/// about 2 x span year steps (546,000 years: 1.4 s in a release build, one ICU4X call with no
+/// poll). It now comes from the year difference left after the years (0 or 1), so the cost
+/// does not depend on the span. The check is [`common::size_ratio`] of 1,000 and 546,000 years
+/// (the same work at both spans: about 1; the old search grew with the span), not a wall time
+/// (M6-ORCH-226). The lines are those of the unpatched icu_calendar 2.3.0 and of node 26.
+#[test]
+fn largest_unit_years_with_one_month_left_does_not_depend_on_the_span() {
+    let lines_of = |span: usize| {
+        let y = format!("P{span}Y1M -P{span}Y2M P{span}Y2M");
+        format!("{span} {y} {y}")
+    };
+    let work = |span: usize| {
+        let src = format!(
+            r#"var r = [];
+            for (var cal of ["chinese", "dangi"]) {{
+              var a = Temporal.PlainDate.from("-271000-03-15").withCalendar(cal), b = a.add({{ years: {span}, months: 1 }});
+              r.push(a.until(b, {{ largestUnit: "years" }}), b.until(a, {{ largestUnit: "years" }}), b.since(a, {{ largestUnit: "years" }}));
+            }}
+            print({span}, r.join(" "));"#
+        );
+        assert_eq!(
+            common::run(&src, false),
+            Ok(vec![lines_of(span)]),
+            "{span} years"
+        );
+    };
+    work(100_000);
+    let ratio = common::size_ratio(1000, 546_000, work);
+    assert!(ratio < common::LINEAR, "size ratio {ratio:.2}");
+}
+
 /// A 100,000-year month difference with a termination pending: icu_calendar has no poll, so
 /// the call must end on its own, and with the binary search it does (O(log(months)) checks).
 /// The unpatched loop is O(years^2): it did not end in the 60 s wait.
