@@ -369,12 +369,19 @@ fn rebuild(p: &Parsed) -> String {
 }
 
 /// CanonicalizeUnicodeLocaleId ( locale ) (6.2.2) of a structurally valid tag `p`: the UTS 35
-/// canonical form (case, subtag order, aliases). If ICU4X cannot read the rebuilt tag (it
-/// does not happen for a structurally valid tag; a test checks the test262 tags), the
-/// lower-case rebuilt tag is the result.
+/// canonical form (case, subtag order, aliases). ICU4X reads only 2-3 letter languages, and
+/// ECMA-402 also allows 5-8 letters: such a language ("abcdefgh-latn-us") takes "und" in its
+/// place for the ICU4X steps and gets its own place back at the end ("abcdefgh-Latn-US", as
+/// node v26.13.0). If ICU4X still cannot read the tag, the lower-case rebuilt tag is the
+/// result.
 pub fn canonicalize_parsed(p: &Parsed) -> String {
     let rebuilt = rebuild(p);
-    let Ok(mut loc) = Locale::try_from_str(&rebuilt) else {
+    let long = p.language.len() >= 5;
+    let input = match rebuilt.strip_prefix(p.language.as_str()) {
+        Some(rest) if long => format!("und{rest}"),
+        _ => rebuilt.clone(),
+    };
+    let Ok(mut loc) = Locale::try_from_str(&input) else {
         return rebuilt;
     };
     CANONICALIZER.canonicalize(&mut loc);
@@ -397,7 +404,16 @@ pub fn canonicalize_parsed(p: &Parsed) -> String {
     for (k, v) in fix {
         loc.extensions.unicode.keywords.set(k, v);
     }
-    loc.to_string()
+    let out = loc.to_string();
+    if !long {
+        return out;
+    }
+    // "und" is a language-free alias match, so an alias rule could give another language;
+    // then the rebuilt tag is the result, as before.
+    match out.strip_prefix("und") {
+        Some(tail) if tail.is_empty() || tail.starts_with('-') => format!("{}{tail}", p.language),
+        _ => rebuilt,
+    }
 }
 
 /// The canonical form of `tag` (6.2.2), or `None` if it is not structurally valid (6.2.1).
@@ -596,6 +612,16 @@ mod tests {
             ("sl-t-sl-rozaj-biske-1994", "sl-t-sl-1994-biske-rozaj"),
             ("en-t-m0-true", "en-t-m0-true"),
             ("en-u-cu-usd-cu-eur", "en-u-cu-usd"),
+            // 5-8 letter languages (node v26.13.0); the value alias of a long language too.
+            ("abcdefgh-latn-us", "abcdefgh-Latn-US"),
+            (
+                "ABCDE-arab-001-u-nu-arab-ca-gregory",
+                "abcde-Arab-001-u-ca-gregory-nu-arab",
+            ),
+            ("abcde-u-ca-islamicc", "abcde-u-ca-islamic-civil"),
+            ("abcde-u-tz-japan", "abcde-u-tz-jptyo"),
+            ("abcdefgh", "abcdefgh"),
+            ("abcde-hepburn-heploc", "abcde-alalc97"),
         ] {
             assert_eq!(canonicalize_tag(t).as_deref(), Some(want), "{t}");
         }
