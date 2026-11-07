@@ -292,11 +292,22 @@ pub enum IntrinsicId {
     IteratorHelperPrototype,
     /// `%WrapForValidIteratorPrototype%` (§27.1.3.2.1.1; made by `ep9_builtins` iterator.rs).
     WrapForValidIteratorPrototype,
+    // ---- INTL W1 CORE (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Intl%` (ECMA-402 §8, the Intl namespace object; made by `ep9_intl` intl.rs, block 29).
+    Intl,
+    /// `%Intl.Locale%` (ECMA-402 §14.1; made by `ep9_intl` locale.rs, block 30).
+    IntlLocale,
+    /// `%Intl.Locale.prototype%` (ECMA-402 §14.3, an ordinary object; made by `ep9_intl` locale.rs).
+    IntlLocalePrototype,
+    /// `%Intl.Collator%` (ECMA-402 §10.1; made by `ep9_intl` collator.rs, block 31).
+    IntlCollator,
+    /// `%Intl.Collator.prototype%` (ECMA-402 §10.3, an ordinary object; made by `ep9_intl` collator.rs).
+    IntlCollatorPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 98] = [
+    pub const ALL: [IntrinsicId; 103] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -395,6 +406,11 @@ impl IntrinsicId {
         IntrinsicId::Iterator,
         IntrinsicId::IteratorHelperPrototype,
         IntrinsicId::WrapForValidIteratorPrototype,
+        IntrinsicId::Intl,
+        IntrinsicId::IntlLocale,
+        IntrinsicId::IntlLocalePrototype,
+        IntrinsicId::IntlCollator,
+        IntrinsicId::IntlCollatorPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -499,6 +515,11 @@ impl IntrinsicId {
             IntrinsicId::Iterator => "%Iterator%",
             IntrinsicId::IteratorHelperPrototype => "%IteratorHelperPrototype%",
             IntrinsicId::WrapForValidIteratorPrototype => "%WrapForValidIteratorPrototype%",
+            IntrinsicId::Intl => "%Intl%",
+            IntrinsicId::IntlLocale => "%Intl.Locale%",
+            IntrinsicId::IntlLocalePrototype => "%Intl.Locale.prototype%",
+            IntrinsicId::IntlCollator => "%Intl.Collator%",
+            IntrinsicId::IntlCollatorPrototype => "%Intl.Collator.prototype%",
         }
     }
 
@@ -603,7 +624,12 @@ impl IntrinsicId {
             | IntrinsicId::FunctionPrototypeCall
             | IntrinsicId::Iterator
             | IntrinsicId::IteratorHelperPrototype
-            | IntrinsicId::WrapForValidIteratorPrototype => return None,
+            | IntrinsicId::WrapForValidIteratorPrototype
+            | IntrinsicId::Intl
+            | IntrinsicId::IntlLocale
+            | IntrinsicId::IntlLocalePrototype
+            | IntrinsicId::IntlCollator
+            | IntrinsicId::IntlCollatorPrototype => return None,
         })
     }
 
@@ -676,6 +702,11 @@ impl IntrinsicId {
             IntrinsicId::Iterator => Some(62),
             IntrinsicId::IteratorHelperPrototype => Some(63),
             IntrinsicId::WrapForValidIteratorPrototype => Some(64),
+            IntrinsicId::Intl => Some(65),
+            IntrinsicId::IntlLocale => Some(66),
+            IntrinsicId::IntlLocalePrototype => Some(67),
+            IntrinsicId::IntlCollator => Some(68),
+            IntrinsicId::IntlCollatorPrototype => Some(69),
             _ => None,
         }
     }
@@ -1354,7 +1385,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 65;
+const INTRINSIC_SLOTS: usize = 70;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
