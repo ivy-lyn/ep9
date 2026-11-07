@@ -214,6 +214,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ep9_masm"
+version = "0.0.0"
+
+[[package]]
 name = "ep9_math"
 version = "0.0.0"
 dependencies = [

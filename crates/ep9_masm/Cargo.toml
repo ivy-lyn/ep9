@@ -1,0 +1,24 @@
+[package]
+name = "ep9_masm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# No dependencies (H34: one instruction stream for JIT and unit code, no LLVM):
+# .github/scripts/dep-guards.sh check 21. No tier code uses this crate in month 7 (plan v12
+# rule 71); the jitless ep9 never links it (dep-guards check 5).
+
+[features]
+# H27 and H34: `jit` = `finalize_jit` (runtime code, absolute addresses allowed); `aot` =
+# `finalize_unit` and the zero-text-relocation check (unit text). Both are on by default, so
+# `cargo test -p ep9_masm` tests both finalizers. A crate that links ep9_masm turns the
+# defaults off and names the one it needs; the jitless form is `--no-default-features
+# --features aot` (the CI step "zero text relocations").
+default = ["jit", "aot"]
+jit = []
+aot = []
+
+[lints]
+workspace = true
