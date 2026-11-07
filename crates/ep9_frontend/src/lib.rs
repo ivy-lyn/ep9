@@ -41,6 +41,7 @@ mod regex_check;
 pub mod scope;
 mod stack;
 mod strict_filter;
+mod surrogate;
 mod worker;
 
 pub use bytecodegen::{
@@ -52,6 +53,7 @@ pub use eval::compile_eval;
 pub use function_ctor::compile_function_ctor;
 pub use position::{LineMap, Position};
 pub use scope::ScopeAnalysis;
+pub use surrogate::eval_source_text;
 
 /// The ECMA-262 goal symbol of a source text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
