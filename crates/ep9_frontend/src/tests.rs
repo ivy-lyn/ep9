@@ -547,6 +547,51 @@ fn shim_placeholders_do_not_grow_with_the_text() {
     eprintln!("K = {K}, N = {N}: {took:?}");
 }
 
+/// The `Function` constructor checks each part on its decoded text (Codex r1 FE-SHIM 4): a
+/// lone surrogate and a real U+FDD0 in a regex class range of the body or of a parameter
+/// default compile, as in node (`Function("return /[a-\uD800-!]/")().test("!")` is true).
+/// Before, (a) and (b) parsed the shim text, where `ESC d800` adds the digits `d800`
+/// (`[a-ESC d800-!]` has the reversed range `0-!`) and ESC ESC is two U+FDD0.
+#[test]
+fn shim_function_constructor_checks_the_decoded_parts() {
+    let ctor = |params: &[P<'_>], body: &[P<'_>]| {
+        compile_function_ctor(
+            ep9_bytecode::FunctionCtorKind::Normal,
+            &shim_text(&wtf16(params)),
+            &shim_text(&wtf16(body)),
+            CompileOptions::default(),
+        )
+    };
+    for (params, body) in [
+        (
+            vec![],
+            vec![P::T("return /[a-"), P::U(0xD800), P::T("-!]/")],
+        ),
+        (vec![], vec![P::T("return /[a-\u{FDD0}-!]/")]),
+        (
+            vec![P::T("a = /[a-"), P::U(0xD800), P::T("-!]/")],
+            vec![P::T("return a")],
+        ),
+    ] {
+        let r = ctor(&params, &body);
+        assert!(r.is_ok(), "{r:?}");
+    }
+    let u = ctor(&[], &[P::T("return /[a-"), P::U(0xD800), P::T("-!]/")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("[a-"), P::U(0xD800), P::T("-!]")]));
+    // Out of order with the real code units (DC00 > DBFF), in order as U+FFFD-U+FFFD.
+    let r = ctor(
+        &[],
+        &[
+            P::T("return /["),
+            P::U(0xDC00),
+            P::T("-"),
+            P::U(0xDBFF),
+            P::T("]/"),
+        ],
+    );
+    assert!(is_syntax(&r), "{r:?}");
+}
+
 /// The `Function` constructor reaches the shim through its joined text.
 #[test]
 fn shim_function_constructor() {

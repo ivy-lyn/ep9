@@ -39,11 +39,12 @@ use std::cell::Cell;
 use ep9_bytecode::{EvalContext, FunctionCtorKind, VerifiedUnit};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{Expression, Function, Program, Statement};
+use oxc_span::SourceType;
 
 use crate::bytecodegen::{CodegenError, CompileOptions};
 use crate::{
     ByteSpan, CompileError, DepthLayer, EarlyErrors, LineMap, PRESCAN_CAP, RangeError,
-    RangeErrorKind, SourceOpts, Strictness, SyntaxError,
+    RangeErrorKind, SyntaxError,
 };
 
 /// Compile a function of `kind` from the parameter text `params` (the arguments joined with
@@ -151,9 +152,17 @@ enum Part {
 }
 
 /// Parse `text`, wrapper (a) or (b), and check its shape (F1, F2). On the worker.
+///
+/// The part is shim text (H05-Q3), as the joined text (c) is: it is decoded first, as
+/// [`compile_eval`](crate::compile_eval) decodes (c), so (a) and (b) parse the same parse
+/// text (U+FFFD for each lone surrogate, one U+FDD0 for an escaped U+FDD0), and a regex
+/// literal with a lone surrogate gets the check again with the real code units (07 §7 step
+/// 5, as `eval.rs` `on_worker`). The shape checks then read the decoded text.
 fn check_part(text: &str, part: Part) -> Result<(), CodegenError> {
+    let (text, shim) = crate::surrogate::decode(text);
+    let text: &str = &text;
     let allocator = Allocator::default();
-    let program = crate::parse(&allocator, text, SourceOpts::script(Strictness::Sloppy))?;
+    let program = parse_part(&allocator, text, &shim)?;
     // The wrapper ends in `\n) {\n})` (a) or `\n})` (b): the part must end right before it.
     let ok = the_function(&program).is_some_and(|f| match part {
         // The parameter list's span holds its parentheses: it ends after the wrapper's `)`,
@@ -179,6 +188,27 @@ fn check_part(text: &str, part: Part) -> Result<(), CodegenError> {
             position: Some(LineMap::new(text.as_bytes()).position(0)),
         }],
     })))
+}
+
+/// [`crate::parse`] of the sloppy script `text`, with the shim's regex check between the parse
+/// and its error check (as `eval.rs` `on_worker`). With no lone surrogate it is the same.
+fn parse_part<'a>(
+    allocator: &'a Allocator,
+    text: &'a str,
+    shim: &crate::surrogate::Shim,
+) -> Result<Program<'a>, CompileError> {
+    let mut parsed = match crate::regex_check::parse(allocator, text, SourceType::script()) {
+        Ok(parsed) => parsed,
+        Err(fatal) => return Err(crate::early_errors(text, fatal.errors()).into()),
+    };
+    shim.check_regex_literals(text, &parsed.tokens, &mut parsed.diagnostics);
+    if parsed.diagnostics.has_errors() {
+        return Err(crate::early_errors(text, parsed.diagnostics.errors()).into());
+    }
+    if let Err(deep) = crate::depth::check_ast_depth(&parsed.program, crate::AST_CAP) {
+        return Err(RangeError::too_deep(DepthLayer::Ast, text, Some(deep.span.start)).into());
+    }
+    Ok(parsed.program)
 }
 
 /// The function of a wrapper text: the program is one expression statement that is one
