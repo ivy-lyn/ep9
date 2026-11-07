@@ -481,66 +481,108 @@ const CASES: &[Case] = &[
         ),
     },
     // ---- ic-global (M7-P2 GLOBALS) ----
+    // Each form runs its harness (the counters, the loops, the called functions) in a function
+    // scope, so only the binding under test is global, and the functions that read or write it
+    // run 12 or more times: past the feedback threshold (8 calls), so the src form reaches the
+    // global IC hit path, and the spec form (Reflect on globalThis, or a with-scope lookup)
+    // does not hit the global IC (fixer r2b: Claude reviewer REV-5, JIT reviewer J5).
     Case {
         path: "ic-global",
         name: "a var, a function and a builtin: IC hits or Reflect on globalThis",
         src: "var g = 1; function inc() { g = g + 1; return g; }\n\
-              function rd() { return g + (typeof Math).length + parseInt('7'); }\n\
-              var s = 0; for (var i = 0; i < 30; i++) { inc(); s += rd(); }\n\
-              print(s, g, typeof notThere);",
+              (function () {\n\
+                function rd() { return g + (typeof Math).length + parseInt('7'); }\n\
+                function step() { inc(); return rd(); }\n\
+                var s = 0; for (var i = 0; i < 30; i++) s += step();\n\
+                print(s, g, typeof notThere);\n\
+              })();",
         spec: Some(
-            "var g = 1; function inc() { Reflect.set(globalThis, 'g', Reflect.get(globalThis, 'g') + 1); return Reflect.get(globalThis, 'g'); }\n\
-             function rd() { return Reflect.get(globalThis, 'g') + (typeof Reflect.get(globalThis, 'Math')).length + Reflect.get(globalThis, 'parseInt')('7'); }\n\
-             var s = 0; for (var i = 0; i < 30; i++) { inc(); s += rd(); }\n\
-             print(s, g, typeof notThere);",
+            "var g = 1, inc;\n\
+             (function () {\n\
+               var R = Reflect, G = globalThis;\n\
+               R.set(G, 'inc', function () { R.set(G, 'g', R.get(G, 'g') + 1); return R.get(G, 'g'); });\n\
+               function rd() { return R.get(G, 'g') + (typeof R.get(G, 'Math')).length + R.get(G, 'parseInt')('7'); }\n\
+               function step() { R.get(G, 'inc')(); return rd(); }\n\
+               var s = 0; for (var i = 0; i < 30; i++) s += step();\n\
+               print(s, R.get(G, 'g'), typeof R.get(G, 'notThere'));\n\
+             })();",
         ),
     },
     Case {
         path: "ic-global",
         name: "the global object's shape changes between hits (polymorphic), then deletes",
-        src: "var g = 3; function f() { return typeof h1 === 'undefined' ? g : g + h1; }\n\
-              var s = 0; for (var r = 0; r < 3; r++) s += f();\n\
-              globalThis.h1 = 1; s += f() + f(); globalThis.h2 = 2; s += f() + f();\n\
-              globalThis.h3 = 3; s += f() + f(); g = 10; s += f();\n\
-              delete globalThis.h1; s += f() + f(); delete globalThis.h3; s += f() + f();\n\
-              print(s, typeof h1, typeof h2, typeof h3);",
+        src: "var g = 3;\n\
+              (function () {\n\
+                function f() { return typeof h1 === 'undefined' ? g : g + h1; }\n\
+                var G = globalThis, s = 0; for (var r = 0; r < 12; r++) s += f();\n\
+                G.h1 = 1; s += f() + f(); G.h2 = 2; s += f() + f();\n\
+                G.h3 = 3; s += f() + f(); g = 10; s += f();\n\
+                delete G.h1; s += f() + f(); delete G.h3; s += f() + f();\n\
+                print(s, typeof h1, typeof h2, typeof h3);\n\
+              })();",
         spec: Some(
-            "var g = 3; function f() { return Reflect.has(globalThis, 'h1') ? Reflect.get(globalThis, 'g') + Reflect.get(globalThis, 'h1') : Reflect.get(globalThis, 'g'); }\n\
-             var s = 0; for (var r = 0; r < 3; r++) s += f();\n\
-             globalThis.h1 = 1; s += f() + f(); globalThis.h2 = 2; s += f() + f();\n\
-             globalThis.h3 = 3; s += f() + f(); g = 10; s += f();\n\
-             delete globalThis.h1; s += f() + f(); delete globalThis.h3; s += f() + f();\n\
-             print(s, typeof h1, typeof h2, typeof h3);",
+            "var g = 3;\n\
+             (function () {\n\
+               var R = Reflect, G = globalThis;\n\
+               function f() { return R.has(G, 'h1') ? R.get(G, 'g') + R.get(G, 'h1') : R.get(G, 'g'); }\n\
+               var s = 0; for (var r = 0; r < 12; r++) s += f();\n\
+               G.h1 = 1; s += f() + f(); G.h2 = 2; s += f() + f();\n\
+               G.h3 = 3; s += f() + f(); R.set(G, 'g', 10); s += f();\n\
+               delete G.h1; s += f() + f(); delete G.h3; s += f() + f();\n\
+               print(s, typeof R.get(G, 'h1'), typeof R.get(G, 'h2'), typeof R.get(G, 'h3'));\n\
+             })();",
         ),
     },
     Case {
         path: "ic-global",
         name: "let and const bindings and the TDZ: IC hits or a with-scope lookup",
-        src: "function early() { return T; }\n\
-              try { early(); } catch (e) { print(e.name); } try { early(); } catch (e) { print(e.name); }\n\
-              let T = 4; let L = 2; const C = 5; function f() { L = L + C; return L; }\n\
-              var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
-              try { (function () { C = 1; })(); } catch (e) { print(e.name); }\n\
-              print(s, L, C, typeof T);",
+        src: "(function () {\n\
+                function early() { return T; }\n\
+                var e = 0; for (var i = 0; i < 12; i++) { try { early(); } catch (x) { if (x.name === 'ReferenceError') e++; } }\n\
+                print(e);\n\
+              })();\n\
+              let T = 4; let L = 2; const C = 5;\n\
+              (function () {\n\
+                function early() { return T; } function f() { L = L + C; return L; } function setC() { C = 1; }\n\
+                var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
+                var e = 0; for (var i = 0; i < 12; i++) { try { setC(); } catch (x) { if (x.name === 'TypeError') e++; } }\n\
+                print(s, e, L, C, typeof T);\n\
+              })();",
         spec: Some(
-            "function early() { with ({}) return T; }\n\
-             try { early(); } catch (e) { print(e.name); } try { early(); } catch (e) { print(e.name); }\n\
-             let T = 4; let L = 2; const C = 5; function f() { with ({}) { L = L + C; return L; } }\n\
-             var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
-             try { (function () { with ({}) C = 1; })(); } catch (e) { print(e.name); }\n\
-             print(s, L, C, typeof T);",
+            "(function () {\n\
+               function early() { with ({}) return T; }\n\
+               var e = 0; for (var i = 0; i < 12; i++) { try { early(); } catch (x) { if (x.name === 'ReferenceError') e++; } }\n\
+               print(e);\n\
+             })();\n\
+             let T = 4; let L = 2; const C = 5;\n\
+             (function () {\n\
+               function early() { with ({}) return T; } function f() { with ({}) { L = L + C; return L; } }\n\
+               function setC() { with ({}) C = 1; }\n\
+               var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
+               var e = 0; for (var i = 0; i < 12; i++) { try { setC(); } catch (x) { if (x.name === 'TypeError') e++; } }\n\
+               with ({}) print(s, e, L, C, typeof T);\n\
+             })();",
         ),
     },
     Case {
         path: "ic-global",
         name: "a lazy namespace key (Temporal): the first load installs it, later loads hit",
-        src: "function t() { return typeof Temporal; } function g() { return Temporal; }\n\
-              var a = g(), b = g(); print(t(), t(), Object.prototype.toString.call(a), a === b, a === globalThis.Temporal);\n\
-              function w(v) { Temporal = v; } w(1); w(2); print(g(), typeof Temporal);",
+        src: "(function () {\n\
+                function t() { return typeof Temporal; } function g() { return Temporal; }\n\
+                var a, b, c = 0; for (var i = 0; i < 20; i++) { a = g(); b = t(); if (a === g()) c++; }\n\
+                print(b, Object.prototype.toString.call(a), c, a === globalThis.Temporal);\n\
+                function w(v) { Temporal = v; } for (var i = 0; i < 20; i++) w(i);\n\
+                print(g(), t());\n\
+              })();",
         spec: Some(
-            "function t() { return typeof Reflect.get(globalThis, 'Temporal'); } function g() { return Reflect.get(globalThis, 'Temporal'); }\n\
-             var a = g(), b = g(); print(t(), t(), Object.prototype.toString.call(a), a === b, a === globalThis.Temporal);\n\
-             function w(v) { Reflect.set(globalThis, 'Temporal', v); } w(1); w(2); print(g(), typeof Temporal);",
+            "(function () {\n\
+               var R = Reflect, G = globalThis;\n\
+               function t() { return typeof R.get(G, 'Temporal'); } function g() { return R.get(G, 'Temporal'); }\n\
+               var a, b, c = 0; for (var i = 0; i < 20; i++) { a = g(); b = t(); if (a === g()) c++; }\n\
+               print(b, Object.prototype.toString.call(a), c, a === G.Temporal);\n\
+               function w(v) { R.set(G, 'Temporal', v); } for (var i = 0; i < 20; i++) w(i);\n\
+               print(g(), t());\n\
+             })();",
         ),
     },
     Case {
