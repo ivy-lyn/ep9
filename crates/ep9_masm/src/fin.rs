@@ -46,6 +46,13 @@ pub enum FinalizeError {
         /// The field offset.
         at: u32,
     },
+    /// The record's instruction start is after its field (`insn > at`).
+    InsnAfterField {
+        /// The field offset.
+        at: u32,
+        /// The instruction start.
+        insn: u32,
+    },
     /// The field is not inside the text.
     FieldOutOfText {
         /// The field offset.
@@ -106,6 +113,9 @@ impl fmt::Display for FinalizeError {
                 )
             }
             FinalizeError::WrongArch { at } => write!(f, "+{at:#x}: form of another arch"),
+            FinalizeError::InsnAfterField { at, insn } => {
+                write!(f, "+{at:#x}: instruction start {insn:#x} after the field")
+            }
             FinalizeError::FieldOutOfText { at } => write!(f, "+{at:#x}: field out of the text"),
             FinalizeError::FieldOverlap { at } => write!(f, "+{at:#x}: fields overlap"),
             FinalizeError::Field { at, kind, error } => {
@@ -135,13 +145,17 @@ impl std::error::Error for FinalizeError {}
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Site {
     pub at: u32,
+    /// The instruction start ([`crate::Reloc::insn`]); only the unit check reads it.
+    #[cfg_attr(not(feature = "aot"), allow(dead_code))]
+    pub insn: u32,
     pub form: Form,
     pub kind: RelocKind,
     pub index: u32,
 }
 
 /// Checks every record of `desc` before any field is written: each kind code is known, each
-/// form is of the stream's arch, each field is inside the text, and no two fields overlap.
+/// form is of the stream's arch, the instruction start is not after the field, each field is
+/// inside the text, and no two fields overlap.
 /// The first failure refuses the whole stream.
 pub(crate) fn sites(desc: &CodeDesc) -> Result<Vec<Site>, FinalizeError> {
     let mut out = Vec::with_capacity(desc.relocs.len());
@@ -153,11 +167,15 @@ pub(crate) fn sites(desc: &CodeDesc) -> Result<Vec<Site>, FinalizeError> {
         if r.form.arch().is_some_and(|a| a != desc.arch) {
             return Err(FinalizeError::WrongArch { at });
         }
+        if r.insn > at {
+            return Err(FinalizeError::InsnAfterField { at, insn: r.insn });
+        }
         if at as usize + r.form.size() > desc.text.len() {
             return Err(FinalizeError::FieldOutOfText { at });
         }
         out.push(Site {
             at,
+            insn: r.insn,
             form: r.form,
             kind,
             index: r.index,

@@ -16,9 +16,11 @@
 //! | DeoptExit | a register-relative form | a load of the shared deopt entry through the isolate register; the exit goes into [`UnitCode::exits`] |
 //! | HeapConst | none | **rejected by the unit writer** ([`FinalizeError::HeapConstInUnit`]) |
 //!
-//! `finalize_unit` checks the base register of the 3 unit-data rows: each LinkSlot, IcCell and
-//! Stub field must be in a 64-bit load through x27/r14 ([`check_unit_data_loads`]). It does
-//! not check the base register of the isolate-register rows (the emitter picks it).
+//! `finalize_unit` checks the base register of the register-relative rows
+//! ([`check_register_loads`]): each LinkSlot, IcCell and Stub field must be in a 64-bit load
+//! through the unit-data register x27/r14, and on x86-64 each Runtime, RootIndex and DeoptExit
+//! field in a 64-bit load through the isolate register r15 (M2-JIT-ABI, H35). The AArch64
+//! isolate-register rows are not checked (the emitter picks the register).
 //!
 //! [`UnitCode`] has no public constructor: only `finalize_unit` makes one, and it runs
 //! [`check_text`] on its output, so a writer that takes a `UnitCode` gets only checked text
@@ -64,13 +66,18 @@ pub struct RwUse {
     pub word: u32,
 }
 
-/// One written field of unit text, for [`check_text`].
+/// One written field of unit text, for [`check_text`] and [`check_register_loads`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Field {
     /// The field offset.
     pub at: u32,
+    /// The start of the field's instruction ([`crate::Reloc::insn`]): the x86-64 checks
+    /// decode the operand forward from here. On AArch64 `insn = at`.
+    pub insn: u32,
     /// The form.
     pub form: Form,
+    /// The kind (the register rules of [`check_register_loads`] depend on it).
+    pub kind: RelocKind,
 }
 
 /// The output of [`finalize_unit`]: position-independent text with zero text relocations.
@@ -111,7 +118,7 @@ impl UnitCode {
 /// Refuses the whole stream on the first problem: an unknown kind code, a HeapConst, an
 /// absolute form, a form that the kind has not here, an operand that `env` cannot resolve, a
 /// value that does not fit its field, or a finding of [`check_text`] or
-/// [`check_unit_data_loads`] on the output.
+/// [`check_register_loads`] on the output.
 pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, FinalizeError> {
     let sites = fin::sites(desc)?;
     let mut text = desc.text.clone();
@@ -172,11 +179,13 @@ pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, Fin
         .iter()
         .map(|s| Field {
             at: s.at,
+            insn: s.insn,
             form: s.form,
+            kind: s.kind,
         })
         .collect();
     let mut findings = check_text(desc.arch, &text, &fields);
-    findings.extend(check_unit_data_loads(desc.arch, &text, &rw));
+    findings.extend(check_register_loads(desc.arch, &text, &fields));
     if !findings.is_empty() {
         return Err(FinalizeError::TextRelocations(findings));
     }
@@ -220,8 +229,9 @@ pub enum Finding {
         len: u32,
     },
     /// An x86-64 disp32 field ([`Form::X64Disp32`]) that is not the disp32 of a
-    /// `[reg + disp32]` operand: no ModRM byte with mod = 10 before it (for example
-    /// `[rip + disp32]`, a pc-relative field under a register-relative label).
+    /// `mov r, [reg + disp32]` decoded from the field's instruction start (see [`check_text`]):
+    /// for example `[rip + disp32]` (a pc-relative field under a register-relative label), a
+    /// SIB operand with no base, or a field inside another instruction.
     NotRegisterRelative {
         /// The field offset.
         at: u32,
@@ -232,10 +242,16 @@ pub enum Finding {
         /// The field offset.
         at: u32,
     },
-    /// A LinkSlot, IcCell or Stub field ([`RwUse`]) that is not in a 64-bit load through the
-    /// unit-data register (H34-Q1): see [`check_unit_data_loads`]. A store, or a load through
-    /// another base register, reads or writes another cell.
+    /// A LinkSlot, IcCell or Stub field that is not in a 64-bit load through the unit-data
+    /// register (H34-Q1): see [`check_register_loads`]. A store, or a load through another
+    /// base register, reads or writes another cell.
     NotUnitDataLoad {
+        /// The field offset.
+        at: u32,
+    },
+    /// An x86-64 Runtime, RootIndex or DeoptExit field that is not in a 64-bit load through
+    /// the isolate register r15: see [`check_register_loads`].
+    NotIsolateLoad {
         /// The field offset.
         at: u32,
     },
@@ -261,6 +277,9 @@ impl fmt::Display for Finding {
             Finding::NotUnitDataLoad { at } => {
                 write!(f, "+{at:#x}: not a load through the unit-data register")
             }
+            Finding::NotIsolateLoad { at } => {
+                write!(f, "+{at:#x}: not a load through the isolate register")
+            }
         }
     }
 }
@@ -272,13 +291,14 @@ impl fmt::Display for Finding {
 /// | each field is inside the text (else [`Finding::FieldOutsideText`], and no other rule reads it) | yes | yes |
 /// | no field is absolute ([`Form::Abs64`]) | yes | yes |
 /// | each pc-relative field reaches a byte of this function's text | yes | yes |
-/// | each [`Form::X64Disp32`] field follows a ModRM byte with mod = 10 (`[reg + disp32]`) | - | yes |
+/// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field | - | yes |
 /// | no `adrp`, no `bl` | yes | - |
 /// | each `b`, `b.cond`, `cbz`/`cbnz`, `tbz`/`tbnz`, `adr` and `ldr` (literal) word reaches a byte of this function's text, with or without a field | yes | - |
 ///
 /// The AArch64 rules scan every word, so hand-written code with no relocation record is
-/// checked too (the spike-b `unit/scan.rs` rules). x86-64 has no decoder here, as in the
-/// spike: its text gets the field rules, and [`UnitEnv`] gives no address to write.
+/// checked too (the spike-b `unit/scan.rs` rules). x86-64 has no linear decoder of the whole
+/// text here, as in the spike: its text gets the field rules (one instruction decoded per
+/// disp32 field), and [`UnitEnv`] gives no address to write.
 pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let len = text.len() as i64;
     let inside = |t: i64| (0..len).contains(&t);
@@ -303,7 +323,7 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
                 }
             }
             FormClass::RegisterRelative => {
-                if f.form == Form::X64Disp32 && !x64_reg_disp32(text, f.at as usize) {
+                if f.form == Form::X64Disp32 && x64_load(text, f.insn, f.at).is_none() {
                     out.push(Finding::NotRegisterRelative { at: f.at });
                 }
             }
@@ -351,73 +371,114 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     out
 }
 
-/// True if the x86-64 disp32 field at `at` is the disp32 of a `[reg + disp32]` operand: the
-/// byte before it is a ModRM byte with mod = 10 and rm != 100, or the byte before that is one
-/// with rm = 100 (a SIB byte between them). Other forms with a disp32 are not register-relative:
-/// mod = 00 with rm = 101 is `[rip + disp32]`, and mod = 00 with SIB base 101 has no base
-/// register. No decoder: the bytes before the field are taken as its operand's ModRM (and SIB).
-fn x64_reg_disp32(text: &[u8], at: usize) -> bool {
-    let modrm = |i: Option<usize>| i.and_then(|i| text.get(i)).map(|&b| (b >> 6, b & 7));
-    match modrm(at.checked_sub(1)) {
-        Some((0b10, rm)) if rm != 0b100 => true,
-        _ => modrm(at.checked_sub(2)) == Some((0b10, 0b100)),
+/// One x86-64 `mov r, [base + disp32]` ([`x64_load`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct X64Load {
+    /// REX.W: a 64-bit load.
+    w: bool,
+    /// The base register, 0-15 (REX.B is bit 3).
+    base: u8,
+    /// A SIB byte with an index register.
+    index: bool,
+}
+
+/// Decodes the x86-64 instruction at `insn` forward, and gives its operand if it is
+/// `mov r, [base + disp32]` with the disp32 exactly at `at`: an optional REX byte (40-4F), the
+/// opcode `8B` (MOV r, r/m: the one unit opcode now; every other opcode, and every legacy
+/// prefix, is refused), a ModRM byte with mod = 10, a SIB byte if rm = 100, then the disp32.
+/// With mod = 10 every form has a base register (SIB base 101 is rbp/r13 + disp32); the
+/// forms with no base (`[rip + disp32]`, SIB with no base) have mod = 00 and are refused.
+/// `None` also for `insn > at` and for bytes past the end of the text.
+fn x64_load(text: &[u8], insn: u32, at: u32) -> Option<X64Load> {
+    let (insn, at) = (insn as usize, at as usize);
+    let rex = match *text.get(insn)? {
+        b @ 0x40..=0x4f => b,
+        _ => 0,
+    };
+    let op = insn + usize::from(rex != 0);
+    if *text.get(op)? != 0x8b {
+        return None;
     }
+    let modrm = *text.get(op + 1)?;
+    if modrm >> 6 != 0b10 {
+        return None;
+    }
+    let rex_b = (rex & 1) << 3;
+    let (base, index, disp) = if modrm & 7 == 0b100 {
+        let sib = *text.get(op + 2)?;
+        // Index 100 with REX.X = 0 is "no index".
+        let index = ((sib >> 3) & 7) | ((rex & 2) << 2);
+        ((sib & 7) | rex_b, index != 0b100, op + 3)
+    } else {
+        ((modrm & 7) | rex_b, false, op + 2)
+    };
+    (disp == at).then_some(X64Load {
+        w: rex & 8 != 0,
+        base,
+        index,
+    })
 }
 
 /// The unit-data register (H34-Q1, H35-Q9) on AArch64: x27.
 const UNIT_DATA_A64: u32 = 27;
 
-/// The unit-data load check: each [`RwUse`] field (LinkSlot, IcCell, the stub's link cell) is
-/// the offset of a 64-bit load through the unit-data register (H34-Q1), or the finding
-/// [`Finding::NotUnitDataLoad`] (or [`Finding::FieldOutsideText`]).
+/// The unit-data register on x86-64: r14 (H34-Q1, H35-Q9).
+const UNIT_DATA_X64: u8 = 14;
+
+/// The isolate register on x86-64: r15 (M2-JIT-ABI, H35).
+const ISOLATE_X64: u8 = 15;
+
+/// The register-load check: each field of a register kind is the offset of a 64-bit load
+/// through the register of its kind, or a finding (or [`Finding::FieldOutsideText`]).
 ///
-/// | Arch | The one form accepted |
-/// |---|---|
-/// | AArch64 | the field word is `ldr Xt, [x27, #imm]` (LDR X, unsigned offset, Rn = 27): exact, the word is the instruction |
-/// | x86-64 | the 3 bytes before the field are REX (W = 1, B = 1), `8B`, ModRM (mod = 10, rm = 110): `mov r64, [r14 + disp32]`. No decoder: these bytes are read as the field's instruction, so a prefix before the REX byte is not seen |
-pub fn check_unit_data_loads(arch: Arch, text: &[u8], rw: &[RwUse]) -> Vec<Finding> {
+/// | Kind | AArch64 | x86-64 |
+/// |---|---|---|
+/// | LinkSlot, IcCell, Stub (the RW words, H34-Q1) | the field word is `ldr Xt, [x27, #imm]` (LDR X, unsigned offset, Rn = 27): exact, the word is the instruction; else [`Finding::NotUnitDataLoad`] | the instruction decoded forward from [`Field::insn`] (as in [`check_text`]) is `mov r64, [r14 + disp32]`: REX.W = 1, base r14 (in ModRM, or in a SIB byte with no index), the disp32 at the field; else [`Finding::NotUnitDataLoad`] |
+/// | Runtime, RootIndex, DeoptExit (the isolate rows) | not checked | the same decode, with base r15: `mov r64, [r15 + disp32]`; else [`Finding::NotIsolateLoad`] |
+/// | Local, HeapConst | - | - |
+///
+/// One instruction is decoded per field, from the start that the record gives: a wrong start
+/// can still mislead it (the full linear decode is routed, UNIT-X64-DECODE).
+pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let mut out = Vec::new();
-    for u in rw {
-        let at = u.at as usize;
+    for f in fields {
+        let (reg, finding) = match f.kind {
+            RelocKind::LinkSlot | RelocKind::IcCell | RelocKind::Stub => {
+                (UNIT_DATA_X64, Finding::NotUnitDataLoad { at: f.at })
+            }
+            RelocKind::Runtime | RelocKind::RootIndex | RelocKind::DeoptExit => {
+                if arch == Arch::A64 {
+                    continue;
+                }
+                (ISOLATE_X64, Finding::NotIsolateLoad { at: f.at })
+            }
+            RelocKind::Local | RelocKind::HeapConst => continue,
+        };
+        let at = f.at as usize;
+        if at.checked_add(4).is_none_or(|end| end > text.len()) {
+            out.push(Finding::FieldOutsideText { at: f.at });
+            continue;
+        }
         let ok = match arch {
-            Arch::A64 => match at.checked_add(4).and_then(|end| text.get(at..end)) {
-                Some(b) => {
-                    let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                    // LDR X, unsigned offset (any imm12, any Rt), with Rn = x27.
-                    w & 0xffc0_03e0 == 0xf940_0000 | (UNIT_DATA_A64 << 5)
-                }
-                None => {
-                    out.push(Finding::FieldOutsideText { at: u.at });
-                    continue;
-                }
-            },
+            // LDR X, unsigned offset (any imm12, any Rt), with Rn = x27.
+            Arch::A64 => word(text, at) & 0xffc0_03e0 == 0xf940_0000 | (UNIT_DATA_A64 << 5),
+            // Any destination (REX.R free).
             Arch::X64 => {
-                if at.checked_add(4).is_none_or(|end| end > text.len()) {
-                    out.push(Finding::FieldOutsideText { at: u.at });
-                    continue;
-                }
-                match at.checked_sub(3).map(|i| &text[i..at]) {
-                    // REX.W + REX.B (REX.R free: any destination), MOV r64, r/m64, then
-                    // mod = 10 and rm = 110 (with REX.B: r14), any reg.
-                    Some(&[rex, op, modrm]) => {
-                        rex & 0xf9 == 0x49 && op == 0x8b && modrm & 0xc7 == 0x86
-                    }
-                    _ => false,
-                }
+                x64_load(text, f.insn, f.at).is_some_and(|l| l.w && l.base == reg && !l.index)
             }
         };
         if !ok {
-            out.push(Finding::NotUnitDataLoad { at: u.at });
+            out.push(finding);
         }
     }
     out
 }
 
-/// [`check_text`] and [`check_unit_data_loads`] of a finished unit: empty for every
+/// [`check_text`] and [`check_register_loads`] of a finished unit: empty for every
 /// [`UnitCode`] (`finalize_unit` checks its output), so a test can state the rules on each
 /// unit it emits.
 pub fn zero_text_relocations(code: &UnitCode) -> Result<(), Vec<Finding>> {
     let mut v = check_text(code.arch, &code.text, &code.fields);
-    v.extend(check_unit_data_loads(code.arch, &code.text, &code.rw));
+    v.extend(check_register_loads(code.arch, &code.text, &code.fields));
     if v.is_empty() { Ok(()) } else { Err(v) }
 }

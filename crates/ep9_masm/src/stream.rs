@@ -254,8 +254,8 @@ fn a64_field(
     Ok(())
 }
 
-/// One relocation of a [`CodeDesc`]: a field, its form, the kind as a wire code and the
-/// kind's operand.
+/// One relocation of a [`CodeDesc`]: a field, the start of its instruction, its form, the
+/// kind as a wire code and the kind's operand.
 ///
 /// The kind is a code, not a [`RelocKind`], so that a record from a newer writer (a stream
 /// read back from bytes; a JIT request finalized again as a unit, doc 13 F21) reaches the
@@ -265,6 +265,11 @@ fn a64_field(
 pub struct Reloc {
     /// The text offset of the field.
     pub at: u32,
+    /// The text offset of the instruction that holds the field (`insn <= at`; a finalizer
+    /// refuses a record with `insn > at`). [`Assembler::x64`] sets the instruction start, so
+    /// the unit check can decode an x86-64 operand forward from it. On AArch64 the field is the
+    /// instruction word: `insn = at`.
+    pub insn: u32,
     /// The field form.
     pub form: Form,
     /// The kind code ([`RelocKind::code`]).
@@ -274,10 +279,11 @@ pub struct Reloc {
 }
 
 impl Reloc {
-    /// A relocation of a typed target.
+    /// A relocation of a typed target, with the instruction start at the field (`insn = at`).
     pub const fn new(at: u32, form: Form, target: Target) -> Reloc {
         Reloc {
             at,
+            insn: at,
             form,
             code: target.kind().code(),
             index: target.index(),
@@ -395,8 +401,21 @@ impl Assembler {
         }
     }
 
-    /// Records a relocation at the field `at`, which is already written.
+    /// Records a relocation at the field `at`, which is already written. The record's
+    /// instruction start is `at` ([`Reloc::new`]): an x86-64 register-relative field recorded
+    /// here fails the unit check, so x86-64 code uses [`Assembler::x64`].
     pub fn reloc(&mut self, at: u32, form: Form, target: Target) -> Result<(), EmitError> {
+        self.reloc_in(at, at, form, target)
+    }
+
+    /// [`Assembler::reloc`] with the instruction start `insn` (`insn <= at`).
+    fn reloc_in(
+        &mut self,
+        insn: u32,
+        at: u32,
+        form: Form,
+        target: Target,
+    ) -> Result<(), EmitError> {
         if form.arch().is_some_and(|a| a != self.arch) {
             return Err(EmitError::WrongArch { at });
         }
@@ -408,7 +427,10 @@ impl Assembler {
         {
             return Err(EmitError::NoSuchLabel(l));
         }
-        self.relocs.push(Reloc::new(at, form, target));
+        self.relocs.push(Reloc {
+            insn,
+            ..Reloc::new(at, form, target)
+        });
         Ok(())
     }
 
@@ -419,8 +441,8 @@ impl Assembler {
         self.reloc(at, form, target)
     }
 
-    /// Writes an x86-64 instruction whose field starts `field` bytes into `bytes`, and records
-    /// its relocation.
+    /// Writes one x86-64 instruction whose field starts `field` bytes into `bytes`, and records
+    /// its relocation with the instruction start (the offset of `bytes[0]`).
     pub fn x64(
         &mut self,
         bytes: &[u8],
@@ -428,9 +450,10 @@ impl Assembler {
         form: Form,
         target: Target,
     ) -> Result<(), EmitError> {
-        let at = self.offset() + field;
+        let insn = self.offset();
+        let at = insn + field;
         self.put(bytes);
-        self.reloc(at, form, target)
+        self.reloc_in(insn, at, form, target)
     }
 
     /// The finished stream. Every label that a relocation names must be bound.

@@ -41,6 +41,7 @@ fn with_code(arch: Arch, code: u8) -> CodeDesc {
     };
     d.relocs.push(Reloc {
         at,
+        insn: at,
         form,
         code,
         index: 0,
