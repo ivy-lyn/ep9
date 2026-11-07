@@ -843,6 +843,11 @@ mod tests {
             canonical_locale("abcdefgh-latn-us").as_deref(),
             Ok("abcdefgh-Latn-US")
         );
+        // new Intl.Locale("iw-Latn-t-abcdefgh").language is "he" (Claude reviewer R3; node).
+        assert_eq!(
+            canonical_locale("iw-Latn-t-abcdefgh").map(|t| BaseName::split(&t).0.language),
+            Ok("he".to_string())
+        );
     }
 
     /// node v26.13.0 `new Intl.Locale(tag, options).toString()` results.

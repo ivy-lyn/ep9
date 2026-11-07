@@ -434,16 +434,30 @@ fn rebuild(p: &Parsed) -> String {
 
 /// CanonicalizeUnicodeLocaleId ( locale ) (6.2.2) of a structurally valid tag `p`: the UTS 35
 /// canonical form (case, subtag order, aliases). ICU4X reads only 2-3 letter languages, and
-/// ECMA-402 also allows 5-8 letters: such a language ("abcdefgh-latn-us") takes "und" in its
-/// place for the ICU4X steps and gets its own place back at the end ("abcdefgh-Latn-US", as
-/// node v26.13.0). If ICU4X still cannot read the tag, the lower-case rebuilt tag is the
-/// result.
+/// ECMA-402 also allows 5-8 letters, in the main language and in the -t- tlang: such a
+/// language ("abcdefgh-latn-us", "iw-t-abcdefgh") takes "und" in its place for the ICU4X
+/// steps and gets its own place back at the end ("abcdefgh-Latn-US", "he-t-abcdefgh", as node
+/// v26.13.0). If ICU4X still cannot read the tag, or an alias rule changes a placeholder, the
+/// lower-case rebuilt tag is the result.
 pub fn canonicalize_parsed(p: &Parsed) -> String {
     let rebuilt = rebuild(p);
     let long = p.language.len() >= 5;
-    let input = match rebuilt.strip_prefix(p.language.as_str()) {
-        Some(rest) if long => format!("und{rest}"),
-        _ => rebuilt.clone(),
+    // The first subtag of a -t- extension is a tlang language (alpha) or a tkey (2 units).
+    let tlang = p
+        .extensions
+        .iter()
+        .position(|(s, t)| *s == b't' && t.first().is_some_and(|l| l.len() >= 5));
+    let input = if long || tlang.is_some() {
+        let mut q = p.clone();
+        if long {
+            q.language = "und".to_string();
+        }
+        if let Some(i) = tlang {
+            q.extensions[i].1[0] = "und".to_string();
+        }
+        rebuild(&q)
+    } else {
+        rebuilt.clone()
     };
     let Ok(mut loc) = Locale::try_from_str(&input) else {
         return rebuilt;
@@ -468,16 +482,33 @@ pub fn canonicalize_parsed(p: &Parsed) -> String {
     for (k, v) in fix {
         loc.extensions.unicode.keywords.set(k, v);
     }
-    let out = loc.to_string();
-    if !long {
-        return out;
-    }
+    let mut out = loc.to_string();
     // "und" is a language-free alias match, so an alias rule could give another language;
     // then the rebuilt tag is the result, as before.
-    match out.strip_prefix("und") {
-        Some(tail) if tail.is_empty() || tail.starts_with('-') => format!("{}{tail}", p.language),
-        _ => rebuilt,
+    if long {
+        match out.strip_prefix("und") {
+            Some(tail) if tail.is_empty() || tail.starts_with('-') => {
+                out = format!("{}{tail}", p.language);
+            }
+            _ => return rebuilt,
+        }
     }
+    if let Some(i) = tlang {
+        // The first "-t-" of the result is the -t- extension: the subtags of the base name
+        // and of the other extensions have 2 or more units, and ICU4X writes the private use
+        // part (the only other place of a 1-unit subtag) last.
+        let Some(at) = out.find("-t-").map(|at| at + 3) else {
+            return rebuilt;
+        };
+        let rest = &out[at..];
+        match rest.strip_prefix("und") {
+            Some(tail) if tail.is_empty() || tail.starts_with('-') => {
+                out = format!("{}{}{tail}", &out[..at], p.extensions[i].1[0]);
+            }
+            _ => return rebuilt,
+        }
+    }
+    out
 }
 
 /// The canonical form of `tag` (6.2.2), or the [`TagError`] of [`parse`].
@@ -709,6 +740,27 @@ mod tests {
             ("abcde-u-tz-japan", "abcde-u-tz-jptyo"),
             ("abcdefgh", "abcdefgh"),
             ("abcde-hepburn-heploc", "abcde-alalc97"),
+            // A 5-8 letter tlang language (Claude reviewer R3; node v26.13.0).
+            ("iw-t-abcdefgh", "he-t-abcdefgh"),
+            ("de-DD-t-abcdefgh", "de-DE-t-abcdefgh"),
+            ("en-latn-us-t-abcdefgh", "en-Latn-US-t-abcdefgh"),
+            (
+                "sl-rozaj-biske-1994-t-abcdefgh",
+                "sl-1994-biske-rozaj-t-abcdefgh",
+            ),
+            ("en-u-ca-gregory-t-abcdefgh", "en-t-abcdefgh-u-ca-gregory"),
+            ("en-u-kn-yes-t-abcdefgh", "en-t-abcdefgh-u-kn"),
+            ("iw-Latn-t-abcdefgh", "he-Latn-t-abcdefgh"),
+            // The control rows: a 2-3 letter tlang; both languages long; a tlang with its
+            // own script, region and variants; a "-t-und" in the private use part.
+            ("en-t-iw-abcdefgh", "en-t-he-abcdefgh"),
+            ("abcde-t-abcdefgh-latn-us", "abcde-t-abcdefgh-latn-us"),
+            ("abcde-t-iw", "abcde-t-he"),
+            ("abcdefgh-t-abcdefgh", "abcdefgh-t-abcdefgh"),
+            (
+                "en-t-abcdefgh-latn-us-m0-names-x-t-und",
+                "en-t-abcdefgh-latn-us-m0-prprname-x-t-und",
+            ),
         ] {
             assert_eq!(canonicalize_tag(t).as_deref(), Ok(want), "{t}");
         }
