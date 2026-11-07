@@ -120,6 +120,7 @@ abi: impl<'s> Cx<'s> :: pub fn create_data_property_or_throw(&mut self, impl Int
 abi: impl<'s> Cx<'s> :: pub fn create_list_from_array_like(&mut self, impl Into<Local<'s>>) -> JsResult<ArgsBuilder<'s>>
 abi: impl<'s> Cx<'s> :: pub fn create_realm(&mut self) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn create_resolving_functions(&mut self, Local<'s, JsObject>) -> (Local<'s, JsFunction>, Local<'s, JsFunction>)
+abi: impl<'s> Cx<'s> :: pub fn default_locale(&mut self) -> Option<String>
 abi: impl<'s> Cx<'s> :: pub fn define_own_property(&mut self, impl Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> JsResult<bool>
 abi: impl<'s> Cx<'s> :: pub fn define_property_or_throw(&mut self, impl Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> JsResult<()>
 abi: impl<'s> Cx<'s> :: pub fn delete(&mut self, impl Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> JsResult<bool>
