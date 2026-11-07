@@ -92,7 +92,7 @@ fn int(i: i32) -> u64 {
 
 #[inline(always)]
 fn num(d: f64) -> u64 {
-    Value::number(d).to_bits()
+    number_bits(d)
 }
 
 /// True for null and undefined (0x02 and 0x0a: they differ only in `encoding::UNDEFINED_TAG`).
@@ -2070,6 +2070,120 @@ fn callee_runs_here(st: &St<'_>, callee: u64, fi: &FunctionInfo) -> bool {
     fi.slot.kind_byte() == DispatchKind::Interp as u8
         && !fi.is_class_constructor()
         && object::function_realm(callee) == st.cx.realm
+}
+
+/// The bits of `Value::number(d)` (the [`num`] box of the handlers). x86-64: the int32 test
+/// takes the `cvttsd2si` result as it is (`i32::MIN` for NaN and for a `d` out of the int32
+/// range) and compares bits (`number_bits_from_trunc`). Rust's saturating `d as i32` of
+/// `Value::number` adds the clamp (`maxsd`, `minsd`) and a NaN select there, and its -0 test
+/// 6 more instructions. Other targets: `Value::number` (their code does not change).
+#[inline(always)]
+fn number_bits(d: f64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::{_mm_cvttsd_si32, _mm_set_sd};
+        // SAFETY: `cvttsd2si` and `movsd` are SSE2, which every x86-64 CPU has (the target
+        // baseline enables it).
+        let i = unsafe { _mm_cvttsd_si32(_mm_set_sd(d)) };
+        number_bits_from_trunc(d, i)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Value::number(d).to_bits()
+    }
+}
+
+/// [`number_bits`] from `i`, the `cvttsd2si` result for `d`: `d` truncated when that fits
+/// in int32, else `i32::MIN` (also for NaN). `f64::from(i)` has the bits of `d` exactly when
+/// `d` is the int32 `i` and not -0 (`f64::from(0)` is +0; a NaN never matches), which is the
+/// int32 case of `Value::number`. It builds on every target for the test.
+#[cfg(any(target_arch = "x86_64", test))]
+#[inline(always)]
+fn number_bits_from_trunc(d: f64, i: i32) -> u64 {
+    if f64::from(i).to_bits() == d.to_bits() {
+        int32_bits(i)
+    } else {
+        Value::double(d).to_bits()
+    }
+}
+
+/// `number_bits` against `Value::number`: the int32 edges, -0, NaN payloads, infinities,
+/// fractions and 200,000 random bit patterns.
+#[cfg(test)]
+mod number_box {
+    use super::*;
+
+    /// `cvttsd2si` (SSE2) as a model, for the targets without it.
+    fn cvttsd2si(d: f64) -> i32 {
+        if d > -2_147_483_649.0 && d < 2_147_483_648.0 {
+            d as i32
+        } else {
+            i32::MIN
+        }
+    }
+
+    fn check(d: f64) {
+        let want = Value::number(d).to_bits();
+        let bits = d.to_bits();
+        assert_eq!(
+            number_bits_from_trunc(d, cvttsd2si(d)),
+            want,
+            "{d} ({bits:#x})"
+        );
+        assert_eq!(number_bits(d), want, "{d} ({bits:#x})");
+    }
+
+    #[test]
+    fn number_bits_is_value_number() {
+        let edges = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            2_147_483_647.0,
+            2_147_483_647.5,
+            2_147_483_648.0,
+            -2_147_483_648.0,
+            -2_147_483_648.5,
+            -2_147_483_648.9,
+            -2_147_483_649.0,
+            4_294_967_296.0,
+            -4_294_967_296.0,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::from_bits(1 | 1 << 63),
+            f64::MAX,
+            f64::MIN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::NAN,
+            f64::from_bits(0x7ff0_0000_0000_0001),
+            f64::from_bits(0xfff8_0000_0000_0001),
+            f64::from_bits(0xfffe_0000_0000_0000),
+        ];
+        for d in edges {
+            check(d);
+        }
+        for i in -1_000..=1_000 {
+            let d = f64::from(i);
+            for x in [d, d + 0.25, d - 0.25, d * 65_536.0, d * 1e9] {
+                check(x);
+            }
+        }
+        // A fixed xorshift sequence: random doubles, and random int32 values as doubles.
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..100_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            check(f64::from_bits(x));
+            check(f64::from(x as i32));
+        }
+    }
 }
 
 /// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit
