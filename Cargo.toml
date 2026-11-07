@@ -110,3 +110,8 @@ incremental = true
 # [patch] applies only at its own workspace root); dep-guards check 16 checks all three.
 [patch.crates-io]
 regress = { path = "third_party/regress" }
+# icu_calendar 2.3.0 with the `until` month search (INTL W1 R2; third_party/patches/icu4x/
+# README.md): the upstream commit in third_party/icu4x.commit plus third_party/patches/icu4x/
+# *.patch. Run `bash scripts/sync-icu4x.sh` before the first cargo command in a new tree, as for
+# regress. spikes/spike-c has the same entry; dep-guards check 16 checks both.
+icu_calendar = { path = "third_party/icu4x/components/calendar" }

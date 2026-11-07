@@ -329,3 +329,120 @@ fn month_day_from_string_reads_the_options_before_the_limits_error() {
         ])
     );
 }
+
+/// The month count of a chinese or dangi difference (largestUnit "months") on every entry point
+/// that reaches icu_calendar `until`: PlainDate until and since, PlainYearMonth until,
+/// ZonedDateTime until, Duration total and round with a PlainDate and a ZonedDateTime
+/// relativeTo. icu_calendar 2.3.0 found it with one NonISODateSurpasses check per month past a
+/// lower bound that is about 0.035 months per year too low, each check O(years): O(years^2),
+/// 2.2-3.4 s per call over 20,000 years in a release build, with no poll. The patch of
+/// third_party/patches/icu4x does a binary search over the same check: the same results (the
+/// lines are those of the unpatched code and of node 26), 29-91 ms per call in a release build.
+/// The 120 s bound covers a slow debug build (about 15 s; the unpatched code: minutes).
+#[test]
+fn chinese_and_dangi_until_in_months_over_20000_years() {
+    let t = std::time::Instant::now();
+    assert_eq!(
+        common::run(
+            r#"var a = Temporal.PlainDate.from("2000-01-15").withCalendar("chinese"), b = Temporal.PlainDate.from("+022000-06-20").withCalendar("chinese");
+            var za = a.toZonedDateTime("UTC"), zb = b.toZonedDateTime("UTC"), d = Temporal.Duration.from({ days: 7300000 });
+            print(a.until(b, { largestUnit: "months" }), a.since(b, { largestUnit: "months" }),
+              a.toPlainYearMonth().until(b.toPlainYearMonth(), { largestUnit: "months" }), za.until(zb, { largestUnit: "months" }),
+              d.total({ unit: "months", relativeTo: a }), d.round({ largestUnit: "months", relativeTo: a }),
+              d.round({ largestUnit: "months", relativeTo: za }));
+            print(a.withCalendar("dangi").until(b.withCalendar("dangi"), { largestUnit: "months" }));"#,
+            false
+        ),
+        lines(&[
+            "P247370M26D -P247370M26D P247371M P247370M26D 247201.3103448276 P247201M9D P247201M9D",
+            "P247370M26D",
+        ])
+    );
+    let took = t.elapsed();
+    assert!(took < std::time::Duration::from_secs(120), "{took:?}");
+}
+
+/// The binary search gives the month count of the spec loop (NonISODateUntil steps 5-6): for
+/// seeded random chinese and dangi pairs up to 40 years apart, `until` with largestUnit
+/// "months" equals a JS walk that adds one month at a time to the first day of the start month
+/// and stops before the first count whose (year, month, start day) passes the end date. The
+/// evidence run of the INTL W1 fixer r3 compared 446 pairs per calendar with the unpatched
+/// icu_calendar (0 differences).
+#[test]
+fn chinese_and_dangi_month_counts_equal_the_spec_loop() {
+    assert_eq!(
+        common::run(
+            r#"var seed = 12345, bad = 0, n = 0;
+            function rnd(k) { seed = (seed * 1103515245 + 12345) >>> 0; return Math.floor((seed / 4294967296) * k); }
+            function pick(cal, y) {
+              var m = 1 + rnd(Temporal.PlainDate.from({ year: y, month: 1, day: 1, calendar: cal }).monthsInYear);
+              var first = Temporal.PlainDate.from({ year: y, month: m, day: 1, calendar: cal });
+              return first.with({ day: 1 + rnd(first.daysInMonth) });
+            }
+            function passes(sign, y, m, d, b) {
+              var c = y !== b.year ? y - b.year : m !== b.month ? m - b.month : d - b.day;
+              return sign * c > 0;
+            }
+            for (var cal of ["chinese", "dangi"]) {
+              for (var i = 0; i < 24; i++) {
+                var y = 1700 + rnd(600), a = pick(cal, y), b = pick(cal, y + rnd(81) - 40);
+                var sign = Temporal.PlainDate.compare(b, a), months = 0;
+                if (sign !== 0) {
+                  var start = a.with({ day: 1 });
+                  for (var k = sign; ; k += sign) {
+                    var s = start.add({ months: k });
+                    if (passes(sign, s.year, s.month, a.day, b)) break;
+                    months = k;
+                  }
+                }
+                n++;
+                if (a.until(b, { largestUnit: "months" }).months !== months) bad++;
+              }
+            }
+            print(n, bad);"#,
+            false
+        ),
+        lines(&["48 0"])
+    );
+}
+
+/// A 100,000-year month difference with a termination pending: icu_calendar has no poll, so
+/// the call must end on its own, and with the binary search it does (O(log(months)) checks).
+/// The unpatched loop is O(years^2): it did not end in the 60 s wait.
+#[test]
+fn a_long_month_difference_ends_with_a_termination_pending() {
+    for call in [
+        "new Temporal.PlainDate(1, 1, 1, 'chinese').until(new Temporal.PlainDate(100000, 1, 1, 'chinese'), { largestUnit: 'months' }).toString()",
+        "new Temporal.PlainDate(100000, 1, 1, 'dangi').toPlainYearMonth().since(new Temporal.PlainDate(1, 1, 1, 'dangi').toPlainYearMonth(), { largestUnit: 'months' }).toString()",
+    ] {
+        assert_eq!(
+            common::terminate_during(call),
+            Some((
+                false,
+                Some("reached".to_string()),
+                Some("again".to_string())
+            )),
+            "{call}"
+        );
+    }
+}
+
+/// The full Temporal range with largestUnit "months" (6,772,638 months), with a termination
+/// pending: icu_calendar has no poll, so the call must end on its own. With the binary search
+/// it ends after O(log(months)) checks (2.2-3.4 s in a release build); the unpatched loop ran
+/// for more than 120 s. The run is in release builds only: a debug build of icu_calendar takes
+/// several minutes for one call.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release only (cargo test --release)")]
+fn the_full_range_month_difference_ends_with_a_termination_pending() {
+    for call in [
+        "new Temporal.PlainDate(-271821, 4, 19, 'chinese').until(new Temporal.PlainDate(275760, 9, 13, 'chinese'), { largestUnit: 'months' }).toString()",
+        "new Temporal.PlainDate(275760, 9, 13, 'dangi').since(new Temporal.PlainDate(-271821, 4, 19, 'dangi'), { largestUnit: 'months' }).toString()",
+    ] {
+        let t = std::time::Instant::now();
+        let r = common::terminate_during(call);
+        let took = t.elapsed();
+        assert!(r.is_some(), "not done in 60 s: {call}");
+        assert!(took < std::time::Duration::from_secs(30), "{took:?}");
+    }
+}

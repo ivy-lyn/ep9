@@ -25,7 +25,11 @@ for name in core_maths calendrical_calculations; do
   py "$here/instr.py" "$work/$name"
 done
 
-# 3. The probe crate with the copies patched in (a copy, so the tracked files do not change).
+# 3. The probe crate with the copies patched in (a copy, so the tracked files do not change),
+#    and icu_calendar from the patched checkout that ep9 builds (scripts/sync-icu4x.sh; the
+#    root [patch.crates-io] entry; INTL W1 R2), so the probe counts the code that ep9 ships.
+[ -f "$root/third_party/icu4x/components/calendar/Cargo.toml" ] \
+  || { echo "calprobe: run scripts/sync-icu4x.sh first (third_party/icu4x is missing)" >&2; exit 1; }
 mkdir -p "$work/probe"
 cp -R "$here/src" "$here/Cargo.toml" "$here/Cargo.lock" "$work/probe/"
 cat >> "$work/probe/Cargo.toml" <<TOML
@@ -33,6 +37,7 @@ cat >> "$work/probe/Cargo.toml" <<TOML
 [patch.crates-io]
 core_maths = { path = "../core_maths" }
 calendrical_calculations = { path = "../calendrical_calculations" }
+icu_calendar = { path = "$root/third_party/icu4x/components/calendar" }
 TOML
 export CARGO_TARGET_DIR="$work/target"
 (cd "$work/probe" && cargo build --release --offline --features instr,control --quiet)

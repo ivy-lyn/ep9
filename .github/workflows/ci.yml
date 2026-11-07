@@ -916,6 +916,9 @@ jobs:
       # other jobs (plan v10 rule 42).
       - name: regress sync
         run: bash scripts/sync-regress.sh
+      # The root [patch.crates-io] icu_calendar path (third_party/icu4x) too (INTL W1 R2).
+      - name: icu4x sync
+        run: bash scripts/sync-icu4x.sh
       - run: cargo "+$MIRI_TOOLCHAIN" miri setup
       - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap -p ep9_math
       # The S2a loom test (plan v12 rule 8; M7-P1 GCPAR1): 2 markers on the shared work
