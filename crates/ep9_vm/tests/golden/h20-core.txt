@@ -79,6 +79,9 @@ abi: impl<'s> ArgsBuilder<'s> :: pub fn get(&self, usize) -> Local<'s>
 abi: impl<'s> ArgsBuilder<'s> :: pub fn is_empty(&self) -> bool
 abi: impl<'s> ArgsBuilder<'s> :: pub fn len(&self) -> usize
 abi: impl<'s> ArgsBuilder<'s> :: pub fn push(&mut self, &mut Cx<'s>, impl Into<Local<'s>>) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: #[doc(hidden)] pub fn forward_apply(&mut self, Args<'s>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: #[doc(hidden)] pub fn forward_call(&mut self, Args<'s>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: #[doc(hidden)] pub fn set_human_fast_paths(&mut self, bool)
 abi: impl<'s> Cx<'s> :: pub fn args_builder(&self) -> ArgsBuilder<'s>
 abi: impl<'s> Cx<'s> :: pub fn bigint_as_int_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn bigint_as_uint_n(&mut self, u64, impl Into<Local<'s>>) -> JsResult<Local<'s>>
@@ -488,6 +491,7 @@ embed (not core): pub const NATIVE_WORD_OFFSET: u64
 embed (not core): pub const NO_CODE: u8
 embed (not core): pub const OBJECT_FIELDS: u32
 embed (not core): pub const OBJECT_LAYOUT_VERSION: u32
+embed (not core): pub const OBJECT_SLOTS: u32
 embed (not core): pub const POLY_CASES: u32
 embed (not core): pub const POLY_CASE_SIZE: u32
 embed (not core): pub const POLY_COUNT: u32
@@ -513,8 +517,10 @@ embed (not core): pub const SHAPE_CAGE_ALIGN: u64
 embed (not core): pub const SHAPE_COUNTS: u32
 embed (not core): pub const SHAPE_ELEMENTS_KIND_SHIFT: u32
 embed (not core): pub const SHAPE_ID_BYTE: u32
+embed (not core): pub const SLOTS_DATA: u32
 embed (not core): pub const SMI_ARRAY_LENGTH: i32
 embed (not core): pub const SMI_FIELD_IN_OBJECT: i32
+embed (not core): pub const SMI_FIELD_OUT_OF_LINE: i32
 embed (not core): pub const SMI_KIND_MASK: i32
 embed (not core): pub const SMI_SHIFT: u32
 embed (not core): pub const THREADED_HANDLERS: usize
@@ -722,3 +728,4 @@ tables: impl core::fmt::Debug for BuiltinTable
 tables: impl core::fmt::Display for BuiltinId
 tables: pub fn check_tables(&[&BuiltinTable]) -> Result<(), String>
 tables: pub struct BuiltinTable { pub name: &'static str, pub modules: &'static [BuiltinModule], .. }
+embed (not core): #[cfg(feature = "fastdiff-hits")] pub fn take_fastdiff_hits() -> Vec<(&'static str, u64)>

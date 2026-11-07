@@ -1705,3 +1705,106 @@ mod tail_tests {
         );
     }
 }
+
+// ---- the human fast-path switch (FASTDIFF, M7-P0 CALLHOST; plan V12-D30) --------------------
+//
+// A human fast path is hand-written code that skips spec steps under a guard, with the spec
+// steps beside it in the same build (09-milestones.md:108). The doc-hidden `Cx` method
+// `set_human_fast_paths` turns the ones that read [`human_fast_paths`] off for one isolate,
+// so `ep9_builtins/tests/fastpath_diff.rs` runs each case with them on and off and compares
+// the output and the exceptions.
+//
+// The switch is per isolate, keyed by `Runtime::id` (no other runtime of the process gets the
+// same id). It lives here, not in `Isolate`: the fast paths see a `Runtime`, never the
+// `Isolate`. While no isolate has turned them off, the test is one relaxed load.
+
+/// True while some isolate of the process has its human fast paths off.
+static ANY_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The `Runtime::id` of every isolate whose human fast paths are off.
+static OFF: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether the human fast paths of `rt`'s isolate are on (the default). Not a GC point.
+#[inline(always)]
+pub(crate) fn human_fast_paths(rt: &Runtime) -> bool {
+    !ANY_OFF.load(std::sync::atomic::Ordering::Relaxed) || !is_off(rt)
+}
+
+#[cold]
+#[inline(never)]
+fn is_off(rt: &Runtime) -> bool {
+    OFF.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&rt.id)
+}
+
+/// Turns the human fast paths of `rt`'s isolate on or off (`abi::Cx::set_human_fast_paths`).
+/// Not a GC point.
+pub(crate) fn set_human_fast_paths(rt: &Runtime, on: bool) {
+    let mut off = OFF
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    off.retain(|&id| id != rt.id);
+    if !on {
+        off.push(rt.id);
+    }
+    ANY_OFF.store(!off.is_empty(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The FASTDIFF hit counters (route P0-FASTHITS; feature `fastdiff-hits`, which only the
+/// FASTDIFF test turns on, so no shipped build counts): per Switch human fast path, the times it
+/// was taken on this thread. A run with the fast paths off must count 0 for each.
+#[cfg(feature = "fastdiff-hits")]
+pub(crate) mod fast_hits {
+    use core::cell::Cell;
+
+    /// The Switch rows of the FASTDIFF inventory, in counter order.
+    pub const NAMES: [&str; 6] = [
+        "host-entry",
+        "forward-apply",
+        "forward-call",
+        "args-create",
+        "clfal-length",
+        "clfal-elements",
+    ];
+
+    thread_local! {
+        static HITS: [Cell<u64>; NAMES.len()] = const { [const { Cell::new(0) }; NAMES.len()] };
+    }
+
+    /// Counts one hit of fast path `i` (an index of [`NAMES`]).
+    #[inline(always)]
+    pub(crate) fn hit(i: usize) {
+        HITS.with(|h| h[i].set(h[i].get() + 1));
+    }
+
+    /// The count of each fast path on this thread, then 0 for each.
+    pub(crate) fn take() -> Vec<(&'static str, u64)> {
+        HITS.with(|h| {
+            NAMES
+                .iter()
+                .zip(h)
+                .map(|(n, c)| (*n, c.replace(0)))
+                .collect()
+        })
+    }
+}
+
+/// Counts a hit of the FASTDIFF Switch path `$i` (`fast_hits::NAMES`) with feature
+/// `fastdiff-hits`; nothing without it.
+macro_rules! fast_hit {
+    ($i:expr) => {
+        #[cfg(feature = "fastdiff-hits")]
+        $crate::call::fast_hits::hit($i);
+    };
+}
+pub(crate) use fast_hit;
+
+#[cfg(test)]
+thread_local! {
+    /// The calls that `interp/slow/call.rs` `host_entry` took on this thread (the tests check
+    /// the path ran).
+    pub(crate) static HOST_ENTRY_HITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    /// The calls that `interp/slow/call.rs` `forward` pushed a frame for on this thread.
+    pub(crate) static FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}

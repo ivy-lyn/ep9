@@ -78,8 +78,8 @@ pub(crate) struct FunctionInfo {
     /// Calls counted while the function has no feedback vector (`feedback::count_call`):
     /// below the threshold until the call that makes the vector, then fixed.
     pub invocations: Cell<u32>,
-    /// The feedback slots that more than one instruction names (`literal_site::shared_slot`):
-    /// empty until the first literal-site miss that asks, then made by one walk of the code.
+    /// The feedback slots that more than one instruction names (`literal_site::shared_slot`) and
+    /// the nested-literal plans (`literal_site::NestedPlan`, M7-P1 OBJ1): made at the first miss.
     pub shared_slots: OnceCell<crate::literal_site::SharedSlots>,
     /// The in-object capacity of `new F` (`slack::instance_capacity`), chosen at the first
     /// construct: 0 not chosen yet, `slack::NO_COUNT` the generous capacity, else capacity + 1.

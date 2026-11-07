@@ -1,7 +1,8 @@
-//! Math (§21.3): the constants, `[@@toStringTag]` and every function but f16round.
+//! Math (§21.3): the constants, `[@@toStringTag]` and every function.
 //!
 //! The expected lines are node 24's output for the same script (`print` = the
-//! arguments' ToString joined by spaces). `common::run_both` runs each script with and
+//! arguments' ToString joined by spaces). f16round: node 26. sumPrecise (node 26 does not have
+//! it): the test262 values, and the exact sums of Python's `float(sum(map(Fraction, xs)))`. `common::run_both` runs each script with and
 //! without GC stress (a collection before every allocation, then the heap verifier).
 
 mod common;
@@ -183,7 +184,8 @@ fn random_is_in_0_1() {
     );
 }
 
-/// The functions are own properties in V8's order (node 24 also has f16round, not built yet).
+/// The functions are own properties in V8's order (V8 main; node 26 has the same order
+/// without sumPrecise).
 #[test]
 fn math_function_order_is_v8s() {
     assert_eq!(
@@ -191,7 +193,59 @@ fn math_function_order_is_v8s() {
             r#"print(Object.getOwnPropertyNames(Math).filter(function (k) { return typeof Math[k] === 'function'; }).join())"#
         ),
         lines(&[
-            "abs,acos,acosh,asin,asinh,atan,atanh,atan2,ceil,cbrt,expm1,clz32,cos,cosh,exp,floor,fround,hypot,imul,log,log1p,log2,log10,max,min,pow,random,round,sign,sin,sinh,sqrt,tan,tanh,trunc"
+            "abs,acos,acosh,asin,asinh,atan,atanh,atan2,ceil,cbrt,expm1,clz32,cos,cosh,exp,floor,f16round,fround,hypot,imul,log,log1p,log2,log10,max,min,pow,random,round,sign,sin,sinh,sqrt,sumPrecise,tan,tanh,trunc"
+        ])
+    );
+}
+
+/// Math.f16round: one rounding to binary16 (ties to even), ToNumber first; ±0, the
+/// midpoints, the overflow at 65520 and the subnormal step 2^-24 (node 26).
+#[test]
+fn f16round_rounds_once_to_binary16() {
+    assert_eq!(
+        common::run_both(
+            r#"function z(x) { return x === 0 ? (1 / x > 0 ? '+0' : '-0') : String(x); } print(Math.f16round(1.337), Math.f16round('0.1'), z(Math.f16round(-1e-10)), Math.f16round(65520), Math.f16round(-65519), Math.f16round(5.960464477539063e-8), z(Math.f16round(2.9802322387695312e-8)), Math.f16round(1.00048828125), Math.f16round(1.0014648437500002), Math.f16round(), Math.f16round(null), Math.f16round(true), Math.f16round({ valueOf: function () { return 3.14159; } }), Math.f16round.length, Math.f16round.name); print(Math.f16round(1 + Math.pow(2, -11) + Math.pow(2, -40)), z(Math.f16round(-0)), Math.f16round(-Infinity), Math.f16round(NaN), Math.f16round(65504), Math.f16round(6.103515625e-5)); var d = Object.getOwnPropertyDescriptor(Math, 'f16round'); print(d.writable, d.enumerable, d.configurable, typeof Math.f16round.prototype); try { new Math.f16round(1); } catch (e) { print(e.name); }"#
+        ),
+        lines(&[
+            "1.3369140625 0.0999755859375 -0 Infinity -65504 5.960464477539063e-8 +0 1 1.001953125 NaN 0 1 3.140625 1 f16round",
+            "1.0009765625 -0 -Infinity NaN 65504 0.00006103515625",
+            "true false true undefined",
+            "TypeError",
+        ])
+    );
+}
+
+/// Math.sumPrecise: the exact sum, rounded once; the states (-0 for no values, NaN, ±∞);
+/// any iterable (test262 sum.js, sum-is-*.js, takes-iterable.js).
+#[test]
+fn sum_precise_sums_exactly() {
+    assert_eq!(
+        common::run_both(
+            r#"function z(x) { return x === 0 ? (1 / x > 0 ? '+0' : '-0') : String(x); } print(Math.sumPrecise([1, 2, 3]), Math.sumPrecise([0.1, 0.2, 0.3]), 0.1 + 0.2 + 0.3, Math.sumPrecise([1e308, 1e308, -1e308]), Math.sumPrecise([1e20, 0.1, -1e20]), Math.sumPrecise([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]), Math.sumPrecise([9007199254740992, 1, 1]), Math.sumPrecise([1e308, 1e308, 0.1, 0.1, 1e30, 0.1, -1e30, -1e308, -1e308]), Math.sumPrecise([8.98846567431158e+307, 8.98846567431158e+307])); print(z(Math.sumPrecise([])), z(Math.sumPrecise([-0, -0])), z(Math.sumPrecise([-0, 0])), z(Math.sumPrecise([1, -1])), Math.sumPrecise([NaN]), Math.sumPrecise([Infinity, -Infinity]), Math.sumPrecise([Infinity, 1]), Math.sumPrecise([-Infinity, -Infinity, 5]), Math.sumPrecise([1e308, 1e308, -Infinity])); function* g() { yield 1; yield 2; } var a = [4]; a[Symbol.iterator] = g; print(Math.sumPrecise(g()), Math.sumPrecise(a), Math.sumPrecise(new Set([0.5, 0.25])), Math.sumPrecise(new Map([[1, 2]]).keys()), Math.sumPrecise.length, Math.sumPrecise.name); var d = Object.getOwnPropertyDescriptor(Math, 'sumPrecise'); print(d.writable, d.enumerable, d.configurable, typeof Math.sumPrecise.prototype)"#
+        ),
+        lines(&[
+            "6 0.6 0.6000000000000001 1e+308 0.1 1 9007199254740994 0.30000000000000004 Infinity",
+            "-0 -0 +0 +0 NaN NaN Infinity -Infinity -Infinity",
+            "3 3 0.75 1 1 sumPrecise",
+            "true false true undefined",
+        ])
+    );
+}
+
+/// Math.sumPrecise errors: RequireObjectCoercible, GetIterator, a value that is not a Number
+/// (no ToNumber: valueOf is not called; the iterator is closed once), a throw from `next` (no
+/// close), and `new` (test262 takes-iterable.js, throws-on-non-number.js).
+#[test]
+fn sum_precise_errors_close_the_iterator() {
+    assert_eq!(
+        common::run_both(
+            r#"function t(f) { try { f(); return 'none'; } catch (e) { return e.name; } } print(t(function () { Math.sumPrecise(); }), t(function () { Math.sumPrecise(null); }), t(function () { Math.sumPrecise(1, 2); }), t(function () { Math.sumPrecise({}); }), t(function () { Math.sumPrecise([{}]); }), t(function () { Math.sumPrecise([0n]); }), t(function () { Math.sumPrecise(['1']); }), t(function () { Math.sumPrecise('12'); }), t(function () { Math.sumPrecise([NaN, true]); }), t(function () { new Math.sumPrecise([]); })); var coercions = 0; var o = { valueOf: function () { coercions++; return 1; }, toString: function () { coercions++; return '1'; } }; var nexts = 0, returns = 0; var it = { [Symbol.iterator]: function () { return { next: function () { nexts++; return { done: false, value: nexts === 1 ? 1 : o }; }, return: function () { returns++; return {}; } }; } }; print(t(function () { Math.sumPrecise(it); }), coercions, nexts, returns); var r2 = 0; var bad = { [Symbol.iterator]: function () { return { next: function () { throw new RangeError('n'); }, return: function () { r2++; return {}; } }; } }; print(t(function () { Math.sumPrecise(bad); }), r2); var r3 = 0; var throwsInReturn = { [Symbol.iterator]: function () { return { next: function () { return { done: false, value: 'x' }; }, return: function () { r3++; throw new SyntaxError('r'); } }; } }; print(t(function () { Math.sumPrecise(throwsInReturn); }), r3)"#
+        ),
+        lines(&[
+            "TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError",
+            "TypeError 0 2 1",
+            "RangeError 0",
+            "TypeError 1",
         ])
     );
 }

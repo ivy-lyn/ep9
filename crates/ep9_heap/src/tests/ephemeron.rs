@@ -365,7 +365,7 @@ impl Rng {
     }
 }
 
-fn random_graph(seed: u64, checked: bool) {
+pub(super) fn random_graph(seed: u64, checked: bool) {
     let mut rng = Rng(seed);
     let heap = eph_heap(checked);
     let n_nodes = 4 + rng.below(40);

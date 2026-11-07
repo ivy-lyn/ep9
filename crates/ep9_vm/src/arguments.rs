@@ -79,8 +79,13 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
     };
     let rt = cx.rt();
     let realm = rt.root(Root::Realm);
-    match cached_shape(rt, realm, mapped) {
-        Some(s) => create_fast(rt, f, s, mapped, map),
+    // A human fast path (FASTDIFF): off, every object is made the spec way.
+    let cached = crate::call::human_fast_paths(rt).then(|| cached_shape(rt, realm, mapped));
+    match cached.flatten() {
+        Some(s) => {
+            crate::call::fast_hit!(3);
+            create_fast(rt, f, s, mapped, map)
+        }
         None => {
             let o = create_slow(rt, f, mapped, map);
             remember_shape(rt, realm, mapped, o);
@@ -296,8 +301,8 @@ fn array_values(rt: &Runtime) -> u64 {
 /// the first use in a realm it gets the attributes the spec gives it: `length` and `name`
 /// {w: false, e: false, c: false} (a table gives a builtin function {c}) and
 /// `[[Extensible]]` false. The strict `callee` accessor is the only way JS code reaches it
-/// (no month-3 role builds the Function.prototype `caller` and `arguments` accessors), so
-/// no code sees it before this runs. GC point (the dictionary move of the redefinitions).
+/// (`caller` and `arguments` of %Function.prototype% use `natives::restricted_function_property`),
+/// so no code sees it before this runs. GC point (the dictionary move of the redefinitions).
 fn throw_type_error(rt: &Runtime) -> Option<u64> {
     let t = builtins::intrinsic(rt, IntrinsicId::ThrowTypeError);
     if !kind::is_callable(t) {
@@ -464,26 +469,37 @@ pub(crate) fn unmodified_length(rt: &Runtime, o: u64) -> Option<u32> {
 /// `abi::Cx::create_list_from_array_like` (V10-D11). Not a GC point.
 #[inline]
 pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
-    if kind::cell_kind(o) != kind::ARGUMENTS.get() {
+    // A human fast path (FASTDIFF): off, the caller takes Get and ToLength.
+    if kind::cell_kind(o) != kind::ARGUMENTS.get() || !crate::call::human_fast_paths(rt) {
         return None;
     }
-    unmodified_length(rt, o).map(u64::from)
+    let n = unmodified_length(rt, o).map(u64::from);
+    if n.is_some() {
+        crate::call::fast_hit!(4);
+    }
+    n
 }
 
 /// `Get(o, ! ToString(𝔽(i)))` of CreateListFromArrayLike (§7.3.19 step 6.b) read in place
 /// when `i` is a present element of the array or arguments object `o` (an object; a mapped
 /// index reads its parameter, [`element_value`]); `None`: the caller reads it through
 /// `property::get_int` (a hole, an index past the elements, an accessor, the chain, any other
-/// kind). Not a GC point.
+/// kind; and every element while the human fast paths are off, FASTDIFF). Not a GC point.
 #[inline]
-pub(crate) fn list_element(o: u64, i: u32) -> Option<u64> {
-    if kind::is_array(o) {
+pub(crate) fn list_element(rt: &Runtime, o: u64, i: u32) -> Option<u64> {
+    let v = if !crate::call::human_fast_paths(rt) {
+        None
+    } else if kind::is_array(o) {
         object::array_get(o, i)
     } else if kind::cell_kind(o) == kind::ARGUMENTS.get() {
         element_value(o, i)
     } else {
         None
+    };
+    if v.is_some() {
+        crate::call::fast_hit!(5);
     }
+    v
 }
 
 /// `o.[[Set]](i, v, o)` (§10.4.4.4, receiver `o`) for a writable element `i` of the arguments
@@ -686,4 +702,65 @@ pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> Option<u64> {
     }
     std::hint::black_box(ordinary);
     Some(keys)
+}
+
+// ---- the forwarded call (M7-P0 CALLHOST; `interp/slow/call.rs` `forward`) --------------------
+
+/// The arguments of an unmodified arguments object, read in place by a forwarded
+/// `f.apply(thisArg, arguments)`: the element store read once ([`forward_source`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Source {
+    /// The ELEMENTS list (undefined when the object has no elements).
+    e: u64,
+    /// The argument count n of the store.
+    n: usize,
+    /// The mapped count mc.
+    mc: usize,
+    /// The context of the mapped parameters (`argsf::MAP`).
+    map: u64,
+}
+
+impl Source {
+    /// The source of 0 arguments (an argArray of undefined or null).
+    pub(crate) const EMPTY: Source = Source {
+        e: UNDEFINED,
+        n: 0,
+        mc: 0,
+        map: UNDEFINED,
+    };
+
+    /// Argument `i` (`i` below the length [`forward_source`] gave): the parameter while `i` is
+    /// mapped, else the element, as [`element_value`] reads it. Not a GC point.
+    #[inline(always)]
+    pub(crate) fn get(&self, i: u32) -> u64 {
+        let i = i as usize;
+        if i < self.mc {
+            let s = object::list_get(self.e, 2 * self.n + i);
+            if s != HOLE {
+                return object::context_get(self.map, int32_of(s) as u32).expect("a mapped slot");
+            }
+        }
+        object::list_get(self.e, i)
+    }
+}
+
+/// The length and the in-place reader of the arguments object `o` when CreateListFromArrayLike
+/// (§7.3.19) of it runs no JS and reads only own data elements: `o` has its realm's initial
+/// shape ([`unmodified_length`]) and an element at each index below that length. `None`: the
+/// builtin's steps (a deleted index, a `length` past the elements or not an int32, an added,
+/// removed or redefined property). Not a GC point.
+#[inline(always)]
+pub(crate) fn forward_source(rt: &Runtime, o: u64) -> Option<(Source, u32)> {
+    debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
+    let len = unmodified_length(rt, o)?;
+    let (e, n, mc) = match store(o) {
+        Some(s) => s,
+        None if len == 0 => (UNDEFINED, 0, 0),
+        None => return None,
+    };
+    if len as usize > n || (0..len as usize).any(|i| object::list_get(e, i) == HOLE) {
+        return None;
+    }
+    let map = object::fixed_get(o, 0);
+    Some((Source { e, n, mc, map }, len))
 }

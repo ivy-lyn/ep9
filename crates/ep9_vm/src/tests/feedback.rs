@@ -646,3 +646,183 @@ fn only_exec_rs_touches_the_feedback_mode_field() {
         "{mode_reads:?}"
     );
 }
+
+// ---- CompareOp classes (M7-P2 RECCOST) -----------------------------------------------------
+
+/// The old `profile::compare_operand` (a test chain from the int32 tag to the cell kind), kept
+/// word for word as the oracle of the RECCOST form: the records must stay byte-equal (H16).
+fn old_compare_operand(v: u64) -> u16 {
+    use crate::frame::{FALSE, NULL, TRUE};
+    use ep9_facts::CompareHint;
+    let is_i32 = v & ep9_value::encoding::NUMBER_TAG == ep9_value::encoding::NUMBER_TAG;
+    let is_number = v & ep9_value::encoding::NUMBER_TAG != 0;
+    let h = if is_i32 {
+        CompareHint::INT32
+    } else if is_number {
+        CompareHint::NUMBER
+    } else if v == TRUE || v == FALSE {
+        CompareHint::BOOLEAN
+    } else if v == NULL || v == UNDEFINED {
+        CompareHint::NULLISH
+    } else {
+        match kinds::cell_kind(v) {
+            1..=7 if crate::string::is_atom(v) => CompareHint::ATOM,
+            1..=7 => CompareHint::STRING,
+            8 => CompareHint::SYMBOL,
+            9 => CompareHint::BIGINT,
+            16..=63 => CompareHint::RECEIVER,
+            _ => CompareHint::OTHER,
+        }
+    };
+    h.bits()
+}
+
+/// The old `profile::compare_bits` (with the old `compare_pair`), the oracle.
+fn old_compare_bits(l: u64, r: u64) -> u32 {
+    use ep9_facts::CompareHint;
+    const INT_NUM: u16 = CompareHint::INT32.bits() | CompareHint::NUMBER.bits();
+    const STRINGS: u16 = CompareHint::ATOM.bits() | CompareHint::STRING.bits();
+    const OBJ_NULL: u16 = CompareHint::RECEIVER.bits() | CompareHint::NULLISH.bits();
+    let tag = ep9_value::encoding::NUMBER_TAG;
+    if l & tag == tag && r & tag == tag {
+        return 0;
+    }
+    let (a, b) = (old_compare_operand(l), old_compare_operand(r));
+    let h = if a == b {
+        a
+    } else {
+        match a | b {
+            INT_NUM => CompareHint::NUMBER.bits(),
+            STRINGS => CompareHint::STRING.bits(),
+            OBJ_NULL => OBJ_NULL,
+            _ => CompareHint::OTHER.bits(),
+        }
+    };
+    u32::from(h)
+}
+
+/// Checks `profile::compare_bits` against the oracle on every pair of `values`; returns the
+/// number of pairs.
+fn check_compare_pairs(values: &[u64]) -> usize {
+    let mut n = 0;
+    for &l in values {
+        for &r in values {
+            assert_eq!(
+                crate::profile::compare_bits(l, r),
+                old_compare_bits(l, r),
+                "compare_bits({l:#x}, {r:#x})"
+            );
+            n += 1;
+        }
+    }
+    n
+}
+
+/// RECCOST (M7-P2) changed how `profile::compare_bits` finds the class of an operand (the tag
+/// as `v >> 49`, the cell kind by a table, the immediates by `| 1` and `| 8`), not the classes:
+/// every pair of a value set gives the bits of the old test chain. The set: numbers at the
+/// edges of the int32 and double tags; every immediate below 256 with `OTHER_TAG` (true, false,
+/// null, undefined, the hole and the bit patterns no Value has); fake cells of all 256 kind
+/// bytes with and without the atom flag (only the header is read; the headers are in a small
+/// cage below 2^47, as cells are); and real cells of an isolate (strings, an atom, a symbol, a
+/// BigInt, objects, an array, a function).
+#[test]
+fn compare_classes_equal_the_old_test_chain() {
+    use ep9_platform::va;
+    use ep9_value::{ShapeId, Word0};
+    let mut values: Vec<u64> = Vec::new();
+    for i in [0, 1, -1, 7, i32::MAX, i32::MIN] {
+        values.push(int32_bits(i));
+    }
+    for d in [
+        0.5,
+        -0.0,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        5e-324,
+        2147483648.0,
+    ] {
+        values.push(Value::number(d).to_bits());
+    }
+    values.extend((0u64..256).filter(|v| v & ep9_value::encoding::OTHER_TAG != 0));
+    // Fake cells: one 8-byte header each, 8-aligned, in a small cage, so each address is below
+    // 2^47 (H7) and a valid cell Value on every host. Not in the Rust heap: on linux-arm64 (48-bit
+    // VA) malloc gives addresses above 2^47 (CI 42331111457: 0xff8d4c005160), which
+    // `runtime::val` refuses.
+    let fakes: Vec<Word0> = (0..=255u8)
+        .flat_map(|k| {
+            [0, kinds::FLAG_ATOM, 0xFFFE, 0xFFFF].map(|f| Word0::new(ShapeId::new(0), 0, k, f))
+        })
+        .collect();
+    let size = (fakes.len() * size_of::<Word0>()).next_multiple_of(va::allocation_granularity());
+    let cage = va::Cage::reserve(&va::CageConfig {
+        cage_size: size,
+        ..va::CageConfig::default()
+    })
+    .expect("a cage below 2^47");
+    cage.heap()
+        .commit(0, size)
+        .expect("commit the fake-cell pages");
+    let base = std::ptr::with_exposed_provenance_mut::<Word0>(cage.heap().base());
+    for (i, w) in fakes.into_iter().enumerate() {
+        // SAFETY: `base` is the start of `size` committed read-write bytes of `cage`, 8-aligned
+        // (a granularity multiple), and `(i + 1) * 8 <= size`.
+        let at = unsafe {
+            let at = base.add(i);
+            at.write(w);
+            at
+        };
+        let bits = at.expose_provenance() as u64;
+        assert!(kinds::is_cell_bits(bits) && bits != 0);
+        assert!(
+            Value::is_valid_bits(bits),
+            "a fake cell at {bits:#x} is not a valid Value"
+        );
+        values.push(bits);
+    }
+    let fake_pairs = check_compare_pairs(&values);
+    assert_eq!(fake_pairs, values.len() * values.len());
+    drop(cage);
+
+    let real = on_big_stack(|| {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        let rt = iso.cx.rt();
+        let cells = [
+            object::new_string(rt, "a text that is not interned"),
+            object::new_string(rt, "\u{3b1}\u{3b2}"),
+            crate::atoms::intern_str(rt, "length"),
+            crate::atoms::intern_str(rt, "x"),
+            crate::symbol::new_symbol(rt, UNDEFINED),
+            crate::bigint::alloc(rt, &ep9_bigint::from_i64(-5)),
+            object::new_plain_object(rt),
+            object::new_object(rt, crate::frame::NULL),
+        ];
+        let mut values: Vec<u64> = cells.to_vec();
+        values.extend([int32_bits(3), Value::number(0.25).to_bits(), UNDEFINED]);
+        values.extend([crate::frame::NULL, crate::frame::TRUE, crate::frame::FALSE]);
+        values.push(crate::frame::HOLE);
+        let n = check_compare_pairs(&values);
+        let classes: Vec<u16> = cells.iter().map(|&c| old_compare_operand(c)).collect();
+        black_box(&mut iso);
+        (n, classes)
+    });
+    use ep9_facts::CompareHint as C;
+    assert_eq!(
+        real.1,
+        [
+            C::STRING.bits(),
+            C::STRING.bits(),
+            C::ATOM.bits(),
+            C::ATOM.bits(),
+            C::SYMBOL.bits(),
+            C::BIGINT.bits(),
+            C::RECEIVER.bits(),
+            C::RECEIVER.bits(),
+        ],
+        "the real cells cover each cell class"
+    );
+    assert!(real.0 > 0);
+}

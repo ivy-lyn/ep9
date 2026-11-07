@@ -95,6 +95,11 @@ pub enum ObjectClass {
     TemporalPlainMonthDay,
     /// A Temporal.ZonedDateTime instance (spec-temporal T8): `[[EpochNanoseconds]]` as slot 0 the epoch seconds (an integral Number) and slot 1 the nanosecond of that second (an int32), `[[TimeZone]]` as slot 2 (the time zone identifier, a String) and `[[Calendar]]` as slot 3 (an ep9 calendar code, an int32), `ep9_temporal` zoned_date_time.rs.
     TemporalZonedDateTime,
+    /// An Iterator Helper object (§27.1.2.1, M7-P1 SPEC-ITER), or the wrapper of
+    /// `Iterator.from` (`[[Iterated]]`): slot 0 the kind and the GeneratorState (an int32),
+    /// slots 1-2 the underlying iterator and its `next`, then the callback, the counter and
+    /// the inner iterator of flatMap (`ep9_builtins` iterator.rs).
+    IteratorHelper,
 }
 
 impl ObjectClass {
@@ -123,6 +128,7 @@ impl ObjectClass {
         ObjectClass::TemporalPlainYearMonth,
         ObjectClass::TemporalPlainMonthDay,
         ObjectClass::TemporalZonedDateTime,
+        ObjectClass::IteratorHelper,
     ];
 
     /// Most internal slots of one object.
@@ -168,6 +174,7 @@ impl ObjectClass {
             ObjectClass::TemporalPlainYearMonth => "Temporal.PlainYearMonth",
             ObjectClass::TemporalPlainMonthDay => "Temporal.PlainMonthDay",
             ObjectClass::TemporalZonedDateTime => "Temporal.ZonedDateTime",
+            ObjectClass::IteratorHelper => "Iterator Helper",
         }
     }
 }

@@ -7,8 +7,8 @@
 //!
 //! | Builtin | Template | Pattern |
 //! |---|---|---|
-//! | `call` | 6 | IsCallable(this); forward `args.rest(1)` with `Cx::tail_call_args` (the callee frame takes this host frame's place; no copy, H20-Q3) |
-//! | `apply` | companion | CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` (one copy, into the callee frame; H20-Q3) |
+//! | `call` | 6 | IsCallable(this); then `Cx::forward_call`: `args.rest(1)` with `Cx::tail_call_args` (the callee frame takes this host frame's place; no copy, H20-Q3). A later call from bytecode of a bytecode function is forwarded by the VM (no host frame; M7-P0 CALLHOST) |
+//! | `apply` | companion | IsCallable(this); then `Cx::forward_apply`: CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` (one copy, into the callee frame; H20-Q3). A later call from bytecode of a bytecode function with an unmodified arguments object or a packed Array is forwarded by the VM (the frame is pushed from the source; M7-P0 CALLHOST) |
 //! | `bind` | 7 | BoundFunctionCreate (`Cx::new_bound_function`: a BOUND_FUNCTION cell; its `[[Call]]` and `[[Construct]]` are in the VM), then SetFunctionLength and SetFunctionName |
 //! | `toString` | companion | the source text (`Cx::function_source_text`, a copy of the unit range, the whole `[[SourceText]]`, made on each call) when the unit embeds its source; else the NativeFunction form, a builtin's named by its `[[InitialName]]` (`Cx::initial_name`); TypeError for a value that is not callable |
 //!
@@ -87,7 +87,9 @@ fn call<'s>(
     //    makes the call after this host frame is gone).
     // 4. Return ? Call(func, thisArg, args). The arguments after thisArg stay where they are:
     //    the callee frame takes the place of this one, never through a heap list.
-    cx.tail_call_args(func, args.get(0), args.rest(1))
+    //    `forward_call` takes steps 3-4 and records this function as the realm's
+    //    %Function.prototype.call%, so the VM can take them for a call from bytecode.
+    cx.forward_call(args)
 }
 
 /// Function.prototype.apply ( thisArg, argArray ) (§20.2.3.1).
@@ -103,21 +105,16 @@ fn apply<'s>(
     if !func.is_callable() {
         return Err(not_callable(cx, "apply", func));
     }
-    let (this_arg, arg_array) = (args.get(0), args.get(1));
-    // 3. If argArray is either undefined or null, then
-    if arg_array.is_undefined_or_null() {
-        // a. Perform PrepareForTailCall().
-        // b. Return ? Call(func, thisArg).
-        return cx.call(func, this_arg, &[]);
-    }
+    // 3. If argArray is either undefined or null, return ? Call(func, thisArg).
     // 4. Let argList be ? CreateListFromArrayLike(argArray). It is built on the VM stack
     //    (an ArgsBuilder: precise roots, no heap list).
-    let arg_list = cx.create_list_from_array_like(arg_array)?;
     // 5. Perform PrepareForTailCall() (H20-Q3: not here; the list is copied once, into the
     //    callee frame, as V8 copies it to the stack, and a tail form would only add the
     //    request to that copy).
     // 6. Return ? Call(func, thisArg, argList).
-    cx.call_built(func, this_arg, arg_list)
+    // `forward_apply` takes steps 3-6 and records this function as the realm's
+    // %Function.prototype.apply%, so the VM can take them for a call from bytecode.
+    cx.forward_apply(args)
 }
 
 /// Template 7. Function.prototype.bind ( thisArg, ...args ) (§20.2.3.2).

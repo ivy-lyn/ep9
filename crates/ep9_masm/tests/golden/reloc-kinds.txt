@@ -1,0 +1,11 @@
+# The ep9_masm relocation kinds: one line per wire code, "<code> <name>" (H34 Freeze table,
+# part "Relocation kinds (append-only)"). Append-only: a new kind is a new last line with the
+# next code; a line never changes and never goes away (tests/kinds.rs).
+0 Local
+1 Stub
+2 Runtime
+3 LinkSlot
+4 IcCell
+5 RootIndex
+6 DeoptExit
+7 HeapConst

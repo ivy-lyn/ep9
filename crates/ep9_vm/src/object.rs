@@ -1224,14 +1224,14 @@ fn store_element(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
 
 /// Stores element `i` of the elements store of `o`, an object that is not an Array
 /// (`elements::plain_elements_kind`); [`HOLE`] removes it. False (nothing stored) for a new
-/// element at or past [`arr::MAX_LENGTH`] or `elements::PLAIN_GAP` past the capacity: the
+/// element at or past [`arr::MAX_LENGTH`] or one that `elements::sparse_growth` refuses: the
 /// caller keeps such an index as a stored property (v0). A raw store, as [`array_set`]: the
 /// callers check `[[Extensible]]`, the chain and that the property storage has no such key.
 /// The kind is always holey (no `length`). GC point.
 pub(crate) fn element_set(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
     debug_assert!(crate::elements::plain_elements_kind(cell_kind(o)));
     let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as u32);
-    if i >= cap && (i >= arr::MAX_LENGTH || i - cap >= crate::elements::PLAIN_GAP) {
+    if i >= cap && (i >= arr::MAX_LENGTH || crate::elements::sparse_growth(rt, o, cap, i)) {
         if v == HOLE {
             return true;
         }

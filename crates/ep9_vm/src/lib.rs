@@ -175,6 +175,12 @@ pub use native::{
 /// Facts for tests and tools (not a stable API).
 #[doc(hidden)]
 pub mod internals {
+    /// FASTDIFF (route P0-FASTHITS): the hit count of each Switch human fast path on this
+    /// thread since the last call (then 0), by its FASTDIFF row name. Feature `fastdiff-hits`.
+    #[cfg(feature = "fastdiff-hits")]
+    pub fn take_fastdiff_hits() -> Vec<(&'static str, u64)> {
+        crate::call::fast_hits::take()
+    }
     /// Opcodes with a cold block in the interpreter DSL.
     pub const COLD_OPCODES: usize = crate::interp::ops::COLD_COUNT;
     /// Handlers per threaded expansion: one per opcode, one per cold block, plus `Exit`,

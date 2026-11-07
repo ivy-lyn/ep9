@@ -16,9 +16,13 @@ ep9_value = { path = "../ep9_value" }
 ep9_vm = { path = "../ep9_vm" }
 
 # build.rs: the engine build id (H35-Q8): the first 16 bytes of SHA-256 (ep9_bytecode's) over
-# the commit, `rustc -vV`, the target and ep9_unit's features; EP9_BUILD_ID overrides it.
+# the commit, the target, EP9_EMBEDDER and `rustc -vV` (no feature, C-19); EP9_BUILD_ID overrides it.
 [build-dependencies]
 ep9_bytecode = { path = "../ep9_bytecode" }
+
+# examples/size_report.rs (the C-17 SIZE-REPORT): compiles each workload as `ep9` does.
+[dev-dependencies]
+ep9_frontend = { path = "../ep9_frontend" }
 
 [features]
 # H27: the unit writer, linked only into AOT builds (ep9c). Never in the ep9 binary:

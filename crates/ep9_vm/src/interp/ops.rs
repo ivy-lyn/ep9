@@ -837,7 +837,7 @@ op!(LdaNewTarget(st) {
 
 // Global ICs (H16, `ic.rs`): a lexical binding or an own data property of the global object.
 op!(LdaGlobal(st, name: K, s: FSlot) {
-    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+    match ic::load_global(st.cx, st.info(), s.0) {
         Some(v) => {
             ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
@@ -854,7 +854,7 @@ op!(LdaGlobal(st, name: K, s: FSlot) {
     st.result(r)
 });
 op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
-    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+    match ic::load_global(st.cx, st.info(), s.0) {
         Some(v) => {
             ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
@@ -872,7 +872,7 @@ op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
 });
 op!(StaGlobal(st, name: K, s: FSlot) {
     let v = st.acc;
-    if ic::store_global(st.rt(), st.info(), st.cx.global_this, s.0, v) {
+    if ic::store_global(st.cx, st.info(), s.0, v) {
         ic::ic_count!(hit, StoreGlobal);
         Flow::Next
     } else {
@@ -961,7 +961,7 @@ op!(StaModuleVariable(st, cell: i32, depth: Depth) { Flow::Cold } cold {
 // ---- property access -----------------------------------------------------------------------
 
 // Named loads and stores run the IC hit path inline (H16, `ic.rs`); a miss runs the generic
-// operation and records a case.
+// operation and records a case (0x21 probes the stub cache first: `ic::get_named_cold`).
 op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     let o = st.reg(object);
     match ic::load(st.rt(), st.info(), o, s.0, name.0) {
@@ -977,7 +977,7 @@ op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     }
 } cold {
     let (o, k) = (st.reg(object), st.constant(name));
-    let r = slow::get_named(st.cx, st.fp, st.pc, o, k, s.0);
+    let r = ic::get_named_cold(st.cx, st.fp, st.pc, o, k, s.0);
     st.result(r)
 });
 // The accumulator holds the home object; the IC is keyed on its prototype (the lookup start)

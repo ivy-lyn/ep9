@@ -17,7 +17,7 @@ strings (6):
 scopes (1):
   scope0 script outer=- flags=[] slots=["o":var]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=3 range=0..36
-  code (66 bytes):
+  code (64 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> LdaGlobal k3, s0  ; k3 = String str0 "o"     ; 10 03 00
       8    Star r2                                      ; 0c 02
@@ -37,10 +37,9 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      49    Star r1                                      ; 0c 01
      51 E> GetNamedProperty r1, k5, s6  ; k5 = String str5 "C" ; 21 01 05 06
      55    Star r0                                      ; 0c 00
-     57    Ldar r0                                      ; 0b 00
-     59 E> Construct r0, (), s7                         ; 69 00 00 00 07
-     64    LdaUndefined                                 ; 05
-     65    Return                                       ; 92
+     57 E> Construct r0, (), s7                         ; 69 00 00 00 07
+     62    LdaUndefined                                 ; 05
+     63    Return                                       ; 92
   constants (6):
       0 String str1 "c"
       1 String str2 "b"
@@ -69,4 +68,4 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      41 E 18 (3:3)
      46 S 25 (5:1)
      51 E 31 (5:7)
-     59 E 25 (5:1)
+     57 E 25 (5:1)

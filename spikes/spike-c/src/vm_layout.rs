@@ -23,9 +23,10 @@
 //! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 4 |
 //! | the key half of an IC entry (a feedback slot or a POLY_IC case) that no site filled: `undefined`; the shape guard's "unfilled" exit compares with it (a hand fact until M6-P0) | `VALUE_UNDEFINED` | IC_LAYOUT 4 |
 //! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 4 |
+//! | an out-of-line field: the object's SLOTS cell at `OBJECT_SLOTS`, field `k` past the in-object capacity at `SLOTS_DATA + 8k` of it, and its smi handler kind `SMI_FIELD_OUT_OF_LINE` (the named load of SPIKEC-9; proved below on a live object). Spike C hand facts (`HAND_FACTS_M6`) from M6-P1 until M7-P0 (MC-P1-LAYOUTX) | `OBJECT_SLOTS`, `SLOTS_DATA`, `SMI_FIELD_OUT_OF_LINE` | OBJECT_LAYOUT 7 (the first two), IC_LAYOUT 4 (the handler kind) |
 //! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler at `+ POLY_HANDLER` (MC-w16-4); `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_HANDLER`, `POLY_COUNT` | IC_LAYOUT 4 |
 //! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT 1 (C-18) |
-//! | the shared exit's register dump below sp: word n = xn for x0-x30, 16-aligned (a hand fact until M6-P0; the emitter's `deopt_exit`) | `DUMP_BYTES` | DEOPT_META 0 |
+//! | the shared exit's register dump below sp: word n = xn for x0-x30, 16-aligned (a hand fact until M6-P0; the emitter's `deopt_exit`) | `DUMP_BYTES` | DEOPT_META 1 (0 until A2 start) |
 //!
 //! Since M5-P0 the export is `ep9_vm::layout`, in every ep9_vm build (C-18). What is left here
 //! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
@@ -44,9 +45,10 @@ pub use ep9_vm::layout::{
     ELEMENTS_KIND_PACKED_DOUBLE, ELEMENTS_KIND_PACKED_ELEMENTS, ELEMENTS_KIND_PACKED_INT32,
     FEEDBACK_INFO, FEEDBACK_KEY, FEEDBACK_SLOT_SIZE, FEEDBACK_SLOTS, FEEDBACK_VALUE, FI_FEEDBACK,
     HOLE, KIND_ARRAY, KIND_BYTE, KIND_CONTEXT, KIND_ELEMENTS, KIND_ELEMENTS_DICT,
-    KIND_ELEMENTS_DOUBLE, KIND_OBJECT, KIND_SHAPE, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES,
-    POLY_COUNT, POLY_HANDLER, SHAPE_CAGE_ALIGN, SHAPE_COUNTS, SHAPE_ELEMENTS_KIND_SHIFT,
-    SHAPE_ID_BYTE, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK, SMI_SHIFT,
+    KIND_ELEMENTS_DOUBLE, KIND_OBJECT, KIND_SHAPE, OBJECT_FIELDS, OBJECT_SLOTS, POLY_CASE_SIZE,
+    POLY_CASES, POLY_COUNT, POLY_HANDLER, SHAPE_CAGE_ALIGN, SHAPE_COUNTS,
+    SHAPE_ELEMENTS_KIND_SHIFT, SHAPE_ID_BYTE, SLOTS_DATA, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT,
+    SMI_FIELD_OUT_OF_LINE, SMI_KIND_MASK, SMI_SHIFT,
 };
 
 /// The elements kinds whose elements the element ops read and write (bit `k` = kind `k`):
@@ -327,7 +329,7 @@ fn check_in(session: &mut crate::harness::Session) -> Result<String, String> {
     Ok(format!(
         "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
          as ep9_vm::layout exports them; the elements kind in the shape and both storage forms \
-         on arrays of the 6 kinds, DICTIONARY (3 ways) and site-born ones; a closure's CONTEXT cell; an out-of-line field and its IC handler (the 3 month-6 hand facts); versions {}",
+         on arrays of the 6 kinds, DICTIONARY (3 ways) and site-born ones; a closure's CONTEXT cell; an out-of-line field and its IC handler (the 3 out-of-line exports, hand facts until M7-P0); versions {}",
         PINNED
             .iter()
             .map(|(n, v)| format!("{n} {v}"))
@@ -429,15 +431,15 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
 /// MODES-CHECK-w22 MC-w22-11) owns `HOLE`, `NATIVE_WORD_OFFSET` and the [`ENCODING_READS`]
 /// constants, which the emitter and the graph builder bake into code. DEOPT_META (since M6-P0;
 /// MC-w23-9, V11-D12) owns the H29 byte form [`crate::deopt_meta`] writes and the register dump
-/// the shared exit stores (`DUMP_BYTES`): it stays 0 in month 6 and moves to 1 at A2 start, and
-/// the spike moves with it.
+/// the shared exit stores (`DUMP_BYTES`): 0 in month 6, 1 from A2 start (M7-P1, format 1 with no
+/// byte changed); the spike moved with it.
 pub const PINNED: [(&str, u32); 6] = [
     ("OBJECT_LAYOUT", 7),
     ("IC_LAYOUT", 4),
     ("FRAME", 2),
     ("VM_LAYOUT", 1),
     ("Value encoding", 1),
-    ("DEOPT_META", 0),
+    ("DEOPT_META", 1),
 ];
 
 /// The VM's own versions, in [`PINNED`] order (Value encoding is `ep9_value`'s).
@@ -620,8 +622,9 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
 /// item in `crates/ep9_vm/src/layout.rs` (each export starts its doc with its owner). The two
 /// smi handlers ([`ARRAY_LENGTH_HANDLER`], [`field_in_object_handler`]) are derived from the
 /// IC_LAYOUT items here. Since M6-P0 the 6 former hand facts are items of the set too (v11in
-/// #2): no fact the spike bakes is outside it or [`ENCODING_READS`].
-pub const READ_SET: [(&str, &str); 69] = [
+/// #2), and since M7-P0 the 3 out-of-line facts of SPIKEC-9 (MC-P1-LAYOUTX): no fact the spike
+/// bakes is outside it or [`ENCODING_READS`].
+pub const READ_SET: [(&str, &str); 72] = [
     ("ARRAY_ELEMENTS", "OBJECT_LAYOUT"),
     ("ARRAY_LENGTH", "OBJECT_LAYOUT"),
     ("CONTEXT_LENGTH", "OBJECT_LAYOUT"),
@@ -668,6 +671,7 @@ pub const READ_SET: [(&str, &str); 69] = [
     ("KIND_SHAPE", "OBJECT_LAYOUT"),
     ("NATIVE_WORD_OFFSET", "Value encoding"),
     ("OBJECT_FIELDS", "OBJECT_LAYOUT"),
+    ("OBJECT_SLOTS", "OBJECT_LAYOUT"),
     ("POLY_CASES", "IC_LAYOUT"),
     ("POLY_CASE_SIZE", "IC_LAYOUT"),
     ("POLY_COUNT", "IC_LAYOUT"),
@@ -684,8 +688,10 @@ pub const READ_SET: [(&str, &str); 69] = [
     ("SHAPE_COUNTS", "OBJECT_LAYOUT"),
     ("SHAPE_ELEMENTS_KIND_SHIFT", "OBJECT_LAYOUT"),
     ("SHAPE_ID_BYTE", "OBJECT_LAYOUT"),
+    ("SLOTS_DATA", "OBJECT_LAYOUT"),
     ("SMI_ARRAY_LENGTH", "IC_LAYOUT"),
     ("SMI_FIELD_IN_OBJECT", "IC_LAYOUT"),
+    ("SMI_FIELD_OUT_OF_LINE", "IC_LAYOUT"),
     ("SMI_KIND_MASK", "IC_LAYOUT"),
     ("SMI_SHIFT", "IC_LAYOUT"),
     ("VALUE_UNDEFINED", "IC_LAYOUT"),
@@ -753,31 +759,9 @@ pub fn read_set_lines() -> Vec<String> {
 
 // ---- out-of-line fields (SPIKEC-9) ---------------------------------------------------------
 
-/// OBJECT_LAYOUT 7, a hand fact (SPIKEC-9, M6-P1): the object word at +8 holds the SLOTS cell
-/// of the out-of-line fields (ep9_vm `object::obj::SLOTS`). See [`HAND_FACTS_M6`].
-pub const OBJECT_SLOTS: u32 = 8;
-/// OBJECT_LAYOUT 7, a hand fact (SPIKEC-9): out-of-line field `k` (the shape's field number
-/// minus its in-object capacity) is at `SLOTS_DATA + 8k` of the SLOTS cell (`shape::slf::DATA`).
-pub const SLOTS_DATA: u32 = 16;
-/// IC_LAYOUT 4, a hand fact (SPIKEC-9): the smi handler kind of an own data field out of line
-/// (`ic::smi::FIELD_OUT_OF_LINE`); its offset (from bit [`SMI_SHIFT`]) is into the SLOTS cell.
-pub const SMI_FIELD_OUT_OF_LINE: i32 = 2;
-
-/// The hand facts of month 6 (SPIKEC-9): (name, value, owner). Navier-stokes' `project` reads
-/// `Math.sqrt`, an own data field of `Math` past its shape's in-object capacity (field 31,
-/// capacity 4), so the named load reads it out of line. `ep9_vm::layout` exports no out-of-line
-/// fact, and `layout.rs` is frozen after M6-P0 (plan v11 rule 2), so these three are hand facts
-/// until the orchestrator adds the exports (the SPIKEC-9 report names the fixer need). Each is
-/// proved on a live object by [`check`] (`check_slots`), as the month-5 hand facts were.
-pub const HAND_FACTS_M6: [(&str, u32, &str); 3] = [
-    ("OBJECT_SLOTS", OBJECT_SLOTS, "OBJECT_LAYOUT"),
-    ("SLOTS_DATA", SLOTS_DATA, "OBJECT_LAYOUT"),
-    (
-        "SMI_FIELD_OUT_OF_LINE",
-        SMI_FIELD_OUT_OF_LINE as u32,
-        "IC_LAYOUT",
-    ),
-];
+// `OBJECT_SLOTS`, `SLOTS_DATA` and `SMI_FIELD_OUT_OF_LINE` are `ep9_vm::layout` exports since
+// M7-P0 (MC-P1-LAYOUTX). From M6-P1 (SPIKEC-9) until then they were the hand facts
+// `HAND_FACTS_M6` here, because `layout.rs` was frozen until the m6-p5 tag (plan v11 rule 2).
 
 /// The smi handler (an int32 Value) of an out-of-line field at byte offset `offset` of the
 /// SLOTS cell.
@@ -793,7 +777,8 @@ for (var layoutW = 0; layoutW < 12; layoutW++) layoutWide['w' + layoutW] = 100 +
 function layoutWideGet(o) { return o.w11; }\n\
 for (var layoutW = 0; layoutW < 20; layoutW++) layoutWideGet(layoutWide);\n";
 
-/// The out-of-line facts ([`HAND_FACTS_M6`]) on a live object: the live facts of the warmed
+/// The out-of-line exports ([`OBJECT_SLOTS`], [`SLOTS_DATA`], [`SMI_FIELD_OUT_OF_LINE`]; hand
+/// facts until M7-P0) on a live object: the live facts of the warmed
 /// load `o.w11` name an own field past the shape's capacity; the IC case of its shape is
 /// [`field_out_of_line_handler`] of `SLOTS_DATA + 8 * (field - capacity)` (the handler kind and
 /// the SLOTS data offset); the object's word at [`OBJECT_SLOTS`] is a cell whose word at that
@@ -1116,7 +1101,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
             "{}",
             lines[1]
         );
-        assert_eq!(lines[5], "DEOPT_META 0: 1 exported: DUMP_BYTES");
+        assert_eq!(lines[5], "DEOPT_META 1: 1 exported: DUMP_BYTES");
         // No hand fact is left (v11in #2): every line lists exports only.
         assert!(!lines.iter().any(|l| l.contains("hand")), "{lines:?}");
         assert!(
@@ -1201,7 +1186,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
             );
             assert!(READ_SET.contains(&item), "{item:?} in READ_SET");
         }
-        assert_eq!(PINNED[5], ("DEOPT_META", 0));
+        assert_eq!(PINNED[5], ("DEOPT_META", 1));
         assert_eq!(VM_VERSIONS[5], ep9_vm::versions::DEOPT_META_VERSION);
     }
 

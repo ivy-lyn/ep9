@@ -39,19 +39,19 @@ fn a_test_encoded_unit_loads_and_another_abi_gives_source() {
 
 #[test]
 fn native_code_needs_every_native_contract_above_version_0() {
-    // This build: the deopt-metadata version is still 0, so a unit with a text section runs
-    // its bytecode, and a unit without one loads.
+    // This build: since A2 start (DEOPT_META 1, M7-P1) every native contract is above 0, so
+    // a unit with a text section loads; with DEOPT_META 0 it ran its bytecode.
     let host = HostInfo::current();
     let first_zero = Contract::ALL
         .into_iter()
         .find(|&c| c.is_native() && host.versions.get(c) == 0);
-    assert_eq!(first_zero, Some(Contract::DeoptMeta));
+    assert_eq!(first_zero, None);
     let native = TestUnit::native(&host).encode();
-    assert_eq!(
-        verdict(&native, &host),
-        Verdict::NoNativeForm(Contract::DeoptMeta)
-    );
-    assert_eq!(check(&native, &host), Outcome::Bytecode);
+    assert_eq!(verdict(&native, &host), Verdict::Load);
+    let mut old = host;
+    old.versions.deopt_meta = 0;
+    let v0 = verdict(&TestUnit::native(&old).encode(), &old);
+    assert_eq!(v0, Verdict::NoNativeForm(Contract::DeoptMeta));
     let no_text = TestUnit::native(&host).without(SectionKind::Text).encode();
     assert_eq!(check(&no_text, &host), Outcome::Load);
 
@@ -100,7 +100,7 @@ fn expected(f: &Field, new: &[u8], host: &HostInfo) -> Outcome {
                 Outcome::LoadError
             }
         }
-        OnChange::Table => unreachable!("not a header field"),
+        _ => expected_v2(f, new, host), // the container v2 rules (and Table: no header field)
     }
 }
 
@@ -270,7 +270,7 @@ fn required_sections_and_the_signature_flag() {
     // Optional sections may go.
     assert_eq!(
         check(
-            &TestUnit::small(&host).without(SectionKind::Hints).encode(),
+            &TestUnit::small(&host).without(SectionKind::Facts).encode(),
             &host
         ),
         Outcome::Load
@@ -468,4 +468,173 @@ fn verdicts_name_their_reason() {
         Verdict::LoadError(BadUnit::Hash).to_string(),
         "load error: content hash mismatch"
     );
+}
+
+/// The outcome of a changed container v2 field with its own rule (`expected` above).
+fn expected_v2(f: &Field, new: &[u8], host: &HostInfo) -> Outcome {
+    let load_if = |ok: bool| if ok { Outcome::Load } else { Outcome::Bytecode };
+    match f.on_change {
+        OnChange::Ignored => Outcome::Load,
+        OnChange::AtMostHost => {
+            load_if(u32::from_le_bytes(new.try_into().unwrap()) <= host.runtime_table_len)
+        }
+        OnChange::Slot => load_if(new[0] < UNIT_DATA_SLOTS),
+        other => unreachable!("{other:?} is not a header field rule"),
+    }
+}
+
+/// Container v2 (doc 13 C-16): the header fields of 5.2 and the flags, each with its rule.
+#[test]
+fn container_v2_header_fields_give_their_outcomes() {
+    let host = synthetic_host();
+    let unit = |f: &dyn Fn(&mut UnitHeader)| {
+        let mut u = TestUnit::native(&host);
+        f(&mut u.header);
+        verdict(&u.encode(), &host)
+    };
+    assert_eq!(unit(&|_| {}), Verdict::Load);
+    // Compat flags: an unknown bit is ignored. Incompat flags: an unknown bit gives BYTECODE.
+    assert_eq!(unit(&|h| h.compat_flags = u32::MAX), Verdict::Load);
+    assert_eq!(
+        unit(&|h| h.incompat_flags = 1 << 5),
+        Verdict::Incompat { bits: 1 << 5 }
+    );
+    // The RuntimeTable length: at most the host's (an append moves no version, C-18).
+    assert_eq!(unit(&|h| h.runtime_table_len = 0), Verdict::Load);
+    assert_eq!(unit(&|h| h.runtime_table_len = 20), Verdict::Load);
+    assert_eq!(
+        unit(&|h| h.runtime_table_len = 21),
+        Verdict::RuntimeTable { unit: 21, host: 20 }
+    );
+    // The VM layout version is a native contract (H35-Q10): another one gives BYTECODE, and 0
+    // with a text section is "no native form".
+    assert!(matches!(
+        unit(&|h| h.versions.vm_layout = 13),
+        Verdict::Version {
+            contract: Contract::VmLayout,
+            unit: 13,
+            host: 12,
+            drop_hints: false
+        }
+    ));
+    let mut h0 = host;
+    h0.versions.vm_layout = 0;
+    assert_eq!(
+        verdict(&TestUnit::native(&h0).encode(), &h0),
+        Verdict::NoNativeForm(Contract::VmLayout)
+    );
+    // The root-shape and codegen-flag hashes must equal the host's.
+    assert_eq!(unit(&|h| h.root_shapes = [0; 8]), Verdict::RootShapes);
+    assert_eq!(unit(&|h| h.codegen_flags[3] ^= 1), Verdict::CodegenFlags);
+    // The unit-data slot: 0-63 (C-20).
+    for s in [0, 1, 63] {
+        assert_eq!(unit(&|h| h.unit_data_slot = s), Verdict::Load, "slot {s}");
+    }
+    for s in [64, 200, 255] {
+        assert_eq!(
+            unit(&|h| h.unit_data_slot = s),
+            Verdict::Slot(s),
+            "slot {s}"
+        );
+    }
+    // A unit of container version 1 is a LOAD ERROR (H35:119: free while no unit exists).
+    let mut v1 = TestUnit::small(&host).encode();
+    v1[offsets::CONTAINER_VERSION] = 1;
+    rehash(&mut v1);
+    assert_eq!(
+        verdict(&v1, &host),
+        Verdict::LoadError(BadUnit::ContainerVersion(1))
+    );
+}
+
+/// Container v2: extension sections (kind >= 0x100) and the reserved kinds `deps` and
+/// `snapshot_binding`.
+#[test]
+fn extension_and_reserved_sections_give_their_outcomes() {
+    let host = synthetic_host();
+    let with = |ext: Vec<(ExtensionEntry, Vec<u8>)>| {
+        let mut u = TestUnit::native(&host);
+        u.extensions = ext;
+        u.encode()
+    };
+    // Not needed by the native code: skipped. Needed: BYTECODE.
+    let skip = with(vec![extension(0x100, false, 4, filler(20, 13))]);
+    assert_eq!(verdict(&skip, &host), Verdict::Load);
+    let need = with(vec![
+        extension(0x100, false, 3, filler(21, 5)),
+        extension(0x2000, true, 16, filler(22, 70)),
+    ]);
+    assert_eq!(verdict(&need, &host), Verdict::Extension(0x2000));
+    // An extension section is inside the content hash.
+    let start = TestUnit::parse(&skip).unwrap();
+    assert_eq!(start.extensions.len(), 1);
+    let mut m = skip.clone();
+    let last = m.len() - 1;
+    m[last] ^= 1;
+    assert_eq!(verdict(&m, &host), Verdict::LoadError(BadUnit::Hash));
+    // Its offset follows its own alignment: a 64 KiB section starts at a 64 KiB boundary.
+    let big = TestUnit::parse(&need).unwrap();
+    let at = SECTION_TABLE_OFFSET + (big.sections.len() + 1) * SECTION_ENTRY_SIZE;
+    let off = u64::from_le_bytes(need[at + 8..at + 16].try_into().unwrap());
+    assert_eq!(off % 65536, 0);
+    // Out of order (an extension before a named kind cannot happen: kinds ascend) and twice.
+    let mut twice = TestUnit::small(&host);
+    twice.extensions = vec![
+        extension(0x100, false, 3, vec![1]),
+        extension(0x100, false, 3, vec![2]),
+    ];
+    assert_eq!(
+        verdict(&twice.encode(), &host),
+        Verdict::LoadError(BadUnit::SectionTable("section kinds not ascending"))
+    );
+    // The reserved kinds: named, not built, so BYTECODE (doc 13 "Reserved").
+    for k in [SectionKind::Deps, SectionKind::SnapshotBinding] {
+        let mut u = TestUnit::small(&host);
+        u.sections.push((k, filler(23, 9)));
+        assert_eq!(
+            verdict(&u.encode(), &host),
+            Verdict::ReservedSection(k),
+            "{k:?}"
+        );
+    }
+}
+
+/// The unit mutation corpus (10:65; the A2-START acceptance): every header field, every bit
+/// of it and random values, on a v2 unit with every kind of section (named, reserved-free,
+/// two extensions, a signature), ends in its S3 outcome. Counted as one corpus run.
+#[test]
+fn the_v2_header_mutation_corpus_ends_in_the_listed_outcomes() {
+    let host = synthetic_host();
+    let mut u = TestUnit::native(&host);
+    u.extensions = vec![
+        extension(0x100, false, 4, filler(30, 11)),
+        extension(0x101, false, 12, filler(31, 3)),
+    ];
+    let base = u.encode();
+    assert_eq!(verdict(&base, &host), Verdict::Load);
+    let mut rng = Rng::new(0xa2);
+    let (mut cases, mut wrong) = (0usize, Vec::new());
+    for f in &HEADER_FIELDS {
+        if f.name == "content_hash" {
+            continue;
+        }
+        let range = f.offset..f.offset + f.size;
+        for new in new_values(&base[range.clone()], &mut rng) {
+            let mut m = base.clone();
+            m[range.clone()].copy_from_slice(&new);
+            rehash(&mut m);
+            cases += 1;
+            let got = check(&m, &host);
+            let want = expected(f, &new, &host);
+            if got != want {
+                wrong.push(format!("{} = {new:02x?}: {got:?}, want {want:?}", f.name));
+            }
+        }
+    }
+    println!(
+        "v2 header mutation corpus: {cases} cases, {} in their S3 outcome",
+        cases - wrong.len()
+    );
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(cases > 3000);
 }

@@ -698,6 +698,44 @@ fn the_compile_strings_hook_runs_in_the_callee_realm() {
     }
 }
 
+/// The hook gets the text of the JS strings (M7-P2 fixer, FE-SHIM VM half): not the shim text
+/// of `Cx::source_text`. A real U+FDD0 stays itself and a lone surrogate is U+FFFD.
+#[test]
+fn the_compile_strings_hook_gets_the_string_text_not_the_shim_text() {
+    let seen = on_big_stack(|| {
+        let mut iso = super::isolate(IsolateConfig {
+            compiler: Some(&HOOKS),
+            ..config(Dispatch::ALL[0], false)
+        });
+        iso.set_compile_strings_hook(Some(record));
+        take_seen();
+        let _ = iso.with_cx(|cx| {
+            let g = cx.global();
+            let tag = cx.new_string("one")?;
+            cx.set(g, "realmTag", tag, true)?;
+            let (eval, function) = (cx.get(g, "eval")?, cx.get(g, "Function")?);
+            let a = cx.new_string_utf16(&[0x61, 0xFDD0, 0x62])?;
+            let b = cx.new_string_utf16(&[0x61, 0xD800, 0x62, 0xFDD0, 0xDC38])?;
+            // The test compiler does not know the texts: a SyntaxError after the hook ran.
+            if cx.call(eval, g, &[a.into()]).is_err() {
+                cx.inner().rt().take_pending();
+            }
+            if cx.call(function, g, &[b.into(), a.into()]).is_err() {
+                cx.inner().rt().take_pending();
+            }
+            Ok(())
+        });
+        take_seen()
+    });
+    assert_eq!(
+        seen,
+        [
+            "[] \"a\\u{fdd0}b\" direct=false realm=one",
+            "[\"a\u{fffd}b\\u{fdd0}\u{fffd}\"] \"a\\u{fdd0}b\" direct=false realm=one",
+        ]
+    );
+}
+
 /// The hook is per isolate (H22-Q6: several isolates on one thread, one after another and
 /// at the same time): an isolate without a hook compiles what another isolate's hook refuses;
 /// `None` removes a hook; the table drops the entry of a dropped isolate at the next set.

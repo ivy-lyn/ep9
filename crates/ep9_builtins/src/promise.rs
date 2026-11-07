@@ -17,9 +17,14 @@
 //! count, an `[[AlreadyCalled]]` flag, a closure's captures) are internal slot objects of
 //! the class `PromiseReaction` with a null prototype: JS never sees them.
 //!
+//! `Promise.allKeyed` and `Promise.allSettledKeyed` are the await-dictionary proposal
+//! (test262 feature `await-dictionary`; <https://tc39.es/proposal-await-dictionary/>): they take
+//! the own enumerable keys of an object instead of an iterable, and settle with a
+//! null-prototype object of the same keys (SpiderMonkey's and QuickJS's key order on
+//! `%Promise%`: after `allSettled`).
+//!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
-//! `tests/golden/ids-promise.txt`. Not built: `Promise.allKeyed` and `allSettledKeyed`
-//! (the await-dictionary proposal).
+//! `tests/golden/ids-promise.txt`.
 
 use ep9_vm::abi::{JsObject, ObjectClass, PromiseCapability};
 use ep9_vm::{
@@ -46,6 +51,8 @@ mod def {
     pub const CATCH: u16 = 11;
     pub const FINALLY: u16 = 12;
     pub const AGGREGATE_ERROR: u16 = 13;
+    pub const ALL_KEYED: u16 = 14;
+    pub const ALL_SETTLED_KEYED: u16 = 15;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -64,6 +71,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("catch", 1, catch),               // 11
     BuiltinDef::method("finally", 1, finally),           // 12
     BuiltinDef::constructor("AggregateError", 2, aggregate_error), // 13
+    BuiltinDef::method("allKeyed", 1, all_keyed),        // 14
+    BuiltinDef::method("allSettledKeyed", 1, all_settled_keyed), // 15
 ];
 
 /// The intrinsics this module makes.
@@ -107,6 +116,8 @@ pub const PROPS: &[ObjectProps] = &[
             ),
             method("all", def::ALL),
             method("allSettled", def::ALL_SETTLED),
+            method("allKeyed", def::ALL_KEYED),
+            method("allSettledKeyed", def::ALL_SETTLED_KEYED),
             method("any", def::ANY),
             method("race", def::RACE),
             method("resolve", def::RESOLVE),
@@ -693,6 +704,280 @@ fn race<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     combinator(cx, this, args.get(0), Combinator::Race)
+}
+
+// ---- Promise.allKeyed, Promise.allSettledKeyed (the await-dictionary proposal) -------------
+
+/// The slots of a keyed element function's record: those of [`element`], and the keys list.
+mod keyed {
+    /// `keys`: the internal list array of the keys, in the order of `values`.
+    pub const KEYS: usize = super::element::COUNT;
+    pub const COUNT: usize = KEYS + 1;
+}
+
+/// Promise.allKeyed ( promises ) and Promise.allSettledKeyed ( promises ): the shared steps.
+fn keyed_combinator<'s>(
+    cx: &mut Cx<'s>,
+    c: Local<'s>,
+    promises: Local<'s>,
+    settled: bool,
+) -> JsResult<Local<'s>> {
+    // 1. Let C be the this value.
+    // 2. Let promiseCapability be ? NewPromiseCapability(C).
+    let cap = cx.new_promise_capability(c)?;
+    // 3. Let promiseResolve be Completion(GetPromiseResolve(C)).
+    // 4. IfAbruptRejectPromise(promiseResolve, promiseCapability).
+    let promise_resolve = match get_promise_resolve(cx, c) {
+        Ok(r) => r,
+        Err(t) => return reject_with(cx, t, cap),
+    };
+    // 5. If promises is not an Object, then
+    //    a. Let error be a newly created TypeError object.
+    //    b. Perform ? Call(promiseCapability.[[Reject]], undefined, « error »).
+    //    c. Return promiseCapability.[[Promise]].
+    let Some(promises) = promises.as_object() else {
+        let name = if settled {
+            "Promise.allSettledKeyed"
+        } else {
+            "Promise.allKeyed"
+        };
+        let t = cx.throw_type_error(&format!("{name}: the argument is not an object"));
+        return reject_with(cx, t, cap);
+    };
+    // 6. Let result be Completion(PerformPromiseAllKeyed(variant, promises, C,
+    //    promiseCapability, promiseResolve)).
+    // 7. IfAbruptRejectPromise(result, promiseCapability).
+    // 8. Return ? result.
+    match perform_keyed(cx, promises, c, cap, promise_resolve, settled) {
+        Ok(v) => Ok(v),
+        Err(t) => reject_with(cx, t, cap),
+    }
+}
+
+/// PerformPromiseAllKeyed ( variant, promises, constructor, resultCapability, promiseResolve );
+/// `settled`: the variant all-settled, else all.
+fn perform_keyed<'s>(
+    cx: &mut Cx<'s>,
+    promises: Local<'s, JsObject>,
+    c: Local<'s>,
+    cap: PromiseCapability<'s>,
+    promise_resolve: Local<'s>,
+    settled: bool,
+) -> JsResult<Local<'s>> {
+    // 1. Let allKeys be ? promises.[[OwnPropertyKeys]]().
+    let all_keys = cx.own_property_keys(promises)?;
+    let count = cx.get(all_keys, "length")?;
+    let count = cx.to_length(count)?;
+    // 2. Let keys be a new empty List.
+    let keys: Local<'s, JsObject> = cx.new_array().into();
+    // 3. Let values be a new empty List.
+    let values: Local<'s, JsObject> = cx.new_array().into();
+    // 4. Let remainingElementsCount be the Record { [[Value]]: 1 }.
+    let remaining = record(cx, 1);
+    rec_set(cx, remaining, 0, Local::number(1.0))?;
+    // 5. Let index be 0.
+    let mut index = 0.0f64;
+    // 6. For each element key of allKeys, do
+    for i in 0..count {
+        // A builtin loop polls once per pass (H23 "Interrupt poll"); a termination is not
+        // caught by IfAbruptRejectPromise (`catch_exception`).
+        cx.poll_interrupt()?;
+        let key = cx.get(all_keys, i.to_string().as_str())?;
+        let key = cx.to_property_key(key)?;
+        // a. Let desc be ? promises.[[GetOwnProperty]](key).
+        let desc = cx.get_own_property(promises, key)?;
+        // b. If desc is not undefined and desc.[[Enumerable]] is true, then
+        if !desc.is_some_and(|d| d.enumerable == Some(true)) {
+            continue;
+        }
+        // i. Let value be ? Get(promises, key).
+        let value = cx.get(promises, key)?;
+        // ii. Append key to keys.
+        list_set(cx, keys, index, key)?;
+        // iii. Append undefined to values.
+        list_set(cx, values, index, Local::undefined())?;
+        // iv. Let nextPromise be ? Call(promiseResolve, constructor, « value »).
+        let next_promise = cx.call(promise_resolve, c, &[value])?;
+        // v. Let alreadyCalled be the Record { [[Value]]: false }.
+        let already = record(cx, 1);
+        rec_set(cx, already, 0, Local::boolean(false))?;
+        // vi-ix. The closures capture alreadyCalled, index, keys, values, resultCapability
+        //        and remainingElementsCount: one record for both.
+        let data = record(cx, keyed::COUNT);
+        rec_set(cx, data, element::ALREADY_CALLED, already)?;
+        rec_set(cx, data, element::INDEX, Local::number(index))?;
+        rec_set(cx, data, element::LIST, values)?;
+        rec_set(cx, data, element::SETTLE, cap.resolve)?;
+        rec_set(cx, data, element::REMAINING, remaining)?;
+        rec_set(cx, data, keyed::KEYS, keys)?;
+        // vii. Let onFulfilled be CreateBuiltinFunction(fulfilledSteps, 1, "", « »).
+        // viii. If variant is all, then
+        //       1. Let onRejected be resultCapability.[[Reject]].
+        // ix. Else,
+        //     1-2. Let onRejected be CreateBuiltinFunction(rejectedSteps, 1, "", « »).
+        let (on_fulfilled, on_rejected): (Local<'s>, Local<'s>) = if settled {
+            (
+                cx.new_builtin_closure(keyed_settled_resolve_element, "", 1, data)
+                    .into(),
+                cx.new_builtin_closure(keyed_settled_reject_element, "", 1, data)
+                    .into(),
+            )
+        } else {
+            (
+                cx.new_builtin_closure(keyed_resolve_element, "", 1, data)
+                    .into(),
+                cap.reject,
+            )
+        };
+        // x. Set remainingElementsCount.[[Value]] to remainingElementsCount.[[Value]] + 1.
+        let n = rec_get(cx, remaining, 0)?.as_number().unwrap_or(0.0);
+        rec_set(cx, remaining, 0, Local::number(n + 1.0))?;
+        // xi. Perform ? Invoke(nextPromise, "then", « onFulfilled, onRejected »).
+        invoke(cx, next_promise, "then", &[on_fulfilled, on_rejected])?;
+        // xii. Set index to index + 1.
+        index += 1.0;
+    }
+    // 7. Set remainingElementsCount.[[Value]] to remainingElementsCount.[[Value]] - 1.
+    // 8. If remainingElementsCount.[[Value]] = 0, then
+    if count_down(cx, remaining)? == 0.0 {
+        // a. NOTE: This can happen even if keys was non-empty if an ill-behaved thenable
+        //    synchronously invoked the callback passed to its "then" method.
+        // b. Let result be CreateKeyedPromiseCombinatorResultObject(keys, values).
+        let result = keyed_result_object(cx, keys, values)?;
+        // c. Perform ? Call(resultCapability.[[Resolve]], undefined, « result »).
+        cx.call(cap.resolve, Local::undefined(), &[result])?;
+    }
+    // 9. Return resultCapability.[[Promise]].
+    Ok(cap.promise.value())
+}
+
+/// CreateKeyedPromiseCombinatorResultObject ( keys, values ).
+fn keyed_result_object<'s>(
+    cx: &mut Cx<'s>,
+    keys: Local<'s, JsObject>,
+    values: Local<'s, JsObject>,
+) -> JsResult<Local<'s>> {
+    // 1. Assert: The number of elements in keys is the same as the number of elements in
+    //    values.
+    let n = cx.get(keys, "length")?;
+    let n = cx.to_length(n)?;
+    // 2. Let obj be OrdinaryObjectCreate(null).
+    let obj = cx.new_object_with_proto(Local::null());
+    // 3. For each integer i such that 0 ≤ i < the number of elements in keys, in ascending
+    //    order, do
+    for i in 0..n {
+        cx.poll_interrupt()?;
+        let index = i.to_string();
+        let key = cx.get(keys, index.as_str())?;
+        let key = cx.to_property_key(key)?;
+        let value = cx.get(values, index.as_str())?;
+        // a. Perform ! CreateDataPropertyOrThrow(obj, keys[i], values[i]).
+        cx.create_data_property_or_throw(obj, key, value)?;
+    }
+    // 4. Return obj.
+    Ok(obj.value())
+}
+
+/// The shared steps of the keyed element functions, after the `[[AlreadyCalled]]` check: set
+/// `values[index]` to `x`; count down; when it was the last one, resolve with the result
+/// object.
+fn keyed_element_done<'s>(cx: &mut Cx<'s>, args: &Args<'s>, x: Local<'s>) -> JsResult<Local<'s>> {
+    // 1-2. If alreadyCalled.[[Value]] is true, return undefined; set it to true.
+    let Some((index, values, resolve, remaining)) = element_call(cx, args)? else {
+        return Ok(Local::undefined());
+    };
+    // Set values[index] to x.
+    list_set(cx, values, index, x)?;
+    // Set remainingElementsCount.[[Value]] to remainingElementsCount.[[Value]] - 1.
+    // If remainingElementsCount.[[Value]] = 0, then
+    if count_down(cx, remaining)? == 0.0 {
+        // Let result be CreateKeyedPromiseCombinatorResultObject(keys, values).
+        let data = captured(cx, args);
+        let keys = rec_get(cx, data, keyed::KEYS)?
+            .as_object()
+            .expect("the keys list");
+        let result = keyed_result_object(cx, keys, values)?;
+        // Return ? Call(resultCapability.[[Resolve]], undefined, « result »).
+        return cx.call(resolve, Local::undefined(), &[result]);
+    }
+    // Return undefined.
+    Ok(Local::undefined())
+}
+
+/// PerformPromiseAllKeyed step 6.b.vi, variant all: the fulfilledSteps closure.
+fn keyed_resolve_element<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    keyed_element_done(cx, &args, args.get(0))
+}
+
+/// The `{ status, value | reason }` object of a keyed all-settled element, made after the
+/// `[[AlreadyCalled]]` check; `None` if it was set.
+fn keyed_settled_value<'s>(
+    cx: &mut Cx<'s>,
+    args: &Args<'s>,
+    fulfilled: bool,
+) -> JsResult<Option<Local<'s>>> {
+    let data = captured(cx, args);
+    let already = rec_get(cx, data, element::ALREADY_CALLED)?
+        .as_object()
+        .expect("the [[AlreadyCalled]] record");
+    if rec_get(cx, already, 0)?.as_bool() == Some(true) {
+        return Ok(None);
+    }
+    // Let obj be OrdinaryObjectCreate(%Object.prototype%); CreateDataPropertyOrThrow(obj,
+    // "status", "fulfilled" | "rejected"); CreateDataPropertyOrThrow(obj, "value" | "reason",
+    // x).
+    settled_object(cx, fulfilled, args.get(0)).map(Some)
+}
+
+/// PerformPromiseAllKeyed step 6.b.vi, variant all-settled: the fulfilledSteps closure.
+fn keyed_settled_resolve_element<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    match keyed_settled_value(cx, &args, true)? {
+        Some(obj) => keyed_element_done(cx, &args, obj),
+        None => Ok(Local::undefined()),
+    }
+}
+
+/// PerformPromiseAllKeyed step 6.b.ix.2: the rejectedSteps closure.
+fn keyed_settled_reject_element<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    match keyed_settled_value(cx, &args, false)? {
+        Some(obj) => keyed_element_done(cx, &args, obj),
+        None => Ok(Local::undefined()),
+    }
+}
+
+/// Promise.allKeyed ( promises ).
+fn all_keyed<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    keyed_combinator(cx, this, args.get(0), false)
+}
+
+/// Promise.allSettledKeyed ( promises ).
+fn all_settled_keyed<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    keyed_combinator(cx, this, args.get(0), true)
 }
 
 /// Promise.reject ( r ) (§27.2.4.6).

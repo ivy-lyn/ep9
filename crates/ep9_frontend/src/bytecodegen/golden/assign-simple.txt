@@ -11,22 +11,20 @@ scopes (2):
   scope0 script outer=- flags=[] slots=["g":var, "l":let, "f":function]
   scope1 function outer=scope0 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..76
-  code (38 bytes):
+  code (34 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str2 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22 S> LdaUndefined                                 ; 05
-     23    Star r1                                      ; 0c 01
-     25    LdaConstant k2  ; k2 = String str1 "l"       ; 0a 02
-     27    Star r0                                      ; 0c 00
-     29 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     34    Ldar r1                                      ; 0b 01
-     36    LdaUndefined                                 ; 05
-     37    Return                                       ; 92
+     20 S> LdaUndefined                                 ; 05
+     21    Star r1                                      ; 0c 01
+     23    LdaConstant k2  ; k2 = String str1 "l"       ; 0a 02
+     25    Star r0                                      ; 0c 00
+     27 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     32    LdaUndefined                                 ; 05
+     33    Return                                       ; 92
   constants (3):
       0 Function f1
       1 String str2 "f"
@@ -38,8 +36,8 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       0 S 0 (1:1)
       5 E 14 (1:15)
      15 E 14 (1:15)
-     22 S 11 (1:12)
-     29 E 7 (1:8)
+     20 S 11 (1:12)
+     27 E 7 (1:8)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=1 range=14..76
   code (23 bytes):
       0 S> LdaSmi [1]                                   ; 04 01

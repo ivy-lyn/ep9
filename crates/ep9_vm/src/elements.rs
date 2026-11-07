@@ -66,7 +66,7 @@
 //! ([`plain_elements_kind`]), so such a key no longer moves a fast object to dictionary mode
 //! (OM-10). An index key that the elements store cannot hold stays a stored property, as in
 //! v0: an accessor, other attributes (`Object.freeze` moves each element there), an index
-//! [`PLAIN_GAP`] or more past the capacity, or one at or past `object::arr::MAX_LENGTH`.
+//! that [`sparse_growth`] refuses (the gap or the density check), or one at or past `MAX_LENGTH`.
 //! One index key lives in one place: the paths of `property.rs` read the elements first,
 //! then the property storage, and add to the elements only when the storage has no such
 //! key. An int32 key (`o[i] = v`, `property::set_index`, `define_index`) makes the elements
@@ -124,11 +124,11 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
     }
 }
 
-/// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, schema 1) of the VM kind `k`, or
-/// `None` for a reserved value (7-15). The two numberings differ at 1-4 (VM: OBJECT_LAYOUT 5,
-/// V10-A21; facts: holey kinds after the packed ones), so every reader converts through this
-/// one map, never a cast (MODES-CHECK-w18 MC-w18-4; the month-6 schema bump either renumbers
-/// `ElementsKind` to the VM order or keeps the map).
+/// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, FACT_SCHEMA 2) of the VM kind
+/// `k`, or `None` for a reserved value (7-15). Since FACT_SCHEMA 2 (M6-P0) the two numberings
+/// are the same (0-6 in the VM order, OBJECT_LAYOUT 5, V10-A21); schema 1 put the holey kinds
+/// after the packed ones, so they differed at 1-4. Every reader still converts through this
+/// one map, never a cast (MODES-CHECK-w18 MC-w18-4), so a later append changes one place.
 pub(crate) const fn to_fact(k: u8) -> Option<ep9_facts::ElementsKind> {
     use ep9_facts::ElementsKind as F;
     match k {
@@ -264,9 +264,9 @@ pub(crate) fn plain_elements_kind(k: u8) -> bool {
 }
 
 /// The largest distance past the capacity at which a new element of an object that is not
-/// an Array still goes to its elements store (H18-Q2's gap, est.); a farther index stays a
-/// stored property, so `o[1e6] = x` allocates no dense range. Arrays keep the v0 rule (dense up
-/// to `object::arr::MAX_LENGTH`) until DICTIONARY (M5-P2 ELEM2).
+/// an Array still goes to its elements store (H18-Q2's gap, est.); a farther index, or one that
+/// the density check of [`sparse_growth`] refuses, stays a stored property, so `o[1e6] = x`
+/// allocates no dense range. Arrays use [`ARRAY_GAP`] and DICTIONARY (M5-P2 ELEM2).
 pub(crate) const PLAIN_GAP: u32 = 1024;
 
 /// Moves the object `o` to elements kind `to` (a store needs it; `to` is more general than
@@ -733,6 +733,107 @@ pub(crate) fn storage_form_ok(o: u64) -> bool {
         return k != kind::DICTIONARY;
     }
     kinds_::cell_kind(e) == want
+}
+
+/// The cell size (in slots) up to which a dense store that must grow always grows, the gap
+/// rule aside (V8's `kMaxUncheckedFastElementsLength`, 5,000; est.; H18 "elements tuning").
+/// Past it, [`sparse_growth`] checks the density first.
+pub(crate) const DENSE_UNCHECKED: usize = 5_000;
+
+/// How many times the words of a dictionary of the same elements a dense cell may take
+/// before [`sparse_growth`] refuses to grow it (V8's `kPreferFastElementsSizeFactor`, 3;
+/// est.; H18 "elements tuning").
+pub(crate) const SPARSE_FACTOR: usize = 3;
+
+/// The far-index rule of a JS object that is not an Array (H18-Q3; M7-P1 OBJ1, route
+/// OBJ-FARKEY; V8's `ShouldConvertToSlowElements`, `js-objects-inl.h`): true if a new element
+/// `i` of `o`, whose dense store has capacity `cap`, must not grow that store. That is: `i` is
+/// [`PLAIN_GAP`] or more past `cap`, or the grown cell (max(i + 1, 2 × `cap`, 4) slots, the
+/// growth of `object::store_element_slow`) would pass [`DENSE_UNCHECKED`] slots and take
+/// [`SPARSE_FACTOR`] times or more the words of an ELEMENTS_DICT cell for its present elements
+/// and `i` (the density check). The caller then keeps the index as a stored property. So the
+/// bit-flag enum form `o[1 << k] = v`, whose capacity doubles at each store and whose gap is
+/// 0, stops at a few thousand slots (it grew to 2^28 slots before: RTS FE-3). Arrays keep the
+/// H18-Q2 Decided rule ([`ARRAY_GAP`] and the dense limit in `object::store_element_slow`; no
+/// density check: M6-ORCH-173, route ARRAY-DENSITY). False for `i` below `cap`. Not a GC point.
+///
+/// The density check counts the present elements, O(`cap`). A refusal keeps the store as it
+/// is, so a refused (cell, capacity) goes into [`REFUSED`]: the next far stores into it are
+/// refused with no count (M7-P1 review F4: each one counted the whole store again) until
+/// [`REFUSED_RECOUNT`] says to count again, as filled holes can make it dense (Codex r2).
+pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
+    debug_assert!(!kinds_::is_array(o), "Arrays keep the H18-Q2 rule");
+    if i < cap {
+        return false;
+    }
+    if i - cap >= PLAIN_GAP {
+        return true;
+    }
+    let grown = (i as usize + 1).max(cap as usize * 2).max(4);
+    if grown <= DENSE_UNCHECKED {
+        return false;
+    }
+    // Past DENSE_UNCHECKED slots `cap` is above 0, so the object has its elements cell.
+    let e = object::rd(object::cell(o), obj::ELEMENTS);
+    let entry = refused_entry(e);
+    let (id, cell, c, hits) = REFUSED.with(|r| r[entry].get());
+    if (id, cell, c) == (rt.id, e, cap) && hits < cap / REFUSED_RECOUNT {
+        REFUSED.with(|r| r[entry].set((id, cell, c, hits + 1)));
+        return true;
+    }
+    #[cfg(test)]
+    DENSITY_COUNTS.with(|n| n.set(n.get() + 1));
+    let used = present_elements(o, e, cap as usize) + 1;
+    // The bucket count of `to_dictionary` for `used` entries, 3 words each, plus the header.
+    let buckets = (used * 2).next_power_of_two().max(dict::MIN_BUCKETS);
+    let dict_words = (dict::DATA + dict::ENTRY * buckets) / 8;
+    let refuse = grown >= SPARSE_FACTOR * dict_words;
+    if refuse {
+        REFUSED.with(|r| r[entry].set((rt.id, e, cap, 0)));
+    }
+    refuse
+}
+
+std::thread_local! {
+    /// The dense stores that [`sparse_growth`] refused last on this thread, by entry
+    /// ([`refused_entry`]): (`Runtime::id`, the elements cell, its capacity, the refusals since
+    /// the count). The cell is only compared, so it is not a root (plan rule 8). A stale entry
+    /// (a new cell at the address, filled holes) keeps few indices as properties (H18-Q3).
+    static REFUSED: [core::cell::Cell<(u64, u64, u32, u32)>; REFUSED_ENTRIES] =
+        const { [const { core::cell::Cell::new((0, 0, 0, 0)) }; REFUSED_ENTRIES] };
+}
+
+/// The entries of [`REFUSED`] (a power of two): a few objects that take far stores in turn
+/// each keep their entry.
+const REFUSED_ENTRIES: usize = 8;
+/// A [`REFUSED`] entry of capacity `cap` refuses `cap` / this far stores, then counts again.
+pub(crate) const REFUSED_RECOUNT: u32 = 64;
+
+/// The [`REFUSED`] entry of the elements cell `e` (bits of an 8-byte aligned address).
+fn refused_entry(e: u64) -> usize {
+    ((e >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize & (REFUSED_ENTRIES - 1)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Tests: the present-element counts [`sparse_growth`] ran on this thread.
+    pub(crate) static DENSITY_COUNTS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// The number of present elements in the dense store `e` (capacity `cap`) of the JS object
+/// `o`, which is not an Array (its kind is holey): a count of the words that are not the hole
+/// of the cell's storage form. Not a GC point.
+fn present_elements(o: u64, e: u64, cap: usize) -> usize {
+    let c = object::cell(e);
+    if storage(kind_of(o)) == Some(Storage::Doubles) {
+        (0..cap)
+            .filter(|&j| object::raw_get(c, delems::DATA + 8 * j) != delems::HOLE)
+            .count()
+    } else {
+        (0..cap)
+            .filter(|&j| object::rd(c, elems::DATA + 8 * j) != HOLE)
+            .count()
+    }
 }
 
 /// Checks the elements invariants of the JS object `o` (tests): the cell's storage form is

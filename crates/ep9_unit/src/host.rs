@@ -3,10 +3,10 @@
 
 use crate::codes::{Versions, cpu, target_abi, target_arch};
 
-/// The engine build id this build writes and accepts (H35-Q8): the first 16 bytes of SHA-256
-/// over the git commit, `rustc -vV`, the target and this crate's features, or the 32 hex
-/// digits of `EP9_BUILD_ID` at build time (`build.rs`). `ep9_frontend` still writes 16 zero
-/// bytes into every CompiledUnit, so the bytecode corpus digest does not depend on it.
+/// The engine build id this build writes and accepts (H35-Q8, C-19): the first 16 bytes of
+/// SHA-256 over the git commit, `rustc -vV`, the target and the embedder string (no Cargo
+/// feature, tree state or profile), or the 32 hex digits of `EP9_BUILD_ID` (`build.rs`).
+/// `ep9_frontend` writes 16 zero bytes into each CompiledUnit, so the corpus digest keeps.
 pub const ENGINE_BUILD_ID: [u8; 16] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/engine_build_id.bin"));
 
@@ -25,7 +25,18 @@ pub struct HostInfo {
     pub heap_page_log2: u8,
     /// [`cpu`] bits this CPU has.
     pub cpu_features: u64,
+    /// The RuntimeTable length of this build (entries; C-18): a unit may call entries below it.
+    pub runtime_table_len: u32,
+    /// The root-shape hash of this build's snapshot; 0 (no snapshot: no root shape is baked).
+    pub root_shapes: [u8; 8],
+    /// The codegen-flag hash of this run; 0 (no run-time flag changes emitted code yet).
+    pub codegen_flags: [u8; 8],
 }
+
+/// The RuntimeTable length of this build: one function pointer per entry
+/// (`ep9_vm::layout::RuntimeTable`, an append-only list, H13-Q3).
+pub const RUNTIME_TABLE_LEN: u32 =
+    (core::mem::size_of::<ep9_vm::layout::RuntimeTable>() / core::mem::size_of::<usize>()) as u32;
 
 impl Versions {
     /// The versions this build was compiled with.
@@ -41,6 +52,7 @@ impl Versions {
             deopt_meta: vm::DEOPT_META_VERSION,
             fact_schema: ep9_facts::FACT_SCHEMA_VERSION,
             builtin_abi: vm::BUILTIN_ABI_VERSION,
+            vm_layout: vm::VM_LAYOUT_VERSION,
         }
     }
 }
@@ -56,6 +68,9 @@ impl HostInfo {
             target_abi: current_abi(),
             heap_page_log2: ep9_heap::layout::PAGE_SIZE.trailing_zeros() as u8,
             cpu_features: detect_cpu(),
+            runtime_table_len: RUNTIME_TABLE_LEN,
+            root_shapes: [0; 8],
+            codegen_flags: [0; 8],
         }
     }
 }
@@ -152,7 +167,7 @@ mod tests {
         let digest = ep9_bytecode::sha256::sha256(INPUT.as_bytes());
         assert_eq!(ENGINE_BUILD_ID[..], digest[..16]);
         let lines: Vec<&str> = INPUT.lines().collect();
-        assert_eq!(lines[0], "ep9 engine build id v1");
+        assert_eq!(lines[0], "ep9 engine build id v2");
         let commit = lines[1].strip_prefix("commit ").expect("commit line");
         assert!(
             commit == "unknown"
@@ -165,14 +180,54 @@ mod tests {
                 .is_some_and(|t| !t.is_empty()),
             "{INPUT}"
         );
-        assert!(lines[3].starts_with("features"), "{INPUT}");
+        assert_eq!(
+            lines[3].strip_prefix("embedder "),
+            Some(option_env!("EP9_EMBEDDER").unwrap_or("")),
+            "{INPUT}"
+        );
         assert_eq!(lines[4], "rustc");
         assert!(
             lines[5..].iter().any(|l| l.starts_with("host: ")),
             "{INPUT}"
         );
-        assert_eq!(lines[3] == "features AOT", cfg!(feature = "aot"), "{INPUT}");
         assert_ne!(ENGINE_BUILD_ID, [0; 16]);
+    }
+
+    /// C-19 (MC-w27-6): the id text names no Cargo feature, no tree state and no profile, so
+    /// the `aot` build (ep9c), the jit and the jitless builds of one commit have one id. The
+    /// same test runs with `--features aot`; the report compares the two ids.
+    #[test]
+    fn the_build_id_names_no_feature_tree_state_or_profile() {
+        if INPUT.starts_with("override ") {
+            return;
+        }
+        let head: Vec<&str> = INPUT.lines().take(5).collect();
+        let keys: Vec<&str> = head
+            .iter()
+            .map(|l| l.split(' ').next().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            keys,
+            ["ep9", "commit", "target", "embedder", "rustc"],
+            "{INPUT}"
+        );
+        let lower = head.join("\n").to_ascii_lowercase();
+        for word in [
+            "feature",
+            "aot",
+            "jit",
+            "dirty",
+            "debug",
+            "release",
+            "profile",
+            "opt-level",
+        ] {
+            let hit = head[..4]
+                .iter()
+                .any(|l| l.to_ascii_lowercase().split([' ', ',']).any(|w| w == word));
+            assert!(!hit, "the id text names {word:?}: {lower}");
+        }
+        println!("engine build id {}", hex(&ENGINE_BUILD_ID));
     }
 
     /// The commit in the id is the one checked out now: cargo reran build.rs when HEAD moved.

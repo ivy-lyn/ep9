@@ -152,10 +152,10 @@ impl NativeCx {
         core::mem::replace(&mut iso.cx.unit_data, directory)
     }
 
-    /// The intrinsic `id` of the current realm (undefined if no table made it): the value a
-    /// unit link cell of kind "intrinsic by stable index" (H13) resolves to.
+    /// The current realm's intrinsic `id`: the link of a unit cell "intrinsic by stable index".
     pub fn intrinsic(iso: &Isolate, id: crate::IntrinsicId) -> Value {
-        val(crate::builtins::intrinsic(&iso.rt, id))
+        let realm = iso.rt.root(crate::runtime::Root::Realm); // H13; MC-w30-3; Codex r1 LAZYNS 2
+        val(crate::realm::intrinsic_for_use(&iso.rt, realm, id)) // a lazy id installs: GC point
     }
 
     /// A new string with the text `s`: the value a unit link cell of kind "unit constant"

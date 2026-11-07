@@ -19,8 +19,8 @@
 //! |---|---|
 //! | T0 call fast path (`interp::ops::call_fast`) | counts the call; the call that reaches `t` goes cold |
 //! | `slow::call` (every `Call*`/`Construct*` cold path) | [`count_call`]: makes the vector before the frame push, while the callee and the arguments are in caller registers |
-//! | `interp::run` (an entry from Rust: scripts, host callbacks) | [`count_call`] with the entry frame pushed |
-//! | `JumpLoop` budget poll (`slow::interrupt_at`) | [`ensure`]: a running function that has none gets one |
+//! | `interp::run` (an entry from Rust: scripts, host callbacks; `slow::count_entry`) | with the entry frame pushed: [`ensure`] for function 0 (a unit's entry code runs once), [`count_call`] for any other |
+//! | budget poll at a `JumpLoop` (`slow::interrupt_at`) or at a call (`slow::call`) | [`ensure`]: a running function that has none gets one |
 //!
 //! `t = 0` makes the vector at the first call; `t = u32::MAX` never makes one (not even at a
 //! poll). Every slot starts as (undefined, int32 0), except an IC slot that sites with

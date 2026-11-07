@@ -16,6 +16,28 @@ use ep9_unit::*;
 pub struct TestUnit {
     pub header: UnitHeader,
     pub sections: Vec<(SectionKind, Vec<u8>)>,
+    /// Extension sections (container v2): the entry's kind, flag and alignment are used; its
+    /// offset and size are computed by [`TestUnit::encode`].
+    pub extensions: Vec<(ExtensionEntry, Vec<u8>)>,
+}
+
+/// An extension section of kind `kind` for [`TestUnit::extensions`].
+pub fn extension(
+    kind: u32,
+    native_needs: bool,
+    align_log2: u8,
+    data: Vec<u8>,
+) -> (ExtensionEntry, Vec<u8>) {
+    (
+        ExtensionEntry {
+            kind,
+            native_needs,
+            align_log2,
+            offset: 0,
+            size: 0,
+        },
+        data,
+    )
 }
 
 /// Deterministic filler bytes.
@@ -38,11 +60,17 @@ pub fn header_for(host: &HostInfo, cpu_required: u64) -> UnitHeader {
         heap_page_log2: host.heap_page_log2,
         source_flags: unit_flags::STRICT,
         cpu_required,
+        compat_flags: 0,
+        incompat_flags: 0,
+        runtime_table_len: host.runtime_table_len,
+        unit_data_slot: 1,
+        root_shapes: host.root_shapes,
+        codegen_flags: host.codegen_flags,
     }
 }
 
 impl TestUnit {
-    /// Bytecode, source and hints: no native code. Odd sizes, so every section after the
+    /// Bytecode, source and facts: no native code. Odd sizes, so every section after the
     /// first has padding before it.
     pub fn small(host: &HostInfo) -> TestUnit {
         TestUnit {
@@ -50,8 +78,9 @@ impl TestUnit {
             sections: vec![
                 (SectionKind::Bytecode, filler(1, 37)),
                 (SectionKind::Source, b"'use strict'; 1 + 2;\n".to_vec()),
-                (SectionKind::Hints, filler(3, 21)),
+                (SectionKind::Facts, filler(3, 21)),
             ],
+            extensions: Vec::new(),
         }
     }
 
@@ -71,6 +100,7 @@ impl TestUnit {
                 (SectionKind::Unwind, filler(15, 9)),
                 (SectionKind::Signature, filler(16, 64)),
             ],
+            extensions: Vec::new(),
         }
     }
 
@@ -79,30 +109,46 @@ impl TestUnit {
         self
     }
 
-    /// The canonical bytes: header, table, sections in kind order at 8-aligned offsets with
-    /// zero padding, then the content hash.
+    /// The canonical bytes: header, table, sections in kind order (the named kinds, then the
+    /// extensions) at their aligned offsets with zero padding, then the content hash.
     pub fn encode(&self) -> Vec<u8> {
-        let mut sections = self.sections.clone();
-        sections.sort_by_key(|(k, _)| *k);
-        let table_end = SECTION_TABLE_OFFSET + sections.len() * SECTION_ENTRY_SIZE;
+        let mut named = self.sections.clone();
+        named.sort_by_key(|(k, _)| *k);
+        let mut ext = self.extensions.clone();
+        ext.sort_by_key(|(e, _)| e.kind);
+        let mut all: Vec<(TableEntry, Vec<u8>)> = named
+            .into_iter()
+            .map(|(kind, d)| {
+                let e = SectionEntry {
+                    kind,
+                    offset: 0,
+                    size: 0,
+                };
+                (TableEntry::Named(e), d)
+            })
+            .collect();
+        all.extend(ext.into_iter().map(|(e, d)| (TableEntry::Extension(e), d)));
+        let table_end = SECTION_TABLE_OFFSET + all.len() * SECTION_ENTRY_SIZE;
         let mut entries = Vec::new();
         let mut body = Vec::new();
         let mut end = table_end;
-        for (kind, data) in &sections {
-            let align = 1usize << kind.align_log2();
+        for (entry, data) in &all {
+            let align = 1usize << entry.align_log2();
             let start = end.div_ceil(align) * align;
             body.resize(body.len() + (start - end), 0);
-            entries.push(SectionEntry {
-                kind: *kind,
-                offset: start as u64,
-                size: data.len() as u64,
+            let (offset, size) = (start as u64, data.len() as u64);
+            entries.push(match *entry {
+                TableEntry::Named(e) => TableEntry::Named(SectionEntry { offset, size, ..e }),
+                TableEntry::Extension(e) => {
+                    TableEntry::Extension(ExtensionEntry { offset, size, ..e })
+                }
             });
             body.extend_from_slice(data);
             end = start + data.len();
         }
         let mut h = self.header;
         h.total_size = end as u64;
-        h.section_count = sections.len() as u32;
+        h.section_count = all.len() as u32;
         h.content_hash = [0; 32];
         let mut out = h.encode().to_vec();
         for e in &entries {
@@ -118,14 +164,23 @@ impl TestUnit {
     pub fn parse(bytes: &[u8]) -> Option<TestUnit> {
         let header = UnitHeader::decode(bytes).ok()?;
         let mut sections = Vec::new();
+        let mut extensions = Vec::new();
         for i in 0..header.section_count as usize {
             let at = SECTION_TABLE_OFFSET + i * SECTION_ENTRY_SIZE;
-            let e = SectionEntry::decode(bytes.get(at..at + SECTION_ENTRY_SIZE)?).ok()?;
-            let start = usize::try_from(e.offset).ok()?;
-            let end = start.checked_add(usize::try_from(e.size).ok()?)?;
-            sections.push((e.kind, bytes.get(start..end)?.to_vec()));
+            let e = TableEntry::decode(bytes.get(at..at + SECTION_ENTRY_SIZE)?).ok()?;
+            let start = usize::try_from(e.offset()).ok()?;
+            let end = start.checked_add(usize::try_from(e.size()).ok()?)?;
+            let data = bytes.get(start..end)?.to_vec();
+            match e {
+                TableEntry::Named(n) => sections.push((n.kind, data)),
+                TableEntry::Extension(x) => extensions.push((x, data)),
+            }
         }
-        Some(TestUnit { header, sections })
+        Some(TestUnit {
+            header,
+            sections,
+            extensions,
+        })
     }
 }
 
@@ -183,11 +238,15 @@ pub fn synthetic_host() -> HostInfo {
             deopt_meta: 9,
             fact_schema: 10,
             builtin_abi: 11,
+            vm_layout: 12,
         },
         target_arch: target_arch::AARCH64,
         target_abi: target_abi::APPLE,
         heap_page_log2: 18,
         cpu_features: cpu::A64_LSE | cpu::A64_JSCONV | cpu::A64_FP16,
+        runtime_table_len: 20,
+        root_shapes: *b"rootshp1",
+        codegen_flags: *b"codegen1",
     }
 }
 

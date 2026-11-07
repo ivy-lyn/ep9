@@ -349,3 +349,133 @@ fn a_long_reject_and_catch_drain_keeps_a_bounded_heap() {
         "the live heap grew with the drain: {small} B at 100 jobs, {big} B at 3100 jobs"
     );
 }
+
+// ---- Promise.allKeyed, Promise.allSettledKeyed (the await-dictionary proposal) -------------
+//
+// No shell of `third_party/shells.toml` has them (node v26.13.0, QuickJS 2026-06-04), so the
+// expected lines come from node with a polyfill that follows the proposal steps one by one
+// (PerformPromiseAllKeyed: [[OwnPropertyKeys]], [[GetOwnProperty]], Get, C.resolve, Invoke
+// "then"); ep9 gives the same lines, the job order included.
+
+/// The keys (own, enumerable, string and symbol, in [[OwnPropertyKeys]] order; no inherited
+/// or non-enumerable key), the null-prototype result, the first rejection, the settled
+/// records, an empty object (resolved in the call), a non-object argument (a rejection with a
+/// TypeError), getters and proxy traps in step order, and the job order with the other jobs.
+#[test]
+fn all_keyed_and_all_settled_keyed() {
+    assert_eq!(
+        run_both(
+            r#"
+var log = [];
+function p(x) { log.push(x); }
+function show(o) { return Object.getPrototypeOf(o) + ':' + Reflect.ownKeys(o).map(function (k) { var v = o[k]; return String(k) + '=' + (v && typeof v === 'object' ? v.status + '/' + ('value' in v ? v.value : v.reason) : v); }).join(','); }
+var s = Symbol('s');
+var src = { b: Promise.resolve(2), a: 1, 3: { then: function (r) { p('thenable'); r(3); } } };
+src[s] = Promise.resolve('sym');
+Object.defineProperty(src, 'hidden', { value: Promise.resolve('no'), enumerable: false });
+Object.setPrototypeOf(src, { inherited: 9 });
+Promise.allKeyed(src).then(function (o) { p('all ' + show(o)); });
+Promise.allKeyed({ x: Promise.resolve(1), y: Promise.reject('E'), z: Promise.reject('F') }).then(function () { p('never'); }, function (e) { p('rej ' + e); });
+Promise.allSettledKeyed({ ok: Promise.resolve(1), bad: Promise.reject(2), plain: 'v' }).then(function (o) { p('settled ' + show(o)); });
+Promise.allKeyed({}).then(function (o) { p('empty ' + show(o)); });
+Promise.allSettledKeyed({}).then(function (o) { p('empty2 ' + show(o)); });
+Promise.allKeyed(1).catch(function (e) { p(e.constructor.name + '1'); });
+Promise.allSettledKeyed('str').catch(function (e) { p(e.constructor.name + '2'); });
+Promise.allKeyed(null).catch(function (e) { p(e.constructor.name + '3'); });
+var g = { get a() { p('get a'); return 1; }, get b() { p('get b'); return 2; } };
+Promise.allKeyed(g).then(function (o) { p('getters ' + show(o)); });
+var order = { 2: 'two', 1: 'one', b: 'b', a: 'a' };
+Promise.allSettledKeyed(order).then(function (o) { p('order ' + show(o)); });
+Promise.allKeyed(new Proxy({ k: 1 }, { ownKeys: function () { p('ownKeys'); return ['k']; }, getOwnPropertyDescriptor: function (t, k) { p('gopd ' + k); return Reflect.getOwnPropertyDescriptor(t, k); }, get: function (t, k) { p('get ' + String(k)); return t[k]; } })).then(function (o) { p('proxy ' + show(o)); });
+p('sync');
+var done = Promise.resolve(); for (var i = 0; i < 12; i++) done = done.then(function () {});
+done.then(function () { log.forEach(function (l) { print(l); }); });
+"#
+        ),
+        lines(&[
+            "get a",
+            "get b",
+            "ownKeys",
+            "gopd k",
+            "get k",
+            "sync",
+            "thenable",
+            "empty null:",
+            "empty2 null:",
+            "TypeError1",
+            "TypeError2",
+            "TypeError3",
+            "rej E",
+            "settled null:ok=fulfilled/1,bad=rejected/2,plain=fulfilled/v",
+            "getters null:a=1,b=2",
+            "order null:1=fulfilled/one,2=fulfilled/two,b=fulfilled/b,a=fulfilled/a",
+            "proxy null:k=1",
+            "all null:3=3,b=2,a=1,Symbol(s)=sym",
+        ])
+    );
+}
+
+/// Lengths, names, the attributes {w, c}, the key order on %Promise% (after allSettled), the
+/// receiver checks (NewPromiseCapability), a custom constructor and its `resolve`, and a
+/// `resolve` that is not callable (a rejection with a TypeError).
+#[test]
+fn all_keyed_shapes_and_custom_constructors() {
+    assert_eq!(
+        run_both(
+            r#"
+var r = function (f) { try { f(); return 'ok'; } catch (e) { return e.constructor.name; } };
+print(Promise.allKeyed.length, Promise.allKeyed.name, Promise.allSettledKeyed.length, Promise.allSettledKeyed.name);
+print(Object.getOwnPropertyNames(Promise).filter(function (k) { return typeof Promise[k] === 'function'; }).slice(0, 4).join());
+var d = Object.getOwnPropertyDescriptor(Promise, 'allKeyed'); print(d.writable, d.enumerable, d.configurable);
+print(r(function () { Promise.allKeyed.call(1, {}); }), r(function () { Promise.allKeyed.call(function () {}, {}); }), r(function () { new Promise.allKeyed({}); }));
+var thenCalls = 0;
+function C(ex) { ex(function (v) { print('C resolve', typeof v, Object.keys(v).join()); }, function (e) { print('C reject', e); }); }
+C.resolve = function (v) { return { then: function (f, rj) { thenCalls++; f(v * 10); } }; };
+Promise.allKeyed.call(C, { a: 1, b: 2 });
+Promise.allSettledKeyed.call(C, { c: 3 });
+print('thenCalls', thenCalls);
+var C2 = function (ex) { ex(function () {}, function (e) { print('C2 reject', e.constructor.name); }); };
+C2.resolve = 5; Promise.allKeyed.call(C2, { a: 1 });
+"#
+        ),
+        lines(&[
+            "1 allKeyed 1 allSettledKeyed",
+            "all,allSettled,allKeyed,allSettledKeyed",
+            "true false true",
+            "TypeError TypeError TypeError",
+            "C resolve object a,b",
+            "C resolve object c",
+            "thenCalls 3",
+            "C2 reject TypeError",
+        ])
+    );
+}
+
+/// The key loop of Promise.allKeyed and allSettledKeyed polls (H23 "Interrupt poll": a builtin
+/// loop with no unit of its own; M7-P0 Codex r1 SPEC-POST-3): 200,000 non-enumerable keys
+/// (made before the termination) stop the call, and the termination is not turned into a
+/// rejection. Before the fix the call ran to its end.
+#[test]
+fn a_long_keyed_combinator_key_loop_stops_on_a_termination() {
+    for f in ["allKeyed", "allSettledKeyed"] {
+        let (terminated, stage) = common::on_big_stack(move || {
+            let mut i = log_isolate(false);
+            run(
+                &mut i,
+                "var o = {}; for (var k = 0; k < 200000; k++) Object.defineProperty(o, 'k' + k, { value: k });",
+                "make.js",
+            )
+            .unwrap();
+            i.terminate_handle().terminate();
+            let src = format!(
+                "var stage = 'before'; Promise.{f}(o).then(function () {{ log('settled'); }}, function () {{ log('rejected'); }}); stage = 'after';"
+            );
+            let r = run(&mut i, &src, "keyed.js");
+            let terminated = r.is_err_and(|e| e.terminated);
+            (terminated, common::global_text(&mut i, "stage"))
+        });
+        assert!(terminated, "{f}");
+        assert_eq!(stage.as_deref(), Some("before"), "{f}");
+        assert!(take_log().is_empty(), "{f}");
+    }
+}

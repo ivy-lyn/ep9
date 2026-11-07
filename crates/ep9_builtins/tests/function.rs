@@ -26,7 +26,7 @@ fn the_three_methods_are_on_function_prototype() {
         lines(&[
             "call 1 apply 2 bind 1",
             "true false true function",
-            "length,name,constructor,apply,bind,call,toString",
+            "length,name,constructor,caller,arguments,apply,bind,call,toString",
         ])
     );
 }
@@ -540,6 +540,132 @@ fn call_tail_calls_its_callee() {
             "TypeError Class constructor A cannot be invoked without 'new'",
             "TypeError",
             "500",
+        ])
+    );
+}
+
+/// An embedder host function that ends in `Cx::forward_apply` (doc-hidden) is never recorded
+/// as %Function.prototype.apply%: only a builtin table definition is (M7-P0 JIT reviewer F1).
+/// So its body runs on every call; before the fix it ran once and the VM forward path
+/// skipped it after that.
+#[test]
+fn an_embedder_forwarder_runs_its_body_on_every_call() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    fn counted_apply<'s>(
+        cx: &mut ep9_vm::Cx<'s>,
+        _this: ep9_vm::Local<'s>,
+        args: ep9_vm::Args<'s>,
+        _nt: ep9_vm::Local<'s>,
+    ) -> ep9_vm::JsResult<ep9_vm::Local<'s>> {
+        COUNT.fetch_add(1, Ordering::Relaxed);
+        cx.forward_apply(args)
+    }
+    let (s, n) = common::on_big_stack(|| {
+        let mut iso = common::isolate(false);
+        iso.register_host_function("capply", 2, counted_apply);
+        let src = "Function.prototype.capply = capply; function g(a) { return a; } var s = ''; for (var i = 0; i < 5; i++) s += g.capply(null, [i]);";
+        let unit = ep9_frontend::compile(
+            src,
+            ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+            ep9_frontend::CompileOptions::default(),
+        )
+        .expect("compiles");
+        iso.with_cx(|cx| cx.run_script(unit, "capply.js").map(|_| ()))
+            .expect("runs");
+        (
+            common::global_text(&mut iso, "s"),
+            COUNT.load(Ordering::Relaxed),
+        )
+    });
+    assert_eq!(s.as_deref(), Some("01234"));
+    assert_eq!(n, 5, "the body ran {n} times for 5 calls");
+}
+
+/// §17.1 (forbidden extensions): strict functions, arrow functions, methods, accessors,
+/// classes, generators, async functions, built-in functions and bound functions have no own
+/// `caller` or `arguments` property (the `Function` constructor's strict functions need the
+/// compiler hook: test262 `StrictFunction_restricted-properties.js`). This guards the
+/// `caller` and `arguments` accessors of %Function.prototype% (§10.2.4
+/// AddRestrictedFunctionProperties): a fix puts them there, never on these functions. ep9
+/// gives a non-strict ordinary function no own `caller` or `arguments` either, as V8 does.
+/// Expected lines are node v26.13.0's.
+#[test]
+fn restricted_functions_have_no_own_caller_or_arguments() {
+    assert_eq!(
+        run_both(
+            "function strict() { 'use strict'; }
+             var o = {m() {}, get g() { return 1; }, set s(v) {}};
+             var cases = [strict, () => 0, o.m,
+                          Object.getOwnPropertyDescriptor(o, 'g').get,
+                          Object.getOwnPropertyDescriptor(o, 's').set,
+                          class {}, class extends Object {}, function* () {},
+                          async function () {}, async () => 0, async function* () {},
+                          Math.max, Function.prototype.call, (function () {}).bind(null),
+                          strict.bind(null)];
+             print(cases.map(function (f) {
+               return f.hasOwnProperty('caller') + '/' + f.hasOwnProperty('arguments');
+             }).join(' ') === cases.map(function () { return 'false/false'; }).join(' '));
+             print(cases.length);
+             function sloppy() {}
+             print(sloppy.hasOwnProperty('caller'), sloppy.hasOwnProperty('arguments'));
+             print(Object.getOwnPropertyNames(strict).join(), Object.getOwnPropertyNames(sloppy).join());"
+        ),
+        lines(&[
+            "true",
+            "15",
+            "false false",
+            "length,name,prototype length,name,prototype",
+        ])
+    );
+}
+
+/// %Function.prototype% `caller` and `arguments` (§10.2.4 AddRestrictedFunctionProperties,
+/// CreateIntrinsics step 3): accessors {e: false, c: true} with one getter ("get caller")
+/// and one setter ("set caller") for both keys. They throw the TypeError of %ThrowTypeError%
+/// (§10.2.4.1) for every function of §17.1 (strict, bound, arrow, method, class, generator,
+/// async and built-in functions) and for a value that is not a function. A non-strict
+/// ordinary function has no own `caller` or `arguments`, so the accessor reaches it too: a
+/// get gives undefined and a set does nothing. This is the web-legacy form of V8,
+/// SpiderMonkey and JavaScriptCore, so the halves are not %ThrowTypeError% (ECMA-262 asks
+/// for it). The lines differ from node v26.13.0 in 3 places: V8 has 4 accessor
+/// functions (line 1: `function false false false`), its sloppy `caller` gives null or the
+/// calling function (line 4: `null null [Function: outer] ok`), and its key order ends
+/// in `toString,arguments,caller` (line 6).
+#[test]
+fn function_prototype_caller_and_arguments_are_restricted() {
+    assert_eq!(
+        run_both(
+            "var p = Function.prototype;
+             var c = Object.getOwnPropertyDescriptor(p, 'caller');
+             var a = Object.getOwnPropertyDescriptor(p, 'arguments');
+             print(typeof c.get, c.get === c.set, c.get === a.get, c.set === a.set);
+             print(c.enumerable, c.configurable, a.enumerable, a.configurable,
+                   c.get.length, c.get.name, c.set.length, c.set.name);
+             function t(f) {
+               try { f(); return 'ok'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; }
+             }
+             function strict() { 'use strict'; }
+             var cases = [strict, (function () {}).bind(null), () => 0, {m() {}}.m, class {},
+                          function* () {}, async function () {}, Math.max, p];
+             print(cases.map(function (f) {
+               return [t(function () { return f.caller; }), t(function () { return f.arguments; }),
+                       t(function () { f.caller = 1; }), t(function () { f.arguments = 1; })].join('/');
+             }).every(function (r) { return r === 'TypeError/TypeError/TypeError/TypeError'; }));
+             function sloppy() { return sloppy.caller; }
+             function outer() { return sloppy(); }
+             print(sloppy.caller, sloppy.arguments, outer(), t(function () { sloppy.caller = 1; }));
+             print(t(function () { c.get.call({}); }), t(function () { c.get.call(undefined); }),
+                   t(function () { a.set.call(1, 1); }));
+             print(Object.getOwnPropertyNames(p).join());"
+        ),
+        lines(&[
+            "function false true true",
+            "false true false true 0 get caller 1 set caller",
+            "true",
+            "undefined undefined undefined ok",
+            "TypeError TypeError TypeError",
+            "length,name,constructor,caller,arguments,apply,bind,call,toString",
         ])
     );
 }

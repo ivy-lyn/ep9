@@ -65,9 +65,9 @@
 //! The reader refuses every unknown value (H29 Freeze table: "the deopt reader refuses a code
 //! object with an unknown tag"); the install then refuses the code, and the function stays in
 //! T0. The writer is the compiler's (Spike C's `deopt_meta.rs` today; `ep9_opt` later, H29
-//! Crates); `Table::encode` is the tests' reference writer. DEOPT_META_VERSION stays 0 in
-//! month 6: no shipped metadata (V10-D29); the form above is "format 1 (declared)", and the
-//! version moves to 1 at A2 start (V11-D12).
+//! Crates); `Table::encode` is the tests' reference writer. The form above is "format 1
+//! (declared)" (H29 Contract): DEOPT_META_VERSION 1 names it since A2 start (M7-P1, V11-D12;
+//! 0 until then); `tests::deopt` pins its bytes. A unit header carries the version (H35).
 //!
 //! **No GC point** (H29-Q7, SCP:127). The rebuild reads every value before it writes one,
 //! boxes ints, booleans and doubles as immediates and allocates nothing on the heap: a
@@ -731,6 +731,36 @@ impl CodeMeta {
 /// a `dispatch.rs` change would need an SP-Dispatch row (rule 22).
 pub(crate) struct SideTable {
     code: RefCell<BTreeMap<usize, CodeMeta>>,
+    /// The exit-site table ([`ExitSite`]): FunctionInfo address -> its exit sites.
+    sites: RefCell<BTreeMap<usize, BTreeMap<SiteKey, ExitSite>>>,
+}
+
+/// The key of an exit site: the bytecode offset T0 resumes at and the guard's feedback slot.
+type SiteKey = (u32, Option<u32>);
+
+/// One exit site of a function, in the exit-site table of [`SideTable`] (MODES-CHECK-w28
+/// MC-w28-7; plan v12 V12-D31). Every deopt adds 1 to the site of its record, with the
+/// record's H29-Q5 counter: the site is (the bytecode offset, the feedback slot of the guard).
+/// The table is per function, not per code object, so it outlives the code: an uninstall
+/// (`SideTable::remove`) keeps it, and a later compile of the function reads why the old
+/// code exited. It is the home of the H29 Contract (3) EXITED state: a site with a
+/// speculation exit has a fact that did not hold, so its slot is "exited"
+/// ([`SideTable::exited_slots`]). The K2 record and the K6 vector form (H16) hold no exit
+/// bit; T2's loop-speculation bit uses this table too. Rust memory, no Value (plan rule 8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExitSite {
+    /// The exits by class: speculation, environment, not filled (H29-Q1).
+    pub exits: [u64; 3],
+    /// The reason of the last exit at the site.
+    pub last_reason: Option<ExitReason>,
+}
+
+impl ExitSite {
+    /// The total exits at the site.
+    #[cfg_attr(not(test), allow(dead_code))] // read by the A2 EXITED writer and T2
+    pub(crate) fn total(&self) -> u64 {
+        self.exits.iter().fold(0, |a, &b| a.saturating_add(b))
+    }
 }
 
 impl SideTable {
@@ -738,6 +768,7 @@ impl SideTable {
     pub(crate) fn new() -> SideTable {
         SideTable {
             code: RefCell::new(BTreeMap::new()),
+            sites: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -798,7 +829,45 @@ impl SideTable {
         let resume = unsafe { rebuild(&meta.table, rec, exit, fp, shape) }?;
         let c = &mut meta.counters[rec.counter as usize];
         *c = c.saturating_add(1);
+        let class = match rec.class {
+            ExitClass::Speculation => 0,
+            ExitClass::Environment => 1,
+            ExitClass::NotFilled => 2,
+        };
+        let mut sites = self.sites.borrow_mut();
+        let site = sites
+            .entry(function)
+            .or_default()
+            .entry((rec.bytecode, rec.feedback))
+            .or_default();
+        site.exits[class] = site.exits[class].saturating_add(1);
+        site.last_reason = Some(rec.reason);
         Ok(resume)
+    }
+
+    /// The exit sites of the function whose FunctionInfo is at `function`, in (bytecode
+    /// offset, feedback slot) order: `((offset, slot), site)`.
+    #[cfg_attr(not(test), allow(dead_code))] // read by the A2 EXITED writer and T2
+    pub(crate) fn exit_sites(&self, function: usize) -> Vec<(SiteKey, ExitSite)> {
+        self.sites
+            .borrow()
+            .get(&function)
+            .map(|m| m.iter().map(|(&k, &v)| (k, v)).collect())
+            .unwrap_or_default()
+    }
+
+    /// The feedback slots of `function` with at least one speculation exit: the EXITED set
+    /// (H29 Contract (3)). Environment and not-filled exits do not count: their facts held.
+    #[cfg_attr(not(test), allow(dead_code))] // read by the A2 EXITED writer and T2
+    pub(crate) fn exited_slots(&self, function: usize) -> Vec<u32> {
+        let mut out: Vec<u32> = self
+            .exit_sites(function)
+            .into_iter()
+            .filter_map(|((_, slot), site)| slot.filter(|_| site.exits[0] > 0))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 }
 

@@ -1,0 +1,10 @@
+{
+ "schema": "ep9-fastdiff/v1",
+ "commit": "0123456789abcdef0123456789abcdef01234567",
+ "dirty": false,
+ "fast_paths": [
+  { "name": "Function.prototype.apply (arguments object)", "cases": 12, "mismatches": 0 },
+  { "name": "Function.prototype.call", "cases": 4, "mismatches": 0, "off": "switch", "hits_on": 3, "hits_off": 0 },
+  { "name": "JSON.parse", "cases": 6, "mismatches": 0 }
+ ]
+}

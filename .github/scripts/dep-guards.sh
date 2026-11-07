@@ -179,11 +179,11 @@ else
 fi
 
 # 11) The ep9_vm features `spike-native` (Spike B's native entry) and `ic-stats` (IC counters)
-#     are never in the ep9 graph, default or jitless (plan M0 month 2, rule 11; H27). Control:
-#     `-p ep9_vm --features spike-native,ic-stats` must show both.
+#     and `fastdiff-hits` (FASTDIFF hit counts) are never in the ep9 graph, default or jitless (plan
+#     M0 month 2, rule 11; H27). Control: `-p ep9_vm --features spike-native,ic-stats,fastdiff-hits`.
 if grep -q "ep9_cli" <<< "$members" && member_exists ep9_vm; then
-  for feat in spike-native ic-stats; do
-    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats" -p ep9_vm --features spike-native,ic-stats
+  for feat in spike-native ic-stats fastdiff-hits; do
+    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats,fastdiff-hits" -p ep9_vm --features spike-native,ic-stats,fastdiff-hits
     feature_check 11 ep9_vm "$feat" off "the default ep9 (-p ep9_cli)" -p ep9_cli
     feature_check 11 ep9_vm "$feat" off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
   done
@@ -417,5 +417,9 @@ if member_exists ep9_temporal; then
 else
   ok "(20) ep9_temporal does not exist yet"
 fi
+
+# 21) ep9_masm has 0 normal and build dependencies (H34: one instruction stream for JIT and unit
+#     code, no LLVM; an encoder crate, 04-execution section 5, joins this list when T1 needs one).
+deps_within 21 ep9_masm
 
 exit "$fail"

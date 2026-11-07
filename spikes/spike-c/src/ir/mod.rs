@@ -1035,7 +1035,9 @@ mod tests {
     /// load writes none. And no opcode the builder translates stores into a context or
     /// changes the current context: the day one does, its graph op must answer true in
     /// [`Op::writes_context`], so the loop that holds it keeps its slot loads (this test
-    /// fails first, as a reminder).
+    /// fails first, as a reminder). Since M7-P0 (MC-w27-5a) it pins the two stores that H32:61
+    /// names and the builder does not translate: `StaLookupSlot` (0x1e) and `StaModuleVariable`
+    /// (0x20).
     #[test]
     fn ops_that_may_write_a_context_slot() {
         let ops = [
@@ -1097,6 +1099,21 @@ mod tests {
             assert!(
                 !crate::build::supported(op),
                 "{op:?} is translated now: give its graph op `writes_context` true (MC-w26-8)"
+            );
+        }
+        // MC-w27-5a (the T2 code part of MC-w27-5; H32:61, hoist rule (1)): a lookup-slot store
+        // and a module-variable store may write what a moved load read. The builder translates
+        // neither; the day one of them is translated, its graph op must answer true in
+        // [`Op::writes_context`] too. The pins name each op by its byte (H2 "ABI core").
+        for (op, byte) in [
+            (Opcode::StaLookupSlot, 0x1e),
+            (Opcode::StaModuleVariable, 0x20),
+        ] {
+            assert_eq!(op as u8, byte, "{op:?}");
+            assert_eq!(Opcode::from_u8(byte), Some(op));
+            assert!(
+                !crate::build::supported(op),
+                "{op:?} is translated now: give its graph op `writes_context` true (MC-w27-5a)"
             );
         }
     }
@@ -1363,7 +1380,7 @@ mod tests {
     /// Codex round 1 (spikec3): a guard whose frame state lies before its block must not
     /// resume T0 there when an effect on the way (here the StoreElement of `a[0] = ...` in
     /// the entry block) already ran: T0 would increment the element twice. The graph of
-    /// `bump` with the last CheckInt32's state moved back to the first one's (@8) is refused.
+    /// `bump` with the last CheckInt32's state moved back to the first one's (@6) is refused.
     #[test]
     fn check_refuses_a_cross_block_resume_past_an_effect() {
         let g = graph_of(
@@ -1381,14 +1398,14 @@ mod tests {
         let (first, _) = g.guard_nodes().next().expect("a guard");
         assert_ne!(g.node(first).block, g.node(last).block, "{g}");
         let early = g.node(first).guard.as_ref().expect("guard").state.clone();
-        assert_eq!(early.offset, 8, "{g}");
+        assert_eq!(early.offset, 6, "{g}");
         let mut bad = g.clone();
         bad.node_mut(last).guard.as_mut().expect("guard").state = early.clone();
         let e = bad
             .check()
             .expect_err(&format!("resume at @{} passed\n{bad}", early.offset));
         assert!(e.contains("not replayable"), "{e}");
-        assert!(e.contains("effect at @17"), "{e}");
+        assert!(e.contains("effect at @15"), "{e}");
         // The same move with no effect on the way (no store) passes: T0 replays only checks.
         let g = graph_of(
             "function inc(k, n) { var z = n | 0; if (z < 0) return 0; return k + 1; }",

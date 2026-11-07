@@ -35,8 +35,9 @@
 //! fails, with a `note:` line); an octopus merge touches every path that differs from its first
 //! parent (`commit_paths`). The commits a merge brings in are checked one by one.
 //!
-//! `--root` (default: this workspace) is the git tree to check; the ADR files, the docs and the
-//! exceptions file are read from its work tree. Exit 0: every part passes. Exit 1: the findings.
+//! `--root` (default: the git top dir of the current dir, `exit::default_root`; plan v12 PR-15)
+//! is the git tree to check; the ADR files, the docs and the exceptions file are read from its
+//! work tree. Exit 0: every part passes. Exit 1: the findings.
 //! Exit 2: a usage error, an unknown `<rev>`, an exceptions line in another form, no Crates row
 //! in `docs/adr/H*.md`, or a pin table line in another form.
 
@@ -75,10 +76,8 @@ pub fn main(args: &[String]) -> Result<bool, String> {
     let base = base.ok_or_else(|| format!("--base <rev> is required\n{USAGE}"))?;
     let root = match root {
         Some(r) => r,
-        None => {
-            let r = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            std::fs::canonicalize(&r).unwrap_or(r)
-        }
+        // PR-15: the git top dir of the current dir, not the tree xtask was built from.
+        None => crate::exit::default_root()?,
     };
     if trailers_only {
         let report = trailers(&root, &base)?;

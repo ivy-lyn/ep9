@@ -36,6 +36,10 @@ spike-native = ["jit"]
 # Inline-cache hit and miss counters (H16), for reports. Off in every shipped build; never in the
 # ep9 graph (.github/scripts/dep-guards.sh check 11).
 ic-stats = []
+# FASTDIFF hit counters (route P0-FASTHITS): each Switch human fast path counts the times it is
+# taken, so the FASTDIFF report shows that it ran. Only the ep9_builtins dev-dependency turns it
+# on (the FASTDIFF test); never in the ep9 graph (.github/scripts/dep-guards.sh check 11).
+fastdiff-hits = []
 
 [lints]
 workspace = true

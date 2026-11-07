@@ -265,6 +265,12 @@ jobs:
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # 10-quality section 5 "Zero text relocations" (H34; from A2, plan v12 section 5.1): every
+      # unit that the ep9_masm tests emit has 0 text relocations, and the unit finalizer rejects
+      # HeapConst. ep9_masm without `jit` (the jitless form: only finalize_unit).
+      - name: zero text relocations (ep9_masm)
+        if: ${{ !cancelled() }}
+        run: cargo test -p ep9_masm --no-default-features --features aot --locked
 
   # H27: the default (jit), jitless and aot feature sets, one package at a time (a --workspace
   # build unifies features and would hide a jitless leak): build, clippy -D warnings and test,
@@ -918,6 +924,9 @@ jobs:
         run: bash scripts/sync-regress.sh
       - run: cargo "+$MIRI_TOOLCHAIN" miri setup
       - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap -p ep9_math
+      # The S2a loom test (plan v12 rule 8; M7-P1 GCPAR1): 2 markers on the shared work
+      # structure. Miri does not cover the parallel mark (helpers() is 0 under Miri).
+      - run: RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom cargo "+$MIRI_TOOLCHAIN" test --locked --release -p ep9_heap --lib parallel::loom_tests
 
   dep-guards:
     name: dependency guards
@@ -972,6 +981,7 @@ jobs:
       - run: cargo build --release --locked -p ep9_bench -p ep9_cli
       - name: Count instructions
         id: count
+        env: { EP9_GC_HELPERS: "0" }
         run: >-
           node .github/scripts/perf-ci-v0.mjs --ep9 target/release/ep9 --bench target/release/ep9-bench
           --counter cachegrind --runs 3 --warmup 0 --out perf-ci-v0.json --md "$GITHUB_STEP_SUMMARY"

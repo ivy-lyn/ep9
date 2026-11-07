@@ -30,6 +30,10 @@ import { blockerOf, FRESH_PATHS, generateKernel, KERNEL_IDS, OK, parseArgs as ke
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
 import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
+// The M2 gate reader and the TS workload (GATES10), and the G7 peak RSS reader (BENCH10): CI's
+// step runs this file only, so it loads those tests too.
+import "./m2gate.test.mjs";
+import "./mem.test.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "../../..");
@@ -658,7 +662,7 @@ test("octane: Octane-7 kernels, the same N as v8-v7, the pinned base.js and kern
     assert.equal(a.text.split("\n").slice(p.offset, p.offset + p.lines).join("\n"), src.replace(/\n$/, ""), p.file);
   }
   assert.equal(a.parts[1].offset, a.offset);
-  assert.throws(() => generateOctane("regexp"), /unknown Octane-7 kernel regexp/);
+  assert.throws(() => generateOctane("regexp"), /unknown Octane kernel regexp/);
   assert.throws(() => generateOctane("richards", { n: 0 }), /bad --n/);
 });
 

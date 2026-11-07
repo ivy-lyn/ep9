@@ -1282,3 +1282,185 @@ fn a_dictionary_array_never_makes_its_site_dictionary() {
         }
     }
 }
+
+// ---- the density check: objects that are not Arrays (M7-P1 OBJ1, route OBJ-FARKEY) ---------
+
+/// The bit-flag enum form (`o[1 << k] = v`, k = 0..27; RTS FE-3: TypeScript's flag enums): each
+/// store lands at the capacity, so the gap rule never fires and the dense store doubled at
+/// each one, to 2^28 slots before the density check. Now the store that would grow a plain
+/// object's cell past `elements::DENSE_UNCHECKED` slots for a few present elements does not:
+/// the object keeps the index as a stored property (H18-Q3; `tests/far_keys.rs` of
+/// ep9_builtins runs the JS form on more object kinds). Every value reads back, own keys stay
+/// in ascending order, and with no collection on the way the heap grows by less than 1 MiB
+/// (2 GiB before). An Array keeps the H18-Q2 rule of M5-P2 (no density check, M6-ORCH-173):
+/// `a[1 << k]` for k = 0..12 grows its dense store to 8192 slots, as at 3dd68d10.
+#[test]
+fn the_flag_enum_form_stays_small_on_a_plain_object() {
+    const FLAT: u64 = 1 << 20;
+    each(|cx, rt| {
+        let plain = object::new_plain_object(rt);
+        let (before, gcs) = (rt.heap.stats().allocated_bytes, rt.heap.stats().collections);
+        for k in 0..28 {
+            assert!(property::set_index(cx, plain, 1 << k, int(k)).unwrap());
+        }
+        // The page counter takes new pages after each collection, so GC stress inflates it:
+        // the byte bound is read on the run with no collection (the capacity bound below holds
+        // in both).
+        let grew = rt.heap.stats().allocated_bytes - before;
+        if rt.heap.stats().collections == gcs {
+            assert!(grew < FLAT, "o[1 << k] for k = 0..27 allocated {grew} B");
+        }
+        assert!(
+            capacity(plain) as usize <= elements::DENSE_UNCHECKED,
+            "a bounded dense store"
+        );
+        // The far indices are stored properties now: a dictionary-mode object (OM-10).
+        assert!(shape::is_dictionary(shape::shape_of(plain)));
+        for k in 0..28 {
+            assert_eq!(
+                property::get_index(cx, plain, 1 << k).unwrap(),
+                int(k),
+                "o[1 << {k}]"
+            );
+        }
+        let want: Vec<String> = (0..28).map(|k| (1u64 << k).to_string()).collect();
+        assert_eq!(texts(property::own_property_keys(cx, plain)), want);
+        checked(rt, plain);
+        let array = object::new_array(rt, 0);
+        for k in 0..13 {
+            assert!(property::set_index(cx, array, 1 << k, int(k)).unwrap());
+        }
+        assert_eq!(
+            elements::kind_of(array),
+            ek::HOLEY_INT32,
+            "the Array stays dense"
+        );
+        assert!(capacity(array) >= 8192);
+        for k in 0..13 {
+            assert_eq!(property::get_index(cx, array, 1 << k).unwrap(), int(k));
+        }
+        checked(rt, array);
+    });
+}
+
+/// The density check keeps dense stores dense: a plain object with every 8th index to
+/// 3 x `elements::DENSE_UNCHECKED` keeps a dense store (as before the check). With every 64th
+/// index its store is too sparse past `DENSE_UNCHECKED` slots: it keeps the far indices as
+/// stored properties. Arrays have no density check (the H18-Q2 rule, M6-ORCH-173): a packed
+/// Array that grows by one, and a holey Array with every 8th or every 64th index, keep a
+/// dense store. Every value reads back.
+#[test]
+fn the_density_check_keeps_dense_stores_dense() {
+    const N: u64 = 3 * elements::DENSE_UNCHECKED as u64;
+    each(|cx, rt| {
+        let packed = object::new_array(rt, 0);
+        for i in 0..N {
+            assert!(property::set_index(cx, packed, i, int(i as i32)).unwrap());
+        }
+        assert_eq!(elements::kind_of(packed), ek::PACKED_INT32);
+        for step in [8, 64] {
+            let a = object::new_array(rt, 0);
+            let o = object::new_plain_object(rt);
+            for i in (0..N).step_by(step) {
+                assert!(property::set_index(cx, a, i, int(i as i32)).unwrap());
+                assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+            }
+            assert_eq!(
+                elements::kind_of(a),
+                ek::HOLEY_INT32,
+                "every {step}th: dense"
+            );
+            assert!(capacity(a) > N - step as u64);
+            if step == 8 {
+                assert!(capacity(o) >= N - 7);
+                assert!(!shape::is_dictionary(shape::shape_of(o)));
+            } else {
+                assert!(capacity(o) as usize <= elements::DENSE_UNCHECKED);
+                assert!(shape::is_dictionary(shape::shape_of(o)));
+            }
+            for i in (0..N).step_by(step) {
+                assert_eq!(property::get_index(cx, a, i).unwrap(), int(i as i32));
+                assert_eq!(property::get_index(cx, o, i).unwrap(), int(i as i32));
+                assert!(!property::has_index(cx, o, i + 1));
+            }
+            checked(rt, a);
+            checked(rt, o);
+        }
+        checked(rt, packed);
+    });
+}
+
+/// A refused store is counted once per `cap` / `REFUSED_RECOUNT` far stores (M7-P1 review F4,
+/// Codex r2): a plain object's dense store of 4004 slots with 4 elements refuses each far
+/// store in [4004, 5028), and each one used to count the whole store again. Now a count keeps
+/// (cell, capacity) and the next 62 far stores are refused with no count: 2 counts for 100
+/// stores. The store does not move and every index reads back.
+#[test]
+fn a_refused_store_is_counted_once() {
+    each(|cx, rt| {
+        let o = object::new_plain_object(rt);
+        // Each store is under the gap past the capacity: 4 -> 1001 -> 2002 -> 4004 slots.
+        for i in [0, 1000, 2000, 3000] {
+            assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+        }
+        let cap = capacity(o);
+        assert_eq!(cap, 4004);
+        let counts = || elements::DENSITY_COUNTS.with(core::cell::Cell::get);
+        let before = counts();
+        for k in 0..100 {
+            assert!(property::set_index(cx, o, cap + 1 + k, int(k as i32)).unwrap());
+        }
+        let budget = cap / u64::from(elements::REFUSED_RECOUNT);
+        assert_eq!(u64::from(counts() - before), 100u64.div_ceil(budget + 1));
+        assert_eq!(capacity(o), cap);
+        assert!(shape::is_dictionary(shape::shape_of(o)));
+        for k in 0..100 {
+            assert_eq!(
+                property::get_index(cx, o, cap + 1 + k).unwrap(),
+                int(k as i32)
+            );
+        }
+        for i in [0, 1000, 2000, 3000] {
+            assert_eq!(property::get_index(cx, o, i).unwrap(), int(i as i32));
+        }
+        checked(rt, o);
+    });
+}
+
+/// A refusal is counted again after `cap` / `REFUSED_RECOUNT` far stores (M7-P1 Codex r2): the
+/// holes of a refused dense store are filled (same cell, same capacity), so the store is dense
+/// and the next far stores must grow it. They kept all later indices in the property storage
+/// for the life of the object before (the Codex r2 script: o[4004], fill 0..4004, o[4005..]).
+#[test]
+fn a_refused_store_that_fills_up_grows_again() {
+    each(|cx, rt| {
+        let o = object::new_plain_object(rt);
+        for i in [0, 1000, 2000, 3000] {
+            assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+        }
+        let cap = capacity(o);
+        assert_eq!(cap, 4004);
+        assert!(property::set_index(cx, o, cap, int(-1)).unwrap());
+        assert_eq!(capacity(o), cap, "the density check refuses o[4004]");
+        for i in 0..cap {
+            assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+        }
+        assert_eq!(capacity(o), cap, "a hole store does not grow the store");
+        let budget = cap / u64::from(elements::REFUSED_RECOUNT);
+        for k in 1..=budget + 1 {
+            assert!(property::set_index(cx, o, cap + k, int(k as i32)).unwrap());
+        }
+        assert!(
+            capacity(o) > cap,
+            "the filled store grows within cap / 64 + 1 far stores"
+        );
+        for i in 0..cap {
+            assert_eq!(property::get_index(cx, o, i).unwrap(), int(i as i32));
+        }
+        assert_eq!(property::get_index(cx, o, cap).unwrap(), int(-1));
+        for k in 1..=budget + 1 {
+            assert_eq!(property::get_index(cx, o, cap + k).unwrap(), int(k as i32));
+        }
+        checked(rt, o);
+    });
+}

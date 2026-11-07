@@ -18,7 +18,7 @@ scopes (7):
   scope5 function outer=scope4 flags=[strict] slots=[]
   scope6 function outer=scope4 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..90
-  code (98 bytes):
+  code (91 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
       7    PushContext r3                               ; 13 03
@@ -29,34 +29,31 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
      19    Star r0                                      ; 0c 00
      21 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
-     26    Star r2                                      ; 0c 02
-     28    Mov r2, r4                                   ; 0d 02 04
-     31    LdaConstant k2  ; k2 = String str3 "m"       ; 0a 02
-     33    Star r5                                      ; 0c 05
-     35 E> CreateClosure k3, s1, #0x00  ; k3 = Function f2 ; 74 03 01 00
-     39    Star r6                                      ; 0c 06
-     41 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
-     46    Ldar r0                                      ; 0b 00
-     48    StaCurrentContextSlot [0]                    ; 1b 00
-     50    PopContext r3                                ; 14 03
-     52    Ldar r0                                      ; 0b 00
-     54 E> StaGlobal k4, s2  ; k4 = String str0 "C"     ; 12 04 02
-     57 S> LdaTheHole                                   ; 07
-     58    Star r1                                      ; 0c 01
-     60 E> CreateClosure k5, s3, #0x00  ; k5 = Function f3 ; 74 05 03 00
-     64    Star r0                                      ; 0c 00
-     66 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
-     71    Star r2                                      ; 0c 02
-     73    Mov r0, r3                                   ; 0d 00 03
-     76    LdaConstant k6  ; k6 = String str4 "n"       ; 0a 06
-     78    Star r4                                      ; 0c 04
-     80 E> CreateClosure k7, s4, #0x00  ; k7 = Function f4 ; 74 07 04 00
-     84    Star r5                                      ; 0c 05
-     86 E> CallRuntime DefineClassMethod, r3-r5         ; 68 0f 00 03 03
-     91    Ldar r0                                      ; 0b 00
-     93 E> StaGlobal k8, s5  ; k8 = String str1 "D"     ; 12 08 05
-     96    LdaUndefined                                 ; 05
-     97    Return                                       ; 92
+     26    Star r4                                      ; 0c 04
+     28    LdaConstant k2  ; k2 = String str3 "m"       ; 0a 02
+     30    Star r5                                      ; 0c 05
+     32 E> CreateClosure k3, s1, #0x00  ; k3 = Function f2 ; 74 03 01 00
+     36    Star r6                                      ; 0c 06
+     38 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+     43    Ldar r0                                      ; 0b 00
+     45    StaCurrentContextSlot [0]                    ; 1b 00
+     47    PopContext r3                                ; 14 03
+     49 E> StaGlobal k4, s2  ; k4 = String str0 "C"     ; 12 04 02
+     52 S> LdaTheHole                                   ; 07
+     53    Star r1                                      ; 0c 01
+     55 E> CreateClosure k5, s3, #0x00  ; k5 = Function f3 ; 74 05 03 00
+     59    Star r0                                      ; 0c 00
+     61 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
+     66    LdaConstant k6  ; k6 = String str4 "n"       ; 0a 06
+     68    Star r4                                      ; 0c 04
+     70 E> CreateClosure k7, s4, #0x00  ; k7 = Function f4 ; 74 07 04 00
+     74    Star r5                                      ; 0c 05
+     76    Mov r0, r3                                   ; 0d 00 03
+     79 E> CallRuntime DefineClassMethod, r3-r5         ; 68 0f 00 03 03
+     84    Ldar r0                                      ; 0b 00
+     86 E> StaGlobal k8, s5  ; k8 = String str1 "D"     ; 12 08 05
+     89    LdaUndefined                                 ; 05
+     90    Return                                       ; 92
   constants (9):
       0 Scope scope1
       1 Function f1
@@ -80,15 +77,15 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 S 4 (1:5)
      15 E 8 (1:9)
      21 E 8 (1:9)
-     35 E 8 (1:9)
-     41 E 22 (1:23)
-     54 E 4 (1:5)
-     57 S 51 (1:52)
-     60 E 55 (1:56)
-     66 E 55 (1:56)
-     80 E 55 (1:56)
-     86 E 70 (1:71)
-     93 E 51 (1:52)
+     32 E 8 (1:9)
+     38 E 22 (1:23)
+     49 E 4 (1:5)
+     52 S 51 (1:52)
+     55 E 55 (1:56)
+     61 E 55 (1:56)
+     70 E 55 (1:56)
+     79 E 70 (1:71)
+     86 E 51 (1:52)
 function f1 class-constructor name="Inner" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..45
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05

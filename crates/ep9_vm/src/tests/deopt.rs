@@ -712,3 +712,156 @@ fn the_lazy_swap_writes_only_the_sites_return_addresses() {
     // SAFETY: as above.
     assert_eq!(unsafe { swap_returns(&after, code, 896, &sites) }, []);
 }
+
+// ---- DEOPT_META 1 (M7-P1 A2-START; MC-w22-21.3, V11-D12): format 1 as H29 declares it ----
+
+/// DEOPT_META_VERSION 1 names "format 1 (declared)" (the H29 Contract; `deopt.rs` module doc).
+/// The bytes below are written by hand from that grammar, not from the encoder: a table with
+/// a const, a speculation exit with a feedback slot, a reason and four values (a register, a
+/// VM frame slot of a parameter, a stack slot into the accumulator and a const), and a call
+/// record of class "not filled" with a two-byte pc. A change to any byte here is a change of
+/// format 1, which only a record or value-location tag append may make (MC-w28-8): a re-layout
+/// is a G8 rewrite of the H29 Contract.
+#[test]
+fn deopt_meta_1_is_the_declared_format_1() {
+    assert_eq!(crate::versions::DEOPT_META_VERSION, 1);
+    let t = Table {
+        consts: vec![int32_bits(7)],
+        records: vec![
+            Record {
+                feedback: Some(4),
+                reason: ExitReason::ShapeDiffers,
+                ..exit(
+                    40,
+                    17,
+                    0,
+                    vec![
+                        value(Target::Reg(Register::local(0)), Repr::Int32, Loc::Reg(19)),
+                        value(
+                            Target::Reg(Register::parameter(1)),
+                            Repr::Tagged,
+                            Loc::Frame(-88),
+                        ),
+                        value(Target::Acc, Repr::Float64, Loc::Stack(104)),
+                        value(Target::Reg(Register::local(2)), Repr::Tagged, Loc::Const(0)),
+                    ],
+                )
+            },
+            Record {
+                tag: RecordTag::Call,
+                class: ExitClass::NotFilled,
+                reason: ExitReason::NoVector,
+                ..exit(
+                    300,
+                    32,
+                    1,
+                    vec![value(Target::Acc, Repr::Tagged, Loc::Reg(0))],
+                )
+            },
+        ],
+    };
+    let mut want = vec![0x02, 0x01]; // uleb records, uleb consts
+    want.extend_from_slice(&int32_bits(7).to_le_bytes()); // const 0: u64 LE
+    want.extend_from_slice(&[
+        // record 0: header (tag 0 exit, class 0), pc 40, bytecode 17, counter 0,
+        // feedback slot 4 + 1, reason 1 (shape differs), 0 inline frames, 4 values
+        0x00, 0x28, 0x11, 0x00, 0x05, 0x01, 0x00, 0x04,
+        // value: loc 0 reg | repr 1 Int32; target r0 (ZigZag 0); x19
+        0x10, 0x00, 0x13,
+        // value: loc 3 VM frame slot | repr 0 Tagged; target a1 (operand -3, ZigZag 5);
+        // offset -88 (ZigZag 175 = uleb 0xaf 0x01)
+        0x03, 0x05, 0xaf, 0x01,
+        // value: loc 1 stack | repr 3 Float64 | bit 7 accumulator; offset 104
+        0xb1, 0x68, // value: loc 2 const | repr 0; target r2 (ZigZag 4); const 0
+        0x02, 0x04, 0x00,
+        // record 1: header (tag 2 call | class 2 not filled), pc 300 (uleb 0xac 0x02),
+        // bytecode 32, counter 1, no feedback slot, reason 3 (no vector), 0 inline, 1 value
+        0x22, 0xac, 0x02, 0x20, 0x01, 0x00, 0x03, 0x00, 0x01,
+        // value: loc 0 reg | repr 0 | accumulator; x0
+        0x80, 0x00,
+    ]);
+    assert_eq!(t.encode(), want);
+    assert_eq!(Table::decode(&want), Ok(t));
+    // The bigger sample (every tag, class and repr) still round-trips in this version.
+    assert_eq!(Table::decode(&sample().encode()), Ok(sample()));
+}
+
+/// MC-w28-7 (V12-D31): the exit-site table. Each deopt adds 1 to the site of its record (the
+/// bytecode offset and the guard's feedback slot) by exit class, next to the record's H29-Q5
+/// counter. Only a speculation exit makes its slot EXITED. The table is per function: an
+/// uninstall of the code keeps it, and two code objects of one function share it.
+#[test]
+fn the_exit_site_table_counts_each_site_and_keeps_it_after_the_code() {
+    let st = SideTable::new();
+    let t = Table {
+        consts: vec![],
+        records: vec![
+            Record {
+                feedback: Some(4),
+                reason: ExitReason::ShapeDiffers,
+                ..exit(8, 3, 0, vec![])
+            },
+            Record {
+                class: ExitClass::NotFilled,
+                feedback: Some(4),
+                reason: ExitReason::NoVector,
+                ..exit(12, 3, 1, vec![])
+            },
+            Record {
+                class: ExitClass::NotFilled,
+                feedback: Some(9),
+                reason: ExitReason::Unfilled,
+                ..exit(16, 7, 2, vec![])
+            },
+            Record {
+                class: ExitClass::Environment,
+                ..exit(20, 11, 3, vec![])
+            },
+        ],
+    };
+    let (start, other, len, fun) = (0x10_000, 0x20_000, 64, 0x2000);
+    let read = || CodeMeta::read(len, fun, &t.encode(), |_| true).expect("read");
+    st.insert(start, read());
+    st.insert(other, read());
+    let (mut mem, fp) = frame(0, 1);
+    let fpp = mem.as_mut_ptr().wrapping_add(fp);
+    let regs = [0u64; DUMP_REGS];
+    let state = ExitState {
+        regs: &regs,
+        native_fp: core::ptr::null(),
+    };
+    let shape = FrameShape {
+        registers: 1,
+        params: 0,
+    };
+    let deopt = |code: usize, pc: u32| {
+        // SAFETY: `fpp` is the synthetic frame of `shape`; no record has a value.
+        unsafe { st.deopt(code, fun, pc, &state, fpp, shape) }.expect("deopt")
+    };
+    assert!(st.exit_sites(fun).is_empty());
+    assert!(st.exited_slots(fun).is_empty());
+    deopt(start, 12);
+    deopt(start, 16);
+    deopt(start, 20);
+    // No speculation exit yet: no slot is EXITED.
+    assert!(st.exited_slots(fun).is_empty());
+    deopt(other, 8);
+    deopt(start, 8);
+    assert_eq!(st.counters(start), Some(vec![1, 1, 1, 1]));
+    assert_eq!(st.counters(other), Some(vec![1, 0, 0, 0]));
+    let sites = st.exit_sites(fun);
+    let keys: Vec<(u32, Option<u32>)> = sites.iter().map(|&(k, _)| k).collect();
+    assert_eq!(keys, [(3, Some(4)), (7, Some(9)), (11, None)]);
+    assert_eq!(sites[0].1.exits, [2, 0, 1]);
+    assert_eq!(sites[0].1.last_reason, Some(ExitReason::ShapeDiffers));
+    assert_eq!(sites[0].1.total(), 3);
+    assert_eq!(sites[1].1.exits, [0, 0, 1]);
+    assert_eq!(sites[2].1.exits, [0, 1, 0]);
+    assert_eq!(st.exited_slots(fun), [4]);
+    // The code goes; the sites stay for the next compile of the function.
+    assert!(st.remove(start) && st.remove(other));
+    assert!(st.is_empty());
+    assert_eq!(st.exit_sites(fun), sites);
+    assert_eq!(st.exited_slots(fun), [4]);
+    assert!(st.exit_sites(fun + 8).is_empty());
+}
