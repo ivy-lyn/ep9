@@ -33,7 +33,7 @@ use crate::fin::{self, Exit, FinalizeError, not_allowed, unresolved};
 use crate::kind::RelocKind;
 use crate::stream::{
     Arch, CodeDesc, Form, FormClass, is_adr, is_adrp, is_b_cond, is_b_or_bl, is_bl, is_cbz,
-    is_ldr_literal, is_tbz, sext, word,
+    is_ldr_literal, is_tbz, sext, word, x64_load,
 };
 
 /// What `finalize_unit` reads from the unit layout and the isolate ABI. No method gives an
@@ -72,7 +72,8 @@ pub struct Field {
     /// The field offset.
     pub at: u32,
     /// The start of the field's instruction ([`crate::Reloc::insn`]): the x86-64 checks
-    /// decode the operand forward from here. On AArch64 `insn = at`.
+    /// decode the operand forward from here, and trust it. On AArch64 `insn = at` (else
+    /// [`Finding::MisalignedField`]).
     pub insn: u32,
     /// The form.
     pub form: Form,
@@ -255,6 +256,12 @@ pub enum Finding {
         /// The field offset.
         at: u32,
     },
+    /// An AArch64 field that is not one instruction word: its offset is not a multiple of 4,
+    /// or its record has `insn != at` (see [`check_text`]). No other rule reads such a field.
+    MisalignedField {
+        /// The field offset.
+        at: u32,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -280,6 +287,12 @@ impl fmt::Display for Finding {
             Finding::NotIsolateLoad { at } => {
                 write!(f, "+{at:#x}: not a load through the isolate register")
             }
+            Finding::MisalignedField { at } => {
+                write!(
+                    f,
+                    "+{at:#x}: AArch64 field not at an aligned instruction word"
+                )
+            }
         }
     }
 }
@@ -289,16 +302,18 @@ impl fmt::Display for Finding {
 /// | Rule | AArch64 | x86-64 |
 /// |---|---|---|
 /// | each field is inside the text (else [`Finding::FieldOutsideText`], and no other rule reads it) | yes | yes |
+/// | each field is one instruction word: a 4-byte aligned offset with `insn = at` (else [`Finding::MisalignedField`], and no other rule reads it) | yes | - |
 /// | no field is absolute ([`Form::Abs64`]) | yes | yes |
 /// | each pc-relative field reaches a byte of this function's text | yes | yes |
-/// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field | - | yes |
+/// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field. The check trusts `insn`: [`crate::Assembler::x64`] records a chunk start only at a known instruction boundary (else `insn = at`, which fails this rule), but a record made by hand with a false `insn` is not found | - | yes |
 /// | no `adrp`, no `bl` | yes | - |
 /// | each `b`, `b.cond`, `cbz`/`cbnz`, `tbz`/`tbnz`, `adr` and `ldr` (literal) word reaches a byte of this function's text, with or without a field | yes | - |
 ///
 /// The AArch64 rules scan every word, so hand-written code with no relocation record is
 /// checked too (the spike-b `unit/scan.rs` rules). x86-64 has no linear decoder of the whole
 /// text here, as in the spike: its text gets the field rules (one instruction decoded per
-/// disp32 field), and [`UnitEnv`] gives no address to write.
+/// disp32 field, from the record's start), and [`UnitEnv`] gives no address to write. A
+/// decode of the whole text that needs no record is route UNIT-X64-DECODE.
 pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let len = text.len() as i64;
     let inside = |t: i64| (0..len).contains(&t);
@@ -309,6 +324,12 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
         let end = (f.at as usize).checked_add(f.form.size());
         if end.is_none_or(|end| end > text.len()) {
             out.push(Finding::FieldOutsideText { at: f.at });
+            continue;
+        }
+        // An AArch64 field is one instruction word: the rules below and the register-load
+        // check read the word at the field.
+        if f.form.arch() == Some(Arch::A64) && (f.at % 4 != 0 || f.insn != f.at) {
+            out.push(Finding::MisalignedField { at: f.at });
             continue;
         }
         match f.form.class() {
@@ -371,54 +392,6 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     out
 }
 
-/// One x86-64 `mov r, [base + disp32]` ([`x64_load`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct X64Load {
-    /// REX.W: a 64-bit load.
-    w: bool,
-    /// The base register, 0-15 (REX.B is bit 3).
-    base: u8,
-    /// A SIB byte with an index register.
-    index: bool,
-}
-
-/// Decodes the x86-64 instruction at `insn` forward, and gives its operand if it is
-/// `mov r, [base + disp32]` with the disp32 exactly at `at`: an optional REX byte (40-4F), the
-/// opcode `8B` (MOV r, r/m: the one unit opcode now; every other opcode, and every legacy
-/// prefix, is refused), a ModRM byte with mod = 10, a SIB byte if rm = 100, then the disp32.
-/// With mod = 10 every form has a base register (SIB base 101 is rbp/r13 + disp32); the
-/// forms with no base (`[rip + disp32]`, SIB with no base) have mod = 00 and are refused.
-/// `None` also for `insn > at` and for bytes past the end of the text.
-fn x64_load(text: &[u8], insn: u32, at: u32) -> Option<X64Load> {
-    let (insn, at) = (insn as usize, at as usize);
-    let rex = match *text.get(insn)? {
-        b @ 0x40..=0x4f => b,
-        _ => 0,
-    };
-    let op = insn + usize::from(rex != 0);
-    if *text.get(op)? != 0x8b {
-        return None;
-    }
-    let modrm = *text.get(op + 1)?;
-    if modrm >> 6 != 0b10 {
-        return None;
-    }
-    let rex_b = (rex & 1) << 3;
-    let (base, index, disp) = if modrm & 7 == 0b100 {
-        let sib = *text.get(op + 2)?;
-        // Index 100 with REX.X = 0 is "no index".
-        let index = ((sib >> 3) & 7) | ((rex & 2) << 2);
-        ((sib & 7) | rex_b, index != 0b100, op + 3)
-    } else {
-        ((modrm & 7) | rex_b, false, op + 2)
-    };
-    (disp == at).then_some(X64Load {
-        w: rex & 8 != 0,
-        base,
-        index,
-    })
-}
-
 /// The unit-data register (H34-Q1, H35-Q9) on AArch64: x27.
 const UNIT_DATA_A64: u32 = 27;
 
@@ -433,7 +406,7 @@ const ISOLATE_X64: u8 = 15;
 ///
 /// | Kind | AArch64 | x86-64 |
 /// |---|---|---|
-/// | LinkSlot, IcCell, Stub (the RW words, H34-Q1) | the field word is `ldr Xt, [x27, #imm]` (LDR X, unsigned offset, Rn = 27): exact, the word is the instruction; else [`Finding::NotUnitDataLoad`] | the instruction decoded forward from [`Field::insn`] (as in [`check_text`]) is `mov r64, [r14 + disp32]`: REX.W = 1, base r14 (in ModRM, or in a SIB byte with no index), the disp32 at the field; else [`Finding::NotUnitDataLoad`] |
+/// | LinkSlot, IcCell, Stub (the RW words, H34-Q1) | the field is a 4-byte aligned word with `insn = at`, and the word is `ldr Xt, [x27, #imm]` (LDR X, unsigned offset, Rn = 27): exact, the word is the instruction; else [`Finding::NotUnitDataLoad`] | the instruction decoded forward from [`Field::insn`] (as in [`check_text`]) is `mov r64, [r14 + disp32]`: REX.W = 1, base r14 (in ModRM, or in a SIB byte with no index), the disp32 at the field; else [`Finding::NotUnitDataLoad`] |
 /// | Runtime, RootIndex, DeoptExit (the isolate rows) | not checked | the same decode, with base r15: `mov r64, [r15 + disp32]`; else [`Finding::NotIsolateLoad`] |
 /// | Local, HeapConst | - | - |
 ///
@@ -460,8 +433,13 @@ pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Fi
             continue;
         }
         let ok = match arch {
-            // LDR X, unsigned offset (any imm12, any Rt), with Rn = x27.
-            Arch::A64 => word(text, at) & 0xffc0_03e0 == 0xf940_0000 | (UNIT_DATA_A64 << 5),
+            // One aligned word (as in check_text): LDR X, unsigned offset (any imm12, any Rt),
+            // with Rn = x27.
+            Arch::A64 => {
+                f.at % 4 == 0
+                    && f.insn == f.at
+                    && word(text, at) & 0xffc0_03e0 == 0xf940_0000 | (UNIT_DATA_A64 << 5)
+            }
             // Any destination (REX.R free).
             Arch::X64 => {
                 x64_load(text, f.insn, f.at).is_some_and(|l| l.w && l.base == reg && !l.index)
@@ -476,7 +454,8 @@ pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Fi
 
 /// [`check_text`] and [`check_register_loads`] of a finished unit: empty for every
 /// [`UnitCode`] (`finalize_unit` checks its output), so a test can state the rules on each
-/// unit it emits.
+/// unit it emits. It reads the fields that `finalize_unit` took, with the same `insn`: it
+/// has the same trust in the record as [`check_text`].
 pub fn zero_text_relocations(code: &UnitCode) -> Result<(), Vec<Finding>> {
     let mut v = check_text(code.arch, &code.text, &code.fields);
     v.extend(check_register_loads(code.arch, &code.text, &code.fields));

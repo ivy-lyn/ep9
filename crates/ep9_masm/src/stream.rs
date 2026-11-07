@@ -266,9 +266,13 @@ pub struct Reloc {
     /// The text offset of the field.
     pub at: u32,
     /// The text offset of the instruction that holds the field (`insn <= at`; a finalizer
-    /// refuses a record with `insn > at`). [`Assembler::x64`] sets the instruction start, so
-    /// the unit check can decode an x86-64 operand forward from it. On AArch64 the field is the
-    /// instruction word: `insn = at`.
+    /// refuses a record with `insn > at`). The unit check decodes an x86-64 operand forward
+    /// from it. [`Assembler::x64`] sets its chunk start only when that start is a known
+    /// instruction boundary, else `insn = at` (and the unit check refuses an `X64Disp32` field
+    /// recorded so). The check trusts this value: a record made by hand with a false `insn` is
+    /// not found (a decode of the whole text is route UNIT-X64-DECODE). On AArch64 the field is
+    /// the instruction word: `insn = at` at a 4-byte aligned offset (the unit check refuses any
+    /// other field).
     pub insn: u32,
     /// The field form.
     pub form: Form,
@@ -349,6 +353,9 @@ pub struct Assembler {
     text: Vec<u8>,
     relocs: Vec<Reloc>,
     labels: Vec<Option<u32>>,
+    /// x86-64: the end of the last chunk that is one whole known instruction and that starts
+    /// at a known boundary (0 = the text start). Only [`Assembler::x64`] reads it.
+    x64_end: u32,
 }
 
 impl Assembler {
@@ -359,6 +366,7 @@ impl Assembler {
             text: Vec::new(),
             relocs: Vec::new(),
             labels: Vec::new(),
+            x64_end: 0,
         }
     }
 
@@ -373,8 +381,18 @@ impl Assembler {
     }
 
     /// Writes bytes.
+    ///
+    /// x86-64: the end of the chunk stays a known instruction boundary for the next
+    /// [`Assembler::x64`] only if the chunk starts at a known boundary and is exactly one of
+    /// `nop` (90), `ret` (c3), `call reg` (ff d0-d7, 41 ff d0-d7) or `jmp reg` (ff e0-e7,
+    /// 41 ff e0-e7). The stream has no decoder for other bytes, so after any other chunk the
+    /// boundary is not known.
     pub fn put(&mut self, bytes: &[u8]) {
+        let whole = self.offset() == self.x64_end && x64_plain(bytes);
         self.text.extend_from_slice(bytes);
+        if whole {
+            self.x64_end = self.offset();
+        }
     }
 
     /// Writes one 4-byte little-endian word (an AArch64 instruction).
@@ -442,7 +460,13 @@ impl Assembler {
     }
 
     /// Writes one x86-64 instruction whose field starts `field` bytes into `bytes`, and records
-    /// its relocation with the instruction start (the offset of `bytes[0]`).
+    /// its relocation. The record's instruction start is the offset of `bytes[0]` only if that
+    /// offset is a known instruction boundary: the text start, or the end of a chunk that is
+    /// one whole known instruction (an `x64` chunk that is a rel32 `call`, `jmp` or `jcc`, or a
+    /// load that the unit check decodes, with the field at its end; or a [`Assembler::put`]
+    /// chunk of the list there). Otherwise the record has `insn = at`, and the unit check
+    /// refuses an `X64Disp32` field recorded so: a prefix or a partial instruction from `put`
+    /// cannot become part of a unit load.
     pub fn x64(
         &mut self,
         bytes: &[u8],
@@ -450,10 +474,15 @@ impl Assembler {
         form: Form,
         target: Target,
     ) -> Result<(), EmitError> {
-        let insn = self.offset();
-        let at = insn + field;
-        self.put(bytes);
-        self.reloc_in(insn, at, form, target)
+        let start = self.offset();
+        let at = start + field;
+        let known = start == self.x64_end;
+        self.text.extend_from_slice(bytes);
+        self.reloc_in(if known { start } else { at }, at, form, target)?;
+        if known && x64_whole(bytes, field, form) {
+            self.x64_end = self.offset();
+        }
+        Ok(())
     }
 
     /// The finished stream. Every label that a relocation names must be bound.
@@ -475,6 +504,81 @@ impl Assembler {
             labels: self.labels,
         })
     }
+}
+
+/// A [`Assembler::put`] chunk that is exactly one whole x86-64 instruction with no field:
+/// `nop`, `ret`, `call reg` or `jmp reg` (REX.B for r8-r15).
+fn x64_plain(b: &[u8]) -> bool {
+    match b {
+        [0x90] | [0xc3] => true,
+        [0xff, m] | [0x41, 0xff, m] => matches!(m, 0xd0..=0xd7 | 0xe0..=0xe7),
+        _ => false,
+    }
+}
+
+/// An [`Assembler::x64`] chunk that is one whole x86-64 instruction with the field at its
+/// end: `call`, `jmp` or `jcc` rel32 (e8, e9, 0f 80-8f), or a load that [`x64_load`]
+/// decodes with the disp32 at the field.
+fn x64_whole(b: &[u8], field: u32, form: Form) -> bool {
+    let f = field as usize;
+    if b.len() != f + form.size() {
+        return false;
+    }
+    match form {
+        Form::X64Rel32 => matches!(&b[..f], [0xe8] | [0xe9] | [0x0f, 0x80..=0x8f]),
+        Form::X64Disp32 => x64_load(b, 0, field).is_some(),
+        _ => false,
+    }
+}
+
+/// One x86-64 `mov r, [base + disp32]` ([`x64_load`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "aot"), allow(dead_code))]
+pub(crate) struct X64Load {
+    /// REX.W: a 64-bit load.
+    pub w: bool,
+    /// The base register, 0-15 (REX.B is bit 3).
+    pub base: u8,
+    /// A SIB byte with an index register.
+    pub index: bool,
+}
+
+/// Decodes the x86-64 instruction at `insn` forward, and gives its operand if it is
+/// `mov r, [base + disp32]` with the disp32 exactly at `at`: an optional REX byte (40-4F), the
+/// opcode `8B` (MOV r, r/m: the one unit opcode now; every other opcode, and every legacy
+/// prefix, is refused), a ModRM byte with mod = 10, a SIB byte if rm = 100, then the disp32.
+/// With mod = 10 every form has a base register (SIB base 101 is rbp/r13 + disp32); the
+/// forms with no base (`[rip + disp32]`, SIB with no base) have mod = 00 and are refused.
+/// `None` also for `insn > at` and for bytes past the end of the text. It does not know
+/// whether `insn` is an instruction start: the caller must.
+pub(crate) fn x64_load(text: &[u8], insn: u32, at: u32) -> Option<X64Load> {
+    let (insn, at) = (insn as usize, at as usize);
+    let rex = match *text.get(insn)? {
+        b @ 0x40..=0x4f => b,
+        _ => 0,
+    };
+    let op = insn + usize::from(rex != 0);
+    if *text.get(op)? != 0x8b {
+        return None;
+    }
+    let modrm = *text.get(op + 1)?;
+    if modrm >> 6 != 0b10 {
+        return None;
+    }
+    let rex_b = (rex & 1) << 3;
+    let (base, index, disp) = if modrm & 7 == 0b100 {
+        let sib = *text.get(op + 2)?;
+        // Index 100 with REX.X = 0 is "no index".
+        let index = ((sib >> 3) & 7) | ((rex & 2) << 2);
+        ((sib & 7) | rex_b, index != 0b100, op + 3)
+    } else {
+        ((modrm & 7) | rex_b, false, op + 2)
+    };
+    (disp == at).then_some(X64Load {
+        w: rex & 8 != 0,
+        base,
+        index,
+    })
 }
 
 #[cfg(test)]

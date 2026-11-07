@@ -499,6 +499,262 @@ fn a_record_whose_instruction_starts_after_its_field_is_refused() {
     );
 }
 
+/// x86-64 (Codex r3 finding 1, fixer r2d): [`Assembler::x64`] records its chunk start as the
+/// instruction start only at a known instruction boundary: the text start, or the end of a
+/// chunk that is one whole known instruction. Otherwise the record has `insn = at`, and the
+/// unit check refuses the field. On the old code `x64` always took its chunk start, so bytes
+/// from `put` (a prefix, a REX byte, the start of another instruction) or the tail of an
+/// earlier `x64` chunk became part of the load, and each refused input here gave a unit.
+/// The disassembly of each output (llvm-mc) is in the comment.
+#[test]
+fn an_x64_unit_load_needs_a_known_instruction_boundary() {
+    let (m14, f14) = x64::MOV_RAX_R14;
+    let (m15, f15) = x64::MOV_RAX_R15;
+    // `pre` with `put`, then the load with `x64`, then a NOP. Gives the record's insn and the
+    // result; a unit must also pass `zero_text_relocations`.
+    let after = |pre: &[u8], load: &[u8], field: u32, t: Target| {
+        let mut a = Assembler::new(Arch::X64);
+        a.put(pre);
+        a.x64(load, field, Form::X64Disp32, t).unwrap();
+        a.put(&x64::NOP);
+        let d = a.finish().unwrap();
+        let got = finalize_unit(&d, &common::TestUnit).map(|u| {
+            assert_eq!(zero_text_relocations(&u), Ok(()));
+        });
+        (d.relocs[0].insn, got)
+    };
+    let no = |v: Vec<Finding>| Err(FinalizeError::TextRelocations(v));
+    let nrr = |at| Finding::NotRegisterRelative { at };
+    let nud = |at| Finding::NotUnitDataLoad { at };
+    let nil = |at| Finding::NotIsolateLoad { at };
+    // The 12 `put` chunks of the Codex r3 verifier. With the load after them, llvm-mc gives:
+    // 64 / 65: mov rax, qword ptr fs:/gs:[r14 + 80]; 67: mov rax, qword ptr [r14d + 80];
+    // 66, f3, 48: the prefix is ignored; f0: lock (#UD); 0f: cmovns ecx, ... (no load);
+    // 48 b8 00 / 48 b8: movabs rax, imm64 (the field is in the immediate); b8: mov eax, imm32;
+    // 80: or byte ptr [rcx - 117], -122.
+    let pres: [&[u8]; 12] = [
+        &[0x64],
+        &[0x65],
+        &[0x67],
+        &[0x66],
+        &[0xf0],
+        &[0xf3],
+        &[0x48],
+        &[0x0f],
+        &[0x48, 0xb8, 0x00],
+        &[0x48, 0xb8],
+        &[0xb8],
+        &[0x80],
+    ];
+    for pre in pres {
+        let at = pre.len() as u32 + 3;
+        assert_eq!(
+            after(pre, &m14, f14, Target::LinkSlot(0)),
+            (at, no(vec![nrr(at), nud(at)])),
+            "{pre:02x?} LinkSlot"
+        );
+        // Through r15 as a Runtime: the old code passed it too (mov rax, fs:[r15 + 2048]).
+        assert_eq!(
+            after(pre, &m15, f15, Target::Runtime(0)),
+            (at, no(vec![nrr(at), nil(at)])),
+            "{pre:02x?} Runtime"
+        );
+    }
+    // A `put` of two NOPs is not in the list: the boundary is not known, and the load is
+    // refused (the emitter writes each instruction with no field in its own `put`).
+    assert_eq!(
+        after(&[0x90, 0x90], &m14, f14, Target::LinkSlot(0)),
+        (5, no(vec![nrr(5), nud(5)]))
+    );
+
+    // An `x64` chunk with a byte after its field (64), then a load: the second load is
+    // mov rax, qword ptr fs:[r14 + 80]. The first record keeps its start (0).
+    let mut a = Assembler::new(Arch::X64);
+    let mut fs_tail = m14.to_vec();
+    fs_tail.push(0x64);
+    a.x64(&fs_tail, f14, Form::X64Disp32, Target::LinkSlot(0))
+        .unwrap();
+    a.x64(&m14, f14, Form::X64Disp32, Target::LinkSlot(1))
+        .unwrap();
+    a.put(&x64::NOP);
+    let d = a.finish().unwrap();
+    assert_eq!((d.relocs[0].insn, d.relocs[1].insn), (0, 11));
+    assert_eq!(
+        finalize_unit(&d, &common::TestUnit).map(|_| ()),
+        no(vec![nrr(11), nud(11)])
+    );
+
+    // An `x64` rel32 chunk that is not a call, jmp or jcc (b8 e8 rel32), then a load:
+    // mov eax, imm32 takes the bytes of the load (mov eax, 4294965992; dec dword ptr ...).
+    let mut a = Assembler::new(Arch::X64);
+    let top = a.new_label();
+    a.bind(top).unwrap();
+    a.x64(
+        &[0xb8, 0xe8, 0, 0, 0, 0],
+        2,
+        Form::X64Rel32,
+        Target::Local(top),
+    )
+    .unwrap();
+    a.x64(&m14, f14, Form::X64Disp32, Target::LinkSlot(0))
+        .unwrap();
+    a.put(&x64::NOP);
+    let d = a.finish().unwrap();
+    assert_eq!(d.relocs[1].insn, 9);
+    assert_eq!(
+        finalize_unit(&d, &common::TestUnit).map(|_| ()),
+        no(vec![nrr(9), nud(9)])
+    );
+
+    // The forms that stay units: the load after each `put` of the list (nop, ret,
+    // call reg, jmp reg, with and without REX.B) keeps its start.
+    let plain: [&[u8]; 10] = [
+        &[0x90],
+        &[0xc3],
+        &x64::CALL_RAX,
+        &[0xff, 0xd7],
+        &x64::JMP_RAX,
+        &[0xff, 0xe7],
+        &[0x41, 0xff, 0xd0],
+        &[0x41, 0xff, 0xd7],
+        &[0x41, 0xff, 0xe0],
+        &[0x41, 0xff, 0xe7],
+    ];
+    for pre in plain {
+        let insn = pre.len() as u32;
+        assert_eq!(
+            after(pre, &m14, f14, Target::LinkSlot(0)),
+            (insn, Ok(())),
+            "{pre:02x?}"
+        );
+        assert_eq!(
+            after(pre, &m15, f15, Target::Runtime(0)),
+            (insn, Ok(())),
+            "{pre:02x?}"
+        );
+    }
+    // je, call and jmp rel32, then a load; and two loads in a row.
+    for (b, f) in [
+        (&x64::JE_REL32.0[..], x64::JE_REL32.1),
+        (&x64::CALL_REL32.0[..], x64::CALL_REL32.1),
+        (&x64::JMP_REL32.0[..], x64::JMP_REL32.1),
+        (&m14[..], f14),
+    ] {
+        let mut a = Assembler::new(Arch::X64);
+        let top = a.new_label();
+        a.bind(top).unwrap();
+        if b == m14 {
+            a.x64(b, f, Form::X64Disp32, Target::LinkSlot(1)).unwrap();
+        } else {
+            a.x64(b, f, Form::X64Rel32, Target::Local(top)).unwrap();
+        }
+        a.x64(&m15, f15, Form::X64Disp32, Target::Runtime(0))
+            .unwrap();
+        a.put(&x64::NOP);
+        let d = a.finish().unwrap();
+        assert_eq!(d.relocs[1].insn, b.len() as u32, "{b:02x?}");
+        common::emit_unit(&d);
+    }
+    // The corpus keeps the start of each load (the unit check passes it: the first test).
+    let d = common::x64_unit_function();
+    for r in d.relocs.iter().filter(|r| r.form == Form::X64Disp32) {
+        assert_eq!(r.insn + 3, r.at);
+    }
+}
+
+/// AArch64 (Codex r3 finding 2, fixer r2d): a field is one instruction word, at a 4-byte
+/// aligned offset with `insn = at`. Else [`check_text`] gives [`Finding::MisalignedField`]
+/// (and no other rule reads the field), and the register-load check refuses it. On the old
+/// code both read the word at any byte offset: the exact `ldr Xt, [x27, #imm]` test passed on
+/// bytes that are parts of two other words.
+#[test]
+fn an_a64_field_is_one_aligned_instruction_word() {
+    // eor v0.16b, v1.16b, v2.16b; mov x3, #0xca00000000000000. Bytes 3-6 (6e 03 40 f9) are
+    // the word of ldr x14, [x27].
+    const RAW: [u8; 8] = [0x20, 0x1c, 0x22, 0x6e, 0x03, 0x40, 0xf9, 0xd2];
+    const LDR_X14_X27: u32 = 0xf940_036e;
+    let rw = |at, insn| field(at, insn, Form::A64Ldst64Imm12, RelocKind::LinkSlot);
+    let no = |v: Vec<Finding>| Err(FinalizeError::TextRelocations(v));
+    let mis = |at| Finding::MisalignedField { at };
+    let nud = |at| Finding::NotUnitDataLoad { at };
+    // The checks alone, at offsets 1, 2 and 3 of the raw text.
+    for at in 1..4 {
+        assert_eq!(
+            check_text(Arch::A64, &RAW, &[rw(at, at)]),
+            [mis(at)],
+            "{at}"
+        );
+        assert_eq!(
+            check_register_loads(Arch::A64, &RAW, &[rw(at, at)]),
+            [nud(at)],
+            "{at}"
+        );
+    }
+    // finalize_unit: a record made by hand at 3.
+    let hand = CodeDesc {
+        arch: Arch::A64,
+        text: RAW.to_vec(),
+        relocs: vec![Reloc::new(3, Form::A64Ldst64Imm12, Target::LinkSlot(0))],
+        labels: vec![],
+    };
+    assert_eq!(
+        finalize_unit(&hand, &common::TestUnit),
+        no(vec![mis(3), nud(3)])
+    );
+    // The public API: put(3 bytes), a64(ldr x14, [x27]), put(1 byte).
+    let mut a = Assembler::new(Arch::A64);
+    a.put(&RAW[..3]);
+    a.a64(LDR_X14_X27, Form::A64Ldst64Imm12, Target::LinkSlot(0))
+        .unwrap();
+    a.put(&RAW[7..]);
+    let d = a.finish().unwrap();
+    assert_eq!(d, hand);
+    // Assembler::reloc at 3.
+    let mut a = Assembler::new(Arch::A64);
+    a.put(&RAW);
+    a.reloc(3, Form::A64Ldst64Imm12, Target::LinkSlot(0))
+        .unwrap();
+    assert_eq!(a.finish().unwrap(), hand);
+    // An isolate row is not a register-load finding on AArch64, but the field is refused.
+    let mut a = Assembler::new(Arch::A64);
+    a.put(&RAW);
+    a.reloc(3, Form::A64Ldst64Imm12, Target::Runtime(0))
+        .unwrap();
+    assert_eq!(
+        finalize_unit(&a.finish().unwrap(), &common::TestUnit),
+        no(vec![mis(3)])
+    );
+    // An aligned field whose record has insn != at: nop; ldr x14, [x27] with insn = 0.
+    let mut t = a64::NOP.to_le_bytes().to_vec();
+    t.extend_from_slice(&LDR_X14_X27.to_le_bytes());
+    assert_eq!(check_text(Arch::A64, &t, &[rw(4, 0)]), [mis(4)]);
+    assert_eq!(check_register_loads(Arch::A64, &t, &[rw(4, 0)]), [nud(4)]);
+    let d = CodeDesc {
+        arch: Arch::A64,
+        text: t.clone(),
+        relocs: vec![Reloc {
+            insn: 0,
+            ..Reloc::new(4, Form::A64Ldst64Imm12, Target::LinkSlot(0))
+        }],
+        labels: vec![],
+    };
+    assert_eq!(
+        finalize_unit(&d, &common::TestUnit),
+        no(vec![mis(4), nud(4)])
+    );
+    // The same word with insn = at is a unit; so is every field of the corpus.
+    assert_eq!(check_text(Arch::A64, &t, &[rw(4, 4)]), []);
+    assert_eq!(check_register_loads(Arch::A64, &t, &[rw(4, 4)]), []);
+    let mut a = Assembler::new(Arch::A64);
+    a.put32(a64::NOP);
+    a.a64(LDR_X14_X27, Form::A64Ldst64Imm12, Target::LinkSlot(0))
+        .unwrap();
+    common::emit_unit(&a.finish().unwrap());
+    for d in [common::a64_unit_function(), common::a64_loop()] {
+        assert!(d.relocs.iter().all(|r| r.at % 4 == 0 && r.insn == r.at));
+    }
+}
+
 /// `check_text` is public, and a check of a unit read back gives it fields from outside: a
 /// field past the end of the text is a finding, not a panic (Claude JIT reviewer J2). On the
 /// old code the first input panicked (a slice index) and the second overflowed `at + 4`.
