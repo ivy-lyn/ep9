@@ -783,10 +783,11 @@ macro_rules! expand_threaded {
                     }
                 });
                 let St { cx, fp, acc, .. } = st;
-                // SAFETY: `next` is an instruction start of verified code or a VM stub.
-                let h = cx.table[unsafe { *next } as usize];
+                let to = $crate::interp::dsl::dispatch_pc_of!($name, next);
+                // SAFETY: `to` is an instruction start of verified code or a VM stub.
+                let h = cx.table[unsafe { *to } as usize];
                 // SAFETY: the table holds handlers of this expansion; the state is valid.
-                unsafe { $tail h(cx, next, fp, acc) }
+                unsafe { $tail h(cx, to, fp, acc) }
             }
         } )*
 
@@ -1220,6 +1221,51 @@ impl R {
     }
 }
 
+/// The `pc` that a threaded handler passes on, as the handler computed it. x86-64: through an
+/// empty `asm!` block, so LLVM keeps the new `pc` in one register and reads the next opcode
+/// at `[pc]`. Without it LLVM read the opcode at `[old pc + len]` and kept the old and the
+/// new `pc` live, so it gave `lea` and `mov rsi` (2 instructions) where `add rsi` (1) does
+/// (`Jump`, the `Test*` compares, `JumpIfJSReceiver`, `Wide`, `ExtraWide`). Other targets:
+/// the same value (their code does not change). The handler arguments, the table read and
+/// the tail call are as before.
+#[inline(always)]
+pub(crate) fn dispatch_pc(next: *const u8) -> *const u8 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut a = next.expose_provenance();
+        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
+        // change. `a` comes back as it went in.
+        unsafe {
+            core::arch::asm!(
+                "/* {a} */",
+                a = inout(reg) a,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+        }
+        core::ptr::with_exposed_provenance(a)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        next
+    }
+}
+
+/// [`dispatch_pc`] of the threaded handler `$name`. `GetNamedProperty` and `TestTypeOf` take
+/// `next` as it is: with the `asm!` block LLVM merged their dispatch tails (3 into 1), so the
+/// hit paths of their jump tables ran one more `jmp` (x86-64 asm, X86SHAPE try 3).
+macro_rules! dispatch_pc_of {
+    (GetNamedProperty, $next:expr) => {
+        $next
+    };
+    (TestTypeOf, $next:expr) => {
+        $next
+    };
+    ($other:ident, $next:expr) => {
+        $crate::interp::dsl::dispatch_pc($next)
+    };
+}
+pub(crate) use dispatch_pc_of;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1258,6 +1304,17 @@ mod tests {
             assert_eq!(<kind::RegOut as Operand>::read::<S2>(b.as_ptr()).0, -9);
             assert_eq!(<kind::RegPair as Operand>::read::<S4>(b.as_ptr()).0, -9);
         }
+    }
+
+    /// `dispatch_pc` gives back the pointer it gets (on x86-64 through its `asm!` block).
+    #[test]
+    fn dispatch_pc_is_the_identity() {
+        let code = [0u8; 16];
+        for i in 0..code.len() {
+            let p = code.as_ptr().wrapping_add(i);
+            assert_eq!(dispatch_pc(p), p);
+        }
+        assert!(dispatch_pc(core::ptr::null()).is_null());
     }
 
     #[test]
