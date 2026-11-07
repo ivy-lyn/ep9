@@ -299,6 +299,12 @@ const _: () = {
     assert!(FIRST_CELL_OFFSET > 0);
 };
 
+/// The nursery policy's back-off (`Inner::after_gc`, GCPAR3): at most this many probe minor
+/// GCs are skipped in a row, so at most this many + 1 major GCs run with no probe between
+/// them. It bounds the cost of a program whose young cells start to die: a probe reads the
+/// survival again after at most 4 major GCs. (est. 3: measured on splay, which skips 1.)
+const MAX_PROBE_SKIPS: u32 = 3;
+
 /// `kind_sizes` entry of a kind byte with no registration.
 const NOT_REGISTERED: usize = 0;
 /// `kind_sizes` entry of a kind with a dynamic size. Not a multiple of 8, so no rounded size
@@ -491,6 +497,11 @@ pub(crate) struct Inner {
     stress_gcs: u32,
     /// The nursery policy (`after_gc`): the last minor GC kept at least 3/4 of the young bytes.
     high_survival: bool,
+    /// The nursery policy's back-off (GCPAR3): how many major GCs run back to back, with no
+    /// probe minor GC between them, after the next high-survival probe (0 to
+    /// [`MAX_PROBE_SKIPS`]); and how many of them are left now.
+    probe_skips: u32,
+    skips_left: u32,
     /// GC-stress collections since the last one that used the parallel paths (`u32::MAX`:
     /// none yet; [`crate::parallel::STRESS_PARALLEL_EVERY`]).
     stress_parallel: u32,
@@ -592,6 +603,8 @@ impl Heap {
                 major_limit: s.initial_budget.saturating_mul(2),
                 stress_gcs: 0,
                 high_survival: false,
+                probe_skips: 0,
+                skips_left: 0,
                 stress_parallel: u32::MAX,
                 #[cfg(test)]
                 sweeper_pages: 0,
@@ -1393,16 +1406,37 @@ impl Inner {
         // So the GCs skip the minor GCs: the next budget GC is major, once the heap holds 5/2
         // of the live bytes of the last major GC. After that major GC, a small minor GC (the
         // initial budget) reads the survival again. (est. 3/4 and 5/2: measured on splay.)
+        //
+        // The back-off (GCPAR3): each probe that finds high survival again lets one more
+        // major GC run with no probe before it (up to MAX_PROBE_SKIPS), and a probe that
+        // finds low survival ends the back-off. A probe marks the young cells that the next
+        // major GC marks again, so on splay 3 of its 4 minor GCs were pure cost. A skipped
+        // probe moves no major GC: the budget after a major GC is the probe's budget plus the
+        // budget after the probe (both end at 5/2 of the live bytes).
+        let mut major_next = false;
         if minor {
             let young = self.allocated_since_gc;
             self.high_survival = young > 0 && promoted_bytes >= young / 4 * 3;
             if self.high_survival {
-                let peak = (self.major_limit / 4).saturating_mul(5);
-                self.next_major = true;
-                self.budget = initial.max(peak.saturating_sub(self.old_bytes));
+                self.probe_skips = (self.probe_skips + 1).min(MAX_PROBE_SKIPS);
+                self.skips_left = self.probe_skips;
+                major_next = true;
+            } else {
+                self.probe_skips = 0;
+                self.skips_left = 0;
             }
         } else if self.high_survival {
-            self.budget = initial;
+            if self.skips_left > 0 {
+                self.skips_left -= 1;
+                major_next = true;
+            } else {
+                self.budget = initial;
+            }
+        }
+        if major_next {
+            let peak = (self.major_limit / 4).saturating_mul(5);
+            self.next_major = true;
+            self.budget = initial.max(peak.saturating_sub(self.old_bytes));
         }
     }
 
