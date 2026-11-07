@@ -8,7 +8,7 @@ license.workspace = true
 
 # Intl (ECMA-402 on ICU4X; INTL-I1-D1, layout B): glue from the Cx builtin ABI (H20) to ICU4X.
 # `#![forbid(unsafe_code)]`; the heap only through ep9_vm's Cx. ep9_builtins lists its modules
-# in ep9_builtins::MODULES. Edges: .github/scripts/dep-guards.sh checks 21-23. ep9_intl reads
+# in ep9_builtins::MODULES. Edges: .github/scripts/dep-guards.sh checks 22-24. ep9_intl reads
 # Temporal objects and the tz data only through ep9_temporal's pub API (std types): no
 # temporal_rs, timezone_provider or zoneinfo64 edge of any kind (check 19, INTL-I1-D9).
 [dependencies]
