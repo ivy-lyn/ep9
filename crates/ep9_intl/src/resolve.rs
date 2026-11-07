@@ -10,6 +10,8 @@
 //!       keywords }   ("de-u-co-phonebk", "de", [("co", "phonebk")])
 //! ```
 
+use std::sync::OnceLock;
+
 use ep9_vm::{Cx, JsResult, Local};
 
 use crate::available;
@@ -23,12 +25,23 @@ pub const FALLBACK_LOCALE: &str = "en-US";
 /// DefaultLocale ( ) (6.2.4): the host locale (`Cx::default_locale`), canonical, without
 /// extensions, cut to its longest available prefix; [`FALLBACK_LOCALE`] if the host gives
 /// none or no prefix is available. So the result is always an available locale.
+///
+/// The host locale is read once per process, at the first use (as node: V8 sets the ICU
+/// default locale at start-up), so a later change of LC_ALL, LC_MESSAGES or LANG changes
+/// nothing. Every cached object made for the default locale (the default collator of
+/// `localeCompare`, a thread-local `crate::cache` slot) then stays right for every isolate
+/// (Codex r1 COLLATOR-2).
 pub fn default_locale(cx: &mut Cx<'_>) -> String {
-    cx.default_locale()
-        .and_then(|t| tag::canonicalize_tag(&t))
-        .map(|t| tag::remove_unicode_extension(&t))
-        .and_then(|t| best_available_locale(&t))
-        .unwrap_or_else(|| FALLBACK_LOCALE.to_string())
+    static DEFAULT: OnceLock<String> = OnceLock::new();
+    DEFAULT
+        .get_or_init(|| {
+            cx.default_locale()
+                .and_then(|t| tag::canonicalize_tag(&t))
+                .map(|t| tag::remove_unicode_extension(&t))
+                .and_then(|t| best_available_locale(&t))
+                .unwrap_or_else(|| FALLBACK_LOCALE.to_string())
+        })
+        .clone()
 }
 
 /// The prefix walk of LookupMatchingLocaleByPrefix (and BestAvailableLocale): the longest
