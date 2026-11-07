@@ -863,12 +863,13 @@ pub fn is_available(tag: &str) -> bool {
 /// one list for Temporal and Intl (INTL-I1 §2.2, §4.4).
 pub const CALENDARS: &[&str] = &ep9_temporal::calendar::AVAILABLE_CALENDARS;
 
-/// AvailableCollations (8.3.2 step 3): the CLDR collation types (not "standard" or "search"),
-/// sorted. W1 COLLATOR checks each against the ICU4X tailoring data
-/// (`collations-accepted-by-Collator`).
+/// AvailableCollations (8.3.2 step 3): the CLDR collation types (not "standard" or "search")
+/// that the ICU4X compiled data has a tailoring for, sorted (`collator` tests check the list
+/// against the data; `collations-accepted-by-Collator`). Not here: "phonetic" (only "ln",
+/// which CLDR "recommended" leaves out) and "searchjl" (a search tailoring; INTL-I1 §5.3
+/// row 12).
 pub const COLLATIONS: &[&str] = &[
-    "compat", "dict", "emoji", "eor", "phonebk", "phonetic", "pinyin", "searchjl", "stroke",
-    "trad", "unihan", "zhuyin",
+    "compat", "dict", "emoji", "eor", "phonebk", "pinyin", "stroke", "trad", "unihan", "zhuyin",
 ];
 
 /// AvailableCurrencies (8.3.2 step 4): the ISO 4217 codes in current use (the ICU list that

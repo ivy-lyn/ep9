@@ -780,25 +780,16 @@ mod tests {
 
     /// Each value of `supportedValuesOf("collation")` (`available::COLLATIONS`) is a
     /// collation type of the data for a locale of the test262 list
-    /// (`collations-accepted-by-Collator.js`), and no other type is. NOT_IN_DATA: the types
-    /// that the list may still hold but the compiled data has no tailoring for (see
-    /// `collations_per_locale_match_node`); the list should drop them.
+    /// (`collations-accepted-by-Collator.js`), and no other type is (the INTL W1 fixer
+    /// dropped "phonetic" and "searchjl" from the list: the compiled data has no tailoring
+    /// for them; see `collations_per_locale_match_node`).
     #[test]
     fn supported_collations_are_the_data_types() {
-        const NOT_IN_DATA: &[&str] = &["phonetic", "searchjl"];
         let locales = ["en", "ar", "de", "es", "hi", "ko", "ln", "si", "sv", "zh"];
         let mut in_data: Vec<&str> = locales.iter().flat_map(|l| collations_of(l)).collect();
         in_data.sort_unstable();
         in_data.dedup();
-        let listed: Vec<&str> = available::COLLATIONS
-            .iter()
-            .copied()
-            .filter(|c| !NOT_IN_DATA.contains(c))
-            .collect();
-        assert_eq!(in_data, listed);
-        for c in NOT_IN_DATA {
-            assert!(!in_data.contains(c), "{c}");
-        }
+        assert_eq!(in_data, available::COLLATIONS);
     }
 
     #[test]

@@ -105,8 +105,8 @@ pub enum ObjectClass {
     /// `ep9_intl` locale.rs.
     IntlLocale,
     /// An Intl.Collator instance (ECMA-402 §10, INTL W1): slot 0 `[[Locale]]` (a String); the
-    /// other slots (the packed options, `[[Collation]]`, `[[BoundCompare]]`) are named in
-    /// `ep9_intl` collator.rs. No ICU4X object is in a slot (INTL-I1-D7).
+    /// other slots (1 the packed options with `[[Collation]]`, 2 `[[BoundCompare]]`) are named
+    /// in `ep9_intl` collator.rs. No ICU4X object is in a slot (INTL-I1-D7).
     IntlCollator,
 }
 

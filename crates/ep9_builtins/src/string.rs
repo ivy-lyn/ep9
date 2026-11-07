@@ -12,8 +12,8 @@
 //! %String.prototype%     charCodeAt; toString, valueOf: thisStringValue
 //!                        (Cx::this_primitive_value)
 //!   string/proto.rs      at, charAt, codePointAt, concat, endsWith, includes, indexOf,
-//!                        lastIndexOf, isWellFormed, toWellFormed, localeCompare (v0: code
-//!                        unit order), padStart, padEnd, repeat, slice, startsWith,
+//!                        lastIndexOf, isWellFormed, toWellFormed, localeCompare (the
+//!                        ep9_intl Collator order), padStart, padEnd, repeat, slice, startsWith,
 //!                        substring, trim, trimStart (= trimLeft), trimEnd (= trimRight)  (P4)
 //!   string/case.rs       toLowerCase, toUpperCase, toLocaleLowerCase, toLocaleUpperCase:
 //!                        Rust std full case mapping, Unicode 17 (H26), lone surrogates kept;
