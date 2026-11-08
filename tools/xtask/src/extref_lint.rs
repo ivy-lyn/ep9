@@ -118,6 +118,12 @@ pub(crate) const VM_STACK: &[(&str, &str)] = &[
     // `write_call_header`, the x86-64 `call_fast` form of M5-P2 PERF3-FIX and M6-P1 CBC).
     ("crates/ep9_vm/src/call.rs", "push_frame"),
     ("crates/ep9_vm/src/call.rs", "write_call_header"),
+    // The construct hit (M7-P3 CONSTRUCT, 6056c0f8): the stub and callee frame words that
+    // `push_construct_stub` and `push_frame` write, written in place.
+    (
+        "crates/ep9_vm/src/construct_ic.rs",
+        "write_construct_frames",
+    ),
     // `FrameRef`: the FunctionInfo, caller fp and return pc of a frame (stack walks).
     ("crates/ep9_vm/src/error.rs", "info"),
     ("crates/ep9_vm/src/error.rs", "caller"),
@@ -126,6 +132,9 @@ pub(crate) const VM_STACK: &[(&str, &str)] = &[
     // the caller (a construct return, `Return`, a generator's yield, the call record step).
     ("crates/ep9_vm/src/interp/mod.rs", "run"),
     ("crates/ep9_vm/src/interp/mod.rs", "construct_return"),
+    // Its fast form for the `ConstructReturn` handler (M7-P3 fixer r2, JIT-F1): the same
+    // return pc and caller fp slots of the stub frame, with no throw path.
+    ("crates/ep9_vm/src/interp/mod.rs", "construct_result"),
     ("crates/ep9_vm/src/interp/mod.rs", "info"),
     ("crates/ep9_vm/src/interp/ops.rs", "op!(Return)"),
     ("crates/ep9_vm/src/interp/dsl.rs", "record_call_next_fn"),
