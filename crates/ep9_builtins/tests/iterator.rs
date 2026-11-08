@@ -646,27 +646,114 @@ log(z.next().value.join(), z.next().value.join());
     }
 }
 
+/// The CPU work of the calling thread so far, in a unit of the platform: nanoseconds of CPU
+/// time (`clock_gettime` with `CLOCK_THREAD_CPUTIME_ID`) on unix, CPU cycles
+/// (`QueryThreadCycleTime`) on Windows. Only ratios of it are used. The other threads of the
+/// machine do not change it, as they change a wall clock (FLAKE-ZIP).
+#[cfg(unix)]
+fn thread_cpu_work() -> u64 {
+    /// `struct timespec` of the 64-bit unix targets (`time_t` and `long` are 64 bits).
+    #[repr(C)]
+    struct Timespec {
+        sec: i64,
+        nsec: i64,
+    }
+    #[cfg(target_os = "macos")]
+    type ClockId = core::ffi::c_uint;
+    #[cfg(not(target_os = "macos"))]
+    type ClockId = core::ffi::c_int;
+    #[cfg(target_os = "macos")]
+    const CLOCK_THREAD_CPUTIME_ID: ClockId = 16;
+    #[cfg(not(target_os = "macos"))]
+    const CLOCK_THREAD_CPUTIME_ID: ClockId = 3; // Linux
+    unsafe extern "C" {
+        fn clock_gettime(clock: ClockId, ts: *mut Timespec) -> core::ffi::c_int;
+    }
+    let mut ts = Timespec { sec: 0, nsec: 0 };
+    // SAFETY: `ts` is a valid and writable `struct timespec` of this target, and
+    // `clock_gettime` only writes it.
+    let rc = unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+    let sec = u64::try_from(ts.sec).expect("a CPU time of 0 s or more");
+    let nsec = u64::try_from(ts.nsec).expect("a CPU time of 0 s or more");
+    sec * 1_000_000_000 + nsec
+}
+
+/// [`thread_cpu_work`] on Windows: the CPU cycles of the calling thread.
+#[cfg(windows)]
+fn thread_cpu_work() -> u64 {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThread() -> *mut core::ffi::c_void;
+        fn QueryThreadCycleTime(thread: *mut core::ffi::c_void, cycles: *mut u64) -> i32;
+    }
+    let mut cycles = 0u64;
+    // SAFETY: `GetCurrentThread` gives the pseudo handle of the calling thread (always
+    // valid, no close), and `cycles` is a valid and writable u64.
+    let ok = unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) };
+    assert_ne!(ok, 0, "QueryThreadCycleTime");
+    cycles
+}
+
+/// The CPU work ([`thread_cpu_work`]) of the first `next` of a zip in longest mode of `n`
+/// empty inputs (all of them are done in that `next`), on a new isolate. The setup and the
+/// compile are not in it.
+fn zip_next_work(n: usize) -> u64 {
+    let mut iso = common::isolate(false);
+    let setup = format!("var z = Iterator.zip(Array({n}).fill([]), {{ mode: 'longest' }});");
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(compile_sloppy(&setup), "setup.js")
+            .map(|_| ())
+    })
+    .expect("the setup runs");
+    let next =
+        compile_sloppy("var r = z.next(); var t = r.done + ' ' + r.value + ' ' + z.next().done;");
+    let before = thread_cpu_work();
+    iso.with_cx_checkpoint(|cx| cx.run_script(next, "next.js").map(|_| ()))
+        .expect("next runs");
+    let work = thread_cpu_work() - before;
+    assert_eq!(
+        common::global_text(&mut iso, "t").as_deref(),
+        Some("true undefined true")
+    );
+    work
+}
+
 /// The open inputs of a zip in longest mode are counted once per `next`, not once per done
-/// input (Codex r1 SPEC-ITER2 1): 40,000 empty inputs that are all done in the first `next`
-/// take one pass over the list. The old scan from index 0 at each done input took about
-/// 40,000^2 / 2 list reads (over 100 s in a debug build); the wait of 30 s only stops a test
-/// that hangs.
+/// input (Codex r1 SPEC-ITER2 1): N empty inputs that are all done in the first `next` take
+/// one pass over the list. The old scan from index 0 at each done input took about N^2 / 2
+/// list reads. The test compares the CPU work of that `next` for 4,000 and 16,000 inputs (the
+/// least of 3 runs of each): linear work grows about 4 times, the old scan about 16 times;
+/// the bound is 8. It measures the CPU work of its thread, not wall time: the old 30 s wall
+/// wait failed under load (FLAKE-ZIP, M6-ORCH-264). The wait of 900 s only stops a test that
+/// hangs.
+#[cfg(any(unix, windows))]
 #[test]
 fn a_zip_of_many_done_inputs_is_linear() {
+    const N: usize = 4_000;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
-            let r = common::run(
-                "var z = Iterator.zip(Array(40000).fill([]), { mode: 'longest' }); \
-                 var r = z.next(); print(r.done + ' ' + r.value + ' ' + z.next().done);",
-                false,
-            );
-            let _ = tx.send(r);
+            let least = |n| (0..3).map(|_| zip_next_work(n)).min().expect("3 runs");
+            let small = least(N);
+            let large = least(4 * N);
+            let _ = tx.send((small, large));
         })
         .expect("a thread");
-    let got = rx.recv_timeout(std::time::Duration::from_secs(30));
-    assert_eq!(got, Ok(lines(&["true undefined true"])));
+    let (small, large) = rx
+        .recv_timeout(std::time::Duration::from_secs(900))
+        .expect("the runs end");
+    let ratio = large as f64 / small.max(1) as f64;
+    eprintln!(
+        "zip next work: {N} inputs {small}, {} inputs {large}, ratio {ratio:.2}",
+        4 * N
+    );
+    assert!(
+        ratio < 8.0,
+        "the next of {} inputs took {ratio:.1} times the work of {N} inputs ({large} / {small})",
+        4 * N
+    );
 }
 
 fn compile_sloppy(src: &str) -> ep9_bytecode::VerifiedUnit {
