@@ -134,7 +134,8 @@ fn resume<R>(payload: Box<dyn Any + Send>) -> R {
 
 impl Mailbox {
     fn lock(&self) -> MutexGuard<'_, Slot> {
-        // No code panics while it holds the lock; a poisoned lock is still a sound slot.
+        // Only the debug_assert in `send` can panic under the lock; a poisoned lock is still a
+        // sound slot.
         self.slot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }

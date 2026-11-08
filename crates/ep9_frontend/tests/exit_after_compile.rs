@@ -41,9 +41,14 @@ use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
 const MODE: &str = "EP9_EXIT_AFTER_COMPILE";
 /// Set in a stress child: start one spinning thread per CPU before the compile.
 const LOAD: &str = "EP9_EXIT_LOAD";
-/// The number of stress children per mode.
+/// The number of stress children per mode (any count overrides [`STRESS_DEFAULT`]).
 const STRESS: &str = "EP9_EXIT_STRESS";
-const STRESS_DEFAULT: usize = if cfg!(windows) { 100 } else { 5 };
+/// The stress loop is a smoke test. The deterministic gate of WIN-EXIT-HANG is the worker's
+/// unit test `dropping_a_worker_takes_no_lock_its_thread_may_hold`. Windows probe A (the test
+/// without the fix) hung 9 of 8000 children (about 0.11 % per exit); probe B (with the fix)
+/// hung 0 of 8000. At that rate, 500 per mode show a regression in about 42 % of the modes of
+/// one run (M6-ORCH-283). The OS ends the worker at an exit on Windows only, so 5 elsewhere.
+const STRESS_DEFAULT: usize = if cfg!(windows) { 500 } else { 5 };
 /// A child that runs longer than this is killed and counts as a hit.
 const DEADLINE: Duration = Duration::from_secs(10);
 /// The stress loop stops at this many hits, so a probe run ends in bounded time.
@@ -120,6 +125,7 @@ fn main() {
 struct Run {
     /// `None`: the child did not end before [`DEADLINE`] and was killed.
     status: Option<ExitStatus>,
+    /// For a `None` run it ends with the kill result and the state after the kill.
     stderr: String,
 }
 
@@ -148,24 +154,33 @@ fn run_child(exe: &std::path::Path, mode: &str, load: bool) -> Run {
         let _ = text_tx.send(String::from_utf8_lossy(&text).into_owned());
     });
     let start = Instant::now();
-    let status = loop {
+    let (status, killed) = loop {
         if let Some(status) = child.try_wait().expect("wait for the child") {
-            break Some(status);
+            break (Some(status), None);
         }
         if start.elapsed() > DEADLINE {
             // TerminateProcess or SIGKILL: the child's pipe closes and the reader ends.
-            let _ = child.kill();
+            let kill = child.kill();
             let killed = Instant::now();
             while killed.elapsed() < DEADLINE && matches!(child.try_wait(), Ok(None)) {
                 thread::sleep(Duration::from_millis(10));
             }
-            break None;
+            // A child that the kill did not end can hold the pipes of this process (std
+            // spawns with inherited handles on Windows): stop here with a clear line.
+            let after = child.try_wait();
+            if matches!(after, Ok(None)) {
+                panic!("{mode}: the child survived the kill (kill: {kill:?}, after: {after:?})");
+            }
+            break (None, Some(format!("\nkill: {kill:?}, after: {after:?}")));
         }
         thread::sleep(Duration::from_millis(2));
     };
-    let stderr = text_rx
+    let mut stderr = text_rx
         .recv_timeout(DEADLINE)
         .unwrap_or_else(|_| "(stderr did not close after the end of the child)".into());
+    if let Some(killed) = killed {
+        stderr.push_str(&killed);
+    }
     Run { status, stderr }
 }
 
