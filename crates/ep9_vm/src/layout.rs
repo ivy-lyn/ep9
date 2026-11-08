@@ -7,8 +7,8 @@
 //! Until M5-P0 this was `native::layout`, behind the `spike-native` feature. C-18 (doc 13:694)
 //! moved it out of the gate, with the three native `Cx` fields (`native_limit`,
 //! `runtime_table`, `unit_data`) and the [`RuntimeTable`] type, so every build has one `Cx`
-//! layout. The process table itself (`native::RUNTIME_TABLE`) and every function it calls stay
-//! behind `spike-native`: a default build has `Cx::runtime_table` = null.
+//! layout. The process table (`native::RUNTIME_TABLE`) and its functions are in every build
+//! since M7-P3 A2-ENTRY (MC-w30-8); before, they were behind `spike-native` (null otherwise).
 //!
 //! Each export names the one version that owns it (MC-w15-5; doc 13 C-18 and §7.3): VM_LAYOUT
 //! (`Cx`, FunctionInfo and RuntimeTable offsets, not the table length: C-18), FRAME (frame
@@ -70,8 +70,8 @@ native_fn_types! {
 }
 
 /// The runtime functions native code calls, at fixed offsets (`#[repr(C)]`, the `RT_*`
-/// constants below), reached through `Cx::runtime_table` (null in a build without
-/// `spike-native`). Every function takes `(cx, fp, off, ..)`:
+/// constants below), reached through `Cx::runtime_table` (the process table in every build
+/// since M7-P3; null before). Every function takes `(cx, fp, off, ..)`:
 /// `cx` is the [`NativeCx`] native code got, `fp` its own frame, `off` the bytecode offset of
 /// the instruction it runs. Each one first publishes `fp` and saves `off` in the frame's offset
 /// slot (`Runtime::enter`), then returns the accumulator bits, or 0 if an exception is
@@ -147,7 +147,7 @@ pub const CX_INTERRUPT: usize = offset_of!(Cx, interrupt);
 /// VM_LAYOUT. `Cx::native_limit` (usize): the lowest native stack address native code may
 /// reach; the prologue's one compare.
 pub const CX_NATIVE_LIMIT: usize = offset_of!(Cx, native_limit);
-/// VM_LAYOUT. `Cx::runtime_table` (`*const RuntimeTable`; null without `spike-native`).
+/// VM_LAYOUT. `Cx::runtime_table` (`*const RuntimeTable`; in every build since M7-P3).
 pub const CX_RUNTIME_TABLE: usize = offset_of!(Cx, runtime_table);
 /// VM_LAYOUT. `Cx::unit_data` (usize; M3-P1 SP-UNIT, H35-Q9): the isolate's unit-data
 /// directory, one word per unit slot, each the base of the isolate's RW copy of the unit in
