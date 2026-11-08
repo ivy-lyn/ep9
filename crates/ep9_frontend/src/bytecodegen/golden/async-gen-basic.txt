@@ -1,6 +1,6 @@
 # async-gen-basic: script (strict)
 # | async function* g(a) { var b = yield a; await b; return b; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=60 source=embedded hints=none
 source_hash=7033fe18b879f68a8c7d77ad8589e25de0d900330b8062d6ebd70d7e638e42cb
 strings (1):

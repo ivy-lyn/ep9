@@ -194,12 +194,17 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
 /// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
 /// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
 /// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
+///
+/// The explicit resource management proposal (Properties of the SuppressedError
+/// Constructor): the same for `%SuppressedError%` (`ep9_builtins` disposable.rs, M7-P3).
 fn aggregate_error_prototype(rt: &Runtime) {
-    let c = builtins::intrinsic(rt, IntrinsicId::AggregateError);
     let error = builtins::intrinsic(rt, IntrinsicId::Error);
-    if object::is_object(c) && object::is_object(error) {
-        let ok = property::set_prototype_of(rt, c, error);
-        debug_assert!(ok, "%AggregateError% is extensible");
+    for id in [IntrinsicId::AggregateError, IntrinsicId::SuppressedError] {
+        let c = builtins::intrinsic(rt, id);
+        if object::is_object(c) && object::is_object(error) {
+            let ok = property::set_prototype_of(rt, c, error);
+            debug_assert!(ok, "{} is extensible", id.name());
+        }
     }
 }
 

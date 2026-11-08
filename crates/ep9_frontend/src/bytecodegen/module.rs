@@ -70,10 +70,11 @@ use ep9_bytecode::{
 };
 use oxc_ast::ast::{
     ArrowFunctionExpression, AwaitExpression, Declaration, ExportDeclaration,
-    ExportDefaultDeclaration, ExportDefaultDeclarationKind, ForOfStatement, Function,
-    ImportAttributeKey, ImportDeclarationSpecifier, ImportExpression, ImportMeta, ImportPhase,
-    ModuleExportName, Program, PropertyDefinition, Statement, StaticBlock, StringLiteral,
-    VariableDeclaration, VariableDeclarationKind, WithClause,
+    ExportDefaultDeclaration, ExportDefaultDeclarationKind, ForOfStatement, ForStatement,
+    ForStatementInit, ForStatementLeft, Function, ImportAttributeKey, ImportDeclarationSpecifier,
+    ImportExpression, ImportMeta, ImportPhase, ModuleExportName, Program, PropertyDefinition,
+    Statement, StaticBlock, StringLiteral, VariableDeclaration, VariableDeclarationKind,
+    WithClause,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::ScopeFlags;
@@ -105,6 +106,8 @@ impl<'a> FnGen<'a, '_> {
             for s in &program.body {
                 counter.visit_statement(s);
             }
+            // The module body's own using region (`stmt.rs` U4).
+            counter.0 += super::stmt::using_suspends(&program.body);
             u32::try_from(counter.0).map_err(|_| super::internal("too many await points"))?
         } else {
             0
@@ -525,7 +528,25 @@ impl<'a> Visit<'a> for AwaitPoints {
         if it.r#await {
             self.0 += FOR_AWAIT_SUSPENDS;
         }
+        // A `using` head (`stmt.rs` U4).
+        if let ForStatementLeft::VariableDeclaration(v) = &it.left {
+            self.0 += super::stmt::using_head_suspends(v);
+        }
         walk::walk_for_of_statement(self, it);
+    }
+
+    /// The disposal of a using region (`stmt.rs` U4).
+    fn visit_statements(&mut self, it: &oxc_allocator::Vec<'a, Statement<'a>>) {
+        self.0 += super::stmt::using_suspends(it);
+        walk::walk_statements(self, it);
+    }
+
+    /// The disposal of a `for` head with `using` (`stmt.rs` U4).
+    fn visit_for_statement(&mut self, it: &ForStatement<'a>) {
+        if let Some(ForStatementInit::VariableDeclaration(v)) = &it.init {
+            self.0 += super::stmt::using_head_suspends(v);
+        }
+        walk::walk_for_statement(self, it);
     }
 
     fn visit_function(&mut self, _it: &Function<'a>, _flags: ScopeFlags) {}

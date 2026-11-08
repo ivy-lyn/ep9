@@ -8,7 +8,7 @@
 # | export * as all from './m.js';
 # | export var v = 1, { w } = {};
 # | export default function () {}
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=module strict=true ts=none source_len=323 source=embedded hints=none
 source_hash=edbe957f958dd3fe353a5ac1f67afe51459c2a4ae6609d6ad4adb02eabc9e854
 strings (23):

@@ -14,8 +14,8 @@
 //!                                 24               25                26
 //!                                 zoned_date_time,
 //!                                 27
-//!          iterator]
-//!          28
+//!          iterator, disposable]
+//!          28        29
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -46,6 +46,8 @@ pub mod weakref;
 pub mod bigint;
 // M7-P1 SPEC-ITER: block 28.
 pub mod iterator;
+// M7-P3 SPEC-ERM: block 29.
+pub mod disposable;
 
 use ep9_vm::{BuiltinModule, BuiltinTable};
 
@@ -81,6 +83,8 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_temporal::zoned_date_time::MODULE,
     // M7-P1 SPEC-ITER: Iterator and the iterator helpers.
     iterator::MODULE,
+    // M7-P3 SPEC-ERM: SuppressedError, DisposableStack, AsyncDisposableStack.
+    disposable::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

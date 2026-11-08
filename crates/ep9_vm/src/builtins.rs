@@ -292,11 +292,26 @@ pub enum IntrinsicId {
     IteratorHelperPrototype,
     /// `%WrapForValidIteratorPrototype%` (§27.1.3.2.1.1; made by `ep9_builtins` iterator.rs).
     WrapForValidIteratorPrototype,
+    // ---- M7-P3 SPEC-ERM (explicit resource management; H20 part 2, H13 "index ids
+    // (append-only)") ----
+    /// `%SuppressedError%` (explicit resource management; made by `ep9_builtins`
+    /// disposable.rs, block 29).
+    SuppressedError,
+    /// `%SuppressedError.prototype%` (made by `ep9_builtins` disposable.rs).
+    SuppressedErrorPrototype,
+    /// `%DisposableStack%` (made by `ep9_builtins` disposable.rs).
+    DisposableStack,
+    /// `%DisposableStack.prototype%` (made by `ep9_builtins` disposable.rs).
+    DisposableStackPrototype,
+    /// `%AsyncDisposableStack%` (made by `ep9_builtins` disposable.rs).
+    AsyncDisposableStack,
+    /// `%AsyncDisposableStack.prototype%` (made by `ep9_builtins` disposable.rs).
+    AsyncDisposableStackPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 98] = [
+    pub const ALL: [IntrinsicId; 104] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -395,6 +410,12 @@ impl IntrinsicId {
         IntrinsicId::Iterator,
         IntrinsicId::IteratorHelperPrototype,
         IntrinsicId::WrapForValidIteratorPrototype,
+        IntrinsicId::SuppressedError,
+        IntrinsicId::SuppressedErrorPrototype,
+        IntrinsicId::DisposableStack,
+        IntrinsicId::DisposableStackPrototype,
+        IntrinsicId::AsyncDisposableStack,
+        IntrinsicId::AsyncDisposableStackPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -499,6 +520,12 @@ impl IntrinsicId {
             IntrinsicId::Iterator => "%Iterator%",
             IntrinsicId::IteratorHelperPrototype => "%IteratorHelperPrototype%",
             IntrinsicId::WrapForValidIteratorPrototype => "%WrapForValidIteratorPrototype%",
+            IntrinsicId::SuppressedError => "%SuppressedError%",
+            IntrinsicId::SuppressedErrorPrototype => "%SuppressedError.prototype%",
+            IntrinsicId::DisposableStack => "%DisposableStack%",
+            IntrinsicId::DisposableStackPrototype => "%DisposableStack.prototype%",
+            IntrinsicId::AsyncDisposableStack => "%AsyncDisposableStack%",
+            IntrinsicId::AsyncDisposableStackPrototype => "%AsyncDisposableStack.prototype%",
         }
     }
 
@@ -603,7 +630,13 @@ impl IntrinsicId {
             | IntrinsicId::FunctionPrototypeCall
             | IntrinsicId::Iterator
             | IntrinsicId::IteratorHelperPrototype
-            | IntrinsicId::WrapForValidIteratorPrototype => return None,
+            | IntrinsicId::WrapForValidIteratorPrototype
+            | IntrinsicId::SuppressedError
+            | IntrinsicId::SuppressedErrorPrototype
+            | IntrinsicId::DisposableStack
+            | IntrinsicId::DisposableStackPrototype
+            | IntrinsicId::AsyncDisposableStack
+            | IntrinsicId::AsyncDisposableStackPrototype => return None,
         })
     }
 
@@ -676,6 +709,12 @@ impl IntrinsicId {
             IntrinsicId::Iterator => Some(62),
             IntrinsicId::IteratorHelperPrototype => Some(63),
             IntrinsicId::WrapForValidIteratorPrototype => Some(64),
+            IntrinsicId::SuppressedError => Some(65),
+            IntrinsicId::SuppressedErrorPrototype => Some(66),
+            IntrinsicId::DisposableStack => Some(67),
+            IntrinsicId::DisposableStackPrototype => Some(68),
+            IntrinsicId::AsyncDisposableStack => Some(69),
+            IntrinsicId::AsyncDisposableStackPrototype => Some(70),
             _ => None,
         }
     }
@@ -1354,7 +1393,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 65;
+const INTRINSIC_SLOTS: usize = 71;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
@@ -1881,8 +1920,9 @@ fn store_reserved(rt: &Runtime, m: &BuiltinModule, global: u64, p: &PropDef) -> 
 const LAZY_KEYS: [&str; 2] = ["Temporal", "Intl"];
 
 /// The intrinsics whose `[[Prototype]]` the eager install sets after its step (2)
-/// ([`fixed_prototypes`], `realm.rs` for %AggregateError%): never in a lazy group.
-const FIXED_PROTOTYPES: [IntrinsicId; 12] = [
+/// ([`fixed_prototypes`], `realm.rs` for %AggregateError% and %SuppressedError%): never in a
+/// lazy group.
+const FIXED_PROTOTYPES: [IntrinsicId; 13] = [
     IntrinsicId::Function,
     IntrinsicId::Error,
     IntrinsicId::GeneratorFunction,
@@ -1895,6 +1935,7 @@ const FIXED_PROTOTYPES: [IntrinsicId; 12] = [
     IntrinsicId::TypeError,
     IntrinsicId::UriError,
     IntrinsicId::AggregateError,
+    IntrinsicId::SuppressedError,
 ];
 
 /// One lazy group: the modules that one lazy key brings.

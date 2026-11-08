@@ -1,6 +1,6 @@
 # module-import-meta: module
 # | export const m = import.meta; function f() { return () => import.meta.url; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=module strict=true ts=none source_len=76 source=embedded hints=none
 source_hash=23cb8c612de8e6ad597365c7c4b5a8ab1ae5774f41defd391c761c4272eb5601
 strings (3):

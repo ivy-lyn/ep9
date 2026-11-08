@@ -160,11 +160,8 @@ impl<'a> FnGen<'a, '_> {
     }
 
     pub(crate) fn var_decl(&mut self, decl: &'a VariableDeclaration<'a>) -> Gen {
-        if matches!(
-            decl.kind,
-            VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing
-        ) {
-            return self.unsupported("using declarations", decl.span);
+        if is_using(decl.kind) {
+            return self.using_decl(decl);
         }
         let lexical = decl.kind != VariableDeclarationKind::Var;
         for d in &decl.declarations {
@@ -396,6 +393,32 @@ impl<'a> FnGen<'a, '_> {
         self.stmt_pos(f.span);
         let scope = self.scope_of(f.scope_id.get(), f.span)?;
         let pushed = self.enter_scope(scope);
+        if let Some(ForStatementInit::VariableDeclaration(v)) = &f.init
+            && is_using(v.kind)
+        {
+            // The head's resources: disposed after the whole loop (ForStatement step 10).
+            let mut kinds = Vec::new();
+            push_using_kinds(v, &mut kinds);
+            let suspends = using_head_suspends(v);
+            self.using_region(&kinds, suspends, v.span, |g| {
+                g.for_loop_tail(f, labels, scope, pushed)
+            })?;
+            self.exit_scope(scope, pushed);
+            return Ok(());
+        }
+        self.for_loop_tail(f, labels, scope, pushed)?;
+        self.exit_scope(scope, pushed);
+        Ok(())
+    }
+
+    /// A `for` statement from its head declaration on, in the loop head scope.
+    fn for_loop_tail(
+        &mut self,
+        f: &'a ForStatement<'a>,
+        labels: Vec<&'a str>,
+        scope: ScopeId,
+        pushed: bool,
+    ) -> Gen {
         match &f.init {
             Some(ForStatementInit::VariableDeclaration(v)) => self.var_decl(v)?,
             Some(init) => {
@@ -428,7 +451,6 @@ impl<'a> FnGen<'a, '_> {
         self.jump_loop(header);
         self.b.bind(exit);
         self.loop_depth -= 1;
-        self.exit_scope(scope, pushed);
         Ok(())
     }
 
@@ -462,11 +484,8 @@ impl<'a> FnGen<'a, '_> {
     fn for_head_assign(&mut self, left: &'a ForStatementLeft<'a>, value: Register) -> Gen {
         match left {
             ForStatementLeft::VariableDeclaration(v) => {
-                if matches!(
-                    v.kind,
-                    VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing
-                ) {
-                    return self.unsupported("using declarations", v.span);
+                if is_using(v.kind) {
+                    return self.using_head(v, value);
                 }
                 let mode = if v.kind == VariableDeclarationKind::Var {
                     BindMode::Var
@@ -573,13 +592,7 @@ impl<'a> FnGen<'a, '_> {
                 g.iterator_step(iter, next, value, exit, f.span.start);
                 g.b.lda_false().star(done);
                 g.loop_target(labels, exit, cont);
-                let result = (|| -> Gen {
-                    let pushed = g.enter_scope(scope);
-                    g.for_head_assign(&f.left, value)?;
-                    g.statement(&f.body)?;
-                    g.exit_scope(scope, pushed);
-                    Ok(())
-                })();
+                let result = g.for_of_iteration(f, scope, value);
                 g.control.pop();
                 result?;
                 g.b.bind(cont);
@@ -647,13 +660,7 @@ impl<'a> FnGen<'a, '_> {
                 g.b.get_named_property(value, k_value, s).star(value);
                 g.b.lda_false().star(done);
                 g.loop_target(labels, exit, cont);
-                let result = (|| -> Gen {
-                    let pushed = g.enter_scope(scope);
-                    g.for_head_assign(&f.left, value)?;
-                    g.statement(&f.body)?;
-                    g.exit_scope(scope, pushed);
-                    Ok(())
-                })();
+                let result = g.for_of_iteration(f, scope, value);
                 g.control.pop();
                 result?;
                 g.b.bind(cont);
@@ -671,6 +678,33 @@ impl<'a> FnGen<'a, '_> {
             },
         )?;
         self.release(m);
+        Ok(())
+    }
+
+    /// One iteration of a `for-of` or `for await` loop: the head binding of `value`, then the
+    /// body, in the iteration scope; a `using` head makes the iteration a using region (its
+    /// resource is disposed at the end of each iteration, before the iterator closes).
+    fn for_of_iteration(
+        &mut self,
+        f: &'a ForOfStatement<'a>,
+        scope: ScopeId,
+        value: Register,
+    ) -> Gen {
+        let pushed = self.enter_scope(scope);
+        if let ForStatementLeft::VariableDeclaration(v) = &f.left
+            && is_using(v.kind)
+        {
+            let mut kinds = Vec::new();
+            push_using_kinds(v, &mut kinds);
+            self.using_region(&kinds, using_head_suspends(v), v.span, |g| {
+                g.for_head_assign(&f.left, value)?;
+                g.statement(&f.body)
+            })?;
+        } else {
+            self.for_head_assign(&f.left, value)?;
+            self.statement(&f.body)?;
+        }
+        self.exit_scope(scope, pushed);
         Ok(())
     }
 
@@ -906,4 +940,500 @@ impl<'a> FnGen<'a, '_> {
         self.release(m);
         Ok(())
     }
+}
+
+// ---- using and await using (explicit resource management; M7-P3 SPEC-ERM) ----
+//
+// A statement list that holds `using` or `await using` declarations (a block, a function,
+// generator, async or module body, a class static block), the head of a `for` statement with
+// a `using` declaration, and each iteration of a `for-of` with a `using` head are one
+// *using region*: the DisposeCapability of its environment (DisposeResources at its end).
+//
+// ```text
+// region entry:   method_i = undefined (using) or the hole (await using)   not on the stack
+// try {                                                                    G5 form, token/value
+//   using x = e:  value_i = e
+//                 [value_i not undefined/null] method_i = GetDisposeMethod(value_i, 0)   (48)
+//   await using:  [undefined/null]  method_i = undefined (on the stack, no method)
+//                 [else] method_i = GetDisposeMethod(value_i, 1); if undefined:
+//                        method_i = GetDisposeMethod(value_i, 0), fallback_i = true
+//                 x = value_i                                            InitializeBinding
+// } finally {     DisposeResources(capability, completion), resources in reverse order:
+//   using:        [method_i] (step 3.d await) try { method_i.call(value_i) } catch (e) R(e)
+//   await using:  [method_i hole] skip; [undefined] needsAwait = true
+//                 try { r = fallback_i ? (sync call, keep its throw; undefined)
+//                                      : method_i.call(value_i)
+//                       hasAwaited = true; Await(r); rethrow the kept throw } catch (e) R(e)
+//   end:          (step 4) if needsAwait and not hasAwaited: Await(undefined)
+//   R(e):         completion is a throw ? value = CreateSuppressedError(e, value) (49)
+//                                       : value = e, token = throw
+// }
+// ```
+//
+// | # | Decision | Why |
+// |---|---|---|
+// | U1 | The resources of a region live in registers, 2 per `using` and 3 per `await using` binding; the region knows them all before its body | The bindings of a region are fixed by the source (a `using` is never a statement of an `if` or a loop body, nor of a case clause: early errors); no DisposableStack object per region (V8 keeps a stack object) |
+// | U2 | A region is the G5 `try`/`finally` with its token and value registers; the finalizer may replace the completion by a throw | `break`, `continue` and `return` through a region dispose first, as through `finally` |
+// | U3 | The sync method of an `await using` value without @@asyncDispose is called directly, then undefined is awaited, then its throw (if any) is the result | The same ticks and results as the promise closure of GetDisposeMethod step 1.b.ii, which user code cannot see; no new builtin |
+// | U4 | An `await using` region has `n + 1` await points for `n` bindings: one per `await using` binding, one step-3.d check per `using` binding, and the step-4 check ([`using_suspends`]) | AF3/AGF2: the counters of the body count them before the body |
+// | U5 | Code with no `using` emits the same bytecode as before | [`using_kinds`] finds no binding, and no region is made |
+
+/// One resource register set of a using region (U1).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UsingResource {
+    /// The value of the binding.
+    value: Register,
+    /// Its dispose method: undefined (a `using` resource) or the hole (an `await using` one)
+    /// while it is not on the stack.
+    method: Register,
+    /// An `await using` resource: true when `method` is the sync @@dispose method (U3).
+    fallback: Option<Register>,
+}
+
+/// The using regions being generated (innermost last): the resources and the next one that a
+/// binding takes.
+#[derive(Debug, Default)]
+pub(crate) struct UsingRegion {
+    resources: Vec<UsingResource>,
+    next: usize,
+}
+
+/// True for the kinds of a `using` or `await using` declaration.
+fn is_using(kind: VariableDeclarationKind) -> bool {
+    matches!(
+        kind,
+        VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing
+    )
+}
+
+/// The resources that the `using` declarations of `list` itself make, in source order: true
+/// for an `await using` binding. Empty when `list` has no `using` declaration (U5).
+pub(crate) fn using_kinds(list: &[Statement<'_>]) -> Vec<bool> {
+    let mut kinds = Vec::new();
+    for s in list {
+        if let Statement::VariableDeclaration(v) = s {
+            push_using_kinds(v, &mut kinds);
+        }
+    }
+    kinds
+}
+
+fn push_using_kinds(v: &VariableDeclaration<'_>, kinds: &mut Vec<bool>) {
+    if is_using(v.kind) {
+        let a = v.kind == VariableDeclarationKind::AwaitUsing;
+        kinds.extend(std::iter::repeat_n(a, v.declarations.len()));
+    }
+}
+
+/// The await points of the disposal of one region with these resources (U4).
+fn suspends_of(kinds: &[bool]) -> usize {
+    if kinds.iter().any(|&a| a) {
+        kinds.len() + 1
+    } else {
+        0
+    }
+}
+
+/// The await points that the using region of the statement list `list` adds (U4), for the
+/// suspend counters of async code (AF3, AGF2, the module's AwaitPoints): 0 when `list` has no
+/// `await using` declaration.
+pub(crate) fn using_suspends(list: &[Statement<'_>]) -> usize {
+    suspends_of(&using_kinds(list))
+}
+
+/// The await points that the using region of a `for` or `for-of` head declaration adds (U4).
+pub(crate) fn using_head_suspends(v: &VariableDeclaration<'_>) -> usize {
+    let mut kinds = Vec::new();
+    push_using_kinds(v, &mut kinds);
+    suspends_of(&kinds)
+}
+
+impl<'a> FnGen<'a, '_> {
+    /// A using region (U1, U2) with the resources `kinds` around `body`. `span` is the source
+    /// range of the region's first declaration (positions and errors). `suspends` is what
+    /// [`using_suspends`] or [`using_head_suspends`] counts for it: the disposal checks that
+    /// it emits that many await points (U4).
+    pub(crate) fn using_region(
+        &mut self,
+        kinds: &[bool],
+        suspends: usize,
+        span: oxc_span::Span,
+        body: impl FnOnce(&mut Self) -> Gen,
+    ) -> Gen {
+        let any_async = kinds.iter().any(|&a| a);
+        if any_async && self.await_target().is_none() {
+            return self.unsupported("await using", span);
+        }
+        let at = span.start;
+        let m = self.mark();
+        let token = self.temp();
+        let value = self.temp();
+        let ctx = self.temp();
+        let mut resources = Vec::with_capacity(kinds.len());
+        for &a in kinds {
+            let value = self.temp();
+            let method = self.temp();
+            let fallback = if a { Some(self.temp()) } else { None };
+            resources.push(UsingResource {
+                value,
+                method,
+                fallback,
+            });
+        }
+        // DisposeResources needsAwait and hasAwaited (an async region only).
+        let flags = if any_async {
+            Some((self.temp(), self.temp()))
+        } else {
+            None
+        };
+        // No resource is on the stack yet (also when a loop enters the region again).
+        for r in &resources {
+            if r.fallback.is_some() {
+                self.b.lda_the_hole();
+            } else {
+                self.b.lda_undefined();
+            }
+            self.b.star(r.method);
+        }
+        self.b.lda_current_context().star(ctx);
+        let (start, end, handler, entry) = (
+            self.b.new_label(),
+            self.b.new_label(),
+            self.b.new_label(),
+            self.b.new_label(),
+        );
+        self.control.push(Control::Finally {
+            token,
+            value,
+            entry,
+            commands: Vec::new(),
+        });
+        self.using.push(UsingRegion {
+            resources: resources.clone(),
+            next: 0,
+        });
+        let before = self.b.instruction_count();
+        self.b.bind(start);
+        // On an error the unit is abandoned: the control stack no longer matters.
+        body(self)?;
+        let region = self.using.pop().expect("using regions out of order");
+        if region.next != resources.len() {
+            return Err(super::internal(format!(
+                "using region at {at}: {} of {} resources bound",
+                region.next,
+                resources.len()
+            )));
+        }
+        let Some(Control::Finally { commands, .. }) = self.control.pop() else {
+            panic!("control stack out of order");
+        };
+        self.b.bind(end);
+        if self.b.instruction_count() > before {
+            self.b
+                .add_handler(start, end, handler, ctx, HandlerKind::Uncaught);
+        }
+        self.b.lda_smi(-1).star(token).jump(entry);
+        self.b.bind(handler);
+        self.b.star(value).lda_zero().star(token);
+        self.b.bind(entry);
+        let message = self.temp();
+        self.b.lda_the_hole().set_pending_message().star(message);
+        let completion = Completion {
+            token,
+            value,
+            message,
+            ctx,
+        };
+        let first = self.generator.as_ref().map_or(0, |g| g.next);
+        self.dispose_resources(&resources, completion, flags, at)?;
+        let emitted = self.generator.as_ref().map_or(0, |g| g.next) - first;
+        if emitted != suspends || suspends != suspends_of(kinds) {
+            return Err(super::internal(format!(
+                "using region at {at}: {emitted} await points emitted, {suspends} counted"
+            )));
+        }
+        self.b.ldar(message).set_pending_message();
+        let (table, labels) = self.b.jump_table(1 + commands.len() as u32);
+        let after = self.b.new_label();
+        self.b.ldar(token).switch_on_smi(table, 0);
+        self.b.jump(after);
+        self.b.bind(labels[0]);
+        self.b.ldar(value).re_throw();
+        for (i, &cmd) in commands.iter().enumerate() {
+            self.b.bind(labels[i + 1]);
+            if cmd == Command::Return {
+                self.b.ldar(value);
+            }
+            self.perform_now(cmd);
+        }
+        self.b.bind(after);
+        self.release(m);
+        Ok(())
+    }
+
+    /// The statements of `list` as one using region (U1): `kinds` is `using_kinds(list)`, not
+    /// empty.
+    pub(crate) fn using_statements(
+        &mut self,
+        list: &'a oxc_allocator::Vec<'a, Statement<'a>>,
+        kinds: &[bool],
+    ) -> Gen {
+        let span = list
+            .iter()
+            .find(|s| matches!(s, Statement::VariableDeclaration(v) if is_using(v.kind)))
+            .map_or_else(oxc_span::Span::default, GetSpan::span);
+        self.using_region(kinds, using_suspends(list), span, |g| {
+            for s in list {
+                g.statement(s)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The next resource of the innermost using region, for a binding at `span`.
+    fn next_using_resource(&mut self, span: oxc_span::Span) -> Gen<UsingResource> {
+        let Some(region) = self.using.last_mut() else {
+            return Err(super::internal(format!(
+                "using binding outside a using region at {}",
+                span.start
+            )));
+        };
+        let Some(&r) = region.resources.get(region.next) else {
+            return Err(super::internal(format!(
+                "using binding at {} has no resource",
+                span.start
+            )));
+        };
+        region.next += 1;
+        Ok(r)
+    }
+
+    /// `using x = e, ...` and `await using x = e, ...` (BindingEvaluation with the hint):
+    /// each value, its resource, then its binding.
+    fn using_decl(&mut self, decl: &'a VariableDeclaration<'a>) -> Gen {
+        for d in &decl.declarations {
+            self.stmt_pos(d.span);
+            let Some(init) = &d.init else {
+                return Err(super::internal(format!(
+                    "using binding without an initializer at {}",
+                    d.span.start
+                )));
+            };
+            let r = self.next_using_resource(d.span)?;
+            self.named_value(init, super::func::pattern_name(&d.id))?;
+            self.add_resource(r, d.span.start);
+            self.b.ldar(r.value);
+            self.bind_value_in_acc(&d.id, BindMode::Init)?;
+        }
+        Ok(())
+    }
+
+    /// The `using` head of a `for-of` iteration: the value in `value` is its binding's value.
+    fn using_head(&mut self, decl: &'a VariableDeclaration<'a>, value: Register) -> Gen {
+        let d = &decl.declarations[0];
+        let r = self.next_using_resource(d.span)?;
+        self.b.ldar(value);
+        self.add_resource(r, d.span.start);
+        self.b.ldar(r.value);
+        self.bind_value_in_acc(&d.id, BindMode::Init)
+    }
+
+    /// AddDisposableResource(capability, acc, hint) (CreateDisposableResource): stores the
+    /// value in `r.value` and, unless a sync hint has undefined or null, its method.
+    fn add_resource(&mut self, r: UsingResource, at: u32) {
+        self.b.star(r.value);
+        let m = self.mark();
+        let args = self.temps(2);
+        match r.fallback {
+            None => {
+                let done = self.b.new_label();
+                self.b.jump_if_undefined_or_null(done);
+                self.b.mov(r.value, args.get(0));
+                self.b.lda_zero().star(args.get(1));
+                self.expr_pos(at);
+                self.runtime(RuntimeId::GetDisposeMethod, args);
+                self.b.star(r.method);
+                self.b.bind(done);
+            }
+            Some(fallback) => {
+                let (null_case, have, done) =
+                    (self.b.new_label(), self.b.new_label(), self.b.new_label());
+                self.b.jump_if_undefined_or_null(null_case);
+                self.b.mov(r.value, args.get(0));
+                self.b.lda_smi(1).star(args.get(1));
+                self.expr_pos(at);
+                self.runtime(RuntimeId::GetDisposeMethod, args);
+                self.b.jump_if_not_undefined(have);
+                self.b.lda_zero().star(args.get(1));
+                self.expr_pos(at);
+                self.runtime(RuntimeId::GetDisposeMethod, args);
+                self.b.star(r.method).lda_true().star(fallback).jump(done);
+                self.b.bind(have);
+                self.b.star(r.method).lda_false().star(fallback).jump(done);
+                // On the stack with no method: the disposal only awaits (step 1.a.i-ii).
+                self.b.bind(null_case);
+                self.b.lda_undefined().star(r.method);
+                self.b.lda_false().star(fallback);
+                self.b.bind(done);
+            }
+        }
+        self.release(m);
+    }
+
+    /// DisposeResources(capability, completion): the finalizer of a using region (U2, U3).
+    fn dispose_resources(
+        &mut self,
+        resources: &[UsingResource],
+        c: Completion,
+        flags: Option<(Register, Register)>,
+        at: u32,
+    ) -> Gen {
+        if let Some((needs_await, has_awaited)) = flags {
+            self.b.lda_false().star(needs_await);
+            self.b.lda_false().star(has_awaited);
+        }
+        for r in resources.iter().rev() {
+            let next = self.b.new_label();
+            match (r.fallback, flags) {
+                (Some(fallback), Some((needs_await, has_awaited))) => {
+                    let m = self.mark();
+                    let kept = self.temp();
+                    let threw = self.temp();
+                    let result = self.temp();
+                    let no_method = self.b.new_label();
+                    self.b
+                        .lda_the_hole()
+                        .test_reference_equal(r.method)
+                        .jump_if_true(next);
+                    self.b.ldar(r.method).jump_if_undefined(no_method);
+                    let (start, end, handler) =
+                        (self.b.new_label(), self.b.new_label(), self.b.new_label());
+                    let (sync_call, await_it, ok) =
+                        (self.b.new_label(), self.b.new_label(), self.b.new_label());
+                    self.b.bind(start);
+                    self.b.lda_false().star(threw);
+                    self.b.ldar(fallback).jump_if_true(sync_call);
+                    let s = self.slot(FeedbackSlotKind::Call);
+                    self.expr_pos(at);
+                    self.b.call_property0(r.method, r.value, s);
+                    self.b.jump(await_it);
+                    // U3: the sync method; its throw is kept until after the Await.
+                    self.b.bind(sync_call);
+                    let (s2, e2, h2, d2) = (
+                        self.b.new_label(),
+                        self.b.new_label(),
+                        self.b.new_label(),
+                        self.b.new_label(),
+                    );
+                    self.b.bind(s2);
+                    let s = self.slot(FeedbackSlotKind::Call);
+                    self.expr_pos(at);
+                    self.b.call_property0(r.method, r.value, s);
+                    self.b.bind(e2);
+                    self.b.add_handler(s2, e2, h2, c.ctx, HandlerKind::Caught);
+                    self.b.jump(d2);
+                    self.b.bind(h2);
+                    self.b.star(kept).lda_the_hole().set_pending_message();
+                    self.b.lda_true().star(threw);
+                    self.b.bind(d2);
+                    self.b.lda_undefined();
+                    // Step 3.e.ii: Await(result); hasAwaited (nothing reads it in between).
+                    self.b.bind(await_it);
+                    self.b
+                        .star(result)
+                        .lda_true()
+                        .star(has_awaited)
+                        .ldar(result);
+                    self.await_acc(at)?;
+                    self.b.ldar(threw).jump_if_false(ok);
+                    self.b.ldar(kept);
+                    self.expr_pos(at);
+                    self.b.throw();
+                    self.b.bind(ok);
+                    self.b.bind(end);
+                    self.b
+                        .add_handler(start, end, handler, c.ctx, HandlerKind::Caught);
+                    self.b.jump(next);
+                    self.b.bind(handler);
+                    self.record_dispose_error(c);
+                    self.b.jump(next);
+                    // Step 3.f: an undefined or null value of an `await using`.
+                    self.b.bind(no_method);
+                    self.b.lda_true().star(needs_await);
+                    self.release(m);
+                }
+                _ => {
+                    self.b.ldar(r.method).jump_if_undefined(next);
+                    if let Some((needs_await, has_awaited)) = flags {
+                        self.await_if_needed(needs_await, has_awaited, at)?;
+                    }
+                    let (start, end, handler) =
+                        (self.b.new_label(), self.b.new_label(), self.b.new_label());
+                    self.b.bind(start);
+                    let s = self.slot(FeedbackSlotKind::Call);
+                    self.expr_pos(at);
+                    self.b.call_property0(r.method, r.value, s);
+                    self.b.bind(end);
+                    self.b
+                        .add_handler(start, end, handler, c.ctx, HandlerKind::Caught);
+                    self.b.jump(next);
+                    self.b.bind(handler);
+                    self.record_dispose_error(c);
+                }
+            }
+            self.b.bind(next);
+        }
+        if let Some((needs_await, has_awaited)) = flags {
+            self.await_if_needed(needs_await, has_awaited, at)?;
+        }
+        Ok(())
+    }
+
+    /// DisposeResources steps 3.d and 4: if needsAwait and not hasAwaited, Await(undefined)
+    /// and clear needsAwait.
+    fn await_if_needed(&mut self, needs_await: Register, has_awaited: Register, at: u32) -> Gen {
+        let go = self.b.new_label();
+        self.b.ldar(needs_await).jump_if_false(go);
+        self.b.ldar(has_awaited).jump_if_true(go);
+        self.b.lda_undefined();
+        self.await_acc(at)?;
+        self.b.lda_false().star(needs_await);
+        self.b.bind(go);
+        Ok(())
+    }
+
+    /// DisposeResources step 3.e.iii with the throw value in the accumulator: a throw
+    /// completion becomes `CreateSuppressedError(e, its value)`; any other becomes throw `e`.
+    fn record_dispose_error(&mut self, c: Completion) {
+        let m = self.mark();
+        let args = self.temps(2);
+        // Clear the pending message (V8): the exception is handled here.
+        self.b
+            .star(args.get(0))
+            .lda_the_hole()
+            .set_pending_message();
+        self.b.lda_the_hole().star(c.message);
+        let (was_throw, done) = (self.b.new_label(), self.b.new_label());
+        self.b
+            .lda_zero()
+            .test_reference_equal(c.token)
+            .jump_if_true(was_throw);
+        self.b.ldar(args.get(0)).star(c.value);
+        self.b.lda_zero().star(c.token).jump(done);
+        self.b.bind(was_throw);
+        self.b.mov(c.value, args.get(1));
+        self.runtime(RuntimeId::CreateSuppressedError, args);
+        self.b.star(c.value);
+        self.b.bind(done);
+        self.release(m);
+    }
+}
+
+/// The completion registers of a using region's finalizer (G5).
+#[derive(Clone, Copy)]
+struct Completion {
+    token: Register,
+    value: Register,
+    message: Register,
+    ctx: Register,
 }

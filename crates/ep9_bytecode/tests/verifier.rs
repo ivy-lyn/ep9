@@ -863,15 +863,15 @@ fn abi5_runtime_arity() {
         err(call(RuntimeId::StoreEvalAnnexBFunction, 1)),
         VerifyErrorKind::RuntimeArity
     );
-    // 48 ids, dense; 48 is not defined.
-    assert_eq!(RUNTIME_FUNCTIONS.len(), 48);
+    // 50 ids, dense; 50 is not defined.
+    assert_eq!(RUNTIME_FUNCTIONS.len(), 50);
     assert!(
         RUNTIME_FUNCTIONS
             .iter()
             .all(|f| !f.returns_pair || f.id == RuntimeId::LoadLookupSlotForCall)
     );
     assert_eq!(
-        err(with_code(&[O::CallRuntime as u8, 48, 0, 0, 0, RET])),
+        err(with_code(&[O::CallRuntime as u8, 50, 0, 0, 0, RET])),
         VerifyErrorKind::FlagValue(0)
     );
 }

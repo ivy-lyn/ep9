@@ -1,6 +1,6 @@
 # fn-mapped-arguments: script (sloppy)
 # | function f(a, b, a) { arguments; return () => b; } function g(x, y) { 'use strict'; arguments; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=96 source=embedded hints=none
 source_hash=bc208eb0bde7bd52820fb8cf61b7dcb3797f711001850bdfc415f662096845f8
 strings (4):

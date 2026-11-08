@@ -1,6 +1,6 @@
 # async-gen-for-await: script (strict)
 # | async function f(xs) { for await (const x of xs) { if (x) break; } } async function* g(xs) { for await (var x of xs) yield x; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=127 source=embedded hints=none
 source_hash=05843be5a93960687a91e80e40d6c5ab955935741273c2017714afd5fa225b12
 strings (6):

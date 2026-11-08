@@ -1,6 +1,6 @@
 # async-arrow: script (strict)
 # | var f = async (a, b = 2) => a + await b; var g = async () => { await 0; };
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=74 source=embedded hints=none
 source_hash=2dc88fc49faa032342a7c1a7e84d95ae1575dac653d83c4df341b969461eb330
 strings (2):

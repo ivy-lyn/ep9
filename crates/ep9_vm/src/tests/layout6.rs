@@ -200,7 +200,7 @@ fn month_6_versions() {
     );
     assert_eq!(
         (versions::BUILTIN_ABI_VERSION, ep9_bytecode::ABI_VERSION),
-        (1, 5)
+        (1, 6)
     );
 }
 

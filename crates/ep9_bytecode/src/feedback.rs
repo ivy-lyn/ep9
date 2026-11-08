@@ -245,6 +245,7 @@ byte_enum! {
 /// async generators, modules, `SetFunctionName`, `ThrowTypeError` and the Annex B.3.2.3 pair
 /// of sloppy direct eval); in M3-P0 the front end emits only ids 44 and 45, and the VM routes
 /// only those two (the others throw `not implemented` until their month-3 owners fill them).
+/// ABI 6 added ids 48-49 (explicit resource management: `using` and `await using`).
 /// [`runtime_table_text`] is part of the ABI fingerprint.
 ///
 /// A function that returns a pair ([`RuntimeInfo::returns_pair`]) is called only by
@@ -409,6 +410,17 @@ pub enum RuntimeId {
     /// code (the var binding, not the block binding of the same name). Returns undefined.
     /// (ABI 5.)
     StoreEvalAnnexBFunction = 47,
+    /// `GetDisposeMethod(value, hint)`: explicit resource management, CreateDisposableResource
+    /// step 1.b for a `using` (`hint` 0, sync-dispose) or an `await using` (`hint` 1,
+    /// async-dispose) binding whose value is not undefined or null. A TypeError if `value` is
+    /// not an object. `hint` 0: GetMethod(value, @@dispose), a TypeError if it is undefined.
+    /// `hint` 1: GetMethod(value, @@asyncDispose), undefined if it is undefined (BytecodeGen
+    /// then asks `hint` 0: the sync method, called with no Await of its result). (ABI 6.)
+    GetDisposeMethod = 48,
+    /// `CreateSuppressedError(error, suppressed)`: DisposeResources step 3.e.iii.1: a new
+    /// SuppressedError object with the non-enumerable data properties `error` and
+    /// `suppressed`. Returns it. (ABI 6.)
+    CreateSuppressedError = 49,
 }
 
 /// Static facts about one runtime function.
@@ -711,6 +723,18 @@ pub const RUNTIME_FUNCTIONS: &[RuntimeInfo] = &[
     RuntimeInfo {
         id: RuntimeId::StoreEvalAnnexBFunction,
         name: "StoreEvalAnnexBFunction",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::GetDisposeMethod,
+        name: "GetDisposeMethod",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::CreateSuppressedError,
+        name: "CreateSuppressedError",
         arity: Some(2),
         returns_pair: false,
     },
