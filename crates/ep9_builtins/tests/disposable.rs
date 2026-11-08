@@ -235,3 +235,31 @@ main();
         ])
     );
 }
+
+/// Codex M7-P3-CODEX-R1 SPEC-ERM 1: AsyncDisposableStack.prototype.disposeAsync with a resource
+/// that has only @@dispose (`use` of a sync disposable). GetDisposeMethod step 1.b.ii makes a
+/// closure that calls the method and returns a new %Promise% resolved with undefined, and
+/// DisposeResources step 3.e.ii awaits it: PromiseResolve reads its `constructor` (a getter
+/// on Promise.prototype sees an "inner" promise before the "outer" one disposeAsync returned).
+/// On the old code the method's result was not awaited as a promise: "ok outer,inner" and
+/// "caught ctor getter outer".
+#[test]
+fn async_disposable_stack_awaits_the_sync_fallback_promise() {
+    assert_eq!(
+        common::run_both(
+            r#"
+var log = [], on = false, boom = false, outer = null;
+Object.defineProperty(Promise.prototype, 'constructor', { configurable: true, get() { if (on) { log.push(this === outer ? 'outer' : 'inner'); if (boom) { boom = false; throw new Error('ctor getter'); } } return Promise; } });
+async function run(b) {
+  log = []; boom = b; outer = null;
+  var s = new AsyncDisposableStack();
+  s.use({ [Symbol.dispose]() { on = true; } });
+  try { outer = s.disposeAsync(); await outer; print('ok ' + log.join()); } catch (e) { print('caught ' + e.message + ' ' + log.join()); }
+  on = false;
+}
+run(false).then(() => run(true));
+"#
+        ),
+        lines(&["ok inner,outer,inner", "caught ctor getter inner,outer"])
+    );
+}

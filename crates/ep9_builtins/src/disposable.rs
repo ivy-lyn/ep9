@@ -919,8 +919,14 @@ fn dispose_steps<'s>(cx: &mut Cx<'s>, r: Local<'s, JsObject>) -> JsResult<()> {
             continue;
         }
         let awaited = match call_resource(cx, kind, a, b) {
-            // U3: the sync method's result is not awaited.
-            Ok(_) if kind == res::USE_SYNC => Local::undefined(),
+            // GetDisposeMethod step 1.b.ii: the closure's promise, resolved with undefined
+            // (not the method's result); its Await reads `constructor` (PromiseResolve).
+            Ok(_) if kind == res::USE_SYNC => {
+                let promise_ctor = cx.intrinsic(IntrinsicId::Promise);
+                let cap = cx.new_promise_capability(promise_ctor)?;
+                cx.call(cap.resolve, Local::undefined(), &[Local::undefined()])?;
+                cap.promise.value()
+            }
             Ok(v) => v,
             Err(t) => {
                 let e = cx.catch_exception(t)?;
