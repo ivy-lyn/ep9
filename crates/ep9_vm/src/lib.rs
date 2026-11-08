@@ -99,7 +99,7 @@ mod kinds;
 pub mod layout;
 mod literal_site;
 mod module;
-#[cfg(feature = "spike-native")]
+// The native entry (C-10): in every build; its spike API is behind `spike-native` (below).
 mod native;
 mod natives;
 mod numconv;
