@@ -729,3 +729,4 @@ tables: impl core::fmt::Display for BuiltinId
 tables: pub fn check_tables(&[&BuiltinTable]) -> Result<(), String>
 tables: pub struct BuiltinTable { pub name: &'static str, pub modules: &'static [BuiltinModule], .. }
 embed (not core): #[cfg(feature = "fastdiff-hits")] pub fn take_fastdiff_hits() -> Vec<(&'static str, u64)>
+abi: impl<'s> Cx<'s> :: pub fn set_elements_integrity(&mut self, impl Into<Local<'s, JsObject>>, bool) -> bool

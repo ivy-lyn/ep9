@@ -721,6 +721,48 @@ const CASES: &[Case] = &[
              print(s, a.join(), a['5'], a['-1']);",
         ),
     },
+    // The ELEMKINDS levels (M7-P3 fixer r1): `keyed_ic::fast_set` sends a FROZEN array cold
+    // in each state of the site (no vector, monomorphic, megamorphic); a SEALED one stores.
+    Case {
+        path: "keyed-access",
+        name: "a frozen or sealed array at a store site",
+        src: "function once(a) { a[0] = 9; return a[0]; } print(once(Object.freeze([1, 2])));\n\
+              function st(a, i, v) { a[i] = v; return a[i]; } function sst(a, i, v) { 'use strict'; a[i] = v; return a[i]; }\n\
+              var p = [1, 2, 3]; for (var i = 0; i < 20; i++) { st(p, i % 3, i); sst(p, i % 3, i); }\n\
+              var f = Object.freeze([1, 2, 3]), s = Object.seal([1.5, 2.5]);\n\
+              print(st(f, 0, 9), st(s, 1, 0.25), st(p, 2, 7), sst(s, 0, 'x'));\n\
+              try { sst(f, 1, 9); } catch (e) { print(e.name); }\n\
+              print(f.join(), s.join(), p.join(), Object.isFrozen(f), Object.isSealed(s), Object.isFrozen(s));",
+        spec: Some(
+            "function once(a) { a[String(0)] = 9; return a[String(0)]; } print(once(Object.freeze([1, 2])));\n\
+             function st(a, i, v) { a[String(i)] = v; return a[String(i)]; } function sst(a, i, v) { 'use strict'; a[String(i)] = v; return a[String(i)]; }\n\
+             var p = [1, 2, 3]; for (var i = 0; i < 20; i++) { st(p, i % 3, i); sst(p, i % 3, i); }\n\
+             var f = Object.freeze([1, 2, 3]), s = Object.seal([1.5, 2.5]);\n\
+             print(st(f, 0, 9), st(s, 1, 0.25), st(p, 2, 7), sst(s, 0, 'x'));\n\
+             try { sst(f, 1, 9); } catch (e) { print(e.name); }\n\
+             print(f.join(), s.join(), p.join(), Object.isFrozen(f), Object.isSealed(s), Object.isFrozen(s));",
+        ),
+    },
+    Case {
+        path: "keyed-access",
+        name: "a frozen array at a megamorphic store site",
+        src: "function st(a, v) { a[0] = v; return a[0]; } function sst(a, v) { 'use strict'; a[0] = v; return a[0]; }\n\
+              var m = []; for (var j = 0; j < 8; j++) { var x = j % 2 ? [j + 0.5, j] : [j, j]; x['k' + j] = j; m.push(x); }\n\
+              for (var r = 0; r < 4; r++) for (var j = 0; j < 8; j++) { st(m[j], r); sst(m[j], r); }\n\
+              var g = Object.freeze([4, 5]), h = Object.freeze([4.5, 5]), q = Object.seal(['a', 'b']);\n\
+              print(st(g, 1), st(h, 2), st(q, 3), sst(q, 4), g.join(), h.join(), q.join());\n\
+              try { sst(g, 1); } catch (e) { print(e.name); } try { sst(h, 1); } catch (e) { print(e.name); }\n\
+              print(m.map(function (a) { return a[0]; }).join());",
+        spec: Some(
+            "function st(a, v) { a[String(0)] = v; return a[String(0)]; } function sst(a, v) { 'use strict'; a[String(0)] = v; return a[String(0)]; }\n\
+             var m = []; for (var j = 0; j < 8; j++) { var x = j % 2 ? [j + 0.5, j] : [j, j]; x['k' + j] = j; m.push(x); }\n\
+             for (var r = 0; r < 4; r++) for (var j = 0; j < 8; j++) { st(m[j], r); sst(m[j], r); }\n\
+             var g = Object.freeze([4, 5]), h = Object.freeze([4.5, 5]), q = Object.seal(['a', 'b']);\n\
+             print(st(g, 1), st(h, 2), st(q, 3), sst(q, 4), g.join(), h.join(), q.join());\n\
+             try { sst(g, 1); } catch (e) { print(e.name); } try { sst(h, 1); } catch (e) { print(e.name); }\n\
+             print(m.map(function (a) { return a[0]; }).join());",
+        ),
+    },
     Case {
         path: "define-own",
         name: "a literal or defineProperty",

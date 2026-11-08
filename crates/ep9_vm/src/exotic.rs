@@ -179,7 +179,10 @@ pub(crate) fn own_property(
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
         let i = array_index_of(key)?;
-        return object::array_get(o, i).map(|v| Ok((v, attr::DEFAULT, Exotic::Element(i))));
+        // A dense element has the attributes of the array's integrity level (M7-P3
+        // ELEMKINDS): {w, e, c}, SEALED {w, e} or FROZEN {e}.
+        return object::array_get(o, i)
+            .map(|v| Ok((v, crate::elements::dense_attrs(o), Exotic::Element(i))));
     }
     if crate::elements::plain_elements_kind(k)
         && let Some((i, v)) = plain_element(o, key)
@@ -214,7 +217,7 @@ pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i3
             return Some(attr::WRITABLE);
         }
         let i = array_index_of(key)?;
-        return object::array_get(o, i).map(|_| attr::DEFAULT);
+        return object::array_get(o, i).map(|_| crate::elements::dense_attrs(o));
     }
     if crate::elements::plain_elements_kind(k) && plain_element(o, key).is_some() {
         return Some(attr::DEFAULT);
