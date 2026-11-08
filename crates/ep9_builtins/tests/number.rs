@@ -382,7 +382,7 @@ fn digit_methods_match_node() {
     );
 }
 
-/// length, name, the keys of `%Number.prototype%` in V8's order (toLocaleString is not built),
+/// length, name, the keys of `%Number.prototype%` in V8's order (toLocaleString: spec_builtins2.rs),
 /// {w, c}, no [[Construct]].
 #[test]
 fn digit_methods_have_length_name_and_keys() {

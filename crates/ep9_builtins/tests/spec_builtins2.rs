@@ -72,3 +72,32 @@ fn number_to_locale_string() {
         ])
     );
 }
+
+/// %Array.prototype% is an Array exotic object (§23.1.3): Array.isArray, `length` {w},
+/// index writes move `length`, and a proxy of an object that inherits from it has `length`
+/// (test262 built-ins/Array/prototype/exotic-array.js, Proxy/has/trap-is-undefined.js).
+#[test]
+fn array_prototype_is_an_array() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            print(Array.isArray(Array.prototype), Array.prototype.length, Object.prototype.toString.call(Array.prototype));
+            var d = Object.getOwnPropertyDescriptor(Array.prototype, "length");
+            print(d.value, d.writable, d.enumerable, d.configurable, Object.getPrototypeOf(Array.prototype) === Object.prototype);
+            Array.prototype[2] = 42;
+            print(Array.prototype.length, [].length, [][2], [5].concat([6]).length, [1, , 3][1]);
+            Array.prototype.length = 0;
+            print(Array.prototype[2], [][2], Array.prototype.length);
+            var o = Object.create(Array.prototype);
+            print("length" in new Proxy(o, {}), "foo" in new Proxy(o, {}), o.length, Array.isArray(o));
+            "#
+        ),
+        lines(&[
+            "true 0 [object Array]",
+            "0 true false false true",
+            "3 0 42 2 undefined",
+            "undefined undefined 0",
+            "true false 0 false",
+        ])
+    );
+}

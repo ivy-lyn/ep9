@@ -73,7 +73,7 @@
 //! |---|---|
 //! | `%Object.prototype%` | an ordinary object, `[[Prototype]]` null |
 //! | `%Function.prototype%` | VM builtin 0.0: a function that returns undefined (§20.2.3) |
-//! | `%Array.prototype%` | an ordinary object (v0: not an Array exotic object, H18) |
+//! | `%Array.prototype%` | an Array exotic object of length 0 (§23.1.3; `object::new_array`) |
 //! | `%String.prototype%`, `%Number.prototype%`, `%Boolean.prototype%` | `wrapper::new_wrapper` of "", +0 and false (§22.1.3, §21.1.3, §20.3.3) |
 //! | `%Iterator.prototype%`, `%ArrayIteratorPrototype%` | ordinary objects (`%StringIteratorPrototype%` is made by the VM table, `natives.rs`) |
 //! | `%Error.prototype%`, the native error prototypes | ordinary objects |
@@ -137,7 +137,8 @@ fn init_core(rt: &Runtime, first: bool) {
         BuiltinId::new(natives::VM_BLOCK, natives::vm::FUNCTION_PROTOTYPE),
     );
     rt.set_root(Root::FunctionPrototype, fp);
-    let array_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::ArrayPrototype, object_proto); // `new_array` reads it: the [[Prototype]]
+    let array_proto = object::new_array(rt, 0); // an Array exotic object (§23.1.3)
     rt.set_root(Root::ArrayPrototype, array_proto);
     for (r, v) in [
         (Root::StringPrototype, rt.atom(Atom::Empty)),
