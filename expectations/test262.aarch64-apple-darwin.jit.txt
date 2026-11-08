@@ -4652,7 +4652,6 @@ test/intl402/Locale/subclassing.js
 test/intl402/Number/prototype/toLocaleString/default-options-object-prototype.js
 test/intl402/Number/prototype/toLocaleString/returns-same-results-as-NumberFormat.js
 test/intl402/Number/prototype/toLocaleString/taint-Intl-NumberFormat.js
-test/intl402/Number/prototype/toLocaleString/this-number-value.js
 test/intl402/Number/prototype/toLocaleString/throws-same-exceptions-as-NumberFormat.js
 test/intl402/NumberFormat/builtin.js
 test/intl402/NumberFormat/casing-numbering-system-options.js
