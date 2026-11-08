@@ -268,21 +268,23 @@ fn parse_legacy(s: &str) -> Option<Parsed> {
     })
 }
 
-/// A numeric slash date as a day number (MakeDay): "M/D/Y" (M and D 1-2 digits, Y 1-6) or
-/// "Y/M/D" (Y 3-6 digits, M and D 1-2). Exactly three fields, each only ASCII digits, so an
+/// A numeric slash date as a day number (MakeDay): "Y/M/D" when the first value is 0 or above
+/// 31, else "M/D/Y" (V8 DayComposer::Write, by value: "001/02/03" is M/D/Y). The first field
+/// has 1-6 digits, M and D 1-2, Y 1-6. Exactly three fields, each only ASCII digits, so an
 /// empty field ("8//4/2011"), a sign or a fourth field gives `None`. V8 takes more forms
-/// ("8/4", "99/1/1", "8/4/2011/"); this function gives `None` for them (NaN), never a value
-/// that differs from V8's.
+/// ("8/4", "08/004/2011", "8/4/2011/"); this function gives `None` for them (NaN), never a
+/// value that differs from V8's.
 fn slash_date(w: &str) -> Option<f64> {
     let mut parts = w.split('/');
     let (a, b, c) = (parts.next()?, parts.next()?, parts.next()?);
     if parts.next().is_some() {
         return None;
     }
-    let (year, month, day) = if (3..=6).contains(&a.len()) {
-        (number(a, 6)?, number(b, 2)?, number(c, 2)?)
+    let first = number(a, 6)?;
+    let (year, month, day) = if !(1.0..=31.0).contains(&first) {
+        (first, number(b, 2)?, number(c, 2)?)
     } else {
-        (number(c, 6)?, number(a, 2)?, number(b, 2)?)
+        (number(c, 6)?, first, number(b, 2)?)
     };
     if !(1.0..=12.0).contains(&month) || !(1.0..=31.0).contains(&day) {
         return None;
@@ -441,6 +443,13 @@ mod tests {
         assert_eq!(local("08/04/12345"), day(12345.0, 8.0, 4.0));
         // A day past the month end runs on (MakeDay), as in V8.
         assert_eq!(local("02/30/2011"), day(2011.0, 3.0, 2.0));
+        // Y/M/D when the first value is not a day (0 or above 31), by value: leading zeros do
+        // not count (V8 DayComposer::Write; node's values).
+        assert_eq!(local("001/02/03"), day(2003.0, 1.0, 2.0));
+        assert_eq!(local("008/04/2011"), day(2011.0, 8.0, 4.0));
+        assert_eq!(local("32/1/1"), day(2032.0, 1.0, 1.0));
+        assert_eq!(local("99/1/1"), day(1999.0, 1.0, 1.0));
+        assert_eq!(local("0/1/1"), day(2000.0, 1.0, 1.0));
         assert_eq!(
             local("8/4/2011 1:2:3"),
             day(2011.0, 8.0, 4.0) + make_time(1.0, 2.0, 3.0, 0.0)
@@ -479,19 +488,12 @@ mod tests {
             "8/4/2011 10:00 10:00",
             "8/4/2011 Thu",
             "\u{ff11}/1/2011",
+            "013/01/01",
         ] {
             assert_eq!(parse(bad), None, "{bad}");
         }
         // node gives a value for these; this parser does not take them (NaN, a subset).
-        for gap in [
-            "08/04",
-            "08/04/2011/",
-            "08//04/2011",
-            "99/1/1",
-            "32/1/1",
-            "008/04/2011",
-            "08/004/2011",
-        ] {
+        for gap in ["08/04", "08/04/2011/", "08//04/2011", "08/004/2011"] {
             assert_eq!(parse(gap), None, "{gap}");
         }
     }
