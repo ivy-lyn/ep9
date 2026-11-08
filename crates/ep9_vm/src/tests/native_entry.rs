@@ -870,8 +870,9 @@ fn native_entry_runs_an_exception_through_a_native_frame() {
 
 // ---- backtraces through a native frame ---------------------------------------------------------
 
-/// The frames of a `std::backtrace` text: (frame number, symbol name) per symbol line. An
-/// inlined function is a line of its own with the number of the frame it is in.
+/// The frames of a `std::backtrace` text: (frame number, symbol name) per symbol line. Each
+/// symbol line has its own number, also the line of an inlined function (the `Display` of
+/// `Backtrace` gives each symbol a new number).
 fn frames(text: &str) -> Vec<(usize, &str)> {
     text.lines()
         .filter_map(|l| {
@@ -879,6 +880,41 @@ fn frames(text: &str) -> Vec<(usize, &str)> {
             Some((n.parse().ok()?, name))
         })
         .collect()
+}
+
+/// The bare function name of a symbol name: no generic part, no module path. The debug
+/// information sets the form. Full debug information (the dev profile) gives
+/// `ep9_vm::native::enter_native::<..>`. The release profile (`debug = "line-tables-only"`)
+/// gives the DWARF name only: `enter_native<..>`, `rt_call_any`. Both give `enter_native`.
+fn fn_name(sym: &str) -> &str {
+    let s = sym.split('<').next().unwrap_or(sym).trim_end_matches(':');
+    s.rsplit("::").next().unwrap_or(s)
+}
+
+/// The walk of a `std::backtrace` text through the stub frame, or why it is not there: the
+/// table function `rt_call_any`, then exactly one frame (the stub; its symbol name is the
+/// linker's choice), then the entry (`enter_native`, or `enter_from_rust` where it is
+/// inlined), and later `call_through_entry`. The names are compared exactly.
+fn stub_walk(text: &str) -> Result<(), String> {
+    let fr = frames(text);
+    let find = |from: usize, names: &[&str]| {
+        fr.iter()
+            .skip(from)
+            .position(|&(_, n)| names.contains(&fn_name(n)))
+            .map(|i| i + from)
+    };
+    let table =
+        find(0, &["rt_call_any"]).ok_or_else(|| format!("no rt_call_any frame:\n{text}"))?;
+    let entry = find(table + 1, &["enter_native", "enter_from_rust"])
+        .ok_or_else(|| format!("the walk stops in the stub frame:\n{text}"))?;
+    if fr[entry].0 != fr[table].0 + 2 {
+        return Err(format!(
+            "one native frame between the table function and the entry:\n{text}"
+        ));
+    }
+    find(entry, &["call_through_entry"])
+        .ok_or_else(|| format!("the walk misses the Rust caller of the entry:\n{text}"))?;
+    Ok(())
 }
 
 /// The system unwinder walks from `walk` (called by the stub through `call_any`) through the
@@ -898,26 +934,9 @@ fn native_entry_backtrace_passes_through_a_native_frame() {
     let r = call_through_entry(&mut iso, g, &[walk]).unwrap().unwrap();
     assert_eq!(r.to_bits(), Value::int32(42).to_bits());
     let (text, ips) = WALKED.with(|w| w.borrow_mut().take()).expect("walk ran");
-    let fr = frames(&text);
-    let find = |from: usize, pred: &dyn Fn(&str) -> bool| {
-        fr.iter()
-            .skip(from)
-            .position(|&(_, n)| pred(n))
-            .map(|i| i + from)
-    };
-    let table = find(0, &|n| n.contains("native::rt_call_any"))
-        .unwrap_or_else(|| panic!("no rt_call_any frame:\n{text}"));
-    let entry = find(table + 1, &|n| {
-        n.contains("native::enter_native") || n.contains("native::enter_from_rust")
-    })
-    .unwrap_or_else(|| panic!("the walk stops in the stub frame:\n{text}"));
-    assert_eq!(
-        fr[entry].0,
-        fr[table].0 + 2,
-        "one native frame between the table function and the entry:\n{text}"
-    );
-    find(entry, &|n| n.contains("entry_tests::call_through_entry"))
-        .unwrap_or_else(|| panic!("the walk misses the Rust caller of the entry:\n{text}"));
+    if let Err(e) = stub_walk(&text) {
+        panic!("{e}");
+    }
     let ret = g_entry.start + call0_bytes().1;
     if cfg!(feature = "jit") {
         let at = ips.iter().position(|&ip| ip == ret).unwrap_or_else(|| {
@@ -934,6 +953,119 @@ fn native_entry_backtrace_passes_through_a_native_frame() {
         (e, e.function),
         (g_entry, core::ptr::from_ref(info(&iso, "g")).addr())
     );
+}
+
+/// A part of the walk of a release build (macOS arm64, `debug = "line-tables-only"`).
+const WALK_RELEASE: &str = "   4: walk
+             at ./src/tests/native_entry.rs:271:16
+   8: call_at
+             at ./src/native.rs:647:5
+   9: rt_call_any
+             at ./src/native.rs:366:13
+  10: _ep9_a2entry_stub_call0
+  11: enter_native<ep9_vm::native::entry_tests::call_through_entry::{closure#0}::{closure_env#0}>
+             at ./src/native.rs:261:22
+  12: enter_from_rust<ep9_vm::native::entry_tests::call_through_entry::{closure#0}::{closure_env#0}>
+             at ./src/native.rs:891:22
+  14: {closure#0}
+             at ./src/tests/native_entry.rs:234:23
+  15: with_cx<u64, ep9_vm::native::entry_tests::call_through_entry::{closure_env#0}>
+             at ./src/isolate.rs:403:13
+  16: call_through_entry
+             at ./src/tests/native_entry.rs:231:17
+";
+
+/// A part of the walk of a debug build (macOS arm64, full debug information).
+const WALK_DEBUG: &str = "   3: ep9_vm::native::entry_tests::walk
+             at ./src/tests/native_entry.rs:271:16
+   7: ep9_vm::native::call_at
+             at ./src/native.rs:647:5
+   8: ep9_vm::native::rt_call_any
+             at ./src/native.rs:366:13
+   9: .Lfunc_end___RNvNtNtCsKkFYnt3Gb3_6ep9_vm6native11entry_tests7stub_a0
+  10: ep9_vm::native::enter_native::<ep9_vm::native::entry_tests::call_through_entry::{closure#0}::{closure#0}>
+             at ./src/native.rs:261:22
+  11: ep9_vm::native::enter_from_rust::<ep9_vm::native::entry_tests::call_through_entry::{closure#0}::{closure#0}>
+             at ./src/native.rs:891:22
+  13: ep9_vm::native::entry_tests::call_through_entry::{closure#0}
+             at ./src/tests/native_entry.rs:234:23
+  14: <ep9_vm::isolate::Isolate>::with_cx::<u64, ep9_vm::native::entry_tests::call_through_entry::{closure#0}>
+             at ./src/isolate.rs:403:13
+  15: ep9_vm::native::entry_tests::call_through_entry
+             at ./src/tests/native_entry.rs:231:17
+";
+
+/// `text` without the line of the stub frame (the line after `rt_call_any`), and each later
+/// frame one number lower: the walk of an unwinder that does not see the stub frame.
+fn without_stub(text: &str) -> String {
+    let mut out = String::new();
+    let mut state = 0; // 0: before rt_call_any, 1: the stub line is next, 2: after the stub line
+    for l in text.lines() {
+        let frame = l
+            .trim_start()
+            .split_once(": ")
+            .and_then(|(n, name)| Some((n.parse::<usize>().ok()?, name)));
+        match (state, frame) {
+            (0, Some((_, name))) if fn_name(name) == "rt_call_any" => state = 1,
+            (1, Some(_)) => {
+                state = 2;
+                continue;
+            }
+            (2, Some((n, name))) => {
+                out += &format!("{:>4}: {name}\n", n - 1);
+                continue;
+            }
+            _ => {}
+        }
+        out += l;
+        out.push('\n');
+    }
+    assert_eq!(state, 2, "the sample has a stub line");
+    out
+}
+
+/// The probe of `native_entry_backtrace_passes_through_a_native_frame` in both name forms:
+/// it finds the walk through the stub frame, and it fails when the stub frame is not there.
+#[test]
+fn native_entry_backtrace_probe_needs_the_stub_frame() {
+    for (sym, name) in [
+        ("rt_call_any", "rt_call_any"),
+        ("ep9_vm::native::rt_call_any", "rt_call_any"),
+        ("enter_native<ep9_vm::X::{closure_env#0}>", "enter_native"),
+        (
+            "ep9_vm::native::enter_native::<ep9_vm::X::{closure#0}>",
+            "enter_native",
+        ),
+        (
+            "ep9_vm::native::entry_tests::call_through_entry",
+            "call_through_entry",
+        ),
+        (
+            "ep9_vm::native::entry_tests::call_through_entry::{closure#0}",
+            "{closure#0}",
+        ),
+        ("<ep9_vm::isolate::Isolate>::with_cx::<u64>", ""),
+        ("_ep9_a2entry_stub_call0", "_ep9_a2entry_stub_call0"),
+    ] {
+        assert_eq!(fn_name(sym), name, "{sym}");
+    }
+    for text in [WALK_RELEASE, WALK_DEBUG] {
+        assert_eq!(stub_walk(text), Ok(()));
+        let no_stub = without_stub(text);
+        let e = stub_walk(&no_stub).unwrap_err();
+        assert!(
+            e.starts_with("one native frame between the table function and the entry"),
+            "{e}"
+        );
+        // The names are compared exactly: a name that only contains `rt_call_any` is another
+        // function.
+        let other = text.replace("rt_call_any", "rt_call_any_slow");
+        assert!(
+            stub_walk(&other)
+                .unwrap_err()
+                .starts_with("no rt_call_any frame")
+        );
+    }
 }
 
 // ---- jit: the stub copied into the code range, its unwind information registered -------------
