@@ -252,6 +252,42 @@ pub(crate) unsafe fn construct_return(
     }
 }
 
+/// True if [`construct_return`] throws for the result `acc` of the construct stub frame `fp`:
+/// a derived constructor (the stub holds the hole) with a result that is not an object. The
+/// `ConstructReturn` handler tests this first and reaches the throw by a tail jump, so its fast
+/// path has no call and no frame (H15 "Cold blocks").
+///
+/// # Safety
+/// `fp` is a live construct stub frame.
+#[inline(always)]
+pub(crate) unsafe fn construct_throws(fp: *mut u64, acc: u64) -> bool {
+    // SAFETY: the receiver slot of the live stub frame (caller contract).
+    !crate::object::is_object(acc) && unsafe { *fp.offset(slot::RECEIVER) } == HOLE
+}
+
+/// [`construct_return`] when [`construct_throws`] is false: the caller's (pc, fp, accumulator),
+/// with no throw path.
+///
+/// # Safety
+/// `fp` is a live construct stub frame and `construct_throws(fp, acc)` is false.
+#[inline(always)]
+pub(crate) unsafe fn construct_result(fp: *mut u64, acc: u64) -> (*const u8, *mut u64, u64) {
+    // SAFETY: header and receiver slots of the live stub frame (caller contract).
+    let (this, ret, caller) = unsafe {
+        (
+            *fp.offset(slot::RECEIVER),
+            *fp.offset(slot::RETURN_PC),
+            *fp.offset(slot::CALLER_FP),
+        )
+    };
+    let acc = if crate::object::is_object(acc) {
+        acc
+    } else {
+        this
+    };
+    (native_ptr::<u8>(ret), native_ptr::<u64>(caller), acc)
+}
+
 /// The throw of [`construct_return`] for a derived constructor's result `acc` that is not an
 /// object. The stub frame is popped: `caller` is the top frame, and the throw is at its
 /// construct instruction, the return pc `ret` minus one (the H14 offset of a frame below a

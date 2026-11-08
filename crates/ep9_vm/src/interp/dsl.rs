@@ -837,8 +837,34 @@ macro_rules! expand_threaded {
             #[allow(unused_variables)]
             fn construct_return(cx, pc, fp, acc) {
                 // SAFETY: caller contract.
-                let (next, fp, acc) = unsafe { $crate::interp::construct_return(cx, fp, acc) };
+                if unsafe { $crate::interp::construct_throws(fp, acc) } {
+                    // SAFETY: the same handler contract.
+                    unsafe { $tail construct_return_throw(cx, pc, fp, acc) }
+                }
+                // SAFETY: caller contract; `construct_throws` is false, so no throw.
+                let (next, fp, acc) = unsafe { $crate::interp::construct_result(fp, acc) };
                 // SAFETY: `next` is the caller's next instruction.
+                let h = cx.table[unsafe { *next } as usize];
+                // SAFETY: as in the opcode handlers.
+                unsafe { $tail h(cx, next, fp, acc) }
+            }
+        }
+
+        $crate::interp::dsl::handler! {
+            /// The cold block of `ConstructReturn` (H15 "Cold blocks"): the throw of a derived
+            /// constructor's result that is not an object. It has the handler signature but no
+            /// `ep9h__` symbol and is not in the table; `cargo xtask disasm-check` follows the
+            /// tail jump to it as part of the handler. Not `#[cold]`: on x86-64 ELF that puts it
+            /// in `.text.unlikely`, where `disasm-check` does not follow the jump.
+            ///
+            /// # Safety
+            /// Only `construct_return` calls this, with its arguments.
+            #[inline(never)]
+            #[allow(unused_variables)]
+            fn construct_return_throw(cx, pc, fp, acc) {
+                // SAFETY: caller contract.
+                let (next, fp, acc) = unsafe { $crate::interp::construct_return(cx, fp, acc) };
+                // SAFETY: `next` is the catching handler's pc or the `Exit` stub.
                 let h = cx.table[unsafe { *next } as usize];
                 // SAFETY: as in the opcode handlers.
                 unsafe { $tail h(cx, next, fp, acc) }
