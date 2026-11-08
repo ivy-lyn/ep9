@@ -412,3 +412,10 @@ pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:978	crates/ep9_vm/src/built
 pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1058	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
 pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1137	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
 pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1187	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
+# M7-P3 A2-ENTRY (C-10): `mod native` and `Cx::runtime_table` are no longer behind `spike-native`;
+# these rows say where 18492a40 (tag m7-p2) put the lines they name.
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/lib.rs:102-103	| Failed deopt (2026-10-29) |	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H23-limits-and-failure-policy.md	`crates/ep9_vm/src/lib.rs` lines 102-103	| 1 Reviewer (M5-P2 amendment: the 2026-10-29 Failed deopt reason clarify row)	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/lib.rs:102-103	| 4 Data (M5-P2 amendment: the 2026-10-29 Failed deopt reason clarify row)	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H35-aot-unit-format.md	crates/ep9_vm/src/isolate.rs:321-324	| Build id |	18492a40	^            #\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H35-aot-unit-format.md	crates/ep9_vm/src/isolate.rs:321-324	| 1 Reviewer (M7-P0 amendment: the 2026-11-06 rewrite row, AOT0, the C-19 build-id rule)	18492a40	^            #\[cfg\(feature \= \"spike\-native\"\)\]$
