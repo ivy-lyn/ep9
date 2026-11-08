@@ -663,9 +663,9 @@ pub enum InstallError {
     /// A class constructor: T0 never enters one natively (`[[Call]]` throws, and
     /// `[[Construct]]` stays in T0).
     ClassConstructor,
-    /// A generator function (`FunctionInfo::is_generator`; M2-P1-R1): its frames are entered
-    /// at the `SwitchOnGeneratorState` prologue on every resume (`call::run_resumed`, T0
-    /// only), and native code has no suspend or resume path.
+    /// A generator function (M2-P1-R1; for [`install_code`] also an async or async generator
+    /// function): its frames are entered at the `SwitchOnGeneratorState` prologue on every
+    /// resume (`call::run_resumed`, T0 only), and native code has no suspend or resume path.
     Generator,
     /// The kind is not [`DispatchKind::Baseline`] or [`DispatchKind::AotBaseline`].
     Kind(DispatchKind),
@@ -1627,8 +1627,9 @@ pub(crate) fn call_native(
 /// entry ([`call_native`]) enter the code. Refused before the slot or the registry changes:
 /// a kind other than Baseline or AotBaseline (Opt is the spike's placement (b) marker; the
 /// optimizing tiers come with T2), a function that is not bytecode (a host function), a class
-/// constructor, a generator function, a function that already has native code, and an empty
-/// range or one that overlaps a registered range. Returns the new entry.
+/// constructor, a generator, async function or async generator function, a function that
+/// already has native code, and an empty range or one that overlaps a registered range.
+/// Returns the new entry.
 ///
 /// The check trusts `code` and `kind`: it reads no byte of the code. The unwind information of
 /// the code is the installer's (`ep9_platform::unwind`; H28): this entry only names the range.
@@ -1654,7 +1655,7 @@ pub(crate) unsafe fn install_code(
     if fi.is_class_constructor() {
         return Err(InstallError::ClassConstructor);
     }
-    if fi.is_generator() {
+    if fi.is_generator() || fi.is_async_function() || fi.is_async_generator() {
         return Err(InstallError::Generator);
     }
     if fi.slot.kind_byte() != DispatchKind::Interp as u8 {

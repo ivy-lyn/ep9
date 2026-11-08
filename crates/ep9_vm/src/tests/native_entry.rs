@@ -609,9 +609,51 @@ fn native_entry_registry_refuses_a_generator() {
     assert!(gen_fi.is_generator());
     let code = stub_range(stub_a0 as *const () as usize, &a0_bytes());
     // SAFETY: refused before the slot or the registry changes.
-    let r = unsafe { install_code(&iso.rt, gen_fi, DispatchKind::AotBaseline, code) };
+    let r = unsafe { install_code(&iso.rt, gen_fi, DispatchKind::AotBaseline, code.clone()) };
     assert_eq!(r, Err(InstallError::Generator));
     assert_eq!(gen_fi.slot.kind(), Some(DispatchKind::Interp));
+    // An async function and an async generator resume through `call::run_resumed` too (T0
+    // only), so `install_code` refuses them in the same way (Codex M7-P3-CODEX-R1 A2-ENTRY 1).
+    for (name, flags) in [
+        (
+            "af",
+            FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::ASYNC,
+        ),
+        (
+            "ag",
+            FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::ASYNC | FunctionFlags::GENERATOR,
+        ),
+    ] {
+        let mut iso = isolate(IsolateConfig::default());
+        iso.with_cx_checkpoint(|cx| {
+            cx.run_script(flagged_unit(name, flags), "async.js")
+                .map(|_| ())
+        })
+        .unwrap();
+        let fi = info(&iso, name);
+        assert!(!fi.is_generator(), "{name}");
+        assert!(fi.is_async_function() || fi.is_async_generator(), "{name}");
+        let n0 = iso.rt.registry.borrow().len();
+        // SAFETY: refused before the slot or the registry changes.
+        let r = unsafe { install_code(&iso.rt, fi, DispatchKind::AotBaseline, code.clone()) };
+        assert_eq!(r, Err(InstallError::Generator), "{name}");
+        assert_eq!(fi.slot.kind(), Some(DispatchKind::Interp), "{name}");
+        assert_eq!(iso.rt.registry.borrow().len(), n0, "{name}");
+    }
+}
+
+/// `function name() { return undefined; }` with the function flags `flags`, as a global.
+fn flagged_unit(name: &str, flags: FunctionFlags) -> VerifiedUnit {
+    let mut m = meta(name, 0, 0, 0, 0);
+    m.flags = flags;
+    let mut s = Asm::new(m);
+    s.b.lda_undefined().return_();
+    let mut sc = Asm::script(0);
+    let k = sc.b.function_constant(FunctionId(1));
+    sc.b.create_closure(k, sc.closure, 0);
+    sc.sta_global(name);
+    sc.b.lda_undefined().return_();
+    unit("", vec![sc.finish(), s.finish()])
 }
 
 /// `function* gen() {}` in the generator shape (the prologue and the initial suspend), as a
