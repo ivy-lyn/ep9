@@ -426,52 +426,151 @@ fn thenables_resolve_in_a_job_and_closures_look_like_builtins() {
     }
 }
 
-/// Negative control for the GC rule (plan rule 8): with the job roots untraced, the queued
-/// jobs die at the first collection and the GC-stress run cannot give the right output (a
-/// debug check or the heap verifier fails, or the output is wrong). The same steps with the
-/// roots traced pass, so the control fails only for the missing roots. The heap is S0
-/// (`generational: false`): with the S1 default (M5-P2) the untraced run gave the right
-/// output in a release build (no zapping there; the freed job cells were still readable at the
-/// checkpoint, est.), so the control did not see the missing roots. Under S0 it does, in debug
-/// and release, as before S1 became the default.
-#[test]
-fn untraced_job_roots_fail_under_gc_stress() {
-    fn steps(untraced: bool) -> bool {
-        crate::jobs::NEGATIVE_CONTROL_UNTRACED_QUEUE.with(|f| f.set(untraced));
-        let mut c = config(Dispatch::DEFAULT, true);
-        c.heap.generational = false;
-        let mut iso = isolate(c);
-        take_output();
-        iso.with_cx(|cx| {
-            queue_prints(cx, &["a", "b", "c"])?;
-            cx.collect_garbage();
-            Ok(())
-        })
-        .unwrap();
-        let ok = iso.perform_microtask_checkpoint().is_ok();
-        let out = take_output();
-        ok && out == ["a", "b", "c"] && iso.verify_heap().is_ok()
-    }
-    assert_eq!(
-        on_big_stack_catch(|| steps(false)),
-        Some(true),
-        "the traced run passes"
-    );
-    assert_ne!(
-        on_big_stack_catch(|| steps(true)),
-        Some(true),
-        "untraced jobs must not survive GC stress"
-    );
+// ---- the negative control of the job roots (plan rule 8; M7-P3 JOBS-NEGCTL) ---------------
+
+/// Bytes of zeros between the test's frame and the frames that make the job records.
+const DEEP: usize = 64 << 10;
+
+/// Overwrites 256 KiB of stack below the caller.
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
 }
 
-/// Runs `f` on a big stack in a thread of its own; `None` if it panicked.
-fn on_big_stack_catch(f: fn() -> bool) -> Option<bool> {
-    std::thread::Builder::new()
-        .stack_size(512 << 20)
-        .spawn(f)
-        .unwrap()
-        .join()
-        .ok()
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> R {
+    let mut pad = [0u8; DEEP];
+    std::hint::black_box(&mut pad);
+    let r = made();
+    std::hint::black_box(&mut pad);
+    r
+}
+
+/// Queues `print("a")`, `print("b")`, `print("c")` below a pad and gives a weak handle on
+/// each job record, in queue order (the walk from the queue head, which must end after 3).
+#[inline(never)]
+fn queued_job_records(iso: &mut Isolate) -> [ep9_heap::WeakHandle; 3] {
+    below_a_pad(|| {
+        iso.with_cx(|cx| queue_prints(cx, &["a", "b", "c"]))
+            .unwrap();
+        let mut found = Vec::new();
+        let mut j = iso.rt.jobs.queue_head();
+        while j != UNDEFINED && found.len() < 4 {
+            found.push(iso.rt.heap.new_weak(crate::runtime::val(j)));
+            j = crate::object::slot_get(j, crate::jobs::job::NEXT);
+        }
+        assert_eq!(found.len(), 3, "the queue holds the 3 jobs");
+        [found[0], found[1], found[2]]
+    })
+}
+
+/// True for each record of `jobs` that is alive. Read below a pad. A weak handle reads the
+/// handle table only (the GC clears an entry whose cell died), never a freed cell.
+#[inline(never)]
+fn job_records_alive(iso: &Isolate, jobs: [ep9_heap::WeakHandle; 3]) -> [bool; 3] {
+    below_a_pad(|| jobs.map(|h| std::hint::black_box(iso.rt.heap.weak(h)).is_some()))
+}
+
+/// A full collection after a stack scrub (rule 35: the scrub runs in the test's own frame,
+/// before and after). Inlined, so the zeros of the first scrub also lie under the frame of
+/// [`gc_now`]: an out-of-line helper's own frame is not under its own scrub, and a slot that
+/// it never writes (on Win64 the home space it gives its callees) keeps what the last call at
+/// that depth left there (`tests/weakref.rs` `collect`: CI run 40733504045).
+#[inline(always)]
+fn collect(iso: &Isolate) {
+    scrub_stack();
+    gc_now(iso);
+    scrub_stack();
+}
+
+/// A full collection, out of line, so that its frames lie on the zeros of the caller's scrub.
+#[inline(never)]
+fn gc_now(iso: &Isolate) {
+    iso.rt.heap.collect();
+}
+
+/// Sets `NEGATIVE_CONTROL_UNTRACED_QUEUE` while it lives. Its drop (on a panic too) first
+/// empties the queue, whose head and tail may then name freed cells, and then turns the flag
+/// off, so no later collection or job reads those cells.
+struct UntracedQueue<'a>(&'a Isolate);
+
+impl<'a> UntracedQueue<'a> {
+    fn on(iso: &'a Isolate) -> Self {
+        crate::jobs::NEGATIVE_CONTROL_UNTRACED_QUEUE.with(|f| f.set(true));
+        UntracedQueue(iso)
+    }
+}
+
+impl Drop for UntracedQueue<'_> {
+    fn drop(&mut self) {
+        self.0.rt.jobs.clear_queue();
+        crate::jobs::NEGATIVE_CONTROL_UNTRACED_QUEUE.with(|f| f.set(false));
+    }
+}
+
+/// Negative control for the GC rule (plan rule 8): with the job roots untraced, a full
+/// collection frees the queued job records; with them traced, the same records live and
+/// the jobs run in order under GC stress. Weak handles on the records show which (the
+/// pattern of `tests/weakref.rs`): the untraced half never runs a job or reads a freed cell.
+/// It reads both states in one isolate: the records live after a collection with the flag
+/// off, and die at the next collection with the flag on, so the flag is the only difference.
+/// The untraced half empties the queue before the flag goes off (`UntracedQueue`).
+///
+/// The old form ran the checkpoint on the freed records (M7-P3 JOBS-NEGCTL, probe run
+/// 42503259470, windows-x64 release): a NEXT chain with a cycle ran `print` without end, and
+/// the output buffer's 24 GiB allocation aborted the test binary. It runs in S0 and in S1.
+#[test]
+fn untraced_job_roots_die_at_a_full_collection() {
+    for generational in [false, true] {
+        on_big_stack(move || {
+            let mut c = config(Dispatch::DEFAULT, true);
+            c.heap.generational = generational;
+            let mut iso = isolate(c);
+            take_output();
+            let jobs = queued_job_records(&mut iso);
+            collect(&iso);
+            assert_eq!(
+                job_records_alive(&iso, jobs),
+                [true; 3],
+                "traced: the queue keeps its jobs (generational={generational})"
+            );
+            iso.perform_microtask_checkpoint().unwrap();
+            assert_eq!(
+                take_output(),
+                ["a", "b", "c"],
+                "generational={generational}"
+            );
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+        on_big_stack(move || {
+            let mut c = config(Dispatch::DEFAULT, true);
+            c.heap.generational = generational;
+            let mut iso = isolate(c);
+            take_output();
+            let jobs = queued_job_records(&mut iso);
+            collect(&iso);
+            assert_eq!(
+                job_records_alive(&iso, jobs),
+                [true; 3],
+                "traced first: the records live (generational={generational})"
+            );
+            let live = {
+                let _untraced = UntracedQueue::on(&iso);
+                collect(&iso);
+                job_records_alive(&iso, jobs)
+            };
+            assert_eq!(
+                live, [false; 3],
+                "untraced: the job records must die (generational={generational})"
+            );
+            assert!(take_output().is_empty(), "no job ran");
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
 }
 
 // ---- M2-P4-RF1: termination drops the queue (Q1, Q2); "handle" unlinks (Q3) -------------
