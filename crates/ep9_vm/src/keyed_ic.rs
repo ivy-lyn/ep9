@@ -171,33 +171,19 @@ pub(crate) fn fast_set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flo
     if !fits {
         return Flow::Cold;
     }
-    // A FROZEN array (M7-P3 ELEMKINDS) takes no store: it goes cold before the key half can
-    // name its shape, so the monomorphic hit (a shape id compare) needs no test of its own.
     if let Some(vec) = feedback::vector(st.info()) {
         let key = feedback::key(vec, s.0);
         // An undefined key and the hole never equal a ShapeId (as in `ic::handler_for`).
         if key as u32 != shape_id(o) {
-            if is_frozen(o) {
-                return Flow::Cold;
-            }
             if key == HOLE {
                 return set_megamorphic(st, o, v, s, e, off, doubles);
             }
             note_receiver(st.rt(), vec, s.0, o, key);
             return Flow::Cold;
         }
-    } else if is_frozen(o) {
-        return Flow::Cold;
     }
     store_present(st.rt(), e, off, doubles, v);
     Flow::Next
-}
-
-/// True if the Array `o` is FROZEN (`shape::level::FROZEN`, M7-P3 ELEMKINDS): its elements
-/// are not writable. Not a GC point.
-#[inline(always)]
-fn is_frozen(o: u64) -> bool {
-    elements::integrity_of(o) & crate::shape::level::FROZEN != 0
 }
 
 /// The store of a fast-case hit: `v` in place at `off` of the elements cell `e`, as raw f64

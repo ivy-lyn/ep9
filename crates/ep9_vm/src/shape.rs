@@ -1759,6 +1759,7 @@ pub(crate) fn integrity(shape: u64) -> i32 {
 /// FROZEN; never lower than the level it has: one-way). The same prototype, object kind and
 /// elements kind: the shared dictionary shape of those flags, or a new unique one for a
 /// prototype-mode object. GC point.
+#[cfg_attr(not(test), allow(dead_code))] // tests; the caller is `elements::set_integrity`
 pub(crate) fn with_integrity(rt: &Runtime, shape: u64, bits: i32) -> u64 {
     let fl = flags(shape);
     debug_assert!(

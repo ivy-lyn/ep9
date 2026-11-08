@@ -792,11 +792,11 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     if is_array(o)
         && let Some(i) = array_index_of(key)
     {
-        // An existing dense element with no level is {w, e, c}; a new one needs an extensible
-        // array ([`fast_element`]). A DICTIONARY array's `array_set` refuses an entry with other
-        // attributes and a new index past a non-writable `length`: `[[DefineOwnProperty]]`
-        // decides those.
-        if fast_element(o, i) && object::array_set(rt, o, i, v) {
+        // An existing dense element is {w, e, c}; a new one needs an extensible array. A
+        // DICTIONARY array's `array_set` refuses an entry with other attributes and a new
+        // index past a non-writable `length`: `[[DefineOwnProperty]]` decides those.
+        if (object::array_get(o, i).is_some() || is_extensible(o)) && object::array_set(rt, o, i, v)
+        {
             return Ok(());
         }
         let exists = own_attrs(rt, o, key, how).is_some();
@@ -885,7 +885,7 @@ pub(crate) fn define_keyed(cx: &mut Cx, o: u64, k: u64, v: u64) -> Res<()> {
     if is_array(o)
         && let Some(i) = val(k).as_int32()
         && i >= 0
-        && fast_element(o, i as u32)
+        && (object::array_get(o, i as u32).is_some() || is_extensible(o))
         && object::array_set(cx.rt(), o, i as u32, v)
     {
         return Ok(());
@@ -947,9 +947,9 @@ pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
         && let Some(i) = array_index_of(key)
         && object::array_get(o, i).is_some()
     {
-        // v0: a dense array keeps a hole; a SEALED or FROZEN one keeps the element (M7-P3
-        // ELEMKINDS: `array_set` refuses, false).
-        return object::array_set(rt, o, i, crate::frame::HOLE);
+        // v0: a dense array keeps a hole.
+        object::array_set(rt, o, i, crate::frame::HOLE);
+        return true;
     }
     if elements::plain_elements_kind(kind::cell_kind(o))
         && let Some(i) = array_index_of(key)
@@ -1661,10 +1661,10 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
     match slot {
         // New attributes move a fast object to dictionary mode (OM-10, props.rs).
         OwnSlot::Storage => props::own_define(rt, o, key, v, attrs),
-        // An Array element: a data value with the attributes of the dense array's level stays in
-        // place; anything else is a DICTIONARY entry (H18-Q2; M5-P2 ELEM2; M7-P3 ELEMKINDS).
+        // An Array element: a {w, e, c} data value of a dense array stays in place; anything
+        // else is a DICTIONARY entry (H18-Q2; M5-P2 ELEM2).
         OwnSlot::Exotic(Exotic::Element(i)) if is_array(o) => {
-            if !is_dict_array(o) && attrs == elements::dense_attrs(o) {
+            if attrs == attr::DEFAULT && !is_dict_array(o) {
                 object::array_set(rt, o, i, v);
             } else {
                 // GC point: `o` and `v` live in Rust locals.
@@ -2152,8 +2152,8 @@ pub(crate) fn define_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<()> {
     debug_assert!(is_object(o));
     if is_array(o)
         && let Some(n) = array_index_u64(i)
-        // An existing element with no level is {w, e, c}; a new one needs an extensible array.
-        && fast_element(o, n)
+        // An existing element is {w, e, c}; a new one needs an extensible array.
+        && (object::array_get(o, n).is_some() || is_extensible(o))
         && object::array_set(cx.rt(), o, n, v)
     {
         return Ok(());
@@ -2178,9 +2178,9 @@ pub(crate) fn delete_index(cx: &mut Cx, o: u64, i: u64, strict: bool) -> Res<boo
         if is_array(o)
             && let Some(n) = array_index_u64(i)
             && object::array_get(o, n).is_some()
-            && object::array_set(cx.rt(), o, n, crate::frame::HOLE)
         {
-            // v0: a dense array keeps a hole (as `delete`); a level refuses: the key path below.
+            // v0: a dense array keeps a hole (as `delete`).
+            object::array_set(cx.rt(), o, n, crate::frame::HOLE);
             return Ok(true);
         }
         if elements::plain_elements_kind(kind::cell_kind(o))
@@ -2305,12 +2305,4 @@ fn for_in_has_at_proxy(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
             return Ok(false);
         }
     }
-}
-
-/// True if CreateDataProperty may store element `i` of the Array `o` with no key: an existing
-/// element of an array with no integrity level ({w, e, c}), or a new one of an extensible array
-/// (a level array never is; M7-P3 ELEMKINDS). Not a GC point.
-#[inline(always)]
-fn fast_element(o: u64, i: u32) -> bool {
-    object::array_get(o, i).is_some() && elements::integrity_of(o) == 0 || is_extensible(o)
 }
