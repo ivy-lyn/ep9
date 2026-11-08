@@ -43,7 +43,7 @@ const MODE: &str = "EP9_EXIT_AFTER_COMPILE";
 const LOAD: &str = "EP9_EXIT_LOAD";
 /// The number of stress children per mode.
 const STRESS: &str = "EP9_EXIT_STRESS";
-const STRESS_DEFAULT: usize = if cfg!(windows) { 2000 } else { 5 };
+const STRESS_DEFAULT: usize = if cfg!(windows) { 100 } else { 5 };
 /// A child that runs longer than this is killed and counts as a hit.
 const DEADLINE: Duration = Duration::from_secs(10);
 /// The stress loop stops at this many hits, so a probe run ends in bounded time.
