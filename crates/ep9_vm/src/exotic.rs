@@ -204,14 +204,14 @@ pub(crate) fn own_property(
 }
 
 /// The attributes of an exotic own property of `o`, without making anything: an array's
-/// `length` or element, a String wrapper's `length` or index, a constructor's lazy
-/// `prototype`. Not a GC point, runs no JS. Never for a proxy (a debug assert; its
-/// `[[GetOwnProperty]]` may run JS): [`try_own_attrs`] takes one.
+/// `length` (`property::length_attrs`, for each Array) or element, a String wrapper's `length`
+/// or index, a constructor's lazy `prototype`. Not a GC point, runs no JS. Never for a proxy
+/// (a debug assert; its `[[GetOwnProperty]]` may run JS): [`try_own_attrs`] takes one.
 pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i32> {
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
         if is_key(rt, key, how, Atom::Length) {
-            return Some(attr::WRITABLE);
+            return Some(crate::property::length_attrs(o));
         }
         let i = array_index_of(key)?;
         return object::array_get(o, i).map(|_| dense_attrs(o));

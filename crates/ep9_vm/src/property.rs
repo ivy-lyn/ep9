@@ -421,7 +421,7 @@ fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Re
     loop {
         let found = match own_attrs(rt, cur, key, how) {
             // An entry of a DICTIONARY array may be an accessor: its pair (M5-P2 ELEM2).
-            Some(a) if is_dict_array(cur) => dict_own(rt, cur, key, how).or(Some((UNDEFINED, a))),
+            Some(a) if is_dict_array(cur) => dict_own(cur, key).or(Some((UNDEFINED, a))),
             // Other exotic own properties are data properties: the value is not needed.
             Some(a) => Some((UNDEFINED, a)),
             // The common case, in one lookup: an own data property of the receiver takes the
@@ -573,31 +573,31 @@ fn dict_index(o: u64, key: u64) -> Option<(u64, i32)> {
 }
 
 /// The own property `key` of the DICTIONARY Array `o` that `exotic.rs` does not answer
-/// right: an entry of its cell, or `length` when it is not writable (attributes 0). Not a GC
-/// point.
-fn dict_own(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<(u64, i32)> {
+/// right: an entry of its cell (an index key), as (value or ACCESSOR_PAIR, attributes). The
+/// callers know that `o` is a DICTIONARY Array. Its `length` is not here: `exotic::own_attrs`
+/// gives the attributes of each Array's `length`, dense or DICTIONARY, from [`length_attrs`]
+/// (one source; Codex M7-P3 r2 CX2-1: a FROZEN Array is dense, and the `[[Set]]` walk saw its
+/// `length` as writable while only this function gave a read-only one). Not a GC point.
+fn dict_own(o: u64, key: u64) -> Option<(u64, i32)> {
     let d = elements::dict_of(o)?;
-    if let Some(i) = array_index_of(key) {
-        return elements::dict_get(d, i);
-    }
-    (!elements::length_writable(o) && exotic::is_key(rt, key, how, Atom::Length))
-        .then(|| (num(f64::from(object::array_len(o))), 0))
+    elements::dict_get(d, array_index_of(key)?)
 }
 
-/// `exotic::own_attrs` with the DICTIONARY entries and a non-writable `length` of an Array.
-/// Not a GC point.
+/// `exotic::own_attrs` with the DICTIONARY entries of an Array (an accessor or other
+/// attributes). Not a GC point.
 #[inline(always)]
 fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i32> {
     if is_dict_array(o)
-        && let Some((_, a)) = dict_own(rt, o, key, how)
+        && let Some((_, a)) = dict_own(o, key)
     {
         return Some(a);
     }
     exotic::own_attrs(rt, o, key, how)
 }
 
-/// The attributes of the Array `a`'s `length`: {w} or none (DICTIONARY with the flag).
-fn length_attrs(a: u64) -> i32 {
+/// The attributes of the Array `a`'s `length` (`elements::length_writable`): {w}, or none
+/// (FROZEN, or DICTIONARY with the flag). Each reader of them calls this. Not a GC point.
+pub(crate) fn length_attrs(a: u64) -> i32 {
     if elements::length_writable(a) {
         attr::WRITABLE
     } else {

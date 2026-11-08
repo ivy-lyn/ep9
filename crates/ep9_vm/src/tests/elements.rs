@@ -1954,3 +1954,89 @@ fn the_readers_and_the_key_paths_follow_a_level() {
         }
     });
 }
+
+/// The pending error of `cx` as "name: message".
+fn take_error(cx: &mut VmCx) -> String {
+    let rt = cx.rt();
+    let e = rt.take_pending();
+    assert!(object::is_object(e), "an error is pending");
+    let name = key(rt, "name");
+    let n = property::get_from(cx, e, name).unwrap();
+    let message = key(cx.rt(), "message");
+    let m = property::get_from(cx, e, message).unwrap();
+    format!(
+        "{}: {}",
+        crate::string::to_rust_string(n),
+        crate::string::to_rust_string(m)
+    )
+}
+
+/// Codex M7-P3 r2 CX2-1: the `length` of a FROZEN dense Array is not writable on the
+/// `[[Set]]` walk too, where the receiver is another object (`exotic::own_attrs` and
+/// `property::own_attrs` take its attributes from `property::length_attrs`, as
+/// `[[GetOwnProperty]]` does). `Reflect.set(frozen, "length", 0, r)` is false and keeps `r`;
+/// an inherited `o.length = 5` is false and adds no own `length` (strict code: a TypeError
+/// with the read-only text, `first_attrs_on_chain`). A SEALED Array's `length` stays writable
+/// (the control), and so does the read-only `length` of a DICTIONARY Array. Before the fix
+/// the walk saw {w} on the FROZEN dense Array (the ELEMKINDS activation keeps it dense).
+#[test]
+fn a_frozen_dense_array_length_is_read_only_on_the_set_walk() {
+    each(|cx, rt| {
+        let length = key(rt, "length");
+        let read_only =
+            "TypeError: Cannot assign to read only property 'length' of object '#<Object>'";
+        for frozen in [true, false] {
+            for vs in [&[][..], &[7][..]] {
+                let p = dense(rt, vs, None);
+                assert!(property::prevent_extensions(rt, p));
+                assert!(elements::set_integrity(rt, p, frozen));
+                assert_ne!(elements::kind_of(p), ek::DICTIONARY, "the form stays dense");
+                // Reflect.set(p, "length", 0, r): another Array receiver.
+                let r = dense(rt, &[1, 2], None);
+                let ok = property::set_with_receiver(cx, p, length, int(0), r).unwrap();
+                assert_eq!(ok, !frozen, "frozen {frozen} {vs:?}");
+                assert_eq!(object::array_len(r), if frozen { 2 } else { 0 });
+                // Reflect.set(p, "length", 5, {}): a plain receiver.
+                let o = object::new_object(rt, p);
+                let ok = property::set_with_receiver(cx, p, length, int(5), o).unwrap();
+                assert_eq!(ok, !frozen);
+                let own = property::get_own_property(cx, o, length).unwrap();
+                assert_eq!(own.is_some(), !frozen);
+                // Sloppy `Object.create(p).length = 5`.
+                let o = object::new_object(rt, p);
+                property::set(cx, o, length, int(5), false).unwrap();
+                let own = property::get_own_property(cx, o, length).unwrap();
+                assert_eq!(own.is_some(), !frozen);
+                // Strict: a TypeError with the read-only text.
+                let o = object::new_object(rt, p);
+                let res = property::set(cx, o, length, int(5), true);
+                assert_eq!(res.is_err(), frozen);
+                if frozen {
+                    assert_eq!(take_error(cx), read_only);
+                }
+                let own = property::get_own_property(cx, o, length).unwrap();
+                assert_eq!(own.is_some(), !frozen);
+                checked(rt, p);
+            }
+        }
+        // A strict `frozen.length = 0` on the Array itself: the read-only text.
+        let a = dense(rt, &[1], None);
+        assert!(property::prevent_extensions(rt, a));
+        assert!(elements::set_integrity(rt, a, true));
+        assert!(property::set(cx, a, length, int(0), true).is_err());
+        assert_eq!(take_error(cx), read_only);
+        assert_eq!(object::array_len(a), 1);
+        // A DICTIONARY Array with a read-only `length` (one source for its attributes too).
+        let s = dense(rt, &[4, 5], None);
+        elements::set_length_readonly(rt, s);
+        assert_eq!(elements::kind_of(s), ek::DICTIONARY);
+        let r = dense(rt, &[1, 2], None);
+        assert!(!property::set_with_receiver(cx, s, length, int(0), r).unwrap());
+        assert_eq!(object::array_len(r), 2);
+        let o = object::new_object(rt, s);
+        assert!(property::set(cx, o, length, int(5), true).is_err());
+        assert_eq!(take_error(cx), read_only);
+        assert!(property::get_own_property(cx, o, length).unwrap().is_none());
+        checked(rt, s);
+    });
+}

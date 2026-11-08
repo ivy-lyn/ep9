@@ -860,3 +860,56 @@ fn to_locale_string_invokes_to_string() {
         assert!(is_type_error(&r), "{src}: {r:?}");
     }
 }
+
+/// Codex M7-P3 r2 CX2-1: the `length` of an Array frozen by `Object.freeze` (a dense Array
+/// since the ELEMKINDS activation) is read-only for a `[[Set]]` whose receiver is another
+/// object: `Reflect.set` with another receiver is false and keeps it; an inherited
+/// `o.length = 5` throws in strict code and adds no own `length` in sloppy code; the generic
+/// `push` and `pop` on `Object.create(frozen)` throw. The strict text names a read-only
+/// property (node: "... of object '[object Array]'"; the object name differs, as before).
+/// `Object.seal` keeps `length` writable (the control).
+#[test]
+fn a_frozen_array_length_is_read_only_for_another_receiver() {
+    assert_eq!(
+        run_both(
+            "function t(f) { try { return String(f()); } catch (e) { return 'THROW ' + e.name; } }
+             var r = [1, 2];
+             print(Reflect.set(Object.freeze([]), 'length', 0, r), JSON.stringify(r));
+             r = [1, 2];
+             print(Reflect.set(Object.freeze([7]), 'length', 0, r), JSON.stringify(r));
+             var p = {};
+             print(Reflect.set(Object.freeze([]), 'length', 5, p), Object.hasOwn(p, 'length'));
+             var o = Object.create(Object.freeze([])); o.length = 5;
+             print(Object.hasOwn(o, 'length'), o.length);
+             print(t(function () { 'use strict'; var o = Object.create(Object.freeze([])); o.length = 5; return 'no throw'; }));
+             print(t(function () { 'use strict'; var o = Object.create(Object.freeze([1])); o.length = 5; return 'no throw'; }));
+             print(t(function () { var o = Object.create(Object.freeze([])); Array.prototype.push.call(o, 9); return 'no throw'; }));
+             print(t(function () { var o = Object.create(Object.freeze([1])); Array.prototype.pop.call(o); return 'no throw'; }));
+             print(t(function () { return Object.create(Object.freeze([])).push(9); }));
+             print(t(function () { return Object.create(Object.freeze([])).pop(); }));
+             var n = 0, q = Object.freeze([]);
+             for (var i = 0; i < 20; i++) { try { (function (o) { 'use strict'; o.length = 5; })(Object.create(q)); } catch (e) { n++; } }
+             print('throws=' + n);
+             try { (function () { 'use strict'; Object.freeze([1]).length = 0; })(); } catch (e) { print(e.name, e.message.split(' of ')[0]); }
+             r = [1, 2];
+             print(Reflect.set(Object.seal([]), 'length', 0, r), JSON.stringify(r));
+             print(t(function () { 'use strict'; var o = Object.create(Object.seal([])); o.length = 5; return Object.hasOwn(o, 'length') + ' ' + o.length; }));"
+        ),
+        lines(&[
+            "false [1,2]",
+            "false [1,2]",
+            "false false",
+            "false 0",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "throws=20",
+            "TypeError Cannot assign to read only property 'length'",
+            "true []",
+            "true 5",
+        ])
+    );
+}
