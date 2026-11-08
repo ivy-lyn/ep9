@@ -11,7 +11,8 @@
 //!                    MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, EPSILON ({}; V8's key order)
 //! %Number.prototype% toExponential, toFixed, toPrecision: exact digits, rounded half up
 //!                    (`exact_decimal`, `round_half_up`); toString(radix): radix 10 is
-//!                    ToString; 2-36 is V8's DoubleToRadixCString (`radix_string`); valueOf.
+//!                    ToString; 2-36 is V8's DoubleToRadixCString (`radix_string`); valueOf;
+//!                    toLocaleString (= ToString: no ECMA-402 yet, as BigInt's).
 //!                    All read thisNumberValue (Cx::this_primitive_value)
 //! global             Number, parseFloat, parseInt {w, c} (node's order: right after Number)
 //! ```
@@ -34,8 +35,6 @@
 //! toExponential without an argument uses the shortest digits of Number::toString (the VM's
 //! `Cx::to_string`, with its even-tie rule), as V8 does. These helpers live here, not in the
 //! VM's numconv.rs: that module is private to ep9_vm.
-//!
-//! Not built yet: `toLocaleString`.
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-number.txt`.
@@ -62,6 +61,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("toExponential", 1, to_exponential), // 9
     BuiltinDef::method("toFixed", 1, to_fixed),     // 10
     BuiltinDef::method("toPrecision", 1, to_precision), // 11
+    // ---- M7-P3 (SPEC-BUILTINS2) ----
+    BuiltinDef::method("toLocaleString", 0, to_locale_string), // 12
 ];
 
 /// Definition indices (ids `BLOCK.i`) of the statics.
@@ -75,6 +76,7 @@ mod def {
     pub const TO_EXPONENTIAL: u16 = 9;
     pub const TO_FIXED: u16 = 10;
     pub const TO_PRECISION: u16 = 11;
+    pub const TO_LOCALE_STRING: u16 = 12;
 }
 
 /// The intrinsics this module makes.
@@ -137,6 +139,8 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("toPrecision"), def::TO_PRECISION),
             PropDef::method(PropKey::Atom(Atom::ToStringKey), 1),
             PropDef::method(PropKey::Atom(Atom::ValueOf), 2),
+            // §21.1.3.4 ({w, c}): last, as in V8.
+            PropDef::method(PropKey::Str("toLocaleString"), def::TO_LOCALE_STRING),
         ],
     },
     ObjectProps {
@@ -236,6 +240,20 @@ fn to_string<'s>(
     }
     let text = radix_string(x, radix as u32);
     Ok(cx.new_string(&text)?.value())
+}
+
+/// Number.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] ) (§21.1.3.4): ep9 has
+/// no ECMA-402 yet, so the "conventions of the host environment's current locale" are the
+/// ones of `toString()` (BigInt's form, design SPEC-T-D9). node with ICU prints "1,234.5"
+/// for 1234.5; ep9 prints "1234.5". The INTL workflow replaces it (ECMA-402 §16.4.1).
+fn to_locale_string<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let x = this_number_value(cx, this)?;
+    Ok(cx.to_string(Local::number(x))?.value())
 }
 
 /// Number.prototype.valueOf ( ) (§21.1.3.7).
