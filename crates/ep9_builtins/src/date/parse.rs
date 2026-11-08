@@ -187,8 +187,15 @@ fn number(w: &str, max: usize) -> Option<f64> {
 /// an optional `(text)` tail.
 fn parse_legacy(s: &str) -> Option<Parsed> {
     use super::format::{DAY_NAMES, MONTH_NAMES};
-    // Drop a "(time zone name)" tail.
+    let blanked;
     let s = match s.find('(') {
+        // A slash date: each "(...)" is a space (V8 SkipParentheses), so the words after a
+        // comment are still read and checked.
+        Some(i) if s[..i].contains('/') => {
+            blanked = blank_comments(s)?;
+            blanked.as_str()
+        }
+        // Drop a "(time zone name)" tail.
         Some(i) => {
             if !s.ends_with(')') {
                 return None;
@@ -266,6 +273,27 @@ fn parse_legacy(s: &str) -> Option<Parsed> {
         Some(o) => Parsed::Utc(tv - o),
         None => Parsed::Local(tv),
     })
+}
+
+/// `s` with each balanced "(...)" (nested too) as one space; `None` if a parenthesis is not
+/// balanced (NaN; V8 reads an open one to the end).
+fn blank_comments(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0u32;
+    for c in s.chars() {
+        match c {
+            '(' => {
+                if depth == 0 {
+                    out.push(' ');
+                }
+                depth += 1;
+            }
+            ')' => depth = depth.checked_sub(1)?,
+            _ if depth > 0 => {}
+            _ => out.push(c),
+        }
+    }
+    (depth == 0).then_some(out)
 }
 
 /// A numeric slash date as a day number (MakeDay): "Y/M/D" when the first value is 0 or above
@@ -429,6 +457,12 @@ mod tests {
         assert_eq!(local("Thu, 08/04/2011"), day(2011.0, 8.0, 4.0));
         assert_eq!(local("  08/04/2011  "), day(2011.0, 8.0, 4.0));
         assert_eq!(local("08/04/2011 (x)"), day(2011.0, 8.0, 4.0));
+        // Each "(...)" is a space (V8 SkipParentheses): the words after it are read.
+        assert_eq!(
+            local("8/4/2011 (x) 12:00 (y)"),
+            day(2011.0, 8.0, 4.0) + 43_200_000.0
+        );
+        assert_eq!(utc("8/4/2011 (a(b)) GMT"), Some(day(2011.0, 8.0, 4.0)));
         assert_eq!(local("2011/08/04"), day(2011.0, 8.0, 4.0));
         assert_eq!(local("2011/8/4"), day(2011.0, 8.0, 4.0));
         assert_eq!(local("08/04/11"), day(2011.0, 8.0, 4.0));
@@ -489,6 +523,7 @@ mod tests {
             "8/4/2011 Thu",
             "\u{ff11}/1/2011",
             "013/01/01",
+            "8/4/2011 (x) 99 (y)",
         ] {
             assert_eq!(parse(bad), None, "{bad}");
         }
