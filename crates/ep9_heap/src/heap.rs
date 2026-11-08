@@ -518,9 +518,9 @@ pub(crate) struct Inner {
     stress_gcs: u32,
     /// The nursery policy (`after_gc`): the last minor GC kept at least 3/4 of the young bytes.
     high_survival: bool,
-    /// The nursery policy's back-off (GCPAR3): how many major GCs run back to back, with no
-    /// probe minor GC between them, after the next high-survival probe (0 to
-    /// [`MAX_PROBE_SKIPS`]); and how many of them are left now.
+    /// The nursery policy's back-off (GCPAR3): how many probe minor GCs are skipped after a
+    /// high-survival probe (0 to [`MAX_PROBE_SKIPS`]; that many + 1 major GCs then run back
+    /// to back); and how many skips are left now.
     probe_skips: u32,
     skips_left: u32,
     /// GC-stress collections since the last one that used the parallel paths (`u32::MAX`:
