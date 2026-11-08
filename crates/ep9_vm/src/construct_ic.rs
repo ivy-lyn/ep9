@@ -95,7 +95,9 @@ pub(crate) fn fast<const SPREAD: bool>(
     let Some(v) = feedback::vector(caller) else {
         return Flow::Cold;
     };
-    if feedback::key(v, s.0) != f {
+    // A dead constructor's key reads undefined after the GC while its handler stays: never a
+    // hit for `new undefined` (the cold path throws the TypeError).
+    if feedback::key(v, s.0) != f || f == UNDEFINED {
         return Flow::Cold;
     }
     let h = feedback::value(v, s.0);

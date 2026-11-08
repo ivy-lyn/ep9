@@ -752,3 +752,74 @@ fn a_derived_constructor_result_is_checked_after_the_return() {
         }
     }
 }
+
+/// Codex M7-P3-CODEX-R1 CONSTRUCT 1: after the GC clears the weak key of a construct site
+/// (its constructor died) the handler stays, and while an instance lives so does its initial
+/// shape. `new undefined` at that site must take the cold path (the TypeError), not a hit:
+/// `feedback::key` reads undefined, which equals the callee. The test makes that slot state
+/// by hand (key undefined, the warm handler as value) and keeps an instance in a global. On
+/// the old code the hit runs `shape::shape_of(undefined)`, which panics (a release abort,
+/// object.rs:359).
+#[test]
+fn a_cleared_key_is_no_hit_for_new_undefined() {
+    // f1: `function site(C) { return new C(); }`; f2: `function F() {}`.
+    fn make() -> (VerifiedUnit, FeedbackSlot) {
+        let mut site = Asm::new(meta("site", 1, 0, 0, 0));
+        let slot = site.b.feedback_slot(FeedbackSlotKind::Call);
+        let f = site.f;
+        site.b.ldar(site.b.parameter(0)).star(f);
+        site.b.construct(f, RegisterList::EMPTY, 0, slot);
+        site.b.return_();
+        let mut ctor = Asm::new(meta("F", 0, 0, 0, 0));
+        ctor.b.lda_undefined().return_();
+        // The script: `site = f1; F = f2; keep = site(F); keep = site(F);`, returns `site`.
+        let mut s = Asm::script(0);
+        let r = s.b.new_register();
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(r);
+        s.sta_global("site");
+        let k = s.b.function_constant(FunctionId(2));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("F");
+        for _ in 0..2 {
+            let (f, a0) = (s.f, s.a.get(0));
+            s.lda_global("F");
+            s.b.star(a0);
+            s.b.ldar(r).star(f);
+            s.b.call_undefined_receiver1(f, a0, s.call);
+            s.sta_global("keep");
+        }
+        s.b.ldar(r).return_();
+        (
+            unit("", vec![s.finish(), site.finish(), ctor.finish()]),
+            slot,
+        )
+    }
+    for (label, c) in configs() {
+        on_big_stack(move || {
+            let mut iso = isolate(c);
+            let (u, slot) = make();
+            let r = iso.with_cx_checkpoint(|cx| {
+                let site = cx.run_script(u, "test.js")?;
+                let fi = object::function_info(site.bits());
+                let v = feedback::vector(fi).expect("a vector (threshold 0)");
+                let h = feedback::value(v, slot.0);
+                assert_eq!(kinds::cell_kind(h), kinds::IC_HANDLER.get(), "{label}");
+                assert_eq!(handler_i32(h, cs::KIND), hk::CONSTRUCT_SITE, "{label}");
+                assert!(shape::is_shape(object::rd(object::cell(h), cs::SHAPE)));
+                // The state after the GC cleared the key: undefined, the handler stays.
+                feedback::set_slot(cx.inner().rt(), v, slot.0, UNDEFINED, h);
+                let u = crate::abi::Local::undefined();
+                cx.call(site, u, &[u]).map(|_| ())
+            });
+            let e = r.expect_err("new undefined throws");
+            assert!(
+                e.message.starts_with("TypeError:"),
+                "{label}: {}",
+                e.message
+            );
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
