@@ -7560,7 +7560,6 @@ test/staging/sm/TypedArray/values.js
 test/staging/sm/TypedArray/with-detached.js
 test/staging/sm/TypedArray/with.js
 test/staging/sm/TypedArray/write-out-of-bounds-tonumber.js
-test/staging/sm/class/derivedConstructorReturnPrimitive.js
 test/staging/sm/class/extendBuiltinConstructors.js
 test/staging/sm/class/strictExecution.js
 test/staging/sm/class/superElemDelete.js
@@ -7594,7 +7593,6 @@ test/staging/sm/object/values-entries-typedarray.js
 test/staging/sm/regress/regress-571014.js
 test/staging/sm/regress/regress-577648-1.js
 test/staging/sm/regress/regress-577648-2.js
-test/staging/sm/regress/regress-583429.js
 test/staging/sm/regress/regress-584355.js
 test/staging/sm/regress/regress-586482-1.js
 test/staging/sm/regress/regress-586482-2.js
