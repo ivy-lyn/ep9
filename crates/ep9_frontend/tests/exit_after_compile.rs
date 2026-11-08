@@ -20,8 +20,9 @@
 //!
 //! WIN-EXIT-HANG (CI 42484485512): the OS can also end the worker while it holds a lock. A drop
 //! that then takes the same lock waits for ever, and the child never ends. The parent kills a
-//! child at DEADLINE and goes on, so a hang costs seconds, not the job timeout. The stderr of a
-//! "thread-exit" child shows where it stopped:
+//! child at DEADLINE and goes on, so a hang costs seconds, not the job timeout. The worker's unit
+//! test `dropping_a_worker_takes_no_lock_its_thread_may_hold` covers this cause on every host.
+//! The stderr of a "thread-exit" child shows where it stopped:
 //!
 //! ```text
 //! no "compiled"                   the hang is before the exit (in the compile)
