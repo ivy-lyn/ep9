@@ -176,12 +176,12 @@ pub(crate) mod kind {
         };
     }
 
-    operand!(Reg, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegInOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOutTriple, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOutPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
+    operand!(Reg, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegInOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegPair, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOutTriple, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOutPair, R, |p, S| R::of_operand(read_signed::<S>(p)));
     operand!(RegList, RList, |p, S| RList(read_signed::<S>(p) as isize));
     operand!(
         RegOutList,
@@ -783,10 +783,11 @@ macro_rules! expand_threaded {
                     }
                 });
                 let St { cx, fp, acc, .. } = st;
-                // SAFETY: `next` is an instruction start of verified code or a VM stub.
-                let h = cx.table[unsafe { *next } as usize];
+                let to = $crate::interp::dsl::dispatch_pc_of!($name, next);
+                // SAFETY: `to` is an instruction start of verified code or a VM stub.
+                let h = cx.table[unsafe { *to } as usize];
                 // SAFETY: the table holds handlers of this expansion; the state is valid.
-                unsafe { $tail h(cx, next, fp, acc) }
+                unsafe { $tail h(cx, to, fp, acc) }
             }
         } )*
 
@@ -1186,6 +1187,85 @@ macro_rules! expand_scaled {
 }
 pub(crate) use expand_scaled;
 
+// ---- the x86-64 register operand decode ------------------------------------------------------
+
+impl R {
+    /// [`R::from_operand`] for the register operand decoders of the handlers (`kind::Reg` and
+    /// the other register kinds). x86-64: the same map as a select, which LLVM keeps as `lea`,
+    /// `test`, `cmov` and puts the slot offset into the load or store address (3 instructions;
+    /// the shift form of `from_operand` gave 4-5 there: `xor`, `test`, `setns`, `shl`, `add`
+    /// or `mov`, `sar`, `and`, `add`). Other targets: `from_operand` (their code does not
+    /// change).
+    #[inline(always)]
+    pub fn of_operand(v: i32) -> R {
+        #[cfg(target_arch = "x86_64")]
+        {
+            R::from_operand_select(v)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            R::from_operand(v)
+        }
+    }
+
+    /// The x86-64 form of [`R::of_operand`]. It builds on every target for the test.
+    #[cfg(any(target_arch = "x86_64", test))]
+    #[inline(always)]
+    fn from_operand_select(v: i32) -> R {
+        let o = v as isize;
+        R(core::hint::select_unpredictable(
+            o < 0,
+            o - HEADER as isize,
+            o,
+        ))
+    }
+}
+
+/// The `pc` that a threaded handler passes on, as the handler computed it. x86-64: through an
+/// empty `asm!` block, so LLVM keeps the new `pc` in one register and reads the next opcode
+/// at `[pc]`. Without it LLVM read the opcode at `[old pc + len]` and kept the old and the
+/// new `pc` live, so it gave `lea` and `mov rsi` (2 instructions) where `add rsi` (1) does
+/// (`Jump`, the `Test*` compares, `JumpIfJSReceiver`, `Wide`, `ExtraWide`). Other targets:
+/// the same value (their code does not change). The handler arguments, the table read and
+/// the tail call are as before.
+#[inline(always)]
+pub(crate) fn dispatch_pc(next: *const u8) -> *const u8 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut a = next.expose_provenance();
+        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
+        // change. `a` comes back as it went in.
+        unsafe {
+            core::arch::asm!(
+                "/* {a} */",
+                a = inout(reg) a,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+        }
+        core::ptr::with_exposed_provenance(a)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        next
+    }
+}
+
+/// [`dispatch_pc`] of the threaded handler `$name`. `GetNamedProperty` and `TestTypeOf` take
+/// `next` as it is: with the `asm!` block LLVM merged their dispatch tails (3 into 1), so the
+/// hit paths of their jump tables ran one more `jmp` (x86-64 asm, X86SHAPE try 3).
+macro_rules! dispatch_pc_of {
+    (GetNamedProperty, $next:expr) => {
+        $next
+    };
+    (TestTypeOf, $next:expr) => {
+        $next
+    };
+    ($other:ident, $next:expr) => {
+        $crate::interp::dsl::dispatch_pc($next)
+    };
+}
+pub(crate) use dispatch_pc_of;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,6 +1278,43 @@ mod tests {
         assert_eq!(R::from_operand(-1).0, crate::frame::slot::RECEIVER);
         assert_eq!(R::from_operand(-2).0, crate::frame::slot::PARAM0);
         assert_eq!(R::from_operand(-2 - 7).0, crate::frame::slot::PARAM0 - 7);
+    }
+
+    /// The decoder map of every target and the x86-64 select form are `from_operand`, for
+    /// every 1-byte and 2-byte operand and the 4-byte ends.
+    #[test]
+    fn register_operand_decoder_is_from_operand() {
+        let ends = [
+            i32::MIN,
+            i32::MIN + 1,
+            -65_536,
+            65_535,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        for v in (i32::from(i16::MIN)..=i32::from(i16::MAX)).chain(ends) {
+            assert_eq!(R::of_operand(v), R::from_operand(v), "operand {v}");
+            assert_eq!(R::from_operand_select(v), R::from_operand(v), "operand {v}");
+        }
+        // The receiver operand (-1) at the 3 scales: fp - 9 (H14).
+        let b = [0xffu8, 0xff, 0xff, 0xff];
+        // SAFETY: `b` has 4 readable bytes.
+        unsafe {
+            assert_eq!(<kind::Reg as Operand>::read::<S1>(b.as_ptr()).0, -9);
+            assert_eq!(<kind::RegOut as Operand>::read::<S2>(b.as_ptr()).0, -9);
+            assert_eq!(<kind::RegPair as Operand>::read::<S4>(b.as_ptr()).0, -9);
+        }
+    }
+
+    /// `dispatch_pc` gives back the pointer it gets (on x86-64 through its `asm!` block).
+    #[test]
+    fn dispatch_pc_is_the_identity() {
+        let code = [0u8; 16];
+        for i in 0..code.len() {
+            let p = code.as_ptr().wrapping_add(i);
+            assert_eq!(dispatch_pc(p), p);
+        }
+        assert!(dispatch_pc(core::ptr::null()).is_null());
     }
 
     #[test]
