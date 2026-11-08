@@ -997,9 +997,30 @@ fn level_dict_flags(a: u64) -> i32 {
 
 /// True if a `length` of `len` would cut an element of the SEALED (or FROZEN) Array `a` with
 /// a dense kind: `object::array_set_length` moves it to DICTIONARY first, whose entries stop
-/// the cut at the highest one (§10.4.2.4 step 17). A cut over holes stays dense. Not a GC point.
+/// the cut at the highest one (§10.4.2.4 step 17). A cut over holes stays dense. It reads only
+/// the indices `len..length` that a cut removes, so a growth reads no element. Not a GC point.
 pub(crate) fn level_cut(a: u64, len: u32) -> bool {
-    integrity_of(a) != 0 && object::element_indices(a).any(|i| i >= len)
+    let old = object::array_len(a);
+    if integrity_of(a) == 0 || len >= old {
+        return false; // a growth or the same length cuts nothing
+    }
+    let e = object::rd(object::cell(a), obj::ELEMENTS);
+    if e == crate::frame::UNDEFINED {
+        return false;
+    }
+    let end = old.min(object::rd_i32(object::cell(e), elems::CAPACITY) as u32);
+    (len..end).any(|i| {
+        #[cfg(test)]
+        LEVEL_CUT_READS.with(|c| c.set(c.get() + 1));
+        object::array_get(a, i).is_some()
+    })
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// The element reads of [`level_cut`] on this thread (the work count of
+    /// `tests::elements::a_level_cut_reads_only_the_cut_indices`).
+    pub(crate) static LEVEL_CUT_READS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
 /// SetIntegrityLevel (§7.3.15) steps 4-5 for the elements of the Array `a`, after its

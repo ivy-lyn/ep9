@@ -1639,6 +1639,59 @@ fn the_raw_stores_refuse_what_a_level_forbids() {
     });
 }
 
+/// `elements::level_cut` (the `length` write of a SEALED or FROZEN dense Array) reads only the
+/// indices a cut removes: no element for a growth or the same length, and at most
+/// `len..length` for a cut (Codex M7-P3-CODEX-R1 ELEMKINDS 2). A work count, not a time: the
+/// same 200 growths on a sealed array of n and of 4n elements read 0 elements on each. On the
+/// old code (every element read on each write) the n array reads 200 n elements and the 4n
+/// array 4 times that.
+#[test]
+fn a_level_cut_reads_only_the_cut_indices() {
+    use elements::LEVEL_CUT_READS as reads;
+    each(|_, rt| {
+        let mut per_n = Vec::new();
+        for n in [250usize, 1000] {
+            let vs: Vec<i32> = (0..n as i32).collect();
+            let s = dense(rt, &vs, None);
+            assert!(property::prevent_extensions(rt, s));
+            assert!(elements::set_integrity(rt, s, false));
+            reads.with(|c| c.set(0));
+            for k in 0..200u32 {
+                assert!(object::array_set_length(rt, s, n as u32 + k));
+            }
+            assert_eq!(object::array_len(s), n as u32 + 199);
+            assert!(
+                elements::kind_of(s) < ek::DICTIONARY,
+                "the dense form stays"
+            );
+            assert_eq!(elements::integrity_of(s), shape::level::SEALED);
+            per_n.push(reads.with(|c| c.get()));
+            assert_eq!(per_n, vec![0; per_n.len()], "200 growths of n = {n}");
+            // The same length and a growth: false; a cut over the holes reads at most them (none
+            // past the capacity of the elements cell).
+            let len = object::array_len(s);
+            for l in [len, len + 1] {
+                reads.with(|c| c.set(0));
+                assert!(!elements::level_cut(s, l));
+                assert_eq!(reads.with(|c| c.get()), 0, "len {l}");
+            }
+            reads.with(|c| c.set(0));
+            assert!(!elements::level_cut(s, n as u32));
+            assert!(reads.with(|c| c.get()) <= 199, "the holes n..n+199 only");
+            // A cut over an element: true after at most `length - len` reads.
+            reads.with(|c| c.set(0));
+            assert!(elements::level_cut(s, n as u32 - 1));
+            assert!(reads.with(|c| c.get()) <= 200);
+            checked(rt, s);
+        }
+        assert_eq!(
+            per_n,
+            [0, 0],
+            "no element read on a growth, for n and for 4n"
+        );
+    });
+}
+
 /// A move to DICTIONARY elements (a far index, a `length` past the dense limit, a read-only
 /// `length`, an element with other attributes) drops the level from the shape and keeps it in
 /// each entry: SEALED {w, e}, FROZEN {e} and the cell's read-only `length` flag. The
