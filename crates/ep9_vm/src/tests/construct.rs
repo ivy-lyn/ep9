@@ -550,3 +550,129 @@ fn twelve_arguments_go_through_the_cold_copy_and_the_hit() {
         assert_eq!(handler_i32(value, cs::COUNT), 1);
     });
 }
+
+// ---- the frames of a hit (M7-P3 CONSTRUCT) -------------------------------------------------
+
+/// A host function for [`the_hit_frames_equal_the_cold_push`]; never called.
+fn never_called<'s>(
+    _: &mut crate::Cx<'s>,
+    _: crate::Local<'s>,
+    _: crate::Args<'s>,
+    _: crate::Local<'s>,
+) -> crate::JsResult<crate::Local<'s>> {
+    unreachable!("the frame test only reads the counts of this info")
+}
+
+/// The frames of a construct hit (`construct_ic::write_construct_frames` at the places of one
+/// size test: the stub at the caller's top + `STUB_SLOTS`, the callee at
+/// `call::call_frame_fp` of the stub) are the frames of the cold path
+/// (`call::push_construct_stub`, then `call::push_frame` at the stub's top with the construct
+/// stub return pc and new.target), slot for slot, and the hit refuses exactly the sizes where
+/// one of the two cold pushes fails: no missing argument, missing arguments, no register, more
+/// arguments than parameters, 0 to 4 arguments, caller frames with 0 and 3 registers, a stack
+/// end inside the stub frame, inside the callee frame, at its end and above it.
+#[test]
+fn the_hit_frames_equal_the_cold_push() {
+    use crate::call::{call_frame_fp, push_construct_stub, push_frame};
+    use crate::construct_ic::{ConstructFrames, STUB_SLOTS, write_construct_frames};
+    use crate::frame::{HEADER, native_of, slot};
+    use crate::interp::CONSTRUCT_RETURN_STUB;
+    use crate::runtime::frame_top;
+    use crate::unit::FunctionInfo;
+    const MARK: u64 = 0x7FF8_0000_DEAD_BEEF;
+    /// The caller frame's fp in each buffer: room for its header and receiver below.
+    const CALLER: usize = 12;
+    let (ctor, this, context) = (int32_bits(1), int32_bits(2), int32_bits(3));
+    let next_pc = core::ptr::without_provenance::<u8>(0x2000);
+    let arg = |i: u32| int32_bits(100 + i as i32);
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let saved_limit = iso.cx.stack_limit;
+    let mut cases = 0;
+    for caller_regs in [0, 3] {
+        let mut caller_fi = FunctionInfo::host(never_called, "caller", 0, false);
+        caller_fi.register_count = caller_regs;
+        for (params, regs) in [(0, 0), (0, 4), (1, 0), (3, 2), (5, 7)] {
+            let mut fi = FunctionInfo::host(never_called, "f", 0, false);
+            fi.parameter_count = params;
+            fi.register_count = regs;
+            for argc in 0..=4u32 {
+                let size = STUB_SLOTS + argc.max(params) as usize + 1 + HEADER + regs as usize;
+                for room in [4, STUB_SLOTS, size - 1, size, size + 3] {
+                    // One buffer for both runs, so the frame links (native words of slot
+                    // addresses) agree; `out[k]` is the buffer after run `k`.
+                    let mut buf = vec![MARK; 96];
+                    let mut out = [Vec::new(), Vec::new()];
+                    let mut fps = [None, None];
+                    for k in 0..2 {
+                        buf.fill(MARK);
+                        // SAFETY: every slot written lies in the 96-slot buffer (the caller
+                        // fp is at 12, its top at most at 15, `room` at most 37 above it).
+                        unsafe {
+                            let caller_fp = buf.as_mut_ptr().add(CALLER);
+                            *caller_fp.offset(slot::FUNCTION_INFO) = native_of(&caller_fi);
+                            let base = frame_top(caller_fp);
+                            let limit = base.add(room);
+                            fps[k] = if k == 0 {
+                                iso.cx.stack_limit = limit;
+                                push_construct_stub(&iso.cx, caller_fp, this, ctor, next_pc)
+                                    .and_then(|stub| {
+                                        push_frame(
+                                            frame_top(stub),
+                                            limit,
+                                            &fi,
+                                            ctor,
+                                            this,
+                                            argc,
+                                            arg,
+                                            stub,
+                                            CONSTRUCT_RETURN_STUB.as_ptr(),
+                                            context,
+                                            ctor,
+                                        )
+                                    })
+                            } else {
+                                let stub = base.add(STUB_SLOTS);
+                                call_frame_fp(stub, limit, &fi, argc).inspect(|&fp| {
+                                    write_construct_frames(
+                                        ConstructFrames {
+                                            caller_fp,
+                                            next_pc,
+                                            stub_info: &iso.rt.construct_stub,
+                                            stub,
+                                            fp,
+                                            fi: &fi,
+                                            ctor,
+                                            this,
+                                            context,
+                                        },
+                                        argc,
+                                        arg,
+                                    );
+                                })
+                            }
+                            .map(|fp| fp.addr() - buf.as_ptr().addr());
+                        }
+                        out[k] = buf.clone();
+                    }
+                    let [a, b] = out;
+                    iso.cx.stack_limit = saved_limit;
+                    let case = format!(
+                        "caller regs {caller_regs} params {params} regs {regs} argc {argc} room {room}"
+                    );
+                    assert_eq!(fps[0], fps[1], "{case}");
+                    assert_eq!(fps[0].is_some(), room >= size, "{case}");
+                    if fps[0].is_some() {
+                        assert_eq!(a, b, "{case}");
+                    } else {
+                        // A refused hit writes nothing (the cold path may leave a stub frame
+                        // above the top, where no reader looks).
+                        let written = b.iter().filter(|&&w| w != MARK).count();
+                        assert_eq!(written, 1, "{case}: only the caller's info slot");
+                    }
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 2 * 5 * 5 * 5);
+}
