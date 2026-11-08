@@ -14,7 +14,7 @@
 //!  2      PACKED_DOUBLE     ┐ raw f64 in an ELEMENTS_DOUBLE cell (kind 81; hole = the NaN
 //!  3      HOLEY_DOUBLE      ┘ 0xFFF7_FFFF_FFF7_FFFF, `object::delems`)
 //!  6      DICTIONARY          an ELEMENTS_DICT cell (kind 82; M5-P2 ELEM2)
-//!  7-15   reserved, append-only (NONEXTENSIBLE, SEALED, FROZEN if built later)
+//!  7-15   reserved, append-only, for storage forms (the levels are flags: `set_integrity`)
 //!  bit 0 = holey (for 0-5)
 //!
 //!  The lattice (a store moves right or down, never back; `join`):
@@ -556,10 +556,10 @@ fn dict_flags(d: CellPtr) -> i32 {
 }
 
 /// True if the Array `a`'s `length` is writable: always, but for a DICTIONARY array whose
-/// cell has [`dict::LENGTH_READONLY`]. Not a GC point.
+/// cell has [`dict::LENGTH_READONLY`], and a FROZEN one ([`is_frozen`]). Not a GC point.
 #[inline]
 pub(crate) fn length_writable(a: u64) -> bool {
-    dict_of(a).is_none_or(|d| dict_flags(d) & dict::LENGTH_READONLY == 0)
+    !is_frozen(a) && dict_of(a).is_none_or(|d| dict_flags(d) & dict::LENGTH_READONLY == 0)
 }
 
 /// Makes the Array `a`'s `length` not writable: the array moves to DICTIONARY first (one
@@ -688,10 +688,10 @@ pub(crate) fn to_dictionary(rt: &Runtime, a: u64) {
         .next_power_of_two()
         .max(dict::MIN_BUCKETS);
     // GC point: `a` lives in a Rust local; the dense cell is reachable from `a`.
-    let d = new_dict_cell(rt, nb, 0);
+    let d = new_dict_cell(rt, nb, level_dict_flags(a));
     for &i in &present {
         let v = object::element_get(a, i).expect("a present element");
-        dict_insert_new(d, i, v, object::attr::DEFAULT, true);
+        dict_insert_new(d, i, v, dense_attrs(a), true);
     }
     // GC point: `a` and `d` live in Rust locals (CSS).
     let ns = match shape::with_elements_kind(rt, shape::shape_of(a), kind::DICTIONARY) {
@@ -916,6 +916,120 @@ pub(crate) fn check(o: u64) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// ---- the extra element kinds: integrity levels as shape flags (M7-P3 ELEMKINDS) -----------
+//
+// H18 "extra element kinds", flags first (V11-D5, V11-D6): an Array with a dense kind (0-5)
+// whose shape has `shape::level::SEALED` has elements {w, e, !c}; with `shape::level::FROZEN`
+// too, elements {e} and a `length` that is not writable ([`dense_attrs`], [`length_writable`]).
+// NONEXTENSIBLE stays the EXTENSIBLE flag clear. The bits sit only on the dictionary shape of a
+// non-extensible Array, and every shape made from it keeps them, except a move to DICTIONARY
+// elements: then each entry takes the level's attributes and a FROZEN `length` the cell's flag
+// ([`to_dictionary`]). [`set_integrity`] sets a level (SetIntegrityLevel, §7.3.15, for an Array).
+// The storage form never changes for it: a DOUBLE or INT32 array keeps its kind and its cell.
+// The raw stores refuse what a level forbids (`object::array_set`: any store into a FROZEN
+// array, a hole in a SEALED one; `object::array_set_length` moves a SEALED array to DICTIONARY
+// before a cut over an element, whose entries then stop the cut), so a caller that gets false
+// takes the attribute-aware path of `property.rs`. Rules:
+// - Once a level can be set, a dense kind alone no longer says "the elements are writable": a
+//   store must also read the level (or compare a shape id). So the bits are facts that native
+//   code may bake: they go into `ep9_vm::layout` with OBJECT_LAYOUT 8 at the commit of the
+//   first caller of [`set_integrity`] (plan rule 71; MODES-CHECK-w32 item 3).
+// - No size field shrinks in place (MODES-CHECK-w32 MC-w32-6, the GCPAR2 sweeper rule): a level
+//   change installs a shape and writes no cell's size; a move to DICTIONARY is a new cell. No
+//   cell kind is new, so no new dynamic size.
+// - The birth-kind rule (MODES-CHECK-w23 MC-w23-19, decided here): only the dense kinds 0-5 are
+//   birth kinds, so [`generalize_site`] keeps its `to >= DICTIONARY` stop (7-15 are above it),
+//   and a level is never a birth form: a SEALED array's transition moves its site's kind, but
+//   its shape is not extensible, so `literal_site::is_birth_shape` never makes it the result.
+
+/// The integrity level bits of the JS object `o`'s shape (`shape::level::INTEGRITY`): 0,
+/// SEALED, or SEALED | FROZEN. Only an Array with a dense kind has bits. Not a GC point.
+#[inline(always)]
+pub(crate) fn integrity_of(o: u64) -> i32 {
+    shape::integrity(shape::shape_of(o))
+}
+
+/// True if the Array `a` is FROZEN: no element and no `length` is writable. Not a GC point.
+#[inline(always)]
+pub(crate) fn is_frozen(a: u64) -> bool {
+    integrity_of(a) & shape::level::FROZEN != 0
+}
+
+/// The attributes of each present element of the Array `a` with a dense kind (0-5):
+/// {w, e, c} ([`object::attr::DEFAULT`]); SEALED {w, e}; FROZEN {e}. The `[[GetOwnProperty]]`
+/// of a dense element reads them. Not a GC point.
+#[inline(always)]
+pub(crate) fn dense_attrs(a: u64) -> i32 {
+    use object::attr;
+    let level = integrity_of(a);
+    if level & shape::level::FROZEN != 0 {
+        attr::ENUMERABLE
+    } else if level & shape::level::SEALED != 0 {
+        attr::WRITABLE | attr::ENUMERABLE
+    } else {
+        attr::DEFAULT
+    }
+}
+
+/// The elements kind of the Array `a` for `object::array_set`, and whether its level refuses
+/// a store of `v` (one shape read: `counts` and `flags` share its line): a FROZEN array takes
+/// no store; a SEALED one takes a new value but not the hole (`[[Delete]]` of a
+/// non-configurable element is false). Not a GC point.
+#[inline(always)]
+pub(crate) fn store_kind(a: u64, v: u64) -> (u8, bool) {
+    let s = shape::shape_of(a);
+    let level = shape::integrity(s);
+    let refuse = level != 0 && (level & shape::level::FROZEN != 0 || v == HOLE);
+    (shape::elements_kind(s), refuse)
+}
+
+/// The ELEMENTS_DICT flags that keep the level of the Array `a` after a move to DICTIONARY: a
+/// FROZEN `length` is not writable ([`dict::LENGTH_READONLY`]). Not a GC point.
+fn level_dict_flags(a: u64) -> i32 {
+    if is_frozen(a) {
+        dict::LENGTH_READONLY
+    } else {
+        0
+    }
+}
+
+/// True if a `length` of `len` would cut an element of the SEALED (or FROZEN) Array `a` with
+/// a dense kind: `object::array_set_length` moves it to DICTIONARY first, whose entries stop
+/// the cut at the highest one (§10.4.2.4 step 17). A cut over holes stays dense. Not a GC point.
+pub(crate) fn level_cut(a: u64, len: u32) -> bool {
+    integrity_of(a) != 0 && object::element_indices(a).any(|i| i >= len)
+}
+
+/// SetIntegrityLevel (§7.3.15) steps 4-5 for the elements of the Array `a`, after its
+/// `[[PreventExtensions]]` (steps 1-2): the level SEALED (or SEALED | FROZEN if `frozen`)
+/// goes into the shape's flags ([`shape::with_integrity`]), never lower than it was, and the
+/// elements keep their storage form and cell. Then the define of each index key with the
+/// level's attributes changes nothing (ValidateAndApplyPropertyDescriptor finds them), and a
+/// FROZEN `length` is not writable. True when done; false (nothing changed) if `a` is not an
+/// Array, is extensible or has DICTIONARY elements: its entries take the defines one by one.
+/// A prototype's level is a structural change (OM-8, `shape::note_change`). GC point (a new
+/// shape): `a` lives in a Rust local of the caller.
+#[cfg_attr(not(test), allow(dead_code))] // tests::elements; the caller is SetIntegrityLevel
+pub(crate) fn set_integrity(rt: &Runtime, a: u64, frozen: bool) -> bool {
+    if !kinds_::is_array(a) {
+        return false;
+    }
+    let s = shape::shape_of(a);
+    if shape::is_extensible(s) || shape::elements_kind(s) >= kind::DICTIONARY {
+        return false;
+    }
+    let have = shape::integrity(s);
+    let want = have | shape::level::SEALED | if frozen { shape::level::FROZEN } else { 0 };
+    if want == have {
+        return true;
+    }
+    // GC point: `a` lives in a Rust local of the caller.
+    let ns = shape::with_integrity(rt, s, want);
+    shape::install(rt, a, ns);
+    shape::note_change(rt, a);
+    true
 }
 
 const _: () = {
