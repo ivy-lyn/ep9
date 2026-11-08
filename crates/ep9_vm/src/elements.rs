@@ -1032,7 +1032,6 @@ std::thread_local! {
 /// Array, is extensible or has DICTIONARY elements: its entries take the defines one by one.
 /// A prototype's level is a structural change (OM-8, `shape::note_change`). GC point (a new
 /// shape): `a` lives in a Rust local of the caller.
-#[cfg_attr(not(test), allow(dead_code))] // tests::elements; the caller is SetIntegrityLevel
 pub(crate) fn set_integrity(rt: &Runtime, a: u64, frozen: bool) -> bool {
     if !kinds_::is_array(a) {
         return false;

@@ -330,6 +330,15 @@ pub const SHAPE_CAGE_ALIGN: u64 = crate::shape::CAGE_ALIGN as u64;
 /// ([`SHAPE_ELEMENTS_KIND_SHIFT`]) are the elements kind of its objects (`shape.rs`
 /// `shf::COUNTS`, a private module: `tests::layout6` proves the value on live shapes).
 pub const SHAPE_COUNTS: u32 = 48;
+/// OBJECT_LAYOUT (8). A shape's `flags` word, an int32 Value (`shape.rs` `shf::FLAGS`): bits 0-3
+/// as built (EXTENSIBLE 1, DICTIONARY 2, PROTOTYPE 4, UNIQUE 8) and the level bits below.
+pub const SHAPE_FLAGS: u32 = 56;
+/// OBJECT_LAYOUT (8). Shape flag bit 4: every element of the Array is not configurable
+/// (`shape::level::SEALED`; H18 "extra element kinds").
+pub const SHAPE_FLAG_SEALED: i32 = crate::shape::level::SEALED;
+/// OBJECT_LAYOUT (8). Shape flag bit 5, always with [`SHAPE_FLAG_SEALED`]: every element is
+/// also not writable, and `length` is not writable (`shape::level::FROZEN`).
+pub const SHAPE_FLAG_FROZEN: i32 = crate::shape::level::FROZEN;
 /// OBJECT_LAYOUT. Kind id of a shape cell (`kinds::SHAPE`).
 pub const KIND_SHAPE: u8 = crate::kinds::SHAPE.get();
 /// OBJECT_LAYOUT. Kind id of a CONTEXT cell (`kinds::CONTEXT`; the `LoadContextSlot` guard).

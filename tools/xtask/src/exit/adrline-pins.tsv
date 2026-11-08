@@ -393,7 +393,7 @@ history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:222	| 4 Data (spec-int 
 history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:241	| 1 Reviewer (spec-int amendment: the 2026-11-06 rewrite row, PROVEN bitwise facts for Number operands (Frozen Model)) | spec-int Claude reviewer,	c69556aee	\"BigInts have no unsigned right shift\, use \>\> instead\"\,
 history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:241	| 1b Second reviewer (spec-int amendment: the 2026-11-06 rewrite row, PROVEN bitwise facts for Number operands (Frozen Model); README §3.2 Frozen part, GATES10 role)	c69556aee	\"BigInts have no unsigned right shift\, use \>\> instead\"\,
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:202	crates/ep9_vm/src/runtime.rs	roots: \(0\.\.TABLE_SLOTS\)\.map\(	0
-pin	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:89-90	crates/ep9_vm/src/versions.rs	^/// Deoptimization metadata \(H29\)	0	^pub const DEOPT_META_VERSION: u32 = 	0
+pin	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:96-97	crates/ep9_vm/src/versions.rs	^/// Deoptimization metadata \(H29\)	0	^pub const DEOPT_META_VERSION: u32 = 	0
 history	H16-ics-and-feedback.md	crates/ep9_unit/src/host.rs:40	1 Reviewer (M5-P0 amendment: the 2026-10-28 rewrite (version) row, IC_LAYOUT 2 -> 3)	3c1c495	ic: vm::IC_LAYOUT_VERSION,
 history	H35-aot-unit-format.md	crates/ep9_unit/build.rs:1-22	4 Data (M7-P0 amendment: the 2026-11-06 rewrite row, AOT0, the C-19 build-id rule)	cf100de92593535eff6b038e0e3a55245b090a1b	^//! The engine build id \(H35-Q8\): writes
 history	13-execution-modes.md	crates/ep9_unit/src/codes.rs:238-239	The container `facts` section (today `Hints`, kind 6	3dd68d100a16990a3c78fb5ea447cb918b2955bf	/// A HINTED FactSnapshot \(`ep9_facts` format\)\. Optional\.
@@ -425,3 +425,13 @@ history	H03-ts-runtime-semantics.md	crates/ep9_bytecode/src/unit.rs:37	Checked a
 # M7-P3 fixer: realm.rs:261 (realm::create) was once the number of the realm::switch cite in the
 # same H22 line, so the diff map reads it as that cite; the pin names the line it means.
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/realm.rs:261	crates/ep9_vm/src/realm.rs	^pub\(crate\) fn create\(	0
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 1 Reviewer (spec-int amendment: the 2026-11-06 rewrite row, BigInt cell part (B2))	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 1 Reviewer (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 4 Data (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 3 Verifier (spec-int amendment: the 2026-11-06 clarify row, ADRLINE and the layout-core OBJECT_LAYOUT number)	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 4 Data (spec-int amendment: the 2026-11-06 clarify row, ADRLINE and the layout-core OBJECT_LAYOUT number)	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:627	`READ_SET` holds 72 items	18492a40	^pub const READ\_SET\: \[\(\&str\, \&str\)\; 72\] \= \[$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P1 amendment: the 2026-11-06 fill row, DEOPT_META 1 = format 1, A2-START)	cf2df095	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 3 Verifier (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
+history	H17-object-layout.md	crates/ep9_vm/src/tests/layout6.rs:211	| 4 Data (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^fn month\_7\_versions\(\) \{$

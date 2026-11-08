@@ -45,7 +45,10 @@ unsafe fn kind_byte(c: u64) -> u8 {
 /// The 4 OBJECT_LAYOUT hand-fact exports of M6-P0 step 3 (were Spike C `HAND_FACTS`) on live
 /// cells: the shape rule with [`layout::SHAPE_CAGE_ALIGN`], the shape's `counts` word at
 /// [`layout::SHAPE_COUNTS`] (its fields equal the shape accessors), and the SHAPE and CONTEXT
-/// kind ids.
+/// kind ids. OBJECT_LAYOUT 8 (M7-P3, JIT-F3): the shape's `flags` word at
+/// [`layout::SHAPE_FLAGS`] equals `shape::flags`, and on a live sealed and a live frozen dense
+/// Array its level bits ([`layout::SHAPE_FLAG_SEALED`], [`layout::SHAPE_FLAG_FROZEN`]) equal
+/// `elements::integrity_of` (Spike C `CheckArray` bakes the offset and the bits).
 #[test]
 fn the_object_layout_hand_fact_exports_hold_on_live_cells() {
     let iso = isolate(config(Dispatch::DEFAULT, false));
@@ -59,6 +62,36 @@ fn the_object_layout_hand_fact_exports_hold_on_live_cells() {
     let a = object::new_array(rt, 2);
     object::array_set(rt, a, 0, crate::frame::int32_bits(5));
     let c = object::new_context(rt, UNDEFINED, core::ptr::null(), 2);
+    let level = |frozen: bool| {
+        let x = object::new_array(rt, 2);
+        object::array_set(rt, x, 0, crate::frame::int32_bits(5));
+        object::array_set(rt, x, 1, crate::frame::int32_bits(6));
+        assert!(crate::property::prevent_extensions(rt, x));
+        assert!(crate::elements::set_integrity(rt, x, frozen));
+        x
+    };
+    let (sealed, frozen) = (level(false), level(true));
+    let levels = layout::SHAPE_FLAG_SEALED | layout::SHAPE_FLAG_FROZEN;
+    for (v, want) in [
+        (o, 0),
+        (a, 0),
+        (sealed, layout::SHAPE_FLAG_SEALED),
+        (frozen, levels),
+    ] {
+        let s = shape::shape_of(v);
+        // SAFETY: `v` and its shape are live cells of `iso`, which runs nothing here.
+        let flags = int32_of(unsafe { word_at(s, layout::SHAPE_FLAGS as usize) });
+        assert_eq!(flags, shape::flags(s));
+        assert_eq!(flags & levels, crate::elements::integrity_of(v));
+        assert_eq!(flags & levels, want);
+    }
+    for v in [sealed, frozen] {
+        let k = shape::elements_kind(shape::shape_of(v));
+        assert!(
+            k < crate::elements::kind::DICTIONARY,
+            "a dense kind with a level"
+        );
+    }
     for v in [o, a] {
         let s = shape::shape_of(v);
         // SAFETY: `v`, its shape and `c` are live cells of `iso`, which runs nothing here.
@@ -95,6 +128,15 @@ fn the_object_layout_hand_fact_exports_hold_on_live_cells() {
         ),
         (64 << 30, 48, 128, 66),
         "the values Spike C baked as hand facts (OBJECT_LAYOUT 5)"
+    );
+    assert_eq!(
+        (
+            layout::SHAPE_FLAGS,
+            layout::SHAPE_FLAG_SEALED,
+            layout::SHAPE_FLAG_FROZEN
+        ),
+        (56, 16, 32),
+        "the level facts Spike C `CheckArray` bakes (OBJECT_LAYOUT 8)"
     );
 }
 
@@ -196,7 +238,7 @@ fn month_6_versions() {
             versions::FRAME_VERSION,
             versions::DEOPT_META_VERSION
         ),
-        (7, 4, 1, 2, 1)
+        (8, 4, 1, 2, 1)
     );
     assert_eq!(
         (versions::BUILTIN_ABI_VERSION, ep9_bytecode::ABI_VERSION),
@@ -209,7 +251,7 @@ fn month_6_versions() {
 /// ABI 5, Value encoding 1 and FACT_SCHEMA 2 (the BIGINT feedback bits were declared in it).
 #[test]
 fn month_7_versions() {
-    assert_eq!(black_box(versions::OBJECT_LAYOUT_VERSION), 7);
+    assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 7);
     assert_eq!(ep9_value::encoding::VERSION, 1);
     assert_eq!(ep9_facts::FACT_SCHEMA_VERSION, 2);
     assert_eq!(crate::kinds::BIGINT.get(), 9);

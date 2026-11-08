@@ -35,7 +35,6 @@
 //! routed kind, proxies included.
 
 use crate::conv::{Res, num};
-use crate::descriptor::Desc;
 use crate::generator::{self, LazyPrototype};
 use crate::interp::Cx;
 use crate::key::{Probe, array_index_of};
@@ -44,6 +43,7 @@ use crate::object::{self, attr};
 use crate::props;
 use crate::runtime::{Atom, Runtime};
 use crate::wrapper;
+use crate::{descriptor::Desc, elements::dense_attrs};
 
 /// The element that `key` names in the +16 elements store of `o`, an object of an
 /// `elements::plain_elements_kind` (H18-Q3): (index, value). The +16 test comes first: most
@@ -179,7 +179,7 @@ pub(crate) fn own_property(
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
         let i = array_index_of(key)?;
-        return object::array_get(o, i).map(|v| Ok((v, attr::DEFAULT, Exotic::Element(i))));
+        return object::array_get(o, i).map(|v| Ok((v, dense_attrs(o), Exotic::Element(i))));
     }
     if crate::elements::plain_elements_kind(k)
         && let Some((i, v)) = plain_element(o, key)
@@ -214,7 +214,7 @@ pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i3
             return Some(attr::WRITABLE);
         }
         let i = array_index_of(key)?;
-        return object::array_get(o, i).map(|_| attr::DEFAULT);
+        return object::array_get(o, i).map(|_| dense_attrs(o));
     }
     if crate::elements::plain_elements_kind(k) && plain_element(o, key).is_some() {
         return Some(attr::DEFAULT);
