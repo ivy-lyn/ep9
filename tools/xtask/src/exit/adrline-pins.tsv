@@ -434,4 +434,5 @@ history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:627	`READ_SET` hol
 history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P1 amendment: the 2026-11-06 fill row, DEOPT_META 1 = format 1, A2-START)	cf2df095	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
 history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 3 Verifier (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
 history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:89-90	| 1 Reviewer (M7-P1 amendment: the 2026-11-06 fill row, DEOPT_META 1 = format 1, A2-START)	9efb72b3	^/// Deoptimization metadata \(H29\)
 history	H17-object-layout.md	crates/ep9_vm/src/tests/layout6.rs:211	| 4 Data (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^fn month\_7\_versions\(\) \{$
