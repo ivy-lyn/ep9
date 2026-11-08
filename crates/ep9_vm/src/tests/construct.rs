@@ -676,3 +676,79 @@ fn the_hit_frames_equal_the_cold_push() {
     }
     assert_eq!(cases, 2 * 5 * 5 * 5);
 }
+
+/// Route CONSTRUCT-DERIVED-RET (§10.2.2 steps 10-12): the result check of a derived
+/// constructor runs after its frame returned, in the caller. The callee `D` (a derived
+/// constructor that never calls `super()`) returns one value: null throws a TypeError, the
+/// hole (what BytecodeGen returns for `undefined` while the `this` binding is the hole)
+/// throws a ReferenceError, and an object is the result. Both caller kinds: a JS construct
+/// (the stub frame, `interp::construct_return`) and a Rust one (`Cx::construct`,
+/// `call::construct_function_object`). Before the route, the 2 non-objects gave undefined.
+#[test]
+fn a_derived_constructor_result_is_checked_after_the_return() {
+    use ep9_bytecode::{FunctionCode, FunctionFlags, FunctionKind};
+    fn derived(result: u8) -> FunctionCode {
+        let mut m = meta("D", 0, 0, 0, 0);
+        m.kind = FunctionKind::DerivedConstructor;
+        m.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+        let mut d = Asm::new(m);
+        match result {
+            0 => d.b.lda_null(),
+            1 => d.b.lda_the_hole(),
+            _ => d.b.create_empty_object_literal(),
+        };
+        d.b.return_();
+        d.finish()
+    }
+    // The script: `D = f1`; with `js`, `print(typeof new D())`; then it returns `D`.
+    fn script(result: u8, js: bool) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let d = s.b.new_register();
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(d);
+        if js {
+            let f = s.f;
+            s.b.ldar(d).star(f);
+            s.b.construct(f, RegisterList::EMPTY, 0, s.call);
+            let t = s.b.feedback_slot(FeedbackSlotKind::TypeOf);
+            s.b.type_of(t);
+            s.print_acc();
+        }
+        s.b.ldar(d).return_();
+        unit("", vec![s.finish(), derived(result)])
+    }
+    let want = [
+        "TypeError: Derived constructors may only return object or undefined",
+        "ReferenceError: Must call super constructor in derived class before accessing 'this' \
+         or returning from derived constructor",
+        "object",
+    ];
+    for result in 0..3u8 {
+        for (label, c) in configs() {
+            on_big_stack(move || {
+                let mut iso = isolate(c);
+                for js in [true, false] {
+                    take_output();
+                    let u = script(result, js);
+                    let r = iso.with_cx_checkpoint(|cx| {
+                        let d = cx.run_script(u, "test.js")?;
+                        if js {
+                            return Ok(String::new());
+                        }
+                        let o = cx.construct(d, &[], d)?;
+                        Ok(cx.type_of(o).to_string())
+                    });
+                    let got = match (r, js) {
+                        (Err(e), _) => e.message,
+                        (Ok(_), true) => take_output().join("\n"),
+                        (Ok(t), false) => t,
+                    };
+                    let w = want[result as usize];
+                    assert_eq!(got, w, "{label} result {result} js {js}");
+                    iso.collect_garbage();
+                    iso.verify_heap().unwrap();
+                }
+            });
+        }
+    }
+}

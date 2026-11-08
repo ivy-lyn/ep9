@@ -837,7 +837,7 @@ macro_rules! expand_threaded {
             #[allow(unused_variables)]
             fn construct_return(cx, pc, fp, acc) {
                 // SAFETY: caller contract.
-                let (next, fp, acc) = unsafe { $crate::interp::construct_return(fp, acc) };
+                let (next, fp, acc) = unsafe { $crate::interp::construct_return(cx, fp, acc) };
                 // SAFETY: `next` is the caller's next instruction.
                 let h = cx.table[unsafe { *next } as usize];
                 // SAFETY: as in the opcode handlers.
@@ -1007,7 +1007,7 @@ macro_rules! expand_match {
                     OP_EXIT => return acc,
                     OP_CONSTRUCT_RETURN => {
                         // SAFETY: only a construct stub frame returns to this stub.
-                        let (next, f, a) = unsafe { $crate::interp::construct_return(fp, acc) };
+                        let (next, f, a) = unsafe { $crate::interp::construct_return(&mut *cx, fp, acc) };
                         pc = next;
                         fp = f;
                         acc = a;

@@ -60,7 +60,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      33 E 71 (1:72)
      48 E 0 (1:1)
 function f1 derived-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=0..104
-  code (33 bytes):
+  code (32 bytes):
       0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope2 ; 75 00 03
       3    PushContext r1                               ; 13 01
       5    LdaNewTarget                                 ; 0f
@@ -77,8 +77,7 @@ function f1 derived-constructor name="A" parent=f0 outer_scope=scope1 flags=[str
      26    JumpIfUndefined @29                          ; 85 03
      28    Return                                       ; 92
      29    LdaCurrentContextSlot [2]                    ; 18 02
-     31 E> ThrowSuperNotCalledIfHole                    ; 95
-     32    Return                                       ; 92
+     31    Return                                       ; 92
   constants (2):
       0 Scope scope2
       1 Function f2
@@ -86,12 +85,11 @@ function f1 derived-constructor name="A" parent=f0 outer_scope=scope1 flags=[str
       0 CreateClosure
       1 Call
   handlers (0):
-  positions (5):
+  positions (4):
       0 E 36 (1:37)
      14 S 45 (1:46)
      20 S 64 (1:65)
      22 E 64 (1:65)
-     31 E 69 (1:70)
 function f2 arrow name="f" parent=f1 outer_scope=scope2 flags=[strict,simple-params] params=0 length=0 regs=2 range=49..62
   code (23 bytes):
       0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00

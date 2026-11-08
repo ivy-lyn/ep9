@@ -218,14 +218,22 @@ pub(crate) unsafe fn run(cx: &mut Cx, pc: *const u8, fp: *mut u64) -> u64 {
     }
 }
 
-/// The `[[Construct]]` result check of a construct stub frame `fp` (§10.2.2 steps 10-12):
-/// an object result stays, anything else becomes the receiver the stub holds. Returns the
-/// caller's (pc, fp, accumulator).
+/// The `[[Construct]]` result check of a construct stub frame `fp` (§10.2.2 steps 10-12),
+/// after the callee frame returned `acc` (step 9: the callee's context is gone): an object
+/// result stays, and for a base constructor anything else becomes the receiver the stub holds.
+/// A derived constructor (the stub holds the hole) with a result that is not an object throws
+/// in the caller's realm, at the caller's construct instruction ([`derived_result_error`]).
+/// Returns the caller's (pc, fp, accumulator), or after a throw the handler's (or the `Exit`
+/// stub's, with accumulator 0).
 ///
 /// # Safety
 /// `fp` is a live construct stub frame.
 #[inline(always)]
-pub(crate) unsafe fn construct_return(fp: *mut u64, acc: u64) -> (*const u8, *mut u64, u64) {
+pub(crate) unsafe fn construct_return(
+    cx: &mut Cx,
+    fp: *mut u64,
+    acc: u64,
+) -> (*const u8, *mut u64, u64) {
     // SAFETY: header and receiver slots of the live stub frame (caller contract).
     let (this, ret, caller) = unsafe {
         (
@@ -234,16 +242,54 @@ pub(crate) unsafe fn construct_return(fp: *mut u64, acc: u64) -> (*const u8, *mu
             *fp.offset(slot::CALLER_FP),
         )
     };
-    let acc = if crate::object::is_object(acc) {
-        acc
-    } else if this == HOLE {
-        // v0: a derived constructor returned a non-object without its `this` check
-        // (BytecodeGen emits that check); give undefined, never the hole.
-        UNDEFINED
+    let (ret, caller) = (native_ptr::<u8>(ret), native_ptr::<u64>(caller));
+    if crate::object::is_object(acc) {
+        (ret, caller, acc)
+    } else if this != HOLE {
+        (ret, caller, this)
     } else {
-        this
-    };
-    (native_ptr(ret), native_ptr(caller), acc)
+        derived_construct_error(cx, caller, ret, acc)
+    }
+}
+
+/// The throw of [`construct_return`] for a derived constructor's result `acc` that is not an
+/// object. The stub frame is popped: `caller` is the top frame, and the throw is at its
+/// construct instruction, the return pc `ret` minus one (the H14 offset of a frame below a
+/// stub). Returns the dispatch state of the handler that catches it.
+#[cold]
+#[inline(never)]
+fn derived_construct_error(
+    cx: &mut Cx,
+    caller: *mut u64,
+    ret: *const u8,
+    acc: u64,
+) -> (*const u8, *mut u64, u64) {
+    let pc = ret.wrapping_sub(1);
+    let (kind, msg) = derived_result_error(acc);
+    slow::throw_msg(cx, caller, pc, kind, msg);
+    let acc = crate::error::unwind(cx, caller, pc);
+    (cx.out_pc, cx.out_fp, acc)
+}
+
+/// The error of `[[Construct]]` (§10.2.2) for a result `r` of a derived constructor that is not
+/// an object: a TypeError for a value that is not undefined (step 10.c), else the
+/// ReferenceError of GetThisBinding (step 12; BytecodeGen returns the `this` binding for
+/// undefined, so `r` is the hole while `super()` has not run). The caller throws it after the
+/// callee's context is gone, so in the caller's realm: [`construct_return`] for a JS caller,
+/// `call::construct_function_object` for a caller in Rust or of another realm.
+pub(crate) fn derived_result_error(r: u64) -> (crate::runtime::ErrorKind, &'static str) {
+    use crate::runtime::ErrorKind;
+    if r == UNDEFINED || r == HOLE {
+        (
+            ErrorKind::ReferenceError,
+            "Must call super constructor in derived class before accessing 'this' or returning from derived constructor",
+        )
+    } else {
+        (
+            ErrorKind::TypeError,
+            "Derived constructors may only return object or undefined",
+        )
+    }
 }
 
 /// What a fast body does next.

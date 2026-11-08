@@ -163,7 +163,7 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[
       0 S 31 (1:32)
       2 E 31 (1:32)
 function f3 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=11..66
-  code (41 bytes):
+  code (40 bytes):
       0    LdaTheHole                                   ; 07
       1    Star r0                                      ; 0c 00
       3 S> LdaCurrentFunction                           ; 0e
@@ -183,19 +183,17 @@ function f3 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[str
      34    JumpIfUndefined @37                          ; 85 03
      36    Return                                       ; 92
      37    Ldar r0                                      ; 0b 00
-     39 E> ThrowSuperNotCalledIfHole                    ; 95
-     40    Return                                       ; 92
+     39    Return                                       ; 92
   constants (0):
   feedback (1):
       0 Call
   handlers (0):
-  positions (6):
+  positions (5):
       3 S 54 (1:55)
       6 E 54 (1:55)
       9 E 54 (1:55)
      18 E 54 (1:55)
      28 E 54 (1:55)
-     39 E 63 (1:64)
 function f4 derived-constructor name="C" parent=f0 outer_scope=scope6 flags=[strict,simple-params] params=0 length=0 regs=5 range=67..111
   code (30 bytes):
       0 S> LdaCurrentFunction                           ; 0e
@@ -259,7 +257,7 @@ function f6 class-fields-initializer name=- parent=f0 outer_scope=scope9 flags=[
       0 S 132 (1:133)
       1 E 132 (1:133)
 function f7 derived-constructor name="D" parent=f0 outer_scope=scope9 flags=[strict,simple-params] params=0 length=0 regs=3 range=112..182
-  code (33 bytes):
+  code (32 bytes):
       0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope11 ; 75 00 03
       3    PushContext r1                               ; 13 01
       5    LdaNewTarget                                 ; 0f
@@ -276,8 +274,7 @@ function f7 derived-constructor name="D" parent=f0 outer_scope=scope9 flags=[str
      26    JumpIfUndefined @29                          ; 85 03
      28    Return                                       ; 92
      29    LdaCurrentContextSlot [2]                    ; 18 02
-     31 E> ThrowSuperNotCalledIfHole                    ; 95
-     32    Return                                       ; 92
+     31    Return                                       ; 92
   constants (2):
       0 Scope scope11
       1 Function f8
@@ -285,12 +282,11 @@ function f7 derived-constructor name="D" parent=f0 outer_scope=scope9 flags=[str
       0 CreateClosure
       1 Call
   handlers (0):
-  positions (5):
+  positions (4):
       0 E 146 (1:147)
      14 S 155 (1:156)
      20 S 174 (1:175)
      22 E 174 (1:175)
-     31 E 179 (1:180)
 function f8 arrow name="f" parent=f7 outer_scope=scope11 flags=[strict,simple-params] params=0 length=0 regs=4 range=159..172
   code (37 bytes):
       0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00

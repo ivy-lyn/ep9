@@ -850,9 +850,9 @@ impl<'a, 's> FnGen<'a, 's> {
         }
     }
 
-    /// Return the accumulator from this function (derived constructors: `undefined` returns
-    /// the checked `this`; an async function resolves its promise first, `async_fn.rs` AF4;
-    /// an async generator completes its first request, `async_gen.rs`).
+    /// Return the accumulator from this function (derived constructors: `undefined` returns the
+    /// `this` binding, which the construct return checks; an async function resolves its
+    /// promise first, `async_fn.rs` AF4; an async generator completes its first request).
     pub(crate) fn emit_return(&mut self) {
         if let Some(object) = self.async_object() {
             self.async_return(object);
@@ -863,17 +863,19 @@ impl<'a, 's> FnGen<'a, 's> {
             return;
         }
         if self.info.kind.is_derived_constructor() {
-            let this_check = self.b.new_label();
-            self.b.jump_if_undefined(this_check);
+            // §10.2.2 steps 10-12 run in the caller's context after the return
+            // (`interp::construct_return`, `call::construct_function_object`), so their
+            // errors are the caller realm's: a value that is not undefined goes back as it
+            // is, and undefined becomes the `this` binding, the hole while `super()` has not
+            // run.
+            let this_value = self.b.new_label();
+            self.b.jump_if_undefined(this_value);
             self.b.return_();
-            self.b.bind(this_check);
+            self.b.bind(this_value);
             match self.info.this {
-                Some(t) => {
-                    self.load_binding_here(t, false);
-                    self.b.throw_super_not_called_if_hole();
-                }
+                Some(t) => self.load_binding_here(t, false),
                 None => {
-                    self.b.lda_the_hole().throw_super_not_called_if_hole();
+                    self.b.lda_the_hole();
                 }
             }
         }

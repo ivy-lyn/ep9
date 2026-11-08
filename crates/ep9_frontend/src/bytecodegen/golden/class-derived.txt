@@ -81,7 +81,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   positions (1):
       0 S 0 (1:1)
 function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=4 range=11..98
-  code (43 bytes):
+  code (42 bytes):
       0    LdaTheHole                                   ; 07
       1    Star r0                                      ; 0c 00
       3 S> LdaCurrentFunction                           ; 0e
@@ -103,15 +103,14 @@ function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[str
      36    JumpIfUndefined @39                          ; 85 03
      38    Return                                       ; 92
      39    Ldar r0                                      ; 0b 00
-     41 E> ThrowSuperNotCalledIfHole                    ; 95
-     42    Return                                       ; 92
+     41    Return                                       ; 92
   constants (1):
       0 String str3 "y"
   feedback (2):
       0 Call
       1 StoreNamed
   handlers (0):
-  positions (8):
+  positions (7):
       3 S 47 (1:48)
       8 E 47 (1:48)
      13 E 47 (1:48)
@@ -119,7 +118,6 @@ function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[str
      26 S 57 (1:58)
      28 E 57 (1:58)
      31 E 57 (1:58)
-     41 E 69 (1:70)
 function f3 method name="m" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=71..96
   code (23 bytes):
       0 S> Ldar <this>                                  ; 0b ff

@@ -673,14 +673,16 @@ pub(crate) fn construct_function_object(
         ordinary_create_from_constructor(cx, new_target)?
     };
     let r = call_function_object(cx, f, this, argc, arg, new_target)?;
-    // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers.
-    Ok(if is_object(r) {
-        r
-    } else if this == HOLE {
-        UNDEFINED
+    // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers: after the call,
+    // in the caller's realm (`call_function_object` switched back).
+    if is_object(r) {
+        Ok(r)
+    } else if this != HOLE {
+        Ok(this)
     } else {
-        this
-    })
+        let (kind, msg) = interp::derived_result_error(r);
+        Err(throw_error(cx, kind, msg))
+    }
 }
 
 /// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13): a `prototype` that is
