@@ -20,8 +20,9 @@
 //!
 //! WIN-EXIT-HANG (CI 42484485512): the OS can also end the worker while it holds a lock. A drop
 //! that then takes the same lock waits for ever, and the child never ends. The parent kills a
-//! child at DEADLINE and goes on, so a hang costs seconds, not the job timeout. The worker's unit
-//! test `dropping_a_worker_takes_no_lock_its_thread_may_hold` covers this cause on every host.
+//! child at DEADLINE and goes on, so a hang costs seconds, not the job timeout; a child that the
+//! kill does not end stops the parent (panic). The worker's unit test
+//! `dropping_a_worker_takes_no_lock_its_thread_may_hold` covers this cause on every host.
 //! The stderr of a "thread-exit" child shows where it stopped:
 //!
 //! ```text
@@ -46,7 +47,7 @@ const STRESS: &str = "EP9_EXIT_STRESS";
 /// The stress loop is a smoke test. The deterministic gate of WIN-EXIT-HANG is the worker's
 /// unit test `dropping_a_worker_takes_no_lock_its_thread_may_hold`. Windows probe A (the test
 /// without the fix) hung 9 of 8000 children (about 0.11 % per exit); probe B (with the fix)
-/// hung 0 of 8000. At that rate, 500 per mode show a regression in about 42 % of the modes of
+/// hung 0 of 8000. At that rate, 500 per mode show a regression in about 43 % of the modes of
 /// one run (M6-ORCH-283). The OS ends the worker at an exit on Windows only, so 5 elsewhere.
 const STRESS_DEFAULT: usize = if cfg!(windows) { 500 } else { 5 };
 /// A child that runs longer than this is killed and counts as a hit.
