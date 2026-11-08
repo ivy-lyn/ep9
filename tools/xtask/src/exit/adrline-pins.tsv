@@ -124,7 +124,7 @@ history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:260-265	| 1 Review
 history	H16-ics-and-feedback.md	`:300-305`	| 1 Reviewer (M4-P0 addendum: the 2026-10-26 rewrite (version) row, IC_LAYOUT 1 -> 2; re-c	d1c350b	^pub struct CloneCase \{$	crates/ep9_facts/src/facts.rs
 history	H16-ics-and-feedback.md	crates/ep9_vm/src/object.rs:347	| 3 Verifier (M4-P2 amendment: the 2026-10-27 CacheIR global-store fill row, P2-ORCH-9)	2dbf2b0	^pub\(crate\) fn wr\(heap\: \&Heap\, c\: CellPtr\, off\: usize\, v\: u64\) \{$
 history	H36-fp-semantics.md	crates/ep9_math/src/exact.rs:745	| 3 Verifier	b34fd01	^    fn soft_fma_sticky_of_shifted_product\(\) \{$
-pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_heap/src/heap.rs	^    pub near_limit\: Option<fn\(committed\: usize, limit\: usize\) \-> usize>,$	0
+pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:113	crates/ep9_heap/src/heap.rs	^    pub near_limit\: Option<fn\(committed\: usize, limit\: usize\) \-> usize>,$	0
 # M5-P0 integration fixer (ADRLINE of the M5-P0 merge head): two refs whose line text P0-VM5
 # changed in place (OBJECT_LAYOUT 5 added +32 to the ARRAY row; the IC hit path lost the epoch
 # argument), and one dated record row that keeps the native.rs lines of its commit.
@@ -266,7 +266,7 @@ history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:460-463	**The set 
 # the drift map would read them from that older commit, so each is pinned to its line at HEAD. The H16
 # F-R7 pin of facts_export.rs:86-100 is gone: the doc now cites 96-110 (its FIX value). H20:66 names
 # builtins.rs:1024 by its full path (the bare `:1024` was an older H20 token of abi/mod.rs).
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:753	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:792	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:184	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
 pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:581	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
 # spec-int merge (spec-temporal on m1m6/p5, 2026-11-05): dated record and Change-log rows keep the line of the
@@ -408,10 +408,10 @@ pin	H13-snapshot-stable-indices.md	docs/adr/README.md:144	docs/adr/README.md	^\|
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/realm.rs:266	4 Data (M7-P0 amendment: the 2026-11-06 fill row, AOT0, the C-18 root-slot form)	0fd056e4	^pub\(crate\) fn switch\(
 # M7-P1 fixer r2b: the 4 H20:64-66 builtins.rs refs came in the merge 385e6560 (git log -S does not read a
 # merge), and 978 and 1058 are older H20 tokens of other lines: each is pinned to its line at HEAD.
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:978	crates/ep9_vm/src/builtins.rs	^pub struct PropDef \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1058	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1137	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1187	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1017	crates/ep9_vm/src/builtins.rs	^pub struct PropDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1097	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1176	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1226	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
 # M7-P3 A2-ENTRY (C-10): `mod native` and `Cx::runtime_table` are no longer behind `spike-native`;
 # these rows say where 18492a40 (tag m7-p2) put the lines they name.
 history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/lib.rs:102-103	| Failed deopt (2026-10-29) |	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
@@ -419,3 +419,9 @@ history	H23-limits-and-failure-policy.md	`crates/ep9_vm/src/lib.rs` lines 102-10
 history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/lib.rs:102-103	| 4 Data (M5-P2 amendment: the 2026-10-29 Failed deopt reason clarify row)	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
 history	H35-aot-unit-format.md	crates/ep9_vm/src/isolate.rs:321-324	| Build id |	18492a40	^            #\[cfg\(feature \= \"spike\-native\"\)\]$
 history	H35-aot-unit-format.md	crates/ep9_vm/src/isolate.rs:321-324	| 1 Reviewer (M7-P0 amendment: the 2026-11-06 rewrite row, AOT0, the C-19 build-id rule)	18492a40	^            #\[cfg\(feature \= \"spike\-native\"\)\]$
+# M7-P3 SPEC-ERM (ABI 5 -> 6): the H03 sentence "`ABI_VERSION` is 5" is an M3-P0 record row; it was
+# true at its own commit.
+history	H03-ts-runtime-semantics.md	crates/ep9_bytecode/src/unit.rs:37	Checked at 5d6faa3 (m0m3/p0-fix-docs)	5d6faa3	^pub const ABI_VERSION: u32 = 5;$
+# M7-P3 fixer: realm.rs:261 (realm::create) was once the number of the realm::switch cite in the
+# same H22 line, so the diff map reads it as that cite; the pin names the line it means.
+pin	H22-isolates-and-realms.md	crates/ep9_vm/src/realm.rs:261	crates/ep9_vm/src/realm.rs	^pub\(crate\) fn create\(	0
