@@ -196,7 +196,7 @@ fn two_isolates_have_the_same_intrinsic_property_order() {
         let ep = cx.intrinsic(IntrinsicId::ErrorPrototype);
         assert_eq!(
             keys(cx, rt, ep),
-            ["toString", "name", "message", "constructor"]
+            ["toString", "name", "message", "constructor", "stack"]
         );
     });
 }
