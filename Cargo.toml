@@ -23,14 +23,14 @@ license = "MIT OR Apache-2.0"
 # D1 = E: oxc from crates.io with exact pins. Only ep9_frontend imports oxc.
 # Bump all of them together, one bump PR at a time (08-repo section 6).
 # List only crates that a member uses (newer cargo warns on unused ones); transitive oxc crates (oxc_syntax, ...) stay pinned by Cargo.lock and --locked.
-oxc_allocator = "=0.155.0"
-oxc_ast = "=0.155.0"
-oxc_ast_visit = "=0.155.0"
-oxc_diagnostics = "=0.155.0"
-oxc_parser = "=0.155.0"
-oxc_regular_expression = "=0.155.0"
-oxc_semantic = "=0.155.0"
-oxc_span = "=0.155.0"
+oxc_allocator = "=0.157.0"
+oxc_ast = "=0.157.0"
+oxc_ast_visit = "=0.157.0"
+oxc_diagnostics = "=0.157.0"
+oxc_parser = "=0.157.0"
+oxc_regular_expression = "=0.157.0"
+oxc_semantic = "=0.157.0"
+oxc_span = "=0.157.0"
 # RX0 (docs/decisions-log.md M4-PLAN-D15): the RegExp backend of ep9_regexp, exact pin. Only
 # ep9_regexp imports it, and only ep9_vm depends on it (.github/scripts/dep-guards.sh check 14).
 # Since M5-P0 the build uses the fork: [patch.crates-io] at the end of this file points at the
