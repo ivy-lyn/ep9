@@ -540,3 +540,41 @@ fn a_unit_script_inside_the_text_host_imports_json_and_text() {
         );
     }
 }
+
+/// A JSON or text module's `default` binding is undefined until the module evaluates (the
+/// spec sets it at Evaluate: CreateDefaultExportSyntheticModule, SetSyntheticModuleExport).
+/// A cycle reaches it before then: `main.js` imports `a.js`, which imports `b.js` first and
+/// then re-exports the default of `d.json` and of `t.txt`; `b.js` imports `a.js` back, so it
+/// evaluates before `d.json` and `t.txt` and reads both bindings through `a.js`: undefined
+/// (not the hole: no ReferenceError). `main.js` evaluates last and sees both values. M7-P4
+/// fixer r2, reviewer R2: at the fixer r1 head `b.js` saw the values (stored at load).
+#[test]
+fn a_cycle_reads_a_json_or_text_default_before_it_evaluates() {
+    const FILES: Files = &[
+        (
+            "main.js",
+            "import { j, t } from './a.js';\nprint('main', JSON.stringify(j), JSON.stringify(t));\n",
+        ),
+        (
+            "a.js",
+            "import './b.js';\n\
+             export { default as j } from './d.json' with { type: 'json' };\n\
+             export { default as t } from './t.txt' with { type: 'text' };\n",
+        ),
+        (
+            "b.js",
+            "import { j, t } from './a.js';\nprint('b', typeof j, typeof t);\n",
+        ),
+        ("d.json", r#"{"v": 1}"#),
+        ("t.txt", "hi"),
+    ];
+    assert_eq!(
+        run_every(FILES, &["main.js"], Host::Text),
+        lines(&[
+            "b undefined undefined",
+            "main {\"v\":1} \"hi\"",
+            // Not node output: the calls of the text hook.
+            "text hook: d.json json, t.txt text",
+        ])
+    );
+}

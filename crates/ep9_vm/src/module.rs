@@ -2299,15 +2299,19 @@ fn import_evaluated<'s>(
 //           a SyntaxError is the error of the load (no record)
 //     text: the text as a string (CreateTextModule)
 //     CreateDefaultExportSyntheticModule(value): a Source Text Module Record of the
-//       synthetic unit (one export, "default", cell 1; function 0 has no statements), with
-//       the value in the box of cell 1
+//       synthetic unit (one export, "default", cell 1, undefined; the value in the box of
+//       cell -1, which no entry names); Evaluate runs function 0: cell 1 = cell -1
 // ```
 //
 // The record keeps the Source Text record form (the MODULE fields do not change), so Link,
-// Evaluate and the namespace treat it as any module with no requests. The value is in the
-// box from the start: the spec stores it at Evaluate (SetSyntheticModuleBinding), but no code
-// can read the binding before then, because the module has no requests (no cycle reaches it)
-// and every importer evaluates after it.
+// Evaluate and the namespace treat it as any module with no requests. The spec sets the
+// binding at Evaluate (SetSyntheticModuleExport), and before then it is undefined (Link
+// initializes it): code can read it before Evaluate, through a cycle of other modules (a
+// module that imports one that re-exports the default, and is imported back by it, runs
+// first). So the value waits in the box of cell -1 (the unit has no import entry, so no Link
+// step writes that box and no name reads it; the environment has its slot, because exports
+// and imports alternate, `cell_slot`), and Evaluate copies it into cell 1 (M7-P4 fixer r2,
+// reviewer R2).
 
 /// The module type of a module request: its `type` import attribute (§16.2.1.3.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2390,8 +2394,11 @@ pub(crate) fn synthetic_module(cx: &mut Cx, realm: u64, name: &str, ty: ModuleTy
     let name_atom = atoms::intern_str(rt, name);
     let m = new_module(rt, lu, name_atom);
     object::record_set(rt, m, modf::HOST_DEFINED, realm);
-    let stored = cell_set(rt, m, SYNTHETIC_DEFAULT_CELL, value);
+    // Link's undefined, not the hole (the binding is never in a TDZ).
+    let stored = cell_set(rt, m, SYNTHETIC_DEFAULT_CELL, UNDEFINED);
     debug_assert!(stored, "the synthetic unit exports cell 1");
+    let b = object::new_list(rt, 1, value);
+    object::context_set(rt, environment(m), cell_slot(SYNTHETIC_VALUE_CELL), b);
     map_add(rt, realm, key, m);
     Ok(m)
 }
@@ -2399,15 +2406,22 @@ pub(crate) fn synthetic_module(cx: &mut Cx, realm: u64, name: &str, ty: ModuleTy
 /// The cell of the `default` export of the synthetic unit.
 const SYNTHETIC_DEFAULT_CELL: i32 = 1;
 
+/// The cell of the synthetic unit that holds the value from load until Evaluate copies it
+/// into [`SYNTHETIC_DEFAULT_CELL`]: no entry names it (the unit has no imports).
+pub(crate) const SYNTHETIC_VALUE_CELL: i32 = -1;
+
 /// The module unit of a JSON or text module: strict module code with the one local export
 /// `default` (local name `*default*`, cell 1) and a function 0 of the front end's module form
-/// (`bytecodegen/module.rs`) with no declarations and no statements:
+/// (`bytecodegen/module.rs`) with no declarations, whose Evaluate part copies cell -1 (the
+/// value, [`SYNTHETIC_VALUE_CELL`]) into cell 1:
 ///
 /// ```text
 ///     Ldar <this>; Star r0; LdaUndefined; Star <this>
 ///     SwitchOnGeneratorState r0, [L_init, L_run]
 /// L_init: LdaUndefined; SuspendGenerator r0, r0..r0, 1, 1     InitializeEnvironment ends
-/// L_run:  ResumeGenerator r0, r0..r0, 1; LdaUndefined; Return Evaluate: nothing to run
+/// L_run:  ResumeGenerator r0, r0..r0, 1                        Evaluate:
+///         LdaModuleVariable -1, 0; StaModuleVariable 1, 0     SetSyntheticModuleExport
+///         LdaUndefined; Return
 /// ```
 ///
 /// The unit has no source text. Not a GC point.
@@ -2440,6 +2454,8 @@ pub(crate) fn synthetic_unit() -> Result<VerifiedUnit, ep9_bytecode::BuildError>
     b.suspend_generator(g, regs, 1, RUN as u32);
     b.bind(entries[RUN as usize]);
     b.resume_generator(g, regs, 1);
+    b.lda_module_variable(SYNTHETIC_VALUE_CELL, 0)
+        .sta_module_variable(SYNTHETIC_DEFAULT_CELL, 0);
     b.lda_undefined().return_();
     u.set_function(FunctionId(0), b.finish()?);
     let mut records = ModuleRecords::default();

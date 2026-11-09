@@ -458,9 +458,10 @@ fn the_synthetic_unit_exports_only_default() {
 }
 
 /// M7-P4 SPEC-BUILTINS4: `has_text_hook` reads the innermost host; a text module's record
-/// holds the text in its `default` cell across collections, and the realm's map gives the
-/// same record again without asking the hook; with no builtin table, a JSON module is the
-/// not-implemented Error (no %JSON.parse%), and no record is made.
+/// holds the text in its value cell across collections (its `default` cell is undefined
+/// until Evaluate), and the realm's map gives the same record again without asking the hook;
+/// with no builtin table, a JSON module is the not-implemented Error (no %JSON.parse%), and
+/// no record is made.
 #[test]
 fn a_text_module_record_holds_its_text() {
     use crate::compiler::{CompileFailure, CompileResult};
@@ -491,7 +492,10 @@ fn a_text_module_record_holds_its_text() {
                 let hm = cx.rt().heap.new_global(val(m));
                 cx.rt().heap.collect();
                 let m = cx.rt().heap.global(hm).to_bits();
-                let v = module::cell_get(m, 1).expect("cell 1");
+                // Before Evaluate: cell 1 (the export) is undefined, the value cell has the
+                // text (M7-P4 fixer r2, reviewer R2).
+                assert_eq!(module::cell_get(m, 1), Some(UNDEFINED));
+                let v = module::cell_get(m, module::SYNTHETIC_VALUE_CELL).expect("the value cell");
                 assert_eq!(crate::string::to_rust_string(v), "a.txt as text");
                 let again =
                     module::synthetic_module(cx, cx.realm, "a.txt", module::ModuleType::Text)
