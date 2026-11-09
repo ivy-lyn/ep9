@@ -1019,9 +1019,15 @@ fn emit_shape(s: &mut Asm, shape: Shape, callee: &str, l: RegisterList) {
     };
 }
 
+/// Taken for the whole body of [`run_host`], so no two `run_host` runs overlap (M7-P4 fixer
+/// r2, reviewer R1 and J3). The human fast path switch is process-wide (`call::ANY_OFF`): while
+/// one test runs with the switch off, the T0 call fast path of every other thread goes cold,
+/// and a test that counts T0 forwards sees too few.
+static RUN_HOST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Runs `make` with `echo`, `sp`, `fcall` and `fapply` registered, the human fast paths `on`
 /// or off: (result, output, host entries, forwarded calls, the forwarded calls of the T0 call
-/// fast path).
+/// fast path). Holds [`RUN_HOST`] until it returns.
 fn run_host(
     make: fn() -> VerifiedUnit,
     d: Dispatch,
@@ -1029,6 +1035,10 @@ fn run_host(
     on: bool,
 ) -> (Result<String, String>, Vec<String>, u64, u64, u64) {
     use crate::call::{FORWARDED_CALLS, HOST_ENTRY_HITS, T0_FORWARDED_CALLS};
+    // A test that failed with the lock held poisons it; the next test must still run.
+    let _one = RUN_HOST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     super::on_big_stack(move || {
         let mut c = super::config(d, stress);
         c.builtins = Some(&FORWARDERS);
