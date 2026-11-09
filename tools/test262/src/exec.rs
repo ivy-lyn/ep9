@@ -904,10 +904,14 @@ fn load_module(root: &Path, name: &str) -> CompileResult {
 
 /// The text hook of the test262 loader: the text of the file `name` (relative to the test262
 /// root) for a JSON module or a text module (`_ty` is `"json"` or `"text"`; the VM parses the
-/// JSON). A file that is not UTF-8 is an error.
+/// JSON). A file that is not UTF-8 is an error. One leading UTF-8 BOM is not part of the text
+/// (WHATWG "UTF-8 decode", as node; M7-P4 fixer r2, reviewer R4).
 fn text_module(root: &Path, name: &str, _ty: &str) -> Result<String, String> {
     match std::fs::read(root.join(name)).map(String::from_utf8) {
-        Ok(Ok(s)) => Ok(s),
+        Ok(Ok(s)) => Ok(match s.strip_prefix('\u{feff}') {
+            Some(rest) => rest.to_string(),
+            None => s,
+        }),
         Ok(Err(_)) => Err(format!("{name}: the file is not valid UTF-8")),
         Err(e) => Err(format!("cannot read {name}: {e}")),
     }
@@ -2068,6 +2072,25 @@ mod tests {
             (lines, error.as_str()),
             (vec!["json 1", "text hi"], "RangeError: script")
         );
+    }
+
+    /// The text hook drops one leading UTF-8 BOM (WHATWG "UTF-8 decode", as node); a U+FEFF
+    /// after it stays (M7-P4 fixer r2, reviewer R4).
+    #[test]
+    fn the_text_hook_drops_one_leading_bom() {
+        let files: &[(&str, &[u8])] = &[("test/bom.json", b"\xef\xbb\xbf{\"b\": 2}")];
+        let script = "import('./bom.json', { with: { type: 'json' } })\n\
+            .then(m => print(JSON.stringify(m.default)), e => print(e));\n";
+        assert_eq!(
+            run_in_root("r4-bom", files, script),
+            ("{\"b\":2}\n".to_string(), String::new())
+        );
+        let root = std::env::temp_dir().join(format!("ep9-t262-r4-hook-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("a test root");
+        std::fs::write(root.join("two.txt"), b"\xef\xbb\xbf\xef\xbb\xbfx").expect("a file");
+        let text = text_module(&root, "two.txt", "text");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(text, Ok("\u{feff}x".to_string()));
     }
 
     #[test]

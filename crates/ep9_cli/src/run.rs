@@ -358,10 +358,14 @@ fn load_module(name: &str) -> CompileResult {
 
 /// The text of the file `name` (a canonical path) for a JSON module or a text module
 /// (`import ... with { type: "json" }` or `type: "text"`; `_ty` is `"json"` or `"text"`; the
-/// VM parses the JSON).
+/// VM parses the JSON). One leading UTF-8 BOM is not part of the text (WHATWG "UTF-8 decode",
+/// as node; M7-P4 fixer r2, reviewer R4).
 fn text_module(name: &str, _ty: &str) -> Result<String, String> {
     match std::fs::read(name).map(String::from_utf8) {
-        Ok(Ok(s)) => Ok(s),
+        Ok(Ok(s)) => Ok(match s.strip_prefix('\u{feff}') {
+            Some(rest) => rest.to_string(),
+            None => s,
+        }),
         Ok(Err(_)) => Err(format!("{name}: the file is not valid UTF-8")),
         Err(e) => Err(format!("cannot read {name}: {e}")),
     }
@@ -574,6 +578,37 @@ mod tests {
             run_files("r3-order", files, script),
             (vec!["job 2".to_string()], "RangeError: script".to_string())
         );
+    }
+
+    /// A leading UTF-8 BOM (EF BB BF) of a JSON or text module file is not part of the text,
+    /// as in WHATWG "UTF-8 decode" and node; one U+FEFF inside the text stays (M7-P4 fixer
+    /// r2, reviewer R4). node v26.13.0: `{"b":2}` and length 4.
+    #[test]
+    fn a_leading_bom_of_a_json_or_text_module_is_dropped() {
+        let files: &[(&str, &[u8])] = &[
+            ("bom.json", b"\xef\xbb\xbf{\"b\": 2}"),
+            ("bom.txt", b"\xef\xbb\xbfab\xef\xbb\xbfc"),
+        ];
+        let script = "import('./bom.json', { with: { type: 'json' } })\n\
+            .then(m => out(JSON.stringify(m.default)), e => out(e));\n\
+            import('./bom.txt', { with: { type: 'text' } })\n\
+            .then(m => out(m.default.length, m.default.charCodeAt(2)), e => out(e));\n";
+        let (mut lines, error) = run_files("r4-bom", files, script);
+        lines.sort();
+        assert_eq!(
+            (lines, error),
+            (
+                vec!["4 65279".to_string(), "{\"b\":2}".to_string()],
+                String::new()
+            )
+        );
+        // The hook itself: one BOM goes, a second one stays.
+        let dir = test_dir("r4-hook");
+        let f = dir.join("two.txt");
+        std::fs::write(&f, b"\xef\xbb\xbf\xef\xbb\xbfx").expect("a test file");
+        let text = text_module(&f.display().to_string(), "text");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(text, Ok("\u{feff}x".to_string()));
     }
 
     #[test]
