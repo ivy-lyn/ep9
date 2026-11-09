@@ -83,34 +83,38 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "forward-apply",
-        site: "crates/ep9_vm/src/interp/slow/call.rs forward (apply)",
+        site: "crates/ep9_vm/src/interp/slow/call.rs forward (apply); crates/ep9_vm/src/call.rs \
+               forward_frame (the T0 form in interp/ops.rs call_fast; not on x86-64 without \
+               spike-native, M7-P4 LEVER-3)",
         off: Off::Switch,
         what: "f.apply(thisArg, list) of a bytecode f with an unmodified arguments object, a \
                packed Array, undefined or null: the frame pushed from the source",
     },
     FastPath {
         id: "forward-call",
-        site: "crates/ep9_vm/src/interp/slow/call.rs forward (call)",
+        site: "crates/ep9_vm/src/interp/slow/call.rs forward (call); crates/ep9_vm/src/call.rs \
+               forward_frame (the T0 form in interp/ops.rs call_fast; not on x86-64 without \
+               spike-native, M7-P4 LEVER-3)",
         off: Off::Switch,
         what: "f.call(thisArg, ...args) of a bytecode f: the frame pushed from the registers",
     },
     // ---- B0, the switch ----
     FastPath {
         id: "args-create",
-        site: "crates/ep9_vm/src/arguments.rs:62 (create_fast, :222)",
+        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :247)",
         off: Off::Switch,
         what: "a new arguments object takes the realm's cached shape (V10-D11)",
     },
     FastPath {
         id: "clfal-length",
-        site: "crates/ep9_vm/src/arguments.rs:466 (list_length)",
+        site: "crates/ep9_vm/src/arguments.rs:506 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
                place",
     },
     FastPath {
         id: "clfal-elements",
-        site: "crates/ep9_vm/src/arguments.rs:486 (list_element; abi/mod.rs create_list_from_array_like)",
+        site: "crates/ep9_vm/src/arguments.rs:526 (list_element; abi/mod.rs create_list_from_array_like)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads a present Array or arguments element in place \
                (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
@@ -139,13 +143,13 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "ic-named",
-        site: "crates/ep9_vm/src/ic.rs:1939 (IC hits)",
+        site: "crates/ep9_vm/src/ic.rs:1964 (IC hits)",
         off: Off::Guard,
         what: "a named load or store answered by the inline cache",
     },
     FastPath {
         id: "ic-global",
-        site: "crates/ep9_vm/src/ic.rs:668-745 (the global IC hits, M7-P2 GLOBALS)",
+        site: "crates/ep9_vm/src/ic.rs:693-770 (the global IC hits, M7-P2 GLOBALS)",
         off: Off::Guard,
         what: "a global load or store (LdaGlobal, LdaGlobalInsideTypeof, StaGlobal) answered by \
                the inline cache",
@@ -177,7 +181,7 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "array-tostring",
-        site: "crates/ep9_vm/src/natives.rs:1404",
+        site: "crates/ep9_vm/src/natives.rs:1546",
         off: Off::Guard,
         what: "Array.prototype.toString with the builtin join: join without a call",
     },
@@ -935,6 +939,127 @@ const CASES: &[Case] = &[
               try { deepa(1, 2); } catch (e) { print(e.name, e.message); }\n\
               print(show.apply(null, [1, 2]), show.call(null, 3));",
         spec: None,
+    },
+    // M7-P4 LEVER-2 (TSPASS2): the IC hit of a prefixed site. `f` loads 300 other names
+    // first, so the name constant of `o.x` needs a `Wide` operand, and its loop body is longer
+    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): the `Wide` fast
+    // body runs them (`interp/ops.rs` `prefix_runs_fast`). Mono, falsy, a string ToBoolean
+    // (cold), a getter (cold), 8 shapes (megamorphic), a prototype load and its change.
+    Case {
+        path: "ic-named",
+        name: "a prefixed (Wide) IC hit or Reflect.get",
+        src: "function f(o, n) {\n\
+              o.a0; o.a1; o.a2; o.a3; o.a4; o.a5; o.a6; o.a7; o.a8; o.a9;\n\
+              o.a10; o.a11; o.a12; o.a13; o.a14; o.a15; o.a16; o.a17; o.a18; o.a19;\n\
+              o.a20; o.a21; o.a22; o.a23; o.a24; o.a25; o.a26; o.a27; o.a28; o.a29;\n\
+              o.a30; o.a31; o.a32; o.a33; o.a34; o.a35; o.a36; o.a37; o.a38; o.a39;\n\
+              o.a40; o.a41; o.a42; o.a43; o.a44; o.a45; o.a46; o.a47; o.a48; o.a49;\n\
+              o.a50; o.a51; o.a52; o.a53; o.a54; o.a55; o.a56; o.a57; o.a58; o.a59;\n\
+              o.a60; o.a61; o.a62; o.a63; o.a64; o.a65; o.a66; o.a67; o.a68; o.a69;\n\
+              o.a70; o.a71; o.a72; o.a73; o.a74; o.a75; o.a76; o.a77; o.a78; o.a79;\n\
+              o.a80; o.a81; o.a82; o.a83; o.a84; o.a85; o.a86; o.a87; o.a88; o.a89;\n\
+              o.a90; o.a91; o.a92; o.a93; o.a94; o.a95; o.a96; o.a97; o.a98; o.a99;\n\
+              o.a100; o.a101; o.a102; o.a103; o.a104; o.a105; o.a106; o.a107; o.a108; o.a109;\n\
+              o.a110; o.a111; o.a112; o.a113; o.a114; o.a115; o.a116; o.a117; o.a118; o.a119;\n\
+              o.a120; o.a121; o.a122; o.a123; o.a124; o.a125; o.a126; o.a127; o.a128; o.a129;\n\
+              o.a130; o.a131; o.a132; o.a133; o.a134; o.a135; o.a136; o.a137; o.a138; o.a139;\n\
+              o.a140; o.a141; o.a142; o.a143; o.a144; o.a145; o.a146; o.a147; o.a148; o.a149;\n\
+              o.a150; o.a151; o.a152; o.a153; o.a154; o.a155; o.a156; o.a157; o.a158; o.a159;\n\
+              o.a160; o.a161; o.a162; o.a163; o.a164; o.a165; o.a166; o.a167; o.a168; o.a169;\n\
+              o.a170; o.a171; o.a172; o.a173; o.a174; o.a175; o.a176; o.a177; o.a178; o.a179;\n\
+              o.a180; o.a181; o.a182; o.a183; o.a184; o.a185; o.a186; o.a187; o.a188; o.a189;\n\
+              o.a190; o.a191; o.a192; o.a193; o.a194; o.a195; o.a196; o.a197; o.a198; o.a199;\n\
+              o.a200; o.a201; o.a202; o.a203; o.a204; o.a205; o.a206; o.a207; o.a208; o.a209;\n\
+              o.a210; o.a211; o.a212; o.a213; o.a214; o.a215; o.a216; o.a217; o.a218; o.a219;\n\
+              o.a220; o.a221; o.a222; o.a223; o.a224; o.a225; o.a226; o.a227; o.a228; o.a229;\n\
+              o.a230; o.a231; o.a232; o.a233; o.a234; o.a235; o.a236; o.a237; o.a238; o.a239;\n\
+              o.a240; o.a241; o.a242; o.a243; o.a244; o.a245; o.a246; o.a247; o.a248; o.a249;\n\
+              o.a250; o.a251; o.a252; o.a253; o.a254; o.a255; o.a256; o.a257; o.a258; o.a259;\n\
+              o.a260; o.a261; o.a262; o.a263; o.a264; o.a265; o.a266; o.a267; o.a268; o.a269;\n\
+              o.a270; o.a271; o.a272; o.a273; o.a274; o.a275; o.a276; o.a277; o.a278; o.a279;\n\
+              o.a280; o.a281; o.a282; o.a283; o.a284; o.a285; o.a286; o.a287; o.a288; o.a289;\n\
+              o.a290; o.a291; o.a292; o.a293; o.a294; o.a295; o.a296; o.a297; o.a298; o.a299;\n\
+              var s = 0;\n\
+              for (var i = 0; i < n; i++) {\n\
+              var t = o.x;\n\
+              if (t) {\n\
+              s += t;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              }\n\
+              }\n\
+              return s;\n\
+              }\n\
+              var r = [f({ x: 2 }, 50), f({ x: 0 }, 5), f({ x: 'ab' }, 3)];\n\
+              var g = { get x() { return 7; } }; r.push(f(g, 4));\n\
+              for (var j = 0; j < 8; j++) { var o = {}; o['p' + j] = j; o.x = j + 1; r.push(f(o, 3)); }\n\
+              var P = { x: 100 }; var c = Object.create(P); r.push(f(c, 2)); P.x = 5; r.push(f(c, 2));\n\
+              print(r.join(' '));",
+        spec: Some(
+            "function f(o, n) {\n\
+             o.a0; o.a1; o.a2; o.a3; o.a4; o.a5; o.a6; o.a7; o.a8; o.a9;\n\
+             o.a10; o.a11; o.a12; o.a13; o.a14; o.a15; o.a16; o.a17; o.a18; o.a19;\n\
+             o.a20; o.a21; o.a22; o.a23; o.a24; o.a25; o.a26; o.a27; o.a28; o.a29;\n\
+             o.a30; o.a31; o.a32; o.a33; o.a34; o.a35; o.a36; o.a37; o.a38; o.a39;\n\
+             o.a40; o.a41; o.a42; o.a43; o.a44; o.a45; o.a46; o.a47; o.a48; o.a49;\n\
+             o.a50; o.a51; o.a52; o.a53; o.a54; o.a55; o.a56; o.a57; o.a58; o.a59;\n\
+             o.a60; o.a61; o.a62; o.a63; o.a64; o.a65; o.a66; o.a67; o.a68; o.a69;\n\
+             o.a70; o.a71; o.a72; o.a73; o.a74; o.a75; o.a76; o.a77; o.a78; o.a79;\n\
+             o.a80; o.a81; o.a82; o.a83; o.a84; o.a85; o.a86; o.a87; o.a88; o.a89;\n\
+             o.a90; o.a91; o.a92; o.a93; o.a94; o.a95; o.a96; o.a97; o.a98; o.a99;\n\
+             o.a100; o.a101; o.a102; o.a103; o.a104; o.a105; o.a106; o.a107; o.a108; o.a109;\n\
+             o.a110; o.a111; o.a112; o.a113; o.a114; o.a115; o.a116; o.a117; o.a118; o.a119;\n\
+             o.a120; o.a121; o.a122; o.a123; o.a124; o.a125; o.a126; o.a127; o.a128; o.a129;\n\
+             o.a130; o.a131; o.a132; o.a133; o.a134; o.a135; o.a136; o.a137; o.a138; o.a139;\n\
+             o.a140; o.a141; o.a142; o.a143; o.a144; o.a145; o.a146; o.a147; o.a148; o.a149;\n\
+             o.a150; o.a151; o.a152; o.a153; o.a154; o.a155; o.a156; o.a157; o.a158; o.a159;\n\
+             o.a160; o.a161; o.a162; o.a163; o.a164; o.a165; o.a166; o.a167; o.a168; o.a169;\n\
+             o.a170; o.a171; o.a172; o.a173; o.a174; o.a175; o.a176; o.a177; o.a178; o.a179;\n\
+             o.a180; o.a181; o.a182; o.a183; o.a184; o.a185; o.a186; o.a187; o.a188; o.a189;\n\
+             o.a190; o.a191; o.a192; o.a193; o.a194; o.a195; o.a196; o.a197; o.a198; o.a199;\n\
+             o.a200; o.a201; o.a202; o.a203; o.a204; o.a205; o.a206; o.a207; o.a208; o.a209;\n\
+             o.a210; o.a211; o.a212; o.a213; o.a214; o.a215; o.a216; o.a217; o.a218; o.a219;\n\
+             o.a220; o.a221; o.a222; o.a223; o.a224; o.a225; o.a226; o.a227; o.a228; o.a229;\n\
+             o.a230; o.a231; o.a232; o.a233; o.a234; o.a235; o.a236; o.a237; o.a238; o.a239;\n\
+             o.a240; o.a241; o.a242; o.a243; o.a244; o.a245; o.a246; o.a247; o.a248; o.a249;\n\
+             o.a250; o.a251; o.a252; o.a253; o.a254; o.a255; o.a256; o.a257; o.a258; o.a259;\n\
+             o.a260; o.a261; o.a262; o.a263; o.a264; o.a265; o.a266; o.a267; o.a268; o.a269;\n\
+             o.a270; o.a271; o.a272; o.a273; o.a274; o.a275; o.a276; o.a277; o.a278; o.a279;\n\
+             o.a280; o.a281; o.a282; o.a283; o.a284; o.a285; o.a286; o.a287; o.a288; o.a289;\n\
+             o.a290; o.a291; o.a292; o.a293; o.a294; o.a295; o.a296; o.a297; o.a298; o.a299;\n\
+             var s = 0;\n\
+             for (var i = 0; i < n; i++) {\n\
+             var t = Reflect.get(o, 'x');\n\
+             if (t) {\n\
+             s += t;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             }\n\
+             }\n\
+             return s;\n\
+             }\n\
+             var r = [f({ x: 2 }, 50), f({ x: 0 }, 5), f({ x: 'ab' }, 3)];\n\
+             var g = { get x() { return 7; } }; r.push(f(g, 4));\n\
+             for (var j = 0; j < 8; j++) { var o = {}; o['p' + j] = j; o.x = j + 1; r.push(f(o, 3)); }\n\
+             var P = { x: 100 }; var c = Object.create(P); r.push(f(c, 2)); P.x = 5; r.push(f(c, 2));\n\
+             print(r.join(' '));",
+        ),
     },
 ];
 
