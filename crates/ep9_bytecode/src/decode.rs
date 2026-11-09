@@ -9,8 +9,64 @@
 //!   instruction offset (jump base, handler and position offsets) = offset of the prefix if any
 //! ```
 
-use crate::opcodes::{Opcode, OpcodeFlags};
+use crate::opcodes::{MAX_OPERANDS, OPCODE_COUNT, OPCODES, Opcode, OpcodeFlags};
 use crate::operand::{OperandKind, OperandScale, Register};
+
+/// The operand places of one opcode at one scale ([`PLACES`]): the byte offset of each operand
+/// from the first byte of the instruction (its prefix included) and the instruction size
+/// (prefix included). 0 for an opcode with no scalable operand at a prefixed scale (no such
+/// instruction decodes).
+#[derive(Clone, Copy)]
+struct Places {
+    at: [u8; MAX_OPERANDS],
+    size: u8,
+}
+
+/// [`Places`] of every opcode at each scale ([`OperandScale::index`]), computed from the opcode
+/// table at compile time (M7-P4 TSPASS2). [`decode_at`] and [`Instruction::operand`] read
+/// them, so a decode sums no operand sizes and an operand read walks no earlier operand.
+static PLACES: [[Places; 3]; OPCODE_COUNT] = {
+    let none = Places {
+        at: [0; MAX_OPERANDS],
+        size: 0,
+    };
+    let mut t = [[none; 3]; OPCODE_COUNT];
+    let scales = [
+        OperandScale::Single,
+        OperandScale::Wide,
+        OperandScale::ExtraWide,
+    ];
+    let mut op = 0;
+    while op < OPCODE_COUNT {
+        let info = &OPCODES[op];
+        let mut k = 0;
+        while k < 3 {
+            let scale = scales[k];
+            if k == 0 || info.has_scalable_operands() {
+                let prefix = if k == 0 { 0 } else { 1 };
+                let mut i = 0;
+                while i < info.operands.len() {
+                    let at = prefix + info.operand_offset(i, scale);
+                    assert!(at < 256);
+                    t[op][k].at[i] = at as u8;
+                    i += 1;
+                }
+                let size = info.size(scale);
+                assert!(size < 256);
+                t[op][k].size = size as u8;
+            }
+            k += 1;
+        }
+        op += 1;
+    }
+    t
+};
+
+/// The [`Places`] of `op` at `scale`.
+#[inline(always)]
+fn places(op: Opcode, scale: OperandScale) -> &'static Places {
+    &PLACES[op as usize][scale.index()]
+}
 
 /// Why bytes do not decode as an instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,11 +132,11 @@ impl<'a> Instruction<'a> {
     }
 
     /// Raw value of operand `i`: sign extended to i64 for signed kinds, zero extended else.
+    /// The operand's offset comes from a table made at compile time (M7-P4 TSPASS2: no walk
+    /// over the earlier operands).
     pub fn operand(&self, i: usize) -> i64 {
-        let info = self.opcode.info();
-        let kind = info.operands[i].kind;
-        let prefix = usize::from(self.scale != OperandScale::Single);
-        let at = prefix + info.operand_offset(i, self.scale);
+        let kind = self.opcode.info().operands[i].kind;
+        let at = usize::from(places(self.opcode, self.scale).at[i]);
         read_operand(&self.bytes[at..], kind, self.scale)
     }
 
@@ -172,7 +228,10 @@ pub fn decode_at(code: &[u8], offset: u32) -> Result<Instruction<'_>, DecodeErro
             (op, scale, start + 1)
         }
     };
-    let end = op_at + 1 + opcode.info().operands_size(scale);
+    // The size from the table made at compile time (M7-P4 TSPASS2), prefix included; it is
+    // `op_at + 1 + operands_size(scale) - start`.
+    let end = start + usize::from(places(opcode, scale).size);
+    debug_assert_eq!(end, op_at + 1 + opcode.info().operands_size(scale));
     if end > code.len() {
         return Err(DecodeError::Truncated(opcode));
     }
@@ -254,6 +313,86 @@ mod tests {
         assert_eq!(i.unsigned(1), 1);
         assert_eq!(i.unsigned(2), 300000);
         assert_eq!(i.size(), 14);
+    }
+
+    /// The table of operand places agrees with the opcode table: for every opcode and every
+    /// scale it decodes at, each operand's offset is the prefix plus `operand_offset`, and the
+    /// size is `OpcodeInfo::size`.
+    #[test]
+    fn places_match_the_opcode_table() {
+        let scales = [
+            OperandScale::Single,
+            OperandScale::Wide,
+            OperandScale::ExtraWide,
+        ];
+        let mut checked = 0;
+        for info in OPCODES.iter() {
+            for scale in scales {
+                if scale != OperandScale::Single && !info.has_scalable_operands() {
+                    assert_eq!(places(info.opcode, scale).size, 0, "{}", info.name);
+                    continue;
+                }
+                let p = places(info.opcode, scale);
+                let prefix = usize::from(scale != OperandScale::Single);
+                for i in 0..info.operands.len() {
+                    assert_eq!(
+                        usize::from(p.at[i]),
+                        prefix + info.operand_offset(i, scale),
+                        "{} operand {i} at {scale:?}",
+                        info.name
+                    );
+                }
+                assert_eq!(usize::from(p.size), info.size(scale), "{}", info.name);
+                checked += 1;
+            }
+        }
+        assert!(checked > OPCODE_COUNT);
+    }
+
+    /// Every operand of every opcode at every scale it decodes at reads back the value that
+    /// was encoded there (a distinct value per operand), through `decode_at` and `operand`.
+    /// The two prefixes are not instructions of their own.
+    #[test]
+    fn every_operand_reads_back_at_every_scale() {
+        for info in OPCODES.iter().filter(|i| i.opcode.prefix_scale().is_none()) {
+            for (scale, prefix) in [
+                (OperandScale::Single, None),
+                (OperandScale::Wide, Some(Opcode::Wide)),
+                (OperandScale::ExtraWide, Some(Opcode::ExtraWide)),
+            ] {
+                if prefix.is_some() && !info.has_scalable_operands() {
+                    continue;
+                }
+                let mut code: Vec<u8> = prefix.map(|p| p as u8).into_iter().collect();
+                code.push(info.opcode as u8);
+                let mut want = Vec::new();
+                for (i, o) in info.operands.iter().enumerate() {
+                    let size = o.kind.size(scale);
+                    // A value that differs per operand and per byte.
+                    let raw: u32 = 0x8180_7f00 + (i as u32) * 0x0101_0101;
+                    let b = raw.to_le_bytes();
+                    code.extend_from_slice(&b[..size]);
+                    let v = match (size, o.kind.is_signed()) {
+                        (1, true) => i64::from(b[0] as i8),
+                        (1, false) => i64::from(b[0]),
+                        (2, true) => i64::from(i16::from_le_bytes([b[0], b[1]])),
+                        (2, false) => i64::from(u16::from_le_bytes([b[0], b[1]])),
+                        (_, true) => i64::from(raw as i32),
+                        (_, false) => i64::from(raw),
+                    };
+                    want.push(v);
+                }
+                let insn = decode_at(&code, 0).unwrap();
+                assert_eq!(
+                    insn.size() as usize,
+                    code.len(),
+                    "{} at {scale:?}",
+                    info.name
+                );
+                let got: Vec<i64> = (0..want.len()).map(|i| insn.operand(i)).collect();
+                assert_eq!(got, want, "{} at {scale:?}", info.name);
+            }
+        }
     }
 
     #[test]

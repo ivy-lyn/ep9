@@ -1,6 +1,6 @@
 # class-computed-name: script (sloppy)
 # | var k = Symbol('s'); var o = { [k]: class {}, ['x' + 1]: class { static y = this.name; } };
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=91 source=embedded hints=none
 source_hash=f900ef05372a54d06e42e89ed22641f907baf9192d738ecaa518b2f6a157b4af
 strings (7):

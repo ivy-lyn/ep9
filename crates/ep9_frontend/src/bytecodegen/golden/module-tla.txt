@@ -1,6 +1,6 @@
 # module-tla: module
 # | import { a } from './a.js'; export let x = await a; for await (const y of [x]) x = y; export function f() { return x; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=module strict=true ts=none source_len=119 source=embedded hints=none
 source_hash=9df2701e5b6ad31ca62926432abe447764b25a40e261229a8a61fa9d36eaa478
 strings (8):

@@ -179,11 +179,11 @@ else
 fi
 
 # 11) The ep9_vm features `spike-native` (Spike B's native entry) and `ic-stats` (IC counters)
-#     are never in the ep9 graph, default or jitless (plan M0 month 2, rule 11; H27). Control:
-#     `-p ep9_vm --features spike-native,ic-stats` must show both.
+#     and `fastdiff-hits` (FASTDIFF hit counts) are never in the ep9 graph, default or jitless (plan
+#     M0 month 2, rule 11; H27). Control: `-p ep9_vm --features spike-native,ic-stats,fastdiff-hits`.
 if grep -q "ep9_cli" <<< "$members" && member_exists ep9_vm; then
-  for feat in spike-native ic-stats; do
-    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats" -p ep9_vm --features spike-native,ic-stats
+  for feat in spike-native ic-stats fastdiff-hits; do
+    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats,fastdiff-hits" -p ep9_vm --features spike-native,ic-stats,fastdiff-hits
     feature_check 11 ep9_vm "$feat" off "the default ep9 (-p ep9_cli)" -p ep9_cli
     feature_check 11 ep9_vm "$feat" off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
   done
@@ -434,6 +434,34 @@ if member_exists ep9_temporal; then
   done
 else
   ok "(20) ep9_temporal does not exist yet"
+fi
+
+# 21) ep9_masm has 0 normal and build dependencies (H34: one instruction stream for JIT and unit
+#     code, no LLVM; an encoder crate, 04-execution section 5, joins this list when T1 needs one).
+deps_within 21 ep9_masm
+
+# 22) ep9_rx1 (RX1, the irregexp port; plan v12 section 7.2, decisions-log M6-ORCH-300) is
+#     reached only from ep9_vm, as ep9_regexp in check 14: no other workspace member has an
+#     edge to it, of any kind (normal, build or dev). Nothing depends on it before the RX1
+#     backend lands, so no dependent passes too. Control: check 14's query on its sample graph
+#     (above).
+if ! member_exists ep9_rx1; then
+  ok "(22) ep9_rx1 does not exist yet"
+else
+  users="$(dependents_of ep9_rx1 "$meta" | paste -sd ' ' -)"
+  if [ "$users" = ep9_vm ] || [ -z "$users" ]; then ok "(22) ep9_rx1 has no dependent but ep9_vm (${users:-none yet})"; else bad "(22) ep9_rx1 must have ep9_vm as its only dependent; it has: $users"; fi
+fi
+
+# 23) The jitless ep9 has the ep9_platform `unwind` feature, and no `jit` (H27-Q3, H28; DL
+#     M6-ORCH-298, MODES-CHECK-w33 MC-w33-2.2): ep9_vm turns `unwind` on in every build, so the
+#     jitless ep9 can register the unwind data of loaded AOT unit text. The default ep9 has it
+#     too. Control: `-p ep9_platform` alone must not show `unwind` (ep9_platform has no default
+#     features), so a query that always sees the feature fails here.
+if grep -q "ep9_cli" <<< "$members"; then
+  feature_check 23 ep9_platform unwind off "control: -p ep9_platform" -p ep9_platform
+  feature_check 23 ep9_platform unwind on "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  feature_check 23 ep9_platform jit off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  feature_check 23 ep9_platform unwind on "the default ep9 (-p ep9_cli)" -p ep9_cli
 fi
 
 # 22) ep9_intl (INTL-I1-D1, layout B) reaches the engine only through ep9_vm's Cx and reads

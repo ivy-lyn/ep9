@@ -36,6 +36,8 @@
 //! may then be old; it is read only after the index is unmapped, and every unmap step writes
 //! it first (§10.4.4.2 step 3) or removes it.
 
+use ep9_heap::CellPtr;
+
 use crate::accessor;
 use crate::builtins::{self, BuiltinId, IntrinsicId};
 use crate::conv::Res;
@@ -65,14 +67,28 @@ use crate::symbol::{self, WellKnownSymbol};
 /// Every later object of that realm and kind takes that shape at allocation and gets its 3
 /// slots written in place ([`create_fast`]): no shape search, no transition lookup, no key
 /// hashing.
+///
+/// Each kind has its own copy (M7-P4 LEVER-3: [`create_kind`]), so `mapped` is a constant
+/// in each, and the slow path ([`create_and_remember`]) is out of line: the fast path keeps
+/// fewer registers.
+#[inline(always)]
+pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> u64 {
+    if mapped {
+        create_kind::<true>(cx, fp, pc)
+    } else {
+        create_kind::<false>(cx, fp, pc)
+    }
+}
+
+/// [`create`] for `MAPPED`. GC point.
 #[cold]
 #[inline(never)]
-pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> u64 {
+fn create_kind<const MAPPED: bool>(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
     cx.rt().enter(fp, pc);
     let f = FrameRef(fp);
     // SAFETY: header slots of a live frame.
     let context = unsafe { *fp.offset(slot::CONTEXT) };
-    let map = if mapped {
+    let map = if MAPPED {
         parameter_map(f, context, f.argc())
     } else {
         &[]
@@ -80,15 +96,27 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
     let rt = cx.rt();
     let realm = rt.root(Root::Realm);
     // A human fast path (FASTDIFF): off, every object is made the spec way.
-    let cached = crate::call::human_fast_paths(rt).then(|| cached_shape(rt, realm, mapped));
-    match cached.flatten() {
-        Some(s) => create_fast(rt, f, s, mapped, map),
-        None => {
-            let o = create_slow(rt, f, mapped, map);
-            remember_shape(rt, realm, mapped, o);
-            o
-        }
+    if crate::call::human_fast_paths(rt)
+        && let Some(s) = cached_shape(rt, realm, MAPPED)
+    {
+        crate::call::fast_hit!(3);
+        return create_fast(rt, f, s, MAPPED, map);
     }
+    create_and_remember(rt, f, realm, MAPPED, map)
+}
+
+/// The slow path of [`create_kind`]: [`create_slow`], then [`remember_shape`]. GC point.
+#[inline(never)]
+fn create_and_remember(
+    rt: &Runtime,
+    f: FrameRef,
+    realm: u64,
+    mapped: bool,
+    map: &[Option<u32>],
+) -> u64 {
+    let o = create_slow(rt, f, mapped, map);
+    remember_shape(rt, realm, mapped, o);
+    o
 }
 
 /// The REALM record field that caches the shape of the realm's mapped or unmapped arguments
@@ -269,19 +297,28 @@ thread_local! {
 /// the parameter map `map`): the n values, n attribute words {w, e, c}, then the context slot
 /// of each mapped index (HOLE for one a later parameter of the same name shadows). GC point
 /// (the list).
+///
+/// The list is the one `object::new_list` makes (an ELEMENTS cell, its length in
+/// `elems::CAPACITY`), but each word is written once (M7-P4 LEVER-3): no fill of all
+/// 2n + mc words before the values go in.
+#[inline(always)]
 fn new_elements(rt: &Runtime, f: FrameRef, map: &[Option<u32>]) -> u64 {
     let n = f.argc() as usize;
-    let e = object::new_list(rt, 2 * n + map.len(), int32_bits(attr::DEFAULT));
-    // No GC point from here on: the stores are init stores into the new list.
-    let c = object::cell(e);
+    let len = 2 * n + map.len();
+    let c = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * len);
+    // No GC point from here on: the stores are init stores into the new list, and the
+    // argument values are read from the frame after the allocation.
+    init(c, elems::CAPACITY, int32_bits(len as i32));
+    let attrs = int32_bits(attr::DEFAULT);
     for i in 0..n {
         init(c, elems::DATA + 8 * i, f.arg(i as u32));
+        init(c, elems::DATA + 8 * (n + i), attrs);
     }
     for (j, s) in map.iter().enumerate() {
         let v = s.map_or(HOLE, |s| int32_bits(s as i32));
         init(c, elems::DATA + 8 * (2 * n + j), v);
     }
-    e
+    c.to_value().to_bits()
 }
 
 /// %Array.prototype.values% for the @@iterator property (§10.4.4.6 step 7, §10.4.4.7 step
@@ -298,8 +335,8 @@ fn array_values(rt: &Runtime) -> u64 {
 /// the first use in a realm it gets the attributes the spec gives it: `length` and `name`
 /// {w: false, e: false, c: false} (a table gives a builtin function {c}) and
 /// `[[Extensible]]` false. The strict `callee` accessor is the only way JS code reaches it
-/// (no month-3 role builds the Function.prototype `caller` and `arguments` accessors), so
-/// no code sees it before this runs. GC point (the dictionary move of the redefinitions).
+/// (`caller` and `arguments` of %Function.prototype% use `natives::restricted_function_property`),
+/// so no code sees it before this runs. GC point (the dictionary move of the redefinitions).
 fn throw_type_error(rt: &Runtime) -> Option<u64> {
     let t = builtins::intrinsic(rt, IntrinsicId::ThrowTypeError);
     if !kind::is_callable(t) {
@@ -444,8 +481,14 @@ pub(crate) fn element_value(o: u64, i: u32) -> Option<u64> {
 /// (`abi::Cx::create_list_from_array_like`, V10-D11). Not a GC point.
 #[inline]
 pub(crate) fn unmodified_length(rt: &Runtime, o: u64) -> Option<u32> {
+    unmodified_length_in(rt.root(Root::Realm), o)
+}
+
+/// [`unmodified_length`] with the current realm's REALM record `realm` given. Not a GC point;
+/// no panic path.
+#[inline(always)]
+fn unmodified_length_in(realm: u64, o: u64) -> Option<u32> {
     debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
-    let realm = rt.root(Root::Realm);
     if !kind::is_cell_bits(realm) || kind::cell_kind(realm) != kind::REALM.get() {
         return None;
     }
@@ -470,7 +513,11 @@ pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
     if kind::cell_kind(o) != kind::ARGUMENTS.get() || !crate::call::human_fast_paths(rt) {
         return None;
     }
-    unmodified_length(rt, o).map(u64::from)
+    let n = unmodified_length(rt, o).map(u64::from);
+    if n.is_some() {
+        crate::call::fast_hit!(4);
+    }
+    n
 }
 
 /// `Get(o, ! ToString(𝔽(i)))` of CreateListFromArrayLike (§7.3.19 step 6.b) read in place
@@ -480,7 +527,7 @@ pub(crate) fn list_length(rt: &Runtime, o: u64) -> Option<u64> {
 /// kind; and every element while the human fast paths are off, FASTDIFF). Not a GC point.
 #[inline]
 pub(crate) fn list_element(rt: &Runtime, o: u64, i: u32) -> Option<u64> {
-    if !crate::call::human_fast_paths(rt) {
+    let v = if !crate::call::human_fast_paths(rt) {
         None
     } else if kind::is_array(o) {
         object::array_get(o, i)
@@ -488,7 +535,11 @@ pub(crate) fn list_element(rt: &Runtime, o: u64, i: u32) -> Option<u64> {
         element_value(o, i)
     } else {
         None
+    };
+    if v.is_some() {
+        crate::call::fast_hit!(5);
     }
+    v
 }
 
 /// `o.[[Set]](i, v, o)` (§10.4.4.4, receiver `o`) for a writable element `i` of the arguments
@@ -720,17 +771,64 @@ impl Source {
 
     /// Argument `i` (`i` below the length [`forward_source`] gave): the parameter while `i` is
     /// mapped, else the element, as [`element_value`] reads it. Not a GC point.
+    ///
+    /// The list words are read without `object::list_get`'s bound test (M7-P4 LEVER-3):
+    /// [`forward_source`] gave a length at most n, and the list holds 2n + mc words.
     #[inline(always)]
     pub(crate) fn get(&self, i: u32) -> u64 {
         let i = i as usize;
+        debug_assert!(i < self.n);
         if i < self.mc {
-            let s = object::list_get(self.e, 2 * self.n + i);
+            let s = list_word(self.e, 2 * self.n + i);
             if s != HOLE {
                 return object::context_get(self.map, int32_of(s) as u32).expect("a mapped slot");
             }
         }
-        object::list_get(self.e, i)
+        list_word(self.e, i)
     }
+
+    /// True if the object had a mapped index when [`forward_source`] read it (mc > 0; an
+    /// index may have been unmapped since). Not a GC point.
+    #[cfg_attr(
+        all(not(feature = "spike-native"), target_arch = "x86_64"),
+        allow(dead_code)
+    )]
+    #[inline(always)]
+    pub(crate) fn mapped(&self) -> bool {
+        self.mc > 0
+    }
+
+    /// The ELEMENTS list of a source that is not [`Source::mapped`] and has a list (a cell):
+    /// the T0 forwarded call reads its words with [`unmapped_word`] (`call::forward_frame`,
+    /// M7-P4 LEVER-3: no panic path there). `None` for any other source. Not a GC point.
+    #[cfg_attr(
+        all(not(feature = "spike-native"), target_arch = "x86_64"),
+        allow(dead_code)
+    )]
+    #[inline(always)]
+    pub(crate) fn unmapped_list(&self) -> Option<CellPtr> {
+        (self.mc == 0 && kind::is_cell_bits(self.e)).then(|| object::cell(self.e))
+    }
+}
+
+/// Argument `i` of a source whose [`Source::unmapped_list`] is `c` (`i` below the length
+/// [`forward_source`] gave): the element itself, as [`Source::get`] reads it there. Not a GC
+/// point.
+#[cfg_attr(
+    all(not(feature = "spike-native"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) fn unmapped_word(c: CellPtr, i: u32) -> u64 {
+    object::rd(c, elems::DATA + 8 * i as usize)
+}
+
+/// Word `i` of the ELEMENTS list `e` of an arguments object, for an `i` the caller has
+/// checked against the store's n and mc ([`store`]). Not a GC point.
+#[inline(always)]
+fn list_word(e: u64, i: usize) -> u64 {
+    debug_assert!(i < object::list_len(e));
+    object::rd(object::cell(e), elems::DATA + 8 * i)
 }
 
 /// The length and the in-place reader of the arguments object `o` when CreateListFromArrayLike
@@ -740,16 +838,35 @@ impl Source {
 /// removed or redefined property). Not a GC point.
 #[inline(always)]
 pub(crate) fn forward_source(rt: &Runtime, o: u64) -> Option<(Source, u32)> {
+    forward_source_in(rt.root(Root::Realm), o)
+}
+
+/// [`forward_source`] with the current realm's REALM record `realm` given (`Cx::realm`, a
+/// copy of the `Root::Realm` root), and no panic path: the T0 forwarded call
+/// (`call::forward_frame`, M7-P4 LEVER-3) reads it inside the call handlers. Not a GC point.
+#[inline(always)]
+pub(crate) fn forward_source_in(realm: u64, o: u64) -> Option<(Source, u32)> {
     debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
-    let len = unmodified_length(rt, o)?;
-    let (e, n, mc) = match store(o) {
-        Some(s) => s,
-        None if len == 0 => (UNDEFINED, 0, 0),
-        None => return None,
-    };
-    if len as usize > n || (0..len as usize).any(|i| object::list_get(e, i) == HOLE) {
+    let len = unmodified_length_in(realm, o)?;
+    let c = object::cell(o);
+    let e = object::rd(c, obj::ELEMENTS);
+    if !kind::is_cell_bits(e) {
+        // No elements (undefined): only a length of 0 reads nothing.
+        return (e == UNDEFINED && len == 0).then_some((Source::EMPTY, 0));
+    }
+    let mc = int32_of(object::rd(c, argsf::MAPPED_COUNT)) as usize;
+    let total = object::rd_i32(object::cell(e), elems::CAPACITY) as usize;
+    let n = total.checked_sub(mc)? / 2;
+    if len as usize > n {
         return None;
     }
-    let map = object::fixed_get(o, 0);
+    let mut i = 0;
+    while i < len as usize {
+        if list_word(e, i) == HOLE {
+            return None;
+        }
+        i += 1;
+    }
+    let map = object::rd(c, argsf::MAP);
     Some((Source { e, n, mc, map }, len))
 }

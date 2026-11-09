@@ -958,6 +958,10 @@ impl Emitter<'_> {
                 );
                 let cage = !(vm_layout::SHAPE_CAGE_ALIGN - 1);
                 let kinds = u32::from(vm_layout::ARRAY_KINDS);
+                // OBJECT_LAYOUT 8: a SEALED or FROZEN Array (shape flag bits 4-5) exits too, so
+                // no element op runs on a level array (a dense kind no longer means writable).
+                let flags = vm_layout::SHAPE_FLAGS;
+                let levels = (vm_layout::SHAPE_FLAG_SEALED | vm_layout::SHAPE_FLAG_FROZEN) as u32;
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 dynasm!(self.ops
                     ; .arch aarch64
@@ -970,6 +974,9 @@ impl Emitter<'_> {
                     ; ldr w16, [X(x), shape_id]
                     ; and x17, X(x), cage
                     ; add x17, x17, x16
+                    ; ldr w16, [x17, flags]
+                    ; tst w16, levels
+                    ; b.ne =>trap
                     ; ldr w16, [x17, counts]
                     ; lsr w16, w16, shift
                     ; movz w17, kinds

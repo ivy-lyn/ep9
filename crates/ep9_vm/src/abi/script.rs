@@ -5,7 +5,7 @@
 //! C2).
 //!
 //! ```text
-//! source text --source_text--> &str (a lone surrogate: not implemented, D8/E8: the shim is M3)
+//! source text --source_text--> &str (shim text: lone surrogate = U+FDD0 + 4 hex digits, H05-Q3)
 //!   --compile (hook)--> VerifiedUnit | CompileFailure -> SyntaxError, RangeError,
 //!                                                       "unsupported: <f>", internal error
 //!                       no hook -> EvalError (O2)
@@ -69,19 +69,19 @@ impl<'s> Cx<'s> {
         self.call(f, global, &[])
     }
 
-    /// The text of the string `s` for the compiler hook (which takes `&str`). Source text with
-    /// a lone surrogate cannot be UTF-8: it throws the v0 not-implemented `Error` (the shim is
-    /// milestone-M3 work, D8; H05-Q3).
+    /// The shim text of the string `s` for the hooks `compile_eval` and `compile_function`,
+    /// which take `&str` (`shim_text`; H05-Q3). The front end decodes it (the lone-surrogate
+    /// shim, 07-runtime.md §7). A Latin-1 string holds no lone surrogate and no U+FDD0.
     pub(crate) fn source_text(&mut self, s: Local<'s, JsString>) -> JsResult<String> {
         let b = string::flatten(self.cx, s.bits());
         let text = match string::view(self.cx, b) {
-            JsStr::Latin1(bytes) => Some(bytes.iter().map(|&c| char::from(c)).collect()),
-            JsStr::Utf16(units) => String::from_utf16(units).ok(),
+            JsStr::Latin1(bytes) => bytes.iter().map(|&c| char::from(c)).collect(),
+            JsStr::Utf16(units) => shim_text(units),
         };
-        match text {
-            Some(t) => Ok(t),
-            None => Err(self.not_implemented("source text with a lone surrogate")),
-        }
+        // Every JS string has a shim text, so the v0 not-implemented Error for a lone
+        // surrogate (D8) is gone. The function keeps its line count: H31 and other docs
+        // cite lines below it.
+        Ok(text)
     }
 
     /// Runs `compile` with the isolate's compiler hooks and turns a failure into the thrown
@@ -92,7 +92,7 @@ impl<'s> Cx<'s> {
         strings: Option<(&[String], &str, bool)>,
         compile: impl FnOnce(&CompilerHooks) -> CompileResult,
     ) -> JsResult<VerifiedUnit> {
-        crate::host::ensure_can_compile_strings(self, strings)?;
+        ensure_can_compile_strings(self, strings)?;
         let Some(hooks) = self.rt().compiler else {
             return Err(self.throw_error(ErrorKind::EvalError, NO_COMPILER));
         };
@@ -255,4 +255,77 @@ impl<'s> Cx<'s> {
         debug_assert!(v == UNDEFINED || kinds::is_object(v));
         v
     }
+}
+
+/// The shim text of the WTF-16 string `units` (the form of `ep9_frontend::eval_source_text`,
+/// H05-Q3): a lone surrogate becomes U+FDD0 and its 4 lower-case hex digits, U+FDD0 becomes
+/// U+FDD0 U+FDD0, and every other code point stays.
+fn shim_text(units: &[u16]) -> String {
+    use std::fmt::Write as _;
+    const ESC: char = '\u{FDD0}';
+    let mut out = String::with_capacity(units.len());
+    for c in char::decode_utf16(units.iter().copied()) {
+        match c {
+            Ok(ESC) => {
+                out.push(ESC);
+                out.push(ESC);
+            }
+            Ok(c) => out.push(c),
+            Err(lone) => {
+                out.push(ESC);
+                // Writing to a String cannot fail.
+                let _ = write!(out, "{:04x}", lone.unpaired_surrogate());
+            }
+        }
+    }
+    out
+}
+
+/// HostEnsureCanCompileStrings (`host.rs`) with the text of the JS strings, not their shim
+/// text ([`shim_text`], which `Cx::source_text` gives the compiler hooks): a real U+FDD0 is
+/// itself again, and a lone surrogate is U+FFFD (a `&str` cannot hold it). The strings are
+/// copied only when one holds U+FDD0. Out of `compile_with`, so its line count stays (H31
+/// and other docs cite lines below it).
+fn ensure_can_compile_strings(
+    cx: &mut Cx<'_>,
+    strings: Option<(&[String], &str, bool)>,
+) -> JsResult<()> {
+    let shown;
+    let strings = match strings {
+        Some((p, b, d)) if b.contains(SHIM_ESC) || p.iter().any(|s| s.contains(SHIM_ESC)) => {
+            shown = (
+                p.iter().map(|s| host_text(s)).collect::<Vec<_>>(),
+                host_text(b),
+            );
+            Some((&shown.0[..], &shown.1[..], d))
+        }
+        s => s,
+    };
+    crate::host::ensure_can_compile_strings(cx, strings)
+}
+
+/// The escape char of the shim text ([`shim_text`]).
+const SHIM_ESC: char = '\u{FDD0}';
+
+/// The text that the HostEnsureCanCompileStrings hook gets for the shim text `shim`
+/// ([`shim_text`]): U+FDD0 U+FDD0 is U+FDD0 again, and U+FDD0 with 4 hex digits (a lone
+/// surrogate) is U+FFFD. Every other char stays.
+fn host_text(shim: &str) -> String {
+    let mut out = String::with_capacity(shim.len());
+    let mut it = shim.chars();
+    while let Some(c) = it.next() {
+        if c != SHIM_ESC {
+            out.push(c);
+        } else if it.clone().next() == Some(SHIM_ESC) {
+            it.next();
+            out.push(SHIM_ESC);
+        } else {
+            // A lone surrogate: skip its 4 hex digits.
+            for _ in 0..4 {
+                it.next();
+            }
+            out.push(char::REPLACEMENT_CHARACTER);
+        }
+    }
+    out
 }

@@ -124,7 +124,7 @@ history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:260-265	| 1 Review
 history	H16-ics-and-feedback.md	`:300-305`	| 1 Reviewer (M4-P0 addendum: the 2026-10-26 rewrite (version) row, IC_LAYOUT 1 -> 2; re-c	d1c350b	^pub struct CloneCase \{$	crates/ep9_facts/src/facts.rs
 history	H16-ics-and-feedback.md	crates/ep9_vm/src/object.rs:347	| 3 Verifier (M4-P2 amendment: the 2026-10-27 CacheIR global-store fill row, P2-ORCH-9)	2dbf2b0	^pub\(crate\) fn wr\(heap\: \&Heap\, c\: CellPtr\, off\: usize\, v\: u64\) \{$
 history	H36-fp-semantics.md	crates/ep9_math/src/exact.rs:745	| 3 Verifier	b34fd01	^    fn soft_fma_sticky_of_shifted_product\(\) \{$
-pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_heap/src/heap.rs	^    pub near_limit\: Option<fn\(committed\: usize, limit\: usize\) \-> usize>,$	0
+pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:113	crates/ep9_heap/src/heap.rs	^    pub near_limit\: Option<fn\(committed\: usize, limit\: usize\) \-> usize>,$	0
 # M5-P0 integration fixer (ADRLINE of the M5-P0 merge head): two refs whose line text P0-VM5
 # changed in place (OBJECT_LAYOUT 5 added +32 to the ARRAY row; the IC hit path lost the epoch
 # argument), and one dated record row that keeps the native.rs lines of its commit.
@@ -255,7 +255,7 @@ history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:58-61	| 3 Verifie
 history	H35-aot-unit-format.md	crates/ep9_vm/src/versions.rs:60-63	| 4 Data (M5-P5 amendment: the 2026-11-02 clarify row, H35-Q10 and the RuntimeTable length, FREEZE-FIX)	fc992ea3	\/\/\/ The VM layout \(C\-18\, doc 13 C\-18\; MC\-w15\-5\: one owner per fact\)\: t
 history	H35-aot-unit-format.md	crates/ep9_vm/src/versions.rs:63	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 clarify row, H35-Q10 and the RuntimeTable length, FREEZE-FIX)	e3f7cbe9	\/\/\/ RuntimeTable offsets \(\`layout\:\:RT\_\*\`\) with the table\'s length\. 1 \(
 history	H35-aot-unit-format.md	crates/ep9_vm/src/versions.rs:60-63	| 3 Verifier (M5-P5 amendment: the 2026-11-02 clarify row, H35-Q10 and the RuntimeTable length, FREEZE-FIX)	fc992ea3	\/\/\/ The VM layout \(C\-18\, doc 13 C\-18\; MC\-w15\-5\: one owner per fact\)\: t
-pin	13-execution-modes.md	crates/ep9_vm/src/layout.rs:7-11	crates/ep9_vm/src/layout.rs	^\/\/\! Until M5\-P0 this was \`native\:\:layout\`	0	^\/\/\! behind \`spike\-native\`\: a default build	0
+history	13-execution-modes.md	crates/ep9_vm/src/layout.rs:7-11	stayed behind `spike-native` (`crates/ep9_vm/src/layout.rs:7-11` at 18492a40	18492a40	^\/\/\! Until M5\-P0 this was \`native\:\:layout\`
 pin	13-execution-modes.md	crates/ep9_vm/src/layout.rs:13-17	crates/ep9_vm/src/layout.rs	^\/\/\! Each export names the one version that owns it	0	^\/\/\! change of any value moves its owner	0
 pin	13-execution-modes.md	spikes/spike-c/src/emit_a64/mod.rs:100-102	spikes/spike-c/src/emit_a64/mod.rs	^\/\/\/ The bytes of the shared exit\'s register dump below sp	0	^const DUMP\_BYTES\: u32 \= layout\:\:DUMP\_BYTES\;	0
 history	13-execution-modes.md	crates/ep9_facts/src/lib.rs:53	| FactSnapshot | L1 |	8374ed99	pub const FACT\_SCHEMA\_VERSION\: u32 \= 1\;
@@ -266,9 +266,9 @@ history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:460-463	**The set 
 # the drift map would read them from that older commit, so each is pinned to its line at HEAD. The H16
 # F-R7 pin of facts_export.rs:86-100 is gone: the doc now cites 96-110 (its FIX value). H20:66 names
 # builtins.rs:1024 by its full path (the bare `:1024` was an older H20 token of abi/mod.rs).
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:784	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:792	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:184	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
-pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:581	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
+pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:606	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
 # spec-int merge (spec-temporal on m1m6/p5, 2026-11-05): dated record and Change-log rows keep the line of the
 # commit they name (M3-P1-REVIEWROW-REFS); the BigInt and Temporal code moved those lines.
 history	H05-always-linked-compiler.md	.github/scripts/dep-guards.sh:191-213	| 1 Reviewer	b34fd01e	\# 12\) H5\: the bytecode compiler is always linked\. ep9 \(the runtime crate\, ep9_cl
@@ -393,7 +393,7 @@ history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:222	| 4 Data (spec-int 
 history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:241	| 1 Reviewer (spec-int amendment: the 2026-11-06 rewrite row, PROVEN bitwise facts for Number operands (Frozen Model)) | spec-int Claude reviewer,	c69556aee	\"BigInts have no unsigned right shift\, use \>\> instead\"\,
 history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:241	| 1b Second reviewer (spec-int amendment: the 2026-11-06 rewrite row, PROVEN bitwise facts for Number operands (Frozen Model); README §3.2 Frozen part, GATES10 role)	c69556aee	\"BigInts have no unsigned right shift\, use \>\> instead\"\,
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:202	crates/ep9_vm/src/runtime.rs	roots: \(0\.\.TABLE_SLOTS\)\.map\(	0
-pin	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:89-90	crates/ep9_vm/src/versions.rs	^/// Deoptimization metadata \(H29\)	0	^pub const DEOPT_META_VERSION: u32 = 	0
+pin	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:96-97	crates/ep9_vm/src/versions.rs	^/// Deoptimization metadata \(H29\)	0	^pub const DEOPT_META_VERSION: u32 = 	0
 history	H16-ics-and-feedback.md	crates/ep9_unit/src/host.rs:40	1 Reviewer (M5-P0 amendment: the 2026-10-28 rewrite (version) row, IC_LAYOUT 2 -> 3)	3c1c495	ic: vm::IC_LAYOUT_VERSION,
 history	H35-aot-unit-format.md	crates/ep9_unit/build.rs:1-22	4 Data (M7-P0 amendment: the 2026-11-06 rewrite row, AOT0, the C-19 build-id rule)	cf100de92593535eff6b038e0e3a55245b090a1b	^//! The engine build id \(H35-Q8\): writes
 history	13-execution-modes.md	crates/ep9_unit/src/codes.rs:238-239	The container `facts` section (today `Hints`, kind 6	3dd68d100a16990a3c78fb5ea447cb918b2955bf	/// A HINTED FactSnapshot \(`ep9_facts` format\)\. Optional\.
@@ -408,10 +408,38 @@ pin	H13-snapshot-stable-indices.md	docs/adr/README.md:144	docs/adr/README.md	^\|
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/realm.rs:266	4 Data (M7-P0 amendment: the 2026-11-06 fill row, AOT0, the C-18 root-slot form)	0fd056e4	^pub\(crate\) fn switch\(
 # M7-P1 fixer r2b: the 4 H20:64-66 builtins.rs refs came in the merge 385e6560 (git log -S does not read a
 # merge), and 978 and 1058 are older H20 tokens of other lines: each is pinned to its line at HEAD.
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1009	crates/ep9_vm/src/builtins.rs	^pub struct PropDef \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1089	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1168	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1218	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1017	crates/ep9_vm/src/builtins.rs	^pub struct PropDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1097	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1176	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1226	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
+# M7-P3 A2-ENTRY (C-10): `mod native` and `Cx::runtime_table` are no longer behind `spike-native`;
+# these rows say where 18492a40 (tag m7-p2) put the lines they name.
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/lib.rs:102-103	| Failed deopt (2026-10-29) |	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H23-limits-and-failure-policy.md	`crates/ep9_vm/src/lib.rs` lines 102-103	| 1 Reviewer (M5-P2 amendment: the 2026-10-29 Failed deopt reason clarify row)	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/lib.rs:102-103	| 4 Data (M5-P2 amendment: the 2026-10-29 Failed deopt reason clarify row)	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H35-aot-unit-format.md	crates/ep9_vm/src/isolate.rs:321-324	| Build id |	18492a40	^            #\[cfg\(feature \= \"spike\-native\"\)\]$
+history	H35-aot-unit-format.md	crates/ep9_vm/src/isolate.rs:321-324	| 1 Reviewer (M7-P0 amendment: the 2026-11-06 rewrite row, AOT0, the C-19 build-id rule)	18492a40	^            #\[cfg\(feature \= \"spike\-native\"\)\]$
+# M7-P3 SPEC-ERM (ABI 5 -> 6): the H03 sentence "`ABI_VERSION` is 5" is an M3-P0 record row; it was
+# true at its own commit.
+history	H03-ts-runtime-semantics.md	crates/ep9_bytecode/src/unit.rs:37	Checked at 5d6faa3 (m0m3/p0-fix-docs)	5d6faa3	^pub const ABI_VERSION: u32 = 5;$
+# M7-P3 fixer: realm.rs:261 (realm::create) was once the number of the realm::switch cite in the
+# same H22 line, so the diff map reads it as that cite; the pin names the line it means.
+pin	H22-isolates-and-realms.md	crates/ep9_vm/src/realm.rs:261	crates/ep9_vm/src/realm.rs	^pub\(crate\) fn create\(	0
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 1 Reviewer (spec-int amendment: the 2026-11-06 rewrite row, BigInt cell part (B2))	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 1 Reviewer (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 4 Data (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 3 Verifier (spec-int amendment: the 2026-11-06 clarify row, ADRLINE and the layout-core OBJECT_LAYOUT number)	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:62	| 4 Data (spec-int amendment: the 2026-11-06 clarify row, ADRLINE and the layout-core OBJECT_LAYOUT number)	18492a40	^pub const OBJECT\_LAYOUT\_VERSION\: u32 \= 7\;$
+history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:627	`READ_SET` holds 72 items	18492a40	^pub const READ\_SET\: \[\(\&str\, \&str\)\; 72\] \= \[$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P1 amendment: the 2026-11-06 fill row, DEOPT_META 1 = format 1, A2-START)	cf2df095	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 3 Verifier (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
+history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:89-90	| 1 Reviewer (M7-P1 amendment: the 2026-11-06 fill row, DEOPT_META 1 = format 1, A2-START)	9efb72b3	^/// Deoptimization metadata \(H29\)
+history	H17-object-layout.md	crates/ep9_vm/src/tests/layout6.rs:211	| 4 Data (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^fn month\_7\_versions\(\) \{$
+# M7-P4 fixer: tools/test262/src/exec.rs:947 (the worker's catch_unwind, after the SPEC-BUILTINS4
+# module host hooks) is an older number of another exec.rs cite of the same H23 lines, so the diff
+# map (from bfea3c7e) reads it as the install_panic_hook line; the pin names the line it means.
+pin	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:947	tools/test262/src/exec.rs	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$	0
 history	H20-builtin-abi.md	.github/scripts/dep-guards.sh:159	T1 Temporal namespace, ep9_temporal edge (Frozen-part route)	17a0c841	^deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal$
 history	H20-builtin-abi.md	.github/scripts/dep-guards.sh:159	T9 clock row provider (part 2)	17a0c841	^deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal$
 history	H36-fp-semantics.md	tools/xtask/src/fpcheck.rs:1669	3 Verifier (spec-int amendment: the 2026-11-06 rewrite row, T0 allow-crate form (Frozen, G8))	17a0c841	^    fn allow_crate_via_is_only_ep9_temporal\(\) \{$

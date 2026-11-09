@@ -561,6 +561,102 @@ fn arrays_seal_and_freeze() {
     );
 }
 
+/// The integrity levels of Arrays (M7-P3 ELEMKINDS; H18 "extra element kinds"): sealed and
+/// frozen arrays of each storage form (INT32, DOUBLE, ELEMENTS, holey, empty) under `[[Get]]`,
+/// `[[Set]]` (sloppy and strict, the keyed store sites in their monomorphic and megamorphic
+/// states), `[[Delete]]`, `[[DefineOwnProperty]]`, `length` sets and cuts, the Array methods
+/// that write, Reflect, a level array as a prototype, and TestIntegrityLevel. Expected output
+/// from node v26.13.0; the spec agrees on each line (§7.3.15, §7.3.16, §10.4.2). The lines pass
+/// with DICTIONARY elements (the form up to M7-P2) and with the shape-flag form, so they guard
+/// the move from one to the other.
+#[test]
+fn arrays_keep_each_integrity_level() {
+    assert_eq!(
+        run_both(
+            "function d(o, k) { var x = Object.getOwnPropertyDescriptor(o, k); return x ? [x.value, x.writable, x.enumerable, x.configurable].join(',') : 'none'; }
+             function te(f) { try { f(); return 'ok'; } catch (e) { return e.constructor.name; } }
+             var s = Object.seal([1, 2.5, 'x']);
+             print(Object.isSealed(s), Object.isFrozen(s), Object.isExtensible(s), d(s, 0), d(s, 'length'));
+             s[0] = 7; s[1] = 3.25; s[2] = {}; s[3] = 9;
+             print(s[0], s[1], typeof s[2], s[3], s.length, delete s[0], s[0], 0 in s);
+             s.length = 1; print(s.length, s[2] === undefined);
+             s.length = 5; print(s.length, 4 in s, Object.isSealed(s));
+             print(te(function () { 'use strict'; delete s[0]; }), te(function () { 'use strict'; s[9] = 1; }));
+             print(te(function () { Object.defineProperty(s, 0, { value: 8 }); }), s[0], d(s, 0));
+             print(te(function () { Object.defineProperty(s, 0, { configurable: true }); }));
+             Object.defineProperty(s, 1, { writable: false }); print(d(s, 1), Object.isFrozen(s));
+             var f = Object.freeze([1, 2, 3]);
+             print(Object.isSealed(f), Object.isFrozen(f), d(f, 1), d(f, 'length'));
+             f[0] = 9; f.length = 0; print(f[0], f.length, delete f[2], f.join());
+             print(te(function () { 'use strict'; f[0] = 9; }), te(function () { 'use strict'; f.length = 0; }));
+             print(te(function () { f.push(4); }), te(function () { f.pop(); }), te(function () { f.reverse(); }), te(function () { f.sort(); }));
+             print(te(function () { f.fill(0); }), te(function () { f.copyWithin(0, 1); }), te(function () { f.splice(0, 1); }));
+             print(te(function () { f.unshift(0); }), te(function () { f.shift(); }), f.join(), f.length);
+             print(f.map(function (x) { return x * 2; }).join(), f.slice(1).join(), f.concat([4]).join(), f.indexOf(3), f.includes(2));
+             print(te(function () { Object.defineProperty(f, 0, { value: 1 }); }), te(function () { Object.defineProperty(f, 0, { value: 2 }); }));
+             var fd = Object.freeze([1.5, -0, NaN]); fd[0] = 2; print(fd[0], Object.is(fd[1], -0), fd[2] !== fd[2], Object.isFrozen(fd));
+             var fe = Object.freeze([]); print(Object.isFrozen(fe), d(fe, 'length'), te(function () { fe.push(); }), te(function () { 'use strict'; fe[0] = 1; }));
+             var h = [1, , 3]; Object.freeze(h); print(1 in h, h.length, Object.keys(h).join());
+             var p = Object.preventExtensions([1, 2]); p[0] = 5; p[2] = 6; print(p.join(), p.length, delete p[1], p.length, Object.isSealed(p));
+             var g = [1, 2]; Object.seal(g); Object.freeze(g); print(Object.isFrozen(g)); Object.seal(g); print(Object.isFrozen(g));
+             var q = Object.freeze([1, 2]); var r = Object.create(q); r[0] = 5; print(r[0], Object.keys(r).length);
+             var t = Object.freeze([1, 2]); var u = []; u.__proto__ = t; print(u.length, te(function () { 'use strict'; u[0] = 1; }));
+             var sp = Object.seal([1, 2, 3]); var o2 = Object.create(sp); print(o2[1]);
+             for (var i = 0; i < 3; i++) { var k = [i, i + 1]; if (i == 2) Object.freeze(k); k[0] = 'z'; print(k[0]); }
+             var big = []; for (var j = 0; j < 100; j++) big.push(j); Object.freeze(big); var sum = 0; for (var j = 0; j < 100; j++) sum += big[j]; print(sum, Object.isFrozen(big));
+             var ss = Object.seal([1, 2, 3]); ss.length = 0; print(ss.length, ss.join());
+             print(JSON.stringify(Object.freeze([1, 'a', null])), Array.isArray(Object.freeze([])));
+             var sd = Object.seal([1, 2]); sd[0] = 1.5; sd[1] = 'w'; print(sd.join(), Object.isSealed(sd), d(sd, 0));
+             var fp = Object.freeze([10, 20]); var o3 = Object.create(fp); print(Object.getPrototypeOf(o3) === fp, fp[1]);
+             print(Reflect.set(f, 0, 5), Reflect.defineProperty(f, 0, { value: 5 }), Reflect.deleteProperty(s, 0), Reflect.deleteProperty(f, 5));
+             function st(a) { a[0] = 'm'; return a[0]; }
+             var arrs = [[1], [1.5], ['a'], {0: 1}, Object.preventExtensions([1]), Object.seal([2]), Object.freeze([3]), Object.freeze([4.5])];
+             print(arrs.map(st).join());
+             function st2(a, v) { a[1] = v; return a[1]; }
+             var fz = Object.freeze([0, 1]); var sl = Object.seal([0, 1]);
+             for (var n = 0; n < 4; n++) { st2([0, 1], n); st2(sl, n); } print(st2(fz, 9), st2(sl, 9), st2(sl, 2.5), Object.isSealed(sl), d(sl, 1));"
+        ),
+        lines(&[
+            "true false false 1,true,true,false 3,true,false,false",
+            "7 3.25 object undefined 3 false 7 true",
+            "3 false",
+            "5 false true",
+            "TypeError TypeError",
+            "ok 8 8,true,true,false",
+            "TypeError",
+            "3.25,false,true,false false",
+            "true true 2,false,true,false 3,false,false,false",
+            "1 3 false 1,2,3",
+            "TypeError TypeError",
+            "TypeError TypeError TypeError TypeError",
+            "TypeError TypeError TypeError",
+            "TypeError TypeError 1,2,3 3",
+            "2,4,6 2,3 1,2,3,4 2 true",
+            "ok TypeError",
+            "1.5 true true true",
+            "true 0,false,false,false TypeError TypeError",
+            "false 3 0,2",
+            "5,2 2 true 2 false",
+            "true",
+            "true",
+            "1 0",
+            "0 TypeError",
+            "2",
+            "z",
+            "z",
+            "2",
+            "4950 true",
+            "3 1,2,3",
+            "[1,\"a\",null] true",
+            "1.5,w true 1.5,true,true,false",
+            "true 20",
+            "false false false true",
+            "m,m,m,m,m,m,3,4.5",
+            "1 9 2.5 true 2.5,true,true,false",
+        ])
+    );
+}
+
 /// M2-P2-CLSCG-NONEXT-FALSEPASS / M2-PRIVATE-EXT: freeze, seal and preventExtensions walk
 /// `[[OwnPropertyKeys]]`, which never lists a private name (§6.2.12), so private fields,
 /// methods and accessors stay usable, and the Object.* key lists never show them. A private
@@ -763,4 +859,126 @@ fn to_locale_string_invokes_to_string() {
         let r = run_both(src);
         assert!(is_type_error(&r), "{src}: {r:?}");
     }
+}
+
+/// Codex M7-P3 r2 CX2-1: the `length` of an Array frozen by `Object.freeze` (a dense Array
+/// since the ELEMKINDS activation) is read-only for a `[[Set]]` whose receiver is another
+/// object: `Reflect.set` with another receiver is false and keeps it; an inherited
+/// `o.length = 5` throws in strict code and adds no own `length` in sloppy code; the generic
+/// `push` and `pop` on `Object.create(frozen)` throw. The strict text names a read-only
+/// property (node: "... of object '[object Array]'"; the object name differs, as before).
+/// `Object.seal` keeps `length` writable (the control).
+#[test]
+fn a_frozen_array_length_is_read_only_for_another_receiver() {
+    assert_eq!(
+        run_both(
+            "function t(f) { try { return String(f()); } catch (e) { return 'THROW ' + e.name; } }
+             var r = [1, 2];
+             print(Reflect.set(Object.freeze([]), 'length', 0, r), JSON.stringify(r));
+             r = [1, 2];
+             print(Reflect.set(Object.freeze([7]), 'length', 0, r), JSON.stringify(r));
+             var p = {};
+             print(Reflect.set(Object.freeze([]), 'length', 5, p), Object.hasOwn(p, 'length'));
+             var o = Object.create(Object.freeze([])); o.length = 5;
+             print(Object.hasOwn(o, 'length'), o.length);
+             print(t(function () { 'use strict'; var o = Object.create(Object.freeze([])); o.length = 5; return 'no throw'; }));
+             print(t(function () { 'use strict'; var o = Object.create(Object.freeze([1])); o.length = 5; return 'no throw'; }));
+             print(t(function () { var o = Object.create(Object.freeze([])); Array.prototype.push.call(o, 9); return 'no throw'; }));
+             print(t(function () { var o = Object.create(Object.freeze([1])); Array.prototype.pop.call(o); return 'no throw'; }));
+             print(t(function () { return Object.create(Object.freeze([])).push(9); }));
+             print(t(function () { return Object.create(Object.freeze([])).pop(); }));
+             var n = 0, q = Object.freeze([]);
+             for (var i = 0; i < 20; i++) { try { (function (o) { 'use strict'; o.length = 5; })(Object.create(q)); } catch (e) { n++; } }
+             print('throws=' + n);
+             try { (function () { 'use strict'; Object.freeze([1]).length = 0; })(); } catch (e) { print(e.name, e.message.split(' of ')[0]); }
+             r = [1, 2];
+             print(Reflect.set(Object.seal([]), 'length', 0, r), JSON.stringify(r));
+             print(t(function () { 'use strict'; var o = Object.create(Object.seal([])); o.length = 5; return Object.hasOwn(o, 'length') + ' ' + o.length; }));"
+        ),
+        lines(&[
+            "false [1,2]",
+            "false [1,2]",
+            "false false",
+            "false 0",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "THROW TypeError",
+            "throws=20",
+            "TypeError Cannot assign to read only property 'length'",
+            "true []",
+            "true 5",
+        ])
+    );
+}
+
+/// MC-w33-5, the SpiderMonkey `bug2023298.js` form: for-in writes `o[k] = 99` into a frozen
+/// dense Array and a frozen ordinary object with elements, warm (30 rounds; sloppy writes do
+/// nothing, strict writes throw), and into a sealed Array (the writes land). The lines are
+/// node v26.13.0's.
+#[test]
+fn for_in_writes_do_not_change_a_frozen_array() {
+    assert_eq!(
+        run_both(
+            r#"
+            // SM bug2023298.js form: for-in writes into a frozen dense Array, warm.
+            function w(o) { for (var k in o) o[k] = 99; }
+            function ws(o) { 'use strict'; var n = 0; for (var k in o) { try { o[k] = 99; } catch (e) { n++; } } return n; }
+            var fa = Object.freeze([1, 2, 3]), sa = Object.seal([1, 2, 3]), fo = Object.freeze({ 0: 1, 1: 2, x: 3 });
+            var thrown = 0;
+            for (var i = 0; i < 30; i++) { w(fa); w(fo); thrown += ws(fa) + ws(fo); }
+            print(fa.join() + ' ' + JSON.stringify(fo) + ' ' + thrown);
+            w(sa); print(sa.join() + ' ' + Object.isFrozen(fa) + ' ' + Object.isSealed(sa) + ' ' + Object.isFrozen(sa));
+            var big = []; for (var j = 0; j < 40; j++) big.push(j); Object.freeze(big);
+            for (var i = 0; i < 20; i++) w(big);
+            print(big[0] + ' ' + big[39] + ' ' + big.length);
+"#
+        ),
+        lines(&[
+            "1,2,3 {\"0\":1,\"1\":2,\"x\":3} 180",
+            "99,99,99 true true false",
+            "0 39 40",
+        ])
+    );
+}
+
+/// MC-w33-5, the SpiderMonkey `bug2045578.js` form: a Proxy `get` trap that gives another value
+/// for a frozen element (of an Array and of an ordinary object, warm) or a frozen Array's
+/// `length` breaks the [[Get]] invariant (§10.5.8 step 9.a): a TypeError; the same trap on a
+/// sealed or a non-extensible Array, or an honest trap, is fine. The lines are node v26.13.0's.
+#[test]
+fn proxy_get_checks_frozen_elements() {
+    assert_eq!(
+        run_both(
+            r#"
+            // SM bug2045578.js form: a Proxy get trap that lies about a frozen element.
+            function t(f) { try { return 'ok ' + f(); } catch (e) { return 'THROW ' + e.constructor.name; } }
+            var fa = Object.freeze([1, 2]), fo = Object.freeze({ 0: 1, a: 2 });
+            var lie = { get: function (t, k) { return k === '0' ? 7 : Reflect.get(t, k); } };
+            var pa = new Proxy(fa, lie), po = new Proxy(fo, lie);
+            var r = [];
+            for (var i = 0; i < 30; i++) { r.push(t(function () { return pa[0]; }), t(function () { return po[0]; })); }
+            var c = {}; r.forEach(function (x) { c[x] = (c[x] || 0) + 1; }); print(JSON.stringify(c));
+            print(t(function () { return pa[1]; }) + ' ' + t(function () { return po.a; }) + ' ' + t(function () { return pa.length; }));
+            var honest = new Proxy(fa, { get: function (t, k) { return Reflect.get(t, k); } });
+            print(t(function () { return honest[0]; }));
+            var sa = Object.seal([1]), ps = new Proxy(sa, lie);
+            print(t(function () { return ps[0]; }));
+            var lieLen = new Proxy(Object.freeze([1, 2]), { get: function (t, k) { return k === 'length' ? 5 : Reflect.get(t, k); } });
+            print(t(function () { return lieLen.length; }));
+            var ne = Object.preventExtensions([1]), pn = new Proxy(ne, lie);
+            print(t(function () { return pn[0]; }));
+"#
+        ),
+        lines(&[
+            "{\"THROW TypeError\":60}",
+            "ok 2 ok 2 ok 2",
+            "ok 1",
+            "ok 7",
+            "THROW TypeError",
+            "ok 7",
+        ])
+    );
 }

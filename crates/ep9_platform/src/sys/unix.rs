@@ -216,3 +216,79 @@ pub(crate) fn stack_bounds() -> io::Result<(usize, usize)> {
         "stack bounds are implemented for macOS, Linux and Windows only",
     ))
 }
+
+/// Makes committed pages read and execute only (the last step of `unit_text`'s protect form).
+///
+/// # Safety
+/// `[addr, addr + size)` is page-aligned, committed, inside a reservation of this process, and
+/// no live reference writes into it.
+pub(crate) unsafe fn protect_rx(addr: usize, size: usize) -> io::Result<()> {
+    // SAFETY: the caller guarantees the range is ours, committed and page-aligned.
+    let rc =
+        unsafe { libc::mprotect(addr as *mut c_void, size, libc::PROT_READ | libc::PROT_EXEC) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+unsafe extern "C" {
+    /// libkern (libSystem): makes instruction fetch see new bytes in `[start, start + len)`.
+    fn sys_icache_invalidate(start: *mut c_void, len: usize);
+}
+
+/// Makes the instruction fetch of this thread see the bytes written to `[addr, addr + len)`
+/// (`unit_text` without `jit`; the `jit` module has its own copy, `jit::flush_icache`).
+#[cfg(target_vendor = "apple")]
+pub(crate) fn flush_icache(addr: usize, len: usize) {
+    // SAFETY: sys_icache_invalidate only runs cache maintenance on the range; it does not
+    // write memory. A range that is not mapped is the caller's bug and faults.
+    unsafe { sys_icache_invalidate(addr as *mut c_void, len) };
+}
+
+/// Makes the instruction fetch of this thread see the bytes written to `[addr, addr + len)`:
+/// the compiler-rt `__clear_cache` sequence for AArch64 (it honors CTR_EL0.IDC and DIC), as
+/// `jit::flush_icache`.
+#[cfg(all(not(target_vendor = "apple"), target_arch = "aarch64"))]
+pub(crate) fn flush_icache(addr: usize, len: usize) {
+    use core::arch::asm;
+    let ctr: u64;
+    // SAFETY: reading CTR_EL0 is allowed at EL0 on Linux (the kernel traps and emulates it when
+    // SCTLR_EL1.UCT is clear).
+    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack, preserves_flags)) };
+    let end = addr + len;
+    if (ctr >> 28) & 1 == 0 {
+        // IDC = 0: clean the data cache to the point of unification.
+        let line = 4usize << ((ctr >> 16) & 0xf);
+        let mut a = addr & !(line - 1);
+        while a < end {
+            // SAFETY: DC CVAU only cleans a cache line; the address is mapped (caller).
+            unsafe { asm!("dc cvau, {}", in(reg) a, options(nostack, preserves_flags)) };
+            a += line;
+        }
+    }
+    // SAFETY: a barrier has no memory-safety effect.
+    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
+    if (ctr >> 29) & 1 == 0 {
+        // DIC = 0: invalidate the instruction cache to the point of unification.
+        let line = 4usize << (ctr & 0xf);
+        let mut a = addr & !(line - 1);
+        while a < end {
+            // SAFETY: IC IVAU only invalidates a cache line; the address is mapped (caller).
+            unsafe { asm!("ic ivau, {}", in(reg) a, options(nostack, preserves_flags)) };
+            a += line;
+        }
+        // SAFETY: a barrier has no memory-safety effect.
+        unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
+    }
+    // SAFETY: an instruction barrier has no memory-safety effect.
+    unsafe { asm!("isb", options(nostack, preserves_flags)) };
+}
+
+/// x86-64 keeps instruction fetch coherent with stores of the same thread.
+#[cfg(all(not(target_vendor = "apple"), target_arch = "x86_64"))]
+pub(crate) fn flush_icache(_addr: usize, _len: usize) {
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}

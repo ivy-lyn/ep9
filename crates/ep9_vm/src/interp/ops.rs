@@ -92,7 +92,7 @@ fn int(i: i32) -> u64 {
 
 #[inline(always)]
 fn num(d: f64) -> u64 {
-    Value::number(d).to_bits()
+    number_bits(d)
 }
 
 /// True for null and undefined (0x02 and 0x0a: they differ only in `encoding::UNDEFINED_TAG`).
@@ -432,13 +432,34 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     callee: u64,
     this: u64,
     argc: u32,
-    arg: impl Fn(&St<'_>, u32) -> u64,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Flow {
     if !object::is_function(callee) {
         return Flow::Cold;
     }
     let fi = object::function_info(callee);
     if fi.slot.kind_byte() != DispatchKind::Interp as u8 || fi.is_class_constructor() {
+        // A forwarded `apply` or `call` of a bytecode function (M7-P4 LEVER-3): the frame of
+        // `call::forward_frame` (no call, no GC point), then the unit of the cold path. A
+        // call that the cold path would record (`profile::record_call`: its budget unit is
+        // in the window) goes cold, so the record stays that of `apply` or `call`.
+        if fi.host.is_some()
+            && object::is_function(this)
+            && !profile::call_window_after_unit(st.cx.budget - 1)
+        {
+            let (fp, next) = (st.fp, st.next);
+            // SAFETY: `fp` is the live top frame and `next` the pc after this call; `arg`
+            // reads registers of the current verified instruction in `fp` (a copy, not the
+            // address of `st`: see [`list_at`]).
+            let (nfp, code) =
+                unsafe { call::forward_frame(&*st.cx, fp, next, callee, this, argc, arg) };
+            if !nfp.is_null() {
+                st.cx.budget -= 1;
+                st.fp = nfp;
+                st.acc = UNDEFINED;
+                return Flow::Jump(code);
+            }
+        }
         return Flow::Cold;
     }
     // A callee of another realm: `slow::call` runs it in its realm (H22-Q3).
@@ -461,7 +482,6 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
-    let rd: &St<'_> = st;
     // SAFETY: `base` is the first free slot above the live top frame `fp`, `limit` is the VM
     // stack cap, and `arg` reads registers of the current verified instruction.
     let nfp = unsafe {
@@ -472,7 +492,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             callee,
             this,
             argc,
-            |i| arg(rd, i),
+            |i| arg(fp, i),
             fp,
             next,
             context,
@@ -554,7 +574,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     callee: u64,
     this: u64,
     argc: u32,
-    arg: impl Fn(&St<'_>, u32) -> u64,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Flow {
     if !object::is_function(callee) {
         return Flow::Cold;
@@ -571,6 +591,27 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             return Flow::Cold;
         }
     } else if crate::native::hot_stub(kind).is_none() {
+        // A forwarded `apply` or `call` of a bytecode function (M7-P4 LEVER-3): the frame of
+        // `call::forward_frame` (no call, no GC point), then the unit of the cold path. A
+        // call that the cold path would record (`profile::record_call`: its budget unit is
+        // in the window) goes cold, so the record stays that of `apply` or `call`.
+        if fi.host.is_some()
+            && object::is_function(this)
+            && !profile::call_window_after_unit(st.cx.budget - 1)
+        {
+            let (fp, next) = (st.fp, st.next);
+            // SAFETY: `fp` is the live top frame and `next` the pc after this call; `arg`
+            // reads registers of the current verified instruction in `fp` (a copy, not the
+            // address of `st`: see [`list_at`]).
+            let (nfp, code) =
+                unsafe { call::forward_frame(&*st.cx, fp, next, callee, this, argc, arg) };
+            if !nfp.is_null() {
+                st.cx.budget -= 1;
+                st.fp = nfp;
+                st.acc = UNDEFINED;
+                return Flow::Jump(code);
+            }
+        }
         return Flow::Cold;
     }
     // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).
@@ -592,7 +633,6 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
-    let rd: &St<'_> = st;
     // SAFETY: as in the default build's `call_fast`.
     let nfp = unsafe {
         call::push_frame(
@@ -602,7 +642,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             callee,
             this,
             argc,
-            |i| arg(rd, i),
+            |i| arg(fp, i),
             fp,
             next,
             context,
@@ -686,6 +726,23 @@ fn call_operand(st: &St<'_>, r: R) -> u64 {
     return st.reg(r);
 }
 
+/// Register `l + i` of the frame `fp`: [`St::list`] of that frame, for the argument reader of
+/// [`call_fast`], which reads the caller's frame `fp`, not `st` (M7-P4 integration fixer).
+///
+/// A reader that holds the address of `st` makes `st` escape at the forwarded call (the
+/// out-of-line `call::forward_frame` of debug builds; see there), and LLVM then makes no call
+/// of the handler a sibling call: in the Spike C test build (ep9_vm at opt-level 2 with debug
+/// assertions), the threaded dispatch grows the native stack by one handler frame per
+/// instruction until a RangeError (15 Spike C unit tests on 2 MiB test threads). The readers
+/// hold copies only (`fp`, the list operand, the operand values), so they are `Copy`.
+#[inline(always)]
+fn list_at(fp: *mut u64, l: RList, i: u32) -> u64 {
+    // SAFETY: as `St::list`: `fp` is the live top frame of the current instruction, the
+    // verifier checked that the whole list lies in the frame, and callers pass `i` below the
+    // count operand of the same instruction.
+    unsafe { *fp.offset(l.0 + i as isize) }
+}
+
 /// `CallProperty`/`CallAnyReceiver`: the list holds the receiver, then the arguments.
 #[inline(always)]
 fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count, s: FSlot) -> Flow {
@@ -697,19 +754,23 @@ fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count,
     // The arguments as a list of their own (not `list(args, i + 1)`: with the `u32` sum the
     // x86-64 copy loop keeps an index and a base, one register more).
     let rest = RList(args.0 + 1);
-    call_fast::<true, true>(st, s, f, this, argc.0 - 1, move |s, i| s.list(rest, i))
+    call_fast::<true, true>(st, s, f, this, argc.0 - 1, move |fp, i| {
+        list_at(fp, rest, i)
+    })
 }
 
 // ---- special -------------------------------------------------------------------------------
 
 op!(Illegal(st) { Flow::Cold } cold { not_impl(st, "the Illegal opcode") });
-op!(Wide(st) { scaled_fast::<S2>(st) } cold { st.scaled::<S2>() });
-op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { st.scaled::<S4>() });
+op!(Wide(st) { scaled_fast::<S2>(st) } cold { scaled_cold::<S2>(st) });
+op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { scaled_cold::<S4>(st) });
 
 /// The fast body of `Wide` and `ExtraWide` (M3-P4 FIXES, PERF3 task 5; perf run 2 slow path
 /// 3): `LdaSmi` and the int32 cases of `AddSmi`, `SubSmi`, `ModSmi`, `BitwiseOrSmi`,
 /// `BitwiseXorSmi` and `BitwiseAndSmi` (the prefixed forms in the hot loops of the T0
-/// kernels) run here, as their one-byte forms do. Anything else (another opcode, an
+/// kernels) run here, as their one-byte forms do. M7-P4 TSPASS2: so do the fast bodies of the
+/// opcodes of [`prefix_runs_fast`] (the prefixed forms in the large functions of the TS
+/// workload), at scale `S` ([`prefixed_fast`]). Anything else (another opcode, an
 /// accumulator that is not an int32, an overflow, a `%` that is not exact in int32) takes the
 /// cold block, which runs the whole instruction in `interp::scaled::step`; nothing is changed
 /// before that. These int32 cases record nothing (implicit, `profile::int32_pair_bits`;
@@ -727,8 +788,11 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
         // SAFETY: `len` is the length of the prefixed instruction.
         return Flow::Jump(unsafe { st.pc.add(len) });
     }
+    if !(O::AddSmi as u8..=O::BitwiseAndSmi as u8).contains(&op) {
+        return prefixed_fast::<S>(st, op);
+    }
     let a = st.acc;
-    if !is_i32(a) || !(O::AddSmi as u8..=O::BitwiseAndSmi as u8).contains(&op) {
+    if !is_i32(a) {
         return Flow::Cold;
     }
     // SAFETY: as above; AddSmi to BitwiseAndSmi all take (value: Imm, slot: Slot).
@@ -763,6 +827,102 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
             Flow::Jump(unsafe { st.pc.add(len) })
         }
         None => Flow::Cold,
+    }
+}
+
+/// True for the opcodes whose prefixed form the `Wide` and `ExtraWide` fast body runs with the
+/// opcode's own fast body ([`prefixed_fast`]; M7-P4 TSPASS2): `JumpLoop`, `Jump` to
+/// `JumpIfJSReceiver` (one jump operand that needs a prefix past 255 bytes) and, on aarch64
+/// ([`PREFIXED_LOAD_FAST`]), `GetNamedProperty` (a name constant or a feedback slot past 255).
+/// On the TS workload (`octane-typescript`, mac a64 counts at m7-p3) these are 31.6 M of the
+/// 39.2 M prefixed instructions; before, each ran in `interp::scaled::step` through the cold
+/// block.
+///
+/// The cold block reads the same set ([`scaled_cold`]): for these opcodes the fast body has
+/// run once and returned `Flow::Cold`, so the cold block runs only the opcode's cold body
+/// (`interp::scaled::step_cold`). A second run of the fast body would count the budget unit
+/// and the loop record of `JumpLoop` twice. Every opcode of the set takes no record flow in
+/// its fast body (it records inline, `JumpLoop`, or not at all), and none writes a register
+/// or the accumulator before it returns `Flow::Cold`. `SetNamedProperty` and the calls are
+/// not in it: their hit paths call out (the write barrier, the frame push), and inline here
+/// they would give the `Wide` handler register saves on entry, also on its `LdaSmi` path.
+#[inline(always)]
+pub(crate) const fn prefix_runs_fast(op: u8) -> bool {
+    use ep9_bytecode::Opcode as O;
+    let jump = op >= O::JumpLoop as u8 && op <= O::JumpIfJSReceiver as u8;
+    jump || (PREFIXED_LOAD_FAST && op == O::GetNamedProperty as u8)
+}
+
+/// True if the `Wide` and `ExtraWide` fast body runs the prefixed `GetNamedProperty`
+/// ([`prefix_runs_fast`]): on aarch64 only. On x86-64 (SysV, `cargo xtask disasm-check`) the
+/// inlined load hit path gives the `Wide` handler 4 register saves on entry, also on its
+/// `LdaSmi` path (8 instructions on each prefixed `LdaSmi` of `t0-loop`); there the prefixed
+/// load stays in `interp::scaled::step`.
+pub(crate) const PREFIXED_LOAD_FAST: bool = cfg!(target_arch = "aarch64");
+
+/// The prefixed (scale `S`) forms of the opcodes of [`prefix_runs_fast`] (or `Flow::Cold` for
+/// any other `op`): the operands at scale `S`, `st.next` set to the end of the prefixed
+/// instruction, then the opcode's fast body as its handler runs it. `st.pc` stays at the
+/// prefix, the base of a jump offset (as in `interp::scaled::step`).
+#[inline(always)]
+fn prefixed_fast<S: dsl::Scale>(st: &mut St<'_>, op: u8) -> Flow {
+    use ep9_bytecode::Opcode as O;
+    #[inline(always)]
+    fn flow(d: Done) -> Flow {
+        match d {
+            Done::Next => Flow::Next,
+            Done::Jump(t) => Flow::Jump(t),
+        }
+    }
+    if !prefix_runs_fast(op) {
+        return Flow::Cold;
+    }
+    if op == O::GetNamedProperty as u8 {
+        // SAFETY: verified code: GetNamedProperty's operands at scale `S` follow the opcode.
+        let (len, (object, name, s)) =
+            unsafe { dsl::decode!(S, st.pc; object: Reg, name: Const, s: Slot) };
+        // SAFETY: `len` is the length of the prefixed instruction.
+        st.next = unsafe { st.pc.add(len) };
+        return GetNamedProperty::fast(st, object, name, s);
+    }
+    if op == O::JumpLoop as u8 {
+        // SAFETY: as above, for JumpLoop's operands.
+        let (len, (target, depth, s)) =
+            unsafe { dsl::decode!(S, st.pc; target: JumpBack, depth: Imm, s: Slot) };
+        // SAFETY: as above.
+        st.next = unsafe { st.pc.add(len) };
+        return JumpLoop::fast(st, target, depth, s);
+    }
+    // SAFETY: as above; Jump to JumpIfJSReceiver all take (target: JumpFwd).
+    let (len, (t,)) = unsafe { dsl::decode!(S, st.pc; target: JumpFwd) };
+    // SAFETY: as above.
+    st.next = unsafe { st.pc.add(len) };
+    match op {
+        o if o == O::Jump as u8 => flow(Jump::fast(st, t)),
+        o if o == O::JumpIfTrue as u8 => flow(JumpIfTrue::fast(st, t)),
+        o if o == O::JumpIfFalse as u8 => flow(JumpIfFalse::fast(st, t)),
+        o if o == O::JumpIfToBooleanTrue as u8 => JumpIfToBooleanTrue::fast(st, t),
+        o if o == O::JumpIfToBooleanFalse as u8 => JumpIfToBooleanFalse::fast(st, t),
+        o if o == O::JumpIfNull as u8 => flow(JumpIfNull::fast(st, t)),
+        o if o == O::JumpIfNotNull as u8 => flow(JumpIfNotNull::fast(st, t)),
+        o if o == O::JumpIfUndefined as u8 => flow(JumpIfUndefined::fast(st, t)),
+        o if o == O::JumpIfNotUndefined as u8 => flow(JumpIfNotUndefined::fast(st, t)),
+        o if o == O::JumpIfUndefinedOrNull as u8 => flow(JumpIfUndefinedOrNull::fast(st, t)),
+        _ => flow(JumpIfJSReceiver::fast(st, t)),
+    }
+}
+
+/// The cold block of `Wide` and `ExtraWide`: for an opcode of [`prefix_runs_fast`] its cold
+/// body only (its fast body ran in [`prefixed_fast`] and returned `Flow::Cold`), for any other
+/// opcode the whole prefixed instruction (`interp::scaled::step`).
+#[inline(always)]
+fn scaled_cold<S: dsl::Scale>(st: &mut St<'_>) -> Done {
+    // SAFETY: verified code: a prefix is followed by an opcode byte.
+    let op = unsafe { *st.pc.add(1) };
+    if prefix_runs_fast(op) {
+        st.scaled_cold::<S>()
+    } else {
+        st.scaled::<S>()
     }
 }
 
@@ -837,7 +997,7 @@ op!(LdaNewTarget(st) {
 
 // Global ICs (H16, `ic.rs`): a lexical binding or an own data property of the global object.
 op!(LdaGlobal(st, name: K, s: FSlot) {
-    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+    match ic::load_global(st.cx, st.info(), s.0) {
         Some(v) => {
             ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
@@ -854,7 +1014,7 @@ op!(LdaGlobal(st, name: K, s: FSlot) {
     st.result(r)
 });
 op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
-    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+    match ic::load_global(st.cx, st.info(), s.0) {
         Some(v) => {
             ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
@@ -872,7 +1032,7 @@ op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
 });
 op!(StaGlobal(st, name: K, s: FSlot) {
     let v = st.acc;
-    if ic::store_global(st.rt(), st.info(), st.cx.global_this, s.0, v) {
+    if ic::store_global(st.cx, st.info(), s.0, v) {
         ic::ic_count!(hit, StoreGlobal);
         Flow::Next
     } else {
@@ -1493,7 +1653,7 @@ op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
 });
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
-    call_fast::<true, false>(st, s, f, UNDEFINED, argc.0, move |s, i| s.list(args, i))
+    call_fast::<true, false>(st, s, f, UNDEFINED, argc.0, move |fp, i| list_at(fp, args, i))
 } cold {
     call_record_cold(st, callee, s)
 });
@@ -2001,7 +2161,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     callee: u64,
     this: u64,
     argc: u32,
-    arg: impl Fn(&St<'_>, u32) -> u64,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Flow {
     if !object::is_function(callee) {
         return Flow::Cold;
@@ -2027,7 +2187,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
         let rd: &St<'_> = st;
         let this = call::bound_with_global(fi, this, rd.cx.global_this);
         // SAFETY: as above; `arg` reads registers of the current verified instruction.
-        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd, i)) };
+        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd.fp, i)) };
         if !callee_runs_here(st, callee, fi) {
             return Flow::Cold;
         }
@@ -2048,7 +2208,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
         let rd: &St<'_> = st;
         let this = call::bound_with_global(fi, this, rd.cx.global_this);
         // SAFETY: as above.
-        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd, i)) };
+        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(fp, i)) };
     }
     // SAFETY: as above; the receiver and the arguments are written.
     unsafe {
@@ -2070,6 +2230,120 @@ fn callee_runs_here(st: &St<'_>, callee: u64, fi: &FunctionInfo) -> bool {
     fi.slot.kind_byte() == DispatchKind::Interp as u8
         && !fi.is_class_constructor()
         && object::function_realm(callee) == st.cx.realm
+}
+
+/// The bits of `Value::number(d)` (the [`num`] box of the handlers). x86-64: the int32 test
+/// takes the `cvttsd2si` result as it is (`i32::MIN` for NaN and for a `d` out of the int32
+/// range) and compares bits (`number_bits_from_trunc`). Rust's saturating `d as i32` of
+/// `Value::number` adds the clamp (`maxsd`, `minsd`) and a NaN select there, and its -0 test
+/// 6 more instructions. Other targets: `Value::number` (their code does not change).
+#[inline(always)]
+fn number_bits(d: f64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::{_mm_cvttsd_si32, _mm_set_sd};
+        // SAFETY: `cvttsd2si` and `movsd` are SSE2, which every x86-64 CPU has (the target
+        // baseline enables it).
+        let i = unsafe { _mm_cvttsd_si32(_mm_set_sd(d)) };
+        number_bits_from_trunc(d, i)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Value::number(d).to_bits()
+    }
+}
+
+/// [`number_bits`] from `i`, the `cvttsd2si` result for `d`: `d` truncated when that fits
+/// in int32, else `i32::MIN` (also for NaN). `f64::from(i)` has the bits of `d` exactly when
+/// `d` is the int32 `i` and not -0 (`f64::from(0)` is +0; a NaN never matches), which is the
+/// int32 case of `Value::number`. It builds on every target for the test.
+#[cfg(any(target_arch = "x86_64", test))]
+#[inline(always)]
+fn number_bits_from_trunc(d: f64, i: i32) -> u64 {
+    if f64::from(i).to_bits() == d.to_bits() {
+        int32_bits(i)
+    } else {
+        Value::double(d).to_bits()
+    }
+}
+
+/// `number_bits` against `Value::number`: the int32 edges, -0, NaN payloads, infinities,
+/// fractions and 200,000 random bit patterns.
+#[cfg(test)]
+mod number_box {
+    use super::*;
+
+    /// `cvttsd2si` (SSE2) as a model, for the targets without it.
+    fn cvttsd2si(d: f64) -> i32 {
+        if d > -2_147_483_649.0 && d < 2_147_483_648.0 {
+            d as i32
+        } else {
+            i32::MIN
+        }
+    }
+
+    fn check(d: f64) {
+        let want = Value::number(d).to_bits();
+        let bits = d.to_bits();
+        assert_eq!(
+            number_bits_from_trunc(d, cvttsd2si(d)),
+            want,
+            "{d} ({bits:#x})"
+        );
+        assert_eq!(number_bits(d), want, "{d} ({bits:#x})");
+    }
+
+    #[test]
+    fn number_bits_is_value_number() {
+        let edges = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            2_147_483_647.0,
+            2_147_483_647.5,
+            2_147_483_648.0,
+            -2_147_483_648.0,
+            -2_147_483_648.5,
+            -2_147_483_648.9,
+            -2_147_483_649.0,
+            4_294_967_296.0,
+            -4_294_967_296.0,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::from_bits(1 | 1 << 63),
+            f64::MAX,
+            f64::MIN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::NAN,
+            f64::from_bits(0x7ff0_0000_0000_0001),
+            f64::from_bits(0xfff8_0000_0000_0001),
+            f64::from_bits(0xfffe_0000_0000_0000),
+        ];
+        for d in edges {
+            check(d);
+        }
+        for i in -1_000..=1_000 {
+            let d = f64::from(i);
+            for x in [d, d + 0.25, d - 0.25, d * 65_536.0, d * 1e9] {
+                check(x);
+            }
+        }
+        // A fixed xorshift sequence: random doubles, and random int32 values as doubles.
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..100_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            check(f64::from_bits(x));
+            check(f64::from(x as i32));
+        }
+    }
 }
 
 /// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit

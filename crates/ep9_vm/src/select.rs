@@ -1,8 +1,8 @@
 //! `select()` (owner M6-P0 MODES6; doc 13 §3.2 and C-15, MODES-D13, MODES-D14): the one rule
 //! that picks the code object a function's dispatch slot caches, from its code set, the
-//! execution policy and the session. A pure function with no caller yet, tested with fake code
+//! execution policy and the session. A pure function, tested with fake code
 //! objects and no codegen (`tests/select.rs`: the T1-T11 table, the append-only lists, JIT and
-//! hybrid tier-up, PIN). The first caller is the A2 unit loader, not the T1 tier (MODES-D6).
+//! hybrid tier-up, PIN). Its first caller is the A2 unit loader (`unit_loader::load`, M7-P4).
 //!
 //! ```text
 //!  select(code set, policy, session) -> Pick       (slot := select(..) after every event)
@@ -27,11 +27,11 @@
 //!
 //! The candidate kinds GenInterp (5) and Lazy (6) of doc 13 §1.3 join the install ranks when
 //! they are built (C-03); until then the jitless rank goes AotOpt > AotBaseline > Interp.
-//! Counter sessions (doc 13 §3.2, MC-w15-17) are not part of this rule yet.
+//! Counter sessions (doc 13 §3.2, MC-w15-17) are not part of this rule; the loader keeps none.
 //!
 //! This is the selector, so the rule 40 policy grep exempts it (plan v11 rule 40).
 
-// No caller until T1 (MODES-D6); the tests use every item.
+// The unit loader calls `select` (M7-P4); some items have only test callers.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::dispatch::DispatchKind;

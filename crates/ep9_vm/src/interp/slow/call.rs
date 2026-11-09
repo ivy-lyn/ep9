@@ -32,7 +32,7 @@
 use ep9_value::Throw;
 
 use crate::bound;
-use crate::call::{self, ArgBuf, CallSite};
+use crate::call::{self, ArgBuf, CallSite, ForwardList};
 use crate::conv::{Res, describe};
 use crate::error::{self, not_implemented, stack_overflow, throw_error};
 use crate::feedback;
@@ -709,6 +709,13 @@ fn runs_bytecode(fi: &FunctionInfo) -> bool {
 //
 // Both are human fast paths (FASTDIFF): `Cx::set_human_fast_paths(false)` turns them off, and
 // every call then takes `decode_call`, `do_call` and the host function.
+//
+// M7-P4 LEVER-3: the T0 call fast path takes most forwarded calls before they come here
+// (`call::forward_frame`: the same tests, with no call, no GC point and no throw; not on
+// x86-64, where every forward comes here); `forward` takes the rest: a mapped arguments object, an Array with a hole or a double list, the call
+// that makes the callee's feedback vector, a call whose sampled call record is due
+// (`profile::record_call`), a budget at 0 (after the poll), a full VM stack (the RangeError),
+// and every call while some isolate has its human fast paths off.
 
 /// The 9 opcodes of the decode-free entries: the bytes CallAnyReceiver ..=
 /// CallUndefinedReceiver2, in this order. At single scale every operand of each is one byte,
@@ -816,6 +823,7 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64
     }
     #[cfg(test)]
     call::HOST_ENTRY_HITS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(0);
     let len = |o: O| pc.wrapping_add(o.info().size(OperandScale::Single));
     // Register lists hold locals only, so the list operand is the slot offset itself.
     let first = isize::from(byte(1) as i8);
@@ -889,9 +897,9 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64
 ///
 /// | Builtin step (§20.2.3.1, §20.2.3.3) | Here |
 /// |---|---|
-/// | IsCallable(func) | `func` is a bytecode FUNCTION, not a class constructor ([`forward_target`]) |
+/// | IsCallable(func) | `func` is a bytecode FUNCTION, not a class constructor (`call::forward_target`) |
 /// | `apply`: argArray undefined or null: Call(func, thisArg) | 0 arguments |
-/// | `apply`: CreateListFromArrayLike(argArray) | an arguments object with its realm's initial shape (`arguments::unmodified_length`: `length` is its own int32 data property in field 0) and an element at each index below it, or an Array with an element at each index below its `length` ([`forward_list`]): each Get reads an own data property, so no getter, proxy trap or conversion runs; a mapped index reads its parameter |
+/// | `apply`: CreateListFromArrayLike(argArray) | an arguments object with its realm's initial shape (`arguments::unmodified_length`: `length` is its own int32 data property in field 0) and an element at each index below it, or an Array with an element at each index below its `length` (`call::forward_list`): each Get reads an own data property, so no getter, proxy trap or conversion runs; a mapped index reads its parameter |
 /// | `call`: the arguments after thisArg | the call's own registers |
 /// | Call(func, thisArg, args), OrdinaryCallBindThis | `call::try_bind_this`; a sloppy callee with a primitive thisArg takes the builtin (its wrap) |
 ///
@@ -927,16 +935,16 @@ fn forward(
         return None;
     }
     let func = this;
-    let fi = forward_target(cx, func)?;
+    let fi = call::forward_target(cx, func)?;
     let this_arg = if argc > 0 { arg(0) } else { UNDEFINED };
     let this_arg = call::try_bind_this(fi, this_arg, rt.global())?;
     let r = if apply {
         let list = if argc > 1 { arg(1) } else { UNDEFINED };
-        match forward_list(cx, list)? {
-            List::Arguments(src, n) => {
+        match call::forward_list(cx, list)? {
+            ForwardList::Arguments(src, n) => {
                 push_forwarded(cx, fp, next, func, fi, this_arg, n, |i| src.get(i))
             }
-            List::Array(n) => push_forwarded(cx, fp, next, func, fi, this_arg, n, |i| {
+            ForwardList::Array(n) => push_forwarded(cx, fp, next, func, fi, this_arg, n, |i| {
                 object::array_get(list, i).unwrap_or(UNDEFINED)
             }),
         }
@@ -954,55 +962,8 @@ fn forward(
     };
     #[cfg(test)]
     call::FORWARDED_CALLS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(if apply { 1 } else { 2 });
     Some(r)
-}
-
-/// The FunctionInfo of `f` if a forwarded call may push its frame: a FUNCTION with bytecode
-/// in an Interp slot (not a host function, not native code), not a class constructor, of the
-/// current realm. Not a GC point.
-#[inline(always)]
-fn forward_target<'a>(cx: &Cx, f: u64) -> Option<&'a FunctionInfo> {
-    if !object::is_function(f) {
-        return None;
-    }
-    let fi = object::function_info(f);
-    (runs_bytecode(fi) && !fi.is_class_constructor() && object::function_realm(f) == cx.realm)
-        .then_some(fi)
-}
-
-/// `apply`'s list as [`forward`] reads it in place, with its argument count.
-enum List {
-    /// An arguments object with its realm's initial shape and an element at each index below
-    /// its `length` (`arguments::forward_source`); also undefined and null, with count 0.
-    Arguments(crate::arguments::Source, u32),
-    /// An Array with an element at each index below its `length`.
-    Array(u32),
-}
-
-/// [`List`] of `apply`'s argArray `list`, or `None`: the builtin's CreateListFromArrayLike (a
-/// hole, a changed `length`, an accessor, a proxy, any other object, a primitive). Not a GC
-/// point.
-#[inline(always)]
-fn forward_list(cx: &Cx, list: u64) -> Option<List> {
-    use crate::frame::NULL;
-    if list == UNDEFINED || list == NULL {
-        let none = crate::arguments::Source::EMPTY;
-        return Some(List::Arguments(none, 0));
-    }
-    if !crate::kinds::is_object(list) {
-        return None;
-    }
-    if is_array(list) {
-        let n = object::array_len(list);
-        return (0..n)
-            .all(|i| object::array_get(list, i).is_some())
-            .then_some(List::Array(n));
-    }
-    if crate::kinds::cell_kind(list) != crate::kinds::ARGUMENTS.get() {
-        return None;
-    }
-    let (src, n) = crate::arguments::forward_source(cx.rt(), list)?;
-    Some(List::Arguments(src, n))
 }
 
 /// The frame push of [`forward`]: Call(`func`, `this`, the `n` arguments that `arg` reads)

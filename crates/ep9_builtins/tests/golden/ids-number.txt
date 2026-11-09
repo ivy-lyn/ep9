@@ -13,3 +13,4 @@
 0x0809   4.9          method       1       "toExponential"  (%Number.prototype%.toExponential w-c)
 0x080a   4.10         method       1       "toFixed"  (%Number.prototype%.toFixed w-c)
 0x080b   4.11         method       1       "toPrecision"  (%Number.prototype%.toPrecision w-c)
+0x080c   4.12         method       0       "toLocaleString"  (%Number.prototype%.toLocaleString w-c)

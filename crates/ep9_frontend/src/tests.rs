@@ -270,3 +270,344 @@ fn no_public_item_names_an_oxc_type() {
     }
     assert!(checked > 100, "only {checked} public lines found");
 }
+
+// ---- the lone-surrogate shim (M7-P2 FE-SHIM; H05-Q3; surrogate.rs) -------------------------
+// These tests write the shim text by hand (`shim_text`, the form the VM gives the hook) and
+// read the unit, so they also run on a tree without the shim (where they fail).
+
+/// The shim text of `units`: U+FDD0 + 4 lower-case hex digits for a lone surrogate, U+FDD0
+/// twice for U+FDD0.
+fn shim_text(units: &[u16]) -> String {
+    let mut out = String::new();
+    for c in char::decode_utf16(units.iter().copied()) {
+        match c {
+            Ok('\u{FDD0}') => out.push_str("\u{FDD0}\u{FDD0}"),
+            Ok(c) => out.push(c),
+            Err(e) => out.push_str(&format!("\u{FDD0}{:04x}", e.unpaired_surrogate())),
+        }
+    }
+    out
+}
+
+/// `parts` joined as WTF-16: text, or one code unit.
+enum P<'a> {
+    T(&'a str),
+    U(u16),
+}
+
+fn wtf16(parts: &[P<'_>]) -> Vec<u16> {
+    let mut out = Vec::new();
+    for p in parts {
+        match p {
+            P::T(t) => out.extend(t.encode_utf16()),
+            P::U(u) => out.push(*u),
+        }
+    }
+    out
+}
+
+fn eval_shim(parts: &[P<'_>]) -> Result<ep9_bytecode::VerifiedUnit, CodegenError> {
+    compile_eval(
+        &shim_text(&wtf16(parts)),
+        &ep9_bytecode::EvalContext::default(),
+        CompileOptions::default(),
+    )
+}
+
+/// The unit has a string with exactly the code units of `parts`.
+fn has_string(unit: &ep9_bytecode::VerifiedUnit, parts: &[P<'_>]) -> bool {
+    let want = ep9_bytecode::UnitString::from_utf16(&wtf16(parts));
+    unit.strings.contains(&want)
+}
+
+fn is_syntax(r: &Result<ep9_bytecode::VerifiedUnit, CodegenError>) -> bool {
+    matches!(r, Err(CodegenError::Compile(CompileError::Syntax(_))))
+}
+
+/// S7.4_A5 and S7.4_A6: every lone surrogate is fine in a `//` and a `/* */` comment.
+#[test]
+fn shim_every_lone_surrogate_in_a_comment_compiles() {
+    for u in 0xD800..=0xDFFF_u16 {
+        let line = eval_shim(&[P::T("//var "), P::U(u), P::T("yy = -1")]);
+        assert!(line.is_ok(), "{u:04x} in a // comment: {line:?}");
+        let block = eval_shim(&[P::T("/*var "), P::U(u), P::T("xx = 1*/")]);
+        assert!(block.is_ok(), "{u:04x} in a /* */ comment: {block:?}");
+    }
+}
+
+/// Outside comments and literals a lone surrogate is a SyntaxError, and the column of a later
+/// error counts it as 1 UTF-16 unit.
+#[test]
+fn shim_lone_surrogate_outside_literals_is_a_syntax_error() {
+    assert!(is_syntax(&eval_shim(&[
+        P::T("var a"),
+        P::U(0xD800),
+        P::T(";")
+    ])));
+    assert!(is_syntax(&eval_shim(&[P::U(0xDC00)])));
+    let r = eval_shim(&[P::T("'"), P::U(0xD800), P::T("'; )")]);
+    let Err(CodegenError::Compile(CompileError::Syntax(e))) = r else {
+        panic!("expected a SyntaxError: {r:?}");
+    };
+    // `'x'; )`: the `)` is UTF-16 column 6 (1-based) of line 1.
+    assert_eq!(e.first().position.map(|p| (p.line, p.column)), Some((1, 6)));
+}
+
+/// String literals and the completion value of a directive get the real code units: a lone
+/// surrogate, a lone surrogate after `\`, and an escaped lead before a raw trail (a pair in
+/// the value).
+#[test]
+fn shim_string_literals_get_the_real_code_units() {
+    let u = eval_shim(&[P::T("var s = 'a"), P::U(0xD800), P::T("b';")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("a"), P::U(0xD800), P::T("b")]));
+    let u = eval_shim(&[P::T("'\\"), P::U(0xDFFF), P::T("'")]).expect("compiles");
+    assert!(has_string(&u, &[P::U(0xDFFF)]));
+    let u = eval_shim(&[P::T("x = '\\uD83D"), P::U(0xDC38), P::T("'")]).expect("compiles");
+    assert!(has_string(&u, &[P::U(0xD83D), P::U(0xDC38)]));
+    let u = eval_shim(&[P::T("({'k"), P::U(0xDBFF), P::T("': 1})")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("k"), P::U(0xDBFF)]));
+}
+
+/// Template literals: the cooked value and the raw value (`String.raw`, CR LF -> LF) get the
+/// real code units.
+#[test]
+fn shim_template_cooked_and_raw_values() {
+    let u = eval_shim(&[P::T("`x"), P::U(0xDC00), P::T("`")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("x"), P::U(0xDC00)]));
+    let u =
+        eval_shim(&[P::T("String.raw`a\\"), P::U(0xD801), P::T("\r\n${1}`")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("a\\"), P::U(0xD801), P::T("\n")]));
+    assert!(has_string(&u, &[P::T("a"), P::U(0xD801), P::T("\n")]));
+}
+
+/// Regex literals: the pattern keeps the real code units, and the check sees their values
+/// (a range of two lone surrogates, a lone surrogate in a group name, after `\` in Unicode
+/// mode).
+#[test]
+fn shim_regex_literals() {
+    let u = eval_shim(&[P::T("/"), P::U(0xD800), P::T("/")]).expect("compiles");
+    assert!(has_string(&u, &[P::U(0xD800)]));
+    let u = eval_shim(&[P::T("/\\uD83D"), P::U(0xDC38), P::T("/u")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("\\uD83D"), P::U(0xDC38)]));
+    // In order (DBFF <= DC00), but U+FFFD > U+DC00: the U+FFFD check alone would fail it.
+    assert!(eval_shim(&[P::T("/["), P::U(0xDBFF), P::T("-\\uDC00]/")]).is_ok());
+    // Out of order (DC00 > DBFF), but U+FFFD-U+FFFD is in order.
+    assert!(is_syntax(&eval_shim(&[
+        P::T("/["),
+        P::U(0xDC00),
+        P::T("-"),
+        P::U(0xDBFF),
+        P::T("]/")
+    ])));
+    // A lone surrogate is never a group name character, also before an escaped trail.
+    for flags in ["", "u"] {
+        let name = eval_shim(&[P::T("/(?<a"), P::U(0xD801), P::T(">.)/"), P::T(flags)]);
+        assert!(is_syntax(&name), "/{flags}: {name:?}");
+        let pair = eval_shim(&[
+            P::T("/(?<a"),
+            P::U(0xD801),
+            P::T("\\uDCA4>.)/"),
+            P::T(flags),
+        ]);
+        assert!(is_syntax(&pair), "/{flags}: {pair:?}");
+    }
+    // The parser's own error at a regex token stays.
+    assert!(is_syntax(&eval_shim(&[
+        P::T("if /"),
+        P::U(0xD800),
+        P::T("/ x")
+    ])));
+    assert!(is_syntax(&eval_shim(&[
+        P::T("/"),
+        P::U(0xD800),
+        P::T("/gg")
+    ])));
+    assert!(eval_shim(&[P::T("/\\"), P::U(0xD800), P::T("/")]).is_ok());
+    assert!(is_syntax(&eval_shim(&[
+        P::T("/\\"),
+        P::U(0xD800),
+        P::T("/u")
+    ])));
+}
+
+/// `\k<` is a group name only in a pattern with named groups (Codex r1 FE-SHIM 3): with no
+/// u or v flag and no `(?<name>` group, `\k` is an identity escape (B.1.2), so `[z-` and a
+/// lone surrogate after it are a class in order (node: `/\k<[z-\uD800]>/` compiles). With a
+/// group or the u flag, `\k<[z-...]>` is a bad group name: a SyntaxError.
+#[test]
+fn shim_k_escape_is_a_group_name_only_with_named_groups() {
+    let plain = eval_shim(&[P::T("/\\k<[z-"), P::U(0xD800), P::T("]>/")]);
+    assert!(plain.is_ok(), "{plain:?}");
+    let u = plain.expect("compiles");
+    assert!(has_string(&u, &[P::T("\\k<[z-"), P::U(0xD800), P::T("]>")]));
+    for (head, flags) in [("/(?<a>.)\\k<[z-", ""), ("/\\k<[z-", "u")] {
+        let r = eval_shim(&[P::T(head), P::U(0xD800), P::T("]>/"), P::T(flags)]);
+        assert!(is_syntax(&r), "{head} {flags}: {r:?}");
+    }
+}
+
+/// A real U+FDD0 (shim text U+FDD0 U+FDD0) stays U+FDD0, also before 4 hex digits; a string
+/// with U+FDD1 runs keeps its value next to a placeholder (surrogate.rs S5).
+#[test]
+fn shim_real_fdd0_and_fdd1_strings_keep_their_value() {
+    let u = eval_shim(&[P::T("'\u{FDD0}d800'")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("\u{FDD0}d800")]));
+    let u = eval_shim(&[
+        P::T("['\u{FDD1}0', '\\uFDD1\\uFDD10', /"),
+        P::U(0xD800),
+        P::T("/]"),
+    ])
+    .expect("compiles");
+    assert!(has_string(&u, &[P::T("\u{FDD1}0")]));
+    assert!(has_string(&u, &[P::T("\u{FDD1}\u{FDD1}0")]));
+    assert!(has_string(&u, &[P::U(0xD800)]));
+    assert_eq!(
+        placeholders_left(&u),
+        0,
+        "a placeholder is left in the unit"
+    );
+}
+
+/// The unit strings of the placeholder form U+FDD1, decimal digits, U+FDD1 (surrogate.rs S5).
+fn placeholders_left(unit: &ep9_bytecode::VerifiedUnit) -> usize {
+    unit.strings
+        .iter()
+        .filter(|s| {
+            let u = s.to_utf16();
+            u.len() > 2
+                && u[0] == 0xFDD1
+                && u[u.len() - 1] == 0xFDD1
+                && u[1..u.len() - 1]
+                    .iter()
+                    .all(|&c| (u16::from(b'0')..=u16::from(b'9')).contains(&c))
+        })
+        .count()
+}
+
+/// Values of the placeholder form keep their value next to placeholders, also when they come
+/// after the regex literal that needs a placeholder: the numbers skip them (surrogate.rs S5).
+#[test]
+fn shim_values_of_the_placeholder_form_keep_their_value() {
+    let u = eval_shim(&[
+        P::T("[/"),
+        P::U(0xD800),
+        P::T("/, /"),
+        P::U(0xDC00),
+        P::T("/, '\\uFDD10\\uFDD1', '\u{FDD1}1\u{FDD1}', `\\u{FDD1}2\\u{fdd1}`]"),
+    ])
+    .expect("compiles");
+    assert!(has_string(&u, &[P::U(0xD800)]));
+    assert!(has_string(&u, &[P::U(0xDC00)]));
+    for n in ["0", "1", "2"] {
+        assert!(
+            has_string(&u, &[P::T("\u{FDD1}"), P::T(n), P::T("\u{FDD1}")]),
+            "{n}"
+        );
+    }
+    assert_eq!(placeholders_left(&u), 3, "only the 3 values");
+}
+
+/// The placeholder work does not grow with the U+FDD1 of the text (Codex r1 FE-SHIM 2): K =
+/// 2,000 U+FDD1 in a comment and N = 2,000 regex literals with a lone surrogate. Before, each
+/// placeholder held K + 1 U+FDD1 and `finish` built a unit string per (unit string,
+/// placeholder) pair: about 95 s in a debug build. The wait of 20 s only stops a test that
+/// hangs.
+#[test]
+fn shim_placeholders_do_not_grow_with_the_text() {
+    const K: usize = 2000;
+    const N: usize = 2000;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut units: Vec<u16> = Vec::new();
+        units.extend("/*".encode_utf16());
+        units.extend(std::iter::repeat_n(0xFDD1, K));
+        units.extend("*/".encode_utf16());
+        for i in 0..N {
+            units.extend("/".encode_utf16());
+            units.push(0xD800);
+            units.extend(format!("{i}/;").encode_utf16());
+        }
+        let t0 = std::time::Instant::now();
+        let r = compile_eval(
+            &shim_text(&units),
+            &ep9_bytecode::EvalContext::default(),
+            CompileOptions::default(),
+        );
+        let _ = tx.send((r, t0.elapsed()));
+    });
+    let (r, took) = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the compile ends in 20 s");
+    let u = r.expect("compiles");
+    for i in [0, N / 2, N - 1] {
+        let i = i.to_string();
+        assert!(has_string(&u, &[P::U(0xD800), P::T(&i)]), "{i}");
+    }
+    assert_eq!(placeholders_left(&u), 0);
+    eprintln!("K = {K}, N = {N}: {took:?}");
+}
+
+/// The `Function` constructor checks each part on its decoded text (Codex r1 FE-SHIM 4): a
+/// lone surrogate and a real U+FDD0 in a regex class range of the body or of a parameter
+/// default compile, as in node (`Function("return /[a-\uD800-!]/")().test("!")` is true).
+/// Before, (a) and (b) parsed the shim text, where `ESC d800` adds the digits `d800`
+/// (`[a-ESC d800-!]` has the reversed range `0-!`) and ESC ESC is two U+FDD0.
+#[test]
+fn shim_function_constructor_checks_the_decoded_parts() {
+    let ctor = |params: &[P<'_>], body: &[P<'_>]| {
+        compile_function_ctor(
+            ep9_bytecode::FunctionCtorKind::Normal,
+            &shim_text(&wtf16(params)),
+            &shim_text(&wtf16(body)),
+            CompileOptions::default(),
+        )
+    };
+    for (params, body) in [
+        (
+            vec![],
+            vec![P::T("return /[a-"), P::U(0xD800), P::T("-!]/")],
+        ),
+        (vec![], vec![P::T("return /[a-\u{FDD0}-!]/")]),
+        (
+            vec![P::T("a = /[a-"), P::U(0xD800), P::T("-!]/")],
+            vec![P::T("return a")],
+        ),
+    ] {
+        let r = ctor(&params, &body);
+        assert!(r.is_ok(), "{r:?}");
+    }
+    let u = ctor(&[], &[P::T("return /[a-"), P::U(0xD800), P::T("-!]/")]).expect("compiles");
+    assert!(has_string(&u, &[P::T("[a-"), P::U(0xD800), P::T("-!]")]));
+    // Out of order with the real code units (DC00 > DBFF), in order as U+FFFD-U+FFFD.
+    let r = ctor(
+        &[],
+        &[
+            P::T("return /["),
+            P::U(0xDC00),
+            P::T("-"),
+            P::U(0xDBFF),
+            P::T("]/"),
+        ],
+    );
+    assert!(is_syntax(&r), "{r:?}");
+}
+
+/// The `Function` constructor reaches the shim through its joined text.
+#[test]
+fn shim_function_constructor() {
+    let body = shim_text(&wtf16(&[
+        P::T("// "),
+        P::U(0xDABC),
+        P::T("\nreturn '"),
+        P::U(0xDC01),
+        P::T("'"),
+    ]));
+    let u = compile_function_ctor(
+        ep9_bytecode::FunctionCtorKind::Normal,
+        "",
+        &body,
+        CompileOptions::default(),
+    )
+    .expect("compiles");
+    assert!(has_string(&u, &[P::U(0xDC01)]));
+}

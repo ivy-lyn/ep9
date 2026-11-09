@@ -32,6 +32,8 @@
 //! | 45 | `ThrowTypeError` | a TypeError with a string message (ABI 5, this file) |
 //! | 46 | `DeclareEvalAnnexBFunction` | B.3.2.3 step 3.a.ii, may the var binding be made (ABI 5, `slow/eval.rs`) |
 //! | 47 | `StoreEvalAnnexBFunction` | B.3.2.3, the var-env store of a block function (ABI 5, `slow/eval.rs`) |
+//! | 48 | `GetDisposeMethod` | explicit resource management: CreateDisposableResource step 1.b, GetDisposeMethod; hint 1 with only @@dispose gives the step 1.b.ii closure (ABI 6, this file) |
+//! | 49 | `CreateSuppressedError` | explicit resource management: DisposeResources step 3.e.iii.1 (ABI 6, this file) |
 //!
 //! Ids 19-28 (ABI 3) are stubs in M2-P0 that throw `not implemented in ep9 v0: <name>`, as
 //! the catch-all arm did before they were routed; their owners fill them. Ids 32-43, 46 and
@@ -260,8 +262,11 @@ pub(crate) fn call_runtime(
             cx.rt().throw_value(e);
             Err(ep9_value::Throw)
         }
-        // An id that a later ABI appends and the VM does not route yet. At ABI 5 every id
-        // (0-47) is routed above, so the arm is unreachable until the next ABI adds ids.
+        // ---- ABI 6 (M7-P3 SPEC-ERM: `using` and `await using`) ----
+        Some(Id::GetDisposeMethod) => get_dispose_method(cx, a(0), a(1)),
+        Some(Id::CreateSuppressedError) => Ok(create_suppressed_error(cx, a(0), a(1))),
+        // An id that a later ABI appends and the VM does not route yet. At ABI 6 every id
+        // (0-49) is routed above, so the arm is unreachable until the next ABI adds ids.
         #[allow(unreachable_patterns)]
         Some(other) => Err(not_implemented(cx, other.info().name)),
         None => Err(throw_error(
@@ -331,6 +336,130 @@ pub(crate) fn call_runtime_pair(
         }
         Err(_) => 0,
     }
+}
+
+/// Id 48: `GetDisposeMethod(value, hint)` (explicit resource management): the method part of
+/// CreateDisposableResource (step 1.b) for a `value` that is not undefined or null (BytecodeGen
+/// tests that first). `hint` is the int32 0 (sync-dispose) or 1 (async-dispose).
+///
+/// ```text
+/// value not an object        -> TypeError                      (step 1.b.i)
+/// hint 0: GetMethod(value, @@dispose); undefined -> TypeError     (GetDisposeMethod step 2,
+///                                                                  step 1.b.iii)
+/// hint 1: GetMethod(value, @@asyncDispose); not undefined -> it   (GetDisposeMethod step 1.a)
+///         else GetMethod(value, @@dispose); undefined -> TypeError (step 1.b.i, step 1.b.iii)
+///         else a new closure over that method                    (step 1.b.ii)
+/// ```
+///
+/// The closure ([`dispose_sync_from_async`]) calls the sync method with the this value and
+/// returns a new %Promise% resolved with undefined (or rejected with the throw), so the
+/// disposal's Await reads that promise's `constructor` (PromiseResolve), as the spec says. It
+/// has no `BuiltinId` (`Cx::new_builtin_closure`; no user code can see it). So hint 1 never
+/// gives undefined, and the BytecodeGen fallback branch (the U3 row of `stmt.rs`) is not
+/// taken. GC point; runs JS (a getter).
+fn get_dispose_method(cx: &mut Cx, value: u64, hint: u64) -> Res<u64> {
+    // The TypeError texts are node's (v26).
+    if !is_object(value) {
+        return Err(throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "An object is expected with `using` declarations",
+        ));
+    }
+    let asynchronous = hint == crate::frame::int32_bits(1);
+    let which = if asynchronous {
+        crate::symbol::WellKnownSymbol::AsyncDispose
+    } else {
+        crate::symbol::WellKnownSymbol::Dispose
+    };
+    let key = crate::symbol::well_known(cx.rt(), which);
+    // GetMethod (§7.3.10): undefined and null give undefined; any other non-callable throws.
+    let m = property::get(cx, value, key)?;
+    if (m == UNDEFINED || m == NULL) && asynchronous {
+        // Step 1.b.i: GetMethod(V, @@dispose); step 1.b.iii of CreateDisposableResource for
+        // undefined. GC point below: `value` and `s` live in Rust locals (CSS).
+        let key = crate::symbol::well_known(cx.rt(), crate::symbol::WellKnownSymbol::Dispose);
+        let s = property::get(cx, value, key)?;
+        if !crate::kinds::is_callable(s) {
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Symbol(Symbol.dispose) is not a function",
+            ));
+        }
+        // Step 1.b.ii: CreateBuiltinFunction(closure, 0, "", « »), the closure captures the
+        // method.
+        let mut acx = abi::Cx::new(cx);
+        let f = acx.new_builtin_closure(
+            dispose_sync_from_async,
+            "",
+            0,
+            Local::<JsValue>::from_bits(s),
+        );
+        return Ok(f.bits());
+    }
+    if !crate::kinds::is_callable(m) {
+        let msg = if asynchronous {
+            "Symbol(Symbol.asyncDispose) is not a function"
+        } else {
+            "Symbol(Symbol.dispose) is not a function"
+        };
+        return Err(throw_error(cx, ErrorKind::TypeError, msg));
+    }
+    Ok(m)
+}
+
+/// The closure of GetDisposeMethod step 1.b.ii (made by [`get_dispose_method`]; its data is
+/// the sync @@dispose method): (a) O = the this value; (b) promiseCapability =
+/// NewPromiseCapability(%Promise%); (c) result = Completion(Call(method, O)); (d)
+/// IfAbruptRejectPromise(result, promiseCapability); (e) Call(resolve, undefined,
+/// « undefined »); (f) return the promise. The method's result is not awaited. A termination
+/// is not caught (`Cx::catch_exception`).
+fn dispose_sync_from_async<'s>(
+    cx: &mut abi::Cx<'s>,
+    this: Local<'s>,
+    args: abi::Args<'s>,
+    _nt: Local<'s>,
+) -> ep9_value::JsResult<Local<'s>> {
+    let method = cx.closure_data(args.callee());
+    let promise_ctor = cx.intrinsic(crate::builtins::IntrinsicId::Promise);
+    let cap = cx.new_promise_capability(promise_ctor)?;
+    match cx.call(method, this, &[]) {
+        Ok(_) => {
+            cx.call(cap.resolve, Local::undefined(), &[Local::undefined()])?;
+        }
+        Err(t) => {
+            let e = cx.catch_exception(t)?;
+            cx.call(cap.reject, Local::undefined(), &[e])?;
+        }
+    }
+    Ok(cap.promise.value())
+}
+
+/// Id 49: `CreateSuppressedError(error, suppressed)` (explicit resource management,
+/// DisposeResources step 3.e.iii.1): a new SuppressedError object (`[[Prototype]]`
+/// %SuppressedError.prototype%, or %Error.prototype% in a realm whose tables did not make it),
+/// then the non-enumerable data properties `error` and `suppressed`, in that order. The spec
+/// gives it no `message`; it gets node's text, so the CLI prints what node prints (as
+/// `ep9_builtins` promise.rs does for AggregateError). GC point; runs no JS.
+fn create_suppressed_error(cx: &mut Cx, error: u64, suppressed: u64) -> u64 {
+    let rt = cx.rt();
+    let mut proto =
+        crate::builtins::intrinsic(rt, crate::builtins::IntrinsicId::SuppressedErrorPrototype);
+    if !is_object(proto) {
+        proto = rt.root(ErrorKind::Error.prototype_root());
+    }
+    // The own `stack` first, then `message`, `error`, `suppressed` (node's key order; the
+    // three spec properties are adjacent). `e` lives in a Rust local (CSS) across the GC points.
+    let e = crate::error::new_error_value(cx, proto, None);
+    let rt = cx.rt();
+    let message = crate::error::message_string(rt, "An error was suppressed during disposal");
+    own_define(rt, e, rt.atom(Atom::Message), message, attr::HIDDEN);
+    let k = crate::atoms::intern_str(rt, "error");
+    own_define(rt, e, k, error, attr::HIDDEN);
+    let k = crate::atoms::intern_str(rt, "suppressed");
+    own_define(rt, e, k, suppressed, attr::HIDDEN);
+    e
 }
 
 /// `DefineClass(constructor, heritage)` (§15.7.14 ClassDefinitionEvaluation steps 5-8, 14-16).

@@ -246,6 +246,239 @@ t('from proxy', function () { return Iterator.from(b) === b; });
     );
 }
 
+/// Part 2 (M7-P2 SPEC-ITER2): Iterator.concat and %Iterator.prototype%[@@dispose]. Each line is
+/// node v26.13.0's for the same script, but two: node has no Iterator.zip or zipKeyed
+/// ("concat desc"), and node calls the inner iterator's `return` when its `next` throws
+/// ("concat throw no close"), where the spec step is `? IteratorStepValue(iteratorRecord)` (no
+/// IteratorClose; test262 `concat/next-method-throws.js`; the other helpers do the same).
+#[test]
+fn concat_and_dispose_match_node() {
+    assert_eq!(
+        common::run_both(script!(
+            r#"
+t('concat desc', function () { return Iterator.concat.length + ' ' + Iterator.concat.name + ' ' + d(Iterator, 'concat') + ' ' + Object.getOwnPropertyNames(Iterator).join(); });
+t('dispose desc', function () { var f = IP[Symbol.dispose]; return f.length + ' ' + f.name + ' ' + d(IP, Symbol.dispose) + ' ' + Reflect.ownKeys(IP).filter(function (k) { return typeof k === 'symbol'; }).map(String).join(); });
+function logged(log, name, vals) { var i = 0; return { [Symbol.iterator]: function () { log.push('open ' + name); return { next: function () { log.push('next ' + name); return i < vals.length ? { value: vals[i++], done: false } : { value: 'x', done: true }; }, return: function () { log.push('return ' + name); return {}; } }; } }; }
+t('concat basic', function () { return Iterator.concat([1, 2], ['a', 'b'].values(), new Set([3]), [].values()).toArray().join(); });
+t('concat empty', function () { var it = Iterator.concat(); return it.next().done + ' ' + (Object.getPrototypeOf(it) === HP) + ' ' + Object.prototype.toString.call(it); });
+t('concat lazy', function () { var log = []; var it = Iterator.concat(logged(log, 'a', [1]), logged(log, 'b', [2])); log.push('made'); var r = []; for (var v of it) r.push(v); return log.join() + ' ' + r.join(); });
+t('concat return yield', function () { var log = []; var it = Iterator.concat(logged(log, 'a', [1, 2]), logged(log, 'b', [3])); it.next(); var r = it.return(); return log.join() + ' ' + r.done + ' ' + it.next().done; });
+t('concat return start', function () { var log = []; var it = Iterator.concat(logged(log, 'a', [1])); it.return(); return log.join() + '|' + it.next().done; });
+t('concat not object', function () { return Iterator.concat([1], 1); });
+t('concat no iterator', function () { return Iterator.concat({}); });
+t('concat checks first', function () { var log = []; try { Iterator.concat({ get [Symbol.iterator]() { log.push('get'); return function () {}; } }, null); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('concat open not object', function () { var it = Iterator.concat({ [Symbol.iterator]: function () { return 1; } }); return it.next(); });
+t('concat fresh result', function () { var res = { value: 1, done: false }; var it = Iterator.concat({ [Symbol.iterator]: function () { return { next: function () { return res; } }; } }); return it.next() !== res; });
+t('concat value after done', function () { var n = 0; var src = { [Symbol.iterator]: function () { return { next: function () { return { get value() { n++; }, done: true }; } }; } }; Iterator.concat(src, src).toArray(); return n; });
+t('concat throw no close', function () { var log = []; var it = Iterator.concat({ [Symbol.iterator]: function () { return { next: function () { throw new RangeError(); }, return: function () { log.push('return'); } }; } }); try { it.next(); } catch (e) { log.push(e.constructor.name); } return log.join() + ' ' + it.next().done; });
+t('concat running', function () { var it; var src = { [Symbol.iterator]: function () { return { next: function () { return it.next(); } }; } }; it = Iterator.concat(src); return it.next(); });
+t('concat string obj', function () { return Iterator.concat(Object('ab')).toArray().join(); });
+t('dispose', function () { var log = []; var o = Object.create(IP); o.return = function () { log.push('return ' + arguments.length + ' ' + (this === o)); return 5; }; var r = o[Symbol.dispose](); return log.join() + ' ' + r; });
+t('dispose none', function () { return IP[Symbol.dispose].call({}) + ' ' + IP[Symbol.dispose].call(1); });
+t('dispose bad', function () { return IP[Symbol.dispose].call({ return: 1 }); });
+t('dispose undefined', function () { return IP[Symbol.dispose].call(undefined); });
+t('dispose helper', function () { var log = []; var h = Iterator.concat(logged(log, 'a', [1, 2])); h.next(); h[Symbol.dispose](); return log.join() + ' ' + h.next().done; });
+"#
+        )),
+        lines(&[
+            "concat desc: 0 concat data,true,false,true length,name,prototype,from,concat,zip,zipKeyed",
+            "dispose desc: 0 [Symbol.dispose] data,true,false,true Symbol(Symbol.iterator),Symbol(Symbol.toStringTag),Symbol(Symbol.dispose)",
+            "concat basic: 1,2,a,b,3",
+            "concat empty: true true [object Iterator Helper]",
+            "concat lazy: made,open a,next a,next a,open b,next b,next b 1,2",
+            "concat return yield: open a,next a,return a true true",
+            "concat return start: |true",
+            "concat not object: throws TypeError",
+            "concat no iterator: throws TypeError",
+            "concat checks first: get,TypeError",
+            "concat open not object: throws TypeError",
+            "concat fresh result: true",
+            "concat value after done: 0",
+            "concat throw no close: RangeError true",
+            "concat running: throws TypeError",
+            "concat string obj: a,b",
+            "dispose: return 0 true undefined",
+            "dispose none: undefined undefined",
+            "dispose bad: throws TypeError",
+            "dispose undefined: throws TypeError",
+            "dispose helper: open a,next a,return a true",
+        ])
+    );
+}
+
+/// Part 2: Iterator.zip and Iterator.zipKeyed (joint iteration). node v26.13.0 has neither: each
+/// line is the result of the proposal steps (IteratorZip, IteratorCloseAll: reverse order, the
+/// first throw wins), checked by hand against the pinned test262 `built-ins/Iterator/zip*`.
+#[test]
+fn zip_and_zip_keyed_follow_the_spec() {
+    assert_eq!(
+        common::run_both(script!(
+            r#"
+t('zip desc', function () { return [Iterator.zip, Iterator.zipKeyed].map(function (f) { return f.length + ' ' + f.name + ' ' + d(Iterator, f.name); }).join(' | '); });
+function src(log, name, n) { var i = 0; return { next: function () { log.push(name + '.next'); i++; return { value: name + i, done: i > n }; }, return: function () { log.push(name + '.return'); return {}; } }; }
+function run(it) { var r = []; for (var v of it) r.push(Array.isArray(v) ? '[' + v.join() + ']' : '{' + Reflect.ownKeys(v).map(function (k) { return String(k) + ':' + v[k]; }).join() + '}'); return r.join(' '); }
+t('zip shortest', function () { var log = []; var r = run(Iterator.zip([src(log, 'a', 1), src(log, 'b', 3)])); return r + ' ' + log.join(); });
+t('zip longest', function () { var log = []; var r = run(Iterator.zip([src(log, 'a', 1), src(log, 'b', 2)], { mode: 'longest', padding: ['p', 'q'] })); return r + ' ' + log.join(); });
+t('zip longest nopad', function () { return run(Iterator.zip([[1], [2, 3], []], { mode: 'longest' })); });
+t('zip strict ok', function () { return run(Iterator.zip([[1, 2], 'xy'.split('')], { mode: 'strict' })); });
+t('zip strict short first', function () { var log = []; var it = Iterator.zip([src(log, 'a', 1), src(log, 'b', 2)], { mode: 'strict' }); it.next(); try { it.next(); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('zip strict short later', function () { var log = []; var it = Iterator.zip([src(log, 'a', 2), src(log, 'b', 1), src(log, 'c', 2)], { mode: 'strict' }); it.next(); try { it.next(); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('zip empty', function () { var it = Iterator.zip([]); return it.next().done + ' ' + Object.prototype.toString.call(it); });
+t('zip fresh', function () { var it = Iterator.zip([[1, 2]]); var a = it.next().value; var b = it.next().value; return (a !== b) + ' ' + Array.isArray(a); });
+t('zip bad mode', function () { return Iterator.zip([], { mode: 'x' }); });
+t('zip string mode obj', function () { return Iterator.zip([], { mode: new String('strict') }); });
+t('zip bad options', function () { return Iterator.zip([], null); });
+t('zip not object', function () { return Iterator.zip('ab'); });
+t('zip string item', function () { return Iterator.zip(['ab']); });
+t('zip bad padding', function () { return Iterator.zip([], { mode: 'longest', padding: 1 }); });
+t('zip pad not read', function () { return Iterator.zip([], { mode: 'shortest', get padding() { throw new RangeError(); } }).next().done; });
+t('zip order', function () { var log = []; var o = { get mode() { log.push('mode'); return 'longest'; }, get padding() { log.push('padding'); return { [Symbol.iterator]: function () { log.push('padIter'); return { next: function () { log.push('padNext'); return { done: false, value: 0 }; }, return: function () { log.push('padReturn'); return {}; } }; } }; } }; var items = { [Symbol.iterator]: function () { log.push('items'); var i = 0; return { next: function () { log.push('itemsNext'); return { done: i++ >= 2, value: [] }; } }; } }; Iterator.zip(items, o); return log.join(); });
+t('zip close on bad item', function () { var log = []; var items = { [Symbol.iterator]: function () { var a = [src(log, 'a', 1), src(log, 'b', 1), 5]; var i = 0; return { next: function () { return { done: false, value: a[i++] }; }, return: function () { log.push('items.return'); return {}; } }; } }; try { Iterator.zip(items); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('zip return start', function () { var log = []; var it = Iterator.zip([src(log, 'a', 1), src(log, 'b', 1)]); it.return(); return log.join() + ' ' + it.next().done; });
+t('zip return yield', function () { var log = []; var it = Iterator.zip([src(log, 'a', 3), src(log, 'b', 3), src(log, 'c', 1)], { mode: 'longest' }); it.next(); it.next(); log.length = 0; it.return(); return log.join(); });
+t('zip step throws', function () { var log = []; var bad = { next: function () { throw new RangeError(); }, return: function () { log.push('bad.return'); } }; var it = Iterator.zip([src(log, 'a', 2), bad, src(log, 'c', 2)]); try { it.next(); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('zip return throws', function () { var log = []; var a = { next: function () { return { done: false }; }, return: function () { log.push('a'); throw new RangeError(); } }; var b = { next: function () { return { done: false }; }, return: function () { log.push('b'); throw new SyntaxError(); } }; var it = Iterator.zip([a, b]); it.next(); try { it.return(); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('zipKeyed basic', function () { var s = Symbol('s'); var o = { a: [1, 2], b: 'xy'.split(''), [s]: [true, false] }; Object.defineProperty(o, 'h', { value: [9], enumerable: false }); o.u = undefined; return run(Iterator.zipKeyed(o)); });
+t('zipKeyed proto', function () { var v = Iterator.zipKeyed({ a: [1] }).next().value; return (Object.getPrototypeOf(v) === null) + ' ' + d(v, 'a'); });
+t('zipKeyed longest', function () { return run(Iterator.zipKeyed({ a: [1], b: [2, 3] }, { mode: 'longest', padding: { a: 'pa', b: 'pb' } })); });
+t('zipKeyed array', function () { return run(Iterator.zipKeyed([[1, 2], [3, 4]])); });
+t('zipKeyed not object', function () { return Iterator.zipKeyed(1); });
+t('zipKeyed bad value', function () { var log = []; try { Iterator.zipKeyed({ a: src(log, 'a', 1), b: null }); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('zipKeyed pad get throws', function () { var log = []; try { Iterator.zipKeyed({ a: src(log, 'a', 1), b: src(log, 'b', 1) }, { mode: 'longest', padding: { get a() { throw new RangeError(); } } }); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+"#
+        )),
+        lines(&[
+            "zip desc: 1 zip data,true,false,true | 1 zipKeyed data,true,false,true",
+            "zip shortest: [a1,b1] a.next,b.next,a.next,b.return",
+            "zip longest: [a1,b1] [p,b2] a.next,b.next,a.next,b.next,b.next",
+            "zip longest nopad: [1,2,] [,3,]",
+            "zip strict ok: [1,x] [2,y]",
+            "zip strict short first: a.next,b.next,a.next,b.next,b.return,TypeError",
+            "zip strict short later: a.next,b.next,c.next,a.next,b.next,c.return,a.return,TypeError",
+            "zip empty: true [object Iterator Helper]",
+            "zip fresh: true true",
+            "zip bad mode: throws TypeError",
+            "zip string mode obj: throws TypeError",
+            "zip bad options: throws TypeError",
+            "zip not object: throws TypeError",
+            "zip string item: throws TypeError",
+            "zip bad padding: throws TypeError",
+            "zip pad not read: true",
+            "zip order: mode,padding,items,itemsNext,itemsNext,itemsNext,padIter,padNext,padNext,padReturn",
+            "zip close on bad item: b.return,a.return,items.return,TypeError",
+            "zip return start: b.return,a.return true",
+            "zip return yield: b.return,a.return",
+            "zip step throws: a.next,c.return,a.return,RangeError",
+            "zip return throws: b,a,SyntaxError",
+            "zipKeyed basic: {a:1,b:x,Symbol(s):true} {a:2,b:y,Symbol(s):false}",
+            "zipKeyed proto: true data,true,true,true",
+            "zipKeyed longest: {a:1,b:2} {a:pa,b:3}",
+            "zipKeyed array: {0:1,1:3} {0:2,1:4}",
+            "zipKeyed not object: throws TypeError",
+            "zipKeyed bad value: a.return,TypeError",
+            "zipKeyed pad get throws: b.return,a.return,RangeError",
+        ])
+    );
+}
+
+/// Part 2: chunks and windows (iterator chunking), includes (iterator includes) and join
+/// (iterator join). node v26.13.0 has none of them: each line is the result of the proposal
+/// steps. The last chunk or partial window is the closure's last Yield: a `return` there
+/// closes nothing, and the next `next` calls no `next` of the underlying iterator.
+#[test]
+fn chunks_windows_includes_and_join_follow_the_spec() {
+    assert_eq!(
+        common::run_both(script!(
+            r#"
+t('descs', function () { return ['chunks', 'windows', 'includes', 'join'].map(function (k) { return k + ':' + IP[k].length + ':' + IP[k].name + ':' + d(IP, k); }).join(' '); });
+function show(it) { return it.toArray().map(function (a) { return '[' + a.join() + ']'; }).join(''); }
+function* g(n) { for (var i = 0; i < n; i++) yield i; }
+t('chunks', function () { return show(g(7).chunks(3)) + ' ' + show(g(6).chunks(3)) + ' ' + show(g(0).chunks(3)) + ' ' + show(g(2).chunks(5)); });
+t('windows', function () { return show(g(5).windows(3)) + ' ' + show(g(2).windows(3)) + ' ' + show(g(2).windows(3, 'allow-partial')) + ' ' + show(g(4).windows(3, 'allow-partial')) + ' ' + show(g(3).windows(1)); });
+t('windows fresh', function () { var it = g(4).windows(2); var a = it.next().value; a[0] = 'x'; var b = it.next().value; return (a !== b) + ' ' + b.join(); });
+t('chunks bad size', function () { return [0, -0, -1, 1.5, NaN, Infinity, '2', undefined, 2 ** 32].map(function (s) { try { g(1).chunks(s); return 'ok'; } catch (e) { return e.constructor.name; } }).join(); });
+t('chunks max size', function () { return show(g(2).chunks(2 ** 32 - 1)); });
+t('windows bad undersized', function () { return [null, '', 'x', true, new String('only-full')].map(function (s) { try { g(1).windows(1, s); return 'ok'; } catch (e) { return e.constructor.name; } }).join(); });
+function closable(log, n) { var i = 0; return { __proto__: IP, get next() { log.push('get next'); return function () { log.push('next'); return { value: i++, done: i > n }; }; }, return: function () { log.push('return'); return {}; } }; }
+t('chunks close on bad size', function () { var log = []; try { closable(log, 1).chunks(0); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('windows order', function () { var log = []; try { closable(log, 1).windows(0, 'bad'); } catch (e) { log.push(e.constructor.name); } try { closable(log, 1).windows(1, 'bad'); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('chunks return start', function () { var log = []; var c = closable(log, 5).chunks(2); c.return(); return log.join() + ' ' + c.next().done; });
+t('chunks return yield', function () { var log = []; var c = closable(log, 5).chunks(2); c.next(); c.return(); return log.join(); });
+t('chunks last', function () { var log = []; var c = closable(log, 3).chunks(2); c.next(); var last = c.next(); log.push('|'); var r = c.return(); return log.join() + ' ' + last.value.join() + ' ' + r.done + ' ' + c.next().done; });
+t('chunks last next', function () { var log = []; var c = closable(log, 3).chunks(2); c.next(); c.next(); log.push('|'); return c.next().done + ' ' + log.join(); });
+t('windows partial last', function () { var log = []; var w = closable(log, 1).windows(3, 'allow-partial'); var a = w.next().value; log.push('|'); w.return(); return a.join() + ' ' + log.join(); });
+t('windows return yield', function () { var log = []; var w = closable(log, 5).windows(2); w.next(); w.return(); return log.join(); });
+t('chunks running', function () { var c; var it = { __proto__: IP, next: function () { return c.next(); } }; c = it.chunks(1); return c.next(); });
+t('includes', function () { return [[1, 2, 3].values().includes(2), [1, 2, 3].values().includes(4), [NaN].values().includes(NaN), [-0].values().includes(0), ['a'].values().includes('a', 1), [4, 5, 6].values().includes(5, 1), [4, 5, 6].values().includes(4, 1), [1].values().includes(1, Infinity)].join(); });
+t('includes bad skip', function () { return [NaN, 0.5, -1, -Infinity, '1', null, 2 ** 53, 1n].map(function (s) { try { g(1).includes(0, s); return 'ok'; } catch (e) { return e.constructor.name; } }).join(); });
+t('includes close', function () { var log = []; var r = closable(log, 9).includes(2); return r + ' ' + log.join(); });
+t('includes no close at end', function () { var log = []; var r = closable(log, 2).includes(7); return r + ' ' + log.join(); });
+t('includes close bad skip', function () { var log = []; try { closable(log, 2).includes(0, -1); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('join', function () { return [[1, null, 'b', undefined].values().join(), ['a', 'b'].values().join('-'), [].values().join(), [1, 2].values().join(''), [{ toString: function () { return 'o'; } }].values().join(1)].join(' | '); });
+t('join sep order', function () { var log = []; var sep = { toString: function () { log.push('sep'); return '+'; } }; var r = closable(log, 2).join(sep); return r + ' ' + log.join(); });
+t('join sep throws', function () { var log = []; try { closable(log, 2).join({ toString: function () { throw new RangeError(); } }); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('join value throws', function () { var log = []; var it = { __proto__: IP, next: function () { log.push('next'); return { value: { toString: function () { throw new RangeError(); } }, done: false }; }, return: function () { log.push('return'); return {}; } }; try { it.join(); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+t('join this', function () { return IP.join.call(1); });
+t('join symbol', function () { return [Symbol()].values().join(); });
+"#
+        )),
+        lines(&[
+            "descs: chunks:1:chunks:data,true,false,true windows:1:windows:data,true,false,true includes:1:includes:data,true,false,true join:1:join:data,true,false,true",
+            "chunks: [0,1,2][3,4,5][6] [0,1,2][3,4,5]  [0,1]",
+            "windows: [0,1,2][1,2,3][2,3,4]  [0,1] [0,1,2][1,2,3] [0][1][2]",
+            "windows fresh: true 1,2",
+            "chunks bad size: RangeError,RangeError,RangeError,TypeError,TypeError,TypeError,TypeError,TypeError,RangeError",
+            "chunks max size: [0,1]",
+            "windows bad undersized: TypeError,TypeError,TypeError,TypeError,TypeError",
+            "chunks close on bad size: return,RangeError",
+            "windows order: return,RangeError,return,TypeError",
+            "chunks return start: get next,return true",
+            "chunks return yield: get next,next,next,return",
+            "chunks last: get next,next,next,next,next,| 2 true true",
+            "chunks last next: true get next,next,next,next,next,|",
+            "windows partial last: 0 get next,next,next,|",
+            "windows return yield: get next,next,next,return",
+            "chunks running: throws TypeError",
+            "includes: true,false,true,true,false,true,false,false",
+            "includes bad skip: TypeError,TypeError,RangeError,RangeError,TypeError,TypeError,RangeError,TypeError",
+            "includes close: true get next,next,next,next,return",
+            "includes no close at end: false get next,next,next,next",
+            "includes close bad skip: return,RangeError",
+            "join: 1,,b, | a-b |  | 12 | o",
+            "join sep order: 0+1 sep,get next,next,next,next",
+            "join sep throws: return,RangeError",
+            "join value throws: next,return,RangeError",
+            "join this: throws TypeError",
+            "join symbol: throws TypeError",
+        ])
+    );
+}
+
+/// Part 2 helpers keep their lists (the items of concat, the iterators and padding of zip, the
+/// ring of windows) in heap slots only: a chain that allocates in every step gives the same
+/// values with a collection before every allocation (`run_both`). The values are the spec's
+/// (node v26.13.0 has no zip and no windows).
+#[test]
+fn a_part_2_chain_survives_gc_stress() {
+    assert_eq!(
+        common::run_both(
+            r#"
+function* g(n) { for (var i = 0; i < n; i++) yield { v: i, s: 'k' + i }; }
+var z = Iterator.zip([g(9), Iterator.concat(g(2), [{ v: 'c', s: 'c' }], g(3)).map(function (o) { return { v: o.v, s: o.s + '!' }; })],
+                     { mode: 'longest', padding: [{ v: 'p0' }, { v: 'p1', s: 'pad' }] });
+var w = z.windows(3, 'allow-partial').flatMap(function (win) { return win.values(); }).chunks(4);
+var k = Iterator.zipKeyed({ a: w, b: [1, 2, 3, 4, 5, 6, 7].values() });
+var parts = [];
+for (var r of k) parts.push(r.b + ':' + r.a.map(function (p) { return p[0].s + '/' + p[1].s; }).join(' '));
+print(parts.join(' | '), [Iterator.concat('ab'.split(''), new Set([1])).join('-'), g(4).map(function (o) { return o.v; }).includes(3, 2)].join());
+"#
+        ),
+        lines(&[
+            "1:k0/k0! k1/k1! k2/c! k1/k1! | 2:k2/c! k3/k0! k2/c! k3/k0! | 3:k4/k1! k3/k0! k4/k1! k5/k2! | 4:k4/k1! k5/k2! k6/pad k5/k2! | 5:k6/pad k7/pad k6/pad k7/pad | 6:k8/pad a-b-1,true",
+        ])
+    );
+}
+
 thread_local! {
     static LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -338,4 +571,287 @@ log(s.return().done, s.next().done);
             i.verify_heap().expect("a valid heap");
         });
     }
+}
+
+/// A completed part 2 helper drops its lists, as a completed generator drops its closure
+/// values: the iterable concat has not opened yet (`return` before the first `next`), the
+/// padding of a zip run to its end, and the ring of a windows helper run to its end die at
+/// the next GC, while each helper stays reachable from a global. The lines before the GC are
+/// the spec's (node v26.13.0 has no zip and no windows); the cleanup lines too.
+#[test]
+fn a_completed_part_2_helper_drops_its_lists() {
+    const SRC: &str = r#"
+var fr = new FinalizationRegistry(function (held) { log('cleanup', held); });
+function reg(name) { var o = { [Symbol.iterator]: function () { return [1].values(); } }; fr.register(o, name); return o; }
+var c = Iterator.concat([1], reg('concat'));
+log(c.return().done, c.next().done);
+var z = Iterator.zip([[1]], { mode: 'longest', padding: [reg('padding')] });
+log(z.next().value.length, z.next().done);
+var w = [reg('ring')].values().windows(2);
+log(w.next().done);
+"#;
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = common::isolate(stress);
+            i.register_host_function("log", 1, log);
+            take_log();
+            run_padded(&mut i, SRC).unwrap();
+            assert_eq!(
+                take_log(),
+                ["true true", "1 true", "true"],
+                "stress={stress}"
+            );
+            let mut seen = Vec::new();
+            common::assert_dies(&mut i, "the lists of completed part 2 helpers", |i| {
+                i.with_cx(|cx| cx.cleanup_finalization_registries())
+                    .unwrap();
+                seen.extend(take_log());
+                seen.sort();
+                seen == ["cleanup concat", "cleanup padding", "cleanup ring"]
+            });
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+/// A zip input that is done leaves the list with its cached `next` method (Codex r1
+/// SPEC-ITER2 3; IteratorZip step 3.b.iii.3.d removes the whole record): the `next` closure
+/// of the first input dies at the next GC, while the zip (longest mode) stays reachable from a
+/// global and its second input is still open. The lines before the GC are the spec's (node
+/// v26.13.0 has no zip); the cleanup line too.
+#[test]
+fn a_done_zip_input_drops_its_next_method() {
+    const SRC: &str = r#"
+var fr = new FinalizationRegistry(function (held) { log('cleanup', held); });
+function once(name) { var big = {}; fr.register(big, name); var n = 0; return { next: function () { return big && n++ < 1 ? { value: 1, done: false } : { done: true }; } }; }
+var z = Iterator.zip([once('next'), [1, 2, 3]], { mode: 'longest' });
+log(z.next().value.join(), z.next().value.join());
+"#;
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = common::isolate(stress);
+            i.register_host_function("log", 1, log);
+            take_log();
+            run_padded(&mut i, SRC).unwrap();
+            assert_eq!(take_log(), ["1,1 ,2"], "stress={stress}");
+            let mut seen = Vec::new();
+            common::assert_dies(&mut i, "the next method of a done zip input", |i| {
+                i.with_cx(|cx| cx.cleanup_finalization_registries())
+                    .unwrap();
+                seen.extend(take_log());
+                seen == ["cleanup next"]
+            });
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+/// The CPU work of the calling thread so far, in a unit of the platform: nanoseconds of CPU
+/// time (`clock_gettime` with `CLOCK_THREAD_CPUTIME_ID`) on unix, CPU cycles
+/// (`QueryThreadCycleTime`) on Windows. Only ratios of it are used. The other threads of the
+/// machine do not change it, as they change a wall clock (FLAKE-ZIP).
+#[cfg(unix)]
+fn thread_cpu_work() -> u64 {
+    /// `struct timespec` of the 64-bit unix targets (`time_t` and `long` are 64 bits).
+    #[repr(C)]
+    struct Timespec {
+        sec: i64,
+        nsec: i64,
+    }
+    #[cfg(target_os = "macos")]
+    type ClockId = core::ffi::c_uint;
+    #[cfg(not(target_os = "macos"))]
+    type ClockId = core::ffi::c_int;
+    #[cfg(target_os = "macos")]
+    const CLOCK_THREAD_CPUTIME_ID: ClockId = 16;
+    #[cfg(not(target_os = "macos"))]
+    const CLOCK_THREAD_CPUTIME_ID: ClockId = 3; // Linux
+    unsafe extern "C" {
+        fn clock_gettime(clock: ClockId, ts: *mut Timespec) -> core::ffi::c_int;
+    }
+    let mut ts = Timespec { sec: 0, nsec: 0 };
+    // SAFETY: `ts` is a valid and writable `struct timespec` of this target, and
+    // `clock_gettime` only writes it.
+    let rc = unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+    let sec = u64::try_from(ts.sec).expect("a CPU time of 0 s or more");
+    let nsec = u64::try_from(ts.nsec).expect("a CPU time of 0 s or more");
+    sec * 1_000_000_000 + nsec
+}
+
+/// [`thread_cpu_work`] on Windows: the CPU cycles of the calling thread.
+#[cfg(windows)]
+fn thread_cpu_work() -> u64 {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThread() -> *mut core::ffi::c_void;
+        fn QueryThreadCycleTime(thread: *mut core::ffi::c_void, cycles: *mut u64) -> i32;
+    }
+    let mut cycles = 0u64;
+    // SAFETY: `GetCurrentThread` gives the pseudo handle of the calling thread (always
+    // valid, no close), and `cycles` is a valid and writable u64.
+    let ok = unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) };
+    assert_ne!(ok, 0, "QueryThreadCycleTime");
+    cycles
+}
+
+/// The CPU work ([`thread_cpu_work`]) of the first `next` of a zip in longest mode of `n`
+/// empty inputs (all of them are done in that `next`), on a new isolate. The setup and the
+/// compile are not in it.
+fn zip_next_work(n: usize) -> u64 {
+    let mut iso = common::isolate(false);
+    let setup = format!("var z = Iterator.zip(Array({n}).fill([]), {{ mode: 'longest' }});");
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(compile_sloppy(&setup), "setup.js")
+            .map(|_| ())
+    })
+    .expect("the setup runs");
+    let next =
+        compile_sloppy("var r = z.next(); var t = r.done + ' ' + r.value + ' ' + z.next().done;");
+    let before = thread_cpu_work();
+    iso.with_cx_checkpoint(|cx| cx.run_script(next, "next.js").map(|_| ()))
+        .expect("next runs");
+    let work = thread_cpu_work() - before;
+    assert_eq!(
+        common::global_text(&mut iso, "t").as_deref(),
+        Some("true undefined true")
+    );
+    work
+}
+
+/// The open inputs of a zip in longest mode are counted once per `next`, not once per done
+/// input (Codex r1 SPEC-ITER2 1): N empty inputs that are all done in the first `next` take
+/// one pass over the list. The old scan from index 0 at each done input took about N^2 / 2
+/// list reads. The test compares the CPU work of that `next` for 4,000 and 16,000 inputs (the
+/// least of 3 runs of each): linear work grows about 4 times, the old scan about 16 times;
+/// the bound is 8. It measures the CPU work of its thread, not wall time: the old 30 s wall
+/// wait failed under load (FLAKE-ZIP, M6-ORCH-264). The wait of 900 s only stops a test that
+/// hangs.
+#[cfg(any(unix, windows))]
+#[test]
+fn a_zip_of_many_done_inputs_is_linear() {
+    const N: usize = 4_000;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let least = |n| (0..3).map(|_| zip_next_work(n)).min().expect("3 runs");
+            let small = least(N);
+            let large = least(4 * N);
+            let _ = tx.send((small, large));
+        })
+        .expect("a thread");
+    let (small, large) = rx
+        .recv_timeout(std::time::Duration::from_secs(900))
+        .expect("the runs end");
+    let ratio = large as f64 / small.max(1) as f64;
+    eprintln!(
+        "zip next work: {N} inputs {small}, {} inputs {large}, ratio {ratio:.2}",
+        4 * N
+    );
+    assert!(
+        ratio < 8.0,
+        "the next of {} inputs took {ratio:.1} times the work of {N} inputs ({large} / {small})",
+        4 * N
+    );
+}
+
+fn compile_sloppy(src: &str) -> ep9_bytecode::VerifiedUnit {
+    ep9_frontend::compile(
+        src,
+        ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+        ep9_frontend::CompileOptions::default(),
+    )
+    .expect("compiles")
+}
+
+/// Runs the script `setup`, then a loop that a termination stops at its first poll (a poll
+/// sets the interrupt budget to at least 10,000 units, `budget_after_poll`), then requests
+/// termination again and runs `call` in a third script, on a thread with a 60 s wait (it
+/// only stops a hung test). Each `call` below takes less than 10,000 units before the loop
+/// it tests and more than 10,128 in all, so only a poll in that loop stops it. True if the
+/// call ended terminated and the isolate kept working.
+fn terminates_in(setup: &'static str, call: &'static str) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let mut iso = common::isolate(false);
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy(setup), "setup.js").map(|_| ())
+            })
+            .expect("the setup runs");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy("for (;;) {}"), "fill.js")
+                    .map(|_| ())
+            });
+            assert!(
+                r.is_err_and(|e| e.terminated),
+                "the budget fill loop ends terminated"
+            );
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile_sloppy(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached';"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
+            let terminated = r.is_err_and(|e| e.terminated);
+            let stage = common::global_text(&mut iso, "stage");
+            // The isolate keeps working.
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
+            let _ = tx.send((terminated, stage, again));
+        })
+        .expect("a thread");
+    let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+    got == Ok((true, Some("before".to_string()), Some("again".to_string())))
+}
+
+/// The zip loops that step no iterator and call no JS take one interrupt budget unit per
+/// pass (`Cx::poll_interrupt`; the H23 Facts row "Interrupt poll"; Codex r1 SPEC-ITER2 2):
+/// the zipKeyed key loop (keys whose value is undefined), the padding loops of zip and
+/// zipKeyed, the ring copy of windows, IteratorCloseAll and the result loop over done
+/// inputs. A termination stops each.
+#[test]
+fn termination_stops_the_zip_and_windows_loops() {
+    const KEYS_UNDEFINED: &str =
+        "var o = {}; for (var i = 0; i < 30000; i++) o['k' + i] = undefined;";
+    const ARRAYS: &str = "var a = []; for (var i = 0; i < 6000; i++) a.push([]);";
+    const KEYS_ARRAYS: &str = "var o = {}; for (var i = 0; i < 6000; i++) o['k' + i] = [];";
+    const WINDOW: &str = "var w = Array(20001).fill(0).values().windows(20000); w.next();";
+    const CLOSE: &str =
+        "var a = [[]]; for (var i = 0; i < 20000; i++) a.push([1]); var z = Iterator.zip(a);";
+    const NULLS: &str = "var a = []; for (var i = 0; i < 20000; i++) a.push([]); \
+         a.push([1, 2, 3]); var z = Iterator.zip(a, { mode: 'longest' }); z.next();";
+    let not_stopped = [
+        (KEYS_UNDEFINED, "Iterator.zipKeyed(o)"),
+        (ARRAYS, "Iterator.zip(a, { mode: 'longest' })"),
+        (ARRAYS, "Iterator.zip(a, { mode: 'longest', padding: [] })"),
+        (KEYS_ARRAYS, "Iterator.zipKeyed(o, { mode: 'longest' })"),
+        (
+            KEYS_ARRAYS,
+            "Iterator.zipKeyed(o, { mode: 'longest', padding: {} })",
+        ),
+        (WINDOW, "w.next().length"),
+        (CLOSE, "z.next()"),
+        (NULLS, "z.next().length"),
+    ]
+    .into_iter()
+    .filter(|&(setup, call)| !terminates_in(setup, call))
+    .map(|(_, call)| call)
+    .collect::<Vec<_>>();
+    assert_eq!(
+        not_stopped,
+        Vec::<&str>::new(),
+        "calls that a termination did not stop"
+    );
 }

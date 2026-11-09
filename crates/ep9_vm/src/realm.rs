@@ -8,8 +8,8 @@
 //! Isolate::new: builtins::check -> Runtime::new -> builtins::prepare
 //!   -> realm::init: atoms, the REALM record and fuse block, core intrinsics, global, symbols
 //!   -> realm::install: builtins::install (every table but the lazy groups; each lazy key
-//!                      gets its place with HOLE), %AggregateError%'s [[Prototype]],
-//!                      fill_intrinsics (the REALM record's intrinsics list)
+//!                      gets its place with HOLE), the %AggregateError% and
+//!                      %SuppressedError% [[Prototype]], fill_intrinsics (the intrinsics list)
 //! realm::create (Cx::create_realm, $262.createRealm): blank the current-realm roots
 //!   -> init_core (a new REALM record, core intrinsics, global object, %Symbol.prototype%)
 //!   -> realm::install (the same function, into the builtin install list) -> switch back
@@ -73,7 +73,7 @@
 //! |---|---|
 //! | `%Object.prototype%` | an ordinary object, `[[Prototype]]` null |
 //! | `%Function.prototype%` | VM builtin 0.0: a function that returns undefined (§20.2.3) |
-//! | `%Array.prototype%` | an ordinary object (v0: not an Array exotic object, H18) |
+//! | `%Array.prototype%` | an Array exotic object of length 0 (§23.1.3; `object::new_array`) |
 //! | `%String.prototype%`, `%Number.prototype%`, `%Boolean.prototype%` | `wrapper::new_wrapper` of "", +0 and false (§22.1.3, §21.1.3, §20.3.3) |
 //! | `%Iterator.prototype%`, `%ArrayIteratorPrototype%` | ordinary objects (`%StringIteratorPrototype%` is made by the VM table, `natives.rs`) |
 //! | `%Error.prototype%`, the native error prototypes | ordinary objects |
@@ -137,7 +137,8 @@ fn init_core(rt: &Runtime, first: bool) {
         BuiltinId::new(natives::VM_BLOCK, natives::vm::FUNCTION_PROTOTYPE),
     );
     rt.set_root(Root::FunctionPrototype, fp);
-    let array_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::ArrayPrototype, object_proto); // `new_array` reads it: the [[Prototype]]
+    let array_proto = object::new_array(rt, 0); // an Array exotic object (§23.1.3)
     rt.set_root(Root::ArrayPrototype, array_proto);
     for (r, v) in [
         (Root::StringPrototype, rt.atom(Atom::Empty)),
@@ -181,9 +182,9 @@ fn init_core(rt: &Runtime, first: bool) {
 /// Installs the builtin tables into the current realm (made by [`init`] or [`create`]): every
 /// table of the isolate (`builtins::install`: the VM table, then the embedder's, so every
 /// module of `ep9_builtins::MODULES` too, but the modules of a lazy group, whose global key
-/// gets HOLE), then the `[[Prototype]]` of `%AggregateError%`, then the REALM record's
-/// intrinsics list. The one install function of every realm (H22-Q3); a lazy group installs
-/// later through `builtins::install_group` (INTL-I1-D8). GC points.
+/// gets HOLE), then the `[[Prototype]]` of `%AggregateError%` and `%SuppressedError%`, then
+/// the intrinsics list of the REALM record. The one install function of every realm (H22-Q3);
+/// a lazy group installs later through `builtins::install_group` (INTL-I1-D8). GC points.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
     builtins::install(cx.rt())?;
     aggregate_error_prototype(cx.rt());
@@ -194,12 +195,17 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
 /// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
 /// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
 /// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
+///
+/// The explicit resource management proposal (Properties of the SuppressedError
+/// Constructor): the same for `%SuppressedError%` (`ep9_builtins` disposable.rs, M7-P3).
 fn aggregate_error_prototype(rt: &Runtime) {
-    let c = builtins::intrinsic(rt, IntrinsicId::AggregateError);
     let error = builtins::intrinsic(rt, IntrinsicId::Error);
-    if object::is_object(c) && object::is_object(error) {
-        let ok = property::set_prototype_of(rt, c, error);
-        debug_assert!(ok, "%AggregateError% is extensible");
+    for id in [IntrinsicId::AggregateError, IntrinsicId::SuppressedError] {
+        let c = builtins::intrinsic(rt, id);
+        if object::is_object(c) && object::is_object(error) {
+            let ok = property::set_prototype_of(rt, c, error);
+            debug_assert!(ok, "{} is extensible", id.name());
+        }
     }
 }
 

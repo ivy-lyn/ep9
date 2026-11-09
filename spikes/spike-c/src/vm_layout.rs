@@ -18,6 +18,7 @@
 //! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 7 |
 //! | ELEMENTS_DOUBLE: capacity (an int32 Value), raw f64 from `ELEMENTS_DOUBLE_DATA`; the hole is a NaN no store writes; a store writes every NaN as the pure NaN (`PURE_NAN_BITS`, proved below) | `ELEMENTS_DOUBLE_CAPACITY`, `ELEMENTS_DOUBLE_DATA`, `ELEMENTS_DOUBLE_HOLE` | OBJECT_LAYOUT 7 |
 //! | a shape's elements kind: `counts` bits 28-31; kinds 0-5 hold elements in the two forms above (INT32 and ELEMENTS kinds: Values; DOUBLE kinds: raw f64), 6 is DICTIONARY, 7-15 reserved. `CheckArray` (the kind guard, M5-P1-ORCH-11) reads it from the receiver's shape and exits unless it is in [`ARRAY_KINDS`] | `SHAPE_ELEMENTS_KIND_SHIFT`, `ELEMENTS_KIND_*` | OBJECT_LAYOUT 7 |
+//! | a shape's `flags` word (an int32 Value) at `SHAPE_FLAGS`: bit 4 SEALED, bit 5 FROZEN (always with SEALED; H18 "extra element kinds"). A level sits on a dense kind, so `CheckArray` also exits when either bit is set (M7-P3: a dense kind no longer means writable elements). Proved on a live sealed and a live frozen Array by `ep9_vm` `tests::layout6` | `SHAPE_FLAGS`, `SHAPE_FLAG_SEALED`, `SHAPE_FLAG_FROZEN` | OBJECT_LAYOUT 8 |
 //! | a cell's shape is the cell `(address & !(SHAPE_CAGE_ALIGN - 1)) \| ShapeId` (kind `KIND_SHAPE`), its `counts` word is at `SHAPE_COUNTS` (proved below on live arrays of each kind); the CONTEXT kind id (the `LoadContextSlot` guard; proved on a live closure). Spike C hand facts until M6-P0 | `SHAPE_CAGE_ALIGN`, `SHAPE_COUNTS`, `KIND_SHAPE`, `KIND_CONTEXT` | OBJECT_LAYOUT 7 |
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
 //! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 4 |
@@ -47,8 +48,9 @@ pub use ep9_vm::layout::{
     HOLE, KIND_ARRAY, KIND_BYTE, KIND_CONTEXT, KIND_ELEMENTS, KIND_ELEMENTS_DICT,
     KIND_ELEMENTS_DOUBLE, KIND_OBJECT, KIND_SHAPE, OBJECT_FIELDS, OBJECT_SLOTS, POLY_CASE_SIZE,
     POLY_CASES, POLY_COUNT, POLY_HANDLER, SHAPE_CAGE_ALIGN, SHAPE_COUNTS,
-    SHAPE_ELEMENTS_KIND_SHIFT, SHAPE_ID_BYTE, SLOTS_DATA, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT,
-    SMI_FIELD_OUT_OF_LINE, SMI_KIND_MASK, SMI_SHIFT,
+    SHAPE_ELEMENTS_KIND_SHIFT, SHAPE_FLAG_FROZEN, SHAPE_FLAG_SEALED, SHAPE_FLAGS, SHAPE_ID_BYTE,
+    SLOTS_DATA, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_FIELD_OUT_OF_LINE, SMI_KIND_MASK,
+    SMI_SHIFT,
 };
 
 /// The elements kinds whose elements the element ops read and write (bit `k` = kind `k`):
@@ -434,7 +436,7 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
 /// the shared exit stores (`DUMP_BYTES`): 0 in month 6, 1 from A2 start (M7-P1, format 1 with no
 /// byte changed); the spike moved with it.
 pub const PINNED: [(&str, u32); 6] = [
-    ("OBJECT_LAYOUT", 7),
+    ("OBJECT_LAYOUT", 8),
     ("IC_LAYOUT", 4),
     ("FRAME", 2),
     ("VM_LAYOUT", 1),
@@ -624,7 +626,7 @@ fn check_elem2(session: &mut crate::harness::Session) -> Result<(), String> {
 /// IC_LAYOUT items here. Since M6-P0 the 6 former hand facts are items of the set too (v11in
 /// #2), and since M7-P0 the 3 out-of-line facts of SPIKEC-9 (MC-P1-LAYOUTX): no fact the spike
 /// bakes is outside it or [`ENCODING_READS`].
-pub const READ_SET: [(&str, &str); 72] = [
+pub const READ_SET: [(&str, &str); 75] = [
     ("ARRAY_ELEMENTS", "OBJECT_LAYOUT"),
     ("ARRAY_LENGTH", "OBJECT_LAYOUT"),
     ("CONTEXT_LENGTH", "OBJECT_LAYOUT"),
@@ -687,6 +689,9 @@ pub const READ_SET: [(&str, &str); 72] = [
     ("SHAPE_CAGE_ALIGN", "OBJECT_LAYOUT"),
     ("SHAPE_COUNTS", "OBJECT_LAYOUT"),
     ("SHAPE_ELEMENTS_KIND_SHIFT", "OBJECT_LAYOUT"),
+    ("SHAPE_FLAGS", "OBJECT_LAYOUT"),
+    ("SHAPE_FLAG_FROZEN", "OBJECT_LAYOUT"),
+    ("SHAPE_FLAG_SEALED", "OBJECT_LAYOUT"),
     ("SHAPE_ID_BYTE", "OBJECT_LAYOUT"),
     ("SLOTS_DATA", "OBJECT_LAYOUT"),
     ("SMI_ARRAY_LENGTH", "IC_LAYOUT"),
@@ -1092,7 +1097,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
         let lines = read_set_lines();
         assert_eq!(lines.len(), 6, "{lines:?}");
         assert!(
-            lines[0].starts_with("OBJECT_LAYOUT 7: ") && lines[0].contains("SHAPE_CAGE_ALIGN"),
+            lines[0].starts_with("OBJECT_LAYOUT 8: ") && lines[0].contains("SHAPE_CAGE_ALIGN"),
             "{}",
             lines[0]
         );

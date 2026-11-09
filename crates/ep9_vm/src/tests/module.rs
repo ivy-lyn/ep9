@@ -333,6 +333,7 @@ fn module_hosts_nest_and_leave_with_their_call() {
     let mut h1 = module::Host {
         resolve: &mut outer,
         load: &mut load,
+        text: None,
     };
     module::with_host(a, &mut h1, || {
         assert_eq!(ask(a), Some(Ok("outer s".to_string())));
@@ -341,6 +342,7 @@ fn module_hosts_nest_and_leave_with_their_call() {
         let mut h2 = module::Host {
             resolve: &mut inner,
             load: &mut load2,
+            text: None,
         };
         module::with_host(a, &mut h2, || {
             assert_eq!(
@@ -361,6 +363,7 @@ fn module_hosts_nest_and_leave_with_their_call() {
             let mut h3 = module::Host {
                 resolve: &mut fail,
                 load: &mut load3,
+                text: None,
             };
             module::with_host(a, &mut h3, || panic!("in the call"));
         }));
@@ -425,4 +428,101 @@ fn gather_available_ancestors_follows_the_spec() {
         );
         drop(roots);
     });
+}
+
+/// M7-P4 SPEC-BUILTINS4: the unit of a JSON or text module is a verified strict module unit
+/// with no requests and the one local export `default` (cell 1), and a resumable function 0
+/// (the `ASYNC` flag, as the front end makes it).
+#[test]
+fn the_synthetic_unit_exports_only_default() {
+    use ep9_bytecode::CodeKind;
+    let unit = module::synthetic_unit().expect("a verified unit");
+    assert_eq!(unit.header.code_kind, CodeKind::Module);
+    let recs = unit.module_records.as_ref().expect("module records");
+    assert!(recs.requested_modules.is_empty() && recs.import_entries.is_empty());
+    assert!(recs.indirect_export_entries.is_empty() && recs.star_export_entries.is_empty());
+    assert!(!recs.has_tla);
+    assert_eq!(recs.local_export_entries.len(), 1);
+    let e = &recs.local_export_entries[0];
+    assert_eq!(e.cell, 1);
+    assert_eq!(
+        *unit.string(e.export_name),
+        ep9_bytecode::UnitString::new("default")
+    );
+    assert_eq!(
+        *unit.string(e.local_name),
+        ep9_bytecode::UnitString::new("*default*")
+    );
+    let f0 = unit.function(ep9_bytecode::FunctionId(0));
+    assert!(f0.flags.contains(ep9_bytecode::FunctionFlags::ASYNC));
+}
+
+/// M7-P4 SPEC-BUILTINS4: `has_text_hook` reads the innermost host; a text module's record
+/// holds the text in its `default` cell across collections, and the realm's map gives the
+/// same record again without asking the hook; with no builtin table, a JSON module is the
+/// not-implemented Error (no %JSON.parse%), and no record is made.
+#[test]
+fn a_text_module_record_holds_its_text() {
+    use crate::compiler::{CompileFailure, CompileResult};
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let key = module::host_key(cx.rt());
+            assert!(!module::has_text_hook(cx.rt()), "no host");
+            let mut resolve = |_: &str, s: &str| -> Result<String, String> { Ok(s.into()) };
+            let mut load =
+                |_: &str| -> CompileResult { Err(CompileFailure::Internal("none".into())) };
+            let asked = core::cell::Cell::new(0);
+            let mut text = |name: &str, ty: &str| -> Result<String, String> {
+                asked.set(asked.get() + 1);
+                Ok(format!("{name} as {ty}"))
+            };
+            let mut host = module::Host {
+                resolve: &mut resolve,
+                load: &mut load,
+                text: Some(&mut text),
+            };
+            module::with_host(key, &mut host, || {
+                assert!(module::has_text_hook(cx.rt()));
+                let realm = cx.realm;
+                let m = module::synthetic_module(cx, realm, "a.txt", module::ModuleType::Text)
+                    .expect("a record");
+                let hm = cx.rt().heap.new_global(val(m));
+                cx.rt().heap.collect();
+                let m = cx.rt().heap.global(hm).to_bits();
+                let v = module::cell_get(m, 1).expect("cell 1");
+                assert_eq!(crate::string::to_rust_string(v), "a.txt as text");
+                let again =
+                    module::synthetic_module(cx, cx.realm, "a.txt", module::ModuleType::Text)
+                        .expect("the same record");
+                assert_eq!(again, m);
+                assert_eq!(asked.get(), 1, "the map answers the second time");
+                let r = module::synthetic_module(cx, cx.realm, "a.json", module::ModuleType::Json);
+                assert!(r.is_err());
+                assert_eq!(
+                    take_error(cx),
+                    "Error: not implemented in ep9 v0: JSON modules without JSON.parse"
+                );
+                assert_eq!(asked.get(), 2);
+                cx.rt().heap.drop_global(hm);
+                let mut l2 =
+                    |_: &str| -> CompileResult { Err(CompileFailure::Internal("none".into())) };
+                let mut r2 = |_: &str, s: &str| -> Result<String, String> { Ok(s.into()) };
+                let mut inner = module::Host {
+                    resolve: &mut r2,
+                    load: &mut l2,
+                    text: None,
+                };
+                module::with_host(key, &mut inner, || {
+                    assert!(
+                        !module::has_text_hook(cx.rt()),
+                        "the innermost host has none"
+                    );
+                });
+            });
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
 }

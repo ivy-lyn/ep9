@@ -6,7 +6,7 @@
 //!   v
 //! check: for each RegExp token of the final token list
 //!   oxc_regular_expression::LiteralParser (the same pattern text, flags text and span
-//!   offsets as oxc_parser 0.155 parse_literal_regexp) --> an error goes into diagnostics
+//!   offsets as oxc_parser 0.157 parse_literal_regexp) --> an error goes into diagnostics
 //!   v
 //! the callers read the diagnostics as before (lib.rs parse, eval.rs on_worker)
 //! ```
@@ -15,7 +15,7 @@
 //! `parse_regular_expression` on, oxc_parser parses the pattern each time that it parses the
 //! literal. It parses the text inside a failed arrow head (`(a=` ...) one more time, so a
 //! literal inside d such heads is parsed d+1 times. The duplicate group name check of
-//! oxc_regular_expression 0.155 is quadratic in the number of groups, so the time grows with
+//! oxc_regular_expression 0.157 is quadratic in the groups of one name, so the time grows with
 //! d x g^2. Here the pattern is parsed once for each literal.
 //!
 //! Why the token list and not an AST walk:
@@ -57,7 +57,7 @@ use oxc_span::SourceType;
 /// ```
 ///
 /// Why pass 1 (fuzz.yml run 41579263254, frontend_compile; decision M6-ORCH-23): after a
-/// fatal error, oxc_parser 0.155 keeps the current token but moves the lexer to the end of
+/// fatal error, oxc_parser 0.157 keeps the current token but moves the lexer to the end of
 /// the text. If that token is `/` or `/=` and the parser then parses an expression
 /// (`export default@import/f`), `Lexer::next_regex` takes the end of the text as the token
 /// start. With tokens on, a `debug_assert!` of the oxc lexer (lexer/mod.rs:328) then fails.
@@ -361,7 +361,7 @@ mod tests {
 
     /// Fuzz crash of fuzz.yml run 41579263254 (frontend_compile; M6-ORCH-23): a fatal error
     /// in a decorator moves the oxc lexer to the end of the text, and `export default` then
-    /// reads the current `/` as a regex literal. With tokens on, oxc_parser 0.155
+    /// reads the current `/` as a regex literal. With tokens on, oxc_parser 0.157
     /// debug-asserts (lexer/mod.rs:328), so [`parse`] runs a tokens-off pass first when
     /// debug assertions are on. The debug and the release test runs (CI runs both) must give
     /// the same SyntaxError, with no panic, at each entry point: the messages below are the

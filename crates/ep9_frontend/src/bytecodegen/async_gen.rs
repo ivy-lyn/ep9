@@ -33,8 +33,9 @@
 
 use ep9_bytecode::{FeedbackSlotKind, HandlerKind, Register, RuntimeId};
 use oxc_ast::ast::{
-    ArrowFunctionExpression, AwaitExpression, Expression, ForOfStatement, Function,
-    PropertyDefinition, ReturnStatement, StaticBlock, YieldExpression,
+    ArrowFunctionExpression, AwaitExpression, Expression, ForOfStatement, ForStatement,
+    ForStatementInit, ForStatementLeft, Function, PropertyDefinition, ReturnStatement, Statement,
+    StaticBlock, YieldExpression,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::ScopeFlags;
@@ -77,6 +78,10 @@ impl<'a> Visit<'a> for AsyncGenCounter {
         if it.r#await {
             self.count += FOR_AWAIT_SUSPENDS;
         }
+        // A `using` head (`stmt.rs` U4).
+        if let ForStatementLeft::VariableDeclaration(v) = &it.left {
+            self.count += super::stmt::using_head_suspends(v);
+        }
         walk::walk_for_of_statement(self, it);
     }
 
@@ -86,6 +91,20 @@ impl<'a> Visit<'a> for AsyncGenCounter {
             self.returns.push(it.span.start);
         }
         walk::walk_return_statement(self, it);
+    }
+
+    /// The disposal of a using region (`stmt.rs` U4).
+    fn visit_statements(&mut self, it: &oxc_allocator::Vec<'a, Statement<'a>>) {
+        self.count += super::stmt::using_suspends(it);
+        walk::walk_statements(self, it);
+    }
+
+    /// The disposal of a `for` head with `using` (`stmt.rs` U4).
+    fn visit_for_statement(&mut self, it: &ForStatement<'a>) {
+        if let Some(ForStatementInit::VariableDeclaration(v)) = &it.init {
+            self.count += super::stmt::using_head_suspends(v);
+        }
+        walk::walk_for_statement(self, it);
     }
 
     fn visit_function(&mut self, _it: &Function<'a>, _flags: ScopeFlags) {}

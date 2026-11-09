@@ -1214,6 +1214,20 @@ impl<'s> Cx<'s> {
         property::try_prevent_extensions(self.cx, o.into().bits())
     }
 
+    /// SetIntegrityLevel (§7.3.15) steps 4-5 for the elements of an Array `o`, after its
+    /// `[[PreventExtensions]]`: the level sealed (or frozen if `frozen`) as a shape flag
+    /// (H18 "extra element kinds"; the elements keep their storage form). True when done, so
+    /// each index key's define then changes nothing; false (nothing changed) when `o` is not
+    /// an Array, is extensible or has DICTIONARY elements: the caller defines each key. Runs
+    /// no JS.
+    pub fn set_elements_integrity(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        frozen: bool,
+    ) -> bool {
+        crate::elements::set_integrity(self.cx.rt(), o.into().bits(), frozen)
+    }
+
     /// IsCallable (§7.2.3).
     pub fn is_callable(&self, v: impl Into<Local<'s>>) -> bool {
         kinds::is_callable(v.into().bits())
@@ -1729,3 +1743,6 @@ impl<'s> Cx<'s> {
 // M7-P0 CALLHOST (H20 part 2): the forwarded calls of `apply` and `call`, and the human
 // fast-path switch of the FASTDIFF tests.
 mod forward;
+
+// M7-P4 A2-LOADER (H20 part 2): the unit-load API, the first caller of `select()`.
+mod unit_code;

@@ -472,6 +472,151 @@ fn the_budget_policy_runs_minor_gcs_then_a_major_one() {
     heap.drop_global(g);
 }
 
+/// The GC kinds of the budget GCs and the bytes allocated before each, while `step(i)` runs
+/// for `i` in `0..n` (each step allocates).
+fn budget_gcs(heap: &Heap, n: u32, mut step: impl FnMut(u32)) -> Vec<(bool, u64)> {
+    let mut seen = heap.stats().collections;
+    let mut at = heap.stats().allocated_bytes;
+    let mut gcs = Vec::new();
+    for i in 0..n {
+        let before = heap.stats().allocated_bytes;
+        step(i);
+        let st = heap.stats();
+        if st.collections != seen {
+            seen = st.collections;
+            gcs.push((st.last_minor, before - at));
+            at = before;
+        }
+    }
+    gcs
+}
+
+/// Slots of the ring of [`new_ring`]: more than the young cells of one probe minor GC (the
+/// initial budget of one page holds 1,024 cells of 256 B), so every young cell is live at a
+/// minor GC, while the live bytes stay at about 1 MiB (old cells die when the ring passes).
+const RING: usize = 4_096;
+
+/// A rooted node with [`RING`] slots (a large cell) and its handle.
+fn new_ring(heap: &Heap) -> (CellPtr, crate::GlobalHandle) {
+    let ring = new_node(heap, 0, RING);
+    let g = heap.new_global(ring.to_value());
+    (ring, g)
+}
+
+/// Allocates a 256 B node and stores it in slot `i % RING` of `ring` (the oldest one dies).
+fn ring_step(heap: &Heap, ring: CellPtr, i: u32) {
+    let c = new_node(heap, i + 1, 30);
+    store(heap, ring, i as usize % RING, c.to_value());
+}
+
+/// The nursery policy (S2a part 2): every young cell stays live (a ring, [`ring_step`]), so
+/// each minor GC keeps all young bytes. Then the next budget GC is major, and after a major GC
+/// one small minor GC (about the initial budget) reads the survival again: no two minor GCs
+/// in a row. (Before the policy the GCs were minor until the old bytes passed twice the live
+/// bytes of the last major GC: two minor GCs in a row here.) The probe back-off (GCPAR3)
+/// skips some of these probes: `high_survival_backs_off_the_probe_minor_gcs`.
+#[test]
+#[cfg_attr(miri, ignore = "40,000 allocations")]
+fn high_survival_makes_the_next_budget_gc_major() {
+    let heap = gen_heap(false, |c| c.initial_budget = PAGE_SIZE);
+    let (ring, g) = new_ring(&heap);
+    let gcs = budget_gcs(&heap, 40_000, |i| ring_step(&heap, ring, i));
+    let kinds: Vec<bool> = gcs.iter().map(|g| g.0).collect();
+    assert!(kinds.len() >= 5, "{kinds:?}");
+    assert!(kinds[0], "the first budget GC is minor: {kinds:?}");
+    for (k, w) in kinds.windows(2).enumerate() {
+        assert!(
+            !(w[0] && w[1]),
+            "two minor GCs in a row at GC {k}: {kinds:?}"
+        );
+    }
+    for (k, w) in gcs.windows(2).enumerate() {
+        if !w[0].0 && w[1].0 {
+            // The minor GC after a major one: the initial budget (one page), rounded up to
+            // the next hole.
+            assert!(
+                w[1].1 < 2 * PAGE_SIZE as u64,
+                "GC {}: {} bytes before the probe minor GC: {gcs:?}",
+                k + 1,
+                w[1].1
+            );
+        }
+    }
+    heap.verify().expect("verifier");
+    heap.drop_global(g);
+}
+
+/// The probe back-off of the nursery policy (GCPAR3): while every young cell stays live,
+/// probe `k` (the `k`-th minor GC that finds high survival) skips `min(k, 3)` probes
+/// (`MAX_PROBE_SKIPS`), so `min(k, 3) + 1` major GCs run before the next probe: the GC kinds
+/// are m M M m M M M m M M M M m M M M M ... (m minor, M major). The old policy alternated
+/// m M m M: a probe after every major GC. Then the young cells start to die: after at most 4
+/// major GCs a probe runs, finds low survival, and the minor GCs come back.
+#[test]
+#[cfg_attr(miri, ignore = "150,000 allocations")]
+fn high_survival_backs_off_the_probe_minor_gcs() {
+    let heap = gen_heap(false, |c| c.initial_budget = PAGE_SIZE);
+    let (ring, g) = new_ring(&heap);
+    let gcs = budget_gcs(&heap, 120_000, |i| ring_step(&heap, ring, i));
+    let kinds: Vec<bool> = gcs.iter().map(|g| g.0).collect();
+    // The majors after each probe: 2, 3, 4, then 4 (the bound).
+    let mut runs = Vec::new();
+    let mut n = 0;
+    for &minor in &kinds[1..] {
+        if minor {
+            runs.push(n);
+            n = 0;
+        } else {
+            n += 1;
+        }
+    }
+    assert!(kinds[0], "the first budget GC is minor: {kinds:?}");
+    assert!(runs.len() >= 4, "{kinds:?}");
+    for (k, &r) in runs.iter().enumerate() {
+        assert_eq!(r, (k + 2).min(4), "majors after probe {}: {kinds:?}", k + 1);
+    }
+    heap.verify().expect("verifier");
+    // Phase 2: the young cells die. After at most 4 major GCs a probe runs, and then every
+    // budget GC is minor (the old bytes stay below the major limit in this run).
+    let gcs = budget_gcs(&heap, 30_000, |i| {
+        new_node(&heap, 100_000 + i, 30);
+    });
+    let kinds: Vec<bool> = gcs.iter().map(|g| g.0).collect();
+    let first_minor = kinds.iter().position(|&m| m).expect("a probe runs");
+    assert!(
+        first_minor <= 4,
+        "{first_minor} majors before the probe: {kinds:?}"
+    );
+    assert!(kinds[first_minor..].iter().all(|&m| m), "{kinds:?}");
+    assert!(kinds.len() - first_minor >= 3, "{kinds:?}");
+    heap.verify().expect("verifier");
+    heap.drop_global(g);
+}
+
+/// The nursery policy keeps the minor GCs while most young cells die: here only 1 in 64
+/// stays, so every budget GC is minor (until the old bytes pass twice the live bytes of the
+/// last major GC, which this run does not reach).
+#[test]
+#[cfg_attr(miri, ignore = "20,000 allocations")]
+fn low_survival_keeps_the_minor_gcs() {
+    let heap = gen_heap(false, |c| c.initial_budget = PAGE_SIZE);
+    let head = new_node(&heap, 0, 1);
+    let g = heap.new_global(head.to_value());
+    let mut tail = head;
+    let gcs = budget_gcs(&heap, 20_000, |i| {
+        let c = new_node(&heap, i + 1, 30);
+        if i % 64 == 0 {
+            store(&heap, tail, 0, c.to_value());
+            tail = c;
+        }
+    });
+    let kinds: Vec<bool> = gcs.iter().map(|g| g.0).collect();
+    assert!(kinds.len() >= 10, "{kinds:?}");
+    assert!(kinds.iter().all(|&m| m), "{kinds:?}");
+    heap.verify().expect("verifier");
+    heap.drop_global(g);
+}
+
 /// A huge `initial_budget` (an embedder that never wants a budget GC) builds a heap: the
 /// initial major-GC limit saturates as `after_gc` does (`2 * usize::MAX` overflowed in
 /// `Heap::new`, a panic with overflow checks). S0 and S1; both GC kinds then still run.

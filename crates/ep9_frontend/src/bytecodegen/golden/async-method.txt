@@ -1,6 +1,6 @@
 # async-method: script (strict)
 # | var o = { async m() { return await this.x; } }; class C { static async #s() { await 1; } async m(x) { return super.m(await x); } }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=130 source=embedded hints=none
 source_hash=ea4ad306d23722de252f9f4b1c453d0d2a312edbd0cdf13cdced2adb681ba91d
 strings (6):

@@ -7,8 +7,8 @@
 //! Until M5-P0 this was `native::layout`, behind the `spike-native` feature. C-18 (doc 13:694)
 //! moved it out of the gate, with the three native `Cx` fields (`native_limit`,
 //! `runtime_table`, `unit_data`) and the [`RuntimeTable`] type, so every build has one `Cx`
-//! layout. The process table itself (`native::RUNTIME_TABLE`) and every function it calls stay
-//! behind `spike-native`: a default build has `Cx::runtime_table` = null.
+//! layout. The process table (`native::RUNTIME_TABLE`) and its functions are in every build
+//! since M7-P3 A2-ENTRY (MC-w30-8); before, they were behind `spike-native` (null otherwise).
 //!
 //! Each export names the one version that owns it (MC-w15-5; doc 13 C-18 and §7.3): VM_LAYOUT
 //! (`Cx`, FunctionInfo and RuntimeTable offsets, not the table length: C-18), FRAME (frame
@@ -70,8 +70,8 @@ native_fn_types! {
 }
 
 /// The runtime functions native code calls, at fixed offsets (`#[repr(C)]`, the `RT_*`
-/// constants below), reached through `Cx::runtime_table` (null in a build without
-/// `spike-native`). Every function takes `(cx, fp, off, ..)`:
+/// constants below), reached through `Cx::runtime_table` (the process table in every build
+/// since M7-P3; null before). Every function takes `(cx, fp, off, ..)`:
 /// `cx` is the [`NativeCx`] native code got, `fp` its own frame, `off` the bytecode offset of
 /// the instruction it runs. Each one first publishes `fp` and saves `off` in the frame's offset
 /// slot (`Runtime::enter`), then returns the accumulator bits, or 0 if an exception is
@@ -147,7 +147,7 @@ pub const CX_INTERRUPT: usize = offset_of!(Cx, interrupt);
 /// VM_LAYOUT. `Cx::native_limit` (usize): the lowest native stack address native code may
 /// reach; the prologue's one compare.
 pub const CX_NATIVE_LIMIT: usize = offset_of!(Cx, native_limit);
-/// VM_LAYOUT. `Cx::runtime_table` (`*const RuntimeTable`; null without `spike-native`).
+/// VM_LAYOUT. `Cx::runtime_table` (`*const RuntimeTable`; in every build since M7-P3).
 pub const CX_RUNTIME_TABLE: usize = offset_of!(Cx, runtime_table);
 /// VM_LAYOUT. `Cx::unit_data` (usize; M3-P1 SP-UNIT, H35-Q9): the isolate's unit-data
 /// directory, one word per unit slot, each the base of the isolate's RW copy of the unit in
@@ -330,6 +330,15 @@ pub const SHAPE_CAGE_ALIGN: u64 = crate::shape::CAGE_ALIGN as u64;
 /// ([`SHAPE_ELEMENTS_KIND_SHIFT`]) are the elements kind of its objects (`shape.rs`
 /// `shf::COUNTS`, a private module: `tests::layout6` proves the value on live shapes).
 pub const SHAPE_COUNTS: u32 = 48;
+/// OBJECT_LAYOUT (8). A shape's `flags` word, an int32 Value (`shape.rs` `shf::FLAGS`): bits 0-3
+/// as built (EXTENSIBLE 1, DICTIONARY 2, PROTOTYPE 4, UNIQUE 8) and the level bits below.
+pub const SHAPE_FLAGS: u32 = 56;
+/// OBJECT_LAYOUT (8). Shape flag bit 4: every element of the Array is not configurable
+/// (`shape::level::SEALED`; H18 "extra element kinds").
+pub const SHAPE_FLAG_SEALED: i32 = crate::shape::level::SEALED;
+/// OBJECT_LAYOUT (8). Shape flag bit 5, always with [`SHAPE_FLAG_SEALED`]: every element is
+/// also not writable, and `length` is not writable (`shape::level::FROZEN`).
+pub const SHAPE_FLAG_FROZEN: i32 = crate::shape::level::FROZEN;
 /// OBJECT_LAYOUT. Kind id of a shape cell (`kinds::SHAPE`).
 pub const KIND_SHAPE: u8 = crate::kinds::SHAPE.get();
 /// OBJECT_LAYOUT. Kind id of a CONTEXT cell (`kinds::CONTEXT`; the `LoadContextSlot` guard).

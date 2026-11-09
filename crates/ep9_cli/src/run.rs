@@ -170,7 +170,15 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         if opts.module {
             run_module(isolate, unit, file)
         } else {
-            isolate.with_cx_checkpoint(|cx| cx.run_script(unit, file).map(|_| ()))
+            // The text hook too, for `import()` of a JSON or text module in the script.
+            isolate.with_cx_checkpoint(|cx| {
+                cx.with_module_text_host(
+                    &mut resolve_module,
+                    &mut load_module,
+                    &mut text_module,
+                    |cx| cx.run_script(unit, file).map(|_| ()),
+                )
+            })
         }
     });
     let _ = std::io::stdout().flush();
@@ -258,8 +266,14 @@ fn run_module(
         std::fs::canonicalize(file).map_or_else(|_| file.to_string(), |p| p.display().to_string())
     };
     isolate.with_cx_checkpoint(|cx| {
-        cx.run_module(unit, &name, &mut resolve_module, &mut load_module)
-            .map(|_| ())
+        cx.run_module_with_text(
+            unit,
+            &name,
+            &mut resolve_module,
+            &mut load_module,
+            &mut text_module,
+        )
+        .map(|_| ())
     })
 }
 
@@ -301,6 +315,17 @@ fn load_module(name: &str) -> CompileResult {
     };
     ep9_frontend::compile(&source, SourceOpts::module(), CompileOptions::default())
         .map_err(hook_failure)
+}
+
+/// The text of the file `name` (a canonical path) for a JSON module or a text module
+/// (`import ... with { type: "json" }` or `type: "text"`; `_ty` is `"json"` or `"text"`; the
+/// VM parses the JSON).
+fn text_module(name: &str, _ty: &str) -> Result<String, String> {
+    match std::fs::read(name).map(String::from_utf8) {
+        Ok(Ok(s)) => Ok(s),
+        Ok(Err(_)) => Err(format!("{name}: the file is not valid UTF-8")),
+        Err(e) => Err(format!("cannot read {name}: {e}")),
+    }
 }
 
 // ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------

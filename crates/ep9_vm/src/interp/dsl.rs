@@ -176,12 +176,12 @@ pub(crate) mod kind {
         };
     }
 
-    operand!(Reg, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegInOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOutTriple, R, |p, S| R::from_operand(read_signed::<S>(p)));
-    operand!(RegOutPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
+    operand!(Reg, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegInOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegPair, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOutTriple, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOutPair, R, |p, S| R::of_operand(read_signed::<S>(p)));
     operand!(RegList, RList, |p, S| RList(read_signed::<S>(p) as isize));
     operand!(
         RegOutList,
@@ -316,10 +316,11 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 // ---- (b) and (c): threaded handlers --------------------------------------------------------
 
 /// The `Flow::Record` arm of a threaded fast handler. (b) (`return`): a tail call of
-/// [`record_next`] with the handler's state (the instruction's own pc) and a constant word
-/// (the record's bits, the slot operand's offset and the instruction length,
-/// [`slot_place`]), so the handler holds no value for the record: `record_next` reads the slot
-/// operand again and finds the next pc. (c) (`become` needs the same signature): records
+/// [`record_next`] with the handler's state (the instruction's own pc) and the record's bits;
+/// its const parameter is the instruction's [`slot_place`] (the slot operand's offset and the
+/// instruction length), so the handler holds no value for the slot: `record_next` reads the
+/// slot operand at its constant offset and finds the next pc. (c) (`become` needs the same
+/// signature): records
 /// inline and continues at the next pc. The `ics_only` expansions (MODES-D11, MODES-D19; M5-P3
 /// PROFILE6) drop the record: (b) tail-calls [`skip_next`] (no record, the next pc), (c)
 /// continues at the next pc. Their fast handlers have no record code; the bits are dead there.
@@ -336,10 +337,13 @@ macro_rules! record_exit {
         let St {
             cx, pc, fp, acc, ..
         } = $st;
-        let w = $r.sib_word(const { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) });
         // SAFETY: `pc` is this one-byte-scale instruction of verified code in the live frame
         // `fp`; `slot_place` gives its slot operand and its length.
-        unsafe { return $crate::interp::dsl::record_next(cx, pc, fp, acc, w) }
+        unsafe {
+            return $crate::interp::dsl::record_next::<
+                { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) },
+            >(cx, pc, fp, acc, $r.bits());
+        }
     }};
     (become, full, $name:ident, $st:ident, $r:ident) => {{
         $crate::profile::record(&$st, $r);
@@ -519,25 +523,26 @@ macro_rules! record_next_fn {
         /// frame `fp`, then dispatches the next instruction as the handler would have.
         /// Out of line (a fast handler reaches it by a tail call), so on x86-64 the record's
         /// registers are saved here, not on entry to every handler that may record
-        /// (M4-P1 PROFILE-X64). `cargo xtask disasm-check` follows the jump to it as part of
-        /// the handler.
+        /// (M4-P1 PROFILE-X64). One copy per `PLACE` (M7-P2 RECCOST): the slot operand's
+        /// offset and the instruction length are constants, so it decodes no word (x86-64: 16
+        /// instructions on the path that adds no bit, 22 before). `cargo xtask disasm-check`
+        /// follows the jump to it as part of the handler.
         ///
         /// # Safety
         /// `pc` is an instruction of verified code at one-byte scale in the live top frame
-        /// `fp`, and `rec` is a `profile::Rec::sib_word` with its `slot_place`.
+        /// `fp`, `PLACE` is its `slot_place`, and `bits` is a `profile::Rec::bits`.
         #[cfg($cfg)]
         #[inline(never)]
-        #[unsafe(export_name = "ep9rec__sib__record_next")]
-        pub(crate) unsafe extern $abi fn record_next(
+        pub(crate) unsafe extern $abi fn record_next<const PLACE: u64>(
             cx: &mut $crate::interp::Cx,
             pc: *const u8,
             fp: *mut u64,
             acc: u64,
-            rec: u64,
+            bits: u64,
         ) -> u64 {
             #[cfg(debug_assertions)]
             debug_native_stack_check(cx);
-            let (off, len) = (((rec >> 32) & 0xFF) as usize, ((rec >> 40) & 0xFF) as usize);
+            let (off, len) = ((PLACE & 0xFF) as usize, ((PLACE >> 8) & 0xFF) as usize);
             debug_assert!(off != 0, "Flow::Record from an opcode without a slot operand");
             // SAFETY: caller contract: the one-byte slot operand is at `pc + off` and the
             // instruction is `len` bytes long, in verified code.
@@ -545,7 +550,7 @@ macro_rules! record_next_fn {
             let slot = $crate::interp::dsl::FSlot(slot);
             // SAFETY: caller contract (`St::new`: `next` is an instruction start of `fp`).
             let st = unsafe { crate::interp::St::new(cx, next, fp, acc, next) };
-            $crate::profile::record(&st, $crate::profile::Rec::new(slot, rec as u32));
+            $crate::profile::record(&st, $crate::profile::Rec::new(slot, bits as u32));
             let crate::interp::St { cx, fp, acc, .. } = st;
             // SAFETY: `next` is an instruction start of verified code.
             let h = cx.table[unsafe { *next } as usize];
@@ -778,10 +783,11 @@ macro_rules! expand_threaded {
                     }
                 });
                 let St { cx, fp, acc, .. } = st;
-                // SAFETY: `next` is an instruction start of verified code or a VM stub.
-                let h = cx.table[unsafe { *next } as usize];
+                let to = $crate::interp::dsl::dispatch_pc_of!($name, next);
+                // SAFETY: `to` is an instruction start of verified code or a VM stub.
+                let h = cx.table[unsafe { *to } as usize];
                 // SAFETY: the table holds handlers of this expansion; the state is valid.
-                unsafe { $tail h(cx, next, fp, acc) }
+                unsafe { $tail h(cx, to, fp, acc) }
             }
         } )*
 
@@ -831,8 +837,34 @@ macro_rules! expand_threaded {
             #[allow(unused_variables)]
             fn construct_return(cx, pc, fp, acc) {
                 // SAFETY: caller contract.
-                let (next, fp, acc) = unsafe { $crate::interp::construct_return(fp, acc) };
+                if unsafe { $crate::interp::construct_throws(fp, acc) } {
+                    // SAFETY: the same handler contract.
+                    unsafe { $tail construct_return_throw(cx, pc, fp, acc) }
+                }
+                // SAFETY: caller contract; `construct_throws` is false, so no throw.
+                let (next, fp, acc) = unsafe { $crate::interp::construct_result(fp, acc) };
                 // SAFETY: `next` is the caller's next instruction.
+                let h = cx.table[unsafe { *next } as usize];
+                // SAFETY: as in the opcode handlers.
+                unsafe { $tail h(cx, next, fp, acc) }
+            }
+        }
+
+        $crate::interp::dsl::handler! {
+            /// The cold block of `ConstructReturn` (H15 "Cold blocks"): the throw of a derived
+            /// constructor's result that is not an object. It has the handler signature but no
+            /// `ep9h__` symbol and is not in the table; `cargo xtask disasm-check` follows the
+            /// tail jump to it as part of the handler. Not `#[cold]`: on x86-64 ELF that puts it
+            /// in `.text.unlikely`, where `disasm-check` does not follow the jump.
+            ///
+            /// # Safety
+            /// Only `construct_return` calls this, with its arguments.
+            #[inline(never)]
+            #[allow(unused_variables)]
+            fn construct_return_throw(cx, pc, fp, acc) {
+                // SAFETY: caller contract.
+                let (next, fp, acc) = unsafe { $crate::interp::construct_return(cx, fp, acc) };
+                // SAFETY: `next` is the catching handler's pc or the `Exit` stub.
                 let h = cx.table[unsafe { *next } as usize];
                 // SAFETY: as in the opcode handlers.
                 unsafe { $tail h(cx, next, fp, acc) }
@@ -1001,7 +1033,7 @@ macro_rules! expand_match {
                     OP_EXIT => return acc,
                     OP_CONSTRUCT_RETURN => {
                         // SAFETY: only a construct stub frame returns to this stub.
-                        let (next, f, a) = unsafe { $crate::interp::construct_return(fp, acc) };
+                        let (next, f, a) = unsafe { $crate::interp::construct_return(&mut *cx, fp, acc) };
                         pc = next;
                         fp = f;
                         acc = a;
@@ -1073,6 +1105,8 @@ macro_rules! expand_scaled {
             fp: *mut u64,
             acc: u64,
         ) -> u64 {
+            #[cfg(test)]
+            $crate::interp::dsl::count_scaled(0);
             // SAFETY: a verified prefix is followed by an opcode byte.
             let op = unsafe { *pc.add(1) };
             match op {
@@ -1130,19 +1164,22 @@ macro_rules! expand_scaled {
         /// The cold blocks of `step::<S>`, out of line, so that the rare cold paths (runtime
         /// calls, lookups, IC misses) do not shape the register use of the fast arms. Same
         /// contract as `step::<S>`; called only after the opcode's fast body returned
-        /// `Flow::Cold`.
+        /// `Flow::Cold`: here, or in the `Wide`/`ExtraWide` fast body for the opcodes it runs
+        /// itself (`St::scaled_cold`, M7-P4 TSPASS2).
         ///
         /// # Safety
         /// As for `step::<S>`.
         #[cold]
         #[inline(never)]
         #[allow(unused_mut, unused_variables, unused_unsafe, unreachable_code)]
-        unsafe fn step_cold<S: $crate::interp::dsl::Scale>(
+        pub(crate) unsafe fn step_cold<S: $crate::interp::dsl::Scale>(
             cx: &mut Cx,
             pc: *const u8,
             fp: *mut u64,
             acc: u64,
         ) -> u64 {
+            #[cfg(test)]
+            $crate::interp::dsl::count_scaled(1);
             // SAFETY: a verified prefix is followed by an opcode byte.
             let op = unsafe { *pc.add(1) };
             match op {
@@ -1182,6 +1219,136 @@ macro_rules! expand_scaled {
 pub(crate) use expand_scaled;
 
 #[cfg(test)]
+thread_local! {
+    /// Tests (M7-P4 TSPASS2): the runs of `interp::scaled::step` (index 0, a whole prefixed
+    /// instruction) and of `interp::scaled::step_cold` (index 1, only its cold body) on this
+    /// thread.
+    pub(crate) static SCALED_RUNS: core::cell::Cell<[u64; 2]> = const { core::cell::Cell::new([0; 2]) };
+}
+
+/// Counts one run of `step` (0) or `step_cold` (1) in [`SCALED_RUNS`] (tests).
+#[cfg(test)]
+pub(crate) fn count_scaled(i: usize) {
+    SCALED_RUNS.with(|c| {
+        let mut n = c.get();
+        n[i] += 1;
+        c.set(n);
+    });
+}
+
+// ---- the x86-64 register operand decode ------------------------------------------------------
+
+impl R {
+    /// [`R::from_operand`] for the register operand decoders of the handlers (`kind::Reg` and
+    /// the other register kinds). x86-64: the same map as a select, which LLVM keeps as `lea`,
+    /// `test`, `cmov` and puts the slot offset into the load or store address (3 instructions;
+    /// the shift form of `from_operand` gave 4-5 there: `xor`, `test`, `setns`, `shl`, `add`
+    /// or `mov`, `sar`, `and`, `add`). Other targets: `from_operand` (their code does not
+    /// change).
+    ///
+    /// aarch64 (M7-P4 TSPASS2): the sign bit, through an empty `asm!` block, times `HEADER`,
+    /// subtracted ([`R::from_operand_sign`]): `lsr` and `sub` with a shifted register (2
+    /// instructions before the load). Without the block LLVM turned the shift form of
+    /// `from_operand` into `cmp`, `mov`, `csel`, `add` (4) in each register operand decode of
+    /// each handler. Other targets: `from_operand`.
+    #[inline(always)]
+    pub fn of_operand(v: i32) -> R {
+        #[cfg(target_arch = "x86_64")]
+        {
+            R::from_operand_select(v)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            R::from_operand_sign(v)
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            R::from_operand(v)
+        }
+    }
+
+    /// The aarch64 form of [`R::of_operand`]: `v - HEADER` for a negative `v`, else `v`, as
+    /// `v - sign(v) * HEADER`. It builds on every target for the test; only aarch64 has the
+    /// `asm!` block.
+    #[cfg(any(target_arch = "aarch64", test))]
+    #[inline(always)]
+    fn from_operand_sign(v: i32) -> R {
+        let o = v as isize;
+        // 1 for a negative operand (the receiver or a parameter), else 0.
+        #[allow(unused_mut)]
+        let mut neg = (o as usize) >> (usize::BITS - 1);
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
+        // change. `neg` comes back as it went in.
+        unsafe {
+            core::arch::asm!(
+                "/* {n} */",
+                n = inout(reg) neg,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+        }
+        R(o - (neg * HEADER) as isize)
+    }
+
+    /// The x86-64 form of [`R::of_operand`]. It builds on every target for the test.
+    #[cfg(any(target_arch = "x86_64", test))]
+    #[inline(always)]
+    fn from_operand_select(v: i32) -> R {
+        let o = v as isize;
+        R(core::hint::select_unpredictable(
+            o < 0,
+            o - HEADER as isize,
+            o,
+        ))
+    }
+}
+
+/// The `pc` that a threaded handler passes on, as the handler computed it. x86-64: through an
+/// empty `asm!` block, so LLVM keeps the new `pc` in one register and reads the next opcode
+/// at `[pc]`. Without it LLVM read the opcode at `[old pc + len]` and kept the old and the
+/// new `pc` live, so it gave `lea` and `mov rsi` (2 instructions) where `add rsi` (1) does
+/// (`Jump`, the `Test*` compares, `JumpIfJSReceiver`, `Wide`, `ExtraWide`). Other targets:
+/// the same value (their code does not change). The handler arguments, the table read and
+/// the tail call are as before.
+#[inline(always)]
+pub(crate) fn dispatch_pc(next: *const u8) -> *const u8 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut a = next.expose_provenance();
+        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
+        // change. `a` comes back as it went in.
+        unsafe {
+            core::arch::asm!(
+                "/* {a} */",
+                a = inout(reg) a,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+        }
+        core::ptr::with_exposed_provenance(a)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        next
+    }
+}
+
+/// [`dispatch_pc`] of the threaded handler `$name`. `GetNamedProperty` and `TestTypeOf` take
+/// `next` as it is: with the `asm!` block LLVM merged their dispatch tails (3 into 1), so the
+/// hit paths of their jump tables ran one more `jmp` (x86-64 asm, X86SHAPE try 3).
+macro_rules! dispatch_pc_of {
+    (GetNamedProperty, $next:expr) => {
+        $next
+    };
+    (TestTypeOf, $next:expr) => {
+        $next
+    };
+    ($other:ident, $next:expr) => {
+        $crate::interp::dsl::dispatch_pc($next)
+    };
+}
+pub(crate) use dispatch_pc_of;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1193,6 +1360,44 @@ mod tests {
         assert_eq!(R::from_operand(-1).0, crate::frame::slot::RECEIVER);
         assert_eq!(R::from_operand(-2).0, crate::frame::slot::PARAM0);
         assert_eq!(R::from_operand(-2 - 7).0, crate::frame::slot::PARAM0 - 7);
+    }
+
+    /// The decoder map of every target, the x86-64 select form and the aarch64 sign form are
+    /// `from_operand`, for every 1-byte and 2-byte operand and the 4-byte ends.
+    #[test]
+    fn register_operand_decoder_is_from_operand() {
+        let ends = [
+            i32::MIN,
+            i32::MIN + 1,
+            -65_536,
+            65_535,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        for v in (i32::from(i16::MIN)..=i32::from(i16::MAX)).chain(ends) {
+            assert_eq!(R::of_operand(v), R::from_operand(v), "operand {v}");
+            assert_eq!(R::from_operand_select(v), R::from_operand(v), "operand {v}");
+            assert_eq!(R::from_operand_sign(v), R::from_operand(v), "operand {v}");
+        }
+        // The receiver operand (-1) at the 3 scales: fp - 9 (H14).
+        let b = [0xffu8, 0xff, 0xff, 0xff];
+        // SAFETY: `b` has 4 readable bytes.
+        unsafe {
+            assert_eq!(<kind::Reg as Operand>::read::<S1>(b.as_ptr()).0, -9);
+            assert_eq!(<kind::RegOut as Operand>::read::<S2>(b.as_ptr()).0, -9);
+            assert_eq!(<kind::RegPair as Operand>::read::<S4>(b.as_ptr()).0, -9);
+        }
+    }
+
+    /// `dispatch_pc` gives back the pointer it gets (on x86-64 through its `asm!` block).
+    #[test]
+    fn dispatch_pc_is_the_identity() {
+        let code = [0u8; 16];
+        for i in 0..code.len() {
+            let p = code.as_ptr().wrapping_add(i);
+            assert_eq!(dispatch_pc(p), p);
+        }
+        assert!(dispatch_pc(core::ptr::null()).is_null());
     }
 
     #[test]

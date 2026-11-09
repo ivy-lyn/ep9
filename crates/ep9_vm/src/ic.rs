@@ -55,7 +55,7 @@
 //! | `PROTO_LOAD`, `MISSING` (cell) under [`KEY_STRING`] (M4-P3 IC2) | 0x21 on a string: a method (`s.charCodeAt`), from %String.prototype% | as above, after a kind-byte check (a symbol has ShapeId 0 too) |
 //! | `ADD` (cell) | 0x24 (validity cell checked), 0x25 | target alive and room in the slots: store, then install the target shape |
 //! | smi field, keyed on the lexical record's shape | 0x10, 0x11; 0x12 if writable | a `let`/`const`/`class` binding; the hole (TDZ) misses |
-//! | `GLOBAL` (cell), keyed on the global object's shape | 0x10, 0x11; 0x12 if writable | the lexical record still has the shape in the handler: the global object's field |
+//! | `GLOBAL` (cell), keyed on the global object's shape | 0x10, 0x11; 0x12 if writable | the lexical record still has the shape in the handler: the global object's field; the hole (a lazy namespace key not installed, INTL-I1-D8) misses (M7-P2) |
 //!
 //! Rules:
 //! - Every heap reference in IC data is weak (plan rule 8, I42): entry and case keys, a
@@ -116,7 +116,7 @@ use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::interp::{Cx, slow};
 use crate::key;
 use crate::kinds::{self as kind, is_cell_bits};
-use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32};
+use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32, realmf};
 use crate::runtime::{Atom, Root, Runtime};
 use crate::shape::{self, slf};
 use crate::string;
@@ -373,9 +373,21 @@ fn shape_id(o: u64) -> u32 {
 }
 
 /// The (key, value) entry of slot `i` of the vector of `fi`, if `fi` has a vector.
+///
+/// M7-P4 TSPASS2: the hit paths that T0's fast handlers inline ([`load`], [`store`]) test
+/// each word they turn into a cell (`object::cell`) with `is_cell_bits` first and miss if it
+/// is not one. The VM never holds such a word there (a vector is a FEEDBACK_VECTOR cell, an
+/// out-of-line field's SLOTS word a SLOTS cell, a handler that is not an int32 an IC_HANDLER
+/// cell), so no hit changes; but then `object::cell` has no panic path left in the handler,
+/// so the `GetNamedProperty` handler and the `Wide` handler make no call and keep no frame
+/// record (aarch64: no `stp x29, x30` on entry and no `ldp` at each exit). A miss runs the
+/// generic path, which panics there as before if the word is not a cell.
 #[inline(always)]
 fn entry(fi: &FunctionInfo, i: u32) -> Option<(u64, u64)> {
     let v = feedback::vector(fi)?;
+    if !is_cell_bits(v) {
+        return None;
+    }
     Some((feedback::key(v, i), feedback::value(v, i)))
 }
 
@@ -406,7 +418,11 @@ fn field_ref(o: u64, loc: i32) -> Option<(CellPtr, usize)> {
     let off = (loc >> smi::SHIFT) as usize;
     match loc & smi::KIND_MASK {
         smi::FIELD_IN_OBJECT => Some((cell(o), off)),
-        smi::FIELD_OUT_OF_LINE => Some((cell(rd(cell(o), obj::SLOTS)), off)),
+        smi::FIELD_OUT_OF_LINE => {
+            // The test of [`entry`]: no panic path in the inlined hit path.
+            let s = rd(cell(o), obj::SLOTS);
+            is_cell_bits(s).then(|| (cell(s), off))
+        }
         _ => None,
     }
 }
@@ -491,9 +507,17 @@ fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Op
             _ => None,
         };
     }
+    // The tests of [`entry`]: no panic path in the inlined hit path.
+    if !is_cell_bits(h) {
+        return None;
+    }
     let c = cell(h);
     let k = rd_i32(c, hc::KIND);
-    if (k != hk::PROTO_LOAD && k != hk::MISSING) || !validity::valid_cell(rd(c, hc::CELL)) {
+    if k != hk::PROTO_LOAD && k != hk::MISSING {
+        return None;
+    }
+    let vc = rd(c, hc::CELL);
+    if !is_cell_bits(vc) || !validity::valid_cell(vc) {
         return None;
     }
     // ShapeId 0 is a string's or a symbol's: a KEY_STRING prototype case serves strings only.
@@ -505,8 +529,9 @@ fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Op
         cross_check(rt, o, key(), c);
         return Some(UNDEFINED);
     }
+    // A dead holder reads undefined, which is not a cell.
     let holder = rd(c, hc::REF);
-    if holder == UNDEFINED {
+    if !is_cell_bits(holder) {
         return None;
     }
     #[cfg(debug_assertions)]
@@ -667,78 +692,78 @@ fn is_mega(v: u64, i: u32) -> bool {
 
 /// The global-object handler `h` of a global site, if it is one and the lexical record still
 /// has the shape it was made under (ShapeId `lid`). A dead lexical shape reads undefined, which
-/// no ShapeId equals.
+/// no ShapeId equals. M7-P2: a value that is not a cell misses too (no panic, no call).
 #[inline(always)]
 fn global_handler(h: u64, lid: u32) -> Option<CellPtr> {
     if is_i32(h) {
         return None;
     }
-    let c = cell(h);
+    let c = as_cell(h)?;
     (rd_i32(c, hc::KIND) == hk::GLOBAL && rd(c, hc::REF) as u32 == lid).then_some(c)
 }
 
-/// The hit path of a global load (0x10 `LdaGlobal`, 0x11 `LdaGlobalInsideTypeof`) from slot
-/// `slot` of the vector of `fi`: a binding of the lexical record (keyed on its shape; the
-/// hole of a TDZ misses), or an own data property of the global object `global` (keyed on
-/// its shape, while the lexical record keeps the shape the case was made under). `None` is a
-/// miss.
+/// The object and smi field handler that a global site's entry (`key`, `value`) names, or `None`
+/// (a miss): the mono global case first (a `var`, a function, a builtin), then a lexical binding,
+/// then a poly entry. As lexical first: a `GLOBAL` case's record shape lacks the name. Each
+/// header is read once (a ShapeId load is not merged with another).
 #[inline(always)]
-pub(crate) fn load_global(rt: &Runtime, fi: &FunctionInfo, global: u64, slot: u32) -> Option<u64> {
-    let (key, value) = entry(fi, slot)?;
-    let lexical = rt.root(Root::Lexical);
-    let lid = shape_id(lexical);
-    if let Some(h) = handler_for(key, value, lid) {
-        let v = if is_i32(h) {
-            read_field(lexical, int32_of(h))?
-        } else {
-            return None;
-        };
-        return (v != HOLE).then_some(v);
+fn global_site(key: u64, value: u64, g: CellPtr, lex: CellPtr) -> Option<(CellPtr, i32)> {
+    let (gid, lid) = (id_of(g), id_of(lex));
+    if key as u32 == gid {
+        return Some((g, rd_i32(global_handler(value, lid)?, hc::LOCATION)));
     }
-    let h = handler_for(key, value, shape_id(global))?;
-    let c = global_handler(h, lid)?;
-    read_field(global, rd_i32(c, hc::LOCATION))
+    if key as u32 == lid {
+        return is_i32(value).then(|| (lex, int32_of(value)));
+    }
+    let p = as_cell(value).filter(|_| key == HOLE)?;
+    for i in 0..POLY_CASES {
+        let (k, h) = (rd(p, case_key_off(i)) as u32, rd(p, case_key_off(i) + 8));
+        if k == lid {
+            return is_i32(h).then(|| (lex, int32_of(h)));
+        }
+        if let Some(c) = (k == gid).then(|| global_handler(h, lid)).flatten() {
+            return Some((g, rd_i32(c, hc::LOCATION)));
+        }
+    }
+    None
 }
 
-/// The hit path of a global store (0x12 `StaGlobal`): a writable lexical binding outside its
-/// TDZ, or a writable own data property of the global object (as for [`load_global`]). False
-/// on a miss; nothing is stored then.
+/// The field (cell, offset) of a global site's case ([`global_site`]) under `Cx::global_this` and
+/// `Cx::realm`'s `GLOBAL_LEXICAL` (= `Root::Lexical`, `realm::switch` writes both; 1 load, not
+/// 5). `None` is a miss, also where `object::cell` would panic: no call (M7-P2 GLOBALS).
 #[inline(always)]
-pub(crate) fn store_global(
-    rt: &Runtime,
-    fi: &FunctionInfo,
-    global: u64,
-    slot: u32,
-    v: u64,
-) -> bool {
-    let Some((key, value)) = entry(fi, slot) else {
-        return false;
-    };
-    let lexical = rt.root(Root::Lexical);
-    let lid = shape_id(lexical);
-    if let Some(h) = handler_for(key, value, lid) {
-        if !is_i32(h) {
-            return false;
-        }
-        let Some((c, off)) = field_ref(lexical, int32_of(h)) else {
-            return false;
-        };
-        if rd(c, off) == HOLE {
-            return false;
-        }
-        object::wr(&rt.heap, c, off, v);
-        return true;
+fn global_field(cx: &Cx, fi: &FunctionInfo, slot: u32) -> Option<(CellPtr, usize)> {
+    let (v, i) = (as_cell(feedback::vector(fi)?)?, slot as usize);
+    debug_assert!(slot < feedback::slot_count(v.to_value().to_bits()));
+    let at = |w| rd(v, feedback::fv::SLOTS + feedback::fv::SLOT_SIZE * i + w);
+    let (key, value) = (at(feedback::fv::KEY), at(feedback::fv::VALUE));
+    let lex = rd(as_cell(cx.realm)?, realmf::GLOBAL_LEXICAL);
+    debug_assert!(lex == cx.rt().root(Root::Lexical) && cx.global_this == cx.rt().global());
+    let (o, loc) = global_site(key, value, as_cell(cx.global_this)?, as_cell(lex)?)?;
+    let off = (loc >> smi::SHIFT) as usize;
+    match loc & smi::KIND_MASK {
+        smi::FIELD_IN_OBJECT => Some((o, off)),
+        smi::FIELD_OUT_OF_LINE => Some((as_cell(rd(o, obj::SLOTS))?, off)),
+        _ => None,
     }
-    let Some(h) = handler_for(key, value, shape_id(global)) else {
+}
+
+/// The hit path of a global load (0x10 `LdaGlobal`, 0x11 `LdaGlobalInsideTypeof`). The hole is
+/// never a hit: the TDZ, or a lazy namespace key that is not installed (INTL-I1-D8).
+#[inline(always)]
+pub(crate) fn load_global(cx: &Cx, fi: &FunctionInfo, slot: u32) -> Option<u64> {
+    let (c, off) = global_field(cx, fi, slot)?;
+    Some(rd(c, off)).filter(|&v| v != HOLE)
+}
+
+/// The hit path of a global store (0x12 `StaGlobal`): as [`load_global`], and the field does not
+/// hold the hole (the generic store gives the same result). False on a miss: nothing stored.
+#[inline(always)]
+pub(crate) fn store_global(cx: &Cx, fi: &FunctionInfo, slot: u32, v: u64) -> bool {
+    let Some((c, off)) = global_field(cx, fi, slot).filter(|&(c, off)| rd(c, off) != HOLE) else {
         return false;
     };
-    let Some(hcell) = global_handler(h, lid) else {
-        return false;
-    };
-    let Some((c, off)) = field_ref(global, rd_i32(hcell, hc::LOCATION)) else {
-        return false;
-    };
-    object::wr(&rt.heap, c, off, v);
+    object::wr(&cx.rt().heap, c, off, v);
     true
 }
 
@@ -2106,3 +2131,18 @@ macro_rules! stub_stats {
     };
 }
 use stub_stats;
+
+// ---- the cell reads of the global hit paths (M7-P2 GLOBALS) -------------------------------------
+
+/// The cell of `b`, or `None` where `object::cell` would panic (a hit path then misses).
+#[inline(always)]
+fn as_cell(b: u64) -> Option<CellPtr> {
+    CellPtr::from_value(crate::runtime::val(b))
+}
+
+/// The word0 ShapeId of the live cell `c`.
+#[inline(always)]
+fn id_of(c: CellPtr) -> u32 {
+    // SAFETY: a cell value the VM holds is live (crate invariant, object.rs).
+    unsafe { c.header() }.shape_id().get()
+}

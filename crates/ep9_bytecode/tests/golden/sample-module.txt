@@ -1,4 +1,4 @@
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=module strict=true ts=[useDefineForClassFields=false, experimentalDecorators=true, emitDecoratorMetadata=true] source_len=243 source=embedded hints=4 bytes
 source_hash=5936d4dc3f7f5837d5da4b389f074b02d9e5da1e0d85dbf0087e3a479e04f983
 strings (12):

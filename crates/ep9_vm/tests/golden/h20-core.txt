@@ -729,3 +729,12 @@ tables: impl core::fmt::Debug for BuiltinTable
 tables: impl core::fmt::Display for BuiltinId
 tables: pub fn check_tables(&[&BuiltinTable]) -> Result<(), String>
 tables: pub struct BuiltinTable { pub name: &'static str, pub modules: &'static [BuiltinModule], .. }
+embed (not core): #[cfg(feature = "fastdiff-hits")] pub fn take_fastdiff_hits() -> Vec<(&'static str, u64)>
+abi: impl<'s> Cx<'s> :: pub fn set_elements_integrity(&mut self, impl Into<Local<'s, JsObject>>, bool) -> bool
+embed (not core): pub const SHAPE_FLAGS: u32
+embed (not core): pub const SHAPE_FLAG_SEALED: i32
+embed (not core): pub const SHAPE_FLAG_FROZEN: i32
+abi: impl<'s> Cx<'s> :: pub fn run_script_with_unit_code(&mut self, VerifiedUnit, &str, &[u8], u64, &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])]) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>)
+abi: impl<'s> Cx<'s> :: pub fn unit_function_digest(&self, &VerifiedUnit, u32) -> Option<[u8; 16]>
+abi: impl<'s> Cx<'s> :: pub fn run_module_with_text(&mut self, VerifiedUnit, &str, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, &mut dyn FnMut(&str, &str) -> Result<String, String>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn with_module_text_host<R>(&mut self, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, &mut dyn FnMut(&str, &str) -> Result<String, String>, impl FnOnce(&mut Self) -> R) -> R

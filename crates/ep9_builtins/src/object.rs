@@ -787,6 +787,9 @@ fn set_integrity_level<'s>(
     if !cx.prevent_extensions(o)? {
         return Ok(false);
     }
+    // Steps 4-5 for the elements of an Array (H18 "extra element kinds"): one shape flag, so
+    // each index key's define below finds the level's attributes and changes nothing.
+    cx.set_elements_integrity(o, level == Level::Frozen);
     // 3. Let keys be ? O.[[OwnPropertyKeys]](). (No private name: §6.2.12.)
     let (keys, len) = own_keys(cx, o)?;
     let non_configurable = PropertyDescriptor {

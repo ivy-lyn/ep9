@@ -1,6 +1,6 @@
 # async-no-await: script (strict)
 # | async function f() { return 1; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=32 source=embedded hints=none
 source_hash=1228b50b2ab8683b1f05aa03b9b2466a2bb98d78f98f9cf73267115d7ffd2dba
 strings (1):

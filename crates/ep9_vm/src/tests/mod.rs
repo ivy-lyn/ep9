@@ -78,6 +78,7 @@ mod stub_cache;
 mod support;
 mod symbols;
 mod time;
+mod unit_loader;
 mod validity;
 mod weakref;
 mod with_stmt;

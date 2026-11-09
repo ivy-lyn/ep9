@@ -525,9 +525,9 @@ impl<'a> Exporter<'a> {
         self.builtin_infos().get(&addr).copied()
     }
 
-    /// The FunctionInfo address of each table builtin whose function object exists in the
-    /// current realm (`builtins::existing_function`; the install makes every one), with its
-    /// id. Made at the first lookup of an export.
+    /// The FunctionInfo address and id of each table builtin whose function exists in the
+    /// current realm (`builtins::existing_function`) at the first lookup of an export: all of
+    /// an eager group; of a lazy group only after its install (`builtins::install_group`).
     fn builtin_infos(&mut self) -> &HashMap<usize, FunctionRef> {
         if self.targets.is_none() {
             let mut t = HashMap::new();

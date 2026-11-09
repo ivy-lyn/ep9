@@ -6,8 +6,8 @@
 //! steps beside it in the same build. [`INVENTORY`] lists every one at B0 (the grep
 //! `fast path` over `ep9_vm` and `ep9_builtins`, the RX0b list of `regexp/symbols.rs` and the
 //! JSON string slice of `json/parse.rs`), the fast paths that the same "is this still the
-//! intrinsic?" test guards (`builtins::existing_function`, `Cx::is_builtin`), and the
-//! M7-P0 CALLHOST paths. Each row says how its spec steps run:
+//! intrinsic?" test guards (`builtins::existing_function`, `Cx::is_builtin`), the
+//! M7-P0 CALLHOST paths and the M7-P3 CONSTRUCT row. Each row says how its spec steps run:
 //!
 //! ```text
 //! Off::Switch  Cx::set_human_fast_paths(false) turns it off (ep9_vm call::human_fast_paths):
@@ -19,11 +19,15 @@
 //!
 //! A run gives the printed lines and the uncaught exception ("Name: message"). The cases of
 //! the Switch rows also run under GC stress (a collection at each allocation), on and off.
+//! Route P0-FASTHITS: a run also gives the hit count of each Switch fast path (ep9_vm feature
+//! `fastdiff-hits`, `internals::take_fastdiff_hits`). Over its cases, a Switch row must count at
+//! least 1 hit with the fast paths on and 0 with them off: 0 mismatches from cases that never
+//! took the fast path is no evidence.
 //!
 //! The JSON report (schema `ep9-fastdiff/v1`, the form that `cargo xtask m2-exit` item 5
 //! reads): the ep9 commit and whether its tree was dirty (`commit`, `dirty`; `null` when git
-//! cannot say), `fast_paths[]` with each fast path's `name`, `cases` and `mismatches`, and the
-//! totals. It goes to `$EP9_FASTDIFF_JSON` if set, else to
+//! cannot say), `fast_paths[]` with each fast path's `name`, `cases` and `mismatches` (and for
+//! a Switch row `hits_on` and `hits_off`), and the totals. It goes to `$EP9_FASTDIFF_JSON` if set, else to
 //! `$CARGO_TARGET_TMPDIR/fastdiff.json`. `EP9_FASTDIFF_DUMP=<dir>` also writes each case
 //! form as a `.js` file (with `print`), so node can run it.
 //!
@@ -79,34 +83,38 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "forward-apply",
-        site: "crates/ep9_vm/src/interp/slow/call.rs forward (apply)",
+        site: "crates/ep9_vm/src/interp/slow/call.rs forward (apply); crates/ep9_vm/src/call.rs \
+               forward_frame (the T0 form in interp/ops.rs call_fast; not on x86-64 without \
+               spike-native, M7-P4 LEVER-3)",
         off: Off::Switch,
         what: "f.apply(thisArg, list) of a bytecode f with an unmodified arguments object, a \
                packed Array, undefined or null: the frame pushed from the source",
     },
     FastPath {
         id: "forward-call",
-        site: "crates/ep9_vm/src/interp/slow/call.rs forward (call)",
+        site: "crates/ep9_vm/src/interp/slow/call.rs forward (call); crates/ep9_vm/src/call.rs \
+               forward_frame (the T0 form in interp/ops.rs call_fast; not on x86-64 without \
+               spike-native, M7-P4 LEVER-3)",
         off: Off::Switch,
         what: "f.call(thisArg, ...args) of a bytecode f: the frame pushed from the registers",
     },
     // ---- B0, the switch ----
     FastPath {
         id: "args-create",
-        site: "crates/ep9_vm/src/arguments.rs:62 (create_fast, :212)",
+        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :247)",
         off: Off::Switch,
         what: "a new arguments object takes the realm's cached shape (V10-D11)",
     },
     FastPath {
         id: "clfal-length",
-        site: "crates/ep9_vm/src/arguments.rs:463 (list_length)",
+        site: "crates/ep9_vm/src/arguments.rs:506 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
                place",
     },
     FastPath {
         id: "clfal-elements",
-        site: "crates/ep9_vm/src/arguments.rs:479 (list_element; abi/mod.rs create_list_from_array_like)",
+        site: "crates/ep9_vm/src/arguments.rs:526 (list_element; abi/mod.rs create_list_from_array_like)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads a present Array or arguments element in place \
                (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
@@ -118,6 +126,14 @@ const INVENTORY: &[FastPath] = &[
         off: Off::Guard,
         what: "the T0 JS-to-JS call: the frame pushed in the handler",
     },
+    // ---- M7-P3 CONSTRUCT, a guard form ----
+    FastPath {
+        id: "construct-site",
+        site: "crates/ep9_vm/src/construct_ic.rs fast (the Construct handler, interp/ops.rs)",
+        off: Off::Guard,
+        what: "`new F(...)` of a plain bytecode constructor at a monomorphic site: `this` from \
+               the site's initial shape, the stub and callee frames written in the handler",
+    },
     FastPath {
         id: "t0-operators",
         site: "crates/ep9_vm/src/profile.rs:513-666 (the T0 operator fast bodies); interp/slow/ops_misc.rs:130, :137",
@@ -127,9 +143,16 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "ic-named",
-        site: "crates/ep9_vm/src/ic.rs:1939 (IC hits)",
+        site: "crates/ep9_vm/src/ic.rs:1964 (IC hits)",
         off: Off::Guard,
         what: "a named load or store answered by the inline cache",
+    },
+    FastPath {
+        id: "ic-global",
+        site: "crates/ep9_vm/src/ic.rs:693-770 (the global IC hits, M7-P2 GLOBALS)",
+        off: Off::Guard,
+        what: "a global load or store (LdaGlobal, LdaGlobalInsideTypeof, StaGlobal) answered by \
+               the inline cache",
     },
     FastPath {
         id: "keyed-access",
@@ -158,7 +181,7 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "array-tostring",
-        site: "crates/ep9_vm/src/natives.rs:1404",
+        site: "crates/ep9_vm/src/natives.rs:1546",
         off: Off::Guard,
         what: "Array.prototype.toString with the builtin join: join without a call",
     },
@@ -423,6 +446,124 @@ const CASES: &[Case] = &[
              var o = { f: f }; print(Reflect.apply(f, o, [1]), Reflect.apply(f, o, [1, 2, 3]), Reflect.apply(f, undefined, []), f.length);",
         ),
     },
+    // ---- construct-site: the spec form first constructs other functions at each site, 20
+    // times (after the threshold calls the caller has its vector), so the site is megamorphic
+    // and every construct takes the cold path ----
+    Case {
+        path: "construct-site",
+        name: "a plain constructor",
+        src: "function P(x, y) { this.x = x; this.y = y; }\n\
+              P.prototype.sum = function () { return this.x + this.y; };\n\
+              function mk(C, a, b) { return new C(a, b); }\n\
+              var s = 0, o; for (var i = 0; i < 30; i++) { o = mk(P, i, 2); s += o.sum(); }\n\
+              print(s, Object.keys(o).join(), Object.getPrototypeOf(o) === P.prototype, o instanceof P, o.constructor === P, JSON.stringify(o));",
+        spec: Some(
+            "function P(x, y) { this.x = x; this.y = y; }\n\
+             P.prototype.sum = function () { return this.x + this.y; };\n\
+             function mk(C, a, b) { return new C(a, b); } for (var k = 0; k < 20; k++) mk(function D() {}, 0, 0);\n\
+             var s = 0, o; for (var i = 0; i < 30; i++) { o = mk(P, i, 2); s += o.sum(); }\n\
+             print(s, Object.keys(o).join(), Object.getPrototypeOf(o) === P.prototype, o instanceof P, o.constructor === P, JSON.stringify(o));",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "missing and extra arguments, arguments and new.target",
+        src: "function A(a, b, c) { this.n = arguments.length; this.t = new.target === A; this.v = [a, b, c].join('/'); this.s = show.apply(this, arguments); }\n\
+              function mk0(C) { return new C(); } function mk1(C) { return new C(1); } function mk4(C) { return new C(1, 2, 3, 4); }\n\
+              var r; for (var i = 0; i < 20; i++) { r = [mk0(A), mk1(A), mk4(A)]; }\n\
+              print(JSON.stringify(r));",
+        spec: Some(
+            "function A(a, b, c) { this.n = arguments.length; this.t = new.target === A; this.v = [a, b, c].join('/'); this.s = show.apply(this, arguments); }\n\
+             function mk0(C) { return new C(); } function mk1(C) { return new C(1); } function mk4(C) { return new C(1, 2, 3, 4); }\n\
+             for (var k = 0; k < 20; k++) { mk0(function D() {}); mk1(function D() {}); mk4(function D() {}); }\n\
+             var r; for (var i = 0; i < 20; i++) { r = [mk0(A), mk1(A), mk4(A)]; }\n\
+             print(JSON.stringify(r));",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "a new prototype, a prototype that is not an object, a returned object",
+        src: "function P() { this.k = 1; }\n\
+              function R(o) { this.k = 2; return o; }\n\
+              function mk(C, a) { return new C(a); } function mkr(C, a) { return new C(a); }\n\
+              var out = '', rs = [];\n\
+              for (var i = 0; i < 30; i++) {\n\
+                if (i === 10) P.prototype = { tag: 'b' };\n\
+                if (i === 20) P.prototype = 5;\n\
+                var p = mk(P); out += Object.getPrototypeOf(p) === Object.prototype ? 'O' : (p.tag || 'a');\n\
+                var x = mkr(R, i % 3 === 0 ? { z: i } : (i % 3 === 1 ? i : null)); rs.push(x.z === undefined ? x.k : x.z);\n\
+              }\n\
+              print(out, rs.join());",
+        spec: Some(
+            "function P() { this.k = 1; }\n\
+             function R(o) { this.k = 2; return o; }\n\
+             function mk(C, a) { return new C(a); } function mkr(C, a) { return new C(a); }\n\
+             for (var k = 0; k < 20; k++) { mk(function D() {}); mkr(function D() {}); }\n\
+             var out = '', rs = [];\n\
+             for (var i = 0; i < 30; i++) {\n\
+               if (i === 10) P.prototype = { tag: 'b' };\n\
+               if (i === 20) P.prototype = 5;\n\
+               var p = mk(P); out += Object.getPrototypeOf(p) === Object.prototype ? 'O' : (p.tag || 'a');\n\
+               var x = mkr(R, i % 3 === 0 ? { z: i } : (i % 3 === 1 ? i : null)); rs.push(x.z === undefined ? x.k : x.z);\n\
+             }\n\
+             print(out, rs.join());",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "class constructors, field initializers and a derived class",
+        src: "class B { constructor(x) { this.x = x; } get dbl() { return this.x * 2; } }\n\
+              class F { a = 1; b = this.a + 1; constructor(c) { this.c = c; } }\n\
+              class E extends B { constructor(x) { super(x); this.e = new.target === E; } }\n\
+              function mkB(C, a) { return new C(a); } function mkF(C, a) { return new C(a); } function mkE(C, a) { return new C(a); }\n\
+              var s = 0, f, e; for (var i = 0; i < 20; i++) { s += mkB(B, i).dbl; f = mkF(F, i); e = mkE(E, i); }\n\
+              print(s, JSON.stringify(f), JSON.stringify(e), e instanceof B, Object.keys(f).join());",
+        spec: Some(
+            "class B { constructor(x) { this.x = x; } get dbl() { return this.x * 2; } }\n\
+             class F { a = 1; b = this.a + 1; constructor(c) { this.c = c; } }\n\
+             class E extends B { constructor(x) { super(x); this.e = new.target === E; } }\n\
+             function mkB(C, a) { return new C(a); } function mkF(C, a) { return new C(a); } function mkE(C, a) { return new C(a); }\n\
+             for (var k = 0; k < 20; k++) { mkB(class D {}); mkF(class D {}); mkE(class D {}); }\n\
+             var s = 0, f, e; for (var i = 0; i < 20; i++) { s += mkB(B, i).dbl; f = mkF(F, i); e = mkE(E, i); }\n\
+             print(s, JSON.stringify(f), JSON.stringify(e), e instanceof B, Object.keys(f).join());",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "a throw in the constructor and a stack overflow of constructs",
+        src: "function T(n) { if (n === 15) throw new RangeError('at ' + n); this.n = n; }\n\
+              function mk(C, a) { return new C(a); }\n\
+              var r = []; for (var i = 0; i < 20; i++) { try { r.push(mk(T, i).n); } catch (e) { r.push(e.name + ':' + e.message); } }\n\
+              function D(n) { this.d = n > 0 ? mkd(D, n - 1) : null; }\n\
+              function mkd(C, a) { return new C(a); }\n\
+              var depth = 'none'; try { mkd(D, 1e6); } catch (e) { depth = e.name; }\n\
+              print(r.join(), depth, mkd(D, 3).d.d.d.d);",
+        spec: Some(
+            "function T(n) { if (n === 15) throw new RangeError('at ' + n); this.n = n; }\n\
+             function mk(C, a) { return new C(a); } for (var k = 0; k < 20; k++) mk(function X() {});\n\
+             var r = []; for (var i = 0; i < 20; i++) { try { r.push(mk(T, i).n); } catch (e) { r.push(e.name + ':' + e.message); } }\n\
+             function D(n) { this.d = n > 0 ? mkd(D, n - 1) : null; }\n\
+             function mkd(C, a) { return new C(a); } for (var k = 0; k < 20; k++) mkd(function X() {});\n\
+             var depth = 'none'; try { mkd(D, 1e6); } catch (e) { depth = e.name; }\n\
+             print(r.join(), depth, mkd(D, 3).d.d.d.d);",
+        ),
+    },
+    Case {
+        path: "construct-site",
+        name: "a long list of constructed cells across collections",
+        src: "function N(v, next) { this.v = v; this.next = next; }\n\
+              function mk(C, a, b) { return new C(a, b); }\n\
+              var l = null; for (var i = 0; i < 50000; i++) l = mk(N, i, l);\n\
+              var s = 0, n = 0; for (var p = l; p; p = p.next) { s += p.v; n++; }\n\
+              print(n, s, l.v, Object.keys(l).join());",
+        spec: Some(
+            "function N(v, next) { this.v = v; this.next = next; }\n\
+             function mk(C, a, b) { return new C(a, b); } for (var k = 0; k < 20; k++) mk(function D() {});\n\
+             var l = null; for (var i = 0; i < 50000; i++) l = mk(N, i, l);\n\
+             var s = 0, n = 0; for (var p = l; p; p = p.next) { s += p.v; n++; }\n\
+             print(n, s, l.v, Object.keys(l).join());",
+        ),
+    },
     Case {
         path: "t0-operators",
         name: "number pairs or ToPrimitive",
@@ -469,6 +610,111 @@ const CASES: &[Case] = &[
              print(s, getx({}), getx(Object.create(null)), getx('str'), getx(5));",
         ),
     },
+    // ---- ic-global (M7-P2 GLOBALS) ----
+    // Each form runs its harness (the counters, the loops, the called functions) in a function
+    // scope, so only the binding under test is global, and the functions that read or write it
+    // run 12 or more times: past the feedback threshold (8 calls), so the src form reaches the
+    // global IC hit path, and the spec form (Reflect on globalThis, or a with-scope lookup)
+    // does not hit the global IC (fixer r2b: Claude reviewer REV-5, JIT reviewer J5).
+    Case {
+        path: "ic-global",
+        name: "a var, a function and a builtin: IC hits or Reflect on globalThis",
+        src: "var g = 1; function inc() { g = g + 1; return g; }\n\
+              (function () {\n\
+                function rd() { return g + (typeof Math).length + parseInt('7'); }\n\
+                function step() { inc(); return rd(); }\n\
+                var s = 0; for (var i = 0; i < 30; i++) s += step();\n\
+                print(s, g, typeof notThere);\n\
+              })();",
+        spec: Some(
+            "var g = 1, inc;\n\
+             (function () {\n\
+               var R = Reflect, G = globalThis;\n\
+               R.set(G, 'inc', function () { R.set(G, 'g', R.get(G, 'g') + 1); return R.get(G, 'g'); });\n\
+               function rd() { return R.get(G, 'g') + (typeof R.get(G, 'Math')).length + R.get(G, 'parseInt')('7'); }\n\
+               function step() { R.get(G, 'inc')(); return rd(); }\n\
+               var s = 0; for (var i = 0; i < 30; i++) s += step();\n\
+               print(s, R.get(G, 'g'), typeof R.get(G, 'notThere'));\n\
+             })();",
+        ),
+    },
+    Case {
+        path: "ic-global",
+        name: "the global object's shape changes between hits (polymorphic), then deletes",
+        src: "var g = 3;\n\
+              (function () {\n\
+                function f() { return typeof h1 === 'undefined' ? g : g + h1; }\n\
+                var G = globalThis, s = 0; for (var r = 0; r < 12; r++) s += f();\n\
+                G.h1 = 1; s += f() + f(); G.h2 = 2; s += f() + f();\n\
+                G.h3 = 3; s += f() + f(); g = 10; s += f();\n\
+                delete G.h1; s += f() + f(); delete G.h3; s += f() + f();\n\
+                print(s, typeof h1, typeof h2, typeof h3);\n\
+              })();",
+        spec: Some(
+            "var g = 3;\n\
+             (function () {\n\
+               var R = Reflect, G = globalThis;\n\
+               function f() { return R.has(G, 'h1') ? R.get(G, 'g') + R.get(G, 'h1') : R.get(G, 'g'); }\n\
+               var s = 0; for (var r = 0; r < 12; r++) s += f();\n\
+               G.h1 = 1; s += f() + f(); G.h2 = 2; s += f() + f();\n\
+               G.h3 = 3; s += f() + f(); R.set(G, 'g', 10); s += f();\n\
+               delete G.h1; s += f() + f(); delete G.h3; s += f() + f();\n\
+               print(s, typeof R.get(G, 'h1'), typeof R.get(G, 'h2'), typeof R.get(G, 'h3'));\n\
+             })();",
+        ),
+    },
+    Case {
+        path: "ic-global",
+        name: "let and const bindings and the TDZ: IC hits or a with-scope lookup",
+        src: "(function () {\n\
+                function early() { return T; }\n\
+                var e = 0; for (var i = 0; i < 12; i++) { try { early(); } catch (x) { if (x.name === 'ReferenceError') e++; } }\n\
+                print(e);\n\
+              })();\n\
+              let T = 4; let L = 2; const C = 5;\n\
+              (function () {\n\
+                function early() { return T; } function f() { L = L + C; return L; } function setC() { C = 1; }\n\
+                var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
+                var e = 0; for (var i = 0; i < 12; i++) { try { setC(); } catch (x) { if (x.name === 'TypeError') e++; } }\n\
+                print(s, e, L, C, typeof T);\n\
+              })();",
+        spec: Some(
+            "(function () {\n\
+               function early() { with ({}) return T; }\n\
+               var e = 0; for (var i = 0; i < 12; i++) { try { early(); } catch (x) { if (x.name === 'ReferenceError') e++; } }\n\
+               print(e);\n\
+             })();\n\
+             let T = 4; let L = 2; const C = 5;\n\
+             (function () {\n\
+               function early() { with ({}) return T; } function f() { with ({}) { L = L + C; return L; } }\n\
+               function setC() { with ({}) C = 1; }\n\
+               var s = 0; for (var i = 0; i < 20; i++) s += f() + early();\n\
+               var e = 0; for (var i = 0; i < 12; i++) { try { setC(); } catch (x) { if (x.name === 'TypeError') e++; } }\n\
+               with ({}) print(s, e, L, C, typeof T);\n\
+             })();",
+        ),
+    },
+    Case {
+        path: "ic-global",
+        name: "a lazy namespace key (Temporal): the first load installs it, later loads hit",
+        src: "(function () {\n\
+                function t() { return typeof Temporal; } function g() { return Temporal; }\n\
+                var a, b, c = 0; for (var i = 0; i < 20; i++) { a = g(); b = t(); if (a === g()) c++; }\n\
+                print(b, Object.prototype.toString.call(a), c, a === globalThis.Temporal);\n\
+                function w(v) { Temporal = v; } for (var i = 0; i < 20; i++) w(i);\n\
+                print(g(), t());\n\
+              })();",
+        spec: Some(
+            "(function () {\n\
+               var R = Reflect, G = globalThis;\n\
+               function t() { return typeof R.get(G, 'Temporal'); } function g() { return R.get(G, 'Temporal'); }\n\
+               var a, b, c = 0; for (var i = 0; i < 20; i++) { a = g(); b = t(); if (a === g()) c++; }\n\
+               print(b, Object.prototype.toString.call(a), c, a === G.Temporal);\n\
+               function w(v) { R.set(G, 'Temporal', v); } for (var i = 0; i < 20; i++) w(i);\n\
+               print(g(), t());\n\
+             })();",
+        ),
+    },
     Case {
         path: "keyed-access",
         name: "an int32 key or a string key",
@@ -477,6 +723,48 @@ const CASES: &[Case] = &[
         spec: Some(
             "var a = [1, 2, 3]; var s = 0; for (var i = 0; i < 3; i++) { a[String(i)] = a[String(i)] * 2; s += a[String(i)]; }\n\
              print(s, a.join(), a['5'], a['-1']);",
+        ),
+    },
+    // The ELEMKINDS levels (M7-P3 fixer r1): `keyed_ic::fast_set` sends a FROZEN array cold
+    // in each state of the site (no vector, monomorphic, megamorphic); a SEALED one stores.
+    Case {
+        path: "keyed-access",
+        name: "a frozen or sealed array at a store site",
+        src: "function once(a) { a[0] = 9; return a[0]; } print(once(Object.freeze([1, 2])));\n\
+              function st(a, i, v) { a[i] = v; return a[i]; } function sst(a, i, v) { 'use strict'; a[i] = v; return a[i]; }\n\
+              var p = [1, 2, 3]; for (var i = 0; i < 20; i++) { st(p, i % 3, i); sst(p, i % 3, i); }\n\
+              var f = Object.freeze([1, 2, 3]), s = Object.seal([1.5, 2.5]);\n\
+              print(st(f, 0, 9), st(s, 1, 0.25), st(p, 2, 7), sst(s, 0, 'x'));\n\
+              try { sst(f, 1, 9); } catch (e) { print(e.name); }\n\
+              print(f.join(), s.join(), p.join(), Object.isFrozen(f), Object.isSealed(s), Object.isFrozen(s));",
+        spec: Some(
+            "function once(a) { a[String(0)] = 9; return a[String(0)]; } print(once(Object.freeze([1, 2])));\n\
+             function st(a, i, v) { a[String(i)] = v; return a[String(i)]; } function sst(a, i, v) { 'use strict'; a[String(i)] = v; return a[String(i)]; }\n\
+             var p = [1, 2, 3]; for (var i = 0; i < 20; i++) { st(p, i % 3, i); sst(p, i % 3, i); }\n\
+             var f = Object.freeze([1, 2, 3]), s = Object.seal([1.5, 2.5]);\n\
+             print(st(f, 0, 9), st(s, 1, 0.25), st(p, 2, 7), sst(s, 0, 'x'));\n\
+             try { sst(f, 1, 9); } catch (e) { print(e.name); }\n\
+             print(f.join(), s.join(), p.join(), Object.isFrozen(f), Object.isSealed(s), Object.isFrozen(s));",
+        ),
+    },
+    Case {
+        path: "keyed-access",
+        name: "a frozen array at a megamorphic store site",
+        src: "function st(a, v) { a[0] = v; return a[0]; } function sst(a, v) { 'use strict'; a[0] = v; return a[0]; }\n\
+              var m = []; for (var j = 0; j < 8; j++) { var x = j % 2 ? [j + 0.5, j] : [j, j]; x['k' + j] = j; m.push(x); }\n\
+              for (var r = 0; r < 4; r++) for (var j = 0; j < 8; j++) { st(m[j], r); sst(m[j], r); }\n\
+              var g = Object.freeze([4, 5]), h = Object.freeze([4.5, 5]), q = Object.seal(['a', 'b']);\n\
+              print(st(g, 1), st(h, 2), st(q, 3), sst(q, 4), g.join(), h.join(), q.join());\n\
+              try { sst(g, 1); } catch (e) { print(e.name); } try { sst(h, 1); } catch (e) { print(e.name); }\n\
+              print(m.map(function (a) { return a[0]; }).join());",
+        spec: Some(
+            "function st(a, v) { a[String(0)] = v; return a[String(0)]; } function sst(a, v) { 'use strict'; a[String(0)] = v; return a[String(0)]; }\n\
+             var m = []; for (var j = 0; j < 8; j++) { var x = j % 2 ? [j + 0.5, j] : [j, j]; x['k' + j] = j; m.push(x); }\n\
+             for (var r = 0; r < 4; r++) for (var j = 0; j < 8; j++) { st(m[j], r); sst(m[j], r); }\n\
+             var g = Object.freeze([4, 5]), h = Object.freeze([4.5, 5]), q = Object.seal(['a', 'b']);\n\
+             print(st(g, 1), st(h, 2), st(q, 3), sst(q, 4), g.join(), h.join(), q.join());\n\
+             try { sst(g, 1); } catch (e) { print(e.name); } try { sst(h, 1); } catch (e) { print(e.name); }\n\
+             print(m.map(function (a) { return a[0]; }).join());",
         ),
     },
     Case {
@@ -588,6 +876,191 @@ const CASES: &[Case] = &[
              print(JSON.stringify(o), o.a === p.a, 2 in o.a, o.c[0] + p.c[0], Object.keys(o).join());",
         ),
     },
+    // ---- the T0 forward (M7-P4 LEVER-3: `call::forward_frame` in the T0 call fast path;
+    // each loop runs past the feedback threshold, so both the T0 form and the cold path run) ----
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: unmapped arguments in a loop",
+        src: "function u(a, b) { 'use strict'; return show.apply(this, arguments); }\n\
+              function w() { 'use strict'; return show.apply(undefined, arguments); }\n\
+              function st() { 'use strict'; return [this === undefined ? 'u' : typeof this, arguments.length].join(); }\n\
+              function s5() { 'use strict'; return st.apply(5, arguments); }\n\
+              var o = { u: u }, r = [];\n\
+              for (var i = 0; i < 300; i++) r.push(o.u(i, 2, 3), u(), w(i), s5(i, i), st.apply(undefined, [i]));\n\
+              print(r.length, r.slice(0, 5).join(' / '), r.slice(-5).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: packed Arrays in a loop",
+        src: "var a0 = [], a1 = ['x'], a3 = [1, 'two', {}], d = [1.5, 2.5], big = [], r = [];\n\
+              for (var j = 0; j < 40; j++) big.push(j);\n\
+              function st() { 'use strict'; return [typeof this, arguments.length, arguments[2]].join(); }\n\
+              for (var i = 0; i < 300; i++) {\n\
+                r.push(show.apply(null, a0), show.apply(a1, a1), show.apply(1, a3), show.apply('s', d), show.apply(null, big), st.apply(1, a3));\n\
+                if (i == 150) { a3.length = 2; a1.push('y'); d[5] = 1; big[2] = 0.5; }\n\
+                if (i == 200) { delete a1[0]; Array.prototype[0] = 'P'; }\n\
+              }\n\
+              delete Array.prototype[0];\n\
+              print(r.length, r.slice(0, 6).join(' / '), r.slice(-6).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: a mapped object and a changed list",
+        src: "function m(a, b) { return show.apply(this, arguments); }\n\
+              function u(a, b) { 'use strict'; arguments[0] = 'U'; if (a === 3) arguments.length = 1; return show.apply(this, arguments); }\n\
+              function x() { 'use strict'; arguments[5] = 'far'; return show.apply(null, arguments); }\n\
+              function y() { 'use strict'; delete arguments[0]; return show.apply(null, arguments); }\n\
+              var r = [];\n\
+              for (var i = 0; i < 200; i++) r.push(m(i, 1), u(i, 2), u(3, 4), x(1), y(1, 2));\n\
+              print(r.length, r.slice(0, 5).join(' / '), r.slice(-5).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-call",
+        name: "the T0 forward: call in a loop",
+        src: "function st() { 'use strict'; return [this === undefined ? 'u' : typeof this, arguments.length, Array.prototype.join.call(arguments)].join(':'); }\n\
+              function two(a, b) { return a + b; }\n\
+              var o = { m: show }, r = [];\n\
+              for (var i = 0; i < 300; i++) r.push(show.call(), show.call(o), show.call(null, i), show.call(o, 1, 2),\n\
+                show.call(o, 1, 2, 3, 4, 5), st.call(i, 'a'), st.call(undefined), two.call(null, i), two.call(null, i, 1, 2));\n\
+              print(r.length, r.slice(0, 9).join(' / '), r.slice(-9).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: a stack overflow of apply and call",
+        src: "function deep(n) { return deep.apply(null, [n + 1]); }\n\
+              function deepc(n) { return deepc.call(null, n + 1); }\n\
+              function deepa() { 'use strict'; return deepa.apply(null, arguments); }\n\
+              try { deep(0); } catch (e) { print(e.name, e.message); }\n\
+              try { deepc(0); } catch (e) { print(e.name, e.message); }\n\
+              try { deepa(1, 2); } catch (e) { print(e.name, e.message); }\n\
+              print(show.apply(null, [1, 2]), show.call(null, 3));",
+        spec: None,
+    },
+    // M7-P4 LEVER-2 (TSPASS2): the IC hit of a prefixed site. `f` loads 300 other names
+    // first, so the name constant of `o.x` needs a `Wide` operand, and its loop body is longer
+    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): the `Wide` fast
+    // body runs them (`interp/ops.rs` `prefix_runs_fast`). Mono, falsy, a string ToBoolean
+    // (cold), a getter (cold), 8 shapes (megamorphic), a prototype load and its change.
+    Case {
+        path: "ic-named",
+        name: "a prefixed (Wide) IC hit or Reflect.get",
+        src: "function f(o, n) {\n\
+              o.a0; o.a1; o.a2; o.a3; o.a4; o.a5; o.a6; o.a7; o.a8; o.a9;\n\
+              o.a10; o.a11; o.a12; o.a13; o.a14; o.a15; o.a16; o.a17; o.a18; o.a19;\n\
+              o.a20; o.a21; o.a22; o.a23; o.a24; o.a25; o.a26; o.a27; o.a28; o.a29;\n\
+              o.a30; o.a31; o.a32; o.a33; o.a34; o.a35; o.a36; o.a37; o.a38; o.a39;\n\
+              o.a40; o.a41; o.a42; o.a43; o.a44; o.a45; o.a46; o.a47; o.a48; o.a49;\n\
+              o.a50; o.a51; o.a52; o.a53; o.a54; o.a55; o.a56; o.a57; o.a58; o.a59;\n\
+              o.a60; o.a61; o.a62; o.a63; o.a64; o.a65; o.a66; o.a67; o.a68; o.a69;\n\
+              o.a70; o.a71; o.a72; o.a73; o.a74; o.a75; o.a76; o.a77; o.a78; o.a79;\n\
+              o.a80; o.a81; o.a82; o.a83; o.a84; o.a85; o.a86; o.a87; o.a88; o.a89;\n\
+              o.a90; o.a91; o.a92; o.a93; o.a94; o.a95; o.a96; o.a97; o.a98; o.a99;\n\
+              o.a100; o.a101; o.a102; o.a103; o.a104; o.a105; o.a106; o.a107; o.a108; o.a109;\n\
+              o.a110; o.a111; o.a112; o.a113; o.a114; o.a115; o.a116; o.a117; o.a118; o.a119;\n\
+              o.a120; o.a121; o.a122; o.a123; o.a124; o.a125; o.a126; o.a127; o.a128; o.a129;\n\
+              o.a130; o.a131; o.a132; o.a133; o.a134; o.a135; o.a136; o.a137; o.a138; o.a139;\n\
+              o.a140; o.a141; o.a142; o.a143; o.a144; o.a145; o.a146; o.a147; o.a148; o.a149;\n\
+              o.a150; o.a151; o.a152; o.a153; o.a154; o.a155; o.a156; o.a157; o.a158; o.a159;\n\
+              o.a160; o.a161; o.a162; o.a163; o.a164; o.a165; o.a166; o.a167; o.a168; o.a169;\n\
+              o.a170; o.a171; o.a172; o.a173; o.a174; o.a175; o.a176; o.a177; o.a178; o.a179;\n\
+              o.a180; o.a181; o.a182; o.a183; o.a184; o.a185; o.a186; o.a187; o.a188; o.a189;\n\
+              o.a190; o.a191; o.a192; o.a193; o.a194; o.a195; o.a196; o.a197; o.a198; o.a199;\n\
+              o.a200; o.a201; o.a202; o.a203; o.a204; o.a205; o.a206; o.a207; o.a208; o.a209;\n\
+              o.a210; o.a211; o.a212; o.a213; o.a214; o.a215; o.a216; o.a217; o.a218; o.a219;\n\
+              o.a220; o.a221; o.a222; o.a223; o.a224; o.a225; o.a226; o.a227; o.a228; o.a229;\n\
+              o.a230; o.a231; o.a232; o.a233; o.a234; o.a235; o.a236; o.a237; o.a238; o.a239;\n\
+              o.a240; o.a241; o.a242; o.a243; o.a244; o.a245; o.a246; o.a247; o.a248; o.a249;\n\
+              o.a250; o.a251; o.a252; o.a253; o.a254; o.a255; o.a256; o.a257; o.a258; o.a259;\n\
+              o.a260; o.a261; o.a262; o.a263; o.a264; o.a265; o.a266; o.a267; o.a268; o.a269;\n\
+              o.a270; o.a271; o.a272; o.a273; o.a274; o.a275; o.a276; o.a277; o.a278; o.a279;\n\
+              o.a280; o.a281; o.a282; o.a283; o.a284; o.a285; o.a286; o.a287; o.a288; o.a289;\n\
+              o.a290; o.a291; o.a292; o.a293; o.a294; o.a295; o.a296; o.a297; o.a298; o.a299;\n\
+              var s = 0;\n\
+              for (var i = 0; i < n; i++) {\n\
+              var t = o.x;\n\
+              if (t) {\n\
+              s += t;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+              }\n\
+              }\n\
+              return s;\n\
+              }\n\
+              var r = [f({ x: 2 }, 50), f({ x: 0 }, 5), f({ x: 'ab' }, 3)];\n\
+              var g = { get x() { return 7; } }; r.push(f(g, 4));\n\
+              for (var j = 0; j < 8; j++) { var o = {}; o['p' + j] = j; o.x = j + 1; r.push(f(o, 3)); }\n\
+              var P = { x: 100 }; var c = Object.create(P); r.push(f(c, 2)); P.x = 5; r.push(f(c, 2));\n\
+              print(r.join(' '));",
+        spec: Some(
+            "function f(o, n) {\n\
+             o.a0; o.a1; o.a2; o.a3; o.a4; o.a5; o.a6; o.a7; o.a8; o.a9;\n\
+             o.a10; o.a11; o.a12; o.a13; o.a14; o.a15; o.a16; o.a17; o.a18; o.a19;\n\
+             o.a20; o.a21; o.a22; o.a23; o.a24; o.a25; o.a26; o.a27; o.a28; o.a29;\n\
+             o.a30; o.a31; o.a32; o.a33; o.a34; o.a35; o.a36; o.a37; o.a38; o.a39;\n\
+             o.a40; o.a41; o.a42; o.a43; o.a44; o.a45; o.a46; o.a47; o.a48; o.a49;\n\
+             o.a50; o.a51; o.a52; o.a53; o.a54; o.a55; o.a56; o.a57; o.a58; o.a59;\n\
+             o.a60; o.a61; o.a62; o.a63; o.a64; o.a65; o.a66; o.a67; o.a68; o.a69;\n\
+             o.a70; o.a71; o.a72; o.a73; o.a74; o.a75; o.a76; o.a77; o.a78; o.a79;\n\
+             o.a80; o.a81; o.a82; o.a83; o.a84; o.a85; o.a86; o.a87; o.a88; o.a89;\n\
+             o.a90; o.a91; o.a92; o.a93; o.a94; o.a95; o.a96; o.a97; o.a98; o.a99;\n\
+             o.a100; o.a101; o.a102; o.a103; o.a104; o.a105; o.a106; o.a107; o.a108; o.a109;\n\
+             o.a110; o.a111; o.a112; o.a113; o.a114; o.a115; o.a116; o.a117; o.a118; o.a119;\n\
+             o.a120; o.a121; o.a122; o.a123; o.a124; o.a125; o.a126; o.a127; o.a128; o.a129;\n\
+             o.a130; o.a131; o.a132; o.a133; o.a134; o.a135; o.a136; o.a137; o.a138; o.a139;\n\
+             o.a140; o.a141; o.a142; o.a143; o.a144; o.a145; o.a146; o.a147; o.a148; o.a149;\n\
+             o.a150; o.a151; o.a152; o.a153; o.a154; o.a155; o.a156; o.a157; o.a158; o.a159;\n\
+             o.a160; o.a161; o.a162; o.a163; o.a164; o.a165; o.a166; o.a167; o.a168; o.a169;\n\
+             o.a170; o.a171; o.a172; o.a173; o.a174; o.a175; o.a176; o.a177; o.a178; o.a179;\n\
+             o.a180; o.a181; o.a182; o.a183; o.a184; o.a185; o.a186; o.a187; o.a188; o.a189;\n\
+             o.a190; o.a191; o.a192; o.a193; o.a194; o.a195; o.a196; o.a197; o.a198; o.a199;\n\
+             o.a200; o.a201; o.a202; o.a203; o.a204; o.a205; o.a206; o.a207; o.a208; o.a209;\n\
+             o.a210; o.a211; o.a212; o.a213; o.a214; o.a215; o.a216; o.a217; o.a218; o.a219;\n\
+             o.a220; o.a221; o.a222; o.a223; o.a224; o.a225; o.a226; o.a227; o.a228; o.a229;\n\
+             o.a230; o.a231; o.a232; o.a233; o.a234; o.a235; o.a236; o.a237; o.a238; o.a239;\n\
+             o.a240; o.a241; o.a242; o.a243; o.a244; o.a245; o.a246; o.a247; o.a248; o.a249;\n\
+             o.a250; o.a251; o.a252; o.a253; o.a254; o.a255; o.a256; o.a257; o.a258; o.a259;\n\
+             o.a260; o.a261; o.a262; o.a263; o.a264; o.a265; o.a266; o.a267; o.a268; o.a269;\n\
+             o.a270; o.a271; o.a272; o.a273; o.a274; o.a275; o.a276; o.a277; o.a278; o.a279;\n\
+             o.a280; o.a281; o.a282; o.a283; o.a284; o.a285; o.a286; o.a287; o.a288; o.a289;\n\
+             o.a290; o.a291; o.a292; o.a293; o.a294; o.a295; o.a296; o.a297; o.a298; o.a299;\n\
+             var s = 0;\n\
+             for (var i = 0; i < n; i++) {\n\
+             var t = Reflect.get(o, 'x');\n\
+             if (t) {\n\
+             s += t;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0; i |= 0;\n\
+             }\n\
+             }\n\
+             return s;\n\
+             }\n\
+             var r = [f({ x: 2 }, 50), f({ x: 0 }, 5), f({ x: 'ab' }, 3)];\n\
+             var g = { get x() { return 7; } }; r.push(f(g, 4));\n\
+             for (var j = 0; j < 8; j++) { var o = {}; o['p' + j] = j; o.x = j + 1; r.push(f(o, 3)); }\n\
+             var P = { x: 100 }; var c = Object.create(P); r.push(f(c, 2)); P.x = 5; r.push(f(c, 2));\n\
+             print(r.join(' '));",
+        ),
+    },
 ];
 
 thread_local! {
@@ -611,10 +1084,19 @@ fn print<'s>(
 /// What a run gives: the printed lines and the uncaught exception.
 type RunOut = (Vec<String>, Option<String>);
 
+/// The Switch fast path hits of one run, by row name (P0-FASTHITS).
+type Hits = Vec<(&'static str, u64)>;
+
 /// Runs the sloppy script `SHOW + src` on a fresh isolate with the human fast paths `on` or
 /// off; `stress`: a collection at each allocation, then the heap verifier. On a big stack
 /// (debug builds and the overflow cases).
 fn run(src: &'static str, on: bool, stress: bool) -> RunOut {
+    run_hits(src, on, stress).0
+}
+
+/// [`run`], and the Switch fast path hits of the run (the counters are per thread, and the run
+/// has its own thread).
+fn run_hits(src: &'static str, on: bool, stress: bool) -> (RunOut, Hits) {
     std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
@@ -637,11 +1119,13 @@ fn run(src: &'static str, on: bool, stress: bool) -> RunOut {
             .expect("an isolate");
             iso.register_host_function("print", 1, print);
             OUT.with(|o| o.borrow_mut().clear());
+            let _ = ep9_vm::internals::take_fastdiff_hits();
             let r = iso.with_cx_checkpoint(|cx| {
                 cx.set_human_fast_paths(on);
                 cx.run_script(unit, "case.js").map(|_| ())
             });
             let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+            let hits = ep9_vm::internals::take_fastdiff_hits();
             iso.collect_garbage();
             iso.verify_heap().expect("a valid heap");
             // The switch is process-wide and keyed by the isolate id: turn it on again, so
@@ -651,7 +1135,7 @@ fn run(src: &'static str, on: bool, stress: bool) -> RunOut {
                 cx.set_human_fast_paths(true);
                 Ok(())
             });
-            (out, r.err().map(|e| e.message))
+            ((out, r.err().map(|e| e.message)), hits)
         })
         .expect("a thread")
         .join()
@@ -723,15 +1207,21 @@ fn every_fast_path_has_a_case_and_every_case_a_fast_path() {
     assert_eq!(ids.len(), INVENTORY.len(), "an id twice");
 }
 
+/// The hits of the row `id` in `h` (0 if it is not a counted row).
+fn hits_of(h: &Hits, id: &str) -> u64 {
+    h.iter().find(|(n, _)| *n == id).map_or(0, |(_, n)| *n)
+}
+
 /// Runs case `c` on and off (and its spec form, and for a Switch row under GC stress with the
-/// fast paths on): the mismatches and the number of runs.
-fn check_case(c: &Case) -> (Vec<String>, usize) {
+/// fast paths on): the mismatches, the number of runs and the hits of its row (on, off).
+fn check_case(c: &Case) -> (Vec<String>, usize, (u64, u64)) {
     let started = std::time::Instant::now();
     let p = INVENTORY.iter().find(|p| p.id == c.path).expect("a row");
     let label = format!("{} / {}", c.path, c.name);
     let mut mismatches = Vec::new();
-    let on = run(c.src, true, false);
-    let off = run(c.src, false, false);
+    let (on, hits_on) = run_hits(c.src, true, false);
+    let (off, hits_off) = run_hits(c.src, false, false);
+    let hits = (hits_of(&hits_on, p.id), hits_of(&hits_off, p.id));
     let mut runs = 2;
     if on.1.is_some() {
         mismatches.push(format!("{label}: uncaught {:?}", on.1));
@@ -760,7 +1250,7 @@ fn check_case(c: &Case) -> (Vec<String>, usize) {
         }
     }
     eprintln!("{label}: {:.1} s", started.elapsed().as_secs_f64());
-    (mismatches, runs)
+    (mismatches, runs, hits)
 }
 
 #[test]
@@ -816,11 +1306,29 @@ fn every_fast_path_matches_its_spec_steps() {
     results.sort_by_key(|(i, _)| *i);
     let mut mismatches = Vec::new();
     let mut per_path = std::collections::BTreeMap::<&str, usize>::new();
+    let mut hits = std::collections::BTreeMap::<&str, (u64, u64)>::new();
     let mut runs = 0;
-    for (i, (m, n)) in results {
+    for (i, (m, n, (h_on, h_off))) in results {
         *per_path.entry(todo[i].path).or_default() += m.len();
+        let h = hits.entry(todo[i].path).or_default();
+        (h.0, h.1) = (h.0 + h_on, h.1 + h_off);
         mismatches.extend(m);
         runs += n;
+    }
+    // P0-FASTHITS: each Switch row whose cases ran took its fast path, and never with the fast
+    // paths off.
+    for p in INVENTORY.iter().filter(|p| p.off == Off::Switch) {
+        let Some(&(h_on, h_off)) = hits.get(p.id) else {
+            continue;
+        };
+        if h_on == 0 {
+            mismatches.push(format!("{}: no case took the fast path (0 hits on)", p.id));
+            *per_path.entry(p.id).or_default() += 1;
+        }
+        if h_off != 0 {
+            mismatches.push(format!("{}: {h_off} hits with the fast paths off", p.id));
+            *per_path.entry(p.id).or_default() += 1;
+        }
     }
     let (commit, dirty) = git_state();
     let mut j = format!(
@@ -834,9 +1342,15 @@ fn every_fast_path_matches_its_spec_steps() {
         } else {
             "guard"
         };
+        let h = if p.off == Off::Switch {
+            let (h_on, h_off) = hits.get(p.id).copied().unwrap_or((0, 0));
+            format!("\"hits_on\":{h_on},\"hits_off\":{h_off},")
+        } else {
+            String::new()
+        };
         let _ = write!(
             j,
-            "{}{{\"name\":{},\"site\":{},\"off\":\"{off}\",\"cases\":{n},\"mismatches\":{},\"what\":{}}}",
+            "{}{{\"name\":{},\"site\":{},\"off\":\"{off}\",\"cases\":{n},\"mismatches\":{},{h}\"what\":{}}}",
             if i > 0 { "," } else { "" },
             json_str(p.id),
             json_str(p.site),

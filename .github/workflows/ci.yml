@@ -265,6 +265,12 @@ jobs:
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # 10-quality section 5 "Zero text relocations" (H34; from A2, plan v12 section 5.1): every
+      # unit that the ep9_masm tests emit has 0 text relocations, and the unit finalizer rejects
+      # HeapConst. ep9_masm without `jit` (the jitless form: only finalize_unit).
+      - name: zero text relocations (ep9_masm)
+        if: ${{ !cancelled() }}
+        run: cargo test -p ep9_masm --no-default-features --features aot --locked
 
   # H27: the default (jit), jitless and aot feature sets, one package at a time (a --workspace
   # build unifies features and would hide a jitless leak): build, clippy -D warnings and test,
@@ -343,6 +349,13 @@ jobs:
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
       - name: test262 parse
         run: cargo run --release --locked -p ep9_test262 -- parse --json test262-parse.json
+      # RX1 parse equality (plan v12 section 7.2, M7-P4 RX1-0): ep9_rx1 parses every regexp of
+      # the test262 RegExp sources as RX0 (regress) does, with the named list of known
+      # differences and the count floors of the test. It reads the checkout above, so it runs
+      # in this job (an ignored test; it panics without the checkout).
+      - name: RX1 parse equality (ep9_rx1)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        run: cargo test --locked -p ep9_rx1 --test parse_equality -- --ignored
       # The engine end to end (tools/test262/README.md "exec"): one worker process per CPU, 20 s
       # soft timeout per run (on an M-series Mac, each run of the 8 sm/Date dst-offset-caching
       # files, among the slowest, takes 0.6-1.5 s, by host load). Exit 1 on a change
@@ -1053,7 +1066,7 @@ jobs:
     env:
       CARGO_FUZZ_VERSION: 0.12.0
       # <target>=<seconds of mutation>, one per target.
-      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60
+      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60 regexp=60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The +toolchain of fuzz/rust-toolchain.toml (the Miri pin); the root stable pin builds

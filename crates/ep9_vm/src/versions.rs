@@ -59,7 +59,14 @@
 /// 7 (spec-temporal B2, design SPEC-T-D6): the kind BIGINT (9) and its cell (+8 u32: digit
 /// count in bits 0-30, sign in bit 31; +12 u32 hash; +16 u64 digits, least significant first;
 /// word0 ShapeId 0 and flags 0; `bigint.rs`). No other layout changes.
-pub const OBJECT_LAYOUT_VERSION: u32 = 7;
+///
+/// 8 (M7-P3 ELEMKINDS, the integrity levels of H18 "extra element kinds"): the shape `flags`
+/// word (an int32 Value at +56, `layout::SHAPE_FLAGS`) bit 4 SEALED and bit 5 FROZEN
+/// (`layout::SHAPE_FLAG_SEALED`, `layout::SHAPE_FLAG_FROZEN`; `shape::level`). A level sits on
+/// the dictionary shape of a non-extensible Array with a dense elements kind, so a dense kind
+/// alone no longer means that the elements are writable: native code that stores an element
+/// tests the level bits too. No cell layout changes.
+pub const OBJECT_LAYOUT_VERSION: u32 = 8;
 /// Inline-cache and feedback data layout (H16). 2 (M4-P0): the feedback slot table of
 /// `profile.rs` (one writer module per slot kind) and the IC_HANDLER layout of `ic.rs` (+8
 /// handler kind, +16 validity cell or int32, +24 weak ref, +32 int32; new handler kinds
