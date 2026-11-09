@@ -65,14 +65,28 @@ use crate::symbol::{self, WellKnownSymbol};
 /// Every later object of that realm and kind takes that shape at allocation and gets its 3
 /// slots written in place ([`create_fast`]): no shape search, no transition lookup, no key
 /// hashing.
+///
+/// Each kind has its own copy (M7-P4 LEVER-3: [`create_kind`]), so `mapped` is a constant
+/// in each, and the slow path ([`create_and_remember`]) is out of line: the fast path keeps
+/// fewer registers.
+#[inline(always)]
+pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> u64 {
+    if mapped {
+        create_kind::<true>(cx, fp, pc)
+    } else {
+        create_kind::<false>(cx, fp, pc)
+    }
+}
+
+/// [`create`] for `MAPPED`. GC point.
 #[cold]
 #[inline(never)]
-pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> u64 {
+fn create_kind<const MAPPED: bool>(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
     cx.rt().enter(fp, pc);
     let f = FrameRef(fp);
     // SAFETY: header slots of a live frame.
     let context = unsafe { *fp.offset(slot::CONTEXT) };
-    let map = if mapped {
+    let map = if MAPPED {
         parameter_map(f, context, f.argc())
     } else {
         &[]
@@ -80,18 +94,27 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
     let rt = cx.rt();
     let realm = rt.root(Root::Realm);
     // A human fast path (FASTDIFF): off, every object is made the spec way.
-    let cached = crate::call::human_fast_paths(rt).then(|| cached_shape(rt, realm, mapped));
-    match cached.flatten() {
-        Some(s) => {
-            crate::call::fast_hit!(3);
-            create_fast(rt, f, s, mapped, map)
-        }
-        None => {
-            let o = create_slow(rt, f, mapped, map);
-            remember_shape(rt, realm, mapped, o);
-            o
-        }
+    if crate::call::human_fast_paths(rt)
+        && let Some(s) = cached_shape(rt, realm, MAPPED)
+    {
+        crate::call::fast_hit!(3);
+        return create_fast(rt, f, s, MAPPED, map);
     }
+    create_and_remember(rt, f, realm, MAPPED, map)
+}
+
+/// The slow path of [`create_kind`]: [`create_slow`], then [`remember_shape`]. GC point.
+#[inline(never)]
+fn create_and_remember(
+    rt: &Runtime,
+    f: FrameRef,
+    realm: u64,
+    mapped: bool,
+    map: &[Option<u32>],
+) -> u64 {
+    let o = create_slow(rt, f, mapped, map);
+    remember_shape(rt, realm, mapped, o);
+    o
 }
 
 /// The REALM record field that caches the shape of the realm's mapped or unmapped arguments
@@ -272,19 +295,28 @@ thread_local! {
 /// the parameter map `map`): the n values, n attribute words {w, e, c}, then the context slot
 /// of each mapped index (HOLE for one a later parameter of the same name shadows). GC point
 /// (the list).
+///
+/// The list is the one `object::new_list` makes (an ELEMENTS cell, its length in
+/// `elems::CAPACITY`), but each word is written once (M7-P4 LEVER-3): no fill of all
+/// 2n + mc words before the values go in.
+#[inline(always)]
 fn new_elements(rt: &Runtime, f: FrameRef, map: &[Option<u32>]) -> u64 {
     let n = f.argc() as usize;
-    let e = object::new_list(rt, 2 * n + map.len(), int32_bits(attr::DEFAULT));
-    // No GC point from here on: the stores are init stores into the new list.
-    let c = object::cell(e);
+    let len = 2 * n + map.len();
+    let c = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * len);
+    // No GC point from here on: the stores are init stores into the new list, and the
+    // argument values are read from the frame after the allocation.
+    init(c, elems::CAPACITY, int32_bits(len as i32));
+    let attrs = int32_bits(attr::DEFAULT);
     for i in 0..n {
         init(c, elems::DATA + 8 * i, f.arg(i as u32));
+        init(c, elems::DATA + 8 * (n + i), attrs);
     }
     for (j, s) in map.iter().enumerate() {
         let v = s.map_or(HOLE, |s| int32_bits(s as i32));
         init(c, elems::DATA + 8 * (2 * n + j), v);
     }
-    e
+    c.to_value().to_bits()
 }
 
 /// %Array.prototype.values% for the @@iterator property (§10.4.4.6 step 7, §10.4.4.7 step
