@@ -1105,6 +1105,8 @@ macro_rules! expand_scaled {
             fp: *mut u64,
             acc: u64,
         ) -> u64 {
+            #[cfg(test)]
+            $crate::interp::dsl::count_scaled(0);
             // SAFETY: a verified prefix is followed by an opcode byte.
             let op = unsafe { *pc.add(1) };
             match op {
@@ -1162,19 +1164,22 @@ macro_rules! expand_scaled {
         /// The cold blocks of `step::<S>`, out of line, so that the rare cold paths (runtime
         /// calls, lookups, IC misses) do not shape the register use of the fast arms. Same
         /// contract as `step::<S>`; called only after the opcode's fast body returned
-        /// `Flow::Cold`.
+        /// `Flow::Cold`: here, or in the `Wide`/`ExtraWide` fast body for the opcodes it runs
+        /// itself (`St::scaled_cold`, M7-P4 TSPASS2).
         ///
         /// # Safety
         /// As for `step::<S>`.
         #[cold]
         #[inline(never)]
         #[allow(unused_mut, unused_variables, unused_unsafe, unreachable_code)]
-        unsafe fn step_cold<S: $crate::interp::dsl::Scale>(
+        pub(crate) unsafe fn step_cold<S: $crate::interp::dsl::Scale>(
             cx: &mut Cx,
             pc: *const u8,
             fp: *mut u64,
             acc: u64,
         ) -> u64 {
+            #[cfg(test)]
+            $crate::interp::dsl::count_scaled(1);
             // SAFETY: a verified prefix is followed by an opcode byte.
             let op = unsafe { *pc.add(1) };
             match op {
@@ -1212,6 +1217,24 @@ macro_rules! expand_scaled {
     };
 }
 pub(crate) use expand_scaled;
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M7-P4 TSPASS2): the runs of `interp::scaled::step` (index 0, a whole prefixed
+    /// instruction) and of `interp::scaled::step_cold` (index 1, only its cold body) on this
+    /// thread.
+    pub(crate) static SCALED_RUNS: core::cell::Cell<[u64; 2]> = const { core::cell::Cell::new([0; 2]) };
+}
+
+/// Counts one run of `step` (0) or `step_cold` (1) in [`SCALED_RUNS`] (tests).
+#[cfg(test)]
+pub(crate) fn count_scaled(i: usize) {
+    SCALED_RUNS.with(|c| {
+        let mut n = c.get();
+        n[i] += 1;
+        c.set(n);
+    });
+}
 
 // ---- the x86-64 register operand decode ------------------------------------------------------
 

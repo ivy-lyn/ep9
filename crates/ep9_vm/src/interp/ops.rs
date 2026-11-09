@@ -703,13 +703,15 @@ fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count,
 // ---- special -------------------------------------------------------------------------------
 
 op!(Illegal(st) { Flow::Cold } cold { not_impl(st, "the Illegal opcode") });
-op!(Wide(st) { scaled_fast::<S2>(st) } cold { st.scaled::<S2>() });
-op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { st.scaled::<S4>() });
+op!(Wide(st) { scaled_fast::<S2>(st) } cold { scaled_cold::<S2>(st) });
+op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { scaled_cold::<S4>(st) });
 
 /// The fast body of `Wide` and `ExtraWide` (M3-P4 FIXES, PERF3 task 5; perf run 2 slow path
 /// 3): `LdaSmi` and the int32 cases of `AddSmi`, `SubSmi`, `ModSmi`, `BitwiseOrSmi`,
 /// `BitwiseXorSmi` and `BitwiseAndSmi` (the prefixed forms in the hot loops of the T0
-/// kernels) run here, as their one-byte forms do. Anything else (another opcode, an
+/// kernels) run here, as their one-byte forms do. M7-P4 TSPASS2: so do the fast bodies of the
+/// opcodes of [`prefix_runs_fast`] (the prefixed forms in the large functions of the TS
+/// workload), at scale `S` ([`prefixed_fast`]). Anything else (another opcode, an
 /// accumulator that is not an int32, an overflow, a `%` that is not exact in int32) takes the
 /// cold block, which runs the whole instruction in `interp::scaled::step`; nothing is changed
 /// before that. These int32 cases record nothing (implicit, `profile::int32_pair_bits`;
@@ -727,8 +729,11 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
         // SAFETY: `len` is the length of the prefixed instruction.
         return Flow::Jump(unsafe { st.pc.add(len) });
     }
+    if !(O::AddSmi as u8..=O::BitwiseAndSmi as u8).contains(&op) {
+        return prefixed_fast::<S>(st, op);
+    }
     let a = st.acc;
-    if !is_i32(a) || !(O::AddSmi as u8..=O::BitwiseAndSmi as u8).contains(&op) {
+    if !is_i32(a) {
         return Flow::Cold;
     }
     // SAFETY: as above; AddSmi to BitwiseAndSmi all take (value: Imm, slot: Slot).
@@ -763,6 +768,93 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
             Flow::Jump(unsafe { st.pc.add(len) })
         }
         None => Flow::Cold,
+    }
+}
+
+/// True for the opcodes whose prefixed form the `Wide` and `ExtraWide` fast body runs with the
+/// opcode's own fast body ([`prefixed_fast`]; M7-P4 TSPASS2): `JumpLoop`, `Jump` to
+/// `JumpIfJSReceiver` (one jump operand that needs a prefix past 255 bytes) and
+/// `GetNamedProperty` (a name constant or a feedback slot past 255). On the TS workload
+/// (`octane-typescript`, mac a64 counts at m7-p3) these are 31.6 M of the 39.2 M prefixed
+/// instructions; before, each ran in `interp::scaled::step` through the cold block.
+///
+/// The cold block reads the same set ([`scaled_cold`]): for these opcodes the fast body has
+/// run once and returned `Flow::Cold`, so the cold block runs only the opcode's cold body
+/// (`interp::scaled::step_cold`). A second run of the fast body would count the budget unit
+/// and the loop record of `JumpLoop` twice. Every opcode of the set takes no record flow in
+/// its fast body (it records inline, `JumpLoop`, or not at all), and none writes a register
+/// or the accumulator before it returns `Flow::Cold`. `SetNamedProperty` and the calls are
+/// not in it: their hit paths call out (the write barrier, the frame push), and inline here
+/// they would give the `Wide` handler register saves on entry, also on its `LdaSmi` path.
+#[inline(always)]
+pub(crate) const fn prefix_runs_fast(op: u8) -> bool {
+    use ep9_bytecode::Opcode as O;
+    (op >= O::JumpLoop as u8 && op <= O::JumpIfJSReceiver as u8) || op == O::GetNamedProperty as u8
+}
+
+/// The prefixed (scale `S`) forms of the opcodes of [`prefix_runs_fast`] (or `Flow::Cold` for
+/// any other `op`): the operands at scale `S`, `st.next` set to the end of the prefixed
+/// instruction, then the opcode's fast body as its handler runs it. `st.pc` stays at the
+/// prefix, the base of a jump offset (as in `interp::scaled::step`).
+#[inline(always)]
+fn prefixed_fast<S: dsl::Scale>(st: &mut St<'_>, op: u8) -> Flow {
+    use ep9_bytecode::Opcode as O;
+    #[inline(always)]
+    fn flow(d: Done) -> Flow {
+        match d {
+            Done::Next => Flow::Next,
+            Done::Jump(t) => Flow::Jump(t),
+        }
+    }
+    if !prefix_runs_fast(op) {
+        return Flow::Cold;
+    }
+    if op == O::GetNamedProperty as u8 {
+        // SAFETY: verified code: GetNamedProperty's operands at scale `S` follow the opcode.
+        let (len, (object, name, s)) =
+            unsafe { dsl::decode!(S, st.pc; object: Reg, name: Const, s: Slot) };
+        // SAFETY: `len` is the length of the prefixed instruction.
+        st.next = unsafe { st.pc.add(len) };
+        return GetNamedProperty::fast(st, object, name, s);
+    }
+    if op == O::JumpLoop as u8 {
+        // SAFETY: as above, for JumpLoop's operands.
+        let (len, (target, depth, s)) =
+            unsafe { dsl::decode!(S, st.pc; target: JumpBack, depth: Imm, s: Slot) };
+        // SAFETY: as above.
+        st.next = unsafe { st.pc.add(len) };
+        return JumpLoop::fast(st, target, depth, s);
+    }
+    // SAFETY: as above; Jump to JumpIfJSReceiver all take (target: JumpFwd).
+    let (len, (t,)) = unsafe { dsl::decode!(S, st.pc; target: JumpFwd) };
+    // SAFETY: as above.
+    st.next = unsafe { st.pc.add(len) };
+    match op {
+        o if o == O::Jump as u8 => flow(Jump::fast(st, t)),
+        o if o == O::JumpIfTrue as u8 => flow(JumpIfTrue::fast(st, t)),
+        o if o == O::JumpIfFalse as u8 => flow(JumpIfFalse::fast(st, t)),
+        o if o == O::JumpIfToBooleanTrue as u8 => JumpIfToBooleanTrue::fast(st, t),
+        o if o == O::JumpIfToBooleanFalse as u8 => JumpIfToBooleanFalse::fast(st, t),
+        o if o == O::JumpIfNull as u8 => flow(JumpIfNull::fast(st, t)),
+        o if o == O::JumpIfNotNull as u8 => flow(JumpIfNotNull::fast(st, t)),
+        o if o == O::JumpIfUndefined as u8 => flow(JumpIfUndefined::fast(st, t)),
+        o if o == O::JumpIfNotUndefined as u8 => flow(JumpIfNotUndefined::fast(st, t)),
+        o if o == O::JumpIfUndefinedOrNull as u8 => flow(JumpIfUndefinedOrNull::fast(st, t)),
+        _ => flow(JumpIfJSReceiver::fast(st, t)),
+    }
+}
+
+/// The cold block of `Wide` and `ExtraWide`: for an opcode of [`prefix_runs_fast`] its cold
+/// body only (its fast body ran in [`prefixed_fast`] and returned `Flow::Cold`), for any other
+/// opcode the whole prefixed instruction (`interp::scaled::step`).
+#[inline(always)]
+fn scaled_cold<S: dsl::Scale>(st: &mut St<'_>) -> Done {
+    // SAFETY: verified code: a prefix is followed by an opcode byte.
+    let op = unsafe { *st.pc.add(1) };
+    if prefix_runs_fast(op) {
+        st.scaled_cold::<S>()
+    } else {
+        st.scaled::<S>()
     }
 }
 

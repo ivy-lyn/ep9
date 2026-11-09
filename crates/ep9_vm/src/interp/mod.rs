@@ -516,6 +516,19 @@ impl<'a> St<'a> {
         self.fp = self.cx.out_fp;
         Done::Jump(self.cx.out_pc)
     }
+
+    /// Runs the cold body of one `Wide`/`ExtraWide` instruction out of line, after its fast
+    /// body ran at scale `S` in the prefix handler and returned `Flow::Cold` (`ops.rs`
+    /// `prefix_runs_fast`; M7-P4 TSPASS2).
+    #[inline(always)]
+    pub fn scaled_cold<S: dsl::Scale>(&mut self) -> Done {
+        // SAFETY: as in `scaled`; the opcode after the prefix has a cold body (its fast body
+        // returned `Flow::Cold`).
+        let acc = unsafe { scaled::step_cold::<S>(self.cx, self.pc, self.fp, self.acc) };
+        self.acc = acc;
+        self.fp = self.cx.out_fp;
+        Done::Jump(self.cx.out_pc)
+    }
 }
 
 /// (a) The match loop.
