@@ -226,7 +226,7 @@ fn strings_digest(unit: &VerifiedUnit) -> [u8; 32] {
     let mut h = ShaHasher(Sha256::new());
     h.write(b"ep9 unit strings digest v2\0");
     unit.strings.hash(&mut h);
-    h.0.finish().into()
+    h.0.finish()
 }
 
 /// The digest of [`unit_function_digest`] for the function `f` of a unit whose
