@@ -63,3 +63,75 @@ fn error_constructors_install_the_cause() {
         ])
     );
 }
+
+/// `Error.prototype.stack` (error-stack-accessor, Stage 3), form H (M6-ORCH-296): the
+/// accessor {e: false, c: true} with "get stack" (length 0) and "set stack" (length 1), not
+/// constructors; the getter gives a string for every object with `[[ErrorData]]` (also
+/// AggregateError, SuppressedError, a subclass, a foreign new.target) and undefined for any
+/// other object (a Proxy of an error too), a TypeError for a primitive; it reads no own
+/// `stack`. The setter takes only a string, throws on %Error.prototype% and runs
+/// SetterThatIgnoresPrototypeProperties (CreateDataPropertyOrThrow, or Set, with the traps of
+/// a Proxy). Each new error still has its own non-enumerable `stack` (form H). node v26.13.0
+/// has no `Error.prototype.stack` (an own accessor on each instance instead), so these lines
+/// come from the proposal steps, not from node. On the old code the first line throws (no
+/// accessor).
+#[test]
+fn error_prototype_stack_is_an_accessor() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            function t(f) { try { return 'ok ' + f(); } catch (e) { return 'THROW ' + e.constructor.name; } }
+            var d = Object.getOwnPropertyDescriptor(Error.prototype, 'stack');
+            var get = d.get, set = d.set;
+            print(typeof get, typeof set, d.enumerable, d.configurable, get.name, get.length, set.name, set.length);
+            print(t(function () { return new get(); }), t(function () { return new set('s'); }), Object.hasOwn(get, 'prototype'));
+            var errs = [new Error('m'), new TypeError('m'), RangeError('m'), new AggregateError([], 'm'), new SuppressedError(1, 2, 'm'), new (class extends URIError {})('m'), Reflect.construct(EvalError, ['m'], Object)];
+            print(errs.map(function (e) { return typeof get.call(e); }).join());
+            var e = (function thrower() { return new TypeError('boom'); })();
+            var lines = get.call(e).split('\n');
+            print(lines.length, lines[0], lines[1].indexOf('    at test.js:') === 0);
+            print([{}, [], function () {}, /r/, new Date(0), Object.create(Error.prototype), Error.prototype, TypeError.prototype, new Proxy(new Error('p'), {})].map(function (o) { return get.call(o); }).join());
+            print([undefined, null, true, 1, '', Symbol(), 1n].map(function (v) { return t(function () { return get.call(v); }); }).join());
+            print(Error.prototype.stack, Object.hasOwn(e, 'stack'), Object.getOwnPropertyDescriptor(e, 'stack').enumerable);
+            Object.defineProperty(e, 'stack', { value: 'X', configurable: true, writable: true });
+            print(e.stack, get.call(e) !== 'X', delete e.stack, typeof e.stack, e.stack === get.call(e));
+            print([undefined, null, 1, {}, new String('s'), Symbol()].map(function (v) { return t(function () { return set.call(e, v); }); }).join());
+            print([undefined, null, 1, 'x'].map(function (v) { return t(function () { return set.call(v, 's'); }); }).join());
+            print(t(function () { return set.call(Error.prototype, 's'); }), t(function () { 'use strict'; Error.prototype.stack = 's'; }), t(function () { Error.prototype.stack = 's'; }), typeof Object.getOwnPropertyDescriptor(Error.prototype, 'stack').get);
+            var p = {}; print(set.call(p, 'v'), JSON.stringify(Object.getOwnPropertyDescriptor(p, 'stack')));
+            var f = new Error('f'); print(set.call(f, 'w'), JSON.stringify(Object.getOwnPropertyDescriptor(f, 'stack')));
+            var nw = new Error('n'); Object.defineProperty(nw, 'stack', { value: 'o', writable: false, configurable: true });
+            print(t(function () { return set.call(nw, 'u'); }), nw.stack);
+            var fr = Object.freeze({}); print(t(function () { return set.call(fr, 'u'); }), Object.hasOwn(fr, 'stack'));
+            var acc, wa = new Error('a'); Object.defineProperty(wa, 'stack', { get: function () { return 'g'; }, set: function (v) { acc = v; }, configurable: true });
+            print(set.call(wa, 'z'), acc);
+            var log = [];
+            var px = new Proxy({}, { getOwnPropertyDescriptor: function (t, k) { log.push('gopd ' + k); return Reflect.getOwnPropertyDescriptor(t, k); }, defineProperty: function (t, k, dd) { log.push('define ' + k + ' ' + dd.value + dd.writable + dd.enumerable + dd.configurable); return Reflect.defineProperty(t, k, dd); } });
+            set.call(px, 'q'); print(log.join());
+            var o2 = Object.create(Error.prototype); o2.stack = 'own'; print(JSON.stringify(Object.getOwnPropertyDescriptor(o2, 'stack')));
+            var base = new Error('b'); delete base.stack; var child = { __proto__: base }; print(child.stack);
+"#
+        ),
+        lines(&[
+            "function function false true get stack 0 set stack 1",
+            "THROW TypeError THROW TypeError false",
+            "string,string,string,string,string,string,string",
+            "2 TypeError: boom true",
+            ",,,,,,,,",
+            "THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError",
+            "undefined true false",
+            "X true true string true",
+            "THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError",
+            "THROW TypeError,THROW TypeError,THROW TypeError,THROW TypeError",
+            "THROW TypeError THROW TypeError THROW TypeError function",
+            "undefined {\"value\":\"v\",\"writable\":true,\"enumerable\":true,\"configurable\":true}",
+            "undefined {\"value\":\"w\",\"writable\":true,\"enumerable\":false,\"configurable\":true}",
+            "THROW TypeError o",
+            "THROW TypeError false",
+            "undefined z",
+            "gopd stack,define stack qtruetruetrue",
+            "{\"value\":\"own\",\"writable\":true,\"enumerable\":true,\"configurable\":true}",
+            "undefined",
+        ])
+    );
+}

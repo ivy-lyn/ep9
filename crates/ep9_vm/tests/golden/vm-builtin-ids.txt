@@ -45,6 +45,8 @@
 0x0029   0.41         method       0       ""  (%ThrowTypeError%)
 0x002a   0.42         getter       0       "caller"  (%Function.prototype%.caller --c)
 0x002b   0.43         setter       1       "caller"  (%Function.prototype%.caller --c)
+0x002c   0.44         getter       0       "stack"  (%Error.prototype%.stack --c)
+0x002d   0.45         setter       1       "stack"  (%Error.prototype%.stack --c)
 # IntrinsicId (append-only)
 intrinsic   0  %Object.prototype%
 intrinsic   1  %Function.prototype%
