@@ -422,4 +422,16 @@ fi
 #     code, no LLVM; an encoder crate, 04-execution section 5, joins this list when T1 needs one).
 deps_within 21 ep9_masm
 
+# 22) ep9_rx1 (RX1, the irregexp port; plan v12 section 7.2, decisions-log M6-ORCH-300) is
+#     reached only from ep9_vm, as ep9_regexp in check 14: no other workspace member has an
+#     edge to it, of any kind (normal, build or dev). Nothing depends on it before the RX1
+#     backend lands, so no dependent passes too. Control: check 14's query on its sample graph
+#     (above).
+if ! member_exists ep9_rx1; then
+  ok "(22) ep9_rx1 does not exist yet"
+else
+  users="$(dependents_of ep9_rx1 "$meta" | paste -sd ' ' -)"
+  if [ "$users" = ep9_vm ] || [ -z "$users" ]; then ok "(22) ep9_rx1 has no dependent but ep9_vm (${users:-none yet})"; else bad "(22) ep9_rx1 must have ep9_vm as its only dependent; it has: $users"; fi
+fi
+
 exit "$fail"
