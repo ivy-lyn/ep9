@@ -300,14 +300,77 @@ static NODE_CASES: &[(&str, &str, Option<&str>)] = &[
     ("a??", "", None),
     ("a{,5}", "", None),
     ("a{,5}", "u", Some("Incomplete quantifier")),
+    // An escaped `>` in a group name (spec rows, M7-P4 fixer r2 reviewer R6).
+    ("(?<a\\u003e>x)", "", None),
+    ("(?<a\\u003e>x)", "u", None),
+    ("(?<a\\u{3e}>x)", "u", None),
+    ("(?<a\\u003e>x)\\k<a>", "", None),
+    ("(?<a\\u003e>x)\\k<a>", "u", None),
+    ("(?<a\\u003e>x)\\k<a>", "v", None),
+    ("(?<\\u003e>x)", "", Some("Invalid capture group name")),
+    // Quantifier bounds above the cap (spec rows, M7-P4 fixer r2 reviewer R7).
+    ("a{2147483649,2147483648}", "", None),
+    ("a{2147483649,2147483648}", "u", None),
+    ("a{2147483649,2147483648}", "v", None),
+    ("a{99999999999,9999999999}", "", None),
+    ("a{2147483648,2147483649}", "", None),
+    (
+        "a{00000000000000000003,2}",
+        "",
+        Some("numbers out of order in {} quantifier"),
+    ),
+    ("a{2,00000000000000000003}", "", None),
 ];
 
 /// Rows of [`NODE_CASES`] where RX1 follows ECMA-262 and V8 does not (crate doc, "Known
 /// gaps"): node v26.13.0 refuses `\p{scx=Hrkt}` (an empty ICU set) and takes `\p{WSpace}`
-/// (an ICU alias that table 68 does not list).
+/// (an ICU alias that table 68 does not list); node takes a `\u` escape of `>` as the end of
+/// a group name (ECMA-262 22.2.1: GroupName ends at a source `>`; 22.2.1.1: an escaped code
+/// point of a RegExpIdentifierPart must be an IdentifierPartChar, and U+003E is not); node
+/// compares the bounds of `{n,m}` after it caps them at 2^31 - 1 (22.2.1.1: the MV of the
+/// first DecimalDigits must not be larger than the MV of the second). oxc (the front end)
+/// refuses the escaped `>` and the bounds out of order too.
 static SPEC_NOT_V8: &[(&str, &str, Option<&str>)] = &[
     ("\\p{scx=Hrkt}", "u", None),
     ("\\p{WSpace}", "u", Some("Invalid property name")),
+    ("(?<a\\u003e>x)", "", Some("Invalid capture group name")),
+    ("(?<a\\u003e>x)", "u", Some("Invalid capture group name")),
+    ("(?<a\\u{3e}>x)", "u", Some("Invalid capture group name")),
+    (
+        "(?<a\\u003e>x)\\k<a>",
+        "",
+        Some("Invalid capture group name"),
+    ),
+    (
+        "(?<a\\u003e>x)\\k<a>",
+        "u",
+        Some("Invalid capture group name"),
+    ),
+    (
+        "(?<a\\u003e>x)\\k<a>",
+        "v",
+        Some("Invalid capture group name"),
+    ),
+    (
+        "a{2147483649,2147483648}",
+        "",
+        Some("numbers out of order in {} quantifier"),
+    ),
+    (
+        "a{2147483649,2147483648}",
+        "u",
+        Some("numbers out of order in {} quantifier"),
+    ),
+    (
+        "a{2147483649,2147483648}",
+        "v",
+        Some("numbers out of order in {} quantifier"),
+    ),
+    (
+        "a{99999999999,9999999999}",
+        "",
+        Some("numbers out of order in {} quantifier"),
+    ),
 ];
 
 #[test]

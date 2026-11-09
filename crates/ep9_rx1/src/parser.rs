@@ -964,8 +964,8 @@ impl<'a, T: Unit> Parser<'a, T> {
                 (0, 1)
             }
             Some('{') => match self.parse_interval_quantifier() {
-                Some((min, max)) => {
-                    if max < min {
+                Some((min, max, out_of_order)) => {
+                    if out_of_order {
                         return Err(self.report_error(Error::RangeOutOfOrder));
                     }
                     (min, max)
@@ -1343,7 +1343,8 @@ impl<'a, T: Unit> Parser<'a, T> {
             self.advance();
             let mut c = self.current();
             // Convert unicode escapes.
-            if c == ch(b'\\') && self.next() == ch(b'u') {
+            let escaped = c == ch(b'\\') && self.next() == ch(b'u');
+            if escaped {
                 self.advance_by(2);
                 match self.parse_unicode_escape() {
                     Some(v) => c = v,
@@ -1361,7 +1362,10 @@ impl<'a, T: Unit> Parser<'a, T> {
                 }
                 push_code_unit(name, c);
                 at_start = false;
-            } else if c == ch(b'>') {
+            } else if c == ch(b'>') && !escaped {
+                // Only a source `>` ends the name (ECMA-262 22.2.1 GroupName); an escape of
+                // `>` is a name character that is not an IdentifierPartChar (22.2.1.1), so the
+                // last branch refuses it. V8 ends the name there (M7-P4 fixer r2, R6).
                 return Ok(());
             } else if unicode::is_identifier_part(c) {
                 push_code_unit(name, c);
@@ -1510,9 +1514,12 @@ impl<'a, T: Unit> Parser<'a, T> {
 
     // ---- quantifiers and escapes -----------------------------------------------------------
 
-    /// `{n}`, `{n,}`, `{n,m}` at `current` (V8 `ParseIntervalQuantifier`). `None` restores the
-    /// position. Values above [`INFINITY`] become [`INFINITY`].
-    fn parse_interval_quantifier(&mut self) -> Option<(u32, u32)> {
+    /// `{n}`, `{n,}`, `{n,m}` at `current` (V8 `ParseIntervalQuantifier`): (min, max, whether
+    /// the MV of n is larger than the MV of m). `None` restores the position. Values above
+    /// [`INFINITY`] become [`INFINITY`]; the order test reads the digits, not the capped
+    /// values (ECMA-262 22.2.1.1; V8 compares the capped values, so it takes
+    /// `{2147483649,2147483648}`; M7-P4 fixer r2, R7).
+    fn parse_interval_quantifier(&mut self) -> Option<(u32, u32, bool)> {
         debug_assert_eq!(self.current(), ch(b'{'));
         let start = self.position();
         self.advance();
@@ -1520,8 +1527,9 @@ impl<'a, T: Unit> Parser<'a, T> {
             self.reset(start);
             return None;
         }
-        let min = self.parse_quantifier_digits();
+        let (min, min_digits) = self.parse_quantifier_digits();
         let max;
+        let mut out_of_order = false;
         if self.current() == ch(b'}') {
             max = min;
             self.advance();
@@ -1531,22 +1539,49 @@ impl<'a, T: Unit> Parser<'a, T> {
                 max = INFINITY;
                 self.advance();
             } else {
-                max = self.parse_quantifier_digits();
+                let max_digits;
+                (max, max_digits) = self.parse_quantifier_digits();
                 if self.current() != ch(b'}') {
                     self.reset(start);
                     return None;
                 }
+                out_of_order = self.compare_digits(min_digits, max_digits).is_gt();
                 self.advance();
             }
         } else {
             self.reset(start);
             return None;
         }
-        Some((min, max))
+        Some((min, max, out_of_order))
     }
 
-    /// DecimalDigits of a quantifier, capped at [`INFINITY`] (V8's overflow loop).
-    fn parse_quantifier_digits(&mut self) -> u32 {
+    /// Compares the MVs of two DecimalDigits by their input spans (ASCII digits, one code unit
+    /// each): with the leading zeros dropped, the longer one is larger; at equal length the
+    /// text decides.
+    fn compare_digits(&self, a: (isize, isize), b: (isize, isize)) -> core::cmp::Ordering {
+        let significant = |(mut from, to): (isize, isize)| {
+            while from + 1 < to && self.input_at(from) == u16::from(b'0') {
+                from += 1;
+            }
+            (from, to)
+        };
+        let (a, b) = (significant(a), significant(b));
+        (a.1 - a.0).cmp(&(b.1 - b.0)).then_with(|| {
+            (a.0..a.1)
+                .map(|i| self.input_at(i))
+                .cmp((b.0..b.1).map(|i| self.input_at(i)))
+        })
+    }
+
+    /// DecimalDigits of a quantifier, capped at [`INFINITY`] (V8's overflow loop), and the
+    /// input span of the digits.
+    fn parse_quantifier_digits(&mut self) -> (u32, (isize, isize)) {
+        let from = self.position();
+        let value = self.parse_quantifier_value();
+        (value, (from, self.position()))
+    }
+
+    fn parse_quantifier_value(&mut self) -> u32 {
         let mut value = 0u32;
         while is_decimal_digit(self.current()) {
             let next = self.current() - ch(b'0');

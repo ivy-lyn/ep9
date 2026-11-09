@@ -21,7 +21,7 @@
 //! | `unicode.rs`, `unicode_tables.rs` | not V8: the ICU lookups of the parser, as tables from the Unicode Character Database [`UCD_VERSION`] (`data/gen-tables.py`) |
 //!
 //! Known gaps of the parser port, each by name (none changes which patterns parse, except the
-//! last two, which follow ECMA-262 where V8 follows ICU):
+//! last four, which follow ECMA-262 where V8 follows ICU or its own parse):
 //!
 //! - The `kVerifySyntax` mode is not ported (one mode).
 //! - V8's `--js-regexp-buffer-boundaries` escapes (`\A`, `\z`, `\Z`) and the debug-only
@@ -36,6 +36,12 @@
 //!   (`\p{WSpace}`); RX1 does not.
 //! - Property values with an empty set: V8 refuses them (`\p{sc=Hrkt}`, ICU); RX1 takes every
 //!   value of PropertyValueAliases.txt, as ECMA-262 says.
+//! - A `\u` escape of `>` in a group name: V8 ends the name there (`/(?<a\u003e>x)/`); RX1
+//!   ends it only at a source `>` and refuses the escape (ECMA-262 22.2.1 and 22.2.1.1:
+//!   U+003E is not an IdentifierPartChar).
+//! - `{n,m}` with bounds above 2^31 - 1: V8 caps both before it compares them, so it takes
+//!   `/a{2147483649,2147483648}/`; RX1 compares the digits (22.2.1.1: the MV of n must not
+//!   be larger than the MV of m), as oxc does.
 //!
 //! The parse-equality test (tests/parse_equality.rs) parses every RegExp source of test262
 //! (built-ins/RegExp, language/literals/regexp) with RX1 and with regress (RX0's engine) and
