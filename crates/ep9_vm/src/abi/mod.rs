@@ -1743,3 +1743,6 @@ impl<'s> Cx<'s> {
 // M7-P0 CALLHOST (H20 part 2): the forwarded calls of `apply` and `call`, and the human
 // fast-path switch of the FASTDIFF tests.
 mod forward;
+
+// M7-P4 A2-LOADER (H20 part 2): the unit-load API, the first caller of `select()`.
+mod unit_code;

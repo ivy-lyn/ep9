@@ -733,3 +733,5 @@ abi: impl<'s> Cx<'s> :: pub fn set_elements_integrity(&mut self, impl Into<Local
 embed (not core): pub const SHAPE_FLAGS: u32
 embed (not core): pub const SHAPE_FLAG_SEALED: i32
 embed (not core): pub const SHAPE_FLAG_FROZEN: i32
+abi: impl<'s> Cx<'s> :: pub fn run_script_with_unit_code(&mut self, VerifiedUnit, &str, &[u8], u64, &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])]) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>)
+abi: impl<'s> Cx<'s> :: pub fn unit_function_digest(&self, &VerifiedUnit, u32) -> Option<[u8; 16]>
