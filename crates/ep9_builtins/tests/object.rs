@@ -913,3 +913,72 @@ fn a_frozen_array_length_is_read_only_for_another_receiver() {
         ])
     );
 }
+
+/// MC-w33-5, the SpiderMonkey `bug2023298.js` form: for-in writes `o[k] = 99` into a frozen
+/// dense Array and a frozen ordinary object with elements, warm (30 rounds; sloppy writes do
+/// nothing, strict writes throw), and into a sealed Array (the writes land). The lines are
+/// node v26.13.0's.
+#[test]
+fn for_in_writes_do_not_change_a_frozen_array() {
+    assert_eq!(
+        run_both(
+            r#"
+            // SM bug2023298.js form: for-in writes into a frozen dense Array, warm.
+            function w(o) { for (var k in o) o[k] = 99; }
+            function ws(o) { 'use strict'; var n = 0; for (var k in o) { try { o[k] = 99; } catch (e) { n++; } } return n; }
+            var fa = Object.freeze([1, 2, 3]), sa = Object.seal([1, 2, 3]), fo = Object.freeze({ 0: 1, 1: 2, x: 3 });
+            var thrown = 0;
+            for (var i = 0; i < 30; i++) { w(fa); w(fo); thrown += ws(fa) + ws(fo); }
+            print(fa.join() + ' ' + JSON.stringify(fo) + ' ' + thrown);
+            w(sa); print(sa.join() + ' ' + Object.isFrozen(fa) + ' ' + Object.isSealed(sa) + ' ' + Object.isFrozen(sa));
+            var big = []; for (var j = 0; j < 40; j++) big.push(j); Object.freeze(big);
+            for (var i = 0; i < 20; i++) w(big);
+            print(big[0] + ' ' + big[39] + ' ' + big.length);
+"#
+        ),
+        lines(&[
+            "1,2,3 {\"0\":1,\"1\":2,\"x\":3} 180",
+            "99,99,99 true true false",
+            "0 39 40",
+        ])
+    );
+}
+
+/// MC-w33-5, the SpiderMonkey `bug2045578.js` form: a Proxy `get` trap that gives another value
+/// for a frozen element (of an Array and of an ordinary object, warm) or a frozen Array's
+/// `length` breaks the [[Get]] invariant (§10.5.8 step 9.a): a TypeError; the same trap on a
+/// sealed or a non-extensible Array, or an honest trap, is fine. The lines are node v26.13.0's.
+#[test]
+fn proxy_get_checks_frozen_elements() {
+    assert_eq!(
+        run_both(
+            r#"
+            // SM bug2045578.js form: a Proxy get trap that lies about a frozen element.
+            function t(f) { try { return 'ok ' + f(); } catch (e) { return 'THROW ' + e.constructor.name; } }
+            var fa = Object.freeze([1, 2]), fo = Object.freeze({ 0: 1, a: 2 });
+            var lie = { get: function (t, k) { return k === '0' ? 7 : Reflect.get(t, k); } };
+            var pa = new Proxy(fa, lie), po = new Proxy(fo, lie);
+            var r = [];
+            for (var i = 0; i < 30; i++) { r.push(t(function () { return pa[0]; }), t(function () { return po[0]; })); }
+            var c = {}; r.forEach(function (x) { c[x] = (c[x] || 0) + 1; }); print(JSON.stringify(c));
+            print(t(function () { return pa[1]; }) + ' ' + t(function () { return po.a; }) + ' ' + t(function () { return pa.length; }));
+            var honest = new Proxy(fa, { get: function (t, k) { return Reflect.get(t, k); } });
+            print(t(function () { return honest[0]; }));
+            var sa = Object.seal([1]), ps = new Proxy(sa, lie);
+            print(t(function () { return ps[0]; }));
+            var lieLen = new Proxy(Object.freeze([1, 2]), { get: function (t, k) { return k === 'length' ? 5 : Reflect.get(t, k); } });
+            print(t(function () { return lieLen.length; }));
+            var ne = Object.preventExtensions([1]), pn = new Proxy(ne, lie);
+            print(t(function () { return pn[0]; }));
+"#
+        ),
+        lines(&[
+            "{\"THROW TypeError\":60}",
+            "ok 2 ok 2 ok 2",
+            "ok 1",
+            "ok 7",
+            "THROW TypeError",
+            "ok 7",
+        ])
+    );
+}
