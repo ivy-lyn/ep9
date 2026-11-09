@@ -263,3 +263,52 @@ run(false).then(() => run(true));
         lines(&["ok inner,outer,inner", "caught ctor getter inner,outer"])
     );
 }
+
+/// Route ERM-SYNC-FALLBACK-PROMISE: `await using` of a value with only @@dispose. GetDisposeMethod
+/// step 1.b.ii gives a closure that calls the method (this = the value, no argument) and returns
+/// a new %Promise% resolved with undefined (or rejected by the method's throw); the disposal
+/// awaits it, so PromiseResolve reads its `constructor`: a getter on Promise.prototype runs,
+/// and its throw is the block's result. The lines are node v26.13.0's (the getter logs only its
+/// first read: node reads `constructor` once more per disposal than the spec steps, for an
+/// async method too). The TypeErrors of a missing or non-callable method and the read order
+/// of the two symbols stay as before. On the old code (the method called directly, then
+/// undefined awaited) the second and third lines have no "ctor" and the second has no throw.
+#[test]
+fn await_using_awaits_the_sync_fallback_promise() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            var log = [], on = false, boom = false, reads = 0;
+            Object.defineProperty(Promise.prototype, 'constructor', { configurable: true, get() { if (on) { reads++; if (reads == 1) { log.push('ctor'); if (boom) throw new Error('ctor getter'); } } return Promise; } });
+            async function f(b, err) {
+              log = []; boom = b; reads = 0;
+              try {
+                { await using x = { [Symbol.dispose]() { log.push('dispose ' + (this === x) + ' ' + arguments.length); on = true; if (err) throw err; return 42; } }; log.push('body'); }
+                on = false; log.push('after');
+              } catch (e) { on = false; log.push('caught ' + (e && e.message || e)); }
+              print(log.join());
+            }
+            async function g() {
+              try { await using y = {}; } catch (e) { print('empty: ' + e.constructor.name + ': ' + e.message); }
+              try { await using y = { [Symbol.dispose]: 1 }; } catch (e) { print('nonfn: ' + e.constructor.name + ': ' + e.message); }
+              try { await using y = { [Symbol.asyncDispose]: null, [Symbol.dispose]: null }; } catch (e) { print('nulls: ' + e.constructor.name + ': ' + e.message); }
+              try { await using y = { [Symbol.asyncDispose]: 1 }; } catch (e) { print('anonfn: ' + e.constructor.name + ': ' + e.message); }
+              var order = [];
+              { await using y = { get [Symbol.asyncDispose]() { order.push('a'); }, get [Symbol.dispose]() { order.push('s'); return function () { order.push('call'); }; } }; order.push('body'); }
+              print('order: ' + order.join());
+            }
+            f(false).then(() => f(true)).then(() => f(false, 'E')).then(g);
+"#
+        ),
+        lines(&[
+            "body,dispose true 0,ctor,after",
+            "body,dispose true 0,ctor,caught ctor getter",
+            "body,dispose true 0,ctor,caught E",
+            "empty: TypeError: Symbol(Symbol.dispose) is not a function",
+            "nonfn: TypeError: Symbol(Symbol.dispose) is not a function",
+            "nulls: TypeError: Symbol(Symbol.dispose) is not a function",
+            "anonfn: TypeError: Symbol(Symbol.asyncDispose) is not a function",
+            "order: a,s,body,call",
+        ])
+    );
+}
