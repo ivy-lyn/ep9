@@ -159,7 +159,7 @@ Owner: the front-end lead agent (D12). Agents draft; only the user posts upstrea
 | WTF-8 or UTF-16 source input | none | M3 | Lone-surrogate shim ([07-runtime.md](./07-runtime.md)) |
 | Parse a function at an offset with context (hook: `parse_function_body`) | none | M4 | L1 retained arena (§8) |
 
-**Local patches.** They use `third_party/oxc.commit`, `scripts/sync-oxc.sh` and `third_party/patches/oxc/*.patch`, consumed through `[patch.crates-io]`. The pin points at the oxc commit that published 0.155.0. Every patch links its upstream PR. The cap is 3 patches (gate P1).
+**Local patches.** They use `third_party/oxc.commit`, `scripts/sync-oxc.sh` and `third_party/patches/oxc/*.patch`, consumed through `[patch.crates-io]`. The pin points at the oxc commit that published the pinned release (0.157.0 since 2026-11-09, M7-P4 OXCBUMP; 0.155.0 before; the bump hours are in `docs/measurements/2026-11-09-p-gates.md`). Every patch links its upstream PR. The cap is 3 patches (gate P1).
 
 **P-gates for an own parser (option D).** P1, P2 and P4 are checked at M2 exit; P3 and P5 at M4 exit.
 
