@@ -24,19 +24,28 @@
 //! OXCBUMP, so the target counts a disagreement on it as a crash):
 //! - `\c` with no control letter inside a class in Unicode mode, for example `/[\c]/u`. RX1
 //!   says InvalidUnicodeEscape at the `c`.
+//! - `\A`, `\z` or `\Z` in Unicode mode, for example `/\z/u` (oxc_regular_expression 0.155
+//!   and 0.157 parse them as the assertions of the TC39 RegExp buffer boundaries proposal).
+//!   ECMA-262 has no such Assertion: in Unicode mode `\z` is an AtomEscape, and
+//!   IdentityEscape[+UnicodeMode] is only SyntaxCharacter or `/` (22.2.1). RX1 says
+//!   InvalidEscape at the letter (fuzz smoke of CI run 42552778227).
 #![no_main]
 
 use ep9_frontend::{CompileError, SourceOpts, Strictness};
 use ep9_rx1::{Error, Flags, ParseError};
 
 /// True for a known front-end false accept (the module doc), given RX1's error.
-fn known_front_end_false_accept(units: &[u16], e: &ParseError) -> bool {
+fn known_front_end_false_accept(units: &[u16], flags: Flags, e: &ParseError) -> bool {
+    let escaped = |letters: &[u8]| {
+        e.pos >= 1
+            && units
+                .get(e.pos)
+                .is_some_and(|&c| letters.iter().any(|&l| c == u16::from(l)))
+            && units[e.pos - 1] == u16::from(b'\\')
+    };
     match e.error {
-        Error::InvalidUnicodeEscape => {
-            e.pos >= 1
-                && units.get(e.pos) == Some(&u16::from(b'c'))
-                && units[e.pos - 1] == u16::from(b'\\')
-        }
+        Error::InvalidUnicodeEscape => escaped(b"c"),
+        Error::InvalidEscape => flags.either_unicode() && escaped(b"AzZ"),
         _ => false,
     }
 }
@@ -93,7 +102,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let rx1_valid = match ep9_rx1::parse(&units, flags) {
         Ok(_) => true,
         Err(e) if e.error.is_stack_overflow() => return,
-        Err(e) if oxc_valid && known_front_end_false_accept(&units, &e) => return,
+        Err(e) if oxc_valid && known_front_end_false_accept(&units, flags, &e) => return,
         Err(_) => false,
     };
     assert!(
