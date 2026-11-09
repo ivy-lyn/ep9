@@ -468,3 +468,75 @@ fn a_text_hook_error_is_thrown() {
         )
     );
 }
+
+/// The join of the unit-load API (M7-P4 A2-LOADER, `Cx::run_script_with_unit_code`) and the
+/// text host (M7-P4 integration fixer): a module host is the isolate's for the length of a
+/// call (the ep9_vm thread-local host list), and `import()` reads it when it runs, not from the
+/// run path. So a script that `run_script_with_unit_code` runs inside
+/// `Cx::with_module_text_host`, with its checkpoint inside, imports a JSON and a text module;
+/// the same unit run with no module host throws the v0 not-implemented `Error` at its first
+/// `import()` (`module::dynamic_import`, as `Cx::run_script` does). The loader reads
+/// the unit's function table in both runs (a jitless variant of `same`; the default preset
+/// of this build picks it or not).
+#[test]
+fn a_unit_script_inside_the_text_host_imports_json_and_text() {
+    const FILES: Files = &[DATA[0], DATA[3]];
+    const SCRIPT: &str = "function same() { return 'unit'; }\n\
+        import('./d.json', { with: { type: 'json' } })\n\
+            .then(m => print('json', m.default.a.length, same()), e => print(e.message));\n\
+        import('./t.txt', { with: { type: 'text' } })\n\
+            .then(m => print('text', m.default.length), e => print(e.message));\n";
+    let go = |inside: bool, stress: bool| -> Result<Vec<String>, String> {
+        common::on_big_stack(move || {
+            let mut iso = new_isolate(Dispatch::ALL[0], stress);
+            let unit = compile_script(SCRIPT).expect("compiles");
+            let cu = unit.unit();
+            let same = cu
+                .functions
+                .iter()
+                .position(|f| {
+                    f.name.is_some_and(|id| {
+                        matches!(&cu.strings[id.index()],
+                            ep9_bytecode::UnitString::Latin1(b) if **b == *b"same")
+                    })
+                })
+                .expect("the function same") as u32;
+            let mut resolve = |referrer: &str, spec: &str| resolve_in(FILES, referrer, spec);
+            let mut load = |name: &str| compile(source(FILES, name).expect("a file"));
+            let mut text =
+                |name: &str, _ty: &str| Ok(source(FILES, name).expect("a file").to_string());
+            let r = iso.with_cx(|cx| {
+                let digest = cx.unit_function_digest(&unit, same).expect("a digest");
+                let none: &[u32] = &[];
+                // (AotBaseline 3, lowering jitless 2, entry 0, length 8, no CPU bits, no fuse)
+                let vars = [(3u8, 2u8, 0u32, 8u32, 0u64, none)];
+                let fns = [(same, digest, &vars[..])];
+                let code = vec![0u8; 64];
+                let body = |cx: &mut Cx<'_>| {
+                    let (rows, r) = cx.run_script_with_unit_code(unit, "u.js", &code, 0, &fns);
+                    r?;
+                    let n = |k: &str| rows.iter().find(|(name, _)| *name == k).map(|e| e.1);
+                    assert_eq!(n("installed"), Some(0), "{rows:?}");
+                    assert_eq!(n("picked"), n("deferred"), "{rows:?}");
+                    cx.perform_microtask_checkpoint()
+                };
+                if inside {
+                    cx.with_module_text_host(&mut resolve, &mut load, &mut text, body)
+                } else {
+                    body(cx)
+                }
+            });
+            let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+            iso.collect_garbage();
+            iso.verify_heap().expect("a valid heap");
+            r.map(|()| out).map_err(|e| e.message)
+        })
+    };
+    for stress in [false, true] {
+        assert_eq!(go(true, stress), Ok(lines(&["json 2 unit", "text 13"])));
+        assert_eq!(
+            go(false, stress),
+            Err("Error: not implemented in ep9 v0: DynamicImport".to_string())
+        );
+    }
+}
