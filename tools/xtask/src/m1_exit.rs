@@ -187,9 +187,10 @@ const T262_FRESH_PATHS: [&str; 9] = [
 /// it stale: the `fuzz` workspace, every engine crate it builds (the path dependencies of
 /// `fuzz/Cargo.toml` and theirs; a test checks the list against them), the root `Cargo.toml`
 /// (its `[profile.release]`, the workspace members) and `Cargo.lock`.
-const CARGO_FUZZ_FRESH_PATHS: [&str; 5] = [
+const CARGO_FUZZ_FRESH_PATHS: [&str; 6] = [
     "crates/ep9_frontend",
     "crates/ep9_bytecode",
+    "crates/ep9_rx1",
     "fuzz",
     "Cargo.toml",
     "Cargo.lock",
