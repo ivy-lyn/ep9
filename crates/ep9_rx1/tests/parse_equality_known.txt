@@ -1,0 +1,30 @@
+# RX1-0 parse-equality known differences (tests/parse_equality.rs): the (pattern, flags) pairs
+# of the test262 RegExp sources (test262 at third_party/test262.commit) where RX1 and regress
+# (RX0's engine, without ep9_regexp's pre-pass) do not agree on "parses or not".
+#
+# Form: <class> TAB <flags, - for none> TAB <RX1 verdict: ok|err> TAB <pattern>
+# The pattern escapes a backslash as \\ and every code unit outside ASCII 0x20-0x7E as \uXXXX.
+# Classes:
+#   prepass  ep9_regexp's pre-pass changes the pattern before regress sees it, so the shipped
+#            RX0 agrees with RX1 (crates/ep9_regexp/src/lib.rs, legacy_chars and unicode_chars)
+#   regress  regress differs from V8 (node) and from the spec; RX1 agrees with node
+#   rx1-gap  RX1 differs from node: a gap of the port
+#   spec     RX1 follows ECMA-262 where V8 follows ICU (crate doc, "Known gaps")
+#
+# M7-P4: 5,099 pairs compared, 11 differ, all prepass. RX1 agrees with node v26.13.0 on all
+# 5,099 (and on the group count and the group names of the 4,542 that parse).
+#
+# prepass: a group name with a supplementary character (a surrogate pair, raw or as \u{...})
+# and no u or v flag. regress reads each code unit as one character, so the pair is not one
+# ID_Start or ID_Continue code point; legacy_chars copies the name as code points first.
+prepass	-	ok	(?<\\u{1d5b0}\\u{1d5a1}\uD835\uDDA5>q\\w*\\W\\w*\\W\\w*)
+prepass	-	ok	(?<\\u{1d5b0}\uD835\uDDA1\\u{1d5a5}>q\\w*\\W\\w*\\W\\w*)
+prepass	-	ok	(?<\\u{1d5b0}\uD835\uDDA1\uD835\uDDA5>q\\w*\\W\\w*\\W\\w*)
+prepass	-	ok	(?<\uD835\uDC53\uD835\uDC5C\uD835\uDC65>fox).*(?<\uD835\uDCD3\uD835\uDCF8\uD835\uDCF0>dog)
+prepass	-	ok	(?<\uD835\uDCD1\uD835\uDCFB\uD835\uDCF8\uD835\uDD00\uD835\uDCF7>brown)
+prepass	-	ok	(?<\uD835\uDCD3\uD835\uDCF8\uD835\uDCF0>dog)(.*?)(\\k<\uD835\uDCD3\uD835\uDCF8\uD835\uDCF0>)
+prepass	-	ok	(?<\uD835\uDDB0\\u{1d5a1}\\u{1d5a5}>q\\w*\\W\\w*\\W\\w*)
+prepass	-	ok	(?<\uD835\uDDB0\\u{1d5a1}\uD835\uDDA5>q\\w*\\W\\w*\\W\\w*)
+prepass	-	ok	(?<\uD835\uDDB0\uD835\uDDA1\\u{1d5a5}>q\\w*\\W\\w*\\W\\w*)
+prepass	-	ok	(?<\uD835\uDDB0\uD835\uDDA1\uD835\uDDA5>q\\w*\\W\\w*\\W\\w*)
+prepass	-	ok	(?<the\uD835\uDFDA>the)
