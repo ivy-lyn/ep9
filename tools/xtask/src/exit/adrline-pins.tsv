@@ -436,7 +436,8 @@ history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 3 Verifier (M7-
 history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
 history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:89-90	| 1 Reviewer (M7-P1 amendment: the 2026-11-06 fill row, DEOPT_META 1 = format 1, A2-START)	9efb72b3	^/// Deoptimization metadata \(H29\)
 history	H17-object-layout.md	crates/ep9_vm/src/tests/layout6.rs:211	| 4 Data (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^fn month\_7\_versions\(\) \{$
-# M7-P4 fixer: tools/test262/src/exec.rs:947 (the worker's catch_unwind, after the SPEC-BUILTINS4
-# module host hooks) is an older number of another exec.rs cite of the same H23 lines, so the diff
-# map (from bfea3c7e) reads it as the install_panic_hook line; the pin names the line it means.
-pin	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:947	tools/test262/src/exec.rs	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$	0
+# M7-P4 fixer: tools/test262/src/exec.rs:974 (the worker's catch_unwind, after the SPEC-BUILTINS4
+# module host hooks and the fixer r2 run_script form; 947 at the fixer r1 head) moved from an older
+# number of another exec.rs cite of the same H23 lines, so the diff map (from bfea3c7e) reads the
+# old token as the install_panic_hook line; the pin names the line it means.
+pin	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:974	tools/test262/src/exec.rs	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$	0
