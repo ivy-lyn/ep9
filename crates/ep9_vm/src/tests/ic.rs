@@ -1298,3 +1298,157 @@ fn a_b_call_from_rust_that_does_not_fit_takes_one_unit() {
         });
     }
 }
+
+// ---- prefixed sites: the Wide fast body (M7-P4 TSPASS2) ------------------------------------
+
+/// The script defines `f0(a, n)`: `for (i = 0; i < n; i++) { t = a.x; if (t) { sum += t;
+/// <300 one-byte instructions> } } return sum` (sum starts at 0). Its `x` constant has index
+/// 300, so the load is a `Wide` GetNamedProperty; the jumps over the loop body and over the
+/// 300 bytes are `Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop. These are opcodes that
+/// the `Wide` fast body runs itself (`ops.rs` `prefix_runs_fast`).
+fn prefixed_program() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("f0");
+    s.b.lda_undefined().return_();
+    let mut b = FunctionBuilder::new(meta("f0", 2, 0, 0, 0));
+    let (a, n) = (b.parameter(0), b.parameter(1));
+    let named = b.feedback_slot(FeedbackSlotKind::LoadNamed);
+    let cmp = b.feedback_slot(FeedbackSlotKind::CompareOp);
+    let bin = b.feedback_slot(FeedbackSlotKind::BinaryOp);
+    let loop_ = b.feedback_slot(FeedbackSlotKind::JumpLoop);
+    for i in 0..300 {
+        b.number_constant(f64::from(i));
+    }
+    let kx = b.string_constant("x");
+    assert!(kx.index() >= 256, "a constant that needs a Wide operand");
+    let (sum, i, t) = (b.new_register(), b.new_register(), b.new_register());
+    b.lda_zero().star(sum).lda_zero().star(i);
+    let header = b.bound_label();
+    let (exit, skip) = (b.new_label(), b.new_label());
+    b.ldar(n).test_less_than(i, cmp).jump_if_false(exit);
+    b.get_named_property(a, kx, named).star(t);
+    b.jump_if_to_boolean_false(skip);
+    b.ldar(t).add(sum, bin).star(sum);
+    for _ in 0..300 {
+        b.lda_zero();
+    }
+    b.bind(skip);
+    b.ldar(i).inc(bin).star(i);
+    b.jump_loop(header, 0, loop_);
+    b.bind(exit);
+    b.ldar(sum).return_();
+    unit("", vec![s.finish(), b.finish().unwrap()])
+}
+
+/// The runs of `interp::scaled::step` and `step_cold` on this thread so far.
+fn scaled_runs() -> [u64; 2] {
+    crate::interp::dsl::SCALED_RUNS.with(|c| c.get())
+}
+
+/// The prefixed GetNamedProperty, JumpIfFalse, JumpIfToBooleanFalse and JumpLoop run in the
+/// `Wide` fast body: no run of `interp::scaled::step` (the old path ran each of them there,
+/// several per loop turn). Where `PREFIXED_LOAD_FAST` is false (x86-64) the load runs in
+/// `step`, once per loop turn, and the jumps still run in the fast body. Their cold bodies (an IC miss, a ToBoolean of a string, the loop's
+/// interrupt poll) run once each in `step_cold`, with the fast body not run again: a
+/// megamorphic load through the stub cache, a getter-free string value and a budget that runs
+/// out mid-loop all give the generic answer.
+#[test]
+fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
+    each(|c| {
+        let mut iso = isolate(c);
+        iso.with_cx_checkpoint(|cx| cx.run_script(prefixed_program(), "wide.js").map(|_| ()))
+            .unwrap();
+        let u = prefixed_program();
+        assert!(
+            ep9_bytecode::Instructions::new(&u.functions[1].bytecode)
+                .filter_map(Result::ok)
+                .filter(|i| i.scale != ep9_bytecode::OperandScale::Single)
+                .map(|i| i.opcode)
+                .collect::<Vec<_>>()
+                == [
+                    ep9_bytecode::Opcode::JumpIfFalse,
+                    ep9_bytecode::Opcode::GetNamedProperty,
+                    ep9_bytecode::Opcode::JumpIfToBooleanFalse,
+                    ep9_bytecode::Opcode::JumpLoop,
+                ],
+            "the prefixed instructions of f0"
+        );
+        let f = iso.global_raw("f0").unwrap();
+        // The runs of `step` for `turns` loop turns: the prefixed loads, if not in the fast
+        // body.
+        let whole = |turns: u64| {
+            if crate::interp::ops::PREFIXED_LOAD_FAST {
+                0
+            } else {
+                turns
+            }
+        };
+        let run = |iso: &mut Isolate, a: u64, n: i32| -> (u64, [u64; 2]) {
+            let before = scaled_runs();
+            let v = iso
+                .call_raw(f, Value::UNDEFINED, &[val(a), val(int(n))])
+                .unwrap()
+                .to_bits();
+            let after = scaled_runs();
+            (v, [after[0] - before[0], after[1] - before[1]])
+        };
+        // A new object with Object.prototype and the data properties `props`.
+        let mk = |iso: &Isolate, props: &[(&str, u64)]| {
+            object_with(&iso.rt, object_prototype(&iso.rt), props)
+        };
+        // Monomorphic: the first turn misses (the uninitialized slot: one cold body), the
+        // rest hit in the fast body.
+        let o = mk(&iso, &[("x", int(2))]);
+        let (v, n) = run(&mut iso, o, 50);
+        assert_eq!(v, int(100));
+        assert_eq!(n[0], whole(50), "no whole prefixed step");
+        assert!(n[1] >= 1, "the first miss runs the cold body");
+        let (v, n) = run(&mut iso, o, 50);
+        assert_eq!(
+            (v, n),
+            (int(100), [whole(50), 0]),
+            "warm: every prefixed op in the fast body"
+        );
+        // A falsy value takes the prefixed JumpIfToBooleanFalse in the fast body.
+        let z = mk(&iso, &[("x", int(0))]);
+        assert_eq!(run(&mut iso, z, 10).0, int(0));
+        // A string is not a fast ToBoolean case: the cold body (step_cold) each turn, and
+        // `sum + t` concatenates: "0" then "ab" per turn.
+        let ab = key(&iso.rt, "ab");
+        let s = mk(&iso, &[("x", ab)]);
+        let (v, n) = run(&mut iso, s, 3);
+        assert_eq!(string::to_rust_string(v), "0ababab");
+        assert_eq!(n[0], whole(3));
+        assert!(n[1] >= 3, "one cold ToBoolean per turn: {n:?}");
+        // Megamorphic: 6 shapes; each load after that probes the stub cache in the cold body.
+        let objs: Vec<u64> = (0..6)
+            .map(|j| {
+                let pad = format!("p{j}");
+                mk(&iso, &[(pad.as_str(), int(j)), ("x", int(j + 1))])
+            })
+            .collect();
+        let held: Vec<GlobalHandle> = objs
+            .iter()
+            .map(|&o| iso.rt.heap.new_global(val(o)))
+            .collect();
+        for _ in 0..2 {
+            for (j, &o) in objs.iter().enumerate() {
+                let (v, n) = run(&mut iso, o, 4);
+                assert_eq!(v, int(4 * (j as i32 + 1)));
+                assert_eq!(n[0], whole(4));
+            }
+        }
+        for h in held {
+            iso.rt.heap.drop_global(h);
+        }
+        // The budget runs out at a prefixed JumpLoop: its cold body polls (step_cold) and the
+        // loop goes on.
+        iso.cx.budget = 3;
+        let (v, n) = run(&mut iso, o, 20);
+        assert_eq!(v, int(40));
+        assert_eq!(n[0], whole(20));
+        assert!(n[1] >= 1, "the poll of the prefixed JumpLoop");
+    });
+}
