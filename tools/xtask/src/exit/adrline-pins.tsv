@@ -268,7 +268,7 @@ history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:460-463	**The set 
 # builtins.rs:1024 by its full path (the bare `:1024` was an older H20 token of abi/mod.rs).
 pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:792	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:184	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
-pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:581	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
+pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:606	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
 # spec-int merge (spec-temporal on m1m6/p5, 2026-11-05): dated record and Change-log rows keep the line of the
 # commit they name (M3-P1-REVIEWROW-REFS); the BigInt and Temporal code moved those lines.
 history	H05-always-linked-compiler.md	.github/scripts/dep-guards.sh:191-213	| 1 Reviewer	b34fd01e	\# 12\) H5\: the bytecode compiler is always linked\. ep9 \(the runtime crate\, ep9_cl
@@ -436,3 +436,7 @@ history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 3 Verifier (M7-
 history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:90	| 4 Data (M7-P2 amendment: the 2026-11-07 clarify row, the Status line note, route H29-STATUS)	bcc2e34b	^pub const DEOPT\_META\_VERSION\: u32 \= 1\;$
 history	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:89-90	| 1 Reviewer (M7-P1 amendment: the 2026-11-06 fill row, DEOPT_META 1 = format 1, A2-START)	9efb72b3	^/// Deoptimization metadata \(H29\)
 history	H17-object-layout.md	crates/ep9_vm/src/tests/layout6.rs:211	| 4 Data (spec-int amendment: the 2026-11-06 rewrite row, OBJECT_LAYOUT 6 -> 7 (B2))	18492a40	^fn month\_7\_versions\(\) \{$
+# M7-P4 fixer: tools/test262/src/exec.rs:947 (the worker's catch_unwind, after the SPEC-BUILTINS4
+# module host hooks) is an older number of another exec.rs cite of the same H23 lines, so the diff
+# map (from bfea3c7e) reads it as the install_panic_hook line; the pin names the line it means.
+pin	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:947	tools/test262/src/exec.rs	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$	0
