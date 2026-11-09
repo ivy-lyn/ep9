@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `%Function.prototype%` (callable, returns undefined), `Function` (CreateDynamicFunction through the compiler hook, `abi/script.rs`) | §20.2.3, §20.2.1.1 |
 //! | `Object`, `Array` (with NewTarget: GetPrototypeFromConstructor) | §20.1.1.1, §23.1.1.1 |
-//! | `Error` and the native errors | §20.5.1.1, §20.5.6.1.1 |
+//! | `Error` and the native errors (with InstallErrorCause: an own `cause` from `options.cause`) | §20.5.1.1, §20.5.6.1.1, §20.5.8.1 |
 //! | `Object.prototype.toString`, `valueOf` (ToObject) | §20.1.3.6, §20.1.3.7 |
 //! | `Error.prototype.toString` | §20.5.3.4 |
 //! | `Array.prototype.join`, `toString` (ToObject, then `join` or %Object.prototype.toString%), `push` (generic: any object, through `[[Set]]`) | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
@@ -894,8 +894,8 @@ macro_rules! error_ctors {
             args: Args<'s>,
             new_target: Local<'s>,
         ) -> JsResult<Local<'s>> {
-            let (m, nt) = (args.get(0).bits(), new_target.bits());
-            construct_error(cx.inner(), ErrorKind::$kind, m, nt).map(local)
+            let (m, o, nt) = (args.get(0).bits(), args.get(1).bits(), new_target.bits());
+            construct_error(cx.inner(), ErrorKind::$kind, m, o, nt).map(local)
         }
     )*};
 }
@@ -910,11 +910,20 @@ error_ctors! {
     uri_error_ctor => UriError,
 }
 
-/// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`. The prototype is
+/// NativeError(message, options) (§20.5.6.1.1; Error is §20.5.1.1). The prototype is
 /// OrdinaryCreateFromConstructor's (§10.1.13): `newTarget.prototype` if it is an object,
 /// else the error prototype of GetFunctionRealm(newTarget); with no newTarget (a call), the
 /// error prototype of the current realm, which is the constructor's (`call_host` switches).
-fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsResult<u64> {
+/// Then ToString(message), then InstallErrorCause(O, options) (§20.5.8.1): HasProperty and
+/// Get of `options.cause` run before the object is made, as nothing can see O between these
+/// steps; the own `cause` is {w, c} and comes after `message` and `stack` in the key order.
+fn construct_error(
+    cx: &mut Cx,
+    kind: ErrorKind,
+    message: u64,
+    options: u64,
+    nt: u64,
+) -> JsResult<u64> {
     let rt = cx.rt();
     let mut proto = rt.root(kind.prototype_root());
     if is_callable(nt) {
@@ -937,7 +946,23 @@ fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsRes
     } else {
         Some(conv::to_string(cx, message)?)
     };
-    Ok(error::new_error_value(cx, proto, msg))
+    // InstallErrorCause step 1: if options is an Object and ? HasProperty(options, "cause"),
+    // then ? Get(options, "cause"). GC points: every value lives in a Rust local (CSS).
+    let mut cause = None;
+    if is_object(options) {
+        let key = crate::atoms::intern_str(cx.rt(), "cause");
+        if property::try_has_property(cx, options, key)? {
+            cause = Some(property::get(cx, options, key)?);
+        }
+    }
+    let e = error::new_error_value(cx, proto, msg);
+    if let Some(c) = cause {
+        // CreateNonEnumerableDataPropertyOrThrow on a new error object: it cannot fail.
+        let rt = cx.rt();
+        let key = crate::atoms::intern_str(rt, "cause");
+        own_define(rt, e, key, c, attr::HIDDEN);
+    }
+    Ok(e)
 }
 
 // ---- iterators ---------------------------------------------------------------------------------
