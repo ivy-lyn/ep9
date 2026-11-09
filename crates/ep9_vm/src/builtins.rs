@@ -657,7 +657,7 @@ impl IntrinsicId {
             | IntrinsicId::DisposableStack
             | IntrinsicId::DisposableStackPrototype
             | IntrinsicId::AsyncDisposableStack
-            | IntrinsicId::AsyncDisposableStackPrototype => return None,
+            | IntrinsicId::AsyncDisposableStackPrototype
             | IntrinsicId::Intl
             | IntrinsicId::IntlLocale
             | IntrinsicId::IntlLocalePrototype
