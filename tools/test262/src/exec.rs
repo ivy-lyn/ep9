@@ -735,7 +735,7 @@ impl RunCtx<'_> {
             if mode == Mode::Module {
                 run_module(iso, root, unit, rel)
             } else {
-                iso.with_cx_checkpoint(|cx| cx.run_script(unit, rel).map(|_| ()))
+                run_script(iso, root, unit, rel)
             }
         });
         if fault_for("late", rel) {
@@ -807,9 +807,30 @@ fn run_module(
 ) -> Result<(), Exception> {
     let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
     let mut load = |name: &str| load_module(root, name);
+    let mut text = |name: &str, ty: &str| text_module(root, name, ty);
     iso.with_cx_checkpoint(|cx| {
-        cx.run_module(unit, rel, &mut resolve, &mut load)
+        cx.run_module_with_text(unit, rel, &mut resolve, &mut load, &mut text)
             .map(|_| ())
+    })
+}
+
+/// Runs the script test `unit` (named `rel`) with the test262 loader and its text hook as
+/// the module host of the run (`Cx::with_module_text_host`), so `import()` of a JSON or text
+/// module works in the script; then a microtask checkpoint, whose jobs use the host of the
+/// caller (`Isolate::with_module_host`).
+fn run_script(
+    iso: &mut Isolate,
+    root: &Path,
+    unit: ep9_bytecode::VerifiedUnit,
+    rel: &str,
+) -> Result<(), Exception> {
+    let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
+    let mut load = |name: &str| load_module(root, name);
+    let mut text = |name: &str, ty: &str| text_module(root, name, ty);
+    iso.with_cx_checkpoint(|cx| {
+        cx.with_module_text_host(&mut resolve, &mut load, &mut text, |cx| {
+            cx.run_script(unit, rel).map(|_| ())
+        })
     })
 }
 
@@ -856,6 +877,17 @@ fn load_module(root: &Path, name: &str) -> CompileResult {
         _ => return Err(CompileFailure::Internal(format!("cannot read {name}"))),
     };
     compile(&src, SourceOpts::module(), name).map_err(hook_failure)
+}
+
+/// The text hook of the test262 loader: the text of the file `name` (relative to the test262
+/// root) for a JSON module or a text module (`_ty` is `"json"` or `"text"`; the VM parses the
+/// JSON). A file that is not UTF-8 is an error.
+fn text_module(root: &Path, name: &str, _ty: &str) -> Result<String, String> {
+    match std::fs::read(root.join(name)).map(String::from_utf8) {
+        Ok(Ok(s)) => Ok(s),
+        Ok(Err(_)) => Err(format!("{name}: the file is not valid UTF-8")),
+        Err(e) => Err(format!("cannot read {name}: {e}")),
+    }
 }
 
 /// The result of an async test from its `print` output (INTERPRETING.md, flag `async`). A

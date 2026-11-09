@@ -441,9 +441,10 @@ fn new_module(rt: &Runtime, lu: &LoadedUnit, name: u64) -> u64 {
 }
 
 /// The import attributes of request `r` of `m` (HostGetSupportedImportAttributes: `type`
-/// only). `type: "json"` (JSON modules) is not built; another `type` is a TypeError, another
-/// key a SyntaxError (§16.2.1.3.1, AllImportAttributesSupported).
-fn check_attributes(cx: &mut Cx, m: u64, r: u32) -> Res<()> {
+/// only): the module type of the request. `type: "json"` (JSON modules) and `type: "text"`
+/// (import text) need a host with a text hook ([`Host::text`]); another `type` is a
+/// TypeError, another key a SyntaxError (§16.2.1.3.1, AllImportAttributesSupported).
+fn check_attributes(cx: &mut Cx, m: u64, r: u32) -> Res<ModuleType> {
     let lu = unit_of(m);
     let req = &records_of(m).requested_modules[r as usize];
     let attributes: Vec<(String, String)> = req
@@ -460,23 +461,33 @@ fn check_attributes(cx: &mut Cx, m: u64, r: u32) -> Res<()> {
 }
 
 /// The checks of [`check_attributes`] on a list of (key, value) pairs, sorted by key: a key
-/// other than `type` is a SyntaxError; `type: "json"` the not-implemented Error; another
-/// type a TypeError.
-fn check_attribute_list(cx: &mut Cx, attributes: &[(String, String)]) -> Res<()> {
+/// other than `type` is a SyntaxError. No `type` is a JavaScript module. With a text hook in
+/// the module host of the isolate ([`Host::text`]), `type: "json"` is a JSON module and
+/// `type: "text"` a text module. With no text hook, `type: "json"` is the not-implemented
+/// Error. Another type is a TypeError.
+fn check_attribute_list(cx: &mut Cx, attributes: &[(String, String)]) -> Res<ModuleType> {
     for (key, _) in attributes {
         if key != "type" {
             let msg = format!("Import attribute \"{key}\" is not supported");
             return Err(throw_error(cx, ErrorKind::SyntaxError, &msg));
         }
     }
-    if let Some((_, value)) = attributes.first() {
-        if value == "json" {
-            return Err(not_implemented(cx, "JSON modules"));
+    let Some((_, value)) = attributes.first() else {
+        return Ok(ModuleType::JavaScript);
+    };
+    let ty = match value.as_str() {
+        "json" => Some(ModuleType::Json),
+        "text" => Some(ModuleType::Text),
+        _ => None,
+    };
+    match ty {
+        Some(ty) if has_text_hook(cx.rt()) => Ok(ty),
+        Some(ModuleType::Json) => Err(not_implemented(cx, "JSON modules")),
+        _ => {
+            let msg = format!("Import attribute type \"{value}\" is not supported");
+            Err(throw_error(cx, ErrorKind::TypeError, &msg))
         }
-        let msg = format!("Import attribute type \"{value}\" is not supported");
-        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
-    Ok(())
 }
 
 /// The error a failed `load` hook throws (as eval code's compile failures, `abi/script.rs`).
@@ -517,7 +528,15 @@ fn module_for_unit(cx: &mut Cx, realm: u64, unit: VerifiedUnit, name: &str) -> R
 pub(crate) struct Host<'h> {
     pub resolve: &'h mut dyn FnMut(&str, &str) -> Result<String, String>,
     pub load: &'h mut dyn FnMut(&str) -> CompileResult,
+    /// `text(name, type)`: the source text of the module `name` for a request with
+    /// `type: "json"` or `type: "text"` (`type` is `"json"` or `"text"`); an `Err` text is
+    /// thrown as an Error. `None`: the host has no JSON or text modules
+    /// ([`check_attribute_list`]). See [`synthetic_module`].
+    pub text: Option<TextHook<'h>>,
 }
+
+/// The text hook of a [`Host`]: `(name, type)` -> the source text, or the error text.
+pub(crate) type TextHook<'h> = &'h mut dyn FnMut(&str, &str) -> Result<String, String>;
 
 std::thread_local! {
     /// The module hosts in use on this thread, innermost last: (the isolate's key,
@@ -584,11 +603,15 @@ fn host_resolve(cx: &mut Cx, referrer: &str, specifier: &str) -> Res<String> {
     }
 }
 
-/// The record of the module named `name` in the module map of `realm` (the referrer's
-/// realm, so one referrer and name give one module, HostLoadImportedModule §16.2.1.10, also
-/// when code of another realm asks): the map's, or a new one from the host's `load(name)`
-/// (the thrown error of a failed load). GC point.
-fn host_module(cx: &mut Cx, realm: u64, name: &str) -> Res<u64> {
+/// The record of the module named `name` of type `ty` in the module map of `realm` (the
+/// referrer's realm, so one referrer and name give one module, HostLoadImportedModule
+/// §16.2.1.10, also when code of another realm asks): the map's, or a new one from the
+/// host's `load(name)` (the thrown error of a failed load). A JSON or text module comes from
+/// [`synthetic_module`]; its map key has the type ([`map_key`]). GC point.
+fn host_module(cx: &mut Cx, realm: u64, name: &str, ty: ModuleType) -> Res<u64> {
+    if ty != ModuleType::JavaScript {
+        return synthetic_module(cx, realm, name, ty);
+    }
     let key = atoms::intern_str(cx.rt(), name);
     if let Some(t) = map_get(realm, key) {
         return Ok(t);
@@ -636,11 +659,11 @@ fn load_graph(cx: &mut Cx, root: u64) -> Res<()> {
             for r in 0..n as u32 {
                 let mut target = loaded(m, r);
                 if target == UNDEFINED {
-                    check_attributes(cx, m, r)?;
+                    let ty = check_attributes(cx, m, r)?;
                     let spec = object::list_get(object::record_get(m, modf::REQUESTED), r as usize);
                     let spec = string::to_rust_string(spec);
                     let name = host_resolve(cx, &referrer, &spec)?;
-                    target = host_module(cx, realm_of(m), &name)?;
+                    target = host_module(cx, realm_of(m), &name, ty)?;
                     object::list_set(rt, object::record_get(m, modf::LOADED), r as usize, target);
                 }
                 if status_of(target) == status::NEW {
@@ -2168,10 +2191,10 @@ fn import_load(cx: &mut Cx, referrer: &str, realm: u64, specifier: u64, options:
         let msg = format!("Import attribute \"{key}\" with value \"{value}\" is not supported");
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
-    check_attribute_list(cx, &attributes)?;
+    let ty = check_attribute_list(cx, &attributes)?;
     // HostLoadImportedModule.
     let name = host_resolve(cx, referrer, &spec)?;
-    host_module(cx, realm, &name)
+    host_module(cx, realm, &name, ty)
 }
 
 /// The rejected closure of ContinueDynamicImport (steps 3-4, 6.b): rejects the import()
@@ -2261,4 +2284,224 @@ fn import_evaluated<'s>(
         cx.resolve_promise_once(pl, Local::<JsValue>::from_bits(ns))?;
     }
     Ok(Local::undefined())
+}
+
+// ---- JSON modules and text modules (synthetic modules) ----------------------------------------
+//
+// ```text
+// import v from "m" with { type: "json" }     check_attribute_list -> ModuleType::Json
+// import v from "m" with { type: "text" }     (both need Host::text; else as before)
+//   host_resolve(referrer, "m") -> name
+//   host_module(realm, name, ty) -> synthetic_module
+//     map_key(name, ty): the realm's map has "name\0json" / "name\0text"   one record per type
+//     Host::text(name, "json" | "text") -> the source text
+//     json: Call(%JSON.parse%, undefined, « text ») in the module's realm (ParseJSONModule);
+//           a SyntaxError is the error of the load (no record)
+//     text: the text as a string (CreateTextModule)
+//     CreateDefaultExportSyntheticModule(value): a Source Text Module Record of the
+//       synthetic unit (one export, "default", cell 1; function 0 has no statements), with
+//       the value in the box of cell 1
+// ```
+//
+// The record keeps the Source Text record form (the MODULE fields do not change), so Link,
+// Evaluate and the namespace treat it as any module with no requests. The value is in the
+// box from the start: the spec stores it at Evaluate (SetSyntheticModuleBinding), but no code
+// can read the binding before then, because the module has no requests (no cycle reaches it)
+// and every importer evaluates after it.
+
+/// The module type of a module request: its `type` import attribute (§16.2.1.3.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModuleType {
+    /// No `type`: a Source Text Module (the host's `load`).
+    JavaScript,
+    /// `type: "json"`: a JSON module (ParseJSONModule).
+    Json,
+    /// `type: "text"`: a text module (CreateTextModule; the import text proposal).
+    Text,
+}
+
+impl ModuleType {
+    /// The `type` value that the host's text hook gets.
+    fn attribute(self) -> &'static str {
+        match self {
+            ModuleType::JavaScript => "javascript",
+            ModuleType::Json => "json",
+            ModuleType::Text => "text",
+        }
+    }
+}
+
+/// True if the module host of `rt`'s isolate (the innermost one) has a text hook.
+pub(crate) fn has_text_hook(rt: &Runtime) -> bool {
+    call_host(host_key(rt), |h| h.text.is_some()).unwrap_or(false)
+}
+
+/// The key of the module `name` of type `ty` in a realm's module map (an atom): the name for
+/// a JavaScript module, else the name, a NUL character and the type. So one file can be a
+/// JavaScript module and a text module at the same time (test262 `text-self.js`). This
+/// trusts the host: its names have no NUL character (the test262 runner and the CLI give
+/// file paths). GC point.
+fn map_key(rt: &Runtime, name: &str, ty: ModuleType) -> u64 {
+    match ty {
+        ModuleType::JavaScript => atoms::intern_str(rt, name),
+        _ => atoms::intern_str(rt, &format!("{name}\0{}", ty.attribute())),
+    }
+}
+
+/// The JSON or text module `name` (`ty`) of the module map of `realm`: the map's, or a new
+/// one from the host's text hook (HostLoadImportedModule with ParseJSONModule or
+/// CreateTextModule, then CreateDefaultExportSyntheticModule). A failed hook, or JSON text
+/// that `JSON.parse` refuses (a SyntaxError), is the thrown error of the load, and no record
+/// is made: a later load asks the host again. GC point; JSON.parse runs no JS code.
+pub(crate) fn synthetic_module(cx: &mut Cx, realm: u64, name: &str, ty: ModuleType) -> Res<u64> {
+    let key = map_key(cx.rt(), name, ty);
+    if let Some(m) = map_get(realm, key) {
+        return Ok(m);
+    }
+    let text = match call_host(host_key(cx.rt()), |h| {
+        h.text.as_mut().map(|t| t(name, ty.attribute()))
+    }) {
+        Some(Some(Ok(text))) => text,
+        Some(Some(Err(msg))) => return Err(throw_error(cx, ErrorKind::Error, &msg)),
+        // `check_attribute_list` saw a text hook, and no JS ran since.
+        _ => {
+            return Err(not_implemented(
+                cx,
+                "JSON and text modules without a text hook",
+            ));
+        }
+    };
+    // GC points from here: the values live in Rust locals (CSS).
+    let rt = cx.rt();
+    let s = string::new_string(rt, &text);
+    let value = match ty {
+        ModuleType::Json => json_parse(cx, realm, s)?,
+        _ => s,
+    };
+    let unit = match synthetic_unit() {
+        Ok(unit) => unit,
+        Err(e) => {
+            let msg = format!("ep9 internal error: the synthetic module unit: {e:?}");
+            return Err(throw_error(cx, ErrorKind::Error, &msg));
+        }
+    };
+    let rt = cx.rt();
+    let lu = load_unit(rt, unit, name);
+    let name_atom = atoms::intern_str(rt, name);
+    let m = new_module(rt, lu, name_atom);
+    object::record_set(rt, m, modf::HOST_DEFINED, realm);
+    let stored = cell_set(rt, m, SYNTHETIC_DEFAULT_CELL, value);
+    debug_assert!(stored, "the synthetic unit exports cell 1");
+    map_add(rt, realm, key, m);
+    Ok(m)
+}
+
+/// The cell of the `default` export of the synthetic unit.
+const SYNTHETIC_DEFAULT_CELL: i32 = 1;
+
+/// The module unit of a JSON or text module: strict module code with the one local export
+/// `default` (local name `*default*`, cell 1) and a function 0 of the front end's module form
+/// (`bytecodegen/module.rs`) with no declarations and no statements:
+///
+/// ```text
+///     Ldar <this>; Star r0; LdaUndefined; Star <this>
+///     SwitchOnGeneratorState r0, [L_init, L_run]
+/// L_init: LdaUndefined; SuspendGenerator r0, r0..r0, 1, 1     InitializeEnvironment ends
+/// L_run:  ResumeGenerator r0, r0..r0, 1; LdaUndefined; Return Evaluate: nothing to run
+/// ```
+///
+/// The unit has no source text. Not a GC point.
+pub(crate) fn synthetic_unit() -> Result<VerifiedUnit, ep9_bytecode::BuildError> {
+    use ep9_bytecode::{
+        FunctionBuilder, FunctionFlags, FunctionId, FunctionMeta, LocalExportEntry, Register,
+        RegisterList, ScopeFlags, ScopeKind, UnitBuilder, UnitOptions, UnitString,
+    };
+    let opts = UnitOptions {
+        code_kind: CodeKind::Module,
+        strict: true,
+        typescript: None,
+        engine_build_id: [0; 16],
+        embed_source: true,
+    };
+    let mut u = UnitBuilder::new("", opts);
+    u.add_scope(ScopeKind::Module, ScopeFlags::STRICT, None, Vec::new());
+    let mut meta = FunctionMeta::entry(CodeKind::Module, true, 0);
+    // A resumable function 0 (M3-P2-MODULE-F0), as the front end makes it.
+    meta.flags = meta.flags | FunctionFlags::ASYNC;
+    let mut b = FunctionBuilder::new(meta);
+    let g = b.new_register();
+    b.ldar(Register::RECEIVER).star(g);
+    b.lda_undefined().star(Register::RECEIVER);
+    let (table, entries) = b.jump_table(RUN as u32 + 1);
+    b.switch_on_generator_state(g, table);
+    b.bind(entries[0]);
+    let regs = RegisterList::new(0, 1);
+    b.lda_undefined();
+    b.suspend_generator(g, regs, 1, RUN as u32);
+    b.bind(entries[RUN as usize]);
+    b.resume_generator(g, regs, 1);
+    b.lda_undefined().return_();
+    u.set_function(FunctionId(0), b.finish()?);
+    let mut records = ModuleRecords::default();
+    records.local_export_entries.push(LocalExportEntry {
+        export_name: UnitString::new("default"),
+        local_name: UnitString::new("*default*"),
+        cell: SYNTHETIC_DEFAULT_CELL,
+    });
+    u.set_module_records(records);
+    u.finish()
+}
+
+/// ParseJSONModule step 1 (the json-modules text, ES2025 §16.2.1.8): `Call(%JSON.parse%,
+/// undefined, « s »)` in `realm` (the module's `[[Realm]]`: its objects get that realm's
+/// prototypes). %JSON.parse% is the builtin of the embedder's table that the table installs
+/// as the `parse` property of %JSON% ([`json_parse_id`]): this trusts the table (ep9_builtins
+/// `json.rs`), not the property, which code can change. A function object of that builtin
+/// is made in `realm` for the call (no code sees it: JSON.parse with no reviver passes no
+/// function on). With no such builtin, the not-implemented Error. GC point; runs no JS code.
+fn json_parse(cx: &mut Cx, realm: u64, s: u64) -> Res<u64> {
+    let rt = cx.rt();
+    let Some(id) = json_parse_id(rt) else {
+        return Err(not_implemented(cx, "JSON modules without JSON.parse"));
+    };
+    // The first realm's function object, made at its install (JSON is not a lazy group), so
+    // this makes nothing. Every realm's function object of a builtin shares its FunctionInfo.
+    let first = crate::builtins::function_object(rt, id);
+    let info: *const FunctionInfo = object::function_info(first);
+    let saved = cx.realm;
+    let switch = realm != saved && realm != UNDEFINED;
+    if switch {
+        crate::realm::switch(cx, realm);
+    }
+    let rt = cx.rt();
+    let f = object::new_function(rt, info, UNDEFINED);
+    let r = abi::Cx::new(cx)
+        .call(
+            Local::<JsValue>::from_bits(f),
+            Local::<JsValue>::undefined(),
+            &[Local::<JsValue>::from_bits(s)],
+        )
+        .map(|v| v.bits());
+    if switch {
+        crate::realm::switch(cx, saved);
+    }
+    r
+}
+
+/// The id of %JSON.parse% in the embedder's builtin table: the definition that a module of
+/// the table installs as the `parse` property of %JSON%. `None` with no table or no such
+/// definition. Not a GC point.
+fn json_parse_id(rt: &Runtime) -> Option<crate::builtins::BuiltinId> {
+    use crate::builtins::{PropKey, PropValue};
+    let table = rt.builtins.table()?;
+    table.modules.iter().find_map(|m| {
+        m.props
+            .iter()
+            .filter(|o| o.target == IntrinsicId::Json)
+            .flat_map(|o| o.props.iter())
+            .find_map(|p| match (p.key, p.value) {
+                (PropKey::Str("parse"), PropValue::Builtin(i)) => Some(m.id(i)),
+                _ => None,
+            })
+    })
 }
