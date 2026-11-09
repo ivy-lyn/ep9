@@ -726,6 +726,24 @@ fn nesting_cap_body() {
     }
 }
 
+/// The nesting cap changes the parse result (crate doc, "Known gaps"; M7-P4 fixer r2,
+/// reviewer R5): 300 nested groups, which V8 parses, are a StackOverflow error here, with no
+/// flag.
+#[test]
+fn three_hundred_nested_groups_are_a_stack_overflow() {
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let deep = format!("{}{}", "(".repeat(300), ")".repeat(300));
+            let e = parse_str(&deep, Flags::empty()).unwrap_err();
+            assert_eq!(e.error, Error::StackOverflow);
+            assert_eq!(e.pos, MAX_NESTING + 1);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 #[test]
 fn the_ucd_version_is_17() {
     assert_eq!(UCD_VERSION, "17.0.0");

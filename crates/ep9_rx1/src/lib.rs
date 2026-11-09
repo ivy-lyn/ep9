@@ -21,7 +21,8 @@
 //! | `unicode.rs`, `unicode_tables.rs` | not V8: the ICU lookups of the parser, as tables from the Unicode Character Database [`UCD_VERSION`] (`data/gen-tables.py`) |
 //!
 //! Known gaps of the parser port, each by name (none changes which patterns parse, except the
-//! last four, which follow ECMA-262 where V8 follows ICU or its own parse):
+//! nesting cap and the last four, which follow ECMA-262 where V8 follows ICU or its own
+//! parse):
 //!
 //! - The `kVerifySyntax` mode is not ported (one mode).
 //! - V8's `--js-regexp-buffer-boundaries` escapes (`\A`, `\z`, `\Z`) and the debug-only
@@ -30,8 +31,10 @@
 //!   ranges and the case closure of `u`+`i` and `v`+`i` (V8 `AddClassEscape`,
 //!   `AddUnicodeCaseEquivalents`, `NeedsDesugaringForIgnoreCase`, `u_foldCase` in `\q{}`) are
 //!   the compiler's job (RX1-1). Tree shape only.
-//! - V8 checks the stack limit in `Advance`; here [`MAX_NESTING`] caps the nesting of groups
-//!   and `v`-mode classes ([`Error::StackOverflow`]).
+//! - V8 checks the stack limit in `Advance`; here [`MAX_NESTING`] (256) caps the nesting of
+//!   groups and `v`-mode classes ([`Error::StackOverflow`]). This changes the parse result:
+//!   RX1 refuses 257 nested groups, and node v26.13.0 (V8) parses 10,000 (it refuses 50,000).
+//!   No error kind is mapped to it yet (RX1-1). Raising the cap is route RX1-DUPNAME-PERF.
 //! - Property names: V8 also takes ICU's short names that ECMA-262 table 68 does not list
 //!   (`\p{WSpace}`); RX1 does not.
 //! - Property values with an empty set: V8 refuses them (`\p{sc=Hrkt}`, ICU); RX1 takes every
