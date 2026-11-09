@@ -6,12 +6,12 @@
 //! | `unit_loader_*_preset*` | MC-p0-cx-1: a unit variant with lowering `jit` is skipped under every preset (JIT, jitless, hybrid), before `select()`; `select()` alone would pick it under hybrid |
 //! | `unit_loader_counts_*` | each skip reason, the digest binding (MC-w31-8), one load per function |
 //! | `unit_loader_*_fuse*` | steps 6-7: a popped or unknown fuse makes the object a dependency that does not hold |
-//! | `unit_loader_api_*` | the Cx API: the isolate's policy (MC-w24-3 form), no install in M7-P4 (MC-w30-2), the bytecode runs |
+//! | `unit_loader_api_*` | the Cx API: the isolate's policy (MC-w24-3 form), no install in M7-P4 (MC-w30-2), the bytecode runs; one intern table (MC-w25-9) |
 //! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered at run time, installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
 //! | `unit_loader_build_*` | SHSTK-ENGINE: the ep9_vm build script runs the shadow-stack refusal |
 //!
-//! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit,
-//! one intern table) are in `crates/ep9_unit/tests/loader.rs`: ep9_vm tests cannot compile JS.
+//! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit)
+//! are in `crates/ep9_unit/tests/loader.rs`: ep9_vm tests cannot compile JS.
 
 use ep9_bytecode::{FunctionFlags, FunctionId, FunctionKind, VerifiedUnit};
 use ep9_platform::CodeRange;
@@ -375,6 +375,43 @@ fn unit_loader_api_picks_by_the_isolate_policy_and_installs_nothing() {
             })
             .unwrap();
         assert_eq!(v, Value::int32(42).to_bits());
+    }
+}
+
+/// MC-w25-9 (H19 "one atom per text"): a unit loaded with its native part keeps no string
+/// table of its own. Each unit string is the isolate's atom for its text, and a second load of
+/// the same unit without unit code gets the same atoms.
+#[test]
+fn unit_loader_api_keeps_one_intern_table() {
+    let mut iso = Isolate::new_with(IsolateConfig::default(), ExecOptions::jitless()).unwrap();
+    let vars: &[Var<'_>] = &[(
+        DispatchKind::AotBaseline as u8,
+        lowering::JITLESS,
+        0,
+        8,
+        0,
+        &[],
+    )];
+    let fns = [(ID, digest(ID), vars)];
+    let text = filler(64);
+    iso.with_cx(|cx| {
+        let (rows, r) = cx.run_script_with_unit_code(defs(), "defs.js", &text, 0, &fns);
+        assert_eq!(rows.iter().find(|(k, _)| *k == "picked").unwrap().1, 1);
+        r.map(|_| ())
+    })
+    .unwrap();
+    iso.with_cx(|cx| cx.run_script(defs(), "again.js").map(|_| ()))
+        .unwrap();
+    let units = iso.rt.units.borrow();
+    let (with, plain) = (&units[units.len() - 2], &units[units.len() - 1]);
+    assert!(!with.unit.strings.is_empty());
+    for (i, s) in with.unit.strings.iter().enumerate() {
+        let atom = match s {
+            ep9_bytecode::UnitString::Latin1(b) => crate::atoms::intern_latin1(&iso.rt, b),
+            ep9_bytecode::UnitString::Utf16(u) => crate::atoms::intern_utf16(&iso.rt, u),
+        };
+        assert_eq!(with.string(i), atom, "string {i}");
+        assert_eq!(plain.string(i), atom, "string {i}");
     }
 }
 
