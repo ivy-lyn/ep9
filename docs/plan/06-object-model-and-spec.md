@@ -139,7 +139,7 @@ The GC side of word0 (gc_state, kind, forwarding in S3) is owned by [03-gc.md](.
 | Intl | Reuse | icu 2.3.x baked data + icu_experimental 0.6.0 | 9-15 (less with agents) | M3 | High |
 | Temporal | Reuse | temporal_rs 0.2.6 + timezone_provider (zoneinfo64, ICU tzdata in `crates/ep9_temporal/data`) | 1-3 glue (Boa glue is 11.7k lines) | M3 | High |
 | Date | Build | Own code + port of V8's legacy date parser. Same tz provider as Temporal | 1-2 | M3 | High |
-| Number to string | Reuse | dragonbox_ecma 0.1.12 (already in oxc's graph). ryu-js 1.0.3 as the alternative | < 0.25 | M1 | High |
+| Number to string | Reuse | dragonbox_ecma 0.1.12 (in oxc's graph until oxc 0.157.0, which uses zmij_ecma 1.0.23; 2026-11-09, M7-P4 OXCBUMP). ryu-js 1.0.3 as the alternative | < 0.25 | M1 | High |
 | toFixed, toPrecision, toExponential, radix | Build | Port of V8 fixed-dtoa, bignum-dtoa, DoubleToRadixCString | part of 1 | M1 | High |
 | String to number | Build grammar | std `str::parse::<f64>` for the float core | part of 1 | M1 | High |
 | Float16 | Build | Own correct rounding (about 40 lines). Not `half` | part of 1 | M3 | High |

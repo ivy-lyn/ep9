@@ -974,7 +974,7 @@ impl<'a> FnGen<'a, '_> {
 // |---|---|---|
 // | U1 | The resources of a region live in registers, 2 per `using` and 3 per `await using` binding; the region knows them all before its body | The bindings of a region are fixed by the source (a `using` is never a statement of an `if` or a loop body, nor of a case clause: early errors); no DisposableStack object per region (V8 keeps a stack object) |
 // | U2 | A region is the G5 `try`/`finally` with its token and value registers; the finalizer may replace the completion by a throw | `break`, `continue` and `return` through a region dispose first, as through `finally` |
-// | U3 | The sync method of an `await using` value without @@asyncDispose is called directly, then undefined is awaited, then its throw (if any) is the result | The same ticks and results as the promise closure of GetDisposeMethod step 1.b.ii, except one observable step: the spec's Await of the closure's promise reads its `constructor` (PromiseResolve), which a getter on Promise.prototype sees; route ERM-SYNC-FALLBACK-PROMISE (AsyncDisposableStack already awaits that promise); no new builtin |
+// | U3 | The sync method of an `await using` value without @@asyncDispose is called directly, then undefined is awaited, then its throw (if any) is the result | The same ticks and results as the promise closure of GetDisposeMethod step 1.b.ii, except one observable step: the spec's Await of the closure's promise reads its `constructor` (PromiseResolve), which a getter on Promise.prototype sees; route ERM-SYNC-FALLBACK-PROMISE (AsyncDisposableStack already awaits that promise); no new builtin. [2026-11-09, M7-P4 SPEC-BUILTINS3 (route ERM-SYNC-FALLBACK-PROMISE, 8109a6fe): the runtime now takes that step: GetDisposeMethod hint 1 returns the step 1.b.ii closure (`interp/slow/runtime.rs` `get_dispose_method`) or throws, so it never gives undefined and the fallback branch of `FnGen::add_resource` is not taken; the branch stays (no BytecodeGen output change)] |
 // | U4 | An `await using` region has `n + 1` await points for `n` bindings: one per `await using` binding, one step-3.d check per `using` binding, and the step-4 check ([`using_suspends`]) | AF3/AGF2: the counters of the body count them before the body |
 // | U5 | Code with no `using` emits the same bytecode as before | [`using_kinds`] finds no binding, and no region is made |
 
@@ -1239,7 +1239,10 @@ impl<'a> FnGen<'a, '_> {
     }
 
     /// AddDisposableResource(capability, acc, hint) (CreateDisposableResource): stores the
-    /// value in `r.value` and, unless a sync hint has undefined or null, its method.
+    /// value in `r.value` and, unless a sync hint has undefined or null, its method. For an
+    /// `await using` value the hint-1 call never gives undefined since M7-P4 SPEC-BUILTINS3 (the
+    /// runtime returns the step 1.b.ii closure; U3), so the hint-0 fallback branch below is not
+    /// taken; it stays, and the emitted bytecode is the same.
     fn add_resource(&mut self, r: UsingResource, at: u32) {
         self.b.star(r.value);
         let m = self.mark();
