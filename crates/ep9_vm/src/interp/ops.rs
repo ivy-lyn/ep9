@@ -439,6 +439,28 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     }
     let fi = object::function_info(callee);
     if fi.slot.kind_byte() != DispatchKind::Interp as u8 || fi.is_class_constructor() {
+        // A forwarded `apply` or `call` of a bytecode function (M7-P4 LEVER-3): the frame of
+        // `call::forward_frame` (no call, no GC point), then the unit of the cold path. A
+        // call that the cold path would record (`profile::record_call`: its budget unit is
+        // in the window) goes cold, so the record stays that of `apply` or `call`.
+        if fi.host.is_some()
+            && object::is_function(this)
+            && !profile::call_window_after_unit(st.cx.budget - 1)
+        {
+            let (fp, next) = (st.fp, st.next);
+            let rd: &St<'_> = st;
+            // SAFETY: `fp` is the live top frame and `next` the pc after this call; `arg`
+            // reads registers of the current verified instruction.
+            let pushed = unsafe {
+                call::forward_frame(&*rd.cx, fp, next, callee, this, argc, |i| arg(rd, i))
+            };
+            if let Some((nfp, code)) = pushed {
+                st.cx.budget -= 1;
+                st.fp = nfp;
+                st.acc = UNDEFINED;
+                return Flow::Jump(code);
+            }
+        }
         return Flow::Cold;
     }
     // A callee of another realm: `slow::call` runs it in its realm (H22-Q3).
@@ -571,6 +593,28 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             return Flow::Cold;
         }
     } else if crate::native::hot_stub(kind).is_none() {
+        // A forwarded `apply` or `call` of a bytecode function (M7-P4 LEVER-3): the frame of
+        // `call::forward_frame` (no call, no GC point), then the unit of the cold path. A
+        // call that the cold path would record (`profile::record_call`: its budget unit is
+        // in the window) goes cold, so the record stays that of `apply` or `call`.
+        if fi.host.is_some()
+            && object::is_function(this)
+            && !profile::call_window_after_unit(st.cx.budget - 1)
+        {
+            let (fp, next) = (st.fp, st.next);
+            let rd: &St<'_> = st;
+            // SAFETY: `fp` is the live top frame and `next` the pc after this call; `arg`
+            // reads registers of the current verified instruction.
+            let pushed = unsafe {
+                call::forward_frame(&*rd.cx, fp, next, callee, this, argc, |i| arg(rd, i))
+            };
+            if let Some((nfp, code)) = pushed {
+                st.cx.budget -= 1;
+                st.fp = nfp;
+                st.acc = UNDEFINED;
+                return Flow::Jump(code);
+            }
+        }
         return Flow::Cold;
     }
     // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).

@@ -36,6 +36,8 @@
 //! may then be old; it is read only after the index is unmapped, and every unmap step writes
 //! it first (§10.4.4.2 step 3) or removes it.
 
+use ep9_heap::CellPtr;
+
 use crate::accessor;
 use crate::builtins::{self, BuiltinId, IntrinsicId};
 use crate::conv::Res;
@@ -479,8 +481,14 @@ pub(crate) fn element_value(o: u64, i: u32) -> Option<u64> {
 /// (`abi::Cx::create_list_from_array_like`, V10-D11). Not a GC point.
 #[inline]
 pub(crate) fn unmodified_length(rt: &Runtime, o: u64) -> Option<u32> {
+    unmodified_length_in(rt.root(Root::Realm), o)
+}
+
+/// [`unmodified_length`] with the current realm's REALM record `realm` given. Not a GC point;
+/// no panic path.
+#[inline(always)]
+fn unmodified_length_in(realm: u64, o: u64) -> Option<u32> {
     debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
-    let realm = rt.root(Root::Realm);
     if !kind::is_cell_bits(realm) || kind::cell_kind(realm) != kind::REALM.get() {
         return None;
     }
@@ -763,17 +771,64 @@ impl Source {
 
     /// Argument `i` (`i` below the length [`forward_source`] gave): the parameter while `i` is
     /// mapped, else the element, as [`element_value`] reads it. Not a GC point.
+    ///
+    /// The list words are read without `object::list_get`'s bound test (M7-P4 LEVER-3):
+    /// [`forward_source`] gave a length at most n, and the list holds 2n + mc words.
     #[inline(always)]
     pub(crate) fn get(&self, i: u32) -> u64 {
         let i = i as usize;
+        debug_assert!(i < self.n);
         if i < self.mc {
-            let s = object::list_get(self.e, 2 * self.n + i);
+            let s = list_word(self.e, 2 * self.n + i);
             if s != HOLE {
                 return object::context_get(self.map, int32_of(s) as u32).expect("a mapped slot");
             }
         }
-        object::list_get(self.e, i)
+        list_word(self.e, i)
     }
+
+    /// True if the object had a mapped index when [`forward_source`] read it (mc > 0; an
+    /// index may have been unmapped since). Not a GC point.
+    #[cfg_attr(
+        all(not(feature = "spike-native"), target_arch = "x86_64"),
+        allow(dead_code)
+    )]
+    #[inline(always)]
+    pub(crate) fn mapped(&self) -> bool {
+        self.mc > 0
+    }
+
+    /// The ELEMENTS list of a source that is not [`Source::mapped`] and has a list (a cell):
+    /// the T0 forwarded call reads its words with [`unmapped_word`] (`call::forward_frame`,
+    /// M7-P4 LEVER-3: no panic path there). `None` for any other source. Not a GC point.
+    #[cfg_attr(
+        all(not(feature = "spike-native"), target_arch = "x86_64"),
+        allow(dead_code)
+    )]
+    #[inline(always)]
+    pub(crate) fn unmapped_list(&self) -> Option<CellPtr> {
+        (self.mc == 0 && kind::is_cell_bits(self.e)).then(|| object::cell(self.e))
+    }
+}
+
+/// Argument `i` of a source whose [`Source::unmapped_list`] is `c` (`i` below the length
+/// [`forward_source`] gave): the element itself, as [`Source::get`] reads it there. Not a GC
+/// point.
+#[cfg_attr(
+    all(not(feature = "spike-native"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) fn unmapped_word(c: CellPtr, i: u32) -> u64 {
+    object::rd(c, elems::DATA + 8 * i as usize)
+}
+
+/// Word `i` of the ELEMENTS list `e` of an arguments object, for an `i` the caller has
+/// checked against the store's n and mc ([`store`]). Not a GC point.
+#[inline(always)]
+fn list_word(e: u64, i: usize) -> u64 {
+    debug_assert!(i < object::list_len(e));
+    object::rd(object::cell(e), elems::DATA + 8 * i)
 }
 
 /// The length and the in-place reader of the arguments object `o` when CreateListFromArrayLike
@@ -783,16 +838,35 @@ impl Source {
 /// removed or redefined property). Not a GC point.
 #[inline(always)]
 pub(crate) fn forward_source(rt: &Runtime, o: u64) -> Option<(Source, u32)> {
+    forward_source_in(rt.root(Root::Realm), o)
+}
+
+/// [`forward_source`] with the current realm's REALM record `realm` given (`Cx::realm`, a
+/// copy of the `Root::Realm` root), and no panic path: the T0 forwarded call
+/// (`call::forward_frame`, M7-P4 LEVER-3) reads it inside the call handlers. Not a GC point.
+#[inline(always)]
+pub(crate) fn forward_source_in(realm: u64, o: u64) -> Option<(Source, u32)> {
     debug_assert!(kind::cell_kind(o) == kind::ARGUMENTS.get());
-    let len = unmodified_length(rt, o)?;
-    let (e, n, mc) = match store(o) {
-        Some(s) => s,
-        None if len == 0 => (UNDEFINED, 0, 0),
-        None => return None,
-    };
-    if len as usize > n || (0..len as usize).any(|i| object::list_get(e, i) == HOLE) {
+    let len = unmodified_length_in(realm, o)?;
+    let c = object::cell(o);
+    let e = object::rd(c, obj::ELEMENTS);
+    if !kind::is_cell_bits(e) {
+        // No elements (undefined): only a length of 0 reads nothing.
+        return (e == UNDEFINED && len == 0).then_some((Source::EMPTY, 0));
+    }
+    let mc = int32_of(object::rd(c, argsf::MAPPED_COUNT)) as usize;
+    let total = object::rd_i32(object::cell(e), elems::CAPACITY) as usize;
+    let n = total.checked_sub(mc)? / 2;
+    if len as usize > n {
         return None;
     }
-    let map = object::fixed_get(o, 0);
+    let mut i = 0;
+    while i < len as usize {
+        if list_word(e, i) == HOLE {
+            return None;
+        }
+        i += 1;
+    }
+    let map = object::rd(c, argsf::MAP);
     Some((Source { e, n, mc, map }, len))
 }
