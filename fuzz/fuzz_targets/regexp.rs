@@ -19,10 +19,9 @@
 //! ```
 //!
 //! Known front-end false accepts (oxc_regular_expression 0.155; node v26.13.0 and RX1 refuse
-//! each, M7-P4 RX1-0 report), not counted as crashes:
-//! - rx-dupnames: a duplicate group name that oxc does not see, for example
-//!   `/(?<a>x|(?<a>y))/` (a group inside a group of the same name). RX1 says
-//!   DuplicateCaptureGroupName.
+//! each, M7-P4 RX1-0 report), not counted as crashes (the rx-dupnames case, a group inside a
+//! group of the same name such as `/(?<a>x|(?<a>y))/`, is refused by oxc 0.157.0, M7-P4
+//! OXCBUMP, so the target counts a disagreement on it as a crash):
 //! - `\c` with no control letter inside a class in Unicode mode, for example `/[\c]/u`. RX1
 //!   says InvalidUnicodeEscape at the `c`.
 #![no_main]
@@ -33,7 +32,6 @@ use ep9_rx1::{Error, Flags, ParseError};
 /// True for a known front-end false accept (the module doc), given RX1's error.
 fn known_front_end_false_accept(units: &[u16], e: &ParseError) -> bool {
     match e.error {
-        Error::DuplicateCaptureGroupName => true,
         Error::InvalidUnicodeEscape => {
             e.pos >= 1
                 && units.get(e.pos) == Some(&u16::from(b'c'))

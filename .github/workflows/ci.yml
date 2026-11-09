@@ -349,6 +349,13 @@ jobs:
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
       - name: test262 parse
         run: cargo run --release --locked -p ep9_test262 -- parse --json test262-parse.json
+      # RX1 parse equality (plan v12 section 7.2, M7-P4 RX1-0): ep9_rx1 parses every regexp of
+      # the test262 RegExp sources as RX0 (regress) does, with the named list of known
+      # differences and the count floors of the test. It reads the checkout above, so it runs
+      # in this job (an ignored test; it panics without the checkout).
+      - name: RX1 parse equality (ep9_rx1)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        run: cargo test --locked -p ep9_rx1 --test parse_equality -- --ignored
       # The engine end to end (tools/test262/README.md "exec"): one worker process per CPU, 20 s
       # soft timeout per run (on an M-series Mac, each run of the 8 sm/Date dst-offset-caching
       # files, among the slowest, takes 0.6-1.5 s, by host load). Exit 1 on a change
