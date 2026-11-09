@@ -24,7 +24,7 @@
 //! | `select()` stays pure: the loader builds its inputs and stores its result | [`load`] |
 //! | A unit variant with lowering `jit` is skipped under every preset, before `select()`: `jit` is never stored in a unit, so `jit` in the hybrid accept list admits only runtime code (doc 13 §1.4; MODES-D13 keeps one filter in `select()`, so the skip is the loader's; route MC-p0-cx-1) | [`load`], [`Reason::JitLowering`] |
 //! | The loader keeps no counter session and `select()` reads none; the session model is T1 tier-manager work at M5 (V12-D31; route MC-p0-cx-2) | [`load`]: `Session { connected: false, cpu }` |
-//! | The policy is the isolate's install rank and accept list ([`isolate_policy`]). Route MC-w24-3 wants them as `ExecOptions` fields set by the preset constructors (`exec.rs`, not this role's file): until then `isolate_policy` is the one place that maps the preset | [`isolate_policy`] |
+//! | The policy is the isolate's install rank and accept list ([`isolate_policy`]): the private `ExecOptions` field that the preset constructors set (`exec.rs`; route MC-w24-3, M7-P4 integration fixer), so the loader keeps no preset table of its own | [`isolate_policy`] |
 //! | Unit load keeps one intern table: every unit string is an atom through `atoms::intern_*` in `LoadedUnit::load` (H19 "one atom per text"); the loader adds no string table (route MC-w25-9) | [`load`] reads no string |
 //! | Native code binds to its bytecode by digest: a function whose bytecode differs (another BytecodeGen switch, a changed source) runs its bytecode. So every switch that changes bytecode or emitted code is in the header `codegen_flags` hash, or unit functions keep the default bytecode; REGOPT has no off switch outside tests (route MC-w31-8) | [`unit_function_digest`], [`Reason::Digest`] |
 //! | No native code on the JS call path until MC-w30-2 (A2-RW, M7-P5): T0 sends a non-Interp slot cold (`interp/ops.rs` `call_fast`) and `slow::call` answers not_implemented for it, so a JS call of an installed function would throw. Step 8 runs only from the in-crate tests ([`install_picked`]) | [`INSTALL`] |
@@ -224,10 +224,10 @@ pub(crate) fn unit_function_digest(unit: &VerifiedUnit, function: u32) -> Option
 }
 
 /// The install rank and accept list of the isolate of `rt` (doc 13 §1.2), or `None` for a
-/// preset this build has no policy for. The one place that maps the preset; route MC-w24-3
-/// moves them into `ExecOptions` fields (`exec.rs`).
+/// preset this build has no policy for: the `ExecOptions` field that the preset constructors
+/// set (`exec.rs`; route MC-w24-3), so the loader keeps no preset table of its own.
 pub(crate) fn isolate_policy(rt: &Runtime) -> Option<Policy> {
-    Policy::of(rt.exec.get().preset())
+    rt.exec.get().policy()
 }
 
 /// Steps 5-7 and the pick for the native part of `lu` (see the module doc): maps `text`,

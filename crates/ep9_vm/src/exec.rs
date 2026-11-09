@@ -109,13 +109,16 @@ impl Feedback {
 }
 
 /// How an isolate executes (C-23): a preset and a type-feedback mode. Opaque: made by a
-/// preset constructor, changed by setters. Later fields (the policy of doc 13 §1.2, the fuzz
-/// hooks) come with new setters, never public fields.
+/// preset constructor, changed by setters. Later fields (the fuzz hooks) come with new
+/// setters, never public fields. The policy of doc 13 §1.2 (the `select()` install rank and
+/// accept list) is a private field that only the preset constructors set (route MC-w24-3,
+/// M7-P4), and the unit loader reads it (`ExecOptions::policy`), not a preset table of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecOptions {
     preset: Preset,
     feedback: Feedback,
     fuzz: FuzzHooks,
+    policy: Option<crate::select::Policy>,
 }
 
 impl ExecOptions {
@@ -126,6 +129,7 @@ impl ExecOptions {
             preset: Preset::JIT,
             feedback: Feedback::FULL,
             fuzz: FuzzHooks::NONE,
+            policy: Some(crate::select::Policy::JIT),
         }
     }
 
@@ -135,6 +139,7 @@ impl ExecOptions {
             preset: Preset::JITLESS,
             feedback: Feedback::ICS_ONLY,
             fuzz: FuzzHooks::NONE,
+            policy: Some(crate::select::Policy::JITLESS),
         }
     }
 
@@ -165,6 +170,13 @@ impl ExecOptions {
     /// The feedback mode.
     pub const fn feedback_mode(&self) -> Feedback {
         self.feedback
+    }
+
+    /// The `select()` policy of the preset (doc 13 §1.2: the install rank and the accept
+    /// list), as the preset constructor set it; `None` for a preset with no policy in this
+    /// build (the hybrid preset is not built yet).
+    pub(crate) const fn policy(&self) -> Option<crate::select::Policy> {
+        self.policy
     }
 }
 

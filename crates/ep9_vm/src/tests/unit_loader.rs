@@ -801,3 +801,35 @@ fn unit_loader_build_script_runs_the_shadow_stack_refusal() {
     assert!(text.contains("panic!("));
     assert!(dir.join("../ep9_unit/build_flags.rs").exists());
 }
+
+/// MC-w24-3 (M7-P4 integration fixer): the policy of an isolate is the private `ExecOptions`
+/// field that the preset constructors set, and the loader reads that field
+/// (`unit_loader::isolate_policy`), not a preset table of its own. The feedback setter
+/// keeps it, and each isolate gives the loader the policy of its options.
+#[test]
+fn unit_loader_api_policy_is_the_exec_options_field() {
+    use crate::Feedback;
+    assert_eq!(ExecOptions::jit().policy(), Some(Policy::JIT));
+    assert_eq!(ExecOptions::jitless().policy(), Some(Policy::JITLESS));
+    assert_eq!(
+        ExecOptions::jit().feedback(Feedback::ICS_ONLY).policy(),
+        Some(Policy::JIT)
+    );
+    assert_eq!(
+        ExecOptions::jitless().feedback(Feedback::FULL).policy(),
+        Some(Policy::JITLESS)
+    );
+    let mut presets = vec![ExecOptions::jitless()];
+    if cfg!(feature = "jit") {
+        presets.push(ExecOptions::jit());
+    }
+    for exec in presets {
+        let iso = Isolate::new_with(IsolateConfig::default(), exec).unwrap();
+        assert_eq!(
+            unit_loader::isolate_policy(&iso.rt),
+            exec.policy(),
+            "{}",
+            exec.preset().name()
+        );
+    }
+}
