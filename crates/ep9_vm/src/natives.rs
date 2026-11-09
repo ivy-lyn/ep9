@@ -1383,10 +1383,7 @@ pub(crate) fn error_stack_get<'s>(
     let rt = cx.rt();
     if let Some((unit, offset)) = object::error_site(e) {
         text.push_str("\n    at ");
-        text.push_str(&error::site_text(
-            rt,
-            crate::runtime::Site { unit, offset },
-        ));
+        text.push_str(&error::site_text(rt, crate::runtime::Site { unit, offset }));
     }
     Ok(local(error::message_string(rt, &text)))
 }
