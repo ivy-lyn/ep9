@@ -434,4 +434,16 @@ else
   if [ "$users" = ep9_vm ] || [ -z "$users" ]; then ok "(22) ep9_rx1 has no dependent but ep9_vm (${users:-none yet})"; else bad "(22) ep9_rx1 must have ep9_vm as its only dependent; it has: $users"; fi
 fi
 
+# 23) The jitless ep9 has the ep9_platform `unwind` feature, and no `jit` (H27-Q3, H28; DL
+#     M6-ORCH-298, MODES-CHECK-w33 MC-w33-2.2): ep9_vm turns `unwind` on in every build, so the
+#     jitless ep9 can register the unwind data of loaded AOT unit text. The default ep9 has it
+#     too. Control: `-p ep9_platform` alone must not show `unwind` (ep9_platform has no default
+#     features), so a query that always sees the feature fails here.
+if grep -q "ep9_cli" <<< "$members"; then
+  feature_check 23 ep9_platform unwind off "control: -p ep9_platform" -p ep9_platform
+  feature_check 23 ep9_platform unwind on "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  feature_check 23 ep9_platform jit off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  feature_check 23 ep9_platform unwind on "the default ep9 (-p ep9_cli)" -p ep9_cli
+fi
+
 exit "$fail"

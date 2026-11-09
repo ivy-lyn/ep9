@@ -118,6 +118,7 @@ mod string;
 mod stub_cache;
 mod symbol;
 mod unit;
+mod unit_loader;
 mod validity;
 pub mod versions;
 mod weakref;

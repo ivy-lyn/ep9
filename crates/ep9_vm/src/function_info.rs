@@ -84,6 +84,11 @@ pub(crate) struct FunctionInfo {
     /// The in-object capacity of `new F` (`slack::instance_capacity`), chosen at the first
     /// construct: 0 not chosen yet, `slack::NO_COUNT` the generous capacity, else capacity + 1.
     pub slack_capacity: Cell<u8>,
+    /// The unit code of this function (doc 13 §3.1, 13:263; M7-P4 A2-LOADER): its code set,
+    /// the code ranges and the `select()` pick, set once by the unit loader
+    /// (`unit_loader::load`). Empty while the function has only bytecode; no T0 path reads it,
+    /// so a run with no unit pays one word per function info (MC-w22-O5).
+    pub code_set: OnceCell<Box<crate::unit_loader::UnitCode>>,
 }
 
 /// The FunctionInfo flags of a unit function.
@@ -157,6 +162,7 @@ impl FunctionInfo {
             invocations: Cell::new(0),
             shared_slots: OnceCell::new(),
             slack_capacity: Cell::new(0),
+            code_set: OnceCell::new(),
         }
     }
 
@@ -185,6 +191,7 @@ impl FunctionInfo {
             invocations: Cell::new(0),
             shared_slots: OnceCell::new(),
             slack_capacity: Cell::new(0),
+            code_set: OnceCell::new(),
         }
     }
 
@@ -208,6 +215,7 @@ impl FunctionInfo {
             invocations: Cell::new(0),
             shared_slots: OnceCell::new(),
             slack_capacity: Cell::new(0),
+            code_set: OnceCell::new(),
         }
     }
 

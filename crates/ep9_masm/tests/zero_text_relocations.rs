@@ -293,7 +293,7 @@ fn a_unit_data_field_needs_a_load_through_the_unit_data_register() {
     assert_eq!(a64_one(0xf940_0360, Target::IcCell(3)), Ok(1));
     assert_eq!(x64_one(&[0x49, 0x8b, 0x86], Target::Stub(1)), Ok(1));
     assert_eq!(x64_one(&[0x4d, 0x8b, 0x86], Target::IcCell(1)), Ok(1));
-    // The isolate-register rows are not checked here: Runtime through x28 is a unit.
+    // Runtime through x28 is a unit (the isolate rows: `an_a64_isolate_field_needs_a_load_through_x28`).
     assert_eq!(a64_one(a64::LDR_X16_X28, Target::Runtime(4)), Ok(0));
 
     // The check alone, on records read back: a field past the end, and an x86-64 field with
@@ -715,14 +715,14 @@ fn an_a64_field_is_one_aligned_instruction_word() {
     a.reloc(3, Form::A64Ldst64Imm12, Target::LinkSlot(0))
         .unwrap();
     assert_eq!(a.finish().unwrap(), hand);
-    // An isolate row is not a register-load finding on AArch64, but the field is refused.
+    // An isolate row: since M7-P4 (A64-ISOLATE-LOAD) also a register-load finding on AArch64.
     let mut a = Assembler::new(Arch::A64);
     a.put(&RAW);
     a.reloc(3, Form::A64Ldst64Imm12, Target::Runtime(0))
         .unwrap();
     assert_eq!(
         finalize_unit(&a.finish().unwrap(), &common::TestUnit),
-        no(vec![mis(3)])
+        no(vec![mis(3), Finding::NotIsolateLoad { at: 3 }])
     );
     // An aligned field whose record has insn != at: nop; ldr x14, [x27] with insn = 0.
     let mut t = a64::NOP.to_le_bytes().to_vec();
@@ -798,3 +798,116 @@ fn check_text_gives_a_finding_for_a_field_outside_the_text() {
 
 /// `str x0, [x27, #0]`.
 const STR_X0_X27: u32 = 0xf900_0360;
+
+/// Route MASM-A64-NEWBR (M7-P2 JIT reviewer J4; M7-P4): the word scan knows the newer AArch64
+/// pc-relative branches. BC.cond (FEAT_HBC) is B.cond with bit 4 set; `CB<cc>`, `CBB<cc>` and
+/// `CBH<cc>` (FEAT_CMPBR) have imm9 at bits 5-13 in words of 4 bytes. The encodings are those of
+/// the Arm ARM ("Conditional branch (immediate)", "Compare and branch"). Before M7-P4 the scan
+/// read none of these words, so a branch out of the function was not a finding.
+#[test]
+fn the_a64_scan_finds_bc_cond_and_cb_cc() {
+    // The same 32-byte text as `the_a64_scan_finds_planted_words`: the word at offset 16.
+    let text = |w: u32| {
+        let mut t = Vec::new();
+        for i in 0..8 {
+            t.extend_from_slice(&if i == 4 { w } else { a64::NOP }.to_le_bytes());
+        }
+        t
+    };
+    // imm9 of a CB<cc> word.
+    let imm9 = |words: i32| ((words as u32) & 0x1ff) << 5;
+    let cases: [(&str, u32); 6] = [
+        // bc.eq: o0 = bit 4.
+        ("bc.eq", BC_EQ),
+        // cbgt x0, x1: sf = 1, cc = 000, Rm = 1, bits 15-14 = 00.
+        ("cbgt x0, x1", 0xf400_0000 | (1 << 16)),
+        // cbgt w0, w1: sf = 0.
+        ("cbgt w0, w1", 0x7400_0000 | (1 << 16)),
+        // cbbgt w0, w1: bit 15 = 1, H (bit 14) = 0.
+        ("cbbgt w0, w1", 0x7400_8000 | (1 << 16)),
+        // cbhgt w0, w1: H = 1.
+        ("cbhgt w0, w1", 0x7400_c000 | (1 << 16)),
+        // cbgt x0, #3: bit 24 = 1, imm6 = 3 at bits 15-20, bit 14 = 0.
+        ("cbgt x0, #3", 0xf500_0000 | (3 << 15)),
+    ];
+    for (name, w) in cases {
+        let (out, back, inside) = if w == BC_EQ {
+            (w | (4 << 5), w | (0x7_fffb << 5), w | (2 << 5))
+        } else {
+            (w | imm9(4), w | imm9(-5), w | imm9(2))
+        };
+        // +16: one past the end; -20: before the start; +8: inside.
+        assert_eq!(
+            check_text(Arch::A64, &text(out), &[]),
+            [Finding::OutsideFunction { at: 16, target: 32 }],
+            "{name}"
+        );
+        assert_eq!(
+            check_text(Arch::A64, &text(back), &[]),
+            [Finding::OutsideFunction { at: 16, target: -4 }],
+            "{name}"
+        );
+        assert_eq!(check_text(Arch::A64, &text(inside), &[]), [], "{name}");
+    }
+    // The imm9 range is +-1 KiB: the largest forward word offset (255) from offset 16.
+    assert_eq!(
+        check_text(Arch::A64, &text(0xf400_0000 | imm9(255)), &[]),
+        [Finding::OutsideFunction {
+            at: 16,
+            target: 16 + 1020
+        }]
+    );
+}
+
+/// Route A64-ISOLATE-LOAD (M7-P2 fixer r2c open item 1; M7-P4): on AArch64 a Runtime, RootIndex
+/// or DeoptExit field must be in `ldr Xt, [x28, #imm]` (x28 is the isolate register,
+/// M2-JIT-ABI), as on x86-64 it must be in `mov r64, [r15 + disp32]`. Before M7-P4 these
+/// fields were not checked on AArch64, and a load through x27 or a store became a unit.
+#[test]
+fn an_a64_isolate_field_needs_a_load_through_x28() {
+    let a64_one = |w: u32, t: Target| {
+        let mut a = Assembler::new(Arch::A64);
+        a.a64(w, Form::A64Ldst64Imm12, t).unwrap();
+        finalize_unit(&a.finish().unwrap(), &common::TestUnit).map(|u| u.exits().len())
+    };
+    let refused = |at| {
+        Err(FinalizeError::TextRelocations(vec![
+            Finding::NotIsolateLoad { at },
+        ]))
+    };
+    // ldr x16, [x27]; str x0, [x28]; ldr x0, [x27].
+    assert_eq!(a64_one(a64::LDR_X16_X27, Target::Runtime(4)), refused(0));
+    assert_eq!(a64_one(STR_X0_X28, Target::RootIndex(2)), refused(0));
+    assert_eq!(a64_one(LDR_X0_X27, Target::DeoptExit(1)), refused(0));
+    // The loads through x28 are units (a DeoptExit gives an exit).
+    assert_eq!(a64_one(a64::LDR_X16_X28, Target::Runtime(4)), Ok(0));
+    assert_eq!(a64_one(a64::LDR_X0_X28, Target::RootIndex(2)), Ok(0));
+    assert_eq!(a64_one(a64::LDR_X16_X28, Target::DeoptExit(1)), Ok(1));
+    // The check alone, on records read back: the kind picks the register.
+    let one = |w: u32, kind| {
+        check_register_loads(
+            Arch::A64,
+            &w.to_le_bytes(),
+            &[field(0, 0, Form::A64Ldst64Imm12, kind)],
+        )
+    };
+    assert_eq!(one(a64::LDR_X0_X28, RelocKind::RootIndex), []);
+    assert_eq!(
+        one(a64::LDR_X0_X28, RelocKind::LinkSlot),
+        [Finding::NotUnitDataLoad { at: 0 }]
+    );
+    assert_eq!(
+        one(a64::LDR_X16_X27, RelocKind::DeoptExit),
+        [Finding::NotIsolateLoad { at: 0 }]
+    );
+    assert_eq!(one(a64::LDR_X16_X27, RelocKind::IcCell), []);
+}
+
+/// `bc.eq #0` (FEAT_HBC).
+const BC_EQ: u32 = 0x5400_0010;
+
+/// `str x0, [x28, #0]`.
+const STR_X0_X28: u32 = 0xf900_0380;
+
+/// `ldr x0, [x27, #0]`.
+const LDR_X0_X27: u32 = 0xf940_0360;

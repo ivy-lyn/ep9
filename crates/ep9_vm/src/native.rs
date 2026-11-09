@@ -1639,7 +1639,7 @@ pub(crate) fn call_native(
 /// bytecode of `fi` against its VM frame and follows the [`RuntimeTable`] rules (0 only with a
 /// pending exception, valid Value bits otherwise). The code stays mapped and unchanged until
 /// [`uninstall_code`] or the isolate drops.
-#[cfg_attr(feature = "spike-native", allow(dead_code))] // first caller: the A2 unit loader
+// Its first caller: the A2 unit loader (`unit_loader::install_picked`, M7-P4).
 pub(crate) unsafe fn install_code(
     rt: &Runtime,
     fi: &FunctionInfo,

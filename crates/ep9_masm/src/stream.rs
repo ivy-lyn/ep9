@@ -179,14 +179,25 @@ pub(crate) const fn is_bl(w: u32) -> bool {
     w & 0xfc00_0000 == 0x9400_0000
 }
 
-/// AArch64 B.cond.
+/// AArch64 B.cond (`0x54000000`, bit 4 = 0) or BC.cond (FEAT_HBC, `0x54000010`, bit 4 = 1):
+/// the same imm19 at bits 5-23 (Arm ARM "Conditional branch (immediate)", o1 = 0).
 pub(crate) const fn is_b_cond(w: u32) -> bool {
-    w & 0xff00_0010 == 0x5400_0000
+    w & 0xff00_0000 == 0x5400_0000
 }
 
 /// AArch64 CBZ or CBNZ.
 pub(crate) const fn is_cbz(w: u32) -> bool {
     w & 0x7e00_0000 == 0x3400_0000
+}
+
+/// AArch64 `CB<cc>` (FEAT_CMPBR): compare and branch, the register form (`CB<cc>`, bits 15-14
+/// = 00), the byte and halfword forms (`CBB<cc>`, `CBH<cc>`, 32-bit only, bit 15 = 1) and the
+/// immediate form (bit 24 = 1, bit 14 = 0). Each has imm9 at bits 5-13 (a word offset, +-1 KiB).
+#[cfg(feature = "aot")]
+pub(crate) const fn is_cb_cc(w: u32) -> bool {
+    w & 0x7f00_c000 == 0x7400_0000
+        || w & 0xff00_8000 == 0x7400_8000
+        || w & 0x7f00_4000 == 0x7500_0000
 }
 
 /// AArch64 LDR (literal), any register class, or PRFM (literal).

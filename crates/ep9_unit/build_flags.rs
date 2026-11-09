@@ -1,11 +1,11 @@
 //! The build-flag rule of MC-w28-9.1 (doc 13 C-19, the A2 build rule): a build of `ep9_unit`
-//! (and of what links it: Spike B today) does not opt in to a hardware shadow stack (x86-64 CET,
-//! AArch64 GCS). Lazy deopt replaces a native return address in a frame record (the H29
-//! Contract: "lazy deopt by return-address swap only"), and a shadow stack faults on that
-//! return. The H29 A4 part decides with data; until then `build.rs` refuses a flag that turns
-//! one on. The `ep9` engine does not link `ep9_unit` yet, so its build has no such check (no
-//! engine code outside `spike-native` swaps a return address today; M7-P1 JIT reviewer F1).
-//! `build.rs` and `tests/build_flags.rs` both include this file with `#[path]`.
+//! or of `ep9_vm` (so of the `ep9` engine and all that links it) does not opt in to a hardware
+//! shadow stack (x86-64 CET, AArch64 GCS). Lazy deopt replaces a native return address in a
+//! frame record (the H29 Contract: "lazy deopt by return-address swap only"), and a shadow
+//! stack faults on that return. The H29 A4 part decides with data; until then both build
+//! scripts refuse a flag that turns one on (SHSTK-ENGINE, M7-P4: `ep9_vm` holds
+//! `deopt::swap_returns`, and `crates/ep9_vm/build.rs` runs this check too).
+//! `build.rs`, `tests/build_flags.rs` and `../ep9_vm/build.rs` include this file with `#[path]`.
 //!
 //! ```text
 //! -Zcf-protection=return | full        rustc: x86-64 CET shadow stack (IBT alone is "branch")
