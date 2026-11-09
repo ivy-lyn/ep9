@@ -8,7 +8,6 @@
 //! ```
 
 use crate::dispatch::DispatchKind::{self, AotBaseline, AotOpt, Baseline, Interp, Opt};
-use crate::exec::Preset;
 use crate::fuse::{STATIC, descriptor};
 use crate::select::{
     CodeObject, CodeSet, Dep, ObjectState, Pick, Policy, Session, lowering, select,
@@ -69,8 +68,12 @@ fn the_policies_are_the_doc_13_presets() {
     for p in [Policy::JIT, Policy::HYBRID] {
         assert!(p.accept.contains(&lowering::JIT));
     }
-    assert_eq!(Policy::of(Preset::JIT), Some(Policy::JIT));
-    assert_eq!(Policy::of(Preset::JITLESS), Some(Policy::JITLESS));
+    // The preset table is the ExecOptions constructors (route MC-w24-3).
+    assert_eq!(crate::ExecOptions::jit().policy(), Some(Policy::JIT));
+    assert_eq!(
+        crate::ExecOptions::jitless().policy(),
+        Some(Policy::JITLESS)
+    );
 }
 
 // ---- T1-T11 (doc 13 §3.3) ----
