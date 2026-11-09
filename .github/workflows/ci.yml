@@ -1056,7 +1056,7 @@ jobs:
     env:
       CARGO_FUZZ_VERSION: 0.12.0
       # <target>=<seconds of mutation>, one per target.
-      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60
+      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60 regexp=60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The +toolchain of fuzz/rust-toolchain.toml (the Miri pin); the root stable pin builds

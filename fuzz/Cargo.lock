@@ -107,6 +107,7 @@ version = "0.0.0"
 dependencies = [
  "ep9_bytecode",
  "ep9_frontend",
+ "ep9_rx1",
  "libfuzzer-sys",
 ]
 
@@ -128,6 +129,10 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
 ]
+
+[[package]]
+name = "ep9_rx1"
+version = "0.0.0"
 
 [[package]]
 name = "fastrand"
