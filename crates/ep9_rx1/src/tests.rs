@@ -599,6 +599,27 @@ fn too_many_captures() {
     );
 }
 
+/// Alternatives that repeat a group name and add another capture each (`(?<a>x)()|...`): the
+/// non-participating intervals of each alternative merge when they overlap or touch, so the
+/// list stays disjoint (a debug assert on the push) and short, and the duplicate-name scan
+/// costs O(N^2) interval steps for N alternatives, not O(N^3) (M7-P4 fixer r2, Codex r1
+/// rx1-0:dupname-cubic: N = 8,000 took 24.4 s in release). A count, not a time.
+#[test]
+fn repeated_names_across_alternatives_merge_their_intervals() {
+    let three = "(?<a>x)()|(?<a>x)()|(?<a>x)()";
+    let p = parse_str(three, Flags::empty()).expect("parses");
+    assert_eq!(p.capture_count, 6);
+    for n in [1_000u64, 8_000] {
+        let pattern = vec!["(?<a>x)()"; n as usize].join("|");
+        let before = parser::INTERVAL_STEPS.with(core::cell::Cell::get);
+        let p = parse_str(&pattern, Flags::empty()).expect("parses");
+        let steps = parser::INTERVAL_STEPS.with(core::cell::Cell::get) - before;
+        assert_eq!(u64::from(p.capture_count), 2 * n);
+        // About n^2 / 2 with merged intervals; about n^3 / 6 without.
+        assert!(steps <= n * n, "{n} alternatives: {steps} interval steps");
+    }
+}
+
 /// The nesting cap: at the cap the parse and the drop of the tree fit in a 1 MiB thread stack
 /// (the Windows main thread size), and one more level is a StackOverflow error, not a crash.
 #[test]

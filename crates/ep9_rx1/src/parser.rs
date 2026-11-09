@@ -47,6 +47,12 @@ pub const MAX_CAPTURES: u32 = ((1 << 16) - 1 - 1) / 2;
 /// passes in release), so the cap fits a 1 MiB thread (the unit test runs on one).
 pub const MAX_NESTING: usize = 256;
 
+#[cfg(test)]
+std::thread_local! {
+    /// The interval steps of the duplicate-name scan on this thread (the cost test).
+    pub(crate) static INTERVAL_STEPS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
 /// End of input (V8 `kEndMarker`).
 const END: u32 = 1 << 21;
 
@@ -424,13 +430,29 @@ impl ParserState {
         let from = self.capture_index + 1;
         let to = captures_started;
         debug_assert!(from <= to);
-        // Extend the last interval if it grows by exactly 1.
+        // `to` only grows (captures_started), so the new interval ends at or after the last
+        // one. Merge it into the last one when they overlap or touch: the union is the same
+        // set of indices, and the list stays disjoint and increasing. (V8 merges only an
+        // interval that grows by exactly 1, so `(?<a>x)()|(?<a>x)()|...` piles up overlapping
+        // intervals there: a cubic duplicate-name scan; M7-P4 fixer r2.)
+        debug_assert!(
+            self.non_participating
+                .last()
+                .is_none_or(|last| to >= last.1)
+        );
         if let Some(last) = self.non_participating.last_mut()
-            && last.1 + 1 == to
+            && from <= last.1 + 1
         {
-            debug_assert!(from >= last.0);
             *last = (last.0.min(from), last.1.max(to));
         } else {
+            // The list stays disjoint and increasing (the duplicate-name scan stops early).
+            debug_assert!(
+                self.non_participating
+                    .last()
+                    .is_none_or(|last| last.1 + 1 < from),
+                "{:?} then ({from}, {to})",
+                self.non_participating
+            );
             self.non_participating.push((from, to));
         }
     }
@@ -1403,6 +1425,8 @@ impl<'a, T: Unit> Parser<'a, T> {
                 Some(indices) => indices.iter().any(|&named_index| {
                     let mut is_duplicate = true;
                     for &(from, to) in &state.non_participating {
+                        #[cfg(test)]
+                        INTERVAL_STEPS.with(|n| n.set(n.get() + 1));
                         // Inside one non-participating interval: not a duplicate.
                         if (from..=to).contains(&named_index) {
                             is_duplicate = false;
