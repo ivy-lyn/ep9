@@ -432,7 +432,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     callee: u64,
     this: u64,
     argc: u32,
-    arg: impl Fn(&St<'_>, u32) -> u64,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Flow {
     if !object::is_function(callee) {
         return Flow::Cold;
@@ -448,13 +448,12 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             && !profile::call_window_after_unit(st.cx.budget - 1)
         {
             let (fp, next) = (st.fp, st.next);
-            let rd: &St<'_> = st;
             // SAFETY: `fp` is the live top frame and `next` the pc after this call; `arg`
-            // reads registers of the current verified instruction.
-            let pushed = unsafe {
-                call::forward_frame(&*rd.cx, fp, next, callee, this, argc, |i| arg(rd, i))
-            };
-            if let Some((nfp, code)) = pushed {
+            // reads registers of the current verified instruction in `fp` (a copy, not the
+            // address of `st`: see [`list_at`]).
+            let (nfp, code) =
+                unsafe { call::forward_frame(&*st.cx, fp, next, callee, this, argc, arg) };
+            if !nfp.is_null() {
                 st.cx.budget -= 1;
                 st.fp = nfp;
                 st.acc = UNDEFINED;
@@ -483,7 +482,6 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
-    let rd: &St<'_> = st;
     // SAFETY: `base` is the first free slot above the live top frame `fp`, `limit` is the VM
     // stack cap, and `arg` reads registers of the current verified instruction.
     let nfp = unsafe {
@@ -494,7 +492,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             callee,
             this,
             argc,
-            |i| arg(rd, i),
+            |i| arg(fp, i),
             fp,
             next,
             context,
@@ -576,7 +574,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     callee: u64,
     this: u64,
     argc: u32,
-    arg: impl Fn(&St<'_>, u32) -> u64,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Flow {
     if !object::is_function(callee) {
         return Flow::Cold;
@@ -602,13 +600,12 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             && !profile::call_window_after_unit(st.cx.budget - 1)
         {
             let (fp, next) = (st.fp, st.next);
-            let rd: &St<'_> = st;
             // SAFETY: `fp` is the live top frame and `next` the pc after this call; `arg`
-            // reads registers of the current verified instruction.
-            let pushed = unsafe {
-                call::forward_frame(&*rd.cx, fp, next, callee, this, argc, |i| arg(rd, i))
-            };
-            if let Some((nfp, code)) = pushed {
+            // reads registers of the current verified instruction in `fp` (a copy, not the
+            // address of `st`: see [`list_at`]).
+            let (nfp, code) =
+                unsafe { call::forward_frame(&*st.cx, fp, next, callee, this, argc, arg) };
+            if !nfp.is_null() {
                 st.cx.budget -= 1;
                 st.fp = nfp;
                 st.acc = UNDEFINED;
@@ -636,7 +633,6 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
-    let rd: &St<'_> = st;
     // SAFETY: as in the default build's `call_fast`.
     let nfp = unsafe {
         call::push_frame(
@@ -646,7 +642,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
             callee,
             this,
             argc,
-            |i| arg(rd, i),
+            |i| arg(fp, i),
             fp,
             next,
             context,
@@ -730,6 +726,23 @@ fn call_operand(st: &St<'_>, r: R) -> u64 {
     return st.reg(r);
 }
 
+/// Register `l + i` of the frame `fp`: [`St::list`] of that frame, for the argument reader of
+/// [`call_fast`], which reads the caller's frame `fp`, not `st` (M7-P4 integration fixer).
+///
+/// A reader that holds the address of `st` makes `st` escape at the forwarded call (the
+/// out-of-line `call::forward_frame` of debug builds; see there), and LLVM then makes no call
+/// of the handler a sibling call: in the Spike C test build (ep9_vm at opt-level 2 with debug
+/// assertions), the threaded dispatch grows the native stack by one handler frame per
+/// instruction until a RangeError (15 Spike C unit tests on 2 MiB test threads). The readers
+/// hold copies only (`fp`, the list operand, the operand values), so they are `Copy`.
+#[inline(always)]
+fn list_at(fp: *mut u64, l: RList, i: u32) -> u64 {
+    // SAFETY: as `St::list`: `fp` is the live top frame of the current instruction, the
+    // verifier checked that the whole list lies in the frame, and callers pass `i` below the
+    // count operand of the same instruction.
+    unsafe { *fp.offset(l.0 + i as isize) }
+}
+
 /// `CallProperty`/`CallAnyReceiver`: the list holds the receiver, then the arguments.
 #[inline(always)]
 fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count, s: FSlot) -> Flow {
@@ -741,7 +754,9 @@ fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count,
     // The arguments as a list of their own (not `list(args, i + 1)`: with the `u32` sum the
     // x86-64 copy loop keeps an index and a base, one register more).
     let rest = RList(args.0 + 1);
-    call_fast::<true, true>(st, s, f, this, argc.0 - 1, move |s, i| s.list(rest, i))
+    call_fast::<true, true>(st, s, f, this, argc.0 - 1, move |fp, i| {
+        list_at(fp, rest, i)
+    })
 }
 
 // ---- special -------------------------------------------------------------------------------
@@ -1638,7 +1653,7 @@ op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
 });
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
-    call_fast::<true, false>(st, s, f, UNDEFINED, argc.0, move |s, i| s.list(args, i))
+    call_fast::<true, false>(st, s, f, UNDEFINED, argc.0, move |fp, i| list_at(fp, args, i))
 } cold {
     call_record_cold(st, callee, s)
 });
@@ -2146,7 +2161,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     callee: u64,
     this: u64,
     argc: u32,
-    arg: impl Fn(&St<'_>, u32) -> u64,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Flow {
     if !object::is_function(callee) {
         return Flow::Cold;
@@ -2172,7 +2187,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
         let rd: &St<'_> = st;
         let this = call::bound_with_global(fi, this, rd.cx.global_this);
         // SAFETY: as above; `arg` reads registers of the current verified instruction.
-        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd, i)) };
+        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd.fp, i)) };
         if !callee_runs_here(st, callee, fi) {
             return Flow::Cold;
         }
@@ -2193,7 +2208,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
         let rd: &St<'_> = st;
         let this = call::bound_with_global(fi, this, rd.cx.global_this);
         // SAFETY: as above.
-        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(rd, i)) };
+        unsafe { call::write_call_args::<LIST>(nfp, this, argc, |i| arg(fp, i)) };
     }
     // SAFETY: as above; the receiver and the arguments are written.
     unsafe {

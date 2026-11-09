@@ -1763,10 +1763,11 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 
 /// The forwarded call of the T0 call fast path (M7-P4 LEVER-3): the steps of `slow::call`'s
 /// `forward` for a call at `next` (the return pc) of the live top frame `fp` whose callee is
-/// the host function `callee`, receiver `func` and `argc` arguments that `arg` reads. When it
+/// the host function `callee`, receiver `func` and `argc` arguments that `arg` reads from `fp`
+/// (`arg(fp, i)`, the reader of `interp::ops::call_fast`). When it
 /// takes the call, it counts the call of the callee (the T0 count, below the feedback
 /// threshold or with the vector made: no GC point) and pushes its frame right above `fp`, and
-/// gives the new frame and the callee's code. The caller then takes the call's budget unit and
+/// gives the new frame and the callee's code (else a null frame). The caller then takes the call's budget unit and
 /// the sampled call record of `callee`, as the cold path does (`call_record_cold`,
 /// `slow::call`), and jumps.
 ///
@@ -1780,7 +1781,7 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 /// (CallProperty0 2 to 6, CallProperty1 3 to 6, M7-P4 LEVER-3), so x86-64 forwards stay on
 /// the cold path.
 ///
-/// `None`, with no state changed (the slots it may have written lie above the top frame,
+/// A null frame and code, with no state changed (the slots it may have written lie above the top frame,
 /// where no GC root scan and no reader looks): the cold path decides. That is every call that
 /// is not a forward ([`forward_target`], `try_bind_this`, the list), an `apply` list that is
 /// an arguments object with a mapped index or an Array that is not packed ([`forward_list`]
@@ -1791,8 +1792,8 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 ///
 /// # Safety
 /// `fp` is the live top frame (bytecode runs with no scratch area), `next` the pc after its
-/// current call instruction, and `arg(i)` returns valid Value bits for `i < argc`, rooted in
-/// the caller's registers.
+/// current call instruction, and `arg(fp, i)` returns valid Value bits for `i < argc`, rooted
+/// in the caller's registers.
 #[cfg_attr(
     all(not(feature = "spike-native"), target_arch = "x86_64"),
     allow(dead_code)
@@ -1801,6 +1802,14 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 // handler (and of `step::<S2>`, which holds them), and the debug Sibling dispatch and the
 // small-stack re-entry test (`tests::interp::scaled_steps_fit_a_small_stack`) run out of
 // native stack (as the debug `Flow::recorded` is out of line).
+//
+// The out-of-line call takes and gives no address of a local of the handler: the reader
+// `arg` is a copy (at most 2 words, in registers) that reads `fp`, and the result is a pair
+// in registers (not an `Option`, which comes back through a stack slot). A local whose
+// address goes into a call makes LLVM mark no call of the handler as a tail call, so in an
+// optimized build with debug assertions (the Spike C test build: ep9_vm at opt-level 2) the
+// threaded dispatch grows the native stack by one handler frame per instruction, until a
+// RangeError (M7-P4 integration fixer: 15 Spike C unit tests on 2 MiB test threads).
 #[cfg_attr(debug_assertions, inline(never))]
 #[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) unsafe fn forward_frame(
@@ -1810,7 +1819,32 @@ pub(crate) unsafe fn forward_frame(
     callee: u64,
     func: u64,
     argc: u32,
-    arg: impl Fn(u32) -> u64,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
+) -> (*mut u64, *const u8) {
+    // SAFETY: the contract of this function.
+    match unsafe { forward_frame_in(cx, fp, next, callee, func, argc, arg) } {
+        Some(pushed) => pushed,
+        None => (core::ptr::null_mut(), core::ptr::null()),
+    }
+}
+
+/// The steps of [`forward_frame`], with `None` for its null frame.
+///
+/// # Safety
+/// As [`forward_frame`].
+#[cfg_attr(
+    all(not(feature = "spike-native"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
+#[inline(always)]
+unsafe fn forward_frame_in(
+    cx: &Cx,
+    fp: *mut u64,
+    next: *const u8,
+    callee: u64,
+    func: u64,
+    argc: u32,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Option<(*mut u64, *const u8)> {
     use crate::builtins::IntrinsicId;
     if cx.budget <= 0 || ANY_OFF.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1826,7 +1860,7 @@ pub(crate) unsafe fn forward_frame(
     // ELEMENTS list ([`packed_array`]). Any other list (a mapped arguments object, an Array
     // with a hole or a double list) takes the cold path's `forward_list`.
     let (n, words) = if apply {
-        let list = if argc > 1 { arg(1) } else { UNDEFINED };
+        let list = if argc > 1 { arg(fp, 1) } else { UNDEFINED };
         if list == UNDEFINED || list == NULL {
             (0, None)
         } else if !is_cell_bits(list) {
@@ -1860,7 +1894,7 @@ pub(crate) unsafe fn forward_frame(
     if novector && fi.invocations.get() + 1 >= cx.feedback_threshold {
         return None;
     }
-    let this_arg = if argc > 0 { arg(0) } else { UNDEFINED };
+    let this_arg = if argc > 0 { arg(fp, 0) } else { UNDEFINED };
     let this_arg = try_bind_this(fi, this_arg, cx.global_this)?;
     let base = frame_top(fp);
     // The frame of `push_frame` for a call, in the steps of the x86-64 T0 call fast path: the
@@ -1877,7 +1911,7 @@ pub(crate) unsafe fn forward_frame(
                 write_call_args::<true>(nfp, this_arg, n, |i| crate::arguments::unmapped_word(w, i))
             }
             None if apply => write_call_args::<true>(nfp, this_arg, 0, |_| UNDEFINED),
-            None => write_call_args::<true>(nfp, this_arg, n, |i| arg(i + 1)),
+            None => write_call_args::<true>(nfp, this_arg, n, |i| arg(fp, i + 1)),
         }
         write_call_header(nfp, fi, func, n, fp, next, || function_context(func));
     }
