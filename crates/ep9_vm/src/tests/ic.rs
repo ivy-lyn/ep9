@@ -1349,7 +1349,8 @@ fn scaled_runs() -> [u64; 2] {
 
 /// The prefixed GetNamedProperty, JumpIfFalse, JumpIfToBooleanFalse and JumpLoop run in the
 /// `Wide` fast body: no run of `interp::scaled::step` (the old path ran each of them there,
-/// several per loop turn). Their cold bodies (an IC miss, a ToBoolean of a string, the loop's
+/// several per loop turn). Where `PREFIXED_LOAD_FAST` is false (x86-64) the load runs in
+/// `step`, once per loop turn, and the jumps still run in the fast body. Their cold bodies (an IC miss, a ToBoolean of a string, the loop's
 /// interrupt poll) run once each in `step_cold`, with the fast body not run again: a
 /// megamorphic load through the stub cache, a getter-free string value and a budget that runs
 /// out mid-loop all give the generic answer.
@@ -1375,6 +1376,15 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
             "the prefixed instructions of f0"
         );
         let f = iso.global_raw("f0").unwrap();
+        // The runs of `step` for `turns` loop turns: the prefixed loads, if not in the fast
+        // body.
+        let whole = |turns: u64| {
+            if crate::interp::ops::PREFIXED_LOAD_FAST {
+                0
+            } else {
+                turns
+            }
+        };
         let run = |iso: &mut Isolate, a: u64, n: i32| -> (u64, [u64; 2]) {
             let before = scaled_runs();
             let v = iso
@@ -1393,12 +1403,12 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
         let o = mk(&iso, &[("x", int(2))]);
         let (v, n) = run(&mut iso, o, 50);
         assert_eq!(v, int(100));
-        assert_eq!(n[0], 0, "no whole prefixed step");
+        assert_eq!(n[0], whole(50), "no whole prefixed step");
         assert!(n[1] >= 1, "the first miss runs the cold body");
         let (v, n) = run(&mut iso, o, 50);
         assert_eq!(
             (v, n),
-            (int(100), [0, 0]),
+            (int(100), [whole(50), 0]),
             "warm: every prefixed op in the fast body"
         );
         // A falsy value takes the prefixed JumpIfToBooleanFalse in the fast body.
@@ -1410,7 +1420,7 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
         let s = mk(&iso, &[("x", ab)]);
         let (v, n) = run(&mut iso, s, 3);
         assert_eq!(string::to_rust_string(v), "0ababab");
-        assert_eq!(n[0], 0);
+        assert_eq!(n[0], whole(3));
         assert!(n[1] >= 3, "one cold ToBoolean per turn: {n:?}");
         // Megamorphic: 6 shapes; each load after that probes the stub cache in the cold body.
         let objs: Vec<u64> = (0..6)
@@ -1427,7 +1437,7 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
             for (j, &o) in objs.iter().enumerate() {
                 let (v, n) = run(&mut iso, o, 4);
                 assert_eq!(v, int(4 * (j as i32 + 1)));
-                assert_eq!(n[0], 0);
+                assert_eq!(n[0], whole(4));
             }
         }
         for h in held {
@@ -1438,7 +1448,7 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
         iso.cx.budget = 3;
         let (v, n) = run(&mut iso, o, 20);
         assert_eq!(v, int(40));
-        assert_eq!(n[0], 0);
+        assert_eq!(n[0], whole(20));
         assert!(n[1] >= 1, "the poll of the prefixed JumpLoop");
     });
 }
