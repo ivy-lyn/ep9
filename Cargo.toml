@@ -31,10 +31,10 @@ oxc_parser = "=0.155.0"
 oxc_regular_expression = "=0.155.0"
 oxc_semantic = "=0.155.0"
 oxc_span = "=0.155.0"
-# RX0 (docs/decisions-log.md M4-PLAN-D15): the RegExp backend of ep9_regexp, exact pin. Only
-# ep9_regexp imports it, and only ep9_vm depends on it (.github/scripts/dep-guards.sh check 14).
-# Since M5-P0 the build uses the fork: [patch.crates-io] at the end of this file points at the
-# git-ignored checkout third_party/regress (scripts/sync-regress.sh; third_party/patches/regress).
+# RX0 (docs/decisions-log.md M4-PLAN-D15): the RegExp backend of ep9_regexp, exact pin. In the
+# engine only ep9_regexp imports it, and only ep9_vm depends on ep9_regexp (dep-guards check 14);
+# ep9_rx1 uses it in tests only (the RX1 parse-equality test). Since M5-P0 the build uses the fork:
+# [patch.crates-io] (end of file) -> git-ignored third_party/regress (scripts/sync-regress.sh).
 regress = "=0.12.0"
 # BigInt digits (plan 06 §4-§5: dashu first, the V8 `src/bigint` port at M8), exact pin. Only
 # ep9_bigint imports it, and only ep9_vm depends on ep9_bigint (dep-guards check 17).

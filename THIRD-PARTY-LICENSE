@@ -201,11 +201,20 @@ Ported:   crates/ep9_math/src/hypot.rs (Math.hypot, H36) from src/builtins/math.
           (class Xsum), at main 40f4b69c3bc25f2a9c1c4137e27c545b6b1183d0
           (2026-11-02; the files last changed in b76957af9c52), to Rust. V8 adapted
           that code from xsum by Radford M. Neal (entry "xsum" below) (M7-P0).
+          crates/ep9_rx1/src/flags.rs, error.rs, ast.rs and parser.rs (RX1, the
+          irregexp parser) from src/regexp/regexp-flags.h, regexp-error.h,
+          regexp-ast.h and regexp-parser.cc, at main
+          40f4b69c3bc25f2a9c1c4137e27c545b6b1183d0 (2026-11-02; regexp-parser.cc
+          last changed in c758a331fdb6), to Rust (M7-P4). The ICU lookups of the
+          parser are tables from Unicode data (crates/ep9_rx1/src/unicode.rs).
 Copyright: math.tq: "Copyright 2019 the V8 project authors. All rights reserved.
           Use of this source code is governed by a BSD-style license that can be
           found in the LICENSE file."
           builtins-math-xsum.h, builtins-math-xsum.cc: "Copyright 2026 the V8
           project authors. All rights reserved."
+          regexp-parser.cc, regexp-ast.h: "Copyright 2016 the V8 project authors.
+          All rights reserved."; regexp-error.h: "Copyright 2020 ..."; regexp-flags.h:
+          "Copyright 2021 ..." (each with the BSD-style licence lines above).
 
 The V8 LICENSE file gives these terms for V8's own code:
 
