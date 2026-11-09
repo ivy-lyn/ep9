@@ -138,6 +138,15 @@ static NODE_CASES: &[(&str, &str, Option<&str>)] = &[
     ("\\-", "u", Some("Invalid escape")),
     ("\\/", "u", None),
     ("\\q", "v", Some("Invalid escape")),
+    // The buffer boundaries proposal (`\A`, `\z`, `\Z`) is not ECMA-262: identity escapes.
+    ("\\A", "", None),
+    ("\\z", "", None),
+    ("\\Z", "", None),
+    ("\\A", "u", Some("Invalid escape")),
+    ("\\Z", "u", Some("Invalid escape")),
+    ("\\z", "v", Some("Invalid escape")),
+    ("a\\z", "u", Some("Invalid escape")),
+    ("[\\z]", "u", Some("Invalid escape")),
     ("[a-z]", "", None),
     ("[z-a]", "", Some("Range out of order in character class")),
     ("[\\d-z]", "", None),
@@ -534,6 +543,39 @@ fn error_positions_are_v8s() {
     assert_eq!(e.error, Error::RangeOutOfOrder);
     let e = parse_str("(", Flags::empty()).unwrap_err();
     assert_eq!((e.error, e.pos), (Error::UnterminatedGroup, 1));
+}
+
+/// The fuzz smoke input of CI run 42552778227 (minimized): flags byte 0xc7 (`dgivy`), then
+/// `\z`. oxc_regular_expression takes `\z` in Unicode mode as a buffer boundary assertion (a
+/// TC39 proposal). ECMA-262 22.2.1 has no such Assertion, and IdentityEscape[+UnicodeMode] is
+/// only SyntaxCharacter or `/`, so `/\z/v` is a SyntaxError (node v26.13.0: "Invalid escape").
+/// The regexp fuzz target skips this difference by the error kind and the position of the
+/// letter, so this test keeps both.
+#[test]
+fn buffer_boundary_escapes_are_errors_in_unicode_mode() {
+    let fuzz_flags = Flags::from_bits(0xc7);
+    assert_eq!(fuzz_flags.to_letters(), "dgivy");
+    let e = parse_str("\\z", fuzz_flags).unwrap_err();
+    assert_eq!((e.error, e.pos), (Error::InvalidEscape, 1));
+    for f in ["u", "v", "iu", "dgivy"] {
+        for (pattern, pos) in [
+            ("\\A", 1),
+            ("\\z", 1),
+            ("\\Z", 1),
+            ("a\\z", 2),
+            ("(?:^\\A)", 5),
+        ] {
+            let e = parse_str(pattern, flags(f)).unwrap_err();
+            assert_eq!(
+                (e.error, e.pos),
+                (Error::InvalidEscape, pos),
+                "/{pattern}/{f}"
+            );
+        }
+    }
+    for pattern in ["\\A", "\\z", "\\Z", "^\\Aa\\z\\Z$"] {
+        assert!(parse_str(pattern, Flags::empty()).is_ok(), "/{pattern}/");
+    }
 }
 
 #[test]
