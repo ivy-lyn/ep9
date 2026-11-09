@@ -1019,8 +1019,8 @@ fn emit_shape(s: &mut Asm, shape: Shape, callee: &str, l: RegisterList) {
     };
 }
 
-/// Runs `make` with `echo`, `fcall` and `fapply` registered, the human fast paths `on` or
-/// off: (result, output, host entries, forwarded calls, the forwarded calls of the T0 call
+/// Runs `make` with `echo`, `sp`, `fcall` and `fapply` registered, the human fast paths `on`
+/// or off: (result, output, host entries, forwarded calls, the forwarded calls of the T0 call
 /// fast path).
 fn run_host(
     make: fn() -> VerifiedUnit,
@@ -1034,6 +1034,7 @@ fn run_host(
         c.builtins = Some(&FORWARDERS);
         let mut iso = isolate(c);
         iso.register_host_function("echo", 0, echo);
+        iso.register_host_function("sp", 0, sp);
         take_output();
         HOST_ENTRY_HITS.with(|h| h.set(0));
         FORWARDED_CALLS.with(|h| h.set(0));
@@ -1312,4 +1313,150 @@ fn the_t0_call_fast_path_pushes_a_forwarded_call_in_place() {
             assert_eq!((off.3, off.4), (0, 0), "{} stress={stress}", d.name());
         }
     }
+}
+
+/// `sp()`: the native stack pointer, as a number.
+fn sp<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(Local::number(ep9_platform::stack_pointer() as f64))
+}
+
+/// The call handlers that may forward keep the sibling dispatch flat: each one ends in a tail
+/// jump, so a run of forwarded calls leaves the native stack where it was (M7-P4 diag N3).
+///
+/// ```text
+/// handler ──fast──> call::forward_frame (out of line in an unoptimized build only)
+///         ──tail jump──> the next handler          (no native frame stays behind)
+/// ```
+///
+/// At c66480e3 `forward_frame` was out of line in every build with debug assertions, also an
+/// optimized one (Spike C's test build: opt-level 2 for ep9_vm). Its reader closure held the
+/// address of the handler's `St`, so `St` escaped and every `Call*` handler of the sibling
+/// expansion lost its tail jump: one native frame per call stayed until the dispatch run
+/// ended, and the Octane crypto warm-up of Spike C threw "Maximum call stack size exceeded".
+///
+/// The run measures the native stack pointer (`sp()`) at the ends of 3 windows, after a
+/// warm-up past the call record window and the feedback threshold of add3:
+/// d0 = 2 calls of sp() in a row (what a call handler leaves behind), d1 = sp(), 50 register
+/// moves, sp() (what other handlers leave behind), d2 = sp(), the 4 forwarded call shapes of
+/// `the_t0_call_fast_path_pushes_a_forwarded_call_in_place` ROUNDS times, sp(). A build with
+/// no tail calls at all (opt-level 0: d1 > d0) has nothing to check and returns. Else
+/// d2 = d0: the forwarded calls left nothing behind.
+#[test]
+fn forwarding_call_handlers_keep_the_sibling_dispatch_flat() {
+    const ROUNDS: usize = 40;
+    /// The 4 call shapes of the T0 forward test (no print: a print is a call too).
+    fn shapes(s: &mut Asm, l: RegisterList) {
+        // add3.fcall("x", 1, 2, 3): CallProperty
+        s.lda_global("add3");
+        s.b.star(l.get(0));
+        s.lda_str("x");
+        s.b.star(l.get(1));
+        for i in 0..3 {
+            s.b.lda_smi(i + 1).star(l.get(2 + i as u32));
+        }
+        s.lda_global("fcall");
+        s.b.star(s.f).call_property(s.f, l, 5, s.call);
+        // add3.fcall(null, 7): CallProperty2
+        s.lda_global("add3");
+        s.b.star(l.get(0))
+            .lda_null()
+            .star(l.get(1))
+            .lda_smi(7)
+            .star(l.get(2));
+        s.lda_global("fcall");
+        s.b.star(s.f)
+            .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+        // add3.fapply(null, undefined): CallProperty2, the apply form
+        s.lda_global("add3");
+        s.b.star(l.get(0))
+            .lda_null()
+            .star(l.get(1))
+            .lda_undefined()
+            .star(l.get(2));
+        s.lda_global("fapply");
+        s.b.star(s.f)
+            .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+        // add3.fcall(): CallProperty0
+        s.lda_global("add3");
+        s.b.star(l.get(0));
+        s.lda_global("fcall");
+        s.b.star(s.f).call_property0(s.f, l.get(0), s.call);
+    }
+    /// acc = sp().
+    fn call_sp(s: &mut Asm) {
+        s.lda_global("sp");
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+    }
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(5);
+        let (t, d0, d1, d2) = (
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+        );
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("add3");
+        for _ in 0..ROUNDS {
+            shapes(&mut s, l);
+        }
+        // d0: sp(), sp()
+        call_sp(&mut s);
+        s.b.star(t);
+        call_sp(&mut s);
+        s.b.sub(t, s.bin).star(d0);
+        // d1: sp(), 50 register moves, sp()
+        call_sp(&mut s);
+        s.b.star(t);
+        for i in 0..25 {
+            s.b.lda_smi(i).star(l.get(0));
+        }
+        call_sp(&mut s);
+        s.b.sub(t, s.bin).star(d1);
+        // d2: sp(), ROUNDS x the 4 forwarded shapes, sp()
+        call_sp(&mut s);
+        s.b.star(t);
+        for _ in 0..ROUNDS {
+            shapes(&mut s, l);
+        }
+        call_sp(&mut s);
+        s.b.sub(t, s.bin).star(d2);
+        for d in [d0, d1, d2] {
+            s.b.ldar(d);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), add3_code()])
+    }
+    let (r, out, _, all, t0) = run_host(make, Dispatch::Sibling, false, true);
+    assert_eq!(r, Ok("undefined".to_string()));
+    let [d0, d1, d2] = [0, 1, 2].map(|i| out[i].parse::<f64>().expect("a number"));
+    // The forwards ran: in both windows of rounds; on a64 the T0 call fast path took most.
+    assert!(all > ROUNDS as u64, "{all}");
+    if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
+        assert_eq!(t0, 0);
+    } else {
+        assert!(t0 > ROUNDS as u64, "{t0} of {all}");
+    }
+    if d1 != d0 {
+        eprintln!(
+            "skip: this build has no tail calls (d0 {d0}, d1 {d1}: opt-level 0), so the \
+             sibling dispatch grows anyway"
+        );
+        return;
+    }
+    assert_eq!(
+        d2,
+        d0,
+        "the forwarded calls left {} bytes of native stack behind ({ROUNDS} rounds of 4 \
+         calls; d0 {d0}): a Call* handler of the sibling expansion has no tail jump",
+        d2 - d0
+    );
 }
