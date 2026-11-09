@@ -872,6 +872,70 @@ const CASES: &[Case] = &[
              print(JSON.stringify(o), o.a === p.a, 2 in o.a, o.c[0] + p.c[0], Object.keys(o).join());",
         ),
     },
+    // ---- the T0 forward (M7-P4 LEVER-3: `call::forward_frame` in the T0 call fast path;
+    // each loop runs past the feedback threshold, so both the T0 form and the cold path run) ----
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: unmapped arguments in a loop",
+        src: "function u(a, b) { 'use strict'; return show.apply(this, arguments); }\n\
+              function w() { 'use strict'; return show.apply(undefined, arguments); }\n\
+              function st() { 'use strict'; return [this === undefined ? 'u' : typeof this, arguments.length].join(); }\n\
+              function s5() { 'use strict'; return st.apply(5, arguments); }\n\
+              var o = { u: u }, r = [];\n\
+              for (var i = 0; i < 300; i++) r.push(o.u(i, 2, 3), u(), w(i), s5(i, i), st.apply(undefined, [i]));\n\
+              print(r.length, r.slice(0, 5).join(' / '), r.slice(-5).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: packed Arrays in a loop",
+        src: "var a0 = [], a1 = ['x'], a3 = [1, 'two', {}], d = [1.5, 2.5], big = [], r = [];\n\
+              for (var j = 0; j < 40; j++) big.push(j);\n\
+              function st() { 'use strict'; return [typeof this, arguments.length, arguments[2]].join(); }\n\
+              for (var i = 0; i < 300; i++) {\n\
+                r.push(show.apply(null, a0), show.apply(a1, a1), show.apply(1, a3), show.apply('s', d), show.apply(null, big), st.apply(1, a3));\n\
+                if (i == 150) { a3.length = 2; a1.push('y'); d[5] = 1; big[2] = 0.5; }\n\
+                if (i == 200) { delete a1[0]; Array.prototype[0] = 'P'; }\n\
+              }\n\
+              delete Array.prototype[0];\n\
+              print(r.length, r.slice(0, 6).join(' / '), r.slice(-6).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: a mapped object and a changed list",
+        src: "function m(a, b) { return show.apply(this, arguments); }\n\
+              function u(a, b) { 'use strict'; arguments[0] = 'U'; if (a === 3) arguments.length = 1; return show.apply(this, arguments); }\n\
+              function x() { 'use strict'; arguments[5] = 'far'; return show.apply(null, arguments); }\n\
+              function y() { 'use strict'; delete arguments[0]; return show.apply(null, arguments); }\n\
+              var r = [];\n\
+              for (var i = 0; i < 200; i++) r.push(m(i, 1), u(i, 2), u(3, 4), x(1), y(1, 2));\n\
+              print(r.length, r.slice(0, 5).join(' / '), r.slice(-5).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-call",
+        name: "the T0 forward: call in a loop",
+        src: "function st() { 'use strict'; return [this === undefined ? 'u' : typeof this, arguments.length, Array.prototype.join.call(arguments)].join(':'); }\n\
+              function two(a, b) { return a + b; }\n\
+              var o = { m: show }, r = [];\n\
+              for (var i = 0; i < 300; i++) r.push(show.call(), show.call(o), show.call(null, i), show.call(o, 1, 2),\n\
+                show.call(o, 1, 2, 3, 4, 5), st.call(i, 'a'), st.call(undefined), two.call(null, i), two.call(null, i, 1, 2));\n\
+              print(r.length, r.slice(0, 9).join(' / '), r.slice(-9).join(' / '));",
+        spec: None,
+    },
+    Case {
+        path: "forward-apply",
+        name: "the T0 forward: a stack overflow of apply and call",
+        src: "function deep(n) { return deep.apply(null, [n + 1]); }\n\
+              function deepc(n) { return deepc.call(null, n + 1); }\n\
+              function deepa() { 'use strict'; return deepa.apply(null, arguments); }\n\
+              try { deep(0); } catch (e) { print(e.name, e.message); }\n\
+              try { deepc(0); } catch (e) { print(e.name, e.message); }\n\
+              try { deepa(1, 2); } catch (e) { print(e.name, e.message); }\n\
+              print(show.apply(null, [1, 2]), show.call(null, 3));",
+        spec: None,
+    },
 ];
 
 thread_local! {

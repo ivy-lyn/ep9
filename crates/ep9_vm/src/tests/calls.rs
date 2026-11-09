@@ -1,8 +1,8 @@
 //! Calls, recursion, argument padding, `this`, construct, classes, closures, host functions.
 
 use ep9_bytecode::{
-    FeedbackSlotKind, FunctionFlags, FunctionId, FunctionKind, Register, RegisterList, RuntimeId,
-    ScopeId, ScopeKind, VariableMode, VerifiedUnit,
+    FeedbackSlotKind, FunctionCode, FunctionFlags, FunctionId, FunctionKind, Register,
+    RegisterList, RuntimeId, ScopeId, ScopeKind, VariableMode, VerifiedUnit,
 };
 
 use super::{Asm, isolate, meta, ok, run_all, take_output, unit, unit_with_scopes};
@@ -1020,14 +1020,15 @@ fn emit_shape(s: &mut Asm, shape: Shape, callee: &str, l: RegisterList) {
 }
 
 /// Runs `make` with `echo`, `fcall` and `fapply` registered, the human fast paths `on` or
-/// off: (result, output, host entries, forwarded calls).
+/// off: (result, output, host entries, forwarded calls, the forwarded calls of the T0 call
+/// fast path).
 fn run_host(
     make: fn() -> VerifiedUnit,
     d: Dispatch,
     stress: bool,
     on: bool,
-) -> (Result<String, String>, Vec<String>, u64, u64) {
-    use crate::call::{FORWARDED_CALLS, HOST_ENTRY_HITS};
+) -> (Result<String, String>, Vec<String>, u64, u64, u64) {
+    use crate::call::{FORWARDED_CALLS, HOST_ENTRY_HITS, T0_FORWARDED_CALLS};
     super::on_big_stack(move || {
         let mut c = super::config(d, stress);
         c.builtins = Some(&FORWARDERS);
@@ -1036,6 +1037,7 @@ fn run_host(
         take_output();
         HOST_ENTRY_HITS.with(|h| h.set(0));
         FORWARDED_CALLS.with(|h| h.set(0));
+        T0_FORWARDED_CALLS.with(|h| h.set(0));
         let r = iso.with_cx_checkpoint(|cx| {
             cx.set_human_fast_paths(on);
             cx.run_script(make(), "host.js").map(|v| cx.display(v))
@@ -1055,6 +1057,7 @@ fn run_host(
             out,
             HOST_ENTRY_HITS.with(|h| h.get()),
             FORWARDED_CALLS.with(|h| h.get()),
+            T0_FORWARDED_CALLS.with(|h| h.get()),
         )
     })
 }
@@ -1197,6 +1200,116 @@ fn a_forwarded_call_pushes_the_bytecode_callee_in_the_same_run() {
             // `arguments::fits`), so viaArgs always takes the builtin's
             // CreateListFromArrayLike. Off: none.
             assert_eq!((on.3, off.3), (5, 0), "{} stress={stress}", d.name());
+        }
+    }
+}
+
+/// `function add3(a, b, c) { return (c + (b + (a + ""))) + typeof this; }`.
+fn add3_code() -> FunctionCode {
+    let mut add3 = Asm::new(meta("add3", 3, 0, 0, 0));
+    let t = add3.b.new_register();
+    let ts = add3.b.feedback_slot(FeedbackSlotKind::TypeOf);
+    add3.lda_str("");
+    for i in 0..3 {
+        let p = add3.b.parameter(i);
+        add3.b.add(p, add3.bin);
+    }
+    let receiver = add3.b.receiver();
+    add3.b.star(t).ldar(receiver).type_of(ts).add(t, add3.bin);
+    add3.b.return_();
+    add3.finish()
+}
+
+#[test]
+fn the_t0_call_fast_path_pushes_a_forwarded_call_in_place() {
+    /// The rounds: past the call record window of the isolate start (`profile::CALL_WINDOW`
+    /// budget units: each of these calls goes cold), the first call of each builtin and the
+    /// feedback threshold of add3 (its vector).
+    const ROUNDS: usize = 40;
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(5);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("add3");
+        for _ in 0..ROUNDS {
+            // add3.fcall("x", 1, 2, 3): the list shape (CallProperty)
+            s.lda_global("add3");
+            s.b.star(l.get(0));
+            s.lda_str("x");
+            s.b.star(l.get(1));
+            for i in 0..3 {
+                s.b.lda_smi(i + 1).star(l.get(2 + i as u32));
+            }
+            s.lda_global("fcall");
+            s.b.star(s.f).call_property(s.f, l, 5, s.call);
+            s.print_acc();
+            // add3.fcall(null, 7): CallProperty2, a missing argument
+            s.lda_global("add3");
+            s.b.star(l.get(0))
+                .lda_null()
+                .star(l.get(1))
+                .lda_smi(7)
+                .star(l.get(2));
+            s.lda_global("fcall");
+            s.b.star(s.f)
+                .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+            s.print_acc();
+            // add3.fapply(null, undefined): 0 arguments, this = the global object
+            s.lda_global("add3");
+            s.b.star(l.get(0))
+                .lda_null()
+                .star(l.get(1))
+                .lda_undefined()
+                .star(l.get(2));
+            s.lda_global("fapply");
+            s.b.star(s.f)
+                .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+            s.print_acc();
+            // add3.fcall(): CallProperty0, this undefined (the global object)
+            s.lda_global("add3");
+            s.b.star(l.get(0));
+            s.lda_global("fcall");
+            s.b.star(s.f).call_property0(s.f, l.get(0), s.call);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), add3_code()])
+    }
+    let want = [
+        "321object",
+        "undefinedundefined7object",
+        "undefinedundefinedundefinedobject",
+        "undefinedundefinedundefinedobject",
+    ]
+    .repeat(ROUNDS);
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run_host(make, d, stress, true);
+            let off = run_host(make, d, stress, false);
+            assert!(on.0.is_ok(), "{:?}", on.0);
+            assert_eq!(on.1, want, "{} stress={stress}", d.name());
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
+            // The T0 call fast path takes most forwards (not the first call of each builtin,
+            // not the call that makes add3's vector, not a call in the profile window); the
+            // cold path takes the rest. Off: none.
+            // The x86-64 form of the fast path does not forward (`call::forward_frame`).
+            let (all, t0) = (on.3, on.4);
+            assert!(
+                all > ROUNDS as u64 && all <= 4 * ROUNDS as u64,
+                "{}: {all}",
+                d.name()
+            );
+            if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
+                assert_eq!(t0, 0, "{} stress={stress}", d.name());
+            } else {
+                assert!(
+                    t0 > ROUNDS as u64 && t0 < all,
+                    "{} stress={stress}: {t0} of {all}",
+                    d.name()
+                );
+            }
+            assert_eq!((off.3, off.4), (0, 0), "{} stress={stress}", d.name());
         }
     }
 }
