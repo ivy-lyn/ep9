@@ -373,9 +373,21 @@ fn shape_id(o: u64) -> u32 {
 }
 
 /// The (key, value) entry of slot `i` of the vector of `fi`, if `fi` has a vector.
+///
+/// M7-P4 TSPASS2: the hit paths that T0's fast handlers inline ([`load`], [`store`]) test
+/// each word they turn into a cell (`object::cell`) with `is_cell_bits` first and miss if it
+/// is not one. The VM never holds such a word there (a vector is a FEEDBACK_VECTOR cell, an
+/// out-of-line field's SLOTS word a SLOTS cell, a handler that is not an int32 an IC_HANDLER
+/// cell), so no hit changes; but then `object::cell` has no panic path left in the handler,
+/// so the `GetNamedProperty` handler and the `Wide` handler make no call and keep no frame
+/// record (aarch64: no `stp x29, x30` on entry and no `ldp` at each exit). A miss runs the
+/// generic path, which panics there as before if the word is not a cell.
 #[inline(always)]
 fn entry(fi: &FunctionInfo, i: u32) -> Option<(u64, u64)> {
     let v = feedback::vector(fi)?;
+    if !is_cell_bits(v) {
+        return None;
+    }
     Some((feedback::key(v, i), feedback::value(v, i)))
 }
 
@@ -406,7 +418,11 @@ fn field_ref(o: u64, loc: i32) -> Option<(CellPtr, usize)> {
     let off = (loc >> smi::SHIFT) as usize;
     match loc & smi::KIND_MASK {
         smi::FIELD_IN_OBJECT => Some((cell(o), off)),
-        smi::FIELD_OUT_OF_LINE => Some((cell(rd(cell(o), obj::SLOTS)), off)),
+        smi::FIELD_OUT_OF_LINE => {
+            // The test of [`entry`]: no panic path in the inlined hit path.
+            let s = rd(cell(o), obj::SLOTS);
+            is_cell_bits(s).then(|| (cell(s), off))
+        }
         _ => None,
     }
 }
@@ -491,9 +507,17 @@ fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Op
             _ => None,
         };
     }
+    // The tests of [`entry`]: no panic path in the inlined hit path.
+    if !is_cell_bits(h) {
+        return None;
+    }
     let c = cell(h);
     let k = rd_i32(c, hc::KIND);
-    if (k != hk::PROTO_LOAD && k != hk::MISSING) || !validity::valid_cell(rd(c, hc::CELL)) {
+    if k != hk::PROTO_LOAD && k != hk::MISSING {
+        return None;
+    }
+    let vc = rd(c, hc::CELL);
+    if !is_cell_bits(vc) || !validity::valid_cell(vc) {
         return None;
     }
     // ShapeId 0 is a string's or a symbol's: a KEY_STRING prototype case serves strings only.
@@ -505,8 +529,9 @@ fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Op
         cross_check(rt, o, key(), c);
         return Some(UNDEFINED);
     }
+    // A dead holder reads undefined, which is not a cell.
     let holder = rd(c, hc::REF);
-    if holder == UNDEFINED {
+    if !is_cell_bits(holder) {
         return None;
     }
     #[cfg(debug_assertions)]
