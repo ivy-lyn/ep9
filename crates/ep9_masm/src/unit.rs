@@ -18,9 +18,9 @@
 //!
 //! `finalize_unit` checks the base register of the register-relative rows
 //! ([`check_register_loads`]): each LinkSlot, IcCell and Stub field must be in a 64-bit load
-//! through the unit-data register x27/r14, and on x86-64 each Runtime, RootIndex and DeoptExit
-//! field in a 64-bit load through the isolate register r15 (M2-JIT-ABI, H35). The AArch64
-//! isolate-register rows are not checked (the emitter picks the register).
+//! through the unit-data register x27/r14, and each Runtime, RootIndex and DeoptExit field in a
+//! 64-bit load through the isolate register x28/r15 (M2-JIT-ABI, H35; the AArch64 rows since
+//! M7-P4, route A64-ISOLATE-LOAD).
 //!
 //! [`UnitCode`] has no public constructor: only `finalize_unit` makes one, and it runs
 //! [`check_text`] on its output, so a writer that takes a `UnitCode` gets only checked text
@@ -32,8 +32,8 @@ use std::fmt;
 use crate::fin::{self, Exit, FinalizeError, not_allowed, unresolved};
 use crate::kind::RelocKind;
 use crate::stream::{
-    Arch, CodeDesc, Form, FormClass, is_adr, is_adrp, is_b_cond, is_b_or_bl, is_bl, is_cbz,
-    is_ldr_literal, is_tbz, sext, word, x64_load,
+    Arch, CodeDesc, Form, FormClass, is_adr, is_adrp, is_b_cond, is_b_or_bl, is_bl, is_cb_cc,
+    is_cbz, is_ldr_literal, is_tbz, sext, word, x64_load,
 };
 
 /// What `finalize_unit` reads from the unit layout and the isolate ABI. No method gives an
@@ -250,8 +250,8 @@ pub enum Finding {
         /// The field offset.
         at: u32,
     },
-    /// An x86-64 Runtime, RootIndex or DeoptExit field that is not in a 64-bit load through
-    /// the isolate register r15: see [`check_register_loads`].
+    /// A Runtime, RootIndex or DeoptExit field that is not in a 64-bit load through the
+    /// isolate register x28/r15: see [`check_register_loads`].
     NotIsolateLoad {
         /// The field offset.
         at: u32,
@@ -307,7 +307,7 @@ impl fmt::Display for Finding {
 /// | each pc-relative field reaches a byte of this function's text | yes | yes |
 /// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field. The check trusts `insn`: [`crate::Assembler::x64`] records a chunk start only at a known instruction boundary (else `insn = at`, which fails this rule), but a record made by hand with a false `insn` is not found, and a boundary that a later field write changed is not found (the boundary is set from the bytes as emitted) | - | yes |
 /// | no `adrp`, no `bl` | yes | - |
-/// | each `b`, `b.cond`, `cbz`/`cbnz`, `tbz`/`tbnz`, `adr` and `ldr` (literal) word reaches a byte of this function's text, with or without a field | yes | - |
+/// | each `b`, `b.cond`, `bc.cond` (FEAT_HBC), `cbz`/`cbnz`, `cb<cc>`/`cbb<cc>`/`cbh<cc>` (FEAT_CMPBR, register and immediate forms), `tbz`/`tbnz`, `adr` and `ldr` (literal) word reaches a byte of this function's text, with or without a field | yes | - |
 ///
 /// The AArch64 rules scan every word, so hand-written code with no relocation record is
 /// checked too (the spike-b `unit/scan.rs` rules). x86-64 has no linear decoder of the whole
@@ -372,6 +372,8 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
                 Some(sext((w >> 5) & 0x7_ffff, 19) * 4)
             } else if is_tbz(w) {
                 Some(sext((w >> 5) & 0x3fff, 14) * 4)
+            } else if is_cb_cc(w) {
+                Some(sext((w >> 5) & 0x1ff, 9) * 4)
             } else if is_adr(w) {
                 Some(sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21))
             } else {
@@ -399,6 +401,9 @@ const UNIT_DATA_A64: u32 = 27;
 /// The unit-data register on x86-64: r14 (H34-Q1, H35-Q9).
 const UNIT_DATA_X64: u8 = 14;
 
+/// The isolate register on AArch64: x28 (M2-JIT-ABI, H35).
+const ISOLATE_A64: u32 = 28;
+
 /// The isolate register on x86-64: r15 (M2-JIT-ABI, H35).
 const ISOLATE_X64: u8 = 15;
 
@@ -408,7 +413,7 @@ const ISOLATE_X64: u8 = 15;
 /// | Kind | AArch64 | x86-64 |
 /// |---|---|---|
 /// | LinkSlot, IcCell, Stub (the RW words, H34-Q1) | the field is a 4-byte aligned word with `insn = at`, and the word is `ldr Xt, [x27, #imm]` (LDR X, unsigned offset, Rn = 27): exact, the word is the instruction; else [`Finding::NotUnitDataLoad`] | the instruction decoded forward from [`Field::insn`] (as in [`check_text`]) is `mov r64, [r14 + disp32]`: REX.W = 1, base r14 (in ModRM, or in a SIB byte with no index), the disp32 at the field; else [`Finding::NotUnitDataLoad`] |
-/// | Runtime, RootIndex, DeoptExit (the isolate rows) | not checked | the same decode, with base r15: `mov r64, [r15 + disp32]`; else [`Finding::NotIsolateLoad`] |
+/// | Runtime, RootIndex, DeoptExit (the isolate rows) | the same word rule with Rn = 28: `ldr Xt, [x28, #imm]` (since M7-P4, route A64-ISOLATE-LOAD); else [`Finding::NotIsolateLoad`] | the same decode, with base r15: `mov r64, [r15 + disp32]`; else [`Finding::NotIsolateLoad`] |
 /// | Local, HeapConst | - | - |
 ///
 /// One instruction is decoded per field, from the start that the record gives: a wrong start
@@ -416,16 +421,17 @@ const ISOLATE_X64: u8 = 15;
 pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let mut out = Vec::new();
     for f in fields {
-        let (reg, finding) = match f.kind {
-            RelocKind::LinkSlot | RelocKind::IcCell | RelocKind::Stub => {
-                (UNIT_DATA_X64, Finding::NotUnitDataLoad { at: f.at })
-            }
-            RelocKind::Runtime | RelocKind::RootIndex | RelocKind::DeoptExit => {
-                if arch == Arch::A64 {
-                    continue;
-                }
-                (ISOLATE_X64, Finding::NotIsolateLoad { at: f.at })
-            }
+        let (a64_reg, x64_reg, finding) = match f.kind {
+            RelocKind::LinkSlot | RelocKind::IcCell | RelocKind::Stub => (
+                UNIT_DATA_A64,
+                UNIT_DATA_X64,
+                Finding::NotUnitDataLoad { at: f.at },
+            ),
+            RelocKind::Runtime | RelocKind::RootIndex | RelocKind::DeoptExit => (
+                ISOLATE_A64,
+                ISOLATE_X64,
+                Finding::NotIsolateLoad { at: f.at },
+            ),
             RelocKind::Local | RelocKind::HeapConst => continue,
         };
         let at = f.at as usize;
@@ -435,15 +441,15 @@ pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Fi
         }
         let ok = match arch {
             // One aligned word (as in check_text): LDR X, unsigned offset (any imm12, any Rt),
-            // with Rn = x27.
+            // with Rn = x27 (the RW words) or x28 (the isolate rows).
             Arch::A64 => {
                 f.at % 4 == 0
                     && f.insn == f.at
-                    && word(text, at) & 0xffc0_03e0 == 0xf940_0000 | (UNIT_DATA_A64 << 5)
+                    && word(text, at) & 0xffc0_03e0 == 0xf940_0000 | (a64_reg << 5)
             }
             // Any destination (REX.R free).
             Arch::X64 => {
-                x64_load(text, f.insn, f.at).is_some_and(|l| l.w && l.base == reg && !l.index)
+                x64_load(text, f.insn, f.at).is_some_and(|l| l.w && l.base == x64_reg && !l.index)
             }
         };
         if !ok {
