@@ -814,10 +814,16 @@ fn run_module(
     })
 }
 
-/// Runs the script test `unit` (named `rel`) with the test262 loader and its text hook as
-/// the module host of the run (`Cx::with_module_text_host`), so `import()` of a JSON or text
-/// module works in the script; then a microtask checkpoint, whose jobs use the host of the
-/// caller (`Isolate::with_module_host`).
+/// Runs the script test `unit` (named `rel`), then a microtask checkpoint, both with the
+/// test262 loader and its text hook as the module host (`Cx::with_module_text_host`), so
+/// `import()` of a JSON or text module works in the script and in its jobs (M7-P4 fixer r2,
+/// reviewer R3). The error order is the one of `Isolate::with_cx_checkpoint`:
+///
+/// ```text
+/// script Ok  -> checkpoint -> its error (a job threw or a termination), the jobs behind stay
+/// script Err -> terminated: that error, no checkpoint
+///            -> else a checkpoint (same host) -> its termination, else the script's error
+/// ```
 fn run_script(
     iso: &mut Isolate,
     root: &Path,
@@ -827,11 +833,28 @@ fn run_script(
     let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
     let mut load = |name: &str| load_module(root, name);
     let mut text = |name: &str, ty: &str| text_module(root, name, ty);
-    iso.with_cx_checkpoint(|cx| {
+    let mut script_ok = false;
+    let r = iso.with_cx(|cx| {
         cx.with_module_text_host(&mut resolve, &mut load, &mut text, |cx| {
-            cx.run_script(unit, rel).map(|_| ())
+            cx.run_script(unit, rel)?;
+            script_ok = true;
+            cx.perform_microtask_checkpoint()
         })
-    })
+    });
+    match r {
+        Ok(()) => Ok(()),
+        Err(e) if script_ok || e.terminated => Err(e),
+        // The script threw (its exception is taken): the jobs still run; a job's error after
+        // it is dropped.
+        Err(e) => match iso.with_cx(|cx| {
+            cx.with_module_text_host(&mut resolve, &mut load, &mut text, |cx| {
+                cx.perform_microtask_checkpoint()
+            })
+        }) {
+            Err(c) if c.terminated => Err(c),
+            _ => Err(e),
+        },
+    }
 }
 
 /// HostLoadImportedModule's name step for test262: a relative specifier (`./x.js`,
@@ -1987,6 +2010,65 @@ fn heap_mode(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Result<(bool, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes `files` (path relative to the root, bytes) into a new test262-like root, runs
+    /// `script` (named `test/main.js`) as the runner runs a script test (`with_module_host`
+    /// of the loader, then [`run_script`]): the `print` output, and the error text if the
+    /// run throws.
+    fn run_in_root(name: &str, files: &[(&str, &[u8])], script: &str) -> (String, String) {
+        let root = std::env::temp_dir().join(format!("ep9-t262-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("test")).expect("a test root");
+        for (f, bytes) in files {
+            std::fs::write(root.join(f), bytes).expect("a test file");
+        }
+        let unit = compile(
+            script,
+            SourceOpts::script(Strictness::Sloppy),
+            "test/main.js",
+        )
+        .expect("compiles");
+        let mut iso = Isolate::new(isolate_config(0, 0)).expect("an isolate");
+        for (name, length, f) in HOST_FUNCTIONS {
+            iso.register_host_function(name, length, f);
+        }
+        OUT.with(|o| o.borrow_mut().clear());
+        let mut resolve =
+            |referrer: &str, specifier: &str| resolve_module(&root, referrer, specifier);
+        let mut load = |name: &str| load_module(&root, name);
+        let r = iso.with_module_host(&mut resolve, &mut load, |iso| {
+            run_script(iso, &root, unit, "test/main.js")
+        });
+        let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+        let _ = std::fs::remove_dir_all(&root);
+        (out, r.err().map(|e| e.message).unwrap_or_default())
+    }
+
+    /// The jobs of a script test import JSON and text modules too: the text host lives across
+    /// the script and its checkpoint (M7-P4 fixer r2, reviewer R3); a script error still wins,
+    /// and its jobs still run (the order of `Isolate::with_cx_checkpoint`).
+    #[test]
+    fn a_job_of_a_script_test_imports_json_and_text() {
+        let files: &[(&str, &[u8])] = &[("test/d.json", br#"{"x": 1}"#), ("test/t.txt", b"hi")];
+        let script = "Promise.resolve()\n\
+            .then(() => import('./d.json', { with: { type: 'json' } }))\n\
+            .then(m => print('json', m.default.x), e => print('json', e));\n\
+            Promise.resolve().then(() => 0).then(() => 0).then(() => 0).then(() => 0)\n\
+            .then(() => import('./t.txt', { with: { type: 'text' } }))\n\
+            .then(m => print('text', m.default), e => print('text', e));\n";
+        let (out, error) = run_in_root("r3-jobs", files, script);
+        let mut lines: Vec<&str> = out.lines().collect();
+        lines.sort_unstable();
+        assert_eq!((lines, error.as_str()), (vec!["json 1", "text hi"], ""));
+        let thrown = format!("{script}throw new RangeError('script');\n");
+        let (out, error) = run_in_root("r3-order", files, &thrown);
+        let mut lines: Vec<&str> = out.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(
+            (lines, error.as_str()),
+            (vec!["json 1", "text hi"], "RangeError: script")
+        );
+    }
 
     #[test]
     fn protocol_round_trip() {
