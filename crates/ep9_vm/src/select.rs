@@ -35,7 +35,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::dispatch::DispatchKind;
-use crate::exec::Preset;
 use crate::fuse;
 
 /// The lowering classes of a code object (doc 13 §1.4; H32, C-07). Append-only: a new class
@@ -166,18 +165,6 @@ impl Policy {
         ],
         accept: &[lowering::JIT, lowering::HYBRID, lowering::JITLESS],
     };
-
-    /// The policy of a preset this build has (`exec::Preset`). The hybrid preset is not built
-    /// yet; a preset this build does not know has none.
-    pub(crate) fn of(p: Preset) -> Option<Policy> {
-        if p == Preset::JIT {
-            Some(Policy::JIT)
-        } else if p == Preset::JITLESS {
-            Some(Policy::JITLESS)
-        } else {
-            None
-        }
-    }
 }
 
 /// The session state `select()` reads.

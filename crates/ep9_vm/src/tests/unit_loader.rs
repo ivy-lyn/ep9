@@ -278,6 +278,28 @@ fn unit_loader_digest_binds_the_bytecode() {
     assert_eq!(unit_function_digest(&changed, G), Some(digest(G)));
 }
 
+/// One load hashes the unit's string table once, not once per listed function (M7-P4 fixer
+/// r2, Codex r1 a2-loader:digest-per-function: 1,764 functions of Octane typescript hashed
+/// 47,652 string bytes each, 500.9 ms per load). 3 listed functions, 1 pass; the 3 digests
+/// still match `unit_function_digest`.
+#[test]
+fn unit_loader_counts_one_string_table_pass_per_load() {
+    let iso = defs_isolate(ExecOptions::jitless());
+    let fns: Vec<FunctionCode> = [G, ID, K]
+        .into_iter()
+        .map(|function| FunctionCode {
+            function,
+            digest: digest(function),
+            variants: vec![variant(DispatchKind::AotBaseline, lowering::JITLESS, 0, 4)],
+        })
+        .collect();
+    let before = unit_loader::string_table_passes();
+    let r = load(&iso, &Policy::JITLESS, &fns);
+    assert_eq!(unit_loader::string_table_passes() - before, 1);
+    assert_eq!(r.count(Reason::Digest), 0, "{:?}", r.rows());
+    assert_eq!(r.count(Reason::Picked), 3, "{:?}", r.rows());
+}
+
 // ---- steps 6-7: fuse refs --------------------------------------------------------------------
 
 /// A variant that names a fuse: picked while the fuse is wired and intact; not picked after

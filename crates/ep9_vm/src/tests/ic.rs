@@ -1349,11 +1349,11 @@ fn scaled_runs() -> [u64; 2] {
 
 /// The prefixed GetNamedProperty, JumpIfFalse, JumpIfToBooleanFalse and JumpLoop run in the
 /// `Wide` fast body: no run of `interp::scaled::step` (the old path ran each of them there,
-/// several per loop turn). Where `PREFIXED_LOAD_FAST` is false (x86-64) the load runs in
-/// `step`, once per loop turn, and the jumps still run in the fast body. Their cold bodies (an IC miss, a ToBoolean of a string, the loop's
+/// several per loop turn). Their cold bodies (an IC miss, a ToBoolean of a string, the loop's
 /// interrupt poll) run once each in `step_cold`, with the fast body not run again: a
 /// megamorphic load through the stub cache, a getter-free string value and a budget that runs
-/// out mid-loop all give the generic answer.
+/// out mid-loop all give the generic answer. Where `PREFIXED_FAST` is false (x86-64) all 4 run
+/// in `step`, as at the base: 4 runs per loop turn and 1 for the exit jump.
 #[test]
 fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
     each(|c| {
@@ -1376,13 +1376,13 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
             "the prefixed instructions of f0"
         );
         let f = iso.global_raw("f0").unwrap();
-        // The runs of `step` for `turns` loop turns: the prefixed loads, if not in the fast
-        // body.
+        // The runs of `step` for `turns` loop turns: none, or (not in the fast body) the 4
+        // prefixed instructions of each turn and the JumpIfFalse that exits.
         let whole = |turns: u64| {
-            if crate::interp::ops::PREFIXED_LOAD_FAST {
+            if crate::interp::ops::PREFIXED_FAST {
                 0
             } else {
-                turns
+                4 * turns + 1
             }
         };
         let run = |iso: &mut Isolate, a: u64, n: i32| -> (u64, [u64; 2]) {

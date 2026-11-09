@@ -170,15 +170,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         if opts.module {
             run_module(isolate, unit, file)
         } else {
-            // The text hook too, for `import()` of a JSON or text module in the script.
-            isolate.with_cx_checkpoint(|cx| {
-                cx.with_module_text_host(
-                    &mut resolve_module,
-                    &mut load_module,
-                    &mut text_module,
-                    |cx| cx.run_script(unit, file).map(|_| ()),
-                )
-            })
+            run_script(isolate, unit, file)
         }
     });
     let _ = std::io::stdout().flush();
@@ -277,6 +269,53 @@ fn run_module(
     })
 }
 
+/// Runs the script `unit` (named `file`), then a microtask checkpoint, both with the file
+/// loader and its text hook as the module host (`Cx::with_module_text_host`), so `import()`
+/// of a JSON or text module works in the script and in its jobs (M7-P4 fixer r2, reviewer
+/// R3). The error order is the one of `Isolate::with_cx_checkpoint`:
+///
+/// ```text
+/// script Ok  -> checkpoint -> its error (a job threw or a termination), the jobs behind stay
+/// script Err -> terminated: that error, no checkpoint
+///            -> else a checkpoint (same host) -> its termination, else the script's error
+/// ```
+fn run_script(
+    isolate: &mut Isolate,
+    unit: ep9_bytecode::VerifiedUnit,
+    file: &str,
+) -> Result<(), Exception> {
+    let mut script_ok = false;
+    let r = isolate.with_cx(|cx| {
+        cx.with_module_text_host(
+            &mut resolve_module,
+            &mut load_module,
+            &mut text_module,
+            |cx| {
+                cx.run_script(unit, file)?;
+                script_ok = true;
+                cx.perform_microtask_checkpoint()
+            },
+        )
+    });
+    match r {
+        Ok(()) => Ok(()),
+        Err(e) if script_ok || e.terminated => Err(e),
+        // The script threw (its exception is taken): the jobs still run; a job's error after
+        // it is dropped.
+        Err(e) => match isolate.with_cx(|cx| {
+            cx.with_module_text_host(
+                &mut resolve_module,
+                &mut load_module,
+                &mut text_module,
+                |cx| cx.perform_microtask_checkpoint(),
+            )
+        }) {
+            Err(c) if c.terminated => Err(c),
+            _ => Err(e),
+        },
+    }
+}
+
 /// The name of the module that `specifier` names in the module `referrer` (a file path, or
 /// [`EVAL_NAME`] for the current directory): a relative (`./`, `../`) or absolute path,
 /// canonical. A bare specifier (a package name) is an error: the CLI has no package lookup
@@ -319,10 +358,14 @@ fn load_module(name: &str) -> CompileResult {
 
 /// The text of the file `name` (a canonical path) for a JSON module or a text module
 /// (`import ... with { type: "json" }` or `type: "text"`; `_ty` is `"json"` or `"text"`; the
-/// VM parses the JSON).
+/// VM parses the JSON). One leading UTF-8 BOM is not part of the text (WHATWG "UTF-8 decode",
+/// as node; M7-P4 fixer r2, reviewer R4).
 fn text_module(name: &str, _ty: &str) -> Result<String, String> {
     match std::fs::read(name).map(String::from_utf8) {
-        Ok(Ok(s)) => Ok(s),
+        Ok(Ok(s)) => Ok(match s.strip_prefix('\u{feff}') {
+            Some(rest) => rest.to_string(),
+            None => s,
+        }),
         Ok(Err(_)) => Err(format!("{name}: the file is not valid UTF-8")),
         Err(e) => Err(format!("cannot read {name}: {e}")),
     }
@@ -439,6 +482,134 @@ pub fn main(opts: Options) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    std::thread_local! {
+        static OUT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// `out(...args)`: the `print` line, kept for the test (not written to stdout).
+    fn out<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        let line = print_line(cx, args.iter())?;
+        OUT.with(|o| o.borrow_mut().push(line.trim_end().to_string()));
+        Ok(Local::undefined())
+    }
+
+    /// A new directory for the files of one test (removed by [`run_files`]).
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ep9-cli-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("a test directory");
+        d
+    }
+
+    /// Writes `files` (name, bytes) into a new directory, runs `script` there as the CLI runs a
+    /// script file (`with_module_host` of the file loader, then [`run_script`]): the `out`
+    /// lines, and the error text if the run throws.
+    fn run_files(name: &str, files: &[(&str, &[u8])], script: &str) -> (Vec<String>, String) {
+        let dir = test_dir(name);
+        for (f, bytes) in files {
+            std::fs::write(dir.join(f), bytes).expect("a test file");
+        }
+        let file = dir.join("main.js").display().to_string();
+        let unit = ep9_frontend::compile(
+            script,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("compiles");
+        let mut isolate = Isolate::new(IsolateConfig {
+            builtins: Some(&ep9_builtins::TABLE),
+            compiler: Some(&COMPILER),
+            ..IsolateConfig::default()
+        })
+        .unwrap();
+        isolate.register_host_function("out", 1, out);
+        OUT.with(|o| o.borrow_mut().clear());
+        let r = isolate.with_module_host(&mut resolve_module, &mut load_module, |isolate| {
+            run_script(isolate, unit, &file)
+        });
+        let lines = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+        let _ = std::fs::remove_dir_all(&dir);
+        (lines, r.err().map(|e| e.message).unwrap_or_default())
+    }
+
+    /// The jobs of a script's checkpoint import JSON and text modules too: the text host lives
+    /// across the script and its checkpoint (M7-P4 fixer r2, reviewer R3). node v26.13.0
+    /// prints the same 2 lines (`--experimental-import-text`); the test does not pin their
+    /// order (it hangs on how many jobs a load takes).
+    #[test]
+    fn a_job_of_a_script_imports_json_and_text() {
+        let files: &[(&str, &[u8])] = &[("d.json", br#"{"x": 1}"#), ("t.txt", b"hi")];
+        let script = "Promise.resolve()\n\
+            .then(() => import('./d.json', { with: { type: 'json' } }))\n\
+            .then(m => out('then', m.default.x), e => out('then', e));\n\
+            (async () => {\n\
+                await 0;\n\
+                const t = await import('./t.txt', { with: { type: 'text' } });\n\
+                out('await', t.default);\n\
+            })().catch(e => out('await', e));\n";
+        let (mut lines, error) = run_files("r3-jobs", files, script);
+        lines.sort();
+        assert_eq!(
+            (lines, error),
+            (
+                vec!["await hi".to_string(), "then 1".to_string()],
+                String::new()
+            )
+        );
+    }
+
+    /// The error order of `Isolate::with_cx_checkpoint` stays: a script that throws still has
+    /// its checkpoint (the jobs run, with the text host), and the script's error is the
+    /// result. (node runs no job after an uncaught script error; this is the CLI's order.)
+    #[test]
+    fn a_script_error_wins_and_its_jobs_still_run() {
+        let files: &[(&str, &[u8])] = &[("d.json", br#"{"x": 2}"#)];
+        let script = "Promise.resolve()\n\
+            .then(() => import('./d.json', { with: { type: 'json' } }))\n\
+            .then(m => out('job', m.default.x), e => out('job', e));\n\
+            throw new RangeError('script');\n";
+        assert_eq!(
+            run_files("r3-order", files, script),
+            (vec!["job 2".to_string()], "RangeError: script".to_string())
+        );
+    }
+
+    /// A leading UTF-8 BOM (EF BB BF) of a JSON or text module file is not part of the text,
+    /// as in WHATWG "UTF-8 decode" and node; one U+FEFF inside the text stays (M7-P4 fixer
+    /// r2, reviewer R4). node v26.13.0: `{"b":2}` and length 4.
+    #[test]
+    fn a_leading_bom_of_a_json_or_text_module_is_dropped() {
+        let files: &[(&str, &[u8])] = &[
+            ("bom.json", b"\xef\xbb\xbf{\"b\": 2}"),
+            ("bom.txt", b"\xef\xbb\xbfab\xef\xbb\xbfc"),
+        ];
+        let script = "import('./bom.json', { with: { type: 'json' } })\n\
+            .then(m => out(JSON.stringify(m.default)), e => out(e));\n\
+            import('./bom.txt', { with: { type: 'text' } })\n\
+            .then(m => out(m.default.length, m.default.charCodeAt(2)), e => out(e));\n";
+        let (mut lines, error) = run_files("r4-bom", files, script);
+        lines.sort();
+        assert_eq!(
+            (lines, error),
+            (
+                vec!["4 65279".to_string(), "{\"b\":2}".to_string()],
+                String::new()
+            )
+        );
+        // The hook itself: one BOM goes, a second one stays.
+        let dir = test_dir("r4-hook");
+        let f = dir.join("two.txt");
+        std::fs::write(&f, b"\xef\xbb\xbf\xef\xbb\xbfx").expect("a test file");
+        let text = text_module(&f.display().to_string(), "text");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(text, Ok("\u{feff}x".to_string()));
+    }
 
     #[test]
     fn print_shows_a_symbol_as_its_descriptive_string() {

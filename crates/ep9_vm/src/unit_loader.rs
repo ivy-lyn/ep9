@@ -207,20 +207,51 @@ impl Hasher for ShaHasher {
 /// The digest that binds native code to the bytecode it was made from (MC-w31-8; the H35
 /// function-table digest field): the first 16 bytes of SHA-256 over a tag, the function's
 /// fields (bytecode, counts, constants, handlers, feedback slots, positions; the derived
-/// `Hash` of `ep9_bytecode::Function`) and the unit's string table (a String constant names a
-/// unit string by index). `None` if `function` is not a function of `unit`. The unit writer
-/// computes the same value (`Cx::unit_function_digest`); the REBASE key of doc 13 C-21 may
-/// refine it before the H35 freeze (A3).
+/// `Hash` of `ep9_bytecode::Function`) and the [`strings_digest`] of the unit's string table
+/// (a String constant names a unit string by index). `None` if `function` is not a function
+/// of `unit`. The unit writer computes the same value (`Cx::unit_function_digest`); the
+/// REBASE key of doc 13 C-21 may refine it before the H35 freeze (A3). Tag v2 since M7-P4
+/// fixer r2: v1 hashed the whole string table into each function digest, so a load hashed it
+/// once per listed function (Codex r1 a2-loader:digest-per-function).
 pub(crate) fn unit_function_digest(unit: &VerifiedUnit, function: u32) -> Option<[u8; 16]> {
     let f = unit.functions.get(function as usize)?;
+    Some(function_digest(f, &strings_digest(unit)))
+}
+
+/// SHA-256 over a tag and the string table of `unit` (the derived `Hash` of its strings): one
+/// pass, shared by the digests of all its functions ([`function_digest`]).
+fn strings_digest(unit: &VerifiedUnit) -> [u8; 32] {
+    #[cfg(test)]
+    STRING_TABLE_PASSES.with(|n| n.set(n.get() + 1));
     let mut h = ShaHasher(Sha256::new());
-    h.write(b"ep9 unit function digest v1\0");
-    f.hash(&mut h);
+    h.write(b"ep9 unit strings digest v2\0");
     unit.strings.hash(&mut h);
+    h.0.finish()
+}
+
+/// The digest of [`unit_function_digest`] for the function `f` of a unit whose
+/// [`strings_digest`] is `strings`.
+fn function_digest(f: &ep9_bytecode::Function, strings: &[u8; 32]) -> [u8; 16] {
+    let mut h = ShaHasher(Sha256::new());
+    h.write(b"ep9 unit function digest v2\0");
+    f.hash(&mut h);
+    h.write(strings);
     let d = h.0.finish();
     let mut out = [0u8; 16];
     out.copy_from_slice(&d[..16]);
-    Some(out)
+    out
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// The passes over a unit's string table on this thread (the digest cost test).
+    static STRING_TABLE_PASSES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The passes over a unit's string table on this thread so far.
+#[cfg(test)]
+pub(crate) fn string_table_passes() -> u64 {
+    STRING_TABLE_PASSES.with(core::cell::Cell::get)
 }
 
 /// The install rank and accept list of the isolate of `rt` (doc 13 §1.2), or `None` for a
@@ -257,6 +288,9 @@ pub(crate) fn load(
         connected: false,
         cpu,
     };
+    // One pass over the string table for the whole load (the digest of each function mixes
+    // it in).
+    let strings = strings_digest(&lu.unit);
     for f in functions {
         let Some(fi) = lu.infos.get(f.function as usize) else {
             r.add(Reason::Function, 1);
@@ -266,7 +300,12 @@ pub(crate) fn load(
             r.add(Reason::Twice, 1);
             continue;
         }
-        if unit_function_digest(&lu.unit, f.function) != Some(f.digest) {
+        let digest = lu
+            .unit
+            .functions
+            .get(f.function as usize)
+            .map(|func| function_digest(func, &strings));
+        if digest != Some(f.digest) {
             r.add(Reason::Digest, 1);
             continue;
         }

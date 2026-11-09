@@ -5465,7 +5465,6 @@ test/staging/sm/extensions/typedarray-subarray-of-subarray.js
 test/staging/sm/generators/iterator-next-non-object.js
 test/staging/sm/generators/yield-star-throw-htmldda.js
 test/staging/sm/lexical-environment/block-scoped-functions-annex-b-arguments.js
-test/staging/sm/misc/future-reserved-words.js
 test/staging/sm/object/values-entries-typedarray.js
 test/staging/sm/regress/regress-571014.js
 test/staging/sm/regress/regress-577648-1.js
@@ -5480,7 +5479,6 @@ test/staging/sm/regress/regress-665355.js
 test/staging/sm/statements/property-reference-self-assignment.js
 test/staging/sm/strict/15.5.5.1.js
 test/staging/sm/strict/15.5.5.2.js
-test/staging/sm/syntax/let-as-label.js
 test/staging/source-phase-imports/import-source-source-text-module.js
 test/staging/source-phase-imports/module-source-prototype-chain.js
 # INTL-W2 (INTL W1 fixer r3, CI 42341556852): both need Intl.DateTimeFormat (W2); quote-string-for-nul-character.js also needs Intl.NumberFormat, Intl.PluralRules and Intl.RelativeTimeFormat

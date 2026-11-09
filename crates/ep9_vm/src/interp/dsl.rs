@@ -1247,7 +1247,7 @@ impl R {
     /// change).
     ///
     /// aarch64 (M7-P4 TSPASS2): the sign bit, through an empty `asm!` block, times `HEADER`,
-    /// subtracted ([`R::from_operand_sign`]): `lsr` and `sub` with a shifted register (2
+    /// subtracted (`R::from_operand_sign`): `lsr` and `sub` with a shifted register (2
     /// instructions before the load). Without the block LLVM turned the shift form of
     /// `from_operand` into `cmp`, `mov`, `csel`, `add` (4) in each register operand decode of
     /// each handler. Other targets: `from_operand`.

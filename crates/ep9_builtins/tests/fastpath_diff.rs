@@ -942,9 +942,9 @@ const CASES: &[Case] = &[
     },
     // M7-P4 LEVER-2 (TSPASS2): the IC hit of a prefixed site. `f` loads 300 other names
     // first, so the name constant of `o.x` needs a `Wide` operand, and its loop body is longer
-    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): the `Wide` fast
-    // body runs them (`interp/ops.rs` `prefix_runs_fast`). Mono, falsy, a string ToBoolean
-    // (cold), a getter (cold), 8 shapes (megamorphic), a prototype load and its change.
+    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): on aarch64 the
+    // `Wide` fast body runs them (`interp/ops.rs` `prefix_runs_fast`). Mono, falsy, a string
+    // ToBoolean (cold), a getter (cold), 8 shapes (megamorphic), a prototype load and its change.
     Case {
         path: "ic-named",
         name: "a prefixed (Wide) IC hit or Reflect.get",
