@@ -381,6 +381,21 @@ authorization of the copyright holder.
 SPDX-License-Identifier: Unicode-3.0
 ----------------------------------------------------------------------
 
+Unicode Character Database (Unicode-3.0)
+----------------------------------------
+
+Project:  The Unicode Character Database, https://www.unicode.org/ucd/
+Derived:  crates/ep9_rx1/src/unicode_tables.rs (the General_Category and Script value
+          aliases, ID_Start and ID_Continue of the RX1 parser), made by
+          crates/ep9_rx1/data/gen-tables.py from UCD 17.0.0
+          (https://www.unicode.org/Public/17.0.0/ucd/) (M7-P4 RX1-0). Data, not code.
+          PropertyValueAliases.txt sha256
+            64e9a5f76f7a1e8b5a47d6a1f9a26522a251208f5276bdfa1559dac7cf2e827a
+          DerivedCoreProperties.txt sha256
+            24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08
+Copyright: Unicode, Inc. The Unicode License v3 applies; its text is in the ICU
+          time-zone data entry above.
+
 Planned entries (added by the PR that ports the code; not in the tree yet)
 ==========================================================================
 
