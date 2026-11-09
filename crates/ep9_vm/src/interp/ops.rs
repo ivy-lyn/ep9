@@ -831,12 +831,12 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
 }
 
 /// True for the opcodes whose prefixed form the `Wide` and `ExtraWide` fast body runs with the
-/// opcode's own fast body ([`prefixed_fast`]; M7-P4 TSPASS2): `JumpLoop`, `Jump` to
-/// `JumpIfJSReceiver` (one jump operand that needs a prefix past 255 bytes) and, on aarch64
-/// ([`PREFIXED_LOAD_FAST`]), `GetNamedProperty` (a name constant or a feedback slot past 255).
-/// On the TS workload (`octane-typescript`, mac a64 counts at m7-p3) these are 31.6 M of the
-/// 39.2 M prefixed instructions; before, each ran in `interp::scaled::step` through the cold
-/// block.
+/// opcode's own fast body ([`prefixed_fast`]; M7-P4 TSPASS2), on aarch64 only
+/// ([`PREFIXED_FAST`]): `JumpLoop`, `Jump` to `JumpIfJSReceiver` (one jump operand that needs a
+/// prefix past 255 bytes) and `GetNamedProperty` (a name constant or a feedback slot past
+/// 255). On the TS workload (`octane-typescript`, mac a64 counts at m7-p3) these are 31.6 M of
+/// the 39.2 M prefixed instructions; before, each ran in `interp::scaled::step` through the
+/// cold block.
 ///
 /// The cold block reads the same set ([`scaled_cold`]): for these opcodes the fast body has
 /// run once and returned `Flow::Cold`, so the cold block runs only the opcode's cold body
@@ -850,15 +850,15 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
 pub(crate) const fn prefix_runs_fast(op: u8) -> bool {
     use ep9_bytecode::Opcode as O;
     let jump = op >= O::JumpLoop as u8 && op <= O::JumpIfJSReceiver as u8;
-    jump || (PREFIXED_LOAD_FAST && op == O::GetNamedProperty as u8)
+    PREFIXED_FAST && (jump || op == O::GetNamedProperty as u8)
 }
 
-/// True if the `Wide` and `ExtraWide` fast body runs the prefixed `GetNamedProperty`
-/// ([`prefix_runs_fast`]): on aarch64 only. On x86-64 (SysV, `cargo xtask disasm-check`) the
-/// inlined load hit path gives the `Wide` handler 4 register saves on entry, also on its
-/// `LdaSmi` path (8 instructions on each prefixed `LdaSmi` of `t0-loop`); there the prefixed
-/// load stays in `interp::scaled::step`.
-pub(crate) const PREFIXED_LOAD_FAST: bool = cfg!(target_arch = "aarch64");
+/// True if the `Wide` and `ExtraWide` fast body runs the opcodes of [`prefix_runs_fast`]: on
+/// aarch64 only (M7-P4 fixer r3, DL M6-ORCH-317). On x86-64 the inlined fast bodies made the
+/// `Wide` handler 181 instructions, not 53 (`cargo xtask disasm-check -v`, SysV), and the
+/// prefixed `LdaSmi` and Smi paths paid for it (x86-64 Ir: `t0-loop` +4.2%, `crypto` +1.6%).
+/// There every other prefixed opcode runs in `interp::scaled::step` again, as at the base.
+pub(crate) const PREFIXED_FAST: bool = cfg!(target_arch = "aarch64");
 
 /// The prefixed (scale `S`) forms of the opcodes of [`prefix_runs_fast`] (or `Flow::Cold` for
 /// any other `op`): the operands at scale `S`, `st.next` set to the end of the prefixed
