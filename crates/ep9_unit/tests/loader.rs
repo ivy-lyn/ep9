@@ -161,6 +161,10 @@ fn open(bytes: &[u8]) -> (VerifiedUnit, Vec<u8>, Vec<Entry>) {
     (unit, text, entries)
 }
 
+/// A variant as `Cx::run_script_with_unit_code` takes it: (dispatch kind, lowering, entry,
+/// length, CPU bits, fuse ids).
+type Var<'a> = (u8, u8, u32, u32, u64, &'a [u32]);
+
 /// One run: with `code` the unit's native part goes to the loader; returns the counts (empty
 /// without), the printed text and the facts.
 fn run(
@@ -176,7 +180,7 @@ fn run(
         .with_cx(|cx| {
             let (rows, r) = match code {
                 Some((text, entries)) => {
-                    let vars: Vec<Vec<(u8, u8, u32, u32, u64, &[u32])>> = entries
+                    let vars: Vec<Vec<Var<'_>>> = entries
                         .iter()
                         .map(|e| {
                             e.variants
@@ -195,7 +199,7 @@ fn run(
                                 .collect()
                         })
                         .collect();
-                    let fns: Vec<(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])> = entries
+                    let fns: Vec<(u32, [u8; 16], &[Var<'_>])> = entries
                         .iter()
                         .zip(&vars)
                         .map(|(e, v)| (e.function, e.digest, &v[..]))
