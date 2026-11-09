@@ -54,7 +54,7 @@ zoneinfo64 = { version = "=0.3.0", default-features = false }
 libm = { version = "=0.2.16", default-features = false }
 # Intl (ECMA-402 on ICU4X; INTL-I1-D5): the 2.3.x line of the icu_calendar that temporal_rs
 # pins, exact pins (the `unstable` APIs can change in a minor release), no default features.
-# Only ep9_intl imports them (dep-guards checks 22-24). Data: the baked compiled data (D10,
+# Only ep9_intl imports them (dep-guards checks 24-26). Data: the baked compiled data (D10,
 # INTL-I1-D4). Not used: the `icu` meta crate (its default turns on icu_segmenter/auto, so
 # lstm and core_maths), serde, datagen, logging, log, ryu, lstm, auto, ixdtf,
 # icu_provider_blob. One BUMP step moves them all at once (INTL-I1-D5).

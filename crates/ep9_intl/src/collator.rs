@@ -1,4 +1,4 @@
-//! Intl.Collator (ECMA-402 §10; block 31): `%Intl.Collator%` and `%Intl.Collator.prototype%`,
+//! Intl.Collator (ECMA-402 §10; block 32): `%Intl.Collator%` and `%Intl.Collator.prototype%`,
 //! a module of the lazy group "Intl" (INTL-I1-D8): its properties target only `%Intl%` and
 //! its own intrinsics. Also the body of `String.prototype.localeCompare` (§19.1.1,
 //! [`locale_compare`]), which `ep9_builtins` calls (INTL-I1 §1.5).
@@ -58,7 +58,7 @@ use crate::resolve::{self, KeyData};
 use crate::tag;
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 31;
+pub const BLOCK: u8 = 32;
 
 /// The class of an Intl.Collator object.
 pub const CLASS: ObjectClass = ObjectClass::IntlCollator;

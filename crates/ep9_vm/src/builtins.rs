@@ -308,13 +308,13 @@ pub enum IntrinsicId {
     /// `%AsyncDisposableStack.prototype%` (made by `ep9_builtins` disposable.rs).
     AsyncDisposableStackPrototype,
     // ---- INTL W1 CORE (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
-    /// `%Intl%` (ECMA-402 §8, the Intl namespace object; made by `ep9_intl` intl.rs, block 29).
+    /// `%Intl%` (ECMA-402 §8, the Intl namespace object; made by `ep9_intl` intl.rs, block 30).
     Intl,
-    /// `%Intl.Locale%` (ECMA-402 §14.1; made by `ep9_intl` locale.rs, block 30).
+    /// `%Intl.Locale%` (ECMA-402 §14.1; made by `ep9_intl` locale.rs, block 31).
     IntlLocale,
     /// `%Intl.Locale.prototype%` (ECMA-402 §14.3, an ordinary object; made by `ep9_intl` locale.rs).
     IntlLocalePrototype,
-    /// `%Intl.Collator%` (ECMA-402 §10.1; made by `ep9_intl` collator.rs, block 31).
+    /// `%Intl.Collator%` (ECMA-402 §10.1; made by `ep9_intl` collator.rs, block 32).
     IntlCollator,
     /// `%Intl.Collator.prototype%` (ECMA-402 §10.3, an ordinary object; made by `ep9_intl` collator.rs).
     IntlCollatorPrototype,
@@ -322,7 +322,7 @@ pub enum IntrinsicId {
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 104] = [
+    pub const ALL: [IntrinsicId; 109] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -741,11 +741,11 @@ impl IntrinsicId {
             IntrinsicId::DisposableStackPrototype => Some(68),
             IntrinsicId::AsyncDisposableStack => Some(69),
             IntrinsicId::AsyncDisposableStackPrototype => Some(70),
-            IntrinsicId::Intl => Some(65),
-            IntrinsicId::IntlLocale => Some(66),
-            IntrinsicId::IntlLocalePrototype => Some(67),
-            IntrinsicId::IntlCollator => Some(68),
-            IntrinsicId::IntlCollatorPrototype => Some(69),
+            IntrinsicId::Intl => Some(71),
+            IntrinsicId::IntlLocale => Some(72),
+            IntrinsicId::IntlLocalePrototype => Some(73),
+            IntrinsicId::IntlCollator => Some(74),
+            IntrinsicId::IntlCollatorPrototype => Some(75),
             _ => None,
         }
     }
@@ -1424,7 +1424,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 71;
+const INTRINSIC_SLOTS: usize = 76;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

@@ -1,4 +1,4 @@
-//! The Intl namespace (ECMA-402 §8; block 29): `%Intl%`, an ordinary object, the key module of
+//! The Intl namespace (ECMA-402 §8; block 30): `%Intl%`, an ordinary object, the key module of
 //! the lazy group "Intl" (INTL-I1-D8): its only `%GlobalObject%` property is `Intl`, and each
 //! service module adds its constructor to `%Intl%`.
 //!
@@ -19,7 +19,7 @@ use crate::available;
 use crate::tag::canonicalize_locale_list;
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 29;
+pub const BLOCK: u8 = 30;
 
 /// The builtin functions, in id order (append-only).
 pub const DEFS: &[BuiltinDef] = &[

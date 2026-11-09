@@ -1,4 +1,4 @@
-//! Intl.Locale (ECMA-402 §14; block 30): `%Intl.Locale%` and `%Intl.Locale.prototype%`, a
+//! Intl.Locale (ECMA-402 §14; block 31): `%Intl.Locale%` and `%Intl.Locale.prototype%`, a
 //! module of the lazy group "Intl" (INTL-I1-D8): its properties target only `%Intl%` and its
 //! own intrinsics.
 //!
@@ -39,7 +39,7 @@ use crate::tag::{
 };
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 30;
+pub const BLOCK: u8 = 31;
 
 /// The class of an Intl.Locale object.
 pub const CLASS: ObjectClass = ObjectClass::IntlLocale;

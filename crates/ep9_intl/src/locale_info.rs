@@ -1,7 +1,7 @@
 //! Locale info (Intl Locale Info proposal, the ECMA-402 §14.3 additions): the
 //! Intl.Locale.prototype methods `getCalendars`, `getCollations`, `getHourCycles`,
 //! `getNumberingSystems`, `getTimeZones`, `getTextInfo` and `getWeekInfo`. Their ids are in the
-//! locale module (block 30, ids 16-22).
+//! locale module (block 31, ids 16-22).
 //!
 //! ```text
 //! RegionPreference(loc)   "rg" override > region subtag > "sd" subdivision

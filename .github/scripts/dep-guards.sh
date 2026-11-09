@@ -155,7 +155,7 @@ deps_within 6 ep9_math
 deps_within 7 ep9_facts ep9_bytecode
 
 # 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math (Math, H20), ep9_temporal
-#    (Temporal; SPEC-T-D11, check 18 keeps its edges) and ep9_intl (Intl; INTL-I1-D1, check 22).
+#    (Temporal; SPEC-T-D11, check 18 keeps its edges) and ep9_intl (Intl; INTL-I1-D1, check 24).
 deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal ep9_intl
 
 # 9) The jitless ep9 has no `jit` feature anywhere in its graph (H27): no ep9_platform "jit".
@@ -464,27 +464,27 @@ if grep -q "ep9_cli" <<< "$members"; then
   feature_check 23 ep9_platform unwind on "the default ep9 (-p ep9_cli)" -p ep9_cli
 fi
 
-# 22) ep9_intl (INTL-I1-D1, layout B) reaches the engine only through ep9_vm's Cx and reads
+# 24) ep9_intl (INTL-I1-D1, layout B) reaches the engine only through ep9_vm's Cx and reads
 #     Temporal objects and the tz data through ep9_temporal's pub API; its other normal edges
 #     are the ICU4X 2.3 components of INTL-I1-D5 and their base crates, and icu_normalizer (NFD
 #     and the ccc for the collator's stream-safe step; icu_collator's own dependency).
-deps_within 22 ep9_intl ep9_vm ep9_temporal icu_locale_core icu_locale icu_collator icu_normalizer icu_decimal fixed_decimal icu_plurals icu_list icu_segmenter icu_casemap icu_experimental icu_calendar icu_time icu_datetime icu_provider writeable tinystr zerovec
+deps_within 24 ep9_intl ep9_vm ep9_temporal icu_locale_core icu_locale icu_collator icu_normalizer icu_decimal fixed_decimal icu_plurals icu_list icu_segmenter icu_casemap icu_experimental icu_calendar icu_time icu_datetime icu_provider writeable tinystr zerovec
 
-# 23) The ICU4X components that only Intl uses have ep9_intl as their only workspace dependent
+# 25) The ICU4X components that only Intl uses have ep9_intl as their only workspace dependent
 #     (any edge kind, as check 19), so builtins and ep9_temporal reach them only through
 #     ep9_intl. Not listed: icu_calendar (temporal_rs), icu_segmenter (textwrap, through
 #     oxc_diagnostics), icu_locale_core and icu_provider (base crates of every icu graph).
 #     Control: check 14's query on its sample graph (above).
 if ! member_exists ep9_intl; then
-  ok "(23) ep9_intl does not exist yet"
+  ok "(25) ep9_intl does not exist yet"
 else
   for c in icu_locale icu_collator icu_normalizer icu_decimal fixed_decimal icu_plurals icu_list icu_casemap icu_experimental icu_time icu_datetime; do
     users="$(dependents_of "$c" "$meta" | paste -sd ' ' -)"
-    if [ "$users" = ep9_intl ]; then ok "(23) only ep9_intl depends on $c"; else bad "(23) $c must have ep9_intl as its only dependent; it has: ${users:-none}"; fi
+    if [ "$users" = ep9_intl ]; then ok "(25) only ep9_intl depends on $c"; else bad "(25) $c must have ep9_intl as its only dependent; it has: ${users:-none}"; fi
   done
 fi
 
-# 24) ICU4X features in the shipped graph (-p ep9_cli, default and jitless; INTL-I1-D5):
+# 26) ICU4X features in the shipped graph (-p ep9_cli, default and jitless; INTL-I1-D5):
 #     icu_segmenter has no `lstm` and no `auto` (lstm needs core_maths: H36); fixed_decimal,
 #     icu_decimal and icu_experimental have no `ryu`; no icu crate has `serde` or `datagen`.
 #     Control: icu_collator has `compiled_data` (a query that sees no features fails here).
@@ -499,21 +499,21 @@ if member_exists ep9_intl; then
     # shellcheck disable=SC2086
     {
       for feat in lstm auto; do
-        feature_check 24 icu_segmenter "$feat" off "$g" $g
+        feature_check 26 icu_segmenter "$feat" off "$g" $g
       done
       for c in fixed_decimal icu_decimal icu_experimental; do
-        feature_check 24 "$c" ryu off "$g" $g
+        feature_check 26 "$c" ryu off "$g" $g
       done
       for c in icu_locale_core icu_locale icu_collator icu_decimal icu_plurals icu_list icu_segmenter icu_casemap icu_experimental icu_calendar icu_time icu_datetime icu_provider; do
         for feat in serde datagen; do
-          feature_check 24 "$c" "$feat" off "$g" $g
+          feature_check 26 "$c" "$feat" off "$g" $g
         done
       done
-      feature_check 24 icu_collator compiled_data on "control: $g" $g
+      feature_check 26 icu_collator compiled_data on "control: $g" $g
     }
   done
 else
-  ok "(24) ep9_intl does not exist yet"
+  ok "(26) ep9_intl does not exist yet"
 fi
 
 exit "$fail"

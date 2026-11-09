@@ -94,10 +94,11 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
                 .collect::<Vec<_>>()
         );
     }
-    // The Intl blocks follow iterator (block 28).
-    assert_eq!(ep9_intl::intl::BLOCK, 29);
-    assert_eq!(ep9_intl::locale::BLOCK, 30);
-    assert_eq!(ep9_intl::collator::BLOCK, 31);
+    // The Intl blocks follow disposable (block 29; M7-P3 SPEC-ERM), after iterator (block 28).
+    assert_eq!(ep9_builtins::disposable::BLOCK, 29);
+    assert_eq!(ep9_intl::intl::BLOCK, 30);
+    assert_eq!(ep9_intl::locale::BLOCK, 31);
+    assert_eq!(ep9_intl::collator::BLOCK, 32);
 }
 
 #[test]
