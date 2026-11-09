@@ -5,12 +5,13 @@ use std::io;
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{ERROR_INVALID_ADDRESS, GetLastError};
+use windows_sys::Win32::System::Diagnostics::Debug::FlushInstructionCache;
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_NOACCESS, PAGE_READWRITE,
-    VirtualAlloc, VirtualFree,
+    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_NOACCESS,
+    PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-use windows_sys::Win32::System::Threading::GetCurrentThreadStackLimits;
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadStackLimits};
 
 /// `(page size, allocation granularity, highest user address)`.
 fn system_info() -> (usize, usize, usize) {
@@ -137,6 +138,30 @@ pub(crate) fn stack_bounds() -> io::Result<(usize, usize)> {
     // SAFETY: both out pointers are valid locals. The call cannot fail (Windows 8 and later).
     unsafe { GetCurrentThreadStackLimits(&mut low, &mut high) };
     Ok((low, high))
+}
+
+/// Makes committed pages read and execute only (the last step of `unit_text`'s protect form).
+///
+/// # Safety
+/// `[addr, addr + size)` is page-aligned, committed, inside a reservation of this process, and
+/// no live reference writes into it.
+pub(crate) unsafe fn protect_rx(addr: usize, size: usize) -> io::Result<()> {
+    let mut old: PAGE_PROTECTION_FLAGS = 0;
+    // SAFETY: the caller guarantees the range is committed and ours; `old` is a valid local.
+    let ok = unsafe { VirtualProtect(addr as *const c_void, size, PAGE_EXECUTE_READ, &mut old) };
+    if ok != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Makes the instruction fetch see the bytes written to `[addr, addr + len)` (`unit_text`
+/// without `jit`; the `jit` module has its own copy, `jit::flush_icache`).
+pub(crate) fn flush_icache(addr: usize, len: usize) {
+    // SAFETY: FlushInstructionCache only runs cache maintenance for our own process; it does
+    // not write memory. The pseudo handle of GetCurrentProcess needs no close.
+    unsafe { FlushInstructionCache(GetCurrentProcess(), addr as *const c_void, len) };
 }
 
 #[cfg(test)]

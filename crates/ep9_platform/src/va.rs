@@ -594,13 +594,13 @@ impl CodeRangeConfig {
     }
 }
 
-/// The process code range (H07-Q6): one reservation for JIT code and mmapped units of every
-/// isolate, below 2^47 and outside [`TSRS_RESERVATION`]. Code gets its pages as
-/// [`CodeChunk`]s; with `jit`, `CodeChunk::commit` turns a chunk into `jit::CodeMemory`.
+/// The process code range (H07-Q6): one reservation for JIT code and unit text of every
+/// isolate, below 2^47 and outside [`TSRS_RESERVATION`]. Code gets its pages as [`CodeChunk`]s:
+/// `CodeChunk::commit` (`jit`) makes `jit::CodeMemory`; [`crate::unit_text`] maps unit text.
 ///
 /// | Build | Mapping |
 /// |---|---|
-/// | `jit` (or `cfg(test)`) on macOS arm64 | one `MAP_JIT` RWX mapping at a hinted address ([`Reservation::reserve_code_range_at`]) |
+/// | `jit` (or `cfg(test)`) on macOS arm64 | one `MAP_JIT` RWX mapping at a hinted address (`Reservation::reserve_code_range_at`, `jit` or test) |
 /// | every other build | a plain reservation, inaccessible until committed |
 ///
 /// The range is never released: [`CodeRange::process`] keeps it for the life of the process.
@@ -787,8 +787,8 @@ impl CodeRange {
 
 /// Pages `[offset, offset + len)` of a [`CodeRange`] that belong to one owner until drop.
 /// Chunks never overlap. Drop gives the pages back to the range (it does not decommit them;
-/// `jit::CodeMemory` does that when it drops). With `jit`, `CodeChunk::commit` makes the
-/// chunk code memory. A chunk never handed to `jit::CodeMemory` is reserved and inaccessible.
+/// `jit::CodeMemory` and `unit_text::UnitText` do that when they drop). With `jit`,
+/// `CodeChunk::commit` makes it code memory; `unit_text` maps unit text into it in every build.
 #[derive(Debug)]
 pub struct CodeChunk<'r> {
     range: &'r CodeRange,
