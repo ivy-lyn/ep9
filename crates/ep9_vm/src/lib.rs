@@ -136,6 +136,9 @@ mod select;
 // BigInt values (spec-temporal B2; OBJECT_LAYOUT 7): the BIGINT cell (kind 9) and its operations.
 mod bigint;
 
+mod array_buffer; // TypedArray TA-1 (OBJECT_LAYOUT 9): ArrayBuffer and SAB data, BYTES, the BufferTable
+mod typed_array; // TypedArray TA-1 (OBJECT_LAYOUT 9): the view cells and their exotic methods
+
 #[cfg(test)]
 mod tests;
 
