@@ -465,16 +465,7 @@ fn call_bytecode(
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     if !fi.is_bytecode() || fi.slot.kind_byte() != crate::dispatch::DispatchKind::Interp as u8 {
-        // Native code (an AotBaseline unit function or a Baseline slot; MC-w30-2, M7-P5
-        // A2-RW): a call from Rust (`Cx::call`, a builtin callback, a forwarded `apply` or
-        // `call` that the T0 forward refused, a callee of another realm) enters it through the
-        // Rust entry, with an entry frame. Construct stays refused here (MC-w29-8).
-        if new_target == UNDEFINED
-            && let Some(nfi) = crate::native::native_callee(f)
-        {
-            return crate::native::enter_from_rust(cx, f, nfi, this, argc, arg);
-        }
-        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+        return call_native_from_rust(cx, f, this, argc, arg, new_target); // MC-w30-2
     }
     poll(cx, caller)?;
     let bound_this = try_bind_this(fi, this, rt.global());
@@ -2107,4 +2098,26 @@ thread_local! {
     /// The calls of [`FORWARDED_CALLS`] that [`forward_frame`] (the T0 call fast path) pushed.
     #[cfg_attr(all(not(feature = "spike-native"), target_arch = "x86_64"), allow(dead_code))]
     pub(crate) static T0_FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The non-bytecode arm of [`call_bytecode`] (M7-P5 A2-RW, route MC-w30-2): a call from Rust
+/// (`Cx::call`, a builtin callback, a forwarded `apply` or `call` that the T0 forward refused,
+/// a callee of another realm) of native code (an AotBaseline unit function or a Baseline slot)
+/// enters it through the Rust entry, with an entry frame. Construct (`new_target` set) stays
+/// refused (MC-w29-8), and so does any other kind. (At the end of the file, so no cited line
+/// moves.)
+fn call_native_from_rust(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    if new_target == UNDEFINED
+        && let Some(nfi) = crate::native::native_callee(f)
+    {
+        return crate::native::enter_from_rust(cx, f, nfi, this, argc, arg);
+    }
+    Err(not_implemented(cx, "calling code of this dispatch kind"))
 }
