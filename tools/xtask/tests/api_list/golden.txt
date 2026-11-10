@@ -1,0 +1,8 @@
+# The public API of ep9_vm from rustdoc JSON (H20-Q6): `cargo xtask api-list` compares,
+# `cargo xtask api-list --bless` writes this file (tools/xtask/src/api_list.rs has the line
+# form). Build: nightly-2026-10-04, --target x86_64-unknown-linux-gnu, --features jit,
+# doc-hidden items read, rustdoc JSON format_version 61. One line per item, sorted.
+k::Cx :: impl<'s> Cx<'s>
+k::Cx :: impl<'s> Cx<'s> :: fn len(&self) -> usize
+k::Cx :: struct Cx<'s> { .. }
+k::run :: fn run(u32) -> bool

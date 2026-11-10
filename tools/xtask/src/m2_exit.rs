@@ -35,7 +35,10 @@
 //! `aarch64-unknown-linux-gnu` the speed cells are N/A by design (no gate host). On
 //! `x86_64-pc-windows-msvc` a speed cell gives the ratio of each Windows reading to the Linux x64
 //! one (`--linux-gate`; 09:66: within 10%; each reading on both hosts must have the status
-//! `valid`, a gate verdict is not needed), and reads OPEN "marginal (no gate host)" until both
+//! `valid`, a gate verdict is not needed). The verdict is the cross-host ratio rule of
+//! 10-quality.md section 3 (P0-WININT): the ratio interval [Windows low / Linux high, Windows
+//! high / Linux low] passes when its low end is >= 0.9, fails when its high end is < 0.9, and is
+//! OPEN (marginal) when it holds 0.9. The cell reads OPEN "marginal (no gate host)" until both
 //! runs are gate-host runs on the same CPU model (a dual-boot or identical host, 10:157).
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
@@ -503,6 +506,42 @@ fn fresh(
     fresh_since(root, commit, paths)
 }
 
+/// The build-id OPEN rule (route P0-BUILDID): the bench tools give a run the commit of the ep9
+/// binary they measured (its `ep9 --version` build line on stderr, `crates/ep9_cli/build.rs`),
+/// and null when a binary prints no line, names no commit, was built with uncommitted engine
+/// changes, or two binaries name two commits; [`fresh`] reads that null as OPEN. This adds
+/// the reason from the run's record of the lines (`commit.binary` of mem.mjs, `ep9.binary` of
+/// jetstream/run.mjs: one record or a list; m2gate.mjs carries none). It trusts that record
+/// as the tool wrote it; a JSON without it (a tool before P0-BUILDID) keeps the plain reason.
+fn with_binary_why(why: String, binary: Option<&Json>) -> String {
+    let one = |b: &Json| -> Option<&'static str> {
+        match b {
+            Json::Null => Some("an ep9 binary prints no build line (`ep9 --version`, P0-BUILDID)"),
+            Json::Obj(_) if b.get("dirty").and_then(Json::bool) == Some(true) => {
+                Some("an ep9 binary was built with uncommitted engine changes")
+            }
+            Json::Obj(_) if b.get("commit").and_then(Json::str).is_none() => {
+                Some("the ep9 binaries name no one commit")
+            }
+            _ => None,
+        }
+    };
+    let found = match binary {
+        Some(Json::Arr(a)) => a.iter().find_map(one).or_else(|| {
+            let mut c = a.iter().filter_map(|b| b.get("commit").and_then(Json::str));
+            let first = c.next();
+            c.any(|x| Some(x) != first)
+                .then_some("the ep9 binaries name no one commit")
+        }),
+        Some(b) => one(b),
+        None => None,
+    };
+    match found {
+        Some(f) => format!("{why} ({f})"),
+        None => why,
+    }
+}
+
 /// The git ids of `paths` at HEAD equal the input's `tree` ids (a CI job on a merge commit).
 fn same_trees(root: &Path, tree: Option<&Json>, paths: &[&str]) -> bool {
     let Some(Json::Obj(_)) = tree else {
@@ -625,6 +664,17 @@ fn speed(id: &str, r: &Json) -> Option<f64> {
     } else {
         Some(v)
     }
+}
+
+/// The order-statistic interval of [`speed`] (low, high): a ratio reading's `interval`, or
+/// for `ts` 1 / its time interval's ends (P0-WININT). None if a bound is missing or not > 0.
+fn speed_interval(id: &str, r: &Json) -> Option<(f64, f64)> {
+    let iv = r.get("interval").and_then(Json::arr)?;
+    let (a, z) = (iv.first()?.num()?, iv.get(1)?.num()?);
+    if !(a > 0.0 && z >= a) {
+        return None;
+    }
+    Some(if id == TS { (1.0 / z, 1.0 / a) } else { (a, z) })
 }
 
 /// A speed cell: the readings `ids` of `builds` from `--gate`.
@@ -826,13 +876,31 @@ fn windows_ratio(
                 ));
             }
             let l = lr.and_then(|r| speed(id, r));
-            match (w, l) {
-                (Some(w), Some(l)) if l > 0.0 => {
+            // P0-WININT: the cross-host ratio rule (10-quality.md section 3, the Windows note):
+            // the ratio interval [Windows low / Linux high, Windows high / Linux low] of the two
+            // speed intervals; the median ratio is printed, the interval decides.
+            let wi = reading(win, id, b).and_then(|r| speed_interval(id, r));
+            let li = lr.and_then(|r| speed_interval(id, r));
+            match (w, l, wi, li) {
+                (Some(w), Some(l), Some((wl, wh)), Some((ll, lh))) if l > 0.0 => {
                     let q = w / l;
-                    if q < WINDOWS_MIN {
+                    let (lo, hi) = (wl / lh, wh / ll);
+                    let side = if lo >= WINDOWS_MIN {
+                        ""
+                    } else if hi < WINDOWS_MIN {
                         status = status.max(Status::Fail);
-                    }
-                    ratios.push(format!("{b} {id} Windows / Linux x64 = {q:.3}"));
+                        " below"
+                    } else {
+                        status = status.max(Status::Open);
+                        " marginal (the interval holds 0.9: run both hosts again with 2x rounds)"
+                    };
+                    ratios.push(format!(
+                        "{b} {id} Windows / Linux x64 = {q:.3} [{lo:.3}, {hi:.3}]{side}"
+                    ));
+                }
+                (Some(_), Some(l), _, _) if l > 0.0 => {
+                    status = status.max(Status::Open);
+                    ratios.push(format!("{b} {id}: no interval on both hosts"));
                 }
                 _ => {
                     status = status.max(Status::Open);
@@ -842,7 +910,7 @@ fn windows_ratio(
         }
     }
     let text = format!(
-        "ratio to Linux x64 ({}; >= {WINDOWS_MIN} needed, 09:66): {}",
+        "ratio to Linux x64 ({}; the interval >= {WINDOWS_MIN} needed, 09:66): {}",
         lp.display(),
         ratios.join(", ")
     );
@@ -1001,7 +1069,8 @@ fn item4(c: &Ctx) -> Cell {
             j.path(&["commit", "ep9"]).and_then(Json::str),
             j.path(&["commit", "runner_dirty"]),
             &FRESH_PATHS,
-        ),
+        )
+        .map_err(|e| with_binary_why(e, j.path(&["commit", "binary"]))),
     )
 }
 
@@ -1411,7 +1480,8 @@ fn item7(c: &Ctx) -> Cell {
             j.path(&["ep9", "commit"]).and_then(Json::str),
             j.path(&["ep9", "dirty"]),
             &FRESH_PATHS,
-        ),
+        )
+        .map_err(|e| with_binary_why(e, j.path(&["ep9", "binary"]))),
     )
 }
 
@@ -2166,6 +2236,69 @@ mod tests {
         );
     }
 
+    /// P0-WININT (M6-ORCH-139): the Windows cells read the ratio interval, not the medians. A
+    /// Windows jit Octane reading with median 1.28 and interval [1.15, 1.40] against the Linux
+    /// x64 1.33 [1.32202, 1.33798]: the median ratio 0.962 read PASS; the interval [0.860,
+    /// 1.059] holds 0.9, so OPEN (marginal). [1.0, 1.1] (median 1.05) is below: FAIL.
+    #[test]
+    fn windows_reads_the_cross_host_ratio_interval() {
+        let r = repo("windows-interval");
+        let base = fixture("gate-win.json").replace(SHA, &r.head);
+        let jit_oct = "\"value\": 1.4,\n   \"interval\": [\n    1.3916,\n    1.4084\n   ]";
+        assert!(base.contains(jit_oct));
+        let at = base.find("\"id\": \"octane7-vs-qjs\"").unwrap();
+        let with = |v: &str| {
+            let mut t = base.clone();
+            let k = at + t[at..].find(jit_oct).unwrap();
+            t.replace_range(k..k + jit_oct.len(), v);
+            t
+        };
+        let cases = [
+            (
+                "\"value\": 1.28, \"interval\": [1.15, 1.4]",
+                Status::Open,
+                "jit octane7-vs-qjs Windows / Linux x64 = 0.962 [0.860, 1.059] marginal",
+            ),
+            (
+                "\"value\": 1.05, \"interval\": [1.0, 1.1]",
+                Status::Fail,
+                "jit octane7-vs-qjs Windows / Linux x64 = 0.789 [0.747, 0.832] below",
+            ),
+        ];
+        for (n, (v, want, text)) in cases.into_iter().enumerate() {
+            let f = format!("inputs/gate-win-{n}.json");
+            write(&r.root, &f, &with(v));
+            let o = Options {
+                gate: Some(r.root.join(&f)),
+                linux_gate: Some(input(&r, "gate-win-linux.json")),
+                ..opts(&r, WINDOWS_X64)
+            };
+            let c = &run(&o).unwrap().cells[0];
+            assert_eq!(c.status, want, "{}", c.evidence);
+            assert!(c.evidence.contains(text), "{text}: {}", c.evidence);
+        }
+        // The fixture pair itself: each interval is above 0.9 (the median 0.950 one too).
+        let o = Options {
+            gate: Some(input(&r, "gate-win.json")),
+            linux_gate: Some(input(&r, "gate-win-linux.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let c = &run(&o).unwrap().cells[0];
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(
+            c.evidence
+                .contains("jitless octane7-vs-qjs Windows / Linux x64 = 0.950 [0.939, 0.961]"),
+            "{}",
+            c.evidence
+        );
+        let ts = speed_interval(TS, &parse_json("{\"interval\": [2.0, 4.0]}").unwrap());
+        assert_eq!(ts, Some((0.25, 0.5)));
+        assert_eq!(
+            speed_interval("x", &parse_json("{\"interval\": [2.0, 1.0]}").unwrap()),
+            None
+        );
+    }
+
     /// M7-P0 Codex r1 GATES10-3: a run of language/ and annexB/ only (no built-ins result, no
     /// skipped built-ins file, no by_dir built-ins count) read PASS with every built-ins dir at
     /// 20 / 20. Now OPEN; and a filtered run (run_paths) that misses one Math file is OPEN.
@@ -2288,6 +2421,59 @@ mod tests {
                 .contains("19 language files in the run, the checkout has 20"),
             "{}",
             c.evidence
+        );
+    }
+
+    /// P0-BUILDID: a mem or JetStream run whose ep9 binary prints no build line, or was built
+    /// dirty, names no ep9 commit (the tools write null), so the cell is OPEN and says why.
+    #[test]
+    fn a_binary_with_no_clean_build_line_is_open() {
+        let r = repo("buildid");
+        let head = format!("\"ep9\": \"{}\", \"runner_dirty\"", r.head);
+        let mem = fixture("mem.json")
+            .replace(SHA, &r.head)
+            .replace(&head, "\"ep9\": null, \"binary\": null, \"runner_dirty\"");
+        assert!(mem.contains("\"binary\": null"));
+        write(&r.root, "inputs/mem-nobuild.json", &mem);
+        let o = Options {
+            mem: Some(r.root.join("inputs/mem-nobuild.json")),
+            ..opts(&r, HOST)
+        };
+        let c = &run(&o).unwrap().cells[3];
+        assert_eq!(c.status, Status::Open);
+        assert!(
+            c.evidence.contains(
+                "it names no ep9 commit (an ep9 binary prints no build line (`ep9 --version`, \
+                 P0-BUILDID))"
+            ),
+            "{}",
+            c.evidence
+        );
+        let js = fixture("jetstream.json").replace(SHA, &r.head).replace(
+            &format!("\"ep9\": {{ \"commit\": \"{}\", \"dirty\": false }}", r.head),
+            &format!(
+                "\"ep9\": {{ \"commit\": null, \"dirty\": false, \"binary\": [{{ \"commit\": \"{}\", \"dirty\": true }}] }}",
+                r.head
+            ),
+        );
+        assert!(js.contains("\"binary\""));
+        write(&r.root, "inputs/js-dirty.json", &js);
+        let o = Options {
+            jetstream: Some(r.root.join("inputs/js-dirty.json")),
+            ..opts(&r, HOST)
+        };
+        let c = &run(&o).unwrap().cells[6];
+        assert_eq!(c.status, Status::Open);
+        assert!(
+            c.evidence
+                .contains("an ep9 binary was built with uncommitted engine changes"),
+            "{}",
+            c.evidence
+        );
+        assert_eq!(
+            with_binary_why("x".into(), None),
+            "x",
+            "a JSON from before P0-BUILDID keeps the plain reason"
         );
     }
 

@@ -32,6 +32,9 @@ fn main() -> ExitCode {
         Ok(args::Command::Run(opts)) => opts,
         Ok(args::Command::Version) => {
             print!("{}", args::version_text());
+            // P0-BUILDID: the freshness line of build.rs ("commit <sha> clean|dirty", or
+            // "commit unknown") on stderr; stdout keeps the two lines its readers parse.
+            eprintln!("ep9 build: {}", env!("EP9_FRESHNESS"));
             return ExitCode::SUCCESS;
         }
         Ok(args::Command::Help) => {

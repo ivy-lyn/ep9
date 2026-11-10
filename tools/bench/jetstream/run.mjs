@@ -108,6 +108,7 @@ for (const cfg of opts.configs) {
     process.exit(2);
   }
   cfg.version = engineVersion(cfg);
+  if (cfg.kind === "ep9") cfg.build = ep9Build(cfg.bin);
 }
 
 /** The engine's version line (ep9: its two --version lines), or null. */
@@ -119,6 +120,18 @@ function engineVersion(cfg) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The freshness line of an ep9 binary (`ep9 --version` stderr, crates/ep9_cli/build.rs;
+ * P0-BUILDID): { commit, dirty }, both null for "commit unknown", or null with no line. The
+ * pattern is cross/run.mjs `parseBuild` (tools/bench/cross/buildid.test.mjs checks both).
+ */
+function ep9Build(bin) {
+  const r = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 30000 });
+  const m = /^ep9 build: commit (?:([0-9a-f]{40}) (clean|dirty)|unknown)$/m.exec(r.stderr ?? "");
+  if (!m) return null;
+  return m[1] ? { commit: m[1], dirty: m[2] === "dirty" } : { commit: null, dirty: null };
 }
 
 const names = fs.readFileSync(opts.list, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
@@ -235,18 +248,28 @@ for (const cfg of opts.configs) {
   };
 }
 // The ep9 tree of this checkout: `cargo xtask m2-exit` item 7 reads it to know that the run is
-// fresh (null when git cannot say).
+// fresh (null when git cannot say). With ep9 configs, ep9.commit is the commit their binaries
+// name (P0-BUILDID), and only when each names it and was built clean; else null (m2-exit:
+// OPEN). ep9.binary keeps their lines; ep9.runner is this checkout's commit.
 function gitOut(args) {
   const r = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() : null;
 }
 const status = gitOut(["status", "--porcelain", "--untracked-files=no"]);
+function ep9Block() {
+  const runner = gitOut(["rev-parse", "HEAD"]);
+  const dirty = status === null ? null : status !== "";
+  const builds = opts.configs.filter((c) => c.kind === "ep9").map((c) => c.build ?? null);
+  if (!builds.length) return { commit: runner, dirty };
+  const one = builds.every((b) => b && b.commit && b.dirty === false && b.commit === builds[0].commit);
+  return { commit: one ? builds[0].commit : null, dirty, binary: builds, runner };
+}
 const result = {
   started,
   finished: new Date().toISOString(),
   host: { platform: process.platform, arch: process.arch, cpus: os.cpus().length, node: process.version },
   loadavg_after_each_rep: load,
-  ep9: { commit: gitOut(["rev-parse", "HEAD"]), dirty: status === null ? null : status !== "" },
+  ep9: ep9Block(),
   jetstream_commit: fs.readFileSync(path.join(root, "third_party/bench-jetstream.commit"), "utf8").trim(),
   list: path.relative(root, path.resolve(opts.list)),
   reps: opts.reps,

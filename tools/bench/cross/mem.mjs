@@ -26,6 +26,10 @@
 //   --label TEXT        a name for the run
 //   --out FILE          the JSON (schema ep9-mem/v1, every sample); --md FILE the Markdown
 //
+// Commit. commit.ep9 is the commit that every ep9 binary of the run names in its `ep9 --version`
+// build line (stderr, P0-BUILDID), and only when each was built clean; else null, and m2-exit
+// reads the run as OPEN. commit.runner is the checkout the reader ran in.
+//
 // Peak RSS. The OS reports the high-water resident set of the engine process when it exits:
 // macOS `/usr/bin/time -l` "maximum resident set size" (bytes); Linux GNU `/usr/bin/time -f %M`
 // (KiB; the `time` package on Debian and Ubuntu). EP9_MEM_TIME names another program of the same
@@ -56,7 +60,7 @@ import { setTimeout as sleepMs } from "node:timers/promises";
 import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile } from "../lib/host.mjs";
 import { geomean, median } from "../lib/stats.mjs";
 import { splitVersion } from "./kernels.mjs";
-import { ENGINES as CROSS_ENGINES, HostBusy, Refusal, resolveEngines, schedule, UsageError } from "./run.mjs";
+import { buildNote, cleanCommit, combineBuilds, ENGINES as CROSS_ENGINES, HostBusy, parseBuild, Refusal, resolveEngines, schedule, UsageError } from "./run.mjs";
 import { DEFAULT_HARNESS, HARNESSES, ROOT } from "./v8v7.mjs";
 import { expandWorkloads, materialize, V8V7_7, WORKLOADS } from "./workloads.mjs";
 
@@ -281,7 +285,8 @@ function resolveEp9(id, bin) {
   if (!new RegExp(`preset ${want}\\b`).test(sv.engine_build ?? "")) {
     throw new UsageError(`${id} ${bin}: the build line is "${sv.engine_build}", want "preset ${want}"`);
   }
-  return { id, label: ENGINES[id].label, role: "subject", bin, args: [], ...sv };
+  // The freshness line of P0-BUILDID (`build`, null for an older binary).
+  return { id, label: ENGINES[id].label, role: "subject", bin, args: [], ...sv, build: parseBuild(v.stderr) };
 }
 
 export function resolveAll(o) {
@@ -454,12 +459,15 @@ export async function run(o, deps = {}) {
     }
 
     const a = analyze(samples, { engines: o.engines, workloads: o.workloads });
+    const binary = combineBuilds(engines.filter((e) => ENGINES[e.id]?.ep9).map((e) => e.build ?? null));
     return {
       schema: SCHEMA,
       label: o.label,
       started,
       finished: new Date().toISOString(),
-      commit: { ep9: git(["rev-parse", "HEAD"]), runner_dirty: (git(["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "" },
+      // The commit of the measured ep9 binaries (P0-BUILDID), not of this checkout: null when one
+      // has no build line, was built dirty or names another commit (m2-exit: OPEN).
+      commit: { ep9: cleanCommit(binary), binary, runner: git(["rev-parse", "HEAD"]), runner_dirty: (git(["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "" },
       host: {
         file: o.host && path.relative(ROOT, o.host),
         id: hostFile?.id ?? null,
@@ -473,7 +481,7 @@ export async function run(o, deps = {}) {
       reader: { tool: tool.name, program: path.basename(tool.program), unit_of_tool: tool.unit, unit: "bytes" },
       runs: o.runs,
       harness: o.harness,
-      engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, bin: path.basename(e.bin), args: e.args })),
+      engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, build: e.build ?? null, bin: path.basename(e.bin), args: e.args })),
       workloads: Object.values(files).filter((f) => o.workloads.includes(f.name)).map(({ file, ...w }) => ({ ...w, file: path.basename(file) })),
       samples,
       ...a,
@@ -492,7 +500,7 @@ export function renderMarkdown(res) {
   const L = [];
   const eng = Object.fromEntries(res.engines.map((e) => [e.id, e]));
   const g = (c) => (!c ? "not checked" : c.limit === null ? `${c.load1} (no idle baseline)` : `${c.load1} (limit ${c.limit}: ${c.pass ? "pass" : "FAIL"})`);
-  L.push(`Peak RSS ${res.label ? `"${res.label}" ` : ""}${res.started} to ${res.finished}; commit \`${(res.commit.ep9 ?? "unknown").slice(0, 12)}\`.`);
+  L.push(`Peak RSS ${res.label ? `"${res.label}" ` : ""}${res.started} to ${res.finished}; commit \`${(res.commit.ep9 ?? "unknown").slice(0, 12)}\`${buildNote(res.commit.binary)}.`);
   L.push("");
   L.push(`- Host: ${res.host.id ?? "no host file"}: ${res.host.measured.cpu}, ${res.host.measured.os} (${res.host.measured.platform}).`);
   L.push(`- Load: before ${g(res.load.before)}; after ${g(res.load.after)}; after each round ${Math.min(...res.load.after_each_round)}-${Math.max(...res.load.after_each_round)}.`);

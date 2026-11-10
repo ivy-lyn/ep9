@@ -12,6 +12,7 @@
 //! | `m2-exit` | `m2_exit.rs` | the 10 M2 exit items and the D11 row for one host, as a table (plan v12 GATES10) |
 //! | `adr-lint` | `adr_lint.rs` | M1 exit item 6: ADR trailers and review records (M4-P0: only `--trailers-only`) |
 //! | `extref-lint` | `extref_lint.rs` | native words in heap cells only through `ExternalRef` (H25-Q2, C-26; M5-P0: the task name only, exits 2) |
+//! | `api-list` | `api_list.rs` | the public API of `ep9_vm` from rustdoc JSON (nightly), against `crates/ep9_vm/tests/golden/public-api.txt` (H20-Q6) |
 //!
 //! `m0_exit.rs`, `m1_exit.rs` and `m2_exit.rs` share the input readers and the cell type in
 //! `exit/`.
@@ -25,6 +26,7 @@
 //! 2 usage error, tool error or a task that is not implemented yet. An unknown task exits 2.
 
 mod adr_lint;
+mod api_list;
 mod disasm;
 mod exit;
 mod extref_lint;
@@ -50,6 +52,7 @@ fn main() -> ExitCode {
         "m2-exit" => m2_exit::main(&args[1..]),
         "adr-lint" => adr_lint::main(&args[1..]),
         "extref-lint" => extref_lint::main(&args[1..]),
+        "api-list" => api_list::main(&args[1..]),
         _ => {
             eprintln!("xtask: task {task:?} is not implemented yet");
             return ExitCode::from(2);
