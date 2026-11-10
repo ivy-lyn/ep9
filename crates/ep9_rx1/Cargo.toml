@@ -6,14 +6,16 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-# RX1: the Rust port of V8's irregexp (docs/plan/04-execution.md section 3). In M7-P4 the
-# parser only. No normal or build dependencies. Nothing in the workspace depends on this crate
+# RX1: the Rust port of V8's irregexp (docs/plan/04-execution.md section 3). In M7-P5 the
+# parser and the class sets (port steps 1 and 2). No normal or build dependencies. Nothing in the workspace depends on this crate
 # yet; later only ep9_vm may (.github/scripts/dep-guards.sh check 22, the check 14 form).
 
 [dev-dependencies]
-# RX0 (the regress fork, root Cargo.toml) for the parse-equality test (tests/parse_equality.rs).
-# A dev edge to ep9_regexp is not allowed (dep-guards check 14), so the test calls regress.
-regress = { workspace = true }
+# RX0 (the regress fork, root Cargo.toml) for the parse-equality and set-equality tests
+# (tests/parse_equality.rs, tests/set_equality.rs). A dev edge to ep9_regexp is not allowed
+# (dep-guards check 14), so the tests call regress. `utf16`: the UTF-16 searches of the
+# set-equality test (ep9_regexp turns it on too, so Cargo.lock does not change).
+regress = { workspace = true, features = ["utf16"] }
 
 [lints]
 workspace = true
