@@ -155,9 +155,6 @@ history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:13-18	Spike C cov
 history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:294-306	Spike C covers them in its own form	6e60ebd	let repr \= match tag \& 3 \{
 history	13-execution-modes.md	spikes/spike-c/src/deopt_meta.rs:13-18	SPIKEC-4 built its own form	6e60ebd	^\/\/\!  value   \:\= u8 tag
 history	13-execution-modes.md	spikes/spike-c/src/deopt_meta.rs:294-306	SPIKEC-4 built its own form	6e60ebd	let repr \= match tag \& 3 \{
-# H31:79: the new number exotic.rs:210 was an older H31 token with another line (e902a53), so the
-# drift map would read it from there.
-pin	H31-fuse-registry.md	crates/ep9_vm/src/exotic.rs:210	crates/ep9_vm/src/exotic.rs	^pub\(crate\) fn own_attrs\(rt\: \&Runtime\, o\: u64\, key\: u64\, how\: Probe\)	0
 history	H20-builtin-abi.md	crates/ep9_vm/src/abi/weakref.rs:227	M4-P4 P4-ORCH-8 (Codex C2-1 and C2-2 on fixer A	e1857f3	if let Err\(t\) = self\.poll_interrupt\(\) \{
 # M5-P2 integration fixer (ADRLINE at the M5-P2 merge head): tokens in dated record rows keep their numbers;
 # each pattern is the token's first line at the commit that added it (FIX or UNFIXABLE at HEAD).
@@ -403,7 +400,6 @@ history	13-execution-modes.md	crates/ep9_unit/build.rs:108-115	Today the id hash
 history	13-execution-modes.md	crates/ep9_unit/src/header.rs:320-330	Today every unknown value is a LOAD ERROR	3dd68d100a16990a3c78fb5ea447cb918b2955bf	let reserved = \[
 history	13-execution-modes.md	crates/ep9_unit/src/header.rs:390-394	Today every unknown value is a LOAD ERROR	3dd68d100a16990a3c78fb5ea447cb918b2955bf	let kind = SectionKind::from_u32\(le_u32\(b, entry_offsets::KIND\)\)
 pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:53	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinId\(u16\);$	0
-pin	H31-fuse-registry.md	crates/ep9_vm/src/property.rs:132	crates/ep9_vm/src/property.rs	^pub\(crate\) fn get_data_from\(	0
 pin	H13-snapshot-stable-indices.md	docs/adr/README.md:144	docs/adr/README.md	^\| H13 \| Snapshot readiness and stable indices \|	0
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/realm.rs:266	4 Data (M7-P0 amendment: the 2026-11-06 fill row, AOT0, the C-18 root-slot form)	0fd056e4	^pub\(crate\) fn switch\(
 # M7-P1 fixer r2b: the 4 H20:64-66 builtins.rs refs came in the merge 385e6560 (git log -S does not read a
@@ -465,3 +461,11 @@ history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:63-69	M7-P3 integrati
 history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:63-69	| 4 Data (M7-P3 amendment: the 2026-11-08 clarify row, the shape flag bits note, the layout exports of 67675dcb (MCV-w33-1))	e9b13b65	^\/\/\/ 8 \(M7\-P3 ELEMKINDS\, the integrity levels of H18
 history	H25-sandbox-readiness.md	tools/xtask/src/extref_lint.rs:124-125	| 4 Data (M7-P3 amendment: the 2026-11-08 clarify row, the VM stack code list, the construct frame writes)	e9b13b65	\"crates\/ep9\_vm\/src\/construct\_ic\.rs\"\,
 history	H25-sandbox-readiness.md	tools/xtask/src/extref_lint.rs:137	| 4 Data (M7-P3 amendment: the 2026-11-08 clarify row, the VM stack code list, the construct frame writes)	e9b13b65	\(\"crates\/ep9\_vm\/src\/interp\/mod\.rs\"\, \"construct\_result\"\)\,
+# TA-1 fixer (ADRLINE at the TA-1 fixer head): H17 row 4 of the 2026-11-08 clarify row read the
+# shape.rs level bits at e9b13b65 (lines 1721-1726); the TA-1 code moved them by 3 lines.
+history	H17-object-layout.md	crates/ep9_vm/src/shape.rs:1721-1726	| 4 Data (M7-P3 amendment: the 2026-11-08 clarify row, the shape flag bits note, the layout exports of 67675dcb (MCV-w33-1))	e9b13b65	^pub\(crate\) mod level \{$
+# TA-1 fixer: H18:54 and 55 name object.rs 1069 (`element_at`) and 1037 (`double_bits`) at HEAD, and each
+# number was an older H18 token of the other line (0ec3c00d, ad9cc525), so the diff map would read
+# it from there: each is pinned to its line at HEAD.
+pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:1069	crates/ep9_vm/src/object.rs	^fn element_at\(e\: CellPtr\, i\: u32\)	0
+pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:1037	crates/ep9_vm/src/object.rs	^pub\(crate\) fn double_bits\(v\: u64\)	0
