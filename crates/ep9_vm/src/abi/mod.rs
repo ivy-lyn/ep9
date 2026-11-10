@@ -51,6 +51,7 @@ mod regexp;
 mod script;
 mod slots;
 mod time;
+mod typed;
 mod weakref;
 
 use core::marker::PhantomData;
