@@ -1,7 +1,7 @@
 //! Cell kind ids (word0 byte 5), table v1 (v2 of the object layout adds GENERATOR and
 //! SLOT_OBJECT, M2-P0; v3 adds ARGUMENTS, MODULE_NAMESPACE, MODULE, ORDERED_TABLE and REALM,
 //! M3-P0; v4 adds PROXY, PROXY_CALLABLE, VALIDITY_CELL and WEAK_CELL and the CONS, SLICED and
-//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0; v6 adds PROPS_INDEXED and the FUSE layout, M6-P0; v7 adds BIGINT, [`BIGINT`]),
+//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0; v6 adds PROPS_INDEXED and the FUSE layout, M6-P0; v7 adds BIGINT, [`BIGINT`]; v9 adds the 12 TypedArray view kinds and BYTES, [`INT8_VIEW`], [`BYTES`]),
 //! and the kind tests on Value bits.
 //!
 //! | Ids | Kinds | Range test |

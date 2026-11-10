@@ -14,7 +14,7 @@
 //!  2      PACKED_DOUBLE     ┐ raw f64 in an ELEMENTS_DOUBLE cell (kind 81; hole = the NaN
 //!  3      HOLEY_DOUBLE      ┘ 0xFFF7_FFFF_FFF7_FFFF, `object::delems`)
 //!  6      DICTIONARY          an ELEMENTS_DICT cell (kind 82; M5-P2 ELEM2)
-//!  7-15   reserved, append-only, for storage forms (the levels are flags: `set_integrity`)
+//!  7, 8   TYPED_FIXED, TYPED_VARIABLE: a view's buffer bytes (OBJECT_LAYOUT 9); 9-15 reserved
 //!  bit 0 = holey (for 0-5)
 //!
 //!  The lattice (a store moves right or down, never back; `join`):
@@ -139,7 +139,7 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
 }
 
 /// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, FACT_SCHEMA 2) of the VM kind
-/// `k`, or `None` for a reserved value (7-15). Since FACT_SCHEMA 2 (M6-P0) the two numberings
+/// `k`, or `None` for 7, 8 (no name yet) and 9-15 (reserved). Since FACT_SCHEMA 2 the numberings
 /// are the same (0-6 in the VM order, OBJECT_LAYOUT 5, V10-A21); schema 1 put the holey kinds
 /// after the packed ones, so they differed at 1-4. Every reader still converts through this
 /// one map, never a cast (MODES-CHECK-w18 MC-w18-4), so a later append changes one place.
