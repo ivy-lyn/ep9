@@ -436,7 +436,7 @@ unsafe fn check_kinds(session: &mut crate::harness::Session) -> Result<(), Strin
 /// the shared exit stores (`DUMP_BYTES`): 0 in month 6, 1 from A2 start (M7-P1, format 1 with no
 /// byte changed); the spike moved with it.
 pub const PINNED: [(&str, u32); 6] = [
-    ("OBJECT_LAYOUT", 8),
+    ("OBJECT_LAYOUT", 9),
     ("IC_LAYOUT", 4),
     ("FRAME", 2),
     ("VM_LAYOUT", 1),
@@ -1097,7 +1097,7 @@ Object.defineProperty(globalThis, 'layoutSiteB', { get: function () { return lay
         let lines = read_set_lines();
         assert_eq!(lines.len(), 6, "{lines:?}");
         assert!(
-            lines[0].starts_with("OBJECT_LAYOUT 8: ") && lines[0].contains("SHAPE_CAGE_ALIGN"),
+            lines[0].starts_with("OBJECT_LAYOUT 9: ") && lines[0].contains("SHAPE_CAGE_ALIGN"),
             "{}",
             lines[0]
         );

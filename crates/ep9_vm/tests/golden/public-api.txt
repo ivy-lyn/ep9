@@ -1215,6 +1215,8 @@ ep9_vm::internals::VM_BUILTINS :: static VM_BUILTINS: &BuiltinTable
 ep9_vm::layout :: #[doc(hidden)] mod layout
 ep9_vm::layout::ARRAY_ELEMENTS :: const ARRAY_ELEMENTS: u32
 ep9_vm::layout::ARRAY_LENGTH :: const ARRAY_LENGTH: u32
+ep9_vm::layout::BYTES_DATA :: const BYTES_DATA: u32
+ep9_vm::layout::BYTES_LENGTH :: const BYTES_LENGTH: u32
 ep9_vm::layout::CONTEXT_LENGTH :: const CONTEXT_LENGTH: u32
 ep9_vm::layout::CONTEXT_PREVIOUS :: const CONTEXT_PREVIOUS: u32
 ep9_vm::layout::CONTEXT_SCOPE :: const CONTEXT_SCOPE: u32
@@ -1242,6 +1244,8 @@ ep9_vm::layout::ELEMENTS_KIND_HOLEY_INT32 :: const ELEMENTS_KIND_HOLEY_INT32: u8
 ep9_vm::layout::ELEMENTS_KIND_PACKED_DOUBLE :: const ELEMENTS_KIND_PACKED_DOUBLE: u8
 ep9_vm::layout::ELEMENTS_KIND_PACKED_ELEMENTS :: const ELEMENTS_KIND_PACKED_ELEMENTS: u8
 ep9_vm::layout::ELEMENTS_KIND_PACKED_INT32 :: const ELEMENTS_KIND_PACKED_INT32: u8
+ep9_vm::layout::ELEMENTS_KIND_TYPED_FIXED :: const ELEMENTS_KIND_TYPED_FIXED: u8
+ep9_vm::layout::ELEMENTS_KIND_TYPED_VARIABLE :: const ELEMENTS_KIND_TYPED_VARIABLE: u8
 ep9_vm::layout::FEEDBACK_INFO :: const FEEDBACK_INFO: u32
 ep9_vm::layout::FEEDBACK_KEY :: const FEEDBACK_KEY: u32
 ep9_vm::layout::FEEDBACK_SLOTS :: const FEEDBACK_SLOTS: u32
@@ -1273,11 +1277,14 @@ ep9_vm::layout::HOLE :: const HOLE: u64
 ep9_vm::layout::KEYED_KINDS_SET_SHIFT :: const KEYED_KINDS_SET_SHIFT: u32
 ep9_vm::layout::KIND_ARRAY :: const KIND_ARRAY: u8
 ep9_vm::layout::KIND_BYTE :: const KIND_BYTE: u32
+ep9_vm::layout::KIND_BYTES :: const KIND_BYTES: u8
 ep9_vm::layout::KIND_CONTEXT :: const KIND_CONTEXT: u8
 ep9_vm::layout::KIND_ELEMENTS :: const KIND_ELEMENTS: u8
 ep9_vm::layout::KIND_ELEMENTS_DICT :: const KIND_ELEMENTS_DICT: u8
 ep9_vm::layout::KIND_ELEMENTS_DOUBLE :: const KIND_ELEMENTS_DOUBLE: u8
+ep9_vm::layout::KIND_FIRST_VIEW :: const KIND_FIRST_VIEW: u8
 ep9_vm::layout::KIND_FUSE :: const KIND_FUSE: u8
+ep9_vm::layout::KIND_LAST_VIEW :: const KIND_LAST_VIEW: u8
 ep9_vm::layout::KIND_OBJECT :: const KIND_OBJECT: u8
 ep9_vm::layout::KIND_PROPS_INDEXED :: const KIND_PROPS_INDEXED: u8
 ep9_vm::layout::KIND_SHAPE :: const KIND_SHAPE: u8
@@ -1344,6 +1351,13 @@ ep9_vm::layout::SMI_FIELD_OUT_OF_LINE :: const SMI_FIELD_OUT_OF_LINE: i32
 ep9_vm::layout::SMI_KIND_MASK :: const SMI_KIND_MASK: i32
 ep9_vm::layout::SMI_SHIFT :: const SMI_SHIFT: u32
 ep9_vm::layout::VALUE_UNDEFINED :: const VALUE_UNDEFINED: u64
+ep9_vm::layout::VIEW_BUFFER :: const VIEW_BUFFER: u32
+ep9_vm::layout::VIEW_BYTE_OFFSET :: const VIEW_BYTE_OFFSET: u32
+ep9_vm::layout::VIEW_DATA :: const VIEW_DATA: u32
+ep9_vm::layout::VIEW_ELEMENT_SIZES :: const VIEW_ELEMENT_SIZES: [u8; 12]
+ep9_vm::layout::VIEW_FIELDS :: const VIEW_FIELDS: u32
+ep9_vm::layout::VIEW_LENGTH :: const VIEW_LENGTH: u32
+ep9_vm::layout::VIEW_LENGTH_AUTO :: const VIEW_LENGTH_AUTO: i32
 ep9_vm::layout::fp_param :: const fn fp_param(u32) -> isize
 ep9_vm::layout::fp_register :: const fn fp_register(u32) -> isize
 ep9_vm::versions :: mod versions

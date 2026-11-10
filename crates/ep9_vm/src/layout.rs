@@ -435,3 +435,53 @@ pub const SLOTS_DATA: u32 = crate::shape::slf::DATA as u32;
 /// IC_LAYOUT. Smi handler kind: an own data field out of line; its byte offset (from bit
 /// [`SMI_SHIFT`]) is into the SLOTS cell at [`OBJECT_SLOTS`] (`ic::smi::FIELD_OUT_OF_LINE`).
 pub const SMI_FIELD_OUT_OF_LINE: i32 = smi::FIELD_OUT_OF_LINE;
+
+// ---- the TypedArray views and BYTES (OBJECT_LAYOUT 9; TypedArray TA-0 TA-DECL) ----
+// Design `docs/plan/notes/typedarray-design.md` §2.2 (plan rule 71: a layout fact native code
+// will bake goes here with its owning version). Appended at the end, so no line above moves.
+// Declared, no reader yet: no native code reads a view in month 8, and no cell of these kinds
+// exists until TA-1 TA-VM builds them; `tests::layout9` pins the values.
+/// OBJECT_LAYOUT (9). Kind id of the first view kind, an Int8Array (`kinds::INT8_VIEW`, 29).
+/// The 12 view kinds are adjacent, in spec Table 71 order, so a view's element type is its
+/// kind minus this id, and "a view" is one range compare with [`KIND_LAST_VIEW`].
+pub const KIND_FIRST_VIEW: u8 = crate::kinds::INT8_VIEW.get();
+/// OBJECT_LAYOUT (9). Kind id of the last view kind, a Float64Array (`kinds::FLOAT64_VIEW`, 40).
+pub const KIND_LAST_VIEW: u8 = crate::kinds::FLOAT64_VIEW.get();
+/// OBJECT_LAYOUT (9). The element size in bytes of view kind `KIND_FIRST_VIEW + t`, in spec
+/// Table 71 order: Int8, Uint8, Uint8Clamped 1; Int16, Uint16 2; Int32, Uint32 4; BigInt64,
+/// BigUint64 8; Float16 2; Float32 4; Float64 8.
+pub const VIEW_ELEMENT_SIZES: [u8; 12] = [1, 1, 1, 2, 2, 4, 4, 8, 8, 2, 4, 8];
+const _: () = assert!(VIEW_ELEMENT_SIZES.len() == (KIND_LAST_VIEW - KIND_FIRST_VIEW + 1) as usize);
+/// OBJECT_LAYOUT (9). A view's buffer (fixed field 0, at `object::obj::FIXED`): its
+/// ArrayBuffer or SharedArrayBuffer, a strong Value.
+pub const VIEW_BUFFER: u32 = obj::FIXED as u32;
+/// OBJECT_LAYOUT (9). A view's data address (fixed field 1): an `ExternalRef<u8>` native word
+/// (the H25 inventory), the store base plus the byteOffset; null when the buffer is detached
+/// or the view has no bytes. The GC never follows it.
+pub const VIEW_DATA: u32 = obj::FIXED as u32 + 8;
+/// OBJECT_LAYOUT (9). A view's length (fixed field 2), as ARRAY's [`ARRAY_LENGTH`]: an int32
+/// Value below 2^31, a double Value from 2^31 on; 0 once detached. A TYPED_VARIABLE view holds
+/// its fixed length or [`VIEW_LENGTH_AUTO`].
+pub const VIEW_LENGTH: u32 = obj::FIXED as u32 + 16;
+/// OBJECT_LAYOUT (9). The int32 in [`VIEW_LENGTH`] of a view that tracks its buffer's length
+/// (`[[ArrayLength]]` auto): the bound comes from the buffer.
+pub const VIEW_LENGTH_AUTO: i32 = -1;
+/// OBJECT_LAYOUT (9). A view's byteOffset (fixed field 3): a number Value.
+pub const VIEW_BYTE_OFFSET: u32 = obj::FIXED as u32 + 24;
+/// OBJECT_LAYOUT (9). A view's first in-object slot, after its 4 fixed fields: field `f` is at
+/// `VIEW_FIELDS + 8f`.
+pub const VIEW_FIELDS: u32 = obj::FIXED as u32 + 32;
+/// OBJECT_LAYOUT (9). Kind id of a BYTES cell (`kinds::BYTES`, 85): the bytes of a
+/// fixed-length, non-shared ArrayBuffer.
+pub const KIND_BYTES: u8 = crate::kinds::BYTES.get();
+/// OBJECT_LAYOUT (9). BYTES: the byte length, a number Value.
+pub const BYTES_LENGTH: u32 = 8;
+/// OBJECT_LAYOUT (9). BYTES: byte `i` is at `BYTES_DATA + i` (8-aligned raw bytes; no Value,
+/// the GC traces none).
+pub const BYTES_DATA: u32 = 16;
+/// OBJECT_LAYOUT (9). Elements kind value 7 (`elements::kind::TYPED_FIXED`): a view of fixed
+/// length; its bound is [`VIEW_LENGTH`].
+pub const ELEMENTS_KIND_TYPED_FIXED: u8 = ek::TYPED_FIXED;
+/// OBJECT_LAYOUT (9). Elements kind value 8 (`elements::kind::TYPED_VARIABLE`): a view whose
+/// bound comes from its buffer.
+pub const ELEMENTS_KIND_TYPED_VARIABLE: u8 = ek::TYPED_VARIABLE;
