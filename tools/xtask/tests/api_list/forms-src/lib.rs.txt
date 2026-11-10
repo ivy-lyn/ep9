@@ -1,0 +1,38 @@
+#![no_std]
+mod sealed {
+    pub struct Token;
+    pub trait Sealed {
+        #[cfg(not(feature = "t1"))]
+        fn test(&self, t: Token);
+        #[cfg(feature = "t1")]
+        fn test(&self);
+        const N: u32;
+        type A;
+    }
+}
+pub trait Downcast: sealed::Sealed {}
+pub struct S;
+impl sealed::Sealed for S {
+    #[cfg(not(feature = "t1"))]
+    fn test(&self, _t: sealed::Token) {}
+    #[cfg(feature = "t1")]
+    fn test(&self) {}
+    const N: u32 = 1;
+    type A = u8;
+}
+impl Downcast for S {}
+mod hidden {
+    #[cfg(not(feature = "t3"))]
+    pub enum E { A }
+    #[cfg(feature = "t3")]
+    #[repr(u8)] pub enum E { A(u32), B { x: u64 } = 7 }
+}
+pub use hidden::E::*;
+#[cfg(not(feature = "t4"))]
+pub extern "C" fn f() {}
+#[cfg(feature = "t4")]
+pub extern "C-unwind" fn f() {}
+#[cfg(not(feature = "t4"))]
+pub type Fp = extern "C" fn();
+#[cfg(feature = "t4")]
+pub type Fp = extern "C-unwind" fn();

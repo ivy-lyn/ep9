@@ -36,7 +36,10 @@
 //! of the crate share the name); a type of another crate prints by its full path. Impls: every
 //! impl of a listed type and of a listed trait, derived ones too, but not the blanket impls
 //! of other crates (`impl<T> From<T> for T`) and of the auto traits only `Send` and `Sync`
-//! (marked `(auto)`).
+//! (marked `(auto)`). The items of a local supertrait that has no public path (a sealed trait
+//! in a private module) are listed under the trait that names it (`supertrait <Name> ::`); a
+//! glob re-export of a local enum lists each variant at its path; an ABI with the unwind flag
+//! prints as `extern "C-unwind"` (M7-P5 Codex T1, T3, T4).
 //!
 //! Usage: `cargo xtask api-list` (check), `--bless` (write the golden), `--print` (the
 //! listing to stdout), `--json FILE` (read this rustdoc JSON, run no rustdoc: the fixture
@@ -335,13 +338,14 @@ pub(crate) fn listing(text: &str) -> Result<Vec<String>, String> {
         }
     }
     let mut impls: Vec<(u64, String)> = Vec::new();
+    let listed: HashSet<u64> = canon.keys().copied().collect();
     let mut ids: Vec<(&String, &u64)> = canon.iter().map(|(id, p)| (p, id)).collect();
     ids.sort();
     for (path, id) in ids {
         let Some(item) = doc.index.get(id) else {
             continue;
         };
-        doc.members(item, path, &mut lines, &mut impls);
+        doc.members(item, path, &listed, &mut lines, &mut impls);
     }
     // Impls: once each, under the listed self type, else under the trait.
     let mut done = HashSet::new();
@@ -383,6 +387,28 @@ pub(crate) fn listing(text: &str) -> Result<Vec<String>, String> {
         }
     }
     Ok(lines.into_iter().collect())
+}
+
+/// The `extern "..." ` part of a function or fn-pointer header (empty for the Rust ABI). An
+/// ABI object with `unwind: true` (rustdoc's `C { unwind: true }`) prints with `-unwind`, as
+/// the source spells it: `extern "C-unwind"` (M7-P5 Codex T4: the unwind flag is API).
+fn extern_abi(hd: Option<&Json>) -> String {
+    match hd.and_then(|h| h.get("abi")) {
+        Some(Json::Str(s)) if s == "Rust" => String::new(),
+        Some(Json::Str(s)) => format!("extern {s:?} "),
+        Some(Json::Obj(m)) => {
+            let Some((abi, v)) = m.first() else {
+                return "extern \"?\" ".into();
+            };
+            let abi = if v.get("unwind").and_then(Json::bool) == Some(true) {
+                format!("{abi}-unwind")
+            } else {
+                abi.clone()
+            };
+            format!("extern {abi:?} ")
+        }
+        _ => String::new(),
+    }
 }
 
 fn last_segment(p: &Json) -> Option<String> {
@@ -450,6 +476,13 @@ impl Doc<'_> {
                                 .and_then(|p| join_path(p))
                                 .unwrap_or_else(|| source.to_string());
                             lines.insert(format!("{prefix}::* :: pub use {src}::*"));
+                            // A glob of a local enum puts its variants here (M7-P5 Codex T3).
+                            if let Some(t) = local.filter(|t| self.kind(*t) == Some("enum")) {
+                                for v in self.variants(t) {
+                                    let vi = self.index[&v];
+                                    public.push((format!("{prefix}::{}", self.name(vi)), v));
+                                }
+                            }
                         }
                         (false, Some(t)) => {
                             let path = format!("{prefix}::{name}");
@@ -477,6 +510,19 @@ impl Doc<'_> {
             }
         }
         Ok(())
+    }
+
+    /// The variant ids of the local enum `id` that the index has.
+    fn variants(&self, id: u64) -> Vec<u64> {
+        self.index
+            .get(&id)
+            .and_then(|e| e.path(&["inner", "enum", "variants"]))
+            .and_then(Json::arr)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(id_of)
+            .filter(|v| self.index.contains_key(v))
+            .collect()
     }
 
     fn kind(&self, id: u64) -> Option<&str> {
@@ -658,10 +704,12 @@ impl Doc<'_> {
     }
 
     /// The member lines of an item at its first path, and its impls for the impl pass.
+    /// `listed`: the items with a public path.
     fn members(
         &self,
         item: &Json,
         path: &str,
+        listed: &HashSet<u64>,
         lines: &mut BTreeSet<String>,
         impls: &mut Vec<(u64, String)>,
     ) {
@@ -686,6 +734,7 @@ impl Doc<'_> {
                 for i in ids(&["implementations"]) {
                     impls.push((i, path.to_string()));
                 }
+                self.supertrait_lines(x, path, listed, &mut HashSet::new(), lines);
             }
             _ => {}
         }
@@ -704,6 +753,42 @@ impl Doc<'_> {
             for i in ids(&["impls"]) {
                 impls.push((i, path.to_string()));
             }
+        }
+    }
+
+    /// The items of each local supertrait of the trait `tr` that has no public path (a sealed
+    /// trait in a private module), and of its supertraits: a caller of the listed trait calls
+    /// them, so they are API (M7-P5 Codex T1). One line per item, under the listed trait:
+    /// `<path> :: supertrait <Name> :: <item>`. A listed supertrait has its own lines.
+    fn supertrait_lines(
+        &self,
+        tr: &Json,
+        path: &str,
+        listed: &HashSet<u64>,
+        seen: &mut HashSet<u64>,
+        lines: &mut BTreeSet<String>,
+    ) {
+        for b in tr.get("bounds").and_then(Json::arr).unwrap_or(&[]) {
+            let Some(t) = b.path(&["trait_bound", "trait"]) else {
+                continue;
+            };
+            let Some(id) = t.get("id").and_then(id_of) else {
+                continue;
+            };
+            if listed.contains(&id) || !seen.insert(id) {
+                continue;
+            }
+            let Some(("trait", sx)) = self.index.get(&id).and_then(|i| inner_kind(i)) else {
+                continue; // not a local trait
+            };
+            let name = self.path_ty(t);
+            for i in sx.get("items").and_then(Json::arr).unwrap_or(&[]) {
+                if let Some(it) = id_of(i).and_then(|i| self.index.get(&i)) {
+                    let decl = self.item_decl(it);
+                    lines.insert(format!("{path} :: supertrait {name} :: {decl}"));
+                }
+            }
+            self.supertrait_lines(sx, path, listed, seen, lines);
         }
     }
 
@@ -774,15 +859,7 @@ impl Doc<'_> {
         if flag("is_unsafe") {
             h.push_str("unsafe ");
         }
-        match hd.and_then(|h| h.get("abi")) {
-            Some(Json::Str(s)) if s == "Rust" => {}
-            Some(Json::Str(s)) => h.push_str(&format!("extern {s:?} ")),
-            Some(Json::Obj(m)) => {
-                let abi = m.first().map(|(k, _)| k.as_str()).unwrap_or("?");
-                h.push_str(&format!("extern {abi:?} "));
-            }
-            _ => {}
-        }
+        h.push_str(&extern_abi(hd));
         let sig = f.get("sig");
         let mut args: Vec<String> = Vec::new();
         for inp in sig
@@ -1157,15 +1234,7 @@ impl Doc<'_> {
                 if hd.and_then(|h| h.get("is_unsafe")).and_then(Json::bool) == Some(true) {
                     h.push_str("unsafe ");
                 }
-                match hd.and_then(|h| h.get("abi")) {
-                    Some(Json::Str(s)) if s == "Rust" => {}
-                    Some(Json::Str(s)) => h.push_str(&format!("extern {s:?} ")),
-                    Some(Json::Obj(m)) => {
-                        let abi = m.first().map(|(k, _)| k.as_str()).unwrap_or("?");
-                        h.push_str(&format!("extern {abi:?} "));
-                    }
-                    _ => {}
-                }
+                h.push_str(&extern_abi(hd));
                 let sig = v.get("sig");
                 let args: Vec<String> = sig
                     .and_then(|s| s.get("inputs"))

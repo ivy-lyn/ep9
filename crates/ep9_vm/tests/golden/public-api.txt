@@ -476,6 +476,7 @@ ep9_vm::DispatchSlot :: impl DispatchSlot :: fn kind(&self) -> core::option::Opt
 ep9_vm::DispatchSlot :: impl DispatchSlot :: fn kind_byte(&self) -> u8
 ep9_vm::DispatchSlot :: impl core::fmt::Debug for DispatchSlot
 ep9_vm::DispatchSlot :: impl core::marker::Send for DispatchSlot (auto)
+ep9_vm::Downcast :: supertrait Sealed :: fn test(u64, Token) -> bool
 ep9_vm::Downcast :: trait Downcast: Sealed
 ep9_vm::ErrorKind :: enum ErrorKind
 ep9_vm::ErrorKind :: impl ErrorKind
