@@ -152,11 +152,29 @@ impl<'s> Cx<'s> {
         let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
         let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
         let policy = unit_loader::isolate_policy(rt);
-        // Step 8 turns on in a later M7-P5 commit, after the unit text unwind data (O3) and the
-        // JS call arms (MC-w30-2) are in place (the DL P5-DL-5 order): until then both methods
-        // load without it.
-        let _ = native;
-        let report = unit_loader::load(rt, &lu, text, &functions, policy.as_ref(), host_cpu);
+        let report = match native {
+            None => unit_loader::load(rt, &lu, text, &functions, policy.as_ref(), host_cpu),
+            // SAFETY: only `run_script_installing_unit_code` passes `native`; its caller ran the
+            // H35 S4 checks (steps 1-4) on these bytes against this build (its `# Safety`),
+            // which is the contract of `load_and_install`.
+            Some((unwind, rw, slot)) => unsafe {
+                unit_loader::load_and_install(
+                    rt,
+                    &lu,
+                    text,
+                    unwind,
+                    rw,
+                    slot,
+                    &functions,
+                    policy.as_ref(),
+                    host_cpu,
+                )
+            },
+        };
+        if let Some(directory) = report.unit_data {
+            // Unit code loads its unit-data register from this directory (H35-Q9).
+            cx.unit_data = directory;
+        }
         let entry: *const FunctionInfo = &lu.infos[0];
         rt.units.borrow_mut().push(lu);
         let f = object::new_function(rt, entry, UNDEFINED);

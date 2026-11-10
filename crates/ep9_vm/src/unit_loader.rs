@@ -764,7 +764,6 @@ pub(crate) fn load(
 /// and `functions` come from, against this engine build (the `# Safety` of the unsafe `Cx`
 /// method in `abi/unit_code.rs`): so the unwind data describes the text, and each picked
 /// variant follows the [`install_picked`] contract.
-#[allow(dead_code)] // the unsafe `Cx` method calls it from the M7-P5 install commit
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn load_and_install(
     rt: &Runtime,

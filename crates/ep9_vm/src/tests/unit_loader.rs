@@ -1008,6 +1008,112 @@ fn unit_loader_a_forwarded_call_or_apply_runs_the_installed_unit_code() {
     }
 }
 
+/// MC-w34-2 (DL P5-DL-5): the safe `Cx::run_script_with_unit_code` never installs, also for
+/// a text and a function table that would install (each pick is "deferred", the slot stays
+/// Interp, the JS call runs the bytecode); the unsafe `Cx::run_script_installing_unit_code`
+/// with the same unit installs the pick, and the JS call runs the unit code. Both give 42
+/// here because the stub runs the bytecode of `g`.
+#[test]
+fn unit_loader_api_only_the_unsafe_method_installs() {
+    let len = call0_bytes().0.len() as u32;
+    let vars: &[Var<'_>] = &[(
+        DispatchKind::AotBaseline as u8,
+        lowering::JITLESS,
+        0,
+        len,
+        0,
+        &[],
+    )];
+    let fns = [(G, digest(G), vars)];
+    let (text, unwind) = (stub_text(), stub_unwind());
+    for install in [false, true] {
+        let mut iso = Isolate::new_with(IsolateConfig::default(), ExecOptions::jitless()).unwrap();
+        iso.register_host_function("walk", 0, walk);
+        let rows = iso
+            .with_cx(|cx| {
+                let (rows, r) = if install {
+                    // SAFETY: `defs()` with the frame stub and its unwind data stands for a unit
+                    // that `ep9_unit::check` accepted (the stub runs the bytecode of `g`).
+                    unsafe {
+                        cx.run_script_installing_unit_code(
+                            defs(),
+                            "defs.js",
+                            &text,
+                            &unwind,
+                            &[],
+                            0,
+                            0,
+                            &fns,
+                        )
+                    }
+                } else {
+                    cx.run_script_with_unit_code(defs(), "defs.js", &text, 0, &fns)
+                };
+                r.map(|_| rows)
+            })
+            .unwrap();
+        let get = |n: &str| rows.iter().find(|(k, _)| *k == n).unwrap().1;
+        assert_eq!(
+            (get("picked"), get("deferred"), get("installed")),
+            (1, u32::from(!install), u32::from(install)),
+            "install {install}: {rows:?}"
+        );
+        let kind = if install {
+            DispatchKind::AotBaseline
+        } else {
+            DispatchKind::Interp
+        };
+        assert_eq!(info(&iso, "g").slot.kind_byte(), kind as u8);
+        assert_eq!(
+            run_js(&mut iso, call_g_walk()),
+            Ok(Value::int32(42).to_bits())
+        );
+    }
+}
+
+/// The unsafe method stores the isolate's unit-data directory in `Cx::unit_data` when the
+/// load made an RW copy, and unit code then reads its link cell through it.
+#[test]
+fn unit_loader_api_the_unsafe_method_sets_the_unit_data_directory() {
+    use crate::builtins::IntrinsicId;
+    let (text, unwind) = reader(3, 0);
+    let tpl = template(
+        &[(
+            unit_loader::rw::LINK_INTRINSIC,
+            IntrinsicId::ObjectPrototype as u32,
+        )],
+        1,
+        0,
+    );
+    let vars: &[Var<'_>] = &[(
+        DispatchKind::AotBaseline as u8,
+        lowering::JITLESS,
+        0,
+        reader_len() as u32,
+        0,
+        &[],
+    )];
+    let fns = [(ID, digest(ID), vars)];
+    let mut iso = Isolate::new_with(IsolateConfig::default(), ExecOptions::jitless()).unwrap();
+    assert_eq!(iso.cx.unit_data, 0);
+    iso.with_cx(|cx| {
+        // SAFETY: as in the test above; the text is the cell reader.
+        let (rows, r) = unsafe {
+            cx.run_script_installing_unit_code(defs(), "defs.js", &text, &unwind, &tpl, 3, 0, &fns)
+        };
+        assert_eq!(rows.iter().find(|(k, _)| *k == "installed").unwrap().1, 1);
+        r.map(|_| ())
+    })
+    .unwrap();
+    assert_ne!(iso.cx.unit_data, 0);
+    let id = iso.global_raw("id").unwrap();
+    let v = call_through_entry(&mut iso, id, &[]).unwrap().unwrap();
+    assert_eq!(
+        v.to_bits(),
+        crate::builtins::intrinsic(&iso.rt, IntrinsicId::ObjectPrototype)
+    );
+}
+
 // ---- the RW copy and the link table (plan v12 §8.2; H35 S4 step 6) ---------------------------
 
 /// An RW template in form 1 (`unit_loader::rw`): `links` as (kind, index), then `ics` IC
