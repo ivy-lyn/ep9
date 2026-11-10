@@ -267,7 +267,7 @@ struct Hot {
 ///
 /// `Heap` is neither `Send` nor `Sync`: one thread creates it, allocates from it and collects
 /// it, and the conservative scan reads that thread's stack. Methods take `&self`; a call from
-/// inside a trace function, root source or weak source panics.
+/// inside a trace function, root source or weak source panics, except `remove_external_bytes`.
 #[repr(C)]
 pub struct Heap {
     hot: Hot,
