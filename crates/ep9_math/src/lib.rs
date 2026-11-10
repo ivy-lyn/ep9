@@ -43,6 +43,7 @@ mod cos;
 mod cosh;
 mod exp;
 mod expm1;
+pub mod f16;
 mod fmod;
 #[cfg(test)]
 mod golden;
