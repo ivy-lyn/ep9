@@ -611,3 +611,82 @@ fn shim_function_constructor() {
     .expect("compiles");
     assert!(has_string(&u, &[P::U(0xDC01)]));
 }
+
+/// FE-RX-BUFBOUND, FE-RX-BIGQUANT: the regex literal verdicts of node v26.13.0
+/// (`x = <literal>;`), with one row where ECMA-262 and node differ. oxc_regular_expression 0.157 takes `\A`, `\z`, `\Z` and `[\c]` in
+/// Unicode mode, and refuses a braced quantifier number above 2^53 - 1.
+#[test]
+fn regex_literals_follow_node_on_escapes_and_big_quantifiers() {
+    let cases: &[(&str, bool)] = &[
+        (r"/\A/u", false),
+        (r"/\z/u", false),
+        (r"/\Z/v", false),
+        (r"/\A/", true),
+        (r"/\z/", true),
+        (r"/[\A]/u", false),
+        (r"/[\z]/v", false),
+        (r"/[\c]/u", false),
+        (r"/[\c_]/u", false),
+        (r"/[\c1]/u", false),
+        (r"/[\c]/", true),
+        (r"/[\c_]/", true),
+        (r"/[\cA]/u", true),
+        (r"/\cA/u", true),
+        (r"/\c/u", false),
+        (r"/[\q{\z}]/v", false),
+        (r"/\\A/u", true),
+        (r"/\\c/u", true),
+        (r"/[\\c]/u", true),
+        (r"/a{9007199254740991}/", true),
+        (r"/a{9007199254740992}/", true),
+        (r"/a{99999999999999999999}/", true),
+        (r"/a{99999999999999999999}/u", true),
+        (r"/a{99999999999999999999,}/", true),
+        (r"/a{1,99999999999999999999}/", true),
+        (r"/a{99999999999999999999,1}/", false),
+        // Node takes this one (V8 makes both numbers "infinity", then they are equal).
+        // ECMA-262 22.2.1.1 compares the MVs: 10^20 - 1 > 10^20 - 2 is a SyntaxError.
+        (r"/a{99999999999999999999,99999999999999999998}/", false),
+        (r"/a{99999999999999999998,99999999999999999999}/", true),
+        (r"/a{99999999999999999999,99999999999999999999}/", true),
+        (r"/a{2,99999999999999999999}/", true),
+        (r"/{99999999999999999999}/", false),
+        (r"/{99999999999999999999}/u", false),
+        (r"/a{99999999999999999999}(/", false),
+        (r"/a{99999999999999999999}{1}/", false),
+        (r"/\u{99999999999999999999}/", true),
+        (r"/\u{99999999999999999999}/u", false),
+        (r"/[a{99999999999999999999}]/", true),
+        (r"/[[a]{99999999999999999999}]/v", false),
+        (r"/a{0099999999999999999999,1}/", false),
+        (r"/a{1,0000000000000000000002}/", true),
+        (r"/(?<a>x)a{99999999999999999999}\k<b>/", false),
+        (r"/a{99999999999999999999}?/", true),
+        // Both fixes on one literal (fuzz replay, M7-P5).
+        (r"/\A[]{9007199254740992,}/u", false),
+        (r"/\z|a{99999999999999999999}/v", false),
+        (r"/[\c]a{99999999999999999999}/u", false),
+    ];
+    for &(literal, node) in cases {
+        let src = format!("x = {literal};");
+        assert_eq!(ok(&src, SLOPPY), node, "{literal}");
+    }
+}
+
+/// The new escape error is a SyntaxError at the escape (FE-RX-BUFBOUND).
+#[test]
+fn regex_unicode_escape_error_has_a_span() {
+    let src = r"x = /ab\z/u;";
+    let errors = syntax_errors(src, SLOPPY);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    let e = errors.first();
+    assert!(e.message.contains("Invalid escape sequence"), "{e:?}");
+    let at = u32::try_from(src.find(r"\z").expect("escape")).expect("small");
+    assert_eq!(
+        e.span,
+        Some(ByteSpan {
+            start: at,
+            end: at + 2
+        })
+    );
+}

@@ -139,6 +139,13 @@ static OF_STRINGS: &[&str] = &[
     "RGI_Emoji_ZWJ_Sequence",
 ];
 
+/// Test only: every name and alias of a binary property (table 68 without Any, ASCII and
+/// Assigned).
+#[cfg(test)]
+pub(crate) fn binary_names() -> impl Iterator<Item = &'static str> {
+    BINARY.iter().map(|&(name, _)| name)
+}
+
 fn lookup(table: &'static [(&'static str, &'static str)], name: &str) -> Option<&'static str> {
     table
         .binary_search_by(|(alias, _)| (*alias).cmp(name))

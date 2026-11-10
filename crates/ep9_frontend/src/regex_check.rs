@@ -43,7 +43,7 @@ use oxc_diagnostics::{Diagnostics, OxcDiagnostic};
 use oxc_parser::config::TokensParserConfig;
 use oxc_parser::{Kind, ParseOptions, Parser, ParserReturn, Token};
 use oxc_regular_expression::{LiteralParser, Options};
-use oxc_span::SourceType;
+use oxc_span::{SourceType, Span};
 
 /// The oxc parse of the front end (lib.rs `parse`, eval.rs `on_worker`): regex parsing off,
 /// tokens on, then [`check`] on the final token list.
@@ -152,9 +152,164 @@ fn check_literal(
         pattern_span_offset: pattern_start,
         flags_span_offset: flags_start,
     };
-    LiteralParser::new(allocator, pattern, Some(flags), options)
+    match LiteralParser::new(allocator, pattern, Some(flags), options)
         .parse()
         .err()
+    {
+        None => unicode_mode_escape_error(pattern, flags, pattern_start),
+        Some(e) if e.message.ends_with(TOO_LARGE_QUANTIFIER) => {
+            // FE-RX-BIGQUANT: check the same text with each too large braced number made
+            // small (same length, same order), so the spans of any other error stay right.
+            let small = small_quantifier_numbers(pattern, flags)?;
+            LiteralParser::new(allocator, &small, Some(flags), options)
+                .parse()
+                .err()
+                .or_else(|| unicode_mode_escape_error(pattern, flags, pattern_start))
+        }
+        Some(e) => Some(e),
+    }
+}
+
+/// The end of oxc_regular_expression 0.157's message for a braced quantifier number above
+/// 2^53 - 1.
+const TOO_LARGE_QUANTIFIER: &str = "Number is too large in braced quantifier";
+
+/// oxc_regular_expression 0.157's limit for a braced quantifier number (2^53 - 1).
+const MAX_QUANTIFIER: u64 = 9_007_199_254_740_991;
+
+/// The early errors of Unicode mode (`u` or `v`) that oxc_regular_expression 0.157 does not
+/// report (route FE-RX-BUFBOUND, and the `[\c]` case of the M7-P4 regexp fuzz target):
+///
+/// | Text | oxc 0.157 | ECMA-262 (node v26.13.0) |
+/// |---|---|---|
+/// | `\A`, `\z`, `\Z` | the assertions of the TC39 buffer boundaries proposal | IdentityEscape[+UnicodeMode] is only SyntaxCharacter or `/` (22.2.1): SyntaxError ("Invalid escape") |
+/// | `\c` with no ASCII letter after it, in a class (`[\c]`, `[\c_]`) | the Annex B ClassControlLetter form | ClassControlLetter is `[~UnicodeMode]` only (B.1.2): SyntaxError ("Invalid Unicode escape") |
+///
+/// One scan: in Unicode mode every `\` starts an escape of one character, also in classes
+/// and in `\q{}`, so these forms are errors wherever they are.
+fn unicode_mode_escape_error(pattern: &str, flags: &str, start: u32) -> Option<OxcDiagnostic> {
+    if !flags.contains(['u', 'v']) {
+        return None;
+    }
+    let mut chars = pattern.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c != '\\' {
+            continue;
+        }
+        let (j, d) = chars.next()?;
+        let bad = match d {
+            'A' | 'z' | 'Z' => true,
+            'c' => !chars.peek().is_some_and(|&(_, l)| l.is_ascii_alphabetic()),
+            _ => false,
+        };
+        if bad {
+            let from = start + u32::try_from(i).ok()?;
+            let to = start + u32::try_from(j + d.len_utf8()).ok()?;
+            return Some(
+                OxcDiagnostic::error("Invalid regular expression: Invalid escape sequence")
+                    .with_label(Span::new(from, to)),
+            );
+        }
+    }
+    None
+}
+
+/// The digits of a braced quantifier number, compared by value (leading zeros do not count).
+fn digits_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (a, b) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+/// True if the digits are above [`MAX_QUANTIFIER`].
+fn too_large(digits: &str) -> bool {
+    digits.parse::<u64>().map_or(true, |v| v > MAX_QUANTIFIER)
+}
+
+/// `value` as `len` digits with leading zeros (the caller makes sure it fits).
+fn padded(value: u64, len: usize) -> String {
+    format!("{value:0len$}")
+}
+
+/// `pattern` with each braced quantifier (`{n}`, `{n,}`, `{n,m}` outside classes and
+/// escapes) whose number is above 2^53 - 1 given same-length numbers at or below it, in the
+/// same order (ECMA-262 22.2.1.1 has only the "n > m" early error; node v26.13.0 takes
+/// `/a{9007199254740992}/`). `None` if no number changes.
+///
+/// Classes: with `v` they nest (a depth count); else the first `]` closes the class.
+/// Escapes: with `u` or `v`, `\u{..}`, `\p{..}` and `\P{..}` hold braces that are no
+/// quantifier. Without `u` and `v`, `\u` and `\p` are identity escapes, and a `{` after them
+/// can start a quantifier.
+fn small_quantifier_numbers(pattern: &str, flags: &str) -> Option<String> {
+    let unicode = flags.contains(['u', 'v']);
+    let sets = flags.contains('v');
+    let b = pattern.as_bytes();
+    let mut out = b.to_vec();
+    let mut changed = false;
+    let mut class_depth = 0_usize;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => {
+                if unicode
+                    && matches!(b.get(i + 1), Some(b'u' | b'p' | b'P'))
+                    && b.get(i + 2) == Some(&b'{')
+                {
+                    i = b[i..]
+                        .iter()
+                        .position(|&x| x == b'}')
+                        .map_or(b.len(), |p| i + p + 1);
+                } else {
+                    i += 2;
+                }
+                continue;
+            }
+            b'[' if sets => class_depth += 1,
+            b'[' => class_depth = 1,
+            b']' => class_depth = class_depth.saturating_sub(1),
+            b'{' if class_depth == 0 => {
+                let rest = &pattern[i + 1..];
+                let n_len = rest.bytes().take_while(u8::is_ascii_digit).count();
+                if n_len > 0 {
+                    let n = &rest[..n_len];
+                    let after = &rest[n_len..];
+                    let (m, close) = if let Some(r) = after.strip_prefix(',') {
+                        let m_len = r.bytes().take_while(u8::is_ascii_digit).count();
+                        (Some(&r[..m_len]), r[m_len..].starts_with('}'))
+                    } else {
+                        (None, after.starts_with('}'))
+                    };
+                    let m = m.filter(|m| !m.is_empty());
+                    if close && (too_large(n) || m.is_some_and(too_large)) {
+                        let (n2, m2) = match m {
+                            None => (padded(1, n.len()), None),
+                            Some(m) if digits_cmp(n, m).is_gt() => {
+                                (padded(2, n.len()), Some(padded(1, m.len())))
+                            }
+                            // n <= m: n stays (it is small when m is the large one).
+                            Some(m) if !too_large(n) => {
+                                let v = n.trim_start_matches('0');
+                                (n.to_string(), Some(padded(v.parse().unwrap_or(0), m.len())))
+                            }
+                            Some(m) => (padded(1, n.len()), Some(padded(1, m.len()))),
+                        };
+                        let at = i + 1;
+                        out[at..at + n.len()].copy_from_slice(n2.as_bytes());
+                        if let (Some(m), Some(m2)) = (m, m2) {
+                            let m_at = at + n.len() + 1;
+                            out[m_at..m_at + m.len()].copy_from_slice(m2.as_bytes());
+                        }
+                        changed = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if !changed {
+        return None;
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]

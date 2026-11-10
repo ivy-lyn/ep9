@@ -1,0 +1,11 @@
+# RX1-1 set-equality known differences (tests/set_equality.rs): the classes of the test262
+# RegExp sources (test262 at third_party/test262.commit) where the code point set of RX1 port
+# step 2 and what regress (RX0's engine, without ep9_regexp's pre-pass) matches differ.
+#
+# Form: <class> TAB <flags, - for none> TAB <class text> TAB <the first differing probes>
+# The class text escapes a backslash as \\ and every code unit outside ASCII 0x20-0x7E as
+# \uXXXX (the flags are only i, u, v and s: the flags that change a class).
+# Classes:
+#   regress  regress differs from the spec (and from node); RX1 follows the spec
+#   spec     RX1 follows ECMA-262 where V8 (node) differs
+#   rx1-gap  RX1 differs from the spec: a gap of the port

@@ -495,7 +495,7 @@ fn captures_and_names() {
     assert_eq!(
         terms[2],
         Tree::BackReference(BackReference {
-            captures: vec![1, 2],
+            captures: std::sync::Arc::from([1, 2]),
             name: Some(a)
         })
     );
@@ -504,7 +504,7 @@ fn captures_and_names() {
     let Tree::Alternative(terms) = &p.tree else {
         panic!()
     };
-    assert!(matches!(&terms[0], Tree::BackReference(r) if r.captures == [2]));
+    assert!(matches!(&terms[0], Tree::BackReference(r) if *r.captures == [2]));
     // \2 with one group is the octal escape \2 without u.
     let Tree::Alternative(terms) = tree("(a)\\2", "") else {
         panic!()
@@ -747,4 +747,30 @@ fn three_hundred_nested_groups_are_a_stack_overflow() {
 #[test]
 fn the_ucd_version_is_17() {
     assert_eq!(UCD_VERSION, "17.0.0");
+}
+
+/// K back references to a name of N groups hold one shared list, not K copies (route
+/// RX1-DUPNAME-PERF; M7-P4: K = 32,766 copies of N = 32,766 indices took 4.29 GB). The count
+/// of distinct lists is the measure.
+#[test]
+fn named_back_references_share_one_list() {
+    let n = 200;
+    let k = 300;
+    let groups = vec!["(?<a>x)"; n].join("|");
+    let pattern = format!("(?:{groups}){}", "\\k<a>".repeat(k));
+    let p = parse_str(&pattern, Flags::empty()).unwrap();
+    let Tree::Alternative(terms) = &p.tree else {
+        panic!()
+    };
+    let mut lists = std::collections::BTreeSet::new();
+    let mut refs = 0;
+    for t in terms {
+        if let Tree::BackReference(b) = t {
+            assert_eq!(b.captures.len(), n);
+            lists.insert(b.captures.as_ptr() as usize);
+            refs += 1;
+        }
+    }
+    assert_eq!(refs, k);
+    assert_eq!(lists.len(), 1, "one list for {k} references");
 }
