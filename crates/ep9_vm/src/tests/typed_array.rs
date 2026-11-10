@@ -14,9 +14,13 @@
 //! | `a_set_converts_first_and_a_detach_in_valueof_stores_nothing` | TypedArraySetElement order: valueOf runs once, also out of bounds; a detach in it leaves length 0 and no store |
 //! | `detached_views_read_undefined_and_store_nothing` | after DetachArrayBuffer: length none, every element undefined, stores and defines change nothing |
 //! | `length_tracking_on_resize` | fixed and auto views on a resizable buffer: out of bounds after a shrink, back after a grow; the data address stays |
-//! | `elements_kind_7_or_8_at_birth_and_kept` | IsTypedArrayFixedLength gives 7 or 8; stores, defines, deletes, a named key and a new prototype keep it (N4) |
+//! | `elements_kind_7_or_8_at_birth_and_kept` | IsTypedArrayFixedLength gives 7 or 8; stores, defines, deletes, a named key and a new prototype keep it (N2, N3, N4) |
 //! | `a_view_as_a_prototype` | MC-w26-4 in Rust: a length-0 view stops an index store below it; a length-4 view hides `Object.prototype[9]`; a holey Array under a view |
 //! | `views_and_buffers_under_gc` | live views keep their buffer and bytes over minor and major GCs |
+//! | `a_named_ic_case_stops_at_a_view` | no named load or store IC case looks past a view, or caches a miss or an add, for "1.5", "-0", "Infinity", "NaN" (`ic::exotic_name`) |
+//! | `a_view_as_a_dictionary_keeps_its_fields` | a dictionary view keeps its kind, fixed fields and elements (N3) |
+//! | `a_view_never_transitions` | `elements::transition` refuses a view in debug builds (N4) |
+//! | `integrity_levels_of_a_view` | SetIntegrityLevel and TestIntegrityLevel over a view's internal methods: no debug panic, the spec results (N3; TODO TA3-PREVEXT) |
 
 use std::cell::Cell;
 use std::hint::black_box;
@@ -643,13 +647,19 @@ fn elements_kind_7_or_8_at_birth_and_kept() {
                 elements::storage_form_ok(v),
                 "a real view passes the form check"
             );
+            assert_eq!(
+                elements::check(v),
+                Ok(()),
+                "and the elements check (needs N2)"
+            );
             assert_eq!(ta::is_fixed_length(v), want == ek::TYPED_FIXED);
             views.push((v, want));
         }
+        let op = super::ic::object_prototype(cx.rt());
         for (v, want) in views {
-            // Element stores, defines and deletes, a named property: the kind stays (no view
-            // reaches `elements::transition`, needs N4). A new prototype waits for needs N3:
-            // `object::set_proto` makes the view a dictionary through `object::fixed_count`.
+            // Element stores, defines and deletes, a named property, a new prototype (a
+            // dictionary view, `object::fixed_count` of a view kind, needs N3): the kind stays
+            // (no view reaches `elements::transition`, needs N4).
             put(cx, v, "0", int(1));
             put(cx, v, "1", crate::conv::num(0.5));
             put(cx, v, "9", int(1));
@@ -661,13 +671,16 @@ fn elements_kind_7_or_8_at_birth_and_kept() {
             assert!(property::define_own_property(cx, v, k, d).unwrap());
             assert!(!property::internal_delete(cx, v, k).unwrap());
             put(cx, v, "name", int(2));
+            assert!(property::set_prototype_of(cx.rt(), v, op));
             assert_eq!(elements::kind_of(v), want);
             assert!(elements::storage_form_ok(v));
+            assert_eq!(elements::check(v), Ok(()));
             assert_eq!(
                 object::rd(object::cell(v), object::obj::ELEMENTS),
                 UNDEFINED
             );
             assert_eq!(get(cx, v, "name"), int(2));
+            assert_eq!(get(cx, v, "toString"), get(cx, op, "toString"));
         }
     });
 }
@@ -789,4 +802,221 @@ fn views_and_buffers_under_gc() {
             iso.verify_heap().unwrap();
         });
     }
+}
+
+/// A named IC case never looks past a view for a canonical numeric key that is not an array
+/// index, and never caches a miss or an add for one (`ic::exotic_name`): node gives undefined
+/// for `ta["1.5"]`, `ta["-0"]` and `Object.create(ta)["1.5"]` even when `Object.prototype`
+/// has the key, and `Object.create(ta)["1.5"] = 1` adds no own property (§10.4.5.5: the view
+/// on the chain answers). The keyed IC has no such case: its fast case takes an Array and an
+/// int32 key only (`keyed_ic::present_element`).
+#[test]
+fn a_named_ic_case_stops_at_a_view() {
+    each(|cx| {
+        let rt = cx.rt();
+        let op = super::ic::object_prototype(rt);
+        for (name, x) in [("1.5", 77), ("-0", 78), ("Infinity", 79), ("NaN", 80)] {
+            crate::props::own_define(rt, op, key(rt, name), int(x), attr::DEFAULT);
+        }
+        let b = buffer(rt, 4, None);
+        let v = ta::new_view(rt, op, 0, b, 0, Some(4)).unwrap();
+        let o = object::new_object(rt, v);
+        for name in ["1.5", "-0", "Infinity", "NaN", "-Infinity"] {
+            for r in [v, o] {
+                let k = key(cx.rt(), name);
+                let case = crate::ic::load_case(cx.rt(), r, k).map(|c| c.handler);
+                assert!(
+                    !matches!(
+                        case,
+                        Some(
+                            crate::ic::Handler::ProtoLoad { .. }
+                                | crate::ic::Handler::Missing { .. }
+                        )
+                    ),
+                    "load {name}: {case:?}"
+                );
+                // A define (0x25, CreateDataProperty) on `o` adds an own property: the chain
+                // plays no part, so only the view itself refuses it.
+                for define in [false, true].into_iter().filter(|&d| !d || r == v) {
+                    let pre = crate::ic::store_pre(cx.rt(), r, k, define);
+                    assert!(
+                        !matches!(pre, Some(crate::ic::StorePre::Add { .. })),
+                        "store {name} (define {define}): {pre:?}"
+                    );
+                }
+                assert_eq!(get(cx, r, name), UNDEFINED, "{name}");
+            }
+            put(cx, o, name, int(1));
+            assert!(
+                !has_own(cx, o, name),
+                "{name}: the view on the chain stores nothing"
+            );
+        }
+        // An ordinary key still gets its cases.
+        let k = key(cx.rt(), "toString");
+        let case = crate::ic::load_case(cx.rt(), v, k).map(|c| c.handler);
+        assert!(
+            matches!(case, Some(crate::ic::Handler::ProtoLoad { .. })),
+            "{case:?}"
+        );
+    });
+}
+
+/// A view that becomes a dictionary (a new prototype, `object::set_proto`; a delete of a named
+/// property) keeps its kind, its fixed fields and its elements (`object::fixed_count` of a view
+/// kind is 4, needs N3).
+#[test]
+fn a_view_as_a_dictionary_keeps_its_fields() {
+    each(|cx| {
+        let rt = cx.rt();
+        let op = super::ic::object_prototype(rt);
+        let b = buffer(rt, 8, None);
+        let v = view(rt, 5, b, 0, Some(2));
+        put(cx, v, "0", int(-3));
+        put(cx, v, "name", int(2));
+        put(cx, v, "other", int(4));
+        assert!(property::set_prototype_of(cx.rt(), v, op));
+        let k = key(cx.rt(), "other");
+        assert!(property::internal_delete(cx, v, k).unwrap());
+        assert!(shape::is_dictionary(shape::shape_of(v)));
+        assert_eq!(elements::kind_of(v), ek::TYPED_FIXED);
+        assert!(elements::storage_form_ok(v));
+        assert_eq!(elements::check(v), Ok(()));
+        assert_eq!(ta::buffer_of(v), b);
+        assert_eq!(ta::length(cx.rt(), v), Some(2));
+        assert_eq!(get(cx, v, "0"), int(-3));
+        assert_eq!(get(cx, v, "name"), int(2));
+        assert!(!has_own(cx, v, "other"));
+        assert_eq!(get(cx, v, "toString"), get(cx, op, "toString"));
+    });
+}
+
+/// No transition takes a view off kind 7 or 8 (`elements::transition` asserts it in debug
+/// builds; needs N4): `join(7 or 8, x)` is DICTIONARY, so a transition would break the view.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "a view never changes its elements kind")]
+fn a_view_never_transitions() {
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let rt: &Runtime = &iso.rt;
+    let v = view(rt, 0, buffer(rt, 4, None), 0, Some(4));
+    elements::transition(rt, v, ek::DICTIONARY);
+    black_box(&mut iso);
+}
+
+/// SetIntegrityLevel (§7.3.15) and TestIntegrityLevel (§7.3.16) over the internal methods of a
+/// view, as `Object.freeze`, `Object.seal`, `Object.preventExtensions`, `Object.isFrozen` and
+/// `Object.isSealed` run them (ep9_builtins `object.rs`); a debug build used to panic in
+/// `object::fixed_count` (needs N3). The results are the spec's (§10.4.5.3: an element is
+/// configurable, so a define with `[[Configurable]]: false` is refused, and freeze or seal
+/// of a view with elements throws a TypeError; a length-0 view freezes).
+#[test]
+fn integrity_levels_of_a_view() {
+    /// SetIntegrityLevel(o, frozen or sealed) with DefinePropertyOrThrow as a `bool`: false
+    /// where the builtin throws the TypeError.
+    fn set_level(cx: &mut Cx, o: u64, frozen: bool) -> bool {
+        if !property::prevent_extensions(cx.rt(), o) {
+            return false;
+        }
+        let keys = property::own_property_keys(cx, o);
+        for i in 0..object::array_len(keys) {
+            let k = object::array_get(keys, i).unwrap();
+            let mut d = Desc {
+                configurable: Some(false),
+                ..Desc::default()
+            };
+            if frozen {
+                match property::get_own_property(cx, o, k).unwrap() {
+                    None => continue,
+                    Some(c) if c.is_data() => d.writable = Some(false),
+                    Some(_) => {}
+                }
+            }
+            if !property::define_own_property(cx, o, k, d).unwrap() {
+                return false;
+            }
+        }
+        true
+    }
+    /// TestIntegrityLevel(o, frozen or sealed).
+    fn test_level(cx: &mut Cx, o: u64, frozen: bool) -> bool {
+        if property::is_extensible(o) {
+            return false;
+        }
+        let keys = property::own_property_keys(cx, o);
+        for i in 0..object::array_len(keys) {
+            let k = object::array_get(keys, i).unwrap();
+            if let Some(c) = property::get_own_property(cx, o, k).unwrap() {
+                if c.configurable == Some(true)
+                    || (frozen && c.is_data() && c.writable == Some(true))
+                {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    each(|cx| {
+        let rt = cx.rt();
+        let fixed_ab = buffer(rt, 8, None);
+        let sab = ab::allocate_shared(rt, NULL, 8, None).unwrap();
+        // Fixed-length views (TYPED_FIXED) with elements: preventExtensions works; freeze and
+        // seal throw at element 0 (node: "Cannot freeze array buffer views with elements").
+        for (b, frozen) in [
+            (fixed_ab, true),
+            (fixed_ab, false),
+            (sab, true),
+            (sab, false),
+        ] {
+            let v = view(cx.rt(), 1, b, 0, Some(4));
+            put(cx, v, "name", int(1));
+            put(cx, v, "0", int(7));
+            assert!(!set_level(cx, v, frozen), "frozen {frozen}");
+            assert!(!property::is_extensible(v));
+            assert!(!test_level(cx, v, false) && !test_level(cx, v, true));
+            assert_eq!(elements::kind_of(v), ek::TYPED_FIXED);
+            assert_eq!(elements::check(v), Ok(()));
+            // The view still reads and stores its elements; no new property comes.
+            assert_eq!(get(cx, v, "0"), int(7));
+            put(cx, v, "1", int(8));
+            assert_eq!(get(cx, v, "1"), int(8));
+            let k = key(cx.rt(), "new");
+            property::set(cx, v, k, int(1), false).unwrap();
+            assert!(!has_own(cx, v, "new"));
+        }
+        // A length-0 view has no element key: freeze and seal succeed (node: `Object.freeze(new
+        // Uint8Array(0))` is fine and `Object.isFrozen` gives true).
+        for frozen in [true, false] {
+            let rt = cx.rt();
+            let v = view(rt, 1, buffer(rt, 0, None), 0, Some(0));
+            put(cx, v, "name", int(1));
+            assert!(set_level(cx, v, frozen));
+            assert!(test_level(cx, v, false));
+            assert_eq!(test_level(cx, v, true), frozen);
+            assert_eq!(elements::kind_of(v), ek::TYPED_FIXED);
+            assert_eq!(elements::check(v), Ok(()));
+            let k = key(cx.rt(), "name");
+            let d = property::get_own_property(cx, v, k).unwrap().unwrap();
+            assert_eq!((d.configurable, d.writable), (Some(false), Some(!frozen)));
+        }
+        // A length-tracking view (TYPED_VARIABLE): its element defines with
+        // `[[Configurable]]: false` are refused as above, and it keeps kind 8.
+        // TODO(TA3-PREVEXT): §10.4.5 [[PreventExtensions]] returns false for a view that is not
+        // IsTypedArrayFixedLength (node: `Object.preventExtensions(new Uint8Array(new
+        // ArrayBuffer(4, {maxByteLength: 8})))` throws a TypeError); ep9 gives true today. The
+        // fix is in the property.rs [[PreventExtensions]] entry, route TA3-PREVEXT (TA-3), so
+        // this test does not call preventExtensions, freeze or seal on this view.
+        let rt = cx.rt();
+        let rab = buffer(rt, 4, Some(8));
+        let auto = view(rt, 1, rab, 0, None);
+        let k = key(cx.rt(), "0");
+        let d = Desc {
+            configurable: Some(false),
+            ..Desc::default()
+        };
+        assert!(!property::define_own_property(cx, auto, k, d).unwrap());
+        assert!(property::is_extensible(auto));
+        assert_eq!(elements::kind_of(auto), ek::TYPED_VARIABLE);
+        assert_eq!(elements::check(auto), Ok(()));
+    });
 }

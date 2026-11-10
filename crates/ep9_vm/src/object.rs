@@ -449,6 +449,13 @@ const FIXED_COUNTS: [u8; 256] = {
     t[kind::MODULE_NAMESPACE.get() as usize] = nsf::FIXED as u8;
     t[kind::PROXY.get() as usize] = fixed::PROXY as u8;
     t[kind::PROXY_CALLABLE.get() as usize] = fixed::PROXY as u8;
+    // The 12 TypedArray view kinds (OBJECT_LAYOUT 9, H17 "view cells"): +24 buffer, +32
+    // data, +40 length, +48 byteOffset (`crate::typed_array::VIEW_FIXED`).
+    let mut v = kind::INT8_VIEW.get();
+    while v <= kind::FLOAT64_VIEW.get() {
+        t[v as usize] = crate::typed_array::VIEW_FIXED as u8;
+        v += 1;
+    }
     t
 };
 
@@ -479,7 +486,8 @@ pub(crate) fn fixed_count(k: u8) -> usize {
             kind::PROXY_CALLABLE
         ]
         .iter()
-        .any(|x| x.get() == k),
+        .any(|x| x.get() == k)
+            || kind::is_view_kind(k),
         "kind {k} is not a JS object kind"
     );
     usize::from(FIXED_COUNTS[usize::from(k)])

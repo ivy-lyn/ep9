@@ -934,12 +934,16 @@ fn cacheable_key(k: u64) -> bool {
 /// prototype; its internal methods answer, `proxy.rs`; M4-P4 fixer B, R-VM-P4-1), so a
 /// proxy receiver, holder or lookup start, or a proxy on the chain, takes the generic path.
 /// Array-index keys never get here, so an arguments object (whose exotic keys are mapped
-/// indices) needs no entry.
+/// indices) needs no entry. A TypedArray (a view kind) answers every other canonical numeric
+/// key itself, such as "-0", "1.5" or "Infinity" (§10.4.5; TypedArray TA-1), so no load or
+/// store case may look past it or cache a miss or an add for one.
 fn exotic_name(rt: &Runtime, k: u8, name: u64) -> bool {
     if k == kind::ARRAY.get() || k == kind::PRIMITIVE_WRAPPER.get() {
         name == rt.atom(Atom::Length)
     } else if k == kind::FUNCTION.get() {
         name == rt.atom(Atom::Prototype)
+    } else if kind::is_view_kind(k) {
+        crate::typed_array::canonical_numeric(name).is_some()
     } else {
         k == kind::MODULE_NAMESPACE.get() || crate::proxy::is_proxy_kind(k)
     }

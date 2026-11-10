@@ -300,6 +300,11 @@ pub(crate) fn transition(rt: &Runtime, o: u64, to: u8) {
         from != to && allows(from, to),
         "elements kind {from} -> {to}"
     );
+    // A TypedArray keeps kind 7 or 8 for life; `join` would take it to DICTIONARY (needs N4).
+    debug_assert!(
+        storage(from) != Some(Storage::Typed) && storage(to) != Some(Storage::Typed),
+        "a view never changes its elements kind ({from} -> {to})"
+    );
     if to == kind::DICTIONARY {
         to_dictionary(rt, o);
         return;
@@ -894,6 +899,10 @@ pub(crate) fn check(o: u64) -> Result<(), String> {
         if let Some(&(i, _)) = entries.iter().find(|&&(i, _)| i >= len) {
             return Err(format!("a dictionary entry at {i} past length {len}"));
         }
+        return Ok(());
+    }
+    if storage(k) == Some(Storage::Typed) {
+        // A TypedArray (kind 7 or 8, a view cell, no store): `storage_form_ok` checked it.
         return Ok(());
     }
     if k > kind::DICTIONARY {
