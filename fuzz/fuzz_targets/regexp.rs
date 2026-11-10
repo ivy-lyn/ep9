@@ -49,6 +49,11 @@
 //!   Term quantifies only an Atom or, without `u` and `v`, a QuantifiableAssertion, a
 //!   look-ahead; ECMA-262 22.2.1 and B.1.2); regress takes it in every mode. The target
 //!   skips any NothingToRepeat of a pattern with `\b` or `\B`.
+//! - Validity: a ClassSetSyntaxCharacter (`( ) [ ] { } / - \ |`) that is not escaped inside
+//!   `\q{..}` of a `v` class, for example `/[\q{?[}]/v`. RX1 says InvalidCharacterInClass
+//!   (ECMA-262 22.2.1: a ClassSetCharacter is not a ClassSetSyntaxCharacter) and node v26.13.0
+//!   refuses it too; regress takes `[` there (found by the M7-P5 fixer r1 10-minute run). The
+//!   target skips any InvalidCharacterInClass with `v` of a pattern with `\q`.
 //! - Validity: regress's `v` parser refuses some valid classes, for example `/[.$]/v` (two
 //!   different ClassSetReservedPunctuator characters; only a doubled one is a
 //!   ClassSetReservedDoublePunctuator) and `/[^ß&&\p{RGI_Emoji}]/v` (an intersection with
@@ -407,6 +412,10 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             check_class_set(&units, flags, p);
         }
         (Err(e), Ok(_)) if known_rx0_false_accept(e.error, &units) => {}
+        (Err(e), Ok(_))
+            if e.error == Error::InvalidCharacterInClass
+                && flags.unicode_sets()
+                && has_escape(&units, b'q') => {}
         (Ok(_), Err(e)) if e.message.ends_with(RX0_TOO_DEEP) => {}
         (Ok(_), Err(_)) if flags.unicode_sets() => {}
         (Err(e), Ok(_)) if e.error == Error::NothingToRepeat && has_boundary(&units) => {}
