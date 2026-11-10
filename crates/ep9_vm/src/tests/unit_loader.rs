@@ -346,6 +346,8 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
             lu,
             &stub_text(),
             &stub_unwind(),
+            &[],
+            0,
             &[f],
             Some(&Policy::JITLESS),
             0,
@@ -638,6 +640,8 @@ fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
             lu,
             &text,
             &stub_unwind(),
+            &[],
+            0,
             &[g_stub()],
             Some(&Policy::JITLESS),
             0,
@@ -702,6 +706,8 @@ fn unit_loader_installs_nothing_without_unwind_data() {
                 lu,
                 &text,
                 &unwind,
+                &[],
+                0,
                 &[g_stub()],
                 Some(&Policy::JITLESS),
                 0,
@@ -734,7 +740,17 @@ fn unit_loader_maps_one_text_per_process_and_only_on_a_pick() {
         // SAFETY: as in `unit_loader_registered_unit_text_runs_and_unwinds_without_jit`; the
         // code does not run here.
         unsafe {
-            unit_loader::load_and_install(&iso.rt, lu, &text, &unwind, &[g_stub()], Some(policy), 0)
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                &[],
+                0,
+                &[g_stub()],
+                Some(policy),
+                0,
+            )
         }
     };
     let (a, b) = (
@@ -786,6 +802,8 @@ fn unit_loader_a_text_larger_than_the_code_range_gives_no_text() {
             lu,
             &text,
             &stub_unwind(),
+            &[],
+            0,
             &[g_stub()],
             Some(&Policy::HYBRID),
             0,
@@ -798,6 +816,426 @@ fn unit_loader_a_text_larger_than_the_code_range_gives_no_text() {
         r.rows()
     );
     assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
+}
+
+// ---- the RW copy and the link table (plan v12 §8.2; H35 S4 step 6) ---------------------------
+
+/// An RW template in form 1 (`unit_loader::rw`): `links` as (kind, index), then `ics` IC
+/// cells and `counters` counters.
+fn template(links: &[(u8, u32)], ics: u32, counters: u32) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend(unit_loader::rw::MAGIC);
+    for w in [
+        unit_loader::rw::VERSION,
+        links.len() as u32,
+        ics,
+        counters,
+        0,
+    ] {
+        b.extend(w.to_le_bytes());
+    }
+    for &(kind, index) in links {
+        b.extend([kind, 0, 0, 0]);
+        b.extend(index.to_le_bytes());
+    }
+    b
+}
+
+/// The cell reader `return [[[cx + CX_UNIT_DATA] + 8 * slot] + 8 * cell]` (the `NativeEntry`
+/// ABI, a leaf: the H35-Q9 unit-data load without the x27 save) and its unwind data in the
+/// loader's form 1.
+fn reader(slot: usize, cell: usize) -> (Vec<u8>, Vec<u8>) {
+    #[cfg(target_arch = "aarch64")]
+    let code: Vec<u8> = {
+        let ldr = |t: u32, n: u32, off: usize| {
+            assert!(off.is_multiple_of(8) && off / 8 < 4096);
+            0xF940_0000 | (((off / 8) as u32) << 10) | (n << 5) | t
+        };
+        [
+            ldr(9, 0, layout::CX_UNIT_DATA),
+            ldr(9, 9, 8 * slot),
+            ldr(0, 9, 8 * cell),
+            0xD65F_03C0, // ret
+        ]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect()
+    };
+    #[cfg(target_arch = "x86_64")]
+    let code: Vec<u8> = {
+        let mut v = vec![0x48, 0x8B, 0x87]; // mov rax, [rdi + disp32]
+        v.extend((layout::CX_UNIT_DATA as u32).to_le_bytes());
+        for off in [8 * slot, 8 * cell] {
+            v.extend([0x48, 0x8B, 0x80]); // mov rax, [rax + disp32]
+            v.extend((off as u32).to_le_bytes());
+        }
+        v.push(0xC3); // ret
+        v
+    };
+    let len = code.len();
+    #[allow(unused_mut)]
+    let mut text = code;
+    #[cfg(unix)]
+    let unwind = {
+        use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder};
+        // A leaf: the CIE rules hold at every instruction.
+        let mut b = EhFrameBuilder::new(&Cie::host());
+        b.add_fde(0, len, &CfiProgram::new());
+        b.finish().bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let unwind = {
+        // UNWIND_INFO version 1 with no codes (a leaf), after the code.
+        text.resize(UNWIND_INFO_OFF, 0xCC);
+        text.extend([1, 0, 0, 0]);
+        let mut v = Vec::new();
+        for w in [0, len as u32, UNWIND_INFO_OFF as u32] {
+            v.extend(w.to_le_bytes());
+        }
+        v
+    };
+    (text, unwind)
+}
+
+/// The AotBaseline jitless variant of `id` over `len` bytes at text offset 0.
+fn id_at0(len: usize) -> FunctionCode {
+    FunctionCode {
+        function: ID,
+        digest: digest(ID),
+        variants: vec![variant(
+            DispatchKind::AotBaseline,
+            lowering::JITLESS,
+            0,
+            len as u32,
+        )],
+    }
+}
+
+/// The length of the reader's code (the text may be longer on Windows).
+fn reader_len() -> usize {
+    if cfg!(target_arch = "aarch64") {
+        16
+    } else {
+        22
+    }
+}
+
+/// RW cells and the link table (plan v12 §8.2): an installing load makes the isolate's RW
+/// copy in unit-data slot 5: link cell 0 = the realm's %Object.prototype%, link cell 1 = the
+/// atom of unit string 0, 2 IC cells (undefined), 1 counter (0). The directory word of slot 5
+/// names the copy, `Cx::unit_data` the directory, and unit code reads link cell 1 through
+/// them (the H35-Q9 load). IC cells are weak: after a GC an IC cell whose object nothing else
+/// holds is undefined, and one whose object lives keeps it; the link cells keep theirs.
+#[test]
+fn unit_loader_rw_copy_links_and_unit_code_reads_it() {
+    use crate::builtins::IntrinsicId;
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    let (text, unwind) = reader(5, 1);
+    let tpl = template(
+        &[
+            (
+                unit_loader::rw::LINK_INTRINSIC,
+                IntrinsicId::ObjectPrototype as u32,
+            ),
+            (unit_loader::rw::LINK_ATOM, 0),
+        ],
+        2,
+        1,
+    );
+    let lu = info(&iso, "id").loaded_unit().unwrap();
+    // SAFETY: the text at offset 0 is the cell reader (`NativeEntry`), and `unwind` describes it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &text,
+            &unwind,
+            &tpl,
+            5,
+            &[id_at0(reader_len())],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let atom = lu.string(0);
+    let dir = r.unit_data.expect("a directory");
+    iso.cx.unit_data = dir;
+    let rw = code_of(info(&iso, "id")).unwrap().rw.clone().unwrap();
+    let object_prototype = crate::builtins::intrinsic(&iso.rt, IntrinsicId::ObjectPrototype);
+    assert_eq!(
+        (0..5).map(|i| rw.word(i)).collect::<Vec<_>>(),
+        [object_prototype, atom, UNDEFINED, UNDEFINED, 0]
+    );
+    let (slot, d) = rw.slot();
+    assert_eq!((slot, d.address(), d.word(5)), (5, dir, rw.base()));
+    // Unit code reads link cell 1 through x28 (the Cx), CX_UNIT_DATA, slot 5.
+    let id = iso.global_raw("id").unwrap();
+    let v = call_through_entry(&mut iso, id, &[]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), atom);
+    iso.collect_garbage();
+    assert_eq!((rw.word(0), rw.word(1)), (object_prototype, atom));
+}
+
+/// Masks the bits of a cell pointer, so the conservative stack scan cannot keep it.
+const MASK: u64 = 0x5a5a_5a5a_5a5a_5a5a;
+
+/// Bytes of zeros between the test's frame and the frame that makes the cell (the pattern of
+/// `tests/async_gen.rs`; each file has its own copy).
+const DEEP: usize = 64 << 10;
+
+/// Overwrites 256 KiB of stack below the caller.
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> R {
+    let mut pad = [0u8; DEEP];
+    std::hint::black_box(&mut pad);
+    let r = made();
+    std::hint::black_box(&mut pad);
+    r
+}
+
+/// IC cells are a weak root range (H35 S5; MC-w33-8.2: a unit IC cell holds its keys weakly):
+/// after a GC an IC cell whose object nothing else holds is undefined, and an IC cell whose
+/// object lives keeps it. The object is made below a pad and its bits are masked, and the
+/// test checks that the conservative stack scan did not keep it.
+#[test]
+fn unit_loader_rw_ic_cells_are_weak() {
+    crate::tests::on_big_stack(|| {
+        let mut config = IsolateConfig::default();
+        config.heap.record_conservative_roots = true;
+        let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+        iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+            .unwrap();
+        let (text, unwind) = reader(5, 0);
+        let lu = info(&iso, "id").loaded_unit().unwrap();
+        // SAFETY: the reader is installed but not run here.
+        let r = unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                &template(&[], 2, 0),
+                5,
+                &[id_at0(reader_len())],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        };
+        assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+        let rw = code_of(info(&iso, "id")).unwrap().rw.clone().unwrap();
+        let rt = &iso.rt;
+        let masked = below_a_pad(|| {
+            let o = crate::object::new_plain_object(rt);
+            rw.set_ic(0, o);
+            std::hint::black_box(o) ^ MASK
+        });
+        let kept = crate::builtins::intrinsic(rt, crate::builtins::IntrinsicId::ObjectPrototype);
+        rw.set_ic(1, kept);
+        scrub_stack();
+        rt.heap.collect();
+        let addr = crate::object::cell(masked ^ MASK).addr();
+        assert!(
+            !rt.heap
+                .last_conservative_roots()
+                .iter()
+                .any(|c| c.addr() == addr),
+            "the conservative scan kept the object"
+        );
+        assert_eq!(
+            (rw.word(0), rw.word(1)),
+            (UNDEFINED, kept),
+            "a dead IC target is undefined; a live one stays"
+        );
+    });
+}
+
+/// MC-w32-8: the loader checks every link-table descriptor before any use: a template that is
+/// not form 1, a kind outside the allow-list (0; 3, the fuse kind, is not built), an index out
+/// of bounds for its kind, a reserved byte, a cell count over the bound; and a slot of 64 or
+/// more, or one held in the isolate. Each gives its reason, maps nothing and installs nothing.
+#[test]
+fn unit_loader_rw_descriptor_checks_come_before_any_use() {
+    use crate::builtins::IntrinsicId;
+    use unit_loader::rw::{LINK_ATOM, LINK_INTRINSIC, MAX_CELLS};
+    let strings = defs().strings.len() as u32;
+    let all = IntrinsicId::ALL.len() as u32;
+    let mut bad: Vec<(&str, Vec<u8>)> = vec![
+        ("magic", {
+            let mut b = template(&[], 0, 0);
+            b[0] = b'X';
+            b
+        }),
+        ("version", {
+            let mut b = template(&[], 0, 0);
+            b[4] = 2;
+            b
+        }),
+        ("reserved", {
+            let mut b = template(&[], 0, 0);
+            b[20] = 1;
+            b
+        }),
+        ("length", {
+            let mut b = template(&[(LINK_ATOM, 0)], 0, 0);
+            b.pop();
+            b
+        }),
+        ("kind 0", template(&[(0, 0)], 0, 0)),
+        ("kind 3", template(&[(3, 0)], 0, 0)),
+        (
+            "intrinsic past the list",
+            template(&[(LINK_INTRINSIC, all)], 0, 0),
+        ),
+        (
+            "RealmFuses",
+            template(&[(LINK_INTRINSIC, IntrinsicId::RealmFuses as u32)], 0, 0),
+        ),
+        (
+            "atom past the strings",
+            template(&[(LINK_ATOM, strings)], 0, 0),
+        ),
+        ("descriptor reserved byte", {
+            let mut b = template(&[(LINK_ATOM, 0)], 0, 0);
+            b[25] = 1;
+            b
+        }),
+        ("cells", template(&[], MAX_CELLS as u32, 1)),
+    ];
+    let (text, unwind) = reader(5, 0);
+    let run = |iso: &Isolate, tpl: &[u8], slot: u8| {
+        let lu = info(iso, "id").loaded_unit().unwrap();
+        // SAFETY: nothing is installed in the refused cases; an accepted case installs the
+        // reader, which is not run here.
+        unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                tpl,
+                slot,
+                &[id_at0(reader_len())],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        }
+    };
+    for (what, tpl) in bad.drain(..) {
+        let iso = defs_isolate(ExecOptions::jitless());
+        let r = run(&iso, &tpl, 5);
+        assert_eq!(
+            (r.count(Reason::Link), r.count(Reason::Installed)),
+            (1, 0),
+            "{what}: {:?}",
+            r.rows()
+        );
+        let uc = code_of(info(&iso, "id")).unwrap();
+        assert!(uc.text.is_none() && uc.rw.is_none(), "{what}");
+    }
+    // Slot 64, then a slot that another unit of the isolate holds.
+    let iso = defs_isolate(ExecOptions::jitless());
+    let r = run(&iso, &template(&[], 1, 0), 64);
+    assert_eq!((r.count(Reason::Slot), r.count(Reason::Installed)), (1, 0));
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    assert_eq!(
+        run(&iso, &template(&[], 1, 0), 7).count(Reason::Installed),
+        1
+    );
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "again.js").map(|_| ()))
+        .unwrap();
+    let r = run(&iso, &template(&[], 1, 0), 7);
+    assert_eq!((r.count(Reason::Slot), r.count(Reason::Installed)), (1, 0));
+    // An empty template makes no copy and keeps the directory.
+    let iso = defs_isolate(ExecOptions::jitless());
+    let r = run(&iso, &[], 9);
+    assert_eq!((r.count(Reason::Installed), r.unit_data), (1, None));
+}
+
+/// MC-w30-3-CODE (H20:70; Codex r1 LAZYNS 2): a link cell of a lazy group's intrinsic installs
+/// the group first, so the cell holds the object that a later JS read gets.
+#[test]
+fn unit_loader_a_lazy_intrinsic_link_installs_its_group_first() {
+    use crate::builtins::{
+        BuiltinModule, BuiltinTable, IntrinsicDef, IntrinsicId, IntrinsicValue, ObjectProps,
+        PropAttrs, PropDef, PropKey,
+    };
+    // One lazy group: the key `Temporal` with its intrinsic (INTL-I1-D8).
+    static LAZY: BuiltinTable = BuiltinTable::new(
+        "lazy-link",
+        &[BuiltinModule {
+            name: "temporal-key",
+            block: 105,
+            defs: &[],
+            intrinsics: &[IntrinsicDef {
+                id: IntrinsicId::Temporal,
+                value: IntrinsicValue::Object {
+                    proto: Some(IntrinsicId::ObjectPrototype),
+                },
+            }],
+            props: &[ObjectProps {
+                target: IntrinsicId::GlobalObject,
+                props: &[PropDef::intrinsic(
+                    PropKey::Str("Temporal"),
+                    IntrinsicId::Temporal,
+                    PropAttrs::METHOD,
+                )],
+            }],
+        }],
+    );
+    let config = IsolateConfig {
+        builtins: Some(&LAZY),
+        ..IsolateConfig::default()
+    };
+    let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
+    let rt = &iso.rt;
+    assert_eq!(
+        crate::builtins::intrinsic(rt, IntrinsicId::Temporal),
+        UNDEFINED
+    );
+    assert!(crate::builtins::lazy_group(rt, IntrinsicId::Temporal).is_some());
+    let (text, unwind) = reader(5, 0);
+    let tpl = template(
+        &[(
+            unit_loader::rw::LINK_INTRINSIC,
+            IntrinsicId::Temporal as u32,
+        )],
+        0,
+        0,
+    );
+    let lu = info(&iso, "id").loaded_unit().unwrap();
+    // SAFETY: the reader is installed but not run here.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            rt,
+            lu,
+            &text,
+            &unwind,
+            &tpl,
+            5,
+            &[id_at0(reader_len())],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let v = code_of(info(&iso, "id"))
+        .unwrap()
+        .rw
+        .as_ref()
+        .unwrap()
+        .word(0);
+    assert!(crate::object::is_object(v));
+    assert_eq!(v, crate::builtins::intrinsic(rt, IntrinsicId::Temporal));
 }
 
 /// Step 8 refuses what `install_code` refuses and what has no entry yet: an AotOpt pick and a
@@ -827,6 +1265,8 @@ fn unit_loader_install_refuses_aot_opt_and_a_class_constructor() {
             lu,
             &stub_text(),
             &stub_unwind(),
+            &[],
+            0,
             &fns,
             Some(&Policy::JITLESS),
             0,

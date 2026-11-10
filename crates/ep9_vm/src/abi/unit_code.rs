@@ -11,10 +11,12 @@
 //!   LoadedUnit::load (strings interned once, H19) -> unit_loader::load (code sets,
 //!   select(); never installs: each pick is "deferred") -> function 0 runs (as run_script)
 //!   -> (the counts by reason, the completion value or the throw)
-//! unsafe Cx::run_script_installing_unit_code(unit, file, text, unwind, host cpu, functions)
-//!   the same, and if a function picked a unit object: the shared mapped text (one per
-//!   process), its unwind data registered (O3), step 8 installs the picks; the caller's
-//!   # Safety is the H35 S4 check
+//! unsafe Cx::run_script_installing_unit_code(unit, file, text, unwind, rw, slot, host cpu,
+//!                                             functions)
+//!   the same, and if a function picked a unit object: the RW template checked, the shared
+//!   mapped text (one per process), its unwind data registered (O3), the isolate's RW copy in
+//!   unit-data slot `slot` (Cx::unit_data names the directory), step 8 installs the picks;
+//!   the caller's # Safety is the H35 S4 check
 //! ```
 //!
 //! Why two methods (route MC-w34-2, M7-P5 A2-RW; DL P5-DL-5): `ep9_vm` cannot run the H35 S4
@@ -74,12 +76,17 @@ impl<'s> Cx<'s> {
     /// [`Cx::run_script_with_unit_code`], and, if a function picked a unit object, steps 5, 7
     /// and 8 (H35 S4): the loader maps `text` once per process (a later load of the same text
     /// and unwind bytes shares it), registers `unwind` (the unit's unwind section in the form
-    /// of the target: `crates/ep9_vm/src/unit_loader.rs` module doc) and installs each
+    /// of the target: `crates/ep9_vm/src/unit_loader.rs` module doc), makes the isolate's RW
+    /// copy of `rw` (the unit's RW template, form 1: link cells, IC cells, counters; empty for
+    /// a unit with no RW data) in unit-data slot `slot` (the header's `unit_data_slot`,
+    /// H35-Q9) and installs each
     /// AotBaseline pick with no fuse dependency in its function's dispatch slot, so a call of
     /// that function runs its unit code. A pick that cannot be installed (AotOpt, a fuse
     /// dependency, a function kind with no native entry yet) counts as "not-installable", a
-    /// text that does not map as "no-text", and unwind data that is empty or does not register
-    /// as "no-unwind"; each runs its bytecode.
+    /// text that does not map as "no-text", unwind data that is empty or does not register as
+    /// "no-unwind", an RW template that is not form 1 or names a link out of bounds as "link",
+    /// and a slot of 64 or more or one that another unit of this isolate holds as "slot"; each
+    /// runs its bytecode.
     ///
     /// # Safety
     /// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `unit`, `text` and
@@ -88,31 +95,36 @@ impl<'s> Cx<'s> {
     /// (2) the content hash (and a required signature) matches, (3) the engine build id and the
     /// bytecode ABI are this build's, and (4) every version, the target and the CPU features
     /// match. `unit` is the unit's bytecode section, `text` its text section, `unwind` its
-    /// unwind section and `functions` its function table, unchanged. So the unit is one that this engine build wrote, and each
+    /// unwind section, `rw` its RW template section, `slot` its header's unit-data slot and
+    /// `functions` its function table, unchanged. So the unit is one that this engine build wrote, and each
     /// variant's code is the native code of its function (H35:18: a unit is trusted code; a
     /// unit of another build never gets here, because step 3 sends it to its source).
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub unsafe fn run_script_installing_unit_code(
         &mut self,
         unit: VerifiedUnit,
         file: &str,
         text: &[u8],
         unwind: &[u8],
+        rw: &[u8],
+        slot: u8,
         host_cpu: u64,
         functions: &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])],
     ) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>) {
-        self.run_unit(unit, file, text, Some(unwind), host_cpu, functions)
+        let native = (unwind, rw, slot);
+        self.run_unit(unit, file, text, Some(native), host_cpu, functions)
     }
 
-    /// The body of both unit-code methods; steps 5, 7 and 8 only with `unwind` (only the
-    /// unsafe method passes it; its caller contract stands for the install contract).
+    /// The body of both unit-code methods; steps 5-8 only with `native` (the unwind section,
+    /// the RW template and the slot; only the unsafe method passes it; its caller contract
+    /// stands for the install contract).
     #[allow(clippy::type_complexity)]
     fn run_unit(
         &mut self,
         unit: VerifiedUnit,
         file: &str,
         text: &[u8],
-        unwind: Option<&[u8]>,
+        native: Option<(&[u8], &[u8], u8)>,
         host_cpu: u64,
         functions: &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])],
     ) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>) {
@@ -143,7 +155,7 @@ impl<'s> Cx<'s> {
         // Step 8 turns on in a later M7-P5 commit, after the unit text unwind data (O3) and the
         // JS call arms (MC-w30-2) are in place (the DL P5-DL-5 order): until then both methods
         // load without it.
-        let _ = unwind;
+        let _ = native;
         let report = unit_loader::load(rt, &lu, text, &functions, policy.as_ref(), host_cpu);
         let entry: *const FunctionInfo = &lu.infos[0];
         rt.units.borrow_mut().push(lu);

@@ -37,6 +37,11 @@
 //! | Native code binds to its bytecode by digest: a function whose bytecode differs (another BytecodeGen switch, a changed source) runs its bytecode. So every switch that changes bytecode or emitted code is in the header `codegen_flags` hash, or unit functions keep the default bytecode; REGOPT has no off switch outside tests (route MC-w31-8) | [`unit_function_digest`], [`Reason::Digest`] |
 //! | Step 8 runs only for a caller that ran the H35 S4 checks (steps 1-4) on the unit bytes: [`load_and_install`] is an `unsafe fn` (the unsafe `Cx` method of `abi/unit_code.rs`), and [`load`] (the safe `Cx` method) never installs, so safe Rust cannot run embedder bytes as code (route MC-w34-2, M7-P5 A2-RW; H35:18 "a unit is trusted code") | [`load`], [`load_and_install`] |
 //! | A run with no unit pays nothing: no T0 path reads the code set; a function info gets one empty `OnceCell` word (routes MC-w22-O5, MC-w29-7) | `FunctionInfo::code_set` |
+//! | The RW copy (H35 S4 step 6; plan v12 §8.2): link cells resolve at load and are a strong root range; IC cells start undefined and are a weak root range (a dead target becomes undefined at GC end; MC-w33-8.2: a unit IC cell holds its keys weakly, as the FeedbackVector's weak slots do); counters start at 0 and are no root. Rule 8: these are the only Rust words that hold the copy's Values, and every GC kind visits both ranges | [`make_rw_copy`] |
+//! | Every link-table descriptor is checked before any use: form 1, the kind allow-list (intrinsic, atom), each index in bounds for its kind, a cell bound; then the slot (route MC-w32-8). A failed check maps nothing and roots nothing | [`parse_template`], [`Reason::Link`], [`Reason::Slot`] |
+//! | A link cell of a lazy group's intrinsic installs its group first (`realm::intrinsic_for_use`), so the cell holds the object a later JS read gets (route MC-w30-3-CODE; H20:70) | [`make_rw_copy`] |
+//! | A unit IC cell is a second IC store beside the function's FeedbackVector (route MC-w31-7; V8 66892da2cc). The rule for the unit IC miss entry (none is built yet): the miss runs the T0 miss path, which updates the FeedbackVector slot first (the one record that profiles, `select()` inputs and tier-up read), and then writes the unit IC cell from that slot. The cell is a cache of the slot: no T0 path and no profile reads it, and a GC that clears it costs one more miss | this table (the miss entry is T1 work) |
+//! | A unit writer keeps one boilerplate constant per literal site: it does not merge the equal boilerplates of two sites into one constant. OBJ1 builds one NestedPlan per literal site (`literal_site.rs`), so a merged constant would make one plan copy per site outside the heap limit (route MC-w31-4; Codex r1 OBJ1-1). A merge needs a DL row and a plan cache keyed by the constant first | the H35 rows (no writer exists yet) |
 //! | The object model reads no execution policy, also with a unit loaded (doc 13 M-R9; route A2-MR9): the loader writes only `code_set` and (step 8) the dispatch slot and the code registry. This file reads the policy, as `select.rs` does: the rule-40 grep exempts both (plan v12 rule 40) | the tests |
 //!
 //! **The process text map** (H35 S2: text is per process; routes A2-UNIT-SHARE and MC-w34-4,
@@ -59,10 +64,16 @@
 //! little-endian), every offset into the text (the UNWIND_INFO bytes are part of the text).
 //! Empty unwind data installs nothing ("no-unwind").
 
+use core::cell::Cell;
 use core::hash::{Hash, Hasher};
 use core::ops::Range;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::io;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
+
+use ep9_heap::{RootStrength, Slot};
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_bytecode::sha256::Sha256;
@@ -116,6 +127,9 @@ pub(crate) struct UnitCode {
     /// of the unit holds it (until the isolate drops, `Runtime::units` only grows). `None`
     /// for [`load`], which maps nothing.
     pub text: Option<Arc<SharedText>>,
+    /// The isolate's RW copy of the unit (H35 S4 step 6), when the installing load made one:
+    /// every function of the load holds it, so it lives as long as the isolate.
+    pub rw: Option<Rc<RwCopy>>,
 }
 
 impl UnitCode {
@@ -150,6 +164,242 @@ pub(crate) struct SharedText {
 unsafe impl Send for SharedText {}
 // SAFETY: as above: no method writes through `&self`.
 unsafe impl Sync for SharedText {}
+
+// ---- the RW copy and the link table (H35 S4 step 6; plan v12 §8.2, 09:213) ----------------
+
+/// The RW template, form 1 (M7-P5 A2-RW): what the unit writer puts in the H35 `rw_template`
+/// section and what [`load_and_install`] reads. All numbers are little-endian.
+///
+/// ```text
+///  0  magic "EPRW"   4 version u32 (1)   8 links u32   12 ics u32   16 counters u32
+/// 20  reserved u32 (0)
+/// 24  links x 8 bytes: kind u8, reserved [3] (0), index u32
+/// ```
+///
+/// The copy of one isolate is one block of `links + ics + counters` words; unit code reaches
+/// it through the unit-data register (x27 / r14 = `[[x28 + CX_UNIT_DATA] + 8 * slot]`, H35-Q9):
+/// link cell `i` at `[x27 + 8 * i]`, IC cell `j` at `[x27 + 8 * (links + j)]`, counter `k` at
+/// `[x27 + 8 * (links + ics + k)]`.
+pub(crate) mod rw {
+    /// The magic of form 1.
+    pub(crate) const MAGIC: [u8; 4] = *b"EPRW";
+    /// The form version.
+    pub(crate) const VERSION: u32 = 1;
+    /// The head size in bytes.
+    pub(crate) const HEAD: usize = 24;
+    /// The size of one link descriptor.
+    pub(crate) const LINK: usize = 8;
+    /// Link kind 1: the intrinsic with this stable index (`IntrinsicId`, H13) of the load
+    /// realm. A lazy group's intrinsic is installed first (route MC-w30-3-CODE; H20:70).
+    pub(crate) const LINK_INTRINSIC: u8 = 1;
+    /// Link kind 2: the isolate's atom of the unit string with this index (H19: one atom per
+    /// text).
+    pub(crate) const LINK_ATOM: u8 = 2;
+    /// The most cells of one copy (`links + ics + counters`): a bound on the block one load
+    /// allocates (8 MiB).
+    pub(crate) const MAX_CELLS: u64 = 1 << 20;
+}
+
+/// One link-table descriptor after its checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Link {
+    /// [`rw::LINK_INTRINSIC`].
+    Intrinsic(crate::builtins::IntrinsicId),
+    /// [`rw::LINK_ATOM`].
+    Atom(usize),
+}
+
+/// A checked RW template.
+struct RwTemplate {
+    links: Vec<Link>,
+    ics: usize,
+    counters: usize,
+}
+
+/// Reads the RW template `b` of the unit `lu` (form 1, [`rw`]) and checks every descriptor
+/// before any use (route MC-w32-8): the magic, the version, the reserved bytes, the cell count
+/// bound, the allow-list of link kinds (intrinsic, atom), and each index: an intrinsic that
+/// the realm has (made by a table, or in a lazy group) and is not `RealmFuses`, a unit string
+/// of `lu`. `None` for any failure.
+fn parse_template(rt: &Runtime, lu: &LoadedUnit, b: &[u8]) -> Option<RwTemplate> {
+    use crate::builtins::{self, IntrinsicId};
+    let u32_at = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
+    };
+    if b.get(..4)? != rw::MAGIC || u32_at(4)? != rw::VERSION || u32_at(20)? != 0 {
+        return None;
+    }
+    let (links, ics, counters) = (u32_at(8)?, u32_at(12)?, u32_at(16)?);
+    let cells = u64::from(links) + u64::from(ics) + u64::from(counters);
+    if cells > rw::MAX_CELLS || b.len() != rw::HEAD + links as usize * rw::LINK {
+        return None;
+    }
+    let mut out = Vec::with_capacity(links as usize);
+    for d in b[rw::HEAD..].as_chunks::<{ rw::LINK }>().0 {
+        let index = u32::from_le_bytes([d[4], d[5], d[6], d[7]]);
+        if d[1..4] != [0; 3] {
+            return None;
+        }
+        out.push(match d[0] {
+            rw::LINK_INTRINSIC => {
+                let id = *IntrinsicId::ALL.get(index as usize)?;
+                let made = crate::kinds::is_object(builtins::intrinsic(rt, id))
+                    || builtins::lazy_group(rt, id).is_some();
+                if id == IntrinsicId::RealmFuses || !made {
+                    return None;
+                }
+                Link::Intrinsic(id)
+            }
+            rw::LINK_ATOM if (index as usize) < lu.unit.strings.len() => Link::Atom(index as usize),
+            _ => return None,
+        });
+    }
+    Some(RwTemplate {
+        links: out,
+        ics: ics as usize,
+        counters: counters as usize,
+    })
+}
+
+/// The unit-data directory of one isolate (H35-Q9): one word per unit slot, each the base of
+/// the isolate's RW copy of the unit in that slot, or 0. `Cx::unit_data` holds its address.
+/// Every RW copy of the isolate holds it, so it lives as long as the isolate.
+pub(crate) struct UnitDirectory {
+    words: Box<[Cell<usize>]>,
+}
+
+impl UnitDirectory {
+    /// The number of slots (`ep9_unit::UNIT_DATA_SLOTS`).
+    pub(crate) const SLOTS: usize = 64;
+
+    /// The address that `Cx::unit_data` holds.
+    pub(crate) fn address(&self) -> usize {
+        self.words.as_ptr().addr()
+    }
+
+    /// The word of `slot`.
+    pub(crate) fn word(&self, slot: usize) -> usize {
+        self.words[slot].get()
+    }
+}
+
+/// The RW copy of one unit in one isolate (H35 S4 step 6): link cells (a strong root range),
+/// IC cells (a weak root range: a dead target becomes undefined at GC end) and counters (raw
+/// words, no root). Rule 8: the Values in it are held only through the two ranges, which every
+/// GC kind visits. The ranges are never removed: the copy lives until the isolate drops, and
+/// the heap (the Runtime's first field) drops first, with its ranges.
+pub(crate) struct RwCopy {
+    words: Box<[AtomicU64]>,
+    // The tests read the layout; unit code reads it through the unit-data register.
+    #[cfg_attr(not(test), allow(dead_code))]
+    links: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
+    ics: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
+    slot: usize,
+    dir: Rc<UnitDirectory>,
+}
+
+impl RwCopy {
+    /// The base address (the unit-data register value).
+    pub(crate) fn base(&self) -> usize {
+        self.words.as_ptr().addr()
+    }
+
+    /// Word `i` of the block (link cells, then IC cells, then counters).
+    #[cfg(test)]
+    pub(crate) fn word(&self, i: usize) -> u64 {
+        self.words[i].load(Relaxed)
+    }
+
+    /// Stores the Value bits `v` in IC cell `j` (unit code's store; tests).
+    #[cfg(test)]
+    pub(crate) fn set_ic(&self, j: usize, v: u64) {
+        assert!(j < self.ics);
+        self.words[self.links + j].store(v, Relaxed);
+    }
+
+    /// The unit-data slot of the copy, and the directory it is in.
+    #[cfg(test)]
+    pub(crate) fn slot(&self) -> (usize, &UnitDirectory) {
+        (self.slot, &self.dir)
+    }
+
+    /// The slots of the words `start..start + len`.
+    fn slots(&self, start: usize, len: usize) -> NonNull<[Slot]> {
+        let p = NonNull::from(&self.words[start..start + len]);
+        // `Slot` is `repr(transparent)` over `AtomicU64`.
+        NonNull::slice_from_raw_parts(p.cast::<Slot>(), len)
+    }
+}
+
+/// The directory of the isolate of `rt`: the one an earlier installing load made (every RW
+/// copy holds it), or a new one.
+fn directory(rt: &Runtime) -> Rc<UnitDirectory> {
+    let units = rt.units.borrow();
+    units
+        .iter()
+        .flat_map(|u| u.infos.iter())
+        .find_map(|fi| code_of(fi)?.rw.as_ref().map(|c| Rc::clone(&c.dir)))
+        .unwrap_or_else(|| {
+            Rc::new(UnitDirectory {
+                words: (0..UnitDirectory::SLOTS).map(|_| Cell::new(0)).collect(),
+            })
+        })
+}
+
+/// Step 6 for `lu` (form 1, [`rw`]): the isolate's RW copy in unit-data slot `slot`. Link
+/// cells resolve now (an intrinsic of the current realm, a lazy group installed first; an
+/// atom), IC cells start undefined, counters 0; the directory word of `slot` names the copy.
+/// `Err(Slot)` if `slot` is 64 or more or held in this isolate. GC point (a lazy group
+/// install): every cell is rooted before the first link resolves.
+fn make_rw_copy(
+    rt: &Runtime,
+    lu: &LoadedUnit,
+    tpl: &RwTemplate,
+    slot: u8,
+) -> Result<Rc<RwCopy>, Reason> {
+    let slot = usize::from(slot);
+    let dir = directory(rt);
+    if slot >= UnitDirectory::SLOTS || dir.word(slot) != 0 {
+        return Err(Reason::Slot);
+    }
+    let (links, ics) = (tpl.links.len(), tpl.ics);
+    let undefined = crate::frame::UNDEFINED;
+    let words: Box<[AtomicU64]> = (0..links + ics + tpl.counters)
+        .map(|i| AtomicU64::new(if i < links + ics { undefined } else { 0 }))
+        .collect();
+    let copy = Rc::new(RwCopy {
+        words,
+        links,
+        ics,
+        slot,
+        dir,
+    });
+    // SAFETY: the slots live in the boxed block of `copy`, which never moves and lives until
+    // the isolate drops (every function of the load holds the copy, and `Runtime::units` only
+    // grows); the heap drops first, with these ranges. They hold undefined now and Values
+    // later (never the bits 0).
+    unsafe {
+        rt.heap
+            .add_root_range(copy.slots(0, links), RootStrength::Strong);
+        rt.heap
+            .add_root_range(copy.slots(links, ics), RootStrength::Weak);
+    }
+    let realm = rt.root(crate::runtime::Root::Realm);
+    for (i, link) in tpl.links.iter().enumerate() {
+        let v = match *link {
+            // A lazy group's intrinsic installs its group first (GC point; the cells are
+            // rooted); `parse_template` checked that the realm has it.
+            Link::Intrinsic(id) => crate::realm::intrinsic_for_use(rt, realm, id),
+            Link::Atom(s) => lu.string(s),
+        };
+        debug_assert!(v != undefined, "link {i}: {link:?} is undefined");
+        copy.words[i].store(v, Relaxed);
+    }
+    copy.dir.words[slot].set(copy.base());
+    Ok(copy)
+}
 
 /// The process text map (module doc): weak entries, pruned at each lookup.
 static TEXTS: Mutex<Vec<Weak<SharedText>>> = Mutex::new(Vec::new());
@@ -282,7 +532,9 @@ fn register_unwind(text: &UnitText<'static>, unwind: &[u8]) -> io::Result<Regist
     let u = |c: &[u8]| u32::from_le_bytes(c.try_into().expect("4 bytes"));
     let len = text.len() as u64;
     let entries: Box<[RuntimeFunction]> = unwind
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|e| RuntimeFunction {
             begin: u(&e[0..4]),
             end: u(&e[4..8]),
@@ -336,11 +588,19 @@ pub(crate) enum Reason {
     /// A pick of an installing load whose text has no unwind data, or unwind data that does
     /// not lie inside the text or does not register (JIT review O3): it runs its bytecode.
     NoUnwind,
+    /// A pick of an installing load whose RW template is not form 1, or has a link-table
+    /// descriptor of a kind outside the allow-list or with an index out of bounds (route
+    /// MC-w32-8): it runs its bytecode.
+    Link,
+    /// A pick of an installing load with RW data whose unit-data slot is 64 or more, or is
+    /// held by another unit in this isolate (H35-Q9: "a second unit with a used slot gives
+    /// BYTECODE"): it runs its bytecode.
+    Slot,
 }
 
 impl Reason {
     /// Every reason, in report order.
-    pub(crate) const ALL: [Reason; 13] = [
+    pub(crate) const ALL: [Reason; 15] = [
         Reason::NoText,
         Reason::Function,
         Reason::Twice,
@@ -354,6 +614,8 @@ impl Reason {
         Reason::Installed,
         Reason::NotInstallable,
         Reason::NoUnwind,
+        Reason::Link,
+        Reason::Slot,
     ];
 
     /// The report name.
@@ -372,6 +634,8 @@ impl Reason {
             Reason::Installed => "installed",
             Reason::NotInstallable => "not-installable",
             Reason::NoUnwind => "no-unwind",
+            Reason::Link => "link",
+            Reason::Slot => "slot",
         }
     }
 }
@@ -380,6 +644,9 @@ impl Reason {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Report {
     counts: [u32; Reason::ALL.len()],
+    /// The isolate's unit-data directory address (`Cx::unit_data`) after an installing load
+    /// that made an RW copy; the caller stores it in its `Cx` (`None`: leave it).
+    pub unit_data: Option<usize>,
 }
 
 impl Report {
@@ -498,16 +765,29 @@ pub(crate) fn load(
 /// method in `abi/unit_code.rs`): so the unwind data describes the text, and each picked
 /// variant follows the [`install_picked`] contract.
 #[allow(dead_code)] // the unsafe `Cx` method calls it from the M7-P5 install commit
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn load_and_install(
     rt: &Runtime,
     lu: &LoadedUnit,
     text: &[u8],
     unwind: &[u8],
+    rw: &[u8],
+    slot: u8,
     functions: &[FunctionCode],
     policy: Option<&Policy>,
     cpu: u64,
 ) -> Report {
-    load_inner(rt, lu, text, Some(unwind), functions, policy, cpu)
+    let native = Native { unwind, rw, slot };
+    load_inner(rt, lu, text, Some(native), functions, policy, cpu)
+}
+
+/// The native part of an installing load beyond the text: the unwind section, the RW
+/// template (empty: no RW data) and the unit-data slot (H35-Q9).
+#[derive(Clone, Copy)]
+struct Native<'a> {
+    unwind: &'a [u8],
+    rw: &'a [u8],
+    slot: u8,
 }
 
 /// [`load`]; with `unwind` (only [`load_and_install`] passes it; its caller contract stands
@@ -516,7 +796,7 @@ fn load_inner(
     rt: &Runtime,
     lu: &LoadedUnit,
     text: &[u8],
-    unwind: Option<&[u8]>,
+    native: Option<Native<'_>>,
     functions: &[FunctionCode],
     policy: Option<&Policy>,
     cpu: u64,
@@ -607,19 +887,24 @@ fn load_inner(
             code: code.into_boxed_slice(),
             pick,
             text: None,
+            rw: None,
         };
         sets.push((fi, unit_code));
     }
     let picked = r.count(Reason::Picked);
     let mut mapped = false;
-    match unwind {
+    match native {
         None => r.add(Reason::Deferred, picked),
         // MC-w34-4: no pick, no map (the JIT preset picks no unit object).
         Some(_) if picked == 0 => {}
-        Some(unwind) => match shared_text(text, unwind) {
-            Ok(t) => {
+        Some(n) => match link_and_map(rt, lu, text, n) {
+            Ok((t, copy)) => {
                 for (_, uc) in &mut sets {
                     uc.text = Some(Arc::clone(&t));
+                    uc.rw = copy.clone();
+                }
+                if let Some(c) = &copy {
+                    r.unit_data = Some(c.dir.address());
                 }
                 mapped = true;
             }
@@ -641,6 +926,34 @@ fn load_inner(
         }
     }
     r
+}
+
+/// Steps 5-7 of an installing load with a pick: checks the RW template (MC-w32-8) and the
+/// slot first, then maps the shared text and registers its unwind data, then makes the RW
+/// copy (an empty template makes none). Nothing is mapped or rooted when a check fails.
+fn link_and_map(
+    rt: &Runtime,
+    lu: &LoadedUnit,
+    text: &[u8],
+    n: Native<'_>,
+) -> Result<(Arc<SharedText>, Option<Rc<RwCopy>>), Reason> {
+    let tpl = if n.rw.is_empty() {
+        None
+    } else {
+        Some(parse_template(rt, lu, n.rw).ok_or(Reason::Link)?)
+    };
+    if tpl.is_some()
+        && (usize::from(n.slot) >= UnitDirectory::SLOTS
+            || directory(rt).word(usize::from(n.slot)) != 0)
+    {
+        return Err(Reason::Slot);
+    }
+    let t = shared_text(text, n.unwind)?;
+    let copy = match &tpl {
+        Some(tpl) => Some(make_rw_copy(rt, lu, tpl, n.slot)?),
+        None => None,
+    };
+    Ok((t, copy))
 }
 
 /// Step 8: installs each AotBaseline pick of `lu` with no fuse dependency and a mapped text
@@ -681,7 +994,6 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
 }
 
 /// The code set of `fi`, if the loader gave it one.
-#[cfg(test)]
 pub(crate) fn code_of(fi: &crate::unit::FunctionInfo) -> Option<&UnitCode> {
     fi.code_set.get().map(|b| &**b)
 }
