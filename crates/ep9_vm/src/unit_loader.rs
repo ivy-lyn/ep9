@@ -434,6 +434,7 @@ fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
         .filter_map(Weak::upgrade)
         .find(|t| t.key == key)
     {
+        sync_text(); // another thread may have mapped it
         return Ok(t);
     }
     if unwind.is_empty() {
@@ -447,7 +448,27 @@ fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
         key,
     });
     texts.push(Arc::downgrade(&t));
+    sync_text();
     Ok(t)
+}
+
+/// A context-synchronizing event on this thread before it runs a text of [`shared_text`]
+/// (M7-P5 Codex A1). A shared text was mapped and flushed by another thread; its cache
+/// maintenance does not sync this thread's pipeline (`isb` on AArch64, `cpuid` on x86-64:
+/// `ep9_platform::unit_text::context_sync`). An isolate is not `Send` (D14), so this thread
+/// is the one that runs the code, after step 8 writes the slots. Called on a mapped text too.
+#[inline]
+fn sync_text() {
+    ep9_platform::unit_text::context_sync();
+    #[cfg(test)]
+    TEXT_SYNCS.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The [`sync_text`] calls on this thread (the tests check that each return of
+    /// [`shared_text`] syncs).
+    pub(crate) static TEXT_SYNCS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Registers the unix unwind data `unwind` of the mapped `text` (module doc, form 1).

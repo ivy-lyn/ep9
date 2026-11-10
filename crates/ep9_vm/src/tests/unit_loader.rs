@@ -1626,3 +1626,53 @@ fn unit_loader_api_policy_is_the_exec_options_field() {
         );
     }
 }
+
+// ---- Codex A1 and A2 (M7-P5 fixer r3): a shared text on another thread; the unwind mode ------
+
+/// Codex A1: thread B takes the text that thread A mapped (the hit path of the process text
+/// map: the same entry address, while A's isolate keeps the text) and runs it. Each return of
+/// `shared_text`, hit or miss, runs `sync_text` on the thread that will run the code (an
+/// isolate is not `Send`). The barrier itself cannot fail a test: the test shows that the
+/// hit path calls it (the counter of this thread) and that the code then runs.
+#[test]
+fn unit_loader_a_text_from_another_thread_is_synced_before_it_runs() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    // Only a guard against a hang (a thread that never answers), not a time bound.
+    let deadline = Duration::from_secs(600);
+    let syncs = || unit_loader::TEXT_SYNCS.with(core::cell::Cell::get);
+    let (to_main, from_a) = mpsc::channel();
+    let (done, wait_done) = mpsc::channel::<()>();
+    let a = std::thread::spawn(move || {
+        let before = syncs();
+        let iso = installed_g();
+        to_main
+            .send((info(&iso, "g").slot.entry(), syncs() - before))
+            .unwrap();
+        // Keep the text mapped until B ran it.
+        let _ = wait_done.recv_timeout(deadline);
+        drop(iso);
+    });
+    let (entry_a, syncs_a) = from_a.recv_timeout(deadline).expect("thread A answers");
+    let b = std::thread::spawn(move || {
+        let before = syncs();
+        let mut iso = installed_g();
+        let n = syncs() - before;
+        let entry = info(&iso, "g").slot.entry();
+        (entry, n, run_js(&mut iso, call_g_walk()))
+    });
+    let b = b.join();
+    let _ = done.send(());
+    a.join().unwrap();
+    let (entry_b, syncs_b, r) = b.unwrap();
+    assert_eq!(
+        entry_b, entry_a,
+        "B runs the text that A mapped (the hit path)"
+    );
+    assert_eq!(
+        (syncs_a, syncs_b),
+        (1, 1),
+        "one sync per load, on each thread"
+    );
+    assert_eq!(r, Ok(Value::int32(42).to_bits()));
+}

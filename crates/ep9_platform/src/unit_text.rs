@@ -29,9 +29,9 @@
 //!   same fact as `jit::WxMode::Protect`, measured on macOS 27.0.1). A hardened binary needs
 //!   `MAP_JIT` (the `com.apple.security.cs.allow-jit` entitlement) or a statically linked
 //!   `.o` unit (H35, not built yet). The H28 unit-mapping row names this limit.
-//! - **Other threads.** The flush is for this thread. Text is mapped before any thread can
-//!   reach its entries (the dispatch slot write comes later and is a release point of the
-//!   isolate's own thread).
+//! - **Other threads.** The flush is for this thread. A thread that runs text that another
+//!   thread mapped (a shared text) first runs [`context_sync`]: the A2 loader calls it on each
+//!   text it returns, mapped or shared, before the dispatch slot write that makes it reachable.
 
 use std::fmt;
 use std::io;
@@ -216,6 +216,27 @@ impl Drop for UnitText<'_> {
             debug_assert!(r.is_ok(), "unit text decommit failed: {r:?}");
         }
         // The window form decommits in `CodeMemory`'s drop; then the chunk gives the pages back.
+    }
+}
+
+/// A context-synchronizing event on this thread, before it runs unit text that another thread
+/// wrote (M7-P5 Codex A1; the Spike B `unit/load.rs` form): `isb` on AArch64 (Arm ARM,
+/// concurrent modification and execution of instructions: the writer's cache maintenance is
+/// broadcast, the pipeline of this core is not), `cpuid` on x86-64 (a serializing instruction;
+/// Intel SDM vol. 3 8.1.3, cross-modifying code). The writer flushed the icache when it wrote
+/// the text; a lock (the loader's text map) orders the data. Other targets: nothing.
+#[inline]
+pub fn context_sync() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `isb` only flushes this core's pipeline; it touches no memory or register.
+    unsafe {
+        core::arch::asm!("isb", options(nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: cpuid leaf 0 exists on every x86-64 CPU and has no side effect.
+        #[allow(unused_unsafe)]
+        let _ = unsafe { core::arch::x86_64::__cpuid(0) };
     }
 }
 
