@@ -2312,10 +2312,13 @@ impl Rel {
 /// and the int32 test of the boxing.
 #[inline(always)]
 fn int32_mul(a: i32, b: i32) -> Option<i32> {
-    let i = i32::try_from(i64::from(a) * i64::from(b)).ok()?;
-    if i == 0 && (a | b) < 0 {
+    let i = a.checked_mul(b)?;
+    if i == 0 {
+        // Rare: a 0 product. Its sign test stays off the path of the other products.
         core::hint::cold_path();
-        return None;
+        if (a | b) < 0 {
+            return None;
+        }
     }
     Some(i)
 }
