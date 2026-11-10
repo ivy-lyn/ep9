@@ -287,6 +287,7 @@ pub struct Heap {
     pub(crate) scratch: RefCell<Vec<u64>>,
     pub(crate) scratch_depth: Cell<u32>,
     _not_send: PhantomData<*mut ()>,
+    external: ExternalBytes,
 }
 
 const _: () = {
@@ -639,6 +640,7 @@ impl Heap {
             scratch: RefCell::new(Vec::new()),
             scratch_depth: Cell::new(0),
             _not_send: PhantomData,
+            external: ExternalBytes::default(),
         })
     }
 
@@ -2776,5 +2778,136 @@ mod near_limit_tests {
         assert_eq!(heap.stats().shape_pages, 1);
         assert!(heap.is_cell(s.addr()));
         heap.drop_global(root);
+    }
+}
+
+// ---- the external-bytes input (typedarray design §5.4) ----
+
+/// The external-bytes input of the heap: the off-heap bytes that heap cells keep alive. Its
+/// first user is the VM's BufferTable (typedarray design TA-D4, §5.1): the committed bytes of
+/// the resizable ArrayBuffer and SharedArrayBuffer stores, which its weak source frees when
+/// the buffer dies. A loop that makes such buffers then runs GCs, as a loop that makes cells
+/// does.
+///
+/// ```text
+/// add_external_bytes(n)       a GC point; never from a trace function, root or weak source
+///   GC-stress on: counts as one allocation (the stress GC runs first)
+///   bytes + n > limit         --> a major GC first (the trigger)
+///   bytes += n                (never fails, except an overflow of the count: TooLarge)
+/// remove_external_bytes(n)    no GC and no borrow: a weak source may call it
+///   bytes -= n
+/// limit, set by the first add after each major GC from the bytes b and the committed heap
+///   bytes c then (I = the initial budget, M = max_heap_bytes):
+///     min(2 * max(I, b), M - c)   at most the room that M leaves next to the heap ...
+///     max(that, b + I)            ... but at least I bytes above b: no GC on every add
+/// ```
+///
+/// The first term has the form of the major-GC bound of the S1 policy (`Inner::after_gc`):
+/// between two major GCs the external bytes grow by at most the larger of the initial budget
+/// and the external bytes left after the first. The second counts the external bytes against
+/// `max_heap_bytes`: when the heap and the external bytes together reach it, a major GC
+/// runs; if they stay above it, the next one runs after `I` more bytes. The heap limit
+/// itself still bounds only the heap's commits (H23): an add never fails for it. The limit
+/// is set at the first add after a major GC, so it reads the bytes that the GC's weak
+/// sources (or the frees right after it) removed. A minor GC sets no limit: an old buffer
+/// dies only in a major GC. The fields are `Cell`s outside [`Heap::inner`], so a weak source
+/// can remove bytes while the GC holds `inner`.
+#[derive(Debug, Default)]
+struct ExternalBytes {
+    /// The bytes reported now: the adds minus the removes.
+    bytes: Cell<usize>,
+    /// The trigger bound. 0: not set yet (no add since the heap was made).
+    limit: Cell<usize>,
+    /// The count of major GCs when `limit` was set.
+    majors: Cell<u64>,
+}
+
+impl Heap {
+    /// The external bytes reported now ([`Heap::add_external_bytes`] minus
+    /// [`Heap::remove_external_bytes`]).
+    pub fn external_bytes(&self) -> usize {
+        self.external.bytes.get()
+    }
+
+    /// Reports `n` more off-heap bytes that heap cells keep alive (a commit of a buffer
+    /// store). If the external bytes would pass the trigger bound, a major GC runs first. The
+    /// bound is twice the external bytes after the last major GC (at least twice
+    /// [`HeapConfig::initial_budget`]), and at most the room that
+    /// [`Heap::max_heap_bytes`] leaves next to the committed heap bytes (but at least one
+    /// initial budget above the external bytes, so a heap over its limit does not collect on
+    /// every add). The add never fails for the heap limit, which bounds only the heap's own
+    /// commits (H23); [`AllocError::TooLarge`] if the count would overflow (the count then
+    /// stays as it was).
+    ///
+    /// Call it with the cell that will own the bytes already rooted.
+    ///
+    /// This is a GC point: it may collect before it returns. It must not run inside a GC.
+    pub fn add_external_bytes(&self, n: usize) -> Result<(), AllocError> {
+        if self.external.bytes.get().checked_add(n).is_none() {
+            return Err(AllocError::TooLarge);
+        }
+        let mut major = false;
+        // GC-stress: the report counts as one allocation, so stress runs reach this path.
+        let stress = {
+            let mut inner = self.inner.borrow_mut();
+            if inner.s.gc_stress > 0 {
+                inner.gc_trigger(0)
+            } else {
+                None
+            }
+        };
+        if let Some(kind) = stress {
+            self.collect_kind(kind);
+            major = kind == GcKind::Major;
+        }
+        if !major && self.external.bytes.get() + n > self.external_limit() {
+            self.collect();
+        }
+        // After a GC the weak sources may have removed bytes, so the count is read again.
+        let bytes = self.external.bytes.get() + n;
+        self.external.bytes.set(bytes);
+        // The first add after a major GC sets the next bound from what is left.
+        self.external_limit();
+        Ok(())
+    }
+
+    /// Reports that `n` of the external bytes are gone (a buffer store was freed or
+    /// decommitted). It runs no GC and takes no borrow of the heap, so the BufferTable's weak
+    /// source may call it during a GC; the next bound then reads the lower count.
+    ///
+    /// # Panics
+    /// If `n` is more than [`Heap::external_bytes`]: an add and a remove do not match.
+    pub fn remove_external_bytes(&self, n: usize) {
+        let bytes = self.external.bytes.get();
+        assert!(
+            n <= bytes,
+            "remove_external_bytes({n}) with only {bytes} external bytes reported"
+        );
+        self.external.bytes.set(bytes - n);
+    }
+
+    /// The trigger bound of the external bytes ([`ExternalBytes`]): set again from the bytes
+    /// and the committed heap bytes now if a major GC ran since it was last set. A set bound
+    /// is never 0: it is at least the initial budget, which is at least a page.
+    pub(crate) fn external_limit(&self) -> usize {
+        let e = &self.external;
+        let inner = self.inner.borrow();
+        let majors = inner.stats.collections - inner.stats.minor_collections;
+        if e.limit.get() == 0 || e.majors.get() != majors {
+            let initial = inner.s.initial_budget;
+            let b = e.bytes.get();
+            let room = inner
+                .mem
+                .max_committed()
+                .saturating_sub(inner.mem.committed_bytes());
+            let limit = initial
+                .max(b)
+                .saturating_mul(2)
+                .min(room)
+                .max(b.saturating_add(initial));
+            e.limit.set(limit);
+            e.majors.set(majors);
+        }
+        e.limit.get()
     }
 }

@@ -17,6 +17,7 @@
 //! | `sweep.rs` | S2a part 2, the concurrent sweep: the cells kept and the freed counts equal the lazy sweep's (S0, S1 major and minor, shapes), allocation reuses the sweeper's pages, checked jobs and the verify, a panic on the sweeper thread, a heap dropped while the sweeper sweeps, two heaps, the random mutators; the GC-stress control of the parallel paths (route GCPAR-STRESS) |
 //! | `loom.rs` | under loom (`--cfg loom`; declared in parallel.rs): the parallel mark's work structure (2 markers, every cell traced once, termination, stop) and the concurrent sweep's page claims (each page swept once; after the end wait the heap's thread owns every page) |
 //! | `v1.rs` | V1, the remembered-set verifier before every minor GC: when it runs, ages against colours, the card of each young reference of a large object; each negative control of 03-gc §7 for S1 (drop 1 in N barriers, old-only filter, elide after escape) fails V1, in a scenario and in the random mutator, and passes with the control off; the S1 forms of "no root rescan" and "no card rescan" (a minor GC that skips the remembered hosts or the dirty cards) fail V1 at the next minor GC |
+//! | `external.rs` | the external-bytes input (typedarray design §5.4): the trigger bound and its major GC, no GC below it, the bound against `max_heap_bytes`, a weak source that removes a dead buffer's bytes in minor and major GCs, the bound after a free, overflow, GC-stress |
 
 use ep9_value::Value;
 
@@ -27,6 +28,7 @@ mod barrier;
 #[cfg(not(miri))]
 mod css;
 mod ephemeron;
+mod external;
 mod gc;
 mod minor;
 mod model;
