@@ -25,11 +25,11 @@
 //! | import | `use crate::frame::native_of as nw;` (a renamed encoding function); `use crate::object::fun::INFO;` (a bare field name); `use crate::object::fun as f;` (a renamed field or `frame` module); `use crate::layout::*;`; `use crate::frame::native;` |
 //! | macro path | `fun::$f`, `crate::frame::$name` (a protected module, then a metavariable); `$m::INFO`; a module and its name as two macro arguments, `rd2!(fun, INFO, c)` (body `$m::$f`; [`macro_arg_pairs`]) |
 //! | hand | `w.checked_sub(DOUBLE_ENCODE_OFFSET)` (the FEEDBACK Call key read of `facts_export.rs` until M5-P3 fixer round 2); `(w - layout::NATIVE_WORD_OFFSET) as usize`; `use ep9_value::encoding::*;` |
-//! | alias, macro, allow | a rename in a file that may name the word: a const of another name, a wrapper ([`ENCODERS`]); `include!`, `concat_idents!`, `${concat(..)}`, a `#[path]` file not scanned ([`HIDING_MACROS`]); an unused list entry |
+//! | macro, allow | `include!`, `concat_idents!` (or a `use` that renames one), `${concat(..)}`, a `#[path]` file not scanned (each `path` of a module; [`HIDING_MACROS`]); an unused list entry |
 //!
-//! - Allowed without a finding: the [`ENCODERS`] of `crates/ep9_vm/src/frame.rs` (the
-//!   encoding) and `crates/ep9_vm/src/external_ref.rs` (the type), the exports of `layout.rs`
-//!   (a const of the export's own name; no word read), `#[cfg(test)]` items and the test files
+//! - Allowed without a finding: `crates/ep9_vm/src/frame.rs` (the encoding and the VM stack),
+//!   `crates/ep9_vm/src/external_ref.rs` (the type), the top-level items of `layout.rs` (it
+//!   exports the offsets, it reads no word), `#[cfg(test)]` items and the test files
 //!   (`src/tests/**`, `tests.rs`), and the [`VM_STACK`] functions: code that reads or writes a
 //!   VM stack frame slot (caller fp, return pc, FunctionInfo; H25 "The other `native_of`
 //!   stores write VM stack frame slots"). The VM stack is not a heap cell. The list names a
@@ -40,8 +40,8 @@
 //!   their plain names, in NFC form ([`nfc_ascii`]: the Kelvin sign is `K`, as rustc reads it).
 //! - Known gaps: a statement that names `ExternalRef` and also copies a bare field word; a
 //!   raw offset (`rd(c, 24)`) in place of the field name; the offset as a literal (`1 << 49`);
-//!   a wrapper fn in `ep9_value` (it boxes doubles with the offset); a module and a name that
-//!   reach `$m::$f` through two macro levels. Review and the H25 inventory cover them.
+//!   a rename or a wrapper in a file where H25 allows the name (route H25-STRICT-V13); a module
+//!   and a name that reach `$m::$f` through two macro levels. Review and H25 cover them.
 //! - Test code is an item whose `cfg` is false in every build without `test` (`test`,
 //!   `all(test, ..)`); `any(test, feature = "x")` compiles in production and is checked.
 //!
@@ -150,26 +150,17 @@ pub(crate) const VM_STACK: &[(&str, &str)] = &[
     ("crates/ep9_vm/src/profile.rs", "record_call_pushed"),
 ];
 
-/// The functions (file, name) of the two encoding files that may use [`ENCODING`] and
-/// [`OFFSETS`]: the encoding itself (`frame.rs`) and the type (`external_ref.rs`). Any other
-/// function, macro or item of those files that uses them is a wrapper, a new name for the
-/// encoding that the token rules do not match (finding `alias`; V11IN-22, the rename forms).
-/// Read at 0c58e12f with this lint (`-v` lists the lines).
-pub(crate) const ENCODERS: &[(&str, &str)] = &[
-    (FRAME_FILE, "native"),
-    (FRAME_FILE, "native_of"),
-    (FRAME_FILE, "native_addr"),
-    (FRAME_FILE, "native_ptr"),
-    (TYPE_FILE, "new"),
-    (TYPE_FILE, "get"),
-    (TYPE_FILE, "addr"),
-];
-
 /// The macros that build or hide a name, so that a token rule never sees it (finding
 /// `macro`; V11IN-22, the macro forms): `include!` reads code from a file that the lint does
 /// not parse, and `concat_idents!` (and the `${concat(..)}` metavariable expression) joins
-/// an identifier from parts. A `#[path]` module whose file the lint does not scan is the same
-/// finding. The tree uses none of them in production code (0c58e12f).
+/// an identifier from parts. A `use` that renames one is a finding (`import`: the new name
+/// hides the call; M7-P5 Codex T5). A `#[path]` module whose file the lint does not scan is
+/// the same finding. The tree uses none of them in production code (0c58e12f).
+///
+/// The lint refuses only what H25 (Rules, lines 54-55) forbids. The V11IN-22 rename rules
+/// inside the files where H25 allows the names (a wrapper in `frame.rs` or `external_ref.rs`,
+/// a const of another name in `layout.rs` or `ep9_value`) wait for route H25-STRICT-V13 (a G8
+/// decision, plan v13; M6-ORCH-371).
 const HIDING_MACROS: &[&str] = &["include", "concat_idents"];
 
 /// The NFC form of an identifier character, for the characters whose NFC form is ASCII: rustc
@@ -271,7 +262,6 @@ fn crate_src_dirs(root: &Path) -> Result<Vec<String>, String> {
 // ---- results --------------------------------------------------------------------------------
 
 const WHY_STACK: &str = "VM stack";
-const WHY_ENCODER: &str = "the encoding or the type";
 const WHY_DOUBLE: &str = "double Value";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -383,7 +373,6 @@ fn unused_allows(scanned: &[String], report: &mut Report) {
     let lists = [
         (VM_STACK, WHY_STACK, "VM_STACK", "encoding"),
         (DOUBLE_VALUE, WHY_DOUBLE, "DOUBLE_VALUE", "offset"),
-        (ENCODERS, WHY_ENCODER, "ENCODERS", "encoding or offset"),
     ];
     for (list, why, name, what) in lists {
         for (file, item) in list {
@@ -479,11 +468,11 @@ struct Regions {
     /// Lines of a glob import of `encoding` (`ep9_value::encoding::*`): a finding outside
     /// [`VALUE_CRATE`], because it hides the [`OFFSETS`] names.
     encoding_globs: Vec<usize>,
-    /// `const` and `static` items (name): in the files that may name a protected name, an
-    /// item of another name that takes its value from one is a rename by value.
-    consts: Vec<(Range, String)>,
-    /// `#[path = ".."] mod m;` items outside test code: (line, the path, inside an inline
-    /// module). [`run`] checks that the lint scans the file.
+    /// Inline `mod m { .. }` items: in `layout.rs` only the top-level items are the exports
+    /// (M7-P5 Codex T7: `layout::inner::FEEDBACK_INFO` is not an export name).
+    inline_mod_ranges: Vec<(Range, ())>,
+    /// `#[path = ".."] mod m;` items outside test code: (line, a path, inside an inline
+    /// module), one entry per `path` of the item. [`run`] checks that the lint scans the file.
     path_mods: Vec<(usize, String, bool)>,
     /// The depth of inline `mod m { .. }` items around the item being visited.
     inline_mods: usize,
@@ -502,30 +491,39 @@ fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
-/// The value of a `#[path = ".."]` attribute, also inside `#[cfg_attr(.., path = "..")]` (an
-/// empty string if it is not one literal: [`run`] then finds no file and reports it).
-fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
-    fn of(m: &syn::Meta) -> Option<String> {
+/// Every value of a `#[path = ".."]` attribute, also inside each `#[cfg_attr(.., path =
+/// "..")]` (nested `cfg_attr` too): each build may take another one, so each is checked (M7-P5
+/// Codex T6). An empty string if one is not one literal: [`run`] then finds no file and
+/// reports it.
+fn path_attr(attrs: &[syn::Attribute]) -> Vec<String> {
+    fn of(m: &syn::Meta, out: &mut Vec<String>) {
         match m {
             syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match &nv.value {
                 syn::Expr::Lit(syn::ExprLit {
                     lit: syn::Lit::Str(s),
                     ..
-                }) => Some(s.value()),
-                _ => Some(String::new()),
+                }) => out.push(s.value()),
+                _ => out.push(String::new()),
             },
-            syn::Meta::List(l) if l.path.is_ident("cfg_attr") => l
-                .parse_args_with(
+            syn::Meta::List(l) if l.path.is_ident("cfg_attr") => {
+                let args = l.parse_args_with(
                     syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-                )
-                .ok()?
-                .iter()
-                .skip(1)
-                .find_map(of),
-            _ => None,
+                );
+                match args {
+                    Ok(args) => args.iter().skip(1).for_each(|m| of(m, out)),
+                    // A `cfg_attr` that does not parse as metas may hide a path: report it.
+                    Err(_) if l.tokens.to_string().contains("path") => out.push(String::new()),
+                    Err(_) => {}
+                }
+            }
+            _ => {}
         }
     }
-    attrs.iter().find_map(|a| of(&a.meta))
+    let mut out = Vec::new();
+    for a in attrs {
+        of(&a.meta, &mut out);
+    }
+    out
 }
 
 fn needs_test(m: &syn::Meta) -> bool {
@@ -591,22 +589,18 @@ impl<'ast> Visit<'ast> for Regions {
                 self.uses.push((range_of(i.span()), ()));
                 self.use_tree(&u.tree, None, u.span().start().line);
             }
-            syn::Item::Const(c) => {
+            syn::Item::Const(_) | syn::Item::Static(_) => {
                 self.stmts.push((range_of(i.span()), ()));
-                self.consts.push((range_of(i.span()), name_of(&c.ident)));
-            }
-            syn::Item::Static(s) => {
-                self.stmts.push((range_of(i.span()), ()));
-                self.consts.push((range_of(i.span()), name_of(&s.ident)));
             }
             syn::Item::Mod(m) => {
-                if m.content.is_none()
-                    && let Some(path) = path_attr(&m.attrs)
-                {
-                    self.path_mods
-                        .push((i.span().start().line, path, self.inline_mods > 0));
+                if m.content.is_none() {
+                    for path in path_attr(&m.attrs) {
+                        self.path_mods
+                            .push((i.span().start().line, path, self.inline_mods > 0));
+                    }
                 }
                 if m.content.is_some() {
+                    self.inline_mod_ranges.push((range_of(i.span()), ()));
                     self.inline_mods += 1;
                     visit::visit_item(self, i);
                     self.inline_mods -= 1;
@@ -681,6 +675,16 @@ impl Regions {
                         format!(
                             "the module `{name}` is imported as `{}`: the field and encoding \
                              names under it would hide; use `{name}` itself",
+                            r.rename
+                        ),
+                    ));
+                }
+                if HIDING_MACROS.contains(&name.as_str()) {
+                    self.imports.push((
+                        line,
+                        format!(
+                            "the macro `{name}!` is imported as `{}`: a call by the new name \
+                             hides it from the macro rule (M7-P5 Codex T5); call `{name}!`",
                             r.rename
                         ),
                     ));
@@ -908,8 +912,7 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
         if name == "ExternalRef" {
             extref.push(*at);
         }
-        // In the encoding file, `native` alone is the encoding function (`frame::native`).
-        if ENCODING.contains(&name.as_str()) || (rel == FRAME_FILE && name == "native") {
+        if ENCODING.contains(&name.as_str()) {
             hits.push((Kind::Encoding, name.clone(), *at));
             continue;
         }
@@ -968,34 +971,12 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
             report.in_tests += 1;
             continue;
         }
-        let item = innermost(&rg.items, at).map(|(_, n)| n.clone());
-        let cst = innermost(&rg.consts, at).map(|(_, n)| n.clone());
-        let alias = |item: &Option<String>, report: &mut Report| {
-            report.findings.push(Finding {
-                file: rel.into(),
-                line: at.line,
-                rule: "alias",
-                msg: format!(
-                    "`{name}` in `{}`: an item of this file that takes its value from a \
-                     protected name, or wraps the encoding, is a new name for it that the \
-                     token rules do not match; use the protected name itself (or list a \
-                     real encoder in extref_lint.rs ENCODERS)",
-                    item.clone().unwrap_or_else(|| "(file scope)".into())
-                ),
-            });
-        };
         if kind == Kind::Hand && value_crate {
-            // The Value encoding itself, but a `const` or `static` of another name is a rename.
-            if let Some(c) = &cst
-                && !OFFSETS.contains(&c.as_str())
-            {
-                alias(&cst, report);
-            }
-            continue;
+            continue; // the Value encoding itself
         }
-        let encoder = item
-            .as_deref()
-            .is_some_and(|it| ENCODERS.contains(&(rel, it)));
+        let item = innermost(&rg.items, at).map(|(_, n)| n.clone());
+        // `layout.rs` exports at its top level only (M7-P5 Codex T7).
+        let layout = rel == LAYOUT_FILE && innermost(&rg.inline_mod_ranges, at).is_none();
         let allowed = |why: &'static str, item: Option<String>, report: &mut Report| {
             report.allowed.push(Allowed {
                 file: rel.into(),
@@ -1007,10 +988,8 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
         };
         match kind {
             Kind::Encoding => {
-                if (rel == FRAME_FILE || rel == TYPE_FILE) && encoder {
-                    allowed(WHY_ENCODER, item, report);
-                } else if rel == FRAME_FILE || rel == TYPE_FILE {
-                    alias(&item, report);
+                if rel == FRAME_FILE || rel == TYPE_FILE {
+                    allowed("the encoding or the type", item, report);
                 } else if let Some(it) = &item
                     && VM_STACK.contains(&(rel, it.as_str()))
                 {
@@ -1029,16 +1008,8 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
                 }
             }
             Kind::Hand => {
-                if (rel == FRAME_FILE || rel == TYPE_FILE) && encoder {
-                    allowed(WHY_ENCODER, item, report);
-                } else if rel == FRAME_FILE || rel == TYPE_FILE {
-                    alias(&item, report);
-                } else if rel == LAYOUT_FILE {
-                    if cst.as_deref().is_some_and(|c| OFFSETS.contains(&c)) {
-                        allowed("the layout export", cst, report);
-                    } else {
-                        alias(&cst, report);
-                    }
+                if rel == FRAME_FILE || rel == TYPE_FILE || layout {
+                    allowed("the encoding, the type or the layout export", item, report);
                 } else if let Some(it) = &item
                     && DOUBLE_VALUE.contains(&(rel, it.as_str()))
                 {
@@ -1069,15 +1040,8 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
                 });
             }
             Kind::Field => {
-                if rel == LAYOUT_FILE {
-                    if cst
-                        .as_deref()
-                        .is_some_and(|c| FIELDS.contains(&("layout", c)))
-                    {
-                        allowed("the layout export", cst, report);
-                    } else {
-                        alias(&cst, report);
-                    }
+                if layout {
+                    allowed("the layout export", item, report);
                     continue;
                 }
                 let ok = innermost(&rg.stmts, at)
@@ -1389,14 +1353,7 @@ use ep9_value::encoding::*;
         );
         let ok = "pub fn native(a: usize) -> u64 { a as u64 + DOUBLE_ENCODE_OFFSET }";
         assert_eq!(lint("crates/ep9_vm/src/frame.rs", ok).0, []);
-        // In the type file only its encoders use the offset (ENCODERS; V11IN-22).
-        let ok_type =
-            "fn addr(self) -> Option<usize> { Some((self.w - DOUBLE_ENCODE_OFFSET) as usize) }";
-        assert_eq!(lint("crates/ep9_vm/src/external_ref.rs", ok_type).0, []);
-        assert_eq!(
-            lint("crates/ep9_vm/src/external_ref.rs", ok).0,
-            [(1, "alias")]
-        );
+        assert_eq!(lint("crates/ep9_vm/src/external_ref.rs", ok).0, []);
         let lay = "pub const NATIVE_WORD_OFFSET: u64 = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;";
         assert_eq!(lint("crates/ep9_vm/src/layout.rs", lay).0, []);
         let (f, r) = lint(
