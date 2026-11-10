@@ -82,6 +82,7 @@ pub(crate) const FIELDS: &[(&str, &str)] = &[
     ("layout", "CONTEXT_SCOPE"),
     ("layout", "FEEDBACK_INFO"),
     ("layout", "VIEW_DATA"),
+    ("dv_slot", "DATA"),
 ];
 
 /// The native-word offset, by its two names (`ep9_value::encoding` and the `ep9_vm::layout`
