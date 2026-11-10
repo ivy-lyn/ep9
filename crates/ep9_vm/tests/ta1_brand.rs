@@ -260,7 +260,8 @@ fn snapshot<'s>(
 /// DataView. Each call panics before it writes a slot: at the choke, or where
 /// `perform_promise_then` reads a `[[PromiseState]]` that is not an int32 (a debug build: at
 /// the `debug_assert!` of the operation). After each call every byte length, readable slot and
-/// byte is as before, and after a GC the view still reads its bytes.
+/// byte is as before, also after a minor GC, and after a full GC the view still reads its
+/// bytes.
 #[test]
 fn the_promise_methods_cannot_write_an_engine_object() {
     let want: &[&str] = if cfg!(debug_assertions) {
@@ -271,6 +272,7 @@ fn the_promise_methods_cannot_write_an_engine_object() {
     for which in 0..5 {
         for op in 0..3 {
             let mut iso = isolate();
+            let minors = iso.gc_stats().minor_collections;
             iso.with_cx(|cx| {
                 let fixed = cx.allocate_array_buffer(Local::null(), 8, None)?;
                 let v = cx.new_typed_array(Local::null(), 1, fixed, 0, None)?;
@@ -303,9 +305,21 @@ fn the_promise_methods_cannot_write_an_engine_object() {
                 assert_eq!(snapshot(cx, bufs, dv), before, "object {which}, op {op}");
                 let g = cx.global();
                 cx.set(g, "v", v, true)?;
+                // A minor GC (the default heap is generational): the young buffers, view and
+                // DataView become old and keep their slots and bytes.
+                cx.collect_garbage_minor();
+                assert_eq!(
+                    snapshot(cx, bufs, dv),
+                    before,
+                    "object {which}, op {op}, minor"
+                );
                 Ok(())
             })
             .unwrap();
+            assert!(
+                iso.gc_stats().minor_collections > minors,
+                "the minor GC ran"
+            );
             iso.collect_garbage();
             iso.with_cx(|cx| {
                 let g = cx.global();
