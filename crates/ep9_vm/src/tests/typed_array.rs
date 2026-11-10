@@ -22,6 +22,7 @@
 //! | `a_view_never_transitions` | `elements::transition` refuses a view in debug builds (N4) |
 //! | `integrity_levels_of_a_view` | SetIntegrityLevel and TestIntegrityLevel over a view's internal methods: no debug panic, the spec results (N3; TODO TA3-PREVEXT) |
 //! | `no_length_on_a_fixed_buffer_computes_it` | InitializeTypedArrayFromArrayBuffer step 9.a: a fixed view with the computed length; the RangeErrors |
+//! | `canonical_numeric_matches_the_spec_text` | `canonical_numeric` against the plain §7.1.21 text over a table of keys, one-byte and two-byte |
 
 use std::cell::Cell;
 use std::hint::black_box;
@@ -1085,5 +1086,136 @@ fn no_length_on_a_fixed_buffer_computes_it() {
         let r6 = buffer(rt, 6, Some(8));
         let v = view(rt, 6, r6, 0, None);
         assert_eq!(ta::length(cx.rt(), v), Some(1));
+    });
+}
+
+/// CanonicalNumericIndexString as `ta::canonical_numeric` computes it, against the plain
+/// form of the spec text (§7.1.21: "-0", else ToString(ToNumber(key)) == key), over a table of
+/// keys: ordinary names, each start character that may begin a numeric string, Number
+/// strings and their near misses, long keys and two-byte keys. The fast reject on the first
+/// unit changes no result.
+#[test]
+fn canonical_numeric_matches_the_spec_text() {
+    fn plain(text: &str) -> Option<f64> {
+        if text == "-0" {
+            return Some(-0.0);
+        }
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let n = crate::numconv::string_to_number(&units);
+        (crate::numconv::number_to_string(n) == text).then_some(n)
+    }
+    let mut keys: Vec<String> = [
+        "",
+        "a",
+        "length",
+        "name",
+        "toString",
+        "constructor",
+        "__proto__",
+        "foo",
+        "Symbol",
+        "-",
+        "-a",
+        "-0",
+        "-0.0",
+        "--1",
+        "-1",
+        "-1.5",
+        "-Infinity",
+        "-NaN",
+        "0",
+        "00",
+        "01",
+        "0.5",
+        ".5",
+        "1.",
+        "1.0",
+        "1.5",
+        "1e3",
+        "1e+21",
+        "1e21",
+        "1e-7",
+        "1E-7",
+        "1e-6",
+        "0.000001",
+        "0.0000001",
+        "123456789012345680000",
+        "1.7976931348623157e+308",
+        "5e-324",
+        "-5e-324",
+        "4294967294",
+        "4294967295",
+        "4294967296",
+        "9007199254740992",
+        "9007199254740993",
+        "I",
+        "In",
+        "Infinity",
+        "Infinityx",
+        "infinity",
+        "N",
+        "NaN",
+        "NaNx",
+        "nan",
+        "+1",
+        " 1",
+        "1 ",
+        "0x10",
+        "0b1",
+        "1_000",
+        "\u{661}",
+        "\u{ff11}",
+        "-\u{661}",
+        "Ι",
+        "Ν",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    // Number strings up to 25 units (the longest ToString of a Number: a sign, "0.", 5 zeros
+    // and 17 digits; `typed_array::MAX_NUMBER_STRING`) and near misses past it.
+    let longest = crate::numconv::number_to_string(-1.2345678901234567e-6);
+    assert_eq!(longest, "-0.0000012345678901234567");
+    keys.push(longest);
+    for x in [
+        1.2345678901234567e-308,
+        0.000001234567890123456,
+        1.2345678901234567e21,
+        123456789012345680000.0,
+        1.0 / 3.0,
+        2.0f64.powi(70),
+        1e-300,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+    ] {
+        for y in [x, -x] {
+            let s = crate::numconv::number_to_string(y);
+            assert!(s.len() <= 25, "{s}");
+            keys.push(format!("{s}0"));
+            keys.push(format!("{s}x"));
+            keys.push(s);
+        }
+    }
+    keys.push("1".repeat(26));
+    keys.push(format!("-{}", "9".repeat(40)));
+    keys.push("N".repeat(64));
+    on_big_stack(move || {
+        let iso = isolate(config(Dispatch::DEFAULT, false));
+        let rt: &Runtime = &iso.rt;
+        for text in &keys {
+            let want = plain(text);
+            let got = ta::canonical_numeric(key(rt, text));
+            assert_eq!(got.map(f64::to_bits), want.map(f64::to_bits), "{text:?}");
+            // A two-byte string with the same text gives the same result.
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let wide = crate::string::testing::new_utf16_cell(rt, &units);
+            let got = ta::canonical_numeric(wide);
+            assert_eq!(
+                got.map(f64::to_bits),
+                want.map(f64::to_bits),
+                "two-byte {text:?}"
+            );
+        }
+        assert!(ta::canonical_numeric(key(rt, "NaN")).unwrap().is_nan());
     });
 }

@@ -309,7 +309,9 @@ pub(crate) fn set_element(cx: &mut Cx, o: u64, index: f64, v: u64) -> Res<()> {
 /// CanonicalNumericIndexString of the property key `key`: the Number `n` when `key` is a
 /// String that is "-0" or ToString(ToNumber(`key`)), else `None` (a symbol, or another
 /// string: "01", "1e3" and " 1" are ordinary keys; "-0", "1.5", "Infinity", "NaN" and "-1"
-/// are numeric). An array index answers from the key's hash field. Not a GC point.
+/// are numeric). An array index answers from the key's hash field. A key that cannot be
+/// numeric by its first unit or its length (such as "length" or "foo") is refused with no
+/// copy. Not a GC point.
 pub(crate) fn canonical_numeric(key: u64) -> Option<f64> {
     if !kinds::is_string(key) {
         return None;
@@ -318,28 +320,50 @@ pub(crate) fn canonical_numeric(key: u64) -> Option<f64> {
         return Some(f64::from(i));
     }
     string::with_text(key, |t| {
-        let units: Vec<u16> = match t {
-            string::JsStr::Latin1(b) => b.iter().map(|&c| u16::from(c)).collect(),
-            string::JsStr::Utf16(u) => u.to_vec(),
+        // A canonical numeric string is "-0" or a Number::toString result: ASCII, at most
+        // MAX_NUMBER_STRING units, and its first unit is a digit, '-', 'I' (Infinity) or 'N'
+        // (NaN).
+        let first = match t {
+            string::JsStr::Latin1(b) => b.first().map(|&c| u16::from(c)),
+            string::JsStr::Utf16(u) => u.first().copied(),
         };
-        // A canonical numeric string is ASCII and starts with a digit, '-', 'I' or 'N'.
-        match units.first() {
-            Some(&c) if c == u16::from(b'-') || c == u16::from(b'I') || c == u16::from(b'N') => {}
-            Some(&c) if (u16::from(b'0')..=u16::from(b'9')).contains(&c) => {}
+        match first {
+            Some(c) if c == u16::from(b'-') || c == u16::from(b'I') || c == u16::from(b'N') => {}
+            Some(c) if (u16::from(b'0')..=u16::from(b'9')).contains(&c) => {}
             _ => return None,
+        }
+        let len = t.len();
+        if len > MAX_NUMBER_STRING {
+            return None;
+        }
+        let mut buf = [0u16; MAX_NUMBER_STRING];
+        let units = &mut buf[..len];
+        match t {
+            string::JsStr::Latin1(b) => {
+                for (u, &c) in units.iter_mut().zip(b) {
+                    *u = u16::from(c);
+                }
+            }
+            string::JsStr::Utf16(u) => units.copy_from_slice(u),
         }
         if units.iter().any(|&c| c > 0x7F) {
             return None;
         }
-        if units == [u16::from(b'-'), u16::from(b'0')] {
+        if *units == [u16::from(b'-'), u16::from(b'0')] {
             return Some(-0.0);
         }
-        let n = crate::numconv::string_to_number(&units);
+        let n = crate::numconv::string_to_number(units);
         let back = crate::numconv::number_to_string(n);
-        (back.len() == units.len() && back.bytes().zip(&units).all(|(a, &b)| u16::from(a) == b))
+        (back.len() == units.len() && back.bytes().zip(&*units).all(|(a, &b)| u16::from(a) == b))
             .then_some(n)
     })
 }
+
+/// The longest Number::toString result (§6.1.6.1.20), in units: 25, as
+/// "-0.0000012345678901234567" (a sign, "0.", 5 zeros and 17 digits). The exponent form is at
+/// most 24 ("-1.2345678901234567e-308") and the integer form 22. A longer key is not
+/// canonical numeric.
+const MAX_NUMBER_STRING: usize = 25;
 
 // ---- the internal methods of the view kinds (§10.4.5.1-7), routed from exotic.rs ---------
 
