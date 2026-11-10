@@ -2842,6 +2842,8 @@ impl Heap {
     /// Call it with the cell that will own the bytes already rooted.
     ///
     /// This is a GC point: it may collect before it returns. It must not run inside a GC.
+    /// Do not hold a borrow of a weak source's state across this call (it is a GC point).
+    /// Put the store in the table only after `Ok`; on `Err`, free the store.
     pub fn add_external_bytes(&self, n: usize) -> Result<(), AllocError> {
         if self.external.bytes.get().checked_add(n).is_none() {
             return Err(AllocError::TooLarge);
