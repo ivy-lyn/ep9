@@ -24,7 +24,7 @@
 //! |---|---|
 //! | Elements kind | 7 when IsTypedArrayFixedLength (a fixed length on a fixed-length ArrayBuffer or on any SharedArrayBuffer), else 8. A view keeps it: no store, delete, define or freeze reaches `elements::transition` for a view (the view keys never reach the element paths: needs N4) |
 //! | Bound | TYPED_FIXED: the +40 length (0 once detached). TYPED_VARIABLE: from the buffer's byte length at each access, so a resize needs no view write |
-//! | Conversion | [[Set]] converts (ToNumber, or ToBigInt for BigInt64 and BigUint64) before the bound check; the conversion may detach or resize, and then nothing is stored |
+//! | Conversion | `[[Set]]` converts (ToNumber, or ToBigInt for BigInt64 and BigUint64) before the bound check; the conversion may detach or resize, and then nothing is stored |
 //! | NaN | a store writes one NaN pattern per float type (`array_buffer::number_to_raw`) |
 //! | GC | the common object trace (`object::register_kinds`, 4 fixed fields); `data` is a native word that the GC skips; the buffer and its view list are in `array_buffer.rs` |
 //! | Policy (M-R9) | nothing here reads `ExecPolicy`, `ExecOptions` or the code set |
