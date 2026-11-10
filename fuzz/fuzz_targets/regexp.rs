@@ -49,12 +49,27 @@
 //!   Term quantifies only an Atom or, without `u` and `v`, a QuantifiableAssertion, a
 //!   look-ahead; ECMA-262 22.2.1 and B.1.2); regress takes it in every mode. The target
 //!   skips any NothingToRepeat of a pattern with `\b` or `\B`.
-//! - Validity: regress's `v` parser takes some classes with a character that ECMA-262 22.2.1
-//!   does not allow there, for example `/[\q{?[}]/v` (a ClassSetSyntaxCharacter not escaped
-//!   inside `\q{..}`) and `/[[.]&&]]/v` (an `&&` with no right operand, then `]`). RX1 says
-//!   InvalidCharacterInClass and node v26.13.0 refuses both; regress takes them (found by the
-//!   M7-P5 fixer r1 10-minute runs). The target does not compare an RX1
-//!   InvalidCharacterInClass with `v`; the front-end check still covers RX1 there.
+//! - Validity: an unescaped `[` or `]` inside `\q{..}` of a `v` class, for example
+//!   `/[\q{?[}]/v` and `/[\q{a]}]/v`. RX1 says InvalidCharacterInClass (ECMA-262 22.2.1: a
+//!   ClassSetCharacter is not a ClassSetSyntaxCharacter), and node v26.13.0 and ep9's front end
+//!   (a literal) refuse it; regress takes it, so `new RegExp` in ep9 takes it (the other
+//!   ClassSetSyntaxCharacters `( ) { / -` there regress refuses too). The target skips an RX1
+//!   InvalidCharacterInClass with `v` only when the error position is such a `[` or `]`.
+//! - Validity: a `]` right after `&&` or `--` in a `v` class, for example `/[[.]&&]]/v`,
+//!   `/[[a]--]]/v`. RX1 says InvalidCharacterInClass (an operator needs a ClassSetOperand,
+//!   ECMA-262 22.2.1), and node and ep9's front end refuse it; regress takes the `]` as the
+//!   operand when one more `]` closes the class. The target skips an RX1
+//!   InvalidCharacterInClass with `v` only when the error position is such a `]`.
+//! - The proof of the 2 rows above (fixer r2, node v26.13.0; in ep9 `new RegExp` is RX0 and
+//!   the literal is the front end; "Syntax" = a SyntaxError):
+//!
+//! ```text
+//!   pattern          node: RegExp, literal   ep9: RegExp, literal   RX1 error, position
+//!   /[\q{?[}]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 5
+//!   /[\q{a]}]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 5
+//!   /[[.]&&]]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
+//!   /[[a]--]]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
+//! ```
 //! - Validity: regress's `v` parser refuses some valid classes, for example `/[.$]/v` (two
 //!   different ClassSetReservedPunctuator characters; only a doubled one is a
 //!   ClassSetReservedDoublePunctuator) and `/[^ß&&\p{RGI_Emoji}]/v` (an intersection with
@@ -100,8 +115,8 @@
 use ep9_frontend::{CompileError, SourceOpts, Strictness};
 use ep9_regexp::{Backend, ExecResult, Input, Rx0, Rx0Scratch};
 use ep9_rx1::{
-    CharacterRange, Error, Flags, Pattern, Tree, case_independent_letters, class_ranges, class_set,
-    simple_fold,
+    CharacterRange, Error, Flags, ParseError, Pattern, Tree, case_independent_letters,
+    class_ranges, class_set, simple_fold,
 };
 
 /// The end of regress's error for groups nested deeper than its cap (a known RX0 difference,
@@ -255,13 +270,67 @@ fn probes(units: &[u16], ranges: &[CharacterRange], flags: Flags) -> Vec<u32> {
     out
 }
 
-/// True for an RX1 error where RX0 is known to take the pattern (the module doc).
-fn known_rx0_false_accept(e: Error, units: &[u16]) -> bool {
-    match e {
+/// True for an RX1 error where RX0 is known to take the pattern (the module doc). The `v` class
+/// rows match only their proven form at the RX1 error position, so an RX1 false reject of a
+/// valid pattern is still a crash.
+fn known_rx0_false_accept(e: &ParseError, units: &[u16], flags: Flags) -> bool {
+    match e.error {
         Error::RangeOutOfOrder | Error::NegatedCharacterClassWithStrings => true,
         Error::InvalidCaptureGroupName => has_escape(units, b'u'),
+        Error::InvalidCharacterInClass if flags.unicode_sets() => {
+            bracket_in_class_string(units, e.pos) || bracket_after_set_operator(units, e.pos)
+        }
         _ => false,
     }
+}
+
+/// True if `units[i]` is the ASCII character `c`.
+fn unit_is(units: &[u16], i: usize, c: u8) -> bool {
+    units.get(i) == Some(&u16::from(c))
+}
+
+/// True if `units[pos]` is an unescaped `[` or `]` inside the body of a `\q{..}` (from `\q{`
+/// to the first unescaped `}`).
+fn bracket_in_class_string(units: &[u16], pos: usize) -> bool {
+    if !(unit_is(units, pos, b'[') || unit_is(units, pos, b']')) {
+        return false;
+    }
+    let (mut i, mut in_q) = (0, false);
+    while i < pos {
+        if unit_is(units, i, b'\\') {
+            if !in_q && unit_is(units, i + 1, b'q') && unit_is(units, i + 2, b'{') {
+                in_q = true;
+                i += 3;
+            } else {
+                i += 2;
+            }
+            continue;
+        }
+        if in_q && unit_is(units, i, b'}') {
+            in_q = false;
+        }
+        i += 1;
+    }
+    // i > pos: the unit at pos is the escaped one of a `\`.
+    in_q && i == pos
+}
+
+/// True if `units[pos]` is a `]` right after an unescaped `&&` or `--`.
+fn bracket_after_set_operator(units: &[u16], pos: usize) -> bool {
+    pos >= 2
+        && unit_is(units, pos, b']')
+        && units[pos - 1] == units[pos - 2]
+        && (unit_is(units, pos - 1, b'&') || unit_is(units, pos - 1, b'-'))
+        && not_escaped(units, pos - 2)
+}
+
+/// True if `units[pos]` is not the escaped unit of a `\` (a scan from the start).
+fn not_escaped(units: &[u16], pos: usize) -> bool {
+    let mut i = 0;
+    while i < pos {
+        i += if unit_is(units, i, b'\\') { 2 } else { 1 };
+    }
+    i == pos
 }
 
 /// True if the class text has `\<letter>`. A `\\<letter>` counts too: skipping more classes
@@ -426,8 +495,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             check_rx0_exec(program, &units, p);
             check_class_set(&units, flags, p);
         }
-        (Err(e), Ok(_)) if known_rx0_false_accept(e.error, &units) => {}
-        (Err(e), Ok(_)) if e.error == Error::InvalidCharacterInClass && flags.unicode_sets() => {}
+        (Err(e), Ok(_)) if known_rx0_false_accept(e, &units, flags) => {}
         (Ok(_), Err(e)) if e.message.ends_with(RX0_TOO_DEEP) => {}
         (Ok(_), Err(_)) if flags.unicode_sets() => {}
         (Err(e), Ok(_)) if e.error == Error::NothingToRepeat && has_boundary(&units) => {}
