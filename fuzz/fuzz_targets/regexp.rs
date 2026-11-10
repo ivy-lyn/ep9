@@ -334,7 +334,7 @@ fn unit_is(units: &[u16], i: usize, c: u8) -> bool {
 }
 
 /// True if `units[pos]` is an unescaped `[` or `]` inside the body of a `\q{..}` (from `\q{`
-/// to the first unescaped `}`).
+/// to the first unescaped `}` that does not end a `\u{..}`).
 fn bracket_in_class_string(units: &[u16], pos: usize) -> bool {
     if !(unit_is(units, pos, b'[') || unit_is(units, pos, b']')) {
         return false;
@@ -345,6 +345,13 @@ fn bracket_in_class_string(units: &[u16], pos: usize) -> bool {
             if !in_q && unit_is(units, i + 1, b'q') && unit_is(units, i + 2, b'{') {
                 in_q = true;
                 i += 3;
+            } else if unit_is(units, i + 1, b'u') && unit_is(units, i + 2, b'{') {
+                // `\u{..}`: its `}` does not end the `\q{..}`.
+                i += 3;
+                while i < pos && !unit_is(units, i, b'}') {
+                    i += 1;
+                }
+                i += 1;
             } else {
                 i += 2;
             }
