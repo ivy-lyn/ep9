@@ -16,7 +16,9 @@
 //!      6-7 fuse refs -> Dep::Static { index, intact now }  (a popped fuse: never picked)
 //!      the code set -> FunctionInfo::code_set (once; no Value inside: rule 8)
 //!      select(code set, the isolate's policy, session) -> Pick ---------> "picked" | "bytecode"
-//!   8  install the picks: not in M7-P4 (INSTALL = false) -----------> "deferred"
+//!   8  install the picks: only from `load_and_install` (the caller ran the H35 S4
+//!      checks, MC-w34-2) -------------------------------------------> "installed"
+//!      `load` never installs ----------------------------------------> "deferred"
 //! ```
 //!
 //! | Rule | Where |
@@ -27,7 +29,7 @@
 //! | The policy is the isolate's install rank and accept list ([`isolate_policy`]): the private `ExecOptions` field that the preset constructors set (`exec.rs`; route MC-w24-3, M7-P4 integration fixer), so the loader keeps no preset table of its own | [`isolate_policy`] |
 //! | Unit load keeps one intern table: every unit string is an atom through `atoms::intern_*` in `LoadedUnit::load` (H19 "one atom per text"); the loader adds no string table (route MC-w25-9) | [`load`] reads no string |
 //! | Native code binds to its bytecode by digest: a function whose bytecode differs (another BytecodeGen switch, a changed source) runs its bytecode. So every switch that changes bytecode or emitted code is in the header `codegen_flags` hash, or unit functions keep the default bytecode; REGOPT has no off switch outside tests (route MC-w31-8) | [`unit_function_digest`], [`Reason::Digest`] |
-//! | No native code on the JS call path until MC-w30-2 (A2-RW, M7-P5): T0 sends a non-Interp slot cold (`interp/ops.rs` `call_fast`) and `slow::call` answers not_implemented for it, so a JS call of an installed function would throw. Step 8 runs only from the in-crate tests ([`install_picked`]) | [`INSTALL`] |
+//! | Step 8 runs only for a caller that ran the H35 S4 checks (steps 1-4) on the unit bytes: [`load_and_install`] is an `unsafe fn` (the unsafe `Cx` method of `abi/unit_code.rs`), and [`load`] (the safe `Cx` method) never installs, so safe Rust cannot run embedder bytes as code (route MC-w34-2, M7-P5 A2-RW; H35:18 "a unit is trusted code") | [`load`], [`load_and_install`] |
 //! | A run with no unit pays nothing: no T0 path reads the code set; a function info gets one empty `OnceCell` word (routes MC-w22-O5, MC-w29-7) | `FunctionInfo::code_set` |
 //! | The object model reads no execution policy, also with a unit loaded (doc 13 M-R9; route A2-MR9): the loader writes only `code_set` and (step 8) the dispatch slot and the code registry. This file reads the policy, as `select.rs` does: the rule-40 grep exempts both (plan v12 rule 40) | the tests |
 //!
@@ -51,11 +53,6 @@ use crate::native::install_code;
 use crate::runtime::Runtime;
 use crate::select::{CodeObject, CodeSet, Dep, ObjectState, Pick, Policy, Session, lowering};
 use crate::unit::LoadedUnit;
-
-/// Step 8 (install the picks into the dispatch slots) is off until the T0 call and construct
-/// paths can enter unit code (route MC-w30-2, A2-RW, M7-P5). The tests run it by
-/// [`install_picked`].
-const INSTALL: bool = false;
 
 /// One native variant of a unit function, as the H35 function table lists it (C-17).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,8 +260,9 @@ pub(crate) fn isolate_policy(rt: &Runtime) -> Option<Policy> {
 
 /// Steps 5-7 and the pick for the native part of `lu` (see the module doc): maps `text`,
 /// gives each listed function its code set and calls `select()` with `policy` and a session
-/// with the host CPU bits `cpu`. Step 8 is off ([`INSTALL`]). Runs no JS and allocates no
-/// heap cell. Returns the counts.
+/// with the host CPU bits `cpu`. Never installs (step 8): each pick counts as
+/// [`Reason::Deferred`] (route MC-w34-2). Runs no JS and allocates no heap cell. Returns the
+/// counts.
 pub(crate) fn load(
     rt: &Runtime,
     lu: &LoadedUnit,
@@ -272,6 +270,39 @@ pub(crate) fn load(
     functions: &[FunctionCode],
     policy: Option<&Policy>,
     cpu: u64,
+) -> Report {
+    load_inner(rt, lu, text, functions, policy, cpu, false)
+}
+
+/// [`load`], then step 8: [`install_picked`].
+///
+/// # Safety
+/// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `lu`, `text` and
+/// `functions` come from, against this engine build (the `# Safety` of the unsafe `Cx`
+/// method in `abi/unit_code.rs`), so each picked variant follows the [`install_picked`]
+/// contract.
+#[allow(dead_code)] // the unsafe `Cx` method calls it from the M7-P5 install commit
+pub(crate) unsafe fn load_and_install(
+    rt: &Runtime,
+    lu: &LoadedUnit,
+    text: &[u8],
+    functions: &[FunctionCode],
+    policy: Option<&Policy>,
+    cpu: u64,
+) -> Report {
+    load_inner(rt, lu, text, functions, policy, cpu, true)
+}
+
+/// [`load`] with step 8 when `install` is true (only [`load_and_install`] passes true; its
+/// caller contract stands for the `install_picked` contract).
+fn load_inner(
+    rt: &Runtime,
+    lu: &LoadedUnit,
+    text: &[u8],
+    functions: &[FunctionCode],
+    policy: Option<&Policy>,
+    cpu: u64,
+    install: bool,
 ) -> Report {
     let mut r = Report::default();
     if functions.is_empty() {
@@ -368,10 +399,10 @@ pub(crate) fn load(
         // Empty (checked above), and nothing else writes it.
         let _ = fi.code_set.set(Box::new(unit_code));
     }
-    if INSTALL {
-        // SAFETY: never runs in M7-P4 (INSTALL is false); when it runs, the unit's own check
-        // (H35 S4 steps 1-4, the digest above) stands for the code contract of
-        // `install_picked`.
+    if install {
+        // SAFETY: only `load_and_install` passes `install`; its caller ran the H35 S4 checks
+        // (steps 1-4) on these bytes, and the digest above binds each code set to its bytecode:
+        // that stands for the code contract of `install_picked`.
         let installed = unsafe { install_picked(rt, lu) };
         for reason in Reason::ALL {
             r.add(reason, installed.count(reason));
@@ -389,9 +420,7 @@ pub(crate) fn load(
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
 /// ABI, it runs the bytecode of its function (the digest binds them), and it follows the
-/// `RuntimeTable` rules. Its text lives as long as the isolate (`UnitCode::text`). JS can
-/// call an installed function only after MC-w30-2; until then only Rust enters it
-/// (`native::call_native`).
+/// `RuntimeTable` rules. Its text lives as long as the isolate (`UnitCode::text`).
 pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
     let mut r = Report::default();
     for fi in lu.infos.iter() {

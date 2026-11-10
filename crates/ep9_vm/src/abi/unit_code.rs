@@ -7,17 +7,26 @@
 //! ep9_unit::check(bytes, host) == Load
 //!   bytecode section --decode, verify--> VerifiedUnit
 //!   text section, function table (C-17) --> functions: (index, digest, variants)
-//! Cx::run_script_with_unit_code(unit, file, text, host cpu, functions)
-//!   LoadedUnit::load (strings interned once, H19) -> unit_loader::load (map, code sets,
-//!   select()) -> function 0 runs (as Cx::run_script)
+//! Cx::run_script_with_unit_code(unit, file, text, host cpu, functions)            safe
+//!   LoadedUnit::load (strings interned once, H19) -> unit_loader::load (code sets,
+//!   select(); never installs: each pick is "deferred") -> function 0 runs (as run_script)
 //!   -> (the counts by reason, the completion value or the throw)
+//! unsafe Cx::run_script_installing_unit_code(.. the same ..)                       unsafe
+//!   the same, and step 8 installs the picks: the caller's # Safety is the H35 S4 check
 //! ```
+//!
+//! Why two methods (route MC-w34-2, M7-P5 A2-RW; DL P5-DL-5): `ep9_vm` cannot run the H35 S4
+//! checks itself (`ep9_unit` depends on `ep9_vm`, and the engine build id is made by
+//! `ep9_unit/build.rs`), and matching header bytes would not make code bytes safe. So the safe
+//! method never maps embedder bytes as code, and only the `unsafe fn` installs: its caller
+//! states that `ep9_unit::check` gave `Load` for these bytes (H35:18, "a unit is trusted code,
+//! like a native addon").
 //!
 //! A variant tuple is `(kind, lowering, entry, len, cpu_required, fuse ids)`: the dispatch kind
 //! byte (3 AotBaseline, 4 AotOpt), the lowering class byte (1 hybrid, 2 jitless; 0 jit is
 //! skipped), the code's offset and length in `text`, the H35-Q5 CPU bits and the static fuse
-//! ids (H31). In M7-P4 no unit code is installed in a dispatch slot ("deferred"): the T0
-//! call paths cannot enter it yet (route MC-w30-2), so every function runs its bytecode.
+//! ids (H31). The safe method installs no unit code in a dispatch slot ("deferred"), so every
+//! function runs its bytecode.
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_value::JsResult;
@@ -44,7 +53,9 @@ impl<'s> Cx<'s> {
     /// set and calls `select()` with the isolate's policy and a session with the CPU bits
     /// `host_cpu`. Returns the load counts by reason, `(name, count)` in a fixed order (H35
     /// S5), and the run's result. A function whose variants are all skipped, or that is not
-    /// listed, runs its bytecode; in M7-P4 every function does (no unit code is installed yet).
+    /// listed, runs its bytecode. This safe method never installs unit code (each pick counts
+    /// as "deferred"), so every function runs its bytecode: the installing form is the unsafe
+    /// [`Cx::run_script_installing_unit_code`] (route MC-w34-2).
     // The H35 function-table entry as plain data: no new pub type (H20 part 2: Cx methods only).
     #[allow(clippy::type_complexity)]
     pub fn run_script_with_unit_code(
@@ -54,6 +65,49 @@ impl<'s> Cx<'s> {
         text: &[u8],
         host_cpu: u64,
         functions: &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])],
+    ) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>) {
+        self.run_unit(unit, file, text, host_cpu, functions, false)
+    }
+
+    /// [`Cx::run_script_with_unit_code`], and step 8 (H35 S4): each AotBaseline pick with no
+    /// fuse dependency is installed in its function's dispatch slot, so a call of that
+    /// function runs its unit code. A pick that cannot be installed (AotOpt, a fuse
+    /// dependency, a function kind with no native entry yet) counts as "not-installable" and
+    /// runs its bytecode.
+    ///
+    /// # Safety
+    /// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `unit`, `text` and
+    /// `functions` come from, against this engine build: `ep9_unit::check(bytes,
+    /// &HostInfo::current())` gave `Load`, so (1) the prefix and the section table are sound,
+    /// (2) the content hash (and a required signature) matches, (3) the engine build id and the
+    /// bytecode ABI are this build's, and (4) every version, the target and the CPU features
+    /// match. `unit` is the unit's bytecode section, `text` its text section and `functions`
+    /// its function table, unchanged. So the unit is one that this engine build wrote, and each
+    /// variant's code is the native code of its function (H35:18: a unit is trusted code; a
+    /// unit of another build never gets here, because step 3 sends it to its source).
+    #[allow(clippy::type_complexity)]
+    pub unsafe fn run_script_installing_unit_code(
+        &mut self,
+        unit: VerifiedUnit,
+        file: &str,
+        text: &[u8],
+        host_cpu: u64,
+        functions: &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])],
+    ) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>) {
+        self.run_unit(unit, file, text, host_cpu, functions, true)
+    }
+
+    /// The body of both unit-code methods; step 8 only when `install` is true (only the unsafe
+    /// method passes true; its caller contract stands for the install contract).
+    #[allow(clippy::type_complexity)]
+    fn run_unit(
+        &mut self,
+        unit: VerifiedUnit,
+        file: &str,
+        text: &[u8],
+        host_cpu: u64,
+        functions: &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])],
+        install: bool,
     ) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>) {
         let functions: Vec<FunctionCode> = functions
             .iter()
@@ -79,6 +133,10 @@ impl<'s> Cx<'s> {
         let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
         let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
         let policy = unit_loader::isolate_policy(rt);
+        // Step 8 turns on in a later M7-P5 commit, after the unit text unwind data (O3) and the
+        // JS call arms (MC-w30-2) are in place (the DL P5-DL-5 order): until then both methods
+        // load without it.
+        let _ = install;
         let report = unit_loader::load(rt, &lu, text, &functions, policy.as_ref(), host_cpu);
         let entry: *const FunctionInfo = &lu.infos[0];
         rt.units.borrow_mut().push(lu);
