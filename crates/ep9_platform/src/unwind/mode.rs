@@ -29,6 +29,10 @@
 //!   which copies the built-in probe into a page of unit text (`unit_text::UnitText`, the form
 //!   a build without `jit` has; M7-P5 A2-RW, route A2-UNIT-SHARE O3); until then every
 //!   registration fails.
+//! - One way in: every entry that chooses the mode ([`registration_mode`] with `jit`,
+//!   [`choose_mode`], [`self_test`]) does it under one lock, one probe run at a time. Only a
+//!   verdict is kept. A probe that could not run (no free page in the code range, a map that
+//!   failed) gives no verdict: its error is returned, not kept, and a later call tries again.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -92,43 +96,68 @@ fn unsupported(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, msg)
 }
 
-/// The registration mode of this process. With `jit` (or in a unit test) the first call runs
-/// the self-test on the built-in probe. Without `jit` it fails until [`self_test`] has run.
-/// Fails for good if the self-test found no working mode: native code must not start then.
+/// The registration mode of this process ([`super::EhFrameRegistration::register`] calls
+/// this). What a caller may rely on:
+/// - A mode is chosen: this returns it. No mode passed the self-test: this fails, for good
+///   (native code must not start then).
+/// - No mode is chosen yet, with `jit` (or in a unit test): this is [`choose_mode`]. It runs
+///   the self-test on the built-in probe, which needs one free page in the process code range.
+///   If the probe could not run, this fails and keeps nothing: a later call tries again. A call
+///   while another thread chooses waits for that choice and returns its verdict.
+/// - No mode is chosen yet, without `jit`: this fails and runs no probe, until [`choose_mode`]
+///   or [`self_test`] has chosen the mode.
 pub fn registration_mode() -> io::Result<RegistrationMode> {
-    #[cfg(any(feature = "jit", test))]
-    let r = MODE.get_or_init(builtin::select);
-    #[cfg(not(any(feature = "jit", test)))]
-    let Some(r) = MODE.get() else {
-        return Err(unsupported(
-            "unwind registration mode not chosen yet: call unwind::self_test on a probe in \
-             the loaded code first (H28)",
-        ));
-    };
-    r.as_ref().copied().map_err(|m| unsupported(m))
+    match MODE.get() {
+        Some(r) => kept(r),
+        #[cfg(any(feature = "jit", test))]
+        None => choose_mode(),
+        #[cfg(not(any(feature = "jit", test)))]
+        None => Err(unsupported(
+            "unwind registration mode not chosen yet: call unwind::choose_mode, or \
+             unwind::self_test on a probe in the loaded code, first (H28)",
+        )),
+    }
 }
 
 /// The registration mode of this process, chosen now if no mode is chosen yet (route
 /// A2-UNIT-SHARE O3, M7-P5 A2-RW): the self-test runs on the built-in probe; with `jit` (or
-/// in a unit test) in a page of its own, as [`registration_mode`]; without `jit` copied into a
-/// page of unit text ([`crate::unit_text::UnitText`], freed after the test). So a jitless unit
-/// loader registers unit text unwind data with no probe of its own. Fails for good, as
-/// [`registration_mode`], if no mode passed. A probe that could not run (no free page in the
-/// code range, a map that failed) gives no verdict: that error is not kept, and a later call
-/// tries again (M7-P5 Codex A2: a unit that fills the range must not stop unwind for good).
+/// in a unit test) in a page of its own; without `jit` copied into a page of unit text
+/// ([`crate::unit_text::UnitText`], freed after the test). So a jitless unit loader registers
+/// unit text unwind data with no probe of its own. What a caller may rely on:
+/// - One probe run at a time in the process; a call while another thread chooses waits and
+///   returns that verdict.
+/// - Only a verdict is kept: the mode, or for good the error that no mode passed.
+/// - A probe that could not run (no free page in the code range, a map that failed) gives no
+///   verdict: that error is returned and not kept, and a later call tries again (M7-P5 Codex
+///   A2: a unit that fills the range must not stop unwind for good).
 pub fn choose_mode() -> io::Result<RegistrationMode> {
-    if MODE.get().is_none() {
-        // One probe run at a time, so the process gets one verdict.
-        let _one = CHOOSING.lock().unwrap_or_else(|e| e.into_inner());
-        if MODE.get().is_none() {
-            let verdict = builtin::try_select().map_err(|e| unsupported(&could_not_run(&e)))?;
-            let _ = MODE.set(verdict);
-        }
-    }
-    registration_mode()
+    kept(choose(builtin::try_select)?.0)
 }
 
-/// Held while [`choose_mode`] runs the probe.
+/// The one way `MODE` gets a value: under [`CHOOSING`], if it has none yet. `run` is the
+/// probe run: `Err` if the probe could not run (returned, not kept), else the verdict (kept).
+/// Returns the kept verdict and whether this call chose it.
+fn choose(
+    run: impl FnOnce() -> Result<Result<RegistrationMode, String>, String>,
+) -> io::Result<(&'static Result<RegistrationMode, String>, bool)> {
+    if let Some(r) = MODE.get() {
+        return Ok((r, false));
+    }
+    let _one = CHOOSING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = MODE.get() {
+        return Ok((r, false));
+    }
+    let verdict = run().map_err(|e| unsupported(&could_not_run(&e)))?;
+    // Every writer of `MODE` holds `CHOOSING`, so this call sets it.
+    Ok((MODE.get_or_init(|| verdict), true))
+}
+
+/// A kept verdict as the result of an entry.
+fn kept(r: &Result<RegistrationMode, String>) -> io::Result<RegistrationMode> {
+    r.as_ref().copied().map_err(|m| unsupported(m))
+}
+
+/// Held while an entry chooses the mode ([`choose`]).
 static CHOOSING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The error text of a probe that could not run.
@@ -151,8 +180,9 @@ pub fn dlsym_guess() -> RegistrationMode {
 }
 
 /// Runs the self-test on `probe` and returns the mode. If no mode was chosen yet, this chooses
-/// it for the process (whole-section, then per-FDE). If one was, this checks `probe` with it.
-/// The probe's registration is removed before the call returns.
+/// it for the process (whole-section, then per-FDE), under the one lock of [`choose_mode`]
+/// (a call while another thread chooses waits, then checks `probe`). If one was, this checks
+/// `probe` with it. The probe's registration is removed before the call returns.
 ///
 /// # Safety
 /// - `probe.entry` points to code with the [`ProbeFn`] contract inside `probe.code`, and that
@@ -160,12 +190,9 @@ pub fn dlsym_guess() -> RegistrationMode {
 /// - Each FDE of `probe.section` describes its code correctly (see
 ///   [`EhFrameRegistration::register`]); no live registration overlaps its span.
 pub unsafe fn self_test(probe: SelfTestProbe) -> io::Result<RegistrationMode> {
-    let mut chose = false;
-    let r = MODE.get_or_init(|| {
-        chose = true;
-        // SAFETY: the caller's contract.
-        unsafe { select(&probe) }
-    });
+    // SAFETY: the caller's contract. The caller's probe always runs, so the run gives a
+    // verdict.
+    let (r, chose) = choose(|| Ok(unsafe { select(&probe) }))?;
     match r {
         Ok(mode) if !chose => {
             // SAFETY: the caller's contract.
@@ -518,16 +545,6 @@ mod builtin {
     #[cfg(not(any(feature = "jit", test)))]
     pub(super) fn try_select() -> Result<Result<RegistrationMode, String>, String> {
         try_select_in_unit_text()
-    }
-
-    /// The process-wide choice with the built-in probe.
-    #[cfg(any(feature = "jit", test))]
-    pub(super) fn select() -> Result<RegistrationMode, String> {
-        // SAFETY: `with_probe` maps the probe for the duration of the closure; the section
-        // describes it exactly; the page is new, so no registration overlaps it.
-        with_probe(probe_section, |p| unsafe { super::select(p) }).map_err(|e| {
-            format!("unwind self-test could not run: {e}. Native code cannot run (H28)")
-        })?
     }
 }
 

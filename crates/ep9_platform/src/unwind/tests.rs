@@ -350,3 +350,149 @@ fn each_mode_on_this_host() {
     assert!(results[at].1.is_ok(), "{results:?}");
     assert!(results[..at].iter().all(|(_, r)| r.is_err()), "{results:?}");
 }
+
+/// The name of [`mode_child_case`] for `--exact` (module path from the crate root).
+#[cfg(unix)]
+const MODE_CHILD_TEST: &str = "unwind::tests::mode_child_case";
+
+/// Runs [`mode_child_case`] in a child process (this test binary again, the `time.rs` form)
+/// with `EP9_PLATFORM_UNWIND_MODE_CHILD=<case>`: a new process, so no mode is chosen yet and
+/// the process code range is free. A child that does not end before the deadline (a hang
+/// guard, not a time bound) is killed and the test fails. Returns the child's stdout.
+#[cfg(unix)]
+fn run_mode_child(case: &str) -> String {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            MODE_CHILD_TEST,
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("EP9_PLATFORM_UNWIND_MODE_CHILD", case)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let read = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = r.read_to_string(&mut s);
+            s
+        })
+    };
+    let out = read(Box::new(child.stdout.take().unwrap()));
+    let err = read(Box::new(child.stderr.take().unwrap()));
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child case {case}: no exit before the deadline; killed");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let (out, err) = (out.join().unwrap(), err.join().unwrap());
+    assert!(
+        status.success() && out.contains(&format!("CHILD-OK {case}")),
+        "child case {case}: {status}\n{out}\n{err}"
+    );
+    out
+}
+
+/// The child side of [`run_mode_child`]; with no `EP9_PLATFORM_UNWIND_MODE_CHILD` it does
+/// nothing. A probe that cannot run (no free page in the code range) gives no verdict, so no
+/// entry keeps its error (M7-P5 fixer r5 item 1, Codex R3 finding 1).
+///
+/// - `full`: the code range has no free page. The first `registration_mode` (the first
+///   [`super::EhFrameRegistration::register`]) and `choose_mode` fail; after the page is free
+///   both pass with one mode.
+/// - `race`: one free page. Thread A runs `choose_mode`, whose probe takes that page; this
+///   thread calls `registration_mode` while the page is taken (it prints `OVERLAP` then).
+///   Both get the mode.
+#[cfg(unix)]
+#[test]
+fn mode_child_case() {
+    use crate::va::{CodeRange, page_size};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    let Ok(case) = std::env::var("EP9_PLATFORM_UNWIND_MODE_CHILD") else {
+        return;
+    };
+    let range = CodeRange::process().unwrap();
+    match case.as_str() {
+        "full" => {
+            let fill = range.alloc(range.free_bytes()).unwrap();
+            assert!(super::registration_mode().is_err(), "no free page");
+            assert!(super::choose_mode().is_err(), "no free page");
+            drop(fill);
+            let mode = super::registration_mode();
+            assert!(
+                mode.is_ok(),
+                "registration_mode after the page is free: {mode:?}"
+            );
+            assert_eq!(super::choose_mode().unwrap(), mode.unwrap());
+        }
+        "race" => {
+            let fill = range.alloc(range.free_bytes() - page_size()).unwrap();
+            let start = Arc::new(Barrier::new(2));
+            let done = Arc::new(AtomicBool::new(false));
+            let (s2, d2) = (start.clone(), done.clone());
+            let a = std::thread::spawn(move || {
+                s2.wait();
+                let r = super::choose_mode().map_err(|e| e.to_string());
+                d2.store(true, Ordering::Release);
+                r
+            });
+            start.wait();
+            let mut b = None;
+            while !done.load(Ordering::Acquire) {
+                if range.free_bytes() == 0 {
+                    b = Some(super::registration_mode().map_err(|e| e.to_string()));
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            let a = a.join().unwrap();
+            drop(fill);
+            if b.is_some() {
+                println!("OVERLAP");
+            }
+            assert!(a.is_ok(), "choose_mode on thread A: {a:?}");
+            if let Some(b) = b {
+                assert_eq!(b, a, "registration_mode while A's probe runs");
+            }
+            let again = super::choose_mode();
+            assert_eq!(again.map_err(|e| e.to_string()), a);
+        }
+        other => panic!("unknown child case {other}"),
+    }
+    println!("CHILD-OK {case}");
+}
+
+/// A first registration with no free page in the code range keeps no error: after the page
+/// is free the mode is chosen (child case `full`).
+#[cfg(unix)]
+#[test]
+fn a_full_range_at_the_first_registration_is_tried_again() {
+    run_mode_child("full");
+}
+
+/// `choose_mode` on one thread and the first registration on another, with one free page:
+/// the registration waits for the one probe run and gets its verdict (child case `race`, 20
+/// processes; the test needs at least one run in which the calls overlap).
+#[cfg(unix)]
+#[test]
+fn a_registration_during_the_mode_choice_gets_its_verdict() {
+    let runs = 20;
+    let overlaps = (0..runs)
+        .filter(|_| run_mode_child("race").contains("OVERLAP"))
+        .count();
+    eprintln!("race: {overlaps} of {runs} runs overlap");
+    assert!(overlaps > 0, "no run overlapped, so the race was not tried");
+}
