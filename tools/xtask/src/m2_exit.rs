@@ -503,6 +503,42 @@ fn fresh(
     fresh_since(root, commit, paths)
 }
 
+/// The build-id OPEN rule (route P0-BUILDID): the bench tools give a run the commit of the ep9
+/// binary they measured (its `ep9 --version` build line on stderr, `crates/ep9_cli/build.rs`),
+/// and null when a binary prints no line, names no commit, was built with uncommitted engine
+/// changes, or two binaries name two commits; [`fresh`] reads that null as OPEN. This adds
+/// the reason from the run's record of the lines (`commit.binary` of mem.mjs, `ep9.binary` of
+/// jetstream/run.mjs: one record or a list; m2gate.mjs carries none). It trusts that record
+/// as the tool wrote it; a JSON without it (a tool before P0-BUILDID) keeps the plain reason.
+fn with_binary_why(why: String, binary: Option<&Json>) -> String {
+    let one = |b: &Json| -> Option<&'static str> {
+        match b {
+            Json::Null => Some("an ep9 binary prints no build line (`ep9 --version`, P0-BUILDID)"),
+            Json::Obj(_) if b.get("dirty").and_then(Json::bool) == Some(true) => {
+                Some("an ep9 binary was built with uncommitted engine changes")
+            }
+            Json::Obj(_) if b.get("commit").and_then(Json::str).is_none() => {
+                Some("the ep9 binaries name no one commit")
+            }
+            _ => None,
+        }
+    };
+    let found = match binary {
+        Some(Json::Arr(a)) => a.iter().find_map(one).or_else(|| {
+            let mut c = a.iter().filter_map(|b| b.get("commit").and_then(Json::str));
+            let first = c.next();
+            c.any(|x| Some(x) != first)
+                .then_some("the ep9 binaries name no one commit")
+        }),
+        Some(b) => one(b),
+        None => None,
+    };
+    match found {
+        Some(f) => format!("{why} ({f})"),
+        None => why,
+    }
+}
+
 /// The git ids of `paths` at HEAD equal the input's `tree` ids (a CI job on a merge commit).
 fn same_trees(root: &Path, tree: Option<&Json>, paths: &[&str]) -> bool {
     let Some(Json::Obj(_)) = tree else {
@@ -1001,7 +1037,8 @@ fn item4(c: &Ctx) -> Cell {
             j.path(&["commit", "ep9"]).and_then(Json::str),
             j.path(&["commit", "runner_dirty"]),
             &FRESH_PATHS,
-        ),
+        )
+        .map_err(|e| with_binary_why(e, j.path(&["commit", "binary"]))),
     )
 }
 
@@ -1411,7 +1448,8 @@ fn item7(c: &Ctx) -> Cell {
             j.path(&["ep9", "commit"]).and_then(Json::str),
             j.path(&["ep9", "dirty"]),
             &FRESH_PATHS,
-        ),
+        )
+        .map_err(|e| with_binary_why(e, j.path(&["ep9", "binary"]))),
     )
 }
 
@@ -2288,6 +2326,59 @@ mod tests {
                 .contains("19 language files in the run, the checkout has 20"),
             "{}",
             c.evidence
+        );
+    }
+
+    /// P0-BUILDID: a mem or JetStream run whose ep9 binary prints no build line, or was built
+    /// dirty, names no ep9 commit (the tools write null), so the cell is OPEN and says why.
+    #[test]
+    fn a_binary_with_no_clean_build_line_is_open() {
+        let r = repo("buildid");
+        let head = format!("\"ep9\": \"{}\", \"runner_dirty\"", r.head);
+        let mem = fixture("mem.json")
+            .replace(SHA, &r.head)
+            .replace(&head, "\"ep9\": null, \"binary\": null, \"runner_dirty\"");
+        assert!(mem.contains("\"binary\": null"));
+        write(&r.root, "inputs/mem-nobuild.json", &mem);
+        let o = Options {
+            mem: Some(r.root.join("inputs/mem-nobuild.json")),
+            ..opts(&r, HOST)
+        };
+        let c = &run(&o).unwrap().cells[3];
+        assert_eq!(c.status, Status::Open);
+        assert!(
+            c.evidence.contains(
+                "it names no ep9 commit (an ep9 binary prints no build line (`ep9 --version`, \
+                 P0-BUILDID))"
+            ),
+            "{}",
+            c.evidence
+        );
+        let js = fixture("jetstream.json").replace(SHA, &r.head).replace(
+            &format!("\"ep9\": {{ \"commit\": \"{}\", \"dirty\": false }}", r.head),
+            &format!(
+                "\"ep9\": {{ \"commit\": null, \"dirty\": false, \"binary\": [{{ \"commit\": \"{}\", \"dirty\": true }}] }}",
+                r.head
+            ),
+        );
+        assert!(js.contains("\"binary\""));
+        write(&r.root, "inputs/js-dirty.json", &js);
+        let o = Options {
+            jetstream: Some(r.root.join("inputs/js-dirty.json")),
+            ..opts(&r, HOST)
+        };
+        let c = &run(&o).unwrap().cells[6];
+        assert_eq!(c.status, Status::Open);
+        assert!(
+            c.evidence
+                .contains("an ep9 binary was built with uncommitted engine changes"),
+            "{}",
+            c.evidence
+        );
+        assert_eq!(
+            with_binary_why("x".into(), None),
+            "x",
+            "a JSON from before P0-BUILDID keeps the plain reason"
         );
     }
 
