@@ -32,7 +32,7 @@
 //! | 4 | Uint16 | 2 | 10 | Float32 | 4 |
 //! | 5 | Int32 | 4 | 11 | Float64 | 8 |
 //!
-//! Rows 7 and 8 hold BigInts ([[ContentType]] bigint); the others hold Numbers. A row above 11
+//! Rows 7 and 8 hold BigInts (`[[ContentType]]` bigint); the others hold Numbers. A row above 11
 //! is a bug in the caller: the filled methods panic on it.
 //!
 //! **Read-modify-write ops** (`op: u8` of [`Cx::atomic_read_modify_write`]): 0 add, 1 and,

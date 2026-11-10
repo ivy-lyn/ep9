@@ -324,7 +324,7 @@ pub(crate) const fn is_view_kind(k: u8) -> bool {
 }
 
 /// True for the 2 BigInt views, BigInt64Array and BigUint64Array (36-37): their elements are
-/// BigInts ([[ContentType]] bigint).
+/// BigInts (`[[ContentType]]` bigint).
 #[inline(always)]
 pub(crate) const fn is_bigint_view_kind(k: u8) -> bool {
     k >= BIGINT64_VIEW.get() && k <= BIGUINT64_VIEW.get()
