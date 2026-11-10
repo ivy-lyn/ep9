@@ -1452,3 +1452,75 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
         assert!(n[1] >= 1, "the poll of the prefixed JumpLoop");
     });
 }
+
+// ---- the keyed store grow case (M7-P5 ICWIDE, `keyed_ic::fast_set`) ---------------------------
+
+/// `r = []`, then `r[j] = 10 * j` for j = 0 to 5, `r[7] = 70` and `r[6] = 60`, all at one
+/// StoreKeyed slot (the script's `set_keyed`); `r` stays as a global.
+fn grow_program() -> (VerifiedUnit, u32) {
+    let mut s = Asm::script(0);
+    let slot = s.set_keyed;
+    let (r, k) = (s.b.new_register(), s.b.new_register());
+    let lit = s.lit;
+    s.b.create_empty_array_literal(lit).star(r);
+    for j in [0, 1, 2, 3, 4, 5, 7, 6] {
+        s.b.lda_smi(j).star(k).lda_smi(10 * j);
+        s.b.set_keyed_property(r, k, slot);
+    }
+    s.b.ldar(r);
+    s.sta_global("r");
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), slot.index() as u32)
+}
+
+/// The grow case stores a missing element in place (an append inside the capacity, and the
+/// fill of a hole) and records in the value half the bits the cold body records for it; a
+/// store that needs more capacity or a kind transition (`r[7]`: HOLEY) stays cold. The key
+/// half stays undefined: no execution was the present-element fast case.
+#[test]
+fn the_keyed_store_grow_case_stores_in_place_and_records_as_cold() {
+    use crate::elements::{self, kind as ek};
+    use crate::profile::keyed;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let mut iso = super::profile::isolate(IsolateConfig {
+                    feedback_threshold: 0,
+                    ..config(d, stress)
+                });
+                crate::keyed_ic::GROW_HITS.with(|c| c.set(0));
+                let (u, slot) = grow_program();
+                let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "grow.js").map(|_| ()));
+                assert!(r.is_ok(), "{r:?}");
+                let hits = crate::keyed_ic::GROW_HITS.with(|c| c.get());
+                // j = 0 and j = 4 need capacity and r[7] a transition: cold. The rest grow.
+                assert_eq!(hits, 5, "{} stress={stress}", d.name());
+                let a = iso.global_raw("r").unwrap().to_bits();
+                assert_eq!(object::array_len(a), 8);
+                for j in 0..8 {
+                    assert_eq!(
+                        object::array_get(a, j),
+                        Some(int32_bits(10 * j as i32)),
+                        "r[{j}]"
+                    );
+                }
+                assert_eq!(elements::kind_of(a), ek::HOLEY_INT32);
+                elements::check(a).unwrap();
+                let units = iso.rt.units.borrow();
+                let fi = &units.last().unwrap().infos[0];
+                let v = feedback::vector(fi).unwrap();
+                assert_eq!(feedback::key(v, slot), UNDEFINED, "the key half");
+                let want = keyed::INDEX
+                    | keyed::ARRAY
+                    | keyed::OUT_OF_BOUNDS
+                    | keyed::HOLE
+                    | elements::kinds_set_bit(ek::PACKED_INT32)
+                    | elements::kinds_set_bit(ek::HOLEY_INT32);
+                assert_eq!(feedback::value(v, slot) as u32, want, "{}", d.name());
+                drop(units);
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+            });
+        }
+    }
+}
