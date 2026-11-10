@@ -7,7 +7,8 @@
 //! | `unit_loader_counts_*` | each skip reason, the digest binding (MC-w31-8), one load per function |
 //! | `unit_loader_*_fuse*` | steps 6-7: a popped or unknown fuse makes the object a dependency that does not hold |
 //! | `unit_loader_api_*` | the Cx API: the isolate's policy (MC-w24-3 form), no install in M7-P4 (MC-w30-2), the bytecode runs; one intern table (MC-w25-9) |
-//! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered at run time, installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
+//! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered by the loader (JIT review O3), installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
+//! | `unit_loader_installs_nothing_*`, `unit_loader_maps_*`, `unit_loader_a_text_larger_*` | O3: no unwind data, no install; A2-UNIT-SHARE and MC-w34-4: one text per process keyed by its bytes, mapped only on a pick, and a text that cannot fit gives "no-text" |
 //! | `unit_loader_build_*` | SHSTK-ENGINE: the ep9_vm build script runs the shadow-stack refusal |
 //!
 //! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit)
@@ -25,9 +26,10 @@ use crate::select::{self, CodeObject, CodeSet, Pick, Policy, Session, lowering};
 use crate::tests::{Asm, meta, pos, unit};
 use crate::unit::FunctionInfo;
 use crate::unit_loader::{
-    self, FunctionCode, Reason, Report, VariantCode, code_of, install_picked, unit_function_digest,
+    self, FunctionCode, Reason, Report, VariantCode, code_of, unit_function_digest,
 };
 use crate::{Args, Cx, Exception, ExecOptions, Isolate, IsolateConfig, JsResult, Local, Value};
+use std::sync::Arc;
 
 /// The source of the unit (positions for stack traces).
 const SRC: &str = "function g(f) { return f(); }\n\
@@ -248,6 +250,7 @@ fn unit_loader_counts_each_reason() {
         (Reason::Deferred, 1),
         (Reason::Installed, 0),
         (Reason::NotInstallable, 0),
+        (Reason::NoUnwind, 0),
     ];
     for (reason, n) in want {
         assert_eq!(r.count(reason), n, "{}", reason.name());
@@ -332,10 +335,22 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     // A wired fuse is a dependency: step 8 does not install it (no pop path re-selects yet).
     let iso = defs_isolate(ExecOptions::jitless());
     iso.rt.fuses.wire(&iso.rt, 0).unwrap();
-    load(&iso, &Policy::JITLESS, &[with_fuse(0)]);
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    // SAFETY: the dependency refusal comes before `install_code`; no code is installed.
-    let r = unsafe { install_picked(&iso.rt, lu) };
+    let mut f = with_fuse(0);
+    f.variants[0].len = call0_bytes().0.len() as u32;
+    // SAFETY: the dependency refusal comes before `install_code`; no code is installed (the
+    // text and its unwind data are the frame stub's).
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text(),
+            &stub_unwind(),
+            &[f],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
         (0, 1)
@@ -514,134 +529,15 @@ fn stub_text() -> Vec<u8> {
     text
 }
 
-#[cfg(unix)]
-mod probe {
-    //! A jitless build has no code of its own for the unwind self-test: the loader's text gives
-    //! the probe (`ep9_platform::unwind` mode doc). The probe bytes and CFI are the built-in
-    //! probe's (`ep9_platform/src/unwind/mode.rs`, `builtin`).
-    use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder, reg};
-    use ep9_platform::unwind::{ProbeFn, SelfTestProbe, self_test};
-    use ep9_platform::{CodeRange, unit_text::UnitText};
-
-    const OTHER_OFF: usize = 64;
-
-    fn probe_code() -> Vec<u8> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            [
-                0xa9be_7bfdu32, //  0 stp x29, x30, [sp, #-32]!
-                0x9100_03fd,    //  4 mov x29, sp
-                0xa901_53f3,    //  8 stp x19, x20, [sp, #16]
-                0xaa00_03f3,    // 12 mov x19, x0
-                0x9100_0400,    // 16 add x0, x0, #1
-                0xd63f_0020,    // 20 blr x1
-                0x8b13_0000,    // 24 add x0, x0, x19
-                0xa941_53f3,    // 28 ldp x19, x20, [sp, #16]
-                0xa8c2_7bfd,    // 32 ldp x29, x30, [sp], #32
-                0xd65f_03c0,    // 36 ret
-            ]
-            .iter()
-            .flat_map(|w| w.to_le_bytes())
-            .collect()
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            #[rustfmt::skip]
-            let v = vec![
-                0x55, 0x48, 0x89, 0xe5, 0x53, 0x48, 0x83, 0xec, 0x08, 0x48, 0x89, 0xfb,
-                0x48, 0x8d, 0x7f, 0x01, 0xff, 0xd6, 0x48, 0x01, 0xd8, 0x48, 0x83, 0xc4,
-                0x08, 0x5b, 0x5d, 0xc3,
-            ];
-            v
-        }
-    }
-
-    fn other_code() -> Vec<u8> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            0xd65f_03c0u32.to_le_bytes().to_vec()
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            vec![0xc3]
-        }
-    }
-
-    fn probe_cfi() -> CfiProgram {
-        let mut p = CfiProgram::new();
-        #[cfg(target_arch = "aarch64")]
-        {
-            use reg::aarch64::*;
-            p.advance_loc(1)
-                .def_cfa_offset(32)
-                .offset(FP, 4)
-                .offset(LR, 3)
-                .advance_loc(1)
-                .def_cfa_register(FP)
-                .advance_loc(1)
-                .offset(X19, 2)
-                .offset(X20, 1)
-                .advance_loc(5)
-                .restore(X19)
-                .restore(X20)
-                .advance_loc(1)
-                .def_cfa(SP, 0)
-                .restore(FP)
-                .restore(LR);
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            use reg::x86_64::*;
-            p.advance_loc(1)
-                .def_cfa_offset(16)
-                .offset(RBP, 2)
-                .advance_loc(3)
-                .def_cfa_register(RBP)
-                .advance_loc(1)
-                .offset(RBX, 3)
-                .advance_loc(21)
-                .restore(RBX)
-                .advance_loc(1)
-                .def_cfa(RSP, 8)
-                .restore(RBP);
-        }
-        p
-    }
-
-    /// Runs the unwind self-test on a probe in unit text (a no-op check once a mode is set).
-    pub(super) fn choose_mode() {
-        let (code, other) = (probe_code(), other_code());
-        let mut text = code.clone();
-        text.resize(OTHER_OFF, 0);
-        text.extend(&other);
-        let t = UnitText::map(CodeRange::process().unwrap(), &text).unwrap();
-        let base = t.base();
-        let mut b = EhFrameBuilder::new(&Cie::host());
-        b.add_fde(base + OTHER_OFF, other.len(), &CfiProgram::new());
-        b.add_fde(base, code.len(), &probe_cfi());
-        // SAFETY: offset 0 of the text is the probe (the `ProbeFn` contract), mapped until `t`
-        // drops after the test; the FDEs describe the text exactly; the page is new.
-        let entry: ProbeFn = unsafe { core::mem::transmute::<usize, ProbeFn>(base) };
-        let probe = SelfTestProbe {
-            entry,
-            code: base..base + code.len(),
-            section: b.finish(),
-        };
-        // SAFETY: as above.
-        unsafe { self_test(probe) }.expect("the unwind self-test on unit text");
-        drop(t);
-    }
-}
-
-/// The unwind records of the frame stub at `code`, registered with the system unwinder.
-fn register(code: core::ops::Range<usize>) -> impl Drop {
-    let ret = call0_bytes().1;
+/// The unwind data of [`stub_text`] in the loader's form 1 (`unit_loader.rs` module doc): on
+/// unix an `.eh_frame` image whose FDE `pc_begin` is the text offset 0, on Windows one
+/// RUNTIME_FUNCTION (offsets into the text). The loader registers it (JIT review O3).
+fn stub_unwind() -> Vec<u8> {
+    let (code, ret) = call0_bytes();
+    let len = code.len();
     #[cfg(unix)]
     {
-        use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder};
-        use ep9_platform::unwind::{self, cfi::reg};
-        probe::choose_mode();
-        let len = call0_bytes().0.len();
+        use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder, reg};
         let mut p = CfiProgram::new();
         #[cfg(target_arch = "aarch64")]
         {
@@ -671,26 +567,17 @@ fn register(code: core::ops::Range<usize>) -> impl Drop {
                 .restore(RBP);
         }
         let mut b = EhFrameBuilder::new(&Cie::host());
-        b.add_fde(code.start, len, &p);
-        // SAFETY: the FDE describes the stub at `code.start` exactly; the caller drops the
-        // registration before the text.
-        unsafe { unwind::EhFrameRegistration::register(b.finish()) }.expect("register the FDE")
+        b.add_fde(0, len, &p);
+        b.finish().bytes().to_vec()
     }
     #[cfg(windows)]
     {
-        use ep9_platform::unwind::{self, win64::RuntimeFunction};
         let _ = ret;
-        let len = call0_bytes().0.len();
-        let all = code.start..code.start + stub_text().len();
-        let entry = RuntimeFunction {
-            begin: 0,
-            end: len as u32,
-            unwind_info: UNWIND_INFO_OFF as u32,
-        };
-        // SAFETY: the UNWIND_INFO at offset 256 describes the prologue of the stub at offset 0;
-        // the caller drops the registration before the text.
-        unsafe { unwind::FunctionTableRegistration::register(all, Box::new([entry])) }
-            .expect("register the function table")
+        let mut v = Vec::new();
+        for w in [0, len as u32, UNWIND_INFO_OFF as u32] {
+            v.extend(w.to_le_bytes());
+        }
+        v
     }
 }
 
@@ -716,18 +603,10 @@ fn call_through_entry(
     entered.then(|| r.map(crate::runtime::val))
 }
 
-/// MC-w33-2.2 in a build without `jit`: the loader maps the unit text (the protect form; with
-/// `jit` the window form), its unwind records are registered at run time, step 8 installs the
-/// AotBaseline pick of `g` (from Rust: [`install_picked`]), `call_native` enters it, the stub
-/// calls `walk` back through T0, and the system unwinder walks from `walk` through the stub
-/// frame into the Rust caller. Without the registration the walk stops at the stub frame (the
-/// `ep9_platform` self-test check); the `jit`-only form is `native_entry_registered_*`.
-#[test]
-fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
-    let mut iso = defs_isolate(ExecOptions::jitless());
-    let text = stub_text();
+/// The AotBaseline jitless variant of `g` over the frame stub at text offset 0.
+fn g_stub() -> FunctionCode {
     let len = call0_bytes().0.len() as u32;
-    let f = FunctionCode {
+    FunctionCode {
         function: G,
         digest: digest(G),
         variants: vec![variant(
@@ -736,25 +615,50 @@ fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
             0,
             len,
         )],
-    };
+    }
+}
+
+/// MC-w33-2.2 in a build without `jit`, and JIT review O3 (M7-P5 A2-RW): an installing load
+/// maps the unit text (the protect form; with `jit` the window form), registers its unwind
+/// data before it installs (no hand registration here: the loader does it), installs the
+/// AotBaseline pick of `g`; `call_native` enters it, the stub calls `walk` back through T0,
+/// and the system unwinder walks from `walk` through the stub frame into the Rust caller.
+/// Without the registration the walk stops at the stub frame (the `ep9_platform` self-test
+/// check); the `jit`-only form is `native_entry_registered_*`.
+#[test]
+fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    let text = stub_text();
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    let r = unit_loader::load(&iso.rt, lu, &text, &[f], Some(&Policy::JITLESS), 0);
-    assert_eq!(r.count(Reason::Picked), 1);
-    let code = code_of(info(&iso, "g")).unwrap().code[0].clone();
+    // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g`: its call at
+    // offset 0), and `stub_unwind` describes it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &text,
+            &stub_unwind(),
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
     let range = CodeRange::process().unwrap();
     assert!(range.contains(code.start));
     if !cfg!(feature = "jit") {
         assert!(!range.is_map_jit());
     }
-    // SAFETY: the text at `code` is the frame stub (it runs the bytecode of `g`: its call at
-    // offset 0), mapped while the isolate lives.
-    let installed = unsafe { install_picked(&iso.rt, lu) };
-    assert_eq!(installed.count(Reason::Installed), 1);
     assert_eq!(
         info(&iso, "g").slot.kind_byte(),
         DispatchKind::AotBaseline as u8
     );
-    let reg = register(code.clone());
     let g = iso.global_raw("g").unwrap();
     let w = iso.global_raw("walk").unwrap();
     WALKED.with(|x| x.borrow_mut().take());
@@ -771,8 +675,129 @@ fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
         "the walk stops at the unit frame: {ips:x?}"
     );
     assert!(!range.contains(ips[at + 1]), "{:#x}: {ips:x?}", ips[at + 1]);
-    drop(reg);
     drop(iso);
+}
+
+/// JIT review O3: no unwind data, or unwind data that leaves the text, installs nothing
+/// ("no-unwind"): the function keeps its Interp slot and its bytecode runs.
+#[test]
+fn unit_loader_installs_nothing_without_unwind_data() {
+    let text = stub_text();
+    let mut outside = stub_unwind();
+    #[cfg(unix)]
+    {
+        // The FDE's pc_range (at its offset 16; the CIE is the first record) past the text.
+        let fde = 4 + u32::from_le_bytes(outside[0..4].try_into().unwrap()) as usize;
+        outside[fde + 16..fde + 24].copy_from_slice(&(text.len() as u64 + 1).to_le_bytes());
+    }
+    #[cfg(windows)]
+    outside[4..8].copy_from_slice(&(text.len() as u32 + 1).to_le_bytes());
+    for (what, unwind) in [("empty", Vec::new()), ("outside", outside)] {
+        let iso = defs_isolate(ExecOptions::jitless());
+        let lu = info(&iso, "g").loaded_unit().unwrap();
+        // SAFETY: as in the test above; nothing is installed.
+        let r = unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                &[g_stub()],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        };
+        assert_eq!(
+            (r.count(Reason::NoUnwind), r.count(Reason::Installed)),
+            (1, 0),
+            "{what}: {:?}",
+            r.rows()
+        );
+        assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
+        assert!(code_of(info(&iso, "g")).unwrap().text.is_none(), "{what}");
+    }
+}
+
+/// A2-UNIT-SHARE and MC-w34-4 (M7-P5 A2-RW): two isolates that load one text with one unwind
+/// data share one mapping (one text per process, keyed by its bytes); the text goes back when
+/// the last isolate drops; a load whose policy picks no unit object (the JIT policy) maps
+/// nothing; the safe load maps nothing either.
+#[test]
+fn unit_loader_maps_one_text_per_process_and_only_on_a_pick() {
+    // A text of this test alone (other tests map the plain stub text at the same time, and
+    // share it: same bytes, same key).
+    let mut text = stub_text();
+    text.extend(b"maps-one-text");
+    let unwind = stub_unwind();
+    let load_in = |iso: &Isolate, policy: &Policy| {
+        let lu = info(iso, "g").loaded_unit().unwrap();
+        // SAFETY: as in `unit_loader_registered_unit_text_runs_and_unwinds_without_jit`; the
+        // code does not run here.
+        unsafe {
+            unit_loader::load_and_install(&iso.rt, lu, &text, &unwind, &[g_stub()], Some(policy), 0)
+        }
+    };
+    let (a, b) = (
+        defs_isolate(ExecOptions::jitless()),
+        defs_isolate(ExecOptions::jitless()),
+    );
+    for iso in [&a, &b] {
+        assert_eq!(load_in(iso, &Policy::JITLESS).count(Reason::Installed), 1);
+    }
+    let ta = code_of(info(&a, "g")).unwrap().text.clone().unwrap();
+    let tb = code_of(info(&b, "g")).unwrap().text.clone().unwrap();
+    assert!(Arc::ptr_eq(&ta, &tb), "one text for both isolates");
+    let w = Arc::downgrade(&ta);
+    drop((ta, tb));
+    drop(a);
+    assert!(w.upgrade().is_some(), "b still holds the text");
+    drop(b);
+    assert!(
+        w.upgrade().is_none(),
+        "the text went back with the last isolate"
+    );
+    // The JIT policy accepts no unit object: no pick, no map.
+    let c = defs_isolate(ExecOptions::jitless());
+    let r = load_in(&c, &Policy::JIT);
+    assert_eq!((r.count(Reason::Picked), r.count(Reason::NoText)), (0, 0));
+    assert!(code_of(info(&c, "g")).unwrap().text.is_none());
+    // The safe load maps nothing.
+    let d = defs_isolate(ExecOptions::jitless());
+    let lu = info(&d, "g").loaded_unit().unwrap();
+    let r = unit_loader::load(&d.rt, lu, &text, &[g_stub()], Some(&Policy::JITLESS), 0);
+    assert_eq!((r.count(Reason::Picked), r.count(Reason::Deferred)), (1, 1));
+    assert!(code_of(info(&d, "g")).unwrap().text.is_none());
+}
+
+/// MC-w34-4, the hybrid case: a unit text larger than the whole process code range (so it
+/// would leave the JIT no room) gives "no-text" before its bytes are hashed, and the function
+/// runs its bytecode.
+#[test]
+fn unit_loader_a_text_larger_than_the_code_range_gives_no_text() {
+    let iso = defs_isolate(ExecOptions::jitless());
+    let size = CodeRange::process().unwrap().size();
+    let mut text = stub_text();
+    text.resize(size + 1, 0);
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: nothing is mapped or installed: the text does not fit.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &text,
+            &stub_unwind(),
+            &[g_stub()],
+            Some(&Policy::HYBRID),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::NoText)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
 }
 
 /// Step 8 refuses what `install_code` refuses and what has no entry yet: an AotOpt pick and a
@@ -793,11 +818,21 @@ fn unit_loader_install_refuses_aot_opt_and_a_class_constructor() {
             variants: vec![variant(DispatchKind::AotBaseline, jl, 0, 4)],
         },
     ];
-    let r = load(&iso, &Policy::JITLESS, &fns);
-    assert_eq!(r.count(Reason::Picked), 2);
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    // SAFETY: both picks are refused before any slot write (AotOpt; a class constructor).
-    let r = unsafe { install_picked(&iso.rt, lu) };
+    // SAFETY: both picks are refused before any slot write (AotOpt; a class constructor); the
+    // text and its unwind data are the frame stub's.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text(),
+            &stub_unwind(),
+            &fns,
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Picked), 2);
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
         (0, 2)

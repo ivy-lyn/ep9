@@ -5,7 +5,6 @@
 //!
 //! ```text
 //!  load(rt, loaded unit, text, functions, policy, host cpu)          (a bytecode unit: LoadedUnit)
-//!   5  text --unit_text::UnitText::map--> RX in the process code range (H07:52), one per unit
 //!   per function entry (the H35 function table, C-17):
 //!      the function index names a function of the unit ------ no ------> skip "function"
 //!      no unit code yet (FunctionInfo::code_set empty) ------ no ------> skip "twice"
@@ -16,9 +15,16 @@
 //!      6-7 fuse refs -> Dep::Static { index, intact now }  (a popped fuse: never picked)
 //!      the code set -> FunctionInfo::code_set (once; no Value inside: rule 8)
 //!      select(code set, the isolate's policy, session) -> Pick ---------> "picked" | "bytecode"
-//!   8  install the picks: only from `load_and_install` (the caller ran the H35 S4
-//!      checks, MC-w34-2) -------------------------------------------> "installed"
-//!      `load` never installs ----------------------------------------> "deferred"
+//!   `load` never installs and maps nothing: each pick ------------------> "deferred"
+//!   `load_and_install` (the caller ran the H35 S4 checks, MC-w34-2), only if a function picked
+//!   a unit object (MC-w34-4):
+//!   5  the process text map, keyed by SHA-256 of the text and its unwind data: a live entry
+//!      is shared; else text --unit_text::UnitText::map--> RX in the process code range
+//!      (H07:52) -- fails ----------------------------------------------> each pick "no-text"
+//!   7  the unwind data of the text registered with the system unwinder, once per mapped
+//!      text, before any of its code can run (JIT review O3) -- fails --> each pick "no-unwind"
+//!   8  install the picks (`install_picked`) -----------------------------> "installed" |
+//!                                                                          "not-installable"
 //! ```
 //!
 //! | Rule | Where |
@@ -33,14 +39,30 @@
 //! | A run with no unit pays nothing: no T0 path reads the code set; a function info gets one empty `OnceCell` word (routes MC-w22-O5, MC-w29-7) | `FunctionInfo::code_set` |
 //! | The object model reads no execution policy, also with a unit loaded (doc 13 M-R9; route A2-MR9): the loader writes only `code_set` and (step 8) the dispatch slot and the code registry. This file reads the policy, as `select.rs` does: the rule-40 grep exempts both (plan v12 rule 40) | the tests |
 //!
-//! Unwind data of unit text: the H35 `unwind` section has no format yet, so this loader
-//! registers none (`UnitCode::_text` keeps only the pages). A test registers the records of
-//! its stub with `ep9_platform::unwind` in a build without `jit` (`tests/unit_loader.rs`;
-//! route MC-w33-2.2).
+//! **The process text map** (H35 S2: text is per process; routes A2-UNIT-SHARE and MC-w34-4,
+//! M7-P5 A2-RW). Unit text and JIT code share the one process code range (H07:52), so the
+//! loader maps a text only when a function picked a unit object (the JIT preset picks none),
+//! and it maps one text once per process: the key is SHA-256 over a tag, the text and its
+//! unwind data, so a reuse is checked by its bytes, not by a name (V8 9d9ccafe3b). The map
+//! holds only weak entries: a text goes back to the range when the last function of the last
+//! isolate that uses it drops, so its size is bounded by the live texts. A text that is larger
+//! than the whole range is refused before its bytes are hashed.
+//!
+//! **Unwind data** (H35 S2 "unwind/debug"; form 1, M7-P5 A2-RW; JIT review O3: no unit code
+//! on the JS call path before its unwind data is registered). The unwind argument is the
+//! unit's unwind section in the form of the target. Unix: an `.eh_frame` image (CIEs and FDEs
+//! as `ep9_platform::unwind::cfi::EhFrameBuilder` writes them, 8-byte `pc_begin` and
+//! `pc_range`) whose `pc_begin` values are text offsets; the loader adds the text address in
+//! its copy, checks that each FDE lies inside the text, and registers it in the process mode
+//! (`unwind::choose_mode`: a jitless build runs the self-test on the built-in probe in unit
+//! text). Windows x64: RUNTIME_FUNCTION entries, 12 bytes each (begin, end, UNWIND_INFO; u32,
+//! little-endian), every offset into the text (the UNWIND_INFO bytes are part of the text).
+//! Empty unwind data installs nothing ("no-unwind").
 
 use core::hash::{Hash, Hasher};
 use core::ops::Range;
-use std::rc::Rc;
+use std::io;
+use std::sync::{Arc, Mutex, Weak};
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_bytecode::sha256::Sha256;
@@ -52,7 +74,7 @@ use crate::fuse::{self, FuseRef};
 use crate::native::install_code;
 use crate::runtime::Runtime;
 use crate::select::{CodeObject, CodeSet, Dep, ObjectState, Pick, Policy, Session, lowering};
-use crate::unit::LoadedUnit;
+use crate::unit::{FunctionInfo, LoadedUnit};
 
 /// One native variant of a unit function, as the H35 function table lists it (C-17).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,13 +107,199 @@ pub(crate) struct FunctionCode {
 pub(crate) struct UnitCode {
     /// The code set that `select()` read (doc 13 §3.1).
     pub set: CodeSet,
-    /// The code of each object of `set`, in the unit text.
+    /// The code of each object of `set`: offsets in the unit text.
     pub code: Box<[Range<usize>]>,
     /// What `select()` picked at load.
     pub pick: Pick,
-    /// Keeps the unit text mapped while a function of the unit holds it (until the isolate
-    /// drops, `Runtime::units` only grows).
-    pub _text: Rc<UnitText<'static>>,
+    /// The mapped text, when the load installs ([`load_and_install`]) and a function picked a
+    /// unit object: it keeps the text mapped and its unwind data registered while a function
+    /// of the unit holds it (until the isolate drops, `Runtime::units` only grows). `None`
+    /// for [`load`], which maps nothing.
+    pub text: Option<Arc<SharedText>>,
+}
+
+impl UnitCode {
+    /// The address range of the code of object `i` of the set, if the text is mapped.
+    pub(crate) fn code_at(&self, i: usize) -> Option<Range<usize>> {
+        let base = self.text.as_ref()?.text.base();
+        let c = self.code.get(i)?;
+        Some(base + c.start..base + c.end)
+    }
+}
+
+/// The unwind registration of the target (unix: `.eh_frame`; Windows: a function table).
+#[cfg(unix)]
+type Registration = ep9_platform::unwind::EhFrameRegistration;
+/// The unwind registration of the target (unix: `.eh_frame`; Windows: a function table).
+#[cfg(windows)]
+type Registration = ep9_platform::unwind::FunctionTableRegistration;
+
+/// One mapped unit text of the process (H35 S2), with its unwind registration: shared by
+/// every function of every isolate that loaded the same text and unwind bytes (module doc).
+pub(crate) struct SharedText {
+    /// Declared first, so it drops (deregisters) before the text pages go back.
+    _unwind: Registration,
+    text: UnitText<'static>,
+    key: [u8; 32],
+}
+
+// SAFETY: the text is written once, in `UnitText::map`, before the value exists, and never
+// again; the value is only read (base, length) and dropped. The registration is `Send` and
+// `Sync` itself. Dropping it on another thread is allowed by both unwinders, and the drop runs
+// only when no function of any isolate holds the text, so no frame of it is on any stack.
+unsafe impl Send for SharedText {}
+// SAFETY: as above: no method writes through `&self`.
+unsafe impl Sync for SharedText {}
+
+/// The process text map (module doc): weak entries, pruned at each lookup.
+static TEXTS: Mutex<Vec<Weak<SharedText>>> = Mutex::new(Vec::new());
+
+/// The map key of a text and its unwind data: SHA-256 over a tag, the text length, the text
+/// and the unwind bytes.
+fn text_key(text: &[u8], unwind: &[u8]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"ep9 unit text key v1\0");
+    h.update(&(text.len() as u64).to_le_bytes());
+    h.update(text);
+    h.update(unwind);
+    h.finish()
+}
+
+/// Steps 5 and 7 (module doc): the mapped text for `text` and `unwind`, shared if a live
+/// entry has the same key, else mapped and registered now. `Err(NoText)` if the text does
+/// not map (empty, larger than the process code range, no room); `Err(NoUnwind)` if the
+/// unwind data is empty, does not lie inside the text or does not register.
+fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
+    let range = CodeRange::process().map_err(|_| Reason::NoText)?;
+    if text.is_empty() || text.len() > range.size() {
+        return Err(Reason::NoText);
+    }
+    let key = text_key(text, unwind);
+    // One lock for the lookup and the map: two isolates that load one unit at once map it
+    // once.
+    let mut texts = TEXTS.lock().unwrap_or_else(|e| e.into_inner());
+    texts.retain(|w| w.strong_count() > 0);
+    if let Some(t) = texts
+        .iter()
+        .filter_map(Weak::upgrade)
+        .find(|t| t.key == key)
+    {
+        return Ok(t);
+    }
+    if unwind.is_empty() {
+        return Err(Reason::NoUnwind);
+    }
+    let mapped = UnitText::map(range, text).map_err(|_| Reason::NoText)?;
+    let reg = register_unwind(&mapped, unwind).map_err(|_| Reason::NoUnwind)?;
+    let t = Arc::new(SharedText {
+        _unwind: reg,
+        text: mapped,
+        key,
+    });
+    texts.push(Arc::downgrade(&t));
+    Ok(t)
+}
+
+/// Registers the unix unwind data `unwind` of the mapped `text` (module doc, form 1).
+#[cfg(unix)]
+fn register_unwind(text: &UnitText<'static>, unwind: &[u8]) -> io::Result<Registration> {
+    use ep9_platform::unwind::cfi::EhFrameSection;
+    let bad = |m: &'static str| io::Error::new(io::ErrorKind::InvalidData, m);
+    let s = EhFrameSection::from_bytes(unwind)?;
+    let mut b = unwind.to_vec();
+    let word = |b: &[u8], at: usize| -> io::Result<u64> {
+        let w = b.get(at..at + 8).ok_or_else(|| bad("an FDE ends early"))?;
+        Ok(u64::from_le_bytes(w.try_into().expect("8 bytes")))
+    };
+    let (base, len) = (text.base() as u64, text.len() as u64);
+    let mut fdes = 0;
+    for (at, is_cie) in s.records()? {
+        if is_cie {
+            if !cie_is_absptr(&b[at..]) {
+                return Err(bad("a CIE that is not the zR absptr form"));
+            }
+            continue;
+        }
+        // FDE: length (4), CIE pointer (4), pc_begin (8), pc_range (8); `records` refused the
+        // 64-bit length form.
+        let n = u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"));
+        if n < 20 {
+            return Err(bad("an FDE shorter than its address fields"));
+        }
+        let (off, n) = (word(&b, at + 8)?, word(&b, at + 16)?);
+        if n == 0 || off.checked_add(n).is_none_or(|end| end > len) {
+            return Err(bad("an FDE that does not lie inside the text"));
+        }
+        b[at + 8..at + 16].copy_from_slice(&(base + off).to_le_bytes());
+        fdes += 1;
+    }
+    if fdes == 0 {
+        return Err(bad("no FDE"));
+    }
+    let section = EhFrameSection::from_bytes(&b)?;
+    ep9_platform::unwind::choose_mode()?;
+    // SAFETY: each FDE describes code of this text (the unit writer made both; the caller of
+    // `load_and_install` vouches for the unit); the text stays mapped and unchanged while the
+    // registration lives (`SharedText` drops the registration first); the chunk is new, so
+    // no other registration overlaps its span.
+    unsafe { Registration::register(section) }
+}
+
+/// True if the CIE record `cie` (from its length field) is the form that
+/// `cfi::EhFrameBuilder` writes: version 1, augmentation "zR", and the FDE pointer encoding
+/// `DW_EH_PE_absptr` (0), so each FDE's `pc_begin` and `pc_range` are 8-byte values.
+#[cfg(unix)]
+fn cie_is_absptr(cie: &[u8]) -> bool {
+    // length (4), CIE id (4), version, "zR\0", code align (uleb), data align (sleb), return
+    // address register (1 byte in version 1), augmentation length (uleb), pointer encoding.
+    let Some(rest) = cie.get(8..) else {
+        return false;
+    };
+    if !rest.starts_with(&[1, b'z', b'R', 0]) {
+        return false;
+    }
+    let mut i = 4;
+    for _ in 0..2 {
+        // The two LEB128 numbers: skip their bytes.
+        while rest.get(i).is_some_and(|&b| b & 0x80 != 0) {
+            i += 1;
+        }
+        i += 1;
+    }
+    i += 1; // the return address register
+    // The augmentation length (one byte for "zR": 1) and the encoding byte.
+    rest.get(i) == Some(&1) && rest.get(i + 1) == Some(&0)
+}
+
+/// Registers the Windows unwind data `unwind` of the mapped `text` (module doc, form 1).
+#[cfg(windows)]
+fn register_unwind(text: &UnitText<'static>, unwind: &[u8]) -> io::Result<Registration> {
+    use ep9_platform::unwind::win64::RuntimeFunction;
+    let bad = |m: &'static str| io::Error::new(io::ErrorKind::InvalidData, m);
+    if unwind.is_empty() || !unwind.len().is_multiple_of(12) {
+        return Err(bad("the function table is not a list of 12-byte entries"));
+    }
+    let u = |c: &[u8]| u32::from_le_bytes(c.try_into().expect("4 bytes"));
+    let len = text.len() as u64;
+    let entries: Box<[RuntimeFunction]> = unwind
+        .chunks_exact(12)
+        .map(|e| RuntimeFunction {
+            begin: u(&e[0..4]),
+            end: u(&e[4..8]),
+            unwind_info: u(&e[8..12]),
+        })
+        .collect();
+    if entries
+        .iter()
+        .any(|e| u64::from(e.end) > len || u64::from(e.unwind_info) + 4 > len)
+    {
+        return Err(bad("a function table entry leaves the text"));
+    }
+    // SAFETY: each UNWIND_INFO describes its function in this text (the unit writer made
+    // both); text and UNWIND_INFO stay mapped and unchanged while the registration lives
+    // (`SharedText` drops it first); the chunk is new, so no other table covers its pages.
+    // `register` checks the order, the bounds and the alignment of the entries.
+    unsafe { Registration::register(text.base()..text.pages().end, entries) }
 }
 
 /// Why a function or a variant gets no unit code, and the other load counts (H35 S5: every
@@ -99,7 +307,8 @@ pub(crate) struct UnitCode {
 /// this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reason {
-    /// The text could not be mapped: every listed function runs its bytecode.
+    /// A pick of an installing load whose text could not be mapped (empty, larger than the
+    /// process code range, no room): it runs its bytecode.
     NoText,
     /// The entry names no function of the unit.
     Function,
@@ -124,11 +333,14 @@ pub(crate) enum Reason {
     /// A pick that step 8 cannot install: AotOpt (no optimizing-tier entry yet), a fuse
     /// dependency (no fuse-pop path re-selects yet), or an `install_code` refusal.
     NotInstallable,
+    /// A pick of an installing load whose text has no unwind data, or unwind data that does
+    /// not lie inside the text or does not register (JIT review O3): it runs its bytecode.
+    NoUnwind,
 }
 
 impl Reason {
     /// Every reason, in report order.
-    pub(crate) const ALL: [Reason; 12] = [
+    pub(crate) const ALL: [Reason; 13] = [
         Reason::NoText,
         Reason::Function,
         Reason::Twice,
@@ -141,6 +353,7 @@ impl Reason {
         Reason::Deferred,
         Reason::Installed,
         Reason::NotInstallable,
+        Reason::NoUnwind,
     ];
 
     /// The report name.
@@ -158,6 +371,7 @@ impl Reason {
             Reason::Deferred => "deferred",
             Reason::Installed => "installed",
             Reason::NotInstallable => "not-installable",
+            Reason::NoUnwind => "no-unwind",
         }
     }
 }
@@ -258,11 +472,11 @@ pub(crate) fn isolate_policy(rt: &Runtime) -> Option<Policy> {
     rt.exec.get().policy()
 }
 
-/// Steps 5-7 and the pick for the native part of `lu` (see the module doc): maps `text`,
-/// gives each listed function its code set and calls `select()` with `policy` and a session
-/// with the host CPU bits `cpu`. Never installs (step 8): each pick counts as
-/// [`Reason::Deferred`] (route MC-w34-2). Runs no JS and allocates no heap cell. Returns the
-/// counts.
+/// The code sets and the picks for the native part of `lu` (see the module doc): gives each
+/// listed function its code set and calls `select()` with `policy` and a session with the host
+/// CPU bits `cpu`. Maps nothing and never installs (step 8): each pick counts as
+/// [`Reason::Deferred`] (routes MC-w34-2, MC-w34-4). Runs no JS and allocates no heap cell.
+/// Returns the counts.
 pub(crate) fn load(
     rt: &Runtime,
     lu: &LoadedUnit,
@@ -271,50 +485,47 @@ pub(crate) fn load(
     policy: Option<&Policy>,
     cpu: u64,
 ) -> Report {
-    load_inner(rt, lu, text, functions, policy, cpu, false)
+    load_inner(rt, lu, text, None, functions, policy, cpu)
 }
 
-/// [`load`], then step 8: [`install_picked`].
+/// [`load`], then, if a function picked a unit object, steps 5, 7 and 8: the shared mapped
+/// text of `text` with its unwind data `unwind` registered (module doc), and
+/// [`install_picked`].
 ///
 /// # Safety
-/// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `lu`, `text` and
-/// `functions` come from, against this engine build (the `# Safety` of the unsafe `Cx`
-/// method in `abi/unit_code.rs`), so each picked variant follows the [`install_picked`]
-/// contract.
+/// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `lu`, `text`, `unwind`
+/// and `functions` come from, against this engine build (the `# Safety` of the unsafe `Cx`
+/// method in `abi/unit_code.rs`): so the unwind data describes the text, and each picked
+/// variant follows the [`install_picked`] contract.
 #[allow(dead_code)] // the unsafe `Cx` method calls it from the M7-P5 install commit
 pub(crate) unsafe fn load_and_install(
     rt: &Runtime,
     lu: &LoadedUnit,
     text: &[u8],
+    unwind: &[u8],
     functions: &[FunctionCode],
     policy: Option<&Policy>,
     cpu: u64,
 ) -> Report {
-    load_inner(rt, lu, text, functions, policy, cpu, true)
+    load_inner(rt, lu, text, Some(unwind), functions, policy, cpu)
 }
 
-/// [`load`] with step 8 when `install` is true (only [`load_and_install`] passes true; its
-/// caller contract stands for the `install_picked` contract).
+/// [`load`]; with `unwind` (only [`load_and_install`] passes it; its caller contract stands
+/// for the `install_picked` contract) also steps 5, 7 and 8.
 fn load_inner(
     rt: &Runtime,
     lu: &LoadedUnit,
     text: &[u8],
+    unwind: Option<&[u8]>,
     functions: &[FunctionCode],
     policy: Option<&Policy>,
     cpu: u64,
-    install: bool,
 ) -> Report {
     let mut r = Report::default();
     if functions.is_empty() {
         return r;
     }
-    let mapped = CodeRange::process().map(|range| UnitText::map(range, text));
-    let Ok(Ok(mapped)) = mapped else {
-        r.add(Reason::NoText, functions.len() as u32);
-        return r;
-    };
-    let text = Rc::new(mapped);
-    let (base, len) = (text.base(), text.len() as u64);
+    let len = text.len() as u64;
     let session = Session {
         connected: false,
         cpu,
@@ -322,12 +533,13 @@ fn load_inner(
     // One pass over the string table for the whole load (the digest of each function mixes
     // it in).
     let strings = strings_digest(&lu.unit);
+    let mut sets: Vec<(&FunctionInfo, UnitCode)> = Vec::new();
     for f in functions {
         let Some(fi) = lu.infos.get(f.function as usize) else {
             r.add(Reason::Function, 1);
             continue;
         };
-        if fi.code_set.get().is_some() {
+        if fi.code_set.get().is_some() || sets.iter().any(|(s, _)| core::ptr::eq(*s, fi)) {
             r.add(Reason::Twice, 1);
             continue;
         }
@@ -377,7 +589,7 @@ fn load_inner(
                 cpu: v.cpu,
                 deps,
             });
-            code.push(base + v.entry as usize..base + end as usize);
+            code.push(v.entry as usize..end as usize);
         }
         let pick = match policy {
             Some(p) => crate::select::select(&set, p, &session),
@@ -394,33 +606,53 @@ fn load_inner(
             set,
             code: code.into_boxed_slice(),
             pick,
-            _text: Rc::clone(&text),
+            text: None,
         };
-        // Empty (checked above), and nothing else writes it.
-        let _ = fi.code_set.set(Box::new(unit_code));
+        sets.push((fi, unit_code));
     }
-    if install {
-        // SAFETY: only `load_and_install` passes `install`; its caller ran the H35 S4 checks
+    let picked = r.count(Reason::Picked);
+    let mut mapped = false;
+    match unwind {
+        None => r.add(Reason::Deferred, picked),
+        // MC-w34-4: no pick, no map (the JIT preset picks no unit object).
+        Some(_) if picked == 0 => {}
+        Some(unwind) => match shared_text(text, unwind) {
+            Ok(t) => {
+                for (_, uc) in &mut sets {
+                    uc.text = Some(Arc::clone(&t));
+                }
+                mapped = true;
+            }
+            Err(reason) => r.add(reason, picked),
+        },
+    }
+    for (fi, uc) in sets {
+        // Empty (checked above), and nothing else writes it.
+        let _ = fi.code_set.set(Box::new(uc));
+    }
+    if mapped {
+        // SAFETY: only `load_and_install` passes `unwind`; its caller ran the H35 S4 checks
         // (steps 1-4) on these bytes, and the digest above binds each code set to its bytecode:
-        // that stands for the code contract of `install_picked`.
+        // that stands for the code contract of `install_picked`. The text is mapped, and its
+        // unwind data is registered (O3).
         let installed = unsafe { install_picked(rt, lu) };
         for reason in Reason::ALL {
             r.add(reason, installed.count(reason));
         }
-    } else {
-        r.add(Reason::Deferred, r.count(Reason::Picked));
     }
     r
 }
 
-/// Step 8: installs each AotBaseline pick of `lu` with no fuse dependency into its dispatch
-/// slot and the code registry (`native::install_code`). Counts [`Reason::Installed`] and
-/// [`Reason::NotInstallable`].
+/// Step 8: installs each AotBaseline pick of `lu` with no fuse dependency and a mapped text
+/// into its dispatch slot and the code registry (`native::install_code`). Counts
+/// [`Reason::Installed`] and [`Reason::NotInstallable`]; a pick with no mapped text is not
+/// counted (its load counted it).
 ///
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
 /// ABI, it runs the bytecode of its function (the digest binds them), and it follows the
-/// `RuntimeTable` rules. Its text lives as long as the isolate (`UnitCode::text`).
+/// `RuntimeTable` rules. Its text lives as long as the isolate (`UnitCode::text`), and its
+/// unwind data is registered.
 pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
     let mut r = Report::default();
     for fi in lu.infos.iter() {
@@ -430,14 +662,17 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
         let Pick::Code(i) = uc.pick else {
             continue;
         };
+        let Some(code) = uc.code_at(i) else {
+            continue;
+        };
         let obj = &uc.set.objects[i];
         let kind = DispatchKind::from_u8(obj.kind);
         if kind != Some(DispatchKind::AotBaseline) || !obj.deps.is_empty() {
             r.add(Reason::NotInstallable, 1);
             continue;
         }
-        // SAFETY: the caller's contract; `uc.code[i]` lies in `uc.text`.
-        match unsafe { install_code(rt, fi, DispatchKind::AotBaseline, uc.code[i].clone()) } {
+        // SAFETY: the caller's contract; `code` lies in `uc.text`.
+        match unsafe { install_code(rt, fi, DispatchKind::AotBaseline, code) } {
             Ok(_) => r.add(Reason::Installed, 1),
             Err(_) => r.add(Reason::NotInstallable, 1),
         }
