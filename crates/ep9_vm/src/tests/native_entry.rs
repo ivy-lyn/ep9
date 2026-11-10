@@ -773,7 +773,7 @@ fn native_entry_runs_stub_code_from_rust_and_from_t0() {
                 let t = iso.global_raw("t").unwrap();
                 assert!(call_through_entry(&mut iso, t, &[]).is_none());
                 // A T0 call of the native g: entered (then g calls back into T0 and into the
-                // native id) only where `slow::call` has the native path (spike-native).
+                // native id) by `slow::call`, in every build (M7-P5 A2-RW, MC-w30-2).
                 crate::tests::take_output();
                 for callee in ["bump", "id"] {
                     let r = iso.with_cx_checkpoint(|cx| {
@@ -790,17 +790,11 @@ fn native_entry_runs_stub_code_from_rust_and_from_t0() {
                 iso.verify_heap().unwrap();
                 out
             });
-            // T0's cold call path (`slow::call`) enters native code only with `spike-native`
-            // (its file is not this role's; the A2 unit loader routes it, plan v12 §7.3).
-            // Without it the call is refused as before, by a catchable error.
-            let t0 = |out: &str| {
-                if cfg!(feature = "spike-native") {
-                    format!("Ok(\"done\") [\"{out}\"]")
-                } else {
-                    "Error: not implemented in ep9 v0: calling code of this dispatch kind"
-                        .to_string()
-                }
-            };
+            // T0's cold call path (`slow::call`) enters native code in every build: with
+            // `spike-native` at its early entry, and in every build late in `do_call`
+            // (`call_native_cold`; M7-P5 A2-RW, MC-w30-2). Before M7-P5 the default build
+            // refused the call with "not implemented". Both paths give the same result.
+            let t0 = |out: &str| format!("Ok(\"done\") [\"{out}\"]");
             assert_eq!(
                 r,
                 [
