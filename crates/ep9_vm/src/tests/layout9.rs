@@ -117,7 +117,7 @@ fn the_view_and_bytes_cell_exports() {
         layout::BYTES_DATA.is_multiple_of(8),
         "the bytes are 8-aligned"
     );
-    assert!(layout::ARRAY_ELEMENTS < layout::VIEW_BUFFER);
+    const { assert!(layout::ARRAY_ELEMENTS < layout::VIEW_BUFFER) };
 }
 
 /// H18 "elements kind values (append-only)": 7 TYPED_FIXED and 8 TYPED_VARIABLE (Proposal A,

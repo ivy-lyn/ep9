@@ -268,6 +268,80 @@ pub(crate) fn is_bigint(b: u64) -> bool {
     cell_kind(b) == BIGINT.get()
 }
 
+// ---- the TypedArray view kinds and BYTES of OBJECT_LAYOUT 9 (TypedArray TA-0, TA-DECL) ----
+// At the end of the const block, after the BIGINT test above, so no line of the table and of
+// the older ids moves (H17 cites them). Design `docs/plan/notes/typedarray-design.md` §2.1
+// (TA-D1, TA-D4). Declared only: TA-1 TA-VM registers them (`object::register_kinds`) and
+// builds their cells.
+
+/// A view of an Int8Array (spec Table 71 row 1): the first of the 12 view kinds, 29-40, one
+/// per element type, adjacent and in Table 71 order, so the element type of a view is its kind
+/// minus [`INT8_VIEW`] (TA-D1). Each view kind is a JS object with 4 fixed fields: +24 buffer,
+/// +32 data (an `ExternalRef<u8>` native word), +40 length, +48 byteOffset; the in-object slots
+/// follow at +56 (`layout::VIEW_*`). Its elements store (+16) is always undefined.
+/// OBJECT_LAYOUT 9.
+pub(crate) const INT8_VIEW: KindId = k(29);
+/// Uint8Array (Table 71 row 2). OBJECT_LAYOUT 9.
+pub(crate) const UINT8_VIEW: KindId = k(30);
+/// Uint8ClampedArray (Table 71 row 3). OBJECT_LAYOUT 9.
+pub(crate) const UINT8_CLAMPED_VIEW: KindId = k(31);
+/// Int16Array (Table 71 row 4). OBJECT_LAYOUT 9.
+pub(crate) const INT16_VIEW: KindId = k(32);
+/// Uint16Array (Table 71 row 5). OBJECT_LAYOUT 9.
+pub(crate) const UINT16_VIEW: KindId = k(33);
+/// Int32Array (Table 71 row 6). OBJECT_LAYOUT 9.
+pub(crate) const INT32_VIEW: KindId = k(34);
+/// Uint32Array (Table 71 row 7). OBJECT_LAYOUT 9.
+pub(crate) const UINT32_VIEW: KindId = k(35);
+/// BigInt64Array (Table 71 row 8): the first of the 2 BigInt views ([`is_bigint_view_kind`]).
+/// OBJECT_LAYOUT 9.
+pub(crate) const BIGINT64_VIEW: KindId = k(36);
+/// BigUint64Array (Table 71 row 9). OBJECT_LAYOUT 9.
+pub(crate) const BIGUINT64_VIEW: KindId = k(37);
+/// Float16Array (Table 71 row 10): the first of the 3 float views ([`is_float_view_kind`]).
+/// OBJECT_LAYOUT 9.
+pub(crate) const FLOAT16_VIEW: KindId = k(38);
+/// Float32Array (Table 71 row 11). OBJECT_LAYOUT 9.
+pub(crate) const FLOAT32_VIEW: KindId = k(39);
+/// Float64Array (Table 71 row 12): the last view kind. OBJECT_LAYOUT 9.
+pub(crate) const FLOAT64_VIEW: KindId = k(40);
+
+/// Raw bytes (internal, TA-D4): the store of a fixed-length, non-shared ArrayBuffer. +8 the
+/// byte length (a number Value), +16 the bytes, zeroed at birth (8-aligned; no Value, so the
+/// trace function visits no word, as ELEMENTS_DOUBLE). Above 8 KiB the cell is a large object.
+/// OBJECT_LAYOUT 9.
+pub(crate) const BYTES: KindId = k(85);
+
+/// The number of view kinds: one per row of spec Table 71.
+pub(crate) const VIEW_KINDS: u8 = FLOAT64_VIEW.get() - INT8_VIEW.get() + 1;
+const _: () = assert!(VIEW_KINDS == 12);
+
+/// True for the 12 view kinds 29-40 (one range compare, TA-D6). Not routed: the range 25..=28
+/// of `exotic::is_routed` stays closed, so a view kind gets this compare of its own.
+#[inline(always)]
+pub(crate) const fn is_view_kind(k: u8) -> bool {
+    k >= INT8_VIEW.get() && k <= FLOAT64_VIEW.get()
+}
+
+/// True for the 2 BigInt views, BigInt64Array and BigUint64Array (36-37): their elements are
+/// BigInts ([[ContentType]] bigint).
+#[inline(always)]
+pub(crate) const fn is_bigint_view_kind(k: u8) -> bool {
+    k >= BIGINT64_VIEW.get() && k <= BIGUINT64_VIEW.get()
+}
+
+/// True for the 3 float views, Float16Array, Float32Array and Float64Array (38-40).
+#[inline(always)]
+pub(crate) const fn is_float_view_kind(k: u8) -> bool {
+    k >= FLOAT16_VIEW.get() && k <= FLOAT64_VIEW.get()
+}
+
+/// A TypedArray (a cell of one of the 12 view kinds, [`is_view_kind`]).
+#[inline(always)]
+pub(crate) fn is_view(b: u64) -> bool {
+    is_view_kind(cell_kind(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,78 +473,4 @@ mod tests {
         all.dedup();
         assert_eq!(all.len(), n, "kind ids are distinct");
     }
-}
-
-// ---- the TypedArray view kinds and BYTES of OBJECT_LAYOUT 9 (TypedArray TA-0, TA-DECL) ----
-// Here, after the tests module at the end of the file, so no line above moves (H17 and H08 cite
-// lines of this file up to the tests). Design `docs/plan/notes/typedarray-design.md` §2.1
-// (TA-D1, TA-D4). Declared only: TA-1 TA-VM registers them (`object::register_kinds`) and
-// builds their cells.
-
-/// A view of an Int8Array (spec Table 71 row 1): the first of the 12 view kinds, 29-40, one
-/// per element type, adjacent and in Table 71 order, so the element type of a view is its kind
-/// minus [`INT8_VIEW`] (TA-D1). Each view kind is a JS object with 4 fixed fields: +24 buffer,
-/// +32 data (an `ExternalRef<u8>` native word), +40 length, +48 byteOffset; the in-object slots
-/// follow at +56 (`layout::VIEW_*`). Its elements store (+16) is always undefined.
-/// OBJECT_LAYOUT 9.
-pub(crate) const INT8_VIEW: KindId = k(29);
-/// Uint8Array (Table 71 row 2). OBJECT_LAYOUT 9.
-pub(crate) const UINT8_VIEW: KindId = k(30);
-/// Uint8ClampedArray (Table 71 row 3). OBJECT_LAYOUT 9.
-pub(crate) const UINT8_CLAMPED_VIEW: KindId = k(31);
-/// Int16Array (Table 71 row 4). OBJECT_LAYOUT 9.
-pub(crate) const INT16_VIEW: KindId = k(32);
-/// Uint16Array (Table 71 row 5). OBJECT_LAYOUT 9.
-pub(crate) const UINT16_VIEW: KindId = k(33);
-/// Int32Array (Table 71 row 6). OBJECT_LAYOUT 9.
-pub(crate) const INT32_VIEW: KindId = k(34);
-/// Uint32Array (Table 71 row 7). OBJECT_LAYOUT 9.
-pub(crate) const UINT32_VIEW: KindId = k(35);
-/// BigInt64Array (Table 71 row 8): the first of the 2 BigInt views ([`is_bigint_view_kind`]).
-/// OBJECT_LAYOUT 9.
-pub(crate) const BIGINT64_VIEW: KindId = k(36);
-/// BigUint64Array (Table 71 row 9). OBJECT_LAYOUT 9.
-pub(crate) const BIGUINT64_VIEW: KindId = k(37);
-/// Float16Array (Table 71 row 10): the first of the 3 float views ([`is_float_view_kind`]).
-/// OBJECT_LAYOUT 9.
-pub(crate) const FLOAT16_VIEW: KindId = k(38);
-/// Float32Array (Table 71 row 11). OBJECT_LAYOUT 9.
-pub(crate) const FLOAT32_VIEW: KindId = k(39);
-/// Float64Array (Table 71 row 12): the last view kind. OBJECT_LAYOUT 9.
-pub(crate) const FLOAT64_VIEW: KindId = k(40);
-
-/// Raw bytes (internal, TA-D4): the store of a fixed-length, non-shared ArrayBuffer. +8 the
-/// byte length (a number Value), +16 the bytes, zeroed at birth (8-aligned; no Value, so the
-/// trace function visits no word, as ELEMENTS_DOUBLE). Above 8 KiB the cell is a large object.
-/// OBJECT_LAYOUT 9.
-pub(crate) const BYTES: KindId = k(85);
-
-/// The number of view kinds: one per row of spec Table 71.
-pub(crate) const VIEW_KINDS: u8 = FLOAT64_VIEW.get() - INT8_VIEW.get() + 1;
-const _: () = assert!(VIEW_KINDS == 12);
-
-/// True for the 12 view kinds 29-40 (one range compare, TA-D6). Not routed: the range 25..=28
-/// of `exotic::is_routed` stays closed, so a view kind gets this compare of its own.
-#[inline(always)]
-pub(crate) const fn is_view_kind(k: u8) -> bool {
-    k >= INT8_VIEW.get() && k <= FLOAT64_VIEW.get()
-}
-
-/// True for the 2 BigInt views, BigInt64Array and BigUint64Array (36-37): their elements are
-/// BigInts ([[ContentType]] bigint).
-#[inline(always)]
-pub(crate) const fn is_bigint_view_kind(k: u8) -> bool {
-    k >= BIGINT64_VIEW.get() && k <= BIGUINT64_VIEW.get()
-}
-
-/// True for the 3 float views, Float16Array, Float32Array and Float64Array (38-40).
-#[inline(always)]
-pub(crate) const fn is_float_view_kind(k: u8) -> bool {
-    k >= FLOAT16_VIEW.get() && k <= FLOAT64_VIEW.get()
-}
-
-/// A TypedArray (a cell of one of the 12 view kinds, [`is_view_kind`]).
-#[inline(always)]
-pub(crate) fn is_view(b: u64) -> bool {
-    is_view_kind(cell_kind(b))
 }
