@@ -24,7 +24,8 @@
 //!        both valid: exec on the pattern text as the subject, at most POLLS polls;
 //!        a match: one span per group (RX1 capture_count + 1), each inside the subject
 //!   3. the pattern is one class (Tree::ClassRanges, ClassSetOperand, ClassSetExpression)
-//!        RX1 set (class_ranges / class_set) against RX0 "^(?:<text>)$" (flags i s u v) on
+//!        RX1 set (class_ranges / class_set; built also when a known difference skips the
+//!        compare) against RX0 "^(?:<text>)$" (flags i s u v) on
 //!        probe characters (the pattern's characters, their case equivalents, the RX1 range
 //!        ends and a fixed list) and on the class strings
 //!        a difference -> panic, except the known RX0 differences below
@@ -502,14 +503,14 @@ fn has_single_amp(units: &[u16]) -> bool {
     false
 }
 
-/// Check 3: on a one-class pattern, the RX1 set is the RX0 set.
+/// Check 3: on a one-class pattern, the RX1 set is the RX0 set. The RX1 set is built for
+/// every one-class pattern, also one with a known RX0 set difference: that skip leaves out
+/// only the compare, so the RX1 set code still runs (a crash or a hang in it is found; M7-P5
+/// Codex R2).
 fn check_class_set(units: &[u16], flags: Flags, rx1: &Pattern) {
     let Some(class) = single_class(&rx1.tree) else {
         return;
     };
-    if known_rx0_set_difference(units, flags) {
-        return;
-    }
     // The flags that change what a class matches; `^(?:...)$` must not see `m` or `y`.
     let set_bits = flags.bits()
         & (Flags::IGNORE_CASE
@@ -517,12 +518,6 @@ fn check_class_set(units: &[u16], flags: Flags, rx1: &Pattern) {
             .union(Flags::UNICODE)
             .union(Flags::UNICODE_SETS))
         .bits();
-    let mut anchored: Vec<u16> = "^(?:".encode_utf16().collect();
-    anchored.extend_from_slice(units);
-    anchored.extend(")$".encode_utf16());
-    let Ok(program) = Rx0::compile(&anchored, ep9_regexp::Flags::from_bits(set_bits)) else {
-        panic!("RX0 compiles the class but not ^(?:class)$");
-    };
     let rx1_flags = Flags::from_bits(set_bits);
     let (ranges, negated, strings) = match class {
         Tree::ClassRanges(cr) => {
@@ -536,6 +531,15 @@ fn check_class_set(units: &[u16], flags: Flags, rx1: &Pattern) {
             let strings: Vec<Vec<u32>> = set.strings.keys().map(|k| k.0.to_vec()).collect();
             (set.ranges, false, strings)
         }
+    };
+    if known_rx0_set_difference(units, flags) {
+        return;
+    }
+    let mut anchored: Vec<u16> = "^(?:".encode_utf16().collect();
+    anchored.extend_from_slice(units);
+    anchored.extend(")$".encode_utf16());
+    let Ok(program) = Rx0::compile(&anchored, ep9_regexp::Flags::from_bits(set_bits)) else {
+        panic!("RX0 compiles the class but not ^(?:class)$");
     };
     let mut caps = Vec::new();
     let mut scratch = Rx0Scratch::default();
