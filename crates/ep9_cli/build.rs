@@ -21,8 +21,11 @@ use std::process::Command;
 #[path = "../ep9_unit/build_watch.rs"]
 mod build_watch;
 
-/// The paths whose state is the engine's: the fresh paths of `tools/bench/cross/kernels.mjs`
-/// `TREE_PATHS` without `tools/bench` (the bench tools are not in the binary).
+/// The paths whose state is the engine's: `tools/bench/cross/kernels.mjs` `TREE_PATHS`
+/// (FRESH_PATHS, REGRESS_PATHS, ICU4X_PATHS) without `tools/bench` (the bench tools are not in
+/// the binary). The regress and icu_calendar forks are built from git-ignored checkouts of
+/// their pins and patch sets, so a pin or patch change is an engine change. The xtask test
+/// `m2_exit::tests::the_build_line_engine_paths_are_the_bench_tree_paths` keeps the lists equal.
 const ENGINE_PATHS: &[&str] = &[
     "crates",
     "Cargo.toml",
@@ -30,6 +33,8 @@ const ENGINE_PATHS: &[&str] = &[
     "rust-toolchain.toml",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "third_party/icu4x.commit",
+    "third_party/patches/icu4x",
 ];
 
 fn main() {

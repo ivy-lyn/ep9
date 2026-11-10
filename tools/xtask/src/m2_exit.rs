@@ -2476,6 +2476,43 @@ mod tests {
 
     /// P0-BUILDID: a mem or JetStream run whose ep9 binary prints no build line, or was built
     /// dirty, names no ep9 commit (the tools write null), so the cell is OPEN and says why.
+    /// P0-BUILDID (M7-P5 Codex fixer F2, Claude reviewer F1): the paths whose changes make
+    /// `ep9 --version` say "dirty" (`crates/ep9_cli/build.rs` ENGINE_PATHS) are
+    /// `tools/bench/cross/kernels.mjs` TREE_PATHS without `tools/bench`, and this file's
+    /// [`ENGINE_PATHS`]. Reads the live sources (the m1-exit `T262_FRESH_PATHS` test form).
+    #[test]
+    fn the_build_line_engine_paths_are_the_bench_tree_paths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let quoted = |s: &str| -> Vec<String> {
+            s.split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect()
+        };
+        let build = std::fs::read_to_string(root.join("crates/ep9_cli/build.rs")).unwrap();
+        let start = build.find("const ENGINE_PATHS").expect("ENGINE_PATHS");
+        let body = &build[start..start + build[start..].find("];").unwrap()];
+        let built = quoted(&body[body.find('=').unwrap()..]);
+        let kernels = std::fs::read_to_string(root.join("tools/bench/cross/kernels.mjs")).unwrap();
+        let line = |name: &str| -> &str {
+            kernels
+                .lines()
+                .find(|l| l.starts_with(&format!("export const {name} = [")))
+                .unwrap_or_else(|| panic!("kernels.mjs: {name}"))
+        };
+        let tree: Vec<String> = line("TREE_PATHS")
+            .split("...")
+            .skip(1)
+            .map(|n| n.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
+            .flat_map(|n| quoted(line(n)))
+            .filter(|p| p != "tools/bench")
+            .collect();
+        assert_eq!(tree.len(), 8, "{tree:?}");
+        assert_eq!(built, tree, "crates/ep9_cli/build.rs ENGINE_PATHS");
+        assert_eq!(built, ENGINE_PATHS, "m2_exit.rs ENGINE_PATHS");
+    }
+
     #[test]
     fn a_binary_with_no_clean_build_line_is_open() {
         let r = repo("buildid");
