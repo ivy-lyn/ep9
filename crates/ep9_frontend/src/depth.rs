@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! layer 0  pre-scan (prescan.rs)   tokens only, before oxc     -> estimate > PRESCAN_CAP: RangeError
-//! layer 1  oxc parser counter      not in oxc 0.157 (M1 patch)  -> the stack is sized for layer 0
+//! layer 1  oxc parser counter      not in oxc 0.158 (M1 patch)  -> the stack is sized for layer 0
 //! layer 2  AST-depth pass (here)   after parse, before semantic -> depth > AST_CAP: RangeError
 //! layer 3  our passes              explicit depth checks        -> depth > AST_CAP: RangeError
 //! ```

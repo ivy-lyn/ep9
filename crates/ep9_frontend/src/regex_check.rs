@@ -6,7 +6,7 @@
 //!   v
 //! check: for each RegExp token of the final token list
 //!   oxc_regular_expression::LiteralParser (the same pattern text, flags text and span
-//!   offsets as oxc_parser 0.157 parse_literal_regexp) --> an error goes into diagnostics
+//!   offsets as oxc_parser 0.158 parse_literal_regexp) --> an error goes into diagnostics
 //!   v
 //! the callers read the diagnostics as before (lib.rs parse, eval.rs on_worker)
 //! ```
@@ -15,8 +15,8 @@
 //! `parse_regular_expression` on, oxc_parser parses the pattern each time that it parses the
 //! literal. It parses the text inside a failed arrow head (`(a=` ...) one more time, so a
 //! literal inside d such heads is parsed d+1 times. The duplicate group name check of
-//! oxc_regular_expression 0.157 is quadratic in the groups of one name, so the time grows with
-//! d x g^2. Here the pattern is parsed once for each literal.
+//! oxc_regular_expression 0.157 was quadratic in the groups of one name (0.158 is linear), so
+//! the time grew with d x g^2. Here the pattern is parsed once for each literal.
 //!
 //! Why the token list and not an AST walk:
 //! - A parser rewind (arrow head, lookahead) cuts the token list where it cuts the parser
@@ -57,10 +57,10 @@ use oxc_span::{SourceType, Span};
 /// ```
 ///
 /// Why pass 1 (fuzz.yml run 41579263254, frontend_compile; decision M6-ORCH-23): after a
-/// fatal error, oxc_parser 0.157 keeps the current token but moves the lexer to the end of
+/// fatal error, oxc_parser 0.158 keeps the current token but moves the lexer to the end of
 /// the text. If that token is `/` or `/=` and the parser then parses an expression
 /// (`export default@import/f`), `Lexer::next_regex` takes the end of the text as the token
-/// start. With tokens on, a `debug_assert!` of the oxc lexer (lexer/mod.rs:328) then fails.
+/// start. With tokens on, a `debug_assert!` of the oxc lexer (lexer/mod.rs:324) then fails.
 /// With tokens off nothing fails. A fatal error makes oxc drop the tokens anyway, so pass 1
 /// gives the diagnostics of a tokens-on parse. The tokens setting only adds the token list,
 /// so pass 2 takes the path of pass 1: no fatal error, and the lexer never jumps ahead.
@@ -170,17 +170,17 @@ fn check_literal(
     }
 }
 
-/// The end of oxc_regular_expression 0.157's message for a braced quantifier number above
+/// The end of oxc_regular_expression 0.158's message for a braced quantifier number above
 /// 2^53 - 1.
 const TOO_LARGE_QUANTIFIER: &str = "Number is too large in braced quantifier";
 
-/// oxc_regular_expression 0.157's limit for a braced quantifier number (2^53 - 1).
+/// oxc_regular_expression 0.158's limit for a braced quantifier number (2^53 - 1).
 const MAX_QUANTIFIER: u64 = 9_007_199_254_740_991;
 
-/// The early errors of Unicode mode (`u` or `v`) that oxc_regular_expression 0.157 does not
+/// The early errors of Unicode mode (`u` or `v`) that oxc_regular_expression 0.158 does not
 /// report (route FE-RX-BUFBOUND, and the `[\c]` case of the M7-P4 regexp fuzz target):
 ///
-/// | Text | oxc 0.157 | ECMA-262 (node v26.13.0) |
+/// | Text | oxc 0.158 | ECMA-262 (node v26.13.0) |
 /// |---|---|---|
 /// | `\A`, `\z`, `\Z` | the assertions of the TC39 buffer boundaries proposal | IdentityEscape[+UnicodeMode] is only SyntaxCharacter or `/` (22.2.1): SyntaxError ("Invalid escape") |
 /// | `\c` with no ASCII letter after it, in a class (`[\c]`, `[\c_]`) | the Annex B ClassControlLetter form | ClassControlLetter is `[~UnicodeMode]` only (B.1.2): SyntaxError ("Invalid Unicode escape") |
@@ -516,8 +516,8 @@ mod tests {
 
     /// Fuzz crash of fuzz.yml run 41579263254 (frontend_compile; M6-ORCH-23): a fatal error
     /// in a decorator moves the oxc lexer to the end of the text, and `export default` then
-    /// reads the current `/` as a regex literal. With tokens on, oxc_parser 0.157
-    /// debug-asserts (lexer/mod.rs:328), so [`parse`] runs a tokens-off pass first when
+    /// reads the current `/` as a regex literal. With tokens on, oxc_parser 0.158
+    /// debug-asserts (lexer/mod.rs:324), so [`parse`] runs a tokens-off pass first when
     /// debug assertions are on. The debug and the release test runs (CI runs both) must give
     /// the same SyntaxError, with no panic, at each entry point: the messages below are the
     /// release messages of the one-pass parse.

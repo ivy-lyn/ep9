@@ -425,7 +425,7 @@ pub(crate) fn semantic<'a>(
 
 /// Make a Script strict without changing the source text.
 ///
-/// oxc 0.157 has no strict-script option: only the Module goal is strict. But its parser has no
+/// oxc 0.158 has no strict-script option: only the Module goal is strict. But its parser has no
 /// strict state either. Every strict-only early error is in oxc_semantic, which makes the
 /// top-level scope strict when `Program::has_use_strict_directive()` holds. So a synthetic
 /// directive at index 0 gives the same result as a `"use strict";` source prefix, keeps every
