@@ -1,0 +1,1353 @@
+# The public API of ep9_vm from rustdoc JSON (H20-Q6): `cargo xtask api-list` compares,
+# `cargo xtask api-list --bless` writes this file (tools/xtask/src/api_list.rs has the line
+# form). Build: nightly-2026-10-04, --target x86_64-unknown-linux-gnu, --features jit,
+# doc-hidden items read, rustdoc JSON format_version 61. One line per item, sorted.
+ep9_vm::Args :: impl<'s> !core::marker::Send for Args<'s> (auto)
+ep9_vm::Args :: impl<'s> !core::marker::Sync for Args<'s> (auto)
+ep9_vm::Args :: impl<'s> Args<'s>
+ep9_vm::Args :: impl<'s> Args<'s> :: fn callee(&self) -> Local<'s, JsFunction>
+ep9_vm::Args :: impl<'s> Args<'s> :: fn get(&self, usize) -> Local<'s>
+ep9_vm::Args :: impl<'s> Args<'s> :: fn is_construct_call(&self) -> bool
+ep9_vm::Args :: impl<'s> Args<'s> :: fn is_empty(&self) -> bool
+ep9_vm::Args :: impl<'s> Args<'s> :: fn iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = Local<'s>> + use<'s>
+ep9_vm::Args :: impl<'s> Args<'s> :: fn len(&self) -> usize
+ep9_vm::Args :: impl<'s> Args<'s> :: fn new_target(&self) -> Local<'s>
+ep9_vm::Args :: impl<'s> Args<'s> :: fn rest(&self, usize) -> Rest<'s>
+ep9_vm::Args :: impl<'s> Args<'s> :: fn this(&self) -> Local<'s>
+ep9_vm::Args :: impl<'s> core::clone::Clone for Args<'s>
+ep9_vm::Args :: impl<'s> core::clone::TrivialClone for Args<'s>
+ep9_vm::Args :: impl<'s> core::marker::Copy for Args<'s>
+ep9_vm::Args :: struct Args<'s> { .. }
+ep9_vm::ArgsBuilder :: impl core::ops::drop::Drop for ArgsBuilder<'_>
+ep9_vm::ArgsBuilder :: impl<'s> !core::marker::Send for ArgsBuilder<'s> (auto)
+ep9_vm::ArgsBuilder :: impl<'s> !core::marker::Sync for ArgsBuilder<'s> (auto)
+ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s>
+ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s> :: fn get(&self, usize) -> Local<'s>
+ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s> :: fn is_empty(&self) -> bool
+ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s> :: fn len(&self) -> usize
+ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s> :: fn push(&mut self, &mut Cx<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::ArgsBuilder :: struct ArgsBuilder<'s> { .. }
+ep9_vm::Atom :: #[repr(u16)] enum Atom
+ep9_vm::Atom :: impl Atom
+ep9_vm::Atom :: impl Atom :: const ALL: &'static [Atom]
+ep9_vm::Atom :: impl Atom :: const fn id(self) -> u16
+ep9_vm::Atom :: impl Atom :: const fn text(self) -> &'static str
+ep9_vm::Atom :: impl core::clone::Clone for Atom
+ep9_vm::Atom :: impl core::clone::TrivialClone for Atom
+ep9_vm::Atom :: impl core::cmp::Eq for Atom
+ep9_vm::Atom :: impl core::cmp::PartialEq for Atom
+ep9_vm::Atom :: impl core::fmt::Debug for Atom
+ep9_vm::Atom :: impl core::hash::Hash for Atom
+ep9_vm::Atom :: impl core::marker::Copy for Atom
+ep9_vm::Atom :: impl core::marker::Send for Atom (auto)
+ep9_vm::Atom :: impl core::marker::StructuralPartialEq for Atom
+ep9_vm::Atom :: impl core::marker::Sync for Atom (auto)
+ep9_vm::Atom :: variant Bigint
+ep9_vm::Atom :: variant Boolean
+ep9_vm::Atom :: variant Callee
+ep9_vm::Atom :: variant Comma
+ep9_vm::Atom :: variant Configurable
+ep9_vm::Atom :: variant Constructor
+ep9_vm::Atom :: variant Done
+ep9_vm::Atom :: variant Empty
+ep9_vm::Atom :: variant Enumerable
+ep9_vm::Atom :: variant False
+ep9_vm::Atom :: variant Function
+ep9_vm::Atom :: variant Get
+ep9_vm::Atom :: variant GlobalThis
+ep9_vm::Atom :: variant Infinity
+ep9_vm::Atom :: variant Length
+ep9_vm::Atom :: variant Message
+ep9_vm::Atom :: variant NaN
+ep9_vm::Atom :: variant Name
+ep9_vm::Atom :: variant Next
+ep9_vm::Atom :: variant Null
+ep9_vm::Atom :: variant Number
+ep9_vm::Atom :: variant Object
+ep9_vm::Atom :: variant Prototype
+ep9_vm::Atom :: variant Raw
+ep9_vm::Atom :: variant Return
+ep9_vm::Atom :: variant Set
+ep9_vm::Atom :: variant Stack
+ep9_vm::Atom :: variant String
+ep9_vm::Atom :: variant Symbol
+ep9_vm::Atom :: variant Throw
+ep9_vm::Atom :: variant ToStringKey
+ep9_vm::Atom :: variant True
+ep9_vm::Atom :: variant Undefined
+ep9_vm::Atom :: variant ValueKey
+ep9_vm::Atom :: variant ValueOf
+ep9_vm::Atom :: variant Writable
+ep9_vm::BuildInfo :: field features: &'static [&'static str]
+ep9_vm::BuildInfo :: field preset: &'static str
+ep9_vm::BuildInfo :: impl core::clone::Clone for BuildInfo
+ep9_vm::BuildInfo :: impl core::clone::TrivialClone for BuildInfo
+ep9_vm::BuildInfo :: impl core::cmp::Eq for BuildInfo
+ep9_vm::BuildInfo :: impl core::cmp::PartialEq for BuildInfo
+ep9_vm::BuildInfo :: impl core::fmt::Debug for BuildInfo
+ep9_vm::BuildInfo :: impl core::fmt::Display for BuildInfo
+ep9_vm::BuildInfo :: impl core::marker::Copy for BuildInfo
+ep9_vm::BuildInfo :: impl core::marker::Send for BuildInfo (auto)
+ep9_vm::BuildInfo :: impl core::marker::StructuralPartialEq for BuildInfo
+ep9_vm::BuildInfo :: impl core::marker::Sync for BuildInfo (auto)
+ep9_vm::BuildInfo :: struct BuildInfo {}
+ep9_vm::BuiltinDef :: field f: HostFn
+ep9_vm::BuiltinDef :: field kind: BuiltinKind
+ep9_vm::BuiltinDef :: field length: u32
+ep9_vm::BuiltinDef :: field name: &'static str
+ep9_vm::BuiltinDef :: impl BuiltinDef
+ep9_vm::BuiltinDef :: impl BuiltinDef :: const fn constructor(&'static str, u32, HostFn) -> BuiltinDef
+ep9_vm::BuiltinDef :: impl BuiltinDef :: const fn getter(&'static str, HostFn) -> BuiltinDef
+ep9_vm::BuiltinDef :: impl BuiltinDef :: const fn method(&'static str, u32, HostFn) -> BuiltinDef
+ep9_vm::BuiltinDef :: impl BuiltinDef :: const fn setter(&'static str, HostFn) -> BuiltinDef
+ep9_vm::BuiltinDef :: impl core::clone::Clone for BuiltinDef
+ep9_vm::BuiltinDef :: impl core::clone::TrivialClone for BuiltinDef
+ep9_vm::BuiltinDef :: impl core::fmt::Debug for BuiltinDef
+ep9_vm::BuiltinDef :: impl core::marker::Copy for BuiltinDef
+ep9_vm::BuiltinDef :: impl core::marker::Send for BuiltinDef (auto)
+ep9_vm::BuiltinDef :: impl core::marker::Sync for BuiltinDef (auto)
+ep9_vm::BuiltinDef :: struct BuiltinDef {}
+ep9_vm::BuiltinId :: impl BuiltinId
+ep9_vm::BuiltinId :: impl BuiltinId :: const BLOCKS: usize
+ep9_vm::BuiltinId :: impl BuiltinId :: const BLOCK_BITS: u32
+ep9_vm::BuiltinId :: impl BuiltinId :: const INDEX_BITS: u32
+ep9_vm::BuiltinId :: impl BuiltinId :: const PER_BLOCK: usize
+ep9_vm::BuiltinId :: impl BuiltinId :: const fn bits(self) -> u16
+ep9_vm::BuiltinId :: impl BuiltinId :: const fn block(self) -> u8
+ep9_vm::BuiltinId :: impl BuiltinId :: const fn index(self) -> u16
+ep9_vm::BuiltinId :: impl BuiltinId :: const fn new(u8, u16) -> BuiltinId
+ep9_vm::BuiltinId :: impl core::clone::Clone for BuiltinId
+ep9_vm::BuiltinId :: impl core::clone::TrivialClone for BuiltinId
+ep9_vm::BuiltinId :: impl core::cmp::Eq for BuiltinId
+ep9_vm::BuiltinId :: impl core::cmp::Ord for BuiltinId
+ep9_vm::BuiltinId :: impl core::cmp::PartialEq for BuiltinId
+ep9_vm::BuiltinId :: impl core::cmp::PartialOrd for BuiltinId
+ep9_vm::BuiltinId :: impl core::fmt::Debug for BuiltinId
+ep9_vm::BuiltinId :: impl core::fmt::Display for BuiltinId
+ep9_vm::BuiltinId :: impl core::hash::Hash for BuiltinId
+ep9_vm::BuiltinId :: impl core::marker::Copy for BuiltinId
+ep9_vm::BuiltinId :: impl core::marker::Send for BuiltinId (auto)
+ep9_vm::BuiltinId :: impl core::marker::StructuralPartialEq for BuiltinId
+ep9_vm::BuiltinId :: impl core::marker::Sync for BuiltinId (auto)
+ep9_vm::BuiltinId :: struct BuiltinId(_)
+ep9_vm::BuiltinKind :: enum BuiltinKind
+ep9_vm::BuiltinKind :: impl core::clone::Clone for BuiltinKind
+ep9_vm::BuiltinKind :: impl core::clone::TrivialClone for BuiltinKind
+ep9_vm::BuiltinKind :: impl core::cmp::Eq for BuiltinKind
+ep9_vm::BuiltinKind :: impl core::cmp::PartialEq for BuiltinKind
+ep9_vm::BuiltinKind :: impl core::fmt::Debug for BuiltinKind
+ep9_vm::BuiltinKind :: impl core::marker::Copy for BuiltinKind
+ep9_vm::BuiltinKind :: impl core::marker::Send for BuiltinKind (auto)
+ep9_vm::BuiltinKind :: impl core::marker::StructuralPartialEq for BuiltinKind
+ep9_vm::BuiltinKind :: impl core::marker::Sync for BuiltinKind (auto)
+ep9_vm::BuiltinKind :: variant Constructor
+ep9_vm::BuiltinKind :: variant Getter
+ep9_vm::BuiltinKind :: variant Method
+ep9_vm::BuiltinKind :: variant Setter
+ep9_vm::BuiltinModule :: field block: u8
+ep9_vm::BuiltinModule :: field defs: &'static [BuiltinDef]
+ep9_vm::BuiltinModule :: field intrinsics: &'static [IntrinsicDef]
+ep9_vm::BuiltinModule :: field name: &'static str
+ep9_vm::BuiltinModule :: field props: &'static [ObjectProps]
+ep9_vm::BuiltinModule :: impl BuiltinModule
+ep9_vm::BuiltinModule :: impl BuiltinModule :: const fn empty(&'static str, u8) -> BuiltinModule
+ep9_vm::BuiltinModule :: impl BuiltinModule :: const fn id(&self, u16) -> BuiltinId
+ep9_vm::BuiltinModule :: impl BuiltinModule :: fn ids_text(&self) -> alloc::string::String
+ep9_vm::BuiltinModule :: impl core::clone::Clone for BuiltinModule
+ep9_vm::BuiltinModule :: impl core::clone::TrivialClone for BuiltinModule
+ep9_vm::BuiltinModule :: impl core::fmt::Debug for BuiltinModule
+ep9_vm::BuiltinModule :: impl core::marker::Copy for BuiltinModule
+ep9_vm::BuiltinModule :: impl core::marker::Send for BuiltinModule (auto)
+ep9_vm::BuiltinModule :: impl core::marker::Sync for BuiltinModule (auto)
+ep9_vm::BuiltinModule :: struct BuiltinModule {}
+ep9_vm::BuiltinTable :: field modules: &'static [BuiltinModule]
+ep9_vm::BuiltinTable :: field name: &'static str
+ep9_vm::BuiltinTable :: impl BuiltinTable
+ep9_vm::BuiltinTable :: impl BuiltinTable :: const fn new(&'static str, &'static [BuiltinModule]) -> BuiltinTable
+ep9_vm::BuiltinTable :: impl core::fmt::Debug for BuiltinTable
+ep9_vm::BuiltinTable :: impl core::marker::Send for BuiltinTable (auto)
+ep9_vm::BuiltinTable :: impl core::marker::Sync for BuiltinTable (auto)
+ep9_vm::BuiltinTable :: struct BuiltinTable { .. }
+ep9_vm::CodeEntry :: field function: usize
+ep9_vm::CodeEntry :: field kind: DispatchKind
+ep9_vm::CodeEntry :: field len: usize
+ep9_vm::CodeEntry :: field start: usize
+ep9_vm::CodeEntry :: impl CodeEntry
+ep9_vm::CodeEntry :: impl CodeEntry :: fn contains(&self, usize) -> bool
+ep9_vm::CodeEntry :: impl CodeEntry :: fn range(&self) -> core::ops::range::Range<usize>
+ep9_vm::CodeEntry :: impl core::clone::Clone for CodeEntry
+ep9_vm::CodeEntry :: impl core::clone::TrivialClone for CodeEntry
+ep9_vm::CodeEntry :: impl core::cmp::Eq for CodeEntry
+ep9_vm::CodeEntry :: impl core::cmp::PartialEq for CodeEntry
+ep9_vm::CodeEntry :: impl core::fmt::Debug for CodeEntry
+ep9_vm::CodeEntry :: impl core::marker::Copy for CodeEntry
+ep9_vm::CodeEntry :: impl core::marker::Send for CodeEntry (auto)
+ep9_vm::CodeEntry :: impl core::marker::StructuralPartialEq for CodeEntry
+ep9_vm::CodeEntry :: impl core::marker::Sync for CodeEntry (auto)
+ep9_vm::CodeEntry :: struct CodeEntry {}
+ep9_vm::CodeRegistry :: fn is_empty(&self) -> bool
+ep9_vm::CodeRegistry :: fn len(&self) -> usize
+ep9_vm::CodeRegistry :: fn lookup(&self, usize) -> core::option::Option<CodeEntry>
+ep9_vm::CodeRegistry :: fn register(&mut self, CodeEntry) -> core::result::Result<(), RegistryError>
+ep9_vm::CodeRegistry :: fn unregister(&mut self, usize) -> core::option::Option<CodeEntry>
+ep9_vm::CodeRegistry :: trait CodeRegistry
+ep9_vm::CollectionCursor :: impl<'s> !core::marker::Send for CollectionCursor<'s> (auto)
+ep9_vm::CollectionCursor :: impl<'s> !core::marker::Sync for CollectionCursor<'s> (auto)
+ep9_vm::CollectionCursor :: impl<'s> core::fmt::Debug for CollectionCursor<'s>
+ep9_vm::CollectionCursor :: struct CollectionCursor<'s> { .. }
+ep9_vm::CompileFailure :: enum CompileFailure
+ep9_vm::CompileFailure :: impl core::clone::Clone for CompileFailure
+ep9_vm::CompileFailure :: impl core::cmp::Eq for CompileFailure
+ep9_vm::CompileFailure :: impl core::cmp::PartialEq for CompileFailure
+ep9_vm::CompileFailure :: impl core::fmt::Debug for CompileFailure
+ep9_vm::CompileFailure :: impl core::marker::Send for CompileFailure (auto)
+ep9_vm::CompileFailure :: impl core::marker::StructuralPartialEq for CompileFailure
+ep9_vm::CompileFailure :: impl core::marker::Sync for CompileFailure (auto)
+ep9_vm::CompileFailure :: variant Internal(alloc::string::String)
+ep9_vm::CompileFailure :: variant Range(alloc::string::String)
+ep9_vm::CompileFailure :: variant Syntax(alloc::string::String)
+ep9_vm::CompileFailure :: variant Unsupported(alloc::string::String)
+ep9_vm::CompileResult :: type CompileResult = core::result::Result<ep9_bytecode::unit::VerifiedUnit, CompileFailure>
+ep9_vm::CompilerHooks :: field compile_eval: fn(&str, &ep9_bytecode::eval_context::EvalContext) -> CompileResult
+ep9_vm::CompilerHooks :: field compile_function: fn(ep9_bytecode::eval_context::FunctionCtorKind, &str, &str) -> CompileResult
+ep9_vm::CompilerHooks :: field compile_script: fn(&str) -> CompileResult
+ep9_vm::CompilerHooks :: impl core::clone::Clone for CompilerHooks
+ep9_vm::CompilerHooks :: impl core::clone::TrivialClone for CompilerHooks
+ep9_vm::CompilerHooks :: impl core::fmt::Debug for CompilerHooks
+ep9_vm::CompilerHooks :: impl core::marker::Copy for CompilerHooks
+ep9_vm::CompilerHooks :: impl core::marker::Send for CompilerHooks (auto)
+ep9_vm::CompilerHooks :: impl core::marker::Sync for CompilerHooks (auto)
+ep9_vm::CompilerHooks :: struct CompilerHooks {}
+ep9_vm::ConstValue :: enum ConstValue
+ep9_vm::ConstValue :: impl core::clone::Clone for ConstValue
+ep9_vm::ConstValue :: impl core::clone::TrivialClone for ConstValue
+ep9_vm::ConstValue :: impl core::cmp::PartialEq for ConstValue
+ep9_vm::ConstValue :: impl core::fmt::Debug for ConstValue
+ep9_vm::ConstValue :: impl core::marker::Copy for ConstValue
+ep9_vm::ConstValue :: impl core::marker::Send for ConstValue (auto)
+ep9_vm::ConstValue :: impl core::marker::StructuralPartialEq for ConstValue
+ep9_vm::ConstValue :: impl core::marker::Sync for ConstValue (auto)
+ep9_vm::ConstValue :: variant Bool(bool)
+ep9_vm::ConstValue :: variant Null
+ep9_vm::ConstValue :: variant Number(f64)
+ep9_vm::ConstValue :: variant Str(&'static str)
+ep9_vm::ConstValue :: variant Undefined
+ep9_vm::Cx :: impl<'s> !core::marker::Send for Cx<'s> (auto)
+ep9_vm::Cx :: impl<'s> !core::marker::Sync for Cx<'s> (auto)
+ep9_vm::Cx :: impl<'s> Cx<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: #[doc(hidden)] fn forward_apply(&mut self, Args<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: #[doc(hidden)] fn forward_call(&mut self, Args<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: #[doc(hidden)] fn set_human_fast_paths(&mut self, bool)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn args_builder(&self) -> ArgsBuilder<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_as_int_n(&mut self, u64, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_as_uint_n(&mut self, u64, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_from_i128(&mut self, i128) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_to_i128(&self, impl core::convert::Into<Local<'s>>) -> core::option::Option<i128>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_to_number(&self, impl core::convert::Into<Local<'s>>) -> f64
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_to_string(&mut self, impl core::convert::Into<Local<'s>>, u32) -> ep9_value::JsResult<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn call(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, &[Local<'s>]) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn call_args(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, Rest<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn call_built(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, ArgsBuilder<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn can_be_held_weakly(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn catch_exception(&mut self, ep9_value::Throw) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn check_native_stack(&mut self) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn cleanup_finalization_registries(&mut self) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn clear_kept_objects(&mut self)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn closure_data(&self, impl core::convert::Into<Local<'s>>) -> Local<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn code_unit_at(&self, Local<'s, FlatStr>, usize) -> core::option::Option<u16>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collect_garbage(&mut self)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collect_garbage_minor(&mut self)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_clear(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_cursor(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass) -> ep9_value::JsResult<CollectionCursor<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_delete(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_get(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<Local<'s>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_has(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_iterator_next(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass) -> ep9_value::JsResult<core::option::Option<Local<'s>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_next(&mut self, &mut CollectionCursor<'s>) -> core::option::Option<(Local<'s>, Local<'s>)>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_set(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_size(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass) -> ep9_value::JsResult<usize>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct(&mut self, impl core::convert::Into<Local<'s>>, &[Local<'s>], impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct_args(&mut self, impl core::convert::Into<Local<'s>>, Rest<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct_built(&mut self, impl core::convert::Into<Local<'s>>, ArgsBuilder<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_array_from_list(&mut self, &[Local<'s>]) -> ep9_value::JsResult<Local<'s, JsArray>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property_index_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_list_from_array_like(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<ArgsBuilder<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_realm(&mut self) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_resolving_functions(&mut self, Local<'s, JsObject>) -> (Local<'s, JsFunction>, Local<'s, JsFunction>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn define_own_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn define_property_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn delete(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn delete_index(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64, bool) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn delete_property_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn descriptive_string(&mut self, Local<'s, JsSymbol>) -> ep9_value::JsResult<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn display(&self, impl core::convert::Into<Local<'s>>) -> alloc::string::String
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn enqueue_job(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn evaluate_script(&mut self, &str, &str) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn evaluate_script_in(&mut self, impl core::convert::Into<Local<'s, JsObject>>, &str, &str) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn finalization_registry_register(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn finalization_registry_unregister(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn flatten(&mut self, impl core::convert::Into<Local<'s, JsString>>) -> ep9_value::JsResult<Local<'s, FlatStr>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn from_property_descriptor(&mut self, core::option::Option<PropertyDescriptor<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn fulfill_promise(&mut self, Local<'s, JsObject>, impl core::convert::Into<Local<'s>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn function_realm_intrinsic(&self, impl core::convert::Into<Local<'s>>, IntrinsicId) -> Local<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn function_source_text(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<Local<'s, JsString>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_index(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_iterator(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<IteratorRecord<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_iterator_from_method(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<IteratorRecord<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_own_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<core::option::Option<PropertyDescriptor<'s>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_prototype_from_constructor(&mut self, impl core::convert::Into<Local<'s, JsObject>>, IntrinsicId) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_prototype_of(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_v(&mut self, impl core::convert::Into<Local<'s>>, impl IntoKey<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_with_receiver(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn global(&self) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn global_binding(&mut self, &str) -> ep9_value::JsResult<core::option::Option<Local<'s>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn has_index(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn has_intrinsic(&self, IntrinsicId) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn has_own_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn has_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn initial_name(&mut self, impl core::convert::Into<Local<'s, JsFunction>>) -> core::option::Option<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn intern(&mut self, Local<'s, JsString>) -> Local<'s, JsKey>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn intrinsic(&self, IntrinsicId) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_array(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_array_or_throw(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_bigint(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_builtin(&self, impl core::convert::Into<Local<'s>>, BuiltinId) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_callable(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_constructor(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_error(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_extensible(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_promise(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_proxy(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_strictly_equal(&self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn iterator_close<T>(&mut self, &IteratorRecord<'s>, ep9_value::JsResult<T>) -> ep9_value::JsResult<T>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn iterator_step_value(&mut self, &mut IteratorRecord<'s>) -> ep9_value::JsResult<core::option::Option<Local<'s>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn key(&mut self, &str) -> Local<'s, JsKey>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn key_for(&self, Local<'s, JsSymbol>) -> core::option::Option<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn local_tz_offset_ms(&mut self, f64, bool) -> f64
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn math_random(&mut self) -> f64
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_array(&mut self) -> Local<'s, JsArray>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_bound_function(&mut self, impl core::convert::Into<Local<'s, JsFunction>>, impl core::convert::Into<Local<'s>>, Rest<'s>) -> ep9_value::JsResult<Local<'s, JsFunction>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_builtin_closure(&mut self, HostFn, &str, u32, impl core::convert::Into<Local<'s>>) -> Local<'s, JsFunction>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_collection(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_collection_iterator(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, bool, bool) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_error_object(&mut self, impl core::convert::Into<Local<'s, JsObject>>, core::option::Option<Local<'s, JsString>>) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_finalization_registry(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_object(&mut self) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_object_with_proto(&mut self, impl core::convert::Into<Local<'s>>) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_object_with_slots(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_promise(&mut self, impl core::convert::Into<Local<'s>>) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_promise_capability(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<PromiseCapability<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_string(&mut self, &str) -> ep9_value::JsResult<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_string_utf16(&mut self, &[u16]) -> ep9_value::JsResult<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_symbol(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsSymbol>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_weak_ref(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> Local<'s, JsObject>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_wrapper(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn not_implemented(&mut self, &str) -> ep9_value::Throw
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn now_epoch_ns(&mut self) -> i128
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn number_to_bigint(&mut self, f64) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn object_class(&self, impl core::convert::Into<Local<'s>>) -> core::option::Option<ObjectClass>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn ordinary_create_from_constructor(&mut self, impl core::convert::Into<Local<'s, JsObject>>, IntrinsicId) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn own_property_keys(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<Local<'s, JsArray>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn perform_microtask_checkpoint(&mut self) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn perform_promise_then(&mut self, Local<'s, JsObject>, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, core::option::Option<PromiseCapability<'s>>) -> Local<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn poll_interrupt(&mut self) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn prevent_extensions(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn primitive_data(&self, impl core::convert::Into<Local<'s>>) -> core::option::Option<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn promise_is_handled(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn promise_resolve(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn promise_result(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn promise_state(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<PromiseState>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn prototype_walk_step(&mut self, impl core::convert::Into<Local<'s, JsObject>>, &mut u32) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn proxy_create(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn proxy_revoke(&mut self, impl core::convert::Into<Local<'s>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_create(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_disable_legacy_features(&mut self, impl core::convert::Into<Local<'s>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_exec(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, usize) -> ep9_value::JsResult<core::option::Option<MatchRecord>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_has_initial_flags(&mut self, impl core::convert::Into<Local<'s>>, &[BuiltinId; 9]) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_initialize(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_legacy_features(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_legacy_static(&mut self, u32) -> ep9_value::JsResult<core::option::Option<Local<'s, JsString>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_note_match(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, &MatchRecord)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_push_units(&mut self, impl core::convert::Into<Local<'s, JsString>>, usize, usize, &mut alloc::vec::Vec<u16>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_set_legacy_input(&mut self, impl core::convert::Into<Local<'s, JsString>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn reject_promise(&mut self, Local<'s, JsObject>, impl core::convert::Into<Local<'s>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn run_module(&mut self, ep9_bytecode::unit::VerifiedUnit, &str, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, &mut dyn core::ops::function::FnMut(&str) -> CompileResult) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn run_module_with_text(&mut self, ep9_bytecode::unit::VerifiedUnit, &str, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, &mut dyn core::ops::function::FnMut(&str) -> CompileResult, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn run_script(&mut self, ep9_bytecode::unit::VerifiedUnit, &str) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn run_script_with_unit_code(&mut self, ep9_bytecode::unit::VerifiedUnit, &str, &[u8], u64, &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])]) -> (alloc::vec::Vec<(&'static str, u32)>, ep9_value::JsResult<Local<'s>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn same_value(&self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn scratch_list(&self) -> ScratchList<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>, bool) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_elements_integrity(&mut self, impl core::convert::Into<Local<'s, JsObject>>, bool) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_function_length(&mut self, impl core::convert::Into<Local<'s, JsObject>>, f64) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_function_name(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::convert::Into<Local<'s>>, core::option::Option<&str>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_index(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64, impl core::convert::Into<Local<'s>>, bool) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_prototype_of(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_with_receiver(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_len(&self, impl core::convert::Into<Local<'s, JsString>>) -> usize
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn substring(&mut self, impl core::convert::Into<Local<'s, JsString>>, usize, usize) -> ep9_value::JsResult<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn symbol_description(&self, Local<'s, JsSymbol>) -> Local<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn symbol_for(&mut self, impl core::convert::Into<Local<'s, JsString>>) -> ep9_value::JsResult<Local<'s, JsSymbol>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn system_time_zone_id(&mut self) -> core::option::Option<alloc::string::String>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn tail_call_args(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, Rest<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn this_bigint_value(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn this_primitive_value(&mut self, impl core::convert::Into<Local<'s>>, PrimitiveType) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn throw(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::Throw
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn throw_error(&mut self, ErrorKind, &str) -> ep9_value::Throw
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn throw_range_error(&mut self, &str) -> ep9_value::Throw
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn throw_type_error(&mut self, &str) -> ep9_value::Throw
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_bigint(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_boolean(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_int32(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<i32>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_integer_or_infinity(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<f64>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<u64>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_number(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<f64>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_numeric(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_object(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_primitive(&mut self, impl core::convert::Into<Local<'s>>, ToPrimitiveHint) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_property_descriptor(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<PropertyDescriptor<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_property_key(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsKey>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_rust_string(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<alloc::string::String>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_string(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_uint32(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<u32>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn try_function_realm_intrinsic(&mut self, impl core::convert::Into<Local<'s>>, IntrinsicId) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn type_of(&self, impl core::convert::Into<Local<'s>>) -> &'static str
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn unit_function_digest(&self, &ep9_bytecode::unit::VerifiedUnit, u32) -> core::option::Option<[u8; 16]>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn weak_ref_deref(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn with_module_text_host<R>(&mut self, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, &mut dyn core::ops::function::FnMut(&str) -> CompileResult, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, impl core::ops::function::FnOnce(&mut Self) -> R) -> R
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn with_realm<R>(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::ops::function::FnOnce(&mut Self) -> ep9_value::JsResult<R>) -> ep9_value::JsResult<R>
+ep9_vm::Cx :: struct Cx<'s> { .. }
+ep9_vm::Dispatch :: enum Dispatch
+ep9_vm::Dispatch :: impl Dispatch
+ep9_vm::Dispatch :: impl Dispatch :: const ALL: &'static [Dispatch]
+ep9_vm::Dispatch :: impl Dispatch :: const DEFAULT: Dispatch
+ep9_vm::Dispatch :: impl Dispatch :: const RELEASE: Dispatch
+ep9_vm::Dispatch :: impl Dispatch :: const fn name(self) -> &'static str
+ep9_vm::Dispatch :: impl core::clone::Clone for Dispatch
+ep9_vm::Dispatch :: impl core::clone::TrivialClone for Dispatch
+ep9_vm::Dispatch :: impl core::cmp::Eq for Dispatch
+ep9_vm::Dispatch :: impl core::cmp::PartialEq for Dispatch
+ep9_vm::Dispatch :: impl core::fmt::Debug for Dispatch
+ep9_vm::Dispatch :: impl core::hash::Hash for Dispatch
+ep9_vm::Dispatch :: impl core::marker::Copy for Dispatch
+ep9_vm::Dispatch :: impl core::marker::Send for Dispatch (auto)
+ep9_vm::Dispatch :: impl core::marker::StructuralPartialEq for Dispatch
+ep9_vm::Dispatch :: impl core::marker::Sync for Dispatch (auto)
+ep9_vm::Dispatch :: variant Match
+ep9_vm::Dispatch :: variant Sibling
+ep9_vm::DispatchKind :: #[repr(u8)] enum DispatchKind
+ep9_vm::DispatchKind :: impl DispatchKind
+ep9_vm::DispatchKind :: impl DispatchKind :: const ALL: [DispatchKind; 5]
+ep9_vm::DispatchKind :: impl DispatchKind :: const fn from_u8(u8) -> core::option::Option<DispatchKind>
+ep9_vm::DispatchKind :: impl DispatchKind :: const fn is_aot(self) -> bool
+ep9_vm::DispatchKind :: impl DispatchKind :: const fn name(self) -> &'static str
+ep9_vm::DispatchKind :: impl core::clone::Clone for DispatchKind
+ep9_vm::DispatchKind :: impl core::clone::TrivialClone for DispatchKind
+ep9_vm::DispatchKind :: impl core::cmp::Eq for DispatchKind
+ep9_vm::DispatchKind :: impl core::cmp::PartialEq for DispatchKind
+ep9_vm::DispatchKind :: impl core::fmt::Debug for DispatchKind
+ep9_vm::DispatchKind :: impl core::hash::Hash for DispatchKind
+ep9_vm::DispatchKind :: impl core::marker::Copy for DispatchKind
+ep9_vm::DispatchKind :: impl core::marker::Send for DispatchKind (auto)
+ep9_vm::DispatchKind :: impl core::marker::StructuralPartialEq for DispatchKind
+ep9_vm::DispatchKind :: impl core::marker::Sync for DispatchKind (auto)
+ep9_vm::DispatchKind :: variant AotBaseline = 3
+ep9_vm::DispatchKind :: variant AotOpt = 4
+ep9_vm::DispatchKind :: variant Baseline = 1
+ep9_vm::DispatchKind :: variant Interp = 0
+ep9_vm::DispatchKind :: variant Opt = 2
+ep9_vm::DispatchSlot :: #[repr(c)] struct DispatchSlot { .. }
+ep9_vm::DispatchSlot :: impl !core::marker::Sync for DispatchSlot (auto)
+ep9_vm::DispatchSlot :: impl DispatchSlot
+ep9_vm::DispatchSlot :: impl DispatchSlot :: const ENTRY_OFFSET: usize
+ep9_vm::DispatchSlot :: impl DispatchSlot :: const KIND_OFFSET: usize
+ep9_vm::DispatchSlot :: impl DispatchSlot :: const fn empty() -> DispatchSlot
+ep9_vm::DispatchSlot :: impl DispatchSlot :: const fn new(DispatchKind, usize) -> DispatchSlot
+ep9_vm::DispatchSlot :: impl DispatchSlot :: fn entry(&self) -> usize
+ep9_vm::DispatchSlot :: impl DispatchSlot :: fn install(&self, DispatchKind, usize)
+ep9_vm::DispatchSlot :: impl DispatchSlot :: fn kind(&self) -> core::option::Option<DispatchKind>
+ep9_vm::DispatchSlot :: impl DispatchSlot :: fn kind_byte(&self) -> u8
+ep9_vm::DispatchSlot :: impl core::fmt::Debug for DispatchSlot
+ep9_vm::DispatchSlot :: impl core::marker::Send for DispatchSlot (auto)
+ep9_vm::Downcast :: trait Downcast: Sealed
+ep9_vm::ErrorKind :: enum ErrorKind
+ep9_vm::ErrorKind :: impl ErrorKind
+ep9_vm::ErrorKind :: impl ErrorKind :: const ALL: [ErrorKind; 7]
+ep9_vm::ErrorKind :: impl ErrorKind :: const fn name(self) -> &'static str
+ep9_vm::ErrorKind :: impl core::clone::Clone for ErrorKind
+ep9_vm::ErrorKind :: impl core::clone::TrivialClone for ErrorKind
+ep9_vm::ErrorKind :: impl core::cmp::Eq for ErrorKind
+ep9_vm::ErrorKind :: impl core::cmp::PartialEq for ErrorKind
+ep9_vm::ErrorKind :: impl core::fmt::Debug for ErrorKind
+ep9_vm::ErrorKind :: impl core::marker::Copy for ErrorKind
+ep9_vm::ErrorKind :: impl core::marker::Send for ErrorKind (auto)
+ep9_vm::ErrorKind :: impl core::marker::StructuralPartialEq for ErrorKind
+ep9_vm::ErrorKind :: impl core::marker::Sync for ErrorKind (auto)
+ep9_vm::ErrorKind :: variant Error
+ep9_vm::ErrorKind :: variant EvalError
+ep9_vm::ErrorKind :: variant RangeError
+ep9_vm::ErrorKind :: variant ReferenceError
+ep9_vm::ErrorKind :: variant SyntaxError
+ep9_vm::ErrorKind :: variant TypeError
+ep9_vm::ErrorKind :: variant UriError
+ep9_vm::Exception :: field constructor: core::option::Option<alloc::string::String>
+ep9_vm::Exception :: field location: core::option::Option<SourceLocation>
+ep9_vm::Exception :: field message: alloc::string::String
+ep9_vm::Exception :: field stack: core::option::Option<alloc::string::String>
+ep9_vm::Exception :: field terminated: bool
+ep9_vm::Exception :: impl core::clone::Clone for Exception
+ep9_vm::Exception :: impl core::cmp::Eq for Exception
+ep9_vm::Exception :: impl core::cmp::PartialEq for Exception
+ep9_vm::Exception :: impl core::fmt::Debug for Exception
+ep9_vm::Exception :: impl core::fmt::Display for Exception
+ep9_vm::Exception :: impl core::marker::Send for Exception (auto)
+ep9_vm::Exception :: impl core::marker::StructuralPartialEq for Exception
+ep9_vm::Exception :: impl core::marker::Sync for Exception (auto)
+ep9_vm::Exception :: struct Exception {}
+ep9_vm::ExecOptions :: impl ExecOptions
+ep9_vm::ExecOptions :: impl ExecOptions :: const fn build_default() -> ExecOptions
+ep9_vm::ExecOptions :: impl ExecOptions :: const fn feedback(self, Feedback) -> ExecOptions
+ep9_vm::ExecOptions :: impl ExecOptions :: const fn feedback_mode(&self) -> Feedback
+ep9_vm::ExecOptions :: impl ExecOptions :: const fn jit() -> ExecOptions
+ep9_vm::ExecOptions :: impl ExecOptions :: const fn jitless() -> ExecOptions
+ep9_vm::ExecOptions :: impl ExecOptions :: const fn preset(&self) -> Preset
+ep9_vm::ExecOptions :: impl core::clone::Clone for ExecOptions
+ep9_vm::ExecOptions :: impl core::clone::TrivialClone for ExecOptions
+ep9_vm::ExecOptions :: impl core::cmp::Eq for ExecOptions
+ep9_vm::ExecOptions :: impl core::cmp::PartialEq for ExecOptions
+ep9_vm::ExecOptions :: impl core::default::Default for ExecOptions
+ep9_vm::ExecOptions :: impl core::fmt::Debug for ExecOptions
+ep9_vm::ExecOptions :: impl core::marker::Copy for ExecOptions
+ep9_vm::ExecOptions :: impl core::marker::Send for ExecOptions (auto)
+ep9_vm::ExecOptions :: impl core::marker::StructuralPartialEq for ExecOptions
+ep9_vm::ExecOptions :: impl core::marker::Sync for ExecOptions (auto)
+ep9_vm::ExecOptions :: struct ExecOptions { .. }
+ep9_vm::Feedback :: impl Feedback
+ep9_vm::Feedback :: impl Feedback :: const FULL: Feedback
+ep9_vm::Feedback :: impl Feedback :: const ICS_ONLY: Feedback
+ep9_vm::Feedback :: impl Feedback :: const fn name(self) -> &'static str
+ep9_vm::Feedback :: impl Feedback :: fn from_name(&str) -> core::option::Option<Feedback>
+ep9_vm::Feedback :: impl core::clone::Clone for Feedback
+ep9_vm::Feedback :: impl core::clone::TrivialClone for Feedback
+ep9_vm::Feedback :: impl core::cmp::Eq for Feedback
+ep9_vm::Feedback :: impl core::cmp::PartialEq for Feedback
+ep9_vm::Feedback :: impl core::fmt::Debug for Feedback
+ep9_vm::Feedback :: impl core::hash::Hash for Feedback
+ep9_vm::Feedback :: impl core::marker::Copy for Feedback
+ep9_vm::Feedback :: impl core::marker::Send for Feedback (auto)
+ep9_vm::Feedback :: impl core::marker::StructuralPartialEq for Feedback
+ep9_vm::Feedback :: impl core::marker::Sync for Feedback (auto)
+ep9_vm::Feedback :: struct Feedback(_)
+ep9_vm::FlatStr :: enum FlatStr
+ep9_vm::FlatStr :: impl Downcast for FlatStr
+ep9_vm::FlatStr :: impl core::marker::Send for FlatStr (auto)
+ep9_vm::FlatStr :: impl core::marker::Sync for FlatStr (auto)
+ep9_vm::HostCx :: type HostCx<'s> = Cx<'s>
+ep9_vm::HostFn :: type HostFn = for<'s> fn(&mut Cx<'s>, Local<'s>, Args<'s>, Local<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::InterruptHandle :: impl InterruptHandle
+ep9_vm::InterruptHandle :: impl InterruptHandle :: fn request(&self, alloc::boxed::Box<dyn core::ops::function::FnOnce() + core::marker::Send>)
+ep9_vm::InterruptHandle :: impl core::clone::Clone for InterruptHandle
+ep9_vm::InterruptHandle :: impl core::fmt::Debug for InterruptHandle
+ep9_vm::InterruptHandle :: impl core::marker::Send for InterruptHandle (auto)
+ep9_vm::InterruptHandle :: impl core::marker::Sync for InterruptHandle (auto)
+ep9_vm::InterruptHandle :: struct InterruptHandle { .. }
+ep9_vm::IntoKey :: fn into_key(self, &mut Cx<'s>) -> Local<'s, JsKey>
+ep9_vm::IntoKey :: impl<'s> IntoKey<'s> for &str
+ep9_vm::IntoKey :: trait IntoKey<'s>
+ep9_vm::IntrinsicDef :: field id: IntrinsicId
+ep9_vm::IntrinsicDef :: field value: IntrinsicValue
+ep9_vm::IntrinsicDef :: impl core::clone::Clone for IntrinsicDef
+ep9_vm::IntrinsicDef :: impl core::clone::TrivialClone for IntrinsicDef
+ep9_vm::IntrinsicDef :: impl core::fmt::Debug for IntrinsicDef
+ep9_vm::IntrinsicDef :: impl core::marker::Copy for IntrinsicDef
+ep9_vm::IntrinsicDef :: impl core::marker::Send for IntrinsicDef (auto)
+ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
+ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
+ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
+ep9_vm::IntrinsicId :: impl IntrinsicId
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 104]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
+ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::clone::TrivialClone for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::cmp::Eq for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::cmp::PartialEq for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::fmt::Debug for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::hash::Hash for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::marker::Copy for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::marker::Send for IntrinsicId (auto)
+ep9_vm::IntrinsicId :: impl core::marker::StructuralPartialEq for IntrinsicId
+ep9_vm::IntrinsicId :: impl core::marker::Sync for IntrinsicId (auto)
+ep9_vm::IntrinsicId :: variant AggregateError
+ep9_vm::IntrinsicId :: variant AggregateErrorPrototype
+ep9_vm::IntrinsicId :: variant Array
+ep9_vm::IntrinsicId :: variant ArrayIteratorPrototype
+ep9_vm::IntrinsicId :: variant ArrayPrototype
+ep9_vm::IntrinsicId :: variant ArrayUnscopables
+ep9_vm::IntrinsicId :: variant AsyncDisposableStack
+ep9_vm::IntrinsicId :: variant AsyncDisposableStackPrototype
+ep9_vm::IntrinsicId :: variant AsyncFromSyncIteratorPrototype
+ep9_vm::IntrinsicId :: variant AsyncFunction
+ep9_vm::IntrinsicId :: variant AsyncFunctionPrototype
+ep9_vm::IntrinsicId :: variant AsyncGeneratorFunction
+ep9_vm::IntrinsicId :: variant AsyncGeneratorFunctionPrototype
+ep9_vm::IntrinsicId :: variant AsyncGeneratorPrototype
+ep9_vm::IntrinsicId :: variant AsyncIteratorPrototype
+ep9_vm::IntrinsicId :: variant BigInt
+ep9_vm::IntrinsicId :: variant BigIntPrototype
+ep9_vm::IntrinsicId :: variant Boolean
+ep9_vm::IntrinsicId :: variant BooleanPrototype
+ep9_vm::IntrinsicId :: variant Date
+ep9_vm::IntrinsicId :: variant DatePrototype
+ep9_vm::IntrinsicId :: variant DisposableStack
+ep9_vm::IntrinsicId :: variant DisposableStackPrototype
+ep9_vm::IntrinsicId :: variant Error
+ep9_vm::IntrinsicId :: variant ErrorPrototype
+ep9_vm::IntrinsicId :: variant Eval
+ep9_vm::IntrinsicId :: variant EvalError
+ep9_vm::IntrinsicId :: variant EvalErrorPrototype
+ep9_vm::IntrinsicId :: variant FinalizationRegistry
+ep9_vm::IntrinsicId :: variant FinalizationRegistryPrototype
+ep9_vm::IntrinsicId :: variant Function
+ep9_vm::IntrinsicId :: variant FunctionPrototype
+ep9_vm::IntrinsicId :: variant FunctionPrototypeApply
+ep9_vm::IntrinsicId :: variant FunctionPrototypeCall
+ep9_vm::IntrinsicId :: variant GeneratorFunction
+ep9_vm::IntrinsicId :: variant GeneratorFunctionPrototype
+ep9_vm::IntrinsicId :: variant GeneratorPrototype
+ep9_vm::IntrinsicId :: variant GlobalObject
+ep9_vm::IntrinsicId :: variant Iterator
+ep9_vm::IntrinsicId :: variant IteratorHelperPrototype
+ep9_vm::IntrinsicId :: variant IteratorPrototype
+ep9_vm::IntrinsicId :: variant Json
+ep9_vm::IntrinsicId :: variant Map
+ep9_vm::IntrinsicId :: variant MapIteratorPrototype
+ep9_vm::IntrinsicId :: variant MapPrototype
+ep9_vm::IntrinsicId :: variant Math
+ep9_vm::IntrinsicId :: variant Number
+ep9_vm::IntrinsicId :: variant NumberPrototype
+ep9_vm::IntrinsicId :: variant Object
+ep9_vm::IntrinsicId :: variant ObjectPrototype
+ep9_vm::IntrinsicId :: variant Promise
+ep9_vm::IntrinsicId :: variant PromisePrototype
+ep9_vm::IntrinsicId :: variant Proxy
+ep9_vm::IntrinsicId :: variant RangeError
+ep9_vm::IntrinsicId :: variant RangeErrorPrototype
+ep9_vm::IntrinsicId :: variant RealmFuses
+ep9_vm::IntrinsicId :: variant ReferenceError
+ep9_vm::IntrinsicId :: variant ReferenceErrorPrototype
+ep9_vm::IntrinsicId :: variant Reflect
+ep9_vm::IntrinsicId :: variant RegExp
+ep9_vm::IntrinsicId :: variant RegExpPrototype
+ep9_vm::IntrinsicId :: variant RegExpStringIteratorPrototype
+ep9_vm::IntrinsicId :: variant Set
+ep9_vm::IntrinsicId :: variant SetIteratorPrototype
+ep9_vm::IntrinsicId :: variant SetPrototype
+ep9_vm::IntrinsicId :: variant String
+ep9_vm::IntrinsicId :: variant StringIteratorPrototype
+ep9_vm::IntrinsicId :: variant StringPrototype
+ep9_vm::IntrinsicId :: variant SuppressedError
+ep9_vm::IntrinsicId :: variant SuppressedErrorPrototype
+ep9_vm::IntrinsicId :: variant Symbol
+ep9_vm::IntrinsicId :: variant SymbolPrototype
+ep9_vm::IntrinsicId :: variant SyntaxError
+ep9_vm::IntrinsicId :: variant SyntaxErrorPrototype
+ep9_vm::IntrinsicId :: variant Temporal
+ep9_vm::IntrinsicId :: variant TemporalDuration
+ep9_vm::IntrinsicId :: variant TemporalDurationPrototype
+ep9_vm::IntrinsicId :: variant TemporalInstant
+ep9_vm::IntrinsicId :: variant TemporalInstantPrototype
+ep9_vm::IntrinsicId :: variant TemporalNow
+ep9_vm::IntrinsicId :: variant TemporalPlainDate
+ep9_vm::IntrinsicId :: variant TemporalPlainDatePrototype
+ep9_vm::IntrinsicId :: variant TemporalPlainDateTime
+ep9_vm::IntrinsicId :: variant TemporalPlainDateTimePrototype
+ep9_vm::IntrinsicId :: variant TemporalPlainMonthDay
+ep9_vm::IntrinsicId :: variant TemporalPlainMonthDayPrototype
+ep9_vm::IntrinsicId :: variant TemporalPlainTime
+ep9_vm::IntrinsicId :: variant TemporalPlainTimePrototype
+ep9_vm::IntrinsicId :: variant TemporalPlainYearMonth
+ep9_vm::IntrinsicId :: variant TemporalPlainYearMonthPrototype
+ep9_vm::IntrinsicId :: variant TemporalZonedDateTime
+ep9_vm::IntrinsicId :: variant TemporalZonedDateTimePrototype
+ep9_vm::IntrinsicId :: variant ThrowTypeError
+ep9_vm::IntrinsicId :: variant TypeError
+ep9_vm::IntrinsicId :: variant TypeErrorPrototype
+ep9_vm::IntrinsicId :: variant UriError
+ep9_vm::IntrinsicId :: variant UriErrorPrototype
+ep9_vm::IntrinsicId :: variant WeakMap
+ep9_vm::IntrinsicId :: variant WeakMapPrototype
+ep9_vm::IntrinsicId :: variant WeakRef
+ep9_vm::IntrinsicId :: variant WeakRefPrototype
+ep9_vm::IntrinsicId :: variant WeakSet
+ep9_vm::IntrinsicId :: variant WeakSetPrototype
+ep9_vm::IntrinsicId :: variant WrapForValidIteratorPrototype
+ep9_vm::IntrinsicValue :: enum IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::clone::Clone for IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::clone::TrivialClone for IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::cmp::Eq for IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::cmp::PartialEq for IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::fmt::Debug for IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::marker::Copy for IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::marker::Send for IntrinsicValue (auto)
+ep9_vm::IntrinsicValue :: impl core::marker::StructuralPartialEq for IntrinsicValue
+ep9_vm::IntrinsicValue :: impl core::marker::Sync for IntrinsicValue (auto)
+ep9_vm::IntrinsicValue :: variant Builtin(u16)
+ep9_vm::IntrinsicValue :: variant Object { proto: core::option::Option<IntrinsicId> }
+ep9_vm::Isolate :: impl !core::marker::Send for Isolate (auto)
+ep9_vm::Isolate :: impl !core::marker::Sync for Isolate (auto)
+ep9_vm::Isolate :: impl Isolate
+ep9_vm::Isolate :: impl Isolate :: fn builtin_table(&self) -> core::option::Option<&'static BuiltinTable>
+ep9_vm::Isolate :: impl Isolate :: fn collect_garbage(&mut self)
+ep9_vm::Isolate :: impl Isolate :: fn compiler(&self) -> core::option::Option<&'static CompilerHooks>
+ep9_vm::Isolate :: impl Isolate :: fn create_realm<R>(&mut self, impl for<'s> core::ops::function::FnOnce(&mut Cx<'s>, Local<'s, JsObject>) -> ep9_value::JsResult<R>) -> core::result::Result<R, Exception>
+ep9_vm::Isolate :: impl Isolate :: fn dispatch(&self) -> Dispatch
+ep9_vm::Isolate :: impl Isolate :: fn gc_stats(&self) -> ep9_heap::heap::GcStats
+ep9_vm::Isolate :: impl Isolate :: fn interrupt_handle(&self) -> InterruptHandle
+ep9_vm::Isolate :: impl Isolate :: fn new(IsolateConfig) -> core::result::Result<Isolate, IsolateError>
+ep9_vm::Isolate :: impl Isolate :: fn new_with(IsolateConfig, ExecOptions) -> core::result::Result<Isolate, IsolateError>
+ep9_vm::Isolate :: impl Isolate :: fn perform_microtask_checkpoint(&mut self) -> core::result::Result<(), Exception>
+ep9_vm::Isolate :: impl Isolate :: fn register_host_function(&mut self, &str, u32, HostFn)
+ep9_vm::Isolate :: impl Isolate :: fn set_compile_strings_hook(&mut self, core::option::Option<for<'s> fn(&mut Cx<'s>, &[alloc::string::String], &str, bool) -> ep9_value::JsResult<()>>)
+ep9_vm::Isolate :: impl Isolate :: fn string_view(&mut self, ep9_value::value::Value) -> core::option::Option<JsStr<'_>>
+ep9_vm::Isolate :: impl Isolate :: fn take_unhandled_rejections(&mut self) -> alloc::vec::Vec<Exception>
+ep9_vm::Isolate :: impl Isolate :: fn terminate_handle(&self) -> TerminateHandle
+ep9_vm::Isolate :: impl Isolate :: fn verify_heap(&self) -> core::result::Result<ep9_heap::verify::VerifyReport, ep9_heap::verify::VerifyError>
+ep9_vm::Isolate :: impl Isolate :: fn with_cx<R>(&mut self, impl for<'s> core::ops::function::FnOnce(&mut Cx<'s>) -> ep9_value::JsResult<R>) -> core::result::Result<R, Exception>
+ep9_vm::Isolate :: impl Isolate :: fn with_cx_checkpoint<R>(&mut self, impl for<'s> core::ops::function::FnOnce(&mut Cx<'s>) -> ep9_value::JsResult<R>) -> core::result::Result<R, Exception>
+ep9_vm::Isolate :: impl Isolate :: fn with_module_host<R>(&mut self, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, &mut dyn core::ops::function::FnMut(&str) -> CompileResult, impl core::ops::function::FnOnce(&mut Isolate) -> R) -> R
+ep9_vm::Isolate :: struct Isolate { .. }
+ep9_vm::IsolateConfig :: field builtins: core::option::Option<&'static BuiltinTable>
+ep9_vm::IsolateConfig :: field compiler: core::option::Option<&'static CompilerHooks>
+ep9_vm::IsolateConfig :: field dispatch: Dispatch
+ep9_vm::IsolateConfig :: field feedback_threshold: u32
+ep9_vm::IsolateConfig :: field heap: ep9_heap::heap::HeapConfig
+ep9_vm::IsolateConfig :: field promise_rejection_tracker: core::option::Option<PromiseRejectionTracker>
+ep9_vm::IsolateConfig :: field stack_trace_limit: usize
+ep9_vm::IsolateConfig :: field vm_stack_slots: usize
+ep9_vm::IsolateConfig :: impl IsolateConfig
+ep9_vm::IsolateConfig :: impl IsolateConfig :: const DEFAULT_FEEDBACK_THRESHOLD: u32
+ep9_vm::IsolateConfig :: impl core::clone::Clone for IsolateConfig
+ep9_vm::IsolateConfig :: impl core::default::Default for IsolateConfig
+ep9_vm::IsolateConfig :: impl core::fmt::Debug for IsolateConfig
+ep9_vm::IsolateConfig :: impl core::marker::Send for IsolateConfig (auto)
+ep9_vm::IsolateConfig :: impl core::marker::Sync for IsolateConfig (auto)
+ep9_vm::IsolateConfig :: struct IsolateConfig {}
+ep9_vm::IsolateError :: enum IsolateError
+ep9_vm::IsolateError :: impl core::error::Error for IsolateError
+ep9_vm::IsolateError :: impl core::fmt::Debug for IsolateError
+ep9_vm::IsolateError :: impl core::fmt::Display for IsolateError
+ep9_vm::IsolateError :: impl core::marker::Send for IsolateError (auto)
+ep9_vm::IsolateError :: impl core::marker::Sync for IsolateError (auto)
+ep9_vm::IsolateError :: variant BuiltinTable(alloc::string::String)
+ep9_vm::IsolateError :: variant Config(&'static str)
+ep9_vm::IsolateError :: variant Heap(ep9_heap::memory::HeapError)
+ep9_vm::IteratorRecord :: impl<'s> !core::marker::Send for IteratorRecord<'s> (auto)
+ep9_vm::IteratorRecord :: impl<'s> !core::marker::Sync for IteratorRecord<'s> (auto)
+ep9_vm::IteratorRecord :: impl<'s> IteratorRecord<'s>
+ep9_vm::IteratorRecord :: impl<'s> IteratorRecord<'s> :: fn is_done(&self) -> bool
+ep9_vm::IteratorRecord :: impl<'s> IteratorRecord<'s> :: fn iterator(&self) -> Local<'s, JsObject>
+ep9_vm::IteratorRecord :: impl<'s> IteratorRecord<'s> :: fn next_method(&self) -> Local<'s>
+ep9_vm::IteratorRecord :: impl<'s> core::fmt::Debug for IteratorRecord<'s>
+ep9_vm::IteratorRecord :: struct IteratorRecord<'s> { .. }
+ep9_vm::JsArray :: enum JsArray
+ep9_vm::JsArray :: impl Downcast for JsArray
+ep9_vm::JsArray :: impl core::marker::Send for JsArray (auto)
+ep9_vm::JsArray :: impl core::marker::Sync for JsArray (auto)
+ep9_vm::JsFunction :: enum JsFunction
+ep9_vm::JsFunction :: impl Downcast for JsFunction
+ep9_vm::JsFunction :: impl core::marker::Send for JsFunction (auto)
+ep9_vm::JsFunction :: impl core::marker::Sync for JsFunction (auto)
+ep9_vm::JsKey :: enum JsKey
+ep9_vm::JsKey :: impl core::marker::Send for JsKey (auto)
+ep9_vm::JsKey :: impl core::marker::Sync for JsKey (auto)
+ep9_vm::JsObject :: enum JsObject
+ep9_vm::JsObject :: impl Downcast for JsObject
+ep9_vm::JsObject :: impl core::marker::Send for JsObject (auto)
+ep9_vm::JsObject :: impl core::marker::Sync for JsObject (auto)
+ep9_vm::JsResult :: pub use ep9_value::JsResult
+ep9_vm::JsStr :: enum JsStr<'a>
+ep9_vm::JsStr :: impl core::cmp::Eq for JsStr<'_>
+ep9_vm::JsStr :: impl core::cmp::Ord for JsStr<'_>
+ep9_vm::JsStr :: impl core::cmp::PartialEq<JsStr<'_>> for JsStr<'_>
+ep9_vm::JsStr :: impl core::cmp::PartialOrd for JsStr<'_>
+ep9_vm::JsStr :: impl<'a> JsStr<'a>
+ep9_vm::JsStr :: impl<'a> JsStr<'a> :: fn array_index(&self) -> core::option::Option<u32>
+ep9_vm::JsStr :: impl<'a> JsStr<'a> :: fn at(&self, usize) -> u16
+ep9_vm::JsStr :: impl<'a> JsStr<'a> :: fn is_empty(&self) -> bool
+ep9_vm::JsStr :: impl<'a> JsStr<'a> :: fn len(&self) -> usize
+ep9_vm::JsStr :: impl<'a> JsStr<'a> :: fn to_string_lossy(self) -> alloc::string::String
+ep9_vm::JsStr :: impl<'a> JsStr<'a> :: fn to_utf16(self) -> alloc::vec::Vec<u16>
+ep9_vm::JsStr :: impl<'a> core::clone::Clone for JsStr<'a>
+ep9_vm::JsStr :: impl<'a> core::clone::TrivialClone for JsStr<'a>
+ep9_vm::JsStr :: impl<'a> core::fmt::Debug for JsStr<'a>
+ep9_vm::JsStr :: impl<'a> core::marker::Copy for JsStr<'a>
+ep9_vm::JsStr :: impl<'a> core::marker::Send for JsStr<'a> (auto)
+ep9_vm::JsStr :: impl<'a> core::marker::Sync for JsStr<'a> (auto)
+ep9_vm::JsStr :: variant Latin1(&'a [u8])
+ep9_vm::JsStr :: variant Utf16(&'a [u16])
+ep9_vm::JsString :: enum JsString
+ep9_vm::JsString :: impl Downcast for JsString
+ep9_vm::JsString :: impl core::marker::Send for JsString (auto)
+ep9_vm::JsString :: impl core::marker::Sync for JsString (auto)
+ep9_vm::JsSymbol :: enum JsSymbol
+ep9_vm::JsSymbol :: impl Downcast for JsSymbol
+ep9_vm::JsSymbol :: impl core::marker::Send for JsSymbol (auto)
+ep9_vm::JsSymbol :: impl core::marker::Sync for JsSymbol (auto)
+ep9_vm::JsValue :: enum JsValue
+ep9_vm::JsValue :: impl Downcast for JsValue
+ep9_vm::JsValue :: impl core::marker::Send for JsValue (auto)
+ep9_vm::JsValue :: impl core::marker::Sync for JsValue (auto)
+ep9_vm::Local :: #[repr(transparent)] struct Local<'s, T = JsValue> { .. }
+ep9_vm::Local :: impl<'s, T = JsValue> !core::marker::Send for Local<'s, T> (auto)
+ep9_vm::Local :: impl<'s, T = JsValue> !core::marker::Sync for Local<'s, T> (auto)
+ep9_vm::Local :: impl<'s, T> Local<'s, T>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_array(&self) -> core::option::Option<Local<'s, JsArray>>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_bool(&self) -> core::option::Option<bool>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_function(&self) -> core::option::Option<Local<'s, JsFunction>>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_int32(&self) -> core::option::Option<i32>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_number(&self) -> core::option::Option<f64>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_object(&self) -> core::option::Option<Local<'s, JsObject>>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_string(&self) -> core::option::Option<Local<'s, JsString>>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn as_symbol(&self) -> core::option::Option<Local<'s, JsSymbol>>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn downcast<U: Downcast>(&self) -> core::option::Option<Local<'s, U>>
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_bool(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_callable(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_null(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_number(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_object(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_same_bits<U>(&self, &Local<'_, U>) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_string(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_symbol(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_undefined(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn is_undefined_or_null(&self) -> bool
+ep9_vm::Local :: impl<'s, T> Local<'s, T> :: fn value(&self) -> Local<'s>
+ep9_vm::Local :: impl<'s> IntoKey<'s> for Local<'s, JsKey>
+ep9_vm::Local :: impl<'s> IntoKey<'s> for Local<'s, JsString>
+ep9_vm::Local :: impl<'s> IntoKey<'s> for Local<'s, JsSymbol>
+ep9_vm::Local :: impl<'s> Local<'s>
+ep9_vm::Local :: impl<'s> Local<'s> :: fn boolean(bool) -> Local<'s>
+ep9_vm::Local :: impl<'s> Local<'s> :: fn int32(i32) -> Local<'s>
+ep9_vm::Local :: impl<'s> Local<'s> :: fn null() -> Local<'s>
+ep9_vm::Local :: impl<'s> Local<'s> :: fn number(f64) -> Local<'s>
+ep9_vm::Local :: impl<'s> Local<'s> :: fn undefined() -> Local<'s>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, FlatStr>> for Local<'s, JsString>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, FlatStr>> for Local<'s, JsValue>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsArray>> for Local<'s, JsObject>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsArray>> for Local<'s, JsValue>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsFunction>> for Local<'s, JsObject>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsFunction>> for Local<'s, JsValue>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsKey>> for Local<'s, JsValue>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsObject>> for Local<'s, JsValue>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsString>> for Local<'s, JsValue>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsSymbol>> for Local<'s, JsKey>
+ep9_vm::Local :: impl<'s> core::convert::From<Local<'s, JsSymbol>> for Local<'s, JsValue>
+ep9_vm::Local :: impl<T> core::clone::Clone for Local<'_, T>
+ep9_vm::Local :: impl<T> core::fmt::Debug for Local<'_, T>
+ep9_vm::Local :: impl<T> core::marker::Copy for Local<'_, T>
+ep9_vm::MatchRecord :: impl !core::marker::Send for MatchRecord (auto)
+ep9_vm::MatchRecord :: impl !core::marker::Sync for MatchRecord (auto)
+ep9_vm::MatchRecord :: impl MatchRecord
+ep9_vm::MatchRecord :: impl MatchRecord :: fn end(&self) -> usize
+ep9_vm::MatchRecord :: impl MatchRecord :: fn get(&self, usize) -> core::option::Option<(usize, usize)>
+ep9_vm::MatchRecord :: impl MatchRecord :: fn group_count(&self) -> usize
+ep9_vm::MatchRecord :: impl MatchRecord :: fn group_name(&self, usize) -> core::option::Option<&[u16]>
+ep9_vm::MatchRecord :: impl MatchRecord :: fn has_group_names(&self) -> bool
+ep9_vm::MatchRecord :: impl MatchRecord :: fn start(&self) -> usize
+ep9_vm::MatchRecord :: impl core::clone::Clone for MatchRecord
+ep9_vm::MatchRecord :: impl core::cmp::Eq for MatchRecord
+ep9_vm::MatchRecord :: impl core::cmp::PartialEq for MatchRecord
+ep9_vm::MatchRecord :: impl core::default::Default for MatchRecord
+ep9_vm::MatchRecord :: impl core::fmt::Debug for MatchRecord
+ep9_vm::MatchRecord :: impl core::marker::StructuralPartialEq for MatchRecord
+ep9_vm::MatchRecord :: struct MatchRecord { .. }
+ep9_vm::NO_CODE :: const NO_CODE: u8
+ep9_vm::ObjectClass :: #[repr(u16)] #[non_exhaustive] enum ObjectClass
+ep9_vm::ObjectClass :: impl ObjectClass
+ep9_vm::ObjectClass :: impl ObjectClass :: const ALL: &'static [ObjectClass]
+ep9_vm::ObjectClass :: impl ObjectClass :: const MAX_SLOTS: usize
+ep9_vm::ObjectClass :: impl ObjectClass :: const fn from_id(u16) -> core::option::Option<ObjectClass>
+ep9_vm::ObjectClass :: impl ObjectClass :: const fn id(self) -> u16
+ep9_vm::ObjectClass :: impl ObjectClass :: const fn name(self) -> &'static str
+ep9_vm::ObjectClass :: impl core::clone::Clone for ObjectClass
+ep9_vm::ObjectClass :: impl core::clone::TrivialClone for ObjectClass
+ep9_vm::ObjectClass :: impl core::cmp::Eq for ObjectClass
+ep9_vm::ObjectClass :: impl core::cmp::PartialEq for ObjectClass
+ep9_vm::ObjectClass :: impl core::fmt::Debug for ObjectClass
+ep9_vm::ObjectClass :: impl core::hash::Hash for ObjectClass
+ep9_vm::ObjectClass :: impl core::marker::Copy for ObjectClass
+ep9_vm::ObjectClass :: impl core::marker::Send for ObjectClass (auto)
+ep9_vm::ObjectClass :: impl core::marker::StructuralPartialEq for ObjectClass
+ep9_vm::ObjectClass :: impl core::marker::Sync for ObjectClass (auto)
+ep9_vm::ObjectClass :: variant ArrayBuffer
+ep9_vm::ObjectClass :: variant AsyncDisposableStack
+ep9_vm::ObjectClass :: variant Date
+ep9_vm::ObjectClass :: variant DisposableStack
+ep9_vm::ObjectClass :: variant FinalizationRegistry
+ep9_vm::ObjectClass :: variant IteratorHelper
+ep9_vm::ObjectClass :: variant Map
+ep9_vm::ObjectClass :: variant MapIterator
+ep9_vm::ObjectClass :: variant Promise
+ep9_vm::ObjectClass :: variant PromiseReaction
+ep9_vm::ObjectClass :: variant RawJson
+ep9_vm::ObjectClass :: variant RegExp
+ep9_vm::ObjectClass :: variant RegExpStringIterator
+ep9_vm::ObjectClass :: variant Set
+ep9_vm::ObjectClass :: variant SetIterator
+ep9_vm::ObjectClass :: variant TemporalDuration
+ep9_vm::ObjectClass :: variant TemporalInstant
+ep9_vm::ObjectClass :: variant TemporalPlainDate
+ep9_vm::ObjectClass :: variant TemporalPlainDateTime
+ep9_vm::ObjectClass :: variant TemporalPlainMonthDay
+ep9_vm::ObjectClass :: variant TemporalPlainTime
+ep9_vm::ObjectClass :: variant TemporalPlainYearMonth
+ep9_vm::ObjectClass :: variant TemporalZonedDateTime
+ep9_vm::ObjectClass :: variant WeakMap
+ep9_vm::ObjectClass :: variant WeakRef
+ep9_vm::ObjectClass :: variant WeakSet
+ep9_vm::ObjectProps :: field props: &'static [PropDef]
+ep9_vm::ObjectProps :: field target: IntrinsicId
+ep9_vm::ObjectProps :: impl core::clone::Clone for ObjectProps
+ep9_vm::ObjectProps :: impl core::clone::TrivialClone for ObjectProps
+ep9_vm::ObjectProps :: impl core::fmt::Debug for ObjectProps
+ep9_vm::ObjectProps :: impl core::marker::Copy for ObjectProps
+ep9_vm::ObjectProps :: impl core::marker::Send for ObjectProps (auto)
+ep9_vm::ObjectProps :: impl core::marker::Sync for ObjectProps (auto)
+ep9_vm::ObjectProps :: struct ObjectProps {}
+ep9_vm::Preset :: impl Preset
+ep9_vm::Preset :: impl Preset :: const JIT: Preset
+ep9_vm::Preset :: impl Preset :: const JITLESS: Preset
+ep9_vm::Preset :: impl Preset :: const fn available(self) -> bool
+ep9_vm::Preset :: impl Preset :: const fn name(self) -> &'static str
+ep9_vm::Preset :: impl Preset :: fn from_name(&str) -> core::option::Option<Preset>
+ep9_vm::Preset :: impl core::clone::Clone for Preset
+ep9_vm::Preset :: impl core::clone::TrivialClone for Preset
+ep9_vm::Preset :: impl core::cmp::Eq for Preset
+ep9_vm::Preset :: impl core::cmp::PartialEq for Preset
+ep9_vm::Preset :: impl core::fmt::Debug for Preset
+ep9_vm::Preset :: impl core::hash::Hash for Preset
+ep9_vm::Preset :: impl core::marker::Copy for Preset
+ep9_vm::Preset :: impl core::marker::Send for Preset (auto)
+ep9_vm::Preset :: impl core::marker::StructuralPartialEq for Preset
+ep9_vm::Preset :: impl core::marker::Sync for Preset (auto)
+ep9_vm::Preset :: struct Preset(_)
+ep9_vm::PrimitiveType :: enum PrimitiveType
+ep9_vm::PrimitiveType :: impl PrimitiveType
+ep9_vm::PrimitiveType :: impl PrimitiveType :: const fn name(self) -> &'static str
+ep9_vm::PrimitiveType :: impl PrimitiveType :: const fn prototype(self) -> IntrinsicId
+ep9_vm::PrimitiveType :: impl core::clone::Clone for PrimitiveType
+ep9_vm::PrimitiveType :: impl core::clone::TrivialClone for PrimitiveType
+ep9_vm::PrimitiveType :: impl core::cmp::Eq for PrimitiveType
+ep9_vm::PrimitiveType :: impl core::cmp::PartialEq for PrimitiveType
+ep9_vm::PrimitiveType :: impl core::fmt::Debug for PrimitiveType
+ep9_vm::PrimitiveType :: impl core::marker::Copy for PrimitiveType
+ep9_vm::PrimitiveType :: impl core::marker::Send for PrimitiveType (auto)
+ep9_vm::PrimitiveType :: impl core::marker::StructuralPartialEq for PrimitiveType
+ep9_vm::PrimitiveType :: impl core::marker::Sync for PrimitiveType (auto)
+ep9_vm::PrimitiveType :: variant Boolean
+ep9_vm::PrimitiveType :: variant Number
+ep9_vm::PrimitiveType :: variant String
+ep9_vm::PrimitiveType :: variant Symbol
+ep9_vm::PromiseCapability :: field promise: Local<'s, JsObject>
+ep9_vm::PromiseCapability :: field reject: Local<'s>
+ep9_vm::PromiseCapability :: field resolve: Local<'s>
+ep9_vm::PromiseCapability :: impl<'s> !core::marker::Send for PromiseCapability<'s> (auto)
+ep9_vm::PromiseCapability :: impl<'s> !core::marker::Sync for PromiseCapability<'s> (auto)
+ep9_vm::PromiseCapability :: impl<'s> core::clone::Clone for PromiseCapability<'s>
+ep9_vm::PromiseCapability :: impl<'s> core::clone::TrivialClone for PromiseCapability<'s>
+ep9_vm::PromiseCapability :: impl<'s> core::fmt::Debug for PromiseCapability<'s>
+ep9_vm::PromiseCapability :: impl<'s> core::marker::Copy for PromiseCapability<'s>
+ep9_vm::PromiseCapability :: struct PromiseCapability<'s> {}
+ep9_vm::PromiseRejectionOperation :: enum PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::clone::Clone for PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::clone::TrivialClone for PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::cmp::Eq for PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::cmp::PartialEq for PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::fmt::Debug for PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::marker::Copy for PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::marker::Send for PromiseRejectionOperation (auto)
+ep9_vm::PromiseRejectionOperation :: impl core::marker::StructuralPartialEq for PromiseRejectionOperation
+ep9_vm::PromiseRejectionOperation :: impl core::marker::Sync for PromiseRejectionOperation (auto)
+ep9_vm::PromiseRejectionOperation :: variant Handle
+ep9_vm::PromiseRejectionOperation :: variant Reject
+ep9_vm::PromiseRejectionTracker :: type PromiseRejectionTracker = for<'s> fn(&mut Cx<'s>, Local<'s, JsObject>, PromiseRejectionOperation)
+ep9_vm::PromiseState :: enum PromiseState
+ep9_vm::PromiseState :: impl core::clone::Clone for PromiseState
+ep9_vm::PromiseState :: impl core::clone::TrivialClone for PromiseState
+ep9_vm::PromiseState :: impl core::cmp::Eq for PromiseState
+ep9_vm::PromiseState :: impl core::cmp::PartialEq for PromiseState
+ep9_vm::PromiseState :: impl core::fmt::Debug for PromiseState
+ep9_vm::PromiseState :: impl core::marker::Copy for PromiseState
+ep9_vm::PromiseState :: impl core::marker::Send for PromiseState (auto)
+ep9_vm::PromiseState :: impl core::marker::StructuralPartialEq for PromiseState
+ep9_vm::PromiseState :: impl core::marker::Sync for PromiseState (auto)
+ep9_vm::PromiseState :: variant Fulfilled
+ep9_vm::PromiseState :: variant Pending
+ep9_vm::PromiseState :: variant Rejected
+ep9_vm::PropAttrs :: field configurable: bool
+ep9_vm::PropAttrs :: field enumerable: bool
+ep9_vm::PropAttrs :: field writable: bool
+ep9_vm::PropAttrs :: impl PropAttrs
+ep9_vm::PropAttrs :: impl PropAttrs :: const ALL: PropAttrs
+ep9_vm::PropAttrs :: impl PropAttrs :: const CONFIGURABLE: PropAttrs
+ep9_vm::PropAttrs :: impl PropAttrs :: const METHOD: PropAttrs
+ep9_vm::PropAttrs :: impl PropAttrs :: const NONE: PropAttrs
+ep9_vm::PropAttrs :: impl core::clone::Clone for PropAttrs
+ep9_vm::PropAttrs :: impl core::clone::TrivialClone for PropAttrs
+ep9_vm::PropAttrs :: impl core::cmp::Eq for PropAttrs
+ep9_vm::PropAttrs :: impl core::cmp::PartialEq for PropAttrs
+ep9_vm::PropAttrs :: impl core::fmt::Debug for PropAttrs
+ep9_vm::PropAttrs :: impl core::marker::Copy for PropAttrs
+ep9_vm::PropAttrs :: impl core::marker::Send for PropAttrs (auto)
+ep9_vm::PropAttrs :: impl core::marker::StructuralPartialEq for PropAttrs
+ep9_vm::PropAttrs :: impl core::marker::Sync for PropAttrs (auto)
+ep9_vm::PropAttrs :: struct PropAttrs {}
+ep9_vm::PropDef :: field attrs: PropAttrs
+ep9_vm::PropDef :: field key: PropKey
+ep9_vm::PropDef :: field value: PropValue
+ep9_vm::PropDef :: impl PropDef
+ep9_vm::PropDef :: impl PropDef :: const fn accessor(PropKey, core::option::Option<u16>, core::option::Option<u16>) -> PropDef
+ep9_vm::PropDef :: impl PropDef :: const fn alias(PropKey, PropKey, PropAttrs) -> PropDef
+ep9_vm::PropDef :: impl PropDef :: const fn constant(PropKey, ConstValue, PropAttrs) -> PropDef
+ep9_vm::PropDef :: impl PropDef :: const fn intrinsic(PropKey, IntrinsicId, PropAttrs) -> PropDef
+ep9_vm::PropDef :: impl PropDef :: const fn method(PropKey, u16) -> PropDef
+ep9_vm::PropDef :: impl core::clone::Clone for PropDef
+ep9_vm::PropDef :: impl core::clone::TrivialClone for PropDef
+ep9_vm::PropDef :: impl core::cmp::PartialEq for PropDef
+ep9_vm::PropDef :: impl core::fmt::Debug for PropDef
+ep9_vm::PropDef :: impl core::marker::Copy for PropDef
+ep9_vm::PropDef :: impl core::marker::Send for PropDef (auto)
+ep9_vm::PropDef :: impl core::marker::StructuralPartialEq for PropDef
+ep9_vm::PropDef :: impl core::marker::Sync for PropDef (auto)
+ep9_vm::PropDef :: struct PropDef {}
+ep9_vm::PropKey :: enum PropKey
+ep9_vm::PropKey :: impl PropKey
+ep9_vm::PropKey :: impl PropKey :: fn text(&self) -> alloc::string::String
+ep9_vm::PropKey :: impl core::clone::Clone for PropKey
+ep9_vm::PropKey :: impl core::clone::TrivialClone for PropKey
+ep9_vm::PropKey :: impl core::cmp::PartialEq for PropKey
+ep9_vm::PropKey :: impl core::fmt::Debug for PropKey
+ep9_vm::PropKey :: impl core::marker::Copy for PropKey
+ep9_vm::PropKey :: impl core::marker::Send for PropKey (auto)
+ep9_vm::PropKey :: impl core::marker::StructuralPartialEq for PropKey
+ep9_vm::PropKey :: impl core::marker::Sync for PropKey (auto)
+ep9_vm::PropKey :: variant Atom(Atom)
+ep9_vm::PropKey :: variant Str(&'static str)
+ep9_vm::PropKey :: variant Symbol(WellKnownSymbol)
+ep9_vm::PropValue :: enum PropValue
+ep9_vm::PropValue :: impl core::clone::Clone for PropValue
+ep9_vm::PropValue :: impl core::clone::TrivialClone for PropValue
+ep9_vm::PropValue :: impl core::cmp::PartialEq for PropValue
+ep9_vm::PropValue :: impl core::fmt::Debug for PropValue
+ep9_vm::PropValue :: impl core::marker::Copy for PropValue
+ep9_vm::PropValue :: impl core::marker::Send for PropValue (auto)
+ep9_vm::PropValue :: impl core::marker::StructuralPartialEq for PropValue
+ep9_vm::PropValue :: impl core::marker::Sync for PropValue (auto)
+ep9_vm::PropValue :: variant Accessor { get: core::option::Option<u16>, set: core::option::Option<u16> }
+ep9_vm::PropValue :: variant Alias(PropKey)
+ep9_vm::PropValue :: variant Builtin(u16)
+ep9_vm::PropValue :: variant Const(ConstValue)
+ep9_vm::PropValue :: variant Intrinsic(IntrinsicId)
+ep9_vm::PropValue :: variant Symbol(WellKnownSymbol)
+ep9_vm::PropertyDescriptor :: field configurable: core::option::Option<bool>
+ep9_vm::PropertyDescriptor :: field enumerable: core::option::Option<bool>
+ep9_vm::PropertyDescriptor :: field get: core::option::Option<Local<'s>>
+ep9_vm::PropertyDescriptor :: field set: core::option::Option<Local<'s>>
+ep9_vm::PropertyDescriptor :: field value: core::option::Option<Local<'s>>
+ep9_vm::PropertyDescriptor :: field writable: core::option::Option<bool>
+ep9_vm::PropertyDescriptor :: impl<'s> !core::marker::Send for PropertyDescriptor<'s> (auto)
+ep9_vm::PropertyDescriptor :: impl<'s> !core::marker::Sync for PropertyDescriptor<'s> (auto)
+ep9_vm::PropertyDescriptor :: impl<'s> PropertyDescriptor<'s>
+ep9_vm::PropertyDescriptor :: impl<'s> PropertyDescriptor<'s> :: fn data(Local<'s>, bool, bool, bool) -> PropertyDescriptor<'s>
+ep9_vm::PropertyDescriptor :: impl<'s> PropertyDescriptor<'s> :: fn is_accessor(&self) -> bool
+ep9_vm::PropertyDescriptor :: impl<'s> PropertyDescriptor<'s> :: fn is_data(&self) -> bool
+ep9_vm::PropertyDescriptor :: impl<'s> core::clone::Clone for PropertyDescriptor<'s>
+ep9_vm::PropertyDescriptor :: impl<'s> core::clone::TrivialClone for PropertyDescriptor<'s>
+ep9_vm::PropertyDescriptor :: impl<'s> core::default::Default for PropertyDescriptor<'s>
+ep9_vm::PropertyDescriptor :: impl<'s> core::fmt::Debug for PropertyDescriptor<'s>
+ep9_vm::PropertyDescriptor :: impl<'s> core::marker::Copy for PropertyDescriptor<'s>
+ep9_vm::PropertyDescriptor :: struct PropertyDescriptor<'s> {}
+ep9_vm::RangeRegistry :: impl CodeRegistry for RangeRegistry
+ep9_vm::RangeRegistry :: impl RangeRegistry
+ep9_vm::RangeRegistry :: impl RangeRegistry :: fn new() -> RangeRegistry
+ep9_vm::RangeRegistry :: impl core::default::Default for RangeRegistry
+ep9_vm::RangeRegistry :: impl core::fmt::Debug for RangeRegistry
+ep9_vm::RangeRegistry :: impl core::marker::Send for RangeRegistry (auto)
+ep9_vm::RangeRegistry :: impl core::marker::Sync for RangeRegistry (auto)
+ep9_vm::RangeRegistry :: struct RangeRegistry { .. }
+ep9_vm::RegistryError :: enum RegistryError
+ep9_vm::RegistryError :: impl core::clone::Clone for RegistryError
+ep9_vm::RegistryError :: impl core::clone::TrivialClone for RegistryError
+ep9_vm::RegistryError :: impl core::cmp::Eq for RegistryError
+ep9_vm::RegistryError :: impl core::cmp::PartialEq for RegistryError
+ep9_vm::RegistryError :: impl core::fmt::Debug for RegistryError
+ep9_vm::RegistryError :: impl core::marker::Copy for RegistryError
+ep9_vm::RegistryError :: impl core::marker::Send for RegistryError (auto)
+ep9_vm::RegistryError :: impl core::marker::StructuralPartialEq for RegistryError
+ep9_vm::RegistryError :: impl core::marker::Sync for RegistryError (auto)
+ep9_vm::RegistryError :: variant Empty
+ep9_vm::RegistryError :: variant Overlap(usize)
+ep9_vm::Rest :: impl<'s> !core::marker::Send for Rest<'s> (auto)
+ep9_vm::Rest :: impl<'s> !core::marker::Sync for Rest<'s> (auto)
+ep9_vm::Rest :: impl<'s> Rest<'s>
+ep9_vm::Rest :: impl<'s> Rest<'s> :: fn get(&self, usize) -> Local<'s>
+ep9_vm::Rest :: impl<'s> Rest<'s> :: fn is_empty(&self) -> bool
+ep9_vm::Rest :: impl<'s> Rest<'s> :: fn iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = Local<'s>> + use<'s>
+ep9_vm::Rest :: impl<'s> Rest<'s> :: fn len(&self) -> usize
+ep9_vm::Rest :: impl<'s> core::clone::Clone for Rest<'s>
+ep9_vm::Rest :: impl<'s> core::clone::TrivialClone for Rest<'s>
+ep9_vm::Rest :: impl<'s> core::marker::Copy for Rest<'s>
+ep9_vm::Rest :: struct Rest<'s> { .. }
+ep9_vm::ScratchList :: impl<'s> !core::marker::Send for ScratchList<'s> (auto)
+ep9_vm::ScratchList :: impl<'s> !core::marker::Sync for ScratchList<'s> (auto)
+ep9_vm::ScratchList :: impl<'s> ScratchList<'s>
+ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn get(&self, usize) -> Local<'s>
+ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn is_empty(&self) -> bool
+ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn len(&self) -> usize
+ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn push(&self, impl core::convert::Into<Local<'s>>) -> usize
+ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn set(&self, usize, impl core::convert::Into<Local<'s>>)
+ep9_vm::ScratchList :: struct ScratchList<'s> { .. }
+ep9_vm::SourceLocation :: field column: u32
+ep9_vm::SourceLocation :: field file: alloc::string::String
+ep9_vm::SourceLocation :: field line: u32
+ep9_vm::SourceLocation :: impl core::clone::Clone for SourceLocation
+ep9_vm::SourceLocation :: impl core::cmp::Eq for SourceLocation
+ep9_vm::SourceLocation :: impl core::cmp::PartialEq for SourceLocation
+ep9_vm::SourceLocation :: impl core::fmt::Debug for SourceLocation
+ep9_vm::SourceLocation :: impl core::fmt::Display for SourceLocation
+ep9_vm::SourceLocation :: impl core::marker::Send for SourceLocation (auto)
+ep9_vm::SourceLocation :: impl core::marker::StructuralPartialEq for SourceLocation
+ep9_vm::SourceLocation :: impl core::marker::Sync for SourceLocation (auto)
+ep9_vm::SourceLocation :: struct SourceLocation {}
+ep9_vm::TerminateHandle :: impl TerminateHandle
+ep9_vm::TerminateHandle :: impl TerminateHandle :: fn terminate(&self)
+ep9_vm::TerminateHandle :: impl core::clone::Clone for TerminateHandle
+ep9_vm::TerminateHandle :: impl core::fmt::Debug for TerminateHandle
+ep9_vm::TerminateHandle :: impl core::marker::Send for TerminateHandle (auto)
+ep9_vm::TerminateHandle :: impl core::marker::Sync for TerminateHandle (auto)
+ep9_vm::TerminateHandle :: struct TerminateHandle(_)
+ep9_vm::Throw :: pub use ep9_value::Throw
+ep9_vm::ToPrimitiveHint :: enum ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::clone::Clone for ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::clone::TrivialClone for ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::cmp::Eq for ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::cmp::PartialEq for ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::fmt::Debug for ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::marker::Copy for ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::marker::Send for ToPrimitiveHint (auto)
+ep9_vm::ToPrimitiveHint :: impl core::marker::StructuralPartialEq for ToPrimitiveHint
+ep9_vm::ToPrimitiveHint :: impl core::marker::Sync for ToPrimitiveHint (auto)
+ep9_vm::ToPrimitiveHint :: variant Default
+ep9_vm::ToPrimitiveHint :: variant Number
+ep9_vm::ToPrimitiveHint :: variant String
+ep9_vm::Value :: pub use ep9_value::value::Value
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const ASYNC_DISPOSE: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const ASYNC_ITERATOR: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const DISPOSE: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const HAS_INSTANCE: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const IS_CONCAT_SPREADABLE: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const ITERATOR: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const MATCH: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const MATCH_ALL: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const REPLACE: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const SEARCH: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const SPECIES: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const SPLIT: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const TO_PRIMITIVE: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const TO_STRING_TAG: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const UNSCOPABLES: Self
+ep9_vm::WellKnownSymbol :: impl WellKnownSymbol :: const fn name(self) -> &'static str
+ep9_vm::WellKnownSymbol :: impl core::clone::Clone for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::clone::TrivialClone for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::cmp::Eq for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::cmp::PartialEq for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::fmt::Debug for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::hash::Hash for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::marker::Copy for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::marker::Send for WellKnownSymbol (auto)
+ep9_vm::WellKnownSymbol :: impl core::marker::StructuralPartialEq for WellKnownSymbol
+ep9_vm::WellKnownSymbol :: impl core::marker::Sync for WellKnownSymbol (auto)
+ep9_vm::WellKnownSymbol :: struct WellKnownSymbol(_)
+ep9_vm::abi :: mod abi
+ep9_vm::abi::Args :: struct Args<'s> { .. }
+ep9_vm::abi::ArgsBuilder :: struct ArgsBuilder<'s> { .. }
+ep9_vm::abi::CollectionCursor :: struct CollectionCursor<'s> { .. }
+ep9_vm::abi::Cx :: struct Cx<'s> { .. }
+ep9_vm::abi::Downcast :: trait Downcast: Sealed
+ep9_vm::abi::FlatStr :: enum FlatStr
+ep9_vm::abi::HostFn :: type HostFn = for<'s> fn(&mut Cx<'s>, Local<'s>, Args<'s>, Local<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::abi::IntoKey :: trait IntoKey<'s>
+ep9_vm::abi::IteratorRecord :: struct IteratorRecord<'s> { .. }
+ep9_vm::abi::JsArray :: enum JsArray
+ep9_vm::abi::JsFunction :: enum JsFunction
+ep9_vm::abi::JsKey :: enum JsKey
+ep9_vm::abi::JsObject :: enum JsObject
+ep9_vm::abi::JsString :: enum JsString
+ep9_vm::abi::JsSymbol :: enum JsSymbol
+ep9_vm::abi::JsValue :: enum JsValue
+ep9_vm::abi::Local :: #[repr(transparent)] struct Local<'s, T = JsValue> { .. }
+ep9_vm::abi::MatchRecord :: struct MatchRecord { .. }
+ep9_vm::abi::ObjectClass :: #[repr(u16)] #[non_exhaustive] enum ObjectClass
+ep9_vm::abi::PrimitiveType :: enum PrimitiveType
+ep9_vm::abi::PromiseCapability :: struct PromiseCapability<'s> {}
+ep9_vm::abi::PromiseRejectionOperation :: enum PromiseRejectionOperation
+ep9_vm::abi::PromiseRejectionTracker :: type PromiseRejectionTracker = for<'s> fn(&mut Cx<'s>, Local<'s, JsObject>, PromiseRejectionOperation)
+ep9_vm::abi::PromiseState :: enum PromiseState
+ep9_vm::abi::PropertyDescriptor :: struct PropertyDescriptor<'s> {}
+ep9_vm::abi::Rest :: struct Rest<'s> { .. }
+ep9_vm::abi::ScratchList :: struct ScratchList<'s> { .. }
+ep9_vm::abi::ToPrimitiveHint :: enum ToPrimitiveHint
+ep9_vm::abi::export_facts :: fn export_facts(&Isolate, &ep9_facts::facts::UnitHash) -> core::result::Result<ep9_facts::snapshot::FactSnapshot, &'static str>
+ep9_vm::build_info :: fn build_info() -> BuildInfo
+ep9_vm::check_tables :: fn check_tables(&[&BuiltinTable]) -> core::result::Result<(), alloc::string::String>
+ep9_vm::internals :: #[doc(hidden)] mod internals
+ep9_vm::internals::COLD_OPCODES :: const COLD_OPCODES: usize
+ep9_vm::internals::THREADED_HANDLERS :: const THREADED_HANDLERS: usize
+ep9_vm::internals::VM_BUILTINS :: static VM_BUILTINS: &BuiltinTable
+ep9_vm::layout :: #[doc(hidden)] mod layout
+ep9_vm::layout::ARRAY_ELEMENTS :: const ARRAY_ELEMENTS: u32
+ep9_vm::layout::ARRAY_LENGTH :: const ARRAY_LENGTH: u32
+ep9_vm::layout::CONTEXT_LENGTH :: const CONTEXT_LENGTH: u32
+ep9_vm::layout::CONTEXT_PREVIOUS :: const CONTEXT_PREVIOUS: u32
+ep9_vm::layout::CONTEXT_SCOPE :: const CONTEXT_SCOPE: u32
+ep9_vm::layout::CONTEXT_SLOTS :: const CONTEXT_SLOTS: u32
+ep9_vm::layout::CX_BUDGET :: const CX_BUDGET: usize
+ep9_vm::layout::CX_GLOBAL_THIS :: const CX_GLOBAL_THIS: usize
+ep9_vm::layout::CX_INTERRUPT :: const CX_INTERRUPT: usize
+ep9_vm::layout::CX_NATIVE_LIMIT :: const CX_NATIVE_LIMIT: usize
+ep9_vm::layout::CX_OUT_FP :: const CX_OUT_FP: usize
+ep9_vm::layout::CX_OUT_PC :: const CX_OUT_PC: usize
+ep9_vm::layout::CX_RUNTIME_TABLE :: const CX_RUNTIME_TABLE: usize
+ep9_vm::layout::CX_STACK_LIMIT :: const CX_STACK_LIMIT: usize
+ep9_vm::layout::CX_TABLE :: const CX_TABLE: usize
+ep9_vm::layout::CX_UNIT_DATA :: const CX_UNIT_DATA: usize
+ep9_vm::layout::DUMP_BYTES :: const DUMP_BYTES: u32
+ep9_vm::layout::ELEMENTS_CAPACITY :: const ELEMENTS_CAPACITY: u32
+ep9_vm::layout::ELEMENTS_DATA :: const ELEMENTS_DATA: u32
+ep9_vm::layout::ELEMENTS_DOUBLE_CAPACITY :: const ELEMENTS_DOUBLE_CAPACITY: u32
+ep9_vm::layout::ELEMENTS_DOUBLE_DATA :: const ELEMENTS_DOUBLE_DATA: u32
+ep9_vm::layout::ELEMENTS_DOUBLE_HOLE :: const ELEMENTS_DOUBLE_HOLE: u64
+ep9_vm::layout::ELEMENTS_KIND_DICTIONARY :: const ELEMENTS_KIND_DICTIONARY: u8
+ep9_vm::layout::ELEMENTS_KIND_HOLEY_DOUBLE :: const ELEMENTS_KIND_HOLEY_DOUBLE: u8
+ep9_vm::layout::ELEMENTS_KIND_HOLEY_ELEMENTS :: const ELEMENTS_KIND_HOLEY_ELEMENTS: u8
+ep9_vm::layout::ELEMENTS_KIND_HOLEY_INT32 :: const ELEMENTS_KIND_HOLEY_INT32: u8
+ep9_vm::layout::ELEMENTS_KIND_PACKED_DOUBLE :: const ELEMENTS_KIND_PACKED_DOUBLE: u8
+ep9_vm::layout::ELEMENTS_KIND_PACKED_ELEMENTS :: const ELEMENTS_KIND_PACKED_ELEMENTS: u8
+ep9_vm::layout::ELEMENTS_KIND_PACKED_INT32 :: const ELEMENTS_KIND_PACKED_INT32: u8
+ep9_vm::layout::FEEDBACK_INFO :: const FEEDBACK_INFO: u32
+ep9_vm::layout::FEEDBACK_KEY :: const FEEDBACK_KEY: u32
+ep9_vm::layout::FEEDBACK_SLOTS :: const FEEDBACK_SLOTS: u32
+ep9_vm::layout::FEEDBACK_SLOT_SIZE :: const FEEDBACK_SLOT_SIZE: u32
+ep9_vm::layout::FEEDBACK_VALUE :: const FEEDBACK_VALUE: u32
+ep9_vm::layout::FI_CODE :: const FI_CODE: usize
+ep9_vm::layout::FI_FEEDBACK :: const FI_FEEDBACK: usize
+ep9_vm::layout::FI_PARAMETER_COUNT :: const FI_PARAMETER_COUNT: usize
+ep9_vm::layout::FI_REGISTER_COUNT :: const FI_REGISTER_COUNT: usize
+ep9_vm::layout::FI_SLOT_ENTRY :: const FI_SLOT_ENTRY: usize
+ep9_vm::layout::FI_SLOT_KIND :: const FI_SLOT_KIND: usize
+ep9_vm::layout::FP_ARGC :: const FP_ARGC: isize
+ep9_vm::layout::FP_BYTECODE_OFFSET :: const FP_BYTECODE_OFFSET: isize
+ep9_vm::layout::FP_CALLEE :: const FP_CALLEE: isize
+ep9_vm::layout::FP_CALLER_FP :: const FP_CALLER_FP: isize
+ep9_vm::layout::FP_CONTEXT :: const FP_CONTEXT: isize
+ep9_vm::layout::FP_FUNCTION_INFO :: const FP_FUNCTION_INFO: isize
+ep9_vm::layout::FP_NEW_TARGET :: const FP_NEW_TARGET: isize
+ep9_vm::layout::FP_RECEIVER :: const FP_RECEIVER: isize
+ep9_vm::layout::FP_RETURN_PC :: const FP_RETURN_PC: isize
+ep9_vm::layout::FRAME_HEADER_WORDS :: const FRAME_HEADER_WORDS: usize
+ep9_vm::layout::FUNCTION_CONTEXT :: const FUNCTION_CONTEXT: usize
+ep9_vm::layout::FUNCTION_INFO :: const FUNCTION_INFO: usize
+ep9_vm::layout::FUSE_ENTRIES :: const FUSE_ENTRIES: u32
+ep9_vm::layout::FUSE_ENTRY_SIZE :: const FUSE_ENTRY_SIZE: u32
+ep9_vm::layout::FUSE_INTACT :: const FUSE_INTACT: u32
+ep9_vm::layout::FUSE_SIZE :: const FUSE_SIZE: u32
+ep9_vm::layout::HOLE :: const HOLE: u64
+ep9_vm::layout::KEYED_KINDS_SET_SHIFT :: const KEYED_KINDS_SET_SHIFT: u32
+ep9_vm::layout::KIND_ARRAY :: const KIND_ARRAY: u8
+ep9_vm::layout::KIND_BYTE :: const KIND_BYTE: u32
+ep9_vm::layout::KIND_CONTEXT :: const KIND_CONTEXT: u8
+ep9_vm::layout::KIND_ELEMENTS :: const KIND_ELEMENTS: u8
+ep9_vm::layout::KIND_ELEMENTS_DICT :: const KIND_ELEMENTS_DICT: u8
+ep9_vm::layout::KIND_ELEMENTS_DOUBLE :: const KIND_ELEMENTS_DOUBLE: u8
+ep9_vm::layout::KIND_FUSE :: const KIND_FUSE: u8
+ep9_vm::layout::KIND_OBJECT :: const KIND_OBJECT: u8
+ep9_vm::layout::KIND_PROPS_INDEXED :: const KIND_PROPS_INDEXED: u8
+ep9_vm::layout::KIND_SHAPE :: const KIND_SHAPE: u8
+ep9_vm::layout::NATIVE_WORD_OFFSET :: const NATIVE_WORD_OFFSET: u64
+ep9_vm::layout::NativeCx :: #[repr(c)] struct NativeCx { .. }
+ep9_vm::layout::NativeCx :: impl core::marker::Send for NativeCx (auto)
+ep9_vm::layout::NativeCx :: impl core::marker::Sync for NativeCx (auto)
+ep9_vm::layout::NativeEntry :: type NativeEntry = unsafe extern "SysV64" fn(*mut NativeCx, *mut u64) -> u64
+ep9_vm::layout::OBJECT_FIELDS :: const OBJECT_FIELDS: u32
+ep9_vm::layout::OBJECT_SLOTS :: const OBJECT_SLOTS: u32
+ep9_vm::layout::POLY_CASES :: const POLY_CASES: u32
+ep9_vm::layout::POLY_CASE_SIZE :: const POLY_CASE_SIZE: u32
+ep9_vm::layout::POLY_COUNT :: const POLY_COUNT: u32
+ep9_vm::layout::POLY_HANDLER :: const POLY_HANDLER: u32
+ep9_vm::layout::PROPS_INDEXED_CAPACITY :: const PROPS_INDEXED_CAPACITY: u32
+ep9_vm::layout::PROPS_INDEXED_COUNT :: const PROPS_INDEXED_COUNT: u32
+ep9_vm::layout::PROPS_INDEXED_ENTRIES :: const PROPS_INDEXED_ENTRIES: u32
+ep9_vm::layout::PROPS_INDEXED_ENTRY_SIZE :: const PROPS_INDEXED_ENTRY_SIZE: u32
+ep9_vm::layout::PROPS_INDEXED_INDEX :: const PROPS_INDEXED_INDEX: u32
+ep9_vm::layout::RT_ADD :: const RT_ADD: usize
+ep9_vm::layout::RT_CALL_ANY :: const RT_CALL_ANY: usize
+ep9_vm::layout::RT_COMPARE :: const RT_COMPARE: usize
+ep9_vm::layout::RT_DEOPT :: const RT_DEOPT: usize
+ep9_vm::layout::RT_GET_KEYED :: const RT_GET_KEYED: usize
+ep9_vm::layout::RT_INC :: const RT_INC: usize
+ep9_vm::layout::RT_LOAD_GLOBAL :: const RT_LOAD_GLOBAL: usize
+ep9_vm::layout::RT_POLL :: const RT_POLL: usize
+ep9_vm::layout::RT_SET_KEYED :: const RT_SET_KEYED: usize
+ep9_vm::layout::RT_STACK_OVERFLOW :: const RT_STACK_OVERFLOW: usize
+ep9_vm::layout::RT_THROW :: const RT_THROW: usize
+ep9_vm::layout::RT_UNWIND :: const RT_UNWIND: usize
+ep9_vm::layout::RtCompareFn :: type RtCompareFn = unsafe extern "SysV64" fn(*mut NativeCx, *mut u64, u32, u32, u64, u64) -> u64
+ep9_vm::layout::RtFn0 :: type RtFn0 = unsafe extern "SysV64" fn(*mut NativeCx, *mut u64, u32) -> u64
+ep9_vm::layout::RtFn1 :: type RtFn1 = unsafe extern "SysV64" fn(*mut NativeCx, *mut u64, u32, u64) -> u64
+ep9_vm::layout::RtFn2 :: type RtFn2 = unsafe extern "SysV64" fn(*mut NativeCx, *mut u64, u32, u64, u64) -> u64
+ep9_vm::layout::RtFn3 :: type RtFn3 = unsafe extern "SysV64" fn(*mut NativeCx, *mut u64, u32, u64, u64, u64) -> u64
+ep9_vm::layout::RuntimeTable :: #[repr(c)] struct RuntimeTable {}
+ep9_vm::layout::RuntimeTable :: field add: RtFn2
+ep9_vm::layout::RuntimeTable :: field call_any: RtFn1
+ep9_vm::layout::RuntimeTable :: field compare: RtCompareFn
+ep9_vm::layout::RuntimeTable :: field deopt: RtFn2
+ep9_vm::layout::RuntimeTable :: field get_keyed: RtFn2
+ep9_vm::layout::RuntimeTable :: field inc: RtFn1
+ep9_vm::layout::RuntimeTable :: field load_global: RtFn0
+ep9_vm::layout::RuntimeTable :: field poll: RtFn0
+ep9_vm::layout::RuntimeTable :: field set_keyed: RtFn3
+ep9_vm::layout::RuntimeTable :: field stack_overflow: RtFn0
+ep9_vm::layout::RuntimeTable :: field throw: RtFn1
+ep9_vm::layout::RuntimeTable :: field unwind: RtFn0
+ep9_vm::layout::RuntimeTable :: impl core::fmt::Debug for RuntimeTable
+ep9_vm::layout::RuntimeTable :: impl core::marker::Send for RuntimeTable (auto)
+ep9_vm::layout::RuntimeTable :: impl core::marker::Sync for RuntimeTable (auto)
+ep9_vm::layout::SHAPE_CAGE_ALIGN :: const SHAPE_CAGE_ALIGN: u64
+ep9_vm::layout::SHAPE_COUNTS :: const SHAPE_COUNTS: u32
+ep9_vm::layout::SHAPE_ELEMENTS_KIND_SHIFT :: const SHAPE_ELEMENTS_KIND_SHIFT: u32
+ep9_vm::layout::SHAPE_FLAGS :: const SHAPE_FLAGS: u32
+ep9_vm::layout::SHAPE_FLAG_FROZEN :: const SHAPE_FLAG_FROZEN: i32
+ep9_vm::layout::SHAPE_FLAG_SEALED :: const SHAPE_FLAG_SEALED: i32
+ep9_vm::layout::SHAPE_ID_BYTE :: const SHAPE_ID_BYTE: u32
+ep9_vm::layout::SLOTS_DATA :: const SLOTS_DATA: u32
+ep9_vm::layout::SMI_ARRAY_LENGTH :: const SMI_ARRAY_LENGTH: i32
+ep9_vm::layout::SMI_FIELD_IN_OBJECT :: const SMI_FIELD_IN_OBJECT: i32
+ep9_vm::layout::SMI_FIELD_OUT_OF_LINE :: const SMI_FIELD_OUT_OF_LINE: i32
+ep9_vm::layout::SMI_KIND_MASK :: const SMI_KIND_MASK: i32
+ep9_vm::layout::SMI_SHIFT :: const SMI_SHIFT: u32
+ep9_vm::layout::VALUE_UNDEFINED :: const VALUE_UNDEFINED: u64
+ep9_vm::layout::fp_param :: const fn fp_param(u32) -> isize
+ep9_vm::layout::fp_register :: const fn fp_register(u32) -> isize
+ep9_vm::versions :: mod versions
+ep9_vm::versions::BUILTIN_ABI_VERSION :: const BUILTIN_ABI_VERSION: u32
+ep9_vm::versions::DEOPT_META_VERSION :: const DEOPT_META_VERSION: u32
+ep9_vm::versions::FRAME_VERSION :: const FRAME_VERSION: u32
+ep9_vm::versions::IC_LAYOUT_VERSION :: const IC_LAYOUT_VERSION: u32
+ep9_vm::versions::OBJECT_LAYOUT_VERSION :: const OBJECT_LAYOUT_VERSION: u32
+ep9_vm::versions::VM_LAYOUT_VERSION :: const VM_LAYOUT_VERSION: u32
