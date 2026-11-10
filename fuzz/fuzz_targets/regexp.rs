@@ -60,7 +60,14 @@
 //!   ECMA-262 22.2.1), and node and ep9's front end refuse it; regress takes the `]` as the
 //!   operand when one more `]` closes the class. The target skips an RX1
 //!   InvalidCharacterInClass with `v` only when the error position is such a `]`.
-//! - The proof of the 2 rows above (fixer r2, node v26.13.0; in ep9 `new RegExp` is RX0 and
+//! - Validity: a `\u` escape with a `+` sign before its hex digits, with `u` or `v`, for
+//!   example `/[\u+1F6]/u` (also `\u{+1F600}`, and outside a class). RX1 says
+//!   InvalidUnicodeEscape (ECMA-262 22.2.1: HexDigits have no sign), and node and ep9's front
+//!   end refuse it; regress takes `+1F6` as the 4 hex digits (a sign that Rust's
+//!   `u32::from_str_radix` accepts). The target skips an RX1 InvalidUnicodeEscape with `u` or
+//!   `v` only when the error position is just after such a `\u` (found by the M7-P5 fixer r1
+//!   10-minute runs, form `/[\u+1F600}-\u14F6{P{Uu}]/u`).
+//! - The proof of the 3 rows above (fixer r2, node v26.13.0; in ep9 `new RegExp` is RX0 and
 //!   the literal is the front end; "Syntax" = a SyntaxError):
 //!
 //! ```text
@@ -69,6 +76,8 @@
 //!   /[\q{a]}]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 5
 //!   /[[.]&&]]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
 //!   /[[a]--]]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
+//!   /[\u+1F6]/u      Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 3
+//!   /\u{+1F600}/u    Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 2
 //! ```
 //! - Validity: regress's `v` parser refuses some valid classes, for example `/[.$]/v` (two
 //!   different ClassSetReservedPunctuator characters; only a doubled one is a
@@ -271,8 +280,8 @@ fn probes(units: &[u16], ranges: &[CharacterRange], flags: Flags) -> Vec<u32> {
 }
 
 /// True for an RX1 error where RX0 is known to take the pattern (the module doc). The `v` class
-/// rows match only their proven form at the RX1 error position, so an RX1 false reject of a
-/// valid pattern is still a crash.
+/// rows and the `\u` row match only their proven form at the RX1 error position, so an RX1
+/// false reject of a valid pattern is still a crash.
 fn known_rx0_false_accept(e: &ParseError, units: &[u16], flags: Flags) -> bool {
     match e.error {
         Error::RangeOutOfOrder | Error::NegatedCharacterClassWithStrings => true,
@@ -280,6 +289,7 @@ fn known_rx0_false_accept(e: &ParseError, units: &[u16], flags: Flags) -> bool {
         Error::InvalidCharacterInClass if flags.unicode_sets() => {
             bracket_in_class_string(units, e.pos) || bracket_after_set_operator(units, e.pos)
         }
+        Error::InvalidUnicodeEscape if flags.either_unicode() => plus_sign_hex_escape(units, e.pos),
         _ => false,
     }
 }
@@ -331,6 +341,15 @@ fn not_escaped(units: &[u16], pos: usize) -> bool {
         i += if unit_is(units, i, b'\\') { 2 } else { 1 };
     }
     i == pos
+}
+
+/// True if `pos` is just after a `\u` and starts `+` or `{+` (a sign before the hex digits).
+fn plus_sign_hex_escape(units: &[u16], pos: usize) -> bool {
+    pos >= 2
+        && unit_is(units, pos - 2, b'\\')
+        && unit_is(units, pos - 1, b'u')
+        && (unit_is(units, pos, b'+')
+            || (unit_is(units, pos, b'{') && unit_is(units, pos + 1, b'+')))
 }
 
 /// True if the class text has `\<letter>`. A `\\<letter>` counts too: skipping more classes
