@@ -277,8 +277,8 @@ pub(super) fn check(
 }
 
 /// The built-in probe: a page of its own from the process code range, freed after the test.
-/// With `jit` (or in a unit test) through a `jit` write window ([`with_probe`]); in every build
-/// as unit text ([`with_probe_in_unit_text`], [`choose_mode`](super::choose_mode)).
+/// With `jit` (or in a unit test) through a `jit` write window (`builtin::with_probe`); in
+/// every build as unit text (`builtin::with_probe_in_unit_text`, [`choose_mode`]).
 mod builtin {
     use super::{ProbeFn, RegistrationMode, SelfTestProbe};
     #[cfg(any(feature = "jit", test))]
@@ -441,7 +441,7 @@ mod builtin {
         b.finish()
     }
 
-    /// [`with_probe`] in the form of every build: the probe and `other` copied into a page of
+    /// `with_probe` in the form of every build: the probe and `other` copied into a page of
     /// unit text ([`crate::unit_text::UnitText`]: the protect form without `jit`), which drops
     /// after `f`.
     pub(in crate::unwind) fn with_probe_in_unit_text<T>(
