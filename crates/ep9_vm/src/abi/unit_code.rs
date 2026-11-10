@@ -82,11 +82,11 @@ impl<'s> Cx<'s> {
     /// H35-Q9) and installs each
     /// AotBaseline pick with no fuse dependency in its function's dispatch slot, so a call of
     /// that function runs its unit code. A pick that cannot be installed (AotOpt, a fuse
-    /// dependency, a function kind with no native entry yet) counts as "not-installable", a
-    /// text that does not map as "no-text", unwind data that is empty or does not register as
-    /// "no-unwind", an RW template that is not form 1 or names a link out of bounds as "link",
-    /// and a slot of 64 or more or one that another unit of this isolate holds as "slot"; each
-    /// runs its bytecode.
+    /// dependency, a constructor, a function kind with no native entry yet) counts as
+    /// "not-installable", a text that does not map as "no-text", unwind data that is empty or
+    /// does not register as "no-unwind", an RW template that is not form 1 or names a link out
+    /// of bounds as "link", and a slot of 64 or more or one that another unit of this isolate
+    /// holds as "slot"; each runs its bytecode.
     ///
     /// # Safety
     /// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `unit`, `text` and

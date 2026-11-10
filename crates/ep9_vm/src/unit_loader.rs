@@ -23,7 +23,7 @@
 //!      (H07:52) -- fails ----------------------------------------------> each pick "no-text"
 //!   7  the unwind data of the text registered with the system unwinder, once per mapped
 //!      text, before any of its code can run (JIT review O3) -- fails --> each pick "no-unwind"
-//!   8  install the picks (`install_picked`) -----------------------------> "installed" |
+//!   8  install the picks (`install_picked`; never a constructor) --------> "installed" |
 //!                                                                          "not-installable"
 //! ```
 //!
@@ -607,7 +607,8 @@ pub(crate) enum Reason {
     /// A pick that step 8 installed.
     Installed,
     /// A pick that step 8 cannot install: AotOpt (no optimizing-tier entry yet), a fuse
-    /// dependency (no fuse-pop path re-selects yet), or an `install_code` refusal.
+    /// dependency (no fuse-pop path re-selects yet), a function with `[[Construct]]` (its
+    /// construct paths run only bytecode: M6-ORCH-386), or an `install_code` refusal.
     NotInstallable,
     /// A pick of an installing load whose text has no unwind data, or unwind data that does
     /// not lie inside the text or does not register (JIT review O3): it runs its bytecode.
@@ -985,6 +986,14 @@ fn link_and_map(
 /// [`Reason::Installed`] and [`Reason::NotInstallable`]; a pick with no mapped text is not
 /// counted (its load counted it).
 ///
+/// A function with `[[Construct]]` (`fi.is_constructor()`: an ordinary `function`, a class
+/// constructor) is not installable: its slot stays Interp, so every construct path (`new`,
+/// `super()`, `Reflect.construct` from Rust) runs its bytecode. The construct paths refuse a
+/// native slot (route MC-w29-8; Frozen H04:52 keeps the default build with no non-Interp
+/// construct path), so an installed constructor would change JS results (JIT review F1 of
+/// M7-P5, M6-ORCH-386). Every install of unit code comes here: also a later installing load
+/// of the same unit and a load that takes a shared text.
+///
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
 /// ABI, it runs the bytecode of its function (the digest binds them), and it follows the
@@ -1004,7 +1013,7 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
         };
         let obj = &uc.set.objects[i];
         let kind = DispatchKind::from_u8(obj.kind);
-        if kind != Some(DispatchKind::AotBaseline) || !obj.deps.is_empty() {
+        if kind != Some(DispatchKind::AotBaseline) || !obj.deps.is_empty() || fi.is_constructor() {
             r.add(Reason::NotInstallable, 1);
             continue;
         }
