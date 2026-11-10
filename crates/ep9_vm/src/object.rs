@@ -1768,16 +1768,39 @@ pub(crate) fn slot_class(v: u64) -> Option<u16> {
     Some(rd_i32(cell(v), slot_obj::CLASS) as u16)
 }
 
-/// The internal slot count of the SLOT_OBJECT `o`.
+/// The internal slot count of the SLOT_OBJECT `o`. Panics in every build if `o` is not a
+/// SLOT_OBJECT or its slots cell is not an ELEMENTS cell: a slot access of another value
+/// would take a word of some other cell for the slots cell (TA-1 fixer r3, A2), so every
+/// slot read and write ([`slot_get`], [`slot_set`]) checks it here.
 #[inline]
 pub(crate) fn slot_count(o: u64) -> usize {
-    debug_assert!(cell_kind(o) == kind::SLOT_OBJECT.get());
+    let k = cell_kind(o);
+    if k != kind::SLOT_OBJECT.get() {
+        not_a_slot_object(k);
+    }
     let s = rd(cell(o), slot_obj::SLOTS);
     if s == UNDEFINED {
         return 0;
     }
-    debug_assert!(cell_kind(s) == kind::ELEMENTS.get());
+    if cell_kind(s) != kind::ELEMENTS.get() {
+        not_a_slots_cell(cell_kind(s));
+    }
     rd_i32(cell(s), elems::CAPACITY) as usize
+}
+
+/// The panic of [`slot_count`] for a value that is not a SLOT_OBJECT (cell kind `k`; 0 for a
+/// value that is not a cell).
+#[cold]
+#[inline(never)]
+fn not_a_slot_object(k: u8) -> ! {
+    panic!("a value of cell kind {k} is not an object with internal slots")
+}
+
+/// The panic of [`slot_count`] for a SLOT_OBJECT whose slots word is not an ELEMENTS cell.
+#[cold]
+#[inline(never)]
+fn not_a_slots_cell(k: u8) -> ! {
+    panic!("the slots word of an object with internal slots is a cell of kind {k}, not ELEMENTS")
 }
 
 /// Internal slot `i` of the SLOT_OBJECT `o`. Panics if `i` ≥ [`slot_count`].
