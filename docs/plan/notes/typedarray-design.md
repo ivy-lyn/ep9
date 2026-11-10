@@ -118,7 +118,7 @@ KIND (AR:75): an id append is a fill of H17 "kind ids (append-only)" (H17:177). 
 - New H25 inventory rows: the view `+32` and the DataView slot 3. Each row is a fill (H25:61).
 - A BYTES cell above 8 KiB goes to the LOS (`crates/ep9_heap/src/layout.rs:19`). The cage is 64 GiB (`crates/ep9_platform/src/va.rs:49`).
 - **Layout facts for native code** (plan rule 71): `ep9_vm::layout` exports, owned by OBJECT_LAYOUT 9 (`crates/ep9_vm/src/layout.rs:248`): the view field offsets, the first and last view kind id, the element size table, the BYTES data offset, and the elements kind values 7 and 8.
-- KIND: H17 has no part for these layouts. A new Freeze-table part "view cells" with its own freeze point (est. the TA workflow merge) is pre-freeze churn, so G8 does not count it. The precedent is the "BigInt cell" part (H17:187, H17:270). The OBJECT_LAYOUT row is "rewrite (version)" on the open parts (H17:271 form). The layout core text (H17:176) does not change.
+- KIND: H17 has no part for these layouts. A new Freeze-table part "view cells" with its own freeze point (est. the TA workflow merge) is pre-freeze churn, so G8 does not count it. The precedent is the "BigInt cell" part (H17:187, H17:270). The OBJECT_LAYOUT row is "rewrite (version)" on the open parts (H17:271 form). The layout core text (H17:176) does not change. [2026-11-10, TA-0 fixer, clarify] The OBJECT_LAYOUT number in the H17 layout-core What and Check cells moves 8 -> 9 (H17 clarify row 2026-11-10, item (2)); no layout-core fact changes.
 
 ### 2.3 Where the bytes live
 
@@ -241,7 +241,7 @@ So a fast path that passes its bound check reads valid memory: a detached view h
 
 ### 5.4 Off-heap pressure
 
-The heap has no external-bytes input today (`crates/ep9_heap/src/heap.rs:105`, `max_heap_bytes` only). A loop that makes resizable buffers or SABs could grow off-heap memory with no GC. Phase TA-0 adds one heap API: the BufferTable reports committed off-heap bytes, and the heap counts them in its next-GC trigger (a GC role grant, §8). [2026-11-10, TA-0 fixer, clarify, TA-ORCH-2 (M6-ORCH-366)] As built in TA-0: `Heap::add_external_bytes`, `Heap::remove_external_bytes` and `Heap::external_bytes` (`crates/ep9_heap/src/heap.rs`). The reported bytes count only in the next-GC trigger, whose bound is at most the room that `max_heap_bytes` leaves next to the committed heap. An add never fails for `max_heap_bytes`: month 8 has no admission check of external bytes (the Frozen H23 rows H23:36, H23:37 and H23:56 keep their text; G8 0). Route TA-EXTBYTES-ADMIT (c), due M2 exit.
+The heap has no external-bytes input today (`crates/ep9_heap/src/heap.rs:105`, `max_heap_bytes` only). A loop that makes resizable buffers or SABs could grow off-heap memory with no GC. Phase TA-0 adds one heap API: the BufferTable reports committed off-heap bytes, and the heap counts them in its next-GC trigger (a GC role grant, §8). [2026-11-10, TA-0 fixer, clarify, TA-ORCH-2 (M6-ORCH-366)] As built in TA-0: `Heap::add_external_bytes`, `Heap::remove_external_bytes` and `Heap::external_bytes` (`crates/ep9_heap/src/heap.rs`). The reported bytes count only in the next-GC trigger, whose bound is at most the room that `max_heap_bytes` leaves next to the committed heap. An add never fails for `max_heap_bytes`: month 8 has no admission check of external bytes (the Frozen H23 rows H23:36, H23:37 and H23:56 keep their text; G8 0). Route TA-EXTBYTES-ADMIT (c), due M2 exit. [2026-11-10, TA-0 fixer, clarify] The caller contract of `Heap::add_external_bytes`: do not hold a borrow of a weak source's state across this call (it is a GC point). Put the store in the table only after Ok; on Err, free the store.
 
 ### 5.5 S3 evacuation
 
@@ -372,7 +372,7 @@ Total 30-45 agent-days (est.). Critical path TA-DECL -> TA-VM -> TA-BUFFERS -> T
 |---|---|---|---|
 | H17 "kind ids (append-only)" (H17:177) | 13 ids | fill | same (count pins move as part of the fill, H17:269) |
 | H17 new part "view cells" | the layouts of §2.2 | rewrite, pre-freeze churn (H17:270 form) | no Frozen part changes |
-| H17 OBJECT_LAYOUT row | 8 -> 9 | rewrite (version) on the open parts (H17:271 form) | layout core text the same |
+| H17 OBJECT_LAYOUT row | 8 -> 9 | rewrite (version) on the open parts (H17:271 form) | layout core text the same [2026-11-10, TA-0 fixer, clarify] The OBJECT_LAYOUT number in the H17 layout-core What and Check cells moves 8 -> 9 (H17 clarify row 2026-11-10, item (2)); no layout-core fact changes. |
 | H17 "Index keys on prototypes" | the view way (§4.2) | fill | the 6 ways keep their result; the way list grows (MC-w26-4) |
 | H18 "elements kind values (append-only)" (H18:85) | 7, 8 | fill | §3.2 table |
 | H18 "FactSnapshot kind list" (H18:88) | names 7, 8 | fill (H18:88: "a new name is part of an append's fill") [2026-11-10, TA-0 fixer, TA-ORCH-1: not in TA-0; in TA-3, with a writer, because H16:237 lets a no-writer item come only with a FACT_SCHEMA bump] | `schema.txt` name lines outside the fingerprint |
