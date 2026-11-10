@@ -229,9 +229,9 @@ fn binop_fast(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
 fn binop_fast_boxed(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
     if is_i32(l) && is_i32(r) {
         let (a, b) = (f64::from(i32_of(l)), f64::from(i32_of(r)));
-        // The exact product or quotient rounded once: the JS result. `num` keeps -0.
+        // The exact product or quotient rounded once: the JS result (`int32_mul`, `num`).
         let v = if matches!(op, BinOp::Mul) {
-            num(a * b)
+            int32_mul(i32_of(l), i32_of(r)).map_or_else(|| num(a * b), int)
         } else {
             num(a / b)
         };
@@ -305,30 +305,30 @@ fn compare_cold(st: &mut St<'_>, op: CmpOp, l: u64) -> Done {
 
 /// `l < r` style comparisons on two numbers (`None`: cold path).
 #[inline(always)]
-fn fast_relational(l: u64, r: u64, f: impl Fn(f64, f64) -> bool) -> Option<u64> {
+fn fast_relational(l: u64, r: u64, op: Rel) -> Option<u64> {
     if is_i32(l) && is_i32(r) {
-        return Some(boolean(f(f64::from(i32_of(l)), f64::from(i32_of(r)))));
+        return Some(boolean(op.int(i32_of(l), i32_of(r))));
     }
-    Some(boolean(f(number(l)?, number(r)?)))
+    Some(boolean(op.num(number(l)?, number(r)?)))
 }
 
 /// The relational fast bodies: an int32 pair is implicit; another number pair records
 /// `CompareHint::NUMBER`, chosen before the operation as in [`binop_fast`]; other operands go
 /// cold.
+///
+/// `op` is the operator as a value ([`Rel`]), not a closure over two doubles (M7-P5 Q6
+/// DISPATCH): an int32 pair takes [`Rel::int`], one integer compare (aarch64: `cmp`, `cinc`),
+/// where the closure gave two conversions, a double compare and a select (`scvtf`, `scvtf`,
+/// `fcmp`, `csel`): LLVM does not turn a compare of two exact int32 conversions back into an
+/// integer compare. Other number pairs take [`Rel::num`], as before.
 #[inline(always)]
-fn relational_fast(
-    st: &mut St<'_>,
-    s: FSlot,
-    l: u64,
-    r: u64,
-    f: impl Fn(f64, f64) -> bool,
-) -> Flow {
+fn relational_fast(st: &mut St<'_>, s: FSlot, l: u64, r: u64, op: Rel) -> Flow {
     let bits = if is_i32(l) && is_i32(r) {
         0
     } else {
         profile::NUMBER_COMPARE
     };
-    match fast_relational(l, r, f) {
+    match fast_relational(l, r, op) {
         Some(v) => {
             st.acc = v;
             next_or_record(s, bits)
@@ -1475,7 +1475,7 @@ op!(TestEqualStrict(st, lhs: R, s: FSlot) {
 });
 op!(TestLessThan(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    relational_fast(st, s, l, a, |x, y| x < y)
+    relational_fast(st, s, l, a, Rel::Lt)
 } cold {
     let l = st.reg(lhs);
     profile::record_compare(st, s, l, st.acc);
@@ -1483,7 +1483,7 @@ op!(TestLessThan(st, lhs: R, s: FSlot) {
 });
 op!(TestGreaterThan(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    relational_fast(st, s, l, a, |x, y| x > y)
+    relational_fast(st, s, l, a, Rel::Gt)
 } cold {
     let l = st.reg(lhs);
     profile::record_compare(st, s, l, st.acc);
@@ -1491,7 +1491,7 @@ op!(TestGreaterThan(st, lhs: R, s: FSlot) {
 });
 op!(TestLessThanOrEqual(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    relational_fast(st, s, l, a, |x, y| x <= y)
+    relational_fast(st, s, l, a, Rel::Le)
 } cold {
     let l = st.reg(lhs);
     profile::record_compare(st, s, l, st.acc);
@@ -1499,7 +1499,7 @@ op!(TestLessThanOrEqual(st, lhs: R, s: FSlot) {
 });
 op!(TestGreaterThanOrEqual(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    relational_fast(st, s, l, a, |x, y| x >= y)
+    relational_fast(st, s, l, a, Rel::Ge)
 } cold {
     let l = st.reg(lhs);
     profile::record_compare(st, s, l, st.acc);
@@ -2267,6 +2267,62 @@ fn number_bits_from_trunc(d: f64, i: i32) -> u64 {
     }
 }
 
+// ---- int32 arms (M7-P5 Q6 DISPATCH) -------------------------------------------------------
+
+/// A relational operator of the `Test*` compares (`<`, `>`, `<=`, `>=`).
+#[derive(Clone, Copy)]
+enum Rel {
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+impl Rel {
+    /// The operator on two int32s. Every int32 is exact as a double, so this is the result of
+    /// [`Rel::num`] on the two doubles (test `int32_fast_paths`), with one integer compare in
+    /// place of two conversions and a double compare.
+    #[inline(always)]
+    fn int(self, a: i32, b: i32) -> bool {
+        match self {
+            Rel::Lt => a < b,
+            Rel::Gt => a > b,
+            Rel::Le => a <= b,
+            Rel::Ge => a >= b,
+        }
+    }
+
+    /// The operator on two numbers (false if one is NaN, IsLessThan §7.2.13).
+    #[inline(always)]
+    fn num(self, x: f64, y: f64) -> bool {
+        match self {
+            Rel::Lt => x < y,
+            Rel::Gt => x > y,
+            Rel::Le => x <= y,
+            Rel::Ge => x >= y,
+        }
+    }
+}
+
+/// `a * b` for two int32s when the JS result is an int32: the exact product fits in int32
+/// and is not -0 (a 0 product with a negative factor). Else `None`, and the caller makes the
+/// double. The JS result is the exact product rounded once (§6.1.6.1.4), and a product that
+/// fits in int32 is exact as a double, so this is `num(f64::from(a) * f64::from(b))` (test
+/// `int32_fast_paths`): one integer multiply in place of two conversions, a double multiply
+/// and the int32 test of the boxing.
+#[inline(always)]
+fn int32_mul(a: i32, b: i32) -> Option<i32> {
+    let i = a.checked_mul(b)?;
+    if i == 0 {
+        // Rare: a 0 product. Its sign test stays off the path of the other products.
+        core::hint::cold_path();
+        if (a | b) < 0 {
+            return None;
+        }
+    }
+    Some(i)
+}
+
 /// `number_bits` against `Value::number`: the int32 edges, -0, NaN payloads, infinities,
 /// fractions and 200,000 random bit patterns.
 #[cfg(test)]
@@ -2693,6 +2749,74 @@ mod call_budget {
         for site in SITES {
             let (_, ran) = run_overflow(50, site, 2);
             assert!(ran, "{site:?}: the queued interrupt did not run");
+        }
+    }
+}
+
+/// The int32 arms of the fast bodies against their double forms (M7-P5 Q6 DISPATCH): the
+/// relational compares ([`Rel::int`] against [`Rel::num`]) and the product ([`int32_mul`]
+/// against `num(f64::from(a) * f64::from(b))`), at the int32 edges and for 200,000 random
+/// pairs.
+#[cfg(test)]
+mod int32_fast_paths {
+    use super::*;
+
+    const EDGES: [i32; 16] = [
+        0,
+        1,
+        -1,
+        2,
+        -2,
+        46_340,
+        46_341,
+        -46_341,
+        65_535,
+        65_536,
+        -65_536,
+        1 << 30,
+        i32::MAX - 1,
+        i32::MAX,
+        i32::MIN + 1,
+        i32::MIN,
+    ];
+
+    fn check(a: i32, b: i32) {
+        for op in [Rel::Lt, Rel::Gt, Rel::Le, Rel::Ge] {
+            assert_eq!(op.int(a, b), op.num(f64::from(a), f64::from(b)), "{a} {b}");
+        }
+        let want = num(f64::from(a) * f64::from(b));
+        match int32_mul(a, b) {
+            Some(i) => assert_eq!(int(i), want, "{a} * {b}"),
+            // Every product that the double form boxes as an int32 takes the int32 arm.
+            None => assert!(!is_i32(want), "{a} * {b}: {want:#x}"),
+        }
+    }
+
+    #[test]
+    fn int32_arms_are_the_double_forms() {
+        for a in EDGES {
+            for b in EDGES {
+                check(a, b);
+                check(a.wrapping_neg(), b);
+            }
+        }
+        // -0: a 0 product with a negative factor is the double -0, not the int32 0.
+        assert_eq!(int32_mul(0, -5), None);
+        assert_eq!(int32_mul(-5, 0), None);
+        assert_eq!(int32_mul(0, 0), Some(0));
+        assert_eq!(int32_mul(0, i32::MIN), None);
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for i in 0..200_000u32 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            // Small factors too: their products fit in int32.
+            let (a, b) = if i % 2 == 0 {
+                (x as i32, (x >> 32) as i32)
+            } else {
+                ((x as i32) >> 16, ((x >> 32) as i32) >> 15)
+            };
+            check(a, b);
         }
     }
 }
