@@ -18,6 +18,7 @@
 //! | `copy_bytes_with_overlap` | CopyDataBlockBytes forward, backward, across buffers and shared |
 //! | `atomics_operations` | load, store, the 6 read-modify-write ops and compare-exchange on each integer type |
 //! | `data_view_slots` | the DataView slots, its range checks, auto length |
+//! | `a_failed_transfer_leaves_the_buffer` | ArrayBufferCopyAndDetach order: a failed grow of a moved store leaves the old buffer as it was |
 
 use std::hint::black_box;
 
@@ -697,5 +698,58 @@ fn data_view_slots() {
         // The views' slot lists in the table: both DataViews.
         assert_eq!(rt.buffers.views_of(b), [dv, auto]);
         black_box(ta::length);
+    });
+}
+
+/// ArrayBufferCopyAndDetach (§25.1.3.3) makes the new buffer (step 7) before it detaches the
+/// old one: when the grow of a moved resizable store fails, the old buffer keeps its store,
+/// its bytes, its views and its external bytes, and a later transfer works. The failure is
+/// injected at the external-bytes add of the grow (`Heap::add_external_bytes` fails when the
+/// count would overflow; the commit has no test hook, and its failure takes the same `Err`
+/// path of `array_buffer::resize`).
+#[test]
+fn a_failed_transfer_leaves_the_buffer() {
+    each(|cx| {
+        let rt = cx.rt();
+        let r = buffer(rt, 4, Some(4 << 20));
+        write_bytes(rt, r, &[1, 2, 3, 4]);
+        let v = view(rt, 1, r, 0, None);
+        let base = ab::data_base(rt, r);
+        let ext = rt.heap.external_bytes();
+        // The next add of 2 bytes or more overflows the count. A GC here frees no store: the
+        // isolate has no dead buffer.
+        let big = usize::MAX - ext - 1;
+        rt.heap.add_external_bytes(big).unwrap();
+        let grow = ab::copy_and_detach(rt, r, NULL, 2 << 20, true);
+        let rt = cx.rt();
+        rt.heap.remove_external_bytes(big);
+        assert_eq!(
+            grow,
+            Err(Fail::Range("Array buffer allocation failed")),
+            "the grow fails"
+        );
+        assert!(!ab::is_detached(r), "a failed transfer does not detach");
+        assert_eq!(ab::data_base(rt, r), base);
+        assert_eq!(bytes_of(rt, r), [1, 2, 3, 4]);
+        assert_eq!(
+            rt.heap.external_bytes(),
+            ext,
+            "the store's bytes count once"
+        );
+        assert_eq!(ta::length(rt, v), Some(4));
+        let k = super::ic::key(rt, "2");
+        assert_eq!(crate::property::get(cx, v, k).unwrap(), int32_bits(3));
+        assert_eq!(cx.rt().buffers.views_of(r), [v]);
+        // The same transfer with room: the store moves, then `r` is detached.
+        let moved = ab::copy_and_detach(cx.rt(), r, NULL, 8, true).unwrap();
+        let rt = cx.rt();
+        assert!(ab::is_detached(r));
+        assert_eq!(ta::length(rt, v), None);
+        assert_eq!(ab::data_base(rt, moved), base);
+        assert_eq!(bytes_of(rt, moved), [1, 2, 3, 4, 0, 0, 0, 0]);
+        // A shrink that cannot fail: the same order.
+        let shrunk = ab::copy_and_detach(rt, moved, NULL, 2, true).unwrap();
+        assert!(ab::is_detached(moved));
+        assert_eq!(bytes_of(cx.rt(), shrunk), [1, 2]);
     });
 }

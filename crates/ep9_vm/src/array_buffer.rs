@@ -639,11 +639,7 @@ fn detach_unchecked(rt: &Runtime, b: u64) {
     object::slot_set(rt, b, slot::BYTE_LENGTH, int32_bits(0));
     object::slot_set(rt, b, slot::STORE, UNDEFINED);
     if let Some(i) = i {
-        let (store, external) = {
-            let mut t = rt.buffers.inner.borrow_mut();
-            let e = &mut t.entries[i];
-            (e.store.take(), core::mem::take(&mut e.external))
-        };
+        let (store, external) = take_store(rt, i);
         if external > 0 {
             rt.heap.remove_external_bytes(external);
         }
@@ -670,7 +666,9 @@ fn zero_view(rt: &Runtime, v: u64) {
 /// `transferToFixedLength`): a new ArrayBuffer with prototype `proto` and `new_len` bytes,
 /// resizable with the old maximum if `preserve` and `b` is resizable. The store moves with no
 /// copy when it can (a BYTES cell of the same length; a resizable reservation that stays
-/// resizable); else the first min(old, new) bytes are copied. Then `b` is detached. GC point.
+/// resizable); else the first min(old, new) bytes are copied. Then `b` is detached: only after
+/// the new buffer has its store (the spec's order: AllocateArrayBuffer, step 7, before
+/// DetachArrayBuffer), so an error leaves `b` as it was. GC point.
 pub(crate) fn copy_and_detach(
     rt: &Runtime,
     b: u64,
@@ -712,19 +710,25 @@ pub(crate) fn copy_and_detach(
         return Ok(nb);
     }
     if new_max.is_some() {
-        // A resizable store stays resizable: move the reservation, then resize it.
+        // A resizable store stays resizable: move the reservation, resize it, then detach `b`.
         let nb = new_buffer_object(rt, proto, ObjectClass::ArrayBuffer, old_len, new_max);
         let i = entry_index(b).expect("a resizable buffer has an entry");
-        let (moved, external) = {
-            let mut t = rt.buffers.inner.borrow_mut();
-            let e = &mut t.entries[i];
-            (e.store.take(), core::mem::take(&mut e.external))
-        };
+        let (moved, external) = take_store(rt, i);
         let j = rt.buffers.insert(nb, moved, external);
         object::slot_set(rt, nb, slot::STORE, int32_bits(j));
         object::slot_set(rt, nb, slot::TABLE, int32_bits(j));
+        // GC point (a grow adds external bytes): `b` and `nb` live in Rust locals, and no JS
+        // runs before the detach, so the views of `b` see no state between the two.
+        if let Err(e) = resize(rt, nb, new_len) {
+            // The grow failed (its external bytes or its commit; `resize` took back what it
+            // added): the store and its count go back to `b`, which stays as it was.
+            let (store, external) = take_store(rt, j as usize);
+            let mut t = rt.buffers.inner.borrow_mut();
+            t.entries[i].store = store;
+            t.entries[i].external = external;
+            return Err(e);
+        }
         detach_unchecked(rt, b);
-        resize(rt, nb, new_len)?;
         return Ok(nb);
     }
     // Copy: allocate first (it can throw a RangeError and leaves `b` as it was).
@@ -739,6 +743,14 @@ pub(crate) fn copy_and_detach(
     }
     detach_unchecked(rt, b);
     Ok(nb)
+}
+
+/// Takes the store and the external byte count out of table entry `i` (they move to another
+/// entry, or the store drops). Not a GC point.
+fn take_store(rt: &Runtime, i: usize) -> (Option<Store>, usize) {
+    let mut t = rt.buffers.inner.borrow_mut();
+    let e = &mut t.entries[i];
+    (e.store.take(), core::mem::take(&mut e.external))
 }
 
 /// The resize of `ArrayBuffer.prototype.resize` (§25.1.6.6) after its ToIndex step. GC point
