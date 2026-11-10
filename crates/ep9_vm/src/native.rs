@@ -25,10 +25,10 @@
 //!
 //! Rust -> native: `call_from_rust` (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
 //! native-slotted function from Rust with an entry frame (return pc = the `Exit` stub), as
-//! `call::call_function_object` does for T0. The general paths still refuse native code: a call
-//! from Rust through `call::call_function_object` (for example `Cx::call` or a builtin
-//! callback) throws "not implemented", and so do `[[Construct]]` and a bound-function call of a
-//! native-slotted function (they take the T0 paths). `call_any` takes no spread call
+//! `call::call_function_object` does for T0. Since M7-P5 A2-RW (MC-w30-2) the general paths
+//! enter native code too, nested: a call from Rust through `call::call_function_object` (for
+//! example `Cx::call` or a builtin callback) and a T0 call that `call_fast` sends cold
+//! (`slow::call`). `[[Construct]]` still throws "not implemented". `call_any` takes no spread call
 //! (BytecodeGen's spread array needs the iterator path of `slow::call`). Generator functions
 //! never get native code ([`InstallError::Generator`]): a resume pushes a new frame and runs
 //! T0 (`call::run_resumed`).
