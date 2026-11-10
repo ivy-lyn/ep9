@@ -297,7 +297,11 @@ fn detach_zeroes_every_live_view() {
             ab::detach(&iso.rt, b, UNDEFINED).unwrap();
             assert!(data(live).is_null() && data(auto).is_null());
             assert_eq!(ta::fixed_length(live), Some(0));
-            assert_eq!(ta::fixed_length(auto), None, "an auto view stays auto");
+            assert_eq!(
+                ta::fixed_length(auto),
+                Some(0),
+                "no length on a fixed-length buffer made a fixed view (length 6)"
+            );
             for (v, len) in [(dv, int32_bits(0)), (dv_auto, int32_bits(-1))] {
                 let w = object::slot_get(v, dv_slot::DATA);
                 let p = crate::external_ref::ExternalRef::<u8>::from_word(w).get();

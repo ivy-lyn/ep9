@@ -21,6 +21,7 @@
 //! | `a_view_as_a_dictionary_keeps_its_fields` | a dictionary view keeps its kind, fixed fields and elements (N3) |
 //! | `a_view_never_transitions` | `elements::transition` refuses a view in debug builds (N4) |
 //! | `integrity_levels_of_a_view` | SetIntegrityLevel and TestIntegrityLevel over a view's internal methods: no debug panic, the spec results (N3; TODO TA3-PREVEXT) |
+//! | `no_length_on_a_fixed_buffer_computes_it` | InitializeTypedArrayFromArrayBuffer step 9.a: a fixed view with the computed length; the RangeErrors |
 
 use std::cell::Cell;
 use std::hint::black_box;
@@ -550,11 +551,16 @@ fn detached_views_read_undefined_and_store_nothing() {
         let rt = cx.rt();
         let b = buffer(rt, 8, None);
         let fixed = view(rt, 5, b, 0, Some(2));
-        let auto = view(rt, 1, b, 2, None);
+        // No length on a fixed-length buffer: the length is computed, the view is fixed.
+        let computed = view(rt, 1, b, 2, None);
+        let rab = buffer(rt, 8, Some(16));
+        let auto = view(rt, 1, rab, 2, None);
         put(cx, fixed, "1", int(9));
+        assert_eq!(ta::length(cx.rt(), computed), Some(6));
         assert_eq!(ta::length(cx.rt(), auto), Some(6));
         ab::detach(cx.rt(), b, UNDEFINED).unwrap();
-        for v in [fixed, auto] {
+        ab::detach(cx.rt(), rab, UNDEFINED).unwrap();
+        for v in [fixed, computed, auto] {
             assert_eq!(ta::length(cx.rt(), v), None);
             assert_eq!(get(cx, v, "0"), UNDEFINED);
             assert!(!has(cx, v, "0"));
@@ -565,12 +571,14 @@ fn detached_views_read_undefined_and_store_nothing() {
             assert!(!property::define_own_property(cx, v, k, d).unwrap());
             assert!(property::internal_delete(cx, v, k).unwrap());
         }
-        // The fields after the detach (design §5.2): a null data word; the fixed view's length
+        // The fields after the detach (design §5.2): a null data word; a fixed view's length
         // is 0, the auto view stays auto; the byte offsets stay.
         assert_eq!(ta::fixed_length(fixed), Some(0));
+        assert_eq!(ta::fixed_length(computed), Some(0));
         assert_eq!(ta::fixed_length(auto), None);
-        assert_eq!((ta::byte_offset(fixed), ta::byte_offset(auto)), (0, 2));
-        assert_eq!(ta::buffer_of(auto), b);
+        assert_eq!((ta::byte_offset(fixed), ta::byte_offset(computed)), (0, 2));
+        assert_eq!(ta::byte_offset(auto), 2);
+        assert_eq!((ta::buffer_of(computed), ta::buffer_of(auto)), (b, rab));
         // A second detach does nothing; a wrong key fails first (SameValue).
         ab::detach(cx.rt(), b, UNDEFINED).unwrap();
         assert!(ab::detach(cx.rt(), b, int(1)).is_err());
@@ -632,10 +640,11 @@ fn elements_kind_7_or_8_at_birth_and_kept() {
         // (buffer, length, the kind by IsTypedArrayFixedLength).
         let cases = [
             (fixed_ab, Some(2), ek::TYPED_FIXED),
-            (fixed_ab, None, ek::TYPED_VARIABLE),
+            (fixed_ab, None, ek::TYPED_FIXED),
             (rab, Some(2), ek::TYPED_VARIABLE),
             (rab, None, ek::TYPED_VARIABLE),
             (sab, Some(2), ek::TYPED_FIXED),
+            (sab, None, ek::TYPED_FIXED),
             (gsab, Some(2), ek::TYPED_FIXED),
             (gsab, None, ek::TYPED_VARIABLE),
         ];
@@ -1018,5 +1027,63 @@ fn integrity_levels_of_a_view() {
         assert!(property::is_extensible(auto));
         assert_eq!(elements::kind_of(auto), ek::TYPED_VARIABLE);
         assert_eq!(elements::check(auto), Ok(()));
+    });
+}
+
+/// InitializeTypedArrayFromArrayBuffer (§23.2.5.1.3) with no length: on a fixed-length buffer
+/// (an ArrayBuffer that is not resizable, a SharedArrayBuffer that is not growable) the view
+/// gets the length (byteLength - offset) / element size and is fixed-length (step 9.a; node:
+/// `Reflect.preventExtensions(new Uint8Array(new ArrayBuffer(4)))` is true); a byte length that
+/// is not a multiple of the element size, or an offset past it, is a RangeError. Only a
+/// resizable or growable buffer gives a length-tracking view (step 8).
+#[test]
+fn no_length_on_a_fixed_buffer_computes_it() {
+    each(|cx| {
+        let rt = cx.rt();
+        let fixed_ab = buffer(rt, 12, None);
+        let sab = ab::allocate_shared(rt, NULL, 12, None).unwrap();
+        let rab = buffer(rt, 12, Some(16));
+        let gsab = ab::allocate_shared(rt, NULL, 12, Some(16)).unwrap();
+        // (buffer, element type, offset, length, elements kind)
+        for (b, t, off, len, want) in [
+            (fixed_ab, 1, 0, 12, ek::TYPED_FIXED),
+            (fixed_ab, 5, 4, 2, ek::TYPED_FIXED),
+            (fixed_ab, 3, 12, 0, ek::TYPED_FIXED),
+            (sab, 4, 2, 5, ek::TYPED_FIXED),
+            (rab, 5, 4, 2, ek::TYPED_VARIABLE),
+            (gsab, 1, 0, 12, ek::TYPED_VARIABLE),
+        ] {
+            let v = view(cx.rt(), t, b, off, None);
+            assert_eq!(elements::kind_of(v), want, "type {t} at {off}");
+            assert_eq!(ta::length(cx.rt(), v), Some(len));
+            let field = (want == ek::TYPED_FIXED).then_some(len);
+            assert_eq!(ta::fixed_length(v), field, "the +40 length");
+            assert_eq!(ta::is_fixed_length(v), want == ek::TYPED_FIXED);
+        }
+        // The errors (node: `new Uint32Array(new ArrayBuffer(6))` and `new Uint8Array(new
+        // ArrayBuffer(4), 5)` throw RangeErrors).
+        let rt = cx.rt();
+        let six = buffer(rt, 6, None);
+        assert!(matches!(
+            ta::new_view(rt, NULL, 6, six, 0, None),
+            Err(ab::Fail::Range(_))
+        ));
+        assert!(matches!(
+            ta::new_view(rt, NULL, 6, six, 4, None),
+            Err(ab::Fail::Range(_))
+        ));
+        assert!(matches!(
+            ta::new_view(rt, NULL, 1, six, 7, None),
+            Err(ab::Fail::Range(_))
+        ));
+        let shared6 = ab::allocate_shared(rt, NULL, 6, None).unwrap();
+        assert!(matches!(
+            ta::new_view(rt, NULL, 5, shared6, 0, None),
+            Err(ab::Fail::Range(_))
+        ));
+        // A resizable buffer takes a byte length that is not a multiple (an auto view floors).
+        let r6 = buffer(rt, 6, Some(8));
+        let v = view(rt, 6, r6, 0, None);
+        assert_eq!(ta::length(cx.rt(), v), Some(1));
     });
 }

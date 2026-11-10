@@ -107,10 +107,14 @@ pub(crate) fn is_fixed_length(o: u64) -> bool {
 }
 
 /// A new TypedArray of element type `t` with prototype `proto` (an object or null) on the
-/// buffer `b` from `offset`: `Some(length)` elements, or a length-tracking view (`None`). The
-/// checks of InitializeTypedArrayFromArrayBuffer that keep memory safe run here again: a
-/// TypeError if `b` is no buffer or is detached; a RangeError for an offset that is not a
-/// multiple of the element size or a range that is not inside the buffer. GC point.
+/// buffer `b` from `offset`: `Some(length)` elements; with `None`, a length-tracking view on a
+/// resizable ArrayBuffer or a growable SharedArrayBuffer, and on a fixed-length buffer a
+/// fixed-length view of (byte length - `offset`) / element size elements
+/// (InitializeTypedArrayFromArrayBuffer steps 8 and 9.a). The checks of that operation that
+/// keep memory safe or pick the length run here again: a TypeError if `b` is no buffer or is
+/// detached; a RangeError for an offset that is not a multiple of the element size, a range
+/// that is not inside the buffer, or (`None` on a fixed-length buffer) a byte length that is
+/// not a multiple of the element size. GC point.
 pub(crate) fn new_view(
     rt: &Runtime,
     proto: u64,
@@ -140,6 +144,24 @@ pub(crate) fn new_view(
         ));
     }
     let buf_len = ab::byte_length(rt, b) as u64;
+    // Step 9.a: no length on a fixed-length buffer (IsFixedLengthArrayBuffer) computes it, so
+    // the view is fixed-length; only a resizable or growable buffer gets an auto view (step 8).
+    let length = match length {
+        None if !ab::is_resizable(b) => {
+            if !buf_len.is_multiple_of(size) {
+                return Err(Fail::Range(
+                    "The byte length of the buffer is not a multiple of the element size",
+                ));
+            }
+            if offset > buf_len {
+                return Err(Fail::Range(
+                    "Start offset is outside the bounds of the buffer",
+                ));
+            }
+            Some((buf_len - offset) / size)
+        }
+        l => l,
+    };
     match length {
         Some(n)
             if n.checked_mul(size)

@@ -276,13 +276,17 @@ impl<'s> Cx<'s> {
     // ---- TypedArrays (§23.2, §10.4.5) ----
 
     /// A new TypedArray of element type `element` with prototype `proto`, on `buffer` (an
-    /// ArrayBuffer or a SharedArrayBuffer) from `byte_offset`: `Some(length)` elements, or a
-    /// length-tracking view with `None` (`[[ArrayLength]]` auto). The caller ran the checks of
-    /// InitializeTypedArrayFromArrayBuffer (sec-initializetypedarrayfromarraybuffer; the
-    /// alignment of `byte_offset`, detach and bounds) in spec order; the view's elements kind
-    /// is TYPED_FIXED or TYPED_VARIABLE by IsTypedArrayFixedLength (design §3.2). A TypeError if
-    /// `buffer` is not a buffer or is detached; a RangeError if `byte_offset` is not a multiple
-    /// of the element size or the range is not inside the buffer.
+    /// ArrayBuffer or a SharedArrayBuffer) from `byte_offset`: `Some(length)` elements, or
+    /// `None` for a length that is undefined: on a resizable ArrayBuffer or a growable
+    /// SharedArrayBuffer a length-tracking view (`[[ArrayLength]]` auto), on a fixed-length
+    /// buffer (byte length - `byte_offset`) / element size elements (step 9.a). The caller ran
+    /// the checks of InitializeTypedArrayFromArrayBuffer
+    /// (sec-initializetypedarrayfromarraybuffer; the alignment of `byte_offset`, detach and
+    /// bounds) in spec order; the view's elements kind is TYPED_FIXED or TYPED_VARIABLE by
+    /// IsTypedArrayFixedLength (design §3.2). A TypeError if `buffer` is not a buffer or is
+    /// detached; a RangeError if `byte_offset` is not a multiple of the element size, the range
+    /// is not inside the buffer, or (`None` on a fixed-length buffer) the byte length is not a
+    /// multiple of the element size.
     pub fn new_typed_array(
         &mut self,
         proto: impl Into<Local<'s>>,
