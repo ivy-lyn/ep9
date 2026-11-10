@@ -36,6 +36,7 @@ use crate::error::{Error, ParseError};
 use crate::flags::Flags;
 use crate::unicode;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// V8 `RegExpMacroAssembler::kMaxCaptures`: `((1 << 16) - 1 - 1) / 2`.
 pub const MAX_CAPTURES: u32 = ((1 << 16) - 1 - 1) / 2;
@@ -1009,7 +1010,7 @@ impl<'a, T: Unit> Parser<'a, T> {
                         self.builder().add_empty();
                     } else {
                         self.builder().add_atom(Tree::BackReference(BackReference {
-                            captures: vec![index],
+                            captures: Arc::from([index]),
                             name: None,
                         }));
                     }
@@ -1473,7 +1474,7 @@ impl<'a, T: Unit> Parser<'a, T> {
             self.builder().add_empty();
         } else {
             self.builder().add_atom(Tree::BackReference(BackReference {
-                captures: Vec::new(),
+                captures: Arc::from([]),
                 name: Some(name.clone()),
             }));
             self.named_back_references.push(name);
@@ -1498,7 +1499,11 @@ impl<'a, T: Unit> Parser<'a, T> {
             self.named_captures = Some(map);
             return Err(self.report_error(Error::InvalidNamedCaptureReference));
         }
-        fill_named_references(tree, &map);
+        let shared: BTreeMap<Vec<u16>, Arc<[u32]>> = map
+            .iter()
+            .map(|(name, groups)| (name.clone(), Arc::from(groups.as_slice())))
+            .collect();
+        fill_named_references(tree, &shared);
         self.named_captures = Some(map);
         Ok(())
     }
@@ -2407,12 +2412,14 @@ fn push_code_unit(v: &mut Vec<u16>, c: u32) {
 }
 
 /// Fills the group indices of every named back reference (the walk depth is at most
-/// [`MAX_NESTING`] levels of groups).
-fn fill_named_references(tree: &mut Tree, map: &BTreeMap<Vec<u16>, Vec<u32>>) {
+/// [`MAX_NESTING`] levels of groups). All references to one name share one list (route
+/// RX1-DUPNAME-PERF: a copy per reference made K references to N groups of one name cost
+/// K x N indices).
+fn fill_named_references(tree: &mut Tree, map: &BTreeMap<Vec<u16>, Arc<[u32]>>) {
     match tree {
         Tree::BackReference(r) => {
             if let Some(name) = &r.name {
-                r.captures = map[name].clone();
+                r.captures = Arc::clone(&map[name]);
             }
         }
         Tree::Disjunction(v) | Tree::Alternative(v) | Tree::Text(v) => {

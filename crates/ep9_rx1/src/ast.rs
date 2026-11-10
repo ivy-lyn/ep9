@@ -12,6 +12,7 @@
 //! Tree subclasses                        Tree enum, one variant per subclass
 //! CharacterRange lists (ICU sets)        ClassItem lists: ranges, \d \s \w ., \p{..} by name
 //! Capture objects shared by references   Tree::Capture in place; BackReference holds indices
+//!                                        (one shared list per name)
 //! CharacterClassStrings (a ZoneMap)      ClassStrings (a BTreeMap with V8's order)
 //! ```
 //!
@@ -22,6 +23,7 @@
 //! the parser asks (V8 `Builder::AddQuantifierToAtom`).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::flags::Flags;
 
@@ -345,8 +347,9 @@ pub struct Lookaround {
 /// A back reference (V8 `BackReference`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackReference {
-    /// The groups it refers to: one for `\n`; for `\k<name>` every group of that name.
-    pub captures: Vec<u32>,
+    /// The groups it refers to: one for `\n`; for `\k<name>` every group of that name. The
+    /// references to one name share one list (V8 shares the `Capture` objects).
+    pub captures: Arc<[u32]>,
     /// The name of `\k<name>`.
     pub name: Option<Vec<u16>>,
 }
