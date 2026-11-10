@@ -11,7 +11,7 @@
 //! | `a_fixed_buffer_is_a_bytes_cell` | zeroed bytes at cell + 16, no store at length 0, the length caps |
 //! | `a_buffer_the_heap_cannot_give_is_a_range_error` | a RangeError past `max_heap_bytes` and when the heap is full, no abort |
 //! | `the_external_bytes_go_up_and_down` | resizable and shared stores: the count after alloc, grow, shrink, detach and the death of the buffer (minor and major GC); the dead store is dropped after the GC |
-//! | `detach_zeroes_every_live_view` | 2 views, one dead before the GC: the list holds the live one; detach zeroes TypedArrays and DataViews |
+//! | `detach_zeroes_every_live_view` | 2 views, one dead before the GC: the list holds the live one; detach zeroes TypedArrays and DataViews; a TYPED_VARIABLE view gets a null data word and keeps its auto length |
 //! | `transfer_moves_or_copies_the_store` | the BYTES cell moves with no copy; a resizable store moves; other lengths copy; the errors |
 //! | `shared_buffers_grow_and_never_detach` | grow, the RangeErrors and TypeErrors, views on a SAB |
 //! | `get_and_set_value_in_both_byte_orders` | each type, little and big endian, unaligned and shared; the range checks |
@@ -271,7 +271,11 @@ fn detach_zeroes_every_live_view() {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
             let b = buffer(&iso.rt, 8, None);
             let live = view(&iso.rt, 5, b, 4, Some(1));
-            let auto = view(&iso.rt, 1, b, 2, None);
+            let computed = view(&iso.rt, 1, b, 2, None);
+            // A TYPED_VARIABLE view (no length, a resizable buffer): detach nulls its data word
+            // too, and its length field stays auto (reviewer F1; design §5.2 step 2).
+            let rab = buffer(&iso.rt, 8, Some(64));
+            let var = view(&iso.rt, 1, rab, 2, None);
             let dv = ab::new_data_view(&iso.rt, NULL, b, 1, Some(4)).unwrap();
             let dv_auto = ab::new_data_view(&iso.rt, NULL, b, 0, None).unwrap();
             let gone = below_a_pad(|| dead_view(&mut iso, b));
@@ -281,7 +285,7 @@ fn detach_zeroes_every_live_view() {
             let views = iso.rt.buffers.views_of(b);
             assert_eq!(
                 views,
-                [live, auto, dv, dv_auto],
+                [live, computed, dv, dv_auto],
                 "the dead view left the list"
             );
             assert!(!views.iter().any(|&v| v as usize == gone ^ MASK));
@@ -295,10 +299,10 @@ fn detach_zeroes_every_live_view() {
             let base = ab::data_base(&iso.rt, b);
             assert_eq!(data(live), base.wrapping_add(4).cast_const());
             ab::detach(&iso.rt, b, UNDEFINED).unwrap();
-            assert!(data(live).is_null() && data(auto).is_null());
+            assert!(data(live).is_null() && data(computed).is_null());
             assert_eq!(ta::fixed_length(live), Some(0));
             assert_eq!(
-                ta::fixed_length(auto),
+                ta::fixed_length(computed),
                 Some(0),
                 "no length on a fixed-length buffer made a fixed view (length 6)"
             );
@@ -312,6 +316,22 @@ fn detach_zeroes_every_live_view() {
             assert_eq!(object::slot_get(b, slot::STORE), UNDEFINED);
             assert_eq!(ab::byte_length(&iso.rt, b), 0);
             assert!(ab::is_detached(b));
+            assert_eq!(
+                crate::elements::kind_of(var),
+                crate::elements::kind::TYPED_VARIABLE
+            );
+            assert_eq!(
+                data(var),
+                ab::data_base(&iso.rt, rab).wrapping_add(2).cast_const()
+            );
+            assert!(!data(var).is_null());
+            ab::detach(&iso.rt, rab, UNDEFINED).unwrap();
+            assert!(
+                data(var).is_null(),
+                "a detached TYPED_VARIABLE view has no data"
+            );
+            assert_eq!(ta::fixed_length(var), None);
+            assert_eq!(ta::length(&iso.rt, var), None);
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });
