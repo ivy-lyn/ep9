@@ -443,9 +443,12 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
             Ok(())
         }
         Binding::With(o) => {
-            // The binding may be gone since the reference was resolved (a getter of
-            // `@@unscopables` deleted it): strict code throws, sloppy code sets it again.
-            if strict && !property::try_has_property(cx, o, name)? {
+            // SetMutableBinding of an object record (§9.1.1.2.5) steps 2-4: the binding may
+            // be gone since the reference was resolved (a getter of `@@unscopables` deleted
+            // it). HasProperty runs in sloppy code too (a proxy's `has` trap sees it); then
+            // strict code throws, sloppy code sets it again.
+            let still_exists = property::try_has_property(cx, o, name)?;
+            if !still_exists && strict {
                 return Err(throw_name_now(cx, NameMsg::NotDefined, name));
             }
             property::set(cx, o, name, v, strict)

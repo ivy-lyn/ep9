@@ -912,10 +912,18 @@ pub(crate) fn delete(cx: &mut Cx, base: u64, k: u64, strict: bool) -> Res<bool> 
     }
     let key = to_property_key(cx, k)?;
     if !is_object(base) {
-        // v0: primitives have no deletable own properties except string indices (false).
-        return Ok(
-            !(is_string(base) && (array_index_of(key).is_some() || is_atom(cx, key, Atom::Length)))
-        );
+        // `ToObject(base).[[Delete]](key)`: the new wrapper's own properties are a String's
+        // indices below its length (§10.4.3.5 StringGetOwnProperty) and `length` (§10.4.3.4
+        // StringCreate step 9), and they are not configurable (false; strict code throws).
+        // Any other key is not an own property of the wrapper (true).
+        let own_string = is_string(base)
+            && (is_atom(cx, key, Atom::Length)
+                || array_index_of(key).is_some_and(|i| (i as usize) < object::str_len(base)));
+        return if own_string {
+            deny(cx, base, key, strict)
+        } else {
+            Ok(true)
+        };
     }
     if internal_delete(cx, base, key)? {
         Ok(true)
