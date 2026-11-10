@@ -72,10 +72,21 @@
 //!   InvalidUnicodeEscape (ECMA-262 22.2.1: HexDigits have no sign), and node and ep9's front
 //!   end refuse it; regress takes `+1F6` as the 4 hex digits (a sign that Rust's
 //!   `u32::from_str_radix` accepts). The target skips an RX1 InvalidUnicodeEscape only when the
-//!   error position is just after such a `\u` (found by the M7-P5 fixer r1 and r2 10-minute
-//!   runs, forms `/[\u+1F600}-\u14F6{P{Uu}]/u` and `/..(?<a\u+03e:>x)\k<a>/gs`).
-//! - The proof of the 3 rows above (fixer r2, node v26.13.0; in ep9 `new RegExp` is RX0 and
-//!   the literal is the front end; "Syntax" = a SyntaxError):
+//!   error position is just after such a `\u` whose `\` opens an escape (in `/\\u+041/u` the
+//!   second `\` is the escaped one, and the pattern is valid) and, without `u` and `v`, inside
+//!   a real group name: not in a class (`/[(?<a\u+041]/` is a valid class), and `\k<..>` only
+//!   when the pattern has a group name (found by the M7-P5 fixer r1 and r2 10-minute runs,
+//!   forms `/[\u+1F600}-\u14F6{P{Uu}]/u` and `/..(?<a\u+03e:>x)\k<a>/gs`; narrowed by fixer
+//!   r7).
+//! - Validity: a `v` class range that ends in `\b`, for example `/[$-\b]/v`. RX1 says
+//!   OutOfOrderCharacterClass (`\b` is U+0008 in a class, ECMA-262 22.2.1), and node and ep9's
+//!   front end refuse it; regress reads that `\b` as `b` (U+0062; the set row of `[\b]`
+//!   below), so it takes the range when its start is U+0062 or lower. The target skips an RX1
+//!   OutOfOrderCharacterClass with `v` only when the error position is just after such a `-\b`
+//!   (the `\` opens an escape) and RX0 refuses the text with that `\b` (and a `\b` range
+//!   start) written `\x08` (found by the M7-P5 fixer r7 10-minute run).
+//! - The proof of the 4 rows above (fixer r2 and r7, node v26.13.0; in ep9 `new RegExp` is RX0
+//!   and the literal is the front end; "Syntax" = a SyntaxError):
 //!
 //! ```text
 //!   pattern          node: RegExp, literal   ep9: RegExp, literal   RX1 error, position
@@ -91,6 +102,8 @@
 //!   /\u{+1F600}/u    Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 2
 //!   /(?<a\u+041>x)/  Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 6
 //!   /(?<a\u{+41}>x)/ Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 6
+//!   /[$-\b]/v        Syntax, Syntax          ok, Syntax             OutOfOrderCharacterClass, 5
+//!   /[a-\b]/v        Syntax, Syntax          ok, Syntax             OutOfOrderCharacterClass, 5
 //! ```
 //! - Validity: regress's `v` parser refuses some valid classes, for example `/[.$]/v` (two
 //!   different ClassSetReservedPunctuator characters; only a doubled one is a
@@ -119,23 +132,46 @@
 //! - Sets: `\c` before a `\` in a class without `u` and `v`, for example
 //!   `/[\c\u{10400}]/`. regress does not match `\` (node and RX1 do: Annex B
 //!   ClassAtomNoDash `\` [lookahead = c], B.1.2).
-//! - Sets: a single `&` (not `&&`, not escaped) in a `v` class, for example `/[a&b]/v` and
-//!   `/[\!&]/v`. regress drops the ClassSetOperand just before the `&` (a character, an
-//!   escape, a nested class, `\q{..}`, `\w`, `\p{..}`; not a range), so it does not match `a`
-//!   and `!` there (node and RX1 do: a single `&` is a ClassSetCharacter, ECMA-262 22.2.1;
-//!   found by the M7-P5 fixer r1 and r2 runs, `/[\!&function \#&]/v`, `/[L&Po\!\#a]/v`).
-//!   Proof (fixer r2, node v26.13.0; ep9 `new RegExp` = RX0; each on `^(?:<class>)$`):
+//! - Sets: a single `&` (not `&&`, not escaped) right after the first ClassSetOperand of a
+//!   `v` class (the outer class or a nested one), for example `/[a&b]/v` and `/[\!&]/v`.
+//!   regress drops that operand (a character, an escape, a nested class, `\q{..}`, `\w`,
+//!   `\p{..}`), so it does not match `a` and `!` there (node and RX1 do: a single `&` is a
+//!   ClassSetCharacter, ECMA-262 22.2.1; found by the M7-P5 fixer r1 and r2 runs,
+//!   `/[\!&function \#&]/v`, `/[L&Po\!\#a]/v`). regress keeps a range before the `&`, a later
+//!   operand (`/[x&y&z]/v` drops only `x`) and a `&` at the class start or inside `\q{..}`; the
+//!   target compares those sets (fixer r7). Proof (fixer r2 and r7, node v26.13.0; ep9
+//!   `new RegExp` = RX0; each on `^(?:<class>)$`):
 //!
 //! ```text
-//!   class            subject   node    ep9
-//!   /[a&b]/v         "a"       true    false
-//!   /[L&Po\!\#a]/v   "L"       true    false
-//!   /[\!&]/v         "!"       true    false
-//!   /[[a]&b]/v       "a"       true    false
-//!   /[\q{a}&b]/v     "a"       true    false
-//!   /[\w&]/v         "a"       true    false
-//!   /[^a&]/v         "a"       false   true
-//!   /[a-c&]/v        "a"       true    true
+//!   class            subject      node    ep9
+//!   /[a&b]/v         "a"          true    false
+//!   /[L&Po\!\#a]/v   "L"          true    false
+//!   /[\!&]/v         "!"          true    false
+//!   /[[a]&b]/v       "a"          true    false
+//!   /[\q{a}&b]/v     "a"          true    false
+//!   /[\w&]/v         "a"          true    false
+//!   /[^a&]/v         "a"          false   true
+//!   /[x[a&b]]/v      "a"          true    false
+//!   /[\u{1F600}&]/v  "\u{1F600}"  true    false
+//!   /[x&y&z]/v       "x"          true    false
+//!   /[x&y&z]/v       "y"          true    true
+//!   /[a-c&]/v        "a"          true    true
+//!   /[&a-c]/v        "a"          true    true
+//!   /[\q{a&b}x]/v    "x"          true    true
+//!   /[[a]--&]/v      "&"          false   false
+//! ```
+//! - Sets: `\u+HHH` (a `+` sign and 3 hex digits) in a class without `u` and `v`, for example
+//!   `/[\u+041]/`. regress reads `+041` as the 4 hex digits (as in the validity row of the `+`
+//!   sign above), so it matches A and not `+` (node and RX1: `\u` is the identity escape `u`,
+//!   Annex B, so the class is `u`, `+`, `0`, `4` and `1`; found by the M7-P5 fixer r7 10-minute
+//!   run). With fewer than 3 hex digits regress agrees (`/[\u+04x]/`). Proof (fixer r7):
+//!
+//! ```text
+//!   class            subject      node    ep9
+//!   /[\u+041]/       "+"          true    false
+//!   /[\u+041]/       "A"          false   true
+//!   /[\u+13D]/       "+"          true    false
+//!   /[\u+04x]/       "+"          true    true
 //! ```
 //! - Sets: the empty string of a `v` class, for example `/^[\q{}]$/v` on "". regress never
 //!   matches it (node and RX1 do; ClassString can be empty, ECMA-262 22.2.1).
@@ -325,8 +361,37 @@ fn known_rx0_false_accept(e: &ParseError, units: &[u16], flags: Flags) -> bool {
             plus_sign_hex_escape(units, e.pos)
                 && (flags.either_unicode() || in_group_name(units, e.pos - 2))
         }
+        Error::OutOfOrderCharacterClass if flags.unicode_sets() => {
+            backspace_range_end(units, e.pos, flags)
+        }
         _ => false,
     }
+}
+
+/// True if `units[..pos]` ends a `v` class range with an escape `\b` (`-\b`, both the `-` and
+/// the `\` unescaped) and RX0 refuses the text with that `\b` (and a `\b` range start) written
+/// `\x08`: RX0 takes the text only because it reads the `\b` as `b` (the module doc).
+fn backspace_range_end(units: &[u16], pos: usize, flags: Flags) -> bool {
+    let backspace =
+        |i: usize| unit_is(units, i, b'\\') && not_escaped(units, i) && unit_is(units, i + 1, b'b');
+    if !(pos >= 3 && unit_is(units, pos - 3, b'-') && not_escaped(units, pos - 3)) {
+        return false;
+    }
+    if !backspace(pos - 2) {
+        return false;
+    }
+    let mut text = Vec::with_capacity(units.len() + 4);
+    let mut i = 0;
+    while i < units.len() {
+        if i == pos - 2 || (pos >= 5 && i == pos - 5 && backspace(i)) {
+            text.extend("\\x08".encode_utf16());
+            i += 2;
+        } else {
+            text.push(units[i]);
+            i += 1;
+        }
+    }
+    Rx0::compile(&text, ep9_regexp::Flags::from_bits(flags.bits())).is_err()
 }
 
 /// True if `units[i]` is the ASCII character `c`.
@@ -397,29 +462,61 @@ fn not_escaped(units: &[u16], pos: usize) -> bool {
     i == pos
 }
 
-/// True if `units[i]` is inside a group name: after `(?<` or `\k<` (not a look-behind `(?<=`,
-/// `(?<!`) with no `>` between.
+/// True if `units[i]` is inside a group name, in the syntax without `u` and `v` (the only
+/// mode that asks): from an unescaped `(?<` outside a class (not a look-behind `(?<=`, `(?<!`)
+/// to the next `>`. An unescaped `\k<` outside a class starts a group name only when the
+/// pattern has such a group (without one, `\k` is an identity escape, ECMA-262 B.1.2). An
+/// unescaped `[` starts a class up to the next unescaped `]`; there `(?<` and `\k<` are class
+/// characters.
 fn in_group_name(units: &[u16], i: usize) -> bool {
-    let mut j = i;
-    while j > 0 {
-        j -= 1;
-        if unit_is(units, j, b'>') {
-            return false;
-        }
-        if unit_is(units, j, b'<') {
-            let opener = j >= 2
-                && ((unit_is(units, j - 2, b'(') && unit_is(units, j - 1, b'?'))
-                    || (unit_is(units, j - 2, b'\\') && unit_is(units, j - 1, b'k')));
-            return opener && !unit_is(units, j + 1, b'=') && !unit_is(units, j + 1, b'!');
-        }
-    }
-    false
+    let has_group = !group_names(units, false).is_empty();
+    group_names(units, has_group)
+        .iter()
+        .any(|&(start, end)| start <= i && i < end)
 }
 
-/// True if `pos` is just after a `\u` and starts `+` or `{+` (a sign before the hex digits).
+/// The group names of the text (the syntax without `u` and `v`), each as `(start, end)`: from
+/// the unit after the `<` to the `>` (or the text end). `with_k`: a `\k<` starts one too.
+fn group_names(units: &[u16], with_k: bool) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let (mut j, mut in_class) = (0, false);
+    while j < units.len() {
+        let group = unit_is(units, j, b'(')
+            && unit_is(units, j + 1, b'?')
+            && unit_is(units, j + 2, b'<')
+            && !unit_is(units, j + 3, b'=')
+            && !unit_is(units, j + 3, b'!');
+        let k = with_k
+            && unit_is(units, j, b'\\')
+            && unit_is(units, j + 1, b'k')
+            && unit_is(units, j + 2, b'<');
+        if !in_class && (group || k) {
+            let start = j + 3;
+            let end = (start..units.len())
+                .find(|&e| unit_is(units, e, b'>'))
+                .unwrap_or(units.len());
+            out.push((start, end));
+            j = end + 1;
+        } else if unit_is(units, j, b'\\') {
+            j += 2;
+        } else {
+            if unit_is(units, j, b'[') {
+                in_class = true;
+            } else if unit_is(units, j, b']') {
+                in_class = false;
+            }
+            j += 1;
+        }
+    }
+    out
+}
+
+/// True if `pos` is just after a `\u` whose `\` opens an escape (it is not the escaped unit of
+/// another `\`) and starts `+` or `{+` (a sign before the hex digits).
 fn plus_sign_hex_escape(units: &[u16], pos: usize) -> bool {
     pos >= 2
         && unit_is(units, pos - 2, b'\\')
+        && not_escaped(units, pos - 2)
         && unit_is(units, pos - 1, b'u')
         && (unit_is(units, pos, b'+')
             || (unit_is(units, pos, b'{') && unit_is(units, pos + 1, b'+')))
@@ -478,29 +575,144 @@ fn known_rx0_set_difference(units: &[u16], flags: Flags) -> bool {
         || (v && i && has_nested_negation(units))
         || (v && has_negation(units) && has_escape(units, b'q'))
         || (!u && has_control_before_escape(units))
-        || (v && has_single_amp(units))
+        || (!u && has_signed_hex4_escape(units))
+        || (v && first_operand_before_single_amp(units))
 }
 
-/// True if the class text has a `&` that is not escaped and has no `&` next to it.
-fn has_single_amp(units: &[u16]) -> bool {
+/// True if the class text has `\u+HHH`: a `\u` whose `\` opens an escape, a `+` and 3 hex
+/// digits (without `u` and `v` regress reads `+HHH` as the 4 hex digits; the module doc).
+fn has_signed_hex4_escape(units: &[u16]) -> bool {
+    let hex = |j: usize| {
+        units
+            .get(j)
+            .and_then(|&d| char::from_u32(u32::from(d)))
+            .is_some_and(|c| c.is_ascii_hexdigit())
+    };
+    (0..units.len()).any(|i| {
+        unit_is(units, i, b'\\')
+            && unit_is(units, i + 1, b'u')
+            && unit_is(units, i + 2, b'+')
+            && (i + 3..i + 6).all(hex)
+            && not_escaped(units, i)
+    })
+}
+
+/// True if a class of the `v` class text (the outer class or a nested one) has a single `&`
+/// (not `&&`) right after its first ClassSetOperand: the operand that regress drops (the module
+/// doc). A `&` after a range, after `--`, at the start of a class or inside `\q{..}` does not
+/// count. The text is one that RX1 takes.
+fn first_operand_before_single_amp(units: &[u16]) -> bool {
     let mut i = 0;
     while i < units.len() {
         if unit_is(units, i, b'\\') {
-            i += 2;
-        } else if unit_is(units, i, b'&') {
-            let run = units[i..]
-                .iter()
-                .take_while(|&&c| c == u16::from(b'&'))
-                .count();
-            if run == 1 {
-                return true;
-            }
-            i += run;
-        } else {
-            i += 1;
+            // An escaped `[` opens no class; a `\q{..}` is passed whole.
+            i = escape_end(units, i);
+            continue;
         }
+        if unit_is(units, i, b'[') {
+            let mut first = i + 1;
+            if unit_is(units, first, b'^') {
+                first += 1;
+            }
+            if !unit_is(units, first, b']') {
+                let end = operand_end(units, first);
+                if unit_is(units, end, b'&') && !unit_is(units, end + 1, b'&') {
+                    return true;
+                }
+            }
+        }
+        i += 1;
     }
     false
+}
+
+/// The end (one past) of the ClassSetOperand at `units[i]` of a `v` class: a nested class, an
+/// escape, or one character (a surrogate pair is one).
+fn operand_end(units: &[u16], i: usize) -> usize {
+    if unit_is(units, i, b'\\') {
+        return escape_end(units, i);
+    }
+    if unit_is(units, i, b'[') {
+        let (mut j, mut depth) = (i + 1, 1_usize);
+        while j < units.len() {
+            if unit_is(units, j, b'\\') {
+                j = escape_end(units, j);
+                continue;
+            }
+            if unit_is(units, j, b'[') {
+                depth += 1;
+            } else if unit_is(units, j, b']') {
+                depth -= 1;
+                if depth == 0 {
+                    return j + 1;
+                }
+            }
+            j += 1;
+        }
+        return units.len();
+    }
+    if surrogate_pair(units.get(i).copied(), units.get(i + 1).copied()) {
+        i + 2
+    } else {
+        i + 1
+    }
+}
+
+/// The end (one past) of the escape at `units[i]` (a `\`) of a `v` class: `\q{..}` (its `}`;
+/// the escapes inside it are passed whole), `\p{..}`, `\P{..}`, `\u{..}`, `\uHHHH` (with a
+/// `\uHHHH` trail surrogate after a lead one: one character), `\xHH`, `\cX`, else 2 units.
+fn escape_end(units: &[u16], i: usize) -> usize {
+    let n = units.len();
+    let braced = |c: u8| unit_is(units, i + 1, c) && unit_is(units, i + 2, b'{');
+    if braced(b'q') {
+        let mut j = i + 3;
+        while j < n && !unit_is(units, j, b'}') {
+            j = if unit_is(units, j, b'\\') {
+                escape_end(units, j)
+            } else {
+                j + 1
+            };
+        }
+        return (j + 1).min(n);
+    }
+    if braced(b'p') || braced(b'P') || braced(b'u') {
+        let close = (i + 3..n).find(|&j| unit_is(units, j, b'}'));
+        return close.map_or(n, |j| j + 1);
+    }
+    let end = if unit_is(units, i + 1, b'u') {
+        match (hex4(units, i + 2), hex4(units, i + 8)) {
+            (Some(lead), Some(trail))
+                if unit_is(units, i + 6, b'\\')
+                    && unit_is(units, i + 7, b'u')
+                    && surrogate_pair(Some(lead), Some(trail)) =>
+            {
+                i + 12
+            }
+            (Some(_), _) => i + 6,
+            _ => i + 2,
+        }
+    } else if unit_is(units, i + 1, b'x') {
+        i + 4
+    } else if unit_is(units, i + 1, b'c') {
+        i + 3
+    } else {
+        i + 2
+    };
+    end.min(n)
+}
+
+/// The 4 hex digits at `units[i..i + 4]` as one code unit.
+fn hex4(units: &[u16], i: usize) -> Option<u16> {
+    let digits = units.get(i..i + 4)?;
+    digits.iter().try_fold(0_u16, |acc, &d| {
+        let d = char::from_u32(u32::from(d))?.to_digit(16)?;
+        Some(acc * 16 + d as u16)
+    })
+}
+
+/// True if `lead` and `trail` are a lead and a trail surrogate.
+fn surrogate_pair(lead: Option<u16>, trail: Option<u16>) -> bool {
+    matches!(lead, Some(0xd800..=0xdbff)) && matches!(trail, Some(0xdc00..=0xdfff))
 }
 
 /// Check 3: on a one-class pattern, the RX1 set is the RX0 set. The RX1 set is built for
