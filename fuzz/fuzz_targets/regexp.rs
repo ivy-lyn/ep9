@@ -82,6 +82,9 @@
 //! - Sets: `\c` before a `\` in a class without `u` and `v`, for example
 //!   `/[\c\u{10400}]/`. regress does not match `\` (node and RX1 do: Annex B
 //!   ClassAtomNoDash `\` [lookahead = c], B.1.2).
+//! - Sets: an escaped ClassSetReservedPunctuator just before a single `&` in a `v` class, for
+//!   example `/[\!&]/v`. regress does not match `!` (node and RX1 do: `\!` is a
+//!   ClassSetCharacter, ECMA-262 22.2.1; found by the M7-P5 fixer r1 10-minute runs).
 //! - Sets: the empty string of a `v` class, for example `/^[\q{}]$/v` on "". regress never
 //!   matches it (node and RX1 do; ClassString can be empty, ECMA-262 22.2.1).
 //!
@@ -314,6 +317,17 @@ fn known_rx0_set_difference(units: &[u16], flags: Flags) -> bool {
         || (v && i && has_nested_negation(units))
         || (v && has_negation(units) && has_escape(units, b'q'))
         || (!u && has_control_before_escape(units))
+        || (v && has_reserved_escape_before_amp(units))
+}
+
+/// True if the class text has `\<ClassSetReservedPunctuator>` just before a `&`.
+fn has_reserved_escape_before_amp(units: &[u16]) -> bool {
+    const RESERVED: &[u8] = b"&!#$%*+,.:;<=>?@^`~";
+    units.windows(3).any(|w| {
+        w[0] == u16::from(b'\\')
+            && RESERVED.iter().any(|&c| w[1] == u16::from(c))
+            && w[2] == u16::from(b'&')
+    })
 }
 
 /// Check 3: on a one-class pattern, the RX1 set is the RX0 set.
