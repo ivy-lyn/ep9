@@ -20,7 +20,10 @@
 //! | this crate's `cfg(test)` on macOS arm64 | `MAP_JIT` (`va.rs`) | [`Form::Window`] |
 //!
 //! - The text is written once, before the first byte of it runs, and never again: unit text
-//!   is per process and shared (H35 S2). Per-isolate data goes to the RW copy (A2-RW).
+//!   is per process and shared (H35 S2). The A2 loader keeps one mapping per process for one
+//!   text, keyed by SHA-256 of the text bytes and their unwind data, and maps a text only when
+//!   a function picks unit code (`ep9_vm` `unit_loader.rs`; M7-P5 A2-RW, routes A2-UNIT-SHARE
+//!   and MC-w34-4). Per-isolate data goes to the RW copy (H35 S4 step 6).
 //! - **Hardened runtime (macOS arm64).** The protect form makes plain anonymous pages
 //!   executable with `mprotect`. That works for a binary without the hardened runtime (the
 //!   same fact as `jit::WxMode::Protect`, measured on macOS 27.0.1). A hardened binary needs
