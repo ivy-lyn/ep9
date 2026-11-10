@@ -18,7 +18,7 @@ crash = a panic or an abort anywhere (also on the front-end worker thread), an I
 | `frontend_compile` | `ep9_frontend::compile` | byte 0: goal (0 sloppy script, 1 strict script, 2 module; mod 3), then the source |
 | `function_ctor` | `ep9_frontend::compile_function_ctor` | byte 0: kind (Function, Generator, Async, AsyncGenerator; mod 4), then `params NUL body` (no NUL: all body) |
 | `eval_context` | `ep9_frontend::compile_eval` | bytes 0-1: EvalContext bits (see the target's doc), then the eval text |
-| `regexp` | `ep9_rx1::parse` and `ep9_frontend::check_early_errors` (parse only: both must agree on valid or not; see the target's doc) | byte 0: flags (bits 0-7 = d g i m s u v y), then the pattern text |
+| `regexp` | `ep9_rx1::parse`, `ep9_frontend::check_early_errors` and `ep9_regexp::Rx0` (RX1 and the front end agree on valid or not; RX1 and RX0 agree on valid or not and the group count; RX0 exec with a poll budget; the RX1 class sets against RX0; see the target's doc) | byte 0: flags (bits 0-7 = d g i m s u v y), then the pattern text |
 
 - `dict/js.dict`: a token for every nesting form of `crates/ep9_frontend/src/forms.rs` (G6:
   the 13 M0 forms, the 7 M1 forms, the other recursive productions), then general JavaScript.
