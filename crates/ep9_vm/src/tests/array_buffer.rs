@@ -258,7 +258,9 @@ fn the_external_bytes_go_up_and_down() {
             let b = buffer(&iso.rt, 1, Some(1));
             assert_eq!(iso.rt.buffers.dead_stores(), 0);
             assert_eq!(ext(&iso), 3 * page);
-            black_box((b, sab, cells.len()));
+            // `kept` too: a release build drops it after the detach, and the GC above would
+            // free its entry (`entries` counts it).
+            black_box((b, sab, kept, cells.len()));
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });
@@ -483,9 +485,11 @@ fn shared_buffers_grow_and_never_detach() {
     });
 }
 
-/// (element type, a value, its little-endian bytes): each Table 71 type.
-fn byte_rows(rt: &Runtime) -> Vec<(u8, u64, Vec<u8>)> {
-    vec![
+/// (element type, a value, its little-endian bytes): each Table 71 type. An array on the
+/// native stack, not a `Vec`: the conservative scan reads only native stacks (H10), so a BigInt
+/// value in Rust heap memory dies at the next GC (RK4).
+fn byte_rows(rt: &Runtime) -> [(u8, u64, Vec<u8>); 12] {
+    [
         (0, int32_bits(-2), vec![0xFE]),
         (1, int32_bits(200), vec![200]),
         (2, num(254.5), vec![254]),
