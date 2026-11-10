@@ -1172,8 +1172,7 @@ fn engine_slots(class: ObjectClass) -> (usize, usize) {
 #[test]
 fn the_slot_api_refuses_the_store_slot() {
     for stress in [false, true] {
-        for which in 0..5 {
-            let class = API_CLASSES[which];
+        for (which, &class) in API_CLASSES.iter().enumerate() {
             let (_, word) = engine_slots(class);
             let write = move |cx: Api<'_, '_>| {
                 let (o, class) = api_buffers(cx)[which];
@@ -1207,12 +1206,12 @@ fn the_slot_api_refuses_the_store_slot() {
 #[test]
 fn the_slot_api_refuses_the_byte_length_slot() {
     for stress in [false, true] {
-        for which in 0..5 {
+        for (which, &class) in API_CLASSES.iter().enumerate() {
             let f = move |cx: Api<'_, '_>| {
                 let (o, class) = api_buffers(cx)[which];
                 let _ = cx.set_slot(o, class, 1, Local::number(4096.0));
             };
-            assert_panic_text(api_panic(stress, f), &write_refused(1, API_CLASSES[which]));
+            assert_panic_text(api_panic(stress, f), &write_refused(1, class));
         }
     }
     each_api(|cx| {
@@ -1441,9 +1440,8 @@ fn a_caller_object_of_a_buffer_class_is_the_callers() {
             for i in 0..count {
                 let x = if class == ObjectClass::DataView && i == dv_slot::TABLE {
                     Local::<'_>::from_bits(object::slot_get(real.bits(), i))
-                } else if i == word {
-                    continue;
-                } else if class == ObjectClass::DataView && i > dv_slot::BYTE_LENGTH {
+                } else if i == word || (class == ObjectClass::DataView && i > dv_slot::BYTE_LENGTH)
+                {
                     continue;
                 } else {
                     cx.slot(real, class, i).unwrap()
