@@ -2474,8 +2474,6 @@ mod tests {
         );
     }
 
-    /// P0-BUILDID: a mem or JetStream run whose ep9 binary prints no build line, or was built
-    /// dirty, names no ep9 commit (the tools write null), so the cell is OPEN and says why.
     /// P0-BUILDID (M7-P5 Codex fixer F2, Claude reviewer F1): the paths whose changes make
     /// `ep9 --version` say "dirty" (`crates/ep9_cli/build.rs` ENGINE_PATHS) are
     /// `tools/bench/cross/kernels.mjs` TREE_PATHS without `tools/bench`, and this file's
@@ -2513,6 +2511,8 @@ mod tests {
         assert_eq!(built, ENGINE_PATHS, "m2_exit.rs ENGINE_PATHS");
     }
 
+    /// P0-BUILDID: a mem or JetStream run whose ep9 binary prints no build line, or was built
+    /// dirty, names no ep9 commit (the tools write null), so the cell is OPEN and says why.
     #[test]
     fn a_binary_with_no_clean_build_line_is_open() {
         let r = repo("buildid");
