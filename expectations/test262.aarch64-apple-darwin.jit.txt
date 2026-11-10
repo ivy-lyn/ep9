@@ -5330,7 +5330,6 @@ test/staging/sm/Reflect/isExtensible.js
 test/staging/sm/Reflect/ownKeys.js
 test/staging/sm/Reflect/preventExtensions.js
 test/staging/sm/RegExp/unicode-back-reference.js
-test/staging/sm/RegExp/unicode-disallow-extended.js
 test/staging/sm/RegExp/unicode-ignoreCase-escape.js
 test/staging/sm/Symbol/species.js
 test/staging/sm/Symbol/toStringTag.js
@@ -5471,7 +5470,8 @@ test/staging/sm/regress/regress-586482-4.js
 test/staging/sm/regress/regress-602621.js
 test/staging/sm/regress/regress-665355.js
 test/staging/sm/statements/property-reference-self-assignment.js
-test/staging/sm/strict/15.5.5.1.js
-test/staging/sm/strict/15.5.5.2.js
 test/staging/source-phase-imports/import-source-source-text-module.js
 test/staging/source-phase-imports/module-source-prototype-chain.js
+# INTL-W2 (INTL W1 fixer r3, CI 42341556852): both need Intl.DateTimeFormat (W2); quote-string-for-nul-character.js also needs Intl.NumberFormat, Intl.PluralRules and Intl.RelativeTimeFormat
+test/staging/sm/String/internalUsage.js
+test/staging/sm/extensions/quote-string-for-nul-character.js
