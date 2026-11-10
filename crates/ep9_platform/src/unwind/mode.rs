@@ -109,15 +109,31 @@ pub fn registration_mode() -> io::Result<RegistrationMode> {
 }
 
 /// The registration mode of this process, chosen now if no mode is chosen yet (route
-/// A2-UNIT-SHARE O3, M7-P5 A2-RW): with `jit` (or in a unit test) as [`registration_mode`];
-/// without `jit` the self-test runs on the built-in probe, copied into a page of unit text
-/// ([`crate::unit_text::UnitText`], freed after the test). So a jitless unit loader registers
-/// unit text unwind data with no probe of its own. Fails for good, as
-/// [`registration_mode`], if no mode passed.
+/// A2-UNIT-SHARE O3, M7-P5 A2-RW): the self-test runs on the built-in probe; with `jit` (or
+/// in a unit test) in a page of its own, as [`registration_mode`]; without `jit` copied into a
+/// page of unit text ([`crate::unit_text::UnitText`], freed after the test). So a jitless unit
+/// loader registers unit text unwind data with no probe of its own. Fails for good, as
+/// [`registration_mode`], if no mode passed. A probe that could not run (no free page in the
+/// code range, a map that failed) gives no verdict: that error is not kept, and a later call
+/// tries again (M7-P5 Codex A2: a unit that fills the range must not stop unwind for good).
 pub fn choose_mode() -> io::Result<RegistrationMode> {
-    #[cfg(not(any(feature = "jit", test)))]
-    let _ = MODE.get_or_init(builtin::select_in_unit_text);
+    if MODE.get().is_none() {
+        // One probe run at a time, so the process gets one verdict.
+        let _one = CHOOSING.lock().unwrap_or_else(|e| e.into_inner());
+        if MODE.get().is_none() {
+            let verdict = builtin::try_select().map_err(|e| unsupported(&could_not_run(&e)))?;
+            let _ = MODE.set(verdict);
+        }
+    }
     registration_mode()
+}
+
+/// Held while [`choose_mode`] runs the probe.
+static CHOOSING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The error text of a probe that could not run.
+fn could_not_run(e: &str) -> String {
+    format!("unwind self-test could not run: {e}. Native code cannot run (H28)")
 }
 
 /// What a `dlsym` of `__unw_add_dynamic_fde` suggests: [`RegistrationMode::PerFde`] if the
@@ -469,16 +485,39 @@ mod builtin {
         Ok(f(&probe))
     }
 
-    /// The process-wide choice with the built-in probe in unit text ([`choose_mode`]).
-    ///
-    /// [`choose_mode`]: super::choose_mode
-    #[cfg_attr(feature = "jit", allow(dead_code))]
+    /// The process-wide choice with the built-in probe in unit text (the [`try_select`] of a
+    /// build without `jit`, as one result).
+    #[cfg(test)]
     pub(in crate::unwind) fn select_in_unit_text() -> Result<RegistrationMode, String> {
+        try_select_in_unit_text().map_err(|e| super::could_not_run(&e))?
+    }
+
+    /// The self-test with the built-in probe in a page of unit text: `Err` if the probe could
+    /// not run (no verdict), else the verdict of `super::select`.
+    #[cfg_attr(all(feature = "jit", not(test)), allow(dead_code))]
+    fn try_select_in_unit_text() -> Result<Result<RegistrationMode, String>, String> {
         // SAFETY: `with_probe_in_unit_text` maps the probe for the duration of the closure; the
         // section describes it exactly; the page is new, so no registration overlaps it.
-        with_probe_in_unit_text(probe_section, |p| unsafe { super::select(p) }).map_err(|e| {
-            format!("unwind self-test could not run: {e}. Native code cannot run (H28)")
-        })?
+        with_probe_in_unit_text(probe_section, |p| unsafe { super::select(p) })
+    }
+
+    /// The probe run of [`choose_mode`]: `Err` if the probe could not run (no verdict), else
+    /// the self-test verdict. With `jit` (or in a unit test) the probe gets a page of its own.
+    ///
+    /// [`choose_mode`]: super::choose_mode
+    #[cfg(any(feature = "jit", test))]
+    pub(super) fn try_select() -> Result<Result<RegistrationMode, String>, String> {
+        // SAFETY: `with_probe` maps the probe for the duration of the closure; the section
+        // describes it exactly; the page is new, so no registration overlaps it.
+        with_probe(probe_section, |p| unsafe { super::select(p) })
+    }
+
+    /// The probe run of [`choose_mode`] without `jit`: in a page of unit text.
+    ///
+    /// [`choose_mode`]: super::choose_mode
+    #[cfg(not(any(feature = "jit", test)))]
+    pub(super) fn try_select() -> Result<Result<RegistrationMode, String>, String> {
+        try_select_in_unit_text()
     }
 
     /// The process-wide choice with the built-in probe.

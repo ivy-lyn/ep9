@@ -10,6 +10,7 @@
 //! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered by the loader (JIT review O3), installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
 //! | `unit_loader_installs_nothing_*`, `unit_loader_maps_*`, `unit_loader_a_text_larger_*` | O3: no unwind data, no install; A2-UNIT-SHARE and MC-w34-4: one text per process keyed by its bytes, mapped only on a pick, and a text that cannot fit gives "no-text" |
 //! | `unit_loader_build_*` | SHSTK-ENGINE: the ep9_vm build script runs the shadow-stack refusal |
+//! | `unit_loader_a_text_from_*`, `unit_loader_a_whole_*`, `unit_loader_a_full_*` | M7-P5 Codex A1: a shared text is synced on the thread that runs it; Codex A2 (child processes, `unit_loader_child_case`): the unwind mode is chosen before a text maps, and a probe that could not run is not cached |
 //!
 //! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit)
 //! are in `crates/ep9_unit/tests/loader.rs`: ep9_vm tests cannot compile JS.
@@ -1675,4 +1676,151 @@ fn unit_loader_a_text_from_another_thread_is_synced_before_it_runs() {
         "one sync per load, on each thread"
     );
     assert_eq!(r, Ok(Value::int32(42).to_bits()));
+}
+
+/// The isolate of [`installed_g`] before the install (the same builtins and globals).
+#[cfg(unix)]
+fn plain_g() -> Isolate {
+    let config = IsolateConfig {
+        builtins: Some(&FORWARDERS),
+        ..IsolateConfig::default()
+    };
+    let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+    iso.register_host_function("walk", 0, walk);
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
+    iso
+}
+
+/// The name of the child case test (module path from the crate root, for `--exact`).
+#[cfg(unix)]
+const CHILD_TEST: &str = "tests::unit_loader::unit_loader_child_case";
+
+/// Runs [`unit_loader_child_case`] in a child process (this test binary again) with
+/// `EP9_UNIT_LOADER_CHILD=<case>`: a fresh process, so the process unwind mode is not chosen
+/// yet and the process code range is free. A child that does not end before the deadline (a
+/// hang guard, not a time bound) is killed and the test fails.
+#[cfg(unix)]
+fn run_child(case: &str) {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let exe = std::env::current_exe().unwrap();
+    let mut child = Command::new(exe)
+        .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+        .env("EP9_UNIT_LOADER_CHILD", case)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let read = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = r.read_to_string(&mut s);
+            s
+        })
+    };
+    let out = read(Box::new(child.stdout.take().unwrap()));
+    let err = read(Box::new(child.stderr.take().unwrap()));
+    let deadline = Instant::now() + Duration::from_secs(1200);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child case {case}: no exit before the deadline; killed");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let (out, err) = (out.join().unwrap(), err.join().unwrap());
+    assert!(
+        status.success() && out.contains(&format!("CHILD-OK {case}")),
+        "child case {case}: {status}\n{out}\n{err}"
+    );
+}
+
+/// The child side of [`run_child`]; with no `EP9_UNIT_LOADER_CHILD` it does nothing.
+///
+/// - `big` (Codex A2, the verifier's V-A2-2): the first text of the process fills the whole
+///   free code range. The loader chooses the unwind mode before it maps the text (the probe
+///   needs a page of its own), so the text installs, the mode is chosen, and a small text
+///   installs after it.
+/// - `busy`: `choose_mode` while the code range has no free page fails, and that error is
+///   not kept: after the range is free again `choose_mode` passes and a text installs.
+#[cfg(unix)]
+#[test]
+fn unit_loader_child_case() {
+    use ep9_platform::unit_text::UnitText;
+    use ep9_platform::unwind::{choose_mode, registration_mode};
+    let Ok(case) = std::env::var("EP9_UNIT_LOADER_CHILD") else {
+        return;
+    };
+    let range = CodeRange::process().unwrap();
+    match case.as_str() {
+        "big" => {
+            let mut iso = plain_g();
+            let free = range.free_bytes();
+            let mut big = stub_text();
+            big.resize(free, 0);
+            let lu = info(&iso, "g").loaded_unit().unwrap();
+            // SAFETY: as `installed_g`: offset 0 holds the frame stub, the rest is not code.
+            let r = unsafe {
+                unit_loader::load_and_install(
+                    &iso.rt,
+                    lu,
+                    &big,
+                    &stub_unwind(),
+                    &[],
+                    0,
+                    &[g_stub()],
+                    Some(&Policy::JITLESS),
+                    0,
+                )
+            };
+            assert_eq!(r.count(Reason::Installed), 1, "big: {:?}", r.rows());
+            assert!(registration_mode().is_ok(), "{:?}", registration_mode());
+            assert_eq!(
+                run_js(&mut iso, call_g_walk()),
+                Ok(Value::int32(42).to_bits())
+            );
+            drop(iso);
+            assert_eq!(
+                range.free_bytes(),
+                free,
+                "the big text went back to the range"
+            );
+        }
+        "busy" => {
+            let fill = UnitText::map(range, &vec![0u8; range.free_bytes()]).unwrap();
+            assert!(choose_mode().is_err(), "no free page for the probe");
+            drop(fill);
+            assert!(choose_mode().is_ok(), "{:?}", choose_mode());
+        }
+        other => panic!("unknown child case {other}"),
+    }
+    // A small text installs and runs (`installed_g` checks the install).
+    let mut iso = installed_g();
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
+    );
+    println!("CHILD-OK {case}");
+}
+
+/// Codex A2: a first text that fills the code range does not stop unwind registration for
+/// the process (child case `big`).
+#[cfg(unix)]
+#[test]
+fn unit_loader_a_whole_range_first_text_keeps_the_unwind_mode() {
+    run_child("big");
+}
+
+/// Codex A2: a probe that could not run is not cached as the process mode (child case
+/// `busy`).
+#[cfg(unix)]
+#[test]
+fn unit_loader_a_full_range_at_the_mode_choice_is_tried_again() {
+    run_child("busy");
 }

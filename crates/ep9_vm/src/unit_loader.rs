@@ -440,6 +440,9 @@ fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
     if unwind.is_empty() {
         return Err(Reason::NoUnwind);
     }
+    // The unwind mode first: its probe needs a free page, which a text may fill (Codex A2).
+    #[cfg(unix)]
+    ep9_platform::unwind::choose_mode().map_err(|_| Reason::NoUnwind)?;
     let mapped = UnitText::map(range, text).map_err(|_| Reason::NoText)?;
     let reg = register_unwind(&mapped, unwind).map_err(|_| Reason::NoUnwind)?;
     let t = Arc::new(SharedText {
