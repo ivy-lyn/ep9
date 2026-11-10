@@ -17,8 +17,9 @@
 //! | `get_and_set_value_in_both_byte_orders` | each type, little and big endian, unaligned and shared; the range checks |
 //! | `copy_bytes_with_overlap` | CopyDataBlockBytes forward, backward, across buffers and shared |
 //! | `atomics_operations` | load, store, the 6 read-modify-write ops and compare-exchange on each integer type |
-//! | `data_view_slots` | the DataView slots, its range checks, auto length |
+//! | `data_view_slots` | the DataView slots (slot 4: its own table entry), its range checks, auto length |
 //! | `a_failed_transfer_leaves_the_buffer` | ArrayBufferCopyAndDetach order: a failed grow of a moved store leaves the old buffer as it was |
+//! | `every_engine_object_owns_its_entry_and_no_other_does` | the brand (TA-1 fixer r3): each maker's buffer or DataView owns a table entry from birth, a caller object never does (also with a copied index), the entries of dead ones go in every GC kind; 10 000 make and drop rounds with GCs: no caller object at a reused address is branded |
 //! | `the_slot_api_refuses_the_store_slot` | safe `Cx` only: `set_slot` and `slot` of a buffer store or a DataView data word panic (Codex TA-1 r1 f1_e) |
 //! | `the_slot_api_refuses_the_byte_length_slot` | safe `Cx` only: `set_slot` of the byte length panics (f1_a, f1_b, f1_d); the range checks hold |
 //! | `the_slot_api_refuses_the_other_engine_slots` | safe `Cx` only: every engine slot of a buffer or a DataView refuses a write; the value slots stay readable |
@@ -87,11 +88,10 @@ fn a_fixed_buffer_is_a_bytes_cell() {
         assert_eq!(object::slot_class(b), Some(ObjectClass::ArrayBuffer.id()));
         let store = object::slot_get(b, slot::STORE);
         assert_eq!(kinds::cell_kind(store), kinds::BYTES.get());
-        assert_eq!(
-            object::slot_get(b, slot::TABLE),
-            UNDEFINED,
-            "no entry: no view"
-        );
+        // Its own table entry from birth (the brand, TA-1 fixer r3), with no view yet.
+        let i = val(object::slot_get(b, slot::TABLE)).as_int32().unwrap();
+        assert!(rt.buffers.owns(i as usize, b), "an entry with no view");
+        assert!(rt.buffers.views_of(b).is_empty());
         assert_eq!(object::slot_get(b, slot::MAX_BYTE_LENGTH), UNDEFINED);
         assert_eq!(ab::byte_length(rt, b), 13);
         let c = object::cell(store);
@@ -704,7 +704,16 @@ fn data_view_slots() {
         assert_eq!(object::slot_get(dv, dv_slot::BUFFER), b);
         assert_eq!(n(object::slot_get(dv, dv_slot::BYTE_OFFSET)), 2.0);
         assert_eq!(n(object::slot_get(dv, dv_slot::BYTE_LENGTH)), 4.0);
-        assert_eq!(object::slot_get(dv, dv_slot::FLAGS), int32_bits(0));
+        // Slot 4 names the DataView's own table entry (the brand), not its buffer's.
+        let j = val(object::slot_get(dv, dv_slot::TABLE))
+            .as_int32()
+            .expect("an int32 index");
+        assert!(
+            rt.buffers.owns(j as usize, dv),
+            "the DataView owns entry {j}"
+        );
+        assert!(ab::is_data_view(rt, dv));
+        assert_ne!(object::slot_get(b, slot::TABLE), int32_bits(j));
         let w = object::slot_get(dv, dv_slot::DATA);
         let p = crate::external_ref::ExternalRef::<u8>::from_word(w).get();
         assert_eq!(p, ab::data_base(rt, b).wrapping_add(2).cast_const());
@@ -781,6 +790,165 @@ fn a_failed_transfer_leaves_the_buffer() {
         assert!(ab::is_detached(moved));
         assert_eq!(bytes_of(cx.rt(), shrunk), [1, 2]);
     });
+}
+
+// ---- the brand: every engine object owns its table entry (TA-1 fixer r3, design study) ------
+
+/// Makes a viewless fixed buffer, a zero-length buffer and a DataView on `keep` that nothing
+/// keeps; returns their masked addresses.
+#[inline(never)]
+fn dead_engine_objects(iso: &mut Isolate, keep: u64) -> Vec<usize> {
+    let rt: &Runtime = &iso.rt;
+    let fixed = buffer(rt, 8, None);
+    let empty = buffer(rt, 0, None);
+    let dv = ab::new_data_view(rt, NULL, keep, 0, None).unwrap();
+    [fixed, empty, dv]
+        .iter()
+        .map(|&o| black_box(o as usize) ^ MASK)
+        .collect()
+}
+
+/// The table slot of an engine object of class `class` (5 a buffer, 4 a DataView) and its
+/// slot count.
+fn table_slot(class: u16) -> (usize, usize) {
+    if class == ObjectClass::DataView.id() {
+        (dv_slot::TABLE, dv_slot::COUNT)
+    } else {
+        (slot::TABLE, slot::COUNT)
+    }
+}
+
+/// The design study's T8 (judge §4.5; free.md T6): `is_engine_object` holds for the result of
+/// each maker (fixed, zero-length, resizable, SAB, DataView, both transfer forms and the copy,
+/// detached buffers) and for nothing else, a caller object with a copied table index included.
+/// A viewless buffer, a zero-length buffer and a DataView own entries, which go when they die
+/// (major and minor GC). Then 10 000 rounds (2 000 under GC stress) make and drop engine and
+/// caller objects with GCs between them: a caller object at the address of a dead engine
+/// object, with that object's old table index, is never branded (the weak source frees an
+/// entry in the GC that finds its owner dead, before the sweep can give the address again).
+/// Under GC stress most caller objects get such an address; the test checks that some do.
+#[test]
+fn every_engine_object_owns_its_entry_and_no_other_does() {
+    // No minor GC under stress: the stress GCs make the dead objects old before it runs.
+    for (stress, minor) in [(false, false), (false, true), (true, false)] {
+        on_big_stack(move || {
+            let mut c = config(Dispatch::DEFAULT, stress);
+            c.heap.generational = true;
+            c.heap.record_conservative_roots = true;
+            let mut iso = isolate(c);
+            let rt: &Runtime = &iso.rt;
+            let fixed = buffer(rt, 8, None);
+            let empty = buffer(rt, 0, None);
+            let rab = buffer(rt, 8, Some(64));
+            let sab = shared(rt, 8, Some(64));
+            let dv = ab::new_data_view(rt, NULL, fixed, 0, None).unwrap();
+            let moved = ab::copy_and_detach(rt, buffer(rt, 8, None), NULL, 8, false).unwrap();
+            let moved_rab =
+                ab::copy_and_detach(rt, buffer(rt, 8, Some(64)), NULL, 16, true).unwrap();
+            let old = buffer(rt, 8, None);
+            let copied = ab::copy_and_detach(rt, old, NULL, 4, false).unwrap();
+            let detached = buffer(rt, 8, Some(16));
+            ab::detach(rt, detached, UNDEFINED).unwrap();
+            let engine = [
+                fixed, empty, rab, sab, dv, moved, moved_rab, old, copied, detached,
+            ];
+            for (n, &o) in engine.iter().enumerate() {
+                assert!(ab::is_engine_object(rt, o), "engine object {n}");
+                let class = object::slot_class(o).unwrap();
+                let (t, _) = table_slot(class);
+                let i = val(object::slot_get(o, t)).as_int32().unwrap();
+                assert!(rt.buffers.owns(i as usize, o), "engine object {n}");
+                assert_eq!(ab::is_data_view(rt, o), class == ObjectClass::DataView.id());
+                assert_eq!(ab::buffer_class(rt, o).is_some(), !ab::is_data_view(rt, o));
+            }
+            assert!(ab::is_detached(old) && ab::is_detached(detached));
+            // Caller objects of the same classes and counts (and others), with the table index
+            // of a real one copied in: no brand.
+            for (n, &real) in engine.iter().enumerate() {
+                let class = object::slot_class(real).unwrap();
+                let (t, count) = table_slot(class);
+                let idx = object::slot_get(real, t);
+                for k in [count, 0, 3, 7] {
+                    let o = object::new_slot_object(rt, NULL, class, k);
+                    if t < k {
+                        object::slot_set(rt, o, t, idx);
+                    }
+                    assert!(!ab::is_engine_object(rt, o), "copy of {n}, {k} slots");
+                    assert!(ab::buffer_class(rt, o).is_none() && !ab::is_data_view(rt, o));
+                }
+            }
+            let plain = object::new_plain_object(rt);
+            for v in [plain, UNDEFINED, NULL, int32_bits(0), num(1.5)] {
+                assert!(!ab::is_engine_object(rt, v));
+            }
+            // A viewless buffer, a zero-length buffer and a DataView die: their 3 entries go.
+            let entries = rt.buffers.live_entries();
+            let cells = below_a_pad(|| dead_engine_objects(&mut iso, fixed));
+            assert_eq!(iso.rt.buffers.live_entries(), entries + 3);
+            assert_eq!(iso.rt.buffers.views_of(fixed).len(), 2);
+            scrub_stack();
+            if minor {
+                iso.rt.heap.collect_minor();
+            } else {
+                iso.collect_garbage();
+            }
+            let css = iso.rt.heap.last_conservative_roots();
+            for &m in &cells {
+                let addr = m ^ MASK;
+                assert!(
+                    !css.iter().any(|c| c.addr() == addr),
+                    "the scan kept {addr:#x}"
+                );
+            }
+            assert_eq!(iso.rt.buffers.live_entries(), entries);
+            assert_eq!(iso.rt.buffers.views_of(fixed), [dv]);
+            // Make and drop: a caller object never takes the brand of a dead engine object
+            // whose address it got (it gets that object's old table index too).
+            let rt: &Runtime = &iso.rt;
+            // GC stress (a GC at each allocation) gives the freed addresses back at once; with
+            // no stress the allocator takes fresh holes first, so few are reused.
+            let rounds = if stress { 2_000 } else { 10_000 };
+            let mut index_at = std::collections::HashMap::new();
+            let mut reused = 0usize;
+            for r in 0..rounds {
+                let e = match r % 3 {
+                    0 => buffer(rt, 8, None),
+                    1 => buffer(rt, 0, None),
+                    _ => ab::new_data_view(rt, NULL, fixed, 0, Some(4)).unwrap(),
+                };
+                assert!(ab::is_engine_object(rt, e), "round {r}");
+                let class = object::slot_class(e).unwrap();
+                let (t, count) = table_slot(class);
+                index_at.insert(e, object::slot_get(e, t));
+                let o = object::new_slot_object(rt, NULL, class, count);
+                let idx = match index_at.get(&o) {
+                    Some(&i) => {
+                        reused += 1;
+                        i
+                    }
+                    None => object::slot_get(e, t),
+                };
+                object::slot_set(rt, o, t, idx);
+                assert!(!ab::is_engine_object(rt, o), "round {r}");
+                black_box((e, o));
+                if r % 10 == 9 {
+                    if (r / 10) % 2 == 0 {
+                        rt.heap.collect_minor();
+                    } else {
+                        rt.heap.collect();
+                    }
+                }
+            }
+            eprintln!(
+                "stress {stress}: {rounds} rounds, {reused} caller objects at the address of an \
+                 earlier engine object"
+            );
+            assert!(!stress || reused > 0, "no address was reused");
+            black_box((empty, rab, sab, dv, moved, moved_rab, copied, cells.len()));
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
 }
 
 // ---- the slot API cannot forge a buffer (Codex TA-1 r1 finding 1) -----------------------------
@@ -944,7 +1112,7 @@ fn the_slot_api_refuses_the_byte_length_slot() {
 /// `set_slot` of slot 4 panics (clearing the detached bit would give a null store a length),
 /// and so does every other engine slot of a buffer (2 the maximum, 3 the detach key) and of a
 /// DataView (0-4). Slots 1-5 of a buffer and 0-2 of a DataView stay readable; slot 4 of a
-/// DataView (its flags) is not read.
+/// DataView (its table index) is not read.
 #[test]
 fn the_slot_api_refuses_the_other_engine_slots() {
     for stress in [false, true] {
@@ -959,7 +1127,7 @@ fn the_slot_api_refuses_the_other_engine_slots() {
         }
         let flags = |cx: Api<'_, '_>| {
             let (dv, class) = api_buffers(cx)[4];
-            let _ = cx.slot(dv, class, dv_slot::FLAGS);
+            let _ = cx.slot(dv, class, dv_slot::TABLE);
         };
         assert!(api_panics(stress, flags), "slot 4 of a DataView");
     }

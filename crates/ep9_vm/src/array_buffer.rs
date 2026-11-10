@@ -8,9 +8,11 @@
 //!   slot 0 store: BYTES cell | int32 entry | undefined     entries[i]: owner (weak), store, views (weak)
 //!   slot 1 byteLength  2 maxByteLength (undefined: fixed)      store: Resizable(Reservation) | Shared(Arc)
 //!   slot 3 detach key  4 flags (int32)                     one weak source (every GC kind):
-//!   slot 5 entry index (int32) or undefined                  owner dead -> remove its external bytes,
-//!                                                              free the entry (the store is dropped
-//!   BYTES (kind 85): +8 byte length, +16 bytes (zeroed)        after the GC); else drop dead views
+//!   slot 5 its own entry index (int32)                       owner dead -> remove its external bytes,
+//! DataView (SLOT_OBJECT, ObjectClass 29)                       free the entry (the store is dropped
+//!   slot 4 its own entry index (int32; no store, no views)     after the GC); else drop dead views
+//!
+//!   BYTES (kind 85): +8 byte length, +16 bytes (zeroed)
 //! ```
 //!
 //! | Buffer | Store | Data address | Freed by |
@@ -23,8 +25,16 @@
 //! Rules:
 //! - **GC (plan rule 8).** Rust memory holds a buffer and its views only weakly, in the
 //!   table, which one weak source sweeps in every GC kind (minor too). The table is indexed by
-//!   the int32 in slot 5, never by an address (H12). An entry exists only for an off-heap store
-//!   or a buffer with a view.
+//!   the int32 in slot 5 (a DataView: slot 4), never by an address (H12).
+//! - **The brand (TA-1 fixer r3; Codex TA-1 r1 finding 1).** Every buffer and DataView that
+//!   this file makes (an engine object) owns one table entry from birth: the maker inserts it
+//!   right after the allocation (no GC point between them), and only `BufferTable::insert`
+//!   sets an owner. [`buffer_class`] and [`is_data_view`] test that the entry that the table
+//!   slot names has the object as its owner, so an object of these classes that the generic
+//!   slot API makes (any slot count, any slot values) is not a buffer or a DataView here: a
+//!   TypeError. The weak source frees a dead owner's entry in the GC that finds it dead, before
+//!   the sweep can give its address again, so a new object never finds itself the owner of an
+//!   old entry.
 //! - **External bytes (needs N1).** A new off-heap store: the buffer is made and held in a Rust
 //!   local first, then `Heap::add_external_bytes` (a GC point) runs with no borrow of the table,
 //!   and only after `Ok` the store goes into the table; on `Err` the store is dropped. The weak
@@ -76,7 +86,8 @@ pub(crate) mod slot {
     pub const DETACH_KEY: usize = 3;
     /// The [`super::flag`] bits (an int32).
     pub const FLAGS: usize = 4;
-    /// The int32 index of the buffer's [`super::BufferTable`] entry, or undefined.
+    /// The int32 index of the buffer's own [`super::BufferTable`] entry: the brand of
+    /// [`super::buffer_class`].
     pub const TABLE: usize = 5;
     /// The slot count.
     pub const COUNT: usize = 6;
@@ -101,8 +112,9 @@ pub(crate) mod dv_slot {
     /// The data address (an `ExternalRef<u8>` native word): the store base + the byte offset,
     /// null when detached (the H25 inventory).
     pub const DATA: usize = 3;
-    /// Flags (an int32; 0, none defined yet).
-    pub const FLAGS: usize = 4;
+    /// The int32 index of the DataView's own [`super::BufferTable`] entry (no store, no
+    /// views): the brand of [`super::is_data_view`].
+    pub const TABLE: usize = 4;
     /// The slot count.
     pub const COUNT: usize = 5;
 }
@@ -313,7 +325,9 @@ impl BufferTable {
         drop(dead);
     }
 
-    /// A new entry for `owner` (no store, no views); its index. Not a GC point.
+    /// A new entry for `owner` (no store, no views); its index. Not a GC point. The only
+    /// writer of an owner: its callers are the makers of this file, right after they allocate
+    /// `owner`.
     fn insert(&self, owner: u64, store: Option<Store>, external: usize) -> i32 {
         let mut t = self.inner.borrow_mut();
         let e = Entry {
@@ -333,6 +347,25 @@ impl BufferTable {
             }
         };
         i32::try_from(i).expect("fewer than 2^31 buffers with a table entry")
+    }
+
+    /// Puts `store` and its external byte count into entry `i` (made with no store at its
+    /// owner's birth). Not a GC point.
+    fn set_store(&self, i: usize, store: Option<Store>, external: usize) {
+        let mut t = self.inner.borrow_mut();
+        let e = &mut t.entries[i];
+        debug_assert!(e.store.is_none() && e.external == 0);
+        e.store = store;
+        e.external = external;
+    }
+
+    /// True if entry `i` exists and `o` is its owner (the brand). Not a GC point.
+    pub(crate) fn owns(&self, i: usize, o: u64) -> bool {
+        self.inner
+            .borrow()
+            .entries
+            .get(i)
+            .is_some_and(|e| e.owner == o)
     }
 
     /// The number of live entries (tests).
@@ -376,14 +409,41 @@ fn add_external(rt: &Runtime, n: usize) -> BufResult<()> {
 
 // ---- buffers ----------------------------------------------------------------------------------
 
-/// The ObjectClass of `b` if it is an ArrayBuffer or a SharedArrayBuffer made here ([`made_here`]).
+/// The ObjectClass of `b` if it is an ArrayBuffer or a SharedArrayBuffer made here: it owns
+/// the table entry that its slot 5 names (the brand, module doc). `None` for any other value,
+/// an object of these classes from the generic slot API included.
 #[inline]
-pub(crate) fn buffer_class(b: u64) -> Option<ObjectClass> {
-    match object::slot_class(b).filter(|_| made_here(b)) {
-        Some(c) if c == ObjectClass::ArrayBuffer.id() => Some(ObjectClass::ArrayBuffer),
-        Some(c) if c == ObjectClass::SharedArrayBuffer.id() => Some(ObjectClass::SharedArrayBuffer),
-        _ => None,
-    }
+pub(crate) fn buffer_class(rt: &Runtime, b: u64) -> Option<ObjectClass> {
+    let c = match object::slot_class(b)? {
+        c if c == ObjectClass::ArrayBuffer.id() => ObjectClass::ArrayBuffer,
+        c if c == ObjectClass::SharedArrayBuffer.id() => ObjectClass::SharedArrayBuffer,
+        _ => return None,
+    };
+    owns_entry(rt, b, slot::COUNT, slot::TABLE).then_some(c)
+}
+
+/// True if `v` is a DataView made here ([`new_data_view`]): it owns the table entry that its
+/// slot 4 names (the brand). A DataView reader (TA-2) trusts the slots of `v` only after this.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn is_data_view(rt: &Runtime, v: u64) -> bool {
+    object::slot_class(v) == Some(ObjectClass::DataView.id())
+        && owns_entry(rt, v, dv_slot::COUNT, dv_slot::TABLE)
+}
+
+/// True if `o` is a buffer or a DataView made here (an engine object; any value).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn is_engine_object(rt: &Runtime, o: u64) -> bool {
+    buffer_class(rt, o).is_some() || is_data_view(rt, o)
+}
+
+/// True if the SLOT_OBJECT `o` has `count` slots and its slot `table` is the int32 index of
+/// a table entry whose owner is `o` (the brand).
+#[inline]
+fn owns_entry(rt: &Runtime, o: u64, count: usize, table: usize) -> bool {
+    object::slot_count(o) == count
+        && val(object::slot_get(o, table))
+            .as_int32()
+            .is_some_and(|i| i >= 0 && rt.buffers.owns(i as usize, o))
 }
 
 /// True if the buffer `b` (its [`buffer_class`] is `Some`) is a SharedArrayBuffer.
@@ -463,7 +523,8 @@ pub(crate) fn data_base(rt: &Runtime, b: u64) -> *mut u8 {
     }
 }
 
-/// The class's slots on a new SLOT_OBJECT, with its byte length, maximum and flags. GC point.
+/// The class's slots on a new SLOT_OBJECT, with its own table entry (no store yet), byte
+/// length, maximum and flags. GC point.
 fn new_buffer_object(
     rt: &Runtime,
     proto: u64,
@@ -472,6 +533,9 @@ fn new_buffer_object(
     max: Option<u64>,
 ) -> u64 {
     let o = object::new_slot_object(rt, proto, class.id(), slot::COUNT);
+    // The brand: `o` owns its entry from birth (no GC point since the allocation).
+    let i = rt.buffers.insert(o, None, 0);
+    object::slot_set(rt, o, slot::TABLE, int32_bits(i));
     let fl = if max.is_some() { flag::RESIZABLE } else { 0 };
     object::slot_set(rt, o, slot::BYTE_LENGTH, crate::conv::num(len as f64));
     let m = max.map_or(UNDEFINED, |m| crate::conv::num(m as f64));
@@ -523,11 +587,10 @@ pub(crate) fn allocate(rt: &Runtime, proto: u64, len: u64, max: Option<u64>) -> 
             // Needs N1: the add is a GC point, with `b` in a Rust local and no table borrow; on
             // Err `mem` drops here.
             add_external(rt, committed)?;
-            let i = rt
-                .buffers
-                .insert(b, Some(Store::Resizable { mem, committed }), committed);
-            object::slot_set(rt, b, slot::STORE, int32_bits(i));
-            object::slot_set(rt, b, slot::TABLE, int32_bits(i));
+            let i = entry_index(b).expect("an engine buffer has its entry");
+            rt.buffers
+                .set_store(i, Some(Store::Resizable { mem, committed }), committed);
+            object::slot_set(rt, b, slot::STORE, int32_bits(i as i32));
         }
     }
     Ok(b)
@@ -570,24 +633,18 @@ pub(crate) fn allocate_shared(
     });
     // Needs N1 (as `allocate`); TA-ORCH-4: this isolate counts the block once.
     add_external(rt, committed)?;
-    let i = rt.buffers.insert(b, Some(Store::Shared(block)), committed);
-    object::slot_set(rt, b, slot::STORE, int32_bits(i));
-    object::slot_set(rt, b, slot::TABLE, int32_bits(i));
+    let i = entry_index(b).expect("an engine buffer has its entry");
+    rt.buffers
+        .set_store(i, Some(Store::Shared(block)), committed);
+    object::slot_set(rt, b, slot::STORE, int32_bits(i as i32));
     Ok(b)
 }
 
-/// Adds the view `v` (a TypedArray or a DataView) to the view list of the buffer `b`, making
-/// its entry if it has none. GC point (the slot store); no JS.
+/// Adds the view `v` (a TypedArray or a DataView) to the view list of the buffer `b` (its
+/// entry exists from its birth). Not a GC point; no JS.
 pub(crate) fn add_view(rt: &Runtime, b: u64, v: u64) {
     rt.buffers.drain_dead();
-    let i = match entry_index(b) {
-        Some(i) => i,
-        None => {
-            let i = rt.buffers.insert(b, None, 0);
-            object::slot_set(rt, b, slot::TABLE, int32_bits(i));
-            i as usize
-        }
-    };
+    let i = entry_index(b).expect("an engine buffer has its entry");
     rt.buffers.inner.borrow_mut().entries[i].views.push(v);
 }
 
@@ -609,7 +666,7 @@ pub(crate) fn view_data(rt: &Runtime, b: u64, byte_offset: usize) -> *const u8 {
 /// A TypeError for a SharedArrayBuffer or a key that is not the buffer's (SameValue). Not a
 /// GC point.
 pub(crate) fn detach(rt: &Runtime, b: u64, key: u64) -> BufResult<()> {
-    match buffer_class(b) {
+    match buffer_class(rt, b) {
         Some(ObjectClass::ArrayBuffer) => {}
         Some(_) => return Err(Fail::Type("Cannot detach a SharedArrayBuffer")),
         None => return Err(Fail::Type("Receiver is not an ArrayBuffer")),
@@ -676,7 +733,7 @@ pub(crate) fn copy_and_detach(
     new_len: u64,
     preserve: bool,
 ) -> BufResult<u64> {
-    match buffer_class(b) {
+    match buffer_class(rt, b) {
         Some(ObjectClass::ArrayBuffer) => {}
         Some(_) => return Err(Fail::Type("Cannot transfer a SharedArrayBuffer")),
         None => return Err(Fail::Type("Receiver is not an ArrayBuffer")),
@@ -713,16 +770,16 @@ pub(crate) fn copy_and_detach(
         // A resizable store stays resizable: move the reservation, resize it, then detach `b`.
         let nb = new_buffer_object(rt, proto, ObjectClass::ArrayBuffer, old_len, new_max);
         let i = entry_index(b).expect("a resizable buffer has an entry");
+        let j = entry_index(nb).expect("an engine buffer has its entry");
         let (moved, external) = take_store(rt, i);
-        let j = rt.buffers.insert(nb, moved, external);
-        object::slot_set(rt, nb, slot::STORE, int32_bits(j));
-        object::slot_set(rt, nb, slot::TABLE, int32_bits(j));
+        rt.buffers.set_store(j, moved, external);
+        object::slot_set(rt, nb, slot::STORE, int32_bits(j as i32));
         // GC point (a grow adds external bytes): `b` and `nb` live in Rust locals, and no JS
         // runs before the detach, so the views of `b` see no state between the two.
         if let Err(e) = resize(rt, nb, new_len) {
             // The grow failed (its external bytes or its commit; `resize` took back what it
             // added): the store and its count go back to `b`, which stays as it was.
-            let (store, external) = take_store(rt, j as usize);
+            let (store, external) = take_store(rt, j);
             let mut t = rt.buffers.inner.borrow_mut();
             t.entries[i].store = store;
             t.entries[i].external = external;
@@ -756,7 +813,7 @@ fn take_store(rt: &Runtime, i: usize) -> (Option<Store>, usize) {
 /// The resize of `ArrayBuffer.prototype.resize` (§25.1.6.6) after its ToIndex step. GC point
 /// (the external bytes of a grow).
 pub(crate) fn resize(rt: &Runtime, b: u64, new_len: u64) -> BufResult<()> {
-    if buffer_class(b) != Some(ObjectClass::ArrayBuffer) || !is_resizable(b) {
+    if buffer_class(rt, b) != Some(ObjectClass::ArrayBuffer) || !is_resizable(b) {
         return Err(Fail::Type("Receiver is not a resizable ArrayBuffer"));
     }
     if is_detached(b) {
@@ -826,7 +883,7 @@ pub(crate) fn resize(rt: &Runtime, b: u64, new_len: u64) -> BufResult<()> {
 /// The grow of `SharedArrayBuffer.prototype.grow` (§25.2.5.3) after its ToIndex step. GC
 /// point (the external bytes).
 pub(crate) fn grow_shared(rt: &Runtime, b: u64, new_len: u64) -> BufResult<()> {
-    if buffer_class(b) != Some(ObjectClass::SharedArrayBuffer) || !is_resizable(b) {
+    if buffer_class(rt, b) != Some(ObjectClass::SharedArrayBuffer) || !is_resizable(b) {
         return Err(Fail::Type("Receiver is not a growable SharedArrayBuffer"));
     }
     let block = shared_block(rt, b);
@@ -1048,7 +1105,7 @@ pub(crate) fn value_to_raw(t: u8, v: u64) -> Option<u64> {
 /// The address of `[index, index + size)` of the buffer `b` after the checks of
 /// GetValueFromBuffer and SetValueInBuffer: a buffer, not detached, inside its byte length.
 fn checked_range(rt: &Runtime, b: u64, index: u64, size: usize) -> BufResult<*mut u8> {
-    if buffer_class(b).is_none() {
+    if buffer_class(rt, b).is_none() {
         return Err(Fail::Type(
             "Receiver is not an ArrayBuffer or a SharedArrayBuffer",
         ));
@@ -1288,7 +1345,7 @@ pub(crate) fn new_data_view(
     offset: u64,
     len: Option<u64>,
 ) -> BufResult<u64> {
-    if buffer_class(b).is_none() {
+    if buffer_class(rt, b).is_none() {
         return Err(Fail::Type(
             "First argument to DataView constructor must be an ArrayBuffer",
         ));
@@ -1306,6 +1363,9 @@ pub(crate) fn new_data_view(
     }
     // GC point: `b` lives in a Rust local (CSS).
     let v = object::new_slot_object(rt, proto, ObjectClass::DataView.id(), dv_slot::COUNT);
+    // The brand: `v` owns its entry from birth (no GC point since the allocation).
+    let j = rt.buffers.insert(v, None, 0);
+    object::slot_set(rt, v, dv_slot::TABLE, int32_bits(j));
     object::slot_set(rt, v, dv_slot::BUFFER, b);
     object::slot_set(rt, v, dv_slot::BYTE_OFFSET, crate::conv::num(offset as f64));
     let bl = len.map_or(int32_bits(layout::VIEW_LENGTH_AUTO), |n| {
@@ -1314,17 +1374,6 @@ pub(crate) fn new_data_view(
     object::slot_set(rt, v, dv_slot::BYTE_LENGTH, bl);
     let data = ExternalRef::new(view_data(rt, b, offset as usize));
     object::slot_set(rt, v, dv_slot::DATA, ExternalRef::to_word(data));
-    object::slot_set(rt, v, dv_slot::FLAGS, int32_bits(0));
     add_view(rt, b, v);
     Ok(v)
-}
-
-/// True if the buffer-class SLOT_OBJECT `b` was made here ([`new_buffer_object`]): it has
-/// [`slot::COUNT`] slots and an int32 in [`slot::FLAGS`]. The generic slot API (`abi/slots.rs`)
-/// never writes one of these slots of an ArrayBuffer or a SharedArrayBuffer, and its
-/// `new_object_with_slots` leaves them undefined, so an object that it makes is not a buffer
-/// here, and no access to a store trusts a slot that safe code wrote (Codex TA-1 r1 finding 1).
-#[inline]
-fn made_here(b: u64) -> bool {
-    object::slot_count(b) == slot::COUNT && val(object::slot_get(b, slot::FLAGS)).is_int32()
 }

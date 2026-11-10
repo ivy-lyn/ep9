@@ -127,7 +127,7 @@ pub(crate) fn new_view(
         usize::from(t) < usize::from(kinds::VIEW_KINDS),
         "element type {t}"
     );
-    if ab::buffer_class(b).is_none() {
+    if ab::buffer_class(rt, b).is_none() {
         return Err(Fail::Type(
             "The buffer is not an ArrayBuffer or a SharedArrayBuffer",
         ));
