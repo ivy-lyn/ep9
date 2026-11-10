@@ -197,7 +197,7 @@ fn object_from_boilerplate(cx: &mut Cx, fi: &FunctionInfo, k: u32) -> Res<u64> {
     Ok(o)
 }
 
-/// GetTemplateObject (§13.2.8.4): one frozen array per site (v0: not frozen), cached per
+/// GetTemplateObject (§13.2.8.4): one frozen array per site (its `raw` is frozen), cached per
 /// function and constant. The current realm owns the object (its `[[TemplateMap]]`,
 /// `realm::add_template`); the isolate map `Runtime::templates` holds it weakly, so a realm
 /// that nothing reachable holds is collected with its template objects (X-REALM2). A cleared
@@ -214,6 +214,15 @@ fn template_object(cx: &mut Cx, fp: *mut u64, k: u32) -> Res<u64> {
         return Err(not_implemented(cx, "template object constant"));
     };
     let u = fi.loaded_unit().expect("a bytecode function");
+    // SetIntegrityLevel(a, frozen) (§7.3.15) of a dense Array that only this function holds:
+    // `[[PreventExtensions]]`, then the FROZEN level of its elements and its `length`
+    // (`elements::set_integrity`). Its only named key is `raw` (attributes 0). GC point:
+    // `a` lives in a Rust local (conservative scan, H10).
+    let freeze = |a: u64| {
+        property::prevent_extensions(rt, a);
+        let done = crate::elements::set_integrity(rt, a, true);
+        debug_assert!(done, "a template array has dense elements");
+    };
     let cooked = object::new_array(rt, parts.len());
     for (i, (_, c)) in parts.iter().enumerate() {
         let v = c.map_or(UNDEFINED, |s| u.string(s.index()));
@@ -225,7 +234,13 @@ fn template_object(cx: &mut Cx, fp: *mut u64, k: u32) -> Res<u64> {
         object::array_set(rt, raw, i as u32, u.string(r.index()));
     }
     object::array_set_length(rt, raw, parts.len() as u32);
+    // Perform ! SetIntegrityLevel(rawObj, frozen).
+    freeze(raw);
+    // Perform ! DefinePropertyOrThrow(template, "raw", PropertyDescriptor { [[Value]]:
+    // rawObj, [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false }).
     own_define(rt, cooked, rt.atom(Atom::Raw), raw, 0);
+    // Perform ! SetIntegrityLevel(template, frozen).
+    freeze(cooked);
     crate::realm::add_template(rt, cooked);
     let h = rt.heap.new_weak(val(cooked));
     let old = rt.templates.borrow_mut().insert(key, h);
