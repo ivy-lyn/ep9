@@ -213,6 +213,16 @@ fn selected_registration_mode() {
     assert_eq!(super::registration_mode().unwrap(), mode);
 }
 
+/// Route A2-UNIT-SHARE O3 (M7-P5 A2-RW): the built-in probe copied into a page of unit text
+/// (the form a jitless loader has, `choose_mode`) finds the process mode.
+#[cfg(unix)]
+#[test]
+fn the_probe_in_unit_text_finds_the_process_mode() {
+    let mode = super::choose_mode().unwrap();
+    assert_eq!(super::registration_mode().unwrap(), mode);
+    assert_eq!(super::mode::select_in_unit_text(), Ok(mode));
+}
+
 /// The built-in probe passes again with the chosen mode, and a registration uses that mode.
 #[cfg(unix)]
 #[test]

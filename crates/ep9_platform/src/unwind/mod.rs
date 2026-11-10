@@ -25,8 +25,8 @@ mod mode;
 mod unix;
 #[cfg(unix)]
 pub use mode::{
-    ProbeCallback, ProbeFn, RegistrationMode, SelfTestProbe, dlsym_guess, registration_mode,
-    self_test,
+    ProbeCallback, ProbeFn, RegistrationMode, SelfTestProbe, choose_mode, dlsym_guess,
+    registration_mode, self_test,
 };
 #[cfg(unix)]
 use unix as os;

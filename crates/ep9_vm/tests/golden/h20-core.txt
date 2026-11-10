@@ -737,3 +737,4 @@ abi: impl<'s> Cx<'s> :: pub fn run_script_with_unit_code(&mut self, VerifiedUnit
 abi: impl<'s> Cx<'s> :: pub fn unit_function_digest(&self, &VerifiedUnit, u32) -> Option<[u8; 16]>
 abi: impl<'s> Cx<'s> :: pub fn run_module_with_text(&mut self, VerifiedUnit, &str, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, &mut dyn FnMut(&str, &str) -> Result<String, String>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn with_module_text_host<R>(&mut self, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, &mut dyn FnMut(&str, &str) -> Result<String, String>, impl FnOnce(&mut Self) -> R) -> R
+abi: impl<'s> Cx<'s> :: pub unsafe fn run_script_installing_unit_code(&mut self, VerifiedUnit, &str, &[u8], &[u8], &[u8], u8, u64, &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])]) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>)

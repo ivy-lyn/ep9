@@ -7,7 +7,8 @@
 //! | `unit_loader_counts_*` | each skip reason, the digest binding (MC-w31-8), one load per function |
 //! | `unit_loader_*_fuse*` | steps 6-7: a popped or unknown fuse makes the object a dependency that does not hold |
 //! | `unit_loader_api_*` | the Cx API: the isolate's policy (MC-w24-3 form), no install in M7-P4 (MC-w30-2), the bytecode runs; one intern table (MC-w25-9) |
-//! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered at run time, installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
+//! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered by the loader (JIT review O3), installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
+//! | `unit_loader_installs_nothing_*`, `unit_loader_maps_*`, `unit_loader_a_text_larger_*` | O3: no unwind data, no install; A2-UNIT-SHARE and MC-w34-4: one text per process keyed by its bytes, mapped only on a pick, and a text that cannot fit gives "no-text" |
 //! | `unit_loader_build_*` | SHSTK-ENGINE: the ep9_vm build script runs the shadow-stack refusal |
 //!
 //! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit)
@@ -25,9 +26,10 @@ use crate::select::{self, CodeObject, CodeSet, Pick, Policy, Session, lowering};
 use crate::tests::{Asm, meta, pos, unit};
 use crate::unit::FunctionInfo;
 use crate::unit_loader::{
-    self, FunctionCode, Reason, Report, VariantCode, code_of, install_picked, unit_function_digest,
+    self, FunctionCode, Reason, Report, VariantCode, code_of, unit_function_digest,
 };
 use crate::{Args, Cx, Exception, ExecOptions, Isolate, IsolateConfig, JsResult, Local, Value};
+use std::sync::Arc;
 
 /// The source of the unit (positions for stack traces).
 const SRC: &str = "function g(f) { return f(); }\n\
@@ -248,6 +250,7 @@ fn unit_loader_counts_each_reason() {
         (Reason::Deferred, 1),
         (Reason::Installed, 0),
         (Reason::NotInstallable, 0),
+        (Reason::NoUnwind, 0),
     ];
     for (reason, n) in want {
         assert_eq!(r.count(reason), n, "{}", reason.name());
@@ -332,10 +335,24 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     // A wired fuse is a dependency: step 8 does not install it (no pop path re-selects yet).
     let iso = defs_isolate(ExecOptions::jitless());
     iso.rt.fuses.wire(&iso.rt, 0).unwrap();
-    load(&iso, &Policy::JITLESS, &[with_fuse(0)]);
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    // SAFETY: the dependency refusal comes before `install_code`; no code is installed.
-    let r = unsafe { install_picked(&iso.rt, lu) };
+    let mut f = with_fuse(0);
+    f.variants[0].len = call0_bytes().0.len() as u32;
+    // SAFETY: the dependency refusal comes before `install_code`; no code is installed (the
+    // text and its unwind data are the frame stub's).
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text(),
+            &stub_unwind(),
+            &[],
+            0,
+            &[f],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
         (0, 1)
@@ -514,134 +531,15 @@ fn stub_text() -> Vec<u8> {
     text
 }
 
-#[cfg(unix)]
-mod probe {
-    //! A jitless build has no code of its own for the unwind self-test: the loader's text gives
-    //! the probe (`ep9_platform::unwind` mode doc). The probe bytes and CFI are the built-in
-    //! probe's (`ep9_platform/src/unwind/mode.rs`, `builtin`).
-    use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder, reg};
-    use ep9_platform::unwind::{ProbeFn, SelfTestProbe, self_test};
-    use ep9_platform::{CodeRange, unit_text::UnitText};
-
-    const OTHER_OFF: usize = 64;
-
-    fn probe_code() -> Vec<u8> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            [
-                0xa9be_7bfdu32, //  0 stp x29, x30, [sp, #-32]!
-                0x9100_03fd,    //  4 mov x29, sp
-                0xa901_53f3,    //  8 stp x19, x20, [sp, #16]
-                0xaa00_03f3,    // 12 mov x19, x0
-                0x9100_0400,    // 16 add x0, x0, #1
-                0xd63f_0020,    // 20 blr x1
-                0x8b13_0000,    // 24 add x0, x0, x19
-                0xa941_53f3,    // 28 ldp x19, x20, [sp, #16]
-                0xa8c2_7bfd,    // 32 ldp x29, x30, [sp], #32
-                0xd65f_03c0,    // 36 ret
-            ]
-            .iter()
-            .flat_map(|w| w.to_le_bytes())
-            .collect()
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            #[rustfmt::skip]
-            let v = vec![
-                0x55, 0x48, 0x89, 0xe5, 0x53, 0x48, 0x83, 0xec, 0x08, 0x48, 0x89, 0xfb,
-                0x48, 0x8d, 0x7f, 0x01, 0xff, 0xd6, 0x48, 0x01, 0xd8, 0x48, 0x83, 0xc4,
-                0x08, 0x5b, 0x5d, 0xc3,
-            ];
-            v
-        }
-    }
-
-    fn other_code() -> Vec<u8> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            0xd65f_03c0u32.to_le_bytes().to_vec()
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            vec![0xc3]
-        }
-    }
-
-    fn probe_cfi() -> CfiProgram {
-        let mut p = CfiProgram::new();
-        #[cfg(target_arch = "aarch64")]
-        {
-            use reg::aarch64::*;
-            p.advance_loc(1)
-                .def_cfa_offset(32)
-                .offset(FP, 4)
-                .offset(LR, 3)
-                .advance_loc(1)
-                .def_cfa_register(FP)
-                .advance_loc(1)
-                .offset(X19, 2)
-                .offset(X20, 1)
-                .advance_loc(5)
-                .restore(X19)
-                .restore(X20)
-                .advance_loc(1)
-                .def_cfa(SP, 0)
-                .restore(FP)
-                .restore(LR);
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            use reg::x86_64::*;
-            p.advance_loc(1)
-                .def_cfa_offset(16)
-                .offset(RBP, 2)
-                .advance_loc(3)
-                .def_cfa_register(RBP)
-                .advance_loc(1)
-                .offset(RBX, 3)
-                .advance_loc(21)
-                .restore(RBX)
-                .advance_loc(1)
-                .def_cfa(RSP, 8)
-                .restore(RBP);
-        }
-        p
-    }
-
-    /// Runs the unwind self-test on a probe in unit text (a no-op check once a mode is set).
-    pub(super) fn choose_mode() {
-        let (code, other) = (probe_code(), other_code());
-        let mut text = code.clone();
-        text.resize(OTHER_OFF, 0);
-        text.extend(&other);
-        let t = UnitText::map(CodeRange::process().unwrap(), &text).unwrap();
-        let base = t.base();
-        let mut b = EhFrameBuilder::new(&Cie::host());
-        b.add_fde(base + OTHER_OFF, other.len(), &CfiProgram::new());
-        b.add_fde(base, code.len(), &probe_cfi());
-        // SAFETY: offset 0 of the text is the probe (the `ProbeFn` contract), mapped until `t`
-        // drops after the test; the FDEs describe the text exactly; the page is new.
-        let entry: ProbeFn = unsafe { core::mem::transmute::<usize, ProbeFn>(base) };
-        let probe = SelfTestProbe {
-            entry,
-            code: base..base + code.len(),
-            section: b.finish(),
-        };
-        // SAFETY: as above.
-        unsafe { self_test(probe) }.expect("the unwind self-test on unit text");
-        drop(t);
-    }
-}
-
-/// The unwind records of the frame stub at `code`, registered with the system unwinder.
-fn register(code: core::ops::Range<usize>) -> impl Drop {
-    let ret = call0_bytes().1;
+/// The unwind data of [`stub_text`] in the loader's form 1 (`unit_loader.rs` module doc): on
+/// unix an `.eh_frame` image whose FDE `pc_begin` is the text offset 0, on Windows one
+/// RUNTIME_FUNCTION (offsets into the text). The loader registers it (JIT review O3).
+fn stub_unwind() -> Vec<u8> {
+    let (code, ret) = call0_bytes();
+    let len = code.len();
     #[cfg(unix)]
     {
-        use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder};
-        use ep9_platform::unwind::{self, cfi::reg};
-        probe::choose_mode();
-        let len = call0_bytes().0.len();
+        use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder, reg};
         let mut p = CfiProgram::new();
         #[cfg(target_arch = "aarch64")]
         {
@@ -671,26 +569,17 @@ fn register(code: core::ops::Range<usize>) -> impl Drop {
                 .restore(RBP);
         }
         let mut b = EhFrameBuilder::new(&Cie::host());
-        b.add_fde(code.start, len, &p);
-        // SAFETY: the FDE describes the stub at `code.start` exactly; the caller drops the
-        // registration before the text.
-        unsafe { unwind::EhFrameRegistration::register(b.finish()) }.expect("register the FDE")
+        b.add_fde(0, len, &p);
+        b.finish().bytes().to_vec()
     }
     #[cfg(windows)]
     {
-        use ep9_platform::unwind::{self, win64::RuntimeFunction};
         let _ = ret;
-        let len = call0_bytes().0.len();
-        let all = code.start..code.start + stub_text().len();
-        let entry = RuntimeFunction {
-            begin: 0,
-            end: len as u32,
-            unwind_info: UNWIND_INFO_OFF as u32,
-        };
-        // SAFETY: the UNWIND_INFO at offset 256 describes the prologue of the stub at offset 0;
-        // the caller drops the registration before the text.
-        unsafe { unwind::FunctionTableRegistration::register(all, Box::new([entry])) }
-            .expect("register the function table")
+        let mut v = Vec::new();
+        for w in [0, len as u32, UNWIND_INFO_OFF as u32] {
+            v.extend(w.to_le_bytes());
+        }
+        v
     }
 }
 
@@ -716,18 +605,10 @@ fn call_through_entry(
     entered.then(|| r.map(crate::runtime::val))
 }
 
-/// MC-w33-2.2 in a build without `jit`: the loader maps the unit text (the protect form; with
-/// `jit` the window form), its unwind records are registered at run time, step 8 installs the
-/// AotBaseline pick of `g` (from Rust: [`install_picked`]), `call_native` enters it, the stub
-/// calls `walk` back through T0, and the system unwinder walks from `walk` through the stub
-/// frame into the Rust caller. Without the registration the walk stops at the stub frame (the
-/// `ep9_platform` self-test check); the `jit`-only form is `native_entry_registered_*`.
-#[test]
-fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
-    let mut iso = defs_isolate(ExecOptions::jitless());
-    let text = stub_text();
+/// The AotBaseline jitless variant of `g` over the frame stub at text offset 0.
+fn g_stub() -> FunctionCode {
     let len = call0_bytes().0.len() as u32;
-    let f = FunctionCode {
+    FunctionCode {
         function: G,
         digest: digest(G),
         variants: vec![variant(
@@ -736,25 +617,52 @@ fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
             0,
             len,
         )],
-    };
+    }
+}
+
+/// MC-w33-2.2 in a build without `jit`, and JIT review O3 (M7-P5 A2-RW): an installing load
+/// maps the unit text (the protect form; with `jit` the window form), registers its unwind
+/// data before it installs (no hand registration here: the loader does it), installs the
+/// AotBaseline pick of `g`; `call_native` enters it, the stub calls `walk` back through T0,
+/// and the system unwinder walks from `walk` through the stub frame into the Rust caller.
+/// Without the registration the walk stops at the stub frame (the `ep9_platform` self-test
+/// check); the `jit`-only form is `native_entry_registered_*`.
+#[test]
+fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    let text = stub_text();
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    let r = unit_loader::load(&iso.rt, lu, &text, &[f], Some(&Policy::JITLESS), 0);
-    assert_eq!(r.count(Reason::Picked), 1);
-    let code = code_of(info(&iso, "g")).unwrap().code[0].clone();
+    // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g`: its call at
+    // offset 0), and `stub_unwind` describes it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &text,
+            &stub_unwind(),
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
     let range = CodeRange::process().unwrap();
     assert!(range.contains(code.start));
     if !cfg!(feature = "jit") {
         assert!(!range.is_map_jit());
     }
-    // SAFETY: the text at `code` is the frame stub (it runs the bytecode of `g`: its call at
-    // offset 0), mapped while the isolate lives.
-    let installed = unsafe { install_picked(&iso.rt, lu) };
-    assert_eq!(installed.count(Reason::Installed), 1);
     assert_eq!(
         info(&iso, "g").slot.kind_byte(),
         DispatchKind::AotBaseline as u8
     );
-    let reg = register(code.clone());
     let g = iso.global_raw("g").unwrap();
     let w = iso.global_raw("walk").unwrap();
     WALKED.with(|x| x.borrow_mut().take());
@@ -771,8 +679,859 @@ fn unit_loader_registered_unit_text_runs_and_unwinds_without_jit() {
         "the walk stops at the unit frame: {ips:x?}"
     );
     assert!(!range.contains(ips[at + 1]), "{:#x}: {ips:x?}", ips[at + 1]);
-    drop(reg);
     drop(iso);
+}
+
+/// JIT review O3: no unwind data, or unwind data that leaves the text, installs nothing
+/// ("no-unwind"): the function keeps its Interp slot and its bytecode runs.
+#[test]
+fn unit_loader_installs_nothing_without_unwind_data() {
+    let text = stub_text();
+    let mut outside = stub_unwind();
+    #[cfg(unix)]
+    {
+        // The FDE's pc_range (at its offset 16; the CIE is the first record) past the text.
+        let fde = 4 + u32::from_le_bytes(outside[0..4].try_into().unwrap()) as usize;
+        outside[fde + 16..fde + 24].copy_from_slice(&(text.len() as u64 + 1).to_le_bytes());
+    }
+    #[cfg(windows)]
+    outside[4..8].copy_from_slice(&(text.len() as u32 + 1).to_le_bytes());
+    for (what, unwind) in [("empty", Vec::new()), ("outside", outside)] {
+        let iso = defs_isolate(ExecOptions::jitless());
+        let lu = info(&iso, "g").loaded_unit().unwrap();
+        // SAFETY: as in the test above; nothing is installed.
+        let r = unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                &[],
+                0,
+                &[g_stub()],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        };
+        assert_eq!(
+            (r.count(Reason::NoUnwind), r.count(Reason::Installed)),
+            (1, 0),
+            "{what}: {:?}",
+            r.rows()
+        );
+        assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
+        assert!(code_of(info(&iso, "g")).unwrap().text.is_none(), "{what}");
+    }
+}
+
+/// A2-UNIT-SHARE and MC-w34-4 (M7-P5 A2-RW): two isolates that load one text with one unwind
+/// data share one mapping (one text per process, keyed by its bytes); the text goes back when
+/// the last isolate drops; a load whose policy picks no unit object (the JIT policy) maps
+/// nothing; the safe load maps nothing either.
+#[test]
+fn unit_loader_maps_one_text_per_process_and_only_on_a_pick() {
+    // A text of this test alone (other tests map the plain stub text at the same time, and
+    // share it: same bytes, same key).
+    let mut text = stub_text();
+    text.extend(b"maps-one-text");
+    let unwind = stub_unwind();
+    let load_in = |iso: &Isolate, policy: &Policy| {
+        let lu = info(iso, "g").loaded_unit().unwrap();
+        // SAFETY: as in `unit_loader_registered_unit_text_runs_and_unwinds_without_jit`; the
+        // code does not run here.
+        unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                &[],
+                0,
+                &[g_stub()],
+                Some(policy),
+                0,
+            )
+        }
+    };
+    let (a, b) = (
+        defs_isolate(ExecOptions::jitless()),
+        defs_isolate(ExecOptions::jitless()),
+    );
+    for iso in [&a, &b] {
+        assert_eq!(load_in(iso, &Policy::JITLESS).count(Reason::Installed), 1);
+    }
+    let ta = code_of(info(&a, "g")).unwrap().text.clone().unwrap();
+    let tb = code_of(info(&b, "g")).unwrap().text.clone().unwrap();
+    assert!(Arc::ptr_eq(&ta, &tb), "one text for both isolates");
+    let w = Arc::downgrade(&ta);
+    drop((ta, tb));
+    drop(a);
+    assert!(w.upgrade().is_some(), "b still holds the text");
+    drop(b);
+    assert!(
+        w.upgrade().is_none(),
+        "the text went back with the last isolate"
+    );
+    // The JIT policy accepts no unit object: no pick, no map.
+    let c = defs_isolate(ExecOptions::jitless());
+    let r = load_in(&c, &Policy::JIT);
+    assert_eq!((r.count(Reason::Picked), r.count(Reason::NoText)), (0, 0));
+    assert!(code_of(info(&c, "g")).unwrap().text.is_none());
+    // The safe load maps nothing.
+    let d = defs_isolate(ExecOptions::jitless());
+    let lu = info(&d, "g").loaded_unit().unwrap();
+    let r = unit_loader::load(&d.rt, lu, &text, &[g_stub()], Some(&Policy::JITLESS), 0);
+    assert_eq!((r.count(Reason::Picked), r.count(Reason::Deferred)), (1, 1));
+    assert!(code_of(info(&d, "g")).unwrap().text.is_none());
+}
+
+/// MC-w34-4, the hybrid case: a unit text larger than the whole process code range (so it
+/// would leave the JIT no room) gives "no-text" before its bytes are hashed, and the function
+/// runs its bytecode.
+#[test]
+fn unit_loader_a_text_larger_than_the_code_range_gives_no_text() {
+    let iso = defs_isolate(ExecOptions::jitless());
+    let size = CodeRange::process().unwrap().size();
+    let mut text = stub_text();
+    text.resize(size + 1, 0);
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: nothing is mapped or installed: the text does not fit.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &text,
+            &stub_unwind(),
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::HYBRID),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::NoText)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
+}
+
+// ---- MC-w30-2 and MC-w34-3: JS calls into installed unit code ----------------------------------
+
+/// A host function in the form of `Function.prototype.call` (IsCallable, then the VM steps;
+/// the `tests/calls.rs` form).
+fn fcall<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if !this.is_callable() {
+        return Err(cx.throw_type_error("fcall: not callable"));
+    }
+    cx.forward_call(args)
+}
+
+/// A host function in the form of `Function.prototype.apply`.
+fn fapply<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if !this.is_callable() {
+        return Err(cx.throw_type_error("fapply: not callable"));
+    }
+    cx.forward_apply(args)
+}
+
+/// `fcall` and `fapply` as builtin table definitions, installed as globals: a forwarder
+/// records only a function made from a table definition (M7-P0 JIT reviewer F1).
+static FORWARDERS: crate::BuiltinTable = crate::BuiltinTable::new(
+    "unit-loader-forwarders",
+    &[crate::BuiltinModule {
+        name: "forwarders",
+        block: 106,
+        defs: &[
+            crate::BuiltinDef::method("fcall", 1, fcall),
+            crate::BuiltinDef::method("fapply", 2, fapply),
+        ],
+        intrinsics: &[],
+        props: &[crate::ObjectProps {
+            target: crate::IntrinsicId::GlobalObject,
+            props: &[
+                crate::PropDef::method(crate::PropKey::Str("fcall"), 0),
+                crate::PropDef::method(crate::PropKey::Str("fapply"), 1),
+            ],
+        }],
+    }],
+);
+
+/// A jitless isolate with the forwarders and `walk` that ran `defs()`, with the frame stub
+/// installed for `g` (`g(f) { return f(); }`: the stub runs the call at bytecode offset 0).
+fn installed_g() -> Isolate {
+    let config = IsolateConfig {
+        builtins: Some(&FORWARDERS),
+        ..IsolateConfig::default()
+    };
+    let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+    iso.register_host_function("walk", 0, walk);
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g`), and
+    // `stub_unwind` describes it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text(),
+            &stub_unwind(),
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    assert_eq!(
+        info(&iso, "g").slot.kind_byte(),
+        DispatchKind::AotBaseline as u8
+    );
+    iso
+}
+
+/// Runs the script `u` in `iso`; its completion value as Value bits, or the error text.
+fn run_js(iso: &mut Isolate, u: VerifiedUnit) -> Result<u64, String> {
+    iso.with_cx_checkpoint(|cx| cx.run_script(u, "calls.js").map(|v| v.bits()))
+        .map_err(|e| format!("{e:?}"))
+}
+
+/// `return g(walk);` (CallUndefinedReceiver1: T0's `call_fast` sends the native slot cold).
+fn call_g_walk() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let a = s.a.get(0);
+    s.lda_global("walk");
+    s.b.star(a);
+    s.lda_global("g");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver1(f, a, slot).return_();
+    unit("", vec![s.finish()])
+}
+
+/// `return fcall.call(g, undefined, walk);` in the call form of the forwarder: `fcall` with
+/// `this` = g (the list shape: receiver first).
+fn fcall_g_walk() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let l = s.b.new_register_list(3);
+    s.lda_global("g");
+    s.b.star(l.get(0)).lda_undefined().star(l.get(1));
+    s.lda_global("walk");
+    s.b.star(l.get(2));
+    s.lda_global("fcall");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_property(f, l, 3, slot).return_();
+    unit("", vec![s.finish()])
+}
+
+/// `function viaArgs(f) { return g.fapply(undefined, arguments); } return viaArgs(walk);`
+/// (`fapply` with `this` = g and an unmapped arguments object: the forward's list form).
+fn fapply_g_walk() -> VerifiedUnit {
+    let mut via = Asm::new(meta("viaArgs", 1, 0, 0, 0));
+    let l = via.b.new_register_list(3);
+    via.lda_global("g");
+    via.b.star(l.get(0)).lda_undefined().star(l.get(1));
+    via.b.create_unmapped_arguments().star(l.get(2));
+    via.lda_global("fapply");
+    via.b.star(via.f);
+    let (f, slot) = (via.f, via.call);
+    via.b
+        .call_property2(f, l.get(0), l.get(1), l.get(2), slot)
+        .return_();
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.b.star(s.f);
+    let a = s.a.get(0);
+    s.lda_global("walk");
+    s.b.star(a);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver1(f, a, slot).return_();
+    unit("", vec![s.finish(), via.finish()])
+}
+
+/// MC-w30-2 (call first): a JS call of a function with installed unit code runs that code.
+/// T0's `call_fast` sends the native slot cold, `slow::call` enters it (nested, its frame
+/// above the caller's registers), the stub calls `walk` back through T0, and the script
+/// gets 42. A call from Rust (`Cx::call`) enters it through the Rust entry. On the old code
+/// both throw "not implemented".
+#[test]
+fn unit_loader_a_js_call_runs_the_installed_unit_code() {
+    let mut iso = installed_g();
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
+    );
+    let (g, w) = (
+        iso.global_raw("g").unwrap(),
+        iso.global_raw("walk").unwrap(),
+    );
+    let v = iso
+        .with_cx(|cx| {
+            let f: Local = Local::from_bits(g.to_bits());
+            let a: Local = Local::from_bits(w.to_bits());
+            let u: Local = Local::from_bits(UNDEFINED);
+            cx.call(f, u, &[a]).map(|v| v.bits())
+        })
+        .unwrap();
+    assert_eq!(v, Value::int32(42).to_bits());
+}
+
+/// MC-w34-3 (DL P5-DL-5): a forwarded `call` and `apply` into an installed unit function give
+/// node's result (42). The T0 forward takes only an Interp callee (`call::forward_target`), so
+/// the forwarder runs its steps and reaches the unit code through the Rust entry (correct;
+/// the forward's speed gain is not there for unit code until the T1 lane, MC-w30-9).
+#[test]
+fn unit_loader_a_forwarded_call_or_apply_runs_the_installed_unit_code() {
+    for (what, u) in [("call", fcall_g_walk()), ("apply", fapply_g_walk())] {
+        let mut iso = installed_g();
+        assert_eq!(
+            run_js(&mut iso, u),
+            Ok(Value::int32(42).to_bits()),
+            "{what}"
+        );
+    }
+}
+
+/// MC-w34-2 (DL P5-DL-5): the safe `Cx::run_script_with_unit_code` never installs, also for
+/// a text and a function table that would install (each pick is "deferred", the slot stays
+/// Interp, the JS call runs the bytecode); the unsafe `Cx::run_script_installing_unit_code`
+/// with the same unit installs the pick, and the JS call runs the unit code. Both give 42
+/// here because the stub runs the bytecode of `g`.
+#[test]
+fn unit_loader_api_only_the_unsafe_method_installs() {
+    let len = call0_bytes().0.len() as u32;
+    let vars: &[Var<'_>] = &[(
+        DispatchKind::AotBaseline as u8,
+        lowering::JITLESS,
+        0,
+        len,
+        0,
+        &[],
+    )];
+    let fns = [(G, digest(G), vars)];
+    let (text, unwind) = (stub_text(), stub_unwind());
+    for install in [false, true] {
+        let mut iso = Isolate::new_with(IsolateConfig::default(), ExecOptions::jitless()).unwrap();
+        iso.register_host_function("walk", 0, walk);
+        let rows = iso
+            .with_cx(|cx| {
+                let (rows, r) = if install {
+                    // SAFETY: `defs()` with the frame stub and its unwind data stands for a unit
+                    // that `ep9_unit::check` accepted (the stub runs the bytecode of `g`).
+                    unsafe {
+                        cx.run_script_installing_unit_code(
+                            defs(),
+                            "defs.js",
+                            &text,
+                            &unwind,
+                            &[],
+                            0,
+                            0,
+                            &fns,
+                        )
+                    }
+                } else {
+                    cx.run_script_with_unit_code(defs(), "defs.js", &text, 0, &fns)
+                };
+                r.map(|_| rows)
+            })
+            .unwrap();
+        let get = |n: &str| rows.iter().find(|(k, _)| *k == n).unwrap().1;
+        assert_eq!(
+            (get("picked"), get("deferred"), get("installed")),
+            (1, u32::from(!install), u32::from(install)),
+            "install {install}: {rows:?}"
+        );
+        let kind = if install {
+            DispatchKind::AotBaseline
+        } else {
+            DispatchKind::Interp
+        };
+        assert_eq!(info(&iso, "g").slot.kind_byte(), kind as u8);
+        assert_eq!(
+            run_js(&mut iso, call_g_walk()),
+            Ok(Value::int32(42).to_bits())
+        );
+    }
+}
+
+/// The unsafe method stores the isolate's unit-data directory in `Cx::unit_data` when the
+/// load made an RW copy, and unit code then reads its link cell through it.
+#[test]
+fn unit_loader_api_the_unsafe_method_sets_the_unit_data_directory() {
+    use crate::builtins::IntrinsicId;
+    let (text, unwind) = reader(3, 0);
+    let tpl = template(
+        &[(
+            unit_loader::rw::LINK_INTRINSIC,
+            IntrinsicId::ObjectPrototype as u32,
+        )],
+        1,
+        0,
+    );
+    let vars: &[Var<'_>] = &[(
+        DispatchKind::AotBaseline as u8,
+        lowering::JITLESS,
+        0,
+        reader_len() as u32,
+        0,
+        &[],
+    )];
+    let fns = [(ID, digest(ID), vars)];
+    let mut iso = Isolate::new_with(IsolateConfig::default(), ExecOptions::jitless()).unwrap();
+    assert_eq!(iso.cx.unit_data, 0);
+    iso.with_cx(|cx| {
+        // SAFETY: as in the test above; the text is the cell reader.
+        let (rows, r) = unsafe {
+            cx.run_script_installing_unit_code(defs(), "defs.js", &text, &unwind, &tpl, 3, 0, &fns)
+        };
+        assert_eq!(rows.iter().find(|(k, _)| *k == "installed").unwrap().1, 1);
+        r.map(|_| ())
+    })
+    .unwrap();
+    assert_ne!(iso.cx.unit_data, 0);
+    let id = iso.global_raw("id").unwrap();
+    let v = call_through_entry(&mut iso, id, &[]).unwrap().unwrap();
+    assert_eq!(
+        v.to_bits(),
+        crate::builtins::intrinsic(&iso.rt, IntrinsicId::ObjectPrototype)
+    );
+}
+
+// ---- the RW copy and the link table (plan v12 §8.2; H35 S4 step 6) ---------------------------
+
+/// An RW template in form 1 (`unit_loader::rw`): `links` as (kind, index), then `ics` IC
+/// cells and `counters` counters.
+fn template(links: &[(u8, u32)], ics: u32, counters: u32) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend(unit_loader::rw::MAGIC);
+    for w in [
+        unit_loader::rw::VERSION,
+        links.len() as u32,
+        ics,
+        counters,
+        0,
+    ] {
+        b.extend(w.to_le_bytes());
+    }
+    for &(kind, index) in links {
+        b.extend([kind, 0, 0, 0]);
+        b.extend(index.to_le_bytes());
+    }
+    b
+}
+
+/// The cell reader `return [[[cx + CX_UNIT_DATA] + 8 * slot] + 8 * cell]` (the `NativeEntry`
+/// ABI, a leaf: the H35-Q9 unit-data load without the x27 save) and its unwind data in the
+/// loader's form 1.
+fn reader(slot: usize, cell: usize) -> (Vec<u8>, Vec<u8>) {
+    #[cfg(target_arch = "aarch64")]
+    let code: Vec<u8> = {
+        let ldr = |t: u32, n: u32, off: usize| {
+            assert!(off.is_multiple_of(8) && off / 8 < 4096);
+            0xF940_0000 | (((off / 8) as u32) << 10) | (n << 5) | t
+        };
+        [
+            ldr(9, 0, layout::CX_UNIT_DATA),
+            ldr(9, 9, 8 * slot),
+            ldr(0, 9, 8 * cell),
+            0xD65F_03C0, // ret
+        ]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect()
+    };
+    #[cfg(target_arch = "x86_64")]
+    let code: Vec<u8> = {
+        let mut v = vec![0x48, 0x8B, 0x87]; // mov rax, [rdi + disp32]
+        v.extend((layout::CX_UNIT_DATA as u32).to_le_bytes());
+        for off in [8 * slot, 8 * cell] {
+            v.extend([0x48, 0x8B, 0x80]); // mov rax, [rax + disp32]
+            v.extend((off as u32).to_le_bytes());
+        }
+        v.push(0xC3); // ret
+        v
+    };
+    let len = code.len();
+    #[allow(unused_mut)]
+    let mut text = code;
+    #[cfg(unix)]
+    let unwind = {
+        use ep9_platform::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder};
+        // A leaf: the CIE rules hold at every instruction.
+        let mut b = EhFrameBuilder::new(&Cie::host());
+        b.add_fde(0, len, &CfiProgram::new());
+        b.finish().bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let unwind = {
+        // UNWIND_INFO version 1 with no codes (a leaf), after the code.
+        text.resize(UNWIND_INFO_OFF, 0xCC);
+        text.extend([1, 0, 0, 0]);
+        let mut v = Vec::new();
+        for w in [0, len as u32, UNWIND_INFO_OFF as u32] {
+            v.extend(w.to_le_bytes());
+        }
+        v
+    };
+    (text, unwind)
+}
+
+/// The AotBaseline jitless variant of `id` over `len` bytes at text offset 0.
+fn id_at0(len: usize) -> FunctionCode {
+    FunctionCode {
+        function: ID,
+        digest: digest(ID),
+        variants: vec![variant(
+            DispatchKind::AotBaseline,
+            lowering::JITLESS,
+            0,
+            len as u32,
+        )],
+    }
+}
+
+/// The length of the reader's code (the text may be longer on Windows).
+fn reader_len() -> usize {
+    if cfg!(target_arch = "aarch64") {
+        16
+    } else {
+        22
+    }
+}
+
+/// RW cells and the link table (plan v12 §8.2): an installing load makes the isolate's RW
+/// copy in unit-data slot 5: link cell 0 = the realm's %Object.prototype%, link cell 1 = the
+/// atom of unit string 0, 2 IC cells (undefined), 1 counter (0). The directory word of slot 5
+/// names the copy, `Cx::unit_data` the directory, and unit code reads link cell 1 through
+/// them (the H35-Q9 load). IC cells are weak: after a GC an IC cell whose object nothing else
+/// holds is undefined, and one whose object lives keeps it; the link cells keep theirs.
+#[test]
+fn unit_loader_rw_copy_links_and_unit_code_reads_it() {
+    use crate::builtins::IntrinsicId;
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    let (text, unwind) = reader(5, 1);
+    let tpl = template(
+        &[
+            (
+                unit_loader::rw::LINK_INTRINSIC,
+                IntrinsicId::ObjectPrototype as u32,
+            ),
+            (unit_loader::rw::LINK_ATOM, 0),
+        ],
+        2,
+        1,
+    );
+    let lu = info(&iso, "id").loaded_unit().unwrap();
+    // SAFETY: the text at offset 0 is the cell reader (`NativeEntry`), and `unwind` describes it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &text,
+            &unwind,
+            &tpl,
+            5,
+            &[id_at0(reader_len())],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let atom = lu.string(0);
+    let dir = r.unit_data.expect("a directory");
+    iso.cx.unit_data = dir;
+    let rw = code_of(info(&iso, "id")).unwrap().rw.clone().unwrap();
+    let object_prototype = crate::builtins::intrinsic(&iso.rt, IntrinsicId::ObjectPrototype);
+    assert_eq!(
+        (0..5).map(|i| rw.word(i)).collect::<Vec<_>>(),
+        [object_prototype, atom, UNDEFINED, UNDEFINED, 0]
+    );
+    let (slot, d) = rw.slot();
+    assert_eq!((slot, d.address(), d.word(5)), (5, dir, rw.base()));
+    // Unit code reads link cell 1 through x28 (the Cx), CX_UNIT_DATA, slot 5.
+    let id = iso.global_raw("id").unwrap();
+    let v = call_through_entry(&mut iso, id, &[]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), atom);
+    iso.collect_garbage();
+    assert_eq!((rw.word(0), rw.word(1)), (object_prototype, atom));
+}
+
+/// Masks the bits of a cell pointer, so the conservative stack scan cannot keep it.
+const MASK: u64 = 0x5a5a_5a5a_5a5a_5a5a;
+
+/// Bytes of zeros between the test's frame and the frame that makes the cell (the pattern of
+/// `tests/async_gen.rs`; each file has its own copy).
+const DEEP: usize = 64 << 10;
+
+/// Overwrites 256 KiB of stack below the caller.
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> R {
+    let mut pad = [0u8; DEEP];
+    std::hint::black_box(&mut pad);
+    let r = made();
+    std::hint::black_box(&mut pad);
+    r
+}
+
+/// IC cells are a weak root range (H35 S5; MC-w33-8.2: a unit IC cell holds its keys weakly):
+/// after a GC an IC cell whose object nothing else holds is undefined, and an IC cell whose
+/// object lives keeps it. The object is made below a pad and its bits are masked, and the
+/// test checks that the conservative stack scan did not keep it.
+#[test]
+fn unit_loader_rw_ic_cells_are_weak() {
+    crate::tests::on_big_stack(|| {
+        let mut config = IsolateConfig::default();
+        config.heap.record_conservative_roots = true;
+        let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+        iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+            .unwrap();
+        let (text, unwind) = reader(5, 0);
+        let lu = info(&iso, "id").loaded_unit().unwrap();
+        // SAFETY: the reader is installed but not run here.
+        let r = unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                &template(&[], 2, 0),
+                5,
+                &[id_at0(reader_len())],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        };
+        assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+        let rw = code_of(info(&iso, "id")).unwrap().rw.clone().unwrap();
+        let rt = &iso.rt;
+        let masked = below_a_pad(|| {
+            let o = crate::object::new_plain_object(rt);
+            rw.set_ic(0, o);
+            std::hint::black_box(o) ^ MASK
+        });
+        let kept = crate::builtins::intrinsic(rt, crate::builtins::IntrinsicId::ObjectPrototype);
+        rw.set_ic(1, kept);
+        scrub_stack();
+        rt.heap.collect();
+        let addr = crate::object::cell(masked ^ MASK).addr();
+        assert!(
+            !rt.heap
+                .last_conservative_roots()
+                .iter()
+                .any(|c| c.addr() == addr),
+            "the conservative scan kept the object"
+        );
+        assert_eq!(
+            (rw.word(0), rw.word(1)),
+            (UNDEFINED, kept),
+            "a dead IC target is undefined; a live one stays"
+        );
+    });
+}
+
+/// MC-w32-8: the loader checks every link-table descriptor before any use: a template that is
+/// not form 1, a kind outside the allow-list (0; 3, the fuse kind, is not built), an index out
+/// of bounds for its kind, a reserved byte, a cell count over the bound; and a slot of 64 or
+/// more, or one held in the isolate. Each gives its reason, maps nothing and installs nothing.
+#[test]
+fn unit_loader_rw_descriptor_checks_come_before_any_use() {
+    use crate::builtins::IntrinsicId;
+    use unit_loader::rw::{LINK_ATOM, LINK_INTRINSIC, MAX_CELLS};
+    let strings = defs().strings.len() as u32;
+    let all = IntrinsicId::ALL.len() as u32;
+    let mut bad: Vec<(&str, Vec<u8>)> = vec![
+        ("magic", {
+            let mut b = template(&[], 0, 0);
+            b[0] = b'X';
+            b
+        }),
+        ("version", {
+            let mut b = template(&[], 0, 0);
+            b[4] = 2;
+            b
+        }),
+        ("reserved", {
+            let mut b = template(&[], 0, 0);
+            b[20] = 1;
+            b
+        }),
+        ("length", {
+            let mut b = template(&[(LINK_ATOM, 0)], 0, 0);
+            b.pop();
+            b
+        }),
+        ("kind 0", template(&[(0, 0)], 0, 0)),
+        ("kind 3", template(&[(3, 0)], 0, 0)),
+        (
+            "intrinsic past the list",
+            template(&[(LINK_INTRINSIC, all)], 0, 0),
+        ),
+        (
+            "RealmFuses",
+            template(&[(LINK_INTRINSIC, IntrinsicId::RealmFuses as u32)], 0, 0),
+        ),
+        (
+            "atom past the strings",
+            template(&[(LINK_ATOM, strings)], 0, 0),
+        ),
+        ("descriptor reserved byte", {
+            let mut b = template(&[(LINK_ATOM, 0)], 0, 0);
+            b[25] = 1;
+            b
+        }),
+        ("cells", template(&[], MAX_CELLS as u32, 1)),
+    ];
+    let (text, unwind) = reader(5, 0);
+    let run = |iso: &Isolate, tpl: &[u8], slot: u8| {
+        let lu = info(iso, "id").loaded_unit().unwrap();
+        // SAFETY: nothing is installed in the refused cases; an accepted case installs the
+        // reader, which is not run here.
+        unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &text,
+                &unwind,
+                tpl,
+                slot,
+                &[id_at0(reader_len())],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        }
+    };
+    for (what, tpl) in bad.drain(..) {
+        let iso = defs_isolate(ExecOptions::jitless());
+        let r = run(&iso, &tpl, 5);
+        assert_eq!(
+            (r.count(Reason::Link), r.count(Reason::Installed)),
+            (1, 0),
+            "{what}: {:?}",
+            r.rows()
+        );
+        let uc = code_of(info(&iso, "id")).unwrap();
+        assert!(uc.text.is_none() && uc.rw.is_none(), "{what}");
+    }
+    // Slot 64, then a slot that another unit of the isolate holds.
+    let iso = defs_isolate(ExecOptions::jitless());
+    let r = run(&iso, &template(&[], 1, 0), 64);
+    assert_eq!((r.count(Reason::Slot), r.count(Reason::Installed)), (1, 0));
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    assert_eq!(
+        run(&iso, &template(&[], 1, 0), 7).count(Reason::Installed),
+        1
+    );
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "again.js").map(|_| ()))
+        .unwrap();
+    let r = run(&iso, &template(&[], 1, 0), 7);
+    assert_eq!((r.count(Reason::Slot), r.count(Reason::Installed)), (1, 0));
+    // An empty template makes no copy and keeps the directory.
+    let iso = defs_isolate(ExecOptions::jitless());
+    let r = run(&iso, &[], 9);
+    assert_eq!((r.count(Reason::Installed), r.unit_data), (1, None));
+}
+
+/// MC-w30-3-CODE (H20:70; Codex r1 LAZYNS 2): a link cell of a lazy group's intrinsic installs
+/// the group first, so the cell holds the object that a later JS read gets.
+#[test]
+fn unit_loader_a_lazy_intrinsic_link_installs_its_group_first() {
+    use crate::builtins::{
+        BuiltinModule, BuiltinTable, IntrinsicDef, IntrinsicId, IntrinsicValue, ObjectProps,
+        PropAttrs, PropDef, PropKey,
+    };
+    // One lazy group: the key `Temporal` with its intrinsic (INTL-I1-D8).
+    static LAZY: BuiltinTable = BuiltinTable::new(
+        "lazy-link",
+        &[BuiltinModule {
+            name: "temporal-key",
+            block: 105,
+            defs: &[],
+            intrinsics: &[IntrinsicDef {
+                id: IntrinsicId::Temporal,
+                value: IntrinsicValue::Object {
+                    proto: Some(IntrinsicId::ObjectPrototype),
+                },
+            }],
+            props: &[ObjectProps {
+                target: IntrinsicId::GlobalObject,
+                props: &[PropDef::intrinsic(
+                    PropKey::Str("Temporal"),
+                    IntrinsicId::Temporal,
+                    PropAttrs::METHOD,
+                )],
+            }],
+        }],
+    );
+    let config = IsolateConfig {
+        builtins: Some(&LAZY),
+        ..IsolateConfig::default()
+    };
+    let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
+    let rt = &iso.rt;
+    assert_eq!(
+        crate::builtins::intrinsic(rt, IntrinsicId::Temporal),
+        UNDEFINED
+    );
+    assert!(crate::builtins::lazy_group(rt, IntrinsicId::Temporal).is_some());
+    let (text, unwind) = reader(5, 0);
+    let tpl = template(
+        &[(
+            unit_loader::rw::LINK_INTRINSIC,
+            IntrinsicId::Temporal as u32,
+        )],
+        0,
+        0,
+    );
+    let lu = info(&iso, "id").loaded_unit().unwrap();
+    // SAFETY: the reader is installed but not run here.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            rt,
+            lu,
+            &text,
+            &unwind,
+            &tpl,
+            5,
+            &[id_at0(reader_len())],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let v = code_of(info(&iso, "id"))
+        .unwrap()
+        .rw
+        .as_ref()
+        .unwrap()
+        .word(0);
+    assert!(crate::object::is_object(v));
+    assert_eq!(v, crate::builtins::intrinsic(rt, IntrinsicId::Temporal));
 }
 
 /// Step 8 refuses what `install_code` refuses and what has no entry yet: an AotOpt pick and a
@@ -793,11 +1552,23 @@ fn unit_loader_install_refuses_aot_opt_and_a_class_constructor() {
             variants: vec![variant(DispatchKind::AotBaseline, jl, 0, 4)],
         },
     ];
-    let r = load(&iso, &Policy::JITLESS, &fns);
-    assert_eq!(r.count(Reason::Picked), 2);
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    // SAFETY: both picks are refused before any slot write (AotOpt; a class constructor).
-    let r = unsafe { install_picked(&iso.rt, lu) };
+    // SAFETY: both picks are refused before any slot write (AotOpt; a class constructor); the
+    // text and its unwind data are the frame stub's.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text(),
+            &stub_unwind(),
+            &[],
+            0,
+            &fns,
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Picked), 2);
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
         (0, 2)

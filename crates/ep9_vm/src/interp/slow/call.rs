@@ -17,9 +17,9 @@
 //! native-slotted or (b) callee of another realm runs nested in its realm too
 //! (`native::call_in_its_realm`).
 //!
-//! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
-//! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
-//! natively. The default build has no such branch. Two places enter it:
+//! Native code (`native.rs`): a call of a FUNCTION with a Baseline or AotBaseline slot (no
+//! construct, not host, not a class ctor) is entered natively: in every build late in
+//! `do_call` (`call_native_cold`; MC-w30-2), and with `spike-native` first at two places:
 //!
 //! ```text
 //! slow::call --enter, interrupt poll--> native_entry: unprefixed CallAnyReceiver, CallProperty,
@@ -290,7 +290,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         });
     }
     if !runs_bytecode(fi) {
-        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+        return call_native_cold(cx, fp, s, callee, this, argc, &args); // MC-w30-2
     }
     // GC point: the callee, the receiver and the arguments are in caller registers (for a
     // bound callee: its target, bound `this` and bound arguments are reachable from it).
@@ -1009,4 +1009,43 @@ fn push_forwarded(
     cx.out_fp = nfp;
     cx.out_pc = fi.code;
     Ok(UNDEFINED)
+}
+
+/// The `!runs_bytecode` arm of [`do_call`]'s call path (M7-P5 A2-RW, route MC-w30-2): native
+/// code (an AotBaseline unit function or a Baseline slot) that T0's `call_fast` sent cold is
+/// entered here, nested, with its frame above the caller's registers and the return pc of the
+/// next instruction (the `native.rs` T0 entry). No feedback count (`native.rs` module doc).
+/// Any other kind throws "not implemented". (At the end of the file, so no cited line moves.)
+fn call_native_cold(
+    cx: &mut Cx,
+    fp: *mut u64,
+    s: &CallSite,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    args: &[u64],
+) -> Res<u64> {
+    let Some(nfi) = crate::native::native_callee(callee) else {
+        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+    };
+    // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
+    // with no scratch area), `args` holds valid Value bits that the push copies before any GC
+    // point, and `native_callee` checked the native slot.
+    let r = unsafe {
+        crate::native::enter_native(
+            cx,
+            frame_top(fp),
+            fp,
+            s.next_pc,
+            callee,
+            nfi,
+            this,
+            argc,
+            |i| args[i as usize],
+        )
+    };
+    // After the call: a nested dispatch under native code (`call_any`) sets them too.
+    cx.out_fp = fp;
+    cx.out_pc = s.next_pc;
+    r
 }

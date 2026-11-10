@@ -1724,8 +1724,8 @@ fn every_other_call_falls_through_to_the_decode_path() {
             s.b.star(wf);
             s.b.call_undefined_receiver1(wf, wa, s.call);
         });
-        // 2. CallWithSpread of native p0 (receiver undefined, spread []): no native entry
-        //    with a spread.
+        // 2. CallWithSpread of native p0 (receiver undefined, spread []): no early native
+        //    entry with a spread; the decode path enters it late (MC-w30-2): p0 prints undefined.
         guarded(&mut s, true, |s| {
             s.b.lda_undefined().star(l.get(0));
             s.b.create_empty_array_literal(s.lit).star(l.get(1));
@@ -1740,7 +1740,8 @@ fn every_other_call_falls_through_to_the_decode_path() {
             let one = RegisterList::new(l.get(0).local_index().unwrap(), 1);
             s.construct_global("id", one);
         });
-        // 4. A bound native function: the callee is BOUND, not a FUNCTION.
+        // 4. A bound native function: the callee is BOUND, not a FUNCTION; the decode path
+        //    enters its native target late (MC-w30-2): p0 prints "x".
         guarded(&mut s, true, |s| {
             s.lda_global("p0");
             s.b.star(l.get(0));
@@ -1794,10 +1795,12 @@ fn every_other_call_falls_through_to_the_decode_path() {
             });
             let label = format!("{} stress={stress}", d.name());
             assert_eq!(r.as_deref(), Ok("done"), "{label}");
+            // Since M7-P5 A2-RW (MC-w30-2) `do_call` enters native code late in every build
+            // (`call_native_cold`); construct stays refused (MC-w29-8). No early entry hit.
             let ni = "not implemented in ep9 v0: calling code of this dispatch kind";
             assert_eq!(
                 out,
-                ["w", ni, ni, ni, "t0!", "1 is not a function"],
+                ["w", "undefined", ni, "x", "t0!", "1 is not a function"],
                 "{label}"
             );
             assert_eq!(hits, 0, "{label}");

@@ -25,7 +25,9 @@
 //! - The mode is chosen once per process. In a build with `jit` (or a unit test), the first
 //!   [`super::EhFrameRegistration::register`] runs the self-test on a built-in probe in a page
 //!   of its own. A jitless (`unwind` only) build has no code of its own to run: its loader
-//!   calls [`self_test`] on a probe in the first loaded unit's text first; until then every
+//!   calls [`self_test`] on a probe in the first loaded unit's text first, or [`choose_mode`],
+//!   which copies the built-in probe into a page of unit text (`unit_text::UnitText`, the form
+//!   a build without `jit` has; M7-P5 A2-RW, route A2-UNIT-SHARE O3); until then every
 //!   registration fails.
 
 use std::cell::RefCell;
@@ -104,6 +106,18 @@ pub fn registration_mode() -> io::Result<RegistrationMode> {
         ));
     };
     r.as_ref().copied().map_err(|m| unsupported(m))
+}
+
+/// The registration mode of this process, chosen now if no mode is chosen yet (route
+/// A2-UNIT-SHARE O3, M7-P5 A2-RW): with `jit` (or in a unit test) as [`registration_mode`];
+/// without `jit` the self-test runs on the built-in probe, copied into a page of unit text
+/// ([`crate::unit_text::UnitText`], freed after the test). So a jitless unit loader registers
+/// unit text unwind data with no probe of its own. Fails for good, as
+/// [`registration_mode`], if no mode passed.
+pub fn choose_mode() -> io::Result<RegistrationMode> {
+    #[cfg(not(any(feature = "jit", test)))]
+    let _ = MODE.get_or_init(builtin::select_in_unit_text);
+    registration_mode()
 }
 
 /// What a `dlsym` of `__unw_add_dynamic_fde` suggests: [`RegistrationMode::PerFde`] if the
@@ -263,12 +277,16 @@ pub(super) fn check(
 }
 
 /// The built-in probe: a page of its own from the process code range, freed after the test.
-#[cfg(any(feature = "jit", test))]
+/// With `jit` (or in a unit test) through a `jit` write window ([`with_probe`]); in every build
+/// as unit text ([`with_probe_in_unit_text`], [`choose_mode`](super::choose_mode)).
 mod builtin {
     use super::{ProbeFn, RegistrationMode, SelfTestProbe};
+    #[cfg(any(feature = "jit", test))]
     use crate::jit::WxMode;
     use crate::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder, reg};
-    use crate::va::{CodeRange, page_size};
+    use crate::va::CodeRange;
+    #[cfg(any(feature = "jit", test))]
+    use crate::va::page_size;
 
     /// Offset of a second function (a bare return) with an FDE of its own, placed before the
     /// probe's FDE in the section.
@@ -375,6 +393,7 @@ mod builtin {
 
     /// Runs `f` with the probe and the `other` function mapped executable in one page (a chunk
     /// of [`CodeRange::process`]); `section` builds the probe's `.eh_frame` from (page base, probe length).
+    #[cfg(any(feature = "jit", test))]
     pub(in crate::unwind) fn with_probe<T>(
         section: impl FnOnce(usize, usize) -> crate::unwind::cfi::EhFrameSection,
         f: impl FnOnce(&SelfTestProbe) -> T,
@@ -422,7 +441,48 @@ mod builtin {
         b.finish()
     }
 
+    /// [`with_probe`] in the form of every build: the probe and `other` copied into a page of
+    /// unit text ([`crate::unit_text::UnitText`]: the protect form without `jit`), which drops
+    /// after `f`.
+    pub(in crate::unwind) fn with_probe_in_unit_text<T>(
+        section: impl FnOnce(usize, usize) -> crate::unwind::cfi::EhFrameSection,
+        f: impl FnOnce(&SelfTestProbe) -> T,
+    ) -> Result<T, String> {
+        let range =
+            CodeRange::process().map_err(|e| format!("reserve the process code range: {e}"))?;
+        let (code, other) = (probe_code(), other_code());
+        let mut bytes = code.clone();
+        bytes.resize(OTHER_OFF, 0);
+        bytes.extend(&other);
+        let text = crate::unit_text::UnitText::map(range, &bytes)
+            .map_err(|e| format!("map the probe as unit text: {e}"))?;
+        let base = text.base();
+        // SAFETY: offset 0 of the text holds the probe, copied above and executable until
+        // `text` drops after `f`; it has the ProbeFn signature.
+        let entry: ProbeFn = unsafe { std::mem::transmute::<usize, ProbeFn>(base) };
+        let probe = SelfTestProbe {
+            entry,
+            code: base..base + code.len(),
+            section: section(base, code.len()),
+        };
+        // `text` drops after `f` and its registrations.
+        Ok(f(&probe))
+    }
+
+    /// The process-wide choice with the built-in probe in unit text ([`choose_mode`]).
+    ///
+    /// [`choose_mode`]: super::choose_mode
+    #[cfg_attr(feature = "jit", allow(dead_code))]
+    pub(in crate::unwind) fn select_in_unit_text() -> Result<RegistrationMode, String> {
+        // SAFETY: `with_probe_in_unit_text` maps the probe for the duration of the closure; the
+        // section describes it exactly; the page is new, so no registration overlaps it.
+        with_probe_in_unit_text(probe_section, |p| unsafe { super::select(p) }).map_err(|e| {
+            format!("unwind self-test could not run: {e}. Native code cannot run (H28)")
+        })?
+    }
+
     /// The process-wide choice with the built-in probe.
+    #[cfg(any(feature = "jit", test))]
     pub(super) fn select() -> Result<RegistrationMode, String> {
         // SAFETY: `with_probe` maps the probe for the duration of the closure; the section
         // describes it exactly; the page is new, so no registration overlaps it.
@@ -433,4 +493,4 @@ mod builtin {
 }
 
 #[cfg(test)]
-pub(super) use builtin::{OTHER_OFF, probe_section, with_probe};
+pub(super) use builtin::{OTHER_OFF, probe_section, select_in_unit_text, with_probe};
