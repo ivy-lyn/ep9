@@ -1220,11 +1220,8 @@ fn reader(slot: usize, cell: usize) -> (Vec<u8>, Vec<u8>) {
         text.resize(UNWIND_INFO_OFF, 0xCC);
         text.extend([1, 0, 0, 0]);
         let mut v = Vec::new();
-        for &start in starts {
-            let start = start as u32;
-            for w in [start, start + len as u32, UNWIND_INFO_OFF as u32] {
-                v.extend(w.to_le_bytes());
-            }
+        for w in [0, len as u32, UNWIND_INFO_OFF as u32] {
+            v.extend(w.to_le_bytes());
         }
         v
     };
