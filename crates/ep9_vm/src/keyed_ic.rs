@@ -5,7 +5,7 @@
 //! ```text
 //! interp/ops.rs (M4-P0 hooks; each after profile::record_keyed, which records nothing)
 //!   GetKeyedProperty          array-only inline path (implicit), then -> fast_get   (cold)
-//!   SetKeyedProperty          -> fast_set: a present element of an Array            (hit)
+//!   SetKeyedProperty          -> fast_set: a present element of an Array (hit), grow case
 //!   DefineKeyedOwnProperty    -> fast_define_own                                    (cold)
 //!   StaInArrayLiteral         -> fast_sta_in_array_literal                          (cold)
 //!   TestIn                    -> fast_has                                           (cold)
@@ -29,7 +29,7 @@
 //! writable data property (an element is always {w, e, c}), so it needs no `[[Extensible]]`
 //! test, no prototype walk and no `proto_index` fuse, and it changes no shape, no kind and
 //! no length: a store that needs a kind transition goes cold (transitions happen on the
-//! cold store path only). Every other keyed case goes cold and leaves the key half alone, so
+//! cold store path only). Every other keyed case leaves the key half alone (MC-w14-6), so
 //! the key half names only receivers of the fast case.
 //!
 //! **The cold-miss rule (profile.rs "Keyed sites", MC-w14-6).** A hit records nothing, so a
@@ -39,10 +39,10 @@
 //! present element adds no element bit). A hit needs a state that a cold fast-case execution
 //! made, so its bits `INDEX | ARRAY` are in the value half (under `type feedback: full`). A
 //! function without a vector hits (the record hooks record nothing there either); its first
-//! fast-case execution with a vector is cold. The hole and out-of-bounds cases stay cold:
-//! their bits (`HOLE`, `OUT_OF_BOUNDS`) differ per execution, and the key half has no room
-//! to remember them (no per-site element-case state before the month-5 elements kinds,
-//! V9-D39). A LoadKeyed site keeps the implicit INDEX of the ops.rs array path
+//! fast-case execution with a vector is cold. A hole or out-of-bounds case is never a hit:
+//! its bits (`HOLE`, `OUT_OF_BOUNDS`) differ per execution, and the key half has no room to
+//! remember them (V9-D39). The store grow case (`grow_in_place`) records them as the cold body
+//! does (`Flow::Record`). A LoadKeyed site keeps the implicit INDEX of the ops.rs array path
 //! (`facts_export.rs`); this module does not change what an INDEX bit means there
 //! (MODES-D17).
 //!
@@ -69,12 +69,12 @@
 
 use crate::elements;
 use crate::feedback::{self, fv};
-use crate::frame::{HOLE, UNDEFINED, int32_of};
+use crate::frame::{HOLE, UNDEFINED, int32_bits, int32_of};
 use crate::interp::dsl::FSlot;
 use crate::interp::{Flow, St};
 use crate::kinds;
 use crate::object::{self, delems, elems, obj, rd, rd_i32};
-use crate::profile;
+use crate::profile::{self, keyed};
 use crate::runtime::{Runtime, val};
 use crate::shape;
 use ep9_heap::CellPtr;
@@ -156,11 +156,20 @@ pub(crate) fn fast_get(_st: &mut St<'_>, _o: u64, _k: u64, _s: FSlot) -> Flow {
 /// is its own tail (M5-P1-ORCH-3, MC-w19-10; V8 keeps its megamorphic keyed store apart): its
 /// own store, then the sampled kinds-set record ([`set_megamorphic`]); no flag joins the two
 /// tails, so the monomorphic path pays nothing for it. A state change goes cold
-/// ([`note_receiver`]).
+/// ([`note_receiver`]). A missing element goes to the grow case ([`grow_in_place`]).
 #[inline(always)]
 pub(crate) fn fast_set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flow {
     let Some((e, off, doubles)) = present_element(o, k) else {
-        return Flow::Cold;
+        // M7-P5 ICWIDE: a missing element of an Array, in place (in line, no call).
+        return if k & NUMBER_TAG == NUMBER_TAG
+            && kinds::is_array(o)
+            && let Ok(i) = u32::try_from(int32_of(k))
+            && let Some(bits) = grow_in_place(st.rt(), o, i, v)
+        {
+            record_as_cold(s, bits)
+        } else {
+            Flow::Cold
+        };
     };
     let fits = if doubles {
         val(v).is_number()
@@ -191,6 +200,100 @@ pub(crate) fn fast_set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flo
     }
     store_present(st.rt(), e, off, doubles, v);
     Flow::Next
+}
+
+/// **The grow case** of `SetKeyedProperty` (M7-P5 ICWIDE).
+///
+/// `a[i] = v` for the Array `a` whose element `i` is missing (a hole, or at or past `length`)
+/// with no allocation: `property::array_store` (the array is extensible and no prototype has
+/// an index key, so no setter or read-only property on the chain decides, §10.1.9.2), then
+/// `object::array_set` in the case its in-line store takes (the kind `v` needs is the kind
+/// the array has, the index is inside the capacity of the elements cell, the array is not a
+/// prototype), with `length` set to `i + 1` at or past it. The bits the cold body records
+/// (INDEX, ARRAY, the element case and the kinds-set bit of the kind before the store), or
+/// `None` and nothing stored. Not a GC point.
+///
+/// It does not allocate and does not call, and it reads and writes neither half of the slot:
+/// [`record_as_cold`] gives the bits to the record of the handler, so the value half after a
+/// grow case is the one the cold path gives (the cold-miss rule), and the key half still
+/// names only receivers of the fast case.
+///
+/// The load side has no such case. M7-P5 ICWIDE measured the wide load cases of [`fast_get`]
+/// (a hole or an index past `length` of an Array, an element of another object, a string key
+/// through the named-load case computation) and left them cold: that body is in line in the
+/// `GetKeyedProperty` handler, so any call in it (the shape lookup, `object::element_get`)
+/// and any new panic path (the fuse read through `Runtime::root`) makes LLVM put the frame
+/// record on entry of the whole handler, and even a call-free hole case moved the block order
+/// of the array path (+2 instructions per array hit; crypto +0.3% to +0.6%, mac a64). Their
+/// place is the cold body (`interp/ops.rs`).
+#[inline(always)]
+fn grow_in_place(rt: &Runtime, a: u64, i: u32, v: u64) -> Option<u32> {
+    use elements::kind as ek;
+    if !crate::property::is_extensible(a) || shape::proto_index_keys(rt) {
+        return None;
+    }
+    let (from, refuse) = elements::store_kind(a, v);
+    if refuse || from == ek::DICTIONARY || i >= object::arr::MAX_LENGTH {
+        return None;
+    }
+    let len = object::array_len_dense(a);
+    debug_assert!(object::array_get(a, i).is_none());
+    // The kind of `object::array_set`; only a store that needs no transition goes on.
+    let int32 = v & NUMBER_TAG == NUMBER_TAG;
+    let values = from & !ek::HOLEY_BIT == ek::PACKED_ELEMENTS;
+    let to = if i <= len && (int32 || (values && v != HOLE)) {
+        from
+    } else {
+        let k = elements::join(from, elements::value_kind(v));
+        if i > len { elements::holey(k) } else { k }
+    };
+    if to != from || shape::is_prototype_object(a) {
+        return None;
+    }
+    let e = rd(object::cell(a), obj::ELEMENTS);
+    if e == UNDEFINED {
+        return None;
+    }
+    let e = object::cell(e);
+    if i >= rd_i32(e, elems::CAPACITY) as u32 {
+        return None;
+    }
+    // `profile::element_case`; not DICTIONARY, so the dense bound is the length.
+    let case = if i >= len {
+        keyed::OUT_OF_BOUNDS
+    } else {
+        keyed::HOLE
+    };
+    let bits = keyed::INDEX | keyed::ARRAY | case | elements::kinds_set_bit(from);
+    let doubles = elements::storage(to) == Some(elements::Storage::Doubles);
+    store_present(rt, e, elems::DATA + 8 * i as usize, doubles, v);
+    if i >= len {
+        object::wr(
+            &rt.heap,
+            object::cell(a),
+            object::arr::LENGTH,
+            int32_bits(i as i32 + 1),
+        );
+    }
+    #[cfg(test)]
+    GROW_HITS.with(|c| c.set(c.get() + 1));
+    Some(bits)
+}
+
+/// The dispatch of a grow case ([`grow_in_place`]): `bits` (never 0) as a record of slot
+/// `s`, which ORs them into the value half as `profile::record_keyed_cold` would have on the
+/// cold path (the record of a `full` table; an `ics_only` table runs none, as its cold hook
+/// records nothing). So a slot's value half after a grow case is the one the cold path gives,
+/// and the case reads neither half (MC-w14-8).
+#[inline(always)]
+fn record_as_cold(s: FSlot, bits: u32) -> Flow {
+    Flow::Record(profile::Rec::new(s, bits))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M7-P5 ICWIDE): how many stores the grow case ([`grow_in_place`]) did.
+    pub(crate) static GROW_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 /// True if the Array `o` is FROZEN (`shape::level::FROZEN`, M7-P3 ELEMKINDS): its elements

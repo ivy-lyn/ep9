@@ -1061,6 +1061,89 @@ const CASES: &[Case] = &[
              print(r.join(' '));",
         ),
     },
+    // M7-P5 LEVER-4 (ICWIDE): `keyed_ic::fast_set` stores a missing element of an Array in
+    // place (`grow_in_place`): at or past `length` and into a hole, inside the capacity, with
+    // no kind transition, on an extensible array that is not a prototype, while no object on
+    // the chain has an index key. The spec form names each index by a string key (cold).
+    Case {
+        path: "keyed-access",
+        name: "a store at or past the length or into a hole of an Array, in place",
+        src: "function put(a, i, v) { a[i] = v; return a.length; }\n\
+              var p = [], d = [0.5], o = ['x'], h = new Array(6), r = [];\n\
+              for (var i = 0; i < 20; i++) { put(p, p.length, i); put(d, d.length, i + 0.25); put(o, o.length, {k: i}); }\n\
+              for (var i = 5; i >= 0; i -= 2) r.push(put(h, i, i * 3));\n\
+              for (var i = 0; i < 6; i += 2) r.push(put(h, i, -i));\n\
+              r.push(put(p, 25, 1), put(p, 21, 2), put(p, 20, 3), put(d, d.length, NaN), put(d, d.length, 7), put(d, d.length, 'z'));\n\
+              var q = [1, 2, 3]; q.length = 1; r.push(put(q, 1, 9), put(q, 2, 8.5), put(q, 3, 'w'));\n\
+              var e = []; e.length = 3; r.push(put(e, 0, 1), put(e, 3, 4));\n\
+              print(r.join(), p.join(), d.join(), o.map(function (x) { return typeof x === 'object' ? x.k : x; }).join(), h.join(), q.join(), e.join());\n\
+              print(20 in p, 22 in p, 24 in p, 5 in h, Object.keys(h).join(), Object.keys(e).join(), String(d[21]));",
+        spec: Some(
+            "function put(a, i, v) { a[String(i)] = v; return a.length; }\n\
+             var p = [], d = [0.5], o = ['x'], h = new Array(6), r = [];\n\
+             for (var i = 0; i < 20; i++) { put(p, p.length, i); put(d, d.length, i + 0.25); put(o, o.length, {k: i}); }\n\
+             for (var i = 5; i >= 0; i -= 2) r.push(put(h, i, i * 3));\n\
+             for (var i = 0; i < 6; i += 2) r.push(put(h, i, -i));\n\
+             r.push(put(p, 25, 1), put(p, 21, 2), put(p, 20, 3), put(d, d.length, NaN), put(d, d.length, 7), put(d, d.length, 'z'));\n\
+             var q = [1, 2, 3]; q.length = 1; r.push(put(q, 1, 9), put(q, 2, 8.5), put(q, 3, 'w'));\n\
+             var e = []; e.length = 3; r.push(put(e, 0, 1), put(e, 3, 4));\n\
+             print(r.join(), p.join(), d.join(), o.map(function (x) { return typeof x === 'object' ? x.k : x; }).join(), h.join(), q.join(), e.join());\n\
+             print(20 in p, 22 in p, 24 in p, 5 in h, Object.keys(h).join(), Object.keys(e).join(), String(d[21]));",
+        ),
+    },
+    Case {
+        path: "keyed-access",
+        name: "a store past the length of a non-extensible, sealed or frozen Array, or of an Array that is a prototype",
+        src: "function put(a, i, v) { a[i] = v; return a.length; } function sput(a, i, v) { 'use strict'; a[i] = v; return a.length; }\n\
+              var w = [1, 2]; for (var i = 0; i < 3; i++) put(w, w.length, i);\n\
+              var n = Object.preventExtensions([1, 2]), s = Object.seal([1, 2]), f = Object.freeze([1, 2]), r = [];\n\
+              r.push(put(n, 2, 3), put(s, 2, 3), put(f, 2, 3));\n\
+              try { sput(n, 2, 3); } catch (x) { r.push(x.name); } try { sput(s, 2, 3); } catch (x) { r.push(x.name); }\n\
+              var pa = [1, 2]; var c = Object.create(pa); r.push(put(pa, 2, 3), put(pa, 3, 4), c[2], c[3], c.length);\n\
+              var t = [1, 2]; t.length = 4; Object.defineProperty(t, 'length', { writable: false }); r.push(put(t, 4, 5), put(t, 2, 6));\n\
+              try { sput(t, 4, 5); } catch (x) { r.push(x.name); }\n\
+              print(r.join(), w.join(), n.join(), s.join(), f.join(), pa.join(), t.join(), t.length, Object.isExtensible(n));",
+        spec: Some(
+            "function put(a, i, v) { a[String(i)] = v; return a.length; } function sput(a, i, v) { 'use strict'; a[String(i)] = v; return a.length; }\n\
+             var w = [1, 2]; for (var i = 0; i < 3; i++) put(w, w.length, i);\n\
+             var n = Object.preventExtensions([1, 2]), s = Object.seal([1, 2]), f = Object.freeze([1, 2]), r = [];\n\
+             r.push(put(n, 2, 3), put(s, 2, 3), put(f, 2, 3));\n\
+             try { sput(n, 2, 3); } catch (x) { r.push(x.name); } try { sput(s, 2, 3); } catch (x) { r.push(x.name); }\n\
+             var pa = [1, 2]; var c = Object.create(pa); r.push(put(pa, 2, 3), put(pa, 3, 4), c[2], c[3], c.length);\n\
+             var t = [1, 2]; t.length = 4; Object.defineProperty(t, 'length', { writable: false }); r.push(put(t, 4, 5), put(t, 2, 6));\n\
+             try { sput(t, 4, 5); } catch (x) { r.push(x.name); }\n\
+             print(r.join(), w.join(), n.join(), s.join(), f.join(), pa.join(), t.join(), t.length, Object.isExtensible(n));",
+        ),
+    },
+    // An index key on a prototype (the static fuse "no-elements prototypes" pops): a setter or
+    // a read-only element of Array.prototype or Object.prototype decides the store of a
+    // missing element (§10.1.9.2), so it stays on the generic path.
+    Case {
+        path: "keyed-access",
+        name: "a store past the length or into a hole with an index setter or a read-only index on the chain",
+        src: "function put(a, i, v) { a[i] = v; return a.length; } function sput(a, i, v) { 'use strict'; a[i] = v; return a.length; }\n\
+              var log = [], a = [0, 1], h = [0, , 2], b = [0];\n\
+              for (var i = 0; i < 4; i++) put(b, b.length, i);\n\
+              Object.defineProperty(Array.prototype, 2, { set: function (v) { log.push('set' + v); }, configurable: true });\n\
+              Object.defineProperty(Object.prototype, 5, { value: 'ro', writable: false, configurable: true });\n\
+              var r = [put(a, 2, 7), put(h, 1, 8), put(b, 5, 9), put(b, b.length, 10)];\n\
+              try { sput([0, 1, 2, 3, 4], 5, 1); } catch (x) { r.push(x.name); }\n\
+              delete Array.prototype[2]; delete Object.prototype[5];\n\
+              r.push(put(a, 2, 11), put(a, a.length, 12));\n\
+              print(r.join(), log.join(), a.join(), h.join(), b.join(), 2 in a, a.hasOwnProperty(2));",
+        spec: Some(
+            "function put(a, i, v) { a[String(i)] = v; return a.length; } function sput(a, i, v) { 'use strict'; a[String(i)] = v; return a.length; }\n\
+             var log = [], a = [0, 1], h = [0, , 2], b = [0];\n\
+             for (var i = 0; i < 4; i++) put(b, b.length, i);\n\
+             Object.defineProperty(Array.prototype, 2, { set: function (v) { log.push('set' + v); }, configurable: true });\n\
+             Object.defineProperty(Object.prototype, 5, { value: 'ro', writable: false, configurable: true });\n\
+             var r = [put(a, 2, 7), put(h, 1, 8), put(b, 5, 9), put(b, b.length, 10)];\n\
+             try { sput([0, 1, 2, 3, 4], 5, 1); } catch (x) { r.push(x.name); }\n\
+             delete Array.prototype[2]; delete Object.prototype[5];\n\
+             r.push(put(a, 2, 11), put(a, a.length, 12));\n\
+             print(r.join(), log.join(), a.join(), h.join(), b.join(), 2 in a, a.hasOwnProperty(2));",
+        ),
+    },
 ];
 
 thread_local! {
