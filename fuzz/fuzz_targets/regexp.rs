@@ -106,9 +106,24 @@
 //! - Sets: `\c` before a `\` in a class without `u` and `v`, for example
 //!   `/[\c\u{10400}]/`. regress does not match `\` (node and RX1 do: Annex B
 //!   ClassAtomNoDash `\` [lookahead = c], B.1.2).
-//! - Sets: an escaped ClassSetReservedPunctuator just before a single `&` in a `v` class, for
-//!   example `/[\!&]/v`. regress does not match `!` (node and RX1 do: `\!` is a
-//!   ClassSetCharacter, ECMA-262 22.2.1; found by the M7-P5 fixer r1 10-minute runs).
+//! - Sets: a single `&` (not `&&`, not escaped) in a `v` class, for example `/[a&b]/v` and
+//!   `/[\!&]/v`. regress drops the ClassSetOperand just before the `&` (a character, an
+//!   escape, a nested class, `\q{..}`, `\w`, `\p{..}`; not a range), so it does not match `a`
+//!   and `!` there (node and RX1 do: a single `&` is a ClassSetCharacter, ECMA-262 22.2.1;
+//!   found by the M7-P5 fixer r1 and r2 runs, `/[\!&function \#&]/v`, `/[L&Po\!\#a]/v`).
+//!   Proof (fixer r2, node v26.13.0; ep9 `new RegExp` = RX0; each on `^(?:<class>)$`):
+//!
+//! ```text
+//!   class            subject   node    ep9
+//!   /[a&b]/v         "a"       true    false
+//!   /[L&Po\!\#a]/v   "L"       true    false
+//!   /[\!&]/v         "!"       true    false
+//!   /[[a]&b]/v       "a"       true    false
+//!   /[\q{a}&b]/v     "a"       true    false
+//!   /[\w&]/v         "a"       true    false
+//!   /[^a&]/v         "a"       false   true
+//!   /[a-c&]/v        "a"       true    true
+//! ```
 //! - Sets: the empty string of a `v` class, for example `/^[\q{}]$/v` on "". regress never
 //!   matches it (node and RX1 do; ClassString can be empty, ECMA-262 22.2.1).
 //!
@@ -405,17 +420,29 @@ fn known_rx0_set_difference(units: &[u16], flags: Flags) -> bool {
         || (v && i && has_nested_negation(units))
         || (v && has_negation(units) && has_escape(units, b'q'))
         || (!u && has_control_before_escape(units))
-        || (v && has_reserved_escape_before_amp(units))
+        || (v && has_single_amp(units))
 }
 
-/// True if the class text has `\<ClassSetReservedPunctuator>` just before a `&`.
-fn has_reserved_escape_before_amp(units: &[u16]) -> bool {
-    const RESERVED: &[u8] = b"&!#$%*+,.:;<=>?@^`~";
-    units.windows(3).any(|w| {
-        w[0] == u16::from(b'\\')
-            && RESERVED.iter().any(|&c| w[1] == u16::from(c))
-            && w[2] == u16::from(b'&')
-    })
+/// True if the class text has a `&` that is not escaped and has no `&` next to it.
+fn has_single_amp(units: &[u16]) -> bool {
+    let mut i = 0;
+    while i < units.len() {
+        if unit_is(units, i, b'\\') {
+            i += 2;
+        } else if unit_is(units, i, b'&') {
+            let run = units[i..]
+                .iter()
+                .take_while(|&&c| c == u16::from(b'&'))
+                .count();
+            if run == 1 {
+                return true;
+            }
+            i += run;
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 /// Check 3: on a one-class pattern, the RX1 set is the RX0 set.
