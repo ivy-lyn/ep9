@@ -55,10 +55,12 @@
 //!   (a literal) refuse it; regress takes it, so `new RegExp` in ep9 takes it (the other
 //!   ClassSetSyntaxCharacters `( ) { / -` there regress refuses too). The target skips an RX1
 //!   InvalidCharacterInClass with `v` only when the error position is such a `[` or `]`.
-//! - Validity: a `]` right after `&&` or `--` in a `v` class, for example `/[[.]&&]]/v`,
-//!   `/[[a]--]]/v`. RX1 says InvalidCharacterInClass (an operator needs a ClassSetOperand,
-//!   ECMA-262 22.2.1), and node and ep9's front end refuse it; regress takes the `]` as the
-//!   operand when one more `]` closes the class. The target skips an RX1
+//! - Validity: a `]` right after `&&`, `--` or the `-` of a range in a `v` class, for example
+//!   `/[[.]&&]]/v`, `/[[a]--]]/v`, `/[A-]]/v`. RX1 says InvalidCharacterInClass (an operator
+//!   needs a ClassSetOperand and a ClassSetRange a ClassSetCharacter, and `]` is a
+//!   ClassSetSyntaxCharacter; ECMA-262 22.2.1), and node and ep9's front end refuse it; regress
+//!   takes the `]` as the operand or as the range end (U+005D: so /[A-]]/v is a range and
+//!   /[a-]]/v is out of order) when one more `]` closes the class. The target skips an RX1
 //!   InvalidCharacterInClass with `v` only when the error position is such a `]`.
 //! - Validity: a `\u` escape with a `+` sign before its hex digits, with `u` or `v`, for
 //!   example `/[\u+1F6]/u` (also `\u{+1F600}`, and outside a class). RX1 says
@@ -76,6 +78,8 @@
 //!   /[\q{a]}]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 5
 //!   /[[.]&&]]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
 //!   /[[a]--]]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
+//!   /[A-]]/v         Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 3
+//!   /[A-]x]/v        Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 3
 //!   /[\u+1F6]/u      Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 3
 //!   /\u{+1F600}/u    Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 2
 //! ```
@@ -340,13 +344,15 @@ fn bracket_in_class_string(units: &[u16], pos: usize) -> bool {
     in_q && i == pos
 }
 
-/// True if `units[pos]` is a `]` right after an unescaped `&&` or `--`.
+/// True if `units[pos]` is a `]` right after an unescaped `&&` or `-` (the `-` of a range or
+/// the second one of `--`).
 fn bracket_after_set_operator(units: &[u16], pos: usize) -> bool {
-    pos >= 2
-        && unit_is(units, pos, b']')
-        && units[pos - 1] == units[pos - 2]
-        && (unit_is(units, pos - 1, b'&') || unit_is(units, pos - 1, b'-'))
-        && not_escaped(units, pos - 2)
+    let amp_amp = pos >= 2
+        && unit_is(units, pos - 1, b'&')
+        && unit_is(units, pos - 2, b'&')
+        && not_escaped(units, pos - 2);
+    let dash = pos >= 1 && unit_is(units, pos - 1, b'-') && not_escaped(units, pos - 1);
+    unit_is(units, pos, b']') && (amp_amp || dash)
 }
 
 /// True if `units[pos]` is not the escaped unit of a `\` (a scan from the start).
