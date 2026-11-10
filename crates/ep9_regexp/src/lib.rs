@@ -430,6 +430,186 @@ fn has_group_names(pattern: &[u16]) -> bool {
     false
 }
 
+/// One event of [`scan_groups`]: a `(` (with the group name of a `(?<name>`), a `|` or a `)`
+/// outside classes and escapes.
+enum GroupEvent {
+    Open(Option<Vec<u32>>),
+    Alternative,
+    Close,
+}
+
+/// The group name that starts at `at` (after `(?<`), as code points: `\uXXXX`, `\u{X}` and
+/// surrogate pairs (two units or two escapes) decoded. `None` if no `>` ends it.
+fn group_name(pattern: &[u16], mut at: usize) -> Option<(Vec<u32>, usize)> {
+    let unit = |c: u8| u16::from(c);
+    let mut cps: Vec<u32> = Vec::new();
+    loop {
+        let c = *pattern.get(at)?;
+        if c == unit(b'>') {
+            break;
+        }
+        if c == unit(b'\\') && pattern.get(at + 1) == Some(&unit(b'u')) {
+            if pattern.get(at + 2) == Some(&unit(b'{')) {
+                let close = (at + 3..pattern.len()).find(|&j| pattern[j] == unit(b'}'))?;
+                let text = String::from_utf16_lossy(&pattern[at + 3..close]);
+                cps.push(u32::from_str_radix(&text, 16).ok()?);
+                at = close + 1;
+            } else {
+                cps.push(u32::from(hex4(pattern, at + 2)?));
+                at += 6;
+            }
+        } else {
+            cps.push(u32::from(c));
+            at += 1;
+        }
+        // A lead then a trail (as units or as escapes) is one code point.
+        if let [.., lead, trail] = cps[..]
+            && (0xd800..=0xdbff).contains(&lead)
+            && (0xdc00..=0xdfff).contains(&trail)
+        {
+            cps.truncate(cps.len() - 2);
+            cps.push(0x10000 + ((lead - 0xd800) << 10) + (trail - 0xdc00));
+        }
+    }
+    Some((cps, at))
+}
+
+/// Walks the group structure of `pattern`: escapes are skipped, classes are skipped (with
+/// `v` they nest). Stops at a group name with no `>` (regress refuses the pattern).
+fn scan_groups(pattern: &[u16], unicode_sets: bool, mut on: impl FnMut(GroupEvent)) {
+    let unit = |c: u8| u16::from(c);
+    let mut class_depth = 0usize;
+    let mut i = 0;
+    while i < pattern.len() {
+        let c = pattern[i];
+        if c == unit(b'\\') {
+            i += 2;
+            continue;
+        }
+        if class_depth > 0 {
+            if c == unit(b']') {
+                class_depth -= 1;
+            } else if c == unit(b'[') && unicode_sets {
+                class_depth += 1;
+            }
+        } else if c == unit(b'[') {
+            class_depth = 1;
+        } else if c == unit(b'(') {
+            if is_group_name_open(pattern, i) {
+                let Some((name, end)) = group_name(pattern, i + 3) else {
+                    return;
+                };
+                on(GroupEvent::Open(Some(name)));
+                i = end;
+            } else {
+                on(GroupEvent::Open(None));
+            }
+        } else if c == unit(b'|') {
+            on(GroupEvent::Alternative);
+        } else if c == unit(b')') {
+            on(GroupEvent::Close);
+        }
+        i += 1;
+    }
+}
+
+/// regress 0.12.0 nests groups at most this deep (`MAX_NESTING_DEPTH`); the scan stops there
+/// and regress gives its error.
+const MAX_GROUP_DEPTH: usize = 256;
+
+/// True if two groups of one name might both take part in a match (ECMA-262 22.2.1.1: it is a
+/// SyntaxError unless the two are in different alternatives of one Disjunction). regress
+/// 0.12.0 compares (depth, alternative) pairs and takes `(?:(?<a>x)|y)(?:z|(?<a>w))`, so the
+/// check runs here first (route RX0-DUPNAMES; node v26.13.0: "Duplicate capture group name").
+///
+/// ```text
+/// one frame per open group (the root is the pattern):
+///   cur  the duplicated names in the frame's current alternative, whose deepest open
+///        frame is this one
+///   all  the duplicated names anywhere in the frame
+/// (?<n>  conflict if n is in `cur` of any open frame (`active[n] > 0`); then n -> cur, all
+/// |      the frame's cur is cleared (those groups are in an earlier alternative now)
+/// )      the frame closes: its `all` joins the parent's cur and all
+/// ```
+///
+/// Only names that two groups share are tracked, so a pattern without such a name costs one
+/// scan. The cost is at most the name occurrences times [`MAX_GROUP_DEPTH`].
+fn duplicate_names_conflict(pattern: &[u16], unicode_sets: bool) -> bool {
+    use std::collections::{HashMap, HashSet};
+    let mut counts: HashMap<Vec<u32>, u32> = HashMap::new();
+    scan_groups(pattern, unicode_sets, |e| {
+        if let GroupEvent::Open(Some(name)) = e {
+            *counts.entry(name).or_default() += 1;
+        }
+    });
+    let ids: HashMap<Vec<u32>, usize> = counts
+        .into_iter()
+        .filter(|&(_, n)| n >= 2)
+        .enumerate()
+        .map(|(id, (name, _))| (name, id))
+        .collect();
+    if ids.is_empty() {
+        return false;
+    }
+    #[derive(Default)]
+    struct Frame {
+        cur: HashSet<usize>,
+        all: HashSet<usize>,
+    }
+    let mut frames = vec![Frame::default()];
+    let mut active = vec![0u32; ids.len()];
+    let mut conflict = false;
+    let mut too_deep = false;
+    scan_groups(pattern, unicode_sets, |e| {
+        if conflict || too_deep {
+            return;
+        }
+        match e {
+            GroupEvent::Open(name) => {
+                if let Some(&id) = name.as_ref().and_then(|n| ids.get(n)) {
+                    if active[id] > 0 {
+                        conflict = true;
+                        return;
+                    }
+                    let top = frames.last_mut().expect("the root frame");
+                    if top.cur.insert(id) {
+                        active[id] += 1;
+                    }
+                    top.all.insert(id);
+                }
+                if frames.len() > MAX_GROUP_DEPTH {
+                    too_deep = true;
+                    return;
+                }
+                frames.push(Frame::default());
+            }
+            GroupEvent::Alternative => {
+                let top = frames.last_mut().expect("the root frame");
+                for id in top.cur.drain() {
+                    active[id] -= 1;
+                }
+            }
+            GroupEvent::Close => {
+                if frames.len() == 1 {
+                    return; // An unmatched `)`: regress refuses it.
+                }
+                let mut done = frames.pop().expect("an open frame");
+                for id in done.cur.drain() {
+                    active[id] -= 1;
+                }
+                let parent = frames.last_mut().expect("the root frame");
+                for id in done.all {
+                    if parent.cur.insert(id) {
+                        active[id] += 1;
+                    }
+                    parent.all.insert(id);
+                }
+            }
+        }
+    });
+    conflict
+}
+
 /// V8's message form: `Invalid regular expression: /<source>/<flags>: <reason>`.
 fn syntax_error(pattern: &[u16], flags: Flags, reason: &str) -> SyntaxErr {
     SyntaxErr {
@@ -464,6 +644,9 @@ impl Backend for Rx0 {
             unicode,
             unicode_sets: flags.contains(Flags::UNICODE_SETS),
         };
+        if duplicate_names_conflict(pattern, flags.contains(Flags::UNICODE_SETS)) {
+            return Err(syntax_error(pattern, flags, "Duplicate capture group name"));
+        }
         let chars = pattern_chars(pattern, unicode);
         let re = regress::Regex::from_unicode(chars.into_iter(), rf)
             .map_err(|e| syntax_error(pattern, flags, &e.text))?;
@@ -1038,5 +1221,83 @@ mod tests {
             run("\\u0178", "i", Input::Latin1(&[b'a', 0xff]), 0).unwrap(),
             [Some((1, 2))]
         );
+    }
+
+    /// Two groups of one name are a SyntaxError unless they are in different alternatives of
+    /// one Disjunction (route RX0-DUPNAMES). The verdicts are node v26.13.0's
+    /// (`new RegExp(pattern, flags)`; the M7-P4 OXCBUMP dupnames cases and 7 more).
+    #[test]
+    fn rx0_duplicate_group_names_follow_node() {
+        let cases: &[(&str, &str, bool)] = &[
+            // (pattern, flags, node v26.13.0 `new RegExp` accepts)
+            ("(?:(?<a>x)|y)(?:z|(?<a>w))", "", false),
+            ("(?<n>a|(?<n>b))", "", false),
+            ("(?:a|(?<n>x))(?<n>y)", "", false),
+            ("(?<a>x)|(?<a>y)", "", true),
+            ("((?<a>x))|((?<a>y))", "", true),
+            ("(?:(?<a>x)|(?<a>y))|(?<a>z)", "", true),
+            ("(?<a>x)|(?:(?<a>y)|(?<a>z))", "", true),
+            ("(?:(?<a>x)|(?<a>y))(?<a>z)", "", false),
+            ("(?<a>x)(?:|(?<a>y))", "", false),
+            ("[a\\|b](?<n>x)|(?<n>y)", "v", true),
+            ("(?<a>x)|[(](?<a>y)", "", true),
+            ("(?i:(?<a>x))|(?<a>y)", "", true),
+            ("(?i:(?<a>x)|y)(?<a>z)", "", false),
+            ("(?<=(?<a>x))|(?<a>y)", "", true),
+            ("((?<a>x)|(?<a>y))|(?<a>z)", "", true),
+            ("(?<a>x)|(?<b>y)(?<a>z)", "", true),
+            ("(?<a>x)|(?<b>y)|(?<a>z)(?<a>w)", "", false),
+            ("(?:(?<a>x)|y)(?:(?<a>w)|z)", "", false),
+            ("(?<a>x)(?<a>y)", "", false),
+            ("(?:(?<a>x)|(?<b>y))\\k<a>", "", true),
+            ("(?<a>(?<b>x)|(?<b>y))|(?<b>z)", "", true),
+            ("(?<a>x|(?<a>y))", "", false),
+            ("(?:(?<a>x))|(?<a>y)|(?:z(?<a>w))", "", true),
+            ("[[\\(]--[x]](?<a>y)|(?<a>z)", "v", true),
+            ("(?<a>x)|(?<a>y)|(?<a>z)", "", true),
+            ("(?:(?:(?<a>x)|y)|z)(?<a>w)", "", false),
+            ("(?:(?:(?<a>x)|y)|(?<a>z))", "", true),
+            ("((?<a>x)|y)((?<a>z)|w)", "", false),
+            ("[(](?<a>y)|(?<a>z)", "u", true),
+            ("[\\q{a|b}](?<a>y)|(?<a>z)", "v", true),
+            ("[[a][\\q{x|y}]](?<a>y)|(?<a>z)", "v", true),
+            ("[\\q{a|b}](?<a>y)(?<a>z)", "v", false),
+            ("(?<a>x)(?<\\u0061>y)", "", false),
+            ("(?<a>x)|(?<\\u0061>y)", "", true),
+            ("(?<\\u{1d49c}>x)(?<\\ud835\\udc9c>y)", "", false),
+            ("(?<a>x)\\((?<a>y)", "", false),
+            ("(?<a>x)[|](?<a>y)", "", false),
+            ("[[\\|]](?<a>x)|(?<a>y)", "v", true),
+            ("[[\\|]](?<a>x)(?<a>y)", "v", false),
+            ("(?<a>x)|\\|(?<a>y)", "", true),
+        ];
+        let mut bad = Vec::new();
+        for &(p, f, ok) in cases {
+            let flags = Flags::parse(&utf16(f)).unwrap();
+            let got = Rx0::compile(&utf16(p), flags);
+            match got {
+                Ok(_) if !ok => bad.push(format!("/{p}/{f}: node SyntaxError, rx0 ok")),
+                Err(e) if ok => bad.push(format!("/{p}/{f}: node ok, rx0 {}", e.message)),
+                Err(e) => assert!(
+                    e.message.ends_with("Duplicate capture group name"),
+                    "{}",
+                    e.message
+                ),
+                Ok(_) => {}
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// The scan is linear for many groups of one name in alternatives, and the depth is cut at
+    /// regress's nesting cap (a count of frames, not a time).
+    #[test]
+    fn rx0_duplicate_name_scan_has_a_bound() {
+        let many = vec!["(?<a>x)"; 20_000].join("|");
+        assert!(!duplicate_names_conflict(&utf16(&many), false));
+        let twice = format!("{many}(?<a>y)");
+        assert!(duplicate_names_conflict(&utf16(&twice), false));
+        let deep = format!("{}(?<a>x)|(?<a>y){}", "(?:".repeat(300), ")".repeat(300));
+        assert!(!duplicate_names_conflict(&utf16(&deep), false));
     }
 }
