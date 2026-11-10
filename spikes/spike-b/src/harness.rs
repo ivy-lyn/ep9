@@ -510,8 +510,8 @@ mod tests {
             let e = call(&mut s, boom, 10).expect_err("drive(boom, 10) throws");
             assert!(e.message.contains("b3") && !e.terminated, "{e:?}");
             assert_eq!(call(&mut s, id, 5).expect("after the throw"), "5");
-            // `boom` stays in T0; `Cx::call` on a native slot throws not_implemented
-            // (call.rs), so the JIT entry from Rust is `call_from_rust`.
+            // `boom` stays in T0. Since M7-P5 A2-RW (MC-w30-2) `Cx::call` on a native slot
+            // enters it too (call.rs `call_native_from_rust`), as `call_from_rust` does.
             let r = s
                 .iso
                 .with_cx_checkpoint(|cx| {
@@ -525,16 +525,16 @@ mod tests {
             let e = call(&mut s, id, 1 << 30).expect_err("terminated");
             assert!(e.terminated, "{e:?}");
             assert_eq!(call(&mut s, id, 7).expect("after the termination"), "7");
-            let e = s
+            let r = s
                 .iso
                 .with_cx_checkpoint(|cx| {
                     let drive = cx.global_binding("drive")?.expect("drive");
                     let id = cx.global_binding("id")?.expect("id");
                     cx.call(drive, Local::undefined(), &[id, Local::int32(3)])
-                        .map(|_| ())
+                        .map(|v| cx.display(v))
                 })
-                .expect_err("native slot");
-            assert!(e.message.contains("not implemented"), "{e:?}");
+                .expect("Cx::call on the native slot of drive");
+            assert_eq!(r, "3");
             assert_eq!(call(&mut s, id, 11).expect("last"), "11");
         }
     }

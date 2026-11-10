@@ -156,9 +156,9 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "keyed-access",
-        site: "crates/ep9_vm/src/profile.rs:870, :902 (the T0 keyed fast body)",
+        site: "crates/ep9_vm/src/interp/ops.rs:1166 (the GetKeyedProperty array path); keyed_ic.rs:161 (fast_set), :230 (the store grow case)",
         off: Off::Guard,
-        what: "an int32 key on a dense element store",
+        what: "an int32 key on a dense element store; the StoreKeyed grow case (a hole fill, or an append at or past length inside the capacity, no kind transition)",
     },
     FastPath {
         id: "define-own",
@@ -187,7 +187,7 @@ const INVENTORY: &[FastPath] = &[
     },
     FastPath {
         id: "instanceof",
-        site: "crates/ep9_vm/src/instance_ic.rs:336; property.rs:1269",
+        site: "crates/ep9_vm/src/instance_ic.rs:336; property.rs:1277",
         off: Off::Guard,
         what: "instanceof with the builtin @@hasInstance: OrdinaryHasInstance in place",
     },

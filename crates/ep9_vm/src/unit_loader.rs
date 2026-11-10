@@ -23,7 +23,7 @@
 //!      (H07:52) -- fails ----------------------------------------------> each pick "no-text"
 //!   7  the unwind data of the text registered with the system unwinder, once per mapped
 //!      text, before any of its code can run (JIT review O3) -- fails --> each pick "no-unwind"
-//!   8  install the picks (`install_picked`) -----------------------------> "installed" |
+//!   8  install the picks (`install_picked`; never a constructor) --------> "installed" |
 //!                                                                          "not-installable"
 //! ```
 //!
@@ -434,11 +434,15 @@ fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
         .filter_map(Weak::upgrade)
         .find(|t| t.key == key)
     {
+        sync_text(); // another thread may have mapped it
         return Ok(t);
     }
     if unwind.is_empty() {
         return Err(Reason::NoUnwind);
     }
+    // The unwind mode first: its probe needs a free page, which a text may fill (Codex A2).
+    #[cfg(unix)]
+    ep9_platform::unwind::choose_mode().map_err(|_| Reason::NoUnwind)?;
     let mapped = UnitText::map(range, text).map_err(|_| Reason::NoText)?;
     let reg = register_unwind(&mapped, unwind).map_err(|_| Reason::NoUnwind)?;
     let t = Arc::new(SharedText {
@@ -447,7 +451,27 @@ fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
         key,
     });
     texts.push(Arc::downgrade(&t));
+    sync_text();
     Ok(t)
+}
+
+/// A context-synchronizing event on this thread before it runs a text of [`shared_text`]
+/// (M7-P5 Codex A1). A shared text was mapped and flushed by another thread; its cache
+/// maintenance does not sync this thread's pipeline (`isb` on AArch64, `cpuid` on x86-64:
+/// `ep9_platform::unit_text::context_sync`). An isolate is not `Send` (D14), so this thread
+/// is the one that runs the code, after step 8 writes the slots. Called on a mapped text too.
+#[inline]
+fn sync_text() {
+    ep9_platform::unit_text::context_sync();
+    #[cfg(test)]
+    TEXT_SYNCS.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The [`sync_text`] calls on this thread (the tests check that each return of
+    /// [`shared_text`] syncs).
+    pub(crate) static TEXT_SYNCS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Registers the unix unwind data `unwind` of the mapped `text` (module doc, form 1).
@@ -583,7 +607,8 @@ pub(crate) enum Reason {
     /// A pick that step 8 installed.
     Installed,
     /// A pick that step 8 cannot install: AotOpt (no optimizing-tier entry yet), a fuse
-    /// dependency (no fuse-pop path re-selects yet), or an `install_code` refusal.
+    /// dependency (no fuse-pop path re-selects yet), a function with `[[Construct]]` (its
+    /// construct paths run only bytecode: M6-ORCH-386), or an `install_code` refusal.
     NotInstallable,
     /// A pick of an installing load whose text has no unwind data, or unwind data that does
     /// not lie inside the text or does not register (JIT review O3): it runs its bytecode.
@@ -763,7 +788,8 @@ pub(crate) fn load(
 /// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `lu`, `text`, `unwind`
 /// and `functions` come from, against this engine build (the `# Safety` of the unsafe `Cx`
 /// method in `abi/unit_code.rs`): so the unwind data describes the text, and each picked
-/// variant follows the [`install_picked`] contract.
+/// variant follows the [`install_picked`] contract. And `cpu` has no bit that this CPU lacks
+/// (the CPU bits of `HostInfo::current()`, H35-Q5): `select()` picks a variant by these bits.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn load_and_install(
     rt: &Runtime,
@@ -960,6 +986,14 @@ fn link_and_map(
 /// [`Reason::Installed`] and [`Reason::NotInstallable`]; a pick with no mapped text is not
 /// counted (its load counted it).
 ///
+/// A function with `[[Construct]]` (`fi.is_constructor()`: an ordinary `function`, a class
+/// constructor) is not installable: its slot stays Interp, so every construct path (`new`,
+/// `super()`, `Reflect.construct` from Rust) runs its bytecode. The construct paths refuse a
+/// native slot (route MC-w29-8; Frozen H04:52 keeps the default build with no non-Interp
+/// construct path), so an installed constructor would change JS results (JIT review F1 of
+/// M7-P5, M6-ORCH-386). Every install of unit code comes here: also a later installing load
+/// of the same unit and a load that takes a shared text.
+///
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
 /// ABI, it runs the bytecode of its function (the digest binds them), and it follows the
@@ -979,7 +1013,7 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
         };
         let obj = &uc.set.objects[i];
         let kind = DispatchKind::from_u8(obj.kind);
-        if kind != Some(DispatchKind::AotBaseline) || !obj.deps.is_empty() {
+        if kind != Some(DispatchKind::AotBaseline) || !obj.deps.is_empty() || fi.is_constructor() {
             r.add(Reason::NotInstallable, 1);
             continue;
         }

@@ -1,0 +1,507 @@
+{
+ "root": 65,
+ "crate_version": null,
+ "includes_private": false,
+ "index": {
+  "0": {
+   "id": 0,
+   "crate_id": 0,
+   "name": "Token",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "struct": {
+     "kind": "unit",
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "impls": []
+    }
+   }
+  },
+  "3": {
+   "id": 3,
+   "crate_id": 0,
+   "name": "A",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "assoc_type": {
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "bounds": [],
+     "type": null,
+     "default_unstable": null
+    }
+   }
+  },
+  "6": {
+   "id": 6,
+   "crate_id": 0,
+   "name": "0",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "struct_field": {
+     "primitive": "u32"
+    }
+   }
+  },
+  "9": {
+   "id": 9,
+   "crate_id": 0,
+   "name": "B",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "variant": {
+     "kind": {
+      "struct": {
+       "fields": [
+        8
+       ],
+       "has_stripped_fields": false
+      }
+     },
+     "discriminant": {
+      "expr": "7",
+      "value": "7"
+     }
+    }
+   }
+  },
+  "12": {
+   "id": 12,
+   "crate_id": 0,
+   "name": "Downcast",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "trait": {
+     "is_auto": false,
+     "is_unsafe": false,
+     "is_dyn_compatible": false,
+     "items": [],
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "bounds": [
+      {
+       "trait_bound": {
+        "trait": {
+         "path": "sealed::Sealed",
+         "id": 4,
+         "args": null
+        },
+        "generic_params": [],
+        "modifier": "none"
+       }
+      }
+     ],
+     "implementations": [
+      13
+     ]
+    }
+   }
+  },
+  "62": {
+   "id": 62,
+   "crate_id": 0,
+   "name": "f",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "function": {
+     "sig": {
+      "inputs": [],
+      "output": null,
+      "is_c_variadic": false
+     },
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "header": {
+      "is_const": false,
+      "is_unsafe": false,
+      "is_async": false,
+      "abi": {
+       "C": {
+        "unwind": false
+       }
+      }
+     },
+     "has_body": true,
+     "default_unstable": null
+    }
+   }
+  },
+  "65": {
+   "id": 65,
+   "crate_id": 0,
+   "name": "fx",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "module": {
+     "is_crate": true,
+     "items": [
+      12,
+      14,
+      62,
+      63,
+      64
+     ],
+     "is_stripped": false
+    }
+   }
+  },
+  "2": {
+   "id": 2,
+   "crate_id": 0,
+   "name": "N",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "assoc_const": {
+     "type": {
+      "primitive": "u32"
+     },
+     "value": null,
+     "default_unstable": null
+    }
+   }
+  },
+  "8": {
+   "id": 8,
+   "crate_id": 0,
+   "name": "x",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "struct_field": {
+     "primitive": "u64"
+    }
+   }
+  },
+  "14": {
+   "id": 14,
+   "crate_id": 0,
+   "name": "S",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "struct": {
+     "kind": "unit",
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "impls": [
+      13
+     ]
+    }
+   }
+  },
+  "64": {
+   "id": 64,
+   "crate_id": 0,
+   "name": null,
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "use": {
+     "source": "hidden::E",
+     "name": "E",
+     "id": 10,
+     "is_glob": true
+    }
+   }
+  },
+  "1": {
+   "id": 1,
+   "crate_id": 0,
+   "name": "test",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "function": {
+     "sig": {
+      "inputs": [
+       [
+        "self",
+        {
+         "borrowed_ref": {
+          "lifetime": null,
+          "is_mutable": false,
+          "type": {
+           "generic": "Self"
+          }
+         }
+        }
+       ],
+       [
+        "t",
+        {
+         "resolved_path": {
+          "path": "Token",
+          "id": 0,
+          "args": null
+         }
+        }
+       ]
+      ],
+      "output": null,
+      "is_c_variadic": false
+     },
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "header": {
+      "is_const": false,
+      "is_unsafe": false,
+      "is_async": false,
+      "abi": "Rust"
+     },
+     "has_body": false,
+     "default_unstable": null
+    }
+   }
+  },
+  "4": {
+   "id": 4,
+   "crate_id": 0,
+   "name": "Sealed",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "trait": {
+     "is_auto": false,
+     "is_unsafe": false,
+     "is_dyn_compatible": false,
+     "items": [
+      1,
+      2,
+      3
+     ],
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "bounds": [],
+     "implementations": []
+    }
+   }
+  },
+  "7": {
+   "id": 7,
+   "crate_id": 0,
+   "name": "A",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "variant": {
+     "kind": {
+      "tuple": [
+       6
+      ]
+     },
+     "discriminant": null
+    }
+   }
+  },
+  "10": {
+   "id": 10,
+   "crate_id": 0,
+   "name": "E",
+   "visibility": "public",
+   "attrs": [
+    {
+     "repr": {
+      "kind": "rust",
+      "align": null,
+      "packed": null,
+      "int": "u8"
+     }
+    }
+   ],
+   "inner": {
+    "enum": {
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "has_stripped_variants": false,
+     "variants": [
+      7,
+      9
+     ],
+     "impls": []
+    }
+   }
+  },
+  "13": {
+   "id": 13,
+   "crate_id": 0,
+   "name": null,
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "impl": {
+     "is_unsafe": false,
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "provided_trait_methods": [],
+     "trait": {
+      "path": "Downcast",
+      "id": 12,
+      "args": null
+     },
+     "for": {
+      "resolved_path": {
+       "path": "S",
+       "id": 14,
+       "args": null
+      }
+     },
+     "items": [],
+     "is_negative": false,
+     "is_synthetic": false,
+     "blanket_impl": null
+    }
+   }
+  },
+  "63": {
+   "id": 63,
+   "crate_id": 0,
+   "name": "Fp",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "type_alias": {
+     "type": {
+      "function_pointer": {
+       "sig": {
+        "inputs": [],
+        "output": null,
+        "is_c_variadic": false
+       },
+       "generic_params": [],
+       "header": {
+        "is_const": false,
+        "is_unsafe": false,
+        "is_async": false,
+        "abi": {
+         "C": {
+          "unwind": false
+         }
+        }
+       }
+      }
+     },
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     }
+    }
+   }
+  }
+ },
+ "paths": {
+  "0": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "sealed",
+    "Token"
+   ],
+   "kind": "struct"
+  },
+  "65": {
+   "crate_id": 0,
+   "path": [
+    "fx"
+   ],
+   "kind": "module"
+  },
+  "14": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "S"
+   ],
+   "kind": "struct"
+  },
+  "63": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "Fp"
+   ],
+   "kind": "type_alias"
+  },
+  "12": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "Downcast"
+   ],
+   "kind": "trait"
+  },
+  "62": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "f"
+   ],
+   "kind": "function"
+  },
+  "10": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "hidden",
+    "E"
+   ],
+   "kind": "enum"
+  },
+  "9": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "hidden",
+    "E",
+    "B"
+   ],
+   "kind": "variant"
+  },
+  "7": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "hidden",
+    "E",
+    "A"
+   ],
+   "kind": "variant"
+  },
+  "4": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "sealed",
+    "Sealed"
+   ],
+   "kind": "trait"
+  }
+ },
+ "external_crates": {},
+ "format_version": 61
+}

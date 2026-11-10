@@ -116,8 +116,11 @@ const SPLAY: &str = "splay-vs-node-jitless";
 /// The two builds of every M2 speed reading (V12-D6).
 const BUILDS: [&str; 2] = ["jit", "jitless"];
 
-/// What a speed input measured: the engine, its build and the regress fork it links.
-const FRESH_PATHS: [&str; 7] = [
+/// What a speed input measured: the engine, its build and the forks it links: regress and
+/// icu_calendar (ep9_temporal and ep9_intl build it from the git-ignored checkout of
+/// `third_party/icu4x.commit` and `third_party/patches/icu4x`; M2EXIT-ICU4X-FRESH, the m1-exit
+/// form of INTL-FRESH-PATHS).
+const FRESH_PATHS: [&str; 9] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -125,20 +128,24 @@ const FRESH_PATHS: [&str; 7] = [
     "rust-toolchain.toml",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "third_party/icu4x.commit",
+    "third_party/patches/icu4x",
 ];
 
-/// What a FASTDIFF run tested: the engine (no bench tool).
-const ENGINE_PATHS: [&str; 6] = [
+/// What a FASTDIFF run tested: the engine and its forks (no bench tool).
+const ENGINE_PATHS: [&str; 8] = [
     "crates",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "third_party/icu4x.commit",
+    "third_party/patches/icu4x",
 ];
 
 /// What a test262 run read (as m1-exit's fresh, named inputs).
-const T262_PATHS: [&str; 9] = [
+const T262_PATHS: [&str; 11] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -148,6 +155,8 @@ const T262_PATHS: [&str; 9] = [
     "third_party/test262.commit",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "third_party/icu4x.commit",
+    "third_party/patches/icu4x",
 ];
 
 /// Item 5 dirs: (prefix under `test/`, the percent it needs).
@@ -184,7 +193,7 @@ const JETSTREAM_PIN: &str = "third_party/bench-jetstream.commit";
 
 const FUZZILLI_HOURS: f64 = 500.0;
 const CLOSED: [&str; 3] = ["fixed", "duplicate", "not-a-bug"];
-const FUZZ_PATHS: [&str; 6] = ENGINE_PATHS;
+const FUZZ_PATHS: [&str; 8] = ENGINE_PATHS;
 
 const P_GATES: [&str; 3] = ["P1", "P2", "P4"];
 const P_RESULTS: [&str; 2] = ["not tripped", "tripped"];
@@ -1828,6 +1837,8 @@ mod tests {
             "rust-toolchain.toml",
             "third_party/regress.commit",
             "third_party/patches/regress/0001.patch",
+            "third_party/icu4x.commit",
+            "third_party/patches/icu4x/0001.patch",
             "third_party/test262.commit",
         ] {
             write(&root, p, "x\n");
@@ -2051,6 +2062,45 @@ mod tests {
             "{}",
             rep.cells[0].evidence
         );
+    }
+
+    /// M2EXIT-ICU4X-FRESH: a change of the icu4x fork pin or of its patch set alone (no change in
+    /// `crates`) makes the same cells OPEN as a change in `crates` does
+    /// (`stale_dirty_or_wrong_host_inputs`): ep9_temporal and ep9_intl build icu_calendar from
+    /// that checkout.
+    #[test]
+    fn an_icu4x_pin_or_patch_change_makes_inputs_stale() {
+        for (k, path) in [
+            "third_party/icu4x.commit",
+            "third_party/patches/icu4x/0001.patch",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let r = repo(&format!("icu4x{k}"));
+            let o = all(&r, "gate-pass.json");
+            let base = run(&o).unwrap();
+            write(&r.root, path, "y\n");
+            git_in(&r.root, &["commit", "-q", "-am", "icu4x"]);
+            let rep = run(&o).unwrap();
+            for i in [0, 1, 2, 3, 4, 5, 6, 9, 10] {
+                assert_ne!(
+                    base.cells[i].evidence, rep.cells[i].evidence,
+                    "{path}: {i}: the evidence did not change"
+                );
+                assert_eq!(
+                    rep.cells[i].status,
+                    Status::Open,
+                    "{path}: {i}: {}",
+                    rep.cells[i].evidence
+                );
+                assert!(
+                    rep.cells[i].evidence.contains("changed between"),
+                    "{path}: {i}: {}",
+                    rep.cells[i].evidence
+                );
+            }
+        }
     }
 
     #[test]
@@ -2422,6 +2472,43 @@ mod tests {
             "{}",
             c.evidence
         );
+    }
+
+    /// P0-BUILDID (M7-P5 Codex fixer F2, Claude reviewer F1): the paths whose changes make
+    /// `ep9 --version` say "dirty" (`crates/ep9_cli/build.rs` ENGINE_PATHS) are
+    /// `tools/bench/cross/kernels.mjs` TREE_PATHS without `tools/bench`, and this file's
+    /// [`ENGINE_PATHS`]. Reads the live sources (the m1-exit `T262_FRESH_PATHS` test form).
+    #[test]
+    fn the_build_line_engine_paths_are_the_bench_tree_paths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let quoted = |s: &str| -> Vec<String> {
+            s.split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect()
+        };
+        let build = std::fs::read_to_string(root.join("crates/ep9_cli/build.rs")).unwrap();
+        let start = build.find("const ENGINE_PATHS").expect("ENGINE_PATHS");
+        let body = &build[start..start + build[start..].find("];").unwrap()];
+        let built = quoted(&body[body.find('=').unwrap()..]);
+        let kernels = std::fs::read_to_string(root.join("tools/bench/cross/kernels.mjs")).unwrap();
+        let line = |name: &str| -> &str {
+            kernels
+                .lines()
+                .find(|l| l.starts_with(&format!("export const {name} = [")))
+                .unwrap_or_else(|| panic!("kernels.mjs: {name}"))
+        };
+        let tree: Vec<String> = line("TREE_PATHS")
+            .split("...")
+            .skip(1)
+            .map(|n| n.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
+            .flat_map(|n| quoted(line(n)))
+            .filter(|p| p != "tools/bench")
+            .collect();
+        assert_eq!(tree.len(), 8, "{tree:?}");
+        assert_eq!(built, tree, "crates/ep9_cli/build.rs ENGINE_PATHS");
+        assert_eq!(built, ENGINE_PATHS, "m2_exit.rs ENGINE_PATHS");
     }
 
     /// P0-BUILDID: a mem or JetStream run whose ep9 binary prints no build line, or was built

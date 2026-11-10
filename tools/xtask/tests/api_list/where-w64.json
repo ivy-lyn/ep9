@@ -1,0 +1,320 @@
+{
+ "root": 55,
+ "crate_version": null,
+ "includes_private": false,
+ "index": {
+  "0": {
+   "id": 0,
+   "crate_id": 0,
+   "name": "inner",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "function": {
+     "sig": {
+      "inputs": [
+       [
+        "self",
+        {
+         "borrowed_ref": {
+          "lifetime": null,
+          "is_mutable": false,
+          "type": {
+           "generic": "Self"
+          }
+         }
+        }
+       ]
+      ],
+      "output": {
+       "primitive": "u8"
+      },
+      "is_c_variadic": false
+     },
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "header": {
+      "is_const": false,
+      "is_unsafe": false,
+      "is_async": false,
+      "abi": "Rust"
+     },
+     "has_body": false,
+     "default_unstable": null
+    }
+   }
+  },
+  "3": {
+   "id": 3,
+   "crate_id": 0,
+   "name": "Sealed",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "trait": {
+     "is_auto": false,
+     "is_unsafe": false,
+     "is_dyn_compatible": true,
+     "items": [
+      2
+     ],
+     "generics": {
+      "params": [],
+      "where_predicates": [
+       {
+        "bound_predicate": {
+         "type": {
+          "generic": "Self"
+         },
+         "bounds": [
+          {
+           "trait_bound": {
+            "trait": {
+             "path": "Inner",
+             "id": 1,
+             "args": null
+            },
+            "generic_params": [],
+            "modifier": "none"
+           }
+          }
+         ],
+         "generic_params": []
+        }
+       }
+      ]
+     },
+     "bounds": [],
+     "implementations": []
+    }
+   }
+  },
+  "6": {
+   "id": 6,
+   "crate_id": 0,
+   "name": null,
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "impl": {
+     "is_unsafe": false,
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "provided_trait_methods": [],
+     "trait": {
+      "path": "Downcast",
+      "id": 5,
+      "args": null
+     },
+     "for": {
+      "resolved_path": {
+       "path": "S",
+       "id": 7,
+       "args": null
+      }
+     },
+     "items": [],
+     "is_negative": false,
+     "is_synthetic": false,
+     "blanket_impl": null
+    }
+   }
+  },
+  "2": {
+   "id": 2,
+   "crate_id": 0,
+   "name": "test",
+   "visibility": "default",
+   "attrs": [],
+   "inner": {
+    "function": {
+     "sig": {
+      "inputs": [
+       [
+        "self",
+        {
+         "borrowed_ref": {
+          "lifetime": null,
+          "is_mutable": false,
+          "type": {
+           "generic": "Self"
+          }
+         }
+        }
+       ]
+      ],
+      "output": {
+       "primitive": "u64"
+      },
+      "is_c_variadic": false
+     },
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "header": {
+      "is_const": false,
+      "is_unsafe": false,
+      "is_async": false,
+      "abi": "Rust"
+     },
+     "has_body": false,
+     "default_unstable": null
+    }
+   }
+  },
+  "5": {
+   "id": 5,
+   "crate_id": 0,
+   "name": "Downcast",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "trait": {
+     "is_auto": false,
+     "is_unsafe": false,
+     "is_dyn_compatible": true,
+     "items": [],
+     "generics": {
+      "params": [],
+      "where_predicates": [
+       {
+        "bound_predicate": {
+         "type": {
+          "generic": "Self"
+         },
+         "bounds": [
+          {
+           "trait_bound": {
+            "trait": {
+             "path": "sealed::Sealed",
+             "id": 3,
+             "args": null
+            },
+            "generic_params": [],
+            "modifier": "none"
+           }
+          }
+         ],
+         "generic_params": []
+        }
+       }
+      ]
+     },
+     "bounds": [],
+     "implementations": [
+      6
+     ]
+    }
+   }
+  },
+  "55": {
+   "id": 55,
+   "crate_id": 0,
+   "name": "fx",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "module": {
+     "is_crate": true,
+     "items": [
+      5,
+      7
+     ],
+     "is_stripped": false
+    }
+   }
+  },
+  "1": {
+   "id": 1,
+   "crate_id": 0,
+   "name": "Inner",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "trait": {
+     "is_auto": false,
+     "is_unsafe": false,
+     "is_dyn_compatible": true,
+     "items": [
+      0
+     ],
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "bounds": [],
+     "implementations": []
+    }
+   }
+  },
+  "7": {
+   "id": 7,
+   "crate_id": 0,
+   "name": "S",
+   "visibility": "public",
+   "attrs": [],
+   "inner": {
+    "struct": {
+     "kind": "unit",
+     "generics": {
+      "params": [],
+      "where_predicates": []
+     },
+     "impls": [
+      6
+     ]
+    }
+   }
+  }
+ },
+ "paths": {
+  "7": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "S"
+   ],
+   "kind": "struct"
+  },
+  "5": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "Downcast"
+   ],
+   "kind": "trait"
+  },
+  "55": {
+   "crate_id": 0,
+   "path": [
+    "fx"
+   ],
+   "kind": "module"
+  },
+  "3": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "sealed",
+    "Sealed"
+   ],
+   "kind": "trait"
+  },
+  "1": {
+   "crate_id": 0,
+   "path": [
+    "fx",
+    "sealed",
+    "Inner"
+   ],
+   "kind": "trait"
+  }
+ },
+ "external_crates": {},
+ "format_version": 61
+}

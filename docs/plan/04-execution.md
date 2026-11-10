@@ -101,8 +101,8 @@ T2 (/T3)     ep9_opt       ---> T2 / T3 code                   optimized-AOT   (
   | Step | V8 files | Rust | State |
   |---|---|---|---|
   | 1 parser | `regexp-flags.h`, `regexp-error.h`, `regexp-ast.h` (the node kinds), `regexp-parser.cc` (`kBuildAST`) | `flags.rs`, `error.rs`, `ast.rs`, `parser.rs`; the ICU lookups of the parser as Unicode 17.0.0 tables (`unicode.rs`, `unicode_tables.rs`) | M7-P4: built |
-  | 2 sets | `regexp-ast.cc` (`CharacterRange`, `ClassSetExpression::ComputeExpression`), `special-case.h` and its generator, `regexp-compiler-tonode.cc` (class escapes, the case closure) | the code point sets of class and property items, from more UCD tables | M7-P5 RX1-1 |
-  | 3 compiler | `regexp-nodes.h`, `regexp-compiler.cc` (one-byte and two-byte programs, the quick check, `BoyerMooreLookahead`) | the node graph and the analysis | RX1-1 and later |
+  | 2 sets | `regexp-ast.cc` (`CharacterRange`, `ClassSetExpression::ComputeExpression`), `special-case.h` and its generator, `regexp-compiler-tonode.cc` (class escapes, the case closure) | the code point sets of class and property items, from more UCD tables (`charset.rs`, `sets.rs`, `special_case.rs`, `unicode_sets.rs` from `data/gen-sets.py`) | M7-P5 RX1-1: built |
+  | 3 compiler | `regexp-nodes.h`, `regexp-compiler.cc` (one-byte and two-byte programs, the quick check, `BoyerMooreLookahead`) | the node graph and the analysis | not started (M7-P5 RX1-1 built step 2 only) |
   | 4 bytecode | `regexp-bytecodes.h`, `regexp-bytecode-generator.cc`, `regexp-bytecode-peephole.cc` | the bytecode and its writer | after 3 |
   | 5 interpreter | `regexp-interpreter.cc`, `regexp-stack.cc`, `regexp-result-vector.cc`, the entry of `regexp.cc` | the matcher behind `ep9_regexp::Backend` (then ep9_vm depends on ep9_rx1; dep-guards check 22) | after 4; the RX1 gate (M5 exit) |
 

@@ -113,15 +113,44 @@ fn each_form_has_its_rule() {
             .map(|r| r.split(':').next().unwrap().to_string())
             .collect()
     };
-    assert_eq!(rule("ep9_vm/src/layout.rs", 9), ["alias"]);
-    assert_eq!(rule("ep9_value/src/encoding.rs", 7), ["alias"]);
-    assert_eq!(rule("ep9_vm/src/frame.rs", 16), ["alias"]);
-    assert_eq!(rule("ep9_vm/src/external_ref.rs", 13), ["alias"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 17), ["field"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 18), ["hand"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 23), ["field"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 26), ["field"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 31), ["field"]);
     assert_eq!(rule("ep9_vm/src/kelvin.rs", 3), ["field"]);
     assert_eq!(rule("ep9_vm/src/macro_args.rs", 8), ["field"]);
     assert_eq!(rule("ep9_vm/src/macro_args.rs", 16), ["encoding"]);
     assert_eq!(rule("ep9_vm/src/hiding.rs", 3), ["macro"]);
+    assert_eq!(rule("ep9_vm/src/hiding.rs", 15), ["import"]);
+    assert_eq!(rule("ep9_vm/src/hiding.rs", 16), ["import"]);
     assert_eq!(rule("ep9_vm/src/path_mod.rs", 2), ["macro"]);
+    assert_eq!(rule("ep9_vm/src/path_mod.rs", 8), ["macro"]);
+}
+
+/// Item 8 of the M7-P5 fixer r3 (M6-ORCH-371 (2)): the lint refuses only what H25 (Rules,
+/// lines 54-55) forbids. In the files where H25 allows the names (`frame.rs`,
+/// `external_ref.rs`, `layout.rs` at its top level, the `ep9_value` crate) a rename or a
+/// wrapper gives no finding, as at 0c58e12f (the stricter rules: route H25-STRICT-V13).
+/// A read or write of a field in a `layout.rs` function or method body is not an export,
+/// so it is a finding (H25:55; M7-P5 Codex R3 finding 3, fixer r5 item 3).
+#[test]
+fn the_files_where_h25_allows_the_names_give_no_finding() {
+    let out = extref_lint(&fixtures(), &[]);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    for case in [
+        "crates/ep9_vm/src/frame.rs",
+        "crates/ep9_vm/src/external_ref.rs",
+        "crates/ep9_value/src/encoding.rs",
+    ] {
+        assert_eq!(reported(&text, case), Vec::<usize>::new(), "{case}");
+    }
+    // layout.rs: the two lines in an inline module (Codex T7) and the three field uses in
+    // function bodies (Codex R3 finding 3); the renamed exports at file scope give none.
+    assert_eq!(
+        reported(&text, "crates/ep9_vm/src/layout.rs"),
+        [17, 18, 23, 26, 31]
+    );
 }
 
 /// The `#[path]` rule reads the scanned set: with only `path_mod.rs` on the command line,
@@ -130,5 +159,8 @@ fn each_form_has_its_rule() {
 fn a_path_module_is_checked_against_the_files_of_the_run() {
     let out = extref_lint(&fixtures(), &["crates/ep9_vm/src/path_mod.rs"]);
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert_eq!(reported(&text, "crates/ep9_vm/src/path_mod.rs"), [2, 4, 7]);
+    assert_eq!(
+        reported(&text, "crates/ep9_vm/src/path_mod.rs"),
+        [2, 4, 8, 12]
+    );
 }

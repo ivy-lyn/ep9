@@ -328,15 +328,15 @@ else
 fi
 
 # 16) The regress fork is live (V9-D15; third_party/patches/regress/README.md). A [patch] table
-#     applies only at its own workspace root, so the root, spikes/spike-b and spikes/spike-c each
-#     have a `[patch.crates-io] regress` path entry. In each of the 3 workspaces `cargo metadata
-#     --locked` must show regress, and every regress package must have no source (a path
-#     package) and the manifest third_party/regress/Cargo.toml (scripts/sync-regress.sh makes
-#     it). Without the entry regress comes from crates.io (or the lock no longer matches) and
-#     this fails. Controls: a sample graph with a crates.io regress must fail the rule and a
-#     sample with the path package must pass it, so a rule that always (or never) passes fails.
-#     The same for icu_calendar (INTL W1 R2; third_party/patches/icu4x/README.md) in the root and
-#     spikes/spike-c (spike-b has no icu_calendar): the path package with the manifest
+#     applies only at its own workspace root, so the root, spikes/spike-b, spikes/spike-c and fuzz
+#     (RX1-FUZZ-EXEC) each have a `[patch.crates-io] regress` path entry. In each of the 4
+#     workspaces `cargo metadata --locked` must show regress, and every regress package must have
+#     no source (a path package) and the manifest third_party/regress/Cargo.toml
+#     (scripts/sync-regress.sh makes it). Without the entry regress comes from crates.io (or the
+#     lock no longer matches) and this fails. Controls: a sample graph with a crates.io regress
+#     must fail the rule and a sample with the path package must pass it, so a rule that always
+#     (or never) passes fails. The same for icu_calendar (INTL W1 R2; third_party/patches/icu4x)
+#     in the root and spikes/spike-c (not in spike-b and fuzz): the path package with the manifest
 #     third_party/icu4x/components/calendar/Cargo.toml (scripts/sync-icu4x.sh makes it).
 # fork_live <metadata json> [<package> <manifest path suffix>]: 0 when the graph has the
 # package (default regress) and each copy of it is the path package with that manifest.
@@ -358,7 +358,7 @@ if fork_live "$reg" || ! fork_live "$fork" || fork_live '{"packages":[]}' \
   || fork_live "$fork" icu_calendar "$icu_cal"; then
   bad "(16) control: the fork rule passes a crates.io regress or icu_calendar or an empty graph, or fails the path package, in a sample graph"
 else
-  for m in Cargo.toml spikes/spike-b/Cargo.toml spikes/spike-c/Cargo.toml; do
+  for m in Cargo.toml spikes/spike-b/Cargo.toml spikes/spike-c/Cargo.toml fuzz/Cargo.toml; do
     if ! wmeta="$(cargo metadata --locked --format-version 1 --manifest-path "$m")"; then
       bad "(16) cargo metadata --locked --manifest-path $m failed (run scripts/sync-regress.sh first; is the lock up to date?)"
     elif fork_live "$wmeta"; then
@@ -367,7 +367,7 @@ else
       found="$(jq -r '.packages[] | select(.name == "regress") | "\(.source // "path") \(.manifest_path)"' <<< "$wmeta" | paste -sd ';' -)"
       bad "(16) $m: regress must be only the third_party/regress path package; found: ${found:-no regress}"
     fi
-    [ "$m" = spikes/spike-b/Cargo.toml ] && continue
+    [ "$m" = spikes/spike-b/Cargo.toml ] || [ "$m" = fuzz/Cargo.toml ] && continue
     if [ -z "$wmeta" ]; then
       :
     elif fork_live "$wmeta" icu_calendar "$icu_cal"; then
