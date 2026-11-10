@@ -251,8 +251,8 @@ impl<'s> Cx<'s> {
     /// RequireInternalSlot(o, …) (§10.1.15), then internal slot `i` of `o`: a TypeError if `o`
     /// is not an object of `class`. Panics if `i` ≥ the slot count the object was made with
     /// (a bug in the builtin), or if `o` is a buffer or a DataView of `abi/typed.rs` and the
-    /// slot holds an engine word, not a JS value: the store (slot 0) of a buffer, the data
-    /// address (slot 3) of a DataView ([`Cx::set_slot`]).
+    /// slot is not one that safe code reads: the store (slot 0) of a buffer, an engine word;
+    /// slots 3 and 4 of a DataView (the data address and the flags) ([`Cx::set_slot`]).
     pub fn slot(
         &mut self,
         o: impl Into<Local<'s>>,
@@ -262,8 +262,8 @@ impl<'s> Cx<'s> {
         let o = self.require_class(o.into(), class)?;
         assert!(
             engine_owned(class)
-                .is_none_or(|(count, word)| object::slot_count(o) != count || i != word),
-            "internal slot {i} of a {} of abi/typed.rs holds an engine word",
+                .is_none_or(|(count, read)| object::slot_count(o) != count || read.contains(&i)),
+            "internal slot {i} of a {} of abi/typed.rs is the engine's",
             class.name()
         );
         Ok(Self::local(object::slot_get(o, i)))
@@ -279,7 +279,8 @@ impl<'s> Cx<'s> {
     /// `new_object_with_slots` refuses that count for these classes. The store, byte length,
     /// flags and table index of a buffer and the data address of a DataView bound every raw
     /// memory access, so only `abi/typed.rs` writes these objects: `set_slot` panics for each
-    /// of their slots, and `slot` for the two engine words. An object of these classes with
+    /// of their slots, and `slot` for each slot but the spec ones that the builtins read (1-5 of
+    /// a buffer; 0-2 of a DataView: buffer, offset, length). An object of these classes with
     /// another slot count is the caller's (any slot, as for every class), and `abi/typed.rs`
     /// does not take it for a buffer (a TypeError there).
     pub fn set_slot(
@@ -311,17 +312,17 @@ impl<'s> Cx<'s> {
 }
 
 /// For the classes whose objects `abi/typed.rs` makes (ArrayBuffer, SharedArrayBuffer,
-/// DataView): the slot count of such an object and its slot that holds an engine word, not a
-/// JS value (a buffer's store, a DataView's data address). `None` for the other classes
-/// ([`Cx::set_slot`]).
+/// DataView): the slot count of such an object and the slots that [`Cx::slot`] may read. The
+/// others hold engine words, not JS values: a buffer's store (slot 0); a DataView's data
+/// address and flags (slots 3 and 4). `None` for the other classes ([`Cx::set_slot`]).
 #[inline]
-fn engine_owned(class: ObjectClass) -> Option<(usize, usize)> {
+fn engine_owned(class: ObjectClass) -> Option<(usize, core::ops::RangeInclusive<usize>)> {
     use crate::array_buffer::{dv_slot, slot};
     match class {
         ObjectClass::ArrayBuffer | ObjectClass::SharedArrayBuffer => {
-            Some((slot::COUNT, slot::STORE))
+            Some((slot::COUNT, slot::BYTE_LENGTH..=slot::TABLE))
         }
-        ObjectClass::DataView => Some((dv_slot::COUNT, dv_slot::DATA)),
+        ObjectClass::DataView => Some((dv_slot::COUNT, dv_slot::BUFFER..=dv_slot::BYTE_LENGTH)),
         _ => None,
     }
 }

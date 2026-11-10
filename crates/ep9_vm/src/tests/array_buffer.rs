@@ -943,12 +943,13 @@ fn the_slot_api_refuses_the_byte_length_slot() {
 /// Site class "slot 4, the flags" (`is_detached`, `is_resizable`; every check above): a
 /// `set_slot` of slot 4 panics (clearing the detached bit would give a null store a length),
 /// and so does every other engine slot of a buffer (2 the maximum, 3 the detach key) and of a
-/// DataView (0-4). Slots 1, 2 and 4 of a buffer and 0-2 and 4 of a DataView stay readable.
+/// DataView (0-4). Slots 1-5 of a buffer and 0-2 of a DataView stay readable; slot 4 of a
+/// DataView (its flags) is not read.
 #[test]
 fn the_slot_api_refuses_the_other_engine_slots() {
     for stress in [false, true] {
-        for which in 0..5 {
-            for i in 0..engine_slots(API_CLASSES[which]).0 {
+        for (which, &class) in API_CLASSES.iter().enumerate() {
+            for i in 0..engine_slots(class).0 {
                 let f = move |cx: Api<'_, '_>| {
                     let (o, class) = api_buffers(cx)[which];
                     let _ = cx.set_slot(o, class, i, Local::int32(0));
@@ -956,12 +957,22 @@ fn the_slot_api_refuses_the_other_engine_slots() {
                 assert!(api_panics(stress, f), "set_slot {i}, case {which}");
             }
         }
+        let flags = |cx: Api<'_, '_>| {
+            let (dv, class) = api_buffers(cx)[4];
+            let _ = cx.slot(dv, class, dv_slot::FLAGS);
+        };
+        assert!(api_panics(stress, flags), "slot 4 of a DataView");
     }
     each_api(|cx| {
         let bufs = api_buffers(cx);
         for (o, class) in bufs {
             let (count, word) = engine_slots(class);
-            for i in (0..count).filter(|&i| i != word) {
+            let last = if class == ObjectClass::DataView {
+                dv_slot::BYTE_LENGTH
+            } else {
+                count - 1
+            };
+            for i in (0..=last).filter(|&i| i != word) {
                 cx.slot(o, class, i).unwrap();
             }
         }
