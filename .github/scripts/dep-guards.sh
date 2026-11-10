@@ -329,16 +329,15 @@ fi
 
 # 16) The regress fork is live (V9-D15; third_party/patches/regress/README.md). A [patch] table
 #     applies only at its own workspace root, so the root, spikes/spike-b, spikes/spike-c and fuzz
-#     (RX1-FUZZ-EXEC: the regexp target builds ep9_regexp) each have a `[patch.crates-io]
-#     regress` path entry. In each of the 4 workspaces `cargo metadata --locked` must show regress, and every regress package must have no source (a path
-#     package) and the manifest third_party/regress/Cargo.toml (scripts/sync-regress.sh makes
-#     it). Without the entry regress comes from crates.io (or the lock no longer matches) and
-#     this fails. Controls: a sample graph with a crates.io regress must fail the rule and a
-#     sample with the path package must pass it, so a rule that always (or never) passes fails.
-#     The same for icu_calendar (INTL W1 R2; third_party/patches/icu4x/README.md) in the root and
-#     spikes/spike-c (spike-b has no icu_calendar): the path package with the manifest
-#     third_party/icu4x/components/calendar/Cargo.toml (scripts/sync-icu4x.sh makes it); fuzz
-#     has no icu_calendar either.
+#     (RX1-FUZZ-EXEC) each have a `[patch.crates-io] regress` path entry. In each of the 4
+#     workspaces `cargo metadata --locked` must show regress, and every regress package must have
+#     no source (a path package) and the manifest third_party/regress/Cargo.toml
+#     (scripts/sync-regress.sh makes it). Without the entry regress comes from crates.io (or the
+#     lock no longer matches) and this fails. Controls: a sample graph with a crates.io regress
+#     must fail the rule and a sample with the path package must pass it, so a rule that always
+#     (or never) passes fails. The same for icu_calendar (INTL W1 R2; third_party/patches/icu4x)
+#     in the root and spikes/spike-c (not in spike-b and fuzz): the path package with the manifest
+#     third_party/icu4x/components/calendar/Cargo.toml (scripts/sync-icu4x.sh makes it).
 # fork_live <metadata json> [<package> <manifest path suffix>]: 0 when the graph has the
 # package (default regress) and each copy of it is the path package with that manifest.
 fork_live() {
