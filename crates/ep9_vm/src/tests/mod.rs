@@ -84,6 +84,9 @@ mod weakref;
 mod with_stmt;
 mod wrappers;
 
+// OBJECT_LAYOUT 9 (TypedArray TA-0): after the list, so no cited line above moves.
+mod layout9;
+
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;
 

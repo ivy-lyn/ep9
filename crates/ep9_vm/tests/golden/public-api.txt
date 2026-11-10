@@ -238,7 +238,19 @@ ep9_vm::Cx :: impl<'s> Cx<'s>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: #[doc(hidden)] fn forward_apply(&mut self, Args<'s>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: #[doc(hidden)] fn forward_call(&mut self, Args<'s>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: #[doc(hidden)] fn set_human_fast_paths(&mut self, bool)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn allocate_array_buffer(&mut self, impl core::convert::Into<Local<'s>>, u64, core::option::Option<u64>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn allocate_shared_array_buffer(&mut self, impl core::convert::Into<Local<'s>>, u64, core::option::Option<u64>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn args_builder(&self) -> ArgsBuilder<'s>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_byte_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<u64>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_copy_and_detach(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, u64, bool) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_resize(&mut self, impl core::convert::Into<Local<'s>>, u64) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_compare_exchange(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_load(&mut self, impl core::convert::Into<Local<'s>>, u64, u8) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_read_modify_write(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, u8, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_store(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomics_notify(&mut self, impl core::convert::Into<Local<'s>>, u64, u64) -> ep9_value::JsResult<u64>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomics_wait(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, f64) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomics_wait_async(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, f64) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_as_int_n(&mut self, u64, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_as_uint_n(&mut self, u64, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn bigint_from_i128(&mut self, i128) -> ep9_value::JsResult<Local<'s>>
@@ -269,6 +281,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn collection_size(&mut self, impl core::conver
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct(&mut self, impl core::convert::Into<Local<'s>>, &[Local<'s>], impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct_args(&mut self, impl core::convert::Into<Local<'s>>, Rest<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct_built(&mut self, impl core::convert::Into<Local<'s>>, ArgsBuilder<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn copy_buffer_bytes(&mut self, impl core::convert::Into<Local<'s>>, u64, impl core::convert::Into<Local<'s>>, u64, u64) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_array_from_list(&mut self, &[Local<'s>]) -> ep9_value::JsResult<Local<'s, JsArray>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property_index_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
@@ -282,6 +295,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn delete(&mut self, impl core::convert::Into<L
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn delete_index(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64, bool) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn delete_property_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn descriptive_string(&mut self, Local<'s, JsSymbol>) -> ep9_value::JsResult<Local<'s, JsString>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn detach_array_buffer(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn display(&self, impl core::convert::Into<Local<'s>>) -> alloc::string::String
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn enqueue_job(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn evaluate_script(&mut self, &str, &str) -> ep9_value::JsResult<Local<'s>>
@@ -301,6 +315,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_own_property(&mut self, impl core::conve
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_prototype_from_constructor(&mut self, impl core::convert::Into<Local<'s, JsObject>>, IntrinsicId) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_prototype_of(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_v(&mut self, impl core::convert::Into<Local<'s>>, impl IntoKey<'s>) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_value_from_buffer(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, bool) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn get_with_receiver(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn global(&self) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn global_binding(&mut self, &str) -> ep9_value::JsResult<core::option::Option<Local<'s>>>
@@ -317,6 +332,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_bigint(&self, impl core::convert::Into<Lo
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_builtin(&self, impl core::convert::Into<Local<'s>>, BuiltinId) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_callable(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_constructor(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_detached_buffer(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_error(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_extensible(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_promise(&self, impl core::convert::Into<Local<'s>>) -> bool
@@ -333,6 +349,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_bound_function(&mut self, impl core::con
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_builtin_closure(&mut self, HostFn, &str, u32, impl core::convert::Into<Local<'s>>) -> Local<'s, JsFunction>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_collection(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_collection_iterator(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, bool, bool) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_data_view(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, u64, core::option::Option<u64>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_error_object(&mut self, impl core::convert::Into<Local<'s, JsObject>>, core::option::Option<Local<'s, JsString>>) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_finalization_registry(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_object(&mut self) -> Local<'s, JsObject>
@@ -343,6 +360,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_promise_capability(&mut self, impl core:
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_string(&mut self, &str) -> ep9_value::JsResult<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_string_utf16(&mut self, &[u16]) -> ep9_value::JsResult<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_symbol(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsSymbol>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_typed_array(&mut self, impl core::convert::Into<Local<'s>>, u8, impl core::convert::Into<Local<'s>>, u64, core::option::Option<u64>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_weak_ref(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_wrapper(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn not_implemented(&mut self, &str) -> ep9_value::Throw
@@ -387,7 +405,9 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_function_name(&mut self, impl core::conv
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_index(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64, impl core::convert::Into<Local<'s>>, bool) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_prototype_of(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_value_in_buffer(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, bool) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_with_receiver(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn shared_array_buffer_grow(&mut self, impl core::convert::Into<Local<'s>>, u64) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_len(&self, impl core::convert::Into<Local<'s, JsString>>) -> usize
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn substring(&mut self, impl core::convert::Into<Local<'s, JsString>>, usize, usize) -> ep9_value::JsResult<Local<'s, JsString>>
@@ -417,6 +437,11 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_string(&mut self, impl core::convert::Int
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn to_uint32(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<u32>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn try_function_realm_intrinsic(&mut self, impl core::convert::Into<Local<'s>>, IntrinsicId) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn type_of(&self, impl core::convert::Into<Local<'s>>) -> &'static str
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn typed_array_buffer(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn typed_array_byte_offset(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<u64>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn typed_array_element(&self, impl core::convert::Into<Local<'s>>) -> core::option::Option<u8>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn typed_array_fixed_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<u64>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn typed_array_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<u64>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn unit_function_digest(&self, &ep9_bytecode::unit::VerifiedUnit, u32) -> core::option::Option<[u8; 16]>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn weak_ref_deref(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn with_module_text_host<R>(&mut self, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, &mut dyn core::ops::function::FnMut(&str) -> CompileResult, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, impl core::ops::function::FnOnce(&mut Self) -> R) -> R
@@ -886,6 +911,7 @@ ep9_vm::ObjectClass :: impl core::marker::StructuralPartialEq for ObjectClass
 ep9_vm::ObjectClass :: impl core::marker::Sync for ObjectClass (auto)
 ep9_vm::ObjectClass :: variant ArrayBuffer
 ep9_vm::ObjectClass :: variant AsyncDisposableStack
+ep9_vm::ObjectClass :: variant DataView
 ep9_vm::ObjectClass :: variant Date
 ep9_vm::ObjectClass :: variant DisposableStack
 ep9_vm::ObjectClass :: variant FinalizationRegistry
@@ -899,6 +925,7 @@ ep9_vm::ObjectClass :: variant RegExp
 ep9_vm::ObjectClass :: variant RegExpStringIterator
 ep9_vm::ObjectClass :: variant Set
 ep9_vm::ObjectClass :: variant SetIterator
+ep9_vm::ObjectClass :: variant SharedArrayBuffer
 ep9_vm::ObjectClass :: variant TemporalDuration
 ep9_vm::ObjectClass :: variant TemporalInstant
 ep9_vm::ObjectClass :: variant TemporalPlainDate
@@ -1213,6 +1240,8 @@ ep9_vm::internals::VM_BUILTINS :: static VM_BUILTINS: &BuiltinTable
 ep9_vm::layout :: #[doc(hidden)] mod layout
 ep9_vm::layout::ARRAY_ELEMENTS :: const ARRAY_ELEMENTS: u32
 ep9_vm::layout::ARRAY_LENGTH :: const ARRAY_LENGTH: u32
+ep9_vm::layout::BYTES_DATA :: const BYTES_DATA: u32
+ep9_vm::layout::BYTES_LENGTH :: const BYTES_LENGTH: u32
 ep9_vm::layout::CONTEXT_LENGTH :: const CONTEXT_LENGTH: u32
 ep9_vm::layout::CONTEXT_PREVIOUS :: const CONTEXT_PREVIOUS: u32
 ep9_vm::layout::CONTEXT_SCOPE :: const CONTEXT_SCOPE: u32
@@ -1240,6 +1269,8 @@ ep9_vm::layout::ELEMENTS_KIND_HOLEY_INT32 :: const ELEMENTS_KIND_HOLEY_INT32: u8
 ep9_vm::layout::ELEMENTS_KIND_PACKED_DOUBLE :: const ELEMENTS_KIND_PACKED_DOUBLE: u8
 ep9_vm::layout::ELEMENTS_KIND_PACKED_ELEMENTS :: const ELEMENTS_KIND_PACKED_ELEMENTS: u8
 ep9_vm::layout::ELEMENTS_KIND_PACKED_INT32 :: const ELEMENTS_KIND_PACKED_INT32: u8
+ep9_vm::layout::ELEMENTS_KIND_TYPED_FIXED :: const ELEMENTS_KIND_TYPED_FIXED: u8
+ep9_vm::layout::ELEMENTS_KIND_TYPED_VARIABLE :: const ELEMENTS_KIND_TYPED_VARIABLE: u8
 ep9_vm::layout::FEEDBACK_INFO :: const FEEDBACK_INFO: u32
 ep9_vm::layout::FEEDBACK_KEY :: const FEEDBACK_KEY: u32
 ep9_vm::layout::FEEDBACK_SLOTS :: const FEEDBACK_SLOTS: u32
@@ -1271,11 +1302,14 @@ ep9_vm::layout::HOLE :: const HOLE: u64
 ep9_vm::layout::KEYED_KINDS_SET_SHIFT :: const KEYED_KINDS_SET_SHIFT: u32
 ep9_vm::layout::KIND_ARRAY :: const KIND_ARRAY: u8
 ep9_vm::layout::KIND_BYTE :: const KIND_BYTE: u32
+ep9_vm::layout::KIND_BYTES :: const KIND_BYTES: u8
 ep9_vm::layout::KIND_CONTEXT :: const KIND_CONTEXT: u8
 ep9_vm::layout::KIND_ELEMENTS :: const KIND_ELEMENTS: u8
 ep9_vm::layout::KIND_ELEMENTS_DICT :: const KIND_ELEMENTS_DICT: u8
 ep9_vm::layout::KIND_ELEMENTS_DOUBLE :: const KIND_ELEMENTS_DOUBLE: u8
+ep9_vm::layout::KIND_FIRST_VIEW :: const KIND_FIRST_VIEW: u8
 ep9_vm::layout::KIND_FUSE :: const KIND_FUSE: u8
+ep9_vm::layout::KIND_LAST_VIEW :: const KIND_LAST_VIEW: u8
 ep9_vm::layout::KIND_OBJECT :: const KIND_OBJECT: u8
 ep9_vm::layout::KIND_PROPS_INDEXED :: const KIND_PROPS_INDEXED: u8
 ep9_vm::layout::KIND_SHAPE :: const KIND_SHAPE: u8
@@ -1342,6 +1376,13 @@ ep9_vm::layout::SMI_FIELD_OUT_OF_LINE :: const SMI_FIELD_OUT_OF_LINE: i32
 ep9_vm::layout::SMI_KIND_MASK :: const SMI_KIND_MASK: i32
 ep9_vm::layout::SMI_SHIFT :: const SMI_SHIFT: u32
 ep9_vm::layout::VALUE_UNDEFINED :: const VALUE_UNDEFINED: u64
+ep9_vm::layout::VIEW_BUFFER :: const VIEW_BUFFER: u32
+ep9_vm::layout::VIEW_BYTE_OFFSET :: const VIEW_BYTE_OFFSET: u32
+ep9_vm::layout::VIEW_DATA :: const VIEW_DATA: u32
+ep9_vm::layout::VIEW_ELEMENT_SIZES :: const VIEW_ELEMENT_SIZES: [u8; 12]
+ep9_vm::layout::VIEW_FIELDS :: const VIEW_FIELDS: u32
+ep9_vm::layout::VIEW_LENGTH :: const VIEW_LENGTH: u32
+ep9_vm::layout::VIEW_LENGTH_AUTO :: const VIEW_LENGTH_AUTO: i32
 ep9_vm::layout::fp_param :: const fn fp_param(u32) -> isize
 ep9_vm::layout::fp_register :: const fn fp_register(u32) -> isize
 ep9_vm::versions :: mod versions

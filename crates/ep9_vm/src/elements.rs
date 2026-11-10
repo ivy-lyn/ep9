@@ -14,7 +14,7 @@
 //!  2      PACKED_DOUBLE     ┐ raw f64 in an ELEMENTS_DOUBLE cell (kind 81; hole = the NaN
 //!  3      HOLEY_DOUBLE      ┘ 0xFFF7_FFFF_FFF7_FFFF, `object::delems`)
 //!  6      DICTIONARY          an ELEMENTS_DICT cell (kind 82; M5-P2 ELEM2)
-//!  7-15   reserved, append-only, for storage forms (the levels are flags: `set_integrity`)
+//!  7, 8   TYPED_FIXED, TYPED_VARIABLE: a view's buffer bytes (OBJECT_LAYOUT 9); 9-15 reserved
 //!  bit 0 = holey (for 0-5)
 //!
 //!  The lattice (a store moves right or down, never back; `join`):
@@ -93,8 +93,17 @@ pub(crate) mod kind {
     pub const PACKED_ELEMENTS: u8 = 4;
     pub const HOLEY_ELEMENTS: u8 = 5;
     pub const DICTIONARY: u8 = 6;
-    /// The values in use (0-6); 7-15 are reserved.
-    pub const COUNT: u8 = 7;
+    /// A TypedArray whose length is fixed (spec IsTypedArrayFixedLength true): the bound of an
+    /// element access is the view's own length field (+40). OBJECT_LAYOUT 9 (TypedArray TA-0,
+    /// design §3.2, Proposal A). A view gets 7 or 8 at birth and keeps it: no transition
+    /// reaches or leaves 7 and 8, and they are no birth kind of an allocation site.
+    pub const TYPED_FIXED: u8 = 7;
+    /// A TypedArray that tracks the length of a resizable buffer, or a fixed-length view on a
+    /// resizable buffer (IsTypedArrayFixedLength false): the bound comes from the buffer at
+    /// each access. OBJECT_LAYOUT 9.
+    pub const TYPED_VARIABLE: u8 = 8;
+    /// The values in use (0-8); 9-15 are reserved.
+    pub const COUNT: u8 = 9;
     /// The largest value the 4 shape bits hold.
     pub const MAX: u8 = 15;
     /// Bit 0 of a value 0-5: the kind allows holes.
@@ -110,9 +119,13 @@ pub(crate) enum Storage {
     Doubles,
     /// An ELEMENTS_DICT cell.
     Dictionary,
+    /// The bytes of a TypedArray's buffer (TYPED_FIXED, TYPED_VARIABLE; OBJECT_LAYOUT 9): the
+    /// view's elements store (+16) is undefined, and its cell kind (a view kind, 29-40) gives
+    /// the element type.
+    Typed,
 }
 
-/// The storage form of kind `k` (0-6), or `None` for a reserved value.
+/// The storage form of kind `k` (0-8), or `None` for a reserved value (9-15).
 pub(crate) const fn storage(k: u8) -> Option<Storage> {
     match k {
         kind::PACKED_INT32 | kind::HOLEY_INT32 | kind::PACKED_ELEMENTS | kind::HOLEY_ELEMENTS => {
@@ -120,12 +133,13 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
         }
         kind::PACKED_DOUBLE | kind::HOLEY_DOUBLE => Some(Storage::Doubles),
         kind::DICTIONARY => Some(Storage::Dictionary),
+        kind::TYPED_FIXED | kind::TYPED_VARIABLE => Some(Storage::Typed),
         _ => None,
     }
 }
 
 /// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, FACT_SCHEMA 2) of the VM kind
-/// `k`, or `None` for a reserved value (7-15). Since FACT_SCHEMA 2 (M6-P0) the two numberings
+/// `k`, or `None` for 7, 8 (no name yet) and 9-15 (reserved). Since FACT_SCHEMA 2 the numberings
 /// are the same (0-6 in the VM order, OBJECT_LAYOUT 5, V10-A21); schema 1 put the holey kinds
 /// after the packed ones, so they differed at 1-4. Every reader still converts through this
 /// one map, never a cast (MODES-CHECK-w18 MC-w18-4), so a later append changes one place.
@@ -139,6 +153,11 @@ pub(crate) const fn to_fact(k: u8) -> Option<ep9_facts::ElementsKind> {
         kind::PACKED_ELEMENTS => Some(F::PackedElements),
         kind::HOLEY_ELEMENTS => Some(F::HoleyElements),
         kind::DICTIONARY => Some(F::Dictionary),
+        // TYPED_FIXED and TYPED_VARIABLE (OBJECT_LAYOUT 9) have no FactSnapshot name yet: an
+        // `ElementsKind` name is an item that needs a writer at every place of the schema
+        // (H16 "declared fields (shrink-only)"), and no exporter writes them in TA-0. A view's
+        // shape exports its elements as none (the open list rule).
+        kind::TYPED_FIXED | kind::TYPED_VARIABLE => None,
         _ => None,
     }
 }
@@ -716,18 +735,26 @@ pub(crate) fn to_dictionary(rt: &Runtime, a: u64) {
 /// "the storage form follows the kind"; M5-P1-ORCH-11: the shape guard is the kind source of
 /// the tiers): no cell, an ELEMENTS cell for kinds 0, 1, 4, 5, an ELEMENTS_DOUBLE cell for
 /// 2, 3 and an ELEMENTS_DICT cell for 6 (which always has one). ARGUMENTS objects keep their
-/// own +16 store. Not a GC point. Every transition asserts it in debug builds.
+/// own +16 store. A TypedArray (a view kind, OBJECT_LAYOUT 9) has kind 7 or 8 and no cell
+/// (+16 undefined), and only a view has 7 or 8. Not a GC point. Every transition asserts it in
+/// debug builds.
 pub(crate) fn storage_form_ok(o: u64) -> bool {
-    if kinds_::cell_kind(o) == kinds_::ARGUMENTS.get() {
+    let ck = kinds_::cell_kind(o);
+    if ck == kinds_::ARGUMENTS.get() {
         return true;
     }
     let k = kind_of(o);
     let e = object::rd(object::cell(o), obj::ELEMENTS);
+    if kinds_::is_view_kind(ck) || storage(k) == Some(Storage::Typed) {
+        return kinds_::is_view_kind(ck)
+            && storage(k) == Some(Storage::Typed)
+            && e == crate::frame::UNDEFINED;
+    }
     let want = match storage(k) {
         Some(Storage::Values) => kinds_::ELEMENTS.get(),
         Some(Storage::Doubles) => kinds_::ELEMENTS_DOUBLE.get(),
         Some(Storage::Dictionary) => kinds_::ELEMENTS_DICT.get(),
-        None => return false,
+        Some(Storage::Typed) | None => return false,
     };
     if e == crate::frame::UNDEFINED {
         return k != kind::DICTIONARY;

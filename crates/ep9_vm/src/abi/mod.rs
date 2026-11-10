@@ -1746,3 +1746,7 @@ mod forward;
 
 // M7-P4 A2-LOADER (H20 part 2): the unit-load API, the first caller of `select()`.
 mod unit_code;
+
+// TypedArray TA-0 TA-DECL (H20 part 2): the ArrayBuffer, SharedArrayBuffer, TypedArray, DataView
+// and Atomics methods, m8-stubs that TA-1 TA-VM fills.
+mod typed;

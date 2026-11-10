@@ -739,3 +739,42 @@ abi: impl<'s> Cx<'s> :: pub fn run_module_with_text(&mut self, VerifiedUnit, &st
 abi: impl<'s> Cx<'s> :: pub fn with_module_text_host<R>(&mut self, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, &mut dyn FnMut(&str, &str) -> Result<String, String>, impl FnOnce(&mut Self) -> R) -> R
 abi: impl<'s> Cx<'s> :: pub unsafe fn run_script_installing_unit_code(&mut self, VerifiedUnit, &str, &[u8], &[u8], &[u8], u8, u64, &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])]) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn default_locale(&mut self) -> Option<String>
+embed (not core): pub const BYTES_DATA: u32
+embed (not core): pub const BYTES_LENGTH: u32
+embed (not core): pub const ELEMENTS_KIND_TYPED_FIXED: u8
+embed (not core): pub const ELEMENTS_KIND_TYPED_VARIABLE: u8
+embed (not core): pub const KIND_BYTES: u8
+embed (not core): pub const KIND_FIRST_VIEW: u8
+embed (not core): pub const KIND_LAST_VIEW: u8
+embed (not core): pub const VIEW_BUFFER: u32
+embed (not core): pub const VIEW_BYTE_OFFSET: u32
+embed (not core): pub const VIEW_DATA: u32
+embed (not core): pub const VIEW_ELEMENT_SIZES: [u8; 12]
+embed (not core): pub const VIEW_FIELDS: u32
+embed (not core): pub const VIEW_LENGTH: u32
+embed (not core): pub const VIEW_LENGTH_AUTO: i32
+abi: impl<'s> Cx<'s> :: pub fn allocate_array_buffer(&mut self, impl Into<Local<'s>>, u64, Option<u64>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn allocate_shared_array_buffer(&mut self, impl Into<Local<'s>>, u64, Option<u64>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn array_buffer_byte_length(&mut self, impl Into<Local<'s>>) -> JsResult<u64>
+abi: impl<'s> Cx<'s> :: pub fn array_buffer_copy_and_detach(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, u64, bool) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn array_buffer_resize(&mut self, impl Into<Local<'s>>, u64) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn atomic_compare_exchange(&mut self, impl Into<Local<'s>>, u64, u8, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn atomic_load(&mut self, impl Into<Local<'s>>, u64, u8) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn atomic_read_modify_write(&mut self, impl Into<Local<'s>>, u64, u8, u8, impl Into<Local<'s>>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn atomic_store(&mut self, impl Into<Local<'s>>, u64, u8, impl Into<Local<'s>>) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn atomics_notify(&mut self, impl Into<Local<'s>>, u64, u64) -> JsResult<u64>
+abi: impl<'s> Cx<'s> :: pub fn atomics_wait(&mut self, impl Into<Local<'s>>, u64, u8, impl Into<Local<'s>>, f64) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn atomics_wait_async(&mut self, impl Into<Local<'s>>, u64, u8, impl Into<Local<'s>>, f64) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn copy_buffer_bytes(&mut self, impl Into<Local<'s>>, u64, impl Into<Local<'s>>, u64, u64) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn detach_array_buffer(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn get_value_from_buffer(&mut self, impl Into<Local<'s>>, u64, u8, bool) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn is_detached_buffer(&self, impl Into<Local<'s>>) -> bool
+abi: impl<'s> Cx<'s> :: pub fn new_data_view(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, u64, Option<u64>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn new_typed_array(&mut self, impl Into<Local<'s>>, u8, impl Into<Local<'s>>, u64, Option<u64>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn set_value_in_buffer(&mut self, impl Into<Local<'s>>, u64, u8, impl Into<Local<'s>>, bool) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn shared_array_buffer_grow(&mut self, impl Into<Local<'s>>, u64) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn typed_array_buffer(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn typed_array_byte_offset(&mut self, impl Into<Local<'s>>) -> JsResult<u64>
+abi: impl<'s> Cx<'s> :: pub fn typed_array_element(&self, impl Into<Local<'s>>) -> Option<u8>
+abi: impl<'s> Cx<'s> :: pub fn typed_array_fixed_length(&mut self, impl Into<Local<'s>>) -> JsResult<Option<u64>>
+abi: impl<'s> Cx<'s> :: pub fn typed_array_length(&mut self, impl Into<Local<'s>>) -> JsResult<Option<u64>>

@@ -29,3 +29,5 @@
   25  AsyncDisposableStack
   26  Intl.Locale
   27  Intl.Collator
+  28  SharedArrayBuffer
+  29  DataView
