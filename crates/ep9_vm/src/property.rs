@@ -22,6 +22,7 @@
 //! | primitive wrapper | `wrapper::string_own_property` (String wrappers: `length`, indices) |
 //! | arguments object, module namespace | routed hooks (`exotic.rs`): `arguments.rs`, `module.rs` |
 //! | proxy (PROXY, PROXY_CALLABLE) | routed hooks (`exotic.rs`): `proxy.rs`, all internal methods |
+//! | TypedArray (view kinds 29-40) | a canonical numeric key: the view hooks (`exotic.rs` -> `typed_array.rs`, §10.4.5); no prototype walk for such a key |
 //! | string primitive | `length`, array-index keys; then `String.prototype` |
 //! | number / boolean primitive | `Number.prototype` / `Boolean.prototype` |
 //! | symbol primitive | `Symbol.prototype` (`symbol::prototype`) |
@@ -448,8 +449,9 @@ fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Re
         if p == NULL {
             break;
         }
-        // Step 1.b: parent.[[Set]](P, V, Receiver). A routed prototype's hook decides.
-        if exotic::is_routed(kind::cell_kind(p)) {
+        // Step 1.b: parent.[[Set]](P, V, Receiver). A routed prototype's hook decides, and a
+        // view's for a canonical numeric key (§10.4.5.5; one compare, `exotic::is_hooked`).
+        if exotic::is_hooked(kind::cell_kind(p)) {
             return routed_proto_set(cx, p, key, v, receiver);
         }
         cur = p;
@@ -457,7 +459,8 @@ fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Re
     define_on_receiver(cx, receiver, key, v)
 }
 
-/// §10.1.9.2 step 1.b on a routed prototype `p` (ARGUMENTS, MODULE_NAMESPACE) of the
+/// §10.1.9.2 step 1.b on a routed prototype `p` (ARGUMENTS, MODULE_NAMESPACE; or a view,
+/// §10.4.5.5) of the
 /// `[[Set]]` walk: `p.[[Set]](key, v, receiver)`. Its hook decides; `None` is OrdinarySet from
 /// `p`. Out of line: it breaks the inlined cycle `set_walk` -> `ordinary_set_walk` ->
 /// `set_walk`. GC point: `p`, `key`, `v` and `receiver` live in Rust locals.
@@ -816,8 +819,8 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
         return Ok(());
     }
     // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy) takes its `[[DefineOwnProperty]]`
-    // hook.
-    if exotic::is_routed(kind::cell_kind(o)) {
+    // hook; so does a view (a canonical numeric key is never stored, §10.4.5.3).
+    if exotic::is_hooked(kind::cell_kind(o)) {
         return define_routed(cx, o, key, v);
     }
     let exotic = own_attrs(rt, o, key, how);
@@ -1036,6 +1039,12 @@ pub(crate) fn has_property(cx: &Cx, o: u64, key: u64) -> bool {
     let how = key::probe(key);
     let mut cur = o;
     loop {
+        // A view answers a canonical numeric key itself (§10.4.5.2): no walk.
+        if kind::is_view(cur)
+            && let Some(b) = crate::typed_array::has(cx.rt(), cur, key)
+        {
+            return b;
+        }
         if has_own_with(cx.rt(), cur, key, how) {
             return true;
         }
@@ -1056,9 +1065,16 @@ pub(crate) fn try_has_property(cx: &mut Cx, o: u64, key: u64) -> Res<bool> {
     let how = key::probe(key);
     let mut cur = o;
     loop {
-        if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
-            // GC point: `key` lives in a Rust local.
-            return crate::proxy::has_property(cx, cur, key);
+        let k = kind::cell_kind(cur);
+        if is_proxy_or_view(k) {
+            if crate::proxy::is_proxy_kind(k) {
+                // GC point: `key` lives in a Rust local.
+                return crate::proxy::has_property(cx, cur, key);
+            }
+            // A view answers a canonical numeric key itself (§10.4.5.2): no walk.
+            if let Some(b) = crate::typed_array::has(cx.rt(), cur, key) {
+                return Ok(b);
+            }
         }
         if has_own_with(cx.rt(), cur, key, how) {
             return Ok(true);
@@ -1091,6 +1107,14 @@ pub(crate) fn try_has_own_property(cx: &mut Cx, o: u64, key: u64) -> Res<bool> {
         return Ok(get_own_property(cx, o, key)?.is_some());
     }
     Ok(has_own_property(cx, o, key))
+}
+
+/// True for the proxy kinds (27, 28) and the view kinds (29-40): one compare on adjacent ids,
+/// so the `[[HasProperty]]` walks test views at no cost over the proxy test.
+#[inline(always)]
+fn is_proxy_or_view(k: u8) -> bool {
+    const _: () = assert!(kind::PROXY_CALLABLE.get() + 1 == kind::INT8_VIEW.get());
+    k.wrapping_sub(kind::PROXY.get()) <= kind::FLOAT64_VIEW.get() - kind::PROXY.get()
 }
 
 fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
@@ -1314,9 +1338,10 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
         let mut string_keys: Vec<(u64, bool)> = Vec::new();
         // The key array of a routed kind, kept live until its keys are pushed below.
         let mut own = UNDEFINED;
-        if exotic::is_routed(kind::cell_kind(cur)) {
-            // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy): its `[[OwnPropertyKeys]]`
-            // and, but for a proxy, `[[GetOwnProperty]]` ([`for_in_attrs`]). GC points.
+        if exotic::is_hooked(kind::cell_kind(cur)) {
+            // A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy) or a view: its
+            // `[[OwnPropertyKeys]]` and, but for a proxy, `[[GetOwnProperty]]`
+            // ([`for_in_attrs`]). GC points.
             if kept == UNDEFINED {
                 // Before the first hook runs (no JS has run yet, so every key in
                 // `seen_string` is still in some object's storage): root them all. A trap
@@ -1985,12 +2010,13 @@ fn index_digits(i: u64, buf: &mut [u8; 20]) -> &[u8] {
 /// without the key: the exotic ones of `exotic.rs` that an integer key can name (array
 /// elements, String wrapper indices), then the stored ones. A routed kind (ARGUMENTS,
 /// MODULE_NAMESPACE, PROXY, PROXY_CALLABLE) always answers `Unknown`: its hooks decide, with
-/// the key (H31 fast-path row 3: only routed kinds answer an index through hooks). A new
-/// exotic kind with integer keys joins `exotic::is_routed` or adds its case here. Not a GC
-/// point.
+/// the key (H31 fast-path row 3: only routed kinds answer an index through hooks). A view
+/// (kinds 29-40, OBJECT_LAYOUT 9) answers `Unknown` too, in the same compare
+/// (`exotic::is_hooked`; TA-D6): its hooks answer an index. A new exotic kind with integer
+/// keys joins `exotic::is_routed` or adds its case here. Not a GC point.
 fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
     let k = kind::cell_kind(o);
-    if exotic::is_routed(k) {
+    if exotic::is_hooked(k) {
         return OwnIndex::Unknown;
     }
     let index = array_index_u64(i);
@@ -2271,8 +2297,15 @@ pub(crate) fn for_in_has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
     let how = key::probe(key);
     let mut cur = o;
     loop {
-        if crate::proxy::is_proxy_kind(kind::cell_kind(cur)) {
-            return for_in_has_at_proxy(cx, cur, key);
+        let k = kind::cell_kind(cur);
+        if is_proxy_or_view(k) {
+            if crate::proxy::is_proxy_kind(k) {
+                return for_in_has_at_proxy(cx, cur, key);
+            }
+            // A view answers a canonical numeric key itself (§10.4.5.2).
+            if let Some(b) = crate::typed_array::has(cx.rt(), cur, key) {
+                return Ok(b);
+            }
         }
         if has_own_with(cx.rt(), cur, key, how) {
             return Ok(true);
@@ -2304,6 +2337,11 @@ fn for_in_has_at_proxy(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
                 return Ok(a & attr::ENUMERABLE != 0);
             }
             cur = proxy_walk_step(cx, cur, &mut hops)?;
+        } else if kind::is_view(cur)
+            && let Some(b) = crate::typed_array::has(cx.rt(), cur, key)
+        {
+            // A view's element is enumerable; another numeric key is not there (no walk).
+            return Ok(b);
         } else if let Some((_, a)) = own_property_stored(cx, cur, key)? {
             return Ok(a & attr::ENUMERABLE != 0);
         } else {

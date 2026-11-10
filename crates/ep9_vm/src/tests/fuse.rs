@@ -775,8 +775,10 @@ fn each_realm_has_a_block_with_the_static_words() {
 type Way = fn(&mut crate::interp::Cx);
 
 /// Every way an index key reaches a prototype (MC-w25-11; `shape::note_proto_index_key` has
-/// these 5 callers), with the caller each one reaches.
-const WAYS: [(&str, Way); 6] = [
+/// these 5 callers), with the caller each one reaches. A TypedArray's integer-indexed keys are
+/// not stored (§10.4.5), so `shape::may_have_index_keys` names every view kind: a view of
+/// length 0 can get elements when its buffer grows.
+const WAYS: [(&str, Way); 7] = [
     (
         "object.rs array_set_sparse: a DICTIONARY entry",
         way_sparse_element,
@@ -794,6 +796,10 @@ const WAYS: [(&str, Way); 6] = [
     (
         "shape.rs proto_info_for: a routed object (a proxy)",
         way_routed_prototype,
+    ),
+    (
+        "shape.rs proto_info_for: a TypedArray (TA-1), even of length 0",
+        way_view_prototype,
     ),
 ];
 
@@ -865,6 +871,18 @@ fn way_routed_prototype(cx: &mut crate::interp::Cx) {
     assert!(!shape::proto_index_keys(rt), "a proxy that is no prototype");
     let o = object::new_plain_object(rt);
     assert!(property::set_prototype_of(rt, o, p));
+}
+
+fn way_view_prototype(cx: &mut crate::interp::Cx) {
+    let rt = cx.rt();
+    let b = crate::array_buffer::allocate(rt, NULL, 0, Some(8)).unwrap();
+    let v = crate::typed_array::new_view(rt, NULL, 0, b, 0, None).unwrap();
+    assert_eq!(crate::typed_array::length(rt, v), Some(0));
+    assert!(!shape::proto_index_keys(rt), "a view that is no prototype");
+    let _child = object::new_object(rt, v);
+    // The view can get an element later, with no write to the prototype.
+    crate::array_buffer::resize(rt, b, 1).unwrap();
+    assert_eq!(crate::typed_array::length(rt, v), Some(1));
 }
 
 /// MC-w25-11 (V8 4635ddd858: one write path that did not pop its protector): each way an index

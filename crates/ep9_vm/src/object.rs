@@ -671,6 +671,30 @@ pub(crate) fn register_kinds(heap: &Heap) {
     for (id, k) in kinds {
         heap.register_kind(id, k).expect("register a VM cell kind");
     }
+    // The 12 TypedArray view kinds (OBJECT_LAYOUT 9, TA-1 TA-VM; `typed_array.rs`): JS objects
+    // with 4 fixed fields (+24 buffer, +32 data, +40 length, +48 byteOffset). Every word after
+    // word0 is a Value or a native word (`data`), so the common object trace visits them.
+    const VIEW_NAMES: [&str; kind::VIEW_KINDS as usize] = [
+        "int8-view",
+        "uint8-view",
+        "uint8-clamped-view",
+        "int16-view",
+        "uint16-view",
+        "int32-view",
+        "uint32-view",
+        "bigint64-view",
+        "biguint64-view",
+        "float16-view",
+        "float32-view",
+        "float64-view",
+    ];
+    const VF: usize = crate::typed_array::VIEW_FIXED;
+    for (row, name) in VIEW_NAMES.into_iter().enumerate() {
+        let id = KindId::new(kind::INT8_VIEW.get() + row as u8).expect("a view kind");
+        let k = object_kind(name, object_size::<VF>, trace_object::<VF>);
+        heap.register_kind(id, k).expect("register a view kind");
+    }
+    crate::array_buffer::register_kind(heap);
     crate::elements::register_kinds(heap);
     crate::bigint::register_kind(heap);
     crate::props::register_kinds(heap);

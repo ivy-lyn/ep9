@@ -11,6 +11,7 @@
 //! | arguments object (kind ARGUMENTS) | routed to `arguments.rs` (M3-P2 VM-ARGS) | - |
 //! | module namespace (kind MODULE_NAMESPACE) | routed to `module.rs` (M3-P2 MODULE) | - |
 //! | proxy (kinds PROXY, PROXY_CALLABLE) | routed to `proxy.rs` (M4-P4 PROXY1) | - |
+//! | TypedArray (the view kinds 29-40, OBJECT_LAYOUT 9) | a canonical numeric key (§10.4.5) routed to `typed_array.rs` (TA-1 TA-VM); any other key is ordinary | {w, e, c} |
 //!
 //! Function `length` and `name` are ordinary own data properties (`object::new_function`).
 //! The lazy `prototype` follows V8, which also creates it on first access.
@@ -33,6 +34,14 @@
 //! `property::try_own_property_keys`) ask `proxy.rs`. So only routed kinds answer an index
 //! through hooks (H31 fast-path row 3): `property::own_index` answers `Unknown` for every
 //! routed kind, proxies included.
+//!
+//! TypedArrays (OBJECT_LAYOUT 9, TypedArray TA-1 TA-VM; design §4.1, TA-D6): the view kinds
+//! 29-40 are not routed kinds (the range 25..=28 of [`is_routed`] stays closed). They answer a
+//! canonical numeric key (CanonicalNumericIndexString, `typed_array::canonical_numeric`) through
+//! the same hooks: each hook tests [`is_hooked`] (one compare on 25..=40: the routed kinds and
+//! the views, so the hot test costs what [`is_routed`] cost) and the out-of-line part sends a
+//! view to `typed_array.rs`, which answers `None` ("ordinary") for any other key.
+//! `property::own_index` answers `Unknown` for a view too (H31 fast-path row 3).
 
 use crate::conv::{Res, num};
 use crate::generator::{self, LazyPrototype};
@@ -146,7 +155,7 @@ pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe, receiver: u64) -> O
     if k == kind::PRIMITIVE_WRAPPER.get() {
         return wrapper::string_own_property(cx.rt(), o, key).map(|(v, _)| Ok(v));
     }
-    if is_routed(k) {
+    if is_hooked(k) {
         return routed_get(cx, k, o, key, how, receiver);
     }
     None
@@ -196,7 +205,7 @@ pub(crate) fn own_property(
         return wrapper::string_own_property(cx.rt(), o, key)
             .map(|(v, a)| Ok((v, a, Exotic::Wrapper)));
     }
-    if is_routed(k) {
+    if is_hooked(k) {
         return routed_own_property(cx, k, o, key, how)
             .map(|r| r.map(|(v, a)| (v, a, Exotic::Routed)));
     }
@@ -225,7 +234,7 @@ pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i3
     if k == kind::PRIMITIVE_WRAPPER.get() {
         return wrapper::string_own_attrs(rt, o, key);
     }
-    if is_routed(k) {
+    if is_hooked(k) {
         return routed_own_attrs(rt, k, o, key, how);
     }
     None
@@ -272,8 +281,24 @@ pub(crate) fn is_routed(k: u8) -> bool {
     k.wrapping_sub(kind::ARGUMENTS.get()) <= kind::PROXY_CALLABLE.get() - kind::ARGUMENTS.get()
 }
 
+/// True for the kinds whose hooks answer some keys: the routed kinds ([`is_routed`], 25-28)
+/// and the TypedArray view kinds (`kinds::is_view_kind`, 29-40; OBJECT_LAYOUT 9). One compare
+/// on adjacent ids, so the hooks below test views at no cost over [`is_routed`]. Not a routed
+/// range: [`is_routed`] stays 25..=28 (TA-D6).
+#[inline(always)]
+pub(crate) fn is_hooked(k: u8) -> bool {
+    const _: () = assert!(
+        kind::PROXY_CALLABLE.get() + 1 == kind::INT8_VIEW.get()
+            && kind::FLOAT64_VIEW.get() - kind::INT8_VIEW.get() + 1 == kind::VIEW_KINDS
+    );
+    k.wrapping_sub(kind::ARGUMENTS.get()) <= kind::FLOAT64_VIEW.get() - kind::ARGUMENTS.get()
+}
+
 #[inline(never)]
 fn routed_get(cx: &mut Cx, k: u8, o: u64, key: u64, how: Probe, receiver: u64) -> Option<Res<u64>> {
+    if kind::is_view_kind(k) {
+        return crate::typed_array::get(cx.rt(), o, key).map(Ok);
+    }
     if k == kind::ARGUMENTS.get() {
         crate::arguments::get(cx, o, key, how)
     } else if k == kind::MODULE_NAMESPACE.get() {
@@ -291,7 +316,9 @@ fn routed_own_property(
     key: u64,
     how: Probe,
 ) -> Option<Res<(u64, i32)>> {
-    if k == kind::ARGUMENTS.get() {
+    if kind::is_view_kind(k) {
+        crate::typed_array::own_property(cx.rt(), o, key).map(Ok)
+    } else if k == kind::ARGUMENTS.get() {
         crate::arguments::own_property(cx, o, key, how)
     } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::own_property(cx, o, key, how)
@@ -302,7 +329,9 @@ fn routed_own_property(
 
 #[inline(never)]
 fn routed_own_attrs(rt: &Runtime, k: u8, o: u64, key: u64, how: Probe) -> Option<i32> {
-    if k == kind::ARGUMENTS.get() {
+    if kind::is_view_kind(k) {
+        crate::typed_array::own_attrs(rt, o, key)
+    } else if k == kind::ARGUMENTS.get() {
         crate::arguments::own_attrs(rt, o, key, how)
     } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::own_attrs(rt, o, key, how)
@@ -316,7 +345,7 @@ fn routed_own_attrs(rt: &Runtime, k: u8, o: u64, key: u64, how: Probe) -> Option
 #[inline(always)]
 pub(crate) fn set(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Option<Res<bool>> {
     let k = kind::cell_kind(o);
-    if is_routed(k) {
+    if is_hooked(k) {
         routed_set(cx, k, o, key, v, receiver)
     } else {
         None
@@ -325,7 +354,9 @@ pub(crate) fn set(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Optio
 
 #[inline(never)]
 fn routed_set(cx: &mut Cx, k: u8, o: u64, key: u64, v: u64, receiver: u64) -> Option<Res<bool>> {
-    if k == kind::ARGUMENTS.get() {
+    if kind::is_view_kind(k) {
+        crate::typed_array::set(cx, o, key, v, receiver)
+    } else if k == kind::ARGUMENTS.get() {
         crate::arguments::set(cx, o, key, v, receiver)
     } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::set(cx, o, key, v, receiver)
@@ -339,7 +370,7 @@ fn routed_set(cx: &mut Cx, k: u8, o: u64, key: u64, v: u64, receiver: u64) -> Op
 #[inline(always)]
 pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> Option<Res<bool>> {
     let k = kind::cell_kind(o);
-    if is_routed(k) {
+    if is_hooked(k) {
         routed_define_own_property(cx, k, o, key, desc)
     } else {
         None
@@ -354,7 +385,9 @@ fn routed_define_own_property(
     key: u64,
     desc: Desc,
 ) -> Option<Res<bool>> {
-    if k == kind::ARGUMENTS.get() {
+    if kind::is_view_kind(k) {
+        crate::typed_array::define_own_property(cx, o, key, desc)
+    } else if k == kind::ARGUMENTS.get() {
         crate::arguments::define_own_property(cx, o, key, desc)
     } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::define_own_property(cx, o, key, desc)
@@ -367,7 +400,7 @@ fn routed_define_own_property(
 #[inline(always)]
 pub(crate) fn delete(cx: &mut Cx, o: u64, key: u64) -> Option<Res<bool>> {
     let k = kind::cell_kind(o);
-    if is_routed(k) {
+    if is_hooked(k) {
         routed_delete(cx, k, o, key)
     } else {
         None
@@ -376,7 +409,9 @@ pub(crate) fn delete(cx: &mut Cx, o: u64, key: u64) -> Option<Res<bool>> {
 
 #[inline(never)]
 fn routed_delete(cx: &mut Cx, k: u8, o: u64, key: u64) -> Option<Res<bool>> {
-    if k == kind::ARGUMENTS.get() {
+    if kind::is_view_kind(k) {
+        crate::typed_array::delete(cx.rt(), o, key).map(Ok)
+    } else if k == kind::ARGUMENTS.get() {
         crate::arguments::delete(cx, o, key)
     } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::delete(cx, o, key)
@@ -391,7 +426,7 @@ fn routed_delete(cx: &mut Cx, k: u8, o: u64, key: u64) -> Option<Res<bool>> {
 #[inline(always)]
 pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> Option<u64> {
     let k = kind::cell_kind(o);
-    if is_routed(k) {
+    if is_hooked(k) {
         routed_own_property_keys(cx, k, o)
     } else {
         None
@@ -400,7 +435,9 @@ pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> Option<u64> {
 
 #[inline(never)]
 fn routed_own_property_keys(cx: &mut Cx, k: u8, o: u64) -> Option<u64> {
-    if k == kind::ARGUMENTS.get() {
+    if kind::is_view_kind(k) {
+        Some(crate::typed_array::own_property_keys(cx, o))
+    } else if k == kind::ARGUMENTS.get() {
         crate::arguments::own_property_keys(cx, o)
     } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::own_property_keys(cx, o)
