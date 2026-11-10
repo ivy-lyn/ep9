@@ -16,3 +16,6 @@ No rustdoc runs, so the tests need no nightly.
 | `forms-supertrait.json` | feature `t1`: `Sealed::test` loses its `Token` argument (M7-P5 Codex T1) |
 | `forms-enum-glob.json` | feature `t3`: `E { A }` becomes `#[repr(u8)] E { A(u32), B { x: u64 } = 7 }` (Codex T3) |
 | `forms-unwind.json` | feature `t4`: `extern "C"` becomes `extern "C-unwind"` on `f` and `Fp` (Codex T4) |
+| `where-base.json` | a crate `fx` (source: `where-src/lib.rs.txt`, cargo features off): the where-clause form of a sealed supertrait, `trait Downcast where Self: sealed::Sealed`, and one level down `Sealed where Self: Inner`; made and cut as `forms-base.json` (M7-P5 Codex R3 finding 2) |
+| `where-golden.txt` | the listing of `where-base.json` |
+| `where-w64.json` | feature `w64`: `Sealed::test` returns `u64`, not `u32` |

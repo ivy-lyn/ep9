@@ -759,7 +759,10 @@ impl Doc<'_> {
     /// The items of each local supertrait of the trait `tr` that has no public path (a sealed
     /// trait in a private module), and of its supertraits: a caller of the listed trait calls
     /// them, so they are API (M7-P5 Codex T1). One line per item, under the listed trait:
-    /// `<path> :: supertrait <Name> :: <item>`. A listed supertrait has its own lines.
+    /// `<path> :: supertrait <Name> :: <item>`. A listed supertrait has its own lines. A
+    /// supertrait is a bound (`trait T: S`) or a bound of `Self` in the where clause
+    /// (`trait T where Self: S`; rustdoc keeps it in `generics.where_predicates`; M7-P5 Codex
+    /// R3 finding 2).
     fn supertrait_lines(
         &self,
         tr: &Json,
@@ -768,7 +771,16 @@ impl Doc<'_> {
         seen: &mut HashSet<u64>,
         lines: &mut BTreeSet<String>,
     ) {
-        for b in tr.get("bounds").and_then(Json::arr).unwrap_or(&[]) {
+        let where_self = tr
+            .path(&["generics", "where_predicates"])
+            .and_then(Json::arr)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|p| p.get("bound_predicate"))
+            .filter(|p| p.path(&["type", "generic"]).and_then(Json::str) == Some("Self"))
+            .flat_map(|p| p.get("bounds").and_then(Json::arr).unwrap_or(&[]));
+        let own = tr.get("bounds").and_then(Json::arr).unwrap_or(&[]);
+        for b in own.iter().chain(where_self) {
             let Some(t) = b.path(&["trait_bound", "trait"]) else {
                 continue;
             };

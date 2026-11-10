@@ -1,0 +1,9 @@
+# The public API of ep9_vm from rustdoc JSON (H20-Q6): `cargo xtask api-list` compares,
+# `cargo xtask api-list --bless` writes this file (tools/xtask/src/api_list.rs has the line
+# form). Build: nightly-2026-10-04, --target x86_64-unknown-linux-gnu, --features jit,
+# doc-hidden items read, rustdoc JSON format_version 61. One line per item, sorted.
+fx::Downcast :: supertrait Inner :: fn inner(&self) -> u8
+fx::Downcast :: supertrait Sealed :: fn test(&self) -> u32
+fx::Downcast :: trait Downcast where Self: Sealed
+fx::S :: impl Downcast for S
+fx::S :: struct S;

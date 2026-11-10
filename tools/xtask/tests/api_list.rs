@@ -75,12 +75,17 @@ fn another_format_version_and_bad_arguments_exit_2() {
 /// `api-list --json <variant> --golden forms-golden.txt` (the listing of `forms-base.json`):
 /// the diff lines of a variant.
 fn forms_diff(json: &str) -> (Option<i32>, Vec<String>) {
+    golden_diff(json, "forms-golden.txt")
+}
+
+/// `api-list --json <variant> --golden <golden>`: the exit code and the diff lines.
+fn golden_diff(json: &str, golden: &str) -> (Option<i32>, Vec<String>) {
     let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .arg("api-list")
         .arg("--json")
         .arg(fixture(json))
         .arg("--golden")
-        .arg(fixture("forms-golden.txt"))
+        .arg(fixture(golden))
         .output()
         .unwrap();
     let text = stdout(&out);
@@ -144,6 +149,32 @@ fn an_unwind_abi_change_fails_the_diff() {
                 "+ fx::Fp :: type Fp = extern \"C-unwind\" fn()".to_string(),
                 "- fx::f :: extern \"C\" fn f()".to_string(),
                 "+ fx::f :: extern \"C-unwind\" fn f()".to_string(),
+            ]
+        )
+    );
+}
+
+#[test]
+fn the_where_golden_is_the_listing_of_the_where_base() {
+    assert_eq!(
+        golden_diff("where-base.json", "where-golden.txt"),
+        (Some(0), vec![])
+    );
+}
+
+/// M7-P5 Codex R3 finding 2 (fixer r5 item 2): the sealed supertrait in a where clause
+/// (`trait Downcast where Self: sealed::Sealed`; rustdoc puts it in
+/// `generics.where_predicates`, not in `bounds`) is walked as the bound form is, also one
+/// level down (`Sealed where Self: Inner`): a change of an item's signature fails the diff.
+#[test]
+fn a_where_clause_supertrait_item_change_fails_the_diff() {
+    assert_eq!(
+        golden_diff("where-w64.json", "where-golden.txt"),
+        (
+            Some(1),
+            vec![
+                "- fx::Downcast :: supertrait Sealed :: fn test(&self) -> u32".to_string(),
+                "+ fx::Downcast :: supertrait Sealed :: fn test(&self) -> u64".to_string(),
             ]
         )
     );
