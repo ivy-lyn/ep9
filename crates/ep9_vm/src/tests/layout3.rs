@@ -152,19 +152,6 @@ fn declared_kinds() -> Vec<(&'static str, KindId)> {
         ("MODULE_NAMESPACE", kinds::MODULE_NAMESPACE),
         ("PROXY", kinds::PROXY),
         ("PROXY_CALLABLE", kinds::PROXY_CALLABLE),
-        // OBJECT_LAYOUT 9 (TypedArray TA-0): the 12 view kinds, spec Table 71 order.
-        ("INT8_VIEW", kinds::INT8_VIEW),
-        ("UINT8_VIEW", kinds::UINT8_VIEW),
-        ("UINT8_CLAMPED_VIEW", kinds::UINT8_CLAMPED_VIEW),
-        ("INT16_VIEW", kinds::INT16_VIEW),
-        ("UINT16_VIEW", kinds::UINT16_VIEW),
-        ("INT32_VIEW", kinds::INT32_VIEW),
-        ("UINT32_VIEW", kinds::UINT32_VIEW),
-        ("BIGINT64_VIEW", kinds::BIGINT64_VIEW),
-        ("BIGUINT64_VIEW", kinds::BIGUINT64_VIEW),
-        ("FLOAT16_VIEW", kinds::FLOAT16_VIEW),
-        ("FLOAT32_VIEW", kinds::FLOAT32_VIEW),
-        ("FLOAT64_VIEW", kinds::FLOAT64_VIEW),
         ("PROPS", kinds::PROPS),
         ("ELEMENTS", kinds::ELEMENTS),
         ("CONTEXT", kinds::CONTEXT),
@@ -185,10 +172,6 @@ fn declared_kinds() -> Vec<(&'static str, KindId)> {
         ("ELEMENTS_DOUBLE", kinds::ELEMENTS_DOUBLE),
         ("ELEMENTS_DICT", kinds::ELEMENTS_DICT),
         ("FUSE", kinds::FUSE),
-        // OBJECT_LAYOUT 6 (M6-P0): PROPS_INDEXED was not in this list (TA-0 adds it with BYTES).
-        ("PROPS_INDEXED", kinds::PROPS_INDEXED),
-        // OBJECT_LAYOUT 9 (TypedArray TA-0): the raw bytes of a fixed-length ArrayBuffer.
-        ("BYTES", kinds::BYTES),
         ("SHAPE", kinds::SHAPE),
     ]
 }
@@ -211,9 +194,8 @@ fn kind_ids_are_an_append_only_byte_list() {
     assert_eq!(
         ids,
         [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
-            76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 128
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 64, 65,
+            66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 128
         ],
         "kind ids as built (append-only: a new id is added at the end of its range)"
     );
@@ -223,15 +205,12 @@ fn kind_ids_are_an_append_only_byte_list() {
             1..=7 => "strings",
             8 => "symbol",
             9 => "bigint",
-            29..=40 => "views",
             16..=63 => "JS objects",
             64..=127 => "internal cells",
             128 => "shape",
             _ => panic!("{name} = {id} is in no range of the kinds.rs table"),
         };
         assert!(!range.is_empty());
-        // The views are JS objects with a range test of their own (OBJECT_LAYOUT 9).
-        assert_eq!(kinds::is_view_kind(id), range == "views", "{name}");
     }
     // The never-assigned probe id is no declared kind and in no range.
     assert!(!ids.contains(&NEVER_ASSIGNED));
@@ -1036,4 +1015,73 @@ fn abi5_runtime_ids_reach_their_stubs() {
             assert_eq!(hits, [hook.as_str()], "{} {label}", info.name);
         }
     }
+}
+
+// ---- OBJECT_LAYOUT 9 (TypedArray TA-0 TA-DECL): the appended kind ids ------------------------
+// At the end of the file, so no line above moves (H13 and H20 cite lines of this file).
+
+/// The kinds that [`declared_kinds`] does not list: PROPS_INDEXED 84 (OBJECT_LAYOUT 6, M6-P0;
+/// that list never got it) and the OBJECT_LAYOUT 9 kinds: the 12 view kinds 29-40 in spec
+/// Table 71 order and BYTES 85.
+fn declared_kinds_since_6() -> Vec<(&'static str, KindId)> {
+    vec![
+        ("INT8_VIEW", kinds::INT8_VIEW),
+        ("UINT8_VIEW", kinds::UINT8_VIEW),
+        ("UINT8_CLAMPED_VIEW", kinds::UINT8_CLAMPED_VIEW),
+        ("INT16_VIEW", kinds::INT16_VIEW),
+        ("UINT16_VIEW", kinds::UINT16_VIEW),
+        ("INT32_VIEW", kinds::INT32_VIEW),
+        ("UINT32_VIEW", kinds::UINT32_VIEW),
+        ("BIGINT64_VIEW", kinds::BIGINT64_VIEW),
+        ("BIGUINT64_VIEW", kinds::BIGUINT64_VIEW),
+        ("FLOAT16_VIEW", kinds::FLOAT16_VIEW),
+        ("FLOAT32_VIEW", kinds::FLOAT32_VIEW),
+        ("FLOAT64_VIEW", kinds::FLOAT64_VIEW),
+        ("PROPS_INDEXED", kinds::PROPS_INDEXED),
+        ("BYTES", kinds::BYTES),
+    ]
+}
+
+/// [`kind_ids_are_an_append_only_byte_list`] over every declared kind of OBJECT_LAYOUT 9 (H17
+/// "kind ids (append-only)"): the ids as built, sorted, are the old ids with 29-40, 84 and 85
+/// added; each lies in its range of the `kinds.rs` table, the views in their own range
+/// (`kinds::is_view_kind`) inside the JS objects; the never-assigned probe is none of them;
+/// the routed range 25..=28 still holds exactly its 4 kinds.
+#[test]
+fn kind_ids_with_the_view_kinds_are_an_append_only_byte_list() {
+    let mut all = declared_kinds();
+    all.extend(declared_kinds_since_6());
+    let mut ids: Vec<u8> = all.iter().map(|(_, k)| k.get()).collect();
+    ids.sort_unstable();
+    let n = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "a kind id is used twice: {ids:?}");
+    assert_eq!(
+        ids,
+        [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
+            76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 128
+        ],
+        "kind ids as built (append-only: a new id is added at the end of its range)"
+    );
+    for (name, k) in &all {
+        let id = k.get();
+        let range = match id {
+            1..=7 => "strings",
+            8 => "symbol",
+            9 => "bigint",
+            29..=40 => "views",
+            16..=63 => "JS objects",
+            64..=127 => "internal cells",
+            128 => "shape",
+            _ => panic!("{name} = {id} is in no range of the kinds.rs table"),
+        };
+        assert_eq!(kinds::is_view_kind(id), range == "views", "{name}");
+    }
+    assert!(!ids.contains(&NEVER_ASSIGNED));
+    let routed: Vec<u8> = (0..=u8::MAX)
+        .filter(|&k| crate::exotic::is_routed(k))
+        .collect();
+    assert_eq!(routed, [25, 26, 27, 28]);
 }

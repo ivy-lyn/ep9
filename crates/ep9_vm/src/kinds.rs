@@ -268,10 +268,144 @@ pub(crate) fn is_bigint(b: u64) -> bool {
     cell_kind(b) == BIGINT.get()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_v1_ranges() {
+        let strings = [
+            SEQ_LATIN1, SEQ_UTF16, CONS, SLICED, THIN, EXT_LATIN1, EXT_UTF16,
+        ];
+        assert!(strings.iter().all(|k| (1..=7).contains(&k.get())));
+        let objects = [
+            OBJECT,
+            FUNCTION,
+            ARRAY,
+            ERROR,
+            ITERATOR,
+            PRIMITIVE_WRAPPER,
+            BOUND_FUNCTION,
+            GENERATOR,
+            SLOT_OBJECT,
+            ARGUMENTS,
+            MODULE_NAMESPACE,
+            PROXY,
+            PROXY_CALLABLE,
+        ];
+        assert!(objects.iter().all(|k| (16..=63).contains(&k.get())));
+        assert_eq!((PROXY.get(), PROXY_CALLABLE.get()), (27, 28));
+        assert_eq!((GENERATOR.get(), SLOT_OBJECT.get()), (23, 24));
+        assert_eq!((ARGUMENTS.get(), MODULE_NAMESPACE.get()), (25, 26));
+        let internal = [
+            PROPS,
+            ELEMENTS,
+            CONTEXT,
+            ACCESSOR_PAIR,
+            FEEDBACK,
+            POLY_IC,
+            IC_HANDLER,
+            SLOTS,
+            DESCRIPTORS,
+            DESC_INDEX,
+            TRANSITIONS,
+            PROTO_INFO,
+            MODULE,
+            ORDERED_TABLE,
+            REALM,
+            VALIDITY_CELL,
+            WEAK_CELL,
+            ELEMENTS_DOUBLE,
+            ELEMENTS_DICT,
+            FUSE,
+            PROPS_INDEXED,
+        ];
+        assert!(internal.iter().all(|k| (64..=127).contains(&k.get())));
+        assert_eq!(
+            (MODULE.get(), ORDERED_TABLE.get(), REALM.get()),
+            (76, 77, 78)
+        );
+        assert_eq!((VALIDITY_CELL.get(), WEAK_CELL.get()), (79, 80));
+        assert_eq!(
+            (ELEMENTS_DOUBLE.get(), ELEMENTS_DICT.get(), FUSE.get()),
+            (81, 82, 83)
+        );
+        assert_eq!(PROPS_INDEXED.get(), 84);
+        assert_eq!((CONS.get(), SLICED.get(), THIN.get()), (3, 4, 5));
+        assert_eq!(SYMBOL.get(), 8);
+        assert_eq!(BIGINT.get(), 9);
+        assert_eq!(SHAPE.get(), 128);
+        let mut all: Vec<u8> = strings
+            .iter()
+            .chain(&objects)
+            .chain(&internal)
+            .map(|k| k.get())
+            .collect();
+        // BIGINT (9) is its own range of one id (OBJECT_LAYOUT 7).
+        all.extend([SYMBOL.get(), BIGINT.get(), SHAPE.get()]);
+        let n = all.len();
+        // OBJECT_LAYOUT 3: 30 ids before, 35 after; OBJECT_LAYOUT 4: 39; OBJECT_LAYOUT 5: 42;
+        // OBJECT_LAYOUT 6: 43; OBJECT_LAYOUT 7: 44.
+        assert_eq!(n, 44);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "kind ids are distinct");
+        assert_eq!(FLAG_INOBJECT_MASK & FLAG_IS_PROTOTYPE, 0);
+        assert_eq!(FLAG_IS_PROTOTYPE & FLAG_HASH_PRESENT, 0);
+    }
+
+    /// OBJECT_LAYOUT 9 (TypedArray TA-0): the 12 view kinds at 29-40 in spec Table 71 order and
+    /// BYTES 85, with their range tests; together with the ids of `table_v1_ranges` (44), 57
+    /// distinct ids. A view is a JS object (16-63) and no routed kind (25..=28 stays closed).
+    #[test]
+    fn table_v9_view_kinds() {
+        let views = [
+            INT8_VIEW,
+            UINT8_VIEW,
+            UINT8_CLAMPED_VIEW,
+            INT16_VIEW,
+            UINT16_VIEW,
+            INT32_VIEW,
+            UINT32_VIEW,
+            BIGINT64_VIEW,
+            BIGUINT64_VIEW,
+            FLOAT16_VIEW,
+            FLOAT32_VIEW,
+            FLOAT64_VIEW,
+        ];
+        assert_eq!(
+            views.map(|k| k.get()),
+            core::array::from_fn(|i| 29 + i as u8)
+        );
+        assert!(views.iter().all(|k| (16..=63).contains(&k.get())));
+        assert_eq!(BYTES.get(), 85);
+        assert!((64..=127).contains(&BYTES.get()));
+        let in_range = |t: fn(u8) -> bool| (0..=u8::MAX).filter(|&k| t(k)).collect::<Vec<_>>();
+        assert_eq!(in_range(is_view_kind), (29..=40).collect::<Vec<u8>>());
+        assert_eq!(in_range(is_bigint_view_kind), [36, 37]);
+        assert_eq!(in_range(is_float_view_kind), [38, 39, 40]);
+        assert!(!(25..=28).any(is_view_kind), "no routed kind is a view");
+        // The ids of table v1 (strings, symbol, BigInt, JS objects 16-28, internal 64-84, shape).
+        let mut all: Vec<u8> = (1..=9)
+            .chain(16..=28)
+            .chain(64..=84)
+            .chain([128])
+            .chain(views.map(|k| k.get()))
+            .chain([BYTES.get()])
+            .collect();
+        let n = all.len();
+        assert_eq!(n, 44 + 13);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "kind ids are distinct");
+    }
+}
+
 // ---- the TypedArray view kinds and BYTES of OBJECT_LAYOUT 9 (TypedArray TA-0, TA-DECL) ----
-// Here, at the end of the const block, so no line above moves (H17 cites them by line). Design:
-// `docs/plan/notes/typedarray-design.md` §2.1 (TA-D1, TA-D4). Declared only: TA-1 TA-VM
-// registers them (`object::register_kinds`) and builds their cells.
+// Here, after the tests module at the end of the file, so no line above moves (H17 and H08 cite
+// lines of this file up to the tests). Design `docs/plan/notes/typedarray-design.md` §2.1
+// (TA-D1, TA-D4). Declared only: TA-1 TA-VM registers them (`object::register_kinds`) and
+// builds their cells.
 
 /// A view of an Int8Array (spec Table 71 row 1): the first of the 12 view kinds, 29-40, one
 /// per element type, adjacent and in Table 71 order, so the element type of a view is its kind
@@ -339,129 +473,4 @@ pub(crate) const fn is_float_view_kind(k: u8) -> bool {
 #[inline(always)]
 pub(crate) fn is_view(b: u64) -> bool {
     is_view_kind(cell_kind(b))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn table_v1_ranges() {
-        let strings = [
-            SEQ_LATIN1, SEQ_UTF16, CONS, SLICED, THIN, EXT_LATIN1, EXT_UTF16,
-        ];
-        assert!(strings.iter().all(|k| (1..=7).contains(&k.get())));
-        let objects = [
-            OBJECT,
-            FUNCTION,
-            ARRAY,
-            ERROR,
-            ITERATOR,
-            PRIMITIVE_WRAPPER,
-            BOUND_FUNCTION,
-            GENERATOR,
-            SLOT_OBJECT,
-            ARGUMENTS,
-            MODULE_NAMESPACE,
-            PROXY,
-            PROXY_CALLABLE,
-            INT8_VIEW,
-            UINT8_VIEW,
-            UINT8_CLAMPED_VIEW,
-            INT16_VIEW,
-            UINT16_VIEW,
-            INT32_VIEW,
-            UINT32_VIEW,
-            BIGINT64_VIEW,
-            BIGUINT64_VIEW,
-            FLOAT16_VIEW,
-            FLOAT32_VIEW,
-            FLOAT64_VIEW,
-        ];
-        assert!(objects.iter().all(|k| (16..=63).contains(&k.get())));
-        assert_eq!((PROXY.get(), PROXY_CALLABLE.get()), (27, 28));
-        assert_eq!((GENERATOR.get(), SLOT_OBJECT.get()), (23, 24));
-        assert_eq!((ARGUMENTS.get(), MODULE_NAMESPACE.get()), (25, 26));
-        let internal = [
-            PROPS,
-            ELEMENTS,
-            CONTEXT,
-            ACCESSOR_PAIR,
-            FEEDBACK,
-            POLY_IC,
-            IC_HANDLER,
-            SLOTS,
-            DESCRIPTORS,
-            DESC_INDEX,
-            TRANSITIONS,
-            PROTO_INFO,
-            MODULE,
-            ORDERED_TABLE,
-            REALM,
-            VALIDITY_CELL,
-            WEAK_CELL,
-            ELEMENTS_DOUBLE,
-            ELEMENTS_DICT,
-            FUSE,
-            PROPS_INDEXED,
-            BYTES,
-        ];
-        assert!(internal.iter().all(|k| (64..=127).contains(&k.get())));
-        assert_eq!(
-            (MODULE.get(), ORDERED_TABLE.get(), REALM.get()),
-            (76, 77, 78)
-        );
-        assert_eq!((VALIDITY_CELL.get(), WEAK_CELL.get()), (79, 80));
-        assert_eq!(
-            (ELEMENTS_DOUBLE.get(), ELEMENTS_DICT.get(), FUSE.get()),
-            (81, 82, 83)
-        );
-        assert_eq!(PROPS_INDEXED.get(), 84);
-        // OBJECT_LAYOUT 9: the 12 views in spec Table 71 order at 29-40, then BYTES 85.
-        let views = [
-            INT8_VIEW,
-            UINT8_VIEW,
-            UINT8_CLAMPED_VIEW,
-            INT16_VIEW,
-            UINT16_VIEW,
-            INT32_VIEW,
-            UINT32_VIEW,
-            BIGINT64_VIEW,
-            BIGUINT64_VIEW,
-            FLOAT16_VIEW,
-            FLOAT32_VIEW,
-            FLOAT64_VIEW,
-        ];
-        assert_eq!(
-            views.map(|k| k.get()),
-            core::array::from_fn(|i| 29 + i as u8)
-        );
-        assert_eq!(BYTES.get(), 85);
-        let in_range = |t: fn(u8) -> bool| (0..=u8::MAX).filter(|&k| t(k)).collect::<Vec<_>>();
-        assert_eq!(in_range(is_view_kind), (29..=40).collect::<Vec<u8>>());
-        assert_eq!(in_range(is_bigint_view_kind), [36, 37]);
-        assert_eq!(in_range(is_float_view_kind), [38, 39, 40]);
-        assert!(!(25..=28).any(is_view_kind), "no routed kind is a view");
-        assert_eq!((CONS.get(), SLICED.get(), THIN.get()), (3, 4, 5));
-        assert_eq!(SYMBOL.get(), 8);
-        assert_eq!(BIGINT.get(), 9);
-        assert_eq!(SHAPE.get(), 128);
-        let mut all: Vec<u8> = strings
-            .iter()
-            .chain(&objects)
-            .chain(&internal)
-            .map(|k| k.get())
-            .collect();
-        // BIGINT (9) is its own range of one id (OBJECT_LAYOUT 7).
-        all.extend([SYMBOL.get(), BIGINT.get(), SHAPE.get()]);
-        let n = all.len();
-        // OBJECT_LAYOUT 3: 30 ids before, 35 after; OBJECT_LAYOUT 4: 39; OBJECT_LAYOUT 5: 42;
-        // OBJECT_LAYOUT 6: 43; OBJECT_LAYOUT 7: 44; OBJECT_LAYOUT 9: 57 (12 views and BYTES).
-        assert_eq!(n, 57);
-        all.sort_unstable();
-        all.dedup();
-        assert_eq!(all.len(), n, "kind ids are distinct");
-        assert_eq!(FLAG_INOBJECT_MASK & FLAG_IS_PROTOTYPE, 0);
-        assert_eq!(FLAG_IS_PROTOTYPE & FLAG_HASH_PRESENT, 0);
-    }
 }
