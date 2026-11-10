@@ -115,6 +115,16 @@ pub enum ObjectClass {
     /// other slots (1 the packed options with `[[Collation]]`, 2 `[[BoundCompare]]`) are named
     /// in `ep9_intl` collator.rs. No ICU4X object is in a slot (INTL-I1-D7).
     IntlCollator,
+    /// A SharedArrayBuffer instance (§25.2; TypedArray TA-0 TA-DECL, design TA-D3): the slot
+    /// form of [`ObjectClass::ArrayBuffer`] (`docs/plan/notes/typedarray-design.md` §2.2); its
+    /// bytes are a shared block off the heap, never detached. Made by the `Cx` methods of
+    /// `abi/typed.rs` (TA-1 TA-VM fills them).
+    SharedArrayBuffer,
+    /// A DataView instance (§25.3; TA-0 TA-DECL, TA-D3): `[[ViewedArrayBuffer]]`,
+    /// `[[ByteOffset]]`, `[[ByteLength]]` and the cached data address (an `ExternalRef<u8>`
+    /// native word, the H25 inventory) in its slots (design §2.2). Made by the `Cx` methods of
+    /// `abi/typed.rs`.
+    DataView,
 }
 
 impl ObjectClass {
@@ -148,6 +158,8 @@ impl ObjectClass {
         ObjectClass::AsyncDisposableStack,
         ObjectClass::IntlLocale,
         ObjectClass::IntlCollator,
+        ObjectClass::SharedArrayBuffer,
+        ObjectClass::DataView,
     ];
 
     /// Most internal slots of one object.
@@ -198,6 +210,8 @@ impl ObjectClass {
             ObjectClass::AsyncDisposableStack => "AsyncDisposableStack",
             ObjectClass::IntlLocale => "Intl.Locale",
             ObjectClass::IntlCollator => "Intl.Collator",
+            ObjectClass::SharedArrayBuffer => "SharedArrayBuffer",
+            ObjectClass::DataView => "DataView",
         }
     }
 }

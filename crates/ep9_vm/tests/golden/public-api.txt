@@ -886,6 +886,7 @@ ep9_vm::ObjectClass :: impl core::marker::StructuralPartialEq for ObjectClass
 ep9_vm::ObjectClass :: impl core::marker::Sync for ObjectClass (auto)
 ep9_vm::ObjectClass :: variant ArrayBuffer
 ep9_vm::ObjectClass :: variant AsyncDisposableStack
+ep9_vm::ObjectClass :: variant DataView
 ep9_vm::ObjectClass :: variant Date
 ep9_vm::ObjectClass :: variant DisposableStack
 ep9_vm::ObjectClass :: variant FinalizationRegistry
@@ -899,6 +900,7 @@ ep9_vm::ObjectClass :: variant RegExp
 ep9_vm::ObjectClass :: variant RegExpStringIterator
 ep9_vm::ObjectClass :: variant Set
 ep9_vm::ObjectClass :: variant SetIterator
+ep9_vm::ObjectClass :: variant SharedArrayBuffer
 ep9_vm::ObjectClass :: variant TemporalDuration
 ep9_vm::ObjectClass :: variant TemporalInstant
 ep9_vm::ObjectClass :: variant TemporalPlainDate
