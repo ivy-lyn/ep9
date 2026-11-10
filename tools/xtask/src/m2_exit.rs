@@ -35,7 +35,10 @@
 //! `aarch64-unknown-linux-gnu` the speed cells are N/A by design (no gate host). On
 //! `x86_64-pc-windows-msvc` a speed cell gives the ratio of each Windows reading to the Linux x64
 //! one (`--linux-gate`; 09:66: within 10%; each reading on both hosts must have the status
-//! `valid`, a gate verdict is not needed), and reads OPEN "marginal (no gate host)" until both
+//! `valid`, a gate verdict is not needed). The verdict is the cross-host ratio rule of
+//! 10-quality.md section 3 (P0-WININT): the ratio interval [Windows low / Linux high, Windows
+//! high / Linux low] passes when its low end is >= 0.9, fails when its high end is < 0.9, and is
+//! OPEN (marginal) when it holds 0.9. The cell reads OPEN "marginal (no gate host)" until both
 //! runs are gate-host runs on the same CPU model (a dual-boot or identical host, 10:157).
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
@@ -663,6 +666,17 @@ fn speed(id: &str, r: &Json) -> Option<f64> {
     }
 }
 
+/// The order-statistic interval of [`speed`] (low, high): a ratio reading's `interval`, or
+/// for `ts` 1 / its time interval's ends (P0-WININT). None if a bound is missing or not > 0.
+fn speed_interval(id: &str, r: &Json) -> Option<(f64, f64)> {
+    let iv = r.get("interval").and_then(Json::arr)?;
+    let (a, z) = (iv.first()?.num()?, iv.get(1)?.num()?);
+    if !(a > 0.0 && z >= a) {
+        return None;
+    }
+    Some(if id == TS { (1.0 / z, 1.0 / a) } else { (a, z) })
+}
+
 /// A speed cell: the readings `ids` of `builds` from `--gate`.
 fn speed_cell(c: &Ctx, ids: &[&str], builds: &[&str]) -> Cell {
     let host = c.o.host.as_str();
@@ -862,13 +876,31 @@ fn windows_ratio(
                 ));
             }
             let l = lr.and_then(|r| speed(id, r));
-            match (w, l) {
-                (Some(w), Some(l)) if l > 0.0 => {
+            // P0-WININT: the cross-host ratio rule (10-quality.md section 3, the Windows note):
+            // the ratio interval [Windows low / Linux high, Windows high / Linux low] of the two
+            // speed intervals; the median ratio is printed, the interval decides.
+            let wi = reading(win, id, b).and_then(|r| speed_interval(id, r));
+            let li = lr.and_then(|r| speed_interval(id, r));
+            match (w, l, wi, li) {
+                (Some(w), Some(l), Some((wl, wh)), Some((ll, lh))) if l > 0.0 => {
                     let q = w / l;
-                    if q < WINDOWS_MIN {
+                    let (lo, hi) = (wl / lh, wh / ll);
+                    let side = if lo >= WINDOWS_MIN {
+                        ""
+                    } else if hi < WINDOWS_MIN {
                         status = status.max(Status::Fail);
-                    }
-                    ratios.push(format!("{b} {id} Windows / Linux x64 = {q:.3}"));
+                        " below"
+                    } else {
+                        status = status.max(Status::Open);
+                        " marginal (the interval holds 0.9: run both hosts again with 2x rounds)"
+                    };
+                    ratios.push(format!(
+                        "{b} {id} Windows / Linux x64 = {q:.3} [{lo:.3}, {hi:.3}]{side}"
+                    ));
+                }
+                (Some(_), Some(l), _, _) if l > 0.0 => {
+                    status = status.max(Status::Open);
+                    ratios.push(format!("{b} {id}: no interval on both hosts"));
                 }
                 _ => {
                     status = status.max(Status::Open);
@@ -878,7 +910,7 @@ fn windows_ratio(
         }
     }
     let text = format!(
-        "ratio to Linux x64 ({}; >= {WINDOWS_MIN} needed, 09:66): {}",
+        "ratio to Linux x64 ({}; the interval >= {WINDOWS_MIN} needed, 09:66): {}",
         lp.display(),
         ratios.join(", ")
     );
@@ -2201,6 +2233,69 @@ mod tests {
         assert!(
             oct.contains("jit octane7-vs-qjs Windows / Linux x64 = 1.053"),
             "{oct}"
+        );
+    }
+
+    /// P0-WININT (M6-ORCH-139): the Windows cells read the ratio interval, not the medians. A
+    /// Windows jit Octane reading with median 1.28 and interval [1.15, 1.40] against the Linux
+    /// x64 1.33 [1.32202, 1.33798]: the median ratio 0.962 read PASS; the interval [0.860,
+    /// 1.059] holds 0.9, so OPEN (marginal). [1.0, 1.1] (median 1.05) is below: FAIL.
+    #[test]
+    fn windows_reads_the_cross_host_ratio_interval() {
+        let r = repo("windows-interval");
+        let base = fixture("gate-win.json").replace(SHA, &r.head);
+        let jit_oct = "\"value\": 1.4,\n   \"interval\": [\n    1.3916,\n    1.4084\n   ]";
+        assert!(base.contains(jit_oct));
+        let at = base.find("\"id\": \"octane7-vs-qjs\"").unwrap();
+        let with = |v: &str| {
+            let mut t = base.clone();
+            let k = at + t[at..].find(jit_oct).unwrap();
+            t.replace_range(k..k + jit_oct.len(), v);
+            t
+        };
+        let cases = [
+            (
+                "\"value\": 1.28, \"interval\": [1.15, 1.4]",
+                Status::Open,
+                "jit octane7-vs-qjs Windows / Linux x64 = 0.962 [0.860, 1.059] marginal",
+            ),
+            (
+                "\"value\": 1.05, \"interval\": [1.0, 1.1]",
+                Status::Fail,
+                "jit octane7-vs-qjs Windows / Linux x64 = 0.789 [0.747, 0.832] below",
+            ),
+        ];
+        for (n, (v, want, text)) in cases.into_iter().enumerate() {
+            let f = format!("inputs/gate-win-{n}.json");
+            write(&r.root, &f, &with(v));
+            let o = Options {
+                gate: Some(r.root.join(&f)),
+                linux_gate: Some(input(&r, "gate-win-linux.json")),
+                ..opts(&r, WINDOWS_X64)
+            };
+            let c = &run(&o).unwrap().cells[0];
+            assert_eq!(c.status, want, "{}", c.evidence);
+            assert!(c.evidence.contains(text), "{text}: {}", c.evidence);
+        }
+        // The fixture pair itself: each interval is above 0.9 (the median 0.950 one too).
+        let o = Options {
+            gate: Some(input(&r, "gate-win.json")),
+            linux_gate: Some(input(&r, "gate-win-linux.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let c = &run(&o).unwrap().cells[0];
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(
+            c.evidence
+                .contains("jitless octane7-vs-qjs Windows / Linux x64 = 0.950 [0.939, 0.961]"),
+            "{}",
+            c.evidence
+        );
+        let ts = speed_interval(TS, &parse_json("{\"interval\": [2.0, 4.0]}").unwrap());
+        assert_eq!(ts, Some((0.25, 0.5)));
+        assert_eq!(
+            speed_interval("x", &parse_json("{\"interval\": [2.0, 1.0]}").unwrap()),
+            None
         );
     }
 
