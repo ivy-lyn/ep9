@@ -19,6 +19,11 @@
 //! | `atomics_operations` | load, store, the 6 read-modify-write ops and compare-exchange on each integer type |
 //! | `data_view_slots` | the DataView slots, its range checks, auto length |
 //! | `a_failed_transfer_leaves_the_buffer` | ArrayBufferCopyAndDetach order: a failed grow of a moved store leaves the old buffer as it was |
+//! | `the_slot_api_refuses_the_store_slot` | safe `Cx` only: `set_slot` and `slot` of a buffer store or a DataView data word panic (Codex TA-1 r1 f1_e) |
+//! | `the_slot_api_refuses_the_byte_length_slot` | safe `Cx` only: `set_slot` of the byte length panics (f1_a, f1_b, f1_d); the range checks hold |
+//! | `the_slot_api_refuses_the_other_engine_slots` | safe `Cx` only: every engine slot of a buffer or a DataView refuses a write; the value slots stay readable |
+//! | `the_slot_api_refuses_the_table_slot` | safe `Cx` only: the table index cannot move to another buffer (f1_f, f1_g) |
+//! | `an_object_of_a_buffer_class_from_the_slot_api_is_not_a_buffer` | safe `Cx` only: `new_object_with_slots` of a buffer class is a TypeError in every `abi/typed.rs` method (f1_c) |
 
 use std::hint::black_box;
 
@@ -31,7 +36,7 @@ use crate::interp::Cx;
 use crate::object;
 use crate::runtime::{Runtime, val};
 use crate::typed_array as ta;
-use crate::{Dispatch, Isolate, kinds, layout};
+use crate::{Dispatch, Isolate, Local, kinds, layout};
 
 fn each(test: fn(&mut Cx)) {
     for stress in [false, true] {
@@ -776,4 +781,323 @@ fn a_failed_transfer_leaves_the_buffer() {
         assert!(ab::is_detached(moved));
         assert_eq!(bytes_of(cx.rt(), shrunk), [1, 2]);
     });
+}
+
+// ---- the slot API cannot forge a buffer (Codex TA-1 r1 finding 1) -----------------------------
+//
+// Each test below uses only safe public calls of the builtin ABI (`crate::abi::Cx`, `Local`), as
+// an embedder or a builtin crate can. A forged slot would bound a raw access of the store, so
+// the slot API refuses each one before any write (a panic: a bug in the caller), and an object
+// that `new_object_with_slots` makes of a buffer class is not a buffer (a TypeError).
+
+type Api<'a, 's> = &'a mut crate::abi::Cx<'s>;
+
+/// True if `f` panics in the public `Cx` of a fresh isolate (GC stress as `stress`).
+fn api_panics(stress: bool, f: impl for<'s> FnOnce(Api<'_, 's>) + Send + 'static) -> bool {
+    on_big_stack(move || {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let _ = iso.with_cx(|cx| {
+                f(cx);
+                Ok(())
+            });
+        }));
+        r.is_err()
+    })
+}
+
+/// Runs `f` with the public `Cx` of a fresh isolate, GC stress off and on, then the heap
+/// verifier.
+fn each_api(f: for<'s> fn(Api<'_, 's>)) {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let r = iso.with_cx(|cx| {
+                f(cx);
+                Ok(())
+            });
+            assert!(r.is_ok());
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// The error name of `r` ("TypeError", "RangeError"), or "ok".
+fn error_name<T>(cx: Api<'_, '_>, r: ep9_value::JsResult<T>) -> String {
+    match r {
+        Ok(_) => "ok".into(),
+        Err(t) => {
+            let e = cx.catch_exception(t).unwrap();
+            let n = cx.get(e.as_object().unwrap(), "name").unwrap();
+            cx.to_rust_string(n).unwrap()
+        }
+    }
+}
+
+/// The buffers of one slot test: a fixed one with a BYTES store, a zero-length one, a resizable
+/// one (an off-heap store), a growable SharedArrayBuffer and a DataView, made by the ABI.
+fn api_buffers<'s>(cx: Api<'_, 's>) -> [(Local<'s, crate::JsObject>, ObjectClass); 5] {
+    let fixed = cx.allocate_array_buffer(Local::null(), 8, None).unwrap();
+    let empty = cx.allocate_array_buffer(Local::null(), 0, None).unwrap();
+    let rab = cx
+        .allocate_array_buffer(Local::null(), 8, Some(4096))
+        .unwrap();
+    let sab = cx
+        .allocate_shared_array_buffer(Local::null(), 8, Some(1 << 22))
+        .unwrap();
+    let dv = cx.new_data_view(Local::null(), fixed, 0, Some(8)).unwrap();
+    let [a, b, c, d, e] = API_CLASSES;
+    [(fixed, a), (empty, b), (rab, c), (sab, d), (dv, e)]
+}
+
+/// The classes of [`api_buffers`], in its order.
+const API_CLASSES: [ObjectClass; 5] = [
+    ObjectClass::ArrayBuffer,
+    ObjectClass::ArrayBuffer,
+    ObjectClass::ArrayBuffer,
+    ObjectClass::SharedArrayBuffer,
+    ObjectClass::DataView,
+];
+
+/// The slots of a class that only the engine writes, and the one it does not let safe code
+/// read (it holds no JS value).
+fn engine_slots(class: ObjectClass) -> (usize, usize) {
+    match class {
+        ObjectClass::DataView => (dv_slot::COUNT, dv_slot::DATA),
+        _ => (slot::COUNT, slot::STORE),
+    }
+}
+
+/// Site class "slot 0, the store" (`data_base`, `checked_range`, `view_data`, the copy of
+/// `copy_and_detach`, the data word of every view): `set_slot` and `slot` of slot 0 panic for
+/// a fixed, a zero-length, a resizable and a shared buffer (f1_e: undefined in slot 0 let the
+/// GC free the bytes under a live view). Slot 3 of a DataView (its data address) likewise.
+#[test]
+fn the_slot_api_refuses_the_store_slot() {
+    for stress in [false, true] {
+        for which in 0..5 {
+            let write = move |cx: Api<'_, '_>| {
+                let (o, class) = api_buffers(cx)[which];
+                let (_, word) = engine_slots(class);
+                let _ = cx.set_slot(o, class, word, Local::undefined());
+            };
+            assert!(
+                api_panics(stress, write),
+                "set_slot of the store, case {which}"
+            );
+            let read = move |cx: Api<'_, '_>| {
+                let (o, class) = api_buffers(cx)[which];
+                let (_, word) = engine_slots(class);
+                let _ = cx.slot(o, class, word);
+            };
+            assert!(api_panics(stress, read), "slot of the store, case {which}");
+        }
+    }
+    // With no forge, a view's bytes live as long as the view (the f1_e steps, no set_slot).
+    each_api(|cx| {
+        let b = cx.allocate_array_buffer(Local::null(), 64, None).unwrap();
+        let v = cx.new_typed_array(Local::null(), 1, b, 0, None).unwrap();
+        cx.set_value_in_buffer(b, 3, 1, Local::int32(0xcd), true)
+            .unwrap();
+        let g = cx.global();
+        cx.set(g, "v", v, true).unwrap();
+        assert_eq!(cx.typed_array_length(v).unwrap(), Some(64));
+        assert_eq!(cx.get(v, "3").unwrap().as_number(), Some(205.0));
+    });
+}
+
+/// Site class "slot 1, the byte length" (`byte_length`, `checked_range`, `new_view`,
+/// `new_data_view`, the bound of a length-tracking view): `set_slot` of slot 1 panics (f1_a:
+/// a 0-length buffer with length 1 wrote through null; f1_b, f1_d: an 8-byte store with length
+/// 4096). Reads of slot 1 still give the length. The range checks then hold.
+#[test]
+fn the_slot_api_refuses_the_byte_length_slot() {
+    for stress in [false, true] {
+        for which in 0..5 {
+            let f = move |cx: Api<'_, '_>| {
+                let (o, class) = api_buffers(cx)[which];
+                let _ = cx.set_slot(o, class, 1, Local::number(4096.0));
+            };
+            assert!(api_panics(stress, f), "set_slot 1, case {which}");
+        }
+    }
+    each_api(|cx| {
+        let [(fixed, c), (empty, _), ..] = api_buffers(cx);
+        assert_eq!(cx.slot(fixed, c, 1).unwrap().as_number(), Some(8.0));
+        let r = cx.set_value_in_buffer(empty, 0, 1, Local::int32(7), true);
+        assert_eq!(error_name(cx, r), "RangeError");
+        let r = cx.set_value_in_buffer(fixed, 8, 1, Local::int32(7), true);
+        assert_eq!(error_name(cx, r), "RangeError");
+        let r = cx.get_value_from_buffer(fixed, 4000, 1, true);
+        assert_eq!(error_name(cx, r), "RangeError");
+        let v = cx
+            .new_typed_array(Local::null(), 1, fixed, 0, None)
+            .unwrap();
+        assert_eq!(cx.typed_array_length(v).unwrap(), Some(8));
+        let r = cx.new_typed_array(Local::null(), 1, fixed, 0, Some(4096));
+        assert_eq!(error_name(cx, r), "RangeError");
+    });
+}
+
+/// Site class "slot 4, the flags" (`is_detached`, `is_resizable`; every check above): a
+/// `set_slot` of slot 4 panics (clearing the detached bit would give a null store a length),
+/// and so does every other engine slot of a buffer (2 the maximum, 3 the detach key) and of a
+/// DataView (0-4). Slots 1, 2 and 4 of a buffer and 0-2 and 4 of a DataView stay readable.
+#[test]
+fn the_slot_api_refuses_the_other_engine_slots() {
+    for stress in [false, true] {
+        for which in 0..5 {
+            for i in 0..engine_slots(API_CLASSES[which]).0 {
+                let f = move |cx: Api<'_, '_>| {
+                    let (o, class) = api_buffers(cx)[which];
+                    let _ = cx.set_slot(o, class, i, Local::int32(0));
+                };
+                assert!(api_panics(stress, f), "set_slot {i}, case {which}");
+            }
+        }
+    }
+    each_api(|cx| {
+        let bufs = api_buffers(cx);
+        for (o, class) in bufs {
+            let (count, word) = engine_slots(class);
+            for i in (0..count).filter(|&i| i != word) {
+                cx.slot(o, class, i).unwrap();
+            }
+        }
+        let (fixed, dv) = (bufs[0].0, bufs[4].0);
+        let b = cx.slot(dv, ObjectClass::DataView, dv_slot::BUFFER).unwrap();
+        assert_eq!(b.bits(), fixed.bits());
+        cx.detach_array_buffer(fixed, Local::undefined()).unwrap();
+        assert!(cx.is_detached_buffer(fixed));
+        let r = cx.get_value_from_buffer(fixed, 0, 1, true);
+        assert_eq!(error_name(cx, r), "TypeError");
+    });
+}
+
+/// Site class "slot 5, the table index" (`byte_length` and `shared_block` of a SAB,
+/// `detach_unchecked` and `take_store`, `resize`, `grow_shared`, `add_view`): the index is
+/// readable (an int32), but a `set_slot` of it panics (f1_f: a small SAB with a big SAB's
+/// index; f1_g: a fixed buffer with a resizable one's index, then a detach).
+#[test]
+fn the_slot_api_refuses_the_table_slot() {
+    for stress in [false, true] {
+        let f1_f = |cx: Api<'_, '_>| {
+            let small = cx
+                .allocate_shared_array_buffer(Local::null(), 8, None)
+                .unwrap();
+            let big = cx
+                .allocate_shared_array_buffer(Local::null(), 1 << 22, None)
+                .unwrap();
+            let i = cx
+                .slot(big, ObjectClass::SharedArrayBuffer, slot::TABLE)
+                .unwrap();
+            assert!(i.as_int32().is_some());
+            let _ = cx.set_slot(small, ObjectClass::SharedArrayBuffer, slot::TABLE, i);
+        };
+        assert!(api_panics(stress, f1_f), "f1_f");
+        let f1_g = |cx: Api<'_, '_>| {
+            let r = cx
+                .allocate_array_buffer(Local::null(), 4096, Some(8192))
+                .unwrap();
+            let a = cx.allocate_array_buffer(Local::null(), 8, None).unwrap();
+            let i = cx.slot(r, ObjectClass::ArrayBuffer, slot::TABLE).unwrap();
+            let _ = cx.set_slot(a, ObjectClass::ArrayBuffer, slot::TABLE, i);
+        };
+        assert!(api_panics(stress, f1_g), "f1_g");
+    }
+    each_api(|cx| {
+        let small = cx
+            .allocate_shared_array_buffer(Local::null(), 8, Some(64))
+            .unwrap();
+        let big = cx
+            .allocate_shared_array_buffer(Local::null(), 1 << 22, None)
+            .unwrap();
+        assert_eq!(cx.array_buffer_byte_length(small).unwrap(), 8);
+        assert_eq!(cx.array_buffer_byte_length(big).unwrap(), 1 << 22);
+        let r = cx.get_value_from_buffer(small, 1 << 21, 1, true);
+        assert_eq!(error_name(cx, r), "RangeError");
+        cx.shared_array_buffer_grow(small, 16).unwrap();
+        assert_eq!(cx.array_buffer_byte_length(small).unwrap(), 16);
+        let r = cx
+            .allocate_array_buffer(Local::null(), 16, Some(64))
+            .unwrap();
+        let a = cx.allocate_array_buffer(Local::null(), 8, None).unwrap();
+        cx.detach_array_buffer(a, Local::undefined()).unwrap();
+        assert!(!cx.is_detached_buffer(r));
+        cx.array_buffer_resize(r, 32).unwrap();
+        cx.set_value_in_buffer(r, 31, 1, Local::int32(9), true)
+            .unwrap();
+        assert_eq!(
+            cx.get_value_from_buffer(r, 31, 1, true)
+                .unwrap()
+                .as_number(),
+            Some(9.0)
+        );
+    });
+}
+
+/// Site class "a buffer made from nothing" (f1_c): `new_object_with_slots` refuses the slot
+/// count of a buffer or a DataView of `abi/typed.rs` for these classes. With any other count the
+/// object and its slots are the caller's (as `tests::slots` uses them), but no `abi/typed.rs`
+/// method takes it for a buffer: each gives a TypeError (or false), never an access, also after
+/// the caller wrote the f1_c values (a length of 16, flags 0) into its slots.
+#[test]
+fn an_object_of_a_buffer_class_from_the_slot_api_is_not_a_buffer() {
+    each_api(|cx| {
+        let real = cx.allocate_array_buffer(Local::null(), 8, None).unwrap();
+        for class in API_CLASSES.into_iter().skip(2) {
+            for n in [0, 3, 5, 7, ObjectClass::MAX_SLOTS] {
+                if n == engine_slots(class).0 {
+                    continue;
+                }
+                let o = cx.new_object_with_slots(Local::null(), class, n);
+                assert_eq!(cx.object_class(o), Some(class));
+                for (i, x) in [(1, Local::number(16.0)), (4, Local::int32(0))] {
+                    if i < n {
+                        cx.set_slot(o, class, i, x).unwrap();
+                        assert_eq!(cx.slot(o, class, i).unwrap().bits(), x.bits());
+                    }
+                }
+                let r = cx.array_buffer_byte_length(o);
+                assert_eq!(error_name(cx, r), "TypeError", "byte length, {n} slots");
+                assert!(!cx.is_detached_buffer(o));
+                let r = cx.detach_array_buffer(o, Local::undefined());
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.array_buffer_copy_and_detach(o, Local::null(), 8, true);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.array_buffer_resize(o, 8);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.shared_array_buffer_grow(o, 8);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.copy_buffer_bytes(real, 0, o, 0, 1);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.copy_buffer_bytes(o, 0, real, 0, 1);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.get_value_from_buffer(o, 0, 1, true);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.set_value_in_buffer(o, 0, 1, Local::int32(7), true);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.new_typed_array(Local::null(), 1, o, 0, None);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.new_data_view(Local::null(), o, 0, None);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.atomic_load(o, 0, 1);
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.atomic_store(o, 0, 1, Local::int32(7));
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.atomic_read_modify_write(o, 0, 1, 0, Local::int32(7));
+                assert_eq!(error_name(cx, r), "TypeError");
+                let r = cx.atomic_compare_exchange(o, 0, 1, Local::int32(0), Local::int32(7));
+                assert_eq!(error_name(cx, r), "TypeError");
+            }
+        }
+    });
+    // The slot count of an `abi/typed.rs` object is refused (f1_c made a 6-slot ArrayBuffer).
+    for class in API_CLASSES.into_iter().skip(2) {
+        let f = move |cx: Api<'_, '_>| {
+            let _ = cx.new_object_with_slots(Local::null(), class, engine_slots(class).0);
+        };
+        assert!(api_panics(false, f), "{class:?}");
+    }
 }

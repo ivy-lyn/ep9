@@ -376,17 +376,17 @@ fn add_external(rt: &Runtime, n: usize) -> BufResult<()> {
 
 // ---- buffers ----------------------------------------------------------------------------------
 
-/// The ObjectClass of the buffer `b`, if it is an ArrayBuffer or a SharedArrayBuffer.
+/// The ObjectClass of `b` if it is an ArrayBuffer or a SharedArrayBuffer made here ([`made_here`]).
 #[inline]
 pub(crate) fn buffer_class(b: u64) -> Option<ObjectClass> {
-    match object::slot_class(b) {
+    match object::slot_class(b).filter(|_| made_here(b)) {
         Some(c) if c == ObjectClass::ArrayBuffer.id() => Some(ObjectClass::ArrayBuffer),
         Some(c) if c == ObjectClass::SharedArrayBuffer.id() => Some(ObjectClass::SharedArrayBuffer),
         _ => None,
     }
 }
 
-/// True if `b` is a SharedArrayBuffer.
+/// True if the buffer `b` (its [`buffer_class`] is `Some`) is a SharedArrayBuffer.
 #[inline]
 pub(crate) fn is_shared(b: u64) -> bool {
     object::slot_class(b) == Some(ObjectClass::SharedArrayBuffer.id())
@@ -826,7 +826,7 @@ pub(crate) fn resize(rt: &Runtime, b: u64, new_len: u64) -> BufResult<()> {
 /// The grow of `SharedArrayBuffer.prototype.grow` (§25.2.5.3) after its ToIndex step. GC
 /// point (the external bytes).
 pub(crate) fn grow_shared(rt: &Runtime, b: u64, new_len: u64) -> BufResult<()> {
-    if !is_shared(b) || !is_resizable(b) {
+    if buffer_class(b) != Some(ObjectClass::SharedArrayBuffer) || !is_resizable(b) {
         return Err(Fail::Type("Receiver is not a growable SharedArrayBuffer"));
     }
     let block = shared_block(rt, b);
@@ -1317,4 +1317,14 @@ pub(crate) fn new_data_view(
     object::slot_set(rt, v, dv_slot::FLAGS, int32_bits(0));
     add_view(rt, b, v);
     Ok(v)
+}
+
+/// True if the buffer-class SLOT_OBJECT `b` was made here ([`new_buffer_object`]): it has
+/// [`slot::COUNT`] slots and an int32 in [`slot::FLAGS`]. The generic slot API (`abi/slots.rs`)
+/// never writes one of these slots of an ArrayBuffer or a SharedArrayBuffer, and its
+/// `new_object_with_slots` leaves them undefined, so an object that it makes is not a buffer
+/// here, and no access to a store trusts a slot that safe code wrote (Codex TA-1 r1 finding 1).
+#[inline]
+fn made_here(b: u64) -> bool {
+    object::slot_count(b) == slot::COUNT && val(object::slot_get(b, slot::FLAGS)).is_int32()
 }

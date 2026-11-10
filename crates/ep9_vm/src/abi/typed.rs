@@ -40,7 +40,7 @@
 //! | Rule | Statement |
 //! |---|---|
 //! | Values are converted by the caller | No method here runs JS. The builtin does the spec's ToIndex, ToNumber, ToBigInt and species steps first, in spec order; a value argument is then a Number, or a BigInt for rows 7 and 8, else a TypeError |
-//! | Memory safety does not trust the caller | A method checks its byte range against the buffer's current length before it reads or writes: a range past it (a builtin bug, or a buffer that a conversion detached or shrank) is a TypeError or a RangeError, never an access |
+//! | Memory safety does not trust the caller | A method checks its byte range against the buffer's current length before it reads or writes: a range past it (a builtin bug, or a buffer that a conversion detached or shrank) is a TypeError or a RangeError, never an access. The slots that bound an access (a buffer's store, byte length, flags and table index; a DataView's data address) are written here only: the generic slot API refuses every slot of a buffer or a DataView made here, and a buffer class object that it makes (another slot count) is not a buffer here ([`Cx::set_slot`]) |
 //! | GC (plan rule 8) | No Value lives in Rust memory: a buffer's store and view list are held through its slots and the isolate's buffer table (one weak source; design §5.1). R3 of the ABI holds: every `&mut` method may allocate |
 //! | Shared memory | A SharedArrayBuffer's bytes are read and written with atomic operations only: unordered access is Relaxed, the Atomics methods are SeqCst (TA-D11) |
 
