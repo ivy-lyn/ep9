@@ -18,7 +18,7 @@
 //!   (gen-regexp-special-case.cc, at build time)      (gen-sets.py ports that generator)
 //! ```
 //!
-//! Without `u` (ECMA-262 Canonicalize with rer.[[Unicode]] false), two code units match when
+//! Without `u` (ECMA-262 Canonicalize with `rer.[[Unicode]]` false), two code units match when
 //! their Canonicalize values are equal; with `u` or `v`, when their Simple_Case_Folding values
 //! are equal. The generator checks V8's claim that [`close_over`] with [`Mode::NonUnicode`]
 //! gives the Canonicalize classes, for every BMP code unit.
