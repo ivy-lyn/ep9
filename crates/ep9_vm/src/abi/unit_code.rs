@@ -98,7 +98,10 @@ impl<'s> Cx<'s> {
     /// unwind section, `rw` its RW template section, `slot` its header's unit-data slot and
     /// `functions` its function table, unchanged. So the unit is one that this engine build wrote, and each
     /// variant's code is the native code of its function (H35:18: a unit is trusted code; a
-    /// unit of another build never gets here, because step 3 sends it to its source).
+    /// unit of another build never gets here, because step 3 sends it to its source). And
+    /// `host_cpu` has no bit that this CPU lacks (the CPU bits of `HostInfo::current()`,
+    /// H35-Q5): `select()` picks a variant by these bits, so a variant that needs a feature this
+    /// CPU does not have would install and run.
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub unsafe fn run_script_installing_unit_code(
         &mut self,
@@ -155,8 +158,9 @@ impl<'s> Cx<'s> {
         let report = match native {
             None => unit_loader::load(rt, &lu, text, &functions, policy.as_ref(), host_cpu),
             // SAFETY: only `run_script_installing_unit_code` passes `native`; its caller ran the
-            // H35 S4 checks (steps 1-4) on these bytes against this build (its `# Safety`),
-            // which is the contract of `load_and_install`.
+            // H35 S4 checks (steps 1-4) on these bytes against this build, and `host_cpu` has no
+            // bit that this CPU lacks (the CPU bits of `HostInfo::current()`, H35-Q5) (its
+            // `# Safety`), which is the contract of `load_and_install`.
             Some((unwind, rw, slot)) => unsafe {
                 unit_loader::load_and_install(
                     rt,

@@ -787,7 +787,8 @@ pub(crate) fn load(
 /// The caller ran the H35 S4 checks, steps 1-4, on the unit bytes that `lu`, `text`, `unwind`
 /// and `functions` come from, against this engine build (the `# Safety` of the unsafe `Cx`
 /// method in `abi/unit_code.rs`): so the unwind data describes the text, and each picked
-/// variant follows the [`install_picked`] contract.
+/// variant follows the [`install_picked`] contract. And `cpu` has no bit that this CPU lacks
+/// (the CPU bits of `HostInfo::current()`, H35-Q5): `select()` picks a variant by these bits.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn load_and_install(
     rt: &Runtime,
