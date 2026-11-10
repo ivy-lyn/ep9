@@ -23,6 +23,7 @@
 //! | `integrity_levels_of_a_view` | SetIntegrityLevel and TestIntegrityLevel over a view's internal methods: no debug panic, the spec results (N3; TODO TA3-PREVEXT) |
 //! | `no_length_on_a_fixed_buffer_computes_it` | InitializeTypedArrayFromArrayBuffer step 9.a: a fixed view with the computed length; the RangeErrors |
 //! | `canonical_numeric_matches_the_spec_text` | `canonical_numeric` against the plain §7.1.21 text over a table of keys, one-byte and two-byte |
+//! | `a_view_receiver_takes_its_define_hook` | OrdinarySet with a view as the receiver (Reflect.set, `super[k] = v`): CreateDataProperty is the view's `[[DefineOwnProperty]]`, so "-0", an index out of range or on a detached view gives false and stores nothing; the named IC case stays SLOW (Codex TA-1 r1 finding 2) |
 
 use std::cell::Cell;
 use std::hint::black_box;
@@ -1216,5 +1217,55 @@ fn canonical_numeric_matches_the_spec_text() {
             );
         }
         assert!(ta::canonical_numeric(key(rt, "NaN")).unwrap().is_nan());
+    });
+}
+
+/// OrdinarySet (§10.1.9.2) step 2.e with a view as the receiver (`Reflect.set({}, k, v, ta)`,
+/// `super[k] = v`, a proxy with no `set` trap): CreateDataProperty(Receiver, P, V) is the
+/// view's `[[DefineOwnProperty]]` (§10.4.5.3), so a canonical numeric key that is not a valid
+/// index gives false and stores nothing, and the named load IC case of the view stays SLOW
+/// (`ic::load_case` reads the storage before `exotic_name`; Codex TA-1 r1 finding 2).
+#[test]
+fn a_view_receiver_takes_its_define_hook() {
+    each(|cx| {
+        let rt = cx.rt();
+        let b = buffer(rt, 4, None);
+        let v = view(rt, 1, b, 0, Some(4));
+        let o = object::new_object(rt, NULL);
+        let refused = |cx: &mut Cx, name: &str| {
+            let k = key(cx.rt(), name);
+            let before = crate::ic::load_case(cx.rt(), v, k).map(|c| c.handler);
+            let r = property::set_with_receiver(cx, o, k, int(7), v).unwrap();
+            assert!(!r, "Reflect.set({{}}, {name:?}, 7, view) is false");
+            assert!(
+                crate::props::own_get(v, k).is_none(),
+                "{name}: no stored key"
+            );
+            assert!(!has_own(cx, v, name), "{name}");
+            assert_eq!(get(cx, v, name), UNDEFINED, "{name}");
+            let after = crate::ic::load_case(cx.rt(), v, k).map(|c| c.handler);
+            assert_eq!(after, before, "{name}: the named load case after the store");
+            assert!(
+                matches!(after, None | Some(crate::ic::Handler::Smi(_))),
+                "{name}: {after:?}"
+            );
+        };
+        for name in ["-0", "1.5", "4", "10", "Infinity", "-Infinity", "NaN", "-1"] {
+            refused(cx, name);
+        }
+        assert_eq!(own_keys(cx, v), ["0", "1", "2", "3"]);
+        // A valid index stores the element; an ordinary key is an ordinary property.
+        let k = key(cx.rt(), "0");
+        assert!(property::set_with_receiver(cx, o, k, int(7), v).unwrap());
+        assert_eq!(get(cx, v, "0"), int(7));
+        let k = key(cx.rt(), "name");
+        assert!(property::set_with_receiver(cx, o, k, int(8), v).unwrap());
+        assert_eq!(get(cx, v, "name"), int(8));
+        assert_eq!(own_keys(cx, v), ["0", "1", "2", "3", "name"]);
+        // A detached view: index 0 is no longer valid.
+        ab::detach(cx.rt(), b, UNDEFINED).unwrap();
+        refused(cx, "0");
+        assert_eq!(own_keys(cx, v), ["name"]);
+        assert!(!has_own(cx, o, "0") && !has_own(cx, o, "-0"));
     });
 }

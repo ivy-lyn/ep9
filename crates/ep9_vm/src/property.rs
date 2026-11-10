@@ -494,9 +494,9 @@ fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool>
     match own_property(cx, receiver, key)? {
         Some((_, a, _)) if a & attr::WRITABLE == 0 => Ok(false),
         Some(_) => define_own_property(cx, receiver, key, desc),
-        // Step 2.e: CreateDataProperty(Receiver, P, V). A proxy receiver takes its
-        // `[[DefineOwnProperty]]` (its cell's storage holds no property key).
-        None if crate::proxy::is_proxy_kind(kind::cell_kind(receiver)) => {
+        // Step 2.e: CreateDataProperty(Receiver, P, V). A proxy or a view receiver takes its
+        // `[[DefineOwnProperty]]` (a proxy stores no key; a view refuses a numeric one).
+        None if crate::proxy::is_proxy(receiver) || kind::is_view(receiver) => {
             define_own_property(cx, receiver, key, Desc::data(v, attr::DEFAULT))
         }
         None => {
