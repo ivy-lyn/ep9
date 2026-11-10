@@ -13,8 +13,8 @@
 //!
 //! Why (fuzz triage of the eval_context timeout bb32e719, Fix 1): with
 //! `parse_regular_expression` on, oxc_parser parses the pattern each time that it parses the
-//! literal. It parses the text inside a failed arrow head (`(a=` ...) one more time, so a
-//! literal inside d such heads is parsed d+1 times. The duplicate group name check of
+//! literal. It parses the text in a failed arrow head (`(a=` ...) again (0.158: only if it cannot
+//! reuse the head), so a literal in d heads is parsed d+1 times. The duplicate group name check of
 //! oxc_regular_expression 0.157 was quadratic in the groups of one name (0.158 is linear), so
 //! the time grew with d x g^2. Here the pattern is parsed once for each literal.
 //!
