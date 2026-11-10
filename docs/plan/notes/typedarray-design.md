@@ -296,7 +296,7 @@ No new handler kind in month 8. The smi kinds have 7, 8 and 15 free, and 7 and 8
 
 - "TypedArray species" is static fuse 8 (`crates/ep9_vm/src/fuse.rs:200-212`). It stays unwired in month 8: TypedArraySpeciesCreate does the full `constructor` and `@@species` lookup, as Array species does today (only fuse 6 is wired, `crates/ep9_vm/src/fuse.rs:84`). Its pop site needs a value-store hook, because a store to an existing `constructor` property is not a shape change. That is a later speed item, together with Array species. V8 has the same protector (`src/execution/protectors.h:104-105`).
 - No detach fuse. V8 needs `ArrayBufferDetaching` (`src/execution/protectors.h:19-20`) because it does not zero every view; ep9 zeroes them (TA-D5).
-- H31:56 row 3 needs a clarify note: the view kinds answer an index through hooks, and `own_index` refuses them (no check result changes).
+- H31:56 row 3 needs a clarify note: the view kinds answer an index through hooks, and `own_index` refuses them (no check result changes). [2026-11-11, TA-1 fixer r2, checker item 4 (M6-ORCH-389, -398): fill, not clarify: the PR changes own_index; the view kinds join the row's rule as a part the plan defers; every existing check keeps its result; G8 0]
 
 ### 6.5 FASTDIFF (plan rule 73)
 
@@ -382,7 +382,7 @@ Total 30-45 agent-days (est.). Critical path TA-DECL -> TA-VM -> TA-BUFFERS -> T
 | H25 inventory | 2 rows | fill (H25:61) | extref-lint passes |
 | H13 "index ids (append-only)" (H13:93) | the new ids | fill | - |
 | H22-Q8 (H22:92), the `$262` row (H22:46) | SAB blocks across isolates; the hooks | fill; clarify | - |
-| H31 fast-path row 3 (H31:56) | the `own_index` refusal | clarify | `is_routed` stays one range test |
+| H31 fast-path row 3 (H31:56) | the `own_index` refusal | clarify [2026-11-11, TA-1 fixer r2, checker item 4 (M6-ORCH-389, -398): fill, not clarify: the PR changes own_index; the view kinds join the row's rule as a part the plan defers; every existing check keeps its result; G8 0] | `is_routed` stays one range test |
 
 G8 count of the plan: 0. If a role finds that one of these changes flips a Frozen check, it stops that item and reports it (plan rule 69).
 
