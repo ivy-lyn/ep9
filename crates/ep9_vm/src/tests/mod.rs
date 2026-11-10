@@ -86,6 +86,9 @@ mod wrappers;
 
 // OBJECT_LAYOUT 9 (TypedArray TA-0): after the list, so no cited line above moves.
 mod layout9;
+// TypedArray TA-1 (TA-VM): the buffer and view core.
+mod array_buffer;
+mod typed_array;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;
