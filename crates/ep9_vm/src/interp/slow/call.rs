@@ -17,9 +17,11 @@
 //! native-slotted or (b) callee of another realm runs nested in its realm too
 //! (`native::call_in_its_realm`).
 //!
-//! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
-//! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
-//! natively. The default build has no such branch. Two places enter it:
+//! Native code (`native.rs`): a call of a FUNCTION with a Baseline or AotBaseline slot (no
+//! construct, not host, not a class constructor) is entered natively. In every build (M7-P5
+//! A2-RW, route MC-w30-2: unit code that the A2 loader installed) `do_call` enters it at its
+//! `!runs_bytecode` arm, after the argument copy. Spike B (feature `spike-native` only) has
+//! two earlier places:
 //!
 //! ```text
 //! slow::call --enter, interrupt poll--> native_entry: unprefixed CallAnyReceiver, CallProperty,
@@ -290,7 +292,33 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         });
     }
     if !runs_bytecode(fi) {
-        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+        // Native code (an AotBaseline unit function or a Baseline slot; MC-w30-2, M7-P5
+        // A2-RW): T0's `call_fast` sent it cold, so it is entered here, nested, with its frame
+        // above the caller's registers and the return pc of the next instruction (the
+        // `native.rs` T0 entry). No feedback count (`native.rs` module doc).
+        let Some(nfi) = crate::native::native_callee(callee) else {
+            return Err(not_implemented(cx, "calling code of this dispatch kind"));
+        };
+        // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode
+        // runs with no scratch area), `args` holds valid Value bits that the push copies before
+        // any GC point, and `native_callee` checked the native slot.
+        let r = unsafe {
+            crate::native::enter_native(
+                cx,
+                frame_top(fp),
+                fp,
+                s.next_pc,
+                callee,
+                nfi,
+                this,
+                argc,
+                |i| args[i as usize],
+            )
+        };
+        // After the call: a nested dispatch under native code (`call_any`) sets them too.
+        cx.out_fp = fp;
+        cx.out_pc = s.next_pc;
+        return r;
     }
     // GC point: the callee, the receiver and the arguments are in caller registers (for a
     // bound callee: its target, bound `this` and bound arguments are reachable from it).

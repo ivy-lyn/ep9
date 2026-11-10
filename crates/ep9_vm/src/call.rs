@@ -465,6 +465,15 @@ fn call_bytecode(
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     if !fi.is_bytecode() || fi.slot.kind_byte() != crate::dispatch::DispatchKind::Interp as u8 {
+        // Native code (an AotBaseline unit function or a Baseline slot; MC-w30-2, M7-P5
+        // A2-RW): a call from Rust (`Cx::call`, a builtin callback, a forwarded `apply` or
+        // `call` that the T0 forward refused, a callee of another realm) enters it through the
+        // Rust entry, with an entry frame. Construct stays refused here (MC-w29-8).
+        if new_target == UNDEFINED
+            && let Some(nfi) = crate::native::native_callee(f)
+        {
+            return crate::native::enter_from_rust(cx, f, nfi, this, argc, arg);
+        }
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
     poll(cx, caller)?;

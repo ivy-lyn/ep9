@@ -818,6 +818,196 @@ fn unit_loader_a_text_larger_than_the_code_range_gives_no_text() {
     assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
 }
 
+// ---- MC-w30-2 and MC-w34-3: JS calls into installed unit code ----------------------------------
+
+/// A host function in the form of `Function.prototype.call` (IsCallable, then the VM steps;
+/// the `tests/calls.rs` form).
+fn fcall<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if !this.is_callable() {
+        return Err(cx.throw_type_error("fcall: not callable"));
+    }
+    cx.forward_call(args)
+}
+
+/// A host function in the form of `Function.prototype.apply`.
+fn fapply<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if !this.is_callable() {
+        return Err(cx.throw_type_error("fapply: not callable"));
+    }
+    cx.forward_apply(args)
+}
+
+/// `fcall` and `fapply` as builtin table definitions, installed as globals: a forwarder
+/// records only a function made from a table definition (M7-P0 JIT reviewer F1).
+static FORWARDERS: crate::BuiltinTable = crate::BuiltinTable::new(
+    "unit-loader-forwarders",
+    &[crate::BuiltinModule {
+        name: "forwarders",
+        block: 106,
+        defs: &[
+            crate::BuiltinDef::method("fcall", 1, fcall),
+            crate::BuiltinDef::method("fapply", 2, fapply),
+        ],
+        intrinsics: &[],
+        props: &[crate::ObjectProps {
+            target: crate::IntrinsicId::GlobalObject,
+            props: &[
+                crate::PropDef::method(crate::PropKey::Str("fcall"), 0),
+                crate::PropDef::method(crate::PropKey::Str("fapply"), 1),
+            ],
+        }],
+    }],
+);
+
+/// A jitless isolate with the forwarders and `walk` that ran `defs()`, with the frame stub
+/// installed for `g` (`g(f) { return f(); }`: the stub runs the call at bytecode offset 0).
+fn installed_g() -> Isolate {
+    let config = IsolateConfig {
+        builtins: Some(&FORWARDERS),
+        ..IsolateConfig::default()
+    };
+    let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+    iso.register_host_function("walk", 0, walk);
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g`), and
+    // `stub_unwind` describes it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text(),
+            &stub_unwind(),
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    assert_eq!(
+        info(&iso, "g").slot.kind_byte(),
+        DispatchKind::AotBaseline as u8
+    );
+    iso
+}
+
+/// Runs the script `u` in `iso`; its completion value as Value bits, or the error text.
+fn run_js(iso: &mut Isolate, u: VerifiedUnit) -> Result<u64, String> {
+    iso.with_cx_checkpoint(|cx| cx.run_script(u, "calls.js").map(|v| v.bits()))
+        .map_err(|e| format!("{e:?}"))
+}
+
+/// `return g(walk);` (CallUndefinedReceiver1: T0's `call_fast` sends the native slot cold).
+fn call_g_walk() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let a = s.a.get(0);
+    s.lda_global("walk");
+    s.b.star(a);
+    s.lda_global("g");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver1(f, a, slot).return_();
+    unit("", vec![s.finish()])
+}
+
+/// `return fcall.call(g, undefined, walk);` in the call form of the forwarder: `fcall` with
+/// `this` = g (the list shape: receiver first).
+fn fcall_g_walk() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let l = s.b.new_register_list(3);
+    s.lda_global("g");
+    s.b.star(l.get(0)).lda_undefined().star(l.get(1));
+    s.lda_global("walk");
+    s.b.star(l.get(2));
+    s.lda_global("fcall");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_property(f, l, 3, slot).return_();
+    unit("", vec![s.finish()])
+}
+
+/// `function viaArgs(f) { return g.fapply(undefined, arguments); } return viaArgs(walk);`
+/// (`fapply` with `this` = g and an unmapped arguments object: the forward's list form).
+fn fapply_g_walk() -> VerifiedUnit {
+    let mut via = Asm::new(meta("viaArgs", 1, 0, 0, 0));
+    let l = via.b.new_register_list(3);
+    via.lda_global("g");
+    via.b.star(l.get(0)).lda_undefined().star(l.get(1));
+    via.b.create_unmapped_arguments().star(l.get(2));
+    via.lda_global("fapply");
+    via.b.star(via.f);
+    let (f, slot) = (via.f, via.call);
+    via.b
+        .call_property2(f, l.get(0), l.get(1), l.get(2), slot)
+        .return_();
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.b.star(s.f);
+    let a = s.a.get(0);
+    s.lda_global("walk");
+    s.b.star(a);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver1(f, a, slot).return_();
+    unit("", vec![s.finish(), via.finish()])
+}
+
+/// MC-w30-2 (call first): a JS call of a function with installed unit code runs that code.
+/// T0's `call_fast` sends the native slot cold, `slow::call` enters it (nested, its frame
+/// above the caller's registers), the stub calls `walk` back through T0, and the script
+/// gets 42. A call from Rust (`Cx::call`) enters it through the Rust entry. On the old code
+/// both throw "not implemented".
+#[test]
+fn unit_loader_a_js_call_runs_the_installed_unit_code() {
+    let mut iso = installed_g();
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
+    );
+    let (g, w) = (
+        iso.global_raw("g").unwrap(),
+        iso.global_raw("walk").unwrap(),
+    );
+    let v = iso
+        .with_cx(|cx| {
+            let f: Local = Local::from_bits(g.to_bits());
+            let a: Local = Local::from_bits(w.to_bits());
+            let u: Local = Local::from_bits(UNDEFINED);
+            cx.call(f, u, &[a]).map(|v| v.bits())
+        })
+        .unwrap();
+    assert_eq!(v, Value::int32(42).to_bits());
+}
+
+/// MC-w34-3 (DL P5-DL-5): a forwarded `call` and `apply` into an installed unit function give
+/// node's result (42). The T0 forward takes only an Interp callee (`call::forward_target`), so
+/// the forwarder runs its steps and reaches the unit code through the Rust entry (correct;
+/// the forward's speed gain is not there for unit code until the T1 lane, MC-w30-9).
+#[test]
+fn unit_loader_a_forwarded_call_or_apply_runs_the_installed_unit_code() {
+    for (what, u) in [("call", fcall_g_walk()), ("apply", fapply_g_walk())] {
+        let mut iso = installed_g();
+        assert_eq!(
+            run_js(&mut iso, u),
+            Ok(Value::int32(42).to_bits()),
+            "{what}"
+        );
+    }
+}
+
 // ---- the RW copy and the link table (plan v12 §8.2; H35 S4 step 6) ---------------------------
 
 /// An RW template in form 1 (`unit_loader::rw`): `links` as (kind, index), then `ics` IC
