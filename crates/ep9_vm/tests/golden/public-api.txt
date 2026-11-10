@@ -276,6 +276,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property_or_throw(&mut self, imp
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_list_from_array_like(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<ArgsBuilder<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_realm(&mut self) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_resolving_functions(&mut self, Local<'s, JsObject>) -> (Local<'s, JsFunction>, Local<'s, JsFunction>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn default_locale(&mut self) -> core::option::Option<alloc::string::String>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn define_own_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn define_property_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn delete(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>) -> ep9_value::JsResult<bool>
@@ -421,6 +422,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn unit_function_digest(&self, &ep9_bytecode::u
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn weak_ref_deref(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn with_module_text_host<R>(&mut self, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, &mut dyn core::ops::function::FnMut(&str) -> CompileResult, &mut dyn core::ops::function::FnMut(&str, &str) -> core::result::Result<alloc::string::String, alloc::string::String>, impl core::ops::function::FnOnce(&mut Self) -> R) -> R
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn with_realm<R>(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl core::ops::function::FnOnce(&mut Self) -> ep9_value::JsResult<R>) -> ep9_value::JsResult<R>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: unsafe fn run_script_installing_unit_code(&mut self, ep9_bytecode::unit::VerifiedUnit, &str, &[u8], &[u8], &[u8], u8, u64, &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])]) -> (alloc::vec::Vec<(&'static str, u32)>, ep9_value::JsResult<Local<'s>>)
 ep9_vm::Cx :: struct Cx<'s> { .. }
 ep9_vm::Dispatch :: enum Dispatch
 ep9_vm::Dispatch :: impl Dispatch
@@ -570,7 +572,7 @@ ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
 ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
 ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
 ep9_vm::IntrinsicId :: impl IntrinsicId
-ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 104]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 109]
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
 ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
@@ -621,6 +623,11 @@ ep9_vm::IntrinsicId :: variant GeneratorFunction
 ep9_vm::IntrinsicId :: variant GeneratorFunctionPrototype
 ep9_vm::IntrinsicId :: variant GeneratorPrototype
 ep9_vm::IntrinsicId :: variant GlobalObject
+ep9_vm::IntrinsicId :: variant Intl
+ep9_vm::IntrinsicId :: variant IntlCollator
+ep9_vm::IntrinsicId :: variant IntlCollatorPrototype
+ep9_vm::IntrinsicId :: variant IntlLocale
+ep9_vm::IntrinsicId :: variant IntlLocalePrototype
 ep9_vm::IntrinsicId :: variant Iterator
 ep9_vm::IntrinsicId :: variant IteratorHelperPrototype
 ep9_vm::IntrinsicId :: variant IteratorPrototype
@@ -889,6 +896,8 @@ ep9_vm::ObjectClass :: variant AsyncDisposableStack
 ep9_vm::ObjectClass :: variant Date
 ep9_vm::ObjectClass :: variant DisposableStack
 ep9_vm::ObjectClass :: variant FinalizationRegistry
+ep9_vm::ObjectClass :: variant IntlCollator
+ep9_vm::ObjectClass :: variant IntlLocale
 ep9_vm::ObjectClass :: variant IteratorHelper
 ep9_vm::ObjectClass :: variant Map
 ep9_vm::ObjectClass :: variant MapIterator
