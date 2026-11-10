@@ -101,6 +101,7 @@ version = "0.0.0"
 dependencies = [
  "ep9_bytecode",
  "ep9_frontend",
+ "ep9_regexp",
  "ep9_rx1",
  "libfuzzer-sys",
 ]
@@ -122,6 +123,13 @@ dependencies = [
  "oxc_regular_expression",
  "oxc_semantic",
  "oxc_span",
+]
+
+[[package]]
+name = "ep9_regexp"
+version = "0.0.0"
+dependencies = [
+ "regress",
 ]
 
 [[package]]
@@ -639,6 +647,13 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "regress"
+version = "0.12.0"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "rustc-hash"

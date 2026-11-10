@@ -1,69 +1,116 @@
-//! RegExp pattern -> the RX1 parser (ep9_rx1) and the front end's early-error check
-//! (ep9_frontend, oxc_regular_expression) must agree on "valid or not"; RX1 must not panic.
+//! RegExp pattern -> three checks: the RX1 parser (ep9_rx1) and the front end's early-error
+//! check (ep9_frontend, oxc_regular_expression) agree on "valid or not"; RX1 and the shipped
+//! RX0 (ep9_regexp, regress) agree on "valid or not" and on the group count; and on a pattern
+//! that is one class, RX1's code point set (port step 2) is the set that RX0 matches. Nothing
+//! may panic. Route RX1-FUZZ-EXEC (M7-P5): RX1 has no matcher yet (port steps 3-5), so the
+//! exec part is the RX0 exec of every pattern (a step budget, the match spans) and the class
+//! set differential.
 //!
-//! Input: byte 0 is the flags (ep9_rx1::Flags bits: d g i m s u v y = bits 0-7), the rest is
-//! the pattern as UTF-8 text. Parse only in M7-P4 (decisions-log M6-ORCH-300): the exec part
-//! (RX1 compile + exec against the shipped RX0) is route RX1-FUZZ-EXEC (RX1-1, M7-P5).
+//! Input: byte 0 is the flags (ep9_rx1::Flags and ep9_regexp::Flags bits: d g i m s u v y =
+//! bits 0-7), the rest is the pattern as UTF-8 text.
 //!
 //! ```text
 //! flags byte + text
 //!   u and v together              -> skip (a flags error, before any pattern parse)
-//!   text is not a RegularExpressionBody (line terminator, an unescaped / outside a class,
-//!   a trailing \, empty, starts with *) -> skip (no literal can hold it)
-//!   oxc: check_early_errors("/<text>/<flags>") as a sloppy script
-//!        Ok -> valid; Syntax -> invalid; Range (the depth caps) -> skip
 //!   RX1: ep9_rx1::parse(text as UTF-16, flags)
 //!        Ok -> valid; StackOverflow (the nesting cap) -> skip; other error -> invalid
-//!   valid != valid -> panic (a crash: one of the two parsers is wrong), except the known
-//!   front-end false accepts and false rejects below
+//!   1. front end (only if the text is a RegularExpressionBody: no line terminator, no
+//!      unescaped / outside a class, no trailing \, not empty, no * first)
+//!        check_early_errors("/<text>/<flags>") as a sloppy script
+//!        Ok -> valid; Syntax -> invalid; Range (the depth caps) -> no check
+//!        valid != RX1 valid -> panic
+//!   2. RX0: ep9_regexp::Rx0::compile(text, flags)
+//!        valid != RX1 valid -> panic, except the known RX0 differences below
+//!        both valid: exec on the pattern text as the subject, at most POLLS polls;
+//!        a match: one span per group (RX1 capture_count + 1), each inside the subject
+//!   3. the pattern is one class (Tree::ClassRanges, ClassSetOperand, ClassSetExpression)
+//!        RX1 set (class_ranges / class_set) against RX0 "^(?:<text>)$" (flags i s u v) on
+//!        probe characters (the pattern's characters, their case equivalents, the RX1 range
+//!        ends and a fixed list) and on the class strings
+//!        a difference -> panic, except the known RX0 differences below
 //! ```
 //!
-//! Known front-end false accepts (oxc_regular_expression 0.155; node v26.13.0 and RX1 refuse
-//! each, M7-P4 RX1-0 report), not counted as crashes (the rx-dupnames case, a group inside a
-//! group of the same name such as `/(?<a>x|(?<a>y))/`, is refused by oxc 0.157.0, M7-P4
-//! OXCBUMP, so the target counts a disagreement on it as a crash):
-//! - `\c` with no control letter inside a class in Unicode mode, for example `/[\c]/u`. RX1
-//!   says InvalidUnicodeEscape at the `c`.
-//! - `\A`, `\z` or `\Z` in Unicode mode, for example `/\z/u` (oxc_regular_expression 0.155
-//!   and 0.157 parse them as the assertions of the TC39 RegExp buffer boundaries proposal).
-//!   ECMA-262 has no such Assertion: in Unicode mode `\z` is an AtomEscape, and
-//!   IdentityEscape[+UnicodeMode] is only SyntaxCharacter or `/` (22.2.1). RX1 says
-//!   InvalidEscape at the letter (fuzz smoke of CI run 42552778227).
+//! Known RX0 differences (regress 0.12.0 with the ep9 patches; RX1 follows ECMA-262 on each,
+//! and node v26.13.0 agrees with RX1 except where a row says that V8 does as regress), found
+//! by a replay of 119,062 inputs (the seeds, the test262 sources and grammar-made patterns),
+//! not counted as crashes:
+//! - Validity: a braced quantifier `{n,m}` with n > m where regress caps both numbers to one
+//!   value, for example `/a{99999999999999999999,99999999999999999998}/`. RX1 says
+//!   RangeOutOfOrder (ECMA-262 22.2.1.1 compares the MVs); regress (and V8) take it. The front
+//!   end refuses it too (M7-P5 FE-RX-BIGQUANT).
+//! - Validity: a negated `v` class that may contain strings, for example `/[^\q{ab}]/v`. RX1
+//!   says NegatedCharacterClassWithStrings (ECMA-262 22.2.1.1, MayContainStrings); regress
+//!   takes it.
+//! - Validity: a `\u` escape of `>` in a group name, for example `/(?<a\u003e>x)/`. V8 and
+//!   regress end the name at the escape; RX1 refuses it (U+003E is not an IdentifierPartChar,
+//!   ECMA-262 22.2.1.1; ep9_rx1 crate doc, "Known gaps"). The target skips any
+//!   InvalidCaptureGroupName of a pattern with `\u`.
+//! - Validity: a quantified `\b` or `\B`, for example `/\b*/`. RX1 says NothingToRepeat (a
+//!   Term quantifies only an Atom or, without `u` and `v`, a QuantifiableAssertion, a
+//!   look-ahead; ECMA-262 22.2.1 and B.1.2); regress takes it in every mode. The target
+//!   skips any NothingToRepeat of a pattern with `\b` or `\B`.
+//! - Validity: regress's `v` parser refuses some valid classes, for example `/[.$]/v` (two
+//!   different ClassSetReservedPunctuator characters; only a doubled one is a
+//!   ClassSetReservedDoublePunctuator) and `/[^ß&&\p{RGI_Emoji}]/v` (an intersection with
+//!   one operand that has no strings cannot contain strings, ECMA-262 MayContainStrings). The
+//!   target does not compare an RX0 refusal with `v`; the front-end check still covers RX1
+//!   there.
+//! - Validity: groups nested deeper than regress's cap (MAX_NESTING_DEPTH), for example 256
+//!   `(?:` around `a`. regress says "Regular expression is too deeply nested"; RX1 takes up
+//!   to ep9_rx1::MAX_NESTING levels (node takes 10,000).
+//! - Sets: `\W` in a class with `i` and `u` or `v`, for example `/[\W]/iu`. regress also
+//!   matches k, s, K, S, U+017F and U+212A (node and RX1: no match; with `u`+`i`, U+017F and
+//!   U+212A are word characters, ECMA-262 WordCharacters).
+//! - Sets: `[\b]` with `v`. regress does not match U+0008 (node and RX1 match it;
+//!   ClassSetCharacter has `\b`, ECMA-262 22.2.1).
+//! - Sets: `\P{..}` with `v` and `i`, for example `/[\P{Lu}]/iv`. regress matches A (node and
+//!   RX1 do not: with `v`+`i`, CharacterComplement takes only the characters c with
+//!   scf(c) = c, ECMA-262 AllCharacters).
+//! - Sets: `&&` and `--` with `v` and `i`, for example `/[[a]&&[A]]/iv`. regress takes the
+//!   intersection or difference before the case folding, so it matches nothing here (node
+//!   and RX1 match a and A: the operands are MaybeSimpleCaseFolding sets, ECMA-262).
+//! - Sets: a nested negated class with `v` and `i`, for example `/[[^s]]/iv`. regress
+//!   matches S (node and RX1 do not; CharacterComplement under `v`+`i`, as for `\P` above).
+//! - Sets: a negated class and `\q{..}` with `v`, for example `/[^\q{K}]/v`. regress matches
+//!   K and does not match a (node and RX1: the other way round).
+//! - Sets: `\c` before a `\` in a class without `u` and `v`, for example
+//!   `/[\c\u{10400}]/`. regress does not match `\` (node and RX1 do: Annex B
+//!   ClassAtomNoDash `\` [lookahead = c], B.1.2).
+//! - Sets: the empty string of a `v` class, for example `/^[\q{}]$/v` on "". regress never
+//!   matches it (node and RX1 do; ClassString can be empty, ECMA-262 22.2.1).
 //!
-//! Known front-end false reject (oxc_regular_expression 0.157; node v26.13.0 and RX1 accept
-//! it), not counted as a crash:
-//! - a braced quantifier number above 2^53 - 1, for example `/a{9007199254740992}/`. oxc says
-//!   "Number is too large in braced quantifier". ECMA-262 22.2.1.1 has no such early error
-//!   (only min > max), and RepeatMatcher takes any integer max; V8 clamps the number.
+//! The target skips the set check of any class text with the escapes above under those
+//! flags, and the empty class string.
+//!
+//! The front-end false accepts and false reject of M7-P4 (`\c` with no letter in a class,
+//! `\A`, `\z`, `\Z` in Unicode mode; a braced number above 2^53 - 1) are fixed in the front
+//! end in M7-P5 (regex_check.rs, routes FE-RX-BUFBOUND and FE-RX-BIGQUANT), so a
+//! disagreement on them is a crash now.
 #![no_main]
 
-use ep9_frontend::{CompileError, EarlyErrors, SourceOpts, Strictness};
-use ep9_rx1::{Error, Flags, ParseError};
+use ep9_frontend::{CompileError, SourceOpts, Strictness};
+use ep9_regexp::{Backend, ExecResult, Input, Rx0, Rx0Scratch};
+use ep9_rx1::{
+    CharacterRange, Error, Flags, Pattern, Tree, case_independent_letters, class_ranges, class_set,
+    simple_fold,
+};
 
-/// True for a known front-end false accept (the module doc), given RX1's error.
-fn known_front_end_false_accept(units: &[u16], flags: Flags, e: &ParseError) -> bool {
-    let escaped = |letters: &[u8]| {
-        e.pos >= 1
-            && units
-                .get(e.pos)
-                .is_some_and(|&c| letters.iter().any(|&l| c == u16::from(l)))
-            && units[e.pos - 1] == u16::from(b'\\')
-    };
-    match e.error {
-        Error::InvalidUnicodeEscape => escaped(b"c"),
-        Error::InvalidEscape => flags.either_unicode() && escaped(b"AzZ"),
-        _ => false,
-    }
-}
+/// The end of regress's error for groups nested deeper than its cap (a known RX0 difference,
+/// the module doc).
+const RX0_TOO_DEEP: &str = "Regular expression is too deeply nested";
 
-/// True for the known front-end false reject (the module doc): every oxc error is the
-/// quantifier size error.
-fn known_front_end_false_reject(errors: &EarlyErrors) -> bool {
-    errors.as_slice().iter().all(|e| {
-        e.message
-            .contains("Number is too large in braced quantifier")
-    })
-}
+/// The polls of one RX0 exec (each after `ep9_regexp::POLL_INTERVAL` steps) before it stops.
+const POLLS: u32 = 64;
+
+/// The probe characters of the set check that every class gets.
+const FIXED_PROBES: [u32; 26] = [
+    0, 0x0a, 0x0d, 0x20, 0x30, 0x41, 0x4b, 0x53, 0x5f, 0x61, 0x6b, 0x73, 0xdf, 0x130, 0x131, 0x17f,
+    0x3c2, 0x1e9e, 0x2028, 0x212a, 0xd800, 0xdc00, 0xffff, 0x10000, 0x1f600, 0x10ffff,
+];
+
+/// The most pattern characters and RX1 ranges that give probes (a bound on the work of one
+/// input).
+const MAX_PROBE_SOURCES: usize = 48;
 
 /// True if `text` is a RegularExpressionBody (ECMA-262 12.9.5): `/<text>/` lexes as one
 /// regexp literal.
@@ -92,6 +139,249 @@ fn is_literal_body(text: &str) -> bool {
     true
 }
 
+/// Check 1: the front end and RX1 agree on "valid or not".
+fn check_front_end(text: &str, flags: Flags, rx1_valid: bool) {
+    if !is_literal_body(text) {
+        return;
+    }
+    let source = format!("/{text}/{}", flags.to_letters());
+    let oxc_valid =
+        match ep9_frontend::check_early_errors(&source, SourceOpts::script(Strictness::Sloppy)) {
+            Ok(()) => true,
+            Err(CompileError::Syntax(_)) => false,
+            Err(CompileError::Range(_)) => return,
+        };
+    assert!(
+        rx1_valid == oxc_valid,
+        "RX1 and the front end disagree: rx1 valid {rx1_valid}, oxc valid {oxc_valid}"
+    );
+}
+
+/// One RX0 exec of `program` on `subject` from 0, stopped after [`POLLS`] polls.
+fn rx0_exec(
+    program: &<Rx0 as Backend>::Program,
+    subject: &[u16],
+    caps: &mut Vec<Option<(usize, usize)>>,
+    scratch: &mut Rx0Scratch,
+) -> ExecResult {
+    let mut polls = 0_u32;
+    let mut poll = || {
+        polls += 1;
+        polls > POLLS
+    };
+    Rx0::exec(program, Input::Utf16(subject), 0, caps, scratch, &mut poll)
+}
+
+/// Check 2, the exec part: RX0 runs the pattern on its own text.
+fn check_rx0_exec(program: &<Rx0 as Backend>::Program, units: &[u16], rx1: &Pattern) {
+    let mut caps = Vec::new();
+    let mut scratch = Rx0Scratch::default();
+    if rx0_exec(program, units, &mut caps, &mut scratch) != ExecResult::Match {
+        return;
+    }
+    assert!(
+        caps.len() == rx1.capture_count as usize + 1,
+        "RX0 gives {} spans, RX1 counts {} groups",
+        caps.len(),
+        rx1.capture_count
+    );
+    assert!(caps[0].is_some(), "a match without a whole-match span");
+    for span in caps.iter().flatten() {
+        assert!(
+            span.0 <= span.1 && span.1 <= units.len(),
+            "a span outside the subject"
+        );
+    }
+}
+
+/// The one class of `tree`, if the pattern is one class.
+fn single_class(tree: &Tree) -> Option<&Tree> {
+    match tree {
+        Tree::ClassRanges(_) | Tree::ClassSetOperand(_) | Tree::ClassSetExpression(_) => Some(tree),
+        Tree::Text(v) | Tree::Alternative(v) | Tree::Disjunction(v) if v.len() == 1 => {
+            single_class(&v[0])
+        }
+        _ => None,
+    }
+}
+
+/// `c` as UTF-16 code units (a code unit stays one unit, a lone surrogate too).
+fn utf16(c: u32, out: &mut Vec<u16>) {
+    let mut buf = [0_u16; 2];
+    match char::from_u32(c) {
+        Some(ch) => out.extend_from_slice(ch.encode_utf16(&mut buf)),
+        None => out.push(c as u16),
+    }
+}
+
+/// The probe characters of a class: [`FIXED_PROBES`], each character of the pattern with its
+/// neighbours and case equivalents, and the ends of the RX1 ranges with their neighbours.
+fn probes(units: &[u16], ranges: &[CharacterRange], flags: Flags) -> Vec<u32> {
+    let unicode = flags.either_unicode();
+    let max = if unicode { 0x10_ffff } else { 0xffff };
+    let mut out: Vec<u32> = FIXED_PROBES.to_vec();
+    let chars: Vec<u32> = if unicode {
+        char::decode_utf16(units.iter().copied())
+            .map(|r| r.map_or_else(|e| u32::from(e.unpaired_surrogate()), u32::from))
+            .collect()
+    } else {
+        units.iter().map(|&u| u32::from(u)).collect()
+    };
+    for &c in chars.iter().take(MAX_PROBE_SOURCES) {
+        out.extend([c.saturating_sub(1), c, c + 1, simple_fold(c)]);
+        if let Ok(u) = u16::try_from(c) {
+            out.extend(
+                case_independent_letters(u, unicode, false)
+                    .into_iter()
+                    .map(u32::from),
+            );
+        }
+    }
+    for r in ranges.iter().take(MAX_PROBE_SOURCES) {
+        out.extend([r.from().saturating_sub(1), r.from(), r.to(), r.to() + 1]);
+    }
+    out.retain(|&c| c <= max);
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// True for an RX1 error where RX0 is known to take the pattern (the module doc).
+fn known_rx0_false_accept(e: Error, units: &[u16]) -> bool {
+    match e {
+        Error::RangeOutOfOrder | Error::NegatedCharacterClassWithStrings => true,
+        Error::InvalidCaptureGroupName => has_escape(units, b'u'),
+        _ => false,
+    }
+}
+
+/// True if the class text has `\<letter>`. A `\\<letter>` counts too: skipping more classes
+/// is safe.
+fn has_escape(units: &[u16], letter: u8) -> bool {
+    units
+        .windows(2)
+        .any(|w| w[0] == u16::from(b'\\') && w[1] == u16::from(letter))
+}
+
+/// True if the class text has `&&` or `--` (also escaped ones: skipping more is safe).
+fn has_set_operator(units: &[u16]) -> bool {
+    units
+        .windows(2)
+        .any(|w| w[0] == w[1] && (w[0] == u16::from(b'&') || w[0] == u16::from(b'-')))
+}
+
+/// True if the text has `\b` or `\B` (also after a `\\`: skipping more is safe).
+fn has_boundary(units: &[u16]) -> bool {
+    has_escape(units, b'b') || has_escape(units, b'B')
+}
+
+/// True if the class text has a `[^` after its first code unit (a nested negated class).
+fn has_nested_negation(units: &[u16]) -> bool {
+    units
+        .windows(2)
+        .skip(1)
+        .any(|w| w[0] == u16::from(b'[') && w[1] == u16::from(b'^'))
+}
+
+/// True if the class text has a `[^` anywhere.
+fn has_negation(units: &[u16]) -> bool {
+    units.starts_with(&[u16::from(b'['), u16::from(b'^')]) || has_nested_negation(units)
+}
+
+/// True if the class text has `\c` before a `\`.
+fn has_control_before_escape(units: &[u16]) -> bool {
+    units
+        .windows(3)
+        .any(|w| w[0] == u16::from(b'\\') && w[1] == u16::from(b'c') && w[2] == u16::from(b'\\'))
+}
+
+/// True for a class with a known RX0 set difference (the module doc).
+fn known_rx0_set_difference(units: &[u16], flags: Flags) -> bool {
+    let (i, u, v) = (
+        flags.ignore_case(),
+        flags.either_unicode(),
+        flags.unicode_sets(),
+    );
+    (i && u && has_escape(units, b'W'))
+        || (v && has_escape(units, b'b'))
+        || (v && i && (has_escape(units, b'P') || has_set_operator(units)))
+        || (v && i && has_nested_negation(units))
+        || (v && has_negation(units) && has_escape(units, b'q'))
+        || (!u && has_control_before_escape(units))
+}
+
+/// Check 3: on a one-class pattern, the RX1 set is the RX0 set.
+fn check_class_set(units: &[u16], flags: Flags, rx1: &Pattern) {
+    let Some(class) = single_class(&rx1.tree) else {
+        return;
+    };
+    if known_rx0_set_difference(units, flags) {
+        return;
+    }
+    // The flags that change what a class matches; `^(?:...)$` must not see `m` or `y`.
+    let set_bits = flags.bits()
+        & (Flags::IGNORE_CASE
+            .union(Flags::DOT_ALL)
+            .union(Flags::UNICODE)
+            .union(Flags::UNICODE_SETS))
+        .bits();
+    let mut anchored: Vec<u16> = "^(?:".encode_utf16().collect();
+    anchored.extend_from_slice(units);
+    anchored.extend(")$".encode_utf16());
+    let Ok(program) = Rx0::compile(&anchored, ep9_regexp::Flags::from_bits(set_bits)) else {
+        panic!("RX0 compiles the class but not ^(?:class)$");
+    };
+    let rx1_flags = Flags::from_bits(set_bits);
+    let (ranges, negated, strings) = match class {
+        Tree::ClassRanges(cr) => {
+            let set = class_ranges(cr, rx1_flags, false);
+            (set.ranges, set.negated, Vec::new())
+        }
+        _ => {
+            let Some(set) = class_set(class, rx1_flags) else {
+                return;
+            };
+            let strings: Vec<Vec<u32>> = set.strings.keys().map(|k| k.0.to_vec()).collect();
+            (set.ranges, false, strings)
+        }
+    };
+    let mut caps = Vec::new();
+    let mut scratch = Rx0Scratch::default();
+    let mut subject = Vec::with_capacity(4);
+    let mut rx0_matches =
+        |subject: &[u16]| match rx0_exec(&program, subject, &mut caps, &mut scratch) {
+            ExecResult::Match => Some(true),
+            ExecResult::NoMatch => Some(false),
+            ExecResult::Interrupted | ExecResult::BudgetExceeded => None,
+        };
+    for c in probes(units, &ranges, flags) {
+        subject.clear();
+        utf16(c, &mut subject);
+        let rx1_match = ep9_rx1::contains(&ranges, c) != negated;
+        let Some(rx0_match) = rx0_matches(&subject) else {
+            continue;
+        };
+        assert!(
+            rx1_match == rx0_match,
+            "the class sets differ at U+{c:04X}: rx1 {rx1_match}, rx0 {rx0_match}"
+        );
+    }
+    // The empty string is a known RX0 difference (the module doc).
+    for s in strings
+        .iter()
+        .filter(|s| !s.is_empty())
+        .take(MAX_PROBE_SOURCES)
+    {
+        subject.clear();
+        for &c in s {
+            utf16(c, &mut subject);
+        }
+        if rx0_matches(&subject) == Some(false) {
+            panic!("RX0 does not match a string of the RX1 class set");
+        }
+    }
+}
+
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let Some((&bits, rest)) = data.split_first() else {
         return;
@@ -103,33 +393,28 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(rest) else {
         return;
     };
-    if !is_literal_body(text) {
-        return;
-    }
-    let source = format!("/{text}/{}", flags.to_letters());
-    let oxc_errors =
-        match ep9_frontend::check_early_errors(&source, SourceOpts::script(Strictness::Sloppy)) {
-            Ok(()) => None,
-            Err(CompileError::Syntax(errors)) => Some(errors),
-            Err(CompileError::Range(_)) => return,
-        };
-    let oxc_valid = oxc_errors.is_none();
     let units: Vec<u16> = text.encode_utf16().collect();
-    let rx1_valid = match ep9_rx1::parse(&units, flags) {
-        Ok(_) => true,
+    let rx1 = match ep9_rx1::parse(&units, flags) {
+        Ok(p) => Ok(p),
         Err(e) if e.error.is_stack_overflow() => return,
-        Err(e) if oxc_valid && known_front_end_false_accept(&units, flags, &e) => return,
-        Err(_) => false,
+        Err(e) => Err(e),
     };
-    if rx1_valid
-        && oxc_errors
-            .as_ref()
-            .is_some_and(known_front_end_false_reject)
-    {
-        return;
+    check_front_end(text, flags, rx1.is_ok());
+    let rx0 = Rx0::compile(&units, ep9_regexp::Flags::from_bits(bits));
+    match (&rx1, &rx0) {
+        (Ok(p), Ok(program)) => {
+            check_rx0_exec(program, &units, p);
+            check_class_set(&units, flags, p);
+        }
+        (Err(e), Ok(_)) if known_rx0_false_accept(e.error, &units) => {}
+        (Ok(_), Err(e)) if e.message.ends_with(RX0_TOO_DEEP) => {}
+        (Ok(_), Err(_)) if flags.unicode_sets() => {}
+        (Err(e), Ok(_)) if e.error == Error::NothingToRepeat && has_boundary(&units) => {}
+        (Err(_), Err(_)) => {}
+        (rx1, rx0) => panic!(
+            "RX1 and RX0 disagree: rx1 valid {}, rx0 valid {}",
+            rx1.is_ok(),
+            rx0.is_ok()
+        ),
     }
-    assert!(
-        rx1_valid == oxc_valid,
-        "RX1 and the front end disagree: rx1 valid {rx1_valid}, oxc valid {oxc_valid}"
-    );
 });
