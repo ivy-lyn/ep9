@@ -298,14 +298,42 @@ fn is_well_formed_and_to_well_formed() {
     );
 }
 
-/// v0: code-unit order (no ECMA-402); node agrees on these inputs.
+/// localeCompare is the Intl.Collator comparison (ECMA-402 §19.1.1, through ep9_intl):
+/// the locale order ("a" < "B"), canonical equivalence, the locales and options arguments,
+/// their errors and their order after ToString of this and that, and no use of the
+/// `Intl.Collator` global. Node v26.13.0 gives the same lines.
 #[test]
-fn locale_compare_is_code_unit_order() {
+fn locale_compare_is_the_collator_order() {
     assert_eq!(
         common::run_both(
-            r#"print('a'.localeCompare('b'), 'b'.localeCompare('a'), 'a'.localeCompare('a'), 'a'.localeCompare('ab'), ''.localeCompare(''), 'a'.localeCompare(), 'undefined'.localeCompare())"#
+            r#"print("a".localeCompare("B"), "B".localeCompare("a"), "\u00e4".localeCompare("a\u0308"), "a".localeCompare("A"), "".localeCompare(""), "a".localeCompare(), "undefined".localeCompare());
+print("\u00e4".localeCompare("af", "de"), "\u00e4".localeCompare("af", "de-u-co-phonebk"), "a".localeCompare("\u00e1", "en", {sensitivity: "base"}), "2".localeCompare("10", undefined, {numeric: true}));
+print("".localeCompare(" ", "th"), "".localeCompare(" ", "en", {ignorePunctuation: true}));
+const r = [];
+function t(fn) { try { fn(); r.push("ok"); } catch (e) { r.push(e.constructor.name); } }
+t(() => "a".localeCompare("b", "en_US"));
+t(() => "a".localeCompare("b", "en", {usage: "x"}));
+t(() => "a".localeCompare("b", "en", null));
+t(() => String.prototype.localeCompare.call(null, "a"));
+t(() => "a".localeCompare(Symbol()));
+print(r.join(" "));
+const log = [];
+String.prototype.localeCompare.call({toString() { log.push("this"); return "a"; }}, {toString() { log.push("that"); return "b"; }}, {get length() { log.push("locales"); return 0; }}, {get usage() { log.push("usage"); }});
+print(log.join());
+const old = Intl.Collator; Intl.Collator = function () { throw new Error("tainted"); };
+print("a".localeCompare("b"), "a".localeCompare("b", "en"));
+Intl.Collator = old;
+print(["b", "a", "\u00e4", "z", "A"].sort((x, y) => x.localeCompare(y)).map(s => s.charCodeAt(0)).join());"#
         ),
-        lines(&["-1 1 0 -1 0 -1 0"])
+        lines(&[
+            "-1 1 0 -1 0 -1 0",
+            "-1 -1 0 -1",
+            "0 0",
+            "RangeError RangeError TypeError TypeError TypeError",
+            "this,that,locales,usage",
+            "-1 -1",
+            "97,65,228,98,122",
+        ])
     );
 }
 

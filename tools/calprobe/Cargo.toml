@@ -1,0 +1,34 @@
+# calprobe (INTL-I1-D2, H36): counts core_maths and astronomy calls on the calendar paths of
+# temporal_rs and icu_calendar. Its own workspace, never part of the engine graph: the root
+# Cargo.toml lists "tools/calprobe" in `exclude`. Cargo.lock starts as a copy of the root
+# Cargo.lock (cargo drops the packages this crate does not use); run.sh checks that every
+# version in it equals the root one. run.sh is the gate; README.md says how and when.
+[package]
+name = "calprobe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[features]
+# The counting copies of core_maths and calendrical_calculations (run.sh patches them in).
+instr = []
+# The positive control: the opt-in astronomical year functions of icu_calendar.
+control = []
+
+# The versions of the root Cargo.lock, pinned. temporal_rs as ep9_temporal uses it.
+[dependencies]
+temporal_rs = { version = "=0.2.6", default-features = false, features = ["float64_representable_durations"] }
+icu_calendar = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+calendrical_calculations = { version = "=0.2.4", default-features = false }
+core_maths = { version = "=0.1.1", default-features = false }
+libm = { version = "=0.2.16", features = ["force-soft-floats"] }
+
+# The ep9 release profile (root Cargo.toml): fat LTO, one codegen unit, abort on panic.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
+
+[workspace]

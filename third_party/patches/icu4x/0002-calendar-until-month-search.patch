@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] icu_calendar: a binary search for the month count of
+ `until`
+
+ArithmeticDate::until finds the month count with the spec loop of
+NonISODateUntil: from a lower bound (C::min_months_from), one
+NonISODateSurpasses check per month until one surpasses. Each check
+balances the months one year at a time (new_balanced), so it is
+O(years). For the East Asian calendars min_months_from is
+12 * years + years / 3, about 0.035 months per year below the true
+rate (about 12.368), so the loop runs O(years) passes: O(years^2) in
+all (chinese, largestUnit "months": 20,000 years 1.7-4.9 s; the full
+Temporal range more than 120 s), with no way for an embedder to stop
+it.
+
+NonISODateSurpasses is monotone in the month count, so the last count
+that does not surpass is the same for a binary search between the
+lower bound (it does not surpass) and 13 months per year of the year
+difference left after the years plus one year (it surpasses). For
+largestUnit "months" the years are 0; for largestUnit "years" the
+year difference left is 0 or 1, so the search is a few checks and does
+not depend on the span (with the whole year difference it took about
+2 x span year steps: 546,000 years with 1 month left, 1.4 s). The
+result is the same; the search takes O(log(months)) checks, so
+O(years log years) in all. If the bound does not surpass (not reached
+for valid dates) the spec loop runs from there.
+
+Test: in ep9, crates/ep9_temporal/tests/calendars.rs (equal results
+with the loop on 446 pairs per calendar; chinese and dangi over
+20,000 years; largestUnit "years" over 100,000 and 546,000 years with
+1 month left).
+---
+ .../calendar/src/calendar_arithmetic.rs       | 38 ++++++++++++++++++-
+ 1 file changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/components/calendar/src/calendar_arithmetic.rs b/components/calendar/src/calendar_arithmetic.rs
+index a2cb514..be0b808 100644
+--- a/components/calendar/src/calendar_arithmetic.rs
++++ b/components/calendar/src/calendar_arithmetic.rs
+@@ -1039,9 +1039,43 @@ impl<C: DateFieldsResolver> ArithmeticDate<C> {
+                 candidate_months = min_months
+             }
+ 
+-            while !surpasses_checker.surpasses_months(candidate_months) {
++            // Non-spec optimization: NonISODateSurpasses is monotone in the month count (the
++            // first month of y0 + m0 + months only moves away from `self` as months grows in
++            // the direction of sign), so the spec loop stops at the last candidate that does
++            // not surpass, and a binary search finds the same value. The loop took one pass
++            // per month past `candidate_months`, and each pass balances the months one year at
++            // a time; with a lower bound whose error grows with the year count (the East Asian
++            // `min_months_from`) that was O(years^2). The search takes O(log(months)) passes.
++            if !surpasses_checker.surpasses_months(candidate_months) {
+                 months = candidate_months;
+-                candidate_months += sign;
++                // No date pair is more than 13 months per year apart, plus one year for the
++                // partial years at the ends: this candidate surpasses. The span is the year
++                // difference left after `years` (largestUnit "years": 0 or 1), so the search
++                // does not depend on the years already taken.
++                let span = (other.year() - self.year() - years).unsigned_abs();
++                let bound = i32::try_from(13 * (u64::from(span) + 1) + 1).unwrap_or(i32::MAX);
++                let mut surpassing = sign * bound;
++                if (surpassing - months) * sign <= 0
++                    || !surpasses_checker.surpasses_months(surpassing)
++                {
++                    // Not reached for valid dates; the spec loop from here keeps the result.
++                    debug_assert!(false, "the month bound does not surpass");
++                    candidate_months = months + sign;
++                    while !surpasses_checker.surpasses_months(candidate_months) {
++                        months = candidate_months;
++                        candidate_months += sign;
++                    }
++                    surpassing = candidate_months;
++                }
++                // Invariant: `months` does not surpass, `surpassing` does.
++                while (surpassing - months) * sign > 1 {
++                    let mid = months + (surpassing - months) / 2;
++                    if surpasses_checker.surpasses_months(mid) {
++                        surpassing = mid;
++                    } else {
++                        months = mid;
++                    }
++                }
+             }
+         }
+         // Freeze the checker's Months field state.

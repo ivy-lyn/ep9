@@ -79,11 +79,13 @@ WORKDIR /src
 
 # ep9, two sancov builds: /opt/ep9/bin/ep9 (jit) and /opt/ep9/bin/ep9-jitless. The regress
 # checkout (third_party/regress, git-ignored and not in the context) is synced before the ep9
-# build: the root [patch.crates-io] path needs it (plan v10 rule 42). The second line of
+# build: the root [patch.crates-io] path needs it (plan v10 rule 42). The same for the icu4x
+# checkout (third_party/icu4x: the patched icu_calendar; INTL W1 R2). The second line of
 # `ep9 --version` names the build (features, default preset): each binary must be the one its
 # name says.
 RUN rustup toolchain install \
  && bash scripts/sync-regress.sh \
+ && bash scripts/sync-icu4x.sh \
  && ep9="$(bash infra/fuzz/build-ep9.sh x86_64-unknown-linux-gnu)" \
  && install -D -m 755 "$ep9" /opt/ep9/bin/ep9 \
  && ep9="$(bash infra/fuzz/build-ep9.sh --jitless x86_64-unknown-linux-gnu)" \

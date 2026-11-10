@@ -50,10 +50,10 @@ fn errors_have_the_spec_types() {
             t(() => Temporal.PlainDate(2020, 1, 1));                     // no new
             t(() => new Temporal.PlainDate(2020, 13, 1));                // month out of range
             t(() => new Temporal.PlainDate(2020, 2, 30));                // day out of range
-            t(() => new Temporal.PlainDate(2020, 1, 1, "gregory"));      // only iso8601
+            t(() => new Temporal.PlainDate(2020, 1, 1, "islamic"));      // not in AvailableCalendars
             t(() => new Temporal.PlainDate(2020, 1, 1, 1));              // calendar not a string
             t(() => new Temporal.PlainDate(275761, 1, 1));               // past the limits
-            t(() => Temporal.PlainDate.from("2020-01-01[u-ca=japanese]"));
+            t(() => Temporal.PlainDate.from("2020-01-01[u-ca=islamic-rgsa]"));
             t(() => Temporal.PlainDate.from({ month: 1, day: 1 }));      // no year
             t(() => Temporal.PlainDate.from({ year: 2020, month: 2, day: 30 }, { overflow: "reject" }));
             t(() => Temporal.PlainDate.from({ year: 2020, month: 1, monthCode: "M02", day: 1 }));

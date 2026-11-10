@@ -26,7 +26,7 @@ import {
   schedule,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
-import { blockerOf, FRESH_PATHS, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, REGRESS_PATHS, splitVersion, TREE_PATHS, treeState, TRIPLES, withProbe } from "./kernels.mjs";
+import { blockerOf, FRESH_PATHS, generateKernel, ICU4X_PATHS, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, REGRESS_PATHS, splitVersion, TREE_PATHS, treeState, TRIPLES, withProbe } from "./kernels.mjs";
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
 import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
@@ -794,7 +794,7 @@ test("m1-exit's kernel and reading ids are the ones kernels.mjs and exit2.mjs wr
   assert.deepEqual(list("READING_IDS"), READINGS.map((r) => r.id));
 });
 
-test("m1-exit item 1 reads the tree ids kernels.mjs writes: FRESH_PATHS, then the regress fork (GF-1, X10)", () => {
+test("m1-exit item 1 reads the tree ids kernels.mjs writes: FRESH_PATHS, then the regress and icu4x forks (GF-1, X10)", () => {
   const rs = readFileSync(path.join(DIR, "../../xtask/src/m1_exit.rs"), "utf8");
   const list = (name) => {
     const m = rs.match(new RegExp(`const ${name}: \\[&str; [0-9]+\\] = \\[([^\\]]*)\\];`));
@@ -803,7 +803,8 @@ test("m1-exit item 1 reads the tree ids kernels.mjs writes: FRESH_PATHS, then th
   };
   assert.deepEqual(list("FRESH_PATHS"), FRESH_PATHS);
   assert.deepEqual(list("REGRESS_PATHS"), REGRESS_PATHS);
-  assert.deepEqual(TREE_PATHS, [...FRESH_PATHS, ...REGRESS_PATHS]);
+  assert.deepEqual(list("ICU4X_PATHS"), ICU4X_PATHS);
+  assert.deepEqual(TREE_PATHS, [...FRESH_PATHS, ...REGRESS_PATHS, ...ICU4X_PATHS]);
   // treeState() writes one id per TREE_PATHS entry (null outside a git tree), dirty for TREE_PATHS.
   const st = treeState();
   assert.deepEqual(Object.keys(st.tree), TREE_PATHS);
@@ -1035,7 +1036,7 @@ test("kernels: --check runs all 15 on the oracle and the engine; JSON for m1-exi
   assert.deepEqual(j.summary, { total: 15, ok: 15, failing: [], failing_not_named: [], all_ok: true });
   assert.equal(j.harness.v8v7, "stub");
   assert.equal(j.harness.octane, OCTANE_HARNESS);
-  assert.deepEqual(Object.keys(j.tree), ["crates", "tools/bench", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "third_party/regress.commit", "third_party/patches/regress"]);
+  assert.deepEqual(Object.keys(j.tree), ["crates", "tools/bench", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "third_party/regress.commit", "third_party/patches/regress", "third_party/icu4x.commit", "third_party/patches/icu4x"]);
   assert.ok(Array.isArray(j.dirty));
   assert.equal(j.ep9.version, "fake-ep9 0.0");
   assert.equal(j.ep9.engine_build, "features jit; preset jit");

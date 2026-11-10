@@ -107,6 +107,14 @@ pub enum ObjectClass {
     /// An AsyncDisposableStack instance (M7-P3 SPEC-ERM): slot 0 `[[AsyncDisposableState]]`,
     /// slot 1 `[[DisposeCapability]]`, as [`ObjectClass::DisposableStack`].
     AsyncDisposableStack,
+    /// An Intl.Locale instance (ECMA-402 §14, INTL W1): slot 0 `[[Locale]]` (the canonical
+    /// tag, a String); the other slots (`[[Calendar]]` .. `[[Numeric]]`) are named in
+    /// `ep9_intl` locale.rs.
+    IntlLocale,
+    /// An Intl.Collator instance (ECMA-402 §10, INTL W1): slot 0 `[[Locale]]` (a String); the
+    /// other slots (1 the packed options with `[[Collation]]`, 2 `[[BoundCompare]]`) are named
+    /// in `ep9_intl` collator.rs. No ICU4X object is in a slot (INTL-I1-D7).
+    IntlCollator,
 }
 
 impl ObjectClass {
@@ -138,6 +146,8 @@ impl ObjectClass {
         ObjectClass::IteratorHelper,
         ObjectClass::DisposableStack,
         ObjectClass::AsyncDisposableStack,
+        ObjectClass::IntlLocale,
+        ObjectClass::IntlCollator,
     ];
 
     /// Most internal slots of one object.
@@ -186,6 +196,8 @@ impl ObjectClass {
             ObjectClass::IteratorHelper => "Iterator Helper",
             ObjectClass::DisposableStack => "DisposableStack",
             ObjectClass::AsyncDisposableStack => "AsyncDisposableStack",
+            ObjectClass::IntlLocale => "Intl.Locale",
+            ObjectClass::IntlCollator => "Intl.Collator",
         }
     }
 }

@@ -1,7 +1,8 @@
-//! The lazy namespace of Temporal (INTL-I1-D8; plan v12 §4.7 LAZYNS): realm init gives the
-//! global key `Temporal` its table place and attributes with a reserved value, and the
-//! Temporal group (the modules of `ep9_temporal::MODULES`) installs into a realm at the first
-//! read of the key or the first use of one of its intrinsics. Every script runs on a fresh
+//! The lazy namespaces of Temporal and Intl (INTL-I1-D8; plan v12 §4.7 LAZYNS; INTL W1): realm
+//! init gives the global keys `Temporal` and `Intl` their table places and attributes with a
+//! reserved value, and each group (the modules of `ep9_temporal::MODULES`, of
+//! `ep9_intl::MODULES`) installs into a realm at the first read of its key or the first use
+//! of one of its intrinsics. Every script runs on a fresh
 //! isolate with `ep9_builtins::TABLE`, with and without GC stress (a collection before every
 //! allocation, then the heap verifier); both runs must agree.
 //!
@@ -123,29 +124,35 @@ fn run_both(src: &str) -> (Result<Vec<String>, String>, usize) {
     (plain, live)
 }
 
+/// The live cells after `src`: the smallest of 3 runs, so a stale stack word does not count.
+fn min_cells(src: &'static str) -> usize {
+    (0..3)
+        .map(|_| common::on_big_stack(move || run(src, false)).1)
+        .min()
+        .expect("3 runs")
+}
+
 /// The live cells of an isolate that ran nothing, and the cells that the Temporal group adds
-/// (a script that reads `Temporal` once, minus that). Each is the smallest of 3 runs, so a
-/// stale stack word does not count.
+/// (a script that reads `Temporal` once, minus that).
 fn group_cells() -> (usize, usize) {
-    let min = |src: &'static str| {
-        (0..3)
-            .map(|_| common::on_big_stack(move || run(src, false)).1)
-            .min()
-            .expect("3 runs")
-    };
-    let base = min("");
-    let one = min("Temporal;");
+    let base = min_cells("");
+    let one = min_cells("Temporal;");
     assert!(one > base, "reading Temporal installs the group");
     (base, one - base)
 }
 
-/// The number of definitions and intrinsics of the Temporal modules: the function objects and
-/// intrinsic objects one install makes, at least.
-fn group_size() -> usize {
-    ep9_temporal::MODULES
+/// The number of definitions and intrinsics of `modules`: the function objects and intrinsic
+/// objects one install makes, at least.
+fn size_of(modules: &[BuiltinModule]) -> usize {
+    modules
         .iter()
         .map(|m| m.defs.len() + m.intrinsics.len())
         .sum()
+}
+
+/// The number of definitions and intrinsics of the Temporal modules.
+fn group_size() -> usize {
+    size_of(ep9_temporal::MODULES)
 }
 
 /// Whether the script that left `live` cells installed the Temporal group in `realms` realms
@@ -549,7 +556,19 @@ fn attrs_text(p: &PropDef) -> String {
 /// symbol keys after the string keys, §10.1.11.1), with the table's attributes.
 #[test]
 fn the_group_is_complete() {
-    let modules: &[BuiltinModule] = ep9_temporal::MODULES;
+    group_is_complete(ep9_temporal::MODULES);
+}
+
+/// [`the_group_is_complete`] for the Intl group (INTL W1; design §4.6 case 8): every object
+/// of every module of `ep9_intl::MODULES` has the key list of the eager install.
+#[test]
+fn the_intl_group_is_complete() {
+    group_is_complete(ep9_intl::MODULES);
+}
+
+/// Every object of every module of `modules` (one lazy group) has the key list of the eager
+/// install, read after the group installs.
+fn group_is_complete(modules: &[BuiltinModule]) {
     let paths = paths();
     let mut src = KEYS_JS.to_string();
     let mut want = Vec::new();
@@ -588,4 +607,100 @@ fn the_group_is_complete() {
     );
     let (r, _) = run_both(&src);
     assert_eq!(r, Ok(want));
+}
+
+/// The Intl ids of INTL W1 (the group of the key `Intl`).
+const INTL_IDS: [IntrinsicId; 5] = [
+    IntrinsicId::Intl,
+    IntrinsicId::IntlLocale,
+    IntrinsicId::IntlLocalePrototype,
+    IntrinsicId::IntlCollator,
+    IntrinsicId::IntlCollatorPrototype,
+];
+
+/// Design §4.6 case 1 for the Intl ids (INTL W1, C1): realm init makes no object of the Intl
+/// group (a script that reads `Intl` once has more live cells than one that does not, by at
+/// least one cell per definition and intrinsic of `ep9_intl::MODULES`), and every Intl id is
+/// in that group. `Cx::has_intrinsic` answers true for an Intl id before the install and
+/// installs nothing (M6-ORCH-132).
+#[test]
+fn realm_init_makes_no_intl_object() {
+    let base = min_cells("");
+    let intl = min_cells("Intl;") - base;
+    assert!(
+        intl >= size_of(ep9_intl::MODULES),
+        "the Intl group adds {intl} cells, fewer than its {} definitions and intrinsics",
+        size_of(ep9_intl::MODULES)
+    );
+    let made: Vec<IntrinsicId> = ep9_intl::MODULES
+        .iter()
+        .flat_map(|m| m.intrinsics.iter().map(|d| d.id))
+        .collect();
+    assert_eq!(made, INTL_IDS, "the Intl group makes the W1 Intl ids");
+    let after = common::on_big_stack(|| {
+        let mut iso = isolate(false);
+        let r = iso.with_cx(|cx| {
+            for id in INTL_IDS {
+                assert!(cx.has_intrinsic(id), "{}", id.name());
+            }
+            Ok(())
+        });
+        assert_eq!(r, Ok(()));
+        common::scrub_and_collect(&mut iso);
+        live_cells(&iso)
+    });
+    assert_eq!(
+        installs(after, base, intl),
+        0,
+        "has_intrinsic installs nothing"
+    );
+}
+
+/// Design §4.6 case 3: `typeof Temporal` installs the Temporal group only (the Intl group
+/// stays out), then `typeof Intl` installs Intl; each group's cells add up.
+#[test]
+fn one_namespace_installs_without_the_other() {
+    let base = min_cells("");
+    let temporal = min_cells("typeof Temporal;") - base;
+    let intl = min_cells("typeof Intl;") - base;
+    let both = min_cells("typeof Temporal; typeof Intl;") - base;
+    assert!(temporal >= group_size() && intl >= size_of(ep9_intl::MODULES));
+    // `typeof Temporal` alone leaves the Intl group out: fewer than half its cells more.
+    assert!(both >= temporal + intl / 2, "{both} {temporal} {intl}");
+    assert!(
+        both.abs_diff(temporal + intl) < intl.min(temporal) / 2,
+        "{both} {temporal} {intl}"
+    );
+    let (r, _) = run_both(
+        "print(typeof Temporal, typeof Intl, Object.prototype.toString.call(Intl), Intl.Locale.prototype.constructor === Intl.Locale);",
+    );
+    assert_eq!(r, Ok(vec!["object object [object Intl] true".to_string()]));
+}
+
+/// Design §4.6 case 7 (C4): the global `Intl` is an ordinary data property {writable: true,
+/// enumerable: false, configurable: true} with the value %Intl% (node v26.13.0 lines); a
+/// delete before the first read keeps the eager result.
+#[test]
+fn the_intl_global_is_a_data_property() {
+    let (r, live) = run_both(
+        r#"const d = Object.getOwnPropertyDescriptor(globalThis, "Intl");
+print(d.writable, d.enumerable, d.configurable, d.value === Intl, Object.prototype.toString.call(d.value));"#,
+    );
+    assert_eq!(
+        r,
+        Ok(vec!["true false true true [object Intl]".to_string()])
+    );
+    let base = min_cells("");
+    assert!(live > base);
+    let (r, _) = run_both(
+        r#"print(delete globalThis.Intl, typeof Intl, "Intl" in globalThis);
+print(typeof Temporal, Reflect.ownKeys(globalThis).includes("Intl"));"#,
+    );
+    assert_eq!(
+        r,
+        Ok(vec![
+            "true undefined false".to_string(),
+            "object false".to_string()
+        ])
+    );
 }

@@ -27,3 +27,5 @@
   23  Iterator Helper
   24  DisposableStack
   25  AsyncDisposableStack
+  26  Intl.Locale
+  27  Intl.Collator

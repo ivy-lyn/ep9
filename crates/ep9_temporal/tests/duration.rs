@@ -116,14 +116,16 @@ const PINNED: [&str; 2] = [
     "38334640028.17767 443687.9632890934 75059993789508.28",
 ];
 
-/// A relativeTo string with a calendar annotation: only iso8601 (CanonicalizeCalendar, ep9 has
-/// only the ISO calendar, design SPEC-T-D17), as for a property bag (spec-temporal Codex r1 T1).
+/// A relativeTo string with a calendar annotation: CanonicalizeCalendar, as for a property bag
+/// (spec-temporal Codex r1 T1). `islamic` and `islamic-rgsa` are not in AvailableCalendars
+/// (INTL-I1-D2); `gregory` and `chinese` are, and the month length of the calendar counts
+/// (node 26 gives the same text, except that V8 accepts `islamic` in a string).
 #[test]
-fn relative_to_strings_take_only_the_iso_calendar() {
+fn relative_to_strings_check_the_calendar() {
     assert_eq!(
         run_both(
             r#"var r = [];
-            for (var rt of ["2020-01-01[u-ca=gregory]", "2020-01-01T00:00[UTC][u-ca=chinese]", "2020-01-01[u-ca=iso8601]", "2020-01-01T00:00[UTC][u-ca=iso8601]"]) {
+            for (var rt of ["2020-01-01[u-ca=islamic]", "2020-01-01T00:00[UTC][u-ca=islamic-rgsa]", "2020-01-01[u-ca=gregory]", "2020-01-01T00:00[UTC][u-ca=chinese]", "2020-01-01[u-ca=iso8601]", "2020-01-01T00:00[UTC][u-ca=iso8601]"]) {
               for (var f of [() => Temporal.Duration.compare("P40D", "P39D", { relativeTo: rt }), () => Temporal.Duration.from("P40D").round({ largestUnit: "months", relativeTo: rt }), () => Temporal.Duration.from("P40D").total({ unit: "months", relativeTo: rt })]) {
                 try { r.push(String(f())); } catch (e) { r.push(e.constructor.name); }
               }
@@ -131,7 +133,7 @@ fn relative_to_strings_take_only_the_iso_calendar() {
             print(r.join(" "));"#
         ),
         lines(&[
-            "RangeError RangeError RangeError RangeError RangeError RangeError 1 P1M9D 1.3103448275862069 1 P1M9D 1.3103448275862069"
+            "RangeError RangeError RangeError RangeError RangeError RangeError 1 P1M9D 1.3103448275862069 1 P1M10D 1.3448275862068966 1 P1M9D 1.3103448275862069 1 P1M9D 1.3103448275862069"
         ])
     );
 }

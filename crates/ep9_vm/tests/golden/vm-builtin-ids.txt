@@ -152,3 +152,8 @@ intrinsic 100  %DisposableStack%
 intrinsic 101  %DisposableStack.prototype%
 intrinsic 102  %AsyncDisposableStack%
 intrinsic 103  %AsyncDisposableStack.prototype%
+intrinsic 104  %Intl%
+intrinsic 105  %Intl.Locale%
+intrinsic 106  %Intl.Locale.prototype%
+intrinsic 107  %Intl.Collator%
+intrinsic 108  %Intl.Collator.prototype%

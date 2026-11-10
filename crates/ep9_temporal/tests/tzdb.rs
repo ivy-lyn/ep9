@@ -58,3 +58,38 @@ fn issue_759_probe_has_the_right_offset() {
     .unwrap();
     assert_eq!(z.offset(), "-04:00");
 }
+
+/// The std-typed wrappers of INTL-I1-D9 (the Intl reads of the tz data).
+#[test]
+fn intl_wrappers_read_the_tz_data() {
+    use ep9_temporal::tzdb::{canonical_zone, offset_at, zone_ids, zones_in_region};
+    let ids = zone_ids();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "sorted, no repeats");
+    for id in [
+        "UTC",
+        "America/New_York",
+        "Asia/Kolkata",
+        "Etc/GMT+1",
+        "Etc/GMT-14",
+    ] {
+        assert!(ids.contains(&id), "{id}");
+    }
+    for id in ["Etc/UTC", "Etc/GMT", "Asia/Calcutta", "US/Pacific"] {
+        assert!(!ids.contains(&id), "{id} is a link");
+    }
+    assert_eq!(canonical_zone("asia/calcutta"), Some("Asia/Kolkata"));
+    assert_eq!(canonical_zone("US/Pacific"), Some("America/Los_Angeles"));
+    assert_eq!(canonical_zone("Etc/UTC"), Some("UTC"));
+    assert_eq!(canonical_zone("Mars/Olympus_Mons"), None);
+    let us = zones_in_region("us");
+    assert!(us.contains(&"America/New_York") && us.contains(&"Pacific/Honolulu"));
+    assert!(!us.contains(&"Europe/Paris"));
+    // 2026-07-01T00:00Z: New York is on DST (-4 h); 2026-01-01T00:00Z it is not (-5 h).
+    let jul = 1_782_864_000_000_000_000i128;
+    let jan = 1_767_225_600_000_000_000i128;
+    assert_eq!(offset_at("America/New_York", jul), Some((-4 * 3600, true)));
+    assert_eq!(offset_at("America/New_York", jan), Some((-5 * 3600, false)));
+    assert_eq!(offset_at("UTC", jan), Some((0, false)));
+    assert_eq!(offset_at("Asia/Kolkata", jan), Some((19_800, false)));
+    assert_eq!(offset_at("Nowhere/City", jan), None);
+}

@@ -1,5 +1,5 @@
-//! Property bags: PrepareCalendarFields (§12.2.3) and ToTemporalTimeRecord (§4.5.12) for the
-//! ISO calendar. The fields are read in alphabetical order; each value is converted right
+//! Property bags: PrepareCalendarFields (§12.2.3) and ToTemporalTimeRecord (§4.5.12), without
+//! the era fields. The fields are read in alphabetical order; each value is converted right
 //! after its Get (both are observable):
 //!
 //! | Field | Conversion |
@@ -10,7 +10,7 @@
 //! | `offset` | ToOffsetString: ToPrimitive(string), a String (TypeError), ParseDateTimeUTCOffset (RangeError) |
 //! | `timeZone` | ToTemporalTimeZoneIdentifier |
 //!
-//! `era` and `eraYear` are not read: the ISO calendar has no eras (CalendarExtraFields).
+//! `era` and `eraYear` (CalendarExtraFields): `calendar::prepare_fields` reads them around this.
 
 use ep9_vm::{Cx, JsObject, JsResult, Local};
 use temporal_rs::fields::{CalendarFields, YearMonthCalendarFields};

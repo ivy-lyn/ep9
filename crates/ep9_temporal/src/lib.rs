@@ -14,8 +14,9 @@
 //!   26 plain_month_day %Temporal.PlainMonthDay%          plain_month_day.rs
 //!   27 zoned_date_time %Temporal.ZonedDateTime%          zoned_date_time.rs
 //! support: tzdb (provider, no ep9_vm import), error (temporal_rs error -> JS error),
-//!          convert (ToIntegerWithTruncation ...), options (option bags), calendar (iso8601
-//!          only), fields (property bags), relative_to (Duration relativeTo)
+//!          convert (ToIntegerWithTruncation ...), options (option bags), calendar
+//!          (AvailableCalendars, INTL-I1-D2; pub for ep9_intl), fields (property bags),
+//!          relative_to (Duration relativeTo)
 //! ```
 //!
 //! Rules of the glue (design §3.1): only the `*_with_provider` forms of temporal_rs; a
@@ -24,7 +25,7 @@
 //! `cx.throw_*` call.
 #![forbid(unsafe_code)]
 
-pub(crate) mod calendar;
+pub mod calendar;
 pub(crate) mod convert;
 pub mod duration;
 pub(crate) mod error;

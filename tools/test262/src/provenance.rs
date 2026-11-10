@@ -43,7 +43,7 @@
 //!   runner built at one commit and run on a tree at another writes both: m1-exit gives OPEN.
 //! - `"runner_dirty"`: whether a tracked file under the compiled paths (`runner_build.rs`:
 //!   `crates`, `tools/test262`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the
-//!   regress pin and patch set) differed from HEAD when this binary was built
+//!   regress and icu4x pins and patch sets) differed from HEAD when this binary was built
 //!   (`EP9_RUNNER_DIRTY`; gates5 high 1). build.rs reruns on the git index and on any change
 //!   under those paths, so a binary built from an edit that was undone later still says `true`.
 //!   Left out when git could not answer. `true` or no field: m1-exit gives OPEN.
@@ -88,8 +88,9 @@ use std::process::Command;
 
 /// The paths whose ids the JSON names: the paths whose change makes an m1-exit item 3 or 4 input
 /// stale (`T262_FRESH_PATHS` in tools/xtask/src/m1_exit.rs; an m1-exit test checks that the two
-/// lists are the same). The last two are the regress fork (D41): its pin and its patch set.
-pub const TREE_PATHS: [&str; 9] = [
+/// lists are the same). Then the regress fork (D41) and the icu4x fork (INTL W1, route
+/// INTL-FRESH-PATHS): the pin and the patch set of each.
+pub const TREE_PATHS: [&str; 11] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -99,6 +100,8 @@ pub const TREE_PATHS: [&str; 9] = [
     "third_party/test262.commit",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "third_party/icu4x.commit",
+    "third_party/patches/icu4x",
 ];
 
 /// The source facts of one run.
@@ -681,13 +684,20 @@ mod tests {
     }
 
     /// pre medium 1 (D41): the regress fork pin and its patch set are tree paths, so a CI
-    /// merge-commit run names their ids and m1-exit compares them with HEAD's.
+    /// merge-commit run names their ids and m1-exit compares them with HEAD's. The icu4x fork
+    /// too (INTL-FRESH-PATHS).
     #[test]
     fn the_regress_fork_is_a_tree_path() {
         let d = tmp("regress");
-        std::fs::create_dir_all(d.join("third_party/patches/regress")).unwrap();
-        std::fs::write(d.join("third_party/regress.commit"), "b\n").unwrap();
-        std::fs::write(d.join("third_party/patches/regress/0001.patch"), "p\n").unwrap();
+        for fork in ["regress", "icu4x"] {
+            std::fs::create_dir_all(d.join(format!("third_party/patches/{fork}"))).unwrap();
+            std::fs::write(d.join(format!("third_party/{fork}.commit")), "b\n").unwrap();
+            std::fs::write(
+                d.join(format!("third_party/patches/{fork}/0001.patch")),
+                "p\n",
+            )
+            .unwrap();
+        }
         git_in(&d, &["init", "-q"]);
         git_in(&d, &["add", "-A"]);
         git_in(&d, &["commit", "-q", "-m", "a"]);
@@ -695,7 +705,12 @@ mod tests {
         let names: Vec<&str> = s.tree.iter().map(|(p, _)| *p).collect();
         assert_eq!(
             names,
-            ["third_party/regress.commit", "third_party/patches/regress"],
+            [
+                "third_party/regress.commit",
+                "third_party/patches/regress",
+                "third_party/icu4x.commit",
+                "third_party/patches/icu4x"
+            ],
             "{s:?}"
         );
         std::fs::remove_dir_all(d).unwrap();
