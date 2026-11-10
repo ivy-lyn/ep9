@@ -177,7 +177,7 @@ pub(crate) mod kind {
     }
 
     operand!(Reg, R, |p, S| R::of_operand(read_signed::<S>(p)));
-    operand!(RegOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
+    operand!(RegOut, R, |p, S| R::of_out_operand(read_signed::<S>(p)));
     operand!(RegInOut, R, |p, S| R::of_operand(read_signed::<S>(p)));
     operand!(RegPair, R, |p, S| R::of_operand(read_signed::<S>(p)));
     operand!(RegOutTriple, R, |p, S| R::of_operand(read_signed::<S>(p)));
@@ -1246,13 +1246,11 @@ impl R {
     /// or `mov`, `sar`, `and`, `add`). Other targets: `from_operand` (their code does not
     /// change).
     ///
-    /// aarch64 (M7-P5 Q6 DISPATCH): a branch on the sign (`R::from_operand_branch`): `tbnz`,
-    /// and `sub` on the negative arm only (the receiver and the parameters). A local (the
-    /// usual operand) costs 1 instruction before the load or store, not 2 (M7-P4 TSPASS2:
-    /// `lsr` and `sub` with a shifted register); a negative operand costs 2, as before (LLVM
-    /// copies the rest of the handler into the negative arm). Star and Ldar: 6 instructions on
-    /// the local path, not 7. Without the empty `asm!` block in the negative arm LLVM turns
-    /// the branch into `sub`, `tst`, `csel` (3). Other targets: `from_operand`.
+    /// aarch64 (M7-P4 TSPASS2): the sign bit, through an empty `asm!` block, times `HEADER`,
+    /// subtracted (`R::from_operand_sign`): `lsr` and `sub` with a shifted register (2
+    /// instructions before the load). Without the block LLVM turned the shift form of
+    /// `from_operand` into `cmp`, `mov`, `csel`, `add` (4) in each register operand decode of
+    /// each handler. Other targets: `from_operand`.
     #[inline(always)]
     pub fn of_operand(v: i32) -> R {
         #[cfg(target_arch = "x86_64")]
@@ -1261,7 +1259,7 @@ impl R {
         }
         #[cfg(target_arch = "aarch64")]
         {
-            R::from_operand_branch(v)
+            R::from_operand_sign(v)
         }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
@@ -1269,8 +1267,54 @@ impl R {
         }
     }
 
-    /// The aarch64 form of [`R::of_operand`]: `v - HEADER` for a negative `v`, else `v`, with
-    /// the subtraction on its own (cold) arm. It builds on every target for the test; only
+    /// [`R::of_operand`] for an output register (`kind::RegOut`: `Star`, the `Mov` target,
+    /// `PushContext`, `ToObject`). aarch64 (M7-P5 Q6 DISPATCH): a branch on the sign
+    /// (`R::from_operand_branch`): `tbnz`, and `sub` on the negative arm only. A local costs 1
+    /// instruction before the store, not 2; a parameter or the receiver costs 2, as before (LLVM
+    /// copies the rest of the handler into the negative arm). `Star`: 6 instructions on the
+    /// local path, not 7. Other targets: [`R::of_operand`].
+    ///
+    /// Only the outputs take the branch: a handler writes a parameter rarely, so the branch is
+    /// well predicted. Inputs read parameters and the receiver often (`Ldar a0`, a load from
+    /// `this`), and the branch of every register kind made a64 richards about 7% slower in wall
+    /// time (2026-11-10, mac M5 Max, a report) although it ran 1.7% fewer instructions.
+    #[inline(always)]
+    pub fn of_out_operand(v: i32) -> R {
+        #[cfg(target_arch = "aarch64")]
+        {
+            R::from_operand_branch(v)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            R::of_operand(v)
+        }
+    }
+
+    /// The aarch64 form of [`R::of_operand`]: `v - HEADER` for a negative `v`, else `v`, as
+    /// `v - sign(v) * HEADER`. It builds on every target for the test; only aarch64 has the
+    /// `asm!` block.
+    #[cfg(any(target_arch = "aarch64", test))]
+    #[inline(always)]
+    fn from_operand_sign(v: i32) -> R {
+        let o = v as isize;
+        // 1 for a negative operand (the receiver or a parameter), else 0.
+        #[allow(unused_mut)]
+        let mut neg = (o as usize) >> (usize::BITS - 1);
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
+        // change. `neg` comes back as it went in.
+        unsafe {
+            core::arch::asm!(
+                "/* {n} */",
+                n = inout(reg) neg,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+        }
+        R(o - (neg * HEADER) as isize)
+    }
+
+    /// The aarch64 form of [`R::of_out_operand`]: `v - HEADER` for a negative `v`, else `v`,
+    /// with the subtraction on its own (cold) arm. It builds on every target for the test; only
     /// aarch64 has the `asm!` block, which keeps the arm a branch (LLVM does not speculate an
     /// `asm!` block into a select).
     #[cfg(any(target_arch = "aarch64", test))]
@@ -1369,8 +1413,9 @@ mod tests {
         assert_eq!(R::from_operand(-2 - 7).0, crate::frame::slot::PARAM0 - 7);
     }
 
-    /// The decoder map of every target, the x86-64 select form and the aarch64 branch form are
-    /// `from_operand`, for every 1-byte and 2-byte operand and the 4-byte ends.
+    /// The decoder maps of every target (inputs and outputs), the x86-64 select form and the
+    /// aarch64 sign and branch forms are `from_operand`, for every 1-byte and 2-byte operand
+    /// and the 4-byte ends.
     #[test]
     fn register_operand_decoder_is_from_operand() {
         let ends = [
@@ -1384,6 +1429,8 @@ mod tests {
         for v in (i32::from(i16::MIN)..=i32::from(i16::MAX)).chain(ends) {
             assert_eq!(R::of_operand(v), R::from_operand(v), "operand {v}");
             assert_eq!(R::from_operand_select(v), R::from_operand(v), "operand {v}");
+            assert_eq!(R::of_out_operand(v), R::from_operand(v), "operand {v}");
+            assert_eq!(R::from_operand_sign(v), R::from_operand(v), "operand {v}");
             assert_eq!(R::from_operand_branch(v), R::from_operand(v), "operand {v}");
         }
         // The receiver operand (-1) at the 3 scales: fp - 9 (H14).
