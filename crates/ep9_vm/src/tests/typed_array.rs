@@ -956,12 +956,11 @@ fn integrity_levels_of_a_view() {
         let keys = property::own_property_keys(cx, o);
         for i in 0..object::array_len(keys) {
             let k = object::array_get(keys, i).unwrap();
-            if let Some(c) = property::get_own_property(cx, o, k).unwrap() {
-                if c.configurable == Some(true)
-                    || (frozen && c.is_data() && c.writable == Some(true))
-                {
-                    return false;
-                }
+            if let Some(c) = property::get_own_property(cx, o, k).unwrap()
+                && (c.configurable == Some(true)
+                    || (frozen && c.is_data() && c.writable == Some(true)))
+            {
+                return false;
             }
         }
         true
@@ -1183,7 +1182,7 @@ fn canonical_numeric_matches_the_spec_text() {
         1.2345678901234567e21,
         123456789012345680000.0,
         1.0 / 3.0,
-        2.0f64.powi(70),
+        1180591620717411303424.0, // 2^70
         1e-300,
         f64::MAX,
         f64::MIN_POSITIVE,
