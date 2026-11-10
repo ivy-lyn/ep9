@@ -1812,9 +1812,34 @@ pub(crate) fn slot_get(o: u64, i: usize) -> u64 {
 }
 
 /// Stores internal slot `i` of the SLOT_OBJECT `o` (barriered). Panics if `i` ≥
-/// [`slot_count`].
+/// [`slot_count`], or if `o` is an engine object: a buffer or a DataView that
+/// `array_buffer.rs` made, whose slots bound raw memory accesses. Only `array_buffer.rs` writes
+/// those, with [`engine_slot_set`].
+///
+/// The choke point (TA-1 fixer r3, design study): the slots cell has no other writer, so every
+/// slot write of the VM and of the builtin ABI (`set_slot`, the Promise records and methods,
+/// collections, WeakRef, RegExp) comes here. A cheap pre-filter (the slot count, then the class
+/// word) sends only the objects that can be engine objects to the brand test.
 #[inline]
 pub(crate) fn slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
+    let n = slot_count(o);
+    assert!(i < n, "internal slot {i} out of range (the object has {n})");
+    if crate::array_buffer::may_be_engine_object(n, rd_i32(cell(o), slot_obj::CLASS)) {
+        crate::array_buffer::refuse_engine_write(rt, o, i);
+    }
+    wr(
+        &rt.heap,
+        cell(rd(cell(o), slot_obj::SLOTS)),
+        elems::DATA + 8 * i,
+        v,
+    );
+}
+
+/// [`slot_set`] with no brand test, for the engine objects of `array_buffer.rs` (buffers and
+/// DataViews): the same barriered store. Only `array_buffer.rs` calls it (and its tests).
+/// Panics if `i` ≥ [`slot_count`].
+#[inline]
+pub(crate) fn engine_slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
     let n = slot_count(o);
     assert!(i < n, "internal slot {i} out of range (the object has {n})");
     wr(
@@ -1822,5 +1847,10 @@ pub(crate) fn slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
         cell(rd(cell(o), slot_obj::SLOTS)),
         elems::DATA + 8 * i,
         v,
+    );
+    // After the store: the first write of a maker is the table slot, which makes the brand.
+    debug_assert!(
+        crate::array_buffer::is_engine_object(rt, o),
+        "engine_slot_set of an object that is not an engine buffer or DataView"
     );
 }

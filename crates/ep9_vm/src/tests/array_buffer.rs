@@ -19,6 +19,7 @@
 //! | `atomics_operations` | load, store, the 6 read-modify-write ops and compare-exchange on each integer type |
 //! | `data_view_slots` | the DataView slots (slot 4: its own table entry), its range checks, auto length |
 //! | `a_failed_transfer_leaves_the_buffer` | ArrayBufferCopyAndDetach order: a failed grow of a moved store leaves the old buffer as it was |
+//! | `the_generic_slot_write_refuses_an_engine_object` | the `object::slot_set` choke (TA-1 fixer r3): each slot of each engine buffer and DataView refuses a generic write; `engine_slot_set` writes them; a caller object of the class is the caller's |
 //! | `every_engine_object_owns_its_entry_and_no_other_does` | the brand (TA-1 fixer r3): each maker's buffer or DataView owns a table entry from birth, a caller object never does (also with a copied index), the entries of dead ones go in every GC kind; 10 000 make and drop rounds with GCs: no caller object at a reused address is branded |
 //! | `the_slot_api_refuses_the_store_slot` | safe `Cx` only: `set_slot` and `slot` of a buffer store or a DataView data word panic (Codex TA-1 r1 f1_e) |
 //! | `the_slot_api_refuses_the_byte_length_slot` | safe `Cx` only: `set_slot` of the byte length panics (f1_a, f1_b, f1_d); the range checks hold |
@@ -415,7 +416,7 @@ fn transfer_moves_or_copies_the_store() {
         ));
         // A buffer with a detach key: transfer and a detach with another key fail.
         let k = buffer(rt, 2, None);
-        object::slot_set(rt, k, slot::DETACH_KEY, int32_bits(7));
+        object::engine_slot_set(rt, k, slot::DETACH_KEY, int32_bits(7));
         assert!(matches!(
             ab::copy_and_detach(rt, k, NULL, 2, false),
             Err(Fail::Type(_))
@@ -948,6 +949,106 @@ fn every_engine_object_owns_its_entry_and_no_other_does() {
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });
+    }
+}
+
+/// The panic text of the `object::slot_set` choke on an engine object.
+const BRAND: &str = "belongs to abi/typed.rs";
+
+/// The text of a panic payload.
+fn panic_string(p: Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default()
+}
+
+/// The panic text of `f` on the runtime of a fresh isolate (GC stress as `stress`), or `None`.
+fn rt_panic(stress: bool, f: impl FnOnce(&Runtime) + Send + 'static) -> Option<String> {
+    on_big_stack(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let iso = isolate(config(Dispatch::DEFAULT, stress));
+            f(&iso.rt);
+        }))
+        .err()
+        .map(panic_string)
+    })
+}
+
+/// The engine objects of one choke test: a fixed buffer with a view, a zero-length buffer, a
+/// resizable buffer, a growable SAB and a DataView, and the slot count of each.
+fn engine_objects(rt: &Runtime) -> [(u64, usize); 5] {
+    let fixed = buffer(rt, 8, None);
+    view(rt, 1, fixed, 0, None);
+    let empty = buffer(rt, 0, None);
+    let rab = buffer(rt, 8, Some(64));
+    let sab = shared(rt, 8, Some(64));
+    let dv = ab::new_data_view(rt, NULL, fixed, 0, Some(8)).unwrap();
+    [
+        (fixed, slot::COUNT),
+        (empty, slot::COUNT),
+        (rab, slot::COUNT),
+        (sab, slot::COUNT),
+        (dv, dv_slot::COUNT),
+    ]
+}
+
+/// The design study's T4 (judge §4.5): the generic slot write (`object::slot_set`, the choke
+/// that every slot writer of the VM and the ABI goes through) panics on each slot of each
+/// engine object before it writes; `object::engine_slot_set` writes them.
+#[test]
+fn the_generic_slot_write_refuses_an_engine_object() {
+    for stress in [false, true] {
+        for which in 0..5 {
+            for i in 0..engine_objects_count(which) {
+                let t = rt_panic(stress, move |rt| {
+                    let (o, _) = engine_objects(rt)[which];
+                    object::slot_set(rt, o, i, UNDEFINED);
+                });
+                assert!(
+                    t.as_deref().is_some_and(|t| t.contains(BRAND)),
+                    "slot {i}, case {which}: {t:?}"
+                );
+            }
+        }
+    }
+    each(|cx| {
+        let rt = cx.rt();
+        let objs = engine_objects(rt);
+        for (o, n) in objs {
+            let before: Vec<u64> = (0..n).map(|i| object::slot_get(o, i)).collect();
+            // The engine write: the same value back into each slot, then the slots are as
+            // before and the object keeps its brand.
+            for (i, &x) in before.iter().enumerate() {
+                object::engine_slot_set(rt, o, i, x);
+            }
+            assert_eq!(
+                (0..n).map(|i| object::slot_get(o, i)).collect::<Vec<_>>(),
+                before
+            );
+            assert!(ab::is_engine_object(rt, o));
+        }
+        let (fixed, _) = objs[0];
+        object::engine_slot_set(rt, fixed, slot::DETACH_KEY, int32_bits(7));
+        assert!(matches!(
+            ab::detach(rt, fixed, UNDEFINED),
+            Err(Fail::Type(_))
+        ));
+        ab::detach(rt, fixed, int32_bits(7)).unwrap();
+        assert!(ab::is_detached(fixed));
+        // A caller object of the same class and count is the caller's: the choke lets it be.
+        let o = object::new_slot_object(rt, NULL, ObjectClass::ArrayBuffer.id(), slot::COUNT);
+        object::slot_set(rt, o, slot::BYTE_LENGTH, num(4096.0));
+        assert_eq!(n(object::slot_get(o, slot::BYTE_LENGTH)), 4096.0);
+    });
+}
+
+/// The slot count of the engine object `which` of [`engine_objects`].
+fn engine_objects_count(which: usize) -> usize {
+    if which == 4 {
+        dv_slot::COUNT
+    } else {
+        slot::COUNT
     }
 }
 

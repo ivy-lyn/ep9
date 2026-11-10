@@ -424,16 +424,39 @@ pub(crate) fn buffer_class(rt: &Runtime, b: u64) -> Option<ObjectClass> {
 
 /// True if `v` is a DataView made here ([`new_data_view`]): it owns the table entry that its
 /// slot 4 names (the brand). A DataView reader (TA-2) trusts the slots of `v` only after this.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_data_view(rt: &Runtime, v: u64) -> bool {
     object::slot_class(v) == Some(ObjectClass::DataView.id())
         && owns_entry(rt, v, dv_slot::COUNT, dv_slot::TABLE)
 }
 
 /// True if `o` is a buffer or a DataView made here (an engine object; any value).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_engine_object(rt: &Runtime, o: u64) -> bool {
     buffer_class(rt, o).is_some() || is_data_view(rt, o)
+}
+
+/// The pre-filter of the `object::slot_set` choke: true if a SLOT_OBJECT with `count` slots
+/// and class id `class` can be an engine object (the slot count of a buffer or a DataView,
+/// and one of their classes). One compare for most objects.
+#[inline(always)]
+pub(crate) fn may_be_engine_object(count: usize, class: i32) -> bool {
+    const AB: i32 = ObjectClass::ArrayBuffer.id() as i32;
+    const SAB: i32 = ObjectClass::SharedArrayBuffer.id() as i32;
+    const DV: i32 = ObjectClass::DataView.id() as i32;
+    (count == slot::COUNT || count == dv_slot::COUNT) && matches!(class, AB | SAB | DV)
+}
+
+/// The brand test of the `object::slot_set` choke (cold: only a SLOT_OBJECT that passed
+/// [`may_be_engine_object`] comes here): panics if `o` is an engine object. Its slots bound raw
+/// memory accesses, so only this file writes them (`object::engine_slot_set`).
+#[cold]
+#[inline(never)]
+pub(crate) fn refuse_engine_write(rt: &Runtime, o: u64, i: usize) {
+    if is_engine_object(rt, o) {
+        let class = object::slot_class(o)
+            .and_then(ObjectClass::from_id)
+            .map_or("?", ObjectClass::name);
+        panic!("internal slot {i} of an engine {class} belongs to abi/typed.rs");
+    }
 }
 
 /// True if the SLOT_OBJECT `o` has `count` slots and its slot `table` is the int32 index of
@@ -535,12 +558,12 @@ fn new_buffer_object(
     let o = object::new_slot_object(rt, proto, class.id(), slot::COUNT);
     // The brand: `o` owns its entry from birth (no GC point since the allocation).
     let i = rt.buffers.insert(o, None, 0);
-    object::slot_set(rt, o, slot::TABLE, int32_bits(i));
+    object::engine_slot_set(rt, o, slot::TABLE, int32_bits(i));
     let fl = if max.is_some() { flag::RESIZABLE } else { 0 };
-    object::slot_set(rt, o, slot::BYTE_LENGTH, crate::conv::num(len as f64));
+    object::engine_slot_set(rt, o, slot::BYTE_LENGTH, crate::conv::num(len as f64));
     let m = max.map_or(UNDEFINED, |m| crate::conv::num(m as f64));
-    object::slot_set(rt, o, slot::MAX_BYTE_LENGTH, m);
-    object::slot_set(rt, o, slot::FLAGS, int32_bits(fl));
+    object::engine_slot_set(rt, o, slot::MAX_BYTE_LENGTH, m);
+    object::engine_slot_set(rt, o, slot::FLAGS, int32_bits(fl));
     o
 }
 
@@ -574,7 +597,7 @@ pub(crate) fn allocate(rt: &Runtime, proto: u64, len: u64, max: Option<u64>) -> 
         None => {
             let bytes =
                 new_bytes(rt, len as usize).ok_or(Fail::Range("Array buffer allocation failed"))?;
-            object::slot_set(rt, b, slot::STORE, bytes);
+            object::engine_slot_set(rt, b, slot::STORE, bytes);
         }
         Some(m) => {
             let mem = Reservation::reserve(reservation_size(m))
@@ -590,7 +613,7 @@ pub(crate) fn allocate(rt: &Runtime, proto: u64, len: u64, max: Option<u64>) -> 
             let i = entry_index(b).expect("an engine buffer has its entry");
             rt.buffers
                 .set_store(i, Some(Store::Resizable { mem, committed }), committed);
-            object::slot_set(rt, b, slot::STORE, int32_bits(i as i32));
+            object::engine_slot_set(rt, b, slot::STORE, int32_bits(i as i32));
         }
     }
     Ok(b)
@@ -636,7 +659,7 @@ pub(crate) fn allocate_shared(
     let i = entry_index(b).expect("an engine buffer has its entry");
     rt.buffers
         .set_store(i, Some(Store::Shared(block)), committed);
-    object::slot_set(rt, b, slot::STORE, int32_bits(i as i32));
+    object::engine_slot_set(rt, b, slot::STORE, int32_bits(i as i32));
     Ok(b)
 }
 
@@ -692,9 +715,9 @@ fn detach_unchecked(rt: &Runtime, b: u64) {
             zero_view(rt, v);
         }
     }
-    object::slot_set(rt, b, slot::FLAGS, int32_bits(flags(b) | flag::DETACHED));
-    object::slot_set(rt, b, slot::BYTE_LENGTH, int32_bits(0));
-    object::slot_set(rt, b, slot::STORE, UNDEFINED);
+    object::engine_slot_set(rt, b, slot::FLAGS, int32_bits(flags(b) | flag::DETACHED));
+    object::engine_slot_set(rt, b, slot::BYTE_LENGTH, int32_bits(0));
+    object::engine_slot_set(rt, b, slot::STORE, UNDEFINED);
     if let Some(i) = i {
         let (store, external) = take_store(rt, i);
         if external > 0 {
@@ -713,9 +736,9 @@ fn zero_view(rt: &Runtime, v: u64) {
     }
     debug_assert_eq!(object::slot_class(v), Some(ObjectClass::DataView.id()));
     let null = ExternalRef::<u8>::new(core::ptr::null());
-    object::slot_set(rt, v, dv_slot::DATA, ExternalRef::to_word(null));
+    object::engine_slot_set(rt, v, dv_slot::DATA, ExternalRef::to_word(null));
     if object::slot_get(v, dv_slot::BYTE_LENGTH) != int32_bits(layout::VIEW_LENGTH_AUTO) {
-        object::slot_set(rt, v, dv_slot::BYTE_LENGTH, int32_bits(0));
+        object::engine_slot_set(rt, v, dv_slot::BYTE_LENGTH, int32_bits(0));
     }
 }
 
@@ -762,7 +785,7 @@ pub(crate) fn copy_and_detach(
     if new_max.is_none() && !is_resizable(b) && new_len == old_len {
         let nb = new_buffer_object(rt, proto, ObjectClass::ArrayBuffer, new_len, None);
         // GC point above: `store` (a BYTES cell or undefined) is in a Rust local and `b` holds it.
-        object::slot_set(rt, nb, slot::STORE, store);
+        object::engine_slot_set(rt, nb, slot::STORE, store);
         detach_unchecked(rt, b);
         return Ok(nb);
     }
@@ -773,7 +796,7 @@ pub(crate) fn copy_and_detach(
         let j = entry_index(nb).expect("an engine buffer has its entry");
         let (moved, external) = take_store(rt, i);
         rt.buffers.set_store(j, moved, external);
-        object::slot_set(rt, nb, slot::STORE, int32_bits(j as i32));
+        object::engine_slot_set(rt, nb, slot::STORE, int32_bits(j as i32));
         // GC point (a grow adds external bytes): `b` and `nb` live in Rust locals, and no JS
         // runs before the detach, so the views of `b` see no state between the two.
         if let Err(e) = resize(rt, nb, new_len) {
@@ -876,7 +899,7 @@ pub(crate) fn resize(rt: &Runtime, b: u64, new_len: u64) -> BufResult<()> {
             }
         }
     }
-    object::slot_set(rt, b, slot::BYTE_LENGTH, crate::conv::num(new_len as f64));
+    object::engine_slot_set(rt, b, slot::BYTE_LENGTH, crate::conv::num(new_len as f64));
     Ok(())
 }
 
@@ -1365,15 +1388,15 @@ pub(crate) fn new_data_view(
     let v = object::new_slot_object(rt, proto, ObjectClass::DataView.id(), dv_slot::COUNT);
     // The brand: `v` owns its entry from birth (no GC point since the allocation).
     let j = rt.buffers.insert(v, None, 0);
-    object::slot_set(rt, v, dv_slot::TABLE, int32_bits(j));
-    object::slot_set(rt, v, dv_slot::BUFFER, b);
-    object::slot_set(rt, v, dv_slot::BYTE_OFFSET, crate::conv::num(offset as f64));
+    object::engine_slot_set(rt, v, dv_slot::TABLE, int32_bits(j));
+    object::engine_slot_set(rt, v, dv_slot::BUFFER, b);
+    object::engine_slot_set(rt, v, dv_slot::BYTE_OFFSET, crate::conv::num(offset as f64));
     let bl = len.map_or(int32_bits(layout::VIEW_LENGTH_AUTO), |n| {
         crate::conv::num(n as f64)
     });
-    object::slot_set(rt, v, dv_slot::BYTE_LENGTH, bl);
+    object::engine_slot_set(rt, v, dv_slot::BYTE_LENGTH, bl);
     let data = ExternalRef::new(view_data(rt, b, offset as usize));
-    object::slot_set(rt, v, dv_slot::DATA, ExternalRef::to_word(data));
+    object::engine_slot_set(rt, v, dv_slot::DATA, ExternalRef::to_word(data));
     add_view(rt, b, v);
     Ok(v)
 }
