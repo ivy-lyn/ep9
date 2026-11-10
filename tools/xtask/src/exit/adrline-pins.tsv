@@ -393,7 +393,7 @@ history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:222	| 4 Data (spec-int 
 history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:241	| 1 Reviewer (spec-int amendment: the 2026-11-06 rewrite row, PROVEN bitwise facts for Number operands (Frozen Model)) | spec-int Claude reviewer,	c69556aee	\"BigInts have no unsigned right shift\, use \>\> instead\"\,
 history	H30-ir-fact-model.md	crates/ep9_vm/src/bigint.rs:241	| 1b Second reviewer (spec-int amendment: the 2026-11-06 rewrite row, PROVEN bitwise facts for Number operands (Frozen Model); README §3.2 Frozen part, GATES10 role)	c69556aee	\"BigInts have no unsigned right shift\, use \>\> instead\"\,
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:202	crates/ep9_vm/src/runtime.rs	roots: \(0\.\.TABLE_SLOTS\)\.map\(	0
-pin	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:96-97	crates/ep9_vm/src/versions.rs	^/// Deoptimization metadata \(H29\)	0	^pub const DEOPT_META_VERSION: u32 = 	0
+pin	H29-deopt-contract.md	crates/ep9_vm/src/versions.rs:107-108	crates/ep9_vm/src/versions.rs	^/// Deoptimization metadata \(H29\)	0	^pub const DEOPT_META_VERSION: u32 = 	0
 history	H16-ics-and-feedback.md	crates/ep9_unit/src/host.rs:40	1 Reviewer (M5-P0 amendment: the 2026-10-28 rewrite (version) row, IC_LAYOUT 2 -> 3)	3c1c495	ic: vm::IC_LAYOUT_VERSION,
 history	H35-aot-unit-format.md	crates/ep9_unit/build.rs:1-22	4 Data (M7-P0 amendment: the 2026-11-06 rewrite row, AOT0, the C-19 build-id rule)	cf100de92593535eff6b038e0e3a55245b090a1b	^//! The engine build id \(H35-Q8\): writes
 history	13-execution-modes.md	crates/ep9_unit/src/codes.rs:238-239	The container `facts` section (today `Hints`, kind 6	3dd68d100a16990a3c78fb5ea447cb918b2955bf	/// A HINTED FactSnapshot \(`ep9_facts` format\)\. Optional\.
@@ -448,3 +448,20 @@ history	H36-fp-semantics.md	tools/xtask/src/fpcheck.rs:1669	3 Verifier (spec-int
 # line 423 to 441; these 2 H34 Review record rows keep their text at the M7-P3 tag 3cc9e671.
 history	H34-relocation-kinds.md	.github/scripts/dep-guards.sh:423	| 3 Verifier (M7-P2 amendment: the 2026-11-07 fill row, ep9_masm as built, A2-MASM)	3cc9e671	^deps_within 21 ep9_masm$
 history	H34-relocation-kinds.md	.github/scripts/dep-guards.sh:423	| 4 Data (M7-P2 amendment: the 2026-11-07 clarify row, the ep9_masm not-built notes)	3cc9e671	^deps_within 21 ep9_masm$
+# TA-0 merge fixer (ADRLINE of the TypedArray TA-0 merge head 249e0f7e, branch m1m7/spec-ta): dated
+# Review record rows and one dated Freeze-table note keep the line of the commit they read. TA-DECL
+# moved the kinds.rs flag-mask asserts (tests module), the elements.rs kind module and storage(), and
+# versions.rs (OBJECT_LAYOUT 9 doc); the fixer's FIELDS line moved extref_lint.rs by 1. H29: its pin
+# token follows the DEOPT_META doc (versions.rs 96-97 -> 107-108).
+history	H08-object-header-and-shapeid.md	crates/ep9_vm/src/kinds.rs:353-354	| 4 Data (M7-P0 amendment: the 2026-11-06 clarify row, AOT0, word0 flag bits 10-15)	760344a4	assert\_eq\!\(FLAG\_INOBJECT\_MASK \& FLAG\_IS\_PROTOTYPE\, 0\)\;
+history	H08-object-header-and-shapeid.md	crates/ep9_vm/src/kinds.rs:353-354	| 3 Verifier (M7-P0 amendment: the 2026-11-06 clarify row, AOT0, word0 flag bits 10-15)	80569f7f	assert\_eq\!\(FLAG\_INOBJECT\_MASK \& FLAG\_IS\_PROTOTYPE\, 0\)\;
+history	H08-object-header-and-shapeid.md	crates/ep9_vm/src/kinds.rs:353-354	| 1 Reviewer (M7-P0 amendment: the 2026-11-06 clarify row, AOT0, word0 flag bits 10-15)	dbb73aae	assert\_eq\!\(FLAG\_INOBJECT\_MASK \& FLAG\_IS\_PROTOTYPE\, 0\)\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:89-101	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	8f24b3c5	pub const PACKED\_INT32\: u8 \= 0\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:116	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX)	8f24b3c5	^pub\(crate\) const fn storage\(k\: u8\) \-\> Option\<Storage\> \{
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:116	| 3 Verifier (M5-P5 amendment: the 2026-11-02 rewrite row, elements kind values (append-only), FREEZE-FIX; the Claude reviewer's check)	b12fed0c	^pub\(crate\) const fn storage\(k\: u8\) \-\> Option\<Storage\> \{
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:89-101	| 1 Reviewer (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, elements core)	3635ac0c	pub const PACKED\_INT32\: u8 \= 0\;
+history	H18-elements-kinds.md	crates/ep9_vm/src/elements.rs:89-101	| 3 Verifier (M5-P5 amendment: the 2026-11-02 clarify row, Frozen step, elements core)	98b7fd37	pub const PACKED\_INT32\: u8 \= 0\;
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:63-69	M7-P3 integration fixer (clarify; MODES-CHECK-w33 MCV-w33-1)	e9b13b65	^\/\/\/ 8 \(M7\-P3 ELEMKINDS\, the integrity levels of H18
+history	H17-object-layout.md	crates/ep9_vm/src/versions.rs:63-69	| 4 Data (M7-P3 amendment: the 2026-11-08 clarify row, the shape flag bits note, the layout exports of 67675dcb (MCV-w33-1))	e9b13b65	^\/\/\/ 8 \(M7\-P3 ELEMKINDS\, the integrity levels of H18
+history	H25-sandbox-readiness.md	tools/xtask/src/extref_lint.rs:124-125	| 4 Data (M7-P3 amendment: the 2026-11-08 clarify row, the VM stack code list, the construct frame writes)	e9b13b65	\"crates\/ep9\_vm\/src\/construct\_ic\.rs\"\,
+history	H25-sandbox-readiness.md	tools/xtask/src/extref_lint.rs:137	| 4 Data (M7-P3 amendment: the 2026-11-08 clarify row, the VM stack code list, the construct frame writes)	e9b13b65	\(\"crates\/ep9\_vm\/src\/interp\/mod\.rs\"\, \"construct\_result\"\)\,
