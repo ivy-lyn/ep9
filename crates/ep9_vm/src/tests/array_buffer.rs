@@ -844,9 +844,12 @@ fn every_engine_object_owns_its_entry_and_no_other_does() {
             let rab = buffer(rt, 8, Some(64));
             let sab = shared(rt, 8, Some(64));
             let dv = ab::new_data_view(rt, NULL, fixed, 0, None).unwrap();
-            let moved = ab::copy_and_detach(rt, buffer(rt, 8, None), NULL, 8, false).unwrap();
-            let moved_rab =
-                ab::copy_and_detach(rt, buffer(rt, 8, Some(64)), NULL, 16, true).unwrap();
+            // The sources of the two moves are named and kept to the end: a release build drops
+            // an unnamed one at once, so the GC below would free its entry too.
+            let src1 = buffer(rt, 8, None);
+            let moved = ab::copy_and_detach(rt, src1, NULL, 8, false).unwrap();
+            let src2 = buffer(rt, 8, Some(64));
+            let moved_rab = ab::copy_and_detach(rt, src2, NULL, 16, true).unwrap();
             let old = buffer(rt, 8, None);
             let copied = ab::copy_and_detach(rt, old, NULL, 4, false).unwrap();
             let detached = buffer(rt, 8, Some(16));
@@ -946,7 +949,20 @@ fn every_engine_object_owns_its_entry_and_no_other_does() {
                  earlier engine object"
             );
             assert!(!stress || reused > 0, "no address was reused");
-            black_box((empty, rab, sab, dv, moved, moved_rab, copied, cells.len()));
+            black_box((
+                empty,
+                rab,
+                sab,
+                dv,
+                moved,
+                moved_rab,
+                copied,
+                old,
+                detached,
+                src1,
+                src2,
+                cells.len(),
+            ));
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });
