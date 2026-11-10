@@ -93,8 +93,17 @@ pub(crate) mod kind {
     pub const PACKED_ELEMENTS: u8 = 4;
     pub const HOLEY_ELEMENTS: u8 = 5;
     pub const DICTIONARY: u8 = 6;
-    /// The values in use (0-6); 7-15 are reserved.
-    pub const COUNT: u8 = 7;
+    /// A TypedArray whose length is fixed (spec IsTypedArrayFixedLength true): the bound of an
+    /// element access is the view's own length field (+40). OBJECT_LAYOUT 9 (TypedArray TA-0,
+    /// design §3.2, Proposal A). A view gets 7 or 8 at birth and keeps it: no transition
+    /// reaches or leaves 7 and 8, and they are no birth kind of an allocation site.
+    pub const TYPED_FIXED: u8 = 7;
+    /// A TypedArray that tracks the length of a resizable buffer, or a fixed-length view on a
+    /// resizable buffer (IsTypedArrayFixedLength false): the bound comes from the buffer at
+    /// each access. OBJECT_LAYOUT 9.
+    pub const TYPED_VARIABLE: u8 = 8;
+    /// The values in use (0-8); 9-15 are reserved.
+    pub const COUNT: u8 = 9;
     /// The largest value the 4 shape bits hold.
     pub const MAX: u8 = 15;
     /// Bit 0 of a value 0-5: the kind allows holes.
@@ -110,9 +119,13 @@ pub(crate) enum Storage {
     Doubles,
     /// An ELEMENTS_DICT cell.
     Dictionary,
+    /// The bytes of a TypedArray's buffer (TYPED_FIXED, TYPED_VARIABLE; OBJECT_LAYOUT 9): the
+    /// view's elements store (+16) is undefined, and its cell kind (a view kind, 29-40) gives
+    /// the element type.
+    Typed,
 }
 
-/// The storage form of kind `k` (0-6), or `None` for a reserved value.
+/// The storage form of kind `k` (0-8), or `None` for a reserved value (9-15).
 pub(crate) const fn storage(k: u8) -> Option<Storage> {
     match k {
         kind::PACKED_INT32 | kind::HOLEY_INT32 | kind::PACKED_ELEMENTS | kind::HOLEY_ELEMENTS => {
@@ -120,6 +133,7 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
         }
         kind::PACKED_DOUBLE | kind::HOLEY_DOUBLE => Some(Storage::Doubles),
         kind::DICTIONARY => Some(Storage::Dictionary),
+        kind::TYPED_FIXED | kind::TYPED_VARIABLE => Some(Storage::Typed),
         _ => None,
     }
 }
@@ -139,6 +153,11 @@ pub(crate) const fn to_fact(k: u8) -> Option<ep9_facts::ElementsKind> {
         kind::PACKED_ELEMENTS => Some(F::PackedElements),
         kind::HOLEY_ELEMENTS => Some(F::HoleyElements),
         kind::DICTIONARY => Some(F::Dictionary),
+        // TYPED_FIXED and TYPED_VARIABLE (OBJECT_LAYOUT 9) have no FactSnapshot name yet: an
+        // `ElementsKind` name is an item that needs a writer at every place of the schema
+        // (H16 "declared fields (shrink-only)"), and no exporter writes them in TA-0. A view's
+        // shape exports its elements as none (the open list rule).
+        kind::TYPED_FIXED | kind::TYPED_VARIABLE => None,
         _ => None,
     }
 }
@@ -716,18 +735,26 @@ pub(crate) fn to_dictionary(rt: &Runtime, a: u64) {
 /// "the storage form follows the kind"; M5-P1-ORCH-11: the shape guard is the kind source of
 /// the tiers): no cell, an ELEMENTS cell for kinds 0, 1, 4, 5, an ELEMENTS_DOUBLE cell for
 /// 2, 3 and an ELEMENTS_DICT cell for 6 (which always has one). ARGUMENTS objects keep their
-/// own +16 store. Not a GC point. Every transition asserts it in debug builds.
+/// own +16 store. A TypedArray (a view kind, OBJECT_LAYOUT 9) has kind 7 or 8 and no cell
+/// (+16 undefined), and only a view has 7 or 8. Not a GC point. Every transition asserts it in
+/// debug builds.
 pub(crate) fn storage_form_ok(o: u64) -> bool {
-    if kinds_::cell_kind(o) == kinds_::ARGUMENTS.get() {
+    let ck = kinds_::cell_kind(o);
+    if ck == kinds_::ARGUMENTS.get() {
         return true;
     }
     let k = kind_of(o);
     let e = object::rd(object::cell(o), obj::ELEMENTS);
+    if kinds_::is_view_kind(ck) || storage(k) == Some(Storage::Typed) {
+        return kinds_::is_view_kind(ck)
+            && storage(k) == Some(Storage::Typed)
+            && e == crate::frame::UNDEFINED;
+    }
     let want = match storage(k) {
         Some(Storage::Values) => kinds_::ELEMENTS.get(),
         Some(Storage::Doubles) => kinds_::ELEMENTS_DOUBLE.get(),
         Some(Storage::Dictionary) => kinds_::ELEMENTS_DICT.get(),
-        None => return false,
+        Some(Storage::Typed) | None => return false,
     };
     if e == crate::frame::UNDEFINED {
         return k != kind::DICTIONARY;
