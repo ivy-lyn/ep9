@@ -306,7 +306,7 @@ pub const ELEMENTS_DOUBLE_HOLE: u64 = delems::HOLE;
 /// OBJECT_LAYOUT (5). The bits of a shape's `counts` word (+48) that hold its elements kind
 /// (`shape::ELEMENTS_KIND_SHIFT`, 4 bits).
 pub const SHAPE_ELEMENTS_KIND_SHIFT: u32 = crate::shape::ELEMENTS_KIND_SHIFT;
-/// OBJECT_LAYOUT (5). Elements kind values (`elements::kind`; 7-15 reserved, bit 0 = holey).
+/// OBJECT_LAYOUT (5). Elements kinds (`elements::kind`; 0-5: bit 0 = holey; 7, 8 views; 9-15 free).
 pub const ELEMENTS_KIND_PACKED_INT32: u8 = ek::PACKED_INT32;
 /// OBJECT_LAYOUT (5).
 pub const ELEMENTS_KIND_HOLEY_INT32: u8 = ek::HOLEY_INT32;
