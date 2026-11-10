@@ -1082,6 +1082,7 @@ pub(crate) fn set_integrity(rt: &Runtime, a: u64, frozen: bool) -> bool {
 const _: () = {
     assert!(kind::COUNT as u32 + KINDS_SET_SHIFT <= 31);
     assert!(kind::DICTIONARY < kind::COUNT && kind::COUNT <= kind::MAX);
+    assert!(kind::TYPED_VARIABLE + 1 == kind::COUNT);
     assert!(join(kind::PACKED_INT32, kind::PACKED_DOUBLE) == kind::PACKED_DOUBLE);
     assert!(join(kind::HOLEY_INT32, kind::PACKED_DOUBLE) == kind::HOLEY_DOUBLE);
     assert!(join(kind::PACKED_ELEMENTS, kind::HOLEY_DOUBLE) == kind::HOLEY_ELEMENTS);
