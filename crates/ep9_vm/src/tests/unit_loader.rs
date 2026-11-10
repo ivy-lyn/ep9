@@ -1887,6 +1887,17 @@ fn new_c_walk() -> VerifiedUnit {
     unit("", vec![s.finish()])
 }
 
+/// `return new g(walk);` (`g` is a method: it has no `[[Construct]]`).
+fn new_g_walk() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let l = s.b.new_register_list(1);
+    s.lda_global("walk");
+    s.b.star(l.get(0));
+    s.construct_global("g", l);
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
 /// `return rconstruct(c, walk);` (the Rust construct path).
 fn rconstruct_c_walk() -> VerifiedUnit {
     let mut s = Asm::script(0);
@@ -1944,7 +1955,8 @@ fn super_c_walk() -> VerifiedUnit {
 /// installable and keeps its Interp slot. `new c(walk)`, `rconstruct(c, walk)` (the Rust
 /// construct path of `Reflect.construct`) and `super(walk)` from `class D extends c` give the
 /// results of an isolate with no install (before the fix each gave "not implemented ...
-/// calling code of this dispatch kind"). The call `g(walk)` enters the unit code (42).
+/// calling code of this dispatch kind"). The call `g(walk)` enters the unit code (42), and
+/// `new g(walk)` of the installed method throws the TypeError of an isolate with no install.
 #[test]
 fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
     let shown = |iso: &mut Isolate, u: VerifiedUnit| {
@@ -2015,4 +2027,16 @@ fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
         run_js(&mut iso, call_g_walk()),
         Ok(Value::int32(42).to_bits())
     );
+    // `new g(walk)` of the installed method: IsConstructor runs before the slot check, so it
+    // is the TypeError of an isolate with no install, not "not implemented" (JIT review r4,
+    // R4-4).
+    let before = shown(&mut plain, new_g_walk());
+    let after = shown(&mut iso, new_g_walk());
+    assert_eq!(after, before, "new g(walk)");
+    let e = after.expect_err("new g(walk) throws");
+    assert!(
+        e.contains("TypeError") && e.contains("is not a constructor"),
+        "new g(walk): {e}"
+    );
+    assert!(!e.contains("not implemented"), "new g(walk): {e}");
 }
