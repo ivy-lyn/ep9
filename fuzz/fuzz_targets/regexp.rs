@@ -61,7 +61,10 @@
 //!   ClassSetSyntaxCharacter; ECMA-262 22.2.1), and node and ep9's front end refuse it; regress
 //!   takes the `]` as the operand or as the range end (U+005D: so /[A-]]/v is a range and
 //!   /[a-]]/v is out of order) when one more `]` closes the class. The target skips an RX1
-//!   InvalidCharacterInClass with `v` only when the error position is such a `]`.
+//!   InvalidCharacterInClass with `v` only when the error position is such a `]`. In the same
+//!   way regress takes a third `&` as the right operand of `&&` just before the class end, for
+//!   example `/[a&&&]/v` (ECMA-262 22.2.1: ClassIntersection has [lookahead is not &] after `&&`);
+//!   the target skips it only when the error position is that `&` and a `]` follows it.
 //! - Validity: a `\u` escape with a `+` sign before its hex digits, with `u` or `v` (for
 //!   example `/[\u+1F6]/u`, also `\u{+1F600}` and outside a class) and in a group name in
 //!   every mode (for example `/(?<a\u+041>x)/`, also in `\k<..>`). RX1 says
@@ -81,6 +84,8 @@
 //!   /[[a]--]]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
 //!   /[A-]]/v         Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 3
 //!   /[A-]x]/v        Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 3
+//!   /[a&&&]/v        Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 4
+//!   /[[a]&&&]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
 //!   /[\u+1F6]/u      Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 3
 //!   /\u{+1F600}/u    Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 2
 //!   /(?<a\u+041>x)/  Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 6
@@ -311,7 +316,9 @@ fn known_rx0_false_accept(e: &ParseError, units: &[u16], flags: Flags) -> bool {
         Error::RangeOutOfOrder | Error::NegatedCharacterClassWithStrings => true,
         Error::InvalidCaptureGroupName => has_escape(units, b'u'),
         Error::InvalidCharacterInClass if flags.unicode_sets() => {
-            bracket_in_class_string(units, e.pos) || bracket_after_set_operator(units, e.pos)
+            bracket_in_class_string(units, e.pos)
+                || bracket_after_set_operator(units, e.pos)
+                || amp_after_intersection(units, e.pos)
         }
         Error::InvalidUnicodeEscape => {
             plus_sign_hex_escape(units, e.pos)
@@ -361,6 +368,16 @@ fn bracket_after_set_operator(units: &[u16], pos: usize) -> bool {
         && not_escaped(units, pos - 2);
     let dash = pos >= 1 && unit_is(units, pos - 1, b'-') && not_escaped(units, pos - 1);
     unit_is(units, pos, b']') && (amp_amp || dash)
+}
+
+/// True if `units[pos]` is a `&` right after an unescaped `&&` and just before a `]`.
+fn amp_after_intersection(units: &[u16], pos: usize) -> bool {
+    pos >= 2
+        && unit_is(units, pos, b'&')
+        && unit_is(units, pos + 1, b']')
+        && unit_is(units, pos - 1, b'&')
+        && unit_is(units, pos - 2, b'&')
+        && not_escaped(units, pos - 2)
 }
 
 /// True if `units[pos]` is not the escaped unit of a `\` (a scan from the start).
