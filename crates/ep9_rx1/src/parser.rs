@@ -22,10 +22,10 @@
 //! Not ported (each is a named gap, listed in the crate doc): the `kVerifySyntax` mode (one
 //! mode here), the `--js-regexp-buffer-boundaries` escapes `\A \z \Z` and the debug-only
 //! possessive quantifier (both V8 flags are off by default), the code point ranges of class
-//! and property escapes (the compiler's job in RX1-1), the case-fold desugaring of `u`+`i`
-//! and `v`+`i` (`NeedsDesugaringForIgnoreCase`, `AddMaybeSimpleCaseFoldedRange`,
-//! `u_foldCase` in `\q{}`: tree shape only, no effect on what parses), and V8's
-//! stack-limit check in `Advance` (here [`MAX_NESTING`] caps groups and nested classes).
+//! and property escapes and the case folding of `v`+`i` (`AddMaybeSimpleCaseFoldedRange`,
+//! `u_foldCase` in `\q{}`: they are in `sets.rs`, port step 2; no effect on what parses), and
+//! V8's stack-limit check in `Advance` (here [`MAX_NESTING`] caps groups and nested classes).
+//! `NeedsDesugaringForIgnoreCase` is ported (M7-P5), with the case data of `special_case.rs`.
 
 use crate::ast::{
     AssertionType, BackReference, Capture, ClassItem, ClassRanges, ClassSetExpression,
@@ -34,6 +34,7 @@ use crate::ast::{
 };
 use crate::error::{Error, ParseError};
 use crate::flags::Flags;
+use crate::special_case;
 use crate::unicode;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -170,22 +171,28 @@ impl TextBuilder {
         }
     }
 
-    fn add_character(&mut self, c: u16) {
-        // V8 NeedsDesugaringForIgnoreCase is false without `u`/`v` + `i`; with them it asks
-        // ICU's case closure. Not ported (tree shape only; RX1-1 adds it with the case data).
+    fn add_character(&mut self, terms: &mut Vec<Tree>, c: u16) {
+        if special_case::needs_desugaring_for_ignore_case(u32::from(c), self.flags) {
+            self.add_class_ranges_for_desugaring(terms, u32::from(c));
+            return;
+        }
         self.characters.get_or_insert_with(Vec::new).push(c);
     }
 
     fn add_unicode_character(&mut self, terms: &mut Vec<Tree>, c: u32) {
         if c > 0xffff {
             debug_assert!(self.flags.either_unicode());
+            if special_case::needs_desugaring_for_ignore_case(c, self.flags) {
+                self.add_class_ranges_for_desugaring(terms, c);
+                return;
+            }
             let lead = 0xd800 + ((c - 0x10000) >> 10);
             let trail = 0xdc00 + ((c - 0x10000) & 0x3ff);
             self.add_atom(Tree::Atom(vec![lead as u16, trail as u16]));
         } else if self.flags.either_unicode() && (is_lead(c) || is_trail(c)) {
             self.add_class_ranges_for_desugaring(terms, c);
         } else {
-            self.add_character(c as u16);
+            self.add_character(terms, c as u16);
         }
     }
 
@@ -272,7 +279,7 @@ impl Builder {
 
     fn add_character(&mut self, c: u16) {
         self.pending_empty = false;
-        self.text.add_character(c);
+        self.text.add_character(&mut self.terms, c);
     }
 
     fn add_unicode_character(&mut self, c: u32) {
