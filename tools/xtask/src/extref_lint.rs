@@ -1040,7 +1040,10 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
                 });
             }
             Kind::Field => {
-                if layout {
+                // An export is a const or static at the file scope of `layout.rs`; a function
+                // or method body that reads or writes the field is not one (H25:55; M7-P5
+                // Codex R3 finding 3).
+                if layout && item.is_none() {
                     allowed("the layout export", item, report);
                     continue;
                 }

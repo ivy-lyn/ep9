@@ -8,7 +8,7 @@ give none.
 
 | File | Form |
 |---|---|
-| `crates/ep9_vm/src/layout.rs` | rename: a const of another name takes its value from a field or the offset: no finding (H25:54 allows layout.rs); a field or the offset in an inline module: a finding (not an export; M7-P5 Codex T7) |
+| `crates/ep9_vm/src/layout.rs` | rename: a const of another name takes its value from a field or the offset: no finding (H25:54 allows layout.rs); a field or the offset in an inline module: a finding (not an export; M7-P5 Codex T7); a read or write of a field in a function or method body: a finding (not an export, H25:55; M7-P5 Codex R3 finding 3); the offset in a function body: no finding (H25:54) |
 | `crates/ep9_value/src/encoding.rs` | rename: a const or static of another name takes the offset: no finding (H25:54 allows ep9_value) |
 | `crates/ep9_vm/src/frame.rs` | rename: a function, macro or const of the encoding file wraps the encoding: no finding (H25:54 allows frame.rs) |
 | `crates/ep9_vm/src/external_ref.rs` | rename: a function of the type file wraps the encoding: no finding (H25:54 allows external_ref.rs) |

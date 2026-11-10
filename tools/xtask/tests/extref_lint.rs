@@ -115,6 +115,9 @@ fn each_form_has_its_rule() {
     };
     assert_eq!(rule("ep9_vm/src/layout.rs", 17), ["field"]);
     assert_eq!(rule("ep9_vm/src/layout.rs", 18), ["hand"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 23), ["field"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 26), ["field"]);
+    assert_eq!(rule("ep9_vm/src/layout.rs", 31), ["field"]);
     assert_eq!(rule("ep9_vm/src/kelvin.rs", 3), ["field"]);
     assert_eq!(rule("ep9_vm/src/macro_args.rs", 8), ["field"]);
     assert_eq!(rule("ep9_vm/src/macro_args.rs", 16), ["encoding"]);
@@ -129,6 +132,8 @@ fn each_form_has_its_rule() {
 /// lines 54-55) forbids. In the files where H25 allows the names (`frame.rs`,
 /// `external_ref.rs`, `layout.rs` at its top level, the `ep9_value` crate) a rename or a
 /// wrapper gives no finding, as at 0c58e12f (the stricter rules: route H25-STRICT-V13).
+/// A read or write of a field in a `layout.rs` function or method body is not an export,
+/// so it is a finding (H25:55; M7-P5 Codex R3 finding 3, fixer r5 item 3).
 #[test]
 fn the_files_where_h25_allows_the_names_give_no_finding() {
     let out = extref_lint(&fixtures(), &[]);
@@ -140,8 +145,12 @@ fn the_files_where_h25_allows_the_names_give_no_finding() {
     ] {
         assert_eq!(reported(&text, case), Vec::<usize>::new(), "{case}");
     }
-    // layout.rs: only the two lines in an inline module (Codex T7).
-    assert_eq!(reported(&text, "crates/ep9_vm/src/layout.rs"), [17, 18]);
+    // layout.rs: the two lines in an inline module (Codex T7) and the three field uses in
+    // function bodies (Codex R3 finding 3); the renamed exports at file scope give none.
+    assert_eq!(
+        reported(&text, "crates/ep9_vm/src/layout.rs"),
+        [17, 18, 23, 26, 31]
+    );
 }
 
 /// The `#[path]` rule reads the scanned set: with only `path_mod.rs` on the command line,
