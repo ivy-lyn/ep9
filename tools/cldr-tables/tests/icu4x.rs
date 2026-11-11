@@ -159,7 +159,78 @@ fn generated_files_are_current_and_deterministic() {
         Vec::<String>::new(),
         "run the generator (README.md)"
     );
-    let bytes: usize = a.values().map(String::len).sum();
+    let bytes: usize = ["digits.rs", "t1.rs"].iter().map(|f| a[f].len()).sum();
     // INTL-V2 plan 2.6: T1 + digits < 0.06 MB.
     assert!(bytes < 60_000, "{bytes}");
+}
+
+/// The tables that replace the W1 hand tables of `ep9_intl` (INTL W2-0 fix r1): one value of
+/// each at CLDR 49.0.0, and the CLDR 48 values that CLDR 49 changed.
+#[test]
+fn locales_hour_cycles_and_aliases() {
+    let t = tables();
+    // availableLocales "full": 657 ids at CLDR 49.0.0 (766 at 48.2.1).
+    assert_eq!(t.locales.len(), 657);
+    assert!(t.locales.windows(2).all(|w| w[0] < w[1]));
+    for l in ["en", "zh-Hant-HK", "sr-Latn", "ady", "kbd-TR"] {
+        assert!(t.locales.binary_search(&l.to_owned()).is_ok(), "{l}");
+    }
+    for l in ["la", "co", "zh-Latn", "en-Dsrt"] {
+        assert!(t.locales.binary_search(&l.to_owned()).is_err(), "{l}");
+    }
+    assert_eq!(
+        t.locales,
+        t.default_numbering_system
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+
+    // timeData: AR, CL, PY, UY, ZM prefer "H" at CLDR 49 ("h" at 48).
+    let h12 = |r: &str| {
+        t.hour_cycle_h12_regions
+            .binary_search(&r.to_owned())
+            .is_ok()
+    };
+    assert!(h12("US") && h12("419") && h12("KR"));
+    for r in ["AR", "CL", "PY", "UY", "ZM", "GB", "001"] {
+        assert!(!h12(r), "{r}");
+    }
+    let rows: Vec<(&str, &str, &str)> = t
+        .hour_cycle_language_regions
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("ar", "001", "h12"),
+            ("en", "001", "h12"),
+            ("fr", "CA", "h23"),
+            ("ku", "SY", "h23"),
+        ]
+    );
+
+    // bcp47 value aliases.
+    let has = |list: &[(String, String, String)], k: &str, a: &str, v: &str| {
+        list.iter()
+            .any(|(x, y, z)| (x.as_str(), y.as_str(), z.as_str()) == (k, a, v))
+    };
+    for (k, a, v) in [
+        ("ca", "ethiopic-amete-alem", "ethioaa"),
+        ("ca", "islamicc", "islamic-civil"),
+        ("kn", "yes", "true"),
+        ("ks", "primary", "level1"),
+        ("ms", "imperial", "uksystem"),
+        ("tz", "cnckg", "cnsha"),
+        ("tz", "est", "papty"),
+        ("tz", "eire", "iedub"),
+    ] {
+        assert!(has(&t.u_value_aliases, k, a, v), "{k} {a}");
+    }
+    // A deprecated type's own alias attribute is not a row ("islamicc" has alias
+    // "islamic-civil"), and CLDR 49 dropped the CLDR 48 "est5edt" -> "usnyc" row.
+    assert!(!has(&t.u_value_aliases, "ca", "islamic-civil", "islamicc"));
+    assert!(!t.u_value_aliases.iter().any(|(_, a, _)| a == "est5edt"));
+    assert!(has(&t.t_value_aliases, "m0", "names", "prprname"));
 }

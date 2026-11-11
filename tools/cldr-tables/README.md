@@ -12,6 +12,9 @@ cargo run           -> crates/ep9_intl/src/cldr/gen/
                       digits.rs   the 78 numbering systems with simple digit mappings
                       t1.rs       NaN, infinity, exponent symbol, approximately sign, range
                                   pattern per CLDR locale and numbering system
+                      locales.rs  the availableLocales "full" ids (ep9_intl available.rs)
+                      hour_cycles.rs  the timeData preferred hour cycles (locale_info.rs)
+                      aliases.rs  the bcp47 -u- and -t- value aliases (tag.rs)
 cargo run -- --check  writes nothing; exit 1 if a generated file differs (CI form)
 cargo test          the tables against the ICU4X compiled data of the same CLDR release,
                     the CLDR version against the ICU4X data README, the check, determinism

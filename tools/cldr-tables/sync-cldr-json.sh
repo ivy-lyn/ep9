@@ -13,6 +13,9 @@ CLDR_PATHS=(
   /cldr-json/cldr-core/package.json
   /cldr-json/cldr-core/availableLocales.json
   /cldr-json/cldr-core/supplemental/numberingSystems.json
+  /cldr-json/cldr-core/supplemental/timeData.json
+  /cldr-json/cldr-bcp47/package.json
+  '/cldr-json/cldr-bcp47/bcp47/*.json'
   /cldr-json/cldr-numbers-full/package.json
   '/cldr-json/cldr-numbers-full/main/*/numbers.json'
   /LICENSE

@@ -12,6 +12,13 @@
 //!       exponential, approximatelySign
 //!     miscPatterns-numberSystem-<nu>  range ──────►  t1.rs       T1_SYMBOLS (distinct records)
 //!                                                                T1_ROWS (locale, nu, record)
+//!   cldr-core/availableLocales.json  "full" ──────►  locales.rs  CLDR_LOCALES
+//!   cldr-core/supplemental/timeData.json
+//!     "_preferred" per region and per
+//!     language-region ────────────────────────────►  hour_cycles.rs  HOUR_CYCLE_H12_REGIONS,
+//!                                                                    HOUR_CYCLE_LANGUAGE_REGIONS
+//!   cldr-bcp47/bcp47/*.json  "_alias",
+//!     "_deprecated" + "_preferred" ───────────────►  aliases.rs  U_VALUE_ALIASES, T_VALUE_ALIASES
 //! ```
 //!
 //! The CLDR JSON locale files are resolved (a child holds every value, not only the values that
@@ -26,7 +33,14 @@ use std::process::Command;
 use serde_json::Value;
 
 /// The files the generator writes, relative to the output directory.
-pub const OUTPUT_FILES: [&str; 3] = ["digits.rs", "t1.rs", "version.rs"];
+pub const OUTPUT_FILES: [&str; 6] = [
+    "aliases.rs",
+    "digits.rs",
+    "hour_cycles.rs",
+    "locales.rs",
+    "t1.rs",
+    "version.rs",
+];
 
 /// The T1 values of one locale and numbering system (CLDR `symbols-numberSystem-<nu>` and
 /// `miscPatterns-numberSystem-<nu>`).
@@ -60,6 +74,20 @@ pub struct Tables {
     pub t1_rows: Vec<(String, u8, u8)>,
     /// The default numbering system of each locale (not written; the tests use it).
     pub default_numbering_system: BTreeMap<String, String>,
+    /// The `availableLocales.json` "full" ids, sorted (the locale directories of
+    /// `cldr-numbers-full/main`).
+    pub locales: Vec<String>,
+    /// The `timeData` regions whose preferred hour format is "h" (h12), sorted. Every other
+    /// region and "001" prefer "H" (h23): `read` refuses data where that is not so.
+    pub hour_cycle_h12_regions: Vec<String>,
+    /// The `timeData` (language, region, hour cycle) rows whose preferred hour cycle is not the
+    /// one of the region row (or of "001" for a region with no row), sorted.
+    pub hour_cycle_language_regions: Vec<(String, String, String)>,
+    /// The -u- value aliases of the bcp47 data, as (key, alias, value), sorted (the rule of
+    /// `value_aliases`).
+    pub u_value_aliases: Vec<(String, String, String)>,
+    /// The -t- value aliases of the bcp47 data, as (tkey, alias, value), sorted.
+    pub t_value_aliases: Vec<(String, String, String)>,
 }
 
 impl Tables {
@@ -240,6 +268,18 @@ pub fn read(cldr: &Path, pin: &str) -> Result<Tables, String> {
         .collect();
     t1_rows.sort();
 
+    let bcp_pkg = root.join("cldr-bcp47/package.json");
+    let bcp_json = read_json(&bcp_pkg)?;
+    let bcp_version = str_at(&bcp_json, &["version"], &bcp_pkg)?;
+    if bcp_version != cldr_version {
+        return Err(format!(
+            "cldr-bcp47 {bcp_version} != cldr-core {cldr_version}"
+        ));
+    }
+    let (hour_cycle_h12_regions, hour_cycle_language_regions) =
+        hour_cycles(&root.join("cldr-core/supplemental/timeData.json"))?;
+    let (u_value_aliases, t_value_aliases) = value_aliases(&root.join("cldr-bcp47/bcp47"))?;
+
     Ok(Tables {
         cldr_version,
         cldr_commit: head,
@@ -247,7 +287,165 @@ pub fn read(cldr: &Path, pin: &str) -> Result<Tables, String> {
         t1_symbols,
         t1_rows,
         default_numbering_system,
+        locales: dirs.into_iter().collect(),
+        hour_cycle_h12_regions,
+        hour_cycle_language_regions,
+        u_value_aliases,
+        t_value_aliases,
     })
+}
+
+/// A (key, alias, value) or (language, region, hour cycle) row.
+type Triple = (String, String, String);
+
+/// The hour cycle of a CLDR `timeData` "_preferred" hour format.
+fn hour_cycle(preferred: &str, file: &Path) -> Result<&'static str, String> {
+    match preferred {
+        "h" => Ok("h12"),
+        "H" => Ok("h23"),
+        "K" => Ok("h11"),
+        "k" => Ok("h24"),
+        _ => Err(format!("{}: preferred {preferred:?}", file.display())),
+    }
+}
+
+/// The two hour cycle tables of `timeData.json` (the form of `ep9_intl` `hour_cycles_of`: the
+/// language-region rows first, then h12 for the listed regions, else h23).
+fn hour_cycles(file: &Path) -> Result<(Vec<String>, Vec<Triple>), String> {
+    let json = read_json(file)?;
+    let data = json
+        .pointer("/supplemental/timeData")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{}: no timeData", file.display()))?;
+    let mut regions: BTreeMap<&str, &'static str> = BTreeMap::new();
+    let mut languages: Vec<(&str, &str, &'static str)> = Vec::new();
+    for (id, v) in data {
+        let hc = hour_cycle(str_at(v, &["_preferred"], file)?, file)?;
+        match id.split_once('-') {
+            None => {
+                regions.insert(id, hc);
+            }
+            Some((language, region)) if !region.contains('-') => {
+                languages.push((language, region, hc));
+            }
+            Some(_) => return Err(format!("{}: id {id:?}", file.display())),
+        }
+    }
+    let world = regions.get("001").copied();
+    if world != Some("h23") {
+        return Err(format!(
+            "{}: 001 prefers {world:?}, not h23",
+            file.display()
+        ));
+    }
+    if let Some((r, hc)) = regions
+        .iter()
+        .find(|(_, hc)| !matches!(**hc, "h12" | "h23"))
+    {
+        return Err(format!(
+            "{}: region {r} prefers {hc}: the ep9_intl hour cycle tables have no row form for it",
+            file.display()
+        ));
+    }
+    let h12 = regions
+        .iter()
+        .filter(|(_, hc)| **hc == "h12")
+        .map(|(r, _)| (*r).to_owned())
+        .collect();
+    let mut rows: Vec<Triple> = languages
+        .into_iter()
+        .filter(|(_, r, hc)| regions.get(r).copied().unwrap_or("h23") != *hc)
+        .map(|(l, r, hc)| (l.to_owned(), r.to_owned(), hc.to_owned()))
+        .collect();
+    rows.sort();
+    Ok((h12, rows))
+}
+
+/// Whether `s` matches the `uvalue` / `tvalue` form: subtags of 3 to 8 lower-case letters or
+/// digits, joined by "-".
+fn is_value(s: &str) -> bool {
+    s.split('-').all(|t| {
+        (3..=8).contains(&t.len())
+            && t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })
+}
+
+/// The value aliases of the bcp47 data (`cldr-bcp47/bcp47/*.json`, UTS 35 §3.2.1: "the aliases
+/// are in the alias attribute value, while the canonical is in the name attribute value"), for
+/// the -u- keys and the -t- tkeys, as (key, alias, value), sorted:
+/// - a type with "_deprecated" and "_preferred": (key, type, preferred);
+/// - any other type: (key, alias, type) for each space-separated "_alias" whose lower-case form
+///   has the value form (`is_value`) and is not the type (an IANA id such as
+///   "America/Panama" has not; "EST" has).
+///
+/// `read` refuses an alias with two values.
+fn value_aliases(dir: &Path) -> Result<(Vec<Triple>, Vec<Triple>), String> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .map(|e| {
+            e.map(|e| e.path())
+                .map_err(|e| format!("{}: {e}", dir.display()))
+        })
+        .collect::<Result<_, _>>()?;
+    files.retain(|p| p.extension().is_some_and(|x| x == "json"));
+    files.sort();
+    if files.is_empty() {
+        return Err(format!("{}: no bcp47 files", dir.display()));
+    }
+    let mut out: [BTreeMap<(String, String), String>; 2] = Default::default();
+    for file in &files {
+        let json = read_json(file)?;
+        for (n, singleton) in ["u", "t"].into_iter().enumerate() {
+            let Some(keys) = json
+                .pointer(&format!("/keyword/{singleton}"))
+                .and_then(Value::as_object)
+            else {
+                continue;
+            };
+            for (key, types) in keys {
+                let Some(types) = types.as_object() else {
+                    continue;
+                };
+                for (ty, v) in types {
+                    if ty.starts_with('_') {
+                        continue;
+                    }
+                    let deprecated = matches!(v.get("_deprecated"), Some(Value::Bool(true)))
+                        || v.get("_deprecated").and_then(Value::as_str) == Some("true");
+                    let mut rows: Vec<(String, String)> = Vec::new();
+                    if deprecated {
+                        if let Some(p) = v.get("_preferred").and_then(Value::as_str) {
+                            rows.push((ty.clone(), p.to_owned()));
+                        }
+                    } else if let Some(alias) = v.get("_alias").and_then(Value::as_str) {
+                        for a in alias.split_whitespace() {
+                            let a = a.to_ascii_lowercase();
+                            if is_value(&a) && a != *ty {
+                                rows.push((a, ty.clone()));
+                            }
+                        }
+                    }
+                    for (alias, value) in rows {
+                        let k = (key.clone(), alias);
+                        if let Some(old) = out[n].get(&k)
+                            && *old != value
+                        {
+                            return Err(format!(
+                                "{}: {singleton} {} alias {} has two values: {old}, {value}",
+                                file.display(),
+                                k.0,
+                                k.1
+                            ));
+                        }
+                        out[n].insert(k, value);
+                    }
+                }
+            }
+        }
+    }
+    let [u, t] = out.map(|m| m.into_iter().map(|((k, a), v)| (k, a, v)).collect());
+    Ok((u, t))
 }
 
 /// A Rust string literal: printable ASCII as is, every other char as `\u{..}`.
@@ -290,6 +488,28 @@ fn header(t: &Tables, what: &str) -> String {
     )
 }
 
+/// `pub(crate) static NAME: [&str; N] = [..];`, one item per line.
+fn str_list<'a>(out: &mut String, name: &str, items: impl ExactSizeIterator<Item = &'a str>) {
+    let _ = writeln!(out, "pub(crate) static {name}: [&str; {}] = [", items.len());
+    for x in items {
+        let _ = writeln!(out, "    {},", lit(x));
+    }
+    out.push_str("];\n");
+}
+
+/// `pub(crate) static NAME: [(&str, &str, &str); N] = [..];`, one row per line.
+fn triple_list(out: &mut String, name: &str, rows: &[(String, String, String)]) {
+    let _ = writeln!(
+        out,
+        "pub(crate) static {name}: [(&str, &str, &str); {}] = [",
+        rows.len()
+    );
+    for (a, b, c) in rows {
+        let _ = writeln!(out, "    ({}, {}, {}),", lit(a), lit(b), lit(c));
+    }
+    out.push_str("];\n");
+}
+
 /// The generated files: name (one of [`OUTPUT_FILES`]) -> text.
 pub fn render(t: &Tables) -> BTreeMap<&'static str, String> {
     let mut files = BTreeMap::new();
@@ -328,8 +548,68 @@ pub fn render(t: &Tables) -> BTreeMap<&'static str, String> {
         let ds: Vec<String> = digits.iter().map(|c| char_lit(*c)).collect();
         let _ = writeln!(d, "    ({}, [{}]),", lit(name), ds.join(", "));
     }
-    d.push_str("];\n");
+    d.push_str("];\n\n");
+    let _ = writeln!(
+        d,
+        "/// The names of [`NUMBERING_SYSTEMS`], in the same order (AvailableNumberingSystems)."
+    );
+    str_list(
+        &mut d,
+        "NUMBERING_SYSTEM_NAMES",
+        t.numbering_systems.iter().map(|(n, _)| n.as_str()),
+    );
     files.insert("digits.rs", d);
+
+    let mut l = header(t, "cldr-core/availableLocales.json, \"full\"");
+    let _ = writeln!(
+        l,
+        "/// The CLDR `availableLocales.json` \"full\" ids, sorted. Canonical tags."
+    );
+    str_list(&mut l, "CLDR_LOCALES", t.locales.iter().map(String::as_str));
+    files.insert("locales.rs", l);
+
+    let mut h = header(t, "cldr-core/supplemental/timeData.json, \"_preferred\"");
+    let _ = writeln!(
+        h,
+        "/// The regions whose preferred hour format is \"h\" (h12), sorted. Every other region and\n\
+         /// \"001\" prefer \"H\" (h23); no region prefers \"K\" or \"k\" (the generator checks it)."
+    );
+    str_list(
+        &mut h,
+        "HOUR_CYCLE_H12_REGIONS",
+        t.hour_cycle_h12_regions.iter().map(String::as_str),
+    );
+    h.push('\n');
+    let _ = writeln!(
+        h,
+        "/// The (language, region, hour cycle) rows whose preferred hour cycle is not the one of the\n\
+         /// region (or of \"001\" for a region with no row), sorted. They come before the region rows."
+    );
+    triple_list(
+        &mut h,
+        "HOUR_CYCLE_LANGUAGE_REGIONS",
+        &t.hour_cycle_language_regions,
+    );
+    files.insert("hour_cycles.rs", h);
+
+    let mut a = header(
+        t,
+        "cldr-bcp47/bcp47/*.json, \"_alias\", \"_deprecated\" and \"_preferred\"",
+    );
+    let _ = writeln!(
+        a,
+        "/// The -u- value aliases, as (key, alias, value), sorted: a deprecated type and its preferred\n\
+         /// value, and each alias of a type that has the uvalue form (subtags of 3 to 8 letters or\n\
+         /// digits, lower case)."
+    );
+    triple_list(&mut a, "U_VALUE_ALIASES", &t.u_value_aliases);
+    a.push('\n');
+    let _ = writeln!(
+        a,
+        "/// The -t- tvalue aliases, as (tkey, alias, value), sorted, in the same form."
+    );
+    triple_list(&mut a, "T_VALUE_ALIASES", &t.t_value_aliases);
+    files.insert("aliases.rs", a);
 
     let mut s = header(
         t,

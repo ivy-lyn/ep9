@@ -6,6 +6,9 @@
 //!   gen/digits.rs   NUMBERING_SYSTEMS   the 78 numbering systems with simple digit mappings
 //!   gen/t1.rs       T1_SYMBOLS, T1_ROWS NaN, infinity, exponent symbol, approximately sign and
 //!                                       range pattern per CLDR locale and numbering system
+//!   gen/locales.rs  CLDR_LOCALES        the availableLocales "full" ids (crate::available)
+//!   gen/hour_cycles.rs  HOUR_CYCLE_*    the timeData preferred hour cycles (crate::locale_info)
+//!   gen/aliases.rs  U_VALUE_ALIASES, T_VALUE_ALIASES  the bcp47 value aliases (crate::tag)
 //! ```
 //!
 //! The CLDR version of the tables is the CLDR version of the ICU4X compiled data (the tests of
@@ -26,8 +29,21 @@
 pub(crate) mod version {
     include!("gen/version.rs");
 }
-mod digits {
+/// `NUMBERING_SYSTEMS`, `NUMBERING_SYSTEM_NAMES`.
+pub(crate) mod digits {
     include!("gen/digits.rs");
+}
+/// `CLDR_LOCALES`.
+pub(crate) mod locales {
+    include!("gen/locales.rs");
+}
+/// `HOUR_CYCLE_H12_REGIONS`, `HOUR_CYCLE_LANGUAGE_REGIONS`.
+pub(crate) mod hour_cycles {
+    include!("gen/hour_cycles.rs");
+}
+/// `U_VALUE_ALIASES`, `T_VALUE_ALIASES`.
+pub(crate) mod aliases {
+    include!("gen/aliases.rs");
 }
 mod t1 {
     use super::NumberSymbols;
@@ -119,6 +135,12 @@ mod tests {
             digits::NUMBERING_SYSTEMS
                 .windows(2)
                 .all(|w| w[0].0 < w[1].0)
+        );
+        assert!(
+            digits::NUMBERING_SYSTEMS
+                .iter()
+                .map(|x| x.0)
+                .eq(digits::NUMBERING_SYSTEM_NAMES)
         );
         assert!(
             t1::T1_ROWS
