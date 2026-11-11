@@ -16,8 +16,10 @@
 //!                                 27
 //!          iterator, disposable,
 //!          28        29
-//!          ep9_intl::MODULES: intl, locale, collator]
+//!          ep9_intl::MODULES: intl, locale, collator,
 //!                             30    31      32
+//!          array_buffer, data_view]
+//!          33            34
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -50,6 +52,9 @@ pub mod bigint;
 pub mod iterator;
 // M7-P3 SPEC-ERM: block 29.
 pub mod disposable;
+// TypedArray TA-2 TA-BUFFERS: blocks 33 and 34.
+pub mod array_buffer;
+pub mod data_view;
 
 use ep9_vm::{BuiltinModule, BuiltinTable};
 
@@ -91,6 +96,10 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_intl::intl::MODULE,
     ep9_intl::locale::MODULE,
     ep9_intl::collator::MODULE,
+    // TypedArray TA-2 TA-BUFFERS: ArrayBuffer, SharedArrayBuffer, DataView; the lazy group of
+    // the keys `ArrayBuffer`, `SharedArrayBuffer` and `DataView` (TA-D14).
+    array_buffer::MODULE,
+    data_view::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.
