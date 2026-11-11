@@ -36,7 +36,8 @@ pub(crate) fn load_global(
     slow::load_global(cx, fp, pc, name, in_typeof, slot)
 }
 
-/// The cold body of `LdaGlobal` on other targets: the generic load ([`slow::load_global`]).
+/// The cold body of `LdaGlobal` on other targets: the generic load
+/// ([`super::slow::load_global`]).
 #[cfg(not(all(target_arch = "x86_64", not(feature = "ic-stats"))))]
 pub(crate) use super::slow::load_global;
 
