@@ -240,7 +240,7 @@ pub(crate) fn incompatible(cx: &mut Cx<'_>, what: &str) -> ep9_vm::Throw {
     cx.throw_type_error(&msg)
 }
 
-/// `this` if it is an ArrayBuffer (RequireInternalSlot(O, [[ArrayBufferData]]) and
+/// `this` if it is an ArrayBuffer (`RequireInternalSlot(O, [[ArrayBufferData]])` and
 /// IsSharedArrayBuffer(O) false), else a TypeError naming `what`.
 fn this_array_buffer<'s>(cx: &mut Cx<'s>, this: Local<'s>, what: &str) -> JsResult<Local<'s>> {
     if cx.is_array_buffer(this) {
@@ -250,7 +250,7 @@ fn this_array_buffer<'s>(cx: &mut Cx<'s>, this: Local<'s>, what: &str) -> JsResu
     }
 }
 
-/// `this` if it is a SharedArrayBuffer (RequireInternalSlot(O, [[ArrayBufferData]]) and
+/// `this` if it is a SharedArrayBuffer (`RequireInternalSlot(O, [[ArrayBufferData]])` and
 /// IsSharedArrayBuffer(O) true), else a TypeError naming `what`.
 fn this_shared<'s>(cx: &mut Cx<'s>, this: Local<'s>, what: &str) -> JsResult<Local<'s>> {
     if cx.is_shared_array_buffer(this) {
@@ -337,7 +337,7 @@ fn species_constructor<'s>(
     Err(cx.throw_type_error("object.constructor[Symbol.species] is not a constructor"))
 }
 
-/// get ArrayBuffer [ @@species ] (§25.1.5.3) and get SharedArrayBuffer [ @@species ]
+/// `get ArrayBuffer [ @@species ]` (§25.1.5.3) and `get SharedArrayBuffer [ @@species ]`
 /// (§25.2.4.2): the this value.
 fn species<'s>(
     _cx: &mut Cx<'s>,
@@ -584,7 +584,7 @@ fn copy_and_detach<'s>(
         .value())
 }
 
-/// ArrayBuffer.prototype.transfer ( [ newLength ] ) (§25.1.6.8).
+/// `ArrayBuffer.prototype.transfer ( [ newLength ] )` (§25.1.6.8).
 fn ab_transfer<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -601,7 +601,7 @@ fn ab_transfer<'s>(
     )
 }
 
-/// ArrayBuffer.prototype.transferToFixedLength ( [ newLength ] ) (§25.1.6.9).
+/// `ArrayBuffer.prototype.transferToFixedLength ( [ newLength ] )` (§25.1.6.9).
 fn ab_transfer_to_fixed_length<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

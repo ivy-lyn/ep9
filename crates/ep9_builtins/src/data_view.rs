@@ -221,7 +221,7 @@ pub const MODULE: BuiltinModule = BuiltinModule {
 /// The RangeError text of a byte offset or a byte index that is no index.
 const OFFSET: &str = "Offset is outside the bounds of the DataView";
 
-/// `this` if it is a DataView (RequireInternalSlot(O, [[DataView]])), else a TypeError naming
+/// `this` if it is a DataView (`RequireInternalSlot(O, [[DataView]])`), else a TypeError naming
 /// `what`.
 fn this_data_view<'s>(cx: &mut Cx<'s>, this: Local<'s>, what: &str) -> JsResult<Local<'s>> {
     if cx.is_data_view(this) {
