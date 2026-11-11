@@ -221,6 +221,10 @@ struct State {
     closed: bool,
     reports: VecDeque<String>,
     agents: Vec<AgentState>,
+    /// A hook of the main agent or of an agent threw because the run passed its deadline
+    /// ([`stopped`]): the run is an infrastructure error "timeout" ([`merge`]), also when JS
+    /// caught the hook's Error.
+    deadline_hit: bool,
 }
 
 /// The state that the main agent and its agents share. One lock and one condition variable:
@@ -284,8 +288,6 @@ struct MainState {
     threads: Vec<JoinHandle<()>>,
     /// The agent test hooks set for this test.
     hooks: Hooks,
-    /// A hook threw because the run passed its deadline.
-    deadline_hit: bool,
 }
 
 /// The agent test hooks of a test (module doc).
@@ -353,7 +355,6 @@ impl Session {
                 config,
                 threads: Vec::new(),
                 hooks,
-                deadline_hit: false,
             });
         });
         Session { ended: false }
@@ -401,7 +402,7 @@ fn shut_down() -> End {
         stuck: g.agents.iter().filter(|a| a.phase != Phase::Ended).count(),
         errors: g.agents.iter().filter_map(|a| a.error.clone()).collect(),
         panics: g.agents.iter().filter_map(|a| a.panic.clone()).collect(),
-        deadline_hit: main.deadline_hit,
+        deadline_hit: g.deadline_hit,
     };
     drop(g);
     for t in main.threads {
@@ -603,23 +604,21 @@ fn agent_shared(cx: &mut Cx<'_>, hook: &str) -> JsResult<(Arc<Shared>, usize)> {
 }
 
 /// The error of a hook whose wait ended at the deadline or at the close of the session. At the
-/// deadline the main agent's run becomes an infrastructure error ([`merge`]).
+/// deadline, on the main agent or on an agent, the run becomes an infrastructure error
+/// ([`State::deadline_hit`], [`merge`]). At the close, an agent records that it saw the stop
+/// ([`AgentState::saw_stop`]).
 fn stopped(cx: &mut Cx<'_>, hook: &str, why: Wait) -> Throw {
-    if why == Wait::Closed {
+    ROLE.with(|r| match (&*r.borrow(), why) {
         // Codex TA-2 r1 finding 1: only this error (and what JS makes of it) is the stop.
-        ROLE.with(|r| {
-            if let Role::Agent { shared, index } = &*r.borrow() {
-                shared.lock().agents[*index].saw_stop = true;
-            }
-        });
-    }
-    if why == Wait::Deadline {
-        ROLE.with(|r| {
-            if let Role::Main(m) = &mut *r.borrow_mut() {
-                m.deadline_hit = true;
-            }
-        });
-    }
+        (Role::Agent { shared, index }, Wait::Closed) => {
+            shared.lock().agents[*index].saw_stop = true;
+        }
+        // Codex TA-2 r1 finding 2: an agent's deadline counts too.
+        (Role::Main(MainState { shared, .. }) | Role::Agent { shared, .. }, Wait::Deadline) => {
+            shared.lock().deadline_hit = true;
+        }
+        _ => {}
+    });
     let what = if why == Wait::Deadline {
         "the run passed its deadline"
     } else {
@@ -1116,6 +1115,96 @@ var out = [first, stored, second, d.getInt32(0, true), errs.join()].join(' | ');
         }
     }
 
+    /// The text of a run result, as the merge tests read it.
+    fn name(r: &Run) -> String {
+        match r {
+            Run::Pass => "pass".to_string(),
+            Run::Fail { cause, detail } => format!("fail {cause} | {detail}"),
+            Run::Infra { cause, detail } => format!("infra {cause} | {detail}"),
+        }
+    }
+
+    /// Runs `agent` as the one agent of a session with a 300 ms deadline (the deadline under
+    /// test). The main agent spins on the raw `getReport` and calls no other hook, so only
+    /// the agent can pass the deadline. Returns the report (or the error text that `getReport`
+    /// threw) and what the agents left.
+    fn agent_passes_the_deadline(agent: &str) -> (String, End) {
+        const MAIN: &str = r#"
+$262.agent.start(agentSource);
+var out;
+try {
+  while ((out = $262.agent.getReport()) === null) {}
+} catch (e) {
+  out = 'main caught: ' + e.message;
+}
+"#;
+        let mut iso = isolate(0);
+        let config = AgentConfig {
+            gc_stress: 0,
+            feedback_threshold: 0,
+            exec: ExecOptions::default(),
+        };
+        let session = Session::begin(config, Duration::from_millis(300), Hooks::default());
+        let r = iso.with_cx(|cx| {
+            cx.evaluate_script(prelude(), "harness/$262 prelude")?;
+            let src = cx.new_string(agent)?;
+            global(cx, "agentSource", src.into())?;
+            cx.evaluate_script(MAIN, "test")?;
+            let g = cx.global();
+            let out = cx.get(g, "out")?;
+            cx.to_rust_string(out)
+        });
+        let end = session.end();
+        (r.unwrap_or_else(|e| format!("main threw: {e}")), end)
+    }
+
+    /// An agent whose `sleep` or `receiveBroadcast` passes the deadline, and that catches the
+    /// hook's Error and reports, does not make the run pass: the deadline is recorded for an
+    /// agent too, so the run is the infrastructure error "timeout" (Codex TA-2 r1 finding 2).
+    #[test]
+    fn an_agent_that_catches_its_deadline_error_is_a_timeout() {
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for (hook, call) in [
+            ("sleep", "$262.agent.sleep(1e9)"),
+            (
+                "receiveBroadcast",
+                "$262.agent.receiveBroadcast(function () {})",
+            ),
+        ] {
+            let agent = format!(
+                "try {{ {call}; }} catch (e) {{ $262.agent.report('caught: ' + e.message); }}\n\
+                 $262.agent.leaving();"
+            );
+            let (out, end) = agent_passes_the_deadline(&agent);
+            got.push((out, end.deadline_hit, name(&merge(Run::Pass, &end))));
+            want.push((
+                format!("caught: $262.agent.{hook}: the run passed its deadline"),
+                true,
+                "infra timeout | timeout: a $262.agent wait passed the run's deadline".to_string(),
+            ));
+        }
+        assert_eq!(got, want);
+    }
+
+    /// An agent whose `sleep` passes the deadline and does not catch the Error: the run is
+    /// the infrastructure error "timeout", not a test failure (Codex TA-2 r1 finding 2,
+    /// case (b)). The main agent sees the agent error through `getReport`.
+    #[test]
+    fn an_agent_that_does_not_catch_its_deadline_error_is_a_timeout() {
+        let (out, end) = agent_passes_the_deadline("$262.agent.sleep(1e9);");
+        assert_eq!(
+            out,
+            "main caught: $262.agent.getReport: an agent threw: agent 0: Error: \
+             $262.agent.sleep: the run passed its deadline"
+        );
+        assert!(end.deadline_hit, "{end:?}");
+        assert_eq!(
+            name(&merge(Run::Pass, &end)),
+            "infra timeout | timeout: a $262.agent wait passed the run's deadline"
+        );
+    }
+
     /// The second value of a broadcast goes to the agent as a Number or a BigInt of the
     /// agent's realm, the same value (here: two isolates, as the main agent and an agent).
     #[test]
@@ -1188,11 +1277,6 @@ var out = [first, stored, second, d.getInt32(0, true), errs.join()].join(' | ');
     /// fails a passing run and joins a failing run's detail.
     #[test]
     fn merge_rules() {
-        let name = |r: &Run| match r {
-            Run::Pass => "pass".to_string(),
-            Run::Fail { cause, detail } => format!("fail {cause} | {detail}"),
-            Run::Infra { cause, detail } => format!("infra {cause} | {detail}"),
-        };
         let errors = End {
             errors: vec!["agent 0: TypeError: x".into()],
             ..End::default()
