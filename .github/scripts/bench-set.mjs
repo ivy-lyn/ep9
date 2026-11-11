@@ -10,8 +10,9 @@
 //     [--top 15] [--timeout-s 3600] [--valgrind PATH] [--work DIR]
 //
 //   --base, --head    the commits of the two builds. Each binary's `ep9 --version` build line
-//                     (P0-BUILDID) must name its commit, built clean; a binary with no build line
-//                     or "commit unknown" is run and the JSON says so
+//                     (P0-BUILDID) must name its commit, built clean (else exit 2); with no
+//                     --base/--head, a binary with no build line or "commit unknown" is run and
+//                     the JSON says so
 //   --workloads       default: the BENCH-SET of rule 13: t0-loop, t0-branchy, t0-call, t0-prop,
 //                     t0-gen, the 7 v8-v7 kernels (no regexp) and Octane-7. Set names of
 //                     tools/bench/cross/workloads.mjs expand (v8v7-7, octane-7, ...)
@@ -43,7 +44,8 @@
 // files), and each row keeps the --top functions by Ir and the --top by Ir change.
 //
 // Exit status: 0 PASS; 1 FAIL or INCOMPLETE (the JSON and the table are still written); 2 usage
-// error (also: a binary names another commit, or was built with uncommitted engine changes).
+// error (also: a binary names another commit or no commit, or was built with uncommitted engine
+// changes).
 // Tests: node --test .github/scripts/bench-set.test.mjs (a fake valgrind and fake engines).
 
 import { spawn, spawnSync } from "node:child_process";
@@ -254,12 +256,16 @@ function versionOf(bin) {
   return { path: bin, ...splitVersion(v.stdout || ""), build: parseBuild(v.stderr) };
 }
 
-/** Checks that a binary is the build of `commit` (when given); returns a note or "". */
+/**
+ * Checks that a binary is the build of `commit` (when given: it must name it); returns a note or
+ * "" (a note only when no commit is given).
+ */
 function checkBuild(side, ep9, commit) {
   const b = ep9.build;
   if (b?.commit && commit && b.commit !== commit) {
     throw new UsageError(`--${side}-ep9 names commit ${b.commit}, not --${side} ${commit}`);
   }
+  if (commit && !b?.commit) throw new UsageError(`--${side}-ep9 names no commit; want ${commit}`);
   if (b?.dirty === true) throw new UsageError(`--${side}-ep9 was built with uncommitted engine changes`);
   if (!b) return `the ${side} binary prints no build line`;
   if (!b.commit) return `the ${side} binary names no commit`;

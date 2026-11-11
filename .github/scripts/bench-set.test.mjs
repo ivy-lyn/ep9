@@ -150,13 +150,15 @@ function fakeSetup(t) {
   const out = path.join(dir, "out.json");
   const md = path.join(dir, "out.md");
   const keep = path.join(dir, "cg");
-  const run = (args = [], env = {}) => {
+  // Each fake engine prints the build line of its commit, built clean (the CI form), unless the
+  // test sets FAKE_BUILD_ep9_base or FAKE_BUILD_ep9_head ("" for no build line); shas: false
+  // runs with no --base and --head.
+  const run = (args = [], env = {}, { shas = true } = {}) => {
     const argv = [
       SCRIPT,
       "--base-ep9", path.join(dir, "ep9-base"),
       "--head-ep9", path.join(dir, "ep9-head"),
-      "--base", BASE,
-      "--head", HEAD,
+      ...(shas ? ["--base", BASE, "--head", HEAD] : []),
       "--target", "test-x64",
       "--valgrind", path.join(TESTDATA, "fake-valgrind.mjs"),
       "--workloads", "t0-loop,t0-call",
@@ -166,7 +168,8 @@ function fakeSetup(t) {
       "--md", md,
       ...args,
     ];
-    const r = spawnSync(process.execPath, argv, { encoding: "utf8", env: { ...process.env, ...env } });
+    const builds = { FAKE_BUILD_ep9_base: `commit ${BASE} clean`, FAKE_BUILD_ep9_head: `commit ${HEAD} clean` };
+    const r = spawnSync(process.execPath, argv, { encoding: "utf8", env: { ...process.env, ...builds, ...env } });
     const res = existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null;
     return { ...r, res, md: existsSync(md) ? readFileSync(md, "utf8") : null };
   };
@@ -276,12 +279,21 @@ test("CLI: a wrong output, a failed run or a log with no count gives no count: I
 
 test("CLI: each binary must name its own commit, built clean; usage errors exit 2", (t) => {
   const f = fakeSetup(t);
-  // No build line (an old ep9): it runs, and a note says so.
-  let r = f.run();
+  // No --base and --head: a binary with no build line (an old ep9) or "commit unknown" runs,
+  // and a note says so.
+  let r = f.run([], { FAKE_BUILD_ep9_base: "", FAKE_BUILD_ep9_head: "commit unknown" }, { shas: false });
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(r.res.notes, ["the base binary prints no build line", "the head binary prints no build line"]);
+  assert.deepEqual(r.res.notes, ["the base binary prints no build line", "the head binary names no commit"]);
   assert.deepEqual([r.res.base.ep9.version, r.res.base.ep9.engine_build, r.res.base.ep9.path], ["fake ep9-base 0.0", "features none; preset jitless", "ep9-base"]);
-  r = f.run([], { FAKE_BUILD_ep9_base: `commit ${BASE} clean`, FAKE_BUILD_ep9_head: `commit ${HEAD} clean` });
+  // With --base and --head, each binary must name its commit (JIT review D2): no build line or
+  // "commit unknown" is a usage error, exit 2.
+  r = f.run([], { FAKE_BUILD_ep9_base: "" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--base-ep9 names no commit; want 1{40}/);
+  r = f.run([], { FAKE_BUILD_ep9_head: "commit unknown" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--head-ep9 names no commit; want 2{40}/);
+  r = f.run();
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.res.notes, []);
   assert.deepEqual(r.res.head.ep9.build, { commit: HEAD, dirty: false });
