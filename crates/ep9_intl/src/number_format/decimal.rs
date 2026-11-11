@@ -30,7 +30,6 @@ use icu_decimal::options::{
 use icu_decimal::preferences::CompactDecimalFormatterPreferences;
 use icu_decimal::provider::{Baked, DecimalSymbolsV1};
 use icu_decimal::{CompactDecimalFormatter, DecimalFormatter, DecimalFormatterPreferences};
-use icu_locale_core::Locale;
 use icu_locale_core::extensions::unicode::Value;
 use icu_locale_core::preferences::extensions::unicode::keywords::NumberingSystem;
 use icu_provider::prelude::*;
@@ -42,6 +41,7 @@ use crate::cldr;
 use crate::digits::{
     DecimalValue, DigitOptions, WIDE_DIGITS, WideDecimal, format_numeric_to_string,
 };
+use crate::tag::icu_locale;
 
 /// An Intl mathematical value (§16.5.15): a finite value (negative zero is a zero with
 /// [`Sign::Negative`]), an infinity or not-a-number. `Wide` is a finite value that a Decimal
@@ -297,11 +297,6 @@ struct Icu {
     plain: Option<DecimalFormatter>,
     /// The compact formatter, no grouping (compact notation only).
     compact: Option<CompactDecimalFormatter>,
-}
-
-/// The ICU4X locale of `data_locale` ("und" if ICU4X cannot read it).
-fn icu_locale(data_locale: &str) -> Locale {
-    Locale::try_from_str(data_locale).unwrap_or(Locale::UNKNOWN)
 }
 
 /// The preferences of `data_locale` with the numbering system `nu` (if ICU4X reads it).

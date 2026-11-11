@@ -58,9 +58,11 @@ use icu_locale_core::subtags::{Region, Script, Variant};
 
 use crate::available;
 use crate::cache::{self, Service};
+use crate::locale::is_unicode_type;
 use crate::options::{get_locale_matcher, get_options_object, get_string_option};
 use crate::resolve;
 use crate::tag;
+use crate::tag::icu_locale;
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 37;
@@ -333,14 +335,6 @@ pub fn initialize<'s>(
 
 // ---- CanonicalCodeForDisplayNames (12.5.1) -----------------------------------------------------
 
-/// Whether `s` matches the `type` nonterminal of UTS 35: `alphanum{3,8} (sep alphanum{3,8})*`
-/// with "-" as the separator.
-fn is_unicode_type(s: &str) -> bool {
-    !s.is_empty()
-        && s.split('-')
-            .all(|p| (3..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()))
-}
-
 /// CanonicalCodeForDisplayNames ( type, code ) (12.5.1): the canonical code, or `None` for
 /// the RangeError.
 pub fn canonical_code(ty: Type, code: &str) -> Option<String> {
@@ -409,11 +403,6 @@ struct LanguageNames {
     script: ScriptDisplayNames,
     region: RegionDisplayNames,
     variant: VariantDisplayNames,
-}
-
-/// The ICU4X locale of `locale` (canonical; "und" if ICU4X cannot read it).
-fn icu_locale(locale: &str) -> Locale {
-    Locale::try_from_str(locale).unwrap_or(Locale::UNKNOWN)
 }
 
 /// New ICU4X objects for `locale` and `p` (`None` if the data cannot load; not reached with the

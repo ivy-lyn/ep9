@@ -37,6 +37,8 @@ use ep9_vm::{
 
 use crate::available;
 use crate::digits::{DigitOptions, RoundingMode, RoundingType, set_number_format_digit_options};
+use crate::locale::is_unicode_type;
+use crate::options::index_of;
 use crate::options::{
     BoolOrString, coerce_options_to_object, get_boolean_or_string_number_format_option,
     get_locale_matcher, get_string_option,
@@ -210,11 +212,6 @@ const SIGNS: [SignDisplay; 5] = [
     SignDisplay::Negative,
 ];
 
-/// The index of `v` in `list` (0 if absent).
-fn index_of<T: PartialEq>(list: &[T], v: &T) -> u32 {
-    list.iter().position(|x| x == v).unwrap_or(0) as u32
-}
-
 /// The internal slots of a NumberFormat (§16.4), unpacked.
 #[derive(Clone, Debug)]
 pub struct Resolved {
@@ -376,14 +373,6 @@ fn read<'s>(cx: &mut Cx<'s>, nf: Local<'s>) -> JsResult<Resolved> {
 }
 
 // ---- InitializeNumberFormat (in Intl.NumberFormat, 16.1.1) ------------------------------------
-
-/// Whether `s` matches the Unicode locale identifier `type` nonterminal: alphanum{3,8}
-/// subtags joined by "-" (UTS 35 §3.2).
-fn is_unicode_type(s: &str) -> bool {
-    !s.is_empty()
-        && s.split('-')
-            .all(|t| (3..=8).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_alphanumeric()))
-}
 
 /// IsWellFormedCurrencyCode ( currency ) (6.3.1): three ASCII letters.
 fn is_well_formed_currency_code(c: &str) -> bool {

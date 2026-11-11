@@ -57,9 +57,11 @@ use crate::digits::{
     set_number_format_digit_options,
 };
 use crate::number_format::decimal::{IntlMv, to_intl_mv};
+use crate::options::index_of;
 use crate::options::{coerce_options_to_object, get_locale_matcher, get_string_option};
 use crate::resolve;
 use crate::tag;
+use crate::tag::icu_locale;
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 33;
@@ -193,11 +195,6 @@ const ROUNDING_TYPES: [RoundingType; 4] = [
 ];
 /// `[[ComputedRoundingPriority]]` values, in their packed order.
 const PRIORITIES: [&str; 3] = ["auto", "morePrecision", "lessPrecision"];
-
-/// The index of `v` in `list` (0 if absent).
-fn index_of<T: PartialEq>(list: &[T], v: &T) -> u32 {
-    list.iter().position(|x| x == v).unwrap_or(0) as u32
-}
 
 /// The internal slots of a PluralRules object (§17.4), unpacked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -440,11 +437,6 @@ impl Icu {
             Rules::Plain(_) | Rules::Cldr(_) => end,
         }
     }
-}
-
-/// The ICU4X locale of `data_locale` ("und" if ICU4X cannot read it).
-fn icu_locale(data_locale: &str) -> Locale {
-    Locale::try_from_str(data_locale).unwrap_or(Locale::UNKNOWN)
 }
 
 /// Whether the ICU4X compiled data has plural rules of type `ordinal` for `locale` itself or

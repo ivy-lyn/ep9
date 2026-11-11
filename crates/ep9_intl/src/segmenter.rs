@@ -56,7 +56,9 @@ use icu_segmenter::options::{SentenceBreakOptions, WordBreakInvariantOptions, Wo
 use icu_segmenter::{GraphemeClusterSegmenter, SentenceSegmenter, WordSegmenter};
 
 use crate::cache::{self, Service};
-use crate::options::{get_locale_matcher, get_options_object, get_string_option};
+use crate::options::{
+    POLL_UNITS, get_locale_matcher, get_options_object, get_string_option, units,
+};
 use crate::resolve;
 use crate::tag;
 
@@ -301,10 +303,6 @@ fn sentence_segmenter(data_locale: &str) -> Option<Rc<SentenceSegmenter>> {
     )
 }
 
-/// Code units of work per interrupt budget unit: the string search rate (H23, the
-/// `SearchWork` of `ep9_builtins`).
-pub const POLL_UNITS: usize = 256;
-
 /// The boundary table of `units` for `data_locale` and `granularity`: for each segment of the
 /// string in order, `end << 1 | isWordLike`, where `end` is the code unit index after the
 /// segment (the last one is the length) and `isWordLike` is 1 for a word-like segment of the
@@ -492,21 +490,6 @@ fn segment<'s>(
         string,
     )?;
     Ok(segments.into())
-}
-
-/// The code units of the string `s`, copied out (a view cannot live across a GC point). The
-/// copy takes one interrupt budget unit per [`POLL_UNITS`] code units.
-fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, JsString>) -> JsResult<Vec<u16>> {
-    let len = cx.string_len(s);
-    let flat = cx.flatten(s)?;
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        if i % POLL_UNITS == POLL_UNITS - 1 {
-            cx.poll_interrupt()?;
-        }
-        out.push(cx.code_unit_at(flat, i).unwrap_or(0));
-    }
-    Ok(out)
 }
 
 /// The boundary table (an internal Array of int32s, [`segment_ends`]) of `string` for the

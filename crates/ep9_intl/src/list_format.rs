@@ -42,6 +42,7 @@ use icu_list::{ListFormatter, ListFormatterPreferences};
 use icu_locale_core::Locale;
 
 use crate::cache::{self, Service};
+use crate::options::units;
 use crate::options::{get_locale_matcher, get_options_object, get_string_option};
 use crate::resolve;
 use crate::tag;
@@ -459,15 +460,6 @@ fn read<'s>(cx: &mut Cx<'s>, o: Local<'s>) -> JsResult<(String, Packed)> {
     let options = cx.slot(o, CLASS, SLOT_OPTIONS)?;
     let locale = cx.to_rust_string(locale)?;
     Ok((locale, Packed(options.as_int32().unwrap_or(0) as u32)))
-}
-
-/// The code units of the string `s`, copied out (a view cannot live across a GC point).
-fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, ep9_vm::JsString>) -> JsResult<Vec<u16>> {
-    let len = cx.string_len(s);
-    let flat = cx.flatten(s)?;
-    Ok((0..len)
-        .map(|i| cx.code_unit_at(flat, i).unwrap_or(0))
-        .collect())
 }
 
 /// StringListFromIterable ( iterable ) (14.5.5): the code units of each String the iterable

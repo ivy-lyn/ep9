@@ -43,7 +43,6 @@ use ep9_vm::{
 use icu_collator::options::{AlternateHandling, CaseLevel, CollatorOptions, Strength};
 use icu_collator::preferences::{CollationCaseFirst, CollationNumericOrdering, CollationType};
 use icu_collator::{CollatorBorrowed, CollatorPreferences};
-use icu_locale_core::Locale;
 use icu_normalizer::DecomposingNormalizerBorrowed;
 use icu_normalizer::properties::{
     CanonicalCombiningClassMap, CanonicalCombiningClassMapBorrowed, CanonicalDecompositionBorrowed,
@@ -51,11 +50,14 @@ use icu_normalizer::properties::{
 };
 
 use crate::cache::{self, Service};
+use crate::locale::is_unicode_type;
+use crate::options::units;
 use crate::options::{
     coerce_options_to_object, get_boolean_option, get_locale_matcher, get_string_option,
 };
 use crate::resolve::{self, KeyData};
 use crate::tag;
+use crate::tag::icu_locale;
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 32;
@@ -303,11 +305,6 @@ pub fn default_ignore_punctuation(data_locale: &str) -> bool {
     in_locale_list(SHIFTED, data_locale)
 }
 
-/// The ICU4X locale of `data_locale` (canonical, no extension; "und" if ICU4X cannot read it).
-fn icu_locale(data_locale: &str) -> Locale {
-    Locale::try_from_str(data_locale).unwrap_or(Locale::UNKNOWN)
-}
-
 /// Whether the ICU4X data has the collation type `co` for `data_locale` (through the locale
 /// fallback: "de-CH" finds the "de" phonebk tailoring). A trie lookup; no ICU4X object.
 pub fn has_collation(data_locale: &str, co: &str) -> bool {
@@ -367,14 +364,6 @@ fn key_data(data_locale: &str, key: &str, search: bool) -> KeyData {
         "kn" => vec!["false".to_string(), "true".to_string()],
         _ => Vec::new(),
     }
-}
-
-/// Whether `s` matches the Unicode locale identifier `type` nonterminal: alphanum{3,8}
-/// subtags joined by "-" (UTS 35 §3.2).
-fn is_unicode_type(s: &str) -> bool {
-    !s.is_empty()
-        && s.split('-')
-            .all(|t| (3..=8).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 // ---- InitializeCollator (10.1.2) --------------------------------------------------------------
@@ -811,15 +800,6 @@ fn compare_function<'s>(
     ))))
 }
 
-/// The code units of the string `s`, copied out (a view cannot live across a GC point).
-fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, ep9_vm::JsString>) -> JsResult<Vec<u16>> {
-    let len = cx.string_len(s);
-    let flat = cx.flatten(s)?;
-    Ok((0..len)
-        .map(|i| cx.code_unit_at(flat, i).unwrap_or(0))
-        .collect())
-}
-
 /// Intl.Collator.prototype.resolvedOptions ( ) (10.3.4).
 fn resolved_options<'s>(
     cx: &mut Cx<'s>,
@@ -934,7 +914,8 @@ mod tests {
         let (mut pairs, mut diffs, mut long) = (0usize, Vec::new(), 0usize);
         for l in locales {
             for (strength, numeric, case_level, shifted, upper) in sets {
-                let mut prefs = CollatorPreferences::from(&Locale::try_from_str(l).unwrap());
+                let mut prefs =
+                    CollatorPreferences::from(&icu_locale_core::Locale::try_from_str(l).unwrap());
                 if numeric {
                     prefs.numeric_ordering = Some(CollationNumericOrdering::True);
                 }

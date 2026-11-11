@@ -492,6 +492,12 @@ pub fn canonicalize_made_tag(tag: &str) -> Result<String, TagError> {
         .ok_or(TagError::Invalid)
 }
 
+/// The ICU4X locale of the data locale `data_locale` (canonical, no extension; "und" if ICU4X
+/// cannot read it).
+pub fn icu_locale(data_locale: &str) -> Locale {
+    Locale::try_from_str(data_locale).unwrap_or(Locale::UNKNOWN)
+}
+
 /// `tag` without its Unicode locale extension sequence (the `-u-...` part), as the
 /// ResolveLocale and BestAvailableLocale steps need. `tag` is canonical; the other subtags
 /// keep their case.
