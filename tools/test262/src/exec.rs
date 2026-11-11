@@ -1607,9 +1607,9 @@ pub fn run(opts: &Options) -> ExitCode {
         "--feedback".into(),
         opts.feedback.name().into(),
     ];
-    // A test has at most 2 runs; each gets the soft timeout, then a margin. A worker that
-    // gives no result by then is stuck where the interrupt check does not reach: kill it.
-    let hard = opts.timeout * 2 + Duration::from_secs(5);
+    // A test has at most 2 runs; each gets the soft timeout and the agent stop grace, then
+    // a margin. A worker with no result by then is stuck where no interrupt reaches: kill it.
+    let hard = opts.timeout * 2 + agent::STOP_GRACE * 2 + Duration::from_secs(5);
     let workers = Workers {
         subcommand: "exec-worker",
         args: &worker_args,

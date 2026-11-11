@@ -7,11 +7,13 @@
 //! - the end of a run stops every agent (a loop, a wait for a broadcast); an agent that does
 //!   not stop, and a main agent that waits past the deadline, are infrastructure errors, never
 //!   a pass;
+//! - a stuck agent in both runs of a test keeps its cause: the worker's hard timeout counts
+//!   the agent stop grace of each run;
 //! - an agent that throws fails the test, with the agent's exception as the cause;
 //! - a hook that needs an engine part this build lacks throws a TypeError (feature probe:
 //!   with a `SharedArrayBuffer` or `ArrayBuffer` constructor the same file checks the real
 //!   path);
-//! - `CanBlockIsTrue` fails (the main agent cannot block), `CanBlockIsFalse` runs.
+//! - `CanBlockIsFalse` fails (the main agent can block), `CanBlockIsTrue` runs.
 //!
 //! Every test runs the runner binary with a soft timeout, and the runner kills a worker at its
 //! hard timeout, so no test here can hang.
@@ -167,7 +169,7 @@ fn passing() -> Vec<(&'static str, String)> {
                  assert.sameValue(nextReport(), 'from a realm');",
             ),
         ),
-        ("can-block-false.js", test("flags: [CanBlockIsFalse]\n", "")),
+        ("can-block-true.js", test("flags: [CanBlockIsTrue]\n", "")),
         (
             "async.js",
             test(
@@ -209,9 +211,9 @@ fn failing() -> Vec<(&'static str, String, &'static str)> {
             "Error: $262.agent.getReport: an agent threw: agent 0: the script does not compile: ",
         ),
         (
-            "can-block-true.js",
-            test("flags: [CanBlockIsTrue]\n", ""),
-            "CanBlockIsTrue: the main agent cannot block",
+            "can-block-false.js",
+            test("flags: [CanBlockIsFalse]\n", ""),
+            "CanBlockIsFalse: the main agent can block",
         ),
     ]
 }
@@ -379,5 +381,33 @@ fn an_agent_that_does_not_stop_is_an_infrastructure_error() {
         "{text}"
     );
     assert_eq!(counts(&text), Some((1, 2)), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A stuck agent in both runs of a test (sloppy and strict): each run waits the agent stop
+/// grace, so the worker's hard timeout must count it two times. Then the result keeps the
+/// "still ran" cause of each run; with a hard timeout of 2 soft timeouts + 5 s, the parent
+/// killed the worker first and the cause was lost (harness checker B2).
+#[test]
+fn a_stuck_agent_in_both_runs_keeps_its_cause() {
+    let tests = [("both.js", test("", "$262.agent.start('');"))];
+    let root = tree("stuck-both", &tests);
+    let expect = expect_file(&root, &[]);
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &["--timeout", "1"],
+        Some("agent-stuck:/both.js"),
+    );
+    assert_eq!(code, Some(2), "{text}");
+    assert!(!text.contains("hard timeout"), "{text}");
+    assert!(
+        text.contains("test/agent/both.js: [sloppy] timeout: 1 agent(s) still ran"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[strict] timeout: 1 agent(s) still ran"),
+        "{text}"
+    );
     std::fs::remove_dir_all(root).unwrap();
 }

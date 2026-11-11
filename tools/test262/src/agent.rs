@@ -3,7 +3,7 @@
 //! `docs/plan/notes/typedarray-design.md` §5.6 and §8.2).
 //!
 //! ```text
-//! worker run thread: the main agent ([[CanBlock]] false)       agent thread i ([[CanBlock]] true)
+//! worker run thread: the main agent ([[CanBlock]] true)        agent thread i ([[CanBlock]] true)
 //!   run: a Session (deadline = now + the soft timeout)
 //!   $262.agent.start(src) ──────── spawn ────────────────────►  a new Isolate (same config)
 //!     returns when the agent runs (or ended) ◄──── running ───    agent prelude, then src
@@ -24,7 +24,7 @@
 //! | Deadline and kill path | Every wait of a hook (start, broadcast, receiveBroadcast, sleep) ends at the run's deadline or at the close of the session, and then throws (a host error, not a test result: [`run`] makes the run an infrastructure error "timeout"). The end of a run terminates every agent isolate (`TerminateHandle`) and waits [`STOP_GRACE`] for it. So no hang can pass a test |
 //! | GC (plan rule 8) | Rust memory holds no JS value: the session holds strings, numbers, thread handles and terminate handles. A hook keeps a value only in its arguments or in locals during one call |
 //! | Missing engine parts | A hook that needs an engine part this build does not have throws a TypeError: `$262.detachArrayBuffer` of a value that is not an engine ArrayBuffer (`Cx::detach_array_buffer` refuses it), `$262.agent.broadcast` of a SharedArrayBuffer while `ep9_vm` has no API that shares its block with another isolate ([`share_block`]) |
-//! | `[[CanBlock]]` | The main agent cannot block ([`MAIN_CAN_BLOCK`]); agents can. A `CanBlockIsTrue` test fails with the cause [`CAN_BLOCK_CAUSE`]; a `CanBlockIsFalse` test runs. The engine has no `[[CanBlock]]` input yet: `Atomics.wait` (TypedArray TA-4) reads it |
+//! | `[[CanBlock]]` | The main agent can block ([`MAIN_CAN_BLOCK`], as a shell main thread in d8, the SpiderMonkey shell and node: test262 `atomicsHelper.js` `$262.agent.safeBroadcast` calls `Atomics.wait` on it); agents can too. A `CanBlockIsFalse` test fails with the cause [`CAN_BLOCK_CAUSE`]; a `CanBlockIsTrue` test runs. The engine has no `[[CanBlock]]` input yet: `Atomics.wait` (TypedArray TA-4) reads it, and the runner sets it to true for the main isolate and for each agent isolate |
 //!
 //! Test hook (`EP9_TEST262_FAULT`, see `exec::fault_for`): `agent-stuck:<substr>` makes each
 //! agent of a matching test sleep in Rust for [`STUCK_FOR`], deaf to its termination, so the
@@ -47,12 +47,15 @@ use crate::exec::{self, Run, RunCtx};
 use crate::frontmatter::Meta;
 use crate::parse::Mode;
 
-/// The `[[CanBlock]]` of the main agent, the one that runs the test file (design §5.6: the
-/// main thread cannot block, agents can).
-pub(crate) const MAIN_CAN_BLOCK: bool = false;
+/// The `[[CanBlock]]` of the main agent, the one that runs the test file. The main agent can
+/// block (a shell main thread: test262 `atomicsHelper.js` `safeBroadcast` calls `Atomics.wait`
+/// on it). `Atomics.wait` wakes on the isolate interrupt (design §5.6), so the watchdog stops
+/// it.
+pub(crate) const MAIN_CAN_BLOCK: bool = true;
 
-/// The failure cause of a `CanBlockIsTrue` test.
-pub(crate) const CAN_BLOCK_CAUSE: &str = "CanBlockIsTrue: the main agent cannot block";
+/// The failure cause of a test whose `[[CanBlock]]` flag the main agent does not have (a
+/// `CanBlockIsFalse` test).
+pub(crate) const CAN_BLOCK_CAUSE: &str = "CanBlockIsFalse: the main agent can block";
 
 /// The time an agent gets to end after the run ends and terminates it.
 pub(crate) const STOP_GRACE: Duration = Duration::from_secs(5);
@@ -388,11 +391,13 @@ fn shut_down() -> End {
 /// the run: an agent that does not stop, a hook that waits past the deadline or an agent
 /// panic is an infrastructure error; an uncaught exception of an agent fails a passing run.
 pub(crate) fn run(cx: &mut RunCtx<'_>, rel: &str, src: &str, meta: &Meta, mode: Mode) -> Run {
-    if meta.can_block() == Some(true) && !MAIN_CAN_BLOCK {
+    if let Some(want) = meta.can_block()
+        && want != MAIN_CAN_BLOCK
+    {
         return exec::fail(
             CAN_BLOCK_CAUSE,
-            "the test needs [[CanBlock]] true; the runner runs it in the main agent, whose \
-             [[CanBlock]] is false (agents of $262.agent.start can block)",
+            "the test needs [[CanBlock]] false; the runner runs it in the main agent, whose \
+             [[CanBlock]] is true (a shell main thread can block)",
         );
     }
     let opts = cx.opts;
