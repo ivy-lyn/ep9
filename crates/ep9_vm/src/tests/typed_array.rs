@@ -24,6 +24,7 @@
 //! | `no_length_on_a_fixed_buffer_computes_it` | InitializeTypedArrayFromArrayBuffer step 9.a: a fixed view with the computed length; the RangeErrors |
 //! | `canonical_numeric_matches_the_spec_text` | `canonical_numeric` against the plain §7.1.21 text over a table of keys, one-byte and two-byte |
 //! | `a_view_receiver_takes_its_define_hook` | OrdinarySet with a view as the receiver (Reflect.set, `super[k] = v`): CreateDataProperty is the view's `[[DefineOwnProperty]]`, so "-0", an index out of range or on a detached view gives false and stores nothing; the named IC case stays SLOW (Codex TA-1 r1 finding 2) |
+//! | `integer_conversions_at_the_edges` | ToInt8 ... ToUint32 and ToUint8Clamp at NaN, ±0, ±∞, negative fractions, 2^31, 2^32, 2^53 and above, as node gives them (H36: no `fmod`, no FMA) |
 
 use std::cell::Cell;
 use std::hint::black_box;
@@ -1267,5 +1268,59 @@ fn a_view_receiver_takes_its_define_hook() {
         refused(cx, "0");
         assert_eq!(own_keys(cx, v), ["name"]);
         assert!(!has_own(cx, o, "0") && !has_own(cx, o, "-0"));
+    });
+}
+
+/// TypedArraySetElement at the conversion edges of the integer element types (ToInt8 ...
+/// ToUint32 and ToUint8Clamp, §7.1.6-12): NaN, ±0, ±∞, negative fractions, 2^31, 2^32, 2^53
+/// and above. The read-back values are node v26.13.0 results of `a = new XArray(1); a[0] = x;
+/// a[0]`, columns Int8, Uint8, Uint8Clamped, Int16, Uint16, Int32, Uint32. H36: the
+/// ToInt8 ... ToUint32 rows take `ep9_value::to_uint32` (integer operations on the bits), so no
+/// target calls `fmod` or emits an FMA for them (`cargo xtask fp-check`).
+#[test]
+fn integer_conversions_at_the_edges() {
+    #[rustfmt::skip]
+    const CASES: [(f64, [f64; 7]); 26] = [
+        (f64::NAN, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (f64::INFINITY, [0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 0.0]),
+        (f64::NEG_INFINITY, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (-0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (-0.5, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (-1.5, [-1.0, 255.0, 0.0, -1.0, 65535.0, -1.0, 4294967295.0]),
+        (-2.5, [-2.0, 254.0, 0.0, -2.0, 65534.0, -2.0, 4294967294.0]),
+        (65504.0, [-32.0, 224.0, 255.0, -32.0, 65504.0, 65504.0, 65504.0]),
+        (2147483648.0, [0.0, 0.0, 255.0, 0.0, 0.0, -2147483648.0, 2147483648.0]),
+        (-2147483648.5, [0.0, 0.0, 0.0, 0.0, 0.0, -2147483648.0, 2147483648.0]),
+        (-2147483649.0, [-1.0, 255.0, 0.0, -1.0, 65535.0, 2147483647.0, 2147483647.0]),
+        (4294967295.5, [-1.0, 255.0, 255.0, -1.0, 65535.0, -1.0, 4294967295.0]),
+        (4294967296.0, [0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 0.0]),
+        (4294967297.0, [1.0, 1.0, 255.0, 1.0, 1.0, 1.0, 1.0]),
+        (-4294967297.0, [-1.0, 255.0, 0.0, -1.0, 65535.0, -1.0, 4294967295.0]),
+        // 2^53, 2^53 + 2, -(2^53 + 2), 2^53 + 2^32 + 6.
+        (9007199254740992.0, [0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 0.0]),
+        (9007199254740994.0, [2.0, 2.0, 255.0, 2.0, 2.0, 2.0, 2.0]),
+        (-9007199254740994.0, [-2.0, 254.0, 0.0, -2.0, 65534.0, -2.0, 4294967294.0]),
+        (9007203549708294.0, [6.0, 6.0, 255.0, 6.0, 6.0, 6.0, 6.0]),
+        // 2^64 + 2^12, 2^70 + 12345 * 2^18 and its negation.
+        (18446744073709555712.0, [0.0, 0.0, 255.0, 4096.0, 4096.0, 4096.0, 4096.0]),
+        (1180591620720647471104.0, [0.0, 0.0, 255.0, 0.0, 0.0, -1058799616.0, 3236167680.0]),
+        (-1180591620720647471104.0, [0.0, 0.0, 0.0, 0.0, 0.0, 1058799616.0, 1058799616.0]),
+        (1e300, [0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 0.0]),
+        (f64::MAX, [0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 0.0]),
+        (5e-324, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    ];
+    each(|cx| {
+        for t in 0u8..=6 {
+            let rt = cx.rt();
+            let b = buffer(rt, 8, None);
+            let v = view(rt, t, b, 0, Some(1));
+            for (x, want) in CASES {
+                put(cx, v, "0", crate::conv::num(x));
+                let got = out_of(get(cx, v, "0"));
+                let want = Out::N(want[usize::from(t)]);
+                assert!(same(got, want), "type {t}: {x:e} -> {got:?}, want {want:?}");
+            }
+        }
     });
 }

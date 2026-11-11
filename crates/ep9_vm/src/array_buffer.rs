@@ -1040,22 +1040,6 @@ pub(crate) unsafe fn write_raw(p: *mut u8, size: usize, x: u64, shared: bool) {
     }
 }
 
-/// The modulo-2^32 integer of a Number (the ToInt32 / ToUint32 core, §7.1.6-7): 0 for NaN and
-/// ±∞, else the truncated value modulo 2^32.
-fn to_uint32_bits(n: f64) -> u32 {
-    if !n.is_finite() {
-        return 0;
-    }
-    let t = n.trunc();
-    if t.abs() < 9_007_199_254_740_992.0 {
-        return t as i64 as u32;
-    }
-    // Exact: fmod of an integral double by a power of two.
-    let m = t % 4_294_967_296.0;
-    let m = if m < 0.0 { m + 4_294_967_296.0 } else { m };
-    m as u32
-}
-
 /// ToUint8Clamp (§7.1.12): NaN and below 0 give 0, above 255 gives 255, else round half to
 /// even.
 fn to_uint8_clamp(n: f64) -> u8 {
@@ -1070,9 +1054,14 @@ fn to_uint8_clamp(n: f64) -> u8 {
 
 /// NumericToRawBytes (§25.1.3.17) of the Number `n` for the Number element type `t`, as the
 /// little-endian integer of its bytes. One NaN pattern per type.
+///
+/// Rows 0-6 except 2 (ToInt8 ... ToUint32, §7.1.6-11) keep the low bytes of ToUint32: the
+/// truncated value modulo 2^32, 0 for NaN and ±∞. `ep9_value::to_uint32` gets it with integer
+/// operations on the bits (H36 "ToInt32"), so no target calls `fmod` or emits an FMA for it
+/// (`cargo xtask fp-check`).
 pub(crate) fn number_to_raw(t: u8, n: f64) -> u64 {
     match t {
-        0 | 1 | 3 | 4 | 5 | 6 => u64::from(to_uint32_bits(n)),
+        0 | 1 | 3 | 4 | 5 | 6 => u64::from(ep9_value::to_uint32(n)),
         2 => u64::from(to_uint8_clamp(n)),
         9 => u64::from(ep9_math::f16::to_bits(n)),
         10 => {
