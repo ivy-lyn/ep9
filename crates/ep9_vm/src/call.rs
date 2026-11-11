@@ -967,8 +967,8 @@ pub(crate) unsafe fn push_construct_stub(
 /// test before its count and its budget unit, then writes the frame with
 /// [`fill_missing_args`], [`write_call_args`] and [`write_call_header`]; the four together
 /// write what [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
-/// The forwarded call of the T0 call fast path on the other targets ([`forward_frame`], M7-P4
-/// LEVER-3) writes its frame with the same four.
+/// The forwarded call of the T0 call path ([`forward_frame`], M7-P4 LEVER-3; x86-64 since M8-P0)
+/// writes its frame with the same four.
 ///
 /// The `& !7` changes no bit (`base` is a slot address, so `fp` is 8-byte aligned). It keeps
 /// LLVM from folding `base + 8 * n + 72` into every later address, so the fast path holds the
@@ -1703,6 +1703,8 @@ mod tail_tests {
 // ```text
 // T0 call fast path (interp/ops.rs call_fast): a host callee with a FUNCTION receiver
 //   ──> forward_frame: no GC point, nothing thrown, the budget above 0 (else None: cold)
+//   (x86-64 without spike-native: from the cold body of the call, after the call record,
+//   interp/ops.rs call_receiver_cold ──> forward_or_call; M8-P0 X86-CALL-FWD)
 // slow::call ──> host_entry ──> forward: the same steps after `enter`, with the GC point of
 //   the feedback count (the call that makes the callee's vector) and the RangeError of a
 //   full VM stack
@@ -1769,7 +1771,8 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 /// threshold or with the vector made: no GC point) and pushes its frame right above `fp`, and
 /// gives the new frame and the callee's code (else a null frame). The caller then takes the call's budget unit and
 /// the sampled call record of `callee`, as the cold path does (`call_record_cold`,
-/// `slow::call`), and jumps.
+/// `slow::call`), and jumps. (`call_fast` sends a call whose record is due cold; the x86-64
+/// cold body `interp::ops::call_receiver_cold` records before its `forward_or_call` calls this.)
 ///
 /// It makes no call (no panic path either), so the call handlers that inline it keep their
 /// register use and their frame: the callee test reads the current REALM record's intrinsics
@@ -1778,8 +1781,10 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 ///
 /// Not in the x86-64 form of the call fast path (`call_fast`, PERF3 item 2): there, the
 /// inlined body costs the call handlers more callee-saved registers, pushed on each call
-/// (CallProperty0 2 to 6, CallProperty1 3 to 6, M7-P4 LEVER-3), so x86-64 forwards stay on
-/// the cold path.
+/// (CallProperty0 2 to 6, CallProperty1 3 to 6, M7-P4 LEVER-3). On x86-64 (not spike-native)
+/// the cold body of the 5 call opcodes with a receiver calls it instead, out of line
+/// (`interp::ops::forward_or_call`, M8-P0 X86-CALL-FWD): the fast handler reaches that body
+/// by its tail jump to the cold handler, so no fast handler saves a register for it.
 ///
 /// A null frame and code, with no state changed (the slots it may have written lie above the top frame,
 /// where no GC root scan and no reader looks): the cold path decides. That is every call that
@@ -1794,10 +1799,6 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 /// `fp` is the live top frame (bytecode runs with no scratch area), `next` the pc after its
 /// current call instruction, and `arg(fp, i)` returns valid Value bits for `i < argc`, rooted
 /// in the caller's registers.
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 // Out of line in debug builds: inline, its unoptimized locals grow the frame of each call
 // handler (and of `step::<S2>`, which holds them), and the debug Sibling dispatch and the
 // small-stack re-entry test (`tests::interp::scaled_steps_fit_a_small_stack`) run out of
@@ -1832,10 +1833,6 @@ pub(crate) unsafe fn forward_frame(
 ///
 /// # Safety
 /// As [`forward_frame`].
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 #[inline(always)]
 unsafe fn forward_frame_in(
     cx: &Cx,
@@ -1933,10 +1930,6 @@ unsafe fn forward_frame_in(
 /// [`forward_list`]'s Array form that `forward_frame` reads in place, with
 /// `arguments::unmapped_word` (each `object::array_get` of an index below n gives that
 /// word). `None` for any other Array. Not a GC point; no panic path.
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 #[inline(always)]
 fn packed_array(a: u64) -> Option<(u32, Option<ep9_heap::CellPtr>)> {
     use ep9_value::encoding::NUMBER_TAG;
@@ -1973,10 +1966,6 @@ fn packed_array(a: u64) -> Option<(u32, Option<ep9_heap::CellPtr>)> {
 /// the record's list a copy of the intrinsic slots; `realm::switch` reads it back). `None`
 /// when `Cx::realm` is no REALM record or its list is too short. Not a GC point; no panic
 /// path.
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 #[inline(always)]
 fn realm_intrinsic(cx: &Cx, id: crate::builtins::IntrinsicId) -> Option<u64> {
     let realm = cx.realm;
@@ -2095,8 +2084,7 @@ thread_local! {
     /// The calls that `interp/slow/call.rs` `forward` or [`forward_frame`] pushed a frame for
     /// on this thread.
     pub(crate) static FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-    /// The calls of [`FORWARDED_CALLS`] that [`forward_frame`] (the T0 call fast path) pushed.
-    #[cfg_attr(all(not(feature = "spike-native"), target_arch = "x86_64"), allow(dead_code))]
+    /// The calls of [`FORWARDED_CALLS`] that [`forward_frame`] (the T0 call path) pushed.
     pub(crate) static T0_FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
