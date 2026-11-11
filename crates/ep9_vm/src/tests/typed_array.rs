@@ -20,11 +20,12 @@
 //! | `a_named_ic_case_stops_at_a_view` | no named load or store IC case looks past a view, or caches a miss or an add, for "1.5", "-0", "Infinity", "NaN" (`ic::exotic_name`) |
 //! | `a_view_as_a_dictionary_keeps_its_fields` | a dictionary view keeps its kind, fixed fields and elements (N3) |
 //! | `a_view_never_transitions` | `elements::transition` refuses a view in debug builds (N4) |
-//! | `integrity_levels_of_a_view` | SetIntegrityLevel and TestIntegrityLevel over a view's internal methods: no debug panic, the spec results (N3; TODO TA3-PREVEXT) |
+//! | `integrity_levels_of_a_view` | SetIntegrityLevel and TestIntegrityLevel over a view's internal methods: no debug panic, the spec results (N3; a length-tracking view: `prevent_extensions_of_a_view_needs_a_fixed_length`) |
 //! | `no_length_on_a_fixed_buffer_computes_it` | InitializeTypedArrayFromArrayBuffer step 9.a: a fixed view with the computed length; the RangeErrors |
 //! | `canonical_numeric_matches_the_spec_text` | `canonical_numeric` against the plain §7.1.21 text over a table of keys, one-byte and two-byte |
 //! | `a_view_receiver_takes_its_define_hook` | OrdinarySet with a view as the receiver (Reflect.set, `super[k] = v`): CreateDataProperty is the view's `[[DefineOwnProperty]]`, so "-0", an index out of range or on a detached view gives false and stores nothing; the named IC case stays SLOW (Codex TA-1 r1 finding 2) |
 //! | `integer_conversions_at_the_edges` | ToInt8 ... ToUint32 and ToUint8Clamp at NaN, ±0, ±∞, negative fractions, 2^31, 2^32, 2^53 and above, as node gives them (H36: no `fmod`, no FMA) |
+//! | `prevent_extensions_of_a_view_needs_a_fixed_length` | §10.4.5 [[PreventExtensions]] (TA3-PREVEXT): false and still extensible for a view that is not IsTypedArrayFixedLength, also out of bounds or detached; OrdinaryPreventExtensions for a fixed-length view (node v26.13.1) |
 
 use std::cell::Cell;
 use std::hint::black_box;
@@ -1012,11 +1013,8 @@ fn integrity_levels_of_a_view() {
         }
         // A length-tracking view (TYPED_VARIABLE): its element defines with
         // `[[Configurable]]: false` are refused as above, and it keeps kind 8.
-        // TODO(TA3-PREVEXT): §10.4.5 [[PreventExtensions]] returns false for a view that is not
-        // IsTypedArrayFixedLength (node: `Object.preventExtensions(new Uint8Array(new
-        // ArrayBuffer(4, {maxByteLength: 8})))` throws a TypeError); ep9 gives true today. The
-        // fix is in the property.rs [[PreventExtensions]] entry, route TA3-PREVEXT (TA-3), so
-        // this test does not call preventExtensions, freeze or seal on this view.
+        // §10.4.5 [[PreventExtensions]] of this view is false (TA3-PREVEXT, TA-3): the test
+        // `prevent_extensions_of_a_view_needs_a_fixed_length` covers it.
         let rt = cx.rt();
         let rab = buffer(rt, 4, Some(8));
         let auto = view(rt, 1, rab, 0, None);
@@ -1322,5 +1320,58 @@ fn integer_conversions_at_the_edges() {
                 assert!(same(got, want), "type {t}: {x:e} -> {got:?}, want {want:?}");
             }
         }
+    });
+}
+
+/// `[[PreventExtensions]]` of a view (`sec-typedarray-preventextensions`, route TA3-PREVEXT)
+/// through the one entry `property::try_prevent_extensions`: false for a view that is not
+/// IsTypedArrayFixedLength, and the view stays extensible; else OrdinaryPreventExtensions.
+/// node v26.13.1 (`Reflect.preventExtensions(v)`, then `Object.isExtensible(v)`) gives the
+/// table; a detach or a shrink does not change the answer (the elements kind is kept).
+#[test]
+fn prevent_extensions_of_a_view_needs_a_fixed_length() {
+    each(|cx| {
+        let rt = cx.rt();
+        let rab = buffer(rt, 8, Some(16));
+        let fixed_ab = buffer(rt, 8, None);
+        let gsab = ab::allocate_shared(rt, NULL, 8, Some(16)).unwrap();
+        let sab = ab::allocate_shared(rt, NULL, 8, None).unwrap();
+        // (what, buffer, offset, length, the node result of Reflect.preventExtensions).
+        let cases = [
+            ("length-tracking on resizable", rab, 0, None, false),
+            ("fixed on resizable", rab, 0, Some(2), false),
+            ("fixed on fixed", fixed_ab, 0, Some(2), true),
+            ("fixed on growable SAB", gsab, 0, Some(2), true),
+            ("length-tracking on growable SAB", gsab, 0, None, false),
+            ("no length on fixed", fixed_ab, 0, None, true),
+            ("no length on fixed SAB", sab, 0, None, true),
+        ];
+        for (what, b, offset, len, want) in cases {
+            let v = view(cx.rt(), 0, b, offset, len);
+            assert_eq!(
+                ta::prevent_extensions(v),
+                (!want).then_some(false),
+                "{what}"
+            );
+            assert_eq!(property::try_prevent_extensions(cx, v), Ok(want), "{what}");
+            assert_eq!(property::is_extensible(v), !want, "{what}: extensible");
+            assert_eq!(elements::check(v), Ok(()));
+        }
+        // A view on a resizable buffer stays not fixed-length when it is out of bounds or
+        // detached (node: false, and the view stays extensible).
+        let rt = cx.rt();
+        let b = buffer(rt, 8, Some(16));
+        let oob = view(rt, 0, b, 4, Some(4));
+        let auto = view(rt, 0, b, 0, None);
+        ab::resize(cx.rt(), b, 2).unwrap();
+        assert_eq!(property::try_prevent_extensions(cx, oob), Ok(false));
+        ab::detach(cx.rt(), b, UNDEFINED).unwrap();
+        assert_eq!(property::try_prevent_extensions(cx, auto), Ok(false));
+        assert!(property::is_extensible(oob) && property::is_extensible(auto));
+        // An object that is no view takes the plain form.
+        let o = object::new_object(cx.rt(), NULL);
+        assert_eq!(ta::prevent_extensions(o), None);
+        assert_eq!(property::try_prevent_extensions(cx, o), Ok(true));
+        assert!(!property::is_extensible(o));
     });
 }
