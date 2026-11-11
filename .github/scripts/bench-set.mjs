@@ -7,15 +7,20 @@
 //   node .github/scripts/bench-set.mjs --base-ep9 bench/ep9-base --head-ep9 bench/ep9-head \
 //     --base <sha> --head <sha> --target linux-x64 [--branch-sim] --out bench-set.json \
 //     [--md FILE] [--keep DIR] [--workloads LIST] [--limit-pct 0.5] [--hash-seed 1] [--jobs N] \
-//     [--top 15] [--functions LIST] [--timeout-s 3600] [--valgrind PATH] [--work DIR]
-//   node .github/scripts/bench-set.mjs --list [--workloads LIST]
+//     [--top 15] [--functions LIST] [--timeout-s 3600] [--valgrind PATH] [--work DIR] [--build B]
+//   node .github/scripts/bench-set.mjs --list [--build B] [--workloads LIST]
 //
 //   --base, --head    the commits of the two builds. Each binary's `ep9 --version` build line
 //                     (P0-BUILDID) must name its commit, built clean (else exit 2); with no
 //                     --base/--head, a binary with no build line or "commit unknown" is run and
 //                     the JSON says so
+//   --build B         jit or jitless (MC-w36-4): each binary's `ep9 --version` build line must
+//                     name that build (jit: the feature jit and preset jit, the ep9_cli default;
+//                     jitless: no feature jit and preset jitless, `--no-default-features`),
+//                     else exit 2. The JSON and the table name it. Not given: no build check
 //   --workloads       default: the BENCH-SET of rule 13: t0-loop, t0-branchy, t0-call, t0-prop,
-//                     t0-gen, the 7 v8-v7 kernels (no regexp) and Octane-7. Set names of
+//                     t0-gen, the 7 v8-v7 kernels (no regexp) and Octane-7; with --build jitless
+//                     the JITLESS-SET: t0-* and the 7 v8-v7 kernels. Set names of
 //                     tools/bench/cross/workloads.mjs expand (v8v7-7, octane-7, ...). A comma
 //                     list; an empty name or an unknown name is a usage error (exit 2)
 //   --list            check --workloads and print the rows it gives, one per line; no run (the
@@ -70,6 +75,16 @@ export const SCHEMA = "ep9-bench-set/v1";
 /** The BENCH-SET of rule 13 (plan v13 section 1.1): t0-*, the 7 v8-v7 kernels and Octane-7. */
 export const T0 = ["t0-loop", "t0-branchy", "t0-call", "t0-prop", "t0-gen"];
 export const BENCH_SET = [...T0, ...V8V7_7, ...OCTANE_7];
+/**
+ * The jitless leg of the bench mode (MC-w36-4): t0-* and the 7 v8-v7 kernels, the rows of D11
+ * (T0 gates in the jitless build) that the jitless `ics` handler table runs.
+ */
+export const JITLESS_SET = [...T0, ...V8V7_7];
+/** The builds that --build names: the build line each binary must print (exec.rs BuildInfo). */
+export const BUILDS = {
+  jit: { jit: true, preset: "jit" },
+  jitless: { jit: false, preset: "jitless" },
+};
 /** The rule-13 floor, in percent. */
 export const LIMIT_PCT = 0.5;
 /** The cachegrind events of a --branch-sim=yes run, in its out-file order. */
@@ -85,7 +100,8 @@ export function parseArgs(argv) {
     head: null,
     target: `${process.platform}-${process.arch}`,
     branchSim: false,
-    workloads: BENCH_SET,
+    workloads: null,
+    build: null,
     limitPct: LIMIT_PCT,
     hashSeed: "1",
     jobs: os.availableParallelism?.() ?? os.cpus().length,
@@ -125,6 +141,11 @@ export function parseArgs(argv) {
       case "--workloads": o.workloads = names(a, val()); break;
       case "--functions": o.functions = names(a, val()); break;
       case "--list": o.list = true; break;
+      case "--build": {
+        o.build = val();
+        if (!Object.hasOwn(BUILDS, o.build)) throw new UsageError(`--build needs jit or jitless, got ${o.build}`);
+        break;
+      }
       case "--limit-pct": {
         const v = val();
         o.limitPct = Number(v);
@@ -150,6 +171,7 @@ export function parseArgs(argv) {
   for (const [k, v] of [["--base", o.base], ["--head", o.head]]) {
     if (v !== null && !/^[0-9a-f]{40}$/.test(v)) throw new UsageError(`${k} needs a full commit id (40 hex digits), got ${v}`);
   }
+  o.workloads ??= o.build === "jitless" ? JITLESS_SET : BENCH_SET;
   if (new Set(o.workloads).size !== o.workloads.length) throw new UsageError("--workloads has a duplicate");
   o.workloads = expandWorkloads(o.workloads);
   if (!o.workloads.length) throw new UsageError("--workloads is empty");
@@ -290,6 +312,21 @@ function checkBuild(side, ep9, commit) {
   return "";
 }
 
+/**
+ * Checks that a binary is the --build build (MC-w36-4): its build line ("features <list>;
+ * preset <name>", M5-P0) names the feature jit and preset jit for jit, no feature jit and preset
+ * jitless for jitless. A jit binary in the jitless leg (or the reverse) would count the other
+ * handler table.
+ */
+export function checkBuildLine(side, ep9, build) {
+  const m = /^features (\S+); preset (\S+)$/.exec(ep9.engine_build ?? "");
+  const want = BUILDS[build];
+  const features = m ? (m[1] === "none" ? [] : m[1].split(",")) : null;
+  if (!m || features.includes("jit") !== want.jit || m[2] !== want.preset) {
+    throw new UsageError(`--${side}-ep9 is not the ${build} build (its build line: ${JSON.stringify(ep9.engine_build)})`);
+  }
+}
+
 /** One cachegrind run; resolves to { status, error, counts, out }. */
 function cgRun(o, side, bin, w, keep) {
   const stem = path.join(keep, `${side}.${w.name}`);
@@ -354,6 +391,10 @@ export async function run(o, { log = (s) => process.stderr.write(`${s}\n`) } = {
   const base = versionOf(o.baseEp9);
   const head = versionOf(o.headEp9);
   const notes = [checkBuild("base", base, o.base), checkBuild("head", head, o.head)].filter(Boolean);
+  if (o.build) {
+    checkBuildLine("base", base, o.build);
+    checkBuildLine("head", head, o.build);
+  }
   const vg = spawnSync(o.valgrind, ["--version"], { encoding: "utf8" });
   const tmp = mkdtempSync(path.join(os.tmpdir(), "ep9-bench-set-"));
   const work = o.work ?? path.join(tmp, "work");
@@ -401,6 +442,7 @@ export async function run(o, { log = (s) => process.stderr.write(`${s}\n`) } = {
   return {
     schema: SCHEMA,
     target: o.target,
+    build: o.build,
     counter: "cachegrind-i-refs",
     branch_sim: o.branchSim,
     hash_seed: o.hashSeed,
@@ -436,7 +478,7 @@ const cell = (s) => String(s).replace(/\s*\n\s*/g, " / ").replaceAll("|", "\\|")
 export function renderMarkdown(res) {
   const sha = (c) => (c ? `\`${c.slice(0, 12)}\`` : "(not given)");
   const L = [
-    `### bench set (${res.target}): cachegrind Ir, head vs base`,
+    `### bench set (${res.target}${res.build ? `, ${res.build} build` : ""}): cachegrind Ir, head vs base`,
     "",
     `base ${sha(res.base.commit)}, head ${sha(res.head.commit)}; EP9_HASH_SEED=${res.hash_seed}, EP9_GC_HELPERS=${res.gc_helpers}; ` +
       `${res.valgrind ?? "valgrind"} --tool=cachegrind --cache-sim=no --branch-sim=${res.branch_sim ? "yes" : "no"}; ` +

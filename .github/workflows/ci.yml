@@ -1237,6 +1237,11 @@ jobs:
   # the mode step refuses any other character, the workloads step any unknown name (exit 2, both
   # before the checkouts and builds). The concurrency group names it, so 2 dispatches of one pair
   # with other workloads do not replace each other.
+  # The jitless leg (MC-w36-4): each side is also built with --no-default-features (the jitless
+  # build: no jit feature, preset jitless, the `ics` handler table with skip_next) in its own
+  # target dir, and counted on the JITLESS-SET (t0-*, the 7 v8-v7 kernels; or bench_workloads).
+  # Rule 13 is read on both builds: the job fails when either leg fails. Its JSON and cachegrind
+  # files go in the same artifact (bench-set-<target>-jitless.json, bench/cg-jitless/).
   bench-set:
     name: bench set (${{ matrix.name }})
     strategy:
@@ -1247,8 +1252,9 @@ jobs:
           || '[{"name":"off","os":"ubuntu-24.04","branch_sim":false}]') }}
     runs-on: ${{ matrix.os }}
     # Rule 25: no measured time yet (est. 30-50 min: 2 release builds, 38 cachegrind runs, 4 at a
-    # time); the orchestrator sets 1.5x the first measured time.
-    timeout-minutes: 120
+    # time; the jitless leg adds 2 release builds in their own target dir and 24 runs, est. +20-35
+    # min); the orchestrator sets 1.5x the first measured time.
+    timeout-minutes: 180
     steps:
       - name: bench mode
         id: mode
@@ -1293,7 +1299,10 @@ jobs:
         if: ${{ steps.mode.outputs.on == 'true' }}
         env:
           WORKLOADS: ${{ steps.mode.outputs.workloads }}
-        run: node .github/scripts/bench-set.mjs --list ${WORKLOADS:+--workloads "$WORKLOADS"}
+        run: |
+          node .github/scripts/bench-set.mjs --build jit --list ${WORKLOADS:+--workloads "$WORKLOADS"}
+          echo "jitless leg:"
+          node .github/scripts/bench-set.mjs --build jitless --list ${WORKLOADS:+--workloads "$WORKLOADS"}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ steps.mode.outputs.on == 'true' }}
         with:
@@ -1318,11 +1327,13 @@ jobs:
         run: bash scripts/sync-bench.sh bench-v8v7 bench-octane
       # Each tree with its own toolchain file and its own regress and icu4x forks (the
       # setup-rust steps, per tree). Each binary's build line must name its commit, clean
-      # (bench-set.mjs checks it).
+      # (bench-set.mjs checks it). The jitless build of each side (MC-w36-4) goes to its own
+      # target dir, so the jit build's artifacts stay.
       - name: build ep9 at base and head
         if: ${{ steps.mode.outputs.on == 'true' }}
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/bench/target
+          JITLESS_TARGET_DIR: ${{ github.workspace }}/bench/target-jitless
         run: |
           set -euo pipefail
           retry() { "$@" || { echo "::warning::$* failed; one retry in 20 s"; sleep 20; "$@"; }; }
@@ -1334,9 +1345,12 @@ jobs:
             retry bash scripts/sync-regress.sh
             if [ -f scripts/sync-icu4x.sh ]; then retry bash scripts/sync-icu4x.sh; fi
             cargo build --release --locked -p ep9_cli
+            cargo build --release --locked -p ep9_cli --no-default-features --target-dir "$JITLESS_TARGET_DIR"
             popd > /dev/null
             cp "$CARGO_TARGET_DIR/release/ep9" "bench/ep9-$side"
+            cp "$JITLESS_TARGET_DIR/release/ep9" "bench/ep9-jitless-$side"
             "bench/ep9-$side" --version
+            "bench/ep9-jitless-$side" --version
           done
       - name: count
         id: count
@@ -1355,14 +1369,22 @@ jobs:
           if [ "$BRANCH_SIM" = true ]; then sim=(--branch-sim); fi
           wl=()
           if [ -n "$WORKLOADS" ]; then wl=(--workloads "$WORKLOADS"); fi
+          # Both legs run; the step fails when either fails (rule 13 on both builds, MC-w36-4).
+          rc=0 rc2=0
           node .github/scripts/bench-set.mjs --base-ep9 bench/ep9-base --head-ep9 bench/ep9-head \
             --base "$BASE" --head "$HEAD" --target "$LEG" "${sim[@]}" "${wl[@]}" --keep bench/cg \
-            --functions "$FUNCTIONS" --out "bench-set-$LEG.json" --md "$GITHUB_STEP_SUMMARY"
+            --functions "$FUNCTIONS" --out "bench-set-$LEG.json" --md "$GITHUB_STEP_SUMMARY" --build jit || rc=$?
+          node .github/scripts/bench-set.mjs --base-ep9 bench/ep9-jitless-base --head-ep9 bench/ep9-jitless-head \
+            --base "$BASE" --head "$HEAD" --target "$LEG" "${sim[@]}" "${wl[@]}" --keep bench/cg-jitless \
+            --functions "$FUNCTIONS" --out "bench-set-$LEG-jitless.json" --md "$GITHUB_STEP_SUMMARY" --build jitless || rc2=$?
+          exit $((rc > rc2 ? rc : rc2))
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && steps.count.outcome != 'skipped' && steps.mode.outputs.on == 'true' }}
         with:
           name: bench-set-${{ matrix.name }}-${{ steps.mode.outputs.head }}
           path: |
             bench-set-${{ matrix.name }}.json
+            bench-set-${{ matrix.name }}-jitless.json
             bench/cg/
+            bench/cg-jitless/
           if-no-files-found: error
