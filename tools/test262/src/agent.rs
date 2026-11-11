@@ -26,9 +26,14 @@
 //! | Engine checks | The hooks test no class: the brand-checked engine method gives the TypeError. `$262.detachArrayBuffer` of a value that is not an engine ArrayBuffer (`Cx::detach_array_buffer`); `$262.agent.broadcast` of a value that is not an engine SharedArrayBuffer (`Cx::shared_array_buffer_block`, [`share_block`]). An agent makes its SharedArrayBuffer on the block with the prototype of its realm's intrinsic `%SharedArrayBuffer.prototype%` ([`adopt_block`]; H22-Q8) |
 //! | `[[CanBlock]]` | The main agent can block ([`MAIN_CAN_BLOCK`], as a shell main thread in d8, the SpiderMonkey shell and node: test262 `atomicsHelper.js` `$262.agent.safeBroadcast` calls `Atomics.wait` on it); agents can too. A `CanBlockIsFalse` test fails with the cause [`CAN_BLOCK_CAUSE`]; a `CanBlockIsTrue` test runs. The engine has no `[[CanBlock]]` input yet: `Atomics.wait` (TypedArray TA-4) reads it, and the runner sets it to true for the main isolate and for each agent isolate |
 //!
-//! Test hook (`EP9_TEST262_FAULT`, see `exec::fault_for`): `agent-stuck:<substr>` makes each
-//! agent of a matching test sleep in Rust for [`STUCK_FOR`], deaf to its termination, so the
-//! tests can show that an agent that does not stop is an infrastructure error.
+//! Test hooks (`EP9_TEST262_FAULT`, see `exec::fault_for`):
+//! - `agent-stuck:<substr>` makes each agent of a matching test sleep in Rust for
+//!   [`STUCK_FOR`], deaf to its termination, so the tests can show that an agent that does
+//!   not stop is an infrastructure error.
+//! - `agent-hold-error:<substr>`: when the script or a job of an agent of a matching test
+//!   ends with an exception that is not a termination, the agent waits in Rust until the
+//!   session closes (or its deadline passes) before it decides if the exception came from
+//!   the stop. So the tests can show that an agent error thrown before the close is kept.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -188,6 +193,10 @@ struct AgentState {
     /// A panic of the agent thread: its text.
     panic: Option<String>,
     terminate: Option<TerminateHandle>,
+    /// A hook of this agent threw because the session closed ([`stopped`]): an exception that
+    /// ends the agent after it is part of the stop. Set on the agent thread when the hook
+    /// throws, so an exception thrown before the close is never taken as the stop.
+    saw_stop: bool,
 }
 
 impl AgentState {
@@ -201,6 +210,7 @@ impl AgentState {
             error: None,
             panic: None,
             terminate: None,
+            saw_stop: false,
         }
     }
 }
@@ -272,10 +282,28 @@ struct MainState {
     shared: Arc<Shared>,
     config: AgentConfig,
     threads: Vec<JoinHandle<()>>,
-    /// The `agent-stuck` test hook is set for this test.
-    stuck: bool,
+    /// The agent test hooks set for this test.
+    hooks: Hooks,
     /// A hook threw because the run passed its deadline.
     deadline_hit: bool,
+}
+
+/// The agent test hooks of a test (module doc).
+#[derive(Clone, Copy, Debug, Default)]
+struct Hooks {
+    /// `agent-stuck`.
+    stuck: bool,
+    /// `agent-hold-error`.
+    hold_error: bool,
+}
+
+impl Hooks {
+    fn for_test(rel: &str) -> Hooks {
+        Hooks {
+            stuck: exec::fault_for("agent-stuck", rel),
+            hold_error: exec::fault_for("agent-hold-error", rel),
+        }
+    }
 }
 
 enum Role {
@@ -313,7 +341,7 @@ struct Session {
 }
 
 impl Session {
-    fn begin(config: AgentConfig, timeout: Duration, stuck: bool) -> Session {
+    fn begin(config: AgentConfig, timeout: Duration, hooks: Hooks) -> Session {
         let shared = Arc::new(Shared {
             state: Mutex::default(),
             changed: Condvar::new(),
@@ -324,7 +352,7 @@ impl Session {
                 shared,
                 config,
                 threads: Vec::new(),
-                stuck,
+                hooks,
                 deadline_hit: false,
             });
         });
@@ -404,7 +432,7 @@ pub(crate) fn run(cx: &mut RunCtx<'_>, rel: &str, src: &str, meta: &Meta, mode: 
         feedback_threshold: opts.feedback_threshold,
         exec: opts.exec,
     };
-    let session = Session::begin(config, opts.timeout, exec::fault_for("agent-stuck", rel));
+    let session = Session::begin(config, opts.timeout, Hooks::for_test(rel));
     let run = cx.run(rel, src, meta, mode);
     merge(run, &session.end())
 }
@@ -449,7 +477,7 @@ fn merge(run: Run, end: &End) -> Run {
 
 // ---- the agent thread --------------------------------------------------------------------------
 
-fn agent_thread(shared: &Arc<Shared>, index: usize, config: AgentConfig, src: &str, stuck: bool) {
+fn agent_thread(shared: &Arc<Shared>, index: usize, config: AgentConfig, src: &str, hooks: Hooks) {
     ROLE.with(|r| {
         *r.borrow_mut() = Role::Agent {
             shared: Arc::clone(shared),
@@ -457,7 +485,7 @@ fn agent_thread(shared: &Arc<Shared>, index: usize, config: AgentConfig, src: &s
         };
     });
     let r = catch_unwind(AssertUnwindSafe(|| {
-        agent_body(shared, index, config, src, stuck)
+        agent_body(shared, index, config, src, hooks)
     }));
     ROLE.with(|r| *r.borrow_mut() = Role::None);
     let mut g = shared.lock();
@@ -481,7 +509,7 @@ fn agent_body(
     index: usize,
     config: AgentConfig,
     src: &str,
-    stuck: bool,
+    hooks: Hooks,
 ) -> Result<(), String> {
     let name = format!("agent {index}");
     let unit = exec::compile(src, SourceOpts::script(Strictness::Sloppy), &name)
@@ -503,12 +531,22 @@ fn agent_body(
         a.phase = Phase::Running;
     }
     shared.notify();
-    if stuck {
+    if hooks.stuck {
         // The `agent-stuck` test hook: deaf to the termination.
         std::thread::sleep(STUCK_FOR);
         return Ok(());
     }
-    let stopped = |e: &ep9_vm::Exception| e.terminated || shared.lock().closed;
+    // An exception is the stop if it is the termination or comes after a hook of this agent
+    // threw for the close (`saw_stop`), not because the session is closed by now: an agent
+    // error thrown before the close stays an error, although the close comes first.
+    let stopped = |e: &ep9_vm::Exception| {
+        if hooks.hold_error && !e.terminated {
+            // The `agent-hold-error` test hook: the close comes before the decision.
+            let g = shared.lock();
+            drop(shared.wait(g, shared.deadline, true, |_| false));
+        }
+        e.terminated || shared.lock().agents[index].saw_stop
+    };
     let r = iso.with_cx_checkpoint(|cx| {
         cx.evaluate_script(prelude(), "harness/$262 agent prelude")?;
         cx.run_script(unit, &name).map(|_| ())
@@ -567,6 +605,14 @@ fn agent_shared(cx: &mut Cx<'_>, hook: &str) -> JsResult<(Arc<Shared>, usize)> {
 /// The error of a hook whose wait ended at the deadline or at the close of the session. At the
 /// deadline the main agent's run becomes an infrastructure error ([`merge`]).
 fn stopped(cx: &mut Cx<'_>, hook: &str, why: Wait) -> Throw {
+    if why == Wait::Closed {
+        // Codex TA-2 r1 finding 1: only this error (and what JS makes of it) is the stop.
+        ROLE.with(|r| {
+            if let Role::Agent { shared, index } = &*r.borrow() {
+                shared.lock().agents[*index].saw_stop = true;
+            }
+        });
+    }
     if why == Wait::Deadline {
         ROLE.with(|r| {
             if let Role::Main(m) = &mut *r.borrow_mut() {
@@ -637,15 +683,15 @@ fn start<'s>(
             "$262.agent.start: a run starts at most {MAX_AGENTS} agents"
         )));
     };
-    let (config, stuck) = ROLE.with(|r| match &*r.borrow() {
-        Role::Main(m) => (m.config, m.stuck),
+    let (config, hooks) = ROLE.with(|r| match &*r.borrow() {
+        Role::Main(m) => (m.config, m.hooks),
         _ => unreachable!("main_shared checked the role"),
     });
     let s = Arc::clone(&shared);
     let spawned = std::thread::Builder::new()
         .name(format!("ep9-test262-agent-{index}"))
         .stack_size(exec::RUN_STACK_BYTES)
-        .spawn(move || agent_thread(&s, index, config, &src, stuck));
+        .spawn(move || agent_thread(&s, index, config, &src, hooks));
     match spawned {
         Ok(t) => ROLE.with(|r| {
             if let Role::Main(m) = &mut *r.borrow_mut() {
@@ -1039,7 +1085,7 @@ var out = [first, stored, second, d.getInt32(0, true), errs.join()].join(' | ');
                 exec: ExecOptions::default(),
             };
             // The session deadline ends every wait (no hang); it is not a time bound.
-            let session = Session::begin(config, Duration::from_secs(120), false);
+            let session = Session::begin(config, Duration::from_secs(120), Hooks::default());
             let r = iso.with_cx(|cx| {
                 cx.evaluate_script(prelude(), "harness/$262 prelude")?;
                 let src = cx.new_string(AGENT)?;

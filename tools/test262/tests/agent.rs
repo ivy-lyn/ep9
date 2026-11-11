@@ -416,6 +416,39 @@ fn a_stuck_agent_in_both_runs_keeps_its_cause() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// An agent that throws after the report that the main agent reads, and the main agent does
+/// not wait for the error (Codex TA-2 r1 finding 1). The `agent-hold-error` hook makes the
+/// order fixed: the agent holds its error until the run ended and the session closed, then
+/// decides. The error came before the close, so it is kept: the passing run fails with it
+/// (it was a Pass when every error after the close counted as a stop).
+#[test]
+fn an_agent_error_held_past_the_close_still_fails_the_run() {
+    let tests = [(
+        "held.js",
+        test(
+            "flags: [onlyStrict]\n",
+            "$262.agent.start('$262.agent.report(\"x\"); throw new TypeError(\"late\")');\n\
+             assert.sameValue(nextReport(), 'x');",
+        ),
+    )];
+    let root = tree("held", &tests);
+    let expect = expect_file(&root, &["test/agent/held.js".to_string()]);
+    let json = root.join("summary.json");
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &["--timeout", "60", "--json", json.to_str().unwrap()],
+        Some("agent-hold-error:/held.js"),
+    );
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(counts(&text), Some((0, 1)), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    let entry = "{\"path\":\"test/agent/held.js\",\"status\":\"fail\",\"cause\":\"agent threw: \
+                 agent 0: TypeError: late";
+    assert!(summary.contains(entry), "{entry}: {summary}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The agent's side of `share.js`: it stores 42 into the broadcast SharedArrayBuffer (with
 /// `Atomics.store` once the engine has `Atomics` and `Int32Array`, else a DataView store),
 /// reports, then reports the byteLength of the same object after the main agent grew it.
