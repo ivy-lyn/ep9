@@ -711,10 +711,10 @@ fn runs_bytecode(fi: &FunctionInfo) -> bool {
 // every call then takes `decode_call`, `do_call` and the host function.
 //
 // M7-P4 LEVER-3: the T0 call fast path takes most forwarded calls before they come here
-// (`call::forward_frame`: the same tests, with no call, no GC point and no throw; not on
-// x86-64, where every forward comes here); `forward` takes the rest: a mapped arguments object, an Array with a hole or a double list, the call
-// that makes the callee's feedback vector, a call whose sampled call record is due
-// (`profile::record_call`), a budget at 0 (after the poll), a full VM stack (the RangeError),
+// (`call::forward_frame`: the same tests, with no call, no GC point and no throw; on x86-64
+// from the cold call body, `interp::ops::forward_or_call`, M8-P0); `forward` takes the rest: a mapped arguments object, an Array with a hole or a double list, the call
+// that makes the callee's feedback vector, a call whose sampled call record is due (on aarch64;
+// x86-64 forwards it after the record) (`profile::record_call`), a budget at 0 (after the poll), a full VM stack (the RangeError),
 // and every call while some isolate has its human fast paths off.
 
 /// The 9 opcodes of the decode-free entries: the bytes CallAnyReceiver ..=

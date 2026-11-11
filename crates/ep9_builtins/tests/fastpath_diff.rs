@@ -84,8 +84,8 @@ const INVENTORY: &[FastPath] = &[
     FastPath {
         id: "forward-apply",
         site: "crates/ep9_vm/src/interp/slow/call.rs forward (apply); crates/ep9_vm/src/call.rs \
-               forward_frame (the T0 form in interp/ops.rs call_fast; not on x86-64 without \
-               spike-native, M7-P4 LEVER-3)",
+               forward_frame (the T0 form in interp/ops.rs call_fast, M7-P4 LEVER-3; x86-64 \
+               without spike-native: interp/ops.rs forward_or_call, M8-P0)",
         off: Off::Switch,
         what: "f.apply(thisArg, list) of a bytecode f with an unmodified arguments object, a \
                packed Array, undefined or null: the frame pushed from the source",
@@ -93,8 +93,8 @@ const INVENTORY: &[FastPath] = &[
     FastPath {
         id: "forward-call",
         site: "crates/ep9_vm/src/interp/slow/call.rs forward (call); crates/ep9_vm/src/call.rs \
-               forward_frame (the T0 form in interp/ops.rs call_fast; not on x86-64 without \
-               spike-native, M7-P4 LEVER-3)",
+               forward_frame (the T0 form in interp/ops.rs call_fast, M7-P4 LEVER-3; x86-64 \
+               without spike-native: interp/ops.rs forward_or_call, M8-P0)",
         off: Off::Switch,
         what: "f.call(thisArg, ...args) of a bytecode f: the frame pushed from the registers",
     },
