@@ -107,3 +107,39 @@ fn format_gives_the_node_lines() {
         ])
     );
 }
+
+const BIG: &str = r#"const big = 10n ** 40000n;
+const s = new Intl.NumberFormat("en").format(-big);
+print((10n ** 32768n).toLocaleString("en").length, s.slice(0, 8), s.length, s.slice(-4), (10n ** 32767n).toLocaleString("en").length);
+const one = new Intl.NumberFormat("en", {maximumSignificantDigits: 1}).format(10n ** 32768n - 1n);
+print(one.length, one.slice(0, 6), one.slice(-4));
+print(new Intl.NumberFormat("en", {notation: "compact"}).format(big).slice(-6), new Intl.NumberFormat("en", {notation: "compact", maximumFractionDigits: 2}).format(big + 5n * 10n ** 9n).slice(-8), new Intl.NumberFormat("de", {notation: "compact", compactDisplay: "long"}).format(big).slice(-10));
+print(new Intl.NumberFormat("de", {maximumSignificantDigits: 3, roundingMode: "ceil"}).format(big + 1n).slice(0, 8), new Intl.NumberFormat("en", {maximumSignificantDigits: 2, roundingMode: "floor"}).format(-(big + 1n)).slice(0, 6));
+print(new Intl.NumberFormat("en", {minimumFractionDigits: 2}).format(big).slice(-5), new Intl.NumberFormat("en-IN").format(big).slice(0, 9));
+const p = new Intl.NumberFormat("en", {useGrouping: false}).formatToParts(-big);
+print(p.length, p[0].type, p[1].type, p[1].value.length, p[1].value.slice(0, 3));
+const t = 10n ** 39998n;
+const f = (m, x) => new Intl.NumberFormat("en", {maximumSignificantDigits: 2, roundingMode: m}).format(x).slice(0, 5);
+print(f("halfEven", 225n * t), f("halfEven", 235n * t), f("halfExpand", -225n * t), f("halfTrunc", 225n * t), f("halfTrunc", 225n * t + 1n), f("halfCeil", -225n * t), f("halfFloor", -225n * t), f("expand", 221n * t), f("trunc", -229n * t), f("ceil", -221n * t), f("floor", 229n * t), f("halfEven", 995n * t));
+"#;
+
+/// A BigInt of 32,768 digits or more (fixed_decimal holds at most 32,768 digits, and a
+/// rounding carry past magnitude 32,767 gives zero): the exact digits with the grouping, sign
+/// and digits of the locale, the rounding modes, compact notation and formatToParts (with no
+/// grouping: 2 parts, so the GC stress run stays short). Old code: "NaN" (Codex r1 finding
+/// 2), and "0" for the carry.
+#[test]
+fn large_bigints_give_the_node_lines() {
+    assert_eq!(
+        run_both(BIG),
+        lines(&[
+            "43691 -10,000, 53335 ,000 43690",
+            "43691 100,00 ,000",
+            "0,000T ,000.01T  Billionen",
+            "10.100.0 -11,00",
+            "00.00 10,00,00,",
+            "2 minusSign integer 40001 100",
+            "22,00 24,00 -23,0 22,00 23,00 -22,0 -23,0 23,00 -22,0 -22,0 22,00 100,0",
+        ])
+    );
+}

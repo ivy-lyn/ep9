@@ -120,6 +120,9 @@ print(pr.select(1n), pr.select(2n), new Intl.PluralRules("en", {maximumFractionD
 print(new Intl.PluralRules("sl").selectRange(1, 1), pr.selectRange(1, "1.0"), pr.selectRange(1n, 2n));
 const fa = new Intl.PluralRules("fa");
 print(new Intl.PluralRules("sl").selectRange(-1, 1), fa.selectRange(-1, 1), fa.selectRange(-0, 0), fa.selectRange(-0.0001, 0));
+const big = 10n ** 40000n, ru = new Intl.PluralRules("ru");
+const tr = (fn) => { try { return fn(); } catch (e) { return e.constructor.name; } };
+print(ru.select(big + 1n), ru.select(big + 2n), tr(() => pr.selectRange(1n, big)), tr(() => pr.selectRange(big, big)), new Intl.PluralRules("ru", {notation: "compact"}).select(big + 1n));
 const c = new Intl.PluralRules("en", {notation: "compact"}).resolvedOptions();
 print(Object.keys(c).join());
 const l = new Intl.PluralRules("en", {roundingPriority: "lessPrecision"}).resolvedOptions();
@@ -145,6 +148,10 @@ fn the_spec_lines_where_v8_differs() {
             // -1 and 1 (and -0 and 0) have the same text and step 4 gives the start category
             // (V8: "few other other other", the range data).
             "one one one one",
+            // ep9: a BigInt is its exact value (ToIntlMathematicalValue step 3), also with
+            // 40,001 digits: ru "one" (i % 10 = 1), "few"; en ranges; ru compact "many" (the
+            // integer significand ends in 0). V8: ToNumber, so a TypeError for each.
+            "one few other other many",
             // ep9: SetNumberFormatDigitOptions step 25 sets the fraction and the significant
             // digits for the compact default, and lessPrecision sets both (V8 shows only the
             // significant digits).

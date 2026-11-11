@@ -41,7 +41,7 @@ use ep9_vm::{
     IntrinsicValue, JsResult, Local, ObjectClass, ObjectProps, PropAttrs, PropDef, PropKey,
     WellKnownSymbol,
 };
-use fixed_decimal::{CompactDecimal, Decimal};
+use fixed_decimal::CompactDecimal;
 use icu_decimal::CompactDecimalFormatter;
 use icu_decimal::options::CompactDecimalFormatterOptions;
 use icu_decimal::preferences::CompactDecimalFormatterPreferences;
@@ -53,7 +53,7 @@ use icu_plurals::{
 
 use crate::cache::{self, Service};
 use crate::digits::{
-    DigitOptions, RoundingMode, RoundingType, format_numeric_to_string,
+    DecimalValue, DigitOptions, RoundingMode, RoundingType, format_numeric_to_string,
     set_number_format_digit_options,
 };
 use crate::number_format::decimal::{IntlMv, to_intl_mv};
@@ -577,14 +577,16 @@ struct Plural {
 
 /// ComputeExponentForMagnitude ( pluralRules, magnitude ) (§16.5.13) for the notation of
 /// `r`: 0 for "standard", the magnitude for "scientific", the magnitude rounded down to a
-/// multiple of 3 for "engineering", the ICU4X compact data for "compact". Integer
-/// arithmetic only (no `log10`, no `pow`; INTL-V2-FP3).
-fn exponent_for_magnitude(r: &Resolved, icu: &Icu, magnitude: i16) -> i16 {
+/// multiple of 3 for "engineering", the ICU4X compact data for "compact" (a magnitude above
+/// i16::MAX takes the exponent of i16::MAX: the top pattern). Integer arithmetic only (no
+/// `log10`, no `pow`; INTL-V2-FP3).
+fn exponent_for_magnitude(r: &Resolved, icu: &Icu, magnitude: i64) -> i64 {
     match r.notation() {
         "scientific" => magnitude,
         "engineering" => magnitude.div_euclid(3) * 3,
         "compact" => icu.compact.as_ref().map_or(0, |c| {
-            i16::from(c.compact_exponent_for_magnitude(magnitude))
+            let m = magnitude.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+            i64::from(c.compact_exponent_for_magnitude(m))
         }),
         _ => 0,
     }
@@ -592,23 +594,23 @@ fn exponent_for_magnitude(r: &Resolved, icu: &Icu, magnitude: i16) -> i16 {
 
 /// ComputeExponent ( pluralRules, x ) (§16.5.12) and the significand x × 10^-exponent rounded
 /// by FormatNumericToString: as NumberFormat shows `x` in the notation of `r`.
-fn compute_exponent(r: &Resolved, icu: &Icu, x: &Decimal) -> (i16, Decimal) {
-    let round = |e: i16| {
+fn compute_exponent<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> (i64, D) {
+    let round = |e: i64| {
         let mut y = x.clone();
         y.multiply_pow10(-e);
         format_numeric_to_string(&r.digits, &mut y);
         y
     };
     // 1. If x = 0, return 0.
-    if x.absolute.is_zero() {
+    if x.is_zero() {
         return (0, round(0));
     }
     // 3-6. The magnitude, its exponent, and x × 10^-exponent rounded.
-    let magnitude = x.absolute.nonzero_magnitude_start();
+    let magnitude = x.nonzero_magnitude_start();
     let e = exponent_for_magnitude(r, icu, magnitude);
     let y = round(e);
     // 7-9. A rounding that keeps the magnitude keeps the exponent.
-    if y.absolute.is_zero() || y.absolute.nonzero_magnitude_start() == magnitude - e {
+    if y.is_zero() || y.nonzero_magnitude_start() == magnitude - e {
         return (e, y);
     }
     // 10. Return ComputeExponentForMagnitude(magnitude + 1).
@@ -620,26 +622,23 @@ fn compute_exponent(r: &Resolved, icu: &Icu, x: &Decimal) -> (i16, Decimal) {
 /// of compact, scientific and engineering notation).
 ///
 /// A negative exponent (scientific or engineering notation of |x| < 1) has no ICU4X operand
-/// (`c` is unsigned): such a value takes the operands of its rounded value with `c` = 0.
-fn operands(r: &Resolved, icu: &Icu, x: &Decimal) -> PluralOperands {
+/// (`c` is unsigned): such a value takes the operands of its rounded value with `c` = 0. So
+/// does an exponent above 255 (`c` is a u8). A WideDecimal gives its operands through
+/// [`DecimalValue::plural_decimal`] (ICU4X keeps at most 18 integer digits).
+fn operands<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> PluralOperands {
     let (e, mut y) = compute_exponent(r, icu, x);
     if let Ok(e) = u8::try_from(e) {
-        return PluralOperands::from(&CompactDecimal::from_significand_and_exponent(y, e));
+        return PluralOperands::from(&CompactDecimal::from_significand_and_exponent(
+            y.plural_decimal(),
+            e,
+        ));
     }
     y.multiply_pow10(e);
-    PluralOperands::from(&y)
+    PluralOperands::from(&y.plural_decimal())
 }
 
-/// ResolvePlural ( pluralRules, n ) (17.5.2) on the Intl mathematical value `n`.
-fn resolve_plural(r: &Resolved, icu: &Icu, n: &IntlMv) -> Plural {
-    // 1-3. NaN and the infinities: "other" (the text only takes part in the equality test of
-    //      ResolvePluralRange).
-    let x = match n {
-        IntlMv::Finite(x) => x,
-        IntlMv::NaN => return other("NaN"),
-        IntlMv::PosInf => return other("Infinity"),
-        IntlMv::NegInf => return other("-Infinity"),
-    };
+/// Steps 4-11 of ResolvePlural on the finite value `x`.
+fn resolve_finite<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> Plural {
     // 4-5. Let res be FormatNumericToString(pluralRules, n); let s be res.[[FormattedString]].
     let mut s = x.clone();
     format_numeric_to_string(&r.digits, &mut s);
@@ -650,7 +649,20 @@ fn resolve_plural(r: &Resolved, icu: &Icu, n: &IntlMv) -> Plural {
     //     and 1 (and -0 and 0) have the same text. The rounding above kept the sign.
     Plural {
         category,
-        formatted: s.absolute.to_string(),
+        formatted: s.unsigned_text(),
+    }
+}
+
+/// ResolvePlural ( pluralRules, n ) (17.5.2) on the Intl mathematical value `n`.
+fn resolve_plural(r: &Resolved, icu: &Icu, n: &IntlMv) -> Plural {
+    // 1-3. NaN and the infinities: "other" (the text only takes part in the equality test of
+    //      ResolvePluralRange).
+    match n {
+        IntlMv::Finite(x) => resolve_finite(r, icu, x),
+        IntlMv::Wide(x) => resolve_finite(r, icu, x),
+        IntlMv::NaN => other("NaN"),
+        IntlMv::PosInf => other("Infinity"),
+        IntlMv::NegInf => other("-Infinity"),
     }
 }
 

@@ -4,15 +4,16 @@
 //! standard and compact notation.
 //!
 //! ```text
-//! value ─ to_intl_mv ─> IntlMv::{Finite(Decimal), PosInf, NegInf, NaN}
+//! value ─ to_intl_mv ─> IntlMv::{Finite(Decimal), Wide(WideDecimal), PosInf, NegInf, NaN}
 //!   Number   digits of Number::toString ("1e+21", "5e-324") -> Decimal::try_from_str (no ryu,
 //!            INTL-V2-FP2)
-//!   BigInt   BigInt::toString -> Decimal
+//!   BigInt   BigInt::toString -> Decimal; from WIDE_DIGITS digits on -> WideDecimal (exact;
+//!            a Decimal has i16 magnitudes)
 //!   String   ToNumber (NaN, +-Infinity, +-0) then the exact decimal text with the trailing
 //!            fraction zeros cut (INTL-V2-D20: "1.500" is the value 1.5)
 //! IntlMv + Options ─ partition ─> [(type, value)]
 //!   compact: ComputeExponent on the ICU4X compact data; x * 10^-e
-//!   FormatNumericToString (crate::digits, rounding on Decimal)
+//!   FormatNumericToString (crate::digits, rounding on Decimal or WideDecimal)
 //!   sign by signDisplay; digits of the numbering system (CLDR digit table); grouping by the
 //!   ICU4X DecimalSymbols sizes; NaN and infinity from the CLDR T1 table
 //!   compact affix: the ICU4X compact pattern, split around the number
@@ -38,13 +39,17 @@ use ep9_vm::{Cx, JsResult, Local, ToPrimitiveHint};
 
 use crate::cache::{self, Service};
 use crate::cldr;
-use crate::digits::{DigitOptions, format_numeric_to_string};
+use crate::digits::{
+    DecimalValue, DigitOptions, WIDE_DIGITS, WideDecimal, format_numeric_to_string,
+};
 
-/// An Intl mathematical value (§16.5.17): a finite value (negative zero is a zero with
-/// [`Sign::Negative`]), an infinity or not-a-number.
+/// An Intl mathematical value (§16.5.15): a finite value (negative zero is a zero with
+/// [`Sign::Negative`]), an infinity or not-a-number. `Wide` is a finite value that a Decimal
+/// cannot hold: a BigInt of [`WIDE_DIGITS`] digits or more.
 #[derive(Clone, Debug, PartialEq)]
 pub enum IntlMv {
     Finite(Decimal),
+    Wide(WideDecimal),
     PosInf,
     NegInf,
     NaN,
@@ -169,7 +174,26 @@ pub fn mv_of_number(cx: &mut Cx<'_>, x: f64) -> JsResult<IntlMv> {
     Ok(decimal_from_literal(&text).map_or(IntlMv::NaN, IntlMv::Finite))
 }
 
-/// ToIntlMathematicalValue ( value ) (§16.5.17).
+/// The Intl mathematical value of the integer text `text` (the BigInt::toString digits with
+/// an optional '-'): a Decimal, or a [`WideDecimal`] from [`WIDE_DIGITS`] digits on. Exact
+/// for each BigInt (never NaN).
+pub fn mv_of_integer(text: &str) -> IntlMv {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(d) => (true, d),
+        None => (false, text),
+    };
+    if digits.len() < WIDE_DIGITS
+        && let Some(d) = decimal_from_literal(text)
+    {
+        return IntlMv::Finite(d);
+    }
+    IntlMv::Wide(WideDecimal::from_integer_digits(
+        negative,
+        digits.as_bytes(),
+    ))
+}
+
+/// ToIntlMathematicalValue ( value ) (§16.5.15).
 pub fn to_intl_mv<'s>(cx: &mut Cx<'s>, value: Local<'s>) -> JsResult<IntlMv> {
     // 1. If value is a Number, return ℝ(value) (or the special values).
     if let Some(x) = value.as_number() {
@@ -181,7 +205,7 @@ pub fn to_intl_mv<'s>(cx: &mut Cx<'s>, value: Local<'s>) -> JsResult<IntlMv> {
     if cx.is_bigint(prim) {
         let s = cx.bigint_to_string(prim, 10)?;
         let text = cx.to_rust_string(s)?;
-        return Ok(decimal_from_literal(&text).map_or(IntlMv::NaN, IntlMv::Finite));
+        return Ok(mv_of_integer(&text));
     }
     // 4-5. If primValue is not a String, return ℝ(? ToNumber(primValue)).
     if !prim.is_string() {
@@ -444,8 +468,8 @@ fn t1_symbols(data_locale: &str, nu: &str) -> Option<&'static cldr::NumberSymbol
 /// integer digit is at `upper` (the ICU4X grouping rule with the ECMA-402 strategies:
 /// "always" ignores the locale's minimum grouping digits).
 fn group_after(
-    upper: i16,
-    magnitude: i16,
+    upper: i64,
+    magnitude: i64,
     grouping: Grouping,
     primary: u8,
     secondary: u8,
@@ -454,15 +478,15 @@ fn group_after(
     if primary == 0 {
         return false;
     }
-    let primary = i16::from(primary);
+    let primary = i64::from(primary);
     if magnitude < primary {
         return false;
     }
     let min_grouping = match grouping {
         Grouping::Never => return false,
         Grouping::Always => 1,
-        Grouping::Auto => i16::from(min.max(1)),
-        Grouping::Min2 => i16::from(min.max(2)),
+        Grouping::Auto => i64::from(min.max(1)),
+        Grouping::Min2 => i64::from(min.max(2)),
     };
     if upper < primary + min_grouping - 1 {
         return false;
@@ -470,25 +494,24 @@ fn group_after(
     let secondary = if secondary == 0 {
         primary
     } else {
-        i16::from(secondary)
+        i64::from(secondary)
     };
     (magnitude - primary) % secondary == 0
 }
 
 /// The parts of the unsigned number `x` (integer, group, decimal, fraction) with the digits
 /// of `nu` and the separators of `icu`.
-fn number_parts(x: &Decimal, nu: &str, icu: &Icu, grouping: Grouping, out: &mut Parts) {
+fn number_parts<D: DecimalValue>(x: &D, nu: &str, icu: &Icu, grouping: Grouping, out: &mut Parts) {
     let digits: [char; 10] = cldr::numbering_system_digits(nu)
         .copied()
         .unwrap_or(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
     let symbols = icu.symbols.get();
     let sizes = symbols.grouping_sizes;
-    let range = x.absolute.magnitude_range();
-    let upper = (*range.end()).max(0);
-    let lower = (*range.start()).min(0);
+    let (lower, upper) = x.shown();
+    let (lower, upper) = (lower.min(0), upper.max(0));
     let mut int = String::new();
     for m in (0..=upper).rev() {
-        int.push(digits[usize::from(x.absolute.digit_at(m))]);
+        int.push(digits[usize::from(x.digit_at(m))]);
         if group_after(
             upper,
             m,
@@ -506,7 +529,7 @@ fn number_parts(x: &Decimal, nu: &str, icu: &Icu, grouping: Grouping, out: &mut 
         out.push((PartType::Decimal, symbols.decimal_separator().to_string()));
         let frac: String = (lower..0)
             .rev()
-            .map(|m| digits[usize::from(x.absolute.digit_at(m))])
+            .map(|m| digits[usize::from(x.digit_at(m))])
             .collect();
         out.push((PartType::Fraction, frac));
     }
@@ -560,34 +583,44 @@ fn affix_parts(affix: &str, out: &mut Parts) {
 
 /// ComputeExponent ( numberFormat, x ) (§16.5.12) for compact notation, and the rounded
 /// x × 10^-exponent: the exponent of the ICU4X compact data for the magnitude of x, again for
-/// magnitude + 1 if the rounding moved the magnitude.
-fn compact_round(c: &CompactDecimalFormatter, digits: &DigitOptions, x: &Decimal) -> (u8, Decimal) {
+/// magnitude + 1 if the rounding moved the magnitude. A magnitude above i16::MAX (a
+/// WideDecimal) takes the exponent of i16::MAX: the top pattern of the data.
+fn compact_round<D: DecimalValue>(
+    c: &CompactDecimalFormatter,
+    digits: &DigitOptions,
+    x: &D,
+) -> (u8, D) {
     let round = |e: u8| {
         let mut y = x.clone();
-        y.multiply_pow10(-i16::from(e));
+        y.multiply_pow10(-i64::from(e));
         format_numeric_to_string(digits, &mut y);
         y
     };
+    let exponent_for = |m: i64| {
+        c.compact_exponent_for_magnitude(m.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16)
+    };
     // 1. If x = 0, return 0.
-    if x.absolute.is_zero() {
+    if x.is_zero() {
         return (0, round(0));
     }
     // 3-4. The magnitude and its exponent.
-    let magnitude = x.absolute.nonzero_magnitude_start();
-    let e = c.compact_exponent_for_magnitude(magnitude);
+    let magnitude = x.nonzero_magnitude_start();
+    let e = exponent_for(magnitude);
     // 5-6. x × 10^-e, rounded.
     let y = round(e);
     // 7-9.
-    if y.absolute.is_zero() || y.absolute.nonzero_magnitude_start() == magnitude - i16::from(e) {
+    if y.is_zero() || y.nonzero_magnitude_start() == magnitude - i64::from(e) {
         return (e, y);
     }
     // 10. ComputeExponentForMagnitude(magnitude + 1).
-    let e = c.compact_exponent_for_magnitude(magnitude + 1);
+    let e = exponent_for(magnitude + 1);
     (e, round(e))
 }
 
 /// The prefix and suffix of the compact pattern of the unsigned significand `y` with the
-/// exponent `e` (the ICU4X compact text split around the plain number text).
+/// exponent `e` (the ICU4X compact text split around the plain number text). `y` is the
+/// [`DecimalValue::plural_decimal`] of the significand: the pattern depends only on the
+/// magnitude and the plural category.
 fn compact_affixes(icu: &Icu, y: &Decimal, e: u8) -> Option<(String, String)> {
     let (c, plain) = (icu.compact.as_ref()?, icu.plain.as_ref()?);
     let mut abs = y.clone();
@@ -601,6 +634,32 @@ fn compact_affixes(icu: &Icu, y: &Decimal, e: u8) -> Option<(String, String)> {
     ))
 }
 
+/// The body parts of the finite value `d` formatted with `f` (compact affixes and the
+/// number, no sign), and whether the rounded value is zero.
+fn finite_parts<D: DecimalValue>(f: &Format<'_>, icu: &Icu, d: &D, body: &mut Parts) -> bool {
+    let (exponent, y) = match (f.compact, icu.compact.as_ref()) {
+        (Some(_), Some(c)) => compact_round(c, &f.digits, d),
+        _ => {
+            let mut y = d.clone();
+            format_numeric_to_string(&f.digits, &mut y);
+            (0, y)
+        }
+    };
+    let affixes = if exponent > 0 {
+        compact_affixes(icu, &y.plural_decimal(), exponent)
+    } else {
+        None
+    };
+    if let Some((prefix, _)) = &affixes {
+        affix_parts(prefix, body);
+    }
+    number_parts(&y, f.numbering_system, icu, f.grouping, body);
+    if let Some((_, suffix)) = &affixes {
+        affix_parts(suffix, body);
+    }
+    y.is_zero()
+}
+
 /// PartitionNumberPattern ( numberFormat, x ) (§16.5.4) for the decimal style: the parts of
 /// `x` formatted with `f`.
 pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
@@ -611,45 +670,29 @@ pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
     let symbols = icu.symbols.get();
     let t1 = t1_symbols(f.data_locale, f.numbering_system);
     // The number and its sign.
-    let (negative, zero, nan) = match x {
-        IntlMv::NaN => (false, false, true),
-        IntlMv::PosInf => (false, false, false),
-        IntlMv::NegInf => (true, false, false),
-        IntlMv::Finite(d) => (d.sign == Sign::Negative, false, false),
+    let (negative, nan) = match x {
+        IntlMv::NaN => (false, true),
+        IntlMv::PosInf => (false, false),
+        IntlMv::NegInf => (true, false),
+        IntlMv::Finite(d) => (d.is_negative(), false),
+        IntlMv::Wide(d) => (d.is_negative(), false),
     };
     let mut body = Parts::new();
-    let mut rounded_zero = zero;
-    match x {
-        IntlMv::NaN => body.push((PartType::Nan, t1.map_or("NaN", |t| t.nan).to_string())),
-        IntlMv::PosInf | IntlMv::NegInf => body.push((
-            PartType::Infinity,
-            t1.map_or("∞", |t| t.infinity).to_string(),
-        )),
-        IntlMv::Finite(d) => {
-            let (exponent, mut y) = match (f.compact, icu.compact.as_ref()) {
-                (Some(_), Some(c)) => compact_round(c, &f.digits, d),
-                _ => {
-                    let mut y = d.clone();
-                    format_numeric_to_string(&f.digits, &mut y);
-                    (0, y)
-                }
-            };
-            rounded_zero = y.absolute.is_zero();
-            y.sign = Sign::None;
-            let affixes = if exponent > 0 {
-                compact_affixes(&icu, &y, exponent)
-            } else {
-                None
-            };
-            if let Some((prefix, _)) = &affixes {
-                affix_parts(prefix, &mut body);
-            }
-            number_parts(&y, f.numbering_system, &icu, f.grouping, &mut body);
-            if let Some((_, suffix)) = &affixes {
-                affix_parts(suffix, &mut body);
-            }
+    let rounded_zero = match x {
+        IntlMv::NaN => {
+            body.push((PartType::Nan, t1.map_or("NaN", |t| t.nan).to_string()));
+            false
         }
-    }
+        IntlMv::PosInf | IntlMv::NegInf => {
+            body.push((
+                PartType::Infinity,
+                t1.map_or("∞", |t| t.infinity).to_string(),
+            ));
+            false
+        }
+        IntlMv::Finite(d) => finite_parts(f, &icu, d, &mut body),
+        IntlMv::Wide(d) => finite_parts(f, &icu, d, &mut body),
+    };
     match sign_of(f.sign_display, negative, rounded_zero, nan) {
         Some(true) => {
             push_text(&mut out, PartType::MinusSign, symbols.minus_sign_prefix());
@@ -739,6 +782,24 @@ mod tests {
                 .as_deref(),
             Some("255")
         );
+    }
+
+    /// The Decimal limit (fixed_decimal 0.7.3: i16 magnitudes): 32,769 digits do not parse,
+    /// so a BigInt takes a WideDecimal from WIDE_DIGITS (32,768) digits on, also at the
+    /// edge where a carry would pass magnitude 32,767.
+    #[test]
+    fn large_integers_are_wide() {
+        let digits = |n: usize| format!("1{}", "0".repeat(n - 1));
+        assert!(decimal_from_literal(&digits(32_769)).is_none());
+        assert!(matches!(mv_of_integer(&digits(32_767)), IntlMv::Finite(_)));
+        assert!(matches!(mv_of_integer(&digits(32_768)), IntlMv::Wide(_)));
+        match mv_of_integer(&format!("-{}", digits(40_000))) {
+            IntlMv::Wide(w) => {
+                assert!(w.is_negative());
+                assert_eq!(w.nonzero_magnitude_start(), 39_999);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// The T1 lookup finds the CLDR parent locales ("zh-TW" has the zh-Hant NaN).
