@@ -18,7 +18,8 @@
 //!   the notation exponent (ComputeExponent: compact from the ICU4X compact data, scientific,
 //!   engineering) ─> PluralOperands (significand, exponent) ─ cache::get_or_make(
 //!   Service::PluralRules, data locale, type + notation) ─> Rc<Icu> ─ category_for
-//!   (the ICU4X rules of the locale or of its language)
+//!   (the ICU4X rules of the locale or of its language; a language that the ICU4X data does
+//!   not have takes the CLDR rules of `cldr_extra`)
 //! selectRange(x, y) ─ two ResolvePlural ─ same text: x's category; else the ICU4X range data
 //!   (`icu_plurals` `unstable`, PluralRulesWithRanges::resolve_range)
 //! ```
@@ -31,6 +32,7 @@
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-plural_rules.txt`.
 
+mod cldr_extra;
 mod mv;
 
 use std::rc::Rc;
@@ -402,6 +404,8 @@ fn read<'s>(cx: &mut Cx<'s>, o: Local<'s>) -> JsResult<Resolved> {
 enum Rules {
     WithRanges(PluralRulesWithRanges<PluralRules>),
     Plain(PluralRules),
+    /// The CLDR rules of a language that the ICU4X data does not have (no range data).
+    Cldr(cldr_extra::Rules),
 }
 
 /// The ICU4X objects of one (data locale, type, notation, compact display).
@@ -417,6 +421,7 @@ impl Icu {
         match &self.rules {
             Rules::WithRanges(r) => r.rules().category_for(o),
             Rules::Plain(r) => r.category_for(o),
+            Rules::Cldr(r) => r.category_for(o),
         }
     }
 
@@ -425,6 +430,7 @@ impl Icu {
         match &self.rules {
             Rules::WithRanges(r) => r.rules().categories().collect(),
             Rules::Plain(r) => r.categories().collect(),
+            Rules::Cldr(r) => r.categories().collect(),
         }
     }
 
@@ -433,7 +439,7 @@ impl Icu {
     fn resolve_range(&self, start: PluralCategory, end: PluralCategory) -> PluralCategory {
         match &self.rules {
             Rules::WithRanges(r) => r.resolve_range(start, end),
-            Rules::Plain(_) => end,
+            Rules::Plain(_) | Rules::Cldr(_) => end,
         }
     }
 }
@@ -473,23 +479,34 @@ fn has_own_rules(locale: &Locale, ordinal: bool) -> bool {
     }
 }
 
-/// The ICU4X locale of the plural rules of `data_locale`. CLDR plural rules belong to the
-/// language (`supplemental/plurals.xml`), but the ICU4X locale fallback follows the CLDR
-/// parent locales, so a script variant whose parent is root ("sr-Latn", "az-Cyrl",
-/// "bs-Cyrl", "uz-Cyrl", "pa-Arab") would get the "und" rules: such a locale takes the rules
-/// of its language.
-fn plural_locale(data_locale: &str, ordinal: bool) -> Locale {
+/// Where the plural rules of a locale come from.
+enum Source {
+    /// The ICU4X data of this locale (or of its ICU4X fallback, "und" at the end).
+    Icu(Locale),
+    /// The CLDR rules of [`cldr_extra`].
+    Cldr(cldr_extra::Rules),
+}
+
+/// The source of the plural rules of `data_locale`. CLDR plural rules belong to the language
+/// (`supplemental/plurals.xml`), but the ICU4X locale fallback follows the CLDR parent
+/// locales, so a script variant whose parent is root ("sr-Latn", "az-Cyrl", "bs-Cyrl",
+/// "uz-Cyrl", "pa-Arab") would get the "und" rules: such a locale takes the rules of its
+/// language. A language that the ICU4X data does not have takes the [`cldr_extra`] rules.
+fn plural_source(data_locale: &str, ordinal: bool) -> Source {
     let locale = icu_locale(data_locale);
     if has_own_rules(&locale, ordinal) {
-        return locale;
+        return Source::Icu(locale);
     }
     let language = Locale::from(icu_locale_core::LanguageIdentifier::from(
         locale.id.language,
     ));
     if language != locale && has_own_rules(&language, ordinal) {
-        return language;
+        return Source::Icu(language);
     }
-    locale
+    match cldr_extra::rules_for(locale.id.language.as_str(), ordinal) {
+        Some(rules) => Source::Cldr(rules),
+        None => Source::Icu(locale),
+    }
 }
 
 /// New ICU4X objects for `data_locale` and `r` (`None` if the data has no rules).
@@ -500,10 +517,15 @@ fn make_icu(data_locale: &str, r: &Resolved) -> Option<Icu> {
     } else {
         PluralRuleType::Cardinal
     });
-    let prefs = PluralRulesPreferences::from(&plural_locale(data_locale, r.plural_type == 1));
-    let rules = match PluralRulesWithRanges::try_new(prefs, options) {
-        Ok(w) => Rules::WithRanges(w),
-        Err(_) => Rules::Plain(PluralRules::try_new(prefs, options).ok()?),
+    let rules = match plural_source(data_locale, r.plural_type == 1) {
+        Source::Cldr(rules) => Rules::Cldr(rules),
+        Source::Icu(l) => {
+            let prefs = PluralRulesPreferences::from(&l);
+            match PluralRulesWithRanges::try_new(prefs, options) {
+                Ok(w) => Rules::WithRanges(w),
+                Err(_) => Rules::Plain(PluralRules::try_new(prefs, options).ok()?),
+            }
+        }
     };
     let compact = match r.compact_display() {
         Some(display) => {
@@ -910,6 +932,12 @@ mod tests {
         assert_eq!(cats("bs-Cyrl", 0), "one,few,other");
         assert_eq!(cats("zh-Hant", 0), "other");
         assert_eq!(cats("en", 1), "one,two,few,other");
+        // A language that the ICU4X data does not have: the CLDR rules (cldr_extra).
+        assert_eq!(cats("gv", 0), "one,two,few,many,other");
+        assert_eq!(cats("kw", 0), "zero,one,two,few,many,other");
+        assert_eq!(cats("kw", 1), "one,many,other");
+        assert_eq!(cats("lag", 0), "zero,one,other");
+        assert_eq!(cats("ff-Adlm", 0), "one,other");
         let en = resolved("en", 1, "standard", false);
         assert_eq!(
             ["1", "2", "3", "4", "11", "21", "22", "23", "111"].map(|x| sel(&en, x)),

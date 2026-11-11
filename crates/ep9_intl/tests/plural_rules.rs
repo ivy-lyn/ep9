@@ -148,3 +148,39 @@ fn the_spec_lines_where_v8_differs() {
         ])
     );
 }
+
+const EXTRA: &str = r#"const xs = [0, 1, 2, 3, 5, 11, 12, 20, 21, 22, 40, 100, 1000, 1.5, 0.5, "1.0", 101, 1000000];
+for (const l of ["gv", "kw", "lag", "shi", "tzm", "ff", "yi", "naq", "ln"]) {
+  const p = new Intl.PluralRules(l);
+  print(l, p.resolvedOptions().pluralCategories.join(), xs.map(x => p.select(x)).join());
+}
+const k = new Intl.PluralRules("kw", {type: "ordinal"});
+print(k.resolvedOptions().pluralCategories.join(), [1, 4, 5, 6, 21, 25, 105, 1000].map(x => k.select(x)).join());
+const kc = new Intl.PluralRules("kw");
+print([2, 22, 1000, 21000, 40000, 100000, 1100000, 3, 81, 1, 0].map(x => kc.select(x)).join());
+const g = new Intl.PluralRules("gsw");
+print(g.selectRange(1, 2), g.selectRange(2, 1), g.selectRange(0, 1));
+"#;
+
+/// The available languages that the ICU4X compiled data has no plural rules for take the CLDR
+/// rules (cardinal and ordinal); the "gsw" ranges give the end category.
+#[test]
+fn languages_without_icu4x_rules_give_the_node_lines() {
+    assert_eq!(
+        run_both(EXTRA),
+        lines(&[
+            "gv one,two,few,many,other few,one,two,other,other,one,two,few,one,two,few,few,few,many,many,one,one,few",
+            "kw zero,one,two,few,many,other zero,one,two,few,other,other,other,other,many,two,other,other,two,other,other,one,many,other",
+            "lag zero,one,other zero,one,other,other,other,other,other,other,other,other,other,other,other,one,one,one,other,other",
+            "shi one,few,other one,one,few,few,few,other,other,other,other,other,other,other,other,other,one,one,other,other",
+            "tzm one,other one,one,other,other,other,one,one,one,one,one,one,other,other,other,other,one,other,other",
+            "ff one,other one,one,other,other,other,other,other,other,other,other,other,other,other,one,one,one,other,other",
+            "yi one,other other,one,other,other,other,other,other,other,other,other,other,other,other,other,other,one,other,other",
+            "naq one,two,other other,one,two,other,other,other,other,other,other,other,other,other,other,other,other,one,other,other",
+            "ln one,other one,one,other,other,other,other,other,other,other,other,other,other,other,other,other,one,other,other",
+            "one,many,other one,one,many,other,one,other,many,other",
+            "two,two,two,other,two,two,two,few,many,one,zero",
+            "other one one",
+        ])
+    );
+}
