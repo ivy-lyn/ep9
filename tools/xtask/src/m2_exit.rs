@@ -46,6 +46,13 @@
 //! had no uncommitted change; else the cell is at least OPEN. An exec JSON may instead name the
 //! git id of each path it measures (a CI pull_request job runs on GitHub's merge commit).
 //!
+//! **The fork checkouts** (FORK-CHECKOUT-ATTEST, `exit::forks`): the exec JSON names the fork
+//! line of its runner's build (`"runner_forks"`): item 5 is OPEN unless every fork reads
+//! `pinned` (a missing field too). An ep9 binary built from a fork checkout that is not its pin
+//! plus its patches says `dirty` in its `ep9 --version` build line (`crates/ep9_cli/build.rs`),
+//! so the speed, MEMREAD and JetStream inputs that copy that line read it as an uncommitted
+//! change.
+//!
 //! **The build.** An m2gate run names its build (`jit` or `jitless`) and the build line of
 //! `ep9 --version` (`features <list>; preset <name>`). The cell is OPEN when they disagree: the
 //! jit preset build has preset `jit` and the feature `jit`; the jitless build has preset
@@ -83,6 +90,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::exit::cross::fresh_since;
+use crate::exit::forks;
 use crate::exit::gc_shards::test262_files;
 use crate::exit::json::{Json, parse_json};
 use crate::exit::report::{Cell, Status, cell, not_given, short, some_paths};
@@ -1225,6 +1233,11 @@ fn t262_cell(c: &Ctx, p: &Path, j: &Json) -> Cell {
         }
         Err(e) => Err(e),
     };
+    // FORK-CHECKOUT-ATTEST: the runner was built from fork checkouts that were their pins plus
+    // their patches (`"runner_forks"`, exit::forks).
+    let src = src.and_then(|t| {
+        forks::check(j.get("runner_forks").and_then(Json::str), "runner_forks").map(|()| t)
+    });
     with_fresh(
         cell(
             status,
@@ -2394,6 +2407,58 @@ mod tests {
             "{}",
             c.evidence
         );
+    }
+
+    /// FORK-CHECKOUT-ATTEST: item 5 reads the fork line of the runner's build. Every fork
+    /// pinned is fresh; a stale or absent fork, a missing field or a line in another form is
+    /// OPEN (the old reader read all of them as fresh).
+    #[test]
+    fn item5_reads_the_runner_fork_line() {
+        let r = repo("t262-forks");
+        let full = fixture("exec.json").replace(SHA, &r.head);
+        let pinned = "\"runner_forks\": \"regress=pinned icu4x=pinned\"";
+        assert!(full.contains(pinned), "the fixture names the fork line");
+        let cases = [
+            (pinned.to_string(), None),
+            (
+                "\"runner_forks\": \"regress=pinned icu4x=stale\"".to_string(),
+                Some(
+                    "stale input: the icu4x fork checkout was not its pin plus its patches (runner_forks: regress=pinned icu4x=stale)",
+                ),
+            ),
+            (
+                "\"runner_forks\": \"regress=absent icu4x=pinned\"".to_string(),
+                Some("the regress fork checkout was not its pin plus its patches"),
+            ),
+            (
+                "\"runner_forks\": \"regress=pinned\"".to_string(),
+                Some("its fork line \"regress=pinned\" is in another form (runner_forks)"),
+            ),
+            (
+                "\"runner_forks_none\": 0".to_string(),
+                Some("it names no fork checkout state (runner_forks;"),
+            ),
+        ];
+        for (k, (field, want)) in cases.iter().enumerate() {
+            write(
+                &r.root,
+                &format!("inputs/exec-f{k}.json"),
+                &full.replace(pinned, field),
+            );
+            let o = Options {
+                exec: Some(r.root.join(format!("inputs/exec-f{k}.json"))),
+                ..all(&r, "gate-pass.json")
+            };
+            let c = &run(&o).unwrap().cells[4];
+            match want {
+                None => assert!(c.evidence.contains("test262 PASS"), "{}", c.evidence),
+                Some(w) => {
+                    assert_eq!(c.status, Status::Open, "{field}: {}", c.evidence);
+                    assert!(c.evidence.contains("test262 OPEN"), "{}", c.evidence);
+                    assert!(c.evidence.contains(w), "{w}: {}", c.evidence);
+                }
+            }
+        }
     }
 
     /// The JetStream hint names an ep9 config: run.mjs reads a bare path as a d8 engine, so
