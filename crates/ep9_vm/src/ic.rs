@@ -2396,6 +2396,49 @@ fn load_with_x86(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -
     read_field(holder, rd_i32(c, hc::LOCATION))
 }
 
+/// The hit path of the `LdaGlobal` fast body: [`load_global`] on aarch64 and other targets,
+/// and on x86-64 with `ic-stats`.
+#[cfg(any(not(target_arch = "x86_64"), feature = "ic-stats"))]
+pub(crate) use self::load_global as load_global_fast;
+
+/// The hit path of the `LdaGlobal` fast body on x86-64 (M8-P1 X86-SHAPE2): [`load_global`] for
+/// a monomorphic entry (a global object case or a lexical binding); `None` for every other
+/// entry. The polymorphic loop of [`global_site`] keeps 4 more values live, so x86-64
+/// `LdaGlobal` saved 4 registers on entry for every run. A polymorphic entry goes to the cold
+/// body, which runs [`load_global`] before the miss path (`interp::tails::load_global`), so a
+/// hit stays a hit. With `ic-stats` the fast body keeps [`load_global`]: there it counts a miss
+/// for each `None`.
+#[cfg(all(target_arch = "x86_64", not(feature = "ic-stats")))]
+#[inline(always)]
+pub(crate) fn load_global_fast(cx: &Cx, fi: &FunctionInfo, slot: u32) -> Option<u64> {
+    let (v, i) = (as_cell(feedback::vector(fi)?)?, slot as usize);
+    debug_assert!(slot < feedback::slot_count(v.to_value().to_bits()));
+    let at = |w| rd(v, feedback::fv::SLOTS + feedback::fv::SLOT_SIZE * i + w);
+    let (key, value) = (at(feedback::fv::KEY), at(feedback::fv::VALUE));
+    let lex = || Some(rd(as_cell(cx.realm)?, realmf::GLOBAL_LEXICAL));
+    debug_assert!(lex() == Some(cx.rt().root(Root::Lexical)) && cx.global_this == cx.rt().global());
+    // [`global_site`] without its polymorphic loop. The global object case first; the record
+    // is read in each arm, so its ShapeId is not live beside the global object's.
+    let g = as_cell(cx.global_this)?;
+    let (o, loc) = if key as u32 == id_of(g) {
+        let c = global_handler(value, id_of(as_cell(lex()?)?))?;
+        (g, rd_i32(c, hc::LOCATION))
+    } else {
+        let lex = as_cell(lex()?)?;
+        if key as u32 != id_of(lex) || !is_i32(value) {
+            return None;
+        }
+        (lex, int32_of(value))
+    };
+    let off = (loc >> smi::SHIFT) as usize;
+    let c = match loc & smi::KIND_MASK {
+        smi::FIELD_IN_OBJECT => o,
+        smi::FIELD_OUT_OF_LINE => as_cell(rd(o, obj::SLOTS))?,
+        _ => return None,
+    };
+    Some(rd(c, off)).filter(|&v| v != HOLE)
+}
+
 #[cfg(test)]
 mod x86_form_tests {
     //! [`load_with_x86`] answers as [`load_with`] (M8-P1 X86-SHAPE2). The form runs only on

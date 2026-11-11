@@ -597,3 +597,6 @@ pub(crate) mod scaled {
     use crate::interp::dsl::expand_scaled;
     ep9_bytecode::for_each_opcode!(expand_scaled[]);
 }
+
+/// Out-of-line finishes of hot handlers on x86-64 (M8-P1 X86-SHAPE2): `tails.rs`.
+pub(crate) mod tails;
