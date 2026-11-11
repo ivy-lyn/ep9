@@ -35,7 +35,7 @@
 // other processes of the host.
 //
 // Verdict per row: "pass" when head Ir <= base Ir x (1 + limit / 100), "FAIL" when above (integer
-// compare, so +0.500% passes and one instruction more fails), "no count" when a side has none.
+// compare, so +0.500% passes and one instruction more fails), "no count" when a side has none or 0.
 // The run: PASS when every row passes; FAIL when a row fails; else INCOMPLETE. A row that moves
 // by more than the limit in the faster direction passes (rule 13 is a floor).
 //
@@ -212,7 +212,7 @@ export function parseCgOut(text) {
  * percent), so a delta of exactly the limit passes.
  */
 export function compare(base, head, limitPct = LIMIT_PCT) {
-  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(head) || base <= 0) {
+  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(head) || base <= 0 || head <= 0) {
     return { delta_pct: null, verdict: "no count" };
   }
   const limitMilli = BigInt(Math.round(limitPct * 1000));

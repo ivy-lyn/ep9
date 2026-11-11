@@ -40,6 +40,12 @@ test("the +0.5% floor: exactly +0.5% passes, one instruction more fails, faster 
   for (const [b, h] of [[null, 5], [5, null], [0, 5], [1.5, 2]]) assert.deepEqual(compare(b, h), { delta_pct: null, verdict: "no count" });
 });
 
+test("a head Ir of 0 or less is no count, as a base of 0 or less (JIT review D1)", () => {
+  // A run that cachegrind did not trace must not read "pass" at -100%.
+  for (const h of [0, -1]) assert.deepEqual(compare(1_000_000_000, h), { delta_pct: null, verdict: "no count" });
+  assert.deepEqual(compare(1000, 1), { delta_pct: -99.9, verdict: "pass" });
+});
+
 test("the default set is t0-*, the 7 v8-v7 kernels and Octane-7 (rule 13); groups", () => {
   assert.deepEqual(BENCH_SET, [...T0, ...V8V7_7, ...OCTANE_7]);
   assert.equal(BENCH_SET.length, 19);
@@ -258,6 +264,11 @@ test("CLI: a wrong output, a failed run or a log with no count gives no count: I
   r = f.run([], { FAKE_CG_NO_IR: "ep9-head:t0-call" });
   assert.equal(r.status, 1);
   assert.match(r.res.rows[1].head.error, /no I refs line/);
+  // A head Ir of 0 (a run that cachegrind did not trace) is no count, not a pass at -100% (D1).
+  r = f.run([], { FAKE_CG: counts([["ep9-head:t0-call", 0]]) });
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(r.res.verdict, "INCOMPLETE");
+  assert.deepEqual([r.res.rows[1].head.status, r.res.rows[1].head.ir, r.res.rows[1].delta_pct, r.res.rows[1].verdict], ["ok", 0, null, "no count"]);
   // A FAIL row beside a row with no count: the run reads FAIL.
   r = f.run([], { FAKE_WRONG: "ep9-head:t0-loop", FAKE_CG: counts([["ep9-head:t0-call", 3_000_000_000]]) });
   assert.equal(r.res.verdict, "FAIL");
