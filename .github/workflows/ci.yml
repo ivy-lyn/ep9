@@ -1034,8 +1034,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install valgrind (cachegrind)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q valgrind
+          apt_valgrind() { sudo apt-get -o Acquire::Retries=5 update -q && sudo apt-get -o Acquire::Retries=5 install -y -q valgrind; }
+          apt_valgrind || { echo "apt-get failed; one more try in 30 s"; sleep 30; apt_valgrind; }
       # richards and deltablue: tools/bench/cross/v8v7.mjs writes them from this pinned checkout.
       - run: bash scripts/sync-bench.sh bench-v8v7
       - run: cargo build --release --locked -p ep9_bench -p ep9_cli
@@ -1289,8 +1289,8 @@ jobs:
       - name: Install valgrind (cachegrind)
         if: ${{ steps.mode.outputs.on == 'true' }}
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q valgrind
+          apt_valgrind() { sudo apt-get -o Acquire::Retries=5 update -q && sudo apt-get -o Acquire::Retries=5 install -y -q valgrind; }
+          apt_valgrind || { echo "apt-get failed; one more try in 30 s"; sleep 30; apt_valgrind; }
           valgrind --version
       # The workload files: v8-v7 and Octane-7 from the pins of the dispatched commit.
       - name: bench pins
