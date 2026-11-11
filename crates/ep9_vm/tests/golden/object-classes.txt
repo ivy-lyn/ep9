@@ -29,3 +29,10 @@
   25  AsyncDisposableStack
   26  Intl.Locale
   27  Intl.Collator
+  28  Intl.PluralRules
+  29  Intl.NumberFormat
+  30  Intl.ListFormat
+  31  Intl.Segmenter
+  32  Segments
+  33  Segment Iterator
+  34  Intl.DisplayNames

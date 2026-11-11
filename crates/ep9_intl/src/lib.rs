@@ -5,9 +5,15 @@
 //! ```text
 //! ep9_builtins::MODULES = [.., ep9_temporal::MODULES.., iterator, ep9_intl::MODULES..]
 //! ep9_intl::MODULES (blocks, append-only; the lazy group of the global key "Intl", INTL-I1-D8)
-//!   29 intl      %Intl%                                  intl.rs     (W1 CORE)
-//!   30 locale    %Intl.Locale%, %Intl.Locale.prototype%  locale.rs   (W1 LOCALE)
-//!   31 collator  %Intl.Collator%, its prototype          collator.rs (W1 COLLATOR)
+//!   30 intl      %Intl%                                  intl.rs     (W1 CORE)
+//!   31 locale    %Intl.Locale%, %Intl.Locale.prototype%  locale.rs   (W1 LOCALE)
+//!   32 collator  %Intl.Collator%, its prototype          collator.rs (W1 COLLATOR)
+//!   33 plural_rules   %Intl.PluralRules%, its prototype       plural_rules.rs   (W2 PLURAL)
+//!   34 number_format  %Intl.NumberFormat%, its prototype      number_format/    (W2 NF-CORE)
+//!   35 list_format    %Intl.ListFormat%, its prototype        list_format.rs    (W2 LIST+CASEMAP)
+//!   36 segmenter      %Intl.Segmenter%, its prototype,        segmenter.rs      (W2 SEGMENTER)
+//!                     %IntlSegmentsPrototype%, %IntlSegmentIteratorPrototype%
+//!   37 display_names  %Intl.DisplayNames%, its prototype      display_names.rs  (W2 DISPLAYNAMES)
 //! support (W1 CORE):
 //!   tag        IsStructurallyValidLanguageTag, CanonicalizeUnicodeLocaleId,
 //!              CanonicalizeLocaleList (ECMA-402 §6.2, §9.2.1)
@@ -33,17 +39,31 @@ pub mod cache;
 pub(crate) mod cldr;
 pub mod collator;
 pub mod digits;
+pub mod display_names;
 pub mod intl;
+pub mod list_format;
 pub mod locale;
 pub mod locale_info;
+pub mod number_format;
 pub mod options;
+pub mod plural_rules;
 pub mod resolve;
+pub mod segmenter;
 pub mod tag;
 
 use ep9_vm::BuiltinModule;
 
 /// The Intl modules, in block order; `ep9_builtins::MODULES` lists them after its own.
-pub const MODULES: &[BuiltinModule] = &[intl::MODULE, locale::MODULE, collator::MODULE];
+pub const MODULES: &[BuiltinModule] = &[
+    intl::MODULE,
+    locale::MODULE,
+    collator::MODULE,
+    plural_rules::MODULE,
+    number_format::MODULE,
+    list_format::MODULE,
+    segmenter::MODULE,
+    display_names::MODULE,
+];
 
 /// Helpers of the unit tests.
 #[cfg(test)]
