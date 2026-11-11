@@ -4,13 +4,13 @@
 // valgrind, no ep9 build and no bench checkout needed. ci.yml runs it in the bench-set job.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { BENCH_SET, compare, groupOf, LIMIT_PCT, parseArgs, parseCgLog, parseCgOut, renderMarkdown, SCHEMA, T0, topFunctions } from "./bench-set.mjs";
+import { BENCH_SET, BUILDS, checkBuildLine, compare, groupOf, JITLESS_SET, LIMIT_PCT, parseArgs, parseCgLog, parseCgOut, renderMarkdown, SCHEMA, T0, topFunctions } from "./bench-set.mjs";
 import { materialize, OCTANE_7, TS_WORKLOAD, V8V7_7 } from "../../tools/bench/cross/workloads.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -270,10 +270,11 @@ test("ci.yml bench mode step: bench_workloads is checked before any build (exit 
 test("ci.yml bench workloads step: an unknown name exits 2; octane-typescript is a row", (t) => {
   let r = runStep(t, "bench workloads", { WORKLOADS: "octane-typescript,deltablue" });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout, "octane-typescript\ndeltablue\n");
+  // The jit leg, then the jitless leg (MC-w36-4): bench_workloads names the rows of both.
+  assert.equal(r.stdout, "octane-typescript\ndeltablue\njitless leg:\noctane-typescript\ndeltablue\n");
   r = runStep(t, "bench workloads", { WORKLOADS: "" });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim().split("\n").length, 19);
+  assert.equal(r.stdout, `${BENCH_SET.join("\n")}\njitless leg:\n${JITLESS_SET.join("\n")}\n`);
   r = runStep(t, "bench workloads", { WORKLOADS: "octane-typescrpt" });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /unknown workload octane-typescrpt/);
@@ -499,4 +500,115 @@ test("markdown: notes, the worst row per group and the function table", () => {
   assert.match(md, /\*\*Verdict: PASS\*\* \(1 of 1 rows counted; worst v8v7: splay \+0\.123%; worst octane: octane-splay -0\.200%\)/);
   assert.match(md, /Note: the base binary names no commit\./);
   assert.match(md, /\| `a\\\|b'c` \| 10 \| 11 \| \+1 \|/);
+});
+
+// ---- the jitless leg (MC-w36-4) ------------------------------------------------------------------
+
+test("--build: jit (default rows: the BENCH-SET) or jitless (default rows: t0-* and v8-v7-7)", () => {
+  const base = ["--base-ep9", "a", "--head-ep9", "b", "--out", "o.json"];
+  assert.deepEqual(JITLESS_SET, [...T0, ...V8V7_7]);
+  assert.equal(JITLESS_SET.length, 12);
+  assert.deepEqual(Object.keys(BUILDS), ["jit", "jitless"]);
+  let o = parseArgs(base);
+  assert.equal(o.build, null);
+  assert.deepEqual(o.workloads, BENCH_SET);
+  o = parseArgs([...base, "--build", "jit"]);
+  assert.equal(o.build, "jit");
+  assert.deepEqual(o.workloads, BENCH_SET);
+  o = parseArgs([...base, "--build", "jitless"]);
+  assert.equal(o.build, "jitless");
+  assert.deepEqual(o.workloads, JITLESS_SET);
+  // A given list is the list of either leg.
+  assert.deepEqual(parseArgs([...base, "--build", "jitless", "--workloads", "octane-typescript,crypto"]).workloads, ["octane-typescript", "crypto"]);
+  for (const bad of ["JIT", "none", ""]) assert.throws(() => parseArgs([...base, "--build", bad]), /--build needs jit or jitless/);
+});
+
+test("the build line check: jit needs feature jit and preset jit; jitless neither", () => {
+  const ok = [
+    ["jit", "features jit; preset jit"],
+    ["jit", "features jit,become; preset jit"],
+    ["jitless", "features none; preset jitless"],
+    ["jitless", "features become; preset jitless"],
+  ];
+  for (const [b, line] of ok) checkBuildLine("head", { engine_build: line }, b);
+  const bad = [
+    ["jit", "features none; preset jitless"],
+    ["jit", "features jit; preset jitless"],
+    ["jit", "features become; preset jit"],
+    ["jitless", "features jit; preset jit"],
+    ["jitless", "features jit; preset jitless"],
+    ["jitless", "features none; preset jit"],
+    ["jitless", null],
+    ["jit", "features jit"],
+  ];
+  for (const [b, line] of bad) {
+    assert.throws(() => checkBuildLine("base", { engine_build: line }, b), new RegExp(`--base-ep9 is not the ${b} build`), `${b}: ${line}`);
+  }
+});
+
+test("CLI --build: the JSON and the table name the build; a binary of the other build exits 2", (t) => {
+  const f = fakeSetup(t);
+  // The fake engines print "features none; preset jitless" (the jitless build line).
+  let r = f.run(["--build", "jitless"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.res.build, "jitless");
+  assert.match(r.md, /^### bench set \(test-x64, jitless build\): cachegrind Ir, head vs base/);
+  r = f.run(["--build", "jit"]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--base-ep9 is not the jit build \(its build line: "features none; preset jitless"\)/);
+  // A jit build line on both sides passes --build jit (and fails --build jitless).
+  for (const n of ["ep9-base", "ep9-head"]) {
+    rmSync(path.join(f.dir, n));
+    writeFileSync(
+      path.join(f.dir, n),
+      `#!/bin/sh\nif [ "$1" = --version ]; then echo "fake ${n} 0.0"; echo "features jit; preset jit"; eval "b=\\\${FAKE_BUILD_$(echo ${n} | tr -- - _):-}"; echo "ep9 build: $b" >&2; exit 0; fi\nexec "${path.join(TESTDATA, "fake-engine.sh")}" "$@"\n`,
+    );
+    chmodSync(path.join(f.dir, n), 0o755);
+  }
+  r = f.run(["--build", "jit"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.res.build, "jit");
+  assert.match(r.md, /^### bench set \(test-x64, jit build\)/m);
+  r = f.run(["--build", "jitless"]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--base-ep9 is not the jitless build/);
+  // No --build: no check, no build in the JSON (the form before MC-w36-4).
+  r = f.run([]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.res.build, null);
+});
+
+test("ci.yml bench-set: each side also builds the jitless ep9 in its own target dir; the artifact keeps both legs", () => {
+  const job = CI.slice(CI.indexOf("\n  bench-set:\n"));
+  const build = stepScript("build ep9 at base and head");
+  assert.match(build, /\n *cargo build --release --locked -p ep9_cli\n/);
+  assert.match(build, /\n *cargo build --release --locked -p ep9_cli --no-default-features --target-dir "\$JITLESS_TARGET_DIR"\n/);
+  assert.match(build, /cp "\$JITLESS_TARGET_DIR\/release\/ep9" "bench\/ep9-jitless-\$side"/);
+  assert.match(build, /"bench\/ep9-jitless-\$side" --version/);
+  assert.match(job, /\n {10}CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/bench\/target\n {10}JITLESS_TARGET_DIR: \$\{\{ github\.workspace \}\}\/bench\/target-jitless\n/);
+  assert.match(job, /\n {12}bench-set-\$\{\{ matrix\.name \}\}-jitless\.json\n/);
+  assert.match(job, /\n {12}bench\/cg-jitless\/\n/);
+});
+
+test("ci.yml count step: both legs run with their --build; the step fails when either leg fails", (t) => {
+  // A fake node on the PATH: it logs its arguments and exits with FAKE_RC_<build>.
+  const bin = mkdtempSync(path.join(os.tmpdir(), "ep9-bench-set-node-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const log = path.join(bin, "log");
+  writeFileSync(
+    path.join(bin, "node"),
+    `#!/bin/sh\necho "$*" >> "${log}"\nfor a; do last=$a; done\neval "rc=\\\${FAKE_RC_$last:-0}"\nexit "$rc"\n`,
+  );
+  chmodSync(path.join(bin, "node"), 0o755);
+  const env = { PATH: `${bin}:${process.env.PATH}`, BASE, HEAD, LEG: "linux-x64", BRANCH_SIM: "true", WORKLOADS: "", FUNCTIONS: "F_cold" };
+  for (const [jit, jitless, want] of [[0, 0, 0], [1, 0, 1], [0, 1, 1], [2, 1, 2], [1, 2, 2]]) {
+    rmSync(log, { force: true });
+    const r = runStep(t, "count", { ...env, FAKE_RC_jit: String(jit), FAKE_RC_jitless: String(jitless) });
+    assert.equal(r.status, want, `jit ${jit}, jitless ${jitless}: ${r.stderr}`);
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(calls.length, 2, calls.join("\n"));
+    assert.match(calls[0], /--base-ep9 bench\/ep9-base --head-ep9 bench\/ep9-head .*--branch-sim .*--keep bench\/cg .*--out bench-set-linux-x64\.json .*--build jit$/);
+    assert.match(calls[1], /--base-ep9 bench\/ep9-jitless-base --head-ep9 bench\/ep9-jitless-head .*--branch-sim .*--keep bench\/cg-jitless .*--out bench-set-linux-x64-jitless\.json .*--build jitless$/);
+    for (const c of calls) assert.match(c, /--base 1{40} --head 2{40} --target linux-x64 /);
+  }
 });

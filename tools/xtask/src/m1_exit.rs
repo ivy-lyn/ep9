@@ -58,6 +58,13 @@
 //! the runner was built dirty, the checkout HEAD is not the pin `third_party/test262.commit` or
 //! moved during the run, or the checkout had changes (plan v10 X4).
 //!
+//! **The fork checkouts** (FORK-CHECKOUT-ATTEST, `exit::forks`): the pins and patch sets above
+//! are tree paths; cargo builds the git-ignored checkouts. On a tree whose `scripts/sync-lib.sh`
+//! has the shared check (`fork_attest`), an ep9-test262 JSON names the fork line of its runner's
+//! build (`"runner_forks"`) and a kernels JSON the fork line at its run (`"forks"`), and the cell
+//! is OPEN unless every fork reads `pinned` (a missing field too). An older tree (the `m1-exit`
+//! tree) has no producer of these fields, so its cells do not read them.
+//!
 //! **The gate build** (X3, the O8 refusal; plan v10 V10-D10, V10-A12): items 1-4 read the
 //! build each input ran. An ep9-test262 JSON names `preset`, `mode` (the preset its isolates
 //! ran), `feedback` and `features`; the kernels JSON (`ep9.engine_build`) and the exit2 JSON
@@ -99,6 +106,7 @@ use crate::adr_lint;
 use crate::exit::adr::{counts_line, index_findings};
 use crate::exit::ci::{CI_MATRIX, CI_TRIPLE, Ci, gh_run};
 use crate::exit::cross::fresh_since;
+use crate::exit::forks;
 use crate::exit::freeze::{Due, find_part, frozen_by_m1};
 use crate::exit::gc_shards::{GC_JOB, merge_gc_shards, test262_files};
 use crate::exit::json::{Json, parse_json};
@@ -872,6 +880,8 @@ struct Runner {
     /// again at the end of the run, and whether the checkout had changes before or after it.
     test262_head_end: Option<String>,
     test262_dirty: Option<bool>,
+    /// `"runner_forks"` (FORK-CHECKOUT-ATTEST): the fork line of the runner's build.
+    forks: Option<String>,
 }
 
 impl Source {
@@ -902,6 +912,7 @@ impl Source {
                 test262_head: str_field(j, "test262_head"),
                 test262_head_end: str_field(j, "test262_head_end"),
                 test262_dirty: j.get("test262_dirty").and_then(Json::bool),
+                forks: str_field(j, "runner_forks"),
             }),
             build: Some(Build::of_json(j)),
             seam: j.get("test_seam").and_then(Json::bool) == Some(true),
@@ -1066,6 +1077,13 @@ fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
             "provenance: it names no test262 dirty flag (test262_dirty; make it again with this tree's runner)"
                 .to_string(),
         ),
+    }
+    // FORK-CHECKOUT-ATTEST: the fork checkouts the runner was built from were their pins plus
+    // their patches; asked only on a tree that has the shared check (exit::forks::required).
+    if forks::required(root)
+        && let Err(e) = forks::check(r.forks.as_deref(), "runner_forks")
+    {
+        why.push(format!("provenance: {e}"));
     }
     why
 }
@@ -1460,6 +1478,13 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
                 fresh.push(format!("{path} differs from HEAD"));
             }
         }
+    }
+    // FORK-CHECKOUT-ATTEST: the fork checkouts at the run were their pins plus their patches
+    // (kernels.mjs `forks`); asked only on a tree that has the shared check.
+    if forks::required(root)
+        && let Err(e) = forks::check(j.get("forks").and_then(Json::str), "forks")
+    {
+        fresh.push(e);
     }
     let tree = if fresh.is_empty() {
         match &foreign {
@@ -7198,6 +7223,78 @@ mod tests {
             let (h, w) = &run(&o).unwrap().cells[8];
             assert_eq!(h.status, want, "{status}: {h:?}");
             assert_eq!(w.status, want);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// FORK-CHECKOUT-ATTEST: on a tree whose scripts/sync-lib.sh has the shared check, the exec
+    /// JSON of items 3 and 4 names its runner's fork line (`runner_forks`) and the kernels JSON
+    /// of item 1 its fork line at the run (`forks`): a stale or absent fork, a missing field or
+    /// a line in another form is OPEN. On a tree without the check (the m1-exit tree) the cells
+    /// read as before (the old reader reads every case as a pass).
+    #[test]
+    fn items_1_and_3_read_the_fork_line_on_a_tree_with_the_check() {
+        let root = fake_repo("forks");
+        let mut o = opts(&root);
+        let pinned = "regress=pinned icu4x=pinned";
+        let exec = |line: Option<&str>| {
+            let mut src = src_at(&root, "HEAD");
+            if let Some(l) = line {
+                src.push_str(&format!(r#""runner_forks":"{l}","#));
+            }
+            exec_json(17, 20, 24, 0.0, &[], &src)
+        };
+        let kernels = |line: Option<&str>| {
+            let j = kernels_json(&root, HOST, 15, 15, None);
+            match line {
+                Some(l) => j.replacen(
+                    r#""dirty":[],"#,
+                    &format!(r#""dirty":[],"forks":"{l}","#),
+                    1,
+                ),
+                None => j,
+            }
+        };
+        // No check in the tree: no field is asked for.
+        o.exec = Some(input(&root, "exec.json", &exec(None)));
+        o.kernels = Some(input(&root, "kernels.json", &kernels(None)));
+        let rep = run(&o).unwrap();
+        assert_eq!(rep.cells[0].0.status, Status::Pass, "{:?}", rep.cells[0]);
+        assert_eq!(rep.cells[2].0.status, Status::Pass, "{:?}", rep.cells[2]);
+        write(&root, "scripts/sync-lib.sh", "fork_attest() {\n  :\n}\n");
+        commit_all(&root, "the fork check");
+        let cases = [
+            (Some(pinned), None),
+            (
+                Some("regress=stale icu4x=pinned"),
+                Some("the regress fork checkout was not its pin plus its patches"),
+            ),
+            (
+                Some("regress=pinned icu4x=absent"),
+                Some("the icu4x fork checkout was not its pin plus its patches"),
+            ),
+            (Some("icu4x=pinned"), Some("is in another form")),
+            (None, Some("it names no fork checkout state")),
+        ];
+        for (line, want) in cases {
+            o.exec = Some(input(&root, "exec.json", &exec(line)));
+            o.kernels = Some(input(&root, "kernels.json", &kernels(line)));
+            let rep = run(&o).unwrap();
+            for (cell, field) in [(0, "forks"), (2, "runner_forks")] {
+                let c = &rep.cells[cell].0;
+                match want {
+                    None => assert_eq!(c.status, Status::Pass, "{line:?}: {c:?}"),
+                    Some(w) => {
+                        assert_eq!(c.status, Status::Open, "{line:?}: {c:?}");
+                        assert!(c.evidence.contains(w), "{w}: {}", c.evidence);
+                        assert!(
+                            c.evidence.contains(&format!("({field}")),
+                            "{field}: {}",
+                            c.evidence
+                        );
+                    }
+                }
+            }
         }
         std::fs::remove_dir_all(root).unwrap();
     }
