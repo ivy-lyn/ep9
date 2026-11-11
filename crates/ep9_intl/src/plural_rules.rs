@@ -53,7 +53,7 @@ use icu_plurals::{
 
 use crate::cache::{self, Service};
 use crate::digits::{
-    DecimalValue, DigitOptions, Interrupted, RoundingMode, RoundingType, Work,
+    DecimalValue, DigitOptions, Interrupted, POLL_DIGITS, RoundingMode, RoundingType, Work,
     format_numeric_to_string, polled, set_number_format_digit_options,
 };
 use crate::number_format::decimal::{IntlMv, to_intl_mv};
@@ -718,11 +718,31 @@ fn resolve_plural_range(
     let xp = resolve_plural(r, icu, x, work)?;
     let yp = resolve_plural(r, icu, y, work)?;
     // 4. If xp.[[FormattedString]] is yp.[[FormattedString]], return xp.[[PluralCategory]].
-    if xp.formatted == yp.formatted {
+    if same_text(&xp.formatted, &yp.formatted, work)? {
         return Ok(xp.category);
     }
     // 5-9. Return PluralRuleSelectRange(locale, type, notation, compactDisplay, xp, yp).
     Ok(icu.resolve_range(xp.category, yp.category))
+}
+
+/// Whether `a` and `b` are the same text. The compare goes in steps of [`POLL_DIGITS`] bytes,
+/// and each step counts in `work` after it (a WideDecimal text has up to about 323 million
+/// digits).
+fn same_text(a: &str, b: &str, work: &mut Work) -> Result<bool, Interrupted> {
+    if a.len() != b.len() {
+        return Ok(false);
+    }
+    for (x, y) in a
+        .as_bytes()
+        .chunks(POLL_DIGITS)
+        .zip(b.as_bytes().chunks(POLL_DIGITS))
+    {
+        if x != y {
+            return Ok(false);
+        }
+        work.add(x.len())?;
+    }
+    Ok(true)
 }
 
 /// The cached ICU4X objects of `r`, or a TypeError if the data has none (not reached: the
@@ -1085,5 +1105,36 @@ mod tests {
         // Same text: the start category (node gives the range category "few" and "other").
         assert_eq!(range("sl", "1", "1"), "one");
         assert_eq!(range("en", "1", "1.0001"), "one");
+    }
+
+    /// ResolvePluralRange step 4 polls while it compares two long equal texts: a stop at the
+    /// first poll after the two ResolvePlural steps stops the call.
+    #[test]
+    fn select_range_compare_polls() {
+        let r = resolved("en", 0, "standard", false);
+        let icu = icu_for(&r).unwrap();
+        let x = IntlMv::Wide(unpolled(|w| {
+            WideDecimal::from_integer_digits(false, &vec![b'7'; 1 << 20], w)
+        }));
+        // n = the polls of the two ResolvePlural steps (steps 2-3).
+        let mut n = 0usize;
+        {
+            let mut count = || {
+                n += 1;
+                true
+            };
+            let mut w = Work::new(&mut count);
+            resolve_plural(&r, &icu, &x, &mut w).unwrap();
+            resolve_plural(&r, &icu, &x, &mut w).unwrap();
+        }
+        // Poll n + 1 comes after steps 2-3, in the compare of step 4; it asks for a stop.
+        let mut calls = 0usize;
+        let mut stop_after_n = || {
+            calls += 1;
+            calls <= n
+        };
+        let got = resolve_plural_range(&r, &icu, &x, &x, &mut Work::new(&mut stop_after_n));
+        assert_eq!(got, Err(Interrupted));
+        assert_eq!(calls, n + 1);
     }
 }
