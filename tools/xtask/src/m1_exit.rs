@@ -63,8 +63,12 @@
 //! has the shared check (`fork_attest`), an ep9-test262 JSON names the fork line of its runner's
 //! build (`"runner_forks"`), a kernels JSON the fork line at its run (`"forks"`) and the nesting
 //! log of item 8 the fork line of its checkouts (`m1-exit forks: ...`, NESTING_CMD), and the cell
-//! is OPEN unless every fork reads `pinned` (a missing field or line too). An older tree (the
-//! `m1-exit` tree) has no producer of these fields, so its cells do not read them.
+//! is OPEN unless every fork reads `pinned` (a missing field or line too). The fork line of a
+//! kernels JSON names the checkouts at the run, not the build, so on the same trees item 1 also
+//! reads the checked binary's own freshness line (`ep9.build`, `ep9 --version` stderr): OPEN
+//! unless it is clean and names the JSON's `commit` (a binary built from an edited fork says
+//! dirty after a resync too). An older tree (the `m1-exit` tree) has no producer of these
+//! fields, so its cells do not read them.
 //!
 //! **The gate build** (X3, the O8 refusal; plan v10 V10-D10, V10-A12): items 1-4 read the
 //! build each input ran. An ep9-test262 JSON names `preset`, `mode` (the preset its isolates
@@ -1504,9 +1508,14 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
     }
     // FORK-CHECKOUT-ATTEST: the fork checkouts at the run were their pins plus their patches
     // (kernels.mjs `forks`); asked only on a tree that has the shared check.
-    if forks::required(root)
-        && let Err(e) = forks::check(j.get("forks").and_then(Json::str), "forks")
-    {
+    let attest = forks::required(root);
+    if attest && let Err(e) = forks::check(j.get("forks").and_then(Json::str), "forks") {
+        fresh.push(e);
+    }
+    // `forks` names the checkouts at the run, not the build: a binary built from an edited or
+    // stale fork and run after a resync must not pass. The binary's own freshness line must be
+    // clean and name `commit` ([`binary_build`]); asked on the same trees as `forks`.
+    if attest && let Err(e) = binary_build(j, commit) {
         fresh.push(e);
     }
     let tree = if fresh.is_empty() {
@@ -1536,6 +1545,37 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
             because(&why)
         ),
     )
+}
+
+/// Item 1: the checked binary's freshness line, `ep9.build` of the kernels JSON (kernels.mjs
+/// `ep9Version`: `ep9 --version` stderr, "ep9 build: commit <sha> clean|dirty", P0-BUILDID;
+/// `crates/ep9_cli/build.rs` says dirty for a change in the engine paths or a fork checkout that
+/// is not its pin plus its patches at build time). Ok when it names `commit` and a clean build;
+/// else the OPEN reason.
+fn binary_build(j: &Json, commit: &str) -> Result<(), String> {
+    let b = j.path(&["ep9", "build"]);
+    let Some(b) = b.filter(|b| b.get("dirty").is_some()) else {
+        return Err(
+            "the ep9 binary names no build line (ep9.build; make it again with this tree's tools)"
+                .into(),
+        );
+    };
+    match (
+        b.get("commit").and_then(Json::str),
+        b.get("dirty").and_then(Json::bool),
+    ) {
+        (Some(c), Some(false)) if c == commit => Ok(()),
+        (Some(c), Some(false)) => Err(format!(
+            "the ep9 binary was built from `{}`, not from its commit `{}` (ep9.build)",
+            short(c),
+            short(commit)
+        )),
+        (Some(c), Some(true)) => Err(format!(
+            "the ep9 binary of `{}` was built with uncommitted engine changes or a fork checkout that was not its pin plus its patches (ep9.build: dirty)",
+            short(c)
+        )),
+        _ => Err("the ep9 binary names no commit or no clean or dirty state (ep9.build)".into()),
+    }
 }
 
 fn item2(c: &Ctx) -> (Cell, Cell) {
@@ -5885,10 +5925,10 @@ mod tests {
             })
             .collect();
         format!(
-            r#"{{"schema":"ep9-kernels/v1","commit":"{}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"ep9":{{"bin":"ep9","engine_build":"{GATE_LINE}"}},"kernels":[{}]}}"#,
-            git_in(root, &["rev-parse", "HEAD"]),
+            r#"{{"schema":"ep9-kernels/v1","commit":"{head}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"ep9":{{"bin":"ep9","engine_build":"{GATE_LINE}","build":{{"commit":"{head}","dirty":false}}}},"kernels":[{}]}}"#,
             ids.join(","),
-            rows.join(",")
+            rows.join(","),
+            head = git_in(root, &["rev-parse", "HEAD"]),
         )
     }
 
@@ -7329,6 +7369,76 @@ mod tests {
                             c.evidence
                         );
                     }
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Codex M8-P1 r1 F1: on a tree with the fork check, item 1 also reads the checked binary's
+    /// own freshness line (`ep9.build`). A binary built from an edited or stale fork and run
+    /// after a resync has pinned checkouts but a dirty build: OPEN. A clean build of another
+    /// commit, no build line, or "commit unknown" are OPEN too. On a tree without the check (the
+    /// m1-exit tree) the cell reads as before.
+    #[test]
+    fn item1_reads_the_binary_build_line_on_a_tree_with_the_check() {
+        let root = fake_repo("item1build");
+        let mut o = opts(&root);
+        let pinned = r#""dirty":[],"forks":"regress=pinned icu4x=pinned","#;
+        let kernels = |build: Option<&str>| {
+            let head = git_in(&root, &["rev-parse", "HEAD"]);
+            let clean = format!(r#","build":{{"commit":"{head}","dirty":false}}"#);
+            let j = kernels_json(&root, HOST, 15, 15, None).replacen(r#""dirty":[],"#, pinned, 1);
+            assert!(j.contains(&clean), "{j}");
+            j.replacen(
+                &clean,
+                &build.map_or(String::new(), |b| format!(r#","build":{b}"#)),
+                1,
+            )
+        };
+        // No check in the tree: a dirty build keeps the old result.
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let dirty = format!(r#"{{"commit":"{head}","dirty":true}}"#);
+        o.kernels = Some(input(&root, "kernels.json", &kernels(Some(&dirty))));
+        let c = &run(&o).unwrap().cells[0].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        let old = head;
+        write(&root, "scripts/sync-lib.sh", "fork_attest() {\n  :\n}\n");
+        commit_all(&root, "the fork check");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let cases = [
+            (
+                Some(format!(r#"{{"commit":"{head}","dirty":false}}"#)),
+                None,
+            ),
+            (
+                Some(format!(r#"{{"commit":"{head}","dirty":true}}"#)),
+                Some(
+                    "was built with uncommitted engine changes or a fork checkout that was not its pin plus its patches (ep9.build: dirty)",
+                ),
+            ),
+            (
+                Some(format!(r#"{{"commit":"{old}","dirty":false}}"#)),
+                Some("the ep9 binary was built from `"),
+            ),
+            (
+                Some(r#"{"commit":null,"dirty":null}"#.to_string()),
+                Some("the ep9 binary names no commit or no clean or dirty state (ep9.build)"),
+            ),
+            (
+                Some("null".to_string()),
+                Some("the ep9 binary names no build line (ep9.build;"),
+            ),
+            (None, Some("the ep9 binary names no build line (ep9.build;")),
+        ];
+        for (build, want) in cases {
+            o.kernels = Some(input(&root, "kernels.json", &kernels(build.as_deref())));
+            let c = &run(&o).unwrap().cells[0].0;
+            match want {
+                None => assert_eq!(c.status, Status::Pass, "{build:?}: {c:?}"),
+                Some(w) => {
+                    assert_eq!(c.status, Status::Open, "{build:?}: {c:?}");
+                    assert!(c.evidence.contains(w), "{w}: {}", c.evidence);
                 }
             }
         }

@@ -44,7 +44,11 @@
 // `absent` in its place otherwise, null when the check cannot run; m1-exit gives OPEN unless every
 // fork reads pinned. `ep9.engine_build` is the
 // build line of the checked binary's `--version` ("features <list>; preset <name>", M5-P0,
-// MC-w17-5), or null for a binary that prints none.
+// MC-w17-5), or null for a binary that prints none. `ep9.build` is the binary's own freshness
+// line (its `--version` stderr, "ep9 build: commit <sha> clean|dirty", P0-BUILDID; run.mjs
+// parseBuild): { commit, dirty }, or null for a binary that prints none. `forks` is the
+// checkouts at the run; `ep9.build` is the build: a binary built from an edited or stale fork
+// says dirty after a resync too. m1-exit gives OPEN unless it is clean and names `commit`.
 //
 // Exit status: 0 every kernel ran with node's output (kernels on --not-yet may fail); 1 a kernel
 // failed; 2 usage error; 3 the oracle or the generator failed (no verdict).
@@ -59,6 +63,9 @@ import { fileURLToPath } from "node:url";
 import { hostInfo } from "../lib/host.mjs";
 import { generate as generateOctane, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { DEFAULT_HARNESS, errorPlace, generate as generateV8v7, HARNESSES, KERNELS as V8V7_KERNELS, ROOT } from "./v8v7.mjs";
+// run.mjs imports this file too; the cycle is safe: each file reads the other's functions only
+// inside its own functions, never at load time.
+import { parseBuild } from "./run.mjs";
 
 export const SCHEMA = "ep9-kernels/v1";
 export const OK = "runs, output equal";
@@ -414,7 +421,7 @@ export function check(o, deps = {}) {
       dirty: st.dirty,
       forks: forkState(),
       host: { ...host, target: TRIPLES[host.platform] ?? null },
-      ep9: { bin: path.basename(o.check), ...splitVersion(runVersion(o.check)), sha256: sha256File(o.check) },
+      ep9: { bin: path.basename(o.check), ...ep9Version(o.check), sha256: sha256File(o.check) },
       oracle: { engine: "node", bin: path.basename(o.node), version: version(o.node) },
       n: o.n,
       harness: { v8v7: o.harness, octane: rows.find((r) => r.suite === "octane")?.harness ?? null },
@@ -449,8 +456,21 @@ export function splitVersion(text) {
 }
 
 function runVersion(bin) {
+  return versionRun(bin).text;
+}
+
+function versionRun(bin) {
   const r = spawnSync(bin, ["--version"], { encoding: "utf8" });
-  return r.status === 0 ? r.stdout : `unknown (--version: ${r.error?.message ?? `exit ${r.status}`})`;
+  return r.status === 0 ? { text: r.stdout, stderr: r.stderr } : { text: `unknown (--version: ${r.error?.message ?? `exit ${r.status}`})`, stderr: "" };
+}
+
+/**
+ * The checked binary's `--version`: `version` and `engine_build` (splitVersion) from stdout, and
+ * `build` from the freshness line on stderr (parseBuild: { commit, dirty }, or null).
+ */
+export function ep9Version(bin) {
+  const r = versionRun(bin);
+  return { ...splitVersion(r.text), build: parseBuild(r.stderr) };
 }
 
 function sha256File(f) {
@@ -461,11 +481,20 @@ function sha256File(f) {
   }
 }
 
+/** The table's note on the binary's freshness line ("" for a clean build of `commit`). */
+function buildText(build, commit) {
+  if (build === undefined || (build?.dirty === false && build.commit === commit)) return "";
+  if (!build) return "; the ep9 binary prints no build line";
+  if (!build.commit) return "; the ep9 binary names no commit";
+  if (build.dirty) return `; the ep9 binary of ${build.commit.slice(0, 12)} was built with uncommitted engine changes`;
+  return `; the ep9 binary was built from ${build.commit.slice(0, 12)}`;
+}
+
 /** The Markdown table of a check result. */
 export function renderTable(res) {
   const cell = (x) => (x ?? "").replaceAll("|", "\\|").replaceAll("`", "'").replaceAll("\n", " / ");
   const L = [];
-  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}${res.ep9.engine_build ? `; ${res.ep9.engine_build}` : ""}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}${res.forks?.split(" ").every((p) => p.endsWith("=pinned")) ? "" : `; fork checkouts: ${res.forks ?? "not checked"}`}.`);
+  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}${res.ep9.engine_build ? `; ${res.ep9.engine_build}` : ""}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}${res.forks?.split(" ").every((p) => p.endsWith("=pinned")) ? "" : `; fork checkouts: ${res.forks ?? "not checked"}`}${buildText(res.ep9.build, res.commit)}.`);
   L.push("");
   L.push("| kernel | result | blocker | place | source line |");
   L.push("|---|---|---|---|---|");
