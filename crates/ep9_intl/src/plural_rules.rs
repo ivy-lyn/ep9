@@ -647,10 +647,12 @@ fn resolve_plural(r: &Resolved, icu: &Icu, n: &IntlMv) -> Plural {
     format_numeric_to_string(&r.digits, &mut s);
     // 6-10. Let p be PluralRuleSelect(locale, type, notation, compactDisplay, s).
     let category = icu.category_for(operands(r, icu, x));
-    // 11. Return the Record { [[PluralCategory]]: p, [[FormattedString]]: s }.
+    // 11. Return the Record { [[PluralCategory]]: p, [[FormattedString]]: s }. The text has
+    //     no sign: FormatNumericToString (§16.5.2) makes it from the unsigned value, so -1
+    //     and 1 (and -0 and 0) have the same text. The rounding above kept the sign.
     Plural {
         category,
-        formatted: s.to_string(),
+        formatted: s.absolute.to_string(),
     }
 }
 

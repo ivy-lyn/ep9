@@ -118,6 +118,8 @@ fn resolved_options_select_and_ranges_give_the_node_lines() {
 const SPEC: &str = r#"const pr = new Intl.PluralRules("en");
 print(pr.select(1n), pr.select(2n), new Intl.PluralRules("en", {maximumFractionDigits: 20}).select("1.00000000000000000001"));
 print(new Intl.PluralRules("sl").selectRange(1, 1), pr.selectRange(1, "1.0"), pr.selectRange(1n, 2n));
+const fa = new Intl.PluralRules("fa");
+print(new Intl.PluralRules("sl").selectRange(-1, 1), fa.selectRange(-1, 1), fa.selectRange(-0, 0), fa.selectRange(-0.0001, 0));
 const c = new Intl.PluralRules("en", {notation: "compact"}).resolvedOptions();
 print(Object.keys(c).join());
 const l = new Intl.PluralRules("en", {roundingPriority: "lessPrecision"}).resolvedOptions();
@@ -139,6 +141,10 @@ fn the_spec_lines_where_v8_differs() {
             // ep9: ResolvePluralRange step 4: the same formatted text gives the start category
             // (V8 gives the range category: "few", "other"; and a TypeError for 1n).
             "one one other",
+            // ep9: the [[FormattedString]] of FormatNumericToString has no sign (§16.5.2), so
+            // -1 and 1 (and -0 and 0) have the same text and step 4 gives the start category
+            // (V8: "few other other other", the range data).
+            "one one one one",
             // ep9: SetNumberFormatDigitOptions step 25 sets the fraction and the significant
             // digits for the compact default, and lessPrecision sets both (V8 shows only the
             // significant digits).
