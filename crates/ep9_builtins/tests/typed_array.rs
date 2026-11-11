@@ -2,9 +2,9 @@
 //! §23.2). R1 (the skeleton) pins the key list of each of the 26 intrinsics, the lazy group
 //! (the 12 constructor keys join the group of `ArrayBuffer`, TA-D14), the `[[Prototype]]`
 //! links of the constructors (the VM's `PROTO_LINKS`, decision O2), in a second realm too,
-//! and the stub TypeError of a constructor that R2 replaces. Each script prints the lines of
-//! node v26.13.0 for the same script (`print` here, `console.log` there; `createRealm()` there
-//! is `vm.runInContext('globalThis', vm.createContext({}))` with `print` copied in) and runs
+//! and the stub TypeError of `from` and `of` that R3 replaces. Each script prints the lines
+//! of node v26.13.0 for the same script (`print` here, `console.log` there; `createRealm()`
+//! there is `vm.runInContext('globalThis', vm.createContext({}))` with `print` copied in) and runs
 //! with and without GC stress.
 
 mod common;
@@ -451,26 +451,29 @@ print(TA === OTA, other.Int8Array === Int8Array, OTA.prototype === TA.prototype,
     assert_eq!(run_realms(src, true), plain, "GC stress");
 }
 
-// ---- (d) the stubs (R2 and R3 replace them) ----------------------------------------------------
+// ---- (d) the stubs (R3 replaces them) -----------------------------------------------------------
 
-/// TA-3 R1 installs stubs: each constructor and `%TypedArray%` throws a TypeError, with or
-/// without `new`. R2 flips this test (node: `new Int8Array(1)` makes a view of length 1).
+/// TA-3 R2 built the constructors and `%TypedArray%` (an abstract class: a TypeError with and
+/// without `new`); `%TypedArray%.from` and `of` stay stubs that throw a TypeError until R3
+/// (node: `new Int8Array(1)` makes a view of length 1; `TA.from([])` and `TA.of(1)` make
+/// views).
 #[test]
-fn a_constructor_is_a_stub_that_throws() {
+fn the_constructors_are_built_and_from_and_of_are_stubs() {
     let src = r#"
 const TA = Object.getPrototypeOf(Int8Array);
 for (const f of [() => new Int8Array(1), () => Int8Array(1), () => new Float64Array(),
   () => new TA(), () => TA.from([]), () => TA.of(1)]) {
-  try { f(); print("no error"); } catch (e) { print(e.constructor === TypeError, e.message); }
+  try { const t = f(); print(t.constructor.name, t.length); }
+  catch (e) { print(e.constructor === TypeError, e.message); }
 }
 "#;
     assert_eq!(
         common::run_both(src),
         lines(&[
-            "true Int8Array: not built yet (m8-stub, TypedArray TA-3)",
-            "true Int8Array: not built yet (m8-stub, TypedArray TA-3)",
-            "true Float64Array: not built yet (m8-stub, TypedArray TA-3)",
-            "true TypedArray: not built yet (m8-stub, TypedArray TA-3)",
+            "Int8Array 1",
+            "true Constructor Int8Array requires 'new'",
+            "Float64Array 0",
+            "true Abstract class TypedArray not directly constructable",
             "true TypedArray.from: not built yet (m8-stub, TypedArray TA-3)",
             "true TypedArray.of: not built yet (m8-stub, TypedArray TA-3)",
         ])
