@@ -143,3 +143,24 @@ fn large_bigints_give_the_node_lines() {
         ])
     );
 }
+
+const BIDI: &str = r#"const p = (l, o, x) => JSON.stringify(new Intl.NumberFormat(l, o).formatToParts(x).filter(q => q.type !== "integer").map(q => [q.type, [...q.value].map(c => c.codePointAt(0).toString(16)).join("+")]));
+for (const [l, o, x] of [["fa", {}, -1], ["he", {}, -1], ["ar-EG", {}, -1], ["ps", {}, -1], ["fa", {signDisplay: "always"}, 1], ["ur", {}, -1]]) print(l, p(l, o, x), new Intl.NumberFormat(l, o).format(x).length);
+"#;
+
+/// The bidi marks of a sign affix (U+200E, U+200F, U+061C at its start or end) are literal
+/// parts, as in node (review B2). Old code: one minusSign or plusSign part with the mark.
+#[test]
+fn sign_bidi_marks_are_literal_parts() {
+    assert_eq!(
+        run_both(BIDI),
+        lines(&[
+            "fa [[\"literal\",\"200e\"],[\"minusSign\",\"2212\"]] 3",
+            "he [[\"literal\",\"200e\"],[\"minusSign\",\"2d\"]] 3",
+            "ar-EG [[\"literal\",\"61c\"],[\"minusSign\",\"2d\"]] 3",
+            "ps [[\"literal\",\"200e\"],[\"minusSign\",\"2d\"],[\"literal\",\"200e\"]] 4",
+            "fa [[\"literal\",\"200e\"],[\"plusSign\",\"2b\"]] 3",
+            "ur [[\"literal\",\"200e\"],[\"minusSign\",\"2d\"]] 3",
+        ])
+    );
+}

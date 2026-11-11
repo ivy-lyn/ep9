@@ -695,14 +695,14 @@ pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
     };
     match sign_of(f.sign_display, negative, rounded_zero, nan) {
         Some(true) => {
-            push_text(&mut out, PartType::MinusSign, symbols.minus_sign_prefix());
+            push_sign(&mut out, PartType::MinusSign, symbols.minus_sign_prefix());
             out.extend(body);
-            push_text(&mut out, PartType::MinusSign, symbols.minus_sign_suffix());
+            push_sign(&mut out, PartType::MinusSign, symbols.minus_sign_suffix());
         }
         Some(false) => {
-            push_text(&mut out, PartType::PlusSign, symbols.plus_sign_prefix());
+            push_sign(&mut out, PartType::PlusSign, symbols.plus_sign_prefix());
             out.extend(body);
-            push_text(&mut out, PartType::PlusSign, symbols.plus_sign_suffix());
+            push_sign(&mut out, PartType::PlusSign, symbols.plus_sign_suffix());
         }
         None => out.extend(body),
     }
@@ -714,6 +714,27 @@ fn push_text(out: &mut Parts, t: PartType, text: &str) {
     if !text.is_empty() {
         out.push((t, text.to_string()));
     }
+}
+
+/// Whether `c` is a bidi mark of a CLDR sign affix: LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK or
+/// ARABIC LETTER MARK.
+fn is_bidi_mark(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}')
+}
+
+/// Pushes the sign affix `affix` as parts: the bidi marks at its start and end are literal
+/// parts, the rest is a part of type `t` (node: fa -1 is literal U+200E, minusSign U+2212;
+/// ps -1 is literal, minusSign, literal).
+fn push_sign(out: &mut Parts, t: PartType, affix: &str) {
+    let core = affix.trim_matches(is_bidi_mark);
+    let start = affix.len() - affix.trim_start_matches(is_bidi_mark).len();
+    if core.is_empty() {
+        push_text(out, PartType::Literal, affix);
+        return;
+    }
+    push_text(out, PartType::Literal, &affix[..start]);
+    push_text(out, t, core);
+    push_text(out, PartType::Literal, &affix[start + core.len()..]);
 }
 
 /// The text of `parts`.
