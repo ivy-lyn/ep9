@@ -612,3 +612,42 @@ test("ci.yml count step: both legs run with their --build; the step fails when e
     for (const c of calls) assert.match(c, /--base 1{40} --head 2{40} --target linux-x64 /);
   }
 });
+
+test("ci.yml valgrind step: no recommends, and 3 tries of update + install with waits of 60 s and 120 s", (t) => {
+  // Fake sudo, apt-get, sleep and valgrind on the PATH: apt-get logs its arguments and fails
+  // (exit 100, as a DNS outage does) while fewer than FAKE_FAIL calls came before it.
+  const bin = mkdtempSync(path.join(os.tmpdir(), "ep9-bench-set-apt-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const log = path.join(bin, "log");
+  const fake = (name, body) => {
+    writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(path.join(bin, name), 0o755);
+  };
+  fake("sudo", 'exec "$@"');
+  fake("apt-get", `n=$(grep -c '^apt-get' "${log}" 2>/dev/null); echo "apt-get $*" >> "${log}"; [ "\${n:-0}" -ge "$FAKE_FAIL" ] || exit 100`);
+  fake("sleep", `echo "sleep $*" >> "${log}"`);
+  fake("valgrind", `echo "valgrind $*" >> "${log}"; echo valgrind-fake`);
+  const step = stepScript("Install valgrind (cachegrind)");
+  assert.match(step, /install -y -q --no-install-recommends valgrind;/);
+  for (let fail = 0; fail <= 6; fail++) {
+    // The form: up to 3 tries, waits of 60 s and 120 s before tries 2 and 3; each try runs
+    // update, then install only when update worked.
+    const want = { sleeps: [], updates: 0, ok: false };
+    for (let k = 0, n = 0; k < 3 && !want.ok; k++) {
+      if (k > 0) want.sleeps.push(["60", "120"][k - 1]);
+      want.updates++;
+      if (n++ < fail || n++ < fail) continue;
+      want.ok = true;
+    }
+    rmSync(log, { force: true });
+    const r = runStep(t, "Install valgrind (cachegrind)", { PATH: `${bin}:${process.env.PATH}`, FAKE_FAIL: String(fail) });
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    const what = `FAKE_FAIL ${fail}: ${calls.join("; ")}`;
+    assert.equal(r.status === 0, want.ok, `${what}; ${r.stdout}${r.stderr}`);
+    assert.deepEqual(calls.filter((c) => c.startsWith("sleep ")).map((c) => c.slice(6)), want.sleeps, what);
+    const apt = calls.filter((c) => c.startsWith("apt-get "));
+    assert.equal(apt.filter((c) => c.endsWith(" update -q")).length, want.updates, what);
+    for (const c of apt) assert.match(c, /^apt-get -o Acquire::Retries=5 (update -q|install -y -q --no-install-recommends valgrind)$/);
+    assert.equal(calls.includes("valgrind --version"), want.ok, what);
+  }
+});
