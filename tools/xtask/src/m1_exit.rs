@@ -61,9 +61,10 @@
 //! **The fork checkouts** (FORK-CHECKOUT-ATTEST, `exit::forks`): the pins and patch sets above
 //! are tree paths; cargo builds the git-ignored checkouts. On a tree whose `scripts/sync-lib.sh`
 //! has the shared check (`fork_attest`), an ep9-test262 JSON names the fork line of its runner's
-//! build (`"runner_forks"`) and a kernels JSON the fork line at its run (`"forks"`), and the cell
-//! is OPEN unless every fork reads `pinned` (a missing field too). An older tree (the `m1-exit`
-//! tree) has no producer of these fields, so its cells do not read them.
+//! build (`"runner_forks"`), a kernels JSON the fork line at its run (`"forks"`) and the nesting
+//! log of item 8 the fork line of its checkouts (`m1-exit forks: ...`, NESTING_CMD), and the cell
+//! is OPEN unless every fork reads `pinned` (a missing field or line too). An older tree (the
+//! `m1-exit` tree) has no producer of these fields, so its cells do not read them.
 //!
 //! **The gate build** (X3, the O8 refusal; plan v10 V10-D10, V10-A12): items 1-4 read the
 //! build each input ran. An ep9-test262 JSON names `preset`, `mode` (the preset its isolates
@@ -258,6 +259,11 @@ const SOURCE_LINE: &str = "m1-exit source: ";
 /// repository does not have) can show that it ran HEAD's code.
 const TREES_LINE: &str = "m1-exit trees:";
 
+/// Item 8: the forks line of a nesting log (NESTING_CMD; FORK-CHECKOUT-ATTEST): `m1-exit forks:
+/// regress=<state> icu4x=<state>`, the `fork_attest` line of the checkouts that the cargo runs
+/// built (`exit::forks`). Empty on a tree without the check; read only on a tree with it.
+const FORKS_LINE: &str = "m1-exit forks: ";
+
 /// Item 1: the kernels (8 v8-v7 + 7 Octane).
 const KERNELS: usize = 15;
 /// Item 1: the kernel ids, each once (CX5-C3; `KERNEL_IDS` of tools/bench/cross/kernels.mjs,
@@ -422,6 +428,7 @@ const NESTING_TESTS: [&str; 9] = [
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
      echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
      echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress third_party/icu4x.commit third_party/patches/icu4x; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
+     echo \"m1-exit forks: $(sh -c '. \"$1/scripts/sync-lib.sh\"; root=$1; fork_attest regress icu4x' sh \"$PWD\")\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -738,6 +745,9 @@ struct Source {
     /// The runner read its source facts through its test seam (`"test_seam": true`; F3,
     /// tools/test262/src/exec.rs): another tree's facts, or a file changed on purpose.
     seam: bool,
+    /// The [`FORKS_LINE`] of a nesting log, trimmed (FORK-CHECKOUT-ATTEST); None for a JSON
+    /// (its runner's fork line is [`Runner`] `forks`) and for a log with no such line.
+    forks: Option<String>,
 }
 
 /// The build an input names (X3, [`build_check`]): an ep9-test262 JSON writes `preset` (the
@@ -916,6 +926,7 @@ impl Source {
             }),
             build: Some(Build::of_json(j)),
             seam: j.get("test_seam").and_then(Json::bool) == Some(true),
+            forks: None,
         }
     }
 
@@ -924,7 +935,17 @@ impl Source {
     fn of_log(log: &str) -> Result<Source, String> {
         let mut found: Option<Source> = None;
         let mut trees: Option<BTreeMap<String, String>> = None;
+        let mut forks: Option<String> = None;
         for l in log.lines().map(str::trim) {
+            // `trim` drops the space after the colon of an empty forks line.
+            if let Some(rest) = l.strip_prefix(FORKS_LINE.trim_end()) {
+                let rest = rest.trim().to_string();
+                if forks.as_ref().is_some_and(|old| *old != rest) {
+                    return Err("two forks lines that differ".into());
+                }
+                forks = Some(rest);
+                continue;
+            }
             if let Some(rest) = l.strip_prefix(TREES_LINE) {
                 let mut t = BTreeMap::new();
                 for pair in rest.split_whitespace() {
@@ -960,6 +981,7 @@ impl Source {
                 runner: None,
                 build: None,
                 seam: false,
+                forks: None,
             };
             match &found {
                 Some(f) if *f != s => {
@@ -974,6 +996,7 @@ impl Source {
         }
         let mut s = found.unwrap_or_default();
         s.trees = trees.unwrap_or_default();
+        s.forks = forks;
         Ok(s)
     }
 
@@ -2772,7 +2795,17 @@ fn item8(c: &Ctx) -> (Cell, Cell) {
                 }
             }
             let src = match Source::of_log(log) {
-                Ok(s) => source_check(c, &s, &T262_FRESH_PATHS),
+                Ok(s) => {
+                    let (mut why, text) = source_check(c, &s, &T262_FRESH_PATHS);
+                    // FORK-CHECKOUT-ATTEST: the cargo runs built the fork checkouts as their
+                    // pins plus their patches; asked only on a tree with the shared check.
+                    if forks::required(&c.o.root)
+                        && let Err(e) = forks::check(s.forks.as_deref(), "the m1-exit forks line")
+                    {
+                        why.push(format!("stale input: {e}"));
+                    }
+                    (why, text)
+                }
                 Err(e) => (vec![format!("provenance: {e}")], "not read".into()),
             };
             with_source(
@@ -3803,9 +3836,9 @@ mod tests {
         );
     }
 
-    /// The CI nesting step (.github/workflows/ci.yml) writes the two NESTING_CMD source lines
-    /// right after its first start line, with the same text, so the linux-a64 CI log of item 8
-    /// names its source (gates need 1).
+    /// The CI nesting step (.github/workflows/ci.yml) writes the three NESTING_CMD source lines
+    /// (source, trees, forks) right after its first start line, with the same text, so the
+    /// linux-a64 CI log of item 8 names its source (gates need 1; FORK-CHECKOUT-ATTEST).
     #[test]
     fn ci_yml_writes_the_nesting_cmd_source_lines() {
         let ci =
@@ -3825,9 +3858,9 @@ mod tests {
                 format!("{} | tee -a nesting.log", &c[..end])
             })
             .collect();
-        assert_eq!(want.len(), 2, "{NESTING_CMD}");
+        assert_eq!(want.len(), 3, "{NESTING_CMD}");
         assert_eq!(
-            lines[start + 1..start + 3],
+            lines[start + 1..start + 4],
             want[..],
             "ci.yml after line {}",
             start + 1
@@ -3843,14 +3876,15 @@ mod tests {
         assert_eq!(list.split(' ').collect::<Vec<_>>(), T262_FRESH_PATHS);
     }
 
-    /// The two NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads
+    /// The three NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads
     /// them as this tree, clean, with its path ids; a CI merge commit that the repo does not have
-    /// passes on those ids, and fails when one id differs.
+    /// passes on those ids, and fails when one id differs. The fake repo has no
+    /// `scripts/sync-lib.sh`, so its forks line is empty, and item 8 does not ask for it.
     #[cfg(unix)]
     #[test]
     fn the_nesting_cmd_source_lines_work() {
         let root = fake_repo("nestcmd");
-        // NESTING_CMD up to its first cargo run: the start line and the two source lines.
+        // NESTING_CMD up to its first cargo run: the start line and the three source lines.
         let prefix = &NESTING_CMD[..NESTING_CMD.find("cargo test").unwrap()];
         let out = Command::new("sh")
             .arg("-c")
@@ -3866,13 +3900,15 @@ mod tests {
             .strip_prefix("m0-exit start: depth_tests\n")
             .unwrap_or_else(|| panic!("{made}"))
             .to_string();
-        assert_eq!(text.lines().count(), 2, "{text}");
+        assert_eq!(text.lines().count(), 3, "{text}");
+        assert_eq!(text.lines().nth(2), Some(FORKS_LINE), "{text}");
         let head = git_in(&root, &["rev-parse", "HEAD"]);
         assert!(
             text.starts_with(&format!("{SOURCE_LINE}commit {head} dirty 0 made-by host:")),
             "{text}"
         );
         let src = Source::of_log(&text).unwrap();
+        assert_eq!(src.forks.as_deref(), Some(""), "{src:?}");
         // The fake repo has 6 of the 7 paths, the root Cargo.toml among them (C1).
         assert_eq!(src.trees.len(), 6, "{src:?}");
         assert_eq!(
@@ -7293,6 +7329,77 @@ mod tests {
                             c.evidence
                         );
                     }
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// FORK-CHECKOUT-ATTEST: on a tree whose scripts/sync-lib.sh has the shared check, the
+    /// nesting log of item 8 names the fork line of its checkouts (the NESTING_CMD forks line):
+    /// a stale or absent fork, no forks line, an empty one, a line in another form or two lines
+    /// that differ are OPEN. On a tree without the check the log needs no forks line.
+    #[test]
+    fn item8_reads_the_forks_line_on_a_tree_with_the_check() {
+        let root = fake_repo("item8forks");
+        let mut o = opts(&root);
+        let log = read(&fixture("nesting.log")).unwrap();
+        let with_forks = |head: &str, line: Option<&str>| {
+            let mut l = with_source_line(&log, head, 0);
+            if let Some(f) = line {
+                l = l.replacen(
+                    " made-by host:test\n",
+                    &format!(" made-by host:test\n{FORKS_LINE}{f}\n"),
+                    1,
+                );
+            }
+            l
+        };
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        // No check in the tree: no forks line is asked for.
+        o.nesting = Some(input(&root, "nesting.log", &with_forks(&head, None)));
+        let c = &run(&o).unwrap().cells[7].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        write(&root, "scripts/sync-lib.sh", "fork_attest() {\n  :\n}\n");
+        commit_all(&root, "the fork check");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let two = with_forks(&head, Some("regress=pinned icu4x=pinned")).replacen(
+            "m0-exit start: nesting_caps cli\n",
+            &format!("m0-exit start: nesting_caps cli\n{FORKS_LINE}regress=stale icu4x=pinned\n"),
+            1,
+        );
+        let cases = [
+            (with_forks(&head, Some("regress=pinned icu4x=pinned")), None),
+            (
+                with_forks(&head, Some("regress=stale icu4x=pinned")),
+                Some("stale input: the regress fork checkout was not its pin plus its patches"),
+            ),
+            (
+                with_forks(&head, Some("regress=pinned icu4x=absent")),
+                Some("stale input: the icu4x fork checkout was not its pin plus its patches"),
+            ),
+            (
+                with_forks(&head, Some("icu4x=pinned")),
+                Some("is in another form (the m1-exit forks line)"),
+            ),
+            (
+                with_forks(&head, Some("")),
+                Some("stale input: it names no fork checkout state (the m1-exit forks line"),
+            ),
+            (
+                with_forks(&head, None),
+                Some("stale input: it names no fork checkout state (the m1-exit forks line"),
+            ),
+            (two, Some("provenance: two forks lines that differ")),
+        ];
+        for (text, want) in cases {
+            o.nesting = Some(input(&root, "nesting.log", &text));
+            let c = &run(&o).unwrap().cells[7].0;
+            match want {
+                None => assert_eq!(c.status, Status::Pass, "{c:?}"),
+                Some(w) => {
+                    assert_eq!(c.status, Status::Open, "{w}: {c:?}");
+                    assert!(c.evidence.contains(w), "{w}: {}", c.evidence);
                 }
             }
         }

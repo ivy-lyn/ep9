@@ -488,14 +488,14 @@ jobs:
           echo "m0-exit start: depth_tests" | tee nesting.log
           echo "m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}" | tee -a nesting.log
           echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress third_party/icu4x.commit third_party/patches/icu4x; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
-          rc1=0
+          echo "m1-exit forks: $(sh -c '. "$1/scripts/sync-lib.sh"; root=$1; fork_attest regress icu4x' sh "$PWD")" | tee -a nesting.log
           cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
-          echo "m0-exit status: $rc1" | tee -a nesting.log
+          echo "m0-exit status: ${rc1:-0}" | tee -a nesting.log
           echo "m0-exit start: nesting_caps cli" | tee -a nesting.log
           rc2=0
           cargo test --locked -p ep9_cli --test nesting_caps --test cli 2>&1 | tee -a nesting.log || rc2=$?
           echo "m0-exit status: $rc2" | tee -a nesting.log
-          [ "$rc1" = 0 ] && [ "$rc2" = 0 ]
+          [ "${rc1:-0}" = 0 ] && [ "$rc2" = 0 ]
       # Every failure with its cause; regenerate an expectation file from test262-exec.json
       # (status "fail").
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
