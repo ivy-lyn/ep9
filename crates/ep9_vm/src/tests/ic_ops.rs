@@ -1590,11 +1590,12 @@ fn a_string_add_concats_and_a_too_long_one_still_throws() {
 // ---- keyed view sites (TypedArray TA-2 TA-KEYED, design §6.3) ------------------------------------
 
 /// The view lists (`ic_ops::view_keyed`): a keyed case whose kinds set has the bit of
-/// TYPED_FIXED or TYPED_VARIABLE and whose key is a view's shape. No T0 code records those
-/// bits before TA-3 (the kinds-set writer comes with the FactSnapshot names 7 and 8,
-/// TA-ORCH-1), so each case here is the one T0 makes (a StoreKeyed key half names the shape of
-/// the view that warmed the site, checked first) with that bit added, as its writer will add
-/// it. Soundness: over views of each type and both bound forms (also after a shrink and a
+/// TYPED_FIXED or TYPED_VARIABLE and whose key is a view's shape. T0 makes neither part: no T0
+/// code records those bits before TA-3 (the kinds-set writer comes with the FactSnapshot
+/// names 7 and 8, TA-ORCH-1), and a view store hit leaves the key half alone (`keyed_ic.rs`
+/// module `view`; checked first: the T0 case of a site that a view warmed has an undefined
+/// key). So each case here is made by hand, as a writer of the element type will make it.
+/// Soundness: over views of each type and both bound forms (also after a shrink and a
 /// detach), a view of another type, an Array, a plain object and a primitive, every key and
 /// value probe whose guards pass gives what the site gives: a load its value, a store the
 /// element that NumericToRawBytes of the value makes. Coverage: the probes that warmed the
@@ -1633,17 +1634,20 @@ fn keyed_view_lists_match_the_view_paths() {
             views.push((ty, fixed, fb));
             views.push((ty, auto, rb));
         }
-        // The T0 case of a store site that a view warmed.
+        // The T0 case of a store site that a view warmed: no key (the hit reads no IC state).
         let v0 = views[0].1;
         call(&mut t, "f1", &[v0, int(0), int(1)]);
-        let c0 = cases(t.vector(1), SLOT, Operation::StoreKeyed)[0];
         assert_eq!(
-            c0,
+            cases(t.vector(1), SLOT, Operation::StoreKeyed)[0],
             Case::Keyed {
-                key: shape::shape_of(v0),
+                key: UNDEFINED,
                 bits: keyed::INDEX | keyed::OBJECT,
             }
         );
+        let c0 = Case::Keyed {
+            key: shape::shape_of(v0),
+            bits: keyed::INDEX | keyed::OBJECT,
+        };
         // With no view bit the list is the array list (every view probe misses).
         let ops = ops_of(&c0, Operation::StoreKeyed);
         assert_eq!(

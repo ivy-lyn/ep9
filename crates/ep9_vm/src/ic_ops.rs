@@ -769,7 +769,9 @@ fn keyed(key: u64, bits: u32, op: Operation) -> Ops {
 /// and the case key is the shape of a view, which gives the element type `t` (the kinds set
 /// does not hold it, so a site with no such key, LoadKeyed and megamorphic ones included,
 /// keeps the array lists). The shape is read only then: the key half of a T0 keyed slot is a
-/// live shape, undefined or the hole.
+/// live shape, undefined or the hole. T0 makes no such case yet: a view store hit leaves the
+/// key half alone (`keyed_ic.rs` module `view`), and no T0 code writes the two view bits
+/// before TA-3, so these lists wait for a writer of the element type.
 ///
 /// ```text
 /// LoadKeyed   GuardKind(receiver, View(t)), GuardType(key, int32), LoadViewOrUndefined(t)

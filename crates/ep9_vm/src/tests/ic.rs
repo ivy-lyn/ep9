@@ -1775,8 +1775,8 @@ fn a_view_load_reads_the_bound_after_resize_grow_and_detach() {
         check(&mut t, auto, 0, int(1), true);
         assert_eq!(
             t.view_store(auto, int(15), int(9)),
-            [0, 0],
-            "the first store: cold"
+            [0, 1],
+            "the first store hits: a view hit reads no IC state"
         );
         assert_eq!(t.view_store(auto, int(14), int(-3)), [0, 1]);
         check(&mut t, auto, 15, int(9), true);
@@ -1814,8 +1814,8 @@ fn a_view_load_reads_the_bound_after_resize_grow_and_detach() {
         put_raw(sf, 3, 1, 0x8001);
         check(&mut t, sf, 1, int(-32767), true);
         check(&mut t, sa, 1, int(-32767), false);
-        // The site names `auto`'s shape: another view type stays cold (the key half stays).
-        assert_eq!(t.view_store(sf, int(3), int(300)), [0, 0]);
+        // Another view type at the same site hits too (Relaxed atomics on the shared bytes).
+        assert_eq!(t.view_store(sf, int(3), int(300)), [0, 1]);
         check(&mut t, sa, 3, int(300), false);
         ab::grow_shared(t.rt(), s, 16).unwrap();
         check(&mut t, sa, 7, int(0), false);
@@ -1851,15 +1851,7 @@ fn a_view_store_converts_as_the_spec_says() {
             num(0.1),
             num(65_520.0),
         ];
-        // A megamorphic site, so that every view type hits: a view's first store names its
-        // shape (cold), then an Array's store makes the hole (cold).
-        let v0 = fixed_view(t.rt(), 0, 8, 0, 8);
-        let arr = object::new_array(t.rt(), 2);
-        object::array_set(t.rt(), arr, 0, int(1));
-        assert_eq!(t.view_store(v0, int(0), int(0)), [0, 0]);
-        assert_eq!(t.view_store(arr, int(0), int(2)), [0, 0]);
-        assert_eq!(t.key_half(1), HOLE);
-        black_box((v0, arr));
+        // One site for every view type: a view hit reads no IC state, so each type hits at once.
         for ty in [0u8, 1, 2, 3, 4, 5, 6, 9, 10, 11] {
             let v = fixed_view(t.rt(), ty, 32, 0, 4);
             for &x in &vals {
@@ -1903,13 +1895,14 @@ fn a_view_store_converts_as_the_spec_says() {
     });
 }
 
-/// The StoreKeyed key half with views (module doc of `keyed_ic.rs`): a view's first store is
-/// cold and names its shape; a hit records nothing; a second view type at the site stays
-/// cold and leaves the key half on the first view; an Array then makes the site megamorphic
-/// (a cold store); a megamorphic view hit records `INDEX | OBJECT` (the record of its cold
-/// store), a megamorphic Array hit records no key or receiver bit. A view site also hits with
-/// no vector (threshold `u32::MAX`). Under `ics_only` the hits and key halves are the same and
-/// the value half stays 0.
+/// The StoreKeyed key half with views (`keyed_ic.rs` module `view`): a view store hit
+/// records `INDEX | OBJECT` (the record of its cold store) and leaves the key half alone, so
+/// the key half names only Array receivers: views of two types hit at a new site (undefined
+/// stays); an Array's first store is cold and names its shape; a view hit then leaves that
+/// shape, and the next Array store is a monomorphic hit with no record; an out-of-bounds view
+/// store is cold and records `INDEX | OBJECT`. A view site also hits with no vector (threshold
+/// `u32::MAX`). Under `ics_only` the hits and key halves are the same and the value half stays
+/// 0.
 #[test]
 fn the_store_key_half_with_views_keeps_the_cold_miss_rule() {
     use crate::profile::keyed;
@@ -1958,15 +1951,15 @@ fn the_store_key_half_with_views_keeps_the_cold_miss_rule() {
         assert_eq!(
             full,
             [
-                ([0, 0], io, "S8"),
-                ([0, 1], 0, "S8"),
-                ([0, 0], io, "S8"),
-                ([0, 0], io, "S8"),
-                ([0, 0], ia, "H"),
-                ([0, 1], io, "H"),
-                ([0, 1], io, "H"),
-                ([0, 0], 0, "H"),
-                ([0, 0], io, "H"),
+                ([0, 1], io, "U"),
+                ([0, 1], io, "U"),
+                ([0, 1], io, "U"),
+                ([0, 1], io, "U"),
+                ([0, 0], ia, "SA"),
+                ([0, 1], io, "SA"),
+                ([0, 1], io, "SA"),
+                ([0, 0], 0, "SA"),
+                ([0, 0], io, "SA"),
             ]
         );
         let ics = run(c, crate::Feedback::ICS_ONLY);

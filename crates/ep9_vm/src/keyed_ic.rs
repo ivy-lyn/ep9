@@ -377,9 +377,13 @@ mod view {
     //! **The view cases (TypedArray TA-2 TA-KEYED; design `docs/plan/notes/typedarray-design.md`
     //! §6.1, §4.1, §5.2).** [`get`] and [`set`] are the tails of `fast_get` and `fast_set` for
     //! a receiver that is no Array case: a TypedArray (a view kind, `kinds::is_view_kind`)
-    //! with an int32 key `i >= 0`; anything else is cold. The view code sits after a cold-path
-    //! hint, so it stays off the block order of the array paths (M7-P5 ICWIDE: a new case there
-    //! cost +2 instructions per array hit), and it makes no call, so the handlers keep no frame.
+    //! with an int32 key `i >= 0`; anything else is cold. Each starts with one compare of the
+    //! cell kind (a receiver kind past `PROXY_CALLABLE` is a view), then a cold-path hint, so
+    //! the view code stays off the block order of the array paths as far as LLVM allows (M7-P5
+    //! ICWIDE: a new case there cost +2 instructions per array hit; this one costs about 1 per
+    //! Array load hit and none per Array store hit, mac a64). It makes no call and reads no
+    //! IC state, so the `GetKeyedProperty` handler keeps no frame and the `SetKeyedProperty`
+    //! handler saves no more registers.
     //!
     //! ```text
     //! element type t = cell kind - INT8_VIEW; BigInt64, BigUint64 (a BigInt allocates) and
@@ -416,30 +420,29 @@ mod view {
     //!   the LoadKeyed key half keeps no state (H16 "the keyed IC state is live only for
     //!   StoreKeyed"), and a state change there would be a call in the `GetKeyedProperty`
     //!   handler, which gives its array path a frame (M7-P5 ICWIDE).
-    //! - A StoreKeyed view hit uses the key half as an Array does: a view shape is just another
-    //!   shape (design §6.1). The first view store goes cold and names its shape; a monomorphic
-    //!   hit records nothing. A view whose site names another view's shape goes cold and leaves
-    //!   the key half alone: a megamorphic state that two views made would let a later Array
-    //!   hit with no cold `ARRAY` record. A megamorphic view hit records `INDEX | OBJECT` (the
-    //!   site may have gone megamorphic on two Arrays).
+    //! - A StoreKeyed view hit records as cold too, and it leaves the key half alone (as every
+    //!   case that is not the Array fast case, MC-w14-6), so the key half names only Array
+    //!   receivers, and an Array hit still needs a cold `ARRAY` record first. A view shape in
+    //!   the key half (design §6.1) would make the hit read the vector, and that read gave the
+    //!   `SetKeyedProperty` handler two more saved registers on entry (+3 instructions per
+    //!   Array store hit; navier-stokes +0.4%, mac a64).
 
     use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Relaxed};
 
-    use super::{note_receiver, record_as_cold, shape_id};
+    use super::record_as_cold;
     use crate::abi::ObjectClass;
     use crate::array_buffer as ab;
     use crate::conv;
     use crate::elements::kind as ek;
     use crate::external_ref::ExternalRef;
-    use crate::feedback;
-    use crate::frame::{HOLE, UNDEFINED, int32_bits, int32_of};
+    use crate::frame::{UNDEFINED, int32_bits, int32_of};
     use crate::interp::dsl::FSlot;
     use crate::interp::{Flow, St};
     use crate::kinds;
     use crate::layout;
     use crate::object::{self, elems, rd};
     use crate::profile::keyed;
-    use crate::runtime::{Runtime, val};
+    use crate::runtime::val;
     use crate::shape;
     use ep9_heap::CellPtr;
     use ep9_value::encoding::NUMBER_TAG;
@@ -454,6 +457,15 @@ mod view {
     /// The bits the cold body records for an int32 key `>= 0` on a view
     /// (`profile::keyed_key`, `profile::keyed_receiver`).
     const VIEW_BITS: u32 = keyed::INDEX | keyed::OBJECT;
+
+    /// False if `o` is no view, by one compare: a JS receiver whose cell kind is past
+    /// `PROXY_CALLABLE` is a view (the kinds after the views are engine cells, never a
+    /// receiver Value); a non-cell gives kind 0. The first test of [`get`] and [`set`], before
+    /// the cold-path hint (module doc). Not a GC point.
+    #[inline(always)]
+    fn maybe_view(o: u64) -> bool {
+        kinds::cell_kind(o) > kinds::PROXY_CALLABLE.get()
+    }
 
     /// True if `o` is a TypedArray: a cell of one of the 12 view kinds. Not a GC point.
     #[inline(always)]
@@ -659,10 +671,13 @@ mod view {
     /// allocates, never calls; not a GC point.
     #[inline(always)]
     pub(super) fn get(st: &mut St<'_>, o: u64, k: u64, s: FSlot) -> Flow {
-        if !is_view(o) {
+        if !maybe_view(o) {
             return Flow::Cold;
         }
         core::hint::cold_path();
+        if !is_view(o) {
+            return Flow::Cold;
+        }
         st.acc = match element(o, k) {
             At::Cold => return Flow::Cold,
             At::Out => UNDEFINED,
@@ -679,51 +694,28 @@ mod view {
     }
 
     /// The view case of `SetKeyedProperty`: for a view `o` (the receiver), the in-bounds store
-    /// of a Number that needs no call, with the StoreKeyed key half as for an Array (module
-    /// doc); else cold. Never allocates and never calls on a hit (a state change is out of
-    /// line and cold); not a GC point.
+    /// of a Number that needs no call, recorded as the cold body records it ([`VIEW_BITS`]);
+    /// else cold. The key half stays as it is (module doc). Never allocates, never calls; not
+    /// a GC point.
     #[inline(always)]
-    pub(super) fn set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flow {
-        if !is_view(o) {
+    pub(super) fn set(_st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flow {
+        if !maybe_view(o) {
             return Flow::Cold;
         }
         core::hint::cold_path();
+        if !is_view(o) {
+            return Flow::Cold;
+        }
         let At::Elem { t, p, shared } = element(o, k) else {
             return Flow::Cold;
         };
         let Some(x) = value_raw(t, v) else {
             return Flow::Cold;
         };
-        let mut flow = Flow::Next;
-        if let Some(vec) = feedback::vector(st.info()) {
-            let key = feedback::key(vec, s.0);
-            // An undefined key and the hole never equal a ShapeId (as in `fast_set`).
-            if key as u32 != shape_id(o) {
-                if key != HOLE {
-                    note_view(st.rt(), vec, s.0, o, key);
-                    return Flow::Cold;
-                }
-                // Megamorphic: the site may have gone megamorphic on two Arrays alone.
-                flow = record_as_cold(s, VIEW_BITS);
-            }
-        }
         // SAFETY: as `get`; no JS ran after the bound was read (`v` is a Number already).
         unsafe { store_raw(p, t, x, shared) };
         #[cfg(test)]
         VIEW_HITS.with(|c| c.set([c.get()[0], c.get()[1] + 1]));
-        flow
-    }
-
-    /// The StoreKeyed state change for the view `o` whose shape the key half `key` (not the
-    /// hole) does not name: new -> monomorphic (the view's shape), an Array's shape ->
-    /// megamorphic; a key half that names another view's shape stays (module doc). Out of
-    /// line: once per state change.
-    #[cold]
-    #[inline(never)]
-    fn note_view(rt: &Runtime, v: u64, i: u32, o: u64, key: u64) {
-        if key != UNDEFINED && kinds::is_view_kind(shape::object_kind(key)) {
-            return;
-        }
-        note_receiver(rt, v, i, o, key);
+        record_as_cold(s, VIEW_BITS)
     }
 }
