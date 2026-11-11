@@ -30,6 +30,7 @@
 
 pub mod available;
 pub mod cache;
+pub(crate) mod cldr;
 pub mod collator;
 pub mod digits;
 pub mod intl;
