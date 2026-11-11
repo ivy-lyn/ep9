@@ -610,6 +610,26 @@ const CASES: &[Case] = &[
              print(s, getx({}), getx(Object.create(null)), getx('str'), getx(5));",
         ),
     },
+    Case {
+        path: "ic-named",
+        name: "the smi handler kinds of a named load (in-object and out-of-line fields, array and string length) or Reflect.get",
+        src: "function fresh(n) { var o = {}; for (var i = 0; i < n; i++) o['p' + i] = i; o.x = n; return o; }\n\
+              function gx(o) { return o.x; } function len(o) { return o.length; }\n\
+              var s = 0, r = [];\n\
+              for (var k = 0; k < 3; k++) for (var n = 0; n < 14; n++) s += gx(fresh(n));\n\
+              var a = [1, 2, 3], t = 'abcd';\n\
+              for (var k = 0; k < 20; k++) { a.push(k); r.push(len(a), len(t + k), len(fresh(k & 3))); }\n\
+              print(s, r.join());",
+        spec: Some(
+            "function fresh(n) { var o = {}; for (var i = 0; i < n; i++) o['p' + i] = i; o.x = n; return o; }\n\
+             function gx(o) { return Reflect.get(Object(o), 'x', o); } function len(o) { return Reflect.get(Object(o), 'length', o); }\n\
+             var s = 0, r = [];\n\
+             for (var k = 0; k < 3; k++) for (var n = 0; n < 14; n++) s += gx(fresh(n));\n\
+             var a = [1, 2, 3], t = 'abcd';\n\
+             for (var k = 0; k < 20; k++) { a.push(k); r.push(len(a), len(t + k), len(fresh(k & 3))); }\n\
+             print(s, r.join());",
+        ),
+    },
     // M8-P0 TS-STORE: a megamorphic 0x24 store probes the stub cache in the handler's cold
     // body (`ic::handler_mega_store`), and an add that needs a larger SLOTS cell grows it on the
     // miss path and stores through its case (`ic::grow_add`). The spec form stores with
