@@ -2268,9 +2268,9 @@ fn grow_add<const CHECK_EPOCH: bool>(rt: &Runtime, o: u64, key: u64, val: u64, h
     if is_i32(h) {
         return false;
     }
-    let hcell = cell(h);
-    if rd_i32(hcell, hc::KIND) != hk::ADD
-        || (CHECK_EPOCH && !validity::valid_cell(rd(hcell, hc::CELL)))
+    let (hcell, add) = (cell(h), hk::ADD);
+    // `add`: the kind test line of [`store_with`] is an adr-lint pin, which must match 1 line.
+    if rd_i32(hcell, hc::KIND) != add || (CHECK_EPOCH && !validity::valid_cell(rd(hcell, hc::CELL)))
     {
         return false;
     }
