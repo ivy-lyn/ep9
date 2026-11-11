@@ -499,6 +499,22 @@ fn plural_source(data_locale: &str, ordinal: bool) -> Source {
     }
 }
 
+/// The ICU4X cardinal rules that `new Intl.PluralRules(locale)` selects with for the data
+/// locale `data_locale` ([`plural_source`]), for the plural patterns of other ICU4X data
+/// (Intl.RelativeTimeFormat's `[[PluralRules]]`, 18.1.1). `None` for a language whose rules
+/// come from [`cldr_extra`]: the ICU4X data has no locale of that language, so the patterns
+/// that its data fallback gives are the root ones, which have only the "other" form.
+pub(crate) fn cardinal_rules(data_locale: &str) -> Option<PluralRules> {
+    match plural_source(data_locale, false) {
+        Source::Icu(l) => PluralRules::try_new(
+            PluralRulesPreferences::from(&l),
+            PluralRulesOptions::default().with_type(PluralRuleType::Cardinal),
+        )
+        .ok(),
+        Source::Cldr(_) => None,
+    }
+}
+
 /// New ICU4X objects for `data_locale` and `r` (`None` if the data has no rules).
 fn make_icu(data_locale: &str, r: &Resolved) -> Option<Icu> {
     let locale = icu_locale(data_locale);

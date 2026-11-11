@@ -422,7 +422,8 @@ pub fn currency_digits(_currency: &str) -> u8 {
 
 /// `localeData.[[<locale>]].[[nu]]` (§16.2.3): the default numbering system of the locale
 /// first, then every numbering system with a simple digit mapping (ECMA-402 Table 14).
-fn nu_data(data_locale: &str) -> resolve::KeyData {
+/// Intl.RelativeTimeFormat has the same `[[nu]]` data (§18.2.3).
+pub(crate) fn nu_data(data_locale: &str) -> resolve::KeyData {
     let first = decimal::default_numbering_system(data_locale);
     let mut v = vec![first.clone()];
     v.extend(
@@ -544,6 +545,44 @@ pub fn initialize<'s>(
         grouping,
         sign_display,
     })
+}
+
+/// The internal slots of the `[[NumberFormat]]` of an Intl.RelativeTimeFormat (18.1.1:
+/// ! Construct(%Intl.NumberFormat%, « locale, nfOptions »), nfOptions = { numberingSystem }):
+/// the decimal style in standard notation with every default, for the `[[Locale]]` `locale`
+/// (its only Unicode extension key is "nu") and `numbering_system`. The construction reads
+/// only a null-prototype object that it made, so it is not observable, and ResolveLocale gives
+/// `locale` back: the same available locales, and a "nu" keyword in `locale` is kept only
+/// when it equals `numbering_system`.
+pub(crate) fn decimal_defaults(locale: &str, numbering_system: &str) -> Resolved {
+    Resolved {
+        locale: locale.to_string(),
+        numbering_system: numbering_system.to_string(),
+        style: index_of(&STYLES, &"decimal"),
+        currency: None,
+        currency_display: index_of(&CURRENCY_DISPLAYS, &"symbol"),
+        currency_sign: index_of(&CURRENCY_SIGNS, &"standard"),
+        unit: None,
+        unit_display: index_of(&UNIT_DISPLAYS, &"short"),
+        // SetNumberFormatDigitOptions(nf, nfOptions, 0, 3, "standard") (16.1.2): no digit
+        // option, so the fraction digits 0-3 rounded "halfExpand".
+        digits: DigitOptions {
+            minimum_integer_digits: 1,
+            minimum_fraction_digits: 0,
+            maximum_fraction_digits: 3,
+            minimum_significant_digits: 1,
+            maximum_significant_digits: 21,
+            rounding_increment: 1,
+            rounding_mode: RoundingMode::HalfExpand,
+            rounding_type: RoundingType::FractionDigits,
+            computed_rounding_priority: "auto",
+            strip_if_integer: false,
+        },
+        notation: index_of(&NOTATIONS, &"standard"),
+        compact_display: index_of(&COMPACT_DISPLAYS, &"short"),
+        grouping: Grouping::Auto,
+        sign_display: SignDisplay::Auto,
+    }
 }
 
 /// The result of SetNumberFormatUnitOptions.
