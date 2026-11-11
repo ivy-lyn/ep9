@@ -11,7 +11,7 @@
 //! | `unit_loader_installs_nothing_*`, `unit_loader_maps_*`, `unit_loader_a_text_larger_*` | O3: no unwind data, no install; A2-UNIT-SHARE and MC-w34-4: one text per process keyed by its bytes, mapped only on a pick, and a text that cannot fit gives "no-text" |
 //! | `unit_loader_build_*` | SHSTK-ENGINE: the ep9_vm build script runs the shadow-stack refusal |
 //! | `unit_loader_a_text_from_*`, `unit_loader_a_whole_*`, `unit_loader_a_full_*` | M7-P5 Codex A1: a shared text is synced on the thread that runs it; Codex A2 (child processes, `unit_loader_child_case`): the unwind mode is chosen before a text maps, and a probe that could not run is not cached |
-//! | `unit_loader_a_constructor_*` | M7-P5 JIT review F1 (M6-ORCH-386): step 8 installs no constructor, so `new`, the Rust construct path (`Reflect.construct`) and `super()` run its bytecode; the tests that install use the methods `g` and `id` |
+//! | `unit_loader_a_constructor_*`, `unit_loader_construct_*` | M7-P5 JIT review F1 (M6-ORCH-386) form 2, then M8-P1 A2-CONSTRUCT (M8-PLAN-D25, D26): step 8 installs an ordinary function (not a class constructor), and `new`, the Rust construct path (`Reflect.construct`), `super()`, a bound target and a construct of another realm enter its unit code with the results, receiver, errors and stacks of its bytecode; the caller counts a call or a construct of unit code (the vector at call 8) |
 //!
 //! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit)
 //! are in `crates/ep9_unit/tests/loader.rs`: ep9_vm tests cannot compile JS.
@@ -1859,7 +1859,7 @@ fn unit_loader_a_full_range_at_the_mode_choice_is_tried_again() {
     run_child("busy");
 }
 
-// ---- JIT review F1 (M7-P5 fixer r4, M6-ORCH-386): step 8 installs no constructor --------------
+// ---- JIT review F1 (M7-P5 fixer r4, M6-ORCH-386), M8-P1 A2-CONSTRUCT (M8-PLAN-D25): constructors -
 
 /// `rconstruct(f, a)`: Construct(f, [a], f) from Rust (`Cx::construct`, the path of
 /// `Reflect.construct`: `call::construct_with`, then `call_bytecode` with new.target set).
@@ -1946,16 +1946,20 @@ fn super_c_walk() -> VerifiedUnit {
     unit("", vec![s.finish(), d.finish()])
 }
 
-/// JIT review F1 (M6-ORCH-386, fix form 2): step 8 installs no function that has
-/// `[[Construct]]`, so every construct path runs its bytecode. One installing load lists the
-/// constructor `c` and the method `g` over the same frame stub: `g` is installed, `c` is not
-/// installable and keeps its Interp slot. `new c(walk)`, `rconstruct(c, walk)` (the Rust
-/// construct path of `Reflect.construct`) and `super(walk)` from `class D extends c` give the
-/// results of an isolate with no install (before the fix each gave "not implemented ...
-/// calling code of this dispatch kind"). The call `g(walk)` enters the unit code (42), and
-/// `new g(walk)` of the installed method throws the TypeError of an isolate with no install.
+/// JIT review F1 (M6-ORCH-386, fix form 2), then M8-P1 A2-CONSTRUCT (M8-PLAN-D25, MC-w29-8 step
+/// 1): this test flips on purpose with D25. Form 2 installed no function with `[[Construct]]`;
+/// since D25 step 8 installs an ordinary function, and every construct path enters its unit
+/// code through `native::native_callee` with new.target in its frame (the class constructor
+/// stays refused: `unit_loader_install_refuses_aot_opt_and_a_class_constructor`). One
+/// installing load lists the constructor `c` and the method `g` over the same frame stub:
+/// both are installed. `new c(walk)`, `rconstruct(c, walk)` (the Rust construct path of
+/// `Reflect.construct`) and `super(walk)` from `class D extends c` give the results of an
+/// isolate with no install, and each runs the unit code of `c` (`walk` sees the stub's return
+/// address of `c` on the native stack). Before form 2 each gave "not implemented ... calling
+/// code of this dispatch kind". The call `g(walk)` enters the unit code (42), and `new
+/// g(walk)` of the installed method throws the TypeError of an isolate with no install.
 #[test]
-fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
+fn unit_loader_a_constructor_is_installed_and_construct_enters_its_unit_code() {
     let shown = |iso: &mut Isolate, u: VerifiedUnit| {
         iso.with_cx_checkpoint(|cx| cx.run_script(u, "n.js").map(|v| cx.display(v)))
             .map_err(|e| format!("{e:?}"))
@@ -1989,6 +1993,8 @@ fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
             0,
         )
     };
+    // The return address of the call in the stub of `c` (in the mapped unit text).
+    let c_ret = code_of(info(&iso, "c")).map(|u| u.code_at(0).unwrap().start + call0_bytes().1);
     let mut wrong = Vec::new();
     for (name, make) in [
         ("new c(walk)", new_c_walk as fn() -> VerifiedUnit),
@@ -1996,21 +2002,29 @@ fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
         ("super(walk)", super_c_walk),
     ] {
         let before = shown(&mut plain, make());
+        WALKED.with(|x| x.borrow_mut().take());
         let after = shown(&mut iso, make());
+        let ips = WALKED.with(|x| x.borrow_mut().take()).unwrap_or_default();
         assert!(before.is_ok(), "{name} with no install: {before:?}");
         if after != before {
             wrong.push(format!(
                 "{name}: no install {before:?}, after the load {after:?}"
             ));
         }
+        if c_ret.is_none_or(|ret| !ips.contains(&ret)) {
+            wrong.push(format!(
+                "{name}: the unit code of c did not run ({c_ret:x?})"
+            ));
+        }
     }
+    // D25: `c` is installed now (form 2 counted it not installable: [2, 1, 1]).
     let counts = [Reason::Picked, Reason::Installed, Reason::NotInstallable].map(|x| r.count(x));
-    if counts != [2, 1, 1] {
+    if counts != [2, 2, 0] {
         wrong.push(format!("picked, installed, not-installable: {counts:?}"));
     }
-    if info(&iso, "c").slot.kind_byte() != DispatchKind::Interp as u8 {
+    if info(&iso, "c").slot.kind_byte() != DispatchKind::AotBaseline as u8 {
         wrong.push(format!(
-            "the slot of c: {} (not Interp)",
+            "the slot of c: {} (not AotBaseline)",
             info(&iso, "c").slot.kind_byte()
         ));
     }
@@ -2036,4 +2050,348 @@ fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
         "new g(walk): {e}"
     );
     assert!(!e.contains("not implemented"), "new g(walk): {e}");
+}
+
+// ---- M8-P1 A2-CONSTRUCT: construct cases and the caller's count (M8-PLAN-D25, D26) ----------
+
+/// Records the native stack in [`WALKED`], as `walk` does.
+fn record_walk() {
+    let ips = ep9_platform::unwind::native_return_addresses(512);
+    WALKED.with(|w| *w.borrow_mut() = Some(ips));
+}
+
+/// `mkobj()`: a new object with `tag` "own" (a constructor body that returns an object).
+/// Records the native stack, as `walk` does.
+fn mkobj<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    record_walk();
+    let o = cx.new_object();
+    let tag = cx.new_string("own")?;
+    cx.set(o, "tag", tag, true)?;
+    Ok(o.into())
+}
+
+/// `undef()`: undefined (a constructor body that returns nothing). Records the native stack.
+fn undef<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    record_walk();
+    Ok(Local::from_bits(Value::UNDEFINED.to_bits()))
+}
+
+/// `boom()`: throws an Error "boom" (a throw in the constructor body, under its frame).
+/// Records the native stack.
+fn boom<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    record_walk();
+    Err(cx.throw_error(crate::runtime::ErrorKind::Error, "boom"))
+}
+
+/// `rconstruct3(f, a, nt)`: Construct(f, [a], nt) from Rust (`Reflect.construct(f, [a], nt)`).
+fn rconstruct3<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.construct(args.get(0), &[args.get(1)], args.get(2))
+        .map(|o| o.value())
+}
+
+/// `f.bindf(t)`: a bound function of `this` with the bound `this` `t` and no bound argument.
+fn bindf<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let target = this.as_function().unwrap();
+    cx.new_bound_function(target, args.get(0), args.rest(1))
+        .map(|f| f.value())
+}
+
+/// `c.prototype.tag = "c"; K.prototype.tag = "K"; bc = bindf.call(c, undefined);` and the
+/// realm B (`other`) with `c`, `walk`, `mkobj`, `undef` and `boom` of this realm.
+fn construct_setup(iso: &mut Isolate) {
+    let mut s = Asm::script(0);
+    let (o, p) = (s.b.new_register(), s.b.new_register());
+    for (ctor, tag) in [("c", "c"), ("K", "K")] {
+        s.lda_global(ctor);
+        s.b.star(o);
+        s.get_named(o, "prototype");
+        s.b.star(p);
+        s.lda_str(tag);
+        s.set_named(p, "tag");
+    }
+    let l = s.b.new_register_list(2);
+    s.lda_global("c");
+    s.b.star(l.get(0)).lda_undefined().star(l.get(1));
+    s.lda_global("bindf");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_property1(f, l.get(0), l.get(1), slot);
+    s.sta_global("bc");
+    s.b.lda_undefined().return_();
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(unit("", vec![s.finish()]), "setup.js")
+            .map(|_| ())
+    })
+    .unwrap();
+    iso.with_cx(|cx| {
+        let a = cx.global();
+        let b = cx.create_realm()?;
+        cx.set(a, "other", b, true)?;
+        for name in ["c", "walk", "mkobj", "undef", "boom"] {
+            let v = cx.get(a, name)?;
+            cx.set(b, name, v, true)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A jitless isolate (GC stress `stress`) that ran `defs()` and [`construct_setup`], with the
+/// host functions of this section; with `install`, the frame stubs of `g` (text offset 0) and
+/// `c` (offset 64) are installed. Returns the isolate and the return address of the call in
+/// the stub of `c` (`None` with no install).
+fn construct_isolate(install: bool, stress: bool) -> (Isolate, Option<usize>) {
+    let config = IsolateConfig {
+        heap: ep9_heap::HeapConfig {
+            gc_stress: u32::from(stress),
+            verify_after_gc: stress,
+            ..ep9_heap::HeapConfig::default()
+        },
+        ..IsolateConfig::default()
+    };
+    let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+    for (name, n, f) in [
+        ("walk", 0, walk as crate::host::HostFn),
+        ("mkobj", 0, mkobj),
+        ("undef", 0, undef),
+        ("boom", 0, boom),
+        ("rconstruct", 2, rconstruct),
+        ("rconstruct3", 3, rconstruct3),
+        ("bindf", 1, bindf),
+    ] {
+        iso.register_host_function(name, n, f);
+    }
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
+    construct_setup(&mut iso);
+    if !install {
+        return (iso, None);
+    }
+    let starts = [0, 64];
+    let mut c_stub = FunctionCode {
+        function: C,
+        digest: digest(C),
+        ..g_stub()
+    };
+    c_stub.variants[0].entry = starts[1] as u32;
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: as in `unit_loader_a_constructor_is_installed_and_construct_enters_its_unit_code`:
+    // the text holds the frame stub at offsets 0 and 64 (each runs the call at bytecode offset
+    // 0 of `g` and of `c`), and `stub_unwind_at` describes both.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text_at(&starts),
+            &stub_unwind_at(&starts),
+            &[],
+            0,
+            &[g_stub(), c_stub],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 2, "{:?}", r.rows());
+    let ret = code_of(info(&iso, "c")).unwrap().code_at(0).unwrap().start + call0_bytes().1;
+    (iso, Some(ret))
+}
+
+/// `return <new ctor(arg)>.tag;` with `new` by the `Construct` opcode (`ctor` a global).
+fn new_tag(ctor: &str, arg: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let l = s.b.new_register_list(1);
+    let o = s.b.new_register();
+    s.lda_global(arg);
+    s.b.star(l.get(0));
+    s.construct_global(ctor, l);
+    s.b.star(o);
+    s.get_named(o, "tag");
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
+/// `return rconstruct3(c, walk, K).tag;` (`Reflect.construct(c, [walk], K)`: the receiver's
+/// prototype comes from new.target `K`, not from `c`).
+fn rconstruct3_tag() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let l = s.b.new_register_list(3);
+    let o = s.b.new_register();
+    for (i, name) in ["c", "walk", "K"].into_iter().enumerate() {
+        s.lda_global(name);
+        s.b.star(l.get(i as u32));
+    }
+    s.lda_global("rconstruct3");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver(f, l, 3, slot);
+    s.b.star(o);
+    s.get_named(o, "tag");
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
+/// Runs `u` in `iso` (in realm B, `other`, when `in_b`): the completion value shown, or the
+/// exception with its message and stack.
+fn shown_in(iso: &mut Isolate, u: VerifiedUnit, in_b: bool) -> Result<String, String> {
+    iso.with_cx_checkpoint(|cx| {
+        if !in_b {
+            return cx.run_script(u, "case.js").map(|v| cx.display(v));
+        }
+        let a = cx.global();
+        let b = cx.get(a, "other")?.as_object().unwrap();
+        cx.with_realm(b, |cx| cx.run_script(u, "case-b.js").map(|v| cx.display(v)))
+    })
+    .map_err(|e| format!("{} | {:?}", e.message, e.stack))
+}
+
+/// MC-w36-3 (the 6 construct cases; plan v13 4.2 task 5, the FASTDIFF form of this file:
+/// `fastpath_diff.rs` cannot install unit code). Each case runs in an isolate with no install
+/// and in one where `c` (and `g`) run their unit code, with and without GC stress, and must
+/// give the same result, receiver and error: (1) a base constructor that returns an object,
+/// (2) a primitive, (3) nothing; (4) `new` of a bound function whose target is installed; (5)
+/// `new` from another realm (`slow::call` sends it to `call::construct_function_object`, the
+/// Rust path); (6) `Reflect.construct(c, [walk], K)` with new.target `K` ≠ `c`; and (7) a
+/// throw in the constructor body with `Error.stack` through the unit frame (MC-w35-7: the
+/// loader-installed text form beside `native_entry.rs`). In the install isolate each case
+/// that calls `walk` sees the stub's return address of `c` on the native stack (the unit code
+/// ran); before D25 `c` was not installed (form 2).
+#[test]
+fn unit_loader_construct_of_unit_code_gives_the_bytecode_results() {
+    type Case = (
+        &'static str,
+        fn() -> VerifiedUnit,
+        bool,
+        Result<&'static str, &'static str>,
+    );
+    let cases: [Case; 7] = [
+        ("object", || new_tag("c", "mkobj"), false, Ok("own")),
+        ("primitive", || new_tag("c", "walk"), false, Ok("c")),
+        ("nothing", || new_tag("c", "undef"), false, Ok("c")),
+        ("bound", || new_tag("bc", "walk"), false, Ok("c")),
+        ("cross-realm", || new_tag("c", "walk"), true, Ok("c")),
+        ("reflect", rconstruct3_tag, false, Ok("K")),
+        ("throw", || new_tag("c", "boom"), false, Err("boom")),
+    ];
+    for stress in [false, true] {
+        let (mut plain, _) = construct_isolate(false, stress);
+        let (mut iso, ret) = construct_isolate(true, stress);
+        let ret = ret.unwrap();
+        let mut wrong = Vec::new();
+        for (name, make, in_b, want) in cases {
+            let before = shown_in(&mut plain, make(), in_b);
+            WALKED.with(|x| x.borrow_mut().take());
+            let after = shown_in(&mut iso, make(), in_b);
+            let ips = WALKED.with(|x| x.borrow_mut().take()).unwrap_or_default();
+            let label = format!("{name} stress={stress}");
+            match (&before, want) {
+                (Ok(v), Ok(w)) if v == w => {}
+                (Err(e), Err(w)) if e.starts_with(&format!("Error: {w}")) => {}
+                _ => wrong.push(format!(
+                    "{label}: with no install {before:?}, want {want:?}"
+                )),
+            }
+            if after != before {
+                wrong.push(format!(
+                    "{label}: no install {before:?}, installed {after:?}"
+                ));
+            }
+            if !ips.contains(&ret) {
+                wrong.push(format!("{label}: the unit code of c did not run"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        // The stack of the throw names the frame of `c` (the unit frame; its call `f()`).
+        let e = shown_in(&mut iso, new_tag("c", "boom"), false).unwrap_err();
+        assert!(e.contains("at c ("), "the stack names c: {e}");
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+        drop(plain);
+    }
+}
+
+/// `g(walk)` `n` times in one script (n T0 calls of `g`); returns the last result.
+fn call_g_walk_n(n: u32) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let a = s.a.get(0);
+    for _ in 0..n {
+        s.lda_global("walk");
+        s.b.star(a);
+        s.lda_global("g");
+        s.b.star(s.f);
+        let (f, slot) = (s.f, s.call);
+        s.b.call_undefined_receiver1(f, a, slot);
+    }
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
+/// MC-w29-1 (M8-PLAN-D26): the caller counts a call of unit code, so a unit function gets its
+/// vector at the 8th call (threshold 8, `isolate.rs`), as its bytecode does, on each path: T0
+/// calls of `g` (`slow::call` before `call_native_cold`), T0 constructs of `c` (before the
+/// construct arm's native entry), calls from Rust (`Cx::call`) and constructs from Rust
+/// (`Reflect.construct`), both counted at the pushed frame as `slow::count_entry` counts. The
+/// unit code counts nothing itself. Before D26 no call of a native slot counted, so the unit
+/// function never got a vector (H32-Q5 (2): native slot calls skipped `count_call`).
+#[test]
+fn unit_loader_construct_and_call_of_unit_code_count_at_the_caller() {
+    let has_vector = |iso: &Isolate, name: &str| crate::feedback::vector(info(iso, name)).is_some();
+    // T0 calls and T0 constructs.
+    let (mut iso, _) = construct_isolate(true, false);
+    let v42 = Ok(Value::int32(42).to_bits());
+    assert_eq!(run_js(&mut iso, call_g_walk_n(7)), v42);
+    assert!(!has_vector(&iso, "g"), "g after 7 T0 calls");
+    assert_eq!(run_js(&mut iso, call_g_walk_n(1)), v42);
+    assert!(has_vector(&iso, "g"), "g after 8 T0 calls");
+    for i in 1..=8 {
+        assert_eq!(
+            shown_in(&mut iso, new_tag("c", "walk"), false),
+            Ok("c".into())
+        );
+        assert_eq!(has_vector(&iso, "c"), i == 8, "c after {i} T0 constructs");
+    }
+    // Calls and constructs from Rust.
+    let (mut iso, _) = construct_isolate(true, false);
+    let [g, c, w] = ["g", "c", "walk"].map(|n| iso.global_raw(n).unwrap());
+    for i in 1..=8 {
+        let v = iso.call_raw(g, Value::UNDEFINED, &[w]).unwrap();
+        assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+        assert_eq!(has_vector(&iso, "g"), i == 8, "g after {i} calls from Rust");
+        let r = iso.with_cx_checkpoint(|cx| {
+            let (c, w): (Local<'_>, Local<'_>) =
+                (Local::from_bits(c.to_bits()), Local::from_bits(w.to_bits()));
+            let o = cx.construct(c, &[w], c)?;
+            cx.get(o, "tag").map(|t| cx.display(t))
+        });
+        assert_eq!(r.as_deref(), Ok("c"));
+        assert_eq!(
+            has_vector(&iso, "c"),
+            i == 8,
+            "c after {i} constructs from Rust"
+        );
+    }
 }

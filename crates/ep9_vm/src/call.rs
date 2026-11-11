@@ -674,15 +674,15 @@ pub(crate) fn construct_function_object(
     };
     let r = call_function_object(cx, f, this, argc, arg, new_target)?;
     // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers: after the call,
-    // in the caller's realm (`call_function_object` switched back).
-    if is_object(r) {
-        Ok(r)
-    } else if this != HOLE {
-        Ok(this)
-    } else {
-        let (kind, msg) = interp::derived_result_error(r);
-        Err(throw_error(cx, kind, msg))
-    }
+    // in the caller's realm (`call_function_object` switched back). One helper for this path
+    // and for the T0 construct of native code (`slow::call`; M8-P1 A2-CONSTRUCT, MC-w36-3):
+    // an object result is the result; else the receiver of a base constructor; else (a
+    // derived constructor: its `this` binding is the hole, or a result that is not an
+    // object) the error of `interp::derived_result_error`. Each caller has its own receiver
+    // in a Rust local (the conservative scan sees it), so the result helper needs no frame.
+    // The helper is at the end of the file, so no cited line moves (the same line count
+    // here as before).
+    construct_result(cx, r, this)
 }
 
 /// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13): a `prototype` that is
@@ -2091,9 +2091,16 @@ thread_local! {
 /// The non-bytecode arm of [`call_bytecode`] (M7-P5 A2-RW, route MC-w30-2): a call from Rust
 /// (`Cx::call`, a builtin callback, a forwarded `apply` or `call` that the T0 forward refused,
 /// a callee of another realm) of native code (an AotBaseline unit function or a Baseline slot)
-/// enters it through the Rust entry, with an entry frame. Construct (`new_target` set) stays
-/// refused (MC-w29-8), and so does any other kind. (At the end of the file, so no cited line
-/// moves.)
+/// enters it through the Rust entry, with an entry frame. Since M8-P1 A2-CONSTRUCT
+/// (M8-PLAN-D25, MC-w29-8 step 1) a construct (`new_target` set: `Reflect.construct`,
+/// `Cx::construct`, a construct of another realm) of an ordinary function enters it too, with
+/// new.target in its frame (`construct_function_object` made the receiver and checks the
+/// result). The entry counts the call as `slow::count_entry` does for a T0 callee
+/// (M8-PLAN-D26, MC-w29-1). Any other kind, and a class constructor (`native_callee`), stays
+/// refused. (At the end of the file, so no cited line moves.) Out of line and cold: the T0
+/// path of [`call_bytecode`] keeps its code.
+#[cold]
+#[inline(never)]
 fn call_native_from_rust(
     cx: &mut Cx,
     f: u64,
@@ -2102,10 +2109,28 @@ fn call_native_from_rust(
     arg: impl Fn(u32) -> u64,
     new_target: u64,
 ) -> Res<u64> {
-    if new_target == UNDEFINED
-        && let Some(nfi) = crate::native::native_callee(f)
-    {
-        return crate::native::enter_from_rust(cx, f, nfi, this, argc, arg);
+    if let Some(nfi) = crate::native::native_callee(f) {
+        return crate::native::enter_from_rust_with(cx, f, nfi, this, argc, arg, new_target);
     }
     Err(not_implemented(cx, "calling code of this dispatch kind"))
+}
+
+/// ECMA-262 §10.2.2 `[[Construct]]` steps 10-12 for the result `r` of a constructor body that
+/// got the receiver `this` (the hole for a derived constructor): an object result is the
+/// result; else the receiver of a base constructor; else the error of
+/// [`interp::derived_result_error`] (a derived constructor), thrown in the current realm,
+/// which is the caller's. The one result check of the Rust construct path
+/// ([`construct_function_object`]) and of the T0 construct of native code (`slow::call`; M8-P1
+/// A2-CONSTRUCT, MC-w36-3). A JS caller of a bytecode constructor has the same check in its
+/// construct stub frame (`interp::construct_return`).
+#[inline(always)]
+pub(crate) fn construct_result(cx: &mut Cx, r: u64, this: u64) -> Res<u64> {
+    if is_object(r) {
+        Ok(r)
+    } else if this != HOLE {
+        Ok(this)
+    } else {
+        let (kind, msg) = interp::derived_result_error(r);
+        Err(throw_error(cx, kind, msg))
+    }
 }
