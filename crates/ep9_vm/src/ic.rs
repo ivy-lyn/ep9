@@ -53,7 +53,7 @@
 //! | `PROTO_LOAD` (cell) | 0x21, 0x22 | validity cell valid and holder alive: the holder's field |
 //! | `MISSING` (cell) | 0x21, 0x22 | validity cell valid: undefined |
 //! | `PROTO_LOAD`, `MISSING` (cell) under [`KEY_STRING`] (M4-P3 IC2) | 0x21 on a string: a method (`s.charCodeAt`), from %String.prototype% | as above, after a kind-byte check (a symbol has ShapeId 0 too) |
-//! | `ADD` (cell) | 0x24 (validity cell checked), 0x25 | target alive and room in the slots: store, then install the target shape |
+//! | `ADD` (cell) | 0x24 (validity cell checked), 0x25 | target alive and room in the slots: store, then install the target shape (no room: a miss; the miss path grows the SLOTS cell, then stores: [`grow_add`], M8-P0 TS-STORE) |
 //! | smi field, keyed on the lexical record's shape | 0x10, 0x11; 0x12 if writable | a `let`/`const`/`class` binding; the hole (TDZ) misses |
 //! | `GLOBAL` (cell), keyed on the global object's shape | 0x10, 0x11; 0x12 if writable | the lexical record still has the shape in the handler: the global object's field; the hole (a lazy namespace key not installed, INTL-I1-D8) misses (M7-P2) |
 //!
@@ -83,13 +83,13 @@
 //! - A fast shape is always extensible and a non-extensible object has a dictionary shape
 //!   (OM-10), so an add-property case, which is made only for a fast shape, can never match a
 //!   non-extensible receiver. [`store`] also asserts it.
-//! - The megamorphic stub cache (M4-P3 IC2, `stub_cache.rs`, H16-Q3): a megamorphic named
-//!   site misses in the hit path ([`load`], [`store`] are unchanged, so a monomorphic hit
-//!   costs no more); its miss path first probes a per-isolate table by (operation, receiver
-//!   ShapeId, name) and runs the handler it finds with the code above ([`mega_load`],
-//!   [`mega_store`]; 0x21 in its cold body, [`get_named_cold`]); on a table miss it computes
-//!   the case for an object receiver ([`skip_miss`], if [`MEGA_FILL`]) and [`record`] puts it
-//!   in the table (not `SLOW`, not a string). The table is emptied at every GC.
+//! - The megamorphic stub cache (M4-P3 IC2, `stub_cache.rs`, H16-Q3): a megamorphic named site
+//!   misses in the hit path ([`load`], [`store`] are unchanged, so a monomorphic hit costs no
+//!   more); its miss path first probes a per-isolate table by (operation, receiver ShapeId,
+//!   name) and runs the handler it finds with the code above ([`mega_load`], [`mega_store`];
+//!   0x21, 0x24, 0x25 in the cold body, [`get_named_cold`], [`handler_mega_store`]); on a table
+//!   miss it computes the case for an object receiver ([`skip_miss`], if [`MEGA_FILL`]) and
+//!   [`record`] puts it in the table (not `SLOW`, not a string). It is emptied at every GC.
 //! - A string's method load (M4-P3 IC2) is a prototype case keyed on [`KEY_STRING`]: its chain
 //!   starts at %String.prototype% (which gets its PROTO_INFO, prototype mode, when the first
 //!   such case is recorded). Global and InstanceOf cases (`instance_ic.rs`) never reach the
@@ -660,8 +660,8 @@ pub(crate) fn mega_load(rt: &Runtime, v: u64, slot: u32, o: u64, key: u64) -> Op
 
 /// The miss path of a named store (`slow::set_named`) before the generic store: `o.key = val`
 /// (0x24) or CreateDataProperty (0x25, `define`) through the stub cache entry for `o`'s shape,
-/// if slot `slot` of `v` is megamorphic and there is one. True if it stored; false: take the
-/// generic path. No allocation, no JS, not a GC point.
+/// if slot `slot` of `v` is megamorphic and there is one; an add with no room grows the SLOTS
+/// cell first ([`grow_add`]). True if it stored; false: the generic path. No JS. GC point.
 pub(crate) fn mega_store(
     rt: &Runtime,
     v: u64,
@@ -676,8 +676,8 @@ pub(crate) fn mega_store(
     }
     let id = shape_id(o);
     let done = match stub_cache::probe(rt, store_op(define), id, key) {
-        Some(h) if define => store_with::<false>(rt, o, || key, val, h),
-        Some(h) => store_with::<true>(rt, o, || key, val, h),
+        Some(h) if define => store_or_grow::<false>(rt, o, key, val, h),
+        Some(h) => store_or_grow::<true>(rt, o, key, val, h),
         None => false,
     };
     stub_stats!(Store, done);
@@ -2011,6 +2011,8 @@ pub(crate) mod stats {
         sites: RefCell<HashMap<(usize, usize, String, u32), u64>>,
         /// Stub cache probes of megamorphic misses (`mega_load`, `mega_store`): [site][hit?].
         stub: [[Cell<u64>; 2]; 2],
+        /// Adds that grew the SLOTS cell on the store miss path (`grow_add`, M8-P0 TS-STORE).
+        grow: Cell<u64>,
     }
 
     impl Drop for Counters {
@@ -2038,6 +2040,9 @@ pub(crate) mod stats {
                     );
                 }
             }
+            if self.grow.get() > 0 {
+                eprintln!("ep9 ic-stats: store grow={}", self.grow.get());
+            }
             for col in [5, 2] {
                 let mut sites: Vec<_> = self
                     .sites
@@ -2062,6 +2067,7 @@ pub(crate) mod stats {
             n: [const { [const { Cell::new(0) }; 6] }; 5],
             sites: RefCell::new(HashMap::new()),
             stub: [const { [const { Cell::new(0) }; 2] }; 2],
+            grow: Cell::new(0),
         };
     }
 
@@ -2085,6 +2091,12 @@ pub(crate) mod stats {
             let x = &c.stub[site as usize][usize::from(hit)];
             x.set(x.get() + 1);
         });
+    }
+
+    /// An add that grew the SLOTS cell on the store miss path (`grow_add`).
+    #[inline(never)]
+    pub(crate) fn grow() {
+        C.with(|c| c.grow.set(c.grow.get() + 1));
     }
 
     /// A miss at slot `slot` of `fi`'s vector, sorted by the slot state.
@@ -2145,4 +2157,159 @@ fn as_cell(b: u64) -> Option<CellPtr> {
 fn id_of(c: CellPtr) -> u32 {
     // SAFETY: a cell value the VM holds is live (crate invariant, object.rs).
     unsafe { c.header() }.shape_id().get()
+}
+
+// ---- the stub cache probe of the store handlers and the add with growth (M8-P0 TS-STORE) -------
+
+/// The stub cache probe of the `SetNamedProperty` (0x24) and `DefineNamedOwnProperty` (0x25,
+/// `define`) handlers: in their cold bodies (the front of `slow::set_named`), after the
+/// monomorphic and polymorphic compares of [`store`] missed, and before the runtime call. The
+/// store form of [`handler_mega_load`]: if slot `slot` of the vector of `fi` is megamorphic
+/// and the stub cache has an entry for `o`'s shape and the name `key` (an atom), stores `val`
+/// through its handler ([`store_with`]). False: the runtime call runs as before (it probes
+/// again, [`mega_store`], which can also grow the SLOTS cell, then takes the generic path,
+/// which fills the entry, [`record`]).
+///
+/// The hit path ([`store`]) does not change. A hit here skips the runtime call: the frame
+/// record (`Runtime::enter`), the call, and its vector and slot reads. An add with no room
+/// misses here (the growth allocates). No allocation, no JS, not a GC point.
+#[inline(always)]
+pub(crate) fn handler_mega_store(
+    rt: &Runtime,
+    fi: &FunctionInfo,
+    o: u64,
+    slot: u32,
+    key: u64,
+    val: u64,
+    define: bool,
+) -> bool {
+    if !kind::is_object(o) {
+        return false;
+    }
+    let Some(v) = feedback::vector(fi) else {
+        return false;
+    };
+    if !is_mega(v, slot) {
+        return false;
+    }
+    let done = match stub_cache::probe(rt, store_op(define), shape_id(o), key) {
+        Some(h) if define => store_with::<false>(rt, o, || key, val, h),
+        Some(h) => store_with::<true>(rt, o, || key, val, h),
+        None => false,
+    };
+    // `ic-stats`: a hit counts here; a miss counts in the probe of the runtime call
+    // ([`mega_store`]), so each probe counts once.
+    if done {
+        stub_stats!(Store, true);
+        #[cfg(test)]
+        HANDLER_STORE_HITS.with(|c| c.set(c.get() + 1));
+    }
+    done
+}
+
+/// The add with growth of a monomorphic or polymorphic store site, on the miss path
+/// (`slow::set_named`, after its frame record): the `ADD` case of slot `slot` of the vector
+/// `v` for `o`'s shape, when only the room in the SLOTS cell is missing ([`grow_add`]). A
+/// megamorphic slot gives false here ([`mega_store`] grows through its stub cache entry). True
+/// if it stored; false: the generic path. No JS. GC point (the growth).
+pub(crate) fn grow_store(
+    rt: &Runtime,
+    v: u64,
+    slot: u32,
+    o: u64,
+    key: u64,
+    val: u64,
+    define: bool,
+) -> bool {
+    if !kind::is_object(o) || is_mega(v, slot) {
+        return false;
+    }
+    let Some(h) = handler_for(
+        feedback::key(v, slot),
+        feedback::value(v, slot),
+        shape_id(o),
+    ) else {
+        return false;
+    };
+    if define {
+        grow_add::<false>(rt, o, key, val, h)
+    } else {
+        grow_add::<true>(rt, o, key, val, h)
+    }
+}
+
+/// [`store_with`], then [`grow_add`] if it missed: the stub cache entry of [`mega_store`].
+/// GC point (the growth).
+#[inline(always)]
+fn store_or_grow<const CHECK_EPOCH: bool>(
+    rt: &Runtime,
+    o: u64,
+    key: u64,
+    val: u64,
+    h: u64,
+) -> bool {
+    store_with::<CHECK_EPOCH>(rt, o, || key, val, h) || grow_add::<CHECK_EPOCH>(rt, o, key, val, h)
+}
+
+/// An add case `h` (0x24 with `CHECK_EPOCH`, or 0x25) for `o` that applies except that the
+/// SLOTS cell of `o` has no room for the new out-of-line field: grows the SLOTS cell as the
+/// generic add does (`props::reserve_field`, the same capacity rule), then stores through `h`
+/// ([`store_with`]). The checks of the hit come first (the validity cell, the target shape
+/// alive, the representation of the new field), so a case that misses for any other reason
+/// grows nothing. The add keeps the order of the generic `[[Set]]` (H16 K13: the case was
+/// checked after a generic store; the hit itself still needs room, so this runs only on the
+/// miss path). False: nothing stored, take the generic path (it finds the room made here).
+///
+/// GC point (the new SLOTS cell): `o`, `val`, `h` and the target shape live in Rust locals
+/// (CSS). A GC runs no JS and changes no prototype, so the validity cell checked here stays
+/// valid, and [`store_with`] checks it again.
+#[inline(never)]
+fn grow_add<const CHECK_EPOCH: bool>(rt: &Runtime, o: u64, key: u64, val: u64, h: u64) -> bool {
+    if is_i32(h) {
+        return false;
+    }
+    let (hcell, add) = (cell(h), hk::ADD);
+    // `add`: the kind test line of [`store_with`] is an adr-lint pin, which must match 1 line.
+    if rd_i32(hcell, hc::KIND) != add || (CHECK_EPOCH && !validity::valid_cell(rd(hcell, hc::CELL)))
+    {
+        return false;
+    }
+    let target = rd(hcell, hc::REF);
+    if target == UNDEFINED
+        || !crate::field_rep::table_fits(shape::last_field_rep(target), val)
+        || rd_i32(hcell, hc::LOCATION) & smi::KIND_MASK == smi::FIELD_IN_OBJECT
+    {
+        return false;
+    }
+    // The new field's index under the target shape; the hit's location is its SLOTS offset.
+    let f = shape::count(target) - 1;
+    let s = rd(cell(o), obj::SLOTS);
+    let have = if s == UNDEFINED {
+        0
+    } else {
+        rd_i32(cell(s), slf::CAPACITY) as usize
+    };
+    if f - usize::from(shape::capacity(target)) < have {
+        // There is room: the hit missed for another reason.
+        return false;
+    }
+    crate::props::reserve_field(rt, o, target, f);
+    let done = store_with::<CHECK_EPOCH>(rt, o, || key, val, h);
+    if done {
+        #[cfg(feature = "ic-stats")]
+        stats::grow();
+        #[cfg(test)]
+        GROW_ADDS.with(|c| c.set(c.get() + 1));
+    }
+    done
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M8-P0 TS-STORE): how many stores the probe of the store handlers
+    /// ([`handler_mega_store`]) answered.
+    pub(crate) static HANDLER_STORE_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    /// Tests (M8-P0 TS-STORE): how many adds grew the SLOTS cell on the miss path
+    /// ([`grow_add`]).
+    pub(crate) static GROW_ADDS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
