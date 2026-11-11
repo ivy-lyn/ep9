@@ -129,6 +129,7 @@ fn the_watched_paths_exist() {
 }
 
 /// The repository's scripts/sync-lib.sh (the one shared check).
+#[cfg(unix)]
 fn sync_lib() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/sync-lib.sh")
 }
