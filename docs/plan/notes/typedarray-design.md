@@ -272,7 +272,7 @@ S3 (03:152) moves cells of sparse blocks. A view caches a raw address into a BYT
                       in bounds ──► store by cell kind; else cold
 ```
 
-- The key half of a StoreKeyed slot keeps its meaning (a shape, or the hole for megamorphic; `crates/ep9_vm/src/keyed_ic.rs:16-22`). A view shape is just another shape.
+- The key half of a StoreKeyed slot keeps its meaning (a shape, or the hole for megamorphic; `crates/ep9_vm/src/keyed_ic.rs:16-22`). A view shape is just another shape. [2026-11-11, TA-2 TA-KEYED as built (246b2d5c): a view store hit leaves the key half alone (BENCH-SET: a view shape in the key half cost +0.72% crypto); `ops_of` gives the view lists only with a view shape as the case key, so no T0 case reaches them until a writer of the element type exists (route TA-KEYED-VIEW-CARRIER, owner TA-3, TA-ORCH-11)]
 - A hit never allocates and never calls (`crates/ep9_vm/src/keyed_ic.rs:65`). So a BigInt view load (a new BIGINT cell) and a store that needs ToNumber stay cold.
 - The kinds set records bit 17 or 18 for a view receiver on the cold path (the bit rule of H16:234). No new record kind.
 - An inline view path in `ops.rs` is a later lever with BENCH data. It must keep the DISASM count and plan rule 72.
@@ -290,7 +290,7 @@ No new handler kind in month 8. The smi kinds have 7, 8 and 15 free, and 7 and 8
 | `LoadView(t)`, `LoadViewOrUndefined(t)` | the element as a Number (Uint32 may give a double; floats give a canonical NaN when boxed); the second gives undefined out of bounds |
 | `StoreView(t)` | the store of a Number already checked by `GuardType(Value, Number)`; it misses when the value needs a call |
 
-`keyed()` (`crates/ep9_vm/src/ic_ops.rs:714`) gives these lists when the kinds set has bit 17 or 18. A reader that does not know them sees a miss (`[Generic]`), as H16:236 asks.
+`keyed()` (`crates/ep9_vm/src/ic_ops.rs:714`) gives these lists when the kinds set has bit 17 or 18. A reader that does not know them sees a miss (`[Generic]`), as H16:236 asks. [2026-11-11, TA-2 TA-KEYED as built (246b2d5c): a view store hit leaves the key half alone (BENCH-SET: a view shape in the key half cost +0.72% crypto); `ops_of` gives the view lists only with a view shape as the case key, so no T0 case reaches them until a writer of the element type exists (route TA-KEYED-VIEW-CARRIER, owner TA-3, TA-ORCH-11)]
 
 ### 6.4 Fuses
 
