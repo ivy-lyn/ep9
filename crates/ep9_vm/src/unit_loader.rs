@@ -986,13 +986,13 @@ fn link_and_map(
 /// [`Reason::Installed`] and [`Reason::NotInstallable`]; a pick with no mapped text is not
 /// counted (its load counted it).
 ///
-/// A function with `[[Construct]]` (`fi.is_constructor()`: an ordinary `function`, a class
-/// constructor) is not installable: its slot stays Interp, so every construct path (`new`,
-/// `super()`, `Reflect.construct` from Rust) runs its bytecode. The construct paths refuse a
-/// native slot (route MC-w29-8; Frozen H04:52 keeps the default build with no non-Interp
-/// construct path), so an installed constructor would change JS results (JIT review F1 of
-/// M7-P5, M6-ORCH-386). Every install of unit code comes here: also a later installing load
-/// of the same unit and a load that takes a shared text.
+/// A class constructor (`fi.is_class_constructor()`) is not installable: its slot stays
+/// Interp, so `new`, `super()` and `Reflect.construct` run its bytecode (the MC-w33-6 result
+/// contract is step 2, A2-GATE). An ordinary `function` is installable since M8-P1
+/// A2-CONSTRUCT (M8-PLAN-D25, MC-w29-8 step 1; form 2 of M6-ORCH-386 refused it): every
+/// construct path enters its native code through `native::native_callee` with new.target in
+/// its frame (`slow::call`, `call::call_native_from_rust`). Every install of unit code comes
+/// here: also a later installing load of the same unit and a load that takes a shared text.
 ///
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
@@ -1012,8 +1012,8 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
             continue;
         };
         let obj = &uc.set.objects[i];
-        let kind = DispatchKind::from_u8(obj.kind);
-        if kind != Some(DispatchKind::AotBaseline) || !obj.deps.is_empty() || fi.is_constructor() {
+        let aot = DispatchKind::from_u8(obj.kind) == Some(DispatchKind::AotBaseline);
+        if !aot || !obj.deps.is_empty() || fi.is_class_constructor() {
             r.add(Reason::NotInstallable, 1);
             continue;
         }

@@ -172,7 +172,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             return Ok(r);
         }
         if !runs_bytecode(fi) {
-            return Err(not_implemented(cx, "calling code of this dispatch kind"));
+            return construct_native_cold(cx, fp, s, callee, new_target, argc, &args); // D25
         }
         // GC point, before `this` exists: the callee and the arguments are in caller
         // registers (a bound callee's target and bound arguments are reachable from it),
@@ -184,9 +184,9 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             // GC point; `this` then lives in a Rust local until the stub frame holds it.
             call::ordinary_create_from_constructor(cx, new_target)?
         };
-        // The construct-site hook (M4-P0; filled by M4-P1 OBJ-ALLOC, `construct_ic.rs`): a stub
-        // that records nothing. GC point allowed: `this` is a Rust local, the rest is in caller
-        // registers.
+        // The construct-site hook (M4-P0; filled by M4-P1 OBJ-ALLOC, `construct_ic.rs`): it
+        // records the site's state (MCV-w36-1). GC point allowed: `this` is a Rust local, the
+        // rest is in caller registers.
         crate::construct_ic::miss(cx, fp, s, callee, new_target, this);
         // SAFETY: `fp` is the live top frame; `this` is valid Value bits.
         let Some(stub) = (unsafe { call::push_construct_stub(cx, fp, this, callee, s.next_pc) })
@@ -1014,8 +1014,8 @@ fn push_forwarded(
 /// The `!runs_bytecode` arm of [`do_call`]'s call path (M7-P5 A2-RW, route MC-w30-2): native
 /// code (an AotBaseline unit function or a Baseline slot) that T0's `call_fast` sent cold is
 /// entered here, nested, with its frame above the caller's registers and the return pc of the
-/// next instruction (the `native.rs` T0 entry). No feedback count (`native.rs` module doc).
-/// Any other kind throws "not implemented". (At the end of the file, so no cited line moves.)
+/// next instruction (the `native.rs` T0 entry). The caller counts (M8-PLAN-D26): `count_call`
+/// before the entry. Any other kind throws "not implemented". (At the end of the file.)
 fn call_native_cold(
     cx: &mut Cx,
     fp: *mut u64,
@@ -1028,6 +1028,10 @@ fn call_native_cold(
     let Some(nfi) = crate::native::native_callee(callee) else {
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     };
+    // The caller counts (M8-PLAN-D26, MC-w29-1), as `do_call` counts a T0 callee: GC point,
+    // the callee, the receiver and the arguments are in caller registers (`args` copies them;
+    // `this` is in a Rust local too).
+    feedback::count_call(cx.rt(), cx.feedback_threshold, nfi);
     // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
     // with no scratch area), `args` holds valid Value bits that the push copies before any GC
     // point, and `native_callee` checked the native slot.
@@ -1048,4 +1052,71 @@ fn call_native_cold(
     cx.out_fp = fp;
     cx.out_pc = s.next_pc;
     r
+}
+
+/// The `!runs_bytecode` arm of [`do_call`]'s construct path (M8-P1 A2-CONSTRUCT; M8-PLAN-D25,
+/// MC-w29-8 step 1, MC-w36-3): `[[Construct]]` of a FUNCTION of the caller's realm with
+/// native code (an AotBaseline unit function or a Baseline slot; `native::native_callee`, so
+/// never a class constructor). The steps of the bytecode arm, in its order, then the native
+/// entry instead of the stub and callee frames:
+///
+/// ```text
+/// kind check (native_callee, else "not implemented") -> count_call (M8-PLAN-D26)
+///   -> the receiver (OrdinaryCreateFromConstructor(new.target), §10.2.2 step 5)
+///   -> construct_ic::miss (the site's record, as for the bytecode constructor: M-R9)
+///   -> native::enter_native_with (new.target in fp - 3, the construct bit; return pc = the
+///      next instruction; nested) -> call::construct_result (§10.2.2 steps 10-12)
+/// ```
+///
+/// So a unit constructor counts and records what its bytecode does at this site. The frame
+/// returns to this function, not to a construct stub frame, so the result check runs here,
+/// through the helper of the Rust construct path. (At the end of the file, so the H23 pin
+/// at line 600 and the other cited lines do not move.)
+fn construct_native_cold(
+    cx: &mut Cx,
+    fp: *mut u64,
+    s: &CallSite,
+    callee: u64,
+    new_target: u64,
+    argc: u32,
+    args: &[u64],
+) -> Res<u64> {
+    let Some(nfi) = crate::native::native_callee(callee) else {
+        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+    };
+    // GC point, before `this` exists: the callee and the arguments are in caller registers
+    // (`args` copies them), new.target is a Rust local (as in `do_call`).
+    feedback::count_call(cx.rt(), cx.feedback_threshold, nfi);
+    let this = if nfi.is_derived() {
+        HOLE
+    } else {
+        // GC point; `this` then lives in a Rust local until the frame holds it, and after the
+        // return until the result check.
+        call::ordinary_create_from_constructor(cx, new_target)?
+    };
+    // The construct-site hook, as in `do_call` (it records the site's state). GC point.
+    crate::construct_ic::miss(cx, fp, s, callee, new_target, this);
+    // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
+    // with no scratch area), `args` holds valid Value bits that the push copies before any GC
+    // point, `native_callee` checked the native slot, and `this` is a new object in a Rust
+    // local.
+    let r = unsafe {
+        crate::native::enter_native_with(
+            cx,
+            frame_top(fp),
+            fp,
+            s.next_pc,
+            callee,
+            nfi,
+            this,
+            argc,
+            |i| args[i as usize],
+            new_target,
+            false,
+        )
+    };
+    // After the call: a nested dispatch under native code (`call_any`) sets them too.
+    cx.out_fp = fp;
+    cx.out_pc = s.next_pc;
+    call::construct_result(cx, r?, this)
 }
