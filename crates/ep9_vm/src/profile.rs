@@ -1109,10 +1109,7 @@ const _: () = {
 /// the bit with `btr` in an `asm!` block; aarch64 has the mask as an `and` immediate.
 #[inline(always)]
 pub(crate) fn adds_bit(st: &St<'_>, s: FSlot, bits: u32) -> bool {
-    use ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
-    const _: () = assert!(DOUBLE_ENCODE_OFFSET == 1 << 49);
     let w = st.hdr(crate::frame::slot::FUNCTION_INFO);
-    debug_assert!((DOUBLE_ENCODE_OFFSET..DOUBLE_ENCODE_OFFSET << 1).contains(&w));
     #[cfg(target_arch = "x86_64")]
     let a = {
         let mut a = w;
@@ -1123,8 +1120,11 @@ pub(crate) fn adds_bit(st: &St<'_>, s: FSlot, bits: u32) -> bool {
         }
         a
     };
+    // A VM stack slot (the extref-lint `VM_STACK` list, H25): only the `frame` encoding. The
+    // offset `frame::native(0)` is 2^49 after inlining; debug builds check the `frame` decode.
     #[cfg(not(target_arch = "x86_64"))]
-    let a = w & (DOUBLE_ENCODE_OFFSET - 1);
+    let a = w & (crate::frame::native(0) - 1);
+    debug_assert!(a as usize == crate::frame::native_addr(w));
     let fi = core::ptr::with_exposed_provenance::<crate::unit::FunctionInfo>(a as usize);
     // SAFETY: header slot 4 of a live frame holds the native word of its FunctionInfo
     // (`St::info`), and `a` is the address that `native_addr` gives for it.
