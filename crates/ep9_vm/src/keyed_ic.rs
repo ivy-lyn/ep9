@@ -372,7 +372,7 @@ pub(crate) fn fast_has(_st: &mut St<'_>, _k: u64, _o: u64, _s: FSlot) -> Flow {
 #[cfg(test)]
 pub(crate) use view::VIEW_HITS;
 
-/// The view cases of the keyed fast bodies (TypedArray TA-2 TA-KEYED).
+// The view cases of the keyed fast bodies (TypedArray TA-2 TA-KEYED; module docs inside).
 mod view {
     //! **The view cases (TypedArray TA-2 TA-KEYED; design `docs/plan/notes/typedarray-design.md`
     //! §6.1, §4.1, §5.2).** [`get`] and [`set`] are the tails of `fast_get` and `fast_set` for
