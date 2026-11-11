@@ -1548,7 +1548,7 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
 }
 
 /// Item 1: the checked binary's freshness line, `ep9.build` of the kernels JSON (kernels.mjs
-/// `ep9Version`: `ep9 --version` stderr, "ep9 build: commit <sha> clean|dirty", P0-BUILDID;
+/// `ep9Version`: `ep9 --version` stderr, `ep9 build: commit <sha> clean|dirty`, P0-BUILDID;
 /// `crates/ep9_cli/build.rs` says dirty for a change in the engine paths or a fork checkout that
 /// is not its pin plus its patches at build time). Ok when it names `commit` and a clean build;
 /// else the OPEN reason.
