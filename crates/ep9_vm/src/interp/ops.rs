@@ -2246,35 +2246,51 @@ fn callee_runs_here(st: &St<'_>, callee: u64, fi: &FunctionInfo) -> bool {
 // ```text
 // CallProperty0-2, CallProperty, CallAnyReceiver (fast handler: unchanged)
 //   ──Flow::Cold (tail jump)──> <op>_cold ──> call_receiver_cold
-//        a host callee with a FUNCTION receiver ──> forward_or_call (out of line)
+//        a FUNCTION receiver, a host callee, no prefix ──> forward_or_call (out of line)
 //            profile::record_call (the record of apply or call, as before)
 //            ──> call::forward_frame: the frame of the bytecode callee, one budget unit,
 //                the dispatch at its first instruction (no GC point, nothing thrown)
 //            ──> else slow::call (its `forward` takes the rest, as before)
-//        any other callee ──> call_record_cold: the record, slow::call (as before)
+//        a FUNCTION receiver and a prefix, or a call whose record may be due
+//            ──> record_call_out (out of line): the record, slow::call (as before)
+//        any other call ──> slow::call (as before: the record is not due)
 // ```
+//
+// The tests of the cold body read only the receiver, the budget and (after the receiver
+// test) the callee at its fixed place: a host call with another receiver (a method of an
+// Array, a String, a generator, `Math`) runs the steps of the base cold body (M8-P0 fixer r6:
+// the first form decoded the callee, the receiver and the Call slot and tested the callee
+// first, about 22 more instructions on each such call; t0-gen x64 +0.79% Ir).
 
 /// The cold body of the `Call*` opcodes with a receiver operand (`CallProperty0`-`2`,
-/// `CallProperty`, `CallAnyReceiver`) on x86-64 (not spike-native): for a host callee with a
-/// FUNCTION receiver [`forward_or_call`] (the sampled call record, then a forwarded `apply` or
-/// `call` of a bytecode function, or else `slow::call`); for any other call
-/// [`call_record_cold`], as before. `receiver` is the receiver's register (`None`: a list form
-/// with no receiver). The receiver test keeps the other host calls (a method of an Array, a
-/// String, `Math`) off the forward's steps.
+/// `CallProperty`, `CallAnyReceiver`) on x86-64 (not spike-native): for an unprefixed call of
+/// a host callee with a FUNCTION receiver [`forward_or_call`] (the sampled call record, then a
+/// forwarded `apply` or `call` of a bytecode function, or else `slow::call`); for any other
+/// call the steps of [`call_record_cold`] (the record out of line, [`record_call_out`], when
+/// it may be due). `receiver` is the receiver's register (`None`: a list form with no
+/// receiver).
 #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
 #[inline(always)]
 fn call_receiver_cold(st: &mut St<'_>, callee: R, s: FSlot, receiver: Option<R>) -> Done {
-    let f = st.reg(callee);
-    if object::is_function(f)
-        && object::function_info(f).host.is_some()
-        && receiver.is_some_and(|r| object::is_function(st.reg(r)))
-    {
-        // SAFETY: the cold handler's state: `fp` is the live top frame, `pc` its current call
-        // instruction (or its prefix) of verified code and `next` the instruction after it.
-        let v = unsafe { forward_or_call(st.cx, st.pc, st.fp, st.next, f, s) };
+    // `callee` and `s` are not read here: LLVM computes an operand that a path after the
+    // first test uses before that test, so a read here would run on every cold call (x86-64
+    // asm, M8-P0 fixer r6). The out-of-line paths read them at `pc`.
+    let _ = (callee, s);
+    if receiver.is_some_and(|r| object::is_function(st.reg(r))) {
+        // SAFETY: the cold handler's state: `fp` is the live top frame and `pc` its current
+        // call instruction (or its prefix) of verified code, one of the 5 opcodes above.
+        let v = match unsafe { fixed_callee(st.pc, st.fp) } {
+            Some(f) if object::is_function(f) && object::function_info(f).host.is_some() => {
+                // SAFETY: as above, with no prefix, and `f` its callee.
+                unsafe { forward_or_call(st.cx, st.pc, st.fp, f) }
+            }
+            // SAFETY: as above.
+            None => unsafe { record_call_out(st.cx, st.pc, st.fp) },
+            Some(_) => return call_record_out_or_cold(st),
+        };
         return st.switch(v);
     }
-    call_record_cold(st, callee, s)
+    call_record_out_or_cold(st)
 }
 
 /// The cold body of the `Call*` opcodes with a receiver operand on the other targets and
@@ -2286,11 +2302,47 @@ fn call_receiver_cold(st: &mut St<'_>, callee: R, s: FSlot, receiver: Option<R>)
     call_record_cold(st, callee, s)
 }
 
+/// The rest of [`call_receiver_cold`]: [`call_record_cold`] with its record out of line. The
+/// test is the first one of `profile::record_call`: a call outside the window records
+/// nothing there.
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(always)]
+fn call_record_out_or_cold(st: &mut St<'_>) -> Done {
+    if st.cx.budget > crate::interp::BUDGET - profile::CALL_WINDOW {
+        // SAFETY: as in `call_receiver_cold`.
+        let v = unsafe { record_call_out(st.cx, st.pc, st.fp) };
+        return st.switch(v);
+    }
+    call_cold(st)
+}
+
+/// The callee of the call at `pc` read at its fixed place (operand 0 of the 5 opcodes of
+/// [`call_receiver_cold`] at single scale, `pc + 1`), or `None` for a prefixed call (`pc` at
+/// its `Wide` or `ExtraWide` byte).
+///
+/// # Safety
+/// `fp` is the live top frame and `pc` its current call instruction (or its prefix) of
+/// verified code, one of the 5 opcodes of [`call_receiver_cold`].
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn fixed_callee(pc: *const u8, fp: *mut u64) -> Option<u64> {
+    use ep9_bytecode::Opcode as O;
+    // SAFETY: caller contract: `pc` is a byte of verified code.
+    let op = unsafe { *pc };
+    if op == O::Wide as u8 || op == O::ExtraWide as u8 {
+        return None;
+    }
+    // SAFETY: operand 0 (a register, one byte at single scale: checked at compile time below)
+    // of the verified instruction; it names a slot of the live frame `fp`.
+    unsafe { Some(*fp.offset(R::from_operand(i32::from(*pc.add(1) as i8)).0)) }
+}
+
 /// The receiver call opcodes of [`forward_or_call`]: at single scale every operand of each is
-/// one byte, so operand `i` is at `pc + 1 + i`.
+/// one byte, so operand `i` is at `pc + 1 + i`; operand 0 is the callee register and the last
+/// operand the Call slot.
 #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
 const _: () = {
-    use ep9_bytecode::{Opcode as O, OperandScale};
+    use ep9_bytecode::{Opcode as O, OperandKind, OperandScale};
     let ops = [
         O::CallProperty0,
         O::CallProperty1,
@@ -2302,58 +2354,117 @@ const _: () = {
     while i < ops.len() {
         let info = ops[i].info();
         assert!(info.size(OperandScale::Single) == 1 + info.operands.len());
+        assert!(info.operands[0].kind as u8 == OperandKind::Reg as u8);
+        assert!(info.operands[info.operands.len() - 1].kind as u8 == OperandKind::Slot as u8);
         i += 1;
     }
+    // The operand counts that `fixed_operands` gives.
+    assert!(O::CallProperty0.info().operands.len() == 3);
+    assert!(O::CallProperty1.info().operands.len() == 4);
+    assert!(O::CallProperty2.info().operands.len() == 5);
+    assert!(O::CallProperty.info().operands.len() == 4);
+    assert!(O::CallAnyReceiver.info().operands.len() == 4);
 };
 
-/// The cold path of [`call_receiver_cold`] (a host callee, a FUNCTION receiver): the sampled call
-/// record (`profile::record_call`, Call slot `s`, at the budget of the call's start, as
-/// [`call_record_cold`]), then the forward, or `slow::call`. It gives the result and
-/// `cx.out_fp`, `cx.out_pc` as `slow::call` does.
-///
-/// The forward reads the operands of the unprefixed call at `pc` at their fixed places (as
-/// `slow::call`'s `host_entry`), and [`call::forward_frame`] pushes the frame of a forwarded
-/// `apply` or `call`; then the call takes its budget unit (after the push, as `slow::call`'s
-/// `forward`) and the dispatch goes on at the callee's first instruction. A prefixed call
-/// (`pc` at its `Wide` or `ExtraWide` byte), a list form with no receiver and every forward
-/// that `forward_frame` refuses take `slow::call`. Same VM state as the cold path:
-/// `slow::call` takes no step before its `forward` in these cases (its poll runs only at a
-/// budget of 0 or below, which `forward_frame` refuses).
-///
-/// Out of line, with the state of the cold handler as arguments (6, all in registers): only
-/// `cx` lives across the call in the cold handler, as across `slow::call`. Inline (or with
-/// the decoded operands as more arguments), the forward's values cost each cold handler 2-4
-/// more callee-saved registers, pushed on every cold call, also on the calls that do not
-/// forward (x86-64 asm, M8-P0). The accumulator is not an argument: it is dead at a call
-/// (`slow::call` reads it only as the `new.target` of a construct), so `slow::call` gets
-/// undefined.
-///
-/// # Safety
-/// As `St::new`: `fp` is the live top frame (bytecode runs with no scratch area), `pc` its
-/// current call instruction (or its prefix) of verified code, one of the opcodes of
-/// [`call_receiver_cold`], and `next` the instruction after it; `f` is its callee (a host
-/// FUNCTION) and `s` its Call slot.
+/// The operand count of the unprefixed call opcode `op` of [`call_receiver_cold`] (checked at
+/// compile time above), or `None` for any other byte (a prefix).
 #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
-#[inline(never)]
-unsafe fn forward_or_call(
-    cx: &mut crate::interp::Cx,
-    pc: *const u8,
-    fp: *mut u64,
-    next: *const u8,
-    f: u64,
-    s: FSlot,
-) -> u64 {
+#[inline(always)]
+fn fixed_operands(op: u8) -> Option<usize> {
     use ep9_bytecode::Opcode as O;
     const CALL_PROPERTY0: u8 = O::CallProperty0 as u8;
     const CALL_PROPERTY1: u8 = O::CallProperty1 as u8;
     const CALL_PROPERTY2: u8 = O::CallProperty2 as u8;
     const CALL_PROPERTY: u8 = O::CallProperty as u8;
     const CALL_ANY_RECEIVER: u8 = O::CallAnyReceiver as u8;
-    // The record of `call_record_cold`, with the state of the cold handler.
-    // SAFETY: the contract of this function.
-    let mut st = unsafe { St::new(cx, pc, fp, UNDEFINED, next) };
-    profile::record_call(&mut st, s, f);
-    let cx = st.cx;
+    match op {
+        CALL_PROPERTY0 => Some(3),
+        CALL_PROPERTY1 | CALL_PROPERTY | CALL_ANY_RECEIVER => Some(4),
+        CALL_PROPERTY2 => Some(5),
+        _ => None,
+    }
+}
+
+/// The record of [`call_record_cold`] out of line, then `slow::call`: the sampled call record
+/// (`profile::record_call`, at the budget of the call's start) with the callee and the Call
+/// slot read at their fixed places, or at their scale for a prefixed call (`pc` at its `Wide`
+/// or `ExtraWide` byte). It gives the result and `cx.out_fp`, `cx.out_pc` as `slow::call`
+/// does. Out of line and cold: the record is due on few calls, and inline (the base form) its
+/// values cost the cold handler 2 more callee-saved registers (x86-64 asm, M8-P0 fixer r6).
+///
+/// # Safety
+/// `fp` is the live top frame (bytecode runs with no scratch area), and `pc` its current call
+/// instruction (or its prefix) of verified code, one of the opcodes of [`call_receiver_cold`].
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[cold]
+#[inline(never)]
+unsafe fn record_call_out(cx: &mut crate::interp::Cx, pc: *const u8, fp: *mut u64) -> u64 {
+    // SAFETY: the contract of this function (`St::new`'s `next` is set below, before any read).
+    let mut st = unsafe { St::new(cx, pc, fp, UNDEFINED, pc) };
+    // SAFETY: caller contract: `pc` is a byte of verified code.
+    let (callee, s) = match fixed_operands(unsafe { *pc }) {
+        // SAFETY: the operands of the verified instruction, one byte each (see
+        // `fixed_operands`).
+        Some(n) => unsafe {
+            st.next = pc.add(1 + n);
+            (
+                R::from_operand(i32::from(*pc.add(1) as i8)),
+                u32::from(*pc.add(n)),
+            )
+        },
+        // A prefixed call: operand 0 and the last operand (the Call slot) at their scale.
+        None => {
+            let fi = st.info();
+            let off = fi.offset_of(pc).expect("pc in the frame's code");
+            // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified
+            // bytecode.
+            let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+            let insn = ep9_bytecode::decode_at(code, off).expect("verified bytecode decodes");
+            st.next = pc.wrapping_add(insn.size() as usize);
+            let last = insn.opcode.info().operands.len() - 1;
+            (R::from_operand(insn.operand(0) as i32), insn.unsigned(last))
+        }
+    };
+    let f = st.reg(callee);
+    profile::record_call(&mut st, FSlot(s), f);
+    slow::call(st.cx, fp, pc, UNDEFINED)
+}
+
+/// The forward path of [`call_receiver_cold`] (an unprefixed call of a host callee with a
+/// FUNCTION receiver): the sampled call record (`profile::record_call`, at the budget of the
+/// call's start, as [`call_record_cold`]), then the forward, or `slow::call`. It gives the
+/// result and `cx.out_fp`, `cx.out_pc` as `slow::call` does.
+///
+/// It reads the receiver, the arguments and the Call slot of the call at `pc` at their fixed
+/// places (as `slow::call`'s `host_entry`), and [`call::forward_frame`] pushes the frame of a
+/// forwarded `apply` or `call`; then the call takes its budget unit (after the push, as
+/// `slow::call`'s `forward`) and the dispatch goes on at the callee's first instruction. Every
+/// forward that `forward_frame` refuses takes `slow::call` after the record (a list form with
+/// no receiver: [`record_call_out`]). Same VM state as the cold path: `slow::call` takes no step
+/// before its `forward` in these cases (its poll runs only at a budget of 0 or below, which
+/// `forward_frame` refuses).
+///
+/// Out of line, with the state of the cold handler and the callee as arguments (4, all in
+/// registers): only `cx` lives across the call in the cold handler, as across `slow::call`.
+/// Inline (or with the decoded operands as more arguments), the forward's values cost each
+/// cold handler 2-4 more callee-saved registers, pushed on every cold call, also on the
+/// calls that do not forward (x86-64 asm, M8-P0). The accumulator is not an argument: it is
+/// dead at a call (`slow::call` reads it only as the `new.target` of a construct), so
+/// `slow::call` gets undefined.
+///
+/// # Safety
+/// As `St::new`: `fp` is the live top frame (bytecode runs with no scratch area), and `pc` its
+/// current call instruction of verified code, one of the opcodes of [`call_receiver_cold`]
+/// (a prefix goes to [`record_call_out`]); `f` is its callee.
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(never)]
+unsafe fn forward_or_call(cx: &mut crate::interp::Cx, pc: *const u8, fp: *mut u64, f: u64) -> u64 {
+    use ep9_bytecode::Opcode as O;
+    const CALL_PROPERTY0: u8 = O::CallProperty0 as u8;
+    const CALL_PROPERTY1: u8 = O::CallProperty1 as u8;
+    const CALL_PROPERTY2: u8 = O::CallProperty2 as u8;
+    const CALL_PROPERTY: u8 = O::CallProperty as u8;
+    const CALL_ANY_RECEIVER: u8 = O::CallAnyReceiver as u8;
     let acc = UNDEFINED;
     // SAFETY: caller contract: `pc` is a byte of verified code.
     let op = unsafe { *pc };
@@ -2362,19 +2473,26 @@ unsafe fn forward_or_call(
     // the whole instruction lies in the code.
     let byte = |i: usize| unsafe { *pc.add(1 + i) };
     let reg = |i: usize| R::from_operand(i32::from(byte(i) as i8)).0;
-    // The receiver slot, the argument count and where the arguments are: slot `s0 + i` of a
-    // list, or `s0` and `s1`. Register lists hold locals only, so the list operand is the slot
-    // offset itself. Operand 0 is the callee `f` in all 5.
-    let (this, argc, list, s0, s1) = match op {
-        CALL_PROPERTY0 => (reg(1), 0, false, 0, 0),
-        CALL_PROPERTY1 => (reg(1), 1, false, reg(2), 0),
-        CALL_PROPERTY2 => (reg(1), 2, false, reg(2), reg(3)),
+    // The operand count (the Call slot is the last operand), the receiver slot, the argument
+    // count and where the arguments are: slot `s0 + i` of a list, or `s0` and `s1`. Register
+    // lists hold locals only, so the list operand is the slot offset itself.
+    let (n, this, argc, list, s0, s1) = match op {
+        CALL_PROPERTY0 => (3, reg(1), 0, false, 0, 0),
+        CALL_PROPERTY1 => (4, reg(1), 1, false, reg(2), 0),
+        CALL_PROPERTY2 => (5, reg(1), 2, false, reg(2), reg(3)),
         CALL_PROPERTY | CALL_ANY_RECEIVER if byte(2) > 0 => {
             let first = isize::from(byte(1) as i8);
-            (first, u32::from(byte(2)) - 1, true, first + 1, 0)
+            (4, first, u32::from(byte(2)) - 1, true, first + 1, 0)
         }
-        _ => return slow::call(cx, fp, pc, acc),
+        // SAFETY: the contract of this function.
+        _ => return unsafe { record_call_out(cx, pc, fp) },
     };
+    let next = pc.wrapping_add(1 + n);
+    // The record of `call_record_cold`, with the state of the cold handler.
+    // SAFETY: the contract of this function; `next` is the pc after the call.
+    let mut st = unsafe { St::new(cx, pc, fp, acc, next) };
+    profile::record_call(&mut st, FSlot(u32::from(byte(n - 1))), f);
+    let cx = st.cx;
     // A copy of the slots (3 words), not the address of a local: as the fast path's readers.
     let arg = move |fp: *mut u64, i: u32| {
         let at = if list {
@@ -2390,7 +2508,7 @@ unsafe fn forward_or_call(
     };
     // SAFETY: as above.
     let this = unsafe { *fp.offset(this) };
-    // SAFETY: the contract of this function (`next` is the pc after the unprefixed call).
+    // SAFETY: the contract of this function.
     let (nfp, code) = unsafe { call::forward_frame(cx, fp, next, f, this, argc, arg) };
     if nfp.is_null() {
         return slow::call(cx, fp, pc, acc);
