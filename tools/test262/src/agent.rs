@@ -548,11 +548,28 @@ fn agent_body(
         }
         e.terminated || shared.lock().agents[index].saw_stop
     };
-    let r = iso.with_cx_checkpoint(|cx| {
+    // The script, then its jobs, as `Isolate::with_cx_checkpoint` runs them, but the script's
+    // own error is decided before the jobs run (Codex TA-2 r2 finding 2): in one
+    // `with_cx_checkpoint` the termination of a job that the close stops takes the place of
+    // the script's error, and a hook of a job that throws for the close sets `saw_stop`. The
+    // jobs still run after a script error (a job can report what the main agent waits for);
+    // their result is dropped then, as `with_cx_checkpoint` drops a job's error after a throw.
+    let script = iso.with_cx(|cx| {
         cx.evaluate_script(prelude(), "harness/$262 agent prelude")?;
         cx.run_script(unit, &name).map(|_| ())
     });
-    match r {
+    let script_error = match script {
+        Ok(()) => None,
+        // The stop (a termination: `with_cx` dropped the queued jobs; or a hook threw for the
+        // close): no job runs.
+        Err(e) if stopped(&e) => return Ok(()),
+        Err(e) => Some(e.message),
+    };
+    let jobs = iso.perform_microtask_checkpoint();
+    if let Some(m) = script_error {
+        return Err(m);
+    }
+    match jobs {
         Ok(()) => {}
         Err(e) if stopped(&e) => return Ok(()),
         Err(e) => return Err(e.message),

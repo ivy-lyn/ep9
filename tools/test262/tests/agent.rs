@@ -449,6 +449,40 @@ fn an_agent_error_held_past_the_close_still_fails_the_run() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// An agent script that queues a job, then throws (Codex TA-2 r2 finding 2): the job reports
+/// "x" and loops, the main agent reads "x" and ends, and the end of the run terminates the
+/// loop. The script's own error came first, so it is kept: the run fails with it. (When the
+/// script and its jobs ran in one `with_cx_checkpoint`, the termination of the job took the
+/// place of the script's TypeError, and the run was a Pass.)
+#[test]
+fn an_agent_script_error_outlives_a_job_that_the_close_terminates() {
+    let tests = [(
+        "job-then-throw.js",
+        test(
+            "flags: [onlyStrict]\n",
+            "$262.agent.start('Promise.resolve().then(function () { \
+             $262.agent.report(\"x\"); while (true) {} }); throw new TypeError(\"early\");');\n\
+             assert.sameValue(nextReport(), 'x');",
+        ),
+    )];
+    let root = tree("job-then-throw", &tests);
+    let expect = expect_file(&root, &["test/agent/job-then-throw.js".to_string()]);
+    let json = root.join("summary.json");
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &["--timeout", "60", "--json", json.to_str().unwrap()],
+        None,
+    );
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(counts(&text), Some((0, 1)), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    let entry = "{\"path\":\"test/agent/job-then-throw.js\",\"status\":\"fail\",\"cause\":\
+                 \"agent threw: agent 0: TypeError: early";
+    assert!(summary.contains(entry), "{entry}: {summary}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The agent's side of `share.js`: it stores 42 into the broadcast SharedArrayBuffer (with
 /// `Atomics.store` once the engine has `Atomics` and `Int32Array`, else a DataView store),
 /// reports, then reports the byteLength of the same object after the main agent grew it.
