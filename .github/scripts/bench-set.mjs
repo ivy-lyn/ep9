@@ -365,8 +365,8 @@ export async function run(o, { log = (s) => process.stderr.write(`${s}\n`) } = {
       r.out_rows_match = bo && ho ? bo.rowsMatch && ho.rowsMatch : null;
     }
   } finally {
-    if (!o.work) rmSync(work, { recursive: true, force: true });
-    if (!o.keep) rmSync(tmp, { recursive: true, force: true });
+    // tmp holds only the default work and cg dirs; --work and --keep dirs are elsewhere.
+    rmSync(tmp, { recursive: true, force: true });
   }
   const verdict = rows.some((r) => r.verdict === "FAIL") ? "FAIL" : rows.every((r) => r.verdict === "pass") ? "PASS" : "INCOMPLETE";
   const worst = {};
