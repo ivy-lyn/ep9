@@ -15,15 +15,20 @@ import { medianRanks, verdict } from "../lib/stats.mjs";
 import {
   analyze,
   checkRun,
+  cpuFields,
+  cpuTable,
   label,
   parseArgs,
   parseBenchJson,
+  parseProcStat,
+  parseSelfStat,
   parseVersions,
   platformId,
   Refusal,
   renderMarkdown,
   run as runCross,
   schedule,
+  spawnRun,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
 import { blockerOf, FRESH_PATHS, generateKernel, ICU4X_PATHS, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, REGRESS_PATHS, splitVersion, TREE_PATHS, treeState, TRIPLES, withProbe } from "./kernels.mjs";
@@ -1183,4 +1188,92 @@ test("kernels: the probes catch NaN, infinities, undefined and 32-bit wraps in t
   const j = JSON.parse(readFileSync(out, "utf8"));
   assert.deepEqual(j.summary.failing, ["v8v7/regexp", "v8v7/navier-stokes", "octane/navier-stokes"]);
   for (const id of j.summary.failing) assert.equal(j.kernels.find((x) => x.id === id).status, "output differs", id);
+});
+
+// ---- Path B columns: CPU time and steal (plan v13 section 3.2 task 2) -------------------------
+
+test("/proc readers: the children's CPU ticks of /proc/self/stat and the steal ticks of /proc/stat", () => {
+  // A command name with spaces and ")" (field 2); cutime 250 and cstime 31 are fields 16 and 17.
+  const self = "4242 (node (x) y) S 1 4242 4242 0 -1 4194304 1 2 3 4 120 30 250 31 20 0 7 0 99 1 2 3\n";
+  assert.deepEqual(parseSelfStat(self), { cutime: 250, cstime: 31 });
+  assert.equal(parseSelfStat("4242 (short) S 1 2\n"), null);
+  // The PB2 box form: the aggregate "cpu" line first, then one line per CPU; steal is its 8th number.
+  const stat = "cpu  1000 0 200 5000 10 0 5 1905 0 0\ncpu0 250 0 50 1250 2 0 1 476 0 0\nintr 1 2 3\n";
+  assert.equal(parseProcStat(stat), 1905);
+  assert.equal(parseProcStat("cpu0 1 2 3\n"), null);
+});
+
+test("cpuFields: user, sys, user + sys and steal in ms from two readings; null without one", () => {
+  const a = { cutime: 100, cstime: 10, steal: 1905, hz: 100 };
+  const b = { cutime: 142, cstime: 13, steal: 1910, hz: 100 };
+  assert.deepEqual(cpuFields(a, b), { user_ms: 420, sys_ms: 30, cpu_ms: 450, steal_ms: 50 });
+  assert.deepEqual(cpuFields(a, { ...b, hz: 250 }), { user_ms: 168, sys_ms: 12, cpu_ms: 180, steal_ms: 20 });
+  const none = { user_ms: null, sys_ms: null, cpu_ms: null, steal_ms: null };
+  assert.deepEqual(cpuFields(null, b), none);
+  assert.deepEqual(cpuFields(a, null), none);
+});
+
+test("spawnRun reads the probe before and after the run", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-cross-cpu-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(dir, "ep9");
+  symlinkSync(path.join(DIR, "testdata/fake-engine.sh"), fake);
+  const js = path.join(dir, "t0-loop.js");
+  writeFileSync(js, 'const want = 604229;\n');
+  const readings = [
+    { cutime: 7, cstime: 1, steal: 300, hz: 100 },
+    { cutime: 9, cstime: 2, steal: 304, hz: 100 },
+  ];
+  const r = spawnRun({ bin: fake, args: [] }, js, 10, () => readings.shift());
+  assert.equal(r.stdout.trim(), "604229");
+  assert.equal(r.status, 0);
+  assert.deepEqual([r.user_ms, r.sys_ms, r.cpu_ms, r.steal_ms], [20, 10, 30, 40]);
+  assert.equal(readings.length, 0);
+  // No /proc (the probe gives null): the fields are null, and the probe is read once.
+  let calls = 0;
+  const n = spawnRun({ bin: fake, args: [] }, js, 10, () => (calls++, null));
+  assert.deepEqual([n.cpu_ms, n.steal_ms, calls], [null, null, 1]);
+});
+
+test("cpuTable: medians and IQR % of wall and CPU time, steal sum and max; warm-up dropped", () => {
+  const s = (round, workload, engine, ms, cpu, steal) => ({ round, warmup: round === 0, workload, engine, ms, user_ms: cpu, sys_ms: 0, cpu_ms: cpu, steal_ms: steal });
+  const samples = [
+    s(0, "t0-loop", "ep9", 999, 999, 999),
+    s(1, "t0-loop", "ep9", 100, 90, 0),
+    s(2, "t0-loop", "ep9", 110, 90, 10),
+    s(3, "t0-loop", "ep9", 120, 100, 20),
+    s(4, "t0-loop", "ep9", 130, 100, 0),
+    s(1, "t0-loop", "qjs", 50, null, null),
+  ];
+  const t = cpuTable(samples, { engines: ["ep9", "qjs"], workloads: ["t0-loop"] });
+  assert.match(t.cpu, /wait4 rusage/);
+  assert.deepEqual(t.rows, [
+    // Type-7 quartiles. Wall 100, 110, 120, 130: median 115, quartiles 107.5 and 122.5, IQR 15
+    // (13.04%). CPU 90, 90, 100, 100: median 95, quartiles 90 and 100, IQR 10 (10.53%).
+    { workload: "t0-loop", engine: "ep9", n: 4, wall_ms: 115, wall_iqr_pct: 13.04, cpu_ms: 95, cpu_iqr_pct: 10.53, steal_ms_sum: 30, steal_ms_max: 20 },
+    { workload: "t0-loop", engine: "qjs", n: 1, wall_ms: 50, wall_iqr_pct: 0, cpu_ms: null, cpu_iqr_pct: null, steal_ms_sum: null, steal_ms_max: null },
+  ]);
+  assert.equal(cpuTable(samples.map((x) => ({ ...x, cpu_ms: null })), { engines: ["ep9"], workloads: ["t0-loop"] }), null);
+});
+
+test("CLI: each sample has the CPU and steal fields; on Linux they are numbers, else null", (t) => {
+  const f = fakeSetup(t);
+  const r = f.run(["--host", f.host(1000)]);
+  assert.equal(r.status, 0, r.stderr);
+  const res = JSON.parse(readFileSync(f.out, "utf8"));
+  const md = readFileSync(f.md, "utf8");
+  for (const x of res.M.samples) {
+    for (const k of ["user_ms", "sys_ms", "cpu_ms", "steal_ms"]) {
+      assert.ok(Object.hasOwn(x, k), k);
+      if (process.platform === "linux") assert.ok(typeof x[k] === "number" && x[k] >= 0, `${k} ${x[k]}`);
+      else assert.equal(x[k], null, k);
+    }
+  }
+  if (process.platform === "linux") {
+    assert.equal(res.M.cpu.rows.length, 3 * 3);
+    assert.match(md, /\| workload \| engine \| n \| wall ms \| wall IQR % \| CPU ms \| CPU IQR % \| steal ms, sum \| steal ms, max \|/);
+  } else {
+    assert.equal(res.M.cpu, null);
+    assert.match(md, /CPU time and steal: not measured \(Linux \/proc only\)\./);
+  }
 });
