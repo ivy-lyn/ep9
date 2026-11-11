@@ -629,7 +629,7 @@ fn containing<'s>(
     segment_data(cx, segmenter, string, start, end, word_like)
 }
 
-/// %IntlSegmentsPrototype% [ @@iterator ] ( ) (19.5.2.2).
+/// %IntlSegmentsPrototype% \[ @@iterator \] ( ) (19.5.2.2).
 fn segments_iterator<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

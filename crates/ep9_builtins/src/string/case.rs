@@ -114,7 +114,7 @@ fn convert_locale<'s>(
     }
 }
 
-/// String.prototype.toLocaleLowerCase ( [ locales ] ) (ECMA-402 §20.1.2).
+/// String.prototype.toLocaleLowerCase ( \[ locales \] ) (ECMA-402 §20.1.2).
 pub(super) fn to_locale_lower_case<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -124,7 +124,7 @@ pub(super) fn to_locale_lower_case<'s>(
     convert_locale(cx, this, args.get(0), Case::Lower, "toLocaleLowerCase")
 }
 
-/// String.prototype.toLocaleUpperCase ( [ locales ] ) (ECMA-402 §20.1.3).
+/// String.prototype.toLocaleUpperCase ( \[ locales \] ) (ECMA-402 §20.1.3).
 pub(super) fn to_locale_upper_case<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
