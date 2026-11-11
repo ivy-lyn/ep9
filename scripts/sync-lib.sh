@@ -55,7 +55,7 @@ pinned_tree() {
 #   absent  no checkout.
 # Status 0 when every NAME is pinned, else 1. It changes nothing in the checkout. The one check
 # of "the checkout that cargo builds is the pin plus the patches": the runner and ep9 build
-# scripts (tools/test262/runner_build.rs), kernels.mjs and the m1-exit nesting line call it.
+# scripts (tools/test262/runner_build.rs) and kernels.mjs call it.
 #   sh -c '. "$1/scripts/sync-lib.sh"; root=$1; fork_attest regress icu4x' sh <root>
 # POSIX sh (dash runs it): the build scripts run it with sh.
 fork_attest() {
