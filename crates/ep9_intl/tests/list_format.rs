@@ -1,8 +1,8 @@
-//! Intl.ListFormat (ECMA-402 §13; INTL W2 LIST+CASEMAP), with and without GC stress. The
-//! expected lines are node v26.13.0's output for the same script (`print` = `console.log` of
-//! the arguments, each through `String`, joined by a space; ICU 78.3, CLDR 48: the strings of
-//! these cases are the same in the CLDR 49 data of ICU4X 2.4), with one difference, named at
-//! its line.
+//! Intl.ListFormat (ECMA-402 §13) and toLocaleLowerCase / toLocaleUpperCase (§19.1.2-3):
+//! INTL W2 LIST+CASEMAP, with and without GC stress. The expected lines are node v26.13.0's
+//! output for the same script (`print` = `console.log` of the arguments, each through
+//! `String`, joined by a space; ICU 78.3, CLDR 48: the strings of these cases are the same in
+//! the CLDR 49 data of ICU4X 2.4), with two differences, each named at its line.
 
 mod common;
 use common::{lines, run_both};
@@ -94,6 +94,44 @@ fn format_and_format_to_parts_give_the_node_lines() {
             "8 %uD800%20and%20x%uDC00",
             "e:x/l: and /e:y , , and ",
             "true []",
+        ])
+    );
+}
+
+const CASEMAP: &str = r#"const U = (...c) => String.fromCharCode(...c);
+const e = s => escape(s);
+print(e("istanbul".toLocaleUpperCase("tr")), e("ISTANBUL".toLocaleLowerCase("tr")), e("I".toLocaleLowerCase("az-Latn")), e("i".toLocaleUpperCase(["tr", "en"])), e("i".toLocaleUpperCase(["en", "tr"])));
+print(e(("I" + U(0x307)).toLocaleLowerCase("tr")), e(("I" + U(0x307)).toLocaleLowerCase("en")), e(U(0xCC).toLocaleLowerCase("lt")), e(("i" + U(0x307)).toLocaleUpperCase("lt")), e(("j" + U(0x307)).toLocaleUpperCase("lt-LT")));
+print(e(U(0x3AC, 0x3BB, 0x3C6, 0x3B1).toLocaleUpperCase("el")), e(U(0x391, 0x3A3).toLocaleLowerCase("el")), e(U(0x587).toLocaleUpperCase("hy")), e("ijs".toLocaleUpperCase("nl")));
+print(e(("I" + U(0xD800, 0x307)).toLocaleLowerCase("tr")), e(U(0xDC00) + "i".toLocaleUpperCase("tr")), e("i".toLocaleUpperCase("tr-u-co-trad")), e("i".toLocaleUpperCase("TR")), e("i".toLocaleUpperCase(new Intl.Locale("tr"))));
+print(e("Abc".toLocaleUpperCase()), e("ABC".toLocaleLowerCase(undefined)), e(U(0xDF).toLocaleUpperCase("de")), "a".toLocaleUpperCase.length, "A".toLocaleLowerCase.length);
+const r = [];
+function t(fn) { try { fn(); r.push("ok"); } catch (x) { r.push(x.constructor.name); } }
+t(() => "a".toLocaleLowerCase(["en-US", "this is not a valid locale"]));
+t(() => "".toLocaleUpperCase("x"));
+t(() => "".toLocaleUpperCase([1]));
+t(() => "".toLocaleUpperCase(null));
+t(() => String.prototype.toLocaleUpperCase.call(null, "tr"));
+const log = [];
+t(() => String.prototype.toLocaleLowerCase.call({ toString() { log.push("this"); return "I"; } }, { get length() { log.push("len"); return 1; }, get 0() { log.push("0"); return "tr"; } }));
+print(r.join(" "), log.join());
+"#;
+
+/// The language-sensitive case mappings (tr, az, lt, el; hy and nl map as the root), lone
+/// surrogates, the locale checks and the read order.
+#[test]
+fn case_mapping_gives_the_node_lines() {
+    assert_eq!(
+        run_both(CASEMAP),
+        lines(&[
+            "%u0130STANBUL %u0131stanbul %u0131 %u0130 I",
+            "i i%u0307 i%u0307%u0300 I J",
+            "%u0391%u039B%u03A6%u0391 %u03B1%u03C2 %u0535%u0552 IJS",
+            "%u0131%uD800%u0307 %uDC00%u0130 %u0130 %u0130 %u0130",
+            "ABC abc SS 0 0",
+            // node gives "ok" here: V8 checks only the first tag; CanonicalizeLocaleList checks
+            // every tag (test262 validates-all-locale-identifiers.js).
+            "RangeError RangeError TypeError TypeError TypeError ok this,len,0",
         ])
     );
 }
