@@ -47,8 +47,8 @@
 //! - **Resize.** A resizable store keeps its base, so the views keep their data word; the bytes
 //!   from the byte length to the committed end are always 0 (a shrink zeroes them), so a later
 //!   grow reads zeros.
-//! - **Shared bytes (TA-D11).** Every access to SAB bytes is atomic: Relaxed for element and
-//!   DataView access (a byte loop when unaligned), SeqCst for Atomics.
+//! - **Shared bytes (TA-D11).** Every access to SAB bytes is atomic: a plain access is a loop of
+//!   one-byte Relaxed atomics (TA-ORCH-12, [`read_raw`]), SeqCst of the element width for Atomics.
 //! - **Caps (design §2.3, est.).** A `maxByteLength` above [`MAX_RESERVATION`] is a RangeError;
 //!   a fixed buffer above `max_heap_bytes` or that the heap cannot allocate is a RangeError
 //!   (CreateByteDataBlock).
@@ -963,8 +963,27 @@ pub(crate) fn is_bigint_elem(t: u8) -> bool {
     t == 7 || t == 8
 }
 
-/// Reads `size` (1, 2, 4 or 8) bytes at `p` as a little-endian integer. Shared bytes: Relaxed
-/// atomic loads of the element width when aligned, else a Relaxed byte loop.
+#[cfg(test)]
+thread_local! {
+    /// Tests (TA-ORCH-12): the count of Relaxed atomic accesses to shared bytes on the plain
+    /// (Unordered) paths of this thread ([`read_raw`], [`write_raw`]), by width: index 0, 1, 2
+    /// and 3 for 1, 2, 4 and 8 bytes.
+    pub(crate) static PLAIN_SHARED_WIDTHS: Cell<[u32; 4]> = const { Cell::new([0; 4]) };
+}
+
+/// Tests: counts one plain access of `size` bytes to shared bytes ([`PLAIN_SHARED_WIDTHS`]).
+#[cfg(test)]
+fn note_plain_shared(size: usize) {
+    PLAIN_SHARED_WIDTHS.with(|c| {
+        let mut w = c.get();
+        w[size.trailing_zeros() as usize] += 1;
+        c.set(w);
+    });
+}
+
+/// Reads `size` (1, 2, 4 or 8) bytes at `p` as a little-endian integer, order Unordered. Shared
+/// bytes: one Relaxed `AtomicU8` load per byte at any size, so plain accesses never mix sizes
+/// (TA-ORCH-12, design §5.6; Atomics against bytes: route TA-SHARED-MIXED-WIDTH).
 ///
 /// # Safety
 /// `[p, p + size)` is inside a live store.
@@ -972,21 +991,12 @@ pub(crate) fn is_bigint_elem(t: u8) -> bool {
 pub(crate) unsafe fn read_raw(p: *const u8, size: usize, shared: bool) -> u64 {
     let p = p.cast_mut();
     if shared {
-        if p.addr().is_multiple_of(size) {
-            // SAFETY: aligned, inside a live store (caller); every access to these bytes is
-            // atomic (TA-D11).
-            return unsafe {
-                match size {
-                    1 => u64::from(AtomicU8::from_ptr(p).load(Relaxed)),
-                    2 => u64::from(AtomicU16::from_ptr(p.cast()).load(Relaxed)),
-                    4 => u64::from(AtomicU32::from_ptr(p.cast()).load(Relaxed)),
-                    _ => AtomicU64::from_ptr(p.cast()).load(Relaxed),
-                }
-            };
-        }
         let mut x = 0u64;
         for i in 0..size {
-            // SAFETY: as above, one byte at a time.
+            #[cfg(test)]
+            note_plain_shared(1);
+            // SAFETY: inside a live store (caller), one byte at a time; every plain access to
+            // shared bytes is a one-byte atomic (TA-D11, TA-ORCH-12).
             let byte = unsafe { AtomicU8::from_ptr(p.add(i)).load(Relaxed) };
             x |= u64::from(byte) << (8 * i);
         }
@@ -1003,27 +1013,17 @@ pub(crate) unsafe fn read_raw(p: *const u8, size: usize, shared: bool) -> u64 {
     }
 }
 
-/// Writes the low `size` bytes of `x` at `p`, little endian ([`read_raw`]'s rules).
+/// Writes the low `size` bytes of `x` at `p`, little endian, order Unordered ([`read_raw`]).
 ///
 /// # Safety
 /// `[p, p + size)` is inside a live store.
 #[inline]
 pub(crate) unsafe fn write_raw(p: *mut u8, size: usize, x: u64, shared: bool) {
     if shared {
-        if p.addr().is_multiple_of(size) {
-            // SAFETY: as `read_raw`.
-            unsafe {
-                match size {
-                    1 => AtomicU8::from_ptr(p).store(x as u8, Relaxed),
-                    2 => AtomicU16::from_ptr(p.cast()).store(x as u16, Relaxed),
-                    4 => AtomicU32::from_ptr(p.cast()).store(x as u32, Relaxed),
-                    _ => AtomicU64::from_ptr(p.cast()).store(x, Relaxed),
-                }
-            }
-            return;
-        }
         for i in 0..size {
-            // SAFETY: as above, one byte at a time.
+            #[cfg(test)]
+            note_plain_shared(1);
+            // SAFETY: as `read_raw`, one byte at a time.
             unsafe { AtomicU8::from_ptr(p.add(i)).store((x >> (8 * i)) as u8, Relaxed) };
         }
         return;

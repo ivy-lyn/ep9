@@ -393,8 +393,8 @@ mod view {
     //!   TYPED_FIXED (7)     the +40 length (0 once detached)
     //!   TYPED_VARIABLE (8)  a resizable ArrayBuffer: its byte length (slot 1; detached: out of
     //!                       bounds), the +48 byte offset, the +40 length or "auto" (out of
-    //!                       bounds when the view does not fit); a growable SharedArrayBuffer:
-    //!                       cold (its length is in the shared block, behind the table)
+    //!                       bounds when the view does not fit)
+    //!   a SharedArrayBuffer (any form): cold, in bounds or not (see below)
     //! GetKeyedProperty   i in bounds: the element as a Number (Uint32 above 2^31 - 1 a double,
     //!                    a float NaN the one NaN); else undefined (no prototype walk, §10.4.5.4)
     //! SetKeyedProperty   i in bounds and v a Number that needs no call (an int32 for the integer
@@ -403,13 +403,17 @@ mod view {
     //!                    needs `trunc`, a libm call on baseline x86-64)
     //! ```
     //!
-    //! The bytes of a SharedArrayBuffer are read and written with Relaxed atomics of the element
-    //! width (TA-D11). A view element is aligned to its size (a byte offset that is a multiple
-    //! of the size, on a store base that is 8-aligned), else the case is cold. The bound and the
-    //! data word come from the view and from its buffer, which `typed_array::new_view` took only
-    //! after `array_buffer::buffer_class` passed: an engine buffer keeps its table entry while
-    //! it lives, and only `array_buffer.rs` writes its slots (BRAND-T, design §5.1 note (1)), so
-    //! the raw slot reads here trust them. The view case reads no Value slot it does not check
+    //! A view on a SharedArrayBuffer is cold (TA-ORCH-12): a plain access to shared bytes is a
+    //! loop of one-byte Relaxed atomics (`array_buffer::read_raw`), so that every plain access
+    //! to them has one width, and the spec path does that loop. A byte loop here would make the
+    //! hit code larger for every view; the miss costs one compare of the buffer's class, which
+    //! the case read before too. So a hit reads and writes only non-shared bytes, with plain
+    //! loads and stores. A view element is aligned to its size (a byte offset that is a
+    //! multiple of the size, on a store base that is 8-aligned), else the case is cold. The
+    //! bound and the data word come from the view and from its buffer, which
+    //! `typed_array::new_view` took only after `array_buffer::buffer_class` passed: an engine
+    //! buffer keeps its table entry while it lives, and only `array_buffer.rs` writes its slots
+    //! (BRAND-T, design §5.1 note (1)), so the raw slot reads here trust them. The view case reads no Value slot it does not check
     //! and writes none (a store writes raw bytes: no barrier).
     //!
     //! **The cold-miss rule** holds for the views as for the Arrays: the cold body records
@@ -426,8 +430,6 @@ mod view {
     //!   the key half (design §6.1) would make the hit read the vector, and that read gave the
     //!   `SetKeyedProperty` handler two more saved registers on entry (+3 instructions per
     //!   Array store hit; navier-stokes +0.4%, mac a64).
-
-    use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Relaxed};
 
     use super::record_as_cold;
     use crate::abi::ObjectClass;
@@ -493,9 +495,9 @@ mod view {
 
     /// Where the key of a view access lands ([`element`]).
     enum At {
-        /// Element `i` of type `t` at `p`, aligned to its size, inside the view's live store;
-        /// `shared` for the bytes of a SharedArrayBuffer.
-        Elem { t: u8, p: *mut u8, shared: bool },
+        /// Element `i` of type `t` at `p`, aligned to its size, inside the view's live store
+        /// (never shared bytes).
+        Elem { t: u8, p: *mut u8 },
         /// IsValidIntegerIndex is false (out of bounds, detached): a load gives undefined.
         Out,
         /// A case the view hit does not take: the cold body.
@@ -532,7 +534,10 @@ mod view {
             return At::Cold;
         };
         const SAB: u64 = int32_bits(ObjectClass::SharedArrayBuffer.id() as i32);
-        let shared = rd(bc, object::slot_obj::CLASS) == SAB;
+        if rd(bc, object::slot_obj::CLASS) == SAB {
+            // TA-ORCH-12: shared bytes go byte by byte on the spec path (module doc).
+            return At::Cold;
+        }
         let len = int32(rd(c, layout::VIEW_LENGTH as usize));
         let n = if shape::elements_kind(shape::shape_of(o)) == ek::TYPED_FIXED {
             // The +40 length (0 once detached); a length of 2^31 or more is a double: cold.
@@ -541,11 +546,8 @@ mod view {
                 None => return At::Cold,
             }
         } else {
-            // TYPED_VARIABLE: the bound reads the buffer at each access (a resize writes no
-            // view).
-            if shared {
-                return At::Cold;
-            }
+            // TYPED_VARIABLE (a resizable ArrayBuffer): the bound reads the buffer at each
+            // access (a resize writes no view).
             let (Some(flags), Some(bytes), Some(off), Some(len)) = (
                 buffer_slot(b, ab::slot::FLAGS).and_then(int32),
                 buffer_slot(b, ab::slot::BYTE_LENGTH).and_then(int32),
@@ -582,26 +584,23 @@ mod view {
         if data.is_null() || !p.addr().is_multiple_of(size) {
             return At::Cold;
         }
-        At::Elem { t, p, shared }
+        At::Elem { t, p }
     }
 
-    /// The little-endian bytes of element type `t` at `p` (Relaxed atomics for shared bytes).
+    /// The little-endian bytes of element type `t` at `p` (never shared bytes).
     ///
     /// # Safety
-    /// `[p, p + elem_size(t))` is inside a live store, and `p` is aligned to that size.
+    /// `[p, p + elem_size(t))` is inside a live store that no other thread writes, and `p` is
+    /// aligned to that size.
     #[inline(always)]
-    unsafe fn load_raw(p: *mut u8, t: u8, shared: bool) -> u64 {
-        // SAFETY: the caller's contract; shared bytes are only accessed atomically (TA-D11).
+    unsafe fn load_raw(p: *mut u8, t: u8) -> u64 {
+        // SAFETY: the caller's contract.
         unsafe {
-            match (elem_size(t), shared) {
-                (1, false) => u64::from(p.read()),
-                (2, false) => u64::from(u16::from_le(p.cast::<u16>().read())),
-                (4, false) => u64::from(u32::from_le(p.cast::<u32>().read())),
-                (_, false) => u64::from_le(p.cast::<u64>().read()),
-                (1, true) => u64::from(AtomicU8::from_ptr(p).load(Relaxed)),
-                (2, true) => u64::from(u16::from_le(AtomicU16::from_ptr(p.cast()).load(Relaxed))),
-                (4, true) => u64::from(u32::from_le(AtomicU32::from_ptr(p.cast()).load(Relaxed))),
-                (_, true) => u64::from_le(AtomicU64::from_ptr(p.cast()).load(Relaxed)),
+            match elem_size(t) {
+                1 => u64::from(p.read()),
+                2 => u64::from(u16::from_le(p.cast::<u16>().read())),
+                4 => u64::from(u32::from_le(p.cast::<u32>().read())),
+                _ => u64::from_le(p.cast::<u64>().read()),
             }
         }
     }
@@ -612,18 +611,14 @@ mod view {
     /// # Safety
     /// As [`load_raw`].
     #[inline(always)]
-    unsafe fn store_raw(p: *mut u8, t: u8, x: u64, shared: bool) {
+    unsafe fn store_raw(p: *mut u8, t: u8, x: u64) {
         // SAFETY: as `load_raw`.
         unsafe {
-            match (elem_size(t), shared) {
-                (1, false) => p.write(x as u8),
-                (2, false) => p.cast::<u16>().write((x as u16).to_le()),
-                (4, false) => p.cast::<u32>().write((x as u32).to_le()),
-                (_, false) => p.cast::<u64>().write(x.to_le()),
-                (1, true) => AtomicU8::from_ptr(p).store(x as u8, Relaxed),
-                (2, true) => AtomicU16::from_ptr(p.cast()).store((x as u16).to_le(), Relaxed),
-                (4, true) => AtomicU32::from_ptr(p.cast()).store((x as u32).to_le(), Relaxed),
-                (_, true) => AtomicU64::from_ptr(p.cast()).store(x.to_le(), Relaxed),
+            match elem_size(t) {
+                1 => p.write(x as u8),
+                2 => p.cast::<u16>().write((x as u16).to_le()),
+                4 => p.cast::<u32>().write((x as u32).to_le()),
+                _ => p.cast::<u64>().write(x.to_le()),
             }
         }
     }
@@ -681,11 +676,11 @@ mod view {
         st.acc = match element(o, k) {
             At::Cold => return Flow::Cold,
             At::Out => UNDEFINED,
-            At::Elem { t, p, shared } => {
+            At::Elem { t, p } => {
                 // SAFETY: element `i` is below the view's current bound, so it is inside the
                 // live store (the view holds its buffer and the buffer its store, design
-                // §5.1), and `p` is aligned (checked).
-                raw_value(t, unsafe { load_raw(p, t, shared) })
+                // §5.1), not a shared one (checked), and `p` is aligned (checked).
+                raw_value(t, unsafe { load_raw(p, t) })
             }
         };
         #[cfg(test)]
@@ -706,14 +701,14 @@ mod view {
         if !is_view(o) {
             return Flow::Cold;
         }
-        let At::Elem { t, p, shared } = element(o, k) else {
+        let At::Elem { t, p } = element(o, k) else {
             return Flow::Cold;
         };
         let Some(x) = value_raw(t, v) else {
             return Flow::Cold;
         };
         // SAFETY: as `get`; no JS ran after the bound was read (`v` is a Number already).
-        unsafe { store_raw(p, t, x, shared) };
+        unsafe { store_raw(p, t, x) };
         #[cfg(test)]
         VIEW_HITS.with(|c| c.set([c.get()[0], c.get()[1] + 1]));
         record_as_cold(s, VIEW_BITS)

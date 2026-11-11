@@ -1728,8 +1728,8 @@ fn a_view_load_hits_each_number_type_with_the_spec_answer() {
 /// resize, a grow and a detach change what the view case answers, with no IC state to
 /// update. A fixed-length view and an "auto" view on a resizable ArrayBuffer (TYPED_VARIABLE),
 /// a view on a fixed-length ArrayBuffer (TYPED_FIXED) and two views on a growable
-/// SharedArrayBuffer (a fixed one hits with Relaxed atomics; the auto one is cold: its bound
-/// is in the shared block). Every load also equals `typed_array::get_element`.
+/// SharedArrayBuffer (both cold: TA-ORCH-12, a plain access to shared bytes is a byte loop on
+/// the spec path). Every load also equals `typed_array::get_element`.
 #[test]
 fn a_view_load_reads_the_bound_after_resize_grow_and_detach() {
     use crate::array_buffer as ab;
@@ -1812,14 +1812,15 @@ fn a_view_load_reads_the_bound_after_resize_grow_and_detach() {
             crate::elements::kind::TYPED_VARIABLE
         );
         put_raw(sf, 3, 1, 0x8001);
-        check(&mut t, sf, 1, int(-32767), true);
+        // TA-ORCH-12: a view on shared bytes never hits (the spec path reads and writes them
+        // byte by byte), in bounds or out of bounds, fixed or auto.
+        check(&mut t, sf, 1, int(-32767), false);
         check(&mut t, sa, 1, int(-32767), false);
-        // Another view type at the same site hits too (Relaxed atomics on the shared bytes).
-        assert_eq!(t.view_store(sf, int(3), int(300)), [0, 1]);
+        assert_eq!(t.view_store(sf, int(3), int(300)), [0, 0]);
         check(&mut t, sa, 3, int(300), false);
         ab::grow_shared(t.rt(), s, 16).unwrap();
         check(&mut t, sa, 7, int(0), false);
-        check(&mut t, sf, 4, UNDEFINED, true);
+        check(&mut t, sf, 4, UNDEFINED, false);
         black_box((auto, fixed, b, v2, b2, s, sf, sa));
         t.collect();
     });

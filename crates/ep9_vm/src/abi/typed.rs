@@ -1010,4 +1010,77 @@ mod tests {
             });
         }
     }
+
+    /// TA-ORCH-12 (Codex TA-2 r2 finding 1): two isolates on two threads do plain DataView
+    /// stores of two widths on the same 4 bytes of one SharedArrayBuffer at the same time:
+    /// `setInt32` (both byte orders) and a `getUint32` here, `setUint8` of each byte there, in
+    /// a bounded loop. A plain access to shared bytes is one Relaxed `AtomicU8` access per
+    /// byte, so this is no data race and no mixed-size access in Rust. Each byte this side
+    /// reads, and each byte at the end, is 0 or a value that one side wrote there (JS lets an
+    /// Int32 tear). Not a timing test: it checks only the values, and each wait has a deadline.
+    #[test]
+    fn two_threads_store_two_widths_on_the_same_shared_bytes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        const DEADLINE: Duration = Duration::from_secs(120);
+        const ROUNDS: u32 = 20_000;
+        /// The values that a side can leave in byte `k` (0 at the start).
+        fn may_hold(k: u8, x: u8) -> bool {
+            // setInt32 of 0x04030201 and 0x14131211, little and big endian; setUint8 of
+            // 0xA0 + k and 0xB0 + k.
+            [0, 1 + k, 0x11 + k, 4 - k, 0x14 - k, 0xA0 + k, 0xB0 + k].contains(&x)
+        }
+        crate::tests::on_big_stack(|| {
+            let mut iso = isolate(config(Dispatch::DEFAULT, false));
+            let iso: &mut Isolate = &mut iso;
+            let mut cx = Cx::new(&mut iso.cx);
+            let p = cx.new_object();
+            let sab = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+            let dv = cx.new_data_view(p, sab, 0, None).unwrap();
+            let block = cx.shared_array_buffer_block(sab).unwrap();
+            let (to_main, from_other) = mpsc::channel::<()>();
+            let other = std::thread::Builder::new()
+                .stack_size(512 << 20)
+                .spawn(move || {
+                    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+                    let mut cx = Cx::new(&mut iso.cx);
+                    let p = cx.new_object();
+                    let sab = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                    let dv = cx.new_data_view(p, sab, 0, None).unwrap();
+                    to_main.send(()).unwrap();
+                    for r in 0..ROUNDS {
+                        for k in 0..4u8 {
+                            let x = f64::from(if r % 2 == 0 { 0xA0 } else { 0xB0 } + k);
+                            // Uint8 (Table 71 row 1).
+                            cx.data_view_set_value(dv, u64::from(k), 1, Local::number(x), true)
+                                .unwrap();
+                        }
+                    }
+                    std::hint::black_box((sab, dv));
+                })
+                .unwrap();
+            from_other
+                .recv_timeout(DEADLINE)
+                .expect("the other isolate adopted the block");
+            for r in 0..ROUNDS {
+                let x = if r % 2 == 0 { 0x0403_0201 } else { 0x1413_1211 };
+                // Int32 (row 5): rounds 0 and 1 of each 4 little endian, 2 and 3 big endian.
+                cx.data_view_set_value(dv, 0, 5, Local::number(f64::from(x)), r % 4 < 2)
+                    .unwrap();
+                // Uint32 (row 6), little endian: byte k is bits 8k..8k+8.
+                let got = cx.data_view_get_value(dv, 0, 6, true).unwrap();
+                let got = got.as_number().unwrap() as u32;
+                for (k, x) in got.to_le_bytes().into_iter().enumerate() {
+                    assert!(may_hold(k as u8, x), "round {r}: byte {k} = {x:#x}");
+                }
+            }
+            other.join().expect("the other thread ended");
+            for k in 0..4u8 {
+                let x = cx.data_view_get_value(dv, u64::from(k), 1, true).unwrap();
+                let x = x.as_number().unwrap() as u8;
+                assert!(may_hold(k, x), "the end: byte {k} = {x:#x}");
+            }
+            std::hint::black_box((p, sab, dv));
+        });
+    }
 }

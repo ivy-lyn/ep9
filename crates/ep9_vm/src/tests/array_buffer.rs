@@ -16,6 +16,7 @@
 //! | `shared_buffers_grow_and_never_detach` | grow, the RangeErrors and TypeErrors, views on a SAB |
 //! | `get_and_set_value_in_both_byte_orders` | each type, little and big endian, unaligned and shared; the range checks |
 //! | `copy_bytes_with_overlap` | CopyDataBlockBytes forward, backward, across buffers and shared |
+//! | `plain_shared_access_goes_byte_by_byte` | TA-ORCH-12: a DataView get and set, a TypedArray element get and set and a copy on shared bytes use one-byte Relaxed atomics only; the bytes land right in each type, index and byte order |
 //! | `atomics_operations` | load, store, the 6 read-modify-write ops and compare-exchange on each integer type |
 //! | `data_view_slots` | the DataView slots (slot 4: its own table entry), its range checks, auto length |
 //! | `a_failed_transfer_leaves_the_buffer` | ArrayBufferCopyAndDetach order: a failed grow of a moved store leaves the old buffer as it was |
@@ -636,6 +637,77 @@ fn copy_bytes_with_overlap() {
             ));
             assert_eq!(read(rt, c), [0, 5, 8], "a failed copy writes nothing");
         }
+    });
+}
+
+/// The plain-access width probe ([`ab::PLAIN_SHARED_WIDTHS`]: 1, 2, 4, 8 bytes) so far, then 0.
+fn take_widths() -> [u32; 4] {
+    ab::PLAIN_SHARED_WIDTHS.with(|c| c.replace([0; 4]))
+}
+
+/// TA-ORCH-12 (Codex TA-2 r2 finding 1): a plain (Unordered, ECMA-262 §29) access to the bytes
+/// of a SharedArrayBuffer goes byte by byte, one Relaxed `AtomicU8` access per byte, so every
+/// plain access to shared bytes has one width (a mixed-size atomic access is undefined in
+/// Rust). Each Table 71 type at an aligned index (0 and 8) and at an odd one (3), in both byte
+/// orders: a DataView set puts the right bytes in the block and the get gives the value back,
+/// each with `size` one-byte accesses and none wider. A TypedArray element set and get of each
+/// type on a shared buffer: the same. CopyDataBlockBytes: one byte each way. A non-shared
+/// buffer takes the plain path (no count).
+#[test]
+fn plain_shared_access_goes_byte_by_byte() {
+    each(|cx| {
+        let b = shared(cx.rt(), 16, None);
+        let dv = ab::new_data_view(cx.rt(), NULL, b, 0, None).unwrap();
+        take_widths();
+        for (t, v, le) in byte_rows(cx.rt()) {
+            let rt = cx.rt();
+            let size = le.len() as u32;
+            let same = |back: u64| {
+                if kinds::is_bigint(v) {
+                    crate::bigint::equals(back, v)
+                } else if t == 2 {
+                    n(back) == 254.0
+                } else {
+                    n(back) == n(v)
+                }
+            };
+            for at in [0u64, 3, 8] {
+                for little in [true, false] {
+                    let what = format!("type {t} at {at} little {little}");
+                    ab::data_view_set(rt, dv, at, t, v, little).unwrap();
+                    assert_eq!(take_widths(), [size, 0, 0, 0], "set: {what}");
+                    let back = ab::data_view_get(rt, dv, at, t, little).unwrap();
+                    assert_eq!(take_widths(), [size, 0, 0, 0], "get: {what}");
+                    assert!(same(back), "{what}");
+                    let got: Vec<u8> = (0..u64::from(size))
+                        .map(|i| n(ab::get_value(rt, b, at + i, 1, true).unwrap()) as u8)
+                        .collect();
+                    take_widths();
+                    let mut want = le.clone();
+                    if !little {
+                        want.reverse();
+                    }
+                    assert_eq!(got, want, "bytes: {what}");
+                }
+            }
+            // A TypedArray element of the type at byte 8 (aligned for every size).
+            let o = ta::new_view(rt, NULL, t, b, 8, Some(1)).unwrap();
+            ta::set_element(cx, o, 0.0, v).unwrap();
+            assert_eq!(take_widths(), [size, 0, 0, 0], "element set: type {t}");
+            let back = ta::get_element(cx.rt(), o, 0.0);
+            assert_eq!(take_widths(), [size, 0, 0, 0], "element get: type {t}");
+            assert!(same(back), "element: type {t}");
+            black_box(o);
+        }
+        let rt = cx.rt();
+        ab::copy_bytes(rt, b, 0, b, 8, 8).unwrap();
+        assert_eq!(take_widths(), [16, 0, 0, 0], "a copy: 8 reads and 8 writes");
+        let plain = buffer(rt, 16, None);
+        let pdv = ab::new_data_view(rt, NULL, plain, 0, None).unwrap();
+        ab::data_view_set(rt, pdv, 0, 11, num(1.5), true).unwrap();
+        assert_eq!(n(ab::data_view_get(rt, pdv, 0, 11, true).unwrap()), 1.5);
+        assert_eq!(take_widths(), [0; 4], "non-shared bytes: the plain path");
+        black_box((b, dv, plain, pdv));
     });
 }
 
