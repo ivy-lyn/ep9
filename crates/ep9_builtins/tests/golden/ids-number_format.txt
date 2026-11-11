@@ -1,0 +1,8 @@
+# ep9 builtin ids: module number_format, block 34. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x4400   34.0         constructor  0       "NumberFormat"  (%Intl.NumberFormat%)
+0x4401   34.1         method       1       "supportedLocalesOf"  (%Intl.NumberFormat%.supportedLocalesOf w-c)
+0x4402   34.2         getter       0       "format"  (%Intl.NumberFormat.prototype%.format --c)
+0x4403   34.3         method       1       "formatToParts"  (%Intl.NumberFormat.prototype%.formatToParts w-c)
+0x4404   34.4         method       0       "resolvedOptions"  (%Intl.NumberFormat.prototype%.resolvedOptions w-c)

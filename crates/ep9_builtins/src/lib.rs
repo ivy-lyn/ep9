@@ -16,8 +16,10 @@
 //!                                 27
 //!          iterator, disposable,
 //!          28        29
-//!          ep9_intl::MODULES: intl, locale, collator]
-//!                             30    31      32
+//!          ep9_intl::MODULES: intl, locale, collator, plural_rules, number_format,
+//!                             30    31      32        33            34
+//!                             list_format, segmenter, display_names]
+//!                             35           36         37
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -91,6 +93,13 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_intl::intl::MODULE,
     ep9_intl::locale::MODULE,
     ep9_intl::collator::MODULE,
+    // INTL W2 (the NF-CORE skeleton; PLURAL, NF-CORE, LIST+CASEMAP, SEGMENTER and DISPLAYNAMES
+    // fill them): the lazy group "Intl".
+    ep9_intl::plural_rules::MODULE,
+    ep9_intl::number_format::MODULE,
+    ep9_intl::list_format::MODULE,
+    ep9_intl::segmenter::MODULE,
+    ep9_intl::display_names::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.
