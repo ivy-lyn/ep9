@@ -235,7 +235,9 @@ impl<'s> Cx<'s> {
     /// `element` (a Table 71 row, the module docs) at byte `byte_index` of `buffer`, little
     /// endian if `little_endian`: a Number, or a BigInt for rows 7 and 8. A TypeError if
     /// `buffer` is not a buffer or is detached; a RangeError if the element is past its byte
-    /// length.
+    /// length. isTypedArray true (the TypedArray form): on shared bytes an index that is a
+    /// multiple of the element size is one Relaxed atomic of the element width (no tear);
+    /// another index goes byte by byte. A DataView uses [`Cx::data_view_get_value`].
     pub fn get_value_from_buffer(
         &mut self,
         buffer: impl Into<Local<'s>>,
@@ -259,6 +261,9 @@ impl<'s> Cx<'s> {
     /// at byte `byte_index` of `buffer` (NumericToRawBytes: Uint8Clamped rounds half to even
     /// and clamps; Float16 and Float32 round to nearest, ties to even; a NaN is one pattern).
     /// An error as [`Cx::get_value_from_buffer`], or a TypeError if `value` has the wrong type.
+    /// isTypedArray true (the TypedArray form): on shared bytes an index that is a multiple of
+    /// the element size is one Relaxed atomic of the element width (no tear); another index
+    /// goes byte by byte. A DataView uses [`Cx::data_view_set_value`].
     pub fn set_value_in_buffer(
         &mut self,
         buffer: impl Into<Local<'s>>,
