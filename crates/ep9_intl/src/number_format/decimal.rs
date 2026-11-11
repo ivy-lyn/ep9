@@ -914,6 +914,25 @@ pub fn pieces(
     }))
 }
 
+/// The CLDR T1 row (exponent separator, approximately sign, range pattern) of the data
+/// locale and numbering system of `f` (`None` if the ICU4X data has no symbols), from the
+/// cached ICU4X data: the ranges of `super::range` read it.
+pub(super) fn t1_row(f: &Format<'_>) -> Option<&'static cldr::NumberSymbols> {
+    icu_for(f).and_then(|icu| icu.t1)
+}
+
+/// The minus and plus sign affixes (prefix form, with their bidi marks) of the data locale
+/// and numbering system of `f` (`None` if the ICU4X data has no symbols): the ranges of
+/// `super::range` find the sign symbol in the parts with them.
+pub(super) fn sign_affixes(f: &Format<'_>) -> Option<(String, String)> {
+    let icu = icu_for(f)?;
+    let symbols = icu.symbols.get();
+    Some((
+        symbols.minus_sign_prefix().to_string(),
+        symbols.plus_sign_prefix().to_string(),
+    ))
+}
+
 /// PartitionNumberPattern ( numberFormat, x ) (§16.5.3) for the decimal style: the parts of
 /// `x` formatted with `f`.
 pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {

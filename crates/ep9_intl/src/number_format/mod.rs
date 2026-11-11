@@ -21,8 +21,8 @@
 //! currency ([`currency`], NF-CURRENCY, with [`currency_digits`]), unit
 //! ([`unit`](mod@unit), NF-UNIT), the notations scientific and engineering ([`scientific`],
 //! NF-SCIRANGE); until then they format as the decimal style in standard notation.
-//! `formatRange` and `formatRangeToParts` (34.5, 34.6; NF-SCIRANGE, with [`range`]) throw a
-//! TypeError until NF-SCIRANGE fills them.
+//! `formatRange` and `formatRangeToParts` (34.5, 34.6; NF-SCIRANGE) format through
+//! [`range`].
 //! `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` call
 //! [`to_locale_string`].
 //!
@@ -846,26 +846,76 @@ fn format_to_parts<'s>(
     Ok(array.into())
 }
 
-/// Intl.NumberFormat.prototype.formatRange ( start, end ) (16.3.4): a TypeError until
-/// NF-SCIRANGE fills it.
-fn format_range<'s>(
+/// The steps of Intl.NumberFormat.prototype.formatRange and formatRangeToParts before
+/// FormatNumericRange(ToParts): the resolved options of the this value and the two Intl
+/// mathematical values, and the parts of PartitionNumberRangePattern (16.5.19).
+fn range_parts<'s>(
     cx: &mut Cx<'s>,
-    _this: Local<'s>,
-    _args: Args<'s>,
-    _nt: Local<'s>,
-) -> JsResult<Local<'s>> {
-    Err(cx.throw_type_error("Intl.NumberFormat.prototype.formatRange is not implemented"))
+    this: Local<'s>,
+    args: Args<'s>,
+) -> JsResult<range::RangeParts> {
+    // 1-2. Let nf be the this value; ? RequireInternalSlot(nf, [[InitializedNumberFormat]]).
+    let r = read(cx, this)?;
+    // 3. If start is undefined or end is undefined, throw a TypeError exception.
+    let (start, end) = (args.get(0), args.get(1));
+    if start.is_undefined() || end.is_undefined() {
+        return Err(cx.throw_type_error("start and end must not be undefined"));
+    }
+    // 4. Let x be ? ToIntlMathematicalValue(start).
+    let x = decimal::to_intl_mv(cx, start)?;
+    // 5. Let y be ? ToIntlMathematicalValue(end).
+    let y = decimal::to_intl_mv(cx, end)?;
+    // 6. FormatNumericRange(ToParts) (16.5.22, 16.5.23) -> PartitionNumberRangePattern:
+    //    1. If x is NaN or y is NaN, throw a RangeError exception.
+    if matches!(x, IntlMv::NaN) || matches!(y, IntlMv::NaN) {
+        return Err(cx.throw_range_error("start and end must not be NaN"));
+    }
+    polled(cx, |w| range::partition(&r, &x, &y, w))
 }
 
-/// Intl.NumberFormat.prototype.formatRangeToParts ( start, end ) (16.3.5): a TypeError until
-/// NF-SCIRANGE fills it.
-fn format_range_to_parts<'s>(
+/// Intl.NumberFormat.prototype.formatRange ( start, end ) (16.3.4).
+fn format_range<'s>(
     cx: &mut Cx<'s>,
-    _this: Local<'s>,
-    _args: Args<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    Err(cx.throw_type_error("Intl.NumberFormat.prototype.formatRangeToParts is not implemented"))
+    let parts = range_parts(cx, this, args)?;
+    // FormatNumericRange (16.5.22): the concatenation of the [[Value]] fields.
+    let s = polled(cx, |w| {
+        let mut out = String::new();
+        for (_, v, _) in &parts {
+            out.push_str(v);
+            w.add(v.len())?;
+        }
+        Ok(out)
+    })?;
+    Ok(cx.new_string(&s)?.into())
+}
+
+/// Intl.NumberFormat.prototype.formatRangeToParts ( start, end ) (16.3.5).
+fn format_range_to_parts<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let parts = range_parts(cx, this, args)?;
+    // FormatNumericRangeToParts (16.5.23): an Array of { type, value, source } in order. One
+    // budget unit per part (H23: a pass of a builtin loop).
+    let array = cx.new_array();
+    for (i, (t, value, source)) in parts.iter().enumerate() {
+        cx.poll_interrupt()?;
+        let o = cx.new_object();
+        let t = cx.new_string(t.name())?;
+        cx.create_data_property_or_throw(o, "type", t)?;
+        let v = cx.new_string(value)?;
+        cx.create_data_property_or_throw(o, "value", v)?;
+        let s = cx.new_string(source.name())?;
+        cx.create_data_property_or_throw(o, "source", s)?;
+        cx.create_data_property_index_or_throw(array, i as u64, o)?;
+    }
+    Ok(array.into())
 }
 
 /// Intl.NumberFormat.prototype.resolvedOptions ( ) (16.3.2).
