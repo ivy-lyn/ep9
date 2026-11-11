@@ -334,11 +334,78 @@ pub enum IntrinsicId {
     /// `%DataView.prototype%` (§25.3.4, an ordinary object; made by `ep9_builtins`
     /// data_view.rs).
     DataViewPrototype,
+    // ---- TypedArray TA-3 TA-CTORS (§23.2; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%TypedArray%` (§23.2.1, `sec-%typedarray%-intrinsic-object`; made by `ep9_builtins`
+    /// typed_array, block 35).
+    TypedArray,
+    /// `%TypedArray.prototype%` (§23.2.3, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    TypedArrayPrototype,
+    /// `%Int8Array%` (§23.2.5, Table 71 row 0; made by `ep9_builtins` typed_array, block 35).
+    Int8Array,
+    /// `%Int8Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Int8ArrayPrototype,
+    /// `%Uint8Array%` (§23.2.5, Table 71 row 1; made by `ep9_builtins` typed_array, block 35).
+    Uint8Array,
+    /// `%Uint8Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Uint8ArrayPrototype,
+    /// `%Uint8ClampedArray%` (§23.2.5, Table 71 row 2; made by `ep9_builtins` typed_array, block 35).
+    Uint8ClampedArray,
+    /// `%Uint8ClampedArray.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Uint8ClampedArrayPrototype,
+    /// `%Int16Array%` (§23.2.5, Table 71 row 3; made by `ep9_builtins` typed_array, block 35).
+    Int16Array,
+    /// `%Int16Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Int16ArrayPrototype,
+    /// `%Uint16Array%` (§23.2.5, Table 71 row 4; made by `ep9_builtins` typed_array, block 35).
+    Uint16Array,
+    /// `%Uint16Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Uint16ArrayPrototype,
+    /// `%Int32Array%` (§23.2.5, Table 71 row 5; made by `ep9_builtins` typed_array, block 35).
+    Int32Array,
+    /// `%Int32Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Int32ArrayPrototype,
+    /// `%Uint32Array%` (§23.2.5, Table 71 row 6; made by `ep9_builtins` typed_array, block 35).
+    Uint32Array,
+    /// `%Uint32Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Uint32ArrayPrototype,
+    /// `%BigInt64Array%` (§23.2.5, Table 71 row 7; made by `ep9_builtins` typed_array, block 35).
+    BigInt64Array,
+    /// `%BigInt64Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    BigInt64ArrayPrototype,
+    /// `%BigUint64Array%` (§23.2.5, Table 71 row 8; made by `ep9_builtins` typed_array, block 35).
+    BigUint64Array,
+    /// `%BigUint64Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    BigUint64ArrayPrototype,
+    /// `%Float16Array%` (§23.2.5, Table 71 row 9; made by `ep9_builtins` typed_array, block 35).
+    Float16Array,
+    /// `%Float16Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Float16ArrayPrototype,
+    /// `%Float32Array%` (§23.2.5, Table 71 row 10; made by `ep9_builtins` typed_array, block 35).
+    Float32Array,
+    /// `%Float32Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Float32ArrayPrototype,
+    /// `%Float64Array%` (§23.2.5, Table 71 row 11; made by `ep9_builtins` typed_array, block 35).
+    Float64Array,
+    /// `%Float64Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
+    /// typed_array).
+    Float64ArrayPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 115] = [
+    pub const ALL: [IntrinsicId; 141] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -454,6 +521,32 @@ impl IntrinsicId {
         IntrinsicId::SharedArrayBufferPrototype,
         IntrinsicId::DataView,
         IntrinsicId::DataViewPrototype,
+        IntrinsicId::TypedArray,
+        IntrinsicId::TypedArrayPrototype,
+        IntrinsicId::Int8Array,
+        IntrinsicId::Int8ArrayPrototype,
+        IntrinsicId::Uint8Array,
+        IntrinsicId::Uint8ArrayPrototype,
+        IntrinsicId::Uint8ClampedArray,
+        IntrinsicId::Uint8ClampedArrayPrototype,
+        IntrinsicId::Int16Array,
+        IntrinsicId::Int16ArrayPrototype,
+        IntrinsicId::Uint16Array,
+        IntrinsicId::Uint16ArrayPrototype,
+        IntrinsicId::Int32Array,
+        IntrinsicId::Int32ArrayPrototype,
+        IntrinsicId::Uint32Array,
+        IntrinsicId::Uint32ArrayPrototype,
+        IntrinsicId::BigInt64Array,
+        IntrinsicId::BigInt64ArrayPrototype,
+        IntrinsicId::BigUint64Array,
+        IntrinsicId::BigUint64ArrayPrototype,
+        IntrinsicId::Float16Array,
+        IntrinsicId::Float16ArrayPrototype,
+        IntrinsicId::Float32Array,
+        IntrinsicId::Float32ArrayPrototype,
+        IntrinsicId::Float64Array,
+        IntrinsicId::Float64ArrayPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -575,6 +668,32 @@ impl IntrinsicId {
             IntrinsicId::SharedArrayBufferPrototype => "%SharedArrayBuffer.prototype%",
             IntrinsicId::DataView => "%DataView%",
             IntrinsicId::DataViewPrototype => "%DataView.prototype%",
+            IntrinsicId::TypedArray => "%TypedArray%",
+            IntrinsicId::TypedArrayPrototype => "%TypedArray.prototype%",
+            IntrinsicId::Int8Array => "%Int8Array%",
+            IntrinsicId::Int8ArrayPrototype => "%Int8Array.prototype%",
+            IntrinsicId::Uint8Array => "%Uint8Array%",
+            IntrinsicId::Uint8ArrayPrototype => "%Uint8Array.prototype%",
+            IntrinsicId::Uint8ClampedArray => "%Uint8ClampedArray%",
+            IntrinsicId::Uint8ClampedArrayPrototype => "%Uint8ClampedArray.prototype%",
+            IntrinsicId::Int16Array => "%Int16Array%",
+            IntrinsicId::Int16ArrayPrototype => "%Int16Array.prototype%",
+            IntrinsicId::Uint16Array => "%Uint16Array%",
+            IntrinsicId::Uint16ArrayPrototype => "%Uint16Array.prototype%",
+            IntrinsicId::Int32Array => "%Int32Array%",
+            IntrinsicId::Int32ArrayPrototype => "%Int32Array.prototype%",
+            IntrinsicId::Uint32Array => "%Uint32Array%",
+            IntrinsicId::Uint32ArrayPrototype => "%Uint32Array.prototype%",
+            IntrinsicId::BigInt64Array => "%BigInt64Array%",
+            IntrinsicId::BigInt64ArrayPrototype => "%BigInt64Array.prototype%",
+            IntrinsicId::BigUint64Array => "%BigUint64Array%",
+            IntrinsicId::BigUint64ArrayPrototype => "%BigUint64Array.prototype%",
+            IntrinsicId::Float16Array => "%Float16Array%",
+            IntrinsicId::Float16ArrayPrototype => "%Float16Array.prototype%",
+            IntrinsicId::Float32Array => "%Float32Array%",
+            IntrinsicId::Float32ArrayPrototype => "%Float32Array.prototype%",
+            IntrinsicId::Float64Array => "%Float64Array%",
+            IntrinsicId::Float64ArrayPrototype => "%Float64Array.prototype%",
         }
     }
 
@@ -696,7 +815,33 @@ impl IntrinsicId {
             | IntrinsicId::SharedArrayBuffer
             | IntrinsicId::SharedArrayBufferPrototype
             | IntrinsicId::DataView
-            | IntrinsicId::DataViewPrototype => return None,
+            | IntrinsicId::DataViewPrototype
+            | IntrinsicId::TypedArray
+            | IntrinsicId::TypedArrayPrototype
+            | IntrinsicId::Int8Array
+            | IntrinsicId::Int8ArrayPrototype
+            | IntrinsicId::Uint8Array
+            | IntrinsicId::Uint8ArrayPrototype
+            | IntrinsicId::Uint8ClampedArray
+            | IntrinsicId::Uint8ClampedArrayPrototype
+            | IntrinsicId::Int16Array
+            | IntrinsicId::Int16ArrayPrototype
+            | IntrinsicId::Uint16Array
+            | IntrinsicId::Uint16ArrayPrototype
+            | IntrinsicId::Int32Array
+            | IntrinsicId::Int32ArrayPrototype
+            | IntrinsicId::Uint32Array
+            | IntrinsicId::Uint32ArrayPrototype
+            | IntrinsicId::BigInt64Array
+            | IntrinsicId::BigInt64ArrayPrototype
+            | IntrinsicId::BigUint64Array
+            | IntrinsicId::BigUint64ArrayPrototype
+            | IntrinsicId::Float16Array
+            | IntrinsicId::Float16ArrayPrototype
+            | IntrinsicId::Float32Array
+            | IntrinsicId::Float32ArrayPrototype
+            | IntrinsicId::Float64Array
+            | IntrinsicId::Float64ArrayPrototype => return None,
         })
     }
 
@@ -786,6 +931,32 @@ impl IntrinsicId {
             IntrinsicId::SharedArrayBufferPrototype => Some(79),
             IntrinsicId::DataView => Some(80),
             IntrinsicId::DataViewPrototype => Some(81),
+            IntrinsicId::TypedArray => Some(82),
+            IntrinsicId::TypedArrayPrototype => Some(83),
+            IntrinsicId::Int8Array => Some(84),
+            IntrinsicId::Int8ArrayPrototype => Some(85),
+            IntrinsicId::Uint8Array => Some(86),
+            IntrinsicId::Uint8ArrayPrototype => Some(87),
+            IntrinsicId::Uint8ClampedArray => Some(88),
+            IntrinsicId::Uint8ClampedArrayPrototype => Some(89),
+            IntrinsicId::Int16Array => Some(90),
+            IntrinsicId::Int16ArrayPrototype => Some(91),
+            IntrinsicId::Uint16Array => Some(92),
+            IntrinsicId::Uint16ArrayPrototype => Some(93),
+            IntrinsicId::Int32Array => Some(94),
+            IntrinsicId::Int32ArrayPrototype => Some(95),
+            IntrinsicId::Uint32Array => Some(96),
+            IntrinsicId::Uint32ArrayPrototype => Some(97),
+            IntrinsicId::BigInt64Array => Some(98),
+            IntrinsicId::BigInt64ArrayPrototype => Some(99),
+            IntrinsicId::BigUint64Array => Some(100),
+            IntrinsicId::BigUint64ArrayPrototype => Some(101),
+            IntrinsicId::Float16Array => Some(102),
+            IntrinsicId::Float16ArrayPrototype => Some(103),
+            IntrinsicId::Float32Array => Some(104),
+            IntrinsicId::Float32ArrayPrototype => Some(105),
+            IntrinsicId::Float64Array => Some(106),
+            IntrinsicId::Float64ArrayPrototype => Some(107),
             _ => None,
         }
     }
@@ -1293,7 +1464,9 @@ pub(crate) fn check(embedder: Option<&'static BuiltinTable>) -> Result<(), Strin
 /// every named intrinsic made by realm init or a module; every alias names a data key (not an
 /// accessor) defined earlier on the same object; no key twice on one object; the first key of
 /// a constructor a module makes is `prototype`, a data property with attributes {} (§20:
-/// `Number.prototype` and others), and every such constructor but `%Proxy%` (§28.2.2) has one.
+/// `Number.prototype` and others), and every such constructor but `%Proxy%` (§28.2.2) has one;
+/// the parent of each `[[Prototype]]` link of a made child is made in the child's install pass
+/// (`check_links`).
 pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
     let modules = || tables.iter().flat_map(|t| t.modules.iter());
     let mut blocks = HashSet::new();
@@ -1449,7 +1622,8 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
+    let all: Vec<&'static BuiltinModule> = modules().collect();
+    check_links(&all, &PROTO_LINKS, &made)
 }
 
 /// Definition `i` of `m` is a function value (a `Method` or a `Constructor`).
@@ -1464,7 +1638,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 82;
+const INTRINSIC_SLOTS: usize = 108;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
@@ -1683,8 +1857,9 @@ pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
 
 /// Installs the tables that [`prepare`] registered into the current realm: (1) the function
 /// object of every definition, (2) the intrinsics the modules make, then the `[[Prototype]]`
-/// of %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction% (%Function%) and of
-/// the native errors (%Error%), (3) the properties. Walk order: VM table, then the embedder's;
+/// links of [`PROTO_LINKS`] whose child the pass made, then the `[[Prototype]]` of
+/// %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction% (%Function%) and of the
+/// native errors (%Error%), (3) the properties. Walk order: VM table, then the embedder's;
 /// modules, then entries, in order. The modules of a lazy group ([`LazyGroups`]) are left
 /// out: only the group's global key gets its place, with the reserved value HOLE
 /// ([`install_group`] installs the group at its first use). Runs after `realm::init`. GC
@@ -1755,6 +1930,11 @@ fn install_pass(rt: &Runtime, pass: Pass) -> Result<(), String> {
             }
         }
     }
+    link_prototypes(rt, &PROTO_LINKS, |id| {
+        modules
+            .iter()
+            .any(|&(m, g)| wanted(g) && m.intrinsics.iter().any(|d| d.id == id))
+    })?;
     if pass == Pass::Eager {
         fixed_prototypes(rt)?;
     }
@@ -1799,9 +1979,10 @@ fn install_pass(rt: &Runtime, pass: Pass) -> Result<(), String> {
 /// Step (2) of the eager install, after the intrinsics: §27.3.2, §27.7.2, §27.4.2 (the
 /// `[[Prototype]]` of %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction% is
 /// %Function%) and §20.5.6.2 (the `[[Prototype]]` of each NativeError constructor is %Error%).
-/// A table gives a builtin's function object %Function.prototype% only. %AggregateError%
-/// (§20.5.7.2) gets it in `realm.rs`, after the embedder's table made it. GC points
-/// (dictionary mode, OM-10): the intrinsics are roots.
+/// A table gives a builtin's function object %Function.prototype%; another `[[Prototype]]`
+/// comes from here, from [`PROTO_LINKS`] ([`link_prototypes`], in the pass that makes the
+/// child) or from `realm.rs`: %AggregateError% (§20.5.7.2) gets it there, after the
+/// embedder's table made it. GC points (dictionary mode, OM-10): the intrinsics are roots.
 fn fixed_prototypes(rt: &Runtime) -> Result<(), String> {
     let function = intrinsic(rt, IntrinsicId::Function);
     for id in [
@@ -1829,6 +2010,28 @@ fn fixed_prototypes(rt: &Runtime) -> Result<(), String> {
         let c = intrinsic(rt, id);
         if !is_object(error) || !is_object(c) || !crate::property::set_prototype_of(rt, c, error) {
             return Err(format!("could not set the [[Prototype]] of {}", id.name()));
+        }
+    }
+    Ok(())
+}
+
+/// Step (2) of an install pass, after the intrinsics: the `[[Prototype]]` of each child of
+/// `links` that this pass made (`made_here`) becomes its parent, which `check_links` proved is
+/// made in the same pass. GC points (dictionary mode, OM-10): the intrinsics are roots, and
+/// each one is read again after the previous call.
+fn link_prototypes(
+    rt: &Runtime,
+    links: &[(IntrinsicId, IntrinsicId)],
+    made_here: impl Fn(IntrinsicId) -> bool,
+) -> Result<(), String> {
+    for &(child, parent) in links.iter().filter(|&&(child, _)| made_here(child)) {
+        let c = intrinsic(rt, child);
+        let p = intrinsic(rt, parent);
+        if !is_object(c) || !is_object(p) || !crate::property::set_prototype_of(rt, c, p) {
+            return Err(format!(
+                "could not set the [[Prototype]] of {}",
+                child.name()
+            ));
         }
     }
     Ok(())
@@ -1991,12 +2194,91 @@ fn store_reserved(rt: &Runtime, m: &BuiltinModule, global: u64, p: &PropDef) -> 
 /// one entry per lazy group, with the group's keys. A read of any key of a group installs the
 /// whole group. A key that no module puts on %GlobalObject% does nothing (Intl before INTL
 /// wave 1). The TypedArray group (design `docs/plan/notes/typedarray-design.md` TA-D14) has
-/// the keys of TA-2; TA-3 and TA-4 append theirs to its list.
+/// the keys of TA-2 and the 12 constructor keys of TA-3 (Table 71 order); TA-4 appends its
+/// keys to its list.
 const LAZY_GROUPS: [&[&str]; 3] = [
     &["Temporal"],
     &["Intl"],
-    &["ArrayBuffer", "SharedArrayBuffer", "DataView"],
+    &[
+        "ArrayBuffer",
+        "SharedArrayBuffer",
+        "DataView",
+        "Int8Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "BigInt64Array",
+        "BigUint64Array",
+        "Float16Array",
+        "Float32Array",
+        "Float64Array",
+    ],
 ];
+
+/// The `[[Prototype]]` links that a table cannot give (a table gives a function object
+/// %Function.prototype%): (child, parent). The install pass that makes the child sets its
+/// `[[Prototype]]` to the parent ([`link_prototypes`]): the eager pass or the pass of the
+/// child's lazy group, so a link keeps its group lazy (no [`FIXED_PROTOTYPES`] entry).
+/// [`check_links`] refuses a link whose parent is not made in the same pass. A link whose
+/// child no table makes does nothing. §23.2.6 (`sec-properties-of-the-typedarray-constructors`):
+/// the `[[Prototype]]` of each TypedArray constructor is %TypedArray% (TypedArray TA-3,
+/// decision O2).
+const PROTO_LINKS: [(IntrinsicId, IntrinsicId); 12] = [
+    (IntrinsicId::Int8Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Uint8Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Uint8ClampedArray, IntrinsicId::TypedArray),
+    (IntrinsicId::Int16Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Uint16Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Int32Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Uint32Array, IntrinsicId::TypedArray),
+    (IntrinsicId::BigInt64Array, IntrinsicId::TypedArray),
+    (IntrinsicId::BigUint64Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Float16Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Float32Array, IntrinsicId::TypedArray),
+    (IntrinsicId::Float64Array, IntrinsicId::TypedArray),
+];
+
+/// The link check of [`check_tables`] for `links` ([`PROTO_LINKS`] in a real check): for each
+/// link whose child a module of `modules` makes, a module or realm init makes the parent too,
+/// and the parent is made in the same install pass as the child (both eager, or both in one
+/// lazy group of [`LazyGroups::compute`]). A link whose child no module makes is skipped (a
+/// table without the child, such as the VM table alone). Runs once per process and table.
+fn check_links(
+    modules: &[&'static BuiltinModule],
+    links: &[(IntrinsicId, IntrinsicId)],
+    made: &HashSet<IntrinsicId>,
+) -> Result<(), String> {
+    let makes = |id: IntrinsicId| {
+        modules
+            .iter()
+            .any(|m| m.intrinsics.iter().any(|d| d.id == id))
+    };
+    if !links.iter().any(|&(child, _)| makes(child)) {
+        return Ok(());
+    }
+    let lazy = LazyGroups::compute(modules);
+    for &(child, parent) in links.iter().filter(|&&(child, _)| makes(child)) {
+        if !made.contains(&parent) {
+            return Err(format!(
+                "builtin table: the [[Prototype]] link of {} names {}, which is not made",
+                child.name(),
+                parent.name()
+            ));
+        }
+        if lazy.id[child as usize] != lazy.id[parent as usize] {
+            return Err(format!(
+                "builtin table: the [[Prototype]] link of {} names {}, which is not made in \
+                 the same install pass (eager or one lazy group)",
+                child.name(),
+                parent.name()
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// The intrinsics whose `[[Prototype]]` the eager install sets after its step (2)
 /// ([`fixed_prototypes`], `realm.rs` for %AggregateError% and %SuppressedError%): never in a
@@ -2545,7 +2827,10 @@ mod tests {
     /// entry, keeps the group eager. Temporal and Intl (one key each) are not in these tables.
     #[test]
     fn a_lazy_group_takes_several_keys_in_several_modules() {
-        let keys = ["ArrayBuffer", "SharedArrayBuffer", "DataView"];
+        // The TypedArray entry: the TA-2 keys, then the TA-3 constructor keys (no module
+        // here puts those on %GlobalObject%, so they do nothing).
+        let keys = LAZY_GROUPS[2];
+        assert_eq!(keys[..3], ["ArrayBuffer", "SharedArrayBuffer", "DataView"]);
         let group_ids = [
             IntrinsicId::ArrayBuffer,
             IntrinsicId::ArrayBufferPrototype,
@@ -2585,5 +2870,218 @@ mod tests {
         let g = LazyGroups::compute(&[&TWO_KEYS]);
         assert_eq!(g.module, [Some(0)]);
         assert_eq!(g.id[IntrinsicId::DataView as usize], None);
+    }
+
+    // ---- the [[Prototype]] links (TypedArray TA-3, decision O2) ----
+
+    const TA_DEFS: &[BuiltinDef] = &[
+        BuiltinDef::constructor("TypedArray", 0, none),
+        BuiltinDef::constructor("Int8Array", 3, none),
+    ];
+
+    const TA_INTRINSICS: &[IntrinsicDef] = &[
+        made(IntrinsicId::TypedArray, IntrinsicValue::Builtin(0)),
+        made(IntrinsicId::TypedArrayPrototype, OBJECT),
+        made(IntrinsicId::Int8Array, IntrinsicValue::Builtin(1)),
+        made(
+            IntrinsicId::Int8ArrayPrototype,
+            IntrinsicValue::Object {
+                proto: Some(IntrinsicId::TypedArrayPrototype),
+            },
+        ),
+    ];
+
+    /// %TypedArray% and %Int8Array% with their prototypes (as `ep9_builtins` typed_array.rs),
+    /// and the global key `Int8Array` of the TypedArray entry of `LAZY_GROUPS`.
+    const TA_LINK: BuiltinModule = BuiltinModule {
+        name: "ta_link",
+        block: 105,
+        defs: TA_DEFS,
+        intrinsics: TA_INTRINSICS,
+        props: &[
+            ObjectProps {
+                target: IntrinsicId::TypedArray,
+                props: &[proto_of(IntrinsicId::TypedArrayPrototype)],
+            },
+            ObjectProps {
+                target: IntrinsicId::Int8Array,
+                props: &[proto_of(IntrinsicId::Int8ArrayPrototype)],
+            },
+            ObjectProps {
+                target: IntrinsicId::GlobalObject,
+                props: &[global("Int8Array", IntrinsicId::Int8Array)],
+            },
+        ],
+    };
+
+    /// The same objects with no global key: an eager module.
+    const TA_EAGER: BuiltinModule = BuiltinModule {
+        name: "ta_eager",
+        block: 106,
+        defs: TA_DEFS,
+        intrinsics: TA_INTRINSICS,
+        props: &[
+            ObjectProps {
+                target: IntrinsicId::TypedArray,
+                props: &[proto_of(IntrinsicId::TypedArrayPrototype)],
+            },
+            ObjectProps {
+                target: IntrinsicId::Int8Array,
+                props: &[proto_of(IntrinsicId::Int8ArrayPrototype)],
+            },
+        ],
+    };
+
+    /// The child alone, in the lazy group (its global key)...
+    const CHILD_ONLY: BuiltinModule = BuiltinModule {
+        name: "child_only",
+        block: 107,
+        defs: &[BuiltinDef::constructor("Int8Array", 3, none)],
+        intrinsics: &[
+            made(IntrinsicId::Int8Array, IntrinsicValue::Builtin(0)),
+            made(IntrinsicId::Int8ArrayPrototype, OBJECT),
+        ],
+        props: &[
+            ObjectProps {
+                target: IntrinsicId::Int8Array,
+                props: &[proto_of(IntrinsicId::Int8ArrayPrototype)],
+            },
+            ObjectProps {
+                target: IntrinsicId::GlobalObject,
+                props: &[global("Int8Array", IntrinsicId::Int8Array)],
+            },
+        ],
+    };
+
+    /// ... and the parent alone, eager.
+    const PARENT_ONLY: BuiltinModule = BuiltinModule {
+        name: "parent_only",
+        block: 108,
+        defs: &[BuiltinDef::constructor("TypedArray", 0, none)],
+        intrinsics: &[
+            made(IntrinsicId::TypedArray, IntrinsicValue::Builtin(0)),
+            made(IntrinsicId::TypedArrayPrototype, OBJECT),
+        ],
+        props: &[ObjectProps {
+            target: IntrinsicId::TypedArray,
+            props: &[proto_of(IntrinsicId::TypedArrayPrototype)],
+        }],
+    };
+
+    static LAZY_LINK: BuiltinTable =
+        BuiltinTable::new("lazy_link", &[TWO_KEYS, THIRD_KEY, TA_LINK]);
+    static EAGER_LINK: BuiltinTable = BuiltinTable::new("eager_link", &[TA_EAGER]);
+    static SPLIT_LINK: BuiltinTable = BuiltinTable::new(
+        "split_link",
+        &[TWO_KEYS, THIRD_KEY, CHILD_ONLY, PARENT_ONLY],
+    );
+    static NO_PARENT: BuiltinTable =
+        BuiltinTable::new("no_parent", &[TWO_KEYS, THIRD_KEY, CHILD_ONLY]);
+
+    /// Runs `f` on a fresh isolate with `table` after the VM's, then collects and verifies the
+    /// heap. `stress`: a collection before every allocation.
+    fn with_table(
+        table: &'static BuiltinTable,
+        stress: bool,
+        f: impl FnOnce(&mut crate::abi::Cx<'_>, &Runtime),
+    ) {
+        let mut iso = crate::tests::isolate(crate::IsolateConfig {
+            builtins: Some(table),
+            ..crate::tests::config(crate::Dispatch::DEFAULT, stress)
+        });
+        {
+            let iso = &mut iso;
+            let mut cx = crate::abi::Cx::new(&mut iso.cx);
+            f(&mut cx, &iso.rt);
+        }
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    }
+
+    /// A link whose child and parent are in one lazy group: realm init makes neither (the
+    /// group stays lazy: the link is no `FIXED_PROTOTYPES` entry), and the first use of a group
+    /// intrinsic installs the group with the child's `[[Prototype]]` set to the parent. The
+    /// rest of the child is the table's (its `prototype` key).
+    #[test]
+    fn a_link_in_a_lazy_group_sets_the_prototype_at_the_group_install() {
+        for stress in [false, true] {
+            with_table(&LAZY_LINK, stress, |cx, rt| {
+                let g = lazy_group(rt, IntrinsicId::ArrayBuffer);
+                assert!(g.is_some());
+                for id in [IntrinsicId::TypedArray, IntrinsicId::Int8Array] {
+                    assert_eq!(lazy_group(rt, id), g, "{}", id.name());
+                    assert_eq!(intrinsic(rt, id), UNDEFINED, "{}", id.name());
+                }
+                let child = cx.intrinsic(IntrinsicId::Int8Array).bits();
+                let parent = intrinsic(rt, IntrinsicId::TypedArray);
+                assert!(is_object(parent));
+                assert_eq!(object::proto_of(child), parent);
+                assert_eq!(
+                    object::proto_of(parent),
+                    intrinsic(rt, IntrinsicId::FunctionPrototype)
+                );
+            });
+        }
+    }
+
+    /// A link whose child and parent are eager: realm init sets the `[[Prototype]]`.
+    #[test]
+    fn a_link_in_an_eager_module_sets_the_prototype_at_realm_init() {
+        for stress in [false, true] {
+            with_table(&EAGER_LINK, stress, |_cx, rt| {
+                assert_eq!(lazy_group(rt, IntrinsicId::Int8Array), None);
+                let child = intrinsic(rt, IntrinsicId::Int8Array);
+                let parent = intrinsic(rt, IntrinsicId::TypedArray);
+                assert!(is_object(child) && is_object(parent));
+                assert_eq!(object::proto_of(child), parent);
+            });
+        }
+    }
+
+    /// A link whose parent is made in another install pass (an eager parent of a lazy child),
+    /// or by no table, is a table error, so `Isolate::new` fails. A link whose child no table
+    /// makes is skipped: the VM table alone passes (check note c9).
+    #[test]
+    fn a_bad_link_is_a_table_error() {
+        let vm = &crate::natives::VM_TABLE;
+        assert_eq!(check_tables(&[vm]), Ok(()));
+        assert_eq!(check_tables(&[vm, &LAZY_LINK]), Ok(()));
+        assert_eq!(check_tables(&[vm, &EAGER_LINK]), Ok(()));
+        for (table, want) in [
+            (
+                &SPLIT_LINK,
+                "builtin table: the [[Prototype]] link of %Int8Array% names %TypedArray%, which \
+                 is not made in the same install pass (eager or one lazy group)",
+            ),
+            (
+                &NO_PARENT,
+                "builtin table: the [[Prototype]] link of %Int8Array% names %TypedArray%, which \
+                 is not made",
+            ),
+        ] {
+            assert_eq!(check_tables(&[vm, table]), Err(want.to_string()));
+            let iso = crate::Isolate::new(crate::IsolateConfig {
+                builtins: Some(table),
+                ..crate::IsolateConfig::default()
+            });
+            assert!(iso.is_err(), "{}", table.name);
+        }
+        // The same split with another link list: one lazy group passes, a core parent of a
+        // lazy child does not.
+        let modules = [&TWO_KEYS, &THIRD_KEY];
+        let made: HashSet<IntrinsicId> = IntrinsicId::ALL
+            .into_iter()
+            .filter(|id| id.is_core())
+            .chain(
+                modules
+                    .iter()
+                    .flat_map(|m| m.intrinsics.iter().map(|d| d.id)),
+            )
+            .collect();
+        let ok = [(IntrinsicId::DataView, IntrinsicId::ArrayBuffer)];
+        assert_eq!(check_links(&modules, &ok, &made), Ok(()));
+        let core = [(IntrinsicId::DataView, IntrinsicId::Function)];
+        assert!(check_links(&modules, &core, &made).is_err());
+        assert_eq!(check_links(&[], &PROTO_LINKS, &made), Ok(()));
     }
 }

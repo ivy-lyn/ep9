@@ -37,7 +37,8 @@
 //!   [`Op::CompareNumbers`], [`Op::OrdinaryHasInstance`] and the `Heap` type of [`Ty`] are
 //!   appended here (M6-P1 CBC); [`Op::GuardViewIndex`], [`Op::LoadViewOrUndefined`],
 //!   [`Op::StoreView`] and the class `View` of [`Class`] for the TypedArray views (TypedArray
-//!   TA-2 TA-KEYED, design §6.3; `view_keyed`).
+//!   TA-2 TA-KEYED, design §6.3; `view_keyed`); [`Op::GuardViewNotShared`] (TypedArray TA-3,
+//!   V13-D8: the view lists exclude a view on a SharedArrayBuffer).
 //!
 //! The IC_HANDLER cell is read through the `instance_ic::io` field offsets: every handler
 //! kind shares that layout (+8 kind, +16, +24, +32; the `ic.rs` IC_LAYOUT 4 table). A test
@@ -479,6 +480,15 @@ pub(crate) enum Op {
     /// type `t`: NumericToRawBytes of the value (one NaN pattern per float type), in place,
     /// with no barrier (the bytes are not Values). It never calls: the value is a Number.
     StoreView(u8),
+    // Appended in TypedArray TA-3 (V13-D8, TA-ORCH-17; route TA-SHARED-MIXED-WIDTH, its SAB
+    // part).
+    /// The value is a view whose buffer (`[[ViewedArrayBuffer]]`, the view's +24) is not a
+    /// SharedArrayBuffer. T0 takes the spec path for a view on a SharedArrayBuffer (its bytes
+    /// are read and written only with atomics, TA-ORCH-12, -13; `keyed_ic.rs` module `view`),
+    /// so a list that reads or writes the elements with plain loads and stores checks this
+    /// first. A view keeps its buffer for life (a detach or a resize keeps the buffer's
+    /// class), so the answer for one view never changes.
+    GuardViewNotShared(Val),
 }
 
 impl Op {
@@ -495,12 +505,13 @@ impl Op {
                 | Op::GuardSlotsRoom(..)
                 | Op::GuardNotHole(..)
                 | Op::GuardViewIndex(..)
+                | Op::GuardViewNotShared(_)
         )
     }
 }
 
-/// The most ops a list holds (a monomorphic keyed store: 4 guards and the store).
-pub(crate) const MAX_OPS: usize = 5;
+/// The most ops a list holds (a keyed store on a view: 5 guards and the store).
+pub(crate) const MAX_OPS: usize = 6;
 
 /// An op list: guards, then one action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -770,13 +781,17 @@ fn keyed(key: u64, bits: u32, op: Operation) -> Ops {
 /// does not hold it, so a site with no such key, LoadKeyed and megamorphic ones included,
 /// keeps the array lists). The shape is read only then: the key half of a T0 keyed slot is a
 /// live shape, undefined or the hole. T0 makes no such case yet: a view store hit leaves the
-/// key half alone (`keyed_ic.rs` module `view`), and no T0 code writes the two view bits
-/// before TA-3, so these lists wait for a writer of the element type.
+/// key half alone (`keyed_ic.rs` module `view`), and no T0 code writes the two view bits (TA-3
+/// left the kinds-set writer to the first FACT_SCHEMA bump, TA-ORCH-14), so these lists wait
+/// for a writer of the element type: route TA-KEYED-VIEW-CARRIER (due M5, V13-D8). The test
+/// that a view hit keeps the key half is
+/// `tests::ic::the_store_key_half_with_views_keeps_the_cold_miss_rule`.
 ///
 /// ```text
-/// LoadKeyed   GuardKind(receiver, View(t)), GuardType(key, int32), LoadViewOrUndefined(t)
-/// StoreKeyed  GuardKind(receiver, View(t)), GuardType(key, int32), GuardViewIndex(receiver, key),
-///             GuardType(value, number), StoreView(t)
+/// LoadKeyed   GuardKind(receiver, View(t)), GuardViewNotShared(receiver), GuardType(key, int32),
+///             LoadViewOrUndefined(t)
+/// StoreKeyed  GuardKind(receiver, View(t)), GuardViewNotShared(receiver), GuardType(key, int32),
+///             GuardViewIndex(receiver, key), GuardType(value, number), StoreView(t)
 /// BigInt64, BigUint64: [Generic] (the element is a BigInt; T0 goes cold)
 /// ```
 ///
@@ -784,7 +799,10 @@ fn keyed(key: u64, bits: u32, op: Operation) -> Ops {
 /// an int32 key on a view reads no named property and no prototype (§10.4.5.4; §10.4.5.5 with
 /// the view as the receiver), and the bound form is the receiver's own elements kind, read at
 /// run time. Both lists are wider than T0's own test (T0 takes no Float16 and no negative key,
-/// and stores only an int32 into an integer type), as H16 allows.
+/// and stores only an int32 into an integer type), as H16 allows. They are not wider at a
+/// SharedArrayBuffer: T0 misses there, and GuardViewNotShared misses too (the view's shape
+/// does not tell: a fixed-length view on a SharedArrayBuffer and one on a fixed-length
+/// ArrayBuffer of the same type have the same elements kind 7 and can share a shape).
 fn view_keyed(key: u64, kinds: Kinds, op: Operation) -> Option<Ops> {
     const VIEWS: u16 = 1 << ek::TYPED_FIXED | 1 << ek::TYPED_VARIABLE;
     if kinds.0 & VIEWS == 0 || key == UNDEFINED || key == HOLE || !is_cell_bits(key) {
@@ -800,6 +818,7 @@ fn view_keyed(key: u64, kinds: Kinds, op: Operation) -> Option<Ops> {
     let t = k - crate::kinds::INT8_VIEW.get();
     let guards = [
         Op::GuardKind(Val::Receiver, Class::View(t)),
+        Op::GuardViewNotShared(Val::Receiver),
         Op::GuardType(Val::Key, Ty::Int32),
     ];
     let mut l = Vec::with_capacity(MAX_OPS);

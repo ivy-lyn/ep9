@@ -99,6 +99,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_intl::intl::BLOCK, 30);
     assert_eq!(ep9_intl::locale::BLOCK, 31);
     assert_eq!(ep9_intl::collator::BLOCK, 32);
+    assert_eq!(ep9_builtins::typed_array::BLOCK, 35);
 }
 
 #[test]

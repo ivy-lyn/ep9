@@ -188,6 +188,12 @@ fn eval(rt: &Runtime, case: &Case, ops: &Ops, e: &Env) -> Out {
                     && is_i32(k)
                     && crate::typed_array::valid_index(rt, o, f64::from(int32_of(k))).is_some()
             }
+            // TA-3 (V13-D8): the view's buffer, by its class (`array_buffer::is_shared`).
+            Op::GuardViewNotShared(v) => {
+                let o = value_of(v);
+                kinds::is_view(o)
+                    && !crate::array_buffer::is_shared(crate::typed_array::buffer_of(o))
+            }
             action => return act(rt, action, e, &value_of, &ref_of, &ty_ok),
         };
         if !pass {
@@ -1690,15 +1696,17 @@ fn keyed_view_lists_match_the_view_paths() {
                 continue;
             }
             let guard = Op::GuardKind(Val::Receiver, Class::View(ty));
+            let not_shared = Op::GuardViewNotShared(Val::Receiver);
             let int_key = Op::GuardType(Val::Key, Ty::Int32);
             assert_eq!(
                 load.as_slice(),
-                &[guard, int_key, Op::LoadViewOrUndefined(ty)]
+                &[guard, not_shared, int_key, Op::LoadViewOrUndefined(ty)]
             );
             assert_eq!(
                 store.as_slice(),
                 &[
                     guard,
+                    not_shared,
                     int_key,
                     Op::GuardViewIndex(Val::Receiver, Val::Key),
                     Op::GuardType(Val::Value, Ty::Number),
@@ -1799,6 +1807,112 @@ fn keyed_view_lists_match_the_view_paths() {
                     )),
                     "{key:#x} {op:?}: {ops:?}"
                 );
+            }
+        }
+        t.release_all(held);
+    });
+}
+
+/// The SAB guard of the view lists (TypedArray TA-3, V13-D8, TA-ORCH-17; route
+/// TA-SHARED-MIXED-WIDTH, its SAB part): T0 takes no view case on a SharedArrayBuffer (its
+/// bytes are read and written with atomics on the spec path, TA-ORCH-12, -13; `keyed_ic.rs`
+/// module `view`), so both view lists hold `GuardViewNotShared(receiver)` right after the
+/// GuardKind. For each Number type: views on a fixed-length SharedArrayBuffer and on a
+/// growable one (a fixed and a length-tracking view) fail the guard and both lists miss, and
+/// T0 does not hit there either (`keyed_ic::VIEW_HITS`), in bounds; views of the same type on a
+/// fixed-length and on a resizable ArrayBuffer pass the guard, and T0 hits. A fixed view on a
+/// fixed-length SharedArrayBuffer and one on a fixed-length ArrayBuffer have the same shape,
+/// so the case key alone does not tell them apart.
+#[test]
+fn a_view_on_a_shared_buffer_fails_the_not_shared_guard() {
+    use crate::array_buffer as ab;
+    use crate::elements::{kind_of, kinds_set_bit};
+    use crate::keyed_ic::VIEW_HITS;
+    use crate::profile::keyed;
+    use crate::typed_array as ta;
+    each(|c| {
+        // The T0 view hits since the last call (loads, stores); each runs on its own thread.
+        let hits = || VIEW_HITS.with(|c| c.replace([0, 0]));
+        let fns = vec![
+            site("f0", FeedbackSlotKind::LoadKeyed, |b, a, k, _, s| {
+                b.ldar(k).get_keyed_property(a, s);
+            }),
+            site("f1", FeedbackSlotKind::StoreKeyed, |b, a, k, v, s| {
+                b.ldar(v).set_keyed_property(a, k, s).ldar(v);
+            }),
+        ];
+        let mut t = new_t(eager(c), fns, vec![], vec![]);
+        let mut held = Vec::new();
+        for ty in [0u8, 1, 2, 3, 4, 5, 6, 9, 10, 11] {
+            // (view, shared). The handles root the buffers and views (H10).
+            let mut views = Vec::new();
+            for (shared, max) in [
+                (false, None),
+                (false, Some(64)),
+                (true, None),
+                (true, Some(64)),
+            ] {
+                let b = if shared {
+                    ab::allocate_shared(t.rt(), NULL, 32, max).unwrap()
+                } else {
+                    ab::allocate(t.rt(), NULL, 32, max).unwrap()
+                };
+                let fixed = ta::new_view(t.rt(), NULL, ty, b, 0, Some(2)).unwrap();
+                let auto = ta::new_view(t.rt(), NULL, ty, b, 0, None).unwrap();
+                held.extend(t.keep_all(&[b, fixed, auto]));
+                views.push((fixed, shared));
+                views.push((auto, shared));
+            }
+            // views[0]: fixed on a fixed ArrayBuffer; views[4]: fixed on a fixed SAB.
+            assert_eq!(kind_of(views[0].0), kind_of(views[4].0));
+            assert_eq!(shape::shape_of(views[0].0), shape::shape_of(views[4].0));
+            for &(case_view, _) in &views {
+                let case = Case::Keyed {
+                    key: shape::shape_of(case_view),
+                    bits: keyed::INDEX | keyed::OBJECT | kinds_set_bit(kind_of(case_view)),
+                };
+                let load = ops_of(&case, Operation::LoadKeyed);
+                let store = ops_of(&case, Operation::StoreKeyed);
+                check_form(&load);
+                check_form(&store);
+                assert_eq!(store.as_slice().len(), MAX_OPS, "type {ty}: {store:?}");
+                for ops in [&load, &store] {
+                    assert_eq!(
+                        ops.as_slice()[..2],
+                        [
+                            Op::GuardKind(Val::Receiver, Class::View(ty)),
+                            Op::GuardViewNotShared(Val::Receiver),
+                        ]
+                    );
+                }
+                for &(v, shared) in &views {
+                    let e = Env {
+                        receiver: v,
+                        key: int(1),
+                        value: int(1),
+                        ..Env::default()
+                    };
+                    // The other guards pass for each probe here: the kind is the case's and
+                    // the key is a valid integer index, so GuardViewNotShared decides.
+                    assert_eq!(kinds::cell_kind(v), kinds::cell_kind(case_view));
+                    assert!(ta::valid_index(t.rt(), v, 1.0).is_some());
+                    let l = eval(t.rt(), &case, &load, &e);
+                    let st = eval(t.rt(), &case, &store, &e);
+                    hits();
+                    let w = call(&mut t, "f0", &[v, int(1)]);
+                    call(&mut t, "f1", &[v, int(1), int(1)]);
+                    let h = hits();
+                    if shared {
+                        assert_eq!((l, st), (Out::Miss, Out::Miss), "type {ty}: shared");
+                        assert_eq!(h, [0, 0], "type {ty}: T0 takes no shared view case");
+                    } else {
+                        assert!(matches!(l, Out::Value(x) if same(x, w)), "type {ty}: {l:?}");
+                        assert_eq!(st, Out::Stored, "type {ty}");
+                        // T0 hits on these probes, except a Float16 view (T0 takes none).
+                        let want = u32::from(ty != 9);
+                        assert_eq!(h, [want, want], "type {ty}: T0 hits");
+                    }
+                }
             }
         }
         t.release_all(held);

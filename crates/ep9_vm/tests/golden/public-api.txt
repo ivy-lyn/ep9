@@ -610,7 +610,7 @@ ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
 ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
 ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
 ep9_vm::IntrinsicId :: impl IntrinsicId
-ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 115]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 141]
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
 ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
@@ -641,7 +641,11 @@ ep9_vm::IntrinsicId :: variant AsyncGeneratorFunctionPrototype
 ep9_vm::IntrinsicId :: variant AsyncGeneratorPrototype
 ep9_vm::IntrinsicId :: variant AsyncIteratorPrototype
 ep9_vm::IntrinsicId :: variant BigInt
+ep9_vm::IntrinsicId :: variant BigInt64Array
+ep9_vm::IntrinsicId :: variant BigInt64ArrayPrototype
 ep9_vm::IntrinsicId :: variant BigIntPrototype
+ep9_vm::IntrinsicId :: variant BigUint64Array
+ep9_vm::IntrinsicId :: variant BigUint64ArrayPrototype
 ep9_vm::IntrinsicId :: variant Boolean
 ep9_vm::IntrinsicId :: variant BooleanPrototype
 ep9_vm::IntrinsicId :: variant DataView
@@ -657,6 +661,12 @@ ep9_vm::IntrinsicId :: variant EvalError
 ep9_vm::IntrinsicId :: variant EvalErrorPrototype
 ep9_vm::IntrinsicId :: variant FinalizationRegistry
 ep9_vm::IntrinsicId :: variant FinalizationRegistryPrototype
+ep9_vm::IntrinsicId :: variant Float16Array
+ep9_vm::IntrinsicId :: variant Float16ArrayPrototype
+ep9_vm::IntrinsicId :: variant Float32Array
+ep9_vm::IntrinsicId :: variant Float32ArrayPrototype
+ep9_vm::IntrinsicId :: variant Float64Array
+ep9_vm::IntrinsicId :: variant Float64ArrayPrototype
 ep9_vm::IntrinsicId :: variant Function
 ep9_vm::IntrinsicId :: variant FunctionPrototype
 ep9_vm::IntrinsicId :: variant FunctionPrototypeApply
@@ -665,6 +675,12 @@ ep9_vm::IntrinsicId :: variant GeneratorFunction
 ep9_vm::IntrinsicId :: variant GeneratorFunctionPrototype
 ep9_vm::IntrinsicId :: variant GeneratorPrototype
 ep9_vm::IntrinsicId :: variant GlobalObject
+ep9_vm::IntrinsicId :: variant Int16Array
+ep9_vm::IntrinsicId :: variant Int16ArrayPrototype
+ep9_vm::IntrinsicId :: variant Int32Array
+ep9_vm::IntrinsicId :: variant Int32ArrayPrototype
+ep9_vm::IntrinsicId :: variant Int8Array
+ep9_vm::IntrinsicId :: variant Int8ArrayPrototype
 ep9_vm::IntrinsicId :: variant Intl
 ep9_vm::IntrinsicId :: variant IntlCollator
 ep9_vm::IntrinsicId :: variant IntlCollatorPrototype
@@ -729,6 +745,16 @@ ep9_vm::IntrinsicId :: variant TemporalZonedDateTimePrototype
 ep9_vm::IntrinsicId :: variant ThrowTypeError
 ep9_vm::IntrinsicId :: variant TypeError
 ep9_vm::IntrinsicId :: variant TypeErrorPrototype
+ep9_vm::IntrinsicId :: variant TypedArray
+ep9_vm::IntrinsicId :: variant TypedArrayPrototype
+ep9_vm::IntrinsicId :: variant Uint16Array
+ep9_vm::IntrinsicId :: variant Uint16ArrayPrototype
+ep9_vm::IntrinsicId :: variant Uint32Array
+ep9_vm::IntrinsicId :: variant Uint32ArrayPrototype
+ep9_vm::IntrinsicId :: variant Uint8Array
+ep9_vm::IntrinsicId :: variant Uint8ArrayPrototype
+ep9_vm::IntrinsicId :: variant Uint8ClampedArray
+ep9_vm::IntrinsicId :: variant Uint8ClampedArrayPrototype
 ep9_vm::IntrinsicId :: variant UriError
 ep9_vm::IntrinsicId :: variant UriErrorPrototype
 ep9_vm::IntrinsicId :: variant WeakMap

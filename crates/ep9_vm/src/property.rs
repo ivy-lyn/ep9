@@ -1536,12 +1536,12 @@ pub(crate) fn prevent_extensions(rt: &Runtime, o: u64) -> bool {
     true
 }
 
-/// `o.[[PreventExtensions]]()` for any object: a proxy asks its own (`proxy.rs`). GC point.
+/// `o.[[PreventExtensions]]()` for any object: a proxy or a view asks its own. GC point.
 pub(crate) fn try_prevent_extensions(cx: &mut Cx, o: u64) -> Res<bool> {
     if crate::proxy::is_proxy(o) {
         return crate::proxy::prevent_extensions(cx, o);
     }
-    Ok(prevent_extensions(cx.rt(), o))
+    Ok(crate::typed_array::prevent_extensions(o).unwrap_or_else(|| prevent_extensions(cx.rt(), o)))
 }
 
 /// `o.[[GetPrototypeOf]]()` for any object: the shape's prototype (§10.1.1.1

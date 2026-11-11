@@ -473,3 +473,12 @@ pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     }
     keys
 }
+
+/// `[[PreventExtensions]]` (§10.4.5, `sec-typedarray-preventextensions`, route TA3-PREVEXT):
+/// `Some(false)` for a view that is not IsTypedArrayFixedLength (a length-tracking view, or a
+/// view on a resizable ArrayBuffer: elements kind 8); `None` for a fixed-length view and for
+/// an object that is no view, so the caller runs OrdinaryPreventExtensions. Not a GC point.
+#[inline]
+pub(crate) fn prevent_extensions(o: u64) -> Option<bool> {
+    (kinds::is_view(o) && !is_fixed_length(o)).then_some(false)
+}
