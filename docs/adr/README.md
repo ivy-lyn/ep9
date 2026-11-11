@@ -88,7 +88,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H3 | Header fields and TS flags | BytecodeGen lowering table | M4 exit |
 | H13 | Snapshot rules, stable index lists | Snapshot build (A1) | M4 exit [2026-11-04, M6-P3 integration fixer (B3T2 need), in the cell so no line moves: the H13 Freeze table splits this row: "rules" at M1 exit; "index ids (append-only)" no freeze point (the "Append-only parts" bullet); "root slots" at A2 start (stable within one engine build until then); "snapshot build" at M4 exit.] |
 | H21 | Design (ADR at M1) | Build | M7 start ("functional before M7") |
-| H24 | Rules | AOT parts | A2 gate |
+| H24 | Rules | AOT parts | A3 gate [2026-11-11, M8-P0 AOT-TEXT (M8-PLAN-D27), in the cell so no line moves: moved from the A2 gate before the part froze (pre-freeze churn, not G8; the H24 Freeze table row "AOT parts" and its Change-log rows)] |
 | H35 | (none: the whole row freezes at the A3 gate) | Writer, loader | A3 gate |
 | H37 | (none) | Schema v0 (A1h) | A4 start |
 | H29 | Contract: Decision and Rules, the Q1-Q7 fills | A4-built part: resume in non-T0 code, the osr-entry record format, the materialize payload | A4 gates (M8 exit) |
