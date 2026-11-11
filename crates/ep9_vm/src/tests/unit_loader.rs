@@ -2356,7 +2356,8 @@ fn call_g_walk_n(n: u32) -> VerifiedUnit {
 /// construct arm's native entry), calls from Rust (`Cx::call`) and constructs from Rust
 /// (`Reflect.construct`), both counted at the pushed frame as `slow::count_entry` counts. The
 /// unit code counts nothing itself. Before D26 no call of a native slot counted, so the unit
-/// function never got a vector (H32-Q5 (2): native slot calls skipped `count_call`).
+/// function never got a vector (H32-Q5 (2): native slot calls skipped `count_call`). With
+/// `spike-native` the T0 call takes the spike entry, which counts nothing.
 #[test]
 fn unit_loader_construct_and_call_of_unit_code_count_at_the_caller() {
     let has_vector = |iso: &Isolate, name: &str| crate::feedback::vector(info(iso, name)).is_some();
@@ -2366,7 +2367,11 @@ fn unit_loader_construct_and_call_of_unit_code_count_at_the_caller() {
     assert_eq!(run_js(&mut iso, call_g_walk_n(7)), v42);
     assert!(!has_vector(&iso, "g"), "g after 7 T0 calls");
     assert_eq!(run_js(&mut iso, call_g_walk_n(1)), v42);
-    assert!(has_vector(&iso, "g"), "g after 8 T0 calls");
+    // With `spike-native` a T0 call of native code takes the spike entry first
+    // (`slow::call` `call_native`), which counts nothing (the `native.rs` module doc; the
+    // `tests::native` A-hot test pins it); the default build counts it.
+    let t0_calls_count = !cfg!(feature = "spike-native");
+    assert_eq!(has_vector(&iso, "g"), t0_calls_count, "g after 8 T0 calls");
     for i in 1..=8 {
         assert_eq!(
             shown_in(&mut iso, new_tag("c", "walk"), false),
