@@ -38,7 +38,11 @@
 // third_party/icu4x.commit, third_party/patches/icu4x; TREE_PATHS), and the
 // TREE_PATHS entries with uncommitted changes (`dirty`; not fresh when it is not empty). A CI
 // pull_request run names GitHub's merge commit, which a local repository does not have: m1-exit
-// item 1 then reads the 9 tree ids against HEAD's (plan v11 GF-1, X10). `ep9.engine_build` is the
+// item 1 then reads the 9 tree ids against HEAD's (plan v11 GF-1, X10). `forks` is the fork
+// line of the checkouts at the run (FORK-CHECKOUT-ATTEST; forkState): `regress=pinned
+// icu4x=pinned` when each git-ignored fork checkout is its pin plus its patch set, `stale` or
+// `absent` in its place otherwise, null when the check cannot run; m1-exit gives OPEN unless every
+// fork reads pinned. `ep9.engine_build` is the
 // build line of the checked binary's `--version` ("features <list>; preset <name>", M5-P0,
 // MC-w17-5), or null for a binary that prints none.
 //
@@ -82,6 +86,25 @@ export const REGRESS_PATHS = ["third_party/regress.commit", "third_party/patches
  * these two make (scripts/sync-icu4x.sh), so m1-exit holds them fresh too (its ICU4X_PATHS).
  */
 export const ICU4X_PATHS = ["third_party/icu4x.commit", "third_party/patches/icu4x"];
+
+/**
+ * The forks ep9 builds from git-ignored checkouts (third_party/<fork>): the `fork_attest` names
+ * (FORK-CHECKOUT-ATTEST; tools/test262/runner_build.rs FORK_BUILT, m1-exit exit::forks::FORKS).
+ */
+export const FORKS = ["regress", "icu4x"];
+
+/**
+ * The fork line of the checkouts under `root` (FORK-CHECKOUT-ATTEST): what `fork_attest` of
+ * scripts/sync-lib.sh prints (the `.ep9-stamp` and `pinned_tree` rule), such as
+ * "regress=pinned icu4x=stale"; null when the check cannot run or prints another form.
+ */
+export function forkState(root = ROOT) {
+  const r = spawnSync("sh", ["-c", '. "$1/scripts/sync-lib.sh"; root=$1; shift; fork_attest "$@"', "sh", root, ...FORKS], { encoding: "utf8" });
+  const line = (r.stdout ?? "").trim();
+  const form = new RegExp(`^${FORKS.map((f) => `${f}=(pinned|stale|absent)`).join(" ")}$`);
+  if (r.error || !form.test(line)) return null;
+  return r.status === (line.split(" ").every((p) => p.endsWith("=pinned")) ? 0 : 1) ? line : null;
+}
 
 /** The paths whose git tree ids the JSON writes (`tree`): FRESH_PATHS, REGRESS_PATHS, ICU4X_PATHS. */
 export const TREE_PATHS = [...FRESH_PATHS, ...REGRESS_PATHS, ...ICU4X_PATHS];
@@ -389,6 +412,7 @@ export function check(o, deps = {}) {
       head: st.head,
       tree: st.tree,
       dirty: st.dirty,
+      forks: forkState(),
       host: { ...host, target: TRIPLES[host.platform] ?? null },
       ep9: { bin: path.basename(o.check), ...splitVersion(runVersion(o.check)), sha256: sha256File(o.check) },
       oracle: { engine: "node", bin: path.basename(o.node), version: version(o.node) },
@@ -441,7 +465,7 @@ function sha256File(f) {
 export function renderTable(res) {
   const cell = (x) => (x ?? "").replaceAll("|", "\\|").replaceAll("`", "'").replaceAll("\n", " / ");
   const L = [];
-  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}${res.ep9.engine_build ? `; ${res.ep9.engine_build}` : ""}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}.`);
+  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}${res.ep9.engine_build ? `; ${res.ep9.engine_build}` : ""}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}${res.forks?.split(" ").every((p) => p.endsWith("=pinned")) ? "" : `; fork checkouts: ${res.forks ?? "not checked"}`}.`);
   L.push("");
   L.push("| kernel | result | blocker | place | source line |");
   L.push("|---|---|---|---|---|");
