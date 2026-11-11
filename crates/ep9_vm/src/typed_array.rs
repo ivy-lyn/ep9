@@ -31,7 +31,7 @@
 
 use ep9_heap::KindId;
 
-use crate::array_buffer::{self as ab, BufResult, Fail, elem_size, is_bigint_elem};
+use crate::array_buffer::{self as ab, BufResult, Fail, IsTypedArray, elem_size, is_bigint_elem};
 use crate::conv::{self, Res};
 use crate::descriptor::Desc;
 use crate::elements::kind as ek;
@@ -278,9 +278,12 @@ pub(crate) fn get_element(rt: &Runtime, o: u64, index: f64) -> u64 {
     let t = element_type(o);
     let size = elem_size(t);
     let shared = ab::is_shared(buffer_of(o));
+    // isTypedArray true (TA-ORCH-13): shared bytes take one access of the element width, so the
+    // element does not tear. `p` is aligned to `size` (the byte offset is a multiple of it).
+    let p = data_of(o).wrapping_add(i * size);
     // SAFETY: `i` is below the view's length, so [data + i * size, + size) is inside the live
     // store (the view holds its buffer, the buffer its store).
-    let x = unsafe { ab::read_raw(data_of(o).wrapping_add(i * size), size, shared) };
+    let x = unsafe { ab::read_raw(p, size, shared, IsTypedArray::Yes) };
     ab::raw_to_value(rt, t, x)
 }
 
@@ -298,8 +301,10 @@ pub(crate) fn set_element(cx: &mut Cx, o: u64, index: f64, v: u64) -> Res<()> {
     if let Some(i) = valid_index(cx.rt(), o, index) {
         let size = elem_size(t);
         let shared = ab::is_shared(buffer_of(o));
+        // isTypedArray true, as `get_element`.
+        let p = data_of(o).wrapping_add(i * size);
         // SAFETY: as `get_element`, checked after the conversion.
-        unsafe { ab::write_raw(data_of(o).wrapping_add(i * size), size, x, shared) };
+        unsafe { ab::write_raw(p, size, x, shared, IsTypedArray::Yes) };
     }
     Ok(())
 }

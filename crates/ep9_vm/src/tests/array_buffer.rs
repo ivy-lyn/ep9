@@ -16,7 +16,7 @@
 //! | `shared_buffers_grow_and_never_detach` | grow, the RangeErrors and TypeErrors, views on a SAB |
 //! | `get_and_set_value_in_both_byte_orders` | each type, little and big endian, unaligned and shared; the range checks |
 //! | `copy_bytes_with_overlap` | CopyDataBlockBytes forward, backward, across buffers and shared |
-//! | `plain_shared_access_goes_byte_by_byte` | TA-ORCH-12: a DataView get and set, a TypedArray element get and set and a copy on shared bytes use one-byte Relaxed atomics only; the bytes land right in each type, index and byte order |
+//! | `plain_shared_access_width_follows_is_typed_array` | TA-ORCH-13: on shared bytes a TypedArray element get and set and Get/SetValueInBuffer use one Relaxed atomic of the element width; a DataView get and set and a copy use one-byte Relaxed atomics; the bytes land right in each type, index and byte order |
 //! | `atomics_operations` | load, store, the 6 read-modify-write ops and compare-exchange on each integer type |
 //! | `data_view_slots` | the DataView slots (slot 4: its own table entry), its range checks, auto length |
 //! | `a_failed_transfer_leaves_the_buffer` | ArrayBufferCopyAndDetach order: a failed grow of a moved store leaves the old buffer as it was |
@@ -645,16 +645,18 @@ fn take_widths() -> [u32; 4] {
     ab::PLAIN_SHARED_WIDTHS.with(|c| c.replace([0; 4]))
 }
 
-/// TA-ORCH-12 (Codex TA-2 r2 finding 1): a plain (Unordered, ECMA-262 §29) access to the bytes
-/// of a SharedArrayBuffer goes byte by byte, one Relaxed `AtomicU8` access per byte, so every
-/// plain access to shared bytes has one width (a mixed-size atomic access is undefined in
-/// Rust). Each Table 71 type at an aligned index (0 and 8) and at an odd one (3), in both byte
-/// orders: a DataView set puts the right bytes in the block and the get gives the value back,
-/// each with `size` one-byte accesses and none wider. A TypedArray element set and get of each
-/// type on a shared buffer: the same. CopyDataBlockBytes: one byte each way. A non-shared
-/// buffer takes the plain path (no count).
+/// TA-ORCH-13 (Codex TA-2 r3; before it TA-ORCH-12): the width of a plain (Unordered,
+/// ECMA-262 §29) access to the bytes of a SharedArrayBuffer follows the isTypedArray argument
+/// of GetValueFromBuffer and SetValueInBuffer. isTypedArray false (a DataView get and set, each
+/// Table 71 type at bytes 0, 3 and 8, both byte orders): one Relaxed `AtomicU8` access per byte;
+/// the set puts the right bytes in the block and the get gives the value back. isTypedArray true
+/// (a TypedArray element get and set; GetValueFromBuffer and SetValueInBuffer at an index that
+/// is a multiple of the size): one Relaxed atomic of the element width, so the element does not
+/// tear (IsNoTearConfiguration, §25.1.3.12). An index that is no multiple of the size is no
+/// TypedArray element: bytes. CopyDataBlockBytes: one byte each way. A non-shared buffer takes
+/// the plain path (no count).
 #[test]
-fn plain_shared_access_goes_byte_by_byte() {
+fn plain_shared_access_width_follows_is_typed_array() {
     each(|cx| {
         let b = shared(cx.rt(), 16, None);
         let dv = ab::new_data_view(cx.rt(), NULL, b, 0, None).unwrap();
@@ -690,13 +692,32 @@ fn plain_shared_access_goes_byte_by_byte() {
                     assert_eq!(got, want, "bytes: {what}");
                 }
             }
+            // One access of the element width: index 0, 1, 2, 3 for 1, 2, 4, 8 bytes.
+            let mut one = [0; 4];
+            one[size.trailing_zeros() as usize] = 1;
             // A TypedArray element of the type at byte 8 (aligned for every size).
             let o = ta::new_view(rt, NULL, t, b, 8, Some(1)).unwrap();
             ta::set_element(cx, o, 0.0, v).unwrap();
-            assert_eq!(take_widths(), [size, 0, 0, 0], "element set: type {t}");
+            assert_eq!(take_widths(), one, "element set: type {t}");
             let back = ta::get_element(cx.rt(), o, 0.0);
-            assert_eq!(take_widths(), [size, 0, 0, 0], "element get: type {t}");
+            assert_eq!(take_widths(), one, "element get: type {t}");
             assert!(same(back), "element: type {t}");
+            // GetValueFromBuffer and SetValueInBuffer (isTypedArray true) at 8, then at 3.
+            let rt = cx.rt();
+            ab::set_value(rt, b, 8, t, v, true).unwrap();
+            assert_eq!(take_widths(), one, "SetValueInBuffer: type {t}");
+            assert!(same(ab::get_value(rt, b, 8, t, true).unwrap()), "type {t}");
+            assert_eq!(take_widths(), one, "GetValueFromBuffer: type {t}");
+            ab::set_value(rt, b, 3, t, v, true).unwrap();
+            assert!(
+                same(ab::get_value(rt, b, 3, t, true).unwrap()),
+                "type {t} at 3"
+            );
+            assert_eq!(
+                take_widths(),
+                [2 * size, 0, 0, 0],
+                "Get/SetValue at 3: type {t}"
+            );
             black_box(o);
         }
         let rt = cx.rt();

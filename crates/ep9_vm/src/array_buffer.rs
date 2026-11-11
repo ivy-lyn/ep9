@@ -47,8 +47,8 @@
 //! - **Resize.** A resizable store keeps its base, so the views keep their data word; the bytes
 //!   from the byte length to the committed end are always 0 (a shrink zeroes them), so a later
 //!   grow reads zeros.
-//! - **Shared bytes (TA-D11).** Every access to SAB bytes is atomic: a plain access is a loop of
-//!   one-byte Relaxed atomics (TA-ORCH-12, [`read_raw`]), SeqCst of the element width for Atomics.
+//! - **Shared bytes (TA-D11).** Every access to SAB bytes is atomic: Relaxed of the element width
+//!   for a TypedArray, Relaxed bytes for a DataView (TA-ORCH-13, [`IsTypedArray`]), SeqCst Atomics.
 //! - **Caps (design §2.3, est.).** A `maxByteLength` above [`MAX_RESERVATION`] is a RangeError;
 //!   a fixed buffer above `max_heap_bytes` or that the heap cannot allocate is a RangeError
 //!   (CreateByteDataBlock).
@@ -965,9 +965,10 @@ pub(crate) fn is_bigint_elem(t: u8) -> bool {
 
 #[cfg(test)]
 thread_local! {
-    /// Tests (TA-ORCH-12): the count of Relaxed atomic accesses to shared bytes on the plain
-    /// (Unordered) paths of this thread ([`read_raw`], [`write_raw`]), by width: index 0, 1, 2
-    /// and 3 for 1, 2, 4 and 8 bytes.
+    /// Tests (TA-ORCH-12, TA-ORCH-13): the count of Relaxed atomic accesses to shared bytes on
+    /// the plain (Unordered) paths of this thread ([`read_raw`], [`write_raw`]), by width: index
+    /// 0, 1, 2 and 3 for 1, 2, 4 and 8 bytes. [`IsTypedArray::Yes`] counts one access of the
+    /// element width; [`IsTypedArray::No`] counts one 1-byte access per byte.
     pub(crate) static PLAIN_SHARED_WIDTHS: Cell<[u32; 4]> = const { Cell::new([0; 4]) };
 }
 
@@ -981,26 +982,22 @@ fn note_plain_shared(size: usize) {
     });
 }
 
-/// Reads `size` (1, 2, 4 or 8) bytes at `p` as a little-endian integer, order Unordered. Shared
-/// bytes: one Relaxed `AtomicU8` load per byte at any size, so plain accesses never mix sizes
-/// (TA-ORCH-12, design §5.6; Atomics against bytes: route TA-SHARED-MIXED-WIDTH).
+/// Reads `size` (1, 2, 4 or 8) bytes at `p` as a little-endian integer, order Unordered.
+/// Non-shared bytes have no other thread (one isolate, one thread): a plain load. Shared bytes
+/// take the tear rule of `ita`, the isTypedArray argument of the caller's spec step, never a
+/// rule from `size` ([`read_shared`], TA-ORCH-13): TypedArrayGetElement and GetValueFromBuffer
+/// pass [`IsTypedArray::Yes`]; GetViewValue and a byte copy pass [`IsTypedArray::No`].
 ///
 /// # Safety
-/// `[p, p + size)` is inside a live store.
+/// `[p, p + size)` is inside a live store. Shared bytes with [`IsTypedArray::Yes`]: `p` is a
+/// multiple of `size` (a TypedArray element is aligned by construction).
 #[inline]
-pub(crate) unsafe fn read_raw(p: *const u8, size: usize, shared: bool) -> u64 {
+pub(crate) unsafe fn read_raw(p: *const u8, size: usize, shared: bool, ita: IsTypedArray) -> u64 {
     let p = p.cast_mut();
     if shared {
-        let mut x = 0u64;
-        for i in 0..size {
-            #[cfg(test)]
-            note_plain_shared(1);
-            // SAFETY: inside a live store (caller), one byte at a time; every plain access to
-            // shared bytes is a one-byte atomic (TA-D11, TA-ORCH-12).
-            let byte = unsafe { AtomicU8::from_ptr(p.add(i)).load(Relaxed) };
-            x |= u64::from(byte) << (8 * i);
-        }
-        return x;
+        // SAFETY: the caller's contract: the range, and for `IsTypedArray::Yes` the alignment of
+        // a TypedArray element.
+        return unsafe { read_shared(p, size, ita) };
     }
     // SAFETY: inside a live store (caller); no other thread writes non-shared bytes.
     unsafe {
@@ -1013,19 +1010,18 @@ pub(crate) unsafe fn read_raw(p: *const u8, size: usize, shared: bool) -> u64 {
     }
 }
 
-/// Writes the low `size` bytes of `x` at `p`, little endian, order Unordered ([`read_raw`]).
+/// Writes the low `size` bytes of `x` at `p`, little endian, order Unordered, with the rules
+/// of [`read_raw`] ([`write_shared`]): TypedArraySetElement and SetValueInBuffer pass
+/// [`IsTypedArray::Yes`]; SetViewValue and a byte copy pass [`IsTypedArray::No`].
 ///
 /// # Safety
-/// `[p, p + size)` is inside a live store.
+/// `[p, p + size)` is inside a live store. Shared bytes with [`IsTypedArray::Yes`]: `p` is a
+/// multiple of `size`.
 #[inline]
-pub(crate) unsafe fn write_raw(p: *mut u8, size: usize, x: u64, shared: bool) {
+pub(crate) unsafe fn write_raw(p: *mut u8, size: usize, x: u64, shared: bool, ita: IsTypedArray) {
     if shared {
-        for i in 0..size {
-            #[cfg(test)]
-            note_plain_shared(1);
-            // SAFETY: as `read_raw`, one byte at a time.
-            unsafe { AtomicU8::from_ptr(p.add(i)).store((x >> (8 * i)) as u8, Relaxed) };
-        }
+        // SAFETY: the caller's contract ([`read_raw`]).
+        unsafe { write_shared(p, size, x, ita) };
         return;
     }
     // SAFETY: as `read_raw`.
@@ -1143,8 +1139,10 @@ pub(crate) fn get_value(
 ) -> BufResult<u64> {
     let size = elem_size(t);
     let p = checked_range(rt, b, index, size)?;
-    // SAFETY: `checked_range` checked the range against the live store.
-    let mut x = unsafe { read_raw(p, size, is_shared(b)) };
+    // isTypedArray true: the ABI pair is the TypedArray form ([`IsTypedArray::abi_index`]).
+    let ita = IsTypedArray::abi_index(index, size);
+    // SAFETY: `checked_range` checked the range; `abi_index` gives `Yes` only when aligned.
+    let mut x = unsafe { read_raw(p, size, is_shared(b), ita) };
     if !little_endian {
         x = x.swap_bytes() >> (64 - 8 * size);
     }
@@ -1168,8 +1166,10 @@ pub(crate) fn set_value(
     if !little_endian {
         x = x.swap_bytes() >> (64 - 8 * size);
     }
-    // SAFETY: `checked_range` checked the range against the live store.
-    unsafe { write_raw(p, size, x, is_shared(b)) };
+    // isTypedArray true: the ABI pair is the TypedArray form ([`IsTypedArray::abi_index`]).
+    let ita = IsTypedArray::abi_index(index, size);
+    // SAFETY: `checked_range` checked the range; `abi_index` gives `Yes` only when aligned.
+    unsafe { write_raw(p, size, x, is_shared(b), ita) };
     Ok(())
 }
 
@@ -1199,8 +1199,8 @@ pub(crate) fn copy_bytes(
             // SAFETY: both ranges were checked; each byte is read and written atomically when
             // its store is shared.
             unsafe {
-                let x = read_raw(src.add(i), 1, true);
-                write_raw(dst.add(i), 1, x, true);
+                let x = read_raw(src.add(i), 1, true, IsTypedArray::No);
+                write_raw(dst.add(i), 1, x, true, IsTypedArray::No);
             }
         };
         if forward {
@@ -1480,7 +1480,7 @@ pub(crate) fn data_view_get(
     let size = elem_size(t);
     let p = data_view_range(rt, v, index, size)?;
     // SAFETY: `data_view_range` checked the range against the live store of the view's buffer.
-    let mut x = unsafe { read_raw(p, size, is_shared(data_view_buffer(v))) };
+    let mut x = unsafe { read_raw(p, size, is_shared(data_view_buffer(v)), IsTypedArray::No) };
     if !little_endian {
         x = x.swap_bytes() >> (64 - 8 * size);
     }
@@ -1507,8 +1507,116 @@ pub(crate) fn data_view_set(
         x = x.swap_bytes() >> (64 - 8 * size);
     }
     // SAFETY: `data_view_range` checked the range against the live store of the view's buffer.
-    unsafe { write_raw(p, size, x, is_shared(data_view_buffer(v))) };
+    unsafe { write_raw(p, size, x, is_shared(data_view_buffer(v)), IsTypedArray::No) };
     Ok(())
+}
+
+// ---- shared bytes: the tear rule (TA-D11, TA-ORCH-13, design §5.6) ---------------------------
+
+/// The isTypedArray argument of GetValueFromBuffer and SetValueInBuffer (§25.1.3.15,
+/// §25.1.3.17): it sets the tear rule of a plain (Unordered, §29) access to shared bytes
+/// ([`read_raw`], [`write_raw`]). Non-shared bytes ignore it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IsTypedArray {
+    /// true: a TypedArray element (TypedArrayGetElement, TypedArraySetElement, and
+    /// GetValueFromBuffer and SetValueInBuffer of a TypedArray). One Relaxed atomic of the
+    /// element width, so the element does not tear: IsNoTearConfiguration (§25.1.3.12) is true
+    /// for the unclamped integer types, and the other types allow it. A TypedArray element is
+    /// aligned to its size (a byte offset that is a multiple of the size, on a page-aligned
+    /// shared block); a debug build checks it.
+    Yes,
+    /// false: a DataView access (GetViewValue, SetViewValue: any byte index) or a byte copy
+    /// (CopyDataBlockBytes). One Relaxed `AtomicU8` access per byte: the access may tear.
+    No,
+}
+
+impl IsTypedArray {
+    /// The isTypedArray argument of the ABI pair `Cx::get_value_from_buffer` and
+    /// `Cx::set_value_in_buffer`: true, the TypedArray form (a DataView uses
+    /// `Cx::data_view_get_value`). A byte index that is not a multiple of the element size is
+    /// no TypedArray element (no TypedArray can make it), so it goes byte by byte (`No`) and the
+    /// access stays aligned.
+    fn abi_index(index: u64, size: usize) -> IsTypedArray {
+        if index.is_multiple_of(size as u64) {
+            IsTypedArray::Yes
+        } else {
+            IsTypedArray::No
+        }
+    }
+}
+
+/// [`read_raw`] of shared bytes. `Yes`: one Relaxed load of the element width. `No`: one
+/// Relaxed `AtomicU8` load per byte.
+///
+/// Platform exception (design §5.6, route TA-SHARED-MIXED-WIDTH): two threads can still access
+/// the same shared bytes with two widths (two TypedArrays of two element types, a DataView and
+/// a TypedArray, or `Atomics` and a plain access). The aligned loads and stores are single-copy
+/// atomic per access on aarch64 and x86-64, the only ep9 targets; the Rust abstract model calls
+/// a mixed-size atomic access undefined. V8 and SpiderMonkey take the same platform rule.
+///
+/// # Safety
+/// As [`read_raw`].
+#[inline]
+unsafe fn read_shared(p: *mut u8, size: usize, ita: IsTypedArray) -> u64 {
+    if ita == IsTypedArray::Yes {
+        debug_assert!(
+            p.addr().is_multiple_of(size),
+            "a TypedArray element is aligned"
+        );
+        #[cfg(test)]
+        note_plain_shared(size);
+        // SAFETY: aligned to `size` (caller), inside a live store; every access to shared bytes
+        // is atomic (TA-D11).
+        return unsafe {
+            match size {
+                1 => u64::from(AtomicU8::from_ptr(p).load(Relaxed)),
+                2 => u64::from(u16::from_le(AtomicU16::from_ptr(p.cast()).load(Relaxed))),
+                4 => u64::from(u32::from_le(AtomicU32::from_ptr(p.cast()).load(Relaxed))),
+                _ => u64::from_le(AtomicU64::from_ptr(p.cast()).load(Relaxed)),
+            }
+        };
+    }
+    let mut x = 0u64;
+    for i in 0..size {
+        #[cfg(test)]
+        note_plain_shared(1);
+        // SAFETY: inside a live store (caller), one byte at a time (TA-D11).
+        let byte = unsafe { AtomicU8::from_ptr(p.add(i)).load(Relaxed) };
+        x |= u64::from(byte) << (8 * i);
+    }
+    x
+}
+
+/// [`write_raw`] of shared bytes, with the rules of [`read_shared`].
+///
+/// # Safety
+/// As [`read_raw`].
+#[inline]
+unsafe fn write_shared(p: *mut u8, size: usize, x: u64, ita: IsTypedArray) {
+    if ita == IsTypedArray::Yes {
+        debug_assert!(
+            p.addr().is_multiple_of(size),
+            "a TypedArray element is aligned"
+        );
+        #[cfg(test)]
+        note_plain_shared(size);
+        // SAFETY: as `read_shared`.
+        unsafe {
+            match size {
+                1 => AtomicU8::from_ptr(p).store(x as u8, Relaxed),
+                2 => AtomicU16::from_ptr(p.cast()).store((x as u16).to_le(), Relaxed),
+                4 => AtomicU32::from_ptr(p.cast()).store((x as u32).to_le(), Relaxed),
+                _ => AtomicU64::from_ptr(p.cast()).store(x.to_le(), Relaxed),
+            }
+        }
+        return;
+    }
+    for i in 0..size {
+        #[cfg(test)]
+        note_plain_shared(1);
+        // SAFETY: as `read_shared`, one byte at a time.
+        unsafe { AtomicU8::from_ptr(p.add(i)).store((x >> (8 * i)) as u8, Relaxed) };
+    }
 }
 
 // ---- TA-2 fixer (N1): a SharedArrayBuffer block shared across isolates (H22-Q8) ------------

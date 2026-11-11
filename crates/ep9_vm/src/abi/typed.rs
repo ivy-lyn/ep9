@@ -1083,4 +1083,70 @@ mod tests {
             std::hint::black_box((p, sab, dv));
         });
     }
+
+    /// TA-ORCH-13 (Codex TA-2 r3): a TypedArray element on shared bytes does not tear. Two
+    /// isolates on two threads share one SharedArrayBuffer block, each with an Int32Array at
+    /// byte 0 and an Int16Array at byte 4. The writer stores -1 and 0 in turn in both elements;
+    /// the reader reads both, each in a bounded loop. Every read is 0 or -1
+    /// (IsNoTearConfiguration, ECMA-262 §25.1.3.12: an unordered Int32 or Int16 TypedArray
+    /// access does not tear; a byte loop can give 255 or 65535). Each element access is one
+    /// Relaxed atomic of the element width, so this is no data race in Rust. Not a timing test:
+    /// it checks only the values, and each wait has a deadline (a byte loop can pass by chance;
+    /// the width probe test is the gate that does not depend on the race).
+    #[test]
+    fn two_threads_see_no_torn_int32_or_int16_element() {
+        use crate::typed_array as ta;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        const DEADLINE: Duration = Duration::from_secs(120);
+        const ROUNDS: u32 = 100_000;
+        // Table 71 rows 5 (Int32) and 3 (Int16).
+        const VIEWS: [(u8, u64); 2] = [(5, 0), (3, 4)];
+        crate::tests::on_big_stack(|| {
+            let mut iso = isolate(config(Dispatch::DEFAULT, false));
+            let iso: &mut Isolate = &mut iso;
+            let mut cx = Cx::new(&mut iso.cx);
+            let p = cx.new_object();
+            let sab = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+            let views = VIEWS.map(|(t, at)| cx.new_typed_array(p, t, sab, at, Some(1)).unwrap());
+            let block = cx.shared_array_buffer_block(sab).unwrap();
+            let (to_main, from_writer) = mpsc::channel::<()>();
+            let writer = std::thread::Builder::new()
+                .stack_size(512 << 20)
+                .spawn(move || {
+                    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+                    let mut cx = Cx::new(&mut iso.cx);
+                    let p = cx.new_object();
+                    let sab = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                    let views =
+                        VIEWS.map(|(t, at)| cx.new_typed_array(p, t, sab, at, Some(1)).unwrap());
+                    to_main.send(()).unwrap();
+                    for r in 0..ROUNDS {
+                        let x = Local::number(if r % 2 == 0 { -1.0 } else { 0.0 }).bits();
+                        for o in views {
+                            ta::set_element(cx.inner(), o.bits(), 0.0, x).unwrap();
+                        }
+                    }
+                    std::hint::black_box((sab, views));
+                })
+                .unwrap();
+            from_writer
+                .recv_timeout(DEADLINE)
+                .expect("the writer adopted the block");
+            let read = |cx: &Cx<'_>, k: usize| {
+                let x: Local<'_> = Local::from_bits(ta::get_element(cx.rt(), views[k].bits(), 0.0));
+                x.as_number().unwrap()
+            };
+            for r in 0..ROUNDS {
+                for k in 0..2 {
+                    let x = read(&cx, k);
+                    assert!(x == 0.0 || x == -1.0, "round {r}: view {k} = {x}");
+                }
+            }
+            writer.join().expect("the writer ended");
+            // The last round (odd) stored 0.
+            assert_eq!([read(&cx, 0), read(&cx, 1)], [0.0, 0.0]);
+            std::hint::black_box((p, sab, views));
+        });
+    }
 }

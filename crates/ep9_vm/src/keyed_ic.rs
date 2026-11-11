@@ -403,10 +403,10 @@ mod view {
     //!                    needs `trunc`, a libm call on baseline x86-64)
     //! ```
     //!
-    //! A view on a SharedArrayBuffer is cold (TA-ORCH-12): a plain access to shared bytes is a
-    //! loop of one-byte Relaxed atomics (`array_buffer::read_raw`), so that every plain access
-    //! to them has one width, and the spec path does that loop. A byte loop here would make the
-    //! hit code larger for every view; the miss costs one compare of the buffer's class, which
+    //! A view on a SharedArrayBuffer is cold (TA-ORCH-12, TA-ORCH-13): a plain access to shared
+    //! bytes is atomic (a TypedArray element: one Relaxed atomic of its width, `read_raw` with
+    //! `IsTypedArray::Yes`), and the spec path does it. An atomic arm here would make the hit
+    //! code larger for every view; the miss costs one compare of the buffer's class, which
     //! the case read before too. So a hit reads and writes only non-shared bytes, with plain
     //! loads and stores. A view element is aligned to its size (a byte offset that is a
     //! multiple of the size, on a store base that is 8-aligned), else the case is cold. The
@@ -535,7 +535,7 @@ mod view {
         };
         const SAB: u64 = int32_bits(ObjectClass::SharedArrayBuffer.id() as i32);
         if rd(bc, object::slot_obj::CLASS) == SAB {
-            // TA-ORCH-12: shared bytes go byte by byte on the spec path (module doc).
+            // TA-ORCH-12, -13: shared bytes take the atomic spec path (module doc).
             return At::Cold;
         }
         let len = int32(rd(c, layout::VIEW_LENGTH as usize));
