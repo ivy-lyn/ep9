@@ -2,7 +2,7 @@
 //! §23.2). R1 (the skeleton) pins the key list of each of the 26 intrinsics, the lazy group
 //! (the 12 constructor keys join the group of `ArrayBuffer`, TA-D14), the `[[Prototype]]`
 //! links of the constructors (the VM's `PROTO_LINKS`, decision O2), in a second realm too,
-//! and the stub TypeError of `from` and `of` that R3 replaces. R2 (the constructors, section
+//! and `from` and `of` on `%TypedArray%` (R3 replaced their stubs). R2 (the constructors, section
 //! (e)) tests each constructor form, the spec step order, sources that shrink or detach, the
 //! getters, a view prototype under a hole read (MC-w26-4), subclasses and realms. Each script
 //! prints the lines of node v26.13 for the same script (`print` here, `console.log` there; `createRealm()` there
@@ -453,14 +453,14 @@ print(TA === OTA, other.Int8Array === Int8Array, OTA.prototype === TA.prototype,
     assert_eq!(run_realms(src, true), plain, "GC stress");
 }
 
-// ---- (d) the stubs (R3 replaces them) -----------------------------------------------------------
+// ---- (d) the former stubs (R2 and R3 replaced them) ---------------------------------------------
 
 /// TA-3 R2 built the constructors and `%TypedArray%` (an abstract class: a TypeError with and
-/// without `new`); `%TypedArray%.from` and `of` stay stubs that throw a TypeError until R3
-/// (node: `new Int8Array(1)` makes a view of length 1; `TA.from([])` and `TA.of(1)` make
-/// views).
+/// without `new`); R3 built `%TypedArray%.from` and `of`, which construct their this value, so
+/// `TA.from([])` and `TA.of(1)` on `%TypedArray%` itself throw the TypeError of the abstract
+/// class (node: the same 6 lines; `tests/typed_array_from_of.rs` tests `from` and `of`).
 #[test]
-fn the_constructors_are_built_and_from_and_of_are_stubs() {
+fn the_constructors_are_built_and_from_and_of_construct_this() {
     let src = r#"
 const TA = Object.getPrototypeOf(Int8Array);
 for (const f of [() => new Int8Array(1), () => Int8Array(1), () => new Float64Array(),
@@ -476,8 +476,8 @@ for (const f of [() => new Int8Array(1), () => Int8Array(1), () => new Float64Ar
             "true Constructor Int8Array requires 'new'",
             "Float64Array 0",
             "true Abstract class TypedArray not directly constructable",
-            "true TypedArray.from: not built yet (m8-stub, TypedArray TA-3)",
-            "true TypedArray.of: not built yet (m8-stub, TypedArray TA-3)",
+            "true Abstract class TypedArray not directly constructable",
+            "true Abstract class TypedArray not directly constructable",
         ])
     );
 }
