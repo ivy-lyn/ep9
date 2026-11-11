@@ -6,6 +6,8 @@
 // The CLDR version is the CLDR version of the ICU4X compiled data (tools/cldr-tables tests).
 // Data: Copyright (c) Unicode, Inc. SPDX-License-Identifier: Unicode-3.0
 
+use super::NumberSymbols;
+
 /// The distinct T1 records, sorted.
 pub(crate) static T1_SYMBOLS: [NumberSymbols; 62] = [
     NumberSymbols { nan: "0/0", infinity: "\u{221e}", exponential: "E", approximately_sign: "~", range: "{0}\u{2013}{1}" },

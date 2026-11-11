@@ -27,30 +27,33 @@
     expect(dead_code, reason = "INTL W2 services read the tables")
 )]
 
+// The generated files are module files (`#[path]`), not `include!` text: extref-lint scans
+// each module file, and it refuses `include!` (rule `macro`, V11IN-22). `rustfmt::skip` keeps
+// rustfmt out of them: the generator writes their form, and `cldr-tables --check` checks it.
 /// `CLDR_VERSION`, `CLDR_JSON_COMMIT`.
-pub(crate) mod version {
-    include!("gen/version.rs");
-}
+#[rustfmt::skip]
+#[path = "gen/version.rs"]
+pub(crate) mod version;
 /// `NUMBERING_SYSTEMS`, `NUMBERING_SYSTEM_NAMES`.
-pub(crate) mod digits {
-    include!("gen/digits.rs");
-}
+#[rustfmt::skip]
+#[path = "gen/digits.rs"]
+pub(crate) mod digits;
 /// `CLDR_LOCALES`.
-pub(crate) mod locales {
-    include!("gen/locales.rs");
-}
+#[rustfmt::skip]
+#[path = "gen/locales.rs"]
+pub(crate) mod locales;
 /// `HOUR_CYCLE_H12_REGIONS`, `HOUR_CYCLE_LANGUAGE_REGIONS`.
-pub(crate) mod hour_cycles {
-    include!("gen/hour_cycles.rs");
-}
+#[rustfmt::skip]
+#[path = "gen/hour_cycles.rs"]
+pub(crate) mod hour_cycles;
 /// `U_VALUE_ALIASES`, `T_VALUE_ALIASES`.
-pub(crate) mod aliases {
-    include!("gen/aliases.rs");
-}
-mod t1 {
-    use super::NumberSymbols;
-    include!("gen/t1.rs");
-}
+#[rustfmt::skip]
+#[path = "gen/aliases.rs"]
+pub(crate) mod aliases;
+/// `T1_SYMBOLS`, `T1_ROWS`.
+#[rustfmt::skip]
+#[path = "gen/t1.rs"]
+mod t1;
 
 /// The T1 values of one CLDR locale and numbering system.
 #[derive(Debug)]

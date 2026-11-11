@@ -615,6 +615,9 @@ pub fn render(t: &Tables) -> BTreeMap<&'static str, String> {
         t,
         "cldr-numbers-full/main/*/numbers.json, symbols-numberSystem-* and miscPatterns-numberSystem-*",
     );
+    // `t1.rs` is a module file of `ep9_intl::cldr` (a `#[path]` module, not `include!`: the
+    // extref-lint rule `macro`, V11IN-22), so it names the record type of its parent module.
+    s.push_str("use super::NumberSymbols;\n\n");
     let _ = writeln!(s, "/// The distinct T1 records, sorted.");
     let _ = writeln!(
         s,
