@@ -1,5 +1,5 @@
 //! Intl (ECMA-402 on ICU4X; INTL-I1-D1, layout B): the glue from the builtin ABI (H20,
-//! `ep9_vm::Cx`) to the ICU4X 2.3 components. The crate has no `unsafe` and reaches the heap
+//! `ep9_vm::Cx`) to the ICU4X 2.4 components. The crate has no `unsafe` and reaches the heap
 //! only through `Cx`.
 //!
 //! ```text
