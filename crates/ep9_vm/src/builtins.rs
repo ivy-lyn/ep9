@@ -318,11 +318,27 @@ pub enum IntrinsicId {
     IntlCollator,
     /// `%Intl.Collator.prototype%` (ECMA-402 §10.3, an ordinary object; made by `ep9_intl` collator.rs).
     IntlCollatorPrototype,
+    // ---- TypedArray TA-2 TA-BUFFERS (§25.1-§25.3; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%ArrayBuffer%` (§25.1.4; made by `ep9_builtins` array_buffer.rs, block 33).
+    ArrayBuffer,
+    /// `%ArrayBuffer.prototype%` (§25.1.6, an ordinary object; made by `ep9_builtins`
+    /// array_buffer.rs).
+    ArrayBufferPrototype,
+    /// `%SharedArrayBuffer%` (§25.2.3; made by `ep9_builtins` array_buffer.rs, block 33).
+    SharedArrayBuffer,
+    /// `%SharedArrayBuffer.prototype%` (§25.2.5, an ordinary object; made by `ep9_builtins`
+    /// array_buffer.rs).
+    SharedArrayBufferPrototype,
+    /// `%DataView%` (§25.3.2; made by `ep9_builtins` data_view.rs, block 34).
+    DataView,
+    /// `%DataView.prototype%` (§25.3.4, an ordinary object; made by `ep9_builtins`
+    /// data_view.rs).
+    DataViewPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 109] = [
+    pub const ALL: [IntrinsicId; 115] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -432,6 +448,12 @@ impl IntrinsicId {
         IntrinsicId::IntlLocalePrototype,
         IntrinsicId::IntlCollator,
         IntrinsicId::IntlCollatorPrototype,
+        IntrinsicId::ArrayBuffer,
+        IntrinsicId::ArrayBufferPrototype,
+        IntrinsicId::SharedArrayBuffer,
+        IntrinsicId::SharedArrayBufferPrototype,
+        IntrinsicId::DataView,
+        IntrinsicId::DataViewPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -547,6 +569,12 @@ impl IntrinsicId {
             IntrinsicId::IntlLocalePrototype => "%Intl.Locale.prototype%",
             IntrinsicId::IntlCollator => "%Intl.Collator%",
             IntrinsicId::IntlCollatorPrototype => "%Intl.Collator.prototype%",
+            IntrinsicId::ArrayBuffer => "%ArrayBuffer%",
+            IntrinsicId::ArrayBufferPrototype => "%ArrayBuffer.prototype%",
+            IntrinsicId::SharedArrayBuffer => "%SharedArrayBuffer%",
+            IntrinsicId::SharedArrayBufferPrototype => "%SharedArrayBuffer.prototype%",
+            IntrinsicId::DataView => "%DataView%",
+            IntrinsicId::DataViewPrototype => "%DataView.prototype%",
         }
     }
 
@@ -662,7 +690,13 @@ impl IntrinsicId {
             | IntrinsicId::IntlLocale
             | IntrinsicId::IntlLocalePrototype
             | IntrinsicId::IntlCollator
-            | IntrinsicId::IntlCollatorPrototype => return None,
+            | IntrinsicId::IntlCollatorPrototype
+            | IntrinsicId::ArrayBuffer
+            | IntrinsicId::ArrayBufferPrototype
+            | IntrinsicId::SharedArrayBuffer
+            | IntrinsicId::SharedArrayBufferPrototype
+            | IntrinsicId::DataView
+            | IntrinsicId::DataViewPrototype => return None,
         })
     }
 
@@ -746,6 +780,12 @@ impl IntrinsicId {
             IntrinsicId::IntlLocalePrototype => Some(73),
             IntrinsicId::IntlCollator => Some(74),
             IntrinsicId::IntlCollatorPrototype => Some(75),
+            IntrinsicId::ArrayBuffer => Some(76),
+            IntrinsicId::ArrayBufferPrototype => Some(77),
+            IntrinsicId::SharedArrayBuffer => Some(78),
+            IntrinsicId::SharedArrayBufferPrototype => Some(79),
+            IntrinsicId::DataView => Some(80),
+            IntrinsicId::DataViewPrototype => Some(81),
             _ => None,
         }
     }
@@ -1424,7 +1464,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 76;
+const INTRINSIC_SLOTS: usize = 82;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
@@ -1719,11 +1759,12 @@ fn install_pass(rt: &Runtime, pass: Pass) -> Result<(), String> {
         fixed_prototypes(rt)?;
     }
     for &(m, g) in &modules {
-        let key_of = |g: u8| lazy.groups[usize::from(g)].key;
+        let keys_of = |g: u8| lazy.groups[usize::from(g)].keys;
         for op in m.props {
             let lazy_key = |p: &PropDef| {
                 g.filter(|&g| {
-                    op.target == IntrinsicId::GlobalObject && p.key.string_text() == Some(key_of(g))
+                    op.target == IntrinsicId::GlobalObject
+                        && p.key.string_text().is_some_and(|t| keys_of(g).contains(&t))
                 })
             };
             if !wanted(g) {
@@ -1946,9 +1987,16 @@ fn store_reserved(rt: &Runtime, m: &BuiltinModule, global: u64, p: &PropDef) -> 
 
 // ---- lazy namespace groups (INTL-I1-D8; M7-P1 LAZYNS) -----------------------------------------
 
-/// The global keys whose namespace installs into a realm at its first use, not at realm init.
-/// A key that no module puts on %GlobalObject% does nothing (Intl before INTL wave 1).
-const LAZY_KEYS: [&str; 2] = ["Temporal", "Intl"];
+/// The global keys whose namespace installs into a realm at its first use, not at realm init:
+/// one entry per lazy group, with the group's keys. A read of any key of a group installs the
+/// whole group. A key that no module puts on %GlobalObject% does nothing (Intl before INTL
+/// wave 1). The TypedArray group (design `docs/plan/notes/typedarray-design.md` TA-D14) has
+/// the keys of TA-2; TA-3 and TA-4 append theirs to its list.
+const LAZY_GROUPS: [&[&str]; 3] = [
+    &["Temporal"],
+    &["Intl"],
+    &["ArrayBuffer", "SharedArrayBuffer", "DataView"],
+];
 
 /// The intrinsics whose `[[Prototype]]` the eager install sets after its step (2)
 /// ([`fixed_prototypes`], `realm.rs` for %AggregateError% and %SuppressedError%): never in a
@@ -1969,24 +2017,25 @@ const FIXED_PROTOTYPES: [IntrinsicId; 13] = [
     IntrinsicId::SuppressedError,
 ];
 
-/// One lazy group: the modules that one lazy key brings.
+/// One lazy group: the modules that the keys of one entry of [`LAZY_GROUPS`] bring.
 struct LazyGroup {
-    /// The global key (an entry of [`LAZY_KEYS`]).
-    key: &'static str,
-    /// The first intrinsic the group makes in walk order (the key's value): the group is
+    /// The global keys (an entry of [`LAZY_GROUPS`]).
+    keys: &'static [&'static str],
+    /// The first intrinsic the group makes in walk order (the value of a key): the group is
     /// installed in a realm when this intrinsic is an object there (no REALM field and no
     /// root records it).
     first: IntrinsicId,
 }
 
 /// The lazy namespace groups of an isolate's tables (the VM table, then the embedder's),
-/// computed once per table from the table data (INTL-I1-D8): for each key of [`LAZY_KEYS`],
-/// the module that puts the key on %GlobalObject% as one of its own intrinsics, then (to a
-/// fixed point) every module whose properties target only group intrinsics or its own
-/// intrinsics, and at least one group intrinsic. A key is lazy only if no module outside its
-/// group names a group intrinsic (as a target, a value or a prototype), no group module is
-/// the VM's own, and no group intrinsic is core or in [`FIXED_PROTOTYPES`]; else its
-/// modules stay eager. The map holds no `Value` (rule 8).
+/// computed once per table from the table data (INTL-I1-D8): for each entry of
+/// [`LAZY_GROUPS`], the key modules (for each key, the module that puts the key on
+/// %GlobalObject% as one of its own intrinsics; its %GlobalObject% properties are all keys of
+/// the entry), then (to a fixed point) every module whose properties target only group
+/// intrinsics or its own intrinsics, and at least one group intrinsic. A group is lazy only if
+/// no module outside it names a group intrinsic (as a target, a value or a prototype), no
+/// group module is the VM's own, and no group intrinsic is core or in [`FIXED_PROTOTYPES`];
+/// else its modules stay eager. The map holds no `Value` (rule 8).
 pub(crate) struct LazyGroups {
     groups: Vec<LazyGroup>,
     /// The group of each module in walk order; `None`: eager.
@@ -2020,42 +2069,72 @@ impl LazyGroups {
             })
         };
         let makes = |m: &BuiltinModule, id: IntrinsicId| m.intrinsics.iter().any(|d| d.id == id);
-        for key in LAZY_KEYS {
-            let is_key = |p: &PropDef| p.key.string_text() == Some(key);
-            let found = modules.iter().enumerate().find_map(|(i, m)| {
-                let p = m
-                    .props
-                    .iter()
-                    .filter(|op| op.target == IntrinsicId::GlobalObject)
-                    .flat_map(|op| op.props)
-                    .find(|p| is_key(p))?;
-                match p.value {
-                    PropValue::Intrinsic(id) if makes(m, id) => Some((i, id)),
-                    _ => None,
+        for keys in LAZY_GROUPS {
+            let is_key = |p: &PropDef| p.key.string_text().is_some_and(|t| keys.contains(&t));
+            // A key property of module `m`: a key of the entry whose value `m` makes.
+            let own_key = |m: &BuiltinModule, p: &PropDef| {
+                is_key(p) && matches!(p.value, PropValue::Intrinsic(id) if makes(m, id))
+            };
+            let mut key_module = vec![false; modules.len()];
+            for key in keys.iter() {
+                let found = modules.iter().position(|m| {
+                    m.props
+                        .iter()
+                        .filter(|op| op.target == IntrinsicId::GlobalObject)
+                        .flat_map(|op| op.props)
+                        .find(|p| p.key.string_text() == Some(*key))
+                        .is_some_and(|p| own_key(m, p))
+                });
+                if let Some(km) = found {
+                    key_module[km] = true;
                 }
-            });
-            let Some((km, first)) = found else { continue };
-            if out.module[km].is_some() || out.groups.len() >= usize::from(u8::MAX) {
+            }
+            // The first key module in walk order; its first intrinsic is the group's mark.
+            let Some(km) = key_module.iter().position(|&b| b) else {
+                continue;
+            };
+            let Some(first) = modules[km].intrinsics.first().map(|d| d.id) else {
+                continue;
+            };
+            if key_module
+                .iter()
+                .enumerate()
+                .any(|(i, &k)| k && out.module[i].is_some())
+                || out.groups.len() >= usize::from(u8::MAX)
+            {
                 continue;
             }
             let mut ids: Ids = [false; IntrinsicId::ALL.len()];
-            for d in modules[km].intrinsics {
-                ids[d.id as usize] = true;
-            }
-            // The key module: its only %GlobalObject% property is the key; its other
-            // properties target its own intrinsics.
-            let key_module_ok = modules[km].props.iter().all(|op| {
-                if op.target == IntrinsicId::GlobalObject {
-                    op.props.len() == 1 && is_key(&op.props[0])
-                } else {
-                    ids[op.target as usize]
+            for (i, m) in modules.iter().enumerate() {
+                if key_module[i] {
+                    for d in m.intrinsics {
+                        ids[d.id as usize] = true;
+                    }
                 }
+            }
+            // The key modules: their %GlobalObject% properties are keys of the entry (each the
+            // module's own intrinsic); their other properties target the key modules'
+            // intrinsics. The mark is the value of a key of the first one.
+            let key_modules_ok = modules.iter().enumerate().all(|(i, m)| {
+                !key_module[i]
+                    || m.props.iter().all(|op| {
+                        if op.target == IntrinsicId::GlobalObject {
+                            !op.props.is_empty() && op.props.iter().all(|p| own_key(m, p))
+                        } else {
+                            ids[op.target as usize]
+                        }
+                    })
             });
-            if !key_module_ok || modules[km].intrinsics.first().map(|d| d.id) != Some(first) {
+            let first_is_a_key_value = modules[km]
+                .props
+                .iter()
+                .filter(|op| op.target == IntrinsicId::GlobalObject)
+                .flat_map(|op| op.props)
+                .any(|p| matches!(p.value, PropValue::Intrinsic(id) if id == first));
+            if !key_modules_ok || !first_is_a_key_value {
                 continue;
             }
-            let mut member = vec![false; modules.len()];
-            member[km] = true;
+            let mut member = key_module;
             loop {
                 let mut grew = false;
                 for (i, m) in modules.iter().enumerate() {
@@ -2111,12 +2190,12 @@ impl LazyGroups {
                                 .any(|p| matches!(p.key.string_text(), Some("length" | "name")))
                     })
             });
-            // The first intrinsic in walk order is the key's value (the installed mark).
+            // The first intrinsic in walk order is a key's value (the installed mark).
             if leaks || pinned || implicit || member.iter().position(|&b| b) != Some(km) {
                 continue;
             }
             let g = out.groups.len() as u8;
-            out.groups.push(LazyGroup { key, first });
+            out.groups.push(LazyGroup { keys, first });
             for (i, m) in modules.iter().enumerate() {
                 if member[i] {
                     out.module[i] = Some(g);
@@ -2158,7 +2237,10 @@ pub(crate) fn lazy_group_of_key(rt: &Runtime, key: u64) -> Option<u8> {
         return None;
     }
     let text = crate::string::to_rust_string(key);
-    groups.iter().position(|g| g.key == text).map(|g| g as u8)
+    groups
+        .iter()
+        .position(|g| g.keys.contains(&text.as_str()))
+        .map(|g| g as u8)
 }
 
 /// Installs lazy group `g` into `realm` (current or not) unless it is installed there: its
@@ -2209,7 +2291,7 @@ pub(crate) fn install_group(rt: &Runtime, realm: u64, g: u8) {
     if let Err(e) = r {
         panic!(
             "ep9 internal error: the lazy {} namespace install failed: {e}",
-            group.key
+            group.keys.join(", ")
         );
     }
 }
@@ -2341,5 +2423,167 @@ mod tests {
         assert_eq!(PropAttrs::METHOD.text(), "w-c");
         assert_eq!(PropAttrs::METHOD.bits(), attr::HIDDEN);
         assert_eq!(PropAttrs::ALL.bits(), attr::DEFAULT);
+    }
+
+    // ---- the lazy groups of several keys (TypedArray TA-2 TA-BUFFERS; TA-D14) ----
+
+    fn none<'s>(
+        _cx: &mut crate::abi::Cx<'s>,
+        _this: crate::abi::Local<'s>,
+        _args: crate::abi::Args<'s>,
+        _nt: crate::abi::Local<'s>,
+    ) -> ep9_value::JsResult<crate::abi::Local<'s>> {
+        Ok(crate::abi::Local::undefined())
+    }
+
+    const fn made(id: IntrinsicId, value: IntrinsicValue) -> IntrinsicDef {
+        IntrinsicDef { id, value }
+    }
+
+    const OBJECT: IntrinsicValue = IntrinsicValue::Object {
+        proto: Some(IntrinsicId::ObjectPrototype),
+    };
+
+    const fn global(key: &'static str, id: IntrinsicId) -> PropDef {
+        PropDef::intrinsic(PropKey::Str(key), id, PropAttrs::METHOD)
+    }
+
+    const fn proto_of(id: IntrinsicId) -> PropDef {
+        PropDef::intrinsic(PropKey::Atom(Atom::Prototype), id, PropAttrs::NONE)
+    }
+
+    /// Two keys in one module (as `ep9_builtins` array_buffer.rs)...
+    const TWO_KEYS: BuiltinModule = BuiltinModule {
+        name: "two_keys",
+        block: 101,
+        defs: &[
+            BuiltinDef::constructor("ArrayBuffer", 1, none),
+            BuiltinDef::constructor("SharedArrayBuffer", 1, none),
+        ],
+        intrinsics: &[
+            made(IntrinsicId::ArrayBuffer, IntrinsicValue::Builtin(0)),
+            made(IntrinsicId::ArrayBufferPrototype, OBJECT),
+            made(IntrinsicId::SharedArrayBuffer, IntrinsicValue::Builtin(1)),
+            made(IntrinsicId::SharedArrayBufferPrototype, OBJECT),
+        ],
+        props: &[
+            ObjectProps {
+                target: IntrinsicId::ArrayBuffer,
+                props: &[proto_of(IntrinsicId::ArrayBufferPrototype)],
+            },
+            ObjectProps {
+                target: IntrinsicId::SharedArrayBuffer,
+                props: &[proto_of(IntrinsicId::SharedArrayBufferPrototype)],
+            },
+            ObjectProps {
+                target: IntrinsicId::GlobalObject,
+                props: &[
+                    global("ArrayBuffer", IntrinsicId::ArrayBuffer),
+                    global("SharedArrayBuffer", IntrinsicId::SharedArrayBuffer),
+                ],
+            },
+        ],
+    };
+
+    /// ... and the third key in another (as data_view.rs).
+    const THIRD_KEY: BuiltinModule = BuiltinModule {
+        name: "third_key",
+        block: 102,
+        defs: &[BuiltinDef::constructor("DataView", 1, none)],
+        intrinsics: &[
+            made(IntrinsicId::DataView, IntrinsicValue::Builtin(0)),
+            made(IntrinsicId::DataViewPrototype, OBJECT),
+        ],
+        props: &[
+            ObjectProps {
+                target: IntrinsicId::DataView,
+                props: &[proto_of(IntrinsicId::DataViewPrototype)],
+            },
+            ObjectProps {
+                target: IntrinsicId::GlobalObject,
+                props: &[global("DataView", IntrinsicId::DataView)],
+            },
+        ],
+    };
+
+    /// A module outside the group that names a group intrinsic (as a value on an eager
+    /// object; a module whose properties target only group intrinsics would join the group).
+    const LEAK: BuiltinModule = BuiltinModule {
+        name: "leak",
+        block: 103,
+        defs: &[],
+        intrinsics: &[],
+        props: &[ObjectProps {
+            target: IntrinsicId::ObjectPrototype,
+            props: &[PropDef::intrinsic(
+                PropKey::Str("dv"),
+                IntrinsicId::DataView,
+                PropAttrs::METHOD,
+            )],
+        }],
+    };
+
+    /// A key module whose %GlobalObject% properties hold a key of no group.
+    const STRAY_KEY: BuiltinModule = BuiltinModule {
+        name: "stray_key",
+        block: 104,
+        defs: &[BuiltinDef::constructor("DataView", 1, none)],
+        intrinsics: &[made(IntrinsicId::DataView, IntrinsicValue::Builtin(0))],
+        props: &[ObjectProps {
+            target: IntrinsicId::GlobalObject,
+            props: &[
+                global("DataView", IntrinsicId::DataView),
+                global("NotAKey", IntrinsicId::DataView),
+            ],
+        }],
+    };
+
+    /// One entry of `LAZY_GROUPS` with three keys in two modules is one group: each key maps
+    /// to it, both modules and their six intrinsics are in it, and its mark is the first
+    /// intrinsic of the first key module in walk order. A module outside the group that names
+    /// a group intrinsic, or a key module with a %GlobalObject% property that is no key of the
+    /// entry, keeps the group eager. Temporal and Intl (one key each) are not in these tables.
+    #[test]
+    fn a_lazy_group_takes_several_keys_in_several_modules() {
+        let keys = ["ArrayBuffer", "SharedArrayBuffer", "DataView"];
+        let group_ids = [
+            IntrinsicId::ArrayBuffer,
+            IntrinsicId::ArrayBufferPrototype,
+            IntrinsicId::SharedArrayBuffer,
+            IntrinsicId::SharedArrayBufferPrototype,
+            IntrinsicId::DataView,
+            IntrinsicId::DataViewPrototype,
+        ];
+        for (modules, first) in [
+            (vec![&TWO_KEYS, &THIRD_KEY], IntrinsicId::ArrayBuffer),
+            (vec![&THIRD_KEY, &TWO_KEYS], IntrinsicId::DataView),
+        ] {
+            let g = LazyGroups::compute(&modules);
+            assert_eq!(g.groups.len(), 1);
+            assert_eq!(g.groups[0].keys, keys);
+            assert_eq!(g.groups[0].first, first);
+            assert_eq!(g.module, [Some(0), Some(0)]);
+            for id in IntrinsicId::ALL {
+                let want = group_ids.contains(&id).then_some(0);
+                assert_eq!(g.id[id as usize], want, "{}", id.name());
+            }
+        }
+        for modules in [
+            vec![&TWO_KEYS, &THIRD_KEY, &LEAK],
+            vec![&TWO_KEYS, &STRAY_KEY],
+        ] {
+            let g = LazyGroups::compute(&modules);
+            assert!(
+                g.groups.is_empty(),
+                "{:?}",
+                modules.iter().map(|m| m.name).collect::<Vec<_>>()
+            );
+            assert!(g.module.iter().all(Option::is_none));
+            assert!(g.id.iter().all(Option::is_none));
+        }
+        // One key module alone is a group of its own keys.
+        let g = LazyGroups::compute(&[&TWO_KEYS]);
+        assert_eq!(g.module, [Some(0)]);
+        assert_eq!(g.id[IntrinsicId::DataView as usize], None);
     }
 }
