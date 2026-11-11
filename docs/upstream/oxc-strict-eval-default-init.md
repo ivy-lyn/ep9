@@ -5,7 +5,7 @@
 | Project, ref | oxc, new issue |
 | Status | draft |
 | ep9 need | PRE-1 (M3-P5-OPEN carry item); M1 front-end correctness, no gate. Due: none (the workaround is in place) |
-| Workaround | `crates/ep9_frontend/src/strict_filter.rs` (M4-P2): after oxc_semantic, drop a "Cannot assign to 'eval'/'arguments' in strict mode" diagnostic whose label is an IdentifierReference that is not itself an assignment target, except an `arguments` read in a class field initializer or static block (then the class error is reported, see Cause). Used by `semantic` (lib.rs) and `compile_eval` (eval.rs). No oxc patch: local patch count stays 0/3 |
+| Workaround | None since M8-P0 (route STRICT-FILTER-REMOVE). oxc_semantic 0.157.0 reports the error only for writes. On oxc 0.158.0 the post-filter `crates/ep9_frontend/src/strict_filter.rs` (M4-P2) dropped and replaced nothing on its 67 cases, so it was removed. `crates/ep9_frontend/tests/strict_eval_arguments.rs` keeps the cases as regression tests. oxc_semantic 0.158.0 also refuses `for (eval of [])` and `for (arguments in {})` in strict code (the related gap below). No oxc patch: local patch count stays 0/3 |
 | Verified by | not yet (a draft is "ready" only after an agent that did not write it runs the repro again, README) |
 
 ## Cause
