@@ -1,14 +1,15 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 55 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0 and 2 M7-P2 tests. 6 of
-# them also fail without GC-stress and are listed in every expectations/test262.<triple>.jit.txt:
+# 56 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2 and 1 TA sync 1
+# tests. 6 of them also fail without GC-stress and are listed in every
+# expectations/test262.<triple>.jit.txt:
 # the 5 month-2 tco-* tests and the M3-P1 test two-digit-years.js. Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
-# 42331111457), and ownkeys-linear.js passes too. The other 49 pass without GC-stress: the
+# 42331111457), and ownkeys-linear.js passes too. The other 50 pass without GC-stress: the
 # other 6 month-2 tests, the other 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test, the 7
-# M4-P3 tests, the 2 B0 tests and the 2 M7-P2 tests.
+# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests and the TA sync 1 test.
 # The 8 month-2 tests that failed without GC-stress when they were listed:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists). They failed at the first lone surrogate, 0xD800, until the M7-P2 shim; now they
@@ -85,6 +86,12 @@
 # at the r2b head, --feedback-threshold 0, host load 16-40 (other jobs):
 # - Iterator/zip/basic-longest.js: 99.3 s; timeout on linux-x64, macos-arm64 and windows-x64
 # - Iterator/zipKeyed/basic-longest.js: 111.8 s (r2a: 107.6 s); timeout on all 4 targets
+# TA sync 1 (the TypedArray side branch at 5f6adde4, M6-ORCH-201: over 30 s alone under
+# GC-stress): staging/sm/expressions/destructuring-array-default-simple.js passes without
+# GC-stress. In CI 42947815582 (macos-arm64 2/6, 3 workers) its sloppy run ran past the 60 s
+# timeout. Alone, 2 runs, mac a64 release, host load 9-14: 38.6 s and 40.2 s at 5f6adde4,
+# 45.9 s and 39.9 s at the fork base 09c937aa (m7-p5, green in CI). So the TA branch did not
+# make it slower; about 20 s per run is at the 3x margin of the 60 s limit (M7-P5-D9).
 # Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
 # head; the M4-P3 tests: on x86_64-unknown-linux-gnu). Paths are relative to the test262 root.
 test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js
@@ -139,6 +146,7 @@ test/staging/sm/Date/two-digit-years.js
 test/staging/sm/Function/has-instance-jitted.js
 test/staging/sm/Proxy/ownkeys-linear.js
 test/staging/sm/String/string-upper-lower-mapping.js
+test/staging/sm/expressions/destructuring-array-default-simple.js
 test/staging/sm/expressions/short-circuit-compound-assignment.js
 test/staging/sm/extensions/recursion.js
 test/staging/sm/regress/regress-1507322-deep-weakmap.js
