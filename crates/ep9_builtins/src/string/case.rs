@@ -1,6 +1,6 @@
 //! Case mapping (§22.1.3.26-28, §22.1.3.30): toLowerCase, toUpperCase and their toLocale
 //! forms. The toLocale forms are the ECMA-402 ones (§20.1.2-3): TransformCase in
-//! `ep9_intl::list_format::casemap` picks the locale; for tr, az, lt and el it maps with
+//! `ep9_intl::casemap` picks the locale; for tr, az, lt and el it maps with
 //! icu_casemap, else ("und") with the Default Case Conversion below, as toLowerCase and
 //! toUpperCase do.
 //!
@@ -24,7 +24,7 @@
 //! one, and std sees the end of a run where the context stops. An ASCII string maps with no
 //! copy through `String`.
 
-use ep9_intl::list_format::casemap::{self, TargetCase};
+use ep9_intl::casemap::{self, TargetCase};
 use ep9_vm::{Args, Cx, JsResult, Local};
 
 use super::{new_str, this_string, units};

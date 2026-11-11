@@ -25,6 +25,7 @@
 //!              DefaultNumberOption, GetNumberOption (§9.2.10-§9.2.15)
 //!   digits     SetNumberFormatDigitOptions and the digit option record (§16.1.2)
 //!   cache      the thread_local cache of ICU4X formatters (Rc; never in a slot, rule 8)
+//!   casemap    TransformCase (§20.1.2.1): toLocaleLowerCase / toLocaleUpperCase (W2 LIST+CASEMAP)
 //!   locale_info  Locale info (W1 LOCALE: getCalendars .. getWeekInfo)
 //! ```
 //!
@@ -36,6 +37,7 @@
 
 pub mod available;
 pub mod cache;
+pub mod casemap;
 pub(crate) mod cldr;
 pub mod collator;
 pub mod digits;

@@ -1,7 +1,7 @@
 //! Intl.ListFormat (ECMA-402 §14; block 35): `%Intl.ListFormat%` and `%Intl.ListFormat.prototype%`,
 //! a module of the lazy group "Intl" (INTL-I1-D8): its properties target only `%Intl%` and
 //! its own intrinsics. Also the case mapping of `String.prototype.toLocaleLowerCase` and
-//! `toLocaleUpperCase` ([`casemap`], ECMA-402 §20.1.2-3), the other half of the LIST+CASEMAP
+//! `toLocaleUpperCase` ([`crate::casemap`], ECMA-402 §20.1.2-3), the other half of the LIST+CASEMAP
 //! service.
 //!
 //! ```text
@@ -29,8 +29,6 @@
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-list_format.txt`.
-
-pub mod casemap;
 
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
