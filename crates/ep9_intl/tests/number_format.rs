@@ -164,3 +164,24 @@ fn sign_bidi_marks_are_literal_parts() {
         ])
     );
 }
+
+const FP2: &str = r#"const fmt = (l, o, ...xs) => xs.map(x => new Intl.NumberFormat(l, o).format(x)).join(" | ");
+print(fmt("en", {maximumSignificantDigits: 21}, 0.1 + 0.2, 1e21, 1.005, 123456789.12345678, 2 ** 53 + 2));
+print(fmt("en", {maximumSignificantDigits: 3}, 5e-324));
+"#;
+
+/// INTL-V2-FP2 (plan §2.7): the digits of a Number are the digits of Number::toString, read
+/// into a Decimal. With 21 significant digits the exact binary value would show more digits
+/// (0.1 + 0.2 is 0.3000000000000000444089... in binary; 1.005 is 1.00499999999999989...),
+/// so these node lines hold only for the Number::toString digits (review B3).
+#[test]
+fn number_digits_are_the_number_to_string_digits() {
+    let tiny = format!("0.{}5", "0".repeat(323));
+    assert_eq!(
+        run_both(FP2),
+        lines(&[
+            "0.30000000000000004 | 1,000,000,000,000,000,000,000 | 1.005 | 123,456,789.12345678 | 9,007,199,254,740,994",
+            &tiny,
+        ])
+    );
+}
