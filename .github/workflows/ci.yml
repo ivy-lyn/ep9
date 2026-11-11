@@ -979,7 +979,7 @@ jobs:
       # `exclude`), so only this step builds it.
       - name: cldr-tables check and tests
         run: |
-          tools/cldr-tables/sync-cldr-json.sh &&
+          { tools/cldr-tables/sync-cldr-json.sh || { echo "::warning::sync-cldr-json.sh failed; one retry in 20 s"; sleep 20; tools/cldr-tables/sync-cldr-json.sh; }; } &&
             cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- --check &&
             cargo test --locked --manifest-path tools/cldr-tables/Cargo.toml
 

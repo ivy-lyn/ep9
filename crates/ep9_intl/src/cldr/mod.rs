@@ -19,6 +19,8 @@
 //! has symbols for. The CLDR JSON values are resolved (a child holds all values, not only the
 //! values that differ from its parent), so the first row found on the fallback chain of a locale
 //! (for example `en-US` -> `en`) is the answer.
+//! If no locale on the chain has a row for `nu` (for example `en` with `arab`), take the `latn`
+//! row of the same chain: every CLDR locale has one (test `tables_are_sorted_and_complete`).
 // The W2 builders (NF-CORE, NF-SCIRANGE) use the tables; until then only the tests read them.
 #![cfg_attr(
     not(test),
