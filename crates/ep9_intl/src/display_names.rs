@@ -87,7 +87,7 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::constructor("DisplayNames", 2, constructor), // 0 (12.1.1)
     BuiltinDef::method("supportedLocalesOf", 1, supported_locales_of), // 1 (12.2.2)
     BuiltinDef::method("of", 1, of),                         // 2 (12.3.3)
-    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 3 (12.3.4)
+    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 3 (12.3.2)
 ];
 
 /// The intrinsics this module makes.
@@ -616,7 +616,7 @@ fn of<'s>(cx: &mut Cx<'s>, this: Local<'s>, args: Args<'s>, _nt: Local<'s>) -> J
     Ok(Local::undefined())
 }
 
-/// Intl.DisplayNames.prototype.resolvedOptions ( ) (12.3.4).
+/// Intl.DisplayNames.prototype.resolvedOptions ( ) (12.3.2).
 fn resolved_options<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

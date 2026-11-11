@@ -197,7 +197,7 @@ fn to_string<'s>(
     cx.bigint_to_string(x, radix_mv as u32).map(|s| s.value())
 }
 
-/// BigInt.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §21.2.3.2; INTL
+/// BigInt.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.3.1; INTL
 /// W2 NF-CORE): the Intl.NumberFormat of `locales` and `options` formats the BigInt.
 fn to_locale_string<'s>(
     cx: &mut Cx<'s>,

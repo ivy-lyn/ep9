@@ -83,8 +83,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::constructor("NumberFormat", 0, constructor), // 0 (16.1.1)
     BuiltinDef::method("supportedLocalesOf", 1, supported_locales_of), // 1 (16.2.2)
     BuiltinDef::getter("format", get_format),                // 2 (16.3.3)
-    BuiltinDef::method("formatToParts", 1, format_to_parts), // 3 (16.3.4)
-    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (16.3.5)
+    BuiltinDef::method("formatToParts", 1, format_to_parts), // 3 (16.3.6)
+    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (16.3.2)
 ];
 
 /// The intrinsics this module makes.
@@ -130,7 +130,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("formatToParts"), def::FORMAT_TO_PARTS),
             // get Intl.NumberFormat.prototype.format ({c}, 16.3.3).
             PropDef::accessor(PropKey::Str("format"), Some(def::GET_FORMAT), None),
-            // Intl.NumberFormat.prototype [ @@toStringTag ] ({c}, 16.3.2).
+            // Intl.NumberFormat.prototype [ @@toStringTag ] ({c}, 16.3.7).
             PropDef::constant(
                 PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
                 ConstValue::Str("Intl.NumberFormat"),
@@ -375,7 +375,7 @@ fn read<'s>(cx: &mut Cx<'s>, nf: Local<'s>) -> JsResult<Resolved> {
     })
 }
 
-// ---- InitializeNumberFormat (16.1.2) ----------------------------------------------------------
+// ---- InitializeNumberFormat (in Intl.NumberFormat, 16.1.1) ------------------------------------
 
 /// Whether `s` matches the Unicode locale identifier `type` nonterminal: alphanum{3,8}
 /// subtags joined by "-" (UTS 35 §3.2).
@@ -390,7 +390,7 @@ fn is_well_formed_currency_code(c: &str) -> bool {
     c.len() == 3 && c.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
-/// IsWellFormedUnitIdentifier ( unitIdentifier ) (6.6.2): a sanctioned simple unit, or two
+/// IsWellFormedUnitIdentifier ( unitIdentifier ) (6.6.1): a sanctioned simple unit, or two
 /// joined by "-per-".
 fn is_well_formed_unit_identifier(u: &str) -> bool {
     let simple = |s: &str| available::UNITS.contains(&s);
@@ -423,7 +423,9 @@ fn nu_data(data_locale: &str) -> resolve::KeyData {
     v
 }
 
-/// InitializeNumberFormat steps 2-31 (16.1.2; the object creation is the caller's): the
+/// InitializeNumberFormat steps 2-31 (the current draft has these steps in Intl.NumberFormat,
+/// 16.1.1; the step numbers follow the separate InitializeNumberFormat of earlier editions;
+/// the object creation is the caller's): the
 /// internal slots of a NumberFormat for `locales` and `options`, in the spec order of the
 /// observable steps. No ICU4X object is made (the locale data reads the baked symbols).
 pub fn initialize<'s>(
@@ -455,7 +457,7 @@ pub fn initialize<'s>(
         .iter()
         .find(|(k, _)| k == "nu")
         .map_or_else(|| "latn".to_string(), |(_, v)| v.clone());
-    // 11. Perform ? SetNumberFormatUnitOptions(numberFormat, options) (16.1.4).
+    // 11. Perform ? SetNumberFormatUnitOptions(numberFormat, options) (16.1.3).
     let unit_options = set_number_format_unit_options(cx, options)?;
     let style = unit_options.style;
     // 13. Let notation be ? GetOption(options, "notation", string, « "standard",
@@ -543,7 +545,7 @@ struct UnitOptions {
     unit_display: u32,
 }
 
-/// SetNumberFormatUnitOptions ( intlObj, options ) (16.1.4).
+/// SetNumberFormatUnitOptions ( intlObj, options ) (16.1.3).
 fn set_number_format_unit_options<'s>(
     cx: &mut Cx<'s>,
     options: Local<'s, JsObject>,
@@ -619,9 +621,9 @@ fn set_number_format_unit_options<'s>(
     })
 }
 
-// ---- FormatNumeric (16.5.4) -------------------------------------------------------------------
+// ---- FormatNumeric (16.5.5) -------------------------------------------------------------------
 
-/// PartitionNumberPattern ( numberFormat, x ) (16.5.4): the parts of `x` formatted with `r`.
+/// PartitionNumberPattern ( numberFormat, x ) (16.5.3): the parts of `x` formatted with `r`.
 ///
 /// The decimal style in standard and compact notation is NF-CORE's. The W3 builders fill the
 /// other branches here: NF-CURRENCY the styles "percent" and "currency", NF-UNIT the style
@@ -639,13 +641,13 @@ pub fn partition_numeric(r: &Resolved, x: &IntlMv) -> Parts {
     decimal::partition(&f, x)
 }
 
-/// FormatNumeric ( numberFormat, x ) (16.5.7).
+/// FormatNumeric ( numberFormat, x ) (16.5.5).
 pub fn format_numeric(r: &Resolved, x: &IntlMv) -> String {
     decimal::join(&partition_numeric(r, x))
 }
 
 /// The NumberFormat-like `toLocaleString` of `x` (Number.prototype.toLocaleString,
-/// 20.1.3.4 in ECMA-402; BigInt.prototype.toLocaleString, 21.2.3.2 in ECMA-402): the
+/// 20.2.1 in ECMA-402; BigInt.prototype.toLocaleString, 20.3.1 in ECMA-402): the
 /// NumberFormat of `locales` and `options` (its construction is not observable) formats `x`.
 pub fn to_locale_string<'s>(
     cx: &mut Cx<'s>,
@@ -710,8 +712,8 @@ fn get_format<'s>(
     let bound = cx.slot(this, CLASS, SLOT_BOUND_FORMAT)?;
     // 4. If nf.[[BoundFormat]] is undefined, then
     if bound.is_undefined() {
-        // a-b. Let F be a new built-in function object as defined in Number Format Functions
-        //      (16.5.2; length 1, name ""), with F.[[NumberFormat]] nf (the closure data).
+        // a-b. Let F be a new built-in function object from the Number Format Function
+        //      closure of this getter (16.3.3; length 1, name ""), with F.[[NumberFormat]] nf (the closure data).
         let f = cx.new_builtin_closure(number_format_function, "", 1, this);
         // c. Set nf.[[BoundFormat]] to F.
         cx.set_slot(this, CLASS, SLOT_BOUND_FORMAT, f)?;
@@ -721,7 +723,7 @@ fn get_format<'s>(
     Ok(bound)
 }
 
-/// A Number Format function (16.5.2).
+/// A Number Format function (the closure of get Intl.NumberFormat.prototype.format, 16.3.3).
 fn number_format_function<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -738,7 +740,7 @@ fn number_format_function<'s>(
     Ok(cx.new_string(&s)?.into())
 }
 
-/// Intl.NumberFormat.prototype.formatToParts ( value ) (16.3.4).
+/// Intl.NumberFormat.prototype.formatToParts ( value ) (16.3.6).
 fn format_to_parts<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -749,7 +751,7 @@ fn format_to_parts<'s>(
     let r = read(cx, this)?;
     // 3. Let x be ? ToIntlMathematicalValue(value).
     let x = decimal::to_intl_mv(cx, args.get(0))?;
-    // 4. Return FormatNumericToParts(nf, x) (16.5.8).
+    // 4. Return FormatNumericToParts(nf, x) (16.5.6).
     let parts = partition_numeric(&r, &x);
     let array = cx.new_array();
     for (i, (t, value)) in parts.iter().enumerate() {
@@ -763,7 +765,7 @@ fn format_to_parts<'s>(
     Ok(array.into())
 }
 
-/// Intl.NumberFormat.prototype.resolvedOptions ( ) (16.3.5).
+/// Intl.NumberFormat.prototype.resolvedOptions ( ) (16.3.2).
 fn resolved_options<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

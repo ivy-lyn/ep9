@@ -23,7 +23,7 @@
 //!              extension keys, SupportedLocales (§9.2)
 //!   options    GetOptionsObject, CoerceOptionsToObject, GetOption, GetBooleanOrStringNumberFormatOption,
 //!              DefaultNumberOption, GetNumberOption (§9.2.10-§9.2.15)
-//!   digits     SetNumberFormatDigitOptions and the digit option record (§16.5.3)
+//!   digits     SetNumberFormatDigitOptions and the digit option record (§16.1.2)
 //!   cache      the thread_local cache of ICU4X formatters (Rc; never in a slot, rule 8)
 //!   locale_info  Locale info (W1 LOCALE: getCalendars .. getWeekInfo)
 //! ```

@@ -1,5 +1,5 @@
 //! Case mapping (§22.1.3.26-28, §22.1.3.30): toLowerCase, toUpperCase and their toLocale
-//! forms. The toLocale forms are the ECMA-402 ones (§19.1.2-3): TransformCase in
+//! forms. The toLocale forms are the ECMA-402 ones (§20.1.2-3): TransformCase in
 //! `ep9_intl::list_format::casemap` picks the locale; for tr, az, lt and el it maps with
 //! icu_casemap, else ("und") with the Default Case Conversion below, as toLowerCase and
 //! toUpperCase do.
@@ -90,7 +90,7 @@ fn convert<'s>(cx: &mut Cx<'s>, this: Local<'s>, case: Case, name: &str) -> JsRe
     new_str(cx, &map_case(&s, case))
 }
 
-/// The ECMA-402 toLocaleLowerCase and toLocaleUpperCase (§19.1.2-3).
+/// The ECMA-402 toLocaleLowerCase and toLocaleUpperCase (§20.1.2-3).
 fn convert_locale<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -114,7 +114,7 @@ fn convert_locale<'s>(
     }
 }
 
-/// String.prototype.toLocaleLowerCase ( [ locales ] ) (ECMA-402 §19.1.2).
+/// String.prototype.toLocaleLowerCase ( [ locales ] ) (ECMA-402 §20.1.2).
 pub(super) fn to_locale_lower_case<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -124,7 +124,7 @@ pub(super) fn to_locale_lower_case<'s>(
     convert_locale(cx, this, args.get(0), Case::Lower, "toLocaleLowerCase")
 }
 
-/// String.prototype.toLocaleUpperCase ( [ locales ] ) (ECMA-402 §19.1.3).
+/// String.prototype.toLocaleUpperCase ( [ locales ] ) (ECMA-402 §20.1.3).
 pub(super) fn to_locale_upper_case<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

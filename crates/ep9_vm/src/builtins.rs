@@ -327,9 +327,9 @@ pub enum IntrinsicId {
     IntlNumberFormat,
     /// `%Intl.NumberFormat.prototype%` (ECMA-402 §16.3, an ordinary object; made by `ep9_intl` number_format.rs).
     IntlNumberFormatPrototype,
-    /// `%Intl.ListFormat%` (ECMA-402 §13.1; made by `ep9_intl` list_format.rs, block 35).
+    /// `%Intl.ListFormat%` (ECMA-402 §14.1; made by `ep9_intl` list_format.rs, block 35).
     IntlListFormat,
-    /// `%Intl.ListFormat.prototype%` (ECMA-402 §13.3, an ordinary object; made by `ep9_intl` list_format.rs).
+    /// `%Intl.ListFormat.prototype%` (ECMA-402 §14.3, an ordinary object; made by `ep9_intl` list_format.rs).
     IntlListFormatPrototype,
     /// `%Intl.Segmenter%` (ECMA-402 §19.1; made by `ep9_intl` segmenter.rs, block 36).
     IntlSegmenter,

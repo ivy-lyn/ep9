@@ -243,7 +243,7 @@ fn to_string<'s>(
     Ok(cx.new_string(&text)?.value())
 }
 
-/// Number.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.1.3.4; INTL
+/// Number.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.2.1; INTL
 /// W2 NF-CORE): the Intl.NumberFormat of `locales` and `options` formats the number.
 fn to_locale_string<'s>(
     cx: &mut Cx<'s>,

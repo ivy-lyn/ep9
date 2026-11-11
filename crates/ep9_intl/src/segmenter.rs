@@ -116,7 +116,7 @@ mod def {
 pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::constructor("Segmenter", 0, constructor), // 0 (19.1.1)
     BuiltinDef::method("supportedLocalesOf", 1, supported_locales_of), // 1 (19.2.2)
-    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 2 (19.3.4)
+    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 2 (19.3.2)
     BuiltinDef::method("segment", 1, segment),            // 3 (19.3.3)
     BuiltinDef::method("containing", 1, containing),      // 4 (19.5.2.1)
     BuiltinDef::method("[Symbol.iterator]", 0, segments_iterator), // 5 (19.5.2.2)
@@ -176,7 +176,7 @@ pub const PROPS: &[ObjectProps] = &[
             // The key order of V8 (node): resolvedOptions, then segment.
             PropDef::method(PropKey::Str("resolvedOptions"), def::RESOLVED_OPTIONS),
             PropDef::method(PropKey::Str("segment"), def::SEGMENT),
-            // Intl.Segmenter.prototype [ @@toStringTag ] ({c}, 19.3.2).
+            // Intl.Segmenter.prototype [ @@toStringTag ] ({c}, 19.3.4).
             PropDef::constant(
                 PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
                 ConstValue::Str("Intl.Segmenter"),
@@ -443,7 +443,7 @@ fn read<'s>(cx: &mut Cx<'s>, o: Local<'s>) -> JsResult<(String, Granularity)> {
     ))
 }
 
-/// Intl.Segmenter.prototype.resolvedOptions ( ) (19.3.4).
+/// Intl.Segmenter.prototype.resolvedOptions ( ) (19.3.2).
 fn resolved_options<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

@@ -1,6 +1,6 @@
 //! The number core of NumberFormat (ECMA-402 §16.5): the Intl mathematical value of a value
-//! (ToIntlMathematicalValue, §16.5.17), and the parts of a formatted number (FormatNumeric,
-//! PartitionNumberPattern §16.5.4, ComputeExponent §16.5.12) for the decimal style in
+//! (ToIntlMathematicalValue, §16.5.15), and the parts of a formatted number (FormatNumeric,
+//! PartitionNumberPattern §16.5.3, ComputeExponent §16.5.12) for the decimal style in
 //! standard and compact notation.
 //!
 //! ```text
@@ -535,7 +535,7 @@ fn number_parts<D: DecimalValue>(x: &D, nu: &str, icu: &Icu, grouping: Grouping,
     }
 }
 
-/// The sign of a formatted value under `[[SignDisplay]]` (GetNumberFormatPattern, §16.5.11):
+/// The sign of a formatted value under `[[SignDisplay]]` (GetNumberFormatPattern, §16.5.10):
 /// `negative` is the sign of the value (negative-zero included), `zero` whether the rounded
 /// value is a zero, `nan` whether it is NaN. `Some(true)` minus, `Some(false)` plus.
 fn sign_of(display: SignDisplay, negative: bool, zero: bool, nan: bool) -> Option<bool> {
@@ -660,7 +660,7 @@ fn finite_parts<D: DecimalValue>(f: &Format<'_>, icu: &Icu, d: &D, body: &mut Pa
     y.is_zero()
 }
 
-/// PartitionNumberPattern ( numberFormat, x ) (§16.5.4) for the decimal style: the parts of
+/// PartitionNumberPattern ( numberFormat, x ) (§16.5.3) for the decimal style: the parts of
 /// `x` formatted with `f`.
 pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
     let mut out = Parts::new();

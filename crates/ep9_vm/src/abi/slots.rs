@@ -122,7 +122,7 @@ pub enum ObjectClass {
     /// other slots (packed options, digit options, `[[BoundFormat]]`) are named in `ep9_intl`
     /// number_format.rs. No ICU4X object is in a slot.
     IntlNumberFormat,
-    /// An Intl.ListFormat instance (ECMA-402 §13, INTL W2): slot 0 `[[Locale]]` (a String); the
+    /// An Intl.ListFormat instance (ECMA-402 §14, INTL W2): slot 0 `[[Locale]]` (a String); the
     /// other slots are named in `ep9_intl` list_format.rs. No ICU4X object is in a slot.
     IntlListFormat,
     /// An Intl.Segmenter instance (ECMA-402 §19, INTL W2): slot 0 `[[Locale]]` (a String); the

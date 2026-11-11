@@ -1,5 +1,5 @@
-//! Intl.ListFormat (ECMA-402 §13), toLocaleLowerCase / toLocaleUpperCase (§19.1.2-3) and
-//! Array.prototype.toLocaleString (§19.4.1):
+//! Intl.ListFormat (ECMA-402 §14), toLocaleLowerCase / toLocaleUpperCase (§20.1.2-3) and
+//! Array.prototype.toLocaleString (§20.5.1):
 //! INTL W2 LIST+CASEMAP, with and without GC stress. The expected lines are node v26.13.0's
 //! output for the same script (`print` = `console.log` of the arguments, each through
 //! `String`, joined by a space; ICU 78.3, CLDR 48: the strings of these cases are the same in

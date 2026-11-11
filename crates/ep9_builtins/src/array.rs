@@ -2011,7 +2011,7 @@ fn move_or_delete<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, from: u64, to: u6
     Ok(())
 }
 
-/// Array.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §19.4.1; it
+/// Array.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.5.1; it
 /// replaces ECMA-262 §23.1.3.32): each element's toLocaleString gets `locales` and `options`.
 fn to_locale_string<'s>(
     cx: &mut Cx<'s>,

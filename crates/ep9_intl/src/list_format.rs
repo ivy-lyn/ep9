@@ -1,7 +1,7 @@
-//! Intl.ListFormat (ECMA-402 §13; block 35): `%Intl.ListFormat%` and `%Intl.ListFormat.prototype%`,
+//! Intl.ListFormat (ECMA-402 §14; block 35): `%Intl.ListFormat%` and `%Intl.ListFormat.prototype%`,
 //! a module of the lazy group "Intl" (INTL-I1-D8): its properties target only `%Intl%` and
 //! its own intrinsics. Also the case mapping of `String.prototype.toLocaleLowerCase` and
-//! `toLocaleUpperCase` ([`casemap`], ECMA-402 §19.1.2-3), the other half of the LIST+CASEMAP
+//! `toLocaleUpperCase` ([`casemap`], ECMA-402 §20.1.2-3), the other half of the LIST+CASEMAP
 //! service.
 //!
 //! ```text
@@ -69,11 +69,11 @@ mod def {
 
 /// The builtin functions, in id order (append-only).
 pub const DEFS: &[BuiltinDef] = &[
-    BuiltinDef::constructor("ListFormat", 0, constructor), // 0 (13.1.1)
-    BuiltinDef::method("supportedLocalesOf", 1, supported_locales_of), // 1 (13.2.2)
-    BuiltinDef::method("format", 1, format),               // 2 (13.3.3)
-    BuiltinDef::method("formatToParts", 1, format_to_parts), // 3 (13.3.4)
-    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (13.3.5)
+    BuiltinDef::constructor("ListFormat", 0, constructor), // 0 (14.1.1)
+    BuiltinDef::method("supportedLocalesOf", 1, supported_locales_of), // 1 (14.2.2)
+    BuiltinDef::method("format", 1, format),               // 2 (14.3.3)
+    BuiltinDef::method("formatToParts", 1, format_to_parts), // 3 (14.3.4)
+    BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (14.3.2)
 ];
 
 /// The intrinsics this module makes.
@@ -118,7 +118,7 @@ pub const PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("resolvedOptions"), def::RESOLVED_OPTIONS),
             PropDef::method(PropKey::Str("format"), def::FORMAT),
             PropDef::method(PropKey::Str("formatToParts"), def::FORMAT_TO_PARTS),
-            // Intl.ListFormat.prototype [ @@toStringTag ] ({c}, 13.3.2).
+            // Intl.ListFormat.prototype [ @@toStringTag ] ({c}, 14.3.5).
             PropDef::constant(
                 PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
                 ConstValue::Str("Intl.ListFormat"),
@@ -189,7 +189,7 @@ pub struct Resolved {
     pub options: Packed,
 }
 
-/// Intl.ListFormat steps 3-15 (13.1.1; the object creation of step 2 is the caller's): the
+/// Intl.ListFormat steps 3-15 (14.1.1; the object creation of step 2 is the caller's): the
 /// `[[Locale]]` and the packed options for `locales` and `options`, in the spec order of the
 /// observable steps. No ICU4X object is made.
 pub fn initialize<'s>(
@@ -302,7 +302,7 @@ impl Joiner {
         split_last(rest, last, after)
     }
 
-    /// The parts of the list `elements` (CreatePartsFromList, 13.5.2 steps 1-4, the
+    /// The parts of the list `elements` (CreatePartsFromList, 14.5.2 steps 1-4, the
     /// `[[Templates]]` of the data): element and literal parts, in order, as code units. An
     /// empty literal is not a part.
     pub fn parts(&self, elements: &[Vec<u16>]) -> Vec<(PartKind, Vec<u16>)> {
@@ -388,7 +388,7 @@ fn joiner_for(locale: &str, options: Packed) -> Option<std::rc::Rc<Joiner>> {
     )
 }
 
-/// CreatePartsFromList ( listFormat, list ) (13.5.2) for the `[[Locale]]` `locale` and the
+/// CreatePartsFromList ( listFormat, list ) (14.5.2) for the `[[Locale]]` `locale` and the
 /// packed options: the parts of `list` (the code units of each element).
 pub fn create_parts_from_list(
     locale: &str,
@@ -413,7 +413,7 @@ pub fn create_parts_from_list(
 
 // ---- the builtins -----------------------------------------------------------------------------
 
-/// Intl.ListFormat ( [ locales [ , options ] ] ) (13.1.1).
+/// Intl.ListFormat ( [ locales [ , options ] ] ) (14.1.1).
 fn constructor<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -438,7 +438,7 @@ fn constructor<'s>(
     Ok(lf.into())
 }
 
-/// Intl.ListFormat.supportedLocalesOf ( locales [ , options ] ) (13.2.2).
+/// Intl.ListFormat.supportedLocalesOf ( locales [ , options ] ) (14.2.2).
 fn supported_locales_of<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -470,7 +470,7 @@ fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, ep9_vm::JsString>) -> JsResult<Vec<u1
         .collect())
 }
 
-/// StringListFromIterable ( iterable ) (13.5.3): the code units of each String the iterable
+/// StringListFromIterable ( iterable ) (14.5.5): the code units of each String the iterable
 /// gives. A value that is not a String closes the iterator with a TypeError.
 pub fn string_list_from_iterable<'s>(
     cx: &mut Cx<'s>,
@@ -514,7 +514,7 @@ fn read_list<'s>(
     Ok(create_parts_from_list(&locale, options, &strings))
 }
 
-/// Intl.ListFormat.prototype.format ( list ) (13.3.3).
+/// Intl.ListFormat.prototype.format ( list ) (14.3.3).
 fn format<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -522,7 +522,7 @@ fn format<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     let parts = read_list(cx, this, args.get(0))?;
-    // 4. Return FormatList(lf, stringList) (13.5.4): the concatenation of the parts.
+    // 4. Return FormatList(lf, stringList) (14.5.3): the concatenation of the parts.
     let len: usize = parts.iter().map(|(_, u)| u.len()).sum();
     let mut out: Vec<u16> = Vec::with_capacity(len);
     for (_, u) in &parts {
@@ -531,7 +531,7 @@ fn format<'s>(
     Ok(cx.new_string_utf16(&out)?.into())
 }
 
-/// Intl.ListFormat.prototype.formatToParts ( list ) (13.3.4).
+/// Intl.ListFormat.prototype.formatToParts ( list ) (14.3.4).
 fn format_to_parts<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -539,7 +539,7 @@ fn format_to_parts<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     let parts = read_list(cx, this, args.get(0))?;
-    // 4. Return FormatListToParts(lf, stringList) (13.5.5): an Array of { type, value }.
+    // 4. Return FormatListToParts(lf, stringList) (14.5.4): an Array of { type, value }.
     let array = cx.new_array();
     for (i, (kind, value)) in parts.iter().enumerate() {
         let o = cx.new_object();
@@ -552,7 +552,7 @@ fn format_to_parts<'s>(
     Ok(array.into())
 }
 
-/// Intl.ListFormat.prototype.resolvedOptions ( ) (13.3.5).
+/// Intl.ListFormat.prototype.resolvedOptions ( ) (14.3.2).
 fn resolved_options<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

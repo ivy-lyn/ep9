@@ -1,4 +1,4 @@
-//! TransformCase ( S, locales, targetCase ) (ECMA-402 §19.1.2.1): the body of
+//! TransformCase ( S, locales, targetCase ) (ECMA-402 §20.1.2.1): the body of
 //! `String.prototype.toLocaleLowerCase` and `toLocaleUpperCase` (INTL W2 LIST+CASEMAP), which
 //! `ep9_builtins` calls (INTL-I1 §1.5). The language-sensitive mappings come from
 //! `icu_casemap` (Unicode 18 data in ICU4X 2.4).
@@ -90,7 +90,7 @@ pub fn map_units(s: &[u16], language: &str, target: TargetCase) -> Vec<u16> {
     out
 }
 
-/// TransformCase ( S, locales, targetCase ) (19.1.2.1) for the code units `s` (steps 1-2 of
+/// TransformCase ( S, locales, targetCase ) (20.1.2.1) for the code units `s` (steps 1-2 of
 /// the String methods, RequireObjectCoercible and ToString, are the caller's): the mapped code
 /// units, or `None` when the matched locale is "und", so the caller maps `s` with the Unicode
 /// Default Case Conversion (the mapping of toLowerCase and toUpperCase, step 8.a/9.a "or the

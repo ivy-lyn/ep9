@@ -121,7 +121,7 @@ pub fn simple_digit(system: &str, d: u8) -> Option<char> {
     char::from_u32(zero as u32 + u32::from(d))
 }
 
-/// `[[RoundingMode]]` (the 9 values of §16.5.3 step 9).
+/// `[[RoundingMode]]` (the 9 values of §16.1.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundingMode {
     Ceil,
@@ -236,13 +236,13 @@ pub struct DigitOptions {
     pub strip_if_integer: bool,
 }
 
-/// The allowed `roundingIncrement` values (§16.5.3 step 8).
+/// The allowed `roundingIncrement` values (§16.1.2).
 const INCREMENTS: [u16; 15] = [
     1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000,
 ];
 
 /// SetNumberFormatDigitOptions ( intlObj, options, mnfdDefault, mxfdDefault, notation )
-/// (§16.5.3). `compact`: notation is "compact".
+/// (§16.1.2). `compact`: notation is "compact".
 pub fn set_number_format_digit_options<'s>(
     cx: &mut Cx<'s>,
     options: Local<'s, JsObject>,
