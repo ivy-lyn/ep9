@@ -85,20 +85,29 @@ pub(crate) fn kept<'d>(
             };
             match reads.spans.binary_search_by_key(&span, |r| r.0) {
                 Err(_) => Some(Cow::Borrowed(d)),
-                Ok(i) => reads.spans[i].1.map(|region| {
-                    // oxc_semantic 0.158.0 `diagnostics::unexpected_arguments`.
-                    Cow::Owned(
+                Ok(i) => {
+                    #[cfg(test)]
+                    CHANGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    reads.spans[i].1.map(|region| {
+                        // oxc_semantic 0.158.0 `diagnostics::unexpected_arguments`.
+                        Cow::Owned(
                         OxcDiagnostic::error(format!("'arguments' is not allowed in {region}"))
                             .with_label(Span::new(span.0, span.1))
                             .with_help(
                                 "Assign the 'arguments' variable to a temporary variable outside",
                             ),
                     )
-                }),
+                    })
+                }
             }
         })
         .collect()
 }
+
+/// Test only (STRICT-FILTER-REMOVE task 1): the number of diagnostics that [`kept`] dropped or
+/// replaced, over every caller path.
+#[cfg(test)]
+static CHANGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// The label span `(start, end)` of a strict `eval`/`arguments` assign diagnostic, or `None`
 /// for any other diagnostic.
@@ -246,6 +255,104 @@ mod tests {
         "let eval = 1",
         "var v; [eval = v] = []",
     ];
+
+    /// STRICT-FILTER-REMOVE task 1: on oxc 0.158 the filter drops or replaces no diagnostic
+    /// of its 67 cases (16 reads, 21 targets, 18 class reads, 12 class reads that are ok). Each
+    /// case runs through oxc_semantic once; the raw errors ("without the filter") and the
+    /// output of [`super::kept`] ("with the filter") must be the same diagnostics, in each goal
+    /// and strictness. The eval and Function() caller paths count through `CHANGED`.
+    #[test]
+    fn filter_drops_nothing_on_its_cases() {
+        use std::borrow::Cow;
+        use std::sync::atomic::Ordering;
+
+        use oxc_allocator::Allocator;
+        use oxc_diagnostics::OxcDiagnostic;
+        use oxc_semantic::SemanticBuilder;
+
+        let cases: Vec<(&str, String)> = READS
+            .iter()
+            .map(|s| ("READS", (*s).to_owned()))
+            .chain(TARGETS.iter().map(|s| ("TARGETS", (*s).to_owned())))
+            .chain(
+                CLASS_ARGS
+                    .iter()
+                    .map(|s| ("CLASS_ARGS", format!("var v, w; {s}"))),
+            )
+            .chain(
+                CLASS_ARGS_OK
+                    .iter()
+                    .map(|s| ("CLASS_ARGS_OK", format!("var v, w; {s}"))),
+            )
+            .collect();
+        assert_eq!(cases.len(), 67);
+        let (mut runs, mut raw_errors, mut candidates) = (0, 0, 0);
+        for (class, src) in &cases {
+            for opts in [
+                SourceOpts::script(Strictness::Strict),
+                SourceOpts::script(Strictness::Sloppy),
+                SourceOpts::module(),
+            ] {
+                let allocator = Allocator::default();
+                let program = crate::parse(&allocator, src, opts)
+                    .unwrap_or_else(|e| panic!("{src} {opts:?}: layer 2 refused: {e:?}"));
+                let built = SemanticBuilder::new_compiler().build(&program);
+                let raw: Vec<&OxcDiagnostic> = built.diagnostics.errors().collect();
+                let with = super::kept(&program, raw.iter().copied());
+                runs += 1;
+                raw_errors += raw.len();
+                candidates += raw.iter().filter(|d| super::candidate(d).is_some()).count();
+                assert_eq!(with.len(), raw.len(), "{class} {src} {opts:?}: dropped");
+                for (k, r) in with.iter().zip(&raw) {
+                    assert!(
+                        matches!(k, Cow::Borrowed(d) if std::ptr::eq(*d, *r)),
+                        "{class} {src} {opts:?}: replaced {r:?} with {k:?}"
+                    );
+                }
+                println!(
+                    "FILTER-NOOP\t{class}\t{opts:?}\t{}\t{}\t{src}",
+                    raw.len(),
+                    raw.first().map_or("accepted", |d| &*d.message)
+                );
+            }
+        }
+        // The other caller paths: check_early_errors, compile, compile_eval (eval.rs:233) and
+        // compile_function_ctor (through compile_eval).
+        let before = super::CHANGED.load(Ordering::Relaxed);
+        let options = crate::CompileOptions::default();
+        for (_, src) in &cases {
+            for opts in [
+                SourceOpts::script(Strictness::Strict),
+                SourceOpts::script(Strictness::Sloppy),
+                SourceOpts::module(),
+            ] {
+                let _ = check_early_errors(src, opts);
+                let _ = crate::compile(src, opts, options);
+            }
+            for strict in [true, false] {
+                let ctx = ep9_bytecode::EvalContext {
+                    strict,
+                    ..ep9_bytecode::EvalContext::default()
+                };
+                let _ = crate::compile_eval(src, &ctx, options);
+            }
+            let _ = crate::compile_function_ctor(
+                ep9_bytecode::FunctionCtorKind::Normal,
+                "",
+                src,
+                options,
+            );
+        }
+        let changed = super::CHANGED.load(Ordering::Relaxed) - before;
+        println!(
+            "FILTER-NOOP-SUM\tcases {}\truns {runs}\traw_errors {raw_errors}\tassign_candidates {candidates}\tchanged_all_paths {changed}",
+            cases.len()
+        );
+        assert_eq!(
+            changed, 0,
+            "the filter changed a diagnostic on a caller path"
+        );
+    }
 
     #[test]
     fn reads_are_accepted() {
