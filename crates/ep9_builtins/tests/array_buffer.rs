@@ -275,6 +275,62 @@ out = out.join();
     }
 }
 
+/// SharedArrayBuffer.prototype.slice step 18 tests the block, not the object (TA-2 fixer;
+/// buffers checker F5): `twin` is a second SharedArrayBuffer of this isolate on the block of
+/// `sab` (`Cx::new_shared_array_buffer_on_block`, as `$262.agent.broadcast` makes one in an
+/// agent), so a species constructor that returns it is a TypeError. A SharedArrayBuffer on
+/// another block is copied into, and `twin` sees the bytes of `sab`.
+#[test]
+fn shared_array_buffer_slice_tests_the_block() {
+    for stress in [false, true] {
+        let out = common::on_big_stack(move || {
+            let src = r#"
+var out = [];
+function t(f) { try { out.push(String(f())); } catch (e) { out.push(e.constructor.name); } }
+new DataView(sab).setUint8(1, 9);
+t(function () { return new DataView(twin).getUint8(1); });
+t(function () { return twin === sab; });
+sab.constructor = { [Symbol.species]: function (n) { return twin; } };
+t(function () { return sab.slice(0, 4); });
+sab.constructor = { [Symbol.species]: function (n) { return other; } };
+t(function () { var r = sab.slice(1, 2); return [r === other, new DataView(other).getUint8(0)].join(); });
+out = out.join();
+"#;
+            let unit = ep9_frontend::compile(
+                src,
+                SourceOpts::script(Strictness::Sloppy),
+                CompileOptions::default(),
+            )
+            .expect("the script compiles");
+            let mut iso = common::isolate(stress);
+            iso.with_cx(|cx| {
+                let global = cx.global();
+                let sp = cx.intrinsic(IntrinsicId::SharedArrayBufferPrototype);
+                let sab = cx.allocate_shared_array_buffer(sp, 8, None)?;
+                let block = cx.shared_array_buffer_block(sab)?;
+                let twin = cx.new_shared_array_buffer_on_block(sp, &block)?;
+                let other = cx.allocate_shared_array_buffer(sp, 8, None)?;
+                cx.set(global, "sab", sab, true)?;
+                cx.set(global, "twin", twin, true)?;
+                cx.set(global, "other", other, true)?;
+                Ok(())
+            })
+            .expect("no exception");
+            iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()))
+                .expect("no exception");
+            let out = common::global_text(&mut iso, "out");
+            iso.collect_garbage();
+            iso.verify_heap().expect("a valid heap");
+            out
+        });
+        assert_eq!(
+            out,
+            Some("9,false,TypeError,true,9".to_string()),
+            "stress {stress}"
+        );
+    }
+}
+
 // ---- the scripts --------------------------------------------------------------------------------
 
 const AB_CTOR_JS: &str = r#"

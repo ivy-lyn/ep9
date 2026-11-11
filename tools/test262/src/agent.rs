@@ -22,8 +22,8 @@
 //! | Rule | Statement |
 //! |---|---|
 //! | Deadline and kill path | Every wait of a hook (start, broadcast, receiveBroadcast, sleep) ends at the run's deadline or at the close of the session, and then throws (a host error, not a test result: [`run`] makes the run an infrastructure error "timeout"). The end of a run terminates every agent isolate (`TerminateHandle`) and waits [`STOP_GRACE`] for it. So no hang can pass a test |
-//! | GC (plan rule 8) | Rust memory holds no JS value: the session holds strings, numbers, thread handles and terminate handles. A hook keeps a value only in its arguments or in locals during one call |
-//! | Missing engine parts | A hook that needs an engine part this build does not have throws a TypeError: `$262.detachArrayBuffer` of a value that is not an engine ArrayBuffer (`Cx::detach_array_buffer` refuses it), `$262.agent.broadcast` of a SharedArrayBuffer while `ep9_vm` has no API that shares its block with another isolate ([`share_block`]) |
+//! | GC (plan rule 8) | Rust memory holds no JS value: the session holds strings, numbers, SharedArrayBuffer blocks (`ep9_vm::SharedBlockRef`: bytes, no JS value), thread handles and terminate handles. A hook keeps a value only in its arguments or in locals during one call |
+//! | Engine checks | The hooks test no class: the brand-checked engine method gives the TypeError. `$262.detachArrayBuffer` of a value that is not an engine ArrayBuffer (`Cx::detach_array_buffer`); `$262.agent.broadcast` of a value that is not an engine SharedArrayBuffer (`Cx::shared_array_buffer_block`, [`share_block`]). An agent makes its SharedArrayBuffer on the block with the prototype of its realm's intrinsic `%SharedArrayBuffer.prototype%` ([`adopt_block`]; H22-Q8) |
 //! | `[[CanBlock]]` | The main agent can block ([`MAIN_CAN_BLOCK`], as a shell main thread in d8, the SpiderMonkey shell and node: test262 `atomicsHelper.js` `$262.agent.safeBroadcast` calls `Atomics.wait` on it); agents can too. A `CanBlockIsFalse` test fails with the cause [`CAN_BLOCK_CAUSE`]; a `CanBlockIsTrue` test runs. The engine has no `[[CanBlock]]` input yet: `Atomics.wait` (TypedArray TA-4) reads it, and the runner sets it to true for the main isolate and for each agent isolate |
 //!
 //! Test hook (`EP9_TEST262_FAULT`, see `exec::fault_for`): `agent-stuck:<substr>` makes each
@@ -39,8 +39,7 @@ use std::time::{Duration, Instant};
 
 use ep9_frontend::{SourceOpts, Strictness};
 use ep9_vm::{
-    Args, Cx, ErrorKind, ExecOptions, HostFn, Isolate, JsResult, Local, ObjectClass,
-    TerminateHandle, Throw,
+    Args, Cx, ErrorKind, ExecOptions, HostFn, Isolate, JsResult, Local, TerminateHandle, Throw,
 };
 
 use crate::exec::{self, Run, RunCtx};
@@ -164,11 +163,10 @@ enum Payload {
 }
 
 /// The block of a SharedArrayBuffer as a broadcast gives it to an agent: a `Send` handle that
-/// keeps the block alive in the agent (H22-Q8: one `Arc` clone per isolate). `ep9_vm` has no
-/// such handle yet, so this is an opaque stand-in that no hook makes: [`share_block`] and
-/// [`adopt_block`] throw (the TA-2 fixer need of TA-HARNESS: `Cx` methods that export and
-/// adopt the block).
-type Block = Arc<dyn std::any::Any + Send + Sync>;
+/// keeps the block alive until the agent makes its SharedArrayBuffer on it (H22-Q8: then one
+/// `Arc` clone per SharedArrayBuffer object, in the table of its isolate). It holds no JS
+/// value.
+type Block = ep9_vm::SharedBlockRef;
 
 #[derive(Clone, Debug)]
 struct Message {
@@ -674,28 +672,26 @@ fn start<'s>(
 }
 
 /// The block of the SharedArrayBuffer `v` for a broadcast. A TypeError if `v` is not a
-/// SharedArrayBuffer, and for now also if it is one: `ep9_vm` has no `Cx` method that hands
-/// a SharedArrayBuffer's block to another isolate (the TA-2 fixer need of TA-HARNESS).
+/// SharedArrayBuffer of the engine: the brand-checked `Cx::shared_array_buffer_block` gives it
+/// (no class test here; design study judge 4.7 (1)).
 fn share_block<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<Block> {
-    // The class only picks the message: no slot of `v` is read here.
-    if cx.object_class(v) != Some(ObjectClass::SharedArrayBuffer) {
-        return Err(cx.throw_type_error(
-            "$262.agent.broadcast: the first argument is not a SharedArrayBuffer",
-        ));
-    }
-    Err(cx.throw_type_error(
-        "$262.agent.broadcast: this engine cannot share a SharedArrayBuffer with another \
-         isolate yet (no block share API in ep9_vm)",
-    ))
+    cx.shared_array_buffer_block(v)
 }
 
-/// A SharedArrayBuffer of the current realm of this agent on the block `b` (its prototype is
-/// the realm's `SharedArrayBuffer.prototype`). A TypeError for now, as [`share_block`].
-fn adopt_block<'s>(cx: &mut Cx<'s>, _b: &Block) -> JsResult<Local<'s>> {
-    Err(cx.throw_type_error(
-        "$262.agent.receiveBroadcast: this engine cannot adopt a SharedArrayBuffer block yet \
-         (no block share API in ep9_vm)",
-    ))
+/// A SharedArrayBuffer of the current realm of this agent on the block `b`: the same bytes,
+/// the block's byte length now and its maximum. Its prototype is the realm's intrinsic
+/// `%SharedArrayBuffer.prototype%`, not a global lookup (no user code runs, and a test that
+/// changes the global `SharedArrayBuffer` does not change it).
+fn adopt_block<'s>(cx: &mut Cx<'s>, b: &Block) -> JsResult<Local<'s>> {
+    let id = ep9_vm::IntrinsicId::SharedArrayBufferPrototype;
+    if !cx.has_intrinsic(id) {
+        return Err(
+            cx.throw_type_error("$262.agent.receiveBroadcast: this realm has no SharedArrayBuffer")
+        );
+    }
+    let proto = cx.intrinsic(id);
+    cx.new_shared_array_buffer_on_block(proto, b)
+        .map(Into::into)
 }
 
 /// The second argument of a broadcast: undefined, a Number or a BigInt, else a TypeError.
@@ -984,52 +980,94 @@ mod tests {
         }
     }
 
-    /// The feature probe of `$262.agent.broadcast`: an engine SharedArrayBuffer is a clean
-    /// TypeError while `ep9_vm` cannot share its block with another isolate; a value that is
-    /// not a SharedArrayBuffer (an ArrayBuffer included) is a TypeError that says so. The
-    /// session of the main agent stays usable after them.
+    /// `$262.agent.broadcast` gives a started agent its own SharedArrayBuffer on the same block
+    /// (H22-Q8; TA-2 fixer N1): the agent sees the bytes of the main agent, the main agent
+    /// sees the agent's store (a DataView read and an Atomics load, `Cx::atomic_load`), a grow
+    /// in the main agent shows the new byteLength in the agent, and the agent's object has the
+    /// length, maximum and prototype of its realm. Two broadcasts of one SharedArrayBuffer give
+    /// the agent two objects on one block: a species constructor of `slice` that returns the
+    /// other one is a TypeError (step 18, the block test). After the agent's objects die and
+    /// a GC runs there, the main agent still reads the block. A value that is not an engine
+    /// SharedArrayBuffer (`{}`, an ArrayBuffer) is a TypeError. Plain and under GC stress 1.
     #[test]
-    fn broadcast_fails_cleanly_until_the_engine_shares_a_block() {
-        let mut iso = isolate(0);
-        let config = AgentConfig {
-            gc_stress: 0,
-            feedback_threshold: 0,
-            exec: ExecOptions::default(),
-        };
-        let session = Session::begin(config, Duration::from_secs(60), false);
-        let r = iso.with_cx(|cx| {
-            cx.evaluate_script(prelude(), "harness/$262 prelude")?;
-            let sab = cx.allocate_shared_array_buffer(Local::null(), 8, None)?;
-            global(cx, "sab", sab.into())?;
-            let ab = cx.allocate_array_buffer(Local::null(), 8, None)?;
-            global(cx, "ab", ab.into())?;
-            cx.evaluate_script(
-                "var out = [sab, ab, {}].map(function (v) {\n\
-                   try { $262.agent.broadcast(v, 1); return 'none'; }\n\
-                   catch (e) { return (e instanceof TypeError) + ': ' + e.message; }\n\
-                 }).join('\\n') + '\\n' + $262.agent.getReport();",
-                "test",
-            )?;
-            let g = cx.global();
-            let out = cx.get(g, "out")?;
-            cx.to_rust_string(out)
-        });
-        let end = session.end();
-        assert_eq!(
-            r.map_err(|e| e.to_string()),
-            Ok(
-                "true: $262.agent.broadcast: this engine cannot share a SharedArrayBuffer with \
-                 another isolate yet (no block share API in ep9_vm)\n\
-                 true: $262.agent.broadcast: the first argument is not a SharedArrayBuffer\n\
-                 true: $262.agent.broadcast: the first argument is not a SharedArrayBuffer\n\
-                 null"
-                    .to_string()
-            )
-        );
-        assert_eq!(
-            (end.stuck, end.errors.len(), end.deadline_hit),
-            (0, 0, false)
-        );
+    fn broadcast_shares_the_block_with_an_agent() {
+        const AGENT: &str = r#"
+$262.agent.receiveBroadcast(function (sab, n) {
+  var d = new DataView(sab);
+  var before = d.getInt32(4, true);
+  d.setInt32(0, 42, true);
+  $262.agent.report([n, before, sab.byteLength, sab.growable, sab.maxByteLength,
+    Object.getPrototypeOf(sab) === SharedArrayBuffer.prototype].join());
+  $262.agent.receiveBroadcast(function (sab2, m) {
+    var r;
+    sab.constructor = { [Symbol.species]: function () { return sab2; } };
+    try { sab.slice(0, 4); r = 'no error'; } catch (e) { r = e.constructor.name; }
+    $262.agent.report([m, sab.byteLength, sab2 === sab, r].join());
+    sab = sab2 = d = null;
+    $262.gc();
+    $262.agent.leaving();
+  });
+});
+"#;
+        const MAIN: &str = r#"
+function nextReport() {
+  var r;
+  while ((r = $262.agent.getReport()) == null) { $262.agent.sleep(1); }
+  return r;
+}
+var sab = new SharedArrayBuffer(8, { maxByteLength: 64 });
+var d = new DataView(sab);
+d.setInt32(4, 7, true);
+$262.agent.start(agentSource);
+$262.agent.broadcast(sab, 1);
+var first = nextReport();
+var stored = d.getInt32(0, true);
+sab.grow(32);
+$262.agent.broadcast(sab, 2);
+var second = nextReport();
+$262.gc();
+var errs = [{}, new ArrayBuffer(8)].map(function (v) {
+  try { $262.agent.broadcast(v, 1); return 'none'; } catch (e) { return e.constructor.name; }
+});
+var out = [first, stored, second, d.getInt32(0, true), errs.join()].join(' | ');
+"#;
+        for gc_stress in [0, 1] {
+            let mut iso = isolate(gc_stress);
+            let config = AgentConfig {
+                gc_stress,
+                feedback_threshold: 0,
+                exec: ExecOptions::default(),
+            };
+            // The session deadline ends every wait (no hang); it is not a time bound.
+            let session = Session::begin(config, Duration::from_secs(120), false);
+            let r = iso.with_cx(|cx| {
+                cx.evaluate_script(prelude(), "harness/$262 prelude")?;
+                let src = cx.new_string(AGENT)?;
+                global(cx, "agentSource", src.into())?;
+                cx.evaluate_script(MAIN, "test")?;
+                let g = cx.global();
+                let out = cx.get(g, "out")?;
+                let sab = cx.get(g, "sab")?;
+                // Int32 (Table 71 row 5) at byte 0: the agent's store, seen by an Atomics load.
+                let x = cx.atomic_load(sab, 0, 5)?;
+                Ok((cx.to_rust_string(out)?, x.as_number()))
+            });
+            let end = session.end();
+            assert_eq!(
+                r.map_err(|e| e.to_string()),
+                Ok((
+                    "1,7,8,true,64,true | 42 | 2,32,false,TypeError | 42 | TypeError,TypeError"
+                        .to_string(),
+                    Some(42.0)
+                )),
+                "gc_stress {gc_stress}"
+            );
+            assert_eq!(
+                (end.stuck, end.errors, end.panics, end.deadline_hit),
+                (0, Vec::new(), Vec::new(), false),
+                "gc_stress {gc_stress}"
+            );
+        }
     }
 
     /// The second value of a broadcast goes to the agent as a Number or a BigInt of the

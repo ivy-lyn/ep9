@@ -787,3 +787,9 @@ abi: impl<'s> Cx<'s> :: pub fn data_view_set_value(&mut self, impl Into<Local<'s
 abi: impl<'s> Cx<'s> :: pub fn is_array_buffer(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_data_view(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_shared_array_buffer(&self, impl Into<Local<'s>>) -> bool
+abi: #[derive(Clone, Debug)] pub struct SharedBlockRef(_)
+abi: impl<'s> Cx<'s> :: pub fn shared_array_buffer_block(&mut self, impl Into<Local<'s>>) -> JsResult<SharedBlockRef>
+abi: impl<'s> Cx<'s> :: pub fn new_shared_array_buffer_on_block(&mut self, impl Into<Local<'s>>, &SharedBlockRef) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn is_same_shared_block(&self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> bool
+path: ep9_vm::SharedBlockRef = abi::SharedBlockRef
+path: ep9_vm::abi::SharedBlockRef

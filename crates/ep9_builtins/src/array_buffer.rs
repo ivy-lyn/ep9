@@ -744,8 +744,8 @@ fn sab_slice<'s>(
         ));
     }
     // 18. If new.[[ArrayBufferData]] is O.[[ArrayBufferData]], throw a TypeError exception.
-    //     (In one agent, two SharedArrayBuffer objects never share a block: SameValue.)
-    if cx.same_value(new, o) {
+    //     (The block test, brand-checked: two objects of one agent can share a block.)
+    if cx.is_same_shared_block(new, o) {
         return Err(cx.throw_type_error(
             "SharedArrayBuffer subclass returned this from species constructor",
         ));

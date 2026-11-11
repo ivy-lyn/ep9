@@ -10,9 +10,11 @@
 //! - a stuck agent in both runs of a test keeps its cause: the worker's hard timeout counts
 //!   the agent stop grace of each run;
 //! - an agent that throws fails the test, with the agent's exception as the cause;
-//! - a hook that needs an engine part this build lacks throws a TypeError (feature probe:
+//! - a hook that gets a value that is not an engine buffer throws a TypeError (feature probe:
 //!   with a `SharedArrayBuffer` or `ArrayBuffer` constructor the same file checks the real
 //!   path);
+//! - a SharedArrayBuffer crosses isolates: the agent's store is seen by the main agent, a grow
+//!   in the main agent is seen by the agent (its own fixture file, plain and GC stress 1);
 //! - `CanBlockIsFalse` fails (the main agent can block), `CanBlockIsTrue` runs.
 //!
 //! Every test runs the runner binary with a soft timeout, and the runner kills a worker at its
@@ -136,7 +138,7 @@ fn passing() -> Vec<(&'static str, String)> {
                  assert.sameValue(nextReport(), 'ok');",
             ),
         ),
-        // A hook that needs an engine part this build lacks throws a TypeError; with the
+        // A hook that gets a value that is not an engine buffer throws a TypeError; with the
         // constructor the same file checks the real path (a feature probe).
         (
             "clean.js",
@@ -150,10 +152,12 @@ fn passing() -> Vec<(&'static str, String)> {
                    $262.detachArrayBuffer(b);\n\
                    assert.sameValue(b.byteLength, 0, 'detached');\n\
                  }\n\
+                 if (typeof ArrayBuffer === 'function') {\n\
+                   assert.throws(TypeError, function () { $262.agent.broadcast(new ArrayBuffer(8)); });\n\
+                 }\n\
                  if (typeof SharedArrayBuffer === 'function') {\n\
                    assert.throws(TypeError, function () { $262.detachArrayBuffer(new SharedArrayBuffer(8)); });\n\
-                   try { $262.agent.broadcast(new SharedArrayBuffer(8)); }\n\
-                   catch (e) { assert(e instanceof TypeError && /cannot share/.test(e.message), String(e)); }\n\
+                   $262.agent.broadcast(new SharedArrayBuffer(8));\n\
                  }",
             ),
         ),
@@ -410,4 +414,56 @@ fn a_stuck_agent_in_both_runs_keeps_its_cause() {
         "{text}"
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The agent's side of `share.js`: it stores 42 into the broadcast SharedArrayBuffer (with
+/// `Atomics.store` once the engine has `Atomics` and `Int32Array`, else a DataView store),
+/// reports, then reports the byteLength of the same object after the main agent grew it.
+const SHARE_AGENT: &str = "var atomics = typeof Atomics === 'object' && typeof Int32Array === 'function';\n\
+    $262.agent.receiveBroadcast(function (sab) {\n\
+      if (atomics) { Atomics.store(new Int32Array(sab), 0, 42); }\n\
+      else { new DataView(sab).setInt32(0, 42, true); }\n\
+      $262.agent.report('stored ' + sab.byteLength);\n\
+      $262.agent.receiveBroadcast(function () {\n\
+        $262.agent.report('length ' + sab.byteLength);\n\
+        $262.agent.leaving();\n\
+      });\n\
+    });";
+
+/// A SharedArrayBuffer crosses isolates (H22-Q8; TA-2 fixer N1), on its own fixture file:
+/// the main agent reads the agent's store (`Atomics.load` once the engine has it, else a
+/// DataView load), and a grow in the main agent shows the new byteLength in the agent. Plain
+/// and under GC stress 1. Without a `SharedArrayBuffer` constructor the file checks nothing
+/// (a feature probe).
+#[test]
+fn a_shared_array_buffer_crosses_isolates() {
+    let body = format!(
+        "if (typeof SharedArrayBuffer === 'function') {{\n\
+           var atomics = typeof Atomics === 'object' && typeof Int32Array === 'function';\n\
+           var sab = new SharedArrayBuffer(8, {{ maxByteLength: 64 }});\n\
+           $262.agent.start({agent:?});\n\
+           $262.agent.broadcast(sab);\n\
+           assert.sameValue(nextReport(), 'stored 8');\n\
+           var got = atomics ? Atomics.load(new Int32Array(sab), 0) : new DataView(sab).getInt32(0, true);\n\
+           assert.sameValue(got, 42, 'the agent store');\n\
+           sab.grow(32);\n\
+           $262.agent.broadcast(sab);\n\
+           assert.sameValue(nextReport(), 'length 32');\n\
+         }}",
+        agent = SHARE_AGENT
+    );
+    let tests = [("share.js", test("", &body))];
+    for gc_stress in ["0", "1"] {
+        let root = tree(&format!("share-{gc_stress}"), &tests);
+        let expect = expect_file(&root, &[]);
+        let (code, text) = exec(
+            &root,
+            &expect,
+            &["--gc-stress", gc_stress, "--timeout", "60"],
+            None,
+        );
+        assert_eq!(code, Some(0), "gc_stress {gc_stress}: {text}");
+        assert_eq!(counts(&text), Some((1, 1)), "gc_stress {gc_stress}: {text}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

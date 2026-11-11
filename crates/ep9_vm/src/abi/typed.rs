@@ -602,6 +602,49 @@ impl<'s> Cx<'s> {
     }
 }
 
+/// The block of a SharedArrayBuffer as a `Send` handle (H22-Q8): it keeps the block alive and
+/// holds no JS value, so another isolate on another thread can make its own SharedArrayBuffer
+/// on the same bytes ([`Cx::new_shared_array_buffer_on_block`]; the test262 runner's
+/// `$262.agent.broadcast`). Made by [`Cx::shared_array_buffer_block`].
+#[derive(Clone, Debug)]
+pub struct SharedBlockRef(std::sync::Arc<ab::SharedBlock>);
+
+/// TA-2 fixer (N1; TA-ORCH-11 item 5): a SharedArrayBuffer block shared across isolates, and
+/// the block test of SharedArrayBuffer.prototype.slice. Each method tests the brand
+/// (`buffer_class`) before it reads a slot. None runs JS.
+impl<'s> Cx<'s> {
+    /// The block of the SharedArrayBuffer `sab`, for another isolate. A TypeError if `sab` is
+    /// not a SharedArrayBuffer that `abi/typed.rs` made.
+    pub fn shared_array_buffer_block(
+        &mut self,
+        sab: impl Into<Local<'s>>,
+    ) -> JsResult<SharedBlockRef> {
+        let r = ab::shared_block_of(self.rt(), sab.into().bits());
+        self.buffer_result(r).map(SharedBlockRef)
+    }
+
+    /// A new SharedArrayBuffer of this isolate with prototype `proto` (an object or null) on
+    /// `block`: the same bytes, the block's byte length now and its maximum (a growable block
+    /// gives a growable SharedArrayBuffer). A RangeError if the bytes cannot be counted.
+    pub fn new_shared_array_buffer_on_block(
+        &mut self,
+        proto: impl Into<Local<'s>>,
+        block: &SharedBlockRef,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let p = proto_bits(proto.into());
+        let r = ab::adopt_shared(self.rt(), p, std::sync::Arc::clone(&block.0));
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// True if `a` and `b` are SharedArrayBuffers on the same block (`new.[[ArrayBufferData]]
+    /// is O.[[ArrayBufferData]]` of SharedArrayBuffer.prototype.slice): two objects of one
+    /// isolate can share a block after [`Cx::new_shared_array_buffer_on_block`]. False if
+    /// either is not a SharedArrayBuffer that `abi/typed.rs` made. Never throws.
+    pub fn is_same_shared_block(&self, a: impl Into<Local<'s>>, b: impl Into<Local<'s>>) -> bool {
+        ab::is_same_shared_block(self.rt(), a.into().bits(), b.into().bits())
+    }
+}
+
 /// The filled bodies on the ABI (TA-1): the error kind of each method on a value that is no
 /// buffer or no view, the 3 waiter stubs that stay for TA-4, and one round trip. The element
 /// semantics, detach, resize, GC and the exotic methods are tested in `tests::typed_array` and
@@ -868,6 +911,102 @@ mod tests {
                 assert_eq!(pending(rt, &mut cx).0, "TypeError");
                 assert!(cx.data_view_buffer(dv).unwrap().is_same_bits(&fixed));
                 std::hint::black_box((o, forged, forged_dv, sab, auto, shared));
+            });
+        }
+    }
+
+    /// TA-2 fixer N1 (H22-Q8): the block of a SharedArrayBuffer goes to an isolate on another
+    /// thread, which makes its own SharedArrayBuffer on it: an Atomics store there is seen by
+    /// an Atomics load here, a grow here is seen there, and the block lives on after the other
+    /// isolate is gone. Only an engine SharedArrayBuffer gives its block (the brand: a caller
+    /// object of the class, an ArrayBuffer and `{}` are TypeErrors). Two objects of one isolate
+    /// on one block are the same block for `is_same_shared_block`; any other pair is not.
+    /// Plain and under GC stress. The channel waits have a deadline (no hang).
+    #[test]
+    fn a_shared_block_crosses_isolates_and_keeps_the_brand() {
+        use crate::abi::{ObjectClass, SharedBlockRef};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        // A deadline for each wait on the other thread, not a time bound of the test.
+        const DEADLINE: Duration = Duration::from_secs(120);
+        for stress in [false, true] {
+            crate::tests::on_big_stack(move || {
+                let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                let iso: &mut Isolate = &mut iso;
+                let rt: &crate::runtime::Runtime = &iso.rt;
+                let mut cx = Cx::new(&mut iso.cx);
+                let p = cx.new_object();
+                let o = cx.new_object();
+                let forged = cx.new_object_with_slots(p, ObjectClass::SharedArrayBuffer, 6);
+                let ab = cx.allocate_array_buffer(p, 8, None).unwrap();
+                let gsab = cx.allocate_shared_array_buffer(p, 8, Some(64)).unwrap();
+                let other = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+                for v in [o, forged, ab] {
+                    assert!(cx.shared_array_buffer_block(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                }
+                assert!(cx.shared_array_buffer_block(Local::undefined()).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                // Int32 (Table 71 row 5) at byte 4: the other isolate reads it.
+                cx.atomic_store(gsab, 4, 5, Local::number(7.0)).unwrap();
+                let block: SharedBlockRef = cx.shared_array_buffer_block(gsab).unwrap();
+                let (to_agent, from_main) = mpsc::channel::<()>();
+                let (to_main, from_agent) = mpsc::channel::<(u64, Option<u64>, f64)>();
+                let agent = std::thread::Builder::new()
+                    .stack_size(512 << 20)
+                    .spawn(move || {
+                        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                        let mut cx = Cx::new(&mut iso.cx);
+                        let p = cx.new_object();
+                        let sab = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                        drop(block);
+                        let seen = cx.atomic_load(sab, 4, 5).unwrap().as_number().unwrap();
+                        cx.atomic_store(sab, 0, 5, Local::number(42.0)).unwrap();
+                        let len = cx.array_buffer_byte_length(sab).unwrap();
+                        let max = cx.array_buffer_max_byte_length(sab).unwrap();
+                        to_main.send((len, max, seen)).unwrap();
+                        from_main
+                            .recv_timeout(DEADLINE)
+                            .expect("the main grew the block");
+                        let len = cx.array_buffer_byte_length(sab).unwrap();
+                        to_main.send((len, None, 0.0)).unwrap();
+                        cx.collect_garbage();
+                        std::hint::black_box(sab);
+                    })
+                    .unwrap();
+                let first = from_agent
+                    .recv_timeout(DEADLINE)
+                    .expect("the agent adopted");
+                assert_eq!(first, (8, Some(64), 7.0), "same length, maximum and bytes");
+                let x = cx.atomic_load(gsab, 0, 5).unwrap();
+                assert_eq!(x.as_number(), Some(42.0), "the agent's store");
+                cx.shared_array_buffer_grow(gsab, 32).unwrap();
+                to_agent.send(()).unwrap();
+                let grown = from_agent.recv_timeout(DEADLINE).expect("the agent read");
+                assert_eq!(grown.0, 32, "the agent sees the grow");
+                agent.join().unwrap();
+                // The agent isolate is gone with its SharedArrayBuffer: the block lives here.
+                cx.collect_garbage();
+                let x = cx.atomic_load(gsab, 0, 5).unwrap();
+                assert_eq!(x.as_number(), Some(42.0));
+                // Two objects of this isolate on one block.
+                let block = cx.shared_array_buffer_block(gsab).unwrap();
+                let twin = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                assert!(!twin.is_same_bits(&gsab));
+                assert_eq!(cx.array_buffer_byte_length(twin).unwrap(), 32);
+                assert_eq!(cx.array_buffer_max_byte_length(twin).unwrap(), Some(64));
+                assert!(cx.is_same_shared_block(gsab, twin));
+                assert!(cx.is_same_shared_block(twin, gsab));
+                assert!(cx.is_same_shared_block(gsab, gsab));
+                assert!(!cx.is_same_shared_block(gsab, other));
+                for v in [o, forged, ab] {
+                    assert!(!cx.is_same_shared_block(gsab, v));
+                    assert!(!cx.is_same_shared_block(v, v));
+                }
+                cx.collect_garbage();
+                let x = cx.atomic_load(twin, 0, 5).unwrap();
+                assert_eq!(x.as_number(), Some(42.0));
+                std::hint::black_box((o, forged, ab, gsab, other, twin));
             });
         }
     }

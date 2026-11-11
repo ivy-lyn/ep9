@@ -346,6 +346,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_error(&self, impl core::convert::Into<Loc
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_extensible(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_promise(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_proxy(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_same_shared_block(&self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_shared_array_buffer(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_strictly_equal(&self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn iterator_close<T>(&mut self, &IteratorRecord<'s>, ep9_value::JsResult<T>) -> ep9_value::JsResult<T>
@@ -367,6 +368,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_object_with_proto(&mut self, impl core::
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_object_with_slots(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_promise(&mut self, impl core::convert::Into<Local<'s>>) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_promise_capability(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<PromiseCapability<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_shared_array_buffer_on_block(&mut self, impl core::convert::Into<Local<'s>>, &SharedBlockRef) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_string(&mut self, &str) -> ep9_value::JsResult<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_string_utf16(&mut self, &[u16]) -> ep9_value::JsResult<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn new_symbol(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsSymbol>>
@@ -417,6 +419,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_prototype_of(&mut self, impl core::conve
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_value_in_buffer(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, bool) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_with_receiver(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn shared_array_buffer_block(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<SharedBlockRef>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn shared_array_buffer_grow(&mut self, impl core::convert::Into<Local<'s>>, u64) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_len(&self, impl core::convert::Into<Local<'s, JsString>>) -> usize
@@ -1164,6 +1167,11 @@ ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn len(&self) -> usize
 ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn push(&self, impl core::convert::Into<Local<'s>>) -> usize
 ep9_vm::ScratchList :: impl<'s> ScratchList<'s> :: fn set(&self, usize, impl core::convert::Into<Local<'s>>)
 ep9_vm::ScratchList :: struct ScratchList<'s> { .. }
+ep9_vm::SharedBlockRef :: impl core::clone::Clone for SharedBlockRef
+ep9_vm::SharedBlockRef :: impl core::fmt::Debug for SharedBlockRef
+ep9_vm::SharedBlockRef :: impl core::marker::Send for SharedBlockRef (auto)
+ep9_vm::SharedBlockRef :: impl core::marker::Sync for SharedBlockRef (auto)
+ep9_vm::SharedBlockRef :: struct SharedBlockRef(_)
 ep9_vm::SourceLocation :: field column: u32
 ep9_vm::SourceLocation :: field file: alloc::string::String
 ep9_vm::SourceLocation :: field line: u32
@@ -1254,6 +1262,7 @@ ep9_vm::abi::PromiseState :: enum PromiseState
 ep9_vm::abi::PropertyDescriptor :: struct PropertyDescriptor<'s> {}
 ep9_vm::abi::Rest :: struct Rest<'s> { .. }
 ep9_vm::abi::ScratchList :: struct ScratchList<'s> { .. }
+ep9_vm::abi::SharedBlockRef :: struct SharedBlockRef(_)
 ep9_vm::abi::ToPrimitiveHint :: enum ToPrimitiveHint
 ep9_vm::abi::export_facts :: fn export_facts(&Isolate, &ep9_facts::facts::UnitHash) -> core::result::Result<ep9_facts::snapshot::FactSnapshot, &'static str>
 ep9_vm::build_info :: fn build_info() -> BuildInfo

@@ -146,7 +146,8 @@ pub use abi::{
     Args, ArgsBuilder, CollectionCursor, Cx, Downcast, FlatStr, HostFn, IntoKey, IteratorRecord,
     JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local, MatchRecord,
     ObjectClass, PrimitiveType, PromiseCapability, PromiseRejectionOperation,
-    PromiseRejectionTracker, PromiseState, PropertyDescriptor, Rest, ScratchList, ToPrimitiveHint,
+    PromiseRejectionTracker, PromiseState, PropertyDescriptor, Rest, ScratchList, SharedBlockRef,
+    ToPrimitiveHint,
 };
 pub use atoms::Atom;
 pub use builtins::{

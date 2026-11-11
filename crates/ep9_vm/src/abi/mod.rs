@@ -1750,3 +1750,5 @@ mod unit_code;
 // TypedArray TA-0 TA-DECL (H20 part 2): the ArrayBuffer, SharedArrayBuffer, TypedArray, DataView
 // and Atomics methods, m8-stubs that TA-1 TA-VM fills.
 mod typed;
+// TA-2 fixer (N1): the SharedArrayBuffer block handle for another isolate (H22-Q8).
+pub use self::typed::SharedBlockRef;

@@ -218,7 +218,6 @@ impl SharedBlock {
     }
 
     /// The process-wide serial number of the block (never an address).
-    #[expect(dead_code, reason = "first reader: TA-4 TA-ATOMICS (the waiter list)")]
     pub(crate) fn serial(&self) -> u64 {
         self.serial
     }
@@ -1510,4 +1509,53 @@ pub(crate) fn data_view_set(
     // SAFETY: `data_view_range` checked the range against the live store of the view's buffer.
     unsafe { write_raw(p, size, x, is_shared(data_view_buffer(v))) };
     Ok(())
+}
+
+// ---- TA-2 fixer (N1): a SharedArrayBuffer block shared across isolates (H22-Q8) ------------
+//
+// A SharedArrayBuffer object belongs to one isolate; its block (`Arc<SharedBlock>`) may go to
+// another isolate on another thread, which makes its own SharedArrayBuffer on it. Each object
+// owns its own table entry from birth (`new_buffer_object`) and holds one `Arc` clone there;
+// the last clone frees the block. Each isolate counts the committed bytes of the block once
+// per object that it makes on it (TA-ORCH-4; TA-4 TA-ATOMICS decides the count of a block
+// that another isolate grows).
+
+/// The block of the SharedArrayBuffer `b` for another isolate: one `Arc` clone. A TypeError
+/// if `b` is not a SharedArrayBuffer made here (the brand). Not a GC point.
+pub(crate) fn shared_block_of(rt: &Runtime, b: u64) -> BufResult<Arc<SharedBlock>> {
+    match buffer_class(rt, b) {
+        Some(ObjectClass::SharedArrayBuffer) => Ok(shared_block(rt, b)),
+        _ => Err(Fail::Type("not a SharedArrayBuffer")),
+    }
+}
+
+/// A new SharedArrayBuffer of this isolate with prototype `proto` on `block` (the block of a
+/// SharedArrayBuffer of any isolate): the same bytes, the block's byte length now and its
+/// maximum. It owns its entry from birth and holds one `Arc` clone in it. A RangeError if the
+/// heap refuses the committed bytes as external bytes. GC point.
+pub(crate) fn adopt_shared(rt: &Runtime, proto: u64, block: Arc<SharedBlock>) -> BufResult<u64> {
+    rt.buffers.drain_dead();
+    let len = block.byte_length() as u64;
+    let max = block.max.map(|m| m as u64);
+    let committed = *block
+        .committed
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    // GC points: `b` lives in a Rust local (CSS); `block` is Rust memory with no Value.
+    let b = new_buffer_object(rt, proto, ObjectClass::SharedArrayBuffer, len, max);
+    add_external(rt, committed)?;
+    let i = entry_index(b).expect("an engine buffer has its entry");
+    rt.buffers
+        .set_store(i, Some(Store::Shared(block)), committed);
+    object::engine_slot_set(rt, b, slot::STORE, int32_bits(i as i32));
+    Ok(b)
+}
+
+/// True if `a` and `b` are SharedArrayBuffers made here on the same block (the block test of
+/// SharedArrayBuffer.prototype.slice: `new.[[ArrayBufferData]] is O.[[ArrayBufferData]]`):
+/// the serial numbers agree, never an address (H12). False if either is not one (the brand).
+/// Not a GC point.
+pub(crate) fn is_same_shared_block(rt: &Runtime, a: u64, b: u64) -> bool {
+    let shared = |v| buffer_class(rt, v) == Some(ObjectClass::SharedArrayBuffer);
+    shared(a) && shared(b) && shared_block(rt, a).serial() == shared_block(rt, b).serial()
 }
