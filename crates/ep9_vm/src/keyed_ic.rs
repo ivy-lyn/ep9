@@ -4,8 +4,8 @@
 //!
 //! ```text
 //! interp/ops.rs (M4-P0 hooks; each after profile::record_keyed, which records nothing)
-//!   GetKeyedProperty          array-only inline path (implicit), then -> fast_get   (cold)
-//!   SetKeyedProperty          -> fast_set: a present element of an Array (hit), grow case
+//!   GetKeyedProperty          array-only inline path (implicit), then -> fast_get   (views)
+//!   SetKeyedProperty          -> fast_set: a present Array element (hit), grow case, views
 //!   DefineKeyedOwnProperty    -> fast_define_own                                    (cold)
 //!   StaInArrayLiteral         -> fast_sta_in_array_literal                          (cold)
 //!   TestIn                    -> fast_has                                           (cold)
@@ -140,11 +140,11 @@ fn note_receiver(rt: &Runtime, v: u64, i: u32, o: u64, key: u64) {
 }
 
 /// `o[k]` (LoadKeyed slot `s`), after the array-only path of `GetKeyedProperty` missed (a
-/// hole, out of bounds, another receiver or key). Always cold: the generic `get_keyed` reads
-/// an int32 index without a string key.
+/// hole, out of bounds, another receiver or key): the view case ([`view::get`], TA-2); all else
+/// is cold (the generic `get_keyed` reads an int32 index without a string key).
 #[inline(always)]
-pub(crate) fn fast_get(_st: &mut St<'_>, _o: u64, _k: u64, _s: FSlot) -> Flow {
-    Flow::Cold
+pub(crate) fn fast_get(st: &mut St<'_>, o: u64, k: u64, s: FSlot) -> Flow {
+    view::get(st, o, k, s)
 }
 
 /// `o[k] = v` (StoreKeyed slot `s`): the fast case stores a present Array element in place,
@@ -168,7 +168,7 @@ pub(crate) fn fast_set(st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flo
         {
             record_as_cold(s, bits)
         } else {
-            Flow::Cold
+            view::set(st, o, k, v, s)
         };
     };
     let fits = if doubles {
@@ -367,4 +367,355 @@ pub(crate) fn fast_sta_in_array_literal(
 #[inline(always)]
 pub(crate) fn fast_has(_st: &mut St<'_>, _k: u64, _o: u64, _s: FSlot) -> Flow {
     Flow::Cold
+}
+
+#[cfg(test)]
+pub(crate) use view::VIEW_HITS;
+
+// The view cases of the keyed fast bodies (TypedArray TA-2 TA-KEYED; module docs inside).
+mod view {
+    //! **The view cases (TypedArray TA-2 TA-KEYED; design `docs/plan/notes/typedarray-design.md`
+    //! §6.1, §4.1, §5.2).** [`get`] and [`set`] are the tails of `fast_get` and `fast_set` for
+    //! a receiver that is no Array case: a TypedArray (a view kind, `kinds::is_view_kind`)
+    //! with an int32 key `i >= 0`; anything else is cold. Each starts with one compare of the
+    //! cell kind (a receiver kind past `PROXY_CALLABLE` is a view), then a cold-path hint, so
+    //! the view code stays off the block order of the array paths as far as LLVM allows (M7-P5
+    //! ICWIDE: a new case there cost +2 instructions per array hit; this one costs about 1 per
+    //! Array load hit and none per Array store hit, mac a64). It makes no call and reads no
+    //! IC state, so the `GetKeyedProperty` handler keeps no frame and the `SetKeyedProperty`
+    //! handler saves no more registers.
+    //!
+    //! ```text
+    //! element type t = cell kind - INT8_VIEW; BigInt64, BigUint64 (a BigInt allocates) and
+    //!   Float16 (its conversion is a call, `ep9_math::f16`) are cold
+    //! bound (IsValidIntegerIndex, read at each access: a detach or resize between two calls
+    //!   changes it, so no IC state remembers it):
+    //!   TYPED_FIXED (7)     the +40 length (0 once detached)
+    //!   TYPED_VARIABLE (8)  a resizable ArrayBuffer: its byte length (slot 1; detached: out of
+    //!                       bounds), the +48 byte offset, the +40 length or "auto" (out of
+    //!                       bounds when the view does not fit); a growable SharedArrayBuffer:
+    //!                       cold (its length is in the shared block, behind the table)
+    //! GetKeyedProperty   i in bounds: the element as a Number (Uint32 above 2^31 - 1 a double,
+    //!                    a float NaN the one NaN); else undefined (no prototype walk, §10.4.5.4)
+    //! SetKeyedProperty   i in bounds and v a Number that needs no call (an int32 for the integer
+    //!                    types, which Uint8Clamped clamps; any Number for Float32 and Float64):
+    //!                    the store; else cold (out of bounds too; a double into an integer type
+    //!                    needs `trunc`, a libm call on baseline x86-64)
+    //! ```
+    //!
+    //! The bytes of a SharedArrayBuffer are read and written with Relaxed atomics of the element
+    //! width (TA-D11). A view element is aligned to its size (a byte offset that is a multiple
+    //! of the size, on a store base that is 8-aligned), else the case is cold. The bound and the
+    //! data word come from the view and from its buffer, which `typed_array::new_view` took only
+    //! after `array_buffer::buffer_class` passed: an engine buffer keeps its table entry while
+    //! it lives, and only `array_buffer.rs` writes its slots (BRAND-T, design §5.1 note (1)), so
+    //! the raw slot reads here trust them. The view case reads no Value slot it does not check
+    //! and writes none (a store writes raw bytes: no barrier).
+    //!
+    //! **The cold-miss rule** holds for the views as for the Arrays: the cold body records
+    //! `INDEX | OBJECT` for an int32 key `>= 0` on a view (no element case, and no kinds-set bit:
+    //! the view kinds are no `elements::plain_elements_kind`, and the kinds-set bits 7 and 8
+    //! have no writer before TA-3; a negative int32 records `OTHER_KEY`, so it is cold here).
+    //! - A LoadKeyed view hit records as cold ([`super::record_as_cold`], the grow case form):
+    //!   the LoadKeyed key half keeps no state (H16 "the keyed IC state is live only for
+    //!   StoreKeyed"), and a state change there would be a call in the `GetKeyedProperty`
+    //!   handler, which gives its array path a frame (M7-P5 ICWIDE).
+    //! - A StoreKeyed view hit records as cold too, and it leaves the key half alone (as every
+    //!   case that is not the Array fast case, MC-w14-6), so the key half names only Array
+    //!   receivers, and an Array hit still needs a cold `ARRAY` record first. A view shape in
+    //!   the key half (design §6.1) would make the hit read the vector, and that read gave the
+    //!   `SetKeyedProperty` handler two more saved registers on entry (+3 instructions per
+    //!   Array store hit; navier-stokes +0.4%, mac a64).
+
+    use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Relaxed};
+
+    use super::record_as_cold;
+    use crate::abi::ObjectClass;
+    use crate::array_buffer as ab;
+    use crate::conv;
+    use crate::elements::kind as ek;
+    use crate::external_ref::ExternalRef;
+    use crate::frame::{UNDEFINED, int32_bits, int32_of};
+    use crate::interp::dsl::FSlot;
+    use crate::interp::{Flow, St};
+    use crate::kinds;
+    use crate::layout;
+    use crate::object::{self, elems, rd};
+    use crate::profile::keyed;
+    use crate::runtime::val;
+    use crate::shape;
+    use ep9_heap::CellPtr;
+    use ep9_value::encoding::NUMBER_TAG;
+
+    #[cfg(test)]
+    thread_local! {
+        /// Tests (TA-2 TA-KEYED): the view hits, loads and stores ([`get`], [`set`]).
+        pub(crate) static VIEW_HITS: core::cell::Cell<[u32; 2]> =
+            const { core::cell::Cell::new([0, 0]) };
+    }
+
+    /// The bits the cold body records for an int32 key `>= 0` on a view
+    /// (`profile::keyed_key`, `profile::keyed_receiver`).
+    const VIEW_BITS: u32 = keyed::INDEX | keyed::OBJECT;
+
+    /// False if `o` is no view, by one compare: a JS receiver whose cell kind is past
+    /// `PROXY_CALLABLE` is a view (the kinds after the views are engine cells, never a
+    /// receiver Value); a non-cell gives kind 0. The first test of [`get`] and [`set`], before
+    /// the cold-path hint (module doc). Not a GC point.
+    #[inline(always)]
+    fn maybe_view(o: u64) -> bool {
+        kinds::cell_kind(o) > kinds::PROXY_CALLABLE.get()
+    }
+
+    /// True if `o` is a TypedArray: a cell of one of the 12 view kinds. Not a GC point.
+    #[inline(always)]
+    fn is_view(o: u64) -> bool {
+        kinds::is_view_kind(kinds::cell_kind(o))
+    }
+
+    /// The int32 of the Value `v`, if it is an int32.
+    #[inline(always)]
+    fn int32(v: u64) -> Option<i32> {
+        (v & NUMBER_TAG == NUMBER_TAG).then(|| int32_of(v))
+    }
+
+    /// The size in bytes of the element type `t` (a Table 71 row; `layout::VIEW_ELEMENT_SIZES`
+    /// with no bounds check).
+    #[inline(always)]
+    fn elem_size(t: u8) -> usize {
+        match t {
+            0..=2 => 1,
+            3 | 4 | 9 => 2,
+            5 | 6 | 10 => 4,
+            _ => 8,
+        }
+    }
+
+    /// Where the key of a view access lands ([`element`]).
+    enum At {
+        /// Element `i` of type `t` at `p`, aligned to its size, inside the view's live store;
+        /// `shared` for the bytes of a SharedArrayBuffer.
+        Elem { t: u8, p: *mut u8, shared: bool },
+        /// IsValidIntegerIndex is false (out of bounds, detached): a load gives undefined.
+        Out,
+        /// A case the view hit does not take: the cold body.
+        Cold,
+    }
+
+    /// Internal slot `i` of the engine buffer `b` (a view's +24: trusted, module doc), read
+    /// raw, with no check that can panic. `None` if `b` or its slots word is not a cell (never
+    /// for an engine buffer). Not a GC point.
+    #[inline(always)]
+    fn buffer_slot(b: u64, i: usize) -> Option<u64> {
+        let bc = CellPtr::from_value(val(b))?;
+        let s = CellPtr::from_value(val(rd(bc, object::slot_obj::SLOTS)))?;
+        Some(rd(s, elems::DATA + 8 * i))
+    }
+
+    /// IsValidIntegerIndex (§10.4.5.14) of the int32 key `k` on the view `o` against its
+    /// current bound, and the address of the element: the rules of the module doc. Not a GC
+    /// point; reads only.
+    #[inline(always)]
+    fn element(o: u64, k: u64) -> At {
+        debug_assert!(is_view(o));
+        let Some(i) = int32(k).and_then(|i| usize::try_from(i).ok()) else {
+            return At::Cold;
+        };
+        let t = kinds::cell_kind(o) - kinds::INT8_VIEW.get();
+        if matches!(t, 7..=9) {
+            return At::Cold;
+        }
+        let size = elem_size(t);
+        let c = object::cell(o);
+        let b = rd(c, layout::VIEW_BUFFER as usize);
+        let Some(bc) = CellPtr::from_value(val(b)) else {
+            return At::Cold;
+        };
+        const SAB: u64 = int32_bits(ObjectClass::SharedArrayBuffer.id() as i32);
+        let shared = rd(bc, object::slot_obj::CLASS) == SAB;
+        let len = int32(rd(c, layout::VIEW_LENGTH as usize));
+        let n = if shape::elements_kind(shape::shape_of(o)) == ek::TYPED_FIXED {
+            // The +40 length (0 once detached); a length of 2^31 or more is a double: cold.
+            match len {
+                Some(n) => n as usize,
+                None => return At::Cold,
+            }
+        } else {
+            // TYPED_VARIABLE: the bound reads the buffer at each access (a resize writes no
+            // view).
+            if shared {
+                return At::Cold;
+            }
+            let (Some(flags), Some(bytes), Some(off), Some(len)) = (
+                buffer_slot(b, ab::slot::FLAGS).and_then(int32),
+                buffer_slot(b, ab::slot::BYTE_LENGTH).and_then(int32),
+                int32(rd(c, layout::VIEW_BYTE_OFFSET as usize)),
+                len,
+            ) else {
+                return At::Cold;
+            };
+            if flags & ab::flag::DETACHED != 0 {
+                return At::Out;
+            }
+            let (bytes, off) = (bytes as usize, off as usize);
+            if len == layout::VIEW_LENGTH_AUTO {
+                if off > bytes {
+                    return At::Out;
+                }
+                (bytes - off) / size
+            } else {
+                // A fixed length on a resizable buffer: out of bounds when it does not fit.
+                let n = len as usize;
+                if off + n * size > bytes {
+                    return At::Out;
+                }
+                n
+            }
+        };
+        if i >= n {
+            return At::Out;
+        }
+        let data = ExternalRef::<u8>::from_word(rd(c, layout::VIEW_DATA as usize))
+            .get()
+            .cast_mut();
+        let p = data.wrapping_add(i * size);
+        if data.is_null() || !p.addr().is_multiple_of(size) {
+            return At::Cold;
+        }
+        At::Elem { t, p, shared }
+    }
+
+    /// The little-endian bytes of element type `t` at `p` (Relaxed atomics for shared bytes).
+    ///
+    /// # Safety
+    /// `[p, p + elem_size(t))` is inside a live store, and `p` is aligned to that size.
+    #[inline(always)]
+    unsafe fn load_raw(p: *mut u8, t: u8, shared: bool) -> u64 {
+        // SAFETY: the caller's contract; shared bytes are only accessed atomically (TA-D11).
+        unsafe {
+            match (elem_size(t), shared) {
+                (1, false) => u64::from(p.read()),
+                (2, false) => u64::from(u16::from_le(p.cast::<u16>().read())),
+                (4, false) => u64::from(u32::from_le(p.cast::<u32>().read())),
+                (_, false) => u64::from_le(p.cast::<u64>().read()),
+                (1, true) => u64::from(AtomicU8::from_ptr(p).load(Relaxed)),
+                (2, true) => u64::from(u16::from_le(AtomicU16::from_ptr(p.cast()).load(Relaxed))),
+                (4, true) => u64::from(u32::from_le(AtomicU32::from_ptr(p.cast()).load(Relaxed))),
+                (_, true) => u64::from_le(AtomicU64::from_ptr(p.cast()).load(Relaxed)),
+            }
+        }
+    }
+
+    /// Writes the low bytes of `x` as element type `t` at `p`, little endian ([`load_raw`]'s
+    /// rules).
+    ///
+    /// # Safety
+    /// As [`load_raw`].
+    #[inline(always)]
+    unsafe fn store_raw(p: *mut u8, t: u8, x: u64, shared: bool) {
+        // SAFETY: as `load_raw`.
+        unsafe {
+            match (elem_size(t), shared) {
+                (1, false) => p.write(x as u8),
+                (2, false) => p.cast::<u16>().write((x as u16).to_le()),
+                (4, false) => p.cast::<u32>().write((x as u32).to_le()),
+                (_, false) => p.cast::<u64>().write(x.to_le()),
+                (1, true) => AtomicU8::from_ptr(p).store(x as u8, Relaxed),
+                (2, true) => AtomicU16::from_ptr(p.cast()).store((x as u16).to_le(), Relaxed),
+                (4, true) => AtomicU32::from_ptr(p.cast()).store((x as u32).to_le(), Relaxed),
+                (_, true) => AtomicU64::from_ptr(p.cast()).store(x.to_le(), Relaxed),
+            }
+        }
+    }
+
+    /// RawBytesToNumeric (§25.1.3.15) of the bytes `x` of the Number element type `t`, as
+    /// `array_buffer::raw_to_value` boxes it (the int32 form when it fits; the one NaN).
+    #[inline(always)]
+    fn raw_value(t: u8, x: u64) -> u64 {
+        match t {
+            0 => int32_bits(i32::from(x as u8 as i8)),
+            1 | 2 => int32_bits(i32::from(x as u8)),
+            3 => int32_bits(i32::from(x as u16 as i16)),
+            4 => int32_bits(i32::from(x as u16)),
+            5 => int32_bits(x as u32 as i32),
+            6 => conv::num(f64::from(x as u32)),
+            10 => conv::num(f64::from(f32::from_bits(x as u32))),
+            _ => conv::num(f64::from_bits(x)),
+        }
+    }
+
+    /// NumericToRawBytes (§25.1.3.17) of `v` for the element type `t` when it needs no call:
+    /// an int32 for the integer types (Uint8Clamped clamps it: ToUint8Clamp of an integer), any
+    /// Number for Float32 and Float64 (one NaN pattern each, as `array_buffer::number_to_raw`).
+    /// `None` for any other value or type.
+    #[inline(always)]
+    fn value_raw(t: u8, v: u64) -> Option<u64> {
+        match t {
+            2 => Some(int32(v)?.clamp(0, 255) as u64),
+            0..=6 => Some(u64::from(int32(v)? as u32)),
+            10 => {
+                let n = val(v).as_number()?;
+                let f = if n.is_nan() { f32::NAN } else { n as f32 };
+                Some(u64::from(f.to_bits()))
+            }
+            11 => {
+                let n = val(v).as_number()?;
+                Some(if n.is_nan() { f64::NAN } else { n }.to_bits())
+            }
+            _ => None,
+        }
+    }
+
+    /// The view case of `GetKeyedProperty`: for a view `o`, the element or undefined into the
+    /// accumulator, recorded as the cold body records it ([`VIEW_BITS`]); else cold. Never
+    /// allocates, never calls; not a GC point.
+    #[inline(always)]
+    pub(super) fn get(st: &mut St<'_>, o: u64, k: u64, s: FSlot) -> Flow {
+        if !maybe_view(o) {
+            return Flow::Cold;
+        }
+        core::hint::cold_path();
+        if !is_view(o) {
+            return Flow::Cold;
+        }
+        st.acc = match element(o, k) {
+            At::Cold => return Flow::Cold,
+            At::Out => UNDEFINED,
+            At::Elem { t, p, shared } => {
+                // SAFETY: element `i` is below the view's current bound, so it is inside the
+                // live store (the view holds its buffer and the buffer its store, design
+                // §5.1), and `p` is aligned (checked).
+                raw_value(t, unsafe { load_raw(p, t, shared) })
+            }
+        };
+        #[cfg(test)]
+        VIEW_HITS.with(|c| c.set([c.get()[0] + 1, c.get()[1]]));
+        record_as_cold(s, VIEW_BITS)
+    }
+
+    /// The view case of `SetKeyedProperty`: for a view `o` (the receiver), the in-bounds store
+    /// of a Number that needs no call, recorded as the cold body records it ([`VIEW_BITS`]);
+    /// else cold. The key half stays as it is (module doc). Never allocates, never calls; not
+    /// a GC point.
+    #[inline(always)]
+    pub(super) fn set(_st: &mut St<'_>, o: u64, k: u64, v: u64, s: FSlot) -> Flow {
+        if !maybe_view(o) {
+            return Flow::Cold;
+        }
+        core::hint::cold_path();
+        if !is_view(o) {
+            return Flow::Cold;
+        }
+        let At::Elem { t, p, shared } = element(o, k) else {
+            return Flow::Cold;
+        };
+        let Some(x) = value_raw(t, v) else {
+            return Flow::Cold;
+        };
+        // SAFETY: as `get`; no JS ran after the bound was read (`v` is a Number already).
+        unsafe { store_raw(p, t, x, shared) };
+        #[cfg(test)]
+        VIEW_HITS.with(|c| c.set([c.get()[0], c.get()[1] + 1]));
+        record_as_cold(s, VIEW_BITS)
+    }
 }

@@ -1524,3 +1524,463 @@ fn the_keyed_store_grow_case_stores_in_place_and_records_as_cold() {
         }
     }
 }
+
+// ---- the view cases of the keyed IC (TypedArray TA-2 TA-KEYED, `keyed_ic.rs`) ---------------
+//
+// `f0(a, k) { return a[k]; }` (LoadKeyed), `f1(a, k, v) { a[k] = v; }` (StoreKeyed, sloppy)
+// and `f2(a, k, v) { 'use strict'; a[k] = v; }`, each with its one slot. The views come from
+// the Rust makers (no JS constructor before TA-2 TA-BUFFERS) and live in Rust locals (the
+// conservative stack scan keeps them; each is used after the last call that needs it). The
+// spec-layer answer is `typed_array::get_element` (the exotic path of the cold body).
+
+/// The Number `d` as Value bits (the int32 form when it fits).
+fn num(d: f64) -> u64 {
+    Value::number(d).to_bits()
+}
+
+/// The script that defines `f0`, `f1` and `f2` (functions 1-3).
+fn view_program() -> VerifiedUnit {
+    let load = {
+        let mut b = FunctionBuilder::new(meta("f0", 3, 0, 0, 0));
+        let (a, k) = (b.parameter(0), b.parameter(1));
+        let s = b.feedback_slot(FeedbackSlotKind::LoadKeyed);
+        assert_eq!(s.index(), SLOT as usize);
+        b.ldar(k).get_keyed_property(a, s).return_();
+        b.finish().unwrap()
+    };
+    let store = |name: &str, strict: bool| {
+        let mut m = meta(name, 3, 0, 0, 0);
+        if strict {
+            m.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+        }
+        let mut b = FunctionBuilder::new(m);
+        let (a, k, v) = (b.parameter(0), b.parameter(1), b.parameter(2));
+        let s = b.feedback_slot(FeedbackSlotKind::StoreKeyed);
+        assert_eq!(s.index(), SLOT as usize);
+        b.ldar(v)
+            .set_keyed_property(a, k, s)
+            .lda_undefined()
+            .return_();
+        b.finish().unwrap()
+    };
+    let mut s = Asm::script(0);
+    for i in 0..3 {
+        let k = s.b.function_constant(FunctionId(i + 1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(&format!("f{i}"));
+    }
+    s.b.lda_undefined().return_();
+    unit(
+        "",
+        vec![s.finish(), load, store("f1", false), store("f2", true)],
+    )
+}
+
+/// An isolate (type feedback `f`) that ran [`view_program`].
+fn view_t(c: IsolateConfig, f: crate::Feedback) -> T {
+    let mut iso =
+        Isolate::new_with(c, crate::ExecOptions::default().feedback(f)).expect("an isolate");
+    iso.register_host_function("print", 1, print);
+    iso.with_cx_checkpoint(|cx| cx.run_script(view_program(), "views.js").map(|_| ()))
+        .unwrap();
+    T { iso }
+}
+
+/// The view hits so far ([`crate::keyed_ic::VIEW_HITS`]: loads, stores), then 0.
+fn take_view_hits() -> [u32; 2] {
+    crate::keyed_ic::VIEW_HITS.with(|c| c.replace([0, 0]))
+}
+
+impl T {
+    /// `f<i>(args..)` and the view hits it made.
+    fn view_call(&mut self, i: usize, args: &[u64]) -> (Result<u64, Exception>, [u32; 2]) {
+        take_view_hits();
+        let f = self.f(i);
+        let args: Vec<Value> = args.iter().map(|&a| val(a)).collect();
+        let r = self
+            .iso
+            .call_raw(f, Value::UNDEFINED, &args)
+            .map(|v| v.to_bits());
+        (r, take_view_hits())
+    }
+
+    /// `f0(o, k)` (a load that must not throw) and its view hits.
+    fn view_load(&mut self, o: u64, k: u64) -> (u64, [u32; 2]) {
+        let (r, h) = self.view_call(0, &[o, k]);
+        (r.unwrap_or_else(|e| panic!("f0 threw {}", e.message)), h)
+    }
+
+    /// `f1(o, k, v)` (sloppy; must not throw): its view hits.
+    fn view_store(&mut self, o: u64, k: u64, v: u64) -> [u32; 2] {
+        let (r, h) = self.view_call(1, &[o, k, v]);
+        r.unwrap_or_else(|e| panic!("f1 threw {}", e.message));
+        h
+    }
+
+    /// The value half of `f<i>`'s slot without the kinds set (bits 0-9), then 0 there.
+    fn take_value_half(&self, i: usize) -> u32 {
+        let v = self.vector(i);
+        let bits = feedback::value(v, SLOT);
+        assert!(val(bits).is_int32(), "a keyed value half is an int32");
+        let off =
+            feedback::fv::SLOTS + feedback::fv::SLOT_SIZE * SLOT as usize + feedback::fv::VALUE;
+        // An int32 is not a cell: no barrier (E1).
+        object::init(object::cell(v), off, int32_bits(0));
+        bits as u32 & !crate::elements::KINDS_SET_MASK
+    }
+
+    /// The key half of `f<i>`'s slot: undefined, the hole, or a shape.
+    fn key_half(&self, i: usize) -> u64 {
+        feedback::key(self.vector(i), SLOT)
+    }
+}
+
+/// A new view (null prototype) of element type `t` on a new fixed-length ArrayBuffer of
+/// `bytes` bytes, from `offset`, with `len` elements.
+fn fixed_view(rt: &Runtime, t: u8, bytes: u64, offset: u64, len: u64) -> u64 {
+    let b = crate::array_buffer::allocate(rt, NULL, bytes, None).unwrap();
+    crate::typed_array::new_view(rt, NULL, t, b, offset, Some(len)).unwrap()
+}
+
+/// Writes the low `size` bytes of `x` (little endian) as element `i` of the view `v`, raw.
+fn put_raw(v: u64, t: u8, i: usize, x: u64) {
+    let size = usize::from(crate::layout::VIEW_ELEMENT_SIZES[usize::from(t)]);
+    let data = crate::external_ref::ExternalRef::<u8>::from_word(object::rd(
+        object::cell(v),
+        crate::layout::VIEW_DATA as usize,
+    ))
+    .get()
+    .cast_mut();
+    // SAFETY: element `i` of a live view inside its length (the tests' views); no other
+    // thread has the bytes.
+    unsafe {
+        core::ptr::copy_nonoverlapping(x.to_le_bytes().as_ptr(), data.add(i * size), size);
+    }
+}
+
+/// The two results are the same JS value with the same bits (a Number), or SameValue (a
+/// BigInt).
+fn same_element(a: u64, b: u64) -> bool {
+    if crate::kinds::is_bigint(a) || crate::kinds::is_bigint(b) {
+        return property::same_value(a, b);
+    }
+    a == b
+}
+
+/// Each element type, through one LoadKeyed site: the view case hits for an int32 key `>= 0`
+/// of the 9 Number types but Float16 (in bounds: the element; out of bounds: undefined) and
+/// misses for BigInt64, BigUint64, Float16 and a negative or double key; every answer has the
+/// bits of the spec-layer path (`typed_array::get_element`): the wrap of each integer type,
+/// Uint32 above 2^31 - 1 as a double, -0, the one NaN for a NaN payload. A hit records `INDEX
+/// | OBJECT` as the cold body does, and the LoadKeyed key half stays undefined (no state).
+#[test]
+fn a_view_load_hits_each_number_type_with_the_spec_answer() {
+    use crate::profile::keyed;
+    each(|c| {
+        let mut t = view_t(c, crate::Feedback::FULL);
+        // Element patterns (the low bytes of each type): all ones (Int8 -1, Uint32 2^32 - 1,
+        // a float NaN), a sign bit (-128, 2147483776, -0 for Float64 ...), a NaN payload.
+        let raw = [u64::MAX, 0x8000_0000_8000_0080, 0x7FF0_0000_7FC0_0001];
+        let keys = [int(0), int(1), int(2), int(3), int(1000), int(-1), num(1.5)];
+        for ty in 0..12u8 {
+            let v = fixed_view(t.rt(), ty, 64, 8, 3);
+            for (i, &x) in raw.iter().enumerate() {
+                put_raw(v, ty, i, x);
+            }
+            let cold = matches!(ty, 7..=9);
+            let mut hits = 0;
+            for &k in &keys {
+                let (got, h) = t.view_load(v, k);
+                let n = val(k).as_number().unwrap();
+                let want = crate::typed_array::get_element(t.rt(), v, n);
+                assert!(
+                    same_element(got, want),
+                    "type {ty} key {k:#x}: {got:#x}, want {want:#x}"
+                );
+                let hit = !cold && val(k).as_int32().is_some_and(|i| i >= 0);
+                assert_eq!(h, [u32::from(hit), 0], "type {ty} key {k:#x}");
+                hits += u32::from(hit);
+            }
+            assert_eq!(hits, if cold { 0 } else { 5 }, "type {ty}");
+            black_box(v);
+        }
+        assert_eq!(
+            t.key_half(0),
+            UNDEFINED,
+            "a LoadKeyed key half keeps no state"
+        );
+        let v = fixed_view(t.rt(), 5, 8, 0, 2);
+        t.take_value_half(0);
+        assert_eq!(t.view_load(v, int(1)), (int(0), [1, 0]));
+        assert_eq!(
+            t.take_value_half(0),
+            keyed::INDEX | keyed::OBJECT,
+            "a hit records as cold"
+        );
+        assert_eq!(t.view_load(v, int(7)), (UNDEFINED, [1, 0]));
+        assert_eq!(t.take_value_half(0), keyed::INDEX | keyed::OBJECT);
+        black_box(v);
+        t.collect();
+    });
+}
+
+/// IsValidIntegerIndex against the current bound: between two calls of one warm site a
+/// resize, a grow and a detach change what the view case answers, with no IC state to
+/// update. A fixed-length view and an "auto" view on a resizable ArrayBuffer (TYPED_VARIABLE),
+/// a view on a fixed-length ArrayBuffer (TYPED_FIXED) and two views on a growable
+/// SharedArrayBuffer (a fixed one hits with Relaxed atomics; the auto one is cold: its bound
+/// is in the shared block). Every load also equals `typed_array::get_element`.
+#[test]
+fn a_view_load_reads_the_bound_after_resize_grow_and_detach() {
+    use crate::array_buffer as ab;
+    use crate::typed_array as ta;
+    each(|c| {
+        let mut t = view_t(c, crate::Feedback::FULL);
+        let check = |t: &mut T, v: u64, i: i32, want: u64, hit: bool| {
+            let (got, h) = t.view_load(v, int(i));
+            assert_eq!(got, want, "[{i}]");
+            assert_eq!(
+                got,
+                ta::get_element(t.rt(), v, f64::from(i)),
+                "[{i}] the spec path"
+            );
+            assert_eq!(h, [u32::from(hit), 0], "[{i}] hits");
+        };
+        let b = ab::allocate(t.rt(), NULL, 8, Some(16)).unwrap();
+        let auto = ta::new_view(t.rt(), NULL, 0, b, 0, None).unwrap();
+        let fixed = ta::new_view(t.rt(), NULL, 0, b, 4, Some(4)).unwrap();
+        assert_eq!(
+            crate::elements::kind_of(auto),
+            crate::elements::kind::TYPED_VARIABLE
+        );
+        assert_eq!(
+            crate::elements::kind_of(fixed),
+            crate::elements::kind::TYPED_VARIABLE
+        );
+        for i in 0..8 {
+            put_raw(auto, 0, i, i as u64 + 1);
+        }
+        check(&mut t, auto, 7, int(8), true);
+        check(&mut t, fixed, 3, int(8), true);
+        check(&mut t, auto, 8, UNDEFINED, true);
+        // A shrink: the auto view follows, the fixed one is out of bounds.
+        ab::resize(t.rt(), b, 4).unwrap();
+        check(&mut t, auto, 3, int(4), true);
+        check(&mut t, auto, 4, UNDEFINED, true);
+        check(&mut t, fixed, 0, UNDEFINED, true);
+        // A grow: the new bytes are 0; the fixed view is back.
+        ab::resize(t.rt(), b, 16).unwrap();
+        check(&mut t, auto, 15, int(0), true);
+        check(&mut t, fixed, 3, int(0), true);
+        check(&mut t, auto, 0, int(1), true);
+        assert_eq!(
+            t.view_store(auto, int(15), int(9)),
+            [0, 1],
+            "the first store hits: a view hit reads no IC state"
+        );
+        assert_eq!(t.view_store(auto, int(14), int(-3)), [0, 1]);
+        check(&mut t, auto, 15, int(9), true);
+        check(&mut t, auto, 14, int(-3), true);
+        // A detach: every index is out of bounds; a store stores nothing and throws nothing.
+        ab::detach(t.rt(), b, UNDEFINED).unwrap();
+        check(&mut t, auto, 0, UNDEFINED, true);
+        check(&mut t, fixed, 0, UNDEFINED, true);
+        assert_eq!(t.view_store(auto, int(0), int(1)), [0, 0]);
+        let (r, h) = t.view_call(2, &[auto, int(0), int(1)]);
+        assert_eq!((r.map_err(|e| e.message), h), (Ok(UNDEFINED), [0, 0]));
+        // TYPED_FIXED on a fixed-length buffer: length 0 once detached.
+        let b2 = ab::allocate(t.rt(), NULL, 4, None).unwrap();
+        let v2 = ta::new_view(t.rt(), NULL, 1, b2, 0, Some(4)).unwrap();
+        assert_eq!(
+            crate::elements::kind_of(v2),
+            crate::elements::kind::TYPED_FIXED
+        );
+        put_raw(v2, 1, 2, 200);
+        check(&mut t, v2, 2, int(200), true);
+        ab::detach(t.rt(), b2, UNDEFINED).unwrap();
+        check(&mut t, v2, 2, UNDEFINED, true);
+        // A growable SharedArrayBuffer.
+        let s = ab::allocate_shared(t.rt(), NULL, 8, Some(16)).unwrap();
+        let sf = ta::new_view(t.rt(), NULL, 3, s, 0, Some(4)).unwrap();
+        let sa = ta::new_view(t.rt(), NULL, 3, s, 0, None).unwrap();
+        assert_eq!(
+            crate::elements::kind_of(sf),
+            crate::elements::kind::TYPED_FIXED
+        );
+        assert_eq!(
+            crate::elements::kind_of(sa),
+            crate::elements::kind::TYPED_VARIABLE
+        );
+        put_raw(sf, 3, 1, 0x8001);
+        check(&mut t, sf, 1, int(-32767), true);
+        check(&mut t, sa, 1, int(-32767), false);
+        // Another view type at the same site hits too (Relaxed atomics on the shared bytes).
+        assert_eq!(t.view_store(sf, int(3), int(300)), [0, 1]);
+        check(&mut t, sa, 3, int(300), false);
+        ab::grow_shared(t.rt(), s, 16).unwrap();
+        check(&mut t, sa, 7, int(0), false);
+        check(&mut t, sf, 4, UNDEFINED, true);
+        black_box((auto, fixed, b, v2, b2, s, sf, sa));
+        t.collect();
+    });
+}
+
+/// The view store case: an int32 into each integer type (the wrap; Uint8Clamped clamps) and
+/// any Number into Float32 and Float64 (rounded; the one NaN pattern) hit; a double into an
+/// integer type, any Float16 store, a value that is not a Number, an index out of bounds and a
+/// negative index go cold; each stores what NumericToRawBytes gives (read back through the
+/// spec path). A BigInt view refuses a Number with a TypeError (cold). An out-of-bounds store
+/// throws nothing in strict code either (§10.4.5.5 returns true).
+#[test]
+fn a_view_store_converts_as_the_spec_says() {
+    use crate::array_buffer as ab;
+    use crate::typed_array as ta;
+    each(|c| {
+        let mut t = view_t(c, crate::Feedback::FULL);
+        let vals = [
+            int(300),
+            int(-1),
+            int(-129),
+            int(70_000),
+            int(i32::MIN),
+            num(1.5),
+            num(2.5),
+            num(-0.0),
+            num(f64::NAN),
+            num(1e10),
+            num(0.1),
+            num(65_520.0),
+        ];
+        // One site for every view type: a view hit reads no IC state, so each type hits at once.
+        for ty in [0u8, 1, 2, 3, 4, 5, 6, 9, 10, 11] {
+            let v = fixed_view(t.rt(), ty, 32, 0, 4);
+            for &x in &vals {
+                let n = val(x).as_number().unwrap();
+                let hits = t.view_store(v, int(1), x);
+                let hit = match ty {
+                    9 => false,
+                    10 | 11 => true,
+                    _ => val(x).is_int32(),
+                };
+                assert_eq!(hits, [0, u32::from(hit)], "type {ty} value {n}");
+                let want = ab::raw_to_value(t.rt(), ty, ab::number_to_raw(ty, n));
+                let got = ta::get_element(t.rt(), v, 1.0);
+                assert_eq!(got, want, "type {ty} value {n}: {got:#x} {want:#x}");
+            }
+            // Out of bounds and a negative key: cold, nothing stored, no throw.
+            put_raw(v, ty, 3, 0);
+            for k in [int(4), int(-1), int(1000)] {
+                assert_eq!(t.view_store(v, k, int(7)), [0, 0]);
+                let (r, h) = t.view_call(2, &[v, k, int(7)]);
+                assert_eq!((r.map_err(|e| e.message), h), (Ok(UNDEFINED), [0, 0]));
+            }
+            assert_eq!(ta::get_element(t.rt(), v, 3.0), int(0));
+            // Not a Number: undefined is NaN (cold).
+            assert_eq!(t.view_store(v, int(2), UNDEFINED), [0, 0]);
+            let want = ab::raw_to_value(t.rt(), ty, ab::number_to_raw(ty, f64::NAN));
+            assert_eq!(ta::get_element(t.rt(), v, 2.0), want, "type {ty}");
+            black_box(v);
+        }
+        for ty in [7u8, 8] {
+            let v = fixed_view(t.rt(), ty, 16, 0, 2);
+            for f in [1, 2] {
+                let (r, h) = t.view_call(f, &[v, int(0), int(1)]);
+                let e = r.expect_err("ToBigInt of a Number");
+                assert_eq!(e.constructor.as_deref(), Some("TypeError"), "{}", e.message);
+                assert_eq!(h, [0, 0]);
+            }
+            black_box(v);
+        }
+        t.collect();
+    });
+}
+
+/// The StoreKeyed key half with views (`keyed_ic.rs` module `view`): a view store hit
+/// records `INDEX | OBJECT` (the record of its cold store) and leaves the key half alone, so
+/// the key half names only Array receivers: views of two types hit at a new site (undefined
+/// stays); an Array's first store is cold and names its shape; a view hit then leaves that
+/// shape, and the next Array store is a monomorphic hit with no record; an out-of-bounds view
+/// store is cold and records `INDEX | OBJECT`. A view site also hits with no vector (threshold
+/// `u32::MAX`). Under `ics_only` the hits and key halves are the same and the value half stays
+/// 0.
+#[test]
+fn the_store_key_half_with_views_keeps_the_cold_miss_rule() {
+    use crate::profile::keyed;
+    fn run(c: IsolateConfig, f: crate::Feedback) -> Vec<([u32; 2], u32, &'static str)> {
+        let mut t = view_t(c, f);
+        let rt = t.rt();
+        let v8 = fixed_view(rt, 0, 8, 0, 8);
+        let v64 = fixed_view(rt, 11, 16, 0, 2);
+        let arr = object::new_array(rt, 4);
+        for i in 0..3 {
+            object::array_set(rt, arr, i, int(i as i32));
+        }
+        let keep = t.keep_all(&[v8, v64, arr]);
+        let state = |t: &T| match t.key_half(1) {
+            UNDEFINED => "U",
+            HOLE => "H",
+            k if k == shape::shape_of(v8) => "S8",
+            k if k == shape::shape_of(v64) => "S64",
+            k if k == shape::shape_of(arr) => "SA",
+            _ => "?",
+        };
+        let mut out = Vec::new();
+        // Each step reads and clears the value half (the first call makes the vector).
+        let mut step = |t: &mut T, o: u64, k: i32, x: u64| {
+            let h = t.view_store(o, int(k), x);
+            out.push((h, t.take_value_half(1), state(t)));
+        };
+        step(&mut t, v8, 0, int(1));
+        step(&mut t, v8, 1, int(2));
+        step(&mut t, v64, 0, num(0.5));
+        step(&mut t, v64, 1, num(1.5));
+        step(&mut t, arr, 0, int(5));
+        step(&mut t, v64, 1, num(2.5));
+        step(&mut t, v8, 2, int(3));
+        step(&mut t, arr, 1, int(6));
+        step(&mut t, v8, 9, int(1));
+        assert_eq!(object::array_get(arr, 1), Some(int(6)));
+        assert_eq!(crate::typed_array::get_element(t.rt(), v64, 1.0), num(2.5));
+        t.release_all(keep);
+        out
+    }
+    each(|c| {
+        let io = keyed::INDEX | keyed::OBJECT;
+        let ia = keyed::INDEX | keyed::ARRAY;
+        let full = run(c.clone(), crate::Feedback::FULL);
+        assert_eq!(
+            full,
+            [
+                ([0, 1], io, "U"),
+                ([0, 1], io, "U"),
+                ([0, 1], io, "U"),
+                ([0, 1], io, "U"),
+                ([0, 0], ia, "SA"),
+                ([0, 1], io, "SA"),
+                ([0, 1], io, "SA"),
+                ([0, 0], 0, "SA"),
+                ([0, 0], io, "SA"),
+            ]
+        );
+        let ics = run(c, crate::Feedback::ICS_ONLY);
+        let want: Vec<_> = full.iter().map(|&(h, _, s)| (h, 0, s)).collect();
+        assert_eq!(
+            ics, want,
+            "ics_only: the same hits and key halves, no record"
+        );
+    });
+    // No vector: the view store hits at once (no state to name).
+    each(|c| {
+        let mut t = view_t(
+            IsolateConfig {
+                feedback_threshold: u32::MAX,
+                ..c
+            },
+            crate::Feedback::FULL,
+        );
+        let v = fixed_view(t.rt(), 5, 8, 0, 2);
+        assert_eq!(t.view_store(v, int(1), int(-7)), [0, 1]);
+        assert_eq!(t.view_load(v, int(1)), (int(-7), [1, 0]));
+        black_box(v);
+    });
+}

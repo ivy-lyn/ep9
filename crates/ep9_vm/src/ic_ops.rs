@@ -35,7 +35,9 @@
 //!   H16's table; [`Op::LoadHolderDict`] is H16's append of M6-P1 ACCIC (holder ref, key: the
 //!   key is the site's name); [`Op::BinaryArith`], [`Op::UnaryArith`],
 //!   [`Op::CompareNumbers`], [`Op::OrdinaryHasInstance`] and the `Heap` type of [`Ty`] are
-//!   appended here (M6-P1 CBC).
+//!   appended here (M6-P1 CBC); [`Op::GuardViewIndex`], [`Op::LoadViewOrUndefined`],
+//!   [`Op::StoreView`] and the class `View` of [`Class`] for the TypedArray views (TypedArray
+//!   TA-2 TA-KEYED, design §6.3; `view_keyed`).
 //!
 //! The IC_HANDLER cell is read through the `instance_ic::io` field offsets: every handler
 //! kind shares that layout (+8 kind, +16, +24, +32; the `ic.rs` IC_LAYOUT 4 table). A test
@@ -46,7 +48,7 @@ use ep9_bytecode::Opcode;
 use ep9_value::encoding::NUMBER_TAG;
 
 use crate::conv::BinOp;
-use crate::elements::{KINDS_SET_MASK, KINDS_SET_SHIFT};
+use crate::elements::{KINDS_SET_MASK, KINDS_SET_SHIFT, kind as ek};
 use crate::feedback;
 use crate::frame::{HOLE, UNDEFINED, int32_of};
 use crate::ic::{self, KEY_STRING, hk, smi};
@@ -335,6 +337,9 @@ pub(crate) enum Proto {
 pub(crate) enum Class {
     Array,
     String,
+    /// (TypedArray TA-2 TA-KEYED, design §6.3) the view kind of the element type `t` (a spec
+    /// Table 71 row: cell kind `kinds::INT8_VIEW` + `t`).
+    View(u8),
 }
 
 /// A value type of [`Op::GuardType`] (H16: int32 / number / string / symbol / bigint; only the
@@ -457,6 +462,23 @@ pub(crate) enum Op {
     /// or PROPS_INDEXED table; H17 "Dictionary v1"); it misses when the holder died or no
     /// longer has the name as a data property.
     LoadHolderDict(Ref),
+    // Appended in TypedArray TA-2 TA-KEYED (design §6.3; the view cases of `keyed_ic.rs`).
+    /// The key (an int32) is a valid integer index of the receiver, a TypedArray
+    /// (IsValidIntegerIndex, §10.4.5.14): at least 0 and below the view's bound at this
+    /// access, in the form of its elements kind: TYPED_FIXED its length field (0 once
+    /// detached), TYPED_VARIABLE the length from its buffer's byte length now (out of bounds
+    /// after a shrink or a detach).
+    GuardViewIndex(Val, Val),
+    /// The element of type `t` at the key of the receiver, a view of that type (an int32
+    /// key): a Number (Uint32 above 2^31 - 1 gives a double; a float NaN boxes as the one
+    /// NaN), or undefined when the key is not a valid integer index (no prototype walk,
+    /// §10.4.5.4). `t` holds a Number (not BigInt64, BigUint64).
+    LoadViewOrUndefined(u8),
+    /// TypedArraySetElement (§10.4.5.16) of a Number (checked by `GuardType(Value, Number)`)
+    /// at a valid integer index (checked by [`Op::GuardViewIndex`]) of the receiver, a view of
+    /// type `t`: NumericToRawBytes of the value (one NaN pattern per float type), in place,
+    /// with no barrier (the bytes are not Values). It never calls: the value is a Number.
+    StoreView(u8),
 }
 
 impl Op {
@@ -472,6 +494,7 @@ impl Op {
                 | Op::GuardIndex(..)
                 | Op::GuardSlotsRoom(..)
                 | Op::GuardNotHole(..)
+                | Op::GuardViewIndex(..)
         )
     }
 }
@@ -710,9 +733,13 @@ fn instance_of(h: u64) -> Ops {
     ])
 }
 
-/// Keyed sites: the T0 array paths (`GetKeyedProperty`'s implicit one, `keyed_ic::fast_set`).
+/// Keyed sites: the T0 array paths (`GetKeyedProperty`'s implicit one, `keyed_ic::fast_set`),
+/// and the view cases of `keyed_ic.rs` ([`view_keyed`], TA-2 TA-KEYED).
 fn keyed(key: u64, bits: u32, op: Operation) -> Ops {
     let kinds = Kinds(((bits & KINDS_SET_MASK) >> KINDS_SET_SHIFT) as u16);
+    if let Some(l) = view_keyed(key, kinds, op) {
+        return l;
+    }
     let index = [
         Op::GuardKind(Val::Receiver, Class::Array),
         Op::GuardType(Val::Key, Ty::Int32),
@@ -735,6 +762,56 @@ fn keyed(key: u64, bits: u32, op: Operation) -> Ops {
     l.extend_from_slice(&index);
     l.push(Op::StoreElement(kinds));
     Ops::of(&l)
+}
+
+/// The view lists of a keyed site (TypedArray TA-2 TA-KEYED, design §6.3), or `None` (the
+/// array lists): only when the kinds set has the bit of TYPED_FIXED (7) or TYPED_VARIABLE (8)
+/// and the case key is the shape of a view, which gives the element type `t` (the kinds set
+/// does not hold it, so a site with no such key, LoadKeyed and megamorphic ones included,
+/// keeps the array lists). The shape is read only then: the key half of a T0 keyed slot is a
+/// live shape, undefined or the hole. T0 makes no such case yet: a view store hit leaves the
+/// key half alone (`keyed_ic.rs` module `view`), and no T0 code writes the two view bits
+/// before TA-3, so these lists wait for a writer of the element type.
+///
+/// ```text
+/// LoadKeyed   GuardKind(receiver, View(t)), GuardType(key, int32), LoadViewOrUndefined(t)
+/// StoreKeyed  GuardKind(receiver, View(t)), GuardType(key, int32), GuardViewIndex(receiver, key),
+///             GuardType(value, number), StoreView(t)
+/// BigInt64, BigUint64: [Generic] (the element is a BigInt; T0 goes cold)
+/// ```
+///
+/// GuardKind, not GuardShape, is a deliberate widening of the shape key (as `ARRAY_LENGTH`):
+/// an int32 key on a view reads no named property and no prototype (§10.4.5.4; §10.4.5.5 with
+/// the view as the receiver), and the bound form is the receiver's own elements kind, read at
+/// run time. Both lists are wider than T0's own test (T0 takes no Float16 and no negative key,
+/// and stores only an int32 into an integer type), as H16 allows.
+fn view_keyed(key: u64, kinds: Kinds, op: Operation) -> Option<Ops> {
+    const VIEWS: u16 = 1 << ek::TYPED_FIXED | 1 << ek::TYPED_VARIABLE;
+    if kinds.0 & VIEWS == 0 || key == UNDEFINED || key == HOLE || !is_cell_bits(key) {
+        return None;
+    }
+    let k = crate::shape::object_kind(key);
+    if !crate::kinds::is_view_kind(k) {
+        return None;
+    }
+    if crate::kinds::is_bigint_view_kind(k) {
+        return Some(Ops::of(GENERIC));
+    }
+    let t = k - crate::kinds::INT8_VIEW.get();
+    let guards = [
+        Op::GuardKind(Val::Receiver, Class::View(t)),
+        Op::GuardType(Val::Key, Ty::Int32),
+    ];
+    let mut l = Vec::with_capacity(MAX_OPS);
+    l.extend_from_slice(&guards);
+    if op == Operation::LoadKeyed {
+        l.push(Op::LoadViewOrUndefined(t));
+    } else {
+        l.push(Op::GuardViewIndex(Val::Receiver, Val::Key));
+        l.push(Op::GuardType(Val::Value, Ty::Number));
+        l.push(Op::StoreView(t));
+    }
+    Some(Ops::of(&l))
 }
 
 const B_INT32: u32 = ep9_facts::BinaryHint::INT32.bits() as u32;

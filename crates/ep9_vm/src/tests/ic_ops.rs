@@ -178,6 +178,16 @@ fn eval(rt: &Runtime, case: &Case, ops: &Ops, e: &Env) -> Out {
                         < slf::DATA + 8 * object::rd_i32(cell(s), slf::CAPACITY) as usize
             }
             Op::GuardNotHole(v, loc) => field(value_of(v), loc) != HOLE,
+            // The view ops (TA-2 TA-KEYED): the spec-layer reading (`typed_array.rs`).
+            Op::GuardKind(v, Class::View(t)) => {
+                kinds::cell_kind(value_of(v)) == kinds::INT8_VIEW.get() + t
+            }
+            Op::GuardViewIndex(o, k) => {
+                let (o, k) = (value_of(o), value_of(k));
+                kinds::is_view(o)
+                    && is_i32(k)
+                    && crate::typed_array::valid_index(rt, o, f64::from(int32_of(k))).is_some()
+            }
             action => return act(rt, action, e, &value_of, &ref_of, &ty_ok),
         };
         if !pass {
@@ -229,6 +239,19 @@ fn act(
             };
             if fits { Out::Stored } else { Out::Miss }
         }
+        Op::LoadViewOrUndefined(t) => {
+            assert_eq!(
+                kinds::cell_kind(e.receiver),
+                kinds::INT8_VIEW.get() + t,
+                "GuardKind passed"
+            );
+            Out::Value(crate::typed_array::get_element(
+                rt,
+                e.receiver,
+                f64::from(int32_of(e.key)),
+            ))
+        }
+        Op::StoreView(_) => Out::Stored,
         Op::CallTarget(_) | Op::CallGetter(..) | Op::CallSetter(..) => Out::Call,
         Op::LoadHolderDict(_) | Op::Generic => Out::Miss,
         Op::BinaryArith(o, t) => binary(o, t, e.lhs, e.rhs),
@@ -1561,5 +1584,223 @@ fn a_string_add_concats_and_a_too_long_one_still_throws() {
             "{}",
             e.message
         );
+    });
+}
+
+// ---- keyed view sites (TypedArray TA-2 TA-KEYED, design §6.3) ------------------------------------
+
+/// The view lists (`ic_ops::view_keyed`): a keyed case whose kinds set has the bit of
+/// TYPED_FIXED or TYPED_VARIABLE and whose key is a view's shape. T0 makes neither part: no T0
+/// code records those bits before TA-3 (the kinds-set writer comes with the FactSnapshot
+/// names 7 and 8, TA-ORCH-1), and a view store hit leaves the key half alone (`keyed_ic.rs`
+/// module `view`; checked first: the T0 case of a site that a view warmed has an undefined
+/// key). So each case here is made by hand, as a writer of the element type will make it.
+/// Soundness: over views of each type and both bound forms (also after a shrink and a
+/// detach), a view of another type, an Array, a plain object and a primitive, every key and
+/// value probe whose guards pass gives what the site gives: a load its value, a store the
+/// element that NumericToRawBytes of the value makes. Coverage: the probes that warmed the
+/// site pass. Without a view bit, with an Array's shape or the hole as the key, the array
+/// lists stay; a BigInt view gives `[Generic]`.
+#[test]
+fn keyed_view_lists_match_the_view_paths() {
+    use crate::array_buffer as ab;
+    use crate::elements::{kind_of, kinds_set_bit};
+    use crate::profile::keyed;
+    use crate::typed_array as ta;
+    each(|c| {
+        let fns = vec![
+            site("f0", FeedbackSlotKind::LoadKeyed, |b, a, k, _, s| {
+                b.ldar(k).get_keyed_property(a, s);
+            }),
+            site("f1", FeedbackSlotKind::StoreKeyed, |b, a, k, v, s| {
+                b.ldar(v).set_keyed_property(a, k, s).ldar(v);
+            }),
+        ];
+        let mut t = new_t(eager(c), fns, vec![], vec![]);
+        let rt = t.rt();
+        let arr = object::new_array(rt, 2);
+        object::array_set(rt, arr, 0, int(1));
+        let plain = object_with(rt, object_prototype(rt), &[("0", int(1))]);
+        // Each type: a fixed view on a fixed-length buffer (TYPED_FIXED) and an auto view on a
+        // resizable one (TYPED_VARIABLE). The handles root them (H10).
+        let mut views = Vec::new();
+        let mut held = t.keep_all(&[arr, plain]);
+        for ty in 0..12u8 {
+            let fb = ab::allocate(rt, NULL, 32, None).unwrap();
+            let fixed = ta::new_view(rt, NULL, ty, fb, 0, Some(4)).unwrap();
+            let rb = ab::allocate(rt, NULL, 32, Some(64)).unwrap();
+            let auto = ta::new_view(rt, NULL, ty, rb, 0, None).unwrap();
+            held.extend(t.keep_all(&[fb, fixed, rb, auto]));
+            views.push((ty, fixed, fb));
+            views.push((ty, auto, rb));
+        }
+        // The T0 case of a store site that a view warmed: no key (the hit reads no IC state).
+        let v0 = views[0].1;
+        call(&mut t, "f1", &[v0, int(0), int(1)]);
+        assert_eq!(
+            cases(t.vector(1), SLOT, Operation::StoreKeyed)[0],
+            Case::Keyed {
+                key: UNDEFINED,
+                bits: keyed::INDEX | keyed::OBJECT,
+            }
+        );
+        let c0 = Case::Keyed {
+            key: shape::shape_of(v0),
+            bits: keyed::INDEX | keyed::OBJECT,
+        };
+        // With no view bit the list is the array list (every view probe misses).
+        let ops = ops_of(&c0, Operation::StoreKeyed);
+        assert_eq!(
+            ops.as_slice()[1],
+            Op::GuardKind(Val::Receiver, Class::Array)
+        );
+        let keys = [
+            int(0),
+            int(1),
+            int(3),
+            int(4),
+            int(9),
+            int(-1),
+            num(1.5),
+            UNDEFINED,
+        ];
+        let vals = [
+            int(7),
+            int(300),
+            int(-1),
+            num(2.5),
+            num(f64::NAN),
+            num(-0.0),
+            UNDEFINED,
+        ];
+        let (mut loads, mut stores) = (0, 0);
+        for (n, &(ty, v, _)) in views.iter().enumerate() {
+            let bits = keyed::INDEX | keyed::OBJECT | kinds_set_bit(kind_of(v));
+            let case = Case::Keyed {
+                key: shape::shape_of(v),
+                bits,
+            };
+            let load = ops_of(&case, Operation::LoadKeyed);
+            let store = ops_of(&case, Operation::StoreKeyed);
+            check_form(&load);
+            check_form(&store);
+            if matches!(ty, 7 | 8) {
+                assert_eq!(load.as_slice(), &[Op::Generic], "BigInt type {ty}");
+                assert_eq!(store.as_slice(), &[Op::Generic], "BigInt type {ty}");
+                continue;
+            }
+            let guard = Op::GuardKind(Val::Receiver, Class::View(ty));
+            let int_key = Op::GuardType(Val::Key, Ty::Int32);
+            assert_eq!(
+                load.as_slice(),
+                &[guard, int_key, Op::LoadViewOrUndefined(ty)]
+            );
+            assert_eq!(
+                store.as_slice(),
+                &[
+                    guard,
+                    int_key,
+                    Op::GuardViewIndex(Val::Receiver, Val::Key),
+                    Op::GuardType(Val::Value, Ty::Number),
+                    Op::StoreView(ty),
+                ]
+            );
+            // The warmer passes (coverage).
+            let warm = Env {
+                receiver: v,
+                key: int(0),
+                value: int(1),
+                ..Env::default()
+            };
+            assert!(matches!(eval(t.rt(), &case, &load, &warm), Out::Value(_)));
+            assert_eq!(eval(t.rt(), &case, &store, &warm), Out::Stored);
+            // Soundness over the probes: the views of this type, one of the next type, an
+            // Array, a plain object and an int32.
+            let other = views[(n + 2) % views.len()].1;
+            let recvs = [views[n & !1].1, views[n | 1].1, other, arr, plain, int(3)];
+            for &o in &recvs {
+                for &k in &keys {
+                    let e = Env {
+                        receiver: o,
+                        key: k,
+                        ..Env::default()
+                    };
+                    match eval(t.rt(), &case, &load, &e) {
+                        Out::Value(x) => {
+                            let w = call(&mut t, "f0", &[o, k]);
+                            assert!(same(x, w), "type {ty} {o:#x}[{k:#x}]: {x:#x} {w:#x}");
+                            loads += 1;
+                        }
+                        Out::Miss => {}
+                        x => panic!("{x:?}"),
+                    }
+                    for &x in &vals {
+                        let e = Env { value: x, ..e };
+                        match eval(t.rt(), &case, &store, &e) {
+                            Out::Stored => {
+                                call(&mut t, "f1", &[o, k, x]);
+                                let got = ta::get_element(t.rt(), o, f64::from(int32_of(k)));
+                                let want = ab::raw_to_value(
+                                    t.rt(),
+                                    ty,
+                                    ab::number_to_raw(ty, number(x).unwrap()),
+                                );
+                                assert!(same(got, want), "type {ty} {o:#x}[{k:#x}] = {x:#x}");
+                                stores += 1;
+                            }
+                            Out::Miss => {}
+                            r => panic!("{r:?}"),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(loads > 0 && stores > 0);
+        // The bound at the probe: a shrink, then a detach, of the Int16 auto view's buffer.
+        let (_, auto, rb) = views[7];
+        let case = Case::Keyed {
+            key: shape::shape_of(auto),
+            bits: kinds_set_bit(kind_of(auto)),
+        };
+        let (load, store) = (
+            ops_of(&case, Operation::LoadKeyed),
+            ops_of(&case, Operation::StoreKeyed),
+        );
+        let probe = |t: &mut T, i: i32| {
+            let e = Env {
+                receiver: auto,
+                key: int(i),
+                value: int(5),
+                ..Env::default()
+            };
+            let w = call(t, "f0", &[auto, int(i)]);
+            assert_eq!(eval(t.rt(), &case, &load, &e), Out::Value(w), "[{i}]");
+            eval(t.rt(), &case, &store, &e)
+        };
+        assert_eq!(probe(&mut t, 3), Out::Stored);
+        ab::resize(t.rt(), rb, 4).unwrap();
+        assert_eq!(probe(&mut t, 1), Out::Stored);
+        assert_eq!(probe(&mut t, 2), Out::Miss);
+        ab::detach(t.rt(), rb, UNDEFINED).unwrap();
+        assert_eq!(probe(&mut t, 0), Out::Miss);
+        // No view list without a view's shape: an Array's shape, the hole, undefined.
+        let bit = kinds_set_bit(crate::elements::kind::TYPED_FIXED);
+        for key in [shape::shape_of(arr), HOLE, UNDEFINED] {
+            let case = Case::Keyed { key, bits: bit };
+            for op in [Operation::LoadKeyed, Operation::StoreKeyed] {
+                let ops = ops_of(&case, op);
+                assert!(
+                    !ops.as_slice().iter().any(|o| matches!(
+                        o,
+                        Op::GuardKind(_, Class::View(_))
+                            | Op::GuardViewIndex(..)
+                            | Op::LoadViewOrUndefined(_)
+                            | Op::StoreView(_)
+                    )),
+                    "{key:#x} {op:?}: {ops:?}"
+                );
+            }
+        }
+        t.release_all(held);
     });
 }
