@@ -12,6 +12,12 @@
 //! WideDecimal x: the same steps (trait DecimalValue), for a BigInt of WIDE_DIGITS or more
 //!             digits, which a Decimal (i16 magnitudes) cannot hold
 //! ```
+//!
+//! Interrupt polls (H23): each pass over the digits of a WideDecimal counts its digits in a
+//! [`Work`] (one budget unit per [`POLL_DIGITS`]), and a termination stops it with
+//! [`Interrupted`]. The builtin makes the `Work` with [`polled`], which turns `Interrupted`
+//! into the `Err` of `Cx::poll_interrupt`. A Decimal (at most 2^16 digits) does not count
+//! its own copy, rounding and text.
 
 use ep9_vm::{Cx, JsObject, JsResult, Local};
 use fixed_decimal::{Decimal, RoundingIncrement, Sign, SignedRoundingMode, UnsignedRoundingMode};
@@ -399,6 +405,68 @@ pub fn set_number_format_digit_options<'s>(
     Ok(out)
 }
 
+// ---- interrupt polls (H23 "Interrupt poll") ---------------------------------------------------
+
+/// A poll returned `false` (an isolate termination): the work stops. [`polled`] gives the
+/// builtin the `Err` of the poll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Interrupted;
+
+/// The digits of work per interrupt budget unit (DL M6-ORCH-457). A T0 tuning value (H23
+/// Freeze table "tuning (gated)"), as the 256 code units of a string search step.
+pub const POLL_DIGITS: usize = 4096;
+
+/// The poll counter of one long WideDecimal operation (the `ep9_bigint::Work` form; this
+/// crate does not depend on `ep9_bigint`): [`Work::add`] counts digits and calls the poll
+/// once per [`POLL_DIGITS`] of them.
+pub struct Work<'p> {
+    poll: &'p mut dyn FnMut() -> bool,
+    digits: usize,
+}
+
+impl<'p> Work<'p> {
+    /// A counter at 0 that calls `poll`.
+    pub fn new(poll: &'p mut dyn FnMut() -> bool) -> Work<'p> {
+        Work { poll, digits: 0 }
+    }
+
+    /// Counts `n` digits of work and calls the poll once per [`POLL_DIGITS`] of them.
+    /// `Err(Interrupted)` as soon as a call returns `false`.
+    pub fn add(&mut self, n: usize) -> Result<(), Interrupted> {
+        self.digits += n;
+        while self.digits >= POLL_DIGITS {
+            self.digits -= POLL_DIGITS;
+            if !(self.poll)() {
+                return Err(Interrupted);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Runs `f` with a [`Work`] whose poll is `Cx::poll_interrupt`: the result of `f`, or the
+/// `Err` of the poll that stopped it (a termination).
+pub fn polled<'s, T>(
+    cx: &mut Cx<'s>,
+    f: impl FnOnce(&mut Work<'_>) -> Result<T, Interrupted>,
+) -> JsResult<T> {
+    let mut stop = Ok(());
+    let r = f(&mut Work::new(&mut || {
+        stop = cx.poll_interrupt();
+        stop.is_ok()
+    }));
+    stop?;
+    // `Interrupted` comes only from a poll that returned `false`, so `stop` is then `Err`.
+    Ok(r.unwrap_or_else(|Interrupted| unreachable!("Interrupted after an Ok poll")))
+}
+
+/// Runs `f` with a [`Work`] whose poll never stops it (the unit tests).
+#[cfg(test)]
+pub(crate) fn unpolled<T>(f: impl FnOnce(&mut Work<'_>) -> Result<T, Interrupted>) -> T {
+    let mut poll = || true;
+    f(&mut Work::new(&mut poll)).unwrap_or_else(|Interrupted| unreachable!("no stop"))
+}
+
 // ---- the value of FormatNumericToString ------------------------------------------------------
 
 /// The operations of FormatNumericToString on a decimal value, with the magnitudes as i64:
@@ -418,9 +486,17 @@ pub trait DecimalValue: Clone {
     /// The digit at magnitude `m` (0 outside the digits).
     fn digit_at(&self, m: i64) -> u8;
     fn multiply_pow10(&mut self, k: i64);
+    /// A copy (the passes over the digits count in `work`).
+    fn copy(&self, work: &mut Work) -> Result<Self, Interrupted>;
     /// Rounds to a multiple of `increment` × 10^`position` with `mode` (the sign of the value
     /// picks the unsigned mode).
-    fn round(&mut self, position: i64, mode: RoundingMode, increment: RoundingIncrement);
+    fn round(
+        &mut self,
+        position: i64,
+        mode: RoundingMode,
+        increment: RoundingIncrement,
+        work: &mut Work,
+    ) -> Result<(), Interrupted>;
     fn trim_end(&mut self);
     fn trim_end_if_integer(&mut self);
     /// Removes the leading zero padding: the highest shown magnitude is then
@@ -430,7 +506,7 @@ pub trait DecimalValue: Clone {
     fn pad_end(&mut self, position: i64);
     /// The digits in the display range, with a '.' before magnitude -1 and no sign: the
     /// `[[FormattedString]]` of FormatNumericToString (§16.5.2, made from the unsigned value).
-    fn unsigned_text(&self) -> String;
+    fn unsigned_text(&self, work: &mut Work) -> Result<String, Interrupted>;
     /// A Decimal with the same ICU4X plural operands and compact pattern (for a value with
     /// an integer part above 18 digits, see [`WideDecimal`]); the value itself for a Decimal.
     fn plural_decimal(&self) -> Decimal;
@@ -464,8 +540,18 @@ impl DecimalValue for Decimal {
     fn multiply_pow10(&mut self, k: i64) {
         self.absolute.multiply_pow10(m16(k));
     }
-    fn round(&mut self, position: i64, mode: RoundingMode, increment: RoundingIncrement) {
+    fn copy(&self, _work: &mut Work) -> Result<Self, Interrupted> {
+        Ok(self.clone())
+    }
+    fn round(
+        &mut self,
+        position: i64,
+        mode: RoundingMode,
+        increment: RoundingIncrement,
+        _work: &mut Work,
+    ) -> Result<(), Interrupted> {
         self.round_with_mode_and_increment(m16(position), mode.signed(), increment);
+        Ok(())
     }
     fn trim_end(&mut self) {
         self.absolute.trim_end();
@@ -482,8 +568,8 @@ impl DecimalValue for Decimal {
     fn pad_end(&mut self, position: i64) {
         self.absolute.pad_end(m16(position));
     }
-    fn unsigned_text(&self) -> String {
-        self.absolute.to_string()
+    fn unsigned_text(&self, _work: &mut Work) -> Result<String, Interrupted> {
+        Ok(self.absolute.to_string())
     }
     fn plural_decimal(&self) -> Decimal {
         self.clone()
@@ -499,8 +585,8 @@ pub const WIDE_DIGITS: usize = 32_768;
 /// An exact decimal of any size: a BigInt of [`WIDE_DIGITS`] digits or more (up to the
 /// BigInt limit of 2^30 bits, about 323 million digits), and the values that the steps of
 /// FormatNumericToString and ComputeExponent make from it. The digits are bytes 0-9, most
-/// significant first. Every pass over them is linear in the digit count; none polls the
-/// interrupt (the BigInt::toString before it polls).
+/// significant first. Every pass over them is linear in the digit count and counts its digits
+/// in a [`Work`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WideDecimal {
     negative: bool,
@@ -515,22 +601,37 @@ pub struct WideDecimal {
 
 impl WideDecimal {
     /// The integer with the ASCII digits `digits` (no sign) and the sign `negative`.
-    pub fn from_integer_digits(negative: bool, digits: &[u8]) -> WideDecimal {
+    pub fn from_integer_digits(
+        negative: bool,
+        digits: &[u8],
+        work: &mut Work,
+    ) -> Result<WideDecimal, Interrupted> {
         debug_assert!(digits.iter().all(u8::is_ascii_digit));
-        let digits: Vec<u8> = digits.iter().map(|b| b - b'0').collect();
-        let start = digits.len() as i64 - 1;
-        WideDecimal::new(negative, digits, start)
+        let mut v = Vec::with_capacity(digits.len());
+        for chunk in digits.chunks(POLL_DIGITS) {
+            v.extend(chunk.iter().map(|b| b - b'0'));
+            work.add(chunk.len())?;
+        }
+        let start = v.len() as i64 - 1;
+        WideDecimal::new(negative, v, start, work)
     }
 
     /// The value `digits` (most significant first, leading and trailing zeros allowed)
     /// with `digits[0]` at magnitude `start`, with no padding.
-    fn new(negative: bool, mut digits: Vec<u8>, mut start: i64) -> WideDecimal {
-        let lead = digits.iter().take_while(|d| **d == 0).count();
-        digits.drain(..lead);
-        start -= lead as i64;
-        while digits.last() == Some(&0) {
-            digits.pop();
+    fn new(
+        negative: bool,
+        mut digits: Vec<u8>,
+        mut start: i64,
+        work: &mut Work,
+    ) -> Result<WideDecimal, Interrupted> {
+        let lead = zeros(digits.iter(), work)?;
+        if lead > 0 {
+            work.add(digits.len() - lead)?;
+            digits.drain(..lead);
         }
+        start -= lead as i64;
+        let trail = zeros(digits.iter().rev(), work)?;
+        digits.truncate(digits.len() - trail);
         if digits.is_empty() {
             start = 0;
         }
@@ -543,7 +644,7 @@ impl WideDecimal {
         };
         w.upper = w.start.max(0);
         w.lower = w.end().min(0);
-        w
+        Ok(w)
     }
 
     /// The magnitude of the lowest nonzero digit (0 for zero).
@@ -556,37 +657,58 @@ impl WideDecimal {
     }
 }
 
+/// The count of the leading zero digits of `digits` (counted in `work`).
+fn zeros<'a>(digits: impl Iterator<Item = &'a u8>, work: &mut Work) -> Result<usize, Interrupted> {
+    let mut n = 0;
+    for d in digits {
+        if *d != 0 {
+            break;
+        }
+        n += 1;
+        if n % POLL_DIGITS == 0 {
+            work.add(POLL_DIGITS)?;
+        }
+    }
+    work.add(n % POLL_DIGITS)?;
+    Ok(n)
+}
+
 /// Long division of the digits `n` (most significant first) by `m`: the quotient digits (the
 /// same count) and the remainder.
-fn div_small(n: &[u8], m: u32) -> (Vec<u8>, u32) {
+fn div_small(n: &[u8], m: u32, work: &mut Work) -> Result<(Vec<u8>, u32), Interrupted> {
     let mut rem = 0u32;
-    let q = n
-        .iter()
-        .map(|d| {
+    let mut q = Vec::with_capacity(n.len());
+    for chunk in n.chunks(POLL_DIGITS) {
+        q.extend(chunk.iter().map(|d| {
             let v = rem * 10 + u32::from(*d);
             rem = v % m;
             (v / m) as u8
-        })
-        .collect();
-    (q, rem)
+        }));
+        work.add(chunk.len())?;
+    }
+    Ok((q, rem))
 }
 
 /// The digits `n` (most significant first) times the small `m`, plus `add` (most significant
 /// first; may be one digit longer).
-fn mul_add_small(n: &[u8], m: u32, add: u32) -> Vec<u8> {
+fn mul_add_small(n: &[u8], m: u32, add: u32, work: &mut Work) -> Result<Vec<u8>, Interrupted> {
     let mut out = Vec::with_capacity(n.len() + 2);
     let mut carry = add;
-    for d in n.iter().rev() {
-        let v = u32::from(*d) * m + carry;
-        out.push((v % 10) as u8);
-        carry = v / 10;
+    for chunk in n.rchunks(POLL_DIGITS) {
+        for d in chunk.iter().rev() {
+            let v = u32::from(*d) * m + carry;
+            out.push((v % 10) as u8);
+            carry = v / 10;
+        }
+        work.add(chunk.len())?;
     }
     while carry > 0 {
         out.push((carry % 10) as u8);
         carry /= 10;
     }
+    work.add(out.len())?;
     out.reverse();
-    out
+    Ok(out)
 }
 
 impl DecimalValue for WideDecimal {
@@ -612,6 +734,10 @@ impl DecimalValue for WideDecimal {
             self.digits[(self.start - m) as usize]
         }
     }
+    fn copy(&self, work: &mut Work) -> Result<Self, Interrupted> {
+        work.add(self.digits.len())?;
+        Ok(self.clone())
+    }
     fn multiply_pow10(&mut self, k: i64) {
         if !self.digits.is_empty() {
             self.start += k;
@@ -621,7 +747,13 @@ impl DecimalValue for WideDecimal {
     }
     /// ApplyUnsignedRoundingMode (§16.5.17) on |x| with the multiples of increment ×
     /// 10^position: |x| = q × unit + rest, 0 <= rest < unit; rest is compared with unit / 2.
-    fn round(&mut self, position: i64, mode: RoundingMode, increment: RoundingIncrement) {
+    fn round(
+        &mut self,
+        position: i64,
+        mode: RoundingMode,
+        increment: RoundingIncrement,
+        work: &mut Work,
+    ) -> Result<(), Interrupted> {
         let m: u32 = match increment {
             RoundingIncrement::MultiplesOf2 => 2,
             RoundingIncrement::MultiplesOf5 => 5,
@@ -629,20 +761,21 @@ impl DecimalValue for WideDecimal {
             _ => 1,
         };
         if self.digits.is_empty() || (m == 1 && position <= self.end()) {
-            return;
+            return Ok(());
         }
         let end = self.end();
         // The digits at magnitude >= position, as an integer (zeros below `end`).
         let high: Vec<u8> = if position > self.start {
             Vec::new()
         } else {
+            work.add((self.start - position + 1) as usize)?;
             let mut h = self.digits
                 [..((self.start - position + 1) as usize).min(self.digits.len())]
                 .to_vec();
             h.resize((self.start - position + 1) as usize, 0);
             h
         };
-        let (q, r) = div_small(&high, m);
+        let (q, r) = div_small(&high, m, work)?;
         // The digits below `position` as a fraction f of 10^position: f = 0, < 1/2, = 1/2 or
         // > 1/2 (the digits have no trailing zero, so a digit below position - 1 is nonzero
         // when end < position - 1).
@@ -684,10 +817,11 @@ impl DecimalValue for WideDecimal {
                 _ => half == O::Greater || (half == O::Equal && odd),
             };
         // (q + up) × m at magnitude `position`.
-        let q = mul_add_small(&q, 1, u32::from(up));
-        let digits = mul_add_small(&q, m, 0);
+        let q = mul_add_small(&q, 1, u32::from(up), work)?;
+        let digits = mul_add_small(&q, m, 0, work)?;
         let start = position + digits.len() as i64 - 1;
-        *self = WideDecimal::new(self.negative, digits, start);
+        *self = WideDecimal::new(self.negative, digits, start, work)?;
+        Ok(())
     }
     fn trim_end(&mut self) {
         self.lower = self.end().min(0);
@@ -712,7 +846,7 @@ impl DecimalValue for WideDecimal {
         }
         self.lower = position.min(self.end());
     }
-    fn unsigned_text(&self) -> String {
+    fn unsigned_text(&self, work: &mut Work) -> Result<String, Interrupted> {
         let mut out = String::with_capacity((self.upper - self.lower + 2) as usize);
         let mut m = self.upper;
         while m >= self.lower {
@@ -720,9 +854,10 @@ impl DecimalValue for WideDecimal {
                 out.push('.');
             }
             out.push(char::from(b'0' + self.digit_at(m)));
+            work.add(1)?;
             m -= 1;
         }
-        out
+        Ok(out)
     }
     /// The ICU4X plural operands keep at most 18 integer digits, and mark a larger integer
     /// part (icu_plurals 2.4 `PluralOperands::from_significand_and_exponent`: i = the low 18
@@ -765,17 +900,23 @@ fn magnitude<D: DecimalValue>(x: &D) -> i64 {
 
 /// ToRawPrecision ( x, minPrecision, maxPrecision, unsignedRoundingMode ) (§16.5.7): rounds
 /// `x` to `max` significant digits and keeps at least `min`. Gives `[[RoundingMagnitude]]`.
-fn to_raw_precision<D: DecimalValue>(x: &mut D, min: u8, max: u8, mode: RoundingMode) -> i64 {
+fn to_raw_precision<D: DecimalValue>(
+    x: &mut D,
+    min: u8,
+    max: u8,
+    mode: RoundingMode,
+    work: &mut Work,
+) -> Result<i64, Interrupted> {
     let (min, max) = (i64::from(min), i64::from(max));
     let e = magnitude(x);
-    x.round(e - max + 1, mode, RoundingIncrement::MultiplesOf1);
+    x.round(e - max + 1, mode, RoundingIncrement::MultiplesOf1, work)?;
     // A carry (9.99 -> 10) moves e up one; n keeps p digits.
     let e = magnitude(x);
     let rm = e - max + 1;
     x.trim_end();
     x.pad_end(rm.min(0).max(e - min + 1).min(0));
     x.pad_start(1);
-    rm
+    Ok(rm)
 }
 
 /// ToRawFixed ( x, minFraction, maxFraction, roundingIncrement, unsignedRoundingMode )
@@ -787,7 +928,8 @@ fn to_raw_fixed<D: DecimalValue>(
     max: u8,
     increment: u16,
     mode: RoundingMode,
-) -> i64 {
+    work: &mut Work,
+) -> Result<i64, Interrupted> {
     let f = i64::from(max);
     // increment = m x 10^k with m in {1, 2, 5, 25}.
     let (mut m, mut k) = (increment, 0i64);
@@ -801,18 +943,22 @@ fn to_raw_fixed<D: DecimalValue>(
         25 => RoundingIncrement::MultiplesOf25,
         _ => RoundingIncrement::MultiplesOf1,
     };
-    x.round(-f + k, mode, inc);
+    x.round(-f + k, mode, inc, work)?;
     x.trim_end();
     x.pad_end(-i64::from(min));
     x.pad_start(1);
-    -f
+    Ok(-f)
 }
 
 /// The rounding of FormatNumericToString ( intlObject, x ) (§16.5.2) on `x`: the rounding of
 /// the object's `[[RoundingType]]`, `stripIfInteger`, and the `[[MinimumIntegerDigits]]`
 /// padding. `x.unsigned_text()` is then the `[[FormattedString]]`; `x` keeps its sign (the
 /// `[[RoundedNumber]]`; -0 keeps the minus sign).
-pub fn format_numeric_to_string<D: DecimalValue>(opts: &DigitOptions, x: &mut D) {
+pub fn format_numeric_to_string<D: DecimalValue>(
+    opts: &DigitOptions,
+    x: &mut D,
+    work: &mut Work,
+) -> Result<(), Interrupted> {
     let mode = opts.rounding_mode;
     match opts.rounding_type {
         RoundingType::SignificantDigits => {
@@ -821,7 +967,8 @@ pub fn format_numeric_to_string<D: DecimalValue>(opts: &DigitOptions, x: &mut D)
                 opts.minimum_significant_digits,
                 opts.maximum_significant_digits,
                 mode,
-            );
+                work,
+            )?;
         }
         RoundingType::FractionDigits => {
             to_raw_fixed(
@@ -830,24 +977,27 @@ pub fn format_numeric_to_string<D: DecimalValue>(opts: &DigitOptions, x: &mut D)
                 opts.maximum_fraction_digits,
                 opts.rounding_increment,
                 mode,
-            );
+                work,
+            )?;
         }
         RoundingType::MorePrecision | RoundingType::LessPrecision => {
-            let mut s = x.clone();
-            let mut f = x.clone();
+            let mut s = x.copy(work)?;
+            let mut f = x.copy(work)?;
             let srm = to_raw_precision(
                 &mut s,
                 opts.minimum_significant_digits,
                 opts.maximum_significant_digits,
                 mode,
-            );
+                work,
+            )?;
             let frm = to_raw_fixed(
                 &mut f,
                 opts.minimum_fraction_digits,
                 opts.maximum_fraction_digits,
                 opts.rounding_increment,
                 mode,
-            );
+                work,
+            )?;
             let s_wins = (srm <= frm) == (opts.rounding_type == RoundingType::MorePrecision);
             *x = if s_wins { s } else { f };
         }
@@ -858,6 +1008,7 @@ pub fn format_numeric_to_string<D: DecimalValue>(opts: &DigitOptions, x: &mut D)
     }
     // 6-9. Pad to [[MinimumIntegerDigits]].
     x.pad_start(i64::from(opts.minimum_integer_digits.max(1)));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -881,7 +1032,7 @@ mod tests {
 
     fn fmt(o: &DigitOptions, s: &str) -> String {
         let mut x: Decimal = s.parse().unwrap();
-        format_numeric_to_string(o, &mut x);
+        unpolled(|w| format_numeric_to_string(o, &mut x, w));
         x.to_string()
     }
 
@@ -935,9 +1086,11 @@ mod tests {
                 ] {
                     for position in 0..6 {
                         let mut d: Decimal = v.parse().unwrap();
-                        let mut w = WideDecimal::from_integer_digits(negative, digits.as_bytes());
-                        DecimalValue::round(&mut d, position, mode, inc);
-                        w.round(position, mode, inc);
+                        let mut w = unpolled(|k| {
+                            WideDecimal::from_integer_digits(negative, digits.as_bytes(), k)
+                        });
+                        unpolled(|k| DecimalValue::round(&mut d, position, mode, inc, k));
+                        unpolled(|k| w.round(position, mode, inc, k));
                         // The value (the display range after a rounding is not used: the
                         // callers set it with trim_end and the pads).
                         let value = |t: String| {
@@ -945,8 +1098,8 @@ mod tests {
                             if t.is_empty() { "0".to_string() } else { t }
                         };
                         assert_eq!(
-                            (value(w.unsigned_text()), w.is_negative()),
-                            (value(d.unsigned_text()), d.is_negative()),
+                            (value(unpolled(|k| w.unsigned_text(k))), w.is_negative()),
+                            (value(unpolled(|k| d.unsigned_text(k))), d.is_negative()),
                             "{v} {mode:?} {inc:?} {position}"
                         );
                     }
@@ -990,25 +1143,39 @@ mod tests {
             ] {
                 let negative = v.starts_with('-');
                 let mut d: Decimal = v.parse().unwrap();
-                let mut w = WideDecimal::from_integer_digits(
-                    negative,
-                    v.trim_start_matches('-').as_bytes(),
+                let mut w = unpolled(|k| {
+                    WideDecimal::from_integer_digits(
+                        negative,
+                        v.trim_start_matches('-').as_bytes(),
+                        k,
+                    )
+                });
+                unpolled(|k| format_numeric_to_string(&o, &mut d, k));
+                unpolled(|k| format_numeric_to_string(&o, &mut w, k));
+                assert_eq!(
+                    unpolled(|k| w.unsigned_text(k)),
+                    unpolled(|k| d.unsigned_text(k)),
+                    "{v} {o:?}"
                 );
-                format_numeric_to_string(&o, &mut d);
-                format_numeric_to_string(&o, &mut w);
-                assert_eq!(w.unsigned_text(), d.unsigned_text(), "{v} {o:?}");
                 assert_eq!(w.shown(), d.shown(), "{v} {o:?}");
                 // A shift (compact notation) gives a fraction.
                 let mut d: Decimal = v.parse().unwrap();
-                let mut w = WideDecimal::from_integer_digits(
-                    negative,
-                    v.trim_start_matches('-').as_bytes(),
-                );
+                let mut w = unpolled(|k| {
+                    WideDecimal::from_integer_digits(
+                        negative,
+                        v.trim_start_matches('-').as_bytes(),
+                        k,
+                    )
+                });
                 DecimalValue::multiply_pow10(&mut d, -4);
                 w.multiply_pow10(-4);
-                format_numeric_to_string(&o, &mut d);
-                format_numeric_to_string(&o, &mut w);
-                assert_eq!(w.unsigned_text(), d.unsigned_text(), "{v} {o:?} / 10^4");
+                unpolled(|k| format_numeric_to_string(&o, &mut d, k));
+                unpolled(|k| format_numeric_to_string(&o, &mut w, k));
+                assert_eq!(
+                    unpolled(|k| w.unsigned_text(k)),
+                    unpolled(|k| d.unsigned_text(k)),
+                    "{v} {o:?} / 10^4"
+                );
             }
         }
     }
@@ -1020,9 +1187,9 @@ mod tests {
         let mut big = vec![b'1'];
         big.extend(std::iter::repeat_n(b'0', 40_000));
         *big.last_mut().unwrap() = b'7';
-        let w = WideDecimal::from_integer_digits(false, &big);
+        let w = unpolled(|k| WideDecimal::from_integer_digits(false, &big, k));
         assert_eq!(w.plural_decimal().to_string(), "1000000000000000007");
-        let w = WideDecimal::from_integer_digits(true, b"42");
+        let w = unpolled(|k| WideDecimal::from_integer_digits(true, b"42", k));
         assert_eq!(w.plural_decimal().to_string(), "-42");
     }
 }

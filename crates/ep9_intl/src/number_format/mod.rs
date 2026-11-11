@@ -39,7 +39,10 @@ use std::rc::Rc;
 
 use crate::available;
 use crate::cache::{self, Service};
-use crate::digits::{DigitOptions, RoundingMode, RoundingType, set_number_format_digit_options};
+use crate::digits::{
+    DigitOptions, Interrupted, RoundingMode, RoundingType, Work, polled,
+    set_number_format_digit_options,
+};
 use crate::locale::is_unicode_type;
 use crate::options::index_of;
 use crate::options::{
@@ -621,7 +624,9 @@ fn set_number_format_unit_options<'s>(
 /// other branches here: NF-CURRENCY the styles "percent" and "currency", NF-UNIT the style
 /// "unit", NF-SCIRANGE the notations "scientific" and "engineering". Until then those
 /// format as the decimal style in standard notation (a stub path, not a spec result).
-pub fn partition_numeric(r: &Resolved, x: &IntlMv) -> Parts {
+///
+/// The passes over the digits count in `work` ([`decimal`] polls).
+pub fn partition_numeric(r: &Resolved, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
     let data_locale = tag::remove_unicode_extension(&r.locale);
     let mut f = r.format(&data_locale);
     let standard_decimal = STYLES[r.style as usize] == "decimal"
@@ -630,12 +635,13 @@ pub fn partition_numeric(r: &Resolved, x: &IntlMv) -> Parts {
         // W3 stub path (see above).
         f.compact = None;
     }
-    decimal::partition(&f, x)
+    decimal::partition(&f, x, work)
 }
 
-/// FormatNumeric ( numberFormat, x ) (16.5.5).
-pub fn format_numeric(r: &Resolved, x: &IntlMv) -> String {
-    decimal::join(&partition_numeric(r, x))
+/// FormatNumeric ( numberFormat, x ) (16.5.5). The passes over the digits poll the
+/// interrupt (`Cx::poll_interrupt`, one budget unit per 4,096 digits).
+pub fn format_numeric(cx: &mut Cx<'_>, r: &Resolved, x: &IntlMv) -> JsResult<String> {
+    polled(cx, |w| decimal::join(&partition_numeric(r, x, w)?, w))
 }
 
 /// The resolved options of the NumberFormat that `toLocaleString` makes as
@@ -672,7 +678,7 @@ pub fn to_locale_string<'s>(
     options: Local<'s>,
 ) -> JsResult<Local<'s>> {
     let r = locale_string_format(cx, locales, options)?;
-    let s = format_numeric(&r, x);
+    let s = format_numeric(cx, &r, x)?;
     Ok(cx.new_string(&s)?.into())
 }
 
@@ -752,7 +758,7 @@ fn number_format_function<'s>(
     // 3-4. Let x be ? ToIntlMathematicalValue(value).
     let x = decimal::to_intl_mv(cx, args.get(0))?;
     // 5. Return FormatNumeric(nf, x).
-    let s = format_numeric(&r, &x);
+    let s = format_numeric(cx, &r, &x)?;
     Ok(cx.new_string(&s)?.into())
 }
 
@@ -767,10 +773,12 @@ fn format_to_parts<'s>(
     let r = read(cx, this)?;
     // 3. Let x be ? ToIntlMathematicalValue(value).
     let x = decimal::to_intl_mv(cx, args.get(0))?;
-    // 4. Return FormatNumericToParts(nf, x) (16.5.6).
-    let parts = partition_numeric(&r, &x);
+    // 4. Return FormatNumericToParts(nf, x) (16.5.6). One budget unit per part (H23: a
+    //    pass of a builtin loop).
+    let parts = polled(cx, |w| partition_numeric(&r, &x, w))?;
     let array = cx.new_array();
     for (i, (t, value)) in parts.iter().enumerate() {
+        cx.poll_interrupt()?;
         let o = cx.new_object();
         let t = cx.new_string(t.name())?;
         cx.create_data_property_or_throw(o, "type", t)?;

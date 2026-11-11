@@ -211,7 +211,7 @@ fn to_locale_string<'s>(
     let r = ep9_intl::number_format::locale_string_format(cx, args.get(0), args.get(1))?;
     // 3. Return FormatNumeric(numberFormat, ℝ(x)).
     let mv = ep9_intl::number_format::decimal::to_intl_mv(cx, x)?;
-    let s = ep9_intl::number_format::format_numeric(&r, &mv);
+    let s = ep9_intl::number_format::format_numeric(cx, &r, &mv)?;
     Ok(cx.new_string(&s)?.into())
 }
 

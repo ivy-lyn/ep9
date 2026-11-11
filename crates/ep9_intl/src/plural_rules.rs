@@ -53,8 +53,8 @@ use icu_plurals::{
 
 use crate::cache::{self, Service};
 use crate::digits::{
-    DecimalValue, DigitOptions, RoundingMode, RoundingType, format_numeric_to_string,
-    set_number_format_digit_options,
+    DecimalValue, DigitOptions, Interrupted, RoundingMode, RoundingType, Work,
+    format_numeric_to_string, polled, set_number_format_digit_options,
 };
 use crate::number_format::decimal::{IntlMv, to_intl_mv};
 use crate::options::index_of;
@@ -586,28 +586,33 @@ fn exponent_for_magnitude(r: &Resolved, icu: &Icu, magnitude: i64) -> i64 {
 
 /// ComputeExponent ( pluralRules, x ) (§16.5.12) and the significand x × 10^-exponent rounded
 /// by FormatNumericToString: as NumberFormat shows `x` in the notation of `r`.
-fn compute_exponent<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> (i64, D) {
-    let round = |e: i64| {
-        let mut y = x.clone();
+fn compute_exponent<D: DecimalValue>(
+    r: &Resolved,
+    icu: &Icu,
+    x: &D,
+    work: &mut Work,
+) -> Result<(i64, D), Interrupted> {
+    let round = |e: i64, work: &mut Work| {
+        let mut y = x.copy(work)?;
         y.multiply_pow10(-e);
-        format_numeric_to_string(&r.digits, &mut y);
-        y
+        format_numeric_to_string(&r.digits, &mut y, work)?;
+        Ok(y)
     };
     // 1. If x = 0, return 0.
     if x.is_zero() {
-        return (0, round(0));
+        return Ok((0, round(0, work)?));
     }
     // 3-6. The magnitude, its exponent, and x × 10^-exponent rounded.
     let magnitude = x.nonzero_magnitude_start();
     let e = exponent_for_magnitude(r, icu, magnitude);
-    let y = round(e);
+    let y = round(e, work)?;
     // 7-9. A rounding that keeps the magnitude keeps the exponent.
     if y.is_zero() || y.nonzero_magnitude_start() == magnitude - e {
-        return (e, y);
+        return Ok((e, y));
     }
     // 10. Return ComputeExponentForMagnitude(magnitude + 1).
     let e = exponent_for_magnitude(r, icu, magnitude + 1);
-    (e, round(e))
+    Ok((e, round(e, work)?))
 }
 
 /// The plural operands of `x` in the notation of `r` (the operand `c`/`e` is the exponent
@@ -625,57 +630,72 @@ fn compute_exponent<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> (i64, D)
 /// (`c` is unsigned): such a value takes the operands of its rounded value with `c` = 0. So
 /// does an exponent above 255 (`c` is a u8). A WideDecimal gives its operands through
 /// [`DecimalValue::plural_decimal`] (ICU4X keeps at most 18 integer digits).
-fn operands<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> PluralOperands {
-    let (e, mut y) = compute_exponent(r, icu, x);
+fn operands<D: DecimalValue>(
+    r: &Resolved,
+    icu: &Icu,
+    x: &D,
+    work: &mut Work,
+) -> Result<PluralOperands, Interrupted> {
+    let (e, mut y) = compute_exponent(r, icu, x, work)?;
     y.trim_start();
     if y.is_zero() {
         let (lower, _) = y.shown();
-        return PluralOperands::from(RawPluralOperands {
+        return Ok(PluralOperands::from(RawPluralOperands {
             i: 0,
             v: (-(lower + e)).clamp(0, 18) as usize,
             w: 0,
             f: 0,
             t: 0,
             c: e.clamp(0, 255) as usize,
-        });
+        }));
     }
     if let Ok(e) = u8::try_from(e) {
-        return PluralOperands::from(&CompactDecimal::from_significand_and_exponent(
-            y.plural_decimal(),
-            e,
+        return Ok(PluralOperands::from(
+            &CompactDecimal::from_significand_and_exponent(y.plural_decimal(), e),
         ));
     }
     y.multiply_pow10(e);
-    PluralOperands::from(&y.plural_decimal())
+    Ok(PluralOperands::from(&y.plural_decimal()))
 }
 
 /// Steps 4-11 of ResolvePlural on the finite value `x`.
-fn resolve_finite<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> Plural {
+fn resolve_finite<D: DecimalValue>(
+    r: &Resolved,
+    icu: &Icu,
+    x: &D,
+    work: &mut Work,
+) -> Result<Plural, Interrupted> {
     // 4-5. Let res be FormatNumericToString(pluralRules, n); let s be res.[[FormattedString]].
-    let mut s = x.clone();
-    format_numeric_to_string(&r.digits, &mut s);
+    let mut s = x.copy(work)?;
+    format_numeric_to_string(&r.digits, &mut s, work)?;
     // 6-10. Let p be PluralRuleSelect(locale, type, notation, compactDisplay, s).
-    let category = icu.category_for(operands(r, icu, x));
+    let category = icu.category_for(operands(r, icu, x, work)?);
     // 11. Return the Record { [[PluralCategory]]: p, [[FormattedString]]: s }. The text has
     //     no sign: FormatNumericToString (§16.5.2) makes it from the unsigned value, so -1
     //     and 1 (and -0 and 0) have the same text. The rounding above kept the sign.
-    Plural {
+    Ok(Plural {
         category,
-        formatted: s.unsigned_text(),
-    }
+        formatted: s.unsigned_text(work)?,
+    })
 }
 
-/// ResolvePlural ( pluralRules, n ) (17.5.2) on the Intl mathematical value `n`.
-fn resolve_plural(r: &Resolved, icu: &Icu, n: &IntlMv) -> Plural {
+/// ResolvePlural ( pluralRules, n ) (17.5.2) on the Intl mathematical value `n`. The passes
+/// over the digits of a WideDecimal count in `work`.
+fn resolve_plural(
+    r: &Resolved,
+    icu: &Icu,
+    n: &IntlMv,
+    work: &mut Work,
+) -> Result<Plural, Interrupted> {
     // 1-3. NaN and the infinities: "other" (the text only takes part in the equality test of
     //      ResolvePluralRange).
-    match n {
-        IntlMv::Finite(x) => resolve_finite(r, icu, x),
-        IntlMv::Wide(x) => resolve_finite(r, icu, x),
+    Ok(match n {
+        IntlMv::Finite(x) => resolve_finite(r, icu, x, work)?,
+        IntlMv::Wide(x) => resolve_finite(r, icu, x, work)?,
         IntlMv::NaN => other("NaN"),
         IntlMv::PosInf => other("Infinity"),
         IntlMv::NegInf => other("-Infinity"),
-    }
+    })
 }
 
 /// The ResolvePlural record of a non-finite value.
@@ -687,16 +707,22 @@ fn other(formatted: &str) -> Plural {
 }
 
 /// ResolvePluralRange ( pluralRules, x, y ) (17.5.4) after the NaN test of step 1.
-fn resolve_plural_range(r: &Resolved, icu: &Icu, x: &IntlMv, y: &IntlMv) -> PluralCategory {
+fn resolve_plural_range(
+    r: &Resolved,
+    icu: &Icu,
+    x: &IntlMv,
+    y: &IntlMv,
+    work: &mut Work,
+) -> Result<PluralCategory, Interrupted> {
     // 2-3.
-    let xp = resolve_plural(r, icu, x);
-    let yp = resolve_plural(r, icu, y);
+    let xp = resolve_plural(r, icu, x, work)?;
+    let yp = resolve_plural(r, icu, y, work)?;
     // 4. If xp.[[FormattedString]] is yp.[[FormattedString]], return xp.[[PluralCategory]].
     if xp.formatted == yp.formatted {
-        return xp.category;
+        return Ok(xp.category);
     }
     // 5-9. Return PluralRuleSelectRange(locale, type, notation, compactDisplay, xp, yp).
-    icu.resolve_range(xp.category, yp.category)
+    Ok(icu.resolve_range(xp.category, yp.category))
 }
 
 /// The cached ICU4X objects of `r`, or a TypeError if the data has none (not reached: the
@@ -721,7 +747,7 @@ fn select<'s>(
     let n = to_intl_mv(cx, args.get(0))?;
     // 4. Return ResolvePlural(pr, n).[[PluralCategory]].
     let icu = icu_or_throw(cx, &r)?;
-    let p = resolve_plural(&r, &icu, &n);
+    let p = polled(cx, |w| resolve_plural(&r, &icu, &n, w))?;
     Ok(cx.new_string(category_name(p.category))?.into())
 }
 
@@ -751,7 +777,7 @@ fn select_range<'s>(
         ));
     }
     let icu = icu_or_throw(cx, &r)?;
-    let c = resolve_plural_range(&r, &icu, &x, &y);
+    let c = polled(cx, |w| resolve_plural_range(&r, &icu, &x, &y, w))?;
     Ok(cx.new_string(category_name(c))?.into())
 }
 
@@ -849,7 +875,7 @@ fn resolved_options<'s>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digits::WideDecimal;
+    use crate::digits::{WideDecimal, unpolled};
     use crate::number_format::decimal::decimal_from_literal;
 
     fn resolved(locale: &str, plural_type: u32, notation: &str, long: bool) -> Resolved {
@@ -881,7 +907,7 @@ mod tests {
     fn sel(r: &Resolved, x: &str) -> &'static str {
         let icu = icu_for(r).unwrap();
         let x = decimal_from_literal(x).unwrap();
-        category_name(resolve_plural(r, &icu, &IntlMv::Finite(x)).category)
+        category_name(unpolled(|w| resolve_plural(r, &icu, &IntlMv::Finite(x), w)).category)
     }
 
     /// The packed slots give back the same options.
@@ -996,8 +1022,9 @@ mod tests {
         let wide = |r: &Resolved, negative: bool| {
             let mut digits = vec![b'1'];
             digits.extend(std::iter::repeat_n(b'0', 32_768));
-            let x = IntlMv::Wide(WideDecimal::from_integer_digits(negative, &digits));
-            category_name(resolve_plural(r, &icu_for(r).unwrap(), &x).category)
+            let x = unpolled(|w| WideDecimal::from_integer_digits(negative, &digits, w));
+            let p = unpolled(|w| resolve_plural(r, &icu_for(r).unwrap(), &IntlMv::Wide(x), w));
+            category_name(p.category)
         };
         assert_eq!(
             [wide(&lag, false), wide(&lag, true), wide(&ar, false)],
@@ -1045,7 +1072,9 @@ mod tests {
             let r = resolved(l, 0, "standard", false);
             let icu = icu_for(&r).unwrap();
             let mv = |s: &str| IntlMv::Finite(decimal_from_literal(s).unwrap());
-            category_name(resolve_plural_range(&r, &icu, &mv(x), &mv(y)))
+            category_name(unpolled(|w| {
+                resolve_plural_range(&r, &icu, &mv(x), &mv(y), w)
+            }))
         };
         assert_eq!(range("sl", "102", "201"), "few");
         assert_eq!(range("sl", "1", "2"), "two");

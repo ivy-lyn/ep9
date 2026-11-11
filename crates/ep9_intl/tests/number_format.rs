@@ -234,3 +234,32 @@ fn to_locale_string_with_no_arguments_uses_the_default_formatter() {
     let r = cached().expect("the default formatter");
     assert_eq!(r.locale, out[1]);
 }
+
+/// The passes over the digits of a WideDecimal poll: one budget unit per 4,096 digits (Codex
+/// r2 finding 2). 10n ** 1500000n + 1n has 1,500,001 digits. Its BigInt::toString (in
+/// ToIntlMathematicalValue) polls, but stays under the budget of 10,000 units (the
+/// toString of 10n ** 1600000n + 1n uses it up). The format then reads, copies, rounds (the
+/// increment 5: a division and two products) and groups all the digits, about 10 passes, so
+/// the budget runs out in the format. Old code: no poll in these passes, so the call ends and
+/// `stage` is "reached".
+#[test]
+fn a_termination_stops_the_format_of_a_huge_bigint() {
+    let call = "new Intl.NumberFormat('en', {roundingIncrement: 5, maximumFractionDigits: 0}).format(10n ** 1500000n + 1n)";
+    assert_eq!(
+        common::terminate_during(call),
+        Some((true, Some("before".to_string()), Some("again".to_string())))
+    );
+}
+
+/// formatToParts takes one budget unit for each part that it makes into an object (H23: one
+/// unit per pass of a builtin loop). 10n ** 40000n gives 13,334 integer parts and 13,333
+/// group parts, more than the budget of 10,000 units. Old code: no poll in the loop, so the
+/// call ends and `stage` is "reached".
+#[test]
+fn a_termination_stops_the_parts_loop() {
+    let call = "new Intl.NumberFormat('en').formatToParts(10n ** 40000n)";
+    assert_eq!(
+        common::terminate_during(call),
+        Some((true, Some("before".to_string()), Some("again".to_string())))
+    );
+}

@@ -20,6 +20,10 @@
 //! ```
 //!
 //! No f64 arithmetic: every digit comes from a Decimal (H36).
+//!
+//! Interrupt polls (H23): the passes over the digits of a WideDecimal (the conversion, the
+//! rounding, the parts, the join) count their digits in a [`Work`] (one budget unit per
+//! 4,096 digits) and stop with [`Interrupted`] on a termination.
 
 use std::rc::Rc;
 
@@ -39,7 +43,8 @@ use ep9_vm::{Cx, JsResult, Local, ToPrimitiveHint};
 use crate::cache::{self, Service};
 use crate::cldr;
 use crate::digits::{
-    DecimalValue, DigitOptions, WIDE_DIGITS, WideDecimal, format_numeric_to_string,
+    DecimalValue, DigitOptions, Interrupted, WIDE_DIGITS, WideDecimal, Work,
+    format_numeric_to_string, polled,
 };
 use crate::tag::icu_locale;
 
@@ -177,7 +182,7 @@ pub fn mv_of_number(cx: &mut Cx<'_>, x: f64) -> JsResult<IntlMv> {
 /// The Intl mathematical value of the integer text `text` (the BigInt::toString digits with
 /// an optional '-'): a Decimal, or a [`WideDecimal`] from [`WIDE_DIGITS`] digits on. Exact
 /// for each BigInt (never NaN).
-pub fn mv_of_integer(text: &str) -> IntlMv {
+pub fn mv_of_integer(text: &str, work: &mut Work) -> Result<IntlMv, Interrupted> {
     let (negative, digits) = match text.strip_prefix('-') {
         Some(d) => (true, d),
         None => (false, text),
@@ -185,12 +190,13 @@ pub fn mv_of_integer(text: &str) -> IntlMv {
     if digits.len() < WIDE_DIGITS
         && let Some(d) = decimal_from_literal(text)
     {
-        return IntlMv::Finite(d);
+        return Ok(IntlMv::Finite(d));
     }
-    IntlMv::Wide(WideDecimal::from_integer_digits(
+    Ok(IntlMv::Wide(WideDecimal::from_integer_digits(
         negative,
         digits.as_bytes(),
-    ))
+        work,
+    )?))
 }
 
 /// ToIntlMathematicalValue ( value ) (§16.5.15).
@@ -203,9 +209,11 @@ pub fn to_intl_mv<'s>(cx: &mut Cx<'s>, value: Local<'s>) -> JsResult<IntlMv> {
     let prim = cx.to_primitive(value, ToPrimitiveHint::Number)?;
     // 3. If primValue is a BigInt, return ℝ(primValue).
     if cx.is_bigint(prim) {
+        // BigInt::toString polls; the copy of its text is one memcpy-speed pass, and the
+        // read of the digits counts them.
         let s = cx.bigint_to_string(prim, 10)?;
         let text = cx.to_rust_string(s)?;
-        return Ok(mv_of_integer(&text));
+        return polled(cx, |w| mv_of_integer(&text, w));
     }
     // 4-5. If primValue is not a String, return ℝ(? ToNumber(primValue)).
     if !prim.is_string() {
@@ -500,7 +508,14 @@ fn group_after(
 
 /// The parts of the unsigned number `x` (integer, group, decimal, fraction) with the digits
 /// of `nu` and the separators of `icu`.
-fn number_parts<D: DecimalValue>(x: &D, nu: &str, icu: &Icu, grouping: Grouping, out: &mut Parts) {
+fn number_parts<D: DecimalValue>(
+    x: &D,
+    nu: &str,
+    icu: &Icu,
+    grouping: Grouping,
+    out: &mut Parts,
+    work: &mut Work,
+) -> Result<(), Interrupted> {
     let digits: [char; 10] = cldr::numbering_system_digits(nu)
         .copied()
         .unwrap_or(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
@@ -510,6 +525,7 @@ fn number_parts<D: DecimalValue>(x: &D, nu: &str, icu: &Icu, grouping: Grouping,
     let (lower, upper) = (lower.min(0), upper.max(0));
     let mut int = String::new();
     for m in (0..=upper).rev() {
+        work.add(1)?;
         int.push(digits[usize::from(x.digit_at(m))]);
         if group_after(
             upper,
@@ -532,6 +548,7 @@ fn number_parts<D: DecimalValue>(x: &D, nu: &str, icu: &Icu, grouping: Grouping,
             .collect();
         out.push((PartType::Fraction, frac));
     }
+    Ok(())
 }
 
 /// The sign of a formatted value under `[[SignDisplay]]` (GetNumberFormatPattern, §16.5.10):
@@ -588,32 +605,33 @@ fn compact_round<D: DecimalValue>(
     c: &CompactDecimalFormatter,
     digits: &DigitOptions,
     x: &D,
-) -> (u8, D) {
-    let round = |e: u8| {
-        let mut y = x.clone();
+    work: &mut Work,
+) -> Result<(u8, D), Interrupted> {
+    let round = |e: u8, work: &mut Work| {
+        let mut y = x.copy(work)?;
         y.multiply_pow10(-i64::from(e));
-        format_numeric_to_string(digits, &mut y);
-        y
+        format_numeric_to_string(digits, &mut y, work)?;
+        Ok(y)
     };
     let exponent_for = |m: i64| {
         c.compact_exponent_for_magnitude(m.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16)
     };
     // 1. If x = 0, return 0.
     if x.is_zero() {
-        return (0, round(0));
+        return Ok((0, round(0, work)?));
     }
     // 3-4. The magnitude and its exponent.
     let magnitude = x.nonzero_magnitude_start();
     let e = exponent_for(magnitude);
     // 5-6. x × 10^-e, rounded.
-    let y = round(e);
+    let y = round(e, work)?;
     // 7-9.
     if y.is_zero() || y.nonzero_magnitude_start() == magnitude - i64::from(e) {
-        return (e, y);
+        return Ok((e, y));
     }
     // 10. ComputeExponentForMagnitude(magnitude + 1).
     let e = exponent_for(magnitude + 1);
-    (e, round(e))
+    Ok((e, round(e, work)?))
 }
 
 /// The prefix and suffix of the compact pattern of the unsigned significand `y` with the
@@ -635,12 +653,18 @@ fn compact_affixes(icu: &Icu, y: &Decimal, e: u8) -> Option<(String, String)> {
 
 /// The body parts of the finite value `d` formatted with `f` (compact affixes and the
 /// number, no sign), and whether the rounded value is zero.
-fn finite_parts<D: DecimalValue>(f: &Format<'_>, icu: &Icu, d: &D, body: &mut Parts) -> bool {
+fn finite_parts<D: DecimalValue>(
+    f: &Format<'_>,
+    icu: &Icu,
+    d: &D,
+    body: &mut Parts,
+    work: &mut Work,
+) -> Result<bool, Interrupted> {
     let (exponent, y) = match (f.compact, icu.compact.as_ref()) {
-        (Some(_), Some(c)) => compact_round(c, &f.digits, d),
+        (Some(_), Some(c)) => compact_round(c, &f.digits, d, work)?,
         _ => {
-            let mut y = d.clone();
-            format_numeric_to_string(&f.digits, &mut y);
+            let mut y = d.copy(work)?;
+            format_numeric_to_string(&f.digits, &mut y, work)?;
             (0, y)
         }
     };
@@ -652,19 +676,19 @@ fn finite_parts<D: DecimalValue>(f: &Format<'_>, icu: &Icu, d: &D, body: &mut Pa
     if let Some((prefix, _)) = &affixes {
         affix_parts(prefix, body);
     }
-    number_parts(&y, f.numbering_system, icu, f.grouping, body);
+    number_parts(&y, f.numbering_system, icu, f.grouping, body, work)?;
     if let Some((_, suffix)) = &affixes {
         affix_parts(suffix, body);
     }
-    y.is_zero()
+    Ok(y.is_zero())
 }
 
 /// PartitionNumberPattern ( numberFormat, x ) (§16.5.3) for the decimal style: the parts of
 /// `x` formatted with `f`.
-pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
+pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
     let mut out = Parts::new();
     let Some(icu) = icu_for(f) else {
-        return out;
+        return Ok(out);
     };
     let symbols = icu.symbols.get();
     let t1 = icu.t1;
@@ -689,8 +713,8 @@ pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
             ));
             false
         }
-        IntlMv::Finite(d) => finite_parts(f, &icu, d, &mut body),
-        IntlMv::Wide(d) => finite_parts(f, &icu, d, &mut body),
+        IntlMv::Finite(d) => finite_parts(f, &icu, d, &mut body, work)?,
+        IntlMv::Wide(d) => finite_parts(f, &icu, d, &mut body, work)?,
     };
     match sign_of(f.sign_display, negative, rounded_zero, nan) {
         Some(true) => {
@@ -705,7 +729,7 @@ pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
         }
         None => out.extend(body),
     }
-    out
+    Ok(out)
 }
 
 /// Pushes a part of type `t` with `text`, if `text` is not empty.
@@ -736,14 +760,20 @@ fn push_sign(out: &mut Parts, t: PartType, affix: &str) {
     push_text(out, PartType::Literal, &affix[start + core.len()..]);
 }
 
-/// The text of `parts`.
-pub fn join(parts: &Parts) -> String {
-    parts.iter().map(|(_, s)| s.as_str()).collect()
+/// The text of `parts` (each part counts its length in `work`).
+pub fn join(parts: &Parts, work: &mut Work) -> Result<String, Interrupted> {
+    let mut out = String::new();
+    for (_, s) in parts {
+        out.push_str(s);
+        work.add(s.len())?;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::digits::unpolled;
 
     /// INTL-V2-FP2: the digits of 1e21, 5e-324 and 0.1 + 0.2 are the digits of
     /// Number::toString ("1e+21", "5e-324", "0.30000000000000004"), read into a Decimal.
@@ -811,9 +841,10 @@ mod tests {
     fn large_integers_are_wide() {
         let digits = |n: usize| format!("1{}", "0".repeat(n - 1));
         assert!(decimal_from_literal(&digits(32_769)).is_none());
-        assert!(matches!(mv_of_integer(&digits(32_767)), IntlMv::Finite(_)));
-        assert!(matches!(mv_of_integer(&digits(32_768)), IntlMv::Wide(_)));
-        match mv_of_integer(&format!("-{}", digits(40_000))) {
+        let mv = |t: &str| unpolled(|w| mv_of_integer(t, w));
+        assert!(matches!(mv(&digits(32_767)), IntlMv::Finite(_)));
+        assert!(matches!(mv(&digits(32_768)), IntlMv::Wide(_)));
+        match mv(&format!("-{}", digits(40_000))) {
             IntlMv::Wide(w) => {
                 assert!(w.is_negative());
                 assert_eq!(w.nonzero_magnitude_start(), 39_999);
@@ -846,7 +877,8 @@ mod tests {
         };
         let icu = icu_for(&f).expect("data");
         assert_eq!(icu.t1.map(|t| t.nan), Some("非數值"));
-        assert_eq!(join(&partition(&f, &IntlMv::NaN)), "非數值");
+        let text = unpolled(|w| join(&partition(&f, &IntlMv::NaN, w)?, w));
+        assert_eq!(text, "非數值");
     }
 
     /// The T1 lookup finds the CLDR parent locales ("zh-TW" has the zh-Hant NaN).
