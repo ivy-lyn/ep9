@@ -376,9 +376,9 @@ fn add_bits(st: &St<'_>, s: FSlot, bits: u32) {
 
 /// A record that a fast body leaves to its dispatch (`interp::Flow::Record`): add `bits` to the
 /// int32 value half of one slot. The fast body only computes the bits; [`record`] runs after
-/// it, in `interp::dsl::record_next` (the sibling expansion: a tail-called out-of-line
-/// function, so the handler has no record code and saves no register on entry) or inline (the
-/// match loop, `become`, prefixed instructions).
+/// it, in `interp::dsl::record_next` (the sibling expansion: a tail call after `adds_bit`
+/// found a new bit, so the handler has no record store and saves no register on entry) or
+/// inline (the match loop, `become`, prefixed instructions).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Rec(u64);
 
