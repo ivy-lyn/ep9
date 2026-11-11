@@ -11,7 +11,7 @@
 //! | `a_fixed_buffer_is_a_bytes_cell` | zeroed bytes at cell + 16, no store at length 0, the length caps |
 //! | `a_buffer_the_heap_cannot_give_is_a_range_error` | a RangeError past `max_heap_bytes` and when the heap is full, no abort |
 //! | `the_external_bytes_go_up_and_down` | resizable and shared stores: the count after alloc, grow, shrink, detach and the death of the buffer (minor and major GC); the dead store is dropped after the GC |
-//! | `detach_zeroes_every_live_view` | 2 views, one dead before the GC: the list holds the live one; detach zeroes TypedArrays and DataViews; a TYPED_VARIABLE view gets a null data word and keeps its auto length |
+//! | `detach_zeroes_every_live_view` | 2 views, one dead before the GC: the list holds the live one; detach zeroes TypedArrays and DataViews (no byteLength on a fixed-length buffer is a fixed DataView of the rest); a TYPED_VARIABLE view and an auto DataView get a null data word and keep their auto length |
 //! | `transfer_moves_or_copies_the_store` | the BYTES cell moves with no copy; a resizable store moves; other lengths copy; the errors |
 //! | `shared_buffers_grow_and_never_detach` | grow, the RangeErrors and TypeErrors, views on a SAB |
 //! | `get_and_set_value_in_both_byte_orders` | each type, little and big endian, unaligned and shared; the range checks |
@@ -285,8 +285,11 @@ fn detach_zeroes_every_live_view() {
             // too, and its length field stays auto (reviewer F1; design §5.2 step 2).
             let rab = buffer(&iso.rt, 8, Some(64));
             let var = view(&iso.rt, 1, rab, 2, None);
+            // An auto DataView (no byteLength, a resizable buffer; spec step 8.b): detach nulls
+            // its data word and its byte length stays auto.
+            let dv_var = ab::new_data_view(&iso.rt, NULL, rab, 2, None).unwrap();
             let dv = ab::new_data_view(&iso.rt, NULL, b, 1, Some(4)).unwrap();
-            let dv_auto = ab::new_data_view(&iso.rt, NULL, b, 0, None).unwrap();
+            let dv_rest = ab::new_data_view(&iso.rt, NULL, b, 0, None).unwrap();
             let gone = below_a_pad(|| dead_view(&mut iso, b));
             assert_eq!(iso.rt.buffers.views_of(b).len(), 5);
             scrub_stack();
@@ -294,7 +297,7 @@ fn detach_zeroes_every_live_view() {
             let views = iso.rt.buffers.views_of(b);
             assert_eq!(
                 views,
-                [live, computed, dv, dv_auto],
+                [live, computed, dv, dv_rest],
                 "the dead view left the list"
             );
             assert!(!views.iter().any(|&v| v as usize == gone ^ MASK));
@@ -307,6 +310,11 @@ fn detach_zeroes_every_live_view() {
             };
             let base = ab::data_base(&iso.rt, b);
             assert_eq!(data(live), base.wrapping_add(4).cast_const());
+            assert_eq!(
+                object::slot_get(dv_rest, dv_slot::BYTE_LENGTH),
+                crate::conv::num(8.0),
+                "no byteLength on a fixed-length buffer made a fixed DataView (8 bytes)"
+            );
             ab::detach(&iso.rt, b, UNDEFINED).unwrap();
             assert!(data(live).is_null() && data(computed).is_null());
             assert_eq!(ta::fixed_length(live), Some(0));
@@ -315,7 +323,10 @@ fn detach_zeroes_every_live_view() {
                 Some(0),
                 "no length on a fixed-length buffer made a fixed view (length 6)"
             );
-            for (v, len) in [(dv, int32_bits(0)), (dv_auto, int32_bits(-1))] {
+            // No byteLength on a fixed-length buffer makes a fixed DataView of the rest (8
+            // bytes; TA-2 route TA2-DV-FIXED, TA-1 review F3), so a detach zeroes its byte
+            // length too.
+            for (v, len) in [(dv, int32_bits(0)), (dv_rest, int32_bits(0))] {
                 let w = object::slot_get(v, dv_slot::DATA);
                 let p = crate::external_ref::ExternalRef::<u8>::from_word(w).get();
                 assert!(p.is_null());
@@ -341,6 +352,18 @@ fn detach_zeroes_every_live_view() {
             );
             assert_eq!(ta::fixed_length(var), None);
             assert_eq!(ta::length(&iso.rt, var), None);
+            let w = object::slot_get(dv_var, dv_slot::DATA);
+            assert!(
+                crate::external_ref::ExternalRef::<u8>::from_word(w)
+                    .get()
+                    .is_null(),
+                "a detached auto DataView has no data"
+            );
+            assert_eq!(
+                object::slot_get(dv_var, dv_slot::BYTE_LENGTH),
+                int32_bits(layout::VIEW_LENGTH_AUTO),
+                "an auto DataView keeps its auto byte length after a detach"
+            );
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });
