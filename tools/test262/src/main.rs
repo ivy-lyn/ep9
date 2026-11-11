@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod agent;
 mod exec;
 mod expect;
 mod frontmatter;
