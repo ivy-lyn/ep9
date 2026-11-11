@@ -610,6 +610,80 @@ const CASES: &[Case] = &[
              print(s, getx({}), getx(Object.create(null)), getx('str'), getx(5));",
         ),
     },
+    // M8-P0 TS-STORE: a megamorphic 0x24 store probes the stub cache in the handler's cold
+    // body (`ic::handler_mega_store`), and an add that needs a larger SLOTS cell grows it on the
+    // miss path and stores through its case (`ic::grow_add`). The spec form stores with
+    // Reflect.set (the generic [[Set]]); a strict failure throws a TypeError in both forms.
+    Case {
+        path: "ic-named",
+        name: "an add with growth of the SLOTS cell (monomorphic, polymorphic and megamorphic store sites; the store probe of the SetNamedProperty handler) or Reflect.set",
+        src: "function fresh(n) { var o = {}; for (var i = 0; i < n; i++) o['p' + i] = i; return o; }\n\
+              function addx(o, v) { o.x = v; return o; }\n\
+              function addyz(o, v) { o.y = v; o.z = v + 1; return o; }\n\
+              function addw(o, v) { o.w = v; return o; }\n\
+              var r = [], s = 0;\n\
+              for (var n = 0; n < 20; n++) for (var k = 0; k < 3; k++) { var o = addyz(addx(fresh(n), n * 10 + k), k); s += o.x + o.y + o.z + Object.keys(o).length; if (k === 2 && n % 5 === 0) r.push(Object.keys(o).join()); }\n\
+              for (var k = 0; k < 16; k++) { s += addw(fresh(4), k).w + addw(fresh(8 + (k & 1) * 4), k).w; }\n\
+              var m = []; for (var k = 0; k < 12; k++) { var o = fresh(6); addx(o, k); addyz(o, k); m.push(o.x + o.y + o.z); }\n\
+              print(s, m.join(), r.join(' | '));",
+        spec: Some(
+            "function fresh(n) { var o = {}; for (var i = 0; i < n; i++) o['p' + i] = i; return o; }\n\
+             function addx(o, v) { Reflect.set(o, 'x', v); return o; }\n\
+             function addyz(o, v) { Reflect.set(o, 'y', v); Reflect.set(o, 'z', v + 1); return o; }\n\
+             function addw(o, v) { Reflect.set(o, 'w', v); return o; }\n\
+             var r = [], s = 0;\n\
+             for (var n = 0; n < 20; n++) for (var k = 0; k < 3; k++) { var o = addyz(addx(fresh(n), n * 10 + k), k); s += o.x + o.y + o.z + Object.keys(o).length; if (k === 2 && n % 5 === 0) r.push(Object.keys(o).join()); }\n\
+             for (var k = 0; k < 16; k++) { s += addw(fresh(4), k).w + addw(fresh(8 + (k & 1) * 4), k).w; }\n\
+             var m = []; for (var k = 0; k < 12; k++) { var o = fresh(6); addx(o, k); addyz(o, k); m.push(o.x + o.y + o.z); }\n\
+             print(s, m.join(), r.join(' | '));",
+        ),
+    },
+    Case {
+        path: "ic-named",
+        name: "an add to a frozen, sealed, non-extensible or dictionary receiver, after a setter or a read-only property appears on the prototype, and with a Proxy on the chain, or Reflect.set",
+        src: "function fresh(n, p) { var o = p === undefined ? {} : Object.create(p); for (var i = 0; i < n; i++) o['p' + i] = i; return o; }\n\
+              function addx(o, v) { o.x = v; return o.x; }\n\
+              function saddx(o, v) { 'use strict'; o.x = v; return o.x; }\n\
+              var r = [], log = [];\n\
+              for (var n = 0; n < 9; n++) for (var k = 0; k < 2; k++) { r.push(addx(fresh(n), k)); r.push(saddx(fresh(n), k)); }\n\
+              var f = Object.freeze(fresh(4)), se = Object.seal(fresh(4)), ne = Object.preventExtensions(fresh(4));\n\
+              r.push(addx(f, 1), addx(se, 2), addx(ne, 3));\n\
+              [f, se, ne].forEach(function (o) { try { saddx(o, 4); } catch (e) { r.push(e.name); } });\n\
+              var d = fresh(6); delete d.p2; r.push(addx(d, 5), saddx(fresh(6), 6), Object.keys(d).join());\n\
+              var P = {}, os = [];\n\
+              for (var n = 0; n < 9; n++) os.push(fresh(n, P));\n\
+              for (var k = 0; k < 2; k++) os.forEach(function (o, i) { r.push(addx(fresh(i, P), k)); });\n\
+              Object.defineProperty(P, 'x', { set: function (v) { log.push('set' + v); }, get: function () { return 'g'; }, configurable: true });\n\
+              os.forEach(function (o, i) { r.push(addx(o, i), saddx(fresh(i, P), i)); });\n\
+              Object.defineProperty(P, 'x', { value: 'ro', writable: false, configurable: true });\n\
+              os.forEach(function (o, i) { r.push(addx(fresh(i, P), i)); try { saddx(fresh(i, P), i); } catch (e) { r.push(e.name); } });\n\
+              delete P.x;\n\
+              var px = new Proxy({}, { set: function (t, k, v, rcv) { log.push('px' + String(k) + v); return Reflect.set(t, k, v, rcv); } });\n\
+              for (var n = 0; n < 9; n++) { var c = fresh(0, px); c.q = n; r.push(addx(c, n), saddx(c, n + 1), Object.keys(c).join()); }\n\
+              print(r.join(), log.join());",
+        spec: Some(
+            "function fresh(n, p) { var o = p === undefined ? {} : Object.create(p); for (var i = 0; i < n; i++) o['p' + i] = i; return o; }\n\
+             function addx(o, v) { Reflect.set(o, 'x', v); return o.x; }\n\
+             function saddx(o, v) { 'use strict'; if (!Reflect.set(o, 'x', v)) throw new TypeError('x'); return o.x; }\n\
+             var r = [], log = [];\n\
+             for (var n = 0; n < 9; n++) for (var k = 0; k < 2; k++) { r.push(addx(fresh(n), k)); r.push(saddx(fresh(n), k)); }\n\
+             var f = Object.freeze(fresh(4)), se = Object.seal(fresh(4)), ne = Object.preventExtensions(fresh(4));\n\
+             r.push(addx(f, 1), addx(se, 2), addx(ne, 3));\n\
+             [f, se, ne].forEach(function (o) { try { saddx(o, 4); } catch (e) { r.push(e.name); } });\n\
+             var d = fresh(6); delete d.p2; r.push(addx(d, 5), saddx(fresh(6), 6), Object.keys(d).join());\n\
+             var P = {}, os = [];\n\
+             for (var n = 0; n < 9; n++) os.push(fresh(n, P));\n\
+             for (var k = 0; k < 2; k++) os.forEach(function (o, i) { r.push(addx(fresh(i, P), k)); });\n\
+             Object.defineProperty(P, 'x', { set: function (v) { log.push('set' + v); }, get: function () { return 'g'; }, configurable: true });\n\
+             os.forEach(function (o, i) { r.push(addx(o, i), saddx(fresh(i, P), i)); });\n\
+             Object.defineProperty(P, 'x', { value: 'ro', writable: false, configurable: true });\n\
+             os.forEach(function (o, i) { r.push(addx(fresh(i, P), i)); try { saddx(fresh(i, P), i); } catch (e) { r.push(e.name); } });\n\
+             delete P.x;\n\
+             var px = new Proxy({}, { set: function (t, k, v, rcv) { log.push('px' + String(k) + v); return Reflect.set(t, k, v, rcv); } });\n\
+             for (var n = 0; n < 9; n++) { var c = fresh(0, px); c.q = n; r.push(addx(c, n), saddx(c, n + 1), Object.keys(c).join()); }\n\
+             print(r.join(), log.join());",
+        ),
+    },
     // ---- ic-global (M7-P2 GLOBALS) ----
     // Each form runs its harness (the counters, the loops, the called functions) in a function
     // scope, so only the binding under test is global, and the functions that read or write it
