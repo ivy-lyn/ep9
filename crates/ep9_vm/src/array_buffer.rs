@@ -1358,9 +1358,12 @@ pub(crate) fn atomic_compare_exchange(
 
 // ---- DataView ---------------------------------------------------------------------------------
 
-/// A new DataView with prototype `proto` on the buffer `b` from `offset`: `Some(n)` bytes or
-/// a length-tracking view (`None`). Checks that `b` is a buffer, not detached, and the range
-/// is inside it. GC point.
+/// A new DataView with prototype `proto` on the buffer `b` from `offset`: `Some(n)` bytes, or
+/// for `None` (byteLength undefined) the rest of a fixed-length buffer (a fixed view of
+/// byteLength - `offset` bytes: the DataView constructor's step 8.a, as `typed_array::new_view`
+/// does; TA-1 review F3, route TA2-DV-FIXED) or a length-tracking view on a resizable or
+/// growable one. Checks that `b` is a buffer, not detached, and the range is inside it. GC
+/// point.
 pub(crate) fn new_data_view(
     rt: &Runtime,
     proto: u64,
@@ -1384,6 +1387,12 @@ pub(crate) fn new_data_view(
             "Start offset is outside the bounds of the buffer",
         ));
     }
+    // Step 8.a: no byteLength on a fixed-length buffer (IsFixedLengthArrayBuffer) gives a fixed
+    // view of the rest; only a resizable or growable buffer gets an auto view (step 8.b).
+    let len = match len {
+        None if !is_resizable(b) => Some(buf_len - offset),
+        l => l,
+    };
     // GC point: `b` lives in a Rust local (CSS).
     let v = object::new_slot_object(rt, proto, ObjectClass::DataView.id(), dv_slot::COUNT);
     // The brand: `v` owns its entry from birth (no GC point since the allocation).
@@ -1399,4 +1408,117 @@ pub(crate) fn new_data_view(
     object::engine_slot_set(rt, v, dv_slot::DATA, ExternalRef::to_word(data));
     add_view(rt, b, v);
     Ok(v)
+}
+
+// ---- TA-2 TA-BUFFERS: the DataView reads and the DataView get and set (§25.3) ---------------
+//
+// Each caller ran `is_data_view` on `v` first (judge 4.7: a raw access trusts the slots only of
+// an object that passed the brand). A DataView's slot 0 is the engine buffer that
+// `new_data_view` checked (`buffer_class`), and only this file writes it.
+
+/// `[[ViewedArrayBuffer]]` of the DataView `v` (also when it is detached).
+pub(crate) fn data_view_buffer(v: u64) -> u64 {
+    object::slot_get(v, dv_slot::BUFFER)
+}
+
+/// `[[ByteOffset]]` of the DataView `v` as stored.
+pub(crate) fn data_view_byte_offset(v: u64) -> u64 {
+    number_slot(v, dv_slot::BYTE_OFFSET)
+}
+
+/// IsViewOutOfBounds (§25.3.1.3) and GetViewByteLength (§25.3.1.2) of
+/// MakeDataViewWithBufferWitnessRecord(`v`, seq-cst): `None` when the view is out of bounds (a
+/// detached buffer included), else its byte length (for an auto view: the buffer's byte length
+/// now, less the byte offset). Not a GC point.
+pub(crate) fn data_view_byte_length(rt: &Runtime, v: u64) -> Option<u64> {
+    let b = data_view_buffer(v);
+    if is_detached(b) {
+        return None;
+    }
+    let buf_len = byte_length(rt, b) as u64;
+    let start = data_view_byte_offset(v);
+    let bl = object::slot_get(v, dv_slot::BYTE_LENGTH);
+    let end = if bl == int32_bits(layout::VIEW_LENGTH_AUTO) {
+        buf_len
+    } else {
+        start.checked_add(number_slot(v, dv_slot::BYTE_LENGTH))?
+    };
+    (start <= buf_len && end <= buf_len).then(|| end - start)
+}
+
+/// The address of `[index, index + size)` of the DataView `v` after the checks of GetViewValue
+/// and SetViewValue (§25.3.1.5 steps 4-9, §25.3.1.6 steps 6-11): the brand, then
+/// IsViewOutOfBounds (a TypeError), then the range inside the view (a RangeError). The address
+/// comes from the buffer's store (`data_base`), not from the DataView's cached data word
+/// (slot 3; R2 of the TA-1 design study: the access trusts only the brand-checked buffer and
+/// its current byte length; a debug build checks that the cached word agrees). Not a GC point.
+fn data_view_range(rt: &Runtime, v: u64, index: u64, size: usize) -> BufResult<*mut u8> {
+    if !is_data_view(rt, v) {
+        return Err(Fail::Type("Receiver is not a DataView"));
+    }
+    let Some(view_len) = data_view_byte_length(rt, v) else {
+        return Err(Fail::Type(
+            "Cannot perform this operation on a detached or out-of-bounds DataView",
+        ));
+    };
+    if index
+        .checked_add(size as u64)
+        .is_none_or(|end| end > view_len)
+    {
+        return Err(Fail::Range("Offset is outside the bounds of the DataView"));
+    }
+    let b = data_view_buffer(v);
+    let offset = data_view_byte_offset(v) as usize;
+    let base = data_base(rt, b);
+    debug_assert_eq!(
+        ExternalRef::<u8>::from_word(object::slot_get(v, dv_slot::DATA)).get(),
+        data_at(base, offset),
+        "the cached data word of a DataView agrees with its buffer"
+    );
+    // In bounds: index + size <= view_len, and offset + view_len <= the byte length of the
+    // buffer, whose store holds at least that many bytes (a non-null base when it is above 0).
+    Ok(base.wrapping_add(offset + index as usize))
+}
+
+/// GetViewValue (§25.3.1.5) after its ToIndex and ToBoolean steps: the element of type `t` at
+/// byte `index` of the DataView `v`. GC point (a BigInt).
+pub(crate) fn data_view_get(
+    rt: &Runtime,
+    v: u64,
+    index: u64,
+    t: u8,
+    little_endian: bool,
+) -> BufResult<u64> {
+    let size = elem_size(t);
+    let p = data_view_range(rt, v, index, size)?;
+    // SAFETY: `data_view_range` checked the range against the live store of the view's buffer.
+    let mut x = unsafe { read_raw(p, size, is_shared(data_view_buffer(v))) };
+    if !little_endian {
+        x = x.swap_bytes() >> (64 - 8 * size);
+    }
+    Ok(raw_to_value(rt, t, x))
+}
+
+/// SetViewValue (§25.3.1.6) after its ToIndex, ToNumber or ToBigInt, and ToBoolean steps:
+/// stores the converted `value` as the element of type `t` at byte `index` of the DataView
+/// `v`. Not a GC point.
+pub(crate) fn data_view_set(
+    rt: &Runtime,
+    v: u64,
+    index: u64,
+    t: u8,
+    value: u64,
+    little_endian: bool,
+) -> BufResult<()> {
+    let size = elem_size(t);
+    let Some(mut x) = value_to_raw(t, value) else {
+        return Err(WRONG_TYPE);
+    };
+    let p = data_view_range(rt, v, index, size)?;
+    if !little_endian {
+        x = x.swap_bytes() >> (64 - 8 * size);
+    }
+    // SAFETY: `data_view_range` checked the range against the live store of the view's buffer.
+    unsafe { write_raw(p, size, x, is_shared(data_view_buffer(v))) };
+    Ok(())
 }

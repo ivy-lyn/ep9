@@ -778,3 +778,12 @@ abi: impl<'s> Cx<'s> :: pub fn typed_array_byte_offset(&mut self, impl Into<Loca
 abi: impl<'s> Cx<'s> :: pub fn typed_array_element(&self, impl Into<Local<'s>>) -> Option<u8>
 abi: impl<'s> Cx<'s> :: pub fn typed_array_fixed_length(&mut self, impl Into<Local<'s>>) -> JsResult<Option<u64>>
 abi: impl<'s> Cx<'s> :: pub fn typed_array_length(&mut self, impl Into<Local<'s>>) -> JsResult<Option<u64>>
+abi: impl<'s> Cx<'s> :: pub fn array_buffer_max_byte_length(&mut self, impl Into<Local<'s>>) -> JsResult<Option<u64>>
+abi: impl<'s> Cx<'s> :: pub fn data_view_buffer(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn data_view_byte_length(&mut self, impl Into<Local<'s>>) -> JsResult<Option<u64>>
+abi: impl<'s> Cx<'s> :: pub fn data_view_byte_offset(&mut self, impl Into<Local<'s>>) -> JsResult<Option<u64>>
+abi: impl<'s> Cx<'s> :: pub fn data_view_get_value(&mut self, impl Into<Local<'s>>, u64, u8, bool) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn data_view_set_value(&mut self, impl Into<Local<'s>>, u64, u8, impl Into<Local<'s>>, bool) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn is_array_buffer(&self, impl Into<Local<'s>>) -> bool
+abi: impl<'s> Cx<'s> :: pub fn is_data_view(&self, impl Into<Local<'s>>) -> bool
+abi: impl<'s> Cx<'s> :: pub fn is_shared_array_buffer(&self, impl Into<Local<'s>>) -> bool

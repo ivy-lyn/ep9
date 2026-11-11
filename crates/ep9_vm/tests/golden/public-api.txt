@@ -243,6 +243,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn allocate_shared_array_buffer(&mut self, impl
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn args_builder(&self) -> ArgsBuilder<'s>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_byte_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<u64>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_copy_and_detach(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, u64, bool) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_max_byte_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<u64>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_resize(&mut self, impl core::convert::Into<Local<'s>>, u64) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_compare_exchange(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_load(&mut self, impl core::convert::Into<Local<'s>>, u64, u8) -> ep9_value::JsResult<Local<'s>>
@@ -289,6 +290,11 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property_or_throw(&mut self, imp
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_list_from_array_like(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<ArgsBuilder<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_realm(&mut self) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_resolving_functions(&mut self, Local<'s, JsObject>) -> (Local<'s, JsFunction>, Local<'s, JsFunction>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn data_view_buffer(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn data_view_byte_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<u64>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn data_view_byte_offset(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<u64>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn data_view_get_value(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, bool) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn data_view_set_value(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, bool) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn default_locale(&mut self) -> core::option::Option<alloc::string::String>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn define_own_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn define_property_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, PropertyDescriptor<'s>) -> ep9_value::JsResult<()>
@@ -328,16 +334,19 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn initial_name(&mut self, impl core::convert::
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn intern(&mut self, Local<'s, JsString>) -> Local<'s, JsKey>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn intrinsic(&self, IntrinsicId) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_array(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_array_buffer(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_array_or_throw(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_bigint(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_builtin(&self, impl core::convert::Into<Local<'s>>, BuiltinId) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_callable(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_constructor(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_data_view(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_detached_buffer(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_error(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_extensible(&mut self, impl core::convert::Into<Local<'s, JsObject>>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_promise(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_proxy(&self, impl core::convert::Into<Local<'s>>) -> bool
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_shared_array_buffer(&self, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_strictly_equal(&self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn iterator_close<T>(&mut self, &IteratorRecord<'s>, ep9_value::JsResult<T>) -> ep9_value::JsResult<T>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn iterator_step_value(&mut self, &mut IteratorRecord<'s>) -> ep9_value::JsResult<core::option::Option<Local<'s>>>
@@ -598,7 +607,7 @@ ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
 ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
 ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
 ep9_vm::IntrinsicId :: impl IntrinsicId
-ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 109]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 115]
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
 ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
@@ -614,6 +623,8 @@ ep9_vm::IntrinsicId :: impl core::marker::Sync for IntrinsicId (auto)
 ep9_vm::IntrinsicId :: variant AggregateError
 ep9_vm::IntrinsicId :: variant AggregateErrorPrototype
 ep9_vm::IntrinsicId :: variant Array
+ep9_vm::IntrinsicId :: variant ArrayBuffer
+ep9_vm::IntrinsicId :: variant ArrayBufferPrototype
 ep9_vm::IntrinsicId :: variant ArrayIteratorPrototype
 ep9_vm::IntrinsicId :: variant ArrayPrototype
 ep9_vm::IntrinsicId :: variant ArrayUnscopables
@@ -630,6 +641,8 @@ ep9_vm::IntrinsicId :: variant BigInt
 ep9_vm::IntrinsicId :: variant BigIntPrototype
 ep9_vm::IntrinsicId :: variant Boolean
 ep9_vm::IntrinsicId :: variant BooleanPrototype
+ep9_vm::IntrinsicId :: variant DataView
+ep9_vm::IntrinsicId :: variant DataViewPrototype
 ep9_vm::IntrinsicId :: variant Date
 ep9_vm::IntrinsicId :: variant DatePrototype
 ep9_vm::IntrinsicId :: variant DisposableStack
@@ -681,6 +694,8 @@ ep9_vm::IntrinsicId :: variant RegExpStringIteratorPrototype
 ep9_vm::IntrinsicId :: variant Set
 ep9_vm::IntrinsicId :: variant SetIteratorPrototype
 ep9_vm::IntrinsicId :: variant SetPrototype
+ep9_vm::IntrinsicId :: variant SharedArrayBuffer
+ep9_vm::IntrinsicId :: variant SharedArrayBufferPrototype
 ep9_vm::IntrinsicId :: variant String
 ep9_vm::IntrinsicId :: variant StringIteratorPrototype
 ep9_vm::IntrinsicId :: variant StringPrototype

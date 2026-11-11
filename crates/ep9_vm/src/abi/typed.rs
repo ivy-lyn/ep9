@@ -347,7 +347,9 @@ impl<'s> Cx<'s> {
     // ---- DataView (§25.3) ----
 
     /// A new DataView with prototype `proto` on `buffer` from `byte_offset`: `Some(n)` bytes,
-    /// or `None` for a length-tracking view (`[[ByteLength]]` auto). The caller ran the checks
+    /// or `None` for a byteLength that is undefined: on a resizable ArrayBuffer or a growable
+    /// SharedArrayBuffer a length-tracking view (`[[ByteLength]]` auto), on a fixed-length
+    /// buffer the byte length - `byte_offset` bytes (step 8.a). The caller ran the checks
     /// of the DataView constructor (sec-dataview-buffer-byteoffset-bytelength) in spec order. A
     /// TypeError if `buffer` is not a buffer or is detached; a RangeError if the range is not
     /// inside it. Its internal slots (`ObjectClass::DataView`): 0 `[[ViewedArrayBuffer]]`,
@@ -482,6 +484,121 @@ impl<'s> Cx<'s> {
         _count: u64,
     ) -> JsResult<u64> {
         Err(not_built(self, "atomics_notify"))
+    }
+}
+
+/// TA-2 TA-BUFFERS (TA-ORCH-10; design study judge.md 4.7): the brand-checked reads that the
+/// getters of `ArrayBuffer.prototype`, `SharedArrayBuffer.prototype` and `DataView.prototype`
+/// need, and the DataView get and set. Each method tests the brand first (`buffer_class`,
+/// `is_data_view`: an object of these classes that the generic slot API made is not a buffer
+/// or a DataView here) and reads the slots only after it. None runs JS.
+impl<'s> Cx<'s> {
+    /// True if `v` is an ArrayBuffer (not a SharedArrayBuffer) that `abi/typed.rs` made: the
+    /// `[[ArrayBufferData]]` test of RequireInternalSlot with IsSharedArrayBuffer false. Never
+    /// throws.
+    pub fn is_array_buffer(&self, v: impl Into<Local<'s>>) -> bool {
+        ab::buffer_class(self.rt(), v.into().bits()) == Some(crate::abi::ObjectClass::ArrayBuffer)
+    }
+
+    /// True if `v` is a SharedArrayBuffer that `abi/typed.rs` made (IsSharedArrayBuffer of a
+    /// value with `[[ArrayBufferData]]`). Never throws.
+    pub fn is_shared_array_buffer(&self, v: impl Into<Local<'s>>) -> bool {
+        ab::buffer_class(self.rt(), v.into().bits())
+            == Some(crate::abi::ObjectClass::SharedArrayBuffer)
+    }
+
+    /// `[[ArrayBufferMaxByteLength]]` of the ArrayBuffer or SharedArrayBuffer `buffer`:
+    /// `Some(max)` for a resizable ArrayBuffer or a growable SharedArrayBuffer, `None` when
+    /// IsFixedLengthArrayBuffer is true (also when it is detached: the slot stays). A TypeError
+    /// if `buffer` is neither.
+    pub fn array_buffer_max_byte_length(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+    ) -> JsResult<Option<u64>> {
+        let b = buffer.into().bits();
+        if ab::buffer_class(self.rt(), b).is_none() {
+            return Err(self.throw_type_error("Receiver is not an ArrayBuffer"));
+        }
+        Ok(ab::max_byte_length(b))
+    }
+
+    /// True if `v` is a DataView that `abi/typed.rs` made (the `[[DataView]]` test of
+    /// RequireInternalSlot). Never throws.
+    pub fn is_data_view(&self, v: impl Into<Local<'s>>) -> bool {
+        ab::is_data_view(self.rt(), v.into().bits())
+    }
+
+    /// The DataView `v` (its bits), or a TypeError.
+    fn data_view_bits(&mut self, v: Local<'s>) -> JsResult<u64> {
+        let b = v.bits();
+        if ab::is_data_view(self.rt(), b) {
+            return Ok(b);
+        }
+        Err(self.throw_type_error("Receiver is not a DataView"))
+    }
+
+    /// `[[ViewedArrayBuffer]]` of the DataView `view` (also when it is detached). A TypeError
+    /// if `view` is not a DataView.
+    pub fn data_view_buffer(
+        &mut self,
+        view: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let v = self.data_view_bits(view.into())?;
+        Ok(Self::local(ab::data_view_buffer(v)))
+    }
+
+    /// `[[ByteOffset]]` of the DataView `view`, or `None` when IsViewOutOfBounds (a detached
+    /// buffer included) of MakeDataViewWithBufferWitnessRecord(`view`, seq-cst). A TypeError if
+    /// `view` is not a DataView.
+    pub fn data_view_byte_offset(&mut self, view: impl Into<Local<'s>>) -> JsResult<Option<u64>> {
+        let v = self.data_view_bits(view.into())?;
+        let in_bounds = ab::data_view_byte_length(self.rt(), v).is_some();
+        Ok(in_bounds.then(|| ab::data_view_byte_offset(v)))
+    }
+
+    /// GetViewByteLength (sec-getviewbytelength) of MakeDataViewWithBufferWitnessRecord(`view`,
+    /// seq-cst): `Some(n)` (for a length-tracking view the buffer's byte length now, less the
+    /// byte offset), or `None` when IsViewOutOfBounds (a detached buffer included). A TypeError
+    /// if `view` is not a DataView.
+    pub fn data_view_byte_length(&mut self, view: impl Into<Local<'s>>) -> JsResult<Option<u64>> {
+        let v = self.data_view_bits(view.into())?;
+        Ok(ab::data_view_byte_length(self.rt(), v))
+    }
+
+    /// GetViewValue (sec-getviewvalue) after its ToIndex and ToBoolean steps: the element of
+    /// type `element` (a Table 71 row, the module docs) at byte `byte_index` of the DataView
+    /// `view`, little endian if `little_endian`: a Number, or a BigInt for rows 7 and 8. A
+    /// TypeError if `view` is not a DataView or is out of bounds (IsViewOutOfBounds, a detached
+    /// buffer included); a RangeError if the element is past the view's byte length.
+    pub fn data_view_get_value(
+        &mut self,
+        view: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        little_endian: bool,
+    ) -> JsResult<Local<'s>> {
+        let t = Self::element_row(element);
+        let r = ab::data_view_get(self.rt(), view.into().bits(), byte_index, t, little_endian);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// SetViewValue (sec-setviewvalue) after its ToIndex, ToNumber or ToBigInt, and ToBoolean
+    /// steps: stores `value` (a Number, or a BigInt for rows 7 and 8: the caller converted it)
+    /// as the element of type `element` at byte `byte_index` of the DataView `view`
+    /// (NumericToRawBytes, as [`Cx::set_value_in_buffer`]). An error as
+    /// [`Cx::data_view_get_value`], or a TypeError if `value` has the wrong type.
+    pub fn data_view_set_value(
+        &mut self,
+        view: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        value: impl Into<Local<'s>>,
+        little_endian: bool,
+    ) -> JsResult<()> {
+        let t = Self::element_row(element);
+        let (v, x) = (view.into().bits(), value.into().bits());
+        let r = ab::data_view_set(self.rt(), v, byte_index, t, x, little_endian);
+        self.buffer_result(r)
     }
 }
 
@@ -627,5 +744,131 @@ mod tests {
         assert_eq!(cx.typed_array_length(t).unwrap(), None);
         assert_eq!(cx.get(t, "1").unwrap().bits(), UNDEFINED);
         std::hint::black_box(dv);
+    }
+
+    /// TA-2 TA-BUFFERS: the brand-checked reads and the DataView get and set. Each takes only
+    /// an engine buffer or DataView (a TypeError, or false, for a plain object and for an
+    /// object of the class that the generic slot API made); a DataView with no byteLength on a
+    /// fixed-length buffer is a fixed view of the rest (route TA2-DV-FIXED: slot 2 holds the
+    /// byte length, not the auto -1), one on a resizable buffer tracks its length; get and
+    /// set check IsViewOutOfBounds (a TypeError) and the view range (a RangeError) against the
+    /// byte length at the access; a detach makes every read out of bounds. Plain and under
+    /// GC stress.
+    #[test]
+    fn the_ta2_reads_check_the_brand_and_the_view_bounds() {
+        use crate::abi::ObjectClass;
+        for stress in [false, true] {
+            crate::tests::on_big_stack(move || {
+                let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                let iso: &mut Isolate = &mut iso;
+                let rt: &crate::runtime::Runtime = &iso.rt;
+                let mut cx = Cx::new(&mut iso.cx);
+                let p = cx.new_object();
+                let o = cx.new_object();
+                let forged = cx.new_object_with_slots(p, ObjectClass::ArrayBuffer, 6);
+                let forged_dv = cx.new_object_with_slots(p, ObjectClass::DataView, 5);
+                let fixed = cx.allocate_array_buffer(p, 8, None).unwrap();
+                let rab = cx.allocate_array_buffer(p, 8, Some(16)).unwrap();
+                let sab = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+                let gsab = cx.allocate_shared_array_buffer(p, 8, Some(16)).unwrap();
+                // The buffer tests.
+                for (v, ab, shared) in [
+                    (o, false, false),
+                    (forged, false, false),
+                    (fixed, true, false),
+                    (rab, true, false),
+                    (sab, false, true),
+                    (gsab, false, true),
+                ] {
+                    assert_eq!(cx.is_array_buffer(v), ab);
+                    assert_eq!(cx.is_shared_array_buffer(v), shared);
+                }
+                for v in [o, forged] {
+                    assert!(cx.array_buffer_max_byte_length(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                }
+                assert_eq!(cx.array_buffer_max_byte_length(fixed).unwrap(), None);
+                assert_eq!(cx.array_buffer_max_byte_length(rab).unwrap(), Some(16));
+                assert_eq!(cx.array_buffer_max_byte_length(sab).unwrap(), None);
+                assert_eq!(cx.array_buffer_max_byte_length(gsab).unwrap(), Some(16));
+                // TA2-DV-FIXED: no byteLength on a fixed buffer gives a fixed view (slot 2 is 6).
+                let dv = cx.new_data_view(p, fixed, 2, None).unwrap();
+                let auto = cx.new_data_view(p, rab, 2, None).unwrap();
+                let shared = cx.new_data_view(p, gsab, 0, None).unwrap();
+                let len = cx.slot(dv, ObjectClass::DataView, 2).unwrap();
+                assert_eq!(len.as_number(), Some(6.0), "a fixed view of the rest");
+                let len = cx.slot(auto, ObjectClass::DataView, 2).unwrap();
+                assert_eq!(len.as_int32(), Some(crate::layout::VIEW_LENGTH_AUTO));
+                // The DataView reads.
+                for v in [o, forged_dv, fixed] {
+                    assert!(!cx.is_data_view(v));
+                    assert!(cx.data_view_buffer(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(cx.data_view_byte_offset(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(cx.data_view_byte_length(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(cx.data_view_get_value(v, 0, 0, true).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(
+                        cx.data_view_set_value(v, 0, 0, Local::number(1.0), true)
+                            .is_err()
+                    );
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                }
+                assert!(cx.is_data_view(dv) && cx.is_data_view(auto));
+                assert!(cx.data_view_buffer(dv).unwrap().is_same_bits(&fixed));
+                assert_eq!(cx.data_view_byte_offset(dv).unwrap(), Some(2));
+                assert_eq!(cx.data_view_byte_length(dv).unwrap(), Some(6));
+                assert_eq!(cx.data_view_byte_length(auto).unwrap(), Some(6));
+                // Big endian through the view, read back through the buffer.
+                cx.data_view_set_value(dv, 1, 4, Local::number(4660.0), false)
+                    .unwrap();
+                let b = cx.get_value_from_buffer(fixed, 3, 1, true).unwrap();
+                assert_eq!(b.as_number(), Some(18.0), "byte 3 = 0x12");
+                let x = cx.data_view_get_value(dv, 1, 4, true).unwrap();
+                assert_eq!(x.as_number(), Some(13330.0), "0x3412 little endian");
+                // The view range: 4 bytes from 3 of a 6-byte view.
+                assert!(cx.data_view_get_value(dv, 3, 5, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "RangeError");
+                assert!(cx.data_view_get_value(dv, u64::MAX, 0, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "RangeError");
+                // A value of the wrong type (the caller converts): a TypeError.
+                assert!(
+                    cx.data_view_set_value(dv, 0, 7, Local::number(1.0), true)
+                        .is_err()
+                );
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                // A length-tracking view follows a resize; a shrink below its offset puts it
+                // out of bounds.
+                cx.array_buffer_resize(rab, 16).unwrap();
+                assert_eq!(cx.data_view_byte_length(auto).unwrap(), Some(14));
+                cx.data_view_set_value(auto, 13, 1, Local::number(7.0), true)
+                    .unwrap();
+                cx.array_buffer_resize(rab, 1).unwrap();
+                assert_eq!(cx.data_view_byte_length(auto).unwrap(), None);
+                assert_eq!(cx.data_view_byte_offset(auto).unwrap(), None);
+                assert!(cx.data_view_get_value(auto, 0, 1, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                cx.array_buffer_resize(rab, 16).unwrap();
+                let x = cx.data_view_get_value(auto, 13, 1, true).unwrap();
+                assert_eq!(x.as_number(), Some(0.0), "a shrink zeroed the byte");
+                // Shared bytes: a growable SAB view grows with it.
+                cx.data_view_set_value(shared, 4, 5, Local::number(-2.0), true)
+                    .unwrap();
+                cx.shared_array_buffer_grow(gsab, 12).unwrap();
+                assert_eq!(cx.data_view_byte_length(shared).unwrap(), Some(12));
+                let x = cx.data_view_get_value(shared, 4, 5, true).unwrap();
+                assert_eq!(x.as_number(), Some(-2.0));
+                // A detach: every read of the fixed view is out of bounds; the buffer stays.
+                cx.detach_array_buffer(fixed, Local::undefined()).unwrap();
+                assert_eq!(cx.data_view_byte_length(dv).unwrap(), None);
+                assert_eq!(cx.data_view_byte_offset(dv).unwrap(), None);
+                assert!(cx.data_view_get_value(dv, 0, 0, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                assert!(cx.data_view_buffer(dv).unwrap().is_same_bits(&fixed));
+                std::hint::black_box((o, forged, forged_dv, sab, auto, shared));
+            });
+        }
     }
 }
