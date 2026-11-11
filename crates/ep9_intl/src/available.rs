@@ -279,9 +279,10 @@ mod tests {
 
     /// The two tz sources can differ in version (INTL-I1 §4.4): every primary zone id of the
     /// Temporal tz data (read through `ep9_temporal::tzdb::zone_ids`, no zoneinfo64 edge)
-    /// parses in the ICU4X `icu_time` IANA parser, except the ids in `NEWER` (zones of tzdb
-    /// 2026f that the ICU4X 2.4 data does not have yet; DateTimeFormat (W4) formats their
-    /// names with the offset form). A new id in either source fails this test.
+    /// parses in the ICU4X `icu_time` IANA parser, except the ids in `NEWER` (zones that the
+    /// ICU4X 2.4 data does not have yet; DateTimeFormat (W4) formats their names with the
+    /// offset form). `NEWER` is empty: "Asia/Hanoi" is not in `zone_ids` (the Temporal
+    /// `zoneinfo64.res` does not have it either). A new id in either source fails this test.
     #[test]
     fn every_zone_id_parses_in_icu_time() {
         use icu_time::TimeZone;
@@ -292,7 +293,7 @@ mod tests {
             .copied()
             .filter(|id| parser.parse(id) == TimeZone::UNKNOWN)
             .collect();
-        const NEWER: &[&str] = &["Asia/Hanoi"];
+        const NEWER: &[&str] = &[];
         assert_eq!(unknown, NEWER);
         assert!(time_zones().len() > 400, "{}", time_zones().len());
     }

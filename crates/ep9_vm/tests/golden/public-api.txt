@@ -573,7 +573,7 @@ ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
 ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
 ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
 ep9_vm::IntrinsicId :: impl IntrinsicId
-ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 121]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 123]
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
 ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
@@ -637,6 +637,8 @@ ep9_vm::IntrinsicId :: variant IntlNumberFormat
 ep9_vm::IntrinsicId :: variant IntlNumberFormatPrototype
 ep9_vm::IntrinsicId :: variant IntlPluralRules
 ep9_vm::IntrinsicId :: variant IntlPluralRulesPrototype
+ep9_vm::IntrinsicId :: variant IntlRelativeTimeFormat
+ep9_vm::IntrinsicId :: variant IntlRelativeTimeFormatPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmentIteratorPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmenter
 ep9_vm::IntrinsicId :: variant IntlSegmenterPrototype
@@ -915,6 +917,7 @@ ep9_vm::ObjectClass :: variant IntlListFormat
 ep9_vm::ObjectClass :: variant IntlLocale
 ep9_vm::ObjectClass :: variant IntlNumberFormat
 ep9_vm::ObjectClass :: variant IntlPluralRules
+ep9_vm::ObjectClass :: variant IntlRelativeTimeFormat
 ep9_vm::ObjectClass :: variant IntlSegmentIterator
 ep9_vm::ObjectClass :: variant IntlSegmenter
 ep9_vm::ObjectClass :: variant IntlSegments

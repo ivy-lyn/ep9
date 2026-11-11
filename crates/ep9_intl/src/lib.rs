@@ -14,6 +14,8 @@
 //!   36 segmenter      %Intl.Segmenter%, its prototype,        segmenter.rs      (W2 SEGMENTER)
 //!                     %IntlSegmentsPrototype%, %IntlSegmentIteratorPrototype%
 //!   37 display_names  %Intl.DisplayNames%, its prototype      display_names.rs  (W2 DISPLAYNAMES)
+//!   38 relative_time_format  %Intl.RelativeTimeFormat%, its prototype
+//!                                                            relative_time_format.rs (W3 RTF)
 //! support (W1 CORE):
 //!   tag        IsStructurallyValidLanguageTag, CanonicalizeUnicodeLocaleId,
 //!              CanonicalizeLocaleList (ECMA-402 §6.2, §9.2.1)
@@ -49,6 +51,7 @@ pub mod locale_info;
 pub mod number_format;
 pub mod options;
 pub mod plural_rules;
+pub mod relative_time_format;
 pub mod resolve;
 pub mod segmenter;
 pub mod tag;
@@ -65,6 +68,7 @@ pub const MODULES: &[BuiltinModule] = &[
     list_format::MODULE,
     segmenter::MODULE,
     display_names::MODULE,
+    relative_time_format::MODULE,
 ];
 
 /// Helpers of the unit tests.

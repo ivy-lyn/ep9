@@ -1,7 +1,7 @@
 //! The number core of NumberFormat (ECMA-402 §16.5): the Intl mathematical value of a value
 //! (ToIntlMathematicalValue, §16.5.15), and the parts of a formatted number (FormatNumeric,
 //! PartitionNumberPattern §16.5.3, ComputeExponent §16.5.12) for the decimal style in
-//! standard and compact notation.
+//! standard, compact, scientific and engineering notation.
 //!
 //! ```text
 //! value ─ to_intl_mv ─> IntlMv::{Finite(Decimal), Wide(WideDecimal), PosInf, NegInf, NaN}
@@ -13,13 +13,19 @@
 //!            fraction zeros cut (INTL-V2-D20: "1.500" is the value 1.5)
 //! IntlMv + Options ─ partition ─> [(type, value)]
 //!   compact: ComputeExponent on the ICU4X compact data; x * 10^-e
+//!   scientific, engineering: ComputeExponent on the magnitude of the Decimal (an integer:
+//!     e = m, or m rounded down to a multiple of 3); x * 10^-e
 //!   FormatNumericToString (crate::digits, rounding on Decimal or WideDecimal)
 //!   sign by signDisplay; digits of the numbering system (CLDR digit table); grouping by the
 //!   ICU4X DecimalSymbols sizes; NaN and infinity from the CLDR T1 table
 //!   compact affix: the ICU4X compact pattern, split around the number
+//!   exponent: exponentSeparator (CLDR T1 `exponential`), exponentMinusSign (the minus sign
+//!     affix of the locale), exponentInteger (the digits of the numbering system)
 //! ```
 //!
-//! No f64 arithmetic: every digit comes from a Decimal (H36).
+//! No f64 arithmetic: every digit comes from a Decimal (H36). The exponent of scientific and
+//! engineering notation is integer arithmetic on the magnitude of the Decimal: no `log10`, no
+//! `pow` (INTL-V2-FP3).
 //!
 //! Interrupt polls (H23): the passes over the digits of a WideDecimal (the conversion, the
 //! rounding, the parts, the join) count their digits in a [`Work`] (one budget unit per
@@ -280,6 +286,25 @@ pub enum SignDisplay {
     Negative,
 }
 
+/// The notations with an exponent part (`[[Notation]]` "scientific" and "engineering").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exponent {
+    Scientific,
+    Engineering,
+}
+
+impl Exponent {
+    /// ComputeExponentForMagnitude ( numberFormat, magnitude ) (§16.5.13) for this notation:
+    /// the magnitude ("scientific"), or the magnitude rounded down to a multiple of 3
+    /// ("engineering"). Integer arithmetic only (INTL-V2-FP3).
+    pub fn for_magnitude(self, magnitude: i64) -> i64 {
+        match self {
+            Exponent::Scientific => magnitude,
+            Exponent::Engineering => magnitude.div_euclid(3) * 3,
+        }
+    }
+}
+
 /// The fields of a NumberFormat that FormatNumeric reads (decimal style).
 #[derive(Clone, Debug)]
 pub struct Format<'a> {
@@ -291,6 +316,8 @@ pub struct Format<'a> {
     /// `None`: standard notation; `Some(long)`: compact notation with `[[CompactDisplay]]`
     /// "long" (true) or "short".
     pub compact: Option<bool>,
+    /// `Some`: scientific or engineering notation (an exponent part after the number).
+    pub exponent: Option<Exponent>,
     pub grouping: Grouping,
     pub sign_display: SignDisplay,
 }
@@ -410,6 +437,16 @@ pub enum PartType {
     Infinity,
     Compact,
     Literal,
+    // INTL W3 (the RTF skeleton): the part types of the styles and notations that NF-CURRENCY,
+    // NF-UNIT and NF-SCIRANGE fill (§16.5.3 PartitionNumberPattern, §16.5.7
+    // FormatApproximately).
+    Currency,
+    PercentSign,
+    Unit,
+    ExponentSeparator,
+    ExponentMinusSign,
+    ExponentInteger,
+    ApproximatelySign,
 }
 
 impl PartType {
@@ -426,6 +463,13 @@ impl PartType {
             PartType::Infinity => "infinity",
             PartType::Compact => "compact",
             PartType::Literal => "literal",
+            PartType::Currency => "currency",
+            PartType::PercentSign => "percentSign",
+            PartType::Unit => "unit",
+            PartType::ExponentSeparator => "exponentSeparator",
+            PartType::ExponentMinusSign => "exponentMinusSign",
+            PartType::ExponentInteger => "exponentInteger",
+            PartType::ApproximatelySign => "approximatelySign",
         }
     }
 }
@@ -597,41 +641,60 @@ fn affix_parts(affix: &str, out: &mut Parts) {
     }
 }
 
+/// ComputeExponent ( numberFormat, x ) (§16.5.12) and the significand x × 10^-exponent
+/// rounded by FormatNumericToString with `digits`, for any notation: `exponent_for` is its
+/// ComputeExponentForMagnitude (§16.5.13). The exponent of the magnitude of x; again for
+/// magnitude + 1 if the rounding moved the magnitude (9.99 rounded to 2 digits is 10: "1E1",
+/// not "10E0"). Integer arithmetic on the magnitude of the decimal (no `log10`, no `pow`;
+/// INTL-V2-FP3). Intl.PluralRules shares it (`crate::plural_rules`).
+pub(crate) fn compute_exponent<D: DecimalValue>(
+    digits: &DigitOptions,
+    x: &D,
+    exponent_for: impl Fn(i64) -> i64,
+    work: &mut Work,
+) -> Result<(i64, D), Interrupted> {
+    let round = |e: i64, work: &mut Work| {
+        let mut y = x.copy(work)?;
+        y.multiply_pow10(-e);
+        format_numeric_to_string(digits, &mut y, work)?;
+        Ok(y)
+    };
+    // 1. If x = 0, return 0.
+    if x.is_zero() {
+        return Ok((0, round(0, work)?));
+    }
+    // 2-4. The magnitude of |x| (the place of its highest nonzero digit) and its exponent.
+    let magnitude = x.nonzero_magnitude_start();
+    let e = exponent_for(magnitude);
+    // 5-6. x × 10^-e, rounded.
+    let y = round(e, work)?;
+    // 7-9. A rounding that keeps the magnitude keeps the exponent.
+    if y.is_zero() || y.nonzero_magnitude_start() == magnitude - e {
+        return Ok((e, y));
+    }
+    // 10. Return ComputeExponentForMagnitude(numberFormat, magnitude + 1).
+    let e = exponent_for(magnitude + 1);
+    Ok((e, round(e, work)?))
+}
+
 /// ComputeExponent ( numberFormat, x ) (§16.5.12) for compact notation, and the rounded
-/// x × 10^-exponent: the exponent of the ICU4X compact data for the magnitude of x, again for
-/// magnitude + 1 if the rounding moved the magnitude. A magnitude above i16::MAX (a
-/// WideDecimal) takes the exponent of i16::MAX: the top pattern of the data.
+/// x × 10^-exponent ([`compute_exponent`]): the exponent of the ICU4X compact data for the
+/// magnitude. A magnitude above i16::MAX (a WideDecimal) takes the exponent of i16::MAX: the
+/// top pattern of the data.
 fn compact_round<D: DecimalValue>(
     c: &CompactDecimalFormatter,
     digits: &DigitOptions,
     x: &D,
     work: &mut Work,
 ) -> Result<(u8, D), Interrupted> {
-    let round = |e: u8, work: &mut Work| {
-        let mut y = x.copy(work)?;
-        y.multiply_pow10(-i64::from(e));
-        format_numeric_to_string(digits, &mut y, work)?;
-        Ok(y)
-    };
     let exponent_for = |m: i64| {
-        c.compact_exponent_for_magnitude(m.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16)
+        i64::from(c.compact_exponent_for_magnitude(
+            m.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16,
+        ))
     };
-    // 1. If x = 0, return 0.
-    if x.is_zero() {
-        return Ok((0, round(0, work)?));
-    }
-    // 3-4. The magnitude and its exponent.
-    let magnitude = x.nonzero_magnitude_start();
-    let e = exponent_for(magnitude);
-    // 5-6. x × 10^-e, rounded.
-    let y = round(e, work)?;
-    // 7-9.
-    if y.is_zero() || y.nonzero_magnitude_start() == magnitude - i64::from(e) {
-        return Ok((e, y));
-    }
-    // 10. ComputeExponentForMagnitude(magnitude + 1).
-    let e = exponent_for(magnitude + 1);
-    Ok((e, round(e, work)?))
+    let (e, y) = compute_exponent(digits, x, exponent_for, work)?;
+    // The exponent is one of the ICU4X data: a u8.
+    Ok((u8::try_from(e).unwrap_or(0), y))
 }
 
 /// The prefix and suffix of the compact pattern of the unsigned significand `y` with the
@@ -651,15 +714,74 @@ fn compact_affixes(icu: &Icu, y: &Decimal, e: u8) -> Option<(String, String)> {
     ))
 }
 
+/// The exponent parts of scientific and engineering notation (PartitionNumberPattern
+/// §16.5.3, step 5.c.ii): the exponentSeparator (CLDR `exponential` of the locale and
+/// numbering system, "E" if the data has none), for a negative exponent the minus sign affix
+/// of the locale as an exponentMinusSign part (its bidi marks are literal parts, as node: ar
+/// "1.2E\u{200E}-4"), and the digits of |e| in the numbering system (exponentInteger).
+fn exponent_parts(
+    e: i64,
+    nu: &str,
+    icu: &Icu,
+    out: &mut Parts,
+    work: &mut Work,
+) -> Result<(), Interrupted> {
+    let separator = icu.t1.map_or("E", |t| t.exponential);
+    out.push((
+        PartType::ExponentSeparator,
+        if separator.is_empty() { "E" } else { separator }.to_string(),
+    ));
+    if e < 0 {
+        let minus = icu.symbols.get().minus_sign_prefix();
+        if minus.trim_matches(is_bidi_mark).is_empty() {
+            out.push((PartType::ExponentMinusSign, "-".to_string()));
+        } else {
+            push_sign(out, PartType::ExponentMinusSign, minus);
+        }
+    }
+    let digits: [char; 10] = cldr::numbering_system_digits(nu)
+        .copied()
+        .unwrap_or(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+    let text: String = e
+        .unsigned_abs()
+        .to_string()
+        .bytes()
+        .map(|b| digits[usize::from(b - b'0')])
+        .collect();
+    work.add(text.len())?;
+    out.push((PartType::ExponentInteger, text));
+    Ok(())
+}
+
+/// The largest exponent shift of the plural value of scientific notation: the significand
+/// (at most 21 integer digits) × 10^e stays in the i16 magnitudes of a Decimal.
+const PLURAL_SHIFT: i64 = 16_000;
+
 /// The body parts of the finite value `d` formatted with `f` (compact affixes and the
-/// number, no sign), and whether the rounded value is zero.
+/// number, then the exponent parts; no sign), whether the rounded value is zero, and (if
+/// `plural`) the [`DecimalValue::plural_decimal`] of the rounded value (the significand in
+/// compact notation; the significand × 10^e in scientific and engineering notation, as ICU:
+/// en "1E3 meters", fr "1,5E0 mètre").
 fn finite_parts<D: DecimalValue>(
     f: &Format<'_>,
     icu: &Icu,
     d: &D,
+    plural: bool,
     body: &mut Parts,
     work: &mut Work,
-) -> Result<bool, Interrupted> {
+) -> Result<(bool, Option<Decimal>), Interrupted> {
+    if let Some(notation) = f.exponent {
+        // 16.5.3 steps 2.b-c: exponent = ComputeExponent(numberFormat, x); x = x × 10^-exponent.
+        let (e, y) = compute_exponent(&f.digits, d, |m| notation.for_magnitude(m), work)?;
+        number_parts(&y, f.numbering_system, icu, f.grouping, body, work)?;
+        exponent_parts(e, f.numbering_system, icu, body, work)?;
+        let rounded = plural.then(|| {
+            let mut p = y.plural_decimal();
+            DecimalValue::multiply_pow10(&mut p, e.clamp(-PLURAL_SHIFT, PLURAL_SHIFT));
+            p
+        });
+        return Ok((y.is_zero(), rounded));
+    }
     let (exponent, y) = match (f.compact, icu.compact.as_ref()) {
         (Some(_), Some(c)) => compact_round(c, &f.digits, d, work)?,
         _ => {
@@ -680,17 +802,85 @@ fn finite_parts<D: DecimalValue>(
     if let Some((_, suffix)) = &affixes {
         affix_parts(suffix, body);
     }
-    Ok(y.is_zero())
+    Ok((y.is_zero(), plural.then(|| y.plural_decimal())))
 }
 
-/// PartitionNumberPattern ( numberFormat, x ) (§16.5.3) for the decimal style: the parts of
-/// `x` formatted with `f`.
-pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
-    let mut out = Parts::new();
+/// The pieces of PartitionNumberPattern (§16.5.3) that a style pattern puts in place (the
+/// styles "percent" and "currency", `super::currency`): the sign that `[[SignDisplay]]`
+/// shows, the number with its compact affixes, and the rounded value.
+pub struct Pieces {
+    /// The sign to show: `Some(true)` minus, `Some(false)` plus, `None` no sign
+    /// (GetNumberFormatPattern, §16.5.10).
+    pub sign: Option<bool>,
+    /// The number parts (or the NaN or infinity part) with the compact affixes; no sign.
+    pub body: Parts,
+    /// The [`DecimalValue::plural_decimal`] of the rounded value, if [`pieces`] was asked
+    /// for it and the value is finite.
+    pub rounded: Option<Decimal>,
+    icu: Rc<Icu>,
+}
+
+impl Pieces {
+    /// Pushes the sign affix before the number (the locale's minus or plus sign prefix, as
+    /// `push_sign` splits it: its bidi marks are literal parts), if a sign shows.
+    pub fn push_sign_prefix(&self, out: &mut Parts) {
+        let symbols = self.icu.symbols.get();
+        match self.sign {
+            Some(true) => push_sign(out, PartType::MinusSign, symbols.minus_sign_prefix()),
+            Some(false) => push_sign(out, PartType::PlusSign, symbols.plus_sign_prefix()),
+            None => {}
+        }
+    }
+
+    /// Pushes the sign affix after the number, if a sign shows.
+    pub fn push_sign_suffix(&self, out: &mut Parts) {
+        let symbols = self.icu.symbols.get();
+        match self.sign {
+            Some(true) => push_sign(out, PartType::MinusSign, symbols.minus_sign_suffix()),
+            Some(false) => push_sign(out, PartType::PlusSign, symbols.plus_sign_suffix()),
+            None => {}
+        }
+    }
+
+    /// The minus sign of the locale for a "-" in a CLDR pattern: the minus sign affix
+    /// without its bidi marks ("-" if the locale has none).
+    pub fn minus_sign(&self) -> String {
+        let symbols = self.icu.symbols.get();
+        let prefix = symbols.minus_sign_prefix().trim_matches(is_bidi_mark);
+        let core = if prefix.is_empty() {
+            symbols.minus_sign_suffix().trim_matches(is_bidi_mark)
+        } else {
+            prefix
+        };
+        if core.is_empty() { "-" } else { core }.to_string()
+    }
+
+    /// The decimal style: the sign prefix, the body, the sign suffix.
+    fn into_parts(self) -> Parts {
+        let mut out = Parts::with_capacity(self.body.len() + 2);
+        self.push_sign_prefix(&mut out);
+        let suffix = {
+            let mut s = Parts::new();
+            self.push_sign_suffix(&mut s);
+            s
+        };
+        out.extend(self.body);
+        out.extend(suffix);
+        out
+    }
+}
+
+/// The [`Pieces`] of `x` formatted with `f` (`None` if the ICU4X data has no symbols). With
+/// `plural`, [`Pieces::rounded`] holds the rounded value of a finite `x`.
+pub fn pieces(
+    f: &Format<'_>,
+    x: &IntlMv,
+    plural: bool,
+    work: &mut Work,
+) -> Result<Option<Pieces>, Interrupted> {
     let Some(icu) = icu_for(f) else {
-        return Ok(out);
+        return Ok(None);
     };
-    let symbols = icu.symbols.get();
     let t1 = icu.t1;
     // The number and its sign.
     let (negative, nan) = match x {
@@ -701,35 +891,52 @@ pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, I
         IntlMv::Wide(d) => (d.is_negative(), false),
     };
     let mut body = Parts::new();
-    let rounded_zero = match x {
+    let (rounded_zero, rounded) = match x {
         IntlMv::NaN => {
             body.push((PartType::Nan, t1.map_or("NaN", |t| t.nan).to_string()));
-            false
+            (false, None)
         }
         IntlMv::PosInf | IntlMv::NegInf => {
             body.push((
                 PartType::Infinity,
                 t1.map_or("∞", |t| t.infinity).to_string(),
             ));
-            false
+            (false, None)
         }
-        IntlMv::Finite(d) => finite_parts(f, &icu, d, &mut body, work)?,
-        IntlMv::Wide(d) => finite_parts(f, &icu, d, &mut body, work)?,
+        IntlMv::Finite(d) => finite_parts(f, &icu, d, plural, &mut body, work)?,
+        IntlMv::Wide(d) => finite_parts(f, &icu, d, plural, &mut body, work)?,
     };
-    match sign_of(f.sign_display, negative, rounded_zero, nan) {
-        Some(true) => {
-            push_sign(&mut out, PartType::MinusSign, symbols.minus_sign_prefix());
-            out.extend(body);
-            push_sign(&mut out, PartType::MinusSign, symbols.minus_sign_suffix());
-        }
-        Some(false) => {
-            push_sign(&mut out, PartType::PlusSign, symbols.plus_sign_prefix());
-            out.extend(body);
-            push_sign(&mut out, PartType::PlusSign, symbols.plus_sign_suffix());
-        }
-        None => out.extend(body),
-    }
-    Ok(out)
+    Ok(Some(Pieces {
+        sign: sign_of(f.sign_display, negative, rounded_zero, nan),
+        body,
+        rounded,
+        icu,
+    }))
+}
+
+/// The CLDR T1 row (exponent separator, approximately sign, range pattern) of the data
+/// locale and numbering system of `f` (`None` if the ICU4X data has no symbols), from the
+/// cached ICU4X data: the ranges of `super::range` read it.
+pub(super) fn t1_row(f: &Format<'_>) -> Option<&'static cldr::NumberSymbols> {
+    icu_for(f).and_then(|icu| icu.t1)
+}
+
+/// The minus and plus sign affixes (prefix form, with their bidi marks) of the data locale
+/// and numbering system of `f` (`None` if the ICU4X data has no symbols): the ranges of
+/// `super::range` find the sign symbol in the parts with them.
+pub(super) fn sign_affixes(f: &Format<'_>) -> Option<(String, String)> {
+    let icu = icu_for(f)?;
+    let symbols = icu.symbols.get();
+    Some((
+        symbols.minus_sign_prefix().to_string(),
+        symbols.plus_sign_prefix().to_string(),
+    ))
+}
+
+/// PartitionNumberPattern ( numberFormat, x ) (§16.5.3) for the decimal style: the parts of
+/// `x` formatted with `f`.
+pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
+    Ok(pieces(f, x, false, work)?.map_or_else(Parts::new, Pieces::into_parts))
 }
 
 /// Pushes a part of type `t` with `text`, if `text` is not empty.
@@ -741,7 +948,7 @@ fn push_text(out: &mut Parts, t: PartType, text: &str) {
 
 /// Whether `c` is a bidi mark of a CLDR sign affix: LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK or
 /// ARABIC LETTER MARK.
-fn is_bidi_mark(c: char) -> bool {
+pub(super) fn is_bidi_mark(c: char) -> bool {
     matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}')
 }
 
@@ -872,6 +1079,7 @@ mod tests {
                 strip_if_integer: false,
             },
             compact: None,
+            exponent: None,
             grouping: Grouping::Auto,
             sign_display: SignDisplay::Auto,
         };
