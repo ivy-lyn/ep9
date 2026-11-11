@@ -395,9 +395,26 @@ pub(crate) struct TableFull;
 /// The internal slot of a Map, Set, WeakMap or WeakSet object that holds its table.
 pub(crate) const TABLE_SLOT: usize = 0;
 
-/// The table of the collection object `o` (internal slot [`TABLE_SLOT`]).
+/// The table of the collection object `o` (internal slot [`TABLE_SLOT`]). Panics in every
+/// build if the slot holds no live table: safe code can write the slot (`Cx::set_slot`), and
+/// every table read and write trusts the cell's own fields (SAFE-COLL-FORGE).
 pub(crate) fn table_of(o: u64) -> u64 {
-    object::slot_get(o, TABLE_SLOT)
+    let t = checked(object::slot_get(o, TABLE_SLOT));
+    assert!(
+        rd_i32(cell(t), otf::FLAGS) & FLAG_OBSOLETE == 0,
+        "the table slot of a collection holds an obsolete table"
+    );
+    t
+}
+
+/// `t` if it is an ORDERED_TABLE cell (live or obsolete). Panics in every build otherwise:
+/// the slot that held `t` is one that safe code can write (SAFE-COLL-FORGE).
+pub(crate) fn checked(t: u64) -> u64 {
+    assert!(
+        kind::cell_kind(t) == kind::ORDERED_TABLE.get(),
+        "a collection slot holds no ORDERED_TABLE cell"
+    );
+    t
 }
 
 /// Sets the value of the key `k` (normalized here) to `v` (ignored for a Set), or appends a
@@ -544,7 +561,9 @@ fn forward(rt: &Runtime, old: u64, new: u64, extra: i32) {
 /// end (the cursor then stays at the end, so an entry added later is still seen). At an
 /// obsolete table the cursor first moves to the table that replaced it: to entry 0 after a
 /// `clear`, else to the index of the first live entry at or after `i` (the count of live
-/// entries before `i`: a rehash keeps their order). Not a GC point.
+/// entries before `i`: a rehash keeps their order). An `i` past the used entries counts as
+/// their end: a Map or Set Iterator keeps `i` in a slot that safe code can write
+/// (SAFE-COLL-FORGE). Not a GC point.
 pub(crate) fn cursor_next(t: &mut u64, i: &mut usize) -> Option<usize> {
     loop {
         let c = cell(*t);
@@ -554,7 +573,7 @@ pub(crate) fn cursor_next(t: &mut u64, i: &mut usize) -> Option<usize> {
                 0
             } else {
                 let weak = flags & FLAG_WEAK_KEYS != 0;
-                (0..*i)
+                (0..(*i).min(used(c)))
                     .filter(|&j| survives(rd(c, entry(c, j)), weak))
                     .count()
             };
