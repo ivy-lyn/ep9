@@ -56,7 +56,7 @@ use crate::digits::{
     DecimalValue, DigitOptions, Interrupted, POLL_DIGITS, RoundingMode, RoundingType, Work,
     format_numeric_to_string, polled, set_number_format_digit_options,
 };
-use crate::number_format::decimal::{IntlMv, to_intl_mv};
+use crate::number_format::decimal::{self, Exponent, IntlMv, to_intl_mv};
 use crate::options::index_of;
 use crate::options::{coerce_options_to_object, get_locale_matcher, get_string_option};
 use crate::resolve;
@@ -585,13 +585,13 @@ struct Plural {
 
 /// ComputeExponentForMagnitude ( pluralRules, magnitude ) (§16.5.13) for the notation of
 /// `r`: 0 for "standard", the magnitude for "scientific", the magnitude rounded down to a
-/// multiple of 3 for "engineering", the ICU4X compact data for "compact" (a magnitude above
-/// i16::MAX takes the exponent of i16::MAX: the top pattern). Integer arithmetic only (no
-/// `log10`, no `pow`; INTL-V2-FP3).
+/// multiple of 3 for "engineering" (the code of NumberFormat, [`Exponent::for_magnitude`]),
+/// the ICU4X compact data for "compact" (a magnitude above i16::MAX takes the exponent of
+/// i16::MAX: the top pattern). Integer arithmetic only (no `log10`, no `pow`; INTL-V2-FP3).
 fn exponent_for_magnitude(r: &Resolved, icu: &Icu, magnitude: i64) -> i64 {
     match r.notation() {
-        "scientific" => magnitude,
-        "engineering" => magnitude.div_euclid(3) * 3,
+        "scientific" => Exponent::Scientific.for_magnitude(magnitude),
+        "engineering" => Exponent::Engineering.for_magnitude(magnitude),
         "compact" => icu.compact.as_ref().map_or(0, |c| {
             let m = magnitude.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
             i64::from(c.compact_exponent_for_magnitude(m))
@@ -601,34 +601,15 @@ fn exponent_for_magnitude(r: &Resolved, icu: &Icu, magnitude: i64) -> i64 {
 }
 
 /// ComputeExponent ( pluralRules, x ) (§16.5.12) and the significand x × 10^-exponent rounded
-/// by FormatNumericToString: as NumberFormat shows `x` in the notation of `r`.
+/// by FormatNumericToString: as NumberFormat shows `x` in the notation of `r` (the code of
+/// NumberFormat, [`decimal::compute_exponent`]).
 fn compute_exponent<D: DecimalValue>(
     r: &Resolved,
     icu: &Icu,
     x: &D,
     work: &mut Work,
 ) -> Result<(i64, D), Interrupted> {
-    let round = |e: i64, work: &mut Work| {
-        let mut y = x.copy(work)?;
-        y.multiply_pow10(-e);
-        format_numeric_to_string(&r.digits, &mut y, work)?;
-        Ok(y)
-    };
-    // 1. If x = 0, return 0.
-    if x.is_zero() {
-        return Ok((0, round(0, work)?));
-    }
-    // 3-6. The magnitude, its exponent, and x × 10^-exponent rounded.
-    let magnitude = x.nonzero_magnitude_start();
-    let e = exponent_for_magnitude(r, icu, magnitude);
-    let y = round(e, work)?;
-    // 7-9. A rounding that keeps the magnitude keeps the exponent.
-    if y.is_zero() || y.nonzero_magnitude_start() == magnitude - e {
-        return Ok((e, y));
-    }
-    // 10. Return ComputeExponentForMagnitude(magnitude + 1).
-    let e = exponent_for_magnitude(r, icu, magnitude + 1);
-    Ok((e, round(e, work)?))
+    decimal::compute_exponent(&r.digits, x, |m| exponent_for_magnitude(r, icu, m), work)
 }
 
 /// The plural operands of `x` in the notation of `r` (the operand `c`/`e` is the exponent

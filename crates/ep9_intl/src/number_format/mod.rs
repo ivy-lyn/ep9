@@ -310,6 +310,11 @@ impl Resolved {
             digits: self.digits,
             compact: (NOTATIONS[self.notation as usize] == "compact")
                 .then_some(self.compact_display == 1),
+            exponent: match NOTATIONS[self.notation as usize] {
+                "scientific" => Some(decimal::Exponent::Scientific),
+                "engineering" => Some(decimal::Exponent::Engineering),
+                _ => None,
+            },
             grouping: self.grouping,
             sign_display: self.sign_display,
         }
