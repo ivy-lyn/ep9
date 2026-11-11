@@ -1089,8 +1089,8 @@ const _: () = {
 // A `full` sibling handler whose fast body returns `interp::Flow::Record` runs [`adds_bit`]
 // before its tail call of `interp::dsl::record_next` (`interp::dsl::record_exit`). When no bit
 // is new (the usual case after a site's first runs: a number `+` on doubles records `NUMBER`
-// each time) the handler dispatches the next instruction itself, so the record costs the test
-// and no call (the V8 form: write feedback only when it changes). `record_next` still runs
+// each time) the handler tail-calls `dsl::skip_next` (as `ics_only`), so the record costs the
+// test and a jump (the V8 form: write feedback only when it changes). `record_next` still runs
 // [`record`], which tests again and stores only a new bit (V9-D6), so every slot gets the same
 // bits as before (FACT_SCHEMA 2; `ep9_builtins` `tests/facts_export.rs` compares the
 // `Dispatch::Match` records, which run inline, with the sibling ones).
