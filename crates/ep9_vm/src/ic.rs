@@ -490,7 +490,7 @@ pub(crate) fn load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, name: u32
     // `move`: a closure that borrowed `name` would keep it in memory, and the T0 handler then
     // loses its sibling tail call in a debug-assertions build at opt-level 2 (Spike C's test
     // profile), so each GetNamedProperty grew the native stack until the RangeError.
-    load_with(rt, o, id, move || fi.constant(name), h)
+    load_hit(rt, o, id, move || fi.constant(name), h)
 }
 
 /// The value the handler `h` gives for `o` (ShapeId `id`), as for [`load`]. `key` gives the
@@ -2312,4 +2312,212 @@ thread_local! {
     /// Tests (M8-P0 TS-STORE): how many adds grew the SLOTS cell on the miss path
     /// ([`grow_add`]).
     pub(crate) static GROW_ADDS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+// ---- x86-64 forms of the hit paths (M8-P1 X86-SHAPE2) ------------------------------------------
+//
+// x86-64 has 5 free caller-saved registers beside the 4 pinned handler arguments (H15; the
+// handler type in `interp/mod.rs`), aarch64 has 18. A hit path that needs more live values on
+// x86-64 makes LLVM save a callee-saved register on entry for every run of the handler. These
+// forms give the same answers as the shared forms in fewer live values and with no jump table;
+// aarch64 keeps the shared forms (its handler bytes do not change).
+
+/// The hit path of [`load`] after the case test: [`load_with`] on aarch64 and other targets.
+#[cfg(not(target_arch = "x86_64"))]
+use self::load_with as load_hit;
+
+/// The hit path of [`load`] after the case test: [`load_with_x86`] on x86-64.
+#[cfg(target_arch = "x86_64")]
+use self::load_with_x86 as load_hit;
+
+/// [`load_with`] in the x86-64 form (M8-P1 X86-SHAPE2): the same answer for every handler `h`,
+/// receiver `o` (a cell) and ShapeId `id`.
+///
+/// - The smi kinds take compares, not a `match`: LLVM makes the 4-way `match` of
+///   [`load_with`] a jump table, and its indirect jump is about 11% of the indirect
+///   mispredicts of octane-typescript on x86-64 (S0, cachegrind). The two field kinds share
+///   one branch: the field's cell is a select of the receiver and its SLOTS word (an object
+///   cell always has that word; the in-object kind does not use the value it reads). So
+///   the kinds form at most 3 compare clusters, below the x86-64 jump table minimum of 4.
+/// - The prototype path tests the ShapeId first and reads the handler kind again for the
+///   `MISSING` test, so `id` and the kind are not live across the validity cell test.
+///
+/// Compiled on every target (a test compares it with [`load_with`]); called only on x86-64.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[inline(always)]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+fn load_with_x86(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Option<u64> {
+    if is_i32(h) {
+        let x = int32_of(h);
+        let k = x & smi::KIND_MASK;
+        if (k as u32).wrapping_sub(smi::FIELD_IN_OBJECT as u32) < 2 {
+            // FIELD_IN_OBJECT or FIELD_OUT_OF_LINE ([`field_ref`]).
+            let s = rd(cell(o), obj::SLOTS);
+            let c = core::hint::select_unpredictable(k == smi::FIELD_IN_OBJECT, o, s);
+            // The test of [`entry`]: no panic path in the inlined hit path.
+            return is_cell_bits(c).then(|| rd(cell(c), (x >> smi::SHIFT) as usize));
+        }
+        if k == smi::ARRAY_LENGTH {
+            return Some(rd(cell(o), arr::LENGTH));
+        }
+        if k == smi::STRING_LENGTH && kind::is_string(o) {
+            return Some(int32_bits(string::str_len(o) as i32));
+        }
+        return None;
+    }
+    if !is_cell_bits(h) {
+        return None;
+    }
+    let c = cell(h);
+    let k = rd_i32(c, hc::KIND);
+    if k != hk::PROTO_LOAD && k != hk::MISSING {
+        return None;
+    }
+    // ShapeId 0 is a string's or a symbol's: a KEY_STRING prototype case serves strings only.
+    if id == 0 && !kind::is_string(o) {
+        return None;
+    }
+    let vc = rd(c, hc::CELL);
+    if !is_cell_bits(vc) || !validity::valid_cell(vc) {
+        return None;
+    }
+    if rd_i32(c, hc::KIND) == hk::MISSING {
+        #[cfg(debug_assertions)]
+        cross_check(rt, o, key(), c);
+        return Some(UNDEFINED);
+    }
+    // A dead holder reads undefined, which is not a cell.
+    let holder = rd(c, hc::REF);
+    if !is_cell_bits(holder) {
+        return None;
+    }
+    #[cfg(debug_assertions)]
+    cross_check(rt, o, key(), c);
+    read_field(holder, rd_i32(c, hc::LOCATION))
+}
+
+/// The hit path of the `LdaGlobal` fast body: [`load_global`] on aarch64 and other targets,
+/// and on x86-64 with `ic-stats`.
+#[cfg(any(not(target_arch = "x86_64"), feature = "ic-stats"))]
+pub(crate) use self::load_global as load_global_fast;
+
+/// The hit path of the `LdaGlobal` fast body on x86-64 (M8-P1 X86-SHAPE2): [`load_global`] for
+/// a monomorphic entry (a global object case or a lexical binding); `None` for every other
+/// entry. The polymorphic loop of [`global_site`] keeps 4 more values live, so x86-64
+/// `LdaGlobal` saved 4 registers on entry for every run. A polymorphic entry goes to the cold
+/// body, which runs [`load_global`] before the miss path (`interp::tails::load_global`), so a
+/// hit stays a hit. With `ic-stats` the fast body keeps [`load_global`]: there it counts a miss
+/// for each `None`.
+#[cfg(all(target_arch = "x86_64", not(feature = "ic-stats")))]
+#[inline(always)]
+pub(crate) fn load_global_fast(cx: &Cx, fi: &FunctionInfo, slot: u32) -> Option<u64> {
+    let (v, i) = (as_cell(feedback::vector(fi)?)?, slot as usize);
+    debug_assert!(slot < feedback::slot_count(v.to_value().to_bits()));
+    let at = |w| rd(v, feedback::fv::SLOTS + feedback::fv::SLOT_SIZE * i + w);
+    let (key, value) = (at(feedback::fv::KEY), at(feedback::fv::VALUE));
+    let lex = || Some(rd(as_cell(cx.realm)?, realmf::GLOBAL_LEXICAL));
+    debug_assert!(lex() == Some(cx.rt().root(Root::Lexical)) && cx.global_this == cx.rt().global());
+    // [`global_site`] without its polymorphic loop. The global object case first; the record
+    // is read in each arm, so its ShapeId is not live beside the global object's.
+    let g = as_cell(cx.global_this)?;
+    let (o, loc) = if key as u32 == id_of(g) {
+        let c = global_handler(value, id_of(as_cell(lex()?)?))?;
+        (g, rd_i32(c, hc::LOCATION))
+    } else {
+        let lex = as_cell(lex()?)?;
+        if key as u32 != id_of(lex) || !is_i32(value) {
+            return None;
+        }
+        (lex, int32_of(value))
+    };
+    let off = (loc >> smi::SHIFT) as usize;
+    let c = match loc & smi::KIND_MASK {
+        smi::FIELD_IN_OBJECT => o,
+        smi::FIELD_OUT_OF_LINE => as_cell(rd(o, obj::SLOTS))?,
+        _ => return None,
+    };
+    Some(rd(c, off)).filter(|&v| v != HOLE)
+}
+
+#[cfg(test)]
+mod x86_form_tests {
+    //! [`load_with_x86`] answers as [`load_with`] (M8-P1 X86-SHAPE2). The form runs only on
+    //! x86-64, but this test runs on every target. The prototype cases (cell handlers) run
+    //! through the handlers in `tests::ic` and `tests::ic_ops` on x86-64 CI.
+
+    use super::*;
+    use crate::tests::{config, isolate};
+    use crate::{Dispatch, symbol};
+
+    #[test]
+    fn the_x86_load_form_answers_as_the_shared_form_for_every_smi_kind() {
+        let iso = isolate(config(Dispatch::Sibling, false));
+        let rt = &iso.rt;
+        let p = object::proto_of(object::new_plain_object(rt));
+        let named = |n: usize| -> u64 {
+            let o = object::new_object(rt, p);
+            for i in 0..n {
+                let k = crate::atoms::intern_str(rt, &format!("p{i}"));
+                crate::props::own_define(rt, o, k, int32_bits(i as i32 + 100), attr::DEFAULT);
+            }
+            o
+        };
+        let small = named(2);
+        let big = named(14);
+        assert_ne!(
+            rd(cell(big), obj::SLOTS),
+            UNDEFINED,
+            "the big object has a SLOTS cell"
+        );
+        let a = object::new_array(rt, 0);
+        assert!(object::array_set(rt, a, 5, int32_bits(1)));
+        let s = string::new_string(rt, "abcd");
+        let y = symbol::new_symbol(rt, UNDEFINED);
+        let mut fields = 0;
+        // Objects: every kind at offsets that hold Values in an object cell (SLOTS, ELEMENTS,
+        // the fixed and in-object fields: `obj`) and in a SLOTS cell (CAPACITY, DATA: `slf`).
+        // A string or a symbol: only the kinds that read no field (the IC makes no field case
+        // for a ShapeId 0 receiver).
+        for (o, offsets, kinds) in [
+            (small, &[8, 16, 24, 32][..], 0..16),
+            (big, &[8, 16, 24, 32][..], 0..16),
+            (a, &[8, 16, 24, 32][..], 0..16),
+            (s, &[0][..], 4..16),
+            (y, &[0][..], 4..16),
+        ] {
+            let id = shape_id(o);
+            for k in kinds {
+                for &off in offsets {
+                    let h = smi_handler(k, off);
+                    let want = load_with(rt, o, id, || UNDEFINED, h);
+                    let got = load_with_x86(rt, o, id, || UNDEFINED, h);
+                    assert_eq!(got, want, "kind {k} offset {off} receiver {o:#x}");
+                    fields += usize::from(want.is_some());
+                }
+            }
+            assert_eq!(
+                load_with_x86(rt, o, id, || UNDEFINED, smi_handler(0, 0)),
+                None
+            );
+            for h in [UNDEFINED, NULL, HOLE, MEGA, SLOW] {
+                assert_eq!(load_with_x86(rt, o, id, || UNDEFINED, h), None);
+                assert_eq!(load_with(rt, o, id, || UNDEFINED, h), None);
+            }
+        }
+        // Each field kind hit somewhere (big's SLOTS cell; every in-object read), so the
+        // compare read values, not only misses.
+        assert!(fields > 15, "{fields}");
+        assert_eq!(
+            load_with_x86(rt, s, 0, || UNDEFINED, smi_handler(4, 0)),
+            Some(int32_bits(4))
+        );
+        assert_eq!(
+            load_with_x86(rt, y, 0, || UNDEFINED, smi_handler(4, 0)),
+            None
+        );
+        assert_eq!(
+            load_with_x86(rt, a, shape_id(a), || UNDEFINED, smi_handler(3, 0)),
+            Some(int32_bits(6))
+        );
+    }
 }
