@@ -1,0 +1,37 @@
+#![no_std]
+mod sealed {
+    pub trait Inner {
+        fn inner(&self) -> u8;
+    }
+    pub trait Sealed
+    where
+        Self: Inner,
+    {
+        #[cfg(not(feature = "w64"))]
+        fn test(&self) -> u32;
+        #[cfg(feature = "w64")]
+        fn test(&self) -> u64;
+    }
+}
+pub trait Downcast
+where
+    Self: sealed::Sealed,
+{
+}
+pub struct S;
+impl sealed::Inner for S {
+    fn inner(&self) -> u8 {
+        0
+    }
+}
+impl sealed::Sealed for S {
+    #[cfg(not(feature = "w64"))]
+    fn test(&self) -> u32 {
+        0
+    }
+    #[cfg(feature = "w64")]
+    fn test(&self) -> u64 {
+        0
+    }
+}
+impl Downcast for S {}

@@ -7,13 +7,17 @@
 //     --count target/release/ep9-bench --out run.json --md run.md
 //
 //   --ep9 PATH          the ep9 binary (release build; required)
-//   --commit SHA        the commit ep9 was built from (default: git HEAD of this checkout)
+//   --commit SHA        check: the commit that the ep9 binary names must be SHA. The JSON's
+//                       commit.ep9 is the binary's own (its `ep9 --version` build line on
+//                       stderr, P0-BUILDID): null when it has none or was built dirty
 //   --engines LIST      default ep9,qjs,node-jitless,d8-jitless,brimstone (ep9 is required)
 //   --shells FILE       reference shells (default third_party/shells/versions.txt, written by
 //                       scripts/sync-shells.sh)
 //   --workloads LIST    default t0-loop,t0-branchy,t0-call,t0-prop,ci-v0,richards (workloads.mjs).
 //                       Set names expand: v8v7-8, v8v7-7 (no regexp), octane-7, exit2 (v8v7-7 +
-//                       octane-7, the M1 exit-2 run that exit2.mjs reads)
+//                       octane-7, the M1 exit-2 run that exit2.mjs reads), ts (octane-typescript,
+//                       the TS workload: 3 Octane files in one script, TSREAD) and m2 (v8v7-7 +
+//                       octane-7 + octane-typescript, the run that m2gate.mjs reads)
 //   --harness H         the v8v7 harness: stub (runs 1 and 2) or base (the real base.js, run 3;
 //                       v8v7.mjs); default DEFAULT_HARNESS of v8v7.mjs. The Octane kernels always
 //                       run with Octane's base.js (octane.mjs). The JSON names it per workload
@@ -59,6 +63,9 @@
 // (class R) too: ep9-bench gets --expect-stdout, so a run that is right in the output check and
 // wrong in a counted run gets no count (exit 4: REFUSED; same rule as perf-ci-v0, W4-PERF-REFUSE).
 //
+// A kernel of more than one file (the TS workload) runs as one script; a refused run names the
+// file and line of the first error line (workloads.mjs `parts`).
+//
 // Exit status: 0 done; 1 refused or another error; 2 usage error; 3 host busy.
 // Tests (fake engines, no shells needed): node --test tools/bench/cross/run.test.mjs
 
@@ -91,6 +98,44 @@ export const DEFAULT_ENGINES = ["ep9", "qjs", "node-jitless", "d8-jitless", "bri
 
 /** M0 exit 4 (09-milestones): ep9 >= 0.6x QuickJS on richards and deltablue. */
 export const CANARY = { engine: "qjs", threshold: 0.6, workloads: ["richards", "deltablue"] };
+
+/**
+ * The freshness line of an ep9 binary (`ep9 --version` stderr, crates/ep9_cli/build.rs;
+ * P0-BUILDID): { commit, dirty } ("commit unknown": both null), or null when the binary has no
+ * such line (a build before P0-BUILDID). cross/mem.mjs reads it too; jetstream/run.mjs has a
+ * copy of the pattern (tools/bench/cross/buildid.test.mjs checks the three tools).
+ */
+export function parseBuild(stderr) {
+  const m = /^ep9 build: commit (?:([0-9a-f]{40}) (clean|dirty)|unknown)$/m.exec(stderr ?? "");
+  if (!m) return null;
+  return m[1] ? { commit: m[1], dirty: m[2] === "dirty" } : { commit: null, dirty: null };
+}
+
+/** The commit a binary's build line names when it was built clean, else null (m2-exit: OPEN). */
+export function cleanCommit(build) {
+  return build && build.dirty === false ? build.commit : null;
+}
+
+/**
+ * The freshness of several ep9 binaries (cross/mem.mjs: the jit and the jitless build): null if
+ * one has no build line, else { commit: the one commit they all name or null, dirty: true if
+ * one is dirty, false if all are clean, else null }.
+ */
+export function combineBuilds(builds) {
+  if (!builds.length || builds.some((b) => !b)) return null;
+  const commits = new Set(builds.map((b) => b.commit));
+  const commit = commits.size === 1 ? builds[0].commit : null;
+  const dirty = builds.some((b) => b.dirty === true) ? true : builds.every((b) => b.dirty === false) ? false : null;
+  return { commit, dirty };
+}
+
+/** Why a run names no ep9 commit, for the reports ("" when it names one). */
+export function buildNote(build) {
+  if (build === undefined || (build && build.dirty === false)) return "";
+  if (build === null) return " (the ep9 binary prints no build line: OPEN in m2-exit)";
+  if (build.commit === null) return " (the ep9 binary names no commit: OPEN in m2-exit)";
+  return ` (the ep9 binary of ${build.commit.slice(0, 12)} was built with uncommitted engine changes: OPEN in m2-exit)`;
+}
 
 export class UsageError extends Error {}
 export class Refusal extends Error {}
@@ -224,8 +269,9 @@ export function resolveEngines(ids, { ep9, shellsFile }) {
     if (!d.shell) {
       const v = spawnSync(ep9, ["--version"], { encoding: "utf8" });
       if (v.error) throw new UsageError(`--ep9 ${ep9}: ${v.error.message}`);
-      // The first line, and the build line of M5-P0 (`engine_build`, null for an older binary).
-      return { id, label: d.label, role: d.role, bin: ep9, args: d.args, ...splitVersion(v.stdout || "") };
+      // The first line, and the build line of M5-P0 (`engine_build`, null for an older binary);
+      // the freshness line of P0-BUILDID (`build`, null for an older binary).
+      return { id, label: d.label, role: d.role, bin: ep9, args: d.args, ...splitVersion(v.stdout || ""), build: parseBuild(v.stderr) };
     }
     const s = shells.shells[d.shell];
     if (!s) throw new UsageError(`${shellsFile} has no ${d.shell} line (engine ${id})`);
@@ -262,6 +308,21 @@ export function spawnRun(engine, file, timeoutS) {
   });
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   return { ms, status: r.status, signal: r.signal, error: r.error?.message ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
+/**
+ * Where the first `<file>:<line>:<col>: ` line of `stderr` is in a multi-file kernel: the part
+ * file and its own line (`parts` of workloads.mjs: { file, offset, lines }), or null.
+ */
+export function partPlace(parts, file, stderr) {
+  for (const l of (stderr ?? "").split("\n")) {
+    const m = l.match(/^(.*?):(\d+):(\d+): /);
+    if (!m || m[1] !== file) continue;
+    const at = Number(m[2]);
+    const p = parts.find((x) => at > x.offset && at <= x.offset + x.lines);
+    return p ? `${p.file}:${at - p.offset}` : `generated:${at}`;
+  }
+  return null;
 }
 
 /** Throws a Refusal unless the run exited with 0 and printed exactly `expect`. */
@@ -484,7 +545,13 @@ export async function run(o, deps = {}) {
   }
 
   const engines = resolveEngines(o.engines, { ep9: o.ep9, shellsFile: o.shells });
-  const commit = o.commit ?? git(["rev-parse", "HEAD"]);
+  // The measured binary names its commit (P0-BUILDID), not this checkout: null when it has no
+  // build line or was built with uncommitted engine changes, so m2-exit reads the run as OPEN.
+  const build = engines.find((e) => e.id === "ep9")?.build ?? null;
+  const commit = cleanCommit(build);
+  if (o.commit && build?.commit && o.commit !== build.commit) {
+    throw new UsageError(`--commit ${o.commit}: the ep9 binary names commit ${build.commit}`);
+  }
   const runnerCommit = git(["rev-parse", "HEAD"]);
   const runnerDirty = git(["status", "--porcelain", "--untracked-files=no"]);
   // The fresh paths (kernels.mjs TREE_PATHS) with uncommitted changes, as kernels.mjs writes
@@ -500,7 +567,13 @@ export async function run(o, deps = {}) {
     const byId = Object.fromEntries(engines.map((e) => [e.id, e]));
     const once = (e, w) => {
       const r = exec(byId[e], files[w].file);
-      checkRun(r, { engine: e, workload: w, expect: files[w].expect });
+      try {
+        checkRun(r, { engine: e, workload: w, expect: files[w].expect });
+      } catch (err) {
+        const at = err instanceof Refusal && files[w].parts && partPlace(files[w].parts, files[w].file, r.stderr);
+        if (at) err.message += `\n    (the first error line is at ${at})`;
+        throw err;
+      }
       return r.ms;
     };
 
@@ -558,14 +631,14 @@ export async function run(o, deps = {}) {
     );
 
     // Class R counts (after the guard: counting is load too).
-    const r = o.count ? countAll(o, engines, files, commit) : null;
+    const r = o.count ? countAll(o, engines, files, commit ?? "") : null;
 
     return {
       schema: SCHEMA,
       label: o.label,
       started,
       finished: new Date().toISOString(),
-      commit: { ep9: commit, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "", dirty },
+      commit: { ep9: commit, binary: build, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "", dirty },
       host: {
         file: o.host && path.relative(ROOT, o.host),
         id: hostFile?.id ?? null,
@@ -579,7 +652,7 @@ export async function run(o, deps = {}) {
       options: { rounds: o.rounds, warmup: o.warmup, settle_s: o.settleS, wait_min: o.waitMin, after_s: o.afterS, allow_busy: o.allowBusy },
       // The binary by file name only: the version (ep9: the commit) names the build, and ep9's
       // engine_build its features and preset (MC-w17-5; null for the other engines).
-      engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, bin: path.basename(e.bin), args: e.args })),
+      engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, build: e.build ?? null, bin: path.basename(e.bin), args: e.args })),
       workloads: Object.values(files).map(({ file, ...w }) => ({ ...w, file: path.basename(file) })),
       M: { ratio: "t(engine) / t(ep9) per round; > 1: ep9 is faster", samples, ...m },
       R: r,
@@ -602,7 +675,7 @@ export function renderMarkdown(res) {
   const ld = res.load;
   const sha = (res.commit.ep9 ?? "unknown").slice(0, 12);
   const roundLoads = ld.after_each_round;
-  L.push(`Run ${res.label ? `"${res.label}" ` : ""}${res.started} to ${res.finished}; ep9 commit \`${sha}\`.`);
+  L.push(`Run ${res.label ? `"${res.label}" ` : ""}${res.started} to ${res.finished}; ep9 commit \`${sha}\`${buildNote(res.commit.binary)}.`);
   L.push("");
   L.push(`- Host: ${h.id ?? "no host file"}: ${h.measured.cpu}, ${h.measured.cpus} logical CPUs, ${h.measured.os} (${h.measured.platform}); runner on node ${h.measured.node}.`);
   const g = (c) =>

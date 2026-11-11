@@ -45,7 +45,10 @@ unsafe fn kind_byte(c: u64) -> u8 {
 /// The 4 OBJECT_LAYOUT hand-fact exports of M6-P0 step 3 (were Spike C `HAND_FACTS`) on live
 /// cells: the shape rule with [`layout::SHAPE_CAGE_ALIGN`], the shape's `counts` word at
 /// [`layout::SHAPE_COUNTS`] (its fields equal the shape accessors), and the SHAPE and CONTEXT
-/// kind ids.
+/// kind ids. OBJECT_LAYOUT 8 (M7-P3, JIT-F3): the shape's `flags` word at
+/// [`layout::SHAPE_FLAGS`] equals `shape::flags`, and on a live sealed and a live frozen dense
+/// Array its level bits ([`layout::SHAPE_FLAG_SEALED`], [`layout::SHAPE_FLAG_FROZEN`]) equal
+/// `elements::integrity_of` (Spike C `CheckArray` bakes the offset and the bits).
 #[test]
 fn the_object_layout_hand_fact_exports_hold_on_live_cells() {
     let iso = isolate(config(Dispatch::DEFAULT, false));
@@ -59,6 +62,36 @@ fn the_object_layout_hand_fact_exports_hold_on_live_cells() {
     let a = object::new_array(rt, 2);
     object::array_set(rt, a, 0, crate::frame::int32_bits(5));
     let c = object::new_context(rt, UNDEFINED, core::ptr::null(), 2);
+    let level = |frozen: bool| {
+        let x = object::new_array(rt, 2);
+        object::array_set(rt, x, 0, crate::frame::int32_bits(5));
+        object::array_set(rt, x, 1, crate::frame::int32_bits(6));
+        assert!(crate::property::prevent_extensions(rt, x));
+        assert!(crate::elements::set_integrity(rt, x, frozen));
+        x
+    };
+    let (sealed, frozen) = (level(false), level(true));
+    let levels = layout::SHAPE_FLAG_SEALED | layout::SHAPE_FLAG_FROZEN;
+    for (v, want) in [
+        (o, 0),
+        (a, 0),
+        (sealed, layout::SHAPE_FLAG_SEALED),
+        (frozen, levels),
+    ] {
+        let s = shape::shape_of(v);
+        // SAFETY: `v` and its shape are live cells of `iso`, which runs nothing here.
+        let flags = int32_of(unsafe { word_at(s, layout::SHAPE_FLAGS as usize) });
+        assert_eq!(flags, shape::flags(s));
+        assert_eq!(flags & levels, crate::elements::integrity_of(v));
+        assert_eq!(flags & levels, want);
+    }
+    for v in [sealed, frozen] {
+        let k = shape::elements_kind(shape::shape_of(v));
+        assert!(
+            k < crate::elements::kind::DICTIONARY,
+            "a dense kind with a level"
+        );
+    }
     for v in [o, a] {
         let s = shape::shape_of(v);
         // SAFETY: `v`, its shape and `c` are live cells of `iso`, which runs nothing here.
@@ -95,6 +128,15 @@ fn the_object_layout_hand_fact_exports_hold_on_live_cells() {
         ),
         (64 << 30, 48, 128, 66),
         "the values Spike C baked as hand facts (OBJECT_LAYOUT 5)"
+    );
+    assert_eq!(
+        (
+            layout::SHAPE_FLAGS,
+            layout::SHAPE_FLAG_SEALED,
+            layout::SHAPE_FLAG_FROZEN
+        ),
+        (56, 16, 32),
+        "the level facts Spike C `CheckArray` bakes (OBJECT_LAYOUT 8)"
     );
 }
 
@@ -196,11 +238,11 @@ fn month_6_versions() {
             versions::FRAME_VERSION,
             versions::DEOPT_META_VERSION
         ),
-        (7, 4, 1, 2, 0)
+        (8, 4, 1, 2, 1)
     );
     assert_eq!(
         (versions::BUILTIN_ABI_VERSION, ep9_bytecode::ABI_VERSION),
-        (1, 5)
+        (1, 6)
     );
 }
 
@@ -209,10 +251,71 @@ fn month_6_versions() {
 /// ABI 5, Value encoding 1 and FACT_SCHEMA 2 (the BIGINT feedback bits were declared in it).
 #[test]
 fn month_7_versions() {
-    assert_eq!(black_box(versions::OBJECT_LAYOUT_VERSION), 7);
+    assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 7);
     assert_eq!(ep9_value::encoding::VERSION, 1);
     assert_eq!(ep9_facts::FACT_SCHEMA_VERSION, 2);
     assert_eq!(crate::kinds::BIGINT.get(), 9);
+}
+
+/// MC-P1-LAYOUTX (M7-P0 AOT0): the 3 out-of-line exports that Spike C kept as hand facts
+/// (`HAND_FACTS_M6`, SPIKEC-9) until M7-P0, on a live object and a live IC. The object's word
+/// at [`layout::OBJECT_SLOTS`] is its SLOTS cell; out-of-line field `k` is the word at
+/// [`layout::SLOTS_DATA`] `+ 8k` of it; and a warm load of such a field keeps a smi handler of
+/// kind [`layout::SMI_FIELD_OUT_OF_LINE`] whose offset names that word. The values are the ones
+/// the spike baked, and each equals the VM constant it exports.
+#[test]
+fn the_out_of_line_field_exports_hold_on_a_live_object() {
+    use super::ic::{Site, T, int, object_prototype, object_with};
+    let c = IsolateConfig {
+        feedback_threshold: 0,
+        ..config(Dispatch::DEFAULT, false)
+    };
+    let mut t = T::new(c, &[Site::Get("x")]);
+    let p = object_prototype(t.rt());
+    let names = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"];
+    let mut fields: Vec<(&str, u64)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| (n, int(i as i32)))
+        .collect();
+    // `x` is field 10, past the in-object capacity; `p9` (field 9) is out of line too.
+    fields.push(("x", int(77)));
+    let o = object_with(t.rt(), p, &fields);
+    let s = shape::shape_of(o);
+    let cap = usize::from(shape::capacity(s));
+    assert!(
+        cap <= 9,
+        "capacity {cap}: the probe needs fields 9 and 10 out of line"
+    );
+    assert_eq!(t.ok(0, o, UNDEFINED), int(77));
+    let h = int32_of(t.handler(0, s).expect("an IC case for the shape of o"));
+    assert_eq!(h & layout::SMI_KIND_MASK, layout::SMI_FIELD_OUT_OF_LINE);
+    let off = (h >> layout::SMI_SHIFT) as usize;
+    assert_eq!(off, layout::SLOTS_DATA as usize + 8 * (10 - cap));
+    // SAFETY: `o` is a live cell of `t.iso` (a stack word, so the conservative scan holds it),
+    // its SLOTS word is checked to be a SLOTS cell before it is read, and the IC case for the
+    // shape of `o` names the offset of field 10 inside that cell; `t.iso` runs nothing here.
+    unsafe {
+        let slots = word_at(o, layout::OBJECT_SLOTS as usize);
+        assert_eq!(kind_byte(slots), kinds::SLOTS.get());
+        assert_eq!(word_at(slots, off), int(77));
+        assert_eq!(word_at(slots, off - 8), int(9));
+    }
+    assert_eq!(
+        (
+            layout::OBJECT_SLOTS,
+            layout::SLOTS_DATA,
+            layout::SMI_FIELD_OUT_OF_LINE
+        ),
+        (8, 16, 2),
+        "the values Spike C baked as hand facts (OBJECT_LAYOUT 6, IC_LAYOUT 4)"
+    );
+    assert_eq!(layout::OBJECT_SLOTS as usize, object::obj::SLOTS);
+    assert_eq!(layout::SLOTS_DATA as usize, shape::slf::DATA);
+    assert_eq!(
+        layout::SMI_FIELD_OUT_OF_LINE,
+        crate::ic::smi::FIELD_OUT_OF_LINE
+    );
 }
 
 // ---- OBJECT_LAYOUT 6: kind 84, the FUSE cell, Root::RealmFuses ------------------------------

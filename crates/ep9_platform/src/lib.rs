@@ -11,11 +11,12 @@
 //! | [`spill`] | spill trampolines for AAPCS64, SysV x86-64 and Win64; [`with_spilled_registers`]; [`load_word`] | naked functions | always |
 //! | `jit` | `CodeMemory` in a code-range chunk (`CodeChunk::commit`) with W^X: MAP_JIT, mprotect, dual mapping; icache flush | MAP_JIT / mprotect / memfd / VirtualProtect | `jit` |
 //! | `unwind` | `.eh_frame` and Win64 UNWIND_INFO encoders; registration; native stack walk | libgcc / libunwind / RtlAddGrowableFunctionTable | `unwind` (`jit` implies it) |
+//! | [`unit_text`] | [`unit_text::UnitText`]: unit text in a code-range chunk, written once, then RX (A2, M7-P4); with `jit` or a `MAP_JIT` range through a `jit` write window, else commit RW, copy, icache flush, protect RX | mprotect / VirtualProtect | always |
 //!
 //! Unit tests build `jit` and `unwind` without the features, so `cargo test --workspace` runs
 //! their tests.
 //!
-//! Not built yet: signals and SEH handlers, unit mapping (A2).
+//! Not built yet: signals and SEH handlers; `.o` units (H35: the static-link unit form).
 
 #[cfg(any(feature = "jit", test))]
 pub mod jit;
@@ -23,6 +24,7 @@ pub mod spill;
 pub mod stack;
 mod sys;
 pub mod time;
+pub mod unit_text;
 #[cfg(any(feature = "unwind", test))]
 pub mod unwind;
 pub mod va;

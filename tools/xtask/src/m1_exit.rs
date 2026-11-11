@@ -23,13 +23,13 @@
 //!
 //! | Item | Host column | Windows column |
 //! |---|---|---|
-//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, the reported tree ids equal HEAD's, and its ids of `third_party/regress.commit` and `third_party/patches/regress` (the regress fork) equal HEAD's, as the reported ones do when the JSON has them; or (GF-1, X10) a full commit id this repository does not have (a CI pull_request run names GitHub's merge commit) whose reported ids of those 5 paths and the 2 regress fork paths each equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
-//! | 2 | exit2 JSON measured on the `--host` platform (`host.platform`, node's `<platform>-<arch>`, X12: another is FAIL, none is OPEN): both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31). On a Linux host the cell records the THP mode, `host.transparent_hugepage` (MC-w18-O4; no status effect; `tools/bench/lib/host.mjs` `thpMode` reads it, run.mjs writes it in `host.measured`, exit2.mjs copies it). On `aarch64-unknown-linux-gnu` the cell is N/A by design: no gate host (V9-D31, V11-D32, X13) | N/A by design |
+//! | 1 | kernels JSON of this `--host`: 15 of 15 kernels "runs, output equal", each of the 15 kernel ids once (a duplicate, missing or unknown id is OPEN), on a fresh tree: a full commit id (40 hex digits) that is a commit here, whose ids of `crates`, `tools/bench`, the root `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` are the reported tree ids, no uncommitted change, the reported tree ids equal HEAD's, and its ids of `third_party/regress.commit`, `third_party/patches/regress`, `third_party/icu4x.commit` and `third_party/patches/icu4x` (the regress and icu4x forks, `FORK_PATHS`; icu4x: route INTL-FRESH-PATHS) equal HEAD's, as the reported ones do when the JSON has them; or (GF-1, X10) a full commit id this repository does not have (a CI pull_request run names GitHub's merge commit) whose reported ids of those 5 paths and the 4 fork paths each equal HEAD's (else OPEN) | job `bench-run (windows-x64)`, step `kernels` (month 5; NOT-RUN without it) |
+//! | 2 | exit2 JSON measured on the `--host` platform (`host.platform`, node's `<platform>-<arch>`, X12: another is FAIL, none is OPEN): both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the four fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31). On a Linux host the cell records the THP mode, `host.transparent_hugepage` (MC-w18-O4; no status effect; `tools/bench/lib/host.mjs` `thpMode` reads it, run.mjs writes it in `host.measured`, exit2.mjs copies it). On `aarch64-unknown-linux-gnu` the cell is N/A by design: no gate host (V9-D31, V11-D32, X13) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), `third_party/icu4x.commit`, `third_party/patches/icu4x` (INTL-FRESH-PATHS), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `crates/ep9_rx1`, `crates/ep9_regexp`, `third_party/regress.commit`, `third_party/patches/regress` (RX1-FUZZ-EXEC), `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
-//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and, for C4, one row per gate kernel of protocol §2, labelled `C4 crypto` and `C4 navier-stokes` (`SPIKE_C_GATE_KERNELS`; protocol §0 C4 "for each gate kernel"; another C4 label, such as a bare `C4` or `C4 all`, is refused; Codex r2) (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from, the root `rust-toolchain.toml` that sets its compiler, the root `.cargo/config.toml` that cargo merges into the build and the regress fork pin, M5-P4-ORCH-2, -9, -10 and -14), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
+//! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and, for C4, one row per gate kernel of protocol §2, labelled `C4 crypto` and `C4 navier-stokes` (`SPIKE_C_GATE_KERNELS`; protocol §0 C4 "for each gate kernel"; another C4 label, such as a bare `C4` or `C4 all`, is refused; Codex r2) (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from, the root `rust-toolchain.toml` that sets its compiler, the root `.cargo/config.toml` that cargo merges into the build and the regress and icu4x fork pins, M5-P4-ORCH-2, -9, -10 and -14), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
 //! | 10 | the SP-Facts verdict is GO, or "GO, speed recorded" (09-milestones.md:241), in each of its Verdict rows, with a row for each of C5a, C5b and C5c (as item 7), each with a fresh `Commit` as in item 7 and the `Lowering` label `jit, PROFILED input` (else refused, at least OPEN) | repo-wide, as the host |
@@ -41,7 +41,8 @@
 //! CI job that made them. The cell is at least OPEN, with a "stale input" or "provenance" reason,
 //! when the commit is missing, is not HEAD or an ancestor with no change in `crates`,
 //! `tools/bench`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/test262`,
-//! `third_party/test262.commit`, `third_party/regress.commit` or `third_party/patches/regress`
+//! `third_party/test262.commit`, `third_party/regress.commit`, `third_party/patches/regress`,
+//! `third_party/icu4x.commit` or `third_party/patches/icu4x`
 //! since (unless the input names the git id of each of these paths
 //! and each equals HEAD's: a CI pull_request job runs on GitHub's merge commit, which the local
 //! repository does not have; the JSON `"tree"` object, the log line `m1-exit trees: <path>=<id>
@@ -84,8 +85,8 @@
 //! H15 has one: X9), the stub markers (`m2`, `m3`, `m4`, plan v9 rule 4; `m5`, plan v10 rule 4;
 //! `m6`, plan v11 rule 4) and the ADR Counts line (PASS only when adr-lint part 3 finds nothing:
 //! the line and the index column equal the Status lines, and the index parses; else FAIL with the
-//! findings). The tree root is `--root`, or this workspace (as m0-exit). The shared readers are in
-//! `crate::exit`.
+//! findings). The tree root is `--root`, or the git top dir of the current dir
+//! (`exit::default_root`; plan v12 PR-15). The shared readers are in `crate::exit`.
 //!
 //! Exit 0 when every cell is PASS or N/A, 1 otherwise, 2 on a usage error or an input that
 //! cannot be read.
@@ -153,12 +154,29 @@ const FRESH_PATHS: [&str; 5] = [
 /// from the git-ignored checkout these two make (scripts/sync-regress.sh, `[patch.crates-io]`),
 /// so a change of either changes engine code. Every fresh list of an input whose code builds
 /// regress has them: items 1 and 2 ([`ENGINE_FRESH_PATHS`]), 3, 4 and 8, the CI run, a Fuzzilli
-/// record (not cargo-fuzz: its targets do not build regress).
+/// record and a cargo-fuzz record (the regexp target builds regress through `ep9_regexp` and the
+/// `[patch.crates-io]` of `fuzz/Cargo.toml`, RX1-FUZZ-EXEC).
 const REGRESS_PATHS: [&str; 2] = ["third_party/regress.commit", "third_party/patches/regress"];
 
-/// Item 2: [`FRESH_PATHS`] and [`REGRESS_PATHS`]. Item 1 keeps [`FRESH_PATHS`] (the tree ids
-/// kernels.mjs writes) and checks [`REGRESS_PATHS`] at the input's commit against HEAD.
-const ENGINE_FRESH_PATHS: [&str; 7] = [
+/// The icu_calendar fork (INTL W1 R2, route INTL-FRESH-PATHS): its pin and its patch set, in the
+/// form of [`REGRESS_PATHS`]. ep9_temporal and ep9_intl build icu_calendar from the git-ignored
+/// checkout these two make (scripts/sync-icu4x.sh, `[patch.crates-io]` in the root and
+/// spikes/spike-c), so a change of either changes engine code: every list that has the regress
+/// fork has these two too (not cargo-fuzz: its targets do not build icu_calendar).
+const ICU4X_PATHS: [&str; 2] = ["third_party/icu4x.commit", "third_party/patches/icu4x"];
+
+/// The pins and patch sets of the forks the engine builds: [`REGRESS_PATHS`], then
+/// [`ICU4X_PATHS`].
+const FORK_PATHS: [&str; 4] = [
+    REGRESS_PATHS[0],
+    REGRESS_PATHS[1],
+    ICU4X_PATHS[0],
+    ICU4X_PATHS[1],
+];
+
+/// Item 2: [`FRESH_PATHS`] and [`FORK_PATHS`]. Item 1 keeps [`FRESH_PATHS`] (the tree ids
+/// kernels.mjs writes) and checks [`FORK_PATHS`] at the input's commit against HEAD.
+const ENGINE_FRESH_PATHS: [&str; 9] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -166,12 +184,14 @@ const ENGINE_FRESH_PATHS: [&str; 7] = [
     "rust-toolchain.toml",
     REGRESS_PATHS[0],
     REGRESS_PATHS[1],
+    ICU4X_PATHS[0],
+    ICU4X_PATHS[1],
 ];
 
 /// Items 3, 4 and 8 (plan v9 section 7 step 3, P3-ORCH-14): the paths whose change after the
 /// input's commit makes a test262 or nesting input stale: [`FRESH_PATHS`], the runner and the
-/// test262 pin.
-const T262_FRESH_PATHS: [&str; 9] = [
+/// test262 pin, and the forks ([`FORK_PATHS`]).
+const T262_FRESH_PATHS: [&str; 11] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -181,15 +201,22 @@ const T262_FRESH_PATHS: [&str; 9] = [
     "third_party/test262.commit",
     REGRESS_PATHS[0],
     REGRESS_PATHS[1],
+    ICU4X_PATHS[0],
+    ICU4X_PATHS[1],
 ];
 
 /// Item 5 (CX5-C4, F2): the paths whose change after a counted cargo-fuzz record's commit makes
 /// it stale: the `fuzz` workspace, every engine crate it builds (the path dependencies of
-/// `fuzz/Cargo.toml` and theirs; a test checks the list against them), the root `Cargo.toml`
-/// (its `[profile.release]`, the workspace members) and `Cargo.lock`.
-const CARGO_FUZZ_FRESH_PATHS: [&str; 5] = [
+/// `fuzz/Cargo.toml` and theirs; a test checks the list against them), the regress fork that
+/// its `[patch.crates-io]` builds ([`REGRESS_PATHS`]), the root `Cargo.toml` (its
+/// `[profile.release]`, the workspace members) and `Cargo.lock`.
+const CARGO_FUZZ_FRESH_PATHS: [&str; 9] = [
     "crates/ep9_frontend",
     "crates/ep9_bytecode",
+    "crates/ep9_rx1",
+    "crates/ep9_regexp",
+    REGRESS_PATHS[0],
+    REGRESS_PATHS[1],
     "fuzz",
     "Cargo.toml",
     "Cargo.lock",
@@ -197,7 +224,7 @@ const CARGO_FUZZ_FRESH_PATHS: [&str; 5] = [
 
 /// The Windows column (P3-ORCH-21): the CI run's head is HEAD, or an ancestor with no change in
 /// these paths since ([`T262_FRESH_PATHS`], the expectation files and the workflows).
-const CI_FRESH_PATHS: [&str; 11] = [
+const CI_FRESH_PATHS: [&str; 13] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -207,6 +234,8 @@ const CI_FRESH_PATHS: [&str; 11] = [
     "third_party/test262.commit",
     REGRESS_PATHS[0],
     REGRESS_PATHS[1],
+    ICU4X_PATHS[0],
+    ICU4X_PATHS[1],
     "expectations",
     ".github",
 ];
@@ -321,7 +350,7 @@ const VERDICTS_HOW: &str = "the Spike C and SP-Facts Verdict tables (a markdown 
 /// Files outside the repo (cargo's home config, `RUSTFLAGS`) are out by design: the Verdict row
 /// records the host (protocol §8).
 /// The test `verdict_fresh_paths_are_the_spike_c_closure` reads the closure and compares.
-const VERDICT_FRESH_PATHS: [&str; 20] = [
+const VERDICT_FRESH_PATHS: [&str; 23] = [
     "spikes/spike-c",
     "spikes/spike-b",
     "crates/ep9_bigint",
@@ -330,6 +359,7 @@ const VERDICT_FRESH_PATHS: [&str; 20] = [
     "crates/ep9_facts",
     "crates/ep9_frontend",
     "crates/ep9_heap",
+    "crates/ep9_intl",
     "crates/ep9_math",
     "crates/ep9_platform",
     "crates/ep9_regexp",
@@ -339,6 +369,8 @@ const VERDICT_FRESH_PATHS: [&str; 20] = [
     "crates/ep9_vm",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "third_party/icu4x.commit",
+    "third_party/patches/icu4x",
     "Cargo.toml",
     "rust-toolchain.toml",
     ".cargo/config.toml",
@@ -381,7 +413,7 @@ const NESTING_TESTS: [&str; 9] = [
 ];
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
      echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
-     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
+     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress third_party/icu4x.commit third_party/patches/icu4x; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -456,9 +488,15 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
 
 /// Entry point: writes the report to `--out` and prints the table and the missing inputs.
 pub fn main(args: &[String]) -> Result<bool, String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let root = std::fs::canonicalize(&root).unwrap_or(root);
-    let opts = parse_args(args, root)?;
+    // PR-15: the default root is the git top dir of the current dir; `--root` replaces it, so a
+    // run with `--root` needs no git tree here.
+    let default = crate::exit::default_root();
+    let opts = parse_args(args, default.clone().unwrap_or_default())?;
+    if opts.root.as_os_str().is_empty() {
+        return Err(default
+            .err()
+            .unwrap_or_else(|| format!("--root needs a dir\n{USAGE}")));
+    }
     let report = run(&opts)?;
     std::fs::write(&opts.out, &report.markdown)
         .map_err(|e| format!("cannot write {}: {e}", opts.out.display()))?;
@@ -1312,8 +1350,9 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
     {
         // GF-1 (X10): a CI pull_request run names GitHub's merge commit, which this repository
         // does not have. Its tree ids prove the code, as in items 3, 4 and 8 ([`same_trees`]):
-        // each of the 5 [`FRESH_PATHS`] and the 2 [`REGRESS_PATHS`] (kernels.mjs writes them all
-        // from month 6) equals HEAD's. An input without the regress ids stays OPEN.
+        // each of the 5 [`FRESH_PATHS`] and the 4 [`FORK_PATHS`] (kernels.mjs writes them all:
+        // the regress ids from month 6, the icu4x ids from INTL W1) equals HEAD's. An input
+        // without the fork ids stays OPEN.
         if same_trees(root, &reported, &ENGINE_FRESH_PATHS) {
             foreign = Some(format!(
                 "commit `{}`, not in this repository (a CI pull_request merge commit), but its ids of {} equal HEAD's",
@@ -1370,15 +1409,15 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
                 other.join(", ")
             ));
         }
-        // pre medium 1: kernels.mjs writes no ids of the regress fork; its commit's ids must be
-        // HEAD's.
+        // pre medium 1: kernels.mjs writes no ids of the regress fork (nor, before INTL W1, of
+        // the icu4x fork); its commit's ids must be HEAD's.
         let id = |rev: &str, path: &str| {
             git(
                 root,
                 &["rev-parse", "--verify", "--quiet", &format!("{rev}:{path}")],
             )
         };
-        let moved: Vec<&str> = REGRESS_PATHS
+        let moved: Vec<&str> = FORK_PATHS
             .iter()
             .filter(|p| id(commit, p) != id("HEAD", p))
             .copied()
@@ -1409,9 +1448,9 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
             fresh.push(format!("{path} differs from HEAD"));
         }
     }
-    // GF-1: a reported regress id (kernels.mjs from month 6) is the id of the measured checkout:
+    // GF-1: a reported fork id (kernels.mjs from month 6) is the id of the measured checkout:
     // it must be HEAD's too. An older JSON without them keeps the commit check above.
-    for path in REGRESS_PATHS {
+    for path in FORK_PATHS {
         if let Some(theirs) = reported.get(path) {
             let ours = git(
                 root,
@@ -2295,6 +2334,8 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
                 "rust-toolchain.toml",
                 REGRESS_PATHS[0],
                 REGRESS_PATHS[1],
+                ICU4X_PATHS[0],
+                ICU4X_PATHS[1],
             ],
             "cargo-fuzz" => &CARGO_FUZZ_FRESH_PATHS,
             _ => {
@@ -3451,7 +3492,7 @@ mod tests {
         let c = &run(&o).unwrap().cells[7].0;
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(
-            c.evidence.contains("stale input: not this tree: crates, tools/bench, Cargo.toml, Cargo.lock, rust-toolchain.toml, tools/test262, third_party/test262.commit, third_party/regress.commit, third_party/patches/regress changed"),
+            c.evidence.contains("stale input: not this tree: crates, tools/bench, Cargo.toml, Cargo.lock, rust-toolchain.toml, tools/test262, third_party/test262.commit, third_party/regress.commit, third_party/patches/regress, third_party/icu4x.commit, third_party/patches/icu4x changed"),
             "{}",
             c.evidence
         );
@@ -3530,11 +3571,11 @@ mod tests {
             (1, "Cargo.toml"),
             (
                 4,
-                "f1.json: not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress changed",
+                "f1.json: not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress, third_party/icu4x.commit, third_party/patches/icu4x changed",
             ),
             (
                 4,
-                "f2.json: not counted: not this tree: crates/ep9_frontend, crates/ep9_bytecode, fuzz, Cargo.toml, Cargo.lock changed",
+                "f2.json: not counted: not this tree: crates/ep9_frontend, crates/ep9_bytecode, crates/ep9_rx1, crates/ep9_regexp, third_party/regress.commit, third_party/patches/regress, fuzz, Cargo.toml, Cargo.lock changed",
             ),
             (7, "Cargo.toml"),
         ] {
@@ -3548,22 +3589,27 @@ mod tests {
     /// pre medium 1 (D41, R41): the regress fork is engine code (ep9_vm builds it through the
     /// `[patch.crates-io]` path), so a change of its pin `third_party/regress.commit` or of a
     /// patch under `third_party/patches/regress` after the input's commit makes items 1, 2, 3
-    /// and 8 OPEN and a counted Fuzzilli record not counted. A counted cargo-fuzz record stays
-    /// counted: its targets do not build regress.
+    /// and 8 OPEN and a counted Fuzzilli record and a counted cargo-fuzz record not counted (the
+    /// regexp target builds regress, RX1-FUZZ-EXEC). The icu4x fork (INTL-FRESH-PATHS: ep9_temporal
+    /// and ep9_intl build icu_calendar from it) is checked the same way, but a counted cargo-fuzz
+    /// record stays counted on an icu4x change: its targets do not build icu_calendar.
     #[test]
     fn a_regress_pin_or_patch_change_makes_inputs_stale() {
-        for (k, path) in REGRESS_PATHS.iter().enumerate() {
-            let root = fake_repo(&format!("regress{k}"));
-            write(
-                &root,
-                "third_party/regress.commit",
-                &format!("{}\n", "b".repeat(40)),
-            );
-            write(
-                &root,
-                "third_party/patches/regress/README.md",
-                "# patches\n",
-            );
+        // The paths themselves, not the constant under test.
+        let forks = [
+            "third_party/regress.commit",
+            "third_party/patches/regress",
+            "third_party/icu4x.commit",
+            "third_party/patches/icu4x",
+        ];
+        for (k, path) in forks.iter().enumerate() {
+            let root = fake_repo(&format!("fork{k}"));
+            for pin in [REGRESS_PATHS[0], ICU4X_PATHS[0]] {
+                write(&root, pin, &format!("{}\n", "b".repeat(40)));
+            }
+            for dir in [REGRESS_PATHS[1], ICU4X_PATHS[1]] {
+                write(&root, &format!("{dir}/README.md"), "# patches\n");
+            }
             let head = commit_all(&root, "regress");
             let mut o = opts(&root);
             o.kernels = Some(input(
@@ -3600,7 +3646,7 @@ mod tests {
                 let c = &r.cells[i].0;
                 assert_eq!(c.status, Status::Pass, "{path}: item {}: {c:?}", i + 1);
             }
-            if k == 0 {
+            if k % 2 == 0 {
                 write(&root, path, &format!("{}\n", "c".repeat(40)));
             } else {
                 write(&root, &format!("{path}/0001-fix.patch"), "--- a\n+++ b\n");
@@ -3622,7 +3668,12 @@ mod tests {
                 fuzz.contains("f1.json: not counted: not this tree"),
                 "{fuzz}"
             );
-            assert!(!fuzz.contains("f2.json: not counted"), "{fuzz}");
+            // k 0 and 1 are the regress fork (the fuzz targets build it), 2 and 3 the icu4x fork.
+            assert_eq!(
+                fuzz.contains("f2.json: not counted: not this tree"),
+                k < 2,
+                "{path}: {fuzz}"
+            );
             std::fs::remove_dir_all(root).unwrap();
         }
     }
@@ -5474,6 +5525,16 @@ mod tests {
         );
         closure.insert("third_party/regress.commit".into());
         closure.insert("third_party/patches/regress".into());
+        // The icu4x fork (INTL-FRESH-PATHS): the same table builds icu_calendar from the
+        // checkout that `scripts/sync-icu4x.sh` makes.
+        assert!(
+            patch.contains(
+                "icu_calendar = { path = \"../../third_party/icu4x/components/calendar\" }"
+            ),
+            "{patch}"
+        );
+        closure.insert("third_party/icu4x.commit".into());
+        closure.insert("third_party/patches/icu4x".into());
         // M5-P4-ORCH-10 (1): the compiler. `gate.sh` runs cargo in spikes/spike-c, and rustup
         // takes the toolchain file of that directory or the nearest one above it.
         let toolchain = spike_c
@@ -6656,7 +6717,7 @@ mod tests {
         assert_eq!(c.status, Status::Open, "{c:?}");
         assert!(
             c.evidence.contains(
-                "not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress changed"
+                "not counted: not this tree: crates, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress, third_party/icu4x.commit, third_party/patches/icu4x changed"
             ),
             "{}",
             c.evidence
@@ -6778,22 +6839,25 @@ mod tests {
     }
 
     /// GF-1 (X10): a kernels JSON of a commit this repository does not have (CI's pull_request
-    /// merge commit) reads PASS when its ids of the 5 fresh paths and the 2 regress fork paths
-    /// equal HEAD's; one id that differs, or no regress ids (an older kernels.mjs), is OPEN. A
-    /// reported regress id of a local commit must be HEAD's too.
+    /// merge commit) reads PASS when its ids of the 5 fresh paths and the 4 fork paths (regress,
+    /// icu4x) equal HEAD's; one id that differs, or no fork ids (an older kernels.mjs), is OPEN.
+    /// A reported fork id of a local commit must be HEAD's too.
     #[test]
     fn item1_reads_the_tree_ids_of_a_foreign_commit() {
         let root = fake_repo("item1foreign");
         write(&root, REGRESS_PATHS[0], "0123456789\n");
         write(&root, "third_party/patches/regress/0001-x.patch", "x\n");
+        write(&root, ICU4X_PATHS[0], "9876543210\n");
+        write(&root, "third_party/patches/icu4x/0001-y.patch", "y\n");
         let head = commit_all(&root, "regress");
         let id = |p: &str| git_in(&root, &["rev-parse", &format!("HEAD:{p}")]);
+        let (ia, ib) = (id(ICU4X_PATHS[0]), id(ICU4X_PATHS[1]));
         let with_regress = |j: &str, a: &str, b: &str| {
             j.replace(
                 r#""tree":{"#,
                 &format!(
-                    r#""tree":{{"{}":"{a}","{}":"{b}","#,
-                    REGRESS_PATHS[0], REGRESS_PATHS[1]
+                    r#""tree":{{"{}":"{a}","{}":"{b}","{}":"{ia}","{}":"{ib}","#,
+                    REGRESS_PATHS[0], REGRESS_PATHS[1], ICU4X_PATHS[0], ICU4X_PATHS[1]
                 ),
             )
         };
@@ -6807,7 +6871,7 @@ mod tests {
                 with_regress(&foreign, &ra, &rb),
                 Status::Pass,
                 format!(
-                    "fresh: commit `{}`, not in this repository (a CI pull_request merge commit), but its ids of crates, tools/bench, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress equal HEAD's",
+                    "fresh: commit `{}`, not in this repository (a CI pull_request merge commit), but its ids of crates, tools/bench, Cargo.toml, Cargo.lock, rust-toolchain.toml, third_party/regress.commit, third_party/patches/regress, third_party/icu4x.commit, third_party/patches/icu4x equal HEAD's",
                     short(&foreign_sha)
                 ),
             ),
@@ -6827,7 +6891,7 @@ mod tests {
             (
                 foreign.clone(),
                 Status::Open,
-                "its ids of third_party/regress.commit, third_party/patches/regress are not HEAD's"
+                "its ids of third_party/regress.commit, third_party/patches/regress, third_party/icu4x.commit, third_party/patches/icu4x are not HEAD's"
                     .to_string(),
             ),
             (

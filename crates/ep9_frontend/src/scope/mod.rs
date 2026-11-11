@@ -32,7 +32,7 @@
 //! that change where a binding must live (checked in `tests.rs`,
 //! `oxc_scope_tree_differs_from_the_spec`):
 //!
-//! | ECMA-262 | oxc 0.155 tree | Effect on ep9 if it used the oxc tree |
+//! | ECMA-262 | oxc 0.157 tree | Effect on ep9 if it used the oxc tree |
 //! |---|---|---|
 //! | Parameters and body are 2 environments when a parameter has an expression | 1 scope (oxc still resolves the names right) | eval in a default value and closures need 2 contexts |
 //! | A class has a scope with an inner, immutable name binding | no inner binding for declarations; methods see the outer one | `C = 1` in a method must throw; reassigning the outer `C` must not change the methods' `C` |

@@ -15,3 +15,5 @@
 0x140b   10.11        method       1       "catch"  (%Promise.prototype%.catch w-c)
 0x140c   10.12        method       1       "finally"  (%Promise.prototype%.finally w-c)
 0x140d   10.13        constructor  2       "AggregateError"  (%AggregateError%)
+0x140e   10.14        method       1       "allKeyed"  (%Promise%.allKeyed w-c)
+0x140f   10.15        method       1       "allSettledKeyed"  (%Promise%.allSettledKeyed w-c)

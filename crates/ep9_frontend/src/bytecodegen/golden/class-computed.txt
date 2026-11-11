@@ -1,6 +1,6 @@
 # class-computed: script (sloppy)
 # | var k; class A { [k]() {} static [k + 1]() {} get [k]() {} 'str'() {} 1() {} }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=78 source=embedded hints=none
 source_hash=cdd40fcb7bc960e1502aaa3657d1c5d063acb19f2affe4cdfbb474517ffd8bd7
 strings (4):
@@ -18,7 +18,7 @@ scopes (8):
   scope6 function outer=scope1 flags=[strict] slots=[]
   scope7 function outer=scope1 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..78
-  code (144 bytes):
+  code (134 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> LdaTheHole                                   ; 07
       6    Star r2                                      ; 0c 02
@@ -26,52 +26,47 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      12    Star r1                                      ; 0c 01
      14 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
      19    Star r3                                      ; 0c 03
-     21    Mov r3, r4                                   ; 0d 03 04
-     24 E> LdaGlobal k1, s1  ; k1 = String str0 "k"     ; 10 01 01
-     27 E> ToName                                       ; 58
-     28    Star r5                                      ; 0c 05
-     30 E> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
-     34    Star r6                                      ; 0c 06
+     21 E> LdaGlobal k1, s1  ; k1 = String str0 "k"     ; 10 01 01
+     24 E> ToName                                       ; 58
+     25    Star r5                                      ; 0c 05
+     27 E> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
+     31    Star r6                                      ; 0c 06
+     33    Mov r3, r4                                   ; 0d 03 04
      36 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
-     41    Mov r1, r4                                   ; 0d 01 04
-     44 E> LdaGlobal k1, s1  ; k1 = String str0 "k"     ; 10 01 01
-     47 E> AddSmi [1], s3                               ; 36 01 03
-     50 E> ToName                                       ; 58
-     51    Star r5                                      ; 0c 05
-     53 E> CreateClosure k3, s4, #0x00  ; k3 = Function f3 ; 74 03 04 00
-     57    Star r6                                      ; 0c 06
+     41 E> LdaGlobal k1, s1  ; k1 = String str0 "k"     ; 10 01 01
+     44 E> AddSmi [1], s3                               ; 36 01 03
+     47 E> ToName                                       ; 58
+     48    Star r5                                      ; 0c 05
+     50 E> CreateClosure k3, s4, #0x00  ; k3 = Function f3 ; 74 03 04 00
+     54    Star r6                                      ; 0c 06
+     56    Mov r1, r4                                   ; 0d 01 04
      59 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
-     64    Mov r3, r4                                   ; 0d 03 04
-     67 E> LdaGlobal k1, s1  ; k1 = String str0 "k"     ; 10 01 01
-     70 E> ToName                                       ; 58
-     71    Star r5                                      ; 0c 05
-     73 E> CreateClosure k4, s5, #0x00  ; k4 = Function f4 ; 74 04 05 00
-     77    Star r6                                      ; 0c 06
-     79    LdaUndefined                                 ; 05
-     80    Star r7                                      ; 0c 07
+     64 E> LdaGlobal k1, s1  ; k1 = String str0 "k"     ; 10 01 01
+     67 E> ToName                                       ; 58
+     68    Star r5                                      ; 0c 05
+     70 E> CreateClosure k4, s5, #0x00  ; k4 = Function f4 ; 74 04 05 00
+     74    Star r6                                      ; 0c 06
+     76    LdaUndefined                                 ; 05
+     77    Star r7                                      ; 0c 07
+     79    Mov r3, r4                                   ; 0d 03 04
      82 E> CallRuntime DefineClassAccessor, r4-r7       ; 68 10 00 04 04
-     87    Mov r3, r4                                   ; 0d 03 04
-     90    LdaConstant k5  ; k5 = String str2 "str"     ; 0a 05
-     92    Star r5                                      ; 0c 05
-     94 E> CreateClosure k6, s6, #0x00  ; k6 = Function f5 ; 74 06 06 00
-     98    Star r6                                      ; 0c 06
-    100 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
-    105    Mov r3, r4                                   ; 0d 03 04
-    108    LdaConstant k7  ; k7 = String str3 "1"       ; 0a 07
-    110    Star r5                                      ; 0c 05
-    112 E> CreateClosure k8, s7, #0x00  ; k8 = Function f6 ; 74 08 07 00
-    116    Star r6                                      ; 0c 06
-    118 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
-    123    Ldar r1                                      ; 0b 01
-    125    Star r0                                      ; 0c 00
-    127    Ldar r1                                      ; 0b 01
-    129    Star r2                                      ; 0c 02
-    131    LdaConstant k9  ; k9 = String str1 "A"       ; 0a 09
-    133    Star r1                                      ; 0c 01
-    135 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
-    140    Ldar r2                                      ; 0b 02
-    142    LdaUndefined                                 ; 05
-    143    Return                                       ; 92
+     87    LdaConstant k5  ; k5 = String str2 "str"     ; 0a 05
+     89    Star r5                                      ; 0c 05
+     91 E> CreateClosure k6, s6, #0x00  ; k6 = Function f5 ; 74 06 06 00
+     95    Star r6                                      ; 0c 06
+     97 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+    102    LdaConstant k7  ; k7 = String str3 "1"       ; 0a 07
+    104    Star r5                                      ; 0c 05
+    106 E> CreateClosure k8, s7, #0x00  ; k8 = Function f6 ; 74 08 07 00
+    110    Star r6                                      ; 0c 06
+    112 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+    117    Mov r1, r0                                   ; 0d 01 00
+    120    LdaConstant k9  ; k9 = String str1 "A"       ; 0a 09
+    122    Star r1                                      ; 0c 01
+    124    Mov r0, r2                                   ; 0d 00 02
+    127 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+    132    LdaUndefined                                 ; 05
+    133    Return                                       ; 92
   constants (10):
       0 Function f1
       1 String str0 "k"
@@ -98,24 +93,24 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 S 7 (1:8)
       8 E 7 (1:8)
      14 E 7 (1:8)
+     21 E 18 (1:19)
      24 E 18 (1:19)
-     27 E 18 (1:19)
-     30 E 7 (1:8)
+     27 E 7 (1:8)
      36 E 18 (1:19)
+     41 E 34 (1:35)
      44 E 34 (1:35)
      47 E 34 (1:35)
-     50 E 34 (1:35)
-     53 E 7 (1:8)
+     50 E 7 (1:8)
      59 E 34 (1:35)
+     64 E 51 (1:52)
      67 E 51 (1:52)
-     70 E 51 (1:52)
-     73 E 7 (1:8)
+     70 E 7 (1:8)
      82 E 51 (1:52)
-     94 E 7 (1:8)
-    100 E 59 (1:60)
-    112 E 7 (1:8)
-    118 E 70 (1:71)
-    135 E 7 (1:8)
+     91 E 7 (1:8)
+     97 E 59 (1:60)
+    106 E 7 (1:8)
+    112 E 70 (1:71)
+    127 E 7 (1:8)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=7..78
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05

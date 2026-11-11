@@ -318,10 +318,10 @@ impl Isolate {
             feedback_threshold: config.feedback_threshold,
             interrupt: Arc::as_ptr(&rt.terminate),
             native_limit: rt.native_limit,
-            #[cfg(feature = "spike-native")]
+            // The process table in every build (MC-w30-8, M7-P3 A2-ENTRY): until then it was
+            // null without `spike-native`. Native code and unit text call its entries by
+            // their byte offsets (`layout::RT_*`, `tests/golden/runtime-table.txt`).
             runtime_table: &crate::native::RUNTIME_TABLE,
-            #[cfg(not(feature = "spike-native"))]
-            runtime_table: core::ptr::null(),
             realm: rt.root(Root::Realm),
             unit_data: 0,
         });
@@ -501,7 +501,11 @@ impl Isolate {
         f: impl FnOnce(&mut Isolate) -> R,
     ) -> R {
         let key = crate::module::host_key(&self.rt);
-        let mut host = crate::module::Host { resolve, load };
+        let mut host = crate::module::Host {
+            resolve,
+            load,
+            text: None,
+        };
         crate::module::with_host(key, &mut host, || f(self))
     }
 
@@ -688,6 +692,21 @@ impl Isolate {
                     display_bits(exc)
                 }
             }
+        } else if crate::kinds::is_bigint(exc) {
+            // A thrown BigInt shows all its digits, as d8 does: BigInt::toString, which polls
+            // (`describe` keeps the 100-digit limit of messages). If it throws (a termination
+            // or the String length RangeError), drop that and use the message form.
+            match crate::bigint::to_string(&mut self.cx, exc, 10) {
+                Ok(s) => format!("{}n", string::to_rust_string(s)),
+                Err(Throw) => {
+                    rt.take_pending();
+                    rt.shared.throw_site.take();
+                    if end_termination(rt) {
+                        return terminated();
+                    }
+                    display_bits(exc)
+                }
+            }
         } else {
             display_bits(exc)
         };
@@ -783,19 +802,19 @@ fn run_unit(cx: &mut Cx, unit: VerifiedUnit, file: &str) -> Res<u64> {
 }
 
 /// The raw read of the global binding `name` (the tests and `NativeCx::global_value`): the
-/// script lexical record first (`None` in its TDZ), then an own data property of the global
-/// object (`None` for an accessor). Runs no JS; interning `name` may allocate.
+/// script lexical record first, then an own data property of the global object. Runs no JS.
 #[cfg(any(test, feature = "spike-native"))]
 fn global_data(rt: &Runtime, name: &str) -> Option<u64> {
-    let key = atoms::intern_str(rt, name);
-    match own_get(rt.root(Root::Lexical), key) {
-        // The TDZ hole never leaves the VM.
-        Some((v, _)) => (v != HOLE).then_some(v),
-        None => own_get(rt.global(), key)
-            // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
-            .filter(|&(_, a)| a & attr::ACCESSOR == 0)
-            .map(|(v, _)| v),
-    }
+    let key = atoms::intern_str(rt, name); // may allocate, as an install may
+    let v = match own_get(rt.root(Root::Lexical), key) {
+        Some((v, _)) => v, // HOLE in its TDZ
+        None => match own_get(rt.global(), key)? {
+            (_, a) if a & attr::ACCESSOR != 0 => HOLE, // an ACCESSOR_PAIR cell: not a JS value
+            (HOLE, _) => realm::resolve_global(rt, rt.global(), key), // a lazy group: install it
+            (v, _) => v,
+        },
+    };
+    (v != HOLE).then_some(v) // HOLE never leaves the VM, as at `[[Get]]` (Codex r1 LAZYNS 1)
 }
 
 // The raw `Value` reads of the in-crate tests and of the spike-native API.
@@ -972,9 +991,65 @@ impl<'s> abi::Cx<'s> {
         resolve: &mut dyn FnMut(&str, &str) -> Result<String, String>,
         load: &mut dyn FnMut(&str) -> CompileResult,
     ) -> JsResult<Local<'s>> {
-        let mut host = crate::module::Host { resolve, load };
+        let mut host = crate::module::Host {
+            resolve,
+            load,
+            text: None,
+        };
         let b = crate::module::run_module(self.inner(), unit, name, &mut host)?;
         Ok(Local::from_bits(b))
+    }
+
+    /// [`run_module`](Self::run_module) with a text hook: `text(name, type)` gives the source
+    /// text of the module `name` (a name from `resolve`) for an import with
+    /// `type: "json"` or `type: "text"` (`type` is `"json"` or `"text"`), or `Err(text)`,
+    /// which throws an `Error` with that text. With the hook, a JSON module (ES2025) is the
+    /// value of `JSON.parse(text)` as its default export (a `SyntaxError` for text that is
+    /// not JSON, thrown by the load), and a text module (the import text proposal) the text
+    /// as a string. The realm's module map keeps one module per name and type, so the hook
+    /// runs once per name and type that loads. `import()` during the call uses the three
+    /// hooks. Without the hook (`run_module`), `type: "json"` throws the v0
+    /// not-implemented `Error` and `type: "text"` a `TypeError`.
+    pub fn run_module_with_text(
+        &mut self,
+        unit: VerifiedUnit,
+        name: &str,
+        resolve: &mut dyn FnMut(&str, &str) -> Result<String, String>,
+        load: &mut dyn FnMut(&str) -> CompileResult,
+        text: &mut dyn FnMut(&str, &str) -> Result<String, String>,
+    ) -> JsResult<Local<'s>> {
+        let mut host = crate::module::Host {
+            resolve,
+            load,
+            text: Some(text),
+        };
+        let b = crate::module::run_module(self.inner(), unit, name, &mut host)?;
+        Ok(Local::from_bits(b))
+    }
+
+    /// Runs `f` with `resolve`, `load` and `text` as the module host of this isolate: the
+    /// hooks of `import()` (HostLoadImportedModule) in the code that runs during `f`, for
+    /// example a script ([`run_script`](Self::run_script)). The hooks have the rules of the
+    /// hooks of [`run_module_with_text`](Self::run_module_with_text), so `import()` of a JSON
+    /// or text module works. Calls nest with `Isolate::with_module_host` and the module runs:
+    /// the innermost host is the one in use. The host goes when `f` returns, so the jobs of a
+    /// checkpoint after the call (`Isolate::with_cx_checkpoint`) use the host outside, if
+    /// any; run [`perform_microtask_checkpoint`](Self::perform_microtask_checkpoint) inside
+    /// `f` to give the jobs this host.
+    pub fn with_module_text_host<R>(
+        &mut self,
+        resolve: &mut dyn FnMut(&str, &str) -> Result<String, String>,
+        load: &mut dyn FnMut(&str) -> CompileResult,
+        text: &mut dyn FnMut(&str, &str) -> Result<String, String>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let key = crate::module::host_key(self.inner().rt());
+        let mut host = crate::module::Host {
+            resolve,
+            load,
+            text: Some(text),
+        };
+        crate::module::with_host(key, &mut host, || f(self))
     }
 
     /// The value of the global binding `name` (GetBindingValue of the global environment,

@@ -154,9 +154,9 @@ deps_within 6 ep9_math
 # 7) ep9_facts depends on ep9_bytecode only (H16: a fact holds no VM or heap type).
 deps_within 7 ep9_facts ep9_bytecode
 
-# 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math for Math (H20) and
-#    ep9_temporal for the Temporal modules (design SPEC-T-D11; check 18 keeps its edges).
-deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal
+# 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math (Math, H20), ep9_temporal
+#    (Temporal; SPEC-T-D11, check 18 keeps its edges) and ep9_intl (Intl; INTL-I1-D1, check 24).
+deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal ep9_intl
 
 # 9) The jitless ep9 has no `jit` feature anywhere in its graph (H27): no ep9_platform "jit".
 #    Control: the default ep9 must show it, so a broken jit chain or a cargo output change that
@@ -179,11 +179,11 @@ else
 fi
 
 # 11) The ep9_vm features `spike-native` (Spike B's native entry) and `ic-stats` (IC counters)
-#     are never in the ep9 graph, default or jitless (plan M0 month 2, rule 11; H27). Control:
-#     `-p ep9_vm --features spike-native,ic-stats` must show both.
+#     and `fastdiff-hits` (FASTDIFF hit counts) are never in the ep9 graph, default or jitless (plan
+#     M0 month 2, rule 11; H27). Control: `-p ep9_vm --features spike-native,ic-stats,fastdiff-hits`.
 if grep -q "ep9_cli" <<< "$members" && member_exists ep9_vm; then
-  for feat in spike-native ic-stats; do
-    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats" -p ep9_vm --features spike-native,ic-stats
+  for feat in spike-native ic-stats fastdiff-hits; do
+    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats,fastdiff-hits" -p ep9_vm --features spike-native,ic-stats,fastdiff-hits
     feature_check 11 ep9_vm "$feat" off "the default ep9 (-p ep9_cli)" -p ep9_cli
     feature_check 11 ep9_vm "$feat" off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
   done
@@ -328,28 +328,37 @@ else
 fi
 
 # 16) The regress fork is live (V9-D15; third_party/patches/regress/README.md). A [patch] table
-#     applies only at its own workspace root, so the root, spikes/spike-b and spikes/spike-c each
-#     have a `[patch.crates-io] regress` path entry. In each of the 3 workspaces `cargo metadata
-#     --locked` must show regress, and every regress package must have no source (a path
-#     package) and the manifest third_party/regress/Cargo.toml (scripts/sync-regress.sh makes
-#     it). Without the entry regress comes from crates.io (or the lock no longer matches) and
-#     this fails. Controls: a sample graph with a crates.io regress must fail the rule and a
-#     sample with the path package must pass it, so a rule that always (or never) passes fails.
-# fork_live <metadata json>: 0 when the graph has regress and each regress is the path package.
+#     applies only at its own workspace root, so the root, spikes/spike-b, spikes/spike-c and fuzz
+#     (RX1-FUZZ-EXEC) each have a `[patch.crates-io] regress` path entry. In each of the 4
+#     workspaces `cargo metadata --locked` must show regress, and every regress package must have
+#     no source (a path package) and the manifest third_party/regress/Cargo.toml
+#     (scripts/sync-regress.sh makes it). Without the entry regress comes from crates.io (or the
+#     lock no longer matches) and this fails. Controls: a sample graph with a crates.io regress
+#     must fail the rule and a sample with the path package must pass it, so a rule that always
+#     (or never) passes fails. The same for icu_calendar (INTL W1 R2; third_party/patches/icu4x)
+#     in the root and spikes/spike-c (not in spike-b and fuzz): the path package with the manifest
+#     third_party/icu4x/components/calendar/Cargo.toml (scripts/sync-icu4x.sh makes it).
+# fork_live <metadata json> [<package> <manifest path suffix>]: 0 when the graph has the
+# package (default regress) and each copy of it is the path package with that manifest.
 fork_live() {
-  local rows
-  rows="$(jq -r '.packages[] | select(.name == "regress") | "\(.source // "path")|\(.manifest_path)"' <<< "$1")" || return 1
+  local name=${2:-regress} suffix=${3:-/third_party/regress/Cargo.toml} rows
+  rows="$(jq -r --arg n "$name" '.packages[] | select(.name == $n) | "\(.source // "path")|\(.manifest_path)"' <<< "$1")" || return 1
   [ -n "$rows" ] || return 1
   while IFS='|' read -r src mp; do
-    [ "$src" = path ] && [[ "$mp" == */third_party/regress/Cargo.toml ]] || return 1
+    [ "$src" = path ] && [[ "$mp" == *"$suffix" ]] || return 1
   done <<< "$rows"
 }
+icu_cal=/third_party/icu4x/components/calendar/Cargo.toml
 reg='{"packages":[{"name":"memchr","source":"registry+https://github.com/rust-lang/crates.io-index","manifest_path":"/c/registry/src/memchr-2.8.3/Cargo.toml"},{"name":"regress","source":"registry+https://github.com/rust-lang/crates.io-index","manifest_path":"/c/registry/src/regress-0.12.0/Cargo.toml"}]}'
 fork='{"packages":[{"name":"regress","source":null,"manifest_path":"/w/third_party/regress/Cargo.toml"}]}'
-if fork_live "$reg" || ! fork_live "$fork" || fork_live '{"packages":[]}'; then
-  bad "(16) control: the fork rule passes a crates.io regress or an empty graph, or fails the path package, in a sample graph"
+icu_reg='{"packages":[{"name":"icu_calendar","source":"registry+https://github.com/rust-lang/crates.io-index","manifest_path":"/c/registry/src/icu_calendar-2.3.0/Cargo.toml"}]}'
+icu_fork='{"packages":[{"name":"icu_calendar","source":null,"manifest_path":"/w/third_party/icu4x/components/calendar/Cargo.toml"}]}'
+if fork_live "$reg" || ! fork_live "$fork" || fork_live '{"packages":[]}' \
+  || fork_live "$icu_reg" icu_calendar "$icu_cal" || ! fork_live "$icu_fork" icu_calendar "$icu_cal" \
+  || fork_live "$fork" icu_calendar "$icu_cal"; then
+  bad "(16) control: the fork rule passes a crates.io regress or icu_calendar or an empty graph, or fails the path package, in a sample graph"
 else
-  for m in Cargo.toml spikes/spike-b/Cargo.toml spikes/spike-c/Cargo.toml; do
+  for m in Cargo.toml spikes/spike-b/Cargo.toml spikes/spike-c/Cargo.toml fuzz/Cargo.toml; do
     if ! wmeta="$(cargo metadata --locked --format-version 1 --manifest-path "$m")"; then
       bad "(16) cargo metadata --locked --manifest-path $m failed (run scripts/sync-regress.sh first; is the lock up to date?)"
     elif fork_live "$wmeta"; then
@@ -357,6 +366,15 @@ else
     else
       found="$(jq -r '.packages[] | select(.name == "regress") | "\(.source // "path") \(.manifest_path)"' <<< "$wmeta" | paste -sd ';' -)"
       bad "(16) $m: regress must be only the third_party/regress path package; found: ${found:-no regress}"
+    fi
+    [ "$m" = spikes/spike-b/Cargo.toml ] || [ "$m" = fuzz/Cargo.toml ] && continue
+    if [ -z "$wmeta" ]; then
+      :
+    elif fork_live "$wmeta" icu_calendar "$icu_cal"; then
+      ok "(16) $m: icu_calendar is the patched checkout third_party/icu4x/components/calendar (path package, no registry source)"
+    else
+      found="$(jq -r '.packages[] | select(.name == "icu_calendar") | "\(.source // "path") \(.manifest_path)"' <<< "$wmeta" | paste -sd ';' -)"
+      bad "(16) $m: icu_calendar must be only the third_party/icu4x/components/calendar path package (run scripts/sync-icu4x.sh); found: ${found:-no icu_calendar}"
     fi
   done
 fi
@@ -416,6 +434,86 @@ if member_exists ep9_temporal; then
   done
 else
   ok "(20) ep9_temporal does not exist yet"
+fi
+
+# 21) ep9_masm has 0 normal and build dependencies (H34: one instruction stream for JIT and unit
+#     code, no LLVM; an encoder crate, 04-execution section 5, joins this list when T1 needs one).
+deps_within 21 ep9_masm
+
+# 22) ep9_rx1 (RX1, the irregexp port; plan v12 section 7.2, decisions-log M6-ORCH-300) is
+#     reached only from ep9_vm, as ep9_regexp in check 14: no other workspace member has an
+#     edge to it, of any kind (normal, build or dev). Nothing depends on it before the RX1
+#     backend lands, so no dependent passes too. Control: check 14's query on its sample graph
+#     (above).
+if ! member_exists ep9_rx1; then
+  ok "(22) ep9_rx1 does not exist yet"
+else
+  users="$(dependents_of ep9_rx1 "$meta" | paste -sd ' ' -)"
+  if [ "$users" = ep9_vm ] || [ -z "$users" ]; then ok "(22) ep9_rx1 has no dependent but ep9_vm (${users:-none yet})"; else bad "(22) ep9_rx1 must have ep9_vm as its only dependent; it has: $users"; fi
+fi
+
+# 23) The jitless ep9 has the ep9_platform `unwind` feature, and no `jit` (H27-Q3, H28; DL
+#     M6-ORCH-298, MODES-CHECK-w33 MC-w33-2.2): ep9_vm turns `unwind` on in every build, so the
+#     jitless ep9 can register the unwind data of loaded AOT unit text. The default ep9 has it
+#     too. Control: `-p ep9_platform` alone must not show `unwind` (ep9_platform has no default
+#     features), so a query that always sees the feature fails here.
+if grep -q "ep9_cli" <<< "$members"; then
+  feature_check 23 ep9_platform unwind off "control: -p ep9_platform" -p ep9_platform
+  feature_check 23 ep9_platform unwind on "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  feature_check 23 ep9_platform jit off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  feature_check 23 ep9_platform unwind on "the default ep9 (-p ep9_cli)" -p ep9_cli
+fi
+
+# 24) ep9_intl (INTL-I1-D1, layout B) reaches the engine only through ep9_vm's Cx and reads
+#     Temporal objects and the tz data through ep9_temporal's pub API; its other normal edges
+#     are the ICU4X 2.3 components of INTL-I1-D5 and their base crates, and icu_normalizer (NFD
+#     and the ccc for the collator's stream-safe step; icu_collator's own dependency).
+deps_within 24 ep9_intl ep9_vm ep9_temporal icu_locale_core icu_locale icu_collator icu_normalizer icu_decimal fixed_decimal icu_plurals icu_list icu_segmenter icu_casemap icu_experimental icu_calendar icu_time icu_datetime icu_provider writeable tinystr zerovec
+
+# 25) The ICU4X components that only Intl uses have ep9_intl as their only workspace dependent
+#     (any edge kind, as check 19), so builtins and ep9_temporal reach them only through
+#     ep9_intl. Not listed: icu_calendar (temporal_rs), icu_segmenter (textwrap, through
+#     oxc_diagnostics), icu_locale_core and icu_provider (base crates of every icu graph).
+#     Control: check 14's query on its sample graph (above).
+if ! member_exists ep9_intl; then
+  ok "(25) ep9_intl does not exist yet"
+else
+  for c in icu_locale icu_collator icu_normalizer icu_decimal fixed_decimal icu_plurals icu_list icu_casemap icu_experimental icu_time icu_datetime; do
+    users="$(dependents_of "$c" "$meta" | paste -sd ' ' -)"
+    if [ "$users" = ep9_intl ]; then ok "(25) only ep9_intl depends on $c"; else bad "(25) $c must have ep9_intl as its only dependent; it has: ${users:-none}"; fi
+  done
+fi
+
+# 26) ICU4X features in the shipped graph (-p ep9_cli, default and jitless; INTL-I1-D5):
+#     icu_segmenter has no `lstm` and no `auto` (lstm needs core_maths: H36); fixed_decimal,
+#     icu_decimal and icu_experimental have no `ryu`; no icu crate has `serde` or `datagen`.
+#     Control: icu_collator has `compiled_data` (a query that sees no features fails here).
+#     Before ep9_intl is in the ep9 graph the check reads -p ep9_intl.
+if member_exists ep9_intl; then
+  if present_in ep9_cli -e normal -i ep9_intl 2>/dev/null; then
+    graphs=("-p ep9_cli" "-p ep9_cli --no-default-features")
+  else
+    graphs=("-p ep9_intl")
+  fi
+  for g in "${graphs[@]}"; do
+    # shellcheck disable=SC2086
+    {
+      for feat in lstm auto; do
+        feature_check 26 icu_segmenter "$feat" off "$g" $g
+      done
+      for c in fixed_decimal icu_decimal icu_experimental; do
+        feature_check 26 "$c" ryu off "$g" $g
+      done
+      for c in icu_locale_core icu_locale icu_collator icu_decimal icu_plurals icu_list icu_segmenter icu_casemap icu_experimental icu_calendar icu_time icu_datetime icu_provider; do
+        for feat in serde datagen; do
+          feature_check 26 "$c" "$feat" off "$g" $g
+        done
+      done
+      feature_check 26 icu_collator compiled_data on "control: $g" $g
+    }
+  done
+else
+  ok "(26) ep9_intl does not exist yet"
 fi
 
 exit "$fail"

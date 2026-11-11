@@ -43,6 +43,10 @@
 0x0027   0.39         method       1       "return"  (%AsyncFromSyncIteratorPrototype%.return w-c)
 0x0028   0.40         method       1       "throw"  (%AsyncFromSyncIteratorPrototype%.throw w-c)
 0x0029   0.41         method       0       ""  (%ThrowTypeError%)
+0x002a   0.42         getter       0       "caller"  (%Function.prototype%.caller --c)
+0x002b   0.43         setter       1       "caller"  (%Function.prototype%.caller --c)
+0x002c   0.44         getter       0       "stack"  (%Error.prototype%.stack --c)
+0x002d   0.45         setter       1       "stack"  (%Error.prototype%.stack --c)
 # IntrinsicId (append-only)
 intrinsic   0  %Object.prototype%
 intrinsic   1  %Function.prototype%
@@ -137,3 +141,19 @@ intrinsic  89  %Temporal.PlainMonthDay%
 intrinsic  90  %Temporal.PlainMonthDay.prototype%
 intrinsic  91  %Temporal.ZonedDateTime%
 intrinsic  92  %Temporal.ZonedDateTime.prototype%
+intrinsic  93  %Function.prototype.apply%
+intrinsic  94  %Function.prototype.call%
+intrinsic  95  %Iterator%
+intrinsic  96  %IteratorHelperPrototype%
+intrinsic  97  %WrapForValidIteratorPrototype%
+intrinsic  98  %SuppressedError%
+intrinsic  99  %SuppressedError.prototype%
+intrinsic 100  %DisposableStack%
+intrinsic 101  %DisposableStack.prototype%
+intrinsic 102  %AsyncDisposableStack%
+intrinsic 103  %AsyncDisposableStack.prototype%
+intrinsic 104  %Intl%
+intrinsic 105  %Intl.Locale%
+intrinsic 106  %Intl.Locale.prototype%
+intrinsic 107  %Intl.Collator%
+intrinsic 108  %Intl.Collator.prototype%

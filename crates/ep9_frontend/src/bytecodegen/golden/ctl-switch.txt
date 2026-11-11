@@ -1,6 +1,6 @@
 # ctl-switch: script (sloppy)
 # | function f(a) { switch (a) { case 1: return 'one'; default: a = 0; case 2: { break; } case 3: let z = 3; (() => z)(); } return a; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=131 source=embedded hints=none
 source_hash=d6ef10a446a795c82e8adab307de774109ba27624d5fd40cd7a2f2b3a4fa81fd
 strings (3):
@@ -14,16 +14,15 @@ scopes (5):
   scope3 block outer=scope2 flags=[] slots=[]
   scope4 function outer=scope2 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..131
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "f"
@@ -35,38 +34,38 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 E 0 (1:1)
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=3 range=0..131
-  code (62 bytes):
+  code (63 bytes):
       0 S> Ldar a0                                      ; 0b fe
-      2    Star r0                                      ; 0c 00
-      4 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
-      6    PushContext r1                               ; 13 01
-      8    LdaTheHole                                   ; 07
-      9    StaCurrentContextSlot [0]                    ; 1b 00
-     11    LdaSmi [1]                                   ; 04 01
-     13    TestEqualStrict r0, s0                       ; 4c 00 00
-     16    JumpIfTrue @34                               ; 7f 12
-     18    LdaSmi [2]                                   ; 04 02
-     20    TestEqualStrict r0, s1                       ; 4c 00 01
-     23    JumpIfTrue @40                               ; 7f 11
-     25    LdaSmi [3]                                   ; 04 03
-     27    TestEqualStrict r0, s2                       ; 4c 00 02
-     30    JumpIfTrue @42                               ; 7f 0c
-     32    Jump @37                                     ; 7e 05
-     34 S> LdaConstant k1  ; k1 = String str2 "one"     ; 0a 01
-     36    Return                                       ; 92
-     37 S> LdaZero                                      ; 03
-     38    Star a0                                      ; 0c fe
-     40 S> Jump @55                                     ; 7e 0f
-     42 S> LdaSmi [3]                                   ; 04 03
-     44    StaCurrentContextSlot [0]                    ; 1b 00
-     46 S> CreateClosure k2, s3, #0x00  ; k2 = Function f2 ; 74 02 03 00
-     50    Star r2                                      ; 0c 02
-     52 E> CallUndefinedReceiver0 r2, s4                ; 64 02 04
-     55    PopContext r1                                ; 14 01
-     57 S> Ldar a0                                      ; 0b fe
-     59    Return                                       ; 92
-     60    LdaUndefined                                 ; 05
-     61    Return                                       ; 92
+      2 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
+      4    PushContext r1                               ; 13 01
+      6    LdaTheHole                                   ; 07
+      7    StaCurrentContextSlot [0]                    ; 1b 00
+      9    LdaSmi [1]                                   ; 04 01
+     11    TestEqualStrict a0, s0                       ; 4c fe 00
+     14    Mov a0, r0                                   ; 0d fe 00
+     17    JumpIfTrue @35                               ; 7f 12
+     19    LdaSmi [2]                                   ; 04 02
+     21    TestEqualStrict r0, s1                       ; 4c 00 01
+     24    JumpIfTrue @41                               ; 7f 11
+     26    LdaSmi [3]                                   ; 04 03
+     28    TestEqualStrict r0, s2                       ; 4c 00 02
+     31    JumpIfTrue @43                               ; 7f 0c
+     33    Jump @38                                     ; 7e 05
+     35 S> LdaConstant k1  ; k1 = String str2 "one"     ; 0a 01
+     37    Return                                       ; 92
+     38 S> LdaZero                                      ; 03
+     39    Star a0                                      ; 0c fe
+     41 S> Jump @56                                     ; 7e 0f
+     43 S> LdaSmi [3]                                   ; 04 03
+     45    StaCurrentContextSlot [0]                    ; 1b 00
+     47 S> CreateClosure k2, s3, #0x00  ; k2 = Function f2 ; 74 02 03 00
+     51    Star r2                                      ; 0c 02
+     53 E> CallUndefinedReceiver0 r2, s4                ; 64 02 04
+     56    PopContext r1                                ; 14 01
+     58 S> Ldar a0                                      ; 0b fe
+     60    Return                                       ; 92
+     61    LdaUndefined                                 ; 05
+     62    Return                                       ; 92
   constants (3):
       0 Scope scope2
       1 String str2 "one"
@@ -80,14 +79,14 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
   handlers (0):
   positions (9):
       0 S 16 (1:17)
-      4 E 16 (1:17)
-     34 S 37 (1:38)
-     37 S 60 (1:61)
-     40 S 77 (1:78)
-     42 S 98 (1:99)
-     46 S 105 (1:106)
-     52 E 105 (1:106)
-     57 S 120 (1:121)
+      2 E 16 (1:17)
+     35 S 37 (1:38)
+     38 S 60 (1:61)
+     41 S 77 (1:78)
+     43 S 98 (1:99)
+     47 S 105 (1:106)
+     53 E 105 (1:106)
+     58 S 120 (1:121)
 function f2 arrow name=- parent=f1 outer_scope=scope2 flags=[simple-params] params=0 length=0 regs=0 range=106..113
   code (5 bytes):
       0 S> LdaCurrentContextSlot [0]                    ; 18 00

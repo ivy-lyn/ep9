@@ -1,6 +1,6 @@
 # class-computed-name: script (sloppy)
 # | var k = Symbol('s'); var o = { [k]: class {}, ['x' + 1]: class { static y = this.name; } };
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=91 source=embedded hints=none
 source_hash=f900ef05372a54d06e42e89ed22641f907baf9192d738ecaa518b2f6a157b4af
 strings (7):
@@ -19,7 +19,7 @@ scopes (6):
   scope4 function outer=scope3 flags=[strict] slots=[]
   scope5 function outer=scope3 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..91
-  code (123 bytes):
+  code (119 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> LdaGlobal k0, s0  ; k0 = String str2 "Symbol" ; 10 00 00
       8    Star r0                                      ; 0c 00
@@ -40,31 +40,29 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      42    Mov r1, r6                                   ; 0d 01 06
      45 E> CallRuntime SetFunctionName, r5-r6           ; 68 2c 00 05 02
      50 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
-     55    Star r4                                      ; 0c 04
-     57    Ldar r2                                      ; 0b 02
-     59 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s5 ; 29 00 01 00 05
-     64    LdaConstant k4  ; k4 = String str4 "x"       ; 0a 04
-     66 E> AddSmi [1], s6                               ; 36 01 06
-     69 E> ToName                                       ; 58
-     70    Star r1                                      ; 0c 01
-     72    LdaTheHole                                   ; 07
-     73    Star r3                                      ; 0c 03
-     75 E> CreateClosure k5, s7, #0x00  ; k5 = Function f2 ; 74 05 07 00
-     79    Star r2                                      ; 0c 02
-     81    Mov r2, r5                                   ; 0d 02 05
-     84    Mov r1, r6                                   ; 0d 01 06
-     87 E> CallRuntime SetFunctionName, r5-r6           ; 68 2c 00 05 02
-     92 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
-     97    Star r4                                      ; 0c 04
-     99 E> CreateClosure k6, s8, #0x00  ; k6 = Function f3 ; 74 06 08 00
-    103    Star r5                                      ; 0c 05
-    105 E> CallProperty0 r5, r2, s9                     ; 60 05 02 09
-    109    Ldar r2                                      ; 0b 02
-    111 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s10 ; 29 00 01 00 0a
-    116    Ldar r0                                      ; 0b 00
-    118 E> StaGlobal k7, s11  ; k7 = String str1 "o"    ; 12 07 0b
-    121    LdaUndefined                                 ; 05
-    122    Return                                       ; 92
+     55    Ldar r2                                      ; 0b 02
+     57 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s5 ; 29 00 01 00 05
+     62    LdaConstant k4  ; k4 = String str4 "x"       ; 0a 04
+     64 E> AddSmi [1], s6                               ; 36 01 06
+     67 E> ToName                                       ; 58
+     68    Star r1                                      ; 0c 01
+     70    LdaTheHole                                   ; 07
+     71    Star r3                                      ; 0c 03
+     73 E> CreateClosure k5, s7, #0x00  ; k5 = Function f2 ; 74 05 07 00
+     77    Star r2                                      ; 0c 02
+     79    Mov r2, r5                                   ; 0d 02 05
+     82    Mov r1, r6                                   ; 0d 01 06
+     85 E> CallRuntime SetFunctionName, r5-r6           ; 68 2c 00 05 02
+     90 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     95 E> CreateClosure k6, s8, #0x00  ; k6 = Function f3 ; 74 06 08 00
+     99    Star r5                                      ; 0c 05
+    101 E> CallProperty0 r5, r2, s9                     ; 60 05 02 09
+    105    Ldar r2                                      ; 0b 02
+    107 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s10 ; 29 00 01 00 0a
+    112    Ldar r0                                      ; 0b 00
+    114 E> StaGlobal k7, s11  ; k7 = String str1 "o"    ; 12 07 0b
+    117    LdaUndefined                                 ; 05
+    118    Return                                       ; 92
   constants (8):
       0 String str2 "Symbol"
       1 String str3 "s"
@@ -99,16 +97,16 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      33 E 36 (1:37)
      45 E 36 (1:37)
      50 E 36 (1:37)
-     59 E 29 (1:30)
-     66 E 47 (1:48)
-     69 E 47 (1:48)
-     75 E 57 (1:58)
-     87 E 57 (1:58)
-     92 E 57 (1:58)
-     99 E 57 (1:58)
-    105 E 63 (1:64)
-    111 E 29 (1:30)
-    118 E 25 (1:26)
+     57 E 29 (1:30)
+     64 E 47 (1:48)
+     67 E 47 (1:48)
+     73 E 57 (1:58)
+     85 E 57 (1:58)
+     90 E 57 (1:58)
+     95 E 57 (1:58)
+    101 E 63 (1:64)
+    107 E 29 (1:30)
+    114 E 25 (1:26)
 function f1 class-constructor name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=36..44
   code (2 bytes):
       0 S> LdaUndefined                                 ; 05
@@ -128,13 +126,12 @@ function f2 class-constructor name=- parent=f0 outer_scope=scope3 flags=[strict,
   positions (1):
       0 S 57 (1:58)
 function f3 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=1 range=63..88
-  code (14 bytes):
+  code (12 bytes):
       0 S> Ldar <this>                                  ; 0b ff
-      2    Star r0                                      ; 0c 00
-      4 E> GetNamedProperty r0, k0, s0  ; k0 = String str5 "name" ; 21 00 00 00
-      8 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str6 "y" ; 25 ff 01 01
-     12    LdaUndefined                                 ; 05
-     13    Return                                       ; 92
+      2 E> GetNamedProperty <this>, k0, s0  ; k0 = String str5 "name" ; 21 ff 00 00
+      6 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str6 "y" ; 25 ff 01 01
+     10    LdaUndefined                                 ; 05
+     11    Return                                       ; 92
   constants (2):
       0 String str5 "name"
       1 String str6 "y"
@@ -144,5 +141,5 @@ function f3 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[
   handlers (0):
   positions (3):
       0 S 65 (1:66)
-      4 E 81 (1:82)
-      8 E 72 (1:73)
+      2 E 81 (1:82)
+      6 E 72 (1:73)

@@ -1,5 +1,6 @@
 //! The global functions isNaN, isFinite and the URI functions (§19.2), Error.isError
-//! (§20.5.2.1), and the key order of this crate's intrinsics.
+//! (§20.5.2.1), escape and unescape (Annex B §B.2.1), and the key order of this crate's
+//! intrinsics.
 //!
 //! The expected lines are node 24's output for the same script (`print` = the
 //! arguments' ToString joined by spaces). `common::run_both` runs each script with and
@@ -114,6 +115,68 @@ fn global_function_key_order() {
 "#
         ),
         lines(&["decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,isFinite,isNaN"])
+    );
+}
+
+/// escape and unescape (Annex B §B.2.1.1-2): the unescaped set (the ASCII word chars and
+/// "@*+-./"), %XX below U+0100 and %uXXXX above (upper case), each code unit of a surrogate
+/// pair alone; unescape of %XX and %uXXXX in either case and every malformed "%" left as it
+/// is (V8 and the spec: no fallback from a bad %u to %XX); ToString, length, name, no
+/// [[Construct]], not enumerable (node v26.13.0's output).
+#[test]
+fn escape_and_unescape() {
+    assert_eq!(
+        common::run_both(
+            r##"
+var all = ''; for (var i = 0; i < 300; i++) all += String.fromCharCode(i);
+print(escape('\x00 !"#$%&\'()*+,-./09:;<=>?@AZ[\\]^_`az{|}~\x7f\x80\xff'));
+print(escape('\u0100\u0fff\uabcd\ud83d\ude00\uffff'), escape(), escape(null), escape(12.5), escape({ toString: function () { return 'a b'; } }), escape(''), escape(1n));
+print(unescape('%41%4a%4A%u0041%u004a%U0041%u00%ZZ%4%u12%u123%u123G%%41%'), unescape('%u0x41'), unescape('%u+041'), unescape('%_1'), unescape());
+print(unescape(escape(all)) === all, unescape('%uD83D%uDE00') === '\ud83d\ude00', unescape('abc%'), unescape('%a'), unescape('%u'), unescape('%uabc'), unescape('%uabcd').charCodeAt(0));
+print(escape.length, escape.name, unescape.length, unescape.name, typeof escape.prototype, Object.getOwnPropertyDescriptor(globalThis, 'escape').enumerable);
+var r = function (f) { try { f(); return 'ok'; } catch (e) { return e.constructor.name; } };
+print([r(function () { escape(Symbol()); }), r(function () { unescape(Symbol()); }), r(function () { new escape(''); }), r(function () { escape({ toString: function () { throw new RangeError(); } }); })].join());
+"##
+        ),
+        lines(&[
+            "%00%20%21%22%23%24%25%26%27%28%29*+%2C-./09%3A%3B%3C%3D%3E%3F@AZ%5B%5C%5D%5E_%60az%7B%7C%7D%7E%7F%80%FF",
+            "%u0100%u0FFF%uABCD%uD83D%uDE00%uFFFF undefined null 12.5 a%20b  1",
+            "AJJAJ%U0041%u00%ZZ%4%u12%u123%u123G%A% %u0x41 %u+041 %_1 undefined",
+            "true true abc% %a %u %uabc 43981",
+            "1 escape 1 unescape undefined false",
+            "TypeError,TypeError,TypeError,RangeError",
+        ])
+    );
+}
+
+/// escape of a text whose result passes the String length limit: the RangeError "Invalid
+/// string length" before the result is allocated (90,000,000 code units of U+0100 would
+/// give 540,000,000 units, above 2^29 - 24 = 536,870,888).
+#[test]
+fn escape_past_the_string_length_limit_is_a_range_error() {
+    assert_eq!(
+        common::run(
+            r#"var s = '\u0100'.repeat(90000000); try { escape(s); print('ok'); } catch (e) { print(e.constructor.name, e.message); } print(escape(s.slice(0, 3)));"#,
+            false
+        ),
+        lines(&["RangeError Invalid string length", "%u0100%u0100%u0100"])
+    );
+}
+
+/// The global keys with escape and unescape in V8's order (node v26.13.0
+/// `Object.getOwnPropertyNames(globalThis)`): after encodeURIComponent, before isFinite.
+#[test]
+fn escape_and_unescape_key_order() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            var want = ['decodeURI', 'decodeURIComponent', 'encodeURI', 'encodeURIComponent', 'escape', 'unescape', 'isFinite', 'isNaN'];
+            print(Object.getOwnPropertyNames(globalThis).filter(function (k) { return want.indexOf(k) >= 0; }).join());
+"#
+        ),
+        lines(&[
+            "decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,isFinite,isNaN"
+        ])
     );
 }
 

@@ -37,11 +37,9 @@ use ep9_value::Value;
 
 use crate::abi::HostFn;
 use crate::atoms::{self, Atom};
-use crate::conv::{self, num};
-use crate::descriptor::Desc;
-use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
-use crate::interp::Cx;
-use crate::kinds::{is_error, is_object, is_symbol};
+use crate::conv::num;
+use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED};
+use crate::kinds::{is_object, is_symbol};
 use crate::object::{self, attr, own_define, own_get};
 use crate::runtime::{Root, Runtime, val};
 use crate::symbol;
@@ -282,11 +280,49 @@ pub enum IntrinsicId {
     TemporalZonedDateTime,
     /// `%Temporal.ZonedDateTime.prototype%` (§6.3, an ordinary object; made by `ep9_temporal` zoned_date_time.rs).
     TemporalZonedDateTimePrototype,
+    // ---- M7-P0 CALLHOST: made by no table; each builtin records itself (abi/forward.rs) ----
+    /// `%Function.prototype.apply%` (§20.2.3.1; `Cx::forward_apply`).
+    FunctionPrototypeApply,
+    /// `%Function.prototype.call%` (§20.2.3.3; `Cx::forward_call`).
+    FunctionPrototypeCall,
+    // ---- M7-P1 SPEC-ITER (iterator helpers; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Iterator%` (§27.1.3.1; made by `ep9_builtins` iterator.rs, block 28).
+    Iterator,
+    /// `%IteratorHelperPrototype%` (§27.1.2.1; made by `ep9_builtins` iterator.rs).
+    IteratorHelperPrototype,
+    /// `%WrapForValidIteratorPrototype%` (§27.1.3.2.1.1; made by `ep9_builtins` iterator.rs).
+    WrapForValidIteratorPrototype,
+    // ---- M7-P3 SPEC-ERM (explicit resource management; H20 part 2, H13 "index ids
+    // (append-only)") ----
+    /// `%SuppressedError%` (explicit resource management; made by `ep9_builtins`
+    /// disposable.rs, block 29).
+    SuppressedError,
+    /// `%SuppressedError.prototype%` (made by `ep9_builtins` disposable.rs).
+    SuppressedErrorPrototype,
+    /// `%DisposableStack%` (made by `ep9_builtins` disposable.rs).
+    DisposableStack,
+    /// `%DisposableStack.prototype%` (made by `ep9_builtins` disposable.rs).
+    DisposableStackPrototype,
+    /// `%AsyncDisposableStack%` (made by `ep9_builtins` disposable.rs).
+    AsyncDisposableStack,
+    /// `%AsyncDisposableStack.prototype%` (made by `ep9_builtins` disposable.rs).
+    AsyncDisposableStackPrototype,
+    // ---- INTL W1 CORE (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Intl%` (ECMA-402 §8, the Intl namespace object; made by `ep9_intl` intl.rs, block 30).
+    Intl,
+    /// `%Intl.Locale%` (ECMA-402 §14.1; made by `ep9_intl` locale.rs, block 31).
+    IntlLocale,
+    /// `%Intl.Locale.prototype%` (ECMA-402 §14.3, an ordinary object; made by `ep9_intl` locale.rs).
+    IntlLocalePrototype,
+    /// `%Intl.Collator%` (ECMA-402 §10.1; made by `ep9_intl` collator.rs, block 32).
+    IntlCollator,
+    /// `%Intl.Collator.prototype%` (ECMA-402 §10.3, an ordinary object; made by `ep9_intl` collator.rs).
+    IntlCollatorPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 93] = [
+    pub const ALL: [IntrinsicId; 109] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -380,6 +416,22 @@ impl IntrinsicId {
         IntrinsicId::TemporalPlainMonthDayPrototype,
         IntrinsicId::TemporalZonedDateTime,
         IntrinsicId::TemporalZonedDateTimePrototype,
+        IntrinsicId::FunctionPrototypeApply,
+        IntrinsicId::FunctionPrototypeCall,
+        IntrinsicId::Iterator,
+        IntrinsicId::IteratorHelperPrototype,
+        IntrinsicId::WrapForValidIteratorPrototype,
+        IntrinsicId::SuppressedError,
+        IntrinsicId::SuppressedErrorPrototype,
+        IntrinsicId::DisposableStack,
+        IntrinsicId::DisposableStackPrototype,
+        IntrinsicId::AsyncDisposableStack,
+        IntrinsicId::AsyncDisposableStackPrototype,
+        IntrinsicId::Intl,
+        IntrinsicId::IntlLocale,
+        IntrinsicId::IntlLocalePrototype,
+        IntrinsicId::IntlCollator,
+        IntrinsicId::IntlCollatorPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -479,6 +531,22 @@ impl IntrinsicId {
             IntrinsicId::TemporalPlainMonthDayPrototype => "%Temporal.PlainMonthDay.prototype%",
             IntrinsicId::TemporalZonedDateTime => "%Temporal.ZonedDateTime%",
             IntrinsicId::TemporalZonedDateTimePrototype => "%Temporal.ZonedDateTime.prototype%",
+            IntrinsicId::FunctionPrototypeApply => "%Function.prototype.apply%",
+            IntrinsicId::FunctionPrototypeCall => "%Function.prototype.call%",
+            IntrinsicId::Iterator => "%Iterator%",
+            IntrinsicId::IteratorHelperPrototype => "%IteratorHelperPrototype%",
+            IntrinsicId::WrapForValidIteratorPrototype => "%WrapForValidIteratorPrototype%",
+            IntrinsicId::SuppressedError => "%SuppressedError%",
+            IntrinsicId::SuppressedErrorPrototype => "%SuppressedError.prototype%",
+            IntrinsicId::DisposableStack => "%DisposableStack%",
+            IntrinsicId::DisposableStackPrototype => "%DisposableStack.prototype%",
+            IntrinsicId::AsyncDisposableStack => "%AsyncDisposableStack%",
+            IntrinsicId::AsyncDisposableStackPrototype => "%AsyncDisposableStack.prototype%",
+            IntrinsicId::Intl => "%Intl%",
+            IntrinsicId::IntlLocale => "%Intl.Locale%",
+            IntrinsicId::IntlLocalePrototype => "%Intl.Locale.prototype%",
+            IntrinsicId::IntlCollator => "%Intl.Collator%",
+            IntrinsicId::IntlCollatorPrototype => "%Intl.Collator.prototype%",
         }
     }
 
@@ -578,7 +646,23 @@ impl IntrinsicId {
             | IntrinsicId::TemporalPlainMonthDay
             | IntrinsicId::TemporalPlainMonthDayPrototype
             | IntrinsicId::TemporalZonedDateTime
-            | IntrinsicId::TemporalZonedDateTimePrototype => return None,
+            | IntrinsicId::TemporalZonedDateTimePrototype
+            | IntrinsicId::FunctionPrototypeApply
+            | IntrinsicId::FunctionPrototypeCall
+            | IntrinsicId::Iterator
+            | IntrinsicId::IteratorHelperPrototype
+            | IntrinsicId::WrapForValidIteratorPrototype
+            | IntrinsicId::SuppressedError
+            | IntrinsicId::SuppressedErrorPrototype
+            | IntrinsicId::DisposableStack
+            | IntrinsicId::DisposableStackPrototype
+            | IntrinsicId::AsyncDisposableStack
+            | IntrinsicId::AsyncDisposableStackPrototype
+            | IntrinsicId::Intl
+            | IntrinsicId::IntlLocale
+            | IntrinsicId::IntlLocalePrototype
+            | IntrinsicId::IntlCollator
+            | IntrinsicId::IntlCollatorPrototype => return None,
         })
     }
 
@@ -646,6 +730,22 @@ impl IntrinsicId {
             IntrinsicId::TemporalPlainMonthDayPrototype => Some(57),
             IntrinsicId::TemporalZonedDateTime => Some(58),
             IntrinsicId::TemporalZonedDateTimePrototype => Some(59),
+            IntrinsicId::FunctionPrototypeApply => Some(60),
+            IntrinsicId::FunctionPrototypeCall => Some(61),
+            IntrinsicId::Iterator => Some(62),
+            IntrinsicId::IteratorHelperPrototype => Some(63),
+            IntrinsicId::WrapForValidIteratorPrototype => Some(64),
+            IntrinsicId::SuppressedError => Some(65),
+            IntrinsicId::SuppressedErrorPrototype => Some(66),
+            IntrinsicId::DisposableStack => Some(67),
+            IntrinsicId::DisposableStackPrototype => Some(68),
+            IntrinsicId::AsyncDisposableStack => Some(69),
+            IntrinsicId::AsyncDisposableStackPrototype => Some(70),
+            IntrinsicId::Intl => Some(71),
+            IntrinsicId::IntlLocale => Some(72),
+            IntrinsicId::IntlLocalePrototype => Some(73),
+            IntrinsicId::IntlCollator => Some(74),
+            IntrinsicId::IntlCollatorPrototype => Some(75),
             _ => None,
         }
     }
@@ -657,8 +757,8 @@ impl IntrinsicId {
     }
 }
 
-/// The intrinsic `id` of the current realm: an object, or undefined if no table made it (or,
-/// for `%Symbol.prototype%`, until symbols exist).
+/// The intrinsic `id` of the current realm, a raw read: an object, or undefined if no table made
+/// it, until symbols exist (`%Symbol.prototype%`) or until its lazy group installs (INTL-I1-D8).
 pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
     match (id.root(), id.slot()) {
         (Some(r), _) => rt.root(r),
@@ -835,8 +935,7 @@ impl PropKey {
         }
     }
 
-    /// The same key? (`Atom(Length)` and `Str("length")` are one key.) No allocation:
-    /// `check_tables` calls it for each pair of keys, at each process start.
+    /// The same key? (`Atom(Length)` and `Str("length")` are one key.) No allocation.
     fn same(&self, other: &PropKey) -> bool {
         match (self.string_text(), other.string_text()) {
             (Some(a), Some(b)) => a == b,
@@ -1110,6 +1209,9 @@ pub struct BuiltinTable {
     pub modules: &'static [BuiltinModule],
     /// The result of [`check`] for this table after the VM table (once per process).
     checked: OnceLock<Result<(), String>>,
+    /// The lazy namespace groups of the VM table followed by this table ([`LazyGroups`];
+    /// once per process, after [`check`]).
+    lazy: OnceLock<LazyGroups>,
 }
 
 impl BuiltinTable {
@@ -1118,6 +1220,7 @@ impl BuiltinTable {
             name,
             modules,
             checked: OnceLock::new(),
+            lazy: OnceLock::new(),
         }
     }
 }
@@ -1209,11 +1312,15 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
             }
         }
     }
-    let prototype = PropKey::Atom(Atom::Prototype);
     // Defined keys with their values, one list per target (index `IntrinsicId as usize`) in
     // walk order, for aliases and duplicates. A check scans its own target's list only, so
     // this stays linear in the number of keys (it runs at each process start).
-    let mut defined: Vec<Vec<(PropKey, PropValue)>> = vec![Vec::new(); IntrinsicId::ALL.len()];
+    // Each key keeps its string text (`None`: a symbol), so a compare reads no atom table.
+    let mut defined: Vec<Vec<(Option<&'static str>, PropKey, PropValue)>> =
+        vec![Vec::new(); IntrinsicId::ALL.len()];
+    let same = |t: Option<&'static str>, k: &PropKey, p: &PropKey, pt: Option<&'static str>| {
+        t == pt && (t.is_some() || k == p)
+    };
     for m in modules() {
         let at = |what: String| format!("builtin table module `{}`: {what}", m.name);
         for op in m.props {
@@ -1221,20 +1328,22 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                 return Err(at(format!("target {} is not made", op.target.name())));
             }
             let on_target = &mut defined[op.target as usize];
+            let ctor = constructors.iter().any(|(c, _)| *c == op.target);
             for p in op.props {
+                let text = p.key.string_text();
                 let here =
                     |what: &str| at(format!("{}.{}: {what}", op.target.name(), p.key.text()));
-                if on_target.iter().any(|(k, _)| k.same(&p.key)) {
+                if on_target.iter().any(|(t, k, _)| same(*t, k, &p.key, text)) {
                     return Err(here("defined twice"));
                 }
                 // Keys go in in walk order; a new key on a function first makes its lazy `prototype`
                 // (`props::own_add`): a constructor but %Proxy% (§28.2.2) has `prototype` {} first.
-                let is_prototype = p.key.same(&prototype)
+                let is_prototype = text == Some("prototype")
                     && p.attrs == PropAttrs::NONE
                     && !matches!(p.value, PropValue::Accessor { .. });
                 if !is_prototype
-                    && constructors.iter().any(|(c, _)| *c == op.target)
-                    && !on_target.iter().any(|(k, _)| k.same(&prototype))
+                    && ctor
+                    && !on_target.iter().any(|(t, _, _)| *t == Some("prototype"))
                 {
                     return Err(here(
                         "the first key of a constructor is `prototype`, a data property with \
@@ -1251,7 +1360,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                         }
                     }
                     PropValue::Alias(k) => {
-                        let of = on_target.iter().find(|(d, _)| d.same(&k));
+                        let of = on_target.iter().find(|(_, d, _)| d.same(&k));
                         match of {
                             None => {
                                 return Err(here(&format!(
@@ -1262,7 +1371,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                             // An alias copies a data value (one function object under two
                             // names, as `Array.prototype[@@iterator]`); no spec alias is an
                             // accessor, and install would copy the internal pair.
-                            Some((_, PropValue::Accessor { .. })) => {
+                            Some((_, _, PropValue::Accessor { .. })) => {
                                 return Err(here(&format!(
                                     "alias of {}, an accessor (an alias needs a data property)",
                                     k.text()
@@ -1285,12 +1394,15 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     }
                     PropValue::Const(_) | PropValue::Symbol(_) => {}
                 }
-                on_target.push((p.key, p.value));
+                on_target.push((text, p.key, p.value));
             }
         }
     }
     for (c, module) in &constructors {
-        if !defined[*c as usize].iter().any(|(k, _)| k.same(&prototype)) {
+        if !defined[*c as usize]
+            .iter()
+            .any(|(t, _, _)| *t == Some("prototype"))
+        {
             return Err(format!(
                 "builtin table module `{module}`: the constructor {} has no `prototype`",
                 c.name()
@@ -1312,7 +1424,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 60;
+const INTRINSIC_SLOTS: usize = 76;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
@@ -1323,10 +1435,14 @@ const INTRINSIC_SLOTS: usize = 60;
 /// the first realm's function objects; a later realm's install makes its own in the install
 /// list ([`begin_realm_install`]), and after its install they are reachable only through
 /// that realm's objects. So [`existing_function`] knows the function objects of the first
-/// realm only.
+/// realm only. A lazy group ([`LazyGroups`]) installs into a realm at its first use: its
+/// function objects go into the module slots for the first realm, else into a new install
+/// list, as a later realm's install does.
 pub(crate) struct BuiltinState {
     /// The embedder's table (`IsolateConfig::builtins`).
     table: Cell<Option<&'static BuiltinTable>>,
+    /// The lazy namespace groups of the isolate's tables (set by [`prepare`]).
+    lazy: Cell<Option<&'static LazyGroups>>,
     /// The installed modules in walk order (the VM table first).
     modules: RefCell<Vec<ModuleState>>,
     /// The number of definitions of all modules (the length of an install list).
@@ -1345,6 +1461,7 @@ impl Default for BuiltinState {
     fn default() -> Self {
         BuiltinState {
             table: Cell::new(None),
+            lazy: Cell::new(None),
             modules: RefCell::new(Vec::new()),
             definitions: Cell::new(0),
             intrinsics: (0..INTRINSIC_SLOTS)
@@ -1359,7 +1476,8 @@ struct ModuleState {
     module: &'static BuiltinModule,
     /// The index of the module's first definition in an install list.
     first: usize,
-    /// One FunctionInfo per definition (dense; frames and function cells point into it).
+    /// One FunctionInfo per definition (dense; frames and function cells point into it). The
+    /// box of a lazy group's module is empty until the group's first install.
     infos: Box<[FunctionInfo]>,
     /// The function object of each definition in the first realm, undefined until made: a
     /// strong root range (the heap is the Runtime's first field, so it drops with the range
@@ -1380,10 +1498,11 @@ fn tables(embedder: Option<&'static BuiltinTable>) -> impl Iterator<Item = &'sta
 }
 
 /// Builds the dense FunctionInfo array and registers the function root range of every module
-/// (VM table first) and the intrinsic slots. No GC allocation. Runs once, before
-/// `realm::init`.
+/// (VM table first) and the intrinsic slots, and finds the lazy groups of the tables
+/// ([`LazyGroups`], once per table). No GC allocation. Runs once, before `realm::init`.
 pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
     rt.builtins.table.set(embedder);
+    rt.builtins.lazy.set(Some(lazy_groups(embedder)));
     let mut mods = rt.builtins.modules.borrow_mut();
     debug_assert!(mods.is_empty(), "builtins::prepare runs once");
     // SAFETY: the slots live in a box that the Runtime owns (`builtins`); the heap is the
@@ -1399,16 +1518,15 @@ pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
             RootStrength::Strong,
         );
     }
+    let lazy = lazy_of(rt);
     let mut first = 0;
-    for module in tables(embedder).flat_map(|t| t.modules.iter()) {
-        let infos: Box<[FunctionInfo]> = module
-            .defs
-            .iter()
-            .map(|d| {
-                let constructor = d.kind == BuiltinKind::Constructor;
-                FunctionInfo::host(d.f, &d.function_name(), d.length, constructor)
-            })
-            .collect();
+    for (mi, module) in tables(embedder).flat_map(|t| t.modules.iter()).enumerate() {
+        // A lazy group's FunctionInfos come at its first install ([`install_group`]).
+        let infos = if lazy.module.get(mi).copied().flatten().is_some() {
+            Box::default()
+        } else {
+            function_infos(module)
+        };
         let functions: Box<[Slot]> = module
             .defs
             .iter()
@@ -1430,6 +1548,18 @@ pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
         first += module.defs.len();
     }
     rt.builtins.definitions.set(first);
+}
+
+/// One FunctionInfo per definition of `module`.
+fn function_infos(module: &BuiltinModule) -> Box<[FunctionInfo]> {
+    module
+        .defs
+        .iter()
+        .map(|d| {
+            let constructor = d.kind == BuiltinKind::Constructor;
+            FunctionInfo::host(d.f, &d.function_name(), d.length, constructor)
+        })
+        .collect()
 }
 
 /// Starts the install of a realm after the first: a new install list (one undefined entry per
@@ -1511,23 +1641,51 @@ pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
         .filter(|&f| f != UNDEFINED && object::function_realm(f) == rt.root(Root::Realm))
 }
 
-/// Installs the tables that [`prepare`] registered: (1) the function object of every
-/// definition, (2) the intrinsics the modules make, then the `[[Prototype]]` of
-/// %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction% (%Function%) and of the
-/// native errors (%Error%),
-/// (3) the properties. Walk order: VM table,
-/// then the embedder's; modules, then entries, in order. Runs after `realm::init`.
-pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
-    let rt = cx.rt();
+/// Installs the tables that [`prepare`] registered into the current realm: (1) the function
+/// object of every definition, (2) the intrinsics the modules make, then the `[[Prototype]]`
+/// of %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction% (%Function%) and of
+/// the native errors (%Error%), (3) the properties. Walk order: VM table, then the embedder's;
+/// modules, then entries, in order. The modules of a lazy group ([`LazyGroups`]) are left
+/// out: only the group's global key gets its place, with the reserved value HOLE
+/// ([`install_group`] installs the group at its first use). Runs after `realm::init`. GC
+/// points.
+pub(crate) fn install(rt: &Runtime) -> Result<(), String> {
+    install_pass(rt, Pass::Eager)
+}
+
+/// What one install pass covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    /// Realm init: every module that is in no lazy group, and the reserved value of each
+    /// lazy key.
+    Eager,
+    /// Lazy group `g` into the current realm (the realm roots are that realm's).
+    Group(u8),
+}
+
+/// The three install steps of [`install`] for the modules of `pass`. GC points: every new
+/// cell goes into a root (a module slot, the install list, an intrinsic slot or root) or a
+/// property of an object that one holds before the next allocation.
+fn install_pass(rt: &Runtime, pass: Pass) -> Result<(), String> {
     let embedder = rt.builtins.table();
-    let modules: Vec<&'static BuiltinModule> =
-        tables(embedder).flat_map(|t| t.modules.iter()).collect();
-    for m in &modules {
-        for i in 0..m.defs.len() {
-            function_object(rt, m.id(i as u16));
+    let lazy = lazy_of(rt);
+    let modules: Vec<(&'static BuiltinModule, Option<u8>)> = tables(embedder)
+        .flat_map(|t| t.modules.iter())
+        .enumerate()
+        .map(|(i, m)| (m, lazy.module.get(i).copied().flatten()))
+        .collect();
+    let wanted = |g: Option<u8>| match pass {
+        Pass::Eager => g.is_none(),
+        Pass::Group(x) => g == Some(x),
+    };
+    for &(m, g) in &modules {
+        if wanted(g) {
+            for i in 0..m.defs.len() {
+                function_object(rt, m.id(i as u16));
+            }
         }
     }
-    for m in &modules {
+    for &(m, _) in modules.iter().filter(|(_, g)| wanted(*g)) {
         for d in m.intrinsics {
             let v = match d.value {
                 IntrinsicValue::Builtin(i) => function_object(rt, m.id(i)),
@@ -1557,9 +1715,53 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
             }
         }
     }
-    // §27.3.2, §27.7.2, §27.4.2: the [[Prototype]] of %GeneratorFunction%, %AsyncFunction%
-    // and %AsyncGeneratorFunction% is %Function%. A table gives a builtin's function object
-    // %Function.prototype% only. GC point (dictionary mode, OM-10): the intrinsics are roots.
+    if pass == Pass::Eager {
+        fixed_prototypes(rt)?;
+    }
+    for &(m, g) in &modules {
+        let key_of = |g: u8| lazy.groups[usize::from(g)].key;
+        for op in m.props {
+            let lazy_key = |p: &PropDef| {
+                g.filter(|&g| {
+                    op.target == IntrinsicId::GlobalObject && p.key.string_text() == Some(key_of(g))
+                })
+            };
+            if !wanted(g) {
+                // A lazy module at realm init: only its global key, with the reserved value.
+                if pass == Pass::Eager {
+                    for p in op.props.iter().filter(|p| lazy_key(p).is_some()) {
+                        define_reserved(rt, m, p)?;
+                    }
+                }
+                continue;
+            }
+            let target = intrinsic(rt, op.target);
+            if !is_object(target) {
+                return Err(format!(
+                    "builtin table module `{}`: {} is not installed",
+                    m.name,
+                    op.target.name()
+                ));
+            }
+            for p in op.props {
+                if lazy_key(p).is_some() {
+                    store_reserved(rt, m, target, p)?;
+                } else {
+                    define(rt, m, target, op.target, p)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Step (2) of the eager install, after the intrinsics: §27.3.2, §27.7.2, §27.4.2 (the
+/// `[[Prototype]]` of %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction% is
+/// %Function%) and §20.5.6.2 (the `[[Prototype]]` of each NativeError constructor is %Error%).
+/// A table gives a builtin's function object %Function.prototype% only. %AggregateError%
+/// (§20.5.7.2) gets it in `realm.rs`, after the embedder's table made it. GC points
+/// (dictionary mode, OM-10): the intrinsics are roots.
+fn fixed_prototypes(rt: &Runtime) -> Result<(), String> {
     let function = intrinsic(rt, IntrinsicId::Function);
     for id in [
         IntrinsicId::GeneratorFunction,
@@ -1574,9 +1776,6 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
             return Err(format!("could not set the [[Prototype]] of {}", id.name()));
         }
     }
-    // §20.5.6.2: the [[Prototype]] of each NativeError constructor is %Error% (made by the
-    // VM table with %Function.prototype%, as above). %AggregateError% (§20.5.7.2) gets it
-    // in `isolate.rs`, after the embedder's table made it. GC point (dictionary mode): the intrinsics are roots.
     let error = intrinsic(rt, IntrinsicId::Error);
     for id in [
         IntrinsicId::EvalError,
@@ -1589,21 +1788,6 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
         let c = intrinsic(rt, id);
         if !is_object(error) || !is_object(c) || !crate::property::set_prototype_of(rt, c, error) {
             return Err(format!("could not set the [[Prototype]] of {}", id.name()));
-        }
-    }
-    for m in &modules {
-        for op in m.props {
-            let target = intrinsic(rt, op.target);
-            if !is_object(target) {
-                return Err(format!(
-                    "builtin table module `{}`: {} is not installed",
-                    m.name,
-                    op.target.name()
-                ));
-            }
-            for p in op.props {
-                define(cx, m, target, op.target, p)?;
-            }
         }
     }
     Ok(())
@@ -1630,16 +1814,17 @@ fn well_known(rt: &Runtime, w: WellKnownSymbol) -> Result<u64, String> {
     }
 }
 
-/// Defines one table property on `target`. GC points: `target`, the key and the value live in
-/// Rust locals (conservative scan) and the intrinsics are roots.
+/// Defines one table property on `target`. An accessor goes straight onto the object (a new
+/// ACCESSOR_PAIR, as `property::define_own_property` makes for a new key of an ordinary
+/// object), so an install needs only `&Runtime` and runs no JS. GC points: `target`, the key
+/// and the value live in Rust locals (conservative scan) and the intrinsics are roots.
 fn define(
-    cx: &mut Cx,
+    rt: &Runtime,
     m: &BuiltinModule,
     target: u64,
     id: IntrinsicId,
     p: &PropDef,
 ) -> Result<(), String> {
-    let rt = cx.rt();
     let at = |what: &str| {
         format!(
             "builtin table module `{}`: {}.{}: {what}",
@@ -1691,31 +1876,381 @@ fn define(
             }
         }
         PropValue::Accessor { get, set } => {
-            let desc = Desc {
-                get: Some(get.map_or(UNDEFINED, |i| function_object(rt, m.id(i)))),
-                set: Some(set.map_or(UNDEFINED, |i| function_object(rt, m.id(i)))),
-                enumerable: Some(p.attrs.enumerable),
-                configurable: Some(p.attrs.configurable),
-                ..Desc::default()
-            };
-            return match crate::property::define_own_property(cx, target, key, desc) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(at("the accessor was rejected")),
-                Err(_) => {
-                    // `e` lives in a Rust local while its text is read.
-                    let e = rt.take_pending();
-                    let text = if is_error(e) {
-                        crate::error::error_header(cx, e)
-                    } else {
-                        conv::describe(e)
-                    };
-                    Err(at(&text))
-                }
-            };
+            // The ordinary step for a new key (`property::add_accessor`): a table target is
+            // an ordinary object or a function, never an Array or a routed kind.
+            if crate::exotic::is_routed(crate::kinds::cell_kind(target)) || object::is_array(target)
+            {
+                return Err(at("an accessor on an exotic object"));
+            }
+            let get = get.map_or(UNDEFINED, |i| function_object(rt, m.id(i)));
+            let set = set.map_or(UNDEFINED, |i| function_object(rt, m.id(i)));
+            // GC point: `target`, `key`, `get` and `set` live in Rust locals.
+            let pair = crate::accessor::new_pair(rt, get, set);
+            let ec = p.attrs.bits() & (attr::ENUMERABLE | attr::CONFIGURABLE);
+            own_define(rt, target, key, pair, attr::ACCESSOR | ec);
+            return Ok(());
         }
     };
     own_define(rt, target, key, v, p.attrs.bits());
     Ok(())
+}
+
+/// Realm init for the global key `p` of a lazy group: the key gets its table place and
+/// attributes with the reserved value HOLE (a VM-internal immediate that is no JS value,
+/// H06). Its field goes to rep ANY and not const (`field_rep::widen`), so the later install
+/// store ([`store_reserved`]) moves no shape and pops no fuse, and no compiled fact holds
+/// HOLE. GC point (the key, the property).
+fn define_reserved(rt: &Runtime, m: &BuiltinModule, p: &PropDef) -> Result<(), String> {
+    let global = intrinsic(rt, IntrinsicId::GlobalObject);
+    let key = key_bits(rt, p.key)?;
+    if own_get(global, key).is_some() {
+        return Err(format!(
+            "builtin table module `{}`: globalThis.{}: the object has this key already",
+            m.name,
+            p.key.text()
+        ));
+    }
+    own_define(rt, global, key, HOLE, p.attrs.bits());
+    let s = crate::shape::shape_of(global);
+    if !crate::shape::is_dictionary(s)
+        && let Some(f) = crate::shape::lookup(rt, s, key)
+    {
+        crate::field_rep::widen(rt, s, f.index);
+    }
+    Ok(())
+}
+
+/// The group install for the global key `p` on `global`: stores the key's intrinsic only
+/// while the property is still a data property that holds HOLE. A write, a define or a
+/// delete before the install replaced the reserved value, and the install keeps that result
+/// (the result of an eager install followed by the same operation). Not a GC point.
+fn store_reserved(rt: &Runtime, m: &BuiltinModule, global: u64, p: &PropDef) -> Result<(), String> {
+    let PropValue::Intrinsic(id) = p.value else {
+        unreachable!("a lazy key names its group's intrinsic (lazy_groups)");
+    };
+    let v = intrinsic(rt, id);
+    if !is_object(v) {
+        return Err(format!(
+            "builtin table module `{}`: {} is not installed",
+            m.name,
+            id.name()
+        ));
+    }
+    // The key is an atom already: realm init interned it for `define_reserved`.
+    let key = key_bits(rt, p.key)?;
+    if matches!(own_get(global, key), Some((HOLE, a)) if a & attr::ACCESSOR == 0) {
+        object::own_replace(rt, global, key, v);
+    }
+    Ok(())
+}
+
+// ---- lazy namespace groups (INTL-I1-D8; M7-P1 LAZYNS) -----------------------------------------
+
+/// The global keys whose namespace installs into a realm at its first use, not at realm init.
+/// A key that no module puts on %GlobalObject% does nothing (Intl before INTL wave 1).
+const LAZY_KEYS: [&str; 2] = ["Temporal", "Intl"];
+
+/// The intrinsics whose `[[Prototype]]` the eager install sets after its step (2)
+/// ([`fixed_prototypes`], `realm.rs` for %AggregateError% and %SuppressedError%): never in a
+/// lazy group.
+const FIXED_PROTOTYPES: [IntrinsicId; 13] = [
+    IntrinsicId::Function,
+    IntrinsicId::Error,
+    IntrinsicId::GeneratorFunction,
+    IntrinsicId::AsyncFunction,
+    IntrinsicId::AsyncGeneratorFunction,
+    IntrinsicId::EvalError,
+    IntrinsicId::RangeError,
+    IntrinsicId::ReferenceError,
+    IntrinsicId::SyntaxError,
+    IntrinsicId::TypeError,
+    IntrinsicId::UriError,
+    IntrinsicId::AggregateError,
+    IntrinsicId::SuppressedError,
+];
+
+/// One lazy group: the modules that one lazy key brings.
+struct LazyGroup {
+    /// The global key (an entry of [`LAZY_KEYS`]).
+    key: &'static str,
+    /// The first intrinsic the group makes in walk order (the key's value): the group is
+    /// installed in a realm when this intrinsic is an object there (no REALM field and no
+    /// root records it).
+    first: IntrinsicId,
+}
+
+/// The lazy namespace groups of an isolate's tables (the VM table, then the embedder's),
+/// computed once per table from the table data (INTL-I1-D8): for each key of [`LAZY_KEYS`],
+/// the module that puts the key on %GlobalObject% as one of its own intrinsics, then (to a
+/// fixed point) every module whose properties target only group intrinsics or its own
+/// intrinsics, and at least one group intrinsic. A key is lazy only if no module outside its
+/// group names a group intrinsic (as a target, a value or a prototype), no group module is
+/// the VM's own, and no group intrinsic is core or in [`FIXED_PROTOTYPES`]; else its
+/// modules stay eager. The map holds no `Value` (rule 8).
+pub(crate) struct LazyGroups {
+    groups: Vec<LazyGroup>,
+    /// The group of each module in walk order; `None`: eager.
+    module: Vec<Option<u8>>,
+    /// The group of each intrinsic id (index `IntrinsicId as usize`); `None`: eager.
+    id: [Option<u8>; IntrinsicId::ALL.len()],
+}
+
+impl LazyGroups {
+    const NONE: LazyGroups = LazyGroups {
+        groups: Vec::new(),
+        module: Vec::new(),
+        id: [None; IntrinsicId::ALL.len()],
+    };
+
+    fn compute(modules: &[&'static BuiltinModule]) -> LazyGroups {
+        // A set of intrinsic ids: one flag per id (index `IntrinsicId as usize`). It runs at
+        // each process start, so no hashing.
+        type Ids = [bool; IntrinsicId::ALL.len()];
+        let mut out = LazyGroups::NONE;
+        out.module = vec![None; modules.len()];
+        let names = |m: &BuiltinModule, ids: &Ids| {
+            m.intrinsics.iter().any(
+                |d| matches!(d.value, IntrinsicValue::Object { proto: Some(p) } if ids[p as usize]),
+            ) || m.props.iter().any(|op| {
+                ids[op.target as usize]
+                    || op
+                        .props
+                        .iter()
+                        .any(|p| matches!(p.value, PropValue::Intrinsic(i) if ids[i as usize]))
+            })
+        };
+        let makes = |m: &BuiltinModule, id: IntrinsicId| m.intrinsics.iter().any(|d| d.id == id);
+        for key in LAZY_KEYS {
+            let is_key = |p: &PropDef| p.key.string_text() == Some(key);
+            let found = modules.iter().enumerate().find_map(|(i, m)| {
+                let p = m
+                    .props
+                    .iter()
+                    .filter(|op| op.target == IntrinsicId::GlobalObject)
+                    .flat_map(|op| op.props)
+                    .find(|p| is_key(p))?;
+                match p.value {
+                    PropValue::Intrinsic(id) if makes(m, id) => Some((i, id)),
+                    _ => None,
+                }
+            });
+            let Some((km, first)) = found else { continue };
+            if out.module[km].is_some() || out.groups.len() >= usize::from(u8::MAX) {
+                continue;
+            }
+            let mut ids: Ids = [false; IntrinsicId::ALL.len()];
+            for d in modules[km].intrinsics {
+                ids[d.id as usize] = true;
+            }
+            // The key module: its only %GlobalObject% property is the key; its other
+            // properties target its own intrinsics.
+            let key_module_ok = modules[km].props.iter().all(|op| {
+                if op.target == IntrinsicId::GlobalObject {
+                    op.props.len() == 1 && is_key(&op.props[0])
+                } else {
+                    ids[op.target as usize]
+                }
+            });
+            if !key_module_ok || modules[km].intrinsics.first().map(|d| d.id) != Some(first) {
+                continue;
+            }
+            let mut member = vec![false; modules.len()];
+            member[km] = true;
+            loop {
+                let mut grew = false;
+                for (i, m) in modules.iter().enumerate() {
+                    if member[i] || out.module[i].is_some() || m.props.is_empty() {
+                        continue;
+                    }
+                    if m.props.iter().any(|op| ids[op.target as usize])
+                        && m.props
+                            .iter()
+                            .all(|op| ids[op.target as usize] || makes(m, op.target))
+                    {
+                        member[i] = true;
+                        grew = true;
+                        for d in m.intrinsics {
+                            ids[d.id as usize] = true;
+                        }
+                    }
+                }
+                if !grew {
+                    break;
+                }
+            }
+            let leaks = modules
+                .iter()
+                .enumerate()
+                .any(|(i, m)| !member[i] && names(m, &ids));
+            let pinned = modules
+                .iter()
+                .enumerate()
+                .any(|(i, m)| member[i] && m.block == crate::natives::VM_BLOCK)
+                || IntrinsicId::ALL
+                    .into_iter()
+                    .any(|id| ids[id as usize] && (id.is_core() || FIXED_PROTOTYPES.contains(&id)));
+            // A table key that a group function object makes itself (`length` and `name`,
+            // `object::new_function`): `check_tables` does not see such a key, only the
+            // install finds it. Such a group stays eager, so `Isolate::new` still reports the
+            // table error, not the first use (Codex r1 LAZYNS 3).
+            let mut function: Ids = [false; IntrinsicId::ALL.len()];
+            for (i, m) in modules.iter().enumerate() {
+                for d in m.intrinsics {
+                    if member[i] && matches!(d.value, IntrinsicValue::Builtin(_)) {
+                        function[d.id as usize] = true;
+                    }
+                }
+            }
+            let implicit = modules.iter().enumerate().any(|(i, m)| {
+                member[i]
+                    && m.props.iter().any(|op| {
+                        function[op.target as usize]
+                            && op
+                                .props
+                                .iter()
+                                .any(|p| matches!(p.key.string_text(), Some("length" | "name")))
+                    })
+            });
+            // The first intrinsic in walk order is the key's value (the installed mark).
+            if leaks || pinned || implicit || member.iter().position(|&b| b) != Some(km) {
+                continue;
+            }
+            let g = out.groups.len() as u8;
+            out.groups.push(LazyGroup { key, first });
+            for (i, m) in modules.iter().enumerate() {
+                if member[i] {
+                    out.module[i] = Some(g);
+                    for d in m.intrinsics {
+                        out.id[d.id as usize] = Some(g);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The lazy groups of the VM table followed by `embedder` (once per process and table).
+fn lazy_groups(embedder: Option<&'static BuiltinTable>) -> &'static LazyGroups {
+    let t = embedder.unwrap_or(&crate::natives::VM_TABLE);
+    t.lazy.get_or_init(|| {
+        let modules: Vec<&'static BuiltinModule> =
+            tables(embedder).flat_map(|t| t.modules.iter()).collect();
+        LazyGroups::compute(&modules)
+    })
+}
+
+/// The lazy groups of the isolate (none before [`prepare`]).
+fn lazy_of(rt: &Runtime) -> &'static LazyGroups {
+    static NONE: LazyGroups = LazyGroups::NONE;
+    rt.builtins.lazy.get().unwrap_or(&NONE)
+}
+
+/// The lazy group of the intrinsic `id`, if it has one. Not a GC point.
+pub(crate) fn lazy_group(rt: &Runtime, id: IntrinsicId) -> Option<u8> {
+    lazy_of(rt).id[id as usize]
+}
+
+/// The lazy group whose global key is the property key `key`, if one is. Not a GC point.
+pub(crate) fn lazy_group_of_key(rt: &Runtime, key: u64) -> Option<u8> {
+    let groups = &lazy_of(rt).groups;
+    if groups.is_empty() || !crate::kinds::is_string(key) {
+        return None;
+    }
+    let text = crate::string::to_rust_string(key);
+    groups.iter().position(|g| g.key == text).map(|g| g as u8)
+}
+
+/// Installs lazy group `g` into `realm` (current or not) unless it is installed there: its
+/// function objects, intrinsics and properties, in table order (the three steps of
+/// [`install`]), and the group's global key while that still holds HOLE. For a realm that is
+/// not current, only the realm roots switch to it and back (no JS runs, so `Cx::realm` does
+/// not change). The first realm's function objects go into the module slots, a later
+/// realm's into a new install list (as its own install did). Panics if the install fails
+/// (`check_tables` passed for the table, and the eager install of the same table did not
+/// fail). GC point.
+pub(crate) fn install_group(rt: &Runtime, realm: u64, g: u8) {
+    let group = &lazy_of(rt).groups[usize::from(g)];
+    if is_object(crate::realm::intrinsic_in(rt, realm, group.first)) {
+        return;
+    }
+    // The group's FunctionInfos, once per isolate (no function object points into the empty
+    // box that this replaces). Not a GC point.
+    for (st, lg) in rt
+        .builtins
+        .modules
+        .borrow_mut()
+        .iter_mut()
+        .zip(&lazy_of(rt).module)
+    {
+        if *lg == Some(g) && st.infos.is_empty() {
+            st.infos = function_infos(st.module);
+        }
+    }
+    // GC points below: `current` and `saved` live in Rust locals (conservative scan), so the
+    // current realm (through its record) and an install list in use stay live.
+    let current = rt.root(Root::Realm);
+    let other = realm != current;
+    if other {
+        load_realm_roots(rt, realm);
+    }
+    let saved = rt.builtins.install_list[0].bits();
+    if is_first_realm(rt, realm) {
+        // E3: a store into a root slot takes no barrier.
+        rt.builtins.install_list[0].init(Value::UNDEFINED);
+    } else {
+        begin_realm_install(rt);
+    }
+    let r = install_pass(rt, Pass::Group(g));
+    rt.builtins.install_list[0].init(val(saved));
+    if other {
+        load_realm_roots(rt, current);
+    }
+    if let Err(e) = r {
+        panic!(
+            "ep9 internal error: the lazy {} namespace install failed: {e}",
+            group.key
+        );
+    }
+}
+
+/// Whether `realm` is the first realm of the isolate: the one whose function objects the
+/// module slots hold (its %Function.prototype%, VM builtin 0.0, is in the slot). Not a GC
+/// point.
+fn is_first_realm(rt: &Runtime, realm: u64) -> bool {
+    let mods = rt.builtins.modules.borrow();
+    let f = mods[0].functions[usize::from(crate::natives::vm::FUNCTION_PROTOTYPE)].bits();
+    f != UNDEFINED && object::function_realm(f) == realm
+}
+
+/// The root part of `realm::switch`: writes `realm`'s intrinsics, lexical record and record
+/// into the current-realm roots, the intrinsic slots and `%Symbol.prototype%`, and empties
+/// the function shape caches (`shape::clear_realm_caches`). `Cx::realm` and
+/// `Cx::global_this` stay: no JS runs before the switch back. Not a GC point.
+fn load_realm_roots(rt: &Runtime, realm: u64) {
+    use crate::object::realmf;
+    let list = object::record_get(realm, realmf::INTRINSICS);
+    for id in IntrinsicId::ALL {
+        load_intrinsic(rt, id, object::list_get(list, id as usize));
+    }
+    rt.set_root(
+        Root::Lexical,
+        object::record_get(realm, realmf::GLOBAL_LEXICAL),
+    );
+    rt.set_root(Root::Realm, realm);
+    crate::shape::clear_realm_caches(rt);
+}
+
+/// Whether the function object `f` was made from a definition of an installed builtin table
+/// (in any realm: every realm's function objects share the definition's FunctionInfo), not by
+/// `Isolate::register_host_function` or a closure. Not a GC point.
+pub(crate) fn is_table_function(rt: &Runtime, f: u64) -> bool {
+    let info = core::ptr::from_ref(object::function_info(f));
+    rt.builtins
+        .modules
+        .borrow()
+        .iter()
+        .any(|st| st.infos.as_ptr_range().contains(&info))
 }
 
 #[cfg(test)]

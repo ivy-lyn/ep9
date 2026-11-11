@@ -6,10 +6,11 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-# Builtins reach the engine only through ep9_vm's builtin ABI (H20), plus ep9_math for Math and
-# ep9_temporal for the Temporal modules (design SPEC-T-D11): .github/scripts/dep-guards.sh
-# check 8.
+# Builtins reach the engine only through ep9_vm's builtin ABI (H20), plus ep9_math for Math,
+# ep9_temporal for the Temporal modules (design SPEC-T-D11) and ep9_intl for the Intl modules
+# (INTL-I1-D1): .github/scripts/dep-guards.sh check 8.
 [dependencies]
+ep9_intl = { path = "../ep9_intl" }
 ep9_math = { path = "../ep9_math" }
 ep9_temporal = { path = "../ep9_temporal" }
 ep9_vm = { path = "../ep9_vm" }
@@ -17,6 +18,8 @@ ep9_vm = { path = "../ep9_vm" }
 # Tests compile JS and run it on an isolate.
 [dev-dependencies]
 ep9_bytecode = { path = "../ep9_bytecode" }
+# The FASTDIFF test reads the hit count of each Switch fast path (route P0-FASTHITS).
+ep9_vm = { path = "../ep9_vm", features = ["fastdiff-hits"] }
 # The facts-export test (`tests/facts_export.rs`, M3-P3; V8-A12).
 ep9_facts = { path = "../ep9_facts" }
 ep9_frontend = { path = "../ep9_frontend" }

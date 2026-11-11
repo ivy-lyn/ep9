@@ -99,7 +99,7 @@ mod kinds;
 pub mod layout;
 mod literal_site;
 mod module;
-#[cfg(feature = "spike-native")]
+// The native entry (C-10): in every build; its spike API is behind `spike-native` (below).
 mod native;
 mod natives;
 mod numconv;
@@ -118,6 +118,7 @@ mod string;
 mod stub_cache;
 mod symbol;
 mod unit;
+mod unit_loader;
 mod validity;
 pub mod versions;
 mod weakref;
@@ -127,7 +128,7 @@ mod wrapper;
 // ic_ops.rs (`ops_of`, the CacheIR-like op lists of the T0 ICs; filled by M6-P1 CBC, read only
 // by the tests until a compiled tier reads it), props_index.rs (Dictionary v1, the hash index of
 // a large dictionary; hook `props::dict_find` -> `props_index::find`, built by M6-P1 DICT1) and
-// select.rs (`select()`, doc 13 C-15, M6-P0 MODES6; no caller).
+// select.rs (`select()`, doc 13 C-15, M6-P0 MODES6; first caller: unit_loader.rs, M7-P4).
 mod ic_ops;
 mod props_index;
 mod select;
@@ -175,6 +176,12 @@ pub use native::{
 /// Facts for tests and tools (not a stable API).
 #[doc(hidden)]
 pub mod internals {
+    /// FASTDIFF (route P0-FASTHITS): the hit count of each Switch human fast path on this
+    /// thread since the last call (then 0), by its FASTDIFF row name. Feature `fastdiff-hits`.
+    #[cfg(feature = "fastdiff-hits")]
+    pub fn take_fastdiff_hits() -> Vec<(&'static str, u64)> {
+        crate::call::fast_hits::take()
+    }
     /// Opcodes with a cold block in the interpreter DSL.
     pub const COLD_OPCODES: usize = crate::interp::ops::COLD_COUNT;
     /// Handlers per threaded expansion: one per opcode, one per cold block, plus `Exit`,

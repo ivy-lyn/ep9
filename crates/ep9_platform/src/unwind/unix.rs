@@ -43,9 +43,12 @@ unsafe impl Send for EhFrameRegistration {}
 unsafe impl Sync for EhFrameRegistration {}
 
 impl EhFrameRegistration {
-    /// Registers every FDE of `section` in the process's [`RegistrationMode`]. The first call
-    /// in a build with `jit` runs the self-test ([`super::registration_mode`]). Fails if no
-    /// mode passed the self-test, or (without `jit`) if [`super::self_test`] has not run yet.
+    /// Registers every FDE of `section` in the process's [`RegistrationMode`]
+    /// ([`super::registration_mode`] says what a caller may rely on). Fails if no mode passed
+    /// the self-test (for good). With `jit`, a call before the mode is chosen runs
+    /// [`super::choose_mode`]: it needs one free page of the process code range, and without
+    /// one it fails and keeps nothing (a later call tries again). Without `jit` it fails until
+    /// [`super::choose_mode`] or [`super::self_test`] has chosen the mode.
     ///
     /// # Safety
     /// - Each FDE describes code at its `pc_begin` range correctly; the unwinder trusts it.

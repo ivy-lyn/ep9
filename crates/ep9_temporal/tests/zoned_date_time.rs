@@ -60,7 +60,7 @@ fn errors_have_the_spec_types() {
             t(() => new Temporal.ZonedDateTime(0n));                          // no time zone
             t(() => new Temporal.ZonedDateTime(0n, "Mars/Olympus_Mons"));     // unknown zone
             t(() => new Temporal.ZonedDateTime(0n, "2020-01-01T00:00Z[UTC]")); // not an identifier
-            t(() => new Temporal.ZonedDateTime(0n, "UTC", "gregory"));        // only iso8601
+            t(() => new Temporal.ZonedDateTime(0n, "UTC", "islamic"));        // not available
             t(() => Temporal.ZonedDateTime.from("2020-01-01T00:00"));         // no time zone
             t(() => Temporal.ZonedDateTime.from({ year: 2020, month: 1, day: 1 })); // no timeZone
             t(() => Temporal.ZonedDateTime.from("2020-01-01T00:00+01:00[UTC]")); // offset mismatch

@@ -506,7 +506,7 @@ fn run(seed: u64, steps: usize, gc_stress: u32) -> Stats {
 /// `generational`: S1 with the verify after every GC (sticky marks, logs, minor GCs: under
 /// GC-stress every 64th GC is major, without it the policy picks).
 #[inline(never)]
-fn run_with(seed: u64, steps: usize, gc_stress: u32, generational: bool) -> Stats {
+pub(super) fn run_with(seed: u64, steps: usize, gc_stress: u32, generational: bool) -> Stats {
     run_budget(seed, steps, gc_stress, generational, 1 << 20)
 }
 

@@ -24,11 +24,13 @@ pub enum Contract {
     FactSchema,
     /// Builtin ABI (H20).
     BuiltinAbi,
+    /// VM layout (C-18, H35-Q10): the `Cx`, FunctionInfo and RuntimeTable offsets.
+    VmLayout,
 }
 
 impl Contract {
-    /// Every contract, in check order (header order, with the builtin ABI last).
-    pub const ALL: [Contract; 9] = [
+    /// Every contract, in check order (header order: the builtin ABI and the VM layout last).
+    pub const ALL: [Contract; 10] = [
         Self::BytecodeAbi,
         Self::ValueEncoding,
         Self::ObjectLayout,
@@ -38,6 +40,7 @@ impl Contract {
         Self::DeoptMeta,
         Self::FactSchema,
         Self::BuiltinAbi,
+        Self::VmLayout,
     ];
 
     /// The field name in the layout text.
@@ -52,6 +55,7 @@ impl Contract {
             Self::DeoptMeta => "deopt_meta",
             Self::FactSchema => "fact_schema",
             Self::BuiltinAbi => "builtin_abi",
+            Self::VmLayout => "vm_layout",
         }
     }
 
@@ -67,6 +71,7 @@ impl Contract {
             Self::DeoptMeta => offsets::DEOPT_META,
             Self::FactSchema => offsets::FACT_SCHEMA,
             Self::BuiltinAbi => offsets::BUILTIN_ABI,
+            Self::VmLayout => offsets::VM_LAYOUT,
         }
     }
 
@@ -98,6 +103,8 @@ pub struct Versions {
     pub fact_schema: u32,
     /// Builtin ABI (`ep9_vm::versions::BUILTIN_ABI_VERSION`).
     pub builtin_abi: u32,
+    /// VM layout (`ep9_vm::versions::VM_LAYOUT_VERSION`).
+    pub vm_layout: u32,
 }
 
 impl Versions {
@@ -113,6 +120,7 @@ impl Versions {
             Contract::DeoptMeta => self.deopt_meta,
             Contract::FactSchema => self.fact_schema,
             Contract::BuiltinAbi => self.builtin_abi,
+            Contract::VmLayout => self.vm_layout,
         }
     }
 
@@ -128,6 +136,7 @@ impl Versions {
             Contract::DeoptMeta => &mut self.deopt_meta,
             Contract::FactSchema => &mut self.fact_schema,
             Contract::BuiltinAbi => &mut self.builtin_abi,
+            Contract::VmLayout => &mut self.vm_layout,
         } = v;
     }
 }
@@ -221,7 +230,8 @@ pub mod cpu {
     };
 }
 
-/// Section kinds (H35 S2). The table lists each kind at most once, in ascending order.
+/// The named section kinds (H35 S2; container v2). The table lists each kind at most once, in
+/// ascending order, and then the extension sections (kinds >= `EXTENSION_KIND_MIN`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum SectionKind {
@@ -235,28 +245,36 @@ pub enum SectionKind {
     Bytecode = 4,
     /// The source text (H5). Required.
     Source = 5,
-    /// A HINTED FactSnapshot (`ep9_facts` format). Optional.
-    Hints = 6,
+    /// Facts: a HINTED FactSnapshot (`ep9_facts` format). Optional. Named `hints` in v1 (F-R1).
+    Facts = 6,
     /// Unwind tables.
     Unwind = 7,
     /// Debug data, perf map.
     Debug = 8,
     /// Signature over the content hash (H35-Q2, D6). Kept out of the hash.
     Signature = 9,
+    /// Reserved (doc 13 F11): the inlined units of the native code and their digests. Named,
+    /// not built: a unit with it gives BYTECODE.
+    Deps = 10,
+    /// Reserved (doc 13 F19): the app snapshot hash the native code is bound to. Named, not
+    /// built: a unit with it gives BYTECODE.
+    SnapshotBinding = 11,
 }
 
 impl SectionKind {
     /// Every kind, in table order.
-    pub const ALL: [SectionKind; 9] = [
+    pub const ALL: [SectionKind; 11] = [
         Self::Text,
         Self::Rodata,
         Self::RwTemplate,
         Self::Bytecode,
         Self::Source,
-        Self::Hints,
+        Self::Facts,
         Self::Unwind,
         Self::Debug,
         Self::Signature,
+        Self::Deps,
+        Self::SnapshotBinding,
     ];
 
     /// The kind with id `v`.
@@ -267,10 +285,12 @@ impl SectionKind {
             3 => Some(Self::RwTemplate),
             4 => Some(Self::Bytecode),
             5 => Some(Self::Source),
-            6 => Some(Self::Hints),
+            6 => Some(Self::Facts),
             7 => Some(Self::Unwind),
             8 => Some(Self::Debug),
             9 => Some(Self::Signature),
+            10 => Some(Self::Deps),
+            11 => Some(Self::SnapshotBinding),
             _ => None,
         }
     }
@@ -283,15 +303,18 @@ impl SectionKind {
             Self::RwTemplate => "rw_template",
             Self::Bytecode => "bytecode",
             Self::Source => "source",
-            Self::Hints => "hints",
+            Self::Facts => "facts",
             Self::Unwind => "unwind",
             Self::Debug => "debug",
             Self::Signature => "signature",
+            Self::Deps => "deps",
+            Self::SnapshotBinding => "snapshot_binding",
         }
     }
 
-    /// log2 of the section's alignment in the file. Container version 1 aligns every section
-    /// to 8 bytes; the A2 loader may raise the text alignment with a container version bump.
+    /// log2 of the section's alignment in the file. Container version 2 aligns every named
+    /// section to 8 bytes; the A2 loader may raise the text alignment with a container version
+    /// bump. An extension section names its own alignment.
     pub const fn align_log2(self) -> u8 {
         3
     }
@@ -300,5 +323,11 @@ impl SectionKind {
     /// BYTECODE outcome and every deopt run the bytecode.
     pub const fn required(self) -> bool {
         matches!(self, Self::Bytecode | Self::Source)
+    }
+
+    /// Named, not built (doc 13 "Reserved"): a unit with this section gives BYTECODE, since
+    /// no engine yet checks what the native code needs it for.
+    pub const fn reserved(self) -> bool {
+        matches!(self, Self::Deps | Self::SnapshotBinding)
     }
 }

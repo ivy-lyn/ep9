@@ -246,6 +246,19 @@ fn inputs_of(name: &str, n: usize) -> Vec<f64> {
             ],
         ),
         "fround" => unary_inputs(seed, n, &[(5, bits), (5, &|r| r.logu(-160, 130, true))]),
+        "f16round" => unary_inputs(
+            seed,
+            n,
+            &[
+                (3, bits),
+                (5, &|r| r.logu(-30, 17, true)),
+                (2, &|r| {
+                    // Near the binary16 midpoints of [1, 2): 1 + (2k + 1) * 2^-11.
+                    let k = r.below(1024) as f64;
+                    r.near_any(1.0 + (2.0 * k + 1.0) / 2048.0, 2)
+                }),
+            ],
+        ),
         _ => panic!("no inputs for {name}"),
     }
 }
@@ -348,6 +361,40 @@ fn triples_of(name: &str, n: usize) -> Vec<[f64; 3]> {
     v
 }
 
+/// The lists of `sum_precise`: `n` lists of 1 to 8 values (any bits, every binade, values near
+/// the negation of an earlier one in the list, small integers), then every pair of
+/// [`SPECIAL`]. The golden digest takes `N / 4` lists: about 1.1 million values.
+fn lists_of(name: &str, n: usize) -> Vec<Vec<f64>> {
+    let seed = name.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+    });
+    let mut r = Rng(seed);
+    let mut v = Vec::with_capacity(n + SPECIAL.len());
+    for _ in 0..n {
+        let len = 1 + r.below(8) as usize;
+        let mut list: Vec<f64> = Vec::with_capacity(len);
+        for _ in 0..len {
+            let x = match r.below(10) {
+                0 => r.bits(),
+                1..=4 => r.logu(-1074, 1023, true),
+                5..=7 if !list.is_empty() => {
+                    let y = list[r.below(list.len() as u64) as usize];
+                    -r.near(y, 3)
+                }
+                _ => (r.below(2001) as f64) - 1000.0,
+            };
+            list.push(x);
+        }
+        v.push(list);
+    }
+    for a in SPECIAL {
+        for b in SPECIAL {
+            v.push(vec![a, b]);
+        }
+    }
+    v
+}
+
 /// SHA-256 of the result bits (little-endian), every NaN as 0x7ff8000000000000.
 fn digest(results: impl Iterator<Item = f64>) -> String {
     let mut h = Sha256::new();
@@ -391,6 +438,7 @@ fn golden_digest(name: &str) -> String {
                 .into_iter()
                 .map(|[a, b, c]| crate::fma_exact(a, b, c)),
         ),
+        "sum_precise" => digest(lists_of(name, N / 4).iter().map(|l| crate::sum_precise(l))),
         _ => {
             let f = unary(name);
             digest(inputs_of(name, N).into_iter().map(f))
@@ -421,6 +469,7 @@ fn unary(name: &str) -> fn(f64) -> f64 {
         "cbrt" => crate::cbrt,
         "round_js" => crate::round_js,
         "fround" => crate::fround,
+        "f16round" => crate::f16round,
         _ => panic!("no function {name}"),
     }
 }
@@ -472,6 +521,8 @@ golden! {
     golden_round_js: "round_js" => "392f53ca5160f9dd2322531397c8904631740027d0a5d36e59091e2d3125bc64",
     golden_fround: "fround" => "afb93baec45f0abc777fe4e4e5d0684559fbb470f5e33eee061e3f1ec5612ef2",
     golden_fma_exact: "fma_exact" => "ed0b1b4b3e27103685edc9611a53524d9dfc6b8f2e283b9e14e00120cbf25a68",
+    golden_f16round: "f16round" => "fdb1f9910c7a6adca38129ef2d0eb06d71f74c875281f2d9a210f1a9c05ac5d0",
+    golden_sum_precise: "sum_precise" => "0cc50c0f37593dadcc51954d5578bc016ddeff51547950dfe28fef568cc3fca4",
 }
 
 /// The same bits with the hardware FMA and with `SoftFma`, on the first `n` golden inputs of

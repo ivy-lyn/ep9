@@ -812,10 +812,10 @@ fn global_lists_match_the_hit_path() {
                 let got = eval(t.rt(), &cs[0], &ops, &Env::default());
                 let fi = info(t, i);
                 if op == Operation::StoreGlobal {
-                    let hit = ic::store_global(t.rt(), &fi, t.rt().global(), SLOT, int(9));
+                    let hit = ic::store_global(&t.iso.cx, &fi, SLOT, int(9));
                     assert_eq!(hit, got == Out::Stored, "{ops:?}");
                 } else {
-                    let hit = ic::load_global(t.rt(), &fi, t.rt().global(), SLOT);
+                    let hit = ic::load_global(&t.iso.cx, &fi, SLOT);
                     match (hit, got) {
                         (Some(h), Out::Value(v)) => assert!(same(h, v)),
                         (None, Out::Miss) => {}
@@ -846,7 +846,7 @@ fn global_lists_match_the_hit_path() {
         assert!(matches!(ops.action(), Op::LoadGlobalField(_)), "{ops:?}");
         assert_eq!(eval(t.rt(), &cs[0], &ops, &Env::default()), Out::Miss);
         let fi = info(&t, 0);
-        assert_eq!(ic::load_global(t.rt(), &fi, t.rt().global(), SLOT), None);
+        assert_eq!(ic::load_global(&t.iso.cx, &fi, SLOT), None);
     });
 }
 

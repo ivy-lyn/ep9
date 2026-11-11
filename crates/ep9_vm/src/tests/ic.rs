@@ -22,13 +22,13 @@ use ep9_heap::GlobalHandle;
 use super::{Asm, config, isolate, meta, on_big_stack, print, unit};
 use crate::atoms;
 use crate::feedback;
-use crate::frame::{NULL, UNDEFINED, int32_bits, int32_of};
+use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, KEY_STRING, State, hk, smi};
 use crate::object::{self, attr};
 use crate::property;
 use crate::props;
 use crate::realm;
-use crate::runtime::{Runtime, val};
+use crate::runtime::{Root, Runtime, val};
 use crate::shape;
 use crate::string;
 use crate::validity;
@@ -1091,6 +1091,147 @@ fn a_global_store_miss_checks_the_entry_and_computes_the_case_once() {
     });
 }
 
+// ---- M7-P2 GLOBALS: what makes a global case miss, and the hole --------------------------------
+
+/// The load hit path itself (`ic::load_global`) at the site of `f<i>`.
+fn load_hit(t: &T, i: usize) -> Option<u64> {
+    let units = t.rt().units.borrow();
+    ic::load_global(&t.iso.cx, &units.last().unwrap().infos[i + 1], SLOT)
+}
+
+/// The store hit path itself (`ic::store_global`) at the `StaGlobal` site of `f<i>`.
+fn store_hit(t: &T, i: usize, v: u64) -> bool {
+    let units = t.rt().units.borrow();
+    ic::store_global(&t.iso.cx, &units.last().unwrap().infos[i + 1], SLOT, v)
+}
+
+#[test]
+fn a_global_case_follows_a_redefine() {
+    each(|c| {
+        let sites = [Site::Global("icD"), Site::StoreGlobal("icD")];
+        let mut t = T::new(c, &sites);
+        let g = t.rt().global();
+        let k = key(t.rt(), "icD");
+        props::own_define(t.rt(), g, k, int(5), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(5));
+        t.ok(1, int(6), UNDEFINED);
+        let gs = shape::shape_of(g);
+        assert_eq!((t.kind(0, gs), t.kind(1, gs)), (Some(GLOBAL), Some(GLOBAL)));
+        // A new value with the same attributes (DefinePropertyOrThrow {value}): the shape
+        // stays, and the hit reads the new value.
+        props::own_define(t.rt(), g, k, int(7), attr::DEFAULT);
+        assert_eq!(shape::shape_of(g), gs);
+        assert_eq!(load_hit(&t, 0), Some(int(7)));
+        // New attributes (read-only): a new shape, so both cases miss. The sloppy store then
+        // has no effect, and the load gives the value.
+        props::own_define(t.rt(), g, k, int(8), attr::DEFAULT & !attr::WRITABLE);
+        assert_ne!(shape::shape_of(g), gs);
+        assert_eq!(load_hit(&t, 0), None);
+        assert!(!store_hit(&t, 1, int(9)));
+        t.ok(1, int(9), UNDEFINED);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(8));
+        assert_eq!(
+            props::own_get(g, k),
+            Some((int(8), attr::DEFAULT & !attr::WRITABLE))
+        );
+    });
+}
+
+#[test]
+fn a_global_case_misses_after_a_delete_of_an_older_property() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Global("icA"), Site::Global("icB")]);
+        let g = t.rt().global();
+        let (ka, kb) = (key(t.rt(), "icA"), key(t.rt(), "icB"));
+        props::own_define(t.rt(), g, ka, int(1), attr::DEFAULT);
+        props::own_define(t.rt(), g, kb, int(2), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(1));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(2));
+        let gs = shape::shape_of(g);
+        assert_eq!((t.kind(0, gs), t.kind(1, gs)), (Some(GLOBAL), Some(GLOBAL)));
+        // `icA` is not the last property: the delete moves the global object to dictionary
+        // mode (OM-10). Both cases miss; the generic path then records SLOW.
+        assert!(property::delete(&mut t.iso.cx, g, ka, false).unwrap());
+        let ds = shape::shape_of(g);
+        assert!(shape::is_dictionary(ds));
+        assert_eq!(load_hit(&t, 1), None);
+        t.throws(0, UNDEFINED, UNDEFINED, "ReferenceError");
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(2));
+        assert_eq!(t.kind(1, ds), Some(smi::SLOW));
+    });
+}
+
+#[test]
+fn a_let_that_shadows_a_global_makes_its_global_cases_miss() {
+    each(|c| {
+        let sites = [
+            Site::Global("icL"),
+            Site::StoreGlobal("icL"),
+            Site::GlobalTypeof("icL"),
+        ];
+        let mut t = T::new(c, &sites);
+        let g = t.rt().global();
+        let k = key(t.rt(), "icL");
+        props::own_define(t.rt(), g, k, int(5), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(5));
+        t.ok(1, int(6), UNDEFINED);
+        assert_eq!(t.ok(2, UNDEFINED, UNDEFINED), int(6));
+        let gs = shape::shape_of(g);
+        for i in 0..3 {
+            assert_eq!(t.kind(i, gs), Some(GLOBAL));
+        }
+        // A later script's `let icL` (DeclareGlobals, `realm::declare_globals`): the binding
+        // in its TDZ (the hole). The global object keeps its shape; the record does not.
+        let lex = t.rt().root(Root::Lexical);
+        let ls = shape::shape_of(lex);
+        props::own_define(t.rt(), lex, k, HOLE, attr::WRITABLE);
+        assert_eq!(shape::shape_of(g), gs);
+        assert_ne!(shape::shape_of(lex), ls);
+        assert_eq!((load_hit(&t, 0), load_hit(&t, 2)), (None, None));
+        assert!(!store_hit(&t, 1, int(0)));
+        t.throws(0, UNDEFINED, UNDEFINED, "ReferenceError");
+        t.throws(1, int(7), UNDEFINED, "ReferenceError");
+        t.throws(2, UNDEFINED, UNDEFINED, "ReferenceError");
+        // Its initialization: the binding answers; the global property keeps its value.
+        assert!(props::own_replace(t.rt(), lex, k, int(10)));
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(10));
+        t.ok(1, int(11), UNDEFINED);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(11));
+        assert_eq!(t.ok(2, UNDEFINED, UNDEFINED), int(11));
+        assert_eq!(load_hit(&t, 0), Some(int(11)));
+        assert_eq!(props::own_get(g, k), Some((int(6), attr::DEFAULT)));
+        assert_eq!(props::own_get(lex, k), Some((int(11), attr::WRITABLE)));
+    });
+}
+
+/// The hole in a global property's field is the reserved value of a lazy namespace key that
+/// is not installed yet (INTL-I1-D8). The value store keeps the shape, so the case stays, but
+/// the hit paths miss: a load never gives the hole, a store never writes over it.
+#[test]
+fn the_global_hit_paths_never_give_or_overwrite_the_hole() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Global("icH"), Site::StoreGlobal("icH")]);
+        let g = t.rt().global();
+        let k = key(t.rt(), "icH");
+        props::own_define(t.rt(), g, k, int(5), attr::DEFAULT);
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(5));
+        t.ok(1, int(6), UNDEFINED);
+        let gs = shape::shape_of(g);
+        assert_eq!(load_hit(&t, 0), Some(int(6)));
+        props::own_define(t.rt(), g, k, HOLE, attr::DEFAULT);
+        assert_eq!(shape::shape_of(g), gs);
+        assert_eq!((t.kind(0, gs), t.kind(1, gs)), (Some(GLOBAL), Some(GLOBAL)));
+        assert_eq!(load_hit(&t, 0), None);
+        assert!(!store_hit(&t, 1, int(7)));
+        assert_eq!(props::own_get(g, k), Some((HOLE, attr::DEFAULT)));
+        // Any other value: the cases hit again.
+        props::own_define(t.rt(), g, k, int(8), attr::DEFAULT);
+        assert_eq!(load_hit(&t, 0), Some(int(8)));
+        assert!(store_hit(&t, 1, int(9)));
+        assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(9));
+    });
+}
+
 // ---- budget units of a call from Rust ------------------------------------------------------
 
 /// A call from Rust (`call::call_function_object`) whose frame does not fit takes 1 budget
@@ -1155,5 +1296,231 @@ fn a_b_call_from_rust_that_does_not_fit_takes_one_unit() {
                 assert_eq!(t.iso.cx.budget, budget - 1, "{}", d.name());
             }
         });
+    }
+}
+
+// ---- prefixed sites: the Wide fast body (M7-P4 TSPASS2) ------------------------------------
+
+/// The script defines `f0(a, n)`: `for (i = 0; i < n; i++) { t = a.x; if (t) { sum += t;
+/// <300 one-byte instructions> } } return sum` (sum starts at 0). Its `x` constant has index
+/// 300, so the load is a `Wide` GetNamedProperty; the jumps over the loop body and over the
+/// 300 bytes are `Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop. These are opcodes that
+/// the `Wide` fast body runs itself (`ops.rs` `prefix_runs_fast`).
+fn prefixed_program() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("f0");
+    s.b.lda_undefined().return_();
+    let mut b = FunctionBuilder::new(meta("f0", 2, 0, 0, 0));
+    let (a, n) = (b.parameter(0), b.parameter(1));
+    let named = b.feedback_slot(FeedbackSlotKind::LoadNamed);
+    let cmp = b.feedback_slot(FeedbackSlotKind::CompareOp);
+    let bin = b.feedback_slot(FeedbackSlotKind::BinaryOp);
+    let loop_ = b.feedback_slot(FeedbackSlotKind::JumpLoop);
+    for i in 0..300 {
+        b.number_constant(f64::from(i));
+    }
+    let kx = b.string_constant("x");
+    assert!(kx.index() >= 256, "a constant that needs a Wide operand");
+    let (sum, i, t) = (b.new_register(), b.new_register(), b.new_register());
+    b.lda_zero().star(sum).lda_zero().star(i);
+    let header = b.bound_label();
+    let (exit, skip) = (b.new_label(), b.new_label());
+    b.ldar(n).test_less_than(i, cmp).jump_if_false(exit);
+    b.get_named_property(a, kx, named).star(t);
+    b.jump_if_to_boolean_false(skip);
+    b.ldar(t).add(sum, bin).star(sum);
+    for _ in 0..300 {
+        b.lda_zero();
+    }
+    b.bind(skip);
+    b.ldar(i).inc(bin).star(i);
+    b.jump_loop(header, 0, loop_);
+    b.bind(exit);
+    b.ldar(sum).return_();
+    unit("", vec![s.finish(), b.finish().unwrap()])
+}
+
+/// The runs of `interp::scaled::step` and `step_cold` on this thread so far.
+fn scaled_runs() -> [u64; 2] {
+    crate::interp::dsl::SCALED_RUNS.with(|c| c.get())
+}
+
+/// The prefixed GetNamedProperty, JumpIfFalse, JumpIfToBooleanFalse and JumpLoop run in the
+/// `Wide` fast body: no run of `interp::scaled::step` (the old path ran each of them there,
+/// several per loop turn). Their cold bodies (an IC miss, a ToBoolean of a string, the loop's
+/// interrupt poll) run once each in `step_cold`, with the fast body not run again: a
+/// megamorphic load through the stub cache, a getter-free string value and a budget that runs
+/// out mid-loop all give the generic answer. Where `PREFIXED_FAST` is false (x86-64) all 4 run
+/// in `step`, as at the base: 4 runs per loop turn and 1 for the exit jump.
+#[test]
+fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
+    each(|c| {
+        let mut iso = isolate(c);
+        iso.with_cx_checkpoint(|cx| cx.run_script(prefixed_program(), "wide.js").map(|_| ()))
+            .unwrap();
+        let u = prefixed_program();
+        assert!(
+            ep9_bytecode::Instructions::new(&u.functions[1].bytecode)
+                .filter_map(Result::ok)
+                .filter(|i| i.scale != ep9_bytecode::OperandScale::Single)
+                .map(|i| i.opcode)
+                .collect::<Vec<_>>()
+                == [
+                    ep9_bytecode::Opcode::JumpIfFalse,
+                    ep9_bytecode::Opcode::GetNamedProperty,
+                    ep9_bytecode::Opcode::JumpIfToBooleanFalse,
+                    ep9_bytecode::Opcode::JumpLoop,
+                ],
+            "the prefixed instructions of f0"
+        );
+        let f = iso.global_raw("f0").unwrap();
+        // The runs of `step` for `turns` loop turns: none, or (not in the fast body) the 4
+        // prefixed instructions of each turn and the JumpIfFalse that exits.
+        let whole = |turns: u64| {
+            if crate::interp::ops::PREFIXED_FAST {
+                0
+            } else {
+                4 * turns + 1
+            }
+        };
+        let run = |iso: &mut Isolate, a: u64, n: i32| -> (u64, [u64; 2]) {
+            let before = scaled_runs();
+            let v = iso
+                .call_raw(f, Value::UNDEFINED, &[val(a), val(int(n))])
+                .unwrap()
+                .to_bits();
+            let after = scaled_runs();
+            (v, [after[0] - before[0], after[1] - before[1]])
+        };
+        // A new object with Object.prototype and the data properties `props`.
+        let mk = |iso: &Isolate, props: &[(&str, u64)]| {
+            object_with(&iso.rt, object_prototype(&iso.rt), props)
+        };
+        // Monomorphic: the first turn misses (the uninitialized slot: one cold body), the
+        // rest hit in the fast body.
+        let o = mk(&iso, &[("x", int(2))]);
+        let (v, n) = run(&mut iso, o, 50);
+        assert_eq!(v, int(100));
+        assert_eq!(n[0], whole(50), "no whole prefixed step");
+        assert!(n[1] >= 1, "the first miss runs the cold body");
+        let (v, n) = run(&mut iso, o, 50);
+        assert_eq!(
+            (v, n),
+            (int(100), [whole(50), 0]),
+            "warm: every prefixed op in the fast body"
+        );
+        // A falsy value takes the prefixed JumpIfToBooleanFalse in the fast body.
+        let z = mk(&iso, &[("x", int(0))]);
+        assert_eq!(run(&mut iso, z, 10).0, int(0));
+        // A string is not a fast ToBoolean case: the cold body (step_cold) each turn, and
+        // `sum + t` concatenates: "0" then "ab" per turn.
+        let ab = key(&iso.rt, "ab");
+        let s = mk(&iso, &[("x", ab)]);
+        let (v, n) = run(&mut iso, s, 3);
+        assert_eq!(string::to_rust_string(v), "0ababab");
+        assert_eq!(n[0], whole(3));
+        assert!(n[1] >= 3, "one cold ToBoolean per turn: {n:?}");
+        // Megamorphic: 6 shapes; each load after that probes the stub cache in the cold body.
+        let objs: Vec<u64> = (0..6)
+            .map(|j| {
+                let pad = format!("p{j}");
+                mk(&iso, &[(pad.as_str(), int(j)), ("x", int(j + 1))])
+            })
+            .collect();
+        let held: Vec<GlobalHandle> = objs
+            .iter()
+            .map(|&o| iso.rt.heap.new_global(val(o)))
+            .collect();
+        for _ in 0..2 {
+            for (j, &o) in objs.iter().enumerate() {
+                let (v, n) = run(&mut iso, o, 4);
+                assert_eq!(v, int(4 * (j as i32 + 1)));
+                assert_eq!(n[0], whole(4));
+            }
+        }
+        for h in held {
+            iso.rt.heap.drop_global(h);
+        }
+        // The budget runs out at a prefixed JumpLoop: its cold body polls (step_cold) and the
+        // loop goes on.
+        iso.cx.budget = 3;
+        let (v, n) = run(&mut iso, o, 20);
+        assert_eq!(v, int(40));
+        assert_eq!(n[0], whole(20));
+        assert!(n[1] >= 1, "the poll of the prefixed JumpLoop");
+    });
+}
+
+// ---- the keyed store grow case (M7-P5 ICWIDE, `keyed_ic::fast_set`) ---------------------------
+
+/// `r = []`, then `r[j] = 10 * j` for j = 0 to 5, `r[7] = 70` and `r[6] = 60`, all at one
+/// StoreKeyed slot (the script's `set_keyed`); `r` stays as a global.
+fn grow_program() -> (VerifiedUnit, u32) {
+    let mut s = Asm::script(0);
+    let slot = s.set_keyed;
+    let (r, k) = (s.b.new_register(), s.b.new_register());
+    let lit = s.lit;
+    s.b.create_empty_array_literal(lit).star(r);
+    for j in [0, 1, 2, 3, 4, 5, 7, 6] {
+        s.b.lda_smi(j).star(k).lda_smi(10 * j);
+        s.b.set_keyed_property(r, k, slot);
+    }
+    s.b.ldar(r);
+    s.sta_global("r");
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), slot.index() as u32)
+}
+
+/// The grow case stores a missing element in place (an append inside the capacity, and the
+/// fill of a hole) and records in the value half the bits the cold body records for it; a
+/// store that needs more capacity or a kind transition (`r[7]`: HOLEY) stays cold. The key
+/// half stays undefined: no execution was the present-element fast case.
+#[test]
+fn the_keyed_store_grow_case_stores_in_place_and_records_as_cold() {
+    use crate::elements::{self, kind as ek};
+    use crate::profile::keyed;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let mut iso = super::profile::isolate(IsolateConfig {
+                    feedback_threshold: 0,
+                    ..config(d, stress)
+                });
+                crate::keyed_ic::GROW_HITS.with(|c| c.set(0));
+                let (u, slot) = grow_program();
+                let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "grow.js").map(|_| ()));
+                assert!(r.is_ok(), "{r:?}");
+                let hits = crate::keyed_ic::GROW_HITS.with(|c| c.get());
+                // j = 0 and j = 4 need capacity and r[7] a transition: cold. The rest grow.
+                assert_eq!(hits, 5, "{} stress={stress}", d.name());
+                let a = iso.global_raw("r").unwrap().to_bits();
+                assert_eq!(object::array_len(a), 8);
+                for j in 0..8 {
+                    assert_eq!(
+                        object::array_get(a, j),
+                        Some(int32_bits(10 * j as i32)),
+                        "r[{j}]"
+                    );
+                }
+                assert_eq!(elements::kind_of(a), ek::HOLEY_INT32);
+                elements::check(a).unwrap();
+                let units = iso.rt.units.borrow();
+                let fi = &units.last().unwrap().infos[0];
+                let v = feedback::vector(fi).unwrap();
+                assert_eq!(feedback::key(v, slot), UNDEFINED, "the key half");
+                let want = keyed::INDEX
+                    | keyed::ARRAY
+                    | keyed::OUT_OF_BOUNDS
+                    | keyed::HOLE
+                    | elements::kinds_set_bit(ek::PACKED_INT32)
+                    | elements::kinds_set_bit(ek::HOLEY_INT32);
+                assert_eq!(feedback::value(v, slot) as u32, want, "{}", d.name());
+                drop(units);
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+            });
+        }
     }
 }

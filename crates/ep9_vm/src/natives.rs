@@ -7,9 +7,10 @@
 //! |---|---|
 //! | `%Function.prototype%` (callable, returns undefined), `Function` (CreateDynamicFunction through the compiler hook, `abi/script.rs`) | §20.2.3, §20.2.1.1 |
 //! | `Object`, `Array` (with NewTarget: GetPrototypeFromConstructor) | §20.1.1.1, §23.1.1.1 |
-//! | `Error` and the native errors | §20.5.1.1, §20.5.6.1.1 |
+//! | `Error` and the native errors (with InstallErrorCause: an own `cause` from `options.cause`) | §20.5.1.1, §20.5.6.1.1, §20.5.8.1 |
 //! | `Object.prototype.toString`, `valueOf` (ToObject) | §20.1.3.6, §20.1.3.7 |
 //! | `Error.prototype.toString` | §20.5.3.4 |
+//! | `Error.prototype.stack` (an accessor {e: false, c: true}: get, the stack text of an object with `[[ErrorData]]`; set, SetterThatIgnoresPrototypeProperties with a string; form H, see `error_stack_get`) | error-stack-accessor (Stage 3) |
 //! | `Array.prototype.join`, `toString` (ToObject, then `join` or %Object.prototype.toString%), `push` (generic: any object, through `[[Set]]`) | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
 //! | `Array.prototype.values` = `Array.prototype[@@iterator]`, `keys`, `entries`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.3.19, §23.1.3.5, §23.1.5.2.1 |
 //! | `Array.prototype[@@unscopables]` (a null-prototype object of 16 `true` keys; no function) | §23.1.3.41 |
@@ -20,6 +21,7 @@
 //! | `%AsyncGeneratorFunction%`, `%AsyncGeneratorPrototype%` `next`/`return`/`throw`, `%AsyncIteratorPrototype%[@@asyncIterator]`, `%AsyncFromSyncIteratorPrototype%` `next`/`return`/`throw` (`generator.rs`, M3-P2 ASYNCGEN; `%AsyncGeneratorFunction%` compiles through the compiler hook like `Function`) | §27.4.1.1, §27.6.1.2-4, §27.1.3.1, §27.1.6.2.1-3 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
 //! | `%ThrowTypeError%` (the strict arguments `callee` accessor; `arguments.rs` sets its attributes) | §10.2.4.1 |
+//! | `Function.prototype.caller`, `Function.prototype.arguments` (accessors; one getter and one setter, which throw the TypeError of %ThrowTypeError% but for a non-strict ordinary function, where they give undefined) | §10.2.4 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value, the next index
 //! and the iteration kind (`object::iter_kind`). The iterated value tells an array iterator
@@ -50,7 +52,7 @@ use crate::conv::{self, num};
 use crate::error;
 use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
-use crate::kinds::{is_callable, is_string};
+use crate::kinds::{self, is_callable, is_string};
 use crate::object::{self, attr, is_array, is_object, own_define};
 use crate::property;
 use crate::runtime::{ErrorKind, Root, Runtime};
@@ -135,6 +137,16 @@ pub(crate) mod vm {
     /// `%ThrowTypeError%` (§10.2.4.1): the `callee` accessor of an unmapped arguments object
     /// (`arguments.rs` gives it its attributes on first use).
     pub const THROW_TYPE_ERROR: u16 = 41;
+    // ---- M7-P2 (SPEC-D fixer need F1) ----
+    /// The getter of the `%Function.prototype%` accessors `caller` and `arguments` (§10.2.4).
+    pub const RESTRICTED_GET: u16 = 42;
+    /// The setter of the `%Function.prototype%` accessors `caller` and `arguments`.
+    pub const RESTRICTED_SET: u16 = 43;
+    // ---- M7-P4 (SPEC-BUILTINS3, route ERROR-STACK) ----
+    /// The getter of `%Error.prototype%.stack` (error-stack-accessor).
+    pub const ERROR_STACK_GET: u16 = 44;
+    /// The setter of `%Error.prototype%.stack`.
+    pub const ERROR_STACK_SET: u16 = 45;
 }
 
 /// The VM's block.
@@ -191,6 +203,10 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("return", 1, generator::async_from_sync_return),
     BuiltinDef::method("throw", 1, generator::async_from_sync_throw),
     BuiltinDef::method("", 0, throw_type_error),
+    BuiltinDef::getter("caller", restricted_function_property),
+    BuiltinDef::setter("caller", restricted_function_property),
+    BuiltinDef::getter("stack", error_stack_get),
+    BuiltinDef::setter("stack", error_stack_set),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -433,6 +449,19 @@ const VM_PROPS: &[ObjectProps] = &[
                 value: PropValue::Builtin(vm::FUNCTION_HAS_INSTANCE),
                 attrs: PropAttrs::NONE,
             },
+            // §10.2.4 AddRestrictedFunctionProperties(%Function.prototype%) steps 3-4: {e:
+            // false, c: true}, one getter and one setter for both keys (the legacy form of
+            // `restricted_function_property`).
+            PropDef::accessor(
+                PropKey::Str("caller"),
+                Some(vm::RESTRICTED_GET),
+                Some(vm::RESTRICTED_SET),
+            ),
+            PropDef::accessor(
+                PropKey::Str("arguments"),
+                Some(vm::RESTRICTED_GET),
+                Some(vm::RESTRICTED_SET),
+            ),
         ],
     },
     ObjectProps {
@@ -530,6 +559,12 @@ const VM_PROPS: &[ObjectProps] = &[
                 PropAttrs::METHOD,
             ),
             PropDef::method(CONSTRUCTOR, vm::ERROR),
+            // error-stack-accessor: an accessor {e: false, c: true}.
+            PropDef::accessor(
+                PropKey::Atom(Atom::Stack),
+                Some(vm::ERROR_STACK_GET),
+                Some(vm::ERROR_STACK_SET),
+            ),
         ],
     },
     ObjectProps {
@@ -722,6 +757,40 @@ pub(crate) fn throw_type_error<'s>(
     ))
 }
 
+/// The getter and the setter of the `%Function.prototype%` accessors `caller` and
+/// `arguments` (§10.2.4 AddRestrictedFunctionProperties). The receiver `this` is the
+/// function whose key a get or a set reached. A non-strict ordinary function (a `function`
+/// declaration or expression, or a function of the `Function` constructor, in non-strict
+/// code) has no own `caller` or `arguments`, so for it a get gives undefined (as when the
+/// key was missing) and a set does nothing. Every other receiver gets the TypeError of
+/// %ThrowTypeError% (§10.2.4.1): the functions of §17.1 that must not have these own
+/// properties (strict, arrow, method, class, generator, async, built-in and bound
+/// functions) and every value that is not a function. ECMA-262 makes both halves
+/// %ThrowTypeError%, so a non-strict function would throw too; this is the web-legacy form
+/// of V8, SpiderMonkey and JavaScriptCore instead (test262 `prop-desc.js` of `caller` and
+/// `arguments` fails on it, as on those engines).
+pub(crate) fn restricted_function_property<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let f = this.bits();
+    if kinds::is_function(f) {
+        let fi = object::function_info(f);
+        if fi.is_bytecode()
+            && !fi.is_strict()
+            && fi.kind == Some(ep9_bytecode::FunctionKind::Normal)
+            && !fi.is_generator()
+            && !fi.is_async_function()
+            && !fi.is_async_generator()
+        {
+            return Ok(local(UNDEFINED));
+        }
+    }
+    throw_type_error(cx, this, args, nt)
+}
+
 /// `%Function.prototype%` (§20.2.3): accepts any arguments and returns undefined.
 pub(crate) fn function_prototype<'s>(
     _cx: &mut HostCx<'s>,
@@ -839,8 +908,8 @@ macro_rules! error_ctors {
             args: Args<'s>,
             new_target: Local<'s>,
         ) -> JsResult<Local<'s>> {
-            let (m, nt) = (args.get(0).bits(), new_target.bits());
-            construct_error(cx.inner(), ErrorKind::$kind, m, nt).map(local)
+            let (m, o, nt) = (args.get(0).bits(), args.get(1).bits(), new_target.bits());
+            construct_error(cx.inner(), ErrorKind::$kind, m, o, nt).map(local)
         }
     )*};
 }
@@ -855,11 +924,20 @@ error_ctors! {
     uri_error_ctor => UriError,
 }
 
-/// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`. The prototype is
+/// NativeError(message, options) (§20.5.6.1.1; Error is §20.5.1.1). The prototype is
 /// OrdinaryCreateFromConstructor's (§10.1.13): `newTarget.prototype` if it is an object,
 /// else the error prototype of GetFunctionRealm(newTarget); with no newTarget (a call), the
 /// error prototype of the current realm, which is the constructor's (`call_host` switches).
-fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsResult<u64> {
+/// Then ToString(message), then InstallErrorCause(O, options) (§20.5.8.1): HasProperty and
+/// Get of `options.cause` run before the object is made, as nothing can see O between these
+/// steps; the own `cause` is {w, c} and comes after `message` and `stack` in the key order.
+fn construct_error(
+    cx: &mut Cx,
+    kind: ErrorKind,
+    message: u64,
+    options: u64,
+    nt: u64,
+) -> JsResult<u64> {
     let rt = cx.rt();
     let mut proto = rt.root(kind.prototype_root());
     if is_callable(nt) {
@@ -882,7 +960,23 @@ fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsRes
     } else {
         Some(conv::to_string(cx, message)?)
     };
-    Ok(error::new_error_value(cx, proto, msg))
+    // InstallErrorCause step 1: if options is an Object and ? HasProperty(options, "cause"),
+    // then ? Get(options, "cause"). GC points: every value lives in a Rust local (CSS).
+    let mut cause = None;
+    if is_object(options) {
+        let key = crate::atoms::intern_str(cx.rt(), "cause");
+        if property::try_has_property(cx, options, key)? {
+            cause = Some(property::get(cx, options, key)?);
+        }
+    }
+    let e = error::new_error_value(cx, proto, msg);
+    if let Some(c) = cause {
+        // CreateNonEnumerableDataPropertyOrThrow on a new error object: it cannot fail.
+        let rt = cx.rt();
+        let key = crate::atoms::intern_str(rt, "cause");
+        own_define(rt, e, key, c, attr::HIDDEN);
+    }
+    Ok(e)
 }
 
 // ---- iterators ---------------------------------------------------------------------------------
@@ -1250,6 +1344,109 @@ pub(crate) fn error_to_string<'s>(
         _ => format!("{name}: {msg}"),
     };
     Ok(local(object::new_string(rt, &s)))
+}
+
+/// The getter of `Error.prototype.stack` (error-stack-accessor, Stage 3; test262
+/// `built-ins/Error/prototype/stack`). Steps: a TypeError for a this value that is not an
+/// Object; undefined for an object with no `[[ErrorData]]` (a Proxy too: no trap runs); else
+/// an implementation-defined string, made with no property read that runs JS: the
+/// `error::error_header` text ("Name: message", data properties only) and the `at` line of
+/// the error's recorded site, if it has one.
+///
+/// Form H (M6-ORCH-296): each new error still gets its own `stack` data property at
+/// construction (`error::install_stack`), so a property access finds that data property
+/// before this accessor. This form is neither the proposal form (no own `stack` on an
+/// instance) nor the node v26 form (no `Error.prototype.stack`; an own accessor on each
+/// instance). The test262 files that need an instance with no own `stack` fail with it.
+pub(crate) fn error_stack_get<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let cx = cx.inner();
+    let e = this.bits();
+    // 1-2. If E is not an Object, throw a TypeError exception.
+    if !is_object(e) {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "get Error.prototype.stack called on non-object",
+        ));
+    }
+    // 3. If E does not have an [[ErrorData]] internal slot, return undefined.
+    if !kinds::is_error(e) {
+        return Ok(Local::undefined());
+    }
+    // 4. An implementation-defined string.
+    let mut text = error::error_header(cx, e);
+    let rt = cx.rt();
+    if let Some((unit, offset)) = object::error_site(e) {
+        text.push_str("\n    at ");
+        text.push_str(&error::site_text(rt, crate::runtime::Site { unit, offset }));
+    }
+    Ok(local(error::message_string(rt, &text)))
+}
+
+/// The setter of `Error.prototype.stack` (error-stack-accessor): a TypeError for a this value
+/// that is not an Object or a value that is not a String; then
+/// SetterThatIgnoresPrototypeProperties(this, %Error.prototype%, "stack", v) (§27.1.3.2.4):
+/// a TypeError when this is %Error.prototype% of the current realm; else
+/// CreateDataPropertyOrThrow when this has no own `stack`, or Set(this, "stack", v, true).
+/// Then undefined. The receiver needs no `[[ErrorData]]`.
+pub(crate) fn error_stack_set<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let cx = cx.inner();
+    let (o, v) = (this.bits(), args.get(0).bits());
+    // 1-2. If E is not an Object, throw a TypeError exception.
+    if !is_object(o) {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "set Error.prototype.stack called on non-object",
+        ));
+    }
+    // 3. If v is not a String, throw a TypeError exception.
+    if !is_string(v) {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "set Error.prototype.stack: the value is not a string",
+        ));
+    }
+    // 4. SetterThatIgnoresPrototypeProperties step 2: if SameValue(this, home) is true, throw
+    //    a TypeError exception.
+    let rt = cx.rt();
+    let key = rt.atom(Atom::Stack);
+    if o == builtins::intrinsic(rt, IntrinsicId::ErrorPrototype) {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "Cannot assign to read only property 'stack' of object",
+        ));
+    }
+    // Step 3. Let desc be ? this.[[GetOwnProperty]](p). GC point below: `o`, `key` and `v`
+    // live in Rust locals.
+    if property::get_own_property(cx, o, key)?.is_none() {
+        // Step 4: ? CreateDataPropertyOrThrow(this, p, v).
+        let desc = crate::descriptor::Desc::data(v, attr::DEFAULT);
+        if !property::define_own_property(cx, o, key, desc)? {
+            return Err(error::throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Cannot define property stack, object is not extensible",
+            ));
+        }
+    } else {
+        // Step 5: ? Set(this, p, v, true).
+        property::set(cx, o, key, v, true)?;
+    }
+    // 5. Return undefined.
+    Ok(Local::undefined())
 }
 
 /// Object.prototype.toString (§20.1.3.6).

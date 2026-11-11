@@ -12,8 +12,12 @@
 //!                                 19        20        21       22          23
 //!                                 plain_date_time, plain_year_month, plain_month_day,
 //!                                 24               25                26
-//!                                 zoned_date_time]
+//!                                 zoned_date_time,
 //!                                 27
+//!          iterator, disposable,
+//!          28        29
+//!          ep9_intl::MODULES: intl, locale, collator]
+//!                             30    31      32
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -42,6 +46,10 @@ pub mod symbol;
 pub mod weakref;
 // spec-temporal B4: block 18.
 pub mod bigint;
+// M7-P1 SPEC-ITER: block 28.
+pub mod iterator;
+// M7-P3 SPEC-ERM: block 29.
+pub mod disposable;
 
 use ep9_vm::{BuiltinModule, BuiltinTable};
 
@@ -75,6 +83,14 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_temporal::plain_year_month::MODULE,
     ep9_temporal::plain_month_day::MODULE,
     ep9_temporal::zoned_date_time::MODULE,
+    // M7-P1 SPEC-ITER: Iterator and the iterator helpers.
+    iterator::MODULE,
+    // M7-P3 SPEC-ERM: SuppressedError, DisposableStack, AsyncDisposableStack.
+    disposable::MODULE,
+    // ep9_intl::MODULES (INTL-I1-D1, INTL W1), in block order: the lazy group "Intl".
+    ep9_intl::intl::MODULE,
+    ep9_intl::locale::MODULE,
+    ep9_intl::collator::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

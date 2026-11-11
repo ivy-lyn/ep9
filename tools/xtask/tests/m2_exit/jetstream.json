@@ -1,0 +1,25 @@
+{
+ "started": "2026-11-06T00:00:00.000Z",
+ "finished": "2026-11-06T01:00:00.000Z",
+ "host": { "platform": "darwin", "arch": "arm64", "cpus": 18, "node": "v24.22.0" },
+ "jetstream_commit": "06785cf861ac44855f168cbbe829278c2802e6de",
+ "list": "expectations/jetstream-m2.txt",
+ "reps": 3,
+ "ep9": { "commit": "0123456789abcdef0123456789abcdef01234567", "dirty": false },
+ "configs": [
+  { "name": "jitless", "engine": "node", "flags": ["--jitless"], "cliFlags": ["--no-prefetch"], "hostFlags": [], "kind": "node", "version": "v24.22.0" },
+  { "name": "ep9", "engine": "ep9@target/release/ep9", "flags": [], "cliFlags": [], "hostFlags": [], "kind": "ep9", "version": "ep9 0.0.0; features jit; preset jit" }
+ ],
+ "complete": true,
+ "missing": [],
+ "summary": {
+  "jitless": { "complete": true, "workloads": 3, "geomean_score": 20, "ratio_vs_first": 1 },
+  "ep9": { "complete": true, "workloads": 3, "geomean_score": 16, "ratio_vs_first": 0.8 }
+ },
+ "table": [
+  { "name": "ai-astar", "jitless": 20, "jitless_n": 3, "ep9": 16, "ep9_n": 3 },
+  { "name": "Air", "jitless": 20, "jitless_n": 3, "ep9": 16, "ep9_n": 3 },
+  { "name": "Babylon", "jitless": 20, "jitless_n": 3, "ep9": 16, "ep9_n": 3 }
+ ],
+ "runs": []
+}

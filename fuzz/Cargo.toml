@@ -20,6 +20,8 @@ members = ["."]
 libfuzzer-sys = "=0.4.13"
 ep9_bytecode = { path = "../crates/ep9_bytecode" }
 ep9_frontend = { path = "../crates/ep9_frontend" }
+ep9_regexp = { path = "../crates/ep9_regexp" }
+ep9_rx1 = { path = "../crates/ep9_rx1" }
 
 [features]
 # The fuzz-log self-test (scripts/self-test.sh): frontend_compile panics on an input that
@@ -47,3 +49,15 @@ path = "fuzz_targets/eval_context.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "regexp"
+path = "fuzz_targets/regexp.rs"
+test = false
+doc = false
+bench = false
+
+# The regress fork of the root Cargo.toml (V9-D15): a [patch] applies only at its own workspace
+# root, so this workspace has the same entry (the regexp target runs ep9_regexp, RX0).
+[patch.crates-io]
+regress = { path = "../third_party/regress" }

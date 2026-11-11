@@ -1,6 +1,6 @@
 # async-gen-yield-star: script (strict)
 # | async function* g(it) { var r = yield* it; return r; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=true ts=none source_len=54 source=embedded hints=none
 source_hash=a1134ac8c97541e2b6644bdae797052c75811b89b0177d8c9ba60537efad2adf
 strings (6):
@@ -14,16 +14,15 @@ scopes (2):
   scope0 script outer=- flags=[strict] slots=["g":function]
   scope1 function outer=scope0 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=2 range=0..54
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "g"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "g"
@@ -35,172 +34,167 @@ function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=
       5 E 0 (1:1)
      15 E 0 (1:1)
 function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator,async,simple-params] params=1 length=1 regs=12 range=0..54
-  code (451 bytes):
+  code (448 bytes):
       0    LdaNewTarget                                 ; 0f
       1    Star r1                                      ; 0c 01
-      3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+23, +100, +175, +223, +276, +312, +387] ; 99 01 00
+      3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +98, +173, +221, +275, +310, +384] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
       9    Mov <this>, r3                               ; 0d ff 03
      12 E> CallRuntime AsyncGeneratorEnter, r2-r3       ; 68 24 00 02 02
      17    Star r1                                      ; 0c 01
-     19    Ldar r1                                      ; 0b 01
-     21 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
-     26    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
-     30    LdaCurrentContext                            ; 15
-     31    Star r2                                      ; 0c 02
-     33 S> Ldar a0                                      ; 0b fe
-     35    Star r9                                      ; 0c 09
-     37    LdaTheHole                                   ; 07
-     38    Star r10                                     ; 0c 0a
-     40 E> CallRuntime CreateAsyncFromSyncIterator, r9-r10 ; 68 29 00 09 02
-     45    Star r5                                      ; 0c 05
-     47 E> GetNamedProperty r5, k1, s0  ; k1 = String str1 "next" ; 21 05 01 00
-     51    Star r7                                      ; 0c 07
-     53    LdaUndefined                                 ; 05
-     54    Star r6                                      ; 0c 06
-     56    LdaZero                                      ; 03
-     57    Star r4                                      ; 0c 04
-     59    Ldar r4                                      ; 0b 04
-     61    SwitchOnSmi k2, [1]  ; k2 = JumpTable [+10, +75] ; 8a 02 01
-     64 E> CallProperty1 r7, r5, r6, s1                 ; 61 07 05 06 01
-     69    Jump @211                                    ; 7e 8e
-     71 E> GetNamedProperty r5, k3, s2  ; k3 = String str2 "return" ; 21 05 03 02
-     75    JumpIfUndefinedOrNull @86                    ; 87 0b
-     77    Star r8                                      ; 0c 08
-     79 E> CallProperty1 r8, r5, r6, s3                 ; 61 08 05 06 03
-     84    Jump @211                                    ; 7e 7f
-     86    Ldar r6                                      ; 0b 06
-     88    Star r10                                     ; 0c 0a
-     90    Mov r1, r9                                   ; 0d 01 09
-     93 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
-     98 E> SuspendGenerator r1, r0-r8, [1]              ; 9a 01 00 09 01
-    103    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
-    107    Star r9                                      ; 0c 09
-    109 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
-    114    SwitchOnSmi k4, [0]  ; k4 = JumpTable [+6]   ; 8a 04 00
-    117    Ldar r9                                      ; 0b 09
-    119 E> Throw                                        ; 90
-    120    Ldar r9                                      ; 0b 09
-    122    Star r10                                     ; 0c 0a
-    124    Mov r1, r9                                   ; 0d 01 09
-    127    LdaTrue                                      ; 08
-    128    Star r11                                     ; 0c 0b
-    130 E> CallRuntime AsyncGeneratorResolve, r9-r11    ; 68 27 00 09 03
-    135    Return                                       ; 92
-    136 E> GetNamedProperty r5, k5, s4  ; k5 = String str3 "throw" ; 21 05 05 04
-    140    JumpIfUndefinedOrNull @151                   ; 87 0b
-    142    Star r8                                      ; 0c 08
-    144 E> CallProperty1 r8, r5, r6, s5                 ; 61 08 05 06 05
-    149    Jump @211                                    ; 7e 3e
-    151 E> GetNamedProperty r5, k3, s6  ; k3 = String str2 "return" ; 21 05 03 06
-    155    JumpIfUndefinedOrNull @206                   ; 87 33
-    157    Star r8                                      ; 0c 08
-    159 E> CallProperty0 r8, r5, s7                     ; 60 08 05 07
-    163    Star r10                                     ; 0c 0a
-    165    Mov r1, r9                                   ; 0d 01 09
-    168 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
-    173 E> SuspendGenerator r1, r0-r8, [2]              ; 9a 01 00 09 02
-    178    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
-    182    Star r9                                      ; 0c 09
-    184 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
-    189    SwitchOnSmi k6, [0]  ; k6 = JumpTable [+6]   ; 8a 06 00
-    192    Ldar r9                                      ; 0b 09
-    194 E> Throw                                        ; 90
-    195    Ldar r9                                      ; 0b 09
-    197    JumpIfJSReceiver @206                        ; 88 09
-    199    Star r8                                      ; 0c 08
-    201 E> CallRuntime ThrowIteratorResultNotAnObject, r8 ; 68 01 00 08 01
-    206 E> CallRuntime ThrowThrowMethodMissing, ()      ; 68 16 00 00 00
-    211    Star r10                                     ; 0c 0a
-    213    Mov r1, r9                                   ; 0d 01 09
-    216 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
-    221 E> SuspendGenerator r1, r0-r8, [3]              ; 9a 01 00 09 03
-    226    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
-    230    Star r9                                      ; 0c 09
-    232 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
-    237    SwitchOnSmi k7, [0]  ; k7 = JumpTable [+6]   ; 8a 07 00
-    240    Ldar r9                                      ; 0b 09
-    242 E> Throw                                        ; 90
-    243    Ldar r9                                      ; 0b 09
-    245    Star r3                                      ; 0c 03
-    247    JumpIfJSReceiver @254                        ; 88 07
-    249 E> CallRuntime ThrowIteratorResultNotAnObject, r3 ; 68 01 00 03 01
-    254 E> GetNamedProperty r3, k8, s8  ; k8 = String str4 "done" ; 21 03 08 08
-    258    JumpIfToBooleanTrue @341                     ; 81 53
-    260 E> GetNamedProperty r3, k9, s9  ; k9 = String str5 "value" ; 21 03 09 09
-    264    Star r10                                     ; 0c 0a
-    266    Mov r1, r9                                   ; 0d 01 09
-    269 E> CallRuntime AsyncGeneratorYield, r9-r10      ; 68 26 00 09 02
-    274 E> SuspendGenerator r1, r0-r8, [4]              ; 9a 01 00 09 04
-    279    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
-    283    Star r6                                      ; 0c 06
-    285 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
-    290    Star r4                                      ; 0c 04
-    292    LdaSmi [1]                                   ; 04 01
-    294    TestReferenceEqual r4                        ; 51 04
-    296    JumpIfFalse @333                             ; 80 25
-    298    Ldar r6                                      ; 0b 06
-    300    Star r10                                     ; 0c 0a
-    302    Mov r1, r9                                   ; 0d 01 09
-    305 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
-    310 E> SuspendGenerator r1, r0-r8, [5]              ; 9a 01 00 09 05
-    315    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
-    319    Star r6                                      ; 0c 06
-    321 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
-    326    SwitchOnSmi k10, [0]  ; k10 = JumpTable [+7] ; 8a 0a 00
-    329    LdaSmi [2]                                   ; 04 02
-    331    Star r4                                      ; 0c 04
-    333    JumpLoop.Wide @59, [0], s10                  ; 01 7d 12 01 00 00 0a 00
-    341 E> GetNamedProperty r3, k9, s11  ; k9 = String str5 "value" ; 21 03 09 0b
-    345    Star r3                                      ; 0c 03
-    347    LdaSmi [1]                                   ; 04 01
-    349    TestReferenceEqual r4                        ; 51 04
-    351    JumpIfFalse @369                             ; 80 12
-    353    Ldar r3                                      ; 0b 03
-    355    Star r10                                     ; 0c 0a
-    357    Mov r1, r9                                   ; 0d 01 09
-    360    LdaTrue                                      ; 08
-    361    Star r11                                     ; 0c 0b
-    363 E> CallRuntime AsyncGeneratorResolve, r9-r11    ; 68 27 00 09 03
-    368    Return                                       ; 92
-    369    Ldar r3                                      ; 0b 03
-    371    Star r0                                      ; 0c 00
-    373 S> Ldar r0                                      ; 0b 00
-    375    Star r4                                      ; 0c 04
-    377    Mov r1, r3                                   ; 0d 01 03
-    380 E> CallRuntime AsyncGeneratorAwait, r3-r4       ; 68 25 00 03 02
-    385 E> SuspendGenerator r1, r0-r2, [6]              ; 9a 01 00 03 06
-    390    ResumeGenerator r1, r0-r2                    ; 9b 01 00 03
-    394    Star r3                                      ; 0c 03
-    396 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
-    401    SwitchOnSmi k11, [0]  ; k11 = JumpTable [+6] ; 8a 0b 00
+     19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
+     24    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
+     28    LdaCurrentContext                            ; 15
+     29    Star r2                                      ; 0c 02
+     31 S> Ldar a0                                      ; 0b fe
+     33    LdaTheHole                                   ; 07
+     34    Star r10                                     ; 0c 0a
+     36    Mov a0, r9                                   ; 0d fe 09
+     39 E> CallRuntime CreateAsyncFromSyncIterator, r9-r10 ; 68 29 00 09 02
+     44    Star r5                                      ; 0c 05
+     46 E> GetNamedProperty r5, k1, s0  ; k1 = String str1 "next" ; 21 05 01 00
+     50    Star r7                                      ; 0c 07
+     52    LdaUndefined                                 ; 05
+     53    Star r6                                      ; 0c 06
+     55    LdaZero                                      ; 03
+     56    Star r4                                      ; 0c 04
+     58    Ldar r4                                      ; 0b 04
+     60    SwitchOnSmi k2, [1]  ; k2 = JumpTable [+10, +74] ; 8a 02 01
+     63 E> CallProperty1 r7, r5, r6, s1                 ; 61 07 05 06 01
+     68    Jump @209                                    ; 7e 8d
+     70 E> GetNamedProperty r5, k3, s2  ; k3 = String str2 "return" ; 21 05 03 02
+     74    JumpIfUndefinedOrNull @85                    ; 87 0b
+     76    Star r8                                      ; 0c 08
+     78 E> CallProperty1 r8, r5, r6, s3                 ; 61 08 05 06 03
+     83    Jump @209                                    ; 7e 7e
+     85    Mov r1, r9                                   ; 0d 01 09
+     88    Mov r6, r10                                  ; 0d 06 0a
+     91 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
+     96 E> SuspendGenerator r1, r0-r8, [1]              ; 9a 01 00 09 01
+    101    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
+    105    Star r9                                      ; 0c 09
+    107 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    112    SwitchOnSmi k4, [0]  ; k4 = JumpTable [+6]   ; 8a 04 00
+    115    Ldar r9                                      ; 0b 09
+    117 E> Throw                                        ; 90
+    118    Ldar r9                                      ; 0b 09
+    120    Star r10                                     ; 0c 0a
+    122    LdaTrue                                      ; 08
+    123    Star r11                                     ; 0c 0b
+    125    Mov r1, r9                                   ; 0d 01 09
+    128 E> CallRuntime AsyncGeneratorResolve, r9-r11    ; 68 27 00 09 03
+    133    Return                                       ; 92
+    134 E> GetNamedProperty r5, k5, s4  ; k5 = String str3 "throw" ; 21 05 05 04
+    138    JumpIfUndefinedOrNull @149                   ; 87 0b
+    140    Star r8                                      ; 0c 08
+    142 E> CallProperty1 r8, r5, r6, s5                 ; 61 08 05 06 05
+    147    Jump @209                                    ; 7e 3e
+    149 E> GetNamedProperty r5, k3, s6  ; k3 = String str2 "return" ; 21 05 03 06
+    153    JumpIfUndefinedOrNull @204                   ; 87 33
+    155    Star r8                                      ; 0c 08
+    157 E> CallProperty0 r8, r5, s7                     ; 60 08 05 07
+    161    Star r10                                     ; 0c 0a
+    163    Mov r1, r9                                   ; 0d 01 09
+    166 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
+    171 E> SuspendGenerator r1, r0-r8, [2]              ; 9a 01 00 09 02
+    176    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
+    180    Star r9                                      ; 0c 09
+    182 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    187    SwitchOnSmi k6, [0]  ; k6 = JumpTable [+6]   ; 8a 06 00
+    190    Ldar r9                                      ; 0b 09
+    192 E> Throw                                        ; 90
+    193    Ldar r9                                      ; 0b 09
+    195    JumpIfJSReceiver @204                        ; 88 09
+    197    Star r8                                      ; 0c 08
+    199 E> CallRuntime ThrowIteratorResultNotAnObject, r8 ; 68 01 00 08 01
+    204 E> CallRuntime ThrowThrowMethodMissing, ()      ; 68 16 00 00 00
+    209    Star r10                                     ; 0c 0a
+    211    Mov r1, r9                                   ; 0d 01 09
+    214 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
+    219 E> SuspendGenerator r1, r0-r8, [3]              ; 9a 01 00 09 03
+    224    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
+    228    Star r9                                      ; 0c 09
+    230 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    235    SwitchOnSmi k7, [0]  ; k7 = JumpTable [+6]   ; 8a 07 00
+    238    Ldar r9                                      ; 0b 09
+    240 E> Throw                                        ; 90
+    241    Ldar r9                                      ; 0b 09
+    243    Mov r9, r3                                   ; 0d 09 03
+    246    JumpIfJSReceiver @253                        ; 88 07
+    248 E> CallRuntime ThrowIteratorResultNotAnObject, r3 ; 68 01 00 03 01
+    253 E> GetNamedProperty r3, k8, s8  ; k8 = String str4 "done" ; 21 03 08 08
+    257    JumpIfToBooleanTrue @339                     ; 81 52
+    259 E> GetNamedProperty r3, k9, s9  ; k9 = String str5 "value" ; 21 03 09 09
+    263    Star r10                                     ; 0c 0a
+    265    Mov r1, r9                                   ; 0d 01 09
+    268 E> CallRuntime AsyncGeneratorYield, r9-r10      ; 68 26 00 09 02
+    273 E> SuspendGenerator r1, r0-r8, [4]              ; 9a 01 00 09 04
+    278    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
+    282    Star r6                                      ; 0c 06
+    284 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    289    Star r4                                      ; 0c 04
+    291    LdaSmi [1]                                   ; 04 01
+    293    TestReferenceEqual r4                        ; 51 04
+    295    JumpIfFalse @331                             ; 80 24
+    297    Mov r1, r9                                   ; 0d 01 09
+    300    Mov r6, r10                                  ; 0d 06 0a
+    303 E> CallRuntime AsyncGeneratorAwait, r9-r10      ; 68 25 00 09 02
+    308 E> SuspendGenerator r1, r0-r8, [5]              ; 9a 01 00 09 05
+    313    ResumeGenerator r1, r0-r8                    ; 9b 01 00 09
+    317    Star r6                                      ; 0c 06
+    319 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    324    SwitchOnSmi k10, [0]  ; k10 = JumpTable [+7] ; 8a 0a 00
+    327    LdaSmi [2]                                   ; 04 02
+    329    Star r4                                      ; 0c 04
+    331    JumpLoop.Wide @58, [0], s10                  ; 01 7d 11 01 00 00 0a 00
+    339 E> GetNamedProperty r3, k9, s11  ; k9 = String str5 "value" ; 21 03 09 0b
+    343    Star r3                                      ; 0c 03
+    345    LdaSmi [1]                                   ; 04 01
+    347    TestReferenceEqual r4                        ; 51 04
+    349    JumpIfFalse @366                             ; 80 11
+    351    LdaTrue                                      ; 08
+    352    Star r11                                     ; 0c 0b
+    354    Mov r1, r9                                   ; 0d 01 09
+    357    Mov r3, r10                                  ; 0d 03 0a
+    360 E> CallRuntime AsyncGeneratorResolve, r9-r11    ; 68 27 00 09 03
+    365    Return                                       ; 92
+    366    Mov r3, r0                                   ; 0d 03 00
+    369 S> Ldar r0                                      ; 0b 00
+    371    Mov r1, r3                                   ; 0d 01 03
+    374    Mov r0, r4                                   ; 0d 00 04
+    377 E> CallRuntime AsyncGeneratorAwait, r3-r4       ; 68 25 00 03 02
+    382 E> SuspendGenerator r1, r0-r2, [6]              ; 9a 01 00 03 06
+    387    ResumeGenerator r1, r0-r2                    ; 9b 01 00 03
+    391    Star r3                                      ; 0c 03
+    393 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    398    SwitchOnSmi k11, [0]  ; k11 = JumpTable [+6] ; 8a 0b 00
+    401    Ldar r3                                      ; 0b 03
+    403 E> Throw                                        ; 90
     404    Ldar r3                                      ; 0b 03
-    406 E> Throw                                        ; 90
-    407    Ldar r3                                      ; 0b 03
-    409    Star r4                                      ; 0c 04
+    406    Star r4                                      ; 0c 04
+    408    LdaTrue                                      ; 08
+    409    Star r5                                      ; 0c 05
     411    Mov r1, r3                                   ; 0d 01 03
-    414    LdaTrue                                      ; 08
-    415    Star r5                                      ; 0c 05
-    417 E> CallRuntime AsyncGeneratorResolve, r3-r5     ; 68 27 00 03 03
-    422    Return                                       ; 92
-    423    LdaUndefined                                 ; 05
-    424    Star r4                                      ; 0c 04
+    414 E> CallRuntime AsyncGeneratorResolve, r3-r5     ; 68 27 00 03 03
+    419    Return                                       ; 92
+    420    LdaUndefined                                 ; 05
+    421    Star r4                                      ; 0c 04
+    423    LdaTrue                                      ; 08
+    424    Star r5                                      ; 0c 05
     426    Mov r1, r3                                   ; 0d 01 03
-    429    LdaTrue                                      ; 08
-    430    Star r5                                      ; 0c 05
-    432 E> CallRuntime AsyncGeneratorResolve, r3-r5     ; 68 27 00 03 03
-    437    Return                                       ; 92
-    438    Star r4                                      ; 0c 04
-    440    LdaTheHole                                   ; 07
-    441    SetPendingMessage                            ; 93
-    442    Mov r1, r3                                   ; 0d 01 03
-    445 E> CallRuntime AsyncGeneratorReject, r3-r4      ; 68 28 00 03 02
-    450    Return                                       ; 92
+    429 E> CallRuntime AsyncGeneratorResolve, r3-r5     ; 68 27 00 03 03
+    434    Return                                       ; 92
+    435    Star r4                                      ; 0c 04
+    437    LdaTheHole                                   ; 07
+    438    SetPendingMessage                            ; 93
+    439    Mov r1, r3                                   ; 0d 01 03
+    442 E> CallRuntime AsyncGeneratorReject, r3-r4      ; 68 28 00 03 02
+    447    Return                                       ; 92
   constants (12):
-      0 JumpTable [+23, +100, +175, +223, +276, +312, +387]
+      0 JumpTable [+21, +98, +173, +221, +275, +310, +384]
       1 String str1 "next"
-      2 JumpTable [+10, +75]
+      2 JumpTable [+10, +74]
       3 String str2 "return"
       4 JumpTable [+6]
       5 String str3 "throw"
@@ -224,51 +218,51 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
      10 JumpLoop
      11 LoadNamed
   handlers (1):
-        [33, 438) -> @438 context=r2 promise
+        [29, 435) -> @435 context=r2 promise
   positions (46):
      12 E 0 (1:1)
-     21 E 0 (1:1)
-     33 S 28 (1:29)
-     40 E 39 (1:40)
-     47 E 39 (1:40)
-     64 E 32 (1:33)
-     71 E 32 (1:33)
-     79 E 32 (1:33)
-     93 E 32 (1:33)
-     98 E 32 (1:33)
-    109 E 32 (1:33)
-    119 E 32 (1:33)
-    130 E 32 (1:33)
-    136 E 32 (1:33)
-    144 E 32 (1:33)
-    151 E 32 (1:33)
-    159 E 32 (1:33)
-    168 E 32 (1:33)
-    173 E 32 (1:33)
-    184 E 32 (1:33)
-    194 E 32 (1:33)
-    201 E 32 (1:33)
-    206 E 32 (1:33)
-    216 E 32 (1:33)
-    221 E 32 (1:33)
-    232 E 32 (1:33)
-    242 E 32 (1:33)
-    249 E 32 (1:33)
-    254 E 32 (1:33)
-    260 E 32 (1:33)
-    269 E 32 (1:33)
-    274 E 32 (1:33)
-    285 E 32 (1:33)
-    305 E 32 (1:33)
-    310 E 32 (1:33)
-    321 E 32 (1:33)
-    341 E 32 (1:33)
-    363 E 32 (1:33)
-    373 S 43 (1:44)
-    380 E 43 (1:44)
-    385 E 43 (1:44)
-    396 E 43 (1:44)
-    406 E 43 (1:44)
-    417 E 43 (1:44)
-    432 E 53 (1:54)
-    445 E 53 (1:54)
+     19 E 0 (1:1)
+     31 S 28 (1:29)
+     39 E 39 (1:40)
+     46 E 39 (1:40)
+     63 E 32 (1:33)
+     70 E 32 (1:33)
+     78 E 32 (1:33)
+     91 E 32 (1:33)
+     96 E 32 (1:33)
+    107 E 32 (1:33)
+    117 E 32 (1:33)
+    128 E 32 (1:33)
+    134 E 32 (1:33)
+    142 E 32 (1:33)
+    149 E 32 (1:33)
+    157 E 32 (1:33)
+    166 E 32 (1:33)
+    171 E 32 (1:33)
+    182 E 32 (1:33)
+    192 E 32 (1:33)
+    199 E 32 (1:33)
+    204 E 32 (1:33)
+    214 E 32 (1:33)
+    219 E 32 (1:33)
+    230 E 32 (1:33)
+    240 E 32 (1:33)
+    248 E 32 (1:33)
+    253 E 32 (1:33)
+    259 E 32 (1:33)
+    268 E 32 (1:33)
+    273 E 32 (1:33)
+    284 E 32 (1:33)
+    303 E 32 (1:33)
+    308 E 32 (1:33)
+    319 E 32 (1:33)
+    339 E 32 (1:33)
+    360 E 32 (1:33)
+    369 S 43 (1:44)
+    377 E 43 (1:44)
+    382 E 43 (1:44)
+    393 E 43 (1:44)
+    403 E 43 (1:44)
+    414 E 43 (1:44)
+    429 E 53 (1:54)
+    442 E 53 (1:54)

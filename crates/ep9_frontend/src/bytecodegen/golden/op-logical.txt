@@ -1,6 +1,6 @@
 # op-logical: script (sloppy)
 # | function f(a, b, c) { return [a && b, a || b, a ?? b, a && b || c, a ? b : c]; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=80 source=embedded hints=none
 source_hash=3f539119e4e249de1dc1dfbc99fdb67090a2b9db06b80dc1f484bd6936dee9fa
 strings (1):
@@ -9,16 +9,15 @@ scopes (2):
   scope0 script outer=- flags=[] slots=["f":function]
   scope1 function outer=scope0 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..80
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "f"

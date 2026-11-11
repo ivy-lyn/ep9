@@ -1,6 +1,6 @@
 # assign-const: script (sloppy)
 # | const c = 1; function f() { c = 2; c += 3; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=44 source=embedded hints=none
 source_hash=4fa7ede8471f5d140b308f67e7ef750c24b7aea145635c49a4fa6366980033c7
 strings (2):
@@ -10,22 +10,20 @@ scopes (2):
   scope0 script outer=- flags=[] slots=["c":const, "f":function]
   scope1 function outer=scope0 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..44
-  code (39 bytes):
+  code (35 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str1 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22 S> LdaSmi [1]                                   ; 04 01
-     24    Star r1                                      ; 0c 01
-     26    LdaConstant k2  ; k2 = String str0 "c"       ; 0a 02
-     28    Star r0                                      ; 0c 00
-     30 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     35    Ldar r1                                      ; 0b 01
-     37    LdaUndefined                                 ; 05
-     38    Return                                       ; 92
+     20 S> LdaSmi [1]                                   ; 04 01
+     22    Star r1                                      ; 0c 01
+     24    LdaConstant k2  ; k2 = String str0 "c"       ; 0a 02
+     26    Star r0                                      ; 0c 00
+     28 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     33    LdaUndefined                                 ; 05
+     34    Return                                       ; 92
   constants (3):
       0 Function f1
       1 String str1 "f"
@@ -37,8 +35,8 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       0 S 0 (1:1)
       5 E 13 (1:14)
      15 E 13 (1:14)
-     22 S 6 (1:7)
-     30 E 0 (1:1)
+     20 S 6 (1:7)
+     28 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=13..44
   code (16 bytes):
       0 S> LdaSmi [2]                                   ; 04 02

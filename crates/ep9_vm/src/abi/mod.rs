@@ -736,12 +736,14 @@ impl<'s> Cx<'s> {
         Self::local(self.rt().global())
     }
 
-    /// An intrinsic object of the current realm (§6.1.7.4). Panics if no table made it (a
-    /// table names only intrinsics that exist: `builtins::check_tables`) or `id` is the
-    /// VM-internal `IntrinsicId::RealmFuses`.
+    /// An intrinsic object of the current realm (§6.1.7.4). A lazy group's intrinsic installs
+    /// its group first (INTL-I1-D8), a GC point then. Panics if no table made it (a table names
+    /// only existing intrinsics: `builtins::check_tables`) or `id` is `IntrinsicId::RealmFuses`.
     pub fn intrinsic(&self, id: IntrinsicId) -> Local<'s, JsObject> {
         assert!(id != IntrinsicId::RealmFuses, "RealmFuses is VM-internal");
-        let v = builtins::intrinsic(self.rt(), id);
+        let rt = self.rt();
+        // A lazy group's intrinsic installs its group first (INTL-I1-D8; a GC point then).
+        let v = crate::realm::intrinsic_for_use(rt, rt.root(crate::runtime::Root::Realm), id);
         assert!(kinds::is_object(v), "{} is not installed", id.name());
         Self::local(v)
     }
@@ -749,7 +751,10 @@ impl<'s> Cx<'s> {
     /// Does the realm have the intrinsic `id`? (The core ones always; the others when a
     /// table made them.)
     pub fn has_intrinsic(&self, id: IntrinsicId) -> bool {
-        kinds::is_object(builtins::intrinsic(self.rt(), id))
+        // A lazy group's intrinsic exists in every realm, installed or not (M6-ORCH-132): the
+        // answer comes from the group map, with no install and no GC point.
+        let rt = self.rt();
+        kinds::is_object(builtins::intrinsic(rt, id)) || builtins::lazy_group(rt, id).is_some()
     }
 
     /// OrdinaryObjectCreate(%Object.prototype%).
@@ -1209,6 +1214,20 @@ impl<'s> Cx<'s> {
         property::try_prevent_extensions(self.cx, o.into().bits())
     }
 
+    /// SetIntegrityLevel (§7.3.15) steps 4-5 for the elements of an Array `o`, after its
+    /// `[[PreventExtensions]]`: the level sealed (or frozen if `frozen`) as a shape flag
+    /// (H18 "extra element kinds"; the elements keep their storage form). True when done, so
+    /// each index key's define then changes nothing; false (nothing changed) when `o` is not
+    /// an Array, is extensible or has DICTIONARY elements: the caller defines each key. Runs
+    /// no JS.
+    pub fn set_elements_integrity(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        frozen: bool,
+    ) -> bool {
+        crate::elements::set_integrity(self.cx.rt(), o.into().bits(), frozen)
+    }
+
     /// IsCallable (§7.2.3).
     pub fn is_callable(&self, v: impl Into<Local<'s>>) -> bool {
         kinds::is_callable(v.into().bits())
@@ -1478,7 +1497,7 @@ impl<'s> Cx<'s> {
         for i in 0..len {
             let ob = o.bits();
             let e = match u32::try_from(i) {
-                Ok(n) if n != u32::MAX => match crate::arguments::list_element(ob, n) {
+                Ok(n) if n != u32::MAX => match crate::arguments::list_element(self.rt(), ob, n) {
                     Some(v) => v,
                     None => property::get_int(self.cx, ob, n)?,
                 },
@@ -1505,7 +1524,8 @@ impl<'s> Cx<'s> {
             None => {
                 let realm = crate::realm::try_get_function_realm(self.cx, constructor.bits())?;
                 let rt = self.rt();
-                let v = crate::realm::intrinsic_in(rt, realm, default);
+                // Installs a lazy group into that realm first (INTL-I1-D8; V8 b5666f7d85).
+                let v = crate::realm::intrinsic_for_use(rt, realm, default);
                 assert!(kinds::is_object(v), "{} is not installed", default.name());
                 Self::local(v)
             }
@@ -1719,3 +1739,10 @@ impl<'s> Cx<'s> {
         call::call_with(self.cx, f, this, args.len, |k| args.bits(k), UNDEFINED).map(Self::local)
     }
 }
+
+// M7-P0 CALLHOST (H20 part 2): the forwarded calls of `apply` and `call`, and the human
+// fast-path switch of the FASTDIFF tests.
+mod forward;
+
+// M7-P4 A2-LOADER (H20 part 2): the unit-load API, the first caller of `select()`.
+mod unit_code;

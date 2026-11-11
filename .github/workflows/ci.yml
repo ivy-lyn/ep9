@@ -141,6 +141,12 @@ jobs:
       # H25-Q2 (C-26): no native word outside ExternalRef, frame.rs and the VM stack code, and
       # none copied from one field into a heap cell (tools/xtask/src/extref_lint.rs).
       - run: cargo xtask extref-lint
+      # H20-Q6: the public API of ep9_vm from rustdoc JSON (the one nightly pin) against
+      # crates/ep9_vm/tests/golden/public-api.txt; a new pub item fails: `cargo xtask api-list --bless`.
+      - name: api-list
+        run: |
+          rustup toolchain install nightly-2026-10-04 --profile minimal --no-self-update
+          cargo xtask api-list
       # Broken intra-doc links and other rustdoc warnings fail the job, private items too.
       - run: cargo doc --workspace --no-deps --locked --document-private-items
         env:
@@ -152,6 +158,8 @@ jobs:
       - run: node --test tools/bench/cross/run.test.mjs
       # t0-dispatch.mjs statistics (PERF-NOISE ranks, verdicts, arguments); no ep9 build needed.
       - run: node --test tools/bench/workloads/t0-dispatch.test.mjs
+      # P0-BUILDID: the bench tools take the commit of the ep9 binary they measure, with fakes.
+      - run: node --test tools/bench/cross/buildid.test.mjs
       # M1 exit item 6 (plan v9 rule 26, section 5.6), last so a finding hides no check above:
       # `cargo xtask adr-lint` (tools/xtask/src/adr_lint.rs) over m0-exit..HEAD: ADR trailers,
       # review records, README Counts, path:line drift and the doc 13 short cites. HEAD is the checked-out tree, so on
@@ -265,6 +273,12 @@ jobs:
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # 10-quality section 5 "Zero text relocations" (H34; from A2, plan v12 section 5.1): every
+      # unit that the ep9_masm tests emit has 0 text relocations, and the unit finalizer rejects
+      # HeapConst. ep9_masm without `jit` (the jitless form: only finalize_unit).
+      - name: zero text relocations (ep9_masm)
+        if: ${{ !cancelled() }}
+        run: cargo test -p ep9_masm --no-default-features --features aot --locked
 
   # H27: the default (jit), jitless and aot feature sets, one package at a time (a --workspace
   # build unifies features and would hide a jitless leak): build, clippy -D warnings and test,
@@ -343,6 +357,13 @@ jobs:
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
       - name: test262 parse
         run: cargo run --release --locked -p ep9_test262 -- parse --json test262-parse.json
+      # RX1 parse equality (plan v12 section 7.2, M7-P4 RX1-0): ep9_rx1 parses every regexp of
+      # the test262 RegExp sources as RX0 (regress) does, with the named list of known
+      # differences and the count floors of the test. It reads the checkout above, so it runs
+      # in this job (an ignored test; it panics without the checkout).
+      - name: RX1 parse equality (ep9_rx1)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        run: cargo test --locked -p ep9_rx1 --test parse_equality -- --ignored
       # The engine end to end (tools/test262/README.md "exec"): one worker process per CPU, 20 s
       # soft timeout per run (on an M-series Mac, each run of the 8 sm/Date dst-offset-caching
       # files, among the slowest, takes 0.6-1.5 s, by host load). Exit 1 on a change
@@ -424,7 +445,7 @@ jobs:
         run: |
           echo "m0-exit start: depth_tests" | tee nesting.log
           echo "m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}" | tee -a nesting.log
-          echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
+          echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress third_party/icu4x.commit third_party/patches/icu4x; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
           rc1=0
           cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
           echo "m0-exit status: $rc1" | tee -a nesting.log
@@ -916,8 +937,14 @@ jobs:
       # other jobs (plan v10 rule 42).
       - name: regress sync
         run: bash scripts/sync-regress.sh
+      # The root [patch.crates-io] icu_calendar path (third_party/icu4x) too (INTL W1 R2).
+      - name: icu4x sync
+        run: bash scripts/sync-icu4x.sh
       - run: cargo "+$MIRI_TOOLCHAIN" miri setup
       - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap -p ep9_math
+      # The S2a loom test (plan v12 rule 8; M7-P1 GCPAR1): 2 markers on the shared work
+      # structure. Miri does not cover the parallel mark (helpers() is 0 under Miri).
+      - run: RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom cargo "+$MIRI_TOOLCHAIN" test --locked --release -p ep9_heap --lib parallel::loom_tests
 
   dep-guards:
     name: dependency guards
@@ -972,6 +999,7 @@ jobs:
       - run: cargo build --release --locked -p ep9_bench -p ep9_cli
       - name: Count instructions
         id: count
+        env: { EP9_GC_HELPERS: "0" }
         run: >-
           node .github/scripts/perf-ci-v0.mjs --ep9 target/release/ep9 --bench target/release/ep9-bench
           --counter cachegrind --runs 3 --warmup 0 --out perf-ci-v0.json --md "$GITHUB_STEP_SUMMARY"
@@ -1046,7 +1074,7 @@ jobs:
     env:
       CARGO_FUZZ_VERSION: 0.12.0
       # <target>=<seconds of mutation>, one per target.
-      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60
+      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60 regexp=60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The +toolchain of fuzz/rust-toolchain.toml (the Miri pin); the root stable pin builds

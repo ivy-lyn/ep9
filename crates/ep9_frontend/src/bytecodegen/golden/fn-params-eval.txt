@@ -1,6 +1,6 @@
 # fn-params-eval: script (sloppy)
 # | function f(a = 1, b = eval('var a = 2')) { return a; } function g({ a }) { eval('var a'); }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=91 source=embedded hints=none
 source_hash=b94a273dfc08f3668d55f8d94e28b8674d915d4674f51d8136fa51641ff286dc
 strings (11):
@@ -21,22 +21,20 @@ scopes (4):
   scope2 block outer=scope1 flags=[] slots=[]
   scope3 function outer=scope0 flags=[needs-context,sloppy-eval] slots=[".eval_ext":var, "a":var, "this":var, "new.target":var, "arguments":var]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..91
-  code (41 bytes):
+  code (37 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
-     26    Star r1                                      ; 0c 01
-     28    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
-     30    Star r0                                      ; 0c 00
-     32 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     37    Ldar r1                                      ; 0b 01
-     39    LdaUndefined                                 ; 05
-     40    Return                                       ; 92
+     20 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     24    Star r1                                      ; 0c 01
+     26    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
+     28    Star r0                                      ; 0c 00
+     30 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     35    LdaUndefined                                 ; 05
+     36    Return                                       ; 92
   constants (4):
       0 Function f1
       1 String str0 "f"
@@ -50,8 +48,8 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       0 S 0 (1:1)
       5 E 0 (1:1)
      15 E 0 (1:1)
-     22 E 55 (1:56)
-     32 E 55 (1:56)
+     20 E 55 (1:56)
+     30 E 55 (1:56)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 length=0 regs=10 range=0..54
   code (106 bytes):
       0 E> CreateFunctionContext k0, [6]  ; k0 = Scope scope1 ; 75 00 06
@@ -84,14 +82,14 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
      50 E> CallRuntimeForPair LoadLookupSlotForCall, r5-r6, r2-r3 ; 9d 1a 00 05 02 02
      56    LdaConstant k2  ; k2 = String str9 "var a = 2" ; 0a 02
      58    Star r4                                      ; 0c 04
-     60    Mov r2, r5                                   ; 0d 02 05
-     63    Mov r4, r6                                   ; 0d 04 06
-     66    LdaCurrentFunction                           ; 0e
-     67    Star r7                                      ; 0c 07
-     69    LdaSmi [1]                                   ; 04 01
-     71    Star r8                                      ; 0c 08
-     73    LdaSmi [22]                                  ; 04 16
-     75    Star r9                                      ; 0c 09
+     60    LdaCurrentFunction                           ; 0e
+     61    Star r7                                      ; 0c 07
+     63    LdaSmi [1]                                   ; 04 01
+     65    Star r8                                      ; 0c 08
+     67    LdaSmi [22]                                  ; 04 16
+     69    Star r9                                      ; 0c 09
+     71    Mov r2, r5                                   ; 0d 02 05
+     74    Mov r4, r6                                   ; 0d 04 06
      77 E> CallRuntime ResolvePossiblyDirectEval, r5-r9 ; 68 07 00 05 05
      82    Star r2                                      ; 0c 02
      84 E> CallProperty1 r2, r3, r4, s0                 ; 61 02 03 04 00
@@ -142,14 +140,14 @@ function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[] params=1 lengt
      35 E> CallRuntimeForPair LoadLookupSlotForCall, r4-r5, r1-r2 ; 9d 1a 00 04 02 01
      41    LdaConstant k3  ; k3 = String str10 "var a"  ; 0a 03
      43    Star r3                                      ; 0c 03
-     45    Mov r1, r4                                   ; 0d 01 04
-     48    Mov r3, r5                                   ; 0d 03 05
-     51    LdaCurrentFunction                           ; 0e
-     52    Star r6                                      ; 0c 06
-     54    LdaSmi [3]                                   ; 04 03
-     56    Star r7                                      ; 0c 07
-     58    LdaSmi [75]                                  ; 04 4b
-     60    Star r8                                      ; 0c 08
+     45    LdaCurrentFunction                           ; 0e
+     46    Star r6                                      ; 0c 06
+     48    LdaSmi [3]                                   ; 04 03
+     50    Star r7                                      ; 0c 07
+     52    LdaSmi [75]                                  ; 04 4b
+     54    Star r8                                      ; 0c 08
+     56    Mov r1, r4                                   ; 0d 01 04
+     59    Mov r3, r5                                   ; 0d 03 05
      62 E> CallRuntime ResolvePossiblyDirectEval, r4-r8 ; 68 07 00 04 05
      67    Star r1                                      ; 0c 01
      69 E> CallProperty1 r1, r2, r3, s1                 ; 61 01 02 03 01

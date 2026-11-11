@@ -1,0 +1,1143 @@
+{
+ "schema": "ep9-m2gate/v1",
+ "builds": [
+  {
+   "build": "jit",
+   "source": "run-0.json",
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "dirty": false,
+   "dirty_paths": [],
+   "runner_commit": "0123456789abcdef0123456789abcdef01234567",
+   "engine_build": "features jit; preset jit",
+   "started": "2026-11-06T00:00:00.000Z",
+   "host": {
+    "id": "lin-gate",
+    "gate_host": true,
+    "cpu": "AMD EPYC 7763",
+    "platform": "linux-x64",
+    "transparent_hugepage": null
+   },
+   "load": {
+    "before": {
+     "load1": 1,
+     "limit": 1.5,
+     "pass": true
+    },
+    "after": {
+     "load1": 1.1,
+     "limit": 1.5,
+     "pass": true
+    }
+   },
+   "provisional": false,
+   "provisional_reasons": []
+  },
+  {
+   "build": "jitless",
+   "source": "run-1.json",
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "dirty": false,
+   "dirty_paths": [],
+   "runner_commit": "0123456789abcdef0123456789abcdef01234567",
+   "engine_build": "features none; preset jitless",
+   "started": "2026-11-06T00:00:00.000Z",
+   "host": {
+    "id": "lin-gate",
+    "gate_host": true,
+    "cpu": "AMD EPYC 7763",
+    "platform": "linux-x64",
+    "transparent_hugepage": null
+   },
+   "load": {
+    "before": {
+     "load1": 1,
+     "limit": 1.5,
+     "pass": true
+    },
+    "after": {
+     "load1": 1.1,
+     "limit": 1.5,
+     "pass": true
+    }
+   },
+   "provisional": false,
+   "provisional_reasons": []
+  }
+ ],
+ "missing_builds": [],
+ "readings": [
+  {
+   "id": "octane7-vs-qjs",
+   "label": "Octane-7 geomean vs QuickJS",
+   "comparator": "qjs",
+   "threshold": 1.33,
+   "workloads": [
+    "octane-richards",
+    "octane-deltablue",
+    "octane-crypto",
+    "octane-raytrace",
+    "octane-earley-boyer",
+    "octane-splay",
+    "octane-navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "marginal",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.33,
+    "interval": [
+     1.32202,
+     1.33798
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.6,
+    "void": false,
+    "threshold": 1.33,
+    "side": "marginal",
+    "series": [
+     1.33399,
+     1.33798,
+     1.32202,
+     1.32601,
+     1.33,
+     1.33399,
+     1.33798,
+     1.32202,
+     1.32601,
+     1.33
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.296733871,
+    "interval": [
+     1.289946295,
+     1.304182
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.5235561071,
+    "void": false,
+    "threshold": 1.33,
+    "side": "below",
+    "series": [
+     1.300456867,
+     1.304182,
+     1.289946295,
+     1.293667738,
+     1.296733871,
+     1.300456867,
+     1.304182,
+     1.289946295,
+     1.293667738,
+     1.296733871
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.33,
+    "gross": 1.296733871
+   },
+   "kernels": [
+    {
+     "workload": "octane-richards",
+     "metric": "net",
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-deltablue",
+     "metric": "net",
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-crypto",
+     "metric": "net",
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-raytrace",
+     "metric": "net",
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-earley-boyer",
+     "metric": "net",
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-splay",
+     "metric": "net",
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-navier-stokes",
+     "metric": "net",
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ],
+   "item": 1,
+   "build": "jit",
+   "value": 1.33,
+   "interval": [
+    1.32202,
+    1.33798
+   ]
+  },
+  {
+   "id": "v8v7-7-vs-node-jitless",
+   "label": "v8-v7 7-kernel geomean vs node --jitless",
+   "comparator": "node-jitless",
+   "threshold": 1,
+   "workloads": [
+    "richards",
+    "deltablue",
+    "crypto",
+    "raytrace",
+    "earley-boyer",
+    "splay",
+    "navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.4,
+    "interval": [
+     1.3916,
+     1.4084
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.6,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4,
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.359677419,
+    "interval": [
+     1.352596016,
+     1.36756
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.5209723717,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419,
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.4,
+    "gross": 1.359677419
+   },
+   "kernels": [
+    {
+     "workload": "richards",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "deltablue",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "crypto",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "raytrace",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "earley-boyer",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "splay",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "navier-stokes",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    }
+   ],
+   "item": 2,
+   "build": "jit",
+   "value": 1.4,
+   "interval": [
+    1.3916,
+    1.4084
+   ],
+   "parity_debt": []
+  },
+  {
+   "id": "splay-vs-node-jitless",
+   "label": "splay vs node --jitless",
+   "comparator": "node-jitless",
+   "threshold": 1,
+   "workloads": [
+    "splay"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.4,
+    "interval": [
+     1.3916,
+     1.4084
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.6,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4,
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.359677419,
+    "interval": [
+     1.352596016,
+     1.36756
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.5209723717,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419,
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.4,
+    "gross": 1.359677419
+   },
+   "kernels": [
+    {
+     "workload": "splay",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ],
+   "item": 6,
+   "build": "jit",
+   "value": 1.4,
+   "interval": [
+    1.3916,
+    1.4084
+   ]
+  },
+  {
+   "id": "ts",
+   "item": 3,
+   "label": "TS workload (octane-typescript)",
+   "build": "jit",
+   "workload": "octane-typescript",
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "rule": "linux-x64: the net ratio to node --jitless >= 1 (the whole interval)",
+   "value": 2.5,
+   "interval": [
+    2.48,
+    2.52
+   ],
+   "gross_s": {
+    "median": 2.5,
+    "interval": [
+     2.48,
+     2.52
+    ],
+    "iqrPct": 0.8,
+    "void": false,
+    "n": 10
+   },
+   "net_s": {
+    "median": 2.49,
+    "interval": [
+     2.47,
+     2.51
+    ],
+    "iqrPct": 0.8032128514,
+    "void": false,
+    "n": 10
+   },
+   "vs_node_jitless": {
+    "comparator": "node-jitless",
+    "metric": "net",
+    "net": {
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "iqrPct": 0.6,
+     "void": false
+    },
+    "gross": {
+     "median": 1.398387097,
+     "interval": [
+      1.390039841,
+      1.4067664
+     ],
+     "iqrPct": 0.5969263995,
+     "void": false
+    },
+    "status": [
+     "valid"
+    ]
+   },
+   "vs_qjs": {
+    "comparator": "qjs",
+    "metric": "net",
+    "net": {
+     "median": 1.33,
+     "interval": [
+      1.32202,
+      1.33798
+     ],
+     "iqrPct": 0.6,
+     "void": false
+    },
+    "gross": {
+     "median": 1.328669355,
+     "interval": [
+      1.320737052,
+      1.33662808
+     ],
+     "iqrPct": 0.5970157396,
+     "void": false
+    },
+    "status": [
+     "valid"
+    ]
+   }
+  },
+  {
+   "id": "octane7-vs-qjs",
+   "label": "Octane-7 geomean vs QuickJS",
+   "comparator": "qjs",
+   "threshold": 1.33,
+   "workloads": [
+    "octane-richards",
+    "octane-deltablue",
+    "octane-crypto",
+    "octane-raytrace",
+    "octane-earley-boyer",
+    "octane-splay",
+    "octane-navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.4,
+    "interval": [
+     1.3916,
+     1.4084
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.6,
+    "void": false,
+    "threshold": 1.33,
+    "side": "above",
+    "series": [
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4,
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.359677419,
+    "interval": [
+     1.352596016,
+     1.36756
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.5209723717,
+    "void": false,
+    "threshold": 1.33,
+    "side": "above",
+    "series": [
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419,
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.4,
+    "gross": 1.359677419
+   },
+   "kernels": [
+    {
+     "workload": "octane-richards",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-deltablue",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-crypto",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-raytrace",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-earley-boyer",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-splay",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    },
+    {
+     "workload": "octane-navier-stokes",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ],
+   "item": 1,
+   "build": "jitless",
+   "value": 1.4,
+   "interval": [
+    1.3916,
+    1.4084
+   ]
+  },
+  {
+   "id": "v8v7-7-vs-node-jitless",
+   "label": "v8-v7 7-kernel geomean vs node --jitless",
+   "comparator": "node-jitless",
+   "threshold": 1,
+   "workloads": [
+    "richards",
+    "deltablue",
+    "crypto",
+    "raytrace",
+    "earley-boyer",
+    "splay",
+    "navier-stokes"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.4,
+    "interval": [
+     1.3916,
+     1.4084
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.6,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4,
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.359677419,
+    "interval": [
+     1.352596016,
+     1.36756
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.5209723717,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419,
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.4,
+    "gross": 1.359677419
+   },
+   "kernels": [
+    {
+     "workload": "richards",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "deltablue",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "crypto",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "raytrace",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "earley-boyer",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "splay",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    },
+    {
+     "workload": "navier-stokes",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ],
+     "floor": 0.8,
+     "debt": "none"
+    }
+   ],
+   "item": 2,
+   "build": "jitless",
+   "value": 1.4,
+   "interval": [
+    1.3916,
+    1.4084
+   ],
+   "parity_debt": []
+  },
+  {
+   "id": "splay-vs-node-jitless",
+   "label": "splay vs node --jitless",
+   "comparator": "node-jitless",
+   "threshold": 1,
+   "workloads": [
+    "splay"
+   ],
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "net": {
+    "n": 10,
+    "median": 1.4,
+    "interval": [
+     1.3916,
+     1.4084
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.6,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4,
+     1.4042,
+     1.4084,
+     1.3916,
+     1.3958,
+     1.4
+    ]
+   },
+   "gross": {
+    "n": 10,
+    "median": 1.359677419,
+    "interval": [
+     1.352596016,
+     1.36756
+    ],
+    "ranks": [
+     2,
+     9
+    ],
+    "iqrPct": 0.5209723717,
+    "void": false,
+    "threshold": 1,
+    "side": "above",
+    "series": [
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419,
+     1.363617671,
+     1.36756,
+     1.352596016,
+     1.356534127,
+     1.359677419
+    ]
+   },
+   "geomean_of_medians": {
+    "net": 1.4,
+    "gross": 1.359677419
+   },
+   "kernels": [
+    {
+     "workload": "splay",
+     "metric": "net",
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "status": [
+      "valid"
+     ]
+    }
+   ],
+   "item": 6,
+   "build": "jitless",
+   "value": 1.4,
+   "interval": [
+    1.3916,
+    1.4084
+   ]
+  },
+  {
+   "id": "ts",
+   "item": 3,
+   "label": "TS workload (octane-typescript)",
+   "build": "jitless",
+   "workload": "octane-typescript",
+   "status": "valid",
+   "gate": "pass",
+   "reasons": [],
+   "rule": "linux-x64: the net ratio to node --jitless >= 1 (the whole interval)",
+   "value": 2.5,
+   "interval": [
+    2.48,
+    2.52
+   ],
+   "gross_s": {
+    "median": 2.5,
+    "interval": [
+     2.48,
+     2.52
+    ],
+    "iqrPct": 0.8,
+    "void": false,
+    "n": 10
+   },
+   "net_s": {
+    "median": 2.49,
+    "interval": [
+     2.47,
+     2.51
+    ],
+    "iqrPct": 0.8032128514,
+    "void": false,
+    "n": 10
+   },
+   "vs_node_jitless": {
+    "comparator": "node-jitless",
+    "metric": "net",
+    "net": {
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "iqrPct": 0.6,
+     "void": false
+    },
+    "gross": {
+     "median": 1.398387097,
+     "interval": [
+      1.390039841,
+      1.4067664
+     ],
+     "iqrPct": 0.5969263995,
+     "void": false
+    },
+    "status": [
+     "valid"
+    ]
+   },
+   "vs_qjs": {
+    "comparator": "qjs",
+    "metric": "net",
+    "net": {
+     "median": 1.4,
+     "interval": [
+      1.3916,
+      1.4084
+     ],
+     "iqrPct": 0.6,
+     "void": false
+    },
+    "gross": {
+     "median": 1.398387097,
+     "interval": [
+      1.390039841,
+      1.4067664
+     ],
+     "iqrPct": 0.5969263995,
+     "void": false
+    },
+    "status": [
+     "valid"
+    ]
+   }
+  }
+ ],
+ "pass": false
+}

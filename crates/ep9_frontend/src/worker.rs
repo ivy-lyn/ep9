@@ -2,31 +2,39 @@
 //! sized for the depth cap (01-front-end §5 "Parse path", §6).
 //!
 //! ```text
-//! caller thread                         front-end worker (one per caller thread, kept alive)
-//!   run(job) --Job--> channel --------> loop { job = recv(); job() }   stack = STACK_BYTES
-//!      ^                                        |
-//!      +---------- result or panic payload -----+
+//! caller thread                          front-end worker (one per caller thread, kept alive)
+//!   run(job) --Job--> mailbox (1 slot) --> loop { take the job or park; job() }  STACK_BYTES
+//!      ^                                                                |
+//!      +--------- result or panic payload (a std sync channel) ---------+
 //! ```
 //!
 //! - One worker per calling thread, kept in a thread local. The caller blocks until the job ends,
-//!   so one worker is enough, and isolates on one thread (D14) share it.
+//!   so one worker and one job slot are enough, and isolates on one thread (D14) share it.
 //! - A job that runs on a worker thread runs inline: a nested call does not spawn a second worker.
 //! - A panic inside the job is caught on the worker and resumed on the caller. The worker lives on.
 //!   Under `panic = "abort"` (P2-INFRA2) the `catch_unwind` in `run` never runs: the process
 //!   aborts in the job. So nothing relies on it for isolation (ep9-test262 uses worker processes).
 //! - The stack is a reservation. The OS commits pages only as deep as a job really goes.
-//! - Dropping a worker closes its channel and does not join the thread (M2-P1-WIN-TLSJOIN). The
-//!   loop sees the closed channel and the thread ends on its own, so its stack is released a
-//!   moment after the drop, not during it. The drop usually runs in the caller's thread-local
-//!   destructor. On Windows, when the caller thread ends the process (returns from `main`, or
-//!   `std::process::exit`), the OS has already ended every other thread by then, and a join of
-//!   such a thread panics ("threads should not terminate unexpectedly"). A panic in a
-//!   thread-local destructor aborts the process (0xC0000409).
+//! - Dropping a worker sets the mailbox close flag and unparks the thread: no join
+//!   (M2-P1-WIN-TLSJOIN), no lock, no allocation, no free (M7-P3-WIN-EXITHANG). The thread sees
+//!   the flag and ends on its own. The drop usually runs in the caller's thread-local destructor.
+//!   On Windows, when the caller thread ends the process (returns from `main`, or
+//!   `std::process::exit`), the OS has already ended every other thread, maybe while one held a
+//!   lock. A join of such a thread panics, and a panic in a thread-local destructor aborts
+//!   (0xC0000409). A lock that a killed thread held stays locked: the old std job channel took
+//!   its waker lock in its close, and such an exit waited for ever (CI 42484485512). The one OS
+//!   call left in the drop is `Thread::unpark` (`WakeByAddressSingle` on Windows); the old close
+//!   made it too (it unparked the parked worker) at every exit before. Nothing is freed: the
+//!   worker thread's own references (never released by a killed thread) keep the mailbox and its
+//!   `Thread` alive.
+//! - No job is left in the slot at the close: `run` waits for its reply, which the job sends after
+//!   the thread took it out. The loop reads the flag before the slot, so such a job would run.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -37,35 +45,27 @@ pub(crate) struct SpawnError {
     pub(crate) message: String,
 }
 
-/// A front-end worker thread, owned through its job channel. Dropping it closes the channel;
-/// the thread is never joined (see the module doc).
-struct Worker {
-    stack_bytes: usize,
-    jobs: mpsc::Sender<Job>,
+/// The one-slot job mailbox of a worker, shared by the [`Worker`] and its thread.
+struct Mailbox {
+    /// Taken by [`Worker::send`] and by the worker thread, never by [`Worker`]'s drop.
+    slot: Mutex<Slot>,
+    /// Set by [`Worker`]'s drop: the thread ends when it finds the slot empty.
+    closed: AtomicBool,
 }
 
-impl Worker {
-    fn spawn(stack_bytes: usize) -> Result<Self, SpawnError> {
-        let (jobs, inbox) = mpsc::channel::<Job>();
-        // The handle is dropped at once: that detaches the thread.
-        thread::Builder::new()
-            .name("ep9-frontend".into())
-            .stack_size(stack_bytes)
-            .spawn(move || {
-                ON_WORKER.with(|on| on.set(true));
-                // Ends when the owning thread drops its sender.
-                while let Ok(job) = inbox.recv() {
-                    job();
-                }
-            })
-            .map_err(|err| SpawnError {
-                message: format!(
-                    "cannot reserve a {} MiB front-end stack: {err}",
-                    stack_bytes >> 20
-                ),
-            })?;
-        Ok(Self { stack_bytes, jobs })
-    }
+#[derive(Default)]
+struct Slot {
+    job: Option<Job>,
+    /// The worker thread left its loop. Set under the lock, so a send after it is refused.
+    gone: bool,
+}
+
+/// A front-end worker thread, owned through its mailbox. Dropping it closes the mailbox; the
+/// thread is never joined (see the module doc).
+struct Worker {
+    stack_bytes: usize,
+    mailbox: Arc<Mailbox>,
+    thread: thread::Thread,
 }
 
 thread_local! {
@@ -96,7 +96,7 @@ where
     }));
     WORKER.with(|cell| -> Result<(), SpawnError> {
         let mut slot = cell.borrow_mut();
-        // At most two tries: the second one follows a worker that died (its channel is closed).
+        // At most two tries: the second one follows a worker thread that ended (never expected).
         for _ in 0..2 {
             // A caller that needs a bigger stack than the current worker has gets a new worker.
             if slot.as_ref().is_some_and(|w| w.stack_bytes < stack_bytes) {
@@ -106,9 +106,9 @@ where
                 *slot = Some(Worker::spawn(stack_bytes)?);
             }
             let worker = slot.as_ref().expect("set above");
-            match worker.jobs.send(wrapped.take().expect("sent at most once")) {
+            match worker.send(wrapped.take().expect("sent at most once")) {
                 Ok(()) => return Ok(()),
-                Err(mpsc::SendError(job)) => {
+                Err(job) => {
                     wrapped = Some(job);
                     *slot = None;
                 }
@@ -130,6 +130,94 @@ where
 
 fn resume<R>(payload: Box<dyn Any + Send>) -> R {
     panic::resume_unwind(payload)
+}
+
+impl Mailbox {
+    fn lock(&self) -> MutexGuard<'_, Slot> {
+        // Only the debug_assert in `send` can panic under the lock; a poisoned lock is still a
+        // sound slot.
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Owned by the worker thread. On every end of the thread (a return or an unwind), it marks the
+/// mailbox gone and drops a job left in the slot, so that job's caller gets no reply and fails.
+/// A thread killed by the OS runs no drop; its caller is then the thread that ends the process.
+struct Gone(Arc<Mailbox>);
+
+impl Drop for Gone {
+    fn drop(&mut self) {
+        let job = {
+            let mut slot = self.0.lock();
+            slot.gone = true;
+            slot.job.take()
+        };
+        drop(job);
+    }
+}
+
+impl Worker {
+    fn spawn(stack_bytes: usize) -> Result<Self, SpawnError> {
+        let mailbox = Arc::new(Mailbox {
+            slot: Mutex::new(Slot::default()),
+            closed: AtomicBool::new(false),
+        });
+        let inbox = Gone(Arc::clone(&mailbox));
+        // The handle is dropped at the end of this function: that detaches the thread.
+        let handle = thread::Builder::new()
+            .name("ep9-frontend".into())
+            .stack_size(stack_bytes)
+            .spawn(move || {
+                ON_WORKER.with(|on| on.set(true));
+                let mailbox = &inbox.0;
+                loop {
+                    // The flag first, then the slot: a job put before the close (the store
+                    // below is Release, this load is Acquire) is then in the slot.
+                    let closed = mailbox.closed.load(Ordering::Acquire);
+                    let job = mailbox.lock().job.take();
+                    match job {
+                        Some(job) => job(),
+                        None if closed => return,
+                        // An unpark before this park leaves a token, so park returns at once.
+                        None => thread::park(),
+                    }
+                }
+            })
+            .map_err(|err| SpawnError {
+                message: format!(
+                    "cannot reserve a {} MiB front-end stack: {err}",
+                    stack_bytes >> 20
+                ),
+            })?;
+        Ok(Self {
+            stack_bytes,
+            mailbox,
+            thread: handle.thread().clone(),
+        })
+    }
+
+    /// Put `job` in the slot and wake the thread. `Err(job)` when the thread has left its loop.
+    fn send(&self, job: Job) -> Result<(), Job> {
+        {
+            let mut slot = self.mailbox.lock();
+            if slot.gone {
+                return Err(job);
+            }
+            debug_assert!(slot.job.is_none(), "run waits for the reply of each job");
+            slot.job = Some(job);
+        }
+        self.thread.unpark();
+        Ok(())
+    }
+}
+
+impl Drop for Worker {
+    /// No join, no lock, no allocation and no free (see the module doc).
+    fn drop(&mut self) {
+        self.mailbox.closed.store(true, Ordering::Release);
+        self.thread.unpark();
+        // The fields drop next: two `Arc` decrements that the thread's references keep above 0.
+    }
 }
 
 /// True on a front-end worker thread.
@@ -215,7 +303,7 @@ mod tests {
             AT_THREAD_END.with(|end| *end.borrow_mut() = Some(SendOnDrop(ended_tx)));
             let _ = gate_rx.recv();
         });
-        worker.jobs.send(job).unwrap();
+        assert!(worker.send(job).is_ok(), "the worker thread is alive");
         let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
         thread::spawn(move || {
             drop(worker);
@@ -225,6 +313,49 @@ mod tests {
         drop(gate_tx);
         assert!(dropped.is_ok(), "the drop waited for the worker thread");
         // The worker thread still ends on its own once its job and channel are done.
+        assert!(
+            ended_rx.recv_timeout(WAIT).is_ok(),
+            "the worker thread did not end"
+        );
+    }
+
+    #[test]
+    fn dropping_a_worker_takes_no_lock_its_thread_may_hold() {
+        // M7-P3-WIN-EXITHANG. At a Windows process exit the OS can end the worker thread while it
+        // holds the mailbox lock, and nothing releases that lock. A helper thread that holds the
+        // lock stands in for that thread on every host: the drop must return while it is held.
+        let worker = Worker::spawn(SMALL).unwrap();
+        let (ended_tx, ended_rx) = mpsc::channel::<()>();
+        let (ran_tx, ran_rx) = mpsc::channel::<()>();
+        let job: Job = Box::new(move || {
+            AT_THREAD_END.with(|end| *end.borrow_mut() = Some(SendOnDrop(ended_tx)));
+            let _ = ran_tx.send(());
+        });
+        assert!(worker.send(job).is_ok(), "the worker thread is alive");
+        assert!(ran_rx.recv_timeout(WAIT).is_ok(), "the job did not run");
+        let mailbox = Arc::clone(&worker.mailbox);
+        let (locked_tx, locked_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = thread::spawn(move || {
+            let held = mailbox.lock();
+            let _ = locked_tx.send(());
+            let _ = release_rx.recv();
+            drop(held);
+        });
+        assert!(
+            locked_rx.recv_timeout(WAIT).is_ok(),
+            "the helper has no lock"
+        );
+        let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            drop(worker);
+            let _ = dropped_tx.send(());
+        });
+        let dropped = dropped_rx.recv_timeout(WAIT);
+        drop(release_tx);
+        holder.join().unwrap();
+        assert!(dropped.is_ok(), "the drop waited for the mailbox lock");
+        // With the lock free again, the worker thread sees the close and ends.
         assert!(
             ended_rx.recv_timeout(WAIT).is_ok(),
             "the worker thread did not end"
@@ -270,5 +401,29 @@ mod tests {
         assert!(err.message.contains("front-end stack"), "{err:?}");
         // The next call can still create a worker with a sane size.
         assert_eq!(run(SMALL, || 1).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_send_after_the_thread_left_its_loop_is_refused() {
+        // The retry in `run` relies on this: the job comes back, it is not lost in the slot.
+        let worker = Worker::spawn(SMALL).unwrap();
+        let mailbox = Arc::clone(&worker.mailbox);
+        let thread_end = worker.thread.clone();
+        drop(worker);
+        let start = std::time::Instant::now();
+        while !mailbox.lock().gone {
+            assert!(
+                start.elapsed() < WAIT,
+                "the worker thread did not leave its loop"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        let again = Worker {
+            stack_bytes: SMALL,
+            mailbox,
+            thread: thread_end,
+        };
+        let refused = again.send(Box::new(|| ()));
+        assert!(refused.is_err(), "a send to a gone thread was taken");
     }
 }

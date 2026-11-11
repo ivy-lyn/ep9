@@ -465,7 +465,7 @@ fn call_bytecode(
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     if !fi.is_bytecode() || fi.slot.kind_byte() != crate::dispatch::DispatchKind::Interp as u8 {
-        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+        return call_native_from_rust(cx, f, this, argc, arg, new_target); // MC-w30-2
     }
     poll(cx, caller)?;
     let bound_this = try_bind_this(fi, this, rt.global());
@@ -673,14 +673,16 @@ pub(crate) fn construct_function_object(
         ordinary_create_from_constructor(cx, new_target)?
     };
     let r = call_function_object(cx, f, this, argc, arg, new_target)?;
-    // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers.
-    Ok(if is_object(r) {
-        r
-    } else if this == HOLE {
-        UNDEFINED
+    // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers: after the call,
+    // in the caller's realm (`call_function_object` switched back).
+    if is_object(r) {
+        Ok(r)
+    } else if this != HOLE {
+        Ok(this)
     } else {
-        this
-    })
+        let (kind, msg) = interp::derived_result_error(r);
+        Err(throw_error(cx, kind, msg))
+    }
 }
 
 /// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13): a `prototype` that is
@@ -965,14 +967,12 @@ pub(crate) unsafe fn push_construct_stub(
 /// test before its count and its budget unit, then writes the frame with
 /// [`fill_missing_args`], [`write_call_args`] and [`write_call_header`]; the four together
 /// write what [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
+/// The forwarded call of the T0 call fast path on the other targets ([`forward_frame`], M7-P4
+/// LEVER-3) writes its frame with the same four.
 ///
 /// The `& !7` changes no bit (`base` is a slot address, so `fp` is 8-byte aligned). It keeps
 /// LLVM from folding `base + 8 * n + 72` into every later address, so the fast path holds the
 /// new `fp` in one register, not `base` and `n` in two.
-#[cfg_attr(
-    any(feature = "spike-native", not(target_arch = "x86_64")),
-    allow(dead_code)
-)]
 #[inline(always)]
 pub(crate) fn call_frame_fp(
     base: *mut u64,
@@ -992,10 +992,6 @@ pub(crate) fn call_frame_fp(
 /// # Safety
 /// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
 /// contract for `base` and `limit`.
-#[cfg_attr(
-    any(feature = "spike-native", not(target_arch = "x86_64")),
-    allow(dead_code)
-)]
 #[inline(always)]
 pub(crate) unsafe fn fill_missing_args(base: *mut u64, fp: *mut u64, argc: u32) {
     // SAFETY: the slots lie in the frame `call_frame_fp` placed below `limit`, above every
@@ -1017,10 +1013,6 @@ pub(crate) unsafe fn fill_missing_args(base: *mut u64, fp: *mut u64, argc: u32) 
 /// # Safety
 /// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
 /// contract for `base` and `limit`, and `arg(i)` returns valid Value bits for `i < argc`.
-#[cfg_attr(
-    any(feature = "spike-native", not(target_arch = "x86_64")),
-    allow(dead_code)
-)]
 #[inline(always)]
 pub(crate) unsafe fn write_call_args<const LIST: bool>(
     fp: *mut u64,
@@ -1063,10 +1055,6 @@ pub(crate) unsafe fn write_call_args<const LIST: bool>(
 /// # Safety
 /// `fp` is `call_frame_fp(base, limit, fi, argc)` (not `None`) with the [`push_frame`]
 /// contract for `base` and `limit`.
-#[cfg_attr(
-    any(feature = "spike-native", not(target_arch = "x86_64")),
-    allow(dead_code)
-)]
 #[inline(always)]
 pub(crate) unsafe fn write_call_header(
     fp: *mut u64,
@@ -1704,4 +1692,432 @@ mod tail_tests {
             "direct {direct}, tail {tail}, now {now}"
         );
     }
+}
+
+// ---- the forwarded call (M7-P0 CALLHOST; the T0 form M7-P4 LEVER-3) -------------------------
+//
+// A call of the current realm's %Function.prototype.apply% or %Function.prototype.call% whose
+// `this` is a bytecode function of this realm pushes that function's frame from the source,
+// in the same dispatch run (H20-Q3 rest). Two places take it:
+//
+// ```text
+// T0 call fast path (interp/ops.rs call_fast): a host callee with a FUNCTION receiver
+//   ──> forward_frame: no GC point, nothing thrown, the budget above 0 (else None: cold)
+// slow::call ──> host_entry ──> forward: the same steps after `enter`, with the GC point of
+//   the feedback count (the call that makes the callee's vector) and the RangeError of a
+//   full VM stack
+// ```
+//
+// Both read the same tests ([`forward_target`], [`forward_list`]) and push the frame that
+// `do_call` pushes for a bytecode callee.
+
+/// The FunctionInfo of `f` if a forwarded call may push its frame: a FUNCTION with bytecode
+/// in an Interp slot (not a host function, not native code), not a class constructor, of the
+/// current realm. Not a GC point.
+#[inline(always)]
+pub(crate) fn forward_target<'a>(cx: &Cx, f: u64) -> Option<&'a FunctionInfo> {
+    if !is_function(f) {
+        return None;
+    }
+    let fi = function_info(f);
+    (fi.is_bytecode()
+        && fi.slot.kind_byte() == crate::dispatch::DispatchKind::Interp as u8
+        && !fi.is_class_constructor()
+        && object::function_realm(f) == cx.realm)
+        .then_some(fi)
+}
+
+/// `apply`'s list as a forwarded call reads it in place, with its argument count.
+pub(crate) enum ForwardList {
+    /// An arguments object with its realm's initial shape and an element at each index below
+    /// its `length` (`arguments::forward_source`); also undefined and null, with count 0.
+    Arguments(crate::arguments::Source, u32),
+    /// An Array with an element at each index below its `length`.
+    Array(u32),
+}
+
+/// [`ForwardList`] of `apply`'s argArray `list`, or `None`: the builtin's
+/// CreateListFromArrayLike (a hole, a changed `length`, an accessor, a proxy, any other
+/// object, a primitive). Not a GC point.
+#[inline(always)]
+pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
+    if list == UNDEFINED || list == NULL {
+        let none = crate::arguments::Source::EMPTY;
+        return Some(ForwardList::Arguments(none, 0));
+    }
+    if !is_object(list) {
+        return None;
+    }
+    if object::is_array(list) {
+        let n = object::array_len(list);
+        return (0..n)
+            .all(|i| object::array_get(list, i).is_some())
+            .then_some(ForwardList::Array(n));
+    }
+    if cell_kind(list) != crate::kinds::ARGUMENTS.get() {
+        return None;
+    }
+    let (src, n) = crate::arguments::forward_source(cx.rt(), list)?;
+    Some(ForwardList::Arguments(src, n))
+}
+
+/// The forwarded call of the T0 call fast path (M7-P4 LEVER-3): the steps of `slow::call`'s
+/// `forward` for a call at `next` (the return pc) of the live top frame `fp` whose callee is
+/// the host function `callee`, receiver `func` and `argc` arguments that `arg` reads from `fp`
+/// (`arg(fp, i)`, the reader of `interp::ops::call_fast`). When it
+/// takes the call, it counts the call of the callee (the T0 count, below the feedback
+/// threshold or with the vector made: no GC point) and pushes its frame right above `fp`, and
+/// gives the new frame and the callee's code (else a null frame). The caller then takes the call's budget unit and
+/// the sampled call record of `callee`, as the cold path does (`call_record_cold`,
+/// `slow::call`), and jumps.
+///
+/// It makes no call (no panic path either), so the call handlers that inline it keep their
+/// register use and their frame: the callee test reads the current REALM record's intrinsics
+/// list (the record is a copy of the intrinsic slots, `realm::record_intrinsic`), and the
+/// switch test is the process-wide flag alone.
+///
+/// Not in the x86-64 form of the call fast path (`call_fast`, PERF3 item 2): there, the
+/// inlined body costs the call handlers more callee-saved registers, pushed on each call
+/// (CallProperty0 2 to 6, CallProperty1 3 to 6, M7-P4 LEVER-3), so x86-64 forwards stay on
+/// the cold path.
+///
+/// A null frame and code, with no state changed (the slots it may have written lie above the top frame,
+/// where no GC root scan and no reader looks): the cold path decides. That is every call that
+/// is not a forward ([`forward_target`], `try_bind_this`, the list), an `apply` list that is
+/// an arguments object with a mapped index or an Array that is not packed ([`forward_list`]
+/// there), a budget at 0 or below (the cold path polls first), the call that makes the
+/// callee's vector (a GC point), a frame that does not fit (the cold path throws the
+/// RangeError), and every call while some isolate has its human fast paths off.
+/// Not a GC point.
+///
+/// # Safety
+/// `fp` is the live top frame (bytecode runs with no scratch area), `next` the pc after its
+/// current call instruction, and `arg(fp, i)` returns valid Value bits for `i < argc`, rooted
+/// in the caller's registers.
+#[cfg_attr(
+    all(not(feature = "spike-native"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
+// Out of line in debug builds: inline, its unoptimized locals grow the frame of each call
+// handler (and of `step::<S2>`, which holds them), and the debug Sibling dispatch and the
+// small-stack re-entry test (`tests::interp::scaled_steps_fit_a_small_stack`) run out of
+// native stack (as the debug `Flow::recorded` is out of line).
+//
+// The out-of-line call takes and gives no address of a local of the handler: the reader
+// `arg` is a copy (at most 2 words, in registers) that reads `fp`, and the result is a pair
+// in registers (not an `Option`, which comes back through a stack slot). A local whose
+// address goes into a call makes LLVM mark no call of the handler as a tail call, so in an
+// optimized build with debug assertions (the Spike C test build: ep9_vm at opt-level 2) the
+// threaded dispatch grows the native stack by one handler frame per instruction, until a
+// RangeError (M7-P4 integration fixer: 15 Spike C unit tests on 2 MiB test threads).
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+pub(crate) unsafe fn forward_frame(
+    cx: &Cx,
+    fp: *mut u64,
+    next: *const u8,
+    callee: u64,
+    func: u64,
+    argc: u32,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
+) -> (*mut u64, *const u8) {
+    // SAFETY: the contract of this function.
+    match unsafe { forward_frame_in(cx, fp, next, callee, func, argc, arg) } {
+        Some(pushed) => pushed,
+        None => (core::ptr::null_mut(), core::ptr::null()),
+    }
+}
+
+/// The steps of [`forward_frame`], with `None` for its null frame.
+///
+/// # Safety
+/// As [`forward_frame`].
+#[cfg_attr(
+    all(not(feature = "spike-native"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
+#[inline(always)]
+unsafe fn forward_frame_in(
+    cx: &Cx,
+    fp: *mut u64,
+    next: *const u8,
+    callee: u64,
+    func: u64,
+    argc: u32,
+    arg: impl Fn(*mut u64, u32) -> u64 + Copy,
+) -> Option<(*mut u64, *const u8)> {
+    use crate::builtins::IntrinsicId;
+    if cx.budget <= 0 || ANY_OFF.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let apply = callee == realm_intrinsic(cx, IntrinsicId::FunctionPrototypeApply)?;
+    if !apply && callee != realm_intrinsic(cx, IntrinsicId::FunctionPrototypeCall)? {
+        return None;
+    }
+    // The source of the arguments: the call's own registers after thisArg (`call`), or the
+    // list (`apply`) in the forms with no call in their tests: undefined, null, an unmodified
+    // arguments object of this realm with no mapped index, or a packed Array with an
+    // ELEMENTS list ([`packed_array`]). Any other list (a mapped arguments object, an Array
+    // with a hole or a double list) takes the cold path's `forward_list`.
+    let (n, words) = if apply {
+        let list = if argc > 1 { arg(fp, 1) } else { UNDEFINED };
+        if list == UNDEFINED || list == NULL {
+            (0, None)
+        } else if !is_cell_bits(list) {
+            return None;
+        } else if cell_kind(list) == crate::kinds::ARGUMENTS.get() {
+            let (src, n) = crate::arguments::forward_source_in(cx.realm, list)?;
+            if src.mapped() {
+                return None;
+            }
+            (
+                n,
+                if n == 0 {
+                    None
+                } else {
+                    Some(src.unmapped_list()?)
+                },
+            )
+        } else if cell_kind(list) == crate::kinds::ARRAY.get() {
+            packed_array(list)?
+        } else {
+            return None;
+        }
+    } else {
+        (argc.saturating_sub(1), None)
+    };
+    // The tests are in this order (the list first) so that fewer values are live in the
+    // list's element scan.
+    let fi = forward_target(cx, func)?;
+    // The call that makes the callee's vector (`feedback::count_call`, a GC point) goes cold.
+    let novector = fi.feedback.get().is_null();
+    if novector && fi.invocations.get() + 1 >= cx.feedback_threshold {
+        return None;
+    }
+    let this_arg = if argc > 0 { arg(fp, 0) } else { UNDEFINED };
+    let this_arg = try_bind_this(fi, this_arg, cx.global_this)?;
+    let base = frame_top(fp);
+    // The frame of `push_frame` for a call, in the steps of the x86-64 T0 call fast path: the
+    // size test, the missing arguments, the receiver and the arguments, the header and the
+    // registers.
+    let nfp = call_frame_fp(base, cx.stack_limit, fi, n)?;
+    // SAFETY: `nfp` is `call_frame_fp` of `base`, the first free slot above the live top frame
+    // `fp` (caller contract), and the VM stack cap; each reader returns Values the caller
+    // keeps rooted.
+    unsafe {
+        fill_missing_args(base, nfp, n);
+        match words {
+            Some(w) => {
+                write_call_args::<true>(nfp, this_arg, n, |i| crate::arguments::unmapped_word(w, i))
+            }
+            None if apply => write_call_args::<true>(nfp, this_arg, 0, |_| UNDEFINED),
+            None => write_call_args::<true>(nfp, this_arg, n, |i| arg(fp, i + 1)),
+        }
+        write_call_header(nfp, fi, func, n, fp, next, || function_context(func));
+    }
+    // The count of `feedback::count_call` (no vector: below the threshold, checked above).
+    if novector {
+        fi.invocations.set(fi.invocations.get() + 1);
+    }
+    #[cfg(test)]
+    FORWARDED_CALLS.with(|h| h.set(h.get() + 1));
+    #[cfg(test)]
+    T0_FORWARDED_CALLS.with(|h| h.set(h.get() + 1));
+    // (`fast_hit` is defined below: called by its path.)
+    crate::call::fast_hit!(if apply { 1 } else { 2 });
+    Some((nfp, fi.code))
+}
+
+/// The length n of the Array `a` and its ELEMENTS list (`None` when n is 0) when each index
+/// below n holds an element in an ELEMENTS list (not a hole, not a double list): the case of
+/// [`forward_list`]'s Array form that `forward_frame` reads in place, with
+/// `arguments::unmapped_word` (each `object::array_get` of an index below n gives that
+/// word). `None` for any other Array. Not a GC point; no panic path.
+#[cfg_attr(
+    all(not(feature = "spike-native"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
+#[inline(always)]
+fn packed_array(a: u64) -> Option<(u32, Option<ep9_heap::CellPtr>)> {
+    use ep9_value::encoding::NUMBER_TAG;
+    let c = object::cell(a);
+    // The int32 length test of `object::array_len`.
+    let w = object::rd(c, object::arr::LENGTH);
+    if w & NUMBER_TAG != NUMBER_TAG {
+        return None;
+    }
+    let n = w as u32;
+    if n == 0 {
+        return Some((0, None));
+    }
+    let e = object::rd(c, object::obj::ELEMENTS);
+    if !is_cell_bits(e) || cell_kind(e) != crate::kinds::ELEMENTS.get() {
+        return None;
+    }
+    let ec = object::cell(e);
+    if n as usize > object::rd_i32(ec, object::elems::CAPACITY) as usize {
+        return None;
+    }
+    let mut i = 0;
+    while i < n {
+        if crate::arguments::unmapped_word(ec, i) == HOLE {
+            return None;
+        }
+        i += 1;
+    }
+    Some((n, Some(ec)))
+}
+
+/// The intrinsic `id` of the current realm read from its REALM record (`Cx::realm`): the
+/// value `builtins::intrinsic` gives, without its bound test (`realm::record_intrinsic` keeps
+/// the record's list a copy of the intrinsic slots; `realm::switch` reads it back). `None`
+/// when `Cx::realm` is no REALM record or its list is too short. Not a GC point; no panic
+/// path.
+#[cfg_attr(
+    all(not(feature = "spike-native"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
+#[inline(always)]
+fn realm_intrinsic(cx: &Cx, id: crate::builtins::IntrinsicId) -> Option<u64> {
+    let realm = cx.realm;
+    if !is_cell_bits(realm) || cell_kind(realm) != crate::kinds::REALM.get() {
+        return None;
+    }
+    let list = object::record_get(realm, object::realmf::INTRINSICS);
+    if !is_cell_bits(list) {
+        return None;
+    }
+    let i = id as usize;
+    let c = object::cell(list);
+    (i < object::rd_i32(c, object::elems::CAPACITY) as usize)
+        .then(|| object::rd(c, object::elems::DATA + 8 * i))
+}
+
+// ---- the human fast-path switch (FASTDIFF, M7-P0 CALLHOST; plan V12-D30) --------------------
+//
+// A human fast path is hand-written code that skips spec steps under a guard, with the spec
+// steps beside it in the same build (09-milestones.md:108). The doc-hidden `Cx` method
+// `set_human_fast_paths` turns the ones that read [`human_fast_paths`] off for one isolate,
+// so `ep9_builtins/tests/fastpath_diff.rs` runs each case with them on and off and compares
+// the output and the exceptions.
+//
+// The switch is per isolate, keyed by `Runtime::id` (no other runtime of the process gets the
+// same id). It lives here, not in `Isolate`: the fast paths see a `Runtime`, never the
+// `Isolate`. While no isolate has turned them off, the test is one relaxed load.
+
+/// True while some isolate of the process has its human fast paths off.
+static ANY_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The `Runtime::id` of every isolate whose human fast paths are off.
+static OFF: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether the human fast paths of `rt`'s isolate are on (the default). Not a GC point.
+#[inline(always)]
+pub(crate) fn human_fast_paths(rt: &Runtime) -> bool {
+    !ANY_OFF.load(std::sync::atomic::Ordering::Relaxed) || !is_off(rt)
+}
+
+#[cold]
+#[inline(never)]
+fn is_off(rt: &Runtime) -> bool {
+    OFF.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&rt.id)
+}
+
+/// Turns the human fast paths of `rt`'s isolate on or off (`abi::Cx::set_human_fast_paths`).
+/// Not a GC point.
+pub(crate) fn set_human_fast_paths(rt: &Runtime, on: bool) {
+    let mut off = OFF
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    off.retain(|&id| id != rt.id);
+    if !on {
+        off.push(rt.id);
+    }
+    ANY_OFF.store(!off.is_empty(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The FASTDIFF hit counters (route P0-FASTHITS; feature `fastdiff-hits`, which only the
+/// FASTDIFF test turns on, so no shipped build counts): per Switch human fast path, the times it
+/// was taken on this thread. A run with the fast paths off must count 0 for each.
+#[cfg(feature = "fastdiff-hits")]
+pub(crate) mod fast_hits {
+    use core::cell::Cell;
+
+    /// The Switch rows of the FASTDIFF inventory, in counter order.
+    pub const NAMES: [&str; 6] = [
+        "host-entry",
+        "forward-apply",
+        "forward-call",
+        "args-create",
+        "clfal-length",
+        "clfal-elements",
+    ];
+
+    thread_local! {
+        static HITS: [Cell<u64>; NAMES.len()] = const { [const { Cell::new(0) }; NAMES.len()] };
+    }
+
+    /// Counts one hit of fast path `i` (an index of [`NAMES`]).
+    #[inline(always)]
+    pub(crate) fn hit(i: usize) {
+        HITS.with(|h| h[i].set(h[i].get() + 1));
+    }
+
+    /// The count of each fast path on this thread, then 0 for each.
+    pub(crate) fn take() -> Vec<(&'static str, u64)> {
+        HITS.with(|h| {
+            NAMES
+                .iter()
+                .zip(h)
+                .map(|(n, c)| (*n, c.replace(0)))
+                .collect()
+        })
+    }
+}
+
+/// Counts a hit of the FASTDIFF Switch path `$i` (`fast_hits::NAMES`) with feature
+/// `fastdiff-hits`; nothing without it.
+macro_rules! fast_hit {
+    ($i:expr) => {
+        #[cfg(feature = "fastdiff-hits")]
+        $crate::call::fast_hits::hit($i);
+    };
+}
+pub(crate) use fast_hit;
+
+#[cfg(test)]
+thread_local! {
+    /// The calls that `interp/slow/call.rs` `host_entry` took on this thread (the tests check
+    /// the path ran).
+    pub(crate) static HOST_ENTRY_HITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    /// The calls that `interp/slow/call.rs` `forward` or [`forward_frame`] pushed a frame for
+    /// on this thread.
+    pub(crate) static FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    /// The calls of [`FORWARDED_CALLS`] that [`forward_frame`] (the T0 call fast path) pushed.
+    #[cfg_attr(all(not(feature = "spike-native"), target_arch = "x86_64"), allow(dead_code))]
+    pub(crate) static T0_FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The non-bytecode arm of [`call_bytecode`] (M7-P5 A2-RW, route MC-w30-2): a call from Rust
+/// (`Cx::call`, a builtin callback, a forwarded `apply` or `call` that the T0 forward refused,
+/// a callee of another realm) of native code (an AotBaseline unit function or a Baseline slot)
+/// enters it through the Rust entry, with an entry frame. Construct (`new_target` set) stays
+/// refused (MC-w29-8), and so does any other kind. (At the end of the file, so no cited line
+/// moves.)
+fn call_native_from_rust(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    if new_target == UNDEFINED
+        && let Some(nfi) = crate::native::native_callee(f)
+    {
+        return crate::native::enter_from_rust(cx, f, nfi, this, argc, arg);
+    }
+    Err(not_implemented(cx, "calling code of this dispatch kind"))
 }

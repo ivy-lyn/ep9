@@ -1,6 +1,6 @@
 # var-annex-b: script (sloppy)
 # | function f() { { function g() {} } return g; } if (true) function h() {}
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=72 source=embedded hints=none
 source_hash=5187e853e2fc59ff1451b36b3aae4664a4e0df90629248b1e53eda0bb1364291
 strings (3):
@@ -15,20 +15,19 @@ scopes (6):
   scope4 block outer=scope0 flags=[] slots=[]
   scope5 function outer=scope4 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=3 range=0..72
-  code (35 bytes):
+  code (33 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r2                                      ; 0c 02
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r1                                      ; 0c 01
      15 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
-     20    Ldar r2                                      ; 0b 02
-     22 S> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
-     26    Star r0                                      ; 0c 00
-     28 S> Ldar r0                                      ; 0b 00
-     30 E> StaGlobal k3, s2  ; k3 = String str1 "h"     ; 12 03 02
-     33    LdaUndefined                                 ; 05
-     34    Return                                       ; 92
+     20 S> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
+     24    Star r0                                      ; 0c 00
+     26 S> Ldar r0                                      ; 0b 00
+     28 E> StaGlobal k3, s2  ; k3 = String str1 "h"     ; 12 03 02
+     31    LdaUndefined                                 ; 05
+     32    Return                                       ; 92
   constants (4):
       0 Function f1
       1 String str0 "f"
@@ -43,9 +42,9 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       0 S 0 (1:1)
       5 E 0 (1:1)
      15 E 0 (1:1)
-     22 S 47 (1:48)
-     28 S 57 (1:58)
-     30 E 57 (1:58)
+     20 S 47 (1:48)
+     26 S 57 (1:58)
+     28 E 57 (1:58)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=2 range=0..46
   code (15 bytes):
       0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f2 ; 74 00 00 00

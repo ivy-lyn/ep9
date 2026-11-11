@@ -95,6 +95,26 @@ pub enum ObjectClass {
     TemporalPlainMonthDay,
     /// A Temporal.ZonedDateTime instance (spec-temporal T8): `[[EpochNanoseconds]]` as slot 0 the epoch seconds (an integral Number) and slot 1 the nanosecond of that second (an int32), `[[TimeZone]]` as slot 2 (the time zone identifier, a String) and `[[Calendar]]` as slot 3 (an ep9 calendar code, an int32), `ep9_temporal` zoned_date_time.rs.
     TemporalZonedDateTime,
+    /// An Iterator Helper object (§27.1.2.1, M7-P1 SPEC-ITER), or the wrapper of
+    /// `Iterator.from` (`[[Iterated]]`): slot 0 the kind and the GeneratorState (an int32),
+    /// slots 1-2 the underlying iterator and its `next`, then the callback, the counter and
+    /// the inner iterator of flatMap (`ep9_builtins` iterator.rs).
+    IteratorHelper,
+    /// A DisposableStack instance (explicit resource management, M7-P3 SPEC-ERM): slot 0
+    /// `[[DisposableState]]` (true = disposed), slot 1 `[[DisposeCapability]]` (the resource
+    /// list, an internal array; `ep9_builtins` disposable.rs).
+    DisposableStack,
+    /// An AsyncDisposableStack instance (M7-P3 SPEC-ERM): slot 0 `[[AsyncDisposableState]]`,
+    /// slot 1 `[[DisposeCapability]]`, as [`ObjectClass::DisposableStack`].
+    AsyncDisposableStack,
+    /// An Intl.Locale instance (ECMA-402 §14, INTL W1): slot 0 `[[Locale]]` (the canonical
+    /// tag, a String); the other slots (`[[Calendar]]` .. `[[Numeric]]`) are named in
+    /// `ep9_intl` locale.rs.
+    IntlLocale,
+    /// An Intl.Collator instance (ECMA-402 §10, INTL W1): slot 0 `[[Locale]]` (a String); the
+    /// other slots (1 the packed options with `[[Collation]]`, 2 `[[BoundCompare]]`) are named
+    /// in `ep9_intl` collator.rs. No ICU4X object is in a slot (INTL-I1-D7).
+    IntlCollator,
 }
 
 impl ObjectClass {
@@ -123,6 +143,11 @@ impl ObjectClass {
         ObjectClass::TemporalPlainYearMonth,
         ObjectClass::TemporalPlainMonthDay,
         ObjectClass::TemporalZonedDateTime,
+        ObjectClass::IteratorHelper,
+        ObjectClass::DisposableStack,
+        ObjectClass::AsyncDisposableStack,
+        ObjectClass::IntlLocale,
+        ObjectClass::IntlCollator,
     ];
 
     /// Most internal slots of one object.
@@ -168,6 +193,11 @@ impl ObjectClass {
             ObjectClass::TemporalPlainYearMonth => "Temporal.PlainYearMonth",
             ObjectClass::TemporalPlainMonthDay => "Temporal.PlainMonthDay",
             ObjectClass::TemporalZonedDateTime => "Temporal.ZonedDateTime",
+            ObjectClass::IteratorHelper => "Iterator Helper",
+            ObjectClass::DisposableStack => "DisposableStack",
+            ObjectClass::AsyncDisposableStack => "AsyncDisposableStack",
+            ObjectClass::IntlLocale => "Intl.Locale",
+            ObjectClass::IntlCollator => "Intl.Collator",
         }
     }
 }

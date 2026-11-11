@@ -1,6 +1,6 @@
 //! Depth guard layer 0: a token pre-scan that bounds oxc's parser recursion before oxc runs.
 //!
-//! oxc 0.155 has no depth limit: deep input overflows the stack and aborts the process
+//! oxc 0.157 has no depth limit: deep input overflows the stack and aborts the process
 //! (01-front-end §6). Until the oxc counter lands (layer 1, M1), this scan estimates the parser's
 //! recursion depth. The front end rejects an estimate above [`crate::depth::PRESCAN_CAP`] and runs
 //! the parse on a worker whose stack fits that cap (see `stack.rs`).

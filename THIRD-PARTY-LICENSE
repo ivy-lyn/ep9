@@ -196,9 +196,39 @@ Ported:   crates/ep9_math/src/hypot.rs (Math.hypot, H36) from src/builtins/math.
           (MathHypot, its general path with the Kahan sum), at main
           f8008f466663464cf3f14474da2c8c91b1be1fcb (2026-10-27), to Rust. The caller
           does ToNumber; the IEEE operations and their order are V8's (M4-P4).
+          crates/ep9_math/src/xsum.rs (Math.sumPrecise, H36) from
+          src/builtins/builtins-math-xsum.h and src/builtins/builtins-math-xsum.cc
+          (class Xsum), at main 40f4b69c3bc25f2a9c1c4137e27c545b6b1183d0
+          (2026-11-02; the files last changed in b76957af9c52), to Rust. V8 adapted
+          that code from xsum by Radford M. Neal (entry "xsum" below) (M7-P0).
+          crates/ep9_rx1/src/flags.rs, error.rs, ast.rs and parser.rs (RX1, the
+          irregexp parser) from src/regexp/regexp-flags.h, regexp-error.h,
+          regexp-ast.h and regexp-parser.cc, at main
+          40f4b69c3bc25f2a9c1c4137e27c545b6b1183d0 (2026-11-02; regexp-parser.cc
+          last changed in c758a331fdb6), to Rust (M7-P4). The ICU lookups of the
+          parser are tables from Unicode data (crates/ep9_rx1/src/unicode.rs).
+          crates/ep9_rx1/src/charset.rs, special_case.rs and sets.rs and
+          crates/ep9_rx1/data/gen-sets.py (RX1 port step 2, the class sets and the
+          case data) from src/regexp/regexp-ast.h (CharacterRange),
+          regexp-compiler-tonode.cc (the CharacterRange functions, the set part of
+          ClassRanges::ToNodeImpl, ClassSetOperand and ClassSetExpression),
+          regexp-compiler.cc and regexp-compiler.h (TextNode::MakeCaseIndependent,
+          GetCaseIndependentLetters, compiler_constants), special-case.h
+          (CaseFolding), regexp-parser.cc (the ICU part of AddPropertyClassRange,
+          NeedsDesugaringForIgnoreCase) and gen-regexp-special-case.cc, at main
+          40f4b69c3bc25f2a9c1c4137e27c545b6b1183d0 (2026-11-02), to Rust and Python
+          (M7-P5).
 Copyright: math.tq: "Copyright 2019 the V8 project authors. All rights reserved.
           Use of this source code is governed by a BSD-style license that can be
           found in the LICENSE file."
+          builtins-math-xsum.h, builtins-math-xsum.cc: "Copyright 2026 the V8
+          project authors. All rights reserved."
+          regexp-parser.cc, regexp-ast.h: "Copyright 2016 the V8 project authors.
+          All rights reserved."; regexp-error.h: "Copyright 2020 ..."; regexp-flags.h:
+          "Copyright 2021 ..."; regexp-compiler-tonode.cc, regexp-compiler.cc,
+          regexp-compiler.h, special-case.h: "Copyright 2019 ...";
+          gen-regexp-special-case.cc: "Copyright 2020 ..." (each with the BSD-style
+          licence lines above).
 
 The V8 LICENSE file gives these terms for V8's own code:
 
@@ -229,6 +259,42 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+----------------------------------------------------------------------
+
+xsum (MIT)
+----------
+
+Project:  xsum, exact summation of floating-point numbers by Radford M. Neal,
+          https://gitlab.com/radfordneal/xsum
+Ported:   crates/ep9_math/src/xsum.rs (Math.sumPrecise, H36), through V8's
+          adaptation (V8 entry above): the small superaccumulator of xsum.c and
+          xsum.h (M7-P0).
+Copyright: "Copyright 2015, 2018, 2021 Radford M. Neal" (the license header that
+          V8's builtins-math-xsum.cc keeps).
+
+The xsum license header:
+
+----------------------------------------------------------------------
+Copyright 2015, 2018, 2021 Radford M. Neal
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----------------------------------------------------------------------
 
 regress (MIT)
@@ -328,6 +394,40 @@ authorization of the copyright holder.
 
 SPDX-License-Identifier: Unicode-3.0
 ----------------------------------------------------------------------
+
+Unicode Character Database (Unicode-3.0)
+----------------------------------------
+
+Project:  The Unicode Character Database, https://www.unicode.org/ucd/
+Derived:  crates/ep9_rx1/src/unicode_tables.rs (the General_Category and Script value
+          aliases, ID_Start and ID_Continue of the RX1 parser), made by
+          crates/ep9_rx1/data/gen-tables.py from UCD 17.0.0
+          (https://www.unicode.org/Public/17.0.0/ucd/) (M7-P4 RX1-0). Data, not code.
+          PropertyValueAliases.txt sha256
+            64e9a5f76f7a1e8b5a47d6a1f9a26522a251208f5276bdfa1559dac7cf2e827a
+          DerivedCoreProperties.txt sha256
+            24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08
+          crates/ep9_rx1/src/unicode_sets.rs (the code point sets of \p{..}, the
+          strings of the properties of strings and the case data of the RX1
+          compiler), made by crates/ep9_rx1/data/gen-sets.py from UCD 17.0.0 and
+          emoji data 17.0 (https://www.unicode.org/Public/17.0.0/ucd/ and its
+          emoji/ files; see the generator doc) (M7-P5 RX1-1). Data, not code.
+          sha256 of the inputs:
+            UnicodeData.txt               2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c
+            PropertyValueAliases.txt      64e9a5f76f7a1e8b5a47d6a1f9a26522a251208f5276bdfa1559dac7cf2e827a
+            Scripts.txt                   9f5e50d3abaee7d6ce09480f325c706f485ae3240912527e651954d2d6b035bf
+            ScriptExtensions.txt          ec2107e58825a1586acee8e0911ce18260394ac8b87e535ca325f1ccbeb06bc6
+            PropList.txt                  130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd
+            DerivedCoreProperties.txt     24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08
+            DerivedBinaryProperties.txt   13dd09d35a9377e33eb388a01e6581d4bfec6b2685316078c341982fa444071a
+            DerivedNormalizationProps.txt 71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488
+            CaseFolding.txt               ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183
+            SpecialCasing.txt             efc25faf19de21b92c1194c111c932e03d2a5eaf18194e33f1156e96de4c9588
+            emoji-data.txt                2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b
+            emoji-sequences.txt           12cc8267dc33cbd11ed32bcf6fc5dc2ad9c7a77bae1bdfba2f41b1b9b3ead8dd
+            emoji-zwj-sequences.txt       5b25441daed2322b068c5e70cda522946a4f0274df864445a1965a92e5fc5cad
+Copyright: Unicode, Inc. The Unicode License v3 applies; its text is in the ICU
+          time-zone data entry above.
 
 Planned entries (added by the PR that ports the code; not in the tree yet)
 ==========================================================================

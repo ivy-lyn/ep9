@@ -60,9 +60,9 @@
 //! (a) an item that a macro makes outside the core files (decision M3-P3-H20-GOLDEN-LIMIT; a
 //! re-exported one is a line that says so); (b) a `#[path]` module whose file is not read, and a
 //! module file in the same places: outside `src/`, not named `.rs`, or whose first name under
-//! `src/` is a gated module of `lib.rs` (`tests`, `native`): the directory `src/tests/` and the
-//! file `src/native.rs` (RV6-G1, RV7-3; M3-P4 ACCEPT-8 note N2; `sources()` reads every other
-//! `.rs` file under `src/`); (c) outside `abi/` and `builtins.rs`, a trait impl whose head
+//! `src/` is a gated module of `lib.rs` (`tests`): the directory `src/tests/` (RV6-G1, RV7-3;
+//! M3-P4 ACCEPT-8 note N2; `src/native.rs` is read since M7-P3 A2-ENTRY; `sources()` reads
+//! every other `.rs` file under `src/`); (c) outside `abi/` and `builtins.rs`, a trait impl whose head
 //! does not name `Isolate` and whose self type is not a closure type (in `isolate.rs`, also not
 //! `Cx`), such as `impl From<Local<'s>> for Value` in `string.rs`; and in `abi/` and
 //! `builtins.rs`, a trait impl whose head does not name `Isolate` and whose trait and self type
@@ -220,7 +220,7 @@ fn cfg_text(attrs: &[String]) -> String {
 /// The source files the golden reads, as (path under `src/`, text): `abi/` sorted by name,
 /// `isolate.rs`, `builtins.rs`, `lib.rs`, then the other files of the default build (sorted;
 /// read only for their `impl Isolate` blocks). A module that `lib.rs` declares under a `cfg`
-/// that is in no default build ([`gated`]: `tests`, `native`) is left out.
+/// that is in no default build ([`gated`]: `tests`) is left out.
 fn sources() -> Vec<(String, String)> {
     let read = |p: &str| {
         std::fs::read_to_string(src_dir().join(p))
@@ -2159,7 +2159,7 @@ fn cargo_features(text: &str) -> (Vec<(String, Vec<String>)>, Vec<String>) {
 /// under a target `cfg` (Codex C2-FP1: `target_pointer_width = "64"` is on for this host),
 /// in a block, an inline module or a module of `lib.rs`, and its line shows the `cfg`. A
 /// block under a `cfg` that is in no default build (`test`, `spike-native`, `all(test, ..)`),
-/// and a file of a module that `lib.rs` gates so (`tests`, `native`), add none.
+/// and a file of a module that `lib.rs` gates so (`tests`), add none.
 #[test]
 fn a_new_isolate_method_is_a_new_line() {
     let mut files = sources();
@@ -2190,11 +2190,9 @@ fn a_new_isolate_method_is_a_new_line() {
         "probe_debug.rs".to_string(),
         "impl crate::Isolate {\n    pub fn debug_raw(&self) -> Value {}\n}\n".to_string(),
     ));
-    assert!(
-        sources()
-            .iter()
-            .all(|(p, _)| !p.starts_with("tests/") && p != "native.rs")
-    );
+    assert!(sources().iter().all(|(p, _)| !p.starts_with("tests/")));
+    // `native.rs` is in every build since M7-P3 (C-10): it is read, and adds no line.
+    assert!(sources().iter().any(|(p, _)| p == "native.rs"));
     let (gone, new) = diff(&golden_lines(), &extract(&files));
     assert!(gone.is_empty(), "{gone:?}");
     let mut want = [

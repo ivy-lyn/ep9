@@ -17,9 +17,9 @@
 //! native-slotted or (b) callee of another realm runs nested in its realm too
 //! (`native::call_in_its_realm`).
 //!
-//! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
-//! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
-//! natively. The default build has no such branch. Two places enter it:
+//! Native code (`native.rs`): a call of a FUNCTION with a Baseline or AotBaseline slot (no
+//! construct, not host, not a class ctor) is entered natively: in every build late in
+//! `do_call` (`call_native_cold`; MC-w30-2), and with `spike-native` first at two places:
 //!
 //! ```text
 //! slow::call --enter, interrupt poll--> native_entry: unprefixed CallAnyReceiver, CallProperty,
@@ -32,7 +32,7 @@
 use ep9_value::Throw;
 
 use crate::bound;
-use crate::call::{self, ArgBuf, CallSite};
+use crate::call::{self, ArgBuf, CallSite, ForwardList};
 use crate::conv::{Res, describe};
 use crate::error::{self, not_implemented, stack_overflow, throw_error};
 use crate::feedback;
@@ -66,16 +66,16 @@ pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {
         feedback::ensure(cx.rt(), cx.feedback_threshold, super::info(fp));
     }
     #[cfg(feature = "spike-native")]
-    // SAFETY: `pc` is the call instruction (or its prefix) of verified code in the live top
-    // frame `fp`, which bytecode runs with no scratch area (call.rs).
+    // SAFETY: `pc` is a call (or its prefix) of verified code in the live top frame `fp` (call.rs).
     if let Some(r) = unsafe { native_entry(cx, fp, pc) } {
         return match r {
             Ok(v) => v,
             Err(Throw) => error::unwind(cx, fp, pc),
         };
     }
-    let site = call::decode_call(fp, pc);
-    match do_call(cx, fp, &site, acc) {
+    // SAFETY: as above (bytecode runs with no scratch area); M7-P0 CALLHOST: a host callee.
+    let r = unsafe { host_entry(cx, fp, pc) };
+    match r.unwrap_or_else(|| do_call(cx, fp, &call::decode_call(fp, pc), acc)) {
         Ok(v) => v,
         Err(Throw) => error::unwind(cx, fp, pc),
     }
@@ -290,7 +290,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         });
     }
     if !runs_bytecode(fi) {
-        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+        return call_native_cold(cx, fp, s, callee, this, argc, &args); // MC-w30-2
     }
     // GC point: the callee, the receiver and the arguments are in caller registers (for a
     // bound callee: its target, bound `this` and bound arguments are reachable from it).
@@ -690,4 +690,362 @@ fn construct_other(
 #[inline]
 fn runs_bytecode(fi: &FunctionInfo) -> bool {
     fi.is_bytecode() && fi.slot.kind_byte() == crate::dispatch::DispatchKind::Interp as u8
+}
+
+// ---- host callees: the decode-free entry and the forwarded calls (M7-P0 CALLHOST) ----------
+//
+// ```text
+// slow::call ──> host_entry: unprefixed CallAnyReceiver, CallProperty, CallProperty0-2,
+//   CallUndefinedReceiver, CallUndefinedReceiver0-2 of a host callee; operands read at their
+//   fixed places, no decode_call, no Vec (as native_entry, M2-P3-D21-ENTRY)
+//     ──> forward: the callee is the realm's %Function.prototype.apply% or
+//         %Function.prototype.call%, its `this` a bytecode function of this realm, and the
+//         list (apply) undefined, null, an unmodified arguments object or a packed Array:
+//         push the bytecode frame from the source, in this dispatch run (H20-Q3 rest)
+//     ──> anything else: call::call_host, as do_call does
+//   ──> anything else: decode_call ──> do_call (a prefixed, spread or bound call of apply or
+//       call runs the builtin)
+// ```
+//
+// Both are human fast paths (FASTDIFF): `Cx::set_human_fast_paths(false)` turns them off, and
+// every call then takes `decode_call`, `do_call` and the host function.
+//
+// M7-P4 LEVER-3: the T0 call fast path takes most forwarded calls before they come here
+// (`call::forward_frame`: the same tests, with no call, no GC point and no throw; not on
+// x86-64, where every forward comes here); `forward` takes the rest: a mapped arguments object, an Array with a hole or a double list, the call
+// that makes the callee's feedback vector, a call whose sampled call record is due
+// (`profile::record_call`), a budget at 0 (after the poll), a full VM stack (the RangeError),
+// and every call while some isolate has its human fast paths off.
+
+/// The 9 opcodes of the decode-free entries: the bytes CallAnyReceiver ..=
+/// CallUndefinedReceiver2, in this order. At single scale every operand of each is one byte,
+/// so operand `i` is at `pc + 1 + i` (checked at compile time below).
+const FIXED_FIRST: u8 = ep9_bytecode::Opcode::CallAnyReceiver as u8;
+const FIXED_LAST: u8 = ep9_bytecode::Opcode::CallUndefinedReceiver2 as u8;
+const _: () = {
+    use ep9_bytecode::{Opcode as O, OperandScale};
+    let ops = [
+        O::CallAnyReceiver,
+        O::CallProperty,
+        O::CallProperty0,
+        O::CallProperty1,
+        O::CallProperty2,
+        O::CallUndefinedReceiver,
+        O::CallUndefinedReceiver0,
+        O::CallUndefinedReceiver1,
+        O::CallUndefinedReceiver2,
+    ];
+    assert!(FIXED_LAST - FIXED_FIRST + 1 == ops.len() as u8);
+    let mut i = 0;
+    while i < ops.len() {
+        let info = ops[i].info();
+        assert!(ops[i] as u8 == FIXED_FIRST + i as u8);
+        assert!(info.size(OperandScale::Single) == 1 + info.operands.len());
+        i += 1;
+    }
+    // CallAnyReceiver and CallProperty have the same operands, so the same length.
+    assert!(
+        O::CallAnyReceiver.info().size(OperandScale::Single)
+            == O::CallProperty.info().size(OperandScale::Single)
+    );
+};
+
+/// A call of one of the 9 fixed-operand opcodes, read at the fixed places: the receiver, the
+/// argument count and where the arguments are.
+struct Fixed {
+    this: u64,
+    argc: u32,
+    /// Argument `i` is in slot `list + i` (a register list); `None`: in slot `regs[i]`.
+    list: Option<isize>,
+    regs: [isize; 2],
+    /// The next instruction.
+    next: *const u8,
+}
+
+impl Fixed {
+    /// Argument `i` (`i < argc`), read from the frame `fp`.
+    ///
+    /// # Safety
+    /// `fp` is the live frame of the instruction this was read from.
+    #[inline(always)]
+    unsafe fn arg(&self, fp: *mut u64, i: u32) -> u64 {
+        let s = match self.list {
+            Some(first) => first + i as isize,
+            None => self.regs[i as usize],
+        };
+        // SAFETY: a slot named by a register operand (or the list with its count) of the
+        // verified instruction, in the live frame `fp` (caller contract).
+        unsafe { *fp.offset(s) }
+    }
+}
+
+/// The decode-free entry of a host callee (M7-P0 CALLHOST; the spike-native `native_entry`
+/// form for builtins): an unprefixed `CallAnyReceiver`, `CallProperty`, `CallProperty0`-`2`,
+/// `CallUndefinedReceiver` or `CallUndefinedReceiver0`-`2` whose callee is a host FUNCTION.
+/// It reads the operands at their fixed single-scale places and the arguments straight from
+/// the caller's registers: no `decode_call`, no `CallSite`, no `ArgBuf`. Then [`forward`]
+/// or `call::call_host`, with the receiver, arguments, return pc and result that `do_call`
+/// gives them, and the realm switch of `call_host`.
+///
+/// Everything else returns `None` with no state changed, and takes `decode_call` and
+/// `do_call`: a `Wide`/`ExtraWide` call (`pc` is at the prefix byte), `CallWithSpread`,
+/// `Construct*`, any callee that is not a host FUNCTION (bytecode, bound, proxy, not
+/// callable), and every call while the human fast paths are off.
+///
+/// # Safety
+/// `pc` is the call instruction (or its prefix) of verified code in the live top frame `fp`,
+/// and no scratch Values lie above that frame.
+#[inline(always)]
+unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64>> {
+    use crate::interp::dsl::R;
+    use ep9_bytecode::{Opcode as O, OperandScale};
+
+    // SAFETY: caller contract: `pc` is a byte of verified code.
+    let op = unsafe { *pc };
+    if !(FIXED_FIRST..=FIXED_LAST).contains(&op) {
+        return None;
+    }
+    // SAFETY: operand `i` of one of the 9 call opcodes (checked above); the verifier checked
+    // that the whole instruction lies in the code.
+    let byte = |i: usize| unsafe { *pc.add(1 + i) };
+    let reg = |i: usize| R::from_operand(i32::from(byte(i) as i8)).0;
+    // SAFETY: slots named by register operands of this verified instruction (and each list
+    // with its count), which lie in the live frame `fp`.
+    let rd = |s: isize| unsafe { *fp.offset(s) };
+    // Operand 0 is the callee in all 9.
+    let callee = rd(reg(0));
+    if !object::is_function(callee) {
+        return None;
+    }
+    let fi = object::function_info(callee);
+    if fi.host.is_none() || !call::human_fast_paths(cx.rt()) {
+        return None;
+    }
+    #[cfg(test)]
+    call::HOST_ENTRY_HITS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(0);
+    let len = |o: O| pc.wrapping_add(o.info().size(OperandScale::Single));
+    // Register lists hold locals only, so the list operand is the slot offset itself.
+    let first = isize::from(byte(1) as i8);
+    let mut f = Fixed {
+        this: UNDEFINED,
+        argc: 0,
+        list: None,
+        regs: [0; 2],
+        next: len(O::CallProperty),
+    };
+    const CALL_ANY_RECEIVER: u8 = O::CallAnyReceiver as u8;
+    const CALL_PROPERTY: u8 = O::CallProperty as u8;
+    const CALL_PROPERTY0: u8 = O::CallProperty0 as u8;
+    const CALL_PROPERTY1: u8 = O::CallProperty1 as u8;
+    const CALL_PROPERTY2: u8 = O::CallProperty2 as u8;
+    const CALL_UNDEFINED: u8 = O::CallUndefinedReceiver as u8;
+    const CALL_UNDEFINED0: u8 = O::CallUndefinedReceiver0 as u8;
+    const CALL_UNDEFINED1: u8 = O::CallUndefinedReceiver1 as u8;
+    match op {
+        // The list holds the receiver, then the arguments; count 0: no receiver.
+        CALL_ANY_RECEIVER | CALL_PROPERTY => {
+            let n = u32::from(byte(2));
+            if n > 0 {
+                (f.this, f.argc, f.list) = (rd(first), n - 1, Some(first + 1));
+            }
+        }
+        CALL_PROPERTY0 => (f.this, f.next) = (rd(reg(1)), len(O::CallProperty0)),
+        CALL_PROPERTY1 => {
+            (f.this, f.argc, f.next) = (rd(reg(1)), 1, len(O::CallProperty1));
+            f.regs[0] = reg(2);
+        }
+        CALL_PROPERTY2 => {
+            (f.this, f.argc, f.next) = (rd(reg(1)), 2, len(O::CallProperty2));
+            f.regs = [reg(2), reg(3)];
+        }
+        CALL_UNDEFINED => {
+            (f.argc, f.list) = (u32::from(byte(2)), Some(first));
+            f.next = len(O::CallUndefinedReceiver);
+        }
+        CALL_UNDEFINED0 => f.next = len(O::CallUndefinedReceiver0),
+        CALL_UNDEFINED1 => {
+            (f.argc, f.next) = (1, len(O::CallUndefinedReceiver1));
+            f.regs[0] = reg(1);
+        }
+        // CallUndefinedReceiver2 (the range check above).
+        _ => {
+            (f.argc, f.next) = (2, len(O::CallUndefinedReceiver2));
+            f.regs = [reg(1), reg(2)];
+        }
+    }
+    // SAFETY: `f` was read from this verified instruction of the live frame `fp`.
+    let arg = |i: u32| unsafe { f.arg(fp, i) };
+    if let Some(r) = forward(cx, fp, f.next, callee, f.this, f.argc, arg) {
+        return Some(r);
+    }
+    let r = call::call_host(cx, callee, fi, f.this, f.argc, arg, UNDEFINED, fp, f.next);
+    if r.is_ok() {
+        cx.out_fp = fp;
+        cx.out_pc = f.next;
+    }
+    Some(r)
+}
+
+/// The forwarded call (M7-P0 CALLHOST; H20-Q3 rest, MC-P1-APPLY): a call of the current
+/// realm's `%Function.prototype.apply%` or `%Function.prototype.call%` (`callee`; each builtin
+/// records itself there when it first runs, `Cx::forward_apply`, `Cx::forward_call`) whose
+/// `this` is a bytecode function of this realm pushes that function's frame right here, as
+/// `do_call` pushes a bytecode callee: return pc `next`, the dispatch goes on at its first
+/// instruction in this run, and the host function never runs. No host frame, no list, no
+/// nested dispatch run. The steps it skips have no observable effect in the cases it takes:
+///
+/// | Builtin step (§20.2.3.1, §20.2.3.3) | Here |
+/// |---|---|
+/// | IsCallable(func) | `func` is a bytecode FUNCTION, not a class constructor (`call::forward_target`) |
+/// | `apply`: argArray undefined or null: Call(func, thisArg) | 0 arguments |
+/// | `apply`: CreateListFromArrayLike(argArray) | an arguments object with its realm's initial shape (`arguments::unmodified_length`: `length` is its own int32 data property in field 0) and an element at each index below it, or an Array with an element at each index below its `length` (`call::forward_list`): each Get reads an own data property, so no getter, proxy trap or conversion runs; a mapped index reads its parameter |
+/// | `call`: the arguments after thisArg | the call's own registers |
+/// | Call(func, thisArg, args), OrdinaryCallBindThis | `call::try_bind_this`; a sloppy callee with a primitive thisArg takes the builtin (its wrap) |
+///
+/// Any other case returns `None` with no state changed, and the caller calls the host
+/// function, which takes its spec steps (CreateListFromArrayLike in its order). As V8's
+/// `CallOrConstructWithArrayLike` reads an unmodified arguments object in place
+/// (`builtins-call-gen.cc:235-241`) and QuickJS's `build_arg_list` a fast array
+/// (`quickjs.c:42338`), the arguments go straight from the source into the callee frame.
+///
+/// What it keeps from the builtin path: the feedback count of the callee (a GC point: `func`,
+/// thisArg and the list stay rooted in the caller's registers; the heap does not move cells,
+/// so the checks above still hold), one budget unit, also when the frame does not fit (R3-2),
+/// and the RangeError of a full VM stack. A deep recursion through `apply` or `call` fills the
+/// VM stack instead of the native one; both throw the same RangeError. The error stack is the
+/// same: host frames are not in it (`error::capture`).
+#[inline(always)]
+fn forward(
+    cx: &mut Cx,
+    fp: *mut u64,
+    next: *const u8,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Option<Res<u64>> {
+    use crate::builtins::{IntrinsicId, intrinsic};
+    let rt = cx.rt();
+    let apply = callee == intrinsic(rt, IntrinsicId::FunctionPrototypeApply);
+    if !apply && callee != intrinsic(rt, IntrinsicId::FunctionPrototypeCall) {
+        return None;
+    }
+    if !call::human_fast_paths(rt) {
+        return None;
+    }
+    let func = this;
+    let fi = call::forward_target(cx, func)?;
+    let this_arg = if argc > 0 { arg(0) } else { UNDEFINED };
+    let this_arg = call::try_bind_this(fi, this_arg, rt.global())?;
+    let r = if apply {
+        let list = if argc > 1 { arg(1) } else { UNDEFINED };
+        match call::forward_list(cx, list)? {
+            ForwardList::Arguments(src, n) => {
+                push_forwarded(cx, fp, next, func, fi, this_arg, n, |i| src.get(i))
+            }
+            ForwardList::Array(n) => push_forwarded(cx, fp, next, func, fi, this_arg, n, |i| {
+                object::array_get(list, i).unwrap_or(UNDEFINED)
+            }),
+        }
+    } else {
+        push_forwarded(
+            cx,
+            fp,
+            next,
+            func,
+            fi,
+            this_arg,
+            argc.saturating_sub(1),
+            |i| arg(i + 1),
+        )
+    };
+    #[cfg(test)]
+    call::FORWARDED_CALLS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(if apply { 1 } else { 2 });
+    Some(r)
+}
+
+/// The frame push of [`forward`]: Call(`func`, `this`, the `n` arguments that `arg` reads)
+/// as `do_call` makes it for a bytecode callee. GC point (the feedback count) before the push;
+/// `arg` reads after it.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn push_forwarded(
+    cx: &mut Cx,
+    fp: *mut u64,
+    next: *const u8,
+    func: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    n: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    // GC point: `func`, thisArg and the list are in caller registers; `this` is one of them
+    // or the global object.
+    feedback::count_call(cx.rt(), cx.feedback_threshold, fi);
+    // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
+    // with no scratch area), and `arg` reads Values the caller keeps rooted.
+    let nfp = unsafe {
+        call::push_frame(
+            frame_top(fp),
+            cx.stack_limit,
+            fi,
+            func,
+            this,
+            n,
+            arg,
+            fp,
+            next,
+            object::function_context(func),
+            UNDEFINED,
+        )
+    };
+    // One unit per call, also when the frame does not fit (R3-2), as in `do_call`.
+    cx.budget -= 1;
+    let Some(nfp) = nfp else {
+        return stack_overflow(cx);
+    };
+    cx.out_fp = nfp;
+    cx.out_pc = fi.code;
+    Ok(UNDEFINED)
+}
+
+/// The `!runs_bytecode` arm of [`do_call`]'s call path (M7-P5 A2-RW, route MC-w30-2): native
+/// code (an AotBaseline unit function or a Baseline slot) that T0's `call_fast` sent cold is
+/// entered here, nested, with its frame above the caller's registers and the return pc of the
+/// next instruction (the `native.rs` T0 entry). No feedback count (`native.rs` module doc).
+/// Any other kind throws "not implemented". (At the end of the file, so no cited line moves.)
+fn call_native_cold(
+    cx: &mut Cx,
+    fp: *mut u64,
+    s: &CallSite,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    args: &[u64],
+) -> Res<u64> {
+    let Some(nfi) = crate::native::native_callee(callee) else {
+        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+    };
+    // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
+    // with no scratch area), `args` holds valid Value bits that the push copies before any GC
+    // point, and `native_callee` checked the native slot.
+    let r = unsafe {
+        crate::native::enter_native(
+            cx,
+            frame_top(fp),
+            fp,
+            s.next_pc,
+            callee,
+            nfi,
+            this,
+            argc,
+            |i| args[i as usize],
+        )
+    };
+    // After the call: a nested dispatch under native code (`call_any`) sets them too.
+    cx.out_fp = fp;
+    cx.out_pc = s.next_pc;
+    r
 }

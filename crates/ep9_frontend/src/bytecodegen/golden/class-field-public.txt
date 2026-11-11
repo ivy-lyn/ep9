@@ -1,6 +1,6 @@
 # class-field-public: script (sloppy)
 # | class A { x = 1; y; 'z' = () => 1; 1 = function() {}; 1.5 = 2; static s = this; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=81 source=embedded hints=none
 source_hash=65d3554072b69be0bc2101cbb7d6e67964159093396fc142d5f53eb003f017ee
 strings (6):
@@ -19,32 +19,27 @@ scopes (7):
   scope5 function outer=scope3 flags=[strict] slots=[]
   scope6 function outer=scope1 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..81
-  code (69 bytes):
+  code (60 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> LdaTheHole                                   ; 07
       6    Star r2                                      ; 0c 02
       8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
      12    Star r1                                      ; 0c 01
      14 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
-     19    Star r3                                      ; 0c 03
-     21    Ldar r1                                      ; 0b 01
-     23    Star r0                                      ; 0c 00
-     25 E> CreateClosure k1, s1, #0x00  ; k1 = Function f2 ; 74 01 01 00
-     29    Star r4                                      ; 0c 04
-     31    Mov r1, r5                                   ; 0d 01 05
-     34    Mov r4, r6                                   ; 0d 04 06
-     37 E> CallRuntime SetClassFieldsInitializer, r5-r6 ; 68 18 00 05 02
-     42 E> CreateClosure k2, s2, #0x00  ; k2 = Function f5 ; 74 02 02 00
-     46    Star r5                                      ; 0c 05
-     48 E> CallProperty0 r5, r1, s3                     ; 60 05 01 03
-     52    Ldar r1                                      ; 0b 01
-     54    Star r2                                      ; 0c 02
-     56    LdaConstant k3  ; k3 = String str0 "A"       ; 0a 03
-     58    Star r1                                      ; 0c 01
-     60 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
-     65    Ldar r2                                      ; 0b 02
-     67    LdaUndefined                                 ; 05
-     68    Return                                       ; 92
+     19    Mov r1, r0                                   ; 0d 01 00
+     22 E> CreateClosure k1, s1, #0x00  ; k1 = Function f2 ; 74 01 01 00
+     26    Star r6                                      ; 0c 06
+     28    Mov r0, r5                                   ; 0d 00 05
+     31 E> CallRuntime SetClassFieldsInitializer, r5-r6 ; 68 18 00 05 02
+     36 E> CreateClosure k2, s2, #0x00  ; k2 = Function f5 ; 74 02 02 00
+     40    Star r5                                      ; 0c 05
+     42 E> CallProperty0 r5, r1, s3                     ; 60 05 01 03
+     46    LdaConstant k3  ; k3 = String str0 "A"       ; 0a 03
+     48    Star r1                                      ; 0c 01
+     50    Mov r0, r2                                   ; 0d 00 02
+     53 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     58    LdaUndefined                                 ; 05
+     59    Return                                       ; 92
   constants (4):
       0 Function f1
       1 Function f2
@@ -61,11 +56,11 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 S 0 (1:1)
       8 E 0 (1:1)
      14 E 0 (1:1)
-     25 E 0 (1:1)
-     37 E 8 (1:9)
-     42 E 0 (1:1)
-     48 E 8 (1:9)
-     60 E 0 (1:1)
+     22 E 0 (1:1)
+     31 E 8 (1:9)
+     36 E 0 (1:1)
+     42 E 8 (1:9)
+     53 E 0 (1:1)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=0..81
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e

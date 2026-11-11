@@ -36,18 +36,18 @@
 //! its cold body (which runs only after the fast body returned `Flow::Cold`, `interp::dsl`).
 //!
 //! **No record code in a fast handler (M4-P1 PROFILE-X64).** A record inlined into a fast
-//! handler made x86-64 LLVM save 1-4 callee-saved registers on entry to 22 handlers (and one
-//! more on 2 call handlers per x64 target), on every execution, also on the implicit int32
-//! paths that record nothing: up to +9% instructions on the T0 kernels, while aarch64 (18
-//! scratch registers) did not change. A plain `#[cold]` out-of-line call made it worse (a
-//! call forces the frame). So a fast body that must record finishes its result and returns
-//! one of three `interp::Flow` values; the sibling handler then tail-calls an out-of-line
-//! function with the handler's state that records and dispatches (`interp::dsl`):
+//! handler made x86-64 LLVM save 1-4 callee-saved registers on entry to 22 handlers (and 1
+//! more on 2 call handlers per x64 target), on every execution, also on the int32 paths that
+//! record nothing: up to +9% instructions on the T0 kernels; a `#[cold]` call was worse. On
+//! aarch64 an inline record saves no register, but LLVM then merges the dispatch tails and the
+//! int32 paths run 1 more instruction (M7-P2 RECCOST: crypto +0.6%). So a fast body that must
+//! record returns one of three `interp::Flow` values, and the sibling handler tail-calls an
+//! out-of-line function with its state that records and dispatches (`interp::dsl`):
 //!
 //! | Flow | Fast bodies | Record (sibling: tail-called function) |
 //! |---|---|---|
-//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next`: it reads the slot operand again from the bytecode) |
-//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next`: it gets the pair) |
+//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next::<PLACE>`: it reads the slot operand at its constant offset) |
+//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<PLACE>`: it gets the pair) |
 //! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
 //!
 //! The match loop, `become` and the prefixed step record inline (`Flow::recorded`).
@@ -136,7 +136,7 @@ use core::ptr::NonNull;
 
 use ep9_facts::{BinaryHint, CompareHint, ForInHint, KeySet, TypeSet};
 use ep9_heap::{CellPtr, Slot};
-use ep9_value::encoding::NUMBER_TAG;
+use ep9_value::encoding::{NUMBER_TAG, OTHER_TAG};
 use ep9_value::{Value, Word0};
 
 use crate::conv::BinOp;
@@ -376,9 +376,9 @@ fn add_bits(st: &St<'_>, s: FSlot, bits: u32) {
 
 /// A record that a fast body leaves to its dispatch (`interp::Flow::Record`): add `bits` to the
 /// int32 value half of one slot. The fast body only computes the bits; [`record`] runs after
-/// it, in `interp::dsl::record_next` (the sibling expansion: an out-of-line function that the
-/// handler reaches by a tail call, so the handler itself has no record code and, on x86-64,
-/// saves no register on entry) or inline (the match loop, `become`, prefixed instructions).
+/// it, in `interp::dsl::record_next` (the sibling expansion: a tail-called out-of-line
+/// function, so the handler has no record code and saves no register on entry) or inline (the
+/// match loop, `become`, prefixed instructions).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Rec(u64);
 
@@ -390,19 +390,18 @@ impl Rec {
         Rec((u64::from(s.0) << 32) | u64::from(bits))
     }
 
-    /// The bits and `place` (the instruction's `interp::dsl::slot_place`: where its slot
-    /// operand lies and its length) as one register-wide word: the last argument of
-    /// `interp::dsl::record_next`. The slot index is left out, so a handler keeps no register
-    /// for it.
+    /// The bits: the last argument of `interp::dsl::record_next` (M7-P2 RECCOST). Its const
+    /// parameter (the instruction's `interp::dsl::slot_place`) says where the slot operand
+    /// lies, so `record_next` reads it again at a constant offset and decodes no word, and a
+    /// handler keeps no register for the slot index.
     #[inline(always)]
-    pub(crate) fn sib_word(self, place: u64) -> u64 {
-        (place << 32) | (self.0 & 0xFFFF_FFFF)
+    pub(crate) fn bits(self) -> u64 {
+        self.0 & 0xFFFF_FFFF
     }
 }
 
 /// A comparison record that a fast body leaves to its dispatch (`interp::Flow::RecordPair`):
-/// the operand pair, whose class ([`compare_bits`]) needs cell reads, so it is computed after
-/// the fast body, in `interp::dsl::record_pair_next` (sibling expansion) or inline.
+/// the operand pair. Its class ([`compare_bits`]) needs cell reads, so it runs after the body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Pair {
     s: FSlot,
@@ -416,7 +415,8 @@ impl Pair {
         Pair { s, l, r }
     }
 
-    /// The pair (the slot is left out: `record_pair_next` reads its operand again).
+    /// The pair, for `interp::dsl::record_pair_next`, which reads the slot operand again at
+    /// its constant offset (as for [`Rec::bits`]).
     #[inline(always)]
     pub(crate) fn operands(self) -> (u64, u64) {
         (self.l, self.r)
@@ -606,29 +606,29 @@ pub(crate) fn record_unary(st: &mut St<'_>, s: FSlot, v: u64) {
 
 // ---- CompareOp -----------------------------------------------------------------------------
 
-/// The `CompareHint` class of one operand.
-#[inline(always)]
-fn compare_operand(v: u64) -> u16 {
-    let h = if is_i32(v) {
-        CompareHint::INT32
-    } else if is_number(v) {
-        CompareHint::NUMBER
-    } else if is_bool(v) {
-        CompareHint::BOOLEAN
-    } else if is_nullish(v) {
-        CompareHint::NULLISH
-    } else {
-        match kinds::cell_kind(v) {
-            1..=7 if string::is_atom(v) => CompareHint::ATOM,
+/// The `CompareHint` class of each cell kind byte (0-255), for [`compare_operand`]: `STRING`
+/// for the string kinds 1-7 (an atom is `ATOM`: the caller tests its flag), `SYMBOL` 8,
+/// `BIGINT` 9, `RECEIVER` 16-63, else `OTHER` (kinds 0, 10-15 and 64-255 hold no JS value).
+/// One load: no compare chain, and no extra register in x86-64 `record_pair_next` (M7-P2
+/// RECCOST; the notes at the end of this file).
+static KIND_CLASS: [CompareHint; 256] = {
+    let mut t = [CompareHint::OTHER; 256];
+    let mut k = 0;
+    while k < 256 {
+        t[k] = match k {
+            // The cell classes of the old test chain of `compare_operand` (the oracle of
+            // `tests::feedback`), with the string kinds as `STRING`: the atom flag is a
+            // field of each string, not of its kind.
+            16..=63 => CompareHint::RECEIVER,
             1..=7 => CompareHint::STRING,
             8 => CompareHint::SYMBOL,
             9 => CompareHint::BIGINT,
-            16..=63 => CompareHint::RECEIVER,
             _ => CompareHint::OTHER,
-        }
-    };
-    h.bits()
-}
+        };
+        k += 1;
+    }
+    t
+};
 
 /// The `CompareHint` bits of a pair: the class both share; `NUMBER` for an int32 and a
 /// double; `STRING` for an atom and another string; `RECEIVER | NULLISH` for an object and
@@ -1038,3 +1038,48 @@ fn compare_record(st: &St<'_>, s: FSlot, l: u64, r: u64) {
         add_bits(st, s, bits);
     }
 }
+
+// ---- CompareOp: the class of one operand (M7-P2 RECCOST) ------------------------------------
+//
+// RECCOST changed how `compare_operand` finds a class, not the classes: the old test chain is
+// the oracle of `tests::feedback` (every pair of numbers, immediates, real cells and fake cells
+// of all 256 kind bytes). It reads the 15 tag bits as `v >> 49` (all ones: an int32; not 0: a
+// double; 0: a cell or an immediate), so it holds no 64-bit constant in a register. It classes
+// an immediate by `| 8` (null, undefined) and `| 1` (false, true), not by a bit test with a
+// variable shift: x86-64 has one shift-count register, `rcx`, and the handler state holds it,
+// so the old chain made x86-64 `record_pair_next` save 3 registers on every call (it saves
+// none now). A cell: one read of its kind byte, then [`KIND_CLASS`] (the old chain read the
+// kind twice: the header fields are atomics, which LLVM does not merge).
+
+/// The `CompareHint` class of one operand (the RECCOST form above).
+#[inline(always)]
+fn compare_operand(v: u64) -> u16 {
+    let h = match v >> 49 {
+        0x7FFF => CompareHint::INT32,
+        0 if v & OTHER_TAG != 0 => match v | 8 {
+            UNDEFINED => CompareHint::NULLISH,
+            _ if v | 1 == TRUE => CompareHint::BOOLEAN,
+            _ => CompareHint::OTHER,
+        },
+        0 => {
+            // SAFETY: a cell Value held by the VM is live (crate invariant, object.rs).
+            let w = unsafe { cell_ptr(v).header() };
+            let c = KIND_CLASS[usize::from(w.kind())];
+            if c == CompareHint::STRING && w.flags() & kinds::FLAG_ATOM != 0 {
+                CompareHint::ATOM
+            } else {
+                c
+            }
+        }
+        _ => CompareHint::NUMBER,
+    };
+    h.bits()
+}
+
+const _: () = {
+    use ep9_value::encoding::NOT_CELL_MASK;
+    assert!(NUMBER_TAG == 0x7FFF << 49 && NOT_CELL_MASK == NUMBER_TAG | OTHER_TAG);
+    assert!(NULL & OTHER_TAG != 0 && FALSE & OTHER_TAG != 0 && UNDEFINED & OTHER_TAG != 0);
+    assert!(FALSE | 1 == TRUE && TRUE | 1 == TRUE && NULL | 8 == UNDEFINED);
+    assert!(UNDEFINED | 8 == UNDEFINED && HOLE | 1 != TRUE && HOLE | 8 != UNDEFINED);
+};

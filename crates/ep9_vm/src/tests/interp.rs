@@ -503,3 +503,224 @@ fn sample_unit_of_ep9_bytecode_runs() {
         assert_eq!(out[0].split(' ').nth(1), Some("1"), "{}: {out:?}", d.name());
     }
 }
+
+// ---- MC-w34-6: prefixed jumps and their feedback on each arch (M7-P5 Q6 DISPATCH) ----------
+
+/// The runs of `interp::scaled::step` and `step_cold` on this thread so far.
+fn scaled_runs() -> [u64; 2] {
+    crate::interp::dsl::SCALED_RUNS.with(|c| c.get())
+}
+
+/// `let i = 0; while (i < 3) { if (false) { <far bytes> } i++; } print(i); return i;` with the
+/// three jumps over the `far` bytes (one-byte `LdaZero` instructions that never run):
+/// `JumpIfFalse` (to the loop exit), `Jump` (over the bytes) and `JumpLoop` (back to the loop
+/// header).
+fn far_jumps_unit(far: usize) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let i = s.b.new_register();
+    s.b.lda_zero().star(i);
+    let header = s.b.bound_label();
+    let (exit, skip) = (s.b.new_label(), s.b.new_label());
+    s.b.lda_smi(3).test_less_than(i, s.cmp).jump_if_false(exit);
+    s.b.jump(skip);
+    for _ in 0..far {
+        s.b.lda_zero();
+    }
+    s.b.bind(skip);
+    s.b.ldar(i).inc(s.bin).star(i);
+    s.b.jump_loop(header, 0, s.loop_);
+    s.b.bind(exit);
+    s.b.ldar(i);
+    s.print_acc();
+    s.b.ldar(i).return_();
+    unit("", vec![s.finish()])
+}
+
+/// MC-w34-6 (2) (V8 0b4d4612c8: an ExtraWide `JumpLoop` offset that the interpreter and the
+/// verifier read with different signs). The jumps of [`far_jumps_unit`] with 70,000 bytes
+/// have offsets past 64 KiB, so each is an `ExtraWide` instruction (a 4-byte offset); with
+/// 40,000 bytes each is a `Wide` instruction whose 2-byte offset has its top bit set, so a
+/// decoder that sign-extends it jumps to the wrong place. Node prints 3 for the same script.
+/// On aarch64 the `Wide` and `ExtraWide` fast bodies run all three (`ops.rs`
+/// `prefix_runs_fast`): no run of `interp::scaled::step`. Elsewhere each runs in `step`: 3 per
+/// loop turn and the exit `JumpIfFalse`. Every expansion, with and without GC stress.
+#[test]
+fn extra_wide_jumps_over_64_kib() {
+    use ep9_bytecode::{Instructions, Opcode as O, OperandScale as S};
+    for (far, scale) in [(70_000, S::ExtraWide), (40_000, S::Wide)] {
+        let u = far_jumps_unit(far);
+        let code = &u.functions[0].bytecode;
+        let prefixed: Vec<(O, S)> = Instructions::new(code)
+            .map(|i| i.unwrap())
+            .filter(|i| i.scale != S::Single)
+            .map(|i| (i.opcode, i.scale))
+            .collect();
+        assert_eq!(
+            prefixed,
+            [
+                (O::JumpIfFalse, scale),
+                (O::Jump, scale),
+                (O::JumpLoop, scale)
+            ]
+        );
+        // Each offset is past 32 KiB: a 2-byte offset has its top bit set.
+        for i in Instructions::new(code).map(|i| i.unwrap()) {
+            if i.scale != S::Single {
+                assert!(i.operand(0) > 0x8000, "{:?} {}", i.opcode, i.operand(0));
+            }
+        }
+        let steps = if crate::interp::ops::PREFIXED_FAST {
+            0
+        } else {
+            3 * 3 + 1
+        };
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let (r, n) = on_big_stack(move || {
+                    let before = scaled_runs();
+                    let r = super::run_in(config(d, stress), far_jumps_unit(far));
+                    (r, scaled_runs()[0] - before[0])
+                });
+                let label = format!("{far} bytes: {} stress={stress}", d.name());
+                assert_eq!(ok(&r), "3", "{label}");
+                assert_eq!(r.output, ["3"], "{label}");
+                assert_eq!(n, steps, "{label}: the runs of interp::scaled::step");
+            }
+        }
+    }
+}
+
+/// The script of `prefixed_feedback_is_the_same_on_every_arch`: 300 number constants, so the
+/// name `x` (constant 300) needs a `Wide` operand, and a loop body of more than 255 bytes, so
+/// its jumps need one too.
+///
+/// ```text
+/// o = {}; o.x = 2; sum = 0;
+/// for (i = 0; i < 20; i++) {
+///   t = o.x;                       // Wide GetNamedProperty
+///   if (t) {                       // Wide JumpIfToBooleanFalse
+///     sum = sum + t;
+///     d = 0.5 + 1000;              // Wide AddSmi of a double (a NUMBER record)
+///     <300 one-byte instructions>
+///   }
+/// }                                // Wide JumpIfFalse (the exit), Wide JumpLoop
+/// print(sum, d); return sum;        // Wide LdaConstant (0.5) and LdaGlobal (print)
+/// ```
+fn prefixed_feedback_unit() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    for i in 0..300 {
+        s.b.number_constant(f64::from(i));
+    }
+    let kx = s.b.string_constant("x");
+    let half = s.b.number_constant(0.5);
+    let (o, sum, i, t, d) = (
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+    );
+    let add = s.b.feedback_slot(ep9_bytecode::FeedbackSlotKind::BinaryOp);
+    let inc = s.b.feedback_slot(ep9_bytecode::FeedbackSlotKind::BinaryOp);
+    s.b.create_empty_object_literal().star(o);
+    s.b.lda_smi(2).set_named_property(o, kx, s.set_named);
+    s.b.lda_zero().star(sum).lda_zero().star(i);
+    let header = s.b.bound_label();
+    let (exit, skip) = (s.b.new_label(), s.b.new_label());
+    s.b.lda_smi(20).test_less_than(i, s.cmp).jump_if_false(exit);
+    s.b.get_named_property(o, kx, s.named).star(t);
+    s.b.jump_if_to_boolean_false(skip);
+    s.b.ldar(t).add(sum, s.bin).star(sum);
+    s.b.lda_constant(half).add_smi(1000, add).star(d);
+    for _ in 0..300 {
+        s.b.lda_zero();
+    }
+    s.b.bind(skip);
+    s.b.ldar(i).inc(inc).star(i);
+    s.b.jump_loop(header, 0, s.loop_);
+    s.b.bind(exit);
+    s.b.ldar(sum).star(s.a.get(0));
+    s.b.ldar(d).star(s.a.get(1));
+    s.lda_global("print");
+    s.b.star(s.f)
+        .call_undefined_receiver2(s.f, s.a.get(0), s.a.get(1), s.call);
+    s.b.ldar(sum).return_();
+    unit("", vec![s.finish()])
+}
+
+/// The records of the FactSnapshot of [`prefixed_feedback_unit`] (`FactSnapshot::dump` without
+/// its header and unit lines, which name the bytecode ABI and the unit hash).
+const PREFIXED_FACTS: &str = r#"shapes 2
+  s0 proto=intrinsic#0 kind=ordinary elements=packed-int32 flags={extensible} capacity=4 keys=[]
+  s1 proto=intrinsic#0 kind=ordinary elements=packed-int32 flags={extensible} capacity=4 keys=["x" {w,e,c} int32 const]
+records 9
+  f0 slot 0 Call flags={}: count=0 uninitialized [] result={}
+  f0 slot 1 BinaryOp flags={}: {int32}
+  f0 slot 2 CompareOp flags={}: {int32}
+  f0 slot 3 LoadGlobal flags={}: bindings={data-property} values={}
+  f0 slot 5 LoadNamed flags={}: monomorphic [s1 own-field 0] values={}
+  f0 slot 6 StoreNamed flags={}: monomorphic [s0 add-field s1 0] values={}
+  f0 slot 11 JumpLoop flags={}: back-edges=1
+  f0 slot 12 BinaryOp flags={}: {int32,number}
+  f0 slot 13 BinaryOp flags={}: {int32}
+"#;
+
+/// MC-w34-6 (1): the feedback of a prefixed instruction must not depend on the path that runs
+/// it. On aarch64 the `Wide` fast body runs the prefixed GetNamedProperty and jumps
+/// (`ops.rs` `prefix_runs_fast`); x86-64 runs them in `interp::scaled::step`. FASTDIFF compares
+/// printed output only, so this test compares the FactSnapshot records (the slot kinds and
+/// their facts) with one text, [`PREFIXED_FACTS`], on every target that runs it (CI: 4). Every
+/// expansion, with and without GC stress.
+#[test]
+fn prefixed_feedback_is_the_same_on_every_arch() {
+    use ep9_bytecode::{Instructions, Opcode as O, OperandScale as S};
+    let u = prefixed_feedback_unit();
+    let wide: Vec<O> = Instructions::new(&u.functions[0].bytecode)
+        .map(|i| i.unwrap())
+        .filter(|i| i.scale == S::Wide)
+        .map(|i| i.opcode)
+        .collect();
+    assert_eq!(
+        wide,
+        [
+            O::SetNamedProperty,
+            O::JumpIfFalse,
+            O::GetNamedProperty,
+            O::JumpIfToBooleanFalse,
+            O::LdaConstant,
+            O::AddSmi,
+            O::JumpLoop,
+            O::LdaGlobal,
+        ]
+    );
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let (r, out, facts) = on_big_stack(move || {
+                // The type feedback `full`: the exporter keeps the record kinds too.
+                let mut iso = super::profile::isolate(IsolateConfig {
+                    feedback_threshold: 0,
+                    ..config(d, stress)
+                });
+                let u = prefixed_feedback_unit();
+                let hash = u.content_hash();
+                // The budget runs out at a back edge of the loop: the sampled JumpLoop record
+                // (`profile::record_jump_loop`) counts it, in the fast body that runs the
+                // prefixed JumpLoop.
+                iso.cx.budget = 5;
+                take_output();
+                let r = iso
+                    .with_cx_checkpoint(|cx| cx.run_script(u, "facts.js").map(|v| cx.display(v)));
+                let out = take_output();
+                let dump = crate::abi::export_facts(&iso, &hash)
+                    .expect("the unit is loaded")
+                    .dump();
+                let facts: String = dump.lines().skip(2).map(|l| format!("{l}\n")).collect();
+                (r, out, facts)
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert_eq!(r.as_deref(), Ok("40"), "{label}");
+            assert_eq!(out, ["40 1000.5"], "{label}");
+            assert_eq!(facts, PREFIXED_FACTS, "{label}");
+        }
+    }
+}

@@ -46,7 +46,7 @@ fn month_5_versions() {
             versions::DEOPT_META_VERSION,
             ep9_bytecode::ABI_VERSION
         ),
-        (2, 1, 0, 5)
+        (2, 1, 1, 6)
     );
 }
 
@@ -294,7 +294,7 @@ fn h29_value_repr_probe_7() {
 // ---- layout facts on live objects --------------------------------------------------------------
 
 /// The `Cx` offsets (VM_LAYOUT 1) read the live `Cx` of a default-build isolate: the three native
-/// fields exist in every build; `runtime_table` is null without `spike-native`.
+/// fields exist in every build; `runtime_table` is set in every build (M7-P3, MC-w30-8).
 #[test]
 fn the_cx_offsets_read_the_live_cx() {
     let iso = isolate(IsolateConfig::default());
@@ -314,8 +314,8 @@ fn the_cx_offsets_read_the_live_cx() {
         assert_eq!(word(layout::CX_NATIVE_LIMIT), iso.rt.native_limit);
         assert_ne!(word(layout::CX_NATIVE_LIMIT), 0);
         assert_eq!(
-            word(layout::CX_RUNTIME_TABLE) == 0,
-            !cfg!(feature = "spike-native")
+            word(layout::CX_RUNTIME_TABLE),
+            core::ptr::from_ref(&crate::native::RUNTIME_TABLE).addr()
         );
         assert_eq!(word(layout::CX_UNIT_DATA), 0);
         assert_eq!(word(layout::CX_OUT_FP), iso.cx.out_fp.addr());

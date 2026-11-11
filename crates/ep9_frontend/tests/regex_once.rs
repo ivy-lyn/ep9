@@ -145,6 +145,33 @@ fn early_errors_match_the_base_commit() {
     }
 }
 
+/// rx-dupnames (source, class, sorted error span starts): two groups of one name that can
+/// both take part are an early error (MightBothParticipate, ECMA-262 22.2.1.1). oxc 0.155.0
+/// accepted the first 5 rows; oxc 0.157.0 and node v26.13.0 reject them. The span is the
+/// name of the earlier group. The other rows agree with node on both oxc versions.
+const DUPNAMES: &[(&str, Class, &[u32])] = &[
+    ("/(?:(?<a>x)|y)(?:z|(?<a>w))/", Class::Syntax, &[7]),
+    ("/(?<n>a|(?<n>b))/", Class::Syntax, &[4]),
+    ("/(?:a|(?<n>x))(?<n>y)/", Class::Syntax, &[9]),
+    ("/(?<a>x)(?:|(?<a>y))/", Class::Syntax, &[4]),
+    ("/(?<a>x|(?<a>y))/", Class::Syntax, &[4]),
+    // The same names in alternatives that cannot both take part stay valid (node agrees).
+    ("/(?:(?<a>x)|(?<a>y))|(?<a>z)/", Class::Ok, &[]),
+    ("/(?<a>(?<b>x)|(?<b>y))|(?<b>z)/", Class::Ok, &[]),
+    ("/(?<a>x)|[(](?<a>y)/", Class::Ok, &[]),
+    ("/(?i:(?<a>x))|(?<a>y)/", Class::Ok, &[]),
+    ("/(?i:(?<a>x)|y)(?<a>z)/", Class::Syntax, &[8]),
+    ("/[\\q{a|b}](?<a>y)|(?<a>z)/v", Class::Ok, &[]),
+    ("/[\\q{a|b}](?<a>y)(?<a>z)/v", Class::Syntax, &[13]),
+];
+
+#[test]
+fn duplicate_names_that_can_both_take_part_are_syntax_errors() {
+    for &(src, class, spans) in DUPNAMES {
+        assert_eq!(run(src), (class, spans.to_vec()), "{src:?}");
+    }
+}
+
 #[test]
 fn a_fatal_parser_error_hides_earlier_regex_errors() {
     // The one known change: after a fatal parser error oxc gives no tokens, so the regex

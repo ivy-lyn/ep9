@@ -10,13 +10,18 @@
 //
 // The v8-v7 kernels (v8v7.mjs) keep their kernel names (richards, ..., navier-stokes); the
 // Octane-7 kernels (octane.mjs) are octane-<kernel>. SETS names the lists of the M1 exit 2
-// readings (exit2.mjs); run.mjs --workloads takes a set name as well as workload names.
+// readings (exit2.mjs) and of the M2 readings (m2gate.mjs); run.mjs --workloads takes a set name
+// as well as workload names.
+//
+// The TS workload (M2 exit 3, plan v12 V12-D5) is octane-typescript: octane.mjs's 3-file kernel
+// `typescript` with the benchmark's own 5 iterations. Set `ts` = that workload (TSREAD); set `m2`
+// = v8v7-7 + octane-7 + octane-typescript (M2GATE: items 1, 2, 3 and 6; splay is in v8v7-7).
 
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { generate as generateOctane, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
+import { generate as generateOctane, KERNELS as OCTANE_KERNELS, TS_KERNEL } from "./octane.mjs";
 import { DEFAULT_HARNESS, generate, PRINT_PRELUDE, ROOT } from "./v8v7.mjs";
 
 const T0_DIR = "tools/bench/workloads";
@@ -42,15 +47,28 @@ export const WORKLOADS = {
   splay: { v8v7: "splay", classes: ["M", "R"] },
   "navier-stokes": { v8v7: "navier-stokes", classes: ["M", "R"] },
   ...Object.fromEntries(Object.keys(OCTANE_KERNELS).map((k) => [`octane-${k}`, { octane: k, classes: ["M", "R"] }])),
+  [`octane-${TS_KERNEL}`]: { octane: TS_KERNEL, classes: ["M", "R"] },
 };
 
 /** The 8 v8-v7 kernels, the 7 of M1 exit 2 (no regexp) and Octane-7 (M1 exits 1 and 2). */
 export const V8V7_8 = ["richards", "deltablue", "crypto", "raytrace", "earley-boyer", "regexp", "splay", "navier-stokes"];
 export const V8V7_7 = V8V7_8.filter((w) => w !== "regexp");
 export const OCTANE_7 = Object.keys(OCTANE_KERNELS).map((k) => `octane-${k}`);
+/** The TS workload of M2 exit 3. */
+export const TS_WORKLOAD = `octane-${TS_KERNEL}`;
 
-/** Named workload lists for run.mjs --workloads. exit2 = what exit2.mjs reads. */
-export const SETS = { "v8v7-8": V8V7_8, "v8v7-7": V8V7_7, "octane-7": OCTANE_7, exit2: [...V8V7_7, ...OCTANE_7] };
+/**
+ * Named workload lists for run.mjs --workloads. exit2 = what exit2.mjs reads; m2 = what
+ * m2gate.mjs reads; ts = the TS workload alone (TSREAD).
+ */
+export const SETS = {
+  "v8v7-8": V8V7_8,
+  "v8v7-7": V8V7_7,
+  "octane-7": OCTANE_7,
+  exit2: [...V8V7_7, ...OCTANE_7],
+  ts: [TS_WORKLOAD],
+  m2: [...V8V7_7, ...OCTANE_7, TS_WORKLOAD],
+};
 
 /** Workload names and set names -> workload names, in order, without duplicates. */
 export function expandWorkloads(list) {
@@ -58,6 +76,9 @@ export function expandWorkloads(list) {
   for (const x of list) for (const w of SETS[x] ?? [x]) if (!out.includes(w)) out.push(w);
   return out;
 }
+
+/** The G7 memory set of mem.mjs (class Mem): the 7 v8-v7 kernels (02-architecture G7; BENCH10). */
+SETS.mem = V8V7_7;
 
 /** Run 1 (week-4 plan section 11). deltablue joins in run 2, once Function.prototype.call lands. */
 export const DEFAULT_WORKLOADS = ["t0-loop", "t0-branchy", "t0-call", "t0-prop", "ci-v0", "richards"];
@@ -109,6 +130,9 @@ export function materialize(names, dir, { root = ROOT, harness = DEFAULT_HARNESS
         generator: "tools/bench/cross/octane.mjs",
         harness: g.harness,
         harness_blob: g.harness_blob,
+        // A kernel of more than one file (the TS workload) names each file's blob, and where
+        // each file starts in the one script (run.mjs maps an error line back to its file).
+        ...(g.blobs.length > 1 ? { blobs: g.blobs, parts: g.parts } : {}),
       });
     } else {
       put(name, PRINT_PRELUDE + readFileSync(path.join(root, w.file), "utf8"), {

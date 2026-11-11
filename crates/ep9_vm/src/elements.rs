@@ -14,7 +14,7 @@
 //!  2      PACKED_DOUBLE     ┐ raw f64 in an ELEMENTS_DOUBLE cell (kind 81; hole = the NaN
 //!  3      HOLEY_DOUBLE      ┘ 0xFFF7_FFFF_FFF7_FFFF, `object::delems`)
 //!  6      DICTIONARY          an ELEMENTS_DICT cell (kind 82; M5-P2 ELEM2)
-//!  7-15   reserved, append-only (NONEXTENSIBLE, SEALED, FROZEN if built later)
+//!  7-15   reserved, append-only, for storage forms (the levels are flags: `set_integrity`)
 //!  bit 0 = holey (for 0-5)
 //!
 //!  The lattice (a store moves right or down, never back; `join`):
@@ -66,7 +66,7 @@
 //! ([`plain_elements_kind`]), so such a key no longer moves a fast object to dictionary mode
 //! (OM-10). An index key that the elements store cannot hold stays a stored property, as in
 //! v0: an accessor, other attributes (`Object.freeze` moves each element there), an index
-//! [`PLAIN_GAP`] or more past the capacity, or one at or past `object::arr::MAX_LENGTH`.
+//! that [`sparse_growth`] refuses (the gap or the density check), or one at or past `MAX_LENGTH`.
 //! One index key lives in one place: the paths of `property.rs` read the elements first,
 //! then the property storage, and add to the elements only when the storage has no such
 //! key. An int32 key (`o[i] = v`, `property::set_index`, `define_index`) makes the elements
@@ -124,11 +124,11 @@ pub(crate) const fn storage(k: u8) -> Option<Storage> {
     }
 }
 
-/// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, schema 1) of the VM kind `k`, or
-/// `None` for a reserved value (7-15). The two numberings differ at 1-4 (VM: OBJECT_LAYOUT 5,
-/// V10-A21; facts: holey kinds after the packed ones), so every reader converts through this
-/// one map, never a cast (MODES-CHECK-w18 MC-w18-4; the month-6 schema bump either renumbers
-/// `ElementsKind` to the VM order or keeps the map).
+/// The FactSnapshot elements kind (`ep9_facts::ElementsKind`, FACT_SCHEMA 2) of the VM kind
+/// `k`, or `None` for a reserved value (7-15). Since FACT_SCHEMA 2 (M6-P0) the two numberings
+/// are the same (0-6 in the VM order, OBJECT_LAYOUT 5, V10-A21); schema 1 put the holey kinds
+/// after the packed ones, so they differed at 1-4. Every reader still converts through this
+/// one map, never a cast (MODES-CHECK-w18 MC-w18-4), so a later append changes one place.
 pub(crate) const fn to_fact(k: u8) -> Option<ep9_facts::ElementsKind> {
     use ep9_facts::ElementsKind as F;
     match k {
@@ -264,9 +264,9 @@ pub(crate) fn plain_elements_kind(k: u8) -> bool {
 }
 
 /// The largest distance past the capacity at which a new element of an object that is not
-/// an Array still goes to its elements store (H18-Q2's gap, est.); a farther index stays a
-/// stored property, so `o[1e6] = x` allocates no dense range. Arrays keep the v0 rule (dense up
-/// to `object::arr::MAX_LENGTH`) until DICTIONARY (M5-P2 ELEM2).
+/// an Array still goes to its elements store (H18-Q2's gap, est.); a farther index, or one that
+/// the density check of [`sparse_growth`] refuses, stays a stored property, so `o[1e6] = x`
+/// allocates no dense range. Arrays use [`ARRAY_GAP`] and DICTIONARY (M5-P2 ELEM2).
 pub(crate) const PLAIN_GAP: u32 = 1024;
 
 /// Moves the object `o` to elements kind `to` (a store needs it; `to` is more general than
@@ -556,10 +556,10 @@ fn dict_flags(d: CellPtr) -> i32 {
 }
 
 /// True if the Array `a`'s `length` is writable: always, but for a DICTIONARY array whose
-/// cell has [`dict::LENGTH_READONLY`]. Not a GC point.
+/// cell has [`dict::LENGTH_READONLY`], and a FROZEN one ([`is_frozen`]). Not a GC point.
 #[inline]
 pub(crate) fn length_writable(a: u64) -> bool {
-    dict_of(a).is_none_or(|d| dict_flags(d) & dict::LENGTH_READONLY == 0)
+    !is_frozen(a) && dict_of(a).is_none_or(|d| dict_flags(d) & dict::LENGTH_READONLY == 0)
 }
 
 /// Makes the Array `a`'s `length` not writable: the array moves to DICTIONARY first (one
@@ -688,10 +688,10 @@ pub(crate) fn to_dictionary(rt: &Runtime, a: u64) {
         .next_power_of_two()
         .max(dict::MIN_BUCKETS);
     // GC point: `a` lives in a Rust local; the dense cell is reachable from `a`.
-    let d = new_dict_cell(rt, nb, 0);
+    let d = new_dict_cell(rt, nb, level_dict_flags(a));
     for &i in &present {
         let v = object::element_get(a, i).expect("a present element");
-        dict_insert_new(d, i, v, object::attr::DEFAULT, true);
+        dict_insert_new(d, i, v, dense_attrs(a), true);
     }
     // GC point: `a` and `d` live in Rust locals (CSS).
     let ns = match shape::with_elements_kind(rt, shape::shape_of(a), kind::DICTIONARY) {
@@ -733,6 +733,107 @@ pub(crate) fn storage_form_ok(o: u64) -> bool {
         return k != kind::DICTIONARY;
     }
     kinds_::cell_kind(e) == want
+}
+
+/// The cell size (in slots) up to which a dense store that must grow always grows, the gap
+/// rule aside (V8's `kMaxUncheckedFastElementsLength`, 5,000; est.; H18 "elements tuning").
+/// Past it, [`sparse_growth`] checks the density first.
+pub(crate) const DENSE_UNCHECKED: usize = 5_000;
+
+/// How many times the words of a dictionary of the same elements a dense cell may take
+/// before [`sparse_growth`] refuses to grow it (V8's `kPreferFastElementsSizeFactor`, 3;
+/// est.; H18 "elements tuning").
+pub(crate) const SPARSE_FACTOR: usize = 3;
+
+/// The far-index rule of a JS object that is not an Array (H18-Q3; M7-P1 OBJ1, route
+/// OBJ-FARKEY; V8's `ShouldConvertToSlowElements`, `js-objects-inl.h`): true if a new element
+/// `i` of `o`, whose dense store has capacity `cap`, must not grow that store. That is: `i` is
+/// [`PLAIN_GAP`] or more past `cap`, or the grown cell (max(i + 1, 2 × `cap`, 4) slots, the
+/// growth of `object::store_element_slow`) would pass [`DENSE_UNCHECKED`] slots and take
+/// [`SPARSE_FACTOR`] times or more the words of an ELEMENTS_DICT cell for its present elements
+/// and `i` (the density check). The caller then keeps the index as a stored property. So the
+/// bit-flag enum form `o[1 << k] = v`, whose capacity doubles at each store and whose gap is
+/// 0, stops at a few thousand slots (it grew to 2^28 slots before: RTS FE-3). Arrays keep the
+/// H18-Q2 Decided rule ([`ARRAY_GAP`] and the dense limit in `object::store_element_slow`; no
+/// density check: M6-ORCH-173, route ARRAY-DENSITY). False for `i` below `cap`. Not a GC point.
+///
+/// The density check counts the present elements, O(`cap`). A refusal keeps the store as it
+/// is, so a refused (cell, capacity) goes into [`REFUSED`]: the next far stores into it are
+/// refused with no count (M7-P1 review F4: each one counted the whole store again) until
+/// [`REFUSED_RECOUNT`] says to count again, as filled holes can make it dense (Codex r2).
+pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
+    debug_assert!(!kinds_::is_array(o), "Arrays keep the H18-Q2 rule");
+    if i < cap {
+        return false;
+    }
+    if i - cap >= PLAIN_GAP {
+        return true;
+    }
+    let grown = (i as usize + 1).max(cap as usize * 2).max(4);
+    if grown <= DENSE_UNCHECKED {
+        return false;
+    }
+    // Past DENSE_UNCHECKED slots `cap` is above 0, so the object has its elements cell.
+    let e = object::rd(object::cell(o), obj::ELEMENTS);
+    let entry = refused_entry(e);
+    let (id, cell, c, hits) = REFUSED.with(|r| r[entry].get());
+    if (id, cell, c) == (rt.id, e, cap) && hits < cap / REFUSED_RECOUNT {
+        REFUSED.with(|r| r[entry].set((id, cell, c, hits + 1)));
+        return true;
+    }
+    #[cfg(test)]
+    DENSITY_COUNTS.with(|n| n.set(n.get() + 1));
+    let used = present_elements(o, e, cap as usize) + 1;
+    // The bucket count of `to_dictionary` for `used` entries, 3 words each, plus the header.
+    let buckets = (used * 2).next_power_of_two().max(dict::MIN_BUCKETS);
+    let dict_words = (dict::DATA + dict::ENTRY * buckets) / 8;
+    let refuse = grown >= SPARSE_FACTOR * dict_words;
+    if refuse {
+        REFUSED.with(|r| r[entry].set((rt.id, e, cap, 0)));
+    }
+    refuse
+}
+
+std::thread_local! {
+    /// The dense stores that [`sparse_growth`] refused last on this thread, by entry
+    /// ([`refused_entry`]): (`Runtime::id`, the elements cell, its capacity, the refusals since
+    /// the count). The cell is only compared, so it is not a root (plan rule 8). A stale entry
+    /// (a new cell at the address, filled holes) keeps few indices as properties (H18-Q3).
+    static REFUSED: [core::cell::Cell<(u64, u64, u32, u32)>; REFUSED_ENTRIES] =
+        const { [const { core::cell::Cell::new((0, 0, 0, 0)) }; REFUSED_ENTRIES] };
+}
+
+/// The entries of [`REFUSED`] (a power of two): a few objects that take far stores in turn
+/// each keep their entry.
+const REFUSED_ENTRIES: usize = 8;
+/// A [`REFUSED`] entry of capacity `cap` refuses `cap` / this far stores, then counts again.
+pub(crate) const REFUSED_RECOUNT: u32 = 64;
+
+/// The [`REFUSED`] entry of the elements cell `e` (bits of an 8-byte aligned address).
+fn refused_entry(e: u64) -> usize {
+    ((e >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize & (REFUSED_ENTRIES - 1)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Tests: the present-element counts [`sparse_growth`] ran on this thread.
+    pub(crate) static DENSITY_COUNTS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// The number of present elements in the dense store `e` (capacity `cap`) of the JS object
+/// `o`, which is not an Array (its kind is holey): a count of the words that are not the hole
+/// of the cell's storage form. Not a GC point.
+fn present_elements(o: u64, e: u64, cap: usize) -> usize {
+    let c = object::cell(e);
+    if storage(kind_of(o)) == Some(Storage::Doubles) {
+        (0..cap)
+            .filter(|&j| object::raw_get(c, delems::DATA + 8 * j) != delems::HOLE)
+            .count()
+    } else {
+        (0..cap)
+            .filter(|&j| object::rd(c, elems::DATA + 8 * j) != HOLE)
+            .count()
+    }
 }
 
 /// Checks the elements invariants of the JS object `o` (tests): the cell's storage form is
@@ -815,6 +916,140 @@ pub(crate) fn check(o: u64) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// ---- the extra element kinds: integrity levels as shape flags (M7-P3 ELEMKINDS) -----------
+//
+// H18 "extra element kinds", flags first (V11-D5, V11-D6): an Array with a dense kind (0-5)
+// whose shape has `shape::level::SEALED` has elements {w, e, !c}; with `shape::level::FROZEN`
+// too, elements {e} and a `length` that is not writable ([`dense_attrs`], [`length_writable`]).
+// NONEXTENSIBLE stays the EXTENSIBLE flag clear. The bits sit only on the dictionary shape of a
+// non-extensible Array, and every shape made from it keeps them, except a move to DICTIONARY
+// elements: then each entry takes the level's attributes and a FROZEN `length` the cell's flag
+// ([`to_dictionary`]). [`set_integrity`] sets a level (SetIntegrityLevel, §7.3.15, for an Array).
+// The storage form never changes for it: a DOUBLE or INT32 array keeps its kind and its cell.
+// The raw stores refuse what a level forbids (`object::array_set`: any store into a FROZEN
+// array, a hole in a SEALED one; `object::array_set_length` moves a SEALED array to DICTIONARY
+// before a cut over an element, whose entries then stop the cut), so a caller that gets false
+// takes the attribute-aware path of `property.rs`. Rules:
+// - Once a level can be set, a dense kind alone no longer says "the elements are writable": a
+//   store must also read the level (or compare a shape id). So the bits are facts that native
+//   code may bake: they go into `ep9_vm::layout` with OBJECT_LAYOUT 8 at the commit of the
+//   first caller of [`set_integrity`] (plan rule 71; MODES-CHECK-w32 item 3).
+// - No size field shrinks in place (MODES-CHECK-w32 MC-w32-6, the GCPAR2 sweeper rule): a level
+//   change installs a shape and writes no cell's size; a move to DICTIONARY is a new cell. No
+//   cell kind is new, so no new dynamic size.
+// - The birth-kind rule (MODES-CHECK-w23 MC-w23-19, decided here): only the dense kinds 0-5 are
+//   birth kinds, so [`generalize_site`] keeps its `to >= DICTIONARY` stop (7-15 are above it),
+//   and a level is never a birth form: a SEALED array's transition moves its site's kind, but
+//   its shape is not extensible, so `literal_site::is_birth_shape` never makes it the result.
+
+/// The integrity level bits of the JS object `o`'s shape (`shape::level::INTEGRITY`): 0,
+/// SEALED, or SEALED | FROZEN. Only an Array with a dense kind has bits. Not a GC point.
+#[inline(always)]
+pub(crate) fn integrity_of(o: u64) -> i32 {
+    shape::integrity(shape::shape_of(o))
+}
+
+/// True if the Array `a` is FROZEN: no element and no `length` is writable. Not a GC point.
+#[inline(always)]
+pub(crate) fn is_frozen(a: u64) -> bool {
+    integrity_of(a) & shape::level::FROZEN != 0
+}
+
+/// The attributes of each present element of the Array `a` with a dense kind (0-5):
+/// {w, e, c} ([`object::attr::DEFAULT`]); SEALED {w, e}; FROZEN {e}. The `[[GetOwnProperty]]`
+/// of a dense element reads them. Not a GC point.
+#[inline(always)]
+pub(crate) fn dense_attrs(a: u64) -> i32 {
+    use object::attr;
+    let level = integrity_of(a);
+    if level & shape::level::FROZEN != 0 {
+        attr::ENUMERABLE
+    } else if level & shape::level::SEALED != 0 {
+        attr::WRITABLE | attr::ENUMERABLE
+    } else {
+        attr::DEFAULT
+    }
+}
+
+/// The elements kind of the Array `a` for `object::array_set`, and whether its level refuses
+/// a store of `v` (one shape read: `counts` and `flags` share its line): a FROZEN array takes
+/// no store; a SEALED one takes a new value but not the hole (`[[Delete]]` of a
+/// non-configurable element is false). Not a GC point.
+#[inline(always)]
+pub(crate) fn store_kind(a: u64, v: u64) -> (u8, bool) {
+    let s = shape::shape_of(a);
+    let level = shape::integrity(s);
+    let refuse = level != 0 && (level & shape::level::FROZEN != 0 || v == HOLE);
+    (shape::elements_kind(s), refuse)
+}
+
+/// The ELEMENTS_DICT flags that keep the level of the Array `a` after a move to DICTIONARY: a
+/// FROZEN `length` is not writable ([`dict::LENGTH_READONLY`]). Not a GC point.
+fn level_dict_flags(a: u64) -> i32 {
+    if is_frozen(a) {
+        dict::LENGTH_READONLY
+    } else {
+        0
+    }
+}
+
+/// True if a `length` of `len` would cut an element of the SEALED (or FROZEN) Array `a` with
+/// a dense kind: `object::array_set_length` moves it to DICTIONARY first, whose entries stop
+/// the cut at the highest one (§10.4.2.4 step 17). A cut over holes stays dense. It reads only
+/// the indices `len..length` that a cut removes, so a growth reads no element. Not a GC point.
+pub(crate) fn level_cut(a: u64, len: u32) -> bool {
+    let old = object::array_len(a);
+    if integrity_of(a) == 0 || len >= old {
+        return false; // a growth or the same length cuts nothing
+    }
+    let e = object::rd(object::cell(a), obj::ELEMENTS);
+    if e == crate::frame::UNDEFINED {
+        return false;
+    }
+    let end = old.min(object::rd_i32(object::cell(e), elems::CAPACITY) as u32);
+    (len..end).any(|i| {
+        #[cfg(test)]
+        LEVEL_CUT_READS.with(|c| c.set(c.get() + 1));
+        object::array_get(a, i).is_some()
+    })
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// The element reads of [`level_cut`] on this thread (the work count of
+    /// `tests::elements::a_level_cut_reads_only_the_cut_indices`).
+    pub(crate) static LEVEL_CUT_READS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// SetIntegrityLevel (§7.3.15) steps 4-5 for the elements of the Array `a`, after its
+/// `[[PreventExtensions]]` (steps 1-2): the level SEALED (or SEALED | FROZEN if `frozen`)
+/// goes into the shape's flags ([`shape::with_integrity`]), never lower than it was, and the
+/// elements keep their storage form and cell. Then the define of each index key with the
+/// level's attributes changes nothing (ValidateAndApplyPropertyDescriptor finds them), and a
+/// FROZEN `length` is not writable. True when done; false (nothing changed) if `a` is not an
+/// Array, is extensible or has DICTIONARY elements: its entries take the defines one by one.
+/// A prototype's level is a structural change (OM-8, `shape::note_change`). GC point (a new
+/// shape): `a` lives in a Rust local of the caller.
+pub(crate) fn set_integrity(rt: &Runtime, a: u64, frozen: bool) -> bool {
+    if !kinds_::is_array(a) {
+        return false;
+    }
+    let s = shape::shape_of(a);
+    if shape::is_extensible(s) || shape::elements_kind(s) >= kind::DICTIONARY {
+        return false;
+    }
+    let have = shape::integrity(s);
+    let want = have | shape::level::SEALED | if frozen { shape::level::FROZEN } else { 0 };
+    if want == have {
+        return true;
+    }
+    // GC point: `a` lives in a Rust local of the caller.
+    let ns = shape::with_integrity(rt, s, want);
+    shape::install(rt, a, ns);
+    shape::note_change(rt, a);
+    true
 }
 
 const _: () = {

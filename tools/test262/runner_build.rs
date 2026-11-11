@@ -14,9 +14,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The paths, from the repo root, whose files build the runner: the engine crates, the runner,
-/// the root manifest and lock file, the toolchain, and the regress fork (pin and patch set;
-/// ep9_vm builds regress through `[patch.crates-io]`).
-pub const COMPILED_PATHS: [&str; 7] = [
+/// the root manifest and lock file, the toolchain, the regress fork (pin and patch set;
+/// ep9_vm builds regress through `[patch.crates-io]`) and the icu4x fork (pin and patch set;
+/// ep9_temporal and ep9_intl build icu_calendar through `[patch.crates-io]`).
+pub const COMPILED_PATHS: [&str; 9] = [
     "crates",
     "tools/test262",
     "Cargo.toml",
@@ -24,6 +25,8 @@ pub const COMPILED_PATHS: [&str; 7] = [
     "rust-toolchain.toml",
     "third_party/regress.commit",
     "third_party/patches/regress",
+    "third_party/icu4x.commit",
+    "third_party/patches/icu4x",
 ];
 
 /// Some(true) when a tracked file under [`COMPILED_PATHS`] differs from HEAD, Some(false) when

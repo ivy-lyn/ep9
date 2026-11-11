@@ -24,6 +24,13 @@
 //!                                windows  None
 //!                              the caller checks the id with its tz data (None or an
 //!                              unknown id: "UTC")
+//! default_locale()             the host locale for Intl (DefaultLocale, ECMA-402 §6.2.4):
+//!                                unix     the first set one of LC_ALL, LC_MESSAGES, LANG:
+//!                                         "ll_CC.codeset@mod" -> "ll-CC"; "C" or "POSIX"
+//!                                         gives None
+//!                                windows  None
+//!                              the caller (ep9_intl) checks the tag and uses "en-US" for
+//!                              None or a tag it has no data for
 //!
 //! Offsets are in milliseconds, positive east of Greenwich. Later the body of
 //! `Cx::local_tz_offset_ms` calls the tz provider that Temporal shares
@@ -83,6 +90,41 @@ fn zone_id_after_zoneinfo(path: &str) -> Option<String> {
     let i = path.rfind("zoneinfo/")?;
     let id = &path[i + "zoneinfo/".len()..];
     (!id.is_empty()).then(|| id.to_string())
+}
+
+/// The host locale as a BCP 47 tag, for Intl (the host part of DefaultLocale, ECMA-402
+/// §6.2.4): "de-DE" for `LANG=de_DE.UTF-8`, or `None` when the host gives none (no variable,
+/// "C", "POSIX", or a value that is no tag). The caller checks the tag with its data.
+pub fn default_locale() -> Option<String> {
+    #[cfg(unix)]
+    {
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .map(|v| v.to_string_lossy().into_owned())
+            .find(|v| !v.is_empty())
+            .and_then(|v| locale_from_posix(&v))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// The BCP 47 tag of a POSIX locale name `language[_territory][.codeset][@modifier]`:
+/// "en_US.UTF-8" -> "en-US", "sr_RS@latin" -> "sr-RS"; "C", "POSIX" and a name with other
+/// characters give `None`.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn locale_from_posix(name: &str) -> Option<String> {
+    let base = name.split(['.', '@']).next().unwrap_or("");
+    if base.is_empty() || base == "C" || base == "POSIX" {
+        return None;
+    }
+    let tag = base.replace('_', "-");
+    let ok = tag
+        .split('-')
+        .all(|s| !s.is_empty() && s.len() <= 8 && s.bytes().all(|b| b.is_ascii_alphanumeric()));
+    ok.then_some(tag)
 }
 
 /// The local time zone offset in milliseconds at the time `t_ms` (LocalTZA, ECMA-262
@@ -249,6 +291,19 @@ mod tests {
         assert_eq!(id(""), None);
         assert_eq!(id(":"), None);
         assert_eq!(zone_id_after_zoneinfo("/usr/share/zoneinfo/"), None);
+    }
+
+    #[test]
+    fn posix_locale_names_give_bcp47_tags() {
+        assert_eq!(locale_from_posix("en_US.UTF-8").as_deref(), Some("en-US"));
+        assert_eq!(locale_from_posix("de_DE").as_deref(), Some("de-DE"));
+        assert_eq!(locale_from_posix("sr_RS@latin").as_deref(), Some("sr-RS"));
+        assert_eq!(locale_from_posix("ja").as_deref(), Some("ja"));
+        assert_eq!(locale_from_posix("C"), None);
+        assert_eq!(locale_from_posix("C.UTF-8"), None);
+        assert_eq!(locale_from_posix("POSIX"), None);
+        assert_eq!(locale_from_posix(""), None);
+        assert_eq!(locale_from_posix("en US"), None);
     }
 
     /// `system_time_zone_id` reads `TZ` (set in a child process: the test process keeps its

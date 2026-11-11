@@ -31,23 +31,31 @@
 //!   constructor is non-configurable, so in fast mode it keeps its field index: a delete of an
 //!   earlier property, a prototype change and `preventExtensions` all go to dictionary mode,
 //!   which the hit checks.
-//! - The hit is a GC point (the allocation of `this`): it publishes its frame first
-//!   (`Runtime::enter`). The callee and the arguments are in caller registers, the initial
-//!   shape in a Rust local. It counts the call (`count_call`, as `call_fast`) and takes one
-//!   budget unit before the allocation, and gives both back if the frames do not fit; the
-//!   cold path then redoes the whole construct (the new object is garbage).
+//! - The hit is a GC point (the allocation of `this`): it publishes its frame first, with the
+//!   words of `Runtime::enter` (the top frame, and its bytecode offset from the caller's
+//!   FunctionInfo that the hit already holds; M7-P3 CONSTRUCT). The callee and the arguments
+//!   are in caller registers, the initial shape in a Rust local. It counts the call
+//!   (`count_call`, as `call_fast`) and takes one budget unit before the allocation.
+//! - The hit pushes the same two frames as the cold path (H14: the stub frame that holds
+//!   `this`, then the callee frame with return pc `ConstructReturn`), with one size test for
+//!   both before it counts anything (M7-P3 CONSTRUCT): the stub has no arguments and no
+//!   registers, so the callee frame starts [`STUB_SLOTS`] slots above this frame's top. If they
+//!   do not fit, the hit goes cold before its count and its unit, and the cold path throws the
+//!   RangeError. After the allocation it writes both frames in place
+//!   ([`write_construct_frames`]): the words of `call::push_construct_stub` and
+//!   `call::push_frame` (test `tests::construct::the_hit_frames_equal_the_cold_push`).
 
 use crate::call::{self, CallSite};
 use crate::dispatch::DispatchKind;
 use crate::error::FrameRef;
 use crate::feedback;
-use crate::frame::{HOLE, UNDEFINED, int32_bits};
+use crate::frame::{CONSTRUCT_BIT, HEADER, HOLE, UNDEFINED, int32_bits, native_of, slot};
 use crate::ic::hk;
 use crate::interp::dsl::{Count, FSlot, R, RList};
 use crate::interp::{CONSTRUCT_RETURN_STUB, Cx, Flow, St};
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, alloc_from_shape, cell, init, obj, rd, rd_i32};
-use crate::runtime::{Atom, frame_top, val};
+use crate::runtime::{Atom, val};
 use crate::shape::{self, slf};
 use crate::unit::FunctionInfo;
 
@@ -59,6 +67,11 @@ pub(crate) mod cs {
     pub const FIELD: usize = 32;
     pub const SIZE: usize = 40;
 }
+
+/// The slots of a `[[Construct]]` stub frame: the receiver and the header. The stub's
+/// FunctionInfo (`Runtime::construct_stub`, `FunctionInfo::stub`) has no parameters and no
+/// registers, so its frame is these slots alone, and the callee frame starts right above them.
+pub(crate) const STUB_SLOTS: usize = 1 + HEADER;
 
 /// `Construct` (`SPREAD` false) or `ConstructWithSpread` (true): the constructor in `ctor`,
 /// the arguments in `args` (`argc` registers), new.target in the accumulator, Call slot `s`.
@@ -78,10 +91,13 @@ pub(crate) fn fast<const SPREAD: bool>(
     if st.acc != f {
         return Flow::Cold;
     }
-    let Some(v) = feedback::vector(st.info()) else {
+    let caller = st.info();
+    let Some(v) = feedback::vector(caller) else {
         return Flow::Cold;
     };
-    if feedback::key(v, s.0) != f {
+    // A dead constructor's key reads undefined after the GC while its handler stays: never a
+    // hit for `new undefined` (the cold path throws the TypeError).
+    if feedback::key(v, s.0) != f || f == UNDEFINED {
         return Flow::Cold;
     }
     let h = feedback::value(v, s.0);
@@ -98,6 +114,14 @@ pub(crate) fn fast<const SPREAD: bool>(
     {
         return Flow::Cold;
     }
+    // Both frames, one size test, before the count and the unit (module docs). `frame_top` of
+    // this frame from its FunctionInfo, loaded once above.
+    let stub = st
+        .fp
+        .wrapping_add(caller.register_count as usize + STUB_SLOTS);
+    let Some(nfp) = call::call_frame_fp(stub, st.cx.stack_limit, fi, argc.0) else {
+        return Flow::Cold;
+    };
     if !count_call(st, fi) {
         return Flow::Cold;
     }
@@ -108,47 +132,131 @@ pub(crate) fn fast<const SPREAD: bool>(
         return Flow::Cold;
     }
     let rt = st.rt();
-    rt.enter(st.fp, st.pc);
+    // `Runtime::enter(fp, pc)`, with the caller's info at hand: `pc` is the current
+    // instruction of the running bytecode function `caller`, so its offset is `pc - code`.
+    rt.stack().set_fp(st.fp);
+    let off = st.pc.addr().wrapping_sub(caller.code.addr());
+    debug_assert_eq!(caller.offset_of(st.pc), Some(off as u32));
+    // SAFETY: header slot 7 of the live top frame.
+    unsafe { *st.fp.offset(slot::BYTECODE_OFFSET) = int32_bits(off as i32) };
     // GC point: `f` and the arguments are in this frame's registers, `shape` in a Rust local.
     let this = alloc_from_shape(rt, kind::OBJECT, shape)
         .to_value()
         .to_bits();
-    // SAFETY: `fp` is the live top frame (bytecode runs with no scratch area) and `this` is a
-    // new object.
-    let stub = unsafe { call::push_construct_stub(st.cx, st.fp, this, f, st.next) };
-    let nfp = stub.and_then(|stub| {
-        let (limit, context) = (st.cx.stack_limit, object::function_context(f));
-        let s: &St<'_> = st;
-        // SAFETY: `stub` is the new top frame; the callee frame goes right above it, and the
-        // reader reads registers of the current verified instruction.
-        unsafe {
-            call::push_frame(
-                frame_top(stub),
-                limit,
-                fi,
-                f,
-                this,
-                argc.0,
-                |i| s.list(args, i),
+    let s: &St<'_> = st;
+    // SAFETY: `stub` and `nfp` are the frames that the size test above placed right above the
+    // live top frame `fp` (bytecode runs with no scratch area) and below the stack limit; the
+    // reader reads registers of the current verified instruction; `this` is a new object.
+    unsafe {
+        write_construct_frames(
+            ConstructFrames {
+                caller_fp: s.fp,
+                next_pc: s.next,
+                stub_info: &rt.construct_stub,
                 stub,
-                CONSTRUCT_RETURN_STUB.as_ptr(),
-                context,
-                f,
-            )
+                fp: nfp,
+                fi,
+                ctor: f,
+                this,
+                context: object::function_context(f),
+            },
+            argc.0,
+            |i| s.list(args, i),
+        );
+    }
+    st.fp = nfp;
+    st.acc = UNDEFINED;
+    Flow::Jump(fi.code)
+}
+
+/// The two frames of a construct hit: the stub frame at `stub` (its base is the caller's
+/// frame top, [`STUB_SLOTS`] below it) and the callee frame of `fi` at `fp`, the frame that
+/// `call::call_frame_fp` places at the stub's top for the call's argument count.
+pub(crate) struct ConstructFrames<'a> {
+    pub caller_fp: *mut u64,
+    pub next_pc: *const u8,
+    pub stub_info: &'a FunctionInfo,
+    pub stub: *mut u64,
+    pub fp: *mut u64,
+    pub fi: &'a FunctionInfo,
+    /// The constructor: the callee of both frames and new.target (`new F`).
+    pub ctor: u64,
+    pub this: u64,
+    /// The constructor's context.
+    pub context: u64,
+}
+
+/// Writes the frames of `w` with `argc` arguments that `arg(i)` reads: the words that
+/// `call::push_construct_stub(cx, caller_fp, this, ctor, next_pc)` and then
+/// `call::push_frame(stub, .., fi, ctor, this, argc, arg, stub, CONSTRUCT_RETURN_STUB,
+/// context, ctor)` write (H14 "`[[Construct]]` from JS"). The stub has no arguments and no
+/// registers (`stub_info`), so it is 9 stores; the callee frame gets the construct bit and
+/// new.target = the constructor.
+///
+/// # Safety
+/// `w.stub` is `w.caller_fp`'s frame top + [`STUB_SLOTS`], `w.fp` is
+/// `call::call_frame_fp(w.stub, limit, w.fi, argc)` (not `None`) for a `limit` at most the
+/// stack end, every slot of `[frame top of caller, w.fp + register count)` is above every live
+/// frame, `w.stub_info` has no parameters and no registers, and `arg(i)` returns valid Value
+/// bits for `i < argc`.
+#[inline(always)]
+pub(crate) unsafe fn write_construct_frames(
+    w: ConstructFrames<'_>,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) {
+    debug_assert!(w.stub_info.parameter_count == 0 && w.stub_info.register_count == 0);
+    let (stub, fp) = (w.stub, w.fp);
+    // SAFETY: the slots lie in the two frames that the caller's size test placed above every
+    // live frame and below the stack limit (caller contract), so these writes clobber nothing
+    // live.
+    unsafe {
+        *stub.offset(slot::RECEIVER) = w.this;
+        *stub.offset(slot::CALLER_FP) = native_of(w.caller_fp);
+        *stub.offset(slot::RETURN_PC) = native_of(w.next_pc);
+        *stub.offset(slot::CALLEE) = w.ctor;
+        *stub.offset(slot::ARGC) = int32_bits(0);
+        *stub.offset(slot::FUNCTION_INFO) = native_of(w.stub_info);
+        *stub.offset(slot::NEW_TARGET) = UNDEFINED;
+        *stub.offset(slot::CONTEXT) = UNDEFINED;
+        *stub.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
+        *fp.offset(slot::CALLER_FP) = native_of(stub);
+        *fp.offset(slot::RETURN_PC) = native_of(CONSTRUCT_RETURN_STUB.as_ptr());
+        *fp.offset(slot::CALLEE) = w.ctor;
+        *fp.offset(slot::ARGC) = int32_bits((argc | CONSTRUCT_BIT) as i32);
+        *fp.offset(slot::FUNCTION_INFO) = native_of(w.fi);
+        *fp.offset(slot::NEW_TARGET) = w.ctor;
+        *fp.offset(slot::CONTEXT) = w.context;
+        *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
+        *fp.offset(slot::RECEIVER) = w.this;
+        // The arguments (`a<i>` at `PARAM0 - i`), then undefined for the missing ones (from the
+        // stub's top, the callee frame's base) and for the registers.
+        let mut p = fp.offset(slot::PARAM0);
+        let end = p.wrapping_sub(argc as usize);
+        let mut i = 0;
+        while p > end {
+            // Volatile as in `call::write_call_args`: a plain store; LLVM makes no vector loop.
+            p.write_volatile(arg(i));
+            p = p.wrapping_sub(1);
+            i += 1;
         }
-    });
-    match nfp {
-        Some(n) => {
-            st.fp = n;
-            st.acc = UNDEFINED;
-            Flow::Jump(fi.code)
-        }
-        None => {
-            // The cold path throws the RangeError (and takes the unit and the count again).
-            st.cx.budget += 1;
-            uncount_call(fi);
-            Flow::Cold
-        }
+        fill_undefined(stub, end.wrapping_add(1));
+        fill_undefined(fp, fp.wrapping_add(w.fi.register_count as usize));
+    }
+}
+
+/// Undefined in every slot of `[from, to)`, one plain store per slot (the loop of
+/// `call::push_frame`: these ranges are short, and LLVM's vector loop costs more set-up).
+///
+/// # Safety
+/// `[from, to)` is writable stack memory.
+#[inline(always)]
+unsafe fn fill_undefined(from: *mut u64, to: *mut u64) {
+    let mut p = from;
+    while p < to {
+        // SAFETY: `p` is in `[from, to)` (caller contract).
+        unsafe { p.write_volatile(UNDEFINED) };
+        p = p.wrapping_add(1);
     }
 }
 

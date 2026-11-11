@@ -153,7 +153,7 @@ struct Options {
     build_check: bool,
 }
 
-const USAGE: &str = "usage: cargo xtask m0-exit --host <triple> --out <file.md> [--exec <json>] \
+const USAGE: &str = "usage: cargo xtask m0-exit --host <triple> --out <file.md> [--root <dir>] [--exec <json>] \
      [--parse <json>] [--exec-gc <json>]... [--cross <json>] [--nesting <log>] [--corpus <log>]... \
      [--verdicts <md>]... [--ci-run <id>] [--ci-run-json <file>] [--no-build-check]\n   \
      or: cargo xtask m0-exit --gc-shard <k>/<n>";
@@ -172,6 +172,7 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
                 .ok_or_else(|| format!("{a} needs a value\n{USAGE}"))
         };
         match a.as_str() {
+            "--root" => o.root = PathBuf::from(val()?),
             "--host" => o.host = val()?,
             "--out" => o.out = PathBuf::from(val()?),
             "--exec" => o.exec = Some(PathBuf::from(val()?)),
@@ -200,18 +201,29 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
 
 /// Entry point: writes the report to `--out` and prints the table.
 pub fn main(args: &[String]) -> Result<bool, String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    // The tree of --root; by default the git top dir of the current dir (exit::default_root),
+    // as adr-lint, m1-exit and m2-exit do.
+    let default = crate::exit::default_root();
+    let root = default.clone().unwrap_or_default();
     if args.first().map(String::as_str) == Some("--gc-shard") {
         let [_, spec] = args else {
             return Err(format!("--gc-shard takes one <k>/<n> value\n{USAGE}"));
         };
+        // A CI shard step may run outside a git tree: then the tree xtask was built from.
+        let root = default
+            .clone()
+            .unwrap_or_else(|_| crate::exit::build_root());
         for p in gc_shard_prefixes(&root.join("third_party/test262"), spec)? {
             println!("{p}");
         }
         return Ok(true);
     }
     let opts = parse_args(args, root)?;
+    if opts.root.as_os_str().is_empty() {
+        return Err(default
+            .err()
+            .unwrap_or_else(|| format!("--root needs a dir\n{USAGE}")));
+    }
     let report = run(&opts)?;
     std::fs::write(&opts.out, &report.markdown)
         .map_err(|e| format!("cannot write {}: {e}", opts.out.display()))?;

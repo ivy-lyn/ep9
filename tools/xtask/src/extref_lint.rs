@@ -23,13 +23,13 @@
 //! | encoding | `init(c, fv::INFO, native_of(fi))`; `&*native_ptr::<FunctionInfo>(w)`; `frame::native(a)` |
 //! | field | `let w = rd(c, fun::INFO);`; `init(v, k, rd(cell(f), fun::INFO))` |
 //! | import | `use crate::frame::native_of as nw;` (a renamed encoding function); `use crate::object::fun::INFO;` (a bare field name); `use crate::object::fun as f;` (a renamed field or `frame` module); `use crate::layout::*;`; `use crate::frame::native;` |
-//! | macro path | `fun::$f`, `crate::frame::$name` (a protected module, then a metavariable); `$m::INFO` |
+//! | macro path | `fun::$f`, `crate::frame::$name` (a protected module, then a metavariable); `$m::INFO`; a module and its name as two macro arguments, `rd2!(fun, INFO, c)` (body `$m::$f`; [`macro_arg_pairs`]) |
 //! | hand | `w.checked_sub(DOUBLE_ENCODE_OFFSET)` (the FEEDBACK Call key read of `facts_export.rs` until M5-P3 fixer round 2); `(w - layout::NATIVE_WORD_OFFSET) as usize`; `use ep9_value::encoding::*;` |
-//! | allow | a [`VM_STACK`] or [`DOUBLE_VALUE`] entry with no hit in a scanned file (remove it) |
+//! | macro, allow | `include!`, `concat_idents!` (or a `use` that renames one), `${concat(..)}`, a `#[path]` file not scanned (each `path` of a module; [`HIDING_MACROS`]); an unused list entry |
 //!
 //! - Allowed without a finding: `crates/ep9_vm/src/frame.rs` (the encoding and the VM stack),
-//!   `crates/ep9_vm/src/external_ref.rs` (the type), `crates/ep9_vm/src/layout.rs` for fields
-//!   (it exports the offsets, it reads no word), `#[cfg(test)]` items and the test files
+//!   `crates/ep9_vm/src/external_ref.rs` (the type), the top-level items of `layout.rs` (it
+//!   exports the offsets, it reads no word), `#[cfg(test)]` items and the test files
 //!   (`src/tests/**`, `tests.rs`), and the [`VM_STACK`] functions: code that reads or writes a
 //!   VM stack frame slot (caller fp, return pc, FunctionInfo; H25 "The other `native_of`
 //!   stores write VM stack frame slots"). The VM stack is not a heap cell. The list names a
@@ -37,11 +37,11 @@
 //!   its line.
 //! - The lint guards against honest mistakes in ep9's own code, not against a hostile author:
 //!   code review and the `ExternalRef` type are the boundary. Raw names (`r#frame`) read as
-//!   their plain names.
+//!   their plain names, in NFC form ([`nfc_ascii`]: the Kelvin sign is `K`, as rustc reads it).
 //! - Known gaps: a statement that names `ExternalRef` and also copies a bare field word; a
-//!   raw offset (`rd(c, 24)`) in place of the field name; the offset as a literal (`1 << 49`)
-//!   in place of its name; a macro path whose module and field both come from metavariables
-//!   (`$m::$f`). Review and the H25 inventory cover them.
+//!   raw offset (`rd(c, 24)`) in place of the field name; the offset as a literal (`1 << 49`);
+//!   a rename or a wrapper in a file where H25 allows the name (route H25-STRICT-V13); a module
+//!   and a name that reach `$m::$f` through two macro levels. Review and H25 cover them.
 //! - Test code is an item whose `cfg` is false in every build without `test` (`test`,
 //!   `all(test, ..)`); `any(test, feature = "x")` compiles in production and is checked.
 //!
@@ -118,6 +118,12 @@ pub(crate) const VM_STACK: &[(&str, &str)] = &[
     // `write_call_header`, the x86-64 `call_fast` form of M5-P2 PERF3-FIX and M6-P1 CBC).
     ("crates/ep9_vm/src/call.rs", "push_frame"),
     ("crates/ep9_vm/src/call.rs", "write_call_header"),
+    // The construct hit (M7-P3 CONSTRUCT, 6056c0f8): the stub and callee frame words that
+    // `push_construct_stub` and `push_frame` write, written in place.
+    (
+        "crates/ep9_vm/src/construct_ic.rs",
+        "write_construct_frames",
+    ),
     // `FrameRef`: the FunctionInfo, caller fp and return pc of a frame (stack walks).
     ("crates/ep9_vm/src/error.rs", "info"),
     ("crates/ep9_vm/src/error.rs", "caller"),
@@ -126,6 +132,9 @@ pub(crate) const VM_STACK: &[(&str, &str)] = &[
     // the caller (a construct return, `Return`, a generator's yield, the call record step).
     ("crates/ep9_vm/src/interp/mod.rs", "run"),
     ("crates/ep9_vm/src/interp/mod.rs", "construct_return"),
+    // Its fast form for the `ConstructReturn` handler (M7-P3 fixer r2, JIT-F1): the same
+    // return pc and caller fp slots of the stub frame, with no throw path.
+    ("crates/ep9_vm/src/interp/mod.rs", "construct_result"),
     ("crates/ep9_vm/src/interp/mod.rs", "info"),
     ("crates/ep9_vm/src/interp/ops.rs", "op!(Return)"),
     ("crates/ep9_vm/src/interp/dsl.rs", "record_call_next_fn"),
@@ -140,6 +149,29 @@ pub(crate) const VM_STACK: &[(&str, &str)] = &[
     // FunctionInfo slot (its key store goes through `ExternalRef`, `target_key`).
     ("crates/ep9_vm/src/profile.rs", "record_call_pushed"),
 ];
+
+/// The macros that build or hide a name, so that a token rule never sees it (finding
+/// `macro`; V11IN-22, the macro forms): `include!` reads code from a file that the lint does
+/// not parse, and `concat_idents!` (and the `${concat(..)}` metavariable expression) joins
+/// an identifier from parts. A `use` that renames one is a finding (`import`: the new name
+/// hides the call; M7-P5 Codex T5). A `#[path]` module whose file the lint does not scan is
+/// the same finding. The tree uses none of them in production code (0c58e12f).
+///
+/// The lint refuses only what H25 (Rules, lines 54-55) forbids. The V11IN-22 rename rules
+/// inside the files where H25 allows the names (a wrapper in `frame.rs` or `external_ref.rs`,
+/// a const of another name in `layout.rs` or `ep9_value`) wait for route H25-STRICT-V13 (a G8
+/// decision, plan v13; M6-ORCH-371).
+const HIDING_MACROS: &[&str] = &["include", "concat_idents"];
+
+/// The NFC form of an identifier character, for the characters whose NFC form is ASCII: rustc
+/// reads every identifier in NFC (the Rust reference, "Identifiers"), so `FEEDBAC\u{212A}_INFO`
+/// (U+212A KELVIN SIGN) names `layout::FEEDBACK_INFO`. U+212A is the only identifier
+/// character whose canonical decomposition is one ASCII letter (U+212A -> U+004B); no ASCII
+/// letter is a composition, so this map is all that a match against the ASCII names needs
+/// (V11IN-22, the raw-name forms).
+fn nfc_ascii(c: char) -> char {
+    if c == '\u{212A}' { 'K' } else { c }
+}
 
 pub fn main(args: &[String]) -> Result<bool, String> {
     let o = parse_opts(args)?;
@@ -261,6 +293,9 @@ pub(crate) struct Report {
     pub(crate) allowed: Vec<Allowed>,
     /// Hits in test code (not findings).
     pub(crate) in_tests: usize,
+    /// `#[path]` modules outside test code: (file, line, path, inside an inline module), for
+    /// [`run`] to check against the scanned files.
+    pub(crate) path_mods: Vec<(String, usize, String, bool)>,
 }
 
 /// Lints `paths` (files or directories, relative to `root`).
@@ -291,9 +326,45 @@ pub(crate) fn run(root: &Path, paths: &[String]) -> Result<Report, String> {
     }
     report.files = scanned.len();
     unused_allows(&scanned, &mut report);
+    path_mods(root, &files, &mut report);
     report.findings.sort();
     report.findings.dedup();
     Ok(report)
+}
+
+/// A `#[path]` module whose file this run does not scan is a finding (`macro`): the lint
+/// never reads that file (V11IN-22). The path is read from the directory of the file that
+/// declares the module, as rustc reads it outside an inline module; a `#[path]` inside an
+/// inline module, or one that is not one string literal, is a finding too.
+fn path_mods(root: &Path, files: &[PathBuf], report: &mut Report) {
+    let scanned: Vec<PathBuf> = files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+    for (rel, line, path, nested) in std::mem::take(&mut report.path_mods) {
+        let mut dir = root.to_path_buf();
+        let parts: Vec<&str> = rel.split('/').collect();
+        dir.extend(&parts[..parts.len().saturating_sub(1)]);
+        let mut target = dir;
+        target.extend(path.split(['/', '\\']).filter(|s| !s.is_empty()));
+        let read = !nested
+            && !path.is_empty()
+            && target.canonicalize().is_ok_and(|t| scanned.contains(&t));
+        if !read {
+            report.findings.push(Finding {
+                file: rel,
+                line,
+                rule: "macro",
+                msg: format!(
+                    "the `#[path = {path:?}]` module file is not a file that this run scans{}: \
+                     the lint never reads it; keep the module file under a scanned `src/` \
+                     (V11IN-22)",
+                    if nested {
+                        " (it is in an inline module)"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+        }
+    }
 }
 
 /// A [`VM_STACK`] or [`DOUBLE_VALUE`] entry of a scanned file that no hit used is a finding:
@@ -397,6 +468,14 @@ struct Regions {
     /// Lines of a glob import of `encoding` (`ep9_value::encoding::*`): a finding outside
     /// [`VALUE_CRATE`], because it hides the [`OFFSETS`] names.
     encoding_globs: Vec<usize>,
+    /// Inline `mod m { .. }` items: in `layout.rs` only the top-level items are the exports
+    /// (M7-P5 Codex T7: `layout::inner::FEEDBACK_INFO` is not an export name).
+    inline_mod_ranges: Vec<(Range, ())>,
+    /// `#[path = ".."] mod m;` items outside test code: (line, a path, inside an inline
+    /// module), one entry per `path` of the item. [`run`] checks that the lint scans the file.
+    path_mods: Vec<(usize, String, bool)>,
+    /// The depth of inline `mod m { .. }` items around the item being visited.
+    inline_mods: usize,
 }
 
 fn range_of(s: proc_macro2::Span) -> Range {
@@ -410,6 +489,41 @@ fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         a.path().is_ident("cfg") && a.parse_args::<syn::Meta>().is_ok_and(|m| needs_test(&m))
     })
+}
+
+/// Every value of a `#[path = ".."]` attribute, also inside each `#[cfg_attr(.., path =
+/// "..")]` (nested `cfg_attr` too): each build may take another one, so each is checked (M7-P5
+/// Codex T6). An empty string if one is not one literal: [`run`] then finds no file and
+/// reports it.
+fn path_attr(attrs: &[syn::Attribute]) -> Vec<String> {
+    fn of(m: &syn::Meta, out: &mut Vec<String>) {
+        match m {
+            syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match &nv.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) => out.push(s.value()),
+                _ => out.push(String::new()),
+            },
+            syn::Meta::List(l) if l.path.is_ident("cfg_attr") => {
+                let args = l.parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                );
+                match args {
+                    Ok(args) => args.iter().skip(1).for_each(|m| of(m, out)),
+                    // A `cfg_attr` that does not parse as metas may hide a path: report it.
+                    Err(_) if l.tokens.to_string().contains("path") => out.push(String::new()),
+                    Err(_) => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for a in attrs {
+        of(&a.meta, &mut out);
+    }
+    out
 }
 
 fn needs_test(m: &syn::Meta) -> bool {
@@ -477,6 +591,21 @@ impl<'ast> Visit<'ast> for Regions {
             }
             syn::Item::Const(_) | syn::Item::Static(_) => {
                 self.stmts.push((range_of(i.span()), ()));
+            }
+            syn::Item::Mod(m) => {
+                if m.content.is_none() {
+                    for path in path_attr(&m.attrs) {
+                        self.path_mods
+                            .push((i.span().start().line, path, self.inline_mods > 0));
+                    }
+                }
+                if m.content.is_some() {
+                    self.inline_mod_ranges.push((range_of(i.span()), ()));
+                    self.inline_mods += 1;
+                    visit::visit_item(self, i);
+                    self.inline_mods -= 1;
+                    return;
+                }
             }
             _ => {}
         }
@@ -550,6 +679,16 @@ impl Regions {
                         ),
                     ));
                 }
+                if HIDING_MACROS.contains(&name.as_str()) {
+                    self.imports.push((
+                        line,
+                        format!(
+                            "the macro `{name}!` is imported as `{}`: a call by the new name \
+                             hides it from the macro rule (M7-P5 Codex T5); call `{name}!`",
+                            r.rename
+                        ),
+                    ));
+                }
                 self.field_import(parent, &name, line);
             }
             syn::UseTree::Name(n) => {
@@ -592,10 +731,11 @@ impl Regions {
     }
 }
 
-/// An identifier's name without the raw prefix (`r#frame` is `frame`), as Rust resolves it,
-/// so a raw name hides nothing from the import and token rules (Codex M5-P3 r3 eng).
+/// An identifier's name without the raw prefix (`r#frame` is `frame`) and in NFC form
+/// ([`nfc_ascii`]), as Rust resolves it, so a raw name hides nothing from the import and
+/// token rules (Codex M5-P3 r3 eng; V11IN-22).
 fn name_of(i: &proc_macro2::Ident) -> String {
-    i.unraw().to_string()
+    i.unraw().to_string().chars().map(nfc_ascii).collect()
 }
 
 /// A module whose names the token rules match: a FIELDS module, or `frame` (`frame::native`).
@@ -610,6 +750,10 @@ enum Tok {
     Colon2,
     /// `$` (a `macro_rules!` metavariable follows).
     Dollar(Pos),
+    /// `!` (after an identifier: a macro call).
+    Bang,
+    /// `${concat(..)}`: a metavariable expression that joins an identifier.
+    Concat(Pos),
     Other,
 }
 
@@ -626,7 +770,17 @@ fn flatten(ts: TokenStream, out: &mut Vec<Tok>) {
                     out.push(Tok::Other);
                 }
             }
-            TokenTree::Punct(p) if p.as_char() == '$' => out.push(Tok::Dollar(p.span().start())),
+            TokenTree::Punct(p) if p.as_char() == '$' => {
+                if let Some(TokenTree::Group(g)) = it.peek()
+                    && g.delimiter() == proc_macro2::Delimiter::Brace
+                    && matches!(g.stream().into_iter().next(),
+                        Some(TokenTree::Ident(i)) if name_of(&i) == "concat")
+                {
+                    out.push(Tok::Concat(p.span().start()));
+                }
+                out.push(Tok::Dollar(p.span().start()));
+            }
+            TokenTree::Punct(p) if p.as_char() == '!' => out.push(Tok::Bang),
             TokenTree::Group(g) => {
                 out.push(Tok::Other);
                 flatten(g.stream(), out);
@@ -643,6 +797,63 @@ enum Kind {
     Field,
     /// An [`OFFSETS`] name.
     Hand,
+    /// A [`HIDING_MACROS`] call, `${concat(..)}` or a `#[path]` module the lint does not scan.
+    Macro,
+}
+
+/// Words that can stand before `!` and a group without a macro call (`if !(..)`).
+const NOT_A_MACRO: &[&str] = &[
+    "if", "while", "match", "return", "in", "let", "else", "break",
+];
+
+/// A macro call whose arguments hold a protected module and one of its names as two bare
+/// identifiers (`rd2!(fun, INFO, c)` with `$m::$f` in the body, `enc!(frame, native, a)`):
+/// the macro joins the path, so no token of this file is the path. Each such pair is a hit at
+/// the name (V11IN-22, the macro forms). Calls nested in calls and in `macro_rules!` bodies
+/// are read too.
+fn macro_arg_pairs(ts: TokenStream, hits: &mut Vec<(Kind, String, Pos)>) {
+    let tts: Vec<TokenTree> = ts.into_iter().collect();
+    for (i, t) in tts.iter().enumerate() {
+        let TokenTree::Group(g) = t else { continue };
+        let call = i >= 2
+            && matches!(&tts[i - 1], TokenTree::Punct(p) if p.as_char() == '!')
+            && matches!(&tts[i - 2], TokenTree::Ident(id)
+                if !NOT_A_MACRO.contains(&name_of(id).as_str()));
+        if call {
+            let mut toks = Vec::new();
+            flatten(g.stream(), &mut toks);
+            let bare: Vec<(&str, Pos)> = toks
+                .iter()
+                .enumerate()
+                .filter_map(|(k, t)| match t {
+                    Tok::Ident(n, at)
+                        if !(k >= 1 && matches!(toks[k - 1], Tok::Colon2))
+                            && !matches!(toks.get(k + 1), Some(Tok::Colon2)) =>
+                    {
+                        Some((n.as_str(), *at))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let has = |w: &str| bare.iter().any(|(n, _)| *n == w);
+            for (n, at) in &bare {
+                let module = FIELDS
+                    .iter()
+                    .find(|(m, f)| f == n && has(m))
+                    .map(|(m, _)| *m);
+                if let Some(m) = module {
+                    hits.push((Kind::Field, format!("{m}, {n} (macro arguments)"), *at));
+                } else if *n == "native" && has("frame") {
+                    hits.push((
+                        Kind::Encoding,
+                        "frame, native (macro arguments)".into(),
+                        *at,
+                    ));
+                }
+            }
+        }
+        macro_arg_pairs(g.stream(), hits);
+    }
 }
 
 /// Lints one file's source; `rel` is its path from the root, with `/`.
@@ -657,11 +868,23 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
         .parse()
         .map_err(|e| format!("{rel}: does not tokenize: {e:?}"))?;
     let mut toks = Vec::new();
+    let ts_pairs = ts.clone();
     flatten(ts, &mut toks);
 
     let mut hits: Vec<(Kind, String, Pos)> = Vec::new();
     let mut extref: Vec<Pos> = Vec::new();
+    macro_arg_pairs(ts_pairs, &mut hits);
     for (i, t) in toks.iter().enumerate() {
+        if let Tok::Concat(at) = t {
+            hits.push((Kind::Macro, "${concat(..)}".into(), *at));
+            continue;
+        }
+        if let (Tok::Ident(name, at), Some(Tok::Bang)) = (t, toks.get(i + 1))
+            && HIDING_MACROS.contains(&name.as_str())
+        {
+            hits.push((Kind::Macro, format!("{name}!"), *at));
+            continue;
+        }
         // A path that a macro completes: `fun::$f`, `crate::frame::$name` (any protected
         // module, then a metavariable), or `$m::INFO` (a metavariable, then a field const).
         // The lint does not expand macros, so it rejects both forms.
@@ -709,6 +932,13 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
     }
 
     let test_file = is_test_file(rel);
+    if !test_file {
+        for (line, path, nested) in &rg.path_mods {
+            report
+                .path_mods
+                .push((rel.to_string(), *line, path.clone(), *nested));
+        }
+    }
     let value_crate = rel.starts_with(VALUE_CRATE);
     let globs = rg.encoding_globs.iter().filter(|_| !value_crate);
     let globs = globs.map(|l| {
@@ -745,6 +975,8 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
             continue; // the Value encoding itself
         }
         let item = innermost(&rg.items, at).map(|(_, n)| n.clone());
+        // `layout.rs` exports at its top level only (M7-P5 Codex T7).
+        let layout = rel == LAYOUT_FILE && innermost(&rg.inline_mod_ranges, at).is_none();
         let allowed = |why: &'static str, item: Option<String>, report: &mut Report| {
             report.allowed.push(Allowed {
                 file: rel.into(),
@@ -776,7 +1008,7 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
                 }
             }
             Kind::Hand => {
-                if rel == FRAME_FILE || rel == TYPE_FILE || rel == LAYOUT_FILE {
+                if rel == FRAME_FILE || rel == TYPE_FILE || layout {
                     allowed("the encoding, the type or the layout export", item, report);
                 } else if let Some(it) = &item
                     && DOUBLE_VALUE.contains(&(rel, it.as_str()))
@@ -796,8 +1028,22 @@ pub(crate) fn lint_source(rel: &str, src: &str, report: &mut Report) -> Result<(
                     });
                 }
             }
+            Kind::Macro => {
+                report.findings.push(Finding {
+                    file: rel.into(),
+                    line: at.line,
+                    rule: "macro",
+                    msg: format!(
+                        "`{name}` builds or hides a name, so the token rules cannot see what it \
+                         reads: write the path in this file (V11IN-22)"
+                    ),
+                });
+            }
             Kind::Field => {
-                if rel == LAYOUT_FILE {
+                // An export is a const or static at the file scope of `layout.rs`; a function
+                // or method body that reads or writes the field is not one (H25:55; M7-P5
+                // Codex R3 finding 3).
+                if layout && item.is_none() {
                     allowed("the layout export", item, report);
                     continue;
                 }

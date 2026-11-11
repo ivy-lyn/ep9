@@ -550,3 +550,276 @@ fn twelve_arguments_go_through_the_cold_copy_and_the_hit() {
         assert_eq!(handler_i32(value, cs::COUNT), 1);
     });
 }
+
+// ---- the frames of a hit (M7-P3 CONSTRUCT) -------------------------------------------------
+
+/// A host function for [`the_hit_frames_equal_the_cold_push`]; never called.
+fn never_called<'s>(
+    _: &mut crate::Cx<'s>,
+    _: crate::Local<'s>,
+    _: crate::Args<'s>,
+    _: crate::Local<'s>,
+) -> crate::JsResult<crate::Local<'s>> {
+    unreachable!("the frame test only reads the counts of this info")
+}
+
+/// The frames of a construct hit (`construct_ic::write_construct_frames` at the places of one
+/// size test: the stub at the caller's top + `STUB_SLOTS`, the callee at
+/// `call::call_frame_fp` of the stub) are the frames of the cold path
+/// (`call::push_construct_stub`, then `call::push_frame` at the stub's top with the construct
+/// stub return pc and new.target), slot for slot, and the hit refuses exactly the sizes where
+/// one of the two cold pushes fails: no missing argument, missing arguments, no register, more
+/// arguments than parameters, 0 to 4 arguments, caller frames with 0 and 3 registers, a stack
+/// end inside the stub frame, inside the callee frame, at its end and above it.
+#[test]
+fn the_hit_frames_equal_the_cold_push() {
+    use crate::call::{call_frame_fp, push_construct_stub, push_frame};
+    use crate::construct_ic::{ConstructFrames, STUB_SLOTS, write_construct_frames};
+    use crate::frame::{HEADER, native_of, slot};
+    use crate::interp::CONSTRUCT_RETURN_STUB;
+    use crate::runtime::frame_top;
+    use crate::unit::FunctionInfo;
+    const MARK: u64 = 0x7FF8_0000_DEAD_BEEF;
+    /// The caller frame's fp in each buffer: room for its header and receiver below.
+    const CALLER: usize = 12;
+    let (ctor, this, context) = (int32_bits(1), int32_bits(2), int32_bits(3));
+    let next_pc = core::ptr::without_provenance::<u8>(0x2000);
+    let arg = |i: u32| int32_bits(100 + i as i32);
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let saved_limit = iso.cx.stack_limit;
+    let mut cases = 0;
+    for caller_regs in [0, 3] {
+        let mut caller_fi = FunctionInfo::host(never_called, "caller", 0, false);
+        caller_fi.register_count = caller_regs;
+        for (params, regs) in [(0, 0), (0, 4), (1, 0), (3, 2), (5, 7)] {
+            let mut fi = FunctionInfo::host(never_called, "f", 0, false);
+            fi.parameter_count = params;
+            fi.register_count = regs;
+            for argc in 0..=4u32 {
+                let size = STUB_SLOTS + argc.max(params) as usize + 1 + HEADER + regs as usize;
+                for room in [4, STUB_SLOTS, size - 1, size, size + 3] {
+                    // One buffer for both runs, so the frame links (native words of slot
+                    // addresses) agree; `out[k]` is the buffer after run `k`.
+                    let mut buf = vec![MARK; 96];
+                    let mut out = [Vec::new(), Vec::new()];
+                    let mut fps = [None, None];
+                    for k in 0..2 {
+                        buf.fill(MARK);
+                        // SAFETY: every slot written lies in the 96-slot buffer (the caller
+                        // fp is at 12, its top at most at 15, `room` at most 37 above it).
+                        unsafe {
+                            let caller_fp = buf.as_mut_ptr().add(CALLER);
+                            *caller_fp.offset(slot::FUNCTION_INFO) = native_of(&caller_fi);
+                            let base = frame_top(caller_fp);
+                            let limit = base.add(room);
+                            fps[k] = if k == 0 {
+                                iso.cx.stack_limit = limit;
+                                push_construct_stub(&iso.cx, caller_fp, this, ctor, next_pc)
+                                    .and_then(|stub| {
+                                        push_frame(
+                                            frame_top(stub),
+                                            limit,
+                                            &fi,
+                                            ctor,
+                                            this,
+                                            argc,
+                                            arg,
+                                            stub,
+                                            CONSTRUCT_RETURN_STUB.as_ptr(),
+                                            context,
+                                            ctor,
+                                        )
+                                    })
+                            } else {
+                                let stub = base.add(STUB_SLOTS);
+                                call_frame_fp(stub, limit, &fi, argc).inspect(|&fp| {
+                                    write_construct_frames(
+                                        ConstructFrames {
+                                            caller_fp,
+                                            next_pc,
+                                            stub_info: &iso.rt.construct_stub,
+                                            stub,
+                                            fp,
+                                            fi: &fi,
+                                            ctor,
+                                            this,
+                                            context,
+                                        },
+                                        argc,
+                                        arg,
+                                    );
+                                })
+                            }
+                            .map(|fp| fp.addr() - buf.as_ptr().addr());
+                        }
+                        out[k] = buf.clone();
+                    }
+                    let [a, b] = out;
+                    iso.cx.stack_limit = saved_limit;
+                    let case = format!(
+                        "caller regs {caller_regs} params {params} regs {regs} argc {argc} room {room}"
+                    );
+                    assert_eq!(fps[0], fps[1], "{case}");
+                    assert_eq!(fps[0].is_some(), room >= size, "{case}");
+                    if fps[0].is_some() {
+                        assert_eq!(a, b, "{case}");
+                    } else {
+                        // A refused hit writes nothing (the cold path may leave a stub frame
+                        // above the top, where no reader looks).
+                        let written = b.iter().filter(|&&w| w != MARK).count();
+                        assert_eq!(written, 1, "{case}: only the caller's info slot");
+                    }
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 2 * 5 * 5 * 5);
+}
+
+/// Route CONSTRUCT-DERIVED-RET (§10.2.2 steps 10-12): the result check of a derived
+/// constructor runs after its frame returned, in the caller. The callee `D` (a derived
+/// constructor that never calls `super()`) returns one value: null throws a TypeError, the
+/// hole (what BytecodeGen returns for `undefined` while the `this` binding is the hole)
+/// throws a ReferenceError, and an object is the result. Both caller kinds: a JS construct
+/// (the stub frame, `interp::construct_return`) and a Rust one (`Cx::construct`,
+/// `call::construct_function_object`). Before the route, the 2 non-objects gave undefined.
+#[test]
+fn a_derived_constructor_result_is_checked_after_the_return() {
+    use ep9_bytecode::{FunctionCode, FunctionFlags, FunctionKind};
+    fn derived(result: u8) -> FunctionCode {
+        let mut m = meta("D", 0, 0, 0, 0);
+        m.kind = FunctionKind::DerivedConstructor;
+        m.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+        let mut d = Asm::new(m);
+        match result {
+            0 => d.b.lda_null(),
+            1 => d.b.lda_the_hole(),
+            _ => d.b.create_empty_object_literal(),
+        };
+        d.b.return_();
+        d.finish()
+    }
+    // The script: `D = f1`; with `js`, `print(typeof new D())`; then it returns `D`.
+    fn script(result: u8, js: bool) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let d = s.b.new_register();
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(d);
+        if js {
+            let f = s.f;
+            s.b.ldar(d).star(f);
+            s.b.construct(f, RegisterList::EMPTY, 0, s.call);
+            let t = s.b.feedback_slot(FeedbackSlotKind::TypeOf);
+            s.b.type_of(t);
+            s.print_acc();
+        }
+        s.b.ldar(d).return_();
+        unit("", vec![s.finish(), derived(result)])
+    }
+    let want = [
+        "TypeError: Derived constructors may only return object or undefined",
+        "ReferenceError: Must call super constructor in derived class before accessing 'this' \
+         or returning from derived constructor",
+        "object",
+    ];
+    for result in 0..3u8 {
+        for (label, c) in configs() {
+            on_big_stack(move || {
+                let mut iso = isolate(c);
+                for js in [true, false] {
+                    take_output();
+                    let u = script(result, js);
+                    let r = iso.with_cx_checkpoint(|cx| {
+                        let d = cx.run_script(u, "test.js")?;
+                        if js {
+                            return Ok(String::new());
+                        }
+                        let o = cx.construct(d, &[], d)?;
+                        Ok(cx.type_of(o).to_string())
+                    });
+                    let got = match (r, js) {
+                        (Err(e), _) => e.message,
+                        (Ok(_), true) => take_output().join("\n"),
+                        (Ok(t), false) => t,
+                    };
+                    let w = want[result as usize];
+                    assert_eq!(got, w, "{label} result {result} js {js}");
+                    iso.collect_garbage();
+                    iso.verify_heap().unwrap();
+                }
+            });
+        }
+    }
+}
+
+/// Codex M7-P3-CODEX-R1 CONSTRUCT 1: after the GC clears the weak key of a construct site
+/// (its constructor died) the handler stays, and while an instance lives so does its initial
+/// shape. `new undefined` at that site must take the cold path (the TypeError), not a hit:
+/// `feedback::key` reads undefined, which equals the callee. The test makes that slot state
+/// by hand (key undefined, the warm handler as value) and keeps an instance in a global. On
+/// the old code the hit runs `shape::shape_of(undefined)`, which panics (a release abort,
+/// object.rs:359).
+#[test]
+fn a_cleared_key_is_no_hit_for_new_undefined() {
+    // f1: `function site(C) { return new C(); }`; f2: `function F() {}`.
+    fn make() -> (VerifiedUnit, FeedbackSlot) {
+        let mut site = Asm::new(meta("site", 1, 0, 0, 0));
+        let slot = site.b.feedback_slot(FeedbackSlotKind::Call);
+        let f = site.f;
+        site.b.ldar(site.b.parameter(0)).star(f);
+        site.b.construct(f, RegisterList::EMPTY, 0, slot);
+        site.b.return_();
+        let mut ctor = Asm::new(meta("F", 0, 0, 0, 0));
+        ctor.b.lda_undefined().return_();
+        // The script: `site = f1; F = f2; keep = site(F); keep = site(F);`, returns `site`.
+        let mut s = Asm::script(0);
+        let r = s.b.new_register();
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(r);
+        s.sta_global("site");
+        let k = s.b.function_constant(FunctionId(2));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("F");
+        for _ in 0..2 {
+            let (f, a0) = (s.f, s.a.get(0));
+            s.lda_global("F");
+            s.b.star(a0);
+            s.b.ldar(r).star(f);
+            s.b.call_undefined_receiver1(f, a0, s.call);
+            s.sta_global("keep");
+        }
+        s.b.ldar(r).return_();
+        (
+            unit("", vec![s.finish(), site.finish(), ctor.finish()]),
+            slot,
+        )
+    }
+    for (label, c) in configs() {
+        on_big_stack(move || {
+            let mut iso = isolate(c);
+            let (u, slot) = make();
+            let r = iso.with_cx_checkpoint(|cx| {
+                let site = cx.run_script(u, "test.js")?;
+                let fi = object::function_info(site.bits());
+                let v = feedback::vector(fi).expect("a vector (threshold 0)");
+                let h = feedback::value(v, slot.0);
+                assert_eq!(kinds::cell_kind(h), kinds::IC_HANDLER.get(), "{label}");
+                assert_eq!(handler_i32(h, cs::KIND), hk::CONSTRUCT_SITE, "{label}");
+                assert!(shape::is_shape(object::rd(object::cell(h), cs::SHAPE)));
+                // The state after the GC cleared the key: undefined, the handler stays.
+                feedback::set_slot(cx.inner().rt(), v, slot.0, UNDEFINED, h);
+                let u = crate::abi::Local::undefined();
+                cx.call(site, u, &[u]).map(|_| ())
+            });
+            let e = r.expect_err("new undefined throws");
+            assert!(
+                e.message.starts_with("TypeError:"),
+                "{label}: {}",
+                e.message
+            );
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}

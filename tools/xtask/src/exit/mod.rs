@@ -32,8 +32,47 @@ pub(crate) mod report;
 pub(crate) mod t262;
 pub(crate) mod verdict;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The default tree root of the tree readers (adr-lint, m1-exit, m2-exit; plan v12 GATES10 task
+/// 4, PR-15): the git top dir of the current dir. Before this, the default was the tree the
+/// xtask binary was built from (`CARGO_MANIFEST_DIR`), so with one target dir for two worktrees
+/// a run in one worktree read the other (decisions M6-ORCH-94). The top dir must hold
+/// `tools/xtask/Cargo.toml`: a current dir inside a nested checkout (`third_party/test262`) or
+/// outside any git work tree is an error that asks for `--root`, never a guess.
+pub(crate) fn default_root() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("cannot read the current dir: {e}"))?;
+    root_of(&cwd)
+}
+
+/// [`default_root`] for the dir `dir`.
+pub(crate) fn root_of(dir: &Path) -> Result<PathBuf, String> {
+    let top = git(dir, &["rev-parse", "--show-toplevel"]).ok_or_else(|| {
+        format!(
+            "{} is not in a git work tree, so there is no default tree root; pass --root <dir>",
+            dir.display()
+        )
+    })?;
+    // As git prints it (absolute; `C:/...` on Windows). No canonicalize: on Windows that gives a
+    // `\\?\` path, which the git calls of the readers would get as their `-C` dir.
+    let top = PathBuf::from(top);
+    if !top.join("tools/xtask/Cargo.toml").is_file() {
+        return Err(format!(
+            "the git top dir {} of {} is not an ep9 tree (no tools/xtask/Cargo.toml); pass --root <dir>",
+            top.display(),
+            dir.display()
+        ));
+    }
+    Ok(top)
+}
+
+/// The tree this xtask binary was built from (`CARGO_MANIFEST_DIR/../..`). Only `m0-exit
+/// --gc-shard` reads it, and only outside a git work tree (a CI shard step).
+pub(crate) fn build_root() -> PathBuf {
+    let r = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::fs::canonicalize(&r).unwrap_or(r)
+}
 
 pub(crate) fn read(p: &Path) -> Result<String, String> {
     std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))

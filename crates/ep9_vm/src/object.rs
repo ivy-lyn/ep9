@@ -1110,13 +1110,13 @@ pub(crate) fn element_indices(o: u64) -> impl Iterator<Item = u32> {
 /// store writes `v`'s f64 with a canonical NaN ([`double_bits`]). An index at or past
 /// [`arr::MAX_LENGTH`], or `elements::ARRAY_GAP` or more past the capacity, moves the array to
 /// DICTIONARY (M5-P2 ELEM2, H18-Q2, Q4), whose stores take [`array_set_sparse`]. False (nothing
-/// stored) only for `i` = 2^32 - 1 (not an array index) and for the DICTIONARY cases that need
-/// the attribute-aware path of `property.rs`. GC point (a new cell or shape): `a` and `v` live
-/// in Rust locals.
+/// stored) for `i` = 2^32 - 1, for the DICTIONARY cases that need the attribute-aware path of
+/// `property.rs`, and for a store that the array's level forbids (`elements::store_kind`).
+/// GC point (a new cell or shape): `a` and `v` live in Rust locals.
 pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
-    let from = crate::elements::kind_of(a);
-    if i >= arr::MAX_LENGTH || from == crate::elements::kind::DICTIONARY {
-        return array_set_sparse(rt, a, i, v);
+    let (from, refuse) = crate::elements::store_kind(a, v);
+    if i >= arr::MAX_LENGTH || from == crate::elements::kind::DICTIONARY || refuse {
+        return !refuse && array_set_sparse(rt, a, i, v);
     }
     // Not DICTIONARY: `length` is at most the dense limit, an int32 Value.
     let len = array_len_dense(a);
@@ -1224,14 +1224,14 @@ fn store_element(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
 
 /// Stores element `i` of the elements store of `o`, an object that is not an Array
 /// (`elements::plain_elements_kind`); [`HOLE`] removes it. False (nothing stored) for a new
-/// element at or past [`arr::MAX_LENGTH`] or `elements::PLAIN_GAP` past the capacity: the
+/// element at or past [`arr::MAX_LENGTH`] or one that `elements::sparse_growth` refuses: the
 /// caller keeps such an index as a stored property (v0). A raw store, as [`array_set`]: the
 /// callers check `[[Extensible]]`, the chain and that the property storage has no such key.
 /// The kind is always holey (no `length`). GC point.
 pub(crate) fn element_set(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
     debug_assert!(crate::elements::plain_elements_kind(cell_kind(o)));
     let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as u32);
-    if i >= cap && (i >= arr::MAX_LENGTH || i - cap >= crate::elements::PLAIN_GAP) {
+    if i >= cap && (i >= arr::MAX_LENGTH || crate::elements::sparse_growth(rt, o, cap, i)) {
         if v == HOLE {
             return true;
         }
@@ -1320,15 +1320,15 @@ fn store_element_slow(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
 
 /// Sets `length` (§10.4.2.4 ArraySetLength steps 13-19, the deletes): every element at or
 /// past `len` goes, from the highest index down. False if a non-configurable element stops it
-/// (only a DICTIONARY array has one): `length` is then that index + 1. The callers check the
-/// value (ToUint32) and that `length` is writable. A `len` past [`arr::MAX_LENGTH`] moves the
-/// array to DICTIONARY (H18-Q4), so any length up to 2^32 - 1 works. A cut that removes an
-/// element is a structural change of a prototype (OM-8); growth and a cut over holes only
-/// change the value of `length`. Growth makes the kind holey (the new indices are holes; GC
-/// point); a cut keeps it.
+/// (a DICTIONARY entry: a SEALED array moves there before a cut over one, `elements::level_cut`):
+/// `length` is then that index + 1. The callers check the value (ToUint32) and that `length`
+/// is writable. A `len` past [`arr::MAX_LENGTH`] moves the array to DICTIONARY (H18-Q4), so any
+/// length up to 2^32 - 1 works. A cut that removes an element is a structural change of a
+/// prototype (OM-8); growth and a cut over holes only change the value of `length`. Growth
+/// makes the kind holey (the new indices are holes; GC point); a cut keeps it.
 pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
     use crate::elements as el;
-    if len > arr::MAX_LENGTH && el::kind_of(a) != el::kind::DICTIONARY {
+    if (len > arr::MAX_LENGTH || el::level_cut(a, len)) && el::kind_of(a) != el::kind::DICTIONARY {
         // GC point: `a` lives in a Rust local.
         el::to_dictionary(rt, a);
     }

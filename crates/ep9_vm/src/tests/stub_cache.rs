@@ -396,3 +396,175 @@ fn a_missing_string_method_is_undefined_until_object_prototype_gets_it() {
         assert_eq!(t.ok(0, s, UNDEFINED), int(4));
     });
 }
+
+// ---- the probe of the GetNamedProperty handler (M7-P1 NAMEDLOAD) -------------------------------
+
+/// The number of loads that the probe in the cold body of `GetNamedProperty` answered
+/// (`ic::get_named_cold`).
+fn handler_hits() -> u32 {
+    ic::HANDLER_PROBE_HITS.with(|c| c.get())
+}
+
+/// Makes site 0 (`a.<name>`) of `t` megamorphic with five objects under `p` that have `name`
+/// as their second property. The caller roots the result while the state matters.
+fn megamorphic(t: &mut T, p: u64, name: &str) -> [u64; 5] {
+    let pads = ["a", "b", "c", "d", "e"];
+    let objs = core::array::from_fn(|i| {
+        object_with(t.rt(), p, &[(pads[i], int(0)), (name, int(10 + i as i32))])
+    });
+    for &o in &objs {
+        t.ok(0, o, UNDEFINED);
+    }
+    assert_eq!(t.state(0), State::Megamorphic);
+    objs
+}
+
+/// Loads `o.<name>` at site 0 twice: the first load fills the entry (the runtime call), the
+/// second one must come from the probe of the handler. Without GC stress the count proves it;
+/// under GC stress a collection may empty the table first, so only the values are checked.
+/// Returns the handler kind of the entry the first load made (`ic::describe_handler`).
+fn fill_then_hit(t: &mut T, o: u64, name: &str, want: u64, stress: bool) -> i32 {
+    assert_eq!(t.ok(0, o, UNDEFINED), want);
+    let kind = entry(t, Op::Load, o, name).map(|h| ic::describe_handler(h).0);
+    let before = handler_hits();
+    assert_eq!(t.ok(0, o, UNDEFINED), want);
+    if !stress {
+        assert_eq!(
+            handler_hits(),
+            before + 1,
+            "the handler's probe answered `{name}`"
+        );
+    }
+    kind.unwrap_or(0)
+}
+
+#[test]
+fn the_get_named_handler_answers_megamorphic_loads_from_the_stub_cache() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Get("x"), Site::Get("m"), Site::Get("length")]);
+        let op = object_prototype(t.rt());
+        let objs = megamorphic(&mut t, op, "x");
+        let kept = t.keep_all(&objs);
+        // An own field in the object.
+        let o = object_with(t.rt(), op, &[("f", int(0)), ("x", int(3))]);
+        let k = fill_then_hit(&mut t, o, "x", int(3), stress);
+        assert!(stress || k == smi::FIELD_IN_OBJECT, "kind {k}");
+        // An own field in the SLOTS cell: past the in-object capacity of a new object.
+        let names: Vec<String> = (0..40).map(|i| format!("p{i}")).collect();
+        let mut props: Vec<(&str, u64)> = names.iter().map(|n| (n.as_str(), int(0))).collect();
+        props.push(("x", int(4)));
+        let big = object_with(t.rt(), op, &props);
+        let k = fill_then_hit(&mut t, big, "x", int(4), stress);
+        assert!(stress || k == smi::FIELD_OUT_OF_LINE, "kind {k}");
+        // A data property of a prototype (PROTO_LOAD) and a missing one (MISSING).
+        let base = object_with(t.rt(), op, &[("x", int(5))]);
+        let child = object_with(t.rt(), base, &[("g", int(0))]);
+        let k = fill_then_hit(&mut t, child, "x", int(5), stress);
+        assert!(stress || k == PROTO_LOAD, "kind {k}");
+        let none = object_with(t.rt(), op, &[("h", int(0))]);
+        let k = fill_then_hit(&mut t, none, "x", UNDEFINED, stress);
+        assert!(stress || k == hk::MISSING | 0x100, "kind {k}");
+        // Not an object at the megamorphic site: a string, a number and a symbol take the
+        // runtime call, whose generic load gives undefined.
+        let before = handler_hits();
+        let s = string::new_string(t.rt(), "abc");
+        assert_eq!(t.ok(0, s, UNDEFINED), UNDEFINED);
+        assert_eq!(t.ok(0, int(7), UNDEFINED), UNDEFINED);
+        let sym = symbol::new_symbol(t.rt(), UNDEFINED);
+        assert_eq!(t.ok(0, sym, UNDEFINED), UNDEFINED);
+        assert_eq!(handler_hits(), before);
+        t.release_all(kept);
+        // An array's `length` at a megamorphic `length` site (ARRAY_LENGTH).
+        let lens: [u64; 5] = core::array::from_fn(|i| {
+            object_with(
+                t.rt(),
+                op,
+                &[(["a", "b", "c", "d", "e"][i], int(0)), ("length", int(1))],
+            )
+        });
+        let kept = t.keep_all(&lens);
+        for &l in &lens {
+            t.ok(2, l, UNDEFINED);
+        }
+        assert_eq!(t.state(2), State::Megamorphic);
+        let a = object::new_array(t.rt(), 0);
+        assert_eq!(t.ok(2, a, UNDEFINED), int(0));
+        let before = handler_hits();
+        assert_eq!(t.ok(2, a, UNDEFINED), int(0));
+        if !stress {
+            assert_eq!(
+                entry(&t, Op::Load, a, "length").map(|h| ic::describe_handler(h).0),
+                Some(smi::ARRAY_LENGTH)
+            );
+            assert_eq!(handler_hits(), before + 1);
+        }
+        t.release_all(kept);
+    });
+}
+
+#[test]
+fn a_probe_hit_in_the_handler_still_checks_the_validity_cell() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Get("m")]);
+        let op = object_prototype(t.rt());
+        let base = object_with(t.rt(), op, &[("m", int(1))]);
+        let mid = object_with(t.rt(), base, &[]);
+        let objs = megamorphic(&mut t, mid, "q");
+        let kept = t.keep_all(&objs);
+        let o = object_with(t.rt(), mid, &[("lone", int(0))]);
+        let k = fill_then_hit(&mut t, o, "m", int(1), stress);
+        assert!(stress || k == PROTO_LOAD, "kind {k}");
+        // A shadowing `m` on `mid`: the entry's cell goes invalid. The probe finds the entry,
+        // its handler misses, and the runtime call finds the new `m`.
+        let before = handler_hits();
+        props::own_define(t.rt(), mid, key(t.rt(), "m"), int(3), attr::DEFAULT);
+        assert_eq!(t.ok(0, o, UNDEFINED), int(3));
+        assert_eq!(handler_hits(), before);
+        // The runtime call put a new case in the entry; the handler answers from it.
+        fill_then_hit(&mut t, o, "m", int(3), stress);
+        // A value store to the holder is not a change: the next hit reads the new value.
+        assert!(props::own_replace(t.rt(), mid, key(t.rt(), "m"), int(4)));
+        assert_eq!(t.ok(0, o, UNDEFINED), int(4));
+        t.release_all(kept);
+    });
+}
+
+#[test]
+fn a_super_load_does_not_use_the_probe_of_the_get_named_handler() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Super("x")]);
+        let op = object_prototype(t.rt());
+        // super.x with the home object `h_i`: the IC is keyed on the lookup start, the
+        // prototype of `h_i`.
+        let pads = ["a", "b", "c", "d", "e", "f"];
+        let starts: [u64; 6] = core::array::from_fn(|i| {
+            object_with(t.rt(), op, &[(pads[i], int(0)), ("x", int(i as i32))])
+        });
+        let homes: [u64; 6] = core::array::from_fn(|i| object_with(t.rt(), starts[i], &[]));
+        let kept = t.keep_all(&starts);
+        let kept_h = t.keep_all(&homes);
+        let this = object::new_plain_object(t.rt());
+        for (i, &h) in homes.iter().enumerate() {
+            assert_eq!(t.ok(0, h, this), int(i as i32));
+        }
+        assert_eq!(t.state(0), State::Megamorphic);
+        let before = handler_hits();
+        for _ in 0..2 {
+            assert_eq!(t.ok(0, homes[5], this), int(5));
+        }
+        assert_eq!(handler_hits(), before);
+        t.release_all(kept_h);
+        t.release_all(kept);
+    });
+}
+
+#[test]
+fn a_new_stub_cache_is_empty() {
+    each(|c| {
+        let t = T::new(c, &[Site::Get("x")]);
+        assert_eq!(t.rt().stub_cache.len(), 0);
+        assert_eq!(stub_cache::ENTRIES, 8192);
+    });
+}

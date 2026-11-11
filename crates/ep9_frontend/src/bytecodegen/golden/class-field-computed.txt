@@ -1,6 +1,6 @@
 # class-field-computed: script (sloppy)
 # | var k; class A { [k] = 1; static [k + 1] = function() {}; [k]() {} [k + 2]; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=83fd11c1a0fd56d4a0ba9e02b0a2ca29bc6a142dcd9debc7804e7c97979c9c9c
 strings (5):
@@ -18,7 +18,7 @@ scopes (7):
   scope5 function outer=scope4 flags=[strict] slots=[]
   scope6 function outer=scope1 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..77
-  code (119 bytes):
+  code (112 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
       7    PushContext r4                               ; 13 04
@@ -35,36 +35,32 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      34 E> AddSmi [1], s2                               ; 36 01 02
      37 E> ToName                                       ; 58
      38    StaCurrentContextSlot [1]                    ; 1b 01
-     40    Mov r3, r5                                   ; 0d 03 05
-     43 E> LdaGlobal k2, s1  ; k2 = String str0 "k"     ; 10 02 01
-     46 E> ToName                                       ; 58
-     47    Star r6                                      ; 0c 06
-     49 E> CreateClosure k3, s3, #0x00  ; k3 = Function f5 ; 74 03 03 00
-     53    Star r7                                      ; 0c 07
+     40 E> LdaGlobal k2, s1  ; k2 = String str0 "k"     ; 10 02 01
+     43 E> ToName                                       ; 58
+     44    Star r6                                      ; 0c 06
+     46 E> CreateClosure k3, s3, #0x00  ; k3 = Function f5 ; 74 03 03 00
+     50    Star r7                                      ; 0c 07
+     52    Mov r3, r5                                   ; 0d 03 05
      55 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
      60 E> LdaGlobal k2, s1  ; k2 = String str0 "k"     ; 10 02 01
      63 E> AddSmi [2], s4                               ; 36 02 04
      66 E> ToName                                       ; 58
      67    StaCurrentContextSlot [2]                    ; 1b 02
-     69    Ldar r1                                      ; 0b 01
-     71    Star r0                                      ; 0c 00
-     73 E> CreateClosure k4, s5, #0x00  ; k4 = Function f2 ; 74 04 05 00
-     77    Star r5                                      ; 0c 05
-     79    Mov r1, r6                                   ; 0d 01 06
-     82    Mov r5, r7                                   ; 0d 05 07
-     85 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
-     90 E> CreateClosure k5, s6, #0x00  ; k5 = Function f3 ; 74 05 06 00
-     94    Star r6                                      ; 0c 06
-     96 E> CallProperty0 r6, r1, s7                     ; 60 06 01 07
-    100    PopContext r4                                ; 14 04
-    102    Ldar r1                                      ; 0b 01
-    104    Star r2                                      ; 0c 02
-    106    LdaConstant k6  ; k6 = String str1 "A"       ; 0a 06
-    108    Star r1                                      ; 0c 01
-    110 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
-    115    Ldar r2                                      ; 0b 02
-    117    LdaUndefined                                 ; 05
-    118    Return                                       ; 92
+     69    Mov r1, r0                                   ; 0d 01 00
+     72 E> CreateClosure k4, s5, #0x00  ; k4 = Function f2 ; 74 04 05 00
+     76    Star r7                                      ; 0c 07
+     78    Mov r0, r6                                   ; 0d 00 06
+     81 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
+     86 E> CreateClosure k5, s6, #0x00  ; k5 = Function f3 ; 74 05 06 00
+     90    Star r6                                      ; 0c 06
+     92 E> CallProperty0 r6, r1, s7                     ; 60 06 01 07
+     96    PopContext r4                                ; 14 04
+     98    LdaConstant k6  ; k6 = String str1 "A"       ; 0a 06
+    100    Star r1                                      ; 0c 01
+    102    Mov r0, r2                                   ; 0d 00 02
+    105 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+    110    LdaUndefined                                 ; 05
+    111    Return                                       ; 92
   constants (7):
       0 Scope scope1
       1 Function f1
@@ -93,18 +89,18 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      31 E 34 (1:35)
      34 E 34 (1:35)
      37 E 34 (1:35)
+     40 E 59 (1:60)
      43 E 59 (1:60)
-     46 E 59 (1:60)
-     49 E 7 (1:8)
+     46 E 7 (1:8)
      55 E 59 (1:60)
      60 E 68 (1:69)
      63 E 68 (1:69)
      66 E 68 (1:69)
-     73 E 7 (1:8)
-     85 E 15 (1:16)
-     90 E 7 (1:8)
-     96 E 15 (1:16)
-    110 E 7 (1:8)
+     72 E 7 (1:8)
+     81 E 15 (1:16)
+     86 E 7 (1:8)
+     92 E 15 (1:16)
+    105 E 7 (1:8)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=7..77
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e

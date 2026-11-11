@@ -4,7 +4,8 @@ description: >
   action. The toolchain file then selects it for every cargo run in the repo. Then it syncs
   third_party/regress (the RX0 fork, V9-D15): the root, spikes/spike-b and spikes/spike-c
   workspaces build regress from that checkout through [patch.crates-io], so every cargo command
-  there needs it first. Callers run actions/checkout before this action.
+  there needs it first. It also syncs third_party/icu4x (the patched icu_calendar of the root and
+  spikes/spike-c). Callers run actions/checkout before this action.
 runs:
   using: composite
   steps:
@@ -33,4 +34,19 @@ runs:
           echo "::warning::scripts/sync-regress.sh failed; one retry in 20 s"
           sleep 20
           bash scripts/sync-regress.sh
+        }
+    # icu_calendar with the `until` month search (INTL W1 R2; third_party/patches/icu4x): the root
+    # and spikes/spike-c workspaces build it from third_party/icu4x/components/calendar through
+    # [patch.crates-io], so every cargo command there needs it too. Same cache key form.
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: third_party/icu4x
+        key: icu4x-${{ runner.os }}-${{ hashFiles('third_party/icu4x.commit', 'third_party/patches/icu4x/**') }}
+    - name: Sync third_party/icu4x
+      shell: bash
+      run: |
+        bash scripts/sync-icu4x.sh || {
+          echo "::warning::scripts/sync-icu4x.sh failed; one retry in 20 s"
+          sleep 20
+          bash scripts/sync-icu4x.sh
         }

@@ -1,20 +1,24 @@
-//! The engine build id (H35-Q8): writes `$OUT_DIR/engine_build_id.bin` (16 bytes), which
-//! `ENGINE_BUILD_ID` in `src/host.rs` includes, and `$OUT_DIR/engine_build_id.txt`, the text
-//! the id was hashed from.
+//! The engine build id (H35-Q8; the C-19 rule of the H35 "Build id" row since A2 start):
+//! writes `$OUT_DIR/engine_build_id.bin` (16 bytes), which `ENGINE_BUILD_ID` in `src/host.rs`
+//! includes, and `$OUT_DIR/engine_build_id.txt`, the text the id was hashed from.
 //!
 //! ```text
 //! EP9_BUILD_ID=<32 hex digits> set  -> id = those 16 bytes          text: "override <hex>\n"
 //! otherwise                         -> id = SHA-256(text)[..16]     text:
-//!     ep9 engine build id v1
+//!     ep9 engine build id v2
 //!     commit <git rev-parse HEAD, or "unknown" without git or outside a checkout>
 //!     target <TARGET>
-//!     features <ep9_unit's own CARGO_FEATURE_* names, sorted, comma-separated>
+//!     embedder <EP9_EMBEDDER at build time, empty by default>
 //!     rustc
 //!     <`$RUSTC -vV`, line by line>
 //! ```
 //!
-//! A build script sees only its own package's features, so the id cannot name the features of
-//! other crates (H35-Q8). It reruns when `EP9_BUILD_ID` changes, when this file changes, and
+//! C-19 (doc 13; MODES-CHECK MC-w27-6): the text names no Cargo feature (not `aot`, not `jit`),
+//! no tree state and no cargo profile, so the jit, jitless and `ep9c` builds of one commit share
+//! one id. The embedder string lets an embedder void its own units (V8 c68946f709 puts an
+//! embedder string in its version hash). It also refuses a build that opts in to hardware
+//! shadow stacks (MC-w28-9.1: `build_flags.rs`). It reruns when `EP9_BUILD_ID` or
+//! `EP9_EMBEDDER` changes, when this file changes, and
 //! when HEAD moves: it watches the HEAD file, and the branch ref HEAD names (the loose ref
 //! file; while the ref is packed, the nearest existing directory above it inside `refs/`, and
 //! `packed-refs`). `git rev-parse --git-path` finds them, also in a worktree, where `.git` is a
@@ -29,6 +33,9 @@ use ep9_bytecode::sha256::sha256;
 #[path = "build_watch.rs"]
 mod build_watch;
 
+#[path = "build_flags.rs"]
+mod build_flags;
+
 use build_watch::git;
 
 /// Length of the build id in bytes (`ENGINE_BUILD_ID: [u8; 16]`).
@@ -37,12 +44,28 @@ const BUILD_ID_LEN: usize = 16;
 /// The override variable: exactly 32 hex digits.
 const OVERRIDE_VAR: &str = "EP9_BUILD_ID";
 
+/// The embedder string variable (C-19): any text, hashed into the id; empty when unset.
+const EMBEDDER_VAR: &str = "EP9_EMBEDDER";
+
 fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets it"));
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=build_watch.rs");
+    println!("cargo::rerun-if-changed=build_flags.rs");
     println!("cargo::rerun-if-env-changed={OVERRIDE_VAR}");
+    println!("cargo::rerun-if-env-changed={EMBEDDER_VAR}");
+    // MC-w28-9.1: lazy deopt swaps return addresses (H29 Contract), which a hardware shadow
+    // stack refuses; no build opts in until the H29 A4 part proves another form.
+    let rustflags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let flags: Vec<&str> = rustflags.split('\x1f').filter(|f| !f.is_empty()).collect();
+    if let Some(flag) = build_flags::shadow_stack_opt_in(&flags) {
+        panic!(
+            "ep9 does not opt in to hardware shadow stacks (CET, GCS) until the H29 A4 part \
+             proves a lazy-deopt form for native return addresses (doc 13 C-19, MC-w28-9.1); \
+             remove the flag {flag:?}"
+        );
+    }
 
     let (id, text) = match std::env::var(OVERRIDE_VAR) {
         Ok(hex) => (
@@ -105,14 +128,14 @@ fn input_text(dir: &Path) -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_else(|| panic!("`{} -vV` failed", Path::new(&rustc).display()));
     let target = std::env::var("TARGET").expect("cargo sets TARGET");
-    let mut features: Vec<String> = std::env::vars()
-        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_").map(str::to_string))
-        .collect();
-    features.sort();
+    // C-19: no Cargo feature, no tree state and no cargo profile; an embedder string instead.
+    let embedder = std::env::var(EMBEDDER_VAR).unwrap_or_default();
+    if embedder.contains(['\n', '\r']) {
+        panic!("{EMBEDDER_VAR} must be one line, got {embedder:?}");
+    }
     let mut text = format!(
-        "ep9 engine build id v1\ncommit {}\ntarget {target}\nfeatures {}\nrustc\n",
+        "ep9 engine build id v2\ncommit {}\ntarget {target}\nembedder {embedder}\nrustc\n",
         commit.as_deref().unwrap_or("unknown"),
-        features.join(",")
     );
     for line in version.lines() {
         text.push_str(line.trim_end());

@@ -1,6 +1,6 @@
 # var-direct-eval: script (sloppy)
 # | function f(a) { var b; eval('a + b'); return b; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=49 source=embedded hints=none
 source_hash=222d0166cab0d2fecf121065fbd303f90501a85a4cc23b4f45bac85fb64352ab
 strings (9):
@@ -17,16 +17,15 @@ scopes (2):
   scope0 script outer=- flags=[] slots=["f":function]
   scope1 function outer=scope0 flags=[needs-context,sloppy-eval] slots=[".eval_ext":var, "a":var, "b":var, "this":var, "new.target":var, "arguments":var]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..49
-  code (24 bytes):
+  code (22 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22    LdaUndefined                                 ; 05
-     23    Return                                       ; 92
+     20    LdaUndefined                                 ; 05
+     21    Return                                       ; 92
   constants (2):
       0 Function f1
       1 String str0 "f"
@@ -56,14 +55,14 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      26 E> CallRuntimeForPair LoadLookupSlotForCall, r4-r5, r1-r2 ; 9d 1a 00 04 02 01
      32    LdaConstant k2  ; k2 = String str8 "a + b"   ; 0a 02
      34    Star r3                                      ; 0c 03
-     36    Mov r1, r4                                   ; 0d 01 04
-     39    Mov r3, r5                                   ; 0d 03 05
-     42    LdaCurrentFunction                           ; 0e
-     43    Star r6                                      ; 0c 06
-     45    LdaSmi [1]                                   ; 04 01
-     47    Star r7                                      ; 0c 07
-     49    LdaSmi [23]                                  ; 04 17
-     51    Star r8                                      ; 0c 08
+     36    LdaCurrentFunction                           ; 0e
+     37    Star r6                                      ; 0c 06
+     39    LdaSmi [1]                                   ; 04 01
+     41    Star r7                                      ; 0c 07
+     43    LdaSmi [23]                                  ; 04 17
+     45    Star r8                                      ; 0c 08
+     47    Mov r1, r4                                   ; 0d 01 04
+     50    Mov r3, r5                                   ; 0d 03 05
      53 E> CallRuntime ResolvePossiblyDirectEval, r4-r8 ; 68 07 00 04 05
      58    Star r1                                      ; 0c 01
      60 E> CallProperty1 r1, r2, r3, s0                 ; 61 01 02 03 00

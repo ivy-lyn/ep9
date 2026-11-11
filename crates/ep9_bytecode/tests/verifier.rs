@@ -863,15 +863,15 @@ fn abi5_runtime_arity() {
         err(call(RuntimeId::StoreEvalAnnexBFunction, 1)),
         VerifyErrorKind::RuntimeArity
     );
-    // 48 ids, dense; 48 is not defined.
-    assert_eq!(RUNTIME_FUNCTIONS.len(), 48);
+    // 50 ids, dense; 50 is not defined.
+    assert_eq!(RUNTIME_FUNCTIONS.len(), 50);
     assert!(
         RUNTIME_FUNCTIONS
             .iter()
             .all(|f| !f.returns_pair || f.id == RuntimeId::LoadLookupSlotForCall)
     );
     assert_eq!(
-        err(with_code(&[O::CallRuntime as u8, 48, 0, 0, 0, RET])),
+        err(with_code(&[O::CallRuntime as u8, 50, 0, 0, 0, RET])),
         VerifyErrorKind::FlagValue(0)
     );
 }
@@ -1064,4 +1064,69 @@ fn abi5_module_record_rules() {
             what: "module flags"
         }
     );
+}
+
+/// MC-w34-6 (V8 0b4d4612c8): the verifier reads a jump offset with the same sign as the
+/// interpreter decoder. `dsl.rs` (ep9_vm `interp/dsl.rs`, the `JumpFwd` and `JumpBack` operand
+/// lines) reads both kinds unsigned at each scale; the direction comes from the kind. So an
+/// offset with its top bit set is a long jump, never a jump the other way. Each case below
+/// passes only when the offset is read unsigned: read signed, it points the other way, out of
+/// the code or to a jump that is not allowed. [`Instruction::jump_target`] gives the same
+/// target as the verifier.
+#[test]
+fn jump_offsets_are_unsigned_as_the_interpreter_reads_them() {
+    assert!(!OperandKind::JumpFwd.is_signed());
+    assert!(!OperandKind::JumpBack.is_signed());
+    let lda = O::LdaZero as u8;
+    let target = |code: &[u8], at: u32| decode_at(code, at).unwrap().jump_target();
+    let with_loop_slot = |code: Vec<u8>| {
+        let mut u = with_code(&code);
+        u.functions[1]
+            .feedback_slots
+            .push(FeedbackSlotKind::JumpLoop); // s2
+        u
+    };
+
+    // Byte scale, forward: 0: Jump 0x80 -> 128: Return (signed: -128, a jump before 0).
+    let mut code = vec![O::Jump as u8, 0x80];
+    code.resize(128, lda);
+    code.push(RET);
+    assert_eq!(target(&code, 0), Some(128));
+    verify(with_code(&code)).unwrap();
+
+    // Byte scale, backward: 128: JumpLoop 0x80 -> 0 (signed: -128, so 256, past the end).
+    let mut code = vec![lda; 128];
+    code.extend([O::JumpLoop as u8, 0x80, 0, 2]);
+    assert_eq!(target(&code, 128), Some(0));
+    verify(with_loop_slot(code)).unwrap();
+
+    // Wide, backward: 32768: Wide JumpLoop 0x8000 -> 0 (signed: -32768, past the end).
+    let mut code = vec![lda; 0x8000];
+    code.extend([O::Wide as u8, O::JumpLoop as u8, 0x00, 0x80, 0, 0, 2, 0]);
+    assert_eq!(target(&code, 0x8000), Some(0));
+    verify(with_loop_slot(code)).unwrap();
+
+    // Wide, forward: 0: Wide Jump 0x8000 -> 32768: Return (signed: -32768, before 0).
+    let mut code = vec![O::Wide as u8, O::Jump as u8, 0x00, 0x80];
+    code.resize(0x8000, lda);
+    code.push(RET);
+    assert_eq!(target(&code, 0), Some(0x8000));
+    verify(with_code(&code)).unwrap();
+
+    // ExtraWide, backward over more than 64 KiB: 65536: ExtraWide JumpLoop 0x10000 -> 0.
+    let mut code = vec![lda; 0x1_0000];
+    code.extend([O::ExtraWide as u8, O::JumpLoop as u8]);
+    code.extend(0x1_0000u32.to_le_bytes());
+    code.extend(0i32.to_le_bytes());
+    code.extend(2u32.to_le_bytes());
+    assert_eq!(target(&code, 0x1_0000), Some(0));
+    verify(with_loop_slot(code)).unwrap();
+
+    // ExtraWide with the top bit set: the decoder gives the unsigned target 0x8000_0000, a
+    // forward jump far past the end, and the verifier refuses it with the jump error.
+    let mut code = vec![O::ExtraWide as u8, O::Jump as u8];
+    code.extend(0x8000_0000u32.to_le_bytes());
+    code.push(RET);
+    assert_eq!(target(&code, 0), Some(0x8000_0000));
+    assert_eq!(err(with_code(&code)), VerifyErrorKind::Jump(0));
 }

@@ -205,7 +205,7 @@ SPEC             [M1a]---------------------->[M3 compliance] (closes after M2)
 RT               [M1]-->[M4 runtime alpha + A1]------------>[M6 runtime beta]---------> [M8 share]
 AOT    A0(1) --> A0(2) --> A1h + A2 ------> A1 ---------> A3 --------> A4 ---------> gates -----> [A5=M10]
 1.0                       (after M1 exit)  (in M4)       (with M5)    (with M7)      at M8 exit
-Rules: no JIT tier code runs JS before M2. Unit machinery (A2) may start after M1 exit behind `aot`.
+Rules: no JIT tier code runs JS before M2. Unit machinery (A2) may start after M1 exit behind `aot`. [2026-11-10: the unit loader builds in every build (H27); `aot` gates unit emission only; the MC-w22-O5 check keeps M2 gate numbers (MC-w29-7)]
        The AOT lane never gates M2, M5 or M7. It gates M0/M1 exits only via time-boxed A0 spikes.
        K-A3 pre-check at M5 exit in every case; if it trips, M5c (3-6 PM est.) runs in the M7 window.
 ```

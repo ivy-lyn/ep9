@@ -15,7 +15,7 @@
 //!   v
 //! scope pass v0 (scope::analyze, layer 3 checks) --> ScopeAnalysis
 //!   v
-//! BytecodeGen v0 (bytecodegen::compile) ------------> VerifiedUnit (ep9_bytecode ABI 5)
+//! BytecodeGen v0 (bytecodegen::compile) ------------> VerifiedUnit (ep9_bytecode ABI 6)
 //! ```
 //!
 //! - No oxc type leaves this crate (H1). Errors are plain [`SyntaxError`] / [`RangeError`] values.
@@ -41,6 +41,7 @@ mod regex_check;
 pub mod scope;
 mod stack;
 mod strict_filter;
+mod surrogate;
 mod worker;
 
 pub use bytecodegen::{
@@ -52,6 +53,7 @@ pub use eval::compile_eval;
 pub use function_ctor::compile_function_ctor;
 pub use position::{LineMap, Position};
 pub use scope::ScopeAnalysis;
+pub use surrogate::eval_source_text;
 
 /// The ECMA-262 goal symbol of a source text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -423,7 +425,7 @@ pub(crate) fn semantic<'a>(
 
 /// Make a Script strict without changing the source text.
 ///
-/// oxc 0.155 has no strict-script option: only the Module goal is strict. But its parser has no
+/// oxc 0.157 has no strict-script option: only the Module goal is strict. But its parser has no
 /// strict state either. Every strict-only early error is in oxc_semantic, which makes the
 /// top-level scope strict when `Program::has_use_strict_directive()` holds. So a synthetic
 /// directive at index 0 gives the same result as a `"use strict";` source prefix, keeps every

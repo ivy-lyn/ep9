@@ -135,3 +135,88 @@ fn bitwise_results_above_the_size_limit_are_range_errors() {
         ])
     );
 }
+
+// ---- interrupt polls (MC-SPEC-BIGPOLL; H23 "Interrupt poll") -------------------------------
+
+/// A script unit.
+fn unit(src: &str) -> ep9_bytecode::VerifiedUnit {
+    ep9_frontend::compile(
+        src,
+        ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+        ep9_frontend::CompileOptions::default(),
+    )
+    .expect("compiles")
+}
+
+/// The watchdog test of MC-SPEC-BIGPOLL: a huge `toString(2)` (2^26 bits: 67,108,864 chars,
+/// 16,384 interrupt budget units, more than one budget of 10,000) stops on a termination. The
+/// script has no loop and no bytecode call, so only the polls inside `toString` can stop it:
+/// `stage` stays 'before'. The isolate keeps working. Before the fix, the conversion ran to its
+/// end and the script reached 'after'.
+#[test]
+fn a_huge_to_string_2_stops_on_a_termination() {
+    let got = common::on_big_stack(|| {
+        let mut iso = common::isolate(false);
+        iso.with_cx(|cx| {
+            cx.run_script(unit("var x = (1n << 67108864n) - 1n;"), "make.js")
+                .map(|_| ())
+        })
+        .expect("makes x");
+        iso.terminate_handle().terminate();
+        let src = "var stage = 'before'; var s = x.toString(2); stage = 'after';";
+        let r = iso.with_cx(|cx| cx.run_script(unit(src), "huge.js").map(|_| ()));
+        let terminated = r.is_err_and(|e| e.terminated);
+        let stage = common::global_text(&mut iso, "stage");
+        iso.with_cx(|cx| {
+            cx.run_script(unit("stage = 'again'"), "again.js")
+                .map(|_| ())
+        })
+        .expect("runs");
+        (terminated, stage, common::global_text(&mut iso, "stage"))
+    });
+    assert_eq!(
+        got,
+        (true, Some("before".to_string()), Some("again".to_string()))
+    );
+}
+
+/// An embedder interrupt callback runs inside long BigInt work (H23-Q6: at the next poll):
+/// the toString(2) above, a long `**`, and BigInt() of a long decimal text.
+#[test]
+fn an_interrupt_callback_runs_inside_long_bigint_work() {
+    for src in [
+        "var r = x.toString(2).length",
+        "var r = (3n ** 20000000n) > 0n",
+        "var r = BigInt('7'.repeat(2000000)) > 0n",
+    ] {
+        let ran = common::on_big_stack(move || {
+            let mut iso = common::isolate(false);
+            iso.with_cx(|cx| {
+                cx.run_script(unit("var x = (1n << 67108864n) - 1n;"), "make.js")
+                    .map(|_| ())
+            })
+            .expect("makes x");
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let f = flag.clone();
+            iso.interrupt_handle().request(Box::new(move || {
+                f.store(true, std::sync::atomic::Ordering::Relaxed)
+            }));
+            iso.with_cx(|cx| cx.run_script(unit(src), "long.js").map(|_| ()))
+                .expect("runs");
+            flag.load(std::sync::atomic::Ordering::Relaxed)
+        });
+        assert!(ran, "{src}");
+    }
+}
+
+/// An uncaught BigInt shows all its digits, as d8 and node do (M7-P0 reviewer R2): the
+/// 100-digit limit is for messages that name a BigInt, not for the thrown value itself.
+#[test]
+fn an_uncaught_bigint_shows_all_its_digits() {
+    assert_eq!(common::run_both("throw 5n"), Err("5n".to_string()));
+    let msg = common::run_both("throw 2n ** 7000n").unwrap_err();
+    // 2^7000 has 2,108 decimal digits.
+    assert_eq!(msg.len(), 2108 + 1, "{msg}");
+    assert!(msg.starts_with("16216967556622020264"), "{msg}");
+    assert!(msg.ends_with("2553829376n"), "{msg}");
+}

@@ -7,12 +7,30 @@
 //! ```text
 //! Isolate::new: builtins::check -> Runtime::new -> builtins::prepare
 //!   -> realm::init: atoms, the REALM record and fuse block, core intrinsics, global, symbols
-//!   -> realm::install: builtins::install (every table), %AggregateError%'s [[Prototype]],
-//!                      fill_intrinsics (the REALM record's intrinsics list)
+//!   -> realm::install: builtins::install (every table but the lazy groups; each lazy key
+//!                      gets its place with HOLE), the %AggregateError% and
+//!                      %SuppressedError% [[Prototype]], fill_intrinsics (the intrinsics list)
 //! realm::create (Cx::create_realm, $262.createRealm): blank the current-realm roots
 //!   -> init_core (a new REALM record, core intrinsics, global object, %Symbol.prototype%)
 //!   -> realm::install (the same function, into the builtin install list) -> switch back
+//! first use of a lazy group (Temporal; Intl from INTL wave 1) in a realm:
+//!   a read of its global key that finds HOLE ([`resolve_global`]: property.rs [[Get]] and
+//!   [[GetOwnProperty]], interp/slow/property.rs global_value), or an intrinsic use
+//!   ([`intrinsic_for_use`]: Cx::intrinsic, GetPrototypeFromConstructor,
+//!   Cx::function_realm_intrinsic) -> builtins::install_group into the realm that owns it
 //! ```
+//!
+//! **Lazy namespace groups (INTL-I1-D8).** A realm does not make the Temporal namespace (and
+//! from INTL wave 1 the Intl one) at init. The global key keeps its table place and
+//! attributes and holds HOLE, a VM-internal value that no JS code sees; its field is rep ANY
+//! and not const, so the install store moves no shape. The group installs at the first read
+//! of the key or the first use of one of its intrinsics, in the realm that owns the key or
+//! the intrinsic. `[[Set]]` and `[[Delete]]` of the key do not install (a write or a delete
+//! replaces HOLE, and the install then keeps the key as it is), and neither do HasProperty
+//! and `[[OwnPropertyKeys]]`. Until the install the group's intrinsics are undefined in the
+//! roots and in the REALM record; `builtins::intrinsic` and [`intrinsic_in`] stay raw reads,
+//! and [`intrinsic_for_use`] is the installing form. A group is installed in a realm when its
+//! first intrinsic is an object there (no root and no REALM field records it).
 //!
 //! A realm is a REALM record (OBJECT_LAYOUT 3, `object::realmf`): its global object, its
 //! global lexical record and its intrinsics list (index `IntrinsicId`). Every function stores
@@ -55,7 +73,7 @@
 //! |---|---|
 //! | `%Object.prototype%` | an ordinary object, `[[Prototype]]` null |
 //! | `%Function.prototype%` | VM builtin 0.0: a function that returns undefined (§20.2.3) |
-//! | `%Array.prototype%` | an ordinary object (v0: not an Array exotic object, H18) |
+//! | `%Array.prototype%` | an Array exotic object of length 0 (§23.1.3; `object::new_array`) |
 //! | `%String.prototype%`, `%Number.prototype%`, `%Boolean.prototype%` | `wrapper::new_wrapper` of "", +0 and false (§22.1.3, §21.1.3, §20.3.3) |
 //! | `%Iterator.prototype%`, `%ArrayIteratorPrototype%` | ordinary objects (`%StringIteratorPrototype%` is made by the VM table, `natives.rs`) |
 //! | `%Error.prototype%`, the native error prototypes | ordinary objects |
@@ -119,7 +137,8 @@ fn init_core(rt: &Runtime, first: bool) {
         BuiltinId::new(natives::VM_BLOCK, natives::vm::FUNCTION_PROTOTYPE),
     );
     rt.set_root(Root::FunctionPrototype, fp);
-    let array_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::ArrayPrototype, object_proto); // `new_array` reads it: the [[Prototype]]
+    let array_proto = object::new_array(rt, 0); // an Array exotic object (§23.1.3)
     rt.set_root(Root::ArrayPrototype, array_proto);
     for (r, v) in [
         (Root::StringPrototype, rt.atom(Atom::Empty)),
@@ -162,11 +181,12 @@ fn init_core(rt: &Runtime, first: bool) {
 
 /// Installs the builtin tables into the current realm (made by [`init`] or [`create`]): every
 /// table of the isolate (`builtins::install`: the VM table, then the embedder's, so every
-/// module of `ep9_builtins::MODULES` too), then the `[[Prototype]]` of `%AggregateError%`, then
-/// the REALM record's intrinsics list. The one install function of every realm (H22-Q3; a lazy
-/// install, M1 per M3D-5, changes only this). GC points.
+/// module of `ep9_builtins::MODULES` too, but the modules of a lazy group, whose global key
+/// gets HOLE), then the `[[Prototype]]` of `%AggregateError%` and `%SuppressedError%`, then
+/// the intrinsics list of the REALM record. The one install function of every realm (H22-Q3);
+/// a lazy group installs later through `builtins::install_group` (INTL-I1-D8). GC points.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
-    builtins::install(cx)?;
+    builtins::install(cx.rt())?;
     aggregate_error_prototype(cx.rt());
     fill_intrinsics(cx.rt());
     Ok(())
@@ -175,12 +195,17 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
 /// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
 /// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
 /// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
+///
+/// The explicit resource management proposal (Properties of the SuppressedError
+/// Constructor): the same for `%SuppressedError%` (`ep9_builtins` disposable.rs, M7-P3).
 fn aggregate_error_prototype(rt: &Runtime) {
-    let c = builtins::intrinsic(rt, IntrinsicId::AggregateError);
     let error = builtins::intrinsic(rt, IntrinsicId::Error);
-    if object::is_object(c) && object::is_object(error) {
-        let ok = property::set_prototype_of(rt, c, error);
-        debug_assert!(ok, "%AggregateError% is extensible");
+    for id in [IntrinsicId::AggregateError, IntrinsicId::SuppressedError] {
+        let c = builtins::intrinsic(rt, id);
+        if object::is_object(c) && object::is_object(error) {
+            let ok = property::set_prototype_of(rt, c, error);
+            debug_assert!(ok, "{} is extensible", id.name());
+        }
     }
 }
 
@@ -194,8 +219,9 @@ pub(crate) fn new_realm_record(rt: &Runtime) -> u64 {
     realm
 }
 
-/// Copies every intrinsic of the realm (`builtins::intrinsic`; undefined for one nothing made)
-/// into the intrinsics list of the `Root::Realm` record, at index `IntrinsicId`. Runs after
+/// Copies every intrinsic of the realm (`builtins::intrinsic`; undefined for one nothing made
+/// and for the intrinsics of a lazy group, which `builtins::install_group` writes later) into
+/// the intrinsics list of the `Root::Realm` record, at index `IntrinsicId`. Runs after
 /// `builtins::install`. Allocates nothing.
 pub(crate) fn fill_intrinsics(rt: &Runtime) {
     let realm = rt.root(Root::Realm);
@@ -224,7 +250,8 @@ fn is_realm(v: u64) -> bool {
 
 /// CreateRealm, SetRealmGlobalObject and SetDefaultGlobalBindings (§9.3.1-§9.3.3) with every
 /// builtin table of the isolate: a new realm with its own intrinsics and global object.
-/// Returns its REALM record; the current realm stays current. GC point.
+/// Returns its REALM record; the current realm stays current. The new realm's lazy groups
+/// install at their first use there, as the first realm's do. GC point.
 ///
 /// The new realm is made in the current-realm roots (so `init_core` and `install` are the
 /// first realm's code): they are blanked, filled by the new realm, then the caller's realm is
@@ -307,13 +334,57 @@ pub(crate) fn leave(cx: &mut Cx, saved: Option<u64>) {
     }
 }
 
-/// The intrinsic `id` of `realm` (current or not): undefined if no table made it.
+/// The intrinsic `id` of `realm` (current or not): undefined if no table made it, and for
+/// an intrinsic of a lazy group that is not installed in `realm` (a raw read; the installing
+/// form is [`intrinsic_for_use`]). Not a GC point.
 pub(crate) fn intrinsic_in(rt: &Runtime, realm: u64, id: IntrinsicId) -> u64 {
     if realm == rt.root(Root::Realm) {
         return builtins::intrinsic(rt, id);
     }
     let list = object::record_get(realm, realmf::INTRINSICS);
     object::list_get(list, id as usize)
+}
+
+/// The intrinsic `id` of `realm` (current or not) for a use: [`intrinsic_in`], but an
+/// intrinsic of a lazy group installs its group into `realm` first
+/// (`builtins::install_group`), so it gives what the eager install gave (INTL-I1-D8). For
+/// `Cx::intrinsic`, the default prototype of GetPrototypeFromConstructor and
+/// `Cx::function_realm_intrinsic`. GC point only for a lazy group that is not installed in
+/// `realm` yet.
+pub(crate) fn intrinsic_for_use(rt: &Runtime, realm: u64, id: IntrinsicId) -> u64 {
+    let v = intrinsic_in(rt, realm, id);
+    if v != UNDEFINED {
+        return v;
+    }
+    match builtins::lazy_group(rt, id) {
+        Some(g) => {
+            builtins::install_group(rt, realm, g);
+            intrinsic_in(rt, realm, id)
+        }
+        None => v,
+    }
+}
+
+/// The swap on read (INTL-I1-D8): a read of the own data property `key` of `holder` found
+/// HOLE. If `holder` is the global object of a realm and `key` is the global key of a lazy
+/// group, the group installs into that realm (the holder's, which need not be the current
+/// realm) and the property's value now is the result; else HOLE as found (the read is not
+/// of a lazy key). For `[[Get]]`, `[[GetOwnProperty]]` and `[[DefineOwnProperty]]`
+/// (`property.rs`) and the global load miss (`interp/slow/property.rs`). GC point.
+#[cold]
+#[inline(never)]
+pub(crate) fn resolve_global(rt: &Runtime, holder: u64, key: u64) -> u64 {
+    if let Some(realm) = of_global(rt, holder)
+        && let Some(g) = builtins::lazy_group_of_key(rt, key)
+    {
+        builtins::install_group(rt, realm, g);
+        if let Some((v, a)) = own_get(holder, key)
+            && a & attr::ACCESSOR == 0
+        {
+            return v;
+        }
+    }
+    HOLE
 }
 
 /// Appends the template object `t` to the current realm's `[[TemplateMap]]`

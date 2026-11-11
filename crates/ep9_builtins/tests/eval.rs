@@ -408,18 +408,40 @@ print(h());"#
 }
 
 /// An Unsupported construct in eval code is the v0 not-implemented Error, never a SyntaxError
-/// (D7, W4-P3-FALSE-PASS); a lone surrogate in the source is not implemented either (D8).
+/// (D7, W4-P3-FALSE-PASS).
 #[test]
-fn unsupported_and_lone_surrogates_are_not_syntax_errors() {
+fn unsupported_is_not_a_syntax_error() {
     assert_eq!(
         run_both(
             r#"function e(f) { try { f(); return 'ok'; } catch (x) { return x.constructor.name + ': ' + x.message; } }
-print(e(() => eval('class A { accessor x = 1 }')));
-print(e(() => eval("'" + String.fromCharCode(0xD800) + "'")));"#
+print(e(() => eval('class A { accessor x = 1 }')));"#
+        ),
+        lines(&["Error: not implemented in ep9 v0: unsupported: class auto-accessors"])
+    );
+}
+
+/// Eval and `Function()` source with a lone surrogate go through the lone-surrogate shim
+/// (H05-Q3): fine in comments and in string, template and regex literals (the real code
+/// units), a SyntaxError elsewhere; a real U+FDD0 stays itself.
+#[test]
+fn lone_surrogates_in_eval_source() {
+    assert_eq!(
+        run_both(
+            r#"var D800 = String.fromCharCode(0xD800), DC38 = String.fromCharCode(0xDC38);
+function e(f) { try { return String(f()); } catch (x) { return x.constructor.name; } }
+function hex(s) { var o = []; for (var i = 0; i < s.length; i++) o.push(s.charCodeAt(i).toString(16)); return o.join(' '); }
+print(e(() => eval('1 //' + D800)), e(() => eval('/*' + DC38 + '*/ 2')));
+print(hex(eval("'a" + D800 + "'")), hex(eval('`' + DC38 + '`')), hex(eval('String.raw`\\' + D800 + '`')));
+print(hex(eval('/' + D800 + '/').source), eval('/\\uD83D' + DC38 + '/u').test('\uD83D\uDC38'));
+print(e(() => eval('var x' + D800)), e(() => eval('/(?<a' + D800 + '>.)/')));
+print(hex(eval("'\uFDD0d800'")), hex(Function('return "' + DC38 + '"')()));"#
         ),
         lines(&[
-            "Error: not implemented in ep9 v0: unsupported: class auto-accessors",
-            "Error: not implemented in ep9 v0: source text with a lone surrogate",
+            "1 2",
+            "61 d800 dc38 5c d800",
+            "d800 false",
+            "SyntaxError SyntaxError",
+            "fdd0 64 38 30 30 dc38",
         ])
     );
 }

@@ -6,11 +6,15 @@
 //!      signed flag == signature section ------------------------------ fail -> LOAD ERROR
 //!    2 SHA-256 (content_hash and signature bytes zeroed) == content_hash - fail -> LOAD ERROR
 //!    3 engine_build_id, bytecode_abi ----------------------------------- differ -> SOURCE
-//!    4 value_encoding .. builtin_abi, target, heap_page_log2, cpu_required
-//!      (a required bit the host lacks); a text section while a native
-//!      contract is at version 0 -------------------------------------- differ -> BYTECODE
-//!      (and drop the hints if fact_schema differs, whatever differs first)
-//!    -> LOAD
+//!    4 value_encoding .. builtin_abi, vm_layout; incompat_flags (a bit this
+//!      engine does not know); runtime_table_len above the host's; root_shapes,
+//!      codegen_flags; unit_data_slot >= 64; target, heap_page_log2,
+//!      cpu_required (a required bit the host lacks); a text section while a
+//!      native contract is at version 0; a reserved section (deps, snapshot
+//!      binding); an unknown extension with "native needs" ------------- differ -> BYTECODE
+//!      (and drop the facts if fact_schema differs, whatever differs first)
+//!    -> LOAD (compat_flags: an unknown bit is ignored; an unknown extension
+//!       without "native needs" is skipped)
 //! ```
 //!
 //! Steps 5-8 (map, link, register, install) are the A2 loader.
@@ -22,8 +26,8 @@ use ep9_bytecode::sha256::{Digest, Sha256};
 
 use crate::codes::{Contract, SectionKind, cpu};
 use crate::header::{
-    BadUnit, HEADER_SIZE, SECTION_ENTRY_SIZE, SECTION_TABLE_OFFSET, SectionEntry, UnitHeader,
-    header_flags, offsets,
+    BadUnit, HEADER_SIZE, SECTION_ENTRY_SIZE, SECTION_TABLE_OFFSET, TableEntry, UNIT_DATA_SLOTS,
+    UnitHeader, header_flags, incompat_flags, offsets,
 };
 use crate::host::HostInfo;
 
@@ -83,6 +87,28 @@ pub enum Verdict {
     },
     /// Step 4: the unit has a text section, but this contract has no native form yet.
     NoNativeForm(Contract),
+    /// Step 4: incompat flag bits this engine does not know.
+    Incompat {
+        /// The unknown bits.
+        bits: u32,
+    },
+    /// Step 4: the native code calls RuntimeTable entries this engine does not have.
+    RuntimeTable {
+        /// The unit's `runtime_table_len`.
+        unit: u32,
+        /// The host's table length.
+        host: u32,
+    },
+    /// Step 4: the native code bakes other snapshot root shapes.
+    RootShapes,
+    /// Step 4: the native code was emitted under other run-time flags.
+    CodegenFlags,
+    /// Step 4: the unit-data slot is not one of the 64 (H35-Q9).
+    Slot(u8),
+    /// Step 4: a reserved section (deps, snapshot binding) that no engine checks yet.
+    ReservedSection(SectionKind),
+    /// Step 4: an extension section this engine does not know, which the native code needs.
+    Extension(u32),
 }
 
 impl Verdict {
@@ -100,7 +126,14 @@ impl Verdict {
             | Self::Target { .. }
             | Self::PageSize { .. }
             | Self::Cpu { .. }
-            | Self::NoNativeForm(_) => Outcome::Bytecode,
+            | Self::NoNativeForm(_)
+            | Self::Incompat { .. }
+            | Self::RuntimeTable { .. }
+            | Self::RootShapes
+            | Self::CodegenFlags
+            | Self::Slot(_)
+            | Self::ReservedSection(_)
+            | Self::Extension(_) => Outcome::Bytecode,
         }
     }
 
@@ -156,6 +189,21 @@ impl fmt::Display for Verdict {
                 "bytecode: native code, but {} has no native form yet (version 0)",
                 c.name()
             ),
+            Self::Incompat { bits } => write!(f, "bytecode: unknown incompat flags {bits:#x}"),
+            Self::RuntimeTable { unit, host } => write!(
+                f,
+                "bytecode: native code calls {unit} runtime table entries, this engine has {host}"
+            ),
+            Self::RootShapes => f.write_str("bytecode: native code bakes other root shapes"),
+            Self::CodegenFlags => f.write_str("bytecode: native code of other codegen flags"),
+            Self::Slot(s) => write!(f, "bytecode: unit-data slot {s} is not 0..64"),
+            Self::ReservedSection(k) => {
+                write!(f, "bytecode: reserved {} section, not built yet", k.name())
+            }
+            Self::Extension(k) => write!(
+                f,
+                "bytecode: native code needs extension section {k:#x}, unknown here"
+            ),
         }
     }
 }
@@ -173,12 +221,16 @@ pub fn verdict(bytes: &[u8], host: &HostInfo) -> Verdict {
     }
 }
 
-/// Where each section is, indexed by kind id.
-struct Sections([Option<Range<usize>>; 10]);
+/// Where each named section is, indexed by kind id, and the extension sections in table
+/// order: (kind, native needs, range).
+struct Sections {
+    named: [Option<Range<usize>>; 12],
+    extensions: Vec<(u32, bool, Range<usize>)>,
+}
 
 impl Sections {
     fn get(&self, k: SectionKind) -> Option<Range<usize>> {
-        self.0[k as usize].clone()
+        self.named[k as usize].clone()
     }
 }
 
@@ -215,29 +267,39 @@ fn read_table(bytes: &[u8], h: &UnitHeader) -> Result<Sections, BadUnit> {
     if bytes.len() < table_end {
         return bad("truncated table");
     }
-    let mut sections = Sections(Default::default());
+    let mut sections = Sections {
+        named: Default::default(),
+        extensions: Vec::new(),
+    };
     let mut end = table_end;
     let mut prev_kind = 0u32;
     for i in 0..count {
         let at = SECTION_TABLE_OFFSET + i * SECTION_ENTRY_SIZE;
-        let e = SectionEntry::decode(&bytes[at..at + SECTION_ENTRY_SIZE])?;
-        if e.kind as u32 <= prev_kind {
+        let e = TableEntry::decode(&bytes[at..at + SECTION_ENTRY_SIZE])?;
+        if e.kind() <= prev_kind {
             return bad("section kinds not ascending");
         }
-        prev_kind = e.kind as u32;
-        let align = 1usize << e.kind.align_log2();
+        prev_kind = e.kind();
+        let align = 1usize << e.align_log2();
         let start = end.next_multiple_of(align);
-        if e.offset != start as u64 {
+        if e.offset() != start as u64 {
             return bad("section offset");
         }
-        if start > bytes.len() || e.size > (bytes.len() - start) as u64 {
+        if start > bytes.len() || e.size() > (bytes.len() - start) as u64 {
             return bad("section out of bounds");
         }
         if bytes[end..start].iter().any(|&b| b != 0) {
             return bad("padding not zero");
         }
-        end = start + e.size as usize;
-        sections.0[e.kind as usize] = Some(start..end);
+        end = start + e.size() as usize;
+        match e {
+            TableEntry::Named(n) => sections.named[n.kind as usize] = Some(start..end),
+            TableEntry::Extension(x) => {
+                sections
+                    .extensions
+                    .push((x.kind, x.native_needs, start..end))
+            }
+        }
     }
     if end != bytes.len() {
         return bad("bytes after the last section");
@@ -290,6 +352,9 @@ fn compare(h: &UnitHeader, sections: &Sections, host: &HostInfo) -> Verdict {
             };
         }
     }
+    if let Some(v) = compare_v2(h, host) {
+        return v;
+    }
     let unit_target = (h.target_arch, h.target_abi);
     let host_target = (host.target_arch, host.target_abi);
     if host.target_arch == 0 || host.target_abi == 0 || unit_target != host_target {
@@ -315,5 +380,41 @@ fn compare(h: &UnitHeader, sections: &Sections, host: &HostInfo) -> Verdict {
     {
         return Verdict::NoNativeForm(c);
     }
+    if let Some(k) = SectionKind::ALL
+        .into_iter()
+        .find(|&k| k.reserved() && sections.get(k).is_some())
+    {
+        return Verdict::ReservedSection(k);
+    }
+    // No extension kind is known yet: one that the native code needs gives BYTECODE, and one
+    // it does not need is skipped.
+    if let Some(&(k, _, _)) = sections.extensions.iter().find(|(_, needs, _)| *needs) {
+        return Verdict::Extension(k);
+    }
     Verdict::Load
+}
+
+/// Step 4, the container v2 header fields: incompat flags, the RuntimeTable length, the root
+/// shapes, the codegen flags and the unit-data slot (compat flags are ignored).
+fn compare_v2(h: &UnitHeader, host: &HostInfo) -> Option<Verdict> {
+    let bits = h.incompat_flags & !incompat_flags::DEFINED;
+    if bits != 0 {
+        return Some(Verdict::Incompat { bits });
+    }
+    if h.runtime_table_len > host.runtime_table_len {
+        return Some(Verdict::RuntimeTable {
+            unit: h.runtime_table_len,
+            host: host.runtime_table_len,
+        });
+    }
+    if h.root_shapes != host.root_shapes {
+        return Some(Verdict::RootShapes);
+    }
+    if h.codegen_flags != host.codegen_flags {
+        return Some(Verdict::CodegenFlags);
+    }
+    if h.unit_data_slot >= UNIT_DATA_SLOTS {
+        return Some(Verdict::Slot(h.unit_data_slot));
+    }
+    None
 }

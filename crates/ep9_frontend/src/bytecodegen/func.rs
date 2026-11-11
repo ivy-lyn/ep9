@@ -14,15 +14,16 @@
 use std::collections::HashMap;
 
 use ep9_bytecode::{
-    ConstIndex, FeedbackSlot, FeedbackSlotKind, FunctionBuilder, FunctionCode, FunctionMeta,
-    HandlerKind, Label, Register, RegisterList, RegisterMark, RuntimeId, UnitString,
+    ConstIndex, FeedbackSlot, FeedbackSlotKind, FunctionCode, FunctionMeta, HandlerKind, Label,
+    Register, RegisterList, RuntimeId, UnitString,
 };
 use oxc_ast::ast::{
     ArrowFunctionExpression, BindingPattern, Class, FormalParameters, Function, Program, Statement,
 };
 use oxc_span::{GetSpan, Span};
 
-use super::{CodegenError, Job, UnitCtx, build_error, new_builder};
+use super::regopt::{Emitter, Mark};
+use super::{CodegenError, Job, UnitCtx, new_builder};
 use crate::scope::{
     Binding, BindingId, BindingKind, BindingLocation, FrameSlot, FunctionInfo, FunctionKind,
     NameId, PerIteration, Reference, Resolution, ScopeAnalysis, ScopeId, ScopeKind,
@@ -84,7 +85,8 @@ pub(crate) struct FnGen<'a, 's> {
     pub(crate) cx: &'s UnitCtx<'s>,
     pub(crate) sa: &'s ScopeAnalysis,
     pub(crate) info: &'s FunctionInfo,
-    pub(crate) b: FunctionBuilder,
+    /// The builder, through the register optimizer (`regopt.rs`).
+    pub(crate) b: Emitter,
     pub(crate) jobs: Vec<Job<'a>>,
     /// The current analysis scope.
     pub(crate) scope: ScopeId,
@@ -110,11 +112,13 @@ pub(crate) struct FnGen<'a, 's> {
     /// (B.3.2.3) and the register that holds what `DeclareEvalAnnexBFunction` answered for it
     /// (`gen_eval_program`; `stmt.rs` `store_annex_b_var` reads it).
     pub(crate) eval_annex_b: Vec<(BindingId, Register)>,
+    /// The using regions being generated, innermost last (`stmt.rs`, `using`).
+    pub(crate) using: Vec<super::stmt::UsingRegion>,
 }
 
 impl<'a, 's> FnGen<'a, 's> {
     pub(crate) fn new(cx: &'s UnitCtx<'s>, info: &'s FunctionInfo, meta: FunctionMeta) -> Self {
-        let mut b = new_builder(info, meta);
+        let mut b = new_builder(info, meta, cx.regopt);
         // Prologue code (context set-up, frame bindings) reports the function start.
         b.set_throw_position(Some(info.span.start));
         let entry_ctx = cx.needs_entry_ctx[info.id.index()].then(|| {
@@ -141,11 +145,12 @@ impl<'a, 's> FnGen<'a, 's> {
             generator: None,
             last_stmt: u32::MAX,
             eval_annex_b: Vec::new(),
+            using: Vec::new(),
         }
     }
 
     pub(crate) fn finish(self) -> Gen<(FunctionCode, Vec<Job<'a>>)> {
-        let code = self.b.finish().map_err(build_error)?;
+        let code = self.b.finish().map_err(Box::new)?;
         Ok((code, self.jobs))
     }
 
@@ -195,11 +200,11 @@ impl<'a, 's> FnGen<'a, 's> {
         self.b.new_register_list(n)
     }
 
-    pub(crate) fn mark(&self) -> RegisterMark {
+    pub(crate) fn mark(&self) -> Mark {
         self.b.register_mark()
     }
 
-    pub(crate) fn release(&mut self, m: RegisterMark) {
+    pub(crate) fn release(&mut self, m: Mark) {
         self.b.release_registers(m);
     }
 
@@ -845,9 +850,9 @@ impl<'a, 's> FnGen<'a, 's> {
         }
     }
 
-    /// Return the accumulator from this function (derived constructors: `undefined` returns
-    /// the checked `this`; an async function resolves its promise first, `async_fn.rs` AF4;
-    /// an async generator completes its first request, `async_gen.rs`).
+    /// Return the accumulator from this function (derived constructors: `undefined` returns the
+    /// `this` binding, which the construct return checks; an async function resolves its
+    /// promise first, `async_fn.rs` AF4; an async generator completes its first request).
     pub(crate) fn emit_return(&mut self) {
         if let Some(object) = self.async_object() {
             self.async_return(object);
@@ -858,17 +863,19 @@ impl<'a, 's> FnGen<'a, 's> {
             return;
         }
         if self.info.kind.is_derived_constructor() {
-            let this_check = self.b.new_label();
-            self.b.jump_if_undefined(this_check);
+            // §10.2.2 steps 10-12 run in the caller's context after the return
+            // (`interp::construct_return`, `call::construct_function_object`), so their
+            // errors are the caller realm's: a value that is not undefined goes back as it
+            // is, and undefined becomes the `this` binding, the hole while `super()` has not
+            // run.
+            let this_value = self.b.new_label();
+            self.b.jump_if_undefined(this_value);
             self.b.return_();
-            self.b.bind(this_check);
+            self.b.bind(this_value);
             match self.info.this {
-                Some(t) => {
-                    self.load_binding_here(t, false);
-                    self.b.throw_super_not_called_if_hole();
-                }
+                Some(t) => self.load_binding_here(t, false),
                 None => {
-                    self.b.lda_the_hole().throw_super_not_called_if_hole();
+                    self.b.lda_the_hole();
                 }
             }
         }
@@ -1222,6 +1229,10 @@ impl<'a, 's> FnGen<'a, 's> {
 
     /// Statements of a body.
     pub(crate) fn statements(&mut self, list: &'a oxc_allocator::Vec<'a, Statement<'a>>) -> Gen {
+        let kinds = super::stmt::using_kinds(list);
+        if !kinds.is_empty() {
+            return self.using_statements(list, &kinds);
+        }
         for s in list {
             self.statement(s)?;
         }

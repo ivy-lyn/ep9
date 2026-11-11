@@ -8,6 +8,8 @@
 //! | `release` | `munmap` | `VirtualFree(MEM_RELEASE)` |
 //! | `commit` | `mprotect(RW)` | `VirtualAlloc(MEM_COMMIT, PAGE_READWRITE)` |
 //! | `decommit` | `mmap(MAP_FIXED, PROT_NONE)` | `VirtualFree(MEM_DECOMMIT)` |
+//! | `protect_rx` (unit text, M7-P4) | `mprotect(RX)` | `VirtualProtect(PAGE_EXECUTE_READ)` |
+//! | `flush_icache` (unit text, M7-P4) | `sys_icache_invalidate`; arm64 `DC CVAU` + `IC IVAU`; x86-64 none | `FlushInstructionCache` |
 //! | `stack_bounds` | `pthread_get_stackaddr_np` / `pthread_getattr_np` | `GetCurrentThreadStackLimits` |
 
 #[cfg(unix)]

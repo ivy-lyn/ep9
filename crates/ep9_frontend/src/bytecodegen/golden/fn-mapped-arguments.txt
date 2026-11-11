@@ -1,6 +1,6 @@
 # fn-mapped-arguments: script (sloppy)
 # | function f(a, b, a) { arguments; return () => b; } function g(x, y) { 'use strict'; arguments; }
-; ep9 bytecode, ABI 5
+; ep9 bytecode, ABI 6
 unit kind=script strict=false ts=none source_len=96 source=embedded hints=none
 source_hash=bc208eb0bde7bd52820fb8cf61b7dcb3797f711001850bdfc415f662096845f8
 strings (4):
@@ -14,22 +14,20 @@ scopes (4):
   scope2 function outer=scope1 flags=[] slots=[]
   scope3 function outer=scope0 flags=[strict] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..96
-  code (41 bytes):
+  code (37 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       9    Star r1                                      ; 0c 01
      11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
      13    Star r0                                      ; 0c 00
      15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     20    Ldar r1                                      ; 0b 01
-     22 E> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
-     26    Star r1                                      ; 0c 01
-     28    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
-     30    Star r0                                      ; 0c 00
-     32 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
-     37    Ldar r1                                      ; 0b 01
-     39    LdaUndefined                                 ; 05
-     40    Return                                       ; 92
+     20 E> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
+     24    Star r1                                      ; 0c 01
+     26    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
+     28    Star r0                                      ; 0c 00
+     30 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     35    LdaUndefined                                 ; 05
+     36    Return                                       ; 92
   constants (4):
       0 Function f1
       1 String str0 "f"
@@ -43,8 +41,8 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       0 S 0 (1:1)
       5 E 0 (1:1)
      15 E 0 (1:1)
-     22 E 51 (1:52)
-     32 E 51 (1:52)
+     20 E 51 (1:52)
+     30 E 51 (1:52)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=2 range=0..50
   code (25 bytes):
       0 E> CreateFunctionContext k0, [2]  ; k0 = Scope scope1 ; 75 00 02

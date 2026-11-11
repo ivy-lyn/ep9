@@ -25,9 +25,11 @@
 /crates/ep9_facts/        @Brooooooklyn
 
 # Engine crates with their own ADR rule: ep9_math is the one Rust Math (H36: the same float bits
-# on every target); ep9_builtins uses only the builtin ABI (H20) and has no unsafe code.
+# on every target); ep9_builtins uses only the builtin ABI (H20) and has no unsafe code;
+# ep9_intl holds the Intl modules on ICU4X (H20 crate layout, INTL-I1-D1; H36 fp-check entry 2).
 /crates/ep9_math/         @Brooooooklyn
 /crates/ep9_builtins/     @Brooooooklyn
+/crates/ep9_intl/         @Brooooooklyn
 
 # Decisions and process
 /docs/adr/                @Brooooooklyn

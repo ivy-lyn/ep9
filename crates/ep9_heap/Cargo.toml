@@ -13,3 +13,9 @@ ep9_platform = { path = "../ep9_platform" }
 
 [lints]
 workspace = true
+
+# loom runs the parallel mark's work structure under every interleaving (src/tests/loom.rs):
+# RUSTFLAGS="--cfg loom" cargo test --release -p ep9_heap --lib parallel::loom_tests. Only that build
+# compiles it; Cargo.lock lists it for every build.
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7.2"

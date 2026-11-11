@@ -1,8 +1,8 @@
 //! Calls, recursion, argument padding, `this`, construct, classes, closures, host functions.
 
 use ep9_bytecode::{
-    FeedbackSlotKind, FunctionFlags, FunctionId, FunctionKind, Register, RegisterList, RuntimeId,
-    ScopeId, ScopeKind, VariableMode, VerifiedUnit,
+    FeedbackSlotKind, FunctionCode, FunctionFlags, FunctionId, FunctionKind, Register,
+    RegisterList, RuntimeId, ScopeId, ScopeKind, VariableMode, VerifiedUnit,
 };
 
 use super::{Asm, isolate, meta, ok, run_all, take_output, unit, unit_with_scopes};
@@ -890,4 +890,583 @@ fn bound_with_global_after_the_receiver_test_is_try_bind_this() {
             assert_eq!(got, want, "strict {strict} receiver {this:#x}");
         }
     }
+}
+
+// ---- the decode-free host entry and the forwarded calls (M7-P0 CALLHOST) --------------------
+
+/// `echo(...)`: "<typeof this>:<args joined by ,>" (a host callee for the entry shapes).
+fn echo<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let mut parts = Vec::new();
+    for v in args.iter() {
+        parts.push(cx.to_rust_string(v)?);
+    }
+    let t = if this.is_undefined() {
+        "undefined".to_string()
+    } else {
+        cx.to_rust_string(this)?
+    };
+    let s = format!("{t}:{}", parts.join(","));
+    Ok(cx.new_string(&s)?.value())
+}
+
+/// A host function in the form of `Function.prototype.call` (IsCallable, then the VM steps).
+fn fcall<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if !this.is_callable() {
+        return Err(cx.throw_type_error("fcall: not callable"));
+    }
+    cx.forward_call(args)
+}
+
+/// A host function in the form of `Function.prototype.apply`.
+fn fapply<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if !this.is_callable() {
+        return Err(cx.throw_type_error("fapply: not callable"));
+    }
+    cx.forward_apply(args)
+}
+
+/// `fcall` and `fapply` as the definitions of a builtin table, installed as globals: a
+/// forwarder records only a function made from a table definition (M7-P0 JIT reviewer F1).
+static FORWARDERS: crate::BuiltinTable = crate::BuiltinTable::new(
+    "forwarders",
+    &[crate::BuiltinModule {
+        name: "forwarders",
+        block: 104,
+        defs: &[
+            crate::BuiltinDef::method("fcall", 1, fcall),
+            crate::BuiltinDef::method("fapply", 2, fapply),
+        ],
+        intrinsics: &[],
+        props: &[crate::ObjectProps {
+            target: crate::IntrinsicId::GlobalObject,
+            props: &[
+                crate::PropDef::method(crate::PropKey::Str("fcall"), 0),
+                crate::PropDef::method(crate::PropKey::Str("fapply"), 1),
+            ],
+        }],
+    }],
+);
+
+/// The 9 fixed-operand call shapes.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    CallProperty0,
+    CallProperty1,
+    CallProperty2,
+    CallProperty,
+    CallAnyReceiver,
+    CallUndefinedReceiver0,
+    CallUndefinedReceiver1,
+    CallUndefinedReceiver2,
+    CallUndefinedReceiver,
+}
+
+/// Emits `acc = callee(..)` in `shape` with the receiver "R" (property shapes) and the
+/// arguments 1..=n (n = 0, 1, 2 for the numbered shapes, 3 for the list shapes).
+fn emit_shape(s: &mut Asm, shape: Shape, callee: &str, l: RegisterList) {
+    let property = matches!(
+        shape,
+        Shape::CallProperty0
+            | Shape::CallProperty1
+            | Shape::CallProperty2
+            | Shape::CallProperty
+            | Shape::CallAnyReceiver
+    );
+    let n = match shape {
+        Shape::CallProperty0 | Shape::CallUndefinedReceiver0 => 0,
+        Shape::CallProperty1 | Shape::CallUndefinedReceiver1 => 1,
+        Shape::CallProperty2 | Shape::CallUndefinedReceiver2 => 2,
+        _ => 3,
+    };
+    let mut k = 0;
+    if property {
+        s.lda_str("R");
+        s.b.star(l.get(0));
+        k = 1;
+    }
+    for i in 0..n {
+        s.b.lda_smi(i as i32 + 1).star(l.get(k + i));
+    }
+    s.lda_global(callee);
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    let list = RegisterList::new(l.get(0).local_index().unwrap(), k + n);
+    match shape {
+        Shape::CallProperty0 => s.b.call_property0(f, l.get(0), slot),
+        Shape::CallProperty1 => s.b.call_property1(f, l.get(0), l.get(1), slot),
+        Shape::CallProperty2 => s.b.call_property2(f, l.get(0), l.get(1), l.get(2), slot),
+        Shape::CallProperty => s.b.call_property(f, list, k + n, slot),
+        Shape::CallAnyReceiver => s.b.call_any_receiver(f, list, k + n, slot),
+        Shape::CallUndefinedReceiver0 => s.b.call_undefined_receiver0(f, slot),
+        Shape::CallUndefinedReceiver1 => s.b.call_undefined_receiver1(f, l.get(0), slot),
+        Shape::CallUndefinedReceiver2 => s.b.call_undefined_receiver2(f, l.get(0), l.get(1), slot),
+        Shape::CallUndefinedReceiver => s.b.call_undefined_receiver(f, list, n, slot),
+    };
+}
+
+/// Taken for the whole body of [`run_host`], so no two `run_host` runs overlap (M7-P4 fixer
+/// r2, reviewer R1 and J3). The human fast path switch is process-wide (`call::ANY_OFF`): while
+/// one test runs with the switch off, the T0 call fast path of every other thread goes cold,
+/// and a test that counts T0 forwards sees too few.
+static RUN_HOST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs `make` with `echo`, `sp`, `fcall` and `fapply` registered, the human fast paths `on`
+/// or off: (result, output, host entries, forwarded calls, the forwarded calls of the T0 call
+/// fast path). Holds [`RUN_HOST`] until it returns.
+fn run_host(
+    make: fn() -> VerifiedUnit,
+    d: Dispatch,
+    stress: bool,
+    on: bool,
+) -> (Result<String, String>, Vec<String>, u64, u64, u64) {
+    use crate::call::{FORWARDED_CALLS, HOST_ENTRY_HITS, T0_FORWARDED_CALLS};
+    // A test that failed with the lock held poisons it; the next test must still run.
+    let _one = RUN_HOST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    super::on_big_stack(move || {
+        let mut c = super::config(d, stress);
+        c.builtins = Some(&FORWARDERS);
+        let mut iso = isolate(c);
+        iso.register_host_function("echo", 0, echo);
+        iso.register_host_function("sp", 0, sp);
+        take_output();
+        HOST_ENTRY_HITS.with(|h| h.set(0));
+        FORWARDED_CALLS.with(|h| h.set(0));
+        T0_FORWARDED_CALLS.with(|h| h.set(0));
+        let r = iso.with_cx_checkpoint(|cx| {
+            cx.set_human_fast_paths(on);
+            cx.run_script(make(), "host.js").map(|v| cx.display(v))
+        });
+        let out = take_output();
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+        // The switch is process-wide and keyed by the isolate id: turn it on again, so a dropped
+        // isolate leaves no id behind (else every later host call takes the lock; M7-P0 JIT
+        // reviewer F5).
+        let _ = iso.with_cx(|cx| {
+            cx.set_human_fast_paths(true);
+            Ok(())
+        });
+        (
+            r.map_err(|e| e.message),
+            out,
+            HOST_ENTRY_HITS.with(|h| h.get()),
+            FORWARDED_CALLS.with(|h| h.get()),
+            T0_FORWARDED_CALLS.with(|h| h.get()),
+        )
+    })
+}
+
+#[test]
+fn a_host_callee_takes_the_decode_free_entry_in_each_fixed_shape() {
+    const SHAPES: [Shape; 9] = [
+        Shape::CallProperty0,
+        Shape::CallProperty1,
+        Shape::CallProperty2,
+        Shape::CallProperty,
+        Shape::CallAnyReceiver,
+        Shape::CallUndefinedReceiver0,
+        Shape::CallUndefinedReceiver1,
+        Shape::CallUndefinedReceiver2,
+        Shape::CallUndefinedReceiver,
+    ];
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(4);
+        for shape in SHAPES {
+            emit_shape(&mut s, shape, "echo", l);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    let want = [
+        "R:",
+        "R:1",
+        "R:1,2",
+        "R:1,2,3",
+        "R:1,2,3",
+        "undefined:",
+        "undefined:1",
+        "undefined:1,2",
+        "undefined:1,2,3",
+    ];
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run_host(make, d, stress, true);
+            let off = run_host(make, d, stress, false);
+            assert!(on.0.is_ok(), "{:?}", on.0);
+            assert_eq!(on.1, want, "{} stress={stress}", d.name());
+            assert_eq!((on.0, on.1), (off.0, off.1), "{}", d.name());
+            // `print` is a host callee too: 9 calls of echo, 9 of print.
+            assert_eq!((on.2, off.2), (18, 0), "{} stress={stress}", d.name());
+        }
+    }
+}
+
+#[test]
+fn a_forwarded_call_pushes_the_bytecode_callee_in_the_same_run() {
+    fn make() -> VerifiedUnit {
+        // f1: function add3(a, b, c) { return (c + (b + (a + ""))) + typeof this; }
+        let mut add3 = Asm::new(meta("add3", 3, 0, 0, 0));
+        let t = add3.b.new_register();
+        let ts = add3.b.feedback_slot(FeedbackSlotKind::TypeOf);
+        add3.lda_str("");
+        for i in 0..3 {
+            let p = add3.b.parameter(i);
+            add3.b.add(p, add3.bin);
+        }
+        let receiver = add3.b.receiver();
+        add3.b.star(t).ldar(receiver).type_of(ts).add(t, add3.bin);
+        add3.b.return_();
+        // f2: function viaArgs(a, b, c) { return fapply.call-form(add3, [undefined, arguments]); }
+        // i.e. add3.fapply(undefined, arguments) with fapply as the callee and add3 its `this`
+        let mut via = Asm::new(meta("viaArgs", 3, 0, 0, 0));
+        let l = via.b.new_register_list(3);
+        via.lda_global("add3");
+        via.b.star(l.get(0)).lda_undefined().star(l.get(1));
+        via.b.create_unmapped_arguments().star(l.get(2));
+        via.lda_global("fapply");
+        via.b.star(via.f);
+        via.b
+            .call_property2(via.f, l.get(0), l.get(1), l.get(2), via.call)
+            .return_();
+
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(5);
+        for (id, name) in [(1, "add3"), (2, "viaArgs")] {
+            let k = s.b.function_constant(FunctionId(id));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global(name);
+        }
+        for _ in 0..3 {
+            // add3.fcall("x", 1, 2, 3): fcall with this = add3 (the list shape)
+            s.lda_global("add3");
+            s.b.star(l.get(0));
+            s.lda_str("x");
+            s.b.star(l.get(1));
+            for i in 0..3 {
+                s.b.lda_smi(i + 1).star(l.get(2 + i as u32));
+            }
+            s.lda_global("fcall");
+            s.b.star(s.f).call_property(s.f, l, 5, s.call);
+            s.print_acc();
+            // viaArgs(4, 5, 6)
+            s.lda_global("viaArgs");
+            s.b.star(s.f);
+            let args = RegisterList::new(l.get(0).local_index().unwrap(), 3);
+            for i in 0..3 {
+                s.b.lda_smi(i + 4).star(args.get(i as u32));
+            }
+            s.b.call_undefined_receiver(s.f, args, 3, s.call);
+            s.print_acc();
+            // add3.fapply(null, undefined): 0 arguments, this = the global object
+            s.lda_global("add3");
+            s.b.star(l.get(0))
+                .lda_null()
+                .star(l.get(1))
+                .lda_undefined()
+                .star(l.get(2));
+            s.lda_global("fapply");
+            s.b.star(s.f)
+                .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), add3.finish(), via.finish()])
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run_host(make, d, stress, true);
+            let off = run_host(make, d, stress, false);
+            assert!(on.0.is_ok(), "{:?}", on.0);
+            let want = [
+                "321object",
+                "654object",
+                "undefinedundefinedundefinedobject",
+            ]
+            .repeat(3);
+            assert_eq!(on.1, want, "{} stress={stress}", d.name());
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
+            // The first call of each builtin records it (the host function runs): fcall in
+            // round 1, fapply at the first viaArgs. Forwarded: fcall in rounds 2 and 3, and
+            // fapply(null, undefined) in all 3 rounds. An unmapped arguments object of this
+            // realm never has the cached shape (the VM table makes no %ThrowTypeError%,
+            // `arguments::fits`), so viaArgs always takes the builtin's
+            // CreateListFromArrayLike. Off: none.
+            assert_eq!((on.3, off.3), (5, 0), "{} stress={stress}", d.name());
+        }
+    }
+}
+
+/// `function add3(a, b, c) { return (c + (b + (a + ""))) + typeof this; }`.
+fn add3_code() -> FunctionCode {
+    let mut add3 = Asm::new(meta("add3", 3, 0, 0, 0));
+    let t = add3.b.new_register();
+    let ts = add3.b.feedback_slot(FeedbackSlotKind::TypeOf);
+    add3.lda_str("");
+    for i in 0..3 {
+        let p = add3.b.parameter(i);
+        add3.b.add(p, add3.bin);
+    }
+    let receiver = add3.b.receiver();
+    add3.b.star(t).ldar(receiver).type_of(ts).add(t, add3.bin);
+    add3.b.return_();
+    add3.finish()
+}
+
+#[test]
+fn the_t0_call_fast_path_pushes_a_forwarded_call_in_place() {
+    /// The rounds: past the call record window of the isolate start (`profile::CALL_WINDOW`
+    /// budget units: each of these calls goes cold), the first call of each builtin and the
+    /// feedback threshold of add3 (its vector).
+    const ROUNDS: usize = 40;
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(5);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("add3");
+        for _ in 0..ROUNDS {
+            // add3.fcall("x", 1, 2, 3): the list shape (CallProperty)
+            s.lda_global("add3");
+            s.b.star(l.get(0));
+            s.lda_str("x");
+            s.b.star(l.get(1));
+            for i in 0..3 {
+                s.b.lda_smi(i + 1).star(l.get(2 + i as u32));
+            }
+            s.lda_global("fcall");
+            s.b.star(s.f).call_property(s.f, l, 5, s.call);
+            s.print_acc();
+            // add3.fcall(null, 7): CallProperty2, a missing argument
+            s.lda_global("add3");
+            s.b.star(l.get(0))
+                .lda_null()
+                .star(l.get(1))
+                .lda_smi(7)
+                .star(l.get(2));
+            s.lda_global("fcall");
+            s.b.star(s.f)
+                .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+            s.print_acc();
+            // add3.fapply(null, undefined): 0 arguments, this = the global object
+            s.lda_global("add3");
+            s.b.star(l.get(0))
+                .lda_null()
+                .star(l.get(1))
+                .lda_undefined()
+                .star(l.get(2));
+            s.lda_global("fapply");
+            s.b.star(s.f)
+                .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+            s.print_acc();
+            // add3.fcall(): CallProperty0, this undefined (the global object)
+            s.lda_global("add3");
+            s.b.star(l.get(0));
+            s.lda_global("fcall");
+            s.b.star(s.f).call_property0(s.f, l.get(0), s.call);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), add3_code()])
+    }
+    let want = [
+        "321object",
+        "undefinedundefined7object",
+        "undefinedundefinedundefinedobject",
+        "undefinedundefinedundefinedobject",
+    ]
+    .repeat(ROUNDS);
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run_host(make, d, stress, true);
+            let off = run_host(make, d, stress, false);
+            assert!(on.0.is_ok(), "{:?}", on.0);
+            assert_eq!(on.1, want, "{} stress={stress}", d.name());
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
+            // The T0 call fast path takes most forwards (not the first call of each builtin,
+            // not the call that makes add3's vector, not a call in the profile window); the
+            // cold path takes the rest. Off: none.
+            // The x86-64 form of the fast path does not forward (`call::forward_frame`).
+            let (all, t0) = (on.3, on.4);
+            assert!(
+                all > ROUNDS as u64 && all <= 4 * ROUNDS as u64,
+                "{}: {all}",
+                d.name()
+            );
+            if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
+                assert_eq!(t0, 0, "{} stress={stress}", d.name());
+            } else {
+                assert!(
+                    t0 > ROUNDS as u64 && t0 < all,
+                    "{} stress={stress}: {t0} of {all}",
+                    d.name()
+                );
+            }
+            assert_eq!((off.3, off.4), (0, 0), "{} stress={stress}", d.name());
+        }
+    }
+}
+
+/// `sp()`: the native stack pointer, as a number.
+fn sp<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(Local::number(ep9_platform::stack_pointer() as f64))
+}
+
+/// The call handlers that may forward keep the sibling dispatch flat: each one ends in a tail
+/// jump, so a run of forwarded calls leaves the native stack where it was (M7-P4 diag N3).
+///
+/// ```text
+/// handler ──fast──> call::forward_frame (out of line in an unoptimized build only)
+///         ──tail jump──> the next handler          (no native frame stays behind)
+/// ```
+///
+/// At c66480e3 `forward_frame` was out of line in every build with debug assertions, also an
+/// optimized one (Spike C's test build: opt-level 2 for ep9_vm). Its reader closure held the
+/// address of the handler's `St`, so `St` escaped and every `Call*` handler of the sibling
+/// expansion lost its tail jump: one native frame per call stayed until the dispatch run
+/// ended, and the Octane crypto warm-up of Spike C threw "Maximum call stack size exceeded".
+///
+/// The run measures the native stack pointer (`sp()`) at the ends of 3 windows, after a
+/// warm-up past the call record window and the feedback threshold of add3:
+/// d0 = 2 calls of sp() in a row (what a call handler leaves behind), d1 = sp(), 50 register
+/// moves, sp() (what other handlers leave behind), d2 = sp(), the 4 forwarded call shapes of
+/// `the_t0_call_fast_path_pushes_a_forwarded_call_in_place` ROUNDS times, sp(). A build with
+/// no tail calls at all (opt-level 0: d1 > d0) has nothing to check and returns. Else
+/// d2 = d0: the forwarded calls left nothing behind.
+#[test]
+fn forwarding_call_handlers_keep_the_sibling_dispatch_flat() {
+    const ROUNDS: usize = 40;
+    /// The 4 call shapes of the T0 forward test (no print: a print is a call too).
+    fn shapes(s: &mut Asm, l: RegisterList) {
+        // add3.fcall("x", 1, 2, 3): CallProperty
+        s.lda_global("add3");
+        s.b.star(l.get(0));
+        s.lda_str("x");
+        s.b.star(l.get(1));
+        for i in 0..3 {
+            s.b.lda_smi(i + 1).star(l.get(2 + i as u32));
+        }
+        s.lda_global("fcall");
+        s.b.star(s.f).call_property(s.f, l, 5, s.call);
+        // add3.fcall(null, 7): CallProperty2
+        s.lda_global("add3");
+        s.b.star(l.get(0))
+            .lda_null()
+            .star(l.get(1))
+            .lda_smi(7)
+            .star(l.get(2));
+        s.lda_global("fcall");
+        s.b.star(s.f)
+            .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+        // add3.fapply(null, undefined): CallProperty2, the apply form
+        s.lda_global("add3");
+        s.b.star(l.get(0))
+            .lda_null()
+            .star(l.get(1))
+            .lda_undefined()
+            .star(l.get(2));
+        s.lda_global("fapply");
+        s.b.star(s.f)
+            .call_property2(s.f, l.get(0), l.get(1), l.get(2), s.call);
+        // add3.fcall(): CallProperty0
+        s.lda_global("add3");
+        s.b.star(l.get(0));
+        s.lda_global("fcall");
+        s.b.star(s.f).call_property0(s.f, l.get(0), s.call);
+    }
+    /// acc = sp().
+    fn call_sp(s: &mut Asm) {
+        s.lda_global("sp");
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+    }
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(5);
+        let (t, d0, d1, d2) = (
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+        );
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("add3");
+        for _ in 0..ROUNDS {
+            shapes(&mut s, l);
+        }
+        // d0: sp(), sp()
+        call_sp(&mut s);
+        s.b.star(t);
+        call_sp(&mut s);
+        s.b.sub(t, s.bin).star(d0);
+        // d1: sp(), 50 register moves, sp()
+        call_sp(&mut s);
+        s.b.star(t);
+        for i in 0..25 {
+            s.b.lda_smi(i).star(l.get(0));
+        }
+        call_sp(&mut s);
+        s.b.sub(t, s.bin).star(d1);
+        // d2: sp(), ROUNDS x the 4 forwarded shapes, sp()
+        call_sp(&mut s);
+        s.b.star(t);
+        for _ in 0..ROUNDS {
+            shapes(&mut s, l);
+        }
+        call_sp(&mut s);
+        s.b.sub(t, s.bin).star(d2);
+        for d in [d0, d1, d2] {
+            s.b.ldar(d);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), add3_code()])
+    }
+    let (r, out, _, all, t0) = run_host(make, Dispatch::Sibling, false, true);
+    assert_eq!(r, Ok("undefined".to_string()));
+    let [d0, d1, d2] = [0, 1, 2].map(|i| out[i].parse::<f64>().expect("a number"));
+    // The forwards ran: in both windows of rounds; on a64 the T0 call fast path took most.
+    assert!(all > ROUNDS as u64, "{all}");
+    if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
+        assert_eq!(t0, 0);
+    } else {
+        assert!(t0 > ROUNDS as u64, "{t0} of {all}");
+    }
+    if d1 != d0 {
+        eprintln!(
+            "skip: this build has no tail calls (d0 {d0}, d1 {d1}: opt-level 0), so the \
+             sibling dispatch grows anyway"
+        );
+        return;
+    }
+    assert_eq!(
+        d2,
+        d0,
+        "the forwarded calls left {} bytes of native stack behind ({ROUNDS} rounds of 4 \
+         calls; d0 {d0}): a Call* handler of the sibling expansion has no tail jump",
+        d2 - d0
+    );
 }
