@@ -1301,25 +1301,22 @@ fn the_t0_call_fast_path_pushes_a_forwarded_call_in_place() {
             assert!(on.0.is_ok(), "{:?}", on.0);
             assert_eq!(on.1, want, "{} stress={stress}", d.name());
             assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
-            // The T0 call fast path takes most forwards (not the first call of each builtin,
-            // not the call that makes add3's vector, not a call in the profile window); the
-            // cold path takes the rest. Off: none.
-            // The x86-64 form of the fast path does not forward (`call::forward_frame`).
+            // The T0 call path takes most forwards (not the first call of each builtin, not
+            // the call that makes add3's vector; on a64 also not a call in the profile
+            // window); `slow::call` takes the rest. Off: none.
+            // x86-64 (not spike-native): from the cold body of the call (`forward_or_call`,
+            // M8-P0 X86-CALL-FWD); before it, every x86-64 forward took `slow::call` (t0 0).
             let (all, t0) = (on.3, on.4);
             assert!(
                 all > ROUNDS as u64 && all <= 4 * ROUNDS as u64,
                 "{}: {all}",
                 d.name()
             );
-            if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
-                assert_eq!(t0, 0, "{} stress={stress}", d.name());
-            } else {
-                assert!(
-                    t0 > ROUNDS as u64 && t0 < all,
-                    "{} stress={stress}: {t0} of {all}",
-                    d.name()
-                );
-            }
+            assert!(
+                t0 > ROUNDS as u64 && t0 < all,
+                "{} stress={stress}: {t0} of {all}",
+                d.name()
+            );
             assert_eq!((off.3, off.4), (0, 0), "{} stress={stress}", d.name());
         }
     }
@@ -1341,6 +1338,8 @@ fn sp<'s>(
 /// ```text
 /// handler ──fast──> call::forward_frame (out of line in an unoptimized build only)
 ///         ──tail jump──> the next handler          (no native frame stays behind)
+/// x86-64: handler ──tail jump──> <op>_cold ──> forward_or_call ──> forward_frame
+///         <op>_cold ──tail jump──> the next handler
 /// ```
 ///
 /// At c66480e3 `forward_frame` was out of line in every build with debug assertions, also an
@@ -1448,13 +1447,10 @@ fn forwarding_call_handlers_keep_the_sibling_dispatch_flat() {
     let (r, out, _, all, t0) = run_host(make, Dispatch::Sibling, false, true);
     assert_eq!(r, Ok("undefined".to_string()));
     let [d0, d1, d2] = [0, 1, 2].map(|i| out[i].parse::<f64>().expect("a number"));
-    // The forwards ran: in both windows of rounds; on a64 the T0 call fast path took most.
+    // The forwards ran: in both windows of rounds; the T0 call path took most (x86-64: in
+    // the cold handler of the call, which ends in a tail jump too; M8-P0 X86-CALL-FWD).
     assert!(all > ROUNDS as u64, "{all}");
-    if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
-        assert_eq!(t0, 0);
-    } else {
-        assert!(t0 > ROUNDS as u64, "{t0} of {all}");
-    }
+    assert!(t0 > ROUNDS as u64, "{t0} of {all}");
     if d1 != d0 {
         eprintln!(
             "skip: this build has no tail calls (d0 {d0}, d1 {d1}: opt-level 0), so the \
