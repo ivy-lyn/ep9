@@ -228,6 +228,16 @@ const INVENTORY: &[FastPath] = &[
         off: Off::Guard,
         what: "an object literal with flat nested arrays built from the recorded shape and the checked boilerplate",
     },
+    // ---- TypedArray TA-2 TA-KEYED, a guard form ----
+    FastPath {
+        id: "keyed-view",
+        site: "crates/ep9_vm/src/keyed_ic.rs view::get, view::set (from fast_get and fast_set; \
+               TypedArray TA-2 TA-KEYED)",
+        off: Off::Guard,
+        what: "an int32 key on a TypedArray: the element or undefined at GetKeyedProperty; at \
+               SetKeyedProperty the in-bounds store of an int32 (integer types) or a Number \
+               (Float32, Float64)",
+    },
 ];
 
 /// Prints `typeof this`, the count and the joined arguments (the forwarded callee).
@@ -1144,7 +1154,187 @@ const CASES: &[Case] = &[
              print(r.join(), log.join(), a.join(), h.join(), b.join(), 2 in a, a.hasOwnProperty(2));",
         ),
     },
+    // ---- keyed-view (TypedArray TA-2 TA-KEYED; design §6.5) ----
+    // The views come from the host functions of `run_hits` (no JS constructor before TA-2
+    // TA-BUFFERS): `__ab(bytes, max)`, `__sab(bytes, max)`, `__ta(type, buffer, offset,
+    // length)` (a Table 71 row; null prototype), `__detach(buffer)`, `__resize(buffer, n)`,
+    // `__grow(sab, n)`. The spec form names each index by a string key (CanonicalNumericIndexString:
+    // the cold exotic path). Each fast form was checked against node v26.13.0 with the real
+    // constructors (the TA-KEYED evidence `fastdiff-node`).
+    Case {
+        path: "keyed-view",
+        name: "an in-bounds load and store of each element type",
+        src: VIEW_TYPES_FAST,
+        spec: Some(VIEW_TYPES_SPEC),
+    },
+    Case {
+        path: "keyed-view",
+        name: "an out-of-bounds or negative index, sloppy and strict",
+        src: "function ld(a, i) { return a[i]; } function st(a, i, v) { a[i] = v; } function sst(a, i, v) { 'use strict'; a[i] = v; }\n\
+              function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+              var a = __ta(5, __ab(16), 0, 4), r = [];\n\
+              for (var k = 0; k < 2; k++) for (var i = -2; i < 7; i++) { st(a, i, i * 10); sst(a, i, i * 10 + 1); r.push(sh(ld(a, i))); }\n\
+              print(r.join());",
+        spec: Some(
+            "function ld(a, i) { return a[String(i)]; } function st(a, i, v) { a[String(i)] = v; } function sst(a, i, v) { 'use strict'; a[String(i)] = v; }\n\
+             function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+             var a = __ta(5, __ab(16), 0, 4), r = [];\n\
+             for (var k = 0; k < 2; k++) for (var i = -2; i < 7; i++) { st(a, i, i * 10); sst(a, i, i * 10 + 1); r.push(sh(ld(a, i))); }\n\
+             print(r.join());",
+        ),
+    },
+    Case {
+        path: "keyed-view",
+        name: "a detached view, and a store whose valueOf detaches",
+        src: "function ld(a, i) { return a[i]; } function st(a, i, v) { a[i] = v; } function sst(a, i, v) { 'use strict'; a[i] = v; }\n\
+              function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+              var b = __ab(16), a = __ta(5, b, 0, 4), f = __ta(0, b, 8, 8), r = [];\n\
+              for (var k = 0; k < 2; k++) for (var i = 0; i < 4; i++) { st(a, i, i + 1); st(f, i, -i); r.push(ld(a, i), ld(f, i)); }\n\
+              __detach(b);\n\
+              for (var i = 0; i < 4; i++) { st(a, i, 9); sst(f, i, 9); r.push(sh(ld(a, i)), sh(ld(f, i))); }\n\
+              var c = __ab(8), u = __ta(0, c, 0, 8), log = [];\n\
+              for (var i = 0; i < 4; i++) st(u, i, i);\n\
+              st(u, 1, { valueOf: function () { log.push('v'); __detach(c); return 5; } });\n\
+              st(u, 9, { valueOf: function () { log.push('w'); return 1; } });\n\
+              print(r.join(), log.join(), sh(ld(u, 0)), sh(ld(u, 1)));",
+        spec: Some(
+            "function ld(a, i) { return a[String(i)]; } function st(a, i, v) { a[String(i)] = v; } function sst(a, i, v) { 'use strict'; a[String(i)] = v; }\n\
+             function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+             var b = __ab(16), a = __ta(5, b, 0, 4), f = __ta(0, b, 8, 8), r = [];\n\
+             for (var k = 0; k < 2; k++) for (var i = 0; i < 4; i++) { st(a, i, i + 1); st(f, i, -i); r.push(ld(a, i), ld(f, i)); }\n\
+             __detach(b);\n\
+             for (var i = 0; i < 4; i++) { st(a, i, 9); sst(f, i, 9); r.push(sh(ld(a, i)), sh(ld(f, i))); }\n\
+             var c = __ab(8), u = __ta(0, c, 0, 8), log = [];\n\
+             for (var i = 0; i < 4; i++) st(u, i, i);\n\
+             st(u, 1, { valueOf: function () { log.push('v'); __detach(c); return 5; } });\n\
+             st(u, 9, { valueOf: function () { log.push('w'); return 1; } });\n\
+             print(r.join(), log.join(), sh(ld(u, 0)), sh(ld(u, 1)));",
+        ),
+    },
+    Case {
+        path: "keyed-view",
+        name: "Uint8Clamped rounding, and NaN stores read back through a Uint8Array",
+        src: "function ld(a, i) { return a[i]; } function st(a, i, v) { a[i] = v; }\n\
+              var a = __ta(2, __ab(8), 0, 8), V = [1.5, 2.5, -1, 300, NaN, 254.5, 255.5, 0.5, 7], r = [];\n\
+              for (var k = 0; k < 2; k++) for (var i = 0; i < V.length; i++) { st(a, i % 8, V[i]); r.push(ld(a, i % 8)); }\n\
+              var b = __ab(16), f = __ta(11, b, 0, 1), g = __ta(10, b, 8, 1), u = __ta(1, b, 0, 16), q = [];\n\
+              for (var k = 0; k < 3; k++) { st(f, 0, NaN); st(g, 0, 0 / 0); }\n\
+              for (var i = 0; i < 16; i++) q.push(ld(u, i));\n\
+              print(r.join(), q.join(), ld(f, 0), ld(g, 0));",
+        spec: Some(
+            "function ld(a, i) { return a[String(i)]; } function st(a, i, v) { a[String(i)] = v; }\n\
+             var a = __ta(2, __ab(8), 0, 8), V = [1.5, 2.5, -1, 300, NaN, 254.5, 255.5, 0.5, 7], r = [];\n\
+             for (var k = 0; k < 2; k++) for (var i = 0; i < V.length; i++) { st(a, i % 8, V[i]); r.push(ld(a, i % 8)); }\n\
+             var b = __ab(16), f = __ta(11, b, 0, 1), g = __ta(10, b, 8, 1), u = __ta(1, b, 0, 16), q = [];\n\
+             for (var k = 0; k < 3; k++) { st(f, 0, NaN); st(g, 0, 0 / 0); }\n\
+             for (var i = 0; i < 16; i++) q.push(ld(u, i));\n\
+             print(r.join(), q.join(), ld(f, 0), ld(g, 0));",
+        ),
+    },
+    Case {
+        path: "keyed-view",
+        name: "a shrunk resizable buffer and an auto view after a grow",
+        src: "function ld(a, i) { return a[i]; } function st(a, i, v) { a[i] = v; }\n\
+              function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+              var b = __ab(8, 16), auto = __ta(0, b, 0), fx = __ta(0, b, 4, 4), r = [];\n\
+              for (var i = 0; i < 8; i++) st(auto, i, i + 1);\n\
+              r.push(ld(auto, 7), ld(fx, 3));\n\
+              __resize(b, 4);\n\
+              for (var i = 0; i < 6; i++) { st(fx, i, 9); st(auto, i, -i); r.push(sh(ld(auto, i)), sh(ld(fx, i))); }\n\
+              __resize(b, 16);\n\
+              for (var i = 0; i < 17; i += 3) { st(auto, i, i); r.push(sh(ld(auto, i)), sh(ld(fx, i % 5))); }\n\
+              var c = __ab(12, 16), w = __ta(5, c, 0), n = __ta(5, c, 4, 2);\n\
+              for (var i = 0; i < 4; i++) { st(w, i, i + 100); st(n, i, i + 200); r.push(sh(ld(w, i)), sh(ld(n, i))); }\n\
+              __resize(c, 4);\n\
+              for (var i = 0; i < 4; i++) { st(w, i, i + 300); st(n, i, i + 400); r.push(sh(ld(w, i)), sh(ld(n, i))); }\n\
+              __resize(c, 16);\n\
+              for (var i = 0; i < 4; i++) { st(w, i, i + 500); r.push(sh(ld(w, i)), sh(ld(n, i))); }\n\
+              print(r.join());",
+        spec: Some(
+            "function ld(a, i) { return a[String(i)]; } function st(a, i, v) { a[String(i)] = v; }\n\
+             function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+             var b = __ab(8, 16), auto = __ta(0, b, 0), fx = __ta(0, b, 4, 4), r = [];\n\
+             for (var i = 0; i < 8; i++) st(auto, i, i + 1);\n\
+             r.push(ld(auto, 7), ld(fx, 3));\n\
+             __resize(b, 4);\n\
+             for (var i = 0; i < 6; i++) { st(fx, i, 9); st(auto, i, -i); r.push(sh(ld(auto, i)), sh(ld(fx, i))); }\n\
+             __resize(b, 16);\n\
+             for (var i = 0; i < 17; i += 3) { st(auto, i, i); r.push(sh(ld(auto, i)), sh(ld(fx, i % 5))); }\n\
+             var c = __ab(12, 16), w = __ta(5, c, 0), n = __ta(5, c, 4, 2);\n\
+             for (var i = 0; i < 4; i++) { st(w, i, i + 100); st(n, i, i + 200); r.push(sh(ld(w, i)), sh(ld(n, i))); }\n\
+             __resize(c, 4);\n\
+             for (var i = 0; i < 4; i++) { st(w, i, i + 300); st(n, i, i + 400); r.push(sh(ld(w, i)), sh(ld(n, i))); }\n\
+             __resize(c, 16);\n\
+             for (var i = 0; i < 4; i++) { st(w, i, i + 500); r.push(sh(ld(w, i)), sh(ld(n, i))); }\n\
+             print(r.join());",
+        ),
+    },
+    Case {
+        path: "keyed-view",
+        name: "a view as a prototype, a canonical numeric string key, a shared buffer",
+        src: "function ld(a, i) { return a[i]; } function st(a, i, v) { a[i] = v; }\n\
+              function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+              var p0 = __ta(0, __ab(0), 0, 0), o = Object.create(p0), p4 = __ta(5, __ab(16), 0, 4), o4 = Object.create(p4);\n\
+              for (var k = 0; k < 3; k++) { st(o, 0, 1); st(p4, 2, 5); }\n\
+              Object.prototype[9] = 'x'; Object.prototype['1.5'] = 'p'; Object.prototype['-0'] = 'q';\n\
+              var r = [sh(ld(o, 0)), Object.keys(o).length, sh(ld(o4, 9)), sh(ld(o4, 2))];\n\
+              st(o4, 2, 7); st(o4, 9, 7);\n\
+              r.push(sh(ld(p4, 2)), Object.keys(o4).join('/'), sh(ld(o4, 2)));\n\
+              var a = __ta(11, __ab(16), 0, 2);\n\
+              for (var k = 0; k < 2; k++) { st(a, '-0', 1); st(a, '1.5', 2); st(a, '01', 3); st(a, 1, 4.5); r.push(sh(ld(a, '-0')), sh(ld(a, '1.5')), ld(a, '01'), ld(a, 1), ld(a, '1'), sh(ld(a, -0))); }\n\
+              delete Object.prototype[9]; delete Object.prototype['1.5']; delete Object.prototype['-0'];\n\
+              r.push(Object.keys(a).join('/'));\n\
+              var s = __sab(8, 32), sf = __ta(3, s, 0, 4), sa = __ta(3, s, 0);\n\
+              for (var k = 0; k < 3; k++) for (var i = 0; i < 6; i++) { st(sf, i, i * 1000 - 1); r.push(sh(ld(sa, i))); }\n\
+              __grow(s, 16); st(sa, 7, -5); r.push(ld(sa, 7), ld(sf, 3), sh(ld(sf, 4)));\n\
+              print(r.join());",
+        spec: Some(
+            "function ld(a, i) { return a[String(i)]; } function st(a, i, v) { a[String(i)] = v; }\n\
+             function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+             var p0 = __ta(0, __ab(0), 0, 0), o = Object.create(p0), p4 = __ta(5, __ab(16), 0, 4), o4 = Object.create(p4);\n\
+             for (var k = 0; k < 3; k++) { st(o, 0, 1); st(p4, 2, 5); }\n\
+             Object.prototype[9] = 'x'; Object.prototype['1.5'] = 'p'; Object.prototype['-0'] = 'q';\n\
+             var r = [sh(ld(o, 0)), Object.keys(o).length, sh(ld(o4, 9)), sh(ld(o4, 2))];\n\
+             st(o4, 2, 7); st(o4, 9, 7);\n\
+             r.push(sh(ld(p4, 2)), Object.keys(o4).join('/'), sh(ld(o4, 2)));\n\
+             var a = __ta(11, __ab(16), 0, 2);\n\
+             for (var k = 0; k < 2; k++) { st(a, '-0', 1); st(a, '1.5', 2); st(a, '01', 3); st(a, 1, 4.5); r.push(sh(ld(a, '-0')), sh(ld(a, '1.5')), ld(a, '01'), ld(a, 1), ld(a, '1'), sh(ld(a, -0))); }\n\
+             delete Object.prototype[9]; delete Object.prototype['1.5']; delete Object.prototype['-0'];\n\
+             r.push(Object.keys(a).join('/'));\n\
+             var s = __sab(8, 32), sf = __ta(3, s, 0, 4), sa = __ta(3, s, 0);\n\
+             for (var k = 0; k < 3; k++) for (var i = 0; i < 6; i++) { st(sf, i, i * 1000 - 1); r.push(sh(ld(sa, i))); }\n\
+             __grow(s, 16); st(sa, 7, -5); r.push(ld(sa, 7), ld(sf, 3), sh(ld(sf, 4)));\n\
+             print(r.join());",
+        ),
+    },
 ];
+
+/// The keyed-view case "each element type" (fast form): every Table 71 type, stores then
+/// loads at one site each, three turns (a warm site); BigInts through the BigInt types.
+const VIEW_TYPES_FAST: &str = "function ld(a, i) { return a[i]; } function st(a, i, v) { a[i] = v; }\n\
+    function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+    var T = [0, 1, 2, 3, 4, 5, 6, 9, 10, 11], V = [1, -1, 300, 70000, -129, 2.5, -2.5, -0, NaN, 1e10, 0.1, 65520, 2147483648, 1 / 3], out = [];\n\
+    for (var j = 0; j < T.length; j++) {\n\
+      var a = __ta(T[j], __ab(80), 8, 8);\n\
+      for (var r = 0; r < 3; r++) for (var i = 0; i < V.length; i++) { st(a, i % 8, V[i]); out.push(sh(ld(a, i % 8))); }\n\
+      print(T[j], out.join()); out = [];\n\
+    }\n\
+    var b = __ta(7, __ab(16), 0, 2), c = __ta(8, __ab(16), 0, 2);\n\
+    for (var r = 0; r < 3; r++) { st(b, 0, -1n); st(c, 0, -1n); st(b, 1, 2n ** 63n); st(c, 1, 2n ** 64n + 5n); }\n\
+    print(ld(b, 0), ld(c, 0), ld(b, 1), ld(c, 1), ld(b, 2));";
+
+/// The spec form of [`VIEW_TYPES_FAST`].
+const VIEW_TYPES_SPEC: &str = "function ld(a, i) { return a[String(i)]; } function st(a, i, v) { a[String(i)] = v; }\n\
+    function sh(x) { return Object.is(x, -0) ? '-0' : String(x); }\n\
+    var T = [0, 1, 2, 3, 4, 5, 6, 9, 10, 11], V = [1, -1, 300, 70000, -129, 2.5, -2.5, -0, NaN, 1e10, 0.1, 65520, 2147483648, 1 / 3], out = [];\n\
+    for (var j = 0; j < T.length; j++) {\n\
+      var a = __ta(T[j], __ab(80), 8, 8);\n\
+      for (var r = 0; r < 3; r++) for (var i = 0; i < V.length; i++) { st(a, i % 8, V[i]); out.push(sh(ld(a, i % 8))); }\n\
+      print(T[j], out.join()); out = [];\n\
+    }\n\
+    var b = __ta(7, __ab(16), 0, 2), c = __ta(8, __ab(16), 0, 2);\n\
+    for (var r = 0; r < 3; r++) { st(b, 0, -1n); st(c, 0, -1n); st(b, 1, 2n ** 63n); st(c, 1, 2n ** 64n + 5n); }\n\
+    print(ld(b, 0), ld(c, 0), ld(b, 1), ld(c, 1), ld(b, 2));";
 
 thread_local! {
     static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -1161,6 +1351,92 @@ fn print<'s>(
         parts.push(cx.to_rust_string(v)?);
     }
     OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
+    Ok(Local::undefined())
+}
+
+// ---- the view makers of the keyed-view cases (TA-2 TA-KEYED; no JS constructor yet) ----
+
+/// The number argument `i` as a byte count, offset or length; `None` when it is undefined.
+fn arg_u64(args: &Args<'_>, i: usize) -> Option<u64> {
+    let v = args.get(i);
+    if v.is_undefined() {
+        return None;
+    }
+    v.as_number().map(|n| n as u64)
+}
+
+/// `__ab(bytes, max)`: a new ArrayBuffer (null prototype), resizable to `max` if it is given.
+fn host_ab<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let len = arg_u64(&args, 0).unwrap_or(0);
+    Ok(cx
+        .allocate_array_buffer(Local::null(), len, arg_u64(&args, 1))?
+        .value())
+}
+
+/// `__sab(bytes, max)`: a new SharedArrayBuffer (null prototype), growable to `max` if given.
+fn host_sab<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let len = arg_u64(&args, 0).unwrap_or(0);
+    Ok(cx
+        .allocate_shared_array_buffer(Local::null(), len, arg_u64(&args, 1))?
+        .value())
+}
+
+/// `__ta(type, buffer, offset, length)`: a new TypedArray (null prototype) of the Table 71
+/// row `type` on `buffer`; no `length`: a length-tracking view (a fixed one on a fixed-length
+/// buffer).
+fn host_ta<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let t = arg_u64(&args, 0).unwrap_or(0) as u8;
+    let off = arg_u64(&args, 2).unwrap_or(0);
+    Ok(cx
+        .new_typed_array(Local::null(), t, args.get(1), off, arg_u64(&args, 3))?
+        .value())
+}
+
+/// `__detach(buffer)`: DetachArrayBuffer with the undefined key.
+fn host_detach<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.detach_array_buffer(args.get(0), Local::undefined())?;
+    Ok(Local::undefined())
+}
+
+/// `__resize(buffer, n)`: `ArrayBuffer.prototype.resize`.
+fn host_resize<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.array_buffer_resize(args.get(0), arg_u64(&args, 1).unwrap_or(0))?;
+    Ok(Local::undefined())
+}
+
+/// `__grow(sab, n)`: `SharedArrayBuffer.prototype.grow`.
+fn host_grow<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.shared_array_buffer_grow(args.get(0), arg_u64(&args, 1).unwrap_or(0))?;
     Ok(Local::undefined())
 }
 
@@ -1201,6 +1477,16 @@ fn run_hits(src: &'static str, on: bool, stress: bool) -> (RunOut, Hits) {
             })
             .expect("an isolate");
             iso.register_host_function("print", 1, print);
+            for (name, n, f) in [
+                ("__ab", 2, host_ab as ep9_vm::HostFn),
+                ("__sab", 2, host_sab),
+                ("__ta", 4, host_ta),
+                ("__detach", 1, host_detach),
+                ("__resize", 2, host_resize),
+                ("__grow", 2, host_grow),
+            ] {
+                iso.register_host_function(name, n, f);
+            }
             OUT.with(|o| o.borrow_mut().clear());
             let _ = ep9_vm::internals::take_fastdiff_hits();
             let r = iso.with_cx_checkpoint(|cx| {
