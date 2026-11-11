@@ -1625,31 +1625,31 @@ op!(ToBoolean(st) {
 op!(CallAnyReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     call_list_with_receiver(st, callee, args, argc, s)
 } cold {
-    call_receiver_cold(st, callee, s)
+    call_receiver_cold(st, callee, s, (argc.0 > 0).then_some(R(args.0)))
 });
 op!(CallProperty(st, callee: R, args: RList, argc: Count, s: FSlot) {
     call_list_with_receiver(st, callee, args, argc, s)
 } cold {
-    call_receiver_cold(st, callee, s)
+    call_receiver_cold(st, callee, s, (argc.0 > 0).then_some(R(args.0)))
 });
 op!(CallProperty0(st, callee: R, receiver: R, s: FSlot) {
     let (f, this) = (st.reg(callee), call_operand(st, receiver));
     call_fast::<false, false>(st, s, f, this, 0, |_, _| UNDEFINED)
 } cold {
-    call_receiver_cold(st, callee, s)
+    call_receiver_cold(st, callee, s, Some(receiver))
 });
 op!(CallProperty1(st, callee: R, receiver: R, a0: R, s: FSlot) {
     let (f, this, v0) = (st.reg(callee), call_operand(st, receiver), call_operand(st, a0));
     call_fast::<false, true>(st, s, f, this, 1, move |_, _| v0)
 } cold {
-    call_receiver_cold(st, callee, s)
+    call_receiver_cold(st, callee, s, Some(receiver))
 });
 op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
     let (f, this) = (st.reg(callee), call_operand(st, receiver));
     let (v0, v1) = (call_operand(st, a0), call_operand(st, a1));
     call_fast::<false, true>(st, s, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold {
-    call_receiver_cold(st, callee, s)
+    call_receiver_cold(st, callee, s, Some(receiver))
 });
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
@@ -2246,7 +2246,7 @@ fn callee_runs_here(st: &St<'_>, callee: u64, fi: &FunctionInfo) -> bool {
 // ```text
 // CallProperty0-2, CallProperty, CallAnyReceiver (fast handler: unchanged)
 //   ──Flow::Cold (tail jump)──> <op>_cold ──> call_receiver_cold
-//        a host callee ──> forward_or_call (out of line)
+//        a host callee with a FUNCTION receiver ──> forward_or_call (out of line)
 //            profile::record_call (the record of apply or call, as before)
 //            ──> call::forward_frame: the frame of the bytecode callee, one budget unit,
 //                the dispatch at its first instruction (no GC point, nothing thrown)
@@ -2255,14 +2255,20 @@ fn callee_runs_here(st: &St<'_>, callee: u64, fi: &FunctionInfo) -> bool {
 // ```
 
 /// The cold body of the `Call*` opcodes with a receiver operand (`CallProperty0`-`2`,
-/// `CallProperty`, `CallAnyReceiver`) on x86-64 (not spike-native): for a host callee
-/// [`forward_or_call`] (the sampled call record, then a forwarded `apply` or `call` of a
-/// bytecode function, or else `slow::call`); for any other callee [`call_record_cold`].
+/// `CallProperty`, `CallAnyReceiver`) on x86-64 (not spike-native): for a host callee with a
+/// FUNCTION receiver [`forward_or_call`] (the sampled call record, then a forwarded `apply` or
+/// `call` of a bytecode function, or else `slow::call`); for any other call
+/// [`call_record_cold`], as before. `receiver` is the receiver's register (`None`: a list form
+/// with no receiver). The receiver test keeps the other host calls (a method of an Array, a
+/// String, `Math`) off the forward's steps.
 #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
 #[inline(always)]
-fn call_receiver_cold(st: &mut St<'_>, callee: R, s: FSlot) -> Done {
+fn call_receiver_cold(st: &mut St<'_>, callee: R, s: FSlot, receiver: Option<R>) -> Done {
     let f = st.reg(callee);
-    if object::is_function(f) && object::function_info(f).host.is_some() {
+    if object::is_function(f)
+        && object::function_info(f).host.is_some()
+        && receiver.is_some_and(|r| object::is_function(st.reg(r)))
+    {
         // SAFETY: the cold handler's state: `fp` is the live top frame, `pc` its current call
         // instruction (or its prefix) of verified code and `next` the instruction after it.
         let v = unsafe { forward_or_call(st.cx, st.pc, st.fp, st.next, f, s) };
@@ -2275,7 +2281,8 @@ fn call_receiver_cold(st: &mut St<'_>, callee: R, s: FSlot) -> Done {
 /// builds: [`call_record_cold`] (their `call_fast` forwards in the fast handler).
 #[cfg(not(all(not(feature = "spike-native"), target_arch = "x86_64")))]
 #[inline(always)]
-fn call_receiver_cold(st: &mut St<'_>, callee: R, s: FSlot) -> Done {
+fn call_receiver_cold(st: &mut St<'_>, callee: R, s: FSlot, receiver: Option<R>) -> Done {
+    let _ = receiver;
     call_record_cold(st, callee, s)
 }
 
@@ -2299,7 +2306,7 @@ const _: () = {
     }
 };
 
-/// The cold path of [`call_receiver_cold`] (a call of a host function): the sampled call
+/// The cold path of [`call_receiver_cold`] (a host callee, a FUNCTION receiver): the sampled call
 /// record (`profile::record_call`, Call slot `s`, at the budget of the call's start, as
 /// [`call_record_cold`]), then the forward, or `slow::call`. It gives the result and
 /// `cx.out_fp`, `cx.out_pc` as `slow::call` does.
