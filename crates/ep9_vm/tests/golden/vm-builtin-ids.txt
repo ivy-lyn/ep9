@@ -157,3 +157,9 @@ intrinsic 105  %Intl.Locale%
 intrinsic 106  %Intl.Locale.prototype%
 intrinsic 107  %Intl.Collator%
 intrinsic 108  %Intl.Collator.prototype%
+intrinsic 109  %ArrayBuffer%
+intrinsic 110  %ArrayBuffer.prototype%
+intrinsic 111  %SharedArrayBuffer%
+intrinsic 112  %SharedArrayBuffer.prototype%
+intrinsic 113  %DataView%
+intrinsic 114  %DataView.prototype%
