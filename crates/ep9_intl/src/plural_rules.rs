@@ -33,7 +33,6 @@
 //! `crates/ep9_builtins/tests/golden/ids-plural_rules.txt`.
 
 mod cldr_extra;
-mod mv;
 
 use std::rc::Rc;
 
@@ -57,11 +56,10 @@ use crate::digits::{
     DigitOptions, RoundingMode, RoundingType, format_numeric_to_string,
     set_number_format_digit_options,
 };
+use crate::number_format::decimal::{IntlMv, to_intl_mv};
 use crate::options::{coerce_options_to_object, get_locale_matcher, get_string_option};
 use crate::resolve;
 use crate::tag;
-
-pub use mv::{IntlMv, to_intl_mv};
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 33;
@@ -827,6 +825,7 @@ fn resolved_options<'s>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::number_format::decimal::decimal_from_literal;
 
     fn resolved(locale: &str, plural_type: u32, notation: &str, long: bool) -> Resolved {
         let compact = notation == "compact";
@@ -856,7 +855,7 @@ mod tests {
 
     fn sel(r: &Resolved, x: &str) -> &'static str {
         let icu = icu_for(r).unwrap();
-        let x = mv::decimal_from_literal(x).unwrap();
+        let x = decimal_from_literal(x).unwrap();
         category_name(resolve_plural(r, &icu, &IntlMv::Finite(x)).category)
     }
 
@@ -955,7 +954,7 @@ mod tests {
         let range = |l: &str, x: &str, y: &str| {
             let r = resolved(l, 0, "standard", false);
             let icu = icu_for(&r).unwrap();
-            let mv = |s: &str| IntlMv::Finite(mv::decimal_from_literal(s).unwrap());
+            let mv = |s: &str| IntlMv::Finite(decimal_from_literal(s).unwrap());
             category_name(resolve_plural_range(&r, &icu, &mv(x), &mv(y)))
         };
         assert_eq!(range("sl", "102", "201"), "few");

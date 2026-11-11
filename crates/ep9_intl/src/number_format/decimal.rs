@@ -722,6 +722,25 @@ mod tests {
         );
     }
 
+    /// The literal forms of ECMA-262 StrDecimalLiteral that `Decimal::try_from_str` does
+    /// not read, and a hex value.
+    #[test]
+    fn literals() {
+        let s = |t: &str| decimal_from_literal(t).map(|d| d.to_string());
+        assert_eq!(s("1e+21").as_deref(), Some("1000000000000000000000"));
+        assert_eq!(s("1.500").as_deref(), Some("1.5"));
+        assert_eq!(s("-0.0012").as_deref(), Some("-0.0012"));
+        assert_eq!(s("5.").as_deref(), Some("5"));
+        assert_eq!(s(".5").as_deref(), Some("0.5"));
+        assert_eq!(s("1x"), None);
+        assert_eq!(
+            decimal_from_radix("ff", 16)
+                .map(|d| d.to_string())
+                .as_deref(),
+            Some("255")
+        );
+    }
+
     /// The T1 lookup finds the CLDR parent locales ("zh-TW" has the zh-Hant NaN).
     #[test]
     fn t1_finds_cldr_parents() {
