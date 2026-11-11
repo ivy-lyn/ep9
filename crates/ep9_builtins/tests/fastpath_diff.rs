@@ -684,6 +684,37 @@ const CASES: &[Case] = &[
              print(r.join(), log.join());",
         ),
     },
+    // M8-P0 TS-STORE, the 0x25 form (JIT review B1): class fields and the properties of an
+    // object literal with a `__proto__` are DefineNamedOwnProperty (0x25) adds. They need a
+    // larger SLOTS cell, so they grow on the miss path (`ic::grow_add` without the validity
+    // cell check): the literal at monomorphic sites (`ic::grow_store`), the fields of the second
+    // pass at megamorphic sites (`ic::mega_store`, after the probe in the handler cold body).
+    // A define skips the prototype chain, so the setter `x` on the prototype must not run. The
+    // spec form defines with Reflect.defineProperty (CreateDataProperty). node v26 gives the
+    // same line for both forms: 6,3,...,6,14 twice, then 9,0,...,9,11, and an empty log.
+    Case {
+        path: "ic-named",
+        name: "a define with growth of the SLOTS cell (class fields and an object literal; the store probe of the DefineNamedOwnProperty handler) past a setter on the prototype, or Reflect.defineProperty",
+        src: "var log = [], r = []; var P = {};\n\
+              Object.defineProperty(P, 'x', { set: function (v) { log.push('set' + v); }, configurable: true });\n\
+              class A { constructor(n) { for (var i = 0; i < n; i++) this['q' + i] = i; } }\n\
+              class B extends A { x = 1; y = 2; z = 3; constructor(n) { super(n); } }\n\
+              Object.setPrototypeOf(B.prototype, Object.create(A.prototype, { x: { set: function (v) { log.push('bset' + v); }, configurable: true } }));\n\
+              for (var k = 0; k < 2; k++) for (var n = 0; n < 12; n++) { var b = new B(n); r.push(b.x + b.y + b.z, Object.keys(b).length); }\n\
+              for (var n = 0; n < 12; n++) { var l = { __proto__: P, a: n, b: n + 1, c: n + 2, d: n + 3, e: n + 4, f: n + 5, g: n + 6, h: n + 7, x: n }; r.push(Object.keys(l).length, l.x); }\n\
+              print(r.join(), log.join());",
+        spec: Some(
+            "function dp(o, k, v) { Reflect.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true }); }\n\
+             var log = [], r = []; var P = {};\n\
+             Object.defineProperty(P, 'x', { set: function (v) { log.push('set' + v); }, configurable: true });\n\
+             class A { constructor(n) { for (var i = 0; i < n; i++) this['q' + i] = i; } }\n\
+             class B extends A { constructor(n) { super(n); dp(this, 'x', 1); dp(this, 'y', 2); dp(this, 'z', 3); } }\n\
+             Object.setPrototypeOf(B.prototype, Object.create(A.prototype, { x: { set: function (v) { log.push('bset' + v); }, configurable: true } }));\n\
+             for (var k = 0; k < 2; k++) for (var n = 0; n < 12; n++) { var b = new B(n); r.push(b.x + b.y + b.z, Object.keys(b).length); }\n\
+             for (var n = 0; n < 12; n++) { var l = Object.create(P); dp(l, 'a', n); dp(l, 'b', n + 1); dp(l, 'c', n + 2); dp(l, 'd', n + 3); dp(l, 'e', n + 4); dp(l, 'f', n + 5); dp(l, 'g', n + 6); dp(l, 'h', n + 7); dp(l, 'x', n); r.push(Object.keys(l).length, l.x); }\n\
+             print(r.join(), log.join());",
+        ),
+    },
     // ---- ic-global (M7-P2 GLOBALS) ----
     // Each form runs its harness (the counters, the loops, the called functions) in a function
     // scope, so only the binding under test is global, and the functions that read or write it
