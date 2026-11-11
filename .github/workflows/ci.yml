@@ -112,17 +112,17 @@ on:
         options:
           - s1
           - s0
-      # The bench mode (header; plan v13 V13-D18). Full commit ids (40 hex digits); the bench-set
-      # job checks them.
+      # The bench mode (header; V13-D18; bench-set checks each input, before any build).
       bench_base:
         description: "bench mode: base commit, full sha (empty: off; set: only scope and bench-set run)"
-        required: false
         default: ""
         type: string
       bench_head:
         description: "bench mode: head commit, full sha (empty: the dispatched commit)"
-        required: false
         default: ""
+        type: string
+      bench_workloads:
+        description: "bench mode: bench-set.mjs --workloads, a comma list (empty: the 19 BENCH-SET rows)"
         type: string
 
 permissions:
@@ -134,7 +134,7 @@ permissions:
 # schedule, workflow_dispatch: one group per event and ref; never cancelled; a newer pending run
 # replaces an older pending one; a bench-mode dispatch: one group per bench_base and bench_head.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || (inputs.bench_base != '' && format('bench-{0}-{1}', inputs.bench_base, inputs.bench_head || github.sha)) || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || (inputs.bench_base != '' && format('bench-{0}-{1}-{2}', inputs.bench_base, inputs.bench_head || github.sha, inputs.bench_workloads)) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -1232,6 +1232,11 @@ jobs:
   # job): on push, pull_request and a dispatch without bench_base the matrix is one "off" leg
   # that prints "bench mode off" and runs the bench-set.mjs tests. Both builds share one target
   # dir, so the dependencies build once; no cache (each dispatch builds 2 new commits).
+  # bench_workloads (MC-w36-1; empty: the 19 rows) is a comma list of bench-set.mjs --workloads
+  # names (workloads.mjs names and set names, octane-typescript too). It goes through env only:
+  # the mode step refuses any other character, the workloads step any unknown name (exit 2, both
+  # before the checkouts and builds). The concurrency group names it, so 2 dispatches of one pair
+  # with other workloads do not replace each other.
   bench-set:
     name: bench set (${{ matrix.name }})
     strategy:
@@ -1252,11 +1257,20 @@ jobs:
           BASE: ${{ inputs.bench_base }}
           HEAD: ${{ inputs.bench_head }}
           SHA: ${{ github.sha }}
+          WORKLOADS: ${{ inputs.bench_workloads }}
         run: |
           if [ "$LEG" = off ]; then
+            if [ -n "$WORKLOADS" ]; then
+              echo "::error::bench mode: bench_workloads needs bench_base"
+              exit 2
+            fi
             echo "bench mode off"
             echo "on=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if ! [[ "$WORKLOADS" =~ ^([a-z0-9-]+(,[a-z0-9-]+)*)?$ ]]; then
+            echo "::error::bench mode: bench_workloads must be a comma list of workload names (a-z, 0-9, -)"
+            exit 2
           fi
           head="${HEAD:-$SHA}"
           for c in "$BASE" "$head"; do
@@ -1265,8 +1279,8 @@ jobs:
               exit 1
             fi
           done
-          { echo "on=true"; echo "base=$BASE"; echo "head=$head"; } >> "$GITHUB_OUTPUT"
-          echo "bench mode on ($LEG): base $BASE, head $head, tools $SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "on=true"; echo "base=$BASE"; echo "head=$head"; echo "workloads=$WORKLOADS"; } >> "$GITHUB_OUTPUT"
+          echo "bench mode on ($LEG): base $BASE, head $head, tools $SHA, workloads ${WORKLOADS:-the BENCH-SET}" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -1274,6 +1288,12 @@ jobs:
       # Fake valgrind and fake engines: the delta, the +0.5% verdict, the refusals.
       - name: bench-set.mjs tests
         run: node --test .github/scripts/bench-set.test.mjs
+      # Unknown workload names stop the leg here (exit 2), before the checkouts and builds.
+      - name: bench workloads
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        env:
+          WORKLOADS: ${{ steps.mode.outputs.workloads }}
+        run: node .github/scripts/bench-set.mjs --list ${WORKLOADS:+--workloads "$WORKLOADS"}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ steps.mode.outputs.on == 'true' }}
         with:
@@ -1326,12 +1346,18 @@ jobs:
           HEAD: ${{ steps.mode.outputs.head }}
           LEG: ${{ matrix.name }}
           BRANCH_SIM: ${{ matrix.branch_sim }}
+          WORKLOADS: ${{ steps.mode.outputs.workloads }}
+          # Rule 81: a _cold handler is judged by its X86IR rows, so the 2 store cold bodies are
+          # always in the function table (TS-STORE), not only when they are in the top cut.
+          FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold
         run: |
           sim=()
           if [ "$BRANCH_SIM" = true ]; then sim=(--branch-sim); fi
+          wl=()
+          if [ -n "$WORKLOADS" ]; then wl=(--workloads "$WORKLOADS"); fi
           node .github/scripts/bench-set.mjs --base-ep9 bench/ep9-base --head-ep9 bench/ep9-head \
-            --base "$BASE" --head "$HEAD" --target "$LEG" "${sim[@]}" --keep bench/cg \
-            --out "bench-set-$LEG.json" --md "$GITHUB_STEP_SUMMARY"
+            --base "$BASE" --head "$HEAD" --target "$LEG" "${sim[@]}" "${wl[@]}" --keep bench/cg \
+            --functions "$FUNCTIONS" --out "bench-set-$LEG.json" --md "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && steps.count.outcome != 'skipped' && steps.mode.outputs.on == 'true' }}
         with:

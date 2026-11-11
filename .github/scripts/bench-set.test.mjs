@@ -4,7 +4,7 @@
 // valgrind, no ep9 build and no bench checkout needed. ci.yml runs it in the bench-set job.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -195,6 +195,88 @@ test("the TS workload file: 3 files, Octane's base.js, its expected output", { s
   assert.equal(ts.harness, "octane-base");
   assert.equal(ts.blobs.length, 3);
   assert.ok(ts.expect.length > 0);
+});
+
+// ---- ci.yml: the bench_workloads dispatch input -------------------------------------------------
+
+const CI = readFileSync(path.join(ROOT, ".github/workflows/ci.yml"), "utf8");
+
+/** The `run: |` script of the step `name` of the bench-set job, as bash text. */
+function stepScript(name) {
+  const lines = CI.slice(CI.indexOf("\n  bench-set:\n")).split("\n");
+  const at = lines.indexOf(`      - name: ${name}`);
+  assert.ok(at > 0, `step ${name}`);
+  let i = at + 1;
+  while (!/^ {8}run: /.test(lines[i])) i++;
+  if (lines[i] !== "        run: |") return lines[i].slice("        run: ".length);
+  const body = [];
+  for (i++; i < lines.length && (lines[i] === "" || lines[i].startsWith("          ")); i++) body.push(lines[i].slice(10));
+  return body.join("\n");
+}
+
+function runStep(t, name, env) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-bench-set-step-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const out = path.join(dir, "out");
+  const sum = path.join(dir, "summary");
+  writeFileSync(out, "");
+  // GitHub runs a `run:` script as `bash -e {file}`.
+  const r = spawnSync("bash", ["-e", "-c", stepScript(name)], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, GITHUB_STEP_SUMMARY: sum, ...env },
+  });
+  return { ...r, output: readFileSync(out, "utf8") };
+}
+
+test("ci.yml: bench_workloads is a dispatch input, in the concurrency group, and never in a run script", () => {
+  assert.match(CI, /\n {6}bench_workloads:\n {8}description: "[^"\n]+"\n {8}type: string\n/);
+  const group = CI.split("\n").find((l) => l.startsWith("  group: ci-"));
+  assert.match(group, /format\('bench-\{0\}-\{1\}-\{2\}', inputs\.bench_base, inputs\.bench_head \|\| github\.sha, inputs\.bench_workloads\)/);
+  // The input reaches the job through env only: no ${{ }} inside a run script of bench-set.
+  for (const name of ["bench mode", "bench workloads", "count"]) assert.doesNotMatch(stepScript(name), /\$\{\{/, name);
+  assert.match(CI, /\n {10}WORKLOADS: \$\{\{ inputs\.bench_workloads \}\}\n/);
+  // The count step passes the list and the 2 store cold bodies (rule 81 rows).
+  const count = stepScript("count");
+  assert.match(count, /"\$\{wl\[@\]\}"/);
+  assert.match(count, /--functions "\$FUNCTIONS"/);
+  assert.match(CI, /\n {10}FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold\n/);
+});
+
+test("ci.yml bench mode step: bench_workloads is checked before any build (exit 2), then passed on", (t) => {
+  const on = { LEG: "linux-x64", BASE: BASE, HEAD: "", SHA: HEAD };
+  let r = runStep(t, "bench mode", { ...on, WORKLOADS: "octane-typescript,deltablue" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.output, /^on=true\nbase=1{40}\nhead=2{40}\nworkloads=octane-typescript,deltablue\n$/);
+  r = runStep(t, "bench mode", { ...on, WORKLOADS: "" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.output, /\nworkloads=\n$/);
+  // Anything but a comma list of names: exit 2, and no on=true.
+  for (const bad of ["deltablue,", "a,,b", "deltablue;id", "delta blue", "$(id)", "`id`", "deltablue\non=true", "Deltablue", "../x"]) {
+    r = runStep(t, "bench mode", { ...on, WORKLOADS: bad });
+    assert.equal(r.status, 2, `${JSON.stringify(bad)}: ${r.stdout}`);
+    assert.equal(r.output, "", bad);
+    assert.match(r.stdout, /::error::bench mode: bench_workloads must be a comma list/);
+  }
+  // The off leg (no bench_base): an input with no bench_base is refused; empty runs as before.
+  r = runStep(t, "bench mode", { LEG: "off", BASE: "", HEAD: "", SHA: HEAD, WORKLOADS: "deltablue" });
+  assert.equal(r.status, 2);
+  assert.match(r.stdout, /bench_workloads needs bench_base/);
+  r = runStep(t, "bench mode", { LEG: "off", BASE: "", HEAD: "", SHA: HEAD, WORKLOADS: "" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.output, "on=false\n");
+});
+
+test("ci.yml bench workloads step: an unknown name exits 2; octane-typescript is a row", (t) => {
+  let r = runStep(t, "bench workloads", { WORKLOADS: "octane-typescript,deltablue" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "octane-typescript\ndeltablue\n");
+  r = runStep(t, "bench workloads", { WORKLOADS: "" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim().split("\n").length, 19);
+  r = runStep(t, "bench workloads", { WORKLOADS: "octane-typescrpt" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /unknown workload octane-typescrpt/);
 });
 
 // ---- the CLI with the fake valgrind ------------------------------------------------------------
