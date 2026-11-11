@@ -2029,3 +2029,87 @@ fn every_preset_and_heap_make_the_same_live_object_model_at_one_threshold() {
 const EAGER_VS_NEVER: &[&str] = &["arrays.int32", "arrays.born", "site", "clone.x"];
 /// The fields that the default threshold and `u32::MAX` leave different.
 const DEFAULT_VS_NEVER: &[&str] = &["arrays.int32", "arrays.born", "site", "clone.x"];
+
+// ---- The no-change test of a record exit (M8-P1 RECCOST2) ----------------------------------
+
+/// The turns of the loop of [`no_change_program`]: past the first budget poll, which makes
+/// the vector of `f` under a threshold above 1 (OM-13), by a few hundred turns.
+const NO_CHANGE_TURNS: i32 = BUDGET as i32 + 600;
+
+/// The script calls function 1 (`f`) once. `f` runs [`NO_CHANGE_TURNS`] turns of a loop with
+/// an `Add`, a `Mul` and a `TestLessThan` site on the doubles `a` = 1.5 and `b` = 0.25: each
+/// turn gives the same record (`NUMBER`), so after its first record a sibling handler finds no
+/// new bit and does not call `record_next` (`interp::dsl::record_exit`). On the last turn `a`
+/// and `b` are `i32::MAX` and 1: the `Add` overflows and records `INT32_OVERFLOW`, a second bit
+/// that must still reach the slot; `*` and `<` of that pair are int32 (implicit). Returns the
+/// `Add`, `Mul` and `TestLessThan` slots of `f`.
+fn no_change_program() -> (VerifiedUnit, [FeedbackSlot; 3]) {
+    let mut s = Asm::script(0);
+    let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+    let kf = s.b.function_constant(FunctionId(1));
+    let f = s.b.new_register();
+    s.b.create_closure(kf, s.closure, 0).star(f);
+    s.b.call_undefined_receiver0(f, site);
+    s.b.lda_undefined().return_();
+
+    let mut fa = Asm::new(meta("f", 0, 0, 0, 0));
+    let k_add = fa.b.feedback_slot(FeedbackSlotKind::BinaryOp);
+    let k_mul = fa.b.feedback_slot(FeedbackSlotKind::BinaryOp);
+    let k_lt = fa.b.feedback_slot(FeedbackSlotKind::CompareOp);
+    let (a, b) = (fa.b.new_register(), fa.b.new_register());
+    fa.lda_num(1.5);
+    fa.b.star(a);
+    fa.lda_num(0.25);
+    fa.b.star(b);
+    counted_loop(&mut fa, NO_CHANGE_TURNS, |s, i| {
+        s.b.ldar(b).add(a, k_add);
+        s.b.ldar(b).mul(a, k_mul);
+        s.b.ldar(b).test_less_than(a, k_lt);
+        // After the second-to-last turn: the int32 pair of the last turn.
+        let keep = s.b.new_label();
+        s.b.lda_smi(NO_CHANGE_TURNS - 2)
+            .test_equal_strict(i, s.cmp)
+            .jump_if_false(keep);
+        s.b.lda_smi(i32::MAX).star(a).lda_smi(1).star(b);
+        s.b.bind(keep);
+    });
+    fa.b.lda_undefined().return_();
+    (
+        unit("", vec![s.finish(), fa.finish()]),
+        [k_add, k_mul, k_lt],
+    )
+}
+
+/// M8-P1 RECCOST2: a sibling handler runs `record_next` only for a record that adds a bit.
+/// The slots must be what `profile::record` on every execution gives: the bit of the many
+/// number turns, plus the one overflow bit of the last turn, the same in every dispatch
+/// expansion (`slots` compares the match loop, which records inline, with the sibling
+/// handlers) and GC mode. Threshold 0: `f` has its vector at its first instruction. Threshold
+/// 1000 (`f` runs once): `f` has no vector until the first budget poll in its loop, so the
+/// test first finds no vector (no record, no `record_next`) and then, in the same frame, the
+/// new vector. `u32::MAX`: no vector at all.
+#[test]
+fn a_record_runs_only_for_a_new_bit_and_sees_a_vector_made_by_a_poll() {
+    let k = no_change_program().1;
+    let want = [
+        bin(BinaryHint::NUMBER) | bin(BinaryHint::INT32_OVERFLOW),
+        bin(BinaryHint::NUMBER),
+        cmp(CompareHint::NUMBER),
+    ];
+    for threshold in [0, 1000] {
+        let got = assert_no_records(How { threshold, ..RUN }, || no_change_program().0);
+        for (i, (&slot, &w)) in k.iter().zip(&want).enumerate() {
+            assert_eq!(value(&got, 1, slot), w, "threshold {threshold}, site {i}");
+            assert_eq!(
+                key(&got, 1, slot),
+                Key::Undefined,
+                "site {i}: key untouched"
+            );
+        }
+    }
+    let never = How {
+        threshold: u32::MAX,
+        ..RUN
+    };
+    assert!(slots(never, || no_change_program().0)[1].is_none());
+}
