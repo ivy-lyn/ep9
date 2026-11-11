@@ -36,7 +36,7 @@
 #                      (kernels.mjs --check) as an artifact
 #   atomgate ......... the atom-key gate (G2, debug exec)            (Linux x64)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
-#   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
+#   dep-guards ....... cargo tree/metadata guards; deny; cldr-tables (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
@@ -972,6 +972,16 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - run: cargo deny --locked check licenses bans
+      # The CLDR side tables of ep9_intl (INTL-V2-D5; tools/cldr-tables/README.md): the pinned
+      # CLDR JSON (a sparse fetch from github.com), then the generated crates/ep9_intl/src/cldr/gen
+      # files against the generator (--check), then the tool tests (the tables against the ICU4X
+      # compiled data of the same CLDR release). tools/cldr-tables is its own workspace (the root
+      # `exclude`), so only this step builds it.
+      - name: cldr-tables check and tests
+        run: |
+          tools/cldr-tables/sync-cldr-json.sh &&
+            cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- --check &&
+            cargo test --locked --manifest-path tools/cldr-tables/Cargo.toml
 
   # perf CI v0 (docs/plan/10-quality.md section 2; tools/bench/README.md "perf CI v0"): the
   # instructions of t0-loop, t0-branchy, t0-call, t0-prop, ci-v0 and the generated v8-v7
