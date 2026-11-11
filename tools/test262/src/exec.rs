@@ -36,32 +36,32 @@ use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Stric
 use ep9_heap::HeapConfig;
 use ep9_vm::{
     Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, ExecOptions, Feedback,
-    HostFn, Isolate, IsolateConfig, JsResult, Local, Preset, PropertyDescriptor, TerminateHandle,
+    Isolate, IsolateConfig, JsResult, Local, Preset, PropertyDescriptor, TerminateHandle,
 };
 
 use crate::frontmatter::{self, Meta};
 use crate::parse::{Mode, STRICT_PREFIX, modes};
 use crate::suite::{self, TestFile};
-use crate::{expect, json, provenance};
+use crate::{agent, expect, json, provenance};
 
 /// Native stack of the thread that runs the isolates in a worker (the CLI uses the same).
-const RUN_STACK_BYTES: usize = 64 << 20;
+pub(crate) const RUN_STACK_BYTES: usize = 64 << 20;
 
 /// The `$262` host object (INTERPRETING.md "Host-Defined Functions"): `global`, `gc`,
 /// `evalScript` (M2-P4, through `Cx::evaluate_script`) and `createRealm` (M3-P1, through
-/// `Cx::create_realm`; each realm runs this prelude over its own host functions, so its
-/// `evalScript` evaluates in that realm). `detachArrayBuffer` and `agent` are missing, so
-/// tests that use them fail.
-const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc, \
+/// `Cx::create_realm`; each realm runs its agent's prelude over its own host functions, so its
+/// `evalScript` evaluates in that realm). An isolate runs [`agent::prelude`]: this text, then
+/// `detachArrayBuffer` and `agent` (TypedArray TA-2 TA-HARNESS; the [`agent`] module).
+pub(crate) const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc, \
                        evalScript: __ep9_eval_script, createRealm: __ep9_create_realm };\n";
 
-/// The host functions of every realm of a test isolate, as global names (`register`).
-const HOST_FUNCTIONS: [(&str, u32, HostFn); 4] = [
+/// The host functions of every realm of a test isolate, as global names: these, then [`agent`]'s.
+pub(crate) const HOST_FUNCTIONS: agent::HostList = agent::host_functions([
     ("print", 1, print),
     ("__ep9_gc", 0, gc),
     ("__ep9_eval_script", 1, eval_script),
     ("__ep9_create_realm", 0, create_realm),
-];
+]);
 
 pub struct Options {
     pub test262: PathBuf,
@@ -224,7 +224,7 @@ pub fn decode(line: &str) -> Option<(String, TestResult)> {
 
 /// Outcome of one run (one mode) of a test.
 #[derive(Debug)]
-enum Run {
+pub(crate) enum Run {
     Pass,
     Fail {
         cause: String,
@@ -237,14 +237,14 @@ enum Run {
     },
 }
 
-fn infra(cause: &'static str, detail: impl Into<String>) -> Run {
+pub(crate) fn infra(cause: &'static str, detail: impl Into<String>) -> Run {
     Run::Infra {
         cause,
         detail: detail.into(),
     }
 }
 
-fn fail(cause: impl Into<String>, detail: impl Into<String>) -> Run {
+pub(crate) fn fail(cause: impl Into<String>, detail: impl Into<String>) -> Run {
     Run::Fail {
         cause: cause.into(),
         detail: detail.into(),
@@ -259,7 +259,7 @@ thread_local! {
 /// The last panic message (set by the worker's panic hook, from any thread).
 static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
 
-fn take_panic() -> String {
+pub(crate) fn take_panic() -> String {
     LAST_PANIC
         .lock()
         .map_or(None, |mut p| p.take())
@@ -337,7 +337,7 @@ fn create_realm<'s>(
             let desc = PropertyDescriptor::data(func.into(), true, false, true);
             cx.define_property_or_throw(global, name, desc)?;
         }
-        cx.evaluate_script(PRELUDE, "harness/$262 prelude")?;
+        cx.evaluate_script(agent::prelude(), "harness/$262 prelude")?;
         cx.get(global, "$262")
     })
 }
@@ -498,7 +498,7 @@ fn compile_failure(e: &CodegenError, what: &str) -> Run {
 }
 
 /// Compiles `src`; `name` is the test path or `harness/<file>` (for the `internal` test hook).
-fn compile(
+pub(crate) fn compile(
     src: &str,
     opts: SourceOpts,
     name: &str,
@@ -555,7 +555,7 @@ fn generational_from_env() -> (bool, u32) {
 
 /// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's,
 /// and the heap mode of [`generational_from_env`] (in `HeapConfig`, never `IsolateConfig`).
-fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
+pub(crate) fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
     let (generational, stress_major_every) = generational_from_env();
     IsolateConfig {
         heap: HeapConfig {
@@ -626,8 +626,8 @@ fn check_builtins(config: IsolateConfig) -> Result<(), String> {
     }
 }
 
-struct RunCtx<'a> {
-    opts: &'a WorkerOptions,
+pub(crate) struct RunCtx<'a> {
+    pub(crate) opts: &'a WorkerOptions,
     harness: &'a mut Harness,
     watchdog: &'a Watchdog,
 }
@@ -660,7 +660,7 @@ impl RunCtx<'_> {
         }
     }
 
-    fn run(&mut self, rel: &str, src: &str, meta: &Meta, mode: Mode) -> Run {
+    pub(crate) fn run(&mut self, rel: &str, src: &str, meta: &Meta, mode: Mode) -> Run {
         let negative = meta.negative.as_ref();
         let (source, opts) = match mode {
             Mode::Strict => (
@@ -707,7 +707,7 @@ impl RunCtx<'_> {
         self.watchdog.arm(iso.terminate_handle(), self.opts.timeout);
         OUT.with(|o| o.borrow_mut().clear());
         if mode != Mode::Raw {
-            if let Some(r) = self.harness_script(&mut iso, "$262 prelude", PRELUDE) {
+            if let Some(r) = self.harness_script(&mut iso, "$262 prelude", agent::prelude()) {
                 return r;
             }
             let mut names = vec!["assert.js".to_string(), "sta.js".to_string()];
@@ -981,7 +981,7 @@ fn run_test(
                 harness: &mut *harness,
                 watchdog,
             };
-            cx.run(rel, &src, &meta, mode)
+            agent::run(&mut cx, rel, &src, &meta, mode)
         }))
         .unwrap_or_else(|_| infra("panic", format!("panic: {}", take_panic())));
         // Past the deadline: a timeout even if the run returned, never a pass or a failure.
