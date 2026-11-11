@@ -240,8 +240,8 @@ fn field_init(rt: &Runtime, o: u64, s: u64, f: usize, v: u64) {
 }
 
 /// Makes room for field `f` of `o` under the fast shape `s` (a new SLOTS cell if the
-/// out-of-line store is too small). GC point.
-fn reserve_field(rt: &Runtime, o: u64, s: u64, f: usize) {
+/// out-of-line store is too small; also the add with growth of `ic::grow_add`). GC point.
+pub(crate) fn reserve_field(rt: &Runtime, o: u64, s: u64, f: usize) {
     let cap = usize::from(shape::capacity(s));
     if f < cap {
         return;
