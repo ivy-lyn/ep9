@@ -414,11 +414,8 @@ fn is_well_formed_unit_identifier(u: &str) -> bool {
     }
 }
 
-/// CurrencyDigits ( currency ) (16.5.1). Stub: 2 for every currency until W3 NF-CURRENCY
-/// fills it with the ISO 4217 minor units.
-pub fn currency_digits(_currency: &str) -> u8 {
-    2
-}
+/// CurrencyDigits ( currency ) (16.5.1): the CLDR minor unit digits ([`currency`]).
+pub use currency::currency_digits;
 
 /// `localeData.[[<locale>]].[[nu]]` (§16.2.3): the default numbering system of the locale
 /// first, then every numbering system with a simple digit mapping (ECMA-402 Table 14).
