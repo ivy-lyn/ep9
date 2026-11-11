@@ -5,7 +5,7 @@
 //! IdentifierReference in strict code when any ancestor is an `ArrayAssignmentTarget`,
 //! `ObjectAssignmentTarget`, `AssignmentTargetPropertyIdentifier` or `UpdateExpression`. The
 //! walk stops only at a member expression, so a reference that is only read inside a
-//! destructuring target also got the error (oxc_semantic 0.157.0 reports only writes):
+//! destructuring target also got the error (oxc_semantic 0.157.0 and 0.158.0 report only writes):
 //!
 //! ```text
 //! "use strict"; [v = eval("1")] = [];          oxc: SyntaxError   node v24.22.1: v = 1
@@ -57,7 +57,7 @@ use oxc_diagnostics::OxcDiagnostic;
 use oxc_semantic::ScopeFlags;
 use oxc_span::Span;
 
-/// The two messages of oxc_semantic 0.157.0 `diagnostics::unexpected_identifier_assign`.
+/// The two messages of oxc_semantic 0.158.0 `diagnostics::unexpected_identifier_assign`.
 const MESSAGES: [&str; 2] = [
     "Cannot assign to 'eval' in strict mode",
     "Cannot assign to 'arguments' in strict mode",
@@ -86,7 +86,7 @@ pub(crate) fn kept<'d>(
             match reads.spans.binary_search_by_key(&span, |r| r.0) {
                 Err(_) => Some(Cow::Borrowed(d)),
                 Ok(i) => reads.spans[i].1.map(|region| {
-                    // oxc_semantic 0.157.0 `diagnostics::unexpected_arguments`.
+                    // oxc_semantic 0.158.0 `diagnostics::unexpected_arguments`.
                     Cow::Owned(
                         OxcDiagnostic::error(format!("'arguments' is not allowed in {region}"))
                             .with_label(Span::new(span.0, span.1))

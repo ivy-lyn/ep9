@@ -36,7 +36,7 @@ static NODE_CASES: &[(&str, &str, Option<&str>)] = &[
     ("*", "", Some("Nothing to repeat")),
     ("a**", "", Some("Nothing to repeat")),
     ("a{99999999999}", "", None),
-    // Above 2^53 - 1: no early error in ECMA-262 (oxc_regular_expression 0.157 has one).
+    // Above 2^53 - 1: no early error in ECMA-262 (oxc_regular_expression 0.158 has one).
     ("a{9007199254740992}", "u", None),
     ("a{99999999999999999999}", "", None),
     ("a{1,99999999999999999999}", "v", None),
