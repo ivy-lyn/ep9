@@ -307,6 +307,20 @@ jobs:
       - name: zero text relocations (ep9_masm)
         if: ${{ !cancelled() }}
         run: cargo test -p ep9_masm --no-default-features --features aot --locked
+      # CI-VM-OPT2-DEBUG (plan v13 V13-D41): the ep9_vm tests::calls unit tests in an optimized
+      # build with debug assertions, the build form of Spike C's tests (opt-level 2). There
+      # forwarding_call_handlers_keep_the_sibling_dispatch_flat checks that the forwarding Call*
+      # handlers end in a tail jump; at opt-level 0 it skips (no build has tail calls there). It
+      # found the LEVER-3 forward_frame stack leak only in that build. linux-x64 only (rule 25:
+      # est. +4-6 min, one ep9_vm build). Its own target dir, so the debug cache of this job is
+      # neither rebuilt nor saved with a second profile.
+      - name: ep9_vm tests::calls (opt-level 2, debug assertions)
+        if: ${{ !cancelled() && matrix.name == 'linux-x64' }}
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+          CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/opt2
+        run: cargo test -p ep9_vm --locked --lib tests::calls
 
   # H27: the default (jit), jitless and aot feature sets, one package at a time (a --workspace
   # build unifies features and would hide a jitless leak): build, clippy -D warnings and test,
