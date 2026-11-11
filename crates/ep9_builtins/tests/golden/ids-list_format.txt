@@ -2,3 +2,7 @@
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
 0x4600   35.0         constructor  0       "ListFormat"  (%Intl.ListFormat%)
+0x4601   35.1         method       1       "supportedLocalesOf"  (%Intl.ListFormat%.supportedLocalesOf w-c)
+0x4602   35.2         method       1       "format"  (%Intl.ListFormat.prototype%.format w-c)
+0x4603   35.3         method       1       "formatToParts"  (%Intl.ListFormat.prototype%.formatToParts w-c)
+0x4604   35.4         method       0       "resolvedOptions"  (%Intl.ListFormat.prototype%.resolvedOptions w-c)
