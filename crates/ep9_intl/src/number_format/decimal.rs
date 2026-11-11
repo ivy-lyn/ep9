@@ -669,14 +669,17 @@ fn compact_affixes(icu: &Icu, y: &Decimal, e: u8) -> Option<(String, String)> {
 }
 
 /// The body parts of the finite value `d` formatted with `f` (compact affixes and the
-/// number, no sign), and whether the rounded value is zero.
+/// number, no sign), whether the rounded value is zero, and (if `plural`) the
+/// [`DecimalValue::plural_decimal`] of the rounded value (the significand in compact
+/// notation).
 fn finite_parts<D: DecimalValue>(
     f: &Format<'_>,
     icu: &Icu,
     d: &D,
+    plural: bool,
     body: &mut Parts,
     work: &mut Work,
-) -> Result<bool, Interrupted> {
+) -> Result<(bool, Option<Decimal>), Interrupted> {
     let (exponent, y) = match (f.compact, icu.compact.as_ref()) {
         (Some(_), Some(c)) => compact_round(c, &f.digits, d, work)?,
         _ => {
@@ -697,17 +700,85 @@ fn finite_parts<D: DecimalValue>(
     if let Some((_, suffix)) = &affixes {
         affix_parts(suffix, body);
     }
-    Ok(y.is_zero())
+    Ok((y.is_zero(), plural.then(|| y.plural_decimal())))
 }
 
-/// PartitionNumberPattern ( numberFormat, x ) (§16.5.3) for the decimal style: the parts of
-/// `x` formatted with `f`.
-pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
-    let mut out = Parts::new();
+/// The pieces of PartitionNumberPattern (§16.5.3) that a style pattern puts in place (the
+/// styles "percent" and "currency", `super::currency`): the sign that `[[SignDisplay]]`
+/// shows, the number with its compact affixes, and the rounded value.
+pub struct Pieces {
+    /// The sign to show: `Some(true)` minus, `Some(false)` plus, `None` no sign
+    /// (GetNumberFormatPattern, §16.5.10).
+    pub sign: Option<bool>,
+    /// The number parts (or the NaN or infinity part) with the compact affixes; no sign.
+    pub body: Parts,
+    /// The [`DecimalValue::plural_decimal`] of the rounded value, if [`pieces`] was asked
+    /// for it and the value is finite.
+    pub rounded: Option<Decimal>,
+    icu: Rc<Icu>,
+}
+
+impl Pieces {
+    /// Pushes the sign affix before the number (the locale's minus or plus sign prefix, as
+    /// `push_sign` splits it: its bidi marks are literal parts), if a sign shows.
+    pub fn push_sign_prefix(&self, out: &mut Parts) {
+        let symbols = self.icu.symbols.get();
+        match self.sign {
+            Some(true) => push_sign(out, PartType::MinusSign, symbols.minus_sign_prefix()),
+            Some(false) => push_sign(out, PartType::PlusSign, symbols.plus_sign_prefix()),
+            None => {}
+        }
+    }
+
+    /// Pushes the sign affix after the number, if a sign shows.
+    pub fn push_sign_suffix(&self, out: &mut Parts) {
+        let symbols = self.icu.symbols.get();
+        match self.sign {
+            Some(true) => push_sign(out, PartType::MinusSign, symbols.minus_sign_suffix()),
+            Some(false) => push_sign(out, PartType::PlusSign, symbols.plus_sign_suffix()),
+            None => {}
+        }
+    }
+
+    /// The minus sign of the locale for a "-" in a CLDR pattern: the minus sign affix
+    /// without its bidi marks ("-" if the locale has none).
+    pub fn minus_sign(&self) -> String {
+        let symbols = self.icu.symbols.get();
+        let prefix = symbols.minus_sign_prefix().trim_matches(is_bidi_mark);
+        let core = if prefix.is_empty() {
+            symbols.minus_sign_suffix().trim_matches(is_bidi_mark)
+        } else {
+            prefix
+        };
+        if core.is_empty() { "-" } else { core }.to_string()
+    }
+
+    /// The decimal style: the sign prefix, the body, the sign suffix.
+    fn into_parts(self) -> Parts {
+        let mut out = Parts::with_capacity(self.body.len() + 2);
+        self.push_sign_prefix(&mut out);
+        let suffix = {
+            let mut s = Parts::new();
+            self.push_sign_suffix(&mut s);
+            s
+        };
+        out.extend(self.body);
+        out.extend(suffix);
+        out
+    }
+}
+
+/// The [`Pieces`] of `x` formatted with `f` (`None` if the ICU4X data has no symbols). With
+/// `plural`, [`Pieces::rounded`] holds the rounded value of a finite `x`.
+pub fn pieces(
+    f: &Format<'_>,
+    x: &IntlMv,
+    plural: bool,
+    work: &mut Work,
+) -> Result<Option<Pieces>, Interrupted> {
     let Some(icu) = icu_for(f) else {
-        return Ok(out);
+        return Ok(None);
     };
-    let symbols = icu.symbols.get();
     let t1 = icu.t1;
     // The number and its sign.
     let (negative, nan) = match x {
@@ -718,35 +789,33 @@ pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, I
         IntlMv::Wide(d) => (d.is_negative(), false),
     };
     let mut body = Parts::new();
-    let rounded_zero = match x {
+    let (rounded_zero, rounded) = match x {
         IntlMv::NaN => {
             body.push((PartType::Nan, t1.map_or("NaN", |t| t.nan).to_string()));
-            false
+            (false, None)
         }
         IntlMv::PosInf | IntlMv::NegInf => {
             body.push((
                 PartType::Infinity,
                 t1.map_or("∞", |t| t.infinity).to_string(),
             ));
-            false
+            (false, None)
         }
-        IntlMv::Finite(d) => finite_parts(f, &icu, d, &mut body, work)?,
-        IntlMv::Wide(d) => finite_parts(f, &icu, d, &mut body, work)?,
+        IntlMv::Finite(d) => finite_parts(f, &icu, d, plural, &mut body, work)?,
+        IntlMv::Wide(d) => finite_parts(f, &icu, d, plural, &mut body, work)?,
     };
-    match sign_of(f.sign_display, negative, rounded_zero, nan) {
-        Some(true) => {
-            push_sign(&mut out, PartType::MinusSign, symbols.minus_sign_prefix());
-            out.extend(body);
-            push_sign(&mut out, PartType::MinusSign, symbols.minus_sign_suffix());
-        }
-        Some(false) => {
-            push_sign(&mut out, PartType::PlusSign, symbols.plus_sign_prefix());
-            out.extend(body);
-            push_sign(&mut out, PartType::PlusSign, symbols.plus_sign_suffix());
-        }
-        None => out.extend(body),
-    }
-    Ok(out)
+    Ok(Some(Pieces {
+        sign: sign_of(f.sign_display, negative, rounded_zero, nan),
+        body,
+        rounded,
+        icu,
+    }))
+}
+
+/// PartitionNumberPattern ( numberFormat, x ) (§16.5.3) for the decimal style: the parts of
+/// `x` formatted with `f`.
+pub fn partition(f: &Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
+    Ok(pieces(f, x, false, work)?.map_or_else(Parts::new, Pieces::into_parts))
 }
 
 /// Pushes a part of type `t` with `text`, if `text` is not empty.
@@ -758,7 +827,7 @@ fn push_text(out: &mut Parts, t: PartType, text: &str) {
 
 /// Whether `c` is a bidi mark of a CLDR sign affix: LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK or
 /// ARABIC LETTER MARK.
-fn is_bidi_mark(c: char) -> bool {
+pub(super) fn is_bidi_mark(c: char) -> bool {
     matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}')
 }
 
