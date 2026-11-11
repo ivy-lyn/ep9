@@ -4,6 +4,7 @@
 # doc-hidden items read, rustdoc JSON format_version 61. One line per item, sorted.
 fx::Downcast :: supertrait Inner :: fn inner(&self) -> u8
 fx::Downcast :: supertrait Sealed :: fn test(&self) -> u32
+fx::Downcast :: supertrait Sealed :: trait Sealed where Self: Inner
 fx::Downcast :: trait Downcast where Self: Sealed
 fx::S :: impl Downcast for S
 fx::S :: struct S;

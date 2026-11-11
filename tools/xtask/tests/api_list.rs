@@ -179,3 +179,77 @@ fn a_where_clause_supertrait_item_change_fails_the_diff() {
         )
     );
 }
+
+/// API-LIST-COMPLETE (R:298): the golden of the `dyn-*` fixtures is the listing of their base.
+#[test]
+fn the_dyn_golden_is_the_listing_of_the_dyn_base() {
+    assert_eq!(
+        golden_diff("dyn-base.json", "dyn-golden.txt"),
+        (Some(0), vec![])
+    );
+    assert_eq!(
+        golden_diff("dyn-chain.json", "dyn-chain-golden.txt"),
+        (Some(0), vec![])
+    );
+}
+
+/// API-LIST-COMPLETE (R:298, Codex R4 3): the generic default of a local private supertrait
+/// (`Sealed<T = u32>` -> `Sealed<T = u64>`) is API: the declaration line changes and the diff
+/// fails. The old listing had no line for it, so the change passed.
+#[test]
+fn a_private_supertrait_generic_default_change_fails_the_diff() {
+    assert_eq!(
+        golden_diff("dyn-g64.json", "dyn-golden.txt"),
+        (
+            Some(1),
+            vec![
+                "- fx::Downcast :: supertrait Sealed :: trait Sealed<T = u32>".to_string(),
+                "+ fx::Downcast :: supertrait Sealed :: trait Sealed<T = u64>".to_string(),
+            ]
+        )
+    );
+}
+
+/// API-LIST-COMPLETE (R:298, Codex R4 4): a pub type alias to `dyn` a local trait with no
+/// public path lists the trait's items (and its hidden supertrait's) under the alias, so a
+/// change of an item's signature fails the diff, for `dyn Shape` and `dyn Shape + Send`. The
+/// old listing had only the alias line.
+#[test]
+fn a_dyn_alias_trait_item_change_fails_the_diff() {
+    assert_eq!(
+        golden_diff("dyn-area32.json", "dyn-golden.txt"),
+        (
+            Some(1),
+            vec![
+                "+ fx::Direct :: dyn Shape :: fn area(&self) -> f32".to_string(),
+                "- fx::Direct :: dyn Shape :: fn area(&self) -> f64".to_string(),
+                "+ fx::Obj :: dyn Shape :: fn area(&self) -> f32".to_string(),
+                "- fx::Obj :: dyn Shape :: fn area(&self) -> f64".to_string(),
+            ]
+        )
+    );
+}
+
+/// API-LIST-COMPLETE (R:298): the walk follows local type aliases with no public path
+/// (`pub type Chain = hops::Hop1`, `Hop1 = Hop2`, `Hop2 = (Hop1, &dyn Shape)`) to the `dyn`
+/// trait, and stops at the cycle Hop1 -> Hop2 -> Hop1 (the JSON is cut by hand: rustc refuses
+/// such a cycle, the reader must still end).
+#[test]
+fn a_dyn_trait_behind_an_alias_chain_is_listed_and_a_cycle_ends() {
+    let out = api_list("dyn-chain.json", &["--print"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = stdout(&out);
+    let chain: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("fx::Chain "))
+        .collect();
+    assert_eq!(
+        chain,
+        [
+            "fx::Chain :: dyn Shape :: fn area(&self) -> f64",
+            "fx::Chain :: dyn Shape :: trait Shape: Base",
+            "fx::Chain :: supertrait Base :: fn id(&self) -> u8",
+            "fx::Chain :: type Chain = Hop1",
+        ]
+    );
+}
