@@ -1,0 +1,3 @@
+/target/
+# The CLDR JSON checkout of sync-cldr-json.sh (pinned by cldr-json.commit).
+/cldr-json/
