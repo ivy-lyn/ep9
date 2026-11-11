@@ -429,6 +429,13 @@ fn supported_locales_of<'s>(
     resolve::supported_locales(cx, &requested, args.get(1))
 }
 
+/// The `[[SegmenterGranularity]]` of the segmenter `o` (a slot read only; no locale text: a
+/// segment data object needs only this).
+fn granularity_of<'s>(cx: &mut Cx<'s>, o: Local<'s>) -> JsResult<Granularity> {
+    let granularity = cx.slot(o, CLASS, SLOT_GRANULARITY)?;
+    Ok(Granularity::from_slot(granularity.as_int32().unwrap_or(0)))
+}
+
 /// The `[[Locale]]` text and the granularity of the segmenter `o` (TypeError if `o` is not an
 /// Intl.Segmenter: RequireInternalSlot(segmenter, `[[InitializedSegmenter]]`)).
 fn read<'s>(cx: &mut Cx<'s>, o: Local<'s>) -> JsResult<(String, Granularity)> {
@@ -542,7 +549,7 @@ fn segment_data<'s>(
     end: usize,
     word_like: bool,
 ) -> JsResult<Local<'s>> {
-    let (_, granularity) = read(cx, segmenter)?;
+    let granularity = granularity_of(cx, segmenter)?;
     // 5. Let result be OrdinaryObjectCreate(%Object.prototype%).
     let result = cx.new_object();
     // 6-7. Let segment be the substring of string from startIndex to endIndex;

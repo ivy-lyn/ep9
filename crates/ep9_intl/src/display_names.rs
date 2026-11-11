@@ -424,11 +424,11 @@ fn make_names(locale: &str, p: Packed) -> Option<Names> {
     })
 }
 
-/// The cached names of (`locale`, `p`).
+/// The cached names of (`locale`, `p`). The key has no fallback bit (bit 5): the ICU4X objects
+/// do not depend on it, so "code" and "none" share them.
 fn names_for(locale: &str, p: Packed) -> Option<Rc<Names>> {
-    cache::get_or_make(Service::DisplayNames, locale, u64::from(p.0), || {
-        make_names(locale, p)
-    })
+    let key = u64::from(p.0 & !(1 << 5));
+    cache::get_or_make(Service::DisplayNames, locale, key, || make_names(locale, p))
 }
 
 /// The CLDR display name of the currency `code` (upper case) in `locale`, from the
@@ -644,6 +644,17 @@ mod tests {
 
     fn packed(ty: Type, style: &str, none: bool, standard: bool) -> Packed {
         Packed::new(ty, index_of(&STYLES, Some(style)), none, standard)
+    }
+
+    /// The fallback "code" and "none" share the cached ICU4X objects (the key has no
+    /// fallback bit).
+    #[test]
+    fn the_fallback_does_not_split_the_cache() {
+        let before = cache::len(Service::DisplayNames);
+        for none in [false, true] {
+            assert!(names_for("de", packed(Type::Region, "long", none, false)).is_some());
+        }
+        assert_eq!(cache::len(Service::DisplayNames), before + 1);
     }
 
     #[test]
