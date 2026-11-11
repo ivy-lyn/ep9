@@ -7,7 +7,8 @@
 //   node .github/scripts/bench-set.mjs --base-ep9 bench/ep9-base --head-ep9 bench/ep9-head \
 //     --base <sha> --head <sha> --target linux-x64 [--branch-sim] --out bench-set.json \
 //     [--md FILE] [--keep DIR] [--workloads LIST] [--limit-pct 0.5] [--hash-seed 1] [--jobs N] \
-//     [--top 15] [--timeout-s 3600] [--valgrind PATH] [--work DIR]
+//     [--top 15] [--functions LIST] [--timeout-s 3600] [--valgrind PATH] [--work DIR]
+//   node .github/scripts/bench-set.mjs --list [--workloads LIST]
 //
 //   --base, --head    the commits of the two builds. Each binary's `ep9 --version` build line
 //                     (P0-BUILDID) must name its commit, built clean (else exit 2); with no
@@ -15,7 +16,13 @@
 //                     the JSON says so
 //   --workloads       default: the BENCH-SET of rule 13: t0-loop, t0-branchy, t0-call, t0-prop,
 //                     t0-gen, the 7 v8-v7 kernels (no regexp) and Octane-7. Set names of
-//                     tools/bench/cross/workloads.mjs expand (v8v7-7, octane-7, ...)
+//                     tools/bench/cross/workloads.mjs expand (v8v7-7, octane-7, ...). A comma
+//                     list; an empty name or an unknown name is a usage error (exit 2)
+//   --list            check --workloads and print the rows it gives, one per line; no run (the
+//                     bench-set job runs it before any build)
+//   --functions LIST  function names (substrings, comma list) whose rows are always kept and
+//                     always in the table, beside the --top cut (the X86IR rows of a _cold
+//                     handler, rule 81)
 //   --branch-sim      cachegrind --branch-sim=yes: also the branch counts (Bc, Bcm, Bi, Bim) for
 //                     the X86IR rows (plan v13 section 1.1). Ir does not change with it
 //   --keep DIR        keep the cachegrind out and log files there (<side>.<workload>.out, .log)
@@ -83,6 +90,8 @@ export function parseArgs(argv) {
     hashSeed: "1",
     jobs: os.availableParallelism?.() ?? os.cpus().length,
     top: 15,
+    functions: [],
+    list: false,
     timeoutS: 3600,
     valgrind: "valgrind",
     keep: null,
@@ -94,6 +103,11 @@ export function parseArgs(argv) {
     const n = Number(v);
     if (!Number.isInteger(n) || n < min) throw new UsageError(`${a} needs an integer >= ${min}, got ${v}`);
     return n;
+  };
+  const names = (a, v) => {
+    const l = v.split(",");
+    if (l.some((x) => !/^[A-Za-z0-9_.:-]+$/.test(x))) throw new UsageError(`${a} needs a comma list of names, got ${JSON.stringify(v)}`);
+    return l;
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -108,7 +122,9 @@ export function parseArgs(argv) {
       case "--head": o.head = val(); break;
       case "--target": o.target = val(); break;
       case "--branch-sim": o.branchSim = true; break;
-      case "--workloads": o.workloads = val().split(",").filter(Boolean); break;
+      case "--workloads": o.workloads = names(a, val()); break;
+      case "--functions": o.functions = names(a, val()); break;
+      case "--list": o.list = true; break;
       case "--limit-pct": {
         const v = val();
         o.limitPct = Number(v);
@@ -130,7 +146,7 @@ export function parseArgs(argv) {
       default: throw new UsageError(`unknown option ${a}`);
     }
   }
-  if (!o.baseEp9 || !o.headEp9 || !o.out) throw new UsageError("--base-ep9, --head-ep9 and --out are required");
+  if (!o.list && (!o.baseEp9 || !o.headEp9 || !o.out)) throw new UsageError("--base-ep9, --head-ep9 and --out are required");
   for (const [k, v] of [["--base", o.base], ["--head", o.head]]) {
     if (v !== null && !/^[0-9a-f]{40}$/.test(v)) throw new UsageError(`${k} needs a full commit id (40 hex digits), got ${v}`);
   }
@@ -227,10 +243,11 @@ const pct = (base, head) => (Number.isFinite(base) && Number.isFinite(head) && b
 /**
  * The function rows of one workload: the `top` functions by Ir (the larger of the two sides) and
  * the `top` by |Ir change|, by |change| first. Each: { fn, base, head, delta } with Ir (and Bi,
- * Bim with --branch-sim) per side.
+ * Bim with --branch-sim) per side. A function whose name contains one of `named` (--functions) is
+ * always a row, with `named: true`.
  */
-export function topFunctions(base, head, top) {
-  if (!base || !head || top === 0) return [];
+export function topFunctions(base, head, top, named = []) {
+  if (!base || !head || (top === 0 && !named.length)) return [];
   const pick = (cg, name) => {
     const a = cg.fns.get(name);
     const at = (e) => (a && cg.events.includes(e) ? a[cg.events.indexOf(e)] : a ? null : 0);
@@ -241,11 +258,12 @@ export function topFunctions(base, head, top) {
   const all = [...new Set([...base.fns.keys(), ...head.fns.keys()])].map((fn) => {
     const b = pick(base, fn);
     const h = pick(head, fn);
-    return { fn: fn.length > 200 ? `${fn.slice(0, 197)}...` : fn, base: b, head: h, delta: h.Ir - b.Ir };
+    const r = { fn: fn.length > 200 ? `${fn.slice(0, 197)}...` : fn, base: b, head: h, delta: h.Ir - b.Ir };
+    return named.some((n) => fn.includes(n)) ? { ...r, named: true } : r;
   });
   const byIr = [...all].sort((x, y) => Math.max(y.base.Ir, y.head.Ir) - Math.max(x.base.Ir, x.head.Ir) || (x.fn < y.fn ? -1 : 1)).slice(0, top);
   const byDelta = [...all].sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta) || (x.fn < y.fn ? -1 : 1)).slice(0, top);
-  const keep = new Set([...byIr, ...byDelta]);
+  const keep = new Set([...byIr, ...byDelta, ...all.filter((r) => r.named)]);
   return [...keep].sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta) || (x.fn < y.fn ? -1 : 1));
 }
 
@@ -365,7 +383,7 @@ export async function run(o, { log = (s) => process.stderr.write(`${s}\n`) } = {
       r.delta_pct = c.delta_pct;
       r.verdict = c.verdict;
       r.bim_delta_pct = pct(r.base.bim, r.head.bim);
-      r.functions = topFunctions(outs.get(`base.${r.name}`), outs.get(`head.${r.name}`), o.top);
+      r.functions = topFunctions(outs.get(`base.${r.name}`), outs.get(`head.${r.name}`), o.top, o.functions);
       const bo = outs.get(`base.${r.name}`);
       const ho = outs.get(`head.${r.name}`);
       r.out_rows_match = bo && ho ? bo.rowsMatch && ho.rowsMatch : null;
@@ -388,6 +406,7 @@ export async function run(o, { log = (s) => process.stderr.write(`${s}\n`) } = {
     hash_seed: o.hashSeed,
     gc_helpers: "0",
     limit_pct: o.limitPct,
+    functions_named: o.functions,
     valgrind: vg.status === 0 ? vg.stdout.trim() : null,
     host: hostInfo(),
     base: { commit: o.base, ep9: { ...base, path: path.basename(base.path) } },
@@ -445,7 +464,8 @@ export function renderMarkdown(res) {
     L.push("", "<details><summary>Functions with the largest Ir change, per workload (head - base; all source files of a name summed)</summary>", "");
     for (const r of withFns) {
       L.push(`**${r.name}**`, "", `| function | base Ir | head Ir | change |${br ? " base Bim | head Bim |" : ""}`, `|---|---:|---:|---:|${br ? "---:|---:|" : ""}`);
-      for (const f of r.functions.slice(0, 10)) {
+      // The 10 largest changes, and every --functions row below them.
+      for (const f of r.functions.filter((f, i) => i < 10 || f.named)) {
         L.push(`| \`${cell(f.fn).replaceAll("`", "'")}\` | ${fmt(f.base.Ir)} | ${fmt(f.head.Ir)} | ${f.delta > 0 ? "+" : ""}${fmt(f.delta)} |${br ? ` ${fmt(f.base.Bim)} | ${fmt(f.head.Bim)} |` : ""}`);
       }
       L.push("");
@@ -460,6 +480,10 @@ async function main() {
   let res;
   try {
     o = parseArgs(process.argv.slice(2));
+    if (o.list) {
+      process.stdout.write(`${o.workloads.join("\n")}\n`);
+      process.exit(0);
+    }
     res = await run(o);
   } catch (e) {
     if (!(e instanceof UsageError)) throw e;

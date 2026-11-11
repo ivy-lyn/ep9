@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { BENCH_SET, compare, groupOf, LIMIT_PCT, parseArgs, parseCgLog, parseCgOut, renderMarkdown, SCHEMA, T0, topFunctions } from "./bench-set.mjs";
-import { materialize, OCTANE_7, V8V7_7 } from "../../tools/bench/cross/workloads.mjs";
+import { materialize, OCTANE_7, TS_WORKLOAD, V8V7_7 } from "../../tools/bench/cross/workloads.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(DIR, "bench-set.mjs");
@@ -123,6 +123,23 @@ test("function rows: the top by Ir and the top by Ir change, largest change firs
   assert.deepEqual(topFunctions(undefined, head, 5), []);
 });
 
+test("function rows: a --functions name is always a row, beside the top cut (rule 81 _cold rows)", () => {
+  const cg = (rows) => ({ events: ["Ir"], fns: new Map(rows.map(([n, ir]) => [n, [ir]])) });
+  const base = cg([["big", 1000], ["moved", 100], ["ep9h__sib__tail__SetNamedProperty_cold", 30], ["ep9h__sib__tail__DefineNamedOwnProperty_cold", 5]]);
+  const head = cg([["big", 1001], ["moved", 160], ["ep9h__sib__tail__SetNamedProperty_cold", 45], ["ep9h__sib__tail__DefineNamedOwnProperty_cold", 7]]);
+  const named = ["SetNamedProperty_cold", "DefineNamedOwnProperty_cold", "not_there"];
+  assert.deepEqual(topFunctions(base, head, 1).map((r) => r.fn), ["moved", "big"]);
+  const rows = topFunctions(base, head, 1, named);
+  assert.deepEqual(rows.map((r) => [r.fn, r.delta, r.named ?? false]), [
+    ["moved", 60, false],
+    ["ep9h__sib__tail__SetNamedProperty_cold", 15, true],
+    ["ep9h__sib__tail__DefineNamedOwnProperty_cold", 2, true],
+    ["big", 1, false],
+  ]);
+  // --top 0 with names: the named rows only.
+  assert.deepEqual(topFunctions(base, head, 0, named).map((r) => r.fn), ["ep9h__sib__tail__SetNamedProperty_cold", "ep9h__sib__tail__DefineNamedOwnProperty_cold"]);
+});
+
 test("options: required paths, full commit ids, workloads and the limit", () => {
   const req = ["--base-ep9", "b", "--head-ep9", "h", "--out", "o.json"];
   const o = parseArgs(req);
@@ -139,6 +156,45 @@ test("options: required paths, full commit ids, workloads and the limit", () => 
   assert.throws(() => parseArgs([...req, "--limit-pct", "0.0005"]), /3 decimals/);
   assert.throws(() => parseArgs([...req, "--limit-pct", "-1"]), /3 decimals/);
   assert.throws(() => parseArgs([...req, "--frob"]), /unknown option/);
+});
+
+test("options: --workloads takes octane-typescript (the TS row, group octane); a bad list is refused", () => {
+  const req = ["--base-ep9", "b", "--head-ep9", "h", "--out", "o.json"];
+  assert.equal(TS_WORKLOAD, "octane-typescript");
+  assert.deepEqual(parseArgs([...req, "--workloads", "octane-typescript,deltablue"]).workloads, ["octane-typescript", "deltablue"]);
+  assert.equal(groupOf("octane-typescript"), "octane");
+  // An empty name or a character outside a name is a usage error, not a silent skip.
+  for (const bad of ["", "deltablue,", ",deltablue", "a,,b", "deltablue;id", "delta blue", "$(id)"]) {
+    assert.throws(() => parseArgs([...req, "--workloads", bad]), /comma list of names/, bad);
+  }
+  assert.deepEqual(parseArgs([...req, "--functions", "SetNamedProperty_cold,DefineNamedOwnProperty_cold"]).functions, ["SetNamedProperty_cold", "DefineNamedOwnProperty_cold"]);
+  assert.throws(() => parseArgs([...req, "--functions", "a,,b"]), /comma list of names/);
+  // --list needs no binary and no --out.
+  assert.deepEqual(parseArgs(["--list", "--workloads", "ts"]).workloads, ["octane-typescript"]);
+});
+
+test("CLI --list: the rows of --workloads, one per line; an unknown name exits 2 (the bench workloads step)", () => {
+  const list = (...a) => spawnSync(process.execPath, [SCRIPT, "--list", ...a], { encoding: "utf8" });
+  let r = list("--workloads", "octane-typescript,deltablue");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "octane-typescript\ndeltablue\n");
+  r = list();
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split("\n"), BENCH_SET);
+  r = list("--workloads", "octane-typescript,nope");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /unknown workload nope/);
+});
+
+test("the TS workload file: 3 files, Octane's base.js, its expected output", { skip: !havePins && "third_party/bench-octane not synced" }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-bench-set-ts-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const files = materialize([TS_WORKLOAD], dir);
+  const ts = files[TS_WORKLOAD];
+  assert.ok(existsSync(ts.file));
+  assert.equal(ts.harness, "octane-base");
+  assert.equal(ts.blobs.length, 3);
+  assert.ok(ts.expect.length > 0);
 });
 
 // ---- the CLI with the fake valgrind ------------------------------------------------------------
@@ -223,6 +279,34 @@ test("CLI: a head +0.6% on one row fails; base and head Ir and the delta per row
   assert.match(r.md, /\| t0-call \| 2,000,000,000 \| 2,012,000,000 \| \+0\.600% \| \*\*FAIL\*\* \|/);
   assert.match(r.md, /\| t0-loop \| 1,000,007,000 \| 1,000,007,000 \| 0\.000% \| pass \|/);
   assert.equal(r.stdout, r.md);
+});
+
+test("CLI: --functions keeps a named function beside --top; the table lists it", (t) => {
+  const f = fakeSetup(t);
+  let r = f.run(["--workloads", "t0-call", "--top", "1"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.res.rows[0].functions.map((x) => x.fn), ["ep9_vm::interp::ops::hot"]);
+  assert.deepEqual(r.res.functions_named, []);
+  r = f.run(["--workloads", "t0-call", "--top", "1", "--functions", "::cold"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.res.functions_named, ["::cold"]);
+  assert.deepEqual(r.res.rows[0].functions.map((x) => [x.fn, x.named ?? false]), [["ep9_vm::interp::ops::hot", false], ["t0-call::cold", true]]);
+  assert.match(r.md, /\| `t0-call::cold` \|/);
+});
+
+test("markdown: a --functions row below the 10 largest changes is still in the table", () => {
+  const side = (ir) => ({ status: "ok", error: null, ir, bc: null, bcm: null, bi: null, bim: null });
+  const fns = Array.from({ length: 12 }, (_, i) => ({ fn: `f${i}`, base: { Ir: 100 }, head: { Ir: 200 - i }, delta: 100 - i }));
+  fns.push({ fn: "ep9h__sib__tail__DefineNamedOwnProperty_cold", base: { Ir: 5 }, head: { Ir: 7 }, delta: 2, named: true });
+  const res = {
+    target: "linux-x64", branch_sim: false, hash_seed: "1", gc_helpers: "0", limit_pct: 0.5, valgrind: "v", host: { cpu: "c" },
+    base: { commit: BASE }, head: { commit: HEAD }, notes: [], verdict: "PASS", worst: {},
+    rows: [{ name: "deltablue", base: side(1000), head: side(1000), delta_pct: 0, verdict: "pass", functions: fns }],
+  };
+  const md = renderMarkdown(res);
+  assert.match(md, /\| `f9` \|/);
+  assert.doesNotMatch(md, /\| `f10` \|/);
+  assert.match(md, /\| `ep9h__sib__tail__DefineNamedOwnProperty_cold` \| 5 \| 7 \| \+2 \|/);
 });
 
 test("CLI: +0.5% exactly passes; a faster head passes; exit 0", (t) => {
