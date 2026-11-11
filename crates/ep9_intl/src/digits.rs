@@ -423,6 +423,9 @@ pub trait DecimalValue: Clone {
     fn round(&mut self, position: i64, mode: RoundingMode, increment: RoundingIncrement);
     fn trim_end(&mut self);
     fn trim_end_if_integer(&mut self);
+    /// Removes the leading zero padding: the highest shown magnitude is then
+    /// max(0, the highest nonzero magnitude).
+    fn trim_start(&mut self);
     fn pad_start(&mut self, position: i64);
     fn pad_end(&mut self, position: i64);
     /// The digits in the display range, with a '.' before magnitude -1 and no sign: the
@@ -469,6 +472,9 @@ impl DecimalValue for Decimal {
     }
     fn trim_end_if_integer(&mut self) {
         self.absolute.trim_end_if_integer();
+    }
+    fn trim_start(&mut self) {
+        self.absolute.trim_start();
     }
     fn pad_start(&mut self, position: i64) {
         self.absolute.pad_start(m16(position));
@@ -690,6 +696,9 @@ impl DecimalValue for WideDecimal {
         if self.end() >= 0 {
             self.lower = 0;
         }
+    }
+    fn trim_start(&mut self) {
+        self.upper = self.start.max(0);
     }
     fn pad_start(&mut self, position: i64) {
         if position <= 0 {

@@ -48,7 +48,7 @@ use icu_decimal::preferences::CompactDecimalFormatterPreferences;
 use icu_locale_core::Locale;
 use icu_plurals::{
     PluralCategory, PluralOperands, PluralRuleType, PluralRules, PluralRulesOptions,
-    PluralRulesPreferences, PluralRulesWithRanges,
+    PluralRulesPreferences, PluralRulesWithRanges, RawPluralOperands,
 };
 
 use crate::cache::{self, Service};
@@ -613,12 +613,32 @@ fn compute_exponent<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> (i64, D)
 /// The plural operands of `x` in the notation of `r` (the operand `c`/`e` is the exponent
 /// of compact, scientific and engineering notation).
 ///
+/// The operands are those of the shown value, so the zero padding of
+/// `[[MinimumIntegerDigits]]` is not in `i` (ICU4X marks a value with a shown digit above
+/// magnitude 17 with i = its low 18 digits + 10^18). A significand that is zero (and
+/// negative zero: the sign is not an operand) gives i = f = t = w = 0, the `v` of its shown
+/// fraction digits and `c` = the exponent, at most 255: every CLDR rule compares `e` with
+/// 0..5 at most (ICU4X `from_significand_and_exponent` marks a zero with an exponent of 18 or
+/// more as a large value).
+///
 /// A negative exponent (scientific or engineering notation of |x| < 1) has no ICU4X operand
 /// (`c` is unsigned): such a value takes the operands of its rounded value with `c` = 0. So
 /// does an exponent above 255 (`c` is a u8). A WideDecimal gives its operands through
 /// [`DecimalValue::plural_decimal`] (ICU4X keeps at most 18 integer digits).
 fn operands<D: DecimalValue>(r: &Resolved, icu: &Icu, x: &D) -> PluralOperands {
     let (e, mut y) = compute_exponent(r, icu, x);
+    y.trim_start();
+    if y.is_zero() {
+        let (lower, _) = y.shown();
+        return PluralOperands::from(RawPluralOperands {
+            i: 0,
+            v: (-(lower + e)).clamp(0, 18) as usize,
+            w: 0,
+            f: 0,
+            t: 0,
+            c: e.clamp(0, 255) as usize,
+        });
+    }
     if let Ok(e) = u8::try_from(e) {
         return PluralOperands::from(&CompactDecimal::from_significand_and_exponent(
             y.plural_decimal(),
@@ -829,6 +849,7 @@ fn resolved_options<'s>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::digits::WideDecimal;
     use crate::number_format::decimal::decimal_from_literal;
 
     fn resolved(locale: &str, plural_type: u32, notation: &str, long: bool) -> Resolved {
@@ -916,6 +937,71 @@ mod tests {
         assert_eq!(
             ["1", "2", "10", "100"].map(|x| sel(&ar, x)),
             ["one", "two", "few", "other"]
+        );
+    }
+
+    /// A significand that rounds to zero, and the zero padding of minimumIntegerDigits: the
+    /// shown value is 0 (or 1), so the operands are those of 0 (or 1), with `c` the exponent
+    /// (at most 255). The lines of node v26.13.0 `new Intl.PluralRules(l, o).select(x)` with
+    /// o = {notation, roundingIncrement: 5, maximumFractionDigits: 0} or
+    /// {minimumIntegerDigits: 21}. Node throws a TypeError for a BigInt, so the WideDecimal
+    /// lines (10^32768) take the result of the Number line of the same shape (1e300).
+    ///
+    /// Not as node: "fr" with 0E6 and up. The CLDR rules "one: i = 0,1" and "many: ... or
+    /// e != 0..5" both hold for i = 0, e >= 6; ICU4X tests `one` first, node (ICU4C) gives
+    /// "many". The old code gave "one" for 0E6 to 0E17 and "many" from 0E18 on (through the
+    /// 10^18 mark of ICU4X, not through `e`); now each exponent gives "one".
+    #[test]
+    fn rounded_zero_and_padding_as_node() {
+        let inc5 = |l: &str, notation: &str| {
+            let mut r = resolved(l, 0, notation, false);
+            r.digits.rounding_increment = 5;
+            r.digits.maximum_fraction_digits = 0;
+            r
+        };
+        let (ar, are) = (inc5("ar", "scientific"), inc5("ar", "engineering"));
+        assert_eq!(
+            [
+                sel(&ar, "1e30"),
+                sel(&ar, "-1e30"),
+                sel(&are, "1e30"),
+                sel(&ar, "1e17")
+            ],
+            ["zero", "zero", "zero", "zero"]
+        );
+        let lag = inc5("lag", "scientific");
+        assert_eq!(
+            ["1e30", "-1e30", "1e300"].map(|x| sel(&lag, x)),
+            ["zero", "zero", "zero"]
+        );
+        let fr = inc5("fr", "scientific");
+        assert_eq!(
+            ["1000", "1e10", "1e30", "1e300"].map(|x| sel(&fr, x)),
+            ["one", "one", "one", "one"]
+        );
+        let pad = |l: &str| {
+            let mut r = resolved(l, 0, "standard", false);
+            r.digits.minimum_integer_digits = 21;
+            r
+        };
+        assert_eq!(
+            [
+                sel(&pad("en"), "1"),
+                sel(&pad("ar"), "0"),
+                sel(&pad("lag"), "-0")
+            ],
+            ["one", "zero", "zero"]
+        );
+        // 10^32768 and -10^32768: a WideDecimal.
+        let wide = |r: &Resolved, negative: bool| {
+            let mut digits = vec![b'1'];
+            digits.extend(std::iter::repeat_n(b'0', 32_768));
+            let x = IntlMv::Wide(WideDecimal::from_integer_digits(negative, &digits));
+            category_name(resolve_plural(r, &icu_for(r).unwrap(), &x).category)
+        };
+        assert_eq!(
+            [wide(&lag, false), wide(&lag, true), wide(&ar, false)],
+            ["zero", "zero", "zero"]
         );
     }
 
