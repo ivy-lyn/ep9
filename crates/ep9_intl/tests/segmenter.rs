@@ -117,13 +117,30 @@ fn segments_and_iterators_give_the_node_lines() {
 }
 
 /// The boundary table of a long string is made in one builtin call, which polls the
-/// interrupt once per segment: a termination requested before the script stops the call
+/// interrupt in the copy, the scan and the store loop: a termination requested before the script stops the call
 /// (30,000 grapheme clusters, 3 times the poll budget), and the isolate keeps working.
 #[test]
 fn a_termination_stops_the_boundary_table() {
     let call = format!(
         "new Intl.Segmenter().segment('{}').containing(0)",
         "a".repeat(30_000)
+    );
+    assert_eq!(
+        common::terminate_during(&call),
+        Some((true, Some("before".to_string()), Some("again".to_string())))
+    );
+}
+
+/// The boundary scan of one long segment polls too: 1,500,000 code units of "a" are one word
+/// (one table entry). The copy of the code units takes one budget unit per 256 (5,859), and
+/// the ICU4X scan takes 1 + 1,500,000 / 256 units for the segment, so the budget of 10,000
+/// runs out inside the scan (Codex r1 finding 1). Old code: one poll in all, so the call
+/// ends and `stage` is "reached".
+#[test]
+fn a_termination_stops_the_scan_of_one_long_segment() {
+    let call = format!(
+        "new Intl.Segmenter('en', {{granularity: 'word'}}).segment('{}').containing(0)",
+        "a".repeat(1_500_000)
     );
     assert_eq!(
         common::terminate_during(&call),

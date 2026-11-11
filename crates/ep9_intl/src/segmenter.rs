@@ -36,6 +36,11 @@
 //! segment in the GC heap (a known cost: V8 and SpiderMonkey keep an ICU break iterator per
 //! object instead, which rule 8 does not allow here).
 //!
+//! Interrupt polls while the table is made: the copy of the code units (one budget unit per
+//! [`POLL_UNITS`]), the scan (after each boundary, 1 + segment length / [`POLL_UNITS`]
+//! units) and the store loop (one per entry). The ICU4X work for one segment does not poll
+//! ([`segment_ends`]).
+//!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-segmenter.txt`.
 
@@ -296,43 +301,76 @@ fn sentence_segmenter(data_locale: &str) -> Option<Rc<SentenceSegmenter>> {
     )
 }
 
+/// Code units of work per interrupt budget unit: the string search rate (H23, the
+/// `SearchWork` of `ep9_builtins`).
+pub const POLL_UNITS: usize = 256;
+
 /// The boundary table of `units` for `data_locale` and `granularity`: for each segment of the
 /// string in order, `end << 1 | isWordLike`, where `end` is the code unit index after the
 /// segment (the last one is the length) and `isWordLike` is 1 for a word-like segment of the
 /// granularity "word" (a letter, number or ideograph segment; ICU4X `WordType` not `None`).
 /// An empty string has no segment. Every end is below 2^29 (the string length limit), so
 /// each entry fits an int32.
-pub fn segment_ends(data_locale: &str, granularity: Granularity, units: &[u16]) -> Vec<u32> {
+///
+/// The ICU4X iterator is lazy: after each boundary, `poll(n)` gets the work of that segment,
+/// `n` = 1 + its length / [`POLL_UNITS`] budget units. A `false` from `poll` stops the scan
+/// (`None`). The ICU4X work for one segment does not poll: one grapheme, word or sentence,
+/// or one complex-script run (Thai, Japanese: the dictionary segments the run in one step).
+/// It is linear in its length, at most the string length limit ((1 << 29) - 24 code units).
+pub fn segment_ends(
+    data_locale: &str,
+    granularity: Granularity,
+    units: &[u16],
+    poll: &mut dyn FnMut(usize) -> bool,
+) -> Option<Vec<u32>> {
     let mut ends: Vec<u32> = Vec::new();
+    let mut start = 0;
     let mut push = |end: usize, word_like: bool| {
         if end > 0 {
             ends.push((end as u32) << 1 | u32::from(word_like));
         }
+        let n = 1 + (end - start) / POLL_UNITS;
+        start = end;
+        poll(n)
     };
     match granularity {
         Granularity::Grapheme => {
             for end in GraphemeClusterSegmenter::new().segment_utf16(units) {
-                push(end, false);
+                if !push(end, false) {
+                    return None;
+                }
             }
         }
         Granularity::Word => match word_segmenter(data_locale) {
             Some(s) => {
                 for (end, t) in s.as_borrowed().segment_utf16(units).iter_with_word_type() {
-                    push(end, t.is_word_like());
+                    if !push(end, t.is_word_like()) {
+                        return None;
+                    }
                 }
             }
-            None => push(units.len(), false),
+            None => {
+                if !push(units.len(), false) {
+                    return None;
+                }
+            }
         },
         Granularity::Sentence => match sentence_segmenter(data_locale) {
             Some(s) => {
                 for end in s.as_borrowed().segment_utf16(units) {
-                    push(end, false);
+                    if !push(end, false) {
+                        return None;
+                    }
                 }
             }
-            None => push(units.len(), false),
+            None => {
+                if !push(units.len(), false) {
+                    return None;
+                }
+            }
         },
     }
-    ends
+    Some(ends)
 }
 
 // ---- the builtins -----------------------------------------------------------------------------
@@ -456,13 +494,19 @@ fn segment<'s>(
     Ok(segments.into())
 }
 
-/// The code units of the string `s`, copied out (a view cannot live across a GC point).
+/// The code units of the string `s`, copied out (a view cannot live across a GC point). The
+/// copy takes one interrupt budget unit per [`POLL_UNITS`] code units.
 fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, JsString>) -> JsResult<Vec<u16>> {
     let len = cx.string_len(s);
     let flat = cx.flatten(s)?;
-    Ok((0..len)
-        .map(|i| cx.code_unit_at(flat, i).unwrap_or(0))
-        .collect())
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        if i % POLL_UNITS == POLL_UNITS - 1 {
+            cx.poll_interrupt()?;
+        }
+        out.push(cx.code_unit_at(flat, i).unwrap_or(0));
+    }
+    Ok(out)
 }
 
 /// The boundary table (an internal Array of int32s, [`segment_ends`]) of `string` for the
@@ -477,7 +521,14 @@ fn make_table<'s>(
     let (locale, granularity) = read(cx, segmenter)?;
     let data_locale = tag::remove_unicode_extension(&locale);
     let units = units(cx, string)?;
-    let ends = segment_ends(&data_locale, granularity, &units);
+    // The scan polls after each boundary (`segment_ends`), with the work of the segment.
+    let mut polled = Ok(());
+    let ends = segment_ends(&data_locale, granularity, &units, &mut |n| {
+        polled = (0..n).try_for_each(|_| cx.poll_interrupt());
+        polled.is_ok()
+    });
+    polled?;
+    let ends = ends.unwrap_or_default();
     let table: Local<'s, JsObject> = cx.new_array().into();
     for (i, e) in ends.iter().enumerate() {
         cx.poll_interrupt()?;
@@ -681,7 +732,8 @@ mod tests {
 
     /// The (end, isWordLike) pairs of `s`.
     fn ends(locale: &str, g: Granularity, s: &str) -> Vec<(u32, bool)> {
-        segment_ends(locale, g, &u16s(s))
+        segment_ends(locale, g, &u16s(s), &mut |_| true)
+            .expect("not stopped")
             .into_iter()
             .map(|e| (e >> 1, e & 1 != 0))
             .collect()
@@ -732,6 +784,37 @@ mod tests {
         assert_eq!(
             ends("ja", Granularity::Word, "こんにちは世界"),
             [(5, true), (7, true)]
+        );
+    }
+
+    /// The scan polls after each boundary that ICU4X gives (the start, 0, first), with
+    /// 1 + segment length / 256 units: a `false` from the third poll stops the scan of
+    /// 200,000 code units after two words.
+    #[test]
+    fn the_scan_polls_per_boundary() {
+        let text = u16s(&"a ".repeat(100_000));
+        let mut calls = Vec::new();
+        let r = segment_ends("en", Granularity::Word, &text, &mut |n| {
+            calls.push(n);
+            calls.len() < 3
+        });
+        assert_eq!((r, calls), (None, vec![1, 1, 1]));
+        let long = u16s(&"a".repeat(1_000));
+        let mut calls = Vec::new();
+        let r = segment_ends("en", Granularity::Grapheme, &long, &mut |n| {
+            calls.push(n);
+            true
+        });
+        assert_eq!(r.map(|e| e.len()), Some(1_000));
+        assert_eq!((calls.len(), calls.iter().sum::<usize>()), (1_001, 1_001));
+        let mut calls = Vec::new();
+        let r = segment_ends("en", Granularity::Word, &long, &mut |n| {
+            calls.push(n);
+            true
+        });
+        assert_eq!(
+            (r.map(|e| e.len()), calls),
+            (Some(1), vec![1, 1 + 1_000 / POLL_UNITS])
         );
     }
 }
