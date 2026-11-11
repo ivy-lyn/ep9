@@ -134,8 +134,9 @@ fn a_termination_stops_the_boundary_table() {
 /// The boundary scan of one long segment polls too: 1,500,000 code units of "a" are one word
 /// (one table entry). The copy of the code units takes one budget unit per 256 (5,859), and
 /// the ICU4X scan takes 1 + 1,500,000 / 256 units for the segment, so the budget of 10,000
-/// runs out inside the scan (Codex r1 finding 1). Old code: one poll in all, so the call
-/// ends and `stage` is "reached".
+/// runs out in the charge of the segment: the poll after the segment stops the call (the
+/// ICU4X scan of one segment does not poll: INTL-H23-POLL-TEXT) (Codex r1 finding 1). Old
+/// code: one poll in all, so the call ends and `stage` is "reached".
 #[test]
 fn a_termination_stops_the_scan_of_one_long_segment() {
     let call = format!(

@@ -331,6 +331,8 @@ pub fn segment_ends(
         start = end;
         poll(n)
     };
+    // Each step of an ICU4X iterator runs to the next boundary with no poll, so a long
+    // segment is one call (H23 gap, route INTL-H23-POLL-TEXT).
     match granularity {
         Granularity::Grapheme => {
             for end in GraphemeClusterSegmenter::new().segment_utf16(units) {
