@@ -74,7 +74,7 @@ parent (exec)                         worker processes (exec-worker), one per th
                                                doneprintHandle.js (async), includes
                                             -> the test; a watchdog terminates it at --timeout
   <-------------- one result line ------  "rel  status  ok  runs  cause  detail"
-  no line in 2 x timeout + 5 s: kill the worker, respawn, infrastructure error
+  no line in 2 x (timeout + agent stop grace 5 s) + 5 s: kill the worker, respawn, infrastructure error
   worker exits (crash, abort): infrastructure error with its stderr tail, respawn
 ```
 
