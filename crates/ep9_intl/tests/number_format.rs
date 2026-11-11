@@ -185,3 +185,28 @@ fn number_digits_are_the_number_to_string_digits() {
         ])
     );
 }
+
+const NU: &str = r#"for (const l of ["en-u-nu-arab", "de-u-nu-arab", "en-u-nu-arabext", "fr-u-nu-arab"]) print(l, JSON.stringify(new Intl.NumberFormat(l).format(-1234.5)));
+"#;
+
+/// A numbering system that the locale's data does not have: the digits of the system with
+/// the locale's own separators and sign (review A5). The ICU4X 2.4 compiled data has decimal
+/// symbols for a numbering system only under the locales that use it ("ar" has "arab"; not
+/// "und", not "en"; a probe of DecimalSymbolsV1 with the marker attribute gave "missing data"
+/// for en/arab, und/arab, und/arabext), so an "und" fallback finds nothing.
+#[test]
+fn numbering_system_symbols_are_the_locale_symbols() {
+    assert_eq!(
+        run_both(NU),
+        lines(&[
+            // ep9: node (ICU4C) takes the CLDR root symbols of the system: "\u{61c}-١٬٢٣٤٫٥"
+            // for en, de and fr with "arab", "\u{200e}-\u{200e}۱٬۲۳۴٫۵" for en with
+            // "arabext". The ICU4X data has no root symbols per system (an open point: a
+            // CLDR side table of the root symbols per numbering system).
+            "en-u-nu-arab \"-١,٢٣٤.٥\"",
+            "de-u-nu-arab \"-١.٢٣٤,٥\"",
+            "en-u-nu-arabext \"-۱,۲۳۴.۵\"",
+            "fr-u-nu-arab \"-١\u{202f}٢٣٤,٥\"",
+        ])
+    );
+}
