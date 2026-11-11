@@ -210,3 +210,27 @@ fn numbering_system_symbols_are_the_locale_symbols() {
         ])
     );
 }
+
+/// Number and BigInt toLocaleString with no arguments use the default NumberFormat of the
+/// cache (design INTL-I1 §4.5 "default formatters"; review A6): after a call, the default
+/// slot of the service holds the resolved options, and an argument call does not change it.
+#[test]
+fn to_locale_string_with_no_arguments_uses_the_default_formatter() {
+    use ep9_intl::cache::{Service, get_or_make_default};
+    use ep9_intl::number_format::Resolved;
+    let cached = || get_or_make_default::<Resolved>(Service::NumberFormat, || None);
+    assert!(cached().is_none());
+    assert_eq!(
+        common::run("print((1234.5).toLocaleString(\"de\"))", false),
+        lines(&["1.234,5"])
+    );
+    assert!(cached().is_none());
+    let out = common::run(
+        "const nf = new Intl.NumberFormat(); print((1234.5).toLocaleString() === nf.format(1234.5), (12345n).toLocaleString() === nf.format(12345n), (5).toLocaleString(undefined, undefined) === nf.format(5)); print(nf.resolvedOptions().locale)",
+        false,
+    )
+    .expect("runs");
+    assert_eq!(out[0], "true true true");
+    let r = cached().expect("the default formatter");
+    assert_eq!(r.locale, out[1]);
+}

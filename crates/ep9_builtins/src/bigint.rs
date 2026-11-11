@@ -208,7 +208,7 @@ fn to_locale_string<'s>(
     // 1. Let x be ? thisBigIntValue(this value).
     let x = cx.this_bigint_value(this)?;
     // 2. Let numberFormat be ? Construct(%Intl.NumberFormat%, « locales, options »).
-    let r = ep9_intl::number_format::initialize(cx, args.get(0), args.get(1))?;
+    let r = ep9_intl::number_format::locale_string_format(cx, args.get(0), args.get(1))?;
     // 3. Return FormatNumeric(numberFormat, ℝ(x)).
     let mv = ep9_intl::number_format::decimal::to_intl_mv(cx, x)?;
     let s = ep9_intl::number_format::format_numeric(&r, &mv);

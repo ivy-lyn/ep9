@@ -297,6 +297,9 @@ struct Icu {
     plain: Option<DecimalFormatter>,
     /// The compact formatter, no grouping (compact notation only).
     compact: Option<CompactDecimalFormatter>,
+    /// The CLDR T1 row (NaN, infinity) of the locale and numbering system ([`t1_symbols`]:
+    /// a walk of the locale fallback chain, made once here, not at each format).
+    t1: Option<&'static cldr::NumberSymbols>,
 }
 
 /// The preferences of `data_locale` with the numbering system `nu` (if ICU4X reads it).
@@ -379,6 +382,7 @@ fn icu_for(f: &Format<'_>) -> Option<Rc<Icu>> {
             symbols,
             plain,
             compact,
+            t1: t1_symbols(f.data_locale, f.numbering_system),
         })
     })
 }
@@ -663,7 +667,7 @@ pub fn partition(f: &Format<'_>, x: &IntlMv) -> Parts {
         return out;
     };
     let symbols = icu.symbols.get();
-    let t1 = t1_symbols(f.data_locale, f.numbering_system);
+    let t1 = icu.t1;
     // The number and its sign.
     let (negative, nan) = match x {
         IntlMv::NaN => (false, true),
@@ -816,6 +820,33 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The cached ICU4X data keeps the T1 row of its locale and numbering system.
+    #[test]
+    fn the_cached_data_has_the_t1_row() {
+        let f = Format {
+            data_locale: "zh-TW",
+            numbering_system: "latn",
+            digits: crate::digits::DigitOptions {
+                minimum_integer_digits: 1,
+                minimum_fraction_digits: 0,
+                maximum_fraction_digits: 3,
+                minimum_significant_digits: 1,
+                maximum_significant_digits: 21,
+                rounding_increment: 1,
+                rounding_mode: crate::digits::RoundingMode::HalfExpand,
+                rounding_type: crate::digits::RoundingType::FractionDigits,
+                computed_rounding_priority: "auto",
+                strip_if_integer: false,
+            },
+            compact: None,
+            grouping: Grouping::Auto,
+            sign_display: SignDisplay::Auto,
+        };
+        let icu = icu_for(&f).expect("data");
+        assert_eq!(icu.t1.map(|t| t.nan), Some("非數值"));
+        assert_eq!(join(&partition(&f, &IntlMv::NaN)), "非數值");
     }
 
     /// The T1 lookup finds the CLDR parent locales ("zh-TW" has the zh-Hant NaN).

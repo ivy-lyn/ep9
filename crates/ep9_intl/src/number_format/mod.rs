@@ -35,7 +35,10 @@ use ep9_vm::{
     PropKey, WellKnownSymbol,
 };
 
+use std::rc::Rc;
+
 use crate::available;
+use crate::cache::{self, Service};
 use crate::digits::{DigitOptions, RoundingMode, RoundingType, set_number_format_digit_options};
 use crate::locale::is_unicode_type;
 use crate::options::index_of;
@@ -635,16 +638,40 @@ pub fn format_numeric(r: &Resolved, x: &IntlMv) -> String {
     decimal::join(&partition_numeric(r, x))
 }
 
+/// The resolved options of the NumberFormat that `toLocaleString` makes as
+/// Construct(%Intl.NumberFormat%, « locales, options ») (its construction is not
+/// observable). With `locales` and `options` undefined the resolution is the same each time
+/// (the option reads see a new null-prototype object, the default locale is read once per
+/// process), so the default slot of the cache keeps it (design INTL-I1 §4.5 "default
+/// formatters").
+pub fn locale_string_format<'s>(
+    cx: &mut Cx<'s>,
+    locales: Local<'s>,
+    options: Local<'s>,
+) -> JsResult<Rc<Resolved>> {
+    if !(locales.is_undefined() && options.is_undefined()) {
+        return Ok(Rc::new(initialize(cx, locales, options)?));
+    }
+    if let Some(r) = cache::get_or_make_default::<Resolved>(Service::NumberFormat, || None) {
+        return Ok(r);
+    }
+    let r = initialize(cx, locales, options)?;
+    Ok(
+        cache::get_or_make_default(Service::NumberFormat, || Some(r.clone()))
+            .unwrap_or_else(|| Rc::new(r)),
+    )
+}
+
 /// The NumberFormat-like `toLocaleString` of `x` (Number.prototype.toLocaleString,
 /// 20.2.1 in ECMA-402; BigInt.prototype.toLocaleString, 20.3.1 in ECMA-402): the
-/// NumberFormat of `locales` and `options` (its construction is not observable) formats `x`.
+/// NumberFormat of `locales` and `options` ([`locale_string_format`]) formats `x`.
 pub fn to_locale_string<'s>(
     cx: &mut Cx<'s>,
     x: &IntlMv,
     locales: Local<'s>,
     options: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    let r = initialize(cx, locales, options)?;
+    let r = locale_string_format(cx, locales, options)?;
     let s = format_numeric(&r, x);
     Ok(cx.new_string(&s)?.into())
 }
