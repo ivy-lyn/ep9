@@ -410,6 +410,16 @@ pub enum PartType {
     Infinity,
     Compact,
     Literal,
+    // INTL W3 (the RTF skeleton): the part types of the styles and notations that NF-CURRENCY,
+    // NF-UNIT and NF-SCIRANGE fill (§16.5.3 PartitionNumberPattern, §16.5.7
+    // FormatApproximately).
+    Currency,
+    PercentSign,
+    Unit,
+    ExponentSeparator,
+    ExponentMinusSign,
+    ExponentInteger,
+    ApproximatelySign,
 }
 
 impl PartType {
@@ -426,6 +436,13 @@ impl PartType {
             PartType::Infinity => "infinity",
             PartType::Compact => "compact",
             PartType::Literal => "literal",
+            PartType::Currency => "currency",
+            PartType::PercentSign => "percentSign",
+            PartType::Unit => "unit",
+            PartType::ExponentSeparator => "exponentSeparator",
+            PartType::ExponentMinusSign => "exponentMinusSign",
+            PartType::ExponentInteger => "exponentInteger",
+            PartType::ApproximatelySign => "approximatelySign",
         }
     }
 }

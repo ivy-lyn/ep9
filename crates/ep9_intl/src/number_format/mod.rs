@@ -17,17 +17,23 @@
 //! INTL W2 NF-CORE: the constructor with every option of §16.1 (the style options too, so
 //! `resolvedOptions` is complete), `supportedLocalesOf`, `format`, `formatToParts` and
 //! `resolvedOptions`; the decimal style in standard and compact notation. W3 fills the rest
-//! of FormatNumeric through [`partition_numeric`]: the styles percent and currency
-//! (NF-CURRENCY, with [`currency_digits`]), unit (NF-UNIT), the notations scientific and
-//! engineering (NF-SCIRANGE); until then they format as the decimal style. `formatRange` and
-//! `formatRangeToParts` (NF-SCIRANGE) are not defined yet (ids append-only, after 4).
+//! of FormatNumeric through [`partition_numeric`], one file each: the styles percent and
+//! currency ([`currency`], NF-CURRENCY, with [`currency_digits`]), unit
+//! ([`unit`](mod@unit), NF-UNIT), the notations scientific and engineering ([`scientific`],
+//! NF-SCIRANGE); until then they format as the decimal style in standard notation.
+//! `formatRange` and `formatRangeToParts` (34.5, 34.6; NF-SCIRANGE, with [`range`]) throw a
+//! TypeError until NF-SCIRANGE fills them.
 //! `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` call
 //! [`to_locale_string`].
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-number_format.txt`.
 
+pub mod currency;
 pub mod decimal;
+pub mod range;
+pub mod scientific;
+pub mod unit;
 
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
@@ -84,6 +90,8 @@ mod def {
     pub const GET_FORMAT: u16 = 2;
     pub const FORMAT_TO_PARTS: u16 = 3;
     pub const RESOLVED_OPTIONS: u16 = 4;
+    pub const FORMAT_RANGE: u16 = 5;
+    pub const FORMAT_RANGE_TO_PARTS: u16 = 6;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -93,6 +101,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::getter("format", get_format),                // 2 (16.3.3)
     BuiltinDef::method("formatToParts", 1, format_to_parts), // 3 (16.3.6)
     BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (16.3.2)
+    BuiltinDef::method("formatRange", 2, format_range),      // 5 (16.3.4)
+    BuiltinDef::method("formatRangeToParts", 2, format_range_to_parts), // 6 (16.3.5)
 ];
 
 /// The intrinsics this module makes.
@@ -133,9 +143,15 @@ pub const PROPS: &[ObjectProps] = &[
                 IntrinsicId::IntlNumberFormat,
                 PropAttrs::METHOD,
             ),
-            // The key order of V8 (node): resolvedOptions, formatToParts, format.
+            // The key order of V8 (node): resolvedOptions, formatToParts, formatRange,
+            // formatRangeToParts, format.
             PropDef::method(PropKey::Str("resolvedOptions"), def::RESOLVED_OPTIONS),
             PropDef::method(PropKey::Str("formatToParts"), def::FORMAT_TO_PARTS),
+            PropDef::method(PropKey::Str("formatRange"), def::FORMAT_RANGE),
+            PropDef::method(
+                PropKey::Str("formatRangeToParts"),
+                def::FORMAT_RANGE_TO_PARTS,
+            ),
             // get Intl.NumberFormat.prototype.format ({c}, 16.3.3).
             PropDef::accessor(PropKey::Str("format"), Some(def::GET_FORMAT), None),
             // Intl.NumberFormat.prototype [ @@toStringTag ] ({c}, 16.3.7).
@@ -620,22 +636,22 @@ fn set_number_format_unit_options<'s>(
 
 /// PartitionNumberPattern ( numberFormat, x ) (16.5.3): the parts of `x` formatted with `r`.
 ///
-/// The decimal style in standard and compact notation is NF-CORE's. The W3 builders fill the
-/// other branches here: NF-CURRENCY the styles "percent" and "currency", NF-UNIT the style
-/// "unit", NF-SCIRANGE the notations "scientific" and "engineering". Until then those
-/// format as the decimal style in standard notation (a stub path, not a spec result).
+/// The decimal style in standard and compact notation is NF-CORE's ([`decimal`]). The W3
+/// builders fill the other branches, one file each: NF-SCIRANGE the notations "scientific"
+/// and "engineering" ([`scientific`]), NF-CURRENCY the styles "percent" and "currency"
+/// ([`currency`]), NF-UNIT the style "unit" ([`unit`](mod@unit)). Until then those format as the
+/// decimal style in standard notation (a stub path, not a spec result).
 ///
 /// The passes over the digits count in `work` ([`decimal`] polls).
 pub fn partition_numeric(r: &Resolved, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
     let data_locale = tag::remove_unicode_extension(&r.locale);
-    let mut f = r.format(&data_locale);
-    let standard_decimal = STYLES[r.style as usize] == "decimal"
-        && matches!(NOTATIONS[r.notation as usize], "standard" | "compact");
-    if !standard_decimal {
-        // W3 stub path (see above).
-        f.compact = None;
+    let f = r.format(&data_locale);
+    match (STYLES[r.style as usize], NOTATIONS[r.notation as usize]) {
+        (_, "scientific" | "engineering") => scientific::partition(r, f, x, work),
+        ("percent" | "currency", _) => currency::partition(r, f, x, work),
+        ("unit", _) => unit::partition(r, f, x, work),
+        _ => decimal::partition(&f, x, work),
     }
-    decimal::partition(&f, x, work)
 }
 
 /// FormatNumeric ( numberFormat, x ) (16.5.5). The passes over the digits poll the
@@ -787,6 +803,28 @@ fn format_to_parts<'s>(
         cx.create_data_property_index_or_throw(array, i as u64, o)?;
     }
     Ok(array.into())
+}
+
+/// Intl.NumberFormat.prototype.formatRange ( start, end ) (16.3.4): a TypeError until
+/// NF-SCIRANGE fills it.
+fn format_range<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Err(cx.throw_type_error("Intl.NumberFormat.prototype.formatRange is not implemented"))
+}
+
+/// Intl.NumberFormat.prototype.formatRangeToParts ( start, end ) (16.3.5): a TypeError until
+/// NF-SCIRANGE fills it.
+fn format_range_to_parts<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Err(cx.throw_type_error("Intl.NumberFormat.prototype.formatRangeToParts is not implemented"))
 }
 
 /// Intl.NumberFormat.prototype.resolvedOptions ( ) (16.3.2).
