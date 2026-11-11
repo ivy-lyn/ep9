@@ -433,23 +433,21 @@ const SHARE_AGENT: &str = "var atomics = typeof Atomics === 'object' && typeof I
 /// A SharedArrayBuffer crosses isolates (H22-Q8; TA-2 fixer N1), on its own fixture file:
 /// the main agent reads the agent's store (`Atomics.load` once the engine has it, else a
 /// DataView load), and a grow in the main agent shows the new byteLength in the agent. Plain
-/// and under GC stress 1. Without a `SharedArrayBuffer` constructor the file checks nothing
-/// (a feature probe).
+/// and under GC stress 1. The engine has `SharedArrayBuffer`, so the file does not probe for
+/// it: a missing constructor fails the test.
 #[test]
 fn a_shared_array_buffer_crosses_isolates() {
     let body = format!(
-        "if (typeof SharedArrayBuffer === 'function') {{\n\
-           var atomics = typeof Atomics === 'object' && typeof Int32Array === 'function';\n\
-           var sab = new SharedArrayBuffer(8, {{ maxByteLength: 64 }});\n\
-           $262.agent.start({agent:?});\n\
-           $262.agent.broadcast(sab);\n\
-           assert.sameValue(nextReport(), 'stored 8');\n\
-           var got = atomics ? Atomics.load(new Int32Array(sab), 0) : new DataView(sab).getInt32(0, true);\n\
-           assert.sameValue(got, 42, 'the agent store');\n\
-           sab.grow(32);\n\
-           $262.agent.broadcast(sab);\n\
-           assert.sameValue(nextReport(), 'length 32');\n\
-         }}",
+        "var atomics = typeof Atomics === 'object' && typeof Int32Array === 'function';\n\
+         var sab = new SharedArrayBuffer(8, {{ maxByteLength: 64 }});\n\
+         $262.agent.start({agent:?});\n\
+         $262.agent.broadcast(sab);\n\
+         assert.sameValue(nextReport(), 'stored 8');\n\
+         var got = atomics ? Atomics.load(new Int32Array(sab), 0) : new DataView(sab).getInt32(0, true);\n\
+         assert.sameValue(got, 42, 'the agent store');\n\
+         sab.grow(32);\n\
+         $262.agent.broadcast(sab);\n\
+         assert.sameValue(nextReport(), 'length 32');",
         agent = SHARE_AGENT
     );
     let tests = [("share.js", test("", &body))];
