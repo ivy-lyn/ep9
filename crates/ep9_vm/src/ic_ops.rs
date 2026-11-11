@@ -781,8 +781,11 @@ fn keyed(key: u64, bits: u32, op: Operation) -> Ops {
 /// does not hold it, so a site with no such key, LoadKeyed and megamorphic ones included,
 /// keeps the array lists). The shape is read only then: the key half of a T0 keyed slot is a
 /// live shape, undefined or the hole. T0 makes no such case yet: a view store hit leaves the
-/// key half alone (`keyed_ic.rs` module `view`), and no T0 code writes the two view bits
-/// before TA-3, so these lists wait for a writer of the element type.
+/// key half alone (`keyed_ic.rs` module `view`), and no T0 code writes the two view bits (TA-3
+/// left the kinds-set writer to the first FACT_SCHEMA bump, TA-ORCH-14), so these lists wait
+/// for a writer of the element type: route TA-KEYED-VIEW-CARRIER (due M5, V13-D8). The test
+/// that a view hit keeps the key half is
+/// `tests::ic::the_store_key_half_with_views_keeps_the_cold_miss_rule`.
 ///
 /// ```text
 /// LoadKeyed   GuardKind(receiver, View(t)), GuardViewNotShared(receiver), GuardType(key, int32),
