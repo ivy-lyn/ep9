@@ -132,9 +132,9 @@ permissions:
 # pull_request: one group per PR; a new push cancels the PR's running CI.
 # push: one group per commit, so every main commit gets its run (per-commit perf baseline).
 # schedule, workflow_dispatch: one group per event and ref; never cancelled; a newer pending run
-# replaces an older pending one.
+# replaces an older pending one; a bench-mode dispatch: one group per bench_base and bench_head.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || (inputs.bench_base != '' && format('bench-{0}-{1}', inputs.bench_base, inputs.bench_head || github.sha)) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
