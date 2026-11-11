@@ -1,4 +1,5 @@
-//! Intl.ListFormat (ECMA-402 §13) and toLocaleLowerCase / toLocaleUpperCase (§19.1.2-3):
+//! Intl.ListFormat (ECMA-402 §13), toLocaleLowerCase / toLocaleUpperCase (§19.1.2-3) and
+//! Array.prototype.toLocaleString (§19.4.1):
 //! INTL W2 LIST+CASEMAP, with and without GC stress. The expected lines are node v26.13.0's
 //! output for the same script (`print` = `console.log` of the arguments, each through
 //! `String`, joined by a space; ICU 78.3, CLDR 48: the strings of these cases are the same in
@@ -132,6 +133,25 @@ fn case_mapping_gives_the_node_lines() {
             // node gives "ok" here: V8 checks only the first tag; CanonicalizeLocaleList checks
             // every tag (test262 validates-all-locale-identifiers.js).
             "RangeError RangeError TypeError TypeError TypeError ok this,len,0",
+        ])
+    );
+}
+
+const ARRAY: &str = r#"const args = [];
+const spy = { toLocaleString(...a) { args.push(a.length + ":" + a.map(String).join(",")); return "s"; } };
+print([spy, null, undefined, spy].toLocaleString(), [spy].toLocaleString("de"), [spy].toLocaleString("de", {x: 1}, 5), args.join(" "));
+print(Array.prototype.toLocaleString.call({length: 3, 0: "a", 2: "x"}, "en"), [[spy, "b"], "c"].toLocaleString("tr", 7), args.slice(4).join(" "));
+"#;
+
+/// Array.prototype.toLocaleString passes (locales, options) to each element's toLocaleString
+/// and skips undefined and null.
+#[test]
+fn array_to_locale_string_gives_the_node_lines() {
+    assert_eq!(
+        run_both(ARRAY),
+        lines(&[
+            "s,,,s s s 2:undefined,undefined 2:undefined,undefined 2:de,undefined 2:de,[object Object]",
+            "a,,x s,b,c 2:tr,7",
         ])
     );
 }
