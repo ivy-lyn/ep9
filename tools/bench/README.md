@@ -87,6 +87,44 @@ perf-ci-v0.json (schema ep9-perf-ci/v1) + a Markdown table (--md appends; CI: th
 - **Exit status.** 0 every workload has a count; 1 a workload was refused or has no count (the JSON and the table are still written, with null counts); 2 usage error.
 - `--workloads` picks a subset; `--jobs N` limits the parallel workloads (default: the CPU count); `--work DIR` keeps the generated v8-v7 files.
 
+## Bench mode
+
+BENCH-SET on GitHub (plan v13 rule 13 and section 3.2; decision M8-PLAN-D18). The rule-13
+floor of a role reads it: no row worse than +0.5% Ir, head against base, on linux-x64 and
+linux-arm64. A dispatch of `ci.yml` with the input `bench_base` runs only the `scope` job and the
+2 legs of the `bench-set` job; every other job, `lint` too, is skipped. The orchestrator runs it
+(agents do not run BENCH-SET on the Mac):
+
+```bash
+gh workflow run ci.yml --ref <ref with this ci.yml> -f bench_base=<base sha> -f bench_head=<head sha>
+```
+
+```text
+bench_base (full sha) ──┐                       per leg: linux-x64 (--branch-sim), linux-arm64
+bench_head (full sha;   ├─> checkout both trees ─> cargo build --release -p ep9_cli in each
+ empty: the dispatched  │   (each with its own toolchain file, regress and icu4x forks;
+ commit)                │    one target dir)
+dispatched commit ──────┘─> the scripts and the workload files (sync-bench.sh bench-v8v7 bench-octane)
+          |
+          v
+.github/scripts/bench-set.mjs: per workload and side, one run
+  valgrind --tool=cachegrind --cache-sim=no --branch-sim=<yes|no> <ep9> <file>
+  EP9_HASH_SEED=1, EP9_GC_HELPERS=0; output = the expected output, else "no count"
+          |
+          v
+bench-set-<leg>.json (schema ep9-bench-set/v1) + the table in the step summary
+artifact bench-set-<leg>-<head sha>: the JSON and the cachegrind .out and .log files
+```
+
+- **Rows.** The BENCH-SET of rule 13: t0-loop, t0-branchy, t0-call, t0-prop, t0-gen, the 7 v8-v7 kernels (no regexp) and Octane-7: 19 rows (`--workloads` takes other names and `workloads.mjs` set names). Both builds run the same workload text: it comes from the dispatched commit.
+- **Verdict.** Per row: `pass` when head Ir ≤ base Ir × 1.005, `FAIL` above it, `no count` when a side has none (a wrong output, a failed run, no count in the log). The compare is on integers, so +0.500% passes. The run is PASS (every row passes), FAIL (a row fails) or INCOMPLETE; the leg fails unless PASS. A row that is faster by any amount passes: rule 13 is a floor.
+- **One run per side.** With a fixed seed and no GC helper threads, cachegrind gives the same count on every run (perf CI v0 above; the x86 fixer and S0 boxes), so the job counts each side once.
+- **X86IR.** The linux-x64 leg runs with `--branch-sim=yes`: each row also has Bc, Bcm, Bi and Bim (indirect-branch mispredicts in the cachegrind model, a relative signal only). Every row lists the functions with the largest Ir change and the largest Ir (the out files, summed per function name over all source files; `--top`, default 15). The .out files are in the artifact for `cg_annotate`.
+- **Commits.** `bench_base` and `bench_head` must be full commit ids. Each binary's `ep9 --version` build line (P0-BUILDID) must name its commit, built clean; else the leg stops with exit 2.
+- **JSON.** `target`, `counter` (`cachegrind-i-refs`), `branch_sim`, `hash_seed`, `gc_helpers`, `limit_pct`, `valgrind`, `host`, `base` and `head` (`commit`; `ep9`: `version`, `engine_build`, `build`), `notes`, `verdict`, `worst` (per group t0, v8v7, octane: the row with the largest delta), and per row: `name`, `group`, the file's `sha256`, `expect` and source, `base` and `head` (`status`, `error`, `ir`, `bc`, `bcm`, `bi`, `bim`), `delta_pct`, `verdict`, `bim_delta_pct`, `out_rows_match` (the rows of each .out file sum to its summary line) and `functions`.
+- **Push and pull_request.** The `bench-set` job has no `needs` and no job-level `if`, so it is never skipped (the tag gate refuses a skipped job): without `bench_base` its matrix is one leg, `off`, that prints "bench mode off" and runs `node --test .github/scripts/bench-set.test.mjs`.
+- **Local.** On a Linux host with valgrind: build both binaries, then `node .github/scripts/bench-set.mjs --base-ep9 A --head-ep9 B --base <sha> --head <sha> --out bench-set.json` (`--branch-sim`, `--keep DIR`, `--jobs N`, `--limit-pct`).
+
 ## JetStream
 
 Needs `bash scripts/sync-bench.sh` first (`bash scripts/sync-bench.sh bench-jetstream` syncs only
