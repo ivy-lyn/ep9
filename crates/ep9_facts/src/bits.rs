@@ -186,9 +186,9 @@ byte_enum! {
         /// An arguments exotic object (VM kind ARGUMENTS; FACT_SCHEMA 2). With the shape's
         /// elements kind it is the fact kind of an arguments object (M6-PLAN-D5).
         Arguments = 7 => "arguments",
-        /// A typed array (FACT_SCHEMA 2, declared): with the shape's elements kind it is the
-        /// fact kind of a typed array (M6-PLAN-D5). The VM has no typed array kind yet, so no
-        /// exporter writes it.
+        /// A typed array (FACT_SCHEMA 2): a view of the VM kinds 29-40, which the exporter writes
+        /// since TypedArray TA-3. The shape's elements kind of a view (VM kind 7 or 8) has no
+        /// name yet (TA-ORCH-14), so a view shape exports its elements kind as none.
         TypedArray = 8 => "typed-array",
     }
 }

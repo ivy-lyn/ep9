@@ -888,8 +888,8 @@ impl<'a> Exporter<'a> {
             (kind::ARGUMENTS, ObjectKind::Arguments),
         ]
         .into_iter()
-        .find(|(id, _)| id.get() == k)
-        .map(|(_, o)| o)?;
+        .find_map(|(id, o)| (id.get() == k).then_some(o))
+        .or(kind::is_view_kind(k).then_some(ObjectKind::TypedArray))?;
         let fl = shape::flags(s);
         let mut flags = ShapeFlags::EMPTY;
         if fl & shape::flag::EXTENSIBLE != 0 {
