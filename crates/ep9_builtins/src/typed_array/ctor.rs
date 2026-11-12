@@ -41,12 +41,12 @@ const OFFSET: &str = "Start offset is outside the bounds of the buffer";
 const DETACHED: &str = "Cannot perform Construct on a detached ArrayBuffer";
 
 /// Is row `r` of [`VIEWS`] of `[[ContentType]]` bigint (BigInt64, BigUint64)?
-fn is_bigint_row(r: u8) -> bool {
+pub(super) fn is_bigint_row(r: u8) -> bool {
     r == 7 || r == 8
 }
 
 /// The element size of row `r` of [`VIEWS`].
-fn element_size(r: u8) -> u64 {
+pub(super) fn element_size(r: u8) -> u64 {
     u64::from(VIEWS[usize::from(r)].3)
 }
 
@@ -78,7 +78,11 @@ pub(super) fn species<'s>(
 
 /// `this` if it is a TypedArray (`RequireInternalSlot(O, [[TypedArrayName]])`), else a
 /// TypeError naming `what`.
-fn this_typed_array<'s>(cx: &mut Cx<'s>, this: Local<'s>, what: &str) -> JsResult<Local<'s>> {
+pub(super) fn this_typed_array<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    what: &str,
+) -> JsResult<Local<'s>> {
     if cx.typed_array_element(this).is_some() {
         Ok(this)
     } else {
@@ -160,7 +164,7 @@ pub(super) fn length<'s>(
 /// (AllocateTypedArray step 1 ran), then the object (TypedArrayCreate): a new
 /// `%ArrayBuffer%` of the current realm with `length` × the element size zero bytes (a
 /// RangeError if it cannot be allocated), and a view of `length` elements on it.
-fn allocate<'s>(
+pub(super) fn allocate<'s>(
     cx: &mut Cx<'s>,
     proto: Local<'s, JsObject>,
     row: u8,

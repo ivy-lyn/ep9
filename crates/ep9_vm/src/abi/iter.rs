@@ -20,9 +20,9 @@ use ep9_value::{JsResult, Throw};
 
 use super::{Cx, JsObject, Local};
 use crate::conv::describe;
-use crate::runtime::Atom;
+use crate::runtime::{Atom, Root};
 use crate::symbol::{self, WellKnownSymbol};
-use crate::{interp, property};
+use crate::{interp, kinds, object, property};
 
 /// An Iterator Record (§7.4.1): the iterator object, its `next` method and whether it is done.
 /// Stack-only (H20 R2): keep it in a Rust local, never in Rust heap memory.
@@ -48,6 +48,19 @@ impl<'s> IteratorRecord<'s> {
     pub fn is_done(&self) -> bool {
         self.done
     }
+}
+
+/// The `kind` of CreateArrayIterator (`sec-createarrayiterator`): what each step of an Array
+/// Iterator gives for index `i` of its object. The names are those of the methods that use
+/// each kind (`keys`, `values`, `entries`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrayIterKind {
+    /// kind key: `i`.
+    Keys,
+    /// kind value: the element `i`.
+    Values,
+    /// kind key+value: the array `[i, element]`.
+    Entries,
 }
 
 impl<'s> Cx<'s> {
@@ -188,6 +201,32 @@ impl<'s> Cx<'s> {
         }
         // 8. Return ? completion.
         completion
+    }
+
+    /// CreateArrayIterator(array, kind) (`sec-createarrayiterator`): a new Array Iterator over
+    /// the object `o`, with prototype `%ArrayIteratorPrototype%` of the current realm, for
+    /// `keys`, `values` and `entries` of `%TypedArray.prototype%`. Its `next`
+    /// (`%ArrayIteratorPrototype%.next`) reads the length of `o` at each step: the closure
+    /// reads TypedArrayLength for a TypedArray (a TypeError when it is out of bounds;
+    /// TypedArray TA-4 R3 adds that arm), else `LengthOfArrayLike`. GC point.
+    pub fn create_array_iterator(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        kind: ArrayIterKind,
+    ) -> Local<'s, JsObject> {
+        let o = o.into().bits();
+        debug_assert!(kinds::is_object(o), "CreateArrayIterator of a non-object");
+        let k = match kind {
+            ArrayIterKind::Keys => object::iter_kind::KEYS,
+            ArrayIterKind::Values => object::iter_kind::VALUES,
+            ArrayIterKind::Entries => object::iter_kind::ENTRIES,
+        };
+        let rt = self.rt();
+        // 1-2. The closure and CreateIteratorFromClosure(closure, "%ArrayIteratorPrototype%",
+        //      %ArrayIteratorPrototype%): one ITERATOR cell with the object, index 0 and kind
+        //      (`object::new_iterator_of_kind`). `o` lives in a Rust local (the stack scan).
+        let proto = rt.root(Root::ArrayIteratorPrototype);
+        Self::local(object::new_iterator_of_kind(rt, proto, o, k))
     }
 
     /// GetMethod(iterator, "return") (§7.3.10, as `interp/slow/iter.rs` cites it) and, if there is one, its call: `None` if the

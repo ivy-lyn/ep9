@@ -1,0 +1,9 @@
+# ep9 builtin ids: module base64, block 37. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x4a00   37.0         method       1       "fromBase64"  (%Uint8Array%.fromBase64 w-c)
+0x4a01   37.1         method       1       "fromHex"  (%Uint8Array%.fromHex w-c)
+0x4a02   37.2         method       0       "toBase64"  (%Uint8Array.prototype%.toBase64 w-c)
+0x4a03   37.3         method       1       "setFromBase64"  (%Uint8Array.prototype%.setFromBase64 w-c)
+0x4a04   37.4         method       0       "toHex"  (%Uint8Array.prototype%.toHex w-c)
+0x4a05   37.5         method       1       "setFromHex"  (%Uint8Array.prototype%.setFromHex w-c)

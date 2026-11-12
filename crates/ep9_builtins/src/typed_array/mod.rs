@@ -12,8 +12,12 @@
 //! ctor.rs     (R2) %TypedArray%, the 12 constructors, get @@species, the getters buffer,
 //!                  byteLength, byteOffset and length (decision O3), the abstract operations
 //! from_of.rs  (R3) %TypedArray%.from and %TypedArray%.of
-//! proto.rs    (TA-4 TA-PROTO, its own block) the other %TypedArray.prototype% methods,
-//!                  @@toStringTag and @@iterator
+//! proto.rs    (TA-4 R1) module typed_array_proto, block 36: the other
+//!                  %TypedArray.prototype% methods, @@toStringTag and @@iterator; their
+//!                  bodies are in proto_iter.rs (TA-4 R3), proto_copy.rs and species.rs
+//!                  (TA-4 R4)
+//! base64.rs   (TA-4 R1 tables, R5 bodies) module base64, block 37: the base64 and hex
+//!                  methods of Uint8Array and Uint8Array.prototype
 //! ```
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
@@ -27,6 +31,12 @@ use ep9_vm::{
 
 mod ctor;
 mod from_of;
+// TypedArray TA-4: blocks 36 (proto) and 37 (base64).
+pub mod base64;
+pub mod proto;
+mod proto_copy;
+mod proto_iter;
+mod species;
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 35;

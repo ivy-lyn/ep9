@@ -143,9 +143,9 @@ mod typed_array; // TypedArray TA-1 (OBJECT_LAYOUT 9): the view cells and their 
 mod tests;
 
 pub use abi::{
-    Args, ArgsBuilder, CollectionCursor, Cx, Downcast, FlatStr, HostFn, IntoKey, IteratorRecord,
-    JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local, MatchRecord,
-    ObjectClass, PrimitiveType, PromiseCapability, PromiseRejectionOperation,
+    Args, ArgsBuilder, ArrayIterKind, CollectionCursor, Cx, Downcast, FlatStr, HostFn, IntoKey,
+    IteratorRecord, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
+    MatchRecord, ObjectClass, PrimitiveType, PromiseCapability, PromiseRejectionOperation,
     PromiseRejectionTracker, PromiseState, PropertyDescriptor, Rest, ScratchList, SharedBlockRef,
     ToPrimitiveHint,
 };

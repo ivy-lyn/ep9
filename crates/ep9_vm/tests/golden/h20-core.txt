@@ -793,3 +793,7 @@ abi: impl<'s> Cx<'s> :: pub fn new_shared_array_buffer_on_block(&mut self, impl 
 abi: impl<'s> Cx<'s> :: pub fn is_same_shared_block(&self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> bool
 path: ep9_vm::SharedBlockRef = abi::SharedBlockRef
 path: ep9_vm::abi::SharedBlockRef
+abi: #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ArrayIterKind { Keys, Values, Entries }
+abi: impl<'s> Cx<'s> :: pub fn create_array_iterator(&mut self, impl Into<Local<'s, JsObject>>, ArrayIterKind) -> Local<'s, JsObject>
+path: ep9_vm::ArrayIterKind = abi::ArrayIterKind
+path: ep9_vm::abi::ArrayIterKind

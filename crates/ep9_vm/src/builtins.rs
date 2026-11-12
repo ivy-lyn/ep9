@@ -401,11 +401,13 @@ pub enum IntrinsicId {
     /// `%Float64Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Float64ArrayPrototype,
+    /// `%Atomics%` (§25.4, an ordinary object; made by `ep9_builtins` atomics, block 38).
+    Atomics,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 141] = [
+    pub const ALL: [IntrinsicId; 142] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -547,6 +549,7 @@ impl IntrinsicId {
         IntrinsicId::Float32ArrayPrototype,
         IntrinsicId::Float64Array,
         IntrinsicId::Float64ArrayPrototype,
+        IntrinsicId::Atomics,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -694,6 +697,7 @@ impl IntrinsicId {
             IntrinsicId::Float32ArrayPrototype => "%Float32Array.prototype%",
             IntrinsicId::Float64Array => "%Float64Array%",
             IntrinsicId::Float64ArrayPrototype => "%Float64Array.prototype%",
+            IntrinsicId::Atomics => "%Atomics%",
         }
     }
 
@@ -841,7 +845,8 @@ impl IntrinsicId {
             | IntrinsicId::Float32Array
             | IntrinsicId::Float32ArrayPrototype
             | IntrinsicId::Float64Array
-            | IntrinsicId::Float64ArrayPrototype => return None,
+            | IntrinsicId::Float64ArrayPrototype
+            | IntrinsicId::Atomics => return None,
         })
     }
 
@@ -957,6 +962,7 @@ impl IntrinsicId {
             IntrinsicId::Float32ArrayPrototype => Some(105),
             IntrinsicId::Float64Array => Some(106),
             IntrinsicId::Float64ArrayPrototype => Some(107),
+            IntrinsicId::Atomics => Some(108),
             _ => None,
         }
     }
@@ -1638,7 +1644,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 108;
+const INTRINSIC_SLOTS: usize = 109;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
@@ -2194,8 +2200,8 @@ fn store_reserved(rt: &Runtime, m: &BuiltinModule, global: u64, p: &PropDef) -> 
 /// one entry per lazy group, with the group's keys. A read of any key of a group installs the
 /// whole group. A key that no module puts on %GlobalObject% does nothing (Intl before INTL
 /// wave 1). The TypedArray group (design `docs/plan/notes/typedarray-design.md` TA-D14) has
-/// the keys of TA-2 and the 12 constructor keys of TA-3 (Table 71 order); TA-4 appends its
-/// keys to its list.
+/// the keys of TA-2, the 12 constructor keys of TA-3 (Table 71 order) and the key `Atomics` of
+/// TA-4 (16 keys).
 const LAZY_GROUPS: [&[&str]; 3] = [
     &["Temporal"],
     &["Intl"],
@@ -2215,6 +2221,7 @@ const LAZY_GROUPS: [&[&str]; 3] = [
         "Float16Array",
         "Float32Array",
         "Float64Array",
+        "Atomics",
     ],
 ];
 

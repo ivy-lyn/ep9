@@ -189,3 +189,4 @@ intrinsic 137  %Float32Array%
 intrinsic 138  %Float32Array.prototype%
 intrinsic 139  %Float64Array%
 intrinsic 140  %Float64Array.prototype%
+intrinsic 141  %Atomics%

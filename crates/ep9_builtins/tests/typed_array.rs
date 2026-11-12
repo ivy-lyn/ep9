@@ -1,5 +1,6 @@
 //! TypedArray objects at the JS level (TypedArray TA-3 TA-CTORS; `src/typed_array/`; ECMA-262
-//! §23.2). R1 (the skeleton) pins the key list of each of the 26 intrinsics, the lazy group
+//! §23.2). R1 (the skeleton) pins the key list of each of the 26 intrinsics (exact lists since
+//! TypedArray TA-4 R1, which installs every TA-4 key), the lazy group
 //! (the 12 constructor keys join the group of `ArrayBuffer`, TA-D14), the `[[Prototype]]`
 //! links of the constructors (the VM's `PROTO_LINKS`, decision O2), in a second realm too,
 //! and `from` and `of` on `%TypedArray%` (R3 replaced their stubs). R2 (the constructors, section
@@ -109,27 +110,18 @@ fn keys(cx: &mut Cx<'_>, id: IntrinsicId) -> JsResult<Vec<String>> {
     Ok(texts)
 }
 
-/// node v26.13.0's `Reflect.ownKeys(%TypedArray.prototype%)`: the full list after TA-4.
+/// node v26.13.1's `Reflect.ownKeys(%TypedArray.prototype%)`: the full list (TA-4 R1 installs
+/// every key, the TA-4 methods as stubs; later roles change no key).
 const PROTOTYPE_KEYS: &str = "constructor,buffer,byteLength,byteOffset,length,entries,keys,\
      values,at,copyWithin,every,fill,filter,find,findIndex,findLast,findLastIndex,forEach,\
      includes,indexOf,join,lastIndexOf,map,reverse,reduce,reduceRight,set,slice,some,sort,\
      subarray,toReversed,toSorted,with,toLocaleString,toString,Symbol(Symbol.toStringTag),\
      Symbol(Symbol.iterator)";
 
-/// The keys of `%TypedArray.prototype%` that TA-3 makes (decision O3: the 4 getters).
-const PROTOTYPE_KEYS_TA3: [&str; 5] = [
-    "constructor",
-    "buffer",
-    "byteLength",
-    "byteOffset",
-    "length",
-];
-
-/// The exact key list of each of the 26 intrinsics of TA-3, read through `Cx::intrinsic`
-/// (which installs the lazy group first): node v26.13.0's `Reflect.ownKeys` of the same
-/// object. `%TypedArray.prototype%` is pinned in a form that TA-4's appends keep (check note
-/// c5): its keys are node's full list filtered to the keys it has, and it has the 5 keys of
-/// TA-3.
+/// The exact key list of each of the 26 intrinsics of TA-3 after TA-4, read through
+/// `Cx::intrinsic` (which installs the lazy group first): node v26.13.1's `Reflect.ownKeys` of
+/// the same object. `%Uint8Array%` and `%Uint8Array.prototype%` have the base64 and hex methods
+/// of module `base64` (TA-4) after their TA-3 keys.
 #[test]
 fn each_intrinsic_has_the_exact_key_list() {
     let mut want = vec![
@@ -137,11 +129,22 @@ fn each_intrinsic_has_the_exact_key_list() {
             IntrinsicId::TypedArray,
             "length,name,prototype,of,from,Symbol(Symbol.species)".to_string(),
         ),
-        (IntrinsicId::TypedArrayPrototype, String::new()),
+        (IntrinsicId::TypedArrayPrototype, PROTOTYPE_KEYS.to_string()),
     ];
     for (ctor, proto, _) in VIEWS {
-        want.push((ctor, "length,name,prototype,BYTES_PER_ELEMENT".to_string()));
-        want.push((proto, "constructor,BYTES_PER_ELEMENT".to_string()));
+        let (c, p) = if ctor == IntrinsicId::Uint8Array {
+            (
+                "length,name,prototype,BYTES_PER_ELEMENT,fromBase64,fromHex",
+                "constructor,BYTES_PER_ELEMENT,toBase64,setFromBase64,toHex,setFromHex",
+            )
+        } else {
+            (
+                "length,name,prototype,BYTES_PER_ELEMENT",
+                "constructor,BYTES_PER_ELEMENT",
+            )
+        };
+        want.push((ctor, c.to_string()));
+        want.push((proto, p.to_string()));
     }
     for stress in [false, true] {
         let ids: Vec<IntrinsicId> = want.iter().map(|&(id, _)| id).collect();
@@ -158,24 +161,7 @@ fn each_intrinsic_has_the_exact_key_list() {
         assert_eq!(got.len(), 26);
         for ((id, got), (want_id, want)) in got.into_iter().zip(&want) {
             assert_eq!(id, *want_id);
-            if id == IntrinsicId::TypedArrayPrototype {
-                for k in PROTOTYPE_KEYS_TA3 {
-                    assert!(
-                        got.iter().any(|g| g == k),
-                        "stress {stress}: no {k}: {got:?}"
-                    );
-                }
-                let node: Vec<&str> = PROTOTYPE_KEYS
-                    .split(',')
-                    .filter(|k| got.iter().any(|g| g == k))
-                    .collect();
-                assert_eq!(
-                    got, node,
-                    "stress {stress}: node's order of the keys it has"
-                );
-            } else {
-                assert_eq!(got.join(","), *want, "stress {stress}: {}", id.name());
-            }
+            assert_eq!(got.join(","), *want, "stress {stress}: {}", id.name());
         }
     }
 }

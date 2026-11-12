@@ -1752,3 +1752,5 @@ mod unit_code;
 mod typed;
 // TA-2 fixer (N1): the SharedArrayBuffer block handle for another isolate (H22-Q8).
 pub use self::typed::SharedBlockRef;
+// TypedArray TA-4 R1 (H20 part 2): the kind of `Cx::create_array_iterator`.
+pub use self::iter::ArrayIterKind;

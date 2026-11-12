@@ -27,6 +27,19 @@ ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s> :: fn is_empty(&self) -> bool
 ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s> :: fn len(&self) -> usize
 ep9_vm::ArgsBuilder :: impl<'s> ArgsBuilder<'s> :: fn push(&mut self, &mut Cx<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
 ep9_vm::ArgsBuilder :: struct ArgsBuilder<'s> { .. }
+ep9_vm::ArrayIterKind :: enum ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::clone::Clone for ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::clone::TrivialClone for ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::cmp::Eq for ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::cmp::PartialEq for ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::fmt::Debug for ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::marker::Copy for ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::marker::Send for ArrayIterKind (auto)
+ep9_vm::ArrayIterKind :: impl core::marker::StructuralPartialEq for ArrayIterKind
+ep9_vm::ArrayIterKind :: impl core::marker::Sync for ArrayIterKind (auto)
+ep9_vm::ArrayIterKind :: variant Entries
+ep9_vm::ArrayIterKind :: variant Keys
+ep9_vm::ArrayIterKind :: variant Values
 ep9_vm::Atom :: #[repr(u16)] enum Atom
 ep9_vm::Atom :: impl Atom
 ep9_vm::Atom :: impl Atom :: const ALL: &'static [Atom]
@@ -284,6 +297,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct_args(&mut self, impl core::convert
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn construct_built(&mut self, impl core::convert::Into<Local<'s>>, ArgsBuilder<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn copy_buffer_bytes(&mut self, impl core::convert::Into<Local<'s>>, u64, impl core::convert::Into<Local<'s>>, u64, u64) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_array_from_list(&mut self, &[Local<'s>]) -> ep9_value::JsResult<Local<'s, JsArray>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_array_iterator(&mut self, impl core::convert::Into<Local<'s, JsObject>>, ArrayIterKind) -> Local<'s, JsObject>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<bool>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property_index_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, u64, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn create_data_property_or_throw(&mut self, impl core::convert::Into<Local<'s, JsObject>>, impl IntoKey<'s>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<()>
@@ -610,7 +624,7 @@ ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
 ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
 ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
 ep9_vm::IntrinsicId :: impl IntrinsicId
-ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 141]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 142]
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
 ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
@@ -640,6 +654,7 @@ ep9_vm::IntrinsicId :: variant AsyncGeneratorFunction
 ep9_vm::IntrinsicId :: variant AsyncGeneratorFunctionPrototype
 ep9_vm::IntrinsicId :: variant AsyncGeneratorPrototype
 ep9_vm::IntrinsicId :: variant AsyncIteratorPrototype
+ep9_vm::IntrinsicId :: variant Atomics
 ep9_vm::IntrinsicId :: variant BigInt
 ep9_vm::IntrinsicId :: variant BigInt64Array
 ep9_vm::IntrinsicId :: variant BigInt64ArrayPrototype
@@ -1263,6 +1278,7 @@ ep9_vm::WellKnownSymbol :: struct WellKnownSymbol(_)
 ep9_vm::abi :: mod abi
 ep9_vm::abi::Args :: struct Args<'s> { .. }
 ep9_vm::abi::ArgsBuilder :: struct ArgsBuilder<'s> { .. }
+ep9_vm::abi::ArrayIterKind :: enum ArrayIterKind
 ep9_vm::abi::CollectionCursor :: struct CollectionCursor<'s> { .. }
 ep9_vm::abi::Cx :: struct Cx<'s> { .. }
 ep9_vm::abi::Downcast :: trait Downcast: Sealed
