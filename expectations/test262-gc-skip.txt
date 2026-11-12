@@ -1,15 +1,15 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 56 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2 and 1 TA sync 1
-# tests. 6 of them also fail without GC-stress and are listed in every
+# 59 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 1 TA sync 1 and
+# 3 TA-3 tests. 6 of them also fail without GC-stress and are listed in every
 # expectations/test262.<triple>.jit.txt:
 # the 5 month-2 tco-* tests and the M3-P1 test two-digit-years.js. Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
-# 42331111457), and ownkeys-linear.js passes too. The other 50 pass without GC-stress: the
+# 42331111457), and ownkeys-linear.js passes too. The other 53 pass without GC-stress: the
 # other 6 month-2 tests, the other 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test, the 7
-# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests and the TA sync 1 test.
+# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the TA sync 1 test and the 3 TA-3 tests.
 # The 8 month-2 tests that failed without GC-stress when they were listed:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists). They failed at the first lone surrogate, 0xD800, until the M7-P2 shim; now they
@@ -92,6 +92,19 @@
 # timeout. Alone, 2 runs, mac a64 release, host load 9-14: 38.6 s and 40.2 s at 5f6adde4,
 # 45.9 s and 39.9 s at the fork base 09c937aa (m7-p5, green in CI). So the TA branch did not
 # make it slower; about 20 s per run is at the 3x margin of the 60 s limit (M7-P5-D9).
+# TA-3 (the TypedArray constructors at 3e1a8584, M6-ORCH-535; TA-3 fixer r1): the 3
+# TypedArray/prototype/copyWithin/coerced-values-*-detached.js tests failed fast before TA-3
+# (no TypedArray constructor). They pass without GC-stress (copyWithin comes with TA-4, so the
+# call of undefined throws the TypeError that each test expects). Each run makes a view 80
+# times (10 constructors, 8 argument kinds) from a 10,000-element array: the harness calls
+# Array.from, and the constructor reads the array by the iterator protocol, so each element
+# makes one iterator result object (§7.4.10), and under GC-stress each allocation is a
+# collection. In CI 43080469208 (GC-stress shard 1/6) both runs of each ran past the 60 s
+# timeout on all 4 targets. The TA-3 fixer r1 removed one more allocation per element (a key
+# atom per index when a builtin reads or writes a view element by index). After it, mac a64
+# release: end-detached.js 536 s per run (2 runs at once, host load 4-7); start-detached.js and
+# end-detached-prototype.js more than 585 s per run (4 runs at once, host load 7-18; stopped).
+# One run of 2 of the 10 constructors (all 8 argument kinds) takes 51 s alone.
 # Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
 # head; the M4-P3 tests: on x86_64-unknown-linux-gnu). Paths are relative to the test262 root.
 test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js
@@ -100,6 +113,9 @@ test/built-ins/Function/prototype/toString/built-in-function-object.js
 test/built-ins/Iterator/zip/basic-longest.js
 test/built-ins/Iterator/zipKeyed/basic-longest.js
 test/built-ins/RegExp/character-class-escape-non-whitespace.js
+test/built-ins/TypedArray/prototype/copyWithin/coerced-values-end-detached-prototype.js
+test/built-ins/TypedArray/prototype/copyWithin/coerced-values-end-detached.js
+test/built-ins/TypedArray/prototype/copyWithin/coerced-values-start-detached.js
 test/built-ins/decodeURI/S15.1.3.1_A1.10_T1.js
 test/built-ins/decodeURI/S15.1.3.1_A1.11_T1.js
 test/built-ins/decodeURI/S15.1.3.1_A1.11_T2.js
