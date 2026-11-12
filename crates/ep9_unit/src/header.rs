@@ -179,11 +179,11 @@ pub mod entry_flags {
 /// Header compat flag bits (offset 140; container v2). A bit this engine does not know is
 /// ignored: a writer sets one for an optional feature that an older engine may skip.
 pub mod compat_flags {
-    /// Bit 0 (container v3, MC-w23-15): the text has landing pads. Every indirect entry of the
-    /// text (each function entry) starts with a landing pad (AArch64 `bti c`) and every
-    /// indirect jump goes through x16 or x17, so a loader may map the text with BTI
-    /// (`PROT_BTI`). Without the bit a loader maps the text without BTI. An engine that does not
-    /// know the bit maps without BTI, which is safe.
+    /// Bit 0 (container v3, MC-w23-15): the text has landing pads: each function entry and each
+    /// `adr` target is `bti c` or `bti jc`, each `br` goes through x16 or x17, and the target
+    /// of each `br` and `blr` is proven to be such a pad or code outside the text (`ep9_masm`
+    /// `check_pads`, PADS-PROVENANCE), so a loader may map the text with BTI (`PROT_BTI`).
+    /// Without the bit, or in an engine that does not know it, the text maps without BTI: safe.
     pub const HAS_PADS: u32 = 1;
     /// Every defined bit.
     pub const DEFINED: u32 = HAS_PADS;

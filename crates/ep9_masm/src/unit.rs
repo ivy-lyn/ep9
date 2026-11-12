@@ -324,6 +324,14 @@ pub enum Finding {
         /// The instruction offset.
         at: u32,
     },
+    /// A unit with landing pads with an AArch64 `br` or `blr` (or a PAC form) whose register
+    /// value is not proven to be a landing pad or code outside the text (see [`check_pads`]):
+    /// it is not set in the same straight-line run by a load through x27 or x28 or by an
+    /// `adr` (route PADS-PROVENANCE).
+    IndirectTargetNotProven {
+        /// The instruction offset.
+        at: u32,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -375,6 +383,9 @@ impl fmt::Display for Finding {
             Finding::NoLandingPad { at } => write!(f, "+{at:#x}: entry without bti c"),
             Finding::IndirectJumpRegister { at } => {
                 write!(f, "+{at:#x}: indirect jump not through x16 or x17")
+            }
+            Finding::IndirectTargetNotProven { at } => {
+                write!(f, "+{at:#x}: indirect branch target not proven")
             }
         }
     }
@@ -668,13 +679,19 @@ const A64_BTI_JC: u32 = 0xd503_24df;
 /// |---|---|---|
 /// | the function entry (offset 0) is `bti c` or `bti jc`: the target of `blr` (a call) and of `br x16`/`br x17` (a tail call) from other code (else [`Finding::NoLandingPad`]) | yes | - |
 /// | each indirect jump (`br`, `braa`, `brab`, `braaz`, `brabz`) goes through x16 or x17, so its target needs only `bti c` (a jump through another register needs `bti j`; else [`Finding::IndirectJumpRegister`]) | yes | - |
-/// | each `adr` with a target in the text, into any register, makes an indirect entry (a `br x16`/`br x17` or a `blr` through the register or a copy of it): the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
+/// | each `adr` with a target in the text, into any register, makes an indirect entry: the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
+/// | each `br` and `blr` (and their PAC forms) takes its register from an allowed form, set in the same straight-line run before it (else [`Finding::IndirectTargetNotProven`]; route PADS-PROVENANCE): a 64-bit load through x27 or x28 (a link cell, a stub cell or a RuntimeTable entry: code outside the text, whose own entry rule holds there), a 64-bit load through a register that such a load set in its own run (one step: a table that the isolate names), or an `adr` (the rule above checks its target) | yes | - |
 ///
-/// `blr` and `ret` may use any register (the spike-b unit probe calls through x1), so the
-/// check reads the target where it is made, at the `adr`, for every register. `adrp` and a
-/// direct call are [`check_text`] findings, so in unit text only an `adr` gives a text
-/// address. x86-64 has no pad form here yet (CET IBT `endbr64` is not built): the check
-/// gives no finding.
+/// The run of a branch goes back from it to its definition over words that write neither the
+/// register nor the flow of control: loads and pairs into other registers (a pair from the
+/// stack, `ldp x29, x30`, pops a frame), stores, `add`/`sub` (immediate), `mov` (wide
+/// immediate or register) and `nop` into other registers. A run stops at the function entry,
+/// at the target of a direct branch in the text and at a landing pad (another way in), and at
+/// any other word (a call, a branch, a write of the register). So a text address made any
+/// other way is refused: arithmetic on an `adr` result, x30 after a `blr` (a return address),
+/// a load from the stack (a saved x30) and a literal load (text bytes). `ret` is not a BTI
+/// branch and may use any register. x86-64 has no pad form here yet (CET IBT `endbr64` is not
+/// built): the check gives no finding.
 pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
     let mut out = Vec::new();
     if arch != Arch::A64 {
@@ -683,16 +700,23 @@ pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
     if text.len() < 4 || !matches!(word(text, 0), A64_BTI_C | A64_BTI_JC) {
         out.push(Finding::NoLandingPad { at: 0 });
     }
+    let starts = run_starts(text);
     for at in (0..text.len() / 4 * 4).step_by(4) {
         let w = word(text, at);
-        // Unconditional branch (register), opc 0000 (BR, BRAAZ, BRABZ) or 1000 (BRAA, BRAB),
-        // op2 = 11111.
-        let br = w & 0xfe1f_0000 == 0xd61f_0000 && matches!((w >> 21) & 0xf, 0 | 8);
-        if br && !matches!((w >> 5) & 31, 16 | 17) {
+        // Unconditional branch (register), op2 = 11111: opc 0000 (BR, BRAAZ, BRABZ), 0001
+        // (BLR, BLRAAZ, BLRABZ), 1000 (BRAA, BRAB), 1001 (BLRAA, BLRAB). RET (0010) is not a
+        // BTI branch.
+        let opc = (w >> 21) & 0xf;
+        let branch = w & 0xfe1f_0000 == 0xd61f_0000 && matches!(opc, 0 | 1 | 8 | 9);
+        let reg = (w >> 5) & 31;
+        if branch && matches!(opc, 0 | 8) && !matches!(reg, 16 | 17) {
             out.push(Finding::IndirectJumpRegister { at: at as u32 });
         }
-        // `adr Xn, L` then `br x16` or `blr Xn` (or a copy of Xn): L is entered by an indirect
-        // branch (JIT review M8-P2 B2; Codex M8-P2 r2: `adr x0, L; blr x0`).
+        if branch && !proven_target(text, &starts, at, reg, 1) {
+            out.push(Finding::IndirectTargetNotProven { at: at as u32 });
+        }
+        // `adr Xn, L` then `br x16` or `blr Xn`: L is entered by an indirect branch (JIT
+        // review M8-P2 B2; Codex M8-P2 r2: `adr x0, L; blr x0`).
         if is_adr(w) {
             let target = at as i64 + sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21);
             if (0..text.len() as i64).contains(&target) {
@@ -708,4 +732,90 @@ pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// The words of `text` (by word index) where a straight-line run starts in [`check_pads`]:
+/// the entry, each target of a direct branch in the text and each BTI landing pad.
+fn run_starts(text: &[u8]) -> Vec<bool> {
+    let n = text.len() / 4;
+    let mut starts = vec![false; n];
+    if n > 0 {
+        starts[0] = true;
+    }
+    for i in 0..n {
+        let w = word(text, i * 4);
+        // BTI (any target kind): HINT #32, #34, #36, #38.
+        if w & 0xffff_ff3f == 0xd503_241f {
+            starts[i] = true;
+        }
+        let distance = if is_b_or_bl(w) {
+            Some(sext(w & 0x03ff_ffff, 26) * 4)
+        } else if is_b_cond(w) || is_cbz(w) {
+            Some(sext((w >> 5) & 0x7_ffff, 19) * 4)
+        } else if is_tbz(w) {
+            Some(sext((w >> 5) & 0x3fff, 14) * 4)
+        } else if is_cb_cc(w) {
+            Some(sext((w >> 5) & 0x1ff, 9) * 4)
+        } else {
+            None
+        };
+        if let Some(d) = distance {
+            let t = (i * 4) as i64 + d;
+            if (0..(n * 4) as i64).contains(&t) {
+                starts[t as usize / 4] = true;
+            }
+        }
+    }
+    starts
+}
+
+/// True when the value of register `reg` at the AArch64 word `at` is proven by an allowed form
+/// in the straight-line run before `at` (the table of [`check_pads`]). `chain` is how many
+/// loads through a register that is itself proven may still follow (1 at a branch).
+fn proven_target(text: &[u8], starts: &[bool], at: usize, reg: u32, chain: u32) -> bool {
+    let mut q = at;
+    loop {
+        if starts[q / 4] || q < 4 {
+            return false;
+        }
+        let p = q - 4;
+        let w = word(text, p);
+        let rd = w & 31;
+        if is_adr(w) && rd == reg {
+            let target = p as i64 + sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21);
+            return (0..text.len() as i64).contains(&target);
+        }
+        // LDR (immediate), 64-bit, unsigned offset.
+        if w & 0xffc0_0000 == 0xf940_0000 {
+            if rd != reg {
+                q = p;
+                continue;
+            }
+            let base = (w >> 5) & 31;
+            return matches!(base, 27 | 28)
+                || (chain > 0 && base != 31 && proven_target(text, starts, p, base, chain - 1));
+        }
+        let neutral = match w & 0xffc0_0000 {
+            // LDP, 64-bit: post-index, pre-index, signed offset.
+            0xa8c0_0000 | 0xa9c0_0000 | 0xa940_0000 => {
+                let (t2, base) = ((w >> 10) & 31, (w >> 5) & 31);
+                rd != reg && t2 != reg && base != reg
+            }
+            // STP, 64-bit (the same forms); STR (immediate), 64-bit, unsigned offset.
+            0xa880_0000 | 0xa980_0000 => (w >> 5) & 31 != reg,
+            0xa900_0000 | 0xf900_0000 => true,
+            _ => {
+                // ADD, ADDS, SUB, SUBS (immediate); MOVN, MOVZ, MOVK; ORR (shifted register)
+                // with Rd != the register (Rd 31 is sp or xzr); NOP.
+                let add_imm = w & 0x1f80_0000 == 0x1100_0000;
+                let mov_wide = w & 0x1f80_0000 == 0x1280_0000 && (w >> 29) & 3 != 1;
+                let orr = w & 0x7f20_0000 == 0x2a00_0000;
+                ((add_imm || mov_wide || orr) && rd != reg) || w == 0xd503_201f
+            }
+        };
+        if !neutral {
+            return false;
+        }
+        q = p;
+    }
 }
