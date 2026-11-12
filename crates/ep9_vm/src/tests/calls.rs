@@ -1614,3 +1614,166 @@ fn the_cold_call_arms_that_do_not_forward_give_the_cold_path_result() {
         }
     }
 }
+
+// ---- the decode-free host construct (M8-P2 TS-HOSTCALL) -------------------------------------
+
+/// `hk(...)`, a host constructor: "<new|call>:<self|other>:<this>:<args joined by ,>" (whether
+/// it was constructed, whether new.target is the callee, and the kind of `this`).
+fn hk<'s>(cx: &mut Cx<'s>, this: Local<'s>, args: Args<'s>, nt: Local<'s>) -> JsResult<Local<'s>> {
+    let mut parts = Vec::new();
+    for v in args.iter() {
+        parts.push(cx.to_rust_string(v)?);
+    }
+    let how = if args.is_construct_call() {
+        "new"
+    } else {
+        "call"
+    };
+    let who = if nt.is_same_bits(&args.callee()) {
+        "self"
+    } else if nt.is_undefined() {
+        "none"
+    } else {
+        "other"
+    };
+    let t = if this.is_undefined() { "u" } else { "x" };
+    let s = format!("{how}:{who}:{t}:{}", parts.join(","));
+    Ok(cx.new_string(&s)?.value())
+}
+
+/// `hthrow(...)`, a host constructor that throws a RangeError with its argument count.
+fn hthrow<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let msg = format!("hthrow {}", args.len());
+    Err(cx.throw_range_error(&msg))
+}
+
+/// `hk`, `hk2` (the same function, another constructor) and `hthrow` as constructors of a
+/// builtin table, installed as globals.
+static HOST_CTORS: crate::BuiltinTable = crate::BuiltinTable::new(
+    "host-ctors",
+    &[crate::BuiltinModule {
+        name: "host-ctors",
+        block: 104,
+        defs: &[
+            crate::BuiltinDef::constructor("hk", 0, hk),
+            crate::BuiltinDef::constructor("hk2", 0, hk),
+            crate::BuiltinDef::constructor("hthrow", 0, hthrow),
+        ],
+        intrinsics: &[],
+        props: &[crate::ObjectProps {
+            target: crate::IntrinsicId::GlobalObject,
+            props: &[
+                crate::PropDef::method(crate::PropKey::Str("hk"), 0),
+                crate::PropDef::method(crate::PropKey::Str("hk2"), 1),
+                crate::PropDef::method(crate::PropKey::Str("hthrow"), 2),
+            ],
+        }],
+    }],
+);
+
+/// An unprefixed `Construct` of a host constructor takes the decode-free host entry
+/// (`interp/slow/call.rs` `host_construct`, M8-P2 TS-HOSTCALL), with 0, 1, 3 and 9 arguments
+/// (no `ArgBuf` for any count), new.target from the accumulator when it is a constructor and
+/// the callee when it is not, a host constructor that throws, and a host function that is not
+/// a constructor (the TypeError of `do_call`). The human fast paths on and off give the same
+/// output; on, the entry counts each construct of a host constructor and each `print`; off,
+/// none. Before M8-P2 a `Construct` never took the entry (the count was the prints only).
+#[test]
+fn a_host_construct_takes_the_decode_free_entry() {
+    /// The constructs that take the entry (the throwing one included) and the prints.
+    const CONSTRUCTS: u64 = 7;
+    const PRINTS: u64 = 8;
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (ctx, t) = (s.b.new_register(), s.b.new_register());
+        let l = s.b.new_register_list(9);
+        for i in 0..9 {
+            s.b.lda_smi(i + 1).star(l.get(i as u32));
+        }
+        let list = |n: u32| RegisterList::new(l.get(0).local_index().unwrap(), n);
+        // new hk() .. new hk(1, .., 9): acc = hk, so new.target = hk.
+        for n in [0, 1, 3, 9] {
+            s.construct_global("hk", list(n));
+            s.print_acc();
+        }
+        // new.target = hk2 (a constructor in the accumulator), then 7 (not one: the callee).
+        s.lda_global("hk");
+        s.b.star(s.f);
+        s.lda_global("hk2");
+        s.b.construct(s.f, list(1), 1, s.call);
+        s.print_acc();
+        s.lda_global("hk");
+        s.b.star(s.f).lda_smi(7).construct(s.f, list(2), 2, s.call);
+        s.print_acc();
+        // A host constructor that throws, and a host function that is not a constructor.
+        try_print_message(&mut s, ctx, t, |s| {
+            s.construct_global("hthrow", list(3));
+        });
+        try_print_message(&mut s, ctx, t, |s| {
+            s.construct_global("echo", list(1));
+        });
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    fn run(d: Dispatch, stress: bool, on: bool) -> (Result<String, String>, Vec<String>, u64) {
+        use crate::call::HOST_ENTRY_HITS;
+        // The switch is process-wide: no `run_host` run at the same time.
+        let _one = RUN_HOST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::on_big_stack(move || {
+            let mut c = super::config(d, stress);
+            c.builtins = Some(&HOST_CTORS);
+            let mut iso = isolate(c);
+            iso.register_host_function("echo", 0, echo);
+            take_output();
+            HOST_ENTRY_HITS.with(|h| h.set(0));
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.set_human_fast_paths(on);
+                cx.run_script(make(), "host.js").map(|v| cx.display(v))
+            });
+            let out = take_output();
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            let _ = iso.with_cx(|cx| {
+                cx.set_human_fast_paths(true);
+                Ok(())
+            });
+            (
+                r.map_err(|e| e.message),
+                out,
+                HOST_ENTRY_HITS.with(|h| h.get()),
+            )
+        })
+    }
+    let want = [
+        "new:self:u:",
+        "new:self:u:1",
+        "new:self:u:1,2,3",
+        "new:self:u:1,2,3,4,5,6,7,8,9",
+        "new:other:u:1",
+        "new:self:u:1,2",
+        "hthrow 3",
+        "function echo is not a constructor",
+    ];
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run(d, stress, true);
+            let off = run(d, stress, false);
+            assert!(on.0.is_ok(), "{:?}", on.0);
+            assert_eq!(on.1, want, "{} stress={stress}", d.name());
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
+            assert_eq!(
+                (on.2, off.2),
+                (CONSTRUCTS + PRINTS, 0),
+                "{} stress={stress}",
+                d.name()
+            );
+        }
+    }
+}
