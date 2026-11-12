@@ -79,7 +79,9 @@ const INVENTORY: &[FastPath] = &[
         id: "host-entry",
         site: "crates/ep9_vm/src/interp/slow/call.rs host_entry",
         off: Off::Switch,
-        what: "the decode-free entry of a host callee in the 9 fixed-operand call shapes",
+        what: "the decode-free entry of a host callee in the 9 fixed-operand call shapes, and of \
+               an unprefixed Construct of a host constructor (host_construct, M8-P2 \
+               TS-HOSTCALL)",
     },
     FastPath {
         id: "forward-apply",
@@ -262,6 +264,48 @@ const CASES: &[Case] = &[
         src: "var s = Object.prototype.toString;\n\
               print(s.call(1), s.call('x'), s.call(null), s.call(undefined), s.call([]));\n\
               var o = { t: s }; print(o.t(), [1, 2].join(), [1, [2, 3]].toString());",
+        spec: None,
+    },
+    // ---- host-entry: M8-P2 TS-HOSTCALL (the Construct arm, the lean host call) ----
+    Case {
+        path: "host-entry",
+        name: "host calls and constructs with 0, 1, 3 and many arguments",
+        src: "var s = 'abcdef';\n\
+              print(s.charAt(), s.charCodeAt(1), s.replace('b', 'B'), s.substring(1, 4), s.concat(1, 2, 3, 4, 5, 6, 7, 8, 9));\n\
+              print(new Array().length, new Array(3).length, new Array(1, 2, 3).join(), new Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10).join());\n\
+              print(new Date(0).getTime(), String(new Number(5)), new Boolean(0).valueOf(), new Map([[1, 2]]).get(1));\n\
+              class D extends Array { constructor(n) { super(n); } }\n\
+              var d = new D(2); print(d instanceof D, d.length, Object.getPrototypeOf(d) === D.prototype);",
+        spec: None,
+    },
+    Case {
+        path: "host-entry",
+        name: "a host construct that throws and a host function that is not a constructor",
+        src: "try { new Array(-1); } catch (e) { print(e.name, e.message); }\n\
+              try { new Map(1); } catch (e) { print(e.name); }\n\
+              try { new Math.max(); } catch (e) { print(e.name, e.message); }\n\
+              try { new ''.charAt(0); } catch (e) { print(e.name, e.message); }\n\
+              try { new Symbol(); } catch (e) { print(e.name, e.stack.split('\\n').length); }",
+        spec: None,
+    },
+    Case {
+        path: "host-entry",
+        name: "a host builtin that re-enters JS",
+        src: "print([3, 1, 2].sort(function (a, b) { return a - b; }).join(), [1, 2].map(function (x) { return x * 2; }).join());\n\
+              var log = [];\n\
+              var it = { [Symbol.iterator]: function* () { log.push('it'); yield [1, 'a']; yield [2, 'b']; } };\n\
+              var m = new Map(it); print(m.get(1), m.get(2), m.size, log.join());\n\
+              print(new Set({ [Symbol.iterator]: function* () { yield 1; yield 1; yield 2; } }).size);",
+        spec: None,
+    },
+    Case {
+        path: "host-entry",
+        name: "a stack overflow of host calls and host constructs gives RangeError",
+        src: "function r() { return [0].map(r); }\n\
+              try { r(); } catch (e) { print(e.name); }\n\
+              var it = { [Symbol.iterator]: function () { new Map(it); return [][Symbol.iterator](); } };\n\
+              try { new Map(it); } catch (e) { print(e.name); }\n\
+              print('after');",
         spec: None,
     },
     // ---- forward-apply (task 4 cases) ----

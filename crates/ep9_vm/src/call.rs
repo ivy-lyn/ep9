@@ -2134,3 +2134,91 @@ pub(crate) fn construct_result(cx: &mut Cx, r: u64, this: u64) -> Res<u64> {
         Err(throw_error(cx, kind, msg))
     }
 }
+
+/// [`call_host`] for a call instruction of bytecode (M8-P2 TS-HOSTCALL: `interp/slow/call.rs`
+/// `host_entry` and `host_construct`, which pass the host function `h` of `fi` that they
+/// read). `caller_fp` is the live top frame of that bytecode, and bytecode runs with no
+/// scratch area (the module doc). So the host frame goes right above the caller's registers
+/// (`frame_top`: no [`top_of`] and no scratch top to save), and the return puts the scratch
+/// top back to none, as [`call_host`] does for a caller with no scratch area. Everything else
+/// is the [`call_host`] form, in its order: the native stack check (RangeError), the host
+/// frame on the VM stack (H14), the realm switch (H20 R5), the call, [`host_return`] (the
+/// tail-call request, H20-Q3), the throw protocol in debug builds (H20 R4), and no budget
+/// unit (H23). (At the end of the file, so [`call_host`] and the cited lines keep their
+/// places; `do_call`'s host arms keep [`call_host`], whose lines H14 cites.)
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn call_host_from_bytecode(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    h: crate::host::HostFn,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+    caller_fp: *mut u64,
+    return_pc: *const u8,
+) -> Res<u64> {
+    let rt = cx.rt();
+    debug_assert!(
+        rt.stack().scratch_top().is_null(),
+        "bytecode runs with a scratch area"
+    );
+    debug_assert!(fi.host.is_some_and(|g| core::ptr::fn_addr_eq(g, h)));
+    if !rt.native_stack_ok() {
+        return stack_overflow(cx);
+    }
+    // SAFETY: `frame_top(caller_fp)` is the first free slot above the live top frame, which has
+    // no scratch Values above it; the limit is the stack end.
+    let fp = unsafe {
+        push_frame(
+            frame_top(caller_fp),
+            cx.stack_limit,
+            fi,
+            f,
+            this,
+            argc,
+            arg,
+            caller_fp,
+            return_pc,
+            UNDEFINED,
+            new_target,
+        )
+    };
+    let Some(fp) = fp else {
+        return stack_overflow(cx);
+    };
+    rt.stack().set_fp(fp);
+    // SAFETY: `fp` is the host frame that `push_frame` just wrote; it stays live until `h`
+    // returns.
+    let args = unsafe { Args::from_fp(fp) };
+    // H20 R5: a host function runs in its own realm. Not a GC point.
+    let saved_realm = realm::enter_realm_of(cx, f);
+    let r = {
+        let mut hcx = abi::Cx::new(cx);
+        h(
+            &mut hcx,
+            Local::from_bits(this),
+            args,
+            Local::from_bits(new_target),
+        )
+        .map(|v| v.bits())
+    };
+    realm::leave(cx, saved_realm);
+    // H20-Q3: pops the host frame (the scratch top goes back to none), or makes the call of
+    // `h`'s tail-call request in its place.
+    let r = host_return(cx, r, caller_fp, core::ptr::null_mut());
+    // H20 R4: the throw protocol.
+    debug_assert!(
+        r.is_ok() || rt.pending() != 0,
+        "host function {:?} returned Err without a pending exception",
+        fi.name
+    );
+    debug_assert!(
+        r.is_err() || rt.pending() == 0,
+        "host function {:?} returned Ok with a pending exception",
+        fi.name
+    );
+    r
+}

@@ -74,7 +74,7 @@ pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {
         };
     }
     // SAFETY: as above (bytecode runs with no scratch area); M7-P0 CALLHOST: a host callee.
-    let r = unsafe { host_entry(cx, fp, pc) };
+    let r = unsafe { host_entry(cx, fp, pc, acc) };
     match r.unwrap_or_else(|| do_call(cx, fp, &call::decode_call(fp, pc), acc)) {
         Ok(v) => v,
         Err(Throw) => error::unwind(cx, fp, pc),
@@ -702,13 +702,16 @@ fn runs_bytecode(fi: &FunctionInfo) -> bool {
 //         %Function.prototype.call%, its `this` a bytecode function of this realm, and the
 //         list (apply) undefined, null, an unmodified arguments object or a packed Array:
 //         push the bytecode frame from the source, in this dispatch run (H20-Q3 rest)
-//     ──> anything else: call::call_host, as do_call does
+//     ──> anything else: call::call_host_from_bytecode (the call_host form for a bytecode
+//         caller), with what do_call gives call::call_host
+//   ──> host_construct: unprefixed Construct of a host constructor (M8-P2 TS-HOSTCALL),
+//       the same fixed places ──> call::call_host_from_bytecode with new.target
 //   ──> anything else: decode_call ──> do_call (a prefixed, spread or bound call of apply or
 //       call runs the builtin)
 // ```
 //
-// Both are human fast paths (FASTDIFF): `Cx::set_human_fast_paths(false)` turns them off, and
-// every call then takes `decode_call`, `do_call` and the host function.
+// All three are human fast paths (FASTDIFF): `Cx::set_human_fast_paths(false)` turns them off,
+// and every call then takes `decode_call`, `do_call` and the host function.
 //
 // M7-P4 LEVER-3: the T0 call fast path takes most forwarded calls before they come here
 // (`call::forward_frame`: the same tests, with no call, no GC point and no throw; on x86-64
@@ -722,6 +725,9 @@ fn runs_bytecode(fi: &FunctionInfo) -> bool {
 /// so operand `i` is at `pc + 1 + i` (checked at compile time below).
 const FIXED_FIRST: u8 = ep9_bytecode::Opcode::CallAnyReceiver as u8;
 const FIXED_LAST: u8 = ep9_bytecode::Opcode::CallUndefinedReceiver2 as u8;
+/// `Construct`, the one construct opcode of [`host_entry`]: at single scale each of its 4
+/// operands is one byte too (callee, list, count, feedback slot; checked below).
+const CONSTRUCT: u8 = ep9_bytecode::Opcode::Construct as u8;
 const _: () = {
     use ep9_bytecode::{Opcode as O, OperandScale};
     let ops = [
@@ -748,16 +754,25 @@ const _: () = {
         O::CallAnyReceiver.info().size(OperandScale::Single)
             == O::CallProperty.info().size(OperandScale::Single)
     );
+    let construct = O::Construct.info();
+    assert!(construct.operands.len() == 4);
+    assert!(construct.size(OperandScale::Single) == 1 + construct.operands.len());
+    // Outside the 9, so the range test of `host_entry` keeps it apart.
+    assert!(CONSTRUCT < FIXED_FIRST || CONSTRUCT > FIXED_LAST);
 };
 
 /// A call of one of the 9 fixed-operand opcodes, read at the fixed places: the receiver, the
-/// argument count and where the arguments are.
+/// argument count and where the arguments are. `Copy` and read by value (M8-P2 TS-HOSTCALL),
+/// so its fields stay in registers, not in a stack copy that each argument read loads.
+#[derive(Clone, Copy)]
 struct Fixed {
     this: u64,
     argc: u32,
-    /// Argument `i` is in slot `list + i` (a register list); `None`: in slot `regs[i]`.
+    /// Argument `i` is in slot `list + i` (a register list); `None`: in slot `a` (`i` 0) or
+    /// `b` (`i` 1).
     list: Option<isize>,
-    regs: [isize; 2],
+    a: isize,
+    b: isize,
     /// The next instruction.
     next: *const u8,
 }
@@ -768,10 +783,11 @@ impl Fixed {
     /// # Safety
     /// `fp` is the live frame of the instruction this was read from.
     #[inline(always)]
-    unsafe fn arg(&self, fp: *mut u64, i: u32) -> u64 {
+    unsafe fn arg(self, fp: *mut u64, i: u32) -> u64 {
         let s = match self.list {
             Some(first) => first + i as isize,
-            None => self.regs[i as usize],
+            None if i == 0 => self.a,
+            None => self.b,
         };
         // SAFETY: a slot named by a register operand (or the list with its count) of the
         // verified instruction, in the live frame `fp` (caller contract).
@@ -781,29 +797,39 @@ impl Fixed {
 
 /// The decode-free entry of a host callee (M7-P0 CALLHOST; the spike-native `native_entry`
 /// form for builtins): an unprefixed `CallAnyReceiver`, `CallProperty`, `CallProperty0`-`2`,
-/// `CallUndefinedReceiver` or `CallUndefinedReceiver0`-`2` whose callee is a host FUNCTION.
+/// `CallUndefinedReceiver` or `CallUndefinedReceiver0`-`2` whose callee is a host FUNCTION,
+/// and (M8-P2 TS-HOSTCALL, [`host_construct`]) an unprefixed `Construct` of a host
+/// constructor, with `acc` its new.target operand.
 /// It reads the operands at their fixed single-scale places and the arguments straight from
-/// the caller's registers: no `decode_call`, no `CallSite`, no `ArgBuf`. Then [`forward`]
-/// or `call::call_host`, with the receiver, arguments, return pc and result that `do_call`
-/// gives them, and the realm switch of `call_host`.
+/// the caller's registers: no `decode_call`, no `CallSite`, no `ArgBuf`, for any argument
+/// count. Then [`forward`] or `call::call_host_from_bytecode` (the `call_host` form for a
+/// bytecode caller), with the receiver, arguments, return pc and result that `do_call` gives
+/// them, and the realm switch of `call_host`.
 ///
 /// Everything else returns `None` with no state changed, and takes `decode_call` and
 /// `do_call`: a `Wide`/`ExtraWide` call (`pc` is at the prefix byte), `CallWithSpread`,
-/// `Construct*`, any callee that is not a host FUNCTION (bytecode, bound, proxy, not
-/// callable), and every call while the human fast paths are off.
+/// `ConstructWithSpread`, any callee that is not a host FUNCTION (bytecode, bound, proxy, not
+/// callable), a `Construct` of a host function that is not a constructor (`do_call` throws
+/// its TypeError), and every call while the human fast paths are off.
 ///
 /// # Safety
 /// `pc` is the call instruction (or its prefix) of verified code in the live top frame `fp`,
 /// and no scratch Values lie above that frame.
 #[inline(always)]
-unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64>> {
+unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> Option<Res<u64>> {
     use crate::interp::dsl::R;
     use ep9_bytecode::{Opcode as O, OperandScale};
 
     // SAFETY: caller contract: `pc` is a byte of verified code.
     let op = unsafe { *pc };
     if !(FIXED_FIRST..=FIXED_LAST).contains(&op) {
-        return None;
+        // Off the path of the 9: the `Construct` arm reads its own operands.
+        return if op == CONSTRUCT {
+            // SAFETY: caller contract, and `pc` is a `Construct`.
+            unsafe { host_construct(cx, fp, pc, acc) }
+        } else {
+            None
+        };
     }
     // SAFETY: operand `i` of one of the 9 call opcodes (checked above); the verifier checked
     // that the whole instruction lies in the code.
@@ -818,7 +844,8 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64
         return None;
     }
     let fi = object::function_info(callee);
-    if fi.host.is_none() || !call::human_fast_paths(cx.rt()) {
+    let h = fi.host?;
+    if !call::human_fast_paths(cx.rt()) {
         return None;
     }
     #[cfg(test)]
@@ -831,7 +858,8 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64
         this: UNDEFINED,
         argc: 0,
         list: None,
-        regs: [0; 2],
+        a: 0,
+        b: 0,
         next: len(O::CallProperty),
     };
     const CALL_ANY_RECEIVER: u8 = O::CallAnyReceiver as u8;
@@ -853,11 +881,11 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64
         CALL_PROPERTY0 => (f.this, f.next) = (rd(reg(1)), len(O::CallProperty0)),
         CALL_PROPERTY1 => {
             (f.this, f.argc, f.next) = (rd(reg(1)), 1, len(O::CallProperty1));
-            f.regs[0] = reg(2);
+            f.a = reg(2);
         }
         CALL_PROPERTY2 => {
             (f.this, f.argc, f.next) = (rd(reg(1)), 2, len(O::CallProperty2));
-            f.regs = [reg(2), reg(3)];
+            (f.a, f.b) = (reg(2), reg(3));
         }
         CALL_UNDEFINED => {
             (f.argc, f.list) = (u32::from(byte(2)), Some(first));
@@ -866,20 +894,22 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64
         CALL_UNDEFINED0 => f.next = len(O::CallUndefinedReceiver0),
         CALL_UNDEFINED1 => {
             (f.argc, f.next) = (1, len(O::CallUndefinedReceiver1));
-            f.regs[0] = reg(1);
+            f.a = reg(1);
         }
         // CallUndefinedReceiver2 (the range check above).
         _ => {
             (f.argc, f.next) = (2, len(O::CallUndefinedReceiver2));
-            f.regs = [reg(1), reg(2)];
+            (f.a, f.b) = (reg(1), reg(2));
         }
     }
     // SAFETY: `f` was read from this verified instruction of the live frame `fp`.
-    let arg = |i: u32| unsafe { f.arg(fp, i) };
+    let arg = move |i: u32| unsafe { f.arg(fp, i) };
     if let Some(r) = forward(cx, fp, f.next, callee, f.this, f.argc, arg) {
         return Some(r);
     }
-    let r = call::call_host(cx, callee, fi, f.this, f.argc, arg, UNDEFINED, fp, f.next);
+    let r = call::call_host_from_bytecode(
+        cx, callee, fi, h, f.this, f.argc, arg, UNDEFINED, fp, f.next,
+    );
     if r.is_ok() {
         cx.out_fp = fp;
         cx.out_pc = f.next;
@@ -926,6 +956,12 @@ fn forward(
     arg: impl Fn(u32) -> u64,
 ) -> Option<Res<u64>> {
     use crate::builtins::{IntrinsicId, intrinsic};
+    // `this` is the function to forward to: a host call whose receiver is not a FUNCTION
+    // (`s.charCodeAt(i)`) is refused with one kind test, before the two intrinsic loads
+    // (M8-P2 TS-HOSTCALL; `call::forward_target` refuses it too).
+    if !object::is_function(this) {
+        return None;
+    }
     let rt = cx.rt();
     let apply = callee == intrinsic(rt, IntrinsicId::FunctionPrototypeApply);
     if !apply && callee != intrinsic(rt, IntrinsicId::FunctionPrototypeCall) {
@@ -1009,6 +1045,67 @@ fn push_forwarded(
     cx.out_fp = nfp;
     cx.out_pc = fi.code;
     Ok(UNDEFINED)
+}
+
+/// The `Construct` arm of [`host_entry`] (M8-P2 TS-HOSTCALL): an unprefixed `Construct`
+/// (`pc`; `acc` its new.target operand) whose callee is a host FUNCTION that is a
+/// constructor. `new F(...args)` as the host arm of `do_call`'s construct path makes it, with
+/// no `decode_call` and no `ArgBuf`: the operands at their fixed single-scale places (callee,
+/// list, count; the feedback slot is not read), new.target = `acc` if it is a constructor
+/// (BytecodeGen sets it) else the callee, then `call::call_host_from_bytecode` with an
+/// undefined receiver, the list registers as the arguments and the return pc of the next
+/// instruction. No feedback count, no construct-site record and no budget unit, as in
+/// `do_call` (a host callee has none).
+///
+/// Anything else returns `None` with no state changed: a callee that is not a host FUNCTION,
+/// a host function that is not a constructor (`do_call` throws its TypeError), and every call
+/// while the human fast paths are off (the switch of [`host_entry`]).
+///
+/// # Safety
+/// As [`host_entry`], and `pc` is a `Construct` instruction.
+#[inline(always)]
+unsafe fn host_construct(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> Option<Res<u64>> {
+    use crate::interp::dsl::R;
+    use ep9_bytecode::{Opcode as O, OperandScale};
+
+    // SAFETY: operand `i` of the `Construct` at `pc` (caller contract; every operand is one
+    // byte at single scale, checked at compile time above); the verifier checked that the
+    // whole instruction lies in the code.
+    let byte = |i: usize| unsafe { *pc.add(1 + i) };
+    // SAFETY: the callee register of this verified instruction, in the live frame `fp`.
+    let callee = unsafe { *fp.offset(R::from_operand(i32::from(byte(0) as i8)).0) };
+    if !object::is_function(callee) {
+        return None;
+    }
+    let fi = object::function_info(callee);
+    let h = fi.host?;
+    if !fi.is_constructor() || !call::human_fast_paths(cx.rt()) {
+        return None;
+    }
+    // The list holds the arguments (no receiver); a register list holds locals only, so the
+    // list operand is the slot offset itself.
+    let first = isize::from(byte(1) as i8);
+    let argc = u32::from(byte(2));
+    let next = pc.wrapping_add(O::Construct.info().size(OperandScale::Single));
+    // SAFETY: the list registers of this verified instruction, with its count, in the live
+    // frame `fp`.
+    let arg = move |i: u32| unsafe { *fp.offset(first + i as isize) };
+    #[cfg(test)]
+    call::HOST_ENTRY_HITS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(0);
+    let new_target = if object::is_constructor(acc) {
+        acc
+    } else {
+        callee
+    };
+    let r = call::call_host_from_bytecode(
+        cx, callee, fi, h, UNDEFINED, argc, arg, new_target, fp, next,
+    );
+    if r.is_ok() {
+        cx.out_fp = fp;
+        cx.out_pc = next;
+    }
+    Some(r)
 }
 
 /// The `!runs_bytecode` arm of [`do_call`]'s call path (M7-P5 A2-RW, route MC-w30-2): native
