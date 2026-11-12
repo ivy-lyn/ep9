@@ -46,15 +46,17 @@ pub(crate) use super::slow::load_global;
 mod tests {
     //! A polymorphic global site through `LdaGlobal` and `LdaGlobalInsideTypeof` (the x86-64
     //! fast body leaves it to the cold body, [`super::load_global`]): it hits there, with no
-    //! scan of the global object (the miss path would scan it). They run on every target; on
-    //! x86-64 they read the forms of M8-P1 X86-SHAPE2 and M8-P3 LEVER-6.
+    //! scan of the global object (the miss path would scan it). A `ForInPrepare` of a key
+    //! array with a long length (the x86-64 fast body leaves it to the cold body,
+    //! `ops::for_in_prepare_cold`). They run on every target; on x86-64 they read the forms of
+    //! M8-P1 X86-SHAPE2 and M8-P3 LEVER-6.
 
     use ep9_bytecode::{FeedbackSlotKind, FunctionBuilder, FunctionId, VerifiedUnit};
 
     use crate::frame::int32_bits;
     use crate::object::attr;
     use crate::tests::{Asm, config, isolate, meta, on_big_stack, unit};
-    use crate::{Dispatch, Isolate, Value, atoms, feedback, ic, props, shape};
+    use crate::{Dispatch, Isolate, Value, atoms, feedback, ic, object, props, shape};
 
     /// The script defines the global `f0`: `return icP` (one LdaGlobal site, slot 0).
     fn program() -> VerifiedUnit {
@@ -166,6 +168,65 @@ mod tests {
                         assert_eq!(call(&mut iso, f), int32_bits(5));
                     }
                     assert_eq!(shape::SCANS.with(|c| c.get().1), 0, "{d:?} stress {stress}");
+                });
+            }
+        }
+    }
+
+    /// The script defines the global `f0`: `ForInPrepare` of the global `keys` as the key
+    /// array, then the key count (the third cache register). Feedback slot 1 is the ForIn slot.
+    fn for_in_program() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("f0");
+        s.b.lda_undefined().return_();
+        let mut b = FunctionBuilder::new(meta("f0", 0, 0, 0, 0));
+        let load = b.feedback_slot(FeedbackSlotKind::LoadGlobal);
+        let fs = b.feedback_slot(FeedbackSlotKind::ForIn);
+        let cache = b.new_register_list(3);
+        let name = b.string_constant("keys");
+        b.lda_global(name, load)
+            .for_in_prepare(cache, fs)
+            .ldar(cache.get(2))
+            .return_();
+        unit("", vec![s.finish(), b.finish().unwrap()])
+    }
+
+    /// M8-P3 LEVER-6: the x86-64 `ForInPrepare` fast body leaves a key array whose length is
+    /// not an int32 (2^31 or more) to its cold body, which finishes it as the fast body does:
+    /// the same key count (the length as a wrapped int32, as before) and the same ForIn record.
+    /// A short array runs the fast body on every target.
+    #[test]
+    fn a_long_for_in_key_array_finishes_in_the_cold_body() {
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                on_big_stack(move || {
+                    let mut got = Vec::new();
+                    for len in [3u32, 1 << 31, u32::MAX] {
+                        let mut c = config(d, stress);
+                        c.feedback_threshold = 0;
+                        let mut iso = isolate(c);
+                        iso.with_cx_checkpoint(|cx| {
+                            cx.run_script(for_in_program(), "t.js").map(|_| ())
+                        })
+                        .unwrap();
+                        let rt = &iso.rt;
+                        let a = object::new_array(rt, 0);
+                        assert!(object::array_set_length(rt, a, len));
+                        let k = atoms::intern_str(rt, "keys");
+                        props::own_define(rt, rt.global(), k, a, attr::DEFAULT);
+                        let f = iso.global_raw("f0").unwrap();
+                        assert_eq!(call(&mut iso, f), int32_bits(len as i32), "{d:?} {len}");
+                        let units = iso.rt.units.borrow();
+                        let v = feedback::vector(&units.last().unwrap().infos[1]).unwrap();
+                        got.push(feedback::value(v, 1));
+                    }
+                    // The cold finish records the bits of the fast record.
+                    assert!(
+                        got.iter().all(|&b| b == got[0]),
+                        "{d:?} stress {stress} {got:x?}"
+                    );
                 });
             }
         }

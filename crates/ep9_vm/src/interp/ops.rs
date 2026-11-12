@@ -1845,14 +1845,14 @@ op!(ForInPrepare(st, cache: R, s: FSlot) {
     if !object::is_array(keys) {
         return Flow::Cold;
     }
-    let n = int(object::array_len(keys) as i32);
+    let Some(n) = for_in_len(keys) else { return Flow::Cold };
     st.set_reg(cache, keys);
     st.set_reg(cache.plus(1), keys);
     st.set_reg(cache.plus(2), n);
     Flow::Record(profile::Rec::new(s, profile::for_in_bits(keys)))
 } cold {
     profile::record_for_in(st, s, st.acc);
-    throw_msg(st, ErrorKind::Error, "ep9 internal error: ForInPrepare without a key array")
+    for_in_prepare_cold(st, cache)
 });
 op!(ForInNext(st, receiver: R, index: R, cache: R, s: FSlot) { Flow::Cold } cold {
     profile::record_for_in_next(st, s, st.reg(receiver));
@@ -2608,6 +2608,62 @@ fn int32_mul(a: i32, b: i32) -> Option<i32> {
         }
     }
     Some(i)
+}
+
+// ---- the x86-64 forms of M8-P3 LEVER-6 (X86-SHAPE3; plan v13 rule 81) ----------------------
+//
+// The handler type pins 4 argument registers (H15), so an x86-64 handler has 5 free
+// caller-saved registers. A fast body that calls a function (even a `#[cold]` one) keeps the
+// handler state in callee-saved registers across the call, and LLVM saves them on entry for
+// every run of the handler. The forms here leave the rare case to the opcode's existing cold
+// body (`Flow::Cold`, a tail jump, before any side effect), which finishes it out of line.
+// No new `Flow` arm, no new cold block and no handler argument change (rule 72). aarch64
+// keeps the code it had (18 caller-saved registers; no save there).
+//
+// - `LdaGlobalInsideTypeof` has the `LdaGlobal` form of M8-P1 X86-SHAPE2
+//   (`ic::load_global_fast`, `interp::tails::load_global`): 4 entry saves to 0.
+// - `ForInPrepare` leaves a key array with a long length to its cold body ([`for_in_len`],
+//   [`for_in_prepare_cold`]): 7 entry saves to 0.
+
+/// The key count of a `ForInPrepare` key array `keys` (an Array), as an int32 value. On
+/// x86-64 `None` for an array whose length is not an int32 (2^31 or more): the fast body
+/// sends it to its cold body, so it has no call of `object::array_len`'s cold part
+/// (`ForInPrepare` saved 7 registers on entry for that call). Other targets: always `Some`.
+#[inline(always)]
+fn for_in_len(keys: u64) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let w = object::rd(object::cell(keys), object::arr::LENGTH);
+        is_i32(w).then(|| int(w as i32))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Some(int(object::array_len(keys) as i32))
+    }
+}
+
+/// The cold body of `ForInPrepare` after its record. On x86-64 the fast body also leaves a
+/// key array with a long length here ([`for_in_len`]): this does what the fast body does
+/// (the record ran already: `profile::record_for_in` adds the bits of the fast record).
+/// Any other accumulator is a VM bug (the key array comes from `ForInEnumerate`).
+#[inline(always)]
+fn for_in_prepare_cold(st: &mut St<'_>, cache: R) -> Done {
+    #[cfg(target_arch = "x86_64")]
+    if object::is_array(st.acc) {
+        let keys = st.acc;
+        let n = int(object::array_len(keys) as i32);
+        st.set_reg(cache, keys);
+        st.set_reg(cache.plus(1), keys);
+        st.set_reg(cache.plus(2), n);
+        return Done::Next;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = cache;
+    throw_msg(
+        st,
+        ErrorKind::Error,
+        "ep9 internal error: ForInPrepare without a key array",
+    )
 }
 
 /// `number_bits` against `Value::number`: the int32 edges, -0, NaN payloads, infinities,
