@@ -78,40 +78,64 @@ print(P[Symbol.iterator] === P.values, P.keys !== P.values, P.entries !== P.valu
     );
 }
 
-/// Each method that is not built yet throws the stub TypeError (m8-stub, TypedArray TA-4 R1):
-/// R4 PROTO-B replaces these lines with node's results. R3 PROTO-A built the methods of
-/// `proto_iter.rs`; the tests below pin them.
+/// The 12 methods of R4 PROTO-B (`proto_copy.rs`; they were m8-stubs before R4) on a small
+/// view with the same two arguments (a comparator and 0), then the TypeError of each one on a
+/// value that is no TypedArray, and on a detached view (node v26.13.1).
 #[test]
-fn each_stub_throws_a_type_error() {
+fn proto_b_methods_on_a_small_view() {
     let src = r#"
 const P = Object.getPrototypeOf(Int8Array.prototype);
 const names = ["copyWithin", "fill", "filter", "map", "reverse", "set", "slice", "sort",
   "subarray", "toReversed", "toSorted", "with"];
-const ta = new Uint8Array(2);
+const show = (r) => r instanceof Object.getPrototypeOf(Int8Array) ? r.constructor.name + "[" + r.join(",") + "]" : String(r);
 for (const n of names) {
+  const ta = new Uint8Array([3, 1, 2]);
   try {
-    P[n].call(ta, () => 0, 0);
-    print(n, "no throw");
+    const r = P[n].call(ta, (a, b) => b - a, 0);
+    print(n, show(r), show(ta));
   } catch (e) {
-    print(n, e instanceof TypeError, e.message);
+    print(n, e.constructor.name);
   }
+}
+for (const n of names) {
+  const r = [];
+  for (const bad of [{}, [], 1, undefined, new DataView(new ArrayBuffer(1))]) {
+    try { P[n].call(bad, () => 0, 0); r.push("no throw"); } catch (e) { r.push(e.constructor.name); }
+  }
+  const ab = new ArrayBuffer(2);
+  const d = new Uint8Array(ab);
+  ab.transfer();
+  try { P[n].call(d, () => 0, 0); r.push("detached no throw"); } catch (e) { r.push("detached " + e.constructor.name); }
+  print(n, r.join(" "));
 }
 "#;
     assert_eq!(
         common::run_both(src),
         lines(&[
-            "copyWithin true TypedArray.prototype.copyWithin: not built yet (m8-stub, TypedArray TA-4)",
-            "fill true TypedArray.prototype.fill: not built yet (m8-stub, TypedArray TA-4)",
-            "filter true TypedArray.prototype.filter: not built yet (m8-stub, TypedArray TA-4)",
-            "map true TypedArray.prototype.map: not built yet (m8-stub, TypedArray TA-4)",
-            "reverse true TypedArray.prototype.reverse: not built yet (m8-stub, TypedArray TA-4)",
-            "set true TypedArray.prototype.set: not built yet (m8-stub, TypedArray TA-4)",
-            "slice true TypedArray.prototype.slice: not built yet (m8-stub, TypedArray TA-4)",
-            "sort true TypedArray.prototype.sort: not built yet (m8-stub, TypedArray TA-4)",
-            "subarray true TypedArray.prototype.subarray: not built yet (m8-stub, TypedArray TA-4)",
-            "toReversed true TypedArray.prototype.toReversed: not built yet (m8-stub, TypedArray TA-4)",
-            "toSorted true TypedArray.prototype.toSorted: not built yet (m8-stub, TypedArray TA-4)",
-            "with true TypedArray.prototype.with: not built yet (m8-stub, TypedArray TA-4)",
+            "copyWithin Uint8Array[3,1,2] Uint8Array[3,1,2]",
+            "fill Uint8Array[0,0,0] Uint8Array[0,0,0]",
+            "filter Uint8Array[3] Uint8Array[3,1,2]",
+            "map Uint8Array[253,0,0] Uint8Array[3,1,2]",
+            "reverse Uint8Array[2,1,3] Uint8Array[2,1,3]",
+            "set undefined Uint8Array[0,0,2]",
+            "slice Uint8Array[] Uint8Array[3,1,2]",
+            "sort Uint8Array[3,2,1] Uint8Array[3,2,1]",
+            "subarray Uint8Array[] Uint8Array[3,1,2]",
+            "toReversed Uint8Array[2,1,3] Uint8Array[3,1,2]",
+            "toSorted Uint8Array[3,2,1] Uint8Array[3,1,2]",
+            "with Uint8Array[0,1,2] Uint8Array[3,1,2]",
+            "copyWithin TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "fill TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "filter TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "map TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "reverse TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "set TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "slice TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "sort TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "subarray TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "toReversed TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "toSorted TypeError TypeError TypeError TypeError TypeError detached TypeError",
+            "with TypeError TypeError TypeError TypeError TypeError detached TypeError",
         ])
     );
 }
@@ -562,6 +586,420 @@ print(r5, n5);
             "reduce TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError",
             "reduceRight TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError",
             "true true 6 1 6 1 11 11 2",
+        ])
+    );
+}
+
+/// `copyWithin`, `fill`, `reverse`, `toReversed` and `set` (node v26.13.1): overlaps in both
+/// directions, the conversion order, a shrink or a detach in a conversion (the length re-read
+/// of `copyWithin` and `fill`; the ignored writes of `set`), the RangeErrors of the offset, the
+/// content type checks, a source on the same buffer or on the same SharedArrayBuffer of another
+/// type (read before any write), and resizable buffers.
+#[test]
+fn copy_within_fill_reverse_set() {
+    let src = r#"
+const show = (v) => "[" + Array.from(v, (x) => Object.is(x, -0) ? "-0" : String(x)).join(",") + "]";
+// copyWithin: overlap both ways, negative and missing arguments, end undefined.
+print(show(new Int16Array([1, 2, 3, 4, 5]).copyWithin(1, 0)), show(new Int16Array([1, 2, 3, 4, 5]).copyWithin(0, 2)),
+  show(new Int16Array([1, 2, 3, 4, 5]).copyWithin(-2, -4, -3)), show(new Int16Array([1, 2, 3, 4, 5]).copyWithin(3)),
+  show(new Float64Array([1, -0, NaN, 4]).copyWithin(2, 0, undefined)), show(new BigInt64Array([1n, 2n, 3n]).copyWithin(0, 1)));
+// copyWithin: a shrink in a conversion cuts the copy; a fixed view out of bounds throws.
+{
+  const rab = new ArrayBuffer(8, { maxByteLength: 16 });
+  const v = new Uint16Array(rab);
+  for (let i = 0; i < 4; i++) v[i] = i + 10;
+  v.copyWithin({ valueOf() { rab.resize(6); return 1; } }, 0);
+  print(show(v));
+  const fixed = new Uint16Array(rab, 0, 3);
+  try { fixed.copyWithin(0, { valueOf() { rab.resize(2); return 1; } }); print("no throw"); } catch (e) { print(e.constructor.name); }
+}
+// fill: the value is converted first, then start and end; a BigInt view wants a BigInt.
+{
+  const log = [];
+  const t = new Int8Array(5);
+  t.fill({ valueOf() { log.push("value"); return 7; } }, { valueOf() { log.push("start"); return 1; } }, { valueOf() { log.push("end"); return -1; } });
+  print(show(t), log.join(" "));
+  print(show(new Uint8ClampedArray(3).fill(300.5)), show(new Float16Array(2).fill(1.0009765625)), show(new BigUint64Array(2).fill(-1n)));
+  try { new BigInt64Array(1).fill(1); } catch (e) { print(e.constructor.name); }
+  try { new Int8Array(1).fill(1n); } catch (e) { print(e.constructor.name); }
+  const rab = new ArrayBuffer(4, { maxByteLength: 8 });
+  const auto = new Uint8Array(rab);
+  auto.fill(9, 0, { valueOf() { rab.resize(2); return 4; } });
+  print(show(auto), rab.byteLength);
+  const fixed = new Uint8Array(rab, 0, 2);
+  try { fixed.fill({ valueOf() { rab.resize(1); return 1; } }); print("no throw"); } catch (e) { print(e.constructor.name); }
+}
+// reverse, toReversed.
+{
+  const a = new Float32Array([1, 2, 3, 4, 5]);
+  print(show(a.reverse()), show(new Int8Array(0).reverse()), show(new BigInt64Array([1n, 2n]).reverse()));
+  const b = new Uint8Array([1, 2, 3]);
+  const r = b.toReversed();
+  print(show(r), show(b), r.constructor.name, r.buffer !== b.buffer);
+}
+// set: an array-like (Get and ToNumber in order), a primitive source, the offset checks.
+{
+  const t = new Int16Array(5);
+  const log = [];
+  const src = { length: 2, get 0() { log.push("get 0"); return { valueOf() { log.push("num 0"); return 7; } }; },
+    get 1() { log.push("get 1"); return "8"; } };
+  print(String(t.set(src, 2)), show(t), log.join(" "));
+  t.set([1, 2, 3]); print(show(t));
+  t.set("45", 3); print(show(t));
+  t.set(5); print(show(t));
+  for (const [s, o] of [[[1], -1], [[1, 2], 4], [[1], Infinity], [new Int8Array(6), 0]]) {
+    try { t.set(s, o); print("no throw"); } catch (e) { print(e.constructor.name); }
+  }
+  try { t.set(null); } catch (e) { print(e.constructor.name); }
+  try { new Int8Array(2).set([1n]); } catch (e) { print(e.constructor.name); }
+  try { new Int8Array(2).set(new BigInt64Array(1)); } catch (e) { print(e.constructor.name); }
+  // A conversion that detaches the target: later writes are ignored, no throw.
+  const ab = new ArrayBuffer(3);
+  const u = new Uint8Array(ab);
+  u.set([1, { valueOf() { ab.transfer(); return 2; } }, 3]);
+  print(u.length, ab.detached);
+}
+// set: a TypedArray source on the same buffer, another type (the source is read first).
+{
+  const ab = new ArrayBuffer(8);
+  const bytes = new Uint8Array(ab);
+  for (let i = 0; i < 8; i++) bytes[i] = i + 1;
+  const words = new Uint16Array(ab, 2, 3);
+  const src = new Uint8Array(ab, 0, 3);
+  words.set(src);
+  print(show(bytes));
+  // The same type on one buffer, overlapping both ways.
+  const v = new Int8Array([1, 2, 3, 4, 5, 6]);
+  v.set(v.subarray(0, 4), 2); print(show(v));
+  const w = new Int8Array([1, 2, 3, 4, 5, 6]);
+  w.set(w.subarray(2), 0); print(show(w));
+  // Other types, no shared buffer: conversions per element.
+  const f = new Float64Array([1.5, -1, 300, NaN]);
+  const c = new Uint8ClampedArray(4); c.set(f); const i8 = new Int8Array(4); i8.set(f);
+  print(show(c), show(i8));
+  const big = new BigUint64Array(2); big.set(new BigInt64Array([-1n, 2n])); print(show(big));
+}
+// set on a SharedArrayBuffer: same block, other types.
+{
+  const sab = new SharedArrayBuffer(8);
+  const bytes = new Uint8Array(sab);
+  for (let i = 0; i < 8; i++) bytes[i] = i + 1;
+  new Uint16Array(sab, 2, 3).set(new Uint8Array(sab, 0, 3));
+  print(show(bytes));
+  const v = new Int32Array(sab);
+  v.set([7, 8]);
+  print(show(v));
+}
+// set: a resizable source and target.
+{
+  const rab = new ArrayBuffer(4, { maxByteLength: 8 });
+  const auto = new Uint8Array(rab);
+  auto.set([1, 2, 3, 4]);
+  rab.resize(6);
+  auto.set([5, 6], 4);
+  print(show(auto));
+  const fixed = new Uint8Array(rab, 4, 2);
+  rab.resize(4);
+  try { fixed.set([1]); print("no throw"); } catch (e) { print(e.constructor.name); }
+  try { auto.set(fixed); print("no throw"); } catch (e) { print(e.constructor.name); }
+}
+"#;
+    assert_eq!(
+        common::run_both(src),
+        lines(&[
+            "[1,1,2,3,4] [3,4,5,4,5] [1,2,3,2,5] [1,2,3,1,2] [1,-0,1,-0] [2,3,3]",
+            "[10,10,11]",
+            "TypeError",
+            "[0,7,7,7,0] value start end",
+            "[255,255,255] [1.0009765625,1.0009765625] [18446744073709551615,18446744073709551615]",
+            "TypeError",
+            "TypeError",
+            "[9,9] 2",
+            "TypeError",
+            "[5,4,3,2,1] [] [2,1]",
+            "[3,2,1] [1,2,3] Uint8Array true",
+            "undefined [0,0,7,8,0] get 0 num 0 get 1",
+            "[1,2,3,8,0]",
+            "[1,2,3,4,5]",
+            "[1,2,3,4,5]",
+            "RangeError",
+            "RangeError",
+            "RangeError",
+            "RangeError",
+            "TypeError",
+            "TypeError",
+            "TypeError",
+            "0 true",
+            "[1,2,1,0,2,0,3,0]",
+            "[1,2,1,2,3,4]",
+            "[3,4,5,6,5,6]",
+            "[2,0,255,0] [1,-1,44,0]",
+            "[18446744073709551615,2]",
+            "[1,2,1,0,2,0,3,0]",
+            "[7,8]",
+            "[1,2,3,4,5,6]",
+            "TypeError",
+            "TypeError",
+        ])
+    );
+}
+
+/// TypedArraySpeciesCreate (`sec-typedarray-species-create`) through `slice`, `map`, `filter`
+/// and `subarray` (node v26.13.1): the default constructor, a custom `constructor[@@species]`
+/// and the arguments it gets, the TypeErrors of SpeciesConstructor, a short result, a result
+/// that is no TypedArray and a content type mismatch, a species constructor that detaches the
+/// source, a `slice` into a view on the same buffer (an ascending byte copy), and `slice` and
+/// `subarray` on resizable and growable buffers. TypedArrayCreateSameType (`toReversed`,
+/// `toSorted`, `with`) reads no `@@species`. node prints the same lines but one: `map` with a
+/// species result of the other content type (a BigInt64Array for an Int8Array) is a TypeError
+/// by TypedArraySpeciesCreate step 4, where V8 does not check it ("map no throw").
+#[test]
+fn species_create() {
+    let src = r#"
+const show = (v) => v.constructor.name + "[" + Array.from(v, String).join(",") + "]";
+// The default constructor: a new buffer of the same type.
+{
+  const ta = new Int16Array([1, 2, 3, 4]);
+  const s = ta.slice(1, 3), m = ta.map((x) => x * 2), f = ta.filter((x) => x % 2 === 0), sub = ta.subarray(1, -1);
+  print(show(s), show(m), show(f), show(sub), s.buffer !== ta.buffer, sub.buffer === ta.buffer, sub.byteOffset);
+}
+// A custom constructor[@@species]: the arguments it gets, and its result is used.
+{
+  const log = [];
+  class MyTA extends Uint8Array {
+    static get [Symbol.species]() { log.push("species"); return Sub; }
+  }
+  class Sub extends Uint8Array {
+    constructor(...args) { log.push("new " + args.map((a) => a instanceof ArrayBuffer ? "buffer" : String(a)).join(" ")); super(...args); }
+  }
+  const t = new MyTA([1, 2, 3, 4]);
+  log.length = 0;
+  print(show(t.slice(1)), show(t.map((x) => x + 1)), show(t.filter((x) => x > 2)), show(t.subarray(1, 3)), show(t.subarray(2)));
+  print(log.join("; "));
+  // toReversed, toSorted and with ignore @@species.
+  log.length = 0;
+  print(show(t.toReversed()), show(t.toSorted()), show(t.with(0, 9)), log.length);
+}
+// constructor is not an object, @@species undefined or null, not a constructor.
+{
+  const ta = new Int8Array([1, 2]);
+  for (const c of [undefined, 1, { [Symbol.species]: undefined }, { [Symbol.species]: null }, { [Symbol.species]: 1 }, { [Symbol.species]: () => {} }]) {
+    ta.constructor = c;
+    try { print(show(ta.slice())); } catch (e) { print(e.constructor.name); }
+  }
+}
+// A short result (TypeError), a result that is no TypedArray, a content type mismatch.
+{
+  const ta = new Int8Array([1, 2, 3]);
+  const species = (f) => { ta.constructor = { [Symbol.species]: f }; };
+  species(function () { return new Int8Array(1); });
+  for (const m of ["slice", "map", "filter"]) {
+    try { ta[m]((x) => true); print(m, "no throw"); } catch (e) { print(m, e.constructor.name); }
+  }
+  species(function (n) { return new Int8Array(n + 2); });
+  print(show(ta.slice()), show(ta.map((x) => x * 3)));
+  species(function () { return {}; });
+  try { ta.slice(); } catch (e) { print(e.constructor.name); }
+  species(function (n) { return new BigInt64Array(n); });
+  for (const m of ["slice", "map", "filter", "subarray"]) {
+    try { ta[m]((x) => true); print(m, "no throw"); } catch (e) { print(m, e.constructor.name); }
+  }
+  species(function (n) { return new Float64Array(n); });
+  print(show(ta.slice(1)), show(ta.map((x) => x / 2)));
+}
+// The species constructor detaches the source: slice throws (count > 0), map reads undefined.
+{
+  const ab = new ArrayBuffer(3);
+  const ta = new Uint8Array(ab);
+  ta.set([1, 2, 3]);
+  ta.constructor = { [Symbol.species]: function (n) { ab.transfer(); return new Uint8Array(n); } };
+  try { ta.slice(); print("no throw"); } catch (e) { print(e.constructor.name); }
+  const ab2 = new ArrayBuffer(3);
+  const tb = new Uint8Array(ab2);
+  tb.set([1, 2, 3]);
+  tb.constructor = { [Symbol.species]: function (n) { ab2.transfer(); return new Uint8Array(n); } };
+  print(show(tb.map((x) => x === undefined ? 7 : x)));
+  const ab3 = new ArrayBuffer(3);
+  const tc = new Uint8Array(ab3);
+  tc.constructor = { [Symbol.species]: function (n) { ab3.transfer(); return new Uint8Array(n); } };
+  try { print(show(tc.slice(0, 0))); } catch (e) { print(e.constructor.name); }
+}
+// slice into a view on the same buffer: an ascending byte copy (target after the source
+// repeats; target before is a plain move).
+{
+  const ab = new Uint16Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).buffer;
+  const ta = new Uint16Array(ab, 0, 6);
+  ta.constructor = { [Symbol.species]: function (n) { return new Uint16Array(ab, 4, n); } };
+  print(show(ta.slice(0)), show(new Uint16Array(ab)));
+  const ab2 = new Uint16Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).buffer;
+  const tb = new Uint16Array(ab2, 4, 6);
+  tb.constructor = { [Symbol.species]: function (n) { return new Uint16Array(ab2, 0, n); } };
+  print(show(tb.slice(0)), show(new Uint16Array(ab2)));
+  // Another type: element by element.
+  const tc = new Float32Array([1.5, -2.5, 3]);
+  tc.constructor = { [Symbol.species]: function (n) { return new Int8Array(n); } };
+  print(show(tc.slice()));
+}
+// slice and subarray on resizable buffers.
+{
+  const rab = new ArrayBuffer(4, { maxByteLength: 8 });
+  const auto = new Uint8Array(rab);
+  auto.set([1, 2, 3, 4]);
+  print(show(auto.slice({ valueOf() { rab.resize(2); return 0; } })));
+  rab.resize(4);
+  auto.set([1, 2, 3, 4]);
+  const s1 = auto.subarray(1), s2 = auto.subarray(1, 3);
+  rab.resize(6);
+  print(show(s1), show(s2), s1.length, s2.length);
+  rab.resize(1);
+  print(s1.length, s2.length);
+  rab.resize(2);
+  const fixed = new Uint8Array(rab, 0, 2);
+  rab.resize(1);
+  try { fixed.slice(); } catch (e) { print("slice", e.constructor.name); }
+  const sub = fixed.subarray(0);
+  print(show(sub), sub.length);
+  const sab = new SharedArrayBuffer(4, { maxByteLength: 8 });
+  const g = new Int8Array(sab);
+  const gs = g.subarray(2);
+  sab.grow(6);
+  print(gs.length, gs.buffer === sab);
+}
+"#;
+    assert_eq!(
+        common::run_both(src),
+        lines(&[
+            "Int16Array[2,3] Int16Array[2,4,6,8] Int16Array[2,4] Int16Array[2,3] true true 2",
+            "Sub[2,3,4] Sub[2,3,4,5] Sub[3,4] Sub[2,3] Sub[3,4]",
+            "species; new 3; species; new 4; species; new 2; species; new buffer 1 2; species; new buffer 2 2",
+            "Uint8Array[4,3,2,1] Uint8Array[1,2,3,4] Uint8Array[9,2,3,4] 0",
+            "Int8Array[1,2]",
+            "TypeError",
+            "Int8Array[1,2]",
+            "Int8Array[1,2]",
+            "TypeError",
+            "TypeError",
+            "slice TypeError",
+            "map TypeError",
+            "filter TypeError",
+            "Int8Array[1,2,3,0,0] Int8Array[3,6,9,0,0]",
+            "TypeError",
+            "slice TypeError",
+            "map TypeError",
+            "filter TypeError",
+            "subarray RangeError",
+            "Float64Array[2,3] Float64Array[0.5,1,1.5]",
+            "TypeError",
+            "Uint8Array[7,7,7]",
+            "Uint8Array[]",
+            "Uint16Array[1,2,1,2,1,2] Uint16Array[1,2,1,2,1,2,1,2,9,10]",
+            "Uint16Array[3,4,5,6,7,8] Uint16Array[3,4,5,6,7,8,7,8,9,10]",
+            "Int8Array[1,-2,3]",
+            "Uint8Array[1,2,0,0]",
+            "Uint8Array[2,3,4,0,0] Uint8Array[2,3] 5 2",
+            "0 0",
+            "slice TypeError",
+            "Uint8Array[] 0",
+            "4 true",
+        ])
+    );
+}
+
+/// `sort`, `toSorted` and `with` (node v26.13.1): the numeric order (-0 before +0, NaN last)
+/// of each element type, a stable sort with a comparator, a NaN or an object result of the
+/// comparator, the comparator check before the this check, a throw that ends the sort before
+/// any write, a detach or a shrink in the comparator (the writes are ignored), and the
+/// conversion order and the RangeError of `with`.
+#[test]
+fn sort_to_sorted_with() {
+    let src = r#"
+const show = (v) => "[" + Array.from(v, (x) => Object.is(x, -0) ? "-0" : String(x)).join(",") + "]";
+// The numeric order: -0 before +0, NaN last; not the string order.
+print(show(new Float64Array([3, NaN, -0, 0, -Infinity, 10, 2, NaN, -1]).sort()),
+  show(new Int8Array([10, 9, -1, 100 - 128, 1]).sort()), show(new Uint32Array([10, 9, 4294967295, 1]).sort()),
+  show(new BigInt64Array([10n, -5n, 2n ** 63n - 1n, -(2n ** 63n)]).sort()), show(new BigUint64Array([2n ** 64n - 1n, 0n, 5n]).sort()),
+  show(new Float16Array([0.5, -0.25, NaN, -0]).sort()));
+// A comparator: stable, NaN results are +0, its result is converted by ToNumber.
+{
+  const ta = new Uint8Array([15, 21, 12, 25, 11, 32, 5]);
+  print(show(ta.sort((a, b) => (a % 10) - (b % 10))));
+  print(show(new Int8Array([3, 1, 2]).sort(() => NaN)), show(new Int8Array([1, 2, 3]).sort((a, b) => ({ valueOf() { return b - a; } }))));
+  const calls = [];
+  new Int8Array([1, 2]).sort((a, b) => { calls.push(typeof a + typeof b); return 0; });
+  new BigInt64Array([1n, 2n]).sort((a, b) => { calls.push(typeof a + typeof b); return 0; });
+  print(calls.join(" "));
+}
+// The comparator check is first: before the this value check.
+for (const c of [null, 1, {}, "x"]) {
+  try { Int8Array.prototype.sort.call(undefined, c); } catch (e) { print(e.constructor.name); }
+}
+// A throw ends the sort before any write; a detach in the comparator: the writes are ignored.
+{
+  const ta = new Int8Array([3, 2, 1]);
+  try { ta.sort(() => { throw new RangeError("x"); }); } catch (e) { print(e.constructor.name, show(ta)); }
+  const ab = new ArrayBuffer(4);
+  const v = new Uint8Array(ab);
+  v.set([4, 3, 2, 1]);
+  print(v.sort((a, b) => { if (!ab.detached) ab.transfer(); return a - b; }) === v, v.length);
+  const rab = new ArrayBuffer(4, { maxByteLength: 8 });
+  const w = new Uint8Array(rab);
+  w.set([4, 3, 2, 1]);
+  let once = true;
+  w.sort((a, b) => { if (once) { once = false; rab.resize(2); } return a - b; });
+  print(show(w));
+}
+// toSorted: a new array of the same type; the source is not changed.
+{
+  const ta = new Float32Array([2, -0, 1, NaN]);
+  const s = ta.toSorted();
+  print(show(s), show(ta), s.constructor.name, show(new Int8Array([2, -1, 3]).toSorted((a, b) => b - a)));
+  try { ta.toSorted(1); } catch (e) { print(e.constructor.name); }
+}
+// with: the index then the value is converted; a RangeError when the index is out of range
+// after the conversions.
+{
+  const ta = new Int16Array([1, 2, 3]);
+  print(show(ta.with(1, 9)), show(ta.with(-1, "7")), show(ta.with(0.9, 5)), show(ta));
+  for (const i of [3, -4, Infinity, -Infinity]) {
+    try { ta.with(i, 0); print("no throw"); } catch (e) { print(e.constructor.name); }
+  }
+  const log = [];
+  try { ta.with({ valueOf() { log.push("index"); return 5; } }, { valueOf() { log.push("value"); return 1; } }); } catch (e) { print(e.constructor.name, log.join(" ")); }
+  try { new BigInt64Array(1).with(0, 1); } catch (e) { print(e.constructor.name); }
+  print(show(new BigInt64Array(2).with(1, 5n)));
+  const rab = new ArrayBuffer(4, { maxByteLength: 8 });
+  const auto = new Uint8Array(rab);
+  try { auto.with(3, { valueOf() { rab.resize(2); return 1; } }); print("no throw"); } catch (e) { print(e.constructor.name); }
+  rab.resize(4);
+  print(show(auto.with(0, { valueOf() { rab.resize(6); return 1; } })), auto.length);
+}
+"#;
+    assert_eq!(
+        common::run_both(src),
+        lines(&[
+            "[-Infinity,-1,-0,0,2,3,10,NaN,NaN] [-28,-1,1,9,10] [1,9,10,4294967295] [-9223372036854775808,-5,10,9223372036854775807] [0,5,18446744073709551615] [-0.25,-0,0.5,NaN]",
+            "[21,11,12,32,15,25,5]",
+            "[3,1,2] [3,2,1]",
+            "numbernumber bigintbigint",
+            "TypeError",
+            "TypeError",
+            "TypeError",
+            "TypeError",
+            "RangeError [3,2,1]",
+            "true 0",
+            "[1,2]",
+            "[-0,1,2,NaN] [2,-0,1,NaN] Float32Array [3,2,-1]",
+            "TypeError",
+            "[1,9,3] [1,2,7] [5,2,3] [1,2,3]",
+            "RangeError",
+            "RangeError",
+            "RangeError",
+            "RangeError",
+            "RangeError index value",
+            "TypeError",
+            "[0,5]",
+            "RangeError",
+            "[1,0,0,0] 6",
         ])
     );
 }
