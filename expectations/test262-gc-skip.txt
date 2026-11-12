@@ -1,15 +1,16 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 59 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 1 TA sync 1 and
-# 3 TA-3 tests. 6 of them also fail without GC-stress and are listed in every
+# 63 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 1 TA sync 1,
+# 3 TA-3 and 4 TA-4 tests. 6 of them also fail without GC-stress and are listed in every
 # expectations/test262.<triple>.jit.txt:
 # the 5 month-2 tco-* tests and the M3-P1 test two-digit-years.js. Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
-# 42331111457), and ownkeys-linear.js passes too. The other 53 pass without GC-stress: the
+# 42331111457), and ownkeys-linear.js passes too. The other 57 pass without GC-stress: the
 # other 6 month-2 tests, the other 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test, the 7
-# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the TA sync 1 test and the 3 TA-3 tests.
+# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the TA sync 1 test, the 3 TA-3 tests and
+# the 4 TA-4 tests.
 # The 8 month-2 tests that failed without GC-stress when they were listed:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists). They failed at the first lone surrogate, 0xD800, until the M7-P2 shim; now they
@@ -105,6 +106,27 @@
 # release: end-detached.js 536 s per run (2 runs at once, host load 4-7); start-detached.js and
 # end-detached-prototype.js more than 585 s per run (4 runs at once, host load 7-18; stopped).
 # One run of 2 of the 10 constructors (all 8 argument kinds) takes 51 s alone.
+# TA-4 (the %TypedArray.prototype% methods, Atomics and base64 at 9f707665; TA-4 fixer r1): 4
+# staging/sm/TypedArray tests failed fast before TA-4 (no sort, set or fill). They pass without
+# GC-stress (0.5-1.1 s wall for both runs). In CI 43248750989 (GC-stress shard 2/6, 60 s) they
+# ran past the timeout: element-setting-converts-using-ToNumber.js and
+# sort_large_countingsort.js on all 4 targets, sort_sorted.js on 3, sort-negative-nan.js on
+# linux-x64. The TA-4 sort and set code makes no allocation per element or per comparison
+# (counted under GC-stress: a default sort of 16,384 elements, 1 collection; a comparator sort
+# of 255 elements, 9). Alone, 2 runs, mac a64 release at 9f707665, --gc-stress 1
+# --feedback-threshold 0 --timeout 120, host load 6-14:
+# - element-setting-converts-using-ToNumber.js: both runs past 120 s (243 s wall). Its own loops
+#   make about 85,000 objects, functions and strings per constructor (counted), for each
+#   constructor of the harness, plain and shared;
+# - sort_large_countingsort.js: both runs past 120 s (244 s wall). The harness's shared
+#   constructors copy each element with `sharedArray[i] = array[i]`, and a keyed store into a
+#   SharedArrayBuffer view makes a key string per store (`property::set_keyed` has no view arm,
+#   unlike `set_index`; a TA-4 fixer r1 need): one collection per element. With a view arm
+#   (tested, not committed) it takes 1.0 s wall, so it can leave this list with that fix;
+# - sort_sorted.js: 93.9 s wall, about 47 s per run (its template message per assert: 2
+#   allocations each, about 65,000 asserts);
+# - sort-negative-nan.js: 48.8 s wall, about 24 s per run (its template message per assert,
+#   4,096-element arrays, 6 constructors), past the 20 s per run margin (M7-P5-D9).
 # Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
 # head; the M4-P3 tests: on x86_64-unknown-linux-gnu). Paths are relative to the test262 root.
 test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js
@@ -162,6 +184,10 @@ test/staging/sm/Date/two-digit-years.js
 test/staging/sm/Function/has-instance-jitted.js
 test/staging/sm/Proxy/ownkeys-linear.js
 test/staging/sm/String/string-upper-lower-mapping.js
+test/staging/sm/TypedArray/element-setting-converts-using-ToNumber.js
+test/staging/sm/TypedArray/sort-negative-nan.js
+test/staging/sm/TypedArray/sort_large_countingsort.js
+test/staging/sm/TypedArray/sort_sorted.js
 test/staging/sm/expressions/destructuring-array-default-simple.js
 test/staging/sm/expressions/short-circuit-compound-assignment.js
 test/staging/sm/extensions/recursion.js
