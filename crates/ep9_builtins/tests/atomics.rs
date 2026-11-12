@@ -644,3 +644,35 @@ fn the_atomics_key_joins_the_lazy_group() {
         "Cx::intrinsic installs the group"
     );
 }
+
+/// A termination (`TerminateHandle`, from another thread) ends
+/// `Isolate::block_for_async_waiters` before its `max` (TA-4 JIT review F2): the host block
+/// checks the terminate word at least every `waiters::SLICE`, as a sync `Atomics.wait` does,
+/// and leaves the termination pending. The `max` of 20 s and the check below bound the test:
+/// a regress fails it, it does not hang.
+#[test]
+fn a_termination_ends_the_block_for_async_waiters() {
+    common::on_big_stack(|| {
+        let mut iso = agent(false);
+        script(
+            &mut iso,
+            "Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 0);",
+        )
+        .unwrap();
+        assert_eq!(iso.async_waiter_count(), 1);
+        let handle = iso.terminate_handle();
+        let watchdog = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            handle.terminate();
+        });
+        let start = Instant::now();
+        iso.block_for_async_waiters(Duration::from_secs(20));
+        let took = start.elapsed();
+        watchdog.join().unwrap();
+        assert!(
+            took < Duration::from_secs(10),
+            "the block ran {took:?}: the termination did not end it"
+        );
+        assert_eq!(iso.async_waiter_count(), 1, "the block resolves nothing");
+    });
+}

@@ -14,8 +14,8 @@
 //!               Async -> push the waiter id into its agent's inbox (the inbox lock)
 //! Agent         one per isolate: its async waiters (id, key, deadline) and its inbox; the
 //!               isolate drains it between jobs ([`Agent::take_ready`]); [`Agent::block`]
-//!               sleeps until an inbox item or the next deadline; the drop removes its async
-//!               waiters from the list
+//!               sleeps until an inbox item, the next deadline or `stop()`; the drop
+//!               removes its async waiters from the list
 //! ```
 //!
 //! | Rule | Statement |
@@ -23,7 +23,7 @@
 //! | Keys | A block's serial number (one per SharedArrayBuffer block of the process) and a byte index: never an address (H12) |
 //! | Lock order | LIST, then an inbox. Never the reverse: [`Agent::take_ready`] takes LIST (for the timeouts) and drops it before it takes its inbox; [`Agent::block`] takes only its inbox |
 //! | No thread-local destructor | Nothing here runs from a thread-local destructor (the Windows exit lesson, design §5.6). [`Agent`]'s drop takes LIST only when the agent still has async waiters |
-//! | Termination | A sync wait wakes at least every [`SLICE`] to call `stop()` (the caller reads its isolate's terminate word), so a watchdog stops a blocked `Atomics.wait` |
+//! | Termination | A sync wait and [`Agent::block`] wake at least every [`SLICE`] to call `stop()` (the caller reads its isolate's terminate word), so a watchdog stops a blocked `Atomics.wait` and a host block for async waiters |
 //! | Poison | A panic while a lock is held does not break the list: every lock takes the inner value of a poisoned mutex |
 
 use std::cell::{Cell, RefCell};
@@ -379,10 +379,12 @@ impl Agent {
     }
 
     /// Blocks this thread until a notify puts an id into the inbox, the next deadline of an
-    /// async waiter passes, or `max` passes: at once if the agent has no async waiter or the
-    /// inbox is not empty. Runs no JS and takes only the inbox lock. The caller then drains
-    /// ([`Agent::take_ready`], through a microtask checkpoint).
-    pub fn block(&self, max: Duration) {
+    /// async waiter passes, `max` passes or `stop()` answers true: at once if the agent has no
+    /// async waiter or the inbox is not empty. It wakes at least every [`SLICE`] to call
+    /// `stop()` (the caller reads its isolate's terminate word), as a sync [`wait`] does. Runs
+    /// no JS and takes only the inbox lock; `stop` runs with it held and must not take it. The
+    /// caller then drains ([`Agent::take_ready`], through a microtask checkpoint).
+    pub fn block(&self, max: Duration, stop: impl Fn() -> bool) {
         if self.count.get() == 0 {
             return;
         }
@@ -398,7 +400,7 @@ impl Agent {
             None => next.unwrap_or(now),
         };
         let mut q = lock(&self.inbox.ids);
-        while q.is_empty() {
+        while q.is_empty() && !stop() {
             let now = Instant::now();
             if now >= until {
                 break;
@@ -406,7 +408,7 @@ impl Agent {
             q = self
                 .inbox
                 .cv
-                .wait_timeout(q, until - now)
+                .wait_timeout(q, (until - now).min(SLICE))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -582,13 +584,13 @@ mod tests {
         assert_eq!((a.pending(), waiting(k)), (2, 2));
         let h = std::thread::spawn(move || notify(k, 1));
         assert_eq!(h.join().unwrap(), 1, "the first (FIFO)");
-        a.block(DEADLINE);
+        a.block(DEADLINE, || false);
         let end = Instant::now() + DEADLINE;
         let mut got = Vec::new();
         while got.len() < 2 {
             assert!(Instant::now() < end);
             got.extend(a.take_ready());
-            a.block(Duration::from_millis(1));
+            a.block(Duration::from_millis(1), || false);
         }
         // The timeout may pass before the first drain: the order of the two is not fixed.
         got.sort_unstable_by_key(|&(id, _)| id);
