@@ -73,19 +73,19 @@ impl<'s> Cx<'s> {
         self.run_unit(unit, file, text, None, host_cpu, functions)
     }
 
-    /// [`Cx::run_script_with_unit_code`], and, if a function picked a unit object, steps 5, 7
-    /// and 8 (H35 S4): the loader maps `text` once per process (a later load of the same text
-    /// and unwind bytes shares it), registers `unwind` (the unit's unwind section in the form
-    /// of the target: `crates/ep9_vm/src/unit_loader.rs` module doc), makes the isolate's RW
-    /// copy of `rw` (the unit's RW template, form 1: link cells, IC cells, counters; empty for
-    /// a unit with no RW data) in unit-data slot `slot` (the header's `unit_data_slot`,
-    /// H35-Q9) and installs each
-    /// AotBaseline pick with no fuse dependency in its function's dispatch slot, so a call of
-    /// that function runs its unit code. A pick that cannot be installed (AotOpt, a fuse
-    /// dependency, a constructor, a function kind with no native entry yet) counts as
-    /// "not-installable", a text that does not map as "no-text", unwind data that is empty or
-    /// does not register as "no-unwind", an RW template that is not form 1 or names a link out
-    /// of bounds as "link", and a slot of 64 or more or one that another unit of this isolate
+    /// [`Cx::run_script_with_unit_code`], and, if a function picked a unit object, steps 5, 7 and 8
+    /// (H35 S4): the loader maps `text` once per process (a later load of the same text and unwind
+    /// bytes shares it; a text that `ep9_platform::linked::register` registered, the .o form, runs
+    /// in place: no map and no unwind registration), registers `unwind` (the unit's unwind section
+    /// in the form of the target: `crates/ep9_vm/src/unit_loader.rs` module doc), makes the
+    /// isolate's RW copy of `rw` (the unit's RW template, form 1: link cells, IC cells, counters;
+    /// empty for a unit with no RW data) in unit-data slot `slot` (the header's `unit_data_slot`,
+    /// H35-Q9) and installs each AotBaseline pick with no fuse dependency in its function's
+    /// dispatch slot, so a call of that function runs its unit code. A pick that cannot be
+    /// installed (AotOpt, a fuse dependency, a constructor, a function kind with no native entry
+    /// yet) counts as "not-installable", a text that does not map as "no-text", unwind data that is
+    /// empty or does not register as "no-unwind", an RW template that is not form 1 or names a link
+    /// out of bounds as "link", and a slot of 64 or more or one that another unit of this isolate
     /// holds as "slot"; each runs its bytecode.
     ///
     /// # Safety
