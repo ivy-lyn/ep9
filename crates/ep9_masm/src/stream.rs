@@ -416,6 +416,15 @@ impl Assembler {
         self.put(&w.to_le_bytes());
     }
 
+    /// Writes the landing pad of an indirect entry (MC-w23-15): `bti c` on AArch64, which a
+    /// `blr` or a `br x16`/`br x17` may reach in text mapped with BTI. On x86-64 it writes
+    /// nothing (no CET IBT form yet).
+    pub fn pad(&mut self) {
+        if self.arch == Arch::A64 {
+            self.put32(0xd503_245f);
+        }
+    }
+
     /// A new label, not bound yet.
     pub fn new_label(&mut self) -> Label {
         self.labels.push(None);

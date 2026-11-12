@@ -52,6 +52,11 @@ pub trait UnitEnv {
     fn root_slot(&self, index: u32) -> Option<i64>;
     /// The offset of the shared deopt entry from the isolate register.
     fn deopt_slot(&self) -> i64;
+    /// True when the unit has landing pads (the container compat flag `has_pads`,
+    /// MC-w23-15): `finalize_unit` then also runs [`check_pads`]. The default is false.
+    fn pads(&self) -> bool {
+        false
+    }
 }
 
 /// One RW word that the unit text loads through the unit-data register.
@@ -91,6 +96,7 @@ pub struct UnitCode {
     fields: Vec<Field>,
     rw: Vec<RwUse>,
     exits: Vec<Exit>,
+    pads: bool,
 }
 
 impl UnitCode {
@@ -113,6 +119,10 @@ impl UnitCode {
     /// The deopt exits, in record order.
     pub fn exits(&self) -> &[Exit] {
         &self.exits
+    }
+    /// True when `finalize_unit` checked the landing pads ([`UnitEnv::pads`], [`check_pads`]).
+    pub fn has_pads(&self) -> bool {
+        self.pads
     }
 }
 
@@ -189,6 +199,10 @@ pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, Fin
         .collect();
     let mut findings = check_text(desc.arch, &text, &fields);
     findings.extend(check_register_loads(desc.arch, &text, &fields));
+    let pads = env.pads();
+    if pads {
+        findings.extend(check_pads(desc.arch, &text));
+    }
     if !findings.is_empty() {
         return Err(FinalizeError::TextRelocations(findings));
     }
@@ -198,6 +212,7 @@ pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, Fin
         fields,
         rw,
         exits,
+        pads,
     })
 }
 
@@ -297,6 +312,18 @@ pub enum Finding {
         /// The target offset.
         target: i64,
     },
+    /// A unit with landing pads whose AArch64 function entry (offset 0) is not `bti c` or
+    /// `bti jc` (see [`check_pads`]).
+    NoLandingPad {
+        /// The entry offset.
+        at: u32,
+    },
+    /// A unit with landing pads with an AArch64 indirect jump (`br`, `braa`, `brab`,
+    /// `braaz`, `brabz`) through a register other than x16 or x17 (see [`check_pads`]).
+    IndirectJumpRegister {
+        /// The instruction offset.
+        at: u32,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -344,6 +371,10 @@ impl fmt::Display for Finding {
                     f,
                     "+{at:#x}: branch target {target:#x} inside an instruction"
                 )
+            }
+            Finding::NoLandingPad { at } => write!(f, "+{at:#x}: entry without bti c"),
+            Finding::IndirectJumpRegister { at } => {
+                write!(f, "+{at:#x}: indirect jump not through x16 or x17")
             }
         }
     }
@@ -608,12 +639,54 @@ pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Fi
     out
 }
 
-/// [`check_text`] and [`check_register_loads`] of a finished unit: empty for every
+/// [`check_text`], [`check_register_loads`] and, for a unit with landing pads,
+/// [`check_pads`] of a finished unit: empty for every
 /// [`UnitCode`] (`finalize_unit` checks its output), so a test can state the rules on each
 /// unit it emits. It reads the fields that `finalize_unit` took, with the same `insn`, and
 /// decodes the whole x86-64 text as [`check_text`] does.
 pub fn zero_text_relocations(code: &UnitCode) -> Result<(), Vec<Finding>> {
     let mut v = check_text(code.arch, &code.text, &code.fields);
     v.extend(check_register_loads(code.arch, &code.text, &code.fields));
+    if code.pads {
+        v.extend(check_pads(code.arch, &code.text));
+    }
     if v.is_empty() { Ok(()) } else { Err(v) }
+}
+
+/// AArch64 `bti c`: the landing pad that [`crate::Assembler::pad`] writes at an indirect
+/// entry (MC-w23-15).
+pub const A64_BTI_C: u32 = 0xd503_245f;
+
+/// AArch64 `bti jc`: a landing pad for calls and jumps.
+const A64_BTI_JC: u32 = 0xd503_24df;
+
+/// The landing-pad check of the text of one function of a unit with landing pads (the
+/// container compat flag `has_pads`, MC-w23-15). A loader maps such text with BTI
+/// (`PROT_BTI`): an indirect branch to a word that is not a landing pad of its kind faults.
+///
+/// | Rule | AArch64 | x86-64 |
+/// |---|---|---|
+/// | the function entry (offset 0) is `bti c` or `bti jc`: the target of `blr` (a call) and of `br x16`/`br x17` (a tail call) from other code (else [`Finding::NoLandingPad`]) | yes | - |
+/// | each indirect jump (`br`, `braa`, `brab`, `braaz`, `brabz`) goes through x16 or x17, so its target needs only `bti c` (a jump through another register needs `bti j`; else [`Finding::IndirectJumpRegister`]) | yes | - |
+///
+/// `blr` and `ret` may use any register. x86-64 has no pad form here yet (CET IBT `endbr64`
+/// is not built): the check gives no finding.
+pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if arch != Arch::A64 {
+        return out;
+    }
+    if text.len() < 4 || !matches!(word(text, 0), A64_BTI_C | A64_BTI_JC) {
+        out.push(Finding::NoLandingPad { at: 0 });
+    }
+    for at in (0..text.len() / 4 * 4).step_by(4) {
+        let w = word(text, at);
+        // Unconditional branch (register), opc 0000 (BR, BRAAZ, BRABZ) or 1000 (BRAA, BRAB),
+        // op2 = 11111.
+        let br = w & 0xfe1f_0000 == 0xd61f_0000 && matches!((w >> 21) & 0xf, 0 | 8);
+        if br && !matches!((w >> 5) & 31, 16 | 17) {
+            out.push(Finding::IndirectJumpRegister { at: at as u32 });
+        }
+    }
+    out
 }
