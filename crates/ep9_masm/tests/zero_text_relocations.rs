@@ -1098,3 +1098,24 @@ fn the_x64_decode_of_the_whole_text_finds_what_no_record_names() {
         ]))
     );
 }
+
+/// Codex M8-P2 r1 H3: `mov eax, [eip + 0]; ret` (`67 8b 05 00 00 00 00 c3`). With the 67
+/// prefix the CPU cuts the RIP-relative address to 32 bits, so the load does not read the
+/// text byte at offset 7 that the old check reported as its target. The old decoder took it
+/// as RIP-relative and the check gave no finding; now the decode stops there. Codex r1 H1
+/// (`66 48 68 00 00 eb 7f; ret`) is a `push imm32` (REX.W wins over 66, see the decoder
+/// test), so the `eb 7f` is immediate bytes on the CPU too and the text passes.
+#[test]
+fn the_x64_check_refuses_an_eip_relative_load() {
+    let text = |b: &[u8]| check_text(Arch::X64, b, &[]);
+    assert_eq!(
+        text(&[0x67, 0x8b, 0x05, 0, 0, 0, 0, 0xc3]),
+        [Finding::Undecodable { at: 0 }]
+    );
+    assert_eq!(
+        text(&[0x90, 0x67, 0x48, 0x8d, 0x05, 0xf8, 0xff, 0xff, 0xff, 0xc3]),
+        [Finding::Undecodable { at: 1 }]
+    );
+    assert_eq!(text(&[0x8b, 0x05, 0, 0, 0, 0, 0xc3]), []);
+    assert_eq!(text(&[0x66, 0x48, 0x68, 0x00, 0x00, 0xeb, 0x7f, 0xc3]), []);
+}

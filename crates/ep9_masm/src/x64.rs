@@ -19,6 +19,8 @@
 //! - a REX byte that is not directly before the opcode (a legacy prefix or a second REX after
 //!   it: the CPU ignores the first REX, and its W bit changes an immediate size);
 //! - a pc-relative branch with the 66 prefix (Intel ignores it, AMD makes the target 16-bit);
+//! - a RIP-relative operand with the 67 prefix (`[eip + disp32]`: the CPU cuts the address to
+//!   32 bits, so it is not the text address that the check reads);
 //! - a one-byte-map opcode with 66 or 67 and F2 or F3 (decoders differ on the operand or
 //!   address size);
 //! - `xbegin` (C7 F8: a branch whose rel field this decoder does not report);
@@ -155,6 +157,9 @@ pub(crate) fn decode(text: &[u8], at: usize) -> Option<Insn> {
                 _ => imm,
             };
             let (n, disp_rip, no_base) = modrm(b, i)?;
+            if addr32 && disp_rip.is_some() {
+                return None;
+            }
             rip = disp_rip.map(|d| d as u8);
             abs = no_base;
             i += n;
@@ -339,5 +344,47 @@ mod tests {
         let mut p = vec![0x66; 15];
         p.push(0x90);
         assert_eq!(decode(&p, 0), None);
+    }
+
+    /// Codex M8-P2 r1 H3: `67 8b 05 d32` is `mov eax, [eip + d32]` (llvm-mc 23.1.4:
+    /// `movl (%eip), %eax`; Intel SDM vol. 2 section 2.2.1.6: with the 67 prefix the
+    /// RIP-relative address is cut to 32 bits). The text is mapped above 4 GiB, so that address
+    /// is not the text byte that the check reads: the decoder refuses it. The old decoder gave
+    /// `rip: Some(2)`, so `check_text` passed the load. Without 67 the form still decodes, and
+    /// 67 with a register base (`[r14d + 80]`) is not RIP-relative and stays.
+    #[test]
+    fn the_decoder_refuses_a_rip_relative_operand_with_the_67_prefix() {
+        for b in [
+            &[0x67, 0x8b, 0x05, 0, 0, 0, 0][..],
+            &[0x67, 0x48, 0x8d, 0x05, 0, 0, 0, 0],
+            &[0x67, 0x83, 0x3d, 0, 0, 0, 0, 1],
+            &[0x67, 0xff, 0x15, 0, 0, 0, 0],
+        ] {
+            assert_eq!(decode(b, 0), None, "{b:02x?}");
+        }
+        let r = decode(&[0x8b, 0x05, 0, 0, 0, 0], 0).unwrap();
+        assert_eq!((r.len, r.rip), (6, Some(2)));
+        let r = decode(&[0x67, 0x49, 0x8b, 0x46, 0x50], 0).unwrap();
+        assert_eq!((r.len, r.rip), (5, None));
+    }
+
+    /// Codex M8-P2 r1 H1 (premise check; the premise does not hold). `push imm` (68) has a
+    /// 64-bit default operand size in 64-bit mode; 66 makes it 16-bit (imm16), and REX.W wins
+    /// over 66 (Intel SDM vol. 1 table 3-4 and vol. 2 section 2.2.1.2: with REX.W = 1 the 66
+    /// prefix is ignored), so `66 48 68` takes an imm32, as with no prefix. llvm-mc 23.1.4 gives
+    /// `pushq $0x7feb0000` for `66 48 68 00 00 eb 7f`, and Zydis (the "defaults to 64-bit"
+    /// operand size map: 64 66 W1 -> 64) agrees. So the hidden `jmp` of the review is part of
+    /// the immediate on the CPU too, and the decoder length (7) is right.
+    #[test]
+    fn the_decoder_sizes_push_imm_by_rex_w_over_66() {
+        let d = |b: &[u8]| decode(b, 0).map(|i| i.len);
+        assert_eq!(
+            d(&[0x66, 0x48, 0x68, 0x00, 0x00, 0xeb, 0x7f, 0xc3]),
+            Some(7)
+        );
+        assert_eq!(d(&[0x48, 0x68, 0, 0, 0, 0]), Some(6));
+        assert_eq!(d(&[0x68, 0, 0, 0, 0]), Some(5));
+        assert_eq!(d(&[0x66, 0x68, 0, 0]), Some(4));
+        assert_eq!(d(&[0x66, 0x6a, 0]), Some(3));
     }
 }
