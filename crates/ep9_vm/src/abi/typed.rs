@@ -234,12 +234,12 @@ impl<'s> Cx<'s> {
     }
 
     /// GetValueFromBuffer (sec-getvaluefrombuffer) with order unordered: the element of type
-    /// `element` (a Table 71 row, the module docs) at byte `byte_index` of `buffer`, little
-    /// endian if `little_endian`: a Number, or a BigInt for rows 7 and 8. A TypeError if
-    /// `buffer` is not a buffer or is detached; a RangeError if the element is past its byte
-    /// length. isTypedArray true (the TypedArray form): on shared bytes an index that is a
-    /// multiple of the element size is one Relaxed atomic of the element width (no tear);
-    /// another index goes byte by byte. A DataView uses [`Cx::data_view_get_value`].
+    /// `element` (a Table 71 row, the module docs) at byte `byte_index` of `buffer`, little endian
+    /// if `little_endian`: a Number, or a BigInt for rows 7 and 8. A TypeError if `buffer` is not a
+    /// buffer or is detached; a RangeError if the element is past its byte length. isTypedArray
+    /// true (a TypedArray): on shared bytes an index that is a multiple of the element size is one
+    /// racy `ep9_platform::shared_mem` access of the element width (`load_racy`, `store_racy`; no
+    /// tear); another index goes byte by byte. A DataView uses [`Cx::data_view_get_value`].
     pub fn get_value_from_buffer(
         &mut self,
         buffer: impl Into<Local<'s>>,
@@ -258,14 +258,14 @@ impl<'s> Cx<'s> {
         self.buffer_result(r).map(Self::local)
     }
 
-    /// SetValueInBuffer (sec-setvalueinbuffer) with order unordered: stores `value` (a Number,
-    /// or a BigInt for rows 7 and 8: the caller converted it) as the element of type `element`
-    /// at byte `byte_index` of `buffer` (NumericToRawBytes: Uint8Clamped rounds half to even
-    /// and clamps; Float16 and Float32 round to nearest, ties to even; a NaN is one pattern).
-    /// An error as [`Cx::get_value_from_buffer`], or a TypeError if `value` has the wrong type.
-    /// isTypedArray true (the TypedArray form): on shared bytes an index that is a multiple of
-    /// the element size is one Relaxed atomic of the element width (no tear); another index
-    /// goes byte by byte. A DataView uses [`Cx::data_view_set_value`].
+    /// SetValueInBuffer (sec-setvalueinbuffer) with order unordered: stores `value` (a Number, or a
+    /// BigInt for rows 7 and 8: the caller converted it) as the element of type `element` at byte
+    /// `byte_index` of `buffer` (NumericToRawBytes: Uint8Clamped rounds half to even and clamps;
+    /// Float16 and Float32 round to nearest, ties to even; a NaN is one pattern). An error as
+    /// [`Cx::get_value_from_buffer`], or a TypeError if `value` has the wrong type. isTypedArray
+    /// true (a TypedArray): on shared bytes an index that is a multiple of the element size is one
+    /// racy `ep9_platform::shared_mem` access of the element width (`load_racy`, `store_racy`; no
+    /// tear); another index goes byte by byte. A DataView uses [`Cx::data_view_set_value`].
     pub fn set_value_in_buffer(
         &mut self,
         buffer: impl Into<Local<'s>>,
@@ -1322,15 +1322,15 @@ mod tests {
         });
     }
 
-    /// TA-ORCH-13 (Codex TA-2 r3): a TypedArray element on shared bytes does not tear. Two
-    /// isolates on two threads share one SharedArrayBuffer block, each with an Int32Array at
-    /// byte 0 and an Int16Array at byte 4. The writer stores -1 and 0 in turn in both elements;
-    /// the reader reads both, each in a bounded loop. Every read is 0 or -1
-    /// (IsNoTearConfiguration, ECMA-262 §25.1.3.12: an unordered Int32 or Int16 TypedArray
-    /// access does not tear; a byte loop can give 255 or 65535). Each element access is one
-    /// Relaxed atomic of the element width, so this is no data race in Rust. Not a timing test:
-    /// it checks only the values, and each wait has a deadline (a byte loop can pass by chance;
-    /// the width probe test is the gate that does not depend on the race).
+    /// TA-ORCH-13 (Codex TA-2 r3): a TypedArray element on shared bytes does not tear. Two isolates
+    /// on two threads share one SharedArrayBuffer block, each with an Int32Array at byte 0 and an
+    /// Int16Array at byte 4. The writer stores -1 and 0 in turn in both elements; the reader reads
+    /// both, each in a bounded loop. Every read is 0 or -1 (IsNoTearConfiguration, ECMA-262
+    /// §25.1.3.12: an unordered Int32 or Int16 TypedArray access does not tear; a byte loop can
+    /// give 255 or 65535). Each element access is one racy `ep9_platform::shared_mem` access of the
+    /// element width (`load_racy`, `store_racy`), so this is no data race in Rust. Not a timing
+    /// test: it checks only the values, and each wait has a deadline (a byte loop can pass by
+    /// chance; the width probe test is the gate that does not depend on the race).
     #[test]
     fn two_threads_see_no_torn_int32_or_int16_element() {
         use crate::typed_array as ta;
