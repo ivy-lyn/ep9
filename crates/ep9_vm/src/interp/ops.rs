@@ -2163,6 +2163,7 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
     argc: u32,
     arg: impl Fn(*mut u64, u32) -> u64 + Copy,
 ) -> Flow {
+    st.acc = UNDEFINED; // Dead (`acc: Write`): M8-P3 LEVER-6, at the end of this file.
     if !object::is_function(callee) {
         return Flow::Cold;
     }
@@ -2217,7 +2218,6 @@ fn call_fast<const LIST: bool, const EARLY: bool>(
         })
     };
     st.fp = nfp;
-    st.acc = UNDEFINED;
     jump_to_callee(st, fi.code, s)
 }
 
@@ -2624,6 +2624,14 @@ fn int32_mul(a: i32, b: i32) -> Option<i32> {
 //   (`ic::load_global_fast`, `interp::tails::load_global`): 4 entry saves to 0.
 // - `ForInPrepare` leaves a key array with a long length to its cold body ([`for_in_len`],
 //   [`for_in_prepare_cold`]): 7 entry saves to 0.
+// - The x86-64 `call_fast` sets the accumulator to undefined first, not last. The `Call*`
+//   opcodes write it (`acc: Write`), and no `Call*` cold body reads it (`slow::call` reads
+//   its `acc` only as the `new.target` of a `Construct`, which does not use `call_fast`),
+//   so a cold exit passes undefined. The register of the old value is free from the entry:
+//   one entry save less (`CallProperty0` 2 to 1, `CallProperty1` 3 to 2, `CallProperty` 5
+//   to 4, `CallUndefinedReceiver0` 1 to 0, `CallUndefinedReceiver1` 2 to 1,
+//   `CallUndefinedReceiver2` 4 to 3; `CallProperty2` and `CallUndefinedReceiver` keep 6 and
+//   4).
 
 /// The key count of a `ForInPrepare` key array `keys` (an Array), as an int32 value. On
 /// x86-64 `None` for an array whose length is not an int32 (2^31 or more): the fast body
