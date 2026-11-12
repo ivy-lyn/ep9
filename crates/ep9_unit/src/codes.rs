@@ -312,11 +312,15 @@ impl SectionKind {
         }
     }
 
-    /// log2 of the section's alignment in the file. Container version 2 aligns every named
-    /// section to 8 bytes; the A2 loader may raise the text alignment with a container version
-    /// bump. An extension section names its own alignment.
+    /// log2 of the section's alignment in the file. Container version 3 aligns the text to
+    /// 64 KiB (C-w22-1: a loader can map the text pages of a mapped file in place, on every
+    /// page size up to 64 KiB) and every other named section to 8 bytes (container version 2
+    /// aligned the text to 8 bytes too). An extension section names its own alignment.
     pub const fn align_log2(self) -> u8 {
-        3
+        match self {
+            Self::Text => TEXT_ALIGN_LOG2,
+            _ => 3,
+        }
     }
 
     /// A unit without this section is a load error. The source is always present (H5); the
@@ -331,3 +335,7 @@ impl SectionKind {
         matches!(self, Self::Deps | Self::SnapshotBinding)
     }
 }
+
+/// log2 of the text section's alignment in the file (container version 3): 64 KiB, the
+/// largest page size a loader maps (C-w22-1).
+pub const TEXT_ALIGN_LOG2: u8 = 16;
