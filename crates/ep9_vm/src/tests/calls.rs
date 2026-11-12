@@ -1777,3 +1777,118 @@ fn a_host_construct_takes_the_decode_free_entry() {
         }
     }
 }
+
+/// `realm_of()`: the global object of the realm the host function runs in.
+fn realm_of<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.global().into())
+}
+
+/// JIT review M8-P2 A1 (H20 R5 on the TS-HOSTCALL path): bytecode of the first realm calls
+/// and constructs host functions of a second realm through the decode-free entry
+/// (`host_entry`, `host_construct` -> `call::call_host_from_bytecode`): `f()` (a host function
+/// made in the second realm) gives the second realm's global, `new A(2)` (the second realm's
+/// Array) has the second realm's `Array.prototype`, `twice(f)` (a first-realm host function
+/// that calls `f` from Rust; ep9_vm has no `Array.prototype.map`) gives the second global too,
+/// and after these `mine()` (a first-realm host function) gives the first global again. The
+/// human fast paths on and off give the same values; on, the entry counts the 4 host calls of
+/// the bytecode (`f`, `new A`, `twice`, `mine`);
+/// off, none. Before this test no test made bytecode call or construct a host function of
+/// another realm through the entry (realm.rs calls from Rust; the FASTDIFF case has one realm).
+#[test]
+fn a_host_callee_of_another_realm_runs_in_its_realm_through_the_entry() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(1);
+        // r1 = f()
+        s.lda_global("f");
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+        s.sta_global("r1");
+        // r2 = new A(2)
+        s.b.lda_smi(2).star(l.get(0));
+        s.construct_global("A", l);
+        s.sta_global("r2");
+        // r3 = twice(f): a first-realm host function calls `f` from Rust (twice).
+        s.lda_global("f");
+        s.b.star(s.a.get(0));
+        s.lda_global("twice");
+        s.b.star(s.f)
+            .call_undefined_receiver1(s.f, s.a.get(0), s.call);
+        s.sta_global("r3");
+        // r4 = mine()
+        s.lda_global("mine");
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+        s.sta_global("r4");
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    /// (r1 is the second global, r2's prototype is the second Array.prototype and not the
+    /// first, r3 is the second global, r4 is the first global, the first realm is current
+    /// after the run), the host entries.
+    fn run(d: Dispatch, stress: bool, on: bool) -> ([bool; 6], u64) {
+        use crate::call::HOST_ENTRY_HITS;
+        let _one = RUN_HOST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::on_big_stack(move || {
+            let mut iso = isolate(super::config(d, stress));
+            iso.register_host_function("mine", 0, realm_of);
+            iso.register_host_function("twice", 1, call_twice);
+            HOST_ENTRY_HITS.with(|h| h.set(0));
+            let first = iso.cx.realm;
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.set_human_fast_paths(on);
+                let g1 = cx.global();
+                let g2 = cx.create_realm()?;
+                let f = cx.with_realm(g2, |cx| {
+                    Ok(cx.new_builtin_closure(realm_of, "f", 0, Local::undefined()))
+                })?;
+                let a2 = cx.get(g2, "Array")?;
+                cx.set(g1, "A", a2, true)?;
+                cx.set(g1, "f", f, true)?;
+                cx.set(g1, "g2", g2, true)?;
+                cx.run_script(make(), "realms.js")?;
+                let g1 = cx.global();
+                let g2 = cx.get(g1, "g2")?;
+                let a2 = cx.get_v(g2, "Array")?;
+                let p2 = cx.get_v(a2, "prototype")?;
+                let a1 = cx.get(g1, "Array")?;
+                let p1 = cx.get_v(a1, "prototype")?;
+                let r1 = cx.get(g1, "r1")?;
+                let r2 = cx.get(g1, "r2")?;
+                let r2p = crate::object::proto_of(r2.bits());
+                let r3 = cx.get(g1, "r3")?;
+                let r4 = cx.get(g1, "r4")?;
+                Ok([
+                    r1.bits() == g2.bits(),
+                    r2p == p2.bits(),
+                    r2p != p1.bits(),
+                    r3.bits() == g2.bits(),
+                    r4.bits() == g1.bits(),
+                    cx.inner().realm == first,
+                ])
+            });
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            let _ = iso.with_cx(|cx| {
+                cx.set_human_fast_paths(true);
+                Ok(())
+            });
+            (r.unwrap(), HOST_ENTRY_HITS.with(|h| h.get()))
+        })
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let on = run(d, stress, true);
+            let off = run(d, stress, false);
+            assert_eq!(on.0, [true; 6], "{label}");
+            assert_eq!(on.0, off.0, "{label}");
+            assert_eq!((on.1, off.1), (4, 0), "{label}");
+        }
+    }
+}
