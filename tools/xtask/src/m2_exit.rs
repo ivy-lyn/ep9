@@ -6,6 +6,8 @@
 //! cargo xtask m2-exit --host <triple> --out m2-exit.md [--root <dir>]
 //!     [--gate <json>]         tools/bench/cross/m2gate.mjs --out (ep9-m2gate/v1)   items 1, 2, 3, 6, 10, D11
 //!     [--linux-gate <json>]   the m2gate JSON of the Linux x64 host (Windows host only: the ratio)
+//!     [--pathb <json>]        the Path B 2-box compare (ep9-pathb-compare/v1)       items 1, 2, 3, 6, 10, D11
+//!                             (Linux x64 and Windows x64 hosts only; V13-D37)
 //!     [--mem <json>]          tools/bench/cross/mem.mjs --out (ep9-mem/v1)          item 4
 //!     [--exec <json>]         ep9-test262 exec --json (the CI artifact)             item 5
 //!     [--fastdiff <json>]     the FASTDIFF JSON (ep9-fastdiff/v1)                    item 5
@@ -40,6 +42,27 @@
 //! high / Linux low] passes when its low end is >= 0.9, fails when its high end is < 0.9, and is
 //! OPEN (marginal) when it holds 0.9. The cell reads OPEN "marginal (no gate host)" until both
 //! runs are gate-host runs on the same CPU model (a dual-boot or identical host, 10:157).
+//!
+//! **The host-cell rule** (plan v13 V13-D37; 10-quality.md section 3, the 2026-11-13 note). With
+//! no gate-host reading, a Linux x64 or Windows x64 speed cell reads the Path B 2-box compare
+//! (`--pathb`): per build and item, the two box intervals against the item's M2 threshold
+//! (Octane-7 1.33, v8-v7 1.0, TS 1.0 (the Linux x64 rule), splay 1.0); "above" when the low end
+//! is >= the threshold, "below" when the high end is under it. The cell reads one of:
+//!
+//! | Cell | When | Exit |
+//! |---|---|---|
+//! | `MARGINAL (no gate host): AGREE above` | every part: both boxes above | holds; read again on the gate host when one exists (a fail there reopens M2) |
+//! | `FAIL-SIDE (no gate host): AGREE below` | a part: both boxes below | blocks the M2 exit |
+//! | `MARGINAL: NO AGREEMENT` | else: a box straddles, the boxes disagree, a part has no cell, or the compare is not a valid reading of this tree | blocks the M2 exit |
+//!
+//! The status stays OPEN (a box never passes or fails a gate, 10:156); the cell names its form.
+//! A gate-host reading (Linux x64: every run with `gate_host`; Windows x64: the gate-host pair
+//! on one CPU model) decides as before, and Path B is not read. A valid compare names a full
+//! `commit` that is fresh for this tree, the `platform` of the host (`linux-x64`,
+//! `win32-x64`), and for each box (1, 2) and build of the cell a run check with `commit_ok`, at
+//! least 31 `rounds` and the load guard passed before and after (10-quality.md section 3, the
+//! box protocol). The verdict line follows V13-D37: the M2 exit holds on the host when every cell is
+//! PASS or N/A, or the cells that are not read `MARGINAL (no gate host): AGREE above`.
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
 //! HEAD, or an ancestor with no change in the paths it measures since, and says that its tree
@@ -79,11 +102,15 @@
 //!   `node`: a `node@<path>` engine) with the flag `--jitless`. Two configs of one name read
 //!   OPEN (the table is keyed by name).
 //! - P-gate file: a Markdown table with the columns `Gate` and `Result`.
+//! - ep9-pathb-compare/v1 (the Path B compare of the 2 box runs): `commit`, `platform`,
+//!   `checks[]` with `box`, `build`, `commit_ok`, `rounds` and `load.{before, after}.pass`, and
+//!   `cells[]` with `build`, `cell` (the M2 item cells start `item <n>:`), `threshold`, `box1`
+//!   and `box2` (`median`, `interval`) and `result`.
 //!
 //! The extra rows (no exit-code effect): the parity debt of item 2 and the tripped P-gates.
 //!
-//! Exit 0 when every cell is PASS or N/A, 1 otherwise, 2 on a usage error or an input that
-//! cannot be read.
+//! Exit 0 when the M2 exit holds on the host (every cell PASS or N/A, or by the host-cell rule),
+//! 1 otherwise, 2 on a usage error or an input that cannot be read.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -209,6 +236,19 @@ const P_RESULTS: [&str; 2] = ["not tripped", "tripped"];
 /// Windows x64 within 10% of Linux x64 (09:66).
 const WINDOWS_MIN: f64 = 0.9;
 
+/// The Path B compare (V13-D37): its schema, the paired rounds of the box protocol
+/// (10-quality.md section 3, "Owner action": 31 paired rounds), and the M2 item and threshold
+/// of each speed reading (09-milestones.md section 2.2; the TS rule of a Linux x64 host, V12-D5).
+const PATHB_SCHEMA: &str = "ep9-pathb-compare/v1";
+const PATHB_ROUNDS: f64 = 31.0;
+const PATHB_ITEMS: [(&str, u32, f64); 4] = [
+    (OCTANE, 1, 1.33),
+    (V8V7, 2, 1.0),
+    (TS, 3, 1.0),
+    (SPLAY, 6, 1.0),
+];
+const PATHB_HOW: &str = "the Path B compare JSON (ep9-pathb-compare/v1) of the 2 box runs of this tree (plan section 13.2)";
+
 const GATE_CMD: &str = "node tools/bench/cross/run.mjs --workloads m2 --harness base --host <host file> --ep9 <build> --out run-<build>.json, for the jit preset and the jitless build, then node tools/bench/cross/m2gate.mjs run-jit.json run-jitless.json --out m2gate.json (on a gate host)";
 const MEM_CMD: &str = "node tools/bench/cross/mem.mjs --out mem.json (BENCH10)";
 const EXEC_CMD: &str = "cargo run --release --locked -p ep9_test262 -- exec --json exec.json (or the test262-exec.json artifact of the CI test262 job of this host)";
@@ -230,8 +270,8 @@ const LINUX_A64: &str = "aarch64-unknown-linux-gnu";
 const WINDOWS_X64: &str = "x86_64-pc-windows-msvc";
 
 const USAGE: &str = "usage: cargo xtask m2-exit --host <triple> --out <file.md> [--root <dir>] \
-     [--gate <json>] [--linux-gate <json>] [--mem <json>] [--exec <json>] [--fastdiff <json>] \
-     [--jetstream <json>] [--fuzz <json>]... [--p-gates <md>]";
+     [--gate <json>] [--linux-gate <json>] [--pathb <json>] [--mem <json>] [--exec <json>] \
+     [--fastdiff <json>] [--jetstream <json>] [--fuzz <json>]... [--p-gates <md>]";
 
 /// The parsed command line.
 #[derive(Debug, Default)]
@@ -241,6 +281,7 @@ struct Options {
     out: PathBuf,
     gate: Option<PathBuf>,
     linux_gate: Option<PathBuf>,
+    pathb: Option<PathBuf>,
     mem: Option<PathBuf>,
     exec: Option<PathBuf>,
     fastdiff: Option<PathBuf>,
@@ -267,6 +308,7 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
             "--out" => o.out = PathBuf::from(val()?),
             "--gate" => o.gate = Some(PathBuf::from(val()?)),
             "--linux-gate" => o.linux_gate = Some(PathBuf::from(val()?)),
+            "--pathb" => o.pathb = Some(PathBuf::from(val()?)),
             "--mem" => o.mem = Some(PathBuf::from(val()?)),
             "--exec" => o.exec = Some(PathBuf::from(val()?)),
             "--fastdiff" => o.fastdiff = Some(PathBuf::from(val()?)),
@@ -295,6 +337,11 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
             "--linux-gate is for --host {WINDOWS_X64} only\n{USAGE}"
         ));
     }
+    if o.pathb.is_some() && o.host != LINUX_X64 && o.host != WINDOWS_X64 {
+        return Err(format!(
+            "--pathb is for --host {LINUX_X64} or {WINDOWS_X64} only (V13-D37)\n{USAGE}"
+        ));
+    }
     Ok(o)
 }
 
@@ -321,7 +368,7 @@ pub fn main(args: &[String]) -> Result<bool, String> {
         println!("missing input: {m}");
     }
     println!("m2-exit: wrote {}", opts.out.display());
-    Ok(report.cells.iter().all(|c| c.status.ok()))
+    Ok(exit_holds(&report.cells, &report.forms))
 }
 
 /// The rendered result.
@@ -331,6 +378,8 @@ struct Report {
     markdown: String,
     /// Items 1-10, then D11.
     cells: Vec<Cell>,
+    /// The host-cell form of each cell (V13-D37), or None.
+    forms: Vec<Option<HostForm>>,
     /// The extra rows: (what, cell). No exit-code effect.
     extra: Vec<(&'static str, Cell)>,
     /// One line per missing input: the flag, its items and the command that makes it.
@@ -342,6 +391,7 @@ struct Ctx<'a> {
     o: &'a Options,
     gate: Option<(PathBuf, Json)>,
     linux_gate: Option<(PathBuf, Json)>,
+    pathb: Option<(PathBuf, Json)>,
     mem: Option<(PathBuf, Json)>,
     exec: Option<(PathBuf, Json)>,
     fastdiff: Option<(PathBuf, Json)>,
@@ -375,6 +425,7 @@ fn run(o: &Options) -> Result<Report, String> {
         o,
         gate: one(&o.gate)?,
         linux_gate: one(&o.linux_gate)?,
+        pathb: one(&o.pathb)?,
         mem: one(&o.mem)?,
         exec: one(&o.exec)?,
         fastdiff: one(&o.fastdiff)?,
@@ -392,6 +443,7 @@ fn run(o: &Options) -> Result<Report, String> {
     };
     schema("--gate", &c.gate, "ep9-m2gate/v1")?;
     schema("--linux-gate", &c.linux_gate, "ep9-m2gate/v1")?;
+    schema("--pathb", &c.pathb, PATHB_SCHEMA)?;
     schema("--mem", &c.mem, "ep9-mem/v1")?;
     schema("--fastdiff", &c.fastdiff, "ep9-fastdiff/v1")?;
     if let Some((p, j)) = &c.exec {
@@ -431,6 +483,14 @@ fn run(o: &Options) -> Result<Report, String> {
             "the m2gate JSON of the Linux x64 run",
         );
     }
+    if o.host == LINUX_X64 || o.host == WINDOWS_X64 {
+        miss(
+            c.pathb.is_some() || on_gate_host(&c, &BUILDS),
+            "--pathb",
+            "items 1, 2, 3, 6, 10, D11 with no gate host (V13-D37)",
+            PATHB_HOW,
+        );
+    }
     miss(c.mem.is_some(), "--mem", "item 4", MEM_CMD);
     miss(c.exec.is_some(), "--exec", "item 5", EXEC_CMD);
     miss(c.fastdiff.is_some(), "--fastdiff", "item 5", FASTDIFF_CMD);
@@ -443,17 +503,17 @@ fn run(o: &Options) -> Result<Report, String> {
     miss(!c.fuzz.is_empty(), "--fuzz", "item 8", FUZZ_HOW);
     miss(c.p_gates.is_some(), "--p-gates", "item 9", P_GATES_HOW);
     let cells = vec![
-        speed_cell(&c, &[OCTANE], &BUILDS),
-        speed_cell(&c, &[V8V7], &BUILDS),
-        speed_cell(&c, &[TS], &BUILDS),
-        item4(&c),
-        item5(&c),
-        speed_cell(&c, &[SPLAY], &BUILDS),
-        item7(&c),
-        item8(&c),
-        item9(&c),
-        speed_cell(&c, &[OCTANE, V8V7, TS], &["jit"]),
-        speed_cell(&c, &[OCTANE, V8V7, TS], &["jitless"]),
+        host_cell(&c, &[OCTANE], &BUILDS),
+        host_cell(&c, &[V8V7], &BUILDS),
+        host_cell(&c, &[TS], &BUILDS),
+        (item4(&c), None),
+        (item5(&c), None),
+        host_cell(&c, &[SPLAY], &BUILDS),
+        (item7(&c), None),
+        (item8(&c), None),
+        (item9(&c), None),
+        host_cell(&c, &[OCTANE, V8V7, TS], &["jit"]),
+        host_cell(&c, &[OCTANE, V8V7, TS], &["jitless"]),
     ];
     let extra = vec![
         ("parity debt", debt_cell(&c)),
@@ -1721,42 +1781,68 @@ fn trip_cell(c: &Ctx) -> Cell {
 
 fn render(
     c: &Ctx,
-    cells: Vec<Cell>,
+    cells: Vec<(Cell, Option<HostForm>)>,
     extra: Vec<(&'static str, Cell)>,
     missing: Vec<String>,
 ) -> Report {
     let o = c.o;
+    let (cells, forms): (Vec<Cell>, Vec<Option<HostForm>>) = cells.into_iter().unzip();
+    // The cell text: its host-cell form (V13-D37), else its status.
+    let name = |h: &Cell, f: &Option<HostForm>| f.map_or(h.status.name(), HostForm::label);
     let head = git(&o.root, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let mut table = String::new();
     let _ = writeln!(table, "| # | M2 exit item | {} |", o.host);
     let _ = writeln!(table, "|---|---|---|");
-    for ((l, t), h) in LABELS.iter().zip(TITLES).zip(&cells) {
-        let _ = writeln!(table, "| {l} | {t} | {} |", h.status.name());
+    for (((l, t), h), f) in LABELS.iter().zip(TITLES).zip(&cells).zip(&forms) {
+        let _ = writeln!(table, "| {l} | {t} | {} |", name(h, f));
     }
     let all_pass = cells.iter().all(|c| c.status.ok());
+    // "item 3 reads" or "items 3, 10 read".
+    let items = |want: HostForm| {
+        let l: Vec<&str> = LABELS
+            .iter()
+            .zip(&forms)
+            .filter(|(_, f)| **f == Some(want))
+            .map(|(l, _)| *l)
+            .collect();
+        match l.as_slice() {
+            [one] => format!("item {one} reads"),
+            _ => format!("items {} read", l.join(", ")),
+        }
+    };
+    let (above, below) = (items(HostForm::AgreeAbove), items(HostForm::AgreeBelow));
+    // V13-D37: a MARGINAL (no gate host) cell with a Path B AGREE above counts for the exit.
+    let holds = exit_holds(&cells, &forms);
     let mut md = String::from("# M2 exit check (`cargo xtask m2-exit`)\n\n");
     let _ = writeln!(
         md,
         "- Items: docs/plan/09-milestones.md section 2.2, M2 exit 1-10, and the D11 row (11-decisions.md D11; plan v12 V12-D6)."
     );
     let _ = writeln!(md, "- Host column: {}; tree at commit `{head}`.", o.host);
-    let _ = writeln!(
-        md,
-        "- Result: {}.\n",
-        if all_pass {
-            "every item PASS (N/A cells are by design): the M2 exit holds on this host"
-        } else {
-            "not every cell is PASS"
-        }
-    );
+    let result = if all_pass {
+        "every item PASS (N/A cells are by design): the M2 exit holds on this host".to_string()
+    } else if holds {
+        format!(
+            "the M2 exit holds on this host by the host-cell rule (V13-D37): every other item PASS or N/A, and {above} {} (a Path B 2-box agreement on the pass side; each is read again on the gate host when one exists, and a fail there reopens M2)",
+            HostForm::AgreeAbove.label()
+        )
+    } else if forms.contains(&Some(HostForm::AgreeBelow)) {
+        format!(
+            "not every cell is PASS; {below} {}: a Path B 2-box agreement below the threshold blocks the M2 exit (V13-D37)",
+            HostForm::AgreeBelow.label()
+        )
+    } else {
+        "not every cell is PASS".to_string()
+    };
+    let _ = writeln!(md, "- Result: {result}.\n");
     md.push_str(&table);
     md.push_str("\n## Evidence\n");
-    for ((l, t), h) in LABELS.iter().zip(TITLES).zip(&cells) {
+    for (((l, t), h), f) in LABELS.iter().zip(TITLES).zip(&cells).zip(&forms) {
         let _ = write!(
             md,
             "\n### {l}. {t}\n\n- {} {}: {}\n",
             o.host,
-            h.status.name(),
+            name(h, f),
             h.evidence
         );
     }
@@ -1775,9 +1861,276 @@ fn render(
         table,
         markdown: md,
         cells,
+        forms,
         extra,
         missing,
     }
+}
+
+// ---- the host-cell rule (V13-D37): Linux x64 and Windows x64 with no gate host ------------
+
+/// The M2 exit holds on this host (the verdict line and the exit code; V13-D37): every cell is
+/// PASS or N/A, or reads `MARGINAL (no gate host): AGREE above`.
+fn exit_holds(cells: &[Cell], forms: &[Option<HostForm>]) -> bool {
+    cells
+        .iter()
+        .zip(forms)
+        .all(|(h, f)| h.status.ok() || *f == Some(HostForm::AgreeAbove))
+}
+
+/// The form of a Linux x64 or Windows x64 speed cell that reads the Path B compare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostForm {
+    /// Every part: both box intervals on the pass side. Holds for the exit (V13-D37).
+    AgreeAbove,
+    /// A part: both box intervals below the threshold. Blocks the exit.
+    AgreeBelow,
+    /// Anything else. Blocks the exit.
+    NoAgreement,
+}
+
+impl HostForm {
+    fn label(self) -> &'static str {
+        match self {
+            HostForm::AgreeAbove => "MARGINAL (no gate host): AGREE above",
+            HostForm::AgreeBelow => "FAIL-SIDE (no gate host): AGREE below",
+            HostForm::NoAgreement => "MARGINAL: NO AGREEMENT",
+        }
+    }
+}
+
+/// The gate-host flag of the `build` run of an m2gate JSON.
+fn gate_host_run(j: &Json, build: &str) -> bool {
+    build_block(j, build)
+        .and_then(|b| b.path(&["host", "gate_host"]))
+        .and_then(Json::bool)
+        == Some(true)
+}
+
+/// The speed readings of `builds` come from a gate host: on Linux x64 every `--gate` run; on
+/// Windows x64 every run of both hosts, on one CPU model (10-quality.md section 3, 10:157).
+fn on_gate_host(c: &Ctx, builds: &[&str]) -> bool {
+    let Some((_, g)) = &c.gate else {
+        return false;
+    };
+    match c.o.host.as_str() {
+        LINUX_X64 => builds.iter().all(|b| gate_host_run(g, b)),
+        WINDOWS_X64 => {
+            let Some((_, l)) = &c.linux_gate else {
+                return false;
+            };
+            let cpu = |j: &Json, b: &str| {
+                build_block(j, b)
+                    .and_then(|x| x.path(&["host", "cpu"]))
+                    .and_then(Json::str)
+                    .map(str::to_string)
+            };
+            builds.iter().all(|b| {
+                gate_host_run(g, b)
+                    && gate_host_run(l, b)
+                    && cpu(g, b).is_some()
+                    && cpu(g, b) == cpu(l, b)
+            })
+        }
+        _ => false,
+    }
+}
+
+/// A speed cell (items 1, 2, 3, 6, 10, D11) with the host-cell rule: on Linux x64 and Windows
+/// x64 with no gate-host reading and a `--pathb` input, the Path B form decides the cell text;
+/// else [`speed_cell`] as it is.
+fn host_cell(c: &Ctx, ids: &[&str], builds: &[&str]) -> (Cell, Option<HostForm>) {
+    let base = speed_cell(c, ids, builds);
+    let host = c.o.host.as_str();
+    let Some((p, j)) = &c.pathb else {
+        return (base, None);
+    };
+    if (host != LINUX_X64 && host != WINDOWS_X64) || on_gate_host(c, builds) {
+        return (base, None);
+    }
+    let (form, text) = pathb_form(c, p, j, ids, builds);
+    let gate = if c.gate.is_some() {
+        format!(
+            "; the --gate reading ({}): {}",
+            base.status.name(),
+            base.evidence
+        )
+    } else {
+        String::new()
+    };
+    (
+        cell(Status::Open, format!("{}: {text}{gate}", form.label())),
+        Some(form),
+    )
+}
+
+/// One side of a box interval against `t`: Some(true) above (low end >= t), Some(false) below
+/// (high end < t), None when it straddles or is not an interval.
+fn pathb_side(b: Option<&Json>, t: f64) -> (Option<bool>, String) {
+    let iv = b.and_then(|b| b.get("interval")).and_then(Json::arr);
+    let (lo, hi) = match iv {
+        Some([a, z]) => match (a.num(), z.num()) {
+            (Some(a), Some(z)) if a <= z => (a, z),
+            _ => return (None, "no interval".into()),
+        },
+        _ => return (None, "no interval".into()),
+    };
+    let med = b
+        .and_then(|b| num(b, "median"))
+        .map_or("-".to_string(), |m| format!("{m:.3}"));
+    let side = if lo >= t {
+        Some(true)
+    } else if hi < t {
+        Some(false)
+    } else {
+        None
+    };
+    let word = match side {
+        Some(true) => "above",
+        Some(false) => "below",
+        None => "straddles",
+    };
+    (side, format!("{med} [{lo:.3}-{hi:.3}] {word}"))
+}
+
+/// The Path B form of the readings `ids` of `builds`, and the evidence text.
+fn pathb_form(c: &Ctx, p: &Path, j: &Json, ids: &[&str], builds: &[&str]) -> (HostForm, String) {
+    let mut why = Vec::new();
+    // The compare must be a valid reading of this tree on this host's platform.
+    let want = platform_of(&c.o.host).unwrap_or("");
+    match j.get("platform").and_then(Json::str) {
+        Some(got) if got == want => {}
+        got => why.push(format!(
+            "the compare names the platform {}, not {want}",
+            got.unwrap_or("none")
+        )),
+    }
+    let checks = j.get("checks").and_then(Json::arr).unwrap_or(&[]);
+    let mut clean = true;
+    for &b in builds {
+        for n in [1.0, 2.0] {
+            let run = checks.iter().find(|x| {
+                num(x, "box") == Some(n) && x.get("build").and_then(Json::str) == Some(b)
+            });
+            let Some(run) = run else {
+                why.push(format!("no run check of box {n} build {b}"));
+                clean = false;
+                continue;
+            };
+            if run.get("commit_ok").and_then(Json::bool) != Some(true) {
+                clean = false;
+                why.push(format!(
+                    "box {n} {b}: the run is not of the compare commit, or its binary is dirty"
+                ));
+            }
+            if num(run, "rounds").is_none_or(|r| r < PATHB_ROUNDS) {
+                why.push(format!(
+                    "box {n} {b}: fewer than {PATHB_ROUNDS} paired rounds (the box protocol)"
+                ));
+            }
+            for when in ["before", "after"] {
+                if run.path(&["load", when, "pass"]).and_then(Json::bool) != Some(true) {
+                    why.push(format!(
+                        "box {n} {b}: the load guard {when} the run did not pass"
+                    ));
+                }
+            }
+        }
+    }
+    let dirty = Json::Bool(!clean);
+    let commit = j.get("commit").and_then(Json::str);
+    let fresh = match fresh(&c.o.root, commit, Some(&dirty), &FRESH_PATHS) {
+        Ok(t) => t,
+        Err(e) => {
+            why.push(format!("the compare is stale: {e}"));
+            String::new()
+        }
+    };
+    let valid = why.is_empty();
+    let cells = j.get("cells").and_then(Json::arr).unwrap_or(&[]);
+    let mut parts = Vec::new();
+    let (mut all_above, mut any_below) = (true, false);
+    for &b in builds {
+        for &id in ids {
+            let Some(&(_, item, t)) = PATHB_ITEMS.iter().find(|(i, _, _)| *i == id) else {
+                continue;
+            };
+            let prefix = format!("item {item}:");
+            let found: Vec<&Json> = cells
+                .iter()
+                .filter(|x| {
+                    x.get("build").and_then(Json::str) == Some(b)
+                        && x.get("cell")
+                            .and_then(Json::str)
+                            .is_some_and(|l| l.starts_with(&prefix))
+                })
+                .collect();
+            let [x] = found.as_slice() else {
+                all_above = false;
+                parts.push(format!(
+                    "{b} item {item}: {} cells (one needed)",
+                    found.len()
+                ));
+                continue;
+            };
+            if num(x, "threshold").is_none_or(|v| (v - t).abs() > 1e-9) {
+                all_above = false;
+                parts.push(format!(
+                    "{b} item {item}: the compare threshold is not the M2 threshold {t}"
+                ));
+                continue;
+            }
+            let (s1, t1) = pathb_side(x.get("box1"), t);
+            let (s2, t2) = pathb_side(x.get("box2"), t);
+            let agree = match (s1, s2) {
+                (Some(true), Some(true)) => "AGREE above",
+                (Some(false), Some(false)) => "AGREE below",
+                (Some(a), Some(z)) if a != z => "OPPOSITE",
+                _ => "NO AGREEMENT",
+            };
+            // The producer's own result must say the same (a second reader of one rule).
+            let stated = x.get("result").and_then(Json::str);
+            let same = stated == Some(agree);
+            all_above &= agree == "AGREE above" && same;
+            any_below |= agree == "AGREE below" && same;
+            parts.push(format!(
+                "{b} item {item} (threshold {t}): box 1 {t1}, box 2 {t2}: {agree}{}",
+                if same {
+                    String::new()
+                } else {
+                    format!(" (the compare says {})", stated.unwrap_or("nothing"))
+                }
+            ));
+        }
+    }
+    let form = if !valid {
+        HostForm::NoAgreement
+    } else if any_below {
+        HostForm::AgreeBelow
+    } else if all_above {
+        HostForm::AgreeAbove
+    } else {
+        HostForm::NoAgreement
+    };
+    let at = commit.map_or("no commit".to_string(), short);
+    let fresh = if fresh.is_empty() {
+        String::new()
+    } else {
+        format!("; fresh: {fresh}")
+    };
+    (
+        form,
+        format!(
+            "Path B {} (commit {at}, 2 boxes, provisional by rule 10:156): {}{fresh}{}",
+            p.display(),
+            parts.join("; "),
+            if valid {
+                String::new()
+            } else {
+                format!("; not a valid reading of this tree: {}", why.join("; "))
+            }
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -2887,5 +3240,389 @@ mod tests {
         assert!(build_line_check("jit", Some("features none; preset jit")).is_err());
         assert!(build_line_check("jitless", Some("features jit; preset jitless")).is_err());
         assert!(build_line_check("jit", None).is_err());
+    }
+
+    // ---- the host-cell rule (V13-D37) -------------------------------------------------------
+
+    /// The speed cells: items 1, 2, 3, 6, 10 and D11.
+    const SPEED: [usize; 6] = [0, 1, 2, 5, 9, 10];
+
+    fn linux_pathb(r: &Repo, pathb: &str) -> Options {
+        Options {
+            gate: Some(input(r, "gate-linux.json")),
+            pathb: Some(input(r, pathb)),
+            ..opts(r, LINUX_X64)
+        }
+    }
+
+    /// The 3 cell forms on Linux x64 with no gate host, one fixture each (month-7 Path B: TS
+    /// AGREE below; all above; one box straddling), and the cells with no --pathb as before.
+    #[test]
+    fn linux_x64_with_no_gate_host_reads_the_path_b_forms() {
+        let r = repo("pathb-linux");
+        let above = HostForm::AgreeAbove.label();
+        let below = HostForm::AgreeBelow.label();
+        let none = HostForm::NoAgreement.label();
+        let cases = [
+            (
+                "pathb-below.json",
+                [above, above, below, above, below, below],
+                "jit item 3 (threshold 1): box 1 0.766 [0.740-0.791] below, box 2 0.756 [0.742-0.765] below: AGREE below",
+            ),
+            (
+                "pathb-above.json",
+                [above; 6],
+                "jitless item 3 (threshold 1): box 1 1.031 [1.012-1.052] above, box 2 1.027 [1.008-1.049] above: AGREE above",
+            ),
+            (
+                "pathb-none.json",
+                [above, none, above, above, none, above],
+                "jit item 2 (threshold 1): box 1 1.064 [1.054-1.094] above, box 2 1.004 [0.991-1.018] straddles: NO AGREEMENT",
+            ),
+        ];
+        for (f, want, text) in cases {
+            let rep = run(&linux_pathb(&r, f)).unwrap();
+            for (i, w) in SPEED.iter().zip(want) {
+                let c = &rep.cells[*i];
+                assert_eq!(c.status, Status::Open, "{f} {i}: {}", c.evidence);
+                assert_eq!(rep.forms[*i].map(HostForm::label), Some(w), "{f} {i}");
+                assert!(
+                    c.evidence.starts_with(&format!("{w}: Path B ")),
+                    "{}",
+                    c.evidence
+                );
+                assert!(
+                    rep.table
+                        .contains(&format!("| {} | {} | {w} |", LABELS[*i], TITLES[*i])),
+                    "{}",
+                    rep.table
+                );
+                assert!(rep.markdown.contains(&format!("- {LINUX_X64} {w}: ")));
+            }
+            let all: String = rep.cells.iter().map(|c| c.evidence.clone()).collect();
+            assert!(all.contains(text), "{f}: {text}");
+            // The --gate reading stays in the evidence.
+            assert!(
+                rep.cells[0]
+                    .evidence
+                    .contains("; the --gate reading (OPEN): marginal (no gate host")
+            );
+            assert!(!rep.missing.iter().any(|m| m.starts_with("--pathb")));
+            // The other items are NOT-RUN here: the M2 exit does not hold.
+            assert!(!exit_holds(&rep.cells, &rep.forms));
+        }
+        let rep = run(&linux_pathb(&r, "pathb-below.json")).unwrap();
+        assert!(
+            rep.markdown.contains("- Result: not every cell is PASS; items 3, 10, D11 read FAIL-SIDE (no gate host): AGREE below: a Path B 2-box agreement below the threshold blocks the M2 exit (V13-D37)."),
+            "{}",
+            rep.markdown
+        );
+        // No --pathb: the cells as before, and a missing-input line.
+        let o = Options {
+            gate: Some(input(&r, "gate-linux.json")),
+            ..opts(&r, LINUX_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], None);
+            assert!(rep.cells[i].evidence.starts_with("marginal (no gate host"));
+        }
+        assert!(rep.missing.iter().any(|m| {
+            m.starts_with("--pathb (items 1, 2, 3, 6, 10, D11 with no gate host (V13-D37))")
+        }));
+    }
+
+    /// A gate-host reading decides as before (Path B is not read); a mac or Linux a64 column
+    /// takes no --pathb; with no --gate, Path B alone gives the form.
+    #[test]
+    fn a_gate_host_reading_decides_and_pathb_is_for_the_x64_hosts() {
+        let r = repo("pathb-gate");
+        let lin = fixture("gate-linux.json")
+            .replace(SHA, &r.head)
+            .replace("\"gate_host\": false", "\"gate_host\": true");
+        write(&r.root, "inputs/gate-host.json", &lin);
+        let o = Options {
+            gate: Some(r.root.join("inputs/gate-host.json")),
+            pathb: Some(input(&r, "pathb-below.json")),
+            ..opts(&r, LINUX_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], None);
+            assert!(
+                !rep.cells[i].evidence.contains("Path B"),
+                "{}",
+                rep.cells[i].evidence
+            );
+            assert!(!rep.cells[i].evidence.starts_with("marginal"));
+        }
+        assert!(!rep.missing.iter().any(|m| m.starts_with("--pathb")));
+        // Windows: the gate-host pair on one CPU model decides as before.
+        let o = Options {
+            gate: Some(input(&r, "gate-win.json")),
+            linux_gate: Some(input(&r, "gate-win-linux.json")),
+            pathb: Some(input(&r, "pathb-below.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        assert_eq!(rep.forms, vec![None; 11]);
+        assert_eq!(
+            rep.cells[0].status,
+            Status::Pass,
+            "{}",
+            rep.cells[0].evidence
+        );
+        // Path B alone (no --gate): the form, with no --gate text.
+        let o = Options {
+            pathb: Some(input(&r, "pathb-above.json")),
+            ..opts(&r, LINUX_X64)
+        };
+        let rep = run(&o).unwrap();
+        assert_eq!(rep.forms[2], Some(HostForm::AgreeAbove));
+        assert!(!rep.cells[2].evidence.contains("--gate reading"));
+        assert!(rep.missing.iter().any(|m| m.starts_with("--gate")));
+        // --pathb on the mac or on Linux a64 is a usage error: no mac cell changes.
+        for host in [HOST, LINUX_A64] {
+            let e = parse_args(
+                &[
+                    "--host".into(),
+                    host.into(),
+                    "--out".into(),
+                    "x".into(),
+                    "--pathb".into(),
+                    "y".into(),
+                ],
+                PathBuf::new(),
+            )
+            .unwrap_err();
+            assert!(e.contains("--pathb is for --host"), "{e}");
+        }
+        assert!(
+            run(&Options {
+                pathb: Some(input(&r, "gate-linux.json")),
+                ..opts(&r, LINUX_X64)
+            })
+            .unwrap_err()
+            .contains("not an ep9-pathb-compare/v1 file")
+        );
+    }
+
+    /// Windows x64 with no gate host reads a Windows x64 Path B only: a Linux x64 compare gives
+    /// NO AGREEMENT.
+    #[test]
+    fn windows_reads_a_windows_path_b() {
+        let r = repo("pathb-win");
+        let win = fixture("gate-linux.json")
+            .replace(SHA, &r.head)
+            .replace("\"platform\": \"linux-x64\"", "\"platform\": \"win32-x64\"");
+        write(&r.root, "inputs/gate-win-box.json", &win);
+        let pb = fixture("pathb-above.json")
+            .replace(SHA, &r.head)
+            .replace("\"platform\": \"linux-x64\"", "\"platform\": \"win32-x64\"");
+        write(&r.root, "inputs/pathb-win.json", &pb);
+        let o = |pathb: PathBuf| Options {
+            gate: Some(r.root.join("inputs/gate-win-box.json")),
+            linux_gate: Some(input(&r, "gate-linux.json")),
+            pathb: Some(pathb),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o(input(&r, "pathb-above.json"))).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement));
+            assert!(
+                rep.cells[i]
+                    .evidence
+                    .contains("the compare names the platform linux-x64, not win32-x64"),
+                "{}",
+                rep.cells[i].evidence
+            );
+        }
+        let rep = run(&o(r.root.join("inputs/pathb-win.json"))).unwrap();
+        for i in SPEED {
+            assert_eq!(
+                rep.forms[i],
+                Some(HostForm::AgreeAbove),
+                "{}",
+                rep.cells[i].evidence
+            );
+            assert!(
+                rep.cells[i]
+                    .evidence
+                    .contains("; the --gate reading (OPEN): marginal (no gate host: a dual-boot")
+            );
+        }
+    }
+
+    /// A compare that is not a valid reading of this tree gives NO AGREEMENT, even when its
+    /// boxes agree below (a stale reading is not this tree's evidence). A run check is per
+    /// build: a bad jit run check leaves the D11 cell (the jitless build only) as it was.
+    #[test]
+    fn an_invalid_path_b_reads_no_agreement() {
+        let r = repo("pathb-invalid");
+        let base = fixture("pathb-below.json").replace(SHA, &r.head);
+        let first_rounds = "\"rounds\": 31";
+        let all: &[usize] = &SPEED;
+        let jit: &[usize] = &[0, 1, 2, 5, 9];
+        let cases: [(&str, String, &str, &[usize]); 6] = [
+            (
+                "stale",
+                fixture("pathb-below.json"),
+                "the compare is stale: ",
+                all,
+            ),
+            (
+                "rounds",
+                base.replacen(first_rounds, "\"rounds\": 15", 1),
+                "box 1 jit: fewer than 31 paired rounds",
+                jit,
+            ),
+            (
+                "commit_ok",
+                base.replacen("\"commit_ok\": true", "\"commit_ok\": false", 1),
+                "box 1 jit: the run is not of the compare commit, or its binary is dirty",
+                jit,
+            ),
+            (
+                "guard",
+                base.replacen("\"pass\": true", "\"pass\": false", 1),
+                "box 1 jit: the load guard before the run did not pass",
+                jit,
+            ),
+            (
+                "platform",
+                base.replace("\"platform\": \"linux-x64\",\n", ""),
+                "the compare names the platform none, not linux-x64",
+                all,
+            ),
+            (
+                "box",
+                base.replace("\"box\": 2,", "\"box\": 3,"),
+                "no run check of box 2 build jit",
+                all,
+            ),
+        ];
+        for (n, text, why, cells) in cases {
+            let f = format!("inputs/pathb-{n}.json");
+            write(&r.root, &f, &text);
+            let o = Options {
+                pathb: Some(r.root.join(&f)),
+                ..opts(&r, LINUX_X64)
+            };
+            let rep = run(&o).unwrap();
+            for &i in cells {
+                assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{n} {i}");
+            }
+            if cells.len() == 5 {
+                assert_eq!(rep.forms[10], Some(HostForm::AgreeBelow), "{n}");
+            }
+            assert!(
+                rep.cells[2].evidence.contains(why),
+                "{n}: {}",
+                rep.cells[2].evidence
+            );
+            assert!(
+                rep.cells[2]
+                    .evidence
+                    .contains("not a valid reading of this tree")
+            );
+        }
+        // A cell whose threshold is not the M2 one, a missing cell, and a result field that
+        // says something else: that part does not agree.
+        let parts = [
+            (
+                base.replacen("\"threshold\": 1.33", "\"threshold\": 1.2", 1),
+                0,
+                "jit item 1: the compare threshold is not the M2 threshold 1.33",
+            ),
+            (
+                base.replacen("\"cell\": \"item 6:", "\"cell\": \"item six:", 1),
+                5,
+                "jit item 6: 0 cells (one needed)",
+            ),
+            (
+                base.replacen(
+                    "\"result\": \"AGREE above\"",
+                    "\"result\": \"NO AGREEMENT\"",
+                    1,
+                ),
+                0,
+                "AGREE above (the compare says NO AGREEMENT)",
+            ),
+        ];
+        for (k, (text, i, why)) in parts.into_iter().enumerate() {
+            let f = format!("inputs/pathb-part-{k}.json");
+            write(&r.root, &f, &text);
+            let o = Options {
+                pathb: Some(r.root.join(&f)),
+                ..opts(&r, LINUX_X64)
+            };
+            let rep = run(&o).unwrap();
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{k}");
+            assert!(
+                rep.cells[i].evidence.contains(why),
+                "{k}: {}",
+                rep.cells[i].evidence
+            );
+        }
+    }
+
+    /// The verdict line and the exit code follow V13-D37: PASS or N/A everywhere, or the cells
+    /// that are not read MARGINAL (no gate host): AGREE above.
+    #[test]
+    fn the_verdict_line_follows_v13_d37() {
+        let r = repo("pathb-verdict");
+        let o = opts(&r, LINUX_X64);
+        let c = Ctx {
+            o: &o,
+            gate: None,
+            linux_gate: None,
+            pathb: None,
+            mem: None,
+            exec: None,
+            fastdiff: None,
+            jetstream: None,
+            fuzz: Vec::new(),
+            p_gates: None,
+        };
+        let pass = || (cell(Status::Pass, "x"), None);
+        let form = |f: HostForm| (cell(Status::Open, f.label()), Some(f));
+        let with = |at: &[(usize, HostForm)]| {
+            let mut v: Vec<_> = (0..11).map(|_| pass()).collect();
+            for &(i, f) in at {
+                v[i] = form(f);
+            }
+            render(&c, v, Vec::new(), Vec::new())
+        };
+        let rep = with(&[]);
+        assert!(exit_holds(&rep.cells, &rep.forms));
+        assert!(rep.markdown.contains(
+            "- Result: every item PASS (N/A cells are by design): the M2 exit holds on this host."
+        ));
+        let rep = with(&[(2, HostForm::AgreeAbove), (9, HostForm::AgreeAbove)]);
+        assert!(exit_holds(&rep.cells, &rep.forms));
+        assert!(
+            rep.markdown.contains("- Result: the M2 exit holds on this host by the host-cell rule (V13-D37): every other item PASS or N/A, and items 3, 10 read MARGINAL (no gate host): AGREE above (a Path B 2-box agreement on the pass side; each is read again on the gate host when one exists, and a fail there reopens M2)."),
+            "{}",
+            rep.markdown
+        );
+        assert!(
+            rep.table
+                .contains("| 3 | TS workload <= 2.8 s | MARGINAL (no gate host): AGREE above |")
+        );
+        let rep = with(&[(2, HostForm::AgreeBelow), (0, HostForm::AgreeAbove)]);
+        assert!(!exit_holds(&rep.cells, &rep.forms));
+        assert!(
+            rep.markdown
+                .contains("; item 3 reads FAIL-SIDE (no gate host): AGREE below: ")
+        );
+        let rep = with(&[(1, HostForm::NoAgreement)]);
+        assert!(!exit_holds(&rep.cells, &rep.forms));
+        assert!(rep.markdown.contains("- Result: not every cell is PASS."));
+        // A cell that is not a host cell and not PASS blocks the exit with an AGREE above.
+        let mut v: Vec<_> = (0..11).map(|_| pass()).collect();
+        v[2] = form(HostForm::AgreeAbove);
+        v[7] = (cell(Status::Open, "item 8"), None);
+        let rep = render(&c, v, Vec::new(), Vec::new());
+        assert!(!exit_holds(&rep.cells, &rep.forms));
     }
 }
