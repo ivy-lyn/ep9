@@ -338,12 +338,14 @@ fn flush(out: &mut Parts, t: PartType, run: &mut String) {
     }
 }
 
-/// x × 100 (16.5.3 step 2.a for the style "percent"). A Decimal whose highest digit would pass
-/// the i16 magnitudes of fixed_decimal (a BigInt of about 32,766 digits) becomes a
-/// [`WideDecimal`] first (a Decimal overflow gives zero).
+/// x × 100 (16.5.3 step 2.a for the style "percent"). A Decimal whose highest digit would
+/// reach the top i16 magnitude of fixed_decimal (i16::MAX; a BigInt of 32,766 digits or more)
+/// becomes a [`WideDecimal`] first: a rounding carry from that magnitude passes the i16
+/// magnitudes, and a Decimal overflow gives zero (10n ** 32766n - 1n with one significant
+/// digit is "1" and 32,768 zeros, not "0%"). Below it, a carry ends at i16::MAX at most.
 fn times_100(x: &IntlMv, work: &mut Work) -> Result<IntlMv, Interrupted> {
     Ok(match x {
-        IntlMv::Finite(d) if d.nonzero_magnitude_start() + 2 > i64::from(i16::MAX) => {
+        IntlMv::Finite(d) if d.nonzero_magnitude_start() + 2 >= i64::from(i16::MAX) => {
             // Only a BigInt has such a magnitude (a Number or String value is below 1e309),
             // so the value is an integer.
             let digits = d.absolute.to_string();

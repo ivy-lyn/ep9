@@ -350,3 +350,27 @@ fn percent_gives_the_node_lines() {
         ])
     );
 }
+
+const PERCENT_CARRY: &str = r#"const nf = new Intl.NumberFormat("en", {style: "percent", maximumSignificantDigits: 1, useGrouping: false});
+for (const k of [32765, 32766, 32767]) {
+  const v = 10n ** BigInt(k) - 1n, want = "1" + "0".repeat(k + 2) + "%";
+  print(k, nf.format(v).length, nf.format(v) === want, nf.format(-v) === "-" + want, nf.formatRange(v, 10n ** BigInt(k)) === "~" + want);
+}"#;
+
+/// The style "percent" with a rounding carry at the i16 limit of fixed_decimal: the BigInt
+/// 10n ** 32766n - 1n (32,766 nines) times 100 has its highest digit at magnitude 32,767
+/// (i16::MAX), and one significant digit carries it to 32,768. x × 100 is a WideDecimal from
+/// that magnitude on, so the carry is exact ("1" and 32,768 zeros). The all-nines BigInts one
+/// digit shorter and one digit longer, the negative values and the range ("~", both ends
+/// round to the same text) too. Old code: "0%" (the Decimal overflow gives zero).
+#[test]
+fn percent_rounding_carry_at_the_i16_limit() {
+    assert_eq!(
+        run_both(PERCENT_CARRY),
+        lines(&[
+            "32765 32769 true true true",
+            "32766 32770 true true true",
+            "32767 32771 true true true",
+        ])
+    );
+}
