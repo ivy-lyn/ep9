@@ -152,7 +152,7 @@ type Registration = ep9_platform::unwind::FunctionTableRegistration;
 /// every function of every isolate that loaded the same text and unwind bytes (module doc).
 pub(crate) struct SharedText {
     /// Declared first, so it drops (deregisters) before the text pages go back.
-    _unwind: Registration,
+    _unwind: Option<Registration>,
     text: UnitText<'static>,
     key: [u8; 32],
 }
@@ -446,7 +446,7 @@ fn shared_text(text: &[u8], unwind: &[u8], pads: bool) -> Result<Arc<SharedText>
     let mapped = UnitText::map_with_pads(range, text, pads).map_err(|_| Reason::NoText)?;
     let reg = register_unwind(&mapped, unwind).map_err(|_| Reason::NoUnwind)?;
     let t = Arc::new(SharedText {
-        _unwind: reg,
+        _unwind: Some(reg),
         text: mapped,
         key,
     });
@@ -973,7 +973,7 @@ fn link_and_map(
     {
         return Err(Reason::Slot);
     }
-    let t = shared_text(text, n.unwind, n.pads)?;
+    let t = linked_or_shared_text(text, n.unwind, n.pads)?;
     let copy = match &tpl {
         Some(tpl) => Some(make_rw_copy(rt, lu, tpl, n.slot)?),
         None => None,
@@ -1097,4 +1097,29 @@ fn entries_have_pads(text: &[u8], functions: &[FunctionCode]) -> bool {
 #[cfg(test)]
 pub(crate) fn text_bti(uc: &UnitCode) -> Option<bool> {
     uc.text.as_ref().map(|t| t.text.bti())
+}
+
+/// Steps 5 and 7 for the text of an installing load: a linked text in place (the `.o` unit
+/// form, H35 S1 and H35-Q3; route MC-w34-5), else [`shared_text`].
+///
+/// A text is linked when it is exactly the text of a unit that the embedder registered
+/// (`ep9_platform::linked::register`, static registration): the static linker put it in the
+/// binary's executable pages and its unwind entries in the binary's own unwind tables. So
+/// nothing is mapped, copied or protected, no unwind data is registered (`unwind` is not
+/// read: the binary's tables cover the text), the process text map is not used (the binary
+/// holds the text once), and no context sync is needed (the text was never written). `pads`
+/// is not used either: the binary's pages are guarded or not by the binary's own note.
+fn linked_or_shared_text(
+    text: &[u8],
+    unwind: &[u8],
+    pads: bool,
+) -> Result<Arc<SharedText>, Reason> {
+    match UnitText::linked(text) {
+        Some(linked) => Ok(Arc::new(SharedText {
+            _unwind: None,
+            key: text_key(text, &[], false),
+            text: linked,
+        })),
+        None => shared_text(text, unwind, pads),
+    }
 }
