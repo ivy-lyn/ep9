@@ -1,0 +1,28 @@
+# ep9 unit code tables (docs/adr/H35-aot-unit-format.md, the Freeze-table part "code tables
+# (append-only)"; MC-w29-2). One line per defined value: <table> <value> <name>. Lines only
+# append: a value keeps its number and its meaning. Written by ep9_unit::code_table_lines();
+# EP9_BLESS=1 appends a new value and never rewrites a line. layout_text() pins the SHA-256 of
+# the first lines (the tables of container version 4), so an edit of one of them needs a
+# CONTAINER_VERSION bump.
+target_arch 1 x86_64
+target_arch 2 aarch64
+target_abi 1 linux
+target_abi 2 apple
+target_abi 3 windows
+cpu 0 sse3 x86_64
+cpu 1 ssse3 x86_64
+cpu 2 sse4.1 x86_64
+cpu 3 sse4.2 x86_64
+cpu 4 popcnt x86_64
+cpu 5 avx x86_64
+cpu 6 avx2 x86_64
+cpu 7 fma x86_64
+cpu 8 bmi1 x86_64
+cpu 9 bmi2 x86_64
+cpu 10 lzcnt x86_64
+cpu 32 lse aarch64
+cpu 33 jsconv aarch64
+cpu 34 dotprod aarch64
+cpu 35 fp16 aarch64
+cpu 36 rcpc aarch64
+compat 0 has_pads: each function entry and each adr target is bti c or bti jc, each br goes through x16 or x17, and each br and blr target is proven a pad or code outside the text: a loader may map the text with BTI

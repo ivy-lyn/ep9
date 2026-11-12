@@ -335,3 +335,22 @@ pub fn hexdump(bytes: &[u8]) -> String {
     }
     s
 }
+
+/// `f` on each item, on every CPU (scoped threads, one chunk each), the results in item order;
+/// a panic in `f` panics the caller with the same payload. For the tests whose cases each
+/// hash a 64 KiB native unit (route UNIT-TEST-TIME).
+pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let chunk = items.len().div_ceil(cpus).max(1);
+    std::thread::scope(|s| {
+        let f = &f;
+        let workers: Vec<_> = items
+            .chunks(chunk)
+            .map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<R>>()))
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
+}
