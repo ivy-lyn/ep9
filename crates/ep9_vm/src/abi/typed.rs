@@ -575,14 +575,14 @@ impl<'s> Cx<'s> {
     /// waiter it is one load of a plain counter (no clock read, no lock). GC point when one
     /// resolves.
     ///
-    /// The order against other jobs is the node/V8 host-task order (decision M6-ORCH-601). A
-    /// notify, from this agent too, only puts the id into the inbox, and the promise resolves
-    /// at the next job boundary of this agent. ECMA-262 NotifyWaiter resolves a waiter of the
-    /// same agent inside `Atomics.notify` and sends one of another agent through
-    /// EnqueueResolveInAgentJob (HostEnqueueGenericJob: no order against promise jobs). V8
-    /// posts a task for every waiter, of the same agent too (`futex-emulation.cc:185-210`).
-    /// So ep9 matches the spec on S1 (Codex's trace) and node on S2 and S3, and neither in
-    /// every case (W: the reaction of the waiter's promise):
+    /// ep9 resolves a notified waiter at the next job boundary (the host-task choice,
+    /// M6-ORCH-601): a notify, from this agent too, only puts the id into the inbox of this
+    /// agent. ECMA-262 NotifyWaiter resolves a waiter of the same agent inside
+    /// `Atomics.notify` and sends one of another agent through EnqueueResolveInAgentJob
+    /// (HostEnqueueGenericJob: no order against promise jobs). V8 posts a task for every
+    /// waiter, of the same agent too (`futex-emulation.cc:185-210`). So ep9 matches the spec
+    /// on S1 (Codex's trace) and node on S2 and S3, and neither in every case (W: the reaction
+    /// of the waiter's promise):
     ///
     /// ```text
     /// trace                                                   ep9       node      spec
