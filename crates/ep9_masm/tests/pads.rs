@@ -293,6 +293,13 @@ fn the_pad_check_proves_each_indirect_branch_target() {
     // A call in between: the callee may change x16 (IP0).
     let call = text(&[BTI_C, a64::LDR_X16_X27, a64::BLR_X16, a64::BLR_X16]);
     assert_eq!(check_pads(Arch::A64, &call), [not_proven(12)]);
+    // A load through an `adr` base reads text bytes (JIT review M8-P3 F2, Codex M8-P3 r1 #1):
+    // `adr x1, #12; ldr x16, [x1]; br x16` jumps to the 8 bytes at 16 (here `bti c` and 0).
+    // An `adr` is a proven form only as the branch register itself, not as a load base.
+    const ADR_X1_12: u32 = 0x1000_0061; // adr x1, #12
+    const LDR_X16_X1: u32 = 0xf940_0030; // ldr x16, [x1]
+    let adr_base = text(&[BTI_C, ADR_X1_12, LDR_X16_X1, a64::BR_X16, BTI_C, 0]);
+    assert_eq!(check_pads(Arch::A64, &adr_base), [not_proven(12)]);
 
     // Allowed: the emitter forms.
     for ok in [

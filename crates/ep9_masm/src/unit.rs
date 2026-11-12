@@ -680,7 +680,7 @@ const A64_BTI_JC: u32 = 0xd503_24df;
 /// | the function entry (offset 0) is `bti c` or `bti jc`: the target of `blr` (a call) and of `br x16`/`br x17` (a tail call) from other code (else [`Finding::NoLandingPad`]) | yes | - |
 /// | each indirect jump (`br`, `braa`, `brab`, `braaz`, `brabz`) goes through x16 or x17, so its target needs only `bti c` (a jump through another register needs `bti j`; else [`Finding::IndirectJumpRegister`]) | yes | - |
 /// | each `adr` with a target in the text, into any register, makes an indirect entry: the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
-/// | each `br` and `blr` (and their PAC forms) takes its register from an allowed form, set in the same straight-line run before it (else [`Finding::IndirectTargetNotProven`]; route PADS-PROVENANCE): a 64-bit load through x27 or x28 (a link cell, a stub cell or a RuntimeTable entry: code outside the text, whose own entry rule holds there), a 64-bit load through a register that such a load set in its own run (one step: a table that the isolate names), or an `adr` (the rule above checks its target) | yes | - |
+/// | each `br` and `blr` (and their PAC forms) takes its register from an allowed form, set in the same straight-line run before it (else [`Finding::IndirectTargetNotProven`]; route PADS-PROVENANCE): a 64-bit load through x27 or x28 (a link cell, a stub cell or a RuntimeTable entry: code outside the text, whose own entry rule holds there), a 64-bit load through a register that such a load set in its own run (one step: a table that the isolate names; not an `adr` base, which reads text bytes), or an `adr` into the branch register itself (the rule above checks its target) | yes | - |
 ///
 /// The run of a branch goes back from it to its definition over words that write neither the
 /// register nor the flow of control: loads and pairs into other registers (a pair from the
@@ -712,7 +712,7 @@ pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
         if branch && matches!(opc, 0 | 8) && !matches!(reg, 16 | 17) {
             out.push(Finding::IndirectJumpRegister { at: at as u32 });
         }
-        if branch && !proven_target(text, &starts, at, reg, 1) {
+        if branch && !proven_target(text, &starts, at, reg, 1, true) {
             out.push(Finding::IndirectTargetNotProven { at: at as u32 });
         }
         // `adr Xn, L` then `br x16` or `blr Xn`: L is entered by an indirect branch (JIT
@@ -771,8 +771,17 @@ fn run_starts(text: &[u8]) -> Vec<bool> {
 
 /// True when the value of register `reg` at the AArch64 word `at` is proven by an allowed form
 /// in the straight-line run before `at` (the table of [`check_pads`]). `chain` is how many
-/// loads through a register that is itself proven may still follow (1 at a branch).
-fn proven_target(text: &[u8], starts: &[bool], at: usize, reg: u32, chain: u32) -> bool {
+/// loads through a register that is itself proven may still follow (1 at a branch). `adr_ok`
+/// is true only for the branch register: an `adr` base of a load is a text address, so the
+/// load reads text bytes (JIT review M8-P3 F2).
+fn proven_target(
+    text: &[u8],
+    starts: &[bool],
+    at: usize,
+    reg: u32,
+    chain: u32,
+    adr_ok: bool,
+) -> bool {
     let mut q = at;
     loop {
         if starts[q / 4] || q < 4 {
@@ -783,7 +792,7 @@ fn proven_target(text: &[u8], starts: &[bool], at: usize, reg: u32, chain: u32) 
         let rd = w & 31;
         if is_adr(w) && rd == reg {
             let target = p as i64 + sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21);
-            return (0..text.len() as i64).contains(&target);
+            return adr_ok && (0..text.len() as i64).contains(&target);
         }
         // LDR (immediate), 64-bit, unsigned offset.
         if w & 0xffc0_0000 == 0xf940_0000 {
@@ -793,7 +802,9 @@ fn proven_target(text: &[u8], starts: &[bool], at: usize, reg: u32, chain: u32) 
             }
             let base = (w >> 5) & 31;
             return matches!(base, 27 | 28)
-                || (chain > 0 && base != 31 && proven_target(text, starts, p, base, chain - 1));
+                || (chain > 0
+                    && base != 31
+                    && proven_target(text, starts, p, base, chain - 1, false));
         }
         let neutral = match w & 0xffc0_0000 {
             // LDP, 64-bit: post-index, pre-index, signed offset.
