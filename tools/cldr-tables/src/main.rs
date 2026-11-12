@@ -75,12 +75,17 @@ fn main() -> ExitCode {
         println!("wrote {} ({} B)", path.display(), text.len());
     }
     println!(
-        "cldr-tables: CLDR {} ({}): {} numbering systems, {} T1 records, {} T1 rows, {total} B",
+        "cldr-tables: CLDR {} ({}): {} numbering systems, {} T1 records, {} T1 rows, T2 {} units, \
+         {} texts, {} records, {} unit sets, {total} B",
         tables.cldr_version,
         tables.cldr_commit,
         tables.numbering_systems.len(),
         tables.t1_symbols.len(),
-        tables.t1_rows.len()
+        tables.t1_rows.len(),
+        tables.unit_ids.len(),
+        tables.t2_texts.len(),
+        tables.t2_records.len(),
+        tables.t2_sets.len()
     );
     ExitCode::SUCCESS
 }

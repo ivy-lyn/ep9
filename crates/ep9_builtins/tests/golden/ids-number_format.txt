@@ -6,3 +6,5 @@
 0x4402   34.2         getter       0       "format"  (%Intl.NumberFormat.prototype%.format --c)
 0x4403   34.3         method       1       "formatToParts"  (%Intl.NumberFormat.prototype%.formatToParts w-c)
 0x4404   34.4         method       0       "resolvedOptions"  (%Intl.NumberFormat.prototype%.resolvedOptions w-c)
+0x4405   34.5         method       2       "formatRange"  (%Intl.NumberFormat.prototype%.formatRange w-c)
+0x4406   34.6         method       2       "formatRangeToParts"  (%Intl.NumberFormat.prototype%.formatRangeToParts w-c)

@@ -36,3 +36,4 @@
   32  Segments
   33  Segment Iterator
   34  Intl.DisplayNames
+  35  Intl.RelativeTimeFormat

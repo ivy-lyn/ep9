@@ -19,7 +19,19 @@
 //!                                                                    HOUR_CYCLE_LANGUAGE_REGIONS
 //!   cldr-bcp47/bcp47/*.json  "_alias",
 //!     "_deprecated" + "_preferred" ───────────────►  aliases.rs  U_VALUE_ALIASES, T_VALUE_ALIASES
+//!   cldr-units-full/main/<locale>/units.json
+//!     <width>.<category>-<unit>  unitPattern-count-*,
+//!       perUnitPattern; <width>.per
+//!       compoundUnitPattern ──────────────────────►  t2.rs       T2_UNITS, T2_TEXT, T2_TEXT_STARTS,
+//!                                                                T2_RECORDS, T2_PER, T2_SETS,
+//!                                                                T2_LOCALE_SETS
 //! ```
+//!
+//! T2 (INTL-V2 plan 2.2, the NF-UNIT row) holds the unit patterns of the 45 sanctioned simple
+//! units of ECMA-402 Table 2 and of the CLDR compound units of two of them
+//! (`kilometer-per-hour`), in the widths short, narrow and long, for every locale. It is made
+//! of shared parts: the distinct texts, the distinct records (the patterns of one unit and
+//! width), and the distinct unit sets (all records of one locale); each locale names its set.
 //!
 //! The CLDR JSON locale files are resolved (a child holds every value, not only the values that
 //! differ from its parent), so a row is the full answer for its locale. Output is deterministic:
@@ -33,14 +45,93 @@ use std::process::Command;
 use serde_json::Value;
 
 /// The files the generator writes, relative to the output directory.
-pub const OUTPUT_FILES: [&str; 6] = [
+pub const OUTPUT_FILES: [&str; 7] = [
     "aliases.rs",
     "digits.rs",
     "hour_cycles.rs",
     "locales.rs",
     "t1.rs",
+    "t2.rs",
     "version.rs",
 ];
+
+/// The sanctioned single unit identifiers of ECMA-402 Table 2, sorted (the `ep9_intl`
+/// `available::UNITS` list; its tests compare the two).
+pub const SANCTIONED_UNITS: [&str; 45] = [
+    "acre",
+    "bit",
+    "byte",
+    "celsius",
+    "centimeter",
+    "day",
+    "degree",
+    "fahrenheit",
+    "fluid-ounce",
+    "foot",
+    "gallon",
+    "gigabit",
+    "gigabyte",
+    "gram",
+    "hectare",
+    "hour",
+    "inch",
+    "kilobit",
+    "kilobyte",
+    "kilogram",
+    "kilometer",
+    "liter",
+    "megabit",
+    "megabyte",
+    "meter",
+    "microsecond",
+    "mile",
+    "mile-scandinavian",
+    "milliliter",
+    "millimeter",
+    "millisecond",
+    "minute",
+    "month",
+    "nanosecond",
+    "ounce",
+    "percent",
+    "petabyte",
+    "pound",
+    "second",
+    "stone",
+    "terabit",
+    "terabyte",
+    "week",
+    "yard",
+    "year",
+];
+
+/// The T2 widths: the CLDR unit lengths in the order of the `[[UnitDisplay]]` values of
+/// `ep9_intl` ("short", "narrow", "long").
+pub const UNIT_WIDTHS: [&str; 3] = ["short", "narrow", "long"];
+
+/// The plural forms of a T2 record, in record order (CLDR `unitPattern-count-<form>`). The
+/// record holds the per-unit pattern after them.
+pub const PLURAL_FORMS: [&str; 6] = ["zero", "one", "two", "few", "many", "other"];
+
+/// The text index of "no text" in a T2 record: text 0 is the empty text (CLDR has no empty
+/// pattern; `read` checks it).
+pub const NO_TEXT: u16 = 0;
+
+/// A T2 record: the text indices of the unit patterns of [`PLURAL_FORMS`] and of the per-unit
+/// pattern, [`NO_TEXT`] where CLDR has none. A plural form whose pattern is the "other"
+/// pattern is [`NO_TEXT`] too (the reader takes "other" for a missing form, as ICU does), so
+/// records that differ only there are one record.
+pub type UnitRecord = [u16; 7];
+
+/// A T2 unit set: the T2 data of one locale.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnitSet {
+    /// Per width of [`UNIT_WIDTHS`]: the text index of the compound pattern "per"
+    /// (`{0}/{1}`).
+    pub per: [u16; 3],
+    /// Per width of [`UNIT_WIDTHS`]: the record index of each unit of `Tables::unit_ids`.
+    pub records: [Vec<u16>; 3],
+}
 
 /// The T1 values of one locale and numbering system (CLDR `symbols-numberSystem-<nu>` and
 /// `miscPatterns-numberSystem-<nu>`).
@@ -88,6 +179,17 @@ pub struct Tables {
     pub u_value_aliases: Vec<(String, String, String)>,
     /// The -t- value aliases of the bcp47 data, as (tkey, alias, value), sorted.
     pub t_value_aliases: Vec<(String, String, String)>,
+    /// The T2 unit ids: [`SANCTIONED_UNITS`] and the CLDR compound units "X-per-Y" of two of
+    /// them, sorted.
+    pub unit_ids: Vec<String>,
+    /// The distinct T2 texts, sorted; text 0 ([`NO_TEXT`]) is the empty text.
+    pub t2_texts: Vec<String>,
+    /// The distinct T2 records, sorted.
+    pub t2_records: Vec<UnitRecord>,
+    /// The distinct T2 unit sets, sorted.
+    pub t2_sets: Vec<UnitSet>,
+    /// The unit set of each locale of `locales`, in that order.
+    pub t2_locale_sets: Vec<u8>,
 }
 
 impl Tables {
@@ -102,6 +204,45 @@ impl Tables {
             .binary_search_by(|(l, x, _)| (l.as_str(), *x as usize).cmp(&(locale, n)))
             .ok()?;
         Some(&self.t1_symbols[self.t1_rows[i].2 as usize])
+    }
+
+    /// The T2 record of `locale`, `unit` and width `width` (an index of [`UNIT_WIDTHS`]).
+    pub fn unit_record(&self, locale: &str, unit: &str, width: usize) -> Option<&UnitRecord> {
+        let l = self
+            .locales
+            .binary_search_by(|x| x.as_str().cmp(locale))
+            .ok()?;
+        let u = self
+            .unit_ids
+            .binary_search_by(|x| x.as_str().cmp(unit))
+            .ok()?;
+        let set = &self.t2_sets[usize::from(self.t2_locale_sets[l])];
+        Some(&self.t2_records[usize::from(set.records.get(width)?[u])])
+    }
+
+    /// The T2 text of index `i` (`None` for [`NO_TEXT`]).
+    pub fn t2_text(&self, i: u16) -> Option<&str> {
+        self.t2_texts
+            .get(usize::from(i))
+            .map(String::as_str)
+            .filter(|t| !t.is_empty())
+    }
+
+    /// The unit pattern of plural form `form` (an index of [`PLURAL_FORMS`]) of a T2 record:
+    /// the "other" pattern if the record has none for `form`.
+    pub fn unit_pattern(&self, record: &UnitRecord, form: usize) -> Option<&str> {
+        self.t2_text(record[form])
+            .or_else(|| self.t2_text(record[5]))
+    }
+
+    /// The compound pattern "per" of `locale` in width `width`.
+    pub fn per_pattern(&self, locale: &str, width: usize) -> Option<&str> {
+        let l = self
+            .locales
+            .binary_search_by(|x| x.as_str().cmp(locale))
+            .ok()?;
+        let set = &self.t2_sets[usize::from(self.t2_locale_sets[l])];
+        self.t2_text(*set.per.get(width)?)
     }
 }
 
@@ -280,6 +421,15 @@ pub fn read(cldr: &Path, pin: &str) -> Result<Tables, String> {
         hour_cycles(&root.join("cldr-core/supplemental/timeData.json"))?;
     let (u_value_aliases, t_value_aliases) = value_aliases(&root.join("cldr-bcp47/bcp47"))?;
 
+    let units_pkg = root.join("cldr-units-full/package.json");
+    let units_version = str_at(&read_json(&units_pkg)?, &["version"], &units_pkg)?.to_owned();
+    if units_version != cldr_version {
+        return Err(format!(
+            "cldr-units-full {units_version} != cldr-core {cldr_version}"
+        ));
+    }
+    let t2 = t2(&root.join("cldr-units-full/main"), &dirs)?;
+
     Ok(Tables {
         cldr_version,
         cldr_commit: head,
@@ -292,6 +442,225 @@ pub fn read(cldr: &Path, pin: &str) -> Result<Tables, String> {
         hour_cycle_language_regions,
         u_value_aliases,
         t_value_aliases,
+        unit_ids: t2.unit_ids,
+        t2_texts: t2.texts,
+        t2_records: t2.records,
+        t2_sets: t2.sets,
+        t2_locale_sets: t2.locale_sets,
+    })
+}
+
+/// The T2 part of [`Tables`].
+struct T2 {
+    unit_ids: Vec<String>,
+    texts: Vec<String>,
+    records: Vec<UnitRecord>,
+    sets: Vec<UnitSet>,
+    locale_sets: Vec<u8>,
+}
+
+/// The T2 unit id of a CLDR unit key `<category>-<unit>` (`speed-kilometer-per-hour` ->
+/// `kilometer-per-hour`): a sanctioned simple unit, or "X-per-Y" of two of them.
+fn t2_unit_id(key: &str) -> Option<&str> {
+    let (_, id) = key.split_once('-')?;
+    let simple = |u: &str| SANCTIONED_UNITS.contains(&u);
+    let sanctioned = simple(id)
+        || id
+            .split_once("-per-")
+            .is_some_and(|(x, y)| simple(x) && simple(y));
+    sanctioned.then_some(id)
+}
+
+/// Whether `pattern` has `{0}` at most once and no other `{`: the form that `ep9_intl` splits
+/// (a unit pattern with no `{0}` replaces the number, as ICU does: ar "ساعة" for one hour).
+fn is_unit_pattern(pattern: &str) -> bool {
+    pattern.matches('{').count() == pattern.matches("{0}").count()
+        && pattern.matches("{0}").count() <= 1
+}
+
+/// The patterns of one unit and width, as texts: [`PLURAL_FORMS`] then the per-unit pattern.
+type RawRecord = [Option<String>; 7];
+
+/// T2 from `main` (the `cldr-units-full/main` directory) for the locale directories `dirs`
+/// (the "full" list).
+fn t2(main: &Path, dirs: &BTreeSet<String>) -> Result<T2, String> {
+    let mut found = BTreeSet::new();
+    for entry in std::fs::read_dir(main).map_err(|e| format!("{}: {e}", main.display()))? {
+        let entry = entry.map_err(|e| format!("{}: {e}", main.display()))?;
+        found.insert(entry.file_name().to_string_lossy().into_owned());
+    }
+    if found != *dirs {
+        return Err(format!(
+            "{}: the locale directories are not the availableLocales.full list",
+            main.display()
+        ));
+    }
+    // Per locale and width: the compound "per" pattern and the record of each unit id.
+    type Width = (String, BTreeMap<String, RawRecord>);
+    let mut raw: Vec<[Width; 3]> = Vec::new();
+    let mut unit_ids: Option<BTreeSet<String>> = None;
+    for locale in dirs {
+        let file = main.join(locale).join("units.json");
+        let json = read_json(&file)?;
+        let units = json
+            .pointer(&format!("/main/{locale}/units"))
+            .ok_or_else(|| format!("{}: no main/{locale}/units", file.display()))?;
+        let mut widths: Vec<Width> = Vec::new();
+        for width in UNIT_WIDTHS {
+            let w = units
+                .get(width)
+                .and_then(Value::as_object)
+                .ok_or_else(|| format!("{}: no units.{width}", file.display()))?;
+            let per = str_at(units, &[width, "per", "compoundUnitPattern"], &file)?;
+            if per.matches("{0}").count() != 1
+                || per.matches("{1}").count() != 1
+                || per.matches('{').count() != 2
+            {
+                return Err(format!("{}: {width} per pattern {per:?}", file.display()));
+            }
+            let mut records = BTreeMap::new();
+            for (key, v) in w {
+                let Some(id) = t2_unit_id(key) else {
+                    continue;
+                };
+                let mut record: RawRecord = Default::default();
+                let obj = v
+                    .as_object()
+                    .ok_or_else(|| format!("{}: {width}.{key}", file.display()))?;
+                for (k, text) in obj {
+                    let Some(form) = k.strip_prefix("unitPattern-count-") else {
+                        continue;
+                    };
+                    if form.contains("-case-") {
+                        continue;
+                    }
+                    let i = PLURAL_FORMS
+                        .iter()
+                        .position(|f| *f == form)
+                        .ok_or_else(|| {
+                            format!("{}: {width}.{key}: plural form {form:?}", file.display())
+                        })?;
+                    let text = text.as_str().ok_or_else(|| {
+                        format!("{}: {width}.{key}.{k} is not a string", file.display())
+                    })?;
+                    record[i] = Some(text.to_owned());
+                }
+                if record[5].is_none() {
+                    return Err(format!("{}: {width}.{key}: no other form", file.display()));
+                }
+                // A form with the "other" pattern: none (module doc of [`UnitRecord`]).
+                let other = record[5].clone();
+                for form in &mut record[..5] {
+                    if *form == other {
+                        *form = None;
+                    }
+                }
+                if let Some(p) = v.get("perUnitPattern") {
+                    let p = p.as_str().ok_or_else(|| {
+                        format!("{}: {width}.{key}.perUnitPattern", file.display())
+                    })?;
+                    if p.matches("{0}").count() != 1 || p.matches('{').count() != 1 {
+                        return Err(format!("{}: {width}.{key}: per-unit {p:?}", file.display()));
+                    }
+                    record[6] = Some(p.to_owned());
+                }
+                if let Some(bad) = record[..6]
+                    .iter()
+                    .flatten()
+                    .find(|p| p.is_empty() || !is_unit_pattern(p))
+                {
+                    return Err(format!(
+                        "{}: {width}.{key}: pattern {bad:?}",
+                        file.display()
+                    ));
+                }
+                if records.insert(id.to_owned(), record).is_some() {
+                    return Err(format!("{}: {width}: two keys for {id}", file.display()));
+                }
+            }
+            let ids: BTreeSet<String> = records.keys().cloned().collect();
+            match &unit_ids {
+                None => unit_ids = Some(ids),
+                Some(all) if *all != ids => {
+                    return Err(format!(
+                        "{}: {width}: the unit ids differ from the first locale's",
+                        file.display()
+                    ));
+                }
+                Some(_) => {}
+            }
+            widths.push((per.to_owned(), records));
+        }
+        let widths: [Width; 3] = widths.try_into().map_err(|_| "three widths".to_string())?;
+        raw.push(widths);
+    }
+    let unit_ids: Vec<String> = unit_ids.unwrap_or_default().into_iter().collect();
+    if let Some(u) = SANCTIONED_UNITS
+        .iter()
+        .find(|u| unit_ids.binary_search_by(|x| x.as_str().cmp(u)).is_err())
+    {
+        return Err(format!("{}: no data for the unit {u}", main.display()));
+    }
+
+    // The distinct texts (the empty text first: NO_TEXT), records and sets.
+    let mut texts = BTreeSet::from([String::new()]);
+    for widths in &raw {
+        for (per, records) in widths {
+            texts.insert(per.clone());
+            texts.extend(records.values().flatten().flatten().cloned());
+        }
+    }
+    let texts: Vec<String> = texts.into_iter().collect();
+    if texts.len() > usize::from(u16::MAX) + 1 {
+        return Err("more than 65536 T2 texts: widen the T2 text index".into());
+    }
+    // u16 fits: checked above.
+    let text_index = |t: &str| texts.binary_search_by(|x| x.as_str().cmp(t)).unwrap_or(0) as u16;
+    let record_of =
+        |r: &RawRecord| -> UnitRecord { r.clone().map(|t| t.map_or(NO_TEXT, |t| text_index(&t))) };
+    let mut records = BTreeSet::new();
+    for widths in &raw {
+        for (_, rs) in widths {
+            records.extend(rs.values().map(record_of));
+        }
+    }
+    let records: Vec<UnitRecord> = records.into_iter().collect();
+    if records.len() > usize::from(u16::MAX) + 1 {
+        return Err("more than 65536 T2 records: widen the T2 record index".into());
+    }
+    // u16 fits: checked above.
+    let record_index = |r: &UnitRecord| records.binary_search(r).unwrap_or(0) as u16;
+    let set_of = |widths: &[Width; 3]| UnitSet {
+        per: [0, 1, 2].map(|w| text_index(&widths[w].0)),
+        records: [0, 1, 2].map(|w| {
+            widths[w]
+                .1
+                .values()
+                .map(|r| record_index(&record_of(r)))
+                .collect()
+        }),
+    };
+    let per_locale: Vec<UnitSet> = raw.iter().map(set_of).collect();
+    let sets: Vec<UnitSet> = per_locale
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if sets.len() > usize::from(u8::MAX) + 1 {
+        return Err("more than 256 T2 unit sets: widen the T2 set index".into());
+    }
+    // u8 fits: checked above.
+    let locale_sets = per_locale
+        .iter()
+        .map(|s| sets.binary_search(s).unwrap_or(0) as u8)
+        .collect();
+    Ok(T2 {
+        unit_ids,
+        texts,
+        records,
+        sets,
+        locale_sets,
     })
 }
 
@@ -652,7 +1021,135 @@ pub fn render(t: &Tables) -> BTreeMap<&'static str, String> {
     s.push_str("];\n");
     files.insert("t1.rs", s);
 
+    files.insert("t2.rs", render_t2(t));
+
     files
+}
+
+/// Numbers, `per_line` to a line, each line indented by 4 and ended by a comma.
+fn number_lines(out: &mut String, numbers: &[String], per_line: usize) {
+    for line in numbers.chunks(per_line) {
+        let _ = writeln!(out, "    {},", line.join(", "));
+    }
+}
+
+/// `t2.rs`: the T2 unit table (the module doc of [`Tables`] fields `unit_ids` to
+/// `t2_locale_sets`).
+fn render_t2(t: &Tables) -> String {
+    let mut u = header(
+        t,
+        "cldr-units-full/main/*/units.json, unitPattern-count-*, perUnitPattern and per compoundUnitPattern",
+    );
+    let n = t.unit_ids.len();
+    let _ = writeln!(
+        u,
+        "/// The T2 unit ids: the sanctioned simple units of ECMA-402 Table 2 and the CLDR compound units\n\
+         /// \"X-per-Y\" of two of them, sorted."
+    );
+    str_list(&mut u, "T2_UNITS", t.unit_ids.iter().map(String::as_str));
+    u.push('\n');
+
+    let _ = writeln!(
+        u,
+        "/// The distinct T2 texts (unit patterns, per-unit patterns, compound \"per\" patterns), sorted and\n\
+         /// joined: text `i` is `T2_TEXT[T2_TEXT_STARTS[i] as usize..T2_TEXT_STARTS[i + 1] as usize]`. Text 0\n\
+         /// is the empty text: \"none\" in a record."
+    );
+    u.push_str("pub(crate) static T2_TEXT: &str = concat!(\n");
+    let mut starts = vec![0usize];
+    for text in &t.t2_texts {
+        let _ = writeln!(u, "    {},", lit(text));
+        starts.push(starts[starts.len() - 1] + text.len());
+    }
+    u.push_str(");\n\n");
+    let _ = writeln!(
+        u,
+        "/// The byte offset of each text of `T2_TEXT`, and the length of `T2_TEXT` last."
+    );
+    let _ = writeln!(
+        u,
+        "pub(crate) static T2_TEXT_STARTS: [u32; {}] = [",
+        starts.len()
+    );
+    number_lines(
+        &mut u,
+        &starts.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        16,
+    );
+    u.push_str("];\n\n");
+
+    let _ = writeln!(
+        u,
+        "/// The distinct T2 records, sorted: the texts (indices of `T2_TEXT_STARTS`; {NO_TEXT} = none) of the unit\n\
+         /// patterns of the plural forms zero, one, two, few, many and other (CLDR `unitPattern-count-*`), and\n\
+         /// of the per-unit pattern (`perUnitPattern`). A form with no text has the \"other\" pattern. A unit\n\
+         /// pattern has `{{0}}` at most once."
+    );
+    let _ = writeln!(
+        u,
+        "pub(crate) static T2_RECORDS: [[u16; 7]; {}] = [",
+        t.t2_records.len()
+    );
+    for r in &t.t2_records {
+        let r: Vec<String> = r.iter().map(ToString::to_string).collect();
+        let _ = writeln!(u, "    [{}],", r.join(", "));
+    }
+    u.push_str("];\n\n");
+
+    let _ = writeln!(
+        u,
+        "/// The text of the compound pattern \"per\" (`{{0}}/{{1}}`) of each T2 unit set (the sets of `T2_SETS`),\n\
+         /// per width: short, narrow, long."
+    );
+    let _ = writeln!(
+        u,
+        "pub(crate) static T2_PER: [[u16; 3]; {}] = [",
+        t.t2_sets.len()
+    );
+    for set in &t.t2_sets {
+        let _ = writeln!(u, "    [{}, {}, {}],", set.per[0], set.per[1], set.per[2]);
+    }
+    u.push_str("];\n\n");
+
+    let _ = writeln!(
+        u,
+        "/// The distinct T2 unit sets (the data of one locale), sorted: per width (short, narrow, long), the\n\
+         /// record (an index of `T2_RECORDS`) of each unit of `T2_UNITS`."
+    );
+    let _ = writeln!(
+        u,
+        "pub(crate) static T2_SETS: [[[u16; {n}]; 3]; {}] = [",
+        t.t2_sets.len()
+    );
+    for set in &t.t2_sets {
+        u.push_str("    [\n");
+        for w in &set.records {
+            let w: Vec<String> = w.iter().map(ToString::to_string).collect();
+            let _ = writeln!(u, "        [{}],", w.join(", "));
+        }
+        u.push_str("    ],\n");
+    }
+    u.push_str("];\n\n");
+
+    let _ = writeln!(
+        u,
+        "/// The unit set (an index of `T2_SETS`) of each locale of `CLDR_LOCALES`, in that order."
+    );
+    let _ = writeln!(
+        u,
+        "pub(crate) static T2_LOCALE_SETS: [u8; {}] = [",
+        t.t2_locale_sets.len()
+    );
+    number_lines(
+        &mut u,
+        &t.t2_locale_sets
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        24,
+    );
+    u.push_str("];\n");
+    u
 }
 
 /// The default paths: the checkout and the pin file next to this crate, the output in

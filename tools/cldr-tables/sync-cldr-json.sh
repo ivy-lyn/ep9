@@ -18,6 +18,8 @@ CLDR_PATHS=(
   '/cldr-json/cldr-bcp47/bcp47/*.json'
   /cldr-json/cldr-numbers-full/package.json
   '/cldr-json/cldr-numbers-full/main/*/numbers.json'
+  /cldr-json/cldr-units-full/package.json
+  '/cldr-json/cldr-units-full/main/*/units.json'
   /LICENSE
 )
 want="$rev $(printf '%s\n' "${CLDR_PATHS[@]}" | git hash-object --stdin)"

@@ -343,11 +343,16 @@ pub enum IntrinsicId {
     IntlDisplayNames,
     /// `%Intl.DisplayNames.prototype%` (ECMA-402 §12.3, an ordinary object; made by `ep9_intl` display_names.rs).
     IntlDisplayNamesPrototype,
+    // ---- INTL W3 (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Intl.RelativeTimeFormat%` (ECMA-402 §18.1; made by `ep9_intl` relative_time_format.rs, block 38).
+    IntlRelativeTimeFormat,
+    /// `%Intl.RelativeTimeFormat.prototype%` (ECMA-402 §18.3, an ordinary object; made by `ep9_intl` relative_time_format.rs).
+    IntlRelativeTimeFormatPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 121] = [
+    pub const ALL: [IntrinsicId; 123] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -469,6 +474,8 @@ impl IntrinsicId {
         IntrinsicId::IntlSegmentIteratorPrototype,
         IntrinsicId::IntlDisplayNames,
         IntrinsicId::IntlDisplayNamesPrototype,
+        IntrinsicId::IntlRelativeTimeFormat,
+        IntrinsicId::IntlRelativeTimeFormatPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -596,6 +603,8 @@ impl IntrinsicId {
             IntrinsicId::IntlSegmentIteratorPrototype => "%IntlSegmentIteratorPrototype%",
             IntrinsicId::IntlDisplayNames => "%Intl.DisplayNames%",
             IntrinsicId::IntlDisplayNamesPrototype => "%Intl.DisplayNames.prototype%",
+            IntrinsicId::IntlRelativeTimeFormat => "%Intl.RelativeTimeFormat%",
+            IntrinsicId::IntlRelativeTimeFormatPrototype => "%Intl.RelativeTimeFormat.prototype%",
         }
     }
 
@@ -723,7 +732,9 @@ impl IntrinsicId {
             | IntrinsicId::IntlSegmentsPrototype
             | IntrinsicId::IntlSegmentIteratorPrototype
             | IntrinsicId::IntlDisplayNames
-            | IntrinsicId::IntlDisplayNamesPrototype => return None,
+            | IntrinsicId::IntlDisplayNamesPrototype
+            | IntrinsicId::IntlRelativeTimeFormat
+            | IntrinsicId::IntlRelativeTimeFormatPrototype => return None,
         })
     }
 
@@ -819,6 +830,8 @@ impl IntrinsicId {
             IntrinsicId::IntlSegmentIteratorPrototype => Some(85),
             IntrinsicId::IntlDisplayNames => Some(86),
             IntrinsicId::IntlDisplayNamesPrototype => Some(87),
+            IntrinsicId::IntlRelativeTimeFormat => Some(88),
+            IntrinsicId::IntlRelativeTimeFormatPrototype => Some(89),
             _ => None,
         }
     }
@@ -1497,7 +1510,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 88;
+const INTRINSIC_SLOTS: usize = 90;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

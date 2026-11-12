@@ -3,7 +3,10 @@
 
 use std::process::Command;
 
-use cldr_tables::{Tables, default_paths, read, read_pin, render, stale};
+use cldr_tables::{
+    NO_TEXT, PLURAL_FORMS, SANCTIONED_UNITS, Tables, UNIT_WIDTHS, default_paths, read, read_pin,
+    render, stale,
+};
 use icu_locale_core::LanguageIdentifier;
 use icu_provider::prelude::*;
 
@@ -233,4 +236,155 @@ fn locales_hour_cycles_and_aliases() {
     assert!(!has(&t.u_value_aliases, "ca", "islamic-civil", "islamicc"));
     assert!(!t.u_value_aliases.iter().any(|(_, a, _)| a == "est5edt"));
     assert!(has(&t.t_value_aliases, "m0", "names", "prprname"));
+}
+
+/// The ICU4X `UnitsNames*V1` markers of the 5 unit categories (area, duration, length, mass,
+/// volume): the "other" pattern of `attributes` ("<width>-<unit>") for `locale`, if the data
+/// has it without fallback.
+fn icu4x_other<M>(attributes: &str, locale: &DataLocale) -> Option<String>
+where
+    M: DataMarker<
+        DataStruct = icu_experimental::dimension::provider::units::display_names::UnitsDisplayNames<
+            'static,
+        >,
+    >,
+    icu_experimental::provider::Baked: DataProvider<M>,
+{
+    let mut metadata = DataRequestMetadata::default();
+    metadata.silent = true;
+    let req = DataRequest {
+        id: DataIdentifierBorrowed::for_marker_attributes_and_locale(
+            DataMarkerAttributes::try_from_str(attributes).ok()?,
+            locale,
+        ),
+        metadata,
+    };
+    let res = icu_experimental::provider::Baked.load(req).ok()?;
+    if res.metadata.locale.is_some() {
+        return None;
+    }
+    // INTL W3 correction 4 (b3): only the default ("other") pattern here; the check per plural
+    // category is an ep9_intl test (`cldr::tests::t2_equals_icu4x_in_every_plural_category`),
+    // because a read per category names icu_plurals, which this crate does not list.
+    let p: &DataPayload<M> = &res.payload;
+    Some(
+        p.get()
+            .elements
+            .get_default()
+            .1
+            .interpolate_to_string(["{0}"]),
+    )
+}
+
+/// T2: the "other" unit pattern of each unit, width and locale that the ICU4X units data has
+/// without fallback equals the T2 pattern (both CLDR 49.0.0).
+#[test]
+fn t2_equals_icu4x() {
+    use icu_experimental::dimension::provider::units::categorized_display_names::*;
+    type Load = fn(&str, &DataLocale) -> Option<String>;
+    let loaders: [Load; 15] = [
+        icu4x_other::<UnitsNamesAreaCoreV1>,
+        icu4x_other::<UnitsNamesAreaExtendedV1>,
+        icu4x_other::<UnitsNamesAreaOutlierV1>,
+        icu4x_other::<UnitsNamesDurationCoreV1>,
+        icu4x_other::<UnitsNamesDurationExtendedV1>,
+        icu4x_other::<UnitsNamesDurationOutlierV1>,
+        icu4x_other::<UnitsNamesLengthCoreV1>,
+        icu4x_other::<UnitsNamesLengthExtendedV1>,
+        icu4x_other::<UnitsNamesLengthOutlierV1>,
+        icu4x_other::<UnitsNamesMassCoreV1>,
+        icu4x_other::<UnitsNamesMassExtendedV1>,
+        icu4x_other::<UnitsNamesMassOutlierV1>,
+        icu4x_other::<UnitsNamesVolumeCoreV1>,
+        icu4x_other::<UnitsNamesVolumeExtendedV1>,
+        icu4x_other::<UnitsNamesVolumeOutlierV1>,
+    ];
+    let t = tables();
+    let (mut compared, mut units) = (0usize, std::collections::BTreeSet::new());
+    let mut wrong = Vec::new();
+    for locale in &t.locales {
+        let langid: LanguageIdentifier = locale.parse().expect("locale id");
+        let dl = DataLocale::from(&langid);
+        for (w, width) in UNIT_WIDTHS.iter().enumerate() {
+            for unit in SANCTIONED_UNITS {
+                let attributes = format!("{width}-{unit}");
+                let Some(icu) = loaders.iter().find_map(|load| load(&attributes, &dl)) else {
+                    continue;
+                };
+                let record = t.unit_record(locale, unit, w).expect("a T2 record");
+                let ours = t.unit_pattern(record, 5).expect("an other form");
+                if ours != icu {
+                    wrong.push(format!("{locale} {attributes}: T2 {ours:?}, ICU4X {icu:?}"));
+                }
+                compared += 1;
+                units.insert(unit);
+            }
+        }
+    }
+    eprintln!(
+        "T2 vs ICU4X: {compared} other patterns, {} units",
+        units.len()
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} differ:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    // The 5 ICU4X categories hold 30 of the 45 sanctioned units.
+    assert_eq!(units.len(), 30, "{units:?}");
+    assert!(compared > 10_000, "{compared}");
+}
+
+/// T2: its shape, one value of each kind (the test262 `unit-*.js` strings at CLDR 49.0.0),
+/// and its size (INTL-V2 plan 2.6: T2 0.3-0.6 MB).
+#[test]
+fn t2_values_and_size() {
+    let t = tables();
+    assert_eq!(t.unit_ids.len(), 50);
+    for u in SANCTIONED_UNITS {
+        assert!(t.unit_ids.binary_search(&u.to_owned()).is_ok(), "{u}");
+    }
+    assert_eq!(t.t2_locale_sets.len(), t.locales.len());
+    assert_eq!(t.t2_texts[usize::from(NO_TEXT)], "");
+    let pattern = |l: &str, u: &str, w: &str, form: &str| {
+        let w = UNIT_WIDTHS.iter().position(|x| *x == w).expect("width");
+        let f = PLURAL_FORMS.iter().position(|x| *x == form).expect("form");
+        let r = t.unit_record(l, u, w).expect("record");
+        t.unit_pattern(r, f).map(str::to_owned)
+    };
+    let p = |l, u, w, f| pattern(l, u, w, f).expect("pattern");
+    assert_eq!(p("en", "kilometer-per-hour", "short", "other"), "{0} km/h");
+    assert_eq!(p("en", "kilometer-per-hour", "narrow", "other"), "{0}km/h");
+    assert_eq!(
+        p("en", "kilometer-per-hour", "long", "one"),
+        "{0} kilometer per hour"
+    );
+    assert_eq!(p("de", "kilometer-per-hour", "short", "other"), "{0} km/h");
+    assert_eq!(p("ko", "kilometer-per-hour", "short", "other"), "{0}km/h");
+    assert_eq!(
+        p("zh-Hant", "kilometer-per-hour", "long", "other"),
+        "每小時 {0} 公里"
+    );
+    assert_eq!(p("ar", "hour", "long", "one"), "ساعة");
+    // A form with the other pattern is not stored: the other pattern serves it.
+    assert_eq!(p("ja", "hour", "long", "one"), "{0} 時間");
+    let en_hour = t.unit_record("en", "hour", 0).expect("en hour");
+    assert_eq!(t.t2_text(en_hour[6]), Some("{0}/h"));
+    assert_eq!(t.per_pattern("en", 2), Some("{0} per {1}"));
+    assert_eq!(t.per_pattern("ja", 2), Some("{0}毎{1}"));
+    // The data size of T2 in the binary (est.: texts, 4 B per text offset, 14 B per record,
+    // 6 B per set and unit, 1 B per locale).
+    let bytes = t.t2_texts.iter().map(String::len).sum::<usize>()
+        + 4 * (t.t2_texts.len() + 1)
+        + 14 * t.t2_records.len()
+        + t.t2_sets.len() * (6 + 6 * t.unit_ids.len())
+        + t.t2_locale_sets.len();
+    eprintln!(
+        "T2: {} texts, {} records, {} sets, {bytes} B of data",
+        t.t2_texts.len(),
+        t.t2_records.len(),
+        t.t2_sets.len()
+    );
+    assert!(bytes < 600_000, "{bytes}");
 }
