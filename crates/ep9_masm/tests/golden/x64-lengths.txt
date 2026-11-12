@@ -1,0 +1,1424 @@
+# x86-64 instruction lengths for the ep9_masm length decoder (route UNIT-X64-DECODE).
+# Made by llvm-mc 23.1.4 (-triple=x86_64-unknown-linux-gnu, Intel syntax, assembled to an
+# object) and llvm-objdump -d: one instruction per line, "<bytes> ; <llvm-objdump text>"
+# (llvm-objdump prints a lock prefix on a line of its own; it is joined to its instruction).
+# Branch targets are labels in that object; their values do not change the length.
+48 83 c0 05 ; add rax, 0x5
+49 83 c1 05 ; add r9, 0x5
+83 c0 05 ; add eax, 0x5
+66 83 c0 05 ; add ax, 0x5
+04 05 ; add al, 0x5
+48 05 45 23 01 00 ; add rax, 0x12345
+05 45 23 01 00 ; add eax, 0x12345
+66 05 34 12 ; add ax, 0x1234
+04 12 ; add al, 0x12
+48 81 c1 45 23 01 00 ; add rcx, 0x12345
+66 81 c1 34 12 ; add cx, 0x1234
+80 c1 12 ; add cl, 0x12
+49 83 c2 ff ; add r10, -0x1
+48 83 40 08 01 ; add qword ptr [rax + 0x8], 0x1
+81 40 08 45 23 01 00 ; add dword ptr [rax + 0x8], 0x12345
+66 81 40 08 34 12 ; add word ptr [rax + 0x8], 0x1234
+80 40 08 07 ; add byte ptr [rax + 0x8], 0x7
+48 01 48 08 ; add qword ptr [rax + 0x8], rcx
+4c 03 58 08 ; add r11, qword ptr [rax + 0x8]
+44 00 40 08 ; add byte ptr [rax + 0x8], r8b
+66 44 03 48 08 ; add r9w, word ptr [rax + 0x8]
+4a 83 44 2d 00 01 ; add qword ptr [rbp + r13], 0x1
+42 81 44 2d 00 45 23 01 00 ; add dword ptr [rbp + r13], 0x12345
+66 42 81 44 2d 00 34 12 ; add word ptr [rbp + r13], 0x1234
+42 80 44 2d 00 07 ; add byte ptr [rbp + r13], 0x7
+4a 01 4c 2d 00 ; add qword ptr [rbp + r13], rcx
+4e 03 5c 2d 00 ; add r11, qword ptr [rbp + r13]
+46 00 44 2d 00 ; add byte ptr [rbp + r13], r8b
+66 46 03 4c 2d 00 ; add r9w, word ptr [rbp + r13]
+48 83 05 40 00 00 00 01 ; add qword ptr [rip + 0x40], 0x1 # 0xd6
+81 05 40 00 00 00 45 23 01 00 ; add dword ptr [rip + 0x40], 0x12345 # 0xe0
+66 81 05 40 00 00 00 34 12 ; add word ptr [rip + 0x40], 0x1234 # 0xe9
+80 05 40 00 00 00 07 ; add byte ptr [rip + 0x40], 0x7 # 0xf0
+48 01 0d 40 00 00 00 ; add qword ptr [rip + 0x40], rcx # 0xf7
+4c 03 1d 40 00 00 00 ; add r11, qword ptr [rip + 0x40] # 0xfe
+44 00 05 40 00 00 00 ; add byte ptr [rip + 0x40], r8b # 0x105
+66 44 03 0d 40 00 00 00 ; add r9w, word ptr [rip + 0x40] # 0x10d
+48 83 84 24 00 10 00 00 01 ; add qword ptr [rsp + 0x1000], 0x1
+81 84 24 00 10 00 00 45 23 01 00 ; add dword ptr [rsp + 0x1000], 0x12345
+66 81 84 24 00 10 00 00 34 12 ; add word ptr [rsp + 0x1000], 0x1234
+80 84 24 00 10 00 00 07 ; add byte ptr [rsp + 0x1000], 0x7
+48 01 8c 24 00 10 00 00 ; add qword ptr [rsp + 0x1000], rcx
+4c 03 9c 24 00 10 00 00 ; add r11, qword ptr [rsp + 0x1000]
+44 00 84 24 00 10 00 00 ; add byte ptr [rsp + 0x1000], r8b
+66 44 03 8c 24 00 10 00 00 ; add r9w, word ptr [rsp + 0x1000]
+48 01 d8 ; add rax, rbx
+45 01 f8 ; add r8d, r15d
+40 00 fe ; add sil, dil
+48 83 c8 05 ; or rax, 0x5
+49 83 c9 05 ; or r9, 0x5
+83 c8 05 ; or eax, 0x5
+66 83 c8 05 ; or ax, 0x5
+0c 05 ; or al, 0x5
+48 0d 45 23 01 00 ; or rax, 0x12345
+0d 45 23 01 00 ; or eax, 0x12345
+66 0d 34 12 ; or ax, 0x1234
+0c 12 ; or al, 0x12
+48 81 c9 45 23 01 00 ; or rcx, 0x12345
+66 81 c9 34 12 ; or cx, 0x1234
+80 c9 12 ; or cl, 0x12
+49 83 ca ff ; or r10, -0x1
+48 83 48 08 01 ; or qword ptr [rax + 0x8], 0x1
+81 48 08 45 23 01 00 ; or dword ptr [rax + 0x8], 0x12345
+66 81 48 08 34 12 ; or word ptr [rax + 0x8], 0x1234
+80 48 08 07 ; or byte ptr [rax + 0x8], 0x7
+48 09 48 08 ; or qword ptr [rax + 0x8], rcx
+4c 0b 58 08 ; or r11, qword ptr [rax + 0x8]
+44 08 40 08 ; or byte ptr [rax + 0x8], r8b
+66 44 0b 48 08 ; or r9w, word ptr [rax + 0x8]
+4a 83 4c 2d 00 01 ; or qword ptr [rbp + r13], 0x1
+42 81 4c 2d 00 45 23 01 00 ; or dword ptr [rbp + r13], 0x12345
+66 42 81 4c 2d 00 34 12 ; or word ptr [rbp + r13], 0x1234
+42 80 4c 2d 00 07 ; or byte ptr [rbp + r13], 0x7
+4a 09 4c 2d 00 ; or qword ptr [rbp + r13], rcx
+4e 0b 5c 2d 00 ; or r11, qword ptr [rbp + r13]
+46 08 44 2d 00 ; or byte ptr [rbp + r13], r8b
+66 46 0b 4c 2d 00 ; or r9w, word ptr [rbp + r13]
+48 83 0d 40 00 00 00 01 ; or qword ptr [rip + 0x40], 0x1 # 0x1f3
+81 0d 40 00 00 00 45 23 01 00 ; or dword ptr [rip + 0x40], 0x12345 # 0x1fd
+66 81 0d 40 00 00 00 34 12 ; or word ptr [rip + 0x40], 0x1234 # 0x206
+80 0d 40 00 00 00 07 ; or byte ptr [rip + 0x40], 0x7 # 0x20d
+48 09 0d 40 00 00 00 ; or qword ptr [rip + 0x40], rcx # 0x214
+4c 0b 1d 40 00 00 00 ; or r11, qword ptr [rip + 0x40] # 0x21b
+44 08 05 40 00 00 00 ; or byte ptr [rip + 0x40], r8b # 0x222
+66 44 0b 0d 40 00 00 00 ; or r9w, word ptr [rip + 0x40] # 0x22a
+48 83 8c 24 00 10 00 00 01 ; or qword ptr [rsp + 0x1000], 0x1
+81 8c 24 00 10 00 00 45 23 01 00 ; or dword ptr [rsp + 0x1000], 0x12345
+66 81 8c 24 00 10 00 00 34 12 ; or word ptr [rsp + 0x1000], 0x1234
+80 8c 24 00 10 00 00 07 ; or byte ptr [rsp + 0x1000], 0x7
+48 09 8c 24 00 10 00 00 ; or qword ptr [rsp + 0x1000], rcx
+4c 0b 9c 24 00 10 00 00 ; or r11, qword ptr [rsp + 0x1000]
+44 08 84 24 00 10 00 00 ; or byte ptr [rsp + 0x1000], r8b
+66 44 0b 8c 24 00 10 00 00 ; or r9w, word ptr [rsp + 0x1000]
+48 09 d8 ; or rax, rbx
+45 09 f8 ; or r8d, r15d
+40 08 fe ; or sil, dil
+48 83 d0 05 ; adc rax, 0x5
+49 83 d1 05 ; adc r9, 0x5
+83 d0 05 ; adc eax, 0x5
+66 83 d0 05 ; adc ax, 0x5
+14 05 ; adc al, 0x5
+48 15 45 23 01 00 ; adc rax, 0x12345
+15 45 23 01 00 ; adc eax, 0x12345
+66 15 34 12 ; adc ax, 0x1234
+14 12 ; adc al, 0x12
+48 81 d1 45 23 01 00 ; adc rcx, 0x12345
+66 81 d1 34 12 ; adc cx, 0x1234
+80 d1 12 ; adc cl, 0x12
+49 83 d2 ff ; adc r10, -0x1
+48 83 50 08 01 ; adc qword ptr [rax + 0x8], 0x1
+81 50 08 45 23 01 00 ; adc dword ptr [rax + 0x8], 0x12345
+66 81 50 08 34 12 ; adc word ptr [rax + 0x8], 0x1234
+80 50 08 07 ; adc byte ptr [rax + 0x8], 0x7
+48 11 48 08 ; adc qword ptr [rax + 0x8], rcx
+4c 13 58 08 ; adc r11, qword ptr [rax + 0x8]
+44 10 40 08 ; adc byte ptr [rax + 0x8], r8b
+66 44 13 48 08 ; adc r9w, word ptr [rax + 0x8]
+4a 83 54 2d 00 01 ; adc qword ptr [rbp + r13], 0x1
+42 81 54 2d 00 45 23 01 00 ; adc dword ptr [rbp + r13], 0x12345
+66 42 81 54 2d 00 34 12 ; adc word ptr [rbp + r13], 0x1234
+42 80 54 2d 00 07 ; adc byte ptr [rbp + r13], 0x7
+4a 11 4c 2d 00 ; adc qword ptr [rbp + r13], rcx
+4e 13 5c 2d 00 ; adc r11, qword ptr [rbp + r13]
+46 10 44 2d 00 ; adc byte ptr [rbp + r13], r8b
+66 46 13 4c 2d 00 ; adc r9w, word ptr [rbp + r13]
+48 83 15 40 00 00 00 01 ; adc qword ptr [rip + 0x40], 0x1 # 0x310
+81 15 40 00 00 00 45 23 01 00 ; adc dword ptr [rip + 0x40], 0x12345 # 0x31a
+66 81 15 40 00 00 00 34 12 ; adc word ptr [rip + 0x40], 0x1234 # 0x323
+80 15 40 00 00 00 07 ; adc byte ptr [rip + 0x40], 0x7 # 0x32a
+48 11 0d 40 00 00 00 ; adc qword ptr [rip + 0x40], rcx # 0x331
+4c 13 1d 40 00 00 00 ; adc r11, qword ptr [rip + 0x40] # 0x338
+44 10 05 40 00 00 00 ; adc byte ptr [rip + 0x40], r8b # 0x33f
+66 44 13 0d 40 00 00 00 ; adc r9w, word ptr [rip + 0x40] # 0x347
+48 83 94 24 00 10 00 00 01 ; adc qword ptr [rsp + 0x1000], 0x1
+81 94 24 00 10 00 00 45 23 01 00 ; adc dword ptr [rsp + 0x1000], 0x12345
+66 81 94 24 00 10 00 00 34 12 ; adc word ptr [rsp + 0x1000], 0x1234
+80 94 24 00 10 00 00 07 ; adc byte ptr [rsp + 0x1000], 0x7
+48 11 8c 24 00 10 00 00 ; adc qword ptr [rsp + 0x1000], rcx
+4c 13 9c 24 00 10 00 00 ; adc r11, qword ptr [rsp + 0x1000]
+44 10 84 24 00 10 00 00 ; adc byte ptr [rsp + 0x1000], r8b
+66 44 13 8c 24 00 10 00 00 ; adc r9w, word ptr [rsp + 0x1000]
+48 11 d8 ; adc rax, rbx
+45 11 f8 ; adc r8d, r15d
+40 10 fe ; adc sil, dil
+48 83 d8 05 ; sbb rax, 0x5
+49 83 d9 05 ; sbb r9, 0x5
+83 d8 05 ; sbb eax, 0x5
+66 83 d8 05 ; sbb ax, 0x5
+1c 05 ; sbb al, 0x5
+48 1d 45 23 01 00 ; sbb rax, 0x12345
+1d 45 23 01 00 ; sbb eax, 0x12345
+66 1d 34 12 ; sbb ax, 0x1234
+1c 12 ; sbb al, 0x12
+48 81 d9 45 23 01 00 ; sbb rcx, 0x12345
+66 81 d9 34 12 ; sbb cx, 0x1234
+80 d9 12 ; sbb cl, 0x12
+49 83 da ff ; sbb r10, -0x1
+48 83 58 08 01 ; sbb qword ptr [rax + 0x8], 0x1
+81 58 08 45 23 01 00 ; sbb dword ptr [rax + 0x8], 0x12345
+66 81 58 08 34 12 ; sbb word ptr [rax + 0x8], 0x1234
+80 58 08 07 ; sbb byte ptr [rax + 0x8], 0x7
+48 19 48 08 ; sbb qword ptr [rax + 0x8], rcx
+4c 1b 58 08 ; sbb r11, qword ptr [rax + 0x8]
+44 18 40 08 ; sbb byte ptr [rax + 0x8], r8b
+66 44 1b 48 08 ; sbb r9w, word ptr [rax + 0x8]
+4a 83 5c 2d 00 01 ; sbb qword ptr [rbp + r13], 0x1
+42 81 5c 2d 00 45 23 01 00 ; sbb dword ptr [rbp + r13], 0x12345
+66 42 81 5c 2d 00 34 12 ; sbb word ptr [rbp + r13], 0x1234
+42 80 5c 2d 00 07 ; sbb byte ptr [rbp + r13], 0x7
+4a 19 4c 2d 00 ; sbb qword ptr [rbp + r13], rcx
+4e 1b 5c 2d 00 ; sbb r11, qword ptr [rbp + r13]
+46 18 44 2d 00 ; sbb byte ptr [rbp + r13], r8b
+66 46 1b 4c 2d 00 ; sbb r9w, word ptr [rbp + r13]
+48 83 1d 40 00 00 00 01 ; sbb qword ptr [rip + 0x40], 0x1 # 0x42d
+81 1d 40 00 00 00 45 23 01 00 ; sbb dword ptr [rip + 0x40], 0x12345 # 0x437
+66 81 1d 40 00 00 00 34 12 ; sbb word ptr [rip + 0x40], 0x1234 # 0x440
+80 1d 40 00 00 00 07 ; sbb byte ptr [rip + 0x40], 0x7 # 0x447
+48 19 0d 40 00 00 00 ; sbb qword ptr [rip + 0x40], rcx # 0x44e
+4c 1b 1d 40 00 00 00 ; sbb r11, qword ptr [rip + 0x40] # 0x455
+44 18 05 40 00 00 00 ; sbb byte ptr [rip + 0x40], r8b # 0x45c
+66 44 1b 0d 40 00 00 00 ; sbb r9w, word ptr [rip + 0x40] # 0x464
+48 83 9c 24 00 10 00 00 01 ; sbb qword ptr [rsp + 0x1000], 0x1
+81 9c 24 00 10 00 00 45 23 01 00 ; sbb dword ptr [rsp + 0x1000], 0x12345
+66 81 9c 24 00 10 00 00 34 12 ; sbb word ptr [rsp + 0x1000], 0x1234
+80 9c 24 00 10 00 00 07 ; sbb byte ptr [rsp + 0x1000], 0x7
+48 19 8c 24 00 10 00 00 ; sbb qword ptr [rsp + 0x1000], rcx
+4c 1b 9c 24 00 10 00 00 ; sbb r11, qword ptr [rsp + 0x1000]
+44 18 84 24 00 10 00 00 ; sbb byte ptr [rsp + 0x1000], r8b
+66 44 1b 8c 24 00 10 00 00 ; sbb r9w, word ptr [rsp + 0x1000]
+48 19 d8 ; sbb rax, rbx
+45 19 f8 ; sbb r8d, r15d
+40 18 fe ; sbb sil, dil
+48 83 e0 05 ; and rax, 0x5
+49 83 e1 05 ; and r9, 0x5
+83 e0 05 ; and eax, 0x5
+66 83 e0 05 ; and ax, 0x5
+24 05 ; and al, 0x5
+48 25 45 23 01 00 ; and rax, 0x12345
+25 45 23 01 00 ; and eax, 0x12345
+66 25 34 12 ; and ax, 0x1234
+24 12 ; and al, 0x12
+48 81 e1 45 23 01 00 ; and rcx, 0x12345
+66 81 e1 34 12 ; and cx, 0x1234
+80 e1 12 ; and cl, 0x12
+49 83 e2 ff ; and r10, -0x1
+48 83 60 08 01 ; and qword ptr [rax + 0x8], 0x1
+81 60 08 45 23 01 00 ; and dword ptr [rax + 0x8], 0x12345
+66 81 60 08 34 12 ; and word ptr [rax + 0x8], 0x1234
+80 60 08 07 ; and byte ptr [rax + 0x8], 0x7
+48 21 48 08 ; and qword ptr [rax + 0x8], rcx
+4c 23 58 08 ; and r11, qword ptr [rax + 0x8]
+44 20 40 08 ; and byte ptr [rax + 0x8], r8b
+66 44 23 48 08 ; and r9w, word ptr [rax + 0x8]
+4a 83 64 2d 00 01 ; and qword ptr [rbp + r13], 0x1
+42 81 64 2d 00 45 23 01 00 ; and dword ptr [rbp + r13], 0x12345
+66 42 81 64 2d 00 34 12 ; and word ptr [rbp + r13], 0x1234
+42 80 64 2d 00 07 ; and byte ptr [rbp + r13], 0x7
+4a 21 4c 2d 00 ; and qword ptr [rbp + r13], rcx
+4e 23 5c 2d 00 ; and r11, qword ptr [rbp + r13]
+46 20 44 2d 00 ; and byte ptr [rbp + r13], r8b
+66 46 23 4c 2d 00 ; and r9w, word ptr [rbp + r13]
+48 83 25 40 00 00 00 01 ; and qword ptr [rip + 0x40], 0x1 # 0x54a
+81 25 40 00 00 00 45 23 01 00 ; and dword ptr [rip + 0x40], 0x12345 # 0x554
+66 81 25 40 00 00 00 34 12 ; and word ptr [rip + 0x40], 0x1234 # 0x55d
+80 25 40 00 00 00 07 ; and byte ptr [rip + 0x40], 0x7 # 0x564
+48 21 0d 40 00 00 00 ; and qword ptr [rip + 0x40], rcx # 0x56b
+4c 23 1d 40 00 00 00 ; and r11, qword ptr [rip + 0x40] # 0x572
+44 20 05 40 00 00 00 ; and byte ptr [rip + 0x40], r8b # 0x579
+66 44 23 0d 40 00 00 00 ; and r9w, word ptr [rip + 0x40] # 0x581
+48 83 a4 24 00 10 00 00 01 ; and qword ptr [rsp + 0x1000], 0x1
+81 a4 24 00 10 00 00 45 23 01 00 ; and dword ptr [rsp + 0x1000], 0x12345
+66 81 a4 24 00 10 00 00 34 12 ; and word ptr [rsp + 0x1000], 0x1234
+80 a4 24 00 10 00 00 07 ; and byte ptr [rsp + 0x1000], 0x7
+48 21 8c 24 00 10 00 00 ; and qword ptr [rsp + 0x1000], rcx
+4c 23 9c 24 00 10 00 00 ; and r11, qword ptr [rsp + 0x1000]
+44 20 84 24 00 10 00 00 ; and byte ptr [rsp + 0x1000], r8b
+66 44 23 8c 24 00 10 00 00 ; and r9w, word ptr [rsp + 0x1000]
+48 21 d8 ; and rax, rbx
+45 21 f8 ; and r8d, r15d
+40 20 fe ; and sil, dil
+48 83 e8 05 ; sub rax, 0x5
+49 83 e9 05 ; sub r9, 0x5
+83 e8 05 ; sub eax, 0x5
+66 83 e8 05 ; sub ax, 0x5
+2c 05 ; sub al, 0x5
+48 2d 45 23 01 00 ; sub rax, 0x12345
+2d 45 23 01 00 ; sub eax, 0x12345
+66 2d 34 12 ; sub ax, 0x1234
+2c 12 ; sub al, 0x12
+48 81 e9 45 23 01 00 ; sub rcx, 0x12345
+66 81 e9 34 12 ; sub cx, 0x1234
+80 e9 12 ; sub cl, 0x12
+49 83 ea ff ; sub r10, -0x1
+48 83 68 08 01 ; sub qword ptr [rax + 0x8], 0x1
+81 68 08 45 23 01 00 ; sub dword ptr [rax + 0x8], 0x12345
+66 81 68 08 34 12 ; sub word ptr [rax + 0x8], 0x1234
+80 68 08 07 ; sub byte ptr [rax + 0x8], 0x7
+48 29 48 08 ; sub qword ptr [rax + 0x8], rcx
+4c 2b 58 08 ; sub r11, qword ptr [rax + 0x8]
+44 28 40 08 ; sub byte ptr [rax + 0x8], r8b
+66 44 2b 48 08 ; sub r9w, word ptr [rax + 0x8]
+4a 83 6c 2d 00 01 ; sub qword ptr [rbp + r13], 0x1
+42 81 6c 2d 00 45 23 01 00 ; sub dword ptr [rbp + r13], 0x12345
+66 42 81 6c 2d 00 34 12 ; sub word ptr [rbp + r13], 0x1234
+42 80 6c 2d 00 07 ; sub byte ptr [rbp + r13], 0x7
+4a 29 4c 2d 00 ; sub qword ptr [rbp + r13], rcx
+4e 2b 5c 2d 00 ; sub r11, qword ptr [rbp + r13]
+46 28 44 2d 00 ; sub byte ptr [rbp + r13], r8b
+66 46 2b 4c 2d 00 ; sub r9w, word ptr [rbp + r13]
+48 83 2d 40 00 00 00 01 ; sub qword ptr [rip + 0x40], 0x1 # 0x667
+81 2d 40 00 00 00 45 23 01 00 ; sub dword ptr [rip + 0x40], 0x12345 # 0x671
+66 81 2d 40 00 00 00 34 12 ; sub word ptr [rip + 0x40], 0x1234 # 0x67a
+80 2d 40 00 00 00 07 ; sub byte ptr [rip + 0x40], 0x7 # 0x681
+48 29 0d 40 00 00 00 ; sub qword ptr [rip + 0x40], rcx # 0x688
+4c 2b 1d 40 00 00 00 ; sub r11, qword ptr [rip + 0x40] # 0x68f
+44 28 05 40 00 00 00 ; sub byte ptr [rip + 0x40], r8b # 0x696
+66 44 2b 0d 40 00 00 00 ; sub r9w, word ptr [rip + 0x40] # 0x69e
+48 83 ac 24 00 10 00 00 01 ; sub qword ptr [rsp + 0x1000], 0x1
+81 ac 24 00 10 00 00 45 23 01 00 ; sub dword ptr [rsp + 0x1000], 0x12345
+66 81 ac 24 00 10 00 00 34 12 ; sub word ptr [rsp + 0x1000], 0x1234
+80 ac 24 00 10 00 00 07 ; sub byte ptr [rsp + 0x1000], 0x7
+48 29 8c 24 00 10 00 00 ; sub qword ptr [rsp + 0x1000], rcx
+4c 2b 9c 24 00 10 00 00 ; sub r11, qword ptr [rsp + 0x1000]
+44 28 84 24 00 10 00 00 ; sub byte ptr [rsp + 0x1000], r8b
+66 44 2b 8c 24 00 10 00 00 ; sub r9w, word ptr [rsp + 0x1000]
+48 29 d8 ; sub rax, rbx
+45 29 f8 ; sub r8d, r15d
+40 28 fe ; sub sil, dil
+48 83 f0 05 ; xor rax, 0x5
+49 83 f1 05 ; xor r9, 0x5
+83 f0 05 ; xor eax, 0x5
+66 83 f0 05 ; xor ax, 0x5
+34 05 ; xor al, 0x5
+48 35 45 23 01 00 ; xor rax, 0x12345
+35 45 23 01 00 ; xor eax, 0x12345
+66 35 34 12 ; xor ax, 0x1234
+34 12 ; xor al, 0x12
+48 81 f1 45 23 01 00 ; xor rcx, 0x12345
+66 81 f1 34 12 ; xor cx, 0x1234
+80 f1 12 ; xor cl, 0x12
+49 83 f2 ff ; xor r10, -0x1
+48 83 70 08 01 ; xor qword ptr [rax + 0x8], 0x1
+81 70 08 45 23 01 00 ; xor dword ptr [rax + 0x8], 0x12345
+66 81 70 08 34 12 ; xor word ptr [rax + 0x8], 0x1234
+80 70 08 07 ; xor byte ptr [rax + 0x8], 0x7
+48 31 48 08 ; xor qword ptr [rax + 0x8], rcx
+4c 33 58 08 ; xor r11, qword ptr [rax + 0x8]
+44 30 40 08 ; xor byte ptr [rax + 0x8], r8b
+66 44 33 48 08 ; xor r9w, word ptr [rax + 0x8]
+4a 83 74 2d 00 01 ; xor qword ptr [rbp + r13], 0x1
+42 81 74 2d 00 45 23 01 00 ; xor dword ptr [rbp + r13], 0x12345
+66 42 81 74 2d 00 34 12 ; xor word ptr [rbp + r13], 0x1234
+42 80 74 2d 00 07 ; xor byte ptr [rbp + r13], 0x7
+4a 31 4c 2d 00 ; xor qword ptr [rbp + r13], rcx
+4e 33 5c 2d 00 ; xor r11, qword ptr [rbp + r13]
+46 30 44 2d 00 ; xor byte ptr [rbp + r13], r8b
+66 46 33 4c 2d 00 ; xor r9w, word ptr [rbp + r13]
+48 83 35 40 00 00 00 01 ; xor qword ptr [rip + 0x40], 0x1 # 0x784
+81 35 40 00 00 00 45 23 01 00 ; xor dword ptr [rip + 0x40], 0x12345 # 0x78e
+66 81 35 40 00 00 00 34 12 ; xor word ptr [rip + 0x40], 0x1234 # 0x797
+80 35 40 00 00 00 07 ; xor byte ptr [rip + 0x40], 0x7 # 0x79e
+48 31 0d 40 00 00 00 ; xor qword ptr [rip + 0x40], rcx # 0x7a5
+4c 33 1d 40 00 00 00 ; xor r11, qword ptr [rip + 0x40] # 0x7ac
+44 30 05 40 00 00 00 ; xor byte ptr [rip + 0x40], r8b # 0x7b3
+66 44 33 0d 40 00 00 00 ; xor r9w, word ptr [rip + 0x40] # 0x7bb
+48 83 b4 24 00 10 00 00 01 ; xor qword ptr [rsp + 0x1000], 0x1
+81 b4 24 00 10 00 00 45 23 01 00 ; xor dword ptr [rsp + 0x1000], 0x12345
+66 81 b4 24 00 10 00 00 34 12 ; xor word ptr [rsp + 0x1000], 0x1234
+80 b4 24 00 10 00 00 07 ; xor byte ptr [rsp + 0x1000], 0x7
+48 31 8c 24 00 10 00 00 ; xor qword ptr [rsp + 0x1000], rcx
+4c 33 9c 24 00 10 00 00 ; xor r11, qword ptr [rsp + 0x1000]
+44 30 84 24 00 10 00 00 ; xor byte ptr [rsp + 0x1000], r8b
+66 44 33 8c 24 00 10 00 00 ; xor r9w, word ptr [rsp + 0x1000]
+48 31 d8 ; xor rax, rbx
+45 31 f8 ; xor r8d, r15d
+40 30 fe ; xor sil, dil
+48 83 f8 05 ; cmp rax, 0x5
+49 83 f9 05 ; cmp r9, 0x5
+83 f8 05 ; cmp eax, 0x5
+66 83 f8 05 ; cmp ax, 0x5
+3c 05 ; cmp al, 0x5
+48 3d 45 23 01 00 ; cmp rax, 0x12345
+3d 45 23 01 00 ; cmp eax, 0x12345
+66 3d 34 12 ; cmp ax, 0x1234
+3c 12 ; cmp al, 0x12
+48 81 f9 45 23 01 00 ; cmp rcx, 0x12345
+66 81 f9 34 12 ; cmp cx, 0x1234
+80 f9 12 ; cmp cl, 0x12
+49 83 fa ff ; cmp r10, -0x1
+48 83 78 08 01 ; cmp qword ptr [rax + 0x8], 0x1
+81 78 08 45 23 01 00 ; cmp dword ptr [rax + 0x8], 0x12345
+66 81 78 08 34 12 ; cmp word ptr [rax + 0x8], 0x1234
+80 78 08 07 ; cmp byte ptr [rax + 0x8], 0x7
+48 39 48 08 ; cmp qword ptr [rax + 0x8], rcx
+4c 3b 58 08 ; cmp r11, qword ptr [rax + 0x8]
+44 38 40 08 ; cmp byte ptr [rax + 0x8], r8b
+66 44 3b 48 08 ; cmp r9w, word ptr [rax + 0x8]
+4a 83 7c 2d 00 01 ; cmp qword ptr [rbp + r13], 0x1
+42 81 7c 2d 00 45 23 01 00 ; cmp dword ptr [rbp + r13], 0x12345
+66 42 81 7c 2d 00 34 12 ; cmp word ptr [rbp + r13], 0x1234
+42 80 7c 2d 00 07 ; cmp byte ptr [rbp + r13], 0x7
+4a 39 4c 2d 00 ; cmp qword ptr [rbp + r13], rcx
+4e 3b 5c 2d 00 ; cmp r11, qword ptr [rbp + r13]
+46 38 44 2d 00 ; cmp byte ptr [rbp + r13], r8b
+66 46 3b 4c 2d 00 ; cmp r9w, word ptr [rbp + r13]
+48 83 3d 40 00 00 00 01 ; cmp qword ptr [rip + 0x40], 0x1 # 0x8a1
+81 3d 40 00 00 00 45 23 01 00 ; cmp dword ptr [rip + 0x40], 0x12345 # 0x8ab
+66 81 3d 40 00 00 00 34 12 ; cmp word ptr [rip + 0x40], 0x1234 # 0x8b4
+80 3d 40 00 00 00 07 ; cmp byte ptr [rip + 0x40], 0x7 # 0x8bb
+48 39 0d 40 00 00 00 ; cmp qword ptr [rip + 0x40], rcx # 0x8c2
+4c 3b 1d 40 00 00 00 ; cmp r11, qword ptr [rip + 0x40] # 0x8c9
+44 38 05 40 00 00 00 ; cmp byte ptr [rip + 0x40], r8b # 0x8d0
+66 44 3b 0d 40 00 00 00 ; cmp r9w, word ptr [rip + 0x40] # 0x8d8
+48 83 bc 24 00 10 00 00 01 ; cmp qword ptr [rsp + 0x1000], 0x1
+81 bc 24 00 10 00 00 45 23 01 00 ; cmp dword ptr [rsp + 0x1000], 0x12345
+66 81 bc 24 00 10 00 00 34 12 ; cmp word ptr [rsp + 0x1000], 0x1234
+80 bc 24 00 10 00 00 07 ; cmp byte ptr [rsp + 0x1000], 0x7
+48 39 8c 24 00 10 00 00 ; cmp qword ptr [rsp + 0x1000], rcx
+4c 3b 9c 24 00 10 00 00 ; cmp r11, qword ptr [rsp + 0x1000]
+44 38 84 24 00 10 00 00 ; cmp byte ptr [rsp + 0x1000], r8b
+66 44 3b 8c 24 00 10 00 00 ; cmp r9w, word ptr [rsp + 0x1000]
+48 39 d8 ; cmp rax, rbx
+45 39 f8 ; cmp r8d, r15d
+40 38 fe ; cmp sil, dil
+48 8b 00 ; mov rax, qword ptr [rax]
+4c 89 38 ; mov qword ptr [rax], r15
+48 8d 10 ; lea rdx, [rax]
+83 38 01 ; cmp dword ptr [rax], 0x1
+48 8b 04 24 ; mov rax, qword ptr [rsp]
+4c 89 3c 24 ; mov qword ptr [rsp], r15
+48 8d 14 24 ; lea rdx, [rsp]
+83 3c 24 01 ; cmp dword ptr [rsp], 0x1
+48 8b 45 00 ; mov rax, qword ptr [rbp]
+4c 89 7d 00 ; mov qword ptr [rbp], r15
+48 8d 55 00 ; lea rdx, [rbp]
+83 7d 00 01 ; cmp dword ptr [rbp], 0x1
+49 8b 04 24 ; mov rax, qword ptr [r12]
+4d 89 3c 24 ; mov qword ptr [r12], r15
+49 8d 14 24 ; lea rdx, [r12]
+41 83 3c 24 01 ; cmp dword ptr [r12], 0x1
+49 8b 45 00 ; mov rax, qword ptr [r13]
+4d 89 7d 00 ; mov qword ptr [r13], r15
+49 8d 55 00 ; lea rdx, [r13]
+41 83 7d 00 01 ; cmp dword ptr [r13], 0x1
+48 8b 40 08 ; mov rax, qword ptr [rax + 0x8]
+4c 89 78 08 ; mov qword ptr [rax + 0x8], r15
+48 8d 50 08 ; lea rdx, [rax + 0x8]
+83 78 08 01 ; cmp dword ptr [rax + 0x8], 0x1
+48 8b 80 00 10 00 00 ; mov rax, qword ptr [rax + 0x1000]
+4c 89 b8 00 10 00 00 ; mov qword ptr [rax + 0x1000], r15
+48 8d 90 00 10 00 00 ; lea rdx, [rax + 0x1000]
+83 b8 00 10 00 00 01 ; cmp dword ptr [rax + 0x1000], 0x1
+48 8b 44 24 08 ; mov rax, qword ptr [rsp + 0x8]
+4c 89 7c 24 08 ; mov qword ptr [rsp + 0x8], r15
+48 8d 54 24 08 ; lea rdx, [rsp + 0x8]
+83 7c 24 08 01 ; cmp dword ptr [rsp + 0x8], 0x1
+48 8b 84 24 00 10 00 00 ; mov rax, qword ptr [rsp + 0x1000]
+4c 89 bc 24 00 10 00 00 ; mov qword ptr [rsp + 0x1000], r15
+48 8d 94 24 00 10 00 00 ; lea rdx, [rsp + 0x1000]
+83 bc 24 00 10 00 00 01 ; cmp dword ptr [rsp + 0x1000], 0x1
+48 8b 45 f8 ; mov rax, qword ptr [rbp - 0x8]
+4c 89 7d f8 ; mov qword ptr [rbp - 0x8], r15
+48 8d 55 f8 ; lea rdx, [rbp - 0x8]
+83 7d f8 01 ; cmp dword ptr [rbp - 0x8], 0x1
+49 8b 85 00 02 00 00 ; mov rax, qword ptr [r13 + 0x200]
+4d 89 bd 00 02 00 00 ; mov qword ptr [r13 + 0x200], r15
+49 8d 95 00 02 00 00 ; lea rdx, [r13 + 0x200]
+41 83 bd 00 02 00 00 01 ; cmp dword ptr [r13 + 0x200], 0x1
+48 8b 04 88 ; mov rax, qword ptr [rax + 4*rcx]
+4c 89 3c 88 ; mov qword ptr [rax + 4*rcx], r15
+48 8d 14 88 ; lea rdx, [rax + 4*rcx]
+83 3c 88 01 ; cmp dword ptr [rax + 4*rcx], 0x1
+48 8b 44 c8 10 ; mov rax, qword ptr [rax + 8*rcx + 0x10]
+4c 89 7c c8 10 ; mov qword ptr [rax + 8*rcx + 0x10], r15
+48 8d 54 c8 10 ; lea rdx, [rax + 8*rcx + 0x10]
+83 7c c8 10 01 ; cmp dword ptr [rax + 8*rcx + 0x10], 0x1
+4b 8b 84 7e 45 23 01 00 ; mov rax, qword ptr [r14 + 2*r15 + 0x12345]
+4f 89 bc 7e 45 23 01 00 ; mov qword ptr [r14 + 2*r15 + 0x12345], r15
+4b 8d 94 7e 45 23 01 00 ; lea rdx, [r14 + 2*r15 + 0x12345]
+43 83 bc 7e 45 23 01 00 01 ; cmp dword ptr [r14 + 2*r15 + 0x12345], 0x1
+48 8b 04 cd 00 01 00 00 ; mov rax, qword ptr [8*rcx + 0x100]
+4c 89 3c cd 00 01 00 00 ; mov qword ptr [8*rcx + 0x100], r15
+48 8d 14 cd 00 01 00 00 ; lea rdx, [8*rcx + 0x100]
+83 3c cd 00 01 00 00 01 ; cmp dword ptr [8*rcx + 0x100], 0x1
+48 8b 04 25 34 12 00 00 ; mov rax, qword ptr [0x1234]
+4c 89 3c 25 34 12 00 00 ; mov qword ptr [0x1234], r15
+48 8d 14 25 34 12 00 00 ; lea rdx, [0x1234]
+83 3c 25 34 12 00 00 01 ; cmp dword ptr [0x1234], 0x1
+48 8b 05 40 00 00 00 ; mov rax, qword ptr [rip + 0x40] # 0xa8f
+4c 89 3d 40 00 00 00 ; mov qword ptr [rip + 0x40], r15 # 0xa96
+48 8d 15 40 00 00 00 ; lea rdx, [rip + 0x40] # 0xa9d
+83 3d 40 00 00 00 01 ; cmp dword ptr [rip + 0x40], 0x1 # 0xaa4
+48 8b 05 00 ff ff ff ; mov rax, qword ptr [rip - 0x100] # 0x96b
+4c 89 3d 00 ff ff ff ; mov qword ptr [rip - 0x100], r15 # 0x972
+48 8d 15 00 ff ff ff ; lea rdx, [rip - 0x100] # 0x979
+83 3d 00 ff ff ff 01 ; cmp dword ptr [rip - 0x100], 0x1 # 0x980
+49 8b 46 18 ; mov rax, qword ptr [r14 + 0x18]
+4d 89 7e 18 ; mov qword ptr [r14 + 0x18], r15
+49 8d 56 18 ; lea rdx, [r14 + 0x18]
+41 83 7e 18 01 ; cmp dword ptr [r14 + 0x18], 0x1
+49 8b 87 00 08 00 00 ; mov rax, qword ptr [r15 + 0x800]
+4d 89 bf 00 08 00 00 ; mov qword ptr [r15 + 0x800], r15
+49 8d 97 00 08 00 00 ; lea rdx, [r15 + 0x800]
+41 83 bf 00 08 00 00 01 ; cmp dword ptr [r15 + 0x800], 0x1
+4a 8b 44 2d 00 ; mov rax, qword ptr [rbp + r13]
+4e 89 7c 2d 00 ; mov qword ptr [rbp + r13], r15
+4a 8d 54 2d 00 ; lea rdx, [rbp + r13]
+42 83 7c 2d 00 01 ; cmp dword ptr [rbp + r13], 0x1
+4b 8b 44 a5 00 ; mov rax, qword ptr [r13 + 4*r12]
+4f 89 7c a5 00 ; mov qword ptr [r13 + 4*r12], r15
+4b 8d 54 a5 00 ; lea rdx, [r13 + 4*r12]
+43 83 7c a5 00 01 ; cmp dword ptr [r13 + 4*r12], 0x1
+c7 44 24 08 44 33 22 11 ; mov dword ptr [rsp + 0x8], 0x11223344
+48 c7 44 24 08 fe ff ff ff ; mov qword ptr [rsp + 0x8], -0x2
+66 c7 44 24 08 55 00 ; mov word ptr [rsp + 0x8], 0x55
+c6 44 24 08 66 ; mov byte ptr [rsp + 0x8], 0x66
+0f b6 44 24 08 ; movzx eax, byte ptr [rsp + 0x8]
+48 0f bf 44 24 08 ; movsx rax, word ptr [rsp + 0x8]
+48 63 44 24 08 ; movsxd rax, dword ptr [rsp + 0x8]
+ff 54 24 08 ; call qword ptr [rsp + 0x8]
+ff 64 24 08 ; jmp qword ptr [rsp + 0x8]
+ff 74 24 08 ; push qword ptr [rsp + 0x8]
+8f 44 24 08 ; pop qword ptr [rsp + 0x8]
+ff 44 24 08 ; inc dword ptr [rsp + 0x8]
+48 ff 4c 24 08 ; dec qword ptr [rsp + 0x8]
+f6 54 24 08 ; not byte ptr [rsp + 0x8]
+66 f7 5c 24 08 ; neg word ptr [rsp + 0x8]
+48 f7 44 24 08 00 01 00 00 ; test qword ptr [rsp + 0x8], 0x100
+f6 44 24 08 01 ; test byte ptr [rsp + 0x8], 0x1
+66 f7 44 24 08 00 01 ; test word ptr [rsp + 0x8], 0x100
+48 85 44 24 08 ; test qword ptr [rsp + 0x8], rax
+48 6b 44 24 08 07 ; imul rax, qword ptr [rsp + 0x8], 0x7
+69 44 24 08 00 10 00 00 ; imul eax, dword ptr [rsp + 0x8], 0x1000
+66 69 4c 24 08 00 10 ; imul cx, word ptr [rsp + 0x8], 0x1000
+48 c1 64 24 08 03 ; shl qword ptr [rsp + 0x8], 0x3
+d1 7c 24 08 ; sar dword ptr [rsp + 0x8]
+d2 44 24 08 ; rol byte ptr [rsp + 0x8], cl
+f2 0f 10 44 24 08 ; movsd xmm0, qword ptr [rsp + 0x8]
+f2 44 0f 11 4c 24 08 ; movsd qword ptr [rsp + 0x8], xmm9
+f2 0f 58 4c 24 08 ; addsd xmm1, qword ptr [rsp + 0x8]
+f2 48 0f 2a 54 24 08 ; cvtsi2sd xmm2, qword ptr [rsp + 0x8]
+66 0f 2e 5c 24 08 ; ucomisd xmm3, qword ptr [rsp + 0x8]
+66 0f 70 64 24 08 1b ; pshufd xmm4, xmmword ptr [rsp + 0x8], 0x1b # xmm4 = mem[3,2,1,0]
+66 0f 3a 0b 6c 24 08 04 ; roundsd xmm5, qword ptr [rsp + 0x8], 0x4
+66 48 0f 3a 22 74 24 08 01 ; pinsrq xmm6, qword ptr [rsp + 0x8], 0x1
+66 48 0f 3a 16 7c 24 08 01 ; pextrq qword ptr [rsp + 0x8], xmm7, 0x1
+48 0f 45 44 24 08 ; cmovne rax, qword ptr [rsp + 0x8]
+0f 94 44 24 08 ; sete byte ptr [rsp + 0x8]
+48 0f ba 64 24 08 05 ; bt qword ptr [rsp + 0x8], 0x5
+0f ab 44 24 08 ; bts dword ptr [rsp + 0x8], eax
+48 0f a4 44 24 08 03 ; shld qword ptr [rsp + 0x8], rax, 0x3
+0f ad 4c 24 08 ; shrd dword ptr [rsp + 0x8], ecx, cl
+48 0f c1 4c 24 08 ; xadd qword ptr [rsp + 0x8], rcx
+f0 48 0f b1 54 24 08 ; lock cmpxchg qword ptr [rsp + 0x8], rdx
+f0 48 0f c7 4c 24 08 ; lock cmpxchg16b xmmword ptr [rsp + 0x8]
+48 87 44 24 08 ; xchg qword ptr [rsp + 0x8], rax
+f2 0f 38 f0 44 24 08 ; crc32 eax, byte ptr [rsp + 0x8]
+f3 48 0f b8 44 24 08 ; popcnt rax, qword ptr [rsp + 0x8]
+f3 0f bd 44 24 08 ; lzcnt eax, dword ptr [rsp + 0x8]
+f3 48 0f bc 44 24 08 ; tzcnt rax, qword ptr [rsp + 0x8]
+48 0f 38 f0 44 24 08 ; movbe rax, qword ptr [rsp + 0x8]
+0f 18 4c 24 08 ; prefetcht0 byte ptr [rsp + 0x8]
+0f 1f 44 24 08 ; nop dword ptr [rsp + 0x8]
+0f ae 7c 24 08 ; clflush byte ptr [rsp + 0x8]
+dd 44 24 08 ; fld qword ptr [rsp + 0x8]
+d9 5c 24 08 ; fstp dword ptr [rsp + 0x8]
+df 44 24 08 ; fild word ptr [rsp + 0x8]
+d9 7c 24 08 ; fnstcw word ptr [rsp + 0x8]
+f3 44 0f 6f 44 24 08 ; movdqu xmm8, xmmword ptr [rsp + 0x8]
+0f 29 4c 24 08 ; movaps xmmword ptr [rsp + 0x8], xmm1
+66 0f ef 54 24 08 ; pxor xmm2, xmmword ptr [rsp + 0x8]
+f2 0f c2 4c 24 08 02 ; cmplesd xmm1, qword ptr [rsp + 0x8]
+0f c6 5c 24 08 44 ; shufps xmm3, xmmword ptr [rsp + 0x8], 0x44 # xmm3 = xmm3[0,1],mem[0,1]
+66 0f c4 4c 24 08 03 ; pinsrw xmm1, word ptr [rsp + 0x8], 0x3
+f3 0f 7e 4c 24 08 ; movq xmm1, qword ptr [rsp + 0x8]
+66 0f 7e 54 24 08 ; movd dword ptr [rsp + 0x8], xmm2
+f2 48 0f 2c 44 24 08 ; cvttsd2si rax, qword ptr [rsp + 0x8]
+f2 0f 51 4c 24 08 ; sqrtsd xmm1, qword ptr [rsp + 0x8]
+66 0f 54 4c 24 08 ; andpd xmm1, xmmword ptr [rsp + 0x8]
+66 0f 60 4c 24 08 ; punpcklbw xmm1, xmmword ptr [rsp + 0x8] # xmm1 = xmm1[0],mem[0],xmm1[1],mem[1],xmm1[2],mem[2],xmm1[3],mem[3],xmm1[4],mem[4],xmm1[5],mem[5],xmm1[6],mem[6],xmm1[7],mem[7]
+66 0f 74 4c 24 08 ; pcmpeqb xmm1, xmmword ptr [rsp + 0x8]
+66 0f d7 c1 ; pmovmskb eax, xmm1
+66 0f 73 d1 03 ; psrlq xmm1, 0x3
+66 0f 73 fa 04 ; pslldq xmm2, 0x4 # xmm2 = zero,zero,zero,zero,xmm2[0,1,2,3,4,5,6,7,8,9,10,11]
+66 0f 3a 0f 4c 24 08 03 ; palignr xmm1, xmmword ptr [rsp + 0x8], 0x3 # xmm1 = mem[3,4,5,6,7,8,9,10,11,12,13,14,15],xmm1[0,1,2]
+66 0f 38 00 4c 24 08 ; pshufb xmm1, xmmword ptr [rsp + 0x8]
+66 0f 38 17 4c 24 08 ; ptest xmm1, xmmword ptr [rsp + 0x8]
+66 0f 38 15 4c 24 08 ; blendvpd xmm1, xmmword ptr [rsp + 0x8], xmm0
+66 0f 3a 63 4c 24 08 0c ; pcmpistri xmm1, xmmword ptr [rsp + 0x8], 0xc
+48 0f bc 44 24 08 ; bsf rax, qword ptr [rsp + 0x8]
+48 0f c3 44 24 08 ; movnti qword ptr [rsp + 0x8], rax
+0f ae 54 24 08 ; ldmxcsr dword ptr [rsp + 0x8]
+0f c7 4c 24 08 ; cmpxchg8b qword ptr [rsp + 0x8]
+66 0f ba 64 24 08 05 ; bt word ptr [rsp + 0x8], 0x5
+48 0f ba 7c 24 08 3f ; btc qword ptr [rsp + 0x8], 0x3f
+66 8b 44 24 08 ; mov ax, word ptr [rsp + 0x8]
+64 48 89 44 24 08 ; mov qword ptr fs:[rsp + 0x8], rax
+c7 45 f8 44 33 22 11 ; mov dword ptr [rbp - 0x8], 0x11223344
+48 c7 45 f8 fe ff ff ff ; mov qword ptr [rbp - 0x8], -0x2
+66 c7 45 f8 55 00 ; mov word ptr [rbp - 0x8], 0x55
+c6 45 f8 66 ; mov byte ptr [rbp - 0x8], 0x66
+0f b6 45 f8 ; movzx eax, byte ptr [rbp - 0x8]
+48 0f bf 45 f8 ; movsx rax, word ptr [rbp - 0x8]
+48 63 45 f8 ; movsxd rax, dword ptr [rbp - 0x8]
+ff 55 f8 ; call qword ptr [rbp - 0x8]
+ff 65 f8 ; jmp qword ptr [rbp - 0x8]
+ff 75 f8 ; push qword ptr [rbp - 0x8]
+8f 45 f8 ; pop qword ptr [rbp - 0x8]
+ff 45 f8 ; inc dword ptr [rbp - 0x8]
+48 ff 4d f8 ; dec qword ptr [rbp - 0x8]
+f6 55 f8 ; not byte ptr [rbp - 0x8]
+66 f7 5d f8 ; neg word ptr [rbp - 0x8]
+48 f7 45 f8 00 01 00 00 ; test qword ptr [rbp - 0x8], 0x100
+f6 45 f8 01 ; test byte ptr [rbp - 0x8], 0x1
+66 f7 45 f8 00 01 ; test word ptr [rbp - 0x8], 0x100
+48 85 45 f8 ; test qword ptr [rbp - 0x8], rax
+48 6b 45 f8 07 ; imul rax, qword ptr [rbp - 0x8], 0x7
+69 45 f8 00 10 00 00 ; imul eax, dword ptr [rbp - 0x8], 0x1000
+66 69 4d f8 00 10 ; imul cx, word ptr [rbp - 0x8], 0x1000
+48 c1 65 f8 03 ; shl qword ptr [rbp - 0x8], 0x3
+d1 7d f8 ; sar dword ptr [rbp - 0x8]
+d2 45 f8 ; rol byte ptr [rbp - 0x8], cl
+f2 0f 10 45 f8 ; movsd xmm0, qword ptr [rbp - 0x8]
+f2 44 0f 11 4d f8 ; movsd qword ptr [rbp - 0x8], xmm9
+f2 0f 58 4d f8 ; addsd xmm1, qword ptr [rbp - 0x8]
+f2 48 0f 2a 55 f8 ; cvtsi2sd xmm2, qword ptr [rbp - 0x8]
+66 0f 2e 5d f8 ; ucomisd xmm3, qword ptr [rbp - 0x8]
+66 0f 70 65 f8 1b ; pshufd xmm4, xmmword ptr [rbp - 0x8], 0x1b # xmm4 = mem[3,2,1,0]
+66 0f 3a 0b 6d f8 04 ; roundsd xmm5, qword ptr [rbp - 0x8], 0x4
+66 48 0f 3a 22 75 f8 01 ; pinsrq xmm6, qword ptr [rbp - 0x8], 0x1
+66 48 0f 3a 16 7d f8 01 ; pextrq qword ptr [rbp - 0x8], xmm7, 0x1
+48 0f 45 45 f8 ; cmovne rax, qword ptr [rbp - 0x8]
+0f 94 45 f8 ; sete byte ptr [rbp - 0x8]
+48 0f ba 65 f8 05 ; bt qword ptr [rbp - 0x8], 0x5
+0f ab 45 f8 ; bts dword ptr [rbp - 0x8], eax
+48 0f a4 45 f8 03 ; shld qword ptr [rbp - 0x8], rax, 0x3
+0f ad 4d f8 ; shrd dword ptr [rbp - 0x8], ecx, cl
+48 0f c1 4d f8 ; xadd qword ptr [rbp - 0x8], rcx
+f0 48 0f b1 55 f8 ; lock cmpxchg qword ptr [rbp - 0x8], rdx
+f0 48 0f c7 4d f8 ; lock cmpxchg16b xmmword ptr [rbp - 0x8]
+48 87 45 f8 ; xchg qword ptr [rbp - 0x8], rax
+f2 0f 38 f0 45 f8 ; crc32 eax, byte ptr [rbp - 0x8]
+f3 48 0f b8 45 f8 ; popcnt rax, qword ptr [rbp - 0x8]
+f3 0f bd 45 f8 ; lzcnt eax, dword ptr [rbp - 0x8]
+f3 48 0f bc 45 f8 ; tzcnt rax, qword ptr [rbp - 0x8]
+48 0f 38 f0 45 f8 ; movbe rax, qword ptr [rbp - 0x8]
+0f 18 4d f8 ; prefetcht0 byte ptr [rbp - 0x8]
+0f 1f 45 f8 ; nop dword ptr [rbp - 0x8]
+0f ae 7d f8 ; clflush byte ptr [rbp - 0x8]
+dd 45 f8 ; fld qword ptr [rbp - 0x8]
+d9 5d f8 ; fstp dword ptr [rbp - 0x8]
+df 45 f8 ; fild word ptr [rbp - 0x8]
+d9 7d f8 ; fnstcw word ptr [rbp - 0x8]
+f3 44 0f 6f 45 f8 ; movdqu xmm8, xmmword ptr [rbp - 0x8]
+0f 29 4d f8 ; movaps xmmword ptr [rbp - 0x8], xmm1
+66 0f ef 55 f8 ; pxor xmm2, xmmword ptr [rbp - 0x8]
+f2 0f c2 4d f8 02 ; cmplesd xmm1, qword ptr [rbp - 0x8]
+0f c6 5d f8 44 ; shufps xmm3, xmmword ptr [rbp - 0x8], 0x44 # xmm3 = xmm3[0,1],mem[0,1]
+66 0f c4 4d f8 03 ; pinsrw xmm1, word ptr [rbp - 0x8], 0x3
+f3 0f 7e 4d f8 ; movq xmm1, qword ptr [rbp - 0x8]
+66 0f 7e 55 f8 ; movd dword ptr [rbp - 0x8], xmm2
+f2 48 0f 2c 45 f8 ; cvttsd2si rax, qword ptr [rbp - 0x8]
+f2 0f 51 4d f8 ; sqrtsd xmm1, qword ptr [rbp - 0x8]
+66 0f 54 4d f8 ; andpd xmm1, xmmword ptr [rbp - 0x8]
+66 0f 60 4d f8 ; punpcklbw xmm1, xmmword ptr [rbp - 0x8] # xmm1 = xmm1[0],mem[0],xmm1[1],mem[1],xmm1[2],mem[2],xmm1[3],mem[3],xmm1[4],mem[4],xmm1[5],mem[5],xmm1[6],mem[6],xmm1[7],mem[7]
+66 0f 74 4d f8 ; pcmpeqb xmm1, xmmword ptr [rbp - 0x8]
+66 0f 3a 0f 4d f8 03 ; palignr xmm1, xmmword ptr [rbp - 0x8], 0x3 # xmm1 = mem[3,4,5,6,7,8,9,10,11,12,13,14,15],xmm1[0,1,2]
+66 0f 38 00 4d f8 ; pshufb xmm1, xmmword ptr [rbp - 0x8]
+66 0f 38 17 4d f8 ; ptest xmm1, xmmword ptr [rbp - 0x8]
+66 0f 38 15 4d f8 ; blendvpd xmm1, xmmword ptr [rbp - 0x8], xmm0
+66 0f 3a 63 4d f8 0c ; pcmpistri xmm1, xmmword ptr [rbp - 0x8], 0xc
+48 0f bc 45 f8 ; bsf rax, qword ptr [rbp - 0x8]
+48 0f c3 45 f8 ; movnti qword ptr [rbp - 0x8], rax
+0f ae 55 f8 ; ldmxcsr dword ptr [rbp - 0x8]
+0f c7 4d f8 ; cmpxchg8b qword ptr [rbp - 0x8]
+66 0f ba 65 f8 05 ; bt word ptr [rbp - 0x8], 0x5
+48 0f ba 7d f8 3f ; btc qword ptr [rbp - 0x8], 0x3f
+66 8b 45 f8 ; mov ax, word ptr [rbp - 0x8]
+64 48 89 45 f8 ; mov qword ptr fs:[rbp - 0x8], rax
+41 c7 85 00 02 00 00 44 33 22 11 ; mov dword ptr [r13 + 0x200], 0x11223344
+49 c7 85 00 02 00 00 fe ff ff ff ; mov qword ptr [r13 + 0x200], -0x2
+66 41 c7 85 00 02 00 00 55 00 ; mov word ptr [r13 + 0x200], 0x55
+41 c6 85 00 02 00 00 66 ; mov byte ptr [r13 + 0x200], 0x66
+41 0f b6 85 00 02 00 00 ; movzx eax, byte ptr [r13 + 0x200]
+49 0f bf 85 00 02 00 00 ; movsx rax, word ptr [r13 + 0x200]
+49 63 85 00 02 00 00 ; movsxd rax, dword ptr [r13 + 0x200]
+41 ff 95 00 02 00 00 ; call qword ptr [r13 + 0x200]
+41 ff a5 00 02 00 00 ; jmp qword ptr [r13 + 0x200]
+41 ff b5 00 02 00 00 ; push qword ptr [r13 + 0x200]
+41 8f 85 00 02 00 00 ; pop qword ptr [r13 + 0x200]
+41 ff 85 00 02 00 00 ; inc dword ptr [r13 + 0x200]
+49 ff 8d 00 02 00 00 ; dec qword ptr [r13 + 0x200]
+41 f6 95 00 02 00 00 ; not byte ptr [r13 + 0x200]
+66 41 f7 9d 00 02 00 00 ; neg word ptr [r13 + 0x200]
+49 f7 85 00 02 00 00 00 01 00 00 ; test qword ptr [r13 + 0x200], 0x100
+41 f6 85 00 02 00 00 01 ; test byte ptr [r13 + 0x200], 0x1
+66 41 f7 85 00 02 00 00 00 01 ; test word ptr [r13 + 0x200], 0x100
+49 85 85 00 02 00 00 ; test qword ptr [r13 + 0x200], rax
+49 6b 85 00 02 00 00 07 ; imul rax, qword ptr [r13 + 0x200], 0x7
+41 69 85 00 02 00 00 00 10 00 00 ; imul eax, dword ptr [r13 + 0x200], 0x1000
+66 41 69 8d 00 02 00 00 00 10 ; imul cx, word ptr [r13 + 0x200], 0x1000
+49 c1 a5 00 02 00 00 03 ; shl qword ptr [r13 + 0x200], 0x3
+41 d1 bd 00 02 00 00 ; sar dword ptr [r13 + 0x200]
+41 d2 85 00 02 00 00 ; rol byte ptr [r13 + 0x200], cl
+f2 41 0f 10 85 00 02 00 00 ; movsd xmm0, qword ptr [r13 + 0x200]
+f2 45 0f 11 8d 00 02 00 00 ; movsd qword ptr [r13 + 0x200], xmm9
+f2 41 0f 58 8d 00 02 00 00 ; addsd xmm1, qword ptr [r13 + 0x200]
+f2 49 0f 2a 95 00 02 00 00 ; cvtsi2sd xmm2, qword ptr [r13 + 0x200]
+66 41 0f 2e 9d 00 02 00 00 ; ucomisd xmm3, qword ptr [r13 + 0x200]
+66 41 0f 70 a5 00 02 00 00 1b ; pshufd xmm4, xmmword ptr [r13 + 0x200], 0x1b # xmm4 = mem[3,2,1,0]
+66 41 0f 3a 0b ad 00 02 00 00 04 ; roundsd xmm5, qword ptr [r13 + 0x200], 0x4
+66 49 0f 3a 22 b5 00 02 00 00 01 ; pinsrq xmm6, qword ptr [r13 + 0x200], 0x1
+66 49 0f 3a 16 bd 00 02 00 00 01 ; pextrq qword ptr [r13 + 0x200], xmm7, 0x1
+49 0f 45 85 00 02 00 00 ; cmovne rax, qword ptr [r13 + 0x200]
+41 0f 94 85 00 02 00 00 ; sete byte ptr [r13 + 0x200]
+49 0f ba a5 00 02 00 00 05 ; bt qword ptr [r13 + 0x200], 0x5
+41 0f ab 85 00 02 00 00 ; bts dword ptr [r13 + 0x200], eax
+49 0f a4 85 00 02 00 00 03 ; shld qword ptr [r13 + 0x200], rax, 0x3
+41 0f ad 8d 00 02 00 00 ; shrd dword ptr [r13 + 0x200], ecx, cl
+49 0f c1 8d 00 02 00 00 ; xadd qword ptr [r13 + 0x200], rcx
+f0 49 0f b1 95 00 02 00 00 ; lock cmpxchg qword ptr [r13 + 0x200], rdx
+f0 49 0f c7 8d 00 02 00 00 ; lock cmpxchg16b xmmword ptr [r13 + 0x200]
+49 87 85 00 02 00 00 ; xchg qword ptr [r13 + 0x200], rax
+f2 41 0f 38 f0 85 00 02 00 00 ; crc32 eax, byte ptr [r13 + 0x200]
+f3 49 0f b8 85 00 02 00 00 ; popcnt rax, qword ptr [r13 + 0x200]
+f3 41 0f bd 85 00 02 00 00 ; lzcnt eax, dword ptr [r13 + 0x200]
+f3 49 0f bc 85 00 02 00 00 ; tzcnt rax, qword ptr [r13 + 0x200]
+49 0f 38 f0 85 00 02 00 00 ; movbe rax, qword ptr [r13 + 0x200]
+41 0f 18 8d 00 02 00 00 ; prefetcht0 byte ptr [r13 + 0x200]
+41 0f 1f 85 00 02 00 00 ; nop dword ptr [r13 + 0x200]
+41 0f ae bd 00 02 00 00 ; clflush byte ptr [r13 + 0x200]
+41 dd 85 00 02 00 00 ; fld qword ptr [r13 + 0x200]
+41 d9 9d 00 02 00 00 ; fstp dword ptr [r13 + 0x200]
+41 df 85 00 02 00 00 ; fild word ptr [r13 + 0x200]
+41 d9 bd 00 02 00 00 ; fnstcw word ptr [r13 + 0x200]
+f3 45 0f 6f 85 00 02 00 00 ; movdqu xmm8, xmmword ptr [r13 + 0x200]
+41 0f 29 8d 00 02 00 00 ; movaps xmmword ptr [r13 + 0x200], xmm1
+66 41 0f ef 95 00 02 00 00 ; pxor xmm2, xmmword ptr [r13 + 0x200]
+f2 41 0f c2 8d 00 02 00 00 02 ; cmplesd xmm1, qword ptr [r13 + 0x200]
+41 0f c6 9d 00 02 00 00 44 ; shufps xmm3, xmmword ptr [r13 + 0x200], 0x44 # xmm3 = xmm3[0,1],mem[0,1]
+66 41 0f c4 8d 00 02 00 00 03 ; pinsrw xmm1, word ptr [r13 + 0x200], 0x3
+f3 41 0f 7e 8d 00 02 00 00 ; movq xmm1, qword ptr [r13 + 0x200]
+66 41 0f 7e 95 00 02 00 00 ; movd dword ptr [r13 + 0x200], xmm2
+f2 49 0f 2c 85 00 02 00 00 ; cvttsd2si rax, qword ptr [r13 + 0x200]
+f2 41 0f 51 8d 00 02 00 00 ; sqrtsd xmm1, qword ptr [r13 + 0x200]
+66 41 0f 54 8d 00 02 00 00 ; andpd xmm1, xmmword ptr [r13 + 0x200]
+66 41 0f 60 8d 00 02 00 00 ; punpcklbw xmm1, xmmword ptr [r13 + 0x200] # xmm1 = xmm1[0],mem[0],xmm1[1],mem[1],xmm1[2],mem[2],xmm1[3],mem[3],xmm1[4],mem[4],xmm1[5],mem[5],xmm1[6],mem[6],xmm1[7],mem[7]
+66 41 0f 74 8d 00 02 00 00 ; pcmpeqb xmm1, xmmword ptr [r13 + 0x200]
+66 41 0f 3a 0f 8d 00 02 00 00 03 ; palignr xmm1, xmmword ptr [r13 + 0x200], 0x3 # xmm1 = mem[3,4,5,6,7,8,9,10,11,12,13,14,15],xmm1[0,1,2]
+66 41 0f 38 00 8d 00 02 00 00 ; pshufb xmm1, xmmword ptr [r13 + 0x200]
+66 41 0f 38 17 8d 00 02 00 00 ; ptest xmm1, xmmword ptr [r13 + 0x200]
+66 41 0f 38 15 8d 00 02 00 00 ; blendvpd xmm1, xmmword ptr [r13 + 0x200], xmm0
+66 41 0f 3a 63 8d 00 02 00 00 0c ; pcmpistri xmm1, xmmword ptr [r13 + 0x200], 0xc
+49 0f bc 85 00 02 00 00 ; bsf rax, qword ptr [r13 + 0x200]
+49 0f c3 85 00 02 00 00 ; movnti qword ptr [r13 + 0x200], rax
+41 0f ae 95 00 02 00 00 ; ldmxcsr dword ptr [r13 + 0x200]
+41 0f c7 8d 00 02 00 00 ; cmpxchg8b qword ptr [r13 + 0x200]
+66 41 0f ba a5 00 02 00 00 05 ; bt word ptr [r13 + 0x200], 0x5
+49 0f ba bd 00 02 00 00 3f ; btc qword ptr [r13 + 0x200], 0x3f
+66 41 8b 85 00 02 00 00 ; mov ax, word ptr [r13 + 0x200]
+64 49 89 85 00 02 00 00 ; mov qword ptr fs:[r13 + 0x200], rax
+43 c7 84 7e 45 23 01 00 44 33 22 11 ; mov dword ptr [r14 + 2*r15 + 0x12345], 0x11223344
+4b c7 84 7e 45 23 01 00 fe ff ff ff ; mov qword ptr [r14 + 2*r15 + 0x12345], -0x2
+66 43 c7 84 7e 45 23 01 00 55 00 ; mov word ptr [r14 + 2*r15 + 0x12345], 0x55
+43 c6 84 7e 45 23 01 00 66 ; mov byte ptr [r14 + 2*r15 + 0x12345], 0x66
+43 0f b6 84 7e 45 23 01 00 ; movzx eax, byte ptr [r14 + 2*r15 + 0x12345]
+4b 0f bf 84 7e 45 23 01 00 ; movsx rax, word ptr [r14 + 2*r15 + 0x12345]
+4b 63 84 7e 45 23 01 00 ; movsxd rax, dword ptr [r14 + 2*r15 + 0x12345]
+43 ff 94 7e 45 23 01 00 ; call qword ptr [r14 + 2*r15 + 0x12345]
+43 ff a4 7e 45 23 01 00 ; jmp qword ptr [r14 + 2*r15 + 0x12345]
+43 ff b4 7e 45 23 01 00 ; push qword ptr [r14 + 2*r15 + 0x12345]
+43 8f 84 7e 45 23 01 00 ; pop qword ptr [r14 + 2*r15 + 0x12345]
+43 ff 84 7e 45 23 01 00 ; inc dword ptr [r14 + 2*r15 + 0x12345]
+4b ff 8c 7e 45 23 01 00 ; dec qword ptr [r14 + 2*r15 + 0x12345]
+43 f6 94 7e 45 23 01 00 ; not byte ptr [r14 + 2*r15 + 0x12345]
+66 43 f7 9c 7e 45 23 01 00 ; neg word ptr [r14 + 2*r15 + 0x12345]
+4b f7 84 7e 45 23 01 00 00 01 00 00 ; test qword ptr [r14 + 2*r15 + 0x12345], 0x100
+43 f6 84 7e 45 23 01 00 01 ; test byte ptr [r14 + 2*r15 + 0x12345], 0x1
+66 43 f7 84 7e 45 23 01 00 00 01 ; test word ptr [r14 + 2*r15 + 0x12345], 0x100
+4b 85 84 7e 45 23 01 00 ; test qword ptr [r14 + 2*r15 + 0x12345], rax
+4b 6b 84 7e 45 23 01 00 07 ; imul rax, qword ptr [r14 + 2*r15 + 0x12345], 0x7
+43 69 84 7e 45 23 01 00 00 10 00 00 ; imul eax, dword ptr [r14 + 2*r15 + 0x12345], 0x1000
+66 43 69 8c 7e 45 23 01 00 00 10 ; imul cx, word ptr [r14 + 2*r15 + 0x12345], 0x1000
+4b c1 a4 7e 45 23 01 00 03 ; shl qword ptr [r14 + 2*r15 + 0x12345], 0x3
+43 d1 bc 7e 45 23 01 00 ; sar dword ptr [r14 + 2*r15 + 0x12345]
+43 d2 84 7e 45 23 01 00 ; rol byte ptr [r14 + 2*r15 + 0x12345], cl
+f2 43 0f 10 84 7e 45 23 01 00 ; movsd xmm0, qword ptr [r14 + 2*r15 + 0x12345]
+f2 47 0f 11 8c 7e 45 23 01 00 ; movsd qword ptr [r14 + 2*r15 + 0x12345], xmm9
+f2 43 0f 58 8c 7e 45 23 01 00 ; addsd xmm1, qword ptr [r14 + 2*r15 + 0x12345]
+f2 4b 0f 2a 94 7e 45 23 01 00 ; cvtsi2sd xmm2, qword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 2e 9c 7e 45 23 01 00 ; ucomisd xmm3, qword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 70 a4 7e 45 23 01 00 1b ; pshufd xmm4, xmmword ptr [r14 + 2*r15 + 0x12345], 0x1b # xmm4 = mem[3,2,1,0]
+66 43 0f 3a 0b ac 7e 45 23 01 00 04 ; roundsd xmm5, qword ptr [r14 + 2*r15 + 0x12345], 0x4
+66 4b 0f 3a 22 b4 7e 45 23 01 00 01 ; pinsrq xmm6, qword ptr [r14 + 2*r15 + 0x12345], 0x1
+66 4b 0f 3a 16 bc 7e 45 23 01 00 01 ; pextrq qword ptr [r14 + 2*r15 + 0x12345], xmm7, 0x1
+4b 0f 45 84 7e 45 23 01 00 ; cmovne rax, qword ptr [r14 + 2*r15 + 0x12345]
+43 0f 94 84 7e 45 23 01 00 ; sete byte ptr [r14 + 2*r15 + 0x12345]
+4b 0f ba a4 7e 45 23 01 00 05 ; bt qword ptr [r14 + 2*r15 + 0x12345], 0x5
+43 0f ab 84 7e 45 23 01 00 ; bts dword ptr [r14 + 2*r15 + 0x12345], eax
+4b 0f a4 84 7e 45 23 01 00 03 ; shld qword ptr [r14 + 2*r15 + 0x12345], rax, 0x3
+43 0f ad 8c 7e 45 23 01 00 ; shrd dword ptr [r14 + 2*r15 + 0x12345], ecx, cl
+4b 0f c1 8c 7e 45 23 01 00 ; xadd qword ptr [r14 + 2*r15 + 0x12345], rcx
+f0 4b 0f b1 94 7e 45 23 01 00 ; lock cmpxchg qword ptr [r14 + 2*r15 + 0x12345], rdx
+f0 4b 0f c7 8c 7e 45 23 01 00 ; lock cmpxchg16b xmmword ptr [r14 + 2*r15 + 0x12345]
+4b 87 84 7e 45 23 01 00 ; xchg qword ptr [r14 + 2*r15 + 0x12345], rax
+f2 43 0f 38 f0 84 7e 45 23 01 00 ; crc32 eax, byte ptr [r14 + 2*r15 + 0x12345]
+f3 4b 0f b8 84 7e 45 23 01 00 ; popcnt rax, qword ptr [r14 + 2*r15 + 0x12345]
+f3 43 0f bd 84 7e 45 23 01 00 ; lzcnt eax, dword ptr [r14 + 2*r15 + 0x12345]
+f3 4b 0f bc 84 7e 45 23 01 00 ; tzcnt rax, qword ptr [r14 + 2*r15 + 0x12345]
+4b 0f 38 f0 84 7e 45 23 01 00 ; movbe rax, qword ptr [r14 + 2*r15 + 0x12345]
+43 0f 18 8c 7e 45 23 01 00 ; prefetcht0 byte ptr [r14 + 2*r15 + 0x12345]
+43 0f 1f 84 7e 45 23 01 00 ; nop dword ptr [r14 + 2*r15 + 0x12345]
+43 0f ae bc 7e 45 23 01 00 ; clflush byte ptr [r14 + 2*r15 + 0x12345]
+43 dd 84 7e 45 23 01 00 ; fld qword ptr [r14 + 2*r15 + 0x12345]
+43 d9 9c 7e 45 23 01 00 ; fstp dword ptr [r14 + 2*r15 + 0x12345]
+43 df 84 7e 45 23 01 00 ; fild word ptr [r14 + 2*r15 + 0x12345]
+43 d9 bc 7e 45 23 01 00 ; fnstcw word ptr [r14 + 2*r15 + 0x12345]
+f3 47 0f 6f 84 7e 45 23 01 00 ; movdqu xmm8, xmmword ptr [r14 + 2*r15 + 0x12345]
+43 0f 29 8c 7e 45 23 01 00 ; movaps xmmword ptr [r14 + 2*r15 + 0x12345], xmm1
+66 43 0f ef 94 7e 45 23 01 00 ; pxor xmm2, xmmword ptr [r14 + 2*r15 + 0x12345]
+f2 43 0f c2 8c 7e 45 23 01 00 02 ; cmplesd xmm1, qword ptr [r14 + 2*r15 + 0x12345]
+43 0f c6 9c 7e 45 23 01 00 44 ; shufps xmm3, xmmword ptr [r14 + 2*r15 + 0x12345], 0x44 # xmm3 = xmm3[0,1],mem[0,1]
+66 43 0f c4 8c 7e 45 23 01 00 03 ; pinsrw xmm1, word ptr [r14 + 2*r15 + 0x12345], 0x3
+f3 43 0f 7e 8c 7e 45 23 01 00 ; movq xmm1, qword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 7e 94 7e 45 23 01 00 ; movd dword ptr [r14 + 2*r15 + 0x12345], xmm2
+f2 4b 0f 2c 84 7e 45 23 01 00 ; cvttsd2si rax, qword ptr [r14 + 2*r15 + 0x12345]
+f2 43 0f 51 8c 7e 45 23 01 00 ; sqrtsd xmm1, qword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 54 8c 7e 45 23 01 00 ; andpd xmm1, xmmword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 60 8c 7e 45 23 01 00 ; punpcklbw xmm1, xmmword ptr [r14 + 2*r15 + 0x12345] # xmm1 = xmm1[0],mem[0],xmm1[1],mem[1],xmm1[2],mem[2],xmm1[3],mem[3],xmm1[4],mem[4],xmm1[5],mem[5],xmm1[6],mem[6],xmm1[7],mem[7]
+66 43 0f 74 8c 7e 45 23 01 00 ; pcmpeqb xmm1, xmmword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 3a 0f 8c 7e 45 23 01 00 03 ; palignr xmm1, xmmword ptr [r14 + 2*r15 + 0x12345], 0x3 # xmm1 = mem[3,4,5,6,7,8,9,10,11,12,13,14,15],xmm1[0,1,2]
+66 43 0f 38 00 8c 7e 45 23 01 00 ; pshufb xmm1, xmmword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 38 17 8c 7e 45 23 01 00 ; ptest xmm1, xmmword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f 38 15 8c 7e 45 23 01 00 ; blendvpd xmm1, xmmword ptr [r14 + 2*r15 + 0x12345], xmm0
+66 43 0f 3a 63 8c 7e 45 23 01 00 0c ; pcmpistri xmm1, xmmword ptr [r14 + 2*r15 + 0x12345], 0xc
+4b 0f bc 84 7e 45 23 01 00 ; bsf rax, qword ptr [r14 + 2*r15 + 0x12345]
+4b 0f c3 84 7e 45 23 01 00 ; movnti qword ptr [r14 + 2*r15 + 0x12345], rax
+43 0f ae 94 7e 45 23 01 00 ; ldmxcsr dword ptr [r14 + 2*r15 + 0x12345]
+43 0f c7 8c 7e 45 23 01 00 ; cmpxchg8b qword ptr [r14 + 2*r15 + 0x12345]
+66 43 0f ba a4 7e 45 23 01 00 05 ; bt word ptr [r14 + 2*r15 + 0x12345], 0x5
+4b 0f ba bc 7e 45 23 01 00 3f ; btc qword ptr [r14 + 2*r15 + 0x12345], 0x3f
+66 43 8b 84 7e 45 23 01 00 ; mov ax, word ptr [r14 + 2*r15 + 0x12345]
+64 4b 89 84 7e 45 23 01 00 ; mov qword ptr fs:[r14 + 2*r15 + 0x12345], rax
+c7 04 cd 00 01 00 00 44 33 22 11 ; mov dword ptr [8*rcx + 0x100], 0x11223344
+48 c7 04 cd 00 01 00 00 fe ff ff ff ; mov qword ptr [8*rcx + 0x100], -0x2
+66 c7 04 cd 00 01 00 00 55 00 ; mov word ptr [8*rcx + 0x100], 0x55
+c6 04 cd 00 01 00 00 66 ; mov byte ptr [8*rcx + 0x100], 0x66
+0f b6 04 cd 00 01 00 00 ; movzx eax, byte ptr [8*rcx + 0x100]
+48 0f bf 04 cd 00 01 00 00 ; movsx rax, word ptr [8*rcx + 0x100]
+48 63 04 cd 00 01 00 00 ; movsxd rax, dword ptr [8*rcx + 0x100]
+ff 14 cd 00 01 00 00 ; call qword ptr [8*rcx + 0x100]
+ff 24 cd 00 01 00 00 ; jmp qword ptr [8*rcx + 0x100]
+ff 34 cd 00 01 00 00 ; push qword ptr [8*rcx + 0x100]
+8f 04 cd 00 01 00 00 ; pop qword ptr [8*rcx + 0x100]
+ff 04 cd 00 01 00 00 ; inc dword ptr [8*rcx + 0x100]
+48 ff 0c cd 00 01 00 00 ; dec qword ptr [8*rcx + 0x100]
+f6 14 cd 00 01 00 00 ; not byte ptr [8*rcx + 0x100]
+66 f7 1c cd 00 01 00 00 ; neg word ptr [8*rcx + 0x100]
+48 f7 04 cd 00 01 00 00 00 01 00 00 ; test qword ptr [8*rcx + 0x100], 0x100
+f6 04 cd 00 01 00 00 01 ; test byte ptr [8*rcx + 0x100], 0x1
+66 f7 04 cd 00 01 00 00 00 01 ; test word ptr [8*rcx + 0x100], 0x100
+48 85 04 cd 00 01 00 00 ; test qword ptr [8*rcx + 0x100], rax
+48 6b 04 cd 00 01 00 00 07 ; imul rax, qword ptr [8*rcx + 0x100], 0x7
+69 04 cd 00 01 00 00 00 10 00 00 ; imul eax, dword ptr [8*rcx + 0x100], 0x1000
+66 69 0c cd 00 01 00 00 00 10 ; imul cx, word ptr [8*rcx + 0x100], 0x1000
+48 c1 24 cd 00 01 00 00 03 ; shl qword ptr [8*rcx + 0x100], 0x3
+d1 3c cd 00 01 00 00 ; sar dword ptr [8*rcx + 0x100]
+d2 04 cd 00 01 00 00 ; rol byte ptr [8*rcx + 0x100], cl
+f2 0f 10 04 cd 00 01 00 00 ; movsd xmm0, qword ptr [8*rcx + 0x100]
+f2 44 0f 11 0c cd 00 01 00 00 ; movsd qword ptr [8*rcx + 0x100], xmm9
+f2 0f 58 0c cd 00 01 00 00 ; addsd xmm1, qword ptr [8*rcx + 0x100]
+f2 48 0f 2a 14 cd 00 01 00 00 ; cvtsi2sd xmm2, qword ptr [8*rcx + 0x100]
+66 0f 2e 1c cd 00 01 00 00 ; ucomisd xmm3, qword ptr [8*rcx + 0x100]
+66 0f 70 24 cd 00 01 00 00 1b ; pshufd xmm4, xmmword ptr [8*rcx + 0x100], 0x1b # xmm4 = mem[3,2,1,0]
+66 0f 3a 0b 2c cd 00 01 00 00 04 ; roundsd xmm5, qword ptr [8*rcx + 0x100], 0x4
+66 48 0f 3a 22 34 cd 00 01 00 00 01 ; pinsrq xmm6, qword ptr [8*rcx + 0x100], 0x1
+66 48 0f 3a 16 3c cd 00 01 00 00 01 ; pextrq qword ptr [8*rcx + 0x100], xmm7, 0x1
+48 0f 45 04 cd 00 01 00 00 ; cmovne rax, qword ptr [8*rcx + 0x100]
+0f 94 04 cd 00 01 00 00 ; sete byte ptr [8*rcx + 0x100]
+48 0f ba 24 cd 00 01 00 00 05 ; bt qword ptr [8*rcx + 0x100], 0x5
+0f ab 04 cd 00 01 00 00 ; bts dword ptr [8*rcx + 0x100], eax
+48 0f a4 04 cd 00 01 00 00 03 ; shld qword ptr [8*rcx + 0x100], rax, 0x3
+0f ad 0c cd 00 01 00 00 ; shrd dword ptr [8*rcx + 0x100], ecx, cl
+48 0f c1 0c cd 00 01 00 00 ; xadd qword ptr [8*rcx + 0x100], rcx
+f0 48 0f b1 14 cd 00 01 00 00 ; lock cmpxchg qword ptr [8*rcx + 0x100], rdx
+f0 48 0f c7 0c cd 00 01 00 00 ; lock cmpxchg16b xmmword ptr [8*rcx + 0x100]
+48 87 04 cd 00 01 00 00 ; xchg qword ptr [8*rcx + 0x100], rax
+f2 0f 38 f0 04 cd 00 01 00 00 ; crc32 eax, byte ptr [8*rcx + 0x100]
+f3 48 0f b8 04 cd 00 01 00 00 ; popcnt rax, qword ptr [8*rcx + 0x100]
+f3 0f bd 04 cd 00 01 00 00 ; lzcnt eax, dword ptr [8*rcx + 0x100]
+f3 48 0f bc 04 cd 00 01 00 00 ; tzcnt rax, qword ptr [8*rcx + 0x100]
+48 0f 38 f0 04 cd 00 01 00 00 ; movbe rax, qword ptr [8*rcx + 0x100]
+0f 18 0c cd 00 01 00 00 ; prefetcht0 byte ptr [8*rcx + 0x100]
+0f 1f 04 cd 00 01 00 00 ; nop dword ptr [8*rcx + 0x100]
+0f ae 3c cd 00 01 00 00 ; clflush byte ptr [8*rcx + 0x100]
+dd 04 cd 00 01 00 00 ; fld qword ptr [8*rcx + 0x100]
+d9 1c cd 00 01 00 00 ; fstp dword ptr [8*rcx + 0x100]
+df 04 cd 00 01 00 00 ; fild word ptr [8*rcx + 0x100]
+d9 3c cd 00 01 00 00 ; fnstcw word ptr [8*rcx + 0x100]
+f3 44 0f 6f 04 cd 00 01 00 00 ; movdqu xmm8, xmmword ptr [8*rcx + 0x100]
+0f 29 0c cd 00 01 00 00 ; movaps xmmword ptr [8*rcx + 0x100], xmm1
+66 0f ef 14 cd 00 01 00 00 ; pxor xmm2, xmmword ptr [8*rcx + 0x100]
+f2 0f c2 0c cd 00 01 00 00 02 ; cmplesd xmm1, qword ptr [8*rcx + 0x100]
+0f c6 1c cd 00 01 00 00 44 ; shufps xmm3, xmmword ptr [8*rcx + 0x100], 0x44 # xmm3 = xmm3[0,1],mem[0,1]
+66 0f c4 0c cd 00 01 00 00 03 ; pinsrw xmm1, word ptr [8*rcx + 0x100], 0x3
+f3 0f 7e 0c cd 00 01 00 00 ; movq xmm1, qword ptr [8*rcx + 0x100]
+66 0f 7e 14 cd 00 01 00 00 ; movd dword ptr [8*rcx + 0x100], xmm2
+f2 48 0f 2c 04 cd 00 01 00 00 ; cvttsd2si rax, qword ptr [8*rcx + 0x100]
+f2 0f 51 0c cd 00 01 00 00 ; sqrtsd xmm1, qword ptr [8*rcx + 0x100]
+66 0f 54 0c cd 00 01 00 00 ; andpd xmm1, xmmword ptr [8*rcx + 0x100]
+66 0f 60 0c cd 00 01 00 00 ; punpcklbw xmm1, xmmword ptr [8*rcx + 0x100] # xmm1 = xmm1[0],mem[0],xmm1[1],mem[1],xmm1[2],mem[2],xmm1[3],mem[3],xmm1[4],mem[4],xmm1[5],mem[5],xmm1[6],mem[6],xmm1[7],mem[7]
+66 0f 74 0c cd 00 01 00 00 ; pcmpeqb xmm1, xmmword ptr [8*rcx + 0x100]
+66 0f 3a 0f 0c cd 00 01 00 00 03 ; palignr xmm1, xmmword ptr [8*rcx + 0x100], 0x3 # xmm1 = mem[3,4,5,6,7,8,9,10,11,12,13,14,15],xmm1[0,1,2]
+66 0f 38 00 0c cd 00 01 00 00 ; pshufb xmm1, xmmword ptr [8*rcx + 0x100]
+66 0f 38 17 0c cd 00 01 00 00 ; ptest xmm1, xmmword ptr [8*rcx + 0x100]
+66 0f 38 15 0c cd 00 01 00 00 ; blendvpd xmm1, xmmword ptr [8*rcx + 0x100], xmm0
+66 0f 3a 63 0c cd 00 01 00 00 0c ; pcmpistri xmm1, xmmword ptr [8*rcx + 0x100], 0xc
+48 0f bc 04 cd 00 01 00 00 ; bsf rax, qword ptr [8*rcx + 0x100]
+48 0f c3 04 cd 00 01 00 00 ; movnti qword ptr [8*rcx + 0x100], rax
+0f ae 14 cd 00 01 00 00 ; ldmxcsr dword ptr [8*rcx + 0x100]
+0f c7 0c cd 00 01 00 00 ; cmpxchg8b qword ptr [8*rcx + 0x100]
+66 0f ba 24 cd 00 01 00 00 05 ; bt word ptr [8*rcx + 0x100], 0x5
+48 0f ba 3c cd 00 01 00 00 3f ; btc qword ptr [8*rcx + 0x100], 0x3f
+66 8b 04 cd 00 01 00 00 ; mov ax, word ptr [8*rcx + 0x100]
+64 48 89 04 cd 00 01 00 00 ; mov qword ptr fs:[8*rcx + 0x100], rax
+c7 05 40 00 00 00 44 33 22 11 ; mov dword ptr [rip + 0x40], 0x11223344 # 0x17bd
+48 c7 05 40 00 00 00 fe ff ff ff ; mov qword ptr [rip + 0x40], -0x2 # 0x17c8
+66 c7 05 40 00 00 00 55 00 ; mov word ptr [rip + 0x40], 0x55 # 0x17d1
+c6 05 40 00 00 00 66 ; mov byte ptr [rip + 0x40], 0x66 # 0x17d8
+0f b6 05 40 00 00 00 ; movzx eax, byte ptr [rip + 0x40] # 0x17df
+48 0f bf 05 40 00 00 00 ; movsx rax, word ptr [rip + 0x40] # 0x17e7
+48 63 05 40 00 00 00 ; movsxd rax, dword ptr [rip + 0x40] # 0x17ee
+ff 15 40 00 00 00 ; call qword ptr [rip + 0x40] # 0x17f4
+ff 25 40 00 00 00 ; jmp qword ptr [rip + 0x40] # 0x17fa
+ff 35 40 00 00 00 ; push qword ptr [rip + 0x40] # 0x1800
+8f 05 40 00 00 00 ; pop qword ptr [rip + 0x40] # 0x1806
+ff 05 40 00 00 00 ; inc dword ptr [rip + 0x40] # 0x180c
+48 ff 0d 40 00 00 00 ; dec qword ptr [rip + 0x40] # 0x1813
+f6 15 40 00 00 00 ; not byte ptr [rip + 0x40] # 0x1819
+66 f7 1d 40 00 00 00 ; neg word ptr [rip + 0x40] # 0x1820
+48 f7 05 40 00 00 00 00 01 00 00 ; test qword ptr [rip + 0x40], 0x100 # 0x182b
+f6 05 40 00 00 00 01 ; test byte ptr [rip + 0x40], 0x1 # 0x1832
+66 f7 05 40 00 00 00 00 01 ; test word ptr [rip + 0x40], 0x100 # 0x183b
+48 85 05 40 00 00 00 ; test qword ptr [rip + 0x40], rax # 0x1842
+48 6b 05 40 00 00 00 07 ; imul rax, qword ptr [rip + 0x40], 0x7 # 0x184a
+69 05 40 00 00 00 00 10 00 00 ; imul eax, dword ptr [rip + 0x40], 0x1000 # 0x1854
+66 69 0d 40 00 00 00 00 10 ; imul cx, word ptr [rip + 0x40], 0x1000 # 0x185d
+48 c1 25 40 00 00 00 03 ; shl qword ptr [rip + 0x40], 0x3 # 0x1865
+d1 3d 40 00 00 00 ; sar dword ptr [rip + 0x40] # 0x186b
+d2 05 40 00 00 00 ; rol byte ptr [rip + 0x40], cl # 0x1871
+f2 0f 10 05 40 00 00 00 ; movsd xmm0, qword ptr [rip + 0x40] # 0x1879
+f2 44 0f 11 0d 40 00 00 00 ; movsd qword ptr [rip + 0x40], xmm9 # 0x1882
+f2 0f 58 0d 40 00 00 00 ; addsd xmm1, qword ptr [rip + 0x40] # 0x188a
+f2 48 0f 2a 15 40 00 00 00 ; cvtsi2sd xmm2, qword ptr [rip + 0x40] # 0x1893
+66 0f 2e 1d 40 00 00 00 ; ucomisd xmm3, qword ptr [rip + 0x40] # 0x189b
+66 0f 70 25 40 00 00 00 1b ; pshufd xmm4, xmmword ptr [rip + 0x40], 0x1b # xmm4 = mem[3,2,1,0]
+66 0f 3a 0b 2d 40 00 00 00 04 ; roundsd xmm5, qword ptr [rip + 0x40], 0x4 # 0x18ae
+66 48 0f 3a 22 35 40 00 00 00 01 ; pinsrq xmm6, qword ptr [rip + 0x40], 0x1 # 0x18b9
+66 48 0f 3a 16 3d 40 00 00 00 01 ; pextrq qword ptr [rip + 0x40], xmm7, 0x1 # 0x18c4
+48 0f 45 05 40 00 00 00 ; cmovne rax, qword ptr [rip + 0x40] # 0x18cc
+0f 94 05 40 00 00 00 ; sete byte ptr [rip + 0x40] # 0x18d3
+48 0f ba 25 40 00 00 00 05 ; bt qword ptr [rip + 0x40], 0x5 # 0x18dc
+0f ab 05 40 00 00 00 ; bts dword ptr [rip + 0x40], eax # 0x18e3
+48 0f a4 05 40 00 00 00 03 ; shld qword ptr [rip + 0x40], rax, 0x3 # 0x18ec
+0f ad 0d 40 00 00 00 ; shrd dword ptr [rip + 0x40], ecx, cl # 0x18f3
+48 0f c1 0d 40 00 00 00 ; xadd qword ptr [rip + 0x40], rcx # 0x18fb
+f0 48 0f b1 15 40 00 00 00 ; lock cmpxchg qword ptr [rip + 0x40], rdx # 0x1904
+f0 48 0f c7 0d 40 00 00 00 ; lock cmpxchg16b xmmword ptr [rip + 0x40] # 0x190d
+48 87 05 40 00 00 00 ; xchg qword ptr [rip + 0x40], rax # 0x1914
+f2 0f 38 f0 05 40 00 00 00 ; crc32 eax, byte ptr [rip + 0x40] # 0x191d
+f3 48 0f b8 05 40 00 00 00 ; popcnt rax, qword ptr [rip + 0x40] # 0x1926
+f3 0f bd 05 40 00 00 00 ; lzcnt eax, dword ptr [rip + 0x40] # 0x192e
+f3 48 0f bc 05 40 00 00 00 ; tzcnt rax, qword ptr [rip + 0x40] # 0x1937
+48 0f 38 f0 05 40 00 00 00 ; movbe rax, qword ptr [rip + 0x40] # 0x1940
+0f 18 0d 40 00 00 00 ; prefetcht0 byte ptr [rip + 0x40] # 0x1947
+0f 1f 05 40 00 00 00 ; nop dword ptr [rip + 0x40] # 0x194e
+0f ae 3d 40 00 00 00 ; clflush byte ptr [rip + 0x40] # 0x1955
+dd 05 40 00 00 00 ; fld qword ptr [rip + 0x40] # 0x195b
+d9 1d 40 00 00 00 ; fstp dword ptr [rip + 0x40] # 0x1961
+df 05 40 00 00 00 ; fild word ptr [rip + 0x40] # 0x1967
+d9 3d 40 00 00 00 ; fnstcw word ptr [rip + 0x40] # 0x196d
+f3 44 0f 6f 05 40 00 00 00 ; movdqu xmm8, xmmword ptr [rip + 0x40] # 0x1976
+0f 29 0d 40 00 00 00 ; movaps xmmword ptr [rip + 0x40], xmm1 # 0x197d
+66 0f ef 15 40 00 00 00 ; pxor xmm2, xmmword ptr [rip + 0x40] # 0x1985
+f2 0f c2 0d 40 00 00 00 02 ; cmplesd xmm1, qword ptr [rip + 0x40] # 0x198e
+0f c6 1d 40 00 00 00 44 ; shufps xmm3, xmmword ptr [rip + 0x40], 0x44 # xmm3 = xmm3[0,1],mem[0,1]
+66 0f c4 0d 40 00 00 00 03 ; pinsrw xmm1, word ptr [rip + 0x40], 0x3 # 0x199f
+f3 0f 7e 0d 40 00 00 00 ; movq xmm1, qword ptr [rip + 0x40] # 0x19a7
+66 0f 7e 15 40 00 00 00 ; movd dword ptr [rip + 0x40], xmm2 # 0x19af
+f2 48 0f 2c 05 40 00 00 00 ; cvttsd2si rax, qword ptr [rip + 0x40] # 0x19b8
+f2 0f 51 0d 40 00 00 00 ; sqrtsd xmm1, qword ptr [rip + 0x40] # 0x19c0
+66 0f 54 0d 40 00 00 00 ; andpd xmm1, xmmword ptr [rip + 0x40] # 0x19c8
+66 0f 60 0d 40 00 00 00 ; punpcklbw xmm1, xmmword ptr [rip + 0x40] # xmm1 = xmm1[0],mem[0],xmm1[1],mem[1],xmm1[2],mem[2],xmm1[3],mem[3],xmm1[4],mem[4],xmm1[5],mem[5],xmm1[6],mem[6],xmm1[7],mem[7]
+66 0f 74 0d 40 00 00 00 ; pcmpeqb xmm1, xmmword ptr [rip + 0x40] # 0x19d8
+66 0f 3a 0f 0d 40 00 00 00 03 ; palignr xmm1, xmmword ptr [rip + 0x40], 0x3 # xmm1 = mem[3,4,5,6,7,8,9,10,11,12,13,14,15],xmm1[0,1,2]
+66 0f 38 00 0d 40 00 00 00 ; pshufb xmm1, xmmword ptr [rip + 0x40] # 0x19f9
+66 0f 38 17 0d 40 00 00 00 ; ptest xmm1, xmmword ptr [rip + 0x40] # 0x1a02
+66 0f 38 15 0d 40 00 00 00 ; blendvpd xmm1, xmmword ptr [rip + 0x40], xmm0 # 0x1a0b
+66 0f 3a 63 0d 40 00 00 00 0c ; pcmpistri xmm1, xmmword ptr [rip + 0x40], 0xc # 0x1a15
+48 0f bc 05 40 00 00 00 ; bsf rax, qword ptr [rip + 0x40] # 0x1a1d
+48 0f c3 05 40 00 00 00 ; movnti qword ptr [rip + 0x40], rax # 0x1a25
+0f ae 15 40 00 00 00 ; ldmxcsr dword ptr [rip + 0x40] # 0x1a2c
+0f c7 0d 40 00 00 00 ; cmpxchg8b qword ptr [rip + 0x40] # 0x1a33
+66 0f ba 25 40 00 00 00 05 ; bt word ptr [rip + 0x40], 0x5 # 0x1a3c
+48 0f ba 3d 40 00 00 00 3f ; btc qword ptr [rip + 0x40], 0x3f # 0x1a45
+66 8b 05 40 00 00 00 ; mov ax, word ptr [rip + 0x40] # 0x1a4c
+64 48 89 05 40 00 00 00 ; mov qword ptr fs:[rip + 0x40], rax
+c7 04 25 34 12 00 00 44 33 22 11 ; mov dword ptr [0x1234], 0x11223344
+48 c7 04 25 34 12 00 00 fe ff ff ff ; mov qword ptr [0x1234], -0x2
+66 c7 04 25 34 12 00 00 55 00 ; mov word ptr [0x1234], 0x55
+c6 04 25 34 12 00 00 66 ; mov byte ptr [0x1234], 0x66
+0f b6 04 25 34 12 00 00 ; movzx eax, byte ptr [0x1234]
+48 0f bf 04 25 34 12 00 00 ; movsx rax, word ptr [0x1234]
+48 63 04 25 34 12 00 00 ; movsxd rax, dword ptr [0x1234]
+ff 14 25 34 12 00 00 ; call qword ptr [0x1234]
+ff 24 25 34 12 00 00 ; jmp qword ptr [0x1234]
+ff 34 25 34 12 00 00 ; push qword ptr [0x1234]
+8f 04 25 34 12 00 00 ; pop qword ptr [0x1234]
+ff 04 25 34 12 00 00 ; inc dword ptr [0x1234]
+48 ff 0c 25 34 12 00 00 ; dec qword ptr [0x1234]
+f6 14 25 34 12 00 00 ; not byte ptr [0x1234]
+66 f7 1c 25 34 12 00 00 ; neg word ptr [0x1234]
+48 f7 04 25 34 12 00 00 00 01 00 00 ; test qword ptr [0x1234], 0x100
+f6 04 25 34 12 00 00 01 ; test byte ptr [0x1234], 0x1
+66 f7 04 25 34 12 00 00 00 01 ; test word ptr [0x1234], 0x100
+48 85 04 25 34 12 00 00 ; test qword ptr [0x1234], rax
+48 6b 04 25 34 12 00 00 07 ; imul rax, qword ptr [0x1234], 0x7
+69 04 25 34 12 00 00 00 10 00 00 ; imul eax, dword ptr [0x1234], 0x1000
+66 69 0c 25 34 12 00 00 00 10 ; imul cx, word ptr [0x1234], 0x1000
+48 c1 24 25 34 12 00 00 03 ; shl qword ptr [0x1234], 0x3
+d1 3c 25 34 12 00 00 ; sar dword ptr [0x1234]
+d2 04 25 34 12 00 00 ; rol byte ptr [0x1234], cl
+f2 0f 10 04 25 34 12 00 00 ; movsd xmm0, qword ptr [0x1234]
+f2 44 0f 11 0c 25 34 12 00 00 ; movsd qword ptr [0x1234], xmm9
+f2 0f 58 0c 25 34 12 00 00 ; addsd xmm1, qword ptr [0x1234]
+f2 48 0f 2a 14 25 34 12 00 00 ; cvtsi2sd xmm2, qword ptr [0x1234]
+66 0f 2e 1c 25 34 12 00 00 ; ucomisd xmm3, qword ptr [0x1234]
+66 0f 70 24 25 34 12 00 00 1b ; pshufd xmm4, xmmword ptr [0x1234], 0x1b # xmm4 = mem[3,2,1,0]
+66 0f 3a 0b 2c 25 34 12 00 00 04 ; roundsd xmm5, qword ptr [0x1234], 0x4
+66 48 0f 3a 22 34 25 34 12 00 00 01 ; pinsrq xmm6, qword ptr [0x1234], 0x1
+66 48 0f 3a 16 3c 25 34 12 00 00 01 ; pextrq qword ptr [0x1234], xmm7, 0x1
+48 0f 45 04 25 34 12 00 00 ; cmovne rax, qword ptr [0x1234]
+0f 94 04 25 34 12 00 00 ; sete byte ptr [0x1234]
+48 0f ba 24 25 34 12 00 00 05 ; bt qword ptr [0x1234], 0x5
+0f ab 04 25 34 12 00 00 ; bts dword ptr [0x1234], eax
+48 0f a4 04 25 34 12 00 00 03 ; shld qword ptr [0x1234], rax, 0x3
+0f ad 0c 25 34 12 00 00 ; shrd dword ptr [0x1234], ecx, cl
+48 0f c1 0c 25 34 12 00 00 ; xadd qword ptr [0x1234], rcx
+f0 48 0f b1 14 25 34 12 00 00 ; lock cmpxchg qword ptr [0x1234], rdx
+f0 48 0f c7 0c 25 34 12 00 00 ; lock cmpxchg16b xmmword ptr [0x1234]
+48 87 04 25 34 12 00 00 ; xchg qword ptr [0x1234], rax
+f2 0f 38 f0 04 25 34 12 00 00 ; crc32 eax, byte ptr [0x1234]
+f3 48 0f b8 04 25 34 12 00 00 ; popcnt rax, qword ptr [0x1234]
+f3 0f bd 04 25 34 12 00 00 ; lzcnt eax, dword ptr [0x1234]
+f3 48 0f bc 04 25 34 12 00 00 ; tzcnt rax, qword ptr [0x1234]
+48 0f 38 f0 04 25 34 12 00 00 ; movbe rax, qword ptr [0x1234]
+0f 18 0c 25 34 12 00 00 ; prefetcht0 byte ptr [0x1234]
+0f 1f 04 25 34 12 00 00 ; nop dword ptr [0x1234]
+0f ae 3c 25 34 12 00 00 ; clflush byte ptr [0x1234]
+dd 04 25 34 12 00 00 ; fld qword ptr [0x1234]
+d9 1c 25 34 12 00 00 ; fstp dword ptr [0x1234]
+df 04 25 34 12 00 00 ; fild word ptr [0x1234]
+d9 3c 25 34 12 00 00 ; fnstcw word ptr [0x1234]
+f3 44 0f 6f 04 25 34 12 00 00 ; movdqu xmm8, xmmword ptr [0x1234]
+0f 29 0c 25 34 12 00 00 ; movaps xmmword ptr [0x1234], xmm1
+66 0f ef 14 25 34 12 00 00 ; pxor xmm2, xmmword ptr [0x1234]
+f2 0f c2 0c 25 34 12 00 00 02 ; cmplesd xmm1, qword ptr [0x1234]
+0f c6 1c 25 34 12 00 00 44 ; shufps xmm3, xmmword ptr [0x1234], 0x44 # xmm3 = xmm3[0,1],mem[0,1]
+66 0f c4 0c 25 34 12 00 00 03 ; pinsrw xmm1, word ptr [0x1234], 0x3
+f3 0f 7e 0c 25 34 12 00 00 ; movq xmm1, qword ptr [0x1234]
+66 0f 7e 14 25 34 12 00 00 ; movd dword ptr [0x1234], xmm2
+f2 48 0f 2c 04 25 34 12 00 00 ; cvttsd2si rax, qword ptr [0x1234]
+f2 0f 51 0c 25 34 12 00 00 ; sqrtsd xmm1, qword ptr [0x1234]
+66 0f 54 0c 25 34 12 00 00 ; andpd xmm1, xmmword ptr [0x1234]
+66 0f 60 0c 25 34 12 00 00 ; punpcklbw xmm1, xmmword ptr [0x1234] # xmm1 = xmm1[0],mem[0],xmm1[1],mem[1],xmm1[2],mem[2],xmm1[3],mem[3],xmm1[4],mem[4],xmm1[5],mem[5],xmm1[6],mem[6],xmm1[7],mem[7]
+66 0f 74 0c 25 34 12 00 00 ; pcmpeqb xmm1, xmmword ptr [0x1234]
+66 0f 3a 0f 0c 25 34 12 00 00 03 ; palignr xmm1, xmmword ptr [0x1234], 0x3 # xmm1 = mem[3,4,5,6,7,8,9,10,11,12,13,14,15],xmm1[0,1,2]
+66 0f 38 00 0c 25 34 12 00 00 ; pshufb xmm1, xmmword ptr [0x1234]
+66 0f 38 17 0c 25 34 12 00 00 ; ptest xmm1, xmmword ptr [0x1234]
+66 0f 38 15 0c 25 34 12 00 00 ; blendvpd xmm1, xmmword ptr [0x1234], xmm0
+66 0f 3a 63 0c 25 34 12 00 00 0c ; pcmpistri xmm1, xmmword ptr [0x1234], 0xc
+48 0f bc 04 25 34 12 00 00 ; bsf rax, qword ptr [0x1234]
+48 0f c3 04 25 34 12 00 00 ; movnti qword ptr [0x1234], rax
+0f ae 14 25 34 12 00 00 ; ldmxcsr dword ptr [0x1234]
+0f c7 0c 25 34 12 00 00 ; cmpxchg8b qword ptr [0x1234]
+66 0f ba 24 25 34 12 00 00 05 ; bt word ptr [0x1234], 0x5
+48 0f ba 3c 25 34 12 00 00 3f ; btc qword ptr [0x1234], 0x3f
+66 8b 04 25 34 12 00 00 ; mov ax, word ptr [0x1234]
+64 48 89 04 25 34 12 00 00 ; mov qword ptr fs:[0x1234], rax
+50 ; push rax
+58 ; pop rax
+48 c7 c0 78 56 34 12 ; mov rax, 0x12345678
+48 b8 88 77 66 55 44 33 22 11 ; movabs rax, 0x1122334455667788
+48 c7 c0 ff ff ff ff ; mov rax, -0x1
+48 0f c8 ; bswap rax
+48 ff c0 ; inc rax
+90 ; nop
+ff d0 ; call rax
+ff e0 ; jmp rax
+48 c1 e0 07 ; shl rax, 0x7
+48 d3 f8 ; sar rax, cl
+48 69 c0 45 23 01 00 ; imul rax, rax, 0x12345
+0f 92 c0 ; setb al
+51 ; push rcx
+59 ; pop rcx
+48 c7 c1 78 56 34 12 ; mov rcx, 0x12345678
+48 b9 88 77 66 55 44 33 22 11 ; movabs rcx, 0x1122334455667788
+48 c7 c1 ff ff ff ff ; mov rcx, -0x1
+48 0f c9 ; bswap rcx
+48 ff c1 ; inc rcx
+48 91 ; xchg rax, rcx
+ff d1 ; call rcx
+ff e1 ; jmp rcx
+48 c1 e1 07 ; shl rcx, 0x7
+48 d3 f9 ; sar rcx, cl
+48 69 c9 45 23 01 00 ; imul rcx, rcx, 0x12345
+52 ; push rdx
+5a ; pop rdx
+48 c7 c2 78 56 34 12 ; mov rdx, 0x12345678
+48 ba 88 77 66 55 44 33 22 11 ; movabs rdx, 0x1122334455667788
+48 c7 c2 ff ff ff ff ; mov rdx, -0x1
+48 0f ca ; bswap rdx
+48 ff c2 ; inc rdx
+48 92 ; xchg rax, rdx
+ff d2 ; call rdx
+ff e2 ; jmp rdx
+48 c1 e2 07 ; shl rdx, 0x7
+48 d3 fa ; sar rdx, cl
+48 69 d2 45 23 01 00 ; imul rdx, rdx, 0x12345
+53 ; push rbx
+5b ; pop rbx
+48 c7 c3 78 56 34 12 ; mov rbx, 0x12345678
+48 bb 88 77 66 55 44 33 22 11 ; movabs rbx, 0x1122334455667788
+48 c7 c3 ff ff ff ff ; mov rbx, -0x1
+48 0f cb ; bswap rbx
+48 ff c3 ; inc rbx
+48 93 ; xchg rax, rbx
+ff d3 ; call rbx
+ff e3 ; jmp rbx
+48 c1 e3 07 ; shl rbx, 0x7
+48 d3 fb ; sar rbx, cl
+48 69 db 45 23 01 00 ; imul rbx, rbx, 0x12345
+54 ; push rsp
+5c ; pop rsp
+48 c7 c4 78 56 34 12 ; mov rsp, 0x12345678
+48 bc 88 77 66 55 44 33 22 11 ; movabs rsp, 0x1122334455667788
+48 c7 c4 ff ff ff ff ; mov rsp, -0x1
+48 0f cc ; bswap rsp
+48 ff c4 ; inc rsp
+48 94 ; xchg rax, rsp
+ff d4 ; call rsp
+ff e4 ; jmp rsp
+48 c1 e4 07 ; shl rsp, 0x7
+48 d3 fc ; sar rsp, cl
+48 69 e4 45 23 01 00 ; imul rsp, rsp, 0x12345
+55 ; push rbp
+5d ; pop rbp
+48 c7 c5 78 56 34 12 ; mov rbp, 0x12345678
+48 bd 88 77 66 55 44 33 22 11 ; movabs rbp, 0x1122334455667788
+48 c7 c5 ff ff ff ff ; mov rbp, -0x1
+48 0f cd ; bswap rbp
+48 ff c5 ; inc rbp
+48 95 ; xchg rax, rbp
+ff d5 ; call rbp
+ff e5 ; jmp rbp
+48 c1 e5 07 ; shl rbp, 0x7
+48 d3 fd ; sar rbp, cl
+48 69 ed 45 23 01 00 ; imul rbp, rbp, 0x12345
+56 ; push rsi
+5e ; pop rsi
+48 c7 c6 78 56 34 12 ; mov rsi, 0x12345678
+48 be 88 77 66 55 44 33 22 11 ; movabs rsi, 0x1122334455667788
+48 c7 c6 ff ff ff ff ; mov rsi, -0x1
+48 0f ce ; bswap rsi
+48 ff c6 ; inc rsi
+48 96 ; xchg rax, rsi
+ff d6 ; call rsi
+ff e6 ; jmp rsi
+48 c1 e6 07 ; shl rsi, 0x7
+48 d3 fe ; sar rsi, cl
+48 69 f6 45 23 01 00 ; imul rsi, rsi, 0x12345
+57 ; push rdi
+5f ; pop rdi
+48 c7 c7 78 56 34 12 ; mov rdi, 0x12345678
+48 bf 88 77 66 55 44 33 22 11 ; movabs rdi, 0x1122334455667788
+48 c7 c7 ff ff ff ff ; mov rdi, -0x1
+48 0f cf ; bswap rdi
+48 ff c7 ; inc rdi
+48 97 ; xchg rax, rdi
+ff d7 ; call rdi
+ff e7 ; jmp rdi
+48 c1 e7 07 ; shl rdi, 0x7
+48 d3 ff ; sar rdi, cl
+48 69 ff 45 23 01 00 ; imul rdi, rdi, 0x12345
+41 50 ; push r8
+41 58 ; pop r8
+49 c7 c0 78 56 34 12 ; mov r8, 0x12345678
+49 b8 88 77 66 55 44 33 22 11 ; movabs r8, 0x1122334455667788
+49 c7 c0 ff ff ff ff ; mov r8, -0x1
+49 0f c8 ; bswap r8
+49 ff c0 ; inc r8
+49 90 ; xchg rax, r8
+41 ff d0 ; call r8
+41 ff e0 ; jmp r8
+49 c1 e0 07 ; shl r8, 0x7
+49 d3 f8 ; sar r8, cl
+4d 69 c0 45 23 01 00 ; imul r8, r8, 0x12345
+41 51 ; push r9
+41 59 ; pop r9
+49 c7 c1 78 56 34 12 ; mov r9, 0x12345678
+49 b9 88 77 66 55 44 33 22 11 ; movabs r9, 0x1122334455667788
+49 c7 c1 ff ff ff ff ; mov r9, -0x1
+49 0f c9 ; bswap r9
+49 ff c1 ; inc r9
+49 91 ; xchg rax, r9
+41 ff d1 ; call r9
+41 ff e1 ; jmp r9
+49 c1 e1 07 ; shl r9, 0x7
+49 d3 f9 ; sar r9, cl
+4d 69 c9 45 23 01 00 ; imul r9, r9, 0x12345
+41 54 ; push r12
+41 5c ; pop r12
+49 c7 c4 78 56 34 12 ; mov r12, 0x12345678
+49 bc 88 77 66 55 44 33 22 11 ; movabs r12, 0x1122334455667788
+49 c7 c4 ff ff ff ff ; mov r12, -0x1
+49 0f cc ; bswap r12
+49 ff c4 ; inc r12
+49 94 ; xchg rax, r12
+41 ff d4 ; call r12
+41 ff e4 ; jmp r12
+49 c1 e4 07 ; shl r12, 0x7
+49 d3 fc ; sar r12, cl
+4d 69 e4 45 23 01 00 ; imul r12, r12, 0x12345
+41 55 ; push r13
+41 5d ; pop r13
+49 c7 c5 78 56 34 12 ; mov r13, 0x12345678
+49 bd 88 77 66 55 44 33 22 11 ; movabs r13, 0x1122334455667788
+49 c7 c5 ff ff ff ff ; mov r13, -0x1
+49 0f cd ; bswap r13
+49 ff c5 ; inc r13
+49 95 ; xchg rax, r13
+41 ff d5 ; call r13
+41 ff e5 ; jmp r13
+49 c1 e5 07 ; shl r13, 0x7
+49 d3 fd ; sar r13, cl
+4d 69 ed 45 23 01 00 ; imul r13, r13, 0x12345
+41 56 ; push r14
+41 5e ; pop r14
+49 c7 c6 78 56 34 12 ; mov r14, 0x12345678
+49 be 88 77 66 55 44 33 22 11 ; movabs r14, 0x1122334455667788
+49 c7 c6 ff ff ff ff ; mov r14, -0x1
+49 0f ce ; bswap r14
+49 ff c6 ; inc r14
+49 96 ; xchg rax, r14
+41 ff d6 ; call r14
+41 ff e6 ; jmp r14
+49 c1 e6 07 ; shl r14, 0x7
+49 d3 fe ; sar r14, cl
+4d 69 f6 45 23 01 00 ; imul r14, r14, 0x12345
+41 57 ; push r15
+41 5f ; pop r15
+49 c7 c7 78 56 34 12 ; mov r15, 0x12345678
+49 bf 88 77 66 55 44 33 22 11 ; movabs r15, 0x1122334455667788
+49 c7 c7 ff ff ff ff ; mov r15, -0x1
+49 0f cf ; bswap r15
+49 ff c7 ; inc r15
+49 97 ; xchg rax, r15
+41 ff d7 ; call r15
+41 ff e7 ; jmp r15
+49 c1 e7 07 ; shl r15, 0x7
+49 d3 ff ; sar r15, cl
+4d 69 ff 45 23 01 00 ; imul r15, r15, 0x12345
+b8 78 56 34 12 ; mov eax, 0x12345678
+89 c0 ; mov eax, eax
+6b c0 03 ; imul eax, eax, 0x3
+0f bd c0 ; bsr eax, eax
+b9 78 56 34 12 ; mov ecx, 0x12345678
+89 c9 ; mov ecx, ecx
+6b c9 03 ; imul ecx, ecx, 0x3
+0f bd c9 ; bsr ecx, ecx
+ba 78 56 34 12 ; mov edx, 0x12345678
+89 d2 ; mov edx, edx
+6b d2 03 ; imul edx, edx, 0x3
+0f bd d2 ; bsr edx, edx
+bb 78 56 34 12 ; mov ebx, 0x12345678
+89 db ; mov ebx, ebx
+6b db 03 ; imul ebx, ebx, 0x3
+0f bd db ; bsr ebx, ebx
+bc 78 56 34 12 ; mov esp, 0x12345678
+89 e4 ; mov esp, esp
+6b e4 03 ; imul esp, esp, 0x3
+0f bd e4 ; bsr esp, esp
+bd 78 56 34 12 ; mov ebp, 0x12345678
+89 ed ; mov ebp, ebp
+6b ed 03 ; imul ebp, ebp, 0x3
+0f bd ed ; bsr ebp, ebp
+be 78 56 34 12 ; mov esi, 0x12345678
+89 f6 ; mov esi, esi
+6b f6 03 ; imul esi, esi, 0x3
+0f bd f6 ; bsr esi, esi
+bf 78 56 34 12 ; mov edi, 0x12345678
+89 ff ; mov edi, edi
+6b ff 03 ; imul edi, edi, 0x3
+0f bd ff ; bsr edi, edi
+41 b8 78 56 34 12 ; mov r8d, 0x12345678
+45 89 c0 ; mov r8d, r8d
+45 6b c0 03 ; imul r8d, r8d, 0x3
+45 0f bd c0 ; bsr r8d, r8d
+41 bd 78 56 34 12 ; mov r13d, 0x12345678
+45 89 ed ; mov r13d, r13d
+45 6b ed 03 ; imul r13d, r13d, 0x3
+45 0f bd ed ; bsr r13d, r13d
+66 b8 34 12 ; mov ax, 0x1234
+66 50 ; push ax
+66 a9 34 12 ; test ax, 0x1234
+66 b9 34 12 ; mov cx, 0x1234
+66 51 ; push cx
+66 f7 c1 34 12 ; test cx, 0x1234
+66 41 b9 34 12 ; mov r9w, 0x1234
+66 41 51 ; push r9w
+66 41 81 c1 34 12 ; add r9w, 0x1234
+66 41 f7 c1 34 12 ; test r9w, 0x1234
+b0 12 ; mov al, 0x12
+a8 12 ; test al, 0x12
+fe c0 ; inc al
+b1 12 ; mov cl, 0x12
+f6 c1 12 ; test cl, 0x12
+fe c1 ; inc cl
+b2 12 ; mov dl, 0x12
+f6 c2 12 ; test dl, 0x12
+fe c2 ; inc dl
+b3 12 ; mov bl, 0x12
+f6 c3 12 ; test bl, 0x12
+fe c3 ; inc bl
+40 b4 12 ; mov spl, 0x12
+40 f6 c4 12 ; test spl, 0x12
+40 fe c4 ; inc spl
+40 b6 12 ; mov sil, 0x12
+40 f6 c6 12 ; test sil, 0x12
+40 fe c6 ; inc sil
+41 b0 12 ; mov r8b, 0x12
+41 f6 c0 12 ; test r8b, 0x12
+41 fe c0 ; inc r8b
+41 b7 12 ; mov r15b, 0x12
+41 f6 c7 12 ; test r15b, 0x12
+41 fe c7 ; inc r15b
+b4 12 ; mov ah, 0x12
+f6 c4 12 ; test ah, 0x12
+fe c4 ; inc ah
+c3 ; ret
+c2 08 00 ; ret 0x8
+c9 ; leave
+c8 10 00 01 ; enter 0x10, 0x1
+cc ; int3
+cd 80 ; int 0x80
+0f 0b ; ud2
+0f a2 ; cpuid
+0f 31 ; rdtsc
+0f 01 f9 ; rdtscp
+0f 05 ; syscall
+f3 90 ; pause
+f4 ; hlt
+48 99 ; cqo
+99 ; cdq
+66 99 ; cwd
+48 98 ; cdqe
+66 98 ; cbw
+98 ; cwde
+f8 ; clc
+f9 ; stc
+fc ; cld
+fd ; std
+f5 ; cmc
+9f ; lahf
+9e ; sahf
+9c ; pushfq
+9d ; popfq
+0f ae f0 ; mfence
+0f ae e8 ; lfence
+0f ae f8 ; sfence
+f3 a4 ; rep movsb byte ptr es:[rdi], byte ptr [rsi]
+f3 48 ab ; rep stosq qword ptr es:[rdi], rax
+48 a5 ; movsq qword ptr es:[rdi], qword ptr [rsi]
+aa ; stosb byte ptr es:[rdi], al
+ad ; lodsd eax, dword ptr [rsi]
+ae ; scasb al, byte ptr es:[rdi]
+48 a7 ; cmpsq qword ptr [rsi], qword ptr es:[rdi]
+f2 ae ; repne scasb al, byte ptr es:[rdi]
+e4 60 ; in al, 0x60
+e6 80 ; out 0x80, al
+ed ; in eax, dx
+66 ef ; out dx, ax
+d7 ; xlatb
+9b ; wait
+db e3 ; fninit
+d9 e8 ; fld1
+d9 ee ; fldz
+de c1 ; faddp st(1), st
+d9 ca ; fxch st(2)
+0f 77 ; emms
+48 0f c7 f0 ; rdrand rax
+0f c7 f8 ; rdseed eax
+0f 01 d0 ; xgetbv
+f0 48 83 00 01 ; lock add qword ptr [rax], 0x1
+f0 41 ff 06 ; lock inc dword ptr [r14]
+64 48 8b 04 25 00 00 00 00 ; mov rax, qword ptr fs:[0x0]
+67 8b 01 ; mov eax, dword ptr [ecx]
+67 8d 44 b3 03 ; lea eax, [ebx + 4*esi + 0x3]
+a0 88 77 66 55 44 33 22 11 ; movabs al, byte ptr [0x1122334455667788]
+48 a1 88 77 66 55 44 33 22 11 ; movabs rax, qword ptr [0x1122334455667788]
+48 a3 88 77 66 55 44 33 22 11 ; movabs qword ptr [0x1122334455667788], rax
+a1 88 77 66 55 44 33 22 11 ; movabs eax, dword ptr [0x1122334455667788]
+67 8b 04 25 44 33 22 11 ; addr32 mov eax, dword ptr [0x11223344]
+c6 f8 01 ; xabort 0x1
+f3 0f 1e fa ; endbr64
+0f b9 00 ; ud1 eax, dword ptr [rax]
+2e 66 0f 1f 04 00 ; nop word ptr cs:[rax + rax]
+0f 10 c1 ; movups xmm0, xmm1
+f2 48 0f 2a c0 ; cvtsi2sd xmm0, rax
+66 48 0f 7e c0 ; movq rax, xmm0
+66 0f 6e c0 ; movd xmm0, eax
+f2 0f 51 c1 ; sqrtsd xmm0, xmm1
+0f 57 c0 ; xorps xmm0, xmm0
+66 0f c5 c1 02 ; pextrw eax, xmm1, 0x2
+66 0f 3a 17 c8 02 ; extractps eax, xmm1, 0x2
+66 0f 3a 21 ca 10 ; insertps xmm1, xmm2, 0x10 # xmm1 = xmm1[0],xmm2[0],xmm1[2,3]
+66 0f 3a 61 ca 18 ; pcmpestri xmm1, xmm2, 0x18
+66 0f 38 dc ca ; aesenc xmm1, xmm2
+66 0f 3a 44 ca 11 ; pclmulqdq xmm1, xmm2, 0x11
+0f 38 cb ca ; sha256rnds2 xmm1, xmm2, xmm0
+f2 48 0f 38 f1 00 ; crc32 rax, qword ptr [rax]
+0f be c1 ; movsx eax, cl
+44 0f b7 06 ; movzx r8d, word ptr [rsi]
+a8 01 ; test al, 0x1
+a9 00 01 00 00 ; test eax, 0x100
+48 a9 00 01 00 00 ; test rax, 0x100
+66 a9 00 01 ; test ax, 0x100
+48 f7 e9 ; imul rcx
+48 f7 e2 ; mul rdx
+49 f7 f0 ; div r8
+f7 38 ; idiv dword ptr [rax]
+48 f7 d0 ; not rax
+49 f7 df ; neg r15
+48 d1 f8 ; sar rax
+d0 d9 ; rcr cl
+2e 89 00 ; mov dword ptr cs:[rax], eax
+eb fe ; jmp 0x2257
+75 fc ; jne 0x2257
+e2 fa ; loop 0x2257
+e3 f8 ; jrcxz 0x2257
+67 e3 f5 ; jecxz 0x2257
+e1 f3 ; loope 0x2257
+e8 ee ff ff ff ; call 0x2257
+e9 21 ff ff ff ; jmp 0x2257
+0f 85 1b ff ff ff ; jne 0x2257
+0f 8f 15 ff ff ff ; jg 0x2257
+e8 10 ff ff ff ; call 0x2257
+e9 32 01 00 00 ; jmp 0x247e
+0f 84 2c 01 00 00 ; je 0x247e
