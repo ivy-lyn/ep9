@@ -28,7 +28,8 @@
 //!   executable with `mprotect`. That works for a binary without the hardened runtime (the
 //!   same fact as `jit::WxMode::Protect`, measured on macOS 27.0.1). A hardened binary needs
 //!   `MAP_JIT` (the `com.apple.security.cs.allow-jit` entitlement) or a statically linked
-//!   `.o` unit (H35, not built yet). The H28 unit-mapping row names this limit.
+//!   `.o` unit ([`UnitText::linked`], `crate::linked`; M8-P3). The H28 unit-mapping row names
+//!   this limit.
 //! - **Landing pads (MC-w23-15).** [`UnitText::map_with_pads`] maps the text of a unit with
 //!   the container compat flag `has_pads` as BTI guarded pages (`PROT_BTI`) on Linux and
 //!   Android AArch64, in both forms, when the kernel takes the flag; elsewhere the text is
@@ -51,6 +52,9 @@ pub enum Form {
     Window,
     /// Commit RW, copy, flush the icache, protect RX (a plain range in a build without `jit`).
     Protect,
+    /// A linked text in place ([`UnitText::linked`], the `.o` unit form): no chunk, no copy, no
+    /// protection change.
+    Linked,
 }
 
 impl Form {
@@ -59,6 +63,7 @@ impl Form {
         match self {
             Form::Window => "window",
             Form::Protect => "protect",
+            Form::Linked => "linked",
         }
     }
 }
@@ -77,7 +82,9 @@ pub struct UnitText<'r> {
     /// `MapJit` drops the contents lazily) before `chunk` gives the pages back.
     #[cfg(any(feature = "jit", test))]
     _mem: Option<crate::jit::CodeMemory<'r>>,
-    chunk: CodeChunk<'r>,
+    /// `None` for a linked text ([`Form::Linked`]).
+    chunk: Option<CodeChunk<'r>>,
+    base: usize,
     len: usize,
     form: Form,
     bti: bool,
@@ -165,7 +172,8 @@ impl<'r> UnitText<'r> {
         };
         Ok(UnitText {
             _mem: Some(mem),
-            chunk,
+            base: chunk.base(),
+            chunk: Some(chunk),
             len: text.len(),
             form: Form::Window,
             bti,
@@ -206,16 +214,17 @@ impl<'r> UnitText<'r> {
         Ok(UnitText {
             #[cfg(any(feature = "jit", test))]
             _mem: None,
-            chunk,
+            base: chunk.base(),
+            chunk: Some(chunk),
             len: text.len(),
             form: Form::Protect,
             bti,
         })
     }
 
-    /// The address of the first text byte (page-aligned).
+    /// The address of the first text byte (page-aligned, except a linked text).
     pub fn base(&self) -> usize {
-        self.chunk.base()
+        self.base
     }
 
     /// The text length in bytes (the chunk may be longer: whole pages).
@@ -233,9 +242,13 @@ impl<'r> UnitText<'r> {
         self.base()..self.base() + self.len
     }
 
-    /// The pages of the chunk: `base()..base() + chunk length` (a page multiple).
+    /// The pages of the chunk: `base()..base() + chunk length` (a page multiple); for a
+    /// linked text, [`UnitText::range`].
     pub fn pages(&self) -> Range<usize> {
-        self.chunk.addr_range()
+        match &self.chunk {
+            Some(c) => c.addr_range(),
+            None => self.range(),
+        }
     }
 
     /// True if `addr` is a text byte.
@@ -252,18 +265,36 @@ impl<'r> UnitText<'r> {
     pub fn bti(&self) -> bool {
         self.bti
     }
+
+    /// The text of a registered linked unit (`crate::linked`, the `.o` form, H35 S1) in place:
+    /// the static linker put it in the binary's executable pages, so nothing is mapped, copied
+    /// or protected, and drop gives nothing back. [`UnitText::bti`] is false: the binary's own
+    /// pages are guarded or not by the binary's own note, not by this value. `None` when
+    /// `text` is not exactly a registered linked text ([`crate::linked::linked_text`]).
+    pub fn linked(text: &[u8]) -> Option<UnitText<'static>> {
+        let t = crate::linked::linked_text(text)?;
+        Some(UnitText {
+            #[cfg(any(feature = "jit", test))]
+            _mem: None,
+            chunk: None,
+            base: t.as_ptr() as usize,
+            len: t.len(),
+            form: Form::Linked,
+            bti: false,
+        })
+    }
 }
 
 impl Drop for UnitText<'_> {
     fn drop(&mut self) {
-        if self.form == Form::Protect {
+        if let (Form::Protect, Some(chunk)) = (self.form, &self.chunk) {
             // SAFETY: the pages belong to this chunk; the caller's rule is that no code runs in
             // them and no pointer into them is used after the drop.
             let r = unsafe {
-                self.chunk
+                chunk
                     .code_range()
                     .reservation()
-                    .decommit(self.chunk.offset(), self.chunk.len())
+                    .decommit(chunk.offset(), chunk.len())
             };
             debug_assert!(r.is_ok(), "unit text decommit failed: {r:?}");
         }

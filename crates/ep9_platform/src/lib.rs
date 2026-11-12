@@ -11,15 +11,17 @@
 //! | [`spill`] | spill trampolines for AAPCS64, SysV x86-64 and Win64; [`with_spilled_registers`]; [`load_word`] | naked functions | always |
 //! | `jit` | `CodeMemory` in a code-range chunk (`CodeChunk::commit`) with W^X: MAP_JIT, mprotect, dual mapping; icache flush | MAP_JIT / mprotect / memfd / VirtualProtect | `jit` |
 //! | `unwind` | `.eh_frame` and Win64 UNWIND_INFO encoders; registration; native stack walk | libgcc / libunwind / RtlAddGrowableFunctionTable | `unwind` (`jit` implies it) |
-//! | [`unit_text`] | [`unit_text::UnitText`]: unit text in a code-range chunk, written once, then RX (A2, M7-P4); with `jit` or a `MAP_JIT` range through a `jit` write window, else commit RW, copy, icache flush, protect RX | mprotect / VirtualProtect | always |
+//! | [`unit_text`] | [`unit_text::UnitText`]: unit text in a code-range chunk, written once, then RX (A2, M7-P4); with `jit` or a `MAP_JIT` range through a `jit` write window, else commit RW, copy, icache flush, protect RX; or a linked text in place ([`unit_text::UnitText::linked`]) | mprotect / VirtualProtect | always |
+//! | [`linked`] | static registration of a linked `.o` unit (H35 S1, H35-Q3; M8-P3): [`linked::LinkedUnit`], the record the `ep9_unit` writer emits; [`linked::register`]; [`linked::linked_text`] | the static linker | always |
 //!
 //! Unit tests build `jit` and `unwind` without the features, so `cargo test --workspace` runs
 //! their tests.
 //!
-//! Not built yet: signals and SEH handlers; `.o` units (H35: the static-link unit form).
+//! Not built yet: signals and SEH handlers.
 
 #[cfg(any(feature = "jit", test))]
 pub mod jit;
+pub mod linked;
 pub mod spill;
 pub mod stack;
 mod sys;
