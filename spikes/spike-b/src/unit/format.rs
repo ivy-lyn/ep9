@@ -3,7 +3,7 @@
 //! spike loads.
 //!
 //! ```text
-//! header (256 B, ep9_unit::UnitHeader) | section table | sections, 8-aligned, in kind order:
+//! header (256 B, ep9_unit::UnitHeader) | section table | sections, kind-aligned, in kind order:
 //!   text        the functions, each at a 16-aligned offset (entry = offset 0 of its code)
 //!   rodata      "SPUR" 1, slot, arch, function table: kind, text offset, length, counter,
 //!               first IC cell, IC cells, bytecode digest (SHA-256), name
@@ -332,8 +332,8 @@ impl Finalize for UnitFinalizer {
     }
 }
 
-/// The canonical container bytes of `sections` (kind order, 8-aligned, zero padding) with
-/// the content hash written.
+/// The canonical container bytes of `sections` (kind order, each kind's alignment, zero
+/// padding) with the content hash written.
 pub fn encode(header: UnitHeader, sections: &[(SectionKind, Vec<u8>)]) -> Vec<u8> {
     let mut sections = sections.to_vec();
     sections.sort_by_key(|(k, _)| *k);

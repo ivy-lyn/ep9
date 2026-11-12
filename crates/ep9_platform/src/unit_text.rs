@@ -29,6 +29,10 @@
 //!   same fact as `jit::WxMode::Protect`, measured on macOS 27.0.1). A hardened binary needs
 //!   `MAP_JIT` (the `com.apple.security.cs.allow-jit` entitlement) or a statically linked
 //!   `.o` unit (H35, not built yet). The H28 unit-mapping row names this limit.
+//! - **Landing pads (MC-w23-15).** [`UnitText::map_with_pads`] maps the text of a unit with
+//!   the container compat flag `has_pads` as BTI guarded pages (`PROT_BTI`) on Linux and
+//!   Android AArch64, in both forms, when the kernel takes the flag; elsewhere the text is
+//!   plain RX. [`UnitText::bti`] says which.
 //! - **Other threads.** The flush is for this thread. A thread that runs text that another
 //!   thread mapped (a shared text) first runs [`context_sync`]: the A2 loader calls it on each
 //!   text it returns, mapped or shared, before the dispatch slot write that makes it reachable.
@@ -76,6 +80,7 @@ pub struct UnitText<'r> {
     chunk: CodeChunk<'r>,
     len: usize,
     form: Form,
+    bti: bool,
 }
 
 impl fmt::Debug for UnitText<'_> {
@@ -84,6 +89,7 @@ impl fmt::Debug for UnitText<'_> {
             .field("base", &format_args!("{:#x}", self.base()))
             .field("len", &self.len)
             .field("form", &self.form)
+            .field("bti", &self.bti)
             .finish()
     }
 }
@@ -93,6 +99,21 @@ impl<'r> UnitText<'r> {
     /// for the form). Errors: `InvalidInput` for empty text; the errors of `CodeRange::alloc`
     /// and of the protection calls. On an error nothing stays committed.
     pub fn map(range: &'r CodeRange, text: &[u8]) -> io::Result<UnitText<'r>> {
+        Self::map_with_pads(range, text, false)
+    }
+
+    /// [`UnitText::map`] for the text of a unit with landing pads (the container compat flag
+    /// `has_pads`, MC-w23-15) when `pads` is true: the pages become BTI guarded pages where
+    /// the OS and the CPU have them (Linux and Android on AArch64, `PROT_BTI`), in both forms.
+    /// Elsewhere, or when the kernel refuses `PROT_BTI` (a CPU without BTI), the text is
+    /// plain RX, as with `pads` false. [`UnitText::bti`] says which. The caller passes true
+    /// only for text whose every indirect entry is a landing pad: in guarded pages an
+    /// indirect branch to any other word faults.
+    pub fn map_with_pads(
+        range: &'r CodeRange,
+        text: &[u8],
+        pads: bool,
+    ) -> io::Result<UnitText<'r>> {
         if text.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -102,14 +123,14 @@ impl<'r> UnitText<'r> {
         let chunk = range.alloc(text.len())?;
         #[cfg(any(feature = "jit", test))]
         if cfg!(feature = "jit") || range.is_map_jit() {
-            return Self::map_window(chunk, text);
+            return Self::map_window(chunk, text, pads);
         }
-        Self::map_protect(chunk, text)
+        Self::map_protect(chunk, text, pads)
     }
 
     /// The window form: `jit::CodeMemory` over the chunk, one write window.
     #[cfg(any(feature = "jit", test))]
-    fn map_window(chunk: CodeChunk<'r>, text: &[u8]) -> io::Result<UnitText<'r>> {
+    fn map_window(chunk: CodeChunk<'r>, text: &[u8], pads: bool) -> io::Result<UnitText<'r>> {
         use crate::jit::{CodeMemory, WxMode};
         let range = chunk.code_range();
         let mode = if range.is_map_jit() {
@@ -128,16 +149,31 @@ impl<'r> UnitText<'r> {
             w.bytes().copy_from_slice(text);
             w.close()?;
         }
+        // The window closed RX. Only Linux and Android on AArch64 have guarded pages; there
+        // the range is plain (no MAP_JIT), so a second mprotect adds PROT_BTI. The text is
+        // never written again, so no later window drops the flag.
+        let bti = if pads
+            && cfg!(all(
+                any(target_os = "linux", target_os = "android"),
+                target_arch = "aarch64"
+            )) {
+            // SAFETY: the pages are committed, page-aligned and ours (the code memory above);
+            // the write window is closed, so no reference writes them.
+            unsafe { sys::protect_rx_bti(chunk.base(), chunk.len()) }?
+        } else {
+            false
+        };
         Ok(UnitText {
             _mem: Some(mem),
             chunk,
             len: text.len(),
             form: Form::Window,
+            bti,
         })
     }
 
-    /// The protect form: commit RW, copy, flush, protect RX.
-    fn map_protect(chunk: CodeChunk<'r>, text: &[u8]) -> io::Result<UnitText<'r>> {
+    /// The protect form: commit RW, copy, flush, protect RX (with BTI for `pads`).
+    fn map_protect(chunk: CodeChunk<'r>, text: &[u8], pads: bool) -> io::Result<UnitText<'r>> {
         let res = chunk.code_range().reservation();
         let (base, pages) = (chunk.base(), chunk.len());
         res.commit(chunk.offset(), pages)?;
@@ -152,17 +188,28 @@ impl<'r> UnitText<'r> {
         }
         sys::flush_icache(base, text.len());
         // SAFETY: the pages are committed, page-aligned and ours; no reference writes them.
-        if let Err(e) = unsafe { sys::protect_rx(base, pages) } {
-            // SAFETY: nothing runs or points into the pages yet.
-            let _ = unsafe { res.decommit(chunk.offset(), pages) };
-            return Err(e);
-        }
+        let protected = unsafe {
+            if pads {
+                sys::protect_rx_bti(base, pages)
+            } else {
+                sys::protect_rx(base, pages).map(|()| false)
+            }
+        };
+        let bti = match protected {
+            Ok(bti) => bti,
+            Err(e) => {
+                // SAFETY: nothing runs or points into the pages yet.
+                let _ = unsafe { res.decommit(chunk.offset(), pages) };
+                return Err(e);
+            }
+        };
         Ok(UnitText {
             #[cfg(any(feature = "jit", test))]
             _mem: None,
             chunk,
             len: text.len(),
             form: Form::Protect,
+            bti,
         })
     }
 
@@ -199,6 +246,11 @@ impl<'r> UnitText<'r> {
     /// How the bytes got there.
     pub fn form(&self) -> Form {
         self.form
+    }
+
+    /// True when the pages are BTI guarded pages ([`UnitText::map_with_pads`]).
+    pub fn bti(&self) -> bool {
+        self.bti
     }
 }
 
@@ -294,5 +346,73 @@ mod tests {
         let e = UnitText::map(&range, &[]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(range.free_bytes(), free);
+    }
+
+    /// `bti c; mov w0, #42; ret` on AArch64; on x86-64 `ret42` (no pad form there).
+    fn padded_ret42() -> Vec<u8> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            [0xD503_245Fu32, 0x5280_0540, 0xD65F_03C0]
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .collect()
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            ret42()
+        }
+    }
+
+    /// The `VmFlags` line of the `/proc/self/smaps` block that holds `addr`.
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        target_arch = "aarch64"
+    ))]
+    fn vm_flags(addr: usize) -> String {
+        let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+        let mut inside = false;
+        for line in smaps.lines() {
+            if let Some((range, _)) = line.split_once(' ')
+                && let Some((lo, hi)) = range.split_once('-')
+                && let (Ok(lo), Ok(hi)) =
+                    (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16))
+            {
+                inside = (lo..hi).contains(&addr);
+            } else if inside && let Some(flags) = line.strip_prefix("VmFlags:") {
+                return flags.to_string();
+            }
+        }
+        panic!("no smaps block holds {addr:#x}");
+    }
+
+    /// MC-w23-15: text with landing pads, mapped by `map_with_pads`, runs (the call through
+    /// a function pointer is a `blr`, which `bti c` accepts). On Linux and Android AArch64 its
+    /// pages are BTI guarded pages (smaps `VmFlags` has `bt`) exactly when the CPU and the
+    /// kernel have BTI; elsewhere, and without the flag, the pages are plain RX.
+    #[test]
+    fn padded_text_runs_and_is_guarded_where_the_target_has_bti() {
+        let range = CodeRange::process().unwrap();
+        let t = UnitText::map_with_pads(range, &padded_ret42(), true).unwrap();
+        // SAFETY: the text is `padded_ret42`, mapped executable until `t` drops.
+        let f: extern "C" fn() -> u32 = unsafe { core::mem::transmute(t.base()) };
+        assert_eq!(f(), 42);
+        let plain = UnitText::map(range, &padded_ret42()).unwrap();
+        assert!(!plain.bti());
+        #[cfg(not(all(
+            any(target_os = "linux", target_os = "android"),
+            target_arch = "aarch64"
+        )))]
+        assert!(!t.bti());
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            target_arch = "aarch64"
+        ))]
+        {
+            let has_bti = std::arch::is_aarch64_feature_detected!("bti");
+            assert_eq!(t.bti(), has_bti);
+            let bt = |a| vm_flags(a).split_whitespace().any(|w| w == "bt");
+            assert_eq!(bt(t.base()), has_bti, "{}", vm_flags(t.base()));
+            assert!(!bt(plain.base()), "{}", vm_flags(plain.base()));
+        }
     }
 }

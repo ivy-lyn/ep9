@@ -292,3 +292,39 @@ pub(crate) fn flush_icache(addr: usize, len: usize) {
 pub(crate) fn flush_icache(_addr: usize, _len: usize) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
+
+/// `PROT_BTI` (Linux uapi `asm/mman.h` on arm64; the same value on Android). A local value:
+/// the `libc` crate has it only for some C libraries.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    target_arch = "aarch64"
+))]
+const PROT_BTI: libc::c_int = 0x10;
+
+/// Makes committed pages read and execute, as BTI guarded pages where the OS and the CPU have
+/// them (MC-w23-15: unit text with landing pads). Linux and Android on AArch64:
+/// `mprotect(PROT_READ | PROT_EXEC | PROT_BTI)`; the kernel refuses `PROT_BTI` with `EINVAL`
+/// on a CPU without BTI (or a kernel built without it), and then the pages are made plain RX.
+/// Other targets: plain RX ([`protect_rx`]). Gives true when the pages are guarded.
+///
+/// # Safety
+/// As [`protect_rx`].
+pub(crate) unsafe fn protect_rx_bti(addr: usize, size: usize) -> io::Result<bool> {
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        target_arch = "aarch64"
+    ))]
+    {
+        let prot = libc::PROT_READ | libc::PROT_EXEC | PROT_BTI;
+        // SAFETY: the caller guarantees the range is ours, committed and page-aligned.
+        if unsafe { libc::mprotect(addr as *mut c_void, size, prot) } == 0 {
+            return Ok(true);
+        }
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EINVAL) {
+            return Err(e);
+        }
+    }
+    // SAFETY: as above.
+    unsafe { protect_rx(addr, size) }.map(|()| false)
+}

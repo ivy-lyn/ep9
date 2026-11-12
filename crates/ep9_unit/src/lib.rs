@@ -3,7 +3,8 @@
 //! `aot` feature (H27), from A2.
 //!
 //! ```text
-//!  unit bytes: header (256 B) | section table (32 B per section) | sections, 8-aligned
+//!  unit bytes: header (256 B) | section table (32 B per section) | sections
+//!              (text 64 KiB-aligned, the others 8-aligned)
 //!                  |
 //!  check(bytes, &HostInfo::current()) -> Load | Bytecode | Source | LoadError   (S4 steps 1-4)
 //!                                         ^
@@ -27,7 +28,7 @@ mod layout;
 pub mod size;
 
 pub use check::{Outcome, Verdict, check, verdict};
-pub use codes::{Contract, SectionKind, Versions, cpu, target_abi, target_arch};
+pub use codes::{Contract, SectionKind, TEXT_ALIGN_LOG2, Versions, cpu, target_abi, target_arch};
 pub use header::{
     BadUnit, CONTAINER_VERSION, EXTENSION_ALIGN_LOG2, EXTENSION_KIND_MIN, ExtensionEntry,
     FROZEN_PREFIX_SIZE, HASH_SHA256, HEADER_SIZE, MAGIC, MAX_SECTIONS, MIN_SECTIONS,

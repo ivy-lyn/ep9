@@ -2400,3 +2400,116 @@ fn unit_loader_construct_and_call_of_unit_code_count_at_the_caller() {
         );
     }
 }
+
+// ---- M8-P2 A2-CUT: C-w22-1 (a text blob at any address) and MC-w23-15 (landing pads) -----
+
+/// Installs `fc` over `text` and `unwind` in a jitless isolate of `defs()` through
+/// [`unit_loader::load_and_install_with_pads`]; the isolate and the load counts.
+fn padded_isolate(text: &[u8], unwind: &[u8], fc: FunctionCode, pads: bool) -> (Isolate, Report) {
+    let iso = defs_isolate(ExecOptions::jitless());
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: each caller's text runs the bytecode of `g` from the variant entry (the frame
+    // stub, after a `bti c` or not), and `unwind` describes the stub.
+    let r = unsafe {
+        unit_loader::load_and_install_with_pads(
+            &iso.rt,
+            lu,
+            text,
+            unwind,
+            &[],
+            0,
+            &[fc],
+            Some(&Policy::JITLESS),
+            0,
+            pads,
+        )
+    };
+    (iso, r)
+}
+
+/// `g(walk)` through the Rust entry (`blr` on AArch64): 42 when the unit code ran.
+fn g_walk_gives_42(iso: &mut Isolate) {
+    let g = iso.global_raw("g").unwrap();
+    let w = iso.global_raw("walk").unwrap();
+    let v = call_through_entry(iso, g, &[w]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+}
+
+/// C-w22-1: the unit text of an embedder blob may lie at any address (here one byte into a
+/// buffer, so not even 2-aligned): the loader copies it into a page of the process code range,
+/// installs `g`, and its unit code runs. A blob in memory is never a load error for its
+/// address; the 64 KiB rule is the file layout (ep9_unit container v3). This holds on the old
+/// code too (the loader always copied); the test pins it.
+#[test]
+fn unit_loader_a_text_at_an_unaligned_address_is_copied_and_runs() {
+    let text = stub_text();
+    let mut buf = vec![0u8; text.len() + 1];
+    buf[1..].copy_from_slice(&text);
+    let blob = &buf[1..];
+    let at = blob.as_ptr() as usize;
+    assert!(!at.is_multiple_of(2), "{at:#x}");
+    let (mut iso, r) = padded_isolate(blob, &stub_unwind(), g_stub(), false);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
+    assert!(CodeRange::process().unwrap().contains(code.start));
+    assert!(code.start.is_multiple_of(4096) && code.start != at);
+    g_walk_gives_42(&mut iso);
+}
+
+/// MC-w23-15: a unit with the compat flag `has_pads` whose entry is `bti c` maps as BTI
+/// guarded pages where the target has them (Linux and Android AArch64 with a BTI CPU and
+/// kernel), and its code runs there (a `blr` into `bti c`). With the flag but an entry that is
+/// not a pad (the plain frame stub), the loader does not trust the flag and maps plain RX: in
+/// guarded pages that call would fault. Other targets: plain RX for both.
+#[test]
+fn unit_loader_a_padded_text_maps_with_bti_where_the_target_has_it() {
+    let guarded = cfg!(all(
+        any(target_os = "linux", target_os = "android"),
+        target_arch = "aarch64"
+    )) && {
+        #[cfg(target_arch = "aarch64")]
+        {
+            std::arch::is_aarch64_feature_detected!("bti")
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            false
+        }
+    };
+    let stub = call0_bytes().0.len() as u32;
+    // AArch64: `bti c` at the entry (offset 0), the frame stub at 4. Elsewhere no pad form:
+    // the plain stub.
+    let (text, unwind, len) = if cfg!(target_arch = "aarch64") {
+        let mut t = stub_text_at(&[4]);
+        t[..4].copy_from_slice(&0xd503_245fu32.to_le_bytes());
+        (t, stub_unwind_at(&[4]), 4 + stub)
+    } else {
+        (stub_text(), stub_unwind(), stub)
+    };
+    let fc = FunctionCode {
+        function: G,
+        digest: digest(G),
+        variants: vec![variant(
+            DispatchKind::AotBaseline,
+            lowering::JITLESS,
+            0,
+            len,
+        )],
+    };
+    let (mut iso, r) = padded_isolate(&text, &unwind, fc, true);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let uc = code_of(info(&iso, "g")).unwrap();
+    assert_eq!(unit_loader::text_bti(uc), Some(guarded));
+    g_walk_gives_42(&mut iso);
+    // A JS call: T0 enters the unit code too.
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
+    );
+    // The flag with an entry that is no pad: plain RX, and the code runs.
+    let (mut iso, r) = padded_isolate(&stub_text(), &stub_unwind(), g_stub(), true);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let uc = code_of(info(&iso, "g")).unwrap();
+    assert_eq!(unit_loader::text_bti(uc), Some(false));
+    g_walk_gives_42(&mut iso);
+}

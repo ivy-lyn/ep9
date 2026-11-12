@@ -156,6 +156,15 @@ pub(crate) unsafe fn protect_rx(addr: usize, size: usize) -> io::Result<()> {
     }
 }
 
+/// [`protect_rx`]: Windows has no BTI guarded pages here (MC-w23-15). Gives false.
+///
+/// # Safety
+/// As [`protect_rx`].
+pub(crate) unsafe fn protect_rx_bti(addr: usize, size: usize) -> io::Result<bool> {
+    // SAFETY: the caller's guarantee is that of `protect_rx`.
+    unsafe { protect_rx(addr, size) }.map(|()| false)
+}
+
 /// Makes the instruction fetch see the bytes written to `[addr, addr + len)` (`unit_text`
 /// without `jit`; the `jit` module has its own copy, `jit::flush_icache`).
 pub(crate) fn flush_icache(addr: usize, len: usize) {

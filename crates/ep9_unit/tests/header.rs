@@ -216,7 +216,7 @@ fn decode_rejects_bad_headers() {
     assert_eq!(UnitHeader::decode(&[]), Err(BadUnit::Truncated));
     assert_eq!(with(0, &[0x88]), Err(BadUnit::Magic));
     assert_eq!(with(7, b"\r"), Err(BadUnit::Magic));
-    for v in [1, 3] {
+    for v in [1, 2, 4] {
         assert_eq!(
             with(offsets::CONTAINER_VERSION, &le(v)),
             Err(BadUnit::ContainerVersion(v))
@@ -283,7 +283,9 @@ fn section_entries_round_trip_and_reject_bad_bytes() {
         let b = e.encode();
         assert_eq!(SectionEntry::decode(&b), Ok(e));
         assert_eq!(SectionKind::from_u32(k as u32), Some(k));
-        assert_eq!(b[entry_offsets::ALIGN_LOG2], 3);
+        // Container v3: the text is 64 KiB-aligned, every other named kind 8-aligned.
+        let align = if k == SectionKind::Text { 16 } else { 3 };
+        assert_eq!(b[entry_offsets::ALIGN_LOG2], align, "{}", k.name());
     }
     let good = SectionEntry {
         kind: SectionKind::Facts,
@@ -308,6 +310,18 @@ fn section_entries_round_trip_and_reject_bad_bytes() {
     );
     assert_eq!(
         with(entry_offsets::ALIGN_LOG2, 4),
+        Err(BadUnit::SectionTable("section alignment"))
+    );
+    // A text entry that says 8 bytes (the container v2 value) is refused.
+    let mut text = SectionEntry {
+        kind: SectionKind::Text,
+        offset: 1 << 16,
+        size: 8,
+    }
+    .encode();
+    text[entry_offsets::ALIGN_LOG2] = 3;
+    assert_eq!(
+        SectionEntry::decode(&text),
         Err(BadUnit::SectionTable("section alignment"))
     );
     for i in entry_offsets::RESERVED..SECTION_ENTRY_SIZE {

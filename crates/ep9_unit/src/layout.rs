@@ -231,7 +231,8 @@ pub fn layout_text() -> String {
     s.push_str(
         "\nlayout: each section starts at align_up(end of the previous section or of the table, \
          2^align_log2); padding bytes are 0; flags and reserved bytes are 0; the last section \
-         ends at total_size\n",
+         ends at total_size. The text is 64 KiB-aligned in the file; a loader maps it in place \
+         only from a 64 KiB-aligned address and copies it otherwise\n",
     );
     s.push_str(
         "hash: hash_alg 1 = SHA-256 of the whole unit with content_hash and the signature \
@@ -246,8 +247,9 @@ pub fn layout_text() -> String {
     );
     let _ = writeln!(s, "header_flags: bit 0 signed");
     s.push_str(
-        "compat_flags: no bit defined; an unknown bit is ignored. incompat_flags: no bit \
-         defined; an unknown bit -> bytecode\n",
+        "compat_flags: bit 0 has_pads (every indirect entry of the text starts with a landing \
+         pad and every indirect jump uses x16 or x17: a loader may map the text with BTI); an \
+         unknown bit is ignored. incompat_flags: no bit defined; an unknown bit -> bytecode\n",
     );
     let _ = writeln!(
         s,
