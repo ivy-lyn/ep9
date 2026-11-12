@@ -1263,6 +1263,19 @@ thread_local! {
     static SITE: core::cell::Cell<(u32, u64)> = const { core::cell::Cell::new((0, 0)) };
 }
 
+/// One call count per site entry (`alloc_entry`, `alloc0_entry`, `clone_entry`). Each entry
+/// adds 1 to its own cell, so no two entries have the same body. An optimized build may give
+/// functions with the same body one address (LLVM MergeFunctions): in the release tests on
+/// linux-arm64 (CI 43204552184) `alloc_entry` and `alloc0_entry` were one function, so
+/// [`sites_isolate`] installed one code start twice and got `Registry(Overlap(..))`.
+static SITE_ENTERED: [core::sync::atomic::AtomicU64; 3] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 3];
+
+/// Counts a call of site entry `i` (see [`SITE_ENTERED`]).
+fn site_entered(i: usize) {
+    SITE_ENTERED[i].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// Argument `i` of the native frame `fp`.
 ///
 /// # Safety
@@ -1286,18 +1299,21 @@ macro_rules! site_entries {
 
 site_entries! {
     alloc_entry(cx, fp) {
+        site_entered(0);
         let (off, slot) = SITE.get();
         // SAFETY: the entry runs as the native code of `arr` (one parameter), with its own
         // `cx` and frame.
         unsafe { (RUNTIME_TABLE.alloc_site)(cx, fp, off, slot, frame_arg(fp, 0)) }
     }
     alloc0_entry(cx, fp) {
+        site_entered(1);
         let (off, slot) = SITE.get();
         // SAFETY: the entry runs as the native code of `arr0` (one parameter), with its own
         // `cx` and frame.
         unsafe { (RUNTIME_TABLE.alloc_site)(cx, fp, off, slot, frame_arg(fp, 0)) }
     }
     clone_entry(cx, fp) {
+        site_entered(2);
         let (off, slot) = SITE.get();
         // SAFETY: the entry runs as the native code of `cl` (two parameters), with its own
         // `cx` and frame.
@@ -1306,6 +1322,19 @@ site_entries! {
             (RUNTIME_TABLE.clone_widen)(cx, fp, off, slot, a, b)
         }
     }
+}
+
+/// The code starts of `alloc_entry`, `alloc0_entry` and `clone_entry`: three, each an own
+/// function (see [`SITE_ENTERED`]).
+fn site_entry_starts() -> [usize; 3] {
+    let a = code_start(alloc_entry as *const () as usize);
+    let a0 = code_start(alloc0_entry as *const () as usize);
+    let c = code_start(clone_entry as *const () as usize);
+    assert!(
+        a != a0 && a != c && a0 != c,
+        "two site entries have one code start: {a:#x} {a0:#x} {c:#x}"
+    );
+    [a, a0, c]
 }
 
 /// An isolate (eager vectors unless `threshold`) that ran `sites()`, with `alloc_entry`
@@ -1319,9 +1348,7 @@ fn sites_isolate(d: Dispatch, stress: bool, threshold: u32) -> (Isolate, [u64; 3
     let (u, slots) = sites();
     iso.with_cx_checkpoint(|cx| cx.run_script(u, "sites.js").map(|_| ()))
         .unwrap();
-    let a = code_start(alloc_entry as *const () as usize);
-    let a0 = code_start(alloc0_entry as *const () as usize);
-    let c = code_start(clone_entry as *const () as usize);
+    let [a, a0, c] = site_entry_starts();
     let kind = DispatchKind::AotBaseline;
     // The vectors, as the counted entries make them (`call_native` does not count).
     for name in ["arr", "arr0", "cl"] {
@@ -1586,4 +1613,35 @@ fn native_entry_alloc_site_refuses_an_offset_inside_an_instruction_and_a_foreign
             iso.verify_heap().unwrap();
         });
     }
+}
+
+/// CI 43204552184 (M8-P2 fixer r2, CI-2): in the release tests on linux-arm64,
+/// `native_entry_alloc_site_*` and `native_entry_clone_widen_*` failed in [`sites_isolate`]
+/// with `Registry(Overlap(..))`. The cause is in the test, not in the registry: `alloc_entry`
+/// and `alloc0_entry` had the same body, and the optimized build (LLVM MergeFunctions) gave
+/// them one address, so the install for `arr0` named the range of `arr` (the macOS arm64
+/// release build does the same; a debug build keeps two functions). This test models that
+/// build: it installs one start for both functions and gets the CI error, and it checks that
+/// the three site entries now have three code starts (each counts its calls in its own cell
+/// of [`SITE_ENTERED`]).
+#[test]
+fn native_entry_site_entries_have_three_code_starts() {
+    on_big_stack(|| {
+        let [a, a0, c] = site_entry_starts();
+        let mut iso = isolate(config(Dispatch::ALL[0], false));
+        let (u, _) = sites();
+        iso.with_cx_checkpoint(|cx| cx.run_script(u, "sites.js").map(|_| ()))
+            .unwrap();
+        let kind = DispatchKind::AotBaseline;
+        // SAFETY: as in `sites_isolate`; the second install is refused and changes nothing.
+        unsafe {
+            install_code(&iso.rt, info(&iso, "arr"), kind, a..a + 1).unwrap();
+            assert_eq!(
+                install_code(&iso.rt, info(&iso, "arr0"), kind, a..a + 1),
+                Err(InstallError::Registry(RegistryError::Overlap(a)))
+            );
+            install_code(&iso.rt, info(&iso, "arr0"), kind, a0..a0 + 1).unwrap();
+            install_code(&iso.rt, info(&iso, "cl"), kind, c..c + 1).unwrap();
+        }
+    });
 }
