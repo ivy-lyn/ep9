@@ -699,7 +699,8 @@ const A64_BTI_JC: u32 = 0xd503_24df;
 /// the proof away from every load through x27 (x28). The H35-Q9 unit-data entry
 /// (`ldr x27, [x28, #ud]`, `ldr x27, [x27, #8 * slot]`) and the restore of x27 before an exit
 /// write x27, so a text with them gets no proof through x27 now: the allowed write forms come
-/// with the production wiring (route UNIT-PADS-WIRING).
+/// with the production wiring (route UNIT-PADS-WIRING). The x27/x28 premise is per function
+/// text; across the functions of a unit it is the job of the wiring route (UNIT-PADS-WIRING).
 pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
     let mut out = Vec::new();
     if arch != Arch::A64 {
