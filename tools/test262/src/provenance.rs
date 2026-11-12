@@ -47,6 +47,13 @@
 //!   (`EP9_RUNNER_DIRTY`; gates5 high 1). build.rs reruns on the git index and on any change
 //!   under those paths, so a binary built from an edit that was undone later still says `true`.
 //!   Left out when git could not answer. `true` or no field: m1-exit gives OPEN.
+//! - `"runner_forks"` (FORK-CHECKOUT-ATTEST): the fork line of this binary's build,
+//!   `EP9_RUNNER_FORKS`: `regress=pinned icu4x=pinned` when each git-ignored fork checkout that
+//!   cargo built was its pin plus its patch set (`fork_attest` of scripts/sync-lib.sh, the
+//!   `.ep9-stamp` and `pinned_tree` rule), `stale` or `absent` in place of `pinned` otherwise.
+//!   The pins and patch files above are tree paths; this says what the checkouts held. Written
+//!   with `"runner_commit"`; left out when build.rs could not run the check. A fork that is not
+//!   `pinned`, or no field: m1-exit and m2-exit give OPEN.
 //! - `"test262_head"`: the HEAD of the test262 checkout the run used (in:193 item 8), read before
 //!   the run starts; left out when that directory is not the top of a git work tree. m1-exit
 //!   compares it with the pin, `third_party/test262.commit`.
@@ -428,6 +435,14 @@ pub fn runner_dirty() -> Option<bool> {
     }
 }
 
+/// The fork line of this runner's build (`EP9_RUNNER_FORKS` of build.rs; module doc):
+/// `regress=pinned icu4x=pinned` when each fork checkout cargo built was its pin plus its
+/// patches, `stale` or `absent` in place of `pinned` otherwise; None when build.rs could not
+/// run the check.
+pub fn runner_forks() -> Option<&'static str> {
+    Some(env!("EP9_RUNNER_FORKS")).filter(|f| !f.is_empty())
+}
+
 /// The HEAD commit of the test262 checkout at `dir` (module doc): None unless `dir` is the top
 /// of its own git work tree (a checkout copied without `.git` into the ep9 tree must not take
 /// the ep9 commit).
@@ -483,7 +498,8 @@ pub fn test262_dirty(dir: &Path) -> Option<bool> {
 /// `t262` read before the run), `,"test262_head_end":...` (read now, `end`) and
 /// `,"test262_dirty":...` (a change in either read). Each is left out when unknown, so m1-exit
 /// reads "no runner commit", "no runner dirty flag", "no test262 HEAD" or "no test262 dirty
-/// flag" and gives OPEN.
+/// flag" and gives OPEN. With a runner commit it also appends this binary's fork line,
+/// `,"runner_forks":...` ([`runner_forks`]; FORK-CHECKOUT-ATTEST), a fact of the same build.
 pub fn write_runner_fields(
     out: &mut String,
     runner: Option<&str>,
@@ -501,6 +517,10 @@ pub fn write_runner_fields(
         } else {
             ",\"runner_dirty\":false"
         });
+    }
+    if let (Some(_), Some(f)) = (runner, runner_forks()) {
+        out.push_str(",\"runner_forks\":");
+        json::string(out, f);
     }
     if let Some(h) = &t262.head {
         out.push_str(",\"test262_head\":");
@@ -1216,10 +1236,18 @@ mod tests {
         );
         let mut out = String::new();
         write_runner_fields(&mut out, Some(rc), Some(true), &co, &co);
+        // FORK-CHECKOUT-ATTEST: in this repository build.rs names the fork line too (the
+        // sync scripts ran before the first cargo command), one pair per fork.
+        let forks = runner_forks().expect("build.rs ran the fork check");
+        let names: Vec<&str> = forks
+            .split(' ')
+            .map(|p| p.split_once('=').expect("a pair").0)
+            .collect();
+        assert_eq!(names, ["regress", "icu4x"], "{forks}");
         assert_eq!(
             out,
             format!(
-                ",\"runner_commit\":\"{rc}\",\"runner_dirty\":true,\"test262_head\":\"{head}\",\"test262_head_end\":\"{head}\",\"test262_dirty\":false"
+                ",\"runner_commit\":\"{rc}\",\"runner_dirty\":true,\"runner_forks\":\"{forks}\",\"test262_head\":\"{head}\",\"test262_head_end\":\"{head}\",\"test262_dirty\":false"
             )
         );
         // gates5 high 1: in this repository build.rs names the dirty flag too.

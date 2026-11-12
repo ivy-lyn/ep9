@@ -376,9 +376,9 @@ fn add_bits(st: &St<'_>, s: FSlot, bits: u32) {
 
 /// A record that a fast body leaves to its dispatch (`interp::Flow::Record`): add `bits` to the
 /// int32 value half of one slot. The fast body only computes the bits; [`record`] runs after
-/// it, in `interp::dsl::record_next` (the sibling expansion: a tail-called out-of-line
-/// function, so the handler has no record code and saves no register on entry) or inline (the
-/// match loop, `become`, prefixed instructions).
+/// it, in `interp::dsl::record_next` (the sibling expansion: a tail call after `adds_bit`
+/// found a new bit, so the handler has no record store and saves no register on entry) or
+/// inline (the match loop, `become`, prefixed instructions).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Rec(u64);
 
@@ -1083,3 +1083,55 @@ const _: () = {
     assert!(FALSE | 1 == TRUE && TRUE | 1 == TRUE && NULL | 8 == UNDEFINED);
     assert!(UNDEFINED | 8 == UNDEFINED && HOLE | 1 != TRUE && HOLE | 8 != UNDEFINED);
 };
+
+// ---- The no-change test of a record exit (M8-P1 RECCOST2) ---------------------------------
+//
+// A `full` sibling handler whose fast body returns `interp::Flow::Record` runs [`adds_bit`]
+// before its tail call of `interp::dsl::record_next` (`interp::dsl::record_exit`). When no bit
+// is new (the usual case after a site's first runs: a number `+` on doubles records `NUMBER`
+// each time) the handler tail-calls `dsl::skip_next` (as `ics_only`), so the record costs the
+// test and a jump (the V8 form: write feedback only when it changes). `record_next` still runs
+// [`record`], which tests again and stores only a new bit (V9-D6), so every slot gets the same
+// bits as before (FACT_SCHEMA 2; `ep9_builtins` `tests/facts_export.rs` compares the
+// `Dispatch::Match` records, which run inline, with the sibling ones).
+
+/// True if the record of `bits` for slot `s` would add a bit: the running function has its
+/// vector and the int32 value half of `s` lacks one of `bits`. The test of [`add_bits`] (the
+/// same loads, no store). It uses only scratch registers and calls nothing, so a fast handler
+/// that runs it saves no register on entry on x86-64 (plan v13 rule 81).
+///
+/// It finds the FunctionInfo by clearing bit 49 of the frame's native word (the address that
+/// `frame::native_addr` gives: a native word is an address below 2^49 plus 2^49), with no
+/// 64-bit constant. `native_addr` adds `0xFFFE_0000_0000_0000`, the int32 tag mask, and a mask
+/// of the low 49 bits is `2^49 - 1`, beside the `2^49` that boxes a double: with either one
+/// LLVM kept the constant in a register from the handler entry (constant hoisting), and the
+/// int32 paths of `TestLessThan` or `Mul` got one more instruction on x86-64. So x86-64 clears
+/// the bit with `btr` in an `asm!` block; aarch64 has the mask as an `and` immediate.
+#[inline(always)]
+pub(crate) fn adds_bit(st: &St<'_>, s: FSlot, bits: u32) -> bool {
+    let w = st.hdr(crate::frame::slot::FUNCTION_INFO);
+    #[cfg(target_arch = "x86_64")]
+    let a = {
+        let mut a = w;
+        // SAFETY: `btr` clears bit 49 of a register and changes only the flags: no memory
+        // access, no stack.
+        unsafe {
+            core::arch::asm!("btr {a}, 49", a = inout(reg) a, options(pure, nomem, nostack));
+        }
+        a
+    };
+    // A VM stack slot (the extref-lint `VM_STACK` list, H25): only the `frame` encoding. The
+    // offset `frame::native(0)` is 2^49 after inlining; debug builds check the `frame` decode.
+    #[cfg(not(target_arch = "x86_64"))]
+    let a = w & (crate::frame::native(0) - 1);
+    debug_assert!(a as usize == crate::frame::native_addr(w));
+    let fi = core::ptr::with_exposed_provenance::<crate::unit::FunctionInfo>(a as usize);
+    // SAFETY: header slot 4 of a live frame holds the native word of its FunctionInfo
+    // (`St::info`), and `a` is the address that `native_addr` gives for it.
+    let Some(v) = feedback::vector(unsafe { &*fi }) else {
+        return false;
+    };
+    let old = value(v, s.0);
+    debug_assert!(is_i32(old), "a profile slot holds an int32: {old:#x}");
+    old as u32 & bits != bits
+}

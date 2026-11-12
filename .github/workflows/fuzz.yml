@@ -16,7 +16,7 @@
 # checked-out HEAD; dirty = a tracked file differed from HEAD before the build or after the run
 # (`git status --porcelain --untracked-files=no`); cpu_hours = the MEASURED run seconds x jobs /
 # 3600 (the fork workers run all the time), so a run cut short counts what it ran; counted =
-# the `counted` input. Default: 3 targets x 2 h x 4 workers = 24 CPU-h. A counted run is
+# the `counted` input. Default: 4 targets x 2 h x 4 workers = 32 CPU-h. A counted run is
 # pre-registered: a decisions-log row names the tool, campaign and tree before the dispatch
 # (plan v10 rule 41); a bug-finding run keeps the default `counted: false`.
 name: fuzz
@@ -75,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [frontend_compile, function_ctor, eval_context]
+        target: [frontend_compile, function_ctor, eval_context, regexp]
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 360
     steps:
