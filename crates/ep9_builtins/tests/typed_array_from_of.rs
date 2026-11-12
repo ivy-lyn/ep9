@@ -214,3 +214,88 @@ print(j(Int16Array.from.call(function (n) { sab.grow(n * 2); return st; }, [7, 8
         ])
     );
 }
+
+fn compile_sloppy(src: &str) -> ep9_bytecode::VerifiedUnit {
+    ep9_frontend::compile(
+        src,
+        ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+        ep9_frontend::CompileOptions::default(),
+    )
+    .expect("compiles")
+}
+
+/// The `tests/iterator.rs` form: runs `setup`, then a loop that a termination stops at its
+/// first poll (a poll sets the interrupt budget to at least 10,000 units), then requests
+/// termination again and runs `call` in a third script, on a thread with a 60 s wait (it only
+/// stops a hung test). True if the call ended terminated and the isolate kept working.
+fn terminates_in(setup: &'static str, call: &'static str) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let mut iso = common::isolate(false);
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy(setup), "setup.js").map(|_| ())
+            })
+            .expect("the setup runs");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy("for (;;) {}"), "fill.js")
+                    .map(|_| ())
+            });
+            assert!(
+                r.is_err_and(|e| e.terminated),
+                "the budget fill loop ends terminated"
+            );
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile_sloppy(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached';"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
+            let terminated = r.is_err_and(|e| e.terminated);
+            let stage = common::global_text(&mut iso, "stage");
+            // The isolate keeps working.
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile_sloppy("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
+            let _ = tx.send((terminated, stage, again));
+        })
+        .expect("a thread");
+    let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+    got == Ok((true, Some("before".to_string()), Some("again".to_string())))
+}
+
+/// The fill loops over a list (`from` step 6.e and InitializeTypedArrayFromList in the
+/// constructor, after IteratorToList; `of` steps 5-6 over its arguments) take one interrupt
+/// budget unit per element (`Cx::poll_interrupt`; H23 "Interrupt poll"; Codex TA-3 r1): a
+/// Number element runs no JS, so without the poll a termination waits for the whole fill.
+/// `from` and the constructor take 6,001 units to read the iterator (one per step) and 6,000
+/// more to fill; `of` fills 12,000. Each is more than the 10,128 units that the budget holds
+/// at most, so only a poll in the fill loop stops it.
+#[test]
+fn termination_stops_the_list_fill_loops() {
+    const ARRAY: &str = "var a = []; for (var i = 0; i < 6000; i++) a.push(i);";
+    const BIG: &str = "var b = []; for (var i = 0; i < 12000; i++) b.push(i);";
+    let not_stopped = [
+        (ARRAY, "Int8Array.from(a)"),
+        (ARRAY, "new Int8Array(a)"),
+        (BIG, "Int8Array.of(...b)"),
+    ]
+    .into_iter()
+    .filter(|&(setup, call)| !terminates_in(setup, call))
+    .map(|(_, call)| call)
+    .collect::<Vec<_>>();
+    assert_eq!(
+        not_stopped,
+        Vec::<&str>::new(),
+        "calls that a termination did not stop"
+    );
+}

@@ -390,8 +390,10 @@ fn from_iterable<'s>(
     // 2. Perform ? AllocateTypedArrayBuffer(O, len).
     let o = allocate(cx, proto, row, len)?;
     // 3-4. For each k < len: Perform ? Set(O, ! ToString(𝔽(k)), values[k], true) (the
-    //      element [[Set]]: ToNumber or ToBigInt, which can detach or shrink the buffer).
+    //      element [[Set]]: ToNumber or ToBigInt, which can detach or shrink the buffer). A
+    //      Number runs no JS, so the loop polls.
     for k in 0..values.len() {
+        cx.poll_interrupt()?;
         cx.set_index(o, k as u64, values.get(k), true)?;
     }
     Ok(o)

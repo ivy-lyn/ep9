@@ -118,8 +118,9 @@ pub(super) fn from<'s>(
         // d-e. For each k < len: kValue is values[k]; mappedValue is ? Call(mapper, thisArg,
         //      « kValue, 𝔽(k) ») if mapping, else kValue; Perform ? Set(targetObj, Pk,
         //      mappedValue, true). (The spec removes the first element of values each time;
-        //      reading index k is the same.)
+        //      reading index k is the same.) A Number runs no JS, so the loop polls.
         for k in 0..len {
+            cx.poll_interrupt()?;
             let k_value = values.get(k);
             let mapped_value = if mapping {
                 cx.call(mapper, this_arg, &[k_value, Local::number(k as f64)])?
@@ -175,7 +176,9 @@ pub(super) fn of<'s>(
     // 4. Let newObj be ? TypedArrayCreateFromConstructor(C, « 𝔽(len) »).
     let new_obj = typed_array_create_from_constructor(cx, c, len as u64)?;
     // 5-6. For each k < len: Let kValue be items[k]; Perform ? Set(newObj, Pk, kValue, true).
+    //      A Number runs no JS, so the loop polls.
     for k in 0..len {
+        cx.poll_interrupt()?;
         cx.set_index(new_obj, k as u64, args.get(k), true)?;
     }
     // 7. Return newObj.
