@@ -66,6 +66,8 @@
 //! (built-ins/RegExp, language/literals/regexp) with RX1 and with regress (RX0's engine) and
 //! checks the differences against a named list. The set-equality test (tests/set_equality.rs)
 //! compares the code point sets of step 2 with what regress matches, on the same sources.
+//! The parse-equality test also compiles each source it parses (step 3) in both subject forms
+//! and checks the graph ([`Program::validate`]).
 #![forbid(unsafe_code)]
 
 mod ast;
@@ -133,5 +135,7 @@ pub fn parse_str(pattern: &str, flags: Flags) -> Result<Pattern, ParseError> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_compiler;
 #[cfg(test)]
 mod tests_sets;

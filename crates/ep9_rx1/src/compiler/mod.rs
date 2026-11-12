@@ -35,6 +35,10 @@
 //!   those alternatives follows the hash; here it follows the lead range. The alternatives
 //!   match disjoint code units, so the order does not change a match.
 //! - The `min_match` of a class (see `ir.rs`).
+//!
+//! The tests (`tests_compiler.rs`) run each graph with a reference walker (`walker.rs`, test
+//! only: the meaning V8's code generator gives each node) and compare the match with node,
+//! on a fixture (`tests/compiler_exec.txt`) and on a file of test262 rows.
 
 pub(crate) mod analysis;
 pub(crate) mod boyer_moore;
@@ -43,6 +47,8 @@ pub(crate) mod ir;
 pub mod node;
 pub(crate) mod quick_check;
 pub(crate) mod tonode;
+#[cfg(test)]
+pub(crate) mod walker;
 
 use crate::error::Error;
 use crate::flags::Flags;
