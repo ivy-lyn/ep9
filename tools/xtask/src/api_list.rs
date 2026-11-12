@@ -39,7 +39,11 @@
 //! (marked `(auto)`). The items of a local supertrait that has no public path (a sealed trait
 //! in a private module) are listed under the trait that names it (`supertrait <Name> ::`); a
 //! glob re-export of a local enum lists each variant at its path; an ABI with the unwind flag
-//! prints as `extern "C-unwind"` (M7-P5 Codex T1, T3, T4).
+//! prints as `extern "C-unwind"` (M7-P5 Codex T1, T3, T4). Such a supertrait's declaration is
+//! a line too when it says more than `trait <Name>` (its generic defaults: `Sealed<T = u32>`),
+//! and a type alias whose type names a local trait with no public path as `dyn` (directly, in
+//! another type, or through local aliases with no public path; a cycle stops) lists that
+//! trait's lines under the alias, `<alias> :: dyn <Name> :: <item>` (API-LIST-COMPLETE).
 //!
 //! Usage: `cargo xtask api-list` (check), `--bless` (write the golden), `--print` (the
 //! listing to stdout), `--json FILE` (read this rustdoc JSON, run no rustdoc: the fixture
@@ -729,6 +733,14 @@ impl Doc<'_> {
             "struct" => sub.extend(ids(&["kind", "plain", "fields"])),
             "union" => sub.extend(ids(&["fields"])),
             "enum" => sub.extend(ids(&["variants"])),
+            "type_alias" => self.dyn_trait_lines(
+                x.get("type"),
+                path,
+                listed,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                lines,
+            ),
             "trait" => {
                 sub.extend(ids(&["items"]));
                 for i in ids(&["implementations"]) {
@@ -794,13 +806,88 @@ impl Doc<'_> {
                 continue; // not a local trait
             };
             let name = self.path_ty(t);
-            for i in sx.get("items").and_then(Json::arr).unwrap_or(&[]) {
-                if let Some(it) = id_of(i).and_then(|i| self.index.get(&i)) {
-                    let decl = self.item_decl(it);
-                    lines.insert(format!("{path} :: supertrait {name} :: {decl}"));
+            self.hidden_trait_lines(id, &format!("{path} :: supertrait {name}"), lines);
+            self.supertrait_lines(sx, path, listed, seen, lines);
+        }
+    }
+
+    /// The lines of the local trait `id` that has no public path, under `head`: one per item,
+    /// and its declaration when it says more than `trait <Name>` (generics with their defaults,
+    /// bounds, a where clause or an API attribute: `Sealed<T = u32>`; API-LIST-COMPLETE, R:298).
+    /// The bare form adds nothing to the line that names the trait, so it gives no line.
+    fn hidden_trait_lines(&self, id: u64, head: &str, lines: &mut BTreeSet<String>) {
+        let Some(item) = self.index.get(&id) else {
+            return;
+        };
+        let Some(("trait", sx)) = inner_kind(item) else {
+            return;
+        };
+        let decl = self.item_decl(item);
+        if decl != format!("trait {}", self.name(item)) {
+            lines.insert(format!("{head} :: {decl}"));
+        }
+        for i in sx.get("items").and_then(Json::arr).unwrap_or(&[]) {
+            if let Some(it) = id_of(i).and_then(|i| self.index.get(&i)) {
+                lines.insert(format!("{head} :: {}", self.item_decl(it)));
+            }
+        }
+    }
+
+    /// The traits that a type alias's type names as `dyn` (API-LIST-COMPLETE, R:298): for each
+    /// local trait with no public path, its lines under the alias (`<path> :: dyn <Name> ::
+    /// <item>`, [`Doc::hidden_trait_lines`]) and those of its hidden supertraits: a caller of
+    /// the alias calls them. The walk visits every part of the type (`&dyn T`, `Box<dyn T>`,
+    /// tuples, fn pointers) and follows a local type alias with no public path to its type;
+    /// `aliases` stops a cycle of aliases, `traits` lists each trait once.
+    fn dyn_trait_lines(
+        &self,
+        t: Option<&Json>,
+        path: &str,
+        listed: &HashSet<u64>,
+        aliases: &mut HashSet<u64>,
+        traits: &mut HashSet<u64>,
+        lines: &mut BTreeSet<String>,
+    ) {
+        let Some(t) = t else { return };
+        match t {
+            Json::Arr(a) => {
+                for x in a {
+                    self.dyn_trait_lines(Some(x), path, listed, aliases, traits, lines);
                 }
             }
-            self.supertrait_lines(sx, path, listed, seen, lines);
+            Json::Obj(m) => {
+                for (k, v) in m {
+                    if k == "dyn_trait" {
+                        for p in v.get("traits").and_then(Json::arr).unwrap_or(&[]) {
+                            let Some(tr) = p.get("trait") else { continue };
+                            let Some(id) = tr.get("id").and_then(id_of) else {
+                                continue;
+                            };
+                            if listed.contains(&id) || !traits.insert(id) {
+                                continue;
+                            }
+                            let Some(("trait", sx)) =
+                                self.index.get(&id).and_then(|i| inner_kind(i))
+                            else {
+                                continue; // not a local trait
+                            };
+                            let name = self.path_ty(tr);
+                            self.hidden_trait_lines(id, &format!("{path} :: dyn {name}"), lines);
+                            self.supertrait_lines(sx, path, listed, &mut HashSet::new(), lines);
+                        }
+                    } else if k == "resolved_path"
+                        && let Some(id) = v.get("id").and_then(id_of)
+                        && !listed.contains(&id)
+                        && let Some(("type_alias", ax)) =
+                            self.index.get(&id).and_then(|i| inner_kind(i))
+                        && aliases.insert(id)
+                    {
+                        self.dyn_trait_lines(ax.get("type"), path, listed, aliases, traits, lines);
+                    }
+                    self.dyn_trait_lines(Some(v), path, listed, aliases, traits, lines);
+                }
+            }
+            _ => {}
         }
     }
 

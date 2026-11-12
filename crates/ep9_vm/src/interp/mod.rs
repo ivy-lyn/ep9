@@ -335,10 +335,10 @@ pub(crate) enum Flow {
     /// Continue in this opcode's cold block (its own handler in (b) and (c)).
     Cold,
     /// As `Next`, after a feedback record (`profile::Rec`; T0 profile, H16-Q2). In (b) the
-    /// handler tail-calls `dsl::record_next`, which records and dispatches, so the record
-    /// code is not in the handler: on x86-64 a handler that records inline saves registers on
-    /// entry, also on its paths that record nothing (M4-P1 PROFILE-X64). (a), (c) and the
-    /// prefixed step record inline.
+    /// handler tail-calls `dsl::record_next` (records, dispatches) only if `profile::adds_bit`
+    /// finds a new bit, else `dsl::skip_next` (M8-P1; `Div`, `DivSmi`, `ForInPrepare` always call
+    /// `record_next`), so the record code is not in the handler: an inline record on x86-64 saves
+    /// registers on entry (M4-P1 PROFILE-X64). (a), (c) and the prefixed step record inline.
     Record(crate::profile::Rec),
     /// As `Record`, for a comparison whose record needs the operand pair
     /// (`profile::Pair`); (b) tail-calls `dsl::record_pair_next`.
@@ -597,3 +597,6 @@ pub(crate) mod scaled {
     use crate::interp::dsl::expand_scaled;
     ep9_bytecode::for_each_opcode!(expand_scaled[]);
 }
+
+/// Out-of-line finishes of hot handlers on x86-64 (M8-P1 X86-SHAPE2): `tails.rs`.
+pub(crate) mod tails;

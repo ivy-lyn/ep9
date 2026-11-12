@@ -2,8 +2,8 @@
 //! spike API stays behind `spike-native` (dep-guards check 11). Owners: P2-SPIKE-B, A2-ENTRY.
 //!
 //! ```text
-//! T0 call (slow/call.rs) --FUNCTION, not host, not class ctor, Baseline / AotBaseline
-//!   slot, no construct, no spread--> enter_native: push_frame (return pc = next bytecode pc),
+//! T0 call or construct (slow/call.rs) --FUNCTION, not host, not class ctor, Baseline /
+//!   AotBaseline slot, no spread--> enter_native (construct: enter_native_with): push_frame,
 //!   publish fp --> slot entry (cx, fp) through extern "C" (aarch64) / extern "sysv64" (x86-64)
 //!   --> acc bits, or 0 = exception pending --> T0 continues at the next pc, or unwinds
 //!
@@ -20,7 +20,7 @@
 //! | An exception is the result 0 (the pending exception is in the runtime) | native frames have no handlers in the spike; T0 unwinds from the caller's call instruction |
 //! | Every table function records the state first (`Runtime::enter`): publishes `fp` and saves the bytecode offset in the frame's offset slot | GC root scan, stack traces, nested calls start above the native frame |
 //! | Table functions take a bytecode offset, not a pc | the same code works for JIT code and for unit text (no relocation of bytecode addresses) |
-//! | The T0 entry records no feedback and does not count the call (`feedback::count_call`) | the spike JIT records no feedback (plan-v3 §5 P2-SPIKE-B) |
+//! | Native code records no feedback and never counts its own calls; its caller counts (M8-PLAN-D26): `slow::call` before its native arms (`call_native_cold`, `construct_native_cold`), and a Rust entry through `call::call_function_object` at the pushed frame (`enter_from_rust_with`, as `slow::count_entry`). A `call_any` call (not a construct: that one takes `call::construct_with`, the counted Rust entry) of a native callee (unit to unit; decided with the A3 writer) and the spike-native entries count nothing | the spike JIT records no feedback (plan-v3 §5 P2-SPIKE-B); a unit function gets its vector at the T0 moments of its bytecode (H32-Q5 (2); M-R9, doc 13) |
 //! | The T0 entry checks no native stack limit | the native prologue compares `Cx::native_limit` (H23-Q5); `call_any` checks it before every nested native or T0 entry, so T0↔native recursion ends in a catchable RangeError |
 //!
 //! Rust -> native: `call_from_rust` (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
@@ -28,10 +28,10 @@
 //! `call::call_function_object` does for T0. Since M7-P5 A2-RW (MC-w30-2) the general paths
 //! enter native code too, nested: a call from Rust through `call::call_function_object` (for
 //! example `Cx::call` or a builtin callback) and a T0 call that `call_fast` sends cold
-//! (`slow::call`). `[[Construct]]` still throws "not implemented". `call_any` takes no spread call
-//! (BytecodeGen's spread array needs the iterator path of `slow::call`). Generator functions
-//! never get native code ([`InstallError::Generator`]): a resume pushes a new frame and runs
-//! T0 (`call::run_resumed`).
+//! (`slow::call`); since M8-P1 A2-CONSTRUCT also `[[Construct]]` of an ordinary function on both
+//! paths (M8-PLAN-D25). `call_any` takes no spread call (BytecodeGen's spread array needs the
+//! iterator path of `slow::call`). Generator functions never get native code
+//! ([`InstallError::Generator`]): a resume pushes a new frame and runs T0 (`call::run_resumed`).
 //!
 //! Realms (H22-Q3): native code runs in its function's realm, as T0 code does. The T0 entries
 //! (`native_entry`, `call_native`, `enter_b_cold`, `call_fast`) take a callee of the caller's
@@ -172,9 +172,9 @@ pub use crate::layout;
 
 // ---- the T0 entry --------------------------------------------------------------------------
 
-/// The FunctionInfo of `callee` if a call (not a construct) enters it natively: a FUNCTION
-/// cell (not bound), not a host function, not a class constructor, not a generator function,
-/// with a Baseline or AotBaseline slot.
+/// The FunctionInfo of `callee` if a call or a construct enters it natively: a FUNCTION cell
+/// (not bound), not a host function, not a class constructor, not a generator function, with a
+/// Baseline or AotBaseline slot (construct: M8-P1 A2-CONSTRUCT, M8-PLAN-D25).
 #[inline]
 pub(crate) fn native_callee<'a>(callee: u64) -> Option<&'a FunctionInfo> {
     if !object::is_function(callee) {
@@ -1701,3 +1701,163 @@ pub(crate) fn uninstall_code(rt: &Runtime, fi: &FunctionInfo) -> Result<CodeEntr
 #[cfg(test)]
 #[path = "tests/native_entry.rs"]
 mod entry_tests;
+
+// ---- the construct entry and the counted Rust entry (M8-P1 A2-CONSTRUCT) -------------------
+//
+// At the end of the file, so no cited line above moves (plan v13 W-pre F1). `enter_native`,
+// `enter_from_rust` and their callers keep their form.
+
+/// [`enter_native`] with `new_target`: a `[[Construct]]` (`new_target` is not undefined;
+/// M8-PLAN-D25, MC-w29-8 step 1) or a call (`new_target` undefined), and with the entry count
+/// of a Rust entry when `count` is set (M8-PLAN-D26). The callee `callee` (`fi`, from
+/// [`native_callee`]: an ordinary function, never a class constructor) gets its frame at `base`:
+///
+/// - a construct: the receiver `this` is the one the caller made (§10.2.2 step 5: no
+///   OrdinaryCallBindThis), new.target goes into `slot::NEW_TARGET` (fp - 3, H14-Q1) and the
+///   frame gets the construct bit (`call::push_frame`), as for a T0 constructor; the result
+///   is the body's value as native code gave it, and the caller applies §10.2.2 steps 10-12
+///   (`call::construct_result`), as `call::construct_function_object` does after a T0 body;
+/// - a call: OrdinaryCallBindThis as in [`enter_native`].
+///
+/// With `count`, the frame is published first and the call counts as `slow::count_entry`
+/// counts the entry from Rust of a T0 callee (`interp::run`): `feedback::ensure` for a unit's
+/// entry code, else `feedback::count_call`. GC point: the published frame holds the callee,
+/// the receiver, the arguments and new.target. The T0 caller (`slow::call`) counts before the
+/// push instead (`count` false), as for a T0 callee. Native code never counts its own calls.
+///
+/// # Safety
+/// As [`enter_native`]; for a construct `this` is an object (or the hole for a derived
+/// constructor) that the caller keeps alive.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn enter_native_with(
+    cx: &mut Cx,
+    base: *mut u64,
+    caller_fp: *mut u64,
+    return_pc: *const u8,
+    callee: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+    count: bool,
+) -> Res<u64> {
+    let rt = cx.rt();
+    // A construct binds no `this`; a call: OrdinaryCallBindThis as in `enter_native` (no GC
+    // point before the push, `arg` may read memory that the GC does not scan).
+    let bound = if new_target == UNDEFINED {
+        call::try_bind_this(fi, this, rt.global())
+    } else {
+        Some(this)
+    };
+    // SAFETY: caller contract (the `push_frame` contract).
+    let nfp = unsafe {
+        call::push_frame(
+            base,
+            cx.stack_limit,
+            fi,
+            callee,
+            bound.unwrap_or(this),
+            argc,
+            arg,
+            caller_fp,
+            return_pc,
+            object::function_context(callee),
+            new_target,
+        )
+    };
+    cx.budget -= 1; // 1 unit per call, also when the frame does not fit (R3-2; D1).
+    let Some(nfp) = nfp else {
+        return stack_overflow(cx);
+    };
+    if bound.is_none() {
+        // SAFETY: as in `enter_native`: `nfp` is the frame just pushed at `base`, above every
+        // live frame and scratch Value, and not published yet.
+        unsafe { wrap_receiver(cx, nfp, this) }?;
+    }
+    rt.stack().set_fp(nfp);
+    // As in `enter_native`: native code runs with no scratch area.
+    rt.stack().clear_scratch();
+    if count && fi.feedback.get().is_null() {
+        // The entry count of a Rust entry (`interp::run`): `nfp` is the published top frame
+        // and `fi.code` its first bytecode instruction (offset 0).
+        slow::count_entry(cx, nfp, fi.code);
+    }
+    // SAFETY: as in `enter_native` (caller contract: the slot entry has the `NativeEntry` ABI).
+    let entry: NativeEntry = unsafe {
+        core::mem::transmute::<*const (), NativeEntry>(core::ptr::with_exposed_provenance(
+            fi.slot.entry(),
+        ))
+    };
+    // SAFETY: `nfp` is the frame of `fi` that was just pushed and published.
+    let r = unsafe { entry(core::ptr::from_mut(cx).cast::<NativeCx>(), nfp) };
+    rt.stack().set_fp(caller_fp);
+    if r == 0 {
+        debug_assert!(
+            rt.pending() != 0,
+            "native code of {:?} returned 0 without a pending exception",
+            fi.name
+        );
+        return Err(Throw);
+    }
+    Ok(r)
+}
+
+/// [`enter_from_rust`] through [`enter_native_with`]: the entry from Rust of the general
+/// paths (`call::call_function_object`, through `call_native_from_rust`), a call or a
+/// construct (`new_target`), counted as `slow::count_entry` counts a T0 callee (M8-PLAN-D26).
+/// The same stack and budget checks, realm switch and D20 state rule as [`enter_from_rust`].
+/// For a construct the caller made the receiver `this` and checks the result
+/// (`call::construct_function_object`).
+pub(crate) fn enter_from_rust_with(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    let rt = cx.rt();
+    if !rt.native_stack_ok() {
+        return stack_overflow(cx);
+    }
+    let stack = rt.stack();
+    let caller = stack.fp();
+    // The interrupt poll of a function entry from Rust (`call::poll`).
+    if cx.budget <= 0 && slow::interrupt(cx, caller) == 0 {
+        return Err(Throw);
+    }
+    let saved_scratch = stack.scratch_top();
+    let base = call::top_of(cx, caller);
+    // A function of another realm runs in its realm (H22-Q3), as `call_function_object`.
+    let saved_realm = realm::enter_realm_of(cx, f);
+    // SAFETY: as in `enter_from_rust`: `caller` is the published top frame (or null at the
+    // outermost entry), `base` the first free slot above it and its scratch Values, `arg`
+    // reads live Values for `i < argc`, `native_callee` checked the slot of `fi`, and a
+    // construct's receiver is kept alive by the caller (`construct_function_object`).
+    let r = unsafe {
+        enter_native_with(
+            cx,
+            base,
+            caller,
+            EXIT_STUB.as_ptr(),
+            f,
+            fi,
+            this,
+            argc,
+            arg,
+            new_target,
+            true,
+        )
+    };
+    realm::leave(cx, saved_realm);
+    // Put back the frame state this call found, on every exit (as `enter_from_rust`).
+    stack.set_fp(caller);
+    if saved_scratch.is_null() {
+        stack.clear_scratch();
+    } else {
+        stack.set_scratch_top(saved_scratch);
+    }
+    r
+}

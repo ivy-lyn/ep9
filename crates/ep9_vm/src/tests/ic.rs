@@ -1524,3 +1524,125 @@ fn the_keyed_store_grow_case_stores_in_place_and_records_as_cold() {
         }
     }
 }
+
+// ---- the add with growth of the SLOTS cell on the store miss path (M8-P0 TS-STORE) ----------
+
+/// The adds that grew the SLOTS cell on the store miss path (`ic::grow_add`).
+pub(super) fn grow_adds() -> u32 {
+    ic::GROW_ADDS.with(|c| c.get())
+}
+
+/// A new object under `proto` with data properties `p0`, `p1`, ... up to its in-object
+/// capacity, so its next field is the first out-of-line one (no SLOTS cell yet).
+pub(super) fn at_capacity(rt: &Runtime, proto: u64) -> u64 {
+    let o = object::new_object(rt, proto);
+    for i in 0..=object::obj::MAX_INOBJECT {
+        let s = shape::shape_of(o);
+        if shape::count(s) == shape::field_layout(s).0 {
+            assert_eq!(rd_slots(o), UNDEFINED, "no out-of-line field yet");
+            return o;
+        }
+        props::own_define(rt, o, key(rt, &format!("p{i}")), int(0), attr::DEFAULT);
+    }
+    unreachable!("an object reaches its in-object capacity")
+}
+
+/// The SLOTS cell of `o` (undefined if it has none).
+fn rd_slots(o: u64) -> u64 {
+    object::rd(object::cell(o), object::obj::SLOTS)
+}
+
+/// The capacity of the SLOTS cell of `o` (0 if it has none).
+fn slots_capacity(o: u64) -> i32 {
+    match rd_slots(o) {
+        UNDEFINED => 0,
+        s => object::rd_i32(object::cell(s), shape::slf::CAPACITY),
+    }
+}
+
+/// A 0x24 store (`Set`) and a 0x25 define (`Define`) whose add needs a SLOTS cell: once the
+/// site has the ADD case, the miss path grows the SLOTS cell and stores through the case. The
+/// generic add does not run, so the case stays and the shape is the case's target.
+#[test]
+fn an_add_with_no_room_grows_the_slots_cell_on_the_miss_path() {
+    each(|c| {
+        let mut t = T::new(
+            c,
+            &[Site::Set("x", false), Site::Define("x"), Site::Get("x")],
+        );
+        let p = object_prototype(t.rt());
+        for site in [0, 1] {
+            let first = at_capacity(t.rt(), p);
+            let from = shape::shape_of(first);
+            t.ok(site, first, int(1));
+            let to = shape::shape_of(first);
+            assert_eq!(t.kind(site, from), Some(ADD), "site {site}");
+            let h = t.handler(site, from);
+            let before = grow_adds();
+            for v in 0..4 {
+                let q = at_capacity(t.rt(), p);
+                assert_eq!(shape::shape_of(q), from);
+                t.ok(site, q, int(v));
+                assert_eq!(own(t.rt(), q, "x"), Some(int(v)));
+                assert_eq!(shape::shape_of(q), to, "the case's target shape");
+                assert_eq!(slots_capacity(q), 4, "the generic add's first SLOTS size");
+                assert_eq!(t.ok(2, q, UNDEFINED), int(v));
+            }
+            assert_eq!(
+                grow_adds(),
+                before + 4,
+                "site {site}: each add grew on the miss path"
+            );
+            assert_eq!(t.handler(site, from), h, "no case was made again");
+        }
+    });
+}
+
+/// A grown add checks the case first: an ADD case whose validity cell went invalid (a read-only
+/// `x` on the prototype) grows nothing, and the generic store runs (sloppy: no add). An add
+/// with no room grows; the next add, with room, hits in the handler with no growth.
+#[test]
+fn an_add_that_misses_for_another_reason_grows_nothing() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Set("x", false), Site::Set("y", false)]);
+        let op = object_prototype(t.rt());
+        let p = object_with(t.rt(), op, &[("pp", int(0))]);
+        let first = at_capacity(t.rt(), p);
+        let from = shape::shape_of(first);
+        t.ok(0, first, int(1));
+        assert_eq!(t.kind(0, from), Some(ADD));
+        // Room: `y` after `x` goes into the SLOTS cell that `x` made (4 places).
+        t.ok(1, first, int(2));
+        let with_x = at_capacity(t.rt(), p);
+        let before = grow_adds();
+        t.ok(0, with_x, int(3));
+        assert_eq!(
+            grow_adds(),
+            before + 1,
+            "no room yet: the case grew the SLOTS cell"
+        );
+        let before = grow_adds();
+        t.ok(1, with_x, int(4));
+        assert_eq!(own(t.rt(), with_x, "y"), Some(int(4)));
+        assert_eq!(grow_adds(), before, "room: the handler stored");
+        // A read-only `x` on the prototype: the cell of the case goes invalid.
+        props::own_define(
+            t.rt(),
+            p,
+            key(t.rt(), "x"),
+            int(5),
+            attr::ENUMERABLE | attr::CONFIGURABLE,
+        );
+        let q = at_capacity(t.rt(), p);
+        assert_eq!(shape::shape_of(q), from);
+        let before = grow_adds();
+        t.ok(0, q, int(6));
+        assert_eq!(
+            own(t.rt(), q, "x"),
+            None,
+            "the read-only `x` blocks the add"
+        );
+        assert_eq!(rd_slots(q), UNDEFINED, "nothing grew");
+        assert_eq!(grow_adds(), before);
+    });
+}

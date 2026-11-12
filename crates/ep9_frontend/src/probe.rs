@@ -146,12 +146,12 @@ fn per(delta_bytes: usize, delta_units: u32) -> String {
 const FLAT: usize = 4 << 10;
 
 /// Parse stack one pre-scan unit may use: its share of the worker stack, keeping the 1.5x
-/// margin of `stack.rs` (4,663 B debug, 2,615 B release).
+/// margin of `stack.rs` (6,199 B debug, 2,615 B release).
 const PARSE_UNIT_BUDGET: usize =
     crate::stack::WORKER_STACK_BYTES / 3 * 2 / crate::PRESCAN_CAP as usize;
 
 /// Pass stack one AST level may use: its share of the worker stack, keeping the 1.5x margin of
-/// `stack.rs`, as `bytecodegen::stack_tests` does for codegen (5,829 B debug, 3,269 B release).
+/// `stack.rs`, as `bytecodegen::stack_tests` does for codegen (7,749 B debug, 3,269 B release).
 const PASS_LEVEL_BUDGET: usize = crate::stack::WORKER_STACK_BYTES / 3 * 2 / crate::AST_CAP as usize;
 
 /// `None` if `delta_bytes` over `delta_units` fits `budget` per unit; else what is wrong. No

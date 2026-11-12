@@ -296,6 +296,8 @@ impl<'s> Cx<'s> {
         if t == UNDEFINED {
             return Ok(None);
         }
+        // Safe code can write this slot (`Cx::set_slot`): a release check (SAFE-COLL-FORGE).
+        table::checked(t);
         let mut i = int32_of(object::slot_get(it, iter_slot::INDEX)) as usize;
         let Some(e) = table::cursor_next(&mut t, &mut i) else {
             object::slot_set(rt, it, iter_slot::TABLE, UNDEFINED);
