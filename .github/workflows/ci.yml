@@ -35,7 +35,7 @@
 #   bench-run ........ M1 exit item 1: the 15 kernels on ep9 vs node (4 targets)
 #                      (kernels.mjs --check) as an artifact
 #   atomgate ......... the atom-key gate (G2, debug exec)            (Linux x64)
-#   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
+#   miri ............. Miri on ep9_value, ep9_heap, ep9_math and ep9_platform --lib shared_mem waiters (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
